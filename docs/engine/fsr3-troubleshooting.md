@@ -42,7 +42,8 @@ Reproduce and bisect with the deterministic camera:
 
 ```bash
 cargo run --release -- --cornell --upscaler fsr3 --fsr-quality quality \
-  --bench-camera pan --bench-frames 60 --screenshot /tmp/pan.png
+  --bench-frames 60 --bench-mode renderer-stepped --bench-camera pan \
+  --screenshot /tmp/pan.png
 ```
 
 `pan` is the cleanest probe: motion is near-uniform and horizontal, so a sign
@@ -129,9 +130,10 @@ was available. If you have one, exercise it and record the result.
 
 ## Gotchas that cost time
 
-- **`--bench-camera` is inert without `--bench-frames`.** The path is
-  normalized over the run length, so there is nothing to normalize against.
-  The engine warns, but the warning is easy to miss under `RUST_LOG=warn`.
+- **Upscaler comparisons use `renderer-stepped`, never `renderer-static`.** A
+  parked camera converges away the disocclusion, reprojection, and camera-cut
+  failures under test. `--bench-camera` is inert without `--bench-frames` and
+  rejected as an unnamed hybrid unless paired with the stepped mode.
 - **Bench CWD matters.** Bare `--bsa` names resolve against the working
   directory, not the `--esm` folder. Run from the game's `Data/`; otherwise
   archives silently fail to open, the scene loads near-empty, and the FPS

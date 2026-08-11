@@ -201,3 +201,9 @@ jobs:
             echo "Engine panicked during the bench run (see 'panicked at' above)."
             exit 1
           fi
+
+      - name: Assert renderer-static scene-state determinism
+        env:
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          BYROREDUX_BENCH_RUNNER: xvfb-run --auto-servernum
+        run: scripts/check-bench-determinism.sh target/debug/byroredux 5

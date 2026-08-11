@@ -123,7 +123,9 @@ run_profile () {
     local command_file="$profile_dir/command.txt"
     local bench_args=(--bench-frames "$BENCH_FRAMES" --bench-hold --screenshot "$screenshot" --upscaler taa)
     if [[ "$MODE" == boundary ]]; then
-        bench_args+=(--bench-camera grid-cross --fly)
+        bench_args+=(--bench-mode renderer-stepped --bench-camera grid-cross --fly)
+    else
+        bench_args+=(--bench-mode system-live)
     fi
     mkdir -p "$profile_dir"
 

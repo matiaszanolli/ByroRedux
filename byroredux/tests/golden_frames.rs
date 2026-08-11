@@ -9,8 +9,8 @@
 //!
 //! ## Determinism
 //!
-//! `BYROREDUX_FIXED_DT=0` (set per-test) overrides the wall-clock
-//! delta-time so animation, camera spin, and the spinning-cube
+//! `--bench-mode renderer-static` fixes delta-time at zero and holds the
+//! authored camera, so animation, camera spin, and the spinning-cube
 //! rotation stop advancing. TAA jitter still varies per-frame
 //! (Halton(2,3) is frame-counter driven, not dt-driven) so the
 //! denoiser still converges over the bench window — but at frame N
@@ -113,7 +113,7 @@ fn manifest_relative(rel: &str) -> PathBuf {
 }
 
 /// Invoke `cargo run --release -p byroredux -- --bench-frames N --screenshot OUT`
-/// with the determinism env var set. Asserts the screenshot file was
+/// in `renderer-static` mode. Asserts the screenshot file was
 /// captured — does NOT assert clean exit, because the engine currently
 /// crashes on shutdown after a successful bench (SIGSEGV in some Vulkan
 /// teardown path) AFTER the PNG has already been written. The test
@@ -127,7 +127,6 @@ fn run_engine_screenshot(out: &Path, frames: u32) {
         .unwrap_or_else(|| panic!("non-UTF-8 path: {out:?}"));
 
     let status = Command::new(env!("CARGO"))
-        .env("BYROREDUX_FIXED_DT", "0")
         // Disable noisy logging — golden test only cares about the
         // rendered frame, not stdout / engine traces.
         .env("RUST_LOG", "warn")
@@ -141,6 +140,8 @@ fn run_engine_screenshot(out: &Path, frames: u32) {
             "--",
             "--bench-frames",
             &frames_s,
+            "--bench-mode",
+            "renderer-static",
             "--screenshot",
             out_s,
         ])

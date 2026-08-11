@@ -10,9 +10,28 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 output_root="${BYROREDUX_RENDER_EVAL_OUT:-${repo_root}/target/renderer-eval}"
-fixed_dt="${BYROREDUX_RENDER_EVAL_DT:-0}"
+bench_mode="${BYROREDUX_RENDER_EVAL_MODE:-renderer-static}"
+bench_camera="${BYROREDUX_RENDER_EVAL_CAMERA:-orbit}"
 capture_frames="${BYROREDUX_RENDER_EVAL_FRAMES:-1 8 32 64}"
 runner="${BYROREDUX_RENDER_EVAL_RUNNER:-}"
+
+bench_args=(--bench-mode "${bench_mode}")
+case "${bench_mode}" in
+    renderer-static)
+        camera_label=static
+        ;;
+    system-live)
+        camera_label=free
+        ;;
+    renderer-stepped)
+        bench_args+=(--bench-camera "${bench_camera}")
+        camera_label="${bench_camera}"
+        ;;
+    *)
+        echo "renderer-eval: invalid BYROREDUX_RENDER_EVAL_MODE: ${bench_mode}" >&2
+        exit 2
+        ;;
+esac
 
 if [[ -e "${output_root}" && ! -d "${output_root}" ]]; then
     echo "renderer-eval: output path exists and is not a directory: ${output_root}" >&2
@@ -39,7 +58,8 @@ metadata="${output_root}/run-metadata.txt"
     echo "dirty=$(if [[ -z "$(git -C "${repo_root}" status --porcelain)" ]]; then echo false; else echo true; fi)"
     echo "timestamp_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     echo "kernel=$(uname -srmo)"
-    echo "fixed_dt=${fixed_dt}"
+    echo "bench_mode=${bench_mode}"
+    echo "bench_camera=${camera_label}"
     echo "capture_frames=${capture_frames}"
     echo "render_debug_default=${BYROREDUX_RENDER_DEBUG:-0}"
     if command -v vulkaninfo >/dev/null 2>&1; then
@@ -67,16 +87,16 @@ capture() {
         # for simple wrappers such as `xvfb-run --auto-servernum`, not an
         # arbitrary shell pipeline.
         read -r -a runner_args <<< "${runner}"
-        BYROREDUX_FIXED_DT="${fixed_dt}" \
         BYROREDUX_RENDER_DEBUG="${debug_flags}" \
         RUST_LOG="${BYROREDUX_RENDER_EVAL_LOG:-warn}" \
             "${runner_args[@]}" "${engine}" --cornell --bench-frames "${frames}" \
+            "${bench_args[@]}" \
             --screenshot "${png}" >"${log}" 2>&1
     else
-        BYROREDUX_FIXED_DT="${fixed_dt}" \
         BYROREDUX_RENDER_DEBUG="${debug_flags}" \
         RUST_LOG="${BYROREDUX_RENDER_EVAL_LOG:-warn}" \
-            "${engine}" --cornell --bench-frames "${frames}" --screenshot "${png}" \
+            "${engine}" --cornell --bench-frames "${frames}" \
+            "${bench_args[@]}" --screenshot "${png}" \
             >"${log}" 2>&1
     fi
     local status=$?

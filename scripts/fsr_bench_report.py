@@ -65,7 +65,7 @@ def main(path):
     for row in rows:
         parsed = {}
         for key, value in row.items():
-            if key in ("scene", "config", "run", "draws"):
+            if key in ("scene", "config", "run", "mode", "camera", "draws", "state_hash"):
                 parsed[key] = value
             else:
                 try:
@@ -74,6 +74,7 @@ def main(path):
                     parsed[key] = 0.0
         grouped[row["scene"]][row["config"]].append(parsed)
 
+    invalid_state = False
     for scene in grouped:
         configs = grouped[scene]
         if REFERENCE not in configs:
@@ -92,7 +93,35 @@ def main(path):
         entities = int(stat(REFERENCE, "entities"))
         runs = len(configs[REFERENCE])
 
-        print(f"\n=== {scene} — {entities} entities, {runs} runs, median (min–max)")
+        # Every row in an upscaler comparison must describe the same measured
+        # scene state. A mismatch invalidates the matrix before any frame-time
+        # delta is interpreted, even when the aggregate counts happen to agree.
+        all_rows = [row for config_rows in configs.values() for row in config_rows]
+        fingerprints = {
+            (
+                row["mode"],
+                row["camera"],
+                row["sim_time_s"],
+                row["entities"],
+                row["draws"],
+                row["lights"],
+                row["tlas"],
+                row["state_hash"],
+            )
+            for row in all_rows
+        }
+        if len(fingerprints) != 1:
+            invalid_state = True
+            print(f"\n=== {scene}: INVALID — {len(fingerprints)} scene-state fingerprints")
+            for fingerprint in sorted(fingerprints, key=str):
+                print("  " + " | ".join(map(str, fingerprint)))
+            continue
+        mode, camera, *_ = next(iter(fingerprints))
+
+        print(
+            f"\n=== {scene} — {mode}/{camera}, {entities} entities, "
+            f"{runs} runs, median (min–max)"
+        )
         print(
             f"{'config':<17}{'fps':>8}{'frame ms':>14}{'render ms':>11}"
             f"{'upscale':>9}{'present':>9}{'render rec.':>16}{'net rec.':>16}"
@@ -135,7 +164,7 @@ def main(path):
             + " + ".join(p.replace("gpu_", "") for p in RENDER_RES_PASSES)
             + " (render-resolution passes only; upscale and present excluded)"
         )
-    return 0
+    return 1 if invalid_state else 0
 
 
 if __name__ == "__main__":

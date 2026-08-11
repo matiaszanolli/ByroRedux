@@ -48,7 +48,6 @@ capture() {
     fi
 
     echo "renderer-eval-fnv: ${case_name} (rotation=${rotation_mode}, debug=${debug_flags})"
-    BYROREDUX_FIXED_DT=0 \
     BYROREDUX_RENDER_DEBUG="${debug_flags}" \
     RUST_LOG="${BYROREDUX_FNV_EVAL_LOG:-warn}" \
         "${runner_args[@]}" "${engine}" \
@@ -62,6 +61,7 @@ capture() {
         --camera-forward "${camera_forward}" \
         --rotation-mode "${rotation_mode}" \
         --bench-frames "${frames}" \
+        --bench-mode renderer-static \
         --screenshot "${png}" >"${log}" 2>&1
 
     if [[ ! -s "${png}" ]]; then

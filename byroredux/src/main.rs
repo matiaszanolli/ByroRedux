@@ -12,6 +12,7 @@ static DHAT_ALLOC: dhat::Alloc = dhat::Alloc;
 mod anim_convert;
 mod app_step;
 mod asset_provider;
+mod bench;
 mod bench_camera;
 mod boot;
 pub(crate) mod cell_loader;
@@ -159,6 +160,10 @@ struct App {
     /// across frames — same scratch-buffer pattern as the others
     /// above (#243 / #253 / #509).
     material_table: byroredux_renderer::MaterialTable,
+    /// Named benchmark timing/camera contract. Present for every finite
+    /// `--bench-frames` run, including legacy invocations resolved onto a
+    /// canonical mode in `boot::run`.
+    bench_mode: Option<crate::bench::BenchMode>,
     /// When `Some(N)`, run exactly N frames then print a `bench:` line
     /// to stdout and exit. See `--bench-frames` in main() and #366.
     bench_frames_target: Option<u32>,
@@ -394,6 +399,7 @@ impl App {
             ),
             skin_offsets: HashMap::new(),
             material_table: byroredux_renderer::MaterialTable::new(),
+            bench_mode: None,
             bench_frames_target: None,
             bench_hold: false,
             bench_summary_printed: false,
@@ -1315,21 +1321,22 @@ impl ApplicationHandler for App {
 
         let atw_pre_t0 = Instant::now();
         let now = atw_pre_t0;
-        // `BYROREDUX_FIXED_DT=<seconds>` overrides the wall-clock dt
-        // with a fixed value so simulation state at frame N is
-        // reproducible across runs. Used by the golden-frame
-        // regression tests in `tests/golden_frames.rs` — set to `0`
-        // to freeze animation entirely (camera, spin, TAA jitter
-        // still advance per-frame because they're frame-counter
-        // driven, not dt-driven), or `0.01666` to step at 60 Hz
-        // for deterministic time-based sims. Has no effect when
-        // unset; `last_frame` is still tracked for any consumer
-        // that reads wall-clock elapsed elsewhere.
+        // Finite benchmarks resolve one named mode before the event loop
+        // starts, so delta-time cannot drift independently of camera policy.
+        // Outside a finite bench, retain BYROREDUX_FIXED_DT as a diagnostic
+        // override for tools that do not emit benchmark conclusions.
         let wall_dt = now.duration_since(self.last_frame).as_secs_f32();
-        let dt = std::env::var("BYROREDUX_FIXED_DT")
-            .ok()
-            .and_then(|s| s.parse::<f32>().ok())
-            .unwrap_or(wall_dt);
+        let dt = self.bench_mode.map_or_else(
+            || {
+                // Preserve the environment override for non-benchmark tools.
+                // Finite benches resolve it once into a named mode in boot.rs.
+                std::env::var("BYROREDUX_FIXED_DT")
+                    .ok()
+                    .and_then(|s| s.parse::<f32>().ok())
+                    .unwrap_or(wall_dt)
+            },
+            |mode| mode.delta_time(wall_dt),
+        );
         self.last_frame = now;
 
         // Update time resources.
@@ -1552,6 +1559,24 @@ impl ApplicationHandler for App {
                         self.bench_frames_count >= target
                     };
                 if path_complete && !self.bench_summary_printed {
+                    // Capture the renderer-facing state only after the timed
+                    // window has closed. Hashing a large bone palette can be
+                    // measurable CPU work, so it must not feed back into the
+                    // frame time being reported.
+                    let scene_state = crate::bench::capture_scene_state(
+                        &self.world,
+                        &self.draw_commands,
+                        &self.water_commands,
+                        &self.gpu_lights,
+                        &self.gpu_fog_volumes,
+                        &self.bone_world,
+                    );
+                    let bench_mode = self
+                        .bench_mode
+                        .expect("every finite benchmark resolves a named mode");
+                    let bench_camera = self
+                        .bench_camera
+                        .map_or_else(|| "free".to_owned(), |path| path.to_string());
                     let stats = self.world.resource::<DebugStats>();
                     let elapsed_secs = self
                         .bench_start
@@ -1620,17 +1645,24 @@ impl ApplicationHandler for App {
                         })
                         .unwrap_or([0.0; 12]);
                     println!(
-                        "bench: frames={} wall_fps={:.1} wall_ms={:.2} \
+                        "bench: mode={} gate={} dt={} camera={} frames={} \
+                         wall_fps={:.1} wall_ms={:.2} \
                          frame_p50_ms={:.2} frame_p95_ms={:.2} frame_max_ms={:.2} \
                          brd_ms={:.2} ui_ms={:.2} draw_ms={:.2} \
-                         [fence={:.2} tlas={:.2} ssbo={:.2} cmd={:.2} submit={:.2}] \
+                         [fence={:.2} tlas_ms={:.2} ssbo={:.2} cmd={:.2} submit={:.2}] \
                          [gpu_skin_disp={:.3} gpu_blas_refit={:.3} gpu_taa={:.3} \
                          gpu_upscale={:.3} gpu_main_render={:.3} gpu_svgf={:.3} \
                          gpu_composite={:.3} gpu_ssao={:.3} gpu_bloom={:.3} \
                          gpu_volumetrics={:.3} gpu_cluster_cull={:.3} \
                          gpu_presentation={:.3}] \
                          systems_ms={:.2} ticks_per_frame={:.1} unaccounted_ms={:.2} \
-                         entities={} meshes={} textures={} draws={}/{}b/{}c",
+                         camera_pos={:.3},{:.3},{:.3} camera_forward={:.6},{:.6},{:.6} \
+                         sim_time_s={:.6} entities={} meshes={} textures={} \
+                         draws={}/{}b/{}c lights={} tlas={} state_hash={:016x}",
+                        bench_mode,
+                        bench_mode.gate_label(),
+                        bench_mode.dt_label(),
+                        bench_camera,
                         self.bench_frames_count,
                         wall_fps,
                         wall_ms,
@@ -1660,7 +1692,14 @@ impl ApplicationHandler for App {
                         systems_ms,
                         ticks_per_frame,
                         unaccounted_ms,
-                        stats.entity_count,
+                        scene_state.camera_position[0],
+                        scene_state.camera_position[1],
+                        scene_state.camera_position[2],
+                        scene_state.camera_forward[0],
+                        scene_state.camera_forward[1],
+                        scene_state.camera_forward[2],
+                        scene_state.simulated_time_s,
+                        scene_state.entities,
                         stats.mesh_count,
                         stats.texture_count,
                         // #1258 — `draws=N/Mb/Kc` = N input DrawCommands
@@ -1669,9 +1708,12 @@ impl ApplicationHandler for App {
                         // looked like a GPU call count but was actually
                         // the input. Format change preserves the
                         // existing first number for audit comparability.
-                        stats.draw_command_count,
+                        scene_state.draws,
                         stats.batch_count,
                         stats.indirect_call_count,
+                        scene_state.lights,
+                        scene_state.tlas_eligible,
+                        scene_state.state_hash,
                     );
                     drop(stats);
                     if let Some(streaming) = self.streaming.as_ref() {

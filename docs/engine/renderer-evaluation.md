@@ -39,8 +39,8 @@ still produced when it is unavailable.
 
 ## Determinism contract
 
-The harness sets `BYROREDUX_FIXED_DT=0` by default. Simulation state stays
-frozen while frame-counter-driven TAA and RT sampling advance deterministically.
+The harness selects `--bench-mode renderer-static` by default. Simulation state
+stays frozen while frame-counter-driven TAA and RT sampling advance deterministically.
 Each case starts a fresh process, so history begins from the same cold state.
 The Cornell camera, geometry, materials, and lights are authored in code and
 do not depend on external files.
@@ -56,7 +56,8 @@ and the existing golden-frame test uses tolerances rather than byte equality.
 |---|---|---|
 | `BYROREDUX_RENDER_EVAL_OUT` | `target/renderer-eval` | Artifact directory |
 | `BYROREDUX_RENDER_EVAL_FRAMES` | `1 8 32 64` | Fresh-process convergence captures |
-| `BYROREDUX_RENDER_EVAL_DT` | `0` | Fixed simulation delta in seconds |
+| `BYROREDUX_RENDER_EVAL_MODE` | `renderer-static` | Named benchmark contract (`renderer-static`, `renderer-stepped`, `system-live`) |
+| `BYROREDUX_RENDER_EVAL_CAMERA` | `orbit` | Moving path used only with `renderer-stepped` |
 | `BYROREDUX_RENDER_EVAL_LOG` | `warn` | Engine `RUST_LOG` value |
 | `BYROREDUX_RENDER_EVAL_RUNNER` | empty | Simple command wrapper, such as `xvfb-run --auto-servernum` |
 

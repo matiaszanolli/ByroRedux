@@ -241,12 +241,21 @@ and exists to separate reconstruction quality from upscaling quality, not
 as a performance option. Details and troubleshooting in
 [docs/engine/fsr3-troubleshooting.md](docs/engine/fsr3-troubleshooting.md).
 
-**Deterministic bench camera.** `--bench-camera <static|pan|orbit|dolly|cut>`
-drives the camera along a frame-indexed path for the length of a
-`--bench-frames` run. Temporal reconstruction only misbehaves when the camera
-moves, and neither the fly camera (needs mouse capture) nor the character rig
-(needs a player) runs headless — so this is what makes a motion capture
-reproducible across upscaler presets.
+**Named benchmark modes.** Every `--bench-frames` summary records one complete
+timing/camera contract: `renderer-static` fixes `dt=0` and holds the authored
+camera for renderer attribution and regression gates; `renderer-stepped` fixes
+`dt=1/60` and requires a non-static frame-indexed `--bench-camera` path for
+animation, streaming, and upscaler comparisons; `system-live` uses wall-clock
+time and a free camera and gates nothing. For example:
+
+```bash
+cargo run --release -- --cornell --bench-frames 300 \
+  --bench-mode renderer-stepped --bench-camera orbit
+```
+
+The benchmark line also records camera pose, simulated time, entity/draw/light/
+TLAS counts, and a deterministic scene-state hash. CI runs `renderer-static`
+twice and rejects hash drift before it can contaminate a performance cycle.
 
 **Sibling archive auto-load.** When `--bsa` / `--textures-bsa` points
 at an unsuffixed `.bsa` / `.ba2` (e.g. `Fallout - Textures.bsa`), the

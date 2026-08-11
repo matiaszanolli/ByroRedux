@@ -33,6 +33,7 @@ set -uo pipefail
 
 RUNS="${1:-3}"
 FRAMES="${2:-300}"
+CAMERA_PATH="${FSR_BENCH_CAMERA:-orbit}"
 GAMES_ROOT="${BYROREDUX_GAMES_ROOT:-/mnt/data/SteamLibrary/steamapps/common}"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="$REPO/target/release/byroredux"
@@ -45,6 +46,13 @@ if [[ ! -x "$BIN" ]]; then
   echo "error: $BIN not found — run 'cargo build --release' first" >&2
   exit 1
 fi
+case "$CAMERA_PATH" in
+  pan|orbit|dolly|cut) ;;
+  *)
+    echo "error: FSR_BENCH_CAMERA must be a moving temporal path (pan|orbit|dolly|cut), got '$CAMERA_PATH'" >&2
+    exit 2
+    ;;
+esac
 
 # Upscaler configurations. TAA at native is the reference every preset is
 # measured against.
@@ -122,7 +130,7 @@ run_scene_args() {
 SCENES=("${FSR_BENCH_SCENES:-cornell prospector whiterun medtek dugout}")
 read -r -a SCENES <<< "${SCENES[0]}"
 
-printf 'scene\tconfig\trun\twall_fps\twall_ms\tfence_ms\tbrd_ms\tgpu_main\tgpu_svgf\tgpu_composite\tgpu_ssao\tgpu_volumetrics\tgpu_upscale\tgpu_presentation\tgpu_bloom\tentities\tdraws\n' > "$TSV"
+printf 'scene\tconfig\trun\tmode\tcamera\twall_fps\twall_ms\tfence_ms\tbrd_ms\tgpu_main\tgpu_svgf\tgpu_composite\tgpu_ssao\tgpu_volumetrics\tgpu_upscale\tgpu_presentation\tgpu_bloom\tsim_time_s\tentities\tdraws\tlights\ttlas\tstate_hash\n' > "$TSV"
 
 for scene in "${SCENES[@]}"; do
   dir="$(scene_dir "$scene")"
@@ -141,12 +149,15 @@ for scene in "${SCENES[@]}"; do
       log="$OUT/${scene}_${name}_${run}.log"
       # Each run is a cold process: pipeline cache is shared on disk (matching
       # the bench-of-record convention) but no GPU state carries over, so one
-      # preset cannot warm another.
+      # preset cannot warm another. Upscaler comparisons always use the fixed
+      # 60 Hz + frame-indexed moving-camera contract: a parked camera would
+      # hide disocclusion/reprojection/camera-cut failures by fully converging.
       ( cd "$dir" && RUST_LOG=warn timeout 900 "$BIN" "${ARGS[@]}" "${FLAG_ARR[@]}" \
-          --bench-frames "$FRAMES" ) > "$log" 2>&1
+          --bench-frames "$FRAMES" \
+          --bench-mode renderer-stepped \
+          --bench-camera "$CAMERA_PATH" ) > "$log" 2>&1
 
-      # The engine prints a bench line per frame once past the target; the
-      # last one is the fullest sample.
+      # A no-screenshot run emits exactly one summary at the target frame.
       line="$(grep '^bench:' "$log" | tail -1)"
       if [[ -z "$line" ]]; then
         echo "warn: $scene/$name run $run produced no bench line (see $log)" >&2
@@ -158,14 +169,19 @@ scene, name, run, line = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 def num(key, default="0"):
     m = re.search(rf'{re.escape(key)}=([0-9.]+)', line)
     return m.group(1) if m else default
+def token(key, default="-"):
+    m = re.search(rf'{re.escape(key)}=([^ ]+)', line)
+    return m.group(1) if m else default
 draws = re.search(r'draws=(\S+)', line)
 print("\t".join([
     scene, name, run,
+    token("mode"), token("camera"),
     num("wall_fps"), num("wall_ms"), num("fence"), num("brd_ms"),
     num("gpu_main_render"), num("gpu_svgf"), num("gpu_composite"),
     num("gpu_ssao"), num("gpu_volumetrics"), num("gpu_upscale"),
     num("gpu_presentation"), num("gpu_bloom"),
-    num("entities"), draws.group(1) if draws else "-",
+    num("sim_time_s"), num("entities"), draws.group(1) if draws else "-",
+    num("lights"), num("tlas"), token("state_hash"),
 ]))
 PY
       printf '.' >&2

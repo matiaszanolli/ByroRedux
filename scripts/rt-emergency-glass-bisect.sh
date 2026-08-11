@@ -30,7 +30,7 @@ fi
 engine="${repo}/target/release/byroredux"
 (
     cd "${data}" || exit 125
-    BYROREDUX_FIXED_DT=0 RUST_LOG=error xvfb-run -a \
+    RUST_LOG=error xvfb-run -a \
         env -u WAYLAND_DISPLAY -u GDK_BACKEND XDG_SESSION_TYPE=x11 \
         "${engine}" \
         --esm Skyrim.esm \
@@ -49,7 +49,7 @@ engine="${repo}/target/release/byroredux"
         --fly \
         --camera-pos -556.74,132.16,364.16 \
         --camera-forward -1,-0.10,0 \
-        --bench-frames "${frames}" \
+        --bench-frames "${frames}" --bench-mode renderer-static \
         --upscaler taa \
         --screenshot "${png}"
 ) >"${log}" 2>&1

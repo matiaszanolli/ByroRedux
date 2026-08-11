@@ -111,7 +111,7 @@ After the Session-34 split, the binary's unit tests live beside the modules they
 
 Dedicated integration-test binaries live under [`byroredux/tests/`](../../byroredux/tests/):
 - `skinning_e2e.rs` — **M29** end-to-end skinning chain on real game content (FNV `NiTriShape`+`NiSkinData` legacy path and SSE `BSTriShape`+`BSSkinBoneData` global-buffer path, the latter covering the #638 fix). `#[ignore]`d.
-- `golden_frames.rs` — golden-frame regression: boots the engine with `--bench-frames N --screenshot path`, per-pixel-compares the captured PNG against `tests/golden/`. Determinism via `BYROREDUX_FIXED_DT`. Catches "Phase X made things worse" rendering regressions.
+- `golden_frames.rs` — golden-frame regression: boots the engine with `--bench-frames N --bench-mode renderer-static --screenshot path`, per-pixel-compares the captured PNG against `tests/golden/`. Catches "Phase X made things worse" rendering regressions.
 - `m41_phase1bx_skinning.rs` — `#[ignore]`d diagnostic pinning the documented bind-pose disagreement between vanilla FNV `skeleton.nif` and `upperbody.nif`.
 
 ## Integration tests (`#[ignore]`'d)

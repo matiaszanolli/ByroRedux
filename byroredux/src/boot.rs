@@ -98,6 +98,9 @@ pub(crate) fn run() -> Result<()> {
         .iter()
         .position(|a| a == "--bench-frames")
         .and_then(|i| args.get(i + 1).and_then(|v| v.parse::<u32>().ok()));
+    if bench_frames == Some(0) {
+        anyhow::bail!("--bench-frames must be greater than zero");
+    }
 
     // --screenshot PATH: when set, request a screenshot on the bench
     // exit frame (requires --bench-frames) and write to PATH before
@@ -124,23 +127,47 @@ pub(crate) fn run() -> Result<()> {
     let camera_pos = parse_vec3_arg(&args, "--camera-pos");
     let camera_forward = parse_vec3_arg(&args, "--camera-forward");
 
-    // --bench-camera <static|pan|orbit|dolly|cut> — drive the camera along a
+    // --bench-camera <static|pan|orbit|dolly|grid-cross|cut> — drive the camera along a
     // deterministic, frame-indexed path for the length of a `--bench-frames`
     // run. Temporal reconstruction only misbehaves when the camera moves, and
     // neither the fly camera (needs mouse capture) nor the character rig
     // (needs a player) runs in a headless bench, so without this the image-
     // quality harness can only ever measure a parked camera. No-op without
     // `--bench-frames`, since the path is normalized on the run length.
-    let bench_camera = match parse_string_arg(&args, "--bench-camera") {
+    let requested_bench_camera = match parse_string_arg(&args, "--bench-camera") {
         Some(spec) => match spec.parse::<crate::bench_camera::BenchCameraPath>() {
             Ok(path) => Some(path),
             Err(error) => anyhow::bail!("{error}"),
         },
         None => None,
     };
-    if bench_camera.is_some() && bench_frames.is_none() {
+    if requested_bench_camera.is_some() && bench_frames.is_none() {
         log::warn!("--bench-camera is inactive without --bench-frames (the path is normalized over the run length)");
     }
+
+    // --bench-mode owns both clocks that can change scene state. Explicit
+    // modes are the benchmark-of-record path; canonical legacy combinations
+    // are inferred during migration so old screenshot/smoke tooling remains
+    // usable while every emitted row still carries an honest mode name.
+    let requested_bench_mode = match parse_string_arg(&args, "--bench-mode") {
+        Some(spec) => match spec.parse::<crate::bench::BenchMode>() {
+            Ok(mode) => Some(mode),
+            Err(error) => anyhow::bail!("{error}"),
+        },
+        None => None,
+    };
+    let legacy_fixed_dt = std::env::var("BYROREDUX_FIXED_DT").ok();
+    let bench_selection = crate::bench::resolve_bench_selection(
+        bench_frames.is_some(),
+        requested_bench_mode,
+        requested_bench_camera,
+        legacy_fixed_dt.as_deref(),
+    )
+    .map_err(anyhow::Error::msg)?;
+    let bench_mode = bench_selection.map(|selection| selection.mode);
+    let bench_camera = bench_selection
+        .and_then(|selection| selection.camera)
+        .or(requested_bench_camera);
 
     // --rotation-mode 0..=3 — diagnostic switch for the REFR
     // Euler→Y-up conversion. See `cell_loader::euler_zup_to_quat_yup_refr`
@@ -163,6 +190,26 @@ pub(crate) fn run() -> Result<()> {
     }
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     init_tracing();
+
+    if let Some(selection) = bench_selection {
+        let camera = selection
+            .camera
+            .map_or_else(|| "free".to_owned(), |path| path.to_string());
+        log::info!(
+            "benchmark mode: {} (dt={}, camera={}, gate={})",
+            selection.mode,
+            selection.mode.dt_label(),
+            camera,
+            selection.mode.gate_label(),
+        );
+        if selection.inferred && (legacy_fixed_dt.is_some() || requested_bench_camera.is_some()) {
+            log::warn!(
+                "legacy benchmark controls inferred as '{}'; pass --bench-mode {} explicitly",
+                selection.mode,
+                selection.mode,
+            );
+        }
+    }
 
     let renderer_config = parse_renderer_config(&args)?;
     log::info!("Renderer upscaler selection: {}", renderer_config.upscaler);
@@ -290,6 +337,7 @@ pub(crate) fn run() -> Result<()> {
     event_loop.set_control_flow(ControlFlow::Poll);
 
     let mut app = App::new(debug_mode, &args, renderer_config);
+    app.bench_mode = bench_mode;
     app.bench_frames_target = bench_frames;
     app.bench_hold = bench_hold;
     app.screenshot_path = screenshot_path;
@@ -1238,9 +1286,17 @@ fn expand_game_profile_args(mut args: Vec<String>) -> Vec<String> {
     // is present, so `--mesh foo.nif`, `--cmd`, an explicit `--esm`, or
     // a master-only run aren't hijacked into loading the default cell.
     let defaults = crate::game_profiles::load_launch_defaults();
-    let has_other_load_flags = ["--esm", "--mesh", "--tree", "--kf", "--cmd", "--master"]
-        .iter()
-        .any(|f| args.iter().any(|a| a == f));
+    let has_other_load_flags = [
+        "--esm",
+        "--mesh",
+        "--tree",
+        "--kf",
+        "--cmd",
+        "--master",
+        "--cornell",
+    ]
+    .iter()
+    .any(|f| args.iter().any(|a| a == f));
     let game_key = match parse_string_arg(&args, "--game") {
         Some(k) => k,
         None => match defaults.game.clone() {

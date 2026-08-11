@@ -46,6 +46,8 @@ Selected modifier / diagnostic flags (all read from `effective_args()`):
 | `--debug` | Force `RUST_LOG=debug` + per-frame stats in the window title |
 | `--cmd "console command"` | Headless: build an empty `World`, run one console command, exit (rejects cell/asset flags — #637) |
 | `--bench-frames N` | Run N frames, print one `bench:` summary line, exit |
+| `--bench-mode MODE` | Complete clock/camera contract: `renderer-static`, `renderer-stepped`, or `system-live` |
+| `--bench-camera PATH` | Non-static frame-indexed path required by `renderer-stepped` (`pan`, `orbit`, `dolly`, `grid-cross`, `cut`) |
 | `--bench-hold` | Keep running after the bench summary so `byro-dbg` can attach |
 | `--screenshot PATH` | Capture a PNG on the bench-exit frame (requires `--bench-frames`) |
 | `--camera-pos x,y,z` / `--camera-forward x,y,z` | Override the auto-framed initial camera pose |
@@ -206,8 +208,8 @@ round-trip gated the loop at the compositor's pace; driving the draw from
 actual presentation).
 
 ```
-1. now = Instant::now(); dt = now - last_frame; last_frame = now
-     (BYROREDUX_FIXED_DT env var overrides dt for golden-frame tests)
+1. now = Instant::now(); dt = selected bench mode (or wall-clock outside a bench)
+     renderer-static=0; renderer-stepped=1/60; system-live=now-last_frame
 2. world_resource_set::<DeltaTime>  / ::<TotalTime>   (interior mutability)
 3. Refresh DebugStats (frame time, entity count, meshes/textures in use,
      registry counts, SkinSlotPool telemetry), ScratchTelemetry,
@@ -218,7 +220,8 @@ actual presentation).
 7. step_cell_transition()           ← drain door.teleport interior↔exterior swap
 8. Update the window title (~4×/sec) if EngineConfig.debug_logging
 9. render_one_frame(event_loop)     ← build render data + draw + present
-10. --bench-frames: on the target frame, print the bench summary
+10. --bench-frames: on the target frame, hash renderer-facing scene state,
+      print the named-mode bench summary
       (and screenshot if requested), then exit unless --bench-hold
 ```
 

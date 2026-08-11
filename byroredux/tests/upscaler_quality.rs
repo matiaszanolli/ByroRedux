@@ -39,11 +39,13 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Bench length per capture. Long enough for SVGF and the upscaler's history
-/// to converge from cold, short enough that a 25-run matrix stays tolerable.
+/// to converge from cold, short enough that a 20-run matrix stays tolerable.
 const FRAMES: u32 = 60;
 
-/// Camera paths exercised. Names match `--bench-camera`.
-const PATHS: [&str; 5] = ["static", "pan", "orbit", "dolly", "cut"];
+/// Moving camera paths exercised. A parked path is deliberately excluded:
+/// full temporal convergence hides disocclusion, reprojection, and cut-reset
+/// failures instead of testing them.
+const PATHS: [&str; 4] = ["pan", "orbit", "dolly", "cut"];
 
 /// FSR presets scored against the reference, in ascending upscale ratio.
 const PRESETS: [&str; 4] = ["native-aa", "quality", "balanced", "performance"];
@@ -51,8 +53,8 @@ const PRESETS: [&str; 4] = ["native-aa", "quality", "balanced", "performance"];
 /// Per-preset acceptance thresholds.
 ///
 /// **Measured, not chosen.** Three full matrix runs on an RTX 4070 Ti
-/// (driver as of 2026-07-24) produced these worst-case values across all five
-/// camera paths:
+/// (driver as of 2026-07-24) produced these worst-case values across the four
+/// moving paths plus the then-present static control:
 ///
 /// | preset      | worst SSIM | worst outliers |
 /// |-------------|-----------:|---------------:|
@@ -63,8 +65,8 @@ const PRESETS: [&str; 4] = ["native-aa", "quality", "balanced", "performance"];
 ///
 /// Run-to-run spread over those three runs was |Δssim| ≤ 0.0001 and
 /// |Δoutlier| ≤ 0.05 pp — the capture path is effectively deterministic, since
-/// `BYROREDUX_FIXED_DT` freezes animation and both the jitter sequence and the
-/// camera path are frame-indexed. The bounds below therefore sit ~0.01 SSIM
+/// `renderer-stepped` fixes simulation at 60 Hz and the camera path is
+/// frame-indexed. The bounds below therefore sit ~0.01 SSIM
 /// and ~25% relative outliers away from the worst observation: two orders of
 /// magnitude above the noise, so they fence real regressions rather than
 /// flapping, while still failing on a 1-point SSIM drop or a doubling of the
@@ -254,9 +256,9 @@ impl SceneArgs {
 
 /// Run the engine once and capture its final frame.
 ///
-/// `BYROREDUX_FIXED_DT=0` freezes animation so the only thing varying between
-/// two captures of the same frame index is the upscaler under test — the
-/// camera path is already frame-indexed rather than time-driven.
+/// `renderer-stepped` advances animation at a fixed 60 Hz while the camera
+/// path advances by frame index. Two captures therefore exercise temporal
+/// reconstruction under motion without reintroducing wall-clock feedback.
 fn capture(out: &Path, camera_path: &str, upscaler: &str, quality: Option<&str>) {
     capture_scene(out, &SceneArgs::Cornell, camera_path, upscaler, quality);
 }
@@ -293,6 +295,8 @@ fn capture_scene(
         [
             "--bench-frames",
             &frames,
+            "--bench-mode",
+            "renderer-stepped",
             "--bench-camera",
             camera_path,
             "--upscaler",
@@ -309,7 +313,6 @@ fn capture_scene(
     }
 
     let status = Command::new(env!("CARGO"))
-        .env("BYROREDUX_FIXED_DT", "0")
         .env("RUST_LOG", "warn")
         .args(&args)
         .status()
