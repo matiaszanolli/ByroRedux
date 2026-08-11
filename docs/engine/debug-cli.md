@@ -942,10 +942,21 @@ Accepts plain decimal (`8`) or hex (`0x8`). Constants are defined in
 | `0x8`  | `DBG_VIZ_TANGENT`               | Color fragments by tangent presence: green = authored or synthesized tangent reaches `perturbNormal` Path 1, red = zero tangent → screen-space derivative Path 2 fallback. |
 | `0x10` | `DBG_BYPASS_NORMAL_MAP`         | Skip `perturbNormal(...)` entirely; lighting uses the geometric vertex normal. Use to bisect whether an artifact comes from the TBN reconstruction or from downstream specular / ambient code. |
 | `0x800000` | `DBG_VIZ_NONFINITE`         | Bisect which shading term first goes non-finite (NaN/Inf): magenta = `indirect` (raw GI bounce), yellow = `indirectLight` (+ambient/AO), red = `directLight` (direct + shadow + emissive), green = all checked terms finite. Added for #2218 (FO3 Megaton exterior geometry saturating to pure white regardless of exposure). |
+| `0x8000000` | `DBG_DISABLE_DIRECT_SHADOWS` | Skip primary direct-light shadow queries while retaining unshadowed light accumulation. GI/reflection hit visibility remains active. |
+| `0x10000000` | `DBG_DISABLE_GI_RAYS` | Skip bounded diffuse GI rays; retain authored ambient, direct lighting, reflections, and AO. |
+| `0x20000000` | `DBG_DISABLE_REFLECTION_GLASS_RAYS` | Skip window portal, fire-refraction, glass IOR, and glossy/metal reflection queries; glass uses its Fresnel fallback. |
+| `0x40000000` | `DBG_DISABLE_ALL_MAIN_RAYS` | Skip all `triangle.frag` ray queries. Other ray-query pipelines and TLAS construction remain active. |
 
 (Bits `0x20`–`0x400000` also exist — see `crates/renderer/src/shader_constants_data.rs`'s
 `DBG_BITS` catalog, the single source of truth, for the full up-to-date list; this table
 covers the oldest bits plus ones with a written diagnostic recipe below.)
+
+The four `DBG_DISABLE_*RAYS` entries are the runtime half of the GPU
+decomposition ladder. They preserve the shipping shader's allocation shape and
+measure avoided execution. `scripts/rt-decomposition-matrix.sh` pairs each one
+with the equivalent `RT_COMPILE_ABLATION_MASK` build, which permits dead-code
+and register-pressure reduction. Use the paired script for performance claims;
+the runtime bits alone do not estimate specialization value.
 
 Combine bits with bitwise-OR — e.g. `BYROREDUX_RENDER_DEBUG=0x14` runs the
 normals visualization *with* the normal-map perturbation skipped, showing pure

@@ -135,6 +135,10 @@ or visibility-ray counts.
 
 - [Cornell scene](../../byroredux/src/cornell.rs)
 - [Golden-frame integration test](../../byroredux/tests/golden_frames.rs)
+- [`rt-decomposition-matrix.sh`](../../scripts/rt-decomposition-matrix.sh) —
+  pairs runtime-disabled and compile-time-disabled direct-shadow, GI,
+  reflection/glass, and all-main-ray-query variants under `renderer-static`;
+  rejects the matrix if any scene-state fingerprint differs.
 - [Shader pipeline](shader-pipeline.md)
 - [Renderer architecture](renderer.md)
 - [Shadow-pipeline trade-offs](shadow-pipeline-tradeoffs.md)
