@@ -81,9 +81,27 @@ float geometrySmith(float NdotV, float NdotL, float roughness) {
     return g1v * g1l;
 }
 
+// Fifth-power weight shared by every Schlick-shaped lobe. Express the fixed
+// exponent as three multiplies instead of GLSL `pow`: the latter survives as
+// a GLSL.std.450 Pow instruction in the shipped SPIR-V and can consume an SFU
+// slot even though x^5 has this exact multiply-chain form.
+float schlickWeight(float cosTheta) {
+    float x = clamp(1.0 - cosTheta, 0.0, 1.0);
+    float x2 = x * x;
+    return x2 * x2 * x;
+}
+
+// Scalar form for dielectric glass. Avoids broadcasting F0 to vec3 only to
+// discard two channels at the call site.
+float fresnelSchlickScalar(float cosTheta, float F0) {
+    float weight = schlickWeight(cosTheta);
+    return F0 + (1.0 - F0) * weight;
+}
+
 // Fresnel (Schlick approximation).
 vec3 fresnelSchlick(float cosTheta, vec3 F0) {
-    return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+    float weight = schlickWeight(cosTheta);
+    return F0 + (1.0 - F0) * weight;
 }
 
 // Derive Schlick F0 from a per-material refractive index. Pre-#1248
@@ -157,9 +175,9 @@ DisneyDiffuseSplit disneyDiffuseSplit(
     float HdotL
 ) {
     // SchlickWeight = (1 - c)^5 — Fresnel-shaped grazing falloff.
-    float FL = pow(clamp(1.0 - NdotL, 0.0, 1.0), 5.0);
-    float FV = pow(clamp(1.0 - NdotV, 0.0, 1.0), 5.0);
-    float FH = pow(clamp(1.0 - HdotL, 0.0, 1.0), 5.0);
+    float FL = schlickWeight(NdotL);
+    float FV = schlickWeight(NdotV);
+    float FH = schlickWeight(HdotL);
 
     // Burley retro-reflection (rough-surface backscatter on
     // grazing-light angles — edge brightening on cloth / sand /

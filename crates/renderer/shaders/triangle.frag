@@ -1531,7 +1531,7 @@ void main() {
         // fallback, no longer glass-specific. BGSM-authored glass can
         // diverge further (water 1.33 → 0.02, dense window glass 1.52 → 0.044).
         vec3 glassF0 = vec3(f0Dielectric);
-        glassFresnel = fresnelSchlick(glassNdotV, glassF0).r;
+        glassFresnel = fresnelSchlickScalar(glassNdotV, f0Dielectric);
         // Dielectric Fresnel already defines the correct specular energy.
         // Boosting legacy specular strength to 3× made the bounded fallback
         // read as chrome whenever the IOR budget was exhausted.
@@ -1633,7 +1633,7 @@ void main() {
         float NdotV_v = max(dot(N_geom_view, V), 0.05);
         // #1248 — per-material dielectric F0 (same source as glassF0
         // above; the IOR block runs inside the isGlass branch).
-        float fresnelScalar = fresnelSchlick(NdotV_v, vec3(f0Dielectric)).r;
+        float fresnelScalar = fresnelSchlickScalar(NdotV_v, f0Dielectric);
 
         // Reflection is only material above the normal-incidence Fresnel
         // floor. The old path traced and fully lit a reflection hit for every
@@ -3356,7 +3356,7 @@ void main() {
                     float eta = frontFace ? (1.0 / ior) : ior;
                     float cosTheta = clamp(dot(-pathDir, hitN), 0.0, 1.0);
                     float f0 = dielectricF0FromIor(ior);
-                    float fresnel = fresnelSchlick(cosTheta, vec3(f0)).r;
+                    float fresnel = fresnelSchlickScalar(cosTheta, f0);
                     vec3 transmittedDir = refract(pathDir, hitN, eta);
                     vec2 eventRand = hash2_pixel_frame(
                         uvec2(gl_FragCoord.xy),

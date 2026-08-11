@@ -215,7 +215,9 @@ mod tests {
         assert!(
             src.contains("bool needsVisibility = visibilityMaskNeedsTrace(")
                 && src.contains("if (!useRestir || !needsVisibility)")
-                && src.contains("if (rtEnabled && needsVisibility && shadowFade > 0.01)"),
+                && src.contains(
+                    "if (directShadowRayEnabled && needsVisibility && shadowFade > 0.01)"
+                ),
             "no-prop-shadow LIGH sources must retain structural ReSTIR visibility"
         );
         assert!(

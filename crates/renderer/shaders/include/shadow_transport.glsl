@@ -122,7 +122,7 @@ vec3 traceShadowTransmittance(
         float ior = max(hitMat.ior, 1.0);
         float f0 = (ior - 1.0) / (ior + 1.0);
         f0 *= f0;
-        float fresnel = f0 + (1.0 - f0) * pow(1.0 - cosTheta, 5.0);
+        float fresnel = fresnelSchlickScalar(cosTheta, f0);
 
         float absorption = mix(0.08, 0.45, authoredOpacity);
         transmission *= mix(vec3(1.0), tint, absorption) * (1.0 - fresnel);

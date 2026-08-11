@@ -1199,6 +1199,46 @@ fn bounded_path_uses_ggx_bsdf_transport_and_directional_environment() {
     );
 }
 
+/// Fixed-exponent Schlick weights belong on the ordinary ALU multiply path,
+/// not behind GLSL.std.450 `Pow`. Glass additionally uses the scalar helper so
+/// its hot path does not broadcast a dielectric F0 only to read `.r` back.
+#[test]
+fn schlick_fresnel_uses_multiply_chain_and_scalar_glass_path() {
+    let frag = include_str!("../../../shaders/triangle.frag");
+    let pbr = include_str!("../../../shaders/include/pbr.glsl");
+    let shadow = include_str!("../../../shaders/include/shadow_transport.glsl");
+
+    for needle in [
+        "float schlickWeight(float cosTheta)",
+        "float x2 = x * x;",
+        "return x2 * x2 * x;",
+        "float fresnelSchlickScalar(float cosTheta, float F0)",
+    ] {
+        assert!(
+            pbr.contains(needle),
+            "optimized Fresnel helper `{needle}` is missing"
+        );
+    }
+    assert!(
+        !pbr.contains("pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0)"),
+        "Schlick must not regress to GLSL pow(x, 5)"
+    );
+    for needle in [
+        "fresnelSchlickScalar(glassNdotV, f0Dielectric)",
+        "fresnelSchlickScalar(NdotV_v, f0Dielectric)",
+        "fresnelSchlickScalar(cosTheta, f0)",
+    ] {
+        assert!(
+            frag.contains(needle),
+            "glass path no longer uses `{needle}`"
+        );
+    }
+    assert!(
+        shadow.contains("fresnelSchlickScalar(cosTheta, f0)"),
+        "glass shadow transport must share the scalar Schlick helper"
+    );
+}
+
 /// #2243 — Disney diffuse is /PI while sheen is not. The clustered-light
 /// path deliberately uses the legacy non-/PI Lambert convention, so it must
 /// rescale the complete Disney lobe. Scaling diffuse alone makes sheen PI
