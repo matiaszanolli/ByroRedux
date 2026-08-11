@@ -393,7 +393,11 @@ fn main() {
     writeln!(out).unwrap();
 
     writeln!(out, "// Main-pass ray-query decomposition.").unwrap();
-    writeln!(out, "#define RT_ABLATION_DIRECT_SHADOW {RT_ABLATION_DIRECT_SHADOW}u").unwrap();
+    writeln!(
+        out,
+        "#define RT_ABLATION_DIRECT_SHADOW {RT_ABLATION_DIRECT_SHADOW}u"
+    )
+    .unwrap();
     writeln!(out, "#define RT_ABLATION_GI {RT_ABLATION_GI}u").unwrap();
     writeln!(
         out,
@@ -402,7 +406,11 @@ fn main() {
     .unwrap();
     writeln!(out, "#define RT_ABLATION_ALL_RAYS {RT_ABLATION_ALL_RAYS}u").unwrap();
     writeln!(out, "#ifndef RT_COMPILE_ABLATION_MASK").unwrap();
-    writeln!(out, "#define RT_COMPILE_ABLATION_MASK {RT_COMPILE_ABLATION_MASK}u").unwrap();
+    writeln!(
+        out,
+        "#define RT_COMPILE_ABLATION_MASK {RT_COMPILE_ABLATION_MASK}u"
+    )
+    .unwrap();
     writeln!(out, "#endif").unwrap();
     writeln!(out).unwrap();
 
