@@ -21,6 +21,11 @@ scene="${BYROREDUX_RT_SCENE:-medtek}"
 runner="${BYROREDUX_RT_RUNNER:-}"
 compiler="${GLSLANG_VALIDATOR:-glslangValidator}"
 
+if [[ -n "$(git -C "${repo_root}" status --porcelain --untracked-files=normal)" ]]; then
+    echo "rt-decomposition: working tree must be clean; compile variants are built from HEAD" >&2
+    exit 2
+fi
+
 if [[ ! "${runs}" =~ ^[1-9][0-9]*$ ]]; then
     echo "rt-decomposition: runs must be a positive integer, got '${runs}'" >&2
     exit 2
@@ -55,12 +60,15 @@ scene_args "${scene}"
 
 mkdir -p "${output_root}/bin"
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/byro-rt-decomposition.XXXXXX")"
-cp "${artifact}" "${work_dir}/triangle.frag.spv.shipping"
-restore_artifact() {
-    cp "${work_dir}/triangle.frag.spv.shipping" "${artifact}"
-    rm -rf -- "${work_dir}"
-}
-trap restore_artifact EXIT
+trap 'rm -rf -- "${work_dir}"' EXIT
+
+# Compile in an archive copy, never by swapping the tracked artifact. Besides
+# keeping the user's tree clean, this prevents an automated commit/watch task
+# from capturing a short-lived evaluation module as the shipping SPIR-V.
+git archive --format=tar --output="${work_dir}/source.tar" HEAD
+mkdir -p "${work_dir}/source"
+tar -xf "${work_dir}/source.tar" -C "${work_dir}/source"
+variant_artifact="${work_dir}/source/crates/renderer/shaders/triangle.frag.spv"
 
 runner_args=()
 launch_prefix=()
@@ -88,15 +96,14 @@ for feature in "${compile_order[@]}"; do
     "${compiler}" -V "-DRT_COMPILE_ABLATION_MASK=${mask}" \
         -I"${shader_root}" "${shader}" -o "${variant_spv}" >/dev/null
     spirv-val "${variant_spv}"
-    cp "${variant_spv}" "${artifact}"
+    cp "${variant_spv}" "${variant_artifact}"
     env CARGO_TARGET_DIR="${output_root}/build" \
-        cargo build --manifest-path "${repo_root}/Cargo.toml" \
+        cargo build --manifest-path "${work_dir}/source/Cargo.toml" \
         --release -p byroredux --bin byroredux
     cp "${output_root}/build/release/byroredux" \
         "${output_root}/bin/compile-${feature}"
     cp "${variant_spv}" "${output_root}/bin/compile-${feature}.spv"
 done
-cp "${work_dir}/triangle.frag.spv.shipping" "${artifact}"
 
 raw_tsv="${output_root}/raw.tsv"
 summary="${output_root}/summary.txt"
