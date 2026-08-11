@@ -17,6 +17,15 @@ use byroredux_renderer::GpuLight;
 
 use crate::bench_camera::BenchCameraPath;
 
+/// Whether the finite benchmark still owns simulation time and camera state.
+///
+/// `--bench-hold` keeps the process alive after the summary is printed for
+/// interactive inspection. That inspection must run like the normal engine:
+/// wall-clock time and player/fly-camera input are live again.
+pub(crate) const fn harness_active(summary_printed: bool) -> bool {
+    !summary_printed
+}
+
 /// Complete timing/camera contract for a finite `--bench-frames` run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BenchMode {
@@ -407,6 +416,12 @@ mod tests {
         );
         assert_eq!(BenchMode::SystemLive.delta_time(0.25), 0.25);
         assert!("static".parse::<BenchMode>().is_err());
+    }
+
+    #[test]
+    fn held_session_releases_harness_after_summary() {
+        assert!(harness_active(false));
+        assert!(!harness_active(true));
     }
 
     #[test]

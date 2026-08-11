@@ -590,32 +590,6 @@ pub fn classify_pbr_keyword(inputs: PbrClassifierInputs<'_>) -> PbrMaterial {
     // aliases to the actual texture filename.
     let filename = path.rsplit(['/', '\\']).next().unwrap_or(path);
 
-    // Weathered scrap/junk cladding (FNV/FO3 shanty-town architecture —
-    // `textures\architecture\megaton\metalscrap{shingles,beams,panels}*.dds`,
-    // reused verbatim for Goodsprings' Prospector Saloon shack walls and
-    // its LowerClass bar counter panel). Landed in `977eb95a` — that
-    // commit's "Add Scripting Subsystem Audit report" title does not
-    // reflect this arm; anchor archaeology here, not the message (#1924).
-    // Checked BEFORE the "metal"
-    // keyword arm below because "metalscrap" contains "metal" and would
-    // otherwise fall into the polished/oxidised-steel bucket at
-    // metalness=0.9 — visibly chrome on rusted, painted corrugated tin
-    // that was never meant to be reflective. The visible surface here is
-    // paint/rust, not bare conductive metal, so treat it like the
-    // stone/rubble bucket: matte, non-metallic.
-    //
-    // Matches "metalscrap" specifically, NOT the bare "scrap" substring
-    // (#1925 / MAT-D6-02): a bare match also caught unrelated scrap-metal
-    // clutter (e.g. Starfield `meshes\SetDressing\ScrapPile_Kit\*.nif`,
-    // whose textures plausibly live under a `ScrapPile*` path with no
-    // "metal" token) and forced it to the same painted-tin matte look
-    // instead of letting it reach the conductive-metal arm below.
-    if contains_any_ci(path, &["metalscrap"]) {
-        return PbrMaterial {
-            roughness: 0.85,
-            metalness: 0.0,
-        };
-    }
     if contains_any_ci(path, &["metal", "iron", "steel", "chainmail"])
         || contains_any_ci(filename, &["dwemer", "dwarven"])
     {
@@ -1051,57 +1025,50 @@ mod tests {
 
     /// Prospector Saloon (`GSProspectorSaloonInterior`) bar-counter panel
     /// and Goodsprings/Megaton shack-wall siding both use
-    /// `textures\architecture\megaton\metalscrap{panels,shingles,beams}*.dds`
-    /// — rusted, painted corrugated-tin cladding. Pre-fix these matched
-    /// the generic "metal" arm (metalness=0.9) and rendered as chrome.
-    /// User-reported 2026-07-06.
+    /// `textures\architecture\megaton\metalscrap{panels,shingles,beams}*.dds`.
+    /// These are metal receivers and must retain conductor response. The
+    /// general metal arm now uses a brushed/oxidised roughness of 0.55, so
+    /// the old matte-dielectric exception is no longer needed to avoid the
+    /// pre-2026-06-03 chrome look.
     #[test]
-    fn classify_pbr_scrap_metal_is_not_chrome() {
+    fn classify_pbr_scrap_metal_is_weathered_conductor() {
         let m = Material::default();
         let panel = classify(&m, r"textures\architecture\megaton\metalscrappanels04.dds");
-        assert_eq!(
-            panel.metalness, 0.0,
-            "rusted/painted scrap cladding must not be classified as bare conductive metal"
-        );
-        assert!(panel.roughness > 0.6);
+        assert_eq!(panel.metalness, 0.9);
+        assert_eq!(panel.roughness, 0.55);
 
         let shingles = classify(
             &m,
             r"textures\architecture\megaton\metalscrapshingles04.dds",
         );
-        assert_eq!(shingles.metalness, 0.0);
+        assert_eq!(shingles.metalness, panel.metalness);
+        assert_eq!(shingles.roughness, panel.roughness);
 
         let beams = classify(&m, r"textures\architecture\megaton\metalscrapbeams01.dds");
-        assert_eq!(beams.metalness, 0.0);
+        assert_eq!(beams.metalness, panel.metalness);
+        assert_eq!(beams.roughness, panel.roughness);
 
         // Genuine bare-metal paths (no "scrap") are unaffected.
         let steel = classify(&m, r"textures\weapons\steel\barrel01.dds");
         assert!(steel.metalness > 0.8);
     }
 
-    /// #1925 / MAT-D6-02 — the "scrap" arm must match "metalscrap"
-    /// specifically, not any path containing the bare "scrap" substring.
-    /// A "Scrap Metal" misc-item / clutter texture (FNV/FO4 naming
-    /// convention: token order "scrap" then "metal", e.g.
-    /// `scrapmetalpile01_d.dds`) is genuine bare conductive scrap, not
-    /// the megaton painted-tin cladding this arm targets. Pre-fix, the
-    /// unbounded "scrap" substring match caught it too (before the
-    /// "metal" keyword arm ever ran) and forced metalness=0.0; post-fix
-    /// it falls through to the conductive-metal arm since "metalscrap"
-    /// (cladding-token order) does not match "scrapmetal".
+    /// Both common scrap-metal token orders must reach the conductive-metal
+    /// arm. A broad "scrap" dielectric exception used to make these paths
+    /// order-dependent even though both describe the same receiver class.
     #[test]
     fn classify_pbr_bare_scrap_reaches_metal_arm() {
         let m = Material::default();
         let pile = classify(&m, r"textures\clutter\scrapmetal\scrapmetalpile01_d.dds");
         assert!(
             pile.metalness > 0.8,
-            "a bare \"scrap\" path with no \"metalscrap\" token must reach the \
-             conductive-metal arm, not the painted-tin matte override"
+            "scrap metal must reach the conductive-metal arm"
         );
 
-        // The megaton cladding arm still catches its actual target.
+        // Megaton's reversed token order has the same physical response.
         let cladding = classify(&m, r"textures\architecture\megaton\metalscrappanels04.dds");
-        assert_eq!(cladding.metalness, 0.0);
+        assert_eq!(cladding.metalness, pile.metalness);
+        assert_eq!(cladding.roughness, pile.roughness);
     }
 
     /// `env_map_scale > 0.3` (legacy BSShaderPPLighting cube-map

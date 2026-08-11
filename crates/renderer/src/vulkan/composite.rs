@@ -187,7 +187,7 @@ pub struct CompositePipeline {
     ///   - Binding 1 (`indirectTex`, SVGF denoised RGBA16F): NEAREST
     ///     preserves the per-pixel denoised values; LINEAR would add
     ///     a second spatial-blur pass not part of the Schied 2017 model.
-    ///   - Binding 5 (`causticTex`, R32_UINT): NEAREST is required
+    ///   - Binding 5 (`causticTex`, three-layer R32_UINT): NEAREST is required
     ///     because integer formats don't expose FILTER_LINEAR, and binding
     ///     a LINEAR sampler trips VUID-vkCmdDraw-magFilter-04553.
     nearest_sampler: vk::Sampler,
@@ -1720,8 +1720,8 @@ mod composite_params_layout_tests {
     #[test]
     fn integer_scene_inputs_are_addressed_in_render_space() {
         let shader = include_str!("../../shaders/composite.frag");
-        assert!(shader.contains("ivec2 causticSize = textureSize(causticTex, 0);"));
-        assert!(shader.contains("texelFetch(causticTex, causticPixel, 0)"));
+        assert!(shader.contains("ivec2 causticSize = textureSize(causticTex, 0).xy;"));
+        assert!(shader.contains("texelFetch(causticTex, ivec3(causticPixel, 0), 0)"));
         assert!(!shader.contains("texelFetch(causticTex, ivec2(gl_FragCoord.xy), 0)"));
         assert!(!shader.contains("texelFetch(waterCausticTex, ivec2(gl_FragCoord.xy), 0)"));
     }
@@ -1752,7 +1752,7 @@ mod composite_params_layout_tests {
     /// #2217 — the caustic term is semantically fragile in a way the
     /// SPIR-V reflection test cannot see. That test pins structural and
     /// branch properties; it passes just as happily when the combined
-    /// decode is replaced by a constant. A one-line `causticLum = 0.0`
+    /// decode is replaced by a constant. A one-line `causticRadiance = vec3(0.0)`
     /// debug stub shipped inside a docs-titled commit (`0a3e0da5`) and
     /// survived 473 renderer tests — only `scripts/check-shader-artifacts.sh`
     /// caught it, and only because the committed `.spv` had not been
@@ -1771,23 +1771,27 @@ mod composite_params_layout_tests {
     ///    convention; without the divide the term is ~1e6× too large and
     ///    the firefly clamp pins every caustic pixel to its ceiling.
     #[test]
-    fn caustic_luminance_combines_both_accumulators_in_float_fixed_point() {
+    fn caustic_radiance_combines_glass_rgb_and_water_in_float_fixed_point() {
         let shader = include_str!("../../shaders/composite.frag");
 
         assert!(
             shader.contains(
-                "float causticLum = (float(causticRaw) + float(waterCausticRaw)) \
-                 / CAUSTIC_FIXED_SCALE;"
-            ),
-            "composite.frag must decode the combined glass + water caustic \
+                "vec3 causticRadiance = (glassCausticRaw + vec3(float(waterCausticRaw)))"
+            ) && shader.contains("/ CAUSTIC_FIXED_SCALE;"),
+            "composite.frag must decode the combined RGB glass + water caustic \
              accumulators as float-promoted fixed point; a constant or \
              single-accumulator expression silently disables caustics"
         );
+        for layer in 0..3 {
+            assert!(shader.contains(&format!(
+                "texelFetch(causticTex, ivec3(causticPixel, {layer}), 0).r"
+            )));
+        }
 
         // Property 2 restated as a prohibition: the uint-domain add is the
         // specific wrap bug #1575 fixed, so it must never reappear.
         assert!(
-            !shader.contains("causticRaw + waterCausticRaw"),
+            !shader.contains("waterCausticRaw +"),
             "the two accumulators must be promoted to float individually \
              before the add — a uint-domain sum wraps mod 2^32 (#1575)"
         );

@@ -1326,17 +1326,25 @@ impl ApplicationHandler for App {
         // Outside a finite bench, retain BYROREDUX_FIXED_DT as a diagnostic
         // override for tools that do not emit benchmark conclusions.
         let wall_dt = now.duration_since(self.last_frame).as_secs_f32();
-        let dt = self.bench_mode.map_or_else(
-            || {
-                // Preserve the environment override for non-benchmark tools.
-                // Finite benches resolve it once into a named mode in boot.rs.
-                std::env::var("BYROREDUX_FIXED_DT")
-                    .ok()
-                    .and_then(|s| s.parse::<f32>().ok())
-                    .unwrap_or(wall_dt)
-            },
-            |mode| mode.delta_time(wall_dt),
-        );
+        let dt = if crate::bench::harness_active(self.bench_summary_printed) {
+            self.bench_mode.map_or_else(
+                || {
+                    // Preserve the environment override for non-benchmark
+                    // tools. Finite benches resolve it once into a named mode
+                    // in boot.rs.
+                    std::env::var("BYROREDUX_FIXED_DT")
+                        .ok()
+                        .and_then(|s| s.parse::<f32>().ok())
+                        .unwrap_or(wall_dt)
+                },
+                |mode| mode.delta_time(wall_dt),
+            )
+        } else {
+            // A held session becomes interactive after its finite benchmark:
+            // fixed dt (including a legacy environment override resolved by
+            // the bench) must no longer suppress walk/fly movement.
+            wall_dt
+        };
         self.last_frame = now;
 
         // Update time resources.
@@ -1796,7 +1804,7 @@ impl ApplicationHandler for App {
                         event_loop.exit();
                     } else {
                         eprintln!(
-                            "bench-hold: engine held open — \
+                            "bench-hold: engine held open in live interactive mode — \
                              attach via `cargo run -p byro-dbg` \
                              (port {}). Ctrl+C / window close to exit.",
                             std::env::var("BYRO_DEBUG_PORT").unwrap_or_else(|_| "9876".to_string()),

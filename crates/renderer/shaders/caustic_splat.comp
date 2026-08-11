@@ -23,13 +23,13 @@
 //      direction through the surface normal with IOR 1.5 (glass default).
 //   3. Trace to the exit interface of closed glass, apply the matching
 //      glass-to-air refraction, then find the closest opaque receiver.
-//   4. Project that hit back into screen space and atomicAdd a fixed-point
-//      luminance contribution into the caustic accumulator at the hit pixel.
+//   4. Project that hit back into screen space and atomicAdd fixed-point RGB
+//      radiance into three array layers at the hit pixel.
 //
-// The accumulator is a single R32_UINT storage image so the shader can use
+// Each accumulator layer is R32_UINT so the shader can use portable scalar
 // `imageAtomicAdd`. Composite converts uint → float when sampling. The
 // fixed-point scale is CAUSTIC_FIXED_SCALE (see params); composite divides
-// by the same value to recover the accumulated luminance.
+// by the same value to recover the accumulated color.
 
 layout(local_size_x = WORKGROUP_X, local_size_y = WORKGROUP_Y) in;
 
@@ -115,8 +115,8 @@ layout(set = 0, binding = 6) uniform accelerationStructureEXT topLevelAS;
 
 #include "include/shadow_common.glsl"
 
-// ── Output: scalar caustic accumulator (R32_UINT, atomic add) ───────
-layout(set = 0, binding = 7, r32ui) uniform uimage2D causticAccum;
+// ── Output: RGB caustic accumulator (three R32_UINT array layers) ───
+layout(set = 0, binding = 7, r32ui) uniform uimage2DArray causticAccum;
 
 // ── Params ──────────────────────────────────────────────────────────
 layout(set = 0, binding = 8) uniform CausticParams {
@@ -166,33 +166,28 @@ void main() {
     // there is no decay/atomic-add race. No mesh/glass gate — the whole
     // accumulator must decay, not just caustic-source pixels.
     if (pc.decayOnly == 1u) {
-        uint v = imageLoad(causticAccum, pixel).r;
-        float decayedF = float(v) * pc.decayFactor;
-        uint dv0 = uint(decayedF);
-        // #2506 — residual of #2239: that fix stochastic-rounded the
-        // DEPOSIT path's truncation but left this paired decay multiply
-        // flooring. A plain `uint()` here discards a mean 0.5 fixed-point
-        // ULP per texel per frame — a constant additive drain that pulls
-        // the EMA's steady state below its true value and, like #2239,
-        // can permanently zero any texel whose true per-frame deposit
-        // sits below one ULP. Same fix: hash a per-(texel, frame)
-        // threshold and round up when the truncated fraction exceeds it,
-        // so the multiply is unbiased in expectation. Distinct hash
-        // constants from the deposit-path dither below — the two run in
-        // mutually exclusive dispatches (`decayOnly` selects one or the
-        // other), so decorrelation isn't required for correctness, only
-        // for not reading as a copy-paste of the same call.
-        uint fcu = uint(cameraPos.w);
-        uvec2 dh = uvec2(pixel) ^ uvec2(fcu * 0x2545F491u, fcu * 0x9E3779B9u);
-        dh = dh * 1664525u + 1013904223u;
-        dh.x += dh.y * 1664525u; dh.y += dh.x * 1664525u;
-        dh.x ^= dh.x >> 16u;     dh.y ^= dh.y >> 16u;
-        float ditherThreshold = float(dh.x) * (1.0 / 4294967296.0);
-        float fracPart = decayedF - float(dv0);
-        if (fracPart > ditherThreshold) {
-            dv0 += 1u;
+        for (int channel = 0; channel < 3; ++channel) {
+            uint v = imageLoad(causticAccum, ivec3(pixel, channel)).r;
+            float decayedF = float(v) * pc.decayFactor;
+            uint dv0 = uint(decayedF);
+            // #2506 — residual of #2239: that fix stochastic-rounded the
+            // DEPOSIT path's truncation but left this paired decay multiply
+            // flooring. Hash the channel as well as texel/frame so colored
+            // pools remain unbiased without locking their quantization noise.
+            uint fcu = uint(cameraPos.w);
+            uvec2 dh = uvec2(pixel) ^ uvec2(
+                fcu * 0x2545F491u + uint(channel) * 0x85EBCA6Bu,
+                fcu * 0x9E3779B9u + uint(channel) * 0xC2B2AE35u);
+            dh = dh * 1664525u + 1013904223u;
+            dh.x += dh.y * 1664525u; dh.y += dh.x * 1664525u;
+            dh.x ^= dh.x >> 16u;     dh.y ^= dh.y >> 16u;
+            float ditherThreshold = float(dh.x) * (1.0 / 4294967296.0);
+            float fracPart = decayedF - float(dv0);
+            if (fracPart > ditherThreshold) {
+                dv0 += 1u;
+            }
+            imageStore(causticAccum, ivec3(pixel, channel), uvec4(dv0, 0u, 0u, 0u));
         }
-        imageStore(causticAccum, pixel, uvec4(dv0, 0u, 0u, 0u));
         return;
     }
 
@@ -251,25 +246,23 @@ void main() {
     vec2 nEnc = texelFetch(normalTex, pixel, 0).rg;
     vec3 N = octDecode(nEnc);
 
-    // Average albedo is pre-computed per instance — use it to tint the
-    // caustic luminance so red glass dims caustic luminance appropriately.
-    // (Scalar accumulator means we lose chromatic tint, but the darkening
-    // term still communicates "this is a colored glass" intensity drop.)
+    // Average albedo is pre-computed per instance. Preserve it per channel so
+    // beer, bottle and stained-glass sources cast their authored hue instead
+    // of merely dimming a white caustic by the tint's luminance.
     vec3 avgAlbedo = vec3(instances[instIdx].avgAlbedoR,
                           instances[instIdx].avgAlbedoG,
                           instances[instIdx].avgAlbedoB);
-    float tintLum = dot(avgAlbedo, vec3(0.2126, 0.7152, 0.0722));
-    // Floor at `TINT_LUM_FLOOR` so glass authored at near-black (smoky
+    // Floor each channel so glass authored at near-black (smoky
     // chem glass, soot-tinted bottle glass) still splats *some*
-    // caustic. Pre-fix the magic 0.05 was inline; named here so a
+    // caustic. The value is named so a
     // future glass-darkness audit knows the knob exists. The value
     // is a perceptual judgement call — too high washes coloured
     // glass caustics flat, too low drops them entirely. 0.05 reads
     // as "you can tell there's some refractor here" on FNV chem
     // glass and Skyrim potion bottles without overpowering the
     // light tint of clear glass. See REN-D13-NEW-05 (audit 2026-05-09).
-    const float TINT_LUM_FLOOR = 0.05;
-    tintLum = max(tintLum, TINT_LUM_FLOOR);
+    const float TINT_CHANNEL_FLOOR = 0.05;
+    vec3 glassTint = max(avgAlbedo, vec3(TINT_CHANNEL_FLOOR));
 
     // Use the actual refractor IOR. `causticTune.y` remains a safe fallback
     // for old/synthetic instances whose former padding lane is still zero.
@@ -284,13 +277,9 @@ void main() {
     //
     // The splat path below is intentionally minimal:
     //
-    //   • Single eta — one `refract(L, n, 1/ior)` call per light. No
-    //     wavelength-dependent dispersion (red/green/blue eta split),
-    //     no per-channel splat. Chromatic glass tint is recovered
-    //     instead by modulating the scalar `tintLum` from
-    //     `avgAlbedo` above, which is a perceptually-acceptable
-    //     fake for stained glass / chem glass but breaks for true
-    //     dispersion (crystal prisms).
+    //   • Single eta — one `refract(L, n, 1/ior)` call per light. There is
+    //     no wavelength-dependent dispersion (red/green/blue eta split),
+    //     but absorption tint is preserved by the per-channel accumulator.
     //
     //   • Single bounce — exactly one refraction event per light, no
     //     reflection-then-refraction or refraction-then-reflection
@@ -417,8 +406,12 @@ void main() {
         vec3 refr = refract(LtoG, ns, 1.0 / ior);
         if (dot(refr, refr) < 0.0001) continue; // total internal reflection
         float entryCos = clamp(dot(-LtoG, ns), 0.0, 1.0);
-        float f0 = pow((ior - 1.0) / (ior + 1.0), 2.0);
-        float entryFresnel = f0 + (1.0 - f0) * pow(1.0 - entryCos, 5.0);
+        float f0 = (ior - 1.0) / (ior + 1.0);
+        f0 *= f0;
+        float oneMinusEntryCos = 1.0 - entryCos;
+        float oneMinusEntryCos2 = oneMinusEntryCos * oneMinusEntryCos;
+        float entryFresnel = f0 + (1.0 - f0)
+            * oneMinusEntryCos2 * oneMinusEntryCos2 * oneMinusEntryCos;
 
         // Closed-surface transport. First find the nearest glass interface
         // along the in-glass direction. This prevents the bottle/beaker back
@@ -533,7 +526,6 @@ void main() {
         }
         float totalTravel = glassTravel + hitT;
         float travelFall = 1.0 / (1.0 + totalTravel * totalTravel * 1e-4);
-        float lum = dot(Lc, vec3(0.2126, 0.7152, 0.0722));
         // `lightReach` from the direction-derivation block above —
         // smoothstep shoulder for point/spot + Lambert cosine for
         // directional. Folds into the existing `lightFall` × `travelFall`
@@ -549,8 +541,8 @@ void main() {
         // Two dielectric interfaces transmit `(1-F)^2` under the parallel-
         // interface approximation used for the exit direction.
         float interfaceTransmission = (1.0 - entryFresnel) * (1.0 - entryFresnel);
-        float contrib = lum * lightFall * lightReach * sourceVisibility
-            * travelFall * tintLum
+        vec3 contrib = Lc * glassTint * lightFall * lightReach * sourceVisibility
+            * travelFall
             * interfaceTransmission * strength * emaWeight;
 
         // Clamp anchored to the u32 atomic range: max representable
@@ -574,40 +566,31 @@ void main() {
                 ivec2 q = hitPixel + ivec2(kx, ky);
                 if (any(lessThan(q, ivec2(0))) || any(greaterThanEqual(q, size))) continue;
                 float w = kGauss5[(ky + 2) * 5 + (kx + 2)]; // #1582 — precomputed
-                float depositF = clamp(contrib * w * scale, 0.0, clamp_max);
-                uint fv = uint(depositF);
-                // #2239 — under the parked-camera EMA (decayFactor > 0), a
-                // dim caustic's `depositF` can sit below one fixed-point ULP
-                // EVERY frame (weak light × long travel × low albedo ×
-                // `emaWeight = 1 - decayFactor`, further diluted by this
-                // tap's Gaussian weight). The plain `uint()` floor above
-                // then deposits exactly 0 forever while the decay pass
-                // (`imageStore(..., v * decayFactor)` above) keeps shrinking
-                // the pool every frame — the running average dies to zero
-                // instead of converging to its true (dim but nonzero)
-                // steady state. Stochastic-round the truncated fraction
-                // instead of always flooring it: hash-derive a per-(texel,
-                // tap, frame) threshold and round up when the fraction
-                // exceeds it, so a chronically sub-ULP contribution still
-                // lands 1 ULP roughly every `1/depositF` frames instead of
-                // never — the Bernoulli trials converge in EXPECTATION to
-                // the exact fractional deposit. Motion frames
-                // (decayFactor == 0) keep the plain floor: there's no
-                // history to refresh, so dropping one dim single-frame
-                // sample is the correct (negligible, non-chronic) result.
-                if (pc.decayFactor > 0.0) {
-                    float fracPart = depositF - float(fv);
-                    uvec2 dv = uvec2(q) ^ uvec2(kx + 2, ky + 2)
-                        ^ uvec2(fcu * 0xC2B2AE35u, fcu * 0x27D4EB2Fu);
-                    dv = dv * 1664525u + 1013904223u;
-                    dv.x += dv.y * 1664525u; dv.y += dv.x * 1664525u;
-                    dv.x ^= dv.x >> 16u;     dv.y ^= dv.y >> 16u;
-                    float ditherThreshold = float(dv.x) * (1.0 / 4294967296.0);
-                    if (fracPart > ditherThreshold) {
-                        fv += 1u;
+                for (int channel = 0; channel < 3; ++channel) {
+                    float depositF = clamp(
+                        contrib[channel] * w * scale, 0.0, clamp_max);
+                    uint fv = uint(depositF);
+                    // #2239 — stochastic-round sub-ULP parked-camera
+                    // deposits. Include the color layer in the hash so one
+                    // channel cannot force correlated RGB rounding.
+                    if (pc.decayFactor > 0.0) {
+                        float fracPart = depositF - float(fv);
+                        uvec2 dv = uvec2(q) ^ uvec2(kx + 2, ky + 2)
+                            ^ uvec2(
+                                fcu * 0xC2B2AE35u + uint(channel) * 0x85EBCA6Bu,
+                                fcu * 0x27D4EB2Fu + uint(channel) * 0x9E3779B9u);
+                        dv = dv * 1664525u + 1013904223u;
+                        dv.x += dv.y * 1664525u; dv.y += dv.x * 1664525u;
+                        dv.x ^= dv.x >> 16u;     dv.y ^= dv.y >> 16u;
+                        float ditherThreshold = float(dv.x) * (1.0 / 4294967296.0);
+                        if (fracPart > ditherThreshold) {
+                            fv += 1u;
+                        }
+                    }
+                    if (fv != 0u) {
+                        imageAtomicAdd(causticAccum, ivec3(q, channel), fv);
                     }
                 }
-                if (fv != 0u) imageAtomicAdd(causticAccum, q, fv);
             }
         }
     }

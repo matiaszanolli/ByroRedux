@@ -1239,6 +1239,28 @@ fn schlick_fresnel_uses_multiply_chain_and_scalar_glass_path() {
     );
 }
 
+#[test]
+fn unresolved_glass_keeps_tint_and_low_angle_reflections() {
+    let frag = include_str!("../../../shaders/triangle.frag");
+
+    for needle in [
+        "if (fresnelScalar > 0.05)",
+        "float absorptionCoverage = min(",
+        "vec3 tintedTransmission = refrColor * glassTint;",
+        "reflColor * reflectionCoverage",
+        "+ tintedTransmission * absorptionCoverage",
+    ] {
+        assert!(
+            frag.contains(needle),
+            "unresolved glass lost `{needle}` and will read as neutral passthrough"
+        );
+    }
+    assert!(
+        !frag.contains("glassSurface = reflColor;\n            resolvedAlpha"),
+        "unresolved glass must not discard authored absorption tint"
+    );
+}
+
 /// #2243 — Disney diffuse is /PI while sheen is not. The clustered-light
 /// path deliberately uses the legacy non-/PI Lambert convention, so it must
 /// rescale the complete Disney lobe. Scaling diffuse alone makes sheen PI

@@ -2,19 +2,20 @@
 //!
 //! One compute dispatch per frame that splats refracted-light contributions
 //! from every caustic-source pixel into a screen-space accumulator. The
-//! accumulator is a single R32_UINT storage image so the shader can use
-//! `imageAtomicAdd`; composite samples the accumulator as a `usampler2D`,
-//! divides out the fixed-point scale, and adds the result to direct lighting.
+//! accumulator is a three-layer R32_UINT storage image so the shader can use
+//! `imageAtomicAdd` independently for RGB; composite samples it as a
+//! `usampler2DArray`, divides out the fixed-point scale, and adds the colored
+//! result to direct lighting.
 //!
 //! ## Resource layout
 //!
 //! - **caustic_accum[frame]** (R32_UINT, STORAGE | SAMPLED | TRANSFER_DST,
 //!   per frame-in-flight): accumulator written by this module, read by the
-//!   composite pass as a 1-channel unsigned texture.
+//!   composite pass as a three-layer unsigned texture (R, G, B).
 //!
 //! Layout lives in `GENERAL` throughout the frame (required for storage
 //! image access) — same policy as SVGF's history images. Composite samples
-//! it through a `usampler2D` view, which is legal in `GENERAL`.
+//! it through a `usampler2DArray` view, which is legal in `GENERAL`.
 //!
 //! ## Per-frame flow
 //!
@@ -36,15 +37,14 @@
 //! | 4       | CameraUBO          | UBO (scene_buffers, per-frame)      |
 //! | 5       | InstanceBuffer     | SSBO (scene_buffers, per-frame)     |
 //! | 6       | TLAS               | acceleration_structure (per-frame)  |
-//! | 7       | caustic accum      | uimage2D r32ui (this module, per-f) |
+//! | 7       | caustic accum      | uimage2DArray r32ui (RGB layers)    |
 //! | 8       | CausticParams      | UBO (this module, per-frame)        |
 
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
 use super::descriptors::{
-    image_barrier_general_write_to_read, image_barrier_undef_to_general, memory_barrier,
-    write_acceleration_structure, write_combined_image_sampler, write_storage_buffer,
-    write_storage_image, write_uniform_buffer, DescriptorPoolBuilder,
+    memory_barrier, write_acceleration_structure, write_combined_image_sampler,
+    write_storage_buffer, write_storage_image, write_uniform_buffer, DescriptorPoolBuilder,
 };
 use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
@@ -55,11 +55,10 @@ use gpu_allocator::vulkan as vk_alloc;
 
 const CAUSTIC_SPLAT_COMP_SPV: &[u8] = include_bytes!("../../shaders/caustic_splat.comp.spv");
 
-/// Scalar caustic accumulator — luminance packed as 16.16 fixed-point per
-/// `imageAtomicAdd`. Composite divides by `CAUSTIC_FIXED_SCALE` on read to
-/// recover the accumulated luminance. Single channel keeps the memory cost
-/// to 4 B/pixel; color tinting is encoded by the per-instance `avgAlbedo`
-/// the shader uses to modulate the splatted value.
+/// Per-channel caustic accumulator — RGB radiance packed as fixed-point in
+/// three R32_UINT array layers. Composite divides by `CAUSTIC_FIXED_SCALE`
+/// on read to recover the accumulated color. Separate layers preserve glass
+/// hue while retaining portable scalar image atomics.
 ///
 /// `R32_UINT` is used precisely because shader image atomics require it: the
 /// Vulkan "Required Format Support" table makes
@@ -69,6 +68,18 @@ const CAUSTIC_SPLAT_COMP_SPV: &[u8] = include_bytes!("../../shaders/caustic_spla
 /// `vkGetPhysicalDeviceFormatProperties` gate is needed here (it could never
 /// fail); the choice of format IS the capability guarantee. See #1404.
 pub const CAUSTIC_FORMAT: vk::Format = vk::Format::R32_UINT;
+const CAUSTIC_COLOR_LAYERS: u32 = 3;
+
+#[inline]
+fn caustic_subresource_range() -> vk::ImageSubresourceRange {
+    vk::ImageSubresourceRange {
+        aspect_mask: vk::ImageAspectFlags::COLOR,
+        base_mip_level: 0,
+        level_count: 1,
+        base_array_layer: 0,
+        layer_count: CAUSTIC_COLOR_LAYERS,
+    }
+}
 
 /// UBO uploaded once per frame. Matches `CausticParams` in
 /// `shaders/caustic_splat.comp` exactly.
@@ -86,7 +97,7 @@ struct CausticSlot {
     image: vk::Image,
     /// `r32ui` storage view for atomic writes from the compute shader.
     storage_view: vk::ImageView,
-    /// Separate view used by composite to sample as a `usampler2D`.
+    /// Separate view used by composite to sample as a `usampler2DArray`.
     sampled_view: vk::ImageView,
     allocation: Option<vk_alloc::Allocation>,
 }
@@ -431,7 +442,7 @@ impl CausticPipeline {
                 depth: 1,
             })
             .mip_levels(1)
-            .array_layers(1)
+            .array_layers(CAUSTIC_COLOR_LAYERS)
             .samples(vk::SampleCountFlags::TYPE_1)
             .tiling(vk::ImageTiling::OPTIMAL)
             .usage(
@@ -493,9 +504,9 @@ impl CausticPipeline {
                     .create_image_view(
                         &vk::ImageViewCreateInfo::default()
                             .image(img)
-                            .view_type(vk::ImageViewType::TYPE_2D)
+                            .view_type(vk::ImageViewType::TYPE_2D_ARRAY)
                             .format(CAUSTIC_FORMAT)
-                            .subresource_range(super::descriptors::color_subresource_single_mip()),
+                            .subresource_range(caustic_subresource_range()),
                         None,
                     )
                     .context("caustic image view")?
@@ -604,7 +615,7 @@ impl CausticPipeline {
         }
     }
 
-    /// Caustic accumulator view used by the composite pass as `usampler2D`.
+    /// Caustic accumulator view used by the composite pass as `usampler2DArray`.
     pub fn sampled_view(&self, frame: usize) -> vk::ImageView {
         self.slots[frame].sampled_view
     }
@@ -644,7 +655,17 @@ impl CausticPipeline {
         super::texture::with_one_time_commands(device, queue, pool, |cmd| {
             let mut barriers = Vec::with_capacity(self.slots.len());
             for slot in &self.slots {
-                barriers.push(image_barrier_undef_to_general(slot.image));
+                barriers.push(
+                    vk::ImageMemoryBarrier::default()
+                        .src_access_mask(vk::AccessFlags::empty())
+                        .dst_access_mask(
+                            vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE,
+                        )
+                        .old_layout(vk::ImageLayout::UNDEFINED)
+                        .new_layout(vk::ImageLayout::GENERAL)
+                        .image(slot.image)
+                        .subresource_range(caustic_subresource_range()),
+                );
             }
             // SAFETY: caller of `initialize_layouts` (unsafe fn) guarantees
             // device/queue/pool validity; `cmd` is the recording buffer
@@ -747,7 +768,7 @@ impl CausticPipeline {
             self.parked_frames = 0;
         }
         let slot_img = self.slots[frame].image;
-        let clear_range = super::descriptors::color_subresource_single_mip();
+        let clear_range = caustic_subresource_range();
         let decay_factor = if camera_static {
             let n = self.parked_frames as f32;
             (n / (n + 1.0)).min(CAUSTIC_DECAY_MAX)
@@ -882,7 +903,13 @@ impl CausticPipeline {
         device.cmd_dispatch(cmd, gx, gy, 1);
 
         // ── COMPUTE → FRAGMENT barrier for composite sample ───────────
-        let out_barrier = image_barrier_general_write_to_read(slot_img);
+        let out_barrier = vk::ImageMemoryBarrier::default()
+            .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+            .dst_access_mask(vk::AccessFlags::SHADER_READ)
+            .old_layout(vk::ImageLayout::GENERAL)
+            .new_layout(vk::ImageLayout::GENERAL)
+            .image(slot_img)
+            .subresource_range(caustic_subresource_range());
         device.cmd_pipeline_barrier(
             cmd,
             vk::PipelineStageFlags::COMPUTE_SHADER,
@@ -923,7 +950,7 @@ impl CausticPipeline {
         frame: usize,
     ) {
         let slot_img = self.slots[frame].image;
-        let clear_range = super::descriptors::color_subresource_single_mip();
+        let clear_range = caustic_subresource_range();
         // Same over-specified wait stages `dispatch`'s moving-camera clear
         // uses: the slot's prior use was either this pipeline's own
         // compute-write + composite's fragment-read (steady state), or
@@ -1114,6 +1141,17 @@ impl CausticPipeline {
 
 #[cfg(test)]
 mod tests {
+    use super::{caustic_subresource_range, CAUSTIC_COLOR_LAYERS};
+
+    #[test]
+    fn caustic_accumulator_spans_rgb_array_layers() {
+        assert_eq!(CAUSTIC_COLOR_LAYERS, 3);
+        assert_eq!(caustic_subresource_range().layer_count, 3);
+        let shader = include_str!("../../shaders/caustic_splat.comp");
+        assert!(shader.contains("uniform uimage2DArray causticAccum;"));
+        assert!(shader.contains("imageAtomicAdd(causticAccum, ivec3(q, channel), fv)"));
+    }
+
     #[test]
     fn caustic_source_light_is_visibility_tested_before_refraction() {
         let shader = include_str!("../../shaders/caustic_splat.comp");
@@ -1143,7 +1181,7 @@ mod tests {
     fn parked_camera_caustic_deposit_is_stochastically_rounded() {
         let shader = include_str!("../../shaders/caustic_splat.comp");
         for contract in [
-            "float depositF = clamp(contrib * w * scale, 0.0, clamp_max);",
+            "contrib[channel] * w * scale, 0.0, clamp_max",
             "uint fv = uint(depositF);",
             "if (pc.decayFactor > 0.0) {",
             "float fracPart = depositF - float(fv);",

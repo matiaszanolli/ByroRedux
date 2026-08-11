@@ -720,7 +720,11 @@ impl VulkanContext {
             Some(ref c) => (0..MAX_FRAMES_IN_FLIGHT)
                 .map(|i| c.sampled_view(i))
                 .collect(),
-            None => mesh_id_views_in.clone(),
+            None => {
+                return Err(anyhow::anyhow!(
+                    "RGB caustic pipeline absent during resize — composite binding 5 requires a 2D array view"
+                ));
+            }
         };
 
         // Recreate bloom pipeline (#905). Bloom's down/up mip pyramid
@@ -849,15 +853,20 @@ impl VulkanContext {
         // per-frame framebuffers. Also rewrites descriptor sets to point at
         // the new indirect + albedo + caustic + volumetric + bloom views.
         // #1257 / Phase E of #1210 — gather the resized water-caustic
-        // sampled views. Same fall-back-to-existing-caustic shape as
-        // the init path in context::new — see that site's comment for why
-        // the alias isn't a zero source, and `caustic_flags.x` (#2508) for
-        // how `composite.frag` avoids double-counting it.
+        // sampled views. The RGB glass accumulator is a 2D array, so the
+        // type-compatible fallback is the existing 1×1 R32_UINT 2D sink.
         let water_caustic_views: Vec<vk::ImageView> = match self.water_caustic_accum.as_ref() {
             Some(a) => (0..MAX_FRAMES_IN_FLIGHT)
                 .map(|i| a.sampled_view(i))
                 .collect(),
-            None => caustic_views.clone(),
+            None => match self.placeholder_caustic_sink.as_ref() {
+                Some(p) => vec![p.view; MAX_FRAMES_IN_FLIGHT],
+                None => {
+                    return Err(anyhow::anyhow!(
+                        "Water-caustic accumulator and its sampled placeholder are both absent during resize"
+                    ));
+                }
+            },
         };
         if let Some(ref mut composite) = self.composite {
             composite.recreate_on_resize(

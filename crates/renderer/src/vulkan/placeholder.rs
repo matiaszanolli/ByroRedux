@@ -137,7 +137,9 @@ impl PlaceholderImage {
             device,
             allocator,
             format,
-            vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_DST,
+            vk::ImageUsageFlags::STORAGE
+                | vk::ImageUsageFlags::SAMPLED
+                | vk::ImageUsageFlags::TRANSFER_DST,
             "placeholder_caustic_sink",
         )?;
         if let Err(e) = Self::clear_and_transition(

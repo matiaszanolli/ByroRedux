@@ -1645,7 +1645,7 @@ void main() {
         vec3 reflColor = isExteriorGlass
             ? (skyTint.xyz * 0.5 + sceneFlags.yzw * 0.5)
             : sceneFlags.yzw;
-        if (fresnelScalar > 0.08) {
+        if (fresnelScalar > 0.05) {
             vec3 R = reflect(-V, N_geom_view);
             vec4 reflRay = traceReflection(
                 fragWorldPos + N_geom_view * 0.05, R, 3000.0,
@@ -2054,8 +2054,23 @@ void main() {
         // blue cups visible in dense drinkware stacks.
         float resolvedAlpha = 1.0;
         if (!refractionResolved && isAlphaBlend) {
-            glassSurface = reflColor;
-            resolvedAlpha = clamp(fresnelScalar, 0.025, 0.65);
+            // Preserve the straight-through framebuffer, but do not discard
+            // the glass hue. Represent the unresolved surface as two bounded
+            // straight-alpha lobes: dielectric reflection plus colored bulk
+            // absorption. This keeps stacks transparent while allowing beer,
+            // bottle and chem-glass art to filter the receiver underneath.
+            float reflectionCoverage = clamp(fresnelScalar, 0.025, 0.65);
+            float unresolvedTintWeight = max(
+                tintWeight, 0.08 * clamp(texColor.a, 0.0, 1.0));
+            float absorptionCoverage = min(
+                unresolvedTintWeight * (1.0 - reflectionCoverage),
+                0.65 - reflectionCoverage);
+            resolvedAlpha = reflectionCoverage + absorptionCoverage;
+            vec3 tintedTransmission = refrColor * glassTint;
+            glassSurface = (
+                reflColor * reflectionCoverage
+                + tintedTransmission * absorptionCoverage
+            ) / max(resolvedAlpha, 1e-4);
         }
         outColor = vec4(glassSurface, resolvedAlpha);
         outNormal = octEncode(N_geom_view);

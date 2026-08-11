@@ -280,6 +280,14 @@ impl App {
     }
 
     pub(crate) fn step_bench_camera(&mut self) {
+        if !crate::bench::harness_active(self.bench_summary_printed) {
+            // `--bench-hold` is an interactive inspection session once the
+            // finite measurement is complete. Drop the last harness pose so
+            // neither this phase nor the post-scheduler restore can pin the
+            // fly/player camera after input has moved it.
+            self.bench_camera_applied_pose = None;
+            return;
+        }
         let (Some(path), Some(total_frames)) = (self.bench_camera, self.bench_frames_target) else {
             return;
         };

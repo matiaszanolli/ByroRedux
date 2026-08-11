@@ -2541,7 +2541,6 @@ impl VulkanContext {
                 // is sound.
                 c.initialize_layouts(&device, &graphics_queue, transfer_pool)
             } {
-                log::warn!("Caustic layout init failed: {e} — disabling caustic");
                 if let Some(mut pipe) = caustic.take() {
                     unsafe {
                         // SAFETY: `pipe` was just created by `device`; on this
@@ -2550,18 +2549,17 @@ impl VulkanContext {
                         pipe.destroy(&device, &gpu_allocator)
                     };
                 }
+                return Err(anyhow::anyhow!(
+                    "Caustic layout init failed: {e} — composite binding 5 requires the RGB array"
+                ));
             }
         }
-        // Build caustic view list for composite. When caustic is disabled
-        // we reuse the mesh_id views as a harmless placeholder (composite
-        // samples with texelFetch as usampler2D; R16_UINT is narrower than
-        // R32_UINT but SPIR-V's usampler2D reads undefined-for-bits-above-
-        // format anyway, yielding small values and ~zero caustic). This
-        // avoids a dedicated dummy image while keeping the descriptor slot
-        // populated.
+        // Composite binding 5 is a `usampler2DArray`; only the RGB caustic
+        // views have the required dimensionality. Pipeline creation and
+        // layout transition are therefore hard requirements above.
         let caustic_views: Vec<vk::ImageView> = match caustic {
             Some(ref c) => (0..n_frames).map(|i| c.sampled_view(i)).collect(),
-            None => mesh_id_views_seed.clone(),
+            None => unreachable!("caustic initialization returned successfully without a pipeline"),
         };
 
         // 14c. Composite pipeline: owns HDR intermediates + scene-composition
@@ -2633,22 +2631,22 @@ impl VulkanContext {
             }
         };
         // #1257 / Phase E of #1210 — water-side caustic sampled views.
-        // None on init failure → alias the existing glass-caustic
-        // (`caustic_views`) sampled views so binding 8 has a *valid*
-        // resource (the descriptor write itself would be undefined
-        // otherwise) — but this is NOT a zero source: `caustic_splat.comp`
-        // writes `caustic_views`' backing images every frame for glass/
-        // MultiLayerParallax refractors, so composite would otherwise
-        // double-count that contribution at binding 8. `caustic_flags.x`
-        // (set from `water_caustic_accum.is_some()` each frame, see
-        // `draw.rs::build_composite_params`) gates the read in
-        // `composite.frag` so the aliased view is never actually sampled
-        // on this fallback path. #2508.
+        // None on init failure → bind the existing 1×1 R32_UINT sink. It is
+        // a 2D sampled/storage view, matching binding 8; the RGB glass view
+        // is now a 2D array and cannot be used as this fallback. The host flag
+        // still gates the read so accumulated sink writes never contribute.
         let water_caustic_views: Vec<vk::ImageView> = match water_caustic_accum {
             Some(ref a) => (0..super::sync::MAX_FRAMES_IN_FLIGHT)
                 .map(|i| a.sampled_view(i))
                 .collect(),
-            None => caustic_views.clone(),
+            None => match placeholder_caustic_sink.as_ref() {
+                Some(p) => vec![p.view; super::sync::MAX_FRAMES_IN_FLIGHT],
+                None => {
+                    return Err(anyhow::anyhow!(
+                        "Water-caustic accumulator and its sampled placeholder are both absent"
+                    ));
+                }
+            },
         };
         let mut composite = match CompositePipeline::new(
             &device,

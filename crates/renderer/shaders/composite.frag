@@ -71,7 +71,7 @@ layout(set = 0, binding = 3) uniform CompositeParams {
     vec4 caustic_flags;
 } params;
 layout(set = 0, binding = 4) uniform sampler2D depthTex;     // depth buffer
-layout(set = 0, binding = 5) uniform usampler2D causticTex;  // R32_UINT caustic accumulator (#321)
+layout(set = 0, binding = 5) uniform usampler2DArray causticTex; // RGB in three R32_UINT layers (#321)
 // M55 Phase 4: volumetric froxel volume (RGBA16F).
 //   rgb = inscatter radiance (HDR linear, pre-tone-map)
 //   a   = extinction coefficient (1 / m)
@@ -431,27 +431,29 @@ void main() {
         vec3 albedo = texture(albedoTex, fragUV).rgb;
 
         // Caustic (#321): refracted-light scatter from the caustic_splat
-        // pass. Stored as fixed-point luminance in a R32_UINT accumulator;
-        // decode here and add a warm-white contribution scaled by the
-        // receiver's own albedo so colored surfaces pick up the caustic
-        // with their own tint.
+        // pass. Stored as fixed-point RGB in three R32_UINT array layers;
+        // decode here and scale by the receiver's own albedo. This preserves
+        // both the transmitting glass hue and the receiving material color.
         //
         // #1257 / Phase E of #1210 — sum the water-side caustic
         // accumulator alongside the glass-/MultiLayerParallax-side
         // one. Both writers share `CAUSTIC_FIXED_SCALE` (the
         // generated `#define` in `shader_constants.glsl`) so their
-        // fixed-point sums are on a unified luminance basis; one
-        // `causticLum` carries the combined contribution downstream.
+        // fixed-point sums are on a unified radiance basis. Water remains a
+        // scalar white contribution and is added equally to all channels.
         // Composite and these accumulators are render-resolution resources.
         // Convert normalized UV to a clamped render pixel so integer fetches
         // remain well-defined at the right and bottom edges.
-        ivec2 causticSize = textureSize(causticTex, 0);
+        ivec2 causticSize = textureSize(causticTex, 0).xy;
         ivec2 causticPixel = clamp(
             ivec2(fragUV * vec2(causticSize)),
             ivec2(0),
             causticSize - ivec2(1)
         );
-        uint causticRaw = texelFetch(causticTex, causticPixel, 0).r;
+        vec3 glassCausticRaw = vec3(
+            texelFetch(causticTex, ivec3(causticPixel, 0), 0).r,
+            texelFetch(causticTex, ivec3(causticPixel, 1), 0).r,
+            texelFetch(causticTex, ivec3(causticPixel, 2), 0).r);
         // #2508 — when the water-side accumulator isn't live this session,
         // binding 8 (waterCausticTex) is fallback-bound to the SAME view as
         // binding 5 (causticTex); sampling it would double-count the glass
@@ -468,8 +470,9 @@ void main() {
         // deposit, not the running sum of the two textures); adding two large
         // uints wraps mod 2^32 to ~0 → a black pixel the post-divide firefly
         // cap cannot recover.
-        float causticLum = (float(causticRaw) + float(waterCausticRaw)) / CAUSTIC_FIXED_SCALE;
-        // Firefly cap on the COMBINED caustic luminance (TARGET 2). The focal
+        vec3 causticRadiance = (glassCausticRaw + vec3(float(waterCausticRaw)))
+            / CAUSTIC_FIXED_SCALE;
+        // Firefly cap on the COMBINED caustic radiance (TARGET 2). The focal
         // cusp under glass spheres / water sums thousands of forward-splat
         // deposits (imageAtomicAdd) into a few pixels; under camera motion the
         // caustic accumulator is cleared per-frame (no EMA smoothing), so the
@@ -478,8 +481,8 @@ void main() {
         // separately below, so the light source is untouched. Pre-ACES linear
         // ceiling — start conservative and tune down per the TARGET 2 bench.
         const float CAUSTIC_FIREFLY_MAX = 16.0;
-        causticLum = min(causticLum, CAUSTIC_FIREFLY_MAX);
-        vec3 caustic = albedo * causticLum;
+        causticRadiance = min(causticRadiance, vec3(CAUSTIC_FIREFLY_MAX));
+        vec3 caustic = albedo * causticRadiance;
 
         combined = direct + indirect * albedo + caustic;
     }
