@@ -1234,8 +1234,12 @@ fn schlick_fresnel_uses_multiply_chain_and_scalar_glass_path() {
         );
     }
     assert!(
-        shadow.contains("fresnelSchlickScalar(cosTheta, f0)"),
-        "glass shadow transport must share the scalar Schlick helper"
+        shadow.contains("shadowFresnelSchlickScalar(cosTheta, f0)"),
+        "glass shadow transport must use its self-contained scalar Schlick helper"
+    );
+    assert!(
+        shadow.contains("float weight = x2 * x2 * x;"),
+        "glass shadow transport must not regress to pow(x, 5)"
     );
 }
 
