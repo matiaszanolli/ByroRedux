@@ -120,9 +120,19 @@ pub enum PipelineKey {
     /// Gamebryo `AlphaFunction` enum values (0=ONE ... 10=SRC_ALPHA_SATURATE);
     /// see [`gamebryo_to_vk_blend_factor`]. Two-sided behavior comes from
     /// dynamic `cmd_set_cull_mode`, not a separate pipeline.
-    /// `wireframe=true` selects the LINE variant (#869); cache key
-    /// already includes blend factors so the extra boolean fits.
-    Blended { src: u8, dst: u8, wireframe: bool },
+    /// `wireframe=true` selects the LINE variant (#869).
+    /// `preserve_opaque_gbuffer=true` is used by refractive glass: glass
+    /// blends into HDR color but must not replace the opaque surface's
+    /// normal/motion/mesh-id/indirect/albedo while depth writes are off.
+    /// Otherwise downstream passes would combine glass metadata with the
+    /// opaque depth behind it and reconstruct a physically impossible
+    /// surface (most visibly as denoiser smears and caustics through walls).
+    Blended {
+        src: u8,
+        dst: u8,
+        wireframe: bool,
+        preserve_opaque_gbuffer: bool,
+    },
 }
 
 /// Convert a Gamebryo `TestFunction` enum value (from
@@ -534,6 +544,7 @@ pub fn create_blend_pipeline(
     src: u8,
     dst: u8,
     wireframe: bool,
+    preserve_opaque_gbuffer: bool,
 ) -> Result<vk::Pipeline> {
     let BlendPipelineCtx {
         device,
@@ -615,6 +626,9 @@ pub fn create_blend_pipeline(
     let overwrite = vk::PipelineColorBlendAttachmentState::default()
         .color_write_mask(vk::ColorComponentFlags::RGBA)
         .blend_enable(false);
+    let no_write = vk::PipelineColorBlendAttachmentState::default()
+        .color_write_mask(vk::ColorComponentFlags::empty())
+        .blend_enable(false);
     let auxiliary_blend = vk::PipelineColorBlendAttachmentState::default()
         .color_write_mask(vk::ColorComponentFlags::RGBA)
         .blend_enable(true)
@@ -637,16 +651,29 @@ pub fn create_blend_pipeline(
         .src_alpha_blend_factor(vk::BlendFactor::ONE)
         .dst_alpha_blend_factor(vk::BlendFactor::ONE)
         .alpha_blend_op(vk::BlendOp::MAX);
-    let attachments = [
-        hdr_blend,       // 0 HDR color (blends)
-        overwrite,       // 1 normal
-        overwrite,       // 2 motion
-        overwrite,       // 3 mesh_id
-        auxiliary_blend, // 4 raw_indirect (coverage blend)
-        auxiliary_blend, // 5 albedo (coverage blend)
-        fsr_mask_max,    // 6 fsr_reactive
-        fsr_mask_max,    // 7 fsr_transparency
-    ];
+    let attachments = if preserve_opaque_gbuffer {
+        [
+            hdr_blend,    // 0 HDR color (glass blends over opaque color)
+            no_write,     // 1 preserve opaque normal paired with depth
+            no_write,     // 2 preserve opaque motion
+            no_write,     // 3 preserve opaque mesh_id paired with depth
+            no_write,     // 4 preserve opaque raw_indirect
+            no_write,     // 5 preserve opaque albedo
+            fsr_mask_max, // 6 fsr_reactive
+            fsr_mask_max, // 7 fsr_transparency
+        ]
+    } else {
+        [
+            hdr_blend,       // 0 HDR color (blends)
+            overwrite,       // 1 normal
+            overwrite,       // 2 motion
+            overwrite,       // 3 mesh_id
+            auxiliary_blend, // 4 raw_indirect (coverage blend)
+            auxiliary_blend, // 5 albedo (coverage blend)
+            fsr_mask_max,    // 6 fsr_reactive
+            fsr_mask_max,    // 7 fsr_transparency
+        ]
+    };
     let color_blending = vk::PipelineColorBlendStateCreateInfo::default()
         .logic_op_enable(false)
         .attachments(&attachments);
@@ -727,7 +754,7 @@ pub fn create_blend_pipeline(
 
     log::debug!(
         "Blend pipeline created: src={src} ({src_factor:?}), dst={dst} ({dst_factor:?}), \
-         wireframe={wireframe}"
+         wireframe={wireframe}, preserve_opaque_gbuffer={preserve_opaque_gbuffer}"
     );
 
     Ok(pipelines[0])
@@ -968,21 +995,25 @@ mod tests {
             src: 6,
             dst: 7,
             wireframe: false,
+            preserve_opaque_gbuffer: false,
         };
         let additive = PipelineKey::Blended {
             src: 6,
             dst: 0,
             wireframe: false,
+            preserve_opaque_gbuffer: false,
         };
         let glass_modulate = PipelineKey::Blended {
             src: 4,
             dst: 0,
             wireframe: false,
+            preserve_opaque_gbuffer: false,
         };
         let premul_additive = PipelineKey::Blended {
             src: 0,
             dst: 0,
             wireframe: false,
+            preserve_opaque_gbuffer: false,
         };
         let opaque = PipelineKey::Opaque { wireframe: false };
 
@@ -1008,13 +1039,34 @@ mod tests {
             src: 6,
             dst: 7,
             wireframe: false,
+            preserve_opaque_gbuffer: false,
         };
         let blend_line = PipelineKey::Blended {
             src: 6,
             dst: 7,
             wireframe: true,
+            preserve_opaque_gbuffer: false,
         };
         assert_ne!(blend_fill, blend_line);
+    }
+
+    /// Refractive glass needs a distinct pipeline because it blends only
+    /// HDR + FSR masks and preserves the opaque G-buffer behind it.
+    #[test]
+    fn pipeline_key_gbuffer_preservation_is_distinct_axis() {
+        let ordinary_blend = PipelineKey::Blended {
+            src: 6,
+            dst: 7,
+            wireframe: false,
+            preserve_opaque_gbuffer: false,
+        };
+        let refractive_glass = PipelineKey::Blended {
+            src: 6,
+            dst: 7,
+            wireframe: false,
+            preserve_opaque_gbuffer: true,
+        };
+        assert_ne!(ordinary_blend, refractive_glass);
     }
 
     /// Regression: #398 (OBL-D4-H1) — every Gamebryo `TestFunction`

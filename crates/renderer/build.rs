@@ -181,6 +181,11 @@ fn main() {
     )
     .unwrap();
     writeln!(out, "#define GI_HIT_LIGHT_CAP {GI_HIT_LIGHT_CAP}u").unwrap();
+    writeln!(
+        out,
+        "#define GI_SAMPLE_LUMINANCE_CLAMP {GI_SAMPLE_LUMINANCE_CLAMP:?}"
+    )
+    .unwrap();
     writeln!(out).unwrap();
 
     writeln!(out, "// Caustic accumulation").unwrap();

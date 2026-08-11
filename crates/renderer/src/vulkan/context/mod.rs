@@ -1486,19 +1486,21 @@ pub struct VulkanContext {
     /// dropped from the key (same dynamic-CULL_MODE rationale as the
     /// opaque pipeline) — halves the cache size and removes a redundant
     /// `cmd_bind_pipeline` per `two_sided` flip in the alpha-blend pass.
-    /// Cache key: `(src, dst, wireframe)`. The wireframe boolean was
-    /// added under #869 — entries are independent per polygon mode so
-    /// a blend material with `NiWireframeProperty` gets its own
-    /// pipeline. Only reachable when `caps.fill_mode_non_solid_supported`
-    /// is true; callers must gate.
-    blend_pipeline_cache: HashMap<(u8, u8, bool), vk::Pipeline>,
-    /// Per-frame scratch — the set of distinct blend (src, dst, wireframe)
-    /// triples seen in this frame's batch list. Used by the pre-pop walk
+    /// Cache key: `(src, dst, wireframe, preserve_opaque_gbuffer)`. The
+    /// wireframe boolean was added under #869 — entries are independent
+    /// per polygon mode so a blend material with `NiWireframeProperty`
+    /// gets its own pipeline. The final axis isolates refractive glass,
+    /// whose HDR output blends normally while writes to opaque G-buffer
+    /// attachments are masked off. Wireframe is only reachable when
+    /// `caps.fill_mode_non_solid_supported` is true; callers must gate.
+    blend_pipeline_cache: HashMap<(u8, u8, bool, bool), vk::Pipeline>,
+    /// Per-frame scratch — the set of distinct blend cache keys seen in
+    /// this frame's batch list. Used by the pre-pop walk
     /// in `draw_frame` to skip the full per-batch `contains_key` sweep
     /// when every seen key is already in `blend_pipeline_cache`. Cleared
     /// at the top of the walk; capacity persists across frames for
     /// amortized churn-free reuse. #1259 / PERF-D3-NEW-04.
-    blend_seen_scratch: std::collections::HashSet<(u8, u8, bool)>,
+    blend_seen_scratch: std::collections::HashSet<(u8, u8, bool, bool)>,
     pipeline_ui: vk::Pipeline,
     pipeline_layout: vk::PipelineLayout,
     /// Mesh handle for the fullscreen quad used by UI overlay.
@@ -3046,12 +3048,13 @@ impl VulkanContext {
         src: u8,
         dst: u8,
         wireframe: bool,
+        preserve_opaque_gbuffer: bool,
     ) -> Result<vk::Pipeline> {
         // Downgrade wireframe → fill if the device doesn't support
         // `vk::PolygonMode::LINE`. #869 — Oblivion vanilla ships zero
         // wireframe meshes so the fallback is invisible to content.
         let wireframe = wireframe && self.device_caps.fill_mode_non_solid_supported;
-        let key = (src, dst, wireframe);
+        let key = (src, dst, wireframe, preserve_opaque_gbuffer);
         if let Some(&pipe) = self.blend_pipeline_cache.get(&key) {
             return Ok(pipe);
         }
@@ -3066,6 +3069,7 @@ impl VulkanContext {
             src,
             dst,
             wireframe,
+            preserve_opaque_gbuffer,
         )?;
         self.blend_pipeline_cache.insert(key, pipe);
         Ok(pipe)

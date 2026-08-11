@@ -150,6 +150,14 @@ pub const GLASS_RAY_COST: u32 = 4;
 // paying eight shadow rays on the common path.
 pub const GI_HIT_LIGHT_CAP: u32 = 8;
 
+// Chroma-preserving luminance ceiling for the complete one-pixel bounded-path
+// sample before it enters SVGF. A single secondary GGX hit can line up with a
+// point light's delta direction and produce a mathematically valid but extreme
+// value at 1 spp; the temporal/spatial filters cannot average that heavy tail
+// before it becomes a large low-frequency stain. Keep ordinary bounce energy
+// untouched and bound only the outlier tail at the denoiser boundary.
+pub const GI_SAMPLE_LUMINANCE_CLAMP: f32 = 1.0;
+
 // Caustic accumulation
 pub const CAUSTIC_FIXED_SCALE: f32 = 65536.0;
 

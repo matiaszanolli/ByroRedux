@@ -56,6 +56,7 @@
 
 // One-bounce GI light cap (shadow ray per light at a bounce hit)
 #define GI_HIT_LIGHT_CAP 8u
+#define GI_SAMPLE_LUMINANCE_CLAMP 1.0
 
 // Caustic accumulation
 #define CAUSTIC_FIXED_SCALE 65536.0

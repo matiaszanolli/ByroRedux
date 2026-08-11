@@ -84,11 +84,15 @@ const SVGF_TEMPORAL_COMP_SPV: &[u8] = include_bytes!("../../shaders/svgf_tempora
 const SVGF_ATROUS_COMP_SPV: &[u8] = include_bytes!("../../shaders/svgf_atrous.comp.spv");
 
 /// Number of à-trous wavelet iterations (Schied 2017 §4.3). Each doubles
-/// the tap stride (1, 2, 4, 8, 16) so the 5×5 B3-spline kernel reaches a
-/// ~65-px effective radius. Must be ODD so the final iteration lands in
+/// the tap stride (1, 2, 4), giving the 5×5 B3-spline chain a 14-pixel
+/// maximum radius. The former five levels reached 62 pixels at render
+/// resolution (roughly 93 output pixels in FSR Quality) and turned spatially
+/// correlated GI error into the wall-sized cloudy stains seen in Dugout Inn.
+/// Three levels still remove moving-camera 1-SPP grain while keeping the
+/// spatial footprint local. Must be ODD so the final iteration lands in
 /// ping-pong slot 0 (`atrous_final_pp()`), which `indirect_view` returns to
 /// the composite pass.
-const ATROUS_ITERATIONS: usize = 5;
+const ATROUS_ITERATIONS: usize = 3;
 const _: () = assert!(
     ATROUS_ITERATIONS % 2 == 1,
     "ATROUS_ITERATIONS must be odd so the final iteration writes ping-pong slot 0"
@@ -1783,7 +1787,7 @@ mod tests {
 
     /// Dugout lighting-ablation regression: a flat wall may have constant
     /// normal and mesh ID across a material boundary or depth silhouette.
-    /// Those two guides alone let all five à-trous levels smear correlated
+    /// Those two guides alone let broad à-trous levels smear correlated
     /// reservoir error across the boundary. Keep both additional guides in
     /// the shader and in the final tap weight.
     #[test]
@@ -1801,6 +1805,16 @@ mod tests {
             src.contains("float w = wN * wZ * wA * wL * hk"),
             "SVGF à-trous final tap weight must apply normal, depth, albedo, and luminance guides"
         );
+    }
+
+    /// Dugout fixed-camera ablation: temporal-only GI was clean after 128
+    /// frames while the five-level spatial result introduced broad stains.
+    /// Keep the production footprint at 1+2+4 strides (14-pixel radius).
+    #[test]
+    fn svgf_atrous_radius_stays_local() {
+        let max_radius = 2 * ((1usize << ATROUS_ITERATIONS) - 1);
+        assert_eq!(ATROUS_ITERATIONS, 3);
+        assert_eq!(max_radius, 14);
     }
 }
 

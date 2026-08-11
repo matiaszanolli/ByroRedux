@@ -109,6 +109,7 @@ impl VulkanContext {
                 src: u8::MAX,
                 dst: u8::MAX,
                 wireframe: false,
+                preserve_opaque_gbuffer: false,
             };
             // `Option` so the first batch always emits an explicit
             // `cmd_set_depth_bias` rather than relying on the
@@ -250,6 +251,7 @@ impl VulkanContext {
                             src,
                             dst,
                             wireframe,
+                            preserve_opaque_gbuffer,
                         } => {
                             // Always present after the pre-population
                             // pass above. If creation failed earlier we
@@ -261,7 +263,7 @@ impl VulkanContext {
                                 wireframe && self.device_caps.fill_mode_non_solid_supported;
                             *self
                                 .blend_pipeline_cache
-                                .get(&(src, dst, wireframe))
+                                .get(&(src, dst, wireframe, preserve_opaque_gbuffer))
                                 .unwrap_or(&self.pipeline)
                         }
                     };

@@ -16,8 +16,9 @@
 // This pass is the variance-guided edge-stopping à-trous wavelet transform
 // from Schied et al. 2017 ("Spatiotemporal Variance-Guided Filtering",
 // HPG 2017) §4.3. It is dispatched ITERATIONS times with a doubling tap
-// stride (1, 2, 4, 8, 16) so a 5×5 B3-spline kernel reaches a ~65-px
-// effective radius for the cost of 5 small passes. Edge-stopping weights
+// stride (1, 2, 4) so a 5×5 B3-spline chain reaches a 14-px maximum
+// radius. Five levels previously reached 62 render pixels and spread
+// correlated GI error into wall-sized cloudy stains. Edge-stopping weights
 // keep the blur from crossing geometric, material, and lighting
 // discontinuities:
 //
@@ -56,7 +57,7 @@ layout(set = 0, binding = 6) uniform sampler2D depthTex;
 
 layout(push_constant) uniform Push {
     uvec2 screen;   // image dimensions in pixels
-    uint  step;     // tap stride for this iteration (1, 2, 4, 8, 16)
+    uint  step;     // tap stride for this iteration (1, 2, 4)
     uint  dbgFlags; // render-debug bitmask (DBG_DISABLE_ATROUS)
 } pc;
 

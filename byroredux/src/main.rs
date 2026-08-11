@@ -187,6 +187,10 @@ struct App {
     /// frame rather than read from the CLI, so a path composes with whatever
     /// the scene (or `--camera-pos`) authored.
     bench_camera_origin: Option<crate::bench_camera::CameraPose>,
+    /// Pose selected by `step_bench_camera` for the current frame. Character
+    /// camera sync also runs in the scheduler, so the post-scheduler phase
+    /// reapplies this exact pose before streaming and rendering.
+    bench_camera_applied_pose: Option<crate::bench_camera::CameraPose>,
     /// Logical path frame for `grid-cross`. Unlike rendered-frame count this
     /// pauses while a boundary transaction is active, making each measured
     /// handoff independent of GPU frame rate and preventing the benchmark
@@ -396,6 +400,7 @@ impl App {
             bench_frames_count: 0,
             bench_camera: None,
             bench_camera_origin: None,
+            bench_camera_applied_pose: None,
             bench_camera_path_frame: 0,
             bench_start: None,
             bench_systems_ns: 0,
@@ -1023,6 +1028,11 @@ impl ApplicationHandler for App {
                 self.window = Some(win);
                 self.last_frame = Instant::now();
                 self.setup_scene();
+                // Preserve the scene/CLI-authored camera before the startup
+                // scheduler's character-follow system overwrites it. The
+                // frame loop will derive and reapply the requested bench path
+                // from this seed on every rendered frame.
+                self.seed_bench_camera_origin();
                 // M41.0 Phase 1b.x — Prime the scene's transform state
                 // BEFORE the event loop starts.
                 self.scheduler.run(&self.world, 0.0);
@@ -1419,11 +1429,8 @@ impl ApplicationHandler for App {
             ctx.fill_upscaler_telemetry(&mut telemetry);
         }
 
-        // Deterministic bench camera (`--bench-camera`). Before the
-        // scheduler so the pose this frame renders from is the pose for
-        // this frame index. `fly_camera_system` cannot fight it: that
-        // system early-returns without mouse capture, which a headless
-        // bench never has.
+        // Select the deterministic bench-camera pose before the scheduler so
+        // camera-dependent systems observe this frame's requested path.
         self.step_bench_camera();
 
         // End of pre-scheduler phase (Phase 10 bracket).
@@ -1440,6 +1447,13 @@ impl ApplicationHandler for App {
 
         // Post-scheduler phase starts here (Phase 10 bracket).
         let atw_post_t0 = Instant::now();
+
+        // Character-mode camera sync runs inside the scheduler and otherwise
+        // replaces an explicit --camera-pos / --bench-camera pose with the
+        // player capsule's eye transform. Restore the selected bench pose
+        // before both streaming and rendering. This is a no-op outside a
+        // deterministic bench.
+        self.restore_bench_camera_pose();
 
         // World cell streaming (M40 Phase 1a). Runs after the
         // scheduler so the scheduler-driven `fly_camera_system` has
@@ -1960,6 +1974,31 @@ mod skin_dispatch_ran_rollback_scope_tests {
             match_pos < ok_arm_pos,
             "sanity: the Ok(needs_recreate) arm must be part of the \
              draw_result match this test is reasoning about."
+        );
+    }
+}
+
+/// A deterministic bench must remember the scene/CLI camera before the
+/// startup scheduler runs `camera_follow_system`. The per-frame reapply is too
+/// late to recover the authored origin if this ordering regresses.
+#[cfg(test)]
+mod bench_camera_startup_order_tests {
+    #[test]
+    fn authored_bench_origin_is_seeded_before_startup_scheduler() {
+        let src = include_str!("main.rs");
+        let setup = src
+            .find("self.setup_scene();")
+            .expect("renderer startup must set up the scene");
+        let startup = &src[setup..];
+        let seed = startup
+            .find("self.seed_bench_camera_origin();")
+            .expect("startup must preserve the authored bench camera");
+        let scheduler = startup
+            .find("self.scheduler.run(&self.world, 0.0);")
+            .expect("startup must prime the scheduler");
+        assert!(
+            seed < scheduler,
+            "bench origin must be captured before character camera sync can overwrite it"
         );
     }
 }

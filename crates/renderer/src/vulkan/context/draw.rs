@@ -2579,11 +2579,13 @@ impl VulkanContext {
             // not a separate pipeline. Wireframe IS a key axis (#869)
             // because `polygon_mode` is static pipeline state — LINE
             // and FILL each need their own pipeline.
+            let order_dependent_glass = is_refractive_glass(draw_cmd);
             let pipeline_key = if draw_cmd.alpha_blend {
                 PipelineKey::Blended {
                     src: draw_cmd.src_blend,
                     dst: draw_cmd.dst_blend,
                     wireframe: draw_cmd.wireframe,
+                    preserve_opaque_gbuffer: order_dependent_glass,
                 }
             } else {
                 PipelineKey::Opaque {
@@ -2612,8 +2614,6 @@ impl VulkanContext {
             // glass draw and a particle draw that happen to agree on
             // every pipeline/depth axis must not fold together, or the
             // merged batch would take one population's path for both.
-            let order_dependent_glass = is_refractive_glass(draw_cmd);
-
             if let Some(batch) = batches.last_mut() {
                 if batch.mesh_handle == draw_cmd.mesh_handle
                     && batch.pipeline_key == pipeline_key
@@ -2812,6 +2812,7 @@ impl VulkanContext {
                 src,
                 dst,
                 wireframe,
+                preserve_opaque_gbuffer,
             } = batch.pipeline_key
             {
                 // Normalize cache key against the device-cap gate so a
@@ -2819,7 +2820,8 @@ impl VulkanContext {
                 // for a regular opaque blend. Matches the gate in
                 // `get_or_create_blend_pipeline`. #869.
                 let wireframe = wireframe && self.device_caps.fill_mode_non_solid_supported;
-                self.blend_seen_scratch.insert((src, dst, wireframe));
+                self.blend_seen_scratch
+                    .insert((src, dst, wireframe, preserve_opaque_gbuffer));
             }
         }
         // Skip the creation pass when every seen key is already cached
@@ -2834,16 +2836,19 @@ impl VulkanContext {
             // the borrow on `blend_seen_scratch` before calling
             // `get_or_create_blend_pipeline` (which takes `&mut self`
             // and would re-borrow scratch via the cache field).
-            let missing: Vec<(u8, u8, bool)> = self
+            let missing: Vec<(u8, u8, bool, bool)> = self
                 .blend_seen_scratch
                 .iter()
                 .filter(|key| !self.blend_pipeline_cache.contains_key(key))
                 .copied()
                 .collect();
-            for (src, dst, wireframe) in missing {
-                if let Err(e) = self.get_or_create_blend_pipeline(src, dst, wireframe) {
+            for (src, dst, wireframe, preserve_opaque_gbuffer) in missing {
+                if let Err(e) =
+                    self.get_or_create_blend_pipeline(src, dst, wireframe, preserve_opaque_gbuffer)
+                {
                     log::error!(
-                        "Failed to create blend pipeline (src={src}, dst={dst}): {e}; \
+                        "Failed to create blend pipeline (src={src}, dst={dst}, \
+                         preserve_opaque_gbuffer={preserve_opaque_gbuffer}): {e}; \
                          draws using this combo will fall back to opaque pipeline"
                     );
                 }
@@ -3999,6 +4004,7 @@ mod group_state_tests {
             src: 10,
             dst: 6,
             wireframe: false,
+            preserve_opaque_gbuffer: false,
         };
         assert_ne!(group_state(&base), group_state(&blended));
 
@@ -4034,6 +4040,7 @@ mod needs_two_sided_blend_split_tests {
                 src: 6,
                 dst: 0,
                 wireframe: false,
+                preserve_opaque_gbuffer: order_dependent_glass,
             },
             two_sided: true,
             render_layer: RenderLayer::Clutter,

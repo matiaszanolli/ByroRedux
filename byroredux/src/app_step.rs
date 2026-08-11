@@ -241,10 +241,49 @@ impl App {
     /// past its distance threshold), but relying on that would make the
     /// harness measure the detector rather than the recovery it is supposed
     /// to be testing.
+    pub(crate) fn seed_bench_camera_origin(&mut self) {
+        if self.bench_camera.is_none()
+            || self.bench_frames_target.is_none()
+            || self.bench_camera_origin.is_some()
+        {
+            return;
+        }
+        let Some(active) = self
+            .world
+            .try_resource::<byroredux_core::ecs::ActiveCamera>()
+            .map(|active| active.0)
+        else {
+            return;
+        };
+        let Some(transform) = self
+            .world
+            .query::<byroredux_core::ecs::Transform>()
+            .and_then(|q| q.get(active).copied())
+        else {
+            return;
+        };
+        let origin = crate::bench_camera::CameraPose {
+            position: transform.translation,
+            forward: transform.rotation * -byroredux_core::math::Vec3::Z,
+        };
+        self.bench_camera_origin = Some(origin);
+        let path = self.bench_camera.expect("bench camera checked above");
+        let total_frames = self
+            .bench_frames_target
+            .expect("bench frame target checked above");
+        log::info!(
+            "bench camera '{path}' over {total_frames} frames from ({:.2}, {:.2}, {:.2})",
+            origin.position.x,
+            origin.position.y,
+            origin.position.z,
+        );
+    }
+
     pub(crate) fn step_bench_camera(&mut self) {
         let (Some(path), Some(total_frames)) = (self.bench_camera, self.bench_frames_target) else {
             return;
         };
+        self.seed_bench_camera_origin();
         let Some(active) = self
             .world
             .try_resource::<byroredux_core::ecs::ActiveCamera>()
@@ -253,31 +292,10 @@ impl App {
             return;
         };
 
-        // Capture the authored pose on the first bench frame so the path
-        // composes with whatever the scene or `--camera-pos` set up.
-        let origin = match self.bench_camera_origin {
-            Some(origin) => origin,
-            None => {
-                let Some(transform) = self
-                    .world
-                    .query::<byroredux_core::ecs::Transform>()
-                    .and_then(|q| q.get(active).copied())
-                else {
-                    return;
-                };
-                let origin = crate::bench_camera::CameraPose {
-                    position: transform.translation,
-                    forward: transform.rotation * -byroredux_core::math::Vec3::Z,
-                };
-                self.bench_camera_origin = Some(origin);
-                log::info!(
-                    "bench camera '{path}' over {total_frames} frames from ({:.2}, {:.2}, {:.2})",
-                    origin.position.x,
-                    origin.position.y,
-                    origin.position.z,
-                );
-                origin
-            }
+        // Seeded immediately after scene setup, before the startup scheduler
+        // can replace an explicit CLI pose with the character's eye transform.
+        let Some(origin) = self.bench_camera_origin else {
+            return;
         };
 
         let is_grid_cross = path == crate::bench_camera::BenchCameraPath::GridCross;
@@ -288,16 +306,8 @@ impl App {
             self.bench_frames_count
         };
         let pose = path.pose(frame, total_frames, origin.position, origin.forward);
-        let rotation = byroredux_core::math::Quat::from_rotation_arc(
-            -byroredux_core::math::Vec3::Z,
-            pose.forward,
-        );
-        if let Some(mut transforms) = self.world.query_mut::<byroredux_core::ecs::Transform>() {
-            if let Some(transform) = transforms.get_mut(active) {
-                transform.translation = pose.position;
-                transform.rotation = rotation;
-            }
-        }
+        self.bench_camera_applied_pose = Some(pose);
+        self.apply_bench_camera_pose(active, pose);
 
         if path.is_cut_frame(frame, total_frames) {
             if let Some(ctx) = self.renderer.as_mut() {
@@ -316,6 +326,40 @@ impl App {
                 boundary_in_progress,
             );
         }
+    }
+
+    fn apply_bench_camera_pose(
+        &self,
+        active: byroredux_core::ecs::EntityId,
+        pose: crate::bench_camera::CameraPose,
+    ) {
+        let rotation = byroredux_core::math::Quat::from_rotation_arc(
+            -byroredux_core::math::Vec3::Z,
+            pose.forward,
+        );
+        if let Some(mut transforms) = self.world.query_mut::<byroredux_core::ecs::Transform>() {
+            if let Some(transform) = transforms.get_mut(active) {
+                transform.translation = pose.position;
+                transform.rotation = rotation;
+            }
+        }
+    }
+
+    /// Reapply the already-selected pose after the scheduler's character
+    /// camera sync. This deliberately does not advance `grid-cross` or signal
+    /// a second cut; it only restores the transform selected above.
+    pub(crate) fn restore_bench_camera_pose(&self) {
+        let Some(pose) = self.bench_camera_applied_pose else {
+            return;
+        };
+        let Some(active) = self
+            .world
+            .try_resource::<byroredux_core::ecs::ActiveCamera>()
+            .map(|active| active.0)
+        else {
+            return;
+        };
+        self.apply_bench_camera_pose(active, pose);
     }
 
     /// Apply a queued runtime upscaler switch (`r.upscaler`, or the settings

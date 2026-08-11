@@ -179,6 +179,7 @@ mod tests {
             ("SHADOW_FADE_END", format!("#define SHADOW_FADE_END {SHADOW_FADE_END:?}")),
             ("DIRECTIONAL_SHADOW_TRACE_DISTANCE", format!("#define DIRECTIONAL_SHADOW_TRACE_DISTANCE {DIRECTIONAL_SHADOW_TRACE_DISTANCE:?}")),
             ("GI_HIT_LIGHT_CAP", format!("#define GI_HIT_LIGHT_CAP {GI_HIT_LIGHT_CAP}u")),
+            ("GI_SAMPLE_LUMINANCE_CLAMP", format!("#define GI_SAMPLE_LUMINANCE_CLAMP {GI_SAMPLE_LUMINANCE_CLAMP:?}")),
             ("CAUSTIC_FIXED_SCALE", format!("#define CAUSTIC_FIXED_SCALE {CAUSTIC_FIXED_SCALE:?}")),
             ("ENABLE_LEGACY_WRS", format!("#define ENABLE_LEGACY_WRS {ENABLE_LEGACY_WRS}")),
             // DBG_* bits are pinned below via the shared DBG_BITS catalog
@@ -840,6 +841,36 @@ mod tests {
         assert!(branch.contains("outColor = vec4(directLight, 1.0);"));
         assert!(branch.contains("outRawIndirect = vec4(0.0);"));
         assert!(branch.contains("outAlbedo = vec4(1.0);"));
+    }
+
+    #[test]
+    fn triangle_frag_clamps_gi_sample_luminance_at_svgf_boundary() {
+        let src = include_str!("../shaders/triangle.frag");
+        assert!(
+            src.contains("float boundedPathLum = pathLuminance(boundedPathSample);")
+                && src.contains("boundedPathSample *= GI_SAMPLE_LUMINANCE_CLAMP / boundedPathLum;")
+                && src.contains("indirect = boundedPathSample;"),
+            "the complete GI path sample must be chroma-preserving luminance-clamped before SVGF"
+        );
+        assert!(
+            !src.contains("indirect = min(pathRadiance, vec3(8.0));"),
+            "the old per-channel 8x ceiling admits white fireflies into SVGF"
+        );
+    }
+
+    #[test]
+    fn triangle_frag_does_not_modulate_ambient_with_single_sample_gi_ao() {
+        let src = include_str!("../shaders/triangle.frag");
+        assert!(
+            src.contains("float combinedAO = ((dbgFlags & DBG_DISABLE_AO) != 0u) ? 1.0 : ao;"),
+            "ambient occlusion must use the stable SSAO signal"
+        );
+        assert!(
+            !src.contains("min(ao, rtAO)")
+                && !src.contains("float rtAO")
+                && !src.contains("rtAO = mix"),
+            "the one-sample GI path must not become an undenoised AO multiplier"
+        );
     }
 
     #[test]

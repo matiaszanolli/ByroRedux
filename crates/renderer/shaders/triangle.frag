@@ -3219,12 +3219,6 @@ void main() {
     // material's GGX/diffuse mixture and evaluate the same BSDF for local
     // lights, so conductors no longer turn into Lambertian color emitters.
     vec3 indirect = vec3(0.0);
-    // RT ambient occlusion derived from the GI ray's hit distance. Close
-    // hits darken the ambient term so recesses/corners/behind-wall regions
-    // get real occlusion, not just the screen-space SSAO approximation
-    // (which can't see the hall-scale geometry off-screen). 1.0 = fully
-    // open, 0.0 = hard against adjacent geometry.
-    float rtAO = 1.0;
     // Gate GI on the surface's actual EMISSION (luminance), not the bare
     // `emissiveMult`: `Material::default()` ships `emissive_mult = 1.0`
     // with a zero emissive colour, so a plain `emissiveMult < 0.01` test
@@ -3265,27 +3259,10 @@ void main() {
             float n1 = giRand.x;
             float n2 = giRand.y;
 
-            // GI hemisphere ray uses the GEOMETRIC normal, not the
-            // per-fragment perturbed `N`. The normal-mapped corrugation
-            // (Quonset hut walls, brick mortar, fence cutouts, every
-            // tile grout pattern) is fake geometry — the underlying
-            // mesh is flat, but the per-pixel `N` swings ±90° to
-            // imply 3D bumps. Sampling the hemisphere along that
-            // perturbed `N` aims a third of the rays straight INTO
-            // the imaginary groove-sidewall (`hitDist` ≈ 0 against
-            // the very same flat plane the fragment lives on),
-            // collapsing `rtAO` to its minimum 0.3 in every "groove"
-            // pixel and producing the painterly bright/dark stripe
-            // signature when the resulting `combinedAO * ambient`
-            // multiplies the cell ambient by a third only in
-            // grooves. The Nellis Museum corrugated steel was the
-            // canonical regression. Geometric normal samples the
-            // hemisphere over the actual macro geometry, so AO sees
-            // "open room" uniformly across the wall and ambient fills
-            // the grooves with the cell's authored colour. Light
-            // direction in the GI hit's incoming-radiance lookup is
-            // already noise-jittered, so trading a tiny per-pixel
-            // directional bias for correct AO is a net win at 1-SPP.
+            // GI hemisphere sampling uses the geometric normal, not the
+            // per-fragment perturbed normal. Normal maps describe the local
+            // scattering frame; they must not aim transport rays into the
+            // underlying macro surface.
             vec3 N_geom = normalize(fragNormalEffective);
             vec3 giDir = cosineWeightedHemisphere(N_geom, n1, n2);
             vec3 giOrigin = fragWorldPos + N_bias * 0.1;
@@ -3305,10 +3282,8 @@ void main() {
             vec3 pathDir = giDir;
             vec3 throughput = primaryDiffuseWeight;
             vec3 pathRadiance = vec3(0.0);
-            float pathDistance = 0.0;
             int diffuseBounces = 0;
             int shadedHits = 0;
-            bool measuredAo = false;
 
             for (int segment = 0; segment < MAX_PATH_SEGMENTS; ++segment) {
                 if (segment >= pathSegmentLimit) break;
@@ -3327,7 +3302,6 @@ void main() {
                 int hitIdx = rayQueryGetIntersectionInstanceCustomIndexEXT(giRQ, true);
                 int hitPrim = rayQueryGetIntersectionPrimitiveIndexEXT(giRQ, true);
                 float hitDist = rayQueryGetIntersectionTEXT(giRQ, true);
-                pathDistance += hitDist;
                 vec3 hitPos = pathOrigin + pathDir * hitDist;
                 GpuInstance hitInst = instances[hitIdx];
                 GpuMaterial hitMat = materials[hitInst.materialId];
@@ -3377,16 +3351,6 @@ void main() {
                     continue;
                 }
 
-                // Glass does not count as ambient occlusion. Measure AO at
-                // the first actual diffuse blocker using total travelled
-                // distance, including any transparent interfaces crossed.
-                if (!measuredAo) {
-                    rtAO = mix(
-                        0.3, 1.0,
-                        smoothstep(60.0, 500.0, pathDistance));
-                    measuredAo = true;
-                }
-
                 vec3 hitAlbedo = clamp(
                     rayHitAlbedo(hitMat, hitBase.rgb), vec3(0.0), vec3(1.0));
                 vec3 viewDir = -pathDir;
@@ -3426,7 +3390,20 @@ void main() {
 
                 pathOrigin = hitPos + hitN * 0.1;
             }
-            indirect = min(pathRadiance, vec3(8.0));
+            // One complete bounded path is one Monte Carlo sample for this
+            // pixel. Clamp its luminance, not the reservoir weight and not
+            // individual RGB channels, immediately before the signal enters
+            // SVGF. Rare secondary GGX/light alignments otherwise land at the
+            // old vec3(8) ceiling as white fireflies; correlated temporal and
+            // spatial filtering then turns those impulses into wall-sized
+            // cloudy stains. Scaling all channels together preserves hue and
+            // leaves normal-energy samples exactly unchanged.
+            vec3 boundedPathSample = max(pathRadiance, vec3(0.0));
+            float boundedPathLum = pathLuminance(boundedPathSample);
+            if (boundedPathLum > GI_SAMPLE_LUMINANCE_CLAMP) {
+                boundedPathSample *= GI_SAMPLE_LUMINANCE_CLAMP / boundedPathLum;
+            }
+            indirect = boundedPathSample;
             // Smooth distance fade: attenuate GI contribution at range
             // to prevent a visible boundary at the cutoff distance.
             indirect *= giFade;
@@ -3472,20 +3449,24 @@ void main() {
     // re-adds the correct modulation without division-based demodulation,
     // avoiding dark-albedo amplification artifacts. See #268.
     vec3 directLight = Lo;
-    // Combine screen-space SSAO with RT AO. SSAO catches fine detail
-    // (texture crevices), RT AO catches hall-scale occlusion. Take min
-    // so whichever sees the occluder wins.
+    // Keep AO independent from the one-sample stochastic GI estimator.
+    // Reusing the GI ray's first-hit distance as RT AO made a random binary
+    // visibility result multiply the entire ambient signal before SVGF.
+    // The raw result was dark stipple; temporal/spatial filtering converted
+    // correlated samples into wall-sized cloudy stains. SSAO remains the
+    // stable contact-occlusion signal until RT AO has its own accumulated,
+    // separately denoised history.
     // DBG_DISABLE_AO (0x800) — force AO fully open to bisect a hard-edged
     // dark floor patch as AO over-darkening (vanishes) vs cast shadow
     // (persists, since shadows live in the `directLight`/Lo term, not AO).
-    float combinedAO = ((dbgFlags & DBG_DISABLE_AO) != 0u) ? 1.0 : min(ao, rtAO);
+    float combinedAO = ((dbgFlags & DBG_DISABLE_AO) != 0u) ? 1.0 : ao;
     // Ambient gets a floor on its AO modulation so deep cavities (e.g.
     // Markarth's narrow rock canyon, Solitude's overhanging arches,
     // any close-walled exterior) don't crush every fragment to pitch-
-    // black when both SSAO and RT-AO report heavy occlusion. The
+    // black when SSAO reports heavy occlusion. The
     // `indirect` term (RT diffuse GI bounce) stays fully AO-modulated
     // because the ray query already accounts for cavity occlusion at
-    // the hit — re-modulating by SSAO+RT-AO is a re-enforcement of
+    // the hit — re-modulating by SSAO is a conservative contact term for
     // the same signal, valid for the bounce path. The ambient term
     // represents authored diffuse irradiance (single-bounce sky-fill
     // + scatter), and real-world second-bounce light fills cavities;
