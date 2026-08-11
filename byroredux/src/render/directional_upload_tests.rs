@@ -6,9 +6,9 @@ use super::*;
 /// regress daytime surface lighting brightness.
 #[test]
 fn exterior_noon_preserves_pre_fix_brightness() {
-    let (color, radius) =
+    let (color, kind) =
         compute_directional_upload(&[0.7, 0.65, 0.55], false, SUN_INTENSITY_PEAK, None);
-    assert_eq!(radius, 0.0, "exterior radius must be 0 (shadowed)");
+    assert_eq!(kind, LightKind::Directional);
     assert!((color[0] - 0.7).abs() < 1e-6);
     assert!((color[1] - 0.65).abs() < 1e-6);
     assert!((color[2] - 0.55).abs() < 1e-6);
@@ -21,13 +21,13 @@ fn exterior_noon_preserves_pre_fix_brightness() {
 /// `SKY_SUNLIGHT` colour from the (0,-1,0) direction.
 #[test]
 fn exterior_midnight_zeroes_directional_contribution() {
-    let (color, radius) = compute_directional_upload(
+    let (color, kind) = compute_directional_upload(
         &[0.05, 0.07, 0.12], // typical TOD-NIGHT SKY_SUNLIGHT (dim blue)
         false,
         0.0,
         None,
     );
-    assert_eq!(radius, 0.0);
+    assert_eq!(kind, LightKind::Directional);
     assert_eq!(
         color,
         [0.0, 0.0, 0.0],
@@ -68,23 +68,20 @@ fn exterior_out_of_range_intensity_is_clamped() {
 
 /// Interior fallback calibration: a missing Directional Fade keeps the
 /// established 0.6× scale, independent of `sun_intensity` — XCLL is authored
-/// cell lighting, not a TOD-driven weather sun. The emitted source uses the
-/// same standard directional contract as outside (`radius == 0`).
+/// cell lighting, not a TOD-driven weather sun. It remains an explicit
+/// ambient-fill kind rather than acquiring exterior directional shadows.
 #[test]
-fn interior_uses_fixed_source_with_standard_directional_contract() {
-    let (noon_color, noon_radius) =
+fn interior_uses_explicit_unshadowed_ambient_fill_contract() {
+    let (noon_color, noon_kind) =
         compute_directional_upload(&[0.5, 0.5, 0.5], true, SUN_INTENSITY_PEAK, None);
-    let (midnight_color, midnight_radius) =
+    let (midnight_color, midnight_kind) =
         compute_directional_upload(&[0.5, 0.5, 0.5], true, 0.0, None);
     assert_eq!(
         noon_color, midnight_color,
         "interior XCLL source must NOT vary with sun_intensity"
     );
-    assert_eq!(
-        noon_radius, 0.0,
-        "interior directionals must use the standard shadowed contract"
-    );
-    assert_eq!(midnight_radius, 0.0);
+    assert_eq!(noon_kind, LightKind::Ambient);
+    assert_eq!(midnight_kind, LightKind::Ambient);
     // 0.6× scale per the established convention.
     assert!((noon_color[0] - 0.30).abs() < 1e-6);
 }

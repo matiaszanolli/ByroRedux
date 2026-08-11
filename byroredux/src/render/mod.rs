@@ -1,6 +1,8 @@
 //! Per-frame render data collection from ECS queries.
 
-use byroredux_core::ecs::{resources::SkinSlotPool, ActiveCamera, EntityId, Transform, World};
+use byroredux_core::ecs::{
+    resources::SkinSlotPool, ActiveCamera, EntityId, LightKind, Transform, World,
+};
 use byroredux_core::math::Vec3;
 use byroredux_physics::PhysicsWorld;
 use byroredux_renderer::vulkan::context::DrawCommand;
@@ -220,16 +222,15 @@ const SUN_INTENSITY_PEAK: f32 = 4.0;
 /// Beyond the renderer's shared shadow fade start, `shadowFade` decays
 /// to zero, leaving the unshadowed contribution un-cancelled.
 ///
-/// Both arms return `radius == 0`, the renderer's standard directional
-/// contract. Environment decides the source colour and strength here;
-/// Lambert/GGX evaluation, RT shadows, and distance fading are identical
-/// in the shader for interior and exterior directionals.
+/// Returns an explicit canonical kind rather than smuggling the distinction
+/// through a negative radius. Interior XCLL is an unshadowed, isotropic
+/// ambient fill; exterior WTHR is a physical directional source.
 fn compute_directional_upload(
     directional_color: &[f32; 3],
     is_interior: bool,
     sun_intensity: f32,
     directional_fade: Option<f32>,
-) -> ([f32; 3], f32) {
+) -> ([f32; 3], LightKind) {
     let source_scale = if is_interior {
         const LEGACY_INTERIOR_DIRECTIONAL_SOURCE_SCALE: f32 = 0.6;
         directional_fade
@@ -245,7 +246,11 @@ fn compute_directional_upload(
             directional_color[1] * source_scale,
             directional_color[2] * source_scale,
         ],
-        0.0,
+        if is_interior {
+            LightKind::Ambient
+        } else {
+            LightKind::Directional
+        },
     )
 }
 

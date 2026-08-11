@@ -222,6 +222,10 @@ bool giLightSample(
     out vec3 L, out float dist, out float contrib
 ) {
     float lightType = lights[i].color_type.w;
+    // Type 3 is already injected once as normal-independent cell fill in
+    // the primary surface pass. It is neither a physical emitter nor a GI
+    // candidate and must not acquire an NdotL lobe at secondary hits.
+    if (lightType > 2.5) return false;
     float radius = lights[i].position_radius.w;
     float falloffShape = lights[i].params.x;
     float atten;

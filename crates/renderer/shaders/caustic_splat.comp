@@ -332,6 +332,9 @@ void main() {
         vec3 Lc = L.color_type.rgb;
         float Lrad = max(L.position_radius.w, 0.01);
         uint Ltype = uint(L.color_type.w);
+        if (Ltype == 3u) {
+            continue; // XCLL ambient fill cannot focus into caustics.
+        }
 
         // Direction of light arrival at G + per-light attenuation
         // factor `lightReach` ∈ [0, 1] applied multiplicatively to the
