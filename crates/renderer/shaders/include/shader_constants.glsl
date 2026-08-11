@@ -140,6 +140,7 @@
 #define DBG_VIZ_NONFINITE 8388608u
 #define DBG_VIZ_SHADOW_OFFSET 16777216u
 #define DBG_VIZ_NORMAL_DIVERGENCE 33554432u
+#define DBG_VIZ_DIRECT 67108864u
 
 // #1799 / PERF-D5-NEW-01 — compile-time gate for the legacy 16-slot
 // WRS reservoir arrays. 0 (default): preprocessed out of

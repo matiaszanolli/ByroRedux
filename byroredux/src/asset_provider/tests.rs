@@ -1130,6 +1130,46 @@ fn v20_bgem_transmissive_bundle_reads_subclass_environment_mapping() {
     assert!(bgem_uses_thin_glass_behavior(&bgem));
 }
 
+#[test]
+fn vanilla_bgsm_chain_keeps_legacy_bsdf() {
+    use byroredux_bgsm::template::ResolvedMaterial;
+    use byroredux_bgsm::BgsmFile;
+
+    let resolved = ResolvedMaterial {
+        file: BgsmFile {
+            pbr: false,
+            ..Default::default()
+        },
+        parent: Some(Arc::new(ResolvedMaterial {
+            file: BgsmFile {
+                pbr: false,
+                ..Default::default()
+            },
+            parent: None,
+        })),
+    };
+    assert!(
+        !bgsm_uses_pbr_bsdf(&resolved),
+        "BGSM provenance alone must not route vanilla FO4 spec-gloss content \
+         through the Disney/PBR lobe"
+    );
+}
+
+#[test]
+fn explicit_bgsm_pbr_opt_in_selects_disney_bsdf() {
+    use byroredux_bgsm::template::ResolvedMaterial;
+    use byroredux_bgsm::BgsmFile;
+
+    let resolved = ResolvedMaterial {
+        file: BgsmFile {
+            pbr: true,
+            ..Default::default()
+        },
+        parent: None,
+    };
+    assert!(bgsm_uses_pbr_bsdf(&resolved));
+}
+
 /// Regression for #2366: the parsed v20+ BGEM PBR opt-in must reach the
 /// canonical imported-material flag through the real merge path.
 #[test]

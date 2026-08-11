@@ -565,6 +565,8 @@ impl VulkanContext {
                     motion_views: &motion_views_in,
                     mesh_id_views: &mesh_id_views_in,
                     normal_views: &normal_views_in,
+                    albedo_views: &albedo_views,
+                    depth_view: self.depth_image_view,
                 },
                 self.frame_extents.render.width,
                 self.frame_extents.render.height,

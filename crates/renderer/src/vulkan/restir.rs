@@ -164,7 +164,7 @@ mod tests {
     /// this and the GLSL must move together.
     #[test]
     fn reservoir_stride_matches_shader() {
-        // lightAndSurface + W + M + histLen + accumR + accumG + accumB
+        // lightAndSurface + W + M + packed(histLen, depth) + accumR/G/B
         // + pad0 (packed geometric normal). 8 scalars × 4 bytes.
         assert_eq!(RESERVOIR_STRIDE, 8 * 4);
     }
@@ -186,6 +186,24 @@ mod tests {
                 && src.contains("cameraStatic ? 64.0 : 16.0")
                 && src.contains("cameraStatic ? 0.025 : 0.1"),
             "direct-light history must converge when parked and remain responsive in motion"
+        );
+    }
+
+    #[test]
+    fn spatial_reuse_requires_same_surface_depth_and_normal() {
+        let src = include_str!("../../shaders/triangle.frag");
+        let bindings = include_str!("../../shaders/include/bindings.glsl");
+        assert!(bindings.contains("float histLenAndDepth;"));
+        assert!(
+            src.contains("rnSurfaceId == surfaceId")
+                && src.contains("spatialDepthCompatible")
+                && src.contains("dot(geomN, nGeomN) >= SPATIAL_NORMAL_COS"),
+            "spatial reservoir reuse must not cross stable receiver, depth, or normal edges"
+        );
+        assert!(
+            src.contains("packHalf2x16(vec2(")
+                && src.contains("floatBitsToUint(rn.histLenAndDepth)"),
+            "depth compatibility must stay inside the existing 32-byte reservoir stride"
         );
     }
 

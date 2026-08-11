@@ -18,9 +18,11 @@
 // HPG 2017) §4.3. It is dispatched ITERATIONS times with a doubling tap
 // stride (1, 2, 4, 8, 16) so a 5×5 B3-spline kernel reaches a ~65-px
 // effective radius for the cost of 5 small passes. Edge-stopping weights
-// keep the blur from crossing geometric / lighting discontinuities:
+// keep the blur from crossing geometric, material, and lighting
+// discontinuities:
 //
-//   w = w_normal · w_luminance(variance) · meshid_match · h(B3 spline)
+//   w = w_normal · w_depth · w_albedo · w_luminance(variance)
+//       · meshid_match · h(B3 spline)
 //
 // The variance the luminance weight is keyed to comes from the temporal
 // moments image (Var = μ2 − μ1²), 3×3-prefiltered. (Schied 2017 also
@@ -48,6 +50,10 @@ layout(set = 0, binding = 3) uniform usampler2D meshIdTex; // R32_UINT
 // ── Output ──
 layout(set = 0, binding = 4, r11f_g11f_b10f) uniform writeonly image2D outColor;
 
+// ── Additional edge-stopping guides ──
+layout(set = 0, binding = 5) uniform sampler2D albedoTex;
+layout(set = 0, binding = 6) uniform sampler2D depthTex;
+
 layout(push_constant) uniform Push {
     uvec2 screen;   // image dimensions in pixels
     uint  step;     // tap stride for this iteration (1, 2, 4, 8, 16)
@@ -57,7 +63,9 @@ layout(push_constant) uniform Push {
 // Edge-stopping parameters (Schied 2017 §4.3 defaults).
 const float SIGMA_N = 128.0; // normal-cone exponent
 const float SIGMA_L = 4.0;   // luminance / variance sensitivity
+const float SIGMA_A = 0.1;   // linear-albedo difference sensitivity
 const float EPS = 1.0e-3;
+const float DEPTH_EPS = 1.0e-7;
 
 float luminance(vec3 c) {
     return dot(c, vec3(0.2126, 0.7152, 0.0722));
@@ -103,7 +111,22 @@ void main() {
     }
 
     vec3 nP = octDecode(texelFetch(normalTex, p, 0).rg);
+    vec3 aP = texelFetch(albedoTex, p, 0).rgb;
+    float zP = texelFetch(depthTex, p, 0).r;
     float lP = luminance(cP);
+
+    // Estimate the current surface's one-pixel depth footprint from the
+    // quieter side of each axis. At a silhouette one side sees the depth
+    // jump while the other usually stays on the centre surface, so min()
+    // does not widen the permitted band to include the other object. This
+    // works directly in hardware-depth space and therefore does not assume
+    // standard versus reversed-Z projection.
+    float zL = texelFetch(depthTex, clamp(p + ivec2(-1, 0), ivec2(0), dim - 1), 0).r;
+    float zR = texelFetch(depthTex, clamp(p + ivec2( 1, 0), ivec2(0), dim - 1), 0).r;
+    float zU = texelFetch(depthTex, clamp(p + ivec2( 0,-1), ivec2(0), dim - 1), 0).r;
+    float zD = texelFetch(depthTex, clamp(p + ivec2( 0, 1), ivec2(0), dim - 1), 0).r;
+    float depthSlopeX = min(abs(zP - zL), abs(zR - zP));
+    float depthSlopeY = min(abs(zP - zU), abs(zD - zP));
 
     // 3×3 Gaussian prefilter of the centre TEMPORAL variance — stabilises
     // the luminance edge-stopping denominator so a single noisy variance
@@ -171,13 +194,22 @@ void main() {
 
             vec3 cQ = texelFetch(inColor, q, 0).rgb;
             vec3 nQ = octDecode(texelFetch(normalTex, q, 0).rg);
+            vec3 aQ = texelFetch(albedoTex, q, 0).rgb;
+            float zQ = texelFetch(depthTex, q, 0).r;
             float lQ = luminance(cQ);
 
             // Edge-stopping weights.
             float wN = pow(max(dot(nP, nQ), 0.0), SIGMA_N);
             float wL = exp(-abs(lP - lQ) / lumPhi);
+            float wA = exp(-length(aP - aQ) / SIGMA_A);
+            vec2 tapDistance = abs(vec2(dx, dy)) * float(pc.step);
+            float depthPhi = max(
+                2.0 * dot(vec2(depthSlopeX, depthSlopeY), tapDistance),
+                DEPTH_EPS
+            );
+            float wZ = exp(-abs(zP - zQ) / depthPhi);
             float hk = h[abs(dx)] * h[abs(dy)];
-            float w = wN * wL * hk;
+            float w = wN * wZ * wA * wL * hk;
 
             cAcc += w * cQ;
             wAcc += w;

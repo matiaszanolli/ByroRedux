@@ -332,10 +332,10 @@ pub struct SvgfPipeline {
     atrous_color: Vec<HistorySlot>,
 }
 
-/// The four per-frame G-buffer view slices SVGF samples — raw indirect,
-/// motion, mesh-ID, and normal (each of length `MAX_FRAMES_IN_FLIGHT`).
-/// Groups the view arguments that travel together into the SVGF
-/// constructor and resize path.
+/// The per-frame G-buffer views SVGF samples. Every slice has length
+/// `MAX_FRAMES_IN_FLIGHT`; depth is shared by all framebuffers.
+/// Groups the view arguments that travel together into the SVGF constructor
+/// and resize path.
 #[derive(Clone, Copy)]
 pub struct SvgfInputViews<'a> {
     /// Raw indirect-lighting views (the denoiser input).
@@ -346,6 +346,10 @@ pub struct SvgfInputViews<'a> {
     pub mesh_id_views: &'a [vk::ImageView],
     /// Normal views (edge-stopping weight).
     pub normal_views: &'a [vk::ImageView],
+    /// Surface albedo views (edge-stopping weight).
+    pub albedo_views: &'a [vk::ImageView],
+    /// Shared depth attachment (edge-stopping weight).
+    pub depth_view: vk::ImageView,
 }
 
 impl SvgfPipeline {
@@ -361,6 +365,7 @@ impl SvgfPipeline {
         debug_assert_eq!(views.motion_views.len(), MAX_FRAMES_IN_FLIGHT);
         debug_assert_eq!(views.mesh_id_views.len(), MAX_FRAMES_IN_FLIGHT);
         debug_assert_eq!(views.normal_views.len(), MAX_FRAMES_IN_FLIGHT);
+        debug_assert_eq!(views.albedo_views.len(), MAX_FRAMES_IN_FLIGHT);
 
         let result = Self::new_inner(device, allocator, pipeline_cache, views, width, height);
         if let Err(ref e) = result {
@@ -382,6 +387,8 @@ impl SvgfPipeline {
             motion_views,
             mesh_id_views,
             normal_views,
+            albedo_views,
+            depth_view,
         } = views;
         let mut partial = Self {
             pipeline: vk::Pipeline::null(),
@@ -651,6 +658,8 @@ impl SvgfPipeline {
             pipeline_cache,
             normal_views,
             mesh_id_views,
+            albedo_views,
+            depth_view,
         ));
 
         log::info!(
@@ -854,6 +863,8 @@ impl SvgfPipeline {
         pipeline_cache: vk::PipelineCache,
         normal_views: &[vk::ImageView],
         mesh_id_views: &[vk::ImageView],
+        albedo_views: &[vk::ImageView],
+        depth_view: vk::ImageView,
     ) -> Result<()> {
         // Binding layout — see svgf_atrous.comp.
         let bindings = [
@@ -885,6 +896,18 @@ impl SvgfPipeline {
             vk::DescriptorSetLayoutBinding::default()
                 .binding(4)
                 .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            // 5: albedo (sampler2D)
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(5)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            // 6: depth (sampler2D)
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(6)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::COMPUTE),
         ];
@@ -958,20 +981,29 @@ impl SvgfPipeline {
                 .context("SVGF à-trous descriptor sets")?
         };
 
-        self.write_atrous_descriptor_sets(device, normal_views, mesh_id_views);
+        self.write_atrous_descriptor_sets(
+            device,
+            normal_views,
+            mesh_id_views,
+            albedo_views,
+            depth_view,
+        );
         Ok(())
     }
 
     /// (Re)write the à-trous descriptor sets. Iteration 0 reads the temporal
     /// output (`indirect_history[f]`); later iterations read the previous
-    /// iteration's ping-pong slot. moments / normal / mesh_id are the
-    /// current frame's. Called from `create_atrous_resources` and after a
-    /// resize recreates the ping-pong images.
+    /// iteration's ping-pong slot. Moments / normal / mesh_id / albedo are
+    /// the current frame's; depth is shared. Called from
+    /// `create_atrous_resources` and after a resize recreates the ping-pong
+    /// images.
     fn write_atrous_descriptor_sets(
         &self,
         device: &ash::Device,
         normal_views: &[vk::ImageView],
         mesh_id_views: &[vk::ImageView],
+        albedo_views: &[vk::ImageView],
+        depth_view: vk::ImageView,
     ) {
         for f in 0..MAX_FRAMES_IN_FLIGHT {
             for k in 0..ATROUS_ITERATIONS {
@@ -1001,6 +1033,14 @@ impl SvgfPipeline {
                 let out_color = [vk::DescriptorImageInfo::default()
                     .image_view(out_color_view)
                     .image_layout(vk::ImageLayout::GENERAL)];
+                let albedo = [vk::DescriptorImageInfo::default()
+                    .sampler(self.point_sampler)
+                    .image_view(albedo_views[f])
+                    .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+                let depth = [vk::DescriptorImageInfo::default()
+                    .sampler(self.point_sampler)
+                    .image_view(depth_view)
+                    .image_layout(vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL)];
 
                 let set = self.atrous_descriptor_sets[f * ATROUS_ITERATIONS + k];
                 let writes = [
@@ -1009,6 +1049,8 @@ impl SvgfPipeline {
                     write_combined_image_sampler(set, 2, &normal),
                     write_combined_image_sampler(set, 3, &mesh_id),
                     write_storage_image(set, 4, &out_color),
+                    write_combined_image_sampler(set, 5, &albedo),
+                    write_combined_image_sampler(set, 6, &depth),
                 ];
                 // SAFETY: sets owned by self; views reference self-owned
                 // images + caller-borrowed G-buffer views live for this call.
@@ -1359,6 +1401,8 @@ impl SvgfPipeline {
             motion_views,
             mesh_id_views,
             normal_views,
+            albedo_views,
+            depth_view,
         } = views;
         for mut slot in self.indirect_history.drain(..) {
             // SAFETY: `recreate_on_resize` runs from the fenced
@@ -1450,7 +1494,13 @@ impl SvgfPipeline {
         // The à-trous pipeline / descriptor sets persist across resize;
         // only the ping-pong images were recreated, so rewrite the sets to
         // point at the fresh views (and the fresh indirect_history seed).
-        self.write_atrous_descriptor_sets(device, normal_views, mesh_id_views);
+        self.write_atrous_descriptor_sets(
+            device,
+            normal_views,
+            mesh_id_views,
+            albedo_views,
+            depth_view,
+        );
 
         // #1031 — walk the fresh history images from UNDEFINED to
         // GENERAL so the next dispatch sees them in a valid storage
@@ -1728,6 +1778,28 @@ mod tests {
              `if (hasHistory)` branch (REG-07 / #1639, #1481) — re-arms a \
              one-frame un-clamped firefly on the disocclusion (no-history) \
              path. Keep `currInd *= maxL` ahead of `if (hasHistory)`."
+        );
+    }
+
+    /// Dugout lighting-ablation regression: a flat wall may have constant
+    /// normal and mesh ID across a material boundary or depth silhouette.
+    /// Those two guides alone let all five à-trous levels smear correlated
+    /// reservoir error across the boundary. Keep both additional guides in
+    /// the shader and in the final tap weight.
+    #[test]
+    fn svgf_atrous_stops_on_depth_and_albedo_edges() {
+        let src = include_str!("../../shaders/svgf_atrous.comp");
+        assert!(
+            src.contains("binding = 5) uniform sampler2D albedoTex"),
+            "SVGF à-trous lost its albedo edge guide"
+        );
+        assert!(
+            src.contains("binding = 6) uniform sampler2D depthTex"),
+            "SVGF à-trous lost its depth edge guide"
+        );
+        assert!(
+            src.contains("float w = wN * wZ * wA * wL * hk"),
+            "SVGF à-trous final tap weight must apply normal, depth, albedo, and luminance guides"
         );
     }
 }

@@ -24,6 +24,8 @@ use anyhow::{Context, Result};
 use ash::vk;
 use std::collections::{HashMap, HashSet, VecDeque};
 
+pub use crate::vulkan::dds::TextureColorSpace;
+
 /// Gamebryo `TexClampMode` address pairs in their on-disk enum order.
 const SAMPLER_ADDRESS_MODES: [(vk::SamplerAddressMode, vk::SamplerAddressMode); 4] = [
     (
@@ -72,6 +74,7 @@ struct PendingDdsUpload {
     dds_bytes: Vec<u8>,
     clamp_mode: u8,
     view_kind: TextureViewKind,
+    color_space: TextureColorSpace,
     /// Lowercased path — for diagnostic logging only. The path_map
     /// entry is set up by `enqueue_dds_with_clamp` at queue time.
     path: String,
@@ -597,14 +600,36 @@ impl TextureRegistry {
         dds_bytes: &[u8],
         clamp_mode: u8,
     ) -> Result<TextureHandle> {
+        self.load_dds_with_clamp_and_color_space(
+            ctx,
+            path,
+            dds_bytes,
+            clamp_mode,
+            TextureColorSpace::Srgb,
+        )
+    }
+
+    /// Role-aware DDS load. The cache key includes `color_space`, so one GPU
+    /// upload is shared by all users of the same `(path, clamp, semantic)`;
+    /// a second image is allocated only if content genuinely reuses one path
+    /// as both a colour texture and a numeric data map.
+    pub fn load_dds_with_clamp_and_color_space(
+        &mut self,
+        ctx: GpuUploadCtx,
+        path: &str,
+        dds_bytes: &[u8],
+        clamp_mode: u8,
+        color_space: TextureColorSpace,
+    ) -> Result<TextureHandle> {
         let clamp_mode = clamp_mode.min(3);
-        let meta = super::vulkan::dds::parse_dds(dds_bytes)?;
+        let meta = super::vulkan::dds::parse_dds_with_color_space(dds_bytes, color_space)?;
         anyhow::ensure!(
             !meta.is_cubemap,
             "DDS '{}' is a cubemap; use the environment-map loader",
             path,
         );
-        let normalized = texture_keyed_path(path, clamp_mode, TextureViewKind::D2);
+        let normalized =
+            texture_keyed_path_with_color_space(path, clamp_mode, TextureViewKind::D2, color_space);
 
         if let Some(&handle) = self.path_map.get(&normalized) {
             if let Some(entry) = self.textures.get_mut(handle as usize) {
@@ -616,34 +641,33 @@ impl TextureRegistry {
         // Reject before paying the upload cost if the bindless array is full.
         self.check_slot_available()?;
 
-        let texture = Texture::from_dds(
-            ctx.device,
-            ctx.allocator,
-            ctx.queue,
-            ctx.command_pool,
-            dds_bytes,
+        let device = ctx.device;
+        let pixel_data = super::vulkan::dds::upload_pixels(&meta, dds_bytes);
+        let texture = Texture::from_dds_with_mip_chain(
+            ctx,
+            &meta,
+            pixel_data.as_ref(),
             self.samplers[clamp_mode as usize],
             self.staging_pool.as_mut(),
         )
         .with_context(|| format!("Failed to load DDS texture '{}'", path))?;
 
         let handle = self.textures.len() as TextureHandle;
-        self.write_texture_to_all_sets(ctx.device, handle, &texture);
+        self.write_texture_to_all_sets(device, handle, &texture);
         self.textures.push(TextureEntry {
             texture: Some(texture),
             pending_destroy: VecDeque::new(),
             ref_count: 1,
         });
         self.path_map.insert(normalized, handle);
-        if let Ok(meta) = super::vulkan::dds::parse_dds(dds_bytes) {
-            self.texture_has_alpha
-                .insert(handle, super::vulkan::dds::format_has_alpha(meta.format));
-            // #1542: for a to-be-expanded 16/24-bpp source the raw bytes
-            // aren't RGBA8 yet, so `average_rgb` would misread them; skip.
-            if meta.expand.is_none() {
-                if let Some(avg) = super::vulkan::dds::average_rgb(&meta, dds_bytes) {
-                    self.texture_avg_rgb.insert(handle, avg);
-                }
+        self.texture_has_alpha
+            .insert(handle, super::vulkan::dds::format_has_alpha(meta.format));
+        // #1542: for a to-be-expanded 16/24-bpp source the raw bytes aren't
+        // RGBA8 yet, so `average_rgb` would misread them; skip. Numeric slots
+        // likewise never feed the diffuse GI-albedo cache.
+        if color_space == TextureColorSpace::Srgb && meta.expand.is_none() {
+            if let Some(avg) = super::vulkan::dds::average_rgb(&meta, dds_bytes) {
+                self.texture_avg_rgb.insert(handle, avg);
             }
         }
 
@@ -693,13 +717,38 @@ impl TextureRegistry {
         dds_bytes: Vec<u8>,
         clamp_mode: u8,
     ) -> Result<TextureHandle> {
-        let meta = super::vulkan::dds::parse_dds(&dds_bytes)?;
+        self.enqueue_dds_with_clamp_and_color_space(
+            device,
+            path,
+            dds_bytes,
+            clamp_mode,
+            TextureColorSpace::Srgb,
+        )
+    }
+
+    /// Batched counterpart of [`Self::load_dds_with_clamp_and_color_space`].
+    pub fn enqueue_dds_with_clamp_and_color_space(
+        &mut self,
+        device: &ash::Device,
+        path: &str,
+        dds_bytes: Vec<u8>,
+        clamp_mode: u8,
+        color_space: TextureColorSpace,
+    ) -> Result<TextureHandle> {
+        let meta = super::vulkan::dds::parse_dds_with_color_space(&dds_bytes, color_space)?;
         anyhow::ensure!(
             !meta.is_cubemap,
             "DDS '{}' is a cubemap; use enqueue_cubemap_dds_with_clamp",
             path,
         );
-        self.enqueue_dds_for_view(device, path, dds_bytes, clamp_mode, TextureViewKind::D2)
+        self.enqueue_dds_for_view(
+            device,
+            path,
+            dds_bytes,
+            clamp_mode,
+            TextureViewKind::D2,
+            color_space,
+        )
     }
 
     /// Queue a six-face DDS environment map for the bindless samplerCube
@@ -714,7 +763,14 @@ impl TextureRegistry {
     ) -> Result<TextureHandle> {
         let meta = super::vulkan::dds::parse_dds(&dds_bytes)?;
         anyhow::ensure!(meta.is_cubemap, "DDS '{}' is not a six-face cubemap", path);
-        self.enqueue_dds_for_view(device, path, dds_bytes, clamp_mode, TextureViewKind::Cube)
+        self.enqueue_dds_for_view(
+            device,
+            path,
+            dds_bytes,
+            clamp_mode,
+            TextureViewKind::Cube,
+            TextureColorSpace::Srgb,
+        )
     }
 
     fn enqueue_dds_for_view(
@@ -724,8 +780,10 @@ impl TextureRegistry {
         dds_bytes: Vec<u8>,
         clamp_mode: u8,
         view_kind: TextureViewKind,
+        color_space: TextureColorSpace,
     ) -> Result<TextureHandle> {
-        let outcome = self.queue_or_hit_for_view(path, dds_bytes, clamp_mode, view_kind)?;
+        let outcome =
+            self.queue_or_hit_for_view(path, dds_bytes, clamp_mode, view_kind, color_space)?;
         // For a fresh enqueue, redirect the freshly-reserved
         // descriptor to the fallback checkerboard. Any
         // GpuInstance.texture_index that resolves to this handle
@@ -762,7 +820,13 @@ impl TextureRegistry {
         dds_bytes: Vec<u8>,
         clamp_mode: u8,
     ) -> Result<EnqueueOutcome> {
-        self.queue_or_hit_for_view(path, dds_bytes, clamp_mode, TextureViewKind::D2)
+        self.queue_or_hit_for_view(
+            path,
+            dds_bytes,
+            clamp_mode,
+            TextureViewKind::D2,
+            TextureColorSpace::Srgb,
+        )
     }
 
     fn queue_or_hit_for_view(
@@ -771,9 +835,11 @@ impl TextureRegistry {
         dds_bytes: Vec<u8>,
         clamp_mode: u8,
         view_kind: TextureViewKind,
+        color_space: TextureColorSpace,
     ) -> Result<EnqueueOutcome> {
         let clamp_mode = clamp_mode.min(3);
-        let normalized = texture_keyed_path(path, clamp_mode, view_kind);
+        let normalized =
+            texture_keyed_path_with_color_space(path, clamp_mode, view_kind, color_space);
 
         // Cache hit: same shape as `load_dds_with_clamp` — bump
         // refcount and return the existing handle without touching
@@ -805,6 +871,7 @@ impl TextureRegistry {
             dds_bytes,
             clamp_mode,
             view_kind,
+            color_space,
             path: path.to_string(),
         });
         Ok(EnqueueOutcome::Reserved(handle))
@@ -880,7 +947,10 @@ impl TextureRegistry {
             transfer_fence,
             |cmd| {
                 for upload in &pending {
-                    let meta = match super::vulkan::dds::parse_dds(&upload.dds_bytes) {
+                    let meta = match super::vulkan::dds::parse_dds_with_color_space(
+                        &upload.dds_bytes,
+                        upload.color_space,
+                    ) {
                         Ok(m) => m,
                         Err(e) => {
                             log::warn!(
@@ -914,7 +984,7 @@ impl TextureRegistry {
                     // `average_rgb` for it (it would misread the packed
                     // pixels) — these are UI/font atlases, never diffuse
                     // albedo anyway.
-                    if meta.expand.is_none() {
+                    if upload.color_space == TextureColorSpace::Srgb && meta.expand.is_none() {
                         if let Some(avg) = super::vulkan::dds::average_rgb(&meta, &upload.dds_bytes)
                         {
                             self.texture_avg_rgb.insert(upload.handle, avg);
@@ -1076,7 +1146,19 @@ impl TextureRegistry {
         path: &str,
         clamp_mode: u8,
     ) -> Option<TextureHandle> {
-        self.acquire_by_path_for_view(path, clamp_mode, TextureViewKind::D2)
+        self.acquire_by_path_with_clamp_and_color_space(path, clamp_mode, TextureColorSpace::Srgb)
+    }
+
+    /// Role-aware cache acquisition. Linear and sRGB views of the same path
+    /// cannot alias because Vulkan bakes the transfer function into the image
+    /// format used by the descriptor.
+    pub fn acquire_by_path_with_clamp_and_color_space(
+        &mut self,
+        path: &str,
+        clamp_mode: u8,
+        color_space: TextureColorSpace,
+    ) -> Option<TextureHandle> {
+        self.acquire_by_path_for_view(path, clamp_mode, TextureViewKind::D2, color_space)
     }
 
     /// Cubemap counterpart of [`Self::acquire_by_path_with_clamp`]. Cube and
@@ -1087,7 +1169,12 @@ impl TextureRegistry {
         path: &str,
         clamp_mode: u8,
     ) -> Option<TextureHandle> {
-        self.acquire_by_path_for_view(path, clamp_mode, TextureViewKind::Cube)
+        self.acquire_by_path_for_view(
+            path,
+            clamp_mode,
+            TextureViewKind::Cube,
+            TextureColorSpace::Srgb,
+        )
     }
 
     fn acquire_by_path_for_view(
@@ -1095,9 +1182,11 @@ impl TextureRegistry {
         path: &str,
         clamp_mode: u8,
         view_kind: TextureViewKind,
+        color_space: TextureColorSpace,
     ) -> Option<TextureHandle> {
         let clamp_mode = clamp_mode.min(3);
-        let normalized = texture_keyed_path(path, clamp_mode, view_kind);
+        let normalized =
+            texture_keyed_path_with_color_space(path, clamp_mode, view_kind, color_space);
         let &handle = self.path_map.get(&normalized)?;
         let entry = self.textures.get_mut(handle as usize)?;
         entry.ref_count = entry.ref_count.saturating_add(1);
@@ -1766,6 +1855,19 @@ fn texture_keyed_path(path: &str, clamp_mode: u8, view_kind: TextureViewKind) ->
     s.push_str(&clamp_mode.to_string());
     if view_kind == TextureViewKind::Cube {
         s.push_str("|cube");
+    }
+    s
+}
+
+fn texture_keyed_path_with_color_space(
+    path: &str,
+    clamp_mode: u8,
+    view_kind: TextureViewKind,
+    color_space: TextureColorSpace,
+) -> String {
+    let mut s = texture_keyed_path(path, clamp_mode, view_kind);
+    if color_space == TextureColorSpace::Linear {
+        s.push_str("|linear");
     }
     s
 }

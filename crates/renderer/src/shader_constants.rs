@@ -805,16 +805,54 @@ mod tests {
         let src = include_str!("../shaders/triangle.frag");
 
         assert!(
-            src.contains("bool useSpatial = (dbgFlags & DBG_DISABLE_SPATIAL) == 0u;"),
+            src.contains("bool useSpatial = !disableRestirReuse")
+                && src.contains("(dbgFlags & DBG_DISABLE_SPATIAL) == 0u;"),
             "DBG_DISABLE_SPATIAL must independently gate spatial reservoir reuse"
         );
         assert!(
-            src.contains("bool useTemporal = (dbgFlags & DBG_DISABLE_TEMPORAL) == 0u;"),
+            src.contains("bool useTemporal = !disableRestirReuse")
+                && src.contains("(dbgFlags & DBG_DISABLE_TEMPORAL) == 0u;"),
             "DBG_DISABLE_TEMPORAL must independently gate temporal reservoir reuse"
+        );
+        assert!(
+            src.contains("(dbgFlags & DBG_DISABLE_RESTIR) != 0u;")
+                && src.matches("!disableRestirReuse").count() >= 2,
+            "DBG_DISABLE_RESTIR must disable both reuse dimensions even when \
+             the legacy WRS arm is compiled out"
         );
         assert!(
             src.contains("if (useTemporal && shadowFade > 0.01"),
             "temporal reprojection must be conditional on useTemporal"
+        );
+    }
+
+    #[test]
+    fn triangle_frag_direct_visualization_excludes_indirect_attachments() {
+        let src = include_str!("../shaders/triangle.frag");
+        let branch = src
+            .split("DBG_VIZ_DIRECT")
+            .nth(1)
+            .expect("triangle.frag must implement DBG_VIZ_DIRECT");
+        let branch = branch
+            .split("} else {")
+            .next()
+            .expect("DBG_VIZ_DIRECT branch must terminate before normal output");
+        assert!(branch.contains("outColor = vec4(directLight, 1.0);"));
+        assert!(branch.contains("outRawIndirect = vec4(0.0);"));
+        assert!(branch.contains("outAlbedo = vec4(1.0);"));
+    }
+
+    #[test]
+    fn triangle_frag_metallic_ambient_is_demodulated_exactly_once() {
+        let src = include_str!("../shaders/triangle.frag");
+        assert!(
+            src.contains("vec3 metallicAmbient = sceneFlags.yzw * metalness * 0.5;"),
+            "the indirect metallic ambient must stay lighting-only so the \
+             composite's albedo multiplication supplies conductor tint once"
+        );
+        assert!(
+            !src.contains("metallicAmbient = sceneFlags.yzw * albedo"),
+            "including albedo here would produce albedo-squared after composite"
         );
     }
 

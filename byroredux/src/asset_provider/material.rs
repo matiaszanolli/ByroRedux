@@ -15,6 +15,14 @@ pub(crate) fn is_materialsbeta_cdb_path(path: &str) -> bool {
     p.starts_with("materials\\") && p.ends_with("materialsbeta.cdb")
 }
 
+/// Select the Disney/PBR BSDF only when the resolved BGSM chain explicitly
+/// opts into Bethesda's PBR workflow. Vanilla FO4 BGSMs overwhelmingly use
+/// the legacy specular-glossiness contract; the file format alone is not a
+/// PBR provenance signal.
+pub(crate) fn bgsm_uses_pbr_bsdf(resolved: &ResolvedMaterial) -> bool {
+    resolved.walk().any(|step| step.file.pbr)
+}
+
 /// Scan one archive for Starfield component databases and load each into
 /// `provider` in archive order. #1571 / SF-D3-03 — the base game ships
 /// `materials\materialsbeta.cdb` in `Starfield - Materials.ba2`, but each
@@ -793,18 +801,11 @@ pub(crate) fn merge_external_material(
         // → metallic-roughness translation below.
         material.from_bgsm = true;
         touched = true;
-        // #1352 / FO4-D7-03 — route ALL BGSM-authored content through the
-        // Disney diffuse lobe (MAT_FLAG_PBR_BSDF via `pack_imported_material_flags`),
-        // not just the rarely-authored `bgsm.pbr == true` case (0 of 793
-        // sampled vanilla FO4 BGSMs set it). The spec-glossiness →
-        // metallic-roughness translation below gives every `from_bgsm` mesh
-        // valid metalness/roughness for the lobe to consume; the per-BGSM
-        // `if bgsm.pbr` set below is now subsumed (kept as a defensive
-        // backstop). NOTE: this changes the diffuse shading of all vanilla
-        // FO4 BGSM content (was Lambert, correct-as-authored for Bethesda's
-        // modified Blinn-Phong pipeline) — pending RenderDoc visual
-        // validation on real FO4 content. Reverting is this single line.
-        material.is_pbr = true;
+        // BGSM is a container, not a BRDF declaration. Vanilla FO4 content
+        // authors the legacy modified-Blinn/Phong specular-glossiness model;
+        // only an explicit PBR bit anywhere in the resolved template chain
+        // promotes the material to the Disney lobe.
+        material.is_pbr |= bgsm_uses_pbr_bsdf(&resolved);
 
         // ── Translation layer (BGSM spec-glossiness → standard PBR) ──
         //
@@ -982,15 +983,6 @@ pub(crate) fn merge_external_material(
             // string" gate — both behave as "not authored, fall
             // through to parent / leave unchanged".
             //
-            // The renderer-side consumer (Phase 2) is deferred per
-            // the original #1077 split: gating PBR vs Gamebryo
-            // shading in `triangle.frag` based on `is_pbr` needs
-            // RenderDoc-validated visual diffs against FO4 content,
-            // which is out of scope for this Phase 1 close-out.
-            if !material.is_pbr && bgsm.pbr {
-                material.is_pbr = true;
-                touched = true;
-            }
             if !material.has_translucency && bgsm.translucency {
                 material.has_translucency = true;
                 touched = true;

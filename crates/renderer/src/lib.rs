@@ -30,7 +30,7 @@ pub mod vulkan;
 pub use mesh::{
     box_vertices_colored, cube_vertices, quad_vertices, triangle_vertices, uv_sphere, MeshRegistry,
 };
-pub use texture_registry::TextureRegistry;
+pub use texture_registry::{TextureColorSpace, TextureRegistry};
 pub use vertex::Vertex;
 pub use vulkan::context::{
     DofView, DrawCommand, FrameTimings, ScreenshotHandle, SkyDalcCube, SkyParams, VulkanContext,

@@ -441,14 +441,17 @@ pub const DBG_DISABLE_MULTISCATTER: u32 = 0x2000;
 /// A/B in one session.
 pub const DBG_DISABLE_ATROUS: u32 = 0x4000;
 
-/// 0x8000 — disable ReSTIR-DI direct-shadow reservoir reuse and fall back
-/// to the legacy per-frame WRS streaming-RIS shadow sampling. ReSTIR-DI
-/// (Bitterli 2020) reuses shadow reservoirs across frames (and, in a later
-/// phase, neighbours) so the direct soft-shadow estimate accumulates many
-/// effective samples instead of re-randomising every frame — fixing the
-/// "incredibly noisy + slow moiré" direct shadows the un-denoised WRS path
-/// produced (`resFrameSeed = cameraPos.w`). Set this bit to A/B ReSTIR
-/// against the legacy WRS path in one live session.
+/// 0x8000 — disable ReSTIR-DI reservoir reuse for a trustworthy raw-direct
+/// ablation. In the default production build (`ENABLE_LEGACY_WRS == 0`) this
+/// keeps the current-frame streaming-RIS reservoir and its final visibility
+/// sample, but disables temporal selection reuse, spatial neighbour reuse,
+/// and the direct-radiance EMA. The result is the noisy one-frame direct-light
+/// estimator needed to separate transport defects from reuse artifacts.
+///
+/// In an evaluation build with `ENABLE_LEGACY_WRS == 1`, the same bit still
+/// selects the legacy 16-slot WRS arm for historical A/B captures. It is never
+/// a no-op: changing its production meaning silently would invalidate the
+/// fixed-camera lighting ladder.
 pub const DBG_DISABLE_RESTIR: u32 = 0x8000;
 
 /// 0x10000 — disable ReSTIR-DI **spatial** reservoir reuse (ReSTIR "P2",
@@ -554,6 +557,12 @@ pub const DBG_VIZ_SHADOW_OFFSET: u32 = 0x1000000;
 /// is the shadow-terminator class, not floating-point self-intersection.
 pub const DBG_VIZ_NORMAL_DIVERGENCE: u32 = 0x2000000;
 
+/// 0x4000000 — display only the resolved direct-light attachment, including
+/// emissive but excluding authored ambient/GI, SVGF, and albedo remodulation.
+/// Pair with [`DBG_DISABLE_RESTIR`] for the raw one-frame direct-transport rung
+/// of the lighting ablation ladder.
+pub const DBG_VIZ_DIRECT: u32 = 0x4000000;
+
 /// Single source of truth for every `DBG_*` debug-viz bit, in emit order.
 /// Both `build.rs` (GLSL header emit) and `shader_constants.rs`'s test
 /// module (`generated_header_contains_all_defines` value-pin,
@@ -594,6 +603,7 @@ pub const DBG_BITS: &[(&str, u32)] = &[
     ("DBG_VIZ_NONFINITE", DBG_VIZ_NONFINITE),
     ("DBG_VIZ_SHADOW_OFFSET", DBG_VIZ_SHADOW_OFFSET),
     ("DBG_VIZ_NORMAL_DIVERGENCE", DBG_VIZ_NORMAL_DIVERGENCE),
+    ("DBG_VIZ_DIRECT", DBG_VIZ_DIRECT),
 ];
 
 /// #1799 / PERF-D5-NEW-01 — compile-time gate for the legacy 16-slot WRS
@@ -609,8 +619,9 @@ pub const DBG_BITS: &[(&str, u32)] = &[
 ///
 /// `0` (default): the legacy WRS arm — declarations, streaming writes, and
 /// pass-2 shadow-ray reads — is preprocessed OUT of `triangle.frag` entirely.
-/// `useRestir` collapses to `rtEnabled` (no `dbgFlags` read for this bit) and
-/// `DBG_DISABLE_RESTIR` becomes a no-op bit in this build.
+/// `DBG_DISABLE_RESTIR` then disables all history/neighbour reuse while
+/// retaining the current-frame reservoir, so the diagnostic remains useful
+/// without reintroducing the legacy array footprint.
 ///
 /// `1`: restores the pre-fix behavior verbatim — the legacy arrays exist and
 /// `DBG_DISABLE_RESTIR` again live-toggles between the two paths at runtime.

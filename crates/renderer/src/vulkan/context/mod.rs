@@ -2435,6 +2435,8 @@ impl VulkanContext {
                 motion_views: &motion_views_seed,
                 mesh_id_views: &mesh_id_views_seed,
                 normal_views: &normal_views_for_svgf,
+                albedo_views: &albedo_views,
+                depth_view: depth_image_view,
             },
             render_extent.width,
             render_extent.height,

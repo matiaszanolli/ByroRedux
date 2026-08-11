@@ -373,7 +373,7 @@ struct Reservoir {
     uint  lightAndSurface; // low 10b light index, high 22b surface ID
     float W;           // unbiased contribution weight (w_sum / (M * pHat))
     float M;           // effective sample count (capped)
-    float histLen;     // EMA history length for the accumulated radiance
+    float histLenAndDepth; // bitcast packHalf2x16(history length, camera distance)
     float accumR;      // accumulated direct-shadow radiance — R
     float accumG;      // accumulated direct-shadow radiance — G
     float accumB;      // accumulated direct-shadow radiance — B

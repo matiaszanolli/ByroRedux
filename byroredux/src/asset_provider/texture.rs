@@ -1,7 +1,7 @@
 use super::*;
 
 use byroredux_nif::import::{MaterialTextureSet, MeshResolver};
-use byroredux_renderer::VulkanContext;
+use byroredux_renderer::{TextureColorSpace, VulkanContext};
 
 /// Provides file data by searching BSA/BA2 archives.
 pub(crate) struct TextureProvider {
@@ -240,7 +240,23 @@ pub(crate) fn resolve_texture_with_clamp(
     tex_path: Option<&str>,
     clamp_mode: u8,
 ) -> u32 {
-    resolve_texture_view_with_clamp(ctx, tex_provider, tex_path, clamp_mode, false)
+    resolve_texture_with_clamp_and_color_space(
+        ctx,
+        tex_provider,
+        tex_path,
+        clamp_mode,
+        TextureColorSpace::Srgb,
+    )
+}
+
+fn resolve_texture_with_clamp_and_color_space(
+    ctx: &mut VulkanContext,
+    tex_provider: &TextureProvider,
+    tex_path: Option<&str>,
+    clamp_mode: u8,
+    color_space: TextureColorSpace,
+) -> u32 {
+    resolve_texture_view_with_clamp(ctx, tex_provider, tex_path, clamp_mode, false, color_space)
 }
 
 fn resolve_environment_texture_with_clamp(
@@ -249,7 +265,14 @@ fn resolve_environment_texture_with_clamp(
     tex_path: Option<&str>,
     clamp_mode: u8,
 ) -> u32 {
-    resolve_texture_view_with_clamp(ctx, tex_provider, tex_path, clamp_mode, true)
+    resolve_texture_view_with_clamp(
+        ctx,
+        tex_provider,
+        tex_path,
+        clamp_mode,
+        true,
+        TextureColorSpace::Srgb,
+    )
 }
 
 fn resolve_texture_view_with_clamp(
@@ -258,6 +281,7 @@ fn resolve_texture_view_with_clamp(
     tex_path: Option<&str>,
     clamp_mode: u8,
     cubemap: bool,
+    color_space: TextureColorSpace,
 ) -> u32 {
     // F2 (2026-05-26 sweep) — "no path authored" is semantically
     // different from "path authored but lookup failed." The former is
@@ -295,7 +319,7 @@ fn resolve_texture_view_with_clamp(
             .acquire_cubemap_by_path_with_clamp(tex_path, clamp_mode)
     } else {
         ctx.texture_registry
-            .acquire_by_path_with_clamp(tex_path, clamp_mode)
+            .acquire_by_path_with_clamp_and_color_space(tex_path, clamp_mode, color_space)
     };
     if let Some(cached) = cached {
         return cached;
@@ -318,11 +342,12 @@ fn resolve_texture_view_with_clamp(
                 clamp_mode,
             )
         } else {
-            ctx.texture_registry.enqueue_dds_with_clamp(
+            ctx.texture_registry.enqueue_dds_with_clamp_and_color_space(
                 &ctx.device,
                 tex_path,
                 dds_bytes,
                 clamp_mode,
+                color_space,
             )
         };
         match queued {
@@ -367,11 +392,17 @@ pub(crate) fn resolve_material_texture_handles_with_clamp(
     clamp_mode: u8,
 ) -> MaterialTextureSet<u32> {
     let fallback = ctx.texture_registry.fallback();
-    map_secondary_texture_handles(textures, base_handle, |path, cubemap| {
+    map_secondary_texture_handles(textures, base_handle, |path, cubemap, color_space| {
         let handle = if cubemap {
             resolve_environment_texture_with_clamp(ctx, tex_provider, Some(path), clamp_mode)
         } else {
-            resolve_texture_with_clamp(ctx, tex_provider, Some(path), clamp_mode)
+            resolve_texture_with_clamp_and_color_space(
+                ctx,
+                tex_provider,
+                Some(path),
+                clamp_mode,
+                color_space,
+            )
         };
         if handle == fallback {
             0
@@ -384,28 +415,49 @@ pub(crate) fn resolve_material_texture_handles_with_clamp(
 fn map_secondary_texture_handles(
     textures: &MaterialTextureSet<Option<String>>,
     base_handle: u32,
-    mut resolve: impl FnMut(&str, bool) -> u32,
+    mut resolve: impl FnMut(&str, bool, TextureColorSpace) -> u32,
 ) -> MaterialTextureSet<u32> {
-    let mut secondary = textures.clone();
-    secondary.base_color = None;
-    let environment = secondary.environment.take();
-    let mut handles = secondary.map_ref(|path| {
-        path.as_deref()
-            .map(|path| resolve(path, false))
-            .unwrap_or(0)
-    });
-    handles.environment = environment
+    let srgb = TextureColorSpace::Srgb;
+    let linear = TextureColorSpace::Linear;
+    let environment = textures
+        .environment
         .as_deref()
-        .map(|path| resolve(path, true))
+        .map(|path| resolve(path, true, srgb))
         .unwrap_or(0);
-    handles.base_color = base_handle;
-    handles
+    let mut slot = |path: &Option<String>, color_space| {
+        path.as_deref()
+            .map(|path| resolve(path, false, color_space))
+            .unwrap_or(0)
+    };
+
+    MaterialTextureSet {
+        base_color: base_handle,
+        normal: slot(&textures.normal, linear),
+        emissive: slot(&textures.emissive, srgb),
+        detail: slot(&textures.detail, srgb),
+        smooth_spec: slot(&textures.smooth_spec, linear),
+        dark: slot(&textures.dark, srgb),
+        height: slot(&textures.height, linear),
+        environment,
+        environment_mask: slot(&textures.environment_mask, linear),
+        tint: slot(&textures.tint, srgb),
+        inner_layer: slot(&textures.inner_layer, srgb),
+        specular: slot(&textures.specular, linear),
+        lighting: slot(&textures.lighting, linear),
+        flow: slot(&textures.flow, linear),
+        wrinkle: slot(&textures.wrinkle, linear),
+        greyscale_lut: slot(&textures.greyscale_lut, srgb),
+        reflectance: slot(&textures.reflectance, linear),
+        emittance_gradient: slot(&textures.emittance_gradient, srgb),
+        decals: std::array::from_fn(|i| slot(&textures.decals[i], srgb)),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{map_secondary_texture_handles, missing_archive_errors};
     use byroredux_nif::import::MaterialTextureSet;
+    use byroredux_renderer::TextureColorSpace;
 
     /// #1776 — the aggregate guard must fire exactly for a kind that was
     /// requested on the CLI yet opened zero archives (the wrong-CWD / mistyped
@@ -457,23 +509,40 @@ mod tests {
 
         let mut seen = Vec::new();
         let mut next_handle = 1u32;
-        let handles = map_secondary_texture_handles(&textures, 777, |path, cubemap| {
-            seen.push((path.to_string(), cubemap));
-            let handle = next_handle;
-            next_handle += 1;
-            handle
-        });
+        let handles =
+            map_secondary_texture_handles(&textures, 777, |path, cubemap, color_space| {
+                seen.push((path.to_string(), cubemap, color_space));
+                let handle = next_handle;
+                next_handle += 1;
+                handle
+            });
 
         assert_eq!(handles.base_color, 777);
-        assert!(!seen.iter().any(|(path, _)| path == "base"));
+        assert!(!seen.iter().any(|(path, _, _)| path == "base"));
         assert_eq!(seen.len(), textures.secondary_values().count());
         assert_eq!(
             seen.iter()
-                .filter(|(_, cubemap)| *cubemap)
-                .map(|(path, _)| path.as_str())
+                .filter(|(_, cubemap, _)| *cubemap)
+                .map(|(path, _, _)| path.as_str())
                 .collect::<Vec<_>>(),
             vec!["environment"],
         );
+        for role in [
+            "normal",
+            "smooth_spec",
+            "height",
+            "environment_mask",
+            "specular",
+        ] {
+            assert!(seen.iter().any(|(path, cubemap, color_space)| path == role
+                && !cubemap
+                && *color_space == TextureColorSpace::Linear));
+        }
+        for role in ["emissive", "detail", "dark", "decal_0"] {
+            assert!(seen.iter().any(|(path, cubemap, color_space)| path == role
+                && !cubemap
+                && *color_space == TextureColorSpace::Srgb));
+        }
         assert!(handles.secondary_values().all(|&handle| handle != 0));
     }
 }

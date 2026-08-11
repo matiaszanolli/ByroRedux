@@ -90,6 +90,18 @@ pub struct DdsMetadata {
     pub expand: Option<RgbExpand>,
 }
 
+/// Sampling transfer function required by the material slot consuming a DDS.
+/// Legacy DXT headers carry no transfer-function bit, and Bethesda also uses
+/// BC3/RGBA containers for both colour textures and numeric data maps, so the
+/// slot semantic must participate in format selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TextureColorSpace {
+    /// Colour-bearing slots such as base colour, glow, detail, and decals.
+    Srgb,
+    /// Numeric slots such as normal, height, specular/gloss, and masks.
+    Linear,
+}
+
 /// Source pixel layout for a 16- or 24-bpp uncompressed `DDPF_RGB` DDS
 /// that needs CPU expansion to R8G8B8A8 (#1542). The channel masks come
 /// straight from DDS_PIXELFORMAT, so any ordering — 16-bpp A1R5G5B5 /
@@ -117,9 +129,13 @@ pub fn format_has_alpha(format: vk::Format) -> bool {
         vk::Format::B8G8R8A8_SRGB
             | vk::Format::B8G8R8A8_UNORM
             | vk::Format::R8G8B8A8_SRGB
+            | vk::Format::R8G8B8A8_UNORM
             | vk::Format::BC2_SRGB_BLOCK
+            | vk::Format::BC2_UNORM_BLOCK
             | vk::Format::BC3_SRGB_BLOCK
+            | vk::Format::BC3_UNORM_BLOCK
             | vk::Format::BC7_SRGB_BLOCK
+            | vk::Format::BC7_UNORM_BLOCK
     )
 }
 
@@ -170,8 +186,14 @@ pub fn average_rgb(meta: &DdsMetadata, data: &[u8]) -> Option<[f32; 3]> {
         // Colour sub-block offset inside each block: BC1 carries colour at
         // byte 0, BC2/BC3 prefix an 8-byte alpha block.
         let color_off = match meta.format {
-            vk::Format::BC1_RGB_SRGB_BLOCK | vk::Format::BC1_RGBA_SRGB_BLOCK => 0,
-            vk::Format::BC2_SRGB_BLOCK | vk::Format::BC3_SRGB_BLOCK => 8,
+            vk::Format::BC1_RGB_SRGB_BLOCK
+            | vk::Format::BC1_RGB_UNORM_BLOCK
+            | vk::Format::BC1_RGBA_SRGB_BLOCK
+            | vk::Format::BC1_RGBA_UNORM_BLOCK => 0,
+            vk::Format::BC2_SRGB_BLOCK
+            | vk::Format::BC2_UNORM_BLOCK
+            | vk::Format::BC3_SRGB_BLOCK
+            | vk::Format::BC3_UNORM_BLOCK => 8,
             _ => return None, // BC4/BC5/BC6H/BC7 — not a diffuse-colour format
         };
         let blocks = w.div_ceil(4) * h.div_ceil(4);
@@ -200,7 +222,7 @@ pub fn average_rgb(meta: &DdsMetadata, data: &[u8]) -> Option<[f32; 3]> {
         // Uncompressed 4-byte colour formats only; single-channel masks
         // (R8/R16) are not albedo.
         let swap_rb = match meta.format {
-            vk::Format::R8G8B8A8_SRGB => false,
+            vk::Format::R8G8B8A8_SRGB | vk::Format::R8G8B8A8_UNORM => false,
             vk::Format::B8G8R8A8_SRGB | vk::Format::B8G8R8A8_UNORM => true,
             _ => return None,
         };
@@ -379,6 +401,57 @@ pub fn parse_dds(data: &[u8]) -> Result<DdsMetadata> {
         }
     } else {
         bail!("Unsupported DDS pixel format (flags={:#x})", pf_flags);
+    }
+}
+
+/// Parse DDS metadata and select the Vulkan UNORM/SRGB view required by the
+/// material slot. The byte layout is identical between each paired format;
+/// this only controls whether sampling performs the sRGB transfer decode.
+pub fn parse_dds_with_color_space(
+    data: &[u8],
+    color_space: TextureColorSpace,
+) -> Result<DdsMetadata> {
+    let mut meta = parse_dds(data)?;
+    meta.format = format_for_color_space(meta.format, color_space);
+    Ok(meta)
+}
+
+fn format_for_color_space(format: vk::Format, color_space: TextureColorSpace) -> vk::Format {
+    use TextureColorSpace::{Linear, Srgb};
+    match (format, color_space) {
+        (vk::Format::R8G8B8A8_SRGB | vk::Format::R8G8B8A8_UNORM, Srgb) => vk::Format::R8G8B8A8_SRGB,
+        (vk::Format::R8G8B8A8_SRGB | vk::Format::R8G8B8A8_UNORM, Linear) => {
+            vk::Format::R8G8B8A8_UNORM
+        }
+        (vk::Format::B8G8R8A8_SRGB | vk::Format::B8G8R8A8_UNORM, Srgb) => vk::Format::B8G8R8A8_SRGB,
+        (vk::Format::B8G8R8A8_SRGB | vk::Format::B8G8R8A8_UNORM, Linear) => {
+            vk::Format::B8G8R8A8_UNORM
+        }
+        (vk::Format::BC1_RGBA_SRGB_BLOCK | vk::Format::BC1_RGBA_UNORM_BLOCK, Srgb) => {
+            vk::Format::BC1_RGBA_SRGB_BLOCK
+        }
+        (vk::Format::BC1_RGBA_SRGB_BLOCK | vk::Format::BC1_RGBA_UNORM_BLOCK, Linear) => {
+            vk::Format::BC1_RGBA_UNORM_BLOCK
+        }
+        (vk::Format::BC2_SRGB_BLOCK | vk::Format::BC2_UNORM_BLOCK, Srgb) => {
+            vk::Format::BC2_SRGB_BLOCK
+        }
+        (vk::Format::BC2_SRGB_BLOCK | vk::Format::BC2_UNORM_BLOCK, Linear) => {
+            vk::Format::BC2_UNORM_BLOCK
+        }
+        (vk::Format::BC3_SRGB_BLOCK | vk::Format::BC3_UNORM_BLOCK, Srgb) => {
+            vk::Format::BC3_SRGB_BLOCK
+        }
+        (vk::Format::BC3_SRGB_BLOCK | vk::Format::BC3_UNORM_BLOCK, Linear) => {
+            vk::Format::BC3_UNORM_BLOCK
+        }
+        (vk::Format::BC7_SRGB_BLOCK | vk::Format::BC7_UNORM_BLOCK, Srgb) => {
+            vk::Format::BC7_SRGB_BLOCK
+        }
+        (vk::Format::BC7_SRGB_BLOCK | vk::Format::BC7_UNORM_BLOCK, Linear) => {
+            vk::Format::BC7_UNORM_BLOCK
+        }
+        _ => format,
     }
 }
 
@@ -671,6 +744,24 @@ mod tests {
         let meta = parse_dds(&data).unwrap();
         assert_eq!(meta.format, vk::Format::BC3_SRGB_BLOCK);
         assert_eq!(meta.block_size, 16);
+    }
+
+    #[test]
+    fn material_slot_selects_srgb_or_linear_view_of_same_bc3_payload() {
+        let data = make_dds_header(512, 512, 10, b"DXT5");
+        let color = parse_dds_with_color_space(&data, TextureColorSpace::Srgb).unwrap();
+        let numeric = parse_dds_with_color_space(&data, TextureColorSpace::Linear).unwrap();
+        assert_eq!(color.format, vk::Format::BC3_SRGB_BLOCK);
+        assert_eq!(numeric.format, vk::Format::BC3_UNORM_BLOCK);
+        assert_eq!(color.block_size, numeric.block_size);
+        assert_eq!(color.data_offset, numeric.data_offset);
+    }
+
+    #[test]
+    fn normal_slot_keeps_fo4_bgra_payload_linear() {
+        let data = make_dx10_header(256, 256, 1, DXGI_FORMAT_B8G8R8A8_UNORM);
+        let numeric = parse_dds_with_color_space(&data, TextureColorSpace::Linear).unwrap();
+        assert_eq!(numeric.format, vk::Format::B8G8R8A8_UNORM);
     }
 
     #[test]

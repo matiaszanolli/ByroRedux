@@ -2113,7 +2113,8 @@ void main() {
     //     environment light through their albedo (re-applied in the
     //     composite pass).
     //
-    //   * Metallic track — `cell_ambient × albedo × metalness × 0.5`.
+    //   * Metallic track — `cell_ambient × metalness × 0.5` here, then the
+    //     shared composite remodulation supplies the conductor tint once.
     //     Metals don't have diffuse, so the dielectric formula
     //     multiplies by `(1 - metalness) → 0` and on conductors with
     //     no working RT reflection (roughness > 0.6, RT off, or
@@ -2122,9 +2123,9 @@ void main() {
     //     corrugated-steel signature: bright Lambert ridges + black
     //     grooves with no fill, reading as painterly stripes
     //     instead of soft reflective metal. This term provides a
-    //     cheap IBL-style approximation by tinting `cell_ambient`
-    //     with the metal's F0 (≈ albedo for conductors) at
-    //     half-strength — enough to fill the grooves with the
+    //     cheap IBL-style approximation at half-strength. The indirect
+    //     attachment is deliberately lighting-only; composite multiplies it
+    //     by local albedo/F0 exactly once, enough to fill the grooves with the
     //     metal's expected colour without overwhelming the direct
     //     specular response on lit ridges. A future irradiance probe
     //     would replace the `0.5` with a real cosine-weighted
@@ -2134,7 +2135,7 @@ void main() {
     vec3 dielectricAmbient = sceneFlags.yzw
                              * vec3(mat.ambientR, mat.ambientG, mat.ambientB)
                              * (1.0 - metalness);
-    vec3 metallicAmbient = sceneFlags.yzw * albedo * metalness * 0.5;
+    vec3 metallicAmbient = sceneFlags.yzw * metalness * 0.5;
     // Light-count-INDEPENDENT ambient fill — acts as a floor, not an
     // addition, so it only lifts fragments where dielectricAmbient +
     // metallicAmbient falls below this level (pure-metal surfaces with
@@ -2494,8 +2495,10 @@ void main() {
 #if ENABLE_LEGACY_WRS
         bool useRestir = rtEnabled && (dbgFlags & DBG_DISABLE_RESTIR) == 0u;
 #else
-        // No legacy arm compiled into this build — DBG_DISABLE_RESTIR is
-        // a no-op bit here.
+        // No legacy arm compiled into this build. DBG_DISABLE_RESTIR keeps
+        // this current-frame reservoir path active but disables every reuse
+        // dimension below, yielding a raw one-frame direct estimator without
+        // paying the legacy array footprint.
         bool useRestir = rtEnabled;
 #endif
         const float RESTIR_LUMA_X = 0.2126;
@@ -2812,7 +2815,10 @@ void main() {
             // uploads a stable ECS-derived identity in the former padding lane.
             uint surfaceId = inst.surfaceId & RESERVOIR_SURFACE_MASK;
             bool stableTemporalSurface = !isAlphaBlend && !isGlass;
-            bool useTemporal = (dbgFlags & DBG_DISABLE_TEMPORAL) == 0u;
+            bool disableRestirReuse =
+                (dbgFlags & DBG_DISABLE_RESTIR) != 0u;
+            bool useTemporal = !disableRestirReuse
+                && (dbgFlags & DBG_DISABLE_TEMPORAL) == 0u;
 
             // Reproject to last frame's pixel via the motion vector (matches
             // outMotion = (currNDC-prevNDC)*0.5, consumed as prevUV = uv -
@@ -2827,6 +2833,9 @@ void main() {
                 Reservoir rp = reservoirsPrev[prevIdx];
                 uint rpLightIndex = reservoirLightIndex(rp.lightAndSurface);
                 uint rpSurfaceId = reservoirSurfaceId(rp.lightAndSurface);
+                vec2 rpHistoryDepth = unpackHalf2x16(
+                    floatBitsToUint(rp.histLenAndDepth));
+                float rpHistLen = rpHistoryDepth.x;
                 vec3 rpGeomN = octDecode(
                     unpackSnorm2x16(floatBitsToUint(rp.pad0)));
                 const float TEMPORAL_NORMAL_COS = 0.906; // cos 25°
@@ -2862,12 +2871,12 @@ void main() {
                 // Radiance is stricter than selection reuse: it is only valid
                 // on the exact reprojected surface. An in-bounds coordinate by
                 // itself says nothing about disocclusion.
-                if (sameSurface && rp.histLen > 0.0
-                    && !isnan(rp.histLen) && !isinf(rp.histLen)
+                if (sameSurface && rpHistLen > 0.0
+                    && !isnan(rpHistLen) && !isinf(rpHistLen)
                     && !isnan(rp.accumR) && !isinf(rp.accumR)) {
                     reprojValid = true;
                     prevAccum = max(vec3(rp.accumR, rp.accumG, rp.accumB), vec3(0.0));
-                    histPrev = clamp(rp.histLen, 0.0, 64.0);
+                    histPrev = clamp(rpHistLen, 0.0, 64.0);
                 }
             }
 
@@ -2884,8 +2893,12 @@ void main() {
             // hazard, no extra resample pass. The spatial source being one
             // frame old is the standard real-time tradeoff (the final
             // visibility ray re-validates every shaded sample ⇒ no light
-            // leaks). Two geometric guards keep the reuse honest across edges:
-            //   1. a 25° geometric-normal-similarity rejection (Bitterli 2020
+            // leaks). Three compatibility guards keep reuse on the same
+            // receiver:
+            //   1. exact stable surface identity;
+            //   2. camera-distance agreement from the packed previous-frame
+            //      reservoir (2% relative tolerance with an 8-BU floor);
+            //   3. a 25° geometric-normal-similarity rejection (Bitterli 2020
             //      §5) — the neighbour's geometric normal is packed into its
             //      reservoir pad0 at write time (no normal-history texture
             //      needed), so a neighbour on a differently-oriented surface
@@ -2893,12 +2906,14 @@ void main() {
             //      is what stops the disocclusion colour seed bleeding shadow
             //      across corners — the case p̂ alone can't catch, since the
             //      same light can be bright on both sides.
-            //   2. re-evaluating p̂ at the current surface — a neighbour whose
-            //      pick is occluded/irrelevant here gets ~zero weight.
+            // Re-evaluating p̂ at the current surface then rejects light picks
+            // whose unshadowed BRDF contribution is irrelevant here. Actual
+            // occlusion remains the final selected light's visibility ray.
             // Combine uses the same biased 1/M streaming-RIS form as the
             // temporal path. Gated by DBG_DISABLE_SPATIAL for live A/B against
             // temporal-only ReSTIR.
-            bool useSpatial = (dbgFlags & DBG_DISABLE_SPATIAL) == 0u;
+            bool useSpatial = !disableRestirReuse
+                && (dbgFlags & DBG_DISABLE_SPATIAL) == 0u;
             if (useSpatial && shadowFade > 0.01) {
                 const int   SPATIAL_SAMPLES = 5;
                 const float SPATIAL_RADIUS  = 16.0; // neighbour disk radius (px)
@@ -2920,6 +2935,9 @@ void main() {
                     uint nIdx = uint(nq.y) * scrW + uint(nq.x);
                     Reservoir rn = reservoirsPrev[nIdx];
                     uint rnLightIndex = reservoirLightIndex(rn.lightAndSurface);
+                    uint rnSurfaceId = reservoirSurfaceId(rn.lightAndSurface);
+                    float rnWorldDist = unpackHalf2x16(
+                        floatBitsToUint(rn.histLenAndDepth)).y;
 
                     // Neighbour's geometric normal (packed into pad0 at write).
                     // Stale / uninitialised reservoirs decode to a near-fixed
@@ -2930,7 +2948,12 @@ void main() {
 
                     // Re-evaluate the neighbour's pick at THIS surface, gated on
                     // geometric-normal similarity (skip cross-edge neighbours).
-                    if (rnLightIndex < lightCount
+                    float spatialDepthTolerance = max(8.0, worldDist * 0.02);
+                    bool spatialDepthCompatible =
+                        abs(rnWorldDist - worldDist) <= spatialDepthTolerance;
+                    if (rnSurfaceId == surfaceId
+                        && spatialDepthCompatible
+                        && rnLightIndex < lightCount
                         && visibilityMaskNeedsTrace(lights[rnLightIndex].params.z)
                         && rn.M > 0.0
                         && rn.W > 0.0 && !isnan(rn.W) && !isinf(rn.W)
@@ -3051,7 +3074,10 @@ void main() {
             rc.lightAndSurface = packReservoirLightAndSurface(restirY, surfaceId);
             rc.W = restirW;
             rc.M = restirM;
-            rc.histLen = histLen;
+            rc.histLenAndDepth = uintBitsToFloat(packHalf2x16(vec2(
+                histLen,
+                min(worldDist, 65504.0)
+            )));
             rc.accumR = accum.r;
             rc.accumG = accum.g;
             rc.accumB = accum.b;
@@ -3599,6 +3625,14 @@ void main() {
         // contributing, while black proves the estimator/gates returned no
         // energy before denoising and exposure can hide it.
         outColor = vec4(indirectLight, 1.0);
+        outRawIndirect = vec4(0.0);
+        outAlbedo = vec4(1.0);
+    } else if ((dbgFlags & DBG_VIZ_DIRECT) != 0u) {
+        // Route the resolved direct estimator through HDR while explicitly
+        // suppressing the indirect attachment. Composite still applies the
+        // scene's exposure/tone map, so captures remain comparable to normal
+        // output while no SVGF/albedo-remodulated energy can hide the result.
+        outColor = vec4(directLight, 1.0);
         outRawIndirect = vec4(0.0);
         outAlbedo = vec4(1.0);
     } else if ((dbgFlags & DBG_VIZ_MATERIAL_STATE) != 0u) {

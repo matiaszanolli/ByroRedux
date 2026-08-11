@@ -323,10 +323,35 @@ fn cache_separates_2d_and_cubemap_views() {
         "a samplerCube request must not alias a sampler2D descriptor",
     );
     let outcome = reg
-        .queue_or_hit_for_view("shared.dds", vec![0; 128], 3, TextureViewKind::Cube)
+        .queue_or_hit_for_view(
+            "shared.dds",
+            vec![0; 128],
+            3,
+            TextureViewKind::Cube,
+            TextureColorSpace::Srgb,
+        )
         .unwrap();
     assert!(matches!(outcome, EnqueueOutcome::Reserved(2)));
     assert!(reg.path_map.contains_key("textures/shared.dds|3|cube"));
+}
+
+#[test]
+fn cache_separates_linear_and_srgb_views_only_when_needed() {
+    let color = texture_keyed_path_with_color_space(
+        "shared.dds",
+        3,
+        TextureViewKind::D2,
+        TextureColorSpace::Srgb,
+    );
+    let numeric = texture_keyed_path_with_color_space(
+        "shared.dds",
+        3,
+        TextureViewKind::D2,
+        TextureColorSpace::Linear,
+    );
+    assert_eq!(color, "textures/shared.dds|3");
+    assert_eq!(numeric, "textures/shared.dds|3|linear");
+    assert_ne!(color, numeric);
 }
 
 /// Sibling: `acquire_by_path_with_clamp(path, 3)` must hit the
