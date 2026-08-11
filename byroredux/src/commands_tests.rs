@@ -162,6 +162,7 @@ fn light_dump_handles_missing_and_present_resources() {
         specular_color: None,
         specular_alpha: None,
         fresnel_power: None,
+        inheritance_flags: None,
     });
     world.insert_resource(SkyParamsRes {
         zenith_color: [0.15, 0.3, 0.65],

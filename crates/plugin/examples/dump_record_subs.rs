@@ -91,7 +91,12 @@ fn print_record(header: &RecordHeader, editor_id: &str, subs: &[SubRecord]) {
     println!("== {editor_id} ({:08X}) ==", header.form_id);
     for (index, sub) in subs.iter().enumerate() {
         let kind = std::str::from_utf8(&sub.sub_type).unwrap_or("????");
-        let preview = &sub.data[..sub.data.len().min(64)];
+        // Bethesda's fixed-size lighting records fit inside 192 bytes
+        // (Skyrim XCLL is 92, FO4/FO76 variants are up to 160). Keeping
+        // that much in the diagnostic output makes versioned tails such
+        // as XCLL inheritance flags inspectable instead of truncating the
+        // exact bytes the tool is normally used to diagnose.
+        let preview = &sub.data[..sub.data.len().min(192)];
         let text = matches!(kind, "EDID" | "CIS1" | "CIS2" | "ANAM" | "BNAM" | "PNAM")
             .then(|| zstring(&sub.data));
         println!(

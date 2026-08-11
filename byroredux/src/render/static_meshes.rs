@@ -204,10 +204,9 @@ pub(super) fn collect_static_mesh_draws(
             // Resolve the two consumption predicates before touching the
             // remaining optional components or hashing a material. A draw
             // outside the frustum that is also excluded from the TLAS cannot
-            // be consumed by any renderer path: LOD terrain is raster-only,
-            // while decal/effect proxy geometry is intentionally not a ray
-            // occluder. Dropping these no-op records here also avoids their
-            // instance-SSBO upload.
+            // be consumed by any renderer path. Effect-shader surfaces are
+            // deliberately retained: they occupy VISIBILITY_LAYER_EFFECT so
+            // optical/GI rays can see them while opaque shadow masks cannot.
             let is_decal_mesh = decal_mesh_q
                 .as_ref()
                 .is_some_and(|q| q.get(entity).is_some());
@@ -219,7 +218,6 @@ pub(super) fn collect_static_mesh_draws(
             let material_kind = mat.map(|m| m.material_kind).unwrap_or(0);
             let in_tlas = (!is_lod || lod_shadow_caster)
                 && !is_decal_mesh
-                && material_kind != byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER
                 && material_kind != byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION;
             if !in_raster && !in_tlas {
                 continue;

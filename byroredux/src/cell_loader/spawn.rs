@@ -1436,12 +1436,13 @@ fn spawn_mesh_instance(
             queue: &ctx.graphics_queue,
             command_pool: ctx.transfer_pool,
         };
-        // BSEffectShader meshes are raster proxy volumes (light shafts,
-        // soft glows, particles), not physical surfaces. Building BLAS for
-        // them both wastes memory/load time and lets shadow/GI rays hit the
-        // proxy hull as if it were solid geometry.
+        // Effect surfaces need a BLAS even though they must not cast opaque
+        // shadows. Authored glass assemblies put emissive BSEffectShader
+        // layers behind their outer shell (Skyrim's alchemy workbench is the
+        // regression fixture); reflection/refraction rays must see those
+        // layers. TLAS visibility masks put them in VISIBILITY_LAYER_EFFECT,
+        // which shadow traversal excludes while optical/GI rays may include.
         let for_rt = ctx.device_caps.ray_query_supported
-            && mesh.material.material_kind != byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER
             && mesh.material.material_kind != byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION
             && !mesh.material.is_decal;
         let upload_result = match mesh_cache_key {
@@ -1469,7 +1470,7 @@ fn spawn_mesh_instance(
             }
         };
 
-        // Fresh physical-surface upload — this handle needs a BLAS. Subsequent
+        // Fresh ray-visible surface upload — this handle needs a BLAS. Subsequent
         // cache hits for the same `(path, sub_mesh_index)` reuse
         // this BLAS entry without re-submitting.
         if for_rt {

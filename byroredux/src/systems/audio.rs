@@ -446,6 +446,7 @@ mod reverb_tests {
             specular_color: None,
             specular_alpha: None,
             fresnel_power: None,
+            inheritance_flags: None,
         }
     }
 

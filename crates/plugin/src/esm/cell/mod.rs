@@ -75,6 +75,11 @@ pub struct CellLighting {
     /// Fresnel power exponent (bytes 68-71). `None` on pre-Skyrim XCLL.
     /// Skyrim-only — `None` on Starfield (its XCLL has no fresnel field).
     pub fresnel_power: Option<f32>,
+    /// Skyrim+ per-field lighting-template inheritance mask (bytes 88-91).
+    /// `None` on pre-Skyrim and Starfield XCLL layouts. Each set bit means
+    /// the matching local field group must be replaced from the cell's
+    /// `LTMP`/`LGTM` record before consumers see the lighting values.
+    pub inheritance_flags: Option<u32>,
     /// Starfield-specific XCLL fields. `Some` only for Starfield's
     /// 108-byte XCLL, whose bytes 40-107 are a volumetric height-fog
     /// model distinct from the Skyrim ambient-cube layout (#1293). When

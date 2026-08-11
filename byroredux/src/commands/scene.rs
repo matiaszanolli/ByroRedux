@@ -86,6 +86,12 @@ impl ConsoleCommand for LightDumpCommand {
                     "    fresnel_power       = {}",
                     fmt_opt_f32(lit.fresnel_power)
                 ));
+                lines.push(format!(
+                    "    LTMP inherits       = {}",
+                    lit.inheritance_flags
+                        .map(|flags| format!("0x{flags:08x} (resolved)"))
+                        .unwrap_or_else(|| "None".to_string())
+                ));
             }
             None => {
                 lines.push("CellLightingRes: <not present — no cell loaded yet>".to_string());

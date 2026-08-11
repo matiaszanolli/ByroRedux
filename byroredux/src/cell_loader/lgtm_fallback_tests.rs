@@ -22,9 +22,25 @@ fn template_with_amber_ambient(form_id: u32) -> LgtmRecord {
         fog_color: [0.18, 0.14, 0.10],
         fog_near: 256.0,
         fog_far: 4096.0,
+        directional_rotation: [15.0f32.to_radians(), (-30.0f32).to_radians()],
         directional_fade: Some(0.5),
         fog_clip: Some(8192.0),
         fog_power: Some(1.0),
+        fog_far_color: Some([0.12, 0.10, 0.08]),
+        fog_max: Some(0.75),
+        light_fade_begin: Some(1024.0),
+        light_fade_end: Some(4096.0),
+        directional_ambient: Some([
+            [0.10, 0.11, 0.12],
+            [0.20, 0.21, 0.22],
+            [0.30, 0.31, 0.32],
+            [0.40, 0.41, 0.42],
+            [0.50, 0.51, 0.52],
+            [0.60, 0.61, 0.62],
+        ]),
+        specular_color: Some([0.8, 0.7, 0.6]),
+        specular_alpha: Some(0.5),
+        fresnel_power: Some(2.0),
     }
 }
 
@@ -88,6 +104,7 @@ fn explicit_xcll_takes_priority_over_lgtm_template() {
         specular_color: None,
         specular_alpha: None,
         fresnel_power: None,
+        inheritance_flags: Some(0),
         starfield: None,
     });
     cell.lighting_template_form = Some(0x0020_0001);
@@ -103,6 +120,97 @@ fn explicit_xcll_takes_priority_over_lgtm_template() {
         resolved.ambient, xcll_ambient,
         "Explicit XCLL ambient must override LGTM template"
     );
+}
+
+/// WinterholdCollegeArchMageQuarters authors an almost-empty XCLL with
+/// mask 0x079f and relies on FarmLightingTemplate for every selected
+/// group. Rotation and directional fade are deliberately *not* inherited.
+#[test]
+fn xcll_inheritance_mask_merges_only_selected_lgtm_groups() {
+    let mut cell = empty_cell(0x000C_AB92, "WinterholdCollegeArchMageQuarters");
+    let local_rotation = [0.7, -0.4];
+    let local_directional_fade = Some(9.0);
+    cell.lighting = Some(CellLighting {
+        ambient: [0.01; 3],
+        directional_color: [0.02; 3],
+        directional_rotation: local_rotation,
+        fog_color: [0.03; 3],
+        fog_near: 3.0,
+        fog_far: 4.0,
+        directional_fade: local_directional_fade,
+        fog_clip: Some(5.0),
+        fog_power: Some(6.0),
+        fog_far_color: Some([0.07; 3]),
+        fog_max: Some(0.08),
+        light_fade_begin: Some(9.0),
+        light_fade_end: Some(10.0),
+        directional_ambient: Some([[0.11; 3]; 6]),
+        specular_color: Some([0.12; 3]),
+        specular_alpha: Some(0.13),
+        fresnel_power: Some(0.14),
+        inheritance_flags: Some(0x079f),
+        starfield: None,
+    });
+    cell.lighting_template_form = Some(0x000A_1196);
+    let template = template_with_amber_ambient(0x000A_1196);
+    let mut index = empty_index();
+    index
+        .lighting_templates
+        .insert(0x000A_1196, template.clone());
+
+    let resolved = resolve_cell_lighting(&cell, &index).expect("resolved XCLL + LTMP");
+    assert_eq!(resolved.ambient, template.ambient);
+    assert_eq!(resolved.directional_ambient, template.directional_ambient);
+    assert_eq!(resolved.specular_color, template.specular_color);
+    assert_eq!(resolved.fresnel_power, template.fresnel_power);
+    assert_eq!(resolved.directional_color, template.directional);
+    assert_eq!(resolved.fog_color, template.fog_color);
+    assert_eq!(resolved.fog_far_color, template.fog_far_color);
+    assert_eq!(resolved.fog_near, template.fog_near);
+    assert_eq!(resolved.fog_far, template.fog_far);
+    assert_eq!(resolved.fog_clip, template.fog_clip);
+    assert_eq!(resolved.fog_power, template.fog_power);
+    assert_eq!(resolved.fog_max, template.fog_max);
+    assert_eq!(resolved.light_fade_begin, template.light_fade_begin);
+    assert_eq!(resolved.light_fade_end, template.light_fade_end);
+    assert_eq!(resolved.directional_rotation, local_rotation);
+    assert_eq!(resolved.directional_fade, local_directional_fade);
+}
+
+#[test]
+fn xcll_full_inheritance_includes_rotation_and_directional_fade() {
+    let mut cell = empty_cell(0x0010_0005, "FullTemplateInheritance");
+    cell.lighting = Some(CellLighting {
+        ambient: [0.0; 3],
+        directional_color: [0.0; 3],
+        directional_rotation: [0.0; 2],
+        fog_color: [0.0; 3],
+        fog_near: 0.0,
+        fog_far: 0.0,
+        directional_fade: Some(0.0),
+        fog_clip: Some(0.0),
+        fog_power: Some(0.0),
+        fog_far_color: None,
+        fog_max: None,
+        light_fade_begin: None,
+        light_fade_end: None,
+        directional_ambient: None,
+        specular_color: None,
+        specular_alpha: None,
+        fresnel_power: None,
+        inheritance_flags: Some(0x07ff),
+        starfield: None,
+    });
+    cell.lighting_template_form = Some(0x0020_0001);
+    let template = template_with_amber_ambient(0x0020_0001);
+    let mut index = empty_index();
+    index
+        .lighting_templates
+        .insert(0x0020_0001, template.clone());
+
+    let resolved = resolve_cell_lighting(&cell, &index).expect("resolved full inheritance");
+    assert_eq!(resolved.directional_rotation, template.directional_rotation);
+    assert_eq!(resolved.directional_fade, template.directional_fade);
 }
 
 /// XCLL absent + LTMP present → LGTM fields project into the
@@ -130,15 +238,13 @@ fn missing_xcll_with_lgtm_template_synthesizes_cell_lighting() {
     assert_eq!(resolved.directional_fade, template.directional_fade);
     assert_eq!(resolved.fog_clip, template.fog_clip);
     assert_eq!(resolved.fog_power, template.fog_power);
-    // LGTM doesn't carry directional rotation — the synth defaults to
-    // sun-from-+X (matches FO3/FNV pre-rotation behavior).
-    assert_eq!(resolved.directional_rotation, [0.0, 0.0]);
-    // Skyrim-extended fields (ambient cube, specular, fog far color,
-    // light fade) live on 92-byte XCLL only — LGTM has no equivalent
-    // and the synthesized lighting leaves them None.
-    assert!(resolved.directional_ambient.is_none());
-    assert!(resolved.specular_color.is_none());
-    assert!(resolved.fog_far_color.is_none());
+    assert_eq!(resolved.directional_rotation, template.directional_rotation);
+    assert_eq!(resolved.directional_ambient, template.directional_ambient);
+    assert_eq!(resolved.specular_color, template.specular_color);
+    assert_eq!(resolved.fog_far_color, template.fog_far_color);
+    assert_eq!(resolved.fog_max, template.fog_max);
+    assert_eq!(resolved.light_fade_begin, template.light_fade_begin);
+    assert_eq!(resolved.light_fade_end, template.light_fade_end);
 }
 
 /// XCLL absent + LTMP absent → returns `None` (engine default fallback).

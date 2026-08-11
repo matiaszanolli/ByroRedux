@@ -362,6 +362,7 @@ mod directional_source_contract_tests {
             specular_color: None,
             specular_alpha: None,
             fresnel_power: None,
+            inheritance_flags: None,
         }
     }
 
@@ -785,6 +786,7 @@ mod gi_light_priority_tests {
             specular_color: None,
             specular_alpha: None,
             fresnel_power: None,
+            inheritance_flags: None,
         });
         // A point light far brighter than the directional source.
         spawn_point_light(&mut world, [5.0, 0.0, 0.0], [1.0, 1.0, 1.0], 5000.0);

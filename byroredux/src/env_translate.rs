@@ -344,6 +344,7 @@ pub(crate) fn translate_exterior_cell_lighting(
         specular_color: None,
         specular_alpha: None,
         fresnel_power: None,
+        inheritance_flags: None,
     }
 }
 
@@ -504,6 +505,7 @@ pub(crate) fn procedural_fallback_cell_lighting(sun_dir: [f32; 3]) -> CellLighti
         specular_color: None,
         specular_alpha: None,
         fresnel_power: None,
+        inheritance_flags: None,
     }
 }
 

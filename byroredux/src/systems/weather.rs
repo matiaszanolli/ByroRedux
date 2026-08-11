@@ -1219,6 +1219,7 @@ mod interior_gate_tests {
             specular_color: None,
             specular_alpha: None,
             fresnel_power: None,
+            inheritance_flags: None,
         });
 
         // Mid-day so the TOD slot is unambiguous; freeze the clock so dt
@@ -1362,6 +1363,7 @@ mod no_wthr_fallback_tests {
             specular_color: None,
             specular_alpha: None,
             fresnel_power: None,
+            inheritance_flags: None,
         });
         world.insert_resource(GameTimeRes::frozen_at(12.0));
         // NB: no WeatherDataRes — that's the case under test.

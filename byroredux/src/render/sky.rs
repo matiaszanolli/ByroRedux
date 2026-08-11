@@ -166,6 +166,7 @@ mod tests {
             specular_color: Some([0.2, 0.4, 0.6]),
             specular_alpha: Some(0.0),
             fresnel_power: Some(1.5),
+            inheritance_flags: None,
         }
     }
 

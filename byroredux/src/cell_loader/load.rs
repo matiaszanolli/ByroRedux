@@ -73,6 +73,7 @@ fn engine_default_interior_lighting() -> CellLightingRes {
         specular_color: None,
         specular_alpha: None,
         fresnel_power: None,
+        inheritance_flags: None,
     }
 }
 
@@ -538,65 +539,132 @@ pub fn load_cell_with_masters(
     })
 }
 
-/// Resolve a cell's lighting against the ESM index, applying the
-/// XCLL → LTMP → engine-default fallback chain (SK-D6-02 / #566).
-///
-/// 1. **Explicit XCLL wins.** Every Skyrim+/FNV/FO3/Oblivion CELL that
-///    authors `XCLL` returns its parsed `CellLighting` verbatim — the
-///    template path is never consulted.
-/// 2. **LGTM template synthesises a CellLighting.** When the cell has
-///    no XCLL but its `LTMP` resolves through `index.lighting_templates`,
-///    the LgtmRecord's ambient / directional / fog scalars project into
-///    a fresh `CellLighting`. Fields the LGTM stub doesn't carry
-///    (directional_rotation, ambient cube, specular) stay at their
-///    pre-XCLL defaults — directional_rotation `[0, 0]` matches a
-///    sun-from-+X cell origin and the Skyrim-extended optionals stay
-///    `None` (the renderer falls back to legacy single-color ambient
-///    when they're absent, the same path FO3/FNV cells take).
-/// 3. **No XCLL and no resolvable LGTM** → `None`. The caller,
-///    [`apply_interior_cell_lighting`], installs
-///    [`engine_default_interior_lighting`] in this case (FNV-D1-01) rather
-///    than skipping the apply — `resolve_cell_lighting` itself stays a pure
-///    "what did the plugin author?" query with no fallback-construction
-///    logic of its own.
-pub(crate) fn resolve_cell_lighting(
-    cell: &esm::cell::CellData,
-    index: &esm::records::EsmIndex,
-) -> Option<esm::cell::CellLighting> {
-    if let Some(lit) = cell.lighting.clone() {
-        return Some(lit);
-    }
-    let template_form = cell.lighting_template_form?;
-    let template = index.lighting_templates.get(&template_form)?;
-    Some(esm::cell::CellLighting {
+const XCLL_INHERIT_AMBIENT: u32 = 0x001;
+const XCLL_INHERIT_DIRECTIONAL_COLOR: u32 = 0x002;
+const XCLL_INHERIT_FOG_COLOR: u32 = 0x004;
+const XCLL_INHERIT_FOG_NEAR: u32 = 0x008;
+const XCLL_INHERIT_FOG_FAR: u32 = 0x010;
+const XCLL_INHERIT_DIRECTIONAL_ROTATION: u32 = 0x020;
+const XCLL_INHERIT_DIRECTIONAL_FADE: u32 = 0x040;
+const XCLL_INHERIT_FOG_CLIP: u32 = 0x080;
+const XCLL_INHERIT_FOG_POWER: u32 = 0x100;
+const XCLL_INHERIT_FOG_MAX: u32 = 0x200;
+const XCLL_INHERIT_LIGHT_FADE: u32 = 0x400;
+
+fn lighting_from_template(template: &esm::records::LgtmRecord) -> esm::cell::CellLighting {
+    esm::cell::CellLighting {
         ambient: template.ambient,
         directional_color: template.directional,
-        // LGTM doesn't carry directional rotation. Sun-from-+X origin
-        // is what FO3/FNV cells defaulted to before #379 added explicit
-        // rotation parsing — same fallback shape here.
-        directional_rotation: [0.0, 0.0],
+        directional_rotation: template.directional_rotation,
         fog_color: template.fog_color,
         fog_near: template.fog_near,
         fog_far: template.fog_far,
         directional_fade: template.directional_fade,
         fog_clip: template.fog_clip,
         fog_power: template.fog_power,
-        // Skyrim extended fields (ambient cube, specular, light fade,
-        // fog far color) ride on the 92-byte XCLL only. The current
-        // LgtmRecord stub doesn't extract them; future LGTM expansion
-        // can fill these in without touching the fallback's call shape.
-        fog_far_color: None,
-        fog_max: None,
-        light_fade_begin: None,
-        light_fade_end: None,
-        directional_ambient: None,
-        specular_color: None,
-        specular_alpha: None,
-        fresnel_power: None,
-        // SF volumetric height-fog fields ride on the inline 108-byte
-        // XCLL, not the LGTM template stub (#1293).
+        fog_far_color: template.fog_far_color,
+        fog_max: template.fog_max,
+        light_fade_begin: template.light_fade_begin,
+        light_fade_end: template.light_fade_end,
+        directional_ambient: template.directional_ambient,
+        specular_color: template.specular_color,
+        specular_alpha: template.specular_alpha,
+        fresnel_power: template.fresnel_power,
+        inheritance_flags: None,
+        // SF volumetric height-fog fields ride on inline XCLL rather
+        // than Skyrim-style LGTM templates.
         starfield: None,
-    })
+    }
+}
+
+/// Apply Skyrim+'s XCLL `Inherits` mask. Optional values replace local
+/// values only when the LGTM actually carries that field, preserving valid
+/// local data when an older/short template lacks the extended layout.
+fn inherit_lighting_fields(
+    local: &mut esm::cell::CellLighting,
+    template: &esm::records::LgtmRecord,
+    flags: u32,
+) {
+    if flags & XCLL_INHERIT_AMBIENT != 0 {
+        local.ambient = template.ambient;
+        if template.directional_ambient.is_some() {
+            local.directional_ambient = template.directional_ambient;
+        }
+        if template.specular_color.is_some() {
+            local.specular_color = template.specular_color;
+        }
+        if template.specular_alpha.is_some() {
+            local.specular_alpha = template.specular_alpha;
+        }
+        if template.fresnel_power.is_some() {
+            local.fresnel_power = template.fresnel_power;
+        }
+    }
+    if flags & XCLL_INHERIT_DIRECTIONAL_COLOR != 0 {
+        local.directional_color = template.directional;
+    }
+    if flags & XCLL_INHERIT_FOG_COLOR != 0 {
+        local.fog_color = template.fog_color;
+        if template.fog_far_color.is_some() {
+            local.fog_far_color = template.fog_far_color;
+        }
+    }
+    if flags & XCLL_INHERIT_FOG_NEAR != 0 {
+        local.fog_near = template.fog_near;
+    }
+    if flags & XCLL_INHERIT_FOG_FAR != 0 {
+        local.fog_far = template.fog_far;
+    }
+    if flags & XCLL_INHERIT_DIRECTIONAL_ROTATION != 0 {
+        local.directional_rotation = template.directional_rotation;
+    }
+    if flags & XCLL_INHERIT_DIRECTIONAL_FADE != 0 && template.directional_fade.is_some() {
+        local.directional_fade = template.directional_fade;
+    }
+    if flags & XCLL_INHERIT_FOG_CLIP != 0 && template.fog_clip.is_some() {
+        local.fog_clip = template.fog_clip;
+    }
+    if flags & XCLL_INHERIT_FOG_POWER != 0 && template.fog_power.is_some() {
+        local.fog_power = template.fog_power;
+    }
+    if flags & XCLL_INHERIT_FOG_MAX != 0 && template.fog_max.is_some() {
+        local.fog_max = template.fog_max;
+    }
+    if flags & XCLL_INHERIT_LIGHT_FADE != 0 {
+        if template.light_fade_begin.is_some() {
+            local.light_fade_begin = template.light_fade_begin;
+        }
+        if template.light_fade_end.is_some() {
+            local.light_fade_end = template.light_fade_end;
+        }
+    }
+}
+
+/// Resolve the CELL XCLL / LTMP chain before renderer translation.
+///
+/// Skyrim+ XCLL is a partial override: its final `Inherits` word chooses
+/// field groups from LTMP. Pre-Skyrim XCLL has no mask and remains a full
+/// override. A missing XCLL synthesizes all available fields from LTMP;
+/// no resolvable authoring returns `None` for the engine-default caller.
+pub(crate) fn resolve_cell_lighting(
+    cell: &esm::cell::CellData,
+    index: &esm::records::EsmIndex,
+) -> Option<esm::cell::CellLighting> {
+    if let Some(mut lit) = cell.lighting.clone() {
+        let flags = lit.inheritance_flags.unwrap_or(0);
+        if flags != 0 {
+            if let Some(template) = cell
+                .lighting_template_form
+                .and_then(|form| index.lighting_templates.get(&form))
+            {
+                inherit_lighting_fields(&mut lit, template, flags);
+            }
+        }
+        return Some(lit);
+    }
+    let template_form = cell.lighting_template_form?;
+    let template = index.lighting_templates.get(&template_form)?;
+    Some(lighting_from_template(template))
 }
 
 #[cfg(test)]
@@ -683,6 +751,7 @@ mod tests {
             specular_color: None,
             specular_alpha: None,
             fresnel_power: None,
+            inheritance_flags: None,
             starfield: None,
         }
     }
@@ -747,6 +816,7 @@ mod tests {
             specular_color: None,
             specular_alpha: None,
             fresnel_power: None,
+            inheritance_flags: None,
         });
 
         apply_interior_cell_lighting(&mut world, None);

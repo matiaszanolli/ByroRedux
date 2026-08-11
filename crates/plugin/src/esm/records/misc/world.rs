@@ -136,10 +136,12 @@ pub fn parse_eczn(form_id: u32, subs: &[SubRecord]) -> EcznRecord {
 }
 
 /// Lighting template (`LGTM`). Provides a named bundle of XCLL-shaped
-/// lighting values that cells can reference via `XLGT` and selectively
+/// lighting values that cells can reference via `LTMP` and selectively
 /// override per-field. Full per-field inheritance fallback lands
-/// alongside #379; this stub captures the XCLL-prefix bytes so the
-/// consuming lookup has something to read.
+/// alongside #379. Skyrim templates also carry the extended fog/fade
+/// values in `DATA` and the directional ambient/specular bundle in
+/// `DALC`; both are needed when CELL.XCLL selects template fields via
+/// its inheritance mask.
 ///
 /// The `DATA` sub-record mirrors XCLL byte-for-byte (bytes 0-39):
 ///   0-3:   ambient  (RGBA, byte order per cell.rs XCLL parser)
@@ -163,9 +165,18 @@ pub struct LgtmRecord {
     pub fog_color: [f32; 3],
     pub fog_near: f32,
     pub fog_far: f32,
+    pub directional_rotation: [f32; 2],
     pub directional_fade: Option<f32>,
     pub fog_clip: Option<f32>,
     pub fog_power: Option<f32>,
+    pub fog_far_color: Option<[f32; 3]>,
+    pub fog_max: Option<f32>,
+    pub light_fade_begin: Option<f32>,
+    pub light_fade_end: Option<f32>,
+    pub directional_ambient: Option<[[f32; 3]; 6]>,
+    pub specular_color: Option<[f32; 3]>,
+    pub specular_alpha: Option<f32>,
+    pub fresnel_power: Option<f32>,
 }
 
 pub fn parse_lgtm(form_id: u32, subs: &[SubRecord]) -> LgtmRecord {
@@ -183,11 +194,37 @@ pub fn parse_lgtm(form_id: u32, subs: &[SubRecord]) -> LgtmRecord {
                 out.fog_color = r.rgb_color().unwrap_or([0.0; 3]);
                 out.fog_near = r.f32_or_default();
                 out.fog_far = r.f32_or_default();
-                // skip rotation_x + rotation_y (2 × i32) before the optional tail.
-                r.skip_or_eof(8);
+                let rot_x = (r.i32_or_default() as f32).to_radians();
+                let rot_y = (r.i32_or_default() as f32).to_radians();
+                out.directional_rotation = [rot_x, rot_y];
                 out.directional_fade = r.f32().ok();
                 out.fog_clip = r.f32().ok();
                 out.fog_power = r.f32().ok();
+
+                // Skyrim v34+ DATA mirrors XCLL except that its ambient
+                // bundle at 40-71 is explicitly unused; the live ambient
+                // cube/specular/fresnel values are in DALC below. The final
+                // u32 (88-91) is likewise unused on LGTM.
+                if sub.data.len() >= 92 {
+                    r.skip_or_eof(32);
+                    out.fog_far_color = r.rgb_color().ok();
+                    out.fog_max = r.f32().ok();
+                    out.light_fade_begin = r.f32().ok();
+                    out.light_fade_end = r.f32().ok();
+                }
+            }
+            b"DALC" if sub.data.len() >= 24 => {
+                let mut r = SubReader::new(&sub.data);
+                let mut ambient_cube = [[0.0f32; 3]; 6];
+                for face in &mut ambient_cube {
+                    *face = r.rgb_color().unwrap_or([0.0; 3]);
+                }
+                out.directional_ambient = Some(ambient_cube);
+                if let Ok(spec) = r.rgba_color() {
+                    out.specular_color = Some([spec[0], spec[1], spec[2]]);
+                    out.specular_alpha = Some(spec[3]);
+                }
+                out.fresnel_power = r.f32().ok();
             }
             _ => {}
         }
@@ -444,18 +481,37 @@ mod tests {
     fn parse_lgtm_decodes_xcll_prefix() {
         // Use distinct byte patterns so an off-by-one on any field
         // surfaces as a visible assertion failure.
-        let mut data = Vec::with_capacity(40);
+        let mut data = Vec::with_capacity(92);
         data.extend_from_slice(&[80, 82, 85, 0]); // ambient
         data.extend_from_slice(&[200, 195, 180, 0]); // directional
         data.extend_from_slice(&[40, 45, 50, 0]); // fog color
         data.extend_from_slice(&64.0f32.to_le_bytes()); // fog near
         data.extend_from_slice(&4000.0f32.to_le_bytes()); // fog far
-        data.extend_from_slice(&0i32.to_le_bytes()); // rot X
-        data.extend_from_slice(&0i32.to_le_bytes()); // rot Y
+        data.extend_from_slice(&15i32.to_le_bytes()); // rot X
+        data.extend_from_slice(&(-30i32).to_le_bytes()); // rot Y
         data.extend_from_slice(&0.5f32.to_le_bytes()); // dir fade
         data.extend_from_slice(&6000.0f32.to_le_bytes()); // fog clip
         data.extend_from_slice(&1.25f32.to_le_bytes()); // fog power
-        let subs = vec![sub(b"EDID", b"LgtmInteriorDim\0"), sub(b"DATA", &data)];
+        data.extend_from_slice(&[0xAA; 32]); // DATA ambient bundle is unused
+        data.extend_from_slice(&[90, 91, 92, 0]); // fog far color
+        data.extend_from_slice(&0.75f32.to_le_bytes()); // fog max
+        data.extend_from_slice(&512.0f32.to_le_bytes()); // light fade begin
+        data.extend_from_slice(&1024.0f32.to_le_bytes()); // light fade end
+        data.extend_from_slice(&0u32.to_le_bytes()); // unused
+
+        let mut dalc = Vec::with_capacity(32);
+        for face in 0u8..6 {
+            let base = 10 + face * 10;
+            dalc.extend_from_slice(&[base, base + 1, base + 2, 0]);
+        }
+        dalc.extend_from_slice(&[210, 211, 212, 128]);
+        dalc.extend_from_slice(&3.5f32.to_le_bytes());
+
+        let subs = vec![
+            sub(b"EDID", b"LgtmInteriorDim\0"),
+            sub(b"DATA", &data),
+            sub(b"DALC", &dalc),
+        ];
         let l = parse_lgtm(0xDEAD, &subs);
         assert_eq!(l.editor_id, "LgtmInteriorDim");
         assert!((l.ambient[0] - 80.0 / 255.0).abs() < 1e-6);
@@ -463,9 +519,27 @@ mod tests {
         assert!((l.fog_color[2] - 50.0 / 255.0).abs() < 1e-6);
         assert_eq!(l.fog_near, 64.0);
         assert_eq!(l.fog_far, 4000.0);
+        assert!((l.directional_rotation[0] - 15.0f32.to_radians()).abs() < 1e-6);
+        assert!((l.directional_rotation[1] - (-30.0f32).to_radians()).abs() < 1e-6);
         assert_eq!(l.directional_fade, Some(0.5));
         assert_eq!(l.fog_clip, Some(6000.0));
         assert_eq!(l.fog_power, Some(1.25));
+        assert_eq!(
+            l.fog_far_color,
+            Some([90.0 / 255.0, 91.0 / 255.0, 92.0 / 255.0])
+        );
+        assert_eq!(l.fog_max, Some(0.75));
+        assert_eq!(l.light_fade_begin, Some(512.0));
+        assert_eq!(l.light_fade_end, Some(1024.0));
+        let cube = l.directional_ambient.expect("DALC ambient cube");
+        assert_eq!(cube[0], [10.0 / 255.0, 11.0 / 255.0, 12.0 / 255.0]);
+        assert_eq!(cube[5], [60.0 / 255.0, 61.0 / 255.0, 62.0 / 255.0]);
+        assert_eq!(
+            l.specular_color,
+            Some([210.0 / 255.0, 211.0 / 255.0, 212.0 / 255.0])
+        );
+        assert_eq!(l.specular_alpha, Some(128.0 / 255.0));
+        assert_eq!(l.fresnel_power, Some(3.5));
     }
 
     /// Regression for #624 / SK-D6-NEW-03. IMGS records were dropped

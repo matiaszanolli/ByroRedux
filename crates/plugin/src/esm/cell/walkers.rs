@@ -451,6 +451,7 @@ pub(crate) fn parse_cell_group(
                                     specular_color: None,
                                     specular_alpha: None,
                                     fresnel_power: None,
+                                    inheritance_flags: None,
                                     starfield: Some(StarfieldLighting {
                                         gravity_scale,
                                         unknown_color,
@@ -496,6 +497,7 @@ pub(crate) fn parse_cell_group(
                                 fog_max,
                                 lf_begin,
                                 lf_end,
+                                inheritance_flags,
                             ) = if sub.data.len() >= 92 {
                                 // 6 × RGBA ambient cube (#367) — alpha pad
                                 // discarded. Specular's 4th byte IS used as
@@ -514,9 +516,10 @@ pub(crate) fn parse_cell_group(
                                     Some(r.f32_or_default()),
                                     Some(r.f32_or_default()),
                                     Some(r.f32_or_default()),
+                                    Some(r.u32_or_default()),
                                 )
                             } else {
-                                (None, None, None, None, None, None, None, None)
+                                (None, None, None, None, None, None, None, None, None)
                             };
 
                             lighting = Some(CellLighting {
@@ -537,6 +540,7 @@ pub(crate) fn parse_cell_group(
                                 specular_color,
                                 specular_alpha,
                                 fresnel_power,
+                                inheritance_flags,
                                 // Skyrim/FNV/Oblivion path — no SF tail.
                                 starfield: None,
                             });

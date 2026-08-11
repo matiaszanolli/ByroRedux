@@ -21,7 +21,7 @@ fn main() {
 
     println!("# {} (BSVER {})  — {} meshes", path, bsver, imported.len());
     println!(
-        "{:<22} {:>5} {:>5} {:>5} {:>5} {:>5} {:>5} {:>6} {:>6} {:>5} {:>5} {:>5}  tex/mat path",
+        "{:<22} {:>5} {:>5} {:>5} {:>5} {:>5} {:>5} {:>6} {:>6} {:>5} {:>5} {:>5} {:>17}  tex/mat path",
         "mesh",
         "kind",
         "metO",
@@ -34,6 +34,7 @@ fn main() {
         "emSrc",
         "alpha",
         "decal",
+        "vertex alpha",
     );
     for m in &imported {
         let name = m
@@ -78,8 +79,17 @@ fn main() {
             EmissiveSource::Lighting => "lit", // BSLightingShaderProperty.emissive_multiple
             EmissiveSource::Effect => "fx",    // BSEffectShaderProperty.base_color_scale
         };
+        let vertex_alpha = if m.colors.is_empty() {
+            "(none)".to_string()
+        } else {
+            let (min, sum, max) = m.colors.iter().fold(
+                (f32::INFINITY, 0.0_f32, f32::NEG_INFINITY),
+                |(min, sum, max), color| (min.min(color[3]), sum + color[3], max.max(color[3])),
+            );
+            format!("{min:.3}/{:.3}/{max:.3}", sum / m.colors.len() as f32)
+        };
         println!(
-            "{:<22.22} {:>5} {:>5} {:>5} {:>5.0} {:>5.2} {:>5.2} {:>6.2} {:>6.1} {:>6} {:>5} {:>5}  {}",
+            "{:<22.22} {:>5} {:>5} {:>5} {:>5.0} {:>5.2} {:>5.2} {:>6.2} {:>6.1} {:>6} {:>5} {:>5} {:>17}  {}",
             name,
             m.material.material_kind,
             meto,
@@ -92,6 +102,7 @@ fn main() {
             emis_src,
             m.material.has_alpha as u8,
             m.material.is_decal as u8,
+            vertex_alpha,
             tex,
         );
     }

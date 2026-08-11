@@ -745,10 +745,10 @@ pub(crate) fn load_nif_bytes_with_skeleton(
             queue: &ctx.graphics_queue,
             command_pool: ctx.transfer_pool,
         };
-        // Effect-shader geometry is a raster-only proxy volume, never a
-        // surface that should occlude shadow/GI/reflection rays.
+        // Effect surfaces remain ray-visible for reflection/refraction and GI.
+        // Their dedicated TLAS visibility layer keeps them out of opaque
+        // shadow traversal without erasing authored glass contents.
         let for_rt = ctx.device_caps.ray_query_supported
-            && mesh.material.material_kind != byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER
             && mesh.material.material_kind != byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION
             && !mesh.material.is_decal;
         // upload_scene_mesh registers the vertices/indices into the global
@@ -772,7 +772,7 @@ pub(crate) fn load_nif_bytes_with_skeleton(
             }
         };
 
-        // Collect BLAS specs for physical surfaces only.
+        // Collect BLAS specs for ray-visible surfaces.
         if for_rt {
             blas_specs.push((mesh_handle, num_verts as u32, mesh.indices.len() as u32));
         }

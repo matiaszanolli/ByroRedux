@@ -53,12 +53,13 @@ fn is_mirror_pane(
 /// [`GLASS_SURFACE_BEHAVIOR`] supplies metalness, roughness, and IOR. Authored
 /// texture-map paths and their parameters remain untouched overlays.
 ///
-/// Existing engine-synthesized kinds are normally preserved. The exception is
-/// a transparent `BSEffectShaderProperty` carrier with either an explicit glass
-/// keyword or an authoritative FO4+ `bgem_glass` flag. Effect shader is the NIF
-/// source format for several FO4 glass surfaces (including Nuka-Cola and
-/// magnifying-glass meshes); that carrier must not outrank the semantic glass
-/// behavior. Call AFTER `Material::resolve_pbr` so the behavior write wins over
+/// Existing engine-synthesized kinds are preserved unless an authoritative
+/// FO4+ `bgem_glass` flag explicitly replaces an effect-shader carrier with
+/// glass behavior. A name/texture keyword alone cannot override an authored
+/// shader type: Skyrim's alchemy workbench intentionally maps its emissive
+/// `InnerHaze` effect layers to `plainglasstile01.dds`. Promoting those layers
+/// to glass erases their emission and turns the enclosing apparatus black.
+/// Call AFTER `Material::resolve_pbr` so the behavior write wins over
 /// source-derived PBR scalars.
 pub(crate) fn classify_glass_into_material(
     material: &mut Material,
@@ -70,9 +71,8 @@ pub(crate) fn classify_glass_into_material(
 ) {
     let keyword_match = texture_path.is_some_and(is_glass_keyword_path)
         || mesh_name.is_some_and(is_glass_keyword_path);
-    let effect_glass_carrier = material.material_kind
-        == byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER
-        && (keyword_match || bgem_glass);
+    let effect_glass_carrier =
+        material.material_kind == byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER && bgem_glass;
 
     // Engine-synthesized behavior already selected — preserve it unless this
     // is the source-format effect carrier used to author an explicit glass
@@ -273,30 +273,31 @@ mod glass_classification_tests {
     }
 
     #[test]
-    fn glass_keyword_promotes_effect_shader_carrier() {
-        // FO4 commonly authors ordinary glass on a BSEffectShaderProperty
-        // without a BGEM glass_enabled flag. The carrier describes the source
-        // map layout; the explicit semantic name selects shared glass optics.
+    fn glass_keyword_does_not_override_effect_shader_semantics() {
+        // Skyrim's alchemy workbench authors InnerHaze as BSEffectShader but
+        // shares plainglasstile01.dds with the surrounding glass shells. The
+        // explicit shader role outranks this ambiguous texture keyword.
         let mut m = mat();
         m.material_kind = byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER;
-        m.texture_path = Some("textures/clutter/nukacola_glass.dds".into());
+        m.texture_path = Some("textures/clutter/plainglasstile01.dds".into());
         let texture_path = m.texture_path.clone();
 
         classify_glass_into_material(
             &mut m,
-            Some("NukaCola_Glass:3"),
+            Some("InnerHaze01:8"),
             texture_path.as_deref(),
             true,
             false,
             false,
         );
 
-        assert_eq!(m.material_kind, GLASS);
-        assert_eq!(m.roughness, GLASS_SURFACE_BEHAVIOR.roughness);
-        assert_eq!(m.ior, GLASS_SURFACE_BEHAVIOR.ior);
+        assert_eq!(
+            m.material_kind,
+            byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER
+        );
         assert_eq!(
             m.texture_path.as_deref(),
-            Some("textures/clutter/nukacola_glass.dds")
+            Some("textures/clutter/plainglasstile01.dds")
         );
     }
 

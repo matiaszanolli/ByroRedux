@@ -135,14 +135,15 @@ fn water_and_non_tlas_both_excluded() {
     assert!(!draw_command_eligible_for_tlas(&cmd));
 }
 
-/// Additive BSEffectShader proxy volumes (light beams, glow shells, soft
-/// particles) are not physical geometry. They must remain raster-only even
-/// if an upstream draw producer accidentally leaves `in_tlas=true`.
+/// BSEffectShader surfaces need TLAS presence for optical rays. Their
+/// dedicated visibility mask—not global TLAS deletion—keeps them from
+/// becoming opaque shadow casters. Skyrim's alchemy-workbench glass depends
+/// on this: its outer shell refracts authored InnerHaze effect geometry.
 #[test]
-fn effect_shader_proxy_is_excluded_from_tlas() {
+fn effect_shader_surface_is_tlas_eligible_for_optical_rays() {
     let mut cmd = make_draw_command(true, false);
     cmd.material_kind = crate::MATERIAL_KIND_EFFECT_SHADER;
-    assert!(!draw_command_eligible_for_tlas(&cmd));
+    assert!(draw_command_eligible_for_tlas(&cmd));
 }
 
 /// Regression for #679 / AS-8-9. The skinned-BLAS rebuild

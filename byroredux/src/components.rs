@@ -315,6 +315,10 @@ pub(crate) struct CellLightingRes {
     pub(crate) specular_alpha: Option<f32>,
     /// Fresnel power exponent — bytes 68-71. Skyrim+ XCLL.
     pub(crate) fresnel_power: Option<f32>,
+    /// Raw Skyrim+ XCLL per-field LTMP inheritance mask. Values in this
+    /// resource are already resolved; the mask is retained as provenance
+    /// for `light.dump` and fixture diagnostics.
+    pub(crate) inheritance_flags: Option<u32>,
 }
 
 impl CellLightingRes {
@@ -356,6 +360,7 @@ impl CellLightingRes {
             specular_color: lit.specular_color,
             specular_alpha: lit.specular_alpha,
             fresnel_power: lit.fresnel_power,
+            inheritance_flags: lit.inheritance_flags,
         }
     }
 }
@@ -394,6 +399,7 @@ mod cell_lighting_res_tests {
             specular_color: None,
             specular_alpha: None,
             fresnel_power: None,
+            inheritance_flags: None,
             starfield: None,
         }
     }
@@ -424,6 +430,7 @@ mod cell_lighting_res_tests {
             specular_color: Some([0.30, 0.30, 0.32]),
             specular_alpha: Some(1.0),
             fresnel_power: Some(2.5),
+            inheritance_flags: Some(0),
             starfield: None,
         }
     }
@@ -504,6 +511,7 @@ mod cell_lighting_res_tests {
             specular_color: None,
             specular_alpha: None,
             fresnel_power: None,
+            inheritance_flags: None,
             starfield: None,
         };
         let res = CellLightingRes::from_cell_lighting(&lit, [0.0, 1.0, 0.0], true);

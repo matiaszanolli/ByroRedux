@@ -554,8 +554,9 @@ fn parse_cell_skyrim_xcll_extracts_directional_ambient_cube() {
     xcll.extend_from_slice(&500.0f32.to_le_bytes());
     // Bytes 84-87: light fade end.
     xcll.extend_from_slice(&800.0f32.to_le_bytes());
-    // Bytes 88-91: inherits flags (u32, unused by the parser).
-    xcll.extend_from_slice(&0u32.to_le_bytes());
+    // Bytes 88-91: per-field LGTM inheritance flags. This exact mask is
+    // authored by WinterholdCollegeArchMageQuarters in Skyrim.esm.
+    xcll.extend_from_slice(&0x079fu32.to_le_bytes());
     assert_eq!(xcll.len(), 92, "Skyrim XCLL must be 92 bytes");
 
     let mut sub_data = Vec::new();
@@ -590,7 +591,7 @@ fn parse_cell_skyrim_xcll_extracts_directional_ambient_cube() {
         &mut reader,
         end,
         &mut cells,
-        crate::esm::reader::GameKind::Fallout3NV,
+        crate::esm::reader::GameKind::Skyrim,
     )
     .unwrap();
 
@@ -633,6 +634,7 @@ fn parse_cell_skyrim_xcll_extracts_directional_ambient_cube() {
     assert_eq!(lit.directional_fade, Some(1.25));
     assert_eq!(lit.fog_clip, Some(7500.0));
     assert_eq!(lit.fog_power, Some(1.5));
+    assert_eq!(lit.inheritance_flags, Some(0x079f));
     assert_eq!(lit.fog_max, Some(0.85));
     assert_eq!(lit.light_fade_begin, Some(500.0));
     assert_eq!(lit.light_fade_end, Some(800.0));

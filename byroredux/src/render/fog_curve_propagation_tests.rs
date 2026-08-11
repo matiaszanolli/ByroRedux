@@ -65,6 +65,7 @@ fn fnv_authored_curve_propagates_to_frame_view() {
         specular_color: None,
         specular_alpha: None,
         fresnel_power: None,
+        inheritance_flags: None,
     });
     let view = run_view(&world);
     assert_eq!(view.fog_clip, 4096.0);
@@ -98,6 +99,7 @@ fn missing_curve_yields_zero_so_shader_falls_back_to_linear() {
         specular_color: None,
         specular_alpha: None,
         fresnel_power: None,
+        inheritance_flags: None,
     });
     let view = run_view(&world);
     assert_eq!(

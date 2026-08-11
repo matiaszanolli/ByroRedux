@@ -479,6 +479,7 @@ pub(crate) fn install_cornell_lighting(world: &mut World, sun: bool) {
         specular_color: None,
         specular_alpha: None,
         fresnel_power: None,
+        inheritance_flags: None,
     });
 }
 
