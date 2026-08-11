@@ -181,6 +181,11 @@ mod tests {
             ("GI_HIT_LIGHT_CAP", format!("#define GI_HIT_LIGHT_CAP {GI_HIT_LIGHT_CAP}u")),
             ("GI_SAMPLE_LUMINANCE_CLAMP", format!("#define GI_SAMPLE_LUMINANCE_CLAMP {GI_SAMPLE_LUMINANCE_CLAMP:?}")),
             ("CAUSTIC_FIXED_SCALE", format!("#define CAUSTIC_FIXED_SCALE {CAUSTIC_FIXED_SCALE:?}")),
+            ("RT_ABLATION_DIRECT_SHADOW", format!("#define RT_ABLATION_DIRECT_SHADOW {RT_ABLATION_DIRECT_SHADOW}u")),
+            ("RT_ABLATION_GI", format!("#define RT_ABLATION_GI {RT_ABLATION_GI}u")),
+            ("RT_ABLATION_REFLECTION_GLASS", format!("#define RT_ABLATION_REFLECTION_GLASS {RT_ABLATION_REFLECTION_GLASS}u")),
+            ("RT_ABLATION_ALL_RAYS", format!("#define RT_ABLATION_ALL_RAYS {RT_ABLATION_ALL_RAYS}u")),
+            ("RT_COMPILE_ABLATION_MASK", format!("#define RT_COMPILE_ABLATION_MASK {RT_COMPILE_ABLATION_MASK}u")),
             ("ENABLE_LEGACY_WRS", format!("#define ENABLE_LEGACY_WRS {ENABLE_LEGACY_WRS}")),
             // DBG_* bits are pinned below via the shared DBG_BITS catalog
             // (every constant, count-checked by

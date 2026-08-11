@@ -25,8 +25,7 @@ output_root="${BYROREDUX_ENVELOPE_OUT:-${repo_root}/target/bench-variability-env
 runner="${BYROREDUX_ENVELOPE_RUNNER:-}"
 scenes_raw="${BYROREDUX_ENVELOPE_SCENES:-prospector medtek dugout}"
 revision="$(git -C "${repo_root}" rev-parse HEAD)"
-if git -C "${repo_root}" diff --quiet --ignore-submodules -- && \
-        git -C "${repo_root}" diff --cached --quiet --ignore-submodules --; then
+if [[ -z "$(git -C "${repo_root}" status --porcelain --untracked-files=normal)" ]]; then
     revision_label="${revision}"
     tree_dirty=false
 else

@@ -305,6 +305,17 @@ pub const FOG_VOLUME_CLUSTER_DIM: u32 = 16;
 /// volumes because the CPU input list is distance-sorted.
 pub const MAX_FOG_VOLUMES_PER_CLUSTER: u32 = 8;
 
+// Main-pass ray-query decomposition. The runtime `DBG_DISABLE_*` bits below
+// preserve the compiled shader's register allocation and isolate avoided
+// execution. `RT_COMPILE_ABLATION_MASK` selects the same feature groups at
+// shader compile time so glslang/the driver may eliminate dead code and lower
+// register pressure. Shipping builds keep the mask at zero.
+pub const RT_ABLATION_DIRECT_SHADOW: u32 = 1 << 0;
+pub const RT_ABLATION_GI: u32 = 1 << 1;
+pub const RT_ABLATION_REFLECTION_GLASS: u32 = 1 << 2;
+pub const RT_ABLATION_ALL_RAYS: u32 = 1 << 3;
+pub const RT_COMPILE_ABLATION_MASK: u32 = 0;
+
 // Debug-viz bit flags packed into `jitter.z` by the renderer
 // (`parse_render_debug_flags_env` + `GpuCamera` upload). Runtime-set
 // via `BYROREDUX_RENDER_DEBUG=<bitmask>` env var or console for
@@ -571,6 +582,24 @@ pub const DBG_VIZ_NORMAL_DIVERGENCE: u32 = 0x2000000;
 /// of the lighting ablation ladder.
 pub const DBG_VIZ_DIRECT: u32 = 0x4000000;
 
+/// 0x8000000 — skip primary direct-light shadow queries while retaining the
+/// unshadowed light estimator. GI/reflection hit lighting can still issue its
+/// own visibility queries; this bit isolates the shipping direct-shadow path.
+pub const DBG_DISABLE_DIRECT_SHADOWS: u32 = 0x8000000;
+
+/// 0x10000000 — skip the bounded diffuse GI path. Authored ambient, direct
+/// lighting, reflections, SSAO, and every non-GI pass remain active.
+pub const DBG_DISABLE_GI_RAYS: u32 = 0x10000000;
+
+/// 0x20000000 — skip main-pass window portal, fire-refraction, glass IOR, and
+/// glossy/metal reflection queries. Glass keeps its zero-ray Fresnel fallback.
+pub const DBG_DISABLE_REFLECTION_GLASS_RAYS: u32 = 0x20000000;
+
+/// 0x40000000 — skip every ray-query path in `triangle.frag`. TLAS build and
+/// ray-query work in other pipelines remain intact, so baseline→this bit is
+/// the main-pass ray budget rather than a whole-frame RT-off measurement.
+pub const DBG_DISABLE_ALL_MAIN_RAYS: u32 = 0x40000000;
+
 /// Single source of truth for every `DBG_*` debug-viz bit, in emit order.
 /// Both `build.rs` (GLSL header emit) and `shader_constants.rs`'s test
 /// module (`generated_header_contains_all_defines` value-pin,
@@ -612,6 +641,13 @@ pub const DBG_BITS: &[(&str, u32)] = &[
     ("DBG_VIZ_SHADOW_OFFSET", DBG_VIZ_SHADOW_OFFSET),
     ("DBG_VIZ_NORMAL_DIVERGENCE", DBG_VIZ_NORMAL_DIVERGENCE),
     ("DBG_VIZ_DIRECT", DBG_VIZ_DIRECT),
+    ("DBG_DISABLE_DIRECT_SHADOWS", DBG_DISABLE_DIRECT_SHADOWS),
+    ("DBG_DISABLE_GI_RAYS", DBG_DISABLE_GI_RAYS),
+    (
+        "DBG_DISABLE_REFLECTION_GLASS_RAYS",
+        DBG_DISABLE_REFLECTION_GLASS_RAYS,
+    ),
+    ("DBG_DISABLE_ALL_MAIN_RAYS", DBG_DISABLE_ALL_MAIN_RAYS),
 ];
 
 /// #1799 / PERF-D5-NEW-01 — compile-time gate for the legacy 16-slot WRS

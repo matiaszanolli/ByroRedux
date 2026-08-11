@@ -53,13 +53,41 @@ run_once() {
         exit 1
     fi
     echo "${line}" >&2
-    sed -n 's/.* state_hash=\([0-9a-fA-F]\{16\}\).*/\1/p' <<< "${line}"
+    python3 - "${line}" <<'PY'
+import re
+import sys
+
+line = sys.argv[1]
+
+
+def token(key):
+    match = re.search(rf"(?:^|[ \[])({re.escape(key)})=([^ \]]+)", line)
+    if not match:
+        raise SystemExit(f"missing {key} in benchmark summary")
+    return match.group(2)
+
+
+# Include post-merge batches and actual calls (`draws=N/Mb/Kc`) as well as
+# the scene hash. The latter covers renderer-facing draw data; the former
+# catches wall-time-driven resource readiness that can change batching while
+# leaving the pre-merge draw stream unchanged.
+print("|".join(token(key) for key in (
+    "mode",
+    "camera",
+    "sim_time_s",
+    "entities",
+    "draws",
+    "lights",
+    "tlas",
+    "state_hash",
+)))
+PY
 }
 
 first="$(run_once 1)"
 second="$(run_once 2)"
 if [[ -z "${first}" || -z "${second}" ]]; then
-    echo "bench-determinism: could not parse a 16-digit state_hash" >&2
+    echo "bench-determinism: could not parse the scene-state fingerprint" >&2
     exit 1
 fi
 if [[ "${first}" != "${second}" ]]; then
@@ -67,4 +95,5 @@ if [[ "${first}" != "${second}" ]]; then
     exit 1
 fi
 
-echo "bench-determinism: PASS — renderer-static state_hash=${first} across two runs"
+state_hash="${first##*|}"
+echo "bench-determinism: PASS — renderer-static fingerprint and state_hash=${state_hash} match across two runs"

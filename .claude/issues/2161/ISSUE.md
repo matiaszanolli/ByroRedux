@@ -23,6 +23,24 @@ Commit `6c56e311` ("Refactor volumetric lighting and water shaders", 2026-07-19)
 ## Evidence
 `traceShadowTransmittance` (`lighting.glsl:172-292`) replaced a single any-hit `TerminateOnFirstHitEXT` probe with two sequential closest-hit walks — an 8-layer alpha-aware opaque walk (`MAX_OPAQUE_LAYERS = 8`, `lighting.glsl:179`) that unconditionally loads `GpuInstance` + `GpuMaterial` per hit before any early-out (`lighting.glsl:196-197`), plus a 4-interface glass walk (`MAX_GLASS_INTERFACES = 4`, `:233`) with per-interface Fresnel/Beer absorption. Worst case is 12 closest-hit queries per shadow ray, fired `SHADOW_RAYS = 4` times per light (`triangle.frag:2636,2657`) plus a pass-2 shadow-subtract (`:2809`). The GI ray became a bounded path tracer (`MAX_PATH_SEGMENTS = 6`, `MAX_DIFFUSE_BOUNCES = 2`, `triangle.frag:2913-2914`) where it was one `TerminateOnFirstHit` traversal; each diffuse-bounce hit re-invokes the same shadow-transmittance machinery, so the full GI path bounds at roughly 6 segments x 4 shadow calls x 12 queries ~= 288 nested ray queries per pixel on top of the direct path's 48. Both features were introduced by `6c56e311` itself.
 
+### 2026-08-11 fixed-state revalidation
+
+The original 300-frame wall-clock-harness rows are invalidated as absolute
+comparisons: faster shaders reached a different simulation/resource state.
+The direct shader-cost claim nevertheless survives the decisive fixed-state
+test. On the `6c56e311` host with fixed `dt = 0` and a static camera, three
+interleaved Prospector swaps measured the shipped module at a 14.93 ms median
+and the `e414249f` parent module at 6.28 ms, with all accepted rows ending at
+3,626 entities / 1,224 draws / 32 batches / 3 GPU calls. That is a **2.38×**
+frame-time ratio. A minimally repaired-source, 3,000-frame knob rerun also
+reproduced the original ranking: binary shadows recovered 6.44 ms, one diffuse
+GI bounce recovered 3.07 ms, and a 6→2 segment cap recovered 1.77 ms.
+
+The old host predates the new scene-state hash, so this is fixed-clock plus
+matched forensic columns rather than a replacement for the hash-backed
+four-boundary matrix. Full method, rejected mismatched-state rows, hashes, and
+results: [`FIXED_STATE_REVALIDATION_2026-08-11.md`](FIXED_STATE_REVALIDATION_2026-08-11.md).
+
 ## Impact
 ~2.2x frame time on real glass-heavy interior content. Now partially masked by FSR 3.1 Quality (the shipped default) shading fewer pixels — a symptom reduction, not a fix; ROADMAP is explicit this should not be read as lowering urgency. Also amplifies the cost side of D2-02 (opaque RT overdraw with no depth pre-pass, tracked as prior-audit-existing, not re-filed) and #779 (missing `early_fragment_tests`) — every occluded fragment that still runs the full shader before the depth test now pays this ~2.2x higher per-fragment cost. See also the PERF-D9-NEW-01 issue (same commit `6c56e311` also introduced a `camera_cut` false-positive) — the measured 68.5 FPS may already include some frames shading under a forced-reset (single-frame, no-motion-vector) state rather than steady-state temporal accumulation; the two regressions were never isolated from each other in the ROADMAP bisect, which only swapped the fragment shader binary.
 

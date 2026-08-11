@@ -671,7 +671,27 @@ void main() {
     // See REN-D9-NEW-02 / #821.
     vec3 N_bias = dot(N, V) < 0.0 ? -N : N;
 
-    bool rtEnabled = sceneFlags.x > 0.5;
+    const bool compileDisableDirectShadows =
+        (RT_COMPILE_ABLATION_MASK & RT_ABLATION_DIRECT_SHADOW) != 0u;
+    const bool compileDisableGi =
+        (RT_COMPILE_ABLATION_MASK & RT_ABLATION_GI) != 0u;
+    const bool compileDisableReflectionGlass =
+        (RT_COMPILE_ABLATION_MASK & RT_ABLATION_REFLECTION_GLASS) != 0u;
+    const bool compileDisableAllRays =
+        (RT_COMPILE_ABLATION_MASK & RT_ABLATION_ALL_RAYS) != 0u;
+    bool runtimeDisableAllRays =
+        (dbgFlags & DBG_DISABLE_ALL_MAIN_RAYS) != 0u;
+    bool rtEnabled = sceneFlags.x > 0.5
+        && !compileDisableAllRays && !runtimeDisableAllRays;
+    bool directShadowRayEnabled = rtEnabled
+        && !compileDisableDirectShadows
+        && (dbgFlags & DBG_DISABLE_DIRECT_SHADOWS) == 0u;
+    bool giRayEnabled = rtEnabled
+        && !compileDisableGi
+        && (dbgFlags & DBG_DISABLE_GI_RAYS) == 0u;
+    bool reflectionGlassRayEnabled = rtEnabled
+        && !compileDisableReflectionGlass
+        && (dbgFlags & DBG_DISABLE_REFLECTION_GLASS_RAYS) == 0u;
 
     // ── RT mipmap LOD — analogous to textureGrad mip selection ──────────
     //
@@ -917,7 +937,7 @@ void main() {
         // Without ray queries there is no faithful source image to distort.
         // Discard preserves the already-rendered scene instead of reverting
         // to the broken normal-as-diffuse slab.
-        if (!rtEnabled) {
+        if (!reflectionGlassRayEnabled) {
             discard;
         }
         vec3 macroN = normalize(fragNormalEffective);
@@ -1401,7 +1421,7 @@ void main() {
         albedo   = glassBase * fragColor.rgb;
     }
 
-    if (isWindow && rtEnabled) {
+    if (isWindow && reflectionGlassRayEnabled) {
         // Fire the portal-escape ray along the surface OUTWARD normal,
         // not along `-V` (camera look direction). Pre-#421 the ray
         // used `-V`, which at oblique viewing angles continued along
@@ -1560,7 +1580,7 @@ void main() {
     // between this path and the fallback, producing screen-space checkerboard
     // blocks. Thin glass stays wholly on the shared, zero-ray Fresnel path.
     bool glassIORAllowed = isGlass && !isThinGlass
-        && rtEnabled && !isWindow && rtLOD < RT_LOD_IOR;
+        && reflectionGlassRayEnabled && !isWindow && rtLOD < RT_LOD_IOR;
     if (glassIORAllowed) {
         // IOR-03 — the atomicAdd claims GLASS_RAY_COST UNCONDITIONALLY, then
         // tests the returned value. Threads that lose the race (old + cost >
@@ -2278,7 +2298,7 @@ void main() {
                 : sceneFlags.yzw * (1.0 / PI);
         }
         vec3 envColor;
-        if (rtEnabled && rtLOD < RT_LOD_REFLECT) {
+        if (reflectionGlassRayEnabled && rtLOD < RT_LOD_REFLECT) {
             // Deterministic rough reflection: a single SHARP ray, GGX-lobe
             // blur applied as a roughness-scaled mip on the hit sample
             // (`traceReflection`'s mipBias). mip ~ roughness·8 spans the
@@ -2493,13 +2513,14 @@ void main() {
         // verbatim below (gated) for live A/B via `0x8000`, when
         // ENABLE_LEGACY_WRS == 1 (#1799 / PERF-D5-NEW-01).
 #if ENABLE_LEGACY_WRS
-        bool useRestir = rtEnabled && (dbgFlags & DBG_DISABLE_RESTIR) == 0u;
+        bool useRestir = directShadowRayEnabled
+            && (dbgFlags & DBG_DISABLE_RESTIR) == 0u;
 #else
         // No legacy arm compiled into this build. DBG_DISABLE_RESTIR keeps
         // this current-frame reservoir path active but disables every reuse
         // dimension below, yielding a raw one-frame direct estimator without
         // paying the legacy array footprint.
-        bool useRestir = rtEnabled;
+        bool useRestir = directShadowRayEnabled;
 #endif
         const float RESTIR_LUMA_X = 0.2126;
         const float RESTIR_LUMA_Y = 0.7152;
@@ -2740,7 +2761,7 @@ void main() {
 
             // Stream this light into the shared shadow reservoir. Both
             // interior and exterior sources reach this exact path.
-            if (rtEnabled && needsVisibility && shadowFade > 0.01) {
+            if (directShadowRayEnabled && needsVisibility && shadowFade > 0.01) {
                 // Target pdf: luminance of the to-be-subtracted radiance
                 // (`shadowableRadiance` computed above). Sampling
                 // proportional to this approximates the optimal
@@ -3230,7 +3251,7 @@ void main() {
         emissiveMult * max(emissiveColor.r, max(emissiveColor.g, emissiveColor.b));
     vec3 primaryDiffuseWeight = (1.0 - fresnelSchlick(NdotV, F0))
         * (1.0 - metalness);
-    if (rtEnabled && !isWindow && !isGlass && giEmissiveLum < 0.01
+    if (giRayEnabled && !isWindow && !isGlass && giEmissiveLum < 0.01
         && rtLOD < RT_LOD_GI
         && pathLuminance(primaryDiffuseWeight) > 1e-5) {
         float giDist = length(fragWorldPos - cameraPos.xyz);

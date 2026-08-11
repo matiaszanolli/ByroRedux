@@ -142,6 +142,19 @@
 #define DBG_VIZ_SHADOW_OFFSET 16777216u
 #define DBG_VIZ_NORMAL_DIVERGENCE 33554432u
 #define DBG_VIZ_DIRECT 67108864u
+#define DBG_DISABLE_DIRECT_SHADOWS 134217728u
+#define DBG_DISABLE_GI_RAYS 268435456u
+#define DBG_DISABLE_REFLECTION_GLASS_RAYS 536870912u
+#define DBG_DISABLE_ALL_MAIN_RAYS 1073741824u
+
+// Main-pass ray-query decomposition.
+#define RT_ABLATION_DIRECT_SHADOW 1u
+#define RT_ABLATION_GI 2u
+#define RT_ABLATION_REFLECTION_GLASS 4u
+#define RT_ABLATION_ALL_RAYS 8u
+#ifndef RT_COMPILE_ABLATION_MASK
+#define RT_COMPILE_ABLATION_MASK 0u
+#endif
 
 // #1799 / PERF-D5-NEW-01 — compile-time gate for the legacy 16-slot
 // WRS reservoir arrays. 0 (default): preprocessed out of
