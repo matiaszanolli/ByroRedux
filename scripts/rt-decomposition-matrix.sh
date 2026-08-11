@@ -119,6 +119,7 @@ dirty="$(git -C "${repo_root}" status --porcelain --untracked-files=normal)"
     echo "runs=${runs}"
     echo "frames=${frames}"
     echo "mode=renderer-static"
+    echo "run_order=round-robin features; runtime/compile order alternates per round"
     echo "compiler=$(${compiler} -dumpfullversion)"
     echo "shipping_spv_sha256=$(sha256sum "${artifact}" | awk '{print $1}')"
     if command -v nvidia-smi >/dev/null 2>&1; then
@@ -126,7 +127,7 @@ dirty="$(git -C "${repo_root}" status --porcelain --untracked-files=normal)"
     fi
 } > "${metadata}"
 
-printf 'scene\tvariant\tform\tfeature\trun\tdebug_flags\tcompile_mask\tspv_bytes\tmode\tcamera\twall_ms\tfence_ms\tgpu_main_ms\tsim_time_s\tentities\tdraws\tlights\ttlas\tstate_hash\n' > "${raw_tsv}"
+printf 'scene\tvariant\tform\tfeature\trun\tdebug_flags\tcompile_mask\tspv_bytes\tspv_sha256\tmode\tcamera\twall_ms\tfence_ms\tgpu_main_ms\tsim_time_s\tentities\tdraws\tlights\ttlas\tstate_hash\n' > "${raw_tsv}"
 
 run_variant() {
     local variant="$1"
@@ -136,36 +137,37 @@ run_variant() {
     local debug_flags="$5"
     local compile_mask="$6"
     local spv_bytes="$7"
-    local run log line status
+    local spv_sha256="$8"
+    local run="$9"
+    local log line status
 
-    for run in $(seq 1 "${runs}"); do
-        log="${output_root}/${variant}_${run}.log"
-        echo "rt-decomposition: ${variant} run ${run}/${runs}" >&2
-        set +e
-        env -u BYROREDUX_FIXED_DT \
-            BYROREDUX_RENDER_DEBUG="${debug_flags}" \
-            RUST_LOG="${BYROREDUX_RT_LOG:-warn}" \
-            "${launch_prefix[@]}" timeout 900 "${engine}" "${args[@]}" \
-            --bench-frames "${frames}" \
-            --bench-mode renderer-static > "${log}" 2>&1
-        status=$?
-        set -e
-        if (( status != 0 )); then
-            echo "rt-decomposition: ${variant} run ${run} exited ${status} (see ${log})" >&2
-            return 1
-        fi
-        line="$(awk '/^bench:/{line=$0} END{print line}' "${log}")"
-        if [[ -z "${line}" ]]; then
-            echo "rt-decomposition: ${variant} run ${run} produced no bench line" >&2
-            return 1
-        fi
-        python3 - "${scene}" "${variant}" "${form}" "${feature}" "${run}" \
-            "${debug_flags}" "${compile_mask}" "${spv_bytes}" "${line}" \
-            >> "${raw_tsv}" <<'PY'
+    log="${output_root}/${variant}_${run}.log"
+    echo "rt-decomposition: ${variant} run ${run}/${runs}" >&2
+    set +e
+    env -u BYROREDUX_FIXED_DT \
+        BYROREDUX_RENDER_DEBUG="${debug_flags}" \
+        RUST_LOG="${BYROREDUX_RT_LOG:-warn}" \
+        "${launch_prefix[@]}" timeout 900 "${engine}" "${args[@]}" \
+        --bench-frames "${frames}" \
+        --bench-mode renderer-static > "${log}" 2>&1
+    status=$?
+    set -e
+    if (( status != 0 )); then
+        echo "rt-decomposition: ${variant} run ${run} exited ${status} (see ${log})" >&2
+        return 1
+    fi
+    line="$(awk '/^bench:/{line=$0} END{print line}' "${log}")"
+    if [[ -z "${line}" ]]; then
+        echo "rt-decomposition: ${variant} run ${run} produced no bench line" >&2
+        return 1
+    fi
+    python3 - "${scene}" "${variant}" "${form}" "${feature}" "${run}" \
+        "${debug_flags}" "${compile_mask}" "${spv_bytes}" "${spv_sha256}" \
+        "${line}" >> "${raw_tsv}" <<'PY'
 import re
 import sys
 
-scene, variant, form, feature, run, flags, mask, size, line = sys.argv[1:]
+scene, variant, form, feature, run, flags, mask, size, spv_hash, line = sys.argv[1:]
 
 
 def token(key, default="-"):
@@ -174,27 +176,57 @@ def token(key, default="-"):
 
 
 print("\t".join([
-    scene, variant, form, feature, run, flags, mask, size,
+    scene, variant, form, feature, run, flags, mask, size, spv_hash,
     token("mode"), token("camera"), token("wall_ms"), token("fence"),
     token("gpu_main_render"), token("sim_time_s"), token("entities"),
     token("draws"), token("lights"), token("tlas"), token("state_hash"),
 ]))
 PY
-    done
 }
 
 shipping_spv_bytes="$(wc -c < "${artifact}")"
-run_variant baseline runtime baseline "${runtime_engine}" 0x0 0 "${shipping_spv_bytes}"
-run_variant runtime-direct-shadow runtime direct-shadow "${runtime_engine}" 0x8000000 0 "${shipping_spv_bytes}"
-run_variant runtime-gi runtime gi "${runtime_engine}" 0x10000000 0 "${shipping_spv_bytes}"
-run_variant runtime-reflection-glass runtime reflection-glass "${runtime_engine}" 0x20000000 0 "${shipping_spv_bytes}"
-run_variant runtime-all-main-rays runtime all-main-rays "${runtime_engine}" 0x40000000 0 "${shipping_spv_bytes}"
+shipping_spv_sha256="$(sha256sum "${artifact}" | awk '{print $1}')"
 
-for feature in "${compile_order[@]}"; do
-    mask="${compile_masks[${feature}]}"
-    compile_spv_bytes="$(wc -c < "${work_dir}/triangle-${feature}.spv")"
-    run_variant "compile-${feature}" compile "${feature}" \
-        "${output_root}/bin/compile-${feature}" 0x0 "${mask}" "${compile_spv_bytes}"
+runtime_flags() {
+    case "$1" in
+        direct-shadow)     echo 0x8000000 ;;
+        gi)                echo 0x10000000 ;;
+        reflection-glass) echo 0x20000000 ;;
+        all-main-rays)    echo 0x40000000 ;;
+    esac
+}
+
+# A grouped run aliases thermal/background drift with the variant: all runtime
+# samples would finish before any compile sample. Rotate feature order between
+# rounds and alternate runtime/compile order inside each adjacent pair. The
+# baseline is sampled once per round, so its median spans the same interval.
+for run in $(seq 1 "${runs}"); do
+    run_variant baseline runtime baseline "${runtime_engine}" 0x0 0 \
+        "${shipping_spv_bytes}" "${shipping_spv_sha256}" "${run}"
+
+    round_offset=$(( (run - 1) % ${#compile_order[@]} ))
+    for feature_index in $(seq 0 $(( ${#compile_order[@]} - 1 ))); do
+        feature="${compile_order[$(( (feature_index + round_offset) % ${#compile_order[@]} ))]}"
+        mask="${compile_masks[${feature}]}"
+        flags="$(runtime_flags "${feature}")"
+        compile_spv="${work_dir}/triangle-${feature}.spv"
+        compile_spv_bytes="$(wc -c < "${compile_spv}")"
+        compile_spv_sha256="$(sha256sum "${compile_spv}" | awk '{print $1}')"
+
+        runtime_args=("runtime-${feature}" runtime "${feature}" \
+            "${runtime_engine}" "${flags}" 0 "${shipping_spv_bytes}" \
+            "${shipping_spv_sha256}" "${run}")
+        compile_args=("compile-${feature}" compile "${feature}" \
+            "${output_root}/bin/compile-${feature}" 0x0 "${mask}" \
+            "${compile_spv_bytes}" "${compile_spv_sha256}" "${run}")
+        if (( run % 2 == 1 )); then
+            run_variant "${runtime_args[@]}"
+            run_variant "${compile_args[@]}"
+        else
+            run_variant "${compile_args[@]}"
+            run_variant "${runtime_args[@]}"
+        fi
+    done
 done
 
 python3 "${repo_root}/scripts/rt_decomposition_report.py" "${raw_tsv}" | tee "${summary}"
