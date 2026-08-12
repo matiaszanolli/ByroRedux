@@ -589,6 +589,26 @@ pub(super) fn load_references_budgeted(
                             if synth_idx == 0 {
                                 stamp_quest_reference(world, root, placed_ref, load_order);
                             }
+                            // #2662 — actor jobs bypass `spawn_synth_child`
+                            // entirely, so without this they never reached
+                            // `attach_script_for_refr`: the `npcs` arm of
+                            // `base_record_script_instance` was unreachable
+                            // from the live attach path and the placed
+                            // `ACHR`'s own VMAD was never consumed. Use the
+                            // same per-synth-child gate the static path uses,
+                            // so the REFR-own VMAD binds to child 0 only and
+                            // the additive REFR-then-base merge is identical.
+                            attach_quest_reference_script(
+                                world,
+                                root,
+                                child_form_id,
+                                record_index,
+                                refr_script_instance_for_synth_child(
+                                    synth_idx,
+                                    placed_ref.script_instance.as_ref(),
+                                ),
+                                &mut job.accum,
+                            );
                             job.accum.npc_spawned += 1;
                             if job.accum.npc_spawned_sample.len() < 8
                                 && !job.accum.npc_spawned_sample.contains(&child_form_id)
@@ -2117,6 +2137,49 @@ mod tests {
     /// here (same constraint as `npc_spawn_jobs_are_resumable_and_wall_clock_timed`
     /// above), so this pins the structural invariant via source inspection.
     #[test]
+    /// SCR-D7-NEW11-01 (#2662) — actor jobs build their own placement root
+    /// instead of routing through `spawn_synth_child`, so they are the one
+    /// spawn path that can silently skip the VMAD attach. It did, for
+    /// 805 `NPC_` + 822 `ACHR` VMAD-bearing records on `Skyrim.esm` alone,
+    /// which also made the `npcs` arm of `base_record_script_instance`
+    /// unreachable from the live attach path.
+    ///
+    /// Source-scan rather than a live spawn: the actor path wants a Vulkan
+    /// device and on-disk game data, out of `cargo test` scope. Mirrors
+    /// `scol_expansion_is_cached_across_a_budget_yield` below.
+    #[test]
+    fn actor_spawn_branch_attaches_vmad_scripts() {
+        let full_src = include_str!("mod.rs");
+        let src = &full_src[..full_src
+            .find("#[cfg(test)]\nmod tests {")
+            .expect("references/mod.rs must have a #[cfg(test)] mod tests block")];
+
+        // The actor branch specifically: its `stamp_quest_reference` must be
+        // followed by an attach before the branch's `continue`.
+        let actor_branch = src
+            .find("NpcSpawnProgress::Complete(result)")
+            .expect("the actor spawn-complete branch must still exist");
+        // Bound the window to the actor arm itself — it ends at the
+        // `continue` that hands off to the static `spawn_synth_child` path.
+        // Without this bound the search would happily match a *later*
+        // branch's attach and pass while the actor arm has none.
+        let branch_len = src[actor_branch..]
+            .find("let refr_script_instance = refr_script_instance_for_synth_child(")
+            .expect("the static-path handoff must follow the actor branch");
+        let branch_tail = &src[actor_branch..actor_branch + branch_len];
+        let stamp = branch_tail
+            .find("stamp_quest_reference(")
+            .expect("the actor branch must stamp the canonical ACHR identity");
+        let attach = branch_tail.find("attach_quest_reference_script(").expect(
+            "the actor branch must attach VMAD scripts — without it every scripted \
+             NPC_/ACHR loads with no canonical behavior (#2662)",
+        );
+        assert!(
+            stamp < attach,
+            "attach must follow the identity stamp in the actor branch"
+        );
+    }
+
     fn scol_expansion_is_cached_across_a_budget_yield() {
         let full_src = include_str!("mod.rs");
         let src = &full_src[..full_src
