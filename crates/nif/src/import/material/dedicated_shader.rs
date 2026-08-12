@@ -166,11 +166,9 @@ fn apply_bs_lighting_shader(
                         }
                     }
                     11 => {
-                        // MultiLayerParallax — "Enables …
-                        // Layer(TS7)". Slot 4 still carries the
-                        // env cube here per nif.xml, paired with
-                        // the `envmap_strength` scalar from
-                        // `ShaderTypeData::MultiLayerParallax`.
+                        // MultiLayerParallax. Slot 4 carries the env cube,
+                        // paired with the `envmap_strength` scalar from
+                        // `ShaderTypeData::MultiLayerParallax`; slot 5 its mask.
                         if info.env_map.is_none() {
                             if let Some(env) = tex_set.textures.get(4).filter(|s| !s.is_empty()) {
                                 info.env_map = intern_texture_path(pool, env);
@@ -181,8 +179,40 @@ fn apply_bs_lighting_shader(
                                 info.env_mask = intern_texture_path(pool, mask);
                             }
                         }
+                        // #2553-adjacent role fix, #2693 — the inner layer is
+                        // slot **6**, not slot 7.
+                        //
+                        // nif.xml contradicts itself here. Its
+                        // `BSLightingShaderType` enum prose says "Enables EnvMap
+                        // Mask(TS6), Layer(TS7)"; its `BSShaderTextureSet` field
+                        // table says slot 6 = "Subsurface for Multilayer
+                        // Parallax", slot 7 = "Back Lighting Map
+                        // (SLSF2_Back_Lighting)". The field table wins, on three
+                        // independent grounds:
+                        //
+                        //   * Shipped data. Across `Skyrim - Meshes0.bsa`'s 607
+                        //     type-11 properties, slot 6 is non-empty on 607/607
+                        //     (`IceCaveWall02`, `IceFrozen03`,
+                        //     `RiftenWindowInner01`) while slot 7 is non-empty on
+                        //     370 and holds tint maps
+                        //     (`IceCaveSubsurfacetint01`). Meshes1.bsa agrees on
+                        //     all 55 of its type-11 shapes.
+                        //   * The enum's OTHER claim is demonstrably false: it
+                        //     calls slot 6 the envmap mask, but slot 5 already
+                        //     carries that (and this arm reads it there), and a
+                        //     100%-populated slot cannot be an optional mask.
+                        //   * This engine's own REFR overlay table already maps
+                        //     NIF slot 6 → `inner` (`cell_loader/refr.rs`), so
+                        //     the pre-fix importer disagreed with its sibling.
+                        //
+                        // Slot 7 (back lighting) is deliberately NOT read: there
+                        // is no back-lighting role in `MaterialTextureSet` and no
+                        // shader consumer for one, so inventing a mapping would
+                        // be fabrication. Park it here rather than silently
+                        // routing it somewhere it does not belong — which is
+                        // exactly the bug being fixed.
                         if info.inner_layer_map.is_none() {
-                            if let Some(inner) = tex_set.textures.get(7).filter(|s| !s.is_empty()) {
+                            if let Some(inner) = tex_set.textures.get(6).filter(|s| !s.is_empty()) {
                                 info.inner_layer_map = intern_texture_path(pool, inner);
                             }
                         }

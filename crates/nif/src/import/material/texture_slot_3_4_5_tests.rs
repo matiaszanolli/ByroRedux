@@ -999,8 +999,14 @@ fn bs_lighting_shader_property_keeps_low_range_material_kind() {
 //
 // Per nif.xml `BSLightingShaderType`:
 //   * FaceTint (4)            — slot 4 = Detail, slot 7 = Tint.
-//   * MultiLayerParallax (11) — slot 4 = Env, slot 7 = inner Layer.
+//   * MultiLayerParallax (11) — slot 4 = Env, slot 6 = inner Layer.
 //   * EyeEnvmap (16)          — slot 4 = Env (default arm).
+//
+// #2693 — the MultiLayerParallax row said "slot 7 = inner Layer" until
+// shipped data settled it: nif.xml's enum prose ("Layer(TS7)") and its
+// `BSShaderTextureSet` field table (slot 6 = "Subsurface for Multilayer
+// Parallax", slot 7 = "Back Lighting Map") contradict each other, and the
+// field table is the one that matches every vanilla type-11 shape.
 //
 // Pre-#563 the importer treated slot 4 as env on every variant,
 // positively misbinding FaceTint detail textures as cubemaps and
@@ -1048,10 +1054,14 @@ fn lighting_shader_with_type_and_texset(
 }
 
 fn full_8_slot_tex_set(tag: &str) -> BSShaderTextureSet {
-    // 8 populated slots so the routing fix can exercise slot 7
-    // alongside the legacy slots 0..=5. Slot 6 stays empty —
-    // nif.xml doesn't reference it on FaceTint or MultiLayerParallax,
-    // so feeding a value would just confuse the assertions.
+    // All 8 slots populated, so a test can tell "routed to the wrong slot"
+    // apart from "routed nowhere".
+    //
+    // #2693 — slot 6 used to be left empty here, on the same nif.xml enum-prose
+    // premise that put the MultiLayerParallax inner layer on slot 7. An empty
+    // slot 6 cannot distinguish those two failures, so the fixture quietly
+    // guaranteed the misbind would pass. Vanilla type-11 content populates slot
+    // 6 on 607/607 shapes; the fixture now matches.
     BSShaderTextureSet {
         textures: vec![
             format!("{tag}_d.dds"),
@@ -1060,7 +1070,7 @@ fn full_8_slot_tex_set(tag: &str) -> BSShaderTextureSet {
             format!("{tag}_p.dds"),
             format!("{tag}_4.dds"),
             format!("{tag}_5.dds"),
-            String::new(),
+            format!("{tag}_6.dds"),
             format!("{tag}_7.dds"),
         ],
     }
@@ -1100,13 +1110,19 @@ fn face_tint_routes_slot_4_to_detail_not_envmap() {
 }
 
 #[test]
-fn multi_layer_parallax_routes_slot_7_to_inner_layer_alongside_env() {
+fn multi_layer_parallax_routes_slot_6_to_inner_layer_alongside_env() {
     // MultiLayerParallax (11) — slot 4 stays the env cube
     // (paired with `multi_layer_envmap_strength`), slot 5 the
-    // env mask, and slot 7 must now land in `inner_layer_map`.
-    // Pre-#563 the slot was silently dropped, leaving Dragonborn
-    // ice walls and modded glass shaders without their inner
-    // layer.
+    // env mask, and slot **6** lands in `inner_layer_map`.
+    //
+    // #563 wired this to slot 7 from nif.xml's enum prose, and this test
+    // pinned that reading — which is why the misbind survived. #2693
+    // measured shipped content: across `Skyrim - Meshes0.bsa`'s 607
+    // type-11 properties, slot 6 is populated on 607/607 with inner-layer
+    // art (`RiftenWindowInner01`, `IceCaveWall02`) while slot 7 carries
+    // tint maps (`IceCaveSubsurfacetint01`) on 370. Slot 7 is the back-
+    // lighting map per nif.xml's field table and is deliberately parked:
+    // no `MaterialTextureSet` role and no shader consumer exists for it.
     let blocks: Vec<Box<dyn NiObject>> = vec![
         Box::new(lighting_shader_with_type_and_texset(11, 1)),
         Box::new(full_8_slot_tex_set("ice")),
@@ -1121,15 +1137,34 @@ fn multi_layer_parallax_routes_slot_7_to_inner_layer_alongside_env() {
 
     assert_path(&pool, info.env_map, "ice_4.dds");
     assert_path(&pool, info.env_mask, "ice_5.dds");
-    assert_path(&pool, info.inner_layer_map, "ice_7.dds");
+    assert_path(&pool, info.inner_layer_map, "ice_6.dds");
     assert!(
         info.tint_map.is_none(),
-        "MultiLayerParallax slot 7 routes to inner_layer_map, not tint_map"
+        "MultiLayerParallax has no tint route — slot 7 is the back-lighting \
+         map, which has no canonical role yet"
     );
     assert!(
         info.detail_map.is_none(),
         "MultiLayerParallax has no detail-slot route — slot 4 stays env"
     );
+    // Slot 7 must reach NO role. Pinning the park explicitly, because the
+    // failure this fixes was a slot quietly routed to the wrong role rather
+    // than to none — `ice_7.dds` appearing anywhere is the regression.
+    for (role, handle) in [
+        ("specular_map", info.specular_map),
+        ("glow_map", info.glow_map),
+        ("parallax_map", info.parallax_map),
+        ("dark_map", info.dark_map),
+    ] {
+        if let Some(h) = handle {
+            let resolved = pool.resolve(h).unwrap_or_default();
+            assert!(
+                !resolved.ends_with("ice_7.dds"),
+                "slot 7 (back lighting) leaked into `{role}` — it has no \
+                 canonical role and must stay parked (#2693)"
+            );
+        }
+    }
 }
 
 #[test]
