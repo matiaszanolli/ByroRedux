@@ -107,7 +107,23 @@ fn apply_bs_lighting_shader(
                 // subsurface tint texture; the other legacy lighting paths
                 // use it as glow. Resolve the role here so downstream code
                 // never has to reinterpret the raw index.
-                let skin_tint_slot = shader.shader_type == 5
+                // #2694 — FaceTint (4) belongs in this branch too. It is a
+                // skin-tint shader: every vanilla FaceTint property carries an
+                // `*_sk.dds` skin-tint mask in slot 2 (3158/3158 in
+                // `Skyrim - Meshes0.bsa`), the same role SkinTint (5) puts
+                // there. It was excluded only because the gate keys on
+                // `shader_type == 5` or `ShaderTypeData::SkinTint`, and Skyrim
+                // FaceTint parses to `ShaderTypeData::None` (that variant's own
+                // doc lists "Type … 4 (Face Tint)"), so every vanilla head bound
+                // its skin-tint mask as a GLOW map — latent only because
+                // `emissive_color` is black, one authored value away from
+                // glowing faces.
+                // HairTint (6) is included on the same evidence: its slot 2 is
+                // `_sk` on all 16 of the 10 815 HairTint properties that
+                // populate it, and the `5 | 6 =>` arm below already treats 5
+                // and 6 as one tint family — so excluding 6 here made the gate
+                // disagree with its own sibling arm.
+                let skin_tint_slot = matches!(shader.shader_type, 4 | 5 | 6)
                     || matches!(
                         &shader.shader_type_data,
                         ShaderTypeData::SkinTint { .. } | ShaderTypeData::Fo76SkinTint { .. }
@@ -129,7 +145,17 @@ fn apply_bs_lighting_shader(
                 // scale / passes scalars already arrive via
                 // `apply_shader_type_data`; pair them with the
                 // texture here. #452.
-                if info.parallax_map.is_none() {
+                //
+                // #2694 — NOT on FaceTint (4). nif.xml's field table calls
+                // slot 3 "Height/Parallax" generically, but every vanilla
+                // FaceTint property puts a *detail* map there
+                // (`MaleHeadDetail_Rough01.dds`, `BlankDetailmap.dds`,
+                // 3149/3158 in `Skyrim - Meshes0.bsa`). Feeding that to
+                // `parallax_map` made `triangle.frag` ray-march POM over a
+                // face complexion map — its POM branch gates only on
+                // `parallaxMapIndex != 0u`, with no `materialKind` check.
+                // The `4 =>` arm below routes slot 3 to `detail_map` instead.
+                if shader.shader_type != 4 && info.parallax_map.is_none() {
                     if let Some(px) = tex_set.textures.get(3) {
                         info.parallax_map = intern_texture_path(pool, px);
                     }
@@ -146,24 +172,52 @@ fn apply_bs_lighting_shader(
                 // and falls through to the default arm.
                 match shader.shader_type {
                     4 => {
-                        // FaceTint — "Enables Detail(TS4), Tint(TS7)".
-                        // Slot 4 here is the per-face detail
-                        // overlay (skin freckles / pores), NOT
-                        // env. Route into the existing
-                        // `detail_map` slot (NiTexturingProperty
-                        // slot 2 already targets the same field
-                        // on pre-Skyrim content).
+                        // FaceTint. #2694 — this arm used to read slot 4 →
+                        // detail and slot 7 → tint, from nif.xml's enum prose
+                        // ("Enables Detail(TS4), Tint(TS7)"). Both slots are
+                        // empty on 100% of vanilla FaceTint properties (they
+                        // never appear at all across the 3158 in
+                        // `Skyrim - Meshes0.bsa`), so the arm was inert while
+                        // the three slots that ARE authored each landed wrong.
+                        //
+                        // Measured occupancy, all 3158 properties:
+                        //   0 diffuse            3158  MaleHead.dds
+                        //   1 normal (_msn/_n)   3158
+                        //   2 skin-tint mask     3158  MaleHead_sk.dds
+                        //   3 detail             3149  MaleHeadDetail_Rough01.dds
+                        //   6 FaceGen tint       3150  FaceTint\Skyrim.esm\<formid>.dds
+                        //   4, 5, 7              absent
+                        //
+                        // Slots 0/1 route generically; slot 2 now goes through
+                        // the `skin_tint_slot` gate above (→ `tint_map`, the
+                        // same role SkinTint gives it). Slot 3 is handled here
+                        // because the generic slot-3 read is suppressed for
+                        // this shader type — see the note at that site.
                         if info.detail_map.is_none() {
-                            if let Some(detail) = tex_set.textures.get(4).filter(|s| !s.is_empty())
+                            if let Some(detail) = tex_set.textures.get(3).filter(|s| !s.is_empty())
                             {
                                 info.detail_map = intern_texture_path(pool, detail);
                             }
                         }
-                        if info.tint_map.is_none() {
-                            if let Some(tint) = tex_set.textures.get(7).filter(|s| !s.is_empty()) {
-                                info.tint_map = intern_texture_path(pool, tint);
-                            }
-                        }
+                        // Slot 6 (the per-NPC baked FaceGen tint) is knowingly
+                        // NOT routed, and this is a real remaining gap rather
+                        // than a no-op park.
+                        //
+                        // It is not the skin-tint mask — that is slot 2 — so it
+                        // cannot share `tint`; it is a baked per-actor overlay,
+                        // semantically closest to a diffuse. `MaterialTextureSet`
+                        // has no role for that, and giving it one is a feature,
+                        // not a slot mapping: a new role + `GpuMaterial` index
+                        // (with the GLSL mirror in lockstep) plus a decision on
+                        // how it composites against the authored diffuse.
+                        //
+                        // That decision belongs to the FaceGen path (#2095),
+                        // which today overrides the diffuse from the ACTOR's
+                        // form id rather than from this slot — and only when
+                        // `material_kind == MATERIAL_KIND_SKIN_TINT` (5), so it
+                        // does not fire for FaceTint (4) at all. Routing slot 6
+                        // to `base_color` here would silently pre-empt that
+                        // design, which is the class of guess this fix removes.
                     }
                     11 => {
                         // MultiLayerParallax. Slot 4 carries the env cube,

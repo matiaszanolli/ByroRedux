@@ -1077,10 +1077,18 @@ fn full_8_slot_tex_set(tag: &str) -> BSShaderTextureSet {
 }
 
 #[test]
-fn face_tint_routes_slot_4_to_detail_not_envmap() {
-    // FaceTint (4) — slot 4 must land in `detail_map`, NOT
-    // `env_map`. Pre-#563 the slot was bound as an env cubemap,
-    // visibly corrupting every NPC face once SK-D5-02 lands.
+fn face_tint_routes_authored_slots_and_leaves_the_empty_ones_alone() {
+    // FaceTint (4). #563 wired this arm from nif.xml's enum prose
+    // ("Enables Detail(TS4), Tint(TS7)") and this test pinned it. #2694
+    // measured vanilla: across `Skyrim - Meshes0.bsa`'s 3158 FaceTint
+    // properties, slots 4/5/7 never appear at all, while slot 2 (`_sk`
+    // skin-tint mask, 3158), slot 3 (`MaleHeadDetail_*`, 3149) and slot 6
+    // (baked FaceGen tint, 3150) are the authored ones. So the arm was
+    // inert and the populated slots each landed wrong:
+    //   * slot 2 → `glow_map` (the `skin_tint_slot` gate missed type 4)
+    //   * slot 3 → `parallax_map`, which makes triangle.frag ray-march POM
+    //     over a face complexion map
+    //   * slot 6 → dropped
     let blocks: Vec<Box<dyn NiObject>> = vec![
         Box::new(lighting_shader_with_type_and_texset(4, 1)),
         Box::new(full_8_slot_tex_set("face")),
@@ -1093,7 +1101,25 @@ fn face_tint_routes_slot_4_to_detail_not_envmap() {
     shape.shader_property_ref = BlockRef(0);
     let (info, pool) = extract_with_pool(&scene, &shape, &[]);
 
-    assert_path(&pool, info.detail_map, "face_4.dds");
+    // Slot 2 is the skin-tint mask, the same role SkinTint (5) gives it.
+    assert_path(&pool, info.tint_map, "face_g.dds");
+    assert!(
+        info.glow_map.is_none(),
+        "FaceTint slot 2 is an `_sk` skin-tint mask, not a glow map — binding \
+         it as emissive is one authored non-black `emissive_color` away from \
+         glowing faces (#2694)"
+    );
+
+    // Slot 3 is the face detail map, and must NOT reach the POM path.
+    assert_path(&pool, info.detail_map, "face_p.dds");
+    assert!(
+        info.parallax_map.is_none(),
+        "FaceTint slot 3 is a detail map; feeding it to `parallax_map` makes \
+         triangle.frag ray-march POM over a face complexion map, since its POM \
+         branch gates only on `parallaxMapIndex != 0u` (#2694)"
+    );
+
+    // Slots 4/5/7 are unauthored on real content; nothing may bind them.
     assert!(
         info.env_map.is_none(),
         "FaceTint slot 4 must NOT be misbound as an env cubemap (#563)"
@@ -1102,10 +1128,9 @@ fn face_tint_routes_slot_4_to_detail_not_envmap() {
         info.env_mask.is_none(),
         "FaceTint has no slot 5 binding either"
     );
-    assert_path(&pool, info.tint_map, "face_7.dds");
     assert!(
         info.inner_layer_map.is_none(),
-        "FaceTint slot 7 routes to tint_map, not inner_layer_map"
+        "FaceTint binds no inner layer"
     );
 }
 
@@ -1165,6 +1190,61 @@ fn multi_layer_parallax_routes_slot_6_to_inner_layer_alongside_env() {
             );
         }
     }
+}
+
+/// #2694 sibling — the tint family (FaceTint 4 / SkinTint 5 / HairTint 6)
+/// must all take slot 2 as the skin-tint mask, not as glow.
+///
+/// The `5 | 6 =>` arm already treats 5 and 6 as one family, but the slot-2
+/// gate keyed on `shader_type == 5` alone, so 4 and 6 fell through to the
+/// glow branch. Measured: slot 2 is `_sk`-suffixed on 3158/3158 FaceTint,
+/// 913/1618 SkinTint and 16/10815 HairTint properties in
+/// `Skyrim - Meshes0.bsa` — never a glow map on any of them.
+#[test]
+fn tint_family_routes_slot_2_to_tint_not_glow() {
+    for shader_type in [4u32, 5, 6] {
+        let blocks: Vec<Box<dyn NiObject>> = vec![
+            Box::new(lighting_shader_with_type_and_texset(shader_type, 1)),
+            Box::new(full_8_slot_tex_set("head")),
+        ];
+        let scene = NifScene {
+            blocks,
+            ..NifScene::default()
+        };
+        let mut shape = make_tri_shape_with_props(Vec::new());
+        shape.shader_property_ref = BlockRef(0);
+        let (info, pool) = extract_with_pool(&scene, &shape, &[]);
+
+        assert_path(&pool, info.tint_map, "head_g.dds");
+        assert!(
+            info.glow_map.is_none(),
+            "shader_type {shader_type} is a tint shader — slot 2 is its `_sk` \
+             skin-tint mask and must not bind as emissive (#2694)"
+        );
+    }
+}
+
+/// Negative guard for the above: a non-tint shader keeps slot 2 as glow, so
+/// the widened gate cannot quietly swallow every shader type.
+#[test]
+fn non_tint_shader_keeps_slot_2_as_glow() {
+    let blocks: Vec<Box<dyn NiObject>> = vec![
+        Box::new(lighting_shader_with_type_and_texset(0, 1)),
+        Box::new(full_8_slot_tex_set("wall")),
+    ];
+    let scene = NifScene {
+        blocks,
+        ..NifScene::default()
+    };
+    let mut shape = make_tri_shape_with_props(Vec::new());
+    shape.shader_property_ref = BlockRef(0);
+    let (info, pool) = extract_with_pool(&scene, &shape, &[]);
+
+    assert_path(&pool, info.glow_map, "wall_g.dds");
+    assert!(
+        info.tint_map.is_none(),
+        "Default (0) is not a tint shader — slot 2 stays the glow map"
+    );
 }
 
 #[test]
