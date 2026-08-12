@@ -46,18 +46,22 @@ fn elevation_ry_quarter_turn_moves_to_y_axis() {
     assert!(approx_eq(dir.z, 0.0), "z should be 0, got {}", dir.z);
 }
 
-/// `rx = π/2` rotates the model direction around Z-up X axis.
-/// Under the helper, that maps to `Rx(-rx)` in Y-up. Because
-/// `(1, 0, 0)` lies on the X axis, it's invariant — output
-/// matches the baseline. Guards against the pre-#380 formula's
-/// behavior, which would have produced `(0, 1, 0)` at this
-/// input.
+/// Known defect: XCLL Directional Rotation XY is azimuth, so changing it
+/// must change the light direction. The current Euler call applies it as an
+/// X-axis rotation to the +X model vector and therefore discards it.
+///
+/// Rust has no native `xfail`; keep this ignored while the XY/Z sign oracle
+/// is unresolved. Running ignored tests must fail until the conversion is
+/// corrected, instead of making the default suite defend the defect.
 #[test]
-fn azimuth_rx_leaves_x_axis_invariant() {
-    let dir = xcll_dir_yup(std::f32::consts::FRAC_PI_2, 0.0);
-    assert!(approx_eq(dir.x, 1.0), "x should be 1, got {}", dir.x);
-    assert!(approx_eq(dir.y, 0.0), "y should be 0, got {}", dir.y);
-    assert!(approx_eq(dir.z, 0.0), "z should be 0, got {}", dir.z);
+#[ignore = "known defect: XCLL Rotation XY is discarded by the Euler conversion"]
+fn rotation_xy_must_affect_direction() {
+    let baseline = xcll_dir_yup(0.0, 0.0);
+    let rotated = xcll_dir_yup(std::f32::consts::FRAC_PI_2, 0.0);
+    assert!(
+        (rotated - baseline).length() > 1e-5,
+        "Rotation XY changed but direction stayed {rotated:?}"
+    );
 }
 
 /// Output vector must always be unit length — XCLL rotations are

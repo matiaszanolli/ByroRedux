@@ -33,8 +33,10 @@ pub struct CellLighting {
     pub ambient: [f32; 3],
     /// Directional light color (RGB 0–1).
     pub directional_color: [f32; 3],
-    /// Directional light rotation (Euler XY in radians, converted to direction vector).
-    pub directional_rotation: [f32; 2],
+    /// Directional Rotation XY (azimuth), in radians.
+    pub directional_rotation_xy: f32,
+    /// Directional Rotation Z (elevation), in radians.
+    pub directional_rotation_z: f32,
     /// Fog color (RGB 0–1), from XCLL bytes 8-10.
     pub fog_color: [f32; 3],
     /// Fog near distance (game units), from XCLL bytes 12-15.

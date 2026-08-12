@@ -112,8 +112,11 @@ pub(crate) fn apply_interior_cell_lighting(
 ) {
     let res = match lighting {
         Some(lit) => {
-            let (rx, ry) = (lit.directional_rotation[0], lit.directional_rotation[1]);
-            let quat = super::euler_zup_to_quat_yup(rx, ry, 0.0);
+            let quat = super::euler_zup_to_quat_yup(
+                lit.directional_rotation_xy,
+                lit.directional_rotation_z,
+                0.0,
+            );
             let dir_v = quat * Vec3::new(1.0, 0.0, 0.0);
             let dir = [dir_v.x, dir_v.y, dir_v.z];
             log::info!(
@@ -555,7 +558,8 @@ fn lighting_from_template(template: &esm::records::LgtmRecord) -> esm::cell::Cel
     esm::cell::CellLighting {
         ambient: template.ambient,
         directional_color: template.directional,
-        directional_rotation: template.directional_rotation,
+        directional_rotation_xy: template.directional_rotation[0],
+        directional_rotation_z: template.directional_rotation[1],
         fog_color: template.fog_color,
         fog_near: template.fog_near,
         fog_far: template.fog_far,
@@ -616,7 +620,8 @@ fn inherit_lighting_fields(
         local.fog_far = template.fog_far;
     }
     if flags & XCLL_INHERIT_DIRECTIONAL_ROTATION != 0 {
-        local.directional_rotation = template.directional_rotation;
+        local.directional_rotation_xy = template.directional_rotation[0];
+        local.directional_rotation_z = template.directional_rotation[1];
     }
     if flags & XCLL_INHERIT_DIRECTIONAL_FADE != 0 && template.directional_fade.is_some() {
         local.directional_fade = template.directional_fade;
@@ -736,7 +741,8 @@ mod tests {
         esm::cell::CellLighting {
             ambient: [0.10, 0.10, 0.12],
             directional_color: [1.0, 0.95, 0.80],
-            directional_rotation: [0.0, 0.0],
+            directional_rotation_xy: 0.0,
+            directional_rotation_z: 0.0,
             fog_color: [0.50, 0.45, 0.30],
             fog_near: 100.0,
             fog_far: 8000.0,

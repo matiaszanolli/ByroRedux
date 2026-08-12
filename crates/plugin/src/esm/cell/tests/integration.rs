@@ -126,8 +126,8 @@ fn oblivion_cells_populate_xcll_lighting() {
             "  '{name}': ambient={:.3?} directional={:.3?} rot=[{:.1},{:.1}]°",
             lit.ambient,
             lit.directional_color,
-            lit.directional_rotation[0].to_degrees(),
-            lit.directional_rotation[1].to_degrees(),
+            lit.directional_rotation_xy.to_degrees(),
+            lit.directional_rotation_z.to_degrees(),
         );
 
         // Sanity: normalized color channels must sit in [0, 1].

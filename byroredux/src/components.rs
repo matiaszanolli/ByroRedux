@@ -384,7 +384,8 @@ mod cell_lighting_res_tests {
         CellLighting {
             ambient: [0.10, 0.10, 0.12],
             directional_color: [1.0, 0.95, 0.80],
-            directional_rotation: [0.0, 0.0],
+            directional_rotation_xy: 0.0,
+            directional_rotation_z: 0.0,
             fog_color: [0.50, 0.45, 0.30],
             fog_near: 100.0,
             fog_far: 8000.0,
@@ -408,7 +409,8 @@ mod cell_lighting_res_tests {
         CellLighting {
             ambient: [0.05, 0.05, 0.06],
             directional_color: [0.8, 0.85, 1.0],
-            directional_rotation: [0.5, 0.3],
+            directional_rotation_xy: 0.5,
+            directional_rotation_z: 0.3,
             fog_color: [0.20, 0.25, 0.35],
             fog_near: 50.0,
             fog_far: 5000.0,
@@ -496,7 +498,8 @@ mod cell_lighting_res_tests {
         let lit = CellLighting {
             ambient: [0.30, 0.30, 0.30],
             directional_color: [0.90, 0.90, 0.85],
-            directional_rotation: [0.0, 0.0],
+            directional_rotation_xy: 0.0,
+            directional_rotation_z: 0.0,
             fog_color: [0.40, 0.40, 0.50],
             fog_near: 200.0,
             fog_far: 4000.0,

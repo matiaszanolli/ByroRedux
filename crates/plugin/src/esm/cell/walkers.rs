@@ -352,8 +352,8 @@ pub(crate) fn parse_cell_group(
                             // XCLL layout (shared 28-byte prefix across all games):
                             //   ambient RGBA, directional RGBA, fog-near RGBA
                             //   fog_near f32, fog_far f32
-                            //   directional rotation X (i32, degrees)
-                            //   directional rotation Y (i32, degrees)
+                            //   directional rotation XY (i32, degrees)
+                            //   directional rotation Z (i32, degrees)
                             //
                             // Oblivion stops at 36 bytes (no extended tail).
                             // FNV adds 12 bytes — dir_fade / fog_clip /
@@ -389,8 +389,8 @@ pub(crate) fn parse_cell_group(
                             let fog_color = r.rgb_color().unwrap_or([0.0; 3]);
                             let fog_near = r.f32_or_default();
                             let fog_far = r.f32_or_default();
-                            let rot_x = (r.i32_or_default() as f32).to_radians();
-                            let rot_y = (r.i32_or_default() as f32).to_radians();
+                            let rotation_xy = (r.i32_or_default() as f32).to_radians();
+                            let rotation_z = (r.i32_or_default() as f32).to_radians();
 
                             // #1293 — Starfield's 108-byte XCLL diverges from
                             // the Skyrim layout at offset 40: bytes 40-107 are a
@@ -434,7 +434,8 @@ pub(crate) fn parse_cell_group(
                                 lighting = Some(CellLighting {
                                     ambient,
                                     directional_color,
-                                    directional_rotation: [rot_x, rot_y],
+                                    directional_rotation_xy: rotation_xy,
+                                    directional_rotation_z: rotation_z,
                                     fog_color,
                                     fog_near,
                                     fog_far,
@@ -525,7 +526,8 @@ pub(crate) fn parse_cell_group(
                             lighting = Some(CellLighting {
                                 ambient,
                                 directional_color,
-                                directional_rotation: [rot_x, rot_y],
+                                directional_rotation_xy: rotation_xy,
+                                directional_rotation_z: rotation_z,
                                 fog_color,
                                 fog_near,
                                 fog_far,
