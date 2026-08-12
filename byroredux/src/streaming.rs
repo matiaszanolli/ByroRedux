@@ -664,14 +664,10 @@ impl WorldStreamingState {
         let Some(player_grid) = self.last_player_grid else {
             return;
         };
-        let worldspace = self
-            .wctx
-            .record_index
-            .cells
-            .worldspaces
-            .get(&self.wctx.worldspace_key);
-        let (Some(height), lod_water_form) = crate::env_translate::translate_lod_water(worldspace)
-        else {
+        let (Some(height), lod_water_form) = crate::env_translate::translate_lod_water(
+            &self.wctx.record_index.cells.worldspaces,
+            &self.wctx.worldspace_key,
+        ) else {
             return;
         };
         self.lod_water = crate::cell_loader::spawn_lod_water_plane(

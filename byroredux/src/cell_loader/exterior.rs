@@ -886,7 +886,8 @@ pub fn build_exterior_world_context(
     // this in `load_one_exterior_cell`.
     let (default_water_height, default_water_type_form) =
         crate::env_translate::default_water_for_worldspace(
-            record_index.cells.worldspaces.get(&worldspace_key),
+            &record_index.cells.worldspaces,
+            &worldspace_key,
             record_index.game,
         );
 

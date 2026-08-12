@@ -55,25 +55,41 @@ use crate::components::{CellLightingRes, DalcCubeYup, SkyParamsRes, WeatherDataR
 ///
 /// This is the prototype of the EXAL GameVariant table (`docs/engine/exal.md`
 /// §4): the one place the per-`GameKind` default-water decision lives.
+///
+/// # Parent inheritance (#2735)
+///
+/// Both halves resolve up the `WNAM` chain when the child authors neither and
+/// sets the matching `PNAM` bit — `0x08` for the `NAM2` type, `0x01` for the
+/// `DNAM` height. Six Skyrim, one FO3 and one FO4 worldspace author no `NAM2`
+/// while explicitly flagging that they inherit it; before this they resolved
+/// to no water at all, which renders as a dry ocean.
 pub(crate) fn default_water_for_worldspace(
-    wrld: Option<&WorldspaceRecord>,
+    worldspaces: &HashMap<String, WorldspaceRecord>,
+    worldspace_key: &str,
     game: GameKind,
 ) -> (Option<f32>, Option<u32>) {
-    let Some(w) = wrld else {
+    if !worldspaces.contains_key(worldspace_key) {
         return (None, None);
-    };
+    }
+    let water_form = inherit_up_chain(worldspaces, worldspace_key, pnam::INHERIT_WATER, |w| {
+        w.water_form
+    });
     if game == GameKind::Oblivion {
         // No DNAM on Oblivion WRLD → sea level Z=0, only where the
-        // worldspace advertises default water via NAM2.
-        return match w.water_form {
-            Some(water_form) => (Some(0.0), Some(water_form)),
+        // worldspace advertises default water via NAM2. (Oblivion authors no
+        // PNAM either, so the chain walk is a no-op there and this stays the
+        // pre-#2735 behaviour exactly.)
+        return match water_form {
+            Some(form) => (Some(0.0), Some(form)),
             None => (None, None),
         };
     }
     // FO3/FNV/Skyrim+/FO4: the DNAM default water height is the signal that
     // the worldspace has default water; pair it with the NAM2 type form.
-    match w.default_water_height {
-        Some(height) => (Some(height), w.water_form),
+    match inherit_up_chain(worldspaces, worldspace_key, pnam::INHERIT_LAND, |w| {
+        w.default_water_height
+    }) {
+        Some(height) => (Some(height), water_form),
         None => (None, None),
     }
 }
@@ -93,18 +109,129 @@ pub(crate) fn default_water_for_worldspace(
 /// 28 `Fallout3.esm` worldspaces, NAM4≠DNAM on 22 of 30 `Skyrim.esm`
 /// worldspaces — so a consumer must not substitute one pair for the other.
 /// #2449 / EXAL-01.
-pub(crate) fn translate_lod_water(wrld: Option<&WorldspaceRecord>) -> (Option<f32>, Option<u32>) {
-    let Some(w) = wrld else {
+///
+/// # Parent inheritance (#2735)
+///
+/// `NAM3`/`NAM4` resolve up the `WNAM` chain under `PNAM` bit `0x02`, which
+/// correlates exactly with their absence on 7 Skyrim, 4 FO3 and 3 FO4 child
+/// worldspaces. Both fields share the one bit — the data shows them always
+/// authored and always omitted together.
+pub(crate) fn translate_lod_water(
+    worldspaces: &HashMap<String, WorldspaceRecord>,
+    worldspace_key: &str,
+) -> (Option<f32>, Option<u32>) {
+    if !worldspaces.contains_key(worldspace_key) {
         return (None, None);
-    };
-    (w.lod_water_height, w.lod_water_form)
+    }
+    (
+        inherit_up_chain(worldspaces, worldspace_key, pnam::INHERIT_LOD, |w| {
+            w.lod_water_height
+        }),
+        inherit_up_chain(worldspaces, worldspace_key, pnam::INHERIT_LOD, |w| {
+            w.lod_water_form
+        }),
+    )
 }
 
-/// `PNAM` parent-use-flags bit: this worldspace inherits its climate from
-/// [`WorldspaceRecord::parent_worldspace`] when it has no own `CNAM`. See
-/// the full bit layout at `crates/plugin/src/esm/cell/mod.rs`'s
-/// `WorldspaceRecord` doc (`WNAM`/`PNAM`).
-const PNAM_INHERIT_CLIMATE: u16 = 0x10;
+/// `PNAM` parent-use flags — which fields a child worldspace takes from its
+/// [`WNAM`](WorldspaceRecord::parent_worldspace) parent.
+///
+/// # How these were identified
+///
+/// The bit meanings are not documented in the record; they were established by
+/// correlating each bit against the *absence* of the sub-record it would
+/// govern, across every child worldspace in the shipped masters (#2735):
+///
+/// | Bit | Sub-record | Skyrim | FO3 | FO4 | FNV |
+/// |---|---|---|---|---|---|
+/// | `0x01` | `DNAM` land data | 7/7 | 4/4 | 1/1 | — |
+/// | `0x02` | `NAM3`+`NAM4` LOD water | 7/7 | 4/4 | 3/3 | — |
+/// | `0x04` | `ICON` map | 34/34 | 23/23 | 3/3 | 10/10 |
+/// | `0x08` | `NAM2` water | 6/6 | 1/1 | 1/1 | — |
+/// | `0x10` | `CNAM` climate | 20 set / 23 absent | 1/1 | 3/3 | — |
+///
+/// Every ratio is "bit set" over "own sub-record absent", and they match
+/// exactly in every game that uses the bit. The invariant the data supports is
+/// therefore **bit set ⟺ no own value, take the parent's**.
+///
+/// Climate is the one inexact row and it confirms rather than undermines the
+/// reading: three Skyrim children lack `CNAM` *without* setting the bit, i.e.
+/// they are genuinely climate-less rather than inheriting — which is precisely
+/// the distinction [`resolve_worldspace_climate`] already draws.
+mod pnam {
+    /// `DNAM` — land data, which carries the default water *height*.
+    pub(super) const INHERIT_LAND: u16 = 0x01;
+    /// `NAM3`/`NAM4` — the distant LOD ring's water type and height.
+    pub(super) const INHERIT_LOD: u16 = 0x02;
+    /// `ICON` — worldspace map texture. Parsed but currently unconsumed, so
+    /// deliberately not wired; add a resolver alongside its first consumer.
+    #[allow(dead_code)]
+    pub(super) const INHERIT_MAP: u16 = 0x04;
+    /// `NAM2` — default water *type*.
+    pub(super) const INHERIT_WATER: u16 = 0x08;
+    /// `CNAM` — climate.
+    pub(super) const INHERIT_CLIMATE: u16 = 0x10;
+}
+
+use pnam::INHERIT_CLIMATE as PNAM_INHERIT_CLIMATE;
+
+/// Resolve one inheritable worldspace field, walking the `WNAM` chain.
+///
+/// A child's own authored value always wins; the chain is consulted only when
+/// the field is absent **and** `bit` is set. That ordering is what the
+/// correlation above establishes, and it means a worldspace that authors a
+/// value can never have it overridden by an ancestor.
+///
+/// Cycle-guarded: corrupt or adversarial plugin data terminates the walk
+/// instead of hanging, matching [`resolve_worldspace_climate`].
+fn inherit_up_chain<T, F>(
+    worldspaces: &HashMap<String, WorldspaceRecord>,
+    start_key: &str,
+    bit: u16,
+    extract: F,
+) -> Option<T>
+where
+    F: Fn(&WorldspaceRecord) -> Option<T>,
+{
+    let mut current = start_key.to_string();
+    let mut visited = std::collections::HashSet::new();
+    loop {
+        let record = worldspaces.get(&current)?;
+        if let Some(value) = extract(record) {
+            return Some(value);
+        }
+        if record.parent_flags & bit == 0 {
+            // No own value and not flagged to inherit — genuinely unauthored,
+            // not an inheritance gap.
+            return None;
+        }
+        if !visited.insert(current.clone()) {
+            log::warn!(
+                "inherit_up_chain: cyclic WNAM chain from '{start_key}' (revisited \
+                 '{current}') while resolving PNAM bit {bit:#06X} — treating as unresolved",
+            );
+            return None;
+        }
+        let parent_fid = record.parent_worldspace.or_else(|| {
+            log::warn!(
+                "inherit_up_chain: '{current}' sets PNAM bit {bit:#06X} but authors no WNAM \
+                 parent — chain terminates unresolved (from '{start_key}')",
+            );
+            None
+        })?;
+        let (parent_key, _) = worldspaces
+            .iter()
+            .find(|(_, w)| w.form_id == parent_fid)
+            .or_else(|| {
+                log::warn!(
+                    "inherit_up_chain: '{current}'s WNAM parent {parent_fid:08X} is not among \
+                     parsed worldspaces — chain terminates unresolved (from '{start_key}')",
+                );
+                None
+            })?;
+        current = parent_key.clone();
+    }
+}
 
 /// Resolve a worldspace's climate FormID (the `CLMT` a `CNAM` sub-record
 /// authors), chasing the `WNAM` parent-worldspace chain when the
@@ -127,47 +254,6 @@ const PNAM_INHERIT_CLIMATE: u16 = 0x10;
 /// plugin data) via `visited`. Logs at `warn` when the chain terminates
 /// unresolved so a real inheritance gap is diagnosable instead of reading
 /// as an unrelated weather bug.
-/// Every worldspace key from `start_key` up its `WNAM` parent chain, most
-/// specific first.
-///
-/// Unlike [`resolve_worldspace_climate`] this walks the chain **unconditionally**
-/// rather than gating on `PNAM`'s climate-inherit bit. The two ask different
-/// questions: that bit governs whether a child inherits its parent's *weather*,
-/// while a child worldspace sits physically inside its parent regardless of how
-/// its sky is authored. Ground-cover climate is a geographic property, so the
-/// chain is the right input even when weather inheritance is switched off.
-///
-/// Cycle-guarded like its sibling; a corrupt chain truncates rather than hangs.
-pub(crate) fn worldspace_name_chain(
-    worldspaces: &HashMap<String, WorldspaceRecord>,
-    start_key: &str,
-) -> Vec<String> {
-    let mut chain = vec![start_key.to_string()];
-    let mut visited = std::collections::HashSet::new();
-    let mut current = start_key.to_string();
-    loop {
-        if !visited.insert(current.clone()) {
-            log::warn!(
-                "worldspace_name_chain: cyclic WNAM chain from '{start_key}' \
-                 (revisited '{current}') — truncating",
-            );
-            return chain;
-        }
-        let Some(record) = worldspaces.get(&current) else {
-            return chain;
-        };
-        let Some(parent_fid) = record.parent_worldspace else {
-            return chain;
-        };
-        let Some((parent_key, _)) = worldspaces.iter().find(|(_, w)| w.form_id == parent_fid)
-        else {
-            return chain;
-        };
-        chain.push(parent_key.clone());
-        current = parent_key.clone();
-    }
-}
-
 pub(crate) fn resolve_worldspace_climate(
     worldspaces: &HashMap<String, WorldspaceRecord>,
     worldspace_climates: &HashMap<String, u32>,
@@ -211,6 +297,47 @@ pub(crate) fn resolve_worldspace_climate(
             return None;
         };
         current_key = parent_key.as_str();
+    }
+}
+
+/// Every worldspace key from `start_key` up its `WNAM` parent chain, most
+/// specific first.
+///
+/// Unlike [`resolve_worldspace_climate`] this walks the chain **unconditionally**
+/// rather than gating on `PNAM`'s climate-inherit bit. The two ask different
+/// questions: that bit governs whether a child inherits its parent's *weather*,
+/// while a child worldspace sits physically inside its parent regardless of how
+/// its sky is authored. Ground-cover climate is a geographic property, so the
+/// chain is the right input even when weather inheritance is switched off.
+///
+/// Cycle-guarded like its sibling; a corrupt chain truncates rather than hangs.
+pub(crate) fn worldspace_name_chain(
+    worldspaces: &HashMap<String, WorldspaceRecord>,
+    start_key: &str,
+) -> Vec<String> {
+    let mut chain = vec![start_key.to_string()];
+    let mut visited = std::collections::HashSet::new();
+    let mut current = start_key.to_string();
+    loop {
+        if !visited.insert(current.clone()) {
+            log::warn!(
+                "worldspace_name_chain: cyclic WNAM chain from '{start_key}' \
+                 (revisited '{current}') — truncating",
+            );
+            return chain;
+        }
+        let Some(record) = worldspaces.get(&current) else {
+            return chain;
+        };
+        let Some(parent_fid) = record.parent_worldspace else {
+            return chain;
+        };
+        let Some((parent_key, _)) = worldspaces.iter().find(|(_, w)| w.form_id == parent_fid)
+        else {
+            return chain;
+        };
+        chain.push(parent_key.clone());
+        current = parent_key.clone();
     }
 }
 
@@ -621,6 +748,13 @@ mod tests {
 
     // ── default_water_for_worldspace ──────────────────────────────
 
+    /// Wrap a standalone record as the single-worldspace map the resolver
+    /// takes. Keyed `"w"`; no parent, so the chain walk is inert and these
+    /// tests keep measuring exactly what they measured pre-#2735.
+    fn solo(wrld: WorldspaceRecord) -> HashMap<String, WorldspaceRecord> {
+        HashMap::from([("w".to_string(), wrld)])
+    }
+
     /// #1305 / OBL-D6-NEW-02 — an Oblivion worldspace with a NAM2 default
     /// water form makes its no-XCLW cells default to water at the Tamriel
     /// sea level Z=0 (Oblivion WRLD has no DNAM height field, so the
@@ -633,7 +767,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            default_water_for_worldspace(Some(&wrld), GameKind::Oblivion),
+            default_water_for_worldspace(&solo(wrld.clone()), "w", GameKind::Oblivion),
             (Some(0.0), Some(0x0000_1234)),
             "Oblivion worldspace advertising default water → no-XCLW cells get Z=0 water"
         );
@@ -646,12 +780,12 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            default_water_for_worldspace(Some(&wrld), GameKind::Oblivion),
+            default_water_for_worldspace(&solo(wrld.clone()), "w", GameKind::Oblivion),
             (None, None)
         );
         // A missing worldspace record likewise yields no default water.
         assert_eq!(
-            default_water_for_worldspace(None, GameKind::Oblivion),
+            default_water_for_worldspace(&HashMap::new(), "missing", GameKind::Oblivion),
             (None, None)
         );
     }
@@ -676,7 +810,7 @@ mod tests {
             GameKind::Starfield,
         ] {
             assert_eq!(
-                default_water_for_worldspace(Some(&wrld), game),
+                default_water_for_worldspace(&solo(wrld.clone()), "w", game),
                 (None, None),
                 "{game:?} with no DNAM default height must NOT be forced to Z=0"
             );
@@ -695,15 +829,264 @@ mod tests {
         };
         for game in [GameKind::Fallout3NV, GameKind::Skyrim, GameKind::Fallout4] {
             assert_eq!(
-                default_water_for_worldspace(Some(&wrld), game),
+                default_water_for_worldspace(&solo(wrld.clone()), "w", game),
                 (Some(-2300.0), Some(0x0000_00AB)),
                 "{game:?} no-XCLW cells inherit the DNAM default water height + NAM2 type"
             );
         }
         // Oblivion ignores DNAM (it has none) and stays on Z=0.
         assert_eq!(
-            default_water_for_worldspace(Some(&wrld), GameKind::Oblivion),
+            default_water_for_worldspace(&solo(wrld.clone()), "w", GameKind::Oblivion),
             (Some(0.0), Some(0x0000_00AB))
+        );
+    }
+
+    // ── PNAM parent inheritance (#2735) ──────────────────────────
+
+    /// Two-worldspace fixture: child `"c"` under parent `"p"`, with the
+    /// child's PNAM bits set to `child_flags`.
+    fn parent_child(
+        parent: WorldspaceRecord,
+        child_flags: u16,
+        child: WorldspaceRecord,
+    ) -> HashMap<String, WorldspaceRecord> {
+        let parent_fid = 0x0000_0100;
+        HashMap::from([
+            (
+                "p".to_string(),
+                WorldspaceRecord {
+                    form_id: parent_fid,
+                    ..parent
+                },
+            ),
+            (
+                "c".to_string(),
+                WorldspaceRecord {
+                    form_id: 0x0000_0200,
+                    parent_worldspace: Some(parent_fid),
+                    parent_flags: child_flags,
+                    ..child
+                },
+            ),
+        ])
+    }
+
+    /// The measured defect: 6 Skyrim + 1 FO3 + 1 FO4 worldspaces author no
+    /// NAM2, set PNAM 0x08, and rendered no water at all before this.
+    #[test]
+    fn child_inherits_the_parents_water_type_and_height() {
+        let map = parent_child(
+            WorldspaceRecord {
+                water_form: Some(0x0000_00AB),
+                default_water_height: Some(-14000.0), // e.g. Skyrim Tamriel
+                ..Default::default()
+            },
+            pnam::INHERIT_WATER | pnam::INHERIT_LAND,
+            WorldspaceRecord::default(),
+        );
+        assert_eq!(
+            default_water_for_worldspace(&map, "c", GameKind::Skyrim),
+            (Some(-14000.0), Some(0x0000_00AB)),
+        );
+    }
+
+    #[test]
+    fn a_childs_own_water_always_beats_the_parents() {
+        // Authored value wins even with the inherit bit set — the bit means
+        // "I have none", not "override me".
+        let map = parent_child(
+            WorldspaceRecord {
+                water_form: Some(0x0000_00AB),
+                default_water_height: Some(-14000.0),
+                ..Default::default()
+            },
+            pnam::INHERIT_WATER | pnam::INHERIT_LAND,
+            WorldspaceRecord {
+                water_form: Some(0x0000_00CD),
+                default_water_height: Some(-2300.0),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            default_water_for_worldspace(&map, "c", GameKind::Skyrim),
+            (Some(-2300.0), Some(0x0000_00CD)),
+        );
+    }
+
+    #[test]
+    fn without_the_bit_a_child_stays_waterless() {
+        // Absent value AND no inherit bit is "genuinely unauthored", which
+        // must not silently pick up the parent's ocean.
+        let map = parent_child(
+            WorldspaceRecord {
+                water_form: Some(0x0000_00AB),
+                default_water_height: Some(-14000.0),
+                ..Default::default()
+            },
+            0,
+            WorldspaceRecord::default(),
+        );
+        assert_eq!(
+            default_water_for_worldspace(&map, "c", GameKind::Skyrim),
+            (None, None),
+        );
+    }
+
+    #[test]
+    fn the_two_water_bits_are_independent() {
+        // 0x08 governs NAM2, 0x01 governs DNAM. A child inheriting only the
+        // type must not also acquire the parent's height.
+        let map = parent_child(
+            WorldspaceRecord {
+                water_form: Some(0x0000_00AB),
+                default_water_height: Some(-14000.0),
+                ..Default::default()
+            },
+            pnam::INHERIT_WATER,
+            WorldspaceRecord::default(),
+        );
+        // No own DNAM and no 0x01 → no height → no default water at all.
+        assert_eq!(
+            default_water_for_worldspace(&map, "c", GameKind::Skyrim),
+            (None, None),
+        );
+    }
+
+    #[test]
+    fn lod_water_inherits_under_its_own_bit() {
+        let map = parent_child(
+            WorldspaceRecord {
+                lod_water_form: Some(0x0000_0777),
+                lod_water_height: Some(-9000.0),
+                ..Default::default()
+            },
+            pnam::INHERIT_LOD,
+            WorldspaceRecord::default(),
+        );
+        assert_eq!(
+            translate_lod_water(&map, "c"),
+            (Some(-9000.0), Some(0x0000_0777))
+        );
+        // …and not under the full-detail water bit.
+        let wrong_bit = parent_child(
+            WorldspaceRecord {
+                lod_water_form: Some(0x0000_0777),
+                lod_water_height: Some(-9000.0),
+                ..Default::default()
+            },
+            pnam::INHERIT_WATER,
+            WorldspaceRecord::default(),
+        );
+        assert_eq!(translate_lod_water(&wrong_bit, "c"), (None, None));
+    }
+
+    #[test]
+    fn inheritance_walks_more_than_one_hop() {
+        // Skyrim holdout worlds nest more than one level deep.
+        let grandparent = 0x0000_0100;
+        let parent = 0x0000_0200;
+        let map = HashMap::from([
+            (
+                "gp".to_string(),
+                WorldspaceRecord {
+                    form_id: grandparent,
+                    water_form: Some(0x0000_00AB),
+                    default_water_height: Some(-14000.0),
+                    ..Default::default()
+                },
+            ),
+            (
+                "p".to_string(),
+                WorldspaceRecord {
+                    form_id: parent,
+                    parent_worldspace: Some(grandparent),
+                    parent_flags: pnam::INHERIT_WATER | pnam::INHERIT_LAND,
+                    ..Default::default()
+                },
+            ),
+            (
+                "c".to_string(),
+                WorldspaceRecord {
+                    form_id: 0x0000_0300,
+                    parent_worldspace: Some(parent),
+                    parent_flags: pnam::INHERIT_WATER | pnam::INHERIT_LAND,
+                    ..Default::default()
+                },
+            ),
+        ]);
+        assert_eq!(
+            default_water_for_worldspace(&map, "c", GameKind::Skyrim),
+            (Some(-14000.0), Some(0x0000_00AB)),
+        );
+    }
+
+    #[test]
+    fn a_cyclic_chain_terminates_instead_of_hanging() {
+        // Corrupt/adversarial plugin data must not spin the loader.
+        let a = 0x0000_0100;
+        let b = 0x0000_0200;
+        let map = HashMap::from([
+            (
+                "a".to_string(),
+                WorldspaceRecord {
+                    form_id: a,
+                    parent_worldspace: Some(b),
+                    parent_flags: pnam::INHERIT_WATER | pnam::INHERIT_LAND,
+                    ..Default::default()
+                },
+            ),
+            (
+                "b".to_string(),
+                WorldspaceRecord {
+                    form_id: b,
+                    parent_worldspace: Some(a),
+                    parent_flags: pnam::INHERIT_WATER | pnam::INHERIT_LAND,
+                    ..Default::default()
+                },
+            ),
+        ]);
+        assert_eq!(
+            default_water_for_worldspace(&map, "a", GameKind::Skyrim),
+            (None, None),
+        );
+    }
+
+    #[test]
+    fn a_dangling_parent_reference_resolves_to_nothing() {
+        // WNAM pointing outside the parsed set (missing master) must not panic.
+        let map = HashMap::from([(
+            "c".to_string(),
+            WorldspaceRecord {
+                form_id: 0x0000_0200,
+                parent_worldspace: Some(0x0DEA_DBEE),
+                parent_flags: pnam::INHERIT_WATER | pnam::INHERIT_LAND,
+                ..Default::default()
+            },
+        )]);
+        assert_eq!(
+            default_water_for_worldspace(&map, "c", GameKind::Skyrim),
+            (None, None),
+        );
+    }
+
+    #[test]
+    fn oblivion_is_unaffected_by_inheritance() {
+        // Oblivion authors no PNAM at all, so the walk is inert and the
+        // sea-level path is byte-for-byte its pre-#2735 behaviour.
+        let map = parent_child(
+            WorldspaceRecord {
+                water_form: Some(0x0000_00AB),
+                ..Default::default()
+            },
+            0,
+            WorldspaceRecord {
+                water_form: Some(0x0000_00CD),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            default_water_for_worldspace(&map, "c", GameKind::Oblivion),
+            (Some(0.0), Some(0x0000_00CD)),
         );
     }
 

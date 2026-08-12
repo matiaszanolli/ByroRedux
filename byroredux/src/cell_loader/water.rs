@@ -638,6 +638,12 @@ mod tests {
 
     // ── translate_lod_water (#2449 / EXAL-01) ────────────────────────
 
+    fn lod_map(
+        wrld: byroredux_plugin::esm::cell::WorldspaceRecord,
+    ) -> std::collections::HashMap<String, byroredux_plugin::esm::cell::WorldspaceRecord> {
+        std::collections::HashMap::from([("w".to_string(), wrld)])
+    }
+
     #[test]
     fn translate_lod_water_passes_through_authored_fields() {
         let wrld = byroredux_plugin::esm::cell::WorldspaceRecord {
@@ -646,7 +652,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            crate::env_translate::translate_lod_water(Some(&wrld)),
+            crate::env_translate::translate_lod_water(&lod_map(wrld), "w"),
             (Some(-500.0), Some(0x0001_2345))
         );
     }
@@ -657,11 +663,11 @@ mod tests {
     fn translate_lod_water_is_none_when_unauthored() {
         let wrld = byroredux_plugin::esm::cell::WorldspaceRecord::default();
         assert_eq!(
-            crate::env_translate::translate_lod_water(Some(&wrld)),
+            crate::env_translate::translate_lod_water(&lod_map(wrld), "w"),
             (None, None)
         );
         assert_eq!(
-            crate::env_translate::translate_lod_water(None),
+            crate::env_translate::translate_lod_water(&Default::default(), "missing"),
             (None, None)
         );
     }
