@@ -61,7 +61,7 @@ SUMMARY="$ARTIFACT_DIR/summary.tsv"
 ACTIVE_PID=""
 
 mkdir -p "$ARTIFACT_DIR"
-printf 'profile\tresult\tentities\tdraws\timage_mean\timage_stddev\tmissing_textures\tfailed_nifs\tcrossings\tfull_samples\tfull_max_ms\tfull_superseded\tlod_samples\tlod_max_ms\tlod_superseded\tframe_p50_ms\tframe_p95_ms\tframe_max_ms\townership\n' > "$SUMMARY"
+printf 'profile\tresult\tentities\tdraws\timage_mean\timage_stddev\tmissing_textures\tfailed_nifs\tcrossings\tfull_samples\tfull_max_ms\tfull_superseded\tlod_samples\tlod_max_ms\tlod_superseded\tframe_p50_ms\tframe_p95_ms\tframe_max_ms\townership\tground_probe\n' > "$SUMMARY"
 
 cleanup_active () {
     if [[ -n "$ACTIVE_PID" ]] && kill -0 "$ACTIVE_PID" 2>/dev/null; then
@@ -95,7 +95,7 @@ profile_ready () {
     done
     if (( missing != 0 )); then
         echo "exterior-smoke[$label]: SKIP - required game data is not installed"
-        printf '%s\tSKIP\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\n' "$label" >> "$SUMMARY"
+        printf '%s\tSKIP\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\n' "$label" >> "$SUMMARY"
         return 1
     fi
     return 0
@@ -166,13 +166,13 @@ run_profile () {
             tail -40 "$stderr_log" || true
             wait "$ACTIVE_PID" 2>/dev/null || true
             ACTIVE_PID=""
-            printf '%s\tFAIL\t0\t0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\n' "$label" >> "$SUMMARY"
+            printf '%s\tFAIL\t0\t0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\n' "$label" >> "$SUMMARY"
             return 1
         fi
         if (( $(date +%s) > deadline )); then
             echo "exterior-smoke[$label]: HARD FAIL - timed out after ${TIMEOUT_SECONDS}s"
             cleanup_active
-            printf '%s\tFAIL\t0\t0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\n' "$label" >> "$SUMMARY"
+            printf '%s\tFAIL\t0\t0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\n' "$label" >> "$SUMMARY"
             return 1
         fi
         sleep 0.5
@@ -229,6 +229,7 @@ EOF
     IMAGE_MEAN="-"
     IMAGE_STDDEV="-"
     local ownership="-"
+    local probe_result="-"
 
     local hard_fail=0
     if [[ -z "$bench_line" ]]; then
@@ -295,6 +296,29 @@ EOF
             hard_fail=1
         else
             echo "exterior-smoke[$label]: PASS traversal: $streaming_line"
+        fi
+    fi
+
+    # EX-04 / #2375 — the spawn ground probe. A content-backed cell can still
+    # have nothing under the spawn column, and a capsule placed there falls
+    # indefinitely. Character mode is now gated on this, so the interesting
+    # signals are: did the probe run, and did it find walkable ground.
+    local probe_line probe_result
+    probe_line="$(grep -oE 'spawn-probe: result=[a-z-]+ colliders=[0-9]+[^"]*' "$stderr_log" \
+        | head -1 || true)"
+    if [[ -z "$probe_line" ]]; then
+        # Absent is not automatically a failure: --fly profiles never probe.
+        echo "exterior-smoke[$label]: INFO - no spawn ground probe (FlyCam profile)"
+        probe_result="n/a"
+    else
+        probe_result="$(grep -oE 'result=[a-z-]+' <<< "$probe_line" | cut -d= -f2)"
+        local probe_colliders
+        probe_colliders="$(grep -oE 'colliders=[0-9]+' <<< "$probe_line" | cut -d= -f2)"
+        if [[ "$probe_result" == grounded ]]; then
+            echo "exterior-smoke[$label]: PASS ground probe (colliders=$probe_colliders)"
+        else
+            echo "exterior-smoke[$label]: HARD FAIL - spawn ground probe found no walkable surface: $probe_line"
+            hard_fail=1
         fi
     fi
 
@@ -370,12 +394,12 @@ EOF
     if (( hard_fail != 0 )); then
         result=FAIL
     fi
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$label" "$result" "$entities" "$draws" "$IMAGE_MEAN" \
         "$IMAGE_STDDEV" "$missing_textures" "$failed_nifs" "$crossings" \
         "$full_samples" "$full_max_ms" "$full_superseded" "$lod_samples" \
         "$lod_max_ms" "$lod_superseded" "$frame_p50_ms" "$frame_p95_ms" \
-        "$frame_max_ms" "$ownership" >> "$SUMMARY"
+        "$frame_max_ms" "$ownership" "$probe_result" >> "$SUMMARY"
     return "$hard_fail"
 }
 

@@ -1,4 +1,7 @@
-use super::{capsule_center_y_on_surface, select_door_spawn_position, select_initial_player_mode};
+use super::{
+    capsule_center_y_on_surface, select_door_spawn_position, select_initial_player_mode,
+    GroundProbe,
+};
 use crate::systems::PlayerMode;
 use byroredux_core::math::Vec3;
 
@@ -59,7 +62,7 @@ fn capsule_spawn_height_includes_radius() {
 #[test]
 fn empty_exterior_defaults_to_flycam_even_when_peripheral_content_loaded() {
     assert_eq!(
-        select_initial_player_mode(false, false, false, true, false),
+        select_initial_player_mode(false, false, false, true, false, true),
         PlayerMode::FlyCam,
     );
 }
@@ -67,7 +70,7 @@ fn empty_exterior_defaults_to_flycam_even_when_peripheral_content_loaded() {
 #[test]
 fn explicit_player_overrides_empty_exterior_guard() {
     assert_eq!(
-        select_initial_player_mode(false, true, false, true, false),
+        select_initial_player_mode(false, true, false, true, false, true),
         PlayerMode::Character,
     );
 }
@@ -75,7 +78,7 @@ fn explicit_player_overrides_empty_exterior_guard() {
 #[test]
 fn explicit_fly_still_wins_over_explicit_player() {
     assert_eq!(
-        select_initial_player_mode(true, true, false, true, true),
+        select_initial_player_mode(true, true, false, true, true, true),
         PlayerMode::FlyCam,
     );
 }
@@ -83,7 +86,98 @@ fn explicit_fly_still_wins_over_explicit_player() {
 #[test]
 fn content_backed_foreground_defaults_to_character() {
     assert_eq!(
-        select_initial_player_mode(false, false, false, true, true),
+        select_initial_player_mode(false, false, false, true, true, true),
         PlayerMode::Character,
     );
+}
+
+// ── EX-04 ground-probe gate (#2375) ──────────────────────────────
+
+#[test]
+fn content_backed_foreground_without_walkable_ground_falls_back_to_flycam() {
+    // The defect this issue names: a cell can be fully content-backed and
+    // still have nothing under the spawn column (FO3 MegatonWorld 0,0). The
+    // capsule used to be placed at aabb.max.y + 200 and fall indefinitely.
+    assert_eq!(
+        select_initial_player_mode(false, false, false, true, true, false),
+        PlayerMode::FlyCam,
+    );
+}
+
+#[test]
+fn explicit_player_overrides_the_ground_probe_too() {
+    // Acceptance is explicit that --player may override "with a warning".
+    assert_eq!(
+        select_initial_player_mode(false, true, false, true, true, false),
+        PlayerMode::Character,
+    );
+}
+
+#[test]
+fn character_needs_content_foreground_and_ground_together() {
+    // All three must hold; any one failing is FlyCam. Pinning the full truth
+    // table stops a later refactor from dropping a term silently.
+    for (content, foreground, ground) in [
+        (true, true, true),
+        (true, true, false),
+        (true, false, true),
+        (false, true, true),
+        (false, false, false),
+    ] {
+        let expected = if content && foreground && ground {
+            PlayerMode::Character
+        } else {
+            PlayerMode::FlyCam
+        };
+        assert_eq!(
+            select_initial_player_mode(false, false, false, content, foreground, ground),
+            expected,
+            "content={content} foreground={foreground} ground={ground}"
+        );
+    }
+}
+
+// ── GroundProbe (#2375) ──────────────────────────────────────────
+
+#[test]
+fn only_a_grounded_probe_is_walkable() {
+    assert!(GroundProbe::Grounded {
+        surface_y: 10.0,
+        spawn_y: 78.0,
+        collider_count: 416,
+    }
+    .is_walkable());
+    assert!(!GroundProbe::NoFloorBeneath {
+        searched_bu: 5000.0,
+        collider_count: 416,
+    }
+    .is_walkable());
+    assert!(!GroundProbe::NoColliders.is_walkable());
+}
+
+#[test]
+fn probe_telemetry_is_greppable_and_names_the_collider_count() {
+    // The smoke matrix greps this line, so its shape is a contract.
+    let grounded = GroundProbe::Grounded {
+        surface_y: -1234.5,
+        spawn_y: -1150.0,
+        collider_count: 416,
+    };
+    let line = grounded.telemetry_line();
+    assert!(line.starts_with("spawn-probe: "), "{line}");
+    assert!(line.contains("result=grounded"), "{line}");
+    assert!(line.contains("colliders=416"), "{line}");
+
+    let missing = GroundProbe::NoFloorBeneath {
+        searched_bu: 5000.0,
+        collider_count: 19,
+    };
+    assert!(missing.telemetry_line().contains("result=no-floor"));
+    assert!(missing.telemetry_line().contains("colliders=19"));
+
+    // The two failure modes must stay distinguishable: "no colliders at all"
+    // is a different diagnosis from "colliders exist, none under the spawn".
+    let none = GroundProbe::NoColliders;
+    assert!(none.telemetry_line().contains("result=no-colliders"));
+    assert_eq!(none.collider_count(), 0);
 }

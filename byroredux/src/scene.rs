@@ -77,12 +77,23 @@ pub(crate) fn cornell_sun_mode(args: &[String]) -> Option<bool> {
     }
 }
 
+/// Choose the starting player rig.
+///
+/// `ground_walkable` is EX-04's gate (#2375): Character mode may only start
+/// from a *verified* walkable surface, not merely from a content-backed cell.
+/// A cell can be fully populated and still have nothing under the spawn
+/// column — FO3 `MegatonWorld` (0,0) is the reference case — and a capsule
+/// placed there falls indefinitely.
+///
+/// `--player` still overrides everything, per the acceptance: the operator has
+/// asked for the capsule and gets it, with a warning.
 fn select_initial_player_mode(
     want_fly: bool,
     want_player: bool,
     cornell: bool,
     has_content: bool,
     foreground_ready_for_character: bool,
+    ground_walkable: bool,
 ) -> crate::systems::PlayerMode {
     if want_fly {
         crate::systems::PlayerMode::FlyCam
@@ -92,7 +103,7 @@ fn select_initial_player_mode(
         // The Cornell box has no colliders; a character capsule would fall
         // through the floor. Fly-cam unless explicitly overridden.
         crate::systems::PlayerMode::FlyCam
-    } else if has_content && foreground_ready_for_character {
+    } else if has_content && foreground_ready_for_character && ground_walkable {
         crate::systems::PlayerMode::Character
     } else {
         crate::systems::PlayerMode::FlyCam
@@ -154,46 +165,157 @@ fn character_spawn_center_y(
 /// foreground column is strictly safer than trusting an authored door height:
 /// the latter may belong to a persistent exterior reference whose tile has not
 /// streamed yet.
+/// Outcome of the spawn-time ground probe (EX-04 / #2375).
+///
+/// A typed result rather than a bare position, because the *reason* a probe
+/// failed decides what the engine should do next: with no colliders at all
+/// there is nothing to stand on anywhere, whereas an empty column over a
+/// populated world is a bad spawn point in an otherwise fine cell.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum GroundProbe {
+    /// A collider was found beneath the spawn column.
+    Grounded {
+        /// Surface Y the ray hit.
+        surface_y: f32,
+        /// Capsule-centre Y derived from it.
+        spawn_y: f32,
+        /// Static colliders in the physics world at probe time.
+        collider_count: u32,
+    },
+    /// Static colliders exist, but none beneath the spawn column.
+    NoFloorBeneath {
+        searched_bu: f32,
+        collider_count: u32,
+    },
+    /// No static colliders at all — the cell has no walkable surface.
+    NoColliders,
+}
+
+impl GroundProbe {
+    /// Whether the probe found walkable ground.
+    ///
+    /// This is the gate EX-04 requires: Character mode may only start from a
+    /// *verified* walkable surface, not merely from a content-backed cell.
+    pub(crate) fn is_walkable(&self) -> bool {
+        matches!(self, Self::Grounded { .. })
+    }
+
+    pub(crate) fn collider_count(&self) -> u32 {
+        match self {
+            Self::Grounded { collider_count, .. } | Self::NoFloorBeneath { collider_count, .. } => {
+                *collider_count
+            }
+            Self::NoColliders => 0,
+        }
+    }
+
+    /// One greppable line for the smoke matrix (EX-04's telemetry clause).
+    pub(crate) fn telemetry_line(&self) -> String {
+        match self {
+            Self::Grounded {
+                surface_y, spawn_y, ..
+            } => format!(
+                "spawn-probe: result=grounded colliders={} surface_y={:.1} spawn_y={:.1}",
+                self.collider_count(),
+                surface_y,
+                spawn_y
+            ),
+            Self::NoFloorBeneath { searched_bu, .. } => format!(
+                "spawn-probe: result=no-floor colliders={} searched_bu={:.1}",
+                self.collider_count(),
+                searched_bu
+            ),
+            Self::NoColliders => "spawn-probe: result=no-colliders colliders=0".to_string(),
+        }
+    }
+}
+
+/// Probe for walkable ground beneath `cam_pos`.
+///
+/// Split from the spawn itself so the *decision* (may Character mode start?)
+/// is separable from the *placement*, and so the outcome is unit-testable.
+fn probe_spawn_ground(
+    world: &World,
+    cam_pos: Vec3,
+    cc: byroredux_physics::CharacterController,
+) -> GroundProbe {
+    let pw = world.resource::<byroredux_physics::PhysicsWorld>();
+    let Some((min, max, collider_count)) = pw.static_colliders_aabb() else {
+        return GroundProbe::NoColliders;
+    };
+    let aabb_height = (max[1] - min[1]).max(1.0);
+    let ray_origin = Vec3::new(cam_pos.x, max[1] + 50.0, cam_pos.z);
+    let searched_bu = aabb_height + 100.0;
+    match pw.cast_ray_down(ray_origin, searched_bu) {
+        Some(surface_y) => GroundProbe::Grounded {
+            surface_y,
+            spawn_y: character_spawn_center_y(world, surface_y, cc),
+            collider_count,
+        },
+        None => GroundProbe::NoFloorBeneath {
+            searched_bu,
+            collider_count,
+        },
+    }
+}
+
+/// Position the capsule from an already-taken [`GroundProbe`].
+///
+/// Pre-#2375 the no-floor arm placed the capsule at `aabb.max.y + 200` — 200
+/// units above everything, with nothing beneath it. That *is* the indefinite
+/// free-fall EX-02 describes, and it happened because the mode decision was
+/// made before the probe ran, so a failed probe had no way to veto Character
+/// mode. The caller now demotes to FlyCam instead; this fallback survives only
+/// for the explicit `--player` override, where the operator has asked for the
+/// capsule regardless.
+fn spawn_position_from_probe(
+    probe: GroundProbe,
+    cam_pos: Vec3,
+    cc: byroredux_physics::CharacterController,
+    world: &World,
+    reason: &str,
+) -> Vec3 {
+    match probe {
+        GroundProbe::Grounded {
+            surface_y, spawn_y, ..
+        } => {
+            log::info!(
+                "M28.5 spawn ray-cast: hit floor at y={:.1} under \
+                 ({:.1}, {:.1}); placing capsule at y={:.1} ({reason})",
+                surface_y,
+                cam_pos.x,
+                cam_pos.z,
+                spawn_y,
+            );
+            Vec3::new(cam_pos.x, spawn_y, cam_pos.z)
+        }
+        GroundProbe::NoFloorBeneath { searched_bu, .. } => {
+            let pw = world.resource::<byroredux_physics::PhysicsWorld>();
+            let top = pw
+                .static_colliders_aabb()
+                .map_or(cam_pos.y, |(_, max, _)| max[1]);
+            log::warn!(
+                "M28.5 spawn ray-cast: NO floor found under ({:.1}, \
+                 {:.1}) within {:.1} BU; falling back to \
+                 aabb.max.y + 200 ({reason})",
+                cam_pos.x,
+                cam_pos.z,
+                searched_bu,
+            );
+            Vec3::new(cam_pos.x, top + 200.0, cam_pos.z)
+        }
+        GroundProbe::NoColliders => cam_pos - Vec3::Y * cc.eye_height,
+    }
+}
+
 fn spawn_on_camera_ground(
     world: &World,
     cam_pos: Vec3,
     cc: byroredux_physics::CharacterController,
     reason: &str,
 ) -> Vec3 {
-    let pw = world.resource::<byroredux_physics::PhysicsWorld>();
-    match pw.static_colliders_aabb() {
-        Some((min, max, _)) => {
-            let aabb_height = (max[1] - min[1]).max(1.0);
-            let ray_origin = Vec3::new(cam_pos.x, max[1] + 50.0, cam_pos.z);
-            let max_distance = aabb_height + 100.0;
-            match pw.cast_ray_down(ray_origin, max_distance) {
-                Some(hit_y) => {
-                    let spawn_y = character_spawn_center_y(world, hit_y, cc);
-                    log::info!(
-                        "M28.5 spawn ray-cast: hit floor at y={:.1} under \
-                         ({:.1}, {:.1}); placing capsule at y={:.1} ({reason})",
-                        hit_y,
-                        cam_pos.x,
-                        cam_pos.z,
-                        spawn_y,
-                    );
-                    Vec3::new(cam_pos.x, spawn_y, cam_pos.z)
-                }
-                None => {
-                    log::warn!(
-                        "M28.5 spawn ray-cast: NO floor found under ({:.1}, \
-                         {:.1}) within {:.1} BU; falling back to \
-                         aabb.max.y + 200 ({reason})",
-                        cam_pos.x,
-                        cam_pos.z,
-                        max_distance,
-                    );
-                    Vec3::new(cam_pos.x, max[1] + 200.0, cam_pos.z)
-                }
-            }
-        }
-        None => cam_pos - Vec3::Y * cc.eye_height,
-    }
+    let probe = probe_spawn_ground(world, cam_pos, cc);
+    spawn_position_from_probe(probe, cam_pos, cc, world, reason)
 }
 
 mod world_setup;
@@ -668,12 +790,48 @@ pub(crate) fn setup_scene(
     //   no content                  → FlyCam (default)
     let want_fly = args.iter().any(|a| a == "--fly");
     let want_player = args.iter().any(|a| a == "--player");
+
+    // EX-04 / #2375 — probe for walkable ground *before* choosing the mode.
+    //
+    // Pre-fix the order was reversed: the mode was chosen from cell content
+    // alone, then the spawn probe ran, and a probe miss placed the capsule at
+    // `aabb.max.y + 200` — 200 units above the world with nothing beneath it.
+    // That is the indefinite free-fall EX-02 describes; the probe knew the
+    // ground was missing but had no way to veto the decision it came after.
+    //
+    // Only run when Character is actually reachable: `--fly`, Cornell and
+    // content-less loads all resolve to FlyCam regardless, and the probe costs
+    // an early physics sync.
+    let cc_for_probe = byroredux_physics::CharacterController::HUMAN;
+    let ground_probe = if want_fly || cornell || !(has_nif_content || want_player) {
+        None
+    } else {
+        // `physics_sync_system` inserts the colliders into `ColliderSet`, but
+        // `QueryPipeline` only learns about them via `pipeline.step()`. dt=0
+        // registers newcomers without moving anything; the explicit BVH flush
+        // is what makes `cast_ray_down` see the cell architecture at all.
+        byroredux_physics::physics_sync_system(world, 0.0);
+        {
+            let mut pw = world.resource_mut::<byroredux_physics::PhysicsWorld>();
+            pw.update_query_pipeline();
+        }
+        let probe = probe_spawn_ground(world, cam_pos, cc_for_probe);
+        // Greppable telemetry line for the smoke matrix — EX-04 asks for the
+        // static-collider count and the probe result to be captured.
+        log::info!("{}", probe.telemetry_line());
+        Some(probe)
+    };
+    // Absent probe = a path that was never going to pick Character, so it must
+    // not veto anything; `true` keeps the pre-existing precedence intact.
+    let ground_walkable = ground_probe.is_none_or(|p| p.is_walkable());
+
     let player_mode = select_initial_player_mode(
         want_fly,
         want_player,
         cornell,
         has_nif_content,
         foreground_ready_for_character,
+        ground_walkable,
     );
     world.insert_resource(player_mode);
     if player_mode == crate::systems::PlayerMode::FlyCam {
@@ -681,6 +839,17 @@ pub(crate) fn setup_scene(
             log::warn!(
                 "Player rig: FlyCam because the requested exterior foreground is empty or missing \
                  (use `--player` to override at your own risk)"
+            );
+        } else if has_nif_content && !ground_walkable && !want_fly {
+            // Distinct from the empty-foreground case above: the cell has
+            // content, but nothing walkable sits under the spawn column, so a
+            // capsule here would free-fall.
+            log::warn!(
+                "Player rig: FlyCam because the spawn ground probe found no walkable surface \
+                 ({}) — use `--player` to override at your own risk",
+                ground_probe
+                    .map(|p| p.telemetry_line())
+                    .unwrap_or_else(|| "no probe".to_string()),
             );
         } else {
             log::info!(
@@ -711,17 +880,10 @@ pub(crate) fn setup_scene(
         // This also means the player body's own newcomer registration
         // happens on the FIRST scheduler-driven tick, not this one —
         // which is correct, since the body isn't spawned yet.
-        byroredux_physics::physics_sync_system(world, 0.0);
-        // M28.5 spawn-fallback fix — `physics_sync_system` inserts the
-        // colliders into `ColliderSet` but `QueryPipeline` only learns
-        // about them as a side-effect of `pipeline.step()`. We haven't
-        // stepped yet (dt=0), so the BVH is empty and `cast_ray_down`
-        // returns `None` for every shot. Flush the BVH explicitly so
-        // the spawn ray-cast sees the cell architecture.
-        {
-            let mut pw = world.resource_mut::<byroredux_physics::PhysicsWorld>();
-            pw.update_query_pipeline();
-        }
+        // The dt=0 sync and BVH flush this path used to perform now happen
+        // above, before the mode decision, so the ground probe can veto
+        // Character mode rather than discovering the missing floor too late
+        // (#2375). Re-running them here would be redundant work.
 
         // Spawn precedence:
         //   1. **Door-teleporter spawn** — find any REFR with a

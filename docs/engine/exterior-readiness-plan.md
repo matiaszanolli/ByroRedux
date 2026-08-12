@@ -235,9 +235,28 @@ The first live boundary matrix on 2026-08-04 established the EX-06 baseline:
 
 ### Tranche B — make entry and traversal safe
 
-1. [ ] Define a foreground-ready result carrying center source, terrain/reference
+1. [x] Define a foreground-ready result carrying center source, terrain/reference
    availability, spawn candidate, and ground-probe status instead of returning
-   bare `Vec3::ZERO` on ambiguity.
+   bare `Vec3::ZERO` on ambiguity. **Done (2026-08-12, #2375)** — the typed
+   `ExteriorForegroundReadiness` half landed with the Tranche A diagnostics;
+   #2375 added the ground-probe half.
+
+   The defect was one of *ordering*, not of missing information. The mode was
+   chosen from cell content alone, the spawn probe ran afterwards, and a probe
+   miss placed the capsule at `aabb.max.y + 200` — 200 units above the world
+   with nothing beneath it. The probe already knew the ground was missing; it
+   simply came after the decision it should have informed. `probe_spawn_ground`
+   now runs before `select_initial_player_mode`, which gained a
+   `ground_walkable` term, and a typed `GroundProbe` distinguishes "no
+   colliders at all" from "colliders exist, none under the spawn column".
+
+   Verified on the issue's own reproduction (FO3 `MegatonWorld` 0,0): the
+   diagnostics name exactly the cells the issue predicts — (-1,-5), (0,-6),
+   (-1,-6) — the probe reports `no-colliders`, and the rig falls back to
+   FlyCam. The curated (-1,-7) profile still starts in Character with 789
+   colliders, so the new gate does not demote healthy cells. All five profiles
+   are grounded at frame 0: FNV 555, FO3 789, Oblivion 1244, Skyrim 314, FO4
+   15,818 colliders.
 2. [x] Add a deterministic three-boundary camera path and bounded streaming /
    whole-frame telemetry (EX-06).
 3. [ ] Bring remaining atomic apply, unload, global-geometry, and LOD work under the shared wall-clock
