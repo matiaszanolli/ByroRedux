@@ -30,6 +30,7 @@ mod list_cells;
 mod material_translate;
 mod name_lookup;
 mod npc_spawn;
+mod ownership_sample;
 mod parsed_nif_cache;
 mod ragdoll;
 mod render;
@@ -201,6 +202,16 @@ struct App {
     /// handoff independent of GPU frame rate and preventing the benchmark
     /// itself from superseding correct-but-slower streaming work.
     bench_camera_path_frame: u32,
+    /// Soak traversal awaiting an ownership sample (EX-08 / #2374).
+    ///
+    /// The camera reaching the origin is not by itself a settled moment: the
+    /// logical clock pauses while a boundary transaction runs, so the frame a
+    /// cycle completes on can land mid-apply. Sampling there reads a
+    /// half-torn-down world and makes reachability counts (`meshes_in_use`)
+    /// alternate between phases while actual residency (`meshes_live_slots`)
+    /// stays flat — a false leak. The cycle index parks here until streaming
+    /// reports no boundary in progress.
+    pending_soak_cycle: Option<u32>,
     /// Wall-clock start of the bench window (set on first bench frame).
     /// Used to compute real elapsed time independent of the rolling stats
     /// window, which measures per-AboutToWait dt and can miss CPU phases.
@@ -408,6 +419,7 @@ impl App {
             bench_camera_origin: None,
             bench_camera_applied_pose: None,
             bench_camera_path_frame: 0,
+            pending_soak_cycle: None,
             bench_start: None,
             bench_systems_ns: 0,
             bench_systems_ticks: 0,
@@ -1424,6 +1436,23 @@ impl ApplicationHandler for App {
             ctx.fill_scratch_telemetry(&mut tlm.rows);
         }
 
+        // EX-08 / #2374 — refresh the cross-subsystem ownership snapshot on the
+        // same throttled cadence as the handle counts above. It reuses the
+        // scratch sets those already populated rather than re-walking the ECS,
+        // so the added per-sample cost is a handful of `len()` calls; off-
+        // cadence frames keep the previous sample.
+        if should_refresh_handle_counts {
+            let snapshot = crate::ownership_sample::sample_all(
+                &self.world,
+                self.renderer.as_ref(),
+                self.in_use_mesh_scratch.len(),
+                self.in_use_tex_scratch.len(),
+            );
+            self.world
+                .resource_mut::<byroredux_core::ecs::OwnershipTelemetry>()
+                .current = snapshot;
+        }
+
         // Refresh skinned-BLAS coverage stats — captures last frame's
         // dispatches / first-sight / refit counters from the renderer
         // so `skin.coverage` reflects the just-drawn frame. Mirrors the
@@ -1552,20 +1581,28 @@ impl ApplicationHandler for App {
                 // closed; without the `bench_summary_printed` flag the
                 // summary would dump per-tick and the screenshot path
                 // would re-fire forever.
-                let path_complete =
-                    if self.bench_camera == Some(crate::bench_camera::BenchCameraPath::GridCross) {
-                        let boundary_in_progress = self
-                            .streaming
-                            .as_ref()
-                            .is_some_and(|state| state.telemetry.boundary_in_progress());
-                        crate::bench_camera::grid_cross_complete(
-                            self.bench_camera_path_frame,
-                            target,
-                            boundary_in_progress,
-                        )
-                    } else {
-                        self.bench_frames_count >= target
-                    };
+                // Both streaming paths run on the logical clock, so both must
+                // ask the clock (not the rendered-frame count) whether they are
+                // done — otherwise a soak would end mid-boundary and report the
+                // in-flight cell as a leaked owner.
+                let uses_streaming_clock = matches!(
+                    self.bench_camera,
+                    Some(crate::bench_camera::BenchCameraPath::GridCross)
+                        | Some(crate::bench_camera::BenchCameraPath::GridSoak)
+                );
+                let path_complete = if uses_streaming_clock {
+                    let boundary_in_progress = self
+                        .streaming
+                        .as_ref()
+                        .is_some_and(|state| state.telemetry.boundary_in_progress());
+                    crate::bench_camera::grid_cross_complete(
+                        self.bench_camera_path_frame,
+                        target,
+                        boundary_in_progress,
+                    )
+                } else {
+                    self.bench_frames_count >= target
+                };
                 if path_complete && !self.bench_summary_printed {
                     // Capture the renderer-facing state only after the timed
                     // window has closed. Hashing a large bone palette can be

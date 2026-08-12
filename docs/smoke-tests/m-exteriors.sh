@@ -1,18 +1,31 @@
 #!/usr/bin/env bash
 # Cross-game exterior readiness smoke matrix and traversal gate
-# (EX-01 / EX-05 / EX-06).
+# (EX-01 / EX-05 / EX-06 / EX-08).
 #
 # Each installed profile loads a known populated exterior at radius 1, retains
 # a deterministic screenshot plus engine/debug telemetry, and applies hard
 # gates to scene population, exterior lighting state, image health, and crash
 # diagnostics. Missing game data self-skips; artifacts are intentionally kept.
 #
+# Modes:
+#   static    one settled view; population + image-health gates.
+#   boundary  one-way `grid-cross`; each of three crossings must settle (EX-06).
+#   soak      repeated out-and-back `grid-soak`; every CPU/GPU/runtime owner
+#             must return to baseline and none may grow monotonically (EX-08).
+#             The reversal is what exercises worker cancellation, partial-apply
+#             cancellation, unload hysteresis, and stale-payload rejection — a
+#             one-way traversal never reaches those paths. Ownership is sampled
+#             engine-side at each return to origin (see `BenchCameraPath::
+#             soak_cycle_completed`), so cycles bind to traversal phase rather
+#             than to when this script happens to reconnect.
+#
 # Usage:
-#   docs/smoke-tests/m-exteriors.sh [fnv|fo3|oblivion|skyrim|fo4|all] [static|boundary]
+#   docs/smoke-tests/m-exteriors.sh [fnv|fo3|oblivion|skyrim|fo4|all] [static|boundary|soak]
 #
 # Useful overrides:
 #   BYROREDUX_SMOKE_FRAMES=10
 #   BYROREDUX_BOUNDARY_FRAMES=900
+#   BYROREDUX_SOAK_FRAMES=1800
 #   BYRO_DEBUG_PORT=9987
 #   BYROREDUX_EXTERIOR_ARTIFACT_DIR=/tmp/exterior-smoke
 
@@ -34,8 +47,11 @@ PORT="${BYRO_DEBUG_PORT:-9876}"
 case "$MODE" in
     static)   BENCH_FRAMES="${BYROREDUX_SMOKE_FRAMES:-30}" ;;
     boundary) BENCH_FRAMES="${BYROREDUX_BOUNDARY_FRAMES:-900}" ;;
+    # Six out-and-back traversals need materially more logical frames than the
+    # single one-way pass; the clock also pauses on every boundary.
+    soak)     BENCH_FRAMES="${BYROREDUX_SOAK_FRAMES:-1800}" ;;
     *)
-        echo "Usage: $0 [fnv|fo3|oblivion|skyrim|fo4|all] [static|boundary]"
+        echo "Usage: $0 [fnv|fo3|oblivion|skyrim|fo4|all] [static|boundary|soak]"
         exit 2
         ;;
 esac
@@ -45,7 +61,7 @@ SUMMARY="$ARTIFACT_DIR/summary.tsv"
 ACTIVE_PID=""
 
 mkdir -p "$ARTIFACT_DIR"
-printf 'profile\tresult\tentities\tdraws\timage_mean\timage_stddev\tmissing_textures\tfailed_nifs\tcrossings\tfull_samples\tfull_max_ms\tfull_superseded\tlod_samples\tlod_max_ms\tlod_superseded\tframe_p50_ms\tframe_p95_ms\tframe_max_ms\n' > "$SUMMARY"
+printf 'profile\tresult\tentities\tdraws\timage_mean\timage_stddev\tmissing_textures\tfailed_nifs\tcrossings\tfull_samples\tfull_max_ms\tfull_superseded\tlod_samples\tlod_max_ms\tlod_superseded\tframe_p50_ms\tframe_p95_ms\tframe_max_ms\townership\n' > "$SUMMARY"
 
 cleanup_active () {
     if [[ -n "$ACTIVE_PID" ]] && kill -0 "$ACTIVE_PID" 2>/dev/null; then
@@ -79,7 +95,7 @@ profile_ready () {
     done
     if (( missing != 0 )); then
         echo "exterior-smoke[$label]: SKIP - required game data is not installed"
-        printf '%s\tSKIP\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\n' "$label" >> "$SUMMARY"
+        printf '%s\tSKIP\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\n' "$label" >> "$SUMMARY"
         return 1
     fi
     return 0
@@ -124,6 +140,8 @@ run_profile () {
     local bench_args=(--bench-frames "$BENCH_FRAMES" --bench-hold --screenshot "$screenshot" --upscaler taa)
     if [[ "$MODE" == boundary ]]; then
         bench_args+=(--bench-mode renderer-stepped --bench-camera grid-cross --fly)
+    elif [[ "$MODE" == soak ]]; then
+        bench_args+=(--bench-mode renderer-stepped --bench-camera grid-soak --fly)
     else
         bench_args+=(--bench-mode system-live)
     fi
@@ -148,13 +166,13 @@ run_profile () {
             tail -40 "$stderr_log" || true
             wait "$ACTIVE_PID" 2>/dev/null || true
             ACTIVE_PID=""
-            printf '%s\tFAIL\t0\t0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\n' "$label" >> "$SUMMARY"
+            printf '%s\tFAIL\t0\t0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\n' "$label" >> "$SUMMARY"
             return 1
         fi
         if (( $(date +%s) > deadline )); then
             echo "exterior-smoke[$label]: HARD FAIL - timed out after ${TIMEOUT_SECONDS}s"
             cleanup_active
-            printf '%s\tFAIL\t0\t0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\n' "$label" >> "$SUMMARY"
+            printf '%s\tFAIL\t0\t0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\n' "$label" >> "$SUMMARY"
             return 1
         fi
         sleep 0.5
@@ -170,6 +188,8 @@ mesh.cache
 mesh.cache failed
 ctx.scratch
 cam.where
+world.owners
+world.owners report
 .quit
 EOF
 
@@ -207,6 +227,7 @@ EOF
     : "${frame_p50_ms:=-}" "${frame_p95_ms:=-}" "${frame_max_ms:=-}"
     IMAGE_MEAN="-"
     IMAGE_STDDEV="-"
+    local ownership="-"
 
     local hard_fail=0
     if [[ -z "$bench_line" ]]; then
@@ -215,7 +236,7 @@ EOF
     elif [[ "$MODE" == static ]] && (( entities < entity_floor || draws < draw_floor )); then
         echo "exterior-smoke[$label]: HARD FAIL - scene population entities=$entities/$entity_floor draws=$draws/$draw_floor"
         hard_fail=1
-    elif [[ "$MODE" == boundary ]] && (( entities < 10 || draws < 1 )); then
+    elif [[ "$MODE" == boundary || "$MODE" == soak ]] && (( entities < 10 || draws < 1 )); then
         echo "exterior-smoke[$label]: HARD FAIL - traversal endpoint has no renderable exterior (entities=$entities draws=$draws)"
         hard_fail=1
     else
@@ -276,6 +297,46 @@ EOF
         fi
     fi
 
+    if [[ "$MODE" == soak ]]; then
+        # `byro-dbg` renders a multi-line command result as a single
+        # JSON-escaped line, so `^ownership:` never anchors in the raw log.
+        # Unescape into a sibling file and gate on that; it also leaves the
+        # ownership table readable in the retained artifacts.
+        local owners_log="$profile_dir/ownership.log"
+        sed 's/\\n/\n/g' "$debug_log" > "$owners_log"
+
+        local owner_cycles owner_fail_count
+        owner_cycles="$(grep -oE 'ownership: [0-9]+ cycle\(s\) recorded' "$owners_log" \
+            | grep -oE '[0-9]+' | head -1 || true)"
+        owner_fail_count="$(grep -c '^ownership: FAIL' "$owners_log" || true)"
+        : "${owner_cycles:=0}" "${owner_fail_count:=0}"
+
+        if ! grep -q '^ownership:' "$owners_log"; then
+            echo "exterior-smoke[$label]: HARD FAIL - world.owners produced no report"
+            ownership=missing
+            hard_fail=1
+        elif grep -Fq 'no baseline recorded' "$owners_log"; then
+            # The baseline is taken engine-side at the first return to origin.
+            # Its absence means the traversal never completed one cycle, so the
+            # run proves nothing about reclamation and must not read as a pass.
+            echo "exterior-smoke[$label]: HARD FAIL - soak never completed a baseline traversal"
+            ownership=no-baseline
+            hard_fail=1
+        elif (( owner_cycles < 4 )); then
+            echo "exterior-smoke[$label]: HARD FAIL - only $owner_cycles ownership cycles recorded (need 4 for a growth verdict)"
+            ownership="cycles=$owner_cycles"
+            hard_fail=1
+        elif (( owner_fail_count > 0 )); then
+            echo "exterior-smoke[$label]: HARD FAIL - $owner_fail_count leaked/growing owner class(es):"
+            grep '^ownership: FAIL' "$owners_log" | sed 's/^/    /'
+            ownership="leaks=$owner_fail_count"
+            hard_fail=1
+        else
+            echo "exterior-smoke[$label]: PASS ownership reclaimed over $owner_cycles cycles"
+            ownership="ok/$owner_cycles"
+        fi
+    fi
+
     if [[ "$missing_textures" != "unknown" && "$missing_textures" != "0" ]]; then
         echo "exterior-smoke[$label]: WARN - $missing_textures unique missing textures"
     fi
@@ -287,12 +348,12 @@ EOF
     if (( hard_fail != 0 )); then
         result=FAIL
     fi
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$label" "$result" "$entities" "$draws" "$IMAGE_MEAN" \
         "$IMAGE_STDDEV" "$missing_textures" "$failed_nifs" "$crossings" \
         "$full_samples" "$full_max_ms" "$full_superseded" "$lod_samples" \
         "$lod_max_ms" "$lod_superseded" "$frame_p50_ms" "$frame_p95_ms" \
-        "$frame_max_ms" >> "$SUMMARY"
+        "$frame_max_ms" "$ownership" >> "$SUMMARY"
     return "$hard_fail"
 }
 
@@ -395,7 +456,7 @@ case "$GAME" in
         run_selected fo4_run
         ;;
     *)
-        echo "Usage: $0 [fnv|fo3|oblivion|skyrim|fo4|all] [static|boundary]"
+        echo "Usage: $0 [fnv|fo3|oblivion|skyrim|fo4|all] [static|boundary|soak]"
         exit 2
         ;;
 esac

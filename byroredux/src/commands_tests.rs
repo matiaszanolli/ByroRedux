@@ -502,3 +502,129 @@ fn mat_list_tabulates_materials() {
     assert!(out.contains("probe_a"), "name missing: {out}");
     assert!(out.contains("kind"), "header missing: {out}");
 }
+
+// ── `world.owners` — EX-08 ownership soak surface (#2374) ──────────
+
+/// Drive the command the way the soak harness does, through `execute`
+/// rather than the tracker API, so the operator-facing contract (arg
+/// parsing, missing-baseline guard, resource wiring) is covered rather
+/// than only the accounting rules underneath it.
+fn owners_world() -> World {
+    let mut world = World::new();
+    world.insert_resource(byroredux_core::ecs::OwnershipTelemetry::default());
+    world.insert_resource(OwnershipTracker::new());
+    world
+}
+
+#[test]
+fn world_owners_lists_every_class_with_its_policy() {
+    let world = owners_world();
+    let out = WorldOwnersCommand.execute(&world, "");
+    let text = out.lines.join("\n");
+    for class in byroredux_core::ecs::OwnershipSnapshot::default().classes() {
+        assert!(text.contains(class.name), "missing class {}", class.name);
+    }
+    // Both policies must be legible in the default listing — an operator
+    // reading a surplus needs to know whether it is a leak or a documented
+    // retain before escalating.
+    assert!(text.contains("exact"));
+    assert!(text.contains("bounded"));
+}
+
+#[test]
+fn world_owners_cycle_without_baseline_is_refused() {
+    // Recording cycles against no baseline would silently produce a report
+    // with nothing to compare against, which reads as a pass.
+    let world = owners_world();
+    let out = WorldOwnersCommand.execute(&world, "cycle");
+    assert!(
+        out.lines.join("\n").contains("no baseline"),
+        "{:?}",
+        out.lines
+    );
+    assert_eq!(world.resource::<OwnershipTracker>().cycles().len(), 0);
+}
+
+#[test]
+fn world_owners_baseline_then_cycles_reaches_a_verdict() {
+    let world = owners_world();
+    WorldOwnersCommand.execute(&world, "baseline");
+    assert!(world.resource::<OwnershipTracker>().baseline().is_some());
+
+    for expected in 1..=3 {
+        let out = WorldOwnersCommand.execute(&world, "cycle");
+        assert!(
+            out.lines[0].contains(&format!("cycle {} recorded", expected)),
+            "{:?}",
+            out.lines
+        );
+    }
+    // A static world reclaims trivially, so the verdict must be PASS — the
+    // gate has to stay quiet when nothing leaks or it will be ignored.
+    let report = WorldOwnersCommand
+        .execute(&world, "report")
+        .lines
+        .join("\n");
+    assert!(report.contains("ownership: PASS"), "{report}");
+}
+
+#[test]
+fn world_owners_baseline_restarts_a_stale_run() {
+    // Re-baselining mid-session must discard the previous run's cycles,
+    // otherwise a second soak inherits the first one's history and its
+    // monotonic-growth series spans two unrelated runs.
+    let world = owners_world();
+    WorldOwnersCommand.execute(&world, "baseline");
+    WorldOwnersCommand.execute(&world, "cycle");
+    WorldOwnersCommand.execute(&world, "cycle");
+    assert_eq!(world.resource::<OwnershipTracker>().cycles().len(), 2);
+
+    WorldOwnersCommand.execute(&world, "baseline");
+    assert_eq!(world.resource::<OwnershipTracker>().cycles().len(), 0);
+    assert!(world.resource::<OwnershipTracker>().baseline().is_some());
+}
+
+#[test]
+fn world_owners_reset_clears_the_baseline_too() {
+    let world = owners_world();
+    WorldOwnersCommand.execute(&world, "baseline");
+    WorldOwnersCommand.execute(&world, "cycle");
+    WorldOwnersCommand.execute(&world, "reset");
+    let tracker = world.resource::<OwnershipTracker>();
+    assert!(tracker.baseline().is_none());
+    assert_eq!(tracker.cycles().len(), 0);
+}
+
+#[test]
+fn world_owners_rejects_an_unknown_subcommand() {
+    // A typo must not silently fall through to the snapshot listing — the
+    // harness would then record a "pass" for a step that never ran.
+    let world = owners_world();
+    let out = WorldOwnersCommand.execute(&world, "basline");
+    assert!(out.lines.join("\n").contains("unknown subcommand"));
+}
+
+#[test]
+fn world_owners_detects_a_leaked_ecs_owner_end_to_end() {
+    // The full EX-08 shape through the command surface: baseline clean,
+    // then leave entities resident and record a cycle. `transform_rows` is
+    // an exact-return class, so the surplus must surface as a LEAK.
+    let mut world = owners_world();
+    WorldOwnersCommand.execute(&world, "baseline");
+
+    for _ in 0..5 {
+        let e = world.spawn();
+        world.insert(e, Transform::default());
+    }
+    WorldOwnersCommand.execute(&world, "cycle");
+
+    let report = WorldOwnersCommand
+        .execute(&world, "report")
+        .lines
+        .join("\n");
+    assert!(report.contains("LEAK"), "{report}");
+    assert!(
+        report.contains("ownership: FAIL NOT-RECLAIMED transform_rows"),
+        "{report}"
+    );
+}

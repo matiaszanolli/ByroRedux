@@ -99,7 +99,7 @@ GitHub tracking is grouped by dependency-sized deliverable under
 | EX-05 | P0 | Non-finite/image-health regression gate | HDR/presentation output reports zero non-finite pixels; deterministic captures reject near-solid white/black and fallback-dominated frames | EX-01 |
 | EX-06 | P0 | Boundary-crossing benchmark | Deterministic path crosses 2+ cells and reports per-cell queue, worker, apply, unload, LOD, and frame p50/p95/max timings | EX-01 |
 | EX-07 | P0 | Finish deadline-bounded streaming | NIF finalization, terrain/water/precombine setup, ordinary static placement, texture/mesh upload, BLAS build, and every LOD provider yield by bytes/mesh batches under one measured budget | EX-06 |
-| EX-08 | P0 | Cancellation and ownership soak | Repeated out-and-back traversal leaves no orphan CellRoot entries, physics bodies, textures, meshes, BLAS, audio emitters, scripts, or unbounded cache growth | EX-06, EX-07 |
+| EX-08 | P0 | Cancellation and ownership soak | Repeated out-and-back traversal leaves no orphan CellRoot entries, physics bodies, textures, meshes, BLAS, audio emitters, scripts, or unbounded cache growth | **Done: #2374** (FNV + FO3 green) |
 | EX-09 | P1 | Exterior transition and save/load state | Interior↔exterior and exterior↔exterior transitions plus save/load restore worldspace/grid/player/weather/change forms without duplicate persistent refs | EX-02, EX-08 |
 | EX-10 | P1 | Near-terrain completeness | LAND height/normal/color/splat paths have per-game real-data guards; adjacent cells have no cracks, texture discontinuities, or collider/render disagreement | EX-01, EX-04 |
 | EX-11 | P1 | Complete distant LOD selection | 4/8/16/32 terrain/object bands, VWD full-model culling, `.btr` normal maps, far-plane/reversed-Z policy, and no near/LOD overlap or holes | EX-06, EX-10 |
@@ -210,7 +210,55 @@ The first live boundary matrix on 2026-08-04 established the EX-06 baseline:
    are batched. The measured unload tail is now 40 ms total / 23 ms GPU;
    global-geometry rebuild and single-hash upload are the next frame-tail
    targets.
-4. [ ] Run cancellation/ownership soak loops and repair leaked owners.
+4. [x] Run cancellation/ownership soak loops and repair leaked owners (EX-08).
+
+The soak is `m-exteriors.sh <profile> soak`. It drives the new `grid-soak`
+bench camera — a triangle wave over the same boundaries `grid-cross` crosses
+one way — because the *reversal* is what reaches pending-worker cancellation,
+partial-apply cancellation, unload hysteresis, and stale-payload rejection. A
+one-way traversal never exercises any of them. Ownership is sampled engine-side
+once per completed round trip, deferred to the first frame with no boundary in
+flight, and folded into an `OwnershipTracker` whose verdict is read out at
+bench-hold via `world.owners report`.
+
+Twenty-one owner classes are tracked, each carrying a reclaim policy so the
+"modulo documented bounded caches" clause is executable rather than editorial:
+
+- `Exact` — must return to baseline. Residency and ownership: ECS rows, cell
+  roots, the `CellRootIndex`, live mesh/texture slots, BLAS, TLAS instances,
+  terrain tiles, physics bodies, audio tracks, script state, particles, water.
+- `Bounded` — may retain, must not grow without bound. Documented caches, plus
+  the two reachability counts (below).
+- `Monotonic` — allocator watermarks that rise by construction and are never
+  failed on: `entities_spawned` and the mesh/texture registry *lengths*, which
+  never shrink because retired slots stay as placeholders so a dangling
+  `mesh_id` / `texture_index` cannot resolve to a different resource (#372).
+
+First live results (2026-08-12, FNV WastelandNV and FO3 MegatonWorld, five
+recorded cycles each after the first traversal establishes the baseline): both
+profiles PASS. Every `Exact` class returned to baseline exactly — FNV held
+`transform_rows` 3733, `cell_root_rows` 4556, `cell_root_index_entries` 13,
+`meshes_live_slots` 718, `texture_live_slots` 190, `blas_entries` 494,
+`tlas_instances` 1252, `terrain_tiles` 12, `physics_bodies` 874 constant across
+all five cycles. No leaked owner was found, so no repair was needed; the
+soak's present value is as a standing regression gate.
+
+Two classes were reclassified `Exact` → `Bounded` on the evidence. `meshes_in_use`
+and `textures_in_use` count *distinct handle values* reachable from entities,
+which is a different question from residency: under #372 handle retirement,
+re-entering a cell issues fresh handles for content whose slots were freed while
+reusing handles for content that stayed resident, so identical scenes
+legitimately map to different handle sets. The measured series was
+620/715/591/620/715 — oscillating inside a fixed band, always at or below the
+flat 718 live-slot count, never monotonic. They keep the growth check, which is
+the half that would still catch a real leak; the exact-return duty sits with the
+live-slot classes that genuinely fall on unload.
+
+Clean shutdown under `BYRO_VALIDATION=1` is verified: zero panics and zero
+validation errors during or after teardown. The eight
+`VUID-VkShaderModuleCreateInfo-pCode-08740` reports are startup shader-module
+creation and reproduce identically in `static` mode, so they are pre-existing
+and outside EX-08.
 
 Exit: EX-02, EX-04, EX-06, EX-07, and EX-08 are closed.
 

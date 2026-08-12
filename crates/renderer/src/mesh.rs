@@ -945,6 +945,19 @@ impl MeshRegistry {
         self.meshes.len()
     }
 
+    /// Number of *occupied* mesh slots.
+    ///
+    /// [`Self::len`] is the slot-vector length, which never shrinks: dropped
+    /// meshes leave a placeholder behind so a dangling `GpuInstance.mesh_id`
+    /// can never resolve to a different mesh (#372). That makes `len()` a
+    /// monotonic watermark rather than a residency figure. This counts the
+    /// slots that actually hold a mesh, which is what the EX-08 ownership soak
+    /// (#2374) holds to an exact return across a load/unload cycle — and the
+    /// mesh-side counterpart of `TextureRegistry::live_slot_count`.
+    pub fn live_slot_count(&self) -> usize {
+        self.meshes.iter().filter(|slot| slot.is_some()).count()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.meshes.is_empty()
     }

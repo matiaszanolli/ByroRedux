@@ -66,6 +66,19 @@ pub enum BenchCameraPath {
     /// fast reconstruction recovers from a discontinuity — and whether the
     /// engine's reset actually reached the upscaler.
     Cut,
+    /// Repeated out-and-back traversal for the EX-08 ownership soak (#2374).
+    ///
+    /// Where [`Self::GridCross`] travels one way and asks whether each
+    /// boundary *settled*, this triangle-waves across the same boundaries N
+    /// times and asks whether every owner came *back*. The reversal is the
+    /// point: turning around mid-traversal is what exercises pending-worker
+    /// cancellation, partial-apply cancellation, unload hysteresis, and
+    /// stale-payload rejection, none of which a one-way path reaches at all.
+    ///
+    /// Deliberately shorter per leg than `GridCross`. Two cells is enough to
+    /// cross a boundary and force the far cell to load, while keeping each
+    /// cycle short enough that a useful cycle count fits in one run.
+    GridSoak,
 }
 
 impl BenchCameraPath {
@@ -101,6 +114,21 @@ impl BenchCameraPath {
     /// finite starting X coordinate while leaving enough frames between them
     /// for the async worker and resumable main-thread apply to settle.
     const GRID_CROSS_DISTANCE_BU: f32 = 3.0 * EXTERIOR_CELL_UNITS;
+
+    /// Out-leg length for [`Self::GridSoak`]. Two cells crosses at least one
+    /// boundary from any starting X and forces the far cell to load; going
+    /// further would buy no additional owner classes and cost cycles.
+    const GRID_SOAK_DISTANCE_BU: f32 = 2.0 * EXTERIOR_CELL_UNITS;
+    /// Out-and-back round trips per soak run.
+    ///
+    /// Must exceed `MIN_CYCLES_FOR_GROWTH` (4) by enough that the *recorded*
+    /// cycles still support a growth verdict after the first round trip is
+    /// consumed as the baseline: 6 traversals yield 5 recorded cycles.
+    pub const GRID_SOAK_CYCLES: u32 = 6;
+    /// Reserve the final 15% as a settle window, same rationale as
+    /// `GRID_CROSS_MOVE_FRACTION` — the last return must finish unloading
+    /// before the run ends or every correct implementation reports a surplus.
+    const GRID_SOAK_MOVE_FRACTION: f32 = 0.85;
     /// Reserve the final 30% of the run as a settle window after crossing the
     /// third boundary. Without a tail, the final load would begin on the exit
     /// frame and every correct implementation would report it unfinished.
@@ -161,6 +189,24 @@ impl BenchCameraPath {
                     forward,
                 }
             }
+            Self::GridSoak => {
+                // Triangle wave: each cycle runs origin → +distance → origin.
+                // At the exact end of the move window `saw` lands back on 0, so
+                // the path finishes where it started and the final unload has
+                // the settle tail to complete in.
+                let travel_progress = (progress / Self::GRID_SOAK_MOVE_FRACTION).min(1.0);
+                let t = travel_progress * Self::GRID_SOAK_CYCLES as f32;
+                let saw = t - t.floor();
+                let triangle = if saw < 0.5 {
+                    saw * 2.0
+                } else {
+                    2.0 - saw * 2.0
+                };
+                CameraPose {
+                    position: origin + Vec3::X * (Self::GRID_SOAK_DISTANCE_BU * triangle),
+                    forward,
+                }
+            }
             Self::Cut => {
                 if progress < Self::CUT_AT {
                     CameraPose {
@@ -201,14 +247,41 @@ impl BenchCameraPath {
     /// Every path, in the order they are documented. Drives the CLI's
     /// error message and the harness matrix, so both stay complete by
     /// construction rather than by remembering to update a second list.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Static,
         Self::Pan,
         Self::Orbit,
         Self::Dolly,
         Self::GridCross,
         Self::Cut,
+        Self::GridSoak,
     ];
+
+    /// Index of the out-and-back cycle that *completes* on `frame`, if any.
+    ///
+    /// Returns `Some(n)` only on the exact frame the camera returns to the
+    /// origin for the `n`-th time (0-based), so the caller can sample
+    /// ownership once per cycle rather than per frame. `None` on every other
+    /// frame and on every non-soak path.
+    ///
+    /// The soak treats cycle 0's completion as its *baseline* — by then the
+    /// one-time bootstrap allocations (worldspace weather textures, the
+    /// fallback checkerboard, the reverb send track) have happened and been
+    /// through one unload, so they sit inside the baseline instead of being
+    /// reported as leaks.
+    pub fn soak_cycle_completed(self, frame: u32, total_frames: u32) -> Option<u32> {
+        if self != Self::GridSoak || total_frames <= 1 || frame == 0 {
+            return None;
+        }
+        let cycle_at = |f: u32| -> u32 {
+            let progress = (f as f32 / (total_frames - 1) as f32).clamp(0.0, 1.0);
+            let travel = (progress / Self::GRID_SOAK_MOVE_FRACTION).min(1.0);
+            (travel * Self::GRID_SOAK_CYCLES as f32).floor() as u32
+        };
+        let previous = cycle_at(frame - 1);
+        let current = cycle_at(frame);
+        (current > previous).then_some(previous)
+    }
 }
 
 pub(crate) fn advance_grid_cross_frame(
@@ -240,6 +313,7 @@ impl std::fmt::Display for BenchCameraPath {
             Self::Dolly => "dolly",
             Self::GridCross => "grid-cross",
             Self::Cut => "cut",
+            Self::GridSoak => "grid-soak",
         })
     }
 }
@@ -255,6 +329,7 @@ impl FromStr for BenchCameraPath {
             "dolly" => Ok(Self::Dolly),
             "grid-cross" => Ok(Self::GridCross),
             "cut" => Ok(Self::Cut),
+            "grid-soak" => Ok(Self::GridSoak),
             other => {
                 // Derive the expected list from `ALL` so a new variant cannot
                 // be added without the error message learning about it.
@@ -517,5 +592,116 @@ mod tests {
             assert_eq!(p.position, ORIGIN);
             assert!(!path.is_cut_frame(0, 1));
         }
+    }
+
+    // ── grid-soak (EX-08 ownership soak, #2374) ─────────────────
+
+    const SOAK_FRAMES: u32 = 900;
+
+    #[test]
+    fn grid_soak_starts_and_ends_at_the_origin() {
+        // The gate compares the end state against a baseline taken at the same
+        // position. If the path finished mid-traversal, the far cell would
+        // still be resident and every run would report a false leak.
+        let start = BenchCameraPath::GridSoak.pose(0, SOAK_FRAMES, ORIGIN, Vec3::X);
+        let end = BenchCameraPath::GridSoak.pose(SOAK_FRAMES - 1, SOAK_FRAMES, ORIGIN, Vec3::X);
+        assert_eq!(start.position, ORIGIN);
+        assert!(
+            (end.position - ORIGIN).length() < 1e-2,
+            "soak ended at {:?}, not the origin",
+            end.position
+        );
+    }
+
+    #[test]
+    fn grid_soak_reaches_a_full_cell_crossing_on_the_out_leg() {
+        // Sample the whole run and take the extreme; the peak must clear one
+        // cell or the traversal never crosses a boundary and the soak measures
+        // nothing at all.
+        let peak = (0..SOAK_FRAMES)
+            .map(|f| {
+                BenchCameraPath::GridSoak
+                    .pose(f, SOAK_FRAMES, ORIGIN, Vec3::X)
+                    .position
+                    .x
+            })
+            .fold(f32::MIN, f32::max);
+        assert!(
+            peak > EXTERIOR_CELL_UNITS,
+            "soak peak {peak} did not clear one cell ({EXTERIOR_CELL_UNITS})"
+        );
+    }
+
+    #[test]
+    fn grid_soak_completes_exactly_the_configured_cycle_count() {
+        let completions: Vec<u32> = (0..SOAK_FRAMES)
+            .filter_map(|f| BenchCameraPath::GridSoak.soak_cycle_completed(f, SOAK_FRAMES))
+            .collect();
+        // Consecutive and 0-based: a skipped or repeated index would silently
+        // drop a cycle from the growth series.
+        let expected: Vec<u32> = (0..BenchCameraPath::GRID_SOAK_CYCLES).collect();
+        assert_eq!(completions, expected);
+    }
+
+    #[test]
+    fn grid_soak_records_enough_cycles_for_a_growth_verdict() {
+        // Cycle 0 is consumed as the baseline, so the *recorded* count is one
+        // less than the traversal count. It must still clear the growth
+        // threshold or `evaluate()` can never return a MonotonicGrowth finding
+        // and half the EX-08 gate is dead code.
+        let recorded = BenchCameraPath::GRID_SOAK_CYCLES as usize - 1;
+        assert!(
+            recorded >= byroredux_core::ecs::resources::ownership::MIN_CYCLES_FOR_GROWTH,
+            "{recorded} recorded cycles is below the growth threshold"
+        );
+    }
+
+    #[test]
+    fn soak_cycle_detection_is_inert_on_every_other_path() {
+        for path in BenchCameraPath::ALL {
+            if path == BenchCameraPath::GridSoak {
+                continue;
+            }
+            for frame in 0..120 {
+                assert_eq!(
+                    path.soak_cycle_completed(frame, 120),
+                    None,
+                    "{path} reported a soak cycle"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn grid_soak_returns_to_origin_between_cycles() {
+        // Each completion frame must actually be at the origin — the cycle
+        // index and the geometry have to agree, or ownership gets sampled
+        // mid-traversal with the far cell still loaded.
+        for frame in 0..SOAK_FRAMES {
+            if BenchCameraPath::GridSoak
+                .soak_cycle_completed(frame, SOAK_FRAMES)
+                .is_none()
+            {
+                continue;
+            }
+            let pose = BenchCameraPath::GridSoak.pose(frame, SOAK_FRAMES, ORIGIN, Vec3::X);
+            let drift = (pose.position - ORIGIN).length();
+            assert!(
+                drift < 0.06 * EXTERIOR_CELL_UNITS,
+                "cycle boundary at frame {frame} sits {drift} from the origin"
+            );
+        }
+    }
+
+    #[test]
+    fn grid_soak_parses_and_displays_round_trip() {
+        assert_eq!(
+            "grid-soak".parse::<BenchCameraPath>(),
+            Ok(BenchCameraPath::GridSoak)
+        );
+        assert_eq!(BenchCameraPath::GridSoak.to_string(), "grid-soak");
+        // `ALL` drives the CLI error text; a variant missing from it would be
+        // unlisted and effectively undiscoverable.
+        assert!(BenchCameraPath::ALL.contains(&BenchCameraPath::GridSoak));
     }
 }

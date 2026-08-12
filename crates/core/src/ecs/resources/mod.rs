@@ -694,6 +694,12 @@ impl Resource for SkinCoverageStats {}
 pub mod skin_slot_pool;
 pub use skin_slot_pool::SkinSlotPool;
 
+pub mod ownership;
+pub use ownership::{
+    FindingKind, OwnerClass, OwnershipFinding, OwnershipSnapshot, OwnershipTelemetry,
+    OwnershipTracker, ReclaimPolicy,
+};
+
 impl SkinCoverageStats {
     /// True when every visible skinned entity got a refit this frame.
     /// Reads correct only after `fill_skin_coverage_stats` populates

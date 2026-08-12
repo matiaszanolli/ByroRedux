@@ -408,6 +408,84 @@ impl ConsoleCommand for SysAccessesCommand {
         CommandOutput::lines(lines)
     }
 }
+/// `world.owners` — cross-subsystem ownership accounting for the EX-08
+/// exterior soak (#2374).
+///
+/// Subcommands drive one soak run:
+///
+/// - *(no args)* — print the current snapshot, one line per owner class.
+/// - `baseline` — record the pre-entry state. Take this after the first cell
+///   has loaded *and* unloaded, so one-time bootstrap allocations (worldspace
+///   weather textures, the fallback checkerboard, the reverb send track) sit
+///   inside the baseline instead of being reported as leaks.
+/// - `cycle` — record one completed out-and-back traversal.
+/// - `report` — print baseline / final / high-water per class plus the verdict.
+/// - `reset` — discard baseline and history.
+///
+/// The verdict rules live in `byroredux_core`'s `OwnershipTracker` so they are
+/// unit-tested without a device; this command is only the operator surface.
+pub(crate) struct WorldOwnersCommand;
+impl ConsoleCommand for WorldOwnersCommand {
+    fn name(&self) -> &str {
+        "world.owners"
+    }
+    fn description(&self) -> &str {
+        "Ownership soak accounting: [baseline|cycle|report|reset] (#2374)"
+    }
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let snapshot = crate::ownership_sample::fresh_snapshot(world);
+        match args.trim() {
+            "baseline" => {
+                let mut tracker = world.resource_mut::<OwnershipTracker>();
+                *tracker = OwnershipTracker::new();
+                tracker.set_baseline(snapshot);
+                CommandOutput::line("ownership: baseline recorded")
+            }
+            "cycle" => {
+                let mut tracker = world.resource_mut::<OwnershipTracker>();
+                if tracker.baseline().is_none() {
+                    return CommandOutput::line(
+                        "ownership: no baseline — run `world.owners baseline` first",
+                    );
+                }
+                tracker.record_cycle(snapshot);
+                let n = tracker.cycles().len();
+                CommandOutput::line(format!("ownership: cycle {} recorded", n))
+            }
+            "report" => {
+                let tracker = world.resource::<OwnershipTracker>();
+                CommandOutput::lines(tracker.report())
+            }
+            "reset" => {
+                let mut tracker = world.resource_mut::<OwnershipTracker>();
+                *tracker = OwnershipTracker::new();
+                CommandOutput::line("ownership: tracker reset")
+            }
+            "" => {
+                let mut lines = vec![format!(
+                    "{:<26} {:>10}  {}",
+                    "class", "value", "reclaim-policy"
+                )];
+                for class in snapshot.classes() {
+                    let policy = match class.policy {
+                        ReclaimPolicy::Exact => "exact",
+                        ReclaimPolicy::Bounded => "bounded",
+                        ReclaimPolicy::Monotonic => "monotonic",
+                    };
+                    lines.push(format!(
+                        "{:<26} {:>10}  {}",
+                        class.name, class.value, policy
+                    ));
+                }
+                CommandOutput::lines(lines)
+            }
+            other => CommandOutput::line(format!(
+                "unknown subcommand `{other}` — use baseline|cycle|report|reset or no argument"
+            )),
+        }
+    }
+}
+
 /// `mem.frag` — compute and emit a per-block GPU memory fragmentation
 /// report. Pulls the live `gpu_allocator` report through the
 /// `AllocatorResource` newtype the binary inserts at engine init, so

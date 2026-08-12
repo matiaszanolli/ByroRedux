@@ -306,8 +306,16 @@ impl App {
             return;
         };
 
-        let is_grid_cross = path == crate::bench_camera::BenchCameraPath::GridCross;
-        let frame = if is_grid_cross {
+        // `grid-cross` and `grid-soak` are streaming workloads, not visual-
+        // quality paths: both advance a *logical* frame that pauses while a
+        // boundary is in flight, so renderer FPS cannot shorten the wall-clock
+        // handoff window and supersede the work being measured.
+        let uses_streaming_clock = matches!(
+            path,
+            crate::bench_camera::BenchCameraPath::GridCross
+                | crate::bench_camera::BenchCameraPath::GridSoak
+        );
+        let frame = if uses_streaming_clock {
             self.bench_camera_path_frame
                 .min(total_frames.saturating_sub(1))
         } else {
@@ -323,15 +331,61 @@ impl App {
             }
         }
 
-        if is_grid_cross {
+        // EX-08 / #2374 — one ownership sample per completed out-and-back.
+        // Arming happens on the logical frame the camera returns to origin;
+        // the sample itself waits for streaming to go quiet (below), because
+        // the return frame is not necessarily a settled one.
+        if let Some(cycle) = path.soak_cycle_completed(frame, total_frames) {
+            self.pending_soak_cycle = Some(cycle);
+        }
+
+        if uses_streaming_clock {
             let boundary_in_progress = self
                 .streaming
                 .as_ref()
                 .is_some_and(|state| state.telemetry.boundary_in_progress());
+            // Take the armed sample on the first quiet frame. Sampling while a
+            // boundary transaction is mid-apply reads a half-built world: the
+            // reachability classes swing with whichever cells happen to have
+            // their entities attached, even though residency never moved.
+            if !boundary_in_progress {
+                if let Some(cycle) = self.pending_soak_cycle.take() {
+                    self.record_soak_ownership_cycle(cycle);
+                }
+            }
             self.bench_camera_path_frame = crate::bench_camera::advance_grid_cross_frame(
                 self.bench_camera_path_frame,
                 total_frames,
                 boundary_in_progress,
+            );
+        }
+    }
+
+    /// Fold one completed soak traversal into the [`OwnershipTracker`].
+    ///
+    /// Cycle 0 establishes the baseline rather than being compared against it
+    /// — see `BenchCameraPath::soak_cycle_completed`. Every later cycle is
+    /// recorded, and the verdict is read out at bench-hold via
+    /// `world.owners report`.
+    fn record_soak_ownership_cycle(&mut self, cycle: u32) {
+        let snapshot = crate::ownership_sample::sample_all(
+            &self.world,
+            self.renderer.as_ref(),
+            self.in_use_mesh_scratch.len(),
+            self.in_use_tex_scratch.len(),
+        );
+        let mut tracker = self
+            .world
+            .resource_mut::<byroredux_core::ecs::OwnershipTracker>();
+        if cycle == 0 {
+            tracker.set_baseline(snapshot);
+            log::info!("soak: ownership baseline recorded after traversal 0");
+        } else {
+            tracker.record_cycle(snapshot);
+            log::info!(
+                "soak: ownership cycle {} recorded ({} total)",
+                cycle,
+                tracker.cycles().len()
             );
         }
     }

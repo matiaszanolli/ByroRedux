@@ -315,6 +315,23 @@ impl AccelerationManager {
         self.static_blas_bytes
     }
 
+    /// Number of *populated* static BLAS slots.
+    ///
+    /// `blas_entries` is indexed by mesh handle, so its `len()` only ever grows
+    /// with the highest handle ever seen and says nothing about residency.
+    /// This counts the live entries, which is what the EX-08 ownership soak
+    /// (#2374) holds to an exact return across a load/unload cycle.
+    pub fn live_static_blas_count(&self) -> usize {
+        self.blas_entries.iter().filter(|e| e.is_some()).count()
+    }
+
+    /// Number of per-entity skinned BLAS currently resident. Paired with
+    /// [`Self::live_static_blas_count`] for the ownership snapshot — the two
+    /// have independent lifecycles (mesh-keyed + LRU vs entity-visibility).
+    pub fn live_skinned_blas_count(&self) -> usize {
+        self.skinned_blas.len()
+    }
+
     /// CPU-side TLAS instance staging Vec — `(len, capacity)`. Element
     /// size is `size_of::<vk::AccelerationStructureInstanceKHR>()` (64
     /// bytes). Surfaced for the `ctx.scratch` console command (R6).

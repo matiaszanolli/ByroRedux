@@ -364,6 +364,12 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     });
     world.insert_resource(DebugStats::default());
     world.insert_resource(byroredux_core::ecs::ScratchTelemetry::default());
+    // EX-08 / #2374 — cross-subsystem ownership accounting. `Telemetry` is the
+    // latest sample (refreshed on the throttled stats cadence); `Tracker` holds
+    // the soak baseline + per-cycle history and stays empty until an operator
+    // runs `world.owners baseline`.
+    world.insert_resource(byroredux_core::ecs::OwnershipTelemetry::default());
+    world.insert_resource(byroredux_core::ecs::OwnershipTracker::new());
     world.insert_resource(byroredux_core::ecs::UpscalerTelemetry::default());
     world.insert_resource(byroredux_core::ecs::PendingUpscalerSwitch::default());
     world.insert_resource(SkinCoverageStats::default());

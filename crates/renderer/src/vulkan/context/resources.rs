@@ -84,6 +84,17 @@ impl VulkanContext {
         )
     }
 
+    /// Number of occupied terrain tile slots.
+    ///
+    /// The backing `Vec` is fixed at `MAX_TERRAIN_TILES`, so only the occupied
+    /// count carries ownership meaning. Each occupied slot holds 8 layer
+    /// texture refcounts that `free_terrain_tile` hands back (#627), which is
+    /// why the EX-08 soak (#2374) tracks it as an exact-return class: a
+    /// surplus here is also a surplus of leaked texture references.
+    pub fn occupied_terrain_tile_count(&self) -> usize {
+        self.terrain_tiles.iter().filter(|t| t.is_some()).count()
+    }
+
     /// Populate `dest` with the current terrain tile slab, filling
     /// empty slots with the zero-tile default so the fragment shader's
     /// `if (layerIdx == 0u) continue;` guard skips them. Returns `true`
