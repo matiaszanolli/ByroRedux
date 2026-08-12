@@ -16,10 +16,17 @@
 //!
 //! 1. **No debug-line guard.** Champollion consults per-instruction source
 //!    lines to reject merges that span lines. We rely on the structural
-//!    pattern alone (the follow-block recomputing the condition variable),
-//!    which is the load-bearing signal; the line check only suppresses
-//!    rare false positives. Validated against the corpus decompile rate +
-//!    the R5 fidelity gate.
+//!    pattern alone, which means the *edge shape* has to carry what the
+//!    line check would otherwise catch: [`BoolPass::collapse`] therefore
+//!    requires the operand block to fall through to the rejoin. Without
+//!    that requirement a `While` whose body recomputes the loop condition
+//!    is silently collapsed and the loop disappears (#2655).
+//!
+//!    Note the corpus decompile rate does **not** validate this departure:
+//!    the smoke harness discards the resulting `Script`, so it measures
+//!    robustness (no panic, no `Err`), not fidelity — a wrong AST scores as
+//!    a success. The R5 fidelity gate does check shape, but it is a single
+//!    `#[ignore]`d script that only runs with Skyrim SE data on disk.
 //! 2. **Termination guard.** The C++ unconditionally re-processes the
 //!    source block after a potential `||`; we re-process only when a
 //!    collapse actually merged a non-exit block (which strictly shrinks
@@ -188,6 +195,24 @@ impl BoolPass<'_> {
             // `rejoin_key`, leaving `current`'s edges pointing at a block
             // that no longer exists. Decline rather than corrupt the CFG —
             // never reachable from real compiler output.
+            return Ok(false);
+        }
+
+        // The operand block must *fall through* to the rejoin (SCR-D3-NEW11-01
+        // / #2655). Without this, a `While` whose single-statement body happens
+        // to recompute the loop-condition variable matches all three structural
+        // signals — conditional source, last statement computes the condition,
+        // follow block recomputes the same variable — while its `next` edge
+        // points *backwards* to the loop head. Collapsing it deletes the back
+        // edge, so the loop vanishes from the AST and is replaced by an `&&`
+        // that was never in the source. Champollion suppresses this with a
+        // per-instruction debug-line check; we deliberately don't consult debug
+        // lines (departure 1 above), so the edge shape is what has to carry it.
+        let falls_through_to_rejoin = self
+            .cfg
+            .block(operand_key)
+            .is_some_and(|b| b.next == rejoin_key && !b.is_conditional());
+        if !falls_through_to_rejoin {
             return Ok(false);
         }
 
@@ -397,6 +422,43 @@ mod tests {
         assert_eq!(child_ifs(&tree), 1);
         assert!(!has_binop(&tree, "&&") && !has_binop(&tree, "||"));
         assert!(has_binop(&tree, "=="));
+    }
+
+    /// SCR-D3-NEW11-01 (#2655) — a `While` whose single-statement body
+    /// recomputes the loop-condition variable matches all three of the
+    /// boolean pass's structural signals, but its operand block jumps
+    /// *backwards* to the loop head instead of falling through to the
+    /// rejoin. Collapsing it would delete the back edge, erasing the loop
+    /// and fabricating an `&&` that was never in the source.
+    #[test]
+    fn loop_body_recomputing_the_condition_is_not_collapsed_into_an_and() {
+        // 0: ::temp0 = (a == b)   ; loop condition
+        // 1: jmpf ::temp0, +3 -> 4 ; loop exit test
+        // 2: ::temp0 = (c == d)   ; body — single stmt, writes ::temp0
+        // 3: jmp -3 -> 0          ; back edge
+        // 4: return
+        let f = Function {
+            return_type_name: "None".into(),
+            locals: vec![local("::temp0", "Bool")],
+            instructions: vec![
+                ins(OpCode::CmpEq, vec![id("::temp0"), id("a"), id("b")]),
+                ins(OpCode::JmpF, vec![id("::temp0"), Value::Integer(3)]),
+                ins(OpCode::CmpEq, vec![id("::temp0"), id("c"), id("d")]),
+                ins(OpCode::Jmp, vec![Value::Integer(-3)]),
+                ins(OpCode::Return, vec![id("::NoneVar")]),
+            ],
+            ..Function::default()
+        };
+        let tree = decompile(f);
+        assert!(
+            tree.iter()
+                .any(|n| matches!(n.kind, NodeKind::While { .. })),
+            "the loop must survive the boolean pass, got: {tree:#?}"
+        );
+        assert!(
+            !has_binop(&tree, "&&"),
+            "no `&&` may be fabricated from the back edge, got: {tree:#?}"
+        );
     }
 
     #[test]
