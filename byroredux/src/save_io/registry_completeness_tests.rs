@@ -1,0 +1,343 @@
+//! Extracted from `save_io.rs`'s inline `mod tests` (#2407 / TD1-004).
+//! Production code there is ~1030 LOC; the test bulk alone pushed the
+//! file past 3000. Split by topic, contents unchanged.
+
+use super::*;
+
+/// Recursively collect every `.rs` file under `dir`. Panics on an
+/// unreadable directory — a moved/renamed scan root should fail loud,
+/// not silently scan nothing (same posture as the `SAVE_TYPE_SOURCES`
+/// guard in the sibling `serde_default_guard_tests`).
+fn collect_rs_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    let entries = std::fs::read_dir(dir).unwrap_or_else(|e| {
+        panic!(
+            "SAVE-D1-12 guard can't read directory {} ({e}); a scan root \
+             moved — update SCAN_ROOTS.",
+            dir.display()
+        )
+    });
+    for entry in entries {
+        let path = entry
+            .expect("SAVE-D1-12 guard: unreadable dir entry")
+            .path();
+        if path.is_dir() {
+            collect_rs_files(&path, out);
+        } else if path.extension().is_some_and(|ext| ext == "rs") {
+            out.push(path);
+        }
+    }
+}
+
+/// Extract `X` from a `impl Component for X` / `impl Resource for X`
+/// line (leading whitespace stripped first — every real impl in this
+/// tree sits at module level with no indentation, but this tolerates
+/// one anyway). Returns `None` for a non-matching line. A generic type
+/// (`impl Component for Foo<T>`) would capture just `Foo`, which is
+/// fine — no generic Component/Resource impl exists in the scanned
+/// directories today.
+fn impl_target_type(line: &str) -> Option<&str> {
+    let trimmed = line.trim_start();
+    let rest = trimmed
+        .strip_prefix("impl Component for ")
+        .or_else(|| trimmed.strip_prefix("impl Resource for "))?;
+    let end = rest
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .unwrap_or(rest.len());
+    (end > 0).then(|| &rest[..end])
+}
+
+/// #2295 (SAVE-D1-12) — registry-completeness guard, generalized past
+/// the NPC-spawn-stamped surface
+/// `npc_spawn_stamped_components_are_saved_or_intentionally_rederived`
+/// (sibling `round_trip_tests`) covers. Scans every
+/// `.rs` file under the three directories where gameplay-relevant ECS
+/// state is defined for a top-level `impl Component for X` / `impl
+/// Resource for X` line, and requires each `X` found to be EITHER
+/// registered in [`build_save_registry`] OR listed in
+/// [`NOT_SAVED_BY_DESIGN`] with a one-line reason — never both, never
+/// neither. Same manually-maintained-allowlist philosophy as
+/// `REDERIVED_NOT_SAVED` above and `MUTABLE_DELTA_COLUMNS`'s `AUDITED`
+/// tripwire; static source scan, not reflection (Rust has none).
+///
+/// This guard exists because the NPC-spawn-stamped guard has zero
+/// visibility into components a *system* inserts later during gameplay
+/// (script recognition, condition evaluation, package/scene execution)
+/// — precisely the class `TwoStateActivator`/`ScriptVariables`/
+/// `ActorControlState`/`Dead` all belong to (#2291/#1834/#2292/#2293).
+/// Building this guard's allowlist (2026-08-05) surfaced 7 genuine,
+/// previously-untracked save gaps on the first pass — filed as
+/// #2378-#2382 rather than fixed inline here, since each needs its own
+/// per-field delta-safety review before registration (matching the
+/// care #1834/#2291/#2292 each took). They're allowlisted below with a
+/// `KNOWN GAP` reason, not silently blessed as safe, so this guard
+/// passes today without hiding the debt it found.
+#[test]
+fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
+    /// A type is safe to omit from `build_save_registry` when either:
+    /// - it's write-once at spawn/NIF-import/cell-load from static
+    ///   ESM/NIF data, so a reload deterministically re-derives it
+    ///   (the `REDERIVED_NOT_SAVED` / `*Behavior`-vs-`*State` pattern);
+    /// - it's GPU/physics/render-derived, rebuilt from other
+    ///   already-saved state every load or every frame (the
+    ///   `GlobalTransform`/`MeshHandle`/`TextureHandle` class
+    ///   `build_save_registry`'s own doc already names);
+    /// - it's a one-shot event/request/command/batch marker drained
+    ///   every frame (transient, per `build_save_registry`'s doc);
+    /// - it's forward-latent: no live (non-test) insertion site exists
+    ///   in the codebase today, so nothing is lost by a save/load —
+    ///   same posture as `Dead` (#2293). Register the moment a real
+    ///   system starts inserting it.
+    /// - it's a KNOWN GAP: a real runtime mutator exists with no
+    ///   reload re-derivation path, tracked by a filed issue and
+    ///   deliberately NOT fixed in the same commit that discovered it.
+    ///
+    /// Verified 2026-08-05 against real (non-`#[cfg(test)]`) insertion
+    /// sites for every entry — see the individual reasons.
+    const NOT_SAVED_BY_DESIGN: &[(&str, &str)] = &[
+        // ── crates/core/src/ecs/components/ ─────────────────────────
+        ("ActiveCamera", "set once at scene/cell setup (scene.rs), no gameplay mutator reassigns it"),
+        ("AnimatedAlpha", "per-frame output re-derived every tick from saved AnimationPlayer/AnimationStack"),
+        ("AnimatedAmbientColor", "per-frame output re-derived every tick from saved AnimationPlayer/AnimationStack"),
+        ("AnimatedDiffuseColor", "per-frame output re-derived every tick from saved AnimationPlayer/AnimationStack"),
+        ("AnimatedEmissiveColor", "per-frame output re-derived every tick from saved AnimationPlayer/AnimationStack"),
+        ("AnimatedMorphWeights", "per-frame output re-derived every tick from saved AnimationPlayer/AnimationStack"),
+        ("AnimatedShaderColor", "per-frame output re-derived every tick from saved AnimationPlayer/AnimationStack"),
+        ("AnimatedShaderFloat", "per-frame output re-derived every tick from saved AnimationPlayer/AnimationStack"),
+        ("AnimatedSpecularColor", "per-frame output re-derived every tick from saved AnimationPlayer/AnimationStack"),
+        ("AnimatedUvTransform", "per-frame output re-derived every tick from saved AnimationPlayer/AnimationStack"),
+        ("AnimatedVisibility", "per-frame output re-derived every tick from saved AnimationPlayer/AnimationStack"),
+        ("AttachPoints", "write-once NIF-import data, no runtime mutator (no query_mut/get_mut site exists)"),
+        ("Billboard", "write-once at NIF/spawn time, no runtime mutator"),
+        ("BSBound", "NIF-import-derived AABB, debug-inspection only, never mutated"),
+        ("BSXFlags", "write-once from NIF root extra data, no runtime mutator"),
+        ("Camera", "only field ever runtime-mutated (aspect) is re-derived from the live window size on resize"),
+        ("CellFormId", "set once per cell load straight from the ESM CELL record's FormID, no runtime mutator"),
+        ("CellRoot", "stamped once per entity at cell load, idempotent across reloads of the same cell"),
+        ("ChildAttachConnections", "write-once NIF-import data, no runtime mutator, same file/pattern as AttachPoints"),
+        ("CollisionShape", "NIF/Havok-derived static geometry, only read by physics sync to register Rapier colliders"),
+        ("Dead", "forward-latent — no live inserter exists yet outside tests (#2293); register the moment a death-resolution system lands"),
+        ("EscortBehavior", "active-package-derived config rebuilt at spawn and replaced by ambient_ai_package_system; mutable companion EscortState is registered"),
+        ("FactionRanks", "already covered by the NPC-spawn-stamped guard's own REDERIVED_NOT_SAVED list above (#1835)"),
+        ("FogVolume", "converted once at cell/scene load from static XCLL/WTHR/NiFogProperty data, only read by the froxel injector"),
+        ("FollowBehavior", "active-package-derived config rebuilt at spawn and replaced by ambient_ai_package_system; mutable companion FollowState is registered"),
+        ("Furniture", "write-once at NIF import (BSFurnitureMarker), only ever read, never query_mut'd"),
+        ("GlobalTransform", "recomputed every frame from saved Transform + Parent by transform_propagation_system; its own doc says \"never written by user code\""),
+        ("GuardBehavior", "active-package-derived config rebuilt at spawn and replaced by ambient_ai_package_system; mutable companion GuardState is registered"),
+        ("LocalBound", "write-once at NIF import/mesh spawn, read-only thereafter to derive WorldBound"),
+        // Material: FIXED — registered (#2378 / SAVE-D1-13), no longer
+        // allowlisted here.
+        ("MeshHandle", "GPU MeshRegistry index, explicitly named in this file's own exclusion doc, rebuilt from the mesh path every reload"),
+        ("ParticleEmitter", "per-particle simulation state (positions/velocities/ages) is purely cosmetic VFX with no gameplay/script hooks; re-seeds from static rate/shape config within under a second of reload"),
+        ("PatrolBehavior", "active-package-derived config rebuilt at spawn and replaced by ambient_ai_package_system; mutable companion PatrolState is registered"),
+        ("PerkList", "zero production write sites exist anywhere (only #[cfg(test)]); do not confuse with the unrelated, already-tracked Perks character component"),
+        ("PhysicsSourceForm", "write-once at bhk-shape spawn; its own doc says \"read only by diagnostics\", never mutated"),
+        ("RenderLayer", "every insert site is one-shot at cell-load/NPC-spawn via pure classifier functions, no runtime mutator"),
+        // RigidBodyData: FIXED — registered (#2379 / SAVE-D1-14), no
+        // longer allowlisted here.
+        ("SandboxBehavior", "active-package-derived config rebuilt at spawn and replaced by ambient_ai_package_system; only read by sandbox_seat_system"),
+        ("SceneFlags", "write-once at NIF import/cell spawn; its one mutator method (set_culled) is unused in production"),
+        ("SkinnedMesh", "GPU skeleton-binding handle, same exclusion class as MeshHandle, rebuilt from skeleton resolution every import"),
+        ("SubmersionState", "fully recomputed every frame from saved Transform + WaterPlane/WaterVolume by submersion_system"),
+        ("TextureHandle", "GPU TextureRegistry index, explicitly named in this file's own exclusion doc, re-resolved by path every load"),
+        ("TravelBehavior", "active-package-derived config rebuilt at spawn and replaced by ambient_ai_package_system; mutable companion TravelState is registered"),
+        ("WanderBehavior", "active-package-derived config rebuilt at spawn and replaced by ambient_ai_package_system; mutable companion WanderState is registered"),
+        ("WaterContact", "per-tick physics-derived output recomputed from body pose + WaterVolume; drowning accumulation is not yet wired"),
+        ("WaterFlow", "static per-cell flow vector set once from WATR wind_direction at cell load, no runtime mutator"),
+        ("WaterPlane", "static per-cell water geometry+material set once from XCWT/WATR at cell load, no runtime mutator"),
+        ("WaterVolume", "static per-cell AABB set once from XCLW/cell floor data at cell load, no runtime mutator"),
+        ("WorldBound", "per-frame bound recomputed from saved LocalBound + GlobalTransform, same exclusion class as GlobalTransform"),
+        // ── crates/scripting/src/ ────────────────────────────────────
+        ("ActivateEvent", "one-shot event marker drained every frame by event_cleanup_system"),
+        // ActorCinematicState: FIXED — registered (#2380 / SAVE-D1-15),
+        // no longer allowlisted here.
+        ("ActorStats", "forward-latent — no live production insert site exists outside tests"),
+        ("AnimationTextKeyEvents", "one-shot event marker drained every frame by event_cleanup_system"),
+        ("CameraShakeCommand", "one-shot command marker drained every frame by event_cleanup_system"),
+        // CinematicPresentationState: FIXED — registered (#2380 /
+        // SAVE-D1-15), no longer allowlisted here.
+        ("ControllerRumbleCommand", "one-shot command marker drained every frame by event_cleanup_system"),
+        ("DialogueLineCompletionBatch", "one-shot presentation-ingress batch, snapshotted+drained every tick"),
+        ("DialoguePlayback", "documented #1696-style rationale on the type itself (#2294)"),
+        ("DialoguePresentationEventBatch", "one-shot presentation batch, drained at the start of every tick before being repopulated the same tick"),
+        ("DialogueRegistry", "populated once from parsed DIAL/INFO ESM records, only ever read afterward"),
+        ("Dlc2Ttr4aPlayerScript", "forward-latent — no live production spawn site exists outside tests/examples"),
+        ("EquipItemCatalog", "populated once at cell/plugin load, only ever read afterward"),
+        ("EvaluatePackageRequest", "one-shot ingress marker, drained every tick by scene_package_system"),
+        // FragmentExecutionQueue: FIXED — registered (#2381 /
+        // SAVE-D1-16), no longer allowlisted here.
+        ("Globals", "the runtime mutator (Globals::set) is explicitly documented as dormant — no production SetGlobalValue writer exists yet; re-evaluate when it lands"),
+        ("HitEvent", "one-shot event marker drained every frame by event_cleanup_system"),
+        // HorseTetherState: FIXED — registered (#2380 / SAVE-D1-15), no
+        // longer allowlisted here.
+        ("KeystoneInventory", "forward-latent — its only mutator only fires for MG07LabyrinthianDoor entities, which have no live production spawn site"),
+        ("MG07LabyrinthianDoor", "forward-latent — no live production spawn site exists outside tests, despite its systems being scheduler-wired"),
+        ("MotionTypeChangeRequest", "one-shot request, applied and drained same-tick by its own consumer system"),
+        ("OnCellLoadEvent", "one-shot event marker drained every frame by event_cleanup_system"),
+        ("OnEquipEvent", "one-shot event marker drained every frame by event_cleanup_system; no live emit site yet either (M41 equip hook pending)"),
+        ("OnTriggerEnterEvent", "one-shot event marker drained every frame by event_cleanup_system"),
+        ("OnUpdateEvent", "one-shot event marker drained every frame by event_cleanup_system"),
+        ("PendingFragmentActivations", "one-frame handoff queue (#2654) drained every frame by fragment_activation_flush_system; deliberately transient for the same reason ActivateEvent above is — it holds raw EntityIds, which a live in-session reload churns (the SAVE-D6-01 / #1696 / #2380 hazard class), and persisting a queue whose only output marker is itself unsaved would be incoherent. Worst case is one queued scripted activation lost if a save lands in the single frame between fragment dispatch and the next frame's flush"),
+        ("PackageRegistry", "populated once from parsed PACK records, only ever read afterward"),
+        ("PackageTargetRegistry", "populated once from placed-REFR positions, only ever read afterward"),
+        ("QuestAdvanceOnActivate", "write-once static config from decompiled-script data; only read to decide whether to write the already-saved QuestStageState"),
+        ("QuestAliasInjectedOverlays", "derived QUST alias injection metadata, rebuilt whenever SceneActorBindings is marked dirty"),
+        ("QuestAliasRuntimeOverlays", "derived full QUST alias metadata, rebuilt whenever SceneActorBindings is marked dirty"),
+        ("QuestDefinitionRegistry", "populated once from parsed QUST records, only ever read afterward"),
+        ("QuestStageAdvancedBatch", "one-shot batch drained every frame by event_cleanup_system"),
+        ("QuestStageFragments", "populated once at cell load from decoded VMAD/PEX, only ever read afterward"),
+        ("RecurringUpdate", "forward-latent — its only writer is unreachable in production today (no live Dlc2Ttr4aPlayerScript spawn site); re-evaluate the moment a real RegisterForUpdate recognizer lands"),
+        // RumbleOnActivate: FIXED — registered (#2382 / SAVE-D1-17), no
+        // longer allowlisted here.
+        ("SceneActionCompletionBatch", "one-shot batch drained every tick by scene_playback_system"),
+        ("SceneActorBindings", "fully computed/cached resource, rebuilt from scratch off static registries whenever marked dirty"),
+        ("SceneAliasCandidate", "write-once at REFR-spawn time from static reference/base-record identity, re-derived identically every reload"),
+        ("SceneEventBatch", "one-shot batch drained every tick"),
+        ("SceneFragmentInvocationBatch", "one-shot batch drained every tick"),
+        ("ScenePackageCompletionBatch", "one-shot batch drained every tick by scene_package_system"),
+        ("ScenePackageEventBatch", "one-shot batch drained every tick by scene_package_system"),
+        ("ScenePackagePlayback", "documented #1696-style rationale on the type itself (#2294)"),
+        ("ScenePlayer", "documented #1696-style rationale on the type itself (#2294)"),
+        ("SceneQuestAliasRegistry", "populated once from parsed QUST alias definitions, only ever read afterward"),
+        ("SceneRegistry", "populated once per plugin/cell install from static SCEN records, only ever read afterward"),
+        ("SceneStartRequest", "one-shot request drained every tick"),
+        ("SceneStopRequest", "one-shot request drained every tick"),
+        ("ScriptRegistry", "static editor_id-to-function-pointer map populated only by explicit .register() calls at boot; function pointers aren't meaningfully serializable"),
+        ("StartGameQuestRegistry", "populated once from ESM QUST records; its own doc states repeated cell loads are idempotent by design"),
+        ("TimerExpired", "one-shot event marker drained every frame by event_cleanup_system"),
+        ("TriggerVolume", "occupancy is engineered (fix #1817) to self-correct via a None-sentinel cold-start re-seed with zero observable difference"),
+        ("TwoStateTransitionBatch", "one-shot presentation batch drained every tick; the state it summarizes (TwoStateActivator) is already registered"),
+        ("UiMessageCommand", "one-shot command marker drained every frame; its only writer is unreachable in production today (same reason as MG07LabyrinthianDoor)"),
+        // ── crates/physics/src/ ──────────────────────────────────────
+        ("CharacterController", "mutable per-frame fields (velocity/grounded/jump) are deliberately zeroed on reload by the pose-restore path, not carried over"),
+        ("ContactConfig", "boot-time tunable resource, no runtime mutator (no resource_mut call exists outside tests)"),
+        ("PhysicsWaterConstants", "boot-time tunable resource, no runtime mutator (no resource_mut call exists outside tests)"),
+        ("PhysicsWorld", "owns live Rapier handle sets, architecturally rebuilt from cell data (CollisionShape/RigidBodyData/Transform) every load, not snapshot-restored"),
+        ("Ragdoll", "handle bookkeeping only, no live inserter exists yet (debug console command only) — same posture as Dead (#2293)"),
+        ("RapierHandles", "self-healing generational index; its own doc states absence is the signal to re-derive it, and physics_sync_system does so automatically"),
+        // ── byroredux/src/ ────────────────────────────────────────────
+        // #2536 / SAVE-D1-18 — added alongside the new `SCAN_ROOTS`
+        // entry below; classifies every `impl Component`/`impl
+        // Resource` under the binary crate not already registered in
+        // `build_save_registry` (`ActorCinematicState`,
+        // `HorseTetherState`, `ActorControlState`, `RigidBodyData`,
+        // `Material`, `RumbleOnActivate`, `CurrentCellContext`,
+        // `PlayerPose`, `GameTimeRes` all already are). Verified
+        // 2026-08-08 against real (non-`#[cfg(test)]`) insertion sites
+        // for every entry, same bar as the rest of this list.
+        ("ActionBindings", "boot-time input configuration; rebuilt from defaults/settings rather than persisted as gameplay state"),
+        ("ActionState", "per-frame held/pressed/released action edges derived entirely from InputState"),
+        ("AlphaBlend", "spawn-time classification extracted from NiAlphaProperty flags at import, rederived identically every load"),
+        ("AmbientPackageRuntime", "NPC_.PKID candidate state rebuilt at spawn and re-evaluated on the first tick against restored clock/CTDA resources"),
+        ("CellLightingRes", "WTHR ambient/directional CPU-side mirror, re-flowed from the plugin's parsed lighting record every cell load"),
+        ("CellRootIndex", "inverted CellRoot->owned-entities index, repopulated by cell_loader::stamp_cell_root every cell load (#791)"),
+        ("CloudSimState", "cloud-scroll accumulator, freshly seeded at [0,0] by every apply_worldspace_weather call (see its own #803 doc)"),
+        ("CurrentCellRoot", "tracks the interior placement-root entity, set fresh by load_cell_with_masters and cleared by execute_pending before each cell load"),
+        ("DebugLoadArchiveSet", "debug cell.load console-command bookkeeping (#2078), outside the normal single-launch CLI path"),
+        ("DoorTeleport", "XTEL destination data, rederived identically from the plugin's parsed REFR every cell load"),
+        ("FootstepConfig", "engine-wide footstep sound configuration loaded once at startup from a vanilla BSA"),
+        ("FootstepEmitter", "per-frame position/stride accumulator mutated by footstep_system every tick — ephemeral audio-cue bookkeeping, not gameplay state"),
+        ("FootstepScratch", "per-frame scratch buffer for footstep_system's two-phase collect/drain pattern (#932) — capacity-only persistence, no gameplay state"),
+        ("HavokAnimationTarget", "skeleton_root + consumed_idle_serial are both spawn-time-resolved (serial always starts at 0), rederived identically every load"),
+        ("HavokIdleCatalog", "process-lifetime IDLE FormID -> animation handle mapping, populated once and read-only afterward — same posture as AnimationClipRegistry"),
+        ("InjectedKeyPulse", "one-frame debug/smoke input ingress drained by refresh_action_state; never canonical gameplay state"),
+        ("InputState", "live keyboard/mouse state for the fly camera, inherently process-session-local"),
+        ("InteractionState", "camera-forward target derived from live transforms and interactable components every frame"),
+        ("InteractionTrace", "session-local interaction diagnostics retained across a cell transition for smoke observability, not gameplay state"),
+        ("IsDecalMesh", "spawn-time classification per FO4 BGSM decal semantics, rederived identically every load"),
+        ("IsFxMesh", "spawn-time classification lifted from a per-frame material-path scan (PERF-D3-NEW-02/#1136), rederived identically every load"),
+        ("IsLodTerrain", "spawn-time classification set only by terrain_lod::spawn_lod_block, rederived identically every load"),
+        ("LightTuning", "live-tuning resource mutated only by the light.atten debug console command, for A/B comparison — not gameplay state"),
+        ("LoadedCellIndex", "read-only parsed-ESM cell index, Arc-shared scene metadata rebuilt every cell load"),
+        ("LoadedPluginSet", "boot-time CLI --esm/--master capture, reused only to re-invoke load_cell_with_masters — not gameplay state"),
+        ("MaterialTextureHandles", "bindless GPU texture handle set, rebuilt by the texture-upload path every load — handles aren't stable across process restarts"),
+        ("MetricsState", "process-diagnostics sampler holding a live sysinfo::System handle, not gameplay state"),
+        ("NameIndex", "lazily-rebuilt Name->EntityId cache, invalidated by its own generation counter (#249)"),
+        ("NifImportRegistry", "process-lifetime parsed-NIF LRU cache, keyed by model path — re-populated on demand, never save-relevant"),
+        ("NormalMapHandle", "bindless GPU texture handle for the water normal-map path, rebuilt by the texture-upload path every load"),
+        ("PendingCellTransitionSlot", "one-shot queued-transition slot, always present but empty except mid-transition"),
+        ("PendingSaveLoadSlot", "one-shot queued-load slot (#1848/SAVE-05), empty except mid-drain — save/load plumbing itself, not save-worthy state"),
+        ("PlayerEntity", "set by scene::spawn_player_character and cleared by cell unload — always freshly re-set on load, not restore-worthy"),
+        ("PlayerMode", "engine-wide FlyCam/Character flag set at scene-setup from CLI flags + scene type, not gameplay state"),
+        ("RagdollActive", "marker for live ragdoll simulation, same physics-rebuild posture as PhysicsWorld above — not snapshot-restored"),
+        ("RagdollTemplate", "per-actor ragdoll blueprint resolved at spawn against the loaded skeleton, rederived identically every load — same posture as PhysicsWorld"),
+        ("SandboxSitClip", "resolved once at cell load from the archive provider, read-only afterward"),
+        ("SaveState", "save-slot directory + ring cursor, resumed from disk at startup (SaveState::new) — save/load plumbing itself, not part of the world snapshot"),
+        ("SceneImportCache", "process-lifetime parsed-scene cache wrapper around the same ParsedNifCache core as NifImportRegistry"),
+        ("SeatReservations", "derived sandbox occupancy, pruned on cell-reference load against live Furniture + claimant Seated state — see its own doc"),
+        ("SkyParamsRes", "WTHR sky rendering parameters, rebuilt from the parsed record every exterior cell load"),
+        ("Spinning", "demo-scene marker component, not present on any real gameplay content"),
+        ("SubtreeCache", "lazily-rebuilt animation subtree cache, invalidated alongside NameIndex (#278)"),
+        ("TerrainTileSlot", "index into the renderer's per-frame GpuTerrainTile SSBO, rebuilt by the terrain-spawn path every load (#470)"),
+        ("TwoSided", "marker for backface-culling state, rederived identically from NIF material data every load"),
+        ("VisibleWhenDistant", "spawn-time classification derived from the streaming-ring/LOD-radius relationship (#1889), rederived identically every load"),
+        ("WeatherDataRes", "WTHR NAM0 sky-color table, rebuilt from the parsed record whenever weather is (re)applied"),
+        ("WeatherTransitionRes", "one-shot weather-blend accumulator, present only mid-transition and removed on completion"),
+    ];
+
+    const SCAN_ROOTS: &[&str] = &[
+        "../crates/core/src/ecs/components",
+        "../crates/scripting/src",
+        "../crates/physics/src",
+        "../byroredux/src",
+    ];
+
+    let manifest = env!("CARGO_MANIFEST_DIR");
+    let mut files = Vec::new();
+    for root in SCAN_ROOTS {
+        collect_rs_files(&std::path::Path::new(manifest).join(root), &mut files);
+    }
+
+    let mut found: Vec<(String, String)> = Vec::new();
+    for path in &files {
+        let src = std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("SAVE-D1-12 guard can't read {}: {e}", path.display()));
+        for (i, line) in src.lines().enumerate() {
+            if let Some(name) = impl_target_type(line) {
+                found.push((name.to_string(), format!("{}:{}", path.display(), i + 1)));
+            }
+        }
+    }
+    assert!(
+        !found.is_empty(),
+        "SAVE-D1-12 guard found zero impl Component/Resource lines under \
+         {SCAN_ROOTS:?} — the scan itself is broken (wrong roots, or the \
+         `impl Component for X` / `impl Resource for X` line shape changed).",
+    );
+
+    let registry = build_save_registry();
+    let registered: std::collections::HashSet<&str> = registry
+        .component_names()
+        .chain(registry.resource_names())
+        .collect();
+    let allowlisted: std::collections::HashSet<&str> =
+        NOT_SAVED_BY_DESIGN.iter().map(|(name, _)| *name).collect();
+
+    let mut offenders = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for (name, loc) in &found {
+        if !seen.insert(name.clone()) {
+            continue;
+        }
+        let saved = registered.contains(name.as_str());
+        let allowed = allowlisted.contains(name.as_str());
+        if saved && allowed {
+            offenders.push(format!(
+                "{name} ({loc}): registered in build_save_registry AND in \
+                 NOT_SAVED_BY_DESIGN — pick one"
+            ));
+        } else if !saved && !allowed {
+            offenders.push(format!(
+                "{name} ({loc}): neither registered in build_save_registry \
+                 nor in NOT_SAVED_BY_DESIGN — classify it (see the guard's \
+                 doc comment for the categories) before landing this type"
+            ));
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "SAVE-D1-12 (#2295): every Component/Resource impl under \
+         crates/core/src/ecs/components/, crates/scripting/src/, and \
+         crates/physics/src/ must be registered XOR allowlisted. \
+         Offenders: {offenders:#?}",
+    );
+}

@@ -1056,22 +1056,36 @@ mod tests {
     /// live device under `cargo test`, and the failing path needs an
     /// allocator-`None` Drop that does not exist today (which is the point —
     /// this pins the ordering before one is reintroduced).
+    ///
+    /// #2406 / TD1-003 moved the guard's *body* into
+    /// `destroy_allocator_owned_resources`, so the two halves now live in
+    /// separate regions. The check gained precision rather than losing it:
+    /// instead of comparing byte offsets within one function, it now pins
+    /// which side of the guard each teardown call is on by construction —
+    /// `destroy_allocations` must be absent from `Drop` entirely and present
+    /// in the allocator-owned helper, and the helper must be reachable only
+    /// from inside the guard.
     #[test]
     fn fsr_context_teardown_sits_outside_the_allocator_guard() {
         const CONTEXT_MOD_RS: &str = include_str!("context/mod.rs");
+        let helper = CONTEXT_MOD_RS
+            .split_once("unsafe fn destroy_allocator_owned_resources")
+            .expect("the allocator-owned teardown helper disappeared (#2406)")
+            .1;
         let drop_impl = CONTEXT_MOD_RS
             .split_once("impl Drop for VulkanContext")
             .expect("VulkanContext Drop impl disappeared")
             .1;
         let guard_pos = drop_impl
-            .find("if let Some(ref alloc) = self.allocator")
+            .find("if let Some(alloc) = self.allocator")
             .expect("the allocator-dependent teardown guard disappeared");
+        let helper_call = drop_impl
+            .find("self.destroy_allocator_owned_resources(&alloc);")
+            .expect("Drop must still invoke the allocator-owned teardown");
         let device_objects_pos = drop_impl
             .find("upscaler.destroy_device_objects(")
             .expect("Drop must retire the FSR SDK context (#2158)");
-        let allocations_pos = drop_impl
-            .find("upscaler.destroy_allocations(")
-            .expect("Drop must free the FSR output images (#2158)");
+
         assert!(
             device_objects_pos < guard_pos,
             "FrameUpscaler::destroy_device_objects moved inside the \
@@ -1080,15 +1094,25 @@ mod tests {
              #1483). Keep it in the allocator-independent block.",
         );
         assert!(
-            guard_pos < allocations_pos,
-            "FrameUpscaler::destroy_allocations must stay inside the \
-             `Some(allocator)` guard — it frees gpu-allocator memory (#2158).",
+            guard_pos < helper_call,
+            "the allocator-owned teardown must be called from inside the \
+             `Some(allocator)` guard (#2158 / #2406)",
         );
         assert!(
-            device_objects_pos < allocations_pos,
-            "the SDK context must be dropped BEFORE the output images it \
-             references are destroyed (#2158).",
+            !drop_impl[..helper_call].contains("upscaler.destroy_allocations("),
+            "FrameUpscaler::destroy_allocations must stay on the guarded side \
+             — it frees gpu-allocator memory (#2158).",
         );
+        assert!(
+            helper.contains("upscaler.destroy_allocations("),
+            "Drop must free the FSR output images (#2158) — they are \
+             allocator-owned, so the call belongs in \
+             destroy_allocator_owned_resources.",
+        );
+        // The SDK context is dropped before the images it references: the
+        // former is in Drop ahead of the guard, the latter only runs inside
+        // the helper the guard calls.
+        assert!(device_objects_pos < helper_call);
     }
 
     #[test]
