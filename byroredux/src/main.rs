@@ -24,6 +24,7 @@ mod debug_load;
 mod env_translate;
 mod fog;
 mod game_profiles;
+mod groundcover_translate;
 mod helpers;
 mod interaction;
 mod list_cells;

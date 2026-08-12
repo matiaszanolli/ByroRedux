@@ -5,7 +5,7 @@ the `charal-*-ruleset.md` files are to [`charal.md`](charal.md). EXAL owns the
 outdoors environment; **ground cover** is the vegetation stratum that sits on
 the terrain surface — grass, ferns, moss, low scrub.
 
-**Status**: PROPOSED (design, 2026-07-26). Implementation rolls out per §8.
+**Status**: Phase 0 IMPLEMENTED (2026-08-12); Phases 1–5 proposed. Rolls out per §9.
 
 **Goal**: grass that reads as an *organic, continuous ground stratum* rather
 than a set of authored patches, generated procedurally from terrain-derived
@@ -335,6 +335,36 @@ Each phase is independently useful and independently reviewable.
 - **Phase 0 — canonical types + boundary.** `GroundCoverSpecies`, palette,
   `WindField`, the affinity table, the EXAL translate site, and the `LTEX`
   keyword map. Pure CPU, fully unit-testable, no rendering.
+  **Done (2026-08-12, #2369)** — types in
+  [`components/groundcover.rs`](../../crates/core/src/ecs/components/groundcover.rs),
+  boundary in
+  [`groundcover_translate.rs`](../../byroredux/src/groundcover_translate.rs).
+
+  The keyword table was derived from the real `LTEX` corpus of the four
+  installed games (386 unique records: Oblivion 229, FNV 89, Skyrim 68, FO3 51)
+  by tokenising every editor ID and ranking by frequency, rather than invented.
+  It resolves 98.7% of the corpus; the 5 residual names are genuinely ambiguous
+  (Bravil city base terrain, an Oblivion decal symbol) and correctly take the
+  low-but-nonzero default.
+
+  That sweep surfaced three rules that source-reading alone would have missed,
+  each now pinned by a regression test:
+
+  1. **`NoGrass` suppression.** 46 corpus records carry an explicit `NoGrass`
+     suffix — `CHTerrainGrass01NoGrass`, `LTundra01NoGrass`,
+     `DementiaMoss01NoGrass`. They are authored variants with vegetation
+     deliberately removed (worn paths, ground under buildings). A
+     `contains("grass")` test scores them *highest* when they mean the exact
+     opposite, so suppression is checked first and wins outright.
+  2. **Worn surfaces outrank their substrate.** `LDirtPathWasteland01` is a
+     trail through dirt; matching `dirt` first grows grass across the trail.
+  3. **`grass` outranks a barren base.** `RootsBarrenWastesGrass01` and
+     `ChemicalBarrenWastes01Grass` are barren ground with grass painted over,
+     so the vegetated reading is the correct one.
+
+  Affinity *values* remain initial estimates pending the §11.3 density-histogram
+  calibration; the tests pin ordering and structure, never the scalars, so that
+  calibration can move numbers without rewriting the suite.
 - **Phase 1 — scatter.** `ExcludedFromTlas` generalisation, chunking, the
   density field in GLSL, `groundcover_scatter.comp`, and debug point rendering
   of accepted candidates over real terrain. This is where the distribution is

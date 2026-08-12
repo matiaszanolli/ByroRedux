@@ -127,6 +127,47 @@ const PNAM_INHERIT_CLIMATE: u16 = 0x10;
 /// plugin data) via `visited`. Logs at `warn` when the chain terminates
 /// unresolved so a real inheritance gap is diagnosable instead of reading
 /// as an unrelated weather bug.
+/// Every worldspace key from `start_key` up its `WNAM` parent chain, most
+/// specific first.
+///
+/// Unlike [`resolve_worldspace_climate`] this walks the chain **unconditionally**
+/// rather than gating on `PNAM`'s climate-inherit bit. The two ask different
+/// questions: that bit governs whether a child inherits its parent's *weather*,
+/// while a child worldspace sits physically inside its parent regardless of how
+/// its sky is authored. Ground-cover climate is a geographic property, so the
+/// chain is the right input even when weather inheritance is switched off.
+///
+/// Cycle-guarded like its sibling; a corrupt chain truncates rather than hangs.
+pub(crate) fn worldspace_name_chain(
+    worldspaces: &HashMap<String, WorldspaceRecord>,
+    start_key: &str,
+) -> Vec<String> {
+    let mut chain = vec![start_key.to_string()];
+    let mut visited = std::collections::HashSet::new();
+    let mut current = start_key.to_string();
+    loop {
+        if !visited.insert(current.clone()) {
+            log::warn!(
+                "worldspace_name_chain: cyclic WNAM chain from '{start_key}' \
+                 (revisited '{current}') — truncating",
+            );
+            return chain;
+        }
+        let Some(record) = worldspaces.get(&current) else {
+            return chain;
+        };
+        let Some(parent_fid) = record.parent_worldspace else {
+            return chain;
+        };
+        let Some((parent_key, _)) = worldspaces.iter().find(|(_, w)| w.form_id == parent_fid)
+        else {
+            return chain;
+        };
+        chain.push(parent_key.clone());
+        current = parent_key.clone();
+    }
+}
+
 pub(crate) fn resolve_worldspace_climate(
     worldspaces: &HashMap<String, WorldspaceRecord>,
     worldspace_climates: &HashMap<String, u32>,

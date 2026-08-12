@@ -393,6 +393,55 @@ pub(crate) fn apply_worldspace_weather(
             ctx.texture_registry.drop_texture(&ctx.device, handle);
         }
     }
+
+    install_ground_cover(world, wctx);
+}
+
+/// EXAL ground-cover translate site (#2369, design §7).
+///
+/// Runs after both weather branches so the wind field reads whichever
+/// `WeatherDataRes` was actually installed — WTHR-derived or procedural
+/// fallback — rather than duplicating the translation per branch.
+///
+/// Both resources are *derived*: the palette from the worldspace identity plus
+/// (in Phase 5) its `GRAS` records, the wind from the live weather. Neither is
+/// saved; both are re-resolved on load, which is why they sit in the save
+/// guard's `NOT_SAVED_BY_DESIGN` list rather than the registry.
+///
+/// `authored` is empty for every game today. That is the designed steady state
+/// for content with no vegetation data, not a stub — `GroundCoverPalette::
+/// resolve` substitutes the built-in species so the scatter pass never sees an
+/// empty palette. Phase 5 fills it from `GRAS`.
+fn install_ground_cover(world: &mut World, wctx: &cell_loader::ExteriorWorldContext) {
+    use crate::groundcover_translate::{resolve_palette_for_chain, resolve_wind};
+
+    let wind_speed = world
+        .try_resource::<WeatherDataRes>()
+        .map(|w| w.wind_speed)
+        .unwrap_or(0);
+    // Classify over the full WNAM ancestry, not the leaf name: FO3's
+    // `MegatonWorld` carries no geographic signal of its own and reads as
+    // temperate, when Megaton is a Capital Wasteland settlement.
+    let chain = crate::env_translate::worldspace_name_chain(
+        &wctx.record_index.cells.worldspaces,
+        &wctx.worldspace_key,
+    );
+    let palette = resolve_palette_for_chain(&chain, Vec::new());
+    let wind = resolve_wind(&wctx.worldspace_key, wind_speed);
+    log::info!(
+        target: "engine::groundcover",
+        "Ground cover for '{}' (chain {:?}): climate {:?}, {} species, \
+         wind {:.1} u/s along [{:.2}, {:.2}]",
+        wctx.worldspace_key,
+        chain,
+        palette.climate,
+        palette.species.len(),
+        wind.speed,
+        wind.direction[0],
+        wind.direction[1],
+    );
+    world.insert_resource(palette);
+    world.insert_resource(wind);
 }
 
 /// Collapse any `WeatherTransitionRes` still in flight from a prior

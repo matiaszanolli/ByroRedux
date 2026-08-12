@@ -122,6 +122,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("FollowBehavior", "active-package-derived config rebuilt at spawn and replaced by ambient_ai_package_system; mutable companion FollowState is registered"),
         ("Furniture", "write-once at NIF import (BSFurnitureMarker), only ever read, never query_mut'd"),
         ("GlobalTransform", "recomputed every frame from saved Transform + Parent by transform_propagation_system; its own doc says \"never written by user code\""),
+        ("GroundCoverPalette", "EXAL-derived (#2369): re-resolved from the worldspace identity + its GRAS records at every worldspace entry by install_ground_cover; saving it would pin a stale palette across a plugin change"),
         ("GuardBehavior", "active-package-derived config rebuilt at spawn and replaced by ambient_ai_package_system; mutable companion GuardState is registered"),
         ("LocalBound", "write-once at NIF import/mesh spawn, read-only thereafter to derive WorldBound"),
         // Material: FIXED — registered (#2378 / SAVE-D1-13), no longer
@@ -145,6 +146,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("WaterFlow", "static per-cell flow vector set once from WATR wind_direction at cell load, no runtime mutator"),
         ("WaterPlane", "static per-cell water geometry+material set once from XCWT/WATR at cell load, no runtime mutator"),
         ("WaterVolume", "static per-cell AABB set once from XCLW/cell floor data at cell load, no runtime mutator"),
+        ("WindField", "EXAL-derived (#2369): re-translated from the live WeatherDataRes wind byte at every worldspace entry; the saved WTHR state it derives from is what carries forward"),
         ("WorldBound", "per-frame bound recomputed from saved LocalBound + GlobalTransform, same exclusion class as GlobalTransform"),
         // ── crates/scripting/src/ ────────────────────────────────────
         ("ActivateEvent", "one-shot event marker drained every frame by event_cleanup_system"),

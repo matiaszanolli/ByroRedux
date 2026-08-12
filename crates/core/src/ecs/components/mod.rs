@@ -16,6 +16,7 @@ pub mod follow;
 pub mod form_id;
 pub mod furniture;
 pub mod global_transform;
+pub mod groundcover;
 pub mod guard;
 pub mod hierarchy;
 pub mod inventory;
