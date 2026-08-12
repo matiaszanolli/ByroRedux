@@ -420,13 +420,8 @@ impl SsaoPipeline {
         super::texture::with_one_time_commands(device, queue, pool, |cmd| {
             for &img in &self.ao_images {
                 // UNDEFINED → TRANSFER_DST for the clear.
-                let barrier = vk::ImageMemoryBarrier::default()
-                    .src_access_mask(vk::AccessFlags::empty())
-                    .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                    .old_layout(vk::ImageLayout::UNDEFINED)
-                    .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                    .image(img)
-                    .subresource_range(range);
+                // #2413 / TD2-116 — shared constructor, same struct.
+                let barrier = super::descriptors::image_barrier_undef_to_transfer_dst(img, 1);
                 // NONE as srcStageMask: UNDEFINED → TRANSFER_DST_OPTIMAL has
                 // no prior writes to expose; NONE is the Vulkan 1.3 idiom
                 // post-#949 / #1100 / #1122.
@@ -455,13 +450,8 @@ impl SsaoPipeline {
                         },
                         &[range],
                     );
-                    let barrier2 = vk::ImageMemoryBarrier::default()
-                        .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                        .dst_access_mask(vk::AccessFlags::SHADER_READ)
-                        .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                        .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                        .image(img)
-                        .subresource_range(range);
+                    let barrier2 =
+                        super::descriptors::image_barrier_transfer_dst_to_shader_read(img, 1);
                     device.cmd_pipeline_barrier(
                         cmd,
                         vk::PipelineStageFlags::TRANSFER,

@@ -279,13 +279,12 @@ impl PlaceholderImage {
         } = final_state;
         let range = super::descriptors::color_subresource_single_mip();
         super::texture::with_one_time_commands(device, queue, pool, |cmd| {
-            let to_dst = vk::ImageMemoryBarrier::default()
-                .src_access_mask(vk::AccessFlags::empty())
-                .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                .old_layout(vk::ImageLayout::UNDEFINED)
-                .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                .image(image)
-                .subresource_range(range);
+            // #2413 / TD2-116 — shared constructor for the entry half.
+            // The exit half stays hand-rolled: `FinalState` is caller-chosen
+            // (SHADER_READ_ONLY_OPTIMAL/SHADER_READ for the AO placeholder,
+            // GENERAL/SHADER_WRITE for the caustic sink), so the fixed
+            // transfer-dst→shader-read helper does not cover it.
+            let to_dst = super::descriptors::image_barrier_undef_to_transfer_dst(image, 1);
             let to_final = vk::ImageMemoryBarrier::default()
                 .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
                 .dst_access_mask(dst_access)

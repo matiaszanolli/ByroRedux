@@ -1308,15 +1308,14 @@ impl VolumetricsPipeline {
                 ));
             }
             for noise in [base_noise, detail_noise] {
-                barriers.push(
-                    vk::ImageMemoryBarrier::default()
-                        .src_access_mask(vk::AccessFlags::empty())
-                        .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                        .old_layout(vk::ImageLayout::UNDEFINED)
-                        .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                        .image(noise.image)
-                        .subresource_range(full_range),
-                );
+                // #2413 / TD2-116 SIBLING — same shape as the three sites
+                // the issue named; `full_range` is
+                // `color_subresource_single_mip()`, which is what the helper
+                // builds for (mips=1, layers=1).
+                barriers.push(super::descriptors::image_barrier_undef_to_transfer_dst(
+                    noise.image,
+                    1,
+                ));
             }
             // SAFETY: `cmd` is recording; every image is freshly allocated
             // and exclusively owned by this pipeline. The barriers move

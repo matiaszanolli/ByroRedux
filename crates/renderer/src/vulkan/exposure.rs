@@ -147,19 +147,22 @@ impl ExposureResource {
     ) -> Result<()> {
         super::texture::with_one_time_commands(&self.device, queue, command_pool, |cmd| {
             let range = color_subresource_single_mip();
-            let to_transfer = vk::ImageMemoryBarrier::default()
-                .src_access_mask(vk::AccessFlags::empty())
-                .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                .old_layout(vk::ImageLayout::UNDEFINED)
-                .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                .image(self.image)
-                .subresource_range(range);
+            // #2413 / TD2-116 — use the shared constructors instead of
+            // hand-rolling the pair. They also set
+            // src/dst_queue_family_index to QUEUE_FAMILY_IGNORED, which the
+            // hand-rolled version left at the zeroed default.
+            let to_transfer =
+                super::descriptors::image_barrier_undef_to_transfer_dst(self.image, 1);
             unsafe {
                 // SAFETY: `cmd` is recording; the image is at its declared
                 // initial layout and has not been submitted before.
+                // NONE, not TOP_OF_PIPE: UNDEFINED → TRANSFER_DST_OPTIMAL has
+                // no prior write to expose. This file was written after the
+                // rest of the family had already migrated (#949 / #1100 /
+                // #1122) and reintroduced the stale idiom — #2413.
                 self.device.cmd_pipeline_barrier(
                     cmd,
-                    vk::PipelineStageFlags::TOP_OF_PIPE,
+                    vk::PipelineStageFlags::NONE,
                     vk::PipelineStageFlags::TRANSFER,
                     vk::DependencyFlags::empty(),
                     &[],
@@ -177,13 +180,8 @@ impl ExposureResource {
                 );
             }
 
-            let to_shader_read = vk::ImageMemoryBarrier::default()
-                .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                .dst_access_mask(vk::AccessFlags::SHADER_READ)
-                .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image(self.image)
-                .subresource_range(range);
+            let to_shader_read =
+                super::descriptors::image_barrier_transfer_dst_to_shader_read(self.image, 1);
             unsafe {
                 // SAFETY: the transfer clear above is ordered before future
                 // compute/fragment shader reads of the same subresource.

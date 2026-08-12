@@ -132,9 +132,12 @@ pub(crate) fn sort_lod_coords_nearest(
 /// +Y normal, zero UV) for any array shorter than `positions` and copying
 /// authored tangents where present.
 ///
-/// Both LOD paths upload the result via `upload_scene_mesh_global_only`
-/// (global-SSBO-only, no per-mesh buffers / no BLAS), so this never needs
-/// the RT-capable vertex layout.
+/// The two LOD paths upload the result via `upload_scene_mesh_global_only`
+/// (global-SSBO-only, no per-mesh buffers / no BLAS); the cell-loader's
+/// `spawn_mesh_instance` (#2410) uploads the same vertices through the
+/// RT-capable path instead. That difference is entirely in the *upload*
+/// call — the `Vertex` values this builds are identical either way, which
+/// is why the one builder serves all three.
 pub(crate) fn imported_mesh_to_vertices(mesh: &ImportedMesh) -> Vec<Vertex> {
     (0..mesh.positions.len())
         .map(|i| {
