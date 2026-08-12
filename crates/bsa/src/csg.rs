@@ -36,6 +36,50 @@ pub const CSG_CHUNK_SIZE: usize = 65_536;
 
 const MAGIC: &[u8; 4] = b"bcsg";
 
+/// Bethesda's `BSCRC32` over an ASCII string.
+///
+/// Reflected CRC-32 (polynomial `0xEDB88320`) with **no** pre-inversion and
+/// **no** final xor, computed over the lowercased bytes. That is the only
+/// difference from `zlib`'s CRC-32, and it is what makes
+/// `bscrc32("fallout4 - geometry")` land on `0xddf19a67` rather than
+/// `0xd80b474a`.
+///
+/// Derived by solving the four CRC parameters (polynomial, init, final xor,
+/// case folding) against six independent ground-truth pairs read out of the
+/// installed FO4 archives — the `BSPackedGeomObject::filename_hash` each
+/// game/DLC's `_oc.nif` files carry (see [`csg_name_hash`] and the unit
+/// test below). Exactly one parameter set reproduces all six.
+pub fn bscrc32(s: &str) -> u32 {
+    let mut crc: u32 = 0;
+    for b in s.bytes() {
+        let mut c = (crc ^ u32::from(b.to_ascii_lowercase())) & 0xff;
+        for _ in 0..8 {
+            c = if c & 1 != 0 {
+                (c >> 1) ^ 0xEDB8_8320
+            } else {
+                c >> 1
+            };
+        }
+        crc = (crc >> 8) ^ c;
+    }
+    crc
+}
+
+/// The `BSPackedGeomObject::filename_hash` that identifies the
+/// `<Plugin> - Geometry.csg` companion of `plugin_path`.
+///
+/// `plugin_path` is a plugin file (`…/Data/DLCCoast.esm`); the hashed string
+/// is its stem plus `" - Geometry"`, lowercased. A precombined `_oc.nif`
+/// names its shared-geometry source by this hash, so it — not the cell's
+/// owning plugin — is the authoritative way to pick the right `.csg`: a
+/// plugin that re-bakes a *master-owned* cell writes the new `_oc.nif` at
+/// the root `meshes\precombined\` path but stores its geometry in its own
+/// blob.
+pub fn csg_name_hash(plugin_path: &str) -> Option<u32> {
+    let stem = Path::new(plugin_path).file_stem()?.to_str()?;
+    Some(bscrc32(&format!("{stem} - Geometry")))
+}
+
 /// One entry of the chunk table: where a zlib stream lives in the file
 /// and how many compressed bytes it spans.
 #[derive(Debug, Clone, Copy)]
@@ -271,6 +315,39 @@ mod tests {
     use flate2::write::ZlibEncoder;
     use flate2::Compression;
     use std::io::Write;
+
+    /// Ground truth: the single `BSPackedGeomObject::filename_hash` every
+    /// `_oc.nif` in each installed FO4 archive carries, read out of
+    /// `Fallout4 - MeshesExtra.ba2` and the five DLC `- Main.ba2` files.
+    /// These six pairs are what pinned the CRC parameters, so they are the
+    /// regression that keeps [`bscrc32`] honest.
+    #[test]
+    fn bscrc32_reproduces_real_csg_filename_hashes() {
+        for (plugin, expected) in [
+            ("Fallout4.esm", 0xddf1_9a67u32),
+            ("DLCCoast.esm", 0x2088_054d),
+            ("DLCNukaWorld.esm", 0xe81b_308e),
+            ("DLCRobot.esm", 0x3a1b_90b8),
+            ("DLCworkshop01.esm", 0x8e56_6007),
+            ("DLCworkshop03.esm", 0x626d_fe98),
+        ] {
+            assert_eq!(
+                csg_name_hash(&format!("/games/Fallout 4/Data/{plugin}")),
+                Some(expected),
+                "BSCRC32 for {plugin}'s companion CSG"
+            );
+        }
+    }
+
+    /// Case folding is part of the hash, not a caller convention: a load
+    /// order can name the same plugin with any casing.
+    #[test]
+    fn csg_name_hash_is_case_insensitive() {
+        assert_eq!(
+            csg_name_hash("/Data/DLCworkshop01.esm"),
+            csg_name_hash("/Data/dlcWORKSHOP01.ESM"),
+        );
+    }
 
     fn zlib(raw: &[u8]) -> Vec<u8> {
         let mut e = ZlibEncoder::new(Vec::new(), Compression::default());

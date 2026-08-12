@@ -24,5 +24,5 @@ mod safety;
 
 pub use archive::BsaArchive;
 pub use ba2::{Ba2Archive, Ba2Variant};
-pub use csg::{CsgArchive, CSG_CHUNK_SIZE};
+pub use csg::{bscrc32, csg_name_hash, CsgArchive, CSG_CHUNK_SIZE};
 pub use safety::{MAX_CHUNK_BYTES, MAX_ENTRY_COUNT};

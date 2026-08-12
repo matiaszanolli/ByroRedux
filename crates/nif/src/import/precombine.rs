@@ -281,6 +281,36 @@ pub fn collect_precombine_geom_refs(
     out
 }
 
+/// The distinct `BSPackedGeomObject::filename_hash` values an `_oc.nif`
+/// points at, in first-seen order.
+///
+/// This is the cheap half of [`collect_precombine_geom_refs`] — no owning-shape
+/// search, no material translation, no string pool — so a caller can decide
+/// *which* `<Plugin> - Geometry.csg` to open before paying for the full walk.
+/// It matters because the CSG a precombine reads from is not implied by the
+/// cell's owning plugin: a plugin that re-bakes a master-owned cell keeps the
+/// root `meshes\precombined\` filename but stores the geometry in its own blob.
+pub fn precombine_csg_filename_hashes(scene: &NifScene) -> Vec<u32> {
+    let mut out: Vec<u32> = Vec::new();
+    for block in &scene.blocks {
+        let Some(packed) = block
+            .as_any()
+            .downcast_ref::<BsPackedCombinedGeomDataExtra>()
+        else {
+            continue;
+        };
+        let BsPackedCombinedPayload::Shared { objects, .. } = &packed.payload else {
+            continue;
+        };
+        for obj in objects {
+            if !out.contains(&obj.filename_hash) {
+                out.push(obj.filename_hash);
+            }
+        }
+    }
+    out
+}
+
 /// Find the shape (`BSMeshLODTriShape` / `BSTriShape`) whose
 /// `extra_data_refs` claims the packed-combined block at `packed_idx`.
 fn find_owning_shape(scene: &NifScene, packed_idx: usize) -> Option<&BsTriShape> {

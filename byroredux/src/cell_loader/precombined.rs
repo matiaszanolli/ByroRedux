@@ -10,10 +10,13 @@
 //!
 //! **Current state** (M49 — complete): this loader reads each `_oc.nif`
 //! from the asset BSA chain (typically `Fallout4 - MeshesExtra.ba2`), then
-//! resolves the vertex / triangle data from the companion `Fallout4 - Geometry.csg`
-//! blob via `CsgArchive` (one big zlib-compressed PSG keyed by filename
-//! hash + offset per `BSPackedGeomObject`). Meshes are decoded to Y-up, spawned
-//! at cell-local identity, and tagged as `RenderLayer::Architecture`. LOD is
+//! resolves the vertex / triangle data from the `<Plugin> - Geometry.csg` blob
+//! its own `BSPackedGeomObject::filename_hash` names, via `CsgArchive` (one big
+//! zlib-compressed PSG keyed by filename hash + offset). Note that the naming
+//! plugin is not always the cell's owner — a plugin re-baking a master-owned
+//! cell keeps the master's filename but moves the geometry into its own blob
+//! (#2369). Meshes are decoded to Y-up, spawned at cell-local identity, and
+//! tagged as `RenderLayer::Architecture`. LOD is
 //! selected by triangle count (finest LOD only, per `fo4-csg-format.md:138-142`).
 //! Absorption gate in [`super::load::load_cell_with_masters`] (conditional on
 //! spawn count) honors the cell's `absorbed_refs` list, suppressing per-REFR
@@ -82,10 +85,10 @@ pub(super) struct PrecombinedSpawnJob {
     next_hash: usize,
     spawned: usize,
     misses: usize,
-    owning_path: String,
     owning_subdir: Option<String>,
-    csg_initialized: bool,
-    csg: Option<Arc<CsgArchive>>,
+    /// Boxed so the resumable job (and the `Pending` variant that carries it
+    /// between frames) stays cheap to move.
+    csg: Box<CsgRouting>,
     csg_open: Duration,
     timed_hashes: usize,
     max_prepare: Duration,
@@ -94,6 +97,22 @@ pub(super) struct PrecombinedSpawnJob {
     max_blas: Duration,
     max_total: Duration,
     max_total_hash: u32,
+}
+
+/// Which `<Plugin> - Geometry.csg` each `BSPackedGeomObject::filename_hash`
+/// resolves to, for one cell's load (#2369).
+#[derive(Default)]
+struct CsgRouting {
+    /// `filename_hash` → the plugin whose companion blob answers to it, for
+    /// every plugin in the load order. Names are hashed, not probed, so an
+    /// entry means "this plugin could own that blob", not that a `.csg` is on
+    /// disk; the probe happens on first use and is remembered in `open`. Only
+    /// an empty load order leaves this empty, which short-circuits the
+    /// shared-geometry path back to the ordinary NIF import.
+    paths: std::collections::HashMap<u32, String>,
+    /// Lazily opened blobs keyed by the same hash. `None` records a probe
+    /// that found no companion CSG, so it isn't retried per hash.
+    open: std::collections::HashMap<u32, Option<Arc<CsgArchive>>>,
 }
 
 pub(super) enum PrecombinedSpawnProgress {
@@ -118,10 +137,11 @@ impl PrecombinedSpawnJob {
             next_hash: 0,
             spawned: 0,
             misses: 0,
-            owning_path: owning_path.to_owned(),
             owning_subdir,
-            csg_initialized: false,
-            csg: None,
+            csg: Box::new(CsgRouting {
+                paths: csg_paths_by_name_hash(load_order_paths, owning_path),
+                ..Default::default()
+            }),
             csg_open: Duration::ZERO,
             timed_hashes: 0,
             max_prepare: Duration::ZERO,
@@ -146,20 +166,6 @@ impl PrecombinedSpawnJob {
     ) -> PrecombinedSpawnProgress {
         debug_assert_eq!(cell.form_id, self.form_id);
         debug_assert_eq!(cell.precombined_mesh_hashes.len(), self.total_hashes);
-
-        // Opening the CSG can itself cross a deadline on a cold session. Count
-        // it as a cooperative unit, then yield before decoding the first hash
-        // when the frame budget has expired.
-        if !self.csg_initialized {
-            let csg_started = Instant::now();
-            self.csg = match mat_provider.as_deref_mut() {
-                Some(mp) => mp.geometry_csg(&self.owning_path),
-                None => open_geometry_csg(&self.owning_path).map(Arc::new),
-            };
-            self.csg_open = csg_started.elapsed();
-            self.csg_initialized = true;
-            budget.complete_unit();
-        }
 
         while self.next_hash < self.total_hashes {
             if budget.should_yield() {
@@ -231,71 +237,89 @@ impl PrecombinedSpawnJob {
                 // through to the standard import path when the CSG is absent or
                 // the `_oc.nif` carries no shared geometry (baked variant /
                 // non-precombine content).
-                let csg_parsed: Option<Arc<CachedNifImport>> =
-                    self.csg
-                        .as_ref()
-                        .and_then(|csg| match byroredux_nif::parse_nif(&bytes) {
-                            Ok(scene) => {
-                                let meshes = {
-                                    let mut pool = world.resource_mut::<StringPool>();
-                                    let mut meshes =
-                                        build_precombine_meshes(&scene, csg, &mut pool);
-                                    // Apply BGSM material flags (two_sided / decal /
-                                    // alpha_test) to the CSG-decoded meshes. FO4
-                                    // authors these in the `.bgsm`, not the NIF, so
-                                    // `precombine_material_from_shape` (NIF-only)
-                                    // can't see them. The REFR and fallback
-                                    // (`parse_and_import_nif`) paths run this merge; the
-                                    // shared-precombine CSG path did not — leaving
-                                    // precombine foliage/decals with no alpha-test
-                                    // (opaque-black cards clipping through walls) and no
-                                    // two-sided / decal routing. `merge_external_material`
-                                    // no-ops for meshes without a `material_path`.
-                                    //
-                                    // BUT do NOT take the BGSM alpha-BLEND on this path.
-                                    // FO4 authors the "Standard" blend mode (function=1,
-                                    // src=6, dst=7) identically on transparent lab glass
-                                    // AND opaque metal architecture (institutemetal01a,
-                                    // flatmetalpanelsdetails01); `merge_external_material`
-                                    // turns any function>0 into `has_alpha`, so applying
-                                    // it here made the whole precombined Institute shell
-                                    // alpha-blend against its diffuse alpha (specular
-                                    // data on lit metal, not opacity) → see-through walls
-                                    // (#1619 follow-up; the efd3c41b regression). Keep
-                                    // the merge's other flags but restore the pre-merge
-                                    // (NIF-shape) alpha-blend state so opaque precombine
-                                    // architecture stays opaque.
-                                    if let Some(provider) = mat_provider.as_deref_mut() {
-                                        for mesh in &mut meshes {
-                                            let blend = (
-                                                mesh.material.has_alpha,
-                                                mesh.material.src_blend_mode,
-                                                mesh.material.dst_blend_mode,
-                                            );
-                                            crate::asset_provider::merge_external_material(
-                                                &mut mesh.material,
-                                                provider,
-                                                &mut pool,
-                                            );
-                                            (
-                                                mesh.material.has_alpha,
-                                                mesh.material.src_blend_mode,
-                                                mesh.material.dst_blend_mode,
-                                            ) = blend;
-                                        }
-                                    }
-                                    meshes
-                                };
-                                (!meshes.is_empty()).then(|| Arc::new(geometry_only_cached(meshes)))
+                let csg_parsed: Option<Arc<CachedNifImport>> = (!self.csg.paths.is_empty())
+                    .then(|| byroredux_nif::parse_nif(&bytes))
+                    .and_then(|parsed| match parsed {
+                        Ok(scene) => {
+                            // Which blob this `_oc.nif` reads from is stated by
+                            // the geometry objects themselves, not by whoever
+                            // owns the cell (#2369). Opening the CSG is its own
+                            // cooperative unit — on a cold session inflating a
+                            // 240 MB-class blob's chunk table can cross a
+                            // deadline by itself.
+                            let csgs = self.open_csgs_for(
+                                &byroredux_nif::import::precombine::precombine_csg_filename_hashes(
+                                    &scene,
+                                ),
+                                mat_provider.as_deref_mut(),
+                                budget,
+                            );
+                            if csgs.is_empty() {
+                                return None;
                             }
-                            Err(e) => {
-                                log::warn!(
-                                    "PreCombined CSG parse failed: '{path}' (cell {:08X}): {e}",
-                                    self.form_id
+                            let meshes = {
+                                let mut pool = world.resource_mut::<StringPool>();
+                                let mut meshes = build_precombine_meshes(
+                                    &scene,
+                                    &|h| csgs.get(&h).cloned(),
+                                    &mut pool,
                                 );
-                                None
-                            }
-                        });
+                                // Apply BGSM material flags (two_sided / decal /
+                                // alpha_test) to the CSG-decoded meshes. FO4
+                                // authors these in the `.bgsm`, not the NIF, so
+                                // `precombine_material_from_shape` (NIF-only)
+                                // can't see them. The REFR and fallback
+                                // (`parse_and_import_nif`) paths run this merge; the
+                                // shared-precombine CSG path did not — leaving
+                                // precombine foliage/decals with no alpha-test
+                                // (opaque-black cards clipping through walls) and no
+                                // two-sided / decal routing. `merge_external_material`
+                                // no-ops for meshes without a `material_path`.
+                                //
+                                // BUT do NOT take the BGSM alpha-BLEND on this path.
+                                // FO4 authors the "Standard" blend mode (function=1,
+                                // src=6, dst=7) identically on transparent lab glass
+                                // AND opaque metal architecture (institutemetal01a,
+                                // flatmetalpanelsdetails01); `merge_external_material`
+                                // turns any function>0 into `has_alpha`, so applying
+                                // it here made the whole precombined Institute shell
+                                // alpha-blend against its diffuse alpha (specular
+                                // data on lit metal, not opacity) → see-through walls
+                                // (#1619 follow-up; the efd3c41b regression). Keep
+                                // the merge's other flags but restore the pre-merge
+                                // (NIF-shape) alpha-blend state so opaque precombine
+                                // architecture stays opaque.
+                                if let Some(provider) = mat_provider.as_deref_mut() {
+                                    for mesh in &mut meshes {
+                                        let blend = (
+                                            mesh.material.has_alpha,
+                                            mesh.material.src_blend_mode,
+                                            mesh.material.dst_blend_mode,
+                                        );
+                                        crate::asset_provider::merge_external_material(
+                                            &mut mesh.material,
+                                            provider,
+                                            &mut pool,
+                                        );
+                                        (
+                                            mesh.material.has_alpha,
+                                            mesh.material.src_blend_mode,
+                                            mesh.material.dst_blend_mode,
+                                        ) = blend;
+                                    }
+                                }
+                                meshes
+                            };
+                            (!meshes.is_empty()).then(|| Arc::new(geometry_only_cached(meshes)))
+                        }
+                        Err(e) => {
+                            log::warn!(
+                                "PreCombined CSG parse failed: '{path}' (cell {:08X}): {e}",
+                                self.form_id
+                            );
+                            None
+                        }
+                    });
                 let parsed = match csg_parsed {
                     Some(c) => Some(c),
                     None => {
@@ -422,6 +446,75 @@ impl PrecombinedSpawnJob {
             misses: self.misses,
         }
     }
+
+    /// Open (once per job) every `<Plugin> - Geometry.csg` named by
+    /// `filename_hashes`, returning the subset that resolved.
+    ///
+    /// Each first open counts as a cooperative unit so a cold session's
+    /// chunk-table read shows up against the frame budget rather than
+    /// disappearing into the hash that happened to trigger it.
+    fn open_csgs_for(
+        &mut self,
+        filename_hashes: &[u32],
+        mut mat_provider: Option<&mut MaterialProvider>,
+        budget: &mut FrameTimeBudget,
+    ) -> std::collections::HashMap<u32, Arc<CsgArchive>> {
+        let mut out = std::collections::HashMap::new();
+        for &name_hash in filename_hashes {
+            if !self.csg.open.contains_key(&name_hash) {
+                let opened = match self.csg.paths.get(&name_hash) {
+                    Some(plugin_path) => {
+                        let started = Instant::now();
+                        let opened = match mat_provider.as_deref_mut() {
+                            Some(mp) => mp.geometry_csg(plugin_path),
+                            None => open_geometry_csg(plugin_path).map(Arc::new),
+                        };
+                        self.csg_open += started.elapsed();
+                        budget.complete_unit();
+                        opened
+                    }
+                    None => {
+                        // A blob named by no loaded plugin — a mod shipping its
+                        // own `.csg` that wasn't passed on the command line, or
+                        // content from a game we don't have. Failing closed
+                        // sends the cell down the per-REFR fallback instead of
+                        // reading another plugin's PSG space at these offsets,
+                        // which decodes as garbage rather than as nothing.
+                        log::debug!(
+                            "PreCombined: cell {:08X} names CSG {name_hash:08x}, \
+                             which no loaded plugin answers to — falling back to REFRs",
+                            self.form_id,
+                        );
+                        None
+                    }
+                };
+                self.csg.open.insert(name_hash, opened);
+            }
+            if let Some(Some(csg)) = self.csg.open.get(&name_hash) {
+                out.insert(name_hash, csg.clone());
+            }
+        }
+        out
+    }
+}
+
+/// Index the load order by the `BSPackedGeomObject::filename_hash` each
+/// plugin's companion `<Plugin> - Geometry.csg` answers to (#2369).
+///
+/// `owner_path` is the cell's owning plugin, included so a single-plugin load
+/// whose path never appears in `load_order_paths` still resolves. Earlier
+/// entries win a hash collision, matching load-order precedence.
+fn csg_paths_by_name_hash(
+    load_order_paths: &[&str],
+    owner_path: &str,
+) -> std::collections::HashMap<u32, String> {
+    let mut out = std::collections::HashMap::new();
+    for path in load_order_paths.iter().copied().chain([owner_path]) {
+        if let Some(h) = byroredux_bsa::csg_name_hash(path) {
+            out.entry(h).or_insert_with(|| path.to_owned());
+        }
+    }
+    out
 }
 
 /// Spawn all precombined `_oc.nif` files without a frame deadline.
@@ -489,22 +582,22 @@ fn precombine_oc_nif_path(form_id: u32, hash: u32, owning_subdir: Option<&str>) 
 }
 
 /// Resolve, from a cell's remapped form id, the path of the plugin that
-/// *owns* it (whose `<Plugin> - Geometry.csg` holds the precombine geometry)
-/// and the `meshes\precombined\` subdirectory its baked `_oc.nif` lives
-/// under. The owner is the load-order plugin at the form-id mod-index byte;
-/// `load_order_paths` is the correctly-cased, load-order-aligned plugin list.
-/// The base master (index 0, `Fallout4.esm`) bakes at the root (`None`
+/// *owns* it and the `meshes\precombined\` subdirectory its baked `_oc.nif`
+/// lives under. The owner is the load-order plugin at the form-id mod-index
+/// byte; `load_order_paths` is the correctly-cased, load-order-aligned plugin
+/// list. The base master (index 0, `Fallout4.esm`) bakes at the root (`None`
 /// subdir); every other owner namespaces under its lowercased basename. When
 /// the index is out of range (the standalone-form-id artifact the remap
 /// passes through unchanged) we fall back to the active plugin + root. #1590.
 ///
-/// The residual override-rebake case — a winning plugin re-baking a
-/// master-owned cell into its *own* CSG while the form-id byte still points
-/// at the master — needs the `BSPackedGeomObject.filename_hash` BSCRC32
-/// cross-check (not yet reproduced; `docs/engine/fo4-csg-format.md`). A wrong
-/// read there fails closed via the decode-time index guard in
-/// [`byroredux_nif::import::precombine::decode_shared_geom_object`] (#1533) →
-/// safe REFR fallback.
+/// The **filename** is all this decides. Which `<Plugin> - Geometry.csg` the
+/// geometry then comes out of is a separate question, answered by the
+/// `BSPackedGeomObject::filename_hash` each object carries — see
+/// [`csg_paths_by_name_hash`]. The two diverge on the override-rebake case: a
+/// plugin re-baking a master-owned cell keeps the master's root filename (so
+/// `owning_subdir` stays `None`) while storing the new geometry in its own
+/// blob. Measured on the installed FO4 set, the DLCs alone re-bake ~460
+/// `Fallout4.esm`-owned cells that way (#2369).
 fn resolve_precombine_owner<'a>(
     form_id: u32,
     load_order_paths: &[&'a str],
@@ -555,9 +648,15 @@ pub(crate) fn open_geometry_csg(plugin_path: &str) -> Option<CsgArchive> {
 }
 
 /// Resolve every `BSPackedCombinedSharedGeomDataExtra` object in a
-/// precombined `_oc.nif` scene against `csg`, producing one spawnable
-/// [`ImportedMesh`] per placed instance (M49). Pure (no GPU / ECS) so it
-/// is unit-testable against real data without a Vulkan device.
+/// precombined `_oc.nif` scene, producing one spawnable [`ImportedMesh`] per
+/// placed instance (M49). Pure (no GPU / ECS) so it is unit-testable against
+/// real data without a Vulkan device.
+///
+/// `resolve_csg` maps a `BSPackedGeomObject::filename_hash` to the blob that
+/// answers to it. Objects naming a blob the caller couldn't open are skipped
+/// rather than read out of whichever CSG happened to be open — a `data_offset`
+/// is only meaningful in its own PSG space, so the wrong blob yields garbage,
+/// not an error (#2369).
 ///
 /// Each object's geometry is decoded once and cloned per
 /// `BSPackedGeomDataCombined` instance transform. Objects whose CSG slice
@@ -567,7 +666,7 @@ pub(crate) fn open_geometry_csg(plugin_path: &str) -> Option<CsgArchive> {
 /// is left for a follow-up.
 pub(super) fn build_precombine_meshes(
     scene: &NifScene,
-    csg: &CsgArchive,
+    resolve_csg: &dyn Fn(u32) -> Option<Arc<CsgArchive>>,
     pool: &mut StringPool,
 ) -> Vec<ImportedMesh> {
     let mut meshes = Vec::new();
@@ -597,6 +696,13 @@ pub(super) fn build_precombine_meshes(
         }
         let tri_start = (lod_off_idx / 3) as usize;
         let need = geom.num_verts * stride + (tri_start + lod_count) * 6;
+        let Some(csg) = resolve_csg(geom.filename_hash) else {
+            log::debug!(
+                "PreCombined: object names CSG {:08x}, which is not open — skipped",
+                geom.filename_hash,
+            );
+            continue;
+        };
         let psg = match csg.read_psg(geom.data_offset as u64, need) {
             Ok(b) => b,
             Err(e) => {
@@ -723,6 +829,45 @@ mod tests {
         );
     }
 
+    /// #2369 — every plugin in the load order contributes its own CSG name
+    /// hash, so a re-bake can be traced back to the plugin that made it even
+    /// when the cell belongs to a master.
+    #[test]
+    fn csg_paths_index_every_plugin_in_the_load_order() {
+        let paths = ["/Data/Fallout4.esm", "/Data/DLCCoast.esm"];
+        let table = csg_paths_by_name_hash(&paths, paths[0]);
+        assert_eq!(
+            table.get(&0xddf1_9a67).map(String::as_str),
+            Some("/Data/Fallout4.esm"),
+        );
+        assert_eq!(
+            table.get(&0x2088_054d).map(String::as_str),
+            Some("/Data/DLCCoast.esm"),
+            "a DLC that re-bakes a master-owned cell must still be reachable"
+        );
+    }
+
+    /// A plugin passed as the active `--esm` but absent from the load-order
+    /// slice still needs its own blob reachable — otherwise a single-plugin
+    /// load resolves nothing.
+    #[test]
+    fn csg_paths_include_the_owning_plugin() {
+        let table = csg_paths_by_name_hash(&[], "/Data/DLCRobot.esm");
+        assert_eq!(
+            table.get(&0x3a1b_90b8).map(String::as_str),
+            Some("/Data/DLCRobot.esm"),
+        );
+    }
+
+    /// Test resolver over a single blob, keyed by the real BSCRC32 of the
+    /// plugin that owns it — so a decode that reaches the CSG proves the
+    /// `_oc.nif` really does name *that* plugin's geometry (#2369).
+    fn one_csg(plugin_path: &str, csg: CsgArchive) -> impl Fn(u32) -> Option<Arc<CsgArchive>> {
+        let want = byroredux_bsa::csg_name_hash(plugin_path).expect("plugin stem");
+        let csg = Arc::new(csg);
+        move |h| (h == want).then(|| csg.clone())
+    }
+
     fn fo4_data_dir() -> Option<PathBuf> {
         if let Ok(v) = std::env::var("BYROREDUX_FO4_DATA") {
             let p = PathBuf::from(&v);
@@ -765,7 +910,8 @@ mod tests {
             .expect("extract _oc.nif");
         let scene = byroredux_nif::parse_nif(&bytes).expect("parse _oc.nif");
         let mut pool = StringPool::new();
-        let meshes = build_precombine_meshes(&scene, &csg, &mut pool);
+        let resolve = one_csg(data.join("Fallout4.esm").to_str().unwrap(), csg);
+        let meshes = build_precombine_meshes(&scene, &resolve, &mut pool);
 
         assert!(
             !meshes.is_empty(),
@@ -796,6 +942,80 @@ mod tests {
             "build_precombine_meshes: decoded {} mesh(es), {textured} textured",
             meshes.len()
         );
+    }
+
+    /// #2369 — the override-rebake case, against real data.
+    ///
+    /// Far Harbor re-bakes `Fallout4.esm`-owned Commonwealth cells: the new
+    /// `_oc.nif` keeps the root `meshes\precombined\` name (so the cell's
+    /// form-id mod byte still says `Fallout4.esm`) but its geometry lives in
+    /// `DLCCoast - Geometry.csg`. Routing by the cell owner decodes **zero**
+    /// meshes for these; routing by the object's own `filename_hash` decodes
+    /// them. Both halves are asserted so the test fails if either the wrong
+    /// blob starts "working" or the right one stops.
+    ///
+    /// Gated on the installed FO4 data:
+    /// `cargo test -p byroredux -- --ignored dlc_rebake`.
+    #[test]
+    #[ignore]
+    fn dlc_rebake_of_a_master_owned_cell_decodes_from_the_dlc_csg() {
+        let Some(data) = fo4_data_dir() else {
+            eprintln!("Skipping: BYROREDUX_FO4_DATA not set and default path missing");
+            return;
+        };
+        let (Ok(ba2), Ok(dlc_csg), Ok(base_csg)) = (
+            Ba2Archive::open(data.join("DLCCoast - Main.ba2")),
+            CsgArchive::open(data.join("DLCCoast - Geometry.csg")),
+            CsgArchive::open(data.join("Fallout4 - Geometry.csg")),
+        ) else {
+            eprintln!("Skipping: Far Harbour archives not installed");
+            return;
+        };
+        let coast_hash = byroredux_bsa::csg_name_hash("DLCCoast.esm").unwrap();
+
+        // A ROOT-level (i.e. Fallout4.esm-owned cell) precombine shipped by
+        // Far Harbour whose objects name Far Harbour's own blob.
+        let rebake = ba2
+            .list_files()
+            .into_iter()
+            .filter(|n| {
+                n.starts_with("meshes\\precombined\\")
+                    && n.ends_with("_oc.nif")
+                    && n.matches('\\').count() == 2
+            })
+            .find(|n| {
+                ba2.extract(n)
+                    .ok()
+                    .and_then(|b| byroredux_nif::parse_nif(&b).ok())
+                    .is_some_and(|s| {
+                        byroredux_nif::import::precombine::precombine_csg_filename_hashes(&s)
+                            == [coast_hash]
+                    })
+            })
+            .expect("Far Harbour re-bakes at least one master-owned cell");
+
+        let bytes = ba2.extract(rebake).expect("extract re-baked _oc.nif");
+        let scene = byroredux_nif::parse_nif(&bytes).expect("parse re-baked _oc.nif");
+
+        let mut pool = StringPool::new();
+        let base = Arc::new(base_csg);
+        let wrong_blob = |_| Some(base.clone());
+        let wrong = build_precombine_meshes(&scene, &wrong_blob, &mut pool);
+        assert!(
+            wrong.is_empty(),
+            "'{rebake}' must not decode out of Fallout4 - Geometry.csg — \
+             that is the #2369 bug, and a PSG offset read against the wrong \
+             blob is garbage rather than an error"
+        );
+
+        let mut pool = StringPool::new();
+        let resolve = one_csg(data.join("DLCCoast.esm").to_str().unwrap(), dlc_csg);
+        let right = build_precombine_meshes(&scene, &resolve, &mut pool);
+        assert!(
+            !right.is_empty(),
+            "'{rebake}' decodes against the blob its own objects name"
+        );
+        eprintln!("dlc re-bake '{rebake}' → {} mesh(es)", right.len());
     }
 
     /// Switchboard transform diagnostic. The packed record's authored
@@ -1036,7 +1256,8 @@ mod tests {
         let bytes = ba2.extract(&built).expect("extract via reconstructed path");
         let scene = byroredux_nif::parse_nif(&bytes).expect("parse _oc.nif");
         let mut pool = StringPool::new();
-        let meshes = build_precombine_meshes(&scene, &csg, &mut pool);
+        let resolve = one_csg(coast.to_str().unwrap(), csg);
+        let meshes = build_precombine_meshes(&scene, &resolve, &mut pool);
         assert!(
             !meshes.is_empty(),
             "DLC precombine decodes against its own DLCCoast - Geometry.csg"

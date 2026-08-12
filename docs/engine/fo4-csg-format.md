@@ -16,7 +16,7 @@ It is no longer missing.
 
 Vanilla FO4 precombined meshes (`meshes\precombined\<cell>_<hash>_oc.nif`)
 are **100 % the Shared variant** — every `BSPackedGeomObject` carries a
-`filename_hash` of `0xddf19a67` (BSCRC32 of `Fallout4 - Geometry`) and a
+`filename_hash` of `0xddf19a67` (`bscrc32("fallout4 - geometry")`) and a
 `data_offset` into `Fallout4 - Geometry.csg`. The `_oc.nif` itself ships
 zero inline vertices; the geometry lives in the `.csg`. Without a `.csg`
 reader the precombined pass spawns nothing and the engine falls back to
@@ -65,6 +65,37 @@ via NIF offsets — `data_offset` already points directly into PSG space —
 so it is currently left unparsed. (It appears to be a CK-side index used
 during generation / `.cdx` build.)
 
+## `BSCRC32` — naming the blob
+
+`BSPackedGeomObject.filename_hash` is Bethesda's `BSCRC32` of
+`"<plugin stem> - geometry"`. That is the reflected CRC-32 (polynomial
+`0xEDB88320`, the same one `zlib` uses) with **no pre-inversion, no final
+xor**, computed over the **lowercased** bytes:
+
+```
+crc = 0
+for each byte b of lowercase(s):
+    crc = (crc >> 8) XOR crc_table[(crc XOR b) & 0xFF]
+```
+
+Solved rather than guessed. Six independent ground-truth pairs were read out
+of the installed archives — the single `filename_hash` every `_oc.nif` in
+`Fallout4 - MeshesExtra.ba2` and each DLC's `- Main.ba2` carries — and the
+four CRC parameters (polynomial, init, final xor, case folding) were searched
+against all six at once. Exactly one parameter set reproduces every pair:
+
+| plugin | `filename_hash` |
+|---|---|
+| `Fallout4.esm` | `0xddf19a67` |
+| `DLCCoast.esm` | `0x2088054d` |
+| `DLCNukaWorld.esm` | `0xe81b308e` |
+| `DLCRobot.esm` | `0x3a1b90b8` |
+| `DLCworkshop01.esm` | `0x8e566007` |
+| `DLCworkshop03.esm` | `0x626dfe98` |
+
+Implemented as `byroredux_bsa::bscrc32` / `csg_name_hash`, with that table as
+its regression test.
+
 ## Reading an object
 
 `BSPackedGeomObject { filename_hash, data_offset }` plus the paired
@@ -76,15 +107,21 @@ vertex_desc     "
 tri_count_lod0/1/2 "
 ```
 
-1. Resolve `<Plugin> - Geometry.csg` from the plugin that **owns the cell**
-   — the cell's remapped form-id mod-index byte → the load order — not the
-   last-loaded `--esm` (#1590). Vanilla single-plugin / DLC-as-active loads
-   coincide (`Fallout4 - Geometry`, `DLCCoast - Geometry`, …); they diverge
-   for master-owned cells loaded under a later plugin. The
-   `BSPackedGeomObject.filename_hash` BSCRC32 remains the authoritative
-   cross-check (still not reproduced); it only matters for the override-
-   rebake edge (a winning plugin re-bakes a master-owned cell into its own
-   CSG), which fails closed via the decode-time index guard (#1533).
+1. Resolve `<Plugin> - Geometry.csg` from **`filename_hash`**, which names the
+   blob directly: it is `BSCRC32("<plugin stem> - Geometry")` (#2369). Hash
+   every plugin in the load order once and look the object's value up. The
+   cell's owning plugin is *not* a reliable substitute — it decides the
+   `_oc.nif` filename (see `precombined.rs`) but not the blob, and the two
+   diverge whenever a plugin re-bakes a master-owned cell: the new
+   `_oc.nif` keeps the master's root filename while its geometry moves into
+   the re-baker's own CSG. Measured on an installed FO4, the five DLCs alone
+   re-bake ~460 `Fallout4.esm`-owned cells this way, and reading their
+   offsets out of `Fallout4 - Geometry.csg` decoded **zero** meshes — silent
+   loss, then a per-REFR fallback.
+   Getting the blob wrong is not a safe error: a `data_offset` is only
+   meaningful inside its own PSG space, so the wrong blob reads well-formed
+   garbage. The decode-time index guard (#1533) catches the loud cases; the
+   hash is what makes the choice correct in the first place.
 2. `psg_stride = runtime_stride − 8` where `runtime_stride =
    (vertex_desc & 0xF) * 4`. On disk the position is **always half4**
    (8 bytes) even when `vertex_desc` has `VF_FULLPREC` (bit 54) set —
