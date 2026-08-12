@@ -32,7 +32,7 @@ those here.
 
 ## Scope
 
-**Crates** (22-crate sanity check in `_audit-common.md`; `pex` is the newest owned by this audit):
+**Crates** (crate-roster sanity check in `_audit-common.md`; `pex` is the newest owned by this audit):
 - `crates/pex/src/` — `.pex` reader + 5-phase decompiler. Files: `crates/pex/src/opcode.rs`,
   `crates/pex/src/reader.rs`, `crates/pex/src/model.rs`, `crates/pex/src/lib.rs`,
   and `crates/pex/src/decompile/` (`mod`, `cfg`, `lift`, `control_flow`, `boolean`,

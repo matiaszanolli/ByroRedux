@@ -103,7 +103,7 @@ confirm it holds).
 **#1292** — external `.mesh` resolved via the canonical `geometries\<X>.mesh`
 path; the importer must NOT prepend `meshes\` (implemented in
 `byroredux/src/asset_provider/archive.rs`, regression-guarded by the
-`normalize_mesh_path` tests in `byroredux/src/asset_provider/tests.rs` —
+`normalize_mesh_path` tests in `byroredux/src/asset_provider/tests/material_path.rs` —
 confirm the `geometries\` head is left untouched). Without this the Cydonia spawn rate
 collapses. **#1209** — iterate every LOD slot, not `meshes.first()` (a `None`
 short-circuit when LOD 0 was external despite later internal slots).
@@ -130,7 +130,7 @@ counts.
 **Checklist**: `ComponentDatabaseFile::parse` consumes `materials\materialsbeta.cdb`
 extracted from `Starfield - Materials.ba2` via `--materials-ba2`. **#762** —
 guard `index_chunks` against the chunk-index regression already referenced in
-`byroredux/src/asset_provider/tests.rs`. **DLC/Creation CDB discovery by scanning (#1571, `8c99c50d`)** —
+`byroredux/src/asset_provider/tests/starfield_mat.rs`. **DLC/Creation CDB discovery by scanning (#1571, `8c99c50d`)** —
 `asset_provider/material.rs::discover_starfield_cdbs` scans each materials archive for
 **every** `materials\materialsbeta.cdb` AND DLC/Creation-namespaced
 `materials\creations\<plugin>\materialsbeta.cdb`, instead of extracting one

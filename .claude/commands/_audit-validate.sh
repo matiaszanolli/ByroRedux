@@ -123,6 +123,33 @@ echo
 echo "Checked $checked_count refs across ${#skill_files[@]} skill files."
 
 # ---------------------------------------------------------------------------
+# Crate-count drift (FATAL)
+#
+# `_audit-common.md` documents the crate roster and tells audits to use it as a
+# coverage sanity check, so a stale count silently understates required
+# coverage. It went stale on two consecutive crate additions — #2261 (`hkx`)
+# and #2420 (`mod-runtime`) — because the number was fixed by hand each time
+# and hand-fixing does not survive the next `crates/` addition.
+#
+# The count is mechanically derivable, so derive it. Pointer sentences in other
+# skills deliberately no longer quote a number at all (#2420); this guards the
+# one remaining literal, in the file that owns it.
+# ---------------------------------------------------------------------------
+crate_dirs=$(find crates -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')
+common_md=.claude/commands/_audit-common.md
+documented=$(grep -oE '^Crate count: [0-9]+' "$common_md" 2>/dev/null | grep -oE '[0-9]+')
+if [[ -z "$documented" ]]; then
+    echo
+    echo "STALE  _audit-common.md — no parseable 'Crate count: N' line"
+    stale_count=$((stale_count + 1))
+elif [[ "$documented" != "$crate_dirs" ]]; then
+    echo
+    echo "STALE  _audit-common.md 'Crate count: $documented' — live tree has $crate_dirs"
+    echo "       Update the count AND the name list beside it."
+    stale_count=$((stale_count + 1))
+fi
+
+# ---------------------------------------------------------------------------
 # Symbol drift (ADVISORY — reports, never fails the gate)
 #
 # Paths were only half the recurring staleness. Renamed *symbols* rot the same

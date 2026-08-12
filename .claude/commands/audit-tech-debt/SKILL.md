@@ -18,7 +18,7 @@ purpose. Re-run the recipe; report what it surfaces today.
 
 **Architecture**: Orchestrator. Each dimension runs as a Task agent (max 3 concurrent).
 
-See `.claude/commands/_audit-common.md` for project layout, the 23-crate roster,
+See `.claude/commands/_audit-common.md` for project layout, the crate roster,
 methodology, deduplication, context rules, severity, and finding format. Do not
 duplicate any of that here. The newest crates — `crates/pex/` (M47.2 compiled-
 Papyrus `.pex` decompiler), `crates/save/` (M45 full-ECS snapshot save/load),
@@ -78,10 +78,10 @@ Tech-debt findings default to **LOW** (see `_audit-severity.md`). Promote only o
    runs in the mid-hundreds (mostly Vulkan/smoke gating, not debt), and the
    >2000-LOC set is currently 6 files (Dim 1) — `context/draw.rs`,
    `context/mod.rs`, `byroredux/src/save_io.rs`, `volumetrics.rs`,
-   `vulkan/material.rs`, `byroredux/src/asset_provider/tests.rs`. #2311
+   `vulkan/material.rs`, `byroredux/src/asset_provider/tests/`. #2311
    (2026-08-06) split the old monolithic NIF import test file into
    `crates/nif/src/import/tests/` per-topic siblings, dropping it out of
-   this set; `save_io.rs` and `asset_provider/tests.rs` crossed in
+   this set; `save_io.rs` and `asset_provider/tests/` crossed in
    independently (the M45 save/load registry sweep). Note #2258/#2259 (2026-08-03, `record_post_passes` /
    `build_tlas` decomposition) extracted helpers *within* `post_passes.rs` /
    `tlas.rs`, which stayed well under 2000 LOC before and after — file-level
