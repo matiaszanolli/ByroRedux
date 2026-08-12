@@ -39,16 +39,127 @@ pub fn parse_navi(form_id: u32, subs: &[SubRecord]) -> NaviRecord {
     out
 }
 
-/// Per-cell navigation mesh (`NAVM`). Geometry is not extracted — the
-/// AI / pathfinding system lands separately and will need to re-parse
-/// the full vertex + triangle + edge table.
+/// Navmesh (`NAVM`) — the walkable surface for one cell.
+///
+/// Two structurally different encodings exist in the lineage and both land in
+/// this one type; see [`parse_navm`] for how they were established.
 #[derive(Debug, Clone, Default)]
 pub struct NavmRecord {
     pub form_id: u32,
     pub editor_id: String,
+    /// `NVER` version tag — format revision the mesh data was exported at.
     pub version: u32,
+    /// `DATA` word 0 — the `CELL` this mesh belongs to. `None` on the packed
+    /// Creation-Engine form, which authors no `DATA`.
+    pub cell_form: Option<u32>,
+    /// `NVVX` vertices in world units (stride 12 = three `f32`).
+    pub vertices: Vec<[f32; 3]>,
+    /// `NVTR` triangles (stride 16).
+    pub triangles: Vec<NavmTriangle>,
+    /// `NVEX` links to triangles in neighbouring meshes (stride 10).
+    pub external_connections: Vec<NavmExternalConnection>,
+    /// Creation-Engine `NVNM` blob, retained undecoded.
+    ///
+    /// Skyrim+ packs vertices, triangles, edge links and cover into one
+    /// variable-length sub-record instead of the typed set above, and its
+    /// internal layout is not established by the corpus — see [`parse_navm`].
+    /// Kept verbatim so a later decoder has the bytes without a re-parse, and
+    /// so a consumer can tell "packed form, not yet decoded" from "empty".
+    pub packed_geometry: Option<Vec<u8>>,
 }
 
+impl NavmRecord {
+    /// True when the geometry is present in decoded form.
+    pub fn has_decoded_geometry(&self) -> bool {
+        !self.vertices.is_empty() && !self.triangles.is_empty()
+    }
+
+    /// FormIDs of every mesh this one links to, deduplicated.
+    ///
+    /// The connectivity query EX-16 needs: which neighbouring meshes must be
+    /// resident for a path to leave this one.
+    pub fn linked_meshes(&self) -> Vec<u32> {
+        let mut out: Vec<u32> = self
+            .external_connections
+            .iter()
+            .map(|c| c.mesh_form)
+            .collect();
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
+    /// True when every triangle's vertex indices are in range.
+    ///
+    /// Holds for all 11,969 FO3 + FNV meshes, so a failure means either a
+    /// corrupt plugin or a decode regression.
+    pub fn indices_are_in_range(&self) -> bool {
+        let limit = self.vertices.len();
+        self.triangles
+            .iter()
+            .all(|t| t.vertices.iter().all(|&v| (v as usize) < limit))
+    }
+}
+
+/// One navmesh triangle: three vertex indices, three edge neighbours, flags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NavmTriangle {
+    /// Indices into [`NavmRecord::vertices`].
+    pub vertices: [u16; 3],
+    /// Triangle index across each edge, or `None` where the edge is a border.
+    /// `0xFFFF` is the authored sentinel for "no neighbour".
+    pub edge_neighbours: [Option<u16>; 3],
+    /// Per-triangle flags (preferred pathing, water, door, …).
+    pub flags: u32,
+}
+
+/// A link from a triangle in this mesh to a triangle in another `NAVM`.
+///
+/// This is the record that makes cross-cell pathing possible: without it a
+/// mesh is an island and a path cannot leave its own cell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NavmExternalConnection {
+    /// Leading word. Small (1, 2, …) and not established by the corpus, so it
+    /// is carried rather than interpreted.
+    pub unknown: u32,
+    /// FormID of the `NAVM` on the other side of the link.
+    pub mesh_form: u32,
+    /// Triangle index within that mesh.
+    pub triangle: u16,
+}
+
+/// Parse a navmesh (`NAVM`), decoding geometry and cross-cell links (#2738).
+///
+/// # Two encodings, established from shipped data
+///
+/// Sweeping `Oblivion.esm`, `Fallout3.esm`, `FalloutNV.esm` and `Skyrim.esm`
+/// shows the lineage splits cleanly:
+///
+/// - **Oblivion authors no `NAVM` at all** (0 records) — it used a different
+///   pathing scheme, so the canonical model must tolerate absence rather than
+///   assume a mesh exists.
+/// - **Gamebryo (FO3 7,198 / FNV 4,771)** uses typed sub-records: `DATA`
+///   (24 B), `NVVX` vertices (stride 12), `NVTR` triangles (stride 16),
+///   `NVEX` external links (stride 10), plus `NVDP`/`NVCA`/`NVGD`.
+/// - **Creation (Skyrim 15,966)** packs everything into one `NVNM` blob
+///   (130 B – 97 KB) with `ONAM`/`PNAM`/`NNAM` alongside.
+///
+/// Strides were derived by taking the GCD of every observed payload length,
+/// then confirmed against the `DATA` header: words 1, 2 and 3 equal the
+/// vertex, triangle and external-connection counts for **all 11,969** FO3 and
+/// FNV meshes, and **no triangle references an out-of-range vertex** in any of
+/// them. `DATA` word 0 is the parent `CELL` FormID; words 4 and 5 are left
+/// undecoded — word 5 is a small count (0–6) whose meaning the corpus does not
+/// establish.
+///
+/// `NVTR`'s 16 bytes are three `u16` vertex indices, three `u16` edge
+/// neighbours and a `u32` flag word, with `0xFFFF` marking a border edge.
+/// `NVEX`'s 10 bytes carry a `u32`, the neighbouring mesh's FormID, and a
+/// `u16` triangle index.
+///
+/// The `NVNM` blob is retained verbatim rather than guessed at: its internal
+/// layout is not established by the corpus, and a half-right decode of
+/// pathing data is worse than an honest "not decoded yet".
 pub fn parse_navm(form_id: u32, subs: &[SubRecord]) -> NavmRecord {
     let mut out = NavmRecord {
         form_id,
@@ -61,10 +172,57 @@ pub fn parse_navm(form_id: u32, subs: &[SubRecord]) -> NavmRecord {
     let common = CommonNamedFields::from_subs(subs);
     out.editor_id = common.editor_id;
     for sub in subs {
+        let data = &sub.data;
         match &sub.sub_type {
-            b"NVER" if sub.data.len() >= 4 => {
-                out.version = SubReader::new(&sub.data).u32_or_default();
+            b"NVER" if data.len() >= 4 => {
+                out.version = SubReader::new(data).u32_or_default();
             }
+            b"DATA" if data.len() >= 24 => {
+                out.cell_form = u32_at(data, 0);
+            }
+            b"NVVX" => {
+                out.vertices = rows(data, 12)
+                    .map(|r| {
+                        [
+                            f32::from_le_bytes([r[0], r[1], r[2], r[3]]),
+                            f32::from_le_bytes([r[4], r[5], r[6], r[7]]),
+                            f32::from_le_bytes([r[8], r[9], r[10], r[11]]),
+                        ]
+                    })
+                    .collect();
+            }
+            b"NVTR" => {
+                out.triangles = rows(data, 16)
+                    .map(|r| {
+                        let w = |i: usize| u16::from_le_bytes([r[i * 2], r[i * 2 + 1]]);
+                        // 0xFFFF is the authored "no neighbour across this
+                        // edge" sentinel — a border triangle. Modelling it as
+                        // `None` keeps a consumer from walking into index
+                        // 65535 and reading whatever sits there.
+                        let link = |i: usize| match w(i) {
+                            u16::MAX => None,
+                            other => Some(other),
+                        };
+                        NavmTriangle {
+                            vertices: [w(0), w(1), w(2)],
+                            edge_neighbours: [link(3), link(4), link(5)],
+                            flags: u32_at(r, 12).unwrap_or(0),
+                        }
+                    })
+                    .collect();
+            }
+            b"NVEX" => {
+                out.external_connections = rows(data, 10)
+                    .filter_map(|r| {
+                        Some(NavmExternalConnection {
+                            unknown: u32_at(r, 0)?,
+                            mesh_form: u32_at(r, 4)?,
+                            triangle: u16::from_le_bytes([r[8], r[9]]),
+                        })
+                    })
+                    .collect();
+            }
+            b"NVNM" => out.packed_geometry = Some(data.clone()),
             _ => {}
         }
     }
@@ -1413,5 +1571,141 @@ mod regn_tests {
         assert_eq!(r.editor_id, "MojaveRegion");
         assert_eq!(r.weather_form, Some(0x1234));
         assert_eq!(r.color, Some([10, 20, 30]));
+    }
+}
+
+#[cfg(test)]
+mod navm_tests {
+    use super::*;
+
+    fn sub(sig: &[u8; 4], data: &[u8]) -> SubRecord {
+        SubRecord {
+            sub_type: *sig,
+            data: data.to_vec(),
+        }
+    }
+
+    fn verts(n: usize) -> SubRecord {
+        let mut d = Vec::new();
+        for i in 0..n {
+            for axis in 0..3 {
+                d.extend_from_slice(&((i * 3 + axis) as f32).to_le_bytes());
+            }
+        }
+        sub(b"NVVX", &d)
+    }
+
+    fn tri(v: [u16; 3], links: [u16; 3], flags: u32) -> Vec<u8> {
+        let mut d = Vec::new();
+        for x in v.iter().chain(links.iter()) {
+            d.extend_from_slice(&x.to_le_bytes());
+        }
+        d.extend_from_slice(&flags.to_le_bytes());
+        d
+    }
+
+    #[test]
+    fn vertices_decode_as_f32_triples() {
+        let r = parse_navm(1, &[verts(3)]);
+        assert_eq!(r.vertices.len(), 3);
+        assert_eq!(r.vertices[0], [0.0, 1.0, 2.0]);
+        assert_eq!(r.vertices[2], [6.0, 7.0, 8.0]);
+    }
+
+    #[test]
+    fn triangles_decode_indices_links_and_flags() {
+        let data = tri([236, 683, 534], [506, u16::MAX, 1], 0x0000_0C00);
+        let r = parse_navm(1, &[sub(b"NVTR", &data)]);
+        assert_eq!(r.triangles.len(), 1);
+        let t = r.triangles[0];
+        assert_eq!(t.vertices, [236, 683, 534]);
+        assert_eq!(t.flags, 0x0000_0C00);
+        // 0xFFFF is the authored border sentinel — modelling it as an index
+        // would send a path walker into element 65535.
+        assert_eq!(t.edge_neighbours, [Some(506), None, Some(1)]);
+    }
+
+    #[test]
+    fn external_connections_expose_the_neighbouring_mesh() {
+        // The bytes of a real FNV NVEX row.
+        let row = [2u8, 0, 0, 0, 252, 70, 22, 0, 252, 0];
+        let r = parse_navm(1, &[sub(b"NVEX", &row)]);
+        assert_eq!(r.external_connections.len(), 1);
+        let c = r.external_connections[0];
+        assert_eq!(c.unknown, 2);
+        assert_eq!(c.mesh_form, 0x0016_46FC);
+        assert_eq!(c.triangle, 252);
+    }
+
+    #[test]
+    fn linked_meshes_dedups_and_sorts() {
+        // Two triangles of the same mesh link to one neighbour; a consumer
+        // asking "what must be resident" wants the mesh once.
+        let mut d = Vec::new();
+        for (u, form, tri) in [(2u32, 0xAAu32, 1u16), (1, 0xAA, 9), (1, 0x22, 3)] {
+            d.extend_from_slice(&u.to_le_bytes());
+            d.extend_from_slice(&form.to_le_bytes());
+            d.extend_from_slice(&tri.to_le_bytes());
+        }
+        let r = parse_navm(1, &[sub(b"NVEX", &d)]);
+        assert_eq!(r.linked_meshes(), vec![0x22, 0xAA]);
+    }
+
+    #[test]
+    fn data_header_supplies_the_parent_cell() {
+        let mut d = 0x0012_06D8u32.to_le_bytes().to_vec();
+        d.extend_from_slice(&687u32.to_le_bytes());
+        d.extend_from_slice(&746u32.to_le_bytes());
+        d.extend_from_slice(&[0u8; 12]);
+        assert_eq!(d.len(), 24);
+        let r = parse_navm(1, &[sub(b"DATA", &d)]);
+        assert_eq!(r.cell_form, Some(0x0012_06D8));
+    }
+
+    #[test]
+    fn index_range_check_catches_a_dangling_vertex() {
+        // Holds for all 11,969 FO3+FNV meshes, so a violation means a corrupt
+        // plugin or a decode regression — worth being able to assert.
+        let ok = parse_navm(1, &[verts(3), sub(b"NVTR", &tri([0, 1, 2], [0, 0, 0], 0))]);
+        assert!(ok.indices_are_in_range());
+        let bad = parse_navm(1, &[verts(3), sub(b"NVTR", &tri([0, 1, 99], [0, 0, 0], 0))]);
+        assert!(!bad.indices_are_in_range());
+    }
+
+    #[test]
+    fn creation_engine_meshes_retain_their_packed_blob() {
+        // Skyrim authors one NVNM blob instead of the typed set. It must be
+        // distinguishable from "empty" — a consumer needs to know the mesh
+        // exists but is not decoded yet, rather than treat it as no navmesh.
+        let r = parse_navm(1, &[sub(b"NVNM", &[1, 2, 3, 4])]);
+        assert_eq!(r.packed_geometry.as_deref(), Some(&[1u8, 2, 3, 4][..]));
+        assert!(!r.has_decoded_geometry());
+        assert!(r.vertices.is_empty());
+    }
+
+    #[test]
+    fn a_gamebryo_mesh_reports_decoded_geometry() {
+        let r = parse_navm(1, &[verts(3), sub(b"NVTR", &tri([0, 1, 2], [0, 0, 0], 0))]);
+        assert!(r.has_decoded_geometry());
+        assert!(r.packed_geometry.is_none());
+    }
+
+    #[test]
+    fn oblivion_style_absence_is_not_an_error() {
+        // Oblivion authors zero NAVM records; the model must tolerate a mesh
+        // that carries nothing rather than assuming geometry exists.
+        let r = parse_navm(1, &[sub(b"NVER", &12u32.to_le_bytes())]);
+        assert_eq!(r.version, 12);
+        assert!(!r.has_decoded_geometry());
+        assert!(r.linked_meshes().is_empty());
+        assert!(r.indices_are_in_range(), "vacuously true with no triangles");
+    }
+
+    #[test]
+    fn ragged_payloads_drop_the_short_row_not_the_mesh() {
+        let mut d = tri([0, 1, 2], [0, 0, 0], 0);
+        d.push(0xFF); // 17 bytes
+        let r = parse_navm(1, &[verts(3), sub(b"NVTR", &d)]);
+        assert_eq!(r.triangles.len(), 1);
     }
 }
