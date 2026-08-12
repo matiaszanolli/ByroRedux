@@ -73,6 +73,7 @@ pub use misc::{
     PackLocation, PackLocationTarget, PackProcedure, PackRecord, PackSchedule, PackTarget,
     PackTargetKind, PackTopicData, PerkRecord, ProjRecord, QuestAlias, QuestObjective,
     QuestObjectiveTarget, QuestObjectiveTargetKind, QuestStage, QuestStageLogEntry, QustRecord,
+    RegionArea, RegionDataEntry, RegionDataKind, RegionDataPayload, RegionSound, RegionWeather,
     RegnRecord, RepuRecord, ScenRecord, SceneAction, SceneActionType, SceneActor, ScenePhase,
     SlgmRecord, SpelRecord, TermRecord, WatrRecord, ALIAS_FLAG_ALLOW_DEAD,
     ALIAS_FLAG_ALLOW_RESERVED, ALIAS_FLAG_ALLOW_REUSE, ALIAS_FLAG_CLOSEST, ALIAS_FLAG_RESERVES,
