@@ -40,6 +40,7 @@ use byroredux_core::ecs::components::{
     EquipmentSlots, GlobalTransform, Inventory, InventoryIndex, ItemStack, Transform,
 };
 use byroredux_core::ecs::resource::Resource;
+use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::world::World;
 use byroredux_plugin::esm::records::script_instance::{PropertyValue, ScriptInstanceData};
 
@@ -166,6 +167,57 @@ impl FragmentExecutionQueue {
 
     pub fn is_empty(&self) -> bool {
         self.pending.is_empty()
+    }
+}
+
+/// `Effect::Activate` targets awaiting delivery as `ActivateEvent`, drained
+/// by [`fragment_activation_flush_system`] at the head of the next frame.
+///
+/// Why a frame of latency instead of a direct insert: `Stage::Update`
+/// schedules the `ActivateEvent` consumers (`rumble_on_activate_dispatch`,
+/// `quest_advance_system`, `two_state_activator_system`) *before*
+/// `quest_fragment_dispatch_system`, because fragment dispatch consumes the
+/// `QuestStageAdvanced` markers `quest_advance_system` produces — the order
+/// cannot simply be swapped. With `event_cleanup_system` draining the marker
+/// at `Stage::Late`, a marker inserted during dispatch was visible to
+/// neither this frame's earlier consumers nor the next frame's (#2654).
+/// Flushing at the head of the next frame delivers it to all of them,
+/// exactly once.
+#[derive(Debug, Clone, Default)]
+pub struct PendingFragmentActivations(Vec<(EntityId, EntityId)>);
+
+impl Resource for PendingFragmentActivations {}
+
+impl PendingFragmentActivations {
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+/// Deliver queued fragment activations as `ActivateEvent` markers.
+///
+/// Must be scheduled in `Stage::Update` **before** every `ActivateEvent`
+/// consumer; see [`PendingFragmentActivations`].
+pub fn fragment_activation_flush_system(world: &World, _dt: f32) {
+    let pending: Vec<(EntityId, EntityId)> = {
+        let Some(mut queue) = world.try_resource_mut::<PendingFragmentActivations>() else {
+            return;
+        };
+        if queue.0.is_empty() {
+            return;
+        }
+        std::mem::take(&mut queue.0)
+    };
+    let Some(mut events) = world.query_mut::<crate::ActivateEvent>() else {
+        log::debug!("fragment Activate skipped: ActivateEvent component never registered");
+        return;
+    };
+    for (target, activator) in pending {
+        events.insert(target, crate::ActivateEvent { activator });
     }
 }
 
@@ -330,6 +382,10 @@ pub struct DeferredFragmentEffects {
     quest_definitions: Option<crate::QuestDefinitionRegistry>,
     cinematic_presentation: Vec<DeferredCinematicPresentationEffect>,
     scene_actor_bindings_dirty: bool,
+    /// `(target, activator)` pairs from `Effect::Activate`, handed to
+    /// [`PendingFragmentActivations`] so they are delivered at the head of
+    /// the *next* frame (#2654) — see that resource's docs.
+    activations: Vec<(EntityId, EntityId)>,
 }
 
 impl DeferredFragmentEffects {
@@ -341,6 +397,7 @@ impl DeferredFragmentEffects {
                 .map(|definitions| definitions.clone()),
             cinematic_presentation: Vec::new(),
             scene_actor_bindings_dirty: false,
+            activations: Vec::new(),
         }
     }
 
@@ -349,6 +406,14 @@ impl DeferredFragmentEffects {
     pub fn apply(self, world: &World) {
         if self.scene_actor_bindings_dirty {
             crate::scene::mark_scene_actor_bindings_dirty(world);
+        }
+        if !self.activations.is_empty() {
+            match world.try_resource_mut::<PendingFragmentActivations>() {
+                Some(mut pending) => pending.0.extend(self.activations),
+                None => log::debug!(
+                    "fragment Activate dropped: PendingFragmentActivations is unavailable"
+                ),
+            }
         }
         if self.cinematic_presentation.is_empty() {
             return;
@@ -575,11 +640,16 @@ fn apply_effect(
                     .map(|player| player.0)
                     .unwrap_or(target_entity),
             };
-            let Some(mut events) = world.query_mut::<crate::ActivateEvent>() else {
-                log::debug!("fragment Activate skipped: ActivateEvent component never registered");
-                return None;
-            };
-            events.insert(target_entity, crate::ActivateEvent { activator });
+            // Queue rather than insert: `quest_fragment_dispatch_system` is
+            // the LAST producer of `ActivateEvent` in Stage::Update, but
+            // three of the four consumers (rumble, quest_advance,
+            // two_state_activator) are scheduled earlier and
+            // `event_cleanup_system` drains the marker at Stage::Late the
+            // same frame — so a directly-inserted marker reached none of
+            // them, ever (#2654). `fragment_activation_flush_system` turns
+            // this into a real `ActivateEvent` at the head of the next
+            // frame, ahead of every consumer.
+            deferred.activations.push((target_entity, activator));
             None
         }
         Effect::SetOpen { target, open } => {
@@ -1153,6 +1223,7 @@ pub fn register(world: &mut World) {
     world.register::<EquipmentSlots>();
     world.insert_resource(QuestStageFragments::default());
     world.insert_resource(FragmentExecutionQueue::default());
+    world.insert_resource(PendingFragmentActivations::default());
     world.insert_resource(QuestObjectiveState::default());
 }
 

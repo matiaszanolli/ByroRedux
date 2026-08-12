@@ -1187,9 +1187,31 @@ fn dispatch_activate_then_set_open_updates_mq101_style_gate() {
 
     quest_fragment_dispatch_system(&world);
 
+    // #2654 — the activation is queued, not inserted: the real schedule
+    // runs three of the four `ActivateEvent` consumers *before* fragment
+    // dispatch, so a marker inserted here would be drained at Stage::Late
+    // having reached none of them. It must not be live yet...
+    assert!(
+        world.get::<crate::ActivateEvent>(lever).is_none(),
+        "fragment activations are deferred, not inserted during dispatch"
+    );
+    assert_eq!(
+        world.resource::<crate::PendingFragmentActivations>().len(),
+        1
+    );
+
+    // ...and must become a real marker when the flush system runs at the
+    // head of the next frame, ahead of every consumer.
+    crate::fragment_activation_flush_system(&world, 0.016);
     assert_eq!(
         world.get::<crate::ActivateEvent>(lever).unwrap().activator,
         soldier
+    );
+    assert!(
+        world
+            .resource::<crate::PendingFragmentActivations>()
+            .is_empty(),
+        "the queue drains exactly once"
     );
     assert!(world.get::<crate::TwoStateActivator>(gate).unwrap().is_open);
     assert_eq!(

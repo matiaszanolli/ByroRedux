@@ -51,9 +51,9 @@ pub use events::{
     OnEquipEvent, OnTriggerEnterEvent, TimerExpired,
 };
 pub use fragment::{
-    apply_effects, fragment_continuation_system, populate_quest_fragments_from_pex,
-    quest_fragment_dispatch_system, DeferredFragmentEffects, FragmentExecutionQueue,
-    QuestStageFragments,
+    apply_effects, fragment_activation_flush_system, fragment_continuation_system,
+    populate_quest_fragments_from_pex, quest_fragment_dispatch_system, DeferredFragmentEffects,
+    FragmentExecutionQueue, PendingFragmentActivations, QuestStageFragments,
 };
 pub use globals::Globals;
 pub use package::{

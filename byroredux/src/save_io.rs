@@ -1976,6 +1976,7 @@ mod tests {
             ("OnEquipEvent", "one-shot event marker drained every frame by event_cleanup_system; no live emit site yet either (M41 equip hook pending)"),
             ("OnTriggerEnterEvent", "one-shot event marker drained every frame by event_cleanup_system"),
             ("OnUpdateEvent", "one-shot event marker drained every frame by event_cleanup_system"),
+            ("PendingFragmentActivations", "one-frame handoff queue (#2654) drained every frame by fragment_activation_flush_system; deliberately transient for the same reason ActivateEvent above is — it holds raw EntityIds, which a live in-session reload churns (the SAVE-D6-01 / #1696 / #2380 hazard class), and persisting a queue whose only output marker is itself unsaved would be incoherent. Worst case is one queued scripted activation lost if a save lands in the single frame between fragment dispatch and the next frame's flush"),
             ("PackageRegistry", "populated once from parsed PACK records, only ever read afterward"),
             ("PackageTargetRegistry", "populated once from placed-REFR positions, only ever read afterward"),
             ("QuestAdvanceOnActivate", "write-once static config from decompiled-script data; only read to decide whether to write the already-saved QuestStageState"),

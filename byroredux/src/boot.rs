@@ -745,6 +745,18 @@ pub(crate) fn build_scheduler() -> Scheduler {
     // Canonical player interaction runs before every OnActivate consumer so
     // a fresh E-key edge is visible to scripts in the same frame.
     scheduler.add_exclusive(Stage::Update, crate::interaction::interaction_system);
+    // #2654 — quest fragments queue their `<Ref>.Activate()` targets rather
+    // than inserting `ActivateEvent` directly, because
+    // `quest_fragment_dispatch` runs *after* three of the four consumers
+    // below (it has to: it consumes the `QuestStageAdvanced` markers
+    // `quest_advance_dispatch` emits) and `event_cleanup_system` drains the
+    // marker at Stage::Late the same frame. Flush the queue here, alongside
+    // the canonical player-interaction producer, so a fragment activation
+    // reaches every consumer exactly once on the following frame.
+    scheduler.add_exclusive(
+        Stage::Update,
+        byroredux_scripting::fragment_activation_flush_system,
+    );
     scheduler.add_exclusive(Stage::Update, rumble_on_activate_dispatch);
     scheduler.add_exclusive(
         Stage::Update,
@@ -1413,6 +1425,60 @@ fn strip_flag_and_value(args: Vec<String>, flag: &str) -> Vec<String> {
         out.push(a);
     }
     out
+}
+
+#[cfg(test)]
+mod fragment_activation_order_tests {
+    //! SCR-D6-NEW11-01 / #2654 — `quest_fragment_dispatch` is the last
+    //! producer of `ActivateEvent` in `Stage::Update`, but three of the
+    //! four consumers are scheduled before it (and it cannot simply move
+    //! earlier: it consumes the `QuestStageAdvanced` markers
+    //! `quest_advance_dispatch` emits). Fragment activations are therefore
+    //! queued and flushed at the head of the next frame — which only works
+    //! while `fragment_activation_flush_system` stays registered ahead of
+    //! every consumer.
+    //!
+    //! Static source check, matching this file's existing
+    //! `include_str!` convention: the live boot path wants a Vulkan device
+    //! and on-disk game data, which is out of `cargo test` scope.
+
+    const BOOT_SRC: &str = include_str!("boot.rs");
+
+    #[test]
+    fn activation_flush_is_scheduled_before_every_activate_event_consumer() {
+        let setup = BOOT_SRC
+            .split("mod fragment_activation_order_tests")
+            .next()
+            .expect("split always yields a first segment");
+
+        let pos = |needle: &str| {
+            setup
+                .find(needle)
+                .unwrap_or_else(|| panic!("`{needle}` is no longer registered in boot.rs"))
+        };
+
+        // Match the *registration* sites, not the `fn` definitions above them.
+        let flush = pos("byroredux_scripting::fragment_activation_flush_system");
+        for consumer in [
+            "Stage::Update, rumble_on_activate_dispatch)",
+            "Stage::Update, quest_advance_dispatch)",
+            "byroredux_scripting::two_state_activator_system",
+        ] {
+            assert!(
+                flush < pos(consumer),
+                "fragment_activation_flush_system must be scheduled before `{consumer}`, or \
+                 fragment `<Ref>.Activate()` silently no-ops again (#2654)"
+            );
+        }
+
+        // And the producer still has to run after the advance that feeds it.
+        assert!(
+            pos("Stage::Update, quest_advance_dispatch)")
+                < pos("Stage::Update, quest_fragment_dispatch)"),
+            "quest_fragment_dispatch consumes QuestStageAdvanced and must stay after \
+             quest_advance_dispatch"
+        );
+    }
 }
 
 #[cfg(test)]
