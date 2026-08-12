@@ -846,9 +846,23 @@ pub(crate) fn build_scheduler() -> Scheduler {
     // wiring reaches Oblivion (`build_character_ruleset` currently returns
     // `None` for it, per `npc_spawn.rs`) — registered now so the tick is
     // already live the moment that wiring lands.
-    scheduler.add_exclusive(
+    // #2391 / ECS-D5B-03 — declared via `add_exclusive_with_access` (the
+    // #1236 channel, previously unused in production). This system is
+    // #2153's site: it builds a 3-deep hold stack (`PoolRegenConfig` read
+    // held across `PoolRegenAccumulator` write, then `CharacterRuleset`
+    // read, then the `ActorValues` write query), and its safety rests
+    // entirely on being scheduled exclusive. The analyzer doesn't pair
+    // exclusives, so this declaration surfaces no conflict row — its job
+    // is to put the disputed types on the `sys.accesses` report instead
+    // of leaving a blank row where the dispute actually is.
+    scheduler.add_exclusive_with_access(
         Stage::Update,
         byroredux_core::character::pool_regen_tick_system,
+        Access::new()
+            .reads_resource::<byroredux_core::character::PoolRegenConfig>()
+            .writes_resource::<byroredux_core::character::PoolRegenAccumulator>()
+            .reads_resource::<byroredux_core::character::CharacterRuleset>()
+            .writes::<byroredux_core::ecs::components::ActorValues>(),
     );
     scheduler.add_exclusive(Stage::Update, dlc2_ttr4a_on_update_dispatch);
     scheduler.add_exclusive(Stage::Update, mg07_on_load_dispatch);
@@ -895,9 +909,24 @@ pub(crate) fn build_scheduler() -> Scheduler {
     // notifications in the same frame, before Late drains the transient
     // AnimationTextKeyEvents components.
     scheduler.add_exclusive(Stage::Update, crate::systems::cinematic_root_motion_system);
-    scheduler.add_exclusive(
+    // #2391 — the second half of #2269's inverted pair. The body reads
+    // text-key events and writes `ActorCinematicState`, then hands the
+    // player's events to `dispatch_player_cinematic_animation_event`,
+    // which takes `CinematicPresentationState` and then `QuestStageState`
+    // — the reverse of the order `quest_fragment_dispatch` establishes.
+    // That inversion is safe only because both systems are exclusive;
+    // naming both resources here is what makes the contract legible in
+    // `sys.accesses` rather than only in prose.
+    scheduler.add_exclusive_with_access(
         Stage::Update,
         crate::systems::cinematic_animation_event_system,
+        Access::new()
+            .reads_resource::<StringPool>()
+            .reads_resource::<byroredux_scripting::papyrus_demo::PlayerEntity>()
+            .writes_resource::<byroredux_scripting::CinematicPresentationState>()
+            .writes_resource::<byroredux_scripting::quest_stages::QuestStageState>()
+            .reads::<byroredux_scripting::AnimationTextKeyEvents>()
+            .writes::<byroredux_scripting::ActorCinematicState>(),
     );
     // Sample freshly delivered ImageSpaceModifier.Apply callbacks after the
     // animation event system so MQ101's blur begins in this rendered frame.
@@ -1067,10 +1096,40 @@ pub(crate) fn build_scheduler() -> Scheduler {
     // system that writes GT on a bounded entity must either be
     // promoted to PostUpdate (before bounds) or accept one-frame
     // stale WorldBounds for that entity.
-    scheduler.add_exclusive(Stage::PostUpdate, make_billboard_system());
+    //
+    // #2391 — the three systems of this PostUpdate chain declare their
+    // access (`add_exclusive_with_access`) even though the analyzer
+    // doesn't pair exclusives: the ordering contract above is entirely
+    // about who touches `GlobalTransform` when, and a blank
+    // `sys.accesses` row is exactly the wrong place for that to be
+    // invisible.
+    scheduler.add_exclusive_with_access(
+        Stage::PostUpdate,
+        make_billboard_system(),
+        Access::new()
+            .reads_resource::<ActiveCamera>()
+            .reads::<byroredux_core::ecs::Billboard>()
+            .writes::<byroredux_core::ecs::GlobalTransform>(),
+    );
     // Bound propagation runs last in PostUpdate so it sees final
     // world transforms (including billboard rotations). See #217.
-    scheduler.add_exclusive(Stage::PostUpdate, make_world_bound_propagation_system());
+    //
+    // The `GlobalTransform` entry is a **write**: the system takes a
+    // write guard on that storage to drain its change-tracking dirty set
+    // (`bounds.rs`, `drain_dirty_into`) before reading transforms
+    // through it. It mutates no transform values, but the lock it takes
+    // is exclusive, and the declaration describes lock acquisition.
+    scheduler.add_exclusive_with_access(
+        Stage::PostUpdate,
+        make_world_bound_propagation_system(),
+        Access::new()
+            .reads::<byroredux_core::ecs::LocalBound>()
+            .reads::<byroredux_core::ecs::Parent>()
+            .reads::<byroredux_core::ecs::Children>()
+            .reads::<byroredux_core::ecs::SkinnedMesh>()
+            .writes::<byroredux_core::ecs::GlobalTransform>()
+            .writes::<byroredux_core::ecs::WorldBound>(),
+    );
     // Submersion detection runs in PostUpdate after bound
     // propagation so the camera's GlobalTransform is already
     // current for the frame. Reads `WaterPlane`/`WaterVolume` +
@@ -1078,7 +1137,16 @@ pub(crate) fn build_scheduler() -> Scheduler {
     // camera entity. Downstream consumers (audio low-pass send,
     // underwater composite tint) read the result later in the
     // frame.
-    scheduler.add_exclusive(Stage::PostUpdate, crate::systems::submersion_system);
+    scheduler.add_exclusive_with_access(
+        Stage::PostUpdate,
+        crate::systems::submersion_system,
+        Access::new()
+            .reads_resource::<ActiveCamera>()
+            .reads::<byroredux_core::ecs::components::WaterPlane>()
+            .reads::<byroredux_core::ecs::components::WaterVolume>()
+            .reads::<byroredux_core::ecs::GlobalTransform>()
+            .writes::<byroredux_core::ecs::components::SubmersionState>(),
+    );
     scheduler.add_to_with_access(
         Stage::Physics,
         byroredux_physics::physics_sync_system,
@@ -1200,7 +1268,13 @@ pub(crate) fn build_scheduler() -> Scheduler {
         Access::new()
             .reads_resource::<TotalTime>()
             .reads_resource::<DeltaTime>()
-            .reads_resource::<DebugStats>(),
+            .reads_resource::<DebugStats>()
+            // #2389 / ECS-D5-01 — the `want_breakdown` arm of the body
+            // reads two more resources (`systems/debug.rs`). The runtime
+            // gate is invisible to the analyzer, so both must be declared
+            // unconditionally — same shape as #1787's `ContactConfig`.
+            .reads_resource::<SkinCoverageStats>()
+            .reads_resource::<byroredux_core::ecs::CpuFrameTimings>(),
     );
     // Debug-UI metrics sampler — throttles itself to ~2 Hz, so the
     // per-frame cost is a single resource read + compare. On a
@@ -1215,6 +1289,14 @@ pub(crate) fn build_scheduler() -> Scheduler {
             .reads_resource::<SkinCoverageStats>()
             .reads_resource::<byroredux_renderer::vulkan::allocator::AllocatorResource>()
             .reads_resource::<byroredux_renderer::vulkan::allocator::GpuMemoryBudget>()
+            // #2389 / ECS-D5-01 — the sample tick also reads the CPU
+            // frame timings and the per-system scheduler timings
+            // (`systems/metrics.rs`); both were missing. The latter is
+            // the likeliest future write target in this stage (an
+            // in-ECS profiler), which is exactly the pairing the
+            // analyzer would have waved through.
+            .reads_resource::<byroredux_core::ecs::CpuFrameTimings>()
+            .reads_resource::<byroredux_core::ecs::SchedulerSystemTimings>()
             .writes_resource::<MetricsState>()
             .writes_resource::<MetricsSnapshot>(),
     );

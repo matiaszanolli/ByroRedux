@@ -929,7 +929,16 @@ fn dispatch_new_oneshots(world: &World, audio_world: &mut AudioWorld) {
     let Some(mgr) = audio_world.manager.as_mut() else {
         return;
     };
-    let mut started: Vec<EntityId> = Vec::with_capacity(pending.len());
+    // Entities whose `OneShotSound` marker is spent this frame —
+    // successes *and* failures alike (#2394 / ECS-D7-2026-08-07-01). A
+    // failed one-shot is still a consumed one-shot: leaving the marker
+    // on a dispatch failure re-collects the entity into `pending` every
+    // subsequent frame, which at 60 Hz is one `warn!` per entity per
+    // frame plus (when only `track.play` fails) a spatial sub-track
+    // allocated and dropped per frame, forever. `prune_stopped_sounds`
+    // can't clean up after it either: it walks `active_sounds`, and a
+    // failed dispatch never pushed an `ActiveSound`.
+    let mut consumed: Vec<EntityId> = Vec::with_capacity(pending.len());
     for p in pending {
         // kira's `SpatialTrackBuilder::distances` accepts a
         // `RangeInclusive<f32>` (or `(f32, f32)` / `[f32; 2]`); the
@@ -951,6 +960,8 @@ fn dispatch_new_oneshots(world: &World, audio_world: &mut AudioWorld) {
                     "M44 Phase 3: add_spatial_sub_track failed for entity {:?}: {e}",
                     p.entity
                 );
+                // Consume the marker anyway — see `consumed`'s note.
+                consumed.push(p.entity);
                 continue;
             }
         };
@@ -974,6 +985,8 @@ fn dispatch_new_oneshots(world: &World, audio_world: &mut AudioWorld) {
                     "M44 Phase 3: track.play failed for entity {:?}: {e}",
                     p.entity
                 );
+                // Consume the marker anyway — see `consumed`'s note.
+                consumed.push(p.entity);
                 continue;
             }
         };
@@ -984,15 +997,16 @@ fn dispatch_new_oneshots(world: &World, audio_world: &mut AudioWorld) {
             unload_fade_ms: p.unload_fade_ms,
             stop_issued: false,
         });
-        started.push(p.entity);
+        consumed.push(p.entity);
     }
 
-    // Clear the OneShotSound marker on every entity that started so we
-    // don't re-dispatch next frame. AudioEmitter stays — callers can
-    // observe "is this entity still playing?" through the active list.
-    if !started.is_empty() {
+    // Clear the OneShotSound marker on every entity whose dispatch was
+    // attempted — started or failed — so we don't re-dispatch next
+    // frame. AudioEmitter stays — callers can observe "is this entity
+    // still playing?" through the active list.
+    if !consumed.is_empty() {
         if let Some(mut oneshot_q) = world.query_mut::<OneShotSound>() {
-            for entity in started {
+            for entity in consumed {
                 oneshot_q.remove(entity);
             }
         }

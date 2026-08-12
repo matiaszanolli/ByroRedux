@@ -140,6 +140,34 @@ fn scheduler_access_invariants_hold_on_the_real_schedule() {
         report.system_count(),
     );
 
+    // #2393 / ECS-D5B-02 — `system_count` counts exclusives too, so it is
+    // satisfied by ~46 systems even if every parallel entry were demoted
+    // to `add_exclusive` tomorrow, which would leave the conflict
+    // assertions below analyzing nothing. M27's resolution pattern is
+    // monotone demotion (every conflict so far was closed by making one
+    // side exclusive) and the boot guard never fails on an empty parallel
+    // batch, so erosion is the path of least resistance. Floor the two
+    // quantities that actually carry the invariant's meaning: how many
+    // systems can be paired, and how many pairs were examined. Deliberate
+    // demotion is still allowed — it just has to be an explicit edit here.
+    assert!(
+        report.parallel_system_count() >= 10,
+        "only {} parallel systems remain (was 10) — a demotion to \
+         add_exclusive shrank the analyzable population. If deliberate, \
+         lower this floor in the same commit; otherwise the conflict \
+         assertions below are quietly analyzing less than they used to \
+         (#2393)",
+        report.parallel_system_count(),
+    );
+    assert!(
+        report.analyzed_pair_count() >= 9,
+        "the analyzer examined only {} same-stage pairs (was 9: Early 3 + \
+         Late 6) — three of five stages already hold a single parallel \
+         system and analyze nothing, so this is the invariant's real \
+         coverage measure (#2393)",
+        report.analyzed_pair_count(),
+    );
+
     let undeclared: Vec<&str> = report
         .stages
         .iter()
@@ -262,4 +290,107 @@ fn camera_follow_declaration_reads_player_mode() {
          incomplete Late-stage declaration makes the zero-conflict \
          invariant unsound (#2676)",
     );
+}
+
+/// #2389 / ECS-D5-01 — both telemetry systems in the `Stage::Late`
+/// parallel batch read resources their declaration omitted:
+/// `log_stats_system` reads `SkinCoverageStats` + `CpuFrameTimings`
+/// behind its `want_breakdown` gate (`systems/debug.rs`), and
+/// `metrics_sample_system` reads `CpuFrameTimings` +
+/// `SchedulerSystemTimings` on a sample tick (`systems/metrics.rs`).
+/// Runtime gates are invisible to the analyzer, so an incomplete
+/// declaration makes `AccessConflict::None` a claim the analyzer never
+/// proved. Scoped to each registration's own argument list.
+#[test]
+fn late_telemetry_declarations_read_all_their_resources() {
+    // The needle carries the registration's own indentation + the
+    // following `Access::new()` so it can't match the `use
+    // crate::systems::{…}` import list at the top of boot.rs.
+    for (system, needles) in [
+        (
+            "        log_stats_system,\n        Access::new()",
+            [
+                ".reads_resource::<SkinCoverageStats>()",
+                ".reads_resource::<byroredux_core::ecs::CpuFrameTimings>()",
+            ],
+        ),
+        (
+            "        metrics_sample_system,\n        Access::new()",
+            [
+                ".reads_resource::<byroredux_core::ecs::CpuFrameTimings>()",
+                ".reads_resource::<byroredux_core::ecs::SchedulerSystemTimings>()",
+            ],
+        ),
+    ] {
+        let reg_start = BOOT_RS
+            .find(system)
+            .unwrap_or_else(|| panic!("{system} must still be registered in build_scheduler"));
+        let reg_end = BOOT_RS[reg_start..]
+            .find("\n    );")
+            .map(|i| reg_start + i)
+            .unwrap_or_else(|| panic!("{system}'s registration must close"));
+        let decl = &BOOT_RS[reg_start..reg_end];
+        for needle in needles {
+            assert!(
+                decl.contains(needle),
+                "{system} declaration is missing `{needle}` — its body reads \
+                 that resource behind a runtime gate the analyzer cannot see \
+                 (#2389)",
+            );
+        }
+    }
+}
+
+/// #2391 / ECS-D5B-03 — `add_exclusive_with_access` (added by #1236 as
+/// the declaration channel for closures and bare `fn` exclusives) had
+/// zero production call sites, so all 43 exclusive registrations
+/// reported blank `sys.accesses` rows — including the handful whose
+/// *only* safety argument is the exclusive scheduling itself
+/// (`pool_regen_tick_system`'s 3-deep hold stack, #2153; the
+/// cinematic/quest-stage lock-order inversion, #2269; the PostUpdate
+/// `GlobalTransform` ordering chain). Those now declare.
+///
+/// Matched on a name substring because `System::name()` returns
+/// `type_name::<Self>()`, which for the `make_*` closure systems is a
+/// synthesised `{{closure}}` path rather than the factory's name.
+#[test]
+fn contract_bearing_exclusives_declare_their_access() {
+    let report = crate::boot::build_scheduler().access_report();
+    let rows: Vec<(&str, bool, bool)> = report
+        .stages
+        .iter()
+        .flat_map(|s| s.systems.iter())
+        .map(|row| {
+            (
+                row.name.as_str(),
+                row.is_exclusive,
+                row.declared.is_some(),
+            )
+        })
+        .collect();
+
+    for needle in [
+        "pool_regen_tick_system",
+        "cinematic_animation_event_system",
+        "submersion_system",
+        "billboard",
+        "bounds",
+    ] {
+        let matching: Vec<&(&str, bool, bool)> = rows
+            .iter()
+            .filter(|(name, is_exclusive, _)| *is_exclusive && name.contains(needle))
+            .collect();
+        assert!(
+            !matching.is_empty(),
+            "no exclusive system whose name contains `{needle}` — the \
+             registration moved or was renamed (#2391)",
+        );
+        assert!(
+            matching.iter().all(|(_, _, declared)| *declared),
+            "exclusive system(s) matching `{needle}` still report a blank \
+             access row: {:?} — declare them via add_exclusive_with_access \
+             so the disputed types are visible in `sys.accesses` (#2391)",
+            matching,
+        );
+    }
 }

@@ -682,6 +682,42 @@ impl AccessReport {
             .count()
     }
 
+    /// How many systems run in a parallel batch (the population the
+    /// conflict analyzer can pair at all).
+    ///
+    /// Distinct from [`system_count`](Self::system_count), which counts
+    /// exclusives too. M27's conflict-resolution pattern is monotone
+    /// demotion — every conflict found so far was resolved by moving one
+    /// side to `add_exclusive` — and the boot guard fails on a conflict
+    /// but never on an empty parallel batch, so demotion is always the
+    /// cheapest way to a green build. That makes this count, not
+    /// `system_count`, the quantity a non-vacuity pin has to floor.
+    /// See #2393.
+    pub fn parallel_system_count(&self) -> usize {
+        self.stages
+            .iter()
+            .flat_map(|s| s.systems.iter())
+            .filter(|row| !row.is_exclusive)
+            .count()
+    }
+
+    /// How many same-stage pairs the conflict analyzer actually examined
+    /// — `Σ C(parallel_k, 2)` over stages.
+    ///
+    /// Not derivable from [`stages`](Self::stages)`[..].conflicts`:
+    /// [`Scheduler::access_report`] only records rows that are *not*
+    /// `AccessConflict::None`, so a fully-clean schedule reports zero
+    /// conflict rows whether it analyzed 9 pairs or none at all. This
+    /// mirrors the pairing loop in `access_report` — a stage holding one
+    /// parallel system contributes 0. See #2393.
+    pub fn analyzed_pair_count(&self) -> usize {
+        self.stages
+            .iter()
+            .map(|s| s.systems.iter().filter(|row| !row.is_exclusive).count())
+            .map(|k| k * k.saturating_sub(1) / 2)
+            .sum()
+    }
+
     /// Total Conflict rows across all stages (excludes Unknown).
     pub fn known_conflict_count(&self) -> usize {
         self.stages

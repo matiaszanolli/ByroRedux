@@ -1199,3 +1199,56 @@ fn reverb_send_gate_matches_silence_db_boundary() {
     assert!(reverb_send_gate_open(-12.0));
     assert!(reverb_send_gate_open(0.0));
 }
+
+/// #2394 / ECS-D7-2026-08-07-01 — the one-shot dispatch loop must
+/// consume the `OneShotSound` marker on its two failure arms, not just
+/// on success. Leaving the marker re-collects the entity into `pending`
+/// every subsequent frame: a `warn!` per entity per frame at 60 Hz, and
+/// — when only `track.play` fails — a spatial sub-track allocated and
+/// immediately dropped every frame for the rest of the session.
+/// `prune_stopped_sounds` cannot clean up after it, because a failed
+/// dispatch never pushed an `ActiveSound`.
+///
+/// Both arms are kira failures (sub-track resource exhaustion, an
+/// unplayable `StaticSoundData`) that no headless test can force — with
+/// no audio device `audio_system` returns at the `manager.is_none()`
+/// gate long before this loop, which is exactly what
+/// `audio_system_no_op_when_audio_world_inactive` above pins. So this
+/// pins the fix at the source level instead, matching the convention
+/// used for device-only renderer paths.
+#[test]
+fn oneshot_marker_is_consumed_on_both_dispatch_failure_arms() {
+    const LIB_RS: &str = include_str!("lib.rs");
+
+    for arm in [
+        "M44 Phase 3: add_spatial_sub_track failed for entity",
+        "M44 Phase 3: track.play failed for entity",
+    ] {
+        let arm_pos = LIB_RS
+            .find(arm)
+            .unwrap_or_else(|| panic!("the `{arm}` failure arm must still exist"));
+        // Slice from the log call to the `continue` that ends the arm.
+        let continue_pos = LIB_RS[arm_pos..]
+            .find("continue;")
+            .map(|i| arm_pos + i)
+            .unwrap_or_else(|| panic!("the `{arm}` arm must still end in `continue`"));
+        let body = &LIB_RS[arm_pos..continue_pos];
+        assert!(
+            body.contains("consumed.push(p.entity);"),
+            "the `{arm}` arm must push onto `consumed` before continuing — a \
+             failed one-shot is still a consumed one-shot, or the entity \
+             re-dispatches (and re-warns) every frame forever (#2394)",
+        );
+    }
+
+    // The success path must consume too — three pushes total, one per
+    // loop exit. A future arm added without a push would leave the
+    // count at 3 only if it also skipped the marker, so pin the shape.
+    assert_eq!(
+        LIB_RS.matches("consumed.push(p.entity);").count(),
+        3,
+        "expected exactly 3 `consumed.push` sites in the one-shot dispatch \
+         loop (two failure arms + the success path) — a new exit path that \
+         doesn't consume the marker reintroduces #2394",
+    );
+}
