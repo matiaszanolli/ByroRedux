@@ -254,15 +254,27 @@ pub struct Material {
     /// instead of the author's tuned curve.
     ///
     /// Landed here (captured, not yet shaded) rather than also wiring a
-    /// `GpuMaterial`/`triangle.frag` consumer in the same change —
-    /// matching the existing `grayscale_to_palette_scale` precedent
-    /// (see that field's doc + `triangle.frag`'s "not yet plumbed to
-    /// GpuMaterial" comment) — so the canonical `Material` no longer
-    /// silently drops authored data while the GPU-side shading
-    /// consumer lands as separate, independently-reviewable follow-up
-    /// work. Defaults mirror `ImportedMaterial`'s own parser-stub
-    /// defaults (`fresnel_power` 5.0 = standard Schlick exponent; the
-    /// rest 0.0 = no contribution).
+    /// `GpuMaterial`/`triangle.frag` consumer in the same change, so the
+    /// canonical `Material` no longer silently drops authored data while
+    /// the GPU-side shading consumer lands as separate,
+    /// independently-reviewable follow-up work. Defaults mirror
+    /// `ImportedMaterial`'s own parser-stub defaults (`fresnel_power`
+    /// 5.0 = standard Schlick exponent; the rest 0.0 = no contribution).
+    ///
+    /// #2592 (SKY-D7-04) — this doc used to justify that shape by citing
+    /// "the existing `grayscale_to_palette_scale` precedent (see that
+    /// field's doc)". There is no such field on `Material`, and the
+    /// pointer was worse than dangling: `grayscale_to_palette_scale`
+    /// lives on `byroredux_nif`'s `ImportedMaterial` — the raw tier —
+    /// and `translate_material` drops it, so it never reaches this type
+    /// at all. It is therefore not a precedent for "captured here but
+    /// unshaded"; it is a strictly earlier failure mode, and the six
+    /// scalars above already go one tier further than it does. Note the
+    /// contrast with `greyscale_texture` below: the palette *LUT* does
+    /// cross the boundary and is consumed, while the palette *scale
+    /// modulator* does not — which is why `triangle.frag` performs an
+    /// unmodulated direct lookup. Tracked in `docs/engine/nifal.md`'s
+    /// parked-passthrough inventory.
     pub lighting_effect_1: f32,
     pub lighting_effect_2: f32,
     pub subsurface_rolloff: f32,

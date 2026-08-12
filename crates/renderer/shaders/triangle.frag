@@ -1049,10 +1049,16 @@ void main() {
     // the same SLSF1 bit (MAT_FLAG_EFFECT_PALETTE_COLOR, set here only by
     // `pack_imported_material_flags` for BGSM meshes that authored a
     // greyscale_texture) AND a resolved LUT, so non-palette lit content is
-    // untouched. The grayscale_to_palette_scale modulator is not yet
-    // plumbed to GpuMaterial — direct lookup for now. Tint correctness +
-    // the luminance coordinate await RenderDoc validation on real FO4
-    // content (additive/flag-gated change — cannot regress other content).
+    // untouched. The grayscale_to_palette_scale modulator is not plumbed
+    // here — direct lookup for now. #2592: the gap is wider than "no
+    // GpuMaterial field". The value stops one tier earlier — it is read
+    // off the BGSM into ImportedMaterial and then dropped by
+    // translate_material, so the canonical Material has nothing to
+    // forward and an authored non-1.0 scale is silently ignored. Closing
+    // it needs a Material field first, then a GpuMaterial slot, then the
+    // multiply below. Tint correctness + the luminance coordinate await
+    // RenderDoc validation on real FO4 content (additive/flag-gated
+    // change — cannot regress other content).
     if ((mat.materialFlags & MAT_FLAG_EFFECT_PALETTE_COLOR) != 0u
         && mat.greyscaleLutIndex != 0u) {
         float gsIndex = dot(texColor.rgb, vec3(0.2126, 0.7152, 0.0722));

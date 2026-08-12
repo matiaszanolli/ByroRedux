@@ -77,11 +77,22 @@ Stale notes in `material-abstraction.md` corrected: the render-side glass heuris
 Residual gap (#2284 / MAT-D1-NEW-04, fixed 2026-08-05): six
 `BSLightingShaderProperty` shading scalars (`lighting_effect_1/2`,
 `subsurface_rolloff`, `rimlight_power`, `backlight_power`, `fresnel_power`) now
-land on the canonical `Material` — captured, not yet shaded, matching the
-existing `grayscale_to_palette_scale` precedent (no `GpuMaterial` field, no
-`triangle.frag` consumer yet). The boundary itself is still the single
-translation site; the remaining work is a GPU-side follow-up, not a boundary
-leak.
+land on the canonical `Material` — captured, not yet shaded (no `GpuMaterial`
+field, no `triangle.frag` consumer yet). The boundary itself is still the
+single translation site; the remaining work is a GPU-side follow-up, not a
+boundary leak.
+
+That paragraph and the `Material` doc used to call this "matching the existing
+`grayscale_to_palette_scale` precedent". It is not one, and the correction
+(#2592 / SKY-D7-04) is what keeps this section's **converged** verdict honest:
+`grayscale_to_palette_scale` never reaches `Material` at all. It is captured on
+`ImportedMaterial` (`asset_provider/material.rs` reads it off the BGSM) and
+then dropped by `translate_material` — an actual boundary omission, one tier
+earlier than the #2284 fields, listed in the parked inventory below. The
+adjacent `greyscale_texture` shows the contrast: the palette *LUT* does cross
+the boundary and is consumed as `GpuMaterial.greyscale_lut_index`, while the
+palette *scale modulator* does not, which is why `triangle.frag` performs an
+unmodulated direct lookup.
 
 ### Geometry / transform — **converged (reference template)**
 
@@ -461,6 +472,7 @@ the record that each gap is known and bounded, with its unblocking consumer:
 | inv marker | `BSInvMarker` | parsed, not walked into `Imported*` | inventory-icon system |
 | `NiSwitchNode` identity | `NiSwitchNode` | walked via **active-index** (furniture states, sheaths, destruction); the type discriminator is not surfaced. Content-present (Skyrim ~165, FO4 ~51) | geometry state-switching driver (gameplay) |
 | `bs_bound` | `BSBound` extra-data | consumed on the **loose-NIF** path only (`nif_loader.rs`), not the cell path | a cell-path bound consumer (low value — the cell path already derives `WorldBound` from geometry) |
+| `grayscale_to_palette_scale` | FO4+ BGSM (`asset_provider/material.rs`) | on `ImportedMaterial` only — **dropped by `translate_material`** (#2592 / SKY-D7-04). Unlike the rest of this table it is not blocked on a missing feature: the consumer it modulates already ships. `triangle.frag`'s palette branch is live and its own comment says the modulator "is not yet plumbed to GpuMaterial — direct lookup for now", so authored non-1.0 scales are silently ignored. FO4-facing; Skyrim never authors the field (SKY-D7-01) | a canonical `Material` field + `GpuMaterial` slot + the multiply in `triangle.frag`'s existing `MAT_FLAG_EFFECT_PALETTE_COLOR` block |
 
 **In-cell LOD (2026-06-02, user-directed):** measured prevalence before building. `NiLODNode`
 (node-level Z-depth LOD) is **content-absent** across all target games; the parser +
