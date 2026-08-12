@@ -645,6 +645,19 @@ pub(super) struct MaterialInfo {
     /// shape as `has_uv_transform`'s own #435/N06 precedent above. See
     /// #2457.
     pub has_bs_lighting_shader: bool,
+    /// Set by the `BSShaderPPLightingProperty` / `BSShaderNoLightingProperty`
+    /// arms — the FO3/FNV *lit* shader pipeline is bound for this material.
+    /// Distinct from `has_bs_lighting_shader`, which is the Skyrim+
+    /// `BSLightingShaderProperty`.
+    ///
+    /// Consumed by the specular-authorship post-pass in
+    /// `walker::extract_material_info_from_refs`: on that pipeline
+    /// `NiMaterialProperty.specular` is vestigial (the engine sourced
+    /// specular from the shader / normal-map alpha), and vanilla FNV
+    /// authors it black essentially everywhere, so copying that zero
+    /// through as *authored* collapses the whole direct-specular lobe.
+    /// See #2553.
+    pub has_legacy_bs_shader: bool,
     /// Depth test enabled (from NiZBufferProperty). Default: true.
     pub z_test: bool,
     /// Depth write enabled (from NiZBufferProperty). Default: true.
@@ -1063,6 +1076,7 @@ impl Default for MaterialInfo {
             specular_authored: false,
             has_uv_transform: false,
             has_bs_lighting_shader: false,
+            has_legacy_bs_shader: false,
             z_test: true,
             z_write: true,
             z_function: 3, // LESSEQUAL — Gamebryo default
@@ -1502,6 +1516,12 @@ mod fo3nv_fire_refraction_tests;
 /// precedence inversion on `texture_clamp_mode`/`env_map_scale`.
 #[cfg(test)]
 mod legacy_property_precedence_tests;
+
+/// Regression tests for #2553 (FNV-D2-01) — a vestigial black
+/// `NiMaterialProperty.specular` on the FO3/FNV lit pipeline is restored
+/// to the unauthored neutral instead of zeroing the direct-specular lobe.
+#[cfg(test)]
+mod legacy_specular_authorship_tests;
 
 #[cfg(test)]
 mod intern_texture_path_tests {

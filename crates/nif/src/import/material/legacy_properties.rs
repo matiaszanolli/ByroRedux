@@ -288,6 +288,10 @@ fn apply_pp_lighting_property(
     info: &mut MaterialInfo,
 ) {
     if let Some(shader) = scene.get_as::<BSShaderPPLightingProperty>(idx) {
+        // #2553 — record that the FO3/FNV lit shader pipeline is bound, so
+        // the specular-authorship post-pass can tell a vestigial black
+        // `NiMaterialProperty.specular` from an authored one.
+        info.has_legacy_bs_shader = true;
         // FO3-D1-02 / #2317 — computed once, shared by the slot-3 texture
         // bind below and the scalar-write gate further down.
         let parallax_authored = fo3_parallax_authored(shader.shader_flags_1());
@@ -459,6 +463,8 @@ fn apply_no_lighting_property(
     info: &mut MaterialInfo,
 ) {
     if let Some(shader) = scene.get_as::<BSShaderNoLightingProperty>(idx) {
+        // #2553 — see the sibling assignment in `apply_pp_lighting_property`.
+        info.has_legacy_bs_shader = true;
         if info.texture_path.is_none() {
             info.texture_path = intern_texture_path(pool, &shader.file_name);
         }

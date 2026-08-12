@@ -134,6 +134,36 @@ pub(crate) fn extract_material_info_from_refs(
         &mut info,
     );
 
+    // #2553 / FNV-D2-01 — unauthored-vs-authored-off for legacy specular.
+    //
+    // `NiMaterialProperty` on the FO3/FNV *lit* pipeline
+    // (`BSShaderPPLightingProperty` / `BSShaderNoLightingProperty`) is
+    // vestigial for specular: that pipeline sourced the specular term from
+    // the shader / normal-map alpha, not the material property, so vanilla
+    // content leaves the field at black essentially everywhere (measured:
+    // `specular` luminance 0.00 on 18/18 meshes across 6 vanilla FNV NIFs,
+    // with `specular_strength` 1.0 — i.e. not the disabled path).
+    //
+    // Copying that zero through as *authored* is what collapsed the entire
+    // direct-specular lobe: `triangle.frag` multiplies the GGX term by
+    // `specStrength * specColor` with no floor, so a black `specular_color`
+    // removes it outright — worst on keyword-classified conductors, which
+    // lose diffuse to their high metalness and then have no specular left.
+    //
+    // Restore the unauthored state rather than inventing a value: `[1, 1, 1]`
+    // is both `MaterialInfo::default()`'s own sentinel and nif.xml's declared
+    // default for `NiMaterialProperty.Specular Color` (`#VEC3_ONE#`), and
+    // `specular_authored = false` is the exact signal `classify_pbr_keyword`
+    // already documents for "no real Gamebryo specular tint here" (#1873).
+    //
+    // This runs BEFORE the `specular_enabled` zeroing below so an explicit
+    // `NiSpecularProperty { flags: 0 }` — a genuine authored disable — still
+    // wins and re-zeroes both fields.
+    if info.has_legacy_bs_shader && info.specular_authored && info.specular_color == [0.0; 3] {
+        info.specular_color = [1.0, 1.0, 1.0];
+        info.specular_authored = false;
+    }
+
     // Zero out specular strength **and color** when the property is
     // disabled. We do this once at the end so later code (pipeline
     // selection, draw command population) doesn't need to know about
