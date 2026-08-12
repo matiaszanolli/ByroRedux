@@ -1127,6 +1127,19 @@ pub(crate) fn build_scheduler() -> Scheduler {
         Stage::Late,
         crate::systems::camera_follow_system,
         Access::new()
+            // #2676 / CONC-D3-NEW-02 — the body's very first statement
+            // reads `PlayerMode` as an early-out gate. Undeclared, the
+            // access analyzer could not see it, so the `Stage::Late`
+            // parallel batch's `known_conflict_count() == 0` invariant
+            // — the thing that makes cross-thread ABBA structurally
+            // unreachable among parallel systems — was computed from an
+            // incomplete declaration. No live race today (the only
+            // writer, `toggle_player_mode`, takes `&mut World` and so
+            // can't run inside the parallel window), but this system
+            // writes the camera pose the renderer, audio listener, and
+            // `submersion_system` all consume. Same shape of fix as
+            // #1787's `ContactConfig` on `physics_sync_system`.
+            .reads_resource::<crate::systems::PlayerMode>()
             .reads_resource::<crate::systems::PlayerEntity>()
             .reads_resource::<ActiveCamera>()
             .reads_resource::<InputState>()

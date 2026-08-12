@@ -22,10 +22,17 @@
 //!    paired access via TypeId-sorted acquisition; the graph generalizes
 //!    the guarantee to any N-lock hold pattern across the scheduler.
 //!
+//!    Cycles of **any length** are reported, not just the direct `A → B` /
+//!    `B → A` pair: the closure test is a reachability search over the
+//!    recorded edges, so a three-system triangle (`A → B` on one thread,
+//!    `B → C` on a second, `C → A` on a third — each edge individually
+//!    legal) panics on the observation that closes it. See #2675.
+//!
 //! The per-acquisition cost is a thread-local HashMap lookup plus (debug
-//! only) a fast-path `RwLock::read()` + `HashSet::contains()` — negligible
-//! compared to the real RwLock the check is guarding. The graph's write-
-//! lock path fires only on novel edge observations; once the graph has
+//! only) a fast-path `RwLock::read()` + one `HashMap::contains_key()` per
+//! held lock — negligible compared to the real RwLock the check is
+//! guarding. The graph's write-lock path (and with it the reachability
+//! search) fires only on novel edge observations; once the graph has
 //! stabilized every acquisition takes the read-only fast path.
 
 use std::any::TypeId;
@@ -168,12 +175,15 @@ pub(crate) fn untrack_write(type_id: TypeId) {
 /// threads in the process. If a later acquisition would add a
 /// cycle-closing edge (e.g. "A → B" was observed and we now try to
 /// acquire A while holding B), we panic at the observation of the
-/// cycle rather than deadlocking silently.
+/// cycle rather than deadlocking silently. "Cycle-closing" is decided
+/// by reachability, so cycles of length 3+ spanning three or more
+/// threads are caught too (#2675).
 ///
 /// The graph lives process-wide behind a `RwLock`: fast-path acquires
 /// (no new edges) take the read side, novel edges upgrade to the write
 /// side once. After the call graph has stabilized the steady-state
-/// cost is one read-lock + two HashSet lookups per novel-pair acquire.
+/// cost is one read-lock + one HashMap lookup per held lock; the
+/// reachability probe runs only on the novel-edge slow path.
 ///
 /// **Opt-in design:** the detector is conservative — it flags any pair
 /// of acquisition orderings that *could* deadlock if the two threads'
@@ -207,16 +217,19 @@ mod global_order {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{LazyLock, RwLock};
 
-    /// For each type T, the set of types observed to have been held
-    /// while T was acquired. An edge `H → T` (i.e. `T ∈ GRAPH[H]`)
+    /// For each type H, the set of types observed to have been
+    /// acquired while H was held, keyed by `TypeId` with the type's
+    /// name as the value (so a reported cycle can name every hop, not
+    /// just its endpoints). An edge `H → T` (i.e. `T ∈ GRAPH[H]`)
     /// means some thread acquired T while H was held.
     ///
     /// Cycle detection is the dual read: when acquiring T while
-    /// holding H, we panic if `H ∈ GRAPH[T]` — that would mean some
-    /// other thread (or an earlier acquisition on this thread)
-    /// already did "T while holding H" AND we're now doing "H while
-    /// holding T", which is the ABBA pattern that deadlocks.
-    static GRAPH: LazyLock<RwLock<HashMap<TypeId, HashSet<TypeId>>>> =
+    /// holding H, we panic if H is **reachable** from T — that means
+    /// the edges already observed carry an order `T → … → H` while
+    /// we're now establishing `H → T`, closing a cycle. At path
+    /// length 1 this is the classic two-lock ABBA pattern; longer
+    /// paths are the N-thread generalization (#2675).
+    static GRAPH: LazyLock<RwLock<HashMap<TypeId, HashMap<TypeId, &'static str>>>> =
         LazyLock::new(|| RwLock::new(HashMap::new()));
 
     /// Whether the env var was set at process start. Cached in an
@@ -225,8 +238,61 @@ mod global_order {
     static ENABLED: LazyLock<AtomicBool> =
         LazyLock::new(|| AtomicBool::new(std::env::var_os("BYRO_LOCK_ORDER_CHECK").is_some()));
 
+    /// Depth-first search for a path `from ⇝ target` over the observed
+    /// edges. Returns the chain of type names along it
+    /// (`[from, …, target]`) when one exists, so a reported cycle can
+    /// name every hop instead of only its endpoints.
+    ///
+    /// `from_name` is passed in because `from` is the incoming
+    /// acquisition, which may not appear as any edge's target yet.
+    /// Every other node on the path was reached through an edge, and
+    /// edges carry their target's name, so the chain is always fully
+    /// nameable.
+    ///
+    /// The graph has one node per locked type — a few dozen at most —
+    /// and this runs only on the novel-edge slow path, so the
+    /// steady-state cost of the detector is unchanged (#2675).
+    fn find_path(
+        graph: &HashMap<TypeId, HashMap<TypeId, &'static str>>,
+        from: TypeId,
+        from_name: &'static str,
+        target: TypeId,
+    ) -> Option<Vec<&'static str>> {
+        let mut visited: HashSet<TypeId> = HashSet::new();
+        visited.insert(from);
+        // node → (predecessor, that node's own type name)
+        let mut prev: HashMap<TypeId, (TypeId, &'static str)> = HashMap::new();
+        let mut stack = vec![from];
+        while let Some(node) = stack.pop() {
+            let Some(edges) = graph.get(&node) else {
+                continue;
+            };
+            for (next, next_name) in edges {
+                if !visited.insert(*next) {
+                    continue;
+                }
+                prev.insert(*next, (node, *next_name));
+                if *next == target {
+                    // Walk the predecessor chain back to `from`.
+                    let mut chain = Vec::new();
+                    let mut cur = target;
+                    while cur != from {
+                        let (p, name) = prev[&cur];
+                        chain.push(name);
+                        cur = p;
+                    }
+                    chain.push(from_name);
+                    chain.reverse();
+                    return Some(chain);
+                }
+                stack.push(*next);
+            }
+        }
+        None
+    }
+
     /// Record each `held → new` edge in the graph and panic if the
-    /// insert would close a cycle (`new → held` already observed).
+    /// insert would close a cycle (`new ⇝ held` already observed).
     /// `held_others` carries the set of distinct types currently
     /// locked on this thread, excluding the incoming `new_id`
     /// itself (re-entrant read acquires on the same type are handled
@@ -246,35 +312,25 @@ mod global_order {
         if !ENABLED.load(Ordering::Relaxed) {
             return;
         }
-        // Fast-path read lock: check every edge is already known AND
-        // the cycle condition doesn't fire. If both hold, skip the
-        // write-lock upgrade entirely.
+        // Fast-path read lock: if every edge we'd add is already
+        // recorded, the graph is unchanged by this acquisition and no
+        // new cycle can appear — skip the write-lock upgrade and the
+        // reachability probe entirely.
+        //
+        // This early-out cannot hide a cycle: the graph only ever
+        // grows through the slow path below, which refuses to insert a
+        // cycle-closing edge (it panics instead). So a
+        // cycle-closing acquisition always presents at least one novel
+        // edge and always reaches the probe. (#2675 — pre-fix this
+        // block also ran a depth-1 `GRAPH[new].contains(held)` test,
+        // which is now subsumed by the path-length-1 case of the
+        // reachability search.)
         {
             let graph = GRAPH.read().expect("GRAPH poisoned");
-            // Cycle check: did some other thread observe the reverse
-            // direction? (`new → held_i` for any i). If yes → ABBA.
-            if let Some(new_edges) = graph.get(&new_id) {
-                for (held_id, held_name) in held_others {
-                    if new_edges.contains(held_id) {
-                        panic!(
-                            "ECS cross-thread deadlock risk (ABBA): attempted acquisition \
-                             of `{}` while holding `{}` on this thread — the reverse edge \
-                             `{}` → `{}` was previously observed on another thread. \
-                             Two threads acquiring the same pair of locks in opposite \
-                             orders will deadlock. Use `query_2_mut`/`query_2_mut_mut` \
-                             for paired access (TypeId-sorted), or acquire locks in a \
-                             consistent process-wide order. See #313.",
-                            new_name, held_name, new_name, held_name,
-                        );
-                    }
-                }
-            }
-            // Are all the edges we'd add already present? If yes, no
-            // write needed.
             let mut all_present = true;
             for (held_id, _) in held_others {
                 match graph.get(held_id) {
-                    Some(edges) if edges.contains(&new_id) => {}
+                    Some(edges) if edges.contains_key(&new_id) => {}
                     _ => {
                         all_present = false;
                         break;
@@ -286,25 +342,57 @@ mod global_order {
             }
         }
         // Slow path: we have at least one novel edge → take the write
-        // lock and insert. Re-check the cycle condition under write
-        // because another thread may have raced us (best-effort but
-        // correct: the check is transitively sound on any consistent
-        // snapshot because cycles, once observed, stay forever).
+        // lock, then check the cycle condition under write because
+        // another thread may have raced us (best-effort but correct:
+        // the check is transitively sound on any consistent snapshot
+        // because cycles, once observed, stay forever).
+        //
+        // #2675 / CONC-D3-NEW-01 — the test is reachability, not a
+        // direct reverse edge. Pre-fix only `new → held` at depth 1
+        // panicked, so a triangle whose three edges were each recorded
+        // by a different thread (each individually legal) was accepted
+        // silently — the detector reported "clean" for a whole class of
+        // real deadlocks, and a live 3-cycle already sat in the graph on
+        // every character-mode frame.
         let mut graph = GRAPH.write().expect("GRAPH poisoned");
-        if let Some(new_edges) = graph.get(&new_id) {
-            for (held_id, held_name) in held_others {
-                if new_edges.contains(held_id) {
-                    panic!(
-                        "ECS cross-thread deadlock risk (ABBA): attempted acquisition \
-                         of `{}` while holding `{}` on this thread — the reverse edge \
-                         was observed on another thread. See #313.",
-                        new_name, held_name,
-                    );
-                }
+        let mut cycle: Option<(&'static str, Vec<&'static str>)> = None;
+        for (held_id, held_name) in held_others {
+            if let Some(chain) = find_path(&graph, new_id, new_name, *held_id) {
+                cycle = Some((held_name, chain));
+                break;
             }
         }
+        if let Some((held_name, chain)) = cycle {
+            // Release the write guard BEFORE unwinding. `RwLock` poisons
+            // only when a panic escapes an exclusive lock, and a poisoned
+            // GRAPH would turn every later acquisition's `expect("GRAPH
+            // poisoned")` into a second, unrelated panic — including
+            // inside a `catch_unwind` harness probing the detector. The
+            // pre-#2675 code panicked out of the read guard (which never
+            // poisons); dropping here preserves that property now that
+            // the probe runs under the write guard. The cycle-closing
+            // edge is still never inserted.
+            drop(graph);
+            panic!(
+                "ECS cross-thread deadlock risk (lock-order cycle): attempted \
+                     acquisition of `{}` while holding `{}` on this thread — that \
+                     closes a cycle over the acquisition orders already observed \
+                     across threads: {} → `{}`. Threads acquiring these locks in \
+                     these orders will deadlock. Use `query_2_mut`/`query_2_mut_mut` \
+                     for paired access (TypeId-sorted), or acquire locks in a \
+                     consistent process-wide order. See #313 / #2675.",
+                new_name,
+                held_name,
+                chain
+                    .iter()
+                    .map(|n| format!("`{n}`"))
+                    .collect::<Vec<_>>()
+                    .join(" → "),
+                new_name,
+            );
+        }
         for (held_id, _) in held_others {
-            graph.entry(*held_id).or_default().insert(new_id);
+            graph.entry(*held_id).or_default().insert(new_id, new_name);
         }
     }
 
@@ -485,6 +573,9 @@ mod tests {
     struct Abba2;
     struct Abba3;
     struct Abba4;
+    struct Abba5;
+    struct Abba6;
+    struct Abba7;
 
     /// Single combined test for the global-graph detector — three
     /// scenarios run sequentially within one test body so the runtime
@@ -497,6 +588,11 @@ mod tests {
     ///   panic (steady-state fast path).
     /// - **Re-entrant reads don't self-edge**: holding two read locks
     ///   on the same type doesn't record `T → T`.
+    /// - **Cycles longer than 2 are caught** (#2675): `A → B` then
+    ///   `B → C` then `C → A` panics on the third pattern, even though
+    ///   no direct reverse edge exists for any single pair. Before the
+    ///   fix the detector only closed length-2 cycles, so a triangle
+    ///   spread over three scheduler stages was recorded silently.
     ///
     /// Each scenario runs after `global_order::reset()` clears any
     /// edges left over from earlier scenarios. The flag stays enabled
@@ -567,6 +663,39 @@ mod tests {
             untrack_read(e);
             track_read(e, "FakeA"); // fresh acquire after release
             untrack_read(e);
+
+            // Scenario 4 (#2675): a three-lock cycle. Each edge is
+            // legal on its own and no pair has a direct reverse edge,
+            // so only a reachability probe can see the closure.
+            global_order::reset();
+            let f = TypeId::of::<Abba5>();
+            let g = TypeId::of::<Abba6>();
+            let h = TypeId::of::<Abba7>();
+            // Edge Abba5 → Abba6.
+            track_read(f, "Abba5");
+            track_read(g, "Abba6");
+            untrack_read(g);
+            untrack_read(f);
+            // Edge Abba6 → Abba7.
+            track_read(g, "Abba6");
+            track_read(h, "Abba7");
+            untrack_read(h);
+            untrack_read(g);
+            // Edge Abba7 → Abba5 closes the triangle
+            // (Abba5 ⇝ Abba7 is reachable) → must panic.
+            let panicked = std::panic::catch_unwind(|| {
+                track_read(h, "Abba7");
+                track_read(f, "Abba5"); // closes the 3-cycle
+                untrack_read(f);
+                untrack_read(h);
+            })
+            .is_err();
+            assert!(
+                panicked,
+                "a 3-lock cycle must panic — the detector must close cycles of \
+                 any length, not just direct A→B / B→A pairs (#2675)"
+            );
+            LOCKS.with(|l| l.borrow_mut().clear());
         }
     }
 }

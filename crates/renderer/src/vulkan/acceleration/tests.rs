@@ -1660,3 +1660,115 @@ mod blas_registration_releases_occupied_slot_tests {
         );
     }
 }
+
+// ── TLAS allocate-then-swap + post-build commit ordering ────────────
+//
+// Both invariants are ordering properties of `tlas.rs` that only show
+// up on a fallible path a headless test can't drive (an allocation
+// failure at TLAS grow time, a `write_mapped` flush failure), and the
+// consequences are validation-layer / GPU-fault visible only. Same
+// source-position pinning approach as
+// `blas_registration_releases_occupied_slot_tests` above and
+// `context/skinned_blas_refit.rs`'s `skin_built_this_frame_skip_tests`.
+#[cfg(test)]
+mod tlas_commit_ordering_tests {
+    const TLAS_RS: &str = include_str!("tlas.rs");
+
+    /// #2673 / CONC-D1-NEW-01 — `ensure_tlas_state` must allocate the
+    /// replacement buffers + acceleration structure BEFORE destroying
+    /// the slot's existing `TlasState`. Destroy-first meant any `?` in
+    /// the allocation window left `self.tlas[frame] == None` while
+    /// scene descriptor binding 2 still named the destroyed AS, with
+    /// `rt_flag` latched at 1.0 — a use-after-free read by every RT
+    /// shading path.
+    #[test]
+    fn ensure_tlas_state_allocates_before_destroying_the_old_slot() {
+        let destroy_pos = TLAS_RS
+            .find("if let Some(mut old) = self.tlas[frame_index].take()")
+            .expect("ensure_tlas_state must still retire the old slot");
+        for (needle, what) in [
+            ("GpuBuffer::create_host_visible(", "the instance staging buffer"),
+            (
+                "let mut instance_buffer_device = GpuBuffer::create_device_local_uninit(",
+                "the device-local instance buffer",
+            ),
+            (
+                "let mut tlas_buffer = GpuBuffer::create_device_local_uninit(",
+                "the AS backing buffer",
+            ),
+            (
+                ".create_acceleration_structure(&accel_info, None)",
+                "the acceleration structure",
+            ),
+        ] {
+            let alloc_pos = TLAS_RS
+                .find(needle)
+                .unwrap_or_else(|| panic!("ensure_tlas_state must still allocate {what}"));
+            assert!(
+                alloc_pos < destroy_pos,
+                "{what} must be allocated BEFORE the old TlasState is destroyed \
+                 (#2673) — otherwise a failure of that allocation leaves \
+                 descriptor binding 2 naming a destroyed VkAccelerationStructureKHR \
+                 while `tlas_written` keeps rt_flag latched at 1.0"
+            );
+        }
+    }
+
+    /// #2673 SIBLING — the scratch regrow follows the same discipline:
+    /// build into a local, retire the old buffer only past the commit
+    /// point. A destroy-first regrow could leave the slot with a live
+    /// TLAS and no scratch buffer, which `build_tlas` unwraps.
+    #[test]
+    fn scratch_regrow_allocates_before_destroying_the_old_buffer() {
+        let alloc_pos = TLAS_RS
+            .find("let new_scratch = if needs_new_scratch {")
+            .expect("the scratch regrow must build into a local first (#2673)");
+        let destroy_pos = TLAS_RS
+            .find("if let Some(mut old_scratch) = self.scratch_buffers[frame_index].take()")
+            .expect("the scratch regrow must still retire the old buffer");
+        assert!(
+            alloc_pos < destroy_pos,
+            "the replacement scratch buffer must be allocated BEFORE the old one \
+             is destroyed (#2673)"
+        );
+    }
+
+    /// #2674 / CONC-D1-NEW-02 — the BUILD-vs-UPDATE bookkeeping that
+    /// next frame's `decide_use_update` consults must be committed only
+    /// after the build has been recorded. Committing before the
+    /// fallible `instance_buffer.write_mapped(..)?` let a failed frame
+    /// claim a BUILD that never happened, so the next frame could pick
+    /// UPDATE with changed BLAS references (VUID-…-pInfos-03707).
+    #[test]
+    fn build_tlas_commits_bookkeeping_after_recording_the_build() {
+        let record_pos = TLAS_RS
+            .find("self.accel_loader.cmd_build_acceleration_structures(")
+            .expect("build_tlas must still record the build");
+        let write_pos = TLAS_RS
+            .find("tlas.instance_buffer.write_mapped(device, &instances)?;")
+            .expect("build_tlas must still stage the instances");
+        assert!(
+            write_pos < record_pos,
+            "sanity: the fallible host write precedes the build record"
+        );
+        for (needle, what) in [
+            (
+                "std::mem::swap(\n            &mut tlas.last_blas_addresses,",
+                "the last_blas_addresses promotion",
+            ),
+            ("tlas.needs_full_rebuild = false;", "the needs_full_rebuild clear"),
+            ("tlas.last_blas_map_gen = map_gen;", "the map-generation stamp"),
+        ] {
+            let commit_pos = TLAS_RS
+                .find(needle)
+                .unwrap_or_else(|| panic!("build_tlas must still perform {what}"));
+            assert!(
+                commit_pos > record_pos,
+                "{what} must run AFTER cmd_build_acceleration_structures (#2674) — \
+                 committing it before the fallible write_mapped lets a failed frame \
+                 assert a BUILD that never landed, and the next frame then refits \
+                 with stale acceleration_structure_reference values"
+            );
+        }
+    }
+}

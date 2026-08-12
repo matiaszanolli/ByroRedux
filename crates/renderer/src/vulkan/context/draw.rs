@@ -2196,6 +2196,33 @@ impl VulkanContext {
                         frame,
                     ) {
                         log::warn!("TLAS build failed: {e}");
+                        // #2673 / CONC-D1-NEW-01 — defence in depth for
+                        // the warn-only policy above. `tlas_written` is
+                        // otherwise a one-way latch, so a slot that ever
+                        // had a TLAS keeps `rt_flag = 1.0` forever and
+                        // every RT path (shadows, reflections, GI, water
+                        // refraction) keeps ray-querying binding 2 on a
+                        // frame whose build never landed. Re-point the
+                        // binding at whatever AS the manager still owns
+                        // (post-#2673 a failed resize keeps the previous
+                        // one alive), then clear the latch and drop
+                        // `rt_flag` so this frame degrades to non-RT
+                        // shading instead. The next successful build
+                        // re-latches and re-patches it to 1.0 via the
+                        // `first_tlas_this_slot` path below.
+                        if let Some(stale_handle) = accel.tlas_handle(frame) {
+                            self.scene_buffers
+                                .write_tlas(&self.device, frame, stale_handle);
+                        }
+                        // Ordered after `write_tlas`, which latches the
+                        // flag `true` as a side effect.
+                        self.scene_buffers.tlas_written[frame] = false;
+                        if let Err(e) =
+                            self.scene_buffers
+                                .patch_camera_rt_flag(&self.device, frame, 0.0)
+                        {
+                            log::warn!("Failed to clear rt_flag after TLAS build failure: {e}");
+                        }
                     } else {
                         if let Some(ref mut timers) = self.gpu_timers {
                             timers.cmd_tlas_build_end(&self.device, cmd, frame);

@@ -234,3 +234,32 @@ fn vulkan_validation_job_fails_on_a_panic() {
          code with `|| true` (#2138)",
     );
 }
+
+/// #2676 / CONC-D3-NEW-02 — `camera_follow_system`'s first statement
+/// reads the `PlayerMode` resource as an early-out gate, but its
+/// `Access` declaration omitted it. `Stage::Late` is the engine's
+/// largest parallel batch, so the analyzer's `known_conflict_count()`
+/// — the invariant that keeps cross-thread ABBA structurally
+/// unreachable among parallel systems — was being computed from an
+/// incomplete declaration. Scoped to this registration's own argument
+/// list, because `player_controller_system` declares the same read.
+#[test]
+fn camera_follow_declaration_reads_player_mode() {
+    let reg_start = BOOT_RS
+        .find("crate::systems::camera_follow_system,")
+        .expect("camera_follow_system must still be registered in build_scheduler");
+    // The declaration ends at the first `);` closing `add_to_with_access`.
+    let reg_end = BOOT_RS[reg_start..]
+        .find("\n    );")
+        .map(|i| reg_start + i)
+        .expect("the camera_follow_system registration must close");
+    let decl = &BOOT_RS[reg_start..reg_end];
+    assert!(
+        decl.contains(".reads_resource::<crate::systems::PlayerMode>()"),
+        "camera_follow_system's Access is missing \
+         `.reads_resource::<crate::systems::PlayerMode>()` — its body gates \
+         on PlayerMode (byroredux/src/systems/character.rs), and an \
+         incomplete Late-stage declaration makes the zero-conflict \
+         invariant unsound (#2676)",
+    );
+}
