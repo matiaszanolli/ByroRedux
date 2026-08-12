@@ -83,12 +83,38 @@ GitHub tracking is grouped by dependency-sized deliverable under
 [#2368](https://github.com/matiaszanolli/ByroRedux/issues/2368), EX-02/04
 [#2375](https://github.com/matiaszanolli/ByroRedux/issues/2375), EX-06/07
 [#2376](https://github.com/matiaszanolli/ByroRedux/issues/2376), EX-08
-[#2374](https://github.com/matiaszanolli/ByroRedux/issues/2374), EX-09/17
+[#2374](https://github.com/matiaszanolli/ByroRedux/issues/2374) (**done**), EX-09/17
 [#2370](https://github.com/matiaszanolli/ByroRedux/issues/2370), EX-10/11
 [#2371](https://github.com/matiaszanolli/ByroRedux/issues/2371), EX-12/13
 [#2373](https://github.com/matiaszanolli/ByroRedux/issues/2373), EX-14/15
 [#2369](https://github.com/matiaszanolli/ByroRedux/issues/2369), and EX-16
 [#2372](https://github.com/matiaszanolli/ByroRedux/issues/2372).
+
+### Re-scoped buildable slices (2026-08-12)
+
+Auditing EX-12/13, EX-14/15 and EX-16 against current code showed that each
+bundled buildable work with work blocked behind unparsed data or an open
+prerequisite. The buildable halves were split out so they can move
+independently:
+
+| Issue | Slice | Blocked on | Why it is buildable now |
+|---|---|---|---|
+| [#2735](https://github.com/matiaszanolli/ByroRedux/issues/2735) | EX-12a — honour the non-climate `PNAM` inheritance bits | — | Only `0x10` (climate) is implemented. Measured: 6 Skyrim + 1 FO3 + 1 FO4 worldspaces author no `NAM2` and set the inherit bit, so they render no water at all. Pure CPU. |
+| [#2736](https://github.com/matiaszanolli/ByroRedux/issues/2736) | EX-05 — pre-tonemap non-finite pixel counter | — | Self-contained; also closes Tranche A item 6. The PNG mean/stddev gate cannot observe an HDR NaN. |
+| [#2737](https://github.com/matiaszanolli/ByroRedux/issues/2737) | EX-16a — parse REGN `RDAT` region data | — | `RegionRecord` captures EDID/weather/colour only; `RDAT` carries the ambient sound, ground cover, objects and priority EX-16 needs. Pure parsing. |
+| [#2738](https://github.com/matiaszanolli/ByroRedux/issues/2738) | EX-16b — parse NAVM geometry + connectivity | — | `NavmRecord` is EDID + version; no vertices, triangles or external connections exist to stream. Pure parsing. |
+
+What stays blocked, and behind what:
+
+- **EX-12/13 continuity across doors and cells** — EX-09 (#2370).
+- **EX-14 ground cover Phases 1–5** — §11's open questions require measurement
+  before Phase 1 (terrain-attribute sampling path, chunk size, tier distances),
+  and the density field lives in GLSL where unit tests cannot reach it.
+- **EX-14 full SpeedTree tree rendering** — out of ground-cover scope by §10;
+  a separate authority in [`exal.md`](exal.md) §5.
+- **EX-15 persistent refs across parent worlds** — EX-09 (#2370).
+- **EX-16 runtime integration** (actor/package migration, emitter crossfade) —
+  #2737 + #2738 plus M42/M44.
 
 | ID | Pri | Work item | Acceptance gate | Depends on |
 |---|---:|---|---|---|
