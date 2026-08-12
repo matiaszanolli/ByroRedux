@@ -1355,12 +1355,12 @@ fn directional_ambient_cube_uses_energy_conserving_squared_normal_weights() {
 /// Running both made the unshadowed fallback wash across the directional,
 /// AO-modulated room lighting and visibly erase shadow contrast.
 #[test]
-fn directional_ambient_cube_disables_legacy_point_light_ambient_fill() {
+fn triangle_frag_has_no_unshadowed_point_light_ambient_fill() {
     let frag = include_str!("../../../shaders/triangle.frag");
 
     assert!(
-        frag.contains("if (lightType < 1.5 && dalcFlags.x <= 0.5)"),
-        "legacy point-light ambient fill must be disabled for authored DALC/XCLL cells"
+        !frag.contains("LIGHT_AMBIENT_FILL_FACTOR") && !frag.contains("lightAmbientFill"),
+        "point/spot ambient fill bypasses N·L, visibility, and AO and must not return"
     );
 }
 
