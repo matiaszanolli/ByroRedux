@@ -164,13 +164,36 @@ What stays blocked, and behind what:
    all behave. Reverted after the check; the counter reads clean on FNV
    WastelandNV and is Vulkan-validation clean.
 
-Current state: all five profiles pass. FNV 4,367/1,229, FO3 3,201/1,093,
-Oblivion 5,709/2,355, Skyrim 6,160/947, and FO4 57,102/22,706
-(entities/draws); every PNG passed image health. FNV/FO3/Oblivion/Skyrim had
-zero missing textures, while FO4 reported one. EX-01 is implemented; EX-05
-EX-05's renderer-side non-finite counter landed with #2736, so the remaining
-EX-05 surface is the environment-value asserts; the diagnostic/safe-fallback
-half of EX-02 is implemented.
+7. [x] Add the environment-value asserts — the other half of EX-05.
+   **Done (2026-08-12, #2368)** — `env.health` gates `CellLightingRes` +
+   `SkyParamsRes` on finite, usable values and hard-fails the matrix on any
+   violation. The pixel counter and this are not redundant: a NaN sun colour
+   behind a zero-intensity sun renders a clean frame over a broken resource,
+   and only one of the two checks can see it.
+
+   The rules are deliberately confined to properties the producers already
+   guarantee — finite, non-negative radiance, unit-length directions, and
+   agreement between `lighting.is_interior` and `sky.is_exterior` (two
+   independently-populated flags describing one fact, which is the "confirmed
+   exterior lighting" clause). Fog distances are *reported, not gated*:
+   `fit_legacy_fog_extinction` already treats `far <= near` as "no fog", so an
+   inverted ramp is a shipped authoring pattern rather than a defect. The live
+   matrix bore that out — FNV WastelandNV ships `fog_near = -10`, which a
+   plausible-looking "near must be positive" rule would have failed.
+
+   Proven with a negative control, as #2736 was: an injected finding turned
+   the FNV run into `HARD FAIL - 1 unusable environment value(s)` with
+   `env=bad=1` in the summary, confirming the report, the grep anchor and the
+   TSV column all behave. Reverted after the check. 14 unit tests cover the
+   rules themselves without a device or game data.
+
+Current state: all five profiles pass. The 2026-08-12 re-run reads FNV
+4,524/1,221, FO3 3,383/1,086, Oblivion 6,043/2,355, Skyrim 5,915/928, and FO4
+57,596/22,983 (entities/draws); every PNG passed image health, every profile
+reported zero non-finite pre-tonemap pixels, and every profile passed the new
+environment-value gate. FNV/FO3/Oblivion/Skyrim had zero missing textures,
+while FO4 reported one. EX-01 and EX-05 are both implemented; the
+diagnostic/safe-fallback half of EX-02 is implemented.
 
 The first live boundary matrix on 2026-08-04 established the EX-06 baseline:
 

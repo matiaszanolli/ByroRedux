@@ -61,7 +61,7 @@ SUMMARY="$ARTIFACT_DIR/summary.tsv"
 ACTIVE_PID=""
 
 mkdir -p "$ARTIFACT_DIR"
-printf 'profile\tresult\tentities\tdraws\timage_mean\timage_stddev\tmissing_textures\tfailed_nifs\tcrossings\tfull_samples\tfull_max_ms\tfull_superseded\tlod_samples\tlod_max_ms\tlod_superseded\tframe_p50_ms\tframe_p95_ms\tframe_max_ms\townership\tground_probe\n' > "$SUMMARY"
+printf 'profile\tresult\tentities\tdraws\timage_mean\timage_stddev\tenv\tmissing_textures\tfailed_nifs\tcrossings\tfull_samples\tfull_max_ms\tfull_superseded\tlod_samples\tlod_max_ms\tlod_superseded\tframe_p50_ms\tframe_p95_ms\tframe_max_ms\townership\tground_probe\n' > "$SUMMARY"
 
 cleanup_active () {
     if [[ -n "$ACTIVE_PID" ]] && kill -0 "$ACTIVE_PID" 2>/dev/null; then
@@ -95,7 +95,7 @@ profile_ready () {
     done
     if (( missing != 0 )); then
         echo "exterior-smoke[$label]: SKIP - required game data is not installed"
-        printf '%s\tSKIP\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\n' "$label" >> "$SUMMARY"
+        printf '%s\tSKIP\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\n' "$label" >> "$SUMMARY"
         return 1
     fi
     return 0
@@ -166,13 +166,13 @@ run_profile () {
             tail -40 "$stderr_log" || true
             wait "$ACTIVE_PID" 2>/dev/null || true
             ACTIVE_PID=""
-            printf '%s\tFAIL\t0\t0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\n' "$label" >> "$SUMMARY"
+            printf '%s\tFAIL\t0\t0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\n' "$label" >> "$SUMMARY"
             return 1
         fi
         if (( $(date +%s) > deadline )); then
             echo "exterior-smoke[$label]: HARD FAIL - timed out after ${TIMEOUT_SECONDS}s"
             cleanup_active
-            printf '%s\tFAIL\t0\t0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\n' "$label" >> "$SUMMARY"
+            printf '%s\tFAIL\t0\t0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\n' "$label" >> "$SUMMARY"
             return 1
         fi
         sleep 0.5
@@ -181,6 +181,7 @@ run_profile () {
     env BYRO_DEBUG_PORT="$PORT" "$DEBUG_BIN" > "$debug_log" 2>&1 <<'EOF' || true
 stats
 light.dump
+env.health
 water.dump
 water.contacts
 tex.missing
@@ -230,6 +231,7 @@ EOF
     IMAGE_STDDEV="-"
     local ownership="-"
     local probe_result="-"
+    local env_result="-"
 
     local hard_fail=0
     if [[ -z "$bench_line" ]]; then
@@ -343,6 +345,41 @@ EOF
         fi
     fi
 
+    # EX-05 / #2368 — the same question one step upstream: are the environment
+    # *inputs* usable? `r.health` above counts pixels, which a NaN only reaches
+    # when something multiplies it into the frame; a NaN sun colour behind a
+    # zero-intensity sun leaves the image clean and the resource broken. The
+    # rules and their justification live in `commands/env_health.rs`; the
+    # script only reads the verdict.
+    local env_report
+    env_report="$profile_dir/env-health.log"
+    # `byro-dbg` wraps each command result as one JSON string, so the first
+    # and last lines of a multi-line reply carry the `byro> "` prompt and the
+    # closing quote. Strip both before anchoring, or the verdict's own header
+    # line never matches.
+    sed 's/\\n/\n/g' "$debug_log" \
+        | sed -e 's/^byro> "//' -e 's/"$//' \
+        | grep '^env:' > "$env_report" || true
+    if [[ ! -s "$env_report" ]]; then
+        echo "exterior-smoke[$label]: WARN - env.health reported nothing (pre-#2368 binary?)"
+        env_result=absent
+    elif ! grep -Fq 'lighting=present sky=present' "$env_report"; then
+        echo "exterior-smoke[$label]: HARD FAIL - environment resources missing after load:"
+        sed 's/^/    /' "$env_report"
+        env_result=no-resources
+        hard_fail=1
+    elif grep -q '^env: FAIL' "$env_report"; then
+        local env_fail_count
+        env_fail_count="$(grep -c '^env: FAIL' "$env_report")"
+        echo "exterior-smoke[$label]: HARD FAIL - $env_fail_count unusable environment value(s):"
+        grep '^env: FAIL' "$env_report" | sed 's/^/    /'
+        env_result="bad=$env_fail_count"
+        hard_fail=1
+    else
+        echo "exterior-smoke[$label]: PASS environment values"
+        env_result=ok
+    fi
+
     if [[ "$MODE" == soak ]]; then
         # `byro-dbg` renders a multi-line command result as a single
         # JSON-escaped line, so `^ownership:` never anchors in the raw log.
@@ -394,9 +431,9 @@ EOF
     if (( hard_fail != 0 )); then
         result=FAIL
     fi
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$label" "$result" "$entities" "$draws" "$IMAGE_MEAN" \
-        "$IMAGE_STDDEV" "$missing_textures" "$failed_nifs" "$crossings" \
+        "$IMAGE_STDDEV" "$env_result" "$missing_textures" "$failed_nifs" "$crossings" \
         "$full_samples" "$full_max_ms" "$full_superseded" "$lod_samples" \
         "$lod_max_ms" "$lod_superseded" "$frame_p50_ms" "$frame_p95_ms" \
         "$frame_max_ms" "$ownership" "$probe_result" >> "$SUMMARY"

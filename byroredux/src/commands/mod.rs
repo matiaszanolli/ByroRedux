@@ -9,6 +9,8 @@
 //! - [`world_info`] — engine / world / memory introspection
 //!   (`help`, `stats`, `entities`, `systems`, `sys.accesses`, `mem.frag`,
 //!   `ctx.scratch`, `world.owners`, `r.health`)
+//! - [`env_health`] — environment-value gate over the live lighting/sky
+//!   resources (`env.health`)
 //! - [`assets`] — texture / mesh / skin diagnostics
 //!   (`tex.*`, `mesh.*`, `skin.*`)
 //! - [`view`] — camera + selection / picking
@@ -25,6 +27,7 @@
 mod actor_value;
 mod assets;
 mod condition;
+mod env_health;
 mod quest;
 mod scene;
 mod shared;
@@ -36,6 +39,7 @@ mod world_info;
 use actor_value::*;
 use assets::*;
 use condition::*;
+use env_health::*;
 use quest::*;
 use scene::*;
 use shared::*;
@@ -89,6 +93,7 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(MemFragCommand);
     registry.register(WorldOwnersCommand);
     registry.register(RenderHealthCommand);
+    registry.register(EnvHealthCommand);
     registry.register(LightDumpCommand);
     registry.register(LightAttenCommand);
     registry.register(ScriptActivateCommand);
