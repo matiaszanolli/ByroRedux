@@ -24,6 +24,72 @@ Commits hold that record.
 
 ---
 
+## Session 65 — playable vertical slice opens; physical lighting backbone; RT decomposition harness  (2026-08-09 → 2026-08-11, `a705423a..65217327`, 36 commits)
+
+With Session 64's audit backlog drained, the project turned from "parses and
+renders Bethesda content" to "can be played." Session 65 opened the playable
+vertical slice as the governing execution plan, closed its P0 gate on real
+Skyrim data, and froze the P2 combat fixture. Running underneath that, two
+structural threads: a physical lighting backbone that puts runtime lighting in
+meters and radiometric units behind a single legacy translation boundary, and a
+ray-tracing decomposition harness built to answer where RT frame time actually
+goes before any further optimisation is attempted.
+
+- **Playable vertical slice (new track).** [`playable-vertical-slice.md`](docs/engine/playable-vertical-slice.md)
+  sequences P0 input → P1 traversal → P2 combat → P3 UI → P4 objective →
+  P5 persistence. **P0 closed** (`fe3431e4`): the Bannered Mare XTEL exit runs
+  native prompt → bound E-key edge → `ActivateEvent` → deferred
+  `WhiterunWorld (6,-2)` arrival, fixing persistent-worldspace destination
+  lookup including negative-grid flooring; pinned by
+  [`p0-door-interaction.sh`](docs/smoke-tests/p0-door-interaction.sh). Input
+  consumers moved onto a once-per-frame `ActionState` snapshot (`e89b14f0`).
+  **P2 fixture frozen** ([`p2-combat-fixture.md`](docs/engine/p2-combat-fixture.md),
+  `a51179c6`): `BleakFallsBarrow01` ref `000380B4`, one level-1 Draugr, one
+  two-handed weapon family, with a `probe_combat_fixture` example reporting
+  inventory and weapon selection. Seat reservations now key on furniture *and*
+  actor state and survive cell loads (`#2147`, `#2392`); NPC save/load and
+  alias injection reworked alongside (`c4c30afd`).
+- **Physical lighting backbone.** New `byroredux_core::lighting` + `radiometry`
+  modules establish `Meters` / `ExtinctionPerMeter` and a single
+  `BETHESDA_UNITS_PER_METER` conversion, with legacy LIGH/NIF fields entering
+  only through `LightSource::from_legacy_world_units`
+  ([`physical-lighting-backbone.md`](docs/engine/physical-lighting-backbone.md)).
+  On top of it: LGTM inheritance flags and an explicit ambient-fill light type
+  (`322f33a8`, `56531828`), fire-temperature classification driving derived
+  emissive lights (`b8412ccc`), volumetric emission with temporal history
+  adjustment (`edbed7a3`), and colour-space/shader-constant consolidation
+  (`a0f75fc5`).
+- **Renderer correctness.** Fresnel unified on a self-contained Schlick helper
+  across the main and shadow-transport paths (`54af3703`, `f1fa9c38`); the
+  unshadowed punctual ambient fill removed (`11a3cafe`); caustic accumulation
+  widened to RGB radiance in a three-layer array (`610cb170`); visibility
+  layers and an adaptive ray budget split out (`5798e467`).
+- **RT decomposition harness.** Ray-query ablation controls with per-variant
+  shader builds and interleaved runs (`8131699c`, `e411254f`, `237e64de`),
+  bench modes + deterministic camera paths (`f19f7f15`, `c615f8de`), and three
+  new scripts — `rt-decomposition-matrix.sh`, `bench-variability-envelope.sh`,
+  `check-bench-determinism.sh` — that measure the noise floor before
+  attributing any delta to a change. No numbers published yet.
+- **Parser + content fixes.** SSE dynamic skin payloads preserved (`#2576`) and
+  single-partition skin palettes remapped (`#2577`); baked LOD quads aligned to
+  worldspace origins (`#2586`); FO4 precombine handling gained bounding-sphere
+  validation and absorption tracking (`fd3f7080`); standalone specular maps
+  supported (`79202bfc`); XCLL directional rotation fields named (`65217327`).
+- **Water.** `water.dump` / `water.contacts` diagnostics (`9270a202`) and an
+  explicit no-water sentinel so an absent CELL XCLW inherits WRLD water while
+  authored `INT_MIN`/`FLT_MAX` keeps the cell dry (`6f93b565`).
+- **Tooling + audits.** Headless `--list-cells [FILTER]` enumerates every
+  interior cell and worldspace in a plugin set, filterable on editor ID and
+  display name (`65cc29d6`). ECS and safety audit reports filed for 2026-08-10.
+
+Net: tests 4532 → 4660 (+128) but the suite ends the session **red** — the
+`fire_lights` oversized-reach canary now fails at 386.66 units, which is the
+outcome it was written to detect. Rust total LOC +10 132; workspace members
+unchanged at 27. Bench-of-record `28155b79` untouched and now 116 commits stale
+against a session that changed renderer hot paths.
+
+---
+
 ## Session 64 — 13-dimension audit sweep + ~95-issue bug-bash across renderer/NIF/physics/save, three feature completions  (2026-08-07 → 2026-08-09, `626614a1..2e5912f5`, 41 commits)
 
 Session 64 opened by finishing three in-flight feature threads — Skyrim's
