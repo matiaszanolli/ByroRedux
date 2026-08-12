@@ -178,41 +178,6 @@ fn resolve_cloud_layer(
     (h, scale)
 }
 
-/// Per-climate sunrise/sunset breakpoints in hours. CLMT TNAM bytes
-/// are in 10-min units (`hour = byte / 6`); the valid authored range is
-/// `1..=144` (`1` = 0:10, `144` = 24:00). Returns the pre-#463 hardcoded
-/// `[6.0, 10.0, 18.0, 22.0]` fallback when:
-///   * the worldspace has no climate (stub or unresolved record),
-///   * the CLMT TNAM is all-zero (a stub field, not authored data),
-///   * any of the four bytes lies outside `1..=144` — corruption guard
-///     for modded ESMs that ship out-of-range bytes (e.g.
-///     `[0, 0, 0, 0xFF]` would otherwise pass the pre-#530 OR-of-bytes
-///     filter and produce a sunset_end of 42.5h, breaking the TOD
-///     interpolator). See #530 / FNV-CELL-8.
-pub(crate) fn climate_tod_hours(
-    climate: Option<&byroredux_plugin::esm::records::ClimateRecord>,
-) -> [f32; 4] {
-    const FALLBACK: [f32; 4] = [6.0, 10.0, 18.0, 22.0];
-    let Some(c) = climate else {
-        return FALLBACK;
-    };
-    let valid = |b: u8| (1..=144).contains(&b);
-    if valid(c.sunrise_begin)
-        && valid(c.sunrise_end)
-        && valid(c.sunset_begin)
-        && valid(c.sunset_end)
-    {
-        [
-            c.sunrise_begin as f32 / 6.0,
-            c.sunrise_end as f32 / 6.0,
-            c.sunset_begin as f32 / 6.0,
-            c.sunset_end as f32 / 6.0,
-        ]
-    } else {
-        FALLBACK
-    }
-}
-
 /// Insert exterior worldspace lighting + sky resources into the world,
 /// driven by the (already-resolved) climate + default-weather sitting
 /// on the streaming context. Worldspace-wide concern, run once at
@@ -272,7 +237,11 @@ pub(crate) fn apply_worldspace_weather(
     // failure modes this prevents.
     collapse_weather_transition(world);
     if let Some(ref wthr) = wctx.default_weather {
-        let sun_dir = compute_sun_arc(bootstrap_hour, climate_tod_hours(wctx.climate.as_ref())).0;
+        let sun_dir = compute_sun_arc(
+            bootstrap_hour,
+            crate::env_translate::climate_tod_hours(wctx.climate.as_ref()),
+        )
+        .0;
         // Canonical day-slot lighting (EXAL boundary). The per-frame
         // `weather_system` then advances through the stored NAM0 table.
         let lighting = crate::env_translate::translate_exterior_cell_lighting(wthr, sun_dir);

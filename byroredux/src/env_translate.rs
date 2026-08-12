@@ -573,6 +573,41 @@ fn fog_coverage_from_weather(classification: u8) -> f32 {
     }
 }
 
+/// Per-climate sunrise/sunset breakpoints in hours. CLMT TNAM bytes
+/// are in 10-min units (`hour = byte / 6`); the valid authored range is
+/// `1..=144` (`1` = 0:10, `144` = 24:00). Returns the pre-#463 hardcoded
+/// `[6.0, 10.0, 18.0, 22.0]` fallback when:
+///   * the worldspace has no climate (stub or unresolved record),
+///   * the CLMT TNAM is all-zero (a stub field, not authored data),
+///   * any of the four bytes lies outside `1..=144` — corruption guard
+///     for modded ESMs that ship out-of-range bytes (e.g.
+///     `[0, 0, 0, 0xFF]` would otherwise pass the pre-#530 OR-of-bytes
+///     filter and produce a sunset_end of 42.5h, breaking the TOD
+///     interpolator). See #530 / FNV-CELL-8.
+pub(crate) fn climate_tod_hours(
+    climate: Option<&byroredux_plugin::esm::records::ClimateRecord>,
+) -> [f32; 4] {
+    const FALLBACK: [f32; 4] = [6.0, 10.0, 18.0, 22.0];
+    let Some(c) = climate else {
+        return FALLBACK;
+    };
+    let valid = |b: u8| (1..=144).contains(&b);
+    if valid(c.sunrise_begin)
+        && valid(c.sunrise_end)
+        && valid(c.sunset_begin)
+        && valid(c.sunset_end)
+    {
+        [
+            c.sunrise_begin as f32 / 6.0,
+            c.sunrise_end as f32 / 6.0,
+            c.sunset_begin as f32 / 6.0,
+            c.sunset_end as f32 / 6.0,
+        ]
+    } else {
+        FALLBACK
+    }
+}
+
 /// WTHR (+ climate for TOD breakpoints) → [`WeatherDataRes`], the full NAM0
 /// table the per-frame interpolator walks. `skyrim_dalc_per_tod` is `Some`
 /// only for Skyrim WTHR (converted Z-up → Y-up once here); `None` elsewhere.
@@ -622,7 +657,7 @@ pub(crate) fn translate_weather(
         ],
         fog_media,
         // #463 — per-climate sunrise/sunset breakpoints (validated helper).
-        tod_hours: crate::scene::climate_tod_hours(climate),
+        tod_hours: climate_tod_hours(climate),
         skyrim_dalc_per_tod,
         // #1033 — WTHR DATA wind_speed drives per-weather cloud-scroll rate.
         wind_speed: wthr.wind_speed,
@@ -740,6 +775,11 @@ pub(crate) fn procedural_fallback_weather() -> WeatherDataRes {
         wind_speed: 0,
     }
 }
+
+/// Regression tests for [`climate_tod_hours`] — #530 / FNV-CELL-8. Lives
+/// beside the function under the EXAL boundary (#2453).
+#[cfg(test)]
+mod climate_tod_hours_tests;
 
 #[cfg(test)]
 mod tests {

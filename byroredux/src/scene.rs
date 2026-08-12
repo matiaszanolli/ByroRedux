@@ -22,16 +22,13 @@ use crate::components::{InputState, Spinning};
 use crate::components::CellLightingRes;
 use crate::streaming::WorldStreamingState;
 
-// Test child modules (procedural_fallback_tests, climate_tod_hours_tests,
-// cloud_tile_scale_tests) reach for these via `use super::*;` — keep
-// them in scope under cfg(test). Production code reaches them through
-// the `world_setup` submodule directly.
+// Test child modules (procedural_fallback_tests, cloud_tile_scale_tests)
+// reach for these via `use super::*;` — keep them in scope under
+// cfg(test). Production code reaches them through the `world_setup`
+// submodule directly.
 #[cfg(test)]
 #[allow(unused_imports)]
 use crate::components::{GameTimeRes, SkyParamsRes, WeatherDataRes};
-// Re-exported for the EXAL boundary (`env_translate::translate_weather`)
-// and the `climate_tod_hours_tests` child module.
-pub(crate) use world_setup::climate_tod_hours;
 
 /// Parse the `--radius` CLI argument into a clamped grid radius for
 /// [`cell_loader::load_exterior_cells`]. Falls back to `3` (7×7 = 49
@@ -1338,8 +1335,6 @@ mod nif_loader;
 use nif_loader::load_nif_from_args;
 pub(crate) use nif_loader::{load_nif_bytes, load_nif_bytes_with_skeleton};
 
-#[cfg(test)]
-mod climate_tod_hours_tests;
 #[cfg(test)]
 mod cloud_tile_scale_tests;
 #[cfg(test)]
