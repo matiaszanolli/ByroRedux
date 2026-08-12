@@ -491,6 +491,32 @@ fn prim_set_stage(e: &Expr, scope: &Scope) -> Option<Effect> {
     })
 }
 
+/// Lookup key for [`Scope::known_quest_properties`].
+///
+/// A decompiled `.pex` reads an auto-property through its *backing
+/// variable* (`::MQ101_var`), not the authored name (`MQ101`) the property
+/// table is keyed by — the same `::`/`_var` decoration
+/// [`QuestRef::property_name`]/[`ObjectRef::property_name`] strip at
+/// dispatch. Normalizing here is what makes the set match on real input
+/// rather than only on `.psc`-built test bodies (#2657); the `.psc` `Ident`
+/// regex cannot even produce a `::X_var` identifier.
+fn quest_property_key(name: &str) -> String {
+    name.strip_prefix("::")
+        .and_then(|n| n.strip_suffix("_var"))
+        .unwrap_or(name)
+        .to_ascii_lowercase()
+}
+
+/// A receiver that is *unambiguously* a quest: `Self`, `GetOwningQuest()`,
+/// a local explicitly declared `Quest k = …`, or a bare identifier the
+/// containing script declares as a `Quest Property`.
+///
+/// Everything else declines. This exists because several modeled method
+/// names (`Start`, `Stop`, `Reset`, `SetActive`) are declared on more than
+/// one receiver type in the Papyrus API, and nothing in the AST shape
+/// distinguishes them — `<ident>.Reset()` is `Quest.Reset()`,
+/// `ObjectReference.Reset()` or `Cell.Reset()` depending only on the
+/// property's declared type.
 fn explicit_quest_receiver(object: &Expr, scope: &Scope) -> Option<QuestRef> {
     let quest = receiver_quest(object, scope)?;
     match &quest {
@@ -499,10 +525,12 @@ fn explicit_quest_receiver(object: &Expr, scope: &Scope) -> Option<QuestRef> {
             let Expr::Ident(name) = object else {
                 return None;
             };
-            scope
-                .quest_locals
-                .contains_key(&name.0.to_ascii_lowercase())
-                .then_some(quest)
+            let key = quest_property_key(&name.0);
+            (scope.quest_locals.contains_key(&key)
+                || scope
+                    .known_quest_properties
+                    .contains(&quest_property_key(&name.0)))
+            .then_some(quest)
         }
     }
 }
@@ -537,23 +565,30 @@ fn prim_complete_quest(e: &Expr, scope: &Scope) -> Option<Effect> {
     })
 }
 
+/// `Reset` is declared on `Quest`, `ObjectReference` *and* `Cell`
+/// (SCR-D5-NEW11-02 / #2653), so the receiver must be unambiguously a
+/// quest — a bare `ObjectReference Property` would otherwise be claimed
+/// here and its real `Reset()` semantics silently dropped.
 fn prim_reset_quest(e: &Expr, scope: &Scope) -> Option<Effect> {
     let (object, args) = method_call(e, "Reset")?;
     if !args.is_empty() {
         return None;
     }
     Some(Effect::ResetQuest {
-        quest: receiver_quest(object, scope)?,
+        quest: explicit_quest_receiver(object, scope)?,
     })
 }
 
+/// `SetActive` is declared on `Quest` *and* `Weather`
+/// (SCR-D5-NEW11-02 / #2653) — same narrow-receiver requirement as
+/// [`prim_reset_quest`].
 fn prim_set_quest_active(e: &Expr, scope: &Scope) -> Option<Effect> {
     let (object, args) = method_call(e, "SetActive")?;
     if args.len() > 1 {
         return None;
     }
     Some(Effect::SetQuestActive {
-        quest: receiver_quest(object, scope)?,
+        quest: explicit_quest_receiver(object, scope)?,
         active: bool_arg(args, 0)?.unwrap_or(true),
     })
 }
@@ -1064,7 +1099,9 @@ fn receiver_object(object: &Expr, scope: &Scope) -> Option<ObjectRef> {
         || scope.quest_locals.contains_key(&key)
         || scope.player_locals.contains(&key)
         || scope.decl_locals.contains(&key)
-        || scope.known_quest_properties.contains(&key)
+        || scope
+            .known_quest_properties
+            .contains(&quest_property_key(&name.0))
     {
         return None;
     }
@@ -1105,8 +1142,14 @@ fn bool_arg(args: &[byroredux_papyrus::ast::CallArg], idx: usize) -> Option<Opti
 #[cfg(test)]
 mod tests {
     use super::*;
-    use byroredux_papyrus::ast::{ScriptItem, StateItem};
+    use byroredux_papyrus::ast::{Identifier, ScriptItem, StateItem};
     use byroredux_papyrus::parse_script;
+
+    /// Wrap a node with a dummy span, for ASTs the `.psc` parser cannot
+    /// express (e.g. a `::X_var` backing-variable identifier).
+    fn sp<T>(node: T) -> Spanned<T> {
+        Spanned::new(node, byroredux_papyrus::span::Span::new(0, 0))
+    }
 
     /// Parse a script and return the body of its first function/event
     /// named like a fragment (or just the first function), to drive
@@ -1456,17 +1499,108 @@ mod tests {
         );
 
         // With quest-property context (the real `populate_quest_fragments_
-        // from_script` call path — #2538's actual fix), the same
-        // statement correctly declines instead: `explicit_quest_receiver`
-        // refuses an unbound bare property, and `receiver_object` now
-        // also refuses it because it's a known Quest property, instead
-        // of accepting it as a scene.
+        // from_script` call path), the ambiguity is resolved *positively*:
+        // the receiver is a known `Quest` property, so it lowers to
+        // `StartQuest` — not to `StartScene` (the #2538 bug) and not to a
+        // whole-fragment decline (#2538's original fix, which discarded
+        // every sibling effect to avoid guessing).
         let quest_properties: HashSet<String> = ["mq101".to_string()].into_iter().collect();
         assert_eq!(
             lower_fragment_with_quest_properties(&body, &quest_properties),
+            Some(vec![Effect::StartQuest {
+                quest: QuestRef::Property("MQ101".into()),
+            }]),
+            "a known Quest Property called with .Start() must lower to StartQuest"
+        );
+
+        // Same statement as the decompiler actually emits it — an
+        // auto-property read arrives as its backing variable `::MQ101_var`,
+        // which the `.psc` Ident regex cannot express, so this shape has to
+        // be built by hand (#2657). It must resolve identically.
+        let decompiled = Expr::Call {
+            callee: Box::new(sp(Expr::MemberAccess {
+                object: Box::new(sp(Expr::Ident(Identifier("::MQ101_var".into())))),
+                member: sp(Identifier("Start".into())),
+            })),
+            args: vec![],
+        };
+        assert_eq!(
+            classify_effect(
+                &decompiled,
+                &Scope {
+                    known_quest_properties: quest_properties.clone(),
+                    ..Scope::default()
+                }
+            ),
+            Some(Effect::StartQuest {
+                quest: QuestRef::Property("::MQ101_var".into()),
+            }),
+            "the backing-variable form the decompiler emits must resolve too"
+        );
+    }
+
+    /// SCR-D5-NEW11-02 (#2653) — `Reset` is declared on `Quest`,
+    /// `ObjectReference` and `Cell`; `SetActive` on `Quest` and `Weather`.
+    /// The zero-arg AST shape is identical, so a bare non-Quest property
+    /// receiver must decline rather than be claimed as a quest effect
+    /// (which would also claim every sibling effect in the fragment).
+    #[test]
+    fn reset_and_set_active_decline_on_a_non_quest_property_receiver() {
+        let reset = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             ObjectReference Property MyContainer Auto\n\
+             Function Fragment_99()\n\
+             MyContainer.Reset()\n EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&reset),
             None,
-            "a Quest Property called with .Start() must decline, not silently \
-             mis-lower to StartScene"
+            "ObjectReference.Reset() must not be claimed as ResetQuest"
+        );
+
+        let set_active = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Weather Property SomeWeather Auto\n\
+             Function Fragment_99()\n\
+             SomeWeather.SetActive(false)\n EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&set_active),
+            None,
+            "Weather.SetActive() must not be claimed as SetQuestActive"
+        );
+    }
+
+    /// The narrowing must not cost the genuine cases: a real `Quest`
+    /// property, `Self`, and `GetOwningQuest()` all still lower.
+    #[test]
+    fn reset_and_set_active_still_lower_on_an_unambiguous_quest_receiver() {
+        let quest_properties: HashSet<String> = ["mq101".to_string()].into_iter().collect();
+
+        let reset = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Quest Property MQ101 Auto\n\
+             Function Fragment_99()\n\
+             MQ101.Reset()\n EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment_with_quest_properties(&reset, &quest_properties),
+            Some(vec![Effect::ResetQuest {
+                quest: QuestRef::Property("MQ101".into()),
+            }])
+        );
+
+        let self_active = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_99()\n\
+             Self.SetActive(true)\n EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&self_active),
+            Some(vec![Effect::SetQuestActive {
+                quest: QuestRef::SelfRef,
+                active: true,
+            }])
         );
     }
 
