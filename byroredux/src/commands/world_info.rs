@@ -408,6 +408,47 @@ impl ConsoleCommand for SysAccessesCommand {
         CommandOutput::lines(lines)
     }
 }
+/// `r.health` — pre-tonemap image-health counters (EX-05 / #2736).
+///
+/// Reports non-finite pixels observed in the linear-HDR scene *before* ACES.
+/// This is the only place the check is meaningful: everything after the tone
+/// mapper is clamped to `[0,1]`, which is why the smoke gate's PNG mean/stddev
+/// statistics cannot observe an HDR NaN at all.
+///
+/// The running total is the number to gate on — a NaN is usually transient,
+/// present only while a bad material or degenerate light is on screen, so a
+/// check that sampled only the current frame would routinely miss it.
+pub(crate) struct RenderHealthCommand;
+impl ConsoleCommand for RenderHealthCommand {
+    fn name(&self) -> &str {
+        "r.health"
+    }
+    fn description(&self) -> &str {
+        "Pre-tonemap non-finite pixel counters (#2736)"
+    }
+    fn execute(&self, world: &World, _args: &str) -> CommandOutput {
+        let Some(health) = world.try_resource::<ImageHealth>() else {
+            return CommandOutput::line("ImageHealth resource not present");
+        };
+        let verdict = if health.is_clean() {
+            "CLEAN"
+        } else {
+            "NON-FINITE PIXELS DETECTED"
+        };
+        CommandOutput::lines(vec![
+            format!("image health: {verdict}"),
+            format!(
+                "  last frame:    rgb={} alpha={}",
+                health.last_non_finite_rgb, health.last_non_finite_alpha
+            ),
+            format!(
+                "  since startup: rgb={} alpha={}",
+                health.total_non_finite_rgb, health.total_non_finite_alpha
+            ),
+        ])
+    }
+}
+
 /// `world.owners` — cross-subsystem ownership accounting for the EX-08
 /// exterior soak (#2374).
 ///

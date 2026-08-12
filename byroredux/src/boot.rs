@@ -368,6 +368,7 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // latest sample (refreshed on the throttled stats cadence); `Tracker` holds
     // the soak baseline + per-cycle history and stays empty until an operator
     // runs `world.owners baseline`.
+    world.insert_resource(byroredux_core::ecs::ImageHealth::default());
     world.insert_resource(byroredux_core::ecs::OwnershipTelemetry::default());
     world.insert_resource(byroredux_core::ecs::OwnershipTracker::new());
     world.insert_resource(byroredux_core::ecs::UpscalerTelemetry::default());

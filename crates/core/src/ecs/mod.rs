@@ -42,7 +42,7 @@ pub use packed::PackedStorage;
 pub use query::{ComponentRef, QueryRead, QueryWrite};
 pub use resource::{Resource, ResourceRead, ResourceWrite};
 pub use resources::{
-    CpuFrameTimings, DebugStats, DeltaTime, EngineConfig, FindingKind, OwnerClass,
+    CpuFrameTimings, DebugStats, DeltaTime, EngineConfig, FindingKind, ImageHealth, OwnerClass,
     OwnershipFinding, OwnershipSnapshot, OwnershipTelemetry, OwnershipTracker, ReclaimPolicy,
     SchedulerAccessReport, ScratchRow, ScratchTelemetry, ScreenshotBridge, SelectedRef,
     SkinCoverageStats, SystemList, TotalTime, UpscalerTelemetry,

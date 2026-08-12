@@ -1011,6 +1011,10 @@ impl VulkanContext {
             )?;
             upscaler.output_views().to_vec()
         };
+        // The health counter buffers are not swapchain-sized and deliberately
+        // outlive the recreate — the rebuilt pipeline rebinds the same ones.
+        let health_handles: Vec<ash::vk::Buffer> =
+            self.image_health_buffers.iter().map(|b| b.buffer).collect();
         self.presentation = Some(
             super::super::presentation::PresentationPipeline::new(
                 &self.device,
@@ -1018,6 +1022,7 @@ impl VulkanContext {
                 self.swapchain_state.format.format,
                 &self.swapchain_state.image_views,
                 &upscaled_views,
+                &health_handles,
                 self.frame_extents.output,
             )
             .context("recreate presentation pipeline")?,

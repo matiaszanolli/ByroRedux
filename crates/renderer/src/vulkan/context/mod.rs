@@ -983,6 +983,10 @@ fn couple_skin_compute_to_palette<T>(skin_compute: Option<T>, skin_palette_ok: b
     }
 }
 
+/// Byte size of one per-frame image-health counter buffer (EX-05 / #2736):
+/// two `u32` atomics — non-finite RGB pixels and non-finite alpha pixels.
+const IMAGE_HEALTH_BUFFER_BYTES: vk::DeviceSize = 8;
+
 pub struct VulkanContext {
     // Ordered for drop safety — later fields are destroyed first.
     pub current_frame: usize,
@@ -1192,6 +1196,21 @@ pub struct VulkanContext {
     screenshot_pending_readback: Option<(vk::Extent2D, u64)>,
 
     frame_sync: FrameSync,
+    /// Per-frame image-health counter buffers (EX-05 / #2736).
+    ///
+    /// Two `u32`s each — non-finite RGB pixels, non-finite alpha pixels —
+    /// written atomically by `presentation.frag` and read back on this slot's
+    /// next fence wait. Host-visible and CPU-zeroed at that same point, so the
+    /// slot is provably idle and no barrier or transfer is needed.
+    ///
+    /// Owned here rather than by `PresentationPipeline` because they must
+    /// survive a swapchain recreate, which rebuilds that pipeline wholesale.
+    image_health_buffers: Vec<super::buffer::GpuBuffer>,
+    /// Last completed frame's counters, `(non_finite_rgb, non_finite_alpha)`.
+    image_health_last: (u32, u32),
+    /// Running total since process start, so a transient NaN that appears on
+    /// one frame is still visible to a gate that samples later.
+    image_health_total: (u64, u64),
     command_buffers: Vec<vk::CommandBuffer>,
     command_pool: vk::CommandPool,
     /// Dedicated pool for one-time upload/transfer commands, separate from
@@ -2750,12 +2769,36 @@ impl VulkanContext {
             device_caps.shader_float16_supported,
         )
         .context("create frame upscaler")?;
+        // EX-05 / #2736 — one small host-visible counter buffer per frame slot.
+        let mut image_health_buffers = Vec::with_capacity(sync::MAX_FRAMES_IN_FLIGHT);
+        for _ in 0..sync::MAX_FRAMES_IN_FLIGHT {
+            image_health_buffers.push(
+                super::buffer::GpuBuffer::create_host_visible(
+                    &device,
+                    &gpu_allocator,
+                    IMAGE_HEALTH_BUFFER_BYTES,
+                    vk::BufferUsageFlags::STORAGE_BUFFER,
+                )
+                .context("create image-health counter buffer")?,
+            );
+        }
+        // gpu-allocator makes no zero-init guarantee, so the very first frame
+        // would otherwise read whatever was in the suballocation and report a
+        // phantom NaN count before the shader had written anything.
+        for buffer in image_health_buffers.iter_mut() {
+            if let Ok(bytes) = buffer.mapped_slice_mut() {
+                bytes.fill(0);
+            }
+        }
+        let health_handles: Vec<vk::Buffer> =
+            image_health_buffers.iter().map(|b| b.buffer).collect();
         let presentation = PresentationPipeline::new(
             &device,
             pipeline_cache,
             swapchain_state.format.format,
             &swapchain_state.image_views,
             frame_upscaler.output_views(),
+            &health_handles,
             frame_extents.output,
         )
         .context("create presentation pipeline")?;
@@ -2884,6 +2927,9 @@ impl VulkanContext {
             transfer_fence,
             command_buffers,
             frame_sync,
+            image_health_buffers,
+            image_health_last: (0, 0),
+            image_health_total: (0, 0),
             current_frame: 0,
             renderer_config,
             frame_extents,
@@ -3503,6 +3549,14 @@ impl VulkanContext {
     unsafe fn destroy_allocator_owned_resources(&mut self, alloc: &SharedAllocator) {
         self.texture_registry.destroy(&self.device, alloc);
         self.scene_buffers.destroy(&self.device, alloc);
+        // EX-05 / #2736 — the image-health counter buffers. `GpuBuffer::Drop`
+        // is a safety net only; the canonical path destroys explicitly here so
+        // the allocation is returned while the allocator is still live.
+        // SAFETY: device idle by this fn's contract, and `alloc` is the
+        // allocator these buffers were created from.
+        for mut buffer in self.image_health_buffers.drain(..) {
+            buffer.destroy(&self.device, alloc);
+        }
         // M29 — destroy SkinSlots BEFORE the SkinComputePipeline
         // because slots own descriptor sets allocated from the
         // pipeline's descriptor pool. Pool destruction implicitly

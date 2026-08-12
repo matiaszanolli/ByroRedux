@@ -7,7 +7,9 @@
 //! after the upscale boundary is what makes the native-copy bridge and the
 //! FSR dispatch interchangeable.
 
-use super::descriptors::{write_combined_image_sampler, DescriptorPoolBuilder};
+use super::descriptors::{
+    write_combined_image_sampler, write_storage_buffer, DescriptorPoolBuilder,
+};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 use anyhow::{Context, Result};
 use ash::vk;
@@ -90,6 +92,11 @@ pub struct PresentationPipeline {
     vert_module: vk::ShaderModule,
     frag_module: vk::ShaderModule,
     extent: vk::Extent2D,
+    /// Per-frame image-health counter buffers (EX-05 / #2736).
+    ///
+    /// Handles only — the allocations are owned by `VulkanContext` because
+    /// they must survive a swapchain recreate, which rebuilds this pipeline.
+    health_buffers: Vec<vk::Buffer>,
 }
 
 impl PresentationPipeline {
@@ -99,9 +106,11 @@ impl PresentationPipeline {
         swapchain_format: vk::Format,
         swapchain_views: &[vk::ImageView],
         upscaled_views: &[vk::ImageView],
+        health_buffers: &[vk::Buffer],
         extent: vk::Extent2D,
     ) -> Result<Self> {
         debug_assert_eq!(upscaled_views.len(), MAX_FRAMES_IN_FLIGHT);
+        debug_assert_eq!(health_buffers.len(), MAX_FRAMES_IN_FLIGHT);
         let mut pipeline = Self {
             render_pass: vk::RenderPass::null(),
             framebuffers: Vec::new(),
@@ -109,6 +118,7 @@ impl PresentationPipeline {
             descriptor_pool: vk::DescriptorPool::null(),
             descriptor_sets: Vec::new(),
             sampler: vk::Sampler::null(),
+            health_buffers: health_buffers.to_vec(),
             pipeline_layout: vk::PipelineLayout::null(),
             pipeline: vk::Pipeline::null(),
             vert_module: vk::ShaderModule::null(),
@@ -158,12 +168,20 @@ impl PresentationPipeline {
         }
         .context("create presentation sampler")?;
 
-        let binding = vk::DescriptorSetLayoutBinding::default()
-            .binding(0)
-            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::FRAGMENT);
-        let bindings = [binding];
+        let bindings = [
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(0)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            // EX-05 / #2736 — per-frame image-health counters, incremented
+            // atomically by the fragment shader on a non-finite scene texel.
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(1)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+        ];
         self.descriptor_set_layout = unsafe {
             // SAFETY: `bindings` outlives the call and the returned layout is
             // owned by this pipeline.
@@ -367,16 +385,25 @@ impl PresentationPipeline {
 
     fn write_inputs(&self, device: &ash::Device, upscaled_views: &[vk::ImageView]) {
         debug_assert_eq!(upscaled_views.len(), MAX_FRAMES_IN_FLIGHT);
+        debug_assert_eq!(self.health_buffers.len(), MAX_FRAMES_IN_FLIGHT);
         for (frame, &view) in upscaled_views.iter().enumerate() {
             let info = [vk::DescriptorImageInfo::default()
                 .sampler(self.sampler)
                 .image_view(view)
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
-            let write = write_combined_image_sampler(self.descriptor_sets[frame], 0, &info);
+            let buffer_info = [vk::DescriptorBufferInfo::default()
+                .buffer(self.health_buffers[frame])
+                .offset(0)
+                .range(vk::WHOLE_SIZE)];
+            let writes = [
+                write_combined_image_sampler(self.descriptor_sets[frame], 0, &info),
+                write_storage_buffer(self.descriptor_sets[frame], 1, &buffer_info),
+            ];
             unsafe {
                 // SAFETY: descriptor set and sampler are owned by `self`; the
-                // caller guarantees each output view outlives this pipeline.
-                device.update_descriptor_sets(&[write], &[]);
+                // caller guarantees each output view and health buffer
+                // outlives this pipeline.
+                device.update_descriptor_sets(&writes, &[]);
             }
         }
     }
@@ -496,6 +523,10 @@ impl PresentationPipeline {
         upscaled_views: &[vk::ImageView],
         extent: vk::Extent2D,
     ) -> Result<()> {
+        // Capture before `destroy`/overwrite: the health buffers are owned by
+        // `VulkanContext` and deliberately survive a swapchain recreate, so
+        // the rebuilt pipeline must rebind the same ones.
+        let health_buffers = std::mem::take(&mut self.health_buffers);
         unsafe {
             // SAFETY: swapchain recreation waits for device idle before this
             // method is called.
@@ -507,6 +538,7 @@ impl PresentationPipeline {
             swapchain_format,
             swapchain_views,
             upscaled_views,
+            &health_buffers,
             extent,
         )?;
         Ok(())

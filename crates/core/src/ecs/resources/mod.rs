@@ -694,6 +694,29 @@ impl Resource for SkinCoverageStats {}
 pub mod skin_slot_pool;
 pub use skin_slot_pool::SkinSlotPool;
 
+/// Pre-tonemap image-health counters (EX-05 / #2736).
+///
+/// Refreshed from the renderer each frame. `last` is the most recently
+/// completed frame; `total` accumulates since process start, because a NaN is
+/// usually transient — it appears only while a bad material or degenerate
+/// light is on screen. A gate sampling just the current frame would miss it.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ImageHealth {
+    pub last_non_finite_rgb: u32,
+    pub last_non_finite_alpha: u32,
+    pub total_non_finite_rgb: u64,
+    pub total_non_finite_alpha: u64,
+}
+
+impl ImageHealth {
+    /// True when nothing non-finite has ever reached the tone mapper.
+    pub fn is_clean(&self) -> bool {
+        self.total_non_finite_rgb == 0 && self.total_non_finite_alpha == 0
+    }
+}
+
+impl Resource for ImageHealth {}
+
 pub mod ownership;
 pub use ownership::{
     FindingKind, OwnerClass, OwnershipFinding, OwnershipSnapshot, OwnershipTelemetry,

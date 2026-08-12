@@ -2,6 +2,22 @@
 
 layout(set = 0, binding = 0) uniform sampler2D upscaledScene;
 
+// EX-05 / #2736 — pre-tonemap image-health counters.
+//
+// This pass is the *last* place the scene exists in linear HDR: everything
+// after `aces()` below is clamped to [0,1], which is exactly why a PNG
+// mean/stddev gate cannot observe an HDR NaN. A non-finite texel here either
+// clamps to white or propagates as a black hole, and both read as ordinary
+// scene content downstream.
+//
+// Counting here rather than in a dedicated compute pass is deliberate: this
+// shader already runs exactly once per output pixel, so the check costs one
+// branch and needs no new pipeline, dispatch or barrier.
+layout(set = 0, binding = 1) buffer ImageHealth {
+    uint nonFinitePixels;
+    uint nonFiniteAlpha;
+} health;
+
 layout(push_constant) uniform PresentationParams {
     vec4 underwater;
     float exposure;
@@ -98,6 +114,17 @@ vec3 normalizedLegacyColor(vec3 color) {
 }
 
 void main() {
+    // Sample the raw texel for the health check, *before* the lens/blur path
+    // mixes neighbours together — a single NaN would otherwise smear across
+    // every pixel its blur kernel touches and inflate the count.
+    vec4 raw = texture(upscaledScene, fragUV);
+    if (any(isnan(raw.rgb)) || any(isinf(raw.rgb))) {
+        atomicAdd(health.nonFinitePixels, 1u);
+    }
+    if (isnan(raw.a) || isinf(raw.a)) {
+        atomicAdd(health.nonFiniteAlpha, 1u);
+    }
+
     vec4 scene = sampleImageSpace(fragUV);
     float luminance = dot(scene.rgb, vec3(0.2126, 0.7152, 0.0722));
     vec3 graded = mix(vec3(luminance), scene.rgb, max(params.grade.x, 0.0));

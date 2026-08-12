@@ -1421,6 +1421,13 @@ impl VulkanContext {
         }
         t.fence_wait_ns = fence_t0.elapsed().as_nanos() as u64;
 
+        // EX-05 / #2736 — harvest this slot's image-health counters from the
+        // *prior* use of the slot, then zero them for the frame about to be
+        // recorded. The fence wait above proves that submission completed, so
+        // the buffer is provably idle: reading and clearing it on the CPU
+        // needs no barrier, no transfer and no extra synchronisation.
+        self.collect_image_health(frame);
+
         // #1194 — read this slot's TIMESTAMP results (from the prior
         // cycle's use of this slot), then reset the pool for the
         // upcoming frame. The fence wait above proves the prior

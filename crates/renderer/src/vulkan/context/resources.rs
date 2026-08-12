@@ -84,6 +84,51 @@ impl VulkanContext {
         )
     }
 
+    /// Read and reset this frame slot's image-health counters (EX-05 / #2736).
+    ///
+    /// Must be called only when `frame`'s in-flight fence has been waited on,
+    /// which is what makes the host read of a device-written buffer safe
+    /// without a barrier. `draw_frame` calls it immediately after that wait.
+    ///
+    /// Counters are *accumulated* into a running total as well as latched as
+    /// the last-frame value, because a NaN is frequently transient — it
+    /// appears for the frames a bad material or a degenerate light is on
+    /// screen and then goes. A gate that only sampled the current frame would
+    /// miss it; the total is what makes the smoke check reliable.
+    pub(super) fn collect_image_health(&mut self, frame: usize) {
+        let Some(buffer) = self.image_health_buffers.get_mut(frame) else {
+            return;
+        };
+        let Ok(bytes) = buffer.mapped_slice_mut() else {
+            return;
+        };
+        if bytes.len() < 8 {
+            return;
+        }
+        let rgb = u32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+        let alpha = u32::from_ne_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+        bytes[..8].fill(0);
+
+        self.image_health_last = (rgb, alpha);
+        self.image_health_total.0 = self.image_health_total.0.saturating_add(u64::from(rgb));
+        self.image_health_total.1 = self.image_health_total.1.saturating_add(u64::from(alpha));
+        if rgb != 0 || alpha != 0 {
+            log::warn!(
+                "image health: {rgb} non-finite RGB pixel(s), {alpha} non-finite alpha pixel(s) \
+                 in the pre-tonemap scene (frame slot {frame}); running total {}/{}",
+                self.image_health_total.0,
+                self.image_health_total.1,
+            );
+        }
+    }
+
+    /// `(last frame, running total)` non-finite pre-tonemap pixel counts as
+    /// `((rgb, alpha), (rgb, alpha))`. Surfaced by `r.health` and the bench
+    /// summary so the exterior smoke gate can hard-fail on a non-zero total.
+    pub fn image_health(&self) -> ((u32, u32), (u64, u64)) {
+        (self.image_health_last, self.image_health_total)
+    }
+
     /// Number of occupied terrain tile slots.
     ///
     /// The backing `Vec` is fixed at `MAX_TERRAIN_TILES`, so only the occupied

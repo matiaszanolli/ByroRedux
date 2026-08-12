@@ -8,7 +8,7 @@
 //!
 //! - [`world_info`] — engine / world / memory introspection
 //!   (`help`, `stats`, `entities`, `systems`, `sys.accesses`, `mem.frag`,
-//!   `ctx.scratch`, `world.owners`)
+//!   `ctx.scratch`, `world.owners`, `r.health`)
 //! - [`assets`] — texture / mesh / skin diagnostics
 //!   (`tex.*`, `mesh.*`, `skin.*`)
 //! - [`view`] — camera + selection / picking
@@ -88,6 +88,7 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(SkinDumpCommand);
     registry.register(MemFragCommand);
     registry.register(WorldOwnersCommand);
+    registry.register(RenderHealthCommand);
     registry.register(LightDumpCommand);
     registry.register(LightAttenCommand);
     registry.register(ScriptActivateCommand);

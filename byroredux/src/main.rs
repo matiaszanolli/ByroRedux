@@ -1437,6 +1437,19 @@ impl ApplicationHandler for App {
             ctx.fill_scratch_telemetry(&mut tlm.rows);
         }
 
+        // EX-05 / #2736 — mirror the pre-tonemap non-finite pixel counters so
+        // the console and bench summary can read them without renderer access.
+        if let Some(ref ctx) = self.renderer {
+            let ((last_rgb, last_alpha), (total_rgb, total_alpha)) = ctx.image_health();
+            let mut health = self
+                .world
+                .resource_mut::<byroredux_core::ecs::ImageHealth>();
+            health.last_non_finite_rgb = last_rgb;
+            health.last_non_finite_alpha = last_alpha;
+            health.total_non_finite_rgb = total_rgb;
+            health.total_non_finite_alpha = total_alpha;
+        }
+
         // EX-08 / #2374 — refresh the cross-subsystem ownership snapshot on the
         // same throttled cadence as the handle counts above. It reuses the
         // scratch sets those already populated rather than re-walking the ECS,

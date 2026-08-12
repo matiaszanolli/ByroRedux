@@ -149,15 +149,28 @@ What stays blocked, and behind what:
    gate; keep the old capture as historical evidence, not a live claim.
 5. [x] Calibrate all five live profiles and tighten their entity/draw floors
    against the 2026-08-04 radius-1 baseline.
-6. [ ] Add the pre-tonemap non-finite pixel counter; PNG statistics cannot
-   observe an HDR NaN directly.
+6. [x] Add the pre-tonemap non-finite pixel counter; PNG statistics cannot
+   observe an HDR NaN directly. **Done (2026-08-12, #2736)** — counted in
+   `presentation.frag`, which is the last place the scene exists in linear HDR
+   before ACES clamps it to `[0,1]`. Counting there rather than in a dedicated
+   compute pass means no new pipeline, dispatch or barrier: that shader already
+   runs exactly once per output pixel, so the check is one branch and an
+   atomic. Surfaced as `r.health` and gated in every smoke mode.
+
+   Proven with a negative control rather than assumed: injecting a
+   runtime-derived NaN into the left quarter of the frame reported exactly
+   230,400 pixels per frame against a 1280×720 output — precisely 25% — which
+   confirms the atomics, the host-visible readback and the per-frame zeroing
+   all behave. Reverted after the check; the counter reads clean on FNV
+   WastelandNV and is Vulkan-validation clean.
 
 Current state: all five profiles pass. FNV 4,367/1,229, FO3 3,201/1,093,
 Oblivion 5,709/2,355, Skyrim 6,160/947, and FO4 57,102/22,706
 (entities/draws); every PNG passed image health. FNV/FO3/Oblivion/Skyrim had
 zero missing textures, while FO4 reported one. EX-01 is implemented; EX-05
-remains open for the renderer-side non-finite counter, and the diagnostic/safe-
-fallback half of EX-02 is implemented.
+EX-05's renderer-side non-finite counter landed with #2736, so the remaining
+EX-05 surface is the environment-value asserts; the diagnostic/safe-fallback
+half of EX-02 is implemented.
 
 The first live boundary matrix on 2026-08-04 established the EX-06 baseline:
 

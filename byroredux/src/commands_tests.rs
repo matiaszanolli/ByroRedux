@@ -628,3 +628,42 @@ fn world_owners_detects_a_leaked_ecs_owner_end_to_end() {
         "{report}"
     );
 }
+
+// ── `r.health` — EX-05 pre-tonemap image health (#2736) ───────────
+
+#[test]
+fn r_health_reports_clean_when_nothing_non_finite_has_appeared() {
+    let mut world = World::new();
+    world.insert_resource(byroredux_core::ecs::ImageHealth::default());
+    let out = RenderHealthCommand.execute(&world, "");
+    let text = out.lines.join("\n");
+    assert!(text.contains("CLEAN"), "{text}");
+    // Both horizons must be visible — an operator triaging a NaN needs to know
+    // whether it is happening now or happened earlier in the run.
+    assert!(text.contains("last frame"));
+    assert!(text.contains("since startup"));
+}
+
+#[test]
+fn r_health_flags_a_historical_nan_even_when_the_current_frame_is_clean() {
+    // The reason the running total exists: a NaN is usually transient, present
+    // only while a bad material or degenerate light is on screen. Reporting
+    // only the current frame would let the gate pass a run that produced one.
+    let mut world = World::new();
+    world.insert_resource(byroredux_core::ecs::ImageHealth {
+        last_non_finite_rgb: 0,
+        last_non_finite_alpha: 0,
+        total_non_finite_rgb: 91,
+        total_non_finite_alpha: 0,
+    });
+    let text = RenderHealthCommand.execute(&world, "").lines.join("\n");
+    assert!(text.contains("NON-FINITE PIXELS DETECTED"), "{text}");
+    assert!(text.contains("rgb=91"), "{text}");
+}
+
+#[test]
+fn r_health_without_the_resource_says_so_rather_than_panicking() {
+    let world = World::new();
+    let text = RenderHealthCommand.execute(&world, "").lines.join("\n");
+    assert!(text.contains("not present"), "{text}");
+}

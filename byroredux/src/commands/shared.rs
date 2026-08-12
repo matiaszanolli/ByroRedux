@@ -12,9 +12,9 @@ pub(crate) use byroredux_core::ecs::components::{
 };
 pub(crate) use byroredux_core::ecs::{
     AccessConflict, ActiveCamera, Camera, ConflictKind, DebugStats, EntityId, GlobalTransform,
-    LightSource, Material, MeshHandle, Name, OwnershipTracker, Parent, ParticleEmitter,
-    ReclaimPolicy, SceneFlags, SchedulerAccessReport, ScratchTelemetry, SelectedRef,
-    SkinCoverageStats, SkinnedMesh, TextureHandle, Transform, World, WorldBound,
+    ImageHealth, LightSource, Material, MeshHandle, Name, OwnershipTracker, Parent,
+    ParticleEmitter, ReclaimPolicy, SceneFlags, SchedulerAccessReport, ScratchTelemetry,
+    SelectedRef, SkinCoverageStats, SkinnedMesh, TextureHandle, Transform, World, WorldBound,
 };
 pub(crate) use byroredux_core::math::{Mat4, Quat, Vec3};
 pub(crate) use byroredux_core::string::StringPool;

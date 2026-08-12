@@ -188,6 +188,7 @@ mesh.cache
 mesh.cache failed
 ctx.scratch
 cam.where
+r.health
 world.owners
 world.owners report
 .quit
@@ -294,6 +295,27 @@ EOF
             hard_fail=1
         else
             echo "exterior-smoke[$label]: PASS traversal: $streaming_line"
+        fi
+    fi
+
+    # EX-05 / #2736 — non-finite pixels in the pre-tonemap HDR scene. The PNG
+    # statistics above cannot see these: everything after ACES is clamped to
+    # [0,1], so a NaN either reads as white or vanishes. Gate on the running
+    # total rather than the last frame, because a NaN is typically transient.
+    local health_total
+    health_total="$(sed 's/\\n/\n/g' "$debug_log" \
+        | grep -oE 'since startup: *rgb=[0-9]+ alpha=[0-9]+' | head -1 || true)"
+    if [[ -z "$health_total" ]]; then
+        echo "exterior-smoke[$label]: WARN - r.health reported nothing (pre-#2736 binary?)"
+    else
+        local hrgb halpha
+        hrgb="$(grep -oE 'rgb=[0-9]+' <<< "$health_total" | cut -d= -f2)"
+        halpha="$(grep -oE 'alpha=[0-9]+' <<< "$health_total" | cut -d= -f2)"
+        if (( hrgb != 0 || halpha != 0 )); then
+            echo "exterior-smoke[$label]: HARD FAIL - non-finite pre-tonemap pixels (rgb=$hrgb alpha=$halpha)"
+            hard_fail=1
+        else
+            echo "exterior-smoke[$label]: PASS image health (no non-finite pre-tonemap pixels)"
         fi
     fi
 

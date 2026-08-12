@@ -436,3 +436,30 @@ fn oscillating_reachability_is_accepted() {
         t.evaluate()
     );
 }
+
+// ── ImageHealth (EX-05 / #2736) ─────────────────────────────────
+
+#[test]
+fn image_health_is_clean_only_when_both_totals_are_zero() {
+    use crate::ecs::resources::ImageHealth;
+    assert!(ImageHealth::default().is_clean());
+    assert!(!ImageHealth {
+        total_non_finite_rgb: 1,
+        ..Default::default()
+    }
+    .is_clean());
+    // Alpha alone must also fail: a NaN alpha propagates through blending and
+    // is just as capable of poisoning the frame as a NaN colour.
+    assert!(!ImageHealth {
+        total_non_finite_alpha: 1,
+        ..Default::default()
+    }
+    .is_clean());
+    // A clean current frame does not clear a historical detection.
+    assert!(!ImageHealth {
+        last_non_finite_rgb: 0,
+        total_non_finite_rgb: 42,
+        ..Default::default()
+    }
+    .is_clean());
+}
