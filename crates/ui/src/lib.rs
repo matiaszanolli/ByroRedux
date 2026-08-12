@@ -20,7 +20,9 @@ pub use avm2_host::ScaleformHostObjectState;
 pub use catalog::{
     ScaleformHostCatalog, ScaleformHostMethod, ScaleformHostMethodKind, ScaleformHostObject,
 };
-pub use host::{ScaleformHostBridge, ScaleformHostCall, ScaleformHostDispatch, ScaleformValue};
+pub use host::{
+    ScaleformHostBridge, ScaleformHostCall, ScaleformHostDispatch, ScaleformValue, MAX_QUEUED_CALLS,
+};
 pub use input::{
     UiImeEvent, UiInputEvent, UiKeyDescriptor, UiKeyLocation, UiLogicalKey, UiMouseButton,
     UiMouseWheelDelta, UiNamedKey, UiPhysicalKey, UiTextControlCode,
@@ -138,6 +140,22 @@ impl UiManager {
         self.player.as_ref().map(SwfPlayer::host_bridge)
     }
 
+    /// Take the ActionScript→engine calls recorded since the previous drain.
+    ///
+    /// The main loop calls this once per frame beside [`Self::tick`]. Keeping
+    /// the accessor here rather than making every caller go through
+    /// [`Self::host_bridge`] is what makes "the engine consumes what the menu
+    /// asked for" a single, greppable call site (#2714) — the bridge was
+    /// designed drain-based and had no non-test consumer at all.
+    ///
+    /// Returns an empty vector when no menu is loaded.
+    pub fn drain_host_calls(&self) -> Vec<ScaleformHostCall> {
+        self.player
+            .as_ref()
+            .map(|player| player.host_bridge().drain_calls())
+            .unwrap_or_default()
+    }
+
     /// Invoke a callback registered by the active ActionScript movie.
     pub fn invoke_callback(
         &mut self,
@@ -213,5 +231,20 @@ impl UiManager {
         self.player = None;
         self.visible = false;
         self.menu_name.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #2714 — the engine's per-frame drain runs whether or not a menu is
+    /// loaded, so the no-player case has to be a cheap empty answer rather
+    /// than a panic or an `Option` the caller has to unwrap every frame.
+    #[test]
+    fn draining_host_calls_without_a_menu_is_empty() {
+        let manager = UiManager::new(1280, 720);
+        assert!(manager.host_bridge().is_none());
+        assert!(manager.drain_host_calls().is_empty());
     }
 }

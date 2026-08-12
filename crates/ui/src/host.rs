@@ -12,6 +12,28 @@ use crate::{ScaleformHostCatalog, ScaleformHostMethodKind, ScaleformProfile};
 
 type ResponseHandler = dyn Fn(&[ScaleformValue]) -> Vec<ScaleformValue>;
 
+/// Backstop on how many undrained ActionScript→engine calls the bridge
+/// retains (#2714).
+///
+/// This is a bound, **not** a capacity estimate, and the distinction matters
+/// for anyone tempted to tune it. Every vanilla menu measured — Skyrim SE
+/// `hudmenu` / `inventorymenu` / `magicmenu`, FO4 `hudmenu` / `pipboymenu` /
+/// `containermenu` — produced **at most one** host call across 600 ticked
+/// frames with periodic focus/mouse/key bursts, because Bethesda menus wait to
+/// be called *into* before they call back out. So the queue's realistic depth
+/// between drains is zero or one, and this cap sits three orders of magnitude
+/// above that purely so a pathological movie, or a frame where the engine
+/// stops draining, degrades to a fixed ~1024-entry ceiling instead of growing
+/// without limit.
+///
+/// Overflow drops the **oldest** entry, not the newest: the queue's contract
+/// is "calls since the previous drain", and under overflow the most recent
+/// state-change calls are the ones a consumer still has any hope of acting on.
+/// Contrast the debug server's `MAX_QUEUED_COMMANDS`, which rejects the newest
+/// — it can tell its producer "no", and this bridge cannot, because
+/// `ExternalInterface.call` has already happened by the time we get here.
+pub const MAX_QUEUED_CALLS: usize = 1024;
+
 /// Value type shared between the engine and ActionScript.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ScaleformValue {
@@ -129,6 +151,13 @@ struct BridgeState {
     next_sequence: u64,
     code_object_destructions: u64,
     calls: VecDeque<ScaleformHostCall>,
+    /// Calls evicted by [`MAX_QUEUED_CALLS`] since the bridge was created.
+    /// Monotonic — a drain does not reset it, so the counter still reports
+    /// that a gap happened after the backlog has been consumed.
+    dropped_calls: u64,
+    /// One-shot latch for the overflow warning, so a movie that floods the
+    /// bridge doesn't also flood the log.
+    overflow_warned: bool,
     callbacks: BTreeSet<String>,
     known_methods: BTreeSet<String>,
     unknown_methods: BTreeSet<String>,
@@ -218,8 +247,27 @@ impl ScaleformHostBridge {
     }
 
     /// Drain calls made by ActionScript since the previous drain.
+    ///
+    /// The engine's UI tick calls this every frame, which is what keeps the
+    /// backlog at its natural depth; [`MAX_QUEUED_CALLS`] only engages when
+    /// something has stopped consuming. A drain that returns
+    /// `MAX_QUEUED_CALLS` entries should be read together with
+    /// [`Self::dropped_calls`] — the batch may not be contiguous.
     pub fn drain_calls(&self) -> Vec<ScaleformHostCall> {
         self.state.borrow_mut().calls.drain(..).collect()
+    }
+
+    /// Number of calls evicted by the [`MAX_QUEUED_CALLS`] bound since this
+    /// bridge was created. Non-zero means a consumer fell behind (or never
+    /// ran) and the record of what the menu asked for has a hole in it.
+    pub fn dropped_calls(&self) -> u64 {
+        self.state.borrow().dropped_calls
+    }
+
+    /// Undrained calls currently retained. Diagnostic only — a consumer
+    /// should use [`Self::drain_calls`].
+    pub fn queued_call_count(&self) -> usize {
+        self.state.borrow().calls.len()
     }
 
     /// Names registered through `ExternalInterface.addCallback`.
@@ -309,6 +357,25 @@ impl ScaleformHostBridge {
             state.unknown_methods.insert(normalized.method.clone());
             ScaleformHostDispatch::Unknown
         };
+
+        // Bound the backlog before pushing (#2714). `record_call` runs inside
+        // `ExternalInterface.call` on Ruffle's owning thread, so there is no
+        // back-pressure channel to the movie — the call has already been made
+        // and the only choice left is which entry to lose.
+        while state.calls.len() >= MAX_QUEUED_CALLS {
+            state.calls.pop_front();
+            state.dropped_calls += 1;
+        }
+        if state.dropped_calls > 0 && !state.overflow_warned {
+            state.overflow_warned = true;
+            log::warn!(
+                "Scaleform host bridge dropped an ActionScript call: {} undrained \
+                 entries is the cap. Either nothing is draining the bridge, or the \
+                 movie is calling the host faster than one frame can consume. \
+                 Further drops are counted in `dropped_calls()` but not logged.",
+                MAX_QUEUED_CALLS,
+            );
+        }
 
         state.calls.push_back(ScaleformHostCall {
             sequence,

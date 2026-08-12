@@ -69,8 +69,9 @@ surface, not a new Flash VM.
 crates/ui/src/
 ├── avm2_host.rs Fallout 4 BGSCodeObj ABC adapter and SWF injection
 ├── catalog.rs   Profile-specific known host-method/object inventory
-├── host.rs      ScaleformHostBridge — ExternalInterface call queue,
-│                callback discovery, typed values, diagnostics/responses
+├── host.rs      ScaleformHostBridge — ExternalInterface call queue (bounded,
+│                drained per frame by the main loop), callback discovery,
+│                typed values, diagnostics/responses
 ├── input.rs     Platform-neutral keyboard, pointer, text, IME, and focus events
 ├── lib.rs       UiManager — top-level handle: owns the active SwfPlayer,
 │                visibility/input-focus/viewport state, load/tick/render/close
@@ -507,6 +508,30 @@ non-Bethesda SWFs come from Ruffle's pinned ExternalInterface fixtures:
 Real Bethesda movies remain local/ignored corpus tests: proprietary SWFs
 must not be committed. The host bridge now provides the observable call
 queue needed for those compatibility assertions.
+
+## Draining the host bridge
+
+`ScaleformHostBridge` is drain-based: `record_call` enqueues every
+ActionScript→engine call and `drain_calls` is the only thing that removes
+one. Until #2714 the engine never drained it — the binary's whole use of
+`crates/ui` was `new` / `load_swf` / `tick` / `render` / input — so the queue
+grew for the life of a loaded menu. The main loop now drains it once per
+frame beside `ui.tick(dt)` (`byroredux/src/main.rs`), which is what keeps the
+backlog at its natural depth, and logs each call at `debug` plus a one-shot
+`warn` for any method the bridge classified `Unknown` or `MissingResponse`.
+That turns `unknown_methods()` / `unanswered_methods()` into live
+diagnostics rather than test-only ones. Acting on the calls — routing them
+into quest / inventory / player state — remains M48 work.
+
+`MAX_QUEUED_CALLS` (1024, drop-oldest, counted by `dropped_calls()`) backs
+that up for the case where the drain does not run. It is a backstop rather
+than a capacity estimate: measured against the installed corpora, every
+vanilla menu tested — Skyrim SE `hudmenu` / `inventorymenu` / `magicmenu`,
+FO4 `hudmenu` / `pipboymenu` / `containermenu` — produced **at most one**
+host call across 600 ticked frames with periodic input bursts, because
+Bethesda menus wait to be called *into* before they call back out. Anyone
+sizing this number should re-measure rather than reason from the "HUD menus
+call the host every frame" intuition, which the corpus does not support.
 
 ## Related docs
 

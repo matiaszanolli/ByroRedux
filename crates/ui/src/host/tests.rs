@@ -314,6 +314,81 @@ fn fallout4_destruction_acknowledgement_is_observable_but_not_a_host_call() {
     assert!(bridge.unknown_methods().is_empty());
 }
 
+/// #2714 — the queue was a plain `VecDeque` with no bound and no consumer, so
+/// an undrained bridge grew for the life of the menu. Pushing past the cap
+/// must now hold at the cap rather than keep growing.
+#[test]
+fn an_undrained_call_queue_stops_growing_at_the_cap() {
+    let bridge = ScaleformHostBridge::new(ScaleformProfile::Fallout4Avm2);
+    let overflow = 50usize;
+    for i in 0..crate::MAX_QUEUED_CALLS + overflow {
+        bridge.record_call("BGSCodeObj.PlaySound", &[ExternalValue::from(i as f64)]);
+    }
+
+    assert_eq!(bridge.queued_call_count(), crate::MAX_QUEUED_CALLS);
+    assert_eq!(bridge.dropped_calls(), overflow as u64);
+}
+
+/// Overflow drops the oldest, so a consumer that finally runs sees the most
+/// recent calls — the ones it still has a chance of acting on.
+#[test]
+fn call_queue_overflow_evicts_the_oldest_entries() {
+    let bridge = ScaleformHostBridge::new(ScaleformProfile::Fallout4Avm2);
+    let total = crate::MAX_QUEUED_CALLS + 10;
+    for i in 0..total {
+        bridge.record_call("BGSCodeObj.PlaySound", &[ExternalValue::from(i as f64)]);
+    }
+
+    let calls = bridge.drain_calls();
+    assert_eq!(calls.len(), crate::MAX_QUEUED_CALLS);
+    // Sequence numbers are assigned before the bound is applied, so the
+    // surviving window is the tail of the stream.
+    assert_eq!(calls.first().unwrap().sequence, 10);
+    assert_eq!(calls.last().unwrap().sequence, total as u64 - 1);
+    assert_eq!(
+        calls.last().unwrap().arguments,
+        vec![ScaleformValue::Number((total - 1) as f64)]
+    );
+}
+
+/// The drop counter is evidence that a gap happened, so it must survive the
+/// drain that clears the backlog.
+#[test]
+fn dropped_call_count_is_monotonic_across_drains() {
+    let bridge = ScaleformHostBridge::new(ScaleformProfile::Fallout4Avm2);
+    for _ in 0..crate::MAX_QUEUED_CALLS + 3 {
+        bridge.record_call("BGSCodeObj.PlaySound", &[]);
+    }
+    assert_eq!(bridge.dropped_calls(), 3);
+
+    bridge.drain_calls();
+    assert_eq!(bridge.queued_call_count(), 0);
+    assert_eq!(
+        bridge.dropped_calls(),
+        3,
+        "a drain clears the backlog, not the record that entries were lost"
+    );
+
+    bridge.record_call("BGSCodeObj.PlaySound", &[]);
+    assert_eq!(bridge.dropped_calls(), 3);
+    assert_eq!(bridge.queued_call_count(), 1);
+}
+
+/// A draining consumer never reaches the bound — the case the engine's
+/// per-frame drain puts us in.
+#[test]
+fn draining_every_frame_never_drops() {
+    let bridge = ScaleformHostBridge::new(ScaleformProfile::Fallout4Avm2);
+    for _ in 0..10 {
+        for _ in 0..64 {
+            bridge.record_call("BGSCodeObj.PlaySound", &[]);
+        }
+        assert_eq!(bridge.drain_calls().len(), 64);
+    }
+    assert_eq!(bridge.dropped_calls(), 0);
+    assert_eq!(bridge.queued_call_count(), 0);
+}
+
 #[test]
 fn avm1_input_and_external_interface_are_bidirectional_headlessly() {
     let (player, bridge) = run_fixture(AVM1_FIXTURE, ScaleformProfile::SkyrimAvm1);
@@ -327,6 +402,7 @@ fn avm2_input_and_external_interface_are_bidirectional_headlessly() {
     dispatch_representative_input(&player);
     assert_external_interface_round_trip(&player, &bridge, ScaleformProfile::Fallout4Avm2);
 }
+
 
 #[test]
 #[ignore = "requires an installed Skyrim Special Edition corpus"]

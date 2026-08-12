@@ -58,7 +58,7 @@ use byroredux_platform::window::{self, WindowConfig};
 use byroredux_renderer::vulkan::context::{DrawCommand, FrameInputs};
 use byroredux_renderer::vulkan::GpuUploadCtx;
 use byroredux_renderer::{ImageSpaceModifierView, RendererConfig, VulkanContext};
-use byroredux_ui::UiManager;
+use byroredux_ui::{ScaleformHostDispatch, UiManager};
 use std::collections::HashMap;
 use std::time::Instant;
 use winit::application::ApplicationHandler;
@@ -120,6 +120,10 @@ struct App {
     ui_input_state: ui_input::UiInputState,
     /// Texture handle for the UI overlay (registered in the texture registry).
     ui_texture_handle: Option<u32>,
+    /// Host methods already reported by the per-frame Scaleform drain, so a
+    /// menu that calls an unimplemented method every frame reports it once
+    /// rather than once per frame (#2714).
+    ui_reported_host_methods: std::collections::HashSet<String>,
     /// Reusable per-frame draw command buffer (cleared each frame, allocation retained).
     draw_commands: Vec<DrawCommand>,
     /// Reusable per-frame water draw command buffer. Built alongside
@@ -390,6 +394,7 @@ impl App {
             ui_manager: None,
             ui_input_state: ui_input::UiInputState::default(),
             ui_texture_handle: None,
+            ui_reported_host_methods: std::collections::HashSet::new(),
             draw_commands: Vec::new(),
             water_commands: Vec::new(),
             gpu_lights: Vec::new(),
@@ -684,6 +689,43 @@ impl App {
                 let ui_w = ui.width;
                 let ui_h = ui.height;
                 ui.tick(dt);
+
+                // Consume what the menu asked of the host (#2714). The bridge
+                // is drain-based by design and had no consumer outside its own
+                // tests, so every ActionScript call was retained for the life
+                // of the menu. Draining here is what keeps the queue at its
+                // natural depth; `MAX_QUEUED_CALLS` is only the backstop for
+                // when this does not run.
+                //
+                // Acting on the calls is M48 work — routing them into quest /
+                // inventory / player state needs those systems' menu contracts
+                // to exist first. What the engine can honestly do today is
+                // consume them and say which ones it cannot answer, which
+                // turns the bridge's `unknown_methods()` set from a test-only
+                // observation into a live one.
+                for call in ui.drain_host_calls() {
+                    log::debug!(
+                        "Scaleform host call #{} {} -> {} ({:?}, {} arg(s))",
+                        call.sequence,
+                        call.transport_method,
+                        call.method,
+                        call.dispatch,
+                        call.arguments.len(),
+                    );
+                    if matches!(
+                        call.dispatch,
+                        ScaleformHostDispatch::Unknown | ScaleformHostDispatch::MissingResponse
+                    ) && self.ui_reported_host_methods.insert(call.method.clone())
+                    {
+                        log::warn!(
+                            "Scaleform menu '{}' called host method '{}' ({:?}) — \
+                             no engine handler is registered, so the menu received Null",
+                            ui.menu_name,
+                            call.method,
+                            call.dispatch,
+                        );
+                    }
+                }
 
                 if let Some(pixels) = ui.render() {
                     if let Some(handle) = self.ui_texture_handle {
