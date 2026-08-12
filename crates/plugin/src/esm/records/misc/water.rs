@@ -1,6 +1,6 @@
 //! Water record (`WATR`) and decoded water parameters.
 
-use super::super::common::{read_lstring_or_zstring, read_zstring};
+use super::super::common::{read_zstring, CommonNamedFields};
 use crate::esm::reader::SubRecord;
 use crate::esm::sub_reader::SubReader;
 
@@ -288,10 +288,15 @@ pub fn parse_watr(form_id: u32, subs: &[SubRecord]) -> WatrRecord {
         form_id,
         ..Default::default()
     };
+    // #2414 / TD2-117 — the universal named fields come from the
+    // shared walker instead of a hand-rolled copy of its arms. It
+    // ignores every other sub-record, so the per-record loop below
+    // is unchanged.
+    let common = CommonNamedFields::from_subs(subs);
+    out.editor_id = common.editor_id;
+    out.full_name = common.full_name;
     for sub in subs {
         match &sub.sub_type {
-            b"EDID" => out.editor_id = read_zstring(&sub.data),
-            b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
             b"TNAM" => out.texture_path = read_zstring(&sub.data),
             b"NNAM" => out.texture_path = read_zstring(&sub.data),
             b"DATA" => {

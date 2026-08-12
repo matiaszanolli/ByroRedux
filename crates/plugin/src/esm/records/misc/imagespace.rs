@@ -5,7 +5,7 @@
 //! subrecords carry scalar or RGBA curves. Keeping the authored curves here
 //! lets the runtime sample them without retaining opaque plugin bytes.
 
-use super::super::common::read_zstring;
+use super::super::common::CommonNamedFields;
 use crate::esm::reader::SubRecord;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -111,9 +111,14 @@ pub fn parse_imad(form_id: u32, subs: &[SubRecord]) -> ImadRecord {
         ..Default::default()
     };
 
+    // #2414 / TD2-117 — the universal named fields come from the
+    // shared walker instead of a hand-rolled copy of its arms. It
+    // ignores every other sub-record, so the per-record loop below
+    // is unchanged.
+    let common = CommonNamedFields::from_subs(subs);
+    out.editor_id = common.editor_id;
     for sub in subs {
         match &sub.sub_type {
-            b"EDID" => out.editor_id = read_zstring(&sub.data),
             b"DNAM" => {
                 if let Some(bytes) = sub.data.get(0..4) {
                     out.flags = u32::from_le_bytes(bytes.try_into().expect("four-byte slice"));

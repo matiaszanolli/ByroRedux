@@ -81,8 +81,8 @@ pub type GpuPreviousModel = [[f32; 4]; 4];
 ///   - 400 → 112 (R1 Phase 6, drop the migrated per-material fields)
 ///   - 112 → 128 (#2219, `skinned_vertex_address` + reserved padding)
 ///
-/// The `size_of::<GpuInstance>() == 112` test below asserts the
-/// invariant; shader-side `GpuInstance` must match.
+/// `gpu_instance_is_128_bytes_std430_compatible` asserts the invariant;
+/// shader-side `GpuInstance` must match.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct GpuInstance {

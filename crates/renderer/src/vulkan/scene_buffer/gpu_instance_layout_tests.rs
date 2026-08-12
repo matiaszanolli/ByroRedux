@@ -1017,7 +1017,8 @@ fn parse_glsl_struct_fields(src: &str) -> Vec<String> {
 /// pins only the *Rust* offsets, and `gpu_material_glsl_field_names_pinned`
 /// only asserts each GLSL name is *present* (`src.contains`). Neither
 /// catches a within-vec4 GLSL reorder (e.g. swapping `metalness` and
-/// `roughness`) that preserves the 300 B size — the shader would then
+/// `roughness`) that preserves the struct's pinned size — the shader would
+/// then
 /// read the wrong scalar on every lit surface, yet every `cargo test`
 /// would pass. This is the positive-order guard the `GpuInstance`
 /// contract already has (`gpu_instance_field_offsets_match_shader_contract`)
@@ -1068,7 +1069,8 @@ fn gpu_material_glsl_field_order_matches_rust_struct() {
             "GpuMaterial field #{i} ORDER mismatch: Rust `{}` vs GLSL `{}`. The GLSL \
              `struct GpuMaterial` in include/bindings.glsl must declare fields in the SAME order \
              as the Rust `#[repr(C)]` struct (the offset source of truth). A within-vec4 reorder \
-             keeps the 300 B size but corrupts every lit-surface read — see #1657 / SF-D8-01.",
+             keeps the struct size unchanged but corrupts every lit-surface read — see \
+             #1657 / SF-D8-01.",
             rust_fields[i], glsl_fields[i],
         );
     }

@@ -1,6 +1,6 @@
 //! Equipment / crafting / generic-record records.
 
-use super::super::common::{read_lstring_or_zstring, read_zstring};
+use super::super::common::{read_lstring_or_zstring, read_zstring, CommonNamedFields};
 use crate::esm::reader::{GameKind, SubRecord};
 use crate::esm::sub_reader::SubReader;
 
@@ -74,9 +74,14 @@ pub fn parse_arma(form_id: u32, subs: &[SubRecord], game: GameKind) -> ArmaRecor
         GameKind::Skyrim | GameKind::Fallout4 | GameKind::Fallout76 | GameKind::Starfield
     );
 
+    // #2414 / TD2-117 — the universal named fields come from the
+    // shared walker instead of a hand-rolled copy of its arms. It
+    // ignores every other sub-record, so the per-record loop below
+    // is unchanged.
+    let common = CommonNamedFields::from_subs(subs);
+    out.editor_id = common.editor_id;
     for sub in subs {
         match &sub.sub_type {
-            b"EDID" => out.editor_id = read_zstring(&sub.data),
             b"BMDT" if sub.data.len() >= 8 => {
                 let mut r = SubReader::new(&sub.data);
                 out.biped_flags = r.u32_or_default();
@@ -154,9 +159,14 @@ pub fn parse_bptd(form_id: u32, subs: &[SubRecord]) -> BptdRecord {
         form_id,
         ..Default::default()
     };
+    // #2414 / TD2-117 — the universal named fields come from the
+    // shared walker instead of a hand-rolled copy of its arms. It
+    // ignores every other sub-record, so the per-record loop below
+    // is unchanged.
+    let common = CommonNamedFields::from_subs(subs);
+    out.editor_id = common.editor_id;
     for sub in subs {
         match &sub.sub_type {
-            b"EDID" => out.editor_id = read_zstring(&sub.data),
             b"BPTN" => {
                 if out.part_count == 0 {
                     out.first_part_name = read_lstring_or_zstring(&sub.data);
@@ -197,9 +207,14 @@ pub fn parse_cobj(form_id: u32, subs: &[SubRecord]) -> CobjRecord {
         form_id,
         ..Default::default()
     };
+    // #2414 / TD2-117 — the universal named fields come from the
+    // shared walker instead of a hand-rolled copy of its arms. It
+    // ignores every other sub-record, so the per-record loop below
+    // is unchanged.
+    let common = CommonNamedFields::from_subs(subs);
+    out.editor_id = common.editor_id;
     for sub in subs {
         match &sub.sub_type {
-            b"EDID" => out.editor_id = read_zstring(&sub.data),
             b"CNAM" if sub.data.len() >= 4 => {
                 out.created_form = SubReader::new(&sub.data).u32_or_default();
             }
@@ -251,10 +266,15 @@ pub fn parse_minimal_esm_record(form_id: u32, subs: &[SubRecord]) -> MinimalEsmR
         form_id,
         ..Default::default()
     };
+    // #2414 / TD2-117 — the universal named fields come from the
+    // shared walker instead of a hand-rolled copy of its arms. It
+    // ignores every other sub-record, so the per-record loop below
+    // is unchanged.
+    let common = CommonNamedFields::from_subs(subs);
+    out.editor_id = common.editor_id;
+    out.full_name = common.full_name;
     for sub in subs {
         match &sub.sub_type {
-            b"EDID" => out.editor_id = read_zstring(&sub.data),
-            b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
             _ => {}
         }
     }
@@ -308,11 +328,16 @@ pub fn parse_slgm(form_id: u32, subs: &[SubRecord]) -> SlgmRecord {
         form_id,
         ..Default::default()
     };
+    // #2414 / TD2-117 — the universal named fields come from the
+    // shared walker instead of a hand-rolled copy of its arms. It
+    // ignores every other sub-record, so the per-record loop below
+    // is unchanged.
+    let common = CommonNamedFields::from_subs(subs);
+    out.editor_id = common.editor_id;
+    out.full_name = common.full_name;
+    out.model_path = common.model_path;
     for sub in subs {
         match &sub.sub_type {
-            b"EDID" => out.editor_id = read_zstring(&sub.data),
-            b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
-            b"MODL" => out.model_path = read_zstring(&sub.data),
             b"DATA" if sub.data.len() >= 8 => {
                 let mut r = SubReader::new(&sub.data);
                 out.value = r.i32_or_default();

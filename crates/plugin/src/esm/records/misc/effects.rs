@@ -1,6 +1,6 @@
 //! Effects / FX / VATS / impact records.
 
-use super::super::common::{read_lstring_or_zstring, read_zstring};
+use super::super::common::{read_lstring_or_zstring, read_zstring, CommonNamedFields};
 use crate::esm::reader::SubRecord;
 use crate::esm::sub_reader::SubReader;
 
@@ -50,10 +50,15 @@ pub fn parse_avif(
         form_id,
         ..Default::default()
     };
+    // #2414 / TD2-117 — the universal named fields come from the
+    // shared walker instead of a hand-rolled copy of its arms. It
+    // ignores every other sub-record, so the per-record loop below
+    // is unchanged.
+    let common = CommonNamedFields::from_subs(subs);
+    out.editor_id = common.editor_id;
+    out.full_name = common.full_name;
     for sub in subs {
         match &sub.sub_type {
-            b"EDID" => out.editor_id = read_zstring(&sub.data),
-            b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
             b"DESC" => out.description = read_lstring_or_zstring(&sub.data),
             b"ANAM" => out.abbreviation = read_zstring(&sub.data),
             b"CNAM" => out.category = SubReader::new(&sub.data).u32_or_default(),
@@ -121,10 +126,15 @@ pub fn parse_proj(form_id: u32, subs: &[SubRecord]) -> ProjRecord {
         form_id,
         ..Default::default()
     };
+    // #2414 / TD2-117 — the universal named fields come from the
+    // shared walker instead of a hand-rolled copy of its arms. It
+    // ignores every other sub-record, so the per-record loop below
+    // is unchanged.
+    let common = CommonNamedFields::from_subs(subs);
+    out.editor_id = common.editor_id;
+    out.full_name = common.full_name;
     for sub in subs {
         match &sub.sub_type {
-            b"EDID" => out.editor_id = read_zstring(&sub.data),
-            b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
             b"DATA" if sub.data.len() >= 12 => {
                 let mut r = SubReader::new(&sub.data);
                 out.flags = r.u32_or_default();
@@ -157,9 +167,14 @@ pub fn parse_efsh(form_id: u32, subs: &[SubRecord]) -> EfshRecord {
         form_id,
         ..Default::default()
     };
+    // #2414 / TD2-117 — the universal named fields come from the
+    // shared walker instead of a hand-rolled copy of its arms. It
+    // ignores every other sub-record, so the per-record loop below
+    // is unchanged.
+    let common = CommonNamedFields::from_subs(subs);
+    out.editor_id = common.editor_id;
     for sub in subs {
         match &sub.sub_type {
-            b"EDID" => out.editor_id = read_zstring(&sub.data),
             b"ICON" => out.fill_texture = read_zstring(&sub.data),
             b"ICO2" => out.particle_texture = read_zstring(&sub.data),
             _ => {}
@@ -190,10 +205,15 @@ pub fn parse_imod(form_id: u32, subs: &[SubRecord]) -> ImodRecord {
         form_id,
         ..Default::default()
     };
+    // #2414 / TD2-117 — the universal named fields come from the
+    // shared walker instead of a hand-rolled copy of its arms. It
+    // ignores every other sub-record, so the per-record loop below
+    // is unchanged.
+    let common = CommonNamedFields::from_subs(subs);
+    out.editor_id = common.editor_id;
+    out.full_name = common.full_name;
     for sub in subs {
         match &sub.sub_type {
-            b"EDID" => out.editor_id = read_zstring(&sub.data),
-            b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
             b"DESC" => out.description = read_lstring_or_zstring(&sub.data),
             b"DATA" if sub.data.len() >= 8 => {
                 let mut r = SubReader::new(&sub.data);
@@ -225,10 +245,15 @@ pub fn parse_repu(form_id: u32, subs: &[SubRecord]) -> RepuRecord {
         form_id,
         ..Default::default()
     };
+    // #2414 / TD2-117 — the universal named fields come from the
+    // shared walker instead of a hand-rolled copy of its arms. It
+    // ignores every other sub-record, so the per-record loop below
+    // is unchanged.
+    let common = CommonNamedFields::from_subs(subs);
+    out.editor_id = common.editor_id;
+    out.full_name = common.full_name;
     for sub in subs {
         match &sub.sub_type {
-            b"EDID" => out.editor_id = read_zstring(&sub.data),
-            b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
             b"DATA" if sub.data.len() >= 4 => {
                 out.base_value = SubReader::new(&sub.data).f32_or_default();
             }
@@ -259,10 +284,15 @@ pub fn parse_expl(form_id: u32, subs: &[SubRecord]) -> ExplRecord {
         form_id,
         ..Default::default()
     };
+    // #2414 / TD2-117 — the universal named fields come from the
+    // shared walker instead of a hand-rolled copy of its arms. It
+    // ignores every other sub-record, so the per-record loop below
+    // is unchanged.
+    let common = CommonNamedFields::from_subs(subs);
+    out.editor_id = common.editor_id;
+    out.full_name = common.full_name;
     for sub in subs {
         match &sub.sub_type {
-            b"EDID" => out.editor_id = read_zstring(&sub.data),
-            b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
             b"DATA" if sub.data.len() >= 16 => {
                 let mut r = SubReader::new(&sub.data);
                 r.skip_or_eof(8); // damage starts at offset 8
@@ -292,10 +322,15 @@ pub fn parse_ipct(form_id: u32, subs: &[SubRecord]) -> IpctRecord {
         form_id,
         ..Default::default()
     };
+    // #2414 / TD2-117 — the universal named fields come from the
+    // shared walker instead of a hand-rolled copy of its arms. It
+    // ignores every other sub-record, so the per-record loop below
+    // is unchanged.
+    let common = CommonNamedFields::from_subs(subs);
+    out.editor_id = common.editor_id;
+    out.model_path = common.model_path;
     for sub in subs {
         match &sub.sub_type {
-            b"EDID" => out.editor_id = read_zstring(&sub.data),
-            b"MODL" => out.model_path = read_zstring(&sub.data),
             _ => {}
         }
     }
@@ -323,9 +358,14 @@ pub fn parse_ipds(form_id: u32, subs: &[SubRecord]) -> IpdsRecord {
         form_id,
         ..Default::default()
     };
+    // #2414 / TD2-117 — the universal named fields come from the
+    // shared walker instead of a hand-rolled copy of its arms. It
+    // ignores every other sub-record, so the per-record loop below
+    // is unchanged.
+    let common = CommonNamedFields::from_subs(subs);
+    out.editor_id = common.editor_id;
     for sub in subs {
         match &sub.sub_type {
-            b"EDID" => out.editor_id = read_zstring(&sub.data),
             // FO3/FNV IPDS DATA is a fixed-size 96-byte array
             // (12 × 8 bytes = (material_kind: u32, ipct: u32) per
             // entry). Skyrim uses 4-byte entries. Counting only:

@@ -1,7 +1,7 @@
 //! `PACK` AI package records — 30-procedure scheduling system (guard
 //! patrols, merchant behavior, dialogue triggers, ambient idles).
 
-use super::super::common::read_zstring;
+use super::super::common::{read_zstring, CommonNamedFields};
 use super::super::condition::{push_ctda, ConditionList};
 use crate::esm::reader::{GameKind, SubRecord};
 use crate::esm::sub_reader::SubReader;
@@ -839,10 +839,14 @@ pub fn parse_pack(
         form_id,
         ..Default::default()
     };
+    // #2414 / TD2-117 — the universal named fields come from the shared
+    // walker instead of a hand-rolled copy of its arms. It ignores every
+    // other sub-record, so the per-record loop below is unchanged.
+    let common = CommonNamedFields::from_subs(subs);
+    out.editor_id = common.editor_id;
     let pkcu_index = subs.iter().position(|sub| sub.sub_type == *b"PKCU");
     for (sub_index, sub) in subs.iter().enumerate() {
         match &sub.sub_type {
-            b"EDID" => out.editor_id = read_zstring(&sub.data),
             b"PKDT" if sub.data.len() >= 8 => {
                 let mut r = SubReader::new(&sub.data);
                 out.package_flags = r.u32_or_default();

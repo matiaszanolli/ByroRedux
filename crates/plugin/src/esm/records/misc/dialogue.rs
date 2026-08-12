@@ -1,6 +1,6 @@
 //! `DIAL` / `INFO` / `MESG` dialogue and message records.
 
-use super::super::common::{read_lstring_or_zstring, read_zstring};
+use super::super::common::{read_lstring_or_zstring, read_zstring, CommonNamedFields};
 use super::super::condition::{push_ctda, ConditionList};
 use crate::esm::reader::SubRecord;
 use crate::esm::sub_reader::SubReader;
@@ -105,10 +105,15 @@ pub fn parse_dial(
         form_id,
         ..Default::default()
     };
+    // #2414 / TD2-117 — the universal named fields come from the
+    // shared walker instead of a hand-rolled copy of its arms. It
+    // ignores every other sub-record, so the per-record loop below
+    // is unchanged.
+    let common = CommonNamedFields::from_subs(subs);
+    out.editor_id = common.editor_id;
+    out.full_name = common.full_name;
     for sub in subs {
         match &sub.sub_type {
-            b"EDID" => out.editor_id = read_zstring(&sub.data),
-            b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
             b"QSTI" if sub.data.len() >= 4 => {
                 if let Ok(q) = SubReader::new(&sub.data).u32() {
                     let remapped = remap.as_ref().map_or(q, |r| r.remap(q));
@@ -314,10 +319,15 @@ pub fn parse_mesg(form_id: u32, subs: &[SubRecord]) -> MesgRecord {
         form_id,
         ..Default::default()
     };
+    // #2414 / TD2-117 — the universal named fields come from the
+    // shared walker instead of a hand-rolled copy of its arms. It
+    // ignores every other sub-record, so the per-record loop below
+    // is unchanged.
+    let common = CommonNamedFields::from_subs(subs);
+    out.editor_id = common.editor_id;
+    out.full_name = common.full_name;
     for sub in subs {
         match &sub.sub_type {
-            b"EDID" => out.editor_id = read_zstring(&sub.data),
-            b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
             b"DESC" => out.description = read_lstring_or_zstring(&sub.data),
             b"QNAM" if sub.data.len() >= 4 => {
                 out.owner_quest = SubReader::new(&sub.data).u32_or_default();

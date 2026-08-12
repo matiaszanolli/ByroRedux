@@ -1,6 +1,6 @@
 //! Magic / perks records.
 
-use super::super::common::{read_lstring_or_zstring, read_zstring};
+use super::super::common::{read_lstring_or_zstring, CommonNamedFields};
 use super::super::condition::{push_ctda, ConditionList};
 use crate::esm::reader::SubRecord;
 use crate::esm::sub_reader::SubReader;
@@ -284,10 +284,15 @@ pub fn parse_perk(
     };
     let mut block = PerkBlock::None;
 
+    // #2414 / TD2-117 — the universal named fields come from the
+    // shared walker instead of a hand-rolled copy of its arms. It
+    // ignores every other sub-record, so the per-record loop below
+    // is unchanged.
+    let common = CommonNamedFields::from_subs(subs);
+    out.editor_id = common.editor_id;
+    out.full_name = common.full_name;
     for sub in subs {
         match &sub.sub_type {
-            b"EDID" => out.editor_id = read_zstring(&sub.data),
-            b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
             b"DESC" => out.description = read_lstring_or_zstring(&sub.data),
             // PERK-level DATA: trait + (level OR num_ranks per-game) +
             // playable + hidden + level/trailing. The leading byte is
@@ -570,10 +575,15 @@ pub fn parse_spel(form_id: u32, subs: &[SubRecord]) -> SpelRecord {
         ..Default::default()
     };
     let mut effects = MagicEffectAccumulator::default();
+    // #2414 / TD2-117 — the universal named fields come from the
+    // shared walker instead of a hand-rolled copy of its arms. It
+    // ignores every other sub-record, so the per-record loop below
+    // is unchanged.
+    let common = CommonNamedFields::from_subs(subs);
+    out.editor_id = common.editor_id;
+    out.full_name = common.full_name;
     for sub in subs {
         match &sub.sub_type {
-            b"EDID" => out.editor_id = read_zstring(&sub.data),
-            b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
             b"SPIT" => {
                 if let Ok(header) = read_sub::<SpellHeader>(sub) {
                     out.cost = header.cost;
@@ -643,10 +653,15 @@ pub fn parse_mgef(form_id: u32, subs: &[SubRecord]) -> MgefRecord {
         form_id,
         ..Default::default()
     };
+    // #2414 / TD2-117 — the universal named fields come from the
+    // shared walker instead of a hand-rolled copy of its arms. It
+    // ignores every other sub-record, so the per-record loop below
+    // is unchanged.
+    let common = CommonNamedFields::from_subs(subs);
+    out.editor_id = common.editor_id;
+    out.full_name = common.full_name;
     for sub in subs {
         match &sub.sub_type {
-            b"EDID" => out.editor_id = read_zstring(&sub.data),
-            b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
             b"DESC" => out.description = read_lstring_or_zstring(&sub.data),
             b"DATA" => {
                 if let Ok(header) = read_sub::<MagicEffectHeader>(sub) {
@@ -704,10 +719,15 @@ pub fn parse_ench(form_id: u32, subs: &[SubRecord]) -> EnchRecord {
         ..Default::default()
     };
     let mut effects = MagicEffectAccumulator::default();
+    // #2414 / TD2-117 — the universal named fields come from the
+    // shared walker instead of a hand-rolled copy of its arms. It
+    // ignores every other sub-record, so the per-record loop below
+    // is unchanged.
+    let common = CommonNamedFields::from_subs(subs);
+    out.editor_id = common.editor_id;
+    out.full_name = common.full_name;
     for sub in subs {
         match &sub.sub_type {
-            b"EDID" => out.editor_id = read_zstring(&sub.data),
-            b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
             // ENIT decoded via schema decoder (Phase C).
             b"ENIT" if sub.data.len() >= 16 => {
                 if let Ok(header) = read_sub::<EnchantmentHeader>(sub) {

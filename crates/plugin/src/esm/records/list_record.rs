@@ -37,7 +37,7 @@
 //! Skyrim ships ~1500. See audit `FNV-D2-02` / #630.
 
 use crate::esm::reader::SubRecord;
-use crate::esm::records::common::read_zstring;
+use crate::esm::records::common::CommonNamedFields;
 use crate::esm::sub_reader::SubReader;
 
 /// Parsed FLST record — flat array of FormID references in authoring order.
@@ -61,9 +61,12 @@ pub fn parse_flst(form_id: u32, subs: &[SubRecord]) -> FlstRecord {
         form_id,
         ..Default::default()
     };
+    // #2414 / TD2-117 SIBLING — same swap as the `misc/` family; these two
+    // sites sit outside it and were not named in the issue.
+    let common = CommonNamedFields::from_subs(subs);
+    out.editor_id = common.editor_id;
     for sub in subs {
         match &sub.sub_type {
-            b"EDID" => out.editor_id = read_zstring(&sub.data),
             b"LNAM" => {
                 if let Ok(id) = SubReader::new(&sub.data).u32() {
                     out.entries.push(id);

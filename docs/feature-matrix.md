@@ -80,7 +80,8 @@ closed by #699.)
 FO4 humanoid actors are `~` because `character assets\skeleton.nif` is absent
 from vanilla FO4 BA2s (only `_1stperson` skeleton exists). `Inventory` +
 `EquipmentSlots` components still land; visible skinned geometry awaits a
-Havok `.hkx` loader (M41.x, Tier 5).
+Havok `.hkx` loader for FO4's packfile layout (M41.x, Tier 5) — the
+`crates/hkx` reader that shipped covers Skyrim SE only.
 
 AI / behavior is `~` (M42, Tier 7) — 7 of ~17 `PACK` procedures have a
 runtime, each opt-in behind its own `BYRO_*` env flag: Sandbox
@@ -114,7 +115,16 @@ the full trace.
 | Particle animation (birth rate, grow/fade size) | ✓ | All |
 | Runtime morph updates (FaceGen) | ✗ | — spawn-time only |
 | UV scrolling (animated UV offset) | ✗ | — parsed, not rendered |
-| Havok `.hkx` skeleton loader | ✗ | — M41.x Tier 5 |
+| Havok `.hkx` skeleton + clip loader | ~ | Skyrim SE — see note |
+
+The `.hkx` row is `~` because `crates/hkx` (shipped 2026-08-01) reads
+Skyrim SE's 64-bit Havok 2010 packfiles: it decodes `hkaSkeleton` and
+expands static / spline-compressed `hkaSplineCompressedAnimation`
+transform tracks, with no behavior-graph loading or execution. It is wired
+into the animation asset provider to install the MQ101 cart-idle catalog
+from real game data — a deliberate vertical slice, not general NPC
+locomotion. FO4 and Starfield `.hkx` remain unread (different packfile
+layouts); see the gaps table below.
 
 ---
 
@@ -158,6 +168,33 @@ the full trace.
 
 ---
 
+## Quests (M43)
+
+| Feature | Status |
+|---|---|
+| QUST record parse — stages, log entries, objectives, targets (version-aware) | ✓ |
+| Stage lifecycle — start-up / shut-down stages, repeated-stage policy, initial active/completed/failed flags | ✓ |
+| Conditional per-log transitions (complete / fail / next-quest) | ✓ |
+| Papyrus quest effects — `Start`/`Stop`/`Complete`/`Reset`/`SetActive`/`FailAllObjectives` | ✓ |
+| QUST VMAD stage→fragment dispatch from vanilla `.pex` | ✓ M47.2 |
+| Save-persistent quest progress | ✓ M45 |
+| Alias fill — direct / unique / condition / XLRT / external / near / closest / force-into (loaded refs) | ✓ |
+| Alias reservations + quest-lifetime semantics | ✓ |
+| Faction + inventory injection from alias data | ✓ |
+| Authored alias metadata without an owning subsystem | ~ exposed as runtime overlays, not fabricated results |
+| Scene (`SCEN`) playback + PACK scene-package actions | ✓ MQ101 vertical slice |
+| Console observability — `quest.show`, `quest.aliases`, `quest.start`/`stop`/`setstage` | ✓ M43.1 |
+| Story Manager event payload / search | ✗ |
+| Reference collections; true LCTN / unloaded-world alias queries | ✗ |
+| Created-object spawning from aliases | ✗ |
+| Dialogue tree + dialogue UI integration | ✗ M43 remainder |
+
+Smoke test: [`docs/smoke-tests/m43-quest-runtime.sh`](smoke-tests/m43-quest-runtime.sh)
+drives the production ESM → runtime → TCP command path against installed
+Skyrim data.
+
+---
+
 ## UI
 
 | Feature | Status |
@@ -180,11 +217,11 @@ the full trace.
 | Starfield CDB material system (`materialsbeta.cdb`) | ✓ Phase 1 |
 | XCLL 108-byte interior lighting (volumetric height-fog model) | ✓ |
 | Static-trimesh collider synthesize from render geometry | ✓ |
-| `.hkx` animation skeleton | ✗ |
+| `.hkx` animation skeleton | ✗ — `crates/hkx` reads Skyrim SE's Havok 2010 packfiles only, not Starfield's layout |
 
 ---
 
-## What Doesn't Work Yet (live gaps as of 2026-06-25)
+## What Doesn't Work Yet (live gaps as of 2026-08-12)
 
 <!-- TD3-002: Save/load (M45/M45.1) removed — shipped 2026-06-21. The M47.2
      row below is the *full* transpiler, which is genuinely still deferred;
@@ -194,7 +231,8 @@ the full trace.
 | Gap | Blocking what | Milestone |
 |---|---|---|
 | Oblivion exterior (TES4 worldspace + LAND) | Oblivion exterior render | M32.5 follow-up |
-| Havok `.hkx` loader | FO4 humanoid actors; Starfield animation | M41.x (Tier 5) |
+| Havok `.hkx` loader (FO4 / Starfield layouts) | FO4 humanoid actors; Starfield animation | M41.x (Tier 5) |
+| General NPC locomotion from `.hkx` | Skyrim actors animating outside the MQ101 cart-idle catalog | M41.x (Tier 5) |
 | Terrain LOD multi-band selection | distance-based 8/16/32 LOD-band selection + `.btr` normal maps (the `.btr`/`.bto`/`_far.nif` parsers ship) | M35 |
 | Remaining `PACK` procedures (Find/Eat/Sleep/Accompany/UseItemAt/Ambush/FleeNotCombat/CastMagic/Dialogue/UseWeapon) + per-frame package re-evaluation | NPCs perform item-use/combat/magic/dialogue behaviors; packages react to game-time changes | M42 (Tier 7) |
 | Full Papyrus transpiler (M47.2) | Arbitrary script execution on real content (`.pex` recognizer slice shipped Session 51) | M47.2 (Tier 3) |

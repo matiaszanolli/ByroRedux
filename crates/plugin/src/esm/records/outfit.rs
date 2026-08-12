@@ -25,7 +25,7 @@
 //! Skyrim SE / FO4 / FO76 / Starfield.
 
 use crate::esm::reader::{FormIdRemap, SubRecord};
-use crate::esm::records::common::read_zstring;
+use crate::esm::records::common::CommonNamedFields;
 use crate::esm::sub_reader::SubReader;
 
 /// Parsed OTFT record — flat array of item FormIDs (ARMO or LVLI).
@@ -64,9 +64,12 @@ pub fn parse_otft(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
         form_id,
         ..Default::default()
     };
+    // #2414 / TD2-117 SIBLING — same swap as the `misc/` family; these two
+    // sites sit outside it and were not named in the issue.
+    let common = CommonNamedFields::from_subs(subs);
+    out.editor_id = common.editor_id;
     for sub in subs {
         match &sub.sub_type {
-            b"EDID" => out.editor_id = read_zstring(&sub.data),
             b"INAM" if sub.data.len() >= 4 => {
                 if let Ok(id) = SubReader::new(&sub.data).u32() {
                     out.items.push(remap_fid(id, remap));

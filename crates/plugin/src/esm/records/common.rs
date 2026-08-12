@@ -335,30 +335,25 @@ impl CommonItemFields {
     /// type-specific parser starts from this and then handles its own DNAM /
     /// type-specific blocks.
     pub fn from_subs(subs: &[SubRecord]) -> Self {
-        let mut out = Self::default();
-        for sub in subs {
-            match &sub.sub_type {
-                // EDID is always an inline cstring — not localized.
-                b"EDID" => out.editor_id = read_zstring(&sub.data),
-                // FULL is an lstring on Skyrim-localized plugins (#348).
-                b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
-                b"MODL" => out.model_path = read_zstring(&sub.data),
-                b"ICON" => out.icon_path = read_zstring(&sub.data),
-                b"SCRI" if sub.data.len() >= 4 => {
-                    out.script_form_id =
-                        crate::esm::sub_reader::SubReader::new(&sub.data).u32_or_default();
-                }
-                b"VMAD" => {
-                    // #2189 — decode, don't just flag. Matches
-                    // `CommonNamedFields::from_subs`'s VMAD arm exactly.
-                    out.has_script = true;
-                    out.script_instance =
-                        Some(super::script_instance::ScriptInstanceData::parse(&sub.data));
-                }
-                _ => {}
-            }
+        // #2414 / TD2-117 — the six universal arms here were a verbatim
+        // second copy of `CommonNamedFields::from_subs`. That copy has
+        // already cost real bugs: #2189's own field doc below records that
+        // #369's `script_instance` decode "reached `CommonNamedFields`
+        // only", leaving every scripted WEAP/ARMO/ALCH/BOOK silently
+        // unattached until it was found again. Delegating makes the two
+        // structurally impossible to diverge; `value`/`weight` stay on this
+        // struct and are filled by the per-record parser as before.
+        let named = CommonNamedFields::from_subs(subs);
+        Self {
+            editor_id: named.editor_id,
+            full_name: named.full_name,
+            model_path: named.model_path,
+            icon_path: named.icon_path,
+            script_form_id: named.script_form_id,
+            has_script: named.has_script,
+            script_instance: named.script_instance,
+            ..Self::default()
         }
-        out
     }
 }
 

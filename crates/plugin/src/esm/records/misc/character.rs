@@ -1,6 +1,6 @@
 //! Character appearance records — head parts, eyes, hair.
 
-use super::super::common::{read_lstring_or_zstring, read_zstring};
+use super::super::common::{read_zstring, CommonNamedFields};
 use crate::esm::reader::SubRecord;
 use crate::esm::sub_reader::SubReader;
 
@@ -25,11 +25,16 @@ pub fn parse_hdpt(form_id: u32, subs: &[SubRecord]) -> HdptRecord {
         form_id,
         ..Default::default()
     };
+    // #2414 / TD2-117 — the universal named fields come from the
+    // shared walker instead of a hand-rolled copy of its arms. It
+    // ignores every other sub-record, so the per-record loop below
+    // is unchanged.
+    let common = CommonNamedFields::from_subs(subs);
+    out.editor_id = common.editor_id;
+    out.full_name = common.full_name;
+    out.model_path = common.model_path;
     for sub in subs {
         match &sub.sub_type {
-            b"EDID" => out.editor_id = read_zstring(&sub.data),
-            b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
-            b"MODL" => out.model_path = read_zstring(&sub.data),
             b"DATA" if !sub.data.is_empty() => {
                 out.flags = sub.data[0];
             }
@@ -56,11 +61,16 @@ pub fn parse_eyes(form_id: u32, subs: &[SubRecord]) -> EyesRecord {
         form_id,
         ..Default::default()
     };
+    // #2414 / TD2-117 — the universal named fields come from the
+    // shared walker instead of a hand-rolled copy of its arms. It
+    // ignores every other sub-record, so the per-record loop below
+    // is unchanged.
+    let common = CommonNamedFields::from_subs(subs);
+    out.editor_id = common.editor_id;
+    out.full_name = common.full_name;
+    out.icon_path = common.icon_path;
     for sub in subs {
         match &sub.sub_type {
-            b"EDID" => out.editor_id = read_zstring(&sub.data),
-            b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
-            b"ICON" => out.icon_path = read_zstring(&sub.data),
             b"DATA" if !sub.data.is_empty() => {
                 out.flags = sub.data[0];
             }
@@ -87,12 +97,17 @@ pub fn parse_hair(form_id: u32, subs: &[SubRecord]) -> HairRecord {
         form_id,
         ..Default::default()
     };
+    // #2414 / TD2-117 — the universal named fields come from the
+    // shared walker instead of a hand-rolled copy of its arms. It
+    // ignores every other sub-record, so the per-record loop below
+    // is unchanged.
+    let common = CommonNamedFields::from_subs(subs);
+    out.editor_id = common.editor_id;
+    out.full_name = common.full_name;
+    out.model_path = common.model_path;
+    out.icon_path = common.icon_path;
     for sub in subs {
         match &sub.sub_type {
-            b"EDID" => out.editor_id = read_zstring(&sub.data),
-            b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
-            b"MODL" => out.model_path = read_zstring(&sub.data),
-            b"ICON" => out.icon_path = read_zstring(&sub.data),
             b"DATA" if !sub.data.is_empty() => {
                 out.flags = sub.data[0];
             }
@@ -130,9 +145,14 @@ pub fn parse_csty(form_id: u32, subs: &[SubRecord]) -> CstyRecord {
         form_id,
         ..Default::default()
     };
+    // #2414 / TD2-117 — the universal named fields come from the
+    // shared walker instead of a hand-rolled copy of its arms. It
+    // ignores every other sub-record, so the per-record loop below
+    // is unchanged.
+    let common = CommonNamedFields::from_subs(subs);
+    out.editor_id = common.editor_id;
     for sub in subs {
         match &sub.sub_type {
-            b"EDID" => out.editor_id = read_zstring(&sub.data),
             b"CSTD" if sub.data.len() >= 4 => {
                 out.csty_flags = SubReader::new(&sub.data).u32_or_default();
             }
@@ -164,9 +184,14 @@ pub fn parse_idle(form_id: u32, subs: &[SubRecord]) -> IdleRecord {
         form_id,
         ..Default::default()
     };
+    // #2414 / TD2-117 — the universal named fields come from the
+    // shared walker instead of a hand-rolled copy of its arms. It
+    // ignores every other sub-record, so the per-record loop below
+    // is unchanged.
+    let common = CommonNamedFields::from_subs(subs);
+    out.editor_id = common.editor_id;
     for sub in subs {
         match &sub.sub_type {
-            b"EDID" => out.editor_id = read_zstring(&sub.data),
             b"MODL" => out.animation_path = read_zstring(&sub.data),
             b"DNAM" => out.behavior_graph_path = read_zstring(&sub.data),
             b"ENAM" => out.animation_event = read_zstring(&sub.data),

@@ -12,7 +12,7 @@
 //! against all 1,706 vanilla Skyrim SE scenes with
 //! `examples/dump_scen_subs.rs`.
 
-use super::super::common::read_zstring;
+use super::super::common::{read_zstring, CommonNamedFields};
 use super::super::condition::{push_ctda, ConditionList};
 use super::super::script_instance::{
     parse_scene_fragments, SceneScriptFragment, ScriptInstanceData,
@@ -157,9 +157,14 @@ pub fn parse_scen(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
     let mut phase_section_finished = false;
     let mut action_section_started = false;
 
+    // #2414 / TD2-117 — the universal named fields come from the
+    // shared walker instead of a hand-rolled copy of its arms. It
+    // ignores every other sub-record, so the per-record loop below
+    // is unchanged.
+    let common = CommonNamedFields::from_subs(subs);
+    out.editor_id = common.editor_id;
     for sub in subs {
         match &sub.sub_type {
-            b"EDID" => out.editor_id = read_zstring(&sub.data),
             b"VMAD" => {
                 out.fragments = parse_scene_fragments(&sub.data);
                 out.script_instance = Some(ScriptInstanceData::parse(&sub.data));

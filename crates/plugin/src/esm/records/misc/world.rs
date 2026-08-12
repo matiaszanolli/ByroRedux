@@ -22,9 +22,14 @@ pub fn parse_navi(form_id: u32, subs: &[SubRecord]) -> NaviRecord {
         form_id,
         ..Default::default()
     };
+    // #2414 / TD2-117 — the universal named fields come from the
+    // shared walker instead of a hand-rolled copy of its arms. It
+    // ignores every other sub-record, so the per-record loop below
+    // is unchanged.
+    let common = CommonNamedFields::from_subs(subs);
+    out.editor_id = common.editor_id;
     for sub in subs {
         match &sub.sub_type {
-            b"EDID" => out.editor_id = read_zstring(&sub.data),
             b"NVER" if sub.data.len() >= 4 => {
                 out.version = SubReader::new(&sub.data).u32_or_default();
             }
@@ -49,9 +54,14 @@ pub fn parse_navm(form_id: u32, subs: &[SubRecord]) -> NavmRecord {
         form_id,
         ..Default::default()
     };
+    // #2414 / TD2-117 — the universal named fields come from the
+    // shared walker instead of a hand-rolled copy of its arms. It
+    // ignores every other sub-record, so the per-record loop below
+    // is unchanged.
+    let common = CommonNamedFields::from_subs(subs);
+    out.editor_id = common.editor_id;
     for sub in subs {
         match &sub.sub_type {
-            b"EDID" => out.editor_id = read_zstring(&sub.data),
             b"NVER" if sub.data.len() >= 4 => {
                 out.version = SubReader::new(&sub.data).u32_or_default();
             }
@@ -82,9 +92,14 @@ pub fn parse_regn(form_id: u32, subs: &[SubRecord]) -> RegnRecord {
         form_id,
         ..Default::default()
     };
+    // #2414 / TD2-117 — the universal named fields come from the
+    // shared walker instead of a hand-rolled copy of its arms. It
+    // ignores every other sub-record, so the per-record loop below
+    // is unchanged.
+    let common = CommonNamedFields::from_subs(subs);
+    out.editor_id = common.editor_id;
     for sub in subs {
         match &sub.sub_type {
-            b"EDID" => out.editor_id = read_zstring(&sub.data),
             b"WNAM" if sub.data.len() >= 4 => {
                 out.weather_form = SubReader::new(&sub.data).u32().ok();
             }
@@ -119,9 +134,14 @@ pub fn parse_eczn(form_id: u32, subs: &[SubRecord]) -> EcznRecord {
         form_id,
         ..Default::default()
     };
+    // #2414 / TD2-117 — the universal named fields come from the
+    // shared walker instead of a hand-rolled copy of its arms. It
+    // ignores every other sub-record, so the per-record loop below
+    // is unchanged.
+    let common = CommonNamedFields::from_subs(subs);
+    out.editor_id = common.editor_id;
     for sub in subs {
         match &sub.sub_type {
-            b"EDID" => out.editor_id = read_zstring(&sub.data),
             b"DATA" if sub.data.len() >= 7 => {
                 let mut r = SubReader::new(&sub.data);
                 out.owner_form = r.u32_or_default();
@@ -184,9 +204,14 @@ pub fn parse_lgtm(form_id: u32, subs: &[SubRecord]) -> LgtmRecord {
         form_id,
         ..Default::default()
     };
+    // #2414 / TD2-117 — the universal named fields come from the
+    // shared walker instead of a hand-rolled copy of its arms. It
+    // ignores every other sub-record, so the per-record loop below
+    // is unchanged.
+    let common = CommonNamedFields::from_subs(subs);
+    out.editor_id = common.editor_id;
     for sub in subs {
         match &sub.sub_type {
-            b"EDID" => out.editor_id = read_zstring(&sub.data),
             b"DATA" if sub.data.len() >= 20 => {
                 let mut r = SubReader::new(&sub.data);
                 out.ambient = r.rgb_color().unwrap_or([0.0; 3]);
@@ -268,9 +293,14 @@ pub fn parse_imgs(form_id: u32, subs: &[SubRecord]) -> ImgsRecord {
         form_id,
         ..Default::default()
     };
+    // #2414 / TD2-117 — the universal named fields come from the
+    // shared walker instead of a hand-rolled copy of its arms. It
+    // ignores every other sub-record, so the per-record loop below
+    // is unchanged.
+    let common = CommonNamedFields::from_subs(subs);
+    out.editor_id = common.editor_id;
     for sub in subs {
         match &sub.sub_type {
-            b"EDID" => out.editor_id = read_zstring(&sub.data),
             b"DNAM" => out.dnam_raw = Some(sub.data.clone()),
             _ => {}
         }

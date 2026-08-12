@@ -1,7 +1,7 @@
 //! `QUST` quest records — stages, objectives, and the Skyrim+ VMAD
 //! fragment-dispatch bindings.
 
-use super::super::common::{read_lstring_or_zstring, read_zstring};
+use super::super::common::{read_lstring_or_zstring, read_zstring, CommonNamedFields};
 use super::super::condition::{push_ctda, ConditionList};
 use super::super::script_instance::{
     parse_quest_fragments, QuestScriptFragment, ScriptInstanceData,
@@ -458,6 +458,13 @@ pub fn parse_qust(
         form_id,
         ..Default::default()
     };
+    // #2414 / TD2-117 — EDID/FULL via the shared walker. The rest of the
+    // record-level fields stay in `parse_qust_header`: QUST's `VMAD` arm
+    // decodes the stage→fragment table on top of the common script data,
+    // so it is not the shared walker's arm.
+    let common = CommonNamedFields::from_subs(subs);
+    out.editor_id = common.editor_id;
+    out.full_name = common.full_name;
     let mut block = QustBlock::None;
     let mut skyrim_plus = false;
     let mut secondary_conditions = false;
@@ -500,8 +507,6 @@ fn parse_qust_header(
     secondary_conditions: &mut bool,
 ) {
     match &sub.sub_type {
-        b"EDID" => out.editor_id = read_zstring(&sub.data),
-        b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
         b"SCRI" if sub.data.len() >= 4 => {
             out.script_ref = remap_form_id(SubReader::new(&sub.data).u32_or_default(), remap);
         }
