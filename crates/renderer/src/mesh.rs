@@ -172,6 +172,17 @@ pub struct MeshRegistry {
     /// Set when `upload_scene_mesh` is called after the initial SSBO
     /// build — signals the frame loop to call `rebuild_geometry_ssbo`.
     geometry_dirty: bool,
+    /// Set when a *scene* mesh is dropped, leaving its span stranded inside
+    /// `pending_vertices`/`pending_indices`; cleared once
+    /// `compact_pending_geometry` has squeezed those spans out.
+    ///
+    /// Deliberately NOT derivable from `meshes.iter().any(|s| s.is_none())`:
+    /// slots are `None` *forever* by design (handle stability, #372), so that
+    /// scan latches true on the first drop of any mesh — scene or not — and
+    /// never clears, making compaction unconditional from then on (#2678).
+    /// Also distinct from `geometry_dirty`, which appends set too and which
+    /// therefore cannot express "a hole exists".
+    geometry_has_holes: bool,
     /// Number of vertices in the SSBO at last build. Used to detect
     /// whether a rebuild is needed vs. the current pending state.
     ssbo_vertex_count: usize,
@@ -244,6 +255,7 @@ impl MeshRegistry {
             global_vertex_buffer: None,
             global_index_buffer: None,
             geometry_dirty: false,
+            geometry_has_holes: false,
             ssbo_vertex_count: 0,
             ssbo_index_count: 0,
             deferred_destroy: DeferredDestroyQueue::new(),
@@ -698,6 +710,11 @@ impl MeshRegistry {
         }
         if was_scene_mesh {
             self.geometry_dirty = true;
+            // #2678 — this drop stranded the mesh's span inside the pending
+            // pools. Record it explicitly; the `meshes` slot it just vacated
+            // stays `None` permanently, so the slot table cannot answer
+            // "is there a hole *right now*".
+            self.geometry_has_holes = true;
         }
 
         true
@@ -707,13 +724,20 @@ impl MeshRegistry {
     /// scene meshes' data, and rewrite each survivor's
     /// `global_vertex_offset`/`global_index_offset` to its new position.
     ///
-    /// Called implicitly by [`rebuild_geometry_ssbo`](Self::rebuild_geometry_ssbo)
-    /// when any scene mesh has been dropped. Safe to call with no drops
-    /// — it exits early if no dead slots are present.
+    /// Called implicitly by [`rebuild_geometry_ssbo`](Self::rebuild_geometry_ssbo).
+    /// Safe to call with no drops: it exits early unless a scene mesh has been
+    /// dropped since the last compaction (`geometry_has_holes`). Pure appends,
+    /// and repeat rebuilds with no intervening drop, skip the pass entirely.
     fn compact_pending_geometry(&mut self) {
         // Fast path: no holes → nothing to compact.
-        let any_dead = self.meshes.iter().any(|slot| slot.is_none());
-        if !any_dead {
+        //
+        // #2678 — gated on the explicit `geometry_has_holes` flag, NOT on
+        // `meshes.iter().any(|s| s.is_none())`. Dropped slots hold `None`
+        // forever (handle stability, #372), so that scan latched true on the
+        // first drop of any mesh and left this pass running on every rebuild
+        // — re-copying both pools to a byte-identical layout once per cell
+        // load, at the ~208 MB typical pool size.
+        if !self.geometry_has_holes {
             return;
         }
 
@@ -743,6 +767,8 @@ impl MeshRegistry {
 
         self.pending_vertices = new_vertices;
         self.pending_indices = new_indices;
+        // Pools are hole-free again until the next scene-mesh drop.
+        self.geometry_has_holes = false;
     }
 
     /// Build the global geometry SSBO from accumulated vertex/index data.
@@ -1724,5 +1750,130 @@ mod refcount_tests {
         reg.mesh_cache.insert(("stale.nif".to_string(), 0), handle);
         assert_eq!(reg.acquire_cached("stale.nif", 0), None);
         assert_eq!(reg.refcount(handle), None);
+    }
+}
+
+#[cfg(test)]
+mod compaction_gate_tests {
+    //! Regression tests for #2678 / PERF-D3-02 — `compact_pending_geometry`
+    //! must actually skip when nothing has been dropped since the last pass.
+    //!
+    //! The bug was invisible in output: the old gate
+    //! (`meshes.iter().any(|s| s.is_none())`) latched true on the first drop
+    //! and never cleared, so every later rebuild re-ran a full compaction
+    //! that produced a *byte-identical* layout. Correct pixels, redundant
+    //! multi-hundred-MB copy per cell load.
+    //!
+    //! Comparing pool CONTENTS therefore cannot detect the regression — a
+    //! redundant pass and a skipped pass agree on every element. These tests
+    //! observe the allocation instead: compaction always installs freshly
+    //! built `Vec`s, so `as_ptr()` moves iff the pass ran. Pools are kept
+    //! non-empty so the pointers are real rather than dangling.
+    use super::*;
+
+    /// Upload two scene meshes through the device-free global-only path.
+    fn two_scene_meshes(reg: &mut MeshRegistry) -> (u32, u32) {
+        let (tv, ti) = triangle_vertices([1.0, 0.0, 0.0]);
+        let (qv, qi) = quad_vertices();
+        let a = reg.upload_scene_mesh_global_only(&tv, &ti).unwrap();
+        let b = reg.upload_scene_mesh_global_only(&qv, &qi).unwrap();
+        (a, b)
+    }
+
+    /// The core pin: a second compaction with no intervening drop must not
+    /// touch the pools. Pre-fix this re-copied both of them.
+    #[test]
+    fn repeat_compaction_without_a_new_drop_does_not_recopy() {
+        let mut reg = MeshRegistry::new();
+        let (a, _b) = two_scene_meshes(&mut reg);
+
+        assert!(reg.drop_mesh(a), "refcount 1 → drop frees the mesh");
+        assert!(
+            reg.geometry_has_holes,
+            "dropping a scene mesh strands its span in the pending pools"
+        );
+
+        // First pass: real work, so the pools are rebuilt.
+        reg.compact_pending_geometry();
+        assert!(
+            !reg.geometry_has_holes,
+            "compaction must clear the flag it consumed"
+        );
+        assert!(
+            !reg.pending_vertices.is_empty(),
+            "survivor geometry remains"
+        );
+
+        let v_ptr = reg.pending_vertices.as_ptr();
+        let i_ptr = reg.pending_indices.as_ptr();
+        let v_len = reg.pending_vertices.len();
+        let i_len = reg.pending_indices.len();
+
+        // Second pass with nothing dropped in between: must be a no-op.
+        reg.compact_pending_geometry();
+
+        assert_eq!(
+            reg.pending_vertices.as_ptr(),
+            v_ptr,
+            "vertex pool was reallocated by a compaction that had nothing to \
+             compact — the #2678 redundant full-pool copy is back"
+        );
+        assert_eq!(
+            reg.pending_indices.as_ptr(),
+            i_ptr,
+            "index pool was reallocated by a no-op compaction (#2678)"
+        );
+        assert_eq!(reg.pending_vertices.len(), v_len);
+        assert_eq!(reg.pending_indices.len(), i_len);
+    }
+
+    /// The flag must not be derivable from the slot table: after a drop AND a
+    /// compaction the `meshes` vec still contains a permanent `None`, which is
+    /// precisely what made the old scan latch.
+    #[test]
+    fn dead_slots_persist_after_compaction_so_the_slot_scan_cannot_gate_it() {
+        let mut reg = MeshRegistry::new();
+        let (a, _b) = two_scene_meshes(&mut reg);
+        assert!(reg.drop_mesh(a));
+        reg.compact_pending_geometry();
+
+        assert!(
+            reg.meshes.iter().any(|slot| slot.is_none()),
+            "dropped slots are None forever (handle stability, #372)"
+        );
+        assert!(
+            !reg.geometry_has_holes,
+            "…so the slot scan and the real hole state disagree — gating on \
+             the scan is what made compaction unconditional"
+        );
+    }
+
+    /// A fresh scene-mesh drop re-arms the gate.
+    #[test]
+    fn a_later_drop_rearms_compaction() {
+        let mut reg = MeshRegistry::new();
+        let (a, b) = two_scene_meshes(&mut reg);
+        assert!(reg.drop_mesh(a));
+        reg.compact_pending_geometry();
+        assert!(!reg.geometry_has_holes);
+
+        assert!(reg.drop_mesh(b), "second scene mesh dropped");
+        assert!(
+            reg.geometry_has_holes,
+            "a new drop must re-arm the pass, or its span leaks in the pools"
+        );
+    }
+
+    /// Appends alone must never arm compaction — `geometry_dirty` covers the
+    /// rebuild trigger, and conflating the two is what the separate flag
+    /// avoids.
+    #[test]
+    fn pure_appends_do_not_arm_compaction() {
+        let mut reg = MeshRegistry::new();
+        two_scene_meshes(&mut reg);
+        assert!(
+            !reg.geometry_has_holes,
+            "uploads create no holes; only drops do"
+        );
     }
 }
