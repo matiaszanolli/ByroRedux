@@ -215,9 +215,14 @@ mod tests {
         assert!(
             src.contains("bool needsVisibility = visibilityMaskNeedsTrace(")
                 && src.contains("if (!useRestir || !needsVisibility)")
-                && src.contains(
-                    "if (directShadowRayEnabled && needsVisibility && shadowFade > 0.01)"
-                ),
+                // #2554 — the `&& shadowFade > 0.01` clause this used to pin
+                // was removed from the streaming gate. It was incidental to
+                // this test's subject (structural visibility for
+                // no-prop-shadow LIGH sources); gating the stream on the
+                // distance fade is what zeroed those lights outright past
+                // SHADOW_FADE_END. See `restir_far_field_converges_to_
+                // unshadowed_radiance` for the pin that now owns the fade.
+                && src.contains("if (directShadowRayEnabled && needsVisibility)"),
             "no-prop-shadow LIGH sources must retain structural ReSTIR visibility"
         );
         assert!(
@@ -232,6 +237,72 @@ mod tests {
                 && common.contains("VISIBILITY_MASK_ALL_OPAQUE")
                 && lighting.contains("vec3 traceLightTransmittance("),
             "direct-light visibility must preserve the explicit layer mask"
+        );
+    }
+
+    /// #2554 / FNV-D3-01 — `shadowFade` must fade the SHADOW term, never the
+    /// light itself.
+    ///
+    /// Lights that need visibility contribute nothing to `Lo` under ReSTIR
+    /// (`if (!useRestir || !needsVisibility)`), so the reservoir estimate is
+    /// their entire direct term. Pre-fix, both the streaming gate and the
+    /// finalize scale keyed on `shadowFade`, so past `SHADOW_FADE_END` the
+    /// estimate went to zero and every FNV light — including the sun, since
+    /// `render/lights.rs` never emits `SHADOW_POLICY_NONE` — blacked out
+    /// beyond ~171 m.
+    ///
+    /// The invariant: `shadowFade == 0` ⇒ direct light == the unshadowed BRDF
+    /// value. That holds iff (a) the reservoir keeps streaming at any
+    /// distance, and (b) the fade is applied to the visibility factor via
+    /// `mix(vec3(1.0), transmissionFrame, shadowFade)` rather than as a bare
+    /// multiply on the contribution. This is the same semantics the retired
+    /// legacy-WRS arm implements by scaling only its shadow subtraction.
+    #[test]
+    fn restir_far_field_converges_to_unshadowed_radiance() {
+        let src = include_str!("../../shaders/triangle.frag");
+
+        // (a) Neither the stream nor its temporal/spatial reuse may be gated
+        //     on the distance fade — a dead reservoir cannot carry the term.
+        assert!(
+            !src.contains("needsVisibility && shadowFade > 0.01")
+                && !src.contains("useTemporal && shadowFade > 0.01")
+                && !src.contains("useSpatial && shadowFade > 0.01"),
+            "reservoir streaming/reuse must not be gated on shadowFade — that \
+             is what zeroed distant lights instead of fading their shadows"
+        );
+
+        // (b) The fade lands on the visibility factor, and the finalize is a
+        //     plain rad·W·V product with no residual `* shadowFade`.
+        assert!(
+            src.contains("visibility = mix(vec3(1.0), transmissionFrame, shadowFade);"),
+            "shadowFade must interpolate visibility toward fully-lit, so the \
+             far-field estimate converges to the unshadowed BRDF value"
+        );
+        assert!(
+            src.contains("frameContribution = rad * restirW * visibility;"),
+            "the ReSTIR finalize must not re-apply shadowFade to the whole \
+             contribution — that fades the light, not the shadow"
+        );
+        assert!(
+            !src.contains("rad * restirW * transmissionFrame * shadowFade"),
+            "the pre-#2554 finalize form must not return"
+        );
+
+        // The shadow RAYS stay fade-gated: skipping them at range is the
+        // intended perf saving, and is what makes the default visibility of
+        // 1.0 load-bearing rather than merely defensive.
+        assert!(
+            src.contains("vec3 visibility = vec3(1.0);") && src.contains("if (shadowFade > 0.01) {"),
+            "shadow rays must still be skipped past the fade, defaulting \
+             visibility to fully lit"
+        );
+
+        // The legacy-WRS arm is the reference semantics being matched here,
+        // not an independent re-derivation (issue's SIBLING check).
+        assert!(
+            src.contains("Lo - shadowable * W * (vec3(1.0) - transmission) * shadowFade"),
+            "legacy-WRS reference semantics (fade applied only to the shadow \
+             subtraction) must remain present as the comparison point"
         );
     }
 

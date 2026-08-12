@@ -826,8 +826,13 @@ mod tests {
             "DBG_DISABLE_RESTIR must disable both reuse dimensions even when \
              the legacy WRS arm is compiled out"
         );
+        // #2554 — the `&& shadowFade > 0.01` clause this used to pin was
+        // removed; gating reservoir reuse on the distance fade is part of
+        // what zeroed distant lights. This test's subject is the `useTemporal`
+        // gate itself, which is unchanged. The fade's own contract now lives
+        // in `restir::tests::restir_far_field_converges_to_unshadowed_radiance`.
         assert!(
-            src.contains("if (useTemporal && shadowFade > 0.01"),
+            src.contains("if (useTemporal && stableTemporalSurface"),
             "temporal reprojection must be conditional on useTemporal"
         );
     }

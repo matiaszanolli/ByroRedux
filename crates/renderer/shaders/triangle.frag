@@ -2726,7 +2726,15 @@ void main() {
 
             // Stream this light into the shared shadow reservoir. Both
             // interior and exterior sources reach this exact path.
-            if (directShadowRayEnabled && needsVisibility && shadowFade > 0.01) {
+            //
+            // #2554 — deliberately NOT gated on `shadowFade`. These lights
+            // are skipped from the `Lo` accumulation above under ReSTIR
+            // (`!useRestir || !needsVisibility`), so their entire direct
+            // term has to arrive via the reservoir. Gating the stream on
+            // the distance fade left them contributing nothing at all past
+            // `SHADOW_FADE_END` rather than contributing unshadowed light.
+            // The fade now applies only to the visibility term at finalize.
+            if (directShadowRayEnabled && needsVisibility) {
                 // Target pdf: luminance of the to-be-subtracted radiance
                 // (`shadowableRadiance` computed above). Sampling
                 // proportional to this approximates the optimal
@@ -2809,7 +2817,11 @@ void main() {
             vec2 motion = (fragCurrClipPos.xy / fragCurrClipPos.w
                          - fragPrevClipPos.xy / fragPrevClipPos.w) * 0.5;
             vec2 prevFrag = gl_FragCoord.xy - motion * screen.xy;
-            if (useTemporal && shadowFade > 0.01 && stableTemporalSurface
+            // #2554 — `shadowFade` removed from this gate alongside the
+            // streaming gate above: the reservoir is now live at every
+            // distance, so its temporal history must be too, or the
+            // far-field estimate degrades to single-frame RIS.
+            if (useTemporal && stableTemporalSurface
                 && prevFrag.x >= 0.0 && prevFrag.y >= 0.0
                 && prevFrag.x < screen.x && prevFrag.y < screen.y) {
                 uint prevIdx = uint(prevFrag.y) * scrW + uint(prevFrag.x);
@@ -2897,7 +2909,9 @@ void main() {
             // temporal-only ReSTIR.
             bool useSpatial = !disableRestirReuse
                 && (dbgFlags & DBG_DISABLE_SPATIAL) == 0u;
-            if (useSpatial && shadowFade > 0.01) {
+            // #2554 — see the streaming/temporal gates above; spatial reuse
+            // is likewise distance-independent now.
+            if (useSpatial) {
                 const int   SPATIAL_SAMPLES = 5;
                 const float SPATIAL_RADIUS  = 16.0; // neighbour disk radius (px)
                 const float SPATIAL_M_CAP   = 8.0;  // per-neighbour trust bound
@@ -2967,66 +2981,95 @@ void main() {
                 restirW = min(restirWSum / (restirM * restirPHat), RESERVOIR_W_CLAMP);
             }
             vec3 frameContribution = vec3(0.0); // this frame's rad·W·V estimate
+            // #2554 / FNV-D3-01 — `shadowFade` no longer gates this block.
+            //
+            // These lights contribute nothing to `Lo` under ReSTIR, so this
+            // estimate IS their whole direct term. Gating the block on the
+            // fade (and multiplying the result by it) faded the *light* to
+            // zero past `SHADOW_FADE_END` instead of fading the *shadow*,
+            // blacking out sun + point direct lighting beyond ~171 m —
+            // every FNV light, since `render/lights.rs` never emits
+            // SHADOW_POLICY_NONE.
+            //
+            // The retired legacy-WRS arm below has the correct semantics and
+            // is the reference matched here, not a re-derivation: it adds
+            // radiance unconditionally and applies `shadowFade` ONLY to the
+            // shadow subtraction (`Lo - shadowable * W * (1 - transmission)
+            // * shadowFade`), so the fade converges to the unshadowed value.
+            //
+            // Perf is preserved: the fade still skips the shadow *rays*
+            // below — past the ramp the visibility term is simply 1.0.
             if (restirY != 0xFFFFFFFFu && restirW > 0.0
-                && visibilityMaskNeedsTrace(lights[restirY].params.z)
-                && shadowFade > 0.01) {
+                && visibilityMaskNeedsTrace(lights[restirY].params.z)) {
                 uint i = restirY;
-                vec3 lightPos = lights[i].position_radius.xyz;
-                float radius = lights[i].position_radius.w;
-                float lightType = lights[i].color_type.w;
-                vec3 L = (lightType < 1.5)
-                    ? normalize(lightPos - fragWorldPos)
-                    : normalize(lights[i].direction_angle.xyz);
-                vec3 Tb, Bb;
-                buildOrthoBasis(L, Tb, Bb);
-                vec3 shadowOffsetNormal = dot(geometricNormal, V) < 0.0
-                    ? -geometricNormal : geometricNormal;
-                vec3 rayOrigin = offsetRayOrigin(
-                    fragWorldPos, shadowOffsetNormal);
-                // K shadow rays per frame, each with a FRESH decorrelated disk
-                // sample (PCG hash, not IGN — IGN's per-frame offset crawls;
-                // white noise decorrelates so the EMA converges). Averaging K
-                // binary visibilities drops per-frame variance by √K, so the
-                // penumbra converges K× faster — the cheap way to fix "a bit
-                // slow", spending the 4070 Ti's 300+ fps headroom. (The EMA
-                // below still refines further over parked frames via 1/N.)
-                const int MAX_SHADOW_RAYS = 8;
-                int shadowRayCount = int(clamp(rayBudget.directShadowSamples, 1u, 8u));
-                vec3 transmissionSum = vec3(0.0);
-                for (int sr = 0; sr < MAX_SHADOW_RAYS; sr++) {
-                    if (sr >= shadowRayCount) break;
-                    vec2 dRand = hash2_pixel_frame(uvec2(gl_FragCoord.xy),
-                        (uint(frameCount) * uint(shadowRayCount) + uint(sr)) * 9u + i);
-                    vec2 diskSample = concentricDiskSample(dRand.x, dRand.y);
-                    vec3 rayDir;
-                    float rayDist;
-                    if (lightType < 1.5) {
-                        float lightDiskRadius = max(radius * 0.025, 1.5);
-                        vec3 jitteredTarget =
-                            lightPos + (Tb * diskSample.x + Bb * diskSample.y) * lightDiskRadius;
-                        rayDir = normalize(jitteredTarget - rayOrigin);
-                        rayDist = length(jitteredTarget - rayOrigin) - 0.1;
-                    } else {
-                        // Tangent-plane disk jitter, valid only for α < ~0.05
-                        // rad — same approximation as the legacy-WRS arm's
-                        // directional-shadow-jitter block below (see its
-                        // comment for the full derivation and tuning history).
-                        float sunAngularRadius = skyTint.w;
-                        vec3 jitteredDir =
-                            L + (Tb * diskSample.x + Bb * diskSample.y) * sunAngularRadius;
-                        rayDir = normalize(jitteredDir);
-                        rayDist = DIRECTIONAL_SHADOW_TRACE_DISTANCE;
+                // Averaged visibility of the selected light. Defaults to
+                // fully lit so that when the shadow rays are skipped past
+                // the fade ramp the estimator lands on the unshadowed BRDF
+                // value rather than on zero.
+                vec3 visibility = vec3(1.0);
+                if (shadowFade > 0.01) {
+                    vec3 lightPos = lights[i].position_radius.xyz;
+                    float radius = lights[i].position_radius.w;
+                    float lightType = lights[i].color_type.w;
+                    vec3 L = (lightType < 1.5)
+                        ? normalize(lightPos - fragWorldPos)
+                        : normalize(lights[i].direction_angle.xyz);
+                    vec3 Tb, Bb;
+                    buildOrthoBasis(L, Tb, Bb);
+                    vec3 shadowOffsetNormal = dot(geometricNormal, V) < 0.0
+                        ? -geometricNormal : geometricNormal;
+                    vec3 rayOrigin = offsetRayOrigin(
+                        fragWorldPos, shadowOffsetNormal);
+                    // K shadow rays per frame, each with a FRESH decorrelated disk
+                    // sample (PCG hash, not IGN — IGN's per-frame offset crawls;
+                    // white noise decorrelates so the EMA converges). Averaging K
+                    // binary visibilities drops per-frame variance by √K, so the
+                    // penumbra converges K× faster — the cheap way to fix "a bit
+                    // slow", spending the 4070 Ti's 300+ fps headroom. (The EMA
+                    // below still refines further over parked frames via 1/N.)
+                    const int MAX_SHADOW_RAYS = 8;
+                    int shadowRayCount = int(clamp(rayBudget.directShadowSamples, 1u, 8u));
+                    vec3 transmissionSum = vec3(0.0);
+                    for (int sr = 0; sr < MAX_SHADOW_RAYS; sr++) {
+                        if (sr >= shadowRayCount) break;
+                        vec2 dRand = hash2_pixel_frame(uvec2(gl_FragCoord.xy),
+                            (uint(frameCount) * uint(shadowRayCount) + uint(sr)) * 9u + i);
+                        vec2 diskSample = concentricDiskSample(dRand.x, dRand.y);
+                        vec3 rayDir;
+                        float rayDist;
+                        if (lightType < 1.5) {
+                            float lightDiskRadius = max(radius * 0.025, 1.5);
+                            vec3 jitteredTarget =
+                                lightPos + (Tb * diskSample.x + Bb * diskSample.y) * lightDiskRadius;
+                            rayDir = normalize(jitteredTarget - rayOrigin);
+                            rayDist = length(jitteredTarget - rayOrigin) - 0.1;
+                        } else {
+                            // Tangent-plane disk jitter, valid only for α < ~0.05
+                            // rad — same approximation as the legacy-WRS arm's
+                            // directional-shadow-jitter block below (see its
+                            // comment for the full derivation and tuning history).
+                            float sunAngularRadius = skyTint.w;
+                            vec3 jitteredDir =
+                                L + (Tb * diskSample.x + Bb * diskSample.y) * sunAngularRadius;
+                            rayDir = normalize(jitteredDir);
+                            rayDist = DIRECTIONAL_SHADOW_TRACE_DISTANCE;
+                        }
+                        transmissionSum += traceLightTransmittance(
+                            i, rayOrigin, rayDir, max(rayDist, 0.01));
                     }
-                    transmissionSum += traceLightTransmittance(
-                        i, rayOrigin, rayDir, max(rayDist, 0.01));
-                }
-                vec3 transmissionFrame = transmissionSum / float(shadowRayCount);
+                    vec3 transmissionFrame = transmissionSum / float(shadowRayCount);
+                    // Fade the SHADOW, not the light: at shadowFade == 1 this is
+                    // the measured visibility, at shadowFade == 0 it is 1.0
+                    // (unshadowed). Matches the legacy-WRS subtraction scaling.
+                    visibility = mix(vec3(1.0), transmissionFrame, shadowFade);
+                } // end shadow-ray trace (shadowFade > 0.01)
                 vec3 rad = shadowableLightRadiance(
                     i, N, V, NdotV, F0, albedo, roughness, metalness,
                     specStrength, specColor, mat, fragTangent, fragWorldPos, dbgFlags);
                 // This frame's unbiased ReSTIR estimate of the pixel's direct
-                // shadowed radiance: rad·W·V̄ (V̄ = K-ray averaged visibility).
-                frameContribution = rad * restirW * transmissionFrame * shadowFade;
+                // shadowed radiance: rad·W·V̄ (V̄ = K-ray averaged visibility,
+                // distance-faded toward fully-lit per #2554).
+                frameContribution = rad * restirW * visibility;
             }
 
             // EMA-accumulate the colour estimate with a bounded history. Four
