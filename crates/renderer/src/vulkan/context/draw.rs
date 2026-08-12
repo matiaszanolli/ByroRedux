@@ -165,6 +165,36 @@ fn skinned_vertex_address_for_draw(
     slot_address.unwrap_or(0)
 }
 
+/// Whether a registered `SkinSlot` may back this draw's
+/// `skinnedVertexAddress` (#2402 / CHAIN2-D2-03).
+///
+/// The slot's output buffer holds exactly `slot_vertex_count` positions,
+/// and `ray_hit.glsl` indexes it through the *live* mesh's index buffer
+/// via `GL_EXT_buffer_reference` — a raw device address with no
+/// descriptor range check. So the slot may only be published when it was
+/// sized for the very mesh being drawn.
+///
+/// The reconciliation that normally destroys and recreates a stale slot
+/// lives in `record_skinned_blas_refit`'s dispatch loop, which `continue`s
+/// past any draw whose mesh is `!rt_capable`. A skinned entity remapped
+/// from an RT-capable mesh to a non-RT-capable one (a skinned
+/// effect-shader proxy or decal — M41 equip/outfit swap, cell reload)
+/// therefore keeps its old slot until the LRU sweep reaps it up to
+/// `MAX_FRAMES_IN_FLIGHT + 1` frames later. If the new mesh has more
+/// vertices, those frames read past the end of the allocation: garbage
+/// normals at best, a GPU page fault at worst.
+///
+/// Equality rather than `>=`: a larger slot is in-bounds but still holds
+/// a *different* mesh's skinned positions, which reconstructs hit normals
+/// from the wrong geometry. Either way the caller falls back to `0`, and
+/// `ray_hit.glsl`'s `skinnedVertexAddress != 0` branch takes the bind-pose
+/// path it used before #2219 — the same fallback a first-sight frame or a
+/// pool-exhaustion miss already gets.
+#[inline]
+fn skin_slot_backs_mesh(slot_vertex_count: u32, mesh_vertex_count: u32) -> bool {
+    slot_vertex_count == mesh_vertex_count
+}
+
 #[cfg(test)]
 mod skinned_vertex_address_tests {
     use super::skinned_vertex_address_for_draw;
@@ -186,6 +216,37 @@ mod skinned_vertex_address_tests {
     #[test]
     fn skinned_draw_without_a_slot_yet_falls_back_to_zero() {
         assert_eq!(skinned_vertex_address_for_draw(64, None), 0);
+    }
+
+    // #2402 / CHAIN2-D2-03 — the capacity gate applied at the call site
+    // before the device-address query. The hazard it closes (a stale slot
+    // sized for a smaller mesh, published after a remap onto a
+    // non-RT-capable mesh that the refit path's reconciliation skips) is
+    // a raw `buffer_reference` overread, invisible to both `cargo test`
+    // and the validation layer — so the decision logic is what gets
+    // pinned here, in the same style as `skinned_vertex_address_for_draw`
+    // above.
+    use super::skin_slot_backs_mesh;
+
+    #[test]
+    fn slot_sized_for_this_mesh_backs_it() {
+        assert!(skin_slot_backs_mesh(1_024, 1_024));
+    }
+
+    #[test]
+    fn undersized_slot_is_rejected() {
+        // The dangerous direction: the live mesh has more vertices than
+        // the slot was allocated for, so the shader would index past the
+        // end of the allocation through a raw device address.
+        assert!(!skin_slot_backs_mesh(512, 1_024));
+    }
+
+    #[test]
+    fn oversized_slot_is_also_rejected() {
+        // In-bounds but wrong geometry — the slot holds a different
+        // mesh's skinned positions, which reconstructs hit normals from
+        // the wrong surface. Bind-pose is the better fallback.
+        assert!(!skin_slot_backs_mesh(2_048, 1_024));
     }
 }
 
@@ -2525,6 +2586,13 @@ impl VulkanContext {
             let slot_address = (draw_cmd.bone_offset != 0)
                 .then(|| self.skin_slots.get(&draw_cmd.entity_id))
                 .flatten()
+                // #2402 — the slot must have been sized for THIS mesh. The
+                // refit path's capacity reconciliation skips non-RT-capable
+                // meshes entirely, so a remap onto one leaves a stale slot
+                // live for a few frames; publishing its address would have
+                // the fragment shader index a raw device address with the
+                // new mesh's (possibly larger) index range.
+                .filter(|slot| skin_slot_backs_mesh(slot.vertex_count(), mesh.vertex_count))
                 .map(|slot| {
                     // SAFETY: `slot.output_buffer.buffer` is a live
                     // DEVICE_LOCAL buffer created with

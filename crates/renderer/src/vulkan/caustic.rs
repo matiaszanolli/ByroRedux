@@ -70,6 +70,44 @@ const CAUSTIC_SPLAT_COMP_SPV: &[u8] = include_bytes!("../../shaders/caustic_spla
 pub const CAUSTIC_FORMAT: vk::Format = vk::Format::R32_UINT;
 const CAUSTIC_COLOR_LAYERS: u32 = 3;
 
+/// Ceiling on the parked-camera EMA decay factor. `N/(N+1)` would reach
+/// 1.0 only in the limit, but the cap keeps it strictly below so the
+/// accumulator never stops admitting new energy (a true 1.0 freezes the
+/// pool forever).
+const CAUSTIC_DECAY_MAX: f32 = 0.995;
+
+/// Advance this FIF slot's parked-visit counter and derive the decay
+/// factor for its accumulator (#2401 / CHAIN2-D2-02).
+///
+/// Extracted as a pure function so the per-slot accounting is testable
+/// without a device — the bug it fixes is arithmetic, not Vulkan.
+///
+/// The counter is **per slot** because the accumulator is per slot:
+/// `slots[frame].image` is never cross-seeded, so it only gains a sample
+/// when this frame index comes round again. A single global counter (the
+/// pre-fix shape) made a slot's k-th visit decay with `n = 2k-1` at
+/// `MAX_FRAMES_IN_FLIGHT == 2`, admitting new energy at weight `1/(2k)`
+/// after only `k` real samples — the running average converged at ~`1/√k`
+/// instead of `1/k`.
+///
+/// Camera motion zeroes **every** slot, not just this one: the decay of
+/// 0.0 returned here wipes the current slot immediately, and the other
+/// slots' images are equally stale from the old viewpoint, so their
+/// counters must not survive to over-weight the next parked run.
+fn advance_parked_visits(
+    parked: &mut [u32; MAX_FRAMES_IN_FLIGHT],
+    frame: usize,
+    camera_static: bool,
+) -> f32 {
+    if !camera_static {
+        *parked = [0; MAX_FRAMES_IN_FLIGHT];
+        return 0.0;
+    }
+    parked[frame] = parked[frame].saturating_add(1);
+    let n = parked[frame] as f32;
+    (n / (n + 1.0)).min(CAUSTIC_DECAY_MAX)
+}
+
 #[inline]
 fn caustic_subresource_range() -> vk::ImageSubresourceRange {
     vk::ImageSubresourceRange {
@@ -124,11 +162,20 @@ pub struct CausticPipeline {
     pub strength: f32,
     pub max_lights: u32,
 
-    /// Consecutive parked (camera-static) frames, for progressive 1/N EMA
-    /// convergence. Reset to 0 on camera motion. Capped so the decay factor
-    /// `N/(N+1)` approaches but never reaches 1.0 (a true 1.0 would freeze
-    /// the pool and never admit new energy).
-    parked_frames: u32,
+    /// Consecutive parked (camera-static) **visits to this FIF slot**, for
+    /// progressive 1/N EMA convergence. Reset to 0 on camera motion. Capped
+    /// so the decay factor `N/(N+1)` approaches but never reaches 1.0 (a
+    /// true 1.0 would freeze the pool and never admit new energy).
+    ///
+    /// Per-slot, not global (#2401 / CHAIN2-D2-02). The accumulator image
+    /// is per-FIF (`slots[frame].image`) and never cross-seeded, so a slot
+    /// is only visited every `MAX_FRAMES_IN_FLIGHT` frames. A single
+    /// global counter made a slot's k-th visit decay with `n = 2k-1` and
+    /// admit new energy at weight `1/(2k)` after only `k` real samples —
+    /// the running average converged at ~`1/√k` instead of `1/k`, leaving
+    /// residual half-rate shimmer for the first ~2 s of a parked camera
+    /// (the exact artifact the EMA exists to remove).
+    parked_frames: [u32; MAX_FRAMES_IN_FLIGHT],
 }
 
 impl CausticPipeline {
@@ -208,7 +255,7 @@ impl CausticPipeline {
             ior: 1.5,
             strength: 1.0,
             max_lights: 8,
-            parked_frames: 0,
+            parked_frames: [0; MAX_FRAMES_IN_FLIGHT],
         };
 
         // SAFETY (inside macro): `partial` is local to this fn and not
@@ -761,20 +808,9 @@ impl CausticPipeline {
         // the longer the camera stays parked. Capped at 0.995 so it never
         // freezes (a true 1.0 would stop admitting new energy). Resets on
         // motion (decay 0 → single-frame clear, no smear).
-        const CAUSTIC_DECAY_MAX: f32 = 0.995;
-        if camera_static {
-            self.parked_frames = self.parked_frames.saturating_add(1);
-        } else {
-            self.parked_frames = 0;
-        }
+        let decay_factor = advance_parked_visits(&mut self.parked_frames, frame, camera_static);
         let slot_img = self.slots[frame].image;
         let clear_range = caustic_subresource_range();
-        let decay_factor = if camera_static {
-            let n = self.parked_frames as f32;
-            (n / (n + 1.0)).min(CAUSTIC_DECAY_MAX)
-        } else {
-            0.0
-        };
 
         // Bind pipeline + descriptor once; the decay and splat passes share
         // them and differ only by push constant.
@@ -1198,5 +1234,78 @@ mod tests {
             "caustic deposit regressed to an unconditional floor — dim parked-camera \
              caustics will decay to zero (#2239)"
         );
+    }
+}
+
+#[cfg(test)]
+mod parked_visit_tests {
+    use super::{advance_parked_visits, CAUSTIC_DECAY_MAX, MAX_FRAMES_IN_FLIGHT};
+
+    /// #2401 / CHAIN2-D2-02 — after k parked *global* frames, the slot
+    /// visited on the k-th of them must see `n` equal to its own visit
+    /// count, not the global frame count. Pre-fix a slot's 5th visit
+    /// (global frame 10) decayed with n = 9 and admitted new energy at
+    /// 1/10 after only 5 samples.
+    #[test]
+    fn each_slot_counts_only_its_own_visits() {
+        let mut parked = [0u32; MAX_FRAMES_IN_FLIGHT];
+        let mut last_per_slot = [0.0f32; MAX_FRAMES_IN_FLIGHT];
+        // 10 consecutive parked global frames, round-robin over the slots.
+        for global in 0..10 {
+            let frame = global % MAX_FRAMES_IN_FLIGHT;
+            last_per_slot[frame] = advance_parked_visits(&mut parked, frame, true);
+        }
+        let visits_per_slot = (10 / MAX_FRAMES_IN_FLIGHT) as u32;
+        for (slot, n) in parked.iter().enumerate() {
+            assert_eq!(
+                *n, visits_per_slot,
+                "slot {slot} counted {n} visits over 10 global frames; each \
+                 slot is visited exactly 10/{MAX_FRAMES_IN_FLIGHT} times and \
+                 its accumulator only gains a sample on those visits (#2401)",
+            );
+        }
+        // …and the decay factor follows the slot's own n, not the global
+        // frame count: n/(n+1), not (2n-1)/(2n).
+        let expected = visits_per_slot as f32 / (visits_per_slot as f32 + 1.0);
+        for (slot, got) in last_per_slot.iter().enumerate() {
+            assert!(
+                (got - expected).abs() < 1e-6,
+                "slot {slot} decayed with {got}, expected {expected} — a \
+                 global counter would have produced a larger factor and \
+                 under-weighted this frame's energy (#2401)",
+            );
+        }
+    }
+
+    /// Camera motion resets every slot, not just the one being dispatched:
+    /// the other slots' images are equally stale from the old viewpoint.
+    #[test]
+    fn motion_resets_every_slot() {
+        let mut parked = [0u32; MAX_FRAMES_IN_FLIGHT];
+        for global in 0..8 {
+            advance_parked_visits(&mut parked, global % MAX_FRAMES_IN_FLIGHT, true);
+        }
+        assert!(parked.iter().all(|n| *n > 0));
+
+        let decay = advance_parked_visits(&mut parked, 0, false);
+        assert_eq!(decay, 0.0, "motion must fully clear, not decay");
+        assert!(
+            parked.iter().all(|n| *n == 0),
+            "every slot's counter must reset on motion, or the next parked \
+             run over-weights a slot holding pre-motion energy (#2401)",
+        );
+    }
+
+    /// The cap keeps the accumulator admitting new energy no matter how
+    /// long the camera stays parked.
+    #[test]
+    fn decay_is_capped_below_one() {
+        let mut parked = [0u32; MAX_FRAMES_IN_FLIGHT];
+        let mut decay = 0.0;
+        for _ in 0..10_000 {
+            decay = advance_parked_visits(&mut parked, 0, true);
+        }
+        assert_eq!(decay, CAUSTIC_DECAY_MAX);
+        assert!(decay < 1.0);
     }
 }

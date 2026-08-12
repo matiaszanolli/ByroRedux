@@ -383,7 +383,7 @@ impl VulkanContext {
                         if let Some(ref mut timers) = self.gpu_timers {
                             timers.cmd_skin_dispatch_end(&self.device, cmd, frame);
                         }
-                        // SAFETY: `cmd` is recording. The COMPUTE_SHADER_WRITE -> AS_BUILD_READ barrier sequences the skin outputs before they are read as BLAS build inputs; the first-sight builds and refits share `blas_scratch_buffer` and self-emit AS_WRITE->AS_WRITE scratch-serialize barriers between builds; the closing AS_BUILD_WRITE -> AS_BUILD_READ barrier hands refit results to the TLAS build below.
+                        // SAFETY: `cmd` is recording. The COMPUTE_SHADER_WRITE -> (AS_BUILD | FRAGMENT)_READ barrier sequences the skin outputs before they are read as BLAS build inputs and before triangle.frag / water.frag dereference them via `skinnedVertexAddress` (#2403); the first-sight builds and refits share `blas_scratch_buffer` and self-emit AS_WRITE->AS_WRITE scratch-serialize barriers between builds; the closing AS_BUILD_WRITE -> AS_BUILD_READ barrier hands refit results to the TLAS build below.
                         unsafe {
                             // Compute writes (skinned vertex output
                             // buffers) → AS build input reads. Covers
@@ -391,16 +391,43 @@ impl VulkanContext {
                             // and the refit loop further down — both
                             // read the freshly-written output buffers
                             // as BLAS-build vertex input.
-                            // COMPUTE_SHADER → ACCELERATION_STRUCTURE_BUILD_KHR.
+                            // COMPUTE_SHADER → ACCELERATION_STRUCTURE_BUILD_KHR
+                            // | FRAGMENT_SHADER.
                             // Skinned vertex output is a BLAS-build INPUT, so the
                             // dst access is SHADER_READ (the spec's build-input
                             // access), NOT ACCELERATION_STRUCTURE_READ. #1436.
+                            //
+                            // #2403 / CHAIN2-D2-01 — the FRAGMENT_SHADER dst bit
+                            // covers the *second* consumer this buffer acquired
+                            // in #2219: `GpuInstance.skinnedVertexAddress` is a
+                            // raw `GL_EXT_buffer_reference` address that
+                            // `getHitTriWorldPositions` (ray_hit.glsl, included
+                            // by triangle.frag / water.frag) dereferences for
+                            // secondary-ray hits on skinned actors. The AS
+                            // barriers that follow are AS_WRITE → AS_READ, whose
+                            // src access scope does not include this compute
+                            // SHADER_WRITE, so before this widening nothing in
+                            // the skin chain published the write to the fragment
+                            // stage. It happened to work only because the
+                            // cluster-cull pass emits a trailing *global*
+                            // COMPUTE/SHADER_WRITE → FRAGMENT/SHADER_READ
+                            // barrier later in `draw_frame` — but that lives
+                            // inside `if let Some(ref cc) = self.cluster_cull`,
+                            // and `ClusterCullPipeline::new` failure degrades to
+                            // `None` without gating the RT path. Cluster-cull
+                            // absent + a skinned actor seen through glass or
+                            // water was therefore a genuine read-after-write
+                            // hazard. Widening the dst here makes the
+                            // dependency this chain's own, and purely additive:
+                            // a wider dst stage mask can only add execution
+                            // dependencies, never remove one.
                             memory_barrier(
                                 &self.device,
                                 cmd,
                                 vk::PipelineStageFlags::COMPUTE_SHADER,
                                 vk::AccessFlags::SHADER_WRITE,
-                                vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+                                vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR
+                                    | vk::PipelineStageFlags::FRAGMENT_SHADER,
                                 vk::AccessFlags::SHADER_READ,
                             );
                             // #911 — first-sight BLAS BUILDs piggyback
