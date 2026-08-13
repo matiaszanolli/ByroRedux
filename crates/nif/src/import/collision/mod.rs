@@ -9,7 +9,7 @@
 //! |---|---|---|---|
 //! | `BhkCollisionObject`   | Universal (dominant pre-FO4)             | `BhkRigidBody` → shape tree | **yes** |
 //! | `BhkNPCollisionObject` | FO4 / FO76 / Starfield ("Niagara Physics") | `BhkSystemBinary` (Havok-serialised blob) | **approximated** — the blob remains opaque; the cell loader uses the scene authoring census to select a render-geometry proxy |
-//! | `BhkPCollisionObject`  | Skyrim+ trigger volumes / phantoms       | `bhkPhantom` subclass | **no** — phantoms aren't modeled as rigid bodies; need a `TriggerVolume` ECS path |
+//! | `BhkPCollisionObject`  | Skyrim+ trigger volumes / phantoms, **and** FO3 DLC via the `bhkSPCollisionObject` alias (#2332) | `bhkPhantom` subclass | **no** — phantoms aren't modeled as rigid bodies; need a `TriggerVolume` ECS path |
 //!
 //! Until the NP-blob decoder lands, the NP arm is a tracked stub: it confirms
 //! the FO4+ chain is present (so the symptom is "collision authoring exists but
@@ -37,12 +37,27 @@ mod shape;
 pub use ragdoll::extract_ragdoll;
 use shape::resolve_shape;
 
-/// Discriminator surfaced by [`examine_collision_kind`] so callers (telemetry,
-/// the trimesh fallback in `cell_loader/spawn.rs`) can distinguish "no
-/// collision authored" from "FO4+ NP collision authored but our decoder is a
-/// stub". The two cases produce the same `None` from [`extract_collision`]
-/// today; the trimesh fallback fires identically for both, but the bookkeeping
-/// matters for diagnostics.
+/// Which kind of collision authoring one block represents — the
+/// discriminator that lets a consumer tell "no collision authored" apart
+/// from "collision authored in a form we can't decode yet", two states
+/// [`extract_collision`] reports identically as `None`.
+///
+/// **Who reads this** (corrected by #2333; the previous docstring named
+/// consumers that never existed):
+///
+/// * Production reads the **aggregate**, not this enum directly:
+///   [`summarize_collision_authoring`] folds a whole scene into a
+///   [`CollisionAuthoringSummary`], the cell loader caches that on its
+///   imported-NIF entry (`cell_loader::nif_import_registry`), and
+///   `cell_loader::spawn`'s `missing_collision_fallback` branches on
+///   `needs_packed_havok_fallback()` to pick a `PackedAabbProxy` for
+///   opaque FO4+ packed Havok. So the NP and no-collision cases no longer
+///   "fire identically" — that sentence described pre-#2355 behaviour.
+/// * [`examine_collision_kind`], the single-`BlockRef` probe, has **no**
+///   production caller. It is a diagnostic entry point for corpus scans
+///   (`examples/_tmp_fo3_d5_collision.rs`) and for the tests below, which
+///   is where the per-block evidence in the FO3 dimension-5 audit came
+///   from. Kept deliberately; do not re-document it as wired-up telemetry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CollisionAuthoring {
     /// No `collision_ref` on the AVObject, or the ref doesn't resolve.
@@ -121,9 +136,10 @@ pub fn summarize_collision_authoring(scene: &NifScene) -> CollisionAuthoringSumm
 
 /// Inspect what kind of collision authoring is present at `collision_ref`
 /// without attempting to extract it. Cheap; just downcasts the block.
-/// Lets the cell-loader trimesh fallback distinguish "FO4 NP — workaround
-/// is intentional" from "no collision — workaround is silently filling a
-/// gap the authoring intended to leave empty".
+///
+/// Diagnostic API — corpus scans and tests, not the cell loader, which
+/// consumes the per-scene [`CollisionAuthoringSummary`] instead. See
+/// [`CollisionAuthoring`] for the full consumer map (#2333).
 pub fn examine_collision_kind(scene: &NifScene, collision_ref: BlockRef) -> CollisionAuthoring {
     let Some(idx) = collision_ref.index() else {
         return CollisionAuthoring::None;

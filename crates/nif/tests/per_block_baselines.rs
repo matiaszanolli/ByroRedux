@@ -7,12 +7,29 @@
 //! an `NiUnknown` placeholder, and the file-level rate stays 100%. The
 //! geometry is silently missing; the gate stays green.
 //!
-//! This test gates on the **per-header-type** parsed/unknown split.
-//! Each game's mesh archive is walked, every NIF is parsed, and a
-//! `PerBlockHistogram` is built keying on the header's advertised type
-//! name. Result is compared against a checked-in baseline TSV; any
-//! type whose `unknown` count grew (or `parsed` count shrank) is a
-//! regression.
+//! This test gates on the per-type parsed/unknown split. Every vanilla
+//! mesh-bearing archive for the game is walked (`Game::mesh_archives`,
+//! #2334 — not just the primary one), every NIF is parsed, and the
+//! per-archive `PerBlockHistogram`s are merged. The result is compared
+//! against a checked-in baseline TSV; any type whose `unknown` count grew
+//! (or `parsed` count shrank) is a regression.
+//!
+//! ## How the rows are keyed (matters for aliased types)
+//!
+//! Parsed blocks key on the **struct's** `block_type_name()`; unknown
+//! blocks key on the **header's advertised** type name. So a type that
+//! deliberately shares another's parser — `bhkSPCollisionObject` parses as
+//! `BhkPCollisionObject` (#2332), `bhkBlendCollisionObject` as
+//! `BhkCollisionObject` — has no row of its own while it parses cleanly;
+//! its blocks are counted on the row of the struct it lands in.
+//!
+//! That still gates them, in both directions: if such a decode breaks, the
+//! blocks either stop reaching the shared struct (→ `PARSED shrank` on that
+//! row) or fall into the recovery path under their own advertised name
+//! (→ `UNKNOWN grew` from an absent baseline row, which
+//! `compare_histograms` scores against 0). What it does *not* give is a
+//! standing per-alias count, so don't read "no `bhkSPCollisionObject` row"
+//! as "not covered".
 //!
 //! ## Workflow
 //!
@@ -37,8 +54,8 @@
 mod common;
 
 use common::{
-    compare_histograms, open_mesh_archive, parse_archive_with_histogram, BaselineRegression, Game,
-    PerBlockHistogram,
+    compare_histograms, open_all_mesh_archives, parse_archive_with_histogram, BaselineRegression,
+    Game, PerBlockHistogram,
 };
 use std::path::PathBuf;
 
@@ -81,21 +98,35 @@ fn regen_mode() -> bool {
 /// new baseline in regen mode; otherwise asserts against the checked-in
 /// baseline.
 fn run_baseline(game: Game) {
-    let Some(archive) = open_mesh_archive(game) else {
+    // #2334 — every vanilla mesh-bearing archive, not just the primary
+    // one. FO3's DLC-only collision types (`bhkSPCollisionObject`,
+    // `bhkBlendCollisionObject`, `bhkConvexTransformShape`) were
+    // unreachable from this gate while it sampled `Fallout - Meshes.bsa`
+    // alone.
+    let Some(archives) = open_all_mesh_archives(game) else {
         return;
     };
-    eprintln!(
-        "[{}] opened {} ({} files)",
-        game.label(),
-        game.mesh_archive(),
-        archive.file_count()
-    );
 
-    let (stats, hist) = parse_archive_with_histogram(&archive, None);
-    stats.print_summary(game.label());
+    let mut hist = PerBlockHistogram::new();
+    let mut total_files = 0usize;
+    for (name, archive) in &archives {
+        eprintln!(
+            "[{}] opened {} ({} files)",
+            game.label(),
+            name,
+            archive.file_count()
+        );
+        let (stats, archive_hist) = parse_archive_with_histogram(archive, None);
+        stats.print_summary(&format!("{} / {}", game.label(), name));
+        total_files += stats.total;
+        hist.merge(&archive_hist);
+    }
+
     eprintln!(
-        "[{}] per-block histogram: {} distinct types, {} unknown blocks across {} types with partial unknown",
+        "[{}] per-block histogram over {} archive(s), {} NIFs: {} distinct types, {} unknown blocks across {} types with partial unknown",
         game.label(),
+        archives.len(),
+        total_files,
         hist.counts.len(),
         hist.total_unknown(),
         hist.types_with_partial_unknown(),
@@ -106,7 +137,7 @@ fn run_baseline(game: Game) {
     if regen_mode() {
         let dir = baselines_dir();
         std::fs::create_dir_all(&dir).expect("create baselines dir");
-        let tsv = hist.to_tsv(stats.total);
+        let tsv = hist.to_tsv(total_files);
         std::fs::write(&path, &tsv).expect("write baseline");
         eprintln!(
             "[{}] regen mode: wrote baseline to {} ({} bytes)",

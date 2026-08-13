@@ -166,6 +166,51 @@ fn bhk_sp_collision_object_dispatches_as_phantom_wrapper() {
     assert_eq!(stream.position() as usize, bytes.len());
 }
 
+/// #2332 completes at the import layer: dispatching `bhkSPCollisionObject`
+/// to `BhkPCollisionObject` is only useful if the collision-authoring
+/// classifier then reports it as a phantom. Pre-fix the shared
+/// `BhkCollisionObject` arm made `examine_collision_kind` answer `Classic`,
+/// which routed 25 FO3-DLC trigger volumes into `extract_from_classic` —
+/// they failed there for the incidental reason that no rigid body resolves,
+/// not by the deliberate phantom path, and a future `TriggerVolume` importer
+/// keying on `Phantom` would have skipped them silently.
+#[test]
+fn bhk_sp_collision_object_classifies_as_phantom_authoring() {
+    use crate::import::collision::{
+        examine_collision_kind, summarize_collision_authoring, CollisionAuthoring,
+    };
+    use crate::scene::NifScene;
+    use crate::types::BlockRef;
+
+    let header = oblivion_header();
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&9i32.to_le_bytes());
+    bytes.extend_from_slice(&0x0081u16.to_le_bytes());
+    bytes.extend_from_slice(&3i32.to_le_bytes());
+    let mut stream = NifStream::new(&bytes, &header);
+    let block = parse_block(
+        "bhkSPCollisionObject",
+        &mut stream,
+        Some(bytes.len() as u32),
+    )
+    .expect("bhkSPCollisionObject must parse");
+
+    let mut scene = NifScene {
+        havok_scale: 1.0,
+        ..NifScene::default()
+    };
+    scene.blocks.push(block);
+
+    assert_eq!(
+        examine_collision_kind(&scene, BlockRef(0u32)),
+        CollisionAuthoring::Phantom,
+        "bhkSPCollisionObject must classify as Phantom, not Classic (#2332)"
+    );
+    let summary = summarize_collision_authoring(&scene);
+    assert_eq!(summary.phantom, 1, "and count as a phantom in the summary");
+    assert_eq!(summary.classic, 0);
+}
+
 /// Regression for #557 — `bhkConvexListShape` (FO3 only) with a
 /// two-sub-shape body. Total size = 37 + 4*N = 45 bytes for N=2.
 #[test]
