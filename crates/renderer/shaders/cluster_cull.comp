@@ -99,15 +99,23 @@ float sliceDepth(uint slice, float clusterFarVal) {
     return CLUSTER_NEAR * pow(clusterFarVal / CLUSTER_NEAR, float(slice) / float(CLUSTER_SLICES_Z));
 }
 
-// Unproject an NDC point to world space via inverse(viewProj).
-// ndcXY in [-1, 1], ndcZ in [0, 1] (Vulkan depth convention).
-vec3 ndcToWorld(vec2 ndcXY, float ndcZ, mat4 invViewProj) {
+// Unproject an NDC point to RENDER-ORIGIN-RELATIVE world space via
+// inverse(viewProj). ndcXY in [-1, 1], ndcZ in [0, 1] (Vulkan depth
+// convention).
+//
+// #2744 (REN-D10-01) — deliberately NOT lifted to absolute here anymore.
+// The caller differences this against the (also relative) camera
+// position to get a ray direction; both operands must still be
+// small-magnitude at that point to keep full f32 precision. The near
+// plane is only 0.1 world units out, so a `nearCorner - camPos`
+// difference formed from two already-ABSOLUTE (~10^5-magnitude at
+// exterior render origins) operands loses the ray direction's precision
+// before it's ever used — see `main()`'s `camRel`/`rayDir` for where the
+// lift now happens, exactly once, AFTER the direction is computed.
+vec3 ndcToWorldRel(vec2 ndcXY, float ndcZ, mat4 invViewProj) {
     vec4 clip = vec4(ndcXY, ndcZ, 1.0);
     vec4 world = invViewProj * clip;
-    // #markarth-precision — invViewProj is the camera-RELATIVE inverse, so add
-    // the render origin to lift the cluster corner into ABSOLUTE world space
-    // (light positions in the SSBO are absolute; the cull test must match).
-    return world.xyz / world.w + renderOrigin.xyz;
+    return world.xyz / world.w;
 }
 
 bool sphereIntersectsAABB(vec3 center, float radius, vec3 aabbMin, vec3 aabbMax) {
@@ -166,15 +174,28 @@ void main() {
     // or 64 lanes), 32 lockstep divergence-free threads cost the same
     // as one, so the redundancy is free in practice. Avoiding the
     // shared-memory broadcast keeps the kernel simpler.
-    vec3 nearCorners[4];
-    nearCorners[0] = ndcToWorld(vec2(ndcMinX, ndcMinY), 0.0, invViewProj);
-    nearCorners[1] = ndcToWorld(vec2(ndcMaxX, ndcMinY), 0.0, invViewProj);
-    nearCorners[2] = ndcToWorld(vec2(ndcMinX, ndcMaxY), 0.0, invViewProj);
-    nearCorners[3] = ndcToWorld(vec2(ndcMaxX, ndcMaxY), 0.0, invViewProj);
+    vec3 nearCornersRel[4];
+    nearCornersRel[0] = ndcToWorldRel(vec2(ndcMinX, ndcMinY), 0.0, invViewProj);
+    nearCornersRel[1] = ndcToWorldRel(vec2(ndcMaxX, ndcMinY), 0.0, invViewProj);
+    nearCornersRel[2] = ndcToWorldRel(vec2(ndcMinX, ndcMaxY), 0.0, invViewProj);
+    nearCornersRel[3] = ndcToWorldRel(vec2(ndcMaxX, ndcMaxY), 0.0, invViewProj);
+
+    // #2744 (REN-D10-01) — camRel is exact in f32: renderOrigin is a
+    // floor(camera_pos / RENDER_ORIGIN_SNAP) * RENDER_ORIGIN_SNAP
+    // multiple, so camPos (absolute) and renderOrigin (absolute) share
+    // every high bit and the subtraction is lossless, unlike
+    // `nearCorner - camPos` when both are already lifted to absolute.
+    vec3 camRel = camPos - renderOrigin.xyz;
 
     vec3 corners[8];
     for (int i = 0; i < 4; i++) {
-        vec3 rayDir = normalize(nearCorners[i] - camPos);
+        // Direction formed in relative space (both operands small-
+        // magnitude, full f32 precision), THEN lifted to absolute below
+        // — not the other way around. This is the fix: pre-#2744,
+        // `nearCorners[i]` was already absolute here, so this difference
+        // silently collapsed near-plane corners onto the same f32 at
+        // exterior render-origin magnitudes.
+        vec3 rayDir = normalize(nearCornersRel[i] - camRel);
         corners[i] = camPos + rayDir * zNear;
         corners[i + 4] = camPos + rayDir * zFar;
     }

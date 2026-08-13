@@ -83,10 +83,24 @@ float getHitVertexAlpha(
     return w * a0 + barycentrics.x * a1 + barycentrics.y * a2;
 }
 
-// World-space positions of a ray-query hit triangle's three vertices.
+// ABSOLUTE world-space positions of a ray-query hit triangle's three
+// vertices. Both branches below return the same frame — see #2747
+// (REN-D10-02): pre-fix the rigid branch returned render-origin-RELATIVE
+// positions (`hi.model` has been render-origin-relative since the
+// markarth cascade's `rebase_model_matrix`) while the skinned branch
+// returned ABSOLUTE (`skin_vertices.comp`'s output, same convention
+// `tlas_instance_transform` relies on). No wrong pixels resulted — every
+// consumer (`getHitTriNormal`, `getRayHitTangentFrame`) differences the
+// three positions, and a uniform per-triangle origin offset cancels —
+// but the mixed convention was a latent trap for any future absolute
+// consumer (re-projection, distance-to-camera, world-space hash,
+// second-bounce ray origin), which would get a `renderOrigin`-sized
+// displacement on rigid geometry only. Fixed by lifting the rigid branch
+// with `+ renderOrigin.xyz`, matching the function's name/header
+// contract rather than changing it.
 //
 // REN-2026-07-28-02 / #2219 — for a skinned instance (boneOffset != 0)
-// the BLAS follows the DEFORMED geometry, but before this fix every
+// the BLAS follows the DEFORMED geometry, but before that fix every
 // caller reconstructed positions from the BIND-POSE global vertex SSBO
 // transformed by the entity's root `model` matrix — correct topology,
 // wrong pose. `skin_vertices.comp` writes already-deformed, already-
@@ -138,9 +152,14 @@ void getHitTriWorldPositions(
     vec3 v0 = vec3(vertexData[p0], vertexData[p0 + 1], vertexData[p0 + 2]);
     vec3 v1 = vec3(vertexData[p1], vertexData[p1 + 1], vertexData[p1 + 2]);
     vec3 v2 = vec3(vertexData[p2], vertexData[p2 + 1], vertexData[p2 + 2]);
-    w0 = (hi.model * vec4(v0, 1.0)).xyz;
-    w1 = (hi.model * vec4(v1, 1.0)).xyz;
-    w2 = (hi.model * vec4(v2, 1.0)).xyz;
+    // #2747 — `hi.model` is render-origin-RELATIVE (rebase_model_matrix
+    // subtracts renderOrigin on the CPU); lift to ABSOLUTE here so this
+    // branch matches the skinned branch above and the function's
+    // documented contract, instead of leaving the caller to discover the
+    // mismatch only when it stops differencing the result.
+    w0 = (hi.model * vec4(v0, 1.0)).xyz + renderOrigin.xyz;
+    w1 = (hi.model * vec4(v1, 1.0)).xyz + renderOrigin.xyz;
+    w2 = (hi.model * vec4(v2, 1.0)).xyz + renderOrigin.xyz;
 }
 
 // World-space geometric (face) normal of a ray-query hit triangle. Used by

@@ -539,6 +539,93 @@ pub struct BlendPipelineCtx<'a> {
     pub pipeline_layout: vk::PipelineLayout,
 }
 
+/// The 8 G-buffer color-attachment blend states for a blend pipeline,
+/// keyed on `preserve_opaque_gbuffer`. Pure (no `ash::Device` needed) so
+/// the write-mask contract is unit-testable directly — split out of
+/// [`create_blend_pipeline`] for exactly that reason (#2745 /
+/// REN-D11-2026-08-12-01: pin `is_caustic_source(cmd) ⇒ mesh-ID
+/// writable`, which a device-requiring pipeline-creation test couldn't
+/// have caught at `cargo test` time).
+///
+/// `hdr_blend` is the one attachment state that depends on the caller's
+/// authored (src, dst) Gamebryo blend factors, so it's built by the
+/// caller and passed in; every other state here is fixed.
+fn blend_gbuffer_attachments(
+    hdr_blend: vk::PipelineColorBlendAttachmentState,
+    preserve_opaque_gbuffer: bool,
+) -> [vk::PipelineColorBlendAttachmentState; 8] {
+    let overwrite = vk::PipelineColorBlendAttachmentState::default()
+        .color_write_mask(vk::ColorComponentFlags::RGBA)
+        .blend_enable(false);
+    let no_write = vk::PipelineColorBlendAttachmentState::default()
+        .color_write_mask(vk::ColorComponentFlags::empty())
+        .blend_enable(false);
+    let auxiliary_blend = vk::PipelineColorBlendAttachmentState::default()
+        .color_write_mask(vk::ColorComponentFlags::RGBA)
+        .blend_enable(true)
+        .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
+        .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+        .color_blend_op(vk::BlendOp::ADD)
+        .src_alpha_blend_factor(vk::BlendFactor::ONE)
+        .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
+        .alpha_blend_op(vk::BlendOp::ADD);
+    // MAX over ONE/ONE: a stack of overlapping translucent surfaces reports
+    // the most reactive coverage in the stack rather than whichever happened
+    // to draw last. AMD's integration contract asks for exactly this
+    // accumulation rule for both masks.
+    let fsr_mask_max = vk::PipelineColorBlendAttachmentState::default()
+        .color_write_mask(vk::ColorComponentFlags::R)
+        .blend_enable(true)
+        .src_color_blend_factor(vk::BlendFactor::ONE)
+        .dst_color_blend_factor(vk::BlendFactor::ONE)
+        .color_blend_op(vk::BlendOp::MAX)
+        .src_alpha_blend_factor(vk::BlendFactor::ONE)
+        .dst_alpha_blend_factor(vk::BlendFactor::ONE)
+        .alpha_blend_op(vk::BlendOp::MAX);
+    if preserve_opaque_gbuffer {
+        [
+            hdr_blend, // 0 HDR color (glass blends over opaque color)
+            no_write,  // 1 preserve opaque normal paired with depth
+            no_write,  // 2 preserve opaque motion
+            // 3 mesh_id: #2745 (REN-D11-2026-08-12-01) — WRITABLE, not
+            // preserved. `preserve_opaque_gbuffer` is set exclusively for
+            // refractive-glass draws (`is_refractive_glass`), the same
+            // predicate that gates `INSTANCE_FLAG_CAUSTIC_SOURCE` on
+            // these draws' `GpuInstance.flags`. `caustic_splat.comp`
+            // finds its sources ONLY through this attachment's bit 31
+            // (`triangle.frag`'s `outMeshID` already sets it correctly
+            // for every alpha-blended fragment); masking it to no_write
+            // here made the producing (glass) and consuming
+            // (caustic-source-flagged) pixel sets disjoint, so the
+            // glass-side caustic accumulator received zero splats every
+            // frame. Unlike normal/motion/raw_indirect/albedo, letting
+            // this one through is SAFE for the original "denoiser
+            // smears" concern the `no_write` mask was added for: bit 31
+            // is exactly the signal `svgf_temporal.comp`'s history gate
+            // (`(currID & 0x80000000u) != 0u`) already uses to bypass
+            // temporal reprojection for alpha-blended pixels, so a
+            // glass fragment's mesh_id is never mistaken for a stable
+            // opaque surface identity.
+            overwrite,
+            no_write,     // 4 preserve opaque raw_indirect
+            no_write,     // 5 preserve opaque albedo
+            fsr_mask_max, // 6 fsr_reactive
+            fsr_mask_max, // 7 fsr_transparency
+        ]
+    } else {
+        [
+            hdr_blend,       // 0 HDR color (blends)
+            overwrite,       // 1 normal
+            overwrite,       // 2 motion
+            overwrite,       // 3 mesh_id
+            auxiliary_blend, // 4 raw_indirect (coverage blend)
+            auxiliary_blend, // 5 albedo (coverage blend)
+            fsr_mask_max,    // 6 fsr_reactive
+            fsr_mask_max,    // 7 fsr_transparency
+        ]
+    }
+}
+
 pub fn create_blend_pipeline(
     ctx: BlendPipelineCtx,
     src: u8,
@@ -623,57 +710,7 @@ pub fn create_blend_pipeline(
         .src_alpha_blend_factor(vk::BlendFactor::ONE)
         .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
         .alpha_blend_op(vk::BlendOp::ADD);
-    let overwrite = vk::PipelineColorBlendAttachmentState::default()
-        .color_write_mask(vk::ColorComponentFlags::RGBA)
-        .blend_enable(false);
-    let no_write = vk::PipelineColorBlendAttachmentState::default()
-        .color_write_mask(vk::ColorComponentFlags::empty())
-        .blend_enable(false);
-    let auxiliary_blend = vk::PipelineColorBlendAttachmentState::default()
-        .color_write_mask(vk::ColorComponentFlags::RGBA)
-        .blend_enable(true)
-        .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
-        .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
-        .color_blend_op(vk::BlendOp::ADD)
-        .src_alpha_blend_factor(vk::BlendFactor::ONE)
-        .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
-        .alpha_blend_op(vk::BlendOp::ADD);
-    // MAX over ONE/ONE: a stack of overlapping translucent surfaces reports
-    // the most reactive coverage in the stack rather than whichever happened
-    // to draw last. AMD's integration contract asks for exactly this
-    // accumulation rule for both masks.
-    let fsr_mask_max = vk::PipelineColorBlendAttachmentState::default()
-        .color_write_mask(vk::ColorComponentFlags::R)
-        .blend_enable(true)
-        .src_color_blend_factor(vk::BlendFactor::ONE)
-        .dst_color_blend_factor(vk::BlendFactor::ONE)
-        .color_blend_op(vk::BlendOp::MAX)
-        .src_alpha_blend_factor(vk::BlendFactor::ONE)
-        .dst_alpha_blend_factor(vk::BlendFactor::ONE)
-        .alpha_blend_op(vk::BlendOp::MAX);
-    let attachments = if preserve_opaque_gbuffer {
-        [
-            hdr_blend,    // 0 HDR color (glass blends over opaque color)
-            no_write,     // 1 preserve opaque normal paired with depth
-            no_write,     // 2 preserve opaque motion
-            no_write,     // 3 preserve opaque mesh_id paired with depth
-            no_write,     // 4 preserve opaque raw_indirect
-            no_write,     // 5 preserve opaque albedo
-            fsr_mask_max, // 6 fsr_reactive
-            fsr_mask_max, // 7 fsr_transparency
-        ]
-    } else {
-        [
-            hdr_blend,       // 0 HDR color (blends)
-            overwrite,       // 1 normal
-            overwrite,       // 2 motion
-            overwrite,       // 3 mesh_id
-            auxiliary_blend, // 4 raw_indirect (coverage blend)
-            auxiliary_blend, // 5 albedo (coverage blend)
-            fsr_mask_max,    // 6 fsr_reactive
-            fsr_mask_max,    // 7 fsr_transparency
-        ]
-    };
+    let attachments = blend_gbuffer_attachments(hdr_blend, preserve_opaque_gbuffer);
     let color_blending = vk::PipelineColorBlendStateCreateInfo::default()
         .logic_op_enable(false)
         .attachments(&attachments);
@@ -1067,6 +1104,52 @@ mod tests {
             preserve_opaque_gbuffer: true,
         };
         assert_ne!(ordinary_blend, refractive_glass);
+    }
+
+    /// Regression for #2745 (REN-D11-2026-08-12-01). `preserve_opaque_
+    /// gbuffer` is set exclusively for refractive-glass draws
+    /// (`context::draw::is_refractive_glass`), the same predicate that
+    /// gates `INSTANCE_FLAG_CAUSTIC_SOURCE`, and `caustic_splat.comp`
+    /// finds its sources ONLY through the mesh-ID attachment's bit 31.
+    /// Masking mesh_id to `no_write` alongside normal/motion/raw_indirect
+    /// /albedo made the producing (glass) and consuming (caustic-source-
+    /// flagged) pixel sets disjoint — the glass-side caustic accumulator
+    /// received zero splats in every cell. Pin the contract this issue
+    /// asked for: `is_caustic_source(cmd) ⇒ mesh-ID (attachment 3) is
+    /// writable for that cmd's pipeline key`. Every OTHER attachment this
+    /// axis preserves (1/2/4/5) must still be masked off — this is not a
+    /// blanket revert of the `preserve_opaque_gbuffer` feature.
+    #[test]
+    fn glass_pipeline_keeps_mesh_id_writable_for_its_own_caustic_source_gate() {
+        let hdr_blend = vk::PipelineColorBlendAttachmentState::default()
+            .color_write_mask(vk::ColorComponentFlags::RGBA)
+            .blend_enable(true);
+
+        let glass = blend_gbuffer_attachments(hdr_blend, true);
+        assert_eq!(
+            glass[3].color_write_mask,
+            vk::ColorComponentFlags::RGBA,
+            "mesh_id (attachment 3) must stay writable for the \
+             preserve_opaque_gbuffer (refractive-glass) pipeline, or its \
+             own INSTANCE_FLAG_CAUSTIC_SOURCE draws are invisible to \
+             caustic_splat.comp's bit-31 gate (#2745)"
+        );
+        // The rest of the "preserve opaque" set must still be masked off —
+        // this fix is scoped to mesh_id only.
+        for (idx, name) in [(1, "normal"), (2, "motion"), (4, "raw_indirect"), (5, "albedo")] {
+            assert_eq!(
+                glass[idx].color_write_mask,
+                vk::ColorComponentFlags::empty(),
+                "{name} (attachment {idx}) must stay preserved (no_write) \
+                 for the refractive-glass pipeline — only mesh_id (#2745) \
+                 was the fix, not a blanket revert of preserve_opaque_gbuffer"
+            );
+        }
+
+        // Sibling case: the ordinary blend pipeline (non-glass) already
+        // wrote mesh_id before this fix — must still write it after.
+        let ordinary = blend_gbuffer_attachments(hdr_blend, false);
+        assert_eq!(ordinary[3].color_write_mask, vk::ColorComponentFlags::RGBA);
     }
 
     /// Regression: #398 (OBL-D4-H1) — every Gamebryo `TestFunction`
