@@ -7,7 +7,7 @@
 use anyhow::{anyhow, Result};
 use std::any::Any;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use ruffle_core::external::Value as ExternalValue;
 use ruffle_core::limits::ExecutionLimit;
@@ -28,10 +28,72 @@ use crate::{
 
 const MAX_ARCHIVE_PRELOAD_PASSES: usize = 64;
 
+/// Process-wide Ruffle GPU bundle, created on first menu load (#2733).
+///
+/// Pre-fix every [`SwfPlayer`] built its own wgpu instance, adapter, device
+/// and queue, synchronously via `block_on` on the winit main-loop thread.
+/// That meant a second live Vulkan device per menu — and because
+/// `UiManager::install_player` only assigns `self.player` once the new
+/// player is fully built, a menu swap transiently held *two* Ruffle devices
+/// alongside the engine's, with a visible hitch on every menu load.
+///
+/// Sharing is the model Ruffle itself uses: `WgpuRenderBackend::new` takes
+/// an `Arc<Descriptors>` precisely so several players can render against one
+/// device, each with its own `TextureTarget`. Nothing here is per-player.
+///
+/// **What this trades.** The device now outlives `UiManager::close()` and
+/// lives for the process, instead of being released with each player. That
+/// is the point — a menu can reopen at any time, and paying the device-
+/// creation hitch once beats paying it per open — but it does mean one idle
+/// logical device is retained after the last menu closes.
+///
+/// A failed creation is deliberately **not** cached, so a transient failure
+/// doesn't permanently disable the UI. If two threads race the very first
+/// call, the loser drops its device and adopts the winner's; menus are built
+/// on the main thread, so this is a correctness guard rather than a live
+/// path.
+fn shared_descriptors() -> Result<Arc<Descriptors>> {
+    static SHARED: OnceLock<Arc<Descriptors>> = OnceLock::new();
+
+    get_or_try_init(&SHARED, || {
+        let instance =
+            create_wgpu_instance(wgpu::Backends::VULKAN, wgpu::BackendOptions::default());
+        let (adapter, device, queue) = futures::executor::block_on(request_adapter_and_device(
+            wgpu::Backends::VULKAN,
+            &instance,
+            None,
+            wgpu::PowerPreference::HighPerformance,
+        ))
+        .map_err(|e| anyhow!("Failed to create wgpu device: {e}"))?;
+        log::info!("Scaleform UI: created the shared Ruffle wgpu device (once per process, #2733)");
+        Ok(Arc::new(Descriptors::new(instance, adapter, device, queue)))
+    })
+}
+
+/// The caching rule [`shared_descriptors`] implements, extracted so it can be
+/// exercised without a GPU (#2733).
+///
+/// First success populates the slot and every later call returns that same
+/// `Arc`; a failure leaves the slot empty so the next call retries. Keeping
+/// this generic is what lets the default test suite pin the contract on a
+/// machine with no Vulkan device, where `shared_descriptors` itself cannot
+/// run at all.
+fn get_or_try_init<T>(
+    slot: &OnceLock<Arc<T>>,
+    make: impl FnOnce() -> Result<Arc<T>>,
+) -> Result<Arc<T>> {
+    if let Some(existing) = slot.get() {
+        return Ok(Arc::clone(existing));
+    }
+    let created = make()?;
+    Ok(Arc::clone(slot.get_or_init(|| created)))
+}
+
 /// Wraps a Ruffle Flash player instance with offscreen wgpu rendering.
 ///
-/// Creates its own wgpu device (separate from the main Vulkan renderer)
-/// and renders SWF content to an RGBA pixel buffer each frame.
+/// Renders SWF content to an RGBA pixel buffer each frame through a wgpu
+/// device that is separate from the engine's `VulkanContext` but **shared by
+/// every player in the process** — see [`shared_descriptors`] (#2733).
 pub struct SwfPlayer {
     player: Arc<Mutex<Player>>,
     width: u32,
@@ -133,18 +195,9 @@ impl SwfPlayer {
     ) -> Result<Self> {
         let host_bridge = ScaleformHostBridge::new(profile);
 
-        // Create wgpu instance and device (headless, no surface).
-        let instance =
-            create_wgpu_instance(wgpu::Backends::VULKAN, wgpu::BackendOptions::default());
-        let (adapter, device, queue) = futures::executor::block_on(request_adapter_and_device(
-            wgpu::Backends::VULKAN,
-            &instance,
-            None,
-            wgpu::PowerPreference::HighPerformance,
-        ))
-        .map_err(|e| anyhow!("Failed to create wgpu device: {e}"))?;
-
-        let descriptors = Arc::new(Descriptors::new(instance, adapter, device, queue));
+        // Headless wgpu device, created once per process (#2733) rather
+        // than once per menu.
+        let descriptors = shared_descriptors()?;
 
         // Create offscreen render target.
         let target = TextureTarget::new(&descriptors.device, (width, height))
@@ -369,5 +422,58 @@ impl Drop for SwfPlayer {
                 let _ = player.call_internal_interface(DESTROY_CALLBACK, []);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod shared_descriptor_tests {
+    use super::get_or_try_init;
+    use anyhow::anyhow;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, OnceLock};
+
+    /// #2733 — the whole point of the singleton: the expensive constructor
+    /// runs once, and every later caller gets that same instance rather than
+    /// a second live device.
+    #[test]
+    fn a_successful_init_runs_once_and_is_shared_by_later_callers() {
+        static SLOT: OnceLock<Arc<u32>> = OnceLock::new();
+        let calls = AtomicUsize::new(0);
+        let mut make = || {
+            calls.fetch_add(1, Ordering::Relaxed);
+            Ok(Arc::new(7u32))
+        };
+
+        let first = get_or_try_init(&SLOT, &mut make).expect("first init succeeds");
+        let second = get_or_try_init(&SLOT, &mut make).expect("second call is cached");
+        let third = get_or_try_init(&SLOT, &mut make).expect("and stays cached");
+
+        assert_eq!(calls.load(Ordering::Relaxed), 1, "device built once");
+        assert!(Arc::ptr_eq(&first, &second));
+        assert!(Arc::ptr_eq(&first, &third));
+        assert_eq!(*first, 7);
+    }
+
+    /// A failure must not poison the slot. Caching the error would turn one
+    /// bad adapter request into a permanently UI-less process, which is worse
+    /// than the per-menu device this replaced.
+    #[test]
+    fn a_failed_init_is_not_cached_and_the_next_call_retries() {
+        static SLOT: OnceLock<Arc<u32>> = OnceLock::new();
+        let attempts = AtomicUsize::new(0);
+        let mut make = || match attempts.fetch_add(1, Ordering::Relaxed) {
+            0 => Err(anyhow!("no adapter this time")),
+            _ => Ok(Arc::new(42u32)),
+        };
+
+        assert!(
+            get_or_try_init(&SLOT, &mut make).is_err(),
+            "first attempt fails"
+        );
+        assert!(SLOT.get().is_none(), "a failure must leave the slot empty");
+
+        let recovered = get_or_try_init(&SLOT, &mut make).expect("retry succeeds");
+        assert_eq!(*recovered, 42);
+        assert_eq!(attempts.load(Ordering::Relaxed), 2, "the retry really ran");
     }
 }
