@@ -679,7 +679,9 @@ pub(crate) fn stream_initial_radius(
             state.lod_reconcile_pending = true;
         }
         ExteriorBootstrapMode::FullRadius => {
-            let progress = reconcile_lod_rings(world, ctx, state, (cx, cy), usize::MAX);
+            // Bootstrap is the deterministic full-radius contract: no attempt
+            // cap and no deadline, so the ring is complete before the first frame.
+            let progress = reconcile_lod_rings(world, ctx, state, (cx, cy), usize::MAX, None);
             debug_assert!(
                 progress.complete,
                 "unlimited LOD bootstrap must settle every provider"

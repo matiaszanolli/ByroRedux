@@ -152,7 +152,8 @@ impl App {
         // precombine setup, and placed-reference spawning. Boundary diffing
         // ran first, so removing a stale `pending` generation above cancels
         // and reclaims a partial cell before it can consume another slice.
-        let mut apply_budget = cell_loader::FrameTimeBudget::new(Self::STREAMING_APPLY_BUDGET);
+        let streaming_deadline = Instant::now() + Self::STREAMING_APPLY_BUDGET;
+        let mut apply_budget = cell_loader::FrameTimeBudget::until(streaming_deadline);
         let apply_started = Instant::now();
         let full_detail_worked =
             advance_streaming_apply(&mut self.world, ctx, state, &mut apply_budget);
@@ -189,7 +190,14 @@ impl App {
             return;
         };
         let lod_started = Instant::now();
-        let progress = reconcile_lod_rings(&mut self.world, ctx, state, player_grid, lod_budget);
+        let progress = reconcile_lod_rings(
+            &mut self.world,
+            ctx,
+            state,
+            player_grid,
+            lod_budget,
+            Some(streaming_deadline),
+        );
         state
             .telemetry
             .record_lod_slice(lod_started.elapsed(), progress.attempted);

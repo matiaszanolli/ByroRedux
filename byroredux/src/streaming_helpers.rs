@@ -65,6 +65,7 @@ pub(crate) fn reconcile_lod_rings(
     state: &mut streaming::WorldStreamingState,
     player_grid: (i32, i32),
     max_attempts_per_provider: usize,
+    deadline: Option<std::time::Instant>,
 ) -> LodReconcileProgress {
     let tex_provider = state.tex_provider.clone();
     let wctx = state.wctx.clone();
@@ -76,12 +77,16 @@ pub(crate) fn reconcile_lod_rings(
         lod_grid_origin,
         max_full_cell_radius: state.radius_unload,
     };
-    let make_budget = || {
-        if max_attempts_per_provider == usize::MAX {
-            LodWorkBudget::unlimited()
-        } else {
-            LodWorkBudget::new(max_attempts_per_provider)
-        }
+    // Every provider draws on its own attempt allowance (so a large terrain
+    // ring cannot starve the active object scheme) but shares ONE wall-clock
+    // deadline with the rest of the frame's streaming work — the attempt
+    // count bounds fairness, the deadline bounds the frame (EX-07 / #2376).
+    // `usize::MAX` remains the deterministic full-radius bootstrap contract
+    // and is deliberately left untimed.
+    let make_budget = || match (max_attempts_per_provider, deadline) {
+        (usize::MAX, _) => LodWorkBudget::unlimited(),
+        (attempts, Some(at)) => LodWorkBudget::with_deadline(attempts, at),
+        (attempts, None) => LodWorkBudget::new(attempts),
     };
 
     let mut terrain_budget = make_budget();

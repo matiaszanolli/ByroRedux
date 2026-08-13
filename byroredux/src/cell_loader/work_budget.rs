@@ -5,7 +5,7 @@
 //! forward progress even when one NIF import or placed reference exceeds the
 //! nominal frame allowance.
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 #[derive(Debug, Clone)]
 pub(crate) struct FrameTimeBudget {
@@ -14,9 +14,16 @@ pub(crate) struct FrameTimeBudget {
 }
 
 impl FrameTimeBudget {
-    pub(crate) fn new(duration: Duration) -> Self {
+    /// Budget bounded by an already-chosen instant.
+    ///
+    /// Takes the deadline rather than a duration so one frame's streaming
+    /// step can compute a single instant and hand it to every stage —
+    /// resumable cell apply *and* the distant-LOD providers — bounding the
+    /// whole step once instead of each stage starting a fresh allowance from
+    /// wherever the previous one happened to finish (EX-07 / #2376).
+    pub(crate) fn until(deadline: Instant) -> Self {
         Self {
-            deadline: Some(Instant::now() + duration),
+            deadline: Some(deadline),
             completed_units: 0,
         }
     }
@@ -54,7 +61,7 @@ mod tests {
 
     #[test]
     fn zero_duration_budget_still_admits_one_unit() {
-        let mut budget = FrameTimeBudget::new(Duration::ZERO);
+        let mut budget = FrameTimeBudget::until(Instant::now());
         assert!(!budget.should_yield(), "first unit guarantees progress");
         budget.complete_unit();
         assert!(

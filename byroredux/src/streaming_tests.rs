@@ -9,7 +9,8 @@
 use super::{
     classify_payload, compute_streaming_deltas, join_with_timeout, pre_parse_cell_panic_safe,
     stale_pending_coords, world_pos_to_grid, JoinTimeout, LoadCellPayload, LoadedCell,
-    PayloadDecision, StreamingDeltas, StreamingTelemetry, StreamingWorkerTimings,
+    PayloadDecision, StreamingDeltas, StreamingLatencySummary, StreamingTelemetry,
+    StreamingWorkerTimings,
 };
 use crate::cell_loader::UnloadPhaseTimings;
 use byroredux_core::ecs::storage::EntityId;
@@ -266,6 +267,89 @@ fn streaming_telemetry_records_independent_ready_deadlines() {
     assert!(telemetry
         .bench_line()
         .contains("unload_despawn_max_ms=5.00 unload_finalize_max_ms=6.00"));
+}
+
+/// EX-06 / #2376 — every phase must report a distribution, not just an
+/// average. Nearest-rank over the retained window, matching
+/// `bench_frame_distribution` so per-phase and whole-frame numbers in one
+/// bench line are read the same way.
+#[test]
+fn latency_summary_reports_nearest_rank_percentiles() {
+    let mut summary = StreamingLatencySummary::default();
+    // 1..=20 ms, deliberately out of order — the reader sorts.
+    for ms in [
+        20, 3, 11, 7, 15, 1, 19, 5, 9, 13, 17, 2, 4, 6, 8, 10, 12, 14, 16, 18,
+    ] {
+        summary.record(Duration::from_millis(ms));
+    }
+    let [p50, p95, max] = summary.percentiles_ms();
+    assert_eq!(summary.samples, 20);
+    assert!((p50 - 10.0).abs() < 1e-6, "p50 was {p50}");
+    assert!((p95 - 19.0).abs() < 1e-6, "p95 was {p95}");
+    assert!((max - 20.0).abs() < 1e-6, "max was {max}");
+
+    // An empty summary reports zeroes rather than dividing by nothing.
+    let [p50, p95, max] = StreamingLatencySummary::default().percentiles_ms();
+    assert_eq!([p50, p95, max], [0.0, 0.0, 0.0]);
+}
+
+/// The window is bounded, but `max` is not: a hitch that scrolled out of the
+/// retained samples still happened, and dropping it would defeat the point of
+/// the measurement.
+#[test]
+fn latency_summary_keeps_all_time_max_after_the_window_wraps() {
+    let mut summary = StreamingLatencySummary::default();
+    summary.record(Duration::from_millis(500)); // the hitch
+    for _ in 0..300 {
+        summary.record(Duration::from_millis(1));
+    }
+    let [p50, p95, max] = summary.percentiles_ms();
+    assert_eq!(summary.samples, 301);
+    assert!(
+        (p50 - 1.0).abs() < 1e-6,
+        "window should have wrapped past the hitch"
+    );
+    assert!((p95 - 1.0).abs() < 1e-6);
+    assert!(
+        (max - 500.0).abs() < 1e-6,
+        "the all-time max must survive the window wrapping, got {max}"
+    );
+}
+
+/// The bench line carries a p50/p95/max triple for each phase EX-06 names.
+#[test]
+fn bench_line_emits_per_phase_distributions() {
+    let mut telemetry = StreamingTelemetry::default();
+    let start = Instant::now();
+    telemetry.begin_boundary((1, 0), start);
+    telemetry.record_apply_slice(Duration::from_millis(3), true);
+    telemetry.record_unload_slice(Duration::from_millis(2), 1);
+    telemetry.record_lod_slice(Duration::from_millis(1), 1);
+    telemetry.record_worker(StreamingWorkerTimings {
+        queue_wait: Duration::from_millis(4),
+        worker: Duration::from_millis(6),
+    });
+
+    let line = telemetry.bench_line();
+    for phase in [
+        "queue_wait",
+        "worker_parse",
+        "apply",
+        "unload",
+        "lod_slice",
+        "full_detail",
+    ] {
+        for stat in ["p50_ms", "p95_ms", "p100_ms"] {
+            assert!(
+                line.contains(&format!("{phase}_{stat}=")),
+                "bench line is missing {phase}_{stat}: {line}"
+            );
+        }
+    }
+    // Single samples put p50 and p95 on the same value.
+    assert!(line.contains("apply_p50_ms=3.00 apply_p95_ms=3.00 apply_p100_ms=3.00"));
+    assert!(line.contains("queue_wait_p50_ms=4.00"));
+    assert!(line.contains("worker_parse_p95_ms=6.00"));
 }
 
 #[test]

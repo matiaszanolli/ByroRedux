@@ -9,6 +9,8 @@
 //! and `ImportedMesh` → renderer conversion live here so providers cannot
 //! drift on scheduling, vertex defaults, or bound math (TD2-105 / #2064).
 
+use std::time::Instant;
+
 use byroredux_core::math::Vec3;
 use byroredux_nif::import::ImportedMesh;
 use byroredux_plugin::esm::reader::GameKind;
@@ -116,17 +118,49 @@ pub(crate) fn quad_origin(gx: i32, gy: i32, level: i32, grid_origin: (i32, i32))
 /// object quad, or placement cell. Reclaims do not consume the budget: stale
 /// geometry must disappear immediately when the player moves, while new
 /// geometry may fill in progressively over later frames.
+///
+/// Bounded on **two** axes (EX-07 / #2376):
+///
+/// * an attempt count, which keeps any one provider from monopolising a
+///   frame's units and starving the others, and
+/// * a wall-clock `deadline`, which is what actually protects the frame.
+///
+/// The attempt count alone never did. Attempts are wildly non-uniform: one
+/// is an archive extract plus NIF parse plus import plus GPU upload of a
+/// macro-mesh whose footprint depends on its LOD band, and since #2371 the
+/// coarse bands stream quads covering up to 32×32 cells. Two attempts of
+/// that can overrun a frame as easily as twenty cheap ones, and no attempt
+/// count can tell the two apart. The deadline can.
+///
+/// Cooperative, matching [`super::FrameTimeBudget`]: a provider that has not
+/// yet completed anything is always admitted once, so an over-budget attempt
+/// defers the *next* unit rather than deadlocking the ring.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct LodWorkBudget {
     remaining: usize,
     spent: usize,
+    deadline: Option<Instant>,
 }
 
 impl LodWorkBudget {
+    /// Attempt-capped only — no time bound. For deterministic bootstrap and
+    /// tests; the per-frame path uses [`Self::with_deadline`].
     pub(crate) fn new(max_attempts: usize) -> Self {
         Self {
             remaining: max_attempts,
             spent: 0,
+            deadline: None,
+        }
+    }
+
+    /// Attempt-capped *and* deadline-bounded. `deadline` is shared across
+    /// every provider in one reconcile, so the rings collectively yield at
+    /// the frame's streaming allowance instead of each starting a fresh one.
+    pub(crate) fn with_deadline(max_attempts: usize, deadline: Instant) -> Self {
+        Self {
+            remaining: max_attempts,
+            spent: 0,
+            deadline: Some(deadline),
         }
     }
 
@@ -135,8 +169,15 @@ impl LodWorkBudget {
     }
 
     /// Reserve one potentially expensive provider attempt.
+    ///
+    /// Refuses once either bound is hit — except for the very first attempt,
+    /// which is always admitted so the ring makes progress even if the
+    /// deadline already elapsed applying full-detail cells.
     pub(crate) fn try_take(&mut self) -> bool {
         if self.remaining == 0 {
+            return false;
+        }
+        if self.spent > 0 && self.deadline.is_some_and(|at| Instant::now() >= at) {
             return false;
         }
         self.remaining -= 1;
@@ -213,6 +254,7 @@ mod tests {
     use byroredux_plugin::esm::cell::{CellData, WorldspaceRecord};
     use byroredux_plugin::esm::records::EsmIndex;
     use std::sync::Arc;
+    use std::time::Duration;
 
     fn exterior_context(index: EsmIndex, worldspace_key: &str) -> ExteriorWorldContext {
         ExteriorWorldContext {
@@ -291,6 +333,46 @@ mod tests {
         let (centre, radius) = local_aabb_center_radius(&positions);
         assert_eq!(centre, Vec3::splat(0.5));
         assert!((radius - Vec3::splat(0.5).length()).abs() < 1e-6);
+    }
+
+    /// EX-07 / #2376 — the wall-clock bound is what actually protects the
+    /// frame. An attempt count cannot: since #2371 one attempt may be a
+    /// level-4 quad or a level-32 macro-mesh covering 64× the ground, and the
+    /// count cannot tell them apart.
+    #[test]
+    fn lod_work_budget_yields_once_the_shared_deadline_passes() {
+        // An already-elapsed deadline still admits exactly one attempt, so a
+        // frame whose full-detail apply consumed the whole allowance cannot
+        // stall the ring forever.
+        let mut budget = LodWorkBudget::with_deadline(8, Instant::now());
+        assert!(budget.try_take(), "first attempt must always be admitted");
+        assert!(
+            !budget.try_take(),
+            "past the deadline, the second attempt must yield to the next frame"
+        );
+        assert_eq!(budget.spent(), 1);
+
+        // A live deadline lets the attempt cap remain the binding limit.
+        let mut budget = LodWorkBudget::with_deadline(3, Instant::now() + Duration::from_secs(30));
+        assert!(budget.try_take());
+        assert!(budget.try_take());
+        assert!(budget.try_take());
+        assert!(
+            !budget.try_take(),
+            "attempt cap still applies under a deadline"
+        );
+        assert_eq!(budget.spent(), 3);
+    }
+
+    /// The deterministic full-radius bootstrap must stay untimed — it runs
+    /// before the first frame is presented, where yielding would leave the
+    /// initial ring half-built.
+    #[test]
+    fn unlimited_budget_has_no_deadline() {
+        let mut budget = LodWorkBudget::unlimited();
+        for _ in 0..1_000 {
+            assert!(budget.try_take());
+        }
     }
 
     #[test]

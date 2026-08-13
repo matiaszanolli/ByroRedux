@@ -45,14 +45,54 @@ pub struct LoadedCell {
     pub cell_root: EntityId,
 }
 
-/// Bounded latency aggregate used by [`StreamingTelemetry`]. Keeping only a
-/// count, total, and maximum makes long play sessions constant-memory while
-/// still exposing the deadline signals the boundary benchmark needs.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// How many recent samples each [`StreamingLatencySummary`] keeps in order to
+/// answer percentile queries.
+///
+/// Percentiles need a distribution, but the count/total/max aggregate is
+/// deliberately constant-memory so a long play session cannot grow it. A
+/// fixed ring squares the two: the window is bounded (128 × 4 B = 512 B per
+/// phase), and percentiles over it are *exact* rather than the approximation
+/// a bucketed histogram of the same size would give.
+///
+/// 128 comfortably covers a boundary benchmark end to end — a `grid-cross`
+/// run crosses three boundaries, so the per-crossing phases record a handful
+/// of samples in total. Only the per-frame slice phases (dispatch, apply,
+/// LOD) can overflow it, and for those a trailing window is the more useful
+/// reading anyway.
+const RECENT_LATENCY_SAMPLES: usize = 128;
+
+/// Bounded latency aggregate used by [`StreamingTelemetry`].
+///
+/// `samples` / `total` / `max` are all-time and constant-memory. The ring
+/// behind them retains the most recent [`RECENT_LATENCY_SAMPLES`] durations so
+/// [`Self::percentiles_ms`] can report p50/p95 — EX-06 asks for a
+/// distribution per phase, and an average hides exactly the tail that a
+/// streaming deadline is meant to bound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StreamingLatencySummary {
     pub samples: u64,
     pub total: Duration,
     pub max: Duration,
+    /// Most recent sample durations in microseconds, oldest-to-newest only
+    /// until the ring wraps (order is irrelevant — every reader sorts).
+    recent: [u32; RECENT_LATENCY_SAMPLES],
+    /// Live entries in `recent`, saturating at its capacity.
+    recent_len: usize,
+    /// Next write index; wraps, overwriting the oldest sample.
+    recent_next: usize,
+}
+
+impl Default for StreamingLatencySummary {
+    fn default() -> Self {
+        Self {
+            samples: 0,
+            total: Duration::ZERO,
+            max: Duration::ZERO,
+            recent: [0; RECENT_LATENCY_SAMPLES],
+            recent_len: 0,
+            recent_next: 0,
+        }
+    }
 }
 
 impl StreamingLatencySummary {
@@ -60,6 +100,12 @@ impl StreamingLatencySummary {
         self.samples = self.samples.saturating_add(1);
         self.total = self.total.saturating_add(elapsed);
         self.max = self.max.max(elapsed);
+
+        // Microseconds in a `u32` reach ~71 minutes — orders of magnitude
+        // past any streaming phase, and half the footprint of nanoseconds.
+        self.recent[self.recent_next] = elapsed.as_micros().min(u32::MAX as u128) as u32;
+        self.recent_next = (self.recent_next + 1) % RECENT_LATENCY_SAMPLES;
+        self.recent_len = (self.recent_len + 1).min(RECENT_LATENCY_SAMPLES);
     }
 
     pub fn average_ms(self) -> f64 {
@@ -72,6 +118,29 @@ impl StreamingLatencySummary {
 
     pub fn max_ms(self) -> f64 {
         self.max.as_secs_f64() * 1000.0
+    }
+
+    /// `[p50, p95, max]` in milliseconds.
+    ///
+    /// p50/p95 are nearest-rank over the retained window, matching
+    /// `main::bench_frame_distribution`'s convention so the per-phase and
+    /// whole-frame numbers in one bench line are directly comparable. `max`
+    /// is the all-time maximum, not the window's — a hitch that scrolled out
+    /// of the window still happened, and losing it would defeat the point of
+    /// the measurement.
+    pub fn percentiles_ms(&self) -> [f64; 3] {
+        if self.recent_len == 0 {
+            return [0.0, 0.0, self.max_ms()];
+        }
+        let mut sorted = [0u32; RECENT_LATENCY_SAMPLES];
+        sorted[..self.recent_len].copy_from_slice(&self.recent[..self.recent_len]);
+        sorted[..self.recent_len].sort_unstable();
+        let window = &sorted[..self.recent_len];
+        let pick = |fraction: f64| {
+            let rank = (fraction * self.recent_len as f64).ceil() as usize;
+            f64::from(window[rank.saturating_sub(1).min(self.recent_len - 1)]) / 1000.0
+        };
+        [pick(0.50), pick(0.95), self.max_ms()]
     }
 }
 
@@ -257,7 +326,7 @@ impl StreamingTelemetry {
              worker_avg_ms={:.2} worker_max_ms={:.2} \
              apply_samples={} apply_avg_ms={:.2} apply_max_ms={:.2} \
              lod_slice_avg_ms={:.2} lod_slice_max_ms={:.2} peak_pending={} \
-             unsettled_full={} unsettled_lod={}",
+             unsettled_full={} unsettled_lod={} {} {} {} {} {} {}",
             self.boundary_crossings,
             self.full_detail.samples,
             self.full_detail.average_ms(),
@@ -291,8 +360,24 @@ impl StreamingTelemetry {
             self.peak_pending,
             u8::from(unsettled_full),
             u8::from(unsettled_lod),
+            // EX-06 per-phase distributions. An average cannot show the tail
+            // a streaming deadline exists to bound, so every phase the plan
+            // names reports p50/p95/max alongside it. Whole-frame p50/p95/max
+            // are emitted by `main`'s own bench line from the CPU frame times.
+            phase_distribution("queue_wait", &self.worker_queue),
+            phase_distribution("worker_parse", &self.worker_parse),
+            phase_distribution("apply", &self.apply_slices),
+            phase_distribution("unload", &self.unload_slices),
+            phase_distribution("lod_slice", &self.lod_slices),
+            phase_distribution("full_detail", &self.full_detail),
         )
     }
+}
+
+/// Format one phase's `p50/p95/max` triple for [`StreamingTelemetry::bench_line`].
+fn phase_distribution(label: &str, summary: &StreamingLatencySummary) -> String {
+    let [p50, p95, max] = summary.percentiles_ms();
+    format!("{label}_p50_ms={p50:.2} {label}_p95_ms={p95:.2} {label}_p100_ms={max:.2}")
 }
 
 /// Queue and worker-service time carried across the worker channel with each
