@@ -98,6 +98,14 @@ impl VulkanContext {
     ///
     /// Called in `draw_frame()` after composite dispatch, before `end_command_buffer`.
     /// The swapchain image is in `PRESENT_SRC_KHR` layout after the composite pass.
+    ///
+    /// # Safety
+    ///
+    /// `cmd` must be recording outside a render pass. `swapchain_image` must
+    /// currently be in `PRESENT_SRC_KHR` layout (this frame's composite pass
+    /// output) and must remain live through submission — this function
+    /// leaves it back in `PRESENT_SRC_KHR` before returning, so the caller's
+    /// subsequent present call sees the layout it expects either way.
     pub(super) unsafe fn screenshot_record_copy(
         &mut self,
         cmd: vk::CommandBuffer,

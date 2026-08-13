@@ -589,6 +589,17 @@ impl FrameUpscaler {
     /// barrier that is already being recorded — and the cost of getting the
     /// narrowing wrong is a same-command-buffer WAW that no test can see.
     /// If it is ever narrowed, split the barrier per call site first.
+    ///
+    /// # Safety
+    ///
+    /// `cmd` must be recording outside a render pass. `scene_color` must be
+    /// in `SHADER_READ_ONLY_OPTIMAL` (composition's output layout) and
+    /// `self.output_images[frame]` must currently be in `output_layout`
+    /// (the caller-declared parameter — `SHADER_READ_ONLY_OPTIMAL` on the
+    /// steady-state bridge path, `GENERAL` on the dispatch-failure recovery
+    /// path). Both images must remain live through submission. This is the
+    /// same contract as `record`'s own `# Safety` doc; every call site
+    /// shares it (see the `// SAFETY:` comment at each).
     unsafe fn record_native_blit(
         &self,
         device: &ash::Device,
@@ -702,6 +713,17 @@ impl FrameUpscaler {
         }
     }
 
+    /// # Safety
+    ///
+    /// `cmd` must be recording outside a render pass. `inputs.scene_color`,
+    /// `inputs.motion_vectors`, `inputs.reactive`, and `inputs.transparency`
+    /// must each be in `SHADER_READ_ONLY_OPTIMAL` (their producing render
+    /// pass's output layout — this barrier is execution-only for the four,
+    /// no layout change). `inputs.depth` must be in
+    /// `DEPTH_STENCIL_READ_ONLY_OPTIMAL`. `self.output_images[frame]` must
+    /// be in `SHADER_READ_ONLY_OPTIMAL` (this frame slot's steady-state
+    /// layout from the prior blit/dispatch). All named images must remain
+    /// live through submission.
     unsafe fn record_fsr_barriers_before(
         &self,
         device: &ash::Device,
@@ -761,6 +783,14 @@ impl FrameUpscaler {
 
     /// Put depth back into the layout every other pass expects after the FSR
     /// boundary barriers ran but the dispatch itself was rejected.
+    ///
+    /// # Safety
+    ///
+    /// `cmd` must be recording outside a render pass. `depth_image` must be
+    /// in `SHADER_READ_ONLY_OPTIMAL` — the layout `record_fsr_barriers_before`
+    /// left it in earlier in this same `cmd`; this fn is only ever called on
+    /// that recovery path, undoing just the depth half of that transition.
+    /// The image must remain live through submission.
     unsafe fn record_fsr_depth_restore(
         &self,
         device: &ash::Device,
@@ -819,6 +849,16 @@ impl FrameUpscaler {
     /// code paths those presets exercise on this driver. **Re-run that
     /// check when the SDK is upgraded** — a backend change to resource-state
     /// tracking would break these barriers silently on the happy path.
+    ///
+    /// # Safety
+    ///
+    /// `cmd` must be recording outside a render pass. `depth_image` must be
+    /// in `SHADER_READ_ONLY_OPTIMAL` and `self.output_images[frame]` must be
+    /// in `GENERAL` — the layouts the validated SDK contract above claims
+    /// the FFX Vulkan backend leaves them in. The SDK dispatch's compute
+    /// accesses must already be recorded into this same `cmd` before this
+    /// call, ahead of this barrier's `COMPUTE_SHADER` source stage. Both
+    /// images must remain live through submission.
     unsafe fn record_fsr_barriers_after(
         &self,
         device: &ash::Device,
@@ -1125,6 +1165,97 @@ mod tests {
             blit_output_src_access(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
             vk::AccessFlags::SHADER_READ
         );
+    }
+
+    /// Regression for #2684 (SAFE-D4-03) — six `unsafe fn` (four here, one
+    /// each in `gbuffer.rs` / `context/screenshot.rs`) carried no `# Safety`
+    /// doc section stating the caller contract, unlike the other 71 of 77
+    /// workspace `unsafe fn`. All are private/`pub(super)`, so
+    /// `clippy::missing_safety_doc` doesn't catch them — verified
+    /// empirically (stripping the doc from `Attachment::destroy` and
+    /// running `cargo clippy -- -W clippy::missing_safety_doc` produces
+    /// zero diagnostics), which is also why enabling that lint crate-wide
+    /// per the issue's "consider" suggestion was skipped: it wouldn't have
+    /// covered the actual gap. Source-scan pin instead: each `unsafe fn`
+    /// signature must be immediately preceded by a `# Safety` heading in
+    /// its doc comment (allowing intervening doc lines, since some of
+    /// these also carry unrelated prose sections above the contract).
+    #[test]
+    fn frame_upscaler_and_sibling_unsafe_fns_carry_safety_doc_sections() {
+        const GBUFFER_RS: &str = include_str!("gbuffer.rs");
+        const SCREENSHOT_RS: &str = include_str!("context/screenshot.rs");
+        const FRAME_UPSCALER_RS: &str = include_str!("frame_upscaler.rs");
+
+        // (source, needle identifying the fn, human label)
+        let sites: &[(&str, &str, &str)] = &[
+            (FRAME_UPSCALER_RS, "unsafe fn record_native_blit(", "record_native_blit"),
+            (
+                FRAME_UPSCALER_RS,
+                "unsafe fn record_fsr_barriers_before(",
+                "record_fsr_barriers_before",
+            ),
+            (
+                FRAME_UPSCALER_RS,
+                "unsafe fn record_fsr_depth_restore(",
+                "record_fsr_depth_restore",
+            ),
+            (
+                FRAME_UPSCALER_RS,
+                "unsafe fn record_fsr_barriers_after(",
+                "record_fsr_barriers_after",
+            ),
+            (
+                GBUFFER_RS,
+                "unsafe fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {",
+                "Attachment::destroy",
+            ),
+            (
+                SCREENSHOT_RS,
+                "unsafe fn screenshot_record_copy(",
+                "screenshot_record_copy",
+            ),
+        ];
+
+        for (src, needle, label) in sites {
+            let before_fn = src
+                .split_once(needle)
+                .unwrap_or_else(|| panic!("{label} disappeared or its signature changed (#2684)"))
+                .0;
+            // Drop the trailing PARTIAL line (e.g. "    pub(super) " —
+            // everything on the signature's own line up to where `needle`
+            // starts matching). Left in, that fragment is neither blank nor
+            // `///`-prefixed, so it would poison the reverse walk below
+            // before it ever reaches the real doc comment lines above it.
+            let before_fn = before_fn.rsplit_once('\n').map_or("", |(rest, _)| rest);
+            // The doc comment block immediately preceding the signature —
+            // everything back to the last non-doc-comment, non-blank line.
+            let doc_block: Vec<&str> = before_fn
+                .lines()
+                .rev()
+                .take_while(|line| {
+                    let trimmed = line.trim();
+                    trimmed.is_empty() || trimmed.starts_with("///")
+                })
+                .collect::<Vec<_>>();
+            // A genuine `# Safety` HEADING line — not just prose elsewhere
+            // in the block that happens to mention the phrase (e.g. "same
+            // contract as `record`'s own `# Safety` doc"). Strip the `///`
+            // prefix and surrounding whitespace and require an exact match,
+            // the same way a Markdown renderer identifies a heading line.
+            let has_safety_heading = doc_block.iter().any(|line| {
+                line.trim()
+                    .strip_prefix("///")
+                    .map(str::trim)
+                    .is_some_and(|rest| rest == "# Safety")
+            });
+            assert!(
+                has_safety_heading,
+                "{label} is `unsafe fn` but its doc comment has no `# Safety` \
+                 HEADING line stating the caller contract (#2684 / SAFE-D4-03) \
+                 — a mention of the phrase elsewhere in its doc prose does \
+                 not count",
+            );
+        }
     }
 }
 
