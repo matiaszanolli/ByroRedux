@@ -551,6 +551,10 @@ pub(super) fn spawn_mesh_instance(
     // draw in the render path. Reads the same components the renderer
     // reads, so the value is identical — only canonical + tooling-visible.
     crate::material_translate::resolve_normal_alpha_spec_roughness(world, entity);
+    // #2826 (REN-D19-02) — same "resolve once from MaterialTextureHandles"
+    // pattern, for whether the model-space normal map's blue channel
+    // carries authored Z.
+    crate::material_translate::resolve_msn_z_source(world, entity);
     let implicit_decal_blend = decal_uses_implicit_alpha_blend(
         mesh.material.is_decal,
         mesh.material.has_alpha,

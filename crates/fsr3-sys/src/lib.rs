@@ -173,7 +173,8 @@ impl std::error::Error for Error {}
 /// same branch, and logs the same message, as a genuine SDK failure.
 const FORCED_FAILURE_CODE: u32 = 3;
 
-/// Debug-only: force [`Context::dispatch`] to fail without entering the SDK.
+/// Fault injection: force [`Context::dispatch`] to fail without entering the
+/// SDK, gated on `BYRO_FSR_FORCE_DISPATCH_FAIL=1`.
 ///
 /// The FSR dispatch-failure recovery path (#2140) is unreachable on the
 /// happy path and not exercisable from `cargo test` — it needs an SDK OOM,
@@ -181,12 +182,38 @@ const FORCED_FAILURE_CODE: u32 = 3;
 /// "SDK rejected the dispatch having recorded nothing" case reproducible so
 /// the recovery barriers can be checked under validation.
 ///
+/// Unlike `debug_checking: cfg!(debug_assertions)` next door, this is
+/// deliberately **not** `cfg`-gated to debug builds: smoke tests and
+/// benches run `--release`, and that's exactly where the recovery path
+/// needs exercising (#2140, AUDIT_RENDERER_2026-08-12b REN-D23-H1). A
+/// release binary that happens to inherit this variable from its
+/// environment is therefore expected to degrade to the native blit for the
+/// whole session — set it deliberately, not by accident. (#2825 /
+/// REN-D23-04 — previously kept on `var_os(..).is_some()`, so `=0` and an
+/// empty value both meant "on"; only an explicit non-empty, non-"0" value
+/// now enables it, matching every other `BYRO_*=1` fault-injection toggle
+/// in this codebase.)
+///
 /// Read once and cached: `dispatch` runs every frame, and re-reading the
 /// environment per frame would put a lock-taking syscall on the hot path.
+/// The cache means the toggle cannot be unset mid-process — set it before
+/// launch, not from a running session.
 fn force_dispatch_failure() -> bool {
     use std::sync::OnceLock;
     static FORCED: OnceLock<bool> = OnceLock::new();
-    *FORCED.get_or_init(|| std::env::var_os("BYRO_FSR_FORCE_DISPATCH_FAIL").is_some())
+    *FORCED.get_or_init(|| env_flag_is_set(std::env::var_os("BYRO_FSR_FORCE_DISPATCH_FAIL")))
+}
+
+/// Pure predicate backing [`force_dispatch_failure`], split out so the
+/// `=0`/empty-means-off fix (#2825 / REN-D23-04) is unit-testable without
+/// touching the process-wide `OnceLock` cache or real environment. Unset
+/// and empty mean off; `"0"` means off; anything else — including a
+/// non-UTF-8 value, which has no `"0"` it could equal — means on.
+fn env_flag_is_set(value: Option<std::ffi::OsString>) -> bool {
+    value.is_some_and(|v| match v.to_str() {
+        Some(s) => !s.is_empty() && s != "0",
+        None => true,
+    })
 }
 
 fn check(code: u32) -> Result<(), Error> {
@@ -462,6 +489,29 @@ mod tests {
         let version = version().expect("version query");
         assert_eq!((version.major, version.minor, version.patch), (3, 1, 4));
         assert_ne!(version.provider_id, 0);
+    }
+
+    /// #2825 (REN-D23-04) — `env_flag_is_set` previously keyed on
+    /// `var_os(..).is_some()`, so an explicit `=0` or an empty value both
+    /// meant "on". Only an explicit non-empty, non-"0" value should mean
+    /// on now, matching every other `BYRO_*=1` fault-injection toggle in
+    /// this codebase (`BYRO_VALIDATION`, `BYRO_FORCE_TLAS_ALLOC_FAIL`, …).
+    #[test]
+    fn env_flag_is_set_treats_zero_and_empty_as_off() {
+        use std::ffi::OsString;
+        assert!(!env_flag_is_set(None));
+        assert!(!env_flag_is_set(Some(OsString::from(""))));
+        assert!(!env_flag_is_set(Some(OsString::from("0"))));
+        assert!(env_flag_is_set(Some(OsString::from("1"))));
+        assert!(env_flag_is_set(Some(OsString::from("true"))));
+        // Non-UTF-8 value: presence still means "on" — there's no "0" it
+        // could equal.
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            let non_utf8 = OsString::from_vec(vec![0xFF, 0xFE]);
+            assert!(env_flag_is_set(Some(non_utf8)));
+        }
     }
 
     #[test]

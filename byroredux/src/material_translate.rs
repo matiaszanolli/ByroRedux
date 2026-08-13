@@ -361,6 +361,54 @@ pub(crate) fn resolve_normal_alpha_spec_roughness(world: &mut World, entity: Ent
     }
 }
 
+/// Pure decision function backing [`resolve_msn_z_source`]: whether the
+/// bound model-space normal map's blue channel carries authored Z, i.e.
+/// whether `MAT_FLAG_MSN_HAS_AUTHORED_Z` should be set. Only meaningful
+/// when `model_space_normals` is set — see [`resolve_msn_z_source`] for
+/// the DXGI-format rationale behind reusing `normal_has_alpha` as the
+/// authored-Z signal.
+fn msn_has_authored_z(model_space_normals: bool, normal_has_alpha: bool) -> bool {
+    model_space_normals && normal_has_alpha
+}
+
+/// #2826 (REN-D19-02) — resolves `MAT_FLAG_MSN_HAS_AUTHORED_Z` the same way
+/// [`resolve_normal_alpha_spec_roughness`] resolves normal-alpha-as-spec:
+/// once at spawn time, after `MaterialTextureHandles` has been attached,
+/// into the canonical `Material.effect_shader_flags` — never re-derived
+/// per-fragment in the shader.
+///
+/// Only meaningful when `MAT_FLAG_MODEL_SPACE_NORMALS` is set. Reuses the
+/// texture registry's alpha classification (`MaterialTextureHandles::
+/// normal_has_alpha`, itself `dds::format_has_alpha` on the bound normal
+/// map's DDS format) as the authored-Z signal: in the surveyed FO4
+/// archives, three-channel `_msn` maps with real signed Z are BC3 (has
+/// alpha), and the genuinely two-channel `_msn` set (FaceCustomization,
+/// constant zero blue) is BC1 (no alpha) — see the audit's DXGI survey
+/// (docs/audits/AUDIT_RENDERER_2026-08-12b.md REN-D19-02). This is an
+/// empirical correlation over the corpus, not a hard format guarantee; a
+/// source that authors a three-channel `_msn` in an alpha-less format (or
+/// vice versa) would need its own signal.
+pub(crate) fn resolve_msn_z_source(world: &mut World, entity: EntityId) {
+    let model_space_normals = world
+        .get::<Material>(entity)
+        .map(|m| {
+            m.effect_shader_flags
+                & byroredux_renderer::vulkan::material::material_flag::MODEL_SPACE_NORMALS
+                != 0
+        })
+        .unwrap_or(false);
+    let normal_has_alpha = world
+        .get::<MaterialTextureHandles>(entity)
+        .map(|handles| handles.normal_has_alpha)
+        .unwrap_or(false);
+    if msn_has_authored_z(model_space_normals, normal_has_alpha) {
+        if let Some(m) = world.get_mut::<Material>(entity) {
+            m.effect_shader_flags |=
+                byroredux_renderer::vulkan::material::material_flag::MSN_HAS_AUTHORED_Z;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -544,6 +592,21 @@ mod tests {
         assert_eq!(material.rimlight_power, 2.50);
         assert_eq!(material.backlight_power, 1.75);
         assert_eq!(material.fresnel_power, 3.5);
+    }
+
+    /// #2826 (REN-D19-02) — `MAT_FLAG_MSN_HAS_AUTHORED_Z` must only be
+    /// asserted when the material is model-space-normal-mapped AND the
+    /// bound normal map's format carries alpha (the BC3 signal for a
+    /// three-channel `_msn`). Neither condition alone is sufficient: a
+    /// tangent-space alpha-carrying normal map (BC3 `_n`, not `_msn`)
+    /// must not set it, and a model-space map without alpha (BC1
+    /// `_msn`, the genuinely two-channel case) must keep reconstructing.
+    #[test]
+    fn msn_authored_z_requires_both_model_space_and_alpha() {
+        assert!(msn_has_authored_z(true, true));
+        assert!(!msn_has_authored_z(true, false));
+        assert!(!msn_has_authored_z(false, true));
+        assert!(!msn_has_authored_z(false, false));
     }
 }
 

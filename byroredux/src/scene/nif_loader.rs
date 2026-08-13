@@ -988,6 +988,9 @@ pub(crate) fn load_nif_bytes_with_skeleton(
         // attached (mirrors the cell-loader spawn
         // path), instead of recomputing it per draw in the render path.
         crate::material_translate::resolve_normal_alpha_spec_roughness(world, entity);
+        // #2826 (REN-D19-02) — same pattern, for whether the model-space
+        // normal map's blue channel carries authored Z.
+        crate::material_translate::resolve_msn_z_source(world, entity);
 
         if let Some(ref name) = mesh.name {
             let mut pool = world.resource_mut::<StringPool>();

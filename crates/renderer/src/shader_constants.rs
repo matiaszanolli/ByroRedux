@@ -753,6 +753,11 @@ mod tests {
             material_flag::TRANSLUCENCY_MIX_ALBEDO
         );
         assert_eq!(MAT_FLAG_THIN_GLASS, material_flag::THIN_GLASS);
+        // #2826 (REN-D19-02) — model-space normal map Z-source bit.
+        assert_eq!(
+            MAT_FLAG_MSN_HAS_AUTHORED_Z,
+            material_flag::MSN_HAS_AUTHORED_Z
+        );
         // Lighting-influence shift — a byte-field offset, not a single-bit flag.
         assert_eq!(MAT_FLAG_EFFECT_LI_SHIFT, material_flag::EFFECT_LI_SHIFT);
         // BGSM_AUTHORED intentionally NOT mirrored to GLSL — see build.rs.

@@ -537,6 +537,28 @@ pub mod material_flag {
     /// Thin glass uses framebuffer transmission plus the shared dielectric
     /// Fresnel surface response; it must never enter the thick Snell/RT path.
     pub const THIN_GLASS: u32 = 1 << 11;
+    /// The bound [`MODEL_SPACE_NORMALS`] map's blue channel carries real
+    /// authored Z data (three-channel FO4 `_msn`, e.g. terrain and
+    /// `PiperHead_msn` — BC3), rather than being empty and needing the
+    /// tangent-space-style reconstruction `mn.z = sqrt(max(0, 1 -
+    /// dot(mn.xy, mn.xy)))` (two-channel `_msn`, e.g. the FaceCustomization
+    /// set — BC1 with a constant zero blue). Only meaningful when
+    /// [`MODEL_SPACE_NORMALS`] is also set; clear (the safe default) means
+    /// reconstruct.
+    ///
+    /// #2826 (REN-D19-02): the fragment shader used to apply that
+    /// reconstruction unconditionally, discarding authored Z over roughly
+    /// half of any three-channel `_msn` surface (measured 42-45% of texels
+    /// with z<0 on real FO4 archives) and forcing a non-negative Z that
+    /// mirrors the normal through the model XY plane. Since BC5/BC3 vs.
+    /// BC1 is knowable from the DDS header at load time — not a per-fragment
+    /// content heuristic — this bit is set in `texture_registry.rs`
+    /// (`classify_msn_z_source`) and folded into `Material.effect_shader_flags`
+    /// at the same spawn-time sites that already resolve `normal_has_alpha`
+    /// (`byroredux::material_translate::resolve_msn_z_source`), per the
+    /// NIFAL parser→`Material` canonical-boundary rule — never re-derived
+    /// per-fragment in the shader.
+    pub const MSN_HAS_AUTHORED_Z: u32 = 1 << 12;
 
     /// Bit-shift for the 8-bit `BSEffectShaderProperty.lighting_influence`
     /// byte packed into `material_flags` bits 16–23. Extract in GLSL as
