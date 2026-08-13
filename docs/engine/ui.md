@@ -479,8 +479,8 @@ notes for the format-string system menus rely on.
 
 ## Tests
 
-The UI crate has 16 default tests plus three ignored installed-corpus
-smokes; the executable adds three winit-translation tests. The synthetic
+The UI crate has 26 default tests plus three ignored installed-corpus
+smokes; the executable adds four winit-translation tests. The synthetic
 non-Bethesda SWFs come from Ruffle's pinned ExternalInterface fixtures:
 
 - The `byroredux-ui` crate compiles as part of the workspace.

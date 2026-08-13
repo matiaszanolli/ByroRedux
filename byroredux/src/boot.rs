@@ -1637,16 +1637,17 @@ mod scheduler_timings_gate_tests {
         );
     }
 
-    /// The lazy arm-on-overlay-open path lives in `main.rs`; without it a
-    /// normal (non-`BYRO_PROFILE`) run could never populate the Metrics
+    /// The lazy arm-on-overlay-open path lives in the winit event handler —
+    /// `main.rs` until #2731 split it out, `app_events.rs` since. Without it
+    /// a normal (non-`BYRO_PROFILE`) run could never populate the Metrics
     /// panel at all. Pin that the fallback exists.
     #[test]
     fn overlay_open_arms_the_tracker_lazily() {
-        const MAIN_SRC: &str = include_str!("main.rs");
+        const EVENT_SRC: &str = include_str!("app_events.rs");
         assert!(
-            MAIN_SRC.contains("SchedulerSystemTimings::default()"),
-            "main.rs must insert SchedulerSystemTimings when the F3 debug overlay first \
-             opens — boot.rs no longer does it unconditionally (#2166)"
+            EVENT_SRC.contains("SchedulerSystemTimings::default()"),
+            "app_events.rs must insert SchedulerSystemTimings when the F3 debug overlay \
+             first opens — boot.rs no longer does it unconditionally (#2166)"
         );
     }
 }

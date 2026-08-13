@@ -29,9 +29,18 @@ const OCCLUSION_EPSILON_BU: f32 = 1.0;
 /// Movement, jump, sprint, and activation are the first gameplay consumers.
 /// The remaining actions establish the same seam for combat, inventory, and
 /// pause to migrate onto incrementally.
+///
+/// #2732 — the three variants with no producer yet carry their own
+/// `#[expect(dead_code)]` rather than the enum carrying a blanket
+/// `#[allow]`. Two reasons. A blanket allow silently absorbs the *next*
+/// unproduced variant as well, so it stops being evidence of anything; and
+/// `expect` is self-expiring — the build warns "unfulfilled lint
+/// expectation" the moment a variant gains a producer, so the attribute is
+/// deleted by whoever wires it up instead of being inherited indefinitely.
+/// (`Inventory` was on the audit's dead list and is bound to Tab below, so
+/// the enum-level allow had already outlived part of its own justification.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
-#[allow(dead_code)] // Mouse/gamepad sources for these declared actions land next.
 pub(crate) enum InputAction {
     MoveForward,
     MoveBackward,
@@ -40,9 +49,12 @@ pub(crate) enum InputAction {
     Jump,
     Sprint,
     Activate,
+    #[expect(dead_code, reason = "no input source yet — see the enum docs (#2732)")]
     Attack,
+    #[expect(dead_code, reason = "no input source yet — see the enum docs (#2732)")]
     Block,
     Inventory,
+    #[expect(dead_code, reason = "no input source yet — see the enum docs (#2732)")]
     Pause,
 }
 

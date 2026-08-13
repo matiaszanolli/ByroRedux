@@ -38,7 +38,10 @@ glslangValidator -V triangle.frag -o triangle.frag.spv
 
 ```
 byroredux/              Binary — game loop, scene setup, systems
-  src/main.rs              App struct, ApplicationHandler (winit event loop), main()
+  src/main.rs              App struct + construction, main(), debug-UI snapshot bridge
+  src/app_events.rs        ApplicationHandler — winit resumed/window/device/about_to_wait (#2731)
+  src/app_frame.rs         App::render_one_frame — per-frame render driver (#2731)
+  src/app_step.rs          Per-tick streaming / debug-load / save / cell-transition steppers
   src/components.rs        Marker components (Spinning, AlphaBlend, TwoSided, Decal) + app resources
   src/systems.rs           ECS systems: fly camera, animation, transform propagation, spin, stats
   src/scene.rs             Scene setup, NIF loading (load_nif_bytes, load_nif_from_args)
