@@ -30,7 +30,7 @@ renderer architecture (BLAS/TLAS, sync, swapchain, teardown ordering) see
 | File | Role |
 |------|------|
 | `skin_palette.comp` | Build per-slot bone-matrix palette from world transforms + bind inverses |
-| `skin_vertices.comp` | Deform skinned vertex positions / normals via palette lookup; output drives per-entity BLAS refit |
+| `skin_vertices.comp` | Deform skinned vertex **positions only** (`SKIN_OUTPUT_STRIDE_FLOATS` = 3 since #2170 — the skinned normal/tangent writes were dropped with their unread consumers); output drives per-entity BLAS refit |
 | `cluster_cull.comp` | Build per-froxel light lists (clustered shading) |
 | `ssao.comp` | Screen-space ambient occlusion texture generation |
 | `svgf_temporal.comp` | Temporal denoiser — motion-vector reprojection + color/moments accumulation for indirect lighting |
@@ -316,7 +316,7 @@ Prefixed by a 16-byte header (`u32 count` + 3 × `u32` padding). Up to
 | `MAX_LIGHTS` | 512 | Per-frame point/spot/directional lights |
 | `MAX_INSTANCES` | 262 144 | One indirect draw command per instance worst-case |
 | `MAX_MATERIALS` | 16 384 | 348 B each; deduplicated per frame |
-| `MAX_TOTAL_BONES` | 196 608 | 144 slots × 1 364 skinned meshes (M29.6) |
+| `MAX_TOTAL_BONES` | 196 608 | `floor(196 608 / 144)` = 1 365 palette slots, minus reserved slot 0 → **1 364 allocatable** skinned meshes (M29.6). Not an exact product: 1 365 × 144 = 196 560 leaves a 48-bone unused tail |
 | `MAX_PENDING_BIND_INVERSE_UPLOADS_PER_FRAME` | 1 366 | First-sight bind-inverse upload cap |
 | `MAX_TERRAIN_TILES` | 1 024 | 32 B each |
 | `IDENTITY_BONE_SLOT` | 0 | Slot 0 is always the identity matrix |

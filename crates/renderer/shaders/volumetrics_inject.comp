@@ -702,6 +702,19 @@ void main() {
         vec3 previousUvw;
         if (reprojectHistory(world_pos, previousUvw)) {
             vec4 history = texture(previousFroxel, previousUvw);
+            // #2809 (REN-D16-04), KNOWN LIMITATION — the 3×3 statistics
+            // below are gathered from `previousFroxel`, i.e. the history
+            // volume itself, not the current frame. `taa.comp` takes its
+            // moments from `uCurrHdr` and `svgf_temporal.comp` its firefly
+            // statistic from `currIndirectTex`; clamping a value to a
+            // neighbourhood that CONTAINS that value removes single-froxel
+            // spatial spikes but places no bound whatever on disagreement
+            // with the current frame, so a spatially smooth but temporally
+            // stale history passes through untouched. Fixing it properly
+            // needs the current frame's computed inscatter/extinction
+            // neighbourhood, i.e. a shared-memory or second-pass
+            // restructure — deliberately not attempted blind, since the
+            // effect is quality-only and needs RenderDoc to evaluate.
             ivec3 historySize = textureSize(previousFroxel, 0);
             vec3 texel = 1.0 / vec3(historySize);
             vec3 historyMean = vec3(0.0);
@@ -747,6 +760,32 @@ void main() {
             // deterministic given the volume — so keying the shorter time
             // constant on how much of the source term is emissive isolates
             // the fast-changing signal without touching the noisy one.
+            // #2809 (REN-D16-04), KNOWN LIMITATION — this time constant is
+            // ASYMMETRIC: fast on, slow off. `emissionFraction` is derived
+            // from the CURRENT sample alone, so on a trailing edge (a froxel
+            // a flame has just left) `local_medium.emission → 0`, which both
+            // drives `emissionAgreement → 1` (disabling the only radiance-
+            // based rejection) and makes the `mix` below select
+            // `steadyWeight` (~12-frame decay) instead of `emissiveWeight`
+            // (~3.5 frames). Net effect: emissive smear trailing moving
+            // fire/explosion fronts.
+            //
+            // Partly self-limiting: when the departing volume also dominated
+            // the froxel's extinction, `relativeDensityDelta ≈ 1` and
+            // `exp(-DENSITY_REJECTION)` collapses `historyWeight` anyway. The
+            // case that survives is a froxel where the ambient/global medium
+            // dominates sigma_t — fogged exteriors, or a bright but optically
+            // thin flame.
+            //
+            // NOT fixable by reading history emission: the froxel image is
+            // RGBA16F with rgb = inscatter and a = extinction, so the
+            // emissive share is never stored and cannot be reprojected. A
+            // real fix needs an extra per-frame emission-share image.
+            // And do NOT "fix" it by folding in a history-vs-current
+            // radiance drop — that is exactly the radiance-delta rejection
+            // the paragraph below rules out, and it would suppress
+            // accumulation at the god-ray edges accumulation exists to clean
+            // up.
             float emissionLuma = dot(local_medium.emission, LUMA_REC709);
             float sourceLuma = dot(current.rgb, LUMA_REC709);
             float emissionFraction =

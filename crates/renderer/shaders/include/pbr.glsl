@@ -6,6 +6,16 @@
 // and in earlier includes. Do not compile on its own.
 
 // ── PBR: GGX / Cook-Torrance BRDF ──────────────────────────────────
+//
+// #2811 (REN-D17-09) — the `knightcrawler25/GLSL-PathTracer` (MIT)
+// file:line citations throughout this file are NOT verifiable offline:
+// that repo is not present under `/mnt/data/src/reference/` (which
+// holds Champollion, Gibbed.Starfield, Material-Editor, gamebryo-v26/
+// v32, havok-20070919/2013, nifly, nifxml, openmw). The line ranges
+// were accurate when transcribed and are kept as provenance, but they
+// cannot be re-checked until the repo is re-cloned — so treat the
+// Rust-side regression tests as the authority on these formulas, not
+// the citations. Same caveat on `vulkan/material.rs`'s `presets`.
 
 // Normal Distribution Function (GGX/Trowbridge-Reitz).
 float distributionGGX(float NdotH, float roughness) {

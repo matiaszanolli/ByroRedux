@@ -1642,3 +1642,160 @@ fn bounded_path_preserves_the_accepted_segment_and_diffuse_budgets() {
         "bounded path must enforce both the hard and adaptive segment ceilings"
     );
 }
+
+/// #2810 (REN-D17-08) — the #1250 isotropic-degeneracy contract, checked
+/// numerically rather than by string mirror.
+///
+/// `distributionGGXAniso` documents that it "reduces exactly to
+/// `distributionGGX` when ax == ay". That is the property which lets the
+/// anisotropic lobe be the single NDF for both cases, so every legacy
+/// isotropic material keeps its exact pre-#1250 appearance. The reduction
+/// is not free algebra — it holds only because H is a unit vector in
+/// tangent space (`HdotX² + HdotY² + NdotH² = 1`), which lets
+///
+///   `HdotX²/a² + HdotY²/a² + NdotH²`  collapse to  `(1 + NdotH²(a²-1))/a²`
+///
+/// i.e. the isotropic `denom` scaled by `1/a²`, whose square then cancels
+/// against the `ax·ay = a²` prefactor. A future edit that drops the `ax*ay`
+/// prefactor, or squares `ax`/`ay` one time too many/few, breaks the
+/// identity while still compiling and still looking plausible — and this
+/// lobe has no CPU producer (`anisotropic` is reachable only through
+/// `mat.set`, see #2514), so nothing would catch it by eyeball either.
+///
+/// Ports both GLSL bodies verbatim so a divergence in either is caught.
+#[test]
+fn anisotropic_ggx_reduces_to_the_isotropic_ndf_at_zero_anisotropy() {
+    const PI: f64 = std::f64::consts::PI;
+
+    // Verbatim ports of `include/pbr.glsl`.
+    fn distribution_ggx(n_dot_h: f64, roughness: f64) -> f64 {
+        let a = roughness * roughness;
+        let a2 = a * a;
+        let denom = n_dot_h * n_dot_h * (a2 - 1.0) + 1.0;
+        a2 / (PI * denom * denom)
+    }
+    fn distribution_ggx_aniso(n_dot_h: f64, h_dot_x: f64, h_dot_y: f64, ax: f64, ay: f64) -> f64 {
+        let ax2 = ax * ax;
+        let ay2 = ay * ay;
+        let denom = h_dot_x * h_dot_x / ax2 + h_dot_y * h_dot_y / ay2 + n_dot_h * n_dot_h;
+        1.0 / (PI * ax * ay * denom * denom)
+    }
+    fn derive_ax_ay(roughness: f64, anisotropic: f64) -> (f64, f64) {
+        let alpha = roughness * roughness;
+        let aniso = anisotropic.clamp(0.0, 1.0);
+        let aspect = (1.0 - aniso * 0.9).sqrt();
+        (
+            (0.025f64 * 0.025).max(alpha / aspect),
+            (0.025f64 * 0.025).max(alpha * aspect),
+        )
+    }
+
+    // Sweep roughness above the `0.025² in α-units` floor so `deriveAxAy`
+    // returns the unclamped `alpha` and the identity is exercised rather
+    // than the floor. roughness ≥ 0.025 ⇒ alpha = roughness² ≥ 0.025².
+    for &roughness in &[0.025, 0.05, 0.1, 0.25, 0.5, 0.75, 1.0] {
+        let (ax, ay) = derive_ax_ay(roughness, 0.0);
+        assert!(
+            (ax - ay).abs() < 1e-15,
+            "anisotropic=0 must give ax == ay (roughness {roughness}): {ax} vs {ay}"
+        );
+
+        // Sample unit half-vectors in tangent space: the identity depends
+        // on `HdotX² + HdotY² + NdotH² == 1`.
+        for &n_dot_h in &[0.05, 0.2, 0.5, 0.8, 0.95, 1.0] {
+            let tangential = (1.0f64 - n_dot_h * n_dot_h).max(0.0).sqrt();
+            for &phi in &[0.0, 0.3, 0.7854, 1.2, PI / 2.0] {
+                let h_dot_x = tangential * phi.cos();
+                let h_dot_y = tangential * phi.sin();
+
+                let iso = distribution_ggx(n_dot_h, roughness);
+                let aniso = distribution_ggx_aniso(n_dot_h, h_dot_x, h_dot_y, ax, ay);
+                let rel = (aniso - iso).abs() / iso.max(1e-300);
+                assert!(
+                    rel < 1e-9,
+                    "anisotropic NDF must reduce to the isotropic NDF at anisotropic=0 \
+                     (roughness {roughness}, NdotH {n_dot_h}, phi {phi}): \
+                     iso {iso}, aniso {aniso}, rel err {rel}"
+                );
+            }
+        }
+    }
+
+    // The ported bodies must stay in lockstep with the GLSL they mirror.
+    let pbr = include_str!("../../../shaders/include/pbr.glsl");
+    assert!(
+        pbr.contains("return 1.0 / (PI * ax * ay * denom * denom);"),
+        "distributionGGXAniso's `ax*ay` prefactor is what cancels the `1/a²` in the \
+         collapsed denominator — dropping it silently breaks the #1250 reduction"
+    );
+    assert!(
+        pbr.contains("float denom = HdotX * HdotX / ax2 + HdotY * HdotY / ay2 + NdotH * NdotH;"),
+        "distributionGGXAniso's denominator drifted from the form the reduction assumes"
+    );
+    assert!(
+        pbr.contains("return a2 / (PI * denom * denom);"),
+        "distributionGGX (isotropic) drifted; the degeneracy target changed"
+    );
+}
+
+/// #2810 (REN-D17-08) — the #1254 anisotropic clamp.
+///
+/// `deriveAxAy` clamps `anisotropic` to [0, 1] before `sqrt(1 - 0.9·a)`.
+/// Without it an authored value > 1.0 (defense-in-depth against a future
+/// BGSM v9+ / Starfield `.mat` importer that forwards unclamped data)
+/// makes the radicand negative → `ax`/`ay` NaN → `distributionGGXAniso`
+/// NaN → black/undefined fragment. Negative inputs shrink `ax` below the
+/// intended floor. Pinned both numerically and at the source, since the
+/// guard is one line that a cleanup pass could plausibly delete.
+#[test]
+fn derive_ax_ay_clamps_anisotropic_against_nan_and_floor_escape() {
+    let pbr = include_str!("../../../shaders/include/pbr.glsl");
+
+    assert!(
+        pbr.contains("float aniso = clamp(anisotropic, 0.0, 1.0);")
+            && pbr.contains("float aspect = sqrt(1.0 - aniso * 0.9);"),
+        "deriveAxAy must clamp `anisotropic` to [0,1] BEFORE the sqrt (#1254) — an \
+         authored value > 1 otherwise makes the radicand negative and NaNs the lobe"
+    );
+    assert!(
+        !pbr.contains("sqrt(1.0 - anisotropic * 0.9)"),
+        "the sqrt must consume the clamped `aniso`, never the raw `anisotropic` (#1254)"
+    );
+    // The α-units floor is the other half of the contract — it mirrors
+    // `specularAaRoughness`'s effective roughness ≥ 0.025 (see #2471 and
+    // the #1250 closeout, which deferred the "drop to 0.001" suggestion).
+    assert!(
+        pbr.contains("ax = max(0.025 * 0.025, alpha / aspect);")
+            && pbr.contains("ay = max(0.025 * 0.025, alpha * aspect);"),
+        "deriveAxAy's 0.025² α-units floor must survive — it preserves the \
+         BSLightingShader gloss-cap behaviour (#1250 closeout / #2471)"
+    );
+
+    // Numeric: out-of-range inputs must stay finite and ordered.
+    fn derive_ax_ay(roughness: f64, anisotropic: f64) -> (f64, f64) {
+        let alpha = roughness * roughness;
+        let aniso = anisotropic.clamp(0.0, 1.0);
+        let aspect = (1.0 - aniso * 0.9).sqrt();
+        (
+            (0.025f64 * 0.025).max(alpha / aspect),
+            (0.025f64 * 0.025).max(alpha * aspect),
+        )
+    }
+    for &anisotropic in &[-5.0, -1.0, -0.001, 0.0, 0.5, 1.0, 1.001, 2.0, 1e6] {
+        let (ax, ay) = derive_ax_ay(0.5, anisotropic);
+        assert!(
+            ax.is_finite() && ay.is_finite(),
+            "anisotropic {anisotropic} produced a non-finite lobe: ax {ax}, ay {ay}"
+        );
+        assert!(
+            ax >= 0.025 * 0.025 && ay >= 0.025 * 0.025,
+            "anisotropic {anisotropic} escaped the α-units floor: ax {ax}, ay {ay}"
+        );
+        // `aspect ≤ 1` for every clamped input, so the tangent axis is
+        // never the narrower of the two.
+        assert!(
+            ax >= ay - 1e-15,
+            "ax must remain the stretched axis for anisotropic {anisotropic}: {ax} < {ay}"
+        );
+    }
+}

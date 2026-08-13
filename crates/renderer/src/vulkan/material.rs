@@ -651,12 +651,35 @@ impl Eq for GpuMaterial {}
 /// `knightcrawler25/GLSL-PathTracer` (MIT) —
 /// `assets/hyperion_rect_lights.scene`.
 ///
-/// Use as the fallback when authored BGSM is absent (or as
-/// known-good test fixtures). Pre-#1251 the synthetic-material
-/// path picked `roughness=0.5, metallic=0.0, F0=0.04` from thin
-/// air — the `feedback_no_guessing` memory wants citable
-/// references for every physical constant, and the Hyperion
-/// preset table is the canonical Disney-BSDF reference.
+/// **Citation is not verifiable offline** (#2811 / REN-D17-09): the
+/// `reference_glsl_pathtracer` note records this repo as cloned to
+/// `/mnt/data/src/reference/`, but it is not present there (that
+/// directory holds Champollion, Gibbed.Starfield, Material-Editor,
+/// gamebryo-v26/v32, havok-20070919/2013, nifly, nifxml, openmw — no
+/// GLSL-PathTracer). Every scalar below is therefore *citable but
+/// unconfirmed* against the named source, and the Dim-17 audit
+/// checklist item "Disney preset constructors match documented values
+/// (cross-ref GLSL-PathTracer)" cannot be executed until the repo is
+/// re-cloned. The same caveat applies to `pbr.glsl`'s four references
+/// into `disney.glsl` line ranges. Treat the values as pinned by the
+/// per-preset tests below, not by a live cross-reference.
+///
+/// **These are test fixtures / reference values only — NOT a runtime
+/// fallback.** An earlier version of this doc described them as "the
+/// fallback when authored BGSM is absent"; no such fallback exists or
+/// should. `translate_material` never consults this module, and its
+/// only callers are the tests below. Wiring these into the runtime
+/// would put per-material selection in the renderer, bypassing the
+/// NIFAL parser→`Material` single boundary — see
+/// `feedback_format_translation` and `docs/engine/nifal.md`. The
+/// canonical no-authored-data path is `Material::resolve_pbr`'s
+/// NaN-sentinel keyword classifier, CPU-side.
+///
+/// Pre-#1251 the synthetic-material path picked
+/// `roughness=0.5, metallic=0.0, F0=0.04` from thin air — the
+/// `feedback_no_guessing` memory wants citable references for every
+/// physical constant, and the Hyperion preset table is the canonical
+/// Disney-BSDF reference.
 ///
 /// Each preset returns a fully-populated `GpuMaterial`. The base
 /// `Default::default()` values cover every field this audit's
