@@ -234,6 +234,11 @@ pub(crate) fn translate_material(
         source.has_alpha || source.alpha_test,
         source.is_decal,
         source.bgem_glass,
+        // #2710 — external-material provenance. Gates the glass-keyword
+        // promotion of an effect-shader carrier to FO4+ content, where a
+        // `.bgem` exists beside the mesh; Skyrim's inline effect shaders
+        // never set it, so their keyword-sharing haze layers stay effects.
+        source.from_bgsm,
     );
     material
 }

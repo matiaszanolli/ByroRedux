@@ -292,18 +292,45 @@ pub struct GpuMaterial {
     // These are source-format agnostic. The NIF translation layer maps
     // legacy slots, BSShader texture sets, BGSM/BGEM, and effect shaders
     // into the same role names before a material reaches this record.
-    pub tint_map_index: u32,               // offset 300
-    pub inner_layer_map_index: u32,        // offset 304
-    pub specular_map_index: u32,           // offset 308
-    pub lighting_map_index: u32,           // offset 312
-    pub flow_map_index: u32,               // offset 316
-    pub wrinkle_map_index: u32,            // offset 320
-    pub reflectance_map_index: u32,        // offset 324
+    //
+    // Nine of the twelve are sampled by `triangle.frag`. Three —
+    // `lighting_map_index`, `flow_map_index`, `wrinkle_map_index` — are
+    // **imported, uploaded, hashed and mirrored in GLSL but deliberately
+    // unsampled**, pending the semantics each one needs (see their own
+    // notes below). #2712 moved that deferral out of a one-off audit
+    // report and into the code: it had already failed to propagate once,
+    // with a sibling audit tabulating all three as fully wired lanes.
+    //
+    // Cost of the deferral, so it stays a decision rather than a
+    // surprise: one otherwise-unused DDS upload per authored lane, and a
+    // dedup-key lane (`hash_gpu_material_fields`) that can split two
+    // materials rendering byte-identically. No visual effect.
+    pub tint_map_index: u32,        // offset 300
+    pub inner_layer_map_index: u32, // offset 304
+    pub specular_map_index: u32,    // offset 308
+    /// **Captured, not yet shaded** (#2712). Populated from
+    /// `BSEffectShaderProperty.lighting_texture` and BGSM/BGEM
+    /// `lighting_texture`. Blocked on deciding what the lane means to
+    /// this renderer: the source games use it as a baked-lighting /
+    /// light-mask overlay authored against their own forward pipeline,
+    /// which has no direct equivalent in an RT-lit frame.
+    pub lighting_map_index: u32, // offset 312
+    /// **Captured, not yet shaded** (#2712). Populated from BGSM
+    /// `flow_texture`. Blocked on flow-map coordinate semantics — the
+    /// UV-advection convention (and its pairing with the water/animation
+    /// path) has to be settled before the lane can drive anything.
+    pub flow_map_index: u32, // offset 316
+    /// **Captured, not yet shaded** (#2712). Populated from BGSM
+    /// `wrinkles_texture`. Blocked on actor control: wrinkle maps are
+    /// blended by per-expression facial-animation weights that the
+    /// animation path does not deliver to the material yet.
+    pub wrinkle_map_index: u32, // offset 320
+    pub reflectance_map_index: u32, // offset 324
     pub emittance_gradient_map_index: u32, // offset 328
-    pub decal_map_0_index: u32,            // offset 332
-    pub decal_map_1_index: u32,            // offset 336
-    pub decal_map_2_index: u32,            // offset 340
-    pub decal_map_3_index: u32,            // offset 344 → total 348
+    pub decal_map_0_index: u32,     // offset 332
+    pub decal_map_1_index: u32,     // offset 336
+    pub decal_map_2_index: u32,     // offset 340
+    pub decal_map_3_index: u32,     // offset 344 → total 348
 }
 
 impl Default for GpuMaterial {
@@ -1361,6 +1388,53 @@ mod tests {
     /// was lifted out of `triangle.frag` into the shared
     /// `include/bindings.glsl` under #1583/#1590 — `triangle.frag`
     /// now `#include`s it.)
+    /// #2712 — pin which supplemental role lanes are actually sampled.
+    ///
+    /// Three of the twelve (`lightingMapIndex`, `flowMapIndex`,
+    /// `wrinkleMapIndex`) are produced, uploaded and hashed but read by
+    /// no shader — a deliberate deferral that previously lived only in a
+    /// one-off audit report and had already failed to propagate to a
+    /// sibling report. This pins it in both directions: a lane silently
+    /// going dead fails here, and so does implementing one of the three
+    /// without removing its "captured, not yet shaded" note.
+    ///
+    /// `triangle.frag` is the only pass that reads the supplemental
+    /// roles (checked across `shaders/`), and it `#include`s the struct
+    /// rather than declaring it, so a name appearing in this file means
+    /// the lane is genuinely sampled.
+    #[test]
+    fn supplemental_role_lanes_sampled_by_triangle_frag_are_exactly_the_nine() {
+        let src = include_str!("../../shaders/triangle.frag");
+
+        for name in &[
+            "tintMapIndex",
+            "innerLayerMapIndex",
+            "specularMapIndex",
+            "reflectanceMapIndex",
+            "emittanceGradientMapIndex",
+            "decalMap0Index",
+            "decalMap1Index",
+            "decalMap2Index",
+            "decalMap3Index",
+        ] {
+            assert!(
+                src.contains(name),
+                "{name} is a wired supplemental role — if this pass stopped \
+                 sampling it, the lane is now uploaded and hashed for nothing \
+                 (#2712)"
+            );
+        }
+
+        for name in &["lightingMapIndex", "flowMapIndex", "wrinkleMapIndex"] {
+            assert!(
+                !src.contains(name),
+                "{name} is now sampled — good, but the deferral notes on \
+                 GpuMaterial and in include/bindings.glsl say it is not. \
+                 Remove them together with this assertion (#2712)"
+            );
+        }
+    }
+
     #[test]
     fn gpu_material_glsl_field_names_pinned() {
         let src = include_str!("../../shaders/include/bindings.glsl");
@@ -1673,7 +1747,7 @@ mod tests {
     }
 
     /// #1032 / REN-D14-NEW-01 — `unique_user_count` excludes the
-    /// seeded slot 0 so `mat.stats` reports actual user-distinct
+    /// seeded slot 0 so `ctx.scratch` reports actual user-distinct
     /// material counts. Pin the contract on the four shapes that
     /// matter:
     ///   * fresh table (no user interns) → 0
@@ -1698,7 +1772,7 @@ mod tests {
         assert_eq!(
             table.unique_user_count(),
             1,
-            "one user material — pre-fix `mat.stats` reported 2 here"
+            "one user material — pre-fix `ctx.scratch` reported 2 here"
         );
         assert_eq!(table.len(), 2, "sanity: len() = seeded + 1 user");
 

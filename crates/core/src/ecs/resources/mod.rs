@@ -428,16 +428,27 @@ impl ScratchRow {
 #[derive(Debug, Default)]
 pub struct ScratchTelemetry {
     pub rows: Vec<ScratchRow>,
-    /// R1 / #780 — unique materials at end of last `build_render_data`
-    /// (== `MaterialTable::len()`). Pairs with `materials_interned` to
-    /// compute the dedup ratio.
+    /// R1 / #780 — unique materials at end of last `build_render_data`.
+    ///
+    /// `== MaterialTable::unique_user_count()`, i.e. `len()` minus the
+    /// seeded neutral default at slot 0 (#1032). The producer in
+    /// `byroredux::main` assigns exactly that, deliberately: counting the
+    /// seed would put a floor of 1 under the denominator and skew the
+    /// dedup ratio on frames with no user materials. This doc previously
+    /// said `len()`, contradicting `unique_user_count`'s own doc in
+    /// `crates/renderer/src/vulkan/material.rs` (#2711).
+    ///
+    /// Pairs with `materials_interned` to compute the dedup ratio.
     pub materials_unique: usize,
     /// R1 / #780 — total `intern()` calls during last
     /// `build_render_data` (== `MaterialTable::interned_count()`,
     /// one tick per emitted `DrawCommand`). Dedup ratio =
     /// `materials_interned / materials_unique` — how many intern calls
     /// each unique material absorbs (higher = better dedup). Displayed by
-    /// the `mat.stats` console command. A drop here flags a regression
+    /// the `ctx.scratch` console command — there is no `mat.stats`
+    /// (#2711); `ctx.scratch`'s handler is what prints the
+    /// `materials: N unique / M interned (R× dedup)` line and the
+    /// overflow tail. A drop here flags a regression
     /// (alignment hole, non-deterministic float in the producer) that
     /// breaks byte-equality dedup before VRAM pressure shows it.
     /// (#1066 / REN-D14-NEW-06 — corrected from the prior inverted formula)

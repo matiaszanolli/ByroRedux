@@ -163,12 +163,21 @@ struct GpuMaterial {
     float anisotropic;
     // Common supplemental semantic texture roles (offsets 300-344).
     // Source-game slot numbering has already been translated away.
+    //
+    // #2712 — `lightingMapIndex`, `flowMapIndex` and `wrinkleMapIndex`
+    // are declared here for layout parity with the Rust `GpuMaterial`
+    // (the struct is a byte contract; the fields cannot be omitted) but
+    // are sampled by NO shader. That is deliberate, not an oversight:
+    // lighting-map semantics are undecided for an RT-lit frame, flow
+    // needs a settled UV-advection convention, and wrinkle needs
+    // per-expression weights the animation path doesn't deliver yet.
+    // See the field notes in crates/renderer/src/vulkan/material.rs.
     uint tintMapIndex;
     uint innerLayerMapIndex;
     uint specularMapIndex;
-    uint lightingMapIndex;
-    uint flowMapIndex;
-    uint wrinkleMapIndex;
+    uint lightingMapIndex; // unsampled — see #2712 above
+    uint flowMapIndex;     // unsampled — see #2712 above
+    uint wrinkleMapIndex;  // unsampled — see #2712 above
     uint reflectanceMapIndex;
     uint emittanceGradientMapIndex;
     uint decalMap0Index;
