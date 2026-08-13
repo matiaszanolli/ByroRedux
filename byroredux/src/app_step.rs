@@ -508,12 +508,21 @@ impl App {
     ///
     /// `build_texture_provider`/`build_material_provider` (called fresh
     /// here, and identically in [`crate::save_io::execute_pending_save_loads`])
-    /// discard the BGSM/BGEM template cache, `MaterialProvider::csg_cache`,
-    /// and `MaterialProvider::sf_cdbs` on every call — each rebuild
-    /// re-opens and re-parses the same BSA/BA2 archives the previous
-    /// provider already warmed. Fine for a single console-triggered
-    /// transition; becomes a real per-door cost once Stage 4 interactive
-    /// door activation ships (every door use pays the rebuild).
+    /// discard the BGSM/BGEM template cache and `MaterialProvider::csg_cache`
+    /// on every call — each rebuild re-opens and re-parses the same
+    /// BSA/BA2 archives the previous provider already warmed. Fine for a
+    /// single console-triggered transition; becomes a real per-door cost
+    /// once Stage 4 interactive door activation ships (every door use pays
+    /// the rebuild).
+    ///
+    /// #2706 (SF-D3-02) — this note previously also listed
+    /// `MaterialProvider::sf_cdbs` among the discarded caches; no such
+    /// field ever existed (`MaterialProvider::sf_cdb_count: usize` is
+    /// presence-only). The real Starfield CDB byte cache
+    /// (`asset_provider::material::sf_cdb_cache`, #2705) is deliberately
+    /// NOT provider-scoped — it lives at module scope precisely so it
+    /// keeps working across every rebuild this note describes, without
+    /// waiting on the whole-provider caching below.
     ///
     /// Not implemented yet — not urgent before Stage 4 — but the shape
     /// this should take when it lands:

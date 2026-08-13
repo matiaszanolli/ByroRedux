@@ -190,6 +190,56 @@ fn unresolved_material_warning_generic_for_non_mat_path() {
     assert!(!msg.contains("CDB"));
 }
 
+/// #2705 (SF-D3-01) — `sf_cdb_cache()` is the process-lifetime cache that
+/// lets `discover_starfield_cdbs` skip the ~105 MB zlib inflate on the
+/// second and later `build_material_provider` rebuild for the same
+/// (archive source, CDB path) pair. Exercises the cache primitive directly,
+/// in the same spirit as this file's other `register_starfield_cdb`-direct
+/// tests that bypass `Archive` entirely (the `bsa` crate has no synthetic
+/// in-memory BA2 fixture builder to drive `discover_starfield_cdbs`'s own
+/// `archive.list_files()` / `archive.extract()` calls end-to-end).
+#[test]
+fn sf_cdb_cache_returns_the_same_bytes_for_a_repeated_key_and_misses_a_different_one() {
+    let key = "sf_cdb_cache_test_key_2705_unique_marker".to_string();
+    let other_key = "sf_cdb_cache_test_key_2705_never_inserted".to_string();
+    let bytes: std::sync::Arc<[u8]> = std::sync::Arc::from(minimal_cdb_bytes());
+
+    assert!(
+        sf_cdb_cache()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&key)
+            .is_none(),
+        "fresh key must miss before any insert"
+    );
+
+    sf_cdb_cache()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(key.clone(), std::sync::Arc::clone(&bytes));
+
+    let cached = sf_cdb_cache()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&key)
+        .cloned();
+    assert_eq!(
+        cached.as_deref(),
+        Some(bytes.as_ref()),
+        "a cached key must return the same bytes — this is what lets \
+         `discover_starfield_cdbs` skip re-extracting on a provider rebuild"
+    );
+
+    assert!(
+        sf_cdb_cache()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&other_key)
+            .is_none(),
+        "a different (archive, path) key must still miss"
+    );
+}
+
 /// A `.bgsm` path must NOT enter the Starfield arm even when the
 /// CDB is loaded — the FO4 BGSM dispatch wins, preserving
 /// spec-glossiness translation.

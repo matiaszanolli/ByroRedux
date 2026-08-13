@@ -1231,6 +1231,36 @@ impl MaterialInfo {
         )
     }
 
+    /// #2707 (SF-D8-01) — true when every one of the five signals
+    /// [`Self::classify_legacy_pbr`]'s classifier reads is absent: no
+    /// texture path (so no keyword can match), no authored specular, no
+    /// normal map, no gloss map, and `env_map_scale` at or below
+    /// `classify_pbr_keyword`'s own `> 0.3` gate. This is exactly the
+    /// state a Starfield material-reference stub is left in — the walker
+    /// returns at `dedicated_shader.rs` (`apply_bs_lighting_shader` /
+    /// `apply_bs_effect_shader`) before writing a single `MaterialInfo`
+    /// field when `shader.material_reference` is set — so every
+    /// classifier arm falls through to the terminal
+    /// `PbrMaterial { roughness: 0.85, metalness: 0.0 }` for a reason
+    /// indistinguishable from "nothing was ever parsed," not because any
+    /// of those five inputs was genuinely authored-and-absent.
+    ///
+    /// Deliberately NOT `!self.has_material_data`: that flag is set only
+    /// by the dedicated-shader / legacy `NiMaterialProperty` arms and
+    /// exists to resolve walker-arm PRECEDENCE (#2457), not to detect
+    /// "no signal at all" — the FO3/FNV `BSShaderPPLightingProperty`-only
+    /// path (common, texture-bound content with a real `texture_path`)
+    /// never sets `has_material_data`, so gating on it here would ALSO
+    /// suppress a real, meaningfully-derived classification for ordinary
+    /// legacy content, not just the empty Starfield stub this targets.
+    pub(super) fn has_no_pbr_classifier_signal(&self) -> bool {
+        self.texture_path.is_none()
+            && !self.specular_authored
+            && self.normal_map.is_none()
+            && self.gloss_map.is_none()
+            && self.env_map_scale <= 0.3
+    }
+
     /// Project this `MaterialInfo`'s shader-type fields into the core-owned
     /// `ShaderTypeFields` bundle carried by `ImportedMaterial`. See #430.
     pub(super) fn shader_type_fields(&self) -> ShaderTypeFields {
@@ -1259,6 +1289,9 @@ impl MaterialInfo {
         mesh_name: Option<&str>,
     ) -> super::types::ImportedMaterial {
         let legacy_pbr = self.classify_legacy_pbr(pool);
+        // #2707 (SF-D8-01) — must be read before any field it inspects is
+        // moved out of `self` below.
+        let no_pbr_signal = self.has_no_pbr_classifier_signal();
         let has_alpha = self.effective_alpha_blend(mesh_name, pool);
         let textures = self.texture_set(pool);
         let shader_type_fields = self.shader_type_fields();
@@ -1280,8 +1313,16 @@ impl MaterialInfo {
             from_bgsm: false,
             bgem_glass: false,
             thin_glass: false,
-            metalness_override: Some(legacy_pbr.metalness),
-            roughness_override: Some(legacy_pbr.roughness),
+            // #2707 (SF-D8-01) — `None` when `classify_legacy_pbr` had
+            // literally no signal to classify from (the Starfield
+            // material-reference stub case), so `translate_material` seeds
+            // the NaN sentinel and `Material::resolve_pbr`'s backstop
+            // classifier owns the fallback instead of this importer
+            // fabricating one from an empty input set. Every other case —
+            // any real signal present, however partial — keeps its
+            // derived `Some(...)`, unchanged from before.
+            metalness_override: (!no_pbr_signal).then_some(legacy_pbr.metalness),
+            roughness_override: (!no_pbr_signal).then_some(legacy_pbr.roughness),
             translucency_subsurface_color: [0.0; 3],
             translucency_transmissive_scale: 0.0,
             translucency_turbulence: 0.0,

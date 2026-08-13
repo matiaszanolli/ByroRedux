@@ -5,7 +5,7 @@ use byroredux_bgsm::{BgemFile, TemplateCache, TemplateResolver};
 use byroredux_nif::import::ImportedMaterial;
 use byroredux_sfmaterial::ComponentDatabaseFile;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// True for a Starfield component-database path — the base
 /// `materials\materialsbeta.cdb` or any DLC/Creation-namespaced
@@ -21,6 +21,25 @@ pub(crate) fn is_materialsbeta_cdb_path(path: &str) -> bool {
 /// PBR provenance signal.
 pub(crate) fn bgsm_uses_pbr_bsdf(resolved: &ResolvedMaterial) -> bool {
     resolved.walk().any(|step| step.file.pbr)
+}
+
+/// Process-lifetime cache of extracted Starfield CDB bytes, keyed by
+/// `"<archive source>|<in-archive path>"`. #2705 (SF-D3-01) —
+/// `build_material_provider` constructs a brand-new `MaterialProvider` (and
+/// therefore a brand-new, empty `csg_cache`-shaped per-instance cache) on
+/// every cell transition / save-load / debug-load, so caching *inside*
+/// `MaterialProvider` wouldn't help here: the same CDB would still get
+/// `archive.extract()`'d — a full zlib inflate of a multi-hundred-MB blob
+/// for the vanilla `materialsbeta.cdb` (105 MB measured) — on every single
+/// rebuild, even though `register_starfield_cdb` only reads the file's
+/// 16-byte header and on-disk content never changes mid-session. Living at
+/// module scope (outside `MaterialProvider`) lets this survive across
+/// provider rebuilds instead of being discarded with the provider — the
+/// same shape #2359 Phase 2's full CDB parse will also want to reuse
+/// (`Arc<[u8]>` so a clone is a refcount bump, not a copy).
+pub(super) fn sf_cdb_cache() -> &'static Mutex<HashMap<String, Arc<[u8]>>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, Arc<[u8]>>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// Scan one archive for Starfield component databases and load each into
@@ -42,13 +61,41 @@ pub(crate) fn discover_starfield_cdbs(
         .map(|p| p.to_owned())
         .collect();
     for path in cdb_paths {
-        match archive.extract(&path) {
-            Ok(bytes) => {
-                log::info!("Discovered Starfield CDB '{path}' in '{source}'");
-                provider.register_starfield_cdb(&bytes);
+        let cache_key = format!("{source}|{path}");
+        let cached = sf_cdb_cache()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&cache_key)
+            .cloned();
+        let bytes: Arc<[u8]> = match cached {
+            Some(bytes) => {
+                log::info!(
+                    "Discovered Starfield CDB '{path}' in '{source}' (cached, {} bytes, \
+                     skipped re-extract)",
+                    bytes.len()
+                );
+                bytes
             }
-            Err(e) => log::warn!("Failed to extract CDB '{path}' from '{source}': {e}"),
-        }
+            None => match archive.extract(&path) {
+                Ok(raw) => {
+                    log::info!(
+                        "Discovered Starfield CDB '{path}' in '{source}' ({} bytes, extracted)",
+                        raw.len()
+                    );
+                    let bytes: Arc<[u8]> = Arc::from(raw);
+                    sf_cdb_cache()
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert(cache_key, Arc::clone(&bytes));
+                    bytes
+                }
+                Err(e) => {
+                    log::warn!("Failed to extract CDB '{path}' from '{source}': {e}");
+                    continue;
+                }
+            },
+        };
+        provider.register_starfield_cdb(&bytes);
     }
 }
 
@@ -275,14 +322,26 @@ pub(crate) struct MaterialProvider {
     /// per-game material path (CANONICAL-BOUNDARY). Archive order is
     /// preserved in `self.archives`, so re-discovery reproduces load order.
     pub(crate) sf_cdb_count: usize,
-    /// #1585 / F6 — process-lifetime cache of the `<Plugin> - Geometry.csg`
-    /// companion blob, keyed by the cell's master plugin path. Mirrors the
-    /// `sf_cdbs` `Arc` hold: the CSG owns a warm zlib `ChunkCache`, so
-    /// re-opening it per precombine cell-load (the pre-fix behaviour)
-    /// re-read and re-parsed the ~3700-entry chunk table every tile and
-    /// discarded all inter-cell chunk reuse. The negative (`None`) result
-    /// is cached too, so a non-FO4 / no-CSG plugin isn't re-stat'd on
+    /// #1585 / F6 — per-`MaterialProvider`-instance cache of the
+    /// `<Plugin> - Geometry.csg` companion blob, keyed by the cell's master
+    /// plugin path. The CSG owns a warm zlib `ChunkCache`, so re-opening it
+    /// per precombine cell-load (the pre-fix behaviour) re-read and
+    /// re-parsed the ~3700-entry chunk table every tile and discarded all
+    /// inter-cell chunk reuse; this cache amortises that cost across every
+    /// tile loaded under the SAME provider build. The negative (`None`)
+    /// result is cached too, so a non-FO4 / no-CSG plugin isn't re-stat'd on
     /// every precombine cell.
+    ///
+    /// #2706 (SF-D3-02) — this field previously described itself as
+    /// "mirrors the `sf_cdbs` `Arc` hold"; no such field ever existed
+    /// (`sf_cdb_count: usize` below is presence-only). Unlike this field,
+    /// [`sf_cdb_cache`] (added by #2705) lives at module scope and is
+    /// genuinely process-lifetime — it survives across the provider
+    /// rebuilds that `build_material_provider` performs on every cell
+    /// transition / save-load / debug-load, whereas `csg_cache` here is
+    /// discarded along with the rest of `MaterialProvider` on every such
+    /// rebuild (see the #2039 / PERF-D7-02 caching design note in
+    /// `app_step.rs`) — the two are NOT lifetime-equivalent.
     pub(crate) csg_cache: HashMap<String, Option<Arc<byroredux_bsa::CsgArchive>>>,
 }
 
@@ -307,12 +366,19 @@ impl MaterialProvider {
     }
 
     /// Resolve + open the `<Plugin> - Geometry.csg` companion blob once per
-    /// session (keyed by `plugin_path`) and hand back a shared handle.
-    /// #1585 / F6 — mirrors the `sf_cdbs` `Arc` caching: precombine cell-loads
-    /// re-opened this ~240 MB blob every tile, re-parsing the chunk table and
-    /// throwing away the warm zlib `ChunkCache` that amortises inflate across
-    /// adjacent tiles sharing PSG regions. The negative result is cached so a
-    /// plugin with no companion CSG isn't re-probed per cell.
+    /// PROVIDER BUILD (keyed by `plugin_path`) and hand back a shared handle
+    /// — NOT once per session; `self.csg_cache` is discarded along with the
+    /// rest of `MaterialProvider` on every `build_material_provider` rebuild
+    /// (#2706 / SF-D3-02 corrected the prior "mirrors the `sf_cdbs` `Arc`
+    /// caching" claim here — no such field exists; the real process-lifetime
+    /// CDB cache is [`sf_cdb_cache`], added by #2705, which lives at module
+    /// scope specifically because it needs to outlive provider rebuilds).
+    /// #1585 / F6 — precombine cell-loads re-opened this ~240 MB blob every
+    /// tile, re-parsing the chunk table and throwing away the warm zlib
+    /// `ChunkCache` that amortises inflate across adjacent tiles sharing PSG
+    /// regions; this cache fixes that WITHIN one provider build. The
+    /// negative result is cached too, so a plugin with no companion CSG
+    /// isn't re-probed per cell.
     pub(crate) fn geometry_csg(
         &mut self,
         plugin_path: &str,
@@ -729,12 +795,32 @@ pub(crate) fn merge_external_material(
         // spec-glossiness translation (FO4-specific format convention).
         // Starfield .mat authors metalness/roughness directly, but this
         // `.mat` arm returns early without touching them — NIF import
-        // (`bs_geometry.rs`) already set `metalness_override`/
-        // `roughness_override` to `Some(classify_legacy_pbr(...))` before
-        // this function ever runs, so the NaN-sentinel path in
-        // `Material::resolve_pbr` never fires for Starfield content.
-        // Phase 2 must *overwrite* those `Some` values with CDB-authored
-        // ones rather than relying on that unreachable fallback.
+        // (`bs_geometry.rs` / `bs_tri_shape.rs` /
+        // `import::material::classify_legacy_pbr`) already ran the
+        // keyword classifier on `metalness_override`/`roughness_override`
+        // before this function ever runs.
+        //
+        // #2707 (SF-D8-01) fixed what those overrides actually are for
+        // the DOMINANT Starfield case (a `material_reference` stub — 97.9%
+        // of sampled meshes): pre-fix, `classify_legacy_pbr` ran on an
+        // all-defaults `MaterialInfo` (the walker returns before writing
+        // any field for a stub) and unconditionally stamped its terminal
+        // `Some(0.0)/Some(0.85)` fallback anyway, permanently disabling
+        // `Material::resolve_pbr`'s NaN-sentinel backstop. Post-fix, a
+        // stub with no classifier signal at all leaves both overrides
+        // `None`, so the NaN sentinel DOES reach `resolve_pbr` — which
+        // re-runs the same classifier against whatever real texture /
+        // normal-map / env-map-scale data has been merged in BY THEN
+        // (this function's own BGSM/BGEM/`.mat` resolution included),
+        // rather than the empty snapshot the importer saw. Non-stub
+        // Starfield meshes (inline shader data present) still arrive with
+        // real `Some(...)` overrides, unchanged.
+        //
+        // Phase 2 (CDB per-field extraction) should still *overwrite*
+        // whichever value is present here with CDB-authored data when a
+        // lookup succeeds; a lookup MISS now correctly falls through to
+        // the sentinel/classifier fallback instead of silently keeping a
+        // fabricated constant.
         return true;
     }
 
