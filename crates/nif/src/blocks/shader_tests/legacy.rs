@@ -212,9 +212,19 @@ fn no_lighting_falloff_absent_when_bsver_le_26() {
     let prop = BSShaderNoLightingProperty::parse(&mut stream)
         .expect("v20.2.0.7 / bsver=11 BSShaderNoLightingProperty should parse");
     assert_eq!(prop.file_name, "ui\\elem.dds");
-    // Absent-field defaults.
-    assert_eq!(prop.falloff_start_angle, 0.0);
-    assert_eq!(prop.falloff_start_opacity, 1.0);
+    // Absent-field defaults, per nif.xml lines 6236-6239 (#2331 —
+    // `start_angle` was 0.0 here, the inverse of the declared 1.0).
+    assert_eq!(
+        [
+            prop.falloff_start_angle,
+            prop.falloff_stop_angle,
+            prop.falloff_start_opacity,
+            prop.falloff_stop_opacity,
+        ],
+        [1.0, 0.0, 1.0, 0.0],
+        "absent falloff must use nif.xml's declared defaults \
+         (start_angle=1.0, stop_angle=0.0, start_opacity=1.0, stop_opacity=0.0)"
+    );
     assert_eq!(
         stream.position() as usize,
         data.len(),

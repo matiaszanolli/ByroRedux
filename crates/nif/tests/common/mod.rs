@@ -104,15 +104,86 @@ impl Game {
     }
 
     /// Typical filename of the primary mesh archive.
+    ///
+    /// Always `mesh_archives()[0]`, so the two can't drift.
     pub fn mesh_archive(self) -> &'static str {
+        self.mesh_archives()[0]
+    }
+
+    /// Every **vanilla** archive that ships NIFs for this game, primary
+    /// first (#2334 / FO3-D5-04).
+    ///
+    /// The baseline harnesses sample this whole set rather than the
+    /// primary archive alone. FO3's DLC archives are what made that
+    /// matter: `bhkSPCollisionObject` (25), `bhkBlendCollisionObject`
+    /// (171) and `bhkConvexTransformShape` (38) appear **only** there, so
+    /// a regression in any of those decodes passed every FO3 gate.
+    ///
+    /// Rules for this list:
+    ///
+    /// * **Vanilla only.** Never a mod archive — a baseline captured
+    ///   against one machine's mod set is not reproducible on another.
+    ///   (The reference FO4 install here carries third-party `.ba2`s
+    ///   sitting right next to the DLC ones; they stay out.)
+    /// * **Mesh-bearing only.** Texture/sound/voice archives contain no
+    ///   NIFs; listing them would just cost walk time.
+    /// * **All-or-nothing.** [`open_all_mesh_archives`] skips the game
+    ///   entirely unless every entry opens, because a baseline compared
+    ///   against a subset of its own corpus reports missing DLC as a
+    ///   parser regression (`PARSED shrank`).
+    ///
+    /// The BA2-era games stay single-archive here on purpose: their
+    /// multi-archive corpora are already swept explicitly by
+    /// `parse_real_nifs.rs` (the Starfield 5-archive and FO4 DLC sweeps),
+    /// and widening them needs its own regen pass on a host that has the
+    /// full DLC set. FO3/FNV had neither, which is the gap #2334 filed.
+    pub fn mesh_archives(self) -> &'static [&'static str] {
         match self {
-            Game::Oblivion => "Oblivion - Meshes.bsa",
-            Game::Fallout3 => "Fallout - Meshes.bsa",
-            Game::FalloutNV => "Fallout - Meshes.bsa",
-            Game::SkyrimSE => "Skyrim - Meshes0.bsa",
-            Game::Fallout4 => "Fallout4 - Meshes.ba2",
-            Game::Fallout76 => "SeventySix - Meshes.ba2",
-            Game::Starfield => "Starfield - Meshes01.ba2",
+            // Oblivion's DLC (`Knights.bsa`, `DLCShiveringIsles -
+            // Meshes.bsa`, the six small plugin archives) ship only with
+            // GOTY/Deluxe. Requiring them would make the all-or-nothing
+            // rule above skip the game entirely on a base-game install —
+            // trading a partial gate for no gate. It also has a sibling
+            // that would need the same corpus: `oblivion_block_count_parity`
+            // in `block_coverage_baselines.rs` pins a per-file truncation
+            // set, which is where the sizeless-era regressions actually
+            // show up. Extend both together or neither.
+            Game::Oblivion => &["Oblivion - Meshes.bsa"],
+            // GOTY edition: the five DLC ship their meshes inside their
+            // own `<DLC> - Main.bsa`, not in a separate meshes archive.
+            Game::Fallout3 => &[
+                "Fallout - Meshes.bsa",
+                "Anchorage - Main.bsa",
+                "BrokenSteel - Main.bsa",
+                "PointLookout - Main.bsa",
+                "ThePitt - Main.bsa",
+                "Zeta - Main.bsa",
+            ],
+            // Ultimate edition: four story DLC, four pre-order packs, plus
+            // `Update.bsa` (the 1.4 patch archive, which does carry NIFs).
+            Game::FalloutNV => &[
+                "Fallout - Meshes.bsa",
+                "Update.bsa",
+                "DeadMoney - Main.bsa",
+                "HonestHearts - Main.bsa",
+                "OldWorldBlues - Main.bsa",
+                "LonesomeRoad - Main.bsa",
+                "GunRunnersArsenal - Main.bsa",
+                "CaravanPack - Main.bsa",
+                "ClassicPack - Main.bsa",
+                "MercenaryPack - Main.bsa",
+                "TribalPack - Main.bsa",
+            ],
+            // SE splits the base mesh corpus across two archives and folds
+            // the DLC into them (there is no `Dawnguard.bsa` — only the
+            // `.esm`), so this pair is the whole vanilla set on every
+            // install, AE or not. `_ResourcePack.bsa` and the `ccBGSSSE*`
+            // archives are Creation Club content that varies per account,
+            // and stay out for the reproducibility rule above.
+            Game::SkyrimSE => &["Skyrim - Meshes0.bsa", "Skyrim - Meshes1.bsa"],
+            Game::Fallout4 => &["Fallout4 - Meshes.ba2"],
+            Game::Fallout76 => &["SeventySix - Meshes.ba2"],
+            Game::Starfield => &["Starfield - Meshes01.ba2"],
         }
     }
 
@@ -219,6 +290,50 @@ pub fn open_mesh_archive(game: Game) -> Option<MeshArchive> {
             None
         }
     }
+}
+
+/// Open **every** archive in [`Game::mesh_archives`], or `None` if any of
+/// them is missing on this host (#2334).
+///
+/// All-or-nothing on purpose. The baseline harnesses compare live counts
+/// against a checked-in capture of this exact corpus, so a partial set
+/// isn't a smaller-but-valid sample — it reports every absent DLC's blocks
+/// as `PARSED shrank`, i.e. a parser regression that didn't happen. A host
+/// with only the base game skips the game instead, the same way it already
+/// skips a host with no game data at all.
+pub fn open_all_mesh_archives(game: Game) -> Option<Vec<(&'static str, MeshArchive)>> {
+    let data = game_data_dir(game)?;
+    let mut opened = Vec::with_capacity(game.mesh_archives().len());
+    for name in game.mesh_archives() {
+        let path = data.join(name);
+        if !path.is_file() {
+            eprintln!(
+                "[{}] skipping: {:?} not found — the baseline corpus is all {} \
+                 archive(s) or nothing (#2334)",
+                game.label(),
+                path,
+                game.mesh_archives().len(),
+            );
+            return None;
+        }
+        let result = match game.archive_kind() {
+            ArchiveKind::Bsa => BsaArchive::open(&path).map(MeshArchive::Bsa),
+            ArchiveKind::Ba2 => Ba2Archive::open(&path).map(MeshArchive::Ba2),
+        };
+        match result {
+            Ok(a) => opened.push((*name, a)),
+            Err(e) => {
+                eprintln!(
+                    "[{}] skipping: failed to open {:?}: {}",
+                    game.label(),
+                    path,
+                    e
+                );
+                return None;
+            }
+        }
+    }
+    Some(opened)
 }
 
 /// Open an arbitrary BA2 archive by explicit filename within a game's data dir.
@@ -539,6 +654,17 @@ pub struct PerBlockHistogram {
 impl PerBlockHistogram {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Fold another archive's histogram into this one (#2334). Per-type
+    /// parsed/unknown counts add; the union of type names is kept, so a
+    /// type that only a DLC archive authors appears in the merged result.
+    pub fn merge(&mut self, other: &PerBlockHistogram) {
+        for (type_name, counts) in &other.counts {
+            let entry = self.counts.entry(type_name.clone()).or_default();
+            entry.parsed += counts.parsed;
+            entry.unknown += counts.unknown;
+        }
     }
 
     pub fn record_scene_blocks<'a>(&mut self, blocks: impl Iterator<Item = &'a Box<dyn NiObject>>) {

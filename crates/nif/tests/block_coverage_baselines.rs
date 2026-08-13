@@ -53,7 +53,7 @@
 
 mod common;
 
-use common::{open_mesh_archive, Game};
+use common::{open_all_mesh_archives, open_mesh_archive, Game};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
@@ -192,8 +192,15 @@ impl Coverage {
 }
 
 fn measure_coverage(game: Game) -> Option<Coverage> {
-    let archive = open_mesh_archive(game)?;
-    let (_stats, hist) = common::parse_archive_with_histogram(&archive, None);
+    // #2334 — sample every vanilla mesh archive, matching
+    // `per_block_baselines.rs`. The two harnesses must walk the same
+    // corpus or their totals describe different things.
+    let archives = open_all_mesh_archives(game)?;
+    let mut hist = common::PerBlockHistogram::new();
+    for (_name, archive) in &archives {
+        let (_stats, archive_hist) = common::parse_archive_with_histogram(archive, None);
+        hist.merge(&archive_hist);
+    }
     let total_blocks: usize = hist.counts.values().map(|c| c.parsed + c.unknown).sum();
     Some(Coverage {
         total_blocks,

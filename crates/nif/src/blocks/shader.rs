@@ -178,7 +178,13 @@ impl BSShaderNoLightingProperty {
                     stream.read_f32_le()?,
                 )
             } else {
-                (0.0, 0.0, 1.0, 0.0)
+                // nif.xml's own per-field defaults for the absent case
+                // (lines 6236-6239): start_angle 1.0, stop_angle 0.0,
+                // start_opacity 1.0, stop_opacity 0.0. `start_angle` is a
+                // cosine-of-angle, so 1.0 means "falloff begins head-on"
+                // — 0.0 (the pre-#2331 value) means "begins at grazing",
+                // the inverse of what the format specifies.
+                (1.0, 0.0, 1.0, 0.0)
             };
 
         Ok(Self {
