@@ -260,6 +260,12 @@ pub const MAT_FLAG_TRANSLUCENCY_MIX_ALBEDO: u32 = 1 << 9;
 // Non-occluding glass sheet/shell. This is a canonical behavior flag, not a
 // BGEM provenance bit: any source translator may select it.
 pub const MAT_FLAG_THIN_GLASS: u32 = 1 << 11;
+// #2826 (REN-D19-02) — set when the bound MODEL_SPACE_NORMALS map's blue
+// channel carries authored Z (three-channel FO4 `_msn`, BC3) rather than
+// being empty (two-channel `_msn`, BC1). Distinguished from the DDS
+// compression format at texture-load time; see `material_flag::
+// MSN_HAS_AUTHORED_Z` in `vulkan/material.rs` for the full rationale.
+pub const MAT_FLAG_MSN_HAS_AUTHORED_Z: u32 = 1 << 12;
 // `MAT_FLAG_EFFECT_LI_SHIFT` — bit offset for the 8-bit
 // `BSEffectShaderProperty.lighting_influence` byte packed into bits
 // 16-23 of `materialFlags`. Extract via

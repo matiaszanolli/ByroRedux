@@ -1,10 +1,16 @@
 # FSR 3.1 upscaler integration plan
 
 Status: **All seven execution phases complete (2026-07-24). FSR 3.1.4 Quality is
-the engine default; `--upscaler taa` is the supported fallback.** Three items are
+the engine default; `--upscaler taa` is the supported fallback.** Four items are
 carried as known scope rather than done: the FP32 shader permutation is
-unexercised for want of a device that lacks `shaderFloat16`, and the two phase-4
-items below (transparency split, UI composited after upscale) remain open.
+unexercised for want of a device that lacks `shaderFloat16`, the two phase-4
+items below (transparency split, UI composited after upscale) remain open, and
+bloom still runs pre-upscale off the raw pre-TAA render-extent HDR rather than
+post-upscale as § 1.2 item 6 targets (`record_bloom_pass` in
+`crates/renderer/src/vulkan/context/post_passes.rs` runs before
+`record_upscale_pass`) — no runtime hazard, since the blur pyramid is
+mip-relative and its output-relative halo radius is preserved either way, but
+the target frame graph below is aspirational on this point, not descriptive.
 
 A pre-existing engine regression was found while benchmarking — see the phase-7
 caveat — which does not affect the FSR comparisons but does mean the absolute
@@ -383,7 +389,9 @@ Detailed ordering contract:
    masks and writes an output-resolution `R16G16B16A16_SFLOAT` storage image.
 6. Bloom and all presentation post-processing consume the upscaled image at
    output resolution, followed by exposure/ACES tonemapping. Bloom moves from
-   raw pre-TAA HDR to this coherent output path.
+   raw pre-TAA HDR to this coherent output path. **Not implemented** — bloom
+   still runs pre-upscale against the raw pre-TAA render-extent HDR (see the
+   status header above); carried as known scope, not a runtime hazard.
 7. Scaleform/Ruffle UI and the reticle move out of main HDR rendering and are
    composited after upscale/tonemap. egui remains last.
 

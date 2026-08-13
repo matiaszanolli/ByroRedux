@@ -520,8 +520,9 @@ impl ConsoleCommand for MatSetCommand {
     fn execute(&self, world: &World, args: &str) -> CommandOutput {
         const USAGE: &str = "usage: mat.set <entity_id> <field> <value...>\n  \
             fields: metalness|roughness|alpha|glossiness|emissive_mult|specular_strength|\
-            env_map_scale|ior|subsurface|sheen|sheen_tint|anisotropic (1 value), \
-            color|diffuse_color|emissive_color|specular_color (3 values), \
+            env_map_scale|ior|subsurface|sheen|sheen_tint|anisotropic|\
+            translucency_transmissive_scale|translucency_turbulence (1 value), \
+            color|diffuse_color|emissive_color|specular_color|translucency_subsurface_color (3 values), \
             material_kind|material_flags (1 int)";
         let mut parts = args.split_whitespace();
         let Some(id_str) = parts.next() else {
@@ -580,9 +581,26 @@ impl ConsoleCommand for MatSetCommand {
             "sheen" => set_scalar(&mut m.sheen, &vals),
             "sheen_tint" => set_scalar(&mut m.sheen_tint, &vals),
             "anisotropic" | "aniso" => set_scalar(&mut m.anisotropic, &vals),
+            // #2823 (REN-D21-01) — `MAT_FLAG_TRANSLUCENCY` (#1147 Phase 2b
+            // SSS lobe) was flag-reachable via `material_flags` but
+            // scalar-unreachable: no arm authored
+            // `translucency_subsurface_color` / `_transmissive_scale` /
+            // `_turbulence`, so they sat at `Material::default()` and the
+            // shader's `* mat.translucencyTransmissiveScale` term was
+            // always zero. Same gap #2514 closed for the Disney-BSDF
+            // scalars above.
+            "translucency_transmissive_scale" | "translucency_scale" => {
+                set_scalar(&mut m.translucency_transmissive_scale, &vals)
+            }
+            "translucency_turbulence" | "translucency_turb" => {
+                set_scalar(&mut m.translucency_turbulence, &vals)
+            }
             "color" | "diffuse_color" | "diffuse" => set_vec3(&mut m.diffuse_color, &vals),
             "emissive_color" => set_vec3(&mut m.emissive_color, &vals),
             "specular_color" => set_vec3(&mut m.specular_color, &vals),
+            "translucency_subsurface_color" | "translucency_color" => {
+                set_vec3(&mut m.translucency_subsurface_color, &vals)
+            }
             "material_kind" | "kind" => {
                 if vals.len() != 1 {
                     Err(format!("expected 1 value, got {}", vals.len()))
@@ -730,5 +748,49 @@ mod mat_set_tests {
         assert_eq!(m.sheen, 0.42);
         assert_eq!(m.sheen_tint, 0.42);
         assert_eq!(m.anisotropic, 0.42);
+    }
+
+    /// Regression for #2823 (REN-D21-01): `MAT_FLAG_TRANSLUCENCY` was
+    /// flag-reachable via `material_flags 64` but scalar-unreachable — no
+    /// arm authored `translucency_subsurface_color` /
+    /// `_transmissive_scale` / `_turbulence`, so the shader's `*
+    /// mat.translucencyTransmissiveScale` term was always zero regardless
+    /// of the flag.
+    #[test]
+    fn translucency_arms_write_their_material_fields() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, Material::default());
+
+        let out =
+            MatSetCommand.execute(&world, &format!("{e} translucency_transmissive_scale 0.75"));
+        let joined = out.lines.join("\n");
+        assert!(
+            joined.contains("translucency_transmissive_scale = 0.7500"),
+            "got: {joined}"
+        );
+
+        let out = MatSetCommand.execute(&world, &format!("{e} translucency_turbulence 0.3"));
+        let joined = out.lines.join("\n");
+        assert!(
+            joined.contains("translucency_turbulence = 0.3000"),
+            "got: {joined}"
+        );
+
+        let out = MatSetCommand.execute(
+            &world,
+            &format!("{e} translucency_subsurface_color 0.1 0.2 0.3"),
+        );
+        let joined = out.lines.join("\n");
+        assert!(
+            joined.contains("translucency_subsurface_color = 0.100,0.200,0.300"),
+            "got: {joined}"
+        );
+
+        let q = world.query::<Material>().unwrap();
+        let m = q.get(e).unwrap();
+        assert_eq!(m.translucency_transmissive_scale, 0.75);
+        assert_eq!(m.translucency_turbulence, 0.3);
+        assert_eq!(m.translucency_subsurface_color, [0.1, 0.2, 0.3]);
     }
 }

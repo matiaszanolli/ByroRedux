@@ -30,6 +30,18 @@ A latched failure clears on the next resize or preset change, since both
 rebuild the context. `r.upscaler taa` then `r.upscaler fsr3 quality` is the
 quickest way to re-arm it deliberately.
 
+**If you see `DISPATCH FAILED` and didn't expect it**, check whether
+`BYRO_FSR_FORCE_DISPATCH_FAIL` is set in the environment. It's a fault-injection
+toggle for exercising the recovery path under validation (#2140) — set
+`BYRO_FSR_FORCE_DISPATCH_FAIL=1` (any non-empty value other than `0`) and it
+latches FSR off for the entire process on the very first dispatch, no SDK
+error required. It is **not** gated to debug builds — it works (and is meant
+to be used) in `--release` too, since that's where smoke/bench runs exercise
+the recovery path — so an environment that carries it from an earlier session
+will silently degrade every subsequent run to the native blit. Cached in a
+`OnceLock` on first read, so it can't be unset mid-process; clear the
+variable and relaunch.
+
 ## Symptom: the whole frame smears when the camera moves
 
 Motion-vector sign, scale, or Y convention. The engine stores

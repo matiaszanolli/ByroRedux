@@ -452,12 +452,26 @@ void main() {
         // that transform made every rotated/scaled REFR light as though it
         // were axis-aligned. The tangent-space TBN multiply remains skipped.
         // The
-        // same `* 2.0 - 1.0` decode + BC5 Z-reconstruction the
-        // tangent-space path uses applies, just without the TBN.
+        // same `* 2.0 - 1.0` decode the tangent-space path uses applies,
+        // just without the TBN.
+        //
+        // #2826 (REN-D19-02) — the BC5 two-channel Z-reconstruction below
+        // is only valid when the map's blue channel is unauthored. Applying
+        // it unconditionally discarded real signed Z on three-channel FO4
+        // `_msn` maps (terrain, `PiperHead_msn` — BC3), which legitimately
+        // have z<0 over roughly half a closed mesh, forcing a non-negative
+        // Z that mirrors the normal through the model XY plane. Whether the
+        // map is genuinely two-channel (BC1, e.g. FaceCustomization) or has
+        // authored Z (BC3) is knowable from the DDS format at load time —
+        // not from any one sampled fragment — so `MAT_FLAG_MSN_HAS_AUTHORED_Z`
+        // is set CPU-side (`texture_registry.rs` / `material_translate.rs`)
+        // rather than re-derived here.
         if ((mat.materialFlags & MAT_FLAG_MODEL_SPACE_NORMALS) != 0u) {
             vec3 mn = texture(textures[nonuniformEXT(normalMapIdx)], sampleUV).rgb;
             mn = mn * 2.0 - 1.0;
-            mn.z = sqrt(max(0.0, 1.0 - dot(mn.xy, mn.xy)));
+            if ((mat.materialFlags & MAT_FLAG_MSN_HAS_AUTHORED_Z) == 0u) {
+                mn.z = sqrt(max(0.0, 1.0 - dot(mn.xy, mn.xy)));
+            }
             mat3 model3 = mat3(inst.model);
             vec3 worldMn;
             if ((inst.flags & INSTANCE_FLAG_NON_UNIFORM_SCALE) != 0u) {
