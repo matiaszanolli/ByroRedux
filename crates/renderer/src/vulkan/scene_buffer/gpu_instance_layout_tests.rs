@@ -474,6 +474,56 @@ fn secondary_ray_coverage_includes_barycentric_vertex_alpha() {
     );
 }
 
+/// #2747 (REN-D10-02) regression. `getHitTriWorldPositions`'s header
+/// promises ABSOLUTE world-space positions from both branches. Pre-fix
+/// the rigid branch multiplied bind-pose vertices by `hi.model`, which
+/// has been render-origin-RELATIVE since the markarth cascade
+/// (`rebase_model_matrix` subtracts `render_origin` unconditionally),
+/// while the skinned branch read `skin_vertices.comp`'s output, which is
+/// ABSOLUTE (same convention `tlas_instance_transform` relies on for
+/// `IDENTITY_VK_TRANSFORM`). No wrong pixels resulted (every consumer
+/// only differences the three positions, and a uniform offset cancels),
+/// but the mixed convention was a latent trap for a future absolute
+/// consumer. Static source check: the rigid branch must lift with
+/// `+ renderOrigin.xyz`, matching the skinned branch's frame.
+#[test]
+fn get_hit_tri_world_positions_returns_absolute_space_on_both_branches() {
+    let hit = include_str!("../../../shaders/include/ray_hit.glsl");
+    let fn_start = hit
+        .find("void getHitTriWorldPositions(")
+        .expect("getHitTriWorldPositions definition must exist");
+    let fn_body = &hit[fn_start..];
+    let fn_end = fn_body
+        .find("\n}\n")
+        .map(|i| i + 3)
+        .expect("getHitTriWorldPositions body must close");
+    let fn_body = &fn_body[..fn_end];
+
+    // Skinned branch (already absolute — pin it stays that way).
+    assert!(
+        fn_body.contains("SkinnedVertexRef ref = SkinnedVertexRef(hi.skinnedVertexAddress);"),
+        "skinned branch must still read skin_vertices.comp's absolute output"
+    );
+
+    // Rigid branch must lift `hi.model`'s render-origin-relative result
+    // to absolute — the actual #2747 fix.
+    for (w, v) in [("w0", "v0"), ("w1", "v1"), ("w2", "v2")] {
+        let needle = format!("{w} = (hi.model * vec4({v}, 1.0)).xyz + renderOrigin.xyz;");
+        assert!(
+            fn_body.contains(&needle),
+            "getHitTriWorldPositions: rigid branch must lift `{w}` to \
+             absolute space (expected `{needle}`) — `hi.model` alone is \
+             render-origin-RELATIVE, so returning it unlifted mismatches \
+             the skinned branch's absolute convention (#2747)"
+        );
+    }
+    assert!(
+        !fn_body.contains("(hi.model * vec4(v0, 1.0)).xyz;"),
+        "getHitTriWorldPositions: rigid branch must not reintroduce the \
+         pre-#2747 unlifted (relative) assignment"
+    );
+}
+
 /// Pin the scale-aware offset and its zero-tMin shadow traversal together.
 /// Reintroducing a fixed world epsilon at either layer recreates acne at
 /// large coordinates and light leaks at small/detail scale.
@@ -809,6 +859,69 @@ fn caustic_writers_rebase_render_origin_before_reprojection() {
                  non-zero render origin (#1488 / REN2-03)."
         );
     }
+}
+
+/// #2744 (REN-D10-01) regression. `cluster_cull.comp` differences a
+/// near-plane corner against the camera position to get a view-ray
+/// direction. That difference is a ~0.1-world-unit vector (the near
+/// plane distance) — it must be formed from two RELATIVE (small-
+/// magnitude) operands so f32 keeps full precision. Lifting either
+/// operand to ABSOLUTE world space before the subtraction throws that
+/// precision away: at exterior render-origin magnitudes (Markarth-scale,
+/// `|world| ~ 176000`) adjacent cluster-tile boundaries collapse onto
+/// the same f32, degenerating into zero-width frustum voxels that
+/// silently drop point/spot lights from affected tiles.
+///
+/// Static source check (no `glslangValidator` dependency): the near
+/// corners must stay unlifted (`ndcToWorldRel`, no `+ renderOrigin`) and
+/// the ray direction must difference two RELATIVE quantities
+/// (`nearCornersRel[i] - camRel`) — never `nearCorners[i] - camPos`,
+/// which is what pre-fix code did once `ndcToWorld` lifted its result to
+/// absolute before this subtraction ran.
+#[test]
+fn cluster_cull_differences_relative_positions_for_ray_direction() {
+    let src = include_str!("../../../shaders/cluster_cull.comp");
+    assert!(
+        src.contains("vec3 ndcToWorldRel(vec2 ndcXY, float ndcZ, mat4 invViewProj) {"),
+        "cluster_cull.comp: expected a RELATIVE-space unprojection helper \
+             (`ndcToWorldRel`) — near-plane corners must not be lifted to \
+             absolute before the ray-direction subtraction (#2744)."
+    );
+    // The relative helper's own body must NOT lift to absolute — i.e.
+    // must not add `renderOrigin` before returning.
+    let helper_start = src
+        .find("vec3 ndcToWorldRel(")
+        .expect("ndcToWorldRel definition must exist");
+    let helper_body = &src[helper_start..helper_start + 400.min(src.len() - helper_start)];
+    let helper_end = helper_body
+        .find('}')
+        .map(|i| i + 1)
+        .unwrap_or(helper_body.len());
+    let helper_body = &helper_body[..helper_end];
+    assert!(
+        !helper_body.contains("renderOrigin"),
+        "cluster_cull.comp: `ndcToWorldRel` must return a RENDER-ORIGIN-\
+             RELATIVE position — it must not reference `renderOrigin` at \
+             all (#2744). Found in body: {helper_body:?}"
+    );
+    assert!(
+        src.contains("vec3 camRel = camPos - renderOrigin.xyz;"),
+        "cluster_cull.comp: expected an exact relative camera position \
+             (`camRel = camPos - renderOrigin.xyz`) computed once before \
+             the per-corner ray-direction loop (#2744)."
+    );
+    assert!(
+        src.contains("normalize(nearCornersRel[i] - camRel)"),
+        "cluster_cull.comp: the ray direction must difference two \
+             RELATIVE quantities (`nearCornersRel[i] - camRel`) — \
+             differencing already-absolute positions is the #2744 \
+             precision bug."
+    );
+    assert!(
+        !src.contains("nearCorners[i] - camPos"),
+        "cluster_cull.comp: must not reintroduce the pre-#2744 \
+             absolute-minus-absolute ray-direction difference."
+    );
 }
 
 /// #1490 / REN2-05 regression. `screen_to_world_dir` must return the

@@ -375,19 +375,31 @@ guard `VUID-03667` at refit time (#1144 / #1145).
   the LRU entries are evicted and their instances drop out of the next TLAS
   rebuild. `missing_blas` is counted split by cause — skinned / rigid /
   ssbo_evicted (#1228) — and throttled to 1 log/sec.
-- **Per-skinned-entity BLAS** (M29): keyed by `EntityId`, built sync at
-  cell load with `ALLOW_UPDATE | PREFER_FAST_BUILD`, then refit per frame
-  via `mode = UPDATE` (`src == dst`) against the skin-compute output. The
-  TLAS-build path looks up `skinned_blas[entity_id]` whenever
-  `DrawCommand.bone_offset != 0`, so static draws keep the per-mesh
-  `blas_entries` lookup unchanged.
+- **Per-skinned-entity BLAS** (M29): keyed by `EntityId`, built on the
+  per-frame command buffer at first sight with `ALLOW_UPDATE |
+  PREFER_FAST_BUILD` (batched — `build_skinned_blas_batched_on_cmd` is the
+  sole entry point; the earlier synchronous per-NPC builder was deleted
+  under #1141), then refit per frame via `mode = UPDATE` (`src == dst`)
+  against the skin-compute output. The TLAS-build path looks up
+  `skinned_blas[entity_id]` whenever `DrawCommand.bone_offset != 0`, so
+  static draws keep the per-mesh `blas_entries` lookup unchanged.
 - **TLAS per frame**: rebuilt every frame from the visible mesh handles and
-  their world transforms, with frustum culling against the camera. Scratch
-  memory is amortized across frames; `tlas_scratch_should_shrink` is a
-  TLAS-calibrated predicate distinct from the BLAS `scratch_should_shrink`
-  (#1226). Instance data is staged through a **device-local instance buffer**
-  (#289) with a two-stage barrier chain (HOST_WRITE→TRANSFER_READ→AS_READ).
-  `MAX_INSTANCES = 0x40000` (262144); `MAX_INDIRECT_DRAWS` is sized identically.
+  their world transforms. The only eligibility gate
+  (`draw_command_eligible_for_tlas`) has no frustum term — per #516,
+  off-screen occluders deliberately stay in the TLAS so on-screen
+  fragments' shadow / reflection / GI rays still hit them; frustum culling
+  gates `in_raster` only, not TLAS membership. Scratch memory is amortized
+  across frames; `tlas_scratch_should_shrink` is a TLAS-calibrated
+  predicate distinct from the BLAS `scratch_should_shrink` (#1226).
+  Instance data is staged through a **device-local instance buffer** (#289)
+  with a two-stage barrier chain (HOST_WRITE→TRANSFER_READ→SHADER_READ @
+  AS_BUILD) — the second barrier's destination is `SHADER_READ`, not
+  `ACCELERATION_STRUCTURE_READ_KHR`, because AS-build INPUT buffers (this
+  instance buffer, and vertex/index elsewhere) are read with `SHADER_READ`
+  at the `AS_BUILD` stage per the Vulkan spec; the latter access mask is
+  for reading an acceleration STRUCTURE itself and trips sync validation
+  as a copy→build RAW hazard (#1436). `MAX_INSTANCES = 0x40000` (262144);
+  `MAX_INDIRECT_DRAWS` is sized identically.
 - **Ray query in the fragment shader + caustic splat compute**: shadow,
   reflection, bounded path-traced GI, window-portal, and refracted-light
   caustic rays — all against the same TLAS. Shadow query is driven by the
