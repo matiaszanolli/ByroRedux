@@ -257,9 +257,11 @@ pub struct GpuMaterial {
     pub sheen: f32, // offset 288
     /// Disney "sheen tint" — interpolation factor between white sheen
     /// (0.0) and base-colour-tinted sheen (1.0). Standard Disney shape;
-    /// `mix(vec3(1.0), albedo, sheenTint)` is the per-pixel sheen
-    /// colour the lobe multiplies into. Default 0.0 → white sheen.
-    /// See #1249.
+    /// the per-pixel sheen colour is `mix(vec3(1.0), albedo / luminance(albedo),
+    /// sheenTint)` — luminance-normalised so the tint carries hue only, not
+    /// intensity (#2819 / REN-D17-05 fixed a regression where this mixed in
+    /// raw `albedo`, coupling sheen brightness to base-colour darkness).
+    /// Default 0.0 → white sheen. See #1249.
     pub sheen_tint: f32, // offset 292
     /// Anisotropic GGX strength [0, 1] (#1250). Drives the standard
     /// Disney `aspect = sqrt(1 - anisotropic * 0.9)` split:

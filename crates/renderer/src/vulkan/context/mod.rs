@@ -181,8 +181,10 @@ pub struct DrawCommand {
     /// 1.0 = full fabric-class edge highlight. Same `MAT_FLAG_BGSM_PBR`
     /// gate.
     pub sheen: f32,
-    /// Disney "sheen tint" (#1249) — `0` = white sheen, `1` = tinted
-    /// by base colour (per Disney's `mix(vec3(1), albedo, sheenTint)`).
+    /// Disney "sheen tint" (#1249) — `0` = white sheen, `1` = tinted by
+    /// base colour, normalised by luminance so the tint carries hue only,
+    /// not intensity (`mix(vec3(1), albedo / luminance(albedo), sheenTint)`,
+    /// #2819 / REN-D17-05).
     pub sheen_tint: f32,
     /// Anisotropic GGX strength (#1250) [0, 1]. Drives the
     /// Disney `aspect = sqrt(1 - anisotropic * 0.9)` split into

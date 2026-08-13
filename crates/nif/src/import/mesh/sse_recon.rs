@@ -28,6 +28,16 @@ pub struct ReconstructedSseGeometry {
     /// disk-named "bitangent" triplet is what we route here as ∂P/∂U
     /// per the existing convention (#795 / SK-D1-04 sibling of SK-D1-03).
     pub(super) tangents: Vec<[f32; 4]>,
+    /// Whether `normals` came from the buffer's `VF_NORMALS` lane rather
+    /// than the renderer-safe `[0,1,0]` fallback fill at the bottom of
+    /// [`decode_sse_packed_buffer_with_external_positions`]. `normals`
+    /// itself is unconditionally populated either way, so callers that
+    /// need to know whether the data is *real* (e.g. before feeding it to
+    /// tangent synthesis) must consult this flag, not `normals.is_empty()`.
+    /// See #2817.
+    pub(super) normals_authored: bool,
+    /// Same contract as [`Self::normals_authored`] for `uvs` / `VF_UVS`.
+    pub(super) uvs_authored: bool,
 }
 
 /// `BSVertexDesc` flag bits — mirror the constants in
@@ -142,6 +152,8 @@ pub fn try_reconstruct_sse_geometry(
         colors: decoded.colors,
         indices,
         tangents: decoded.tangents,
+        normals_authored: decoded.normals_authored,
+        uvs_authored: decoded.uvs_authored,
     })
 }
 
@@ -167,6 +179,13 @@ pub struct DecodedPackedBuffer {
     /// (after tangent). Sign derived from the on-disk tangent (∂P/∂V)
     /// per `sign(dot(B, cross(N, T)))`. See #796 / SK-D1-04.
     pub(super) tangents: Vec<[f32; 4]>,
+    /// `vertex_attrs & VF_NORMALS != 0` — whether `normals` holds real
+    /// decoded data rather than the `[0,1,0]` fallback fill applied
+    /// below when the flag is clear. See #2817.
+    pub(super) normals_authored: bool,
+    /// `vertex_attrs & VF_UVS != 0` — same contract as
+    /// [`Self::normals_authored`] for `uvs`.
+    pub(super) uvs_authored: bool,
 }
 
 /// Decode a `SseSkinGlobalBuffer` into Y-up vertex arrays.
@@ -448,6 +467,13 @@ fn decode_sse_packed_buffer_with_external_positions(
         }
     }
 
+    // Capture authorship before the fallback fills below make `normals` /
+    // `uvs` unconditionally non-empty — #2817 (sibling of #2363): a caller
+    // gating tangent synthesis on `!normals.is_empty()` would otherwise
+    // vacuously pass on a buffer that never carried `VF_NORMALS`.
+    let normals_authored = vertex_attrs & VF_NORMALS != 0;
+    let uvs_authored = vertex_attrs & VF_UVS != 0;
+
     // Fall-back fills when a flag is clear so the parallel arrays stay
     // length-aligned with `positions`. The renderer's per-vertex
     // composition tolerates [0, 1, 0] / [0, 0] / opaque-white defaults.
@@ -469,5 +495,7 @@ fn decode_sse_packed_buffer_with_external_positions(
         bone_weights,
         bone_indices,
         tangents,
+        normals_authored,
+        uvs_authored,
     })
 }

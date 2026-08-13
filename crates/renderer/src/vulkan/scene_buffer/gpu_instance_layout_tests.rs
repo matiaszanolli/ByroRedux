@@ -1245,6 +1245,33 @@ fn schlick_fresnel_uses_multiply_chain_and_scalar_glass_path() {
     );
 }
 
+/// #2819 (REN-D17-05) — `disneyDiffuseSplit`'s sheen colour must mix toward a
+/// luminance-normalised base-colour tint, not raw `albedo`. Both cited
+/// references (Disney 2012 `disney.brdf`'s `Ctint = baseColor / Cdlum`, and
+/// knightcrawler25/GLSL-PathTracer's `GetSpecColor`) normalise by luminance
+/// first so `sheenTint` transfers hue without changing sheen intensity —
+/// mixing in raw albedo instead makes a dark base colour (e.g. black velvet)
+/// scale the whole sheen lobe down at `sheenTint = 1.0`. No automated pixel
+/// test exists for this lobe (Cornell-harness capture is the verification
+/// path per the issue), so this pins the GLSL source shape the same way the
+/// other PBR-lobe regressions in this file do.
+#[test]
+fn disney_sheen_color_uses_luminance_normalised_tint_not_raw_albedo() {
+    let pbr = include_str!("../../../shaders/include/pbr.glsl");
+
+    for needle in [
+        "float sheenLuminance = dot(albedo, vec3(0.3, 0.6, 0.1));",
+        "vec3 sheenTintColor = sheenLuminance > 0.0 ? albedo / sheenLuminance : vec3(1.0);",
+        "vec3 sheenColor = mix(vec3(1.0), sheenTintColor, sheenTint);",
+    ] {
+        assert!(pbr.contains(needle), "sheen luminance-normalisation `{needle}` is missing");
+    }
+    assert!(
+        !pbr.contains("vec3 sheenColor = mix(vec3(1.0), albedo, sheenTint);"),
+        "sheen colour must not regress to mixing raw (non-luminance-normalised) albedo"
+    );
+}
+
 #[test]
 fn unresolved_glass_keeps_tint_and_low_angle_reflections() {
     let frag = include_str!("../../../shaders/triangle.frag");

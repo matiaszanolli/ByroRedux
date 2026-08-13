@@ -11,8 +11,10 @@
 //! Path 1 firing on chrome fragments — the swap-induced 90° rotation
 //! of the normal-map basis).
 
-use super::{synthesize_tangents, synthesize_tangents_yup};
-use crate::types::NiPoint3;
+use super::{extract_tangents_from_extra_data, synthesize_tangents, synthesize_tangents_yup};
+use crate::blocks::extra_data::NiExtraData;
+use crate::scene::NifScene;
+use crate::types::{BlockRef, NiPoint3};
 
 /// Construct a triangle in the XY plane (Z-up) with an explicit UV
 /// mapping where `U = X` and `V = Y`, so that:
@@ -298,4 +300,191 @@ fn synthesize_tangents_yup_empty_inputs_return_empty() {
         &empty_triangles
     )
     .is_empty());
+}
+
+// ── #2818 (REN-D19-06) — `extract_tangents_from_extra_data` coverage ──
+//
+// The load-bearing #786 half-swap (Bethesda's on-disk "tangents" field
+// holds ∂P/∂V, "bitangents" holds ∂P/∂U — our decoder reads the SECOND
+// 12-byte half into `Vertex.tangent.xyz`) had no direct test coverage
+// before this file: only the downstream `synthesize_tangents` fallback
+// was pinned. These tests exercise the extractor itself: the half-swap,
+// the exact-size gate, the extra-data name match, and the Z-up → Y-up
+// conversion applied to both halves.
+
+/// Build a `NiBinaryExtraData` block with the canonical tangent-space
+/// name and a caller-supplied blob, registered as block 0 of a fresh
+/// scene. Returns the scene plus the `extra_data_refs` slice pointing
+/// at it, ready to hand to `extract_tangents_from_extra_data`.
+fn scene_with_tangent_blob(
+    name: &str,
+    type_name: &str,
+    binary_data: Option<Vec<u8>>,
+) -> NifScene {
+    let extra = NiExtraData {
+        type_name: type_name.to_string(),
+        name: Some(std::sync::Arc::from(name)),
+        string_value: None,
+        integer_value: None,
+        float_value: None,
+        binary_data,
+        strings_array: None,
+        integers_array: None,
+        floats_array: None,
+        bone_lods: None,
+        skin_attach_bones: None,
+        bone_translations: None,
+    };
+    let mut scene = NifScene::default();
+    scene.blocks.push(Box::new(extra));
+    scene
+}
+
+/// The exact canonical name `extract_tangents_from_extra_data` matches
+/// against — kept as a constant so a future rename of the fixture can't
+/// silently drift from the production string.
+const TANGENT_SPACE_NAME: &str = "Tangent space (binormal & tangent vectors)";
+
+/// Pack two vertices' worth of Bethesda-layout tangent-space extra
+/// data: `[v0_tangent, v1_tangent, v0_bitangent, v1_bitangent]`, each
+/// a 12-byte Z-up `Vector3` — the on-disk layout per nifly's
+/// `Geometry.cpp:81-84` (`[tangents..., bitangents...]`).
+fn pack_bethesda_tangent_blob(tangents: &[[f32; 3]], bitangents: &[[f32; 3]]) -> Vec<u8> {
+    let mut blob = Vec::with_capacity((tangents.len() + bitangents.len()) * 12);
+    for [x, y, z] in tangents {
+        blob.extend_from_slice(&x.to_le_bytes());
+        blob.extend_from_slice(&y.to_le_bytes());
+        blob.extend_from_slice(&z.to_le_bytes());
+    }
+    for [x, y, z] in bitangents {
+        blob.extend_from_slice(&x.to_le_bytes());
+        blob.extend_from_slice(&y.to_le_bytes());
+        blob.extend_from_slice(&z.to_le_bytes());
+    }
+    blob
+}
+
+/// #786 half-swap + Z-up → Y-up conversion, exercised end-to-end
+/// through `extract_tangents_from_extra_data` with two vertices (so
+/// the per-vertex offset math — `i * 12` for the tangent half,
+/// `num_verts * 12 + i * 12` for the bitangent half — is pinned, not
+/// just the single-vertex degenerate case).
+///
+/// Vertex 0: on-disk tangent (∂P/∂V, Z-up) = (0, 1, 0); on-disk
+/// bitangent (∂P/∂U, Z-up) = (1, 0, 0).
+/// Vertex 1: on-disk tangent = (0, -1, 0); on-disk bitangent = (-1, 0, 0).
+/// Both vertex normals point Z-up +Z (straight up).
+///
+/// `Vertex.tangent.xyz` must equal `zup_to_yup(bitangent)` — the
+/// SECOND half, not the first — and the bitangent-sign convention
+/// (`sign(dot(B, cross(N, T)))`) must land on the on-disk tangent half
+/// converted the same way.
+#[test]
+fn extract_tangents_from_extra_data_applies_bethesda_half_swap_and_zup_to_yup() {
+    let normals_zup = [
+        NiPoint3 {
+            x: 0.0,
+            y: 0.0,
+            z: 1.0,
+        },
+        NiPoint3 {
+            x: 0.0,
+            y: 0.0,
+            z: 1.0,
+        },
+    ];
+    let blob = pack_bethesda_tangent_blob(
+        &[[0.0, 1.0, 0.0], [0.0, -1.0, 0.0]],
+        &[[1.0, 0.0, 0.0], [-1.0, 0.0, 0.0]],
+    );
+    assert_eq!(blob.len(), 2 * 24, "fixture must be exactly num_verts * 24 bytes");
+
+    let scene = scene_with_tangent_blob(TANGENT_SPACE_NAME, "NiBinaryExtraData", Some(blob));
+    let refs = [BlockRef(0)];
+    let tangents = extract_tangents_from_extra_data(&scene, &refs, &normals_zup, 2);
+
+    assert_eq!(tangents.len(), 2, "one tangent per vertex");
+    // Vertex 0: bitangent half (1,0,0) Z-up → (1,0,0) Y-up (X axis is
+    // identity under the swap); sign +1 for this right-handed fixture.
+    assert!((tangents[0][0] - 1.0).abs() < 1e-6, "v0.x = {}", tangents[0][0]);
+    assert!(tangents[0][1].abs() < 1e-6, "v0.y = {}", tangents[0][1]);
+    assert!(tangents[0][2].abs() < 1e-6, "v0.z = {}", tangents[0][2]);
+    assert_eq!(tangents[0][3], 1.0, "v0 sign");
+    // Vertex 1: bitangent half (-1,0,0) Z-up → (-1,0,0) Y-up. A
+    // different offset than vertex 0 proves the `num_verts * 12`
+    // second-half stride, not a stale first-vertex read repeated.
+    assert!((tangents[1][0] + 1.0).abs() < 1e-6, "v1.x = {}", tangents[1][0]);
+    assert!(tangents[1][1].abs() < 1e-6, "v1.y = {}", tangents[1][1]);
+    assert!(tangents[1][2].abs() < 1e-6, "v1.z = {}", tangents[1][2]);
+    assert_eq!(tangents[1][3], 1.0, "v1 sign");
+}
+
+/// The `blob.len() != num_verts * 24` size gate must skip the blob
+/// (log + `continue`) rather than risk a partial/misaligned decode —
+/// the caller falls back to `synthesize_tangents`.
+#[test]
+fn extract_tangents_from_extra_data_size_mismatch_returns_empty() {
+    let normals_zup = [NiPoint3 {
+        x: 0.0,
+        y: 0.0,
+        z: 1.0,
+    }];
+    // One byte short of the required 24 for num_verts = 1.
+    let blob = vec![0u8; 23];
+    let scene = scene_with_tangent_blob(TANGENT_SPACE_NAME, "NiBinaryExtraData", Some(blob));
+    let refs = [BlockRef(0)];
+    let tangents = extract_tangents_from_extra_data(&scene, &refs, &normals_zup, 1);
+    assert!(
+        tangents.is_empty(),
+        "size-mismatched blob must be skipped, not partially decoded"
+    );
+}
+
+/// A `NiBinaryExtraData` block whose `name` doesn't exactly match
+/// `"Tangent space (binormal & tangent vectors)"` must be skipped —
+/// the function has no fuzzy-match fallback.
+#[test]
+fn extract_tangents_from_extra_data_wrong_name_returns_empty() {
+    let normals_zup = [NiPoint3 {
+        x: 0.0,
+        y: 0.0,
+        z: 1.0,
+    }];
+    let blob = pack_bethesda_tangent_blob(&[[0.0, 1.0, 0.0]], &[[1.0, 0.0, 0.0]]);
+    let scene = scene_with_tangent_blob("Some other extra data", "NiBinaryExtraData", Some(blob));
+    let refs = [BlockRef(0)];
+    let tangents = extract_tangents_from_extra_data(&scene, &refs, &normals_zup, 1);
+    assert!(
+        tangents.is_empty(),
+        "non-matching extra-data name must be skipped"
+    );
+}
+
+/// A block with the right name but the wrong `type_name` (not
+/// `NiBinaryExtraData`) must also be skipped — the name check alone
+/// isn't sufficient.
+#[test]
+fn extract_tangents_from_extra_data_wrong_type_name_returns_empty() {
+    let normals_zup = [NiPoint3 {
+        x: 0.0,
+        y: 0.0,
+        z: 1.0,
+    }];
+    let blob = pack_bethesda_tangent_blob(&[[0.0, 1.0, 0.0]], &[[1.0, 0.0, 0.0]]);
+    let scene = scene_with_tangent_blob(TANGENT_SPACE_NAME, "NiStringExtraData", Some(blob));
+    let refs = [BlockRef(0)];
+    let tangents = extract_tangents_from_extra_data(&scene, &refs, &normals_zup, 1);
+    assert!(
+        tangents.is_empty(),
+        "non-NiBinaryExtraData type must be skipped even with a matching name"
+    );
+}
+
+/// `num_verts == 0` must short-circuit before any block lookup.
+#[test]
+fn extract_tangents_from_extra_data_zero_num_verts_returns_empty() {
+    let scene = scene_with_tangent_blob(TANGENT_SPACE_NAME, "NiBinaryExtraData", Some(Vec::new()));
+    let refs = [BlockRef(0)];
+    let tangents = extract_tangents_from_extra_data(&scene, &refs, &[], 0);
+    assert!(tangents.is_empty());
 }
