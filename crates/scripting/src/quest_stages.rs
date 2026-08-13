@@ -44,6 +44,7 @@ use byroredux_plugin::esm::records::{
     QUEST_FLAG_START_GAME_ENABLED, QUEST_LOG_FLAG_COMPLETE_QUEST, QUEST_LOG_FLAG_FAIL_QUEST,
 };
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 
 use crate::papyrus_demo::PlayerEntity;
 
@@ -675,9 +676,21 @@ impl StartGameQuestRegistry {
     }
 }
 
+/// #2659 (SCR-D6-NEW11-02) — `definitions` is `Arc`-wrapped so
+/// `#[derive(Clone)]` is an O(1) refcount bump, not an O(quest count) deep
+/// copy. `DeferredFragmentEffects::new` (`fragment.rs`) clones this
+/// registry unconditionally, once per `quest_fragment_dispatch_system`
+/// call — measured up to the entire frame budget on a heavily-modded
+/// (5,000-quest) load order when it was a deep clone. Sound because the
+/// registry's only writers ([`install_start_game_quests`],
+/// [`install_engine_start_quest`]) take `world: &mut World` — an
+/// exclusive borrow that can't coexist with any system's outstanding
+/// `Arc` clone from a prior read — so every write either uniquely owns
+/// the `Arc` (in-place mutation via `Arc::make_mut`, no copy) or is the
+/// registry's very first population.
 #[derive(Debug, Clone, Default)]
 pub struct QuestDefinitionRegistry {
-    definitions: HashMap<QuestFormId, QuestDefinition>,
+    definitions: Arc<HashMap<QuestFormId, QuestDefinition>>,
 }
 
 impl Resource for QuestDefinitionRegistry {}
@@ -903,7 +916,7 @@ pub fn install_start_game_quests(
     let count = quests.len();
     world.resource_mut::<StartGameQuestRegistry>().quests = quests;
     world.resource_mut::<StartGameQuestRegistry>().initial_flags = initial_flags;
-    world.resource_mut::<QuestDefinitionRegistry>().definitions = definitions;
+    world.resource_mut::<QuestDefinitionRegistry>().definitions = Arc::new(definitions);
     count
 }
 
@@ -924,9 +937,7 @@ pub fn install_engine_start_quest(
         .quests
         .insert(quest, start_up_stage)
         != Some(start_up_stage);
-    world
-        .resource_mut::<QuestDefinitionRegistry>()
-        .definitions
+    Arc::make_mut(&mut world.resource_mut::<QuestDefinitionRegistry>().definitions)
         .entry(quest)
         .or_insert_with(|| QuestDefinition {
             editor_id: String::new(),
@@ -1600,5 +1611,71 @@ mod tests {
         assert_eq!(s.get_stage(q1), 0);
         assert_eq!(s.get_stage(q2), 30, "reset must be quest-scoped");
         assert!(s.get_stage_done(q2, 30));
+    }
+
+    // ── #2659 (SCR-D6-NEW11-02) — Arc-shared QuestDefinitionRegistry ──
+
+    /// Regression pinning the actual perf fix: `QuestDefinitionRegistry::
+    /// clone()` must share the underlying allocation (an `Arc` refcount
+    /// bump), not deep-copy it. `DeferredFragmentEffects::new`
+    /// (`fragment.rs`) calls this unconditionally on every
+    /// `quest_fragment_dispatch_system` invocation — a deep clone there
+    /// was measured at up to the entire frame budget on a heavily-modded
+    /// (5,000-quest) load order.
+    #[test]
+    fn registry_clone_shares_the_same_allocation() {
+        let mut world = World::new();
+        world.insert_resource(QuestDefinitionRegistry::default());
+        world.insert_resource(StartGameQuestRegistry::default());
+        install_engine_start_quest(&mut world, QuestFormId(0x1000), Some(10));
+
+        let original = world.resource::<QuestDefinitionRegistry>().clone();
+        let snapshot = original.clone();
+        assert!(
+            Arc::ptr_eq(&original.definitions, &snapshot.definitions),
+            "clone() must share the same Arc allocation, not deep-copy \
+             the definitions map (#2659)"
+        );
+    }
+
+    /// Correctness counterpart: once a snapshot clone is taken (as
+    /// `DeferredFragmentEffects::new` does before the quest-state guards
+    /// are acquired), a LATER write to the live registry (via
+    /// `Arc::make_mut`, which clones-on-write when the Arc is shared)
+    /// must NOT retroactively mutate that snapshot. If `Arc::make_mut`'s
+    /// clone-on-write ever failed to trigger here, a prior frame's
+    /// still-alive snapshot would silently observe a later frame's
+    /// writes — exactly the class of bug sharing the allocation could
+    /// introduce if done carelessly.
+    #[test]
+    fn write_after_snapshot_does_not_mutate_the_snapshot() {
+        let mut world = World::new();
+        world.insert_resource(QuestDefinitionRegistry::default());
+        world.insert_resource(StartGameQuestRegistry::default());
+        let quest_a = QuestFormId(0x1000);
+        install_engine_start_quest(&mut world, quest_a, Some(10));
+
+        // Snapshot BEFORE the second write, exactly like
+        // `DeferredFragmentEffects::new` does before taking the
+        // quest-state guards.
+        let snapshot = world.resource::<QuestDefinitionRegistry>().clone();
+        assert!(snapshot.contains(quest_a));
+        assert!(!snapshot.contains(QuestFormId(0x2000)));
+
+        let quest_b = QuestFormId(0x2000);
+        install_engine_start_quest(&mut world, quest_b, Some(20));
+
+        // The live registry sees both quests now...
+        assert!(world.resource::<QuestDefinitionRegistry>().contains(quest_a));
+        assert!(world.resource::<QuestDefinitionRegistry>().contains(quest_b));
+        // ...but the earlier snapshot must still see only the first —
+        // proving the shared allocation was cloned-on-write, not mutated
+        // through the snapshot's own (still-live) Arc handle.
+        assert!(snapshot.contains(quest_a));
+        assert!(
+            !snapshot.contains(quest_b),
+            "a write after the snapshot was taken must not retroactively \
+             appear in it (#2659 Arc clone-on-write correctness)"
+        );
     }
 }

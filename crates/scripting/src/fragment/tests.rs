@@ -598,6 +598,87 @@ fn populate_from_script_skips_absent_and_declined_fragments() {
     assert!(frags.get(Q, 7).is_none(), "absent fragment not registered");
 }
 
+/// Regression for #2657 (SCR-D5-NEW11-01), pinned end-to-end through the
+/// REAL production entry point (`populate_quest_fragments_from_script`),
+/// not just the lower-level `classify_effect`/`lower_fragment_with_
+/// quest_properties` primitives `translate::effects`'s own test already
+/// covers. A decompiled `.pex` auto-property read arrives as its backing
+/// variable (`::MQ101_var`), a shape the `.psc` `Ident` regex can never
+/// produce — `first_fn_body`-style `parse_script` fixtures elsewhere in
+/// this file cannot express this AST, so it's hand-built here, mirroring
+/// `translate::effects::tests::sp`.
+///
+/// Confirmed by direct code inspection that `quest_property_key`'s
+/// `::`/`_var`-stripping normalization (added under #2653, `53f7de9d`)
+/// already fixes the key-space mismatch #2657 reported — this test locks
+/// that fix in against the exact real-input shape, through the exact
+/// call path production uses, so a future refactor of either
+/// `quest_property_names` or `receiver_object`/`explicit_quest_receiver`
+/// can't silently reopen it.
+#[test]
+fn populate_from_script_resolves_decompiled_backing_variable_quest_property() {
+    use byroredux_papyrus::ast::{Function, Identifier, Property};
+
+    fn sp<T>(node: T) -> Spanned<T> {
+        Spanned::new(node, byroredux_papyrus::span::Span::new(0, 0))
+    }
+
+    let script = Script {
+        name: sp(Identifier("QF_TestQuest".into())),
+        parent: Some(sp(Identifier("Quest".into()))),
+        flags: byroredux_papyrus::ast::ScriptFlags::empty(),
+        body: vec![
+            sp(ScriptItem::Property(Box::new(Property {
+                ty: sp(Type::Object(Identifier("Quest".into()))),
+                name: sp(Identifier("MQ101".into())),
+                flags: byroredux_papyrus::ast::PropertyFlags::AUTO,
+                initial_value: None,
+                getter: None,
+                setter: None,
+                doc_comment: None,
+            }))),
+            sp(ScriptItem::Function(Function {
+                return_type: None,
+                name: sp(Identifier("Fragment_99".into())),
+                params: Vec::new(),
+                flags: byroredux_papyrus::ast::FunctionFlags::empty(),
+                // The decompiler's actual shape for `MQ101.Start()`:
+                // `::MQ101_var.Start()`, not the `.psc`-expressible
+                // `MQ101.Start()`.
+                body: vec![sp(Stmt::ExprStmt(sp(
+                    byroredux_papyrus::ast::Expr::Call {
+                        callee: Box::new(sp(byroredux_papyrus::ast::Expr::MemberAccess {
+                            object: Box::new(sp(byroredux_papyrus::ast::Expr::Ident(
+                                Identifier("::MQ101_var".into()),
+                            ))),
+                            member: sp(Identifier("Start".into())),
+                        })),
+                        args: Vec::new(),
+                    },
+                )))],
+                doc_comment: None,
+            })),
+        ],
+    };
+
+    let bindings = [(1u16, "Fragment_99")];
+    let world = fixture();
+    let inserted = {
+        let mut frags = world.resource_mut::<QuestStageFragments>();
+        populate_quest_fragments_from_script(&mut frags, Q, &script, &bindings)
+    };
+    assert_eq!(
+        inserted, 1,
+        "MQ101.Start() (decompiled shape) must lower to StartQuest and \
+         register, not decline the fragment (#2657)"
+    );
+    let frags = world.resource::<QuestStageFragments>();
+    assert!(
+        frags.get(Q, 1).is_some(),
+        "the fragment must be registered for stage 1"
+    );
+}
+
 #[test]
 fn dispatch_resolves_property_targeted_effect_via_registered_vmad() {
     // The counterpart to `property_targeted_effect_skipped_without_vmad`:

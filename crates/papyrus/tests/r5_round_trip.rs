@@ -92,6 +92,19 @@ fn parse_default_rumble_on_activate() {
     assert!(state_names.contains(&"inactive"));
 
     // `active` is the Auto state.
+    //
+    // #2656 (SCR-D4-NEW11-01) — this assertion alone does NOT prove
+    // `parse_property_flags` stops at the property's own line: the
+    // `shakeRight` property immediately preceding `Auto State active`
+    // in this fixture has a trailing `{ doc comment }` on the next
+    // line, which happens to break the (pre-fix) buggy flag loop before
+    // it could reach the state's `Auto` — an accident of this
+    // fixture's formatting, not a property of the parser. The real,
+    // fixture-independent regression coverage (a short-form property
+    // with NO trailing doc comment immediately before `Auto State`) is
+    // `parser::script::tests::property_immediately_before_auto_state_
+    // does_not_swallow_its_auto` and its siblings in
+    // `crates/papyrus/src/parser/script.rs`.
     let active = states.iter().find(|s| s.name.node.0 == "active").unwrap();
     assert!(active.is_auto, "'active' must be the Auto state");
 }

@@ -390,6 +390,14 @@ pub struct DeferredFragmentEffects {
 
 impl DeferredFragmentEffects {
     /// Snapshot fragment resources before acquiring the quest-state guards.
+    ///
+    /// Called unconditionally by every production caller of this batch,
+    /// including on frames with no quest-stage activity at all — see
+    /// [`quest_fragment_dispatch_system`]'s early-bail, which runs AFTER
+    /// this snapshot for the #2539 lock-ordering reason documented on the
+    /// struct above. `QuestDefinitionRegistry::clone()` is an O(1) `Arc`
+    /// refcount bump (#2659 / SCR-D6-NEW11-02), not a deep copy — that's
+    /// what keeps this unconditional call cheap on every load-order size.
     pub fn new(world: &World) -> Self {
         Self {
             quest_definitions: world
@@ -1238,7 +1246,31 @@ pub fn register(world: &mut World) {
 /// one, which the AST alone cannot. Properties are always top-level
 /// (never nested in a `State` block, unlike functions/events), so no
 /// `StateItem` walk is needed here.
-fn quest_property_names(script: &Script) -> std::collections::HashSet<String> {
+///
+/// #2657 (SCR-D5-NEW11-01) — the receiver-side key-space mismatch (a
+/// decompiled `.pex` reads a property through its `::X_var` backing
+/// variable, not the authored name this set is keyed by) is fixed;
+/// `receiver_object`/`explicit_quest_receiver` normalize through
+/// `quest_property_key` before consulting this set (#2653, `53f7de9d`).
+///
+/// A SEPARATE, still-open gap from the same issue: the type test below
+/// is an exact `Type::Object("quest")` match, so a property typed with a
+/// Quest-*derived* script (`mq206script`, `dn019script`, `min03script`,
+/// …) is never collected — real corpus content does this. Closing it
+/// needs a script-class-hierarchy resolver (something that can answer
+/// "does `mq206script` transitively extend `Quest`?"); nothing in this
+/// crate builds one today, and this single-`Script` function has no
+/// access to any other script's `extends` declaration to improvise one.
+/// Not attempted here — flagged as a candidate follow-up issue rather
+/// than guessed at with a naming-convention heuristic.
+///
+/// `pub` (#2658 / SCR-D5-NEW11-03) — so `examples/fragment_coverage.rs`
+/// and `examples/mq101_conformance.rs` can build the same per-script set
+/// this function's one production caller
+/// ([`populate_quest_fragments_from_script`]) does, and measure
+/// `lower_fragment_with_quest_properties` (what production actually
+/// runs) instead of context-free `lower_fragment`.
+pub fn quest_property_names(script: &Script) -> std::collections::HashSet<String> {
     script
         .body
         .iter()

@@ -25,7 +25,8 @@ use std::collections::BTreeMap;
 use byroredux_bsa::{Ba2Archive, BsaArchive};
 use byroredux_papyrus::ast::ScriptItem;
 use byroredux_pex::{decompile::decompile_script, parse};
-use byroredux_scripting::translate::effects::{lower_fragment, Effect};
+use byroredux_scripting::fragment::quest_property_names;
+use byroredux_scripting::translate::effects::{lower_fragment_with_quest_properties, Effect};
 
 enum Archive {
     Bsa(BsaArchive),
@@ -126,6 +127,11 @@ fn main() {
             else {
                 continue;
             };
+            // #2658 (SCR-D5-NEW11-03) — computed once per script, matching
+            // the production caller (`populate_quest_fragments_from_script`),
+            // and fed to `lower_fragment_with_quest_properties` below so
+            // this measures the SAME lowering path production runs.
+            let quest_properties = quest_property_names(&script);
             for item in &script.body {
                 let ScriptItem::Function(func) = &item.node else {
                     continue;
@@ -144,7 +150,9 @@ fn main() {
                     continue;
                 }
                 behavioral += 1;
-                if let Some(effects) = lower_fragment(&func.body) {
+                if let Some(effects) =
+                    lower_fragment_with_quest_properties(&func.body, &quest_properties)
+                {
                     claimed += 1;
                     claimed_effects += effects.len();
                     for e in &effects {

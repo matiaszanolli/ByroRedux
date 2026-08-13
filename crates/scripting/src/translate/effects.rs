@@ -243,6 +243,17 @@ struct Scope {
 /// empty quest-property set, for the many call sites (mostly tests) with
 /// no script-level property metadata available — preserves this
 /// function's pre-#2538 behavior exactly for those.
+///
+/// #2658 (SCR-D5-NEW11-03) — `#[doc(hidden)]` because the context-free
+/// path is test-only by design: the single production caller
+/// (`fragment::populate_quest_fragments_from_script`) always calls
+/// [`lower_fragment_with_quest_properties`] with a real set instead. Two
+/// coverage/conformance measurement harnesses called this one anyway,
+/// which for a time made them measure a lowering path production never
+/// runs — hiding it from docs is a nudge against a future call site
+/// picking it by mistake, not an access restriction (both examples and
+/// every test in this crate can still see and call it fine).
+#[doc(hidden)]
 pub fn lower_fragment(body: &[Spanned<Stmt>]) -> Option<Vec<Effect>> {
     lower_fragment_with_quest_properties(body, &HashSet::new())
 }
