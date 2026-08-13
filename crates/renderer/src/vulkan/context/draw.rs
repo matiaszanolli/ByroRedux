@@ -3300,6 +3300,13 @@ impl VulkanContext {
             drop(queue);
         }
 
+        // #2715 (CONC-D7-UI-01) — `queue_submit` above just created a new
+        // pending submission against `bindless_sets[frame]`, so
+        // `TextureRegistry::apply_descriptor_write`'s immediate-write fast
+        // path may no longer target this slot until the next `begin_frame`
+        // (post fence-wait) call re-confirms it idle.
+        self.texture_registry.note_frame_submitted(frame);
+
         // #917 / REN-D10-NEW-03 — advance SVGF + TAA `frames_since_
         // creation` counters now that `queue_submit` returned success.
         // Each pipeline self-gates on its `dispatched_this_frame` flag
