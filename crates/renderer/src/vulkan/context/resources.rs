@@ -95,6 +95,22 @@ impl VulkanContext {
     /// appears for the frames a bad material or a degenerate light is on
     /// screen and then goes. A gate that only sampled the current frame would
     /// miss it; the total is what makes the smoke check reliable.
+    ///
+    /// #2793 (REN-D5-05) — this reads GPU-written data through
+    /// `mapped_slice_mut()` with no `vkInvalidateMappedMemoryRanges` call
+    /// (`GpuBuffer` has no invalidate primitive at all), then writes the
+    /// reset-to-zero bytes back through the same mapping with no
+    /// `flush_if_needed()` — despite `mapped_slice_mut`'s own doc mandating
+    /// one after writes. Both omissions are visibility gaps on paper. They
+    /// are benign in practice ONLY because `image_health_buffers` is a
+    /// `create_host_visible` (`MemoryLocation::CpuToGpu`) allocation, and
+    /// gpu-allocator 0.27's `CpuToGpu` preset puts `HOST_COHERENT` in the
+    /// *required* (not just preferred) memory-property flags — so
+    /// `is_coherent` is always `true` here and both the GPU write and this
+    /// host read/write stay automatically visible to each other with no
+    /// explicit barrier. That's a property of this specific allocator
+    /// version, not a Vulkan-spec guarantee; it doesn't hold if this buffer
+    /// is ever changed to a non-coherent-eligible allocation.
     pub(super) fn collect_image_health(&mut self, frame: usize) {
         let Some(buffer) = self.image_health_buffers.get_mut(frame) else {
             return;

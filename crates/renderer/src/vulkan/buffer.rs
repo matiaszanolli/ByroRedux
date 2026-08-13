@@ -747,6 +747,19 @@ impl GpuBuffer {
 
     /// Get the mapped memory slice for direct writes (no intermediate Vec).
     /// Call `flush_if_needed()` after writing to ensure GPU visibility.
+    ///
+    /// #2793 (REN-D5-05) — this type has no `vkInvalidateMappedMemoryRanges`
+    /// counterpart to `flush_if_needed()`. That's fine for the write-then-
+    /// flush usage this doc comment describes, but a caller that instead
+    /// READS GPU-written bytes back through this same slice (e.g. an
+    /// atomic-counter buffer the shader writes and the host later drains)
+    /// gets no equivalent visibility guarantee from this type — it's
+    /// correct today only because every current `mapped_slice_mut` caller's
+    /// buffer is `create_host_visible` (`CpuToGpu`), and gpu-allocator
+    /// 0.27's `CpuToGpu` preset requires (not merely prefers)
+    /// `HOST_COHERENT`, so `is_coherent` is always `true` in practice. Add
+    /// an `invalidate_if_needed()` sibling to `flush_if_needed()` before
+    /// this type is ever used with a non-coherent-eligible allocation.
     pub fn mapped_slice_mut(&mut self) -> Result<&mut [u8]> {
         let alloc = self
             .allocation

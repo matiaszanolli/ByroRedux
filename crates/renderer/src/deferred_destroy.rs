@@ -2,14 +2,20 @@
 //! must be delayed until any in-flight command buffer that references
 //! them has retired (typically MAX_FRAMES_IN_FLIGHT frames).
 //!
-//! Two production users today, both on the countdown variant:
+//! Three production users today, all on the countdown variant:
 //!   * [`crate::mesh::MeshRegistry::deferred_destroy`] — pairs of
 //!     vertex / index `GpuBuffer`s queued by `drop_mesh` (#372 /
 //!     #879).
 //!   * [`crate::vulkan::acceleration::AccelerationManager::pending_destroy_blas`]
 //!     — `BlasEntry` queued by `drop_blas` (#372 / #495).
+//!   * [`crate::vulkan::acceleration::AccelerationManager::pending_destroy_scratch`]
+//!     — retired shared BLAS-build `GpuBuffer` scratch allocations,
+//!     queued alongside `pending_destroy_blas` and ticked/drained in
+//!     lockstep with it (#1782 — a prior fix moved this queue onto
+//!     this same countdown path after a use-after-free surfaced from
+//!     freeing scratch buffers immediately instead of deferring them).
 //!
-//! Both predate this primitive and reimplemented the same
+//! The first two predate this primitive and reimplemented the same
 //! `Vec<(T, u32)>` + per-frame `retain_mut` decrement loop +
 //! shutdown drain shape. Consolidating them here keeps the countdown
 //! semantics + safety contract in one place.
@@ -29,8 +35,14 @@
 /// instead of silently lagging behind. Items pushed at frame N are
 /// safe to destroy at frame N+`DEFAULT_COUNTDOWN` because every
 /// command buffer that could reference them has finished by then.
-/// Mirrors the correct pattern at `draw.rs:889` and
-/// `acceleration.rs::tick_pending_destroy_blas`.
+/// Mirrors the correct pattern at the deferred-destroy tick call site
+/// in `VulkanContext::draw_frame` (`vulkan::context::draw`, run
+/// immediately after `wait_for_fences` — see the comment there for
+/// why ordering matters, #418) and
+/// [`crate::vulkan::acceleration::AccelerationManager::tick_deferred_destroy`]
+/// (#2794 — both cross-references had rotted to a stale line number
+/// and a since-renamed function after the `acceleration.rs` →
+/// `acceleration/` module split).
 pub(crate) const DEFAULT_COUNTDOWN: u32 = crate::vulkan::sync::MAX_FRAMES_IN_FLIGHT as u32;
 
 /// Queue of items waiting `countdown` more frames before destruction.

@@ -84,6 +84,20 @@ pub(crate) fn submersion_system(world: &World, _dt: f32) {
         return;
     };
     let Some(vq) = world.query::<WaterVolume>() else {
+        // #2792 (REN-D15-09) — mirror the WaterPlane-absent branch above:
+        // no `WaterVolume` component anywhere means no water can submerge
+        // the camera this frame, so any stale `head_submerged` / `material`
+        // from a prior frame must be cleared, not left to feed
+        // `compute_underwater_params` indefinitely. Today `WaterPlane`
+        // always ships with a matching `WaterVolume` except transiently via
+        // `spawn_lod_water_plane` (#2449), a state the camera can't already
+        // be submerged in — but that's an invariant of the current spawn
+        // path, not something this function should assume holds forever.
+        if let Some(mut sq) = world.query_mut::<SubmersionState>() {
+            if let Some(state) = sq.get_mut(cam_entity) {
+                *state = SubmersionState::default();
+            }
+        }
         return;
     };
     for (entity, plane) in wq.iter() {
@@ -216,7 +230,11 @@ pub fn compute_underwater_params(world: &World) -> [f32; 4] {
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_head_submerged, WATERLINE_HYSTERESIS};
+    use super::{resolve_head_submerged, submersion_system, WATERLINE_HYSTERESIS};
+    use byroredux_core::ecs::components::water::{
+        SubmersionState, WaterKind, WaterMaterial, WaterPlane,
+    };
+    use byroredux_core::ecs::{ActiveCamera, GlobalTransform, World};
 
     const EPS: f32 = WATERLINE_HYSTERESIS;
 
@@ -258,5 +276,57 @@ mod tests {
         assert!(!resolve_head_submerged(false, Some(mid))); // dry stays dry
         assert!(resolve_head_submerged(true, Some(mid))); // wet stays wet
         assert!(std::hint::black_box(EPS) > 0.0);
+    }
+
+    /// Regression for #2792 (REN-D15-09): a `WaterPlane` entity with no
+    /// matching `WaterVolume` component must clear stale submersion state
+    /// exactly like the "no `WaterPlane` at all" branch above it does —
+    /// not bare-`return` and leave a prior frame's `head_submerged: true`
+    /// / `material` feeding `compute_underwater_params` indefinitely.
+    #[test]
+    fn water_volume_absent_clears_stale_submersion_state() {
+        let mut world = World::new();
+
+        let camera = world.spawn();
+        world.insert_resource(ActiveCamera(camera));
+        world.insert(camera, GlobalTransform::IDENTITY);
+        // Stale state from a prior frame — must be cleared, not preserved.
+        world.insert(
+            camera,
+            SubmersionState {
+                depth: 5.0,
+                head_submerged: true,
+                material: Some(WaterMaterial::default()),
+            },
+        );
+
+        // A WaterPlane entity exists (so the WaterPlane-absent early
+        // return above does NOT fire) but carries no WaterVolume — the
+        // transient state `spawn_lod_water_plane` (#2449) produces.
+        let water = world.spawn();
+        world.insert(
+            water,
+            WaterPlane {
+                kind: WaterKind::River,
+                material: WaterMaterial::default(),
+            },
+        );
+
+        submersion_system(&world, 0.0);
+
+        let sq = world
+            .query::<SubmersionState>()
+            .expect("SubmersionState query");
+        let state = sq.get(camera).copied().expect("camera state");
+        assert_eq!(state.depth, 0.0, "depth must reset to default");
+        assert!(
+            !state.head_submerged,
+            "head_submerged must reset to default, not stay stuck true"
+        );
+        assert!(
+            state.material.is_none(),
+            "material must reset to default, not keep feeding \
+             compute_underwater_params a stale value"
+        );
     }
 }
