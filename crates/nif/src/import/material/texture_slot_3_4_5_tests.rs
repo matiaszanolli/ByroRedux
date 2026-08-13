@@ -1386,6 +1386,56 @@ fn model_space_normals_route_slot_7_to_alternate_specular() {
     assert!(info.gloss_map.is_none());
 }
 
+/// Regression for #2742 / REN-D6-2026-08-12-01: SkinTint (5) and
+/// HairTint (6) are diverted into their own `5 | 6 =>` arm (#1350, to
+/// guard slots 4/5 from a spurious env-cube bind) which reads no slot
+/// at or above 3 at all — including slot 7. That silently dropped the
+/// same model-space-normals alternate-specular rule the `_ =>` arm
+/// applies (pinned above by
+/// `model_space_normals_route_slot_7_to_alternate_specular`), for
+/// 100% of Skyrim SE body/hands/beast-skin materials (measured
+/// 390/390 + 4/4 on real BSA data — every slot-7-bearing SkinTint
+/// property is model-space-normal).
+#[test]
+fn skin_tint_and_hair_tint_route_slot_7_to_alternate_specular_under_msn() {
+    for shader_type in [5u32, 6u32] {
+        let mut shader = lighting_shader_with_type_and_texset(shader_type, 1);
+        shader.shader_flags_1 = crate::shader_flags::skyrim_slsf1::MODEL_SPACE_NORMALS;
+        let blocks: Vec<Box<dyn NiObject>> = vec![
+            Box::new(shader),
+            Box::new(full_8_slot_tex_set("skin_modelspace")),
+        ];
+        let scene = NifScene {
+            blocks,
+            bsver: crate::version::bsver::SKYRIM_SE,
+            ..NifScene::default()
+        };
+        let mut shape = make_tri_shape_with_props(Vec::new());
+        shape.shader_property_ref = BlockRef(0);
+        let (info, pool) = extract_with_pool(&scene, &shape, &[]);
+
+        assert!(
+            info.model_space_normals,
+            "shader_type {shader_type} must report model_space_normals from SLSF1"
+        );
+        assert_path(
+            &pool,
+            info.specular_map,
+            "skin_modelspace_7.dds",
+        );
+        // The #1350 guard (env_map/env_mask skipped for slots 4/5) must
+        // still hold — this fix only adds slot 7, it doesn't reopen 4/5.
+        assert!(
+            info.env_map.is_none(),
+            "shader_type {shader_type} must still NOT bind slot 4 as env_map (#1350)"
+        );
+        assert!(
+            info.env_mask.is_none(),
+            "shader_type {shader_type} must still NOT bind slot 5 as env_mask (#1350)"
+        );
+    }
+}
+
 /// Regression for #725 / NIF-D4-06: when the legacy
 /// `NiTexturingProperty.parallax_texture` slot is bound WITHOUT a
 /// co-bound `BSShaderPPLightingProperty` (rare on FO3/FNV with an

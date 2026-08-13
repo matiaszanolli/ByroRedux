@@ -105,9 +105,9 @@ pub struct SkinSlot {
     /// over uninitialised data).
     pub has_populated_output: bool,
     /// #1197 / PERF-DIM7-03 — per-FIF cache of "currently-bound
-    /// `(input, palette)` buffer handle pair" for the slot's
-    /// descriptor sets. `dispatch` compares this against the live
-    /// pair; on match it skips `vkUpdateDescriptorSets` entirely.
+    /// `(input, palette, input_generation)` buffer handle triple" for
+    /// the slot's descriptor sets. `dispatch` compares this against the
+    /// live triple; on match it skips `vkUpdateDescriptorSets` entirely.
     /// `output_buffer` isn't tracked — it's a function of the slot
     /// itself, so once any FIF has been written it stays correct
     /// (the buffer doesn't move). `input` changes on cell transitions
@@ -115,9 +115,19 @@ pub struct SkinSlot {
     /// `MeshRegistry::rebuild_geometry_ssbo`); `palette` is fixed for
     /// the renderer lifetime today but the comparison handles any
     /// future rotation correctly without an explicit invalidation hook.
+    ///
+    /// #2743 — `input_generation` (`MeshRegistry::geometry_generation`)
+    /// closes a false-cache-hit hole: Vulkan does not guarantee
+    /// non-dispatchable handle values are unique or non-recycled, and
+    /// `rebuild_geometry_ssbo`'s low-headroom `reclaim_before_rebuild`
+    /// path destroys the old global vertex SSBO and allocates the
+    /// replacement inside the same call — the max-probability recycle
+    /// window. Comparing the raw handle alone let a recycled `input`
+    /// register as "unchanged" and skip the descriptor rewrite, binding
+    /// a freed generation's memory into the dispatch.
     /// `None` = never written; first dispatch on that FIF is the cold
     /// write. Steady-state writes per slot per frame: 0.
-    descriptor_bindings: [Option<(vk::Buffer, vk::Buffer)>; MAX_FRAMES_IN_FLIGHT],
+    descriptor_bindings: [Option<(vk::Buffer, vk::Buffer, u64)>; MAX_FRAMES_IN_FLIGHT],
 }
 
 impl SkinSlot {
@@ -224,6 +234,11 @@ pub struct SkinDispatchBuffers {
     pub input_buffer: vk::Buffer,
     /// Byte size of `input_buffer`.
     pub input_buffer_size: vk::DeviceSize,
+    /// #2743 — `MeshRegistry::geometry_generation()` at the time
+    /// `input_buffer` was read. Folded into the descriptor cache key so a
+    /// destroy-then-recycle of the underlying `vk::Buffer` handle (see
+    /// `SkinSlot::descriptor_bindings`) can't false-hit the cache.
+    pub input_generation: u64,
     /// Per-frame bone palette buffer.
     pub bone_buffer: vk::Buffer,
     /// Byte size of `bone_buffer`.
@@ -540,6 +555,7 @@ impl SkinComputePipeline {
         let SkinDispatchBuffers {
             input_buffer,
             input_buffer_size,
+            input_generation,
             bone_buffer,
             bone_buffer_size,
         } = buffers;
@@ -549,7 +565,11 @@ impl SkinComputePipeline {
         // and cannot change without destroying the slot, so a cached
         // hit on `(input, palette)` is sufficient to prove all three
         // descriptors are still correct.
-        let live_key = (input_buffer, bone_buffer);
+        //
+        // #2743 — `input_generation` rides along so a destroy-then-
+        // recycle of `input_buffer`'s raw handle (same value, different
+        // underlying allocation) can't be mistaken for "unchanged".
+        let live_key = (input_buffer, bone_buffer, input_generation);
         let needs_write = slot.descriptor_bindings[frame_index] != Some(live_key);
         if needs_write {
             let input_info = [vk::DescriptorBufferInfo {
@@ -1183,9 +1203,11 @@ mod tests {
     /// per-FIF cache comparison so steady-state frames issue zero
     /// descriptor writes. Pre-fix every dispatch unconditionally
     /// emitted three writes; the cache key is the
-    /// `(input_buffer, bone_buffer)` pair for the slot pipeline
-    /// (output is implicit) and `(world, bind_inv, palette)` for
-    /// the palette pipeline.
+    /// `(input_buffer, bone_buffer, input_generation)` triple for the
+    /// slot pipeline (output is implicit; `input_generation` added by
+    /// #2743) and `(world, bind_inv, palette)` for the palette
+    /// pipeline (no generation needed — see
+    /// `palette_cache_key_has_no_generation_because_its_buffers_are_renderer_lifetime`).
     ///
     /// Live mock of the dispatch path needs a Vulkan device; a
     /// source-string check verifies the guard exists and the
@@ -1257,6 +1279,87 @@ mod tests {
             "source order changed — SkinComputePipeline::dispatch should \
              precede SkinPaletteComputePipeline::dispatch in skin_compute.rs"
         );
+    }
+
+    // ── #2743 — stale descriptor cache from a recycled vk::Buffer ────
+
+    /// Pure key-equality predicate pinning the actual defect: two
+    /// dispatches against the SAME raw `vk::Buffer` handle value (which
+    /// Vulkan explicitly permits to be a recycled non-dispatchable
+    /// handle, not a unique identity) must NOT compare equal once their
+    /// `MeshRegistry::geometry_generation()` differs — otherwise
+    /// `dispatch` skips the descriptor rewrite and binds a freed
+    /// generation's memory. No Vulkan device needed; `vk::Buffer` is a
+    /// transparent `u64` wrapper so a raw value is enough to model
+    /// "handle recycled by the driver".
+    #[test]
+    fn descriptor_cache_key_distinguishes_recycled_handle_by_generation() {
+        use ash::vk::Handle;
+        let recycled_handle = vk::Buffer::from_raw(0x1234);
+        let bone_handle = vk::Buffer::from_raw(0x5678);
+
+        // Same (input, bone) pair, two different geometry generations —
+        // exactly what `rebuild_geometry_ssbo`'s destroy-then-recreate
+        // produces when the allocator hands back the same handle value.
+        let key_before_rebuild = (recycled_handle, bone_handle, 1u64);
+        let key_after_rebuild = (recycled_handle, bone_handle, 2u64);
+
+        assert_ne!(
+            key_before_rebuild, key_after_rebuild,
+            "#2743 — a recycled vk::Buffer handle with a bumped \
+             geometry_generation must NOT compare equal to its pre-rebuild \
+             key, or dispatch() wrongly treats the freed generation's \
+             descriptor binding as still valid"
+        );
+        // The pre-#2743 key shape (handle pair alone, no generation)
+        // WOULD have compared these two dispatches as identical —
+        // that's the false-cache-hit this fix closes.
+        assert_eq!(
+            (key_before_rebuild.0, key_before_rebuild.1),
+            (key_after_rebuild.0, key_after_rebuild.1),
+            "test fixture must actually model a handle recycle (identical \
+             (input, bone) pair), or this test isn't exercising #2743 at all"
+        );
+    }
+
+    /// SIBLING check (#2743's completeness list): `SkinPaletteComputePipeline`
+    /// caches `(bone_world_buffer, bind_inverse_buffer, palette_buffer)`
+    /// with no generation component, unlike the slot pipeline's fix above.
+    /// That's safe only because all three buffers are sourced from
+    /// `SceneBuffers` (renderer-lifetime allocations that never get
+    /// destroyed-and-recreated the way `MeshRegistry`'s global vertex SSBO
+    /// does), not from a registry with a reclaim-and-rebuild path. Pin the
+    /// call site so a future refactor that starts sourcing one of these
+    /// three from a recycled-buffer registry doesn't silently reopen the
+    /// same hole. Source-scan only — mirrors
+    /// `skin_compute_dispatch_guards_descriptor_writes_on_cache_miss`.
+    #[test]
+    fn palette_dispatch_buffers_are_sourced_from_scene_buffers_not_mesh_registry() {
+        let src = include_str!("context/draw.rs");
+        let call_site = src
+            .find("super::super::skin_compute::PaletteDispatchBuffers {")
+            .expect("PaletteDispatchBuffers construction site moved or was removed");
+        // Look at the ~1 KiB window immediately before the call site,
+        // where the three buffer locals are bound — wide enough to cover
+        // the `let` bindings without reaching into an unrelated block.
+        let window_start = call_site.saturating_sub(1024);
+        let window = &src[window_start..call_site];
+        for needle in [
+            "self.scene_buffers.bone_world_buffers()",
+            "self.scene_buffers.bind_inverses_persistent()",
+            "self.scene_buffers.bone_buffers()",
+        ] {
+            assert!(
+                window.contains(needle),
+                "PaletteDispatchBuffers's buffers must still come from \
+                 `self.scene_buffers` (renderer-lifetime, #2743 SIBLING \
+                 check) — `{needle}` no longer found near the construction \
+                 site; if a buffer now comes from MeshRegistry or another \
+                 registry with a reclaim-and-rebuild path, its cache key \
+                 needs the same generation treatment as \
+                 SkinComputePipeline::dispatch got in #2743"
+            );
+        }
     }
 
     /// `descriptor_writes_this_frame` is interior-mutability-backed

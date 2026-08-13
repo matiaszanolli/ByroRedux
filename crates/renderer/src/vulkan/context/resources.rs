@@ -569,4 +569,72 @@ mod tests {
         );
         assert!(!dirty);
     }
+
+    /// #2740 (REN-D4-04) — a fence's memory dependency only covers
+    /// *device*-side access; it does not by itself guarantee a device
+    /// write is host-visible (that additionally needs a coherent memory
+    /// type or an explicit `vkInvalidateMappedMemoryRanges`). Three
+    /// comments around the image-health readback used to claim the fence
+    /// wait alone was sufficient, which the spec explicitly denies. This
+    /// pins that the two still-editable sites (the `image_health_buffers`
+    /// field doc and the `collect_image_health` call site — the third,
+    /// `collect_image_health`'s own doc comment, was already corrected
+    /// under #2793) no longer make that claim, and that the corrected
+    /// (coherent-allocator-specific) reasoning is present in all three.
+    /// Source-scan only, no device needed.
+    #[test]
+    fn image_health_docs_no_longer_claim_fence_alone_proves_host_visibility() {
+        // Scope resources.rs's own source to the production half (before
+        // `mod tests`) so this test's own explanatory strings — which
+        // necessarily name the retired claim to describe what it checks for
+        // — don't trip the self-scan.
+        let resources_src_full = include_str!("resources.rs");
+        let resources_src = &resources_src_full[..resources_src_full
+            .find("mod tests {")
+            .expect("resources.rs must have a `mod tests` block")];
+        let mod_src = include_str!("mod.rs");
+        let draw_src = include_str!("draw.rs");
+
+        // Build the two retired-claim needles from parts so this file's own
+        // source doesn't contain them as a literal (defeating the point of
+        // the check once this test itself is included via include_str!).
+        let idle_claim = ["provably", "idle"].join(" ");
+        let barrier_claim = [
+            "needs no barrier, no transfer",
+            "and no extra synchronisation.",
+        ]
+        .join(" ");
+
+        for (label, src) in [
+            ("resources.rs (collect_image_health doc)", resources_src),
+            ("mod.rs (image_health_buffers field doc)", mod_src),
+            ("draw.rs (collect_image_health call site)", draw_src),
+        ] {
+            assert!(
+                !src.contains(&idle_claim),
+                "{label} still claims the fence wait alone makes the buffer \
+                 \"provably idle\" for a host read — that's the incorrect \
+                 claim #2740 corrects (a fence's access scope is device-side \
+                 only)"
+            );
+            assert!(
+                !src.contains(&barrier_claim),
+                "{label} still claims a fence wait needs no barrier for a \
+                 host read of device-written memory — #2740"
+            );
+        }
+
+        // And the corrected reasoning must actually be present, not just
+        // the wrong claim removed.
+        assert!(
+            resources_src.contains("HOST_COHERENT"),
+            "collect_image_health's doc must explain the coherent-allocator \
+             reasoning that actually makes the host read safe (#2793)"
+        );
+        assert!(
+            mod_src.contains("HOST_COHERENT") || mod_src.contains("collect_image_health"),
+            "image_health_buffers field doc must point to the corrected \
+             explanation (#2740)"
+        );
+    }
 }

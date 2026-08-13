@@ -1202,8 +1202,18 @@ pub struct VulkanContext {
     ///
     /// Two `u32`s each — non-finite RGB pixels, non-finite alpha pixels —
     /// written atomically by `presentation.frag` and read back on this slot's
-    /// next fence wait. Host-visible and CPU-zeroed at that same point, so the
-    /// slot is provably idle and no barrier or transfer is needed.
+    /// next fence wait, then CPU-zeroed at that same point.
+    ///
+    /// #2740 (REN-D4-04) — a fence signal only guarantees the *device*-side
+    /// access scope has completed; it does NOT by itself make that write
+    /// host-visible on a non-coherent memory type (that needs an explicit
+    /// `vkInvalidateMappedMemoryRanges`). This buffer's host read/write is
+    /// safe with no barrier ONLY because `create_host_visible` allocates
+    /// `MemoryLocation::CpuToGpu`, and gpu-allocator 0.27's `CpuToGpu` preset
+    /// requires `HOST_COHERENT` (not merely prefers it) — see
+    /// `collect_image_health`'s doc comment (`context/resources.rs`) for the
+    /// full explanation. That is a property of this specific allocator
+    /// version, not a Vulkan-spec guarantee from the fence alone.
     ///
     /// Owned here rather than by `PresentationPipeline` because they must
     /// survive a swapchain recreate, which rebuilds that pipeline wholesale.

@@ -1546,6 +1546,7 @@ impl SvgfPipeline {
                 // whole-function contract, unreferenced by any in-flight command buffer.
                 device.destroy_pipeline(self.pipeline, None)
             };
+            self.pipeline = vk::Pipeline::null();
         }
         if self.pipeline_layout != vk::PipelineLayout::null() {
             unsafe {
@@ -1554,6 +1555,7 @@ impl SvgfPipeline {
                 // already destroyed above, so no in-flight command buffer uses it.
                 device.destroy_pipeline_layout(self.pipeline_layout, None)
             };
+            self.pipeline_layout = vk::PipelineLayout::null();
         }
         if self.descriptor_pool != vk::DescriptorPool::null() {
             unsafe {
@@ -1562,6 +1564,7 @@ impl SvgfPipeline {
                 // sets allocated from it at teardown.
                 device.destroy_descriptor_pool(self.descriptor_pool, None)
             };
+            self.descriptor_pool = vk::DescriptorPool::null();
         }
         if self.descriptor_set_layout != vk::DescriptorSetLayout::null() {
             unsafe {
@@ -1570,6 +1573,7 @@ impl SvgfPipeline {
                 // pool and pipeline layout are torn down.
                 device.destroy_descriptor_set_layout(self.descriptor_set_layout, None)
             };
+            self.descriptor_set_layout = vk::DescriptorSetLayout::null();
         }
         if self.point_sampler != vk::Sampler::null() {
             unsafe {
@@ -1578,6 +1582,7 @@ impl SvgfPipeline {
                 // through it at teardown.
                 device.destroy_sampler(self.point_sampler, None)
             };
+            self.point_sampler = vk::Sampler::null();
         }
         // À-trous pipeline objects (descriptor sets are freed with the pool).
         if self.atrous_pipeline != vk::Pipeline::null() {
@@ -1587,6 +1592,7 @@ impl SvgfPipeline {
                 // by any in-flight command buffer at teardown.
                 device.destroy_pipeline(self.atrous_pipeline, None)
             };
+            self.atrous_pipeline = vk::Pipeline::null();
         }
         if self.atrous_pipeline_layout != vk::PipelineLayout::null() {
             unsafe {
@@ -1595,6 +1601,7 @@ impl SvgfPipeline {
                 // already destroyed above, so no in-flight command buffer uses it.
                 device.destroy_pipeline_layout(self.atrous_pipeline_layout, None)
             };
+            self.atrous_pipeline_layout = vk::PipelineLayout::null();
         }
         if self.atrous_descriptor_pool != vk::DescriptorPool::null() {
             unsafe {
@@ -1603,6 +1610,7 @@ impl SvgfPipeline {
                 // sets allocated from it at teardown.
                 device.destroy_descriptor_pool(self.atrous_descriptor_pool, None)
             };
+            self.atrous_descriptor_pool = vk::DescriptorPool::null();
         }
         if self.atrous_descriptor_set_layout != vk::DescriptorSetLayout::null() {
             unsafe {
@@ -1611,6 +1619,7 @@ impl SvgfPipeline {
                 // that the à-trous pool and pipeline layout are torn down.
                 device.destroy_descriptor_set_layout(self.atrous_descriptor_set_layout, None)
             };
+            self.atrous_descriptor_set_layout = vk::DescriptorSetLayout::null();
         }
         for mut slot in self.atrous_color.drain(..) {
             // SAFETY: same in-flight-free contract as the history loops below.
@@ -1923,5 +1932,69 @@ mod unsubmitted_dispatch_tests {
              Everything from that latch to queue_submit must be infallible, \
              or #917's invariant is bypassable again (#2146).",
         );
+    }
+
+    /// #2741 — `destroy()` must be safe to call twice: a failed
+    /// `recreate_on_resize` calls it once and propagates the error without
+    /// clearing the field, so `Drop`/`destroy_allocator_owned_resources`
+    /// calls it again. That's only sound if every scalar handle is reset to
+    /// its null sentinel immediately after being destroyed, so the second
+    /// pass's `!= null()` guard is never armed. Source-scan pin, no device
+    /// needed — mirrors
+    /// `resize.rs::old_image_views_destroyed_between_new_swapchain_creation_and_old_destroy`.
+    #[test]
+    fn destroy_nulls_every_scalar_handle_after_destroying_it() {
+        let src = include_str!("svgf.rs");
+        for (destroy_call, null_reset) in [
+            (
+                "device.destroy_pipeline(self.pipeline, None)",
+                "self.pipeline = vk::Pipeline::null();",
+            ),
+            (
+                "device.destroy_pipeline_layout(self.pipeline_layout, None)",
+                "self.pipeline_layout = vk::PipelineLayout::null();",
+            ),
+            (
+                "device.destroy_descriptor_pool(self.descriptor_pool, None)",
+                "self.descriptor_pool = vk::DescriptorPool::null();",
+            ),
+            (
+                "device.destroy_descriptor_set_layout(self.descriptor_set_layout, None)",
+                "self.descriptor_set_layout = vk::DescriptorSetLayout::null();",
+            ),
+            (
+                "device.destroy_sampler(self.point_sampler, None)",
+                "self.point_sampler = vk::Sampler::null();",
+            ),
+            (
+                "device.destroy_pipeline(self.atrous_pipeline, None)",
+                "self.atrous_pipeline = vk::Pipeline::null();",
+            ),
+            (
+                "device.destroy_pipeline_layout(self.atrous_pipeline_layout, None)",
+                "self.atrous_pipeline_layout = vk::PipelineLayout::null();",
+            ),
+            (
+                "device.destroy_descriptor_pool(self.atrous_descriptor_pool, None)",
+                "self.atrous_descriptor_pool = vk::DescriptorPool::null();",
+            ),
+            (
+                "device.destroy_descriptor_set_layout(self.atrous_descriptor_set_layout, None)",
+                "self.atrous_descriptor_set_layout = vk::DescriptorSetLayout::null();",
+            ),
+        ] {
+            let destroy_pos = src
+                .find(destroy_call)
+                .unwrap_or_else(|| panic!("destroy call not found: {destroy_call}"));
+            let null_pos = src
+                .find(null_reset)
+                .unwrap_or_else(|| panic!("null reset not found: {null_reset}"));
+            assert!(
+                null_pos > destroy_pos && null_pos - destroy_pos < 200,
+                "{null_reset} must immediately follow {destroy_call} so a \
+                 second destroy() call (double-free on failed resize, #2741) \
+                 finds the guard already disarmed"
+            );
+        }
     }
 }

@@ -169,6 +169,18 @@ pub struct MeshRegistry {
     pub global_vertex_buffer: Option<GpuBuffer>,
     /// Global geometry SSBO (indices). Built by `build_geometry_ssbo()`.
     pub global_index_buffer: Option<GpuBuffer>,
+    /// #2743 — monotonic counter bumped every time `build_geometry_ssbo`
+    /// allocates a new `global_vertex_buffer` / `global_index_buffer` pair
+    /// (fresh build or `rebuild_geometry_ssbo`'s destroy-then-recreate).
+    /// Vulkan does not guarantee non-dispatchable handle values are
+    /// unique or non-recycled — `rebuild_geometry_ssbo`'s low-headroom
+    /// `reclaim_before_rebuild` path destroys the old SSBO and allocates
+    /// the replacement inside the same call, the max-probability recycle
+    /// window. `SkinComputePipeline::dispatch`'s per-FIF descriptor cache
+    /// keys on the raw `vk::Buffer` handle alone; folding this generation
+    /// into that key lets a same-handle-different-generation rebuild be
+    /// told apart from an unchanged buffer. See `Self::geometry_generation`.
+    geometry_generation: u64,
     /// Set when `upload_scene_mesh` is called after the initial SSBO
     /// build — signals the frame loop to call `rebuild_geometry_ssbo`.
     geometry_dirty: bool,
@@ -254,6 +266,7 @@ impl MeshRegistry {
             pending_indices: Vec::new(),
             global_vertex_buffer: None,
             global_index_buffer: None,
+            geometry_generation: 0,
             geometry_dirty: false,
             geometry_has_holes: false,
             ssbo_vertex_count: 0,
@@ -830,6 +843,14 @@ impl MeshRegistry {
             &self.pending_indices,
             self.geometry_staging_pool.as_mut(),
         )?);
+        // #2743 — a fresh vk::Buffer handle pair now backs the global
+        // vertex/index SSBO (either this is the first build, or
+        // `rebuild_geometry_ssbo` destroyed the old pair above). Bump so
+        // any cache keyed on the raw handle (e.g.
+        // `SkinComputePipeline::dispatch`'s per-FIF descriptor cache) can
+        // tell a same-handle-recycled generation apart from an unchanged
+        // buffer.
+        self.geometry_generation = self.geometry_generation.wrapping_add(1);
 
         log::info!(
             "Global geometry SSBO: {} vertices ({:.1} KB), {} indices ({:.1} KB)",
@@ -940,6 +961,15 @@ impl MeshRegistry {
     /// build. The frame loop should call `rebuild_geometry_ssbo` to update.
     pub fn is_geometry_dirty(&self) -> bool {
         self.geometry_dirty
+    }
+
+    /// #2743 — monotonic counter bumped every time `global_vertex_buffer` /
+    /// `global_index_buffer` get a fresh `vk::Buffer` pair. Fold into any
+    /// cache keyed on the raw handle so a same-handle-recycled generation
+    /// (destroy-then-immediately-reallocate, e.g. `rebuild_geometry_ssbo`'s
+    /// `reclaim_before_rebuild` path) can't false-hit.
+    pub fn geometry_generation(&self) -> u64 {
+        self.geometry_generation
     }
 
     /// Whether `handle`'s scene-geometry range exists in the currently bound

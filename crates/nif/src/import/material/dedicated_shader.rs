@@ -287,6 +287,25 @@ fn apply_bs_lighting_shader(
                         // slots 4/5 explicitly so that can't happen.
                         // (The tint colour itself is a separate
                         // capture path, not a texture set lookup.)
+                        //
+                        // #2742 — slot 7 is NOT covered by that same
+                        // "declares no TS slot" reasoning: with
+                        // model-space normals, slot 7 is the alternate
+                        // specular intensity/colour texture (see the
+                        // `_ =>` arm below), and that's independent of
+                        // shader type. Diverting 5/6 out of the default
+                        // arm (#1350, to guard slots 4/5) silently
+                        // dropped this too. Measured on real data:
+                        // 390/390 slot-7-bearing SkinTint properties in
+                        // `Skyrim - Meshes0.bsa` (4/4 in `Meshes1.bsa`)
+                        // are model-space-normal — every Skyrim
+                        // body/hands/beast-skin `_S.dds` specular mask
+                        // was being decoded and discarded.
+                        if model_space_normals && info.specular_map.is_none() {
+                            if let Some(spec) = tex_set.textures.get(7).filter(|s| !s.is_empty()) {
+                                info.specular_map = intern_texture_path(pool, spec);
+                            }
+                        }
                     }
                     _ => {
                         // Default arm — EnvironmentMap (1),

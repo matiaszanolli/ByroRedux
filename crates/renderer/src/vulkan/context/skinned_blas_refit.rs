@@ -74,6 +74,10 @@ impl VulkanContext {
                     .global_vertex_buffer
                     .as_ref()
                     .map(|b| (b.buffer, b.size));
+                // #2743 — read alongside `global_vert_buf` so the
+                // dispatch's descriptor cache key can tell a recycled
+                // `vk::Buffer` handle apart from an unchanged one.
+                let input_generation = self.mesh_registry.geometry_generation();
                 let bone_buffer = self
                     .scene_buffers
                     .bone_buffers()
@@ -367,6 +371,7 @@ impl VulkanContext {
                                     super::super::skin_compute::SkinDispatchBuffers {
                                         input_buffer,
                                         input_buffer_size: input_size,
+                                        input_generation,
                                         bone_buffer: bone_buf,
                                         bone_buffer_size,
                                     },

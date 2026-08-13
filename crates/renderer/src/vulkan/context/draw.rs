@@ -1423,9 +1423,12 @@ impl VulkanContext {
 
         // EX-05 / #2736 — harvest this slot's image-health counters from the
         // *prior* use of the slot, then zero them for the frame about to be
-        // recorded. The fence wait above proves that submission completed, so
-        // the buffer is provably idle: reading and clearing it on the CPU
-        // needs no barrier, no transfer and no extra synchronisation.
+        // recorded. The fence wait above proves submission completed
+        // (device-side access scope only) — it does NOT by itself prove the
+        // GPU write is host-visible; that additionally requires the memory
+        // to be host-coherent (or an explicit invalidate). See
+        // `collect_image_health`'s doc comment for why that holds here.
+        // #2740 (REN-D4-04).
         self.collect_image_health(frame);
 
         // #1194 — read this slot's TIMESTAMP results (from the prior
