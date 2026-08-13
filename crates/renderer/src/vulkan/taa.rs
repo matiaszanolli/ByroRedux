@@ -1028,6 +1028,47 @@ mod tests {
         );
     }
 
+    /// Regression for #2760 (REN-D13-02) — a geometry pixel that reprojects
+    /// to a formerly-sky (mesh_id 0) location must NOT hard-reject through
+    /// the ordinary `disocclusion`/`surfaceMismatch` terms (that path
+    /// produces permanent, every-frame edge crawl on exterior geometry/sky
+    /// silhouettes under Halton jitter with a parked camera — both possible
+    /// jitter-driven coverage states reject history, so the pixel never
+    /// stabilizes). Instead it must fall through to the accepted-history
+    /// path with the variance-clip window collapsed to zero width, which
+    /// clips `clampedHist` to exactly the current frame's own neighbourhood
+    /// mean regardless of the untrustworthy reprojected sample.
+    #[test]
+    fn taa_comp_soft_clamps_geometry_reprojecting_from_sky_instead_of_hard_rejecting() {
+        let src = include_str!("../../shaders/taa.comp");
+        // The reject-list expression itself is unchanged (pinned by the
+        // sibling test above) — this fix changes what `disocclusion` and
+        // `surfaceMismatch` themselves evaluate to, not the list they feed.
+        assert!(
+            src.contains(
+                "bool disocclusionFromSky = currSurface != 0u && (prevMid & 0x7FFFFFFFu) == 0u;"
+            ),
+            "must identify the geometry-reprojecting-from-sky case separately from an ordinary \
+             surface-to-surface disocclusion"
+        );
+        assert!(
+            src.contains("bool disocclusion = !disocclusionFromSky && currSurface != (prevMid & 0x7FFFFFFFu);"),
+            "the sky-transition case must be excluded from the hard-reject disocclusion term"
+        );
+        assert!(
+            src.contains("bool surfaceMismatch = !disocclusionFromSky && dot(currNormal, prevNormal) < 0.85;"),
+            "the sky-transition case must also be excluded from the normal-mismatch reject term, \
+             or the garbage reprojected G-buffer normal at a formerly-sky pixel reintroduces the \
+             same hard reject through this second term"
+        );
+        assert!(
+            src.contains("float gamma = disocclusionFromSky ? 0.0 : 1.5;"),
+            "the sky-transition case must collapse the variance-clip window to zero width instead \
+             of hard-rejecting, so accepted history clips to the current frame's own neighbourhood \
+             mean rather than importing the reprojected sky/clear colour"
+        );
+    }
+
     /// #2741 — `destroy()` must be safe to call twice: a failed
     /// `recreate_on_resize` calls it once and propagates the error without
     /// clearing the field, so `Drop`/`destroy_allocator_owned_resources`
