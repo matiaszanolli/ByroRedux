@@ -116,9 +116,22 @@ fn merge_sets_is_pbr_on_mat_path_when_cdb_loaded() {
         "fresh ImportedMesh defaults to is_pbr=false"
     );
 
-    let touched = merge_external_material(&mut mesh.material, &mut provider, &mut pool);
+    let outcome = merge_external_material(&mut mesh.material, &mut provider, &mut pool);
 
-    assert!(touched, ".mat arm must report touched=true");
+    // #2709 (SF-D9-03) — this is the exact case the old `bool` return
+    // could not name: the sidecar resolved, but the arm forwarded only
+    // the `is_pbr` routing flag and no authored field. `PresenceOnly`,
+    // never `Merged` — until Phase 2's CDB per-field extraction lands.
+    assert_eq!(
+        outcome,
+        MergeOutcome::PresenceOnly,
+        ".mat arm resolves but forwards no authored field"
+    );
+    assert!(outcome.resolved(), "the .mat sidecar did resolve");
+    assert!(
+        !outcome.merged(),
+        "no authored field was forwarded — must not count as a populated merge"
+    );
     assert!(
         mesh.material.is_pbr,
         "Starfield .mat path must flip is_pbr=true → MAT_FLAG_PBR_BSDF in shader"
@@ -144,12 +157,17 @@ fn merge_skips_mat_path_when_cdb_absent() {
     assert!(!provider.has_starfield_cdb());
 
     let mut mesh = imported_mesh_with_material_path(&mut pool, "materials/modded.mat");
-    let touched = merge_external_material(&mut mesh.material, &mut provider, &mut pool);
+    let outcome = merge_external_material(&mut mesh.material, &mut provider, &mut pool);
 
     // Falls through past the .mat arm; bgsm/bgem dispatch fails
-    // because the path doesn't match either suffix; returns false
+    // because the path doesn't match either suffix; `Unresolved`
     // (no archive to resolve from anyway).
-    assert!(!touched, "no CDB + no archives → no merge work");
+    assert_eq!(
+        outcome,
+        MergeOutcome::Unresolved,
+        "no CDB + no archives → no merge work"
+    );
+    assert!(!outcome.resolved());
     assert!(
         !mesh.material.is_pbr,
         ".mat path without CDB must NOT flip is_pbr"

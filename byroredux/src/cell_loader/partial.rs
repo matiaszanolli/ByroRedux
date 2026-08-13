@@ -112,7 +112,9 @@ pub(crate) fn finish_partial_import(
     if let Some(provider) = mat_provider {
         let mut pool = world.resource_mut::<byroredux_core::string::StringPool>();
         for mesh in &mut meshes {
-            merge_external_material(&mut mesh.material, provider, &mut pool);
+            // #2709 (SF-D9-03) — outcome discarded deliberately; this
+            // path has no per-cell material tally to feed it into.
+            let _ = merge_external_material(&mut mesh.material, provider, &mut pool);
         }
     }
 

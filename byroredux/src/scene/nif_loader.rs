@@ -270,7 +270,9 @@ pub(super) fn parse_import_and_merge(
     // REFR overlays and per-mesh imports share the dedup table (#609).
     if let Some(provider) = mat_provider {
         for mesh in &mut imported.meshes {
-            merge_external_material(&mut mesh.material, provider, &mut pool);
+            // #2709 (SF-D9-03) — outcome discarded deliberately; the
+            // loose-NIF path has no per-cell material tally to feed.
+            let _ = merge_external_material(&mut mesh.material, provider, &mut pool);
         }
     }
     // #1215 / D2 FIND-1 — sibling of the cell-loader zero-contribution

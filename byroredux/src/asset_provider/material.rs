@@ -1,7 +1,7 @@
 use super::*;
 
 use byroredux_bgsm::template::ResolvedMaterial;
-use byroredux_bgsm::{BgemFile, TemplateCache, TemplateResolver};
+use byroredux_bgsm::{BgemFile, BgsmFile, TemplateCache, TemplateResolver};
 use byroredux_nif::import::ImportedMaterial;
 use byroredux_sfmaterial::ComponentDatabaseFile;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -21,6 +21,35 @@ pub(crate) fn is_materialsbeta_cdb_path(path: &str) -> bool {
 /// PBR provenance signal.
 pub(crate) fn bgsm_uses_pbr_bsdf(resolved: &ResolvedMaterial) -> bool {
     resolved.walk().any(|step| step.file.pbr)
+}
+
+/// #1077 / FO4-D6-003 (Phase 1: data propagation) — forwards one BGSM
+/// chain step's `translucency` / `model_space_normals` shader-flag bits
+/// into `ImportedMaterial`. Same child-first precedence as every texture
+/// slot in [`merge_external_material`]'s walk: first authored `true`
+/// wins, so a step whose own flag is unset (`false`) doesn't clobber a
+/// value an earlier (closer) step in the chain already set. Sets
+/// `*touched = true` whenever it flips either flag.
+///
+/// Extracted out of the merge loop (#2702 / FO4-D2-03) so its three
+/// regression tests call the real production logic instead of a
+/// hand-copied mirror — the mirror was proven able to diverge silently
+/// from `merge_external_material` (the FO4-D2-01 `is_pbr` contract flip
+/// landed with a green mirror suite while its own comment kept stating
+/// the pre-flip behaviour).
+pub(crate) fn forward_bgsm_phase1_flags(
+    material: &mut ImportedMaterial,
+    bgsm: &BgsmFile,
+    touched: &mut bool,
+) {
+    if !material.has_translucency && bgsm.translucency {
+        material.has_translucency = true;
+        *touched = true;
+    }
+    if !material.model_space_normals && bgsm.model_space_normals {
+        material.model_space_normals = true;
+        *touched = true;
+    }
 }
 
 /// Process-lifetime cache of extracted Starfield CDB bytes, keyed by
@@ -658,16 +687,6 @@ impl MaterialProvider {
     }
 }
 
-/// Merge BGSM / BGEM material data into an `ImportedMesh` whose
-/// `material_path` points at a .bgsm or .bgem file. NIF fields take
-/// precedence — only empty slots are filled in from the resolved
-/// material chain. This matches Bethesda's runtime behaviour where the
-/// shader property can override template defaults per-material.
-///
-/// For BGSM the template chain is walked child-first: the first
-/// non-empty value for any given field wins. BGEM has no inheritance
-/// (the format carries no `root_material_path`) so we read the single
-/// parsed file. Returns `true` when any field was filled.
 /// Narrow a BGSM/BGEM `src_blend`/`dst_blend` value to the `u8` the
 /// Gamebryo `NiAlphaProperty` blend-factor field (and
 /// [`gamebryo_to_vk_blend_factor`](byroredux_renderer)) expects.
@@ -723,35 +742,103 @@ pub(crate) fn unresolved_material_warning(path: &str, has_starfield_cdb: bool) -
     }
 }
 
+/// What [`merge_external_material`] actually did, for the caller and for
+/// diagnostics.
+///
+/// #2709 (SF-D9-03) — replaces a bare `bool` whose doc claimed it "flips
+/// to `true` on any merged field". That was false for the Starfield `.mat`
+/// arm, which returns success having set only `is_pbr` and forwarded no
+/// texture, scalar, or alpha state at all. The two cases are visually
+/// identical downstream (a mesh with engine defaults), so collapsing them
+/// into one `true` left no signal anywhere distinguishing "this cell's
+/// materials resolved" from "this cell's materials resolved to nothing" —
+/// precisely the state the dominant Starfield population is in, and the
+/// reason a total material blackout produces no actionable diagnostic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MergeOutcome {
+    /// No `material_path`, an unresolvable pool symbol, a path in no
+    /// loaded archive, a parse failure, or an unrecognised extension.
+    /// Nothing was written; the mesh keeps its NIF-derived material.
+    Unresolved,
+    /// The sidecar was recognised and confirmed present, but the merge
+    /// forwarded no authored field — only a routing flag. Today this is
+    /// exactly the Starfield `.mat` arm: the CDB-presence gate flips
+    /// `is_pbr` so the mesh takes the Disney lobe, and per-field
+    /// extraction from the Component Database is the deferred Phase 2
+    /// (#1289 / #2359). A caller counting "materials that actually
+    /// supplied data" must NOT count this.
+    PresenceOnly,
+    /// At least one authored field (texture slot, scalar, alpha/blend
+    /// state, or shader flag) was forwarded onto the `ImportedMaterial`.
+    Merged,
+}
+
+// Consumed by the merge regression tests today; no production caller
+// reads the outcome yet (all four discard it explicitly — see their
+// `let _ =` sites). Kept as the type's API rather than inlined into the
+// tests so the deferred per-cell "materials resolved / of which
+// presence-only" telemetry sink #2709 asks for has something to call,
+// and so a future reader doesn't reach for `== MergeOutcome::Merged`
+// spelled out at each site.
+#[cfg_attr(not(test), allow(dead_code))]
+impl MergeOutcome {
+    /// True when the sidecar resolved at all, whether or not it supplied
+    /// any authored field. This is the old `bool` return's meaning —
+    /// use it only where "did the path resolve" is genuinely the
+    /// question, not as a proxy for "did the mesh get material data".
+    pub(crate) fn resolved(self) -> bool {
+        !matches!(self, MergeOutcome::Unresolved)
+    }
+
+    /// True only when authored data actually landed on the material.
+    pub(crate) fn merged(self) -> bool {
+        matches!(self, MergeOutcome::Merged)
+    }
+}
+
 /// Merge a BGSM, BGEM, or Starfield `.mat` sidecar into the
 /// source-normalized NIF material payload.
+///
+/// NIF fields take precedence — only empty slots are filled from the
+/// resolved material chain, matching Bethesda's runtime behaviour where
+/// the shader property overrides template defaults per-material. For BGSM
+/// the template chain is walked child-first (first non-empty value for a
+/// given field wins); BGEM has no inheritance (the format carries no
+/// `root_material_path`) so the single parsed file is read.
 ///
 /// This boundary deliberately accepts [`ImportedMaterial`] rather than an
 /// [`byroredux_nif::import::ImportedMesh`]: external formats can patch material
 /// semantics, but cannot mutate geometry, transforms, skinning, or scene
 /// ownership.
+///
+/// See [`MergeOutcome`] for what the return value distinguishes and why
+/// it is not a `bool` (#2709 / SF-D9-03).
+#[must_use = "a PresenceOnly merge resolved the sidecar but forwarded no authored \
+              field — discarding the outcome erases the only signal distinguishing \
+              it from a fully-populated merge (#2709)"]
 pub(crate) fn merge_external_material(
     material: &mut ImportedMaterial,
     provider: &mut MaterialProvider,
     pool: &mut byroredux_core::string::StringPool,
-) -> bool {
+) -> MergeOutcome {
     let Some(path_sym) = material.material_path else {
-        return false;
+        return MergeOutcome::Unresolved;
     };
     // `StringPool::resolve` returns the canonical lowercased form, so
     // we own the string for the BGSM dispatch + suffix matching here
     // without an extra `to_ascii_lowercase` allocation. See #609.
     let path: String = match pool.resolve(path_sym) {
         Some(s) => s.to_string(),
-        None => return false,
+        None => return MergeOutcome::Unresolved,
     };
 
-    // `touched` flips to `true` on any merged field. Allowed unused
-    // assignment: the success branches (BGSM / BGEM) set `touched`
-    // unconditionally via `material.from_bgsm = true`, so the `false`
-    // initializer is overwritten before any read — but the
-    // initializer is load-bearing for the failure / unknown-kind
-    // path that returns it without further assignment.
+    // `touched` flips to `true` on any merged AUTHORED field — it is what
+    // separates `MergeOutcome::Merged` from `PresenceOnly` at the returns
+    // below, so it must NOT be set by a routing-only flag flip. Allowed
+    // unused assignment: the BGSM / BGEM success branches set it
+    // unconditionally alongside `material.from_bgsm = true`, so the
+    // `false` initializer is overwritten before any read there — but the
+    // initializer is load-bearing for the failure / unknown-kind path.
     #[allow(unused_assignments)]
     let mut touched = false;
     // `fill` populates an `Option<FixedString>` slot only when it's
@@ -821,7 +908,11 @@ pub(crate) fn merge_external_material(
         // lookup succeeds; a lookup MISS now correctly falls through to
         // the sentinel/classifier fallback instead of silently keeping a
         // fabricated constant.
-        return true;
+        //
+        // #2709 (SF-D9-03) — `PresenceOnly`, not `Merged`: this arm sets
+        // exactly one routing flag and forwards no authored field. Phase 2
+        // should return `Merged` once a CDB lookup actually supplies data.
+        return MergeOutcome::PresenceOnly;
     }
 
     // BGSM/BGEM scalar-override state. The `Option<String>` slots use
@@ -880,7 +971,7 @@ pub(crate) fn merge_external_material(
 
     if dispatch_kind == Some(MaterialKind::Bgsm) {
         let Some(resolved) = provider.resolve_bgsm(&path) else {
-            return false;
+            return MergeOutcome::Unresolved;
         };
         // BGSM resolution succeeded — telemetry-only flag (no renderer
         // branch); the substantive work happens in the spec-glossiness
@@ -1063,23 +1154,11 @@ pub(crate) fn merge_external_material(
                 &mut touched,
                 pool,
             );
-            // #1077 / FO4-D6-003 (Phase 1: data propagation) —
-            // BGSM-only shader flags. Same child-first precedence as
-            // the texture slots: first authored `true` wins, parent
-            // chain only contributes when the child leaves the flag
-            // at its bool default. The default-false case is
-            // structurally identical to the texture-slot "empty
-            // string" gate — both behave as "not authored, fall
-            // through to parent / leave unchanged".
-            //
-            if !material.has_translucency && bgsm.translucency {
-                material.has_translucency = true;
-                touched = true;
-            }
-            if !material.model_space_normals && bgsm.model_space_normals {
-                material.model_space_normals = true;
-                touched = true;
-            }
+            // #1077 / FO4-D6-003 (Phase 1: data propagation) — BGSM-only
+            // shader flags, extracted to `forward_bgsm_phase1_flags`
+            // (#2702 / FO4-D2-03) so its regression tests exercise this
+            // exact call, not a hand-copied mirror.
+            forward_bgsm_phase1_flags(material, bgsm, &mut touched);
 
             // #1147 Phase 2b — BGSM v>=8 translucency suite. Same
             // child-first precedence as the flags above. The
@@ -1213,10 +1292,25 @@ pub(crate) fn merge_external_material(
                 set_blend = true;
                 touched = true;
             }
+            // #2704 (FO4-D7-02) — Deferred: no consumer. These eleven BGSM
+            // scalars decode correctly on the parser side (`bgsm.rs`) but
+            // have no `ImportedMaterial` sink here, same deferred-consumer
+            // class as the BGEM v21+/v22 glass-overlay suite above:
+            //   * the entire wetness-control suite — `wetness_control_spec_scale`,
+            //     `wetness_control_spec_power_scale`, `wetness_control_spec_min_var`,
+            //     `wetness_control_env_map_scale`, `wetness_control_fresnel_power`,
+            //     `wetness_control_metalness` — the authored input the ROADMAP
+            //     M61 wet-surface feature would need
+            //   * `custom_porosity`, `porosity_value` (v>=9 porosity pair)
+            //   * `adaptive_emissive_exposure_offset` (v>=13 adaptive-emissive tuning)
+            //   * `aniso_lighting`
+            //   * `external_emittance`
+            // No runtime effect today; flagging so the next completeness
+            // sweep can tell "not yet wired" from "overlooked".
         }
     } else if dispatch_kind == Some(MaterialKind::Bgem) {
         let Some(bgem) = provider.resolve_bgem(&path) else {
-            return false;
+            return MergeOutcome::Unresolved;
         };
         // BGEM (effect material) has no smoothness/specular authoring —
         // metalness and roughness are left as NaN sentinels so resolve_pbr
@@ -1429,8 +1523,17 @@ pub(crate) fn merge_external_material(
                 unresolved_material_warning(&path, provider.has_starfield_cdb())
             );
         }
-        return false;
+        return MergeOutcome::Unresolved;
     }
 
-    touched
+    // Both the BGSM and BGEM arms above set `touched` unconditionally
+    // alongside `material.from_bgsm = true`, so reaching here with
+    // `touched == false` is not currently possible — the `PresenceOnly`
+    // arm is deliberate rather than defensive, and stays correct if a
+    // future arm resolves without forwarding anything.
+    if touched {
+        MergeOutcome::Merged
+    } else {
+        MergeOutcome::PresenceOnly
+    }
 }

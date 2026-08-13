@@ -237,9 +237,22 @@ pub struct GpuMaterial {
     /// generic dielectric — `F0 = 0.04` matches the pre-#1248 behaviour
     /// so legacy NIF content with no authored IOR renders unchanged).
     /// Other common values: water 1.33 (F0 ≈ 0.020), ice 1.31, polished
-    /// stone 1.54, diamond 2.42 (F0 ≈ 0.172). FO4 BGSM v9+ and
-    /// Starfield .mat materials author this explicitly; older NIF
-    /// content inherits the default. See #1248.
+    /// stone 1.54, diamond 2.42 (F0 ≈ 0.172).
+    ///
+    /// #2703 (FO4-D7-01) — **no current importer authors this field.**
+    /// It was previously documented as "FO4 BGSM v9+ and Starfield .mat
+    /// materials author this explicitly", which is false for both:
+    /// `crates/bgsm/src/bgsm.rs` decodes no IOR/refraction field at any
+    /// BGSM version (its v>=9 addition is `custom_porosity` +
+    /// `porosity_value`, unrelated), and Starfield's CDB material reader
+    /// (`crates/sfmaterial`) has no refractive-index component either.
+    /// `material_translate::translate_material` always resolves this via
+    /// `material_optical_scalar(material_kind, refraction_strength)` —
+    /// the generic dielectric default (or glass promotion) for every
+    /// game, every format. `MATERIAL_KIND_FIRE_REFRACTION` is the one
+    /// exception: it overloads this same field as an authored 0-1
+    /// distortion strength, not a physical IOR — see
+    /// `SurfaceBehavior::ior`'s doc in `crates/core`. See #1248.
     pub ior: f32, // offset 280
     // ── Disney diffuse lobe (vec4 #21; offsets 284-296) ──────────────
     /// Disney "subsurface" diffuse-lobe weight (0 = pure Burley
