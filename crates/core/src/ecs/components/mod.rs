@@ -50,7 +50,7 @@ pub use animated::{
 pub use attach_points::{AttachPoint, AttachPoints, ChildAttachConnections};
 pub use billboard::{Billboard, BillboardMode};
 pub use bsx::{BSBound, BSXFlags};
-pub use camera::{ActiveCamera, Camera};
+pub use camera::{ActiveCamera, Camera, DEFAULT_RENDER_DISTANCE};
 pub use cell_root::{CellFormId, CellRoot};
 pub use collision::{CollisionShape, MotionType, RigidBodyData};
 pub use escort::{EscortBehavior, EscortState, Escorted};

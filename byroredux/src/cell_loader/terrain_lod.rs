@@ -247,6 +247,34 @@ fn block_hole_mask(
     })
 }
 
+/// Worst case of [`lod_ring_reach_cells`] over every supported game — the
+/// widest distant-LOD ring the engine can ever stream.
+///
+/// Pinned as a plain constant so the camera far plane can be checked against
+/// it at compile time ([`cells_from_bu`] is float math and cannot run in a
+/// `const`). `max_ring_reach_covers_every_game` proves it stays both correct
+/// and tight.
+pub(crate) const MAX_LOD_RING_REACH_CELLS: i32 = 61;
+
+// #2371 / EX-11 — the camera far plane must clear the ring's far-corner
+// diagonal (`reach · √2`). The frustum's far plane is extracted from the
+// view-projection matrix, so geometry past it is *culled*, not merely
+// clipped: an under-sized far plane makes whole LOD blocks wink out along
+// the view diagonals. Squared to keep the check in exact integer math.
+//
+// This fires if either side is retuned — a deeper ring or a shorter far
+// plane — instead of silently truncating the horizon, which is exactly how
+// the 61-cell baked ladder came to overshoot the previous 300 000 far plane.
+const _: () = {
+    let reach_bu = MAX_LOD_RING_REACH_CELLS as i64 * EXTERIOR_CELL_UNITS as i64;
+    let far = byroredux_core::ecs::components::DEFAULT_RENDER_DISTANCE as i64;
+    assert!(
+        far * far >= 2 * reach_bu * reach_bu,
+        "camera far plane no longer covers the LOD ring's far-corner diagonal — \
+         raise DEFAULT_RENDER_DISTANCE or shrink MAX_LOD_RING_REACH_CELLS"
+    );
+};
+
 /// Outer reach of the distant-terrain LOD ring for `game`, in cells.
 ///
 /// Single source of truth for "how far does distant terrain go", so anything
@@ -966,6 +994,45 @@ mod tests {
             player,
             radius_unload
         ));
+    }
+
+    /// #2371 / EX-11 — [`MAX_LOD_RING_REACH_CELLS`] backs a compile-time
+    /// check on the camera far plane, so it has to be both an upper bound on
+    /// every game's ring (or the horizon gets culled) and tight (or the far
+    /// plane is padded for a ring nothing streams, wasting depth precision
+    /// that is already the limiting factor — see `DEFAULT_RENDER_DISTANCE`).
+    #[test]
+    fn max_ring_reach_covers_every_game() {
+        let games = [
+            GameKind::Oblivion,
+            GameKind::Fallout3NV,
+            GameKind::Skyrim,
+            GameKind::Fallout4,
+            GameKind::Fallout76,
+            GameKind::Starfield,
+        ];
+        let mut widest = 0;
+        for game in games {
+            let reach = lod_ring_reach_cells(game);
+            assert!(
+                reach <= MAX_LOD_RING_REACH_CELLS,
+                "{game:?} streams {reach} cells, past the pinned maximum of {}",
+                MAX_LOD_RING_REACH_CELLS
+            );
+            widest = widest.max(reach);
+        }
+        assert_eq!(
+            widest, MAX_LOD_RING_REACH_CELLS,
+            "the pinned maximum is looser than any real ring — tighten it"
+        );
+
+        // Games with no baked quadtree keep the synthesized ring; the ladder
+        // games reach further, which is what moved the far plane.
+        assert_eq!(
+            lod_ring_reach_cells(GameKind::Oblivion),
+            LOD_RADIUS_BLOCKS * LOD_BLOCK_CELLS
+        );
+        assert!(lod_ring_reach_cells(GameKind::Skyrim) > LOD_RADIUS_BLOCKS * LOD_BLOCK_CELLS);
     }
 
     /// #2371 — Oblivion / FO3 / FNV ship no baked quadtree, so their terrain
