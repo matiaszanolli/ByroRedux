@@ -26,7 +26,8 @@ use crate::components::{
 ///  - `sunset_begin - 2h` (clamped) → `TOD_DAY` re-anchor — preserves
 ///    the `day → sunset` ease-in the pre-#463 hardcoded path had
 ///  - `sunset_begin` → `TOD_SUNSET`
-///  - `sunset_end + 2h` (clamped to 23h) → `TOD_NIGHT`
+///  - `sunset_end + 2h` (clamped against `sunset_begin` and against the
+///    `keys[0] + 24` wrap point) → `TOD_NIGHT`
 ///
 /// Kept `pub(crate)` so the unit test in this module can pin the
 /// formula independently of a full World setup.
@@ -36,7 +37,20 @@ pub(crate) fn build_tod_keys(tod_hours: [f32; 4]) -> [(f32, usize); 7] {
     let afternoon_peak = (sunrise_end + sunset_begin) * 0.5;
     let afternoon_cool = (sunset_begin - 2.0).max(sunrise_end + 0.1);
     let midnight = 1.0f32;
-    let night = (sunset_end + 2.0).min(23.0);
+    // #2820 (REN-D18-03) — clamp against the true predecessor key
+    // (`sunset_begin`), not an absolute `23.0`. The old absolute clamp
+    // fired on every vanilla FNV/FO3 climate (`sunset_end == 22.0` →
+    // `22 + 2 = 24` clamped down to `23`, compressing the documented
+    // `sunset_end + 2h` ease from 6h to 5h with no cited source for the
+    // extra hour of slack) and could go non-monotonic against
+    // `sunset_begin` on any climate with `sunset_begin > 23.0` (TNAM
+    // bytes 139-144, which pass `climate_tod_hours`'s `1..=144` range
+    // check). `24.9` keeps the same margin under the `keys[0] + 24 =
+    // 25.0` wrap point the old `23.0` clamp was guarding — any value
+    // under 25.0 satisfies that invariant, so this is the least-strict
+    // bound that still holds it. Mirrors #2473's predecessor-relative
+    // treatment of key 4 (`afternoon_cool`).
+    let night = (sunset_end + 2.0).max(sunset_begin + 0.1).min(24.9);
     [
         (midnight, TOD_MIDNIGHT),
         (sunrise_begin, TOD_SUNRISE),
@@ -763,7 +777,7 @@ mod tod_keys_tests {
             (14.0, TOD_HIGH_NOON), // midpoint(10, 18)
             (16.0, TOD_DAY),       // sunset_begin - 2
             (18.0, TOD_SUNSET),
-            (23.0, TOD_NIGHT), // min(22+2, 23) = 23 (clamped)
+            (24.0, TOD_NIGHT), // (22+2).max(18+0.1).min(24.9) = 24 — #2820
         ];
         for (i, ((h, s), (eh, es))) in keys.iter().zip(expected.iter()).enumerate() {
             assert!(
@@ -813,6 +827,11 @@ mod tod_keys_tests {
             [5.33, 10.0, 17.0, 22.0], // FO3 Wasteland
             [4.5, 9.0, 19.5, 22.0],   // Skyrim Tundra (hypothetical)
             [7.0, 11.0, 16.0, 19.0],  // compressed-day winter
+            // #2820 — late-sunset climate (TNAM bytes 141/144 → hours
+            // 23.5/24.0). Pre-fix, `night = min(sunset_end + 2, 23.0)`
+            // clamped to an absolute `23.0` regardless of `sunset_begin`,
+            // producing `keys[5] = 23.5 > keys[6] = 23.0` — non-monotonic.
+            [6.0, 10.0, 23.5, 24.0],
         ] {
             let keys = build_tod_keys(tod_hours);
             for w in keys.windows(2) {
@@ -824,6 +843,44 @@ mod tod_keys_tests {
                     tod_hours,
                 );
             }
+        }
+    }
+
+    /// #2820 (REN-D18-03) — the `night` anchor must stay strictly after
+    /// its true predecessor key (`sunset_begin`), not merely under an
+    /// absolute `23.0`. A late-sunset climate whose `sunset_begin`
+    /// exceeds the old clamp reproduces the non-monotonic table the
+    /// absolute clamp allowed.
+    #[test]
+    fn tod_keys_clamp_night_relative_to_sunset_begin_on_late_sunset_climates() {
+        let keys = build_tod_keys([6.0, 10.0, 23.5, 24.0]);
+        let sunset_begin = keys[5].0;
+        let night = keys[6].0;
+        assert!(
+            night > sunset_begin,
+            "night ({night:.2}) must be strictly after sunset_begin \
+             ({sunset_begin:.2}) to keep keys monotonic"
+        );
+    }
+
+    /// #2820 (REN-D18-03) — on vanilla FNV/FO3 climates (`sunset_end ==
+    /// 22.0`) the night anchor must get the documented full `+2h` ease,
+    /// not be compressed to `23.0` by an unsourced absolute clamp.
+    #[test]
+    fn tod_keys_night_anchor_gets_full_two_hour_ease_on_vanilla_climates() {
+        for tod_hours in [
+            [6.0, 10.0, 18.0, 22.0],   // FNV
+            [5.333, 10.0, 17.0, 22.0], // FO3 Capital Wasteland
+        ] {
+            let keys = build_tod_keys(tod_hours);
+            let sunset_end = tod_hours[3];
+            let night = keys[6].0;
+            assert!(
+                (night - (sunset_end + 2.0)).abs() < 1e-5,
+                "night ({night:.2}) must equal sunset_end + 2h ({:.2}) on vanilla \
+                 content, not be compressed by the clamp",
+                sunset_end + 2.0
+            );
         }
     }
 
@@ -939,23 +996,25 @@ mod tod_keys_tests {
     #[test]
     fn pick_tod_pair_pre_midnight_wraps_into_night_segment() {
         let keys = build_tod_keys([6.0, 10.0, 18.0, 22.0]);
-        // Hour 0.5 wraps to 24.5; falls inside NIGHT (23) → MIDNIGHT (25).
+        // Hour 0.5 wraps to 24.5; falls inside NIGHT (24, per #2820's
+        // predecessor-relative clamp — was 23 pre-fix) → MIDNIGHT (25).
         let (a, b, t) = pick_tod_pair(&keys, 0.5);
         assert_eq!(a, TOD_NIGHT, "pre-midnight hour 0.5 wraps into NIGHT");
         assert_eq!(b, TOD_MIDNIGHT);
-        // t = (24.5 - 23) / (25 - 23) = 0.75.
-        assert!((t - 0.75).abs() < 1e-5, "expected t≈0.75, got {t}");
+        // t = (24.5 - 24) / (25 - 24) = 0.5.
+        assert!((t - 0.5).abs() < 1e-5, "expected t≈0.5, got {t}");
     }
 
     /// `pick_tod_pair` post-last-key branch — hour after the last
-    /// authored key (typically 22h+) interpolates NIGHT → MIDNIGHT
-    /// through the same wrap segment as the pre-midnight case.
+    /// authored key (NIGHT, now `24.0` on this climate per #2820)
+    /// interpolates NIGHT → MIDNIGHT through the same wrap segment as
+    /// the pre-midnight case.
     #[test]
     fn pick_tod_pair_post_night_anchor_returns_night_to_midnight() {
         let keys = build_tod_keys([6.0, 10.0, 18.0, 22.0]);
-        // Hour 24.0 (equivalently 0.0 next day, but the wrap normalizes
-        // pre-keys[0]; this test hits the >= keys[last] branch directly).
-        let (a, b, t) = pick_tod_pair(&keys, 23.5);
+        // Hour 24.5 — after NIGHT (24.0) and before the MIDNIGHT wrap
+        // key (25.0); hits the >= keys[last] branch directly.
+        let (a, b, t) = pick_tod_pair(&keys, 24.5);
         assert_eq!(a, TOD_NIGHT);
         assert_eq!(b, TOD_MIDNIGHT);
         assert!(t > 0.0 && t <= 1.0);

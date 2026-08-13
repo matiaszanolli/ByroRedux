@@ -195,9 +195,22 @@ DisneyDiffuseSplit disneyDiffuseSplit(
     float Fss = mix(1.0, Fss90, FL) * mix(1.0, Fss90, FV);
     float ss = 1.25 * (Fss * (1.0 / max(NdotL + NdotV, 1e-4) - 0.5) + 0.5);
 
-    // Sheen — Fresnel-weighted edge highlight, tinted between white
-    // and base colour. Layered on top of the diffuse lobe.
-    vec3 sheenColor = mix(vec3(1.0), albedo, sheenTint);
+    // Sheen — Fresnel-weighted edge highlight, tinted between white and a
+    // luminance-normalised base-colour tint. Layered on top of the diffuse
+    // lobe. #2819 (REN-D17-05) — both cited references (Disney 2012
+    // `disney.brdf`'s `Ctint = baseColor / Cdlum`, and
+    // knightcrawler25/GLSL-PathTracer's `GetSpecColor`, which this
+    // function's doc block names as its reference) normalise by luminance
+    // BEFORE mixing, so `sheenTint` transfers hue only, not intensity.
+    // Mixing in raw `albedo` instead coupled the two: a dark base colour
+    // (e.g. black velvet — the canonical sheen material) scaled the whole
+    // sheen lobe down at `sheenTint = 1.0` instead of just tinting it.
+    // Weights are the Disney-paper luminance coefficients (0.3, 0.6, 0.1)
+    // — deliberately NOT `pathLuminance`'s Rec.709 weights above, which
+    // are for the path-tracer's variance estimator, not this BRDF term.
+    float sheenLuminance = dot(albedo, vec3(0.3, 0.6, 0.1));
+    vec3 sheenTintColor = sheenLuminance > 0.0 ? albedo / sheenLuminance : vec3(1.0);
+    vec3 sheenColor = mix(vec3(1.0), sheenTintColor, sheenTint);
 
     DisneyDiffuseSplit o;
     o.diffuse = albedo * mix(Fd + Fretro, ss, subsurface) * (1.0 / PI);

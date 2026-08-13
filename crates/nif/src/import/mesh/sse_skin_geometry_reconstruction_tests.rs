@@ -852,3 +852,111 @@ fn decode_sse_packed_buffer_tangents_without_normals_keeps_stride_aligned() {
     // stride fix is about byte alignment, not producing a tangent here.
     assert!(decoded.tangents.is_empty());
 }
+
+/// Regression for #2817 (REN-D19-05) — an SSE global buffer with neither
+/// `VF_NORMALS` nor `VF_UVS` set decodes `normals` / `uvs` as the
+/// renderer-safe `[0,1,0]` / `[0,0]` fallback fill (so the parallel arrays
+/// stay length-aligned), but that fallback must NOT be mistaken for
+/// authored data by the downstream tangent-synthesis guard. Pre-fix,
+/// `extract_bs_tri_shape`'s 4th tangent branch tested
+/// `!normals.is_empty() && !uvs.is_empty()`, which is vacuously true for
+/// every SSE-reconstructed shape (both arrays are always populated by
+/// `sse_recon.rs`'s own fallback), fabricating a tangent basis from data
+/// that was never on disk. `DecodedPackedBuffer::normals_authored` /
+/// `uvs_authored` (threaded through `ReconstructedSseGeometry`) are the
+/// fix: mirrors `placeholder_normals_with_uvs_do_not_trigger_tangent_synthesis`
+/// in `bs_geometry_tangent_tests.rs` (#2363) for the BSTriShape SSE path.
+#[test]
+fn sse_buffer_without_normals_or_uvs_does_not_trigger_tangent_synthesis() {
+    // VF_VERTEX only (0x001) — no VF_NORMALS (0x008), no VF_UVS (0x002).
+    let zup_positions = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    let (vertex_desc, vertex_size, raw_bytes) = pack_position_only(&zup_positions);
+
+    let shape = BsTriShape {
+        av: NiAVObjectData {
+            net: empty_net(),
+            flags: 0,
+            transform: crate::types::NiTransform::default(),
+            properties: Vec::new(),
+            collision_ref: BlockRef::NULL,
+        },
+        center: NiPoint3 {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        },
+        radius: 0.0,
+        skin_ref: BlockRef(1),
+        shader_property_ref: BlockRef::NULL,
+        alpha_property_ref: BlockRef::NULL,
+        vertex_desc,
+        num_triangles: 0,
+        num_vertices: 0,
+        vertices: Vec::new(),
+        uvs: Vec::new(),
+        normals: Vec::new(),
+        vertex_colors: Vec::new(),
+        triangles: Vec::new(),
+        bone_weights: Vec::new(),
+        bone_indices: Vec::new(),
+        tangents: Vec::new(),
+        kind: BsTriShapeKind::Plain,
+        data_size: 0,
+    };
+
+    let skin_instance = NiSkinInstance {
+        data_ref: BlockRef::NULL,
+        skin_partition_ref: BlockRef(2),
+        skeleton_root_ref: BlockRef::NULL,
+        bone_refs: Vec::new(),
+    };
+
+    let partition = SkinPartitionEntry {
+        num_vertices: 3,
+        num_triangles: 1,
+        bones: Vec::new(),
+        num_weights_per_vertex: 0,
+        vertex_map: vec![0, 1, 2],
+        vertex_weights: Vec::new(),
+        triangles: vec![[0, 1, 2]],
+        bone_indices: Vec::new(),
+    };
+
+    let skin_partition = NiSkinPartition {
+        partitions: vec![partition],
+        global_vertex_data: Some(SseSkinGlobalBuffer {
+            vertex_desc,
+            vertex_size,
+            raw_bytes,
+        }),
+    };
+
+    let mut scene = NifScene::default();
+    scene.blocks.push(Box::new(shape));
+    scene.blocks.push(Box::new(skin_instance));
+    scene.blocks.push(Box::new(skin_partition));
+
+    let shape_ref = scene.get_as::<BsTriShape>(0).unwrap();
+    let mesh = extract_bs_tri_shape(
+        &scene,
+        shape_ref,
+        &crate::types::NiTransform::default(),
+        &mut byroredux_core::string::StringPool::new(),
+    )
+    .expect("VF_VERTEX-only SSE buffer must still reconstruct positions/indices");
+
+    assert_eq!(
+        mesh.normals,
+        vec![[0.0, 1.0, 0.0]; 3],
+        "normals must be the renderer-safe fallback, not authored data"
+    );
+    assert_eq!(
+        mesh.uvs,
+        vec![[0.0, 0.0]; 3],
+        "uvs must be the renderer-safe fallback, not authored data"
+    );
+    assert!(
+        mesh.tangents.is_empty(),
+        "fabricated normals/uvs must not authorize tangent synthesis (#2817)"
+    );
+}

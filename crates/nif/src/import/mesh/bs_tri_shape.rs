@@ -36,26 +36,51 @@ pub fn extract_bs_tri_shape(
         return None;
     }
 
-    let (positions, indices, sse_normals, sse_uvs, sse_colors, sse_tangents) =
-        if let Some(geom) = reconstructed {
-            (
-                geom.positions,
-                geom.indices,
-                Some(geom.normals),
-                Some(geom.uvs),
-                Some(geom.colors),
-                Some(geom.tangents),
-            )
-        } else {
-            let positions: Vec<[f32; 3]> = shape.vertices.iter().map(zup_point_to_yup).collect();
-            let indices: Vec<u32> = shape
-                .triangles
-                .iter()
-                .flat_map(|tri| [tri[0] as u32, tri[1] as u32, tri[2] as u32])
-                .collect();
-            (positions, indices, None, None, None, None)
-        };
+    let (
+        positions,
+        indices,
+        sse_normals,
+        sse_uvs,
+        sse_colors,
+        sse_tangents,
+        sse_normals_authored,
+        sse_uvs_authored,
+    ) = if let Some(geom) = reconstructed {
+        (
+            geom.positions,
+            geom.indices,
+            Some(geom.normals),
+            Some(geom.uvs),
+            Some(geom.colors),
+            Some(geom.tangents),
+            geom.normals_authored,
+            geom.uvs_authored,
+        )
+    } else {
+        let positions: Vec<[f32; 3]> = shape.vertices.iter().map(zup_point_to_yup).collect();
+        let indices: Vec<u32> = shape
+            .triangles
+            .iter()
+            .flat_map(|tri| [tri[0] as u32, tri[1] as u32, tri[2] as u32])
+            .collect();
+        (positions, indices, None, None, None, None, false, false)
+    };
 
+    // Keep authorship separate from the populated fallback vector: synthesized
+    // tangents require real normals, not the renderer-safe `[0,1,0]`
+    // placeholder below (#2363, mirrored here per #2817 — the guard at the
+    // 4th tangent branch below used to test `!normals.is_empty()`, which is
+    // vacuous since `normals` is unconditionally populated). For the
+    // SSE-reconstructed path, `ReconstructedSseGeometry::normals_authored`
+    // (threaded from `decode_sse_packed_buffer`'s `VF_NORMALS` check) is the
+    // real signal — `sse_normals.is_some()` alone would still be vacuous
+    // since `sse_recon.rs` fabricates its own `[0,1,0]` fallback before
+    // handing the (always-populated) vector up here.
+    let normals_authored = if sse_normals.is_some() {
+        sse_normals_authored
+    } else {
+        !shape.normals.is_empty()
+    };
     let normals: Vec<[f32; 3]> = if let Some(n) = sse_normals {
         n
     } else if !shape.normals.is_empty() {
@@ -64,6 +89,13 @@ pub fn extract_bs_tri_shape(
         vec![[0.0, 1.0, 0.0]; positions.len()]
     };
 
+    // Same authorship split as `normals_authored`, for `VF_UVS` /
+    // `shape.uvs`.
+    let uvs_authored = if sse_uvs.is_some() {
+        sse_uvs_authored
+    } else {
+        !shape.uvs.is_empty()
+    };
     let uvs = if let Some(u) = sse_uvs {
         u
     } else {
@@ -170,7 +202,7 @@ pub fn extract_bs_tri_shape(
             &shape.uvs,
             &build_triangles_for_synth(),
         )
-    } else if !normals.is_empty() && !uvs.is_empty() && !positions.is_empty() {
+    } else if normals_authored && uvs_authored && !positions.is_empty() {
         // #1204 — SSE-reconstructed BSTriShape whose vertex descriptor
         // lacks `VF_TANGENTS`: `shape.normals` / `shape.uvs` are empty
         // (the geometry lives in `positions` / `normals` / `uvs` from
@@ -179,6 +211,16 @@ pub fn extract_bs_tri_shape(
         // forcing Path-2 (screen-space derivative TBN) and inheriting
         // the #1104 UV-mirror handedness bug. Route to the Y-up
         // synthesis sibling so Path-1 fires instead.
+        //
+        // #2817 — gate on `normals_authored && uvs_authored`, not
+        // `!normals.is_empty() && !uvs.is_empty()`: both `normals` and
+        // `uvs` are unconditionally populated a few lines up (falling back
+        // to a fabricated `[0,1,0]` placeholder / `sse_recon.rs`'s own
+        // `[0,0]` fallback), so the old guard reduced to
+        // `!positions.is_empty()`, already tested above. An SSE buffer
+        // with neither `VF_NORMALS` nor `VF_UVS` would otherwise reach
+        // here with both inputs fabricated and still synthesize a
+        // "tangent" basis from data that was never authored.
         synthesize_tangents_yup(&positions, &normals, &uvs, &build_triangles_for_synth())
     } else {
         Vec::new()
