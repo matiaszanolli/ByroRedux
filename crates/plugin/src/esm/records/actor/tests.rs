@@ -1079,23 +1079,160 @@ fn clas_oblivion_short_data_drops_silently() {
     assert!(c.tag_skills.is_empty());
 }
 
-/// #1629 — a 128-byte Skyrim RACE DATA must NOT be decoded with the
-/// 36-byte TES4 layout. With the GameKind guard the arm is skipped, so
-/// skill_bonuses / base_height / base_weight / race_flags stay at their
-/// RaceRecord defaults instead of garbage from a mis-applied layout.
+/// #1629 / #2455 — a Skyrim RACE DATA must not be read with the 36-byte
+/// TES4 layout. #1629 achieved that by skipping the arm entirely; #2455
+/// replaced the skip with the real TES5 decode, so the guarantee is now
+/// "decoded with the *TES5* layout" rather than "left at defaults".
+///
+/// TES5 puts 7 skill pairs + 2 padding bytes where TES4 puts 8 pairs, which
+/// shifts height/weight/flags by nothing but changes the pair count — so a
+/// TES4 read of this fixture would produce a different, wrong bonus list.
 #[test]
-fn skyrim_race_data_128b_is_not_decoded_as_tes4_layout() {
-    // Non-zero bytes so a TES4 decode WOULD produce visible garbage.
-    let data: Vec<u8> = (0..128).map(|i| (i as u8).wrapping_add(1)).collect();
-    let subs = vec![sub(b"DATA", &data)];
-    let r = parse_race(0x900, &subs, GameKind::Skyrim);
-    assert!(
-        r.skill_bonuses.is_empty(),
-        "Skyrim 128-byte DATA must not yield TES4-layout skill bonuses"
+fn skyrim_race_data_uses_the_tes5_layout_not_tes4() {
+    let mut data = vec![0u8; 128];
+    // 7 pairs: one real bonus then Skill_None for the rest.
+    data[0] = 0x07; // Two-Handed
+    data[1] = 10;
+    for slot in 1..7 {
+        data[slot * 2] = 0xFF;
+        data[slot * 2 + 1] = 0;
+    }
+    // Bytes 14..16 are TES5 padding — deliberately non-zero, so a TES4 read
+    // (which would treat them as an eighth skill pair) is distinguishable.
+    data[14] = 0xAB;
+    data[15] = 0xCD;
+    data[16..20].copy_from_slice(&1.03f32.to_le_bytes());
+    data[20..24].copy_from_slice(&1.0f32.to_le_bytes());
+    data[24..28].copy_from_slice(&0.9f32.to_le_bytes());
+    data[28..32].copy_from_slice(&1.1f32.to_le_bytes());
+    data[32..36].copy_from_slice(&0x50a0_8943u32.to_le_bytes());
+
+    let r = parse_race(0x900, &[sub(b"DATA", &data)], GameKind::Skyrim);
+    assert_eq!(
+        r.skill_bonuses,
+        vec![(0x07, 10)],
+        "exactly the 7-pair TES5 array, Skill_None dropped — a TES4 read \
+         would have consumed the padding as an eighth pair"
     );
-    assert_eq!(r.base_height, (1.0, 1.0), "height must stay default");
-    assert_eq!(r.base_weight, (1.0, 1.0), "weight must stay default");
-    assert_eq!(r.race_flags, 0, "flags must stay default");
+    assert_eq!(r.base_height, (1.03, 1.0));
+    assert_eq!(r.base_weight, (0.9, 1.1));
+    assert_eq!(r.race_flags, 0x50a0_8943);
+}
+
+/// #2455 — the real thing. Vanilla `Skyrim.esm` `NordRace` DATA, first 36
+/// bytes verbatim (the record is 164 bytes; the tail is TES5-only fields no
+/// consumer reads). The decoded bonuses must match Nord's documented racials,
+/// which is what validates the *skill-index mapping*, not just the offsets.
+#[test]
+fn vanilla_skyrim_nordrace_data_decodes_to_its_documented_racials() {
+    let mut data = vec![0u8; 164];
+    data[..36].copy_from_slice(&[
+        0x07, 0x0a, 0x06, 0x05, 0x09, 0x05, 0x0a, 0x05, 0x11, 0x05, 0x0c, 0x05, 0xff, 0x00, 0x00,
+        0x00, 0x0a, 0xd7, 0x83, 0x3f, 0x0a, 0xd7, 0x83, 0x3f, 0x00, 0x00, 0x80, 0x3f, 0x00, 0x00,
+        0x80, 0x3f, 0x43, 0x89, 0xa0, 0x50,
+    ]);
+
+    let r = parse_race(0x13746, &[sub(b"DATA", &data)], GameKind::Skyrim);
+
+    // Nord: Two-Handed +10; One-Handed, Block, Smithing, Speech, Light
+    // Armor +5 each. Skyrim actor-value skill indices, not TES4's.
+    assert_eq!(
+        r.skill_bonuses,
+        vec![(7, 10), (6, 5), (9, 5), (10, 5), (17, 5), (12, 5)],
+        "decoded bonuses must match vanilla Nord's racial skill list"
+    );
+    assert!(
+        (r.base_height.0 - 1.03).abs() < 1e-6,
+        "Nord male height 1.03"
+    );
+    assert!((r.base_height.1 - 1.03).abs() < 1e-6);
+    assert_eq!(r.base_weight, (1.0, 1.0));
+    assert_eq!(r.race_flags, 0x50a0_8943);
+    assert!(r.race_flags & 1 == 1, "Nord is a playable race");
+}
+
+/// #2455 — vanilla `Skyrim.esm` `ElderRace` grants no skill bonuses, so all
+/// seven slots are the `0xFF` Skill_None sentinel. Distinguishes "decoded and
+/// genuinely empty" from "never decoded", which the old default-asserting
+/// test could not.
+#[test]
+fn vanilla_skyrim_elderrace_decodes_to_no_skill_bonuses() {
+    let mut data = vec![0u8; 164];
+    for slot in 0..7 {
+        data[slot * 2] = 0xFF;
+    }
+    data[16..20].copy_from_slice(&1.0f32.to_le_bytes());
+    data[20..24].copy_from_slice(&1.0f32.to_le_bytes());
+
+    let r = parse_race(0x13744, &[sub(b"DATA", &data)], GameKind::Skyrim);
+    assert!(r.skill_bonuses.is_empty());
+    assert_eq!(r.base_height, (1.0, 1.0), "height still decodes");
+}
+
+/// #2455 — FO4 / FO76 use a *third* layout: floats from offset 0 and no
+/// skill array at all (neither game has skills). Fixture bytes are the first
+/// 36 of vanilla `Fallout4.esm`'s `HumanRace` and `HumanChildRace`.
+///
+/// The child race is the field-identifying evidence: it is the one that must
+/// come out shorter. Reading these bytes with the TES5 layout would instead
+/// yield the bogus pairs `(0,0) (128,63) …` and a height of 0.5.
+#[test]
+fn fallout4_race_data_decodes_height_from_offset_zero() {
+    let human: [u8; 36] = [
+        0x00, 0x00, 0x80, 0x3f, 0x48, 0xe1, 0x7a, 0x3f, 0x00, 0x00, 0x00, 0x3f, 0x00, 0x00, 0x00,
+        0x3f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3f, 0x00, 0x00, 0x00, 0x3f, 0x00, 0x00,
+        0x00, 0x00, 0x43, 0x89, 0xa0, 0x50,
+    ];
+    let child: [u8; 36] = [
+        0x33, 0x33, 0x53, 0x3f, 0x33, 0x33, 0x53, 0x3f, 0x00, 0x00, 0x00, 0x3f, 0x00, 0x00, 0x00,
+        0x3f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3f, 0x00, 0x00, 0x00, 0x3f, 0x00, 0x00,
+        0x00, 0x00, 0x47, 0x89, 0x20, 0x50,
+    ];
+
+    let mut data = vec![0u8; 200];
+    data[..36].copy_from_slice(&human);
+    let r = parse_race(0x13746, &[sub(b"DATA", &data)], GameKind::Fallout4);
+    assert!((r.base_height.0 - 1.0).abs() < 1e-6);
+    assert!((r.base_height.1 - 0.98).abs() < 1e-6);
+
+    let mut data = vec![0u8; 200];
+    data[..36].copy_from_slice(&child);
+    let child_race = parse_race(0x1, &[sub(b"DATA", &data)], GameKind::Fallout4);
+    assert!(
+        (child_race.base_height.0 - 0.825).abs() < 1e-6,
+        "the child race must decode shorter than the adult — this is what \
+         identifies offset 0 as height"
+    );
+    assert!(child_race.base_height.0 < r.base_height.0);
+
+    // No skills in FO4, and the weight morph is deliberately not surfaced.
+    assert!(child_race.skill_bonuses.is_empty());
+    assert_eq!(child_race.base_weight, (1.0, 1.0));
+    assert_eq!(child_race.race_flags, 0);
+}
+
+/// #2455 — FO76's 216-byte DATA shares FO4's leading-height shape.
+#[test]
+fn fallout76_race_data_shares_the_fallout4_height_offsets() {
+    let mut data = vec![0u8; 216];
+    data[0..4].copy_from_slice(&1.15f32.to_le_bytes());
+    data[4..8].copy_from_slice(&0.95f32.to_le_bytes());
+    let r = parse_race(0x2, &[sub(b"DATA", &data)], GameKind::Fallout76);
+    assert_eq!(r.base_height, (1.15, 0.95));
+    assert!(r.skill_bonuses.is_empty());
+}
+
+/// #2455 — a shape no arm claims must not be silently swallowed. Starfield
+/// ships no RACE DATA at all, so an unexpected one is worth a breadcrumb;
+/// the record still parses and simply keeps its defaults.
+#[test]
+fn unhandled_race_data_shape_leaves_defaults_intact() {
+    let data = vec![0x5Au8; 40];
+    let r = parse_race(0x3, &[sub(b"DATA", &data)], GameKind::Starfield);
+    assert!(r.skill_bonuses.is_empty());
+    assert_eq!(r.base_height, (1.0, 1.0));
+    assert_eq!(r.base_weight, (1.0, 1.0));
+    assert_eq!(r.race_flags, 0);
 }
 
 /// The Oblivion path still decodes its 36-byte DATA (guard preserves

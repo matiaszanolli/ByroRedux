@@ -303,9 +303,13 @@ pub struct RaceRecord {
     pub editor_id: String,
     pub full_name: String,
     pub description: String,
-    /// Skill bonuses: 8 pairs of `(skill_index, bonus)` where
-    /// `skill_index` is the `SkillIndex` enum value (0x0C..=0x20 for
-    /// Oblivion's 21 skills; 0xFF = None for unused slots).
+    /// Skill bonuses: `(skill_index, bonus)` pairs, with `0xFF` (None)
+    /// slots dropped. Oblivion / FO3 / FNV author 8 pairs of the 0x0C..=0x20
+    /// `SkillIndex` values; Skyrim authors 7 pairs of its own actor-value
+    /// skill indices (6 = One-Handed … 23 = Enchanting).
+    ///
+    /// Always empty for FO4 / FO76 / Starfield: those games have no skills,
+    /// and their RACE `DATA` carries no bonus array at all (#2455).
     ///
     /// Pre-#967 this field was typed as `Vec<(u32, i8)>` under the
     /// premise that the bonus was form-keyed by `AVIF` reference.
@@ -343,15 +347,26 @@ pub struct RaceRecord {
     /// populates on FO3 / FNV).
     pub head_parts: Vec<(u32, String, Option<u8>)>,
     /// Default body height per gender, from DATA — `(male, female)`.
-    /// Vanilla Oblivion / FO3 / FNV authors values in ~0.9..1.15.
-    /// Default `(1.0, 1.0)` when DATA is shorter than 36 bytes
-    /// (Skyrim ships 128-byte DATA which falls into a separate
-    /// reader arm not yet wired here).
+    /// Vanilla values run ~0.8..1.2 (Skyrim `NordRace` is 1.03; FO4
+    /// `HumanChildRace` is 0.825). Decoded for Oblivion / FO3 / FNV
+    /// (offset 16), Skyrim (offset 16 after its 7 skill pairs), and
+    /// FO4 / FO76 (offset 0) — see `parse_race` for the three layouts.
+    /// Stays `(1.0, 1.0)` when the game ships no RACE `DATA` at all
+    /// (Starfield) or the sub-record is too short.
     pub base_height: (f32, f32),
     /// Default body weight per gender, from DATA — `(male, female)`.
     /// Vanilla values typically `(1.0, 1.0)`.
+    ///
+    /// Populated for Oblivion / FO3 / FNV and Skyrim. **Not** populated for
+    /// FO4 / FO76: those encode a three-axis (thin / muscular / large) morph
+    /// per gender that this two-field pair cannot represent, and the bytes
+    /// are invariant across every shipped race so no reading of them can be
+    /// validated against the data (#2455).
     pub base_weight: (f32, f32),
-    /// `RACE_FLAGS` u32 tail of the 36-byte DATA. Bit 0 = Playable.
+    /// `RACE_FLAGS` u32 from DATA (offset 32 on every decoded layout).
+    /// Bit 0 = Playable. Left at `0` for FO4 / FO76, whose flag semantics
+    /// are unverified — their non-playable `HumanChildRace` sets bit 0,
+    /// contradicting the TES-lineage meaning (#2455).
     /// Other bits are documented per game (`BeastRace`, `Swims`,
     /// `Flies` — vanilla Oblivion uses bit 0 + bit 2 = 0x05 for
     /// playable beast-race overrides).
@@ -1026,12 +1041,10 @@ pub fn parse_race(form_id: u32, subs: &[SubRecord], game: GameKind) -> RaceRecor
             // surfacing garbage form-keyed bonuses and dropping height/
             // weight/flags entirely. Layout per OpenMW
             // `esm4/loadrace.cpp:135-153` (canonical TES4-era reader).
-            // TES5 DATA is 128 / 164 bytes with a different layout —
-            // not yet wired here. Gate on the TES4/FO3/FNV era so a Skyrim
-            // 128/164-byte DATA (which also satisfies `len >= 36`) is left at
-            // defaults rather than mis-decoded with the 36-byte layout into
-            // garbage skill bonuses / height / weight / flags (#1629). Skyrim+
-            // falls through to the `_ => {}` arm.
+            // Gate on the TES4/FO3/FNV era so a Skyrim 128/164-byte DATA
+            // (which also satisfies `len >= 36`) is not mis-decoded with the
+            // 36-byte layout into garbage skill bonuses / height / weight /
+            // flags (#1629). Skyrim+ is handled by the two arms below.
             b"DATA"
                 if matches!(game, GameKind::Oblivion | GameKind::Fallout3NV)
                     && sub.data.len() >= 36 =>
@@ -1057,6 +1070,100 @@ pub fn parse_race(form_id: u32, subs: &[SubRecord], game: GameKind) -> RaceRecor
                 record.base_height = (h_m, h_f);
                 record.base_weight = (w_m, w_f);
                 record.race_flags = r.u32_or_default();
+            }
+            // DATA (TES5 — Skyrim LE 128 B / SE 164 B):
+            //   7 × (u8 skill_index, u8 bonus)      14 B
+            //   u16 padding                          2 B
+            //   heightMale + heightFemale (2 × f32)  8 B
+            //   weightMale + weightFemale (2 × f32)  8 B
+            //   raceFlags (u32)                      4 B
+            //   … then 92 / 128 B of TES5-only tail (starting health /
+            //     magicka / stamina, carry weight, accel + decel rates,
+            //     regen rates, unarmed damage and reach, biped object slots)
+            //     which no consumer needs yet.
+            //
+            // Layout per OpenMW `esm4/loadrace.cpp:154-170`, and verified
+            // byte-for-byte against vanilla `Skyrim.esm` (2026-08-12), which
+            // ships 164-byte DATA for all 99 of its RACE records:
+            //   * `NordRace` decodes to skill indices 7/6/9/10/17/12 with
+            //     bonuses +10/+5/+5/+5/+5/+5 — exactly vanilla Nord's
+            //     Two-Handed +10 and One-Handed / Block / Smithing / Speech /
+            //     Light Armor +5 — plus height 1.03 and weight 1.0.
+            //   * `ElderRace` decodes to seven `0xFF` Skill_None slots, which
+            //     is correct: the Elder race grants no skill bonuses.
+            // Both are strong evidence for the offsets *and* the skill-index
+            // mapping, which a length check alone could not establish.
+            //
+            // Note the pair count differs from the TES4 arm above: TES5 has 7
+            // skill slots plus two padding bytes where TES4/FO3/FNV has 8.
+            b"DATA" if matches!(game, GameKind::Skyrim) && matches!(sub.data.len(), 128 | 164) => {
+                let mut r = SubReader::new(&sub.data);
+                for _ in 0..7 {
+                    let skill = r.u8_or_default();
+                    let bonus = r.u8_or_default() as i8;
+                    // Same Skill_None handling as the TES4 arm — keep the
+                    // public Vec "real bonuses only".
+                    if skill != 0xFF {
+                        record.skill_bonuses.push((skill, bonus));
+                    }
+                }
+                let _padding = r.u16_or_default();
+                let h_m = r.f32_or_default();
+                let h_f = r.f32_or_default();
+                let w_m = r.f32_or_default();
+                let w_f = r.f32_or_default();
+                record.base_height = (h_m, h_f);
+                record.base_weight = (w_m, w_f);
+                record.race_flags = r.u32_or_default();
+            }
+            // DATA (FO4 200 B / FO76 216 B) — a third layout again, and
+            // deliberately only partially decoded.
+            //
+            // Measured against vanilla `Fallout4.esm` (45 RACE records) and
+            // `SeventySix.esm` (157) on 2026-08-12:
+            //   * There is **no skill-bonus array at all** — the record opens
+            //     with floats at offset 0. That is consistent with the games
+            //     themselves: neither FO4 nor FO76 has skills. Feeding these
+            //     bytes through the TES5 arm would read `00 00 80 3f` as the
+            //     pairs `(0,0) (128,63)` — precisely the garbage #1629 removed.
+            //   * `heightMale` / `heightFemale` sit at offsets 0 and 4, and
+            //     they carry real signal: `HumanRace` is 1.0 / 0.98 while
+            //     `HumanChildRace` and `GhoulChildRace` are 0.825 / 0.825.
+            //     A child race being shorter is what identifies the field.
+            //   * Offsets 8..32 are **byte-identical across every shipped race
+            //     in both games** (`0.5, 0.5, 0.0` twice). Being invariant they
+            //     carry no information to validate an interpretation against,
+            //     so they are left undecoded rather than guessed. The shape
+            //     suggests FO4's three-axis (thin / muscular / large) body
+            //     morph per gender, which `base_weight`'s `(male, female)`
+            //     pair could not represent even if it were confirmed — so
+            //     `base_weight` stays at its default here, by design.
+            // A `race_flags`-shaped word sits at offset 32 as it does in TES5,
+            // but its bit meanings are unverified for these games (FO4's
+            // non-playable `HumanChildRace` has bit 0 set, which contradicts
+            // the TES-lineage "bit 0 = Playable"), so it is not surfaced.
+            b"DATA"
+                if matches!(game, GameKind::Fallout4 | GameKind::Fallout76)
+                    && sub.data.len() >= 8 =>
+            {
+                let mut r = SubReader::new(&sub.data);
+                record.base_height = (r.f32_or_default(), r.f32_or_default());
+            }
+            // Any DATA that reached here is a shape no arm claims. Log it
+            // rather than dropping it silently: the whole point of #1629 /
+            // #2455 is that a RACE record quietly left at defaults reads
+            // identically to one that decoded fine. Mirrors the
+            // `xcll_size_sanity_warn` pattern. `debug` not `warn` because
+            // Starfield legitimately ships zero RACE DATA sub-records, so a
+            // louder level would be pure noise on a correct load.
+            b"DATA" => {
+                log::debug!(
+                    "RACE {:08X}: DATA sub-record ({} bytes) has no decoder for {:?} — \
+                     skill bonuses / height / weight / flags stay at defaults",
+                    form_id,
+                    sub.data.len(),
+                    game,
+                );
             }
             // MODL appears multiple times in RACE for body parts. Collect them all.
             //
