@@ -82,10 +82,12 @@ pub struct SceneBuffers {
     /// M29.6 — HOST_VISIBLE staging buffer for first-sight
     /// `bind_inverses` uploads. Sized for
     /// `MAX_PENDING_BIND_INVERSE_UPLOADS_PER_FRAME × MAX_BONES_PER_MESH
-    /// × mat4 ≈ 144 KB`. The renderer writes up to this many pending
-    /// uploads into consecutive slots here, then records one
-    /// `cmd_copy_buffer` per upload (each targeting a different slot
-    /// offset in [`bind_inverses_persistent`]).
+    /// × mat4 ≈ 12.6 MB` (#2791 — was stale at "144 KB", 87× too small,
+    /// from before the constant's #1284 re-bump to 1366). The renderer
+    /// writes up to this many pending uploads into consecutive slots
+    /// here, then records one `cmd_copy_buffer` per upload (each
+    /// targeting a different slot offset in
+    /// [`bind_inverses_persistent`]).
     pub(super) bind_inverse_upload_staging: GpuBuffer,
     /// M29.5 — bytes most recently written into the bone-world
     /// staging buffer by [`upload_bone_worlds`]. [`record_bone_world_copy`]
@@ -576,9 +578,14 @@ fn allocate_scene_render_buffers(
         bone_buf_size,
         vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
     )?;
-    // M29.6 — small HOST_VISIBLE staging that holds up to
-    // MAX_PENDING_BIND_INVERSE_UPLOADS_PER_FRAME × MAX_BONES_PER_MESH ×
-    // mat4 bytes of pending first-sight uploads. 16 × 144 × 64 ≈ 144 KB.
+    // M29.6 — small (relative to `bind_inverses_persistent`) HOST_VISIBLE
+    // staging that holds up to MAX_PENDING_BIND_INVERSE_UPLOADS_PER_FRAME ×
+    // MAX_BONES_PER_MESH × mat4 bytes of pending first-sight uploads.
+    // #2791 (REN-D5-04) — this was stale at "16 × 144 × 64 ≈ 144 KB", from
+    // before `MAX_PENDING_BIND_INVERSE_UPLOADS_PER_FRAME`'s #1284 re-bump.
+    // At the current constant (1366): 1366 × 144 × 64 B ≈ 12.6 MB — the
+    // second-largest host-visible allocation this function makes. See the
+    // constant's own doc in `constants.rs` for the sizing history.
     let bind_inverse_staging_size = (MAX_PENDING_BIND_INVERSE_UPLOADS_PER_FRAME
         * MAX_BONES_PER_MESH
         * std::mem::size_of::<[[f32; 4]; 4]>())
