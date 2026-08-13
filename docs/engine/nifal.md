@@ -365,7 +365,11 @@ Text-key events are wired (`NiControllerSequence.text_keys_ref` →
 `AnimationClip.text_keys` → `AnimationTextKeyEvents` ECS → scripting); embedded
 controllers set `text_keys: Vec::new()` by design (mesh-local controllers carry no
 event keys). Intentionally parked (captured, no renderer consumer yet, *not*
-leaks): per-light **ambient** colour channels and **morph-weight** channels.
+a leak): per-light **ambient** colour channels. **Morph-weight** channels are
+NOT in this state — since `a8b0cf64` they reach a live `AnimatedMorphWeights`
+ECS sink every frame (confirmed by `sink_lifecycle_end_to_end_tests`); they
+only lack a downstream GPU/mesh-vertex-blend consumer, tracked separately by
+#2221.
 
 `anim_convert::convert_nif_clip` is the single NIF→core boundary, but not the
 only production boundary for the canonical `AnimationClip`: Skyrim's cart/
