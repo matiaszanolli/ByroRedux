@@ -58,13 +58,24 @@ pub struct NavmRecord {
     pub triangles: Vec<NavmTriangle>,
     /// `NVEX` links to triangles in neighbouring meshes (stride 10).
     pub external_connections: Vec<NavmExternalConnection>,
-    /// Creation-Engine `NVNM` blob, retained undecoded.
+    /// Worldspace this tile belongs to, from the `NVNM` header. `0` means the
+    /// tile is interior — [`cell_form`](Self::cell_form) then names the cell.
+    /// `None` on the Gamebryo typed form, which authors no worldspace word.
+    pub worldspace_form: Option<u32>,
+    /// Exterior cell grid `(x, y)` this tile belongs to, from the `NVNM`
+    /// header. Present only when `worldspace_form` is a non-zero worldspace;
+    /// interiors carry [`cell_form`](Self::cell_form) instead. See
+    /// [`parse_navm`] for how the branch and the axis order were established.
+    pub grid: Option<(i32, i32)>,
+    /// Creation-Engine `NVNM` bytes, retained when the body could not be
+    /// decoded.
     ///
-    /// Skyrim+ packs vertices, triangles, edge links and cover into one
-    /// variable-length sub-record instead of the typed set above, and its
-    /// internal layout is not established by the corpus — see [`parse_navm`].
-    /// Kept verbatim so a later decoder has the bytes without a re-parse, and
-    /// so a consumer can tell "packed form, not yet decoded" from "empty".
+    /// `Some` for Fallout 4, whose body layout diverges from Skyrim's after
+    /// the shared header (measured: 0 of 7,894 `Fallout4.esm` blobs reconcile
+    /// under the Skyrim body layout; OpenMW skips the FO4 form for the same
+    /// reason). Kept verbatim so a later decoder has the bytes without a
+    /// re-parse, and so a consumer can tell "packed form, not yet decoded"
+    /// from "empty". `None` once the body decoded into the typed fields above.
     pub packed_geometry: Option<Vec<u8>>,
 }
 
@@ -157,9 +168,80 @@ pub struct NavmExternalConnection {
 /// `NVEX`'s 10 bytes carry a `u32`, the neighbouring mesh's FormID, and a
 /// `u16` triangle index.
 ///
-/// The `NVNM` blob is retained verbatim rather than guessed at: its internal
-/// layout is not established by the corpus, and a half-right decode of
-/// pathing data is worse than an honest "not decoded yet".
+/// # The Creation-Engine `NVNM` blob (#2738)
+///
+/// One length-prefixed stream rather than typed sub-records. Field order is
+/// OpenMW's `components/esm4/loadnavm.cpp`; the two decisions that reference
+/// gets wrong or leaves uncertain were settled against shipped data by
+/// [`decode_nvnm`], which is also why the decode is gated on exact
+/// reconciliation rather than on a version check.
+///
+/// ```text
+/// u32 unknown0, u32 unknown1, u32 worldspace
+/// worldspace != 0 ? (i16 grid_y, i16 grid_x) : u32 cell_form
+/// u32 n; [f32; 3] * n         vertices
+/// u32 n; 16 B    * n          triangles (same 16-byte row as NVTR)
+/// u32 n; 10 B    * n          external connections (same row as NVEX)
+/// u32 n; 10 B    * n          door triangles      — skipped, see below
+/// u32 n; u16     * n          cover triangles     — skipped, see below
+/// u32 divisor, 8 * f32 bounds, then divisor^2 counted u16 index lists
+/// ```
+///
+/// Door triangles, cover triangles, the bounds block and the segment lists
+/// are walked but **not stored**: they belong to actor traversal and combat
+/// cover (#2372), and this crate has repeatedly paid for fields parsed ahead
+/// of a consumer. The walk still has to visit them — that is what proves the
+/// stream reconciles.
+///
+/// **Fallout 4 keeps its blob.** The header decodes there (verified below),
+/// but 0 of 7,894 `Fallout4.esm` bodies reconcile under this layout; OpenMW
+/// skips the FO4 form for the same reason. Rather than version-gate, the
+/// decoder simply requires `consumed == len` and falls back to retaining the
+/// bytes, which also protects against a future format revision.
+///
+/// # Evidence for the header branch
+///
+/// Word 3 is four bytes either way, so a length check cannot discriminate
+/// grid-vs-cell — both candidate rules reconcile 15,966/15,966 on
+/// `Skyrim.esm`. The owning `CELL` settles it independently, since a `NAVM`
+/// sits in that cell's child group whose header label is the cell FormID:
+///
+/// | worldspace word | tiles | word 3 == owning CELL |
+/// |---|---:|---:|
+/// | `0` (interior) | 1,526 | **1,526** |
+/// | `0x3C` (Tamriel) | 12,817 | 0 |
+/// | any other worldspace | 1,623 | 0 |
+///
+/// So the rule is `worldspace != 0 → grid`, not OpenMW's hardcoded
+/// `worldspace == 0x3C` (whose own FIXME concedes the check is wrong). The
+/// difference is not academic: it misreads every one of Solstheim's 1,540
+/// `Dragonborn.esm` tiles as a cell FormID.
+///
+/// Axis order likewise comes from the data, not the comment: compared against
+/// the owning exterior cell's `XCLC`, `(y, x)` matches 14,440/14,440 on
+/// `Skyrim.esm` and 1,564/1,564 on `Dragonborn.esm`, while `(x, y)` matches
+/// only the diagonal coincidences (210 and 59).
+///
+/// # Decode coverage (`examples/dump_navmesh`, 2026-08-13)
+///
+/// | Plugin | `NAVM` | geometry decoded | blob kept | cell/grid known |
+/// |---|---:|---:|---:|---:|
+/// | `Skyrim.esm` | 15,966 | 15,966 | 0 | 15,966 |
+/// | `Dragonborn.esm` | 1,723 | 1,722 | 0 | 1,722 |
+/// | `Dawnguard.esm` | 1,922 | 1,863 | 0 | 1,863 |
+/// | `Fallout3.esm` | 7,198 | 7,198 | 0 | 7,198 |
+/// | `FalloutNV.esm` | 4,771 | 4,771 | 0 | 4,771 |
+/// | `Fallout4.esm` | 7,894 | 0 | 7,894 | **7,894** |
+/// | `Oblivion.esm` | 0 | — | — | — |
+///
+/// Every triangle in every decoded mesh indexes a vertex that exists
+/// (`indices_are_in_range`), across all 31,520 of them.
+///
+/// The shortfalls are accounted for, not unexplained: the 59 Dawnguard and 1
+/// Dragonborn tiles that yield nothing are **deleted-record overrides**
+/// (header flag `0x20`) carrying no sub-records at all, so there is nothing
+/// to decode. Fallout 4 keeps every blob but still locates every tile,
+/// because its divergence begins after the shared header.
 pub fn parse_navm(form_id: u32, subs: &[SubRecord]) -> NavmRecord {
     let mut out = NavmRecord {
         form_id,
@@ -191,42 +273,180 @@ pub fn parse_navm(form_id: u32, subs: &[SubRecord]) -> NavmRecord {
                     })
                     .collect();
             }
-            b"NVTR" => {
-                out.triangles = rows(data, 16)
-                    .map(|r| {
-                        let w = |i: usize| u16::from_le_bytes([r[i * 2], r[i * 2 + 1]]);
-                        // 0xFFFF is the authored "no neighbour across this
-                        // edge" sentinel — a border triangle. Modelling it as
-                        // `None` keeps a consumer from walking into index
-                        // 65535 and reading whatever sits there.
-                        let link = |i: usize| match w(i) {
-                            u16::MAX => None,
-                            other => Some(other),
-                        };
-                        NavmTriangle {
-                            vertices: [w(0), w(1), w(2)],
-                            edge_neighbours: [link(3), link(4), link(5)],
-                            flags: u32_at(r, 12).unwrap_or(0),
-                        }
-                    })
-                    .collect();
-            }
+            // Same 16-byte row the packed `NVNM` body carries (#2738), so
+            // both forms go through one decoder.
+            b"NVTR" => out.triangles = rows(data, 16).map(decode_nvtr_row).collect(),
             b"NVEX" => {
-                out.external_connections = rows(data, 10)
-                    .filter_map(|r| {
-                        Some(NavmExternalConnection {
-                            unknown: u32_at(r, 0)?,
-                            mesh_form: u32_at(r, 4)?,
-                            triangle: u16::from_le_bytes([r[8], r[9]]),
-                        })
-                    })
-                    .collect();
+                out.external_connections = rows(data, 10).filter_map(decode_nvex_row).collect();
             }
-            b"NVNM" => out.packed_geometry = Some(data.clone()),
+            // #2738 — decode the Creation-Engine packed form into the same
+            // canonical fields the Gamebryo typed form fills, so consumers
+            // never branch per game. Retains the blob when the body doesn't
+            // reconcile (Fallout 4).
+            b"NVNM" => decode_nvnm(data, &mut out),
             _ => {}
         }
     }
     out
+}
+
+/// Cursor over an `NVNM` blob that refuses to read past the end.
+///
+/// Every accessor returns `None` on overrun so a wrong branch or a future
+/// format revision surfaces as "did not reconcile" instead of garbage.
+struct NvnmCursor<'a> {
+    data: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> NvnmCursor<'a> {
+    fn u32(&mut self) -> Option<u32> {
+        let raw = self.data.get(self.pos..self.pos + 4)?;
+        self.pos += 4;
+        Some(u32::from_le_bytes(raw.try_into().ok()?))
+    }
+
+    fn i16(&mut self) -> Option<i16> {
+        let raw = self.data.get(self.pos..self.pos + 2)?;
+        self.pos += 2;
+        Some(i16::from_le_bytes(raw.try_into().ok()?))
+    }
+
+    /// A `u32` count followed by `count * stride` bytes, returned as a slice.
+    fn counted(&mut self, stride: usize) -> Option<&'a [u8]> {
+        let count = self.u32()? as usize;
+        let len = count.checked_mul(stride)?;
+        let raw = self.data.get(self.pos..self.pos.checked_add(len)?)?;
+        self.pos += len;
+        Some(raw)
+    }
+
+    /// A counted block whose contents are deliberately not retained.
+    fn skip_counted(&mut self, stride: usize) -> Option<()> {
+        self.counted(stride).map(|_| ())
+    }
+
+    fn skip(&mut self, len: usize) -> Option<()> {
+        self.pos = self.pos.checked_add(len)?;
+        (self.pos <= self.data.len()).then_some(())
+    }
+}
+
+/// Largest `divisor` this decoder will honour before declaring the stream
+/// unrecognised. The segment grid is `divisor^2` counted lists, so a garbage
+/// word here is the difference between a bounded walk and a very long one.
+/// Shipped content stays far below: the observed maximum across `Skyrim.esm`
+/// and `Dragonborn.esm` is single-digit.
+const NVNM_MAX_DIVISOR: u32 = 64;
+
+/// Decode a Creation-Engine `NVNM` blob into `out`'s canonical fields.
+///
+/// The header (worldspace + cell-or-grid) is decoded for **every** game that
+/// ships the sub-record, because it reconciles everywhere it was measured —
+/// including Fallout 4, whose interiors match the owning cell 781/781 and
+/// whose exteriors match `XCLC` 7,113/7,113. The body is decoded only when
+/// the whole stream reconciles to the blob length exactly; otherwise the
+/// bytes are retained and the geometry fields stay empty.
+///
+/// See [`parse_navm`] for the layout and the evidence behind the branch.
+fn decode_nvnm(data: &[u8], out: &mut NavmRecord) {
+    let mut cur = NvnmCursor { data, pos: 0 };
+    let header = (|| {
+        cur.u32()?; // unknown — tracks NVER on the typed form
+        cur.u32()?; // unknown — location-ish; not established by the corpus
+        let worldspace = cur.u32()?;
+        // Interior tiles name their cell; exterior tiles name their grid,
+        // y before x. Both are four bytes, so this branch is invisible to a
+        // length check — see `parse_navm` for how it was settled.
+        let (cell_form, grid) = if worldspace == 0 {
+            (Some(cur.u32()?), None)
+        } else {
+            let y = i32::from(cur.i16()?);
+            let x = i32::from(cur.i16()?);
+            (None, Some((x, y)))
+        };
+        Some((worldspace, cell_form, grid))
+    })();
+
+    let Some((worldspace, cell_form, grid)) = header else {
+        // Not even the header reconciles — retain and report nothing.
+        out.packed_geometry = Some(data.to_vec());
+        return;
+    };
+    out.worldspace_form = Some(worldspace);
+    if cell_form.is_some() {
+        out.cell_form = cell_form;
+    }
+    out.grid = grid;
+
+    let body = (|| {
+        let vertices: Vec<[f32; 3]> = rows(cur.counted(12)?, 12)
+            .map(|r| {
+                [
+                    f32::from_le_bytes([r[0], r[1], r[2], r[3]]),
+                    f32::from_le_bytes([r[4], r[5], r[6], r[7]]),
+                    f32::from_le_bytes([r[8], r[9], r[10], r[11]]),
+                ]
+            })
+            .collect();
+        // Byte-identical to the Gamebryo `NVTR` row, so the same decoder
+        // serves both. Skyrim splits the trailing `u32` into a cover marker
+        // and cover flags; carrying it whole keeps one canonical field.
+        let triangles: Vec<NavmTriangle> =
+            rows(cur.counted(16)?, 16).map(decode_nvtr_row).collect();
+        // Likewise identical to `NVEX`.
+        let external: Vec<NavmExternalConnection> = rows(cur.counted(10)?, 10)
+            .filter_map(decode_nvex_row)
+            .collect();
+        cur.skip_counted(10)?; // door triangles — actor traversal, #2372
+        cur.skip_counted(2)?; // cover triangles — combat cover, #2372
+        let divisor = cur.u32()?;
+        if divisor > NVNM_MAX_DIVISOR {
+            return None;
+        }
+        cur.skip(4 * 8)?; // max X/Y distance + min/max XYZ bounds
+        for _ in 0..(divisor * divisor) {
+            cur.skip_counted(2)?; // per-segment triangle index list
+        }
+        (cur.pos == data.len()).then_some((vertices, triangles, external))
+    })();
+
+    match body {
+        Some((vertices, triangles, external_connections)) => {
+            out.vertices = vertices;
+            out.triangles = triangles;
+            out.external_connections = external_connections;
+        }
+        // Header understood, body not (Fallout 4). Keep the bytes; the
+        // association above is still usable for streaming.
+        None => out.packed_geometry = Some(data.to_vec()),
+    }
+}
+
+/// Decode one 16-byte triangle row, shared by `NVTR` and the `NVNM` body.
+fn decode_nvtr_row(r: &[u8]) -> NavmTriangle {
+    let w = |i: usize| u16::from_le_bytes([r[i * 2], r[i * 2 + 1]]);
+    // 0xFFFF is the authored "no neighbour across this edge" sentinel — a
+    // border triangle. Modelling it as `None` keeps a consumer from walking
+    // into index 65535 and reading whatever sits there.
+    let link = |i: usize| match w(i) {
+        u16::MAX => None,
+        other => Some(other),
+    };
+    NavmTriangle {
+        vertices: [w(0), w(1), w(2)],
+        edge_neighbours: [link(3), link(4), link(5)],
+        flags: u32_at(r, 12).unwrap_or(0),
+    }
+}
+
+/// Decode one 10-byte external-connection row, shared by `NVEX` and `NVNM`.
+fn decode_nvex_row(r: &[u8]) -> Option<NavmExternalConnection> {
+    Some(NavmExternalConnection {
+        unknown: u32_at(r, 0)?,
+        mesh_form: u32_at(r, 4)?,
+        triangle: u16::from_le_bytes([r[8], r[9]]),
+    })
 }
 
 /// What a [`RegionDataEntry`] configures. The discriminants are the raw
@@ -1712,15 +1932,160 @@ mod navm_tests {
         assert!(!bad.indices_are_in_range());
     }
 
+    /// Build a Creation-Engine `NVNM` body (#2738). `location` is either the
+    /// interior cell FormID or the exterior `(x, y)` grid; `divisor` sizes
+    /// the trailing segment grid.
+    fn nvnm(
+        worldspace: u32,
+        location: Result<u32, (i16, i16)>,
+        vertices: &[[f32; 3]],
+        triangles: &[[u8; 16]],
+        links: &[[u8; 10]],
+        divisor: u32,
+    ) -> Vec<u8> {
+        let mut d = Vec::new();
+        d.extend_from_slice(&7u32.to_le_bytes()); // unknown 0
+        d.extend_from_slice(&0u32.to_le_bytes()); // unknown 1
+        d.extend_from_slice(&worldspace.to_le_bytes());
+        match location {
+            Ok(cell) => d.extend_from_slice(&cell.to_le_bytes()),
+            Err((x, y)) => {
+                // y before x — the order the corpus establishes.
+                d.extend_from_slice(&y.to_le_bytes());
+                d.extend_from_slice(&x.to_le_bytes());
+            }
+        }
+        d.extend_from_slice(&(vertices.len() as u32).to_le_bytes());
+        for v in vertices {
+            for c in v {
+                d.extend_from_slice(&c.to_le_bytes());
+            }
+        }
+        d.extend_from_slice(&(triangles.len() as u32).to_le_bytes());
+        for t in triangles {
+            d.extend_from_slice(t);
+        }
+        d.extend_from_slice(&(links.len() as u32).to_le_bytes());
+        for l in links {
+            d.extend_from_slice(l);
+        }
+        d.extend_from_slice(&0u32.to_le_bytes()); // door triangles
+        d.extend_from_slice(&0u32.to_le_bytes()); // cover triangles
+        d.extend_from_slice(&divisor.to_le_bytes());
+        d.extend_from_slice(&[0u8; 32]); // max X/Y dist + min/max XYZ
+        for _ in 0..(divisor * divisor) {
+            d.extend_from_slice(&0u32.to_le_bytes()); // empty segment list
+        }
+        d
+    }
+
+    /// #2738 — the packed Creation-Engine form decodes into the same
+    /// canonical fields the Gamebryo typed form fills, so a consumer never
+    /// branches per game. Verified against 19,551 shipped Skyrim-era meshes.
     #[test]
-    fn creation_engine_meshes_retain_their_packed_blob() {
-        // Skyrim authors one NVNM blob instead of the typed set. It must be
-        // distinguishable from "empty" — a consumer needs to know the mesh
-        // exists but is not decoded yet, rather than treat it as no navmesh.
+    fn creation_engine_packed_mesh_decodes_into_the_canonical_fields() {
+        let blob = nvnm(
+            0x0000_003C,
+            Err((7, -3)),
+            &[[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]],
+            &[tri([0, 1, 2], [1, u16::MAX, 2], 0xABCD_1234)
+                .try_into()
+                .unwrap()],
+            &[{
+                let mut row = [0u8; 10];
+                row[0..4].copy_from_slice(&1u32.to_le_bytes());
+                row[4..8].copy_from_slice(&0x0002_EE41u32.to_le_bytes());
+                row[8..10].copy_from_slice(&5u16.to_le_bytes());
+                row
+            }],
+            2,
+        );
+        let r = parse_navm(1, &[sub(b"NVNM", &blob)]);
+
+        assert_eq!(r.worldspace_form, Some(0x0000_003C));
+        assert_eq!(
+            r.grid,
+            Some((7, -3)),
+            "exterior tiles carry a grid, y first"
+        );
+        assert_eq!(r.cell_form, None, "…and no cell FormID");
+        assert_eq!(r.vertices.len(), 3);
+        assert_eq!(r.vertices[2], [7.0, 8.0, 9.0]);
+        assert_eq!(r.triangles.len(), 1);
+        assert_eq!(r.triangles[0].vertices, [0, 1, 2]);
+        assert_eq!(
+            r.triangles[0].edge_neighbours,
+            [Some(1), None, Some(2)],
+            "0xFFFF is the border sentinel here exactly as in NVTR"
+        );
+        assert_eq!(r.linked_meshes(), vec![0x0002_EE41]);
+        assert!(r.has_decoded_geometry());
+        assert!(r.indices_are_in_range());
+        assert!(
+            r.packed_geometry.is_none(),
+            "a body that reconciles must not also keep the blob"
+        );
+    }
+
+    /// The interior branch: worldspace `0` means word 3 is the owning CELL,
+    /// not a grid. Established against 1,526 `Skyrim.esm` interior tiles,
+    /// every one of which matched its enclosing cell-children group label.
+    #[test]
+    fn packed_interior_mesh_carries_its_cell_instead_of_a_grid() {
+        let blob = nvnm(0, Ok(0x0001_A2B3), &[[0.0, 0.0, 0.0]], &[], &[], 1);
+        let r = parse_navm(1, &[sub(b"NVNM", &blob)]);
+        assert_eq!(r.worldspace_form, Some(0));
+        assert_eq!(r.cell_form, Some(0x0001_A2B3));
+        assert_eq!(r.grid, None);
+    }
+
+    /// #2738 — Fallout 4 diverges after the shared header (0 of 7,894
+    /// `Fallout4.esm` bodies reconcile). The decode is gated on exact
+    /// reconciliation rather than a version check, so an unrecognised body
+    /// keeps its bytes while the header still locates the tile.
+    #[test]
+    fn a_body_that_does_not_reconcile_keeps_its_blob_but_still_locates() {
+        let mut blob = nvnm(0x0000_003C, Err((4, 9)), &[[0.0, 0.0, 0.0]], &[], &[], 1);
+        // Truncate the trailing segment list: header intact, body short.
+        blob.truncate(blob.len() - 2);
+        let r = parse_navm(1, &[sub(b"NVNM", &blob)]);
+
+        assert_eq!(r.worldspace_form, Some(0x0000_003C));
+        assert_eq!(r.grid, Some((4, 9)), "the header still locates the tile");
+        assert!(!r.has_decoded_geometry(), "…but the body is not guessed at");
+        assert_eq!(r.packed_geometry.as_deref(), Some(&blob[..]));
+    }
+
+    /// Trailing bytes are as disqualifying as missing ones: a body that
+    /// under-consumes means the layout is not the one this decoder knows.
+    #[test]
+    fn a_body_with_trailing_bytes_is_not_accepted() {
+        let mut blob = nvnm(0, Ok(0x10), &[[0.0, 0.0, 0.0]], &[], &[], 1);
+        blob.push(0xFF);
+        let r = parse_navm(1, &[sub(b"NVNM", &blob)]);
+        assert!(!r.has_decoded_geometry());
+        assert!(r.packed_geometry.is_some());
+    }
+
+    /// A garbage `divisor` must not turn into a multi-billion-iteration walk.
+    #[test]
+    fn an_absurd_segment_divisor_is_rejected_rather_than_walked() {
+        let mut blob = nvnm(0, Ok(0x10), &[[0.0, 0.0, 0.0]], &[], &[], 1);
+        // Overwrite the divisor word (last 4 + 32 + 4 bytes back) with 0xFFFF.
+        let divisor_at = blob.len() - 4 - 32 - 4;
+        blob[divisor_at..divisor_at + 4].copy_from_slice(&0xFFFFu32.to_le_bytes());
+        let r = parse_navm(1, &[sub(b"NVNM", &blob)]);
+        assert!(r.packed_geometry.is_some(), "bounded, and no geometry");
+        assert!(!r.has_decoded_geometry());
+    }
+
+    #[test]
+    fn a_truncated_header_retains_the_blob_and_reports_nothing() {
         let r = parse_navm(1, &[sub(b"NVNM", &[1, 2, 3, 4])]);
         assert_eq!(r.packed_geometry.as_deref(), Some(&[1u8, 2, 3, 4][..]));
         assert!(!r.has_decoded_geometry());
         assert!(r.vertices.is_empty());
+        assert_eq!(r.worldspace_form, None);
     }
 
     #[test]

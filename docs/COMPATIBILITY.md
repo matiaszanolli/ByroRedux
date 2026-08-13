@@ -220,7 +220,7 @@ Bars are eyeballed weight, not a computed metric — read the rows, not the bars
 | `[ ]` | Ragdoll — FO4 / FO76 / Starfield | — | Blocked on `BhkSystemBinary` |
 | `[ ]` | Havok cloth / hair physics | Skyrim+ | Parser arm exists; no sim |
 | `[ ]` | Destruction (DEST records) | — | |
-| `[ ]` | Navmesh pathfinding | NAVM/NAVI | NAVM record dispatched; **no path graph, no A\*** |
+| `[~]` | Navmesh pathfinding | NAVM/NAVI | Geometry + cross-cell links decoded for Oblivion-era typed `NVVX`/`NVTR`/`NVEX` **and** the Skyrim-era packed `NVNM` (#2738); FO4 keeps its blob (body layout diverges) though every tile still locates. **No path graph, no A\*, no actor consumer yet** |
 | `[ ]` | Water buoyancy / swimming | — | |
 
 ## 9. Scripting & game logic
