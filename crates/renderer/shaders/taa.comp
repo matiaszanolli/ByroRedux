@@ -153,15 +153,34 @@ void main() {
     // history reset on bit-31 toggle alone. The dedicated `alphaBlend`
     // path below covers the actual transparency case.
     bool background = currSurface == 0u;
-    bool disocclusion = currSurface != (prevMid & 0x7FFFFFFFu);
+
+    // #2760 (REN-D13-02) — geometry/sky silhouettes never stabilize under
+    // TAA jitter: sky is synthesised later in composite.frag and never
+    // exists in this HDR attachment, so the sky side of a silhouette
+    // carries only the render-pass clear colour and mesh_id 0. Sub-pixel
+    // Halton jitter flips which side of the edge a given pixel centre
+    // falls on every frame; with a parked camera the motion vector is
+    // exactly zero, so the SAME screen pixel reprojects to itself and
+    // alternates covered/uncovered forever — a permanent, not one-frame,
+    // disocclusion. Treat "current is real geometry, reprojected sample
+    // was sky" as its own case: still refuse the (garbage) history colour,
+    // but via the tight variance clamp below instead of a hard bypass, so
+    // the pixel still gets the current-frame neighbourhood-mean box filter
+    // instead of zero antialiasing. Ordinary disocclusion between two real
+    // surfaces (neither side is sky) is untouched.
+    bool disocclusionFromSky = currSurface != 0u && (prevMid & 0x7FFFFFFFu) == 0u;
+    bool disocclusion = !disocclusionFromSky && currSurface != (prevMid & 0x7FFFFFFFu);
 
     // Surface IDs alone do not reject history at folds within a single mesh
     // (walls/furniture are commonly batched into one instance). Compare the
     // octahedral G-buffer normals at the reprojected location as the missing
-    // surface-consistency test.
+    // surface-consistency test. Skipped for the sky-transition case above —
+    // the reprojected G-buffer normal at a formerly-sky pixel is clear-value
+    // garbage, not a real surface, so comparing against it would just
+    // reintroduce the same hard reject through this second reject term.
     vec3 currNormal = oct_decode(texelFetch(uCurrNormal, pix, 0).rg);
     vec3 prevNormal = oct_decode(texelFetch(uPrevNormal, prevPix, 0).rg);
-    bool surfaceMismatch = dot(currNormal, prevNormal) < 0.85;
+    bool surfaceMismatch = !disocclusionFromSky && dot(currNormal, prevNormal) < 0.85;
 
     // Alpha-blend opt-out: bit 31 of the mesh_id is set on transparent
     // fragments by triangle.frag. History reprojection would sample
@@ -208,7 +227,17 @@ void main() {
     // producing residual flicker. γ=1.5 widens the variance window enough
     // to keep those samples while still rejecting genuine ghosting from
     // disocclusions.
-    const float gamma = 1.5;
+    //
+    // #2760 — collapsed to 0 for the sky-transition case identified above:
+    // `yMin == yMax == mean` forces `clampedHist` to exactly the current
+    // frame's own 3×3 neighbourhood mean regardless of what `histRgb`
+    // actually samples (the clamp below is degenerate at a zero-width
+    // window), so the untrustworthy reprojected sky/clear colour never
+    // contributes. The final luma-weighted blend then averages the current
+    // sample against its own neighbourhood mean — a cheap box-filtered
+    // antialias — instead of the single-sample pass-through a hard reject
+    // would give.
+    float gamma = disocclusionFromSky ? 0.0 : 1.5;
     vec3 yMin = mean - gamma * sigma;
     vec3 yMax = mean + gamma * sigma;
 

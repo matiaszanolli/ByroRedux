@@ -56,7 +56,9 @@ layout(location = 10) in vec4 fragTangent;
 layout(location = 0) out vec4 outColor;        // HDR color (direct light only)
 layout(location = 1) out vec2 outNormal;       // octahedral-encoded normal (RG16_SNORM). #275
 layout(location = 2) out vec2 outMotion;       // screen-space motion vector
-layout(location = 3) out uint outMeshID;       // per-instance ID + 1
+layout(location = 3) out uint outMeshID;       // stable surface ID (opaque) or
+                                                // sorted instance idx + ALPHA_BLEND_NO_HISTORY
+                                                // bit (alpha-blended); see the assignment below
 layout(location = 4) out vec4 outRawIndirect;  // demodulated indirect light (for SVGF)
 layout(location = 5) out vec4 outAlbedo;       // surface color (composite re-multiplies)
 // FSR 3.1 reconstruction masks. Both are cleared to zero and MAX-blended,

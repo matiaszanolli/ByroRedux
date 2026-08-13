@@ -156,7 +156,10 @@ pub(super) fn create_render_pass(
     //                                       alpha draw index + 1 for caustics.
     //                                       Bit 31
     //                                       (0x80000000) is the ALPHA_BLEND_NO_HISTORY
-    //                                       flag (`triangle.frag:1532`), so the
+    //                                       flag, written by `triangle.frag`'s
+    //                                       `outMeshID` assignment (search
+    //                                       `0x80000000u` there — a raw line
+    //                                       number drifts, #2757), so the
     //                                       encoding ceiling is 0x7FFFFFFF
     //                                       distinct IDs — `MAX_INSTANCES`
     //                                       sits well below that to bound the

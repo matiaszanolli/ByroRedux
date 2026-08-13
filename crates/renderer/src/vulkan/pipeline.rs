@@ -840,7 +840,8 @@ pub fn create_ui_pipeline(
     ];
 
     // UI pipeline uses the lightweight UiVertex (position + UV only, 20 bytes)
-    // instead of the full 100-byte Vertex (post-M-NORMALS, #783) with unused
+    // instead of the full 104-byte Vertex (color widened vec3→vec4, `cd2b5fe4`;
+    // pinned by `vertex_size_matches_attribute_stride`, #2761) with unused
     // bone / normal / color / tangent fields.
     let binding_descriptions = [UiVertex::binding_description()];
     let attribute_descriptions = UiVertex::attribute_descriptions();
