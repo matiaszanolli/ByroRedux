@@ -140,6 +140,11 @@ impl TemplateCache {
     /// Resolve a BGSM + its template chain. The same path is guaranteed
     /// to return `Arc::ptr_eq`-identical results between calls as long
     /// as the entry stays in the cache.
+    ///
+    /// **Cyclic chains are the exception** and are deliberately never
+    /// cached — see [`Self::resolve_depth`] (#2701). They re-parse on
+    /// every resolve, which is the price of load-order-independent
+    /// results on broken authoring.
     pub fn resolve<R: TemplateResolver>(
         &mut self,
         resolver: &mut R,
@@ -148,9 +153,37 @@ impl TemplateCache {
         const DEPTH_LIMIT: usize = 16;
         let mut visited: Vec<String> = Vec::new();
         self.resolve_depth(resolver, path, DEPTH_LIMIT, &mut visited)
+            .map(|(resolved, _truncated)| resolved)
     }
 
     /// Recursive resolve with cycle detection.
+    ///
+    /// Returns `(resolved, truncated)`, where `truncated` is `true` when
+    /// this node's chain was cut short by cycle detection — either here
+    /// or anywhere below it. A truncated chain is **not** cached (#2701):
+    /// where a walk breaks a cycle depends on which node it entered from,
+    /// so a cached truncation would leak one root's answer to another.
+    ///
+    /// Concretely, with the cycle `B → C → B`:
+    ///
+    /// * entering at `A` (`A → B → C → B`) breaks at `C`, giving
+    ///   `A → B → C(end)`;
+    /// * entering at `D` (`D → C → B → C`) breaks at `B`, giving
+    ///   `D → C → B(end)`.
+    ///
+    /// Both are correct for their own root. Caching either one hands the
+    /// other root a chain it would never have resolved: pre-fix, the
+    /// A-walk left `c.bgsm` cached with `parent: None`, so a later
+    /// standalone `resolve("c.bgsm")` — whose correct chain is
+    /// `C → B(end)` — hit the cache and got depth 1 instead of 2, losing
+    /// every field `b.bgsm` authored. Which chain a material got depended
+    /// on which material the cell happened to load first.
+    ///
+    /// The flag propagates up rather than suppressing only the detecting
+    /// node, because an ancestor's entry embeds the truncated `Arc`: with
+    /// `B` cached as `B → C(end)` from the A-walk, the later D-walk would
+    /// resolve `C` fresh, hit that cached `B`, and produce
+    /// `D → C → B → C(end)` — a chain with `C` on it twice.
     ///
     /// `visited` tracks the canonicalised (lowercase) keys of every
     /// ancestor on the current walk. When a parent's key matches an
@@ -171,11 +204,14 @@ impl TemplateCache {
         path: &str,
         remaining: usize,
         visited: &mut Vec<String>,
-    ) -> Result<Arc<ResolvedMaterial>, ResolveError> {
+    ) -> Result<(Arc<ResolvedMaterial>, bool), ResolveError> {
         let key = path.to_ascii_lowercase();
 
         if let Some(hit) = self.entries.get(&key) {
-            return Ok(Arc::clone(hit));
+            // Cache entries are cycle-free by construction (the insert
+            // below is skipped for truncated chains), so a hit never
+            // carries a truncation up to its caller.
+            return Ok((Arc::clone(hit), false));
         }
 
         if remaining == 0 {
@@ -196,6 +232,7 @@ impl TemplateCache {
 
         // Capture the parent path BEFORE moving `file` into the Arc.
         let parent_path = file.root_material_path.clone();
+        let mut truncated = false;
         let parent = match parent_path {
             Some(pp) if !pp.is_empty() => {
                 let parent_key = pp.to_ascii_lowercase();
@@ -207,20 +244,28 @@ impl TemplateCache {
                     // first-Some-wins, so the cycle anchor's fields
                     // surfaced when it was first walked). Terminating
                     // here just prevents the loop.
+                    truncated = true;
                     None
                 } else {
                     visited.push(key.clone());
                     let result = self.resolve_depth(resolver, &pp, remaining - 1, visited);
                     visited.pop();
-                    Some(result?)
+                    let (parent, parent_truncated) = result?;
+                    truncated |= parent_truncated;
+                    Some(parent)
                 }
             }
             _ => None,
         };
 
         let resolved = Arc::new(ResolvedMaterial { file, parent });
-        self.insert(key, Arc::clone(&resolved));
-        Ok(resolved)
+        // #2701 — a chain cut by cycle detection is only valid for the
+        // walk that produced it; see this fn's doc. Caching it would make
+        // a material's resolved chain depend on cell load order.
+        if !truncated {
+            self.insert(key, Arc::clone(&resolved));
+        }
+        Ok((resolved, truncated))
     }
 
     fn insert(&mut self, key: String, value: Arc<ResolvedMaterial>) {
@@ -572,26 +617,105 @@ mod tests {
         assert!(chain[2].parent.is_none());
     }
 
+    /// #2701 — the real invariant this test was always named for. The
+    /// previous version asserted the opposite: that a self-referential
+    /// file *is* cached (`Arc::ptr_eq` + `len() == 1`), and its own
+    /// comment conceded it only held "if it was discovered via the cycle
+    /// path". A truncated chain is valid only for the walk that produced
+    /// it, so caching it makes a material's resolved chain depend on
+    /// which material the cell loaded first.
     #[test]
     fn cycle_break_does_not_pollute_cache_with_partial_chains() {
-        // The cycle-broken parent must NOT be cached as a partial
-        // chain — another root resolving the same path with a
-        // different visited prefix would see incorrect terminal-None.
-        // Today: cycle-break sets parent = None on the LEAF that
-        // detects the cycle; that leaf already has a valid cache
-        // entry, but only if it was discovered via the cycle path.
-        //
-        // The simplest invariant: a self-referential file resolves
-        // once and the same Arc is returned on repeat. Verifies the
-        // cache survives the cycle path.
+        // A → B → C → B. The A-rooted walk breaks at C, so C's entry
+        // would read `parent: None` — but C's *own* correct chain is
+        // C → B(end). Pre-fix the second resolve hit that cache entry
+        // and got depth 1: every field b.bgsm authored vanished, and
+        // which of the two chains C received depended on load order.
+        let mut resolver = StubResolver::new();
+        resolver.add("a.bgsm", bgsm_with_template("b.bgsm"));
+        resolver.add("b.bgsm", bgsm_with_template("c.bgsm"));
+        resolver.add("c.bgsm", bgsm_with_template("b.bgsm"));
+
+        let mut cache = TemplateCache::new(16);
+        let from_a = cache.resolve(&mut resolver, "a.bgsm").unwrap();
+        assert_eq!(from_a.depth(), 3, "A → B → C(end)");
+        assert_eq!(
+            cache.len(),
+            0,
+            "nothing on a cycle-truncated chain may be cached — not the \
+             detecting node, and not the ancestors whose entries embed it"
+        );
+
+        // The standalone resolve now sees C's own chain, not A's leftovers.
+        let standalone_c = cache.resolve(&mut resolver, "c.bgsm").unwrap();
+        assert_eq!(
+            standalone_c.depth(),
+            2,
+            "C → B(end) — resolving C on its own must not inherit the \
+             A-rooted walk's truncation point"
+        );
+        let chain: Vec<_> = standalone_c.walk().collect();
+        assert_eq!(chain[0].file.root_material_path.as_deref(), Some("b.bgsm"));
+        assert!(chain[1].parent.is_none(), "cycle break at B this time");
+    }
+
+    /// #2701 — the truncation flag must propagate to ancestors, not just
+    /// suppress the detecting node. An ancestor's entry embeds the
+    /// truncated `Arc`, so caching it hands the next root a chain it
+    /// would never have resolved.
+    #[test]
+    fn cycle_truncation_does_not_leak_through_a_cached_ancestor() {
+        // Same B ⇄ C cycle, entered from both sides.
+        let mut resolver = StubResolver::new();
+        resolver.add("a.bgsm", bgsm_with_template("b.bgsm"));
+        resolver.add("b.bgsm", bgsm_with_template("c.bgsm"));
+        resolver.add("c.bgsm", bgsm_with_template("b.bgsm"));
+        resolver.add("d.bgsm", bgsm_with_template("c.bgsm"));
+
+        let mut cache = TemplateCache::new(16);
+        let from_a = cache.resolve(&mut resolver, "a.bgsm").unwrap();
+        assert_eq!(from_a.depth(), 3, "A → B → C(end)");
+
+        // If B had been cached as `B → C(end)` by the walk above, this
+        // D-rooted walk would resolve C fresh, hit that B, and build
+        // D → C → B → C(end): four nodes with C on the chain twice.
+        let from_d = cache.resolve(&mut resolver, "d.bgsm").unwrap();
+        assert_eq!(from_d.depth(), 3, "D → C → B(end)");
+        let chain: Vec<_> = from_d.walk().collect();
+        assert_eq!(chain[0].file.root_material_path.as_deref(), Some("c.bgsm"));
+        assert_eq!(chain[1].file.root_material_path.as_deref(), Some("b.bgsm"));
+        assert!(chain[2].parent.is_none(), "cycle break at B, not at C");
+    }
+
+    /// #2701 follow-on: the price of the rule above is that cyclic
+    /// chains re-parse on every resolve. Pinned so the cost is a
+    /// decision rather than a surprise — and so that *clean* chains are
+    /// shown to still cache normally, which is the case that matters for
+    /// vanilla content.
+    #[test]
+    fn cyclic_chains_reparse_while_clean_chains_still_cache() {
         let mut resolver = StubResolver::new();
         resolver.add("self.bgsm", bgsm_with_template("self.bgsm"));
+        resolver.add("clean.bgsm", bgsm_with_template("root.bgsm"));
+        resolver.add("root.bgsm", bgsm_with_template(""));
 
         let mut cache = TemplateCache::new(16);
         let first = cache.resolve(&mut resolver, "self.bgsm").unwrap();
         let second = cache.resolve(&mut resolver, "self.bgsm").unwrap();
-        assert!(Arc::ptr_eq(&first, &second), "second resolve hits cache");
-        assert_eq!(cache.len(), 1);
+        assert!(
+            !Arc::ptr_eq(&first, &second),
+            "a self-referential file re-resolves rather than returning a \
+             cached truncation"
+        );
+        assert_eq!(first.depth(), second.depth(), "…and resolves identically");
+        assert_eq!(cache.len(), 0, "the cycle contributed no entries");
+
+        // A clean chain is unaffected: both nodes cached, repeat resolve
+        // is Arc-identical.
+        let clean_first = cache.resolve(&mut resolver, "clean.bgsm").unwrap();
+        let clean_second = cache.resolve(&mut resolver, "clean.bgsm").unwrap();
+        assert!(Arc::ptr_eq(&clean_first, &clean_second));
+        assert_eq!(cache.len(), 2, "clean.bgsm + root.bgsm");
     }
 
     #[test]
