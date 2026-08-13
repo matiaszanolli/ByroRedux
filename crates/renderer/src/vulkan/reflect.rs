@@ -614,6 +614,126 @@ mod tests {
         }
     }
 
+    /// Regression: #2464. `GpuDalcCube` is a `#[repr(C)]` UBO uploaded to
+    /// set 1 / binding 14, mirrored by a hand-written GLSL block — the exact
+    /// shape #1447 built this reflection guard for — but it was never added
+    /// to the pinned list, and there was no Rust-side `size_of` pin either.
+    ///
+    /// The hazard is live rather than theoretical: `specular_fresnel` is
+    /// documented as "reserved for future per-cell specular tint plumbing",
+    /// i.e. a field expected to grow a consumer. A Rust-side append that
+    /// missed the GLSL block would shift every ambient-cube axis the
+    /// fragment shader reads, mis-tinting interior ambient on every Skyrim
+    /// `WTHR.DALC` cell — with no validation error, because the binding
+    /// shape would still match.
+    ///
+    /// Note `water.frag` reads the block too, not just `triangle.frag`.
+    #[test]
+    fn dalc_cube_ubo_size_matches_gpu_dalc_cube_in_every_shader() {
+        use crate::vulkan::scene_buffer::GpuDalcCube;
+        let expected = std::mem::size_of::<GpuDalcCube>() as u32;
+        let shaders: &[(&str, &[u8])] = &[
+            (
+                "triangle.frag",
+                include_bytes!("../../shaders/triangle.frag.spv"),
+            ),
+            ("water.frag", include_bytes!("../../shaders/water.frag.spv")),
+        ];
+        for (name, spv) in shaders {
+            let size = uniform_block_size_by_name(spv, "DalcCubeUBO")
+                .unwrap_or_else(|e| panic!("{name}: reflect DalcCubeUBO failed: {e}"))
+                .unwrap_or_else(|| panic!("{name}: declares no DalcCubeUBO block"));
+            assert_eq!(
+                size, expected,
+                "{name}.spv DalcCubeUBO is {size} B but GpuDalcCube is {expected} B — \
+                 the shader's committed .spv is stale; recompile it \
+                 (glslangValidator -V {name} -o {name}.spv from crates/renderer/shaders). See #2464."
+            );
+        }
+    }
+
+    /// Regression: #2464 (sibling sweep). Auditing #2464 showed `DalcCubeUBO`
+    /// was not the only unpinned uniform block — every other UBO in the tree
+    /// had the same gap, while the three pinned ones (`CameraUBO`,
+    /// `VolumetricsParams`, `IntegrationParams`) each got their guard only
+    /// after a stale-`.spv` bug had already shipped (#1447, #1493).
+    ///
+    /// This closes the set: every `layout(set = …) uniform` block that has a
+    /// `#[repr(C)]` host struct behind it is now size-pinned, so the next
+    /// drift is caught by the suite rather than by a rendering artifact.
+    /// Push constants are deliberately out of scope — they are bounded by
+    /// `VkPhysicalDeviceLimits::maxPushConstantsSize` and validated at pipeline
+    /// creation, so they fail loudly rather than silently.
+    ///
+    /// Both bloom passes name their block `Params`; they are distinct structs
+    /// and are pinned separately.
+    #[test]
+    fn every_remaining_uniform_block_size_matches_its_host_struct() {
+        use crate::vulkan::bloom::{DownsampleParams, UpsampleParams};
+        use crate::vulkan::caustic::CausticParams;
+        use crate::vulkan::composite::CompositeParams;
+        use crate::vulkan::ssao::SsaoParams;
+        use crate::vulkan::svgf::SvgfTemporalParams;
+        use crate::vulkan::taa::TaaParams;
+
+        // (shader, .spv, GLSL block name, expected host size)
+        let cases: &[(&str, &[u8], &str, u32)] = &[
+            (
+                "composite.frag",
+                include_bytes!("../../shaders/composite.frag.spv"),
+                "CompositeParams",
+                std::mem::size_of::<CompositeParams>() as u32,
+            ),
+            (
+                "taa.comp",
+                include_bytes!("../../shaders/taa.comp.spv"),
+                "TaaParams",
+                std::mem::size_of::<TaaParams>() as u32,
+            ),
+            (
+                "caustic_splat.comp",
+                include_bytes!("../../shaders/caustic_splat.comp.spv"),
+                "CausticParams",
+                std::mem::size_of::<CausticParams>() as u32,
+            ),
+            (
+                "svgf_temporal.comp",
+                include_bytes!("../../shaders/svgf_temporal.comp.spv"),
+                "SvgfTemporalParams",
+                std::mem::size_of::<SvgfTemporalParams>() as u32,
+            ),
+            (
+                "ssao.comp",
+                SSAO_SPV,
+                "SSAOParams",
+                std::mem::size_of::<SsaoParams>() as u32,
+            ),
+            (
+                "bloom_downsample.comp",
+                include_bytes!("../../shaders/bloom_downsample.comp.spv"),
+                "Params",
+                std::mem::size_of::<DownsampleParams>() as u32,
+            ),
+            (
+                "bloom_upsample.comp",
+                include_bytes!("../../shaders/bloom_upsample.comp.spv"),
+                "Params",
+                std::mem::size_of::<UpsampleParams>() as u32,
+            ),
+        ];
+        for (name, spv, block, expected) in cases {
+            let size = uniform_block_size_by_name(spv, block)
+                .unwrap_or_else(|e| panic!("{name}: reflect {block} failed: {e}"))
+                .unwrap_or_else(|| panic!("{name}: declares no {block} block"));
+            assert_eq!(
+                size, *expected,
+                "{name}.spv {block} is {size} B but the host struct is {expected} B — \
+                 the shader's committed .spv is stale; recompile it \
+                 (glslangValidator -V {name} -o {name}.spv from crates/renderer/shaders). See #2464."
+            );
+        }
+    }
+
     /// Regression: #1917 / #1926. Commit `977eb95a` rewrote `composite.frag`'s
     /// volumetric-apply block from a runtime `if (params.depth_params.z >
     /// 0.5) {...} else {...}` branch to the unconditional

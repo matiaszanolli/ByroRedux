@@ -93,14 +93,14 @@ pub const DEFAULT_BLOOM_INTENSITY: f32 = crate::shader_constants::BLOOM_INTENSIT
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct DownsampleParams {
+pub(crate) struct DownsampleParams {
     /// xy = 1 / src_resolution, zw = 1 / dst_resolution
     inv_resolutions: [f32; 4],
 }
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct UpsampleParams {
+pub(crate) struct UpsampleParams {
     /// xy = 1 / smaller_resolution, zw = 1 / dst_resolution
     inv_resolutions: [f32; 4],
 }

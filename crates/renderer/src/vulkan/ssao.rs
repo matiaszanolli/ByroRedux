@@ -19,7 +19,7 @@ const SSAO_COMP_SPV: &[u8] = include_bytes!("../../shaders/ssao.comp.spv");
 /// SSAO parameters uploaded as a UBO.
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct SsaoParams {
+pub(crate) struct SsaoParams {
     /// View-projection matrix (column-major).
     view_proj: [[f32; 4]; 4],
     /// Precomputed `inverse(viewProj)` for world-space reconstruction from depth.
