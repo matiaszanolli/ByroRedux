@@ -627,6 +627,13 @@ final `up_mips[0]` is what composite adds to scene HDR before tone-mapping
 talk slides would be required to avoid violating the no-guessing rule, and
 the box filter lands ~80% of the visual win unambiguously.
 
+`BloomPipeline` owns **one complete pyramid per frame-in-flight**. That is
+load-bearing, not incidental: `dispatch()` rewrites `down_descriptor_sets[0]`
+binding 0 each frame and writes every mip with no pre-barrier, which is sound
+only because each slot's images are exclusive to that slot and gated by the
+frame fence (#931). See [memory-budget.md](memory-budget.md#bloom) for the
+resulting footprint.
+
 ## Volumetric lighting (M55)
 
 [`vulkan/volumetrics.rs`](../../crates/renderer/src/vulkan/volumetrics.rs)

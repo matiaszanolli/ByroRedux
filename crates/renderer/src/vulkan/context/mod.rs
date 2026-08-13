@@ -1311,6 +1311,26 @@ pub struct VulkanContext {
     /// clear required. Adding entries that hold device-side
     /// resources here would invalidate this contract.
     pub failed_skin_slots: std::collections::HashSet<byroredux_core::ecs::storage::EntityId>,
+    /// Entities whose first-sight `build_skinned_blas_batched_on_cmd`
+    /// returned an error on a prior frame — the BLAS sibling of
+    /// [`Self::failed_skin_slots`] (#2802 / REN-D9-2026-08-12-03).
+    ///
+    /// The slot set gates *slot allocation* only, and a build failure
+    /// leaves the slot behind, so `needs_slot` is false on the next
+    /// frame and that gate never fires. The entity therefore re-entered
+    /// the size query + build every frame and logged **two** WARNs per
+    /// frame: the build failure itself, plus the refit that then could
+    /// not find the BLAS the build never produced. Both fire precisely
+    /// under the VRAM pressure that caused the failure.
+    ///
+    /// Cleared with `failed_skin_slots` on any LRU eviction — the same
+    /// "capacity opened up, retry once" rule, for the same reason (an
+    /// AS allocation failure is a memory-pressure signal, and eviction
+    /// is the event that changes it).
+    ///
+    /// Drop contract: same as `failed_skin_slots` — host-side ids only,
+    /// no Vulkan handles.
+    pub failed_skin_blas: std::collections::HashSet<byroredux_core::ecs::storage::EntityId>,
     /// Cell-unload victims pending skin-slot teardown. Populated by
     /// `unload_cell`, drained by the per-frame eviction pass at the
     /// top of `draw_frame` (after the fence wait that retires any
@@ -2900,6 +2920,7 @@ impl VulkanContext {
             skin_palette,
             skin_slots: std::collections::HashMap::new(),
             failed_skin_slots: std::collections::HashSet::new(),
+            failed_skin_blas: std::collections::HashSet::new(),
             pending_skin_unload_victims: Vec::new(),
             last_skin_coverage_frame: super::skin_compute::SkinCoverageFrame::default(),
             last_draw_call_stats: DrawCallStats::default(),
@@ -3315,6 +3336,9 @@ impl VulkanContext {
         stats.first_sight_succeeded = f.first_sight_succeeded;
         stats.refits_attempted = f.refits_attempted;
         stats.refits_succeeded = f.refits_succeeded;
+        // #2803 — host-side chain cost, same-frame (not fence-lagged
+        // like the GPU brackets below).
+        stats.cpu_skin_chain_ms = f.cpu_skin_chain_ns as f32 / 1.0e6;
         // #1194 — GPU timer snapshot. Zeros when timer unavailable
         // (driver lacks timestamp support) or first pipelined cycle
         // hasn't completed.

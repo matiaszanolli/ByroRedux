@@ -523,6 +523,15 @@ impl ConsoleCommand for SkinCoverageCommand {
             "  refits_succeeded       = {}",
             cov.refits_succeeded,
         ));
+        // #2803 — CPU-side cost of driving the whole skinned chain
+        // (dispatch + first-sight builds + refits + eviction). Same
+        // frame as the counters above, unlike the fence-lagged GPU
+        // timers below; a large value here with small GPU brackets
+        // means the host recording, not the device, is the cost.
+        lines.push(format!(
+            "  cpu_skin_chain_ms      = {:.3}  (host: dispatch + builds + refits + eviction)",
+            cov.cpu_skin_chain_ms,
+        ));
         // #1194 — per-pass GPU timer. ms == 0.0 means either the
         // driver lacks timestampComputeAndGraphics OR the bracket
         // didn't fire this snapshot (skinned chain skipped, TAA

@@ -268,6 +268,18 @@ impl VulkanContext {
                         if needs_slot && self.failed_skin_slots.contains(&entity_id) {
                             continue;
                         }
+                        // #2802 — the BLAS sibling of the gate above.
+                        // A failed first-sight build leaves the slot
+                        // behind, so `needs_slot` is false from the next
+                        // frame on and the slot gate can never suppress
+                        // it; without this the entity re-ran the size
+                        // query + build every frame and logged two WARNs
+                        // per frame (build + the refit that then finds no
+                        // BLAS). Same clear rule: LRU eviction re-opens
+                        // the retry.
+                        if needs_blas && self.failed_skin_blas.contains(&entity_id) {
+                            continue;
+                        }
                         self.last_skin_coverage_frame.first_sight_attempted += 1;
                         if needs_slot {
                             match skin_pipeline.create_slot(&self.device, alloc, vertex_count) {
@@ -482,10 +494,18 @@ impl VulkanContext {
                                             // entity unchanged.
                                             built_this_frame.insert(entity_id);
                                         }
+                                        // #2802 — record the failure so the
+                                        // retry is suppressed until an LRU
+                                        // eviction re-opens it: one WARN per
+                                        // pressure episode instead of one per
+                                        // frame, per entity.
                                         Err(e) => {
                                             log::warn!(
-                                                "skin_compute first-sight BLAS build failed for entity {entity_id}: {e}"
+                                                "skin_compute first-sight BLAS build failed for entity {entity_id}: {e} \
+                                                 — skinned RT disabled for this entity until an eviction frees capacity \
+                                                 (raster unaffected)"
                                             );
+                                            self.failed_skin_blas.insert(entity_id);
                                         }
                                     }
                                 }
@@ -561,6 +581,22 @@ impl VulkanContext {
                                     // skip — counts via `dispatches_skipped`
                                     // is the dispatch's responsibility;
                                     // refit just falls through silently.
+                                    continue;
+                                }
+                                // #2802 — an entity with no BLAS cannot be
+                                // refitted: `refit_skinned_blas` submits
+                                // `mode = UPDATE` against an existing
+                                // structure, so it would fail its "no
+                                // skinned BLAS for entity" lookup and WARN.
+                                // That state means this frame's first-sight
+                                // build failed or was suppressed, and the
+                                // first-sight path owns the retry — skip
+                                // silently rather than counting an attempt
+                                // that could never succeed. This is also
+                                // what makes `refits_attempted` match its
+                                // documented meaning ("entities with a slot
+                                // AND an existing BLAS").
+                                if !accel.has_skinned_blas(entity_id) {
                                     continue;
                                 }
                                 // Past the slot gate → coverage counts a
@@ -689,10 +725,20 @@ impl VulkanContext {
                     // it re-enters the cache via the failure path.
                     // See #900.
                     self.failed_skin_slots.clear();
+                    // #2802 — same event, same reason: a failed BLAS
+                    // build is a memory-pressure signal, and eviction is
+                    // what changes that pressure.
+                    self.failed_skin_blas.clear();
                 }
             }
         }
-        let _skin_chain_ns = skin_t0.elapsed().as_nanos() as u64;
+        // #2803 — the host-side cost of the whole skinned chain
+        // (dispatch loop + first-sight builds + refits + eviction),
+        // measured since M29 but discarded until this counter gave it a
+        // consumer. Surfaced through `SkinCoverageStats` /
+        // `skin.coverage`; distinct from the GPU brackets (#1194), which
+        // time the device work this function only records.
+        self.last_skin_coverage_frame.cpu_skin_chain_ns = skin_t0.elapsed().as_nanos() as u64;
     }
 }
 
@@ -743,6 +789,122 @@ mod skin_built_this_frame_skip_tests {
     }
 }
 
+// #2802 / REN-D9-2026-08-12-03 — a failed first-sight BLAS build must be
+// recorded, suppressed, and never chased by a refit that cannot succeed.
+// Same source-position pinning as the sibling modules here: the code sits
+// inside `draw_frame`'s live-Vulkan-device path, so structural position is
+// what's checkable without a GPU.
+#[cfg(test)]
+mod skin_blas_build_failure_suppression_tests {
+    #[test]
+    fn failed_builds_are_recorded_gated_and_cleared_with_the_slot_set() {
+        let src = include_str!("skinned_blas_refit.rs");
+
+        let gate_pos = src
+            .find("if needs_blas && self.failed_skin_blas.contains(&entity_id) {")
+            .expect(
+                "the first-sight path must skip entities whose previous BLAS build failed \
+                 — the `failed_skin_slots` gate cannot cover them, because a failed build \
+                 leaves the slot behind so `needs_slot` is false from the next frame on \
+                 (#2802)",
+            );
+        let attempted_pos = src
+            .find("self.last_skin_coverage_frame.first_sight_attempted += 1;")
+            .expect("the first-sight path must count attempts");
+        assert!(
+            gate_pos < attempted_pos,
+            "the failed-BLAS gate must precede the attempt counter, like the \
+             failed-slot gate above it, so the coverage gauge reports real attempts \
+             rather than entities the loop visited (#2802)"
+        );
+
+        let insert_pos = src
+            .find("self.failed_skin_blas.insert(entity_id);")
+            .expect("a failed first-sight build must record the entity (#2802)");
+        let build_err_pos = src
+            .find("\"skin_compute first-sight BLAS build failed for entity {entity_id}: {e}")
+            .expect("the first-sight build failure must still log");
+        assert!(
+            build_err_pos < insert_pos,
+            "the record must live in the build-failure arm, next to its WARN — \
+             recording anywhere else would suppress entities that never failed"
+        );
+
+        let slot_clear_pos = src
+            .find("self.failed_skin_slots.clear();")
+            .expect("the eviction path must clear the failed-slot set (#900)");
+        let blas_clear_pos = src.find("self.failed_skin_blas.clear();").expect(
+            "the eviction path must clear the failed-BLAS set too — otherwise a \
+                 build that failed once under memory pressure is suppressed for the \
+                 rest of the session even after capacity frees up (#2802)",
+        );
+        assert!(
+            slot_clear_pos < blas_clear_pos,
+            "both sets must clear at the same eviction site; capacity opening up is \
+             the one event that makes either retry worth re-running"
+        );
+    }
+
+    #[test]
+    fn the_refit_loop_skips_entities_that_have_no_blas_to_refit() {
+        let src = include_str!("skinned_blas_refit.rs");
+
+        let no_blas_guard_pos = src.find("if !accel.has_skinned_blas(entity_id) {").expect(
+            "the refit loop must skip entities with no BLAS — `refit_skinned_blas` \
+                 submits `mode = UPDATE` against an existing structure, so without this \
+                 a failed build produces a second WARN every frame (#2802)",
+        );
+        let refits_attempted_pos = src
+            .find("self.last_skin_coverage_frame.refits_attempted += 1;")
+            .expect("the refit loop must count attempted refits");
+        assert!(
+            no_blas_guard_pos < refits_attempted_pos,
+            "the no-BLAS skip must precede the counter, or `refits_attempted` counts \
+             attempts that could never succeed — the counter's own doc restricts it to \
+             entities with a slot AND an existing BLAS (#2802)"
+        );
+    }
+}
+
+// #2803 / REN-D9-2026-08-12-04 — the skin-chain wall time must land on the
+// coverage struct. It was measured every frame since M29 and dropped into a
+// `_`-prefixed local, which is exactly the shape that reads as "already
+// instrumented" while measuring nothing.
+#[cfg(test)]
+mod skin_chain_timing_is_consumed_tests {
+    #[test]
+    fn the_elapsed_time_is_stored_on_the_coverage_frame_not_discarded() {
+        let src = include_str!("skinned_blas_refit.rs");
+
+        // Matched as two fragments rather than one exact line so
+        // `cargo fmt` re-wrapping the statement can't fail the test for
+        // a cosmetic reason.
+        let store_pos = src
+            .find("self.last_skin_coverage_frame.cpu_skin_chain_ns =")
+            .expect(
+                "record_skinned_blas_refit must store its elapsed time on \
+                 `last_skin_coverage_frame` so `fill_skin_coverage_stats` can surface \
+                 it (#2803)",
+            );
+        assert!(
+            src[store_pos..].starts_with("self.last_skin_coverage_frame.cpu_skin_chain_ns =")
+                && src[store_pos..]
+                    .lines()
+                    .take(2)
+                    .any(|l| l.contains("skin_t0.elapsed().as_nanos()")),
+            "the stored value must be the skin-chain elapsed time itself (#2803)"
+        );
+        // Needle assembled at runtime: spelling it as one literal would
+        // make this assertion match its own source and always fail.
+        let discarded = format!("let _{}", "skin_chain_ns");
+        assert!(
+            !src.contains(&discarded),
+            "the discarded-local form is what #2803 removed — re-introducing it makes \
+             the measurement dead again"
+        );
+    }
+}
+
 // #2494 — the pending_skin_unload_victims drain and the SkinSlot LRU sweep
 // must run even on a frame where `global_vertex_buffer` / the per-frame
 // bone buffer is absent, or despawned entities' GPU memory and
@@ -775,8 +937,10 @@ mod skin_eviction_runs_without_global_vertex_buffer_tests {
             .find("evictees.extend(self.skin_slots.iter().filter_map(")
             .expect("the SkinSlot LRU sweep must exist");
         let skin_chain_ns_pos = src
-            .find("let _skin_chain_ns = skin_t0.elapsed()")
-            .expect("record_skinned_blas_refit must record its elapsed time");
+            .find("self.last_skin_coverage_frame.cpu_skin_chain_ns =")
+            .expect(
+                "record_skinned_blas_refit must record its elapsed time as the last thing                  it does (#2803 gave the measurement a consumer; it is still the anchor                  for the eviction-ordering assertions below)",
+            );
 
         assert!(
             guard_open_pos < guard_close_pos,

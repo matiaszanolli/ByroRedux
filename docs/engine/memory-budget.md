@@ -137,14 +137,26 @@ main render pass, read the following frame).
 
 [`bloom.rs`](../../crates/renderer/src/vulkan/bloom.rs) — a mip pyramid
 (5 down-levels + 4 up-levels, B10G11R11_UFLOAT_PACK32, 4 B/px) seeded
-from a **half-resolution** base, recomputed every frame with no
-history — not FIF-doubled, unlike everything else on this page.
+from a **half-resolution** base. The pyramid carries no history across
+frames, but it **is** FIF-doubled like everything else on this page:
+`BloomPipeline` owns one independent `BloomFrame` per frame-in-flight,
+each with its own down and up images.
 
-| Resolution | Down+up pyramid |
-|---|---|
-| 1920×1080 | ~3.5 MB |
-| 2560×1440 | ~6.2 MB |
-| 3840×2160 | ~13.8 MB |
+That is a requirement, not an oversight. `dispatch()` rewrites
+`down_descriptor_sets[0]` binding 0 every frame and writes every mip with
+no pre-barrier — sound only because each slot's images are exclusive to
+that slot and gated by the frame fence (the #931 barrier-reduction
+rationale). Collapsing `frames` to a single shared pyramid would
+reintroduce the cross-frame WAR that argument depends on being absent.
+
+Extents follow the **render** extent (`frame_extents.render`), so every
+figure below shrinks under any FSR preset.
+
+| Resolution | Per frame-in-flight | Total (2 FIF) |
+|---|---|---|
+| 1920×1080 | ~5.5 MB | ~11.0 MB |
+| 2560×1440 | ~9.8 MB | ~19.6 MB |
+| 3840×2160 | ~22.1 MB | ~44.1 MB |
 
 ### FSR 3.1 Upscaler (default, `5c7acfe2`)
 
@@ -398,7 +410,7 @@ the fence slot is complete before the tick runs (#418).
 | TAA history (2 FIF) | ~33 MB (1080p) | ~133 MB (4K) |
 | Glass + water caustics (2 FIF) | ~33 MB (1080p) | ~133 MB (4K) |
 | SSAO (2 FIF) | ~4 MB (1080p) | ~17 MB (4K) |
-| Bloom pyramid | ~4 MB (1080p) | ~14 MB (4K) |
+| Bloom pyramid (2 FIF) | ~11 MB (1080p) | ~44 MB (4K) |
 | Volumetrics froxel grid (2 volumes, 2 FIF) | ~29.5 MB (1080p) | ~118 MB (4K) |
 | FSR 3.1 upscaler output (2 FIF, output resolution) | ~33 MB (1080p) | ~133 MB (4K) — SDK working memory not separately tracked |
 | Vertex / index pools | ~208 MB | ~1.66 GB cap |
@@ -406,7 +418,7 @@ the fence slot is complete before the tick runs (#418).
 | BLAS structures | ~300 MB | ~1 GB (heavy scene) |
 | TLAS + scratch | ~50 MB | ~256 MB |
 | Pipeline cache blob | < 10 MB | — |
-| **Estimated total** | **~1.50 GB** | **< 4 GB target** |
+| **Estimated total** | **~1.52 GB** | **< 4 GB target** |
 
 The 6 GB RT-minimum and 4 GB budget ceiling are not enforced by code;
 they are design targets. The RTX 4070 Ti (12 GB) has headroom for all

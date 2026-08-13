@@ -131,11 +131,13 @@ layout(location = 7) out float outFsrTransparency;
 // WaterPipeline pipeline-layout shape declared in #1255.
 layout(set = 2, binding = 0, r32ui) uniform uimage2D waterCausticAccum;
 
-const float PI = 3.14159265359;
 const float REFLECTION_MAX_DIST = 5000.0;
 const float REFRACTION_MAX_DIST = 2000.0;
-const float SHORELINE_RAY_MAX   = 256.0;
 const float DIST_FALLOFF        = 0.0015; // matches triangle.frag
+// No SHORELINE_RAY_MAX here (#2804): the shoreline probe's tMax is the
+// authored `push.tune.z` (`shoreline_width`), not a shader constant. The
+// dead 256.0 that used to sit here read as the cap and contradicted the
+// live default (32.0) by 8x.
 
 // ── Hash / noise helpers ──────────────────────────────────────────────
 //
@@ -579,7 +581,11 @@ void main() {
     if (reflHit) {
         reflColor *= exp(-reflDist * DIST_FALLOFF);
     }
-    reflColor = mix(reflectionMiss, reflColor, reflHit ? 1.0 : 0.0);
+    // No miss re-select here (#2804): every `hit = false` path in
+    // `traceWaterRay` already returns `missFallback`, which is exactly
+    // `reflectionMiss`, so the former
+    // `mix(reflectionMiss, reflColor, reflHit ? 1.0 : 0.0)` selected
+    // `reflColor` in both branches.
     // WATR DATA reflection_color is a filter on reflected radiance. It must
     // not be mixed into the shared ray terminus, because that contaminates
     // the refraction branch with a reflection-only material parameter.
