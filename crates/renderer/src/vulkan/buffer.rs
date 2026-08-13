@@ -515,6 +515,65 @@ fn aligned_flush_range(
     (aligned_offset, aligned_size)
 }
 
+/// #2683 (SAFE-D4-01) — best-effort guard against `aligned_flush_range`'s
+/// outward rounding pushing a flush past the end of the memory object it's
+/// flushing into. `Allocation` doesn't expose the parent gpu-allocator
+/// block's size through any public API (verified against the vendored
+/// `gpu-allocator 0.28.0` source — `memory_block_index` is private and
+/// there is no accessor), so this can only check the one case gpu-allocator
+/// DOES make checkable: `Allocation::is_dedicated()` — an allocation made
+/// with an explicit `AllocationScheme::Dedicated{Buffer,Image}` gets its
+/// OWN `VkDeviceMemory` object sized to exactly `alloc.size()`, so for that
+/// case `alloc.offset() + alloc.size()` IS the true end of the memory
+/// object and a widened flush past it is a real
+/// VUID-VkMappedMemoryRange-size-01389 violation, not just an
+/// over-generous flush into a sibling sub-allocation. This is exactly the
+/// escalation path the SAFETY comments at the three call sites warn about:
+/// a future refactor switching a host-visible buffer to a dedicated
+/// allocation scheme.
+///
+/// Does NOT catch the OTHER escalation those comments warn about — a
+/// `GpuAllocatorManaged` allocation whose requested size exceeds
+/// gpu-allocator's shared-block threshold also gets a personal block sized
+/// to fit exactly it, with the identical VUID exposure, but
+/// `is_dedicated()` reports `false` for that case too (it reflects the
+/// requested `AllocationScheme`, not whether gpu-allocator's internal
+/// bin-packing happened to hand this allocation its own block) — nothing
+/// in the public API distinguishes it from an ordinary shared-block
+/// sub-allocation. That gap needs either an upstream gpu-allocator API
+/// addition or validation-layer verification per the issue; not fixable
+/// from this side of the crate boundary.
+fn debug_assert_flush_range_bounded(
+    alloc: &vulkan::Allocation,
+    aligned_offset: vk::DeviceSize,
+    aligned_size: vk::DeviceSize,
+) {
+    if alloc.is_dedicated() {
+        debug_assert!(
+            flush_range_within(aligned_offset, aligned_size, alloc.offset(), alloc.size()),
+            "flush range [{aligned_offset}, {}) escapes the dedicated allocation's \
+             [{}, {}) — VUID-VkMappedMemoryRange-size-01389 (#2683)",
+            aligned_offset + aligned_size,
+            alloc.offset(),
+            alloc.offset() + alloc.size(),
+        );
+    }
+}
+
+/// Pure bound check `debug_assert_flush_range_bounded` relies on, split out
+/// so the arithmetic is unit-testable without a live `Allocation` —
+/// `gpu_allocator::vulkan::Allocation`'s fields are all private with no
+/// public setters, only `Default` (all-zero), so a meaningful populated
+/// instance can't be constructed outside the crate that owns it.
+fn flush_range_within(
+    aligned_offset: vk::DeviceSize,
+    aligned_size: vk::DeviceSize,
+    alloc_offset: vk::DeviceSize,
+    alloc_size: vk::DeviceSize,
+) -> bool {
+    aligned_offset >= alloc_offset && aligned_offset + aligned_size <= alloc_offset + alloc_size
+}
+
 pub struct GpuBuffer {
     pub buffer: vk::Buffer,
     pub size: vk::DeviceSize,
@@ -778,10 +837,22 @@ impl GpuBuffer {
 
         if !self.is_coherent {
             let (aligned_offset, aligned_size) = aligned_flush_range(alloc.offset(), alloc.size());
-            // SAFETY: alloc.memory() is valid and mapped. The range is contained
-            // within this allocation's slice of the parent VkDeviceMemory: offset
-            // is rounded down and size rounded up to nonCoherentAtomSize, which
-            // gpu-allocator already pads sub-allocations to.
+            debug_assert_flush_range_bounded(alloc, aligned_offset, aligned_size);
+            // SAFETY: alloc.memory() is valid and mapped. `aligned_flush_range`
+            // rounds the offset DOWN and the size UP to `NON_COHERENT_ATOM_SIZE`,
+            // so the flushed range is a strict SUPERSET of this allocation, not a
+            // subset — it is bounded only by the parent gpu-allocator memory
+            // block, not by `alloc`'s own `[offset, offset+size)` slice.
+            // gpu-allocator 0.28 has no `nonCoherentAtomSize` awareness at all
+            // (verified against the vendored source — zero occurrences of
+            // `non_coherent`/`atom_size`); it sub-allocates purely on
+            // `VkMemoryRequirements.alignment`, so nothing pads sub-allocations
+            // to this boundary on its behalf. What actually keeps this sound
+            // today: every call site here uses `AllocationScheme::
+            // GpuAllocatorManaged`, so `alloc.memory()` backs a multi-MB shared
+            // block and the widened range still lands inside it — see #2683 /
+            // SAFE-D4-01 and `debug_assert_flush_range_bounded`'s doc for the
+            // one case (a dedicated allocation) that's actually checkable.
             unsafe {
                 let range = vk::MappedMemoryRange::default()
                     .memory(alloc.memory())
@@ -835,14 +906,18 @@ impl GpuBuffer {
             // rounds outward to satisfy that.
             let (aligned_offset, aligned_size) =
                 aligned_flush_range(alloc.offset(), len as vk::DeviceSize);
+            debug_assert_flush_range_bounded(alloc, aligned_offset, aligned_size);
 
             // SAFETY: alloc.memory() returns the VkDeviceMemory backing this
-            // allocation, which is valid and mapped (verified above). The
-            // range is contained within this allocation's region of the parent
-            // memory object — aligned_size is rounded up to atom size but
-            // capped at the written length, and gpu-allocator pads
-            // sub-allocations to atom size so the rounded-up tail stays
-            // within the allocation.
+            // allocation, which is valid and mapped (verified above).
+            // `aligned_size` is rounded UP from `len` (the written length) to
+            // `NON_COHERENT_ATOM_SIZE` with no cap — `aligned_flush_range`
+            // never clamps to `alloc.size()` — so the flushed range can extend
+            // past this allocation's own end, bounded only by the parent
+            // gpu-allocator memory block (see #2683 / SAFE-D4-01 and
+            // `debug_assert_flush_range_bounded`'s doc). Sound today because
+            // every call site uses `AllocationScheme::GpuAllocatorManaged`,
+            // whose shared multi-MB block absorbs the overshoot.
             unsafe {
                 let range = vk::MappedMemoryRange::default()
                     .memory(alloc.memory())
@@ -879,10 +954,17 @@ impl GpuBuffer {
         }
 
         let (aligned_offset, aligned_size) = aligned_flush_range(alloc.offset() + offset, size);
+        debug_assert_flush_range_bounded(alloc, aligned_offset, aligned_size);
 
-        // SAFETY: alloc.memory() is valid and mapped. The range is contained
-        // within this allocation — caller is responsible for ensuring
-        // `offset + size <= alloc.size()`.
+        // SAFETY: alloc.memory() is valid and mapped. Caller is responsible
+        // for `offset + size <= alloc.size()`, but the ACTUALLY flushed range
+        // is `aligned_flush_range`'s outward-rounded superset of
+        // `[offset, offset+size)`, not that range itself — it can extend past
+        // this allocation's own end, bounded only by the parent gpu-allocator
+        // memory block (see #2683 / SAFE-D4-01 and
+        // `debug_assert_flush_range_bounded`'s doc). Sound today because
+        // every call site uses `AllocationScheme::GpuAllocatorManaged`, whose
+        // shared multi-MB block absorbs the overshoot.
         unsafe {
             let range = vk::MappedMemoryRange::default()
                 .memory(alloc.memory())
@@ -1272,6 +1354,49 @@ mod tests {
         assert_ne!(sz, vk::WHOLE_SIZE);
         let (_, sz) = aligned_flush_range(1024 * 1024, 4096);
         assert_ne!(sz, vk::WHOLE_SIZE);
+    }
+
+    /// Regression for #2683 (SAFE-D4-01) — `aligned_flush_range`'s outward
+    /// rounding produces a range that is a strict SUPERSET of the input
+    /// `[offset, offset+size)`, never a subset. The pre-fix SAFETY comments
+    /// claimed the opposite ("contained within this allocation's slice").
+    /// Pin the actual relationship directly against the function under
+    /// test, independent of any `Allocation` fixture.
+    #[test]
+    fn aligned_flush_range_widens_outward_never_inward() {
+        for (offset, size) in [(100u64, 200u64), (50, 50), (0, 48), (37, 999)] {
+            let (aligned_offset, aligned_size) = aligned_flush_range(offset, size);
+            assert!(
+                aligned_offset <= offset,
+                "aligned_offset must round DOWN, never up past the real start"
+            );
+            assert!(
+                aligned_offset + aligned_size >= offset + size,
+                "aligned end must round UP, never down past the real end"
+            );
+        }
+    }
+
+    /// Regression for #2683 (SAFE-D4-01) — `flush_range_within` (the pure
+    /// arithmetic `debug_assert_flush_range_bounded` gates its assert on)
+    /// must accept a range that stays inside `[alloc_offset,
+    /// alloc_offset+alloc_size)` and reject one that overshoots either end.
+    #[test]
+    fn flush_range_within_accepts_contained_and_rejects_overshoot() {
+        // Exact match — the tightest possible "contained" case.
+        assert!(flush_range_within(0, 256, 0, 256));
+        // Strictly inside.
+        assert!(flush_range_within(64, 128, 0, 256));
+        // Overshoots the end — exactly the bug `aligned_flush_range`'s
+        // outward-rounding size can produce against a dedicated allocation.
+        assert!(!flush_range_within(0, 512, 0, 256));
+        // Undershoots the start — defensive; not reachable via
+        // `aligned_flush_range` today (offset is unsigned and
+        // `alloc_offset` is always 0 for a dedicated allocation, per the
+        // block-sizing argument in `debug_assert_flush_range_bounded`'s
+        // doc), but the helper must still catch it if that invariant ever
+        // changes upstream.
+        assert!(!flush_range_within(0, 128, 64, 256));
     }
 
     /// #1759 / TD7-002 — `aligned_flush_range` rounds with the bitmask trick

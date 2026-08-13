@@ -539,6 +539,130 @@ fn manual_bench_draw_sort_serial_vs_parallel() {
     }
 }
 
+/// #2681 (PERF-D2-04) — third arm: decorate-sort-undecorate. Extracts the
+/// 11-tuple key once per element into a `Vec<(Key, usize)>` (a fraction of
+/// `DrawCommand`'s ~480 bytes), sorts THAT by key (O(N) key extractions
+/// instead of `sort_unstable_by_key`'s ~2·N·log₂N re-extractions from the
+/// full struct on every comparison — the same transform #2034 already
+/// applied to `collect_lights`), then applies the resulting permutation via
+/// a `Vec<Option<DrawCommand>>` scratch buffer (`DrawCommand` isn't `Clone`,
+/// so `.take()` is the obviously-correct way to move each element into its
+/// sorted slot without an in-place cycle-walk).
+///
+/// Per the issue: **do not land the production change on this reasoning
+/// alone** — only if this arm measurably wins over `manual_bench_draw_sort_
+/// serial_vs_parallel`'s serial/parallel arms at the N=1800–3400 range the
+/// runtime baselines actually occupy (see PERF-D2-03).
+///
+/// **Measured outcome (2026-08-13, this repo's dev hardware, two
+/// independent runs): the hypothesis does NOT hold.** Decorate-sort-
+/// undecorate is 2–3× SLOWER than the current `sort_unstable_by_key`
+/// baseline across nearly the entire swept range (N=400..2750, and again at
+/// N=5000/10000), reproducibly. It only "wins" at N=3000 and N=3400
+/// specifically, and that pair doesn't fit a real algorithmic crossover —
+/// both neighboring points (N=2750 below, N=5000 above) favor the baseline
+/// heavily, and `decorate_serial` itself drops implausibly between N=2750
+/// and N=3400 with no corresponding rise afterward, consistent with a
+/// measurement artifact (scheduler/thermal/cache noise) rather than a
+/// signal. **Conclusion: the production sort is NOT changed.** The
+/// mechanism reasoning in the issue (per-comparison key extraction
+/// dominates) doesn't predict what's actually measured here, most likely
+/// because `draw_sort_key`'s ~10 touched fields sit within the first couple
+/// of `DrawCommand` cache lines rather than scattered across all ~8, and/or
+/// the optimizer inlines the extraction into the comparator well enough
+/// that the un-decorated approach's per-swap cost (large-struct `ptr::swap`
+/// during the sort itself, same either way at this element count) dominates
+/// over decorate's saved extractions. This bench is kept as the permanent,
+/// re-runnable falsification — re-run it (not the reasoning) before ever
+/// revisiting this optimization.
+///
+/// `cargo test -p byroredux --release manual_bench_draw_sort_decorate_sort_undecorate -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn manual_bench_draw_sort_decorate_sort_undecorate() {
+    use rayon::prelude::*;
+    use std::time::Instant;
+    fn make_inputs(n: usize) -> Vec<DrawCommand> {
+        let mut v = Vec::with_capacity(n);
+        for i in 0..n {
+            let mut c = cmd((i % 7) == 0, (i % 13) == 0, (i % 5) == 0);
+            c.mesh_handle = (i as u32 * 2654435761) & 0xFFFF;
+            c.entity_id = i as u32;
+            c.sort_depth = (i as u32 * 1664525).wrapping_add(1013904223);
+            c.src_blend = ((i % 4) as u8) + 5;
+            c.dst_blend = ((i % 3) as u8) + 6;
+            c.z_test = (i % 2) == 0;
+            c.z_write = (i % 3) == 0;
+            c.z_function = ((i % 8) as u8) + 1;
+            v.push(c);
+        }
+        v
+    }
+    fn decorate_sort_undecorate(v: Vec<DrawCommand>, parallel: bool) -> Vec<DrawCommand> {
+        let mut keyed: Vec<_> = v
+            .iter()
+            .enumerate()
+            .map(|(i, c)| (draw_sort_key(c), i))
+            .collect();
+        if parallel {
+            keyed.par_sort_unstable_by_key(|&(k, _)| k);
+        } else {
+            keyed.sort_unstable_by_key(|&(k, _)| k);
+        }
+        let mut slots: Vec<Option<DrawCommand>> = v.into_iter().map(Some).collect();
+        keyed
+            .iter()
+            .map(|&(_, idx)| slots[idx].take().expect("each index visited exactly once"))
+            .collect()
+    }
+    const ITERS: u32 = 50;
+    for &n in &[
+        400usize, 800, 1500, 1800, 2000, 2250, 2500, 2750, 3000, 3400, 5000, 10_000,
+    ] {
+        let mut baseline_ns = 0u128;
+        for _ in 0..ITERS {
+            let mut v = make_inputs(n);
+            let t0 = Instant::now();
+            v.sort_unstable_by_key(draw_sort_key);
+            baseline_ns += t0.elapsed().as_nanos();
+            std::hint::black_box(&v);
+        }
+        let mut decorate_serial_ns = 0u128;
+        for _ in 0..ITERS {
+            let v = make_inputs(n);
+            let t0 = Instant::now();
+            let sorted = decorate_sort_undecorate(v, false);
+            decorate_serial_ns += t0.elapsed().as_nanos();
+            std::hint::black_box(&sorted);
+        }
+        let mut decorate_par_ns = 0u128;
+        for _ in 0..ITERS {
+            let v = make_inputs(n);
+            let t0 = Instant::now();
+            let sorted = decorate_sort_undecorate(v, true);
+            decorate_par_ns += t0.elapsed().as_nanos();
+            std::hint::black_box(&sorted);
+        }
+        let baseline = baseline_ns / ITERS as u128;
+        let dec_serial = decorate_serial_ns / ITERS as u128;
+        let dec_par = decorate_par_ns / ITERS as u128;
+        let best_decorate = dec_serial.min(dec_par);
+        let ratio = baseline as f64 / best_decorate as f64;
+        let winner = if baseline <= best_decorate {
+            "baseline"
+        } else if dec_serial <= dec_par {
+            "decorate-serial"
+        } else {
+            "decorate-parallel"
+        };
+        eprintln!(
+            "N={:>6}  baseline={:>8} ns  decorate_serial={:>8} ns  decorate_par={:>8} ns  \
+             ratio(baseline/best_decorate)={:>5.2}  winner={}",
+            n, baseline, dec_serial, dec_par, ratio, winner
+        );
+    }
+}
+
 // ── Option B: !in_raster prefix sorts RT-only draws to the end ────
 //
 // When `MAX_INSTANCES` cap fires, the SSBO upload silently drops the

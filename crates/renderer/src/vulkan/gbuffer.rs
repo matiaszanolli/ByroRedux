@@ -177,6 +177,14 @@ impl Attachment {
         Ok(())
     }
 
+    /// # Safety
+    ///
+    /// No in-flight command buffer or descriptor set may still reference
+    /// any image, image view, or allocation owned by this `Attachment` —
+    /// i.e. the caller must have fenced/idled the device (or otherwise
+    /// proven no outstanding GPU work touches them) before calling this.
+    /// `device` must be the same logical device the images/views/
+    /// allocations were created against.
     unsafe fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
         for &view in &self.views {
             // SAFETY: caller of `destroy` (an `unsafe fn`) guarantees no

@@ -467,7 +467,16 @@ pub(crate) fn sort_draw_commands(draw_commands: &mut [DrawCommand]) -> usize {
     let mut raster_len = 0;
     for index in 0..draw_commands.len() {
         if draw_commands[index].in_raster {
-            draw_commands.swap(raster_len, index);
+            // #2682 (PERF-D2-05) — `<[T]>::swap` lowers to `ptr::swap`, which
+            // performs the full three-way ~480-byte copy regardless of index
+            // equality. `raster_len == index` for the whole initial run of
+            // consecutive `in_raster` commands (i.e. every frame where
+            // nothing gets culled, or any run under `BYRO_NO_CULL=1`), so an
+            // unconditional swap wastes up to `N × 2 × sizeof(DrawCommand)`
+            // of self-copy traffic in the fully-visible case.
+            if raster_len != index {
+                draw_commands.swap(raster_len, index);
+            }
             raster_len += 1;
         }
     }
