@@ -52,11 +52,15 @@ pub type GpuPreviousModel = [[f32; 4]; 4];
 /// since #1583/#1590 — `triangle.frag` itself no longer declares its own
 /// copy) plus four standalone hand-mirrored copies — `triangle.vert`,
 /// `ui.vert`, `caustic_splat.comp`, and `water.vert` (#1498) — MUST be
-/// updated in lockstep (5 declaration sites total). The
-/// `every_shader_struct_gpu_instance_names_material_kind_slot` test
-/// greps those five .glsl/.comp/.vert files for the `struct GpuInstance`
-/// declaration — when you add a field here, update the expected suffix
-/// in the assertion and rename the sentinel to match the new last field.
+/// updated in lockstep (5 declaration sites total). When you add,
+/// remove, or reorder a field here, update all five GLSL copies to
+/// match: `gpu_instance_glsl_copies_stay_in_lockstep` (#2748 /
+/// REN-D3-2026-08-12-01, in `gpu_instance_layout_tests.rs`) parses
+/// every mirror's field list at compile time and asserts they're
+/// byte-for-byte identical to each other AND in the same order as this
+/// struct's field declarations. `every_shader_struct_gpu_instance_names_expected_fields`
+/// is an older, narrower complementary check for a few specific
+/// stale/required field names.
 ///
 /// Layout: 128 bytes per instance, 16-byte aligned (8×16). R1 Phase 6
 /// collapsed the per-material fields (texture indices, PBR scalars,
@@ -312,10 +316,20 @@ pub struct GpuCamera {
     /// declaration shape to match across triangle.frag/.vert +
     /// cluster_cull.comp + caustic_splat.comp + water.frag.
     pub sun_direction: [f32; 4],
-    /// x = aperture half-radius (world units), y = focal distance (world units),
-    /// zw = reserved (0). When x == 0.0 the camera is a pinhole (no DOF jitter
-    /// was applied this frame). Available to shaders for future screen-space DOF
-    /// or circle-of-confusion visualisation without an extra UBO binding.
+    /// x = aperture half-radius (0.0 = pinhole, world units), y = focal
+    /// distance (world units), z = `light_atten_knee` — the #1451
+    /// point/spot attenuation knee fraction, live-tunable via the
+    /// `light.atten` console command and read by
+    /// `include/lighting.glsl`'s `kneeFrac` — w = `camera_static` (1.0 =
+    /// parked camera), read by `triangle.frag` to decorrelate the GI
+    /// seed on static frames. Both `z` and `w` are live, NOT reserved —
+    /// see #2750 / REN-D3-2026-08-12-02 (this doc previously said
+    /// `zw = reserved (0)`, which invited a future author to repurpose a
+    /// lane two consumers already depend on). Written in
+    /// `vulkan/context/draw.rs`; all five GLSL `CameraUBO` mirrors
+    /// (`include/bindings.glsl`, `triangle.vert`, `water.vert`,
+    /// `cluster_cull.comp`, `caustic_splat.comp`) must carry this same
+    /// comment.
     pub dof_params: [f32; 4],
     /// **Camera-relative render origin** (#markarth-precision). xyz = the
     /// world-space origin all GPU clip-space math is performed relative to;

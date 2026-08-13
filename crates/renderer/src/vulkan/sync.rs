@@ -229,9 +229,22 @@ impl FrameSync {
             );
         }
 
+        // `in_flight` is fixed-size (per frame-in-flight slot, not per
+        // swapchain image), so unlike `render_finished` above it can't be
+        // `clear()`d and rebuilt with `push`. Mirror the same destroy-
+        // before-fallible-recreate safety instead: null out every handle
+        // in its own pass first, so if `create_fence` fails partway
+        // through the second pass, no `in_flight` entry can be left
+        // pointing at an already-destroyed fence. `destroy_fence` on
+        // `vk::Fence::null()` is a spec-defined no-op, so the null'd
+        // entries are safe to destroy again (e.g. from `Drop`) even if
+        // this function returns early.
         let fence_info = vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
         for fence in &mut self.in_flight {
             device.destroy_fence(*fence, None);
+            *fence = vk::Fence::null();
+        }
+        for fence in &mut self.in_flight {
             *fence = device
                 .create_fence(&fence_info, None)
                 .context("Failed to recreate in_flight fence after resize")?;
