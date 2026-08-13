@@ -110,7 +110,11 @@ pub(super) fn parse_and_import_nif(
     // resolved BGSM/BGEM chain.
     if let Some(provider) = mat_provider {
         for mesh in &mut meshes {
-            merge_external_material(&mut mesh.material, provider, pool);
+            // #2709 (SF-D9-03) — the merge mutates `mesh.material` in
+            // place; the outcome is a diagnostic signal this path has no
+            // sink for yet (there is no per-cell material tally to feed).
+            // Discarded deliberately, not overlooked.
+            let _ = merge_external_material(&mut mesh.material, provider, pool);
         }
     }
     let lights = byroredux_nif::import::import_nif_lights(&scene);

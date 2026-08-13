@@ -296,7 +296,12 @@ impl PrecombinedSpawnJob {
                                             mesh.material.src_blend_mode,
                                             mesh.material.dst_blend_mode,
                                         );
-                                        crate::asset_provider::merge_external_material(
+                                        // #2709 (SF-D9-03) — outcome discarded
+                                        // deliberately; this path already
+                                        // selectively reverts part of the merge
+                                        // (the blend restore below) and has no
+                                        // per-cell material tally to feed.
+                                        let _ = crate::asset_provider::merge_external_material(
                                             &mut mesh.material,
                                             provider,
                                             &mut pool,

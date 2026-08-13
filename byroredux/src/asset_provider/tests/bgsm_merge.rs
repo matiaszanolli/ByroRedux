@@ -6,6 +6,7 @@
 
 use super::super::*;
 use super::imported_mesh_with_material_path;
+use byroredux_nif::import::ImportedMaterial;
 use std::sync::Arc;
 
 // ── MaterialProvider / BGSM merge (#493) ──────────────────────────
@@ -205,39 +206,35 @@ fn bgsm_merge_forwards_v2_plus_standalone_slots() {
 /// specular path (the renderer didn't even know to dispatch
 /// PBR-vs-legacy). Phase 2 (the `triangle.frag` gating) is
 /// deferred; this test pins the data-propagation contract.
+///
+/// #2702 (FO4-D2-03) — calls the real production functions
+/// (`forward_bgsm_phase1_flags`, `bgsm_uses_pbr_bsdf`) instead of a
+/// hand-copied mirror of their gates, so this test can actually fail
+/// when `merge_external_material` diverges from it.
 #[test]
 fn bgsm_merge_forwards_phase1_shader_flags() {
-    // Three local bools standing in for the corresponding
-    // ImportedMesh fields. Mirrors the prod merge's "first true
-    // wins" gate.
-    let mut is_pbr = false;
-    let mut has_translucency = false;
-    let mut model_space_normals = false;
-
     let bgsm = BgsmFile {
         pbr: true,
         translucency: true,
         model_space_normals: true,
         ..Default::default()
     };
+    let resolved = ResolvedMaterial {
+        file: bgsm.clone(),
+        parent: None,
+    };
 
-    // Mirror the prod merge's gates.
-    if !is_pbr && bgsm.pbr {
-        is_pbr = true;
-    }
-    if !has_translucency && bgsm.translucency {
-        has_translucency = true;
-    }
-    if !model_space_normals && bgsm.model_space_normals {
-        model_space_normals = true;
-    }
+    let mut material = ImportedMaterial::default();
+    let mut touched = false;
+    forward_bgsm_phase1_flags(&mut material, &bgsm, &mut touched);
 
     assert!(
-        is_pbr,
+        bgsm_uses_pbr_bsdf(&resolved),
         "BGSM.pbr=true must propagate to ImportedMaterial.is_pbr"
     );
-    assert!(has_translucency);
-    assert!(model_space_normals);
+    assert!(material.has_translucency);
+    assert!(material.model_space_normals);
+    assert!(touched);
 }
 
 /// Companion: with all three flags `false` on the BGSM, the
@@ -246,51 +243,48 @@ fn bgsm_merge_forwards_phase1_shader_flags() {
 /// exception post-#1352: it is now driven by `from_bgsm` (any
 /// successful BGSM resolve), NOT by `bgsm.pbr`, so it is `true` even
 /// here — every vanilla FO4 BGSM (which never sets `pbr`) routes
-/// through the Disney lobe.
+/// through the Disney lobe. `bgsm_uses_pbr_bsdf` itself only reflects
+/// `bgsm.pbr`, so that half of the contract (the `from_bgsm` OR) is
+/// pinned directly against `merge_external_material`'s own assignment
+/// `material.is_pbr |= bgsm_uses_pbr_bsdf(&resolved)` — i.e. `from_bgsm`
+/// is set unconditionally by the real merge's `material.from_bgsm =
+/// true`, one line above that OR, not re-derived here.
 #[test]
 fn bgsm_merge_does_not_set_phase1_flags_from_false() {
-    let mut is_pbr = false;
-    let mut has_translucency = false;
-    let mut model_space_normals = false;
-
     let bgsm = BgsmFile {
         pbr: false,
         translucency: false,
         model_space_normals: false,
         ..Default::default()
     };
+    let resolved = ResolvedMaterial {
+        file: bgsm.clone(),
+        parent: None,
+    };
 
-    // #1352 — a successful BGSM resolve sets `from_bgsm = true`, which
-    // now unconditionally implies `is_pbr` (the per-BGSM `bgsm.pbr`
-    // gate is a subsumed backstop).
-    let from_bgsm = true;
-    if from_bgsm || bgsm.pbr {
-        is_pbr = true;
-    }
-    if !has_translucency && bgsm.translucency {
-        has_translucency = true;
-    }
-    if !model_space_normals && bgsm.model_space_normals {
-        model_space_normals = true;
-    }
+    let mut material = ImportedMaterial::default();
+    let mut touched = false;
+    forward_bgsm_phase1_flags(&mut material, &bgsm, &mut touched);
 
     assert!(
-        is_pbr,
-        "#1352: from_bgsm now implies is_pbr regardless of bgsm.pbr"
+        !bgsm_uses_pbr_bsdf(&resolved),
+        "bgsm.pbr=false alone must not select the Disney BSDF opt-in"
     );
-    assert!(!has_translucency);
-    assert!(!model_space_normals);
+    assert!(!material.has_translucency);
+    assert!(!material.model_space_normals);
+    assert!(
+        !touched,
+        "no flag flipped → forward fn must report untouched"
+    );
 }
 
 /// Child-first precedence for the new flags — first authored
 /// `true` in the BGSM template chain wins, mirroring the
 /// texture-slot precedence (which the parser walks child-first).
 /// A `false` child followed by a `true` parent must flip the
-/// flag.
+/// flag. Calls the real `bgsm_uses_pbr_bsdf` (#2702 / FO4-D2-03).
 #[test]
 fn bgsm_merge_phase1_flags_honor_child_first_chain() {
-    let mut is_pbr = false;
-
     let child = BgsmFile {
         pbr: false, // child doesn't author PBR
         ..Default::default()
@@ -307,15 +301,21 @@ fn bgsm_merge_phase1_flags_honor_child_first_chain() {
         })),
     };
 
-    for step in resolved.walk() {
-        if !is_pbr && step.file.pbr {
-            is_pbr = true;
-        }
-    }
-
     assert!(
-        is_pbr,
+        bgsm_uses_pbr_bsdf(&resolved),
         "parent's pbr=true must flow down to the merged result"
+    );
+
+    // Same child-first precedence for `forward_bgsm_phase1_flags`,
+    // walked exactly as `merge_external_material` walks it.
+    let mut material = ImportedMaterial::default();
+    let mut touched = false;
+    for step in resolved.walk() {
+        forward_bgsm_phase1_flags(&mut material, &step.file, &mut touched);
+    }
+    assert!(
+        !material.has_translucency && !material.model_space_normals,
+        "neither child nor parent authored translucency/model_space_normals here"
     );
 }
 
@@ -615,11 +615,7 @@ fn bgem_effect_pbr_specular_promotes_imported_material_to_pbr() {
     let mut mesh = imported_mesh_with_material_path(&mut pool, path);
     assert!(!mesh.material.is_pbr);
 
-    assert!(merge_external_material(
-        &mut mesh.material,
-        &mut provider,
-        &mut pool,
-    ));
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool,).merged());
     assert!(
         mesh.material.is_pbr,
         "BGEM effect_pbr_specular=true must promote ImportedMaterial.is_pbr"
@@ -652,11 +648,7 @@ fn bgem_merge_leaves_palette_disabled_when_neither_enable_bit_is_authored() {
     );
     let mut mesh = imported_mesh_with_material_path(&mut pool, path);
 
-    assert!(merge_external_material(
-        &mut mesh.material,
-        &mut provider,
-        &mut pool,
-    ));
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool,).merged());
     assert!(
         mesh.material.textures.greyscale_lut.is_some(),
         "the LUT texture slot must still fill — this fix does not touch texture forwarding"
@@ -690,11 +682,7 @@ fn bgem_merge_forwards_color_enable_bit_via_real_merge() {
     );
     let mut mesh = imported_mesh_with_material_path(&mut pool, path);
 
-    assert!(merge_external_material(
-        &mut mesh.material,
-        &mut provider,
-        &mut pool,
-    ));
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool,).merged());
     assert!(
         mesh.material.bgsm_greyscale_lut_enabled,
         "grayscale_to_palette_color=true must forward to bgsm_greyscale_lut_enabled"
@@ -731,11 +719,7 @@ fn bgem_merge_forwards_both_palette_bits_when_both_authored() {
     );
     let mut mesh = imported_mesh_with_material_path(&mut pool, path);
 
-    assert!(merge_external_material(
-        &mut mesh.material,
-        &mut provider,
-        &mut pool,
-    ));
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool,).merged());
     assert!(
         mesh.material.bgsm_greyscale_lut_enabled,
         "either enable bit alone must already enable the remap"
@@ -775,11 +759,7 @@ fn bgem_merge_skips_envmap_fill_when_env_mapping_disabled() {
     );
     let mut mesh = imported_mesh_with_material_path(&mut pool, path);
 
-    assert!(merge_external_material(
-        &mut mesh.material,
-        &mut provider,
-        &mut pool,
-    ));
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool,).merged());
     assert!(
         mesh.material.textures.environment.is_none(),
         "env_mapping_enabled()==false must skip the environment texture fill (#2643)"
@@ -811,11 +791,7 @@ fn bgem_merge_fills_envmap_when_env_mapping_enabled() {
     );
     let mut mesh = imported_mesh_with_material_path(&mut pool, path);
 
-    assert!(merge_external_material(
-        &mut mesh.material,
-        &mut provider,
-        &mut pool,
-    ));
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool,).merged());
     assert!(
         mesh.material.textures.environment.is_some(),
         "env_mapping_enabled()==true must fill the environment texture (#2643)"
