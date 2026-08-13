@@ -354,6 +354,30 @@ fn method_called_with_bgs_receiver(abc: &AbcFile, ops: &[Op]) -> Option<Vec<u8>>
     None
 }
 
+/// #2716 (SAFEUI-02) — the injected 3-op bootstrap (`FindPropStrict` +1,
+/// `GetLocal` +1 -> peak +2, `CallPropVoid`) needs two slots ABOVE
+/// whatever depth `D` the operand stack is already at when it splices in,
+/// i.e. `max_stack` must become at least `D + 2`. The pre-fix
+/// `existing_max_stack.max(2)` only guarantees `max_stack >= 2`, which
+/// every real constructor already satisfies on its own (an `InitProperty`
+/// alone consumes three operands) — a no-op that happened to be correct
+/// only because BGSCodeObj's init is emitted at statement level (`D == 0`)
+/// by the compiler in every corpus example seen so far. A constructor
+/// that initializes BGSCodeObj inside an expression (legal ABC, `D > 0`)
+/// would overflow the AVM2 operand stack — a Rust index-out-of-bounds
+/// panic in Ruffle's interpreter, since Ruffle's verifier does not
+/// reconcile declared `max_stack` against actual (`core/src/avm2/verify.rs`
+/// has no reference to `max_stack`; the frame is sized once from it in
+/// `Stack::get_stack_frame`). `saturating_add` is correct for any `D`:
+/// `existing_max_stack` already reflects the deepest point BEFORE the
+/// splice, so adding the injection's own peak growth on top bounds the
+/// deepest point AFTER it, regardless of where in the body that peak was.
+/// Split out (pure, no `MethodBody`) so unit tests can pin the arithmetic
+/// without reconstructing a full ABC.
+fn max_stack_with_injected_bootstrap_headroom(existing_max_stack: u32) -> u32 {
+    existing_max_stack.saturating_add(2)
+}
+
 fn patch_root_constructor(abc_data: &[u8], root_class: &[u8]) -> Result<Vec<u8>, String> {
     let mut abc = Reader::new(abc_data)
         .read()
@@ -477,7 +501,7 @@ fn patch_root_constructor(abc_data: &[u8], root_class: &[u8]) -> Result<Vec<u8>,
         insertion_offset..insertion_offset,
         injection.iter().copied(),
     );
-    body.max_stack = body.max_stack.max(2);
+    body.max_stack = max_stack_with_injected_bootstrap_headroom(body.max_stack);
     let inserted = injection.len() as u32;
     let insertion_offset = insertion_offset as u32;
     for exception in &mut body.exceptions {
@@ -925,8 +949,8 @@ mod tests {
     use swf::{DoAbc2, DoAbc2Flag, FileAttributes, SwfStr, Tag};
 
     use super::{
-        build_adapter_abc, inject_host_object_adapter, referenced_host_methods, write_ops,
-        DESTROYED_EVENT,
+        build_adapter_abc, inject_host_object_adapter, max_stack_with_injected_bootstrap_headroom,
+        referenced_host_methods, write_ops, DESTROYED_EVENT,
     };
     use crate::{ScaleformHostCatalog, ScaleformProfile};
 
@@ -1013,6 +1037,146 @@ mod tests {
         }
     }
 
+    /// Regression for #2717 / SAFEUI-03: `inject_host_object_adapter`
+    /// fully parses and re-serializes the ENTIRE movie (every font,
+    /// bitmap, sprite, sound, shape tag decoded and re-encoded, not
+    /// copied) rather than the raw-tag-splice strategy its sibling
+    /// `navigator.rs::prepare_import_asset_swf` uses. Before this test the
+    /// only real-data evidence for "lossless on FO4 content" was 2 of 311
+    /// menus, checked by an `#[ignore]`d test that never runs in CI. This
+    /// sweeps every `.swf` in the FO4 interface archive through
+    /// injection and asserts the output re-parses — NOT gated behind
+    /// `#[ignore]` (so the corpus is actually swept whenever it's
+    /// present), but self-skips (rather than failing) when the archive
+    /// isn't available, since the corpus is multi-gigabyte game data that
+    /// can't ship with the repo.
+    ///
+    /// Four menus (`KNOWN_MISSING_ON_DESTROY_TRAIT` below) are excluded
+    /// from the "must succeed" assertion: they were discovered by an
+    /// earlier run of *this* test to fail the *unrelated*, pre-existing
+    /// lifecycle-class search — a separate bug from what #2717 is about.
+    /// `Shared.ScaleformHostCatalog`'s Fallout 4 profile requires a class
+    /// whose OWN traits include the host-object property AND both the
+    /// on-create AND on-destroy hooks; these four menus' lifecycle class
+    /// (`DialogueMenu`, `MultiActivateMenu`, `SPECIALMenu`, `Terminal`)
+    /// declares the property and on-create hook but never an
+    /// `onCodeObjDestruction` trait of its own — legal, real, shipped ABC.
+    /// The lookup falls through to "lifecycle class not found",
+    /// `inject_host_object_adapter` returns `Err`, and every caller
+    /// propagates that `Err` (`SwfPlayer::new` / `new_with_profile` /
+    /// `from_resource_provider`, `player.rs`) — so today these 4 real
+    /// Fallout 4 menus fail to load entirely. That is a real, separate
+    /// defect worth its own issue (loosen the on-destroy requirement, or
+    /// search inherited traits) — NOT something #2717's round-trip
+    /// serialization safety fix should touch, and not something this test
+    /// should silently paper over either, hence naming it explicitly
+    /// instead of a bare allow-list.
+    #[test]
+    fn all_installed_fallout4_swfs_round_trip_through_injection() {
+        const KNOWN_MISSING_ON_DESTROY_TRAIT: &[&str] = &[
+            "interface\\dialoguemenu.swf",
+            "interface\\multiactivatemenu.swf",
+            "interface\\specialmenu.swf",
+            "interface\\terminalmenu.swf",
+        ];
+
+        let path = std::env::var("BYROREDUX_FO4_DATA").unwrap_or_else(|_| {
+            "/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data".to_string()
+        });
+        let archive_path = std::path::Path::new(&path).join("Fallout4 - Interface.ba2");
+        let Ok(archive) = Ba2Archive::open(&archive_path) else {
+            eprintln!(
+                "skipping all_installed_fallout4_swfs_round_trip_through_injection: \
+                 {archive_path:?} not available (set BYROREDUX_FO4_DATA to override)"
+            );
+            return;
+        };
+        let catalog = ScaleformHostCatalog::for_profile(ScaleformProfile::Fallout4Avm2);
+
+        let mut swf_paths: Vec<String> = archive
+            .list_files()
+            .into_iter()
+            .filter(|path| path.ends_with(".swf"))
+            .map(str::to_string)
+            .collect();
+        swf_paths.sort();
+        assert!(
+            !swf_paths.is_empty(),
+            "expected .swf files in the FO4 interface archive at {archive_path:?}"
+        );
+
+        let mut injected_count = 0usize;
+        let mut failures = Vec::new();
+        let mut still_missing_on_destroy = Vec::new();
+        for movie_path in &swf_paths {
+            let swf = match archive.extract(movie_path) {
+                Ok(data) => data,
+                Err(error) => {
+                    failures.push(format!("{movie_path}: extract failed: {error}"));
+                    continue;
+                }
+            };
+            match inject_host_object_adapter(&swf, catalog) {
+                Ok((patched, state)) => {
+                    if state == super::ScaleformHostObjectState::AdapterInjected {
+                        injected_count += 1;
+                        // The structural sanity check #2717 asks for: the
+                        // fully re-serialized movie must still be a valid
+                        // SWF. This does NOT prove byte-for-byte losslessness
+                        // (that needs the raw-tag-splice rewrite the issue's
+                        // primary suggested fix describes) — it proves the
+                        // `swf` crate's write path didn't produce a movie
+                        // that can no longer be parsed at all, which is the
+                        // failure mode a corrupted re-encode would produce.
+                        let reparsed = swf::decompress_swf(patched.as_slice())
+                            .map_err(|error| error.to_string())
+                            .and_then(|decompressed| {
+                                swf::parse_swf(&decompressed)
+                                    .map_err(|error| error.to_string())
+                                    .map(|_movie| ())
+                            });
+                        if let Err(error) = reparsed {
+                            failures.push(format!(
+                                "{movie_path}: patched output failed to re-parse: {error}"
+                            ));
+                        }
+                    }
+                }
+                Err(error) => {
+                    if KNOWN_MISSING_ON_DESTROY_TRAIT.contains(&movie_path.as_str())
+                        && error.contains("lifecycle class was not found")
+                    {
+                        still_missing_on_destroy.push(movie_path.clone());
+                    } else {
+                        failures.push(format!("{movie_path}: injection failed: {error}"));
+                    }
+                }
+            }
+        }
+
+        assert!(
+            failures.is_empty(),
+            "{} of {} FO4 SWFs failed the injection round-trip ({injected_count} actually \
+             went through AVM2 adapter injection; {} excluded as the known, unrelated \
+             on-destroy-trait gap):\n{}",
+            failures.len(),
+            swf_paths.len(),
+            still_missing_on_destroy.len(),
+            failures.join("\n"),
+        );
+        // If this list has shrunk, the on-destroy gap got fixed (or the
+        // menu changed) — update KNOWN_MISSING_ON_DESTROY_TRAIT and the
+        // doc comment above rather than leaving a stale exclusion. If it
+        // has GROWN, a new menu just started hitting the same gap.
+        assert_eq!(
+            still_missing_on_destroy,
+            KNOWN_MISSING_ON_DESTROY_TRAIT,
+            "the set of menus hitting the known on-destroy-trait gap changed — \
+             update KNOWN_MISSING_ON_DESTROY_TRAIT (and file/link the follow-up \
+             issue this comment references) rather than leaving this stale"
+        );
+    }
+
     #[test]
     fn marker_without_a_lifecycle_class_is_rejected() {
         let marker_abc = marker_abc();
@@ -1086,5 +1250,59 @@ mod tests {
         let mut bytes = Vec::new();
         Writer::new(&mut bytes).write(abc).unwrap();
         bytes
+    }
+
+    /// Regression for #2716 / SAFEUI-02: the injected bootstrap needs
+    /// `existing_max_stack + 2` headroom for ANY existing depth, not just
+    /// `max(existing_max_stack, 2)`. The pre-fix formula was a no-op for
+    /// every constructor that already declares `max_stack >= 2` — which is
+    /// every real one (an `InitProperty` alone needs three operands) — so
+    /// pin the case that formula silently got wrong: a constructor whose
+    /// declared depth already exceeds 2 must still grow by exactly 2, not
+    /// stay unchanged.
+    #[test]
+    fn injected_bootstrap_headroom_adds_two_regardless_of_existing_depth() {
+        for existing in [0u32, 1, 2, 3, 5, 10] {
+            let fixed = max_stack_with_injected_bootstrap_headroom(existing);
+            assert_eq!(
+                fixed,
+                existing + 2,
+                "existing_max_stack={existing}: bootstrap needs exactly 2 \
+                 slots of headroom above whatever depth the constructor \
+                 already reaches"
+            );
+
+            // The retired `.max(2)` formula this replaces: correct only by
+            // coincidence at existing <= 2, and silently wrong (stays flat
+            // instead of growing) for every existing depth above that —
+            // exactly the BGSCodeObj-inside-an-expression (D > 0) shape
+            // #2716 describes.
+            let retired_formula = existing.max(2);
+            if existing > 2 {
+                assert_ne!(
+                    fixed, retired_formula,
+                    "existing_max_stack={existing}: the fixed formula must \
+                     diverge from the retired one here, or this test isn't \
+                     actually exercising the bug #2716 fixes"
+                );
+            }
+        }
+    }
+
+    /// `saturating_add` must not wrap even at the type's ceiling — ABC
+    /// `max_stack` is a `u30` in the format (so real inputs never
+    /// approach `u32::MAX`), but the Rust field is a plain `u32` and the
+    /// arithmetic operator must stay a deliberate, safe choice rather
+    /// than an overflow-panicking `+`.
+    #[test]
+    fn injected_bootstrap_headroom_saturates_instead_of_wrapping() {
+        assert_eq!(
+            max_stack_with_injected_bootstrap_headroom(u32::MAX),
+            u32::MAX
+        );
+        assert_eq!(
+            max_stack_with_injected_bootstrap_headroom(u32::MAX - 1),
+            u32::MAX
+        );
     }
 }

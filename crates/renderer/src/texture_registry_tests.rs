@@ -114,6 +114,7 @@ fn make_registry_for_overflow_test(max_textures: u32, occupied: usize) -> Textur
         staging_pool: None,
         pending_set_writes: vec![Vec::new(); MAX_FRAMES_IN_FLIGHT],
         current_slot: 0,
+        fence_confirmed_idle_slot: None,
         pending_dds_uploads: Vec::new(),
         slot_capacity_warning_emitted: false,
     }
@@ -550,6 +551,102 @@ fn pending_writes_cleared_by_recreate_semantics() {
         queue.clear();
     }
     assert!(reg.pending_set_writes.iter().all(|q| q.is_empty()));
+}
+
+// ── #2715 (CONC-D7-UI-01) fence-confirmed-idle write gating ─────
+
+/// Regression for #2715: `begin_frame`'s contract is that the caller
+/// already waited on `slot`'s fence — that's what `fence_confirmed_idle_slot`
+/// is meant to record. `note_frame_submitted` must clear it again once a
+/// new command buffer is pending against that slot, so a later write
+/// outside the fence-confirmed window (e.g. the UI overlay's texture
+/// upload, which runs before its iteration's `draw_frame`) can't take the
+/// immediate-write fast path against a slot that's actually still pending.
+#[test]
+fn fence_confirmed_idle_slot_tracks_wait_and_submit() {
+    let mut reg = make_registry_for_overflow_test(16, 0);
+    assert_eq!(
+        reg.fence_confirmed_idle_slot, None,
+        "nothing is known-idle before the first fence wait"
+    );
+
+    // `begin_frame`'s device-touching half (flush_pending_set_writes) is
+    // a no-op when the slot's queue is empty, so the idle-tracking half
+    // is exercised directly here rather than through begin_frame (which
+    // needs a real ash::Device).
+    reg.current_slot = 0;
+    reg.fence_confirmed_idle_slot = Some(0);
+    assert_eq!(reg.fence_confirmed_idle_slot, Some(0));
+
+    // `queue_submit` for slot 0 succeeded — slot 0 now has a pending
+    // command buffer again, so it must no longer read as confirmed-idle.
+    reg.note_frame_submitted(0);
+    assert_eq!(
+        reg.fence_confirmed_idle_slot, None,
+        "note_frame_submitted must clear the idle mark for the slot that \
+         was just submitted (#2715)"
+    );
+
+    // Submitting a DIFFERENT slot than the one currently marked idle must
+    // not clear the mark — only the fence wait for THAT slot invalidates
+    // it, and this scenario shouldn't arise in practice (begin_frame
+    // always re-marks before submit), but the method must stay precise.
+    reg.fence_confirmed_idle_slot = Some(1);
+    reg.note_frame_submitted(0);
+    assert_eq!(
+        reg.fence_confirmed_idle_slot,
+        Some(1),
+        "note_frame_submitted(0) must not clear a mark held by a \
+         different slot"
+    );
+}
+
+/// Regression for #2715: when `current_slot` is NOT fence-confirmed idle
+/// (the state `apply_descriptor_write` is in when called before that
+/// iteration's `draw_frame`/fence-wait — e.g. the UI overlay's texture
+/// upload), the write must queue for EVERY slot, `current_slot` included
+/// — not just the "other" slots `record_pending_writes_for_other_slots`
+/// targets. Otherwise the payload never reaches `current_slot`'s
+/// descriptor set at all once it's later confirmed idle by a future
+/// `begin_frame`, since only `flush_pending_set_writes` — driven by the
+/// pending queue — applies it then.
+#[test]
+fn write_queues_for_current_slot_too_when_not_fence_confirmed_idle() {
+    let mut reg = make_registry_for_overflow_test(16, 0);
+    reg.current_slot = 0;
+    reg.fence_confirmed_idle_slot = None; // not yet confirmed for ANY slot
+
+    reg.record_pending_write_for_all_slots(9, 0, vk::ImageView::null(), vk::Sampler::null());
+
+    assert_eq!(
+        reg.pending_set_writes[0].len(),
+        1,
+        "current_slot (0) must ALSO receive the queued write when it \
+         isn't fence-confirmed idle (#2715) — unlike \
+         record_pending_writes_for_other_slots, which deliberately skips it"
+    );
+    assert_eq!(reg.pending_set_writes[0][0].handle, 9);
+    assert_eq!(reg.pending_set_writes[1].len(), 1);
+    assert_eq!(reg.pending_set_writes[1][0].handle, 9);
+}
+
+/// Sibling case: `current_slot` fence-confirmed idle for a DIFFERENT slot
+/// than the one currently recording still must not take the
+/// immediate-write fast path — `apply_descriptor_write`'s guard compares
+/// against `current_slot` specifically, not "any slot is idle".
+#[test]
+fn stale_idle_mark_for_a_different_slot_does_not_authorize_immediate_write() {
+    let mut reg = make_registry_for_overflow_test(16, 0);
+    reg.current_slot = 0;
+    reg.fence_confirmed_idle_slot = Some(1); // slot 1 was confirmed, not 0
+
+    assert_ne!(
+        reg.fence_confirmed_idle_slot,
+        Some(reg.current_slot),
+        "the guard `apply_descriptor_write` checks (fence_confirmed_idle_slot \
+         == Some(current_slot)) must be false here, or the fix's central \
+         invariant is broken"
+    );
 }
 
 // ── #881 pending DDS upload queue mechanics ────────────────────

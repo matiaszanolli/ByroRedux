@@ -213,6 +213,26 @@ pub struct TextureRegistry {
     /// descriptor writes target `bindless_sets[current_slot]`; writes
     /// for every other slot go into `pending_set_writes[other]`.
     current_slot: usize,
+    /// #2715 (CONC-D7-UI-01) — `Some(slot)` exactly when `bindless_sets[slot]`
+    /// is *known*, via a completed fence wait, to be idle: no submitted
+    /// command buffer can be reading it. Set by `begin_frame` (which the
+    /// caller may only invoke after waiting on `slot`'s fence). Cleared by
+    /// `note_frame_submitted` once `draw_frame`'s `queue_submit` for that
+    /// slot succeeds, since that call creates a new pending submission
+    /// against it.
+    ///
+    /// `apply_descriptor_write`'s immediate-write fast path is safe ONLY
+    /// while this equals `Some(current_slot)`. A caller outside that
+    /// window — e.g. the UI overlay's `update_rgba`, called from the host
+    /// app's per-iteration update *before* that iteration's `draw_frame`
+    /// (and thus before its fence wait) — would otherwise write into a
+    /// slot whose command buffer from the *previous* iteration is still
+    /// in the pending state, racing a live shader read
+    /// (`VUID-vkUpdateDescriptorSets-None-03047`). Outside the window,
+    /// `apply_descriptor_write` queues the write for every slot instead,
+    /// including `current_slot` — the next `begin_frame` flush applies it
+    /// before that frame's command buffer is recorded.
+    fence_confirmed_idle_slot: Option<usize>,
     /// DDS uploads queued by `enqueue_dds_with_clamp` and drained by
     /// `flush_pending_uploads` (#881 / CELL-PERF-03). Each entry's
     /// bindless slot is already reserved (with the descriptor
@@ -390,6 +410,9 @@ impl TextureRegistry {
             staging_pool: None,
             pending_set_writes: vec![Vec::new(); MAX_FRAMES_IN_FLIGHT],
             current_slot: 0,
+            // No fence has been waited on yet — nothing is known-idle until
+            // the first `begin_frame` call.
+            fence_confirmed_idle_slot: None,
             pending_dds_uploads: Vec::new(),
             slot_capacity_warning_emitted: false,
         };
@@ -1412,6 +1435,22 @@ impl TextureRegistry {
         self.current_frame_id = self.current_frame_id.wrapping_add(1);
         self.current_slot = slot;
         self.flush_pending_set_writes(device, slot);
+        // #2715 — the caller's contract (see doc comment above) guarantees
+        // `slot`'s fence has already been waited on, so `bindless_sets[slot]`
+        // is now known-idle for `apply_descriptor_write`'s immediate-write
+        // fast path, until this frame's `queue_submit` (see
+        // `note_frame_submitted`).
+        self.fence_confirmed_idle_slot = Some(slot);
+    }
+
+    /// #2715 (CONC-D7-UI-01) — must be called once `draw_frame`'s
+    /// `queue_submit` for `slot` succeeds. From that point a new command
+    /// buffer is pending against `bindless_sets[slot]`, so
+    /// `apply_descriptor_write` may no longer write into it immediately.
+    pub fn note_frame_submitted(&mut self, slot: usize) {
+        if self.fence_confirmed_idle_slot == Some(slot) {
+            self.fence_confirmed_idle_slot = None;
+        }
     }
 
     /// Apply every queued descriptor write for `slot` via a single
@@ -1465,9 +1504,24 @@ impl TextureRegistry {
         image_view: vk::ImageView,
         sampler: vk::Sampler,
     ) {
-        // Immediate write on the current slot — safe: we're CPU-side
-        // recording its command buffer right now; no submission is
-        // pending against it.
+        // #2715 (CONC-D7-UI-01) — the immediate-write fast path is safe
+        // ONLY while a completed fence wait has proven `current_slot`
+        // idle (see `fence_confirmed_idle_slot`'s doc comment). A caller
+        // outside that window — e.g. the UI overlay's texture upload,
+        // which runs before its iteration's `draw_frame`/fence-wait —
+        // would otherwise write into a slot whose command buffer from the
+        // *previous* iteration is still pending, racing a live shader
+        // read (`VUID-vkUpdateDescriptorSets-None-03047`). Queue for
+        // every slot, `current_slot` included, in that case; the next
+        // `begin_frame` flush applies it before that frame records.
+        if self.fence_confirmed_idle_slot != Some(self.current_slot) {
+            self.record_pending_write_for_all_slots(handle, binding, image_view, sampler);
+            return;
+        }
+
+        // Immediate write on the current slot — safe: a completed fence
+        // wait has just proven no submitted command buffer can be reading
+        // `bindless_sets[self.current_slot]`.
         let image_info = vk::DescriptorImageInfo::default()
             .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
             .image_view(image_view)
@@ -1478,9 +1532,9 @@ impl TextureRegistry {
             handle,
             &image_info,
         );
-        // SAFETY: `self.current_slot` is being recorded by the CPU right
-        // now (see the comment above) — no submitted command buffer can be
-        // reading `bindless_sets[self.current_slot]` concurrently.
+        // SAFETY: `self.fence_confirmed_idle_slot == Some(self.current_slot)`
+        // (checked above) — a completed fence wait has proven no submitted
+        // command buffer can be reading `bindless_sets[self.current_slot]`.
         unsafe {
             device.update_descriptor_sets(&[write], &[]);
         }
@@ -1502,6 +1556,30 @@ impl TextureRegistry {
             if slot == self.current_slot {
                 continue;
             }
+            queue.push(PendingSetWrite {
+                handle,
+                binding,
+                image_view,
+                sampler,
+            });
+        }
+    }
+
+    /// #2715 (CONC-D7-UI-01) — pure queue bookkeeping: push a pending
+    /// write onto EVERY slot, `current_slot` included. Used by
+    /// `apply_descriptor_write` when `fence_confirmed_idle_slot` doesn't
+    /// prove `current_slot` idle, so the immediate-write fast path isn't
+    /// safe for it either this call. Split out (mirroring
+    /// `record_pending_writes_for_other_slots`) so unit tests can
+    /// exercise the queue mechanics without a real Vulkan device.
+    fn record_pending_write_for_all_slots(
+        &mut self,
+        handle: TextureHandle,
+        binding: u32,
+        image_view: vk::ImageView,
+        sampler: vk::Sampler,
+    ) {
+        for queue in &mut self.pending_set_writes {
             queue.push(PendingSetWrite {
                 handle,
                 binding,
