@@ -157,3 +157,65 @@ fn classifier_effect_shader_arm_shape_does_not_chrome() {
         "must stay above the RT reflection gate"
     );
 }
+
+// #2707 (SF-D8-01) — `into_imported_material` must leave
+// `metalness_override`/`roughness_override` as `None` (deferring to
+// `Material::resolve_pbr`'s NaN-sentinel backstop) rather than stamping
+// the classifier's terminal fallback as a fabricated `Some(...)`, when
+// `MaterialInfo` carries no PBR classifier signal at all — exactly the
+// state a Starfield material-reference stub is left in (the walker
+// returns before writing a single field). Any real signal, however
+// partial, must still stamp `Some(...)` unchanged from before this fix.
+
+#[test]
+fn has_no_pbr_classifier_signal_is_true_on_an_untouched_material_info() {
+    let info = MaterialInfo::default();
+    assert!(
+        info.has_no_pbr_classifier_signal(),
+        "a completely untouched MaterialInfo (the Starfield stub case) \
+         must report no classifier signal"
+    );
+}
+
+#[test]
+fn has_no_pbr_classifier_signal_is_false_once_any_signal_is_present() {
+    let mut pool = StringPool::new();
+    // Just a texture path — the FO3/FNV BSShaderPPLightingProperty-only
+    // shape, which never sets `has_material_data` (#2457) but DOES carry
+    // a real signal the classifier can use.
+    let mut info = MaterialInfo::default();
+    info.texture_path = Some(pool.intern("textures/clutter/barrel/barrel01.dds"));
+    assert!(
+        !info.has_no_pbr_classifier_signal(),
+        "a real texture path is a classifier signal even without has_material_data"
+    );
+}
+
+#[test]
+fn into_imported_material_leaves_overrides_none_for_an_empty_stub() {
+    let mut pool = StringPool::new();
+    let info = MaterialInfo::default();
+    let imported = info.into_imported_material(&mut pool, None);
+    assert_eq!(
+        imported.metalness_override, None,
+        "an empty stub must leave metalness_override unset so \
+         Material::resolve_pbr's NaN-sentinel backstop can classify \
+         from whatever real data merges in later, instead of a value \
+         fabricated from an input set that was empty by construction"
+    );
+    assert_eq!(imported.roughness_override, None);
+}
+
+#[test]
+fn into_imported_material_keeps_overrides_some_when_any_signal_present() {
+    let mut pool = StringPool::new();
+    let mut info = MaterialInfo::default();
+    info.texture_path = Some(pool.intern(r"Textures\Weapons\Iron\IronSword.dds"));
+    let imported = info.into_imported_material(&mut pool, None);
+    assert!(
+        imported.metalness_override.is_some(),
+        "real classifier signal (even partial) must still stamp Some(...), \
+         unchanged from before this fix"
+    );
+    assert!(imported.roughness_override.is_some());
+}

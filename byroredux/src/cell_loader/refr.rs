@@ -189,6 +189,23 @@ impl RefrTextureOverlay {
     /// first-wins policy so REFR overlays and per-mesh imports agree on
     /// precedence for MNAM-only TXSTs. No-op when the path isn't a
     /// `.bgsm` / `.bgem` or the provider can't resolve it.
+    ///
+    /// #2708 (SF-D9-02) — this is a SECOND, parallel external-material
+    /// resolver alongside `asset_provider::merge_external_material`, and
+    /// the two have diverged in format coverage: `merge_external_material`
+    /// also has a Starfield `.mat` arm (`is_pbr`-only today, pending #2359
+    /// Phase 2), this one does not. A Starfield REFR whose XATO/MSWP
+    /// supplies a `.mat` path falls through both branches here as a silent
+    /// no-op — the path still reaches `ov.material_path` (and thence the
+    /// spawned material) via the caller, but no role fills happen and
+    /// there is no per-role hook for a future CDB lookup. Harmless today
+    /// (Starfield content resolves no textures from either resolver, and
+    /// `.mat` overlays on vanilla Starfield REFRs are rare) but becomes a
+    /// real, silent divergence between the two resolvers the moment Phase
+    /// 2 gives `merge_external_material`'s `.mat` arm real per-role data.
+    /// Do NOT add a second one-off `.mat` arm here when that lands — route
+    /// both resolvers through one shared "resolve external material →
+    /// roles" helper instead.
     fn fill_from_bgsm(&mut self, provider: &mut MaterialProvider, pool: &mut StringPool) {
         let Some(path_sym) = self.material_path else {
             return;
