@@ -278,3 +278,83 @@ fn default_material_info_has_none_source() {
     let info = MaterialInfo::default();
     assert_eq!(info.emissive_source, EmissiveSource::None);
 }
+
+// #2591 (SKY-D7-03) — `EmissiveSource::None`'s own doc says materials
+// land there "without any of the three shader-property classes OR
+// where none of them authored a non-zero emissive". Pre-fix, all three
+// set-sites tagged their variant unconditionally, degenerating the
+// discriminator on Skyrim (where the overwhelming majority of
+// BSLightingShaderProperty blocks ship the unauthored `[0,0,0]`/`1.0`
+// default) to "has a BSLightingShaderProperty" rather than "has an
+// authored emissive". These three tests are the zero-authoring
+// counterpart of the three "must tag X" tests above — same fixtures,
+// with the emissive fields zeroed instead of the "distinctive
+// non-default" values those use.
+
+#[test]
+fn bslighting_unauthored_emissive_stays_none() {
+    let mut shader = minimal_bslighting();
+    shader.emissive_color = [0.0, 0.0, 0.0];
+    shader.emissive_multiple = 1.0; // BSLSP's own unauthored wire default
+    let blocks: Vec<Box<dyn NiObject>> = vec![Box::new(shader)];
+    let scene = NifScene {
+        blocks,
+        ..NifScene::default()
+    };
+    let shape = tri_shape_with_shader_ref(0);
+    let mut pool = StringPool::new();
+    let info = extract_material_info(&scene, &shape, &[], &mut pool);
+    assert_eq!(
+        info.emissive_source,
+        EmissiveSource::None,
+        "an unauthored (black) BSLightingShaderProperty emissive must not \
+         be tagged Lighting — the color contributes nothing regardless of \
+         the multiplier"
+    );
+}
+
+#[test]
+fn bseffect_unauthored_emissive_stays_none() {
+    let mut shader = minimal_bseffect();
+    shader.base_color = [0.0, 0.0, 0.0, 1.0];
+    shader.base_color_scale = 0.0;
+    let blocks: Vec<Box<dyn NiObject>> = vec![Box::new(shader)];
+    let scene = NifScene {
+        blocks,
+        ..NifScene::default()
+    };
+    let shape = tri_shape_with_shader_ref(0);
+    let mut pool = StringPool::new();
+    let info = extract_material_info(&scene, &shape, &[], &mut pool);
+    assert_eq!(
+        info.emissive_source,
+        EmissiveSource::None,
+        "an unauthored (zero-scale) BSEffectShaderProperty diffuse-tint \
+         must not be tagged Effect"
+    );
+}
+
+#[test]
+fn nimaterial_unauthored_emissive_stays_none() {
+    let mut mat = minimal_nimaterial();
+    mat.emissive = NiColor {
+        r: 0.0,
+        g: 0.0,
+        b: 0.0,
+    };
+    mat.emissive_mult = 1.0;
+    let blocks: Vec<Box<dyn NiObject>> = vec![Box::new(mat)];
+    let scene = NifScene {
+        blocks,
+        ..NifScene::default()
+    };
+    let shape = tri_shape_with_property_list(&[0]);
+    let mut pool = StringPool::new();
+    let info = extract_material_info(&scene, &shape, &[], &mut pool);
+    assert_eq!(
+        info.emissive_source,
+        EmissiveSource::None,
+        "an unauthored (black) NiMaterialProperty emissive must not be \
+         tagged Material"
+    );
+}

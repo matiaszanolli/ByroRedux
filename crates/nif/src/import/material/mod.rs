@@ -592,13 +592,18 @@ pub(super) struct MaterialInfo {
     /// `BSLightingShaderProperty.grayscale_to_palette_scale` — FO4+
     /// BSVER >= 130. Modulator on the greyscale→palette LUT remap
     /// (NPC face tints, gradient-driven palette swaps). Default 1.0
-    /// = no scale (matches the BSLSP parser stub default at
-    /// `shader.rs:748`). See #1241.
+    /// = no scale — matches
+    /// `BSLightingShaderProperty::material_reference_stub` (the FO4/
+    /// FO76+ material-reference stopcond) and, since #2589, the
+    /// `parse_skyrim` arm too (it never serializes this FO4+-only
+    /// field, so it now constructs the same neutral literal instead of
+    /// the `0.0` it used pre-#2589). #1241 / #2589 (SKY-D7-01).
     pub grayscale_to_palette_scale: f32,
     /// `BSLightingShaderProperty.fresnel_power` — FO4+ BSVER >= 130.
     /// Per-material Schlick exponent for the Fresnel rim term.
-    /// Default 5.0 (standard Schlick exponent, matches the BSLSP
-    /// parser stub default at `shader.rs:749`). See #1241.
+    /// Default 5.0 (standard Schlick exponent) — same three-arm
+    /// agreement as [`Self::grayscale_to_palette_scale`] above.
+    /// #1241 / #2589 (SKY-D7-01).
     pub fresnel_power: f32,
     pub uv_offset: [f32; 2],
     pub uv_scale: [f32; 2],
@@ -1052,9 +1057,20 @@ impl Default for MaterialInfo {
             specular_enabled: true,
             glossiness: 80.0,
             // BSLightingShaderProperty PBR scalars — defaults mirror
-            // the parser stub at `crates/nif/src/blocks/shader.rs:739-749`
-            // so the no-author fallback is the same as the stopcond
-            // fallback. See #1241.
+            // `BSLightingShaderProperty::material_reference_stub`
+            // (function name, not a line number — #2590 / SKY-D7-02:
+            // the prior `shader.rs:739-749` citation had drifted onto
+            // unrelated struct-field docs since the #1279 three-arm
+            // parser split) so the no-author fallback is the same as
+            // the stopcond fallback. Since #2589 (SKY-D7-01), the
+            // `parse_skyrim` arm also agrees on `grayscale_to_
+            // palette_scale`/`fresnel_power` specifically — it used to
+            // construct those two FO4+-only fields as `0.0` instead of
+            // the neutral `1.0`/`5.0` every other arm/stub/default
+            // agrees on. `parse_fo4` / `parse_fo76_plus` read real
+            // authored bytes for every field here, so "the no-author
+            // fallback" only ever applies to `parse_skyrim` and the
+            // stopcond stub. See #1241.
             refraction_strength: 0.0,
             lighting_effect_1: 0.0,
             lighting_effect_2: 0.0,
