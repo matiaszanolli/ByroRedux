@@ -102,7 +102,7 @@ independently:
 | [#2735](https://github.com/matiaszanolli/ByroRedux/issues/2735) | EX-12a — honour the non-climate `PNAM` inheritance bits | — | Only `0x10` (climate) is implemented. Measured: 6 Skyrim + 1 FO3 + 1 FO4 worldspaces author no `NAM2` and set the inherit bit, so they render no water at all. Pure CPU. |
 | [#2736](https://github.com/matiaszanolli/ByroRedux/issues/2736) | EX-05 — pre-tonemap non-finite pixel counter | — | Self-contained; also closes Tranche A item 6. The PNG mean/stddev gate cannot observe an HDR NaN. |
 | [#2737](https://github.com/matiaszanolli/ByroRedux/issues/2737) | EX-16a — parse REGN `RDAT` region data | — | `RegionRecord` captures EDID/weather/colour only; `RDAT` carries the ambient sound, ground cover, objects and priority EX-16 needs. Pure parsing. |
-| [#2738](https://github.com/matiaszanolli/ByroRedux/issues/2738) | EX-16b — parse NAVM geometry + connectivity | — | `NavmRecord` is EDID + version; no vertices, triangles or external connections exist to stream. Pure parsing. |
+| [#2738](https://github.com/matiaszanolli/ByroRedux/issues/2738) | EX-16b — parse NAVM geometry + connectivity | — | **Geometry + connectivity landed** (2026-08-13): typed `NVVX`/`NVTR`/`NVEX` for FO3/FNV, packed `NVNM` for Skyrim-era, and tile→cell/grid association for every game including FO4. What is left on the issue is the `NAVI` `NVMI`/`NVPP` index, whose stated purpose — associating tiles with cells — the `NVNM` header now serves directly; its unique content (merged-mesh lists, preferred paths) belongs to the pathfinding work in #2372. Pure parsing. |
 
 What stays blocked, and behind what:
 
