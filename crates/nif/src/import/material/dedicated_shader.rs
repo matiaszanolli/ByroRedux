@@ -402,7 +402,20 @@ fn apply_bs_lighting_shader(
         // Capture rich material data.
         info.emissive_color = shader.emissive_color;
         info.emissive_mult = shader.emissive_multiple;
-        info.emissive_source = byroredux_core::ecs::components::material::EmissiveSource::Lighting;
+        // #2591 (SKY-D7-03) — only tag `Lighting` when this BSLSP actually
+        // authored a non-zero emissive. Vanilla Skyrim ships the vast
+        // majority of BSLightingShaderProperty blocks with the unauthored
+        // `[0,0,0]` / `1.0` default; tagging those `Lighting` anyway
+        // degenerated the discriminator to "has a BSLightingShaderProperty"
+        // rather than "has an authored emissive", contradicting
+        // `EmissiveSource::None`'s own doc.
+        if byroredux_core::ecs::components::material::emissive_contribution_is_authored(
+            shader.emissive_color,
+            shader.emissive_multiple,
+        ) {
+            info.emissive_source =
+                byroredux_core::ecs::components::material::EmissiveSource::Lighting;
+        }
         info.specular_color = shader.specular_color;
         info.specular_authored = true;
         info.specular_strength = shader.specular_strength;
@@ -525,8 +538,15 @@ fn apply_bs_effect_shader(
             // #1280 step 4 — tag the BSEffect source. Semantic is
             // diffuse-tint scale (per #166), not emissive; the
             // discriminator lets a future render path distinguish.
-            info.emissive_source =
-                byroredux_core::ecs::components::material::EmissiveSource::Effect;
+            // #2591 (SKY-D7-03) — gated on non-zero authoring, same as
+            // the BSLightingShaderProperty site above.
+            if byroredux_core::ecs::components::material::emissive_contribution_is_authored(
+                info.emissive_color,
+                info.emissive_mult,
+            ) {
+                info.emissive_source =
+                    byroredux_core::ecs::components::material::EmissiveSource::Effect;
+            }
             info.uv_offset = shader.uv_offset;
             info.uv_scale = shader.uv_scale;
             info.has_uv_transform = true;

@@ -17,6 +17,32 @@ fn parse_bs_lighting_default_no_trailing() {
     assert_eq!(stream.position(), data.len() as u64);
 }
 
+/// Regression for #2589 (SKY-D7-01) — `grayscale_to_palette_scale` /
+/// `fresnel_power` are FO4+ wire fields Skyrim never serializes, so
+/// `parse_skyrim` has no authored value to construct them from. It must
+/// land on the same neutral no-modulation defaults every other no-value
+/// site in the pipeline agrees on (`1.0` / `5.0` —
+/// `BSLightingShaderProperty::material_reference_stub`,
+/// `MaterialInfo::default()`), not `0.0`/`0.0`. Pre-fix, the `0.0`
+/// literal survived `apply_bs_lighting_shader`'s unconditional copy all
+/// the way to canonical `Material.fresnel_power`.
+#[test]
+fn parse_bs_lighting_skyrim_arm_uses_neutral_fo4_field_defaults() {
+    let header = make_skyrim_header();
+    let data = build_bs_lighting_common(0); // shader_type=0 (Default)
+    let mut stream = NifStream::new(&data, &header);
+
+    let prop = BSLightingShaderProperty::parse(&mut stream).unwrap();
+    assert_eq!(
+        prop.grayscale_to_palette_scale, 1.0,
+        "grayscale_to_palette_scale must default to 1.0 (no modulation), not 0.0"
+    );
+    assert_eq!(
+        prop.fresnel_power, 5.0,
+        "fresnel_power must default to 5.0 (standard Schlick exponent), not 0.0"
+    );
+}
+
 #[test]
 fn parse_bs_lighting_env_map_trailing() {
     let header = make_skyrim_header();

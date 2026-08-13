@@ -203,11 +203,28 @@ fn plain_refraction_keeps_authored_lighting_shader_type() {
     );
 }
 
-/// `MaterialInfo::default()` must mirror the BSLSP parser stub at
-/// `crates/nif/src/blocks/shader.rs:739-749` so the no-author fallback
-/// is the same as the FO76+ stopcond fallback. If either side drifts
-/// the renderer would see different rim/SSS/fresnel defaults depending
-/// on whether the BGSM stopcond fired or the block was parsed normally.
+/// `MaterialInfo::default()` must mirror
+/// `BSLightingShaderProperty::material_reference_stub` (function name,
+/// not a line number — #2590 / SKY-D7-02: the prior `shader.rs:739-749`
+/// citation had drifted onto unrelated struct-field docs since the
+/// #1279 three-arm parser split) so the no-author fallback is the same
+/// as the FO4/FO76+ stopcond fallback. If either side drifts the
+/// renderer would see different rim/SSS/fresnel defaults depending on
+/// whether the stopcond fired or the block was parsed normally.
+///
+/// This test only pins the `MaterialInfo::default()` ↔
+/// `material_reference_stub` half of the invariant. The `parse_skyrim`
+/// arm is a THIRD, independent site that must agree on
+/// `grayscale_to_palette_scale`/`fresnel_power` specifically (it never
+/// serializes those two FO4+-only fields, so it constructs literals
+/// rather than reading them — pre-#2589 / SKY-D7-01 those literals were
+/// `0.0`/`0.0` instead of the neutral `1.0`/`5.0` here, and this test
+/// could not have caught that drift since it never touches
+/// `parse_skyrim`). See
+/// `blocks::shader_tests::skyrim::parse_bs_lighting_skyrim_arm_uses_neutral_fo4_field_defaults`
+/// for that arm's direct pin. `parse_fo4` / `parse_fo76_plus` read real
+/// authored bytes for every field compared here, so neither has (or
+/// needs) a "stub default" to agree with.
 #[test]
 fn material_info_default_matches_bslsp_parser_stub_defaults() {
     let info = MaterialInfo::default();
