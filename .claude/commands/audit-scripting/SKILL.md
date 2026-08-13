@@ -54,7 +54,22 @@ those here.
   `resolve_object` and `condition.rs`'s `RunOn::QuestAlias` both resolve
   through, and `apply_alias_injections`/`QuestAliasInjectionState` apply
   alias-injected factions/inventory onto `FactionRanks`/`Inventory` — see
-  Dim 5/6), `crates/scripting/src/lib.rs`. Recognizer
+  Dim 5/6; `scene.rs` is now a thin re-export over
+  `crates/scripting/src/scene/playback.rs` + `crates/scripting/src/scene/quest_alias.rs`),
+  `crates/scripting/src/lib.rs`.
+  **Runtime modules added to this inventory 2026-08-13** — none of them existed
+  when Dims 1–7 were written, so route findings deliberately rather than
+  assuming a dimension already covers them:
+  `crates/scripting/src/package.rs` (the largest of the new set — AI-package
+  script surface, cross-reference `/audit-fnv` Dim 9 for the procedure runtimes),
+  `crates/scripting/src/cinematic.rs` (the M47.2 MQ101 scripted-camera slice —
+  see Dimension 8), `crates/scripting/src/dialogue.rs`,
+  `crates/scripting/src/vm_state.rs` (the Papyrus-visible state machine
+  `condition.rs` and `fragment.rs` both read),
+  `crates/scripting/src/player_control.rs` (disable/enable player controls —
+  the gate `byroredux/src/systems/character.rs` honours, cross-reference
+  `/audit-physics` Dim 5), `crates/scripting/src/globals.rs`,
+  `crates/scripting/src/equipment.rs`. Recognizer
   chain: `crates/scripting/src/translate/` (`mod`, `source`, `archetype`, `compose`,
   `effects`, `tables`, `recognizers/{mod, quest_stage_gate, rumble,
   two_state_activator}` — `two_state_activator` landed after this file's last
@@ -92,7 +107,7 @@ those here.
   decode + the alias-fill/injection runtime, **Phases 0–3 shipped
   2026-08-07** (commit `a844c26b`). The decode itself
   (`crates/plugin/src/esm/records/misc/quest.rs`) stays out of this skill's
-  crate scope (a future ESM/quest-focused audit owns it), but the *consumer*
+  crate scope (`/audit-esm` Dim 4 owns it, added 2026-08-13), but the *consumer*
   runtime — `SceneActorBindings`, alias resolution, alias-injected
   factions/inventory — now lives in `crates/scripting/src/scene.rs`, which
   IS in scope (see the crate-scope entry above and Dim 5/6). Read this doc's
@@ -190,7 +205,7 @@ of the "shipped slice" fix around it.
   qust_alias_survey.rs` + `qust_alias_rawdump.rs`). That parser stays out of
   this skill's crate scope (`crates/plugin`, not `pex`/`papyrus`/
   `scripting`) — don't expand this skill's dimensions to cover `quest.rs`
-  itself, it belongs to a future ESM/quest-focused audit. **The
+  itself, it belongs to `/audit-esm` Dim 4. **The
   fill-and-apply runtime this bullet used to describe as unbuilt is now
   live and IS in scope**, in `crates/scripting/src/scene.rs`:
   `SceneActorBindings` fills Forced Reference / Unique Actor / loaded Find
@@ -224,7 +239,7 @@ of the "shipped slice" fix around it.
 
 ## Parameters (from $ARGUMENTS)
 
-- `--focus <dimensions>`: Comma-separated dimension numbers (e.g., `1,2,3`). Default: all 7.
+- `--focus <dimensions>`: Comma-separated dimension numbers (e.g., `1,2,3`). Default: all 8.
 - `--depth shallow|deep`: `shallow` = check API contracts + the decline/bounds
   invariants; `deep` = trace each decompiler pass's tree rewrite + the per-frame
   ECS lifecycle. Default: `deep`.
@@ -994,6 +1009,62 @@ dimensions covers it.
   `translate_pex` Some, trigger_volumes++ on a volume spawn) so the smoke harness
   has a real signal — a counter that never increments makes the gate vacuous.
 **Output**: `/tmp/audit/scripting/dim_7.md`
+
+### Dimension 8: Havok Idle / Cinematic Slice — `.hkx` Decode → Playback (added 2026-08-13)
+**Entry points**: `crates/hkx/src/packfile.rs` + `crates/hkx/src/animation.rs`
+(`decode_skeleton`, `decode_spline_animation`, `HkxSkeleton`, `HkxBone`,
+`HkxAnimation`, `HkxTransform`, `HkxAnnotation`);
+`byroredux/src/asset_provider/animation.rs` (`populate_havok_idle_runtime`,
+`convert_hkx_clip`, `idle_animation_candidates`, `behavior_completion_events`) —
+the crate's **only** consumer; `crates/scripting/src/cinematic.rs` and
+`byroredux/src/systems/cinematic.rs` (`havok_idle_playback_system`,
+`cinematic_root_motion_system`, `cinematic_animation_event_system`,
+`scripted_motion_type_system`, `vehicle_attachment_system`)
+**Why this dimension exists**: the M47.2 MQ101 cart cinematic is the first
+scripted sequence that drives *animation* rather than ECS state, and it crosses
+three previously-unaudited surfaces — an untrusted binary parser (`hkx`), an
+asset-resolution catalog, and five playback systems. Dims 1–7 cover none of it.
+**Checklist**:
+- **Untrusted binary input.** `crates/hkx` is a deliberately safe reader (no
+  `unsafe`, no behavior-graph execution). Apply the same discipline `/audit-nif`
+  Dim 1 applies: every offset read is bounds-checked, a lying count cannot
+  pre-allocate unbounded memory, and a malformed packfile returns `Err` rather
+  than panicking. Confirm the "no behavior-graph execution" scope claim still
+  holds — executing a guest behavior graph would be a categorically different
+  trust surface.
+- **Spline decompression**: `decode_spline_animation` handles static *and*
+  dynamic transform tracks. Verify the static/dynamic split is driven by the
+  file's own flags, that the quantization decode matches the documented Havok
+  2010 layout, and that a track count mismatch against `HkxSkeleton` is rejected
+  rather than zip-truncated (a silently short zip is a limb frozen at bind pose).
+- **Bone binding**: `convert_hkx_clip` maps Havok bone names onto the engine
+  skeleton. Verify unmatched bones are reported, not dropped silently, and that
+  the Z-up→Y-up conversion happens exactly once (the same double-convert trap
+  `/audit-physics` Dim 4 checks on the ragdoll side).
+- **Catalog resolution**: `idle_animation_candidates` builds a name-candidate
+  list per idle event. Verify a miss is diagnosable and that the candidate order
+  is deterministic — a set/hash-ordered candidate list makes playback
+  irreproducible run-to-run.
+- **Playback lifecycle**: `havok_idle_playback_system` is documented to start a
+  scoped player **once per serial** (guard:
+  `idle_request_starts_scoped_havok_player_once_per_serial`). Verify the request
+  is drained after consumption, so a stuck request cannot restart the clip every
+  frame.
+- **Root motion**: `cinematic_root_motion_system` applies and then drains a
+  delta (guard: `cart_exit_root_motion_moves_and_orients_actor_then_drains_delta`).
+  Verify apply-then-drain ordering — an undrained delta integrates every frame
+  and launches the actor.
+- **Completion events**: `behavior_completion_events` /
+  `cinematic_animation_event_system` translate clip annotations into scripted
+  completions. Verify an annotation the catalog doesn't know is ignored safely
+  and that a missing completion event cannot deadlock a quest stage waiting on it
+  — cross-reference Dim 6's quest-stage gating.
+- **Attachment**: `vehicle_attachment_system` / `scripted_motion_type_system`
+  reparent and re-classify bodies mid-sequence. Verify the motion-type flip is
+  the same `Keyframed` discipline `byroredux/src/npc_spawn.rs` uses for live
+  ragdoll bones — cross-reference `/audit-physics` Dims 3–4 and report the
+  physics half there.
+**Output**: `/tmp/audit/scripting/dim_8.md`
 
 ## Phase 3: Merge
 

@@ -90,6 +90,7 @@ for the severity scale (including the NIFAL canonical-translation rows).
 **Output**: `/tmp/audit/fo3/dim_2.md`
 
 ### Dimension 3: ESM Record Coverage (Fallout3.esm)
+**Scope split with `/audit-esm` (added 2026-08-13)**: `/audit-esm` owns the parser *as a parser* — GRUP walk, `SubReader` byte accounting, schema dispatch, FormID remap. This dimension owns **this game's data through it**: record counts, game-unique authoring, and the semantics that only show up on this title's masters. If the defect is in the shared mechanism, file it against `/audit-esm` instead of here.
 **Subagent**: `general-purpose`
 **Entry points**: `crates/plugin/src/esm/records/`, `crates/plugin/src/esm/cell/` (post-Session-34 split — `walkers.rs` / helpers / support / `wrld.rs`), `byroredux/src/cell_loader/refr_texture_overlay_tests.rs`
 **Checklist**:

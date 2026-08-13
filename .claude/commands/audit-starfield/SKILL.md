@@ -173,6 +173,7 @@ pre-fix). Regression guard for this dimension's resolve-rate baseline.
 **Output**: `/tmp/audit/starfield/dim_4.md`
 
 ### Dimension 5: ESM + Cell Bring-up Regression Surface
+**Scope split with `/audit-esm` (added 2026-08-13)**: `/audit-esm` owns the parser *as a parser* — GRUP walk, `SubReader` byte accounting, schema dispatch, FormID remap. This dimension owns **this game's data through it**: record counts, game-unique authoring, and the semantics that only show up on this title's masters. If the defect is in the shared mechanism, file it against `/audit-esm` instead of here.
 **Subagent**: `general-purpose`
 **Entry points**: `crates/plugin/src/esm/reader.rs` (`GameKind::Starfield` HEDR-0.96
 classifier), `crates/plugin/src/esm/records/mod.rs` (FourCC dispatch),

@@ -13,7 +13,9 @@ is one-file-per-concern: `storage.rs` holds only the `Component` /
 `world.rs` owns the `RwLock`-per-storage `World`; `query.rs` the guard-owning
 query wrappers; `resource.rs` the resource guards; `scheduler.rs` the stage
 scheduler; `access.rs` the declared-access conflict analyzer; `lock_tracker.rs`
-the deadlock / ABBA detector; `systems.rs` the transform-propagation system.
+the deadlock / ABBA detector; `systems.rs` the transform-propagation system. Dimension 10 (added 2026-08-13)
+extends this skill past `ecs/` into the sibling `crates/core/src/animation/`
+runtime, which had no owner dimension anywhere.
 
 Dimensions are ordered by ECS blast radius: lock ordering / deadlock first,
 then storage correctness, query borrow safety, scheduler declarations, resource
@@ -361,6 +363,49 @@ upstream boundary.
 - **ECS-adjacent producers**: Starfield CDB output (`crates/sfmaterial/`) must
   flow through `translate_material` / `resolve_pbr`; `crates/debug-ui/` (egui
   overlay) must not register or mutate gameplay components.
+
+### 10. Animation Runtime (`crates/core/src/animation/`, added 2026-08-13)
+
+`crates/core/src/animation/` is a `byroredux-core` subsystem with no owner
+dimension anywhere: `/audit-nif` owns the NIF/KF **import**, `/audit-nifal`
+Dim 7 owns the NIF→`AnimationClip` **translation boundary**, and nothing owns
+what happens after — sampling, layer blending, root-motion split, text-key
+dispatch. It lands here because `AnimationPlayer` / `AnimationStack` are ECS
+components driven by an ECS system (`byroredux/src/systems/animation.rs`), and
+`AnimationClipRegistry` is a `Resource`.
+
+- **Clip-handle validity**: `AnimationPlayer.clip_handle` / `AnimationLayer`
+  index into `AnimationClipRegistry` (`crates/core/src/animation/registry.rs`).
+  A stale handle after a cell unload must be a no-op, never a panic or an
+  out-of-bounds read. Verify unload clears or invalidates players alongside the
+  registry (same lifecycle class as Dimension 7).
+- **Time advance**: `advance_time` (`crates/core/src/animation/player.rs`) and
+  `advance_stack` (`crates/core/src/animation/stack.rs`) must handle `dt == 0`,
+  a negative/NaN `dt`, and a zero-length clip without dividing by zero or
+  looping forever. Verify `CycleType` (loop / clamp / reverse) is applied per
+  clip, not globally.
+- **Blend weights**: `AnimationLayer::effective_weight` + `play` + `cleanup_finished`
+  define the crossfade. Verify weights are normalized (or documented as additive),
+  that `cleanup_finished` cannot remove a layer still contributing weight, and
+  that an unbounded layer stack cannot grow per frame — `play` on every tick with
+  a nonzero blend time is the leak shape.
+- **`sample_blended_transform`** is the hot path (per bone, per skinned entity,
+  per frame). Verify it allocates nothing and short-circuits the single-layer
+  case; cross-reference `/audit-performance` Dim 1 for cost, report the
+  allocation here.
+- **Root motion**: `split_root_motion` (`crates/core/src/animation/root_motion.rs`)
+  separates the delta applied to the entity from the residual left on the bone.
+  Verify the split is applied exactly once per tick and drained — an undrained
+  `RootMotionDelta` integrates every frame (the same failure mode
+  `/audit-scripting` Dim 8 checks on the cinematic path).
+- **Text keys**: `visit_stack_text_events` / `collect_stack_text_events`
+  (`crates/core/src/animation/stack.rs`) must not emit an event twice when a clip
+  loops across the frame boundary, and must emit it at all when a single frame
+  spans multiple key times (a large `dt` after a stall).
+- **Interpolation** (`crates/core/src/animation/interpolation.rs`): `find_key_pair`
+  boundary behaviour at t < first key and t > last key, plus quaternion
+  shortest-path (a missing dot-sign flip is a bone spinning the long way).
+  B-splines reach FNV/FO3 too — do not assume Skyrim+ (`feedback_bspline_not_skyrim_only`).
 
 ## Process
 

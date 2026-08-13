@@ -125,6 +125,7 @@ Dimensions are ordered by FO4 risk: the precombine pipeline, BGSM material trans
 **Output**: `/tmp/audit/fo4/dim_5.md`
 
 ### Dimension 6: ESM Architecture Records (SCOL / MOVS / PKIN / TXST)
+**Scope split with `/audit-esm` (added 2026-08-13)**: `/audit-esm` owns the parser *as a parser* — GRUP walk, `SubReader` byte accounting, schema dispatch, FormID remap. This dimension owns **this game's data through it**: record counts, game-unique authoring, and the semantics that only show up on this title's masters. If the defect is in the shared mechanism, file it against `/audit-esm` instead of here.
 **Subagent**: `general-purpose`
 **Entry points**: `crates/plugin/src/esm/records/` (`scol.rs`, `movs.rs`, `pkin.rs`, `mswp.rs`; TXST lives in the misc set), `crates/plugin/src/esm/cell/` (`mod`, `walkers`, `support`, `wrld` + `cell/tests/`).
 **Checklist**:

@@ -14,12 +14,18 @@ dedup, report format) lives in `.claude/commands/_audit-common.md` and
 
 Every audit referenced below is a live skill under
 `.claude/commands/audit-<name>/SKILL.md`, invoked as `/audit-<name>`.
-The full current set (23): audio, concurrency, ecs, fnv, fo3, fo4, incremental,
-legacy-compat, nif, nifal, oblivion, performance, publish, regression, renderer,
-runtime, safety, save, scripting, skyrim, speedtree, starfield, tech-debt.
+The full current set (27): audio, character, concurrency, ecs, esm, fnv, fo3,
+fo4, incremental, legacy-compat, nif, nifal, oblivion, performance, physics,
+publish, regression, renderer, runtime, safety, save, scripting, skyrim,
+speedtree, starfield, tech-debt, ui.
 (`/audit-publish` is a post-processing step, not an analysis pass — it never
 appears in a preset. `/audit-scripting` owns crates/scripting + crates/pex +
-crates/papyrus; `/audit-save` owns crates/save — both added 2026-06-23.)
+crates/papyrus; `/audit-save` owns crates/save — both added 2026-06-23.
+**Four owner audits added 2026-08-13**, closing the largest coverage gaps:
+`/audit-esm` owns crates/plugin, `/audit-ui` owns crates/ui, `/audit-physics`
+owns crates/physics + byroredux/src/ragdoll.rs, `/audit-character` owns
+crates/core/src/character. Presets that used to substitute generic audits for
+those areas now call the owner directly.)
 
 **`--focus` numbers below track the dimension numbering inside each target skill.
 If a target audit is renumbered, update the focus lists here in lockstep** — the
@@ -36,6 +42,9 @@ suite is the one place those numbers are duplicated, so it drifts first.
 | `per-game-all` | per-game compat sweep | the 6 game audits |
 | `nif-all-games` | NIF parser vs every game | nif ×6 game corpora |
 | `runtime-regression` | telemetry diff vs baselines | runtime |
+| `esm-deep` | after ESM/plugin-parser changes | esm · incremental · (per-game when one title is the target) |
+| `physics-deep` | after physics / ragdoll / character-controller changes | physics · concurrency · safety |
+| `character-deep` | after CHARAL ruleset / progression changes | character · esm · ecs |
 | `nif-deep` | after NIF parser changes | nif · nifal · safety · incremental |
 | `nifal-deep` | after NIFAL translation changes | nifal · nif · renderer · ecs |
 | `renderer-deep` | after renderer changes | renderer · performance · concurrency · safety |
@@ -43,8 +52,8 @@ suite is the one place those numbers are duplicated, so it drifts first.
 | `material-deep` | after material-table / PBR changes | renderer · safety |
 | `texture-roles-deep` | after `MaterialTextureSet` / `ImportedMaterial` changes | nifal · fo4 · starfield · renderer |
 | `upscaler-deep` | after FSR3 / presentation / exposure changes | renderer · safety · performance |
-| `ui-deep` | after Scaleform/SWF (R4 + M48) changes | safety · concurrency · tech-debt · incremental |
-| `water-deep` | after water-rendering changes | renderer · concurrency · safety |
+| `ui-deep` | after Scaleform/SWF (R4 + M48) changes | ui · safety · concurrency · tech-debt |
+| `water-deep` | after water changes (render **or** physics half) | renderer · physics · esm · concurrency · safety |
 | `volumetrics-deep` | after volumetric-lighting changes | renderer · performance · safety |
 | `bloom-deep` | after bloom-pyramid changes | renderer · performance · safety |
 | `skin-deep` | after GPU-skinning / BLAS-refit changes | renderer · performance · concurrency · safety |
@@ -52,7 +61,7 @@ suite is the one place those numbers are duplicated, so it drifts first.
 | `scripting-deep` | after scripting / .pex / Papyrus / recognizer changes | scripting · ecs · incremental |
 | `save-deep` | after save/load changes | save · ecs · incremental |
 | `speedtree-deep` | after SpeedTree (.spt) changes | speedtree · incremental |
-| `streaming-deep` | after world-streaming / NPC-spawn changes | performance · concurrency · safety |
+| `streaming-deep` | after world-streaming / NPC-spawn changes | performance · concurrency · character · physics · safety |
 | `legacy-deep` | after compatibility-mapping work | legacy-compat · incremental |
 
 ## Broad Presets
@@ -79,20 +88,30 @@ catches what static audits structurally can't see:
 5. `/audit-performance`
 6. `/audit-nif`
 7. `/audit-nifal`
-8. `/audit-audio`
-9. `/audit-speedtree`
-10. `/audit-scripting`
-11. `/audit-save`
-12. `/audit-legacy-compat`
-13. `/audit-tech-debt`
-14. `/audit-fnv`
-15. `/audit-fo3`
-16. `/audit-skyrim`
-17. `/audit-oblivion`
-18. `/audit-fo4`
-19. `/audit-starfield`
-20. `/audit-regression`
-21. `/audit-runtime --game all`
+8. `/audit-esm`
+9. `/audit-physics`
+10. `/audit-character`
+11. `/audit-ui`
+12. `/audit-audio`
+13. `/audit-speedtree`
+14. `/audit-scripting`
+15. `/audit-save`
+16. `/audit-legacy-compat`
+17. `/audit-tech-debt`
+18. `/audit-fnv`
+19. `/audit-fo3`
+20. `/audit-skyrim`
+21. `/audit-oblivion`
+22. `/audit-fo4`
+23. `/audit-starfield`
+24. `/audit-regression`
+25. `/audit-runtime --game all`
+
+With the four 2026-08-13 additions this preset now covers every crate in the
+`_audit-common.md` crate→owner map. The residual gaps it does **not** cover are
+`crates/mod-runtime` (folded into `/audit-safety` Dim 11), `crates/hkx` (folded
+into `/audit-scripting` Dim 8), and `crates/debug-server` / `crates/debug-protocol`
+(no owner). Name them in the summary rather than claiming full coverage.
 
 ### `--preset tech-debt-deep`
 Surface accumulated debt (run after a milestone closes, before opening the next):
@@ -201,19 +220,26 @@ Run `BYRO_VALIDATION=1` alongside — layout errors here are structurally
 invisible to `cargo test`.
 
 ### `--preset ui-deep`
-After Scaleform/SWF UI changes (R4 + M48 host layer). **No `/audit-ui` skill
-exists**, so this preset is the only coverage `crates/ui/` gets — say so in the
-report scope line:
-1. `/audit-safety`                     # Ruffle/wgpu FFI + offscreen readback lifetimes
-2. `/audit-concurrency --focus 7`      # Ruffle local-executor pump vs. main loop
-3. `/audit-tech-debt`                  # generated AVM2 adapter + 74/138-method catalogs are drift-prone
-4. `/audit-incremental --commits 10`
+After Scaleform/SWF UI changes (R4 + M48 host layer). `/audit-ui` (added
+2026-08-13) now owns `crates/ui/` — the host contract, profile split, ABC
+adapter, navigator and render/device lifecycle. The three generic passes stay
+because the crate straddles an FFI boundary and two drift-prone generated
+surfaces:
+1. `/audit-ui`                         # the owner: profile, bridge, AVM2 adapter, navigator, device, input
+2. `/audit-safety --focus 1`           # Ruffle/wgpu FFI + offscreen readback lifetimes
+3. `/audit-concurrency --focus 7`      # Ruffle local-executor pump vs. main loop
+4. `/audit-tech-debt`                  # generated AVM2 adapter + the pinned method catalogs are drift-prone
 
 ### `--preset water-deep`
-After water-rendering changes (incl. water-side caustics):
+After water changes. WATAL is **double-ended** and its physics half shipped at
+the 2026-08-10 checkpoint, so a water change is rarely render-only — buoyancy,
+submerged damping and current drag read the same canonical `WaterFlow` the
+shader does:
 1. `/audit-renderer --focus 1,2,8,14,15`  # AS + rays + composite + caustic splat + water dim
-2. `/audit-concurrency --focus 1,2`
-3. `/audit-safety`
+2. `/audit-physics --focus 6`             # the WATAL physics sink (buoyancy / damping / current)
+3. `/audit-esm --focus 5`                 # the tri-state XCLW / WRLD water decode at the CELL boundary
+4. `/audit-concurrency --focus 1,2`
+5. `/audit-safety`
 
 ### `--preset volumetrics-deep`
 After volumetric-lighting changes:
@@ -264,11 +290,42 @@ After SpeedTree (.spt) walker / billboard-fallback changes:
 1. `/audit-speedtree`
 2. `/audit-incremental --commits 10`
 
+### `--preset esm-deep`
+After ESM/ESP parser changes — the GRUP walk, `SubReader` byte accounting, a
+per-record schema, the FormID remap, or the CELL/WRLD walkers
+(`crates/plugin/`). Add the per-game audit when one title is the target, since
+`/audit-esm` audits the parser *as a parser* and the per-game skills audit its
+output for their own data:
+1. `/audit-esm`
+2. `/audit-incremental --commits 10`
+3. `/audit-<game>` — only when the change is game-specific
+
+### `--preset physics-deep`
+After physics changes — collider translation, the fixed-step accumulator, the
+4-phase sync, ragdoll articulation, the character controller, or the WATAL
+buoyancy sink (`crates/physics/`, `byroredux/src/ragdoll.rs`):
+1. `/audit-physics`
+2. `/audit-concurrency --focus 5,7`    # the resource↔storage lock dance in physics_sync_system
+3. `/audit-safety`
+
+### `--preset character-deep`
+After CHARAL changes — a ruleset, a derived formula, a leveling model, or the
+population boundary. `/audit-esm` joins because CHARAL's inputs (AVIF, CLAS,
+NPC_) are decoded there, and a wrong FormID resolution is indistinguishable
+from a wrong coefficient at the actor:
+1. `/audit-character`
+2. `/audit-esm --focus 4`              # AVIF / CLAS / NPC_ decode + dispatch coverage
+3. `/audit-ecs`                        # ActorValues / Perks / CharacterLevel component layer
+
 ### `--preset streaming-deep`
-After world-streaming / NPC-spawn changes (M40 / M41):
+After world-streaming / NPC-spawn changes (M40 / M41). NPC spawn is also
+CHARAL's only population site and the physics registration path, so both owners
+join:
 1. `/audit-performance --focus 7`       # world streaming & cell transitions
 2. `/audit-concurrency --focus 7`       # worker threads (streaming, debug server)
-3. `/audit-safety`
+3. `/audit-character --focus 5`         # the population boundary in npc_spawn.rs
+4. `/audit-physics --focus 3`           # newcomer registration / release across cell churn
+5. `/audit-safety`
 
 ### `--preset legacy-deep`
 After compatibility-mapping work (Gamebryo 2.3 → Redux):

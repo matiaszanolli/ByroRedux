@@ -65,16 +65,25 @@ Risk is the *floor* severity for an un-disproven finding in that area.
 | `crates/bsa/src/**` (BSA / BA2 / CSG) | `/audit-nif` (archive feed), per-game `/audit-<game>` | HIGH |
 | `byroredux/src/material_translate.rs`, `crates/core/src/ecs/components/material.rs`, `crates/nif/src/import/collision/mod.rs` (NIFAL boundary) | `/audit-nifal` | HIGH |
 | `byroredux/src/env_translate.rs` (EXAL boundary) | `/audit-nifal` (mirror), `/audit-renderer` | MEDIUM |
-| `byroredux/src/ragdoll.rs`, `crates/physics/src/**` (PHYSAL / Rapier bridge) | `/audit-safety`, per-game `/audit-<game>` | MEDIUM |
+| `byroredux/src/ragdoll.rs`, `crates/physics/src/**` (PHYSAL / Rapier bridge, character controller, buoyancy) | `/audit-physics`, `/audit-safety` | HIGH |
+| `byroredux/src/systems/character.rs` (player/character controller) | `/audit-physics` Dim 5 | MEDIUM |
 | `crates/spt/src/**`, `byroredux/src/cell_loader/refr.rs` (.spt route) | `/audit-speedtree` | MEDIUM |
-| `crates/plugin/src/esm/**` (incl. `records/misc/{water,character,world,pack,quest,dialogue,magic,effects,equipment}.rs`) | per-game `/audit-<game>`, `/audit-legacy-compat` | MEDIUM |
-| `crates/core/src/animation/**` | `/audit-nif` (anim import), `/audit-ecs` | MEDIUM |
+| `crates/plugin/src/**` — reader / sub_reader / GRUP dispatch / per-record decoders / cell walkers / strings table | `/audit-esm`; per-game `/audit-<game>` for the game-specific slice | HIGH |
+| `crates/ui/src/**`, `byroredux/src/ui_input.rs` (Scaleform/Ruffle host layer) | `/audit-ui`, `/audit-safety` (FFI half) | MEDIUM |
+| `crates/core/src/character/**` (CHARAL rulesets, derived formulas, leveling) | `/audit-character` | HIGH |
+| `crates/core/src/animation/**` | `/audit-ecs` Dim 10 (runtime), `/audit-nif` (import), `/audit-nifal` Dim 7 (translation) | MEDIUM |
+| `crates/hkx/src/**`, `byroredux/src/asset_provider/animation.rs` | `/audit-scripting` Dim 8 | MEDIUM |
+| `crates/fsr3-sys/**`, `crates/renderer/src/vulkan/{frame_upscaler,upscaling,presentation,exposure}.rs` | `/audit-renderer` Dim 23, `/audit-safety` Dim 1 | HIGH |
+| `crates/mod-runtime/src/**` (sandboxed mod host) | `/audit-safety` Dim 11 | MEDIUM |
 | `byroredux/src/cell_loader/**` | per-game `/audit-<game>` | MEDIUM |
 | `byroredux/src/systems/**`, `byroredux/src/render/**` | `/audit-ecs`, `/audit-renderer`, `/audit-performance` | MEDIUM |
 | `byroredux/src/scene/**` | per-game `/audit-<game>` | MEDIUM |
 | `byroredux/src/main.rs`, `byroredux/src/commands/**` | `/audit-ecs` | MEDIUM |
+| `byroredux/src/boot.rs` (scheduler registration + declared access) | `/audit-concurrency` Dim 4, `/audit-ecs` Dim 5 | HIGH |
 | `crates/scripting/**`, `crates/pex/**`, `crates/papyrus/**` | `/audit-scripting` | MEDIUM |
-| `crates/save/**` | `/audit-save` | MEDIUM |
+| `crates/save/**`, `byroredux/src/save_io.rs`, `byroredux/src/save_io/**` | `/audit-save` | MEDIUM |
+| `byroredux/src/streaming.rs`, `streaming_helpers.rs`, `byroredux/src/npc_spawn.rs`, `byroredux/src/npc_spawn/**` | `/audit-performance` Dim 7, `/audit-concurrency` Dim 7 | MEDIUM |
+| `byroredux/src/fog.rs`, `byroredux/src/env_translate.rs`, `byroredux/src/groundcover_translate.rs` (EXAL) | `/audit-renderer`, `/audit-nifal` (mirror) | MEDIUM |
 | `byroredux/src/asset_provider/archive.rs` (sibling-BSA auto-load, AE path strip) | per-game `/audit-<game>` | MEDIUM |
 | `crates/audio/src/{lib,tests}.rs` | `/audit-audio` | MEDIUM |
 | `crates/sfmaterial/src/**` (Starfield CDB) | `/audit-starfield` | MEDIUM |
@@ -88,9 +97,18 @@ Risk is the *floor* severity for an un-disproven finding in that area.
 > `systems.rs`, `scene.rs`, and `cell_loader.rs` are all directories
 > now (`byroredux/src/render/`, `systems/`, `scene/`, `cell_loader/`),
 > each with a thin `mod.rs` dispatch + topic submodules + `*_tests.rs`
-> siblings. `crates/renderer/src/vulkan/acceleration/` and `scene_buffer/`
-> are likewise split. The authoritative tree is in `_audit-common.md`
-> § Project Layout — route against it, not against memory.
+> siblings. `crates/renderer/src/vulkan/acceleration/`, `scene_buffer/`
+> and `volumetrics/` are likewise split, and `crates/scripting/src/scene.rs`
+> is now thin over `crates/scripting/src/scene/`. The authoritative tree is
+> in `_audit-common.md` § Project Layout — route against it, not against
+> memory.
+>
+> **Four owner audits were added 2026-08-13** — `/audit-esm`,
+> `/audit-ui`, `/audit-physics`, `/audit-character`. Diffs in
+> `crates/plugin`, `crates/ui`, `crates/physics` and
+> `crates/core/src/character` used to route to "per-game audits, partially"
+> or to nothing at all; route them to their owner now. A delta report that
+> still says one of those areas has no owner has a stale premise.
 
 ## Step 3: Regression-focused checks on each changed file
 

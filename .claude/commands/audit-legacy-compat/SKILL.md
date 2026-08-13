@@ -28,9 +28,11 @@ yet cover. Both are findings; documented limitations (FO4+ packed Havok, phantom
 **not**. The per-layer specs maintain leak inventories — cross-check against them so closed
 leaks are not re-filed.
 
-Dimensions are ordered by compat-gap blast radius. NIFAL/EXAL/PHYSAL each have a deep
-sibling — **`/audit-nifal`** (and the per-game audits) drill the contents; this audit owns
-the *cross-layer mapping shape* and subsystem coverage.
+Dimensions are ordered by compat-gap blast radius. Each layer now has a deep sibling that
+drills its contents — **`/audit-nifal`** for NIFAL, **`/audit-physics`** for PHYSAL's solver
+end (added 2026-08-13), **`/audit-character`** for CHARAL, plus the per-game audits. This
+audit owns the *cross-layer mapping shape* and subsystem coverage; when a finding is about
+one layer's internals, file it there and keep the mapping-shape observation here.
 
 ## Dimensions
 
@@ -114,7 +116,11 @@ is silently wrong for **every** game — `Material::metalness`/`roughness` are p
 
 Ragdoll/physics translation; **double-ended** (per-game source axis + per-solver sink axis).
 The classic-chain slice landed 2026-06-14. Reference: `docs/engine/physal.md` (§1 double-ended,
-§2 tiers, §3 ragdoll reference realisation, §5 per-concern inventory).
+§2 tiers, §3 ragdoll reference realisation, §5 per-concern inventory). The **solver end** —
+collider translation, fixed-step determinism, ragdoll build/teardown, character controller,
+buoyancy — is owned by `/audit-physics` as of 2026-08-13; keep this dimension on the
+*source-axis* question (does each game's authoring reach the canonical spec intact?) and
+cross-reference rather than duplicating the solver checks.
 
 - **The per-game seam is ONLY the constraint CInfo decode** — everything else is game-agnostic
   by construction. Audit that the seam stays that narrow: the two typed decoders

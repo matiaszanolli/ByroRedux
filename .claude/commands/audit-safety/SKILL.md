@@ -21,8 +21,11 @@ Vulkan spec violation = **HIGH** · `unsafe` without a safety comment = **MEDIUM
 Dimension 1), ~6 in `crates/core`, 2 in `byroredux`, and one each in
 `crates/plugin`, `crates/facegen`, `crates/cxx-bridge`, `crates/ui`, and
 `crates/pex` (the M47.2 decompiler — its single `unsafe` is a guarded
-`transmute` in `opcode.rs`, see Dimension 2). `crates/save` (M45) and
-`crates/hkx` (M47.2, a deliberately safe packfile reader) have no `unsafe`.
+`transmute` in `opcode.rs`, see Dimension 2). `crates/save` (M45),
+`crates/hkx` (M47.2, a deliberately safe packfile reader) and
+`crates/mod-runtime` (the sandbox host, Dimension 11) have no `unsafe` —
+for the last two that absence is itself the safety property, so verify it
+rather than skipping them.
 Counts drift — recount with `grep -ro unsafe crates/<c>/src | wc -l` rather
 than trusting these figures. Renderer carries roughly nine `SAFETY` comments
 per ten `unsafe` tokens; the residual gap is where the unsafe-without-comment
@@ -37,7 +40,14 @@ Vulkan-spec compliance, then the narrower regression-guard surfaces.
 
 ## Dimensions
 
-### 1. FFI Lifetime Safety (cxx bridge) — CRITICAL class
+### 1. FFI Lifetime Safety (live crossings first) — CRITICAL class
+
+**Ordering note (2026-08-13):** this dimension used to lead with the cxx bridge.
+That is backwards — cxx-bridge is a 36-LOC placeholder while `crates/fsr3-sys`
+is the workspace's only real FFI crossing and sits on the **engine-default**
+render path. Audit `fsr3-sys` first, then the Ruffle/wgpu boundary
+(`crates/ui`, cross-reference `/audit-ui` Dim 6), then confirm the cxx scope
+guard below.
 
 - **The cxx surface is currently a placeholder.** `crates/cxx-bridge/src/lib.rs`
   exposes one bridge fn, `native_hello() -> String` (impl in
@@ -61,6 +71,15 @@ Vulkan-spec compliance, then the narrower regression-guard surfaces.
   and `Drop` calls back into the native shim. Audit every `unsafe fn` here for
   a `# Safety` doc and a lifetime contract the way this dimension used to
   reserve for a *hypothetical* live cxx-bridge.
+- **The Ruffle / wgpu boundary (`crates/ui`) is the second live crossing.**
+  `SwfPlayer` (`crates/ui/src/player.rs`) creates its own wgpu device and
+  captures frames into a pixel buffer the engine then uploads through
+  `update_rgba`. Two safety questions belong here: (a) the captured slice's
+  lifetime vs. the upload (a borrow that outlives the backend's frame is a
+  use-after-free), and (b) device/allocator teardown ordering against
+  `VulkanContext` (same class as Dimension 3's allocator-before-device rule).
+  The *contract* half — stride, format, resize — is `/audit-ui` Dim 6; report
+  the memory-safety half here and cross-reference.
 
 ### 2. Memory Corruption / UB
 
@@ -316,11 +335,47 @@ safety facet — NaN/inf scalars reaching the GPU, unbounded allocation.*
   lock scopes to the `set_textures` submit only (CONC-D1-01 / #1713) — a widened
   hold regresses that.
 
+### 11. Sandboxed Mod Runtime — Trust Boundary (`crates/mod-runtime`, added 2026-08-13)
+
+`crates/mod-runtime/src/` is the engine-owned boundary between untrusted
+community code and host services. It contains **no `unsafe`** and has **no
+consumer in the engine yet** — so audit it as a *contract*, not a live path, and
+do not report "unused" as a finding. What matters is that the guarantees are
+real before the first consumer lands and makes them load-bearing.
+
+- **Absence, not promise.** The crate docstring claims no WASI implementation is
+  linked by default, so OS access is *absent* rather than merely unused. Verify
+  that against `crates/mod-runtime/Cargo.toml` — a wasi feature pulled in
+  transitively (even unused) turns the claim false, and a future
+  *add_to_linker_sync* would silently activate it.
+- **Capability gating.** `CapabilitySet` / `CapabilityId` / `Principal`
+  (`crates/mod-runtime/src/identity.rs`) are the authority model; `LOG_CAPABILITY`
+  is the only defined capability today. Verify every host function reachable from
+  a guest checks `contains` **before** acting, and that a missing grant is an
+  error rather than a no-op — a silently-ignored denial is indistinguishable from
+  success to the guest and to the log reader.
+- **Per-instance isolation.** Each `ModInstance` gets its own principal and
+  store. Verify no shared mutable state (a `static`, a shared `Arc`, a global
+  logger buffer) lets one instance observe or affect another.
+- **Resource limits.** `SandboxConfig` (`crates/mod-runtime/src/limits.rs`) plus
+  `fuel_remaining` are the DoS defenses. Verify `validate()` rejects degenerate
+  configs (zero/absurd fuel, zero memory) and that fuel exhaustion produces a
+  `FaultInfo` / terminal `InstanceStatus` rather than a hang. An unbounded
+  `logs()` `Vec` is itself a memory-exhaustion channel a guest controls — check
+  for a cap.
+- **Lifecycle.** `LifecyclePhase` / `initialize` / `shutdown`: verify a fault in
+  one phase cannot leave the instance usable, that `shutdown` is idempotent, and
+  that a trapping guest is quarantined rather than retried in a loop.
+- **Untrusted input at compile time.** `SandboxRuntime::compile` takes arbitrary
+  bytes. Verify a malformed component yields `SandboxError`, not a panic — this
+  crate's whole point is that hostile input is expected.
+
 ## Procedure
 
 1. Grep all `unsafe` in `crates/` + `byroredux/` (`.rs`); note the renderer mass
    and the SAFETY-comment gap (Dimension 4).
-2. Confirm the cxx bridge is still a no-pointer placeholder (Dimension 1).
+2. Audit the live FFI crossings — `fsr3-sys` then Ruffle/wgpu — and confirm the
+   cxx bridge is still a no-pointer placeholder (Dimension 1).
 3. Audit the cached-pointer ECS contract + repr(C) GPU structs + NIF POD reads +
    sfmaterial decode (Dimension 2).
 4. Walk the leak inventory and the three drop-ordering regression guards — Rapier
@@ -330,7 +385,7 @@ safety facet — NaN/inf scalars reaching the GPU, unbounded allocation.*
    barrier/layout claims invisible to cargo test as "needs RenderDoc verification"
    (Dimension 5).
 7. R1 material layout pins (Dimension 6), IOR/glass guards (7), NPC/anim spawn (8),
-   NIFAL NaN boundary (9), debug-ui teardown (10).
+   NIFAL NaN boundary (9), debug-ui teardown (10), mod-runtime trust boundary (11).
 8. Dedup against open/closed issues (`_audit-common` Deduplication) — most items
    above are regression guards; recast a confirmed-intact guard as PASS, not a NEW
    finding.

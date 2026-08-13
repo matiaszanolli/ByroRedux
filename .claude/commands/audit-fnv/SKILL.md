@@ -85,6 +85,7 @@ cell-boundary + door-teleport swaps) — both verified against the tree 2026-07-
 **Output**: `/tmp/audit/fnv/dim_3.md`
 
 ### Dimension 4: ESM Record Parser — Coverage & Accuracy
+**Scope split with `/audit-esm` (added 2026-08-13)**: `/audit-esm` owns the parser *as a parser* — GRUP walk, `SubReader` byte accounting, schema dispatch, FormID remap. This dimension owns **this game's data through it**: record counts, game-unique authoring, and the semantics that only show up on this title's masters. If the defect is in the shared mechanism, file it against `/audit-esm` instead of here.
 **Subagent**: `general-purpose`
 **Entry points**: `crates/plugin/src/esm/records/`, `crates/plugin/src/esm/cell/` (post-split: `walkers.rs` / `helpers.rs` / `support.rs` / `wrld.rs`)
 **Checklist**:
@@ -130,6 +131,7 @@ cell-boundary + door-teleport swaps) — both verified against the tree 2026-07-
 - Per PHYSAL, the *only* per-game seam is the constraint CInfo decode — confirm no per-game branch leaked into `ragdoll.rs` or the solver bridge (`crates/physics/`).
 - FNV's dominant constraint form is a `bhkMalleableConstraint` wrapping a Ragdoll (see `docs/engine/physal.md` §FO3/FNV) — confirm that decode path in `crates/nif/src/blocks/collision/constraints.rs` + `ragdoll.rs` survives and produces a jointed body, not a single rigid blob.
 - Writeback must not corrupt the skinned bone palette feeding the GPU skin path (cross-check Dimension 6).
+- **Scope split with `/audit-physics` (added 2026-08-13)**: the solver end — collider translation, the fixed-step accumulator, `build_ragdoll`/`remove_ragdoll` completeness, the character controller — is owned there. Keep this dimension on the FNV *source axis*: does FNV's authored bhk chain reach the canonical spec intact on real skeletons.
 **Output**: `/tmp/audit/fnv/dim_7.md`
 
 ### Dimension 8: Real-Data Validation & Bench-of-Record

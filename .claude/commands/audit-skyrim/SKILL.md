@@ -141,6 +141,7 @@ benches refresh every `/session-close`.
 **Output**: `/tmp/audit/skyrim/dim_3.md`
 
 ### Dimension 4: Multi-Master Load Order + TES5 Cell-Load Regression
+**Scope split with `/audit-esm` (added 2026-08-13)**: `/audit-esm` owns the parser *as a parser* — GRUP walk, `SubReader` byte accounting, schema dispatch, FormID remap. This dimension owns **this game's data through it**: record counts, game-unique authoring, and the semantics that only show up on this title's masters. If the defect is in the shared mechanism, file it against `/audit-esm` instead of here.
 **Subagent**: `general-purpose`
 **Entry points**: `byroredux/src/cell_loader/load_order.rs` (`--master` FormID remap), `crates/plugin/src/esm/records/` (TES5 records share the unified parser — the per-game legacy stub was removed under #390), `crates/plugin/src/esm/cell/` (CELL walker), `crates/plugin/src/esm/cell/tests/integration.rs` (`parse_real_skyrim_esm`), `ROADMAP.md`
 **Checklist**:
