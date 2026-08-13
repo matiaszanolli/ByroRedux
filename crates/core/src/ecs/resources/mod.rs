@@ -530,6 +530,19 @@ pub struct SkinCoverageStats {
     /// out of the renderer each frame; the full count is in
     /// `slots_failed`.
     pub failed_entity_ids: Vec<super::storage::EntityId>,
+    /// **CPU** wall-clock milliseconds the renderer spent driving the
+    /// skinned chain this frame — dispatch loop, first-sight BLAS
+    /// builds, refit loop, and the slot eviction drain/sweep.
+    ///
+    /// Unlike every `gpu_*_ms` field below this is same-frame, not one
+    /// `MAX_FRAMES_IN_FLIGHT` cycle behind: it is a host `Instant`
+    /// measurement taken inside the frame being reported. It is also
+    /// the only host-side cost of the chain that is measured at all —
+    /// the GPU brackets time the work this recording *submits*, and the
+    /// two diverge whenever per-entity map lookups and command
+    /// recording, rather than the device, are the bottleneck. Measured
+    /// since M29, given a consumer by #2803.
+    pub cpu_skin_chain_ms: f32,
     /// Per-pass GPU elapsed time in milliseconds (#1194 /
     /// PERF-DIM7-INSTR). One `MAX_FRAMES_IN_FLIGHT` cycle behind the
     /// frame the stats were filled on — that's the pipeline lag

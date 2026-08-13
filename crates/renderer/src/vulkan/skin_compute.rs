@@ -157,6 +157,20 @@ pub struct SkinCoverageFrame {
     pub first_sight_succeeded: u32,
     pub refits_attempted: u32,
     pub refits_succeeded: u32,
+    /// Wall-clock nanoseconds `record_skinned_blas_refit` spent on the
+    /// CPU this frame: the dispatch loop, the first-sight build batch,
+    /// the refit loop, and the eviction drain/sweep that closes it.
+    ///
+    /// This is the **host** cost of driving the skinned chain, not the
+    /// GPU cost of executing it — `gpu_skin_dispatch_ms` /
+    /// `gpu_skin_blas_refit_ms` (#1194) cover the device side, and the
+    /// two can diverge badly: the whole chain is command recording plus
+    /// per-entity map lookups, so it can dominate a frame on the CPU
+    /// while the GPU brackets stay short.
+    ///
+    /// Measured since M29 (`1ae235b9`) but discarded into `_skin_chain_ns`
+    /// until #2803 gave it a consumer.
+    pub cpu_skin_chain_ns: u64,
 }
 
 /// LRU eviction predicate for [`SkinSlot`] / `skinned_blas` cleanup.
