@@ -1038,6 +1038,28 @@ impl VulkanContext {
         // the needed clear on the first post-resize frame that skips.
         self.caustic_cleared_on_skip = [false; MAX_FRAMES_IN_FLIGHT];
 
+        // Command buffers are per frame-in-flight (fixed count), so they
+        // don't need reallocation on swapchain resize. They'll be reset
+        // before re-recording on the next draw_frame. See #259.
+
+        // Recreate per-image semaphores and fence tracking for the new
+        // swapchain BEFORE the main framebuffers are (re)built. `self.
+        // framebuffers` was drained empty earlier in the resize (see
+        // `destroy_main_framebuffers` above) and the #1211 sentinel
+        // elsewhere reads `framebuffers.is_empty()` as "resize still in
+        // progress / failed". If a fallible fence recreate here errors
+        // out, this function returns before touching `self.framebuffers`,
+        // so it's still empty and the sentinel correctly reports a
+        // failed-and-recoverable resize instead of looking complete.
+        unsafe {
+            // SAFETY: the resize path called device_wait_idle before this phase,
+            // so the retired per-image semaphores/fences owned by `frame_sync` are
+            // no longer in use by any in-flight submission and can be destroyed and
+            // recreated against `self.device` (which is live).
+            self.frame_sync
+                .recreate_for_swapchain(&self.device, self.swapchain_state.images.len())?;
+        }
+
         // Main framebuffers bind the new HDR + G-buffer views + depth.
         let gbuffer_ref = self
             .gbuffer
@@ -1069,20 +1091,6 @@ impl VulkanContext {
             self.depth_image_view,
             self.frame_extents.render,
         )?;
-
-        // Command buffers are per frame-in-flight (fixed count), so they
-        // don't need reallocation on swapchain resize. They'll be reset
-        // before re-recording on the next draw_frame. See #259.
-
-        // Recreate per-image semaphores and fence tracking for the new swapchain.
-        unsafe {
-            // SAFETY: the resize path called device_wait_idle before this phase,
-            // so the retired per-image semaphores/fences owned by `frame_sync` are
-            // no longer in use by any in-flight submission and can be destroyed and
-            // recreated against `self.device` (which is live).
-            self.frame_sync
-                .recreate_for_swapchain(&self.device, self.swapchain_state.images.len())?;
-        }
 
         // Reset frame-in-flight counter so the first post-resize frame
         // starts from slot 0 with a clean fence/semaphore cycle.

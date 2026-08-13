@@ -111,9 +111,15 @@ uint packReservoirLightAndSurface(uint lightIndex, uint surfaceId) {
 
 void main() {
     // Both FSR masks default to "fully described by depth and motion" so
-    // that every early-out path below — the debug visualizations, the
-    // sky/background arms — leaves a defined value in the attachment. The
-    // real policy is applied from the authored coverage at the end of main.
+    // every early-out path below leaves a defined value in the attachment.
+    // That default is correct as-is for the debug visualizations and the
+    // sky/background arms (opaque, coherent motion — no reactive/
+    // transparency contribution needed). Production transparent-surface
+    // early returns (FIRE_REFRACTION, EFFECT_SHADER, NO_LIGHTING, IOR/
+    // Fresnel-fallback glass, glass-passthru debug viz) each overwrite
+    // this default with their own coverage before returning — see
+    // REN-D11-2026-08-12-02. Surfaces that fall through to the end of
+    // main get the authored-coverage policy there instead.
     outFsrReactive = 0.0;
     outFsrTransparency = 0.0;
 
@@ -913,6 +919,15 @@ void main() {
         // Effects contribute through HDR only. Alpha zero preserves the
         // opaque receiver's auxiliary G-buffer state in blended pipelines.
         outAlbedo = vec4(emit, 0.0);
+        // This is a production early-return, not one of the debug/sky
+        // arms the top-of-main zero default is scoped to (REN-D11-2026-
+        // 08-12-02) — fire / magic-aura / glow-ring FX cards are exactly
+        // the coverage-blended content the reactive mask exists for.
+        // Not glass, so both masks track the same coverage term, same
+        // as the tail policy below.
+        float fsrCoverage = min(finalAlpha, 0.9);
+        outFsrReactive = alphaBlendFrag ? fsrCoverage : 0.0;
+        outFsrTransparency = alphaBlendFrag ? fsrCoverage : 0.0;
         return;
     }
 
@@ -1027,6 +1042,15 @@ void main() {
         outColor = vec4(emit, texColor.a);
         outRawIndirect = vec4(0.0);
         outAlbedo = vec4(emit, 0.0);
+        // Production early-return (REN-D11-2026-08-12-02) — terminal
+        // screens / signs / decals reach here through the same
+        // per-instance alpha-blend pipeline choice noted above, so mirror
+        // the tail policy: not glass, so both masks share one coverage
+        // term, and opaque (non-blend) fullbright surfaces correctly get
+        // no reactive/transparency contribution.
+        float fsrCoverage = min(texColor.a, 0.9);
+        outFsrReactive = alphaBlendFrag ? fsrCoverage : 0.0;
+        outFsrTransparency = alphaBlendFrag ? fsrCoverage : 0.0;
         return;
     }
 
@@ -2086,6 +2110,15 @@ void main() {
         // RT terminus (alpha=1) replaces them alongside HDR.
         outRawIndirect = vec4(0.0, 0.0, 0.0, resolvedAlpha);
         outAlbedo = vec4(albedo, resolvedAlpha);
+        // Production early-return (REN-D11-2026-08-12-02) — this branch
+        // only runs under `glassIORAllowed`, which requires `isGlass`, so
+        // the tail's `isGlass ? 1.0` case applies unconditionally: an
+        // IOR-refracted pixel's colour tracks what's behind it, not its
+        // own motion vector. Without this, glass flips its transparency
+        // mask between 1.0 (Fresnel-fallback tail) and 0.0 (this branch)
+        // frame-to-frame purely from the adaptive ray budget.
+        outFsrReactive = isAlphaBlend ? min(resolvedAlpha, 0.9) : 0.0;
+        outFsrTransparency = 1.0;
         return;
     }
 
@@ -2104,6 +2137,13 @@ void main() {
             outNormal = octEncode(normalize(fragNormalEffective));
             outRawIndirect = vec4(0.0);
             outAlbedo = vec4(albedo, 1.0);
+            // Nested under `if (isGlass)`, so `isGlass` is true here too —
+            // same tail-policy reasoning as the IOR branch above
+            // (REN-D11-2026-08-12-02): this is real glass geometry, just
+            // rendered through the diagnostic passthru instead of the
+            // normal Fresnel path.
+            outFsrReactive = isAlphaBlend ? 0.9 : 0.0;
+            outFsrTransparency = 1.0;
             return;
         }
         N = glassViewNormal;

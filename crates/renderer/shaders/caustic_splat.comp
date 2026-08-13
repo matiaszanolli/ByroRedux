@@ -72,7 +72,7 @@ layout(set = 0, binding = 4) uniform CameraUBO {
     vec4 jitter;        // xy = sub-pixel TAA jitter in NDC, z = bitcast<f32>(render_debug_flags), w = is_exterior. #1125.
     vec4 skyTint;       // xyz = TOD/weather zenith colour, w = reserved. #1028.
     vec4 sunDirection;
-    vec4 dofParams;      // x = aperture half-radius, y = focus_dist, zw = reserved. 0.0 = pinhole.
+    vec4 dofParams;      // x = aperture half-radius (0.0 = pinhole), y = focus_dist, z = atten knee frac, w = camera_static (1.0 = parked).
     vec4 renderOrigin;   // #markarth-precision — xyz = camera-relative render origin (added to inv_view_proj world reconstruction below). w = FSR one-frame-reset flag (NOT padding — #2164/L-10).
 };
 

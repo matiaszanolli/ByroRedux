@@ -186,13 +186,18 @@ fn mesh_id_format_is_r32_uint() {
 }
 
 /// Regression: #417 — every shader that declares its own copy of
-/// `struct GpuInstance` must name the final u32 slot
-/// `materialKind`, not `_pad1` or any other legacy placeholder.
-/// The Rust side guards offsets via
-/// `gpu_instance_field_offsets_match_shader_contract`; this test
-/// guards name-level drift across the four shader copies so a
-/// future refactor that actually reads the field (currently unused
-/// on the caustic path) doesn't silently alias it to padding.
+/// `struct GpuInstance` must name required fields correctly (originally
+/// the final u32 slot as `materialKind`, not `_pad1` or any other legacy
+/// placeholder; R1 Phase 6 later moved `materialKind` off this struct
+/// entirely — see the field-presence loop below for what's still
+/// checked). The Rust side guards offsets via
+/// `gpu_instance_field_offsets_match_shader_contract`; this test is
+/// presence-only (`src.contains(...)`) — it does NOT check field order
+/// or that all five mirrors match each other or the Rust struct. That
+/// full lockstep guard is `gpu_instance_glsl_copies_stay_in_lockstep`
+/// (#2748 / REN-D3-2026-08-12-01); this test stays as a cheap
+/// complementary check for the specific stale-name / missing-field /
+/// reintroduced-stale-field regressions it was written against.
 ///
 /// Walks the shaders tree at compile time via `include_str!` —
 /// works in `cargo test` even on machines that don't have
@@ -200,7 +205,7 @@ fn mesh_id_format_is_r32_uint() {
 /// failure mode from #417 (caustic_splat.comp still said
 /// `uint _pad1;` after the triangle.* / ui.vert rename).
 #[test]
-fn every_shader_struct_gpu_instance_names_material_kind_slot() {
+fn every_shader_struct_gpu_instance_names_expected_fields() {
     const SOURCES: &[(&str, &str)] = &[
         (
             "triangle.vert",
@@ -1062,12 +1067,13 @@ fn extract_struct_body<'a>(src: &'a str, decl: &str) -> Option<&'a str> {
     Some(&src[open + 1..close])
 }
 
-/// Ordered field names of the Rust `#[repr(C)] struct GpuMaterial`,
-/// parsed from `material.rs` source. A field line is `pub <ident>: <ty>,`;
-/// comment / attribute / blank lines are skipped.
-fn parse_rust_struct_fields(src: &str) -> Vec<String> {
-    let body = extract_struct_body(src, "pub struct GpuMaterial")
-        .expect("material.rs must declare `pub struct GpuMaterial`");
+/// Ordered field names of a Rust `#[repr(C)]` struct (e.g.
+/// `"pub struct GpuMaterial"` / `"pub struct GpuInstance"`), parsed from
+/// its source file. A field line is `pub <ident>: <ty>,`; comment /
+/// attribute / blank lines are skipped.
+fn parse_rust_struct_fields(src: &str, decl: &str) -> Vec<String> {
+    let body =
+        extract_struct_body(src, decl).unwrap_or_else(|| panic!("source must declare `{decl}`"));
     let mut out = Vec::new();
     for raw in body.lines() {
         let line = raw.trim();
@@ -1086,15 +1092,17 @@ fn parse_rust_struct_fields(src: &str) -> Vec<String> {
     out
 }
 
-/// Ordered field names of the GLSL `struct GpuMaterial`, parsed from
-/// `include/bindings.glsl`. Handles multi-name declarations
-/// (`float a, b, c;`) and skips `//`/`///` comment lines.
-fn parse_glsl_struct_fields(src: &str) -> Vec<String> {
+/// Ordered field names of a GLSL struct declaration (e.g.
+/// `"struct GpuMaterial"` / `"struct GpuInstance"`), parsed from a GLSL
+/// source file. Handles multi-name declarations (`float a, b, c;`) and
+/// skips `//`/`///` comment lines.
+fn parse_glsl_struct_fields(src: &str, decl: &str) -> Vec<String> {
     const TYPES: &[&str] = &[
         "float", "uint", "int", "bool", "vec2", "vec3", "vec4", "mat2", "mat3", "mat4",
+        // GpuInstance-only types (#2219 skinned_vertex_address + padding).
+        "uint64_t", "uvec2",
     ];
-    let body = extract_struct_body(src, "struct GpuMaterial")
-        .expect("include/bindings.glsl must declare `struct GpuMaterial`");
+    let body = extract_struct_body(src, decl).unwrap_or_else(|| panic!("source must declare `{decl}`"));
     let mut out = Vec::new();
     for raw in body.lines() {
         // Drop any trailing line comment first (also collapses `///` /
@@ -1147,8 +1155,8 @@ fn gpu_material_glsl_field_order_matches_rust_struct() {
     let rust_src = include_str!("../material.rs");
     let glsl_src = include_str!("../../../shaders/include/bindings.glsl");
 
-    let rust_fields = parse_rust_struct_fields(rust_src);
-    let glsl_fields = parse_glsl_struct_fields(glsl_src);
+    let rust_fields = parse_rust_struct_fields(rust_src, "pub struct GpuMaterial");
+    let glsl_fields = parse_glsl_struct_fields(glsl_src, "struct GpuMaterial");
 
     assert!(
         rust_fields.len() > 60,
@@ -1261,6 +1269,107 @@ fn gpu_light_glsl_copies_stay_in_lockstep() {
                 );
             }
         }
+    }
+}
+
+// ── GpuInstance five-way GLSL lockstep (#2748 / REN-D3-2026-08-12-01) ──
+
+/// #2748 — `struct GpuInstance` is hand-duplicated across **five** GLSL
+/// sources (`include/bindings.glsl`, `triangle.vert`, `ui.vert`,
+/// `water.vert`, `caustic_splat.comp`), the largest mirror fan-out of any
+/// GPU struct in the codebase. Its only prior guard,
+/// `every_shader_struct_gpu_instance_names_expected_fields` below, is
+/// presence-only (`src.contains(...)`) — it never compared the five
+/// declarations to each other or to the Rust struct, and never checked
+/// field order or completeness. `caustic_splat.comp` uses a multi-name
+/// declaration (`float avgAlbedoR, avgAlbedoG, avgAlbedoB;`) where every
+/// other mirror uses three separate lines, so this walks each source
+/// through `parse_glsl_struct_fields` (which already understands
+/// multi-name declarations, unlike the raw-line `strip_struct_body` used
+/// for `GpuLight`) rather than comparing stripped source text directly.
+///
+/// First asserts all five mirrors declare an identical field list, name
+/// and order alike; then reuses `parse_rust_struct_fields` /
+/// `normalize_ident` (the same #1657 machinery
+/// `gpu_material_glsl_field_order_matches_rust_struct` uses) to assert
+/// that shared list matches the Rust `#[repr(C)] struct GpuInstance`
+/// field order in `gpu_types.rs` — the same two-leg coverage
+/// `GpuMaterial` and `GpuLight` already have.
+#[test]
+fn gpu_instance_glsl_copies_stay_in_lockstep() {
+    const SOURCES: &[(&str, &str)] = &[
+        (
+            "include/bindings.glsl",
+            include_str!("../../../shaders/include/bindings.glsl"),
+        ),
+        (
+            "triangle.vert",
+            include_str!("../../../shaders/triangle.vert"),
+        ),
+        ("ui.vert", include_str!("../../../shaders/ui.vert")),
+        (
+            "water.vert",
+            include_str!("../../../shaders/water.vert"),
+        ),
+        (
+            "caustic_splat.comp",
+            include_str!("../../../shaders/caustic_splat.comp"),
+        ),
+    ];
+
+    let mut reference: Option<(&str, Vec<String>)> = None;
+    for (name, src) in SOURCES {
+        let fields = parse_glsl_struct_fields(src, "struct GpuInstance");
+        assert!(
+            fields.len() >= 14,
+            "{name}: parsed only {} GpuInstance field(s) — parser likely broke",
+            fields.len()
+        );
+        match &reference {
+            None => reference = Some((name, fields)),
+            Some((ref_name, ref_fields)) => {
+                assert_eq!(
+                    ref_fields, &fields,
+                    "GpuInstance layout mismatch: `{ref_name}` vs `{name}`. All five GLSL copies \
+                     of `struct GpuInstance` must declare identical fields in the same order \
+                     (Shader Struct Sync invariant, #2748 / REN-D3-2026-08-12-01) — a drift here \
+                     silently corrupts per-instance data for whichever copy lags behind."
+                );
+            }
+        }
+    }
+
+    // Second leg: the shared GLSL field list must also match the Rust
+    // `#[repr(C)]` struct's declaration order (the offset source of
+    // truth, pinned separately by
+    // `gpu_instance_field_offsets_match_shader_contract`).
+    let (_, glsl_fields) = reference.expect("SOURCES is non-empty");
+    let rust_src = include_str!("gpu_types.rs");
+    let rust_fields = parse_rust_struct_fields(rust_src, "pub struct GpuInstance");
+
+    let rust_norm: Vec<String> = rust_fields.iter().map(|f| normalize_ident(f)).collect();
+    let glsl_norm: Vec<String> = glsl_fields.iter().map(|f| normalize_ident(f)).collect();
+
+    assert_eq!(
+        rust_norm.len(),
+        glsl_norm.len(),
+        "GpuInstance field COUNT differs: Rust has {} {:?}, GLSL mirrors have {} {:?}. The Rust \
+         `struct GpuInstance` (gpu_types.rs) and its five GLSL mirrors must stay in lockstep — \
+         see #2748 / REN-D3-2026-08-12-01.",
+        rust_norm.len(),
+        rust_fields,
+        glsl_norm.len(),
+        glsl_fields,
+    );
+
+    for (i, (r, g)) in rust_norm.iter().zip(glsl_norm.iter()).enumerate() {
+        assert_eq!(
+            r, g,
+            "GpuInstance field #{i} ORDER mismatch: Rust `{}` vs GLSL `{}`. Every GLSL \
+             `struct GpuInstance` mirror must declare fields in the SAME order as the Rust \
+             `#[repr(C)]` struct — see #2748 / REN-D3-2026-08-12-01.",
+            rust_fields[i], glsl_fields[i],
+        );
     }
 }
 
