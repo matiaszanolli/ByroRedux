@@ -880,6 +880,10 @@ impl BSLightingShaderProperty {
     /// - `lighting_effect_1/2` present (Skyrim-only fields).
     /// - No `root_material_path`, no wetness, no FO4 subsurface block,
     ///   no FO76 luminance/translucency/texture-arrays.
+    /// - No `grayscale_to_palette_scale` / `fresnel_power` (BSVER >= 130
+    ///   only) — constructed below at the neutral no-modulation defaults
+    ///   (`1.0` / `5.0`), matching `material_reference_stub` and
+    ///   `MaterialInfo::default()`. See #2589.
     /// - `glossiness` stays raw (0-100 scale authored).
     /// - Shader-type-data dispatches through the legacy `BSLightingShaderType` enum.
     fn parse_skyrim(stream: &mut NifStream, _bsver: u32) -> io::Result<Self> {
@@ -935,8 +939,21 @@ impl BSLightingShaderProperty {
             subsurface_rolloff: 0.0,
             rimlight_power: 0.0,
             backlight_power: 0.0,
-            grayscale_to_palette_scale: 0.0,
-            fresnel_power: 0.0,
+            // #2589 (SKY-D7-01) — `grayscale_to_palette_scale` /
+            // `fresnel_power` are FO4+ wire fields (BSVER >= 130) that
+            // Skyrim never serializes, so this arm has no authored value
+            // to read — same situation as every other unauthored field
+            // above. The neutral no-modulation defaults every OTHER
+            // no-value site in the pipeline agrees on are `1.0` / `5.0`
+            // (see `BSLightingShaderProperty::material_reference_stub`
+            // and `MaterialInfo::default()`), NOT `0.0`. `0.0` here
+            // silently survived `apply_bs_lighting_shader`'s unconditional
+            // copy into canonical `Material.fresnel_power`, producing a
+            // full-strength (`pow(1-cosθ,0)==1`) Fresnel term at every
+            // view angle the moment a shading consumer reads it — latent
+            // only because no consumer exists yet (#2284 follow-up).
+            grayscale_to_palette_scale: 1.0,
+            fresnel_power: 5.0,
             wetness: None,
             luminance: None,
             do_translucency: false,

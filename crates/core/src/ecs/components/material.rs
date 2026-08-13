@@ -509,9 +509,30 @@ pub enum EmissiveSource {
     /// effect-shader path reads its visible "glow" from
     /// `base_color * base_color_scale`. A future BSEffect-proper render
     /// path should branch on this variant to drop the conflation; see
-    /// the walker site (`import/material/walker.rs`) for the
+    /// the set-site (`import/material/dedicated_shader.rs`) for the
     /// in-source #166 rename note.
     Effect,
+}
+
+/// Whether a captured `(color, multiplier)` pair is a genuine emissive
+/// (or, for [`EmissiveSource::Effect`], diffuse-tint) authoring —
+/// versus the unauthored struct default the source NIF block ships
+/// when nothing was actually set. Shared by all three
+/// `EmissiveSource::{Material,Lighting,Effect}` set-sites (#2591 /
+/// SKY-D7-03) so `EmissiveSource::None`'s own doc — "materials without
+/// any of the three shader-property classes **or** where none of them
+/// authored a non-zero emissive" — is actually true. Pre-fix, every
+/// BSLightingShaderProperty (the overwhelming majority of vanilla
+/// Skyrim content, almost none of which authors emissive) was tagged
+/// `Lighting` regardless, degenerating the discriminator to "has a
+/// BSLightingShaderProperty" rather than "has an authored emissive".
+///
+/// `color == [0,0,0]` alone zeroes the contribution regardless of
+/// `mult` (black times anything is still black); `mult == 0.0` alone
+/// zeroes it regardless of `color`. Either is sufficient for "not
+/// authored" — both must be non-zero for "authored".
+pub fn emissive_contribution_is_authored(color: [f32; 3], mult: f32) -> bool {
+    color != [0.0, 0.0, 0.0] && mult != 0.0
 }
 
 /// Free-form inputs to the keyword-based PBR classifier. Decoupled
@@ -1483,5 +1504,24 @@ mod tests {
         m.resolve_pbr();
         assert_eq!(m.metalness, 1.0);
         assert_eq!(m.roughness, 0.04);
+    }
+
+    /// #2591 (SKY-D7-03) — either a black color or a zero multiplier
+    /// alone is sufficient to mark a contribution unauthored; both must
+    /// be non-zero for "authored".
+    #[test]
+    fn emissive_contribution_is_authored_requires_both_nonzero_color_and_mult() {
+        assert!(emissive_contribution_is_authored([0.5, 0.5, 0.5], 1.25));
+        assert!(
+            !emissive_contribution_is_authored([0.0, 0.0, 0.0], 1.0),
+            "black color contributes nothing regardless of the multiplier"
+        );
+        assert!(
+            !emissive_contribution_is_authored([0.5, 0.5, 0.5], 0.0),
+            "a zero multiplier contributes nothing regardless of the color"
+        );
+        assert!(!emissive_contribution_is_authored([0.0, 0.0, 0.0], 0.0));
+        // Partial-channel authoring still counts.
+        assert!(emissive_contribution_is_authored([0.0, 0.2, 0.0], 1.0));
     }
 }

@@ -146,8 +146,15 @@ fn apply_material_property(scene: &NifScene, idx: usize, info: &mut MaterialInfo
             info.alpha = mat.alpha;
             info.emissive_mult = mat.emissive_mult;
             // #1280 step 4 — tag the legacy Oblivion/FO3/FNV source.
-            info.emissive_source =
-                byroredux_core::ecs::components::material::EmissiveSource::Material;
+            // #2591 (SKY-D7-03) — gated on non-zero authoring, same as
+            // the BSLightingShaderProperty / BSEffectShaderProperty sites.
+            if byroredux_core::ecs::components::material::emissive_contribution_is_authored(
+                info.emissive_color,
+                info.emissive_mult,
+            ) {
+                info.emissive_source =
+                    byroredux_core::ecs::components::material::EmissiveSource::Material;
+            }
             info.has_material_data = true;
         }
     }
