@@ -62,6 +62,7 @@ mod exterior;
 mod index;
 mod load;
 mod load_order;
+mod lod_bands;
 mod lod_support;
 mod nif_import_registry;
 mod object_lod;

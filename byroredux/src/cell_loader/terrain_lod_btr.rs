@@ -8,20 +8,28 @@
 //! game's authored distant terrain mesh + per-quad diffuse, so the far
 //! horizon reads with real texturing instead of tiled dirt.
 //!
-//! ## Integration (single ring, per-block source choice)
+//! ## Integration (one banded ring, per-quad source choice)
 //!
-//! Level-4 `.btr` quads align 1:1 with [`super::terrain_lod`]'s 4-cell LOD
-//! blocks (`LOD_BLOCK_CELLS = 4`), so `.btr` slots into the existing ring
-//! without a parallel tracking map: [`super::terrain_lod::spawn_lod_block`]
-//! produces **either** a textured `.btr` block (this module) **or** a
-//! heightmap-synth block — never both for the same coordinate, so no
-//! double-draw / z-fight. `.btr` is chosen only for **fully-distant** blocks
-//! (`hole_mask == 0` → all 16 cells have landscape and none lie inside the
-//! full-detail ring); boundary blocks fall through to synth, which can punch
-//! per-cell holes a baked mesh cannot. As the player approaches a `.btr`
-//! quad its mask flips non-zero → the block regenerates into a hole-masked
-//! synth boundary block, then the near cells stream full-detail. The synth
-//! path stays the universal fallback (older games, missing `.btr`).
+//! [`super::terrain_lod`] keys its ring by `(level, qx, qy)` and picks the
+//! level from [`super::lod_bands`]' per-game ladder (#2371). Each coordinate
+//! resolves to **either** a textured `.btr` block (this module) **or** a
+//! heightmap-synth block — never both, so no double-draw / z-fight.
+//!
+//! * **Finest band (level 4).** `.btr` is chosen for **fully-distant**
+//!   blocks (`hole_mask == 0` → all 16 cells have landscape and none lie
+//!   inside the full-detail ring); boundary blocks fall through to synth,
+//!   which can punch per-cell holes a baked mesh cannot. As the player
+//!   approaches a `.btr` quad its mask flips non-zero → the block
+//!   regenerates into a hole-masked synth boundary block, then the near
+//!   cells stream full-detail.
+//! * **Coarse bands (8 / 16 / 32).** `.btr` only. The band descent proposes
+//!   a coarse quad exclusively where one is baked — a missing `.btr`
+//!   subdivides into finer children instead of holing the horizon — and
+//!   those quads sit far outside the streaming radius, so their hole mask is
+//!   always 0.
+//!
+//! The synth path stays the universal fallback: Oblivion / FO3 / FNV bake no
+//! quadtree at all and keep their single synthesized ring unchanged.
 //!
 //! ## Format (EXAL §5 / Q2, docs/engine/exal.md)
 //!
@@ -30,9 +38,10 @@
 //! v20.2.0.7, → 1 mesh). Naming is **level-first**:
 //! `meshes\terrain\<world>\<world>.<level>.<x>.<y>.btr` with `(x, y)` the
 //! quad's SW-corner cell on that worldspace's own level-aligned grid. Diffuse sibling:
-//! `textures\terrain\<world>\<world>.<level>.<x>.<y>.dds` (`_n.dds` normal is
-//! a follow-up — the LOD entity carries the mesh's own per-vertex normals,
-//! matching the synth path's capability).
+//! `textures\terrain\<world>\<world>.<level>.<x>.<y>.dds`, with the
+//! tangent-space normal map at the same stem plus `_n` (wired in #2371 —
+//! see [`btr_normal_path`], which also documents why FO4's `_msn`
+//! model-space variant is not bound yet).
 //!
 //! ## Placement convention (verified against real data — NOT like `.bto`)
 //!
@@ -56,10 +65,11 @@ use byroredux_core::ecs::{
 };
 use byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
 use byroredux_core::math::Vec3;
+use byroredux_nif::import::MaterialTextureSet;
 use byroredux_renderer::{Vertex, VulkanContext};
 
 use crate::asset_provider::{resolve_texture, TextureProvider};
-use crate::components::IsLodTerrain;
+use crate::components::{IsLodTerrain, MaterialTextureHandles};
 use crate::streaming::LodBlock;
 
 /// Archive-relative path of the distant-terrain `.btr` for a worldspace
@@ -79,6 +89,28 @@ pub(crate) fn btr_archive_path(worldspace_key: &str, level: i32, qx: i32, qy: i3
 pub(crate) fn btr_diffuse_path(worldspace_key: &str, level: i32, qx: i32, qy: i32) -> String {
     let w = worldspace_key.to_ascii_lowercase();
     format!("textures\\terrain\\{w}\\{w}.{level}.{qx}.{qy}.dds")
+}
+
+/// Per-quad **tangent-space** normal map for a distant-terrain `.btr`: the
+/// diffuse path's stem plus the `_n` suffix
+/// (`textures\terrain\<world>\<world>.<level>.<x>.<y>_n.dds`).
+///
+/// Skyrim ships one of these for every `.btr` at every level — measured on
+/// `Skyrim - Textures7.bsa` (2026-08-12): 4608 / 1152 / 288 / 72 DDS at
+/// levels 4 / 8 / 16 / 32, exactly twice the 2304 / 576 / 144 / 36 `.btr`
+/// count, i.e. one diffuse + one `_n` each.
+///
+/// **FO4 is deliberately not covered here.** Its terrain LOD normals are
+/// `_msn` (`commonwealth.32.32.0_msn.dds`) — *model*-space, not tangent
+/// space. Binding those into the tangent-space normal slot would shade
+/// worse than no normal map at all. Routing them correctly needs the
+/// `MAT_FLAG_MODEL_SPACE_NORMALS` bit, which reaches the shader only through
+/// a `Material` component, and LOD entities carry none — that is #2444
+/// (MAT-D3-02). Until it lands, FO4 distant terrain keeps the mesh's own
+/// per-vertex normals.
+pub(crate) fn btr_normal_path(worldspace_key: &str, level: i32, qx: i32, qy: i32) -> String {
+    let w = worldspace_key.to_ascii_lowercase();
+    format!("textures\\terrain\\{w}\\{w}.{level}.{qx}.{qy}_n.dds")
 }
 
 /// Map a `.btr`'s quad-local Y-up vertex into world space for the level-`level`
@@ -106,11 +138,13 @@ fn btr_local_to_world(local: [f32; 3], level: i32, qx: i32, qy: i32) -> [f32; 3]
 /// (no BLAS, lean static draw, never enters the TLAS), exactly like the
 /// synth path and object LOD.
 ///
-/// `level` is the quad edge in cells (4 for the closest band — see
-/// [`super::terrain_lod::LOD_BLOCK_CELLS`]); `(qx, qy)` is the quad's
-/// SW-corner cell. `hole_mask` is stored verbatim on the returned block (the
-/// caller only invokes this for `hole_mask == 0` blocks, so it is always 0 —
-/// the regen trigger that switches the block to synth when the player nears).
+/// `level` is the quad edge in cells — 4 for the closest band (see
+/// [`super::terrain_lod::LOD_BLOCK_CELLS`]), or 8 / 16 / 32 for the coarse
+/// bands; the placement math below is level-generic. `(qx, qy)` is the
+/// quad's SW-corner cell. `hole_mask` is stored verbatim on the returned
+/// block (the caller only invokes this for `hole_mask == 0` blocks, so it is
+/// always 0 — the regen trigger that switches a finest-band block to synth
+/// when the player nears).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_btr_block(
     world: &mut World,
@@ -191,6 +225,23 @@ pub(crate) fn spawn_btr_block(
         tex_handle
     };
 
+    // Per-quad tangent-space normal map (#2371). Absent for FO4 (which bakes
+    // `_msn` model-space normals instead — see [`btr_normal_path`]) and for
+    // any quad whose sibling is missing; the entity then simply carries no
+    // normal map and shades from the mesh's own per-vertex normals, exactly
+    // as before. The fallback handle is treated as "absent" rather than bound
+    // so distant terrain never samples the checker as a normal map.
+    // (`resolve_texture` returns the fallback handle *without* acquiring a
+    // reference, so a miss must be discarded by value, never `drop_texture`d
+    // — same contract `object_lod` relies on for its atlas.)
+    let normal_path = btr_normal_path(worldspace_key, level, qx, qy);
+    let resolved_normal = resolve_texture(ctx, tex_provider, Some(normal_path.as_str()));
+    let normal_handle = if resolved_normal == ctx.texture_registry.fallback() {
+        0
+    } else {
+        resolved_normal
+    };
+
     // World-space bound over the baked (already world-space) vertices.
     let bound = world_bound(&vertices);
 
@@ -204,6 +255,16 @@ pub(crate) fn spawn_btr_block(
         Ok(h) => h,
         Err(e) => {
             log::warn!("Distant-terrain '{}' upload failed: {}", path, e);
+            // Release the refs the two resolves above acquired, or a failed
+            // upload pins their VkImages + bindless slots for the session
+            // (the #1537 leak shape).
+            if tex_handle != 0 && tex_handle != ctx.texture_registry.fallback() {
+                ctx.texture_registry.drop_texture(&ctx.device, tex_handle);
+            }
+            if normal_handle != 0 {
+                ctx.texture_registry
+                    .drop_texture(&ctx.device, normal_handle);
+            }
             return None;
         }
     };
@@ -216,6 +277,29 @@ pub(crate) fn spawn_btr_block(
     if tex_handle != 0 {
         world.insert(entity, TextureHandle(tex_handle));
     }
+    // #2371 — the authored per-quad normal map. `MaterialTextureHandles` is
+    // the same component the static-mesh pass reads for every NIF material,
+    // so distant terrain picks up real surface detail through the existing
+    // path rather than a LOD-specific one. Only inserted when a real map
+    // resolved; every other role stays at 0 ("absent").
+    if normal_handle != 0 {
+        world.insert(
+            entity,
+            MaterialTextureHandles {
+                textures: MaterialTextureSet {
+                    normal: normal_handle,
+                    ..Default::default()
+                },
+                // Terrain LOD normals carry no legacy gloss channel, and the
+                // quads have no authored parallax — keep the shader's
+                // defaults (see `components::MaterialTextureHandles`).
+                normal_has_alpha: false,
+                parallax_height_scale: 0.04,
+                parallax_max_passes: 4.0,
+            },
+        );
+    }
+
     world.insert(entity, bound);
     world.insert(entity, RenderLayer::Architecture);
     world.insert(entity, IsLodTerrain);
@@ -224,6 +308,7 @@ pub(crate) fn spawn_btr_block(
         entity,
         mesh_handle,
         texture_handle: tex_handle,
+        normal_texture_handle: normal_handle,
         hole_mask,
     })
 }
@@ -300,6 +385,33 @@ mod tests {
             btr_diffuse_path("tamriel", 16, 0, 0),
             "textures\\terrain\\tamriel\\tamriel.16.0.0.dds"
         );
+    }
+
+    /// #2371 — the normal map is the diffuse stem plus `_n`, at every band.
+    /// These paths are present verbatim in `Skyrim - Textures7.bsa`
+    /// (2026-08-12), which ships one `_n` per `.btr` at all four levels.
+    #[test]
+    fn btr_normal_is_the_diffuse_stem_plus_n_suffix() {
+        assert_eq!(
+            btr_normal_path("Tamriel", 4, -44, -56),
+            "textures\\terrain\\tamriel\\tamriel.4.-44.-56_n.dds"
+        );
+        assert_eq!(
+            btr_normal_path("tamriel", 16, -16, -80),
+            "textures\\terrain\\tamriel\\tamriel.16.-16.-80_n.dds"
+        );
+        assert_eq!(
+            btr_normal_path("Tamriel", 32, 32, -96),
+            "textures\\terrain\\tamriel\\tamriel.32.32.-96_n.dds"
+        );
+
+        // It is exactly the diffuse path with `_n` before the extension —
+        // the two must not drift apart.
+        for level in [4, 8, 16, 32] {
+            let diffuse = btr_diffuse_path("Tamriel", level, 8, -4);
+            let normal = btr_normal_path("Tamriel", level, 8, -4);
+            assert_eq!(normal, diffuse.replace(".dds", "_n.dds"));
+        }
     }
 
     #[test]

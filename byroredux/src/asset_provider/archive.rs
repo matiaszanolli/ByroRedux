@@ -48,6 +48,18 @@ impl Archive {
         }
     }
 
+    /// Whether `path` is present, without extracting (and decompressing)
+    /// it. Both backends answer from their in-memory file table, so this is
+    /// a hash lookup — cheap enough for the per-quad availability probe the
+    /// baked-LOD band selector runs every reconcile
+    /// (`cell_loader::lod_bands`).
+    pub(crate) fn contains(&self, path: &str) -> bool {
+        match self {
+            Archive::Bsa(a) => a.contains(path),
+            Archive::Ba2(a) => a.contains(path),
+        }
+    }
+
     /// Enumerate entry paths (BA2 paths are already lowercase +
     /// backslash-separated, per `Ba2Archive::list_files`). BSA archives
     /// return empty: Starfield's component databases ship only in BA2s,

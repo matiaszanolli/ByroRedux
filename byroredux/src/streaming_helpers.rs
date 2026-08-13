@@ -158,8 +158,8 @@ fn flush_pending_lod_textures(ctx: &mut byroredux_renderer::VulkanContext) {
 /// `object_lod_blocks` are mutually exclusive per game, but both are drained
 /// unconditionally so the reclaim set is game-agnostic.
 pub(crate) fn drain_lod_reclaim_targets(
-    lod_blocks: &mut HashMap<(i32, i32), LodBlock>,
-    object_lod_blocks: &mut HashMap<(i32, i32), ObjectLodBlock>,
+    lod_blocks: &mut HashMap<(i32, i32, i32), LodBlock>,
+    object_lod_blocks: &mut HashMap<(i32, i32, i32), ObjectLodBlock>,
     placement_lod_blocks: &mut HashMap<(i32, i32), PlacementLodBlock>,
 ) -> (Vec<LodBlock>, Vec<ObjectLodBlock>, Vec<PlacementLodBlock>) {
     (
@@ -559,6 +559,7 @@ mod tests {
             entity, // EntityId == u32
             mesh_handle: mesh,
             texture_handle: 0,
+            normal_texture_handle: 0,
             hole_mask: 0,
         }
     }
@@ -569,12 +570,12 @@ mod tests {
     /// touched, leaking the whole ring on every exterior→interior transition).
     #[test]
     fn drain_collects_and_empties_all_lod_rings() {
-        let mut terrain: HashMap<(i32, i32), LodBlock> = HashMap::new();
-        terrain.insert((0, 0), lod(1, 10));
-        terrain.insert((1, 0), lod(2, 11));
-        let mut objects: HashMap<(i32, i32), ObjectLodBlock> = HashMap::new();
+        let mut terrain: HashMap<(i32, i32, i32), LodBlock> = HashMap::new();
+        terrain.insert((4, 0, 0), lod(1, 10));
+        terrain.insert((4, 4, 0), lod(2, 11));
+        let mut objects: HashMap<(i32, i32, i32), ObjectLodBlock> = HashMap::new();
         objects.insert(
-            (0, 0),
+            (4, 0, 0), // (level, qx, qy) since #2371
             ObjectLodBlock {
                 entities: vec![3],
                 mesh_handles: vec![12, 13],
@@ -654,8 +655,8 @@ mod tests {
     /// no-LOD-resident transition is a clean no-op.
     #[test]
     fn drain_of_empty_rings_is_noop() {
-        let mut terrain: HashMap<(i32, i32), LodBlock> = HashMap::new();
-        let mut objects: HashMap<(i32, i32), ObjectLodBlock> = HashMap::new();
+        let mut terrain: HashMap<(i32, i32, i32), LodBlock> = HashMap::new();
+        let mut objects: HashMap<(i32, i32, i32), ObjectLodBlock> = HashMap::new();
         let mut placements: HashMap<(i32, i32), PlacementLodBlock> = HashMap::new();
         let (t, o, p) = drain_lod_reclaim_targets(&mut terrain, &mut objects, &mut placements);
         assert!(t.is_empty() && o.is_empty() && p.is_empty());

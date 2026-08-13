@@ -36,27 +36,14 @@ use byroredux_core::ecs::{
     GlobalTransform, MeshHandle, TextureHandle, Transform, World, WorldBound,
 };
 use byroredux_core::math::{Quat, Vec3};
-use byroredux_plugin::esm::reader::GameKind;
 use byroredux_renderer::VulkanContext;
 
 use crate::asset_provider::{resolve_texture, TextureProvider};
 use crate::components::IsLodTerrain;
 
 use super::exterior::ExteriorWorldContext;
-use super::lod_support::{quad_origin, sort_lod_coords_nearest, LodReconcileInput, LodWorkBudget};
-
-/// Object-LOD quad level streamed by the first cut — level 4 (4×4-cell
-/// quads), the closest / highest-detail band. Coarser bands (8/16/32) for
-/// farther distances are a follow-up (a multi-band selector like terrain
-/// LOD's single ring → multiple rings).
-pub(crate) const OBJECT_LOD_LEVEL: i32 = 4;
-
-/// Object-LOD ring radius in **cells** (Chebyshev). Quads whose nearest cell
-/// is within this distance of the player — and entirely outside the
-/// full-detail ring — load their `.bto`. 16 cells ≈ 65 K BU of distant
-/// objects; conservative first-cut value (object LOD is many meshes per quad,
-/// heavier than terrain LOD). Tunable.
-pub(crate) const OBJECT_LOD_RADIUS_CELLS: i32 = 16;
+use super::lod_bands::{self, quad_min_chebyshev, LodBandLadder, LodBandSelection};
+use super::lod_support::{worldspace_cell_bounds, LodReconcileInput, LodWorkBudget};
 
 /// One streamed object-LOD quad: the `.bto` macro-mesh imports to several
 /// sub-meshes, each spawned as its own [`IsLodTerrain`] entity. Tracked so a
@@ -86,53 +73,21 @@ impl ObjectLodBlock {
     }
 }
 
-/// Minimum Chebyshev distance (in cells) from `player` to any cell of the
-/// level-`level` quad with SW corner `(qx, qy)` (cells `[qx, qx+level) ×
-/// [qy, qy+level)`). `0` when the player stands inside the quad.
-fn quad_min_chebyshev(qx: i32, qy: i32, level: i32, player: (i32, i32)) -> i32 {
-    let nx = player.0.clamp(qx, qx + level - 1);
-    let ny = player.1.clamp(qy, qy + level - 1);
-    (player.0 - nx).abs().max((player.1 - ny).abs())
-}
-
-/// Quads whose `.bto` should be resident this frame: level-aligned, within
-/// [`OBJECT_LOD_RADIUS_CELLS`] of the player, and **entirely** beyond
-/// `max_full_cell_radius` (every cell the quad covers has
-/// `quad_min_chebyshev > max_full_cell_radius`). Mirrors
-/// [`super::placement_lod::placement_lod_cells_in_radius`], but per-quad
-/// rather than per-cell.
-///
-/// `max_full_cell_radius` **must** be the caller's `radius_unload` — see
-/// [`stream_object_lod_blocks`] (#1866 / LC0703-01).
-fn object_lod_quads_in_radius(
-    player: (i32, i32),
-    max_full_cell_radius: i32,
-    level: i32,
-    grid_origin: (i32, i32),
-) -> Vec<(i32, i32)> {
-    let mut quads = Vec::new();
-    let rq = OBJECT_LOD_RADIUS_CELLS / level + 1;
-    let (pqx, pqy) = quad_origin(player.0, player.1, level, grid_origin);
-    for dj in -rq..=rq {
-        for di in -rq..=rq {
-            let qx = pqx + di * level;
-            let qy = pqy + dj * level;
-            let d = quad_min_chebyshev(qx, qy, level, player);
-            if d > max_full_cell_radius && d <= OBJECT_LOD_RADIUS_CELLS {
-                quads.push((qx, qy));
-            }
-        }
-    }
-    quads
-}
-
-/// Stream the distant **object** LOD ring around the player (Skyrim+/FO4).
+/// Stream the distant **object** LOD bands around the player (Skyrim+/FO4).
 /// Mirrors [`super::terrain_lod::stream_lod_blocks`]: quads entering the ring
 /// load their `.bto`, quads leaving unload. A quad loads only when it is
 /// **entirely outside** `max_full_cell_radius`, so the baked LOD never
 /// overlaps a resident full model (the runtime half of the VWD rule; proper
 /// per-record full-model culling at the boundary is a further follow-up,
 /// #1866).
+///
+/// Which **level** each quad draws at comes from [`super::lod_bands`]: a
+/// quadtree descent over the game's own `[TerrainManager]` band distances,
+/// keyed `(level, qx, qy)`. Pre-#2371 this streamed a single hardcoded
+/// level-4 ring 16 cells deep; it now spans 4/8/16 (Skyrim) or 4/8/16/32
+/// (FO4) out to the vanilla `fBlockMaximumDistance`, with band-switch
+/// hysteresis. Because the descent partitions the ring, two levels can never
+/// both claim the same ground.
 ///
 /// `max_full_cell_radius` **must** be the caller's cell-streaming
 /// `radius_unload`, not `radius_load` — #1866 / LC0703-01. Full cells load at
@@ -155,35 +110,49 @@ pub(crate) fn stream_object_lod_blocks(
     world: &mut World,
     ctx: &mut VulkanContext,
     input: &LodReconcileInput<'_>,
-    blocks: &mut HashMap<(i32, i32), ObjectLodBlock>,
+    blocks: &mut HashMap<(i32, i32, i32), ObjectLodBlock>,
     budget: &mut LodWorkBudget,
 ) -> bool {
     let tex_provider = input.tex_provider;
     let wctx = input.wctx;
     let player_grid = input.player_grid;
-    let max_full_cell_radius = input.max_full_cell_radius;
-    if !matches!(
-        wctx.record_index.game,
-        GameKind::Skyrim | GameKind::Fallout4
-    ) {
+    let Some(ladder) = LodBandLadder::for_game(wctx.record_index.game) else {
         return true;
-    }
-    let level = OBJECT_LOD_LEVEL;
-    let mut desired = object_lod_quads_in_radius(
-        player_grid,
-        max_full_cell_radius,
-        level,
-        input.lod_grid_origin,
+    };
+
+    let selection = LodBandSelection {
+        ladder: &ladder,
+        player: player_grid,
+        grid_origin: input.lod_grid_origin,
+        exclude_within: input.max_full_cell_radius,
+        world_bounds: worldspace_cell_bounds(wctx),
+    };
+    let mut desired = lod_bands::select_lod_quads(
+        &selection,
+        |level, qx, qy| blocks.contains_key(&(level, qx, qy)),
+        |level, qx, qy| {
+            tex_provider.has_mesh(&bto_archive_path(&wctx.worldspace_key, level, qx, qy))
+        },
     );
-    sort_lod_coords_nearest(&mut desired, |(qx, qy)| {
-        quad_min_chebyshev(qx, qy, level, player_grid)
+    // Closest-first, so a budgeted reconcile fills the near bands before the
+    // far ones. Ties break on level so a quad's own band stays grouped.
+    desired.sort_unstable_by_key(|&(level, qx, qy)| {
+        (
+            quad_min_chebyshev(qx, qy, level, player_grid),
+            level,
+            qy,
+            qx,
+        )
     });
     let desired_set: std::collections::HashSet<_> = desired.iter().copied().collect();
 
     let mut spawned = 0usize;
     let mut unloaded = 0usize;
 
-    // Unload quads that left the ring (skip empty sentinels — nothing to free).
+    // Unload quads that left the ring or changed band (skip empty sentinels —
+    // nothing to free). A band switch shows up here as the old
+    // `(level, qx, qy)` key vanishing from `desired_set`, so the coarser or
+    // finer replacement can never double-draw the ground it covers.
     blocks.retain(|coord, blk| {
         if desired_set.contains(coord) {
             true
@@ -204,7 +173,7 @@ pub(crate) fn stream_object_lod_blocks(
     let mut attempted = 0usize;
 
     // Load entering quads.
-    for (qx, qy) in candidates {
+    for (level, qx, qy) in candidates {
         if !budget.try_take() {
             break;
         }
@@ -214,11 +183,11 @@ pub(crate) fn stream_object_lod_blocks(
                 if !blk.entities.is_empty() {
                     spawned += 1;
                 }
-                blocks.insert((qx, qy), blk);
+                blocks.insert((level, qx, qy), blk);
             }
             None => {
                 // No `.bto` for this quad — remember so we don't re-extract.
-                blocks.insert((qx, qy), ObjectLodBlock::empty());
+                blocks.insert((level, qx, qy), ObjectLodBlock::empty());
             }
         }
     }
@@ -226,12 +195,15 @@ pub(crate) fn stream_object_lod_blocks(
     let complete = attempted == candidate_count;
     if complete && spawned + unloaded > 0 {
         log::info!(
-            "Object-LOD ring @cell ({},{}): +{} quads loaded, -{} unloaded ({} tracked)",
+            "Object-LOD bands @cell ({},{}): +{} quads loaded, -{} unloaded \
+             ({} tracked, levels 4..={}, {} cells deep)",
             player_grid.0,
             player_grid.1,
             spawned,
             unloaded,
             blocks.len(),
+            ladder.coarsest_level(),
+            ladder.max_cells(),
         );
     }
 
@@ -379,9 +351,10 @@ pub(crate) fn unload_object_lod_block(
 // Canonical quad levels (cells per quad edge), Skyrim+: 4 = closest/highest
 // detail (4×4 cells), then 8, 16, 32 (lowest; level 32 also makes the world
 // map). Matches `LODSettings\<World>.lod`'s level-min 4 / level-max 32 (EXAL
-// Q2). The first cut loads only level 4 ([`OBJECT_LOD_LEVEL`]); coarser bands
-// are a follow-up. `lod_support::quad_origin` works for any of them and keeps
-// the worldspace-relative grid shared with terrain LOD (#2586).
+// Q2). All of them are streamed since #2371 — see [`super::lod_bands`] for
+// the per-game ladder that picks between them. `lod_support::quad_origin`
+// works for any level and keeps the worldspace-relative grid shared with
+// terrain LOD (#2586).
 
 /// Archive-relative path of the object-LOD `.bto` for a worldspace quad:
 /// `meshes\terrain\<world>\objects\<world>.<level>.<x>.<y>.bto`.
@@ -399,38 +372,84 @@ pub(crate) fn bto_archive_path(worldspace_key: &str, level: i32, qx: i32, qy: i3
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cell_loader::lod_support::quad_origin;
+    use byroredux_plugin::esm::reader::GameKind;
 
-    /// #1866 / LC0703-01 — a quad whose nearest cell sits exactly at the
-    /// streaming hysteresis boundary (`radius_load + 1 == radius_unload`)
-    /// must NOT be desired when gated on `radius_unload`, even though the
-    /// pre-fix code (gating on `radius_load`) would have included it —
-    /// that one-cell band is exactly where a full REFR can still be
-    /// resident (unload only fires past `radius_unload`), so loading LOD
-    /// there would z-fight it.
+    fn quads_for(player: (i32, i32), exclude_within: i32) -> Vec<(i32, i32, i32)> {
+        let ladder = LodBandLadder::for_game(GameKind::Fallout4).unwrap();
+        let selection = LodBandSelection {
+            ladder: &ladder,
+            player,
+            grid_origin: (0, 0),
+            exclude_within,
+            world_bounds: None,
+        };
+        lod_bands::select_lod_quads(&selection, |_, _, _| false, |_, _, _| true)
+    }
+
+    /// #1866 / LC0703-01 — no quad may reach inside `radius_unload`, the
+    /// streaming hysteresis boundary. Full cells load at `radius_load` but
+    /// only unload past `radius_load + 1`, so that one-cell band can still
+    /// hold a resident full REFR; baked LOD drawn there would z-fight it.
+    /// Now enforced for every band, not just the old level-4 ring.
     #[test]
-    fn ring_excludes_hysteresis_band_when_gated_on_radius_unload() {
+    fn no_band_reaches_inside_the_streaming_hysteresis_boundary() {
         let radius_load = 5;
         let radius_unload = radius_load + 1; // streaming.rs's hysteresis rule
-        let level = 1; // 1×1 quads so "nearest cell distance" is exact
-        let player = (0, 0);
+                                             // Offset from a quad corner so a level-4 quad lands at exactly
+                                             // `radius_unload`: from (2,0), quad (8, 0) is 6 cells out. At an
+                                             // exact corner the two gatings are indistinguishable (4-aligned
+                                             // quads step 0, 4, 8… so nothing sits at 6) and the regression
+                                             // would not be observable at all.
+        let player = (2, 0);
 
-        // Buggy pre-fix behaviour: gating on radius_load includes the
-        // hysteresis-band cell (distance == radius_unload == 6).
-        let buggy = object_lod_quads_in_radius(player, radius_load, level, (0, 0));
-        assert!(
-            buggy.contains(&(6, 0)),
-            "sanity: radius_load gating must reproduce the pre-fix bug"
-        );
+        for (level, qx, qy) in quads_for(player, radius_unload) {
+            let d = quad_min_chebyshev(qx, qy, level, player);
+            assert!(
+                d > radius_unload,
+                "level-{level} quad ({qx}, {qy}) sits {d} cells out — inside the \
+                 load/unload hysteresis band, where a full REFR can still be resident"
+            );
+        }
 
-        // Fixed behaviour: gating on radius_unload excludes it.
-        let fixed = object_lod_quads_in_radius(player, radius_unload, level, (0, 0));
+        // Sanity: the guard actually binds. Gating on `radius_load` instead
+        // admits a quad sitting exactly in the hysteresis band — the shape
+        // of the pre-fix bug.
         assert!(
-            !fixed.contains(&(6, 0)),
-            "a cell at exactly radius_load+1 can still hold a resident full \
-             REFR under the load/unload hysteresis band — LOD must not load there"
+            quads_for(player, radius_load)
+                .iter()
+                .any(|&(level, qx, qy)| quad_min_chebyshev(qx, qy, level, player) == radius_unload),
+            "radius_load gating must reproduce the pre-fix bug"
         );
-        // A cell safely beyond the hysteresis band still loads.
-        assert!(fixed.contains(&(7, 0)));
+    }
+
+    /// #2371 — object LOD spans the full band ladder now, not one hardcoded
+    /// level-4 ring 16 cells deep. FO4 authors `fBlockLevel2Distance`, so
+    /// all four bands are live (and it ships level-32 `.bto` to match).
+    ///
+    /// Unioned over player positions within a coarse quad: a strict
+    /// quadtree quantises each band's candidates to its own quad size, so
+    /// any single position may skip one (see
+    /// `lod_bands::every_declared_band_is_reachable_from_some_position`).
+    #[test]
+    fn object_lod_streams_every_band_out_to_the_vanilla_max_distance() {
+        let mut levels: Vec<i32> = Vec::new();
+        let mut furthest = 0;
+        for py in 0..32 {
+            for px in 0..32 {
+                for (level, qx, qy) in quads_for((px, py), 6) {
+                    levels.push(level);
+                    furthest = furthest.max(quad_min_chebyshev(qx, qy, level, (px, py)));
+                }
+            }
+        }
+        levels.sort_unstable();
+        levels.dedup();
+        assert_eq!(levels, vec![4, 8, 16, 32]);
+        assert!(
+            furthest > 16,
+            "bands must reach past the old 16-cell ring, got {furthest}"
+        );
     }
 
     #[test]
@@ -451,12 +470,20 @@ mod tests {
     }
 
     #[test]
-    fn object_lod_ring_keeps_nonzero_worldspace_phase() {
+    fn object_lod_bands_keep_nonzero_worldspace_phase() {
         let origin = (-50, -50);
-        let quads = object_lod_quads_in_radius((-49, -49), 0, 4, origin);
+        let ladder = LodBandLadder::for_game(GameKind::Skyrim).unwrap();
+        let selection = LodBandSelection {
+            ladder: &ladder,
+            player: (-49, -49),
+            grid_origin: origin,
+            exclude_within: 0,
+            world_bounds: None,
+        };
+        let quads = lod_bands::select_lod_quads(&selection, |_, _, _| false, |_, _, _| true);
         assert!(!quads.is_empty());
-        assert!(quads.iter().all(|&(qx, qy)| {
-            (qx - origin.0).rem_euclid(4) == 0 && (qy - origin.1).rem_euclid(4) == 0
+        assert!(quads.iter().all(|&(level, qx, qy)| {
+            (qx - origin.0).rem_euclid(level) == 0 && (qy - origin.1).rem_euclid(level) == 0
         }));
     }
 
@@ -482,8 +509,24 @@ mod tests {
         );
     }
 
+    /// Skyrim ships no level-32 `.bto` (measured on
+    /// `Skyrim - Meshes1.bsa`: 517 / 152 / 48 at levels 4 / 8 / 16, none at
+    /// 32) and authors no `fBlockLevel2Distance`. The ladder must therefore
+    /// never ask for a level-32 Skyrim object quad in the first place.
     #[test]
-    fn object_lod_level_is_closest_band() {
-        assert_eq!(OBJECT_LOD_LEVEL, 4);
+    fn skyrim_object_bands_stop_at_level_16() {
+        let ladder = LodBandLadder::for_game(GameKind::Skyrim).unwrap();
+        assert_eq!(ladder.coarsest_level(), 16);
+
+        let selection = LodBandSelection {
+            ladder: &ladder,
+            player: (0, 0),
+            grid_origin: (0, 0),
+            exclude_within: 6,
+            world_bounds: None,
+        };
+        let quads = lod_bands::select_lod_quads(&selection, |_, _, _| false, |_, _, _| true);
+        assert!(quads.iter().all(|&(level, _, _)| level <= 16));
+        assert!(quads.iter().any(|&(level, _, _)| level == 16));
     }
 }

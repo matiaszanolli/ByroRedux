@@ -55,6 +55,19 @@ impl TextureProvider {
         }
         None
     }
+
+    /// Whether a mesh exists, without paying for extraction + decompression.
+    ///
+    /// The baked-LOD band selector (`cell_loader::lod_bands`) probes one
+    /// `.btr` / `.bto` per candidate quad on every reconcile purely to decide
+    /// which level to draw; going through [`Self::extract_mesh`] for that
+    /// would inflate + discard a whole macro-mesh per probe.
+    pub(crate) fn has_mesh(&self, path: &str) -> bool {
+        let normalised = normalize_mesh_path(path);
+        self.mesh_archives
+            .iter()
+            .any(|archive| archive.contains(normalised.as_ref()))
+    }
 }
 
 impl MeshResolver for TextureProvider {

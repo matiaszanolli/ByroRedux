@@ -36,7 +36,8 @@ use crate::asset_provider::{resolve_texture, TextureProvider};
 use crate::components::IsLodTerrain;
 use crate::streaming::LodBlock;
 
-use super::lod_support::{sort_lod_coords_nearest, LodReconcileInput, LodWorkBudget};
+use super::lod_bands::{self, quad_min_chebyshev, LodBandLadder, LodBandSelection};
+use super::lod_support::{worldspace_cell_bounds, LodReconcileInput, LodWorkBudget};
 
 /// Cells per LOD-block edge. A block is one merged mesh covering
 /// `LOD_BLOCK_CELLS²` cells (4×4 = 16 cells = 16384×16384 BU). Bigger
@@ -194,17 +195,12 @@ const _: () = assert!(
     "LOD hole mask is u16 — LOD_BLOCK_CELLS squared must be <= 16",
 );
 
-/// OR a hole bit for every cell `(bx0+dx, by0+dy)` in block `(bi, bj)` for
-/// which `holed(gx, gy)` is true. Pure (no `CellData` map) so the
-/// player-tracking regen logic is unit-testable in isolation.
-fn assemble_hole_mask(
-    bi: i32,
-    bj: i32,
-    grid_origin: (i32, i32),
-    holed: impl Fn(i32, i32) -> bool,
-) -> u16 {
+/// OR a hole bit for every cell `(bx0+dx, by0+dy)` in the finest-level block
+/// whose SW corner is `(bx0, by0)`, for which `holed(gx, gy)` is true. Pure
+/// (no `CellData` map) so the player-tracking regen logic is unit-testable in
+/// isolation.
+fn assemble_hole_mask(bx0: i32, by0: i32, holed: impl Fn(i32, i32) -> bool) -> u16 {
     let k = LOD_BLOCK_CELLS;
-    let (bx0, by0) = block_cell_origin(bi, bj, grid_origin);
     let mut mask: u16 = 0;
     for dy in 0..k {
         for dx in 0..k {
@@ -221,23 +217,28 @@ fn all_holed_mask() -> u16 {
     ((1u32 << (LOD_BLOCK_CELLS * LOD_BLOCK_CELLS)) - 1) as u16
 }
 
-/// The 16-bit per-cell hole pattern for block `(bi, bj)` given the player's
-/// grid cell and full-detail radius. A cell is holed when it's inside the
-/// full-detail radius (streamed near terrain renders it) or has no
-/// landscape. Stored on [`LodBlock`] so a boundary block is regenerated
-/// only when its pattern actually changes.
+/// The 16-bit per-cell hole pattern for the finest-level block at SW cell
+/// `(bx0, by0)`, given the player's grid cell and full-detail radius. A cell
+/// is holed when it's inside the full-detail radius (streamed near terrain
+/// renders it) or has no landscape. Stored on [`LodBlock`] so a boundary
+/// block is regenerated only when its pattern actually changes.
+///
+/// Only the finest band needs this. Coarser bands are selected only far
+/// beyond `max_full_cell_radius` (their refine thresholds start at 15 cells
+/// against a ~6-cell streaming radius) and are drawn from prebaked `.btr`
+/// meshes that already bake in the game's own coverage, so their mask is
+/// always 0 — see [`stream_lod_blocks`].
 ///
 /// `max_full_cell_radius` **must** be the caller's `radius_unload` — see
 /// [`cell_is_full_detail`] (#1871 / LC0703-02).
 fn block_hole_mask(
     cells_map: &HashMap<(i32, i32), CellData>,
-    bi: i32,
-    bj: i32,
-    grid_origin: (i32, i32),
+    bx0: i32,
+    by0: i32,
     player_grid: (i32, i32),
     max_full_cell_radius: i32,
 ) -> u16 {
-    assemble_hole_mask(bi, bj, grid_origin, |gx, gy| {
+    assemble_hole_mask(bx0, by0, |gx, gy| {
         cell_is_full_detail(gx, gy, player_grid, max_full_cell_radius)
             || cells_map
                 .get(&(gx, gy))
@@ -246,14 +247,91 @@ fn block_hole_mask(
     })
 }
 
-/// Stream the distant-terrain LOD ring around the player's grid cell
-/// `player_grid` (#1373). Reconciles the resident `lod_blocks` against the
-/// desired ring (Chebyshev `LOD_RADIUS_BLOCKS` around the player block):
-///   * blocks entering the radius are spawned,
-///   * blocks leaving are unloaded (`drop_mesh` + despawn),
-///   * boundary blocks whose hole mask changed (the full-detail region
-///     moved with the player) are regenerated so the LOD never overlaps or
-///     gaps against the streamed near terrain.
+/// Outer reach of the distant-terrain LOD ring for `game`, in cells.
+///
+/// Single source of truth for "how far does distant terrain go", so anything
+/// sized to match it cannot drift. Games with a baked quadtree reach their
+/// own `fBlockMaximumDistance` (61 cells at the vanilla Ultra tier); the rest
+/// keep the synthesized ring's `LOD_RADIUS_BLOCKS × LOD_BLOCK_CELLS`.
+pub(crate) fn lod_ring_reach_cells(game: GameKind) -> i32 {
+    LodBandLadder::for_game(game)
+        .map(|ladder| ladder.max_cells())
+        .unwrap_or(LOD_RADIUS_BLOCKS * LOD_BLOCK_CELLS)
+}
+
+/// The `(level, qx, qy)` quads the terrain ring wants resident this
+/// reconcile, closest-first so a budgeted initialization grows outward
+/// deterministically instead of following HashMap iteration order.
+///
+/// Two regimes, by whether the game bakes a quadtree at all (#2371):
+///
+/// * **Skyrim / FO4** descend [`super::lod_bands`]' 4/8/16/32 ladder. A
+///   coarse band is only offered where the game actually baked a `.btr`;
+///   where it did not, the descent subdivides instead of leaving a hole,
+///   and the finest band always reports available because heightmap synth
+///   can cover any footprint.
+/// * **Oblivion / FO3 / FNV** ship no baked quadtree, so there is nothing to
+///   select between: they keep the single synthesized
+///   [`LOD_RADIUS_BLOCKS`]-deep ring they have always used, emitted at the
+///   finest level. `has_btr` is never consulted for them.
+#[allow(clippy::too_many_arguments)]
+fn desired_lod_quads(
+    ladder: Option<&LodBandLadder>,
+    player_grid: (i32, i32),
+    grid_origin: (i32, i32),
+    max_full_cell_radius: i32,
+    world_bounds: Option<((i32, i32), (i32, i32))>,
+    resident: impl Fn(i32, i32, i32) -> bool,
+    has_btr: impl Fn(i32, i32, i32) -> bool,
+) -> Vec<(i32, i32, i32)> {
+    let k = LOD_BLOCK_CELLS;
+    let mut desired = match ladder {
+        Some(ladder) => {
+            let selection = LodBandSelection {
+                ladder,
+                player: player_grid,
+                grid_origin,
+                exclude_within: max_full_cell_radius,
+                world_bounds,
+            };
+            lod_bands::select_lod_quads(&selection, resident, |level, qx, qy| {
+                level == k || has_btr(level, qx, qy)
+            })
+        }
+        None => {
+            let (pbi, pbj) = block_index(player_grid, grid_origin);
+            let mut coords = Vec::new();
+            for bj in (pbj - LOD_RADIUS_BLOCKS)..=(pbj + LOD_RADIUS_BLOCKS) {
+                for bi in (pbi - LOD_RADIUS_BLOCKS)..=(pbi + LOD_RADIUS_BLOCKS) {
+                    let (bx0, by0) = block_cell_origin(bi, bj, grid_origin);
+                    coords.push((k, bx0, by0));
+                }
+            }
+            coords
+        }
+    };
+    desired.sort_unstable_by_key(|&(level, qx, qy)| {
+        (
+            quad_min_chebyshev(qx, qy, level, player_grid),
+            level,
+            qy,
+            qx,
+        )
+    });
+    desired
+}
+
+/// Stream the distant-terrain LOD bands around the player's grid cell
+/// `player_grid` (#1373). Reconciles the resident `lod_blocks` against
+/// [`desired_lod_quads`]:
+///   * quads entering the ring are spawned,
+///   * quads leaving — or switching band — are unloaded (`drop_mesh` +
+///     despawn); a band switch is exactly an old `(level, …)` key dropping
+///     out of the desired set, which is what stops two levels double-drawing
+///     the same ground,
+///   * finest-band boundary blocks whose hole mask changed (the full-detail
+///     region moved with the player) are regenerated so the LOD never
+///     overlaps or gaps against the streamed near terrain.
 ///
 /// Cells inside `max_full_cell_radius` are holed out. Reclaims and stale-mask
 /// invalidations happen immediately; entering/regenerated blocks consume
@@ -267,8 +345,8 @@ pub(crate) fn stream_lod_blocks(
     world: &mut World,
     ctx: &mut VulkanContext,
     input: &LodReconcileInput<'_>,
-    lod_blocks: &mut HashMap<(i32, i32), LodBlock>,
-    missing_blocks: &mut HashMap<(i32, i32), u16>,
+    lod_blocks: &mut HashMap<(i32, i32, i32), LodBlock>,
+    missing_blocks: &mut HashMap<(i32, i32, i32), u16>,
     budget: &mut LodWorkBudget,
 ) -> bool {
     let tex_provider = input.tex_provider;
@@ -292,20 +370,25 @@ pub(crate) fn stream_lod_blocks(
         .map(|w| w.form_id)
         .unwrap_or(0);
     let k = LOD_BLOCK_CELLS;
-    // Block containing the player, relative to this WRLD's authored LOD grid
-    // origin. `div_euclid` floors consistently across negative coordinates.
     let grid_origin = input.lod_grid_origin;
-    let (pbi, pbj) = block_index(player_grid, grid_origin);
+    let ladder = LodBandLadder::for_game(game);
 
-    // Desired ring: closest-first so a budgeted initialization grows outward
-    // deterministically instead of following HashMap random iteration order.
-    let mut desired = Vec::new();
-    for bj in (pbj - LOD_RADIUS_BLOCKS)..=(pbj + LOD_RADIUS_BLOCKS) {
-        for bi in (pbi - LOD_RADIUS_BLOCKS)..=(pbi + LOD_RADIUS_BLOCKS) {
-            desired.push((bi, bj));
-        }
-    }
-    sort_lod_coords_nearest(&mut desired, |coord| chebyshev(coord, (pbi, pbj)));
+    let desired = desired_lod_quads(
+        ladder.as_ref(),
+        player_grid,
+        grid_origin,
+        max_full_cell_radius,
+        worldspace_cell_bounds(wctx),
+        |level, qx, qy| lod_blocks.contains_key(&(level, qx, qy)),
+        |level, qx, qy| {
+            tex_provider.has_mesh(&super::terrain_lod_btr::btr_archive_path(
+                worldspace_key,
+                level,
+                qx,
+                qy,
+            ))
+        },
+    );
     let desired_set: HashSet<_> = desired.iter().copied().collect();
 
     let mut spawned = 0usize;
@@ -313,7 +396,7 @@ pub(crate) fn stream_lod_blocks(
     let mut invalidated = 0usize;
     let mut unloaded = 0usize;
 
-    // Unload blocks that left the ring.
+    // Unload blocks that left the ring or changed band.
     lod_blocks.retain(|coord, block| {
         if desired_set.contains(coord) {
             true
@@ -331,37 +414,36 @@ pub(crate) fn stream_lod_blocks(
     // First invalidate every stale block, regardless of the spawn budget.
     // This prevents old hole masks from overlapping full-detail terrain while
     // replacement geometry waits for an idle frame.
-    for &(bi, bj) in &desired {
-        let mask = block_hole_mask(
-            cells_map,
-            bi,
-            bj,
-            grid_origin,
-            player_grid,
-            max_full_cell_radius,
-        );
+    for &(level, qx, qy) in &desired {
+        // Only the finest band can touch the full-detail region or need
+        // per-cell holes; coarse bands are baked meshes far outside it.
+        let mask = if level == k {
+            block_hole_mask(cells_map, qx, qy, player_grid, max_full_cell_radius)
+        } else {
+            0
+        };
         // Copy the prior mask out before mutating the map (no borrow held).
-        let prev_mask = lod_blocks.get(&(bi, bj)).map(|b| b.hole_mask);
+        let prev_mask = lod_blocks.get(&(level, qx, qy)).map(|b| b.hole_mask);
 
         // Empty block (every cell holed) — ensure no stale entry remains.
         if mask == all_holed {
-            if let Some(block) = lod_blocks.remove(&(bi, bj)) {
+            if let Some(block) = lod_blocks.remove(&(level, qx, qy)) {
                 unload_lod_block(world, ctx, &block);
                 unloaded += 1;
             }
-            missing_blocks.remove(&(bi, bj));
+            missing_blocks.remove(&(level, qx, qy));
             continue;
         }
 
         match prev_mask {
             Some(m) if m == mask => {
-                missing_blocks.remove(&(bi, bj));
+                missing_blocks.remove(&(level, qx, qy));
                 continue;
             }
             Some(_) => {
                 // Hole pattern moved — drop the stale block now; its
                 // replacement may be deferred below.
-                if let Some(block) = lod_blocks.remove(&(bi, bj)) {
+                if let Some(block) = lod_blocks.remove(&(level, qx, qy)) {
                     unload_lod_block(world, ctx, &block);
                 }
                 invalidated += 1;
@@ -369,16 +451,16 @@ pub(crate) fn stream_lod_blocks(
             None => {} // new block
         }
 
-        if missing_blocks.get(&(bi, bj)) == Some(&mask) {
+        if missing_blocks.get(&(level, qx, qy)) == Some(&mask) {
             continue;
         }
-        missing_blocks.remove(&(bi, bj));
-        candidates.push((bi, bj, mask));
+        missing_blocks.remove(&(level, qx, qy));
+        candidates.push((level, qx, qy, mask));
     }
 
     let candidate_count = candidates.len();
     let mut attempted = 0usize;
-    for (bi, bj, mask) in candidates {
+    for (level, qx, qy, mask) in candidates {
         if !budget.try_take() {
             break;
         }
@@ -392,14 +474,17 @@ pub(crate) fn stream_lod_blocks(
         // mesh can't do, and missing `.btr` / older games fall through — the
         // synth path handles all of those. Exactly one block per coordinate,
         // so the textured LOD never double-draws the synth LOD (EXAL §5).
+        //
+        // Coarse bands (`level > k`) exist *only* as `.btr`: the descent
+        // above only proposes them where one is baked, and the synth builder
+        // is finest-band-only (its hole mask is a `u16`, one bit per cell).
         let btr_block = if mask == 0 && matches!(game, GameKind::Skyrim | GameKind::Fallout4) {
-            let (qx, qy) = block_cell_origin(bi, bj, grid_origin);
             super::terrain_lod_btr::spawn_btr_block(
                 world,
                 ctx,
                 tex_provider,
                 worldspace_key,
-                k,
+                level,
                 qx,
                 qy,
                 mask,
@@ -409,23 +494,36 @@ pub(crate) fn stream_lod_blocks(
         };
         let from_btr = btr_block.is_some();
         let block = btr_block.or_else(|| {
+            if level != k {
+                // A coarse band whose `.btr` is present in the archive but
+                // unusable (parse or upload failure — `spawn_btr_block`
+                // warns). The synth builder cannot cover this footprint: its
+                // hole mask is a `u16`, one bit per cell, so it only handles
+                // the finest band. The quad is recorded in `missing_blocks`
+                // below and stays absent for as long as the player keeps it
+                // in range — a hole in the horizon rather than a retry loop.
+                // Availability is judged on the file existing, so re-
+                // descending into finer children would need failure memory
+                // that outlives the desired set; not worth the thrash risk
+                // for a hard asset failure this rare.
+                return None;
+            }
             spawn_lod_block(
                 world,
                 ctx,
                 tex_provider,
                 &index.landscape_textures,
                 cells_map,
-                bi,
-                bj,
-                grid_origin,
+                qx,
+                qy,
                 player_grid,
                 max_full_cell_radius,
                 world_form_id,
             )
         });
         if let Some(block) = block {
-            lod_blocks.insert((bi, bj), block);
-            missing_blocks.remove(&(bi, bj));
+            lod_blocks.insert((level, qx, qy), block);
+            missing_blocks.remove(&(level, qx, qy));
             spawned += 1;
             if from_btr {
                 btr_spawned += 1;
@@ -433,24 +531,25 @@ pub(crate) fn stream_lod_blocks(
         } else {
             // Remember a real miss at this exact hole mask so a budgeted
             // reconcile can continue outward instead of retrying forever.
-            missing_blocks.insert((bi, bj), mask);
+            missing_blocks.insert((level, qx, qy), mask);
         }
     }
 
     let complete = attempted == candidate_count;
     if complete && spawned + invalidated + unloaded > 0 {
+        let reach_cells = lod_ring_reach_cells(game);
         log::info!(
-            "LOD ring @block ({},{}): +{} spawned ({} prebaked .btr / {} synth), \
+            "LOD ring @cell ({},{}): +{} spawned ({} prebaked .btr / {} synth), \
              ~{} stale invalidated, -{} unloaded ({} resident, ~{:.0}K BU)",
-            pbi,
-            pbj,
+            player_grid.0,
+            player_grid.1,
             spawned,
             btr_spawned,
             spawned - btr_spawned,
             invalidated,
             unloaded,
             lod_blocks.len(),
-            (LOD_RADIUS_BLOCKS * k) as f32 * EXTERIOR_CELL_UNITS / 1000.0,
+            reach_cells as f32 * EXTERIOR_CELL_UNITS / 1000.0,
         );
     }
 
@@ -476,10 +575,16 @@ pub(crate) fn unload_lod_block(world: &mut World, ctx: &mut VulkanContext, block
         ctx.texture_registry
             .drop_texture(&ctx.device, block.texture_handle);
     }
+    // #2371 — same reclaim for the `.btr` per-quad normal map.
+    if block.normal_texture_handle != 0 {
+        ctx.texture_registry
+            .drop_texture(&ctx.device, block.normal_texture_handle);
+    }
     world.despawn(block.entity);
 }
 
-/// Build + spawn one LOD block at block-coords `(bi, bj)`. Returns `None`
+/// Build + spawn one finest-band LOD block whose SW-corner cell is
+/// `(bx0, by0)`. Returns `None`
 /// (nothing spawned) when the block is entirely holes — every cell either
 /// missing, landscape-less, or inside the full-detail radius — or the
 /// upload fails. On success returns the [`LodBlock`] for streaming tracking.
@@ -493,15 +598,13 @@ fn spawn_lod_block(
     tex_provider: &TextureProvider,
     landscape_textures: &HashMap<u32, String>,
     cells_map: &HashMap<(i32, i32), CellData>,
-    bi: i32,
-    bj: i32,
-    grid_origin: (i32, i32),
+    bx0: i32,
+    by0: i32,
     player_grid: (i32, i32),
     max_full_cell_radius: i32,
     world_form_id: u32,
 ) -> Option<LodBlock> {
     let k = LOD_BLOCK_CELLS;
-    let (bx0, by0) = block_cell_origin(bi, bj, grid_origin);
     let origin_x = bx0 as f32 * EXTERIOR_CELL_UNITS;
     let origin_y = by0 as f32 * EXTERIOR_CELL_UNITS;
 
@@ -688,7 +791,12 @@ fn spawn_lod_block(
     {
         Ok(h) => h,
         Err(e) => {
-            log::warn!("Failed to upload LOD terrain block ({},{}): {}", bi, bj, e);
+            log::warn!(
+                "Failed to upload LOD terrain block at cell ({},{}): {}",
+                bx0,
+                by0,
+                e
+            );
             // Release the texture acquired above so a failed upload doesn't
             // pin the VkImage + bindless slot (the resolve bumped its refcount).
             if tex_handle != 0 {
@@ -713,18 +821,14 @@ fn spawn_lod_block(
     // and is skipped by any TLAS-membership logic.
     world.insert(entity, IsLodTerrain);
 
-    let hole_mask = block_hole_mask(
-        cells_map,
-        bi,
-        bj,
-        grid_origin,
-        player_grid,
-        max_full_cell_radius,
-    );
+    let hole_mask = block_hole_mask(cells_map, bx0, by0, player_grid, max_full_cell_radius);
     Some(LodBlock {
         entity,
         mesh_handle,
         texture_handle: tex_handle,
+        // The synth path paints a single tiled ground diffuse and has no
+        // authored per-quad normal map; only `.btr` blocks carry one.
+        normal_texture_handle: 0,
         hole_mask,
     })
 }
@@ -864,6 +968,120 @@ mod tests {
         ));
     }
 
+    /// #2371 — Oblivion / FO3 / FNV ship no baked quadtree, so their terrain
+    /// ring must be byte-for-byte what it was before band selection existed:
+    /// one finest-level ring, `LOD_RADIUS_BLOCKS` blocks deep, centred on the
+    /// player's block. A regression here is a silently shrunken horizon on
+    /// the three games that have no coarser source to fall back to.
+    #[test]
+    fn games_without_a_baked_quadtree_keep_the_single_synth_ring() {
+        let grid_origin = (0, 0);
+        let player = (5, -3);
+        let quads = desired_lod_quads(
+            None,
+            player,
+            grid_origin,
+            6,
+            None,
+            |_, _, _| false,
+            |_, _, _| panic!(".btr availability must never be probed without a ladder"),
+        );
+
+        let side = (2 * LOD_RADIUS_BLOCKS + 1) as usize;
+        assert_eq!(quads.len(), side * side);
+        assert!(quads.iter().all(|&(level, _, _)| level == LOD_BLOCK_CELLS));
+
+        // Exactly the old block square, expressed in SW-corner cells.
+        let (pbi, pbj) = block_index(player, grid_origin);
+        let mut expected: Vec<(i32, i32, i32)> = Vec::new();
+        for bj in (pbj - LOD_RADIUS_BLOCKS)..=(pbj + LOD_RADIUS_BLOCKS) {
+            for bi in (pbi - LOD_RADIUS_BLOCKS)..=(pbi + LOD_RADIUS_BLOCKS) {
+                let (bx0, by0) = block_cell_origin(bi, bj, grid_origin);
+                expected.push((LOD_BLOCK_CELLS, bx0, by0));
+            }
+        }
+        let mut got = quads.clone();
+        got.sort_unstable();
+        expected.sort_unstable();
+        assert_eq!(got, expected);
+    }
+
+    /// The band ladder only ever offers a coarse terrain quad where the game
+    /// baked a `.btr` for it. Where it did not, the descent must subdivide
+    /// down to the finest band — which heightmap synth can always cover —
+    /// rather than leave a hole in the horizon.
+    #[test]
+    fn coarse_terrain_bands_require_a_baked_btr() {
+        let ladder = LodBandLadder::for_game(GameKind::Skyrim).unwrap();
+        let quads = desired_lod_quads(
+            Some(&ladder),
+            (0, 0),
+            (0, 0),
+            6,
+            None,
+            |_, _, _| false,
+            |_, _, _| false, // no `.btr` baked anywhere
+        );
+        assert!(!quads.is_empty());
+        assert!(
+            quads.iter().all(|&(level, _, _)| level == LOD_BLOCK_CELLS),
+            "with no baked `.btr`, every terrain quad must fall back to the synth band"
+        );
+
+        // With `.btr` present, coarse bands are used and the ring reaches
+        // further than the synth-only ring ever did.
+        let banded = desired_lod_quads(
+            Some(&ladder),
+            (0, 0),
+            (0, 0),
+            6,
+            None,
+            |_, _, _| false,
+            |_, _, _| true,
+        );
+        assert!(banded.iter().any(|&(level, _, _)| level > LOD_BLOCK_CELLS));
+        let reach = banded
+            .iter()
+            .map(|&(l, qx, qy)| quad_min_chebyshev(qx, qy, l, (0, 0)))
+            .max()
+            .unwrap();
+        assert!(
+            reach > LOD_RADIUS_BLOCKS * LOD_BLOCK_CELLS,
+            "banded terrain must reach past the old {}-cell synth ring, got {reach}",
+            LOD_RADIUS_BLOCKS * LOD_BLOCK_CELLS
+        );
+    }
+
+    /// Only the finest band can ever need a hole mask. Coarse bands are
+    /// selected far outside the streaming radius, so `stream_lod_blocks` is
+    /// entitled to hardcode their mask to 0 — this pins the premise.
+    #[test]
+    fn coarse_terrain_bands_never_reach_the_full_detail_region() {
+        let radius_unload = 6;
+        for game in [GameKind::Skyrim, GameKind::Fallout4] {
+            let ladder = LodBandLadder::for_game(game).unwrap();
+            for py in 0..8 {
+                for px in 0..8 {
+                    let quads = desired_lod_quads(
+                        Some(&ladder),
+                        (px, py),
+                        (0, 0),
+                        radius_unload,
+                        None,
+                        |_, _, _| false,
+                        |_, _, _| true,
+                    );
+                    for (level, qx, qy) in quads {
+                        assert!(
+                            quad_min_chebyshev(qx, qy, level, (px, py)) > radius_unload,
+                            "level-{level} quad ({qx}, {qy}) reaches inside the streaming radius"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     /// #1373 — a boundary block's hole mask shifts as the player crosses
     /// cells, which is exactly what triggers regeneration. Pure radius
     /// closure, no `CellData` map needed.
@@ -872,26 +1090,27 @@ mod tests {
         let full = 1;
         let holed = |p: (i32, i32)| move |gx: i32, gy: i32| chebyshev((gx, gy), p) <= full;
 
-        // Block (0,0) covers cells (0,0)..=(3,3). Player at (0,0) holes its
-        // SW corner; moving the player east to (4,0) (into block (1,0))
-        // clears those holes — the mask must change (→ regenerate).
-        let blk0_at_origin = assemble_hole_mask(0, 0, (0, 0), holed((0, 0)));
-        let blk0_at_east = assemble_hole_mask(0, 0, (0, 0), holed((4, 0)));
+        // The block at SW cell (0,0) covers cells (0,0)..=(3,3). Player at
+        // (0,0) holes its SW corner; moving the player east to (4,0) (into
+        // the next block) clears those holes — the mask must change
+        // (→ regenerate).
+        let blk0_at_origin = assemble_hole_mask(0, 0, holed((0, 0)));
+        let blk0_at_east = assemble_hole_mask(0, 0, holed((4, 0)));
         assert_ne!(
             blk0_at_origin, blk0_at_east,
             "boundary block mask must change as the player crosses cells"
         );
 
         // The block the player moved INTO gains the full-detail holes.
-        let blk1_at_origin = assemble_hole_mask(1, 0, (0, 0), holed((0, 0)));
-        let blk1_at_east = assemble_hole_mask(1, 0, (0, 0), holed((4, 0)));
+        let blk1_at_origin = assemble_hole_mask(4, 0, holed((0, 0)));
+        let blk1_at_east = assemble_hole_mask(4, 0, holed((4, 0)));
         assert_ne!(blk1_at_origin, blk1_at_east);
 
         // A far block (outside the full-detail radius from both positions)
         // keeps mask 0 — never regenerates from player motion (the common
         // case: most of the ring is stable).
-        assert_eq!(assemble_hole_mask(5, 5, (0, 0), holed((0, 0))), 0);
-        assert_eq!(assemble_hole_mask(5, 5, (0, 0), holed((4, 0))), 0);
+        assert_eq!(assemble_hole_mask(20, 20, holed((0, 0))), 0);
+        assert_eq!(assemble_hole_mask(20, 20, holed((4, 0))), 0);
     }
 
     /// `all_holed_mask` has exactly the low `LOD_BLOCK_CELLS²` bits set —
@@ -900,7 +1119,7 @@ mod tests {
     #[test]
     fn all_holed_mask_is_full_block() {
         let always = |_: i32, _: i32| true;
-        assert_eq!(all_holed_mask(), assemble_hole_mask(0, 0, (0, 0), always));
+        assert_eq!(all_holed_mask(), assemble_hole_mask(0, 0, always));
         assert_eq!(all_holed_mask(), 0xFFFF); // 4×4 = 16 bits
     }
 

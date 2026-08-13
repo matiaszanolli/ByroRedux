@@ -67,6 +67,40 @@ pub(crate) fn worldspace_lod_grid_origin(wctx: &ExteriorWorldContext) -> (i32, i
         .unwrap_or((0, 0))
 }
 
+/// Inclusive cell bounds of the active worldspace, when it authors enough
+/// to know them. Used by `lod_bands` to prune baked-LOD quads that miss the
+/// worldspace entirely — without it, the subdivide-on-missing-asset rule
+/// would descend open ocean all the way to the finest band.
+///
+/// Prefers WRLD `NAM0`/`NAM9` (the same source as
+/// [`worldspace_lod_grid_origin`]); worldspaces that omit it fall back to the
+/// component-wise extent of their explicit exterior cells, and a worldspace
+/// with neither returns `None` (prune nothing).
+pub(crate) fn worldspace_cell_bounds(
+    wctx: &ExteriorWorldContext,
+) -> Option<((i32, i32), (i32, i32))> {
+    let cells = &wctx.record_index.cells;
+    if let Some(bounds) = cells
+        .worldspaces
+        .get(&wctx.worldspace_key)
+        .and_then(|worldspace| worldspace.usable_cell_bounds())
+    {
+        return Some(bounds);
+    }
+
+    cells
+        .exterior_cells
+        .get(&wctx.worldspace_key)
+        .and_then(|world_cells| {
+            world_cells.keys().copied().map(|c| (c, c)).reduce(|a, b| {
+                (
+                    (a.0 .0.min(b.0 .0), a.0 .1.min(b.0 .1)),
+                    (a.1 .0.max(b.1 .0), a.1 .1.max(b.1 .1)),
+                )
+            })
+        })
+}
+
 /// SW corner of the level-sized quad containing `(gx, gy)`, aligned to the
 /// active worldspace's own `grid_origin` rather than global zero (#2586).
 pub(crate) fn quad_origin(gx: i32, gy: i32, level: i32, grid_origin: (i32, i32)) -> (i32, i32) {

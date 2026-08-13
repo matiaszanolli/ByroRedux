@@ -298,9 +298,8 @@ const LOD_WATER_HOLE_MARGIN_CELLS: i32 = 1;
 /// Spawn the worldspace-wide distant LOD water quad (#2449 / EXAL-01) — the
 /// `NAM3`/`NAM4` counterpart of [`spawn_water_plane`]'s per-cell `XCLW`/
 /// `XCWT`. A single square annulus ("picture frame"): its outer edge
-/// matches the distant-terrain LOD ring's total radius
-/// (`LOD_RADIUS_BLOCKS × LOD_BLOCK_CELLS`, `super::terrain_lod`) for visual
-/// consistency, and its inner edge is a hole cut out around
+/// matches the distant-terrain LOD ring's total reach
+/// (`super::terrain_lod::lod_ring_reach_cells`) for visual consistency, and its inner edge is a hole cut out around
 /// `player_grid` sized to `radius_unload` (+ a one-cell margin) so it
 /// doesn't overlap/double-blend against the near, full-detail per-cell
 /// water. Called once at worldspace entry — see [`LodWaterPlane`]'s doc for
@@ -389,6 +388,7 @@ fn build_lod_water_frame(
     Some((vertices, indices))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_lod_water_plane(
     world: &mut World,
     ctx: &mut VulkanContext,
@@ -398,15 +398,19 @@ pub(crate) fn spawn_lod_water_plane(
     lod_water_form: Option<u32>,
     player_grid: (i32, i32),
     radius_unload: i32,
+    game: esm::reader::GameKind,
 ) -> Option<LodWaterPlane> {
     let (material, kind, flow, normal_texture_path) =
         crate::env_translate::resolve_water_material(waters, lod_water_form);
 
     let allocator = ctx.allocator.as_ref()?;
 
-    let outer = (super::terrain_lod::LOD_RADIUS_BLOCKS * super::terrain_lod::LOD_BLOCK_CELLS)
-        as f32
-        * EXTERIOR_CELL_UNITS;
+    // Track the terrain LOD ring's own reach, which since #2371 depends on
+    // whether the game bakes a quadtree (Skyrim/FO4 reach their vanilla
+    // `fBlockMaximumDistance`, the rest keep the synth ring). Reading it from
+    // `terrain_lod` keeps the water frame from falling short of the terrain
+    // it is supposed to meet.
+    let outer = super::terrain_lod::lod_ring_reach_cells(game) as f32 * EXTERIOR_CELL_UNITS;
     let inner = (radius_unload + LOD_WATER_HOLE_MARGIN_CELLS).max(0) as f32 * EXTERIOR_CELL_UNITS;
     // Cell-grid-index-based Z-up world coordinates (pre-conversion), same
     // convention `spawn_lod_block` uses for its block origin.

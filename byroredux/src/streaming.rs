@@ -324,6 +324,12 @@ pub struct LodBlock {
     /// session (#1537). `0` = fallback/placeholder, never per-block
     /// refcounted (skip the drop).
     pub texture_handle: u32,
+    /// Per-quad tangent-space normal-map `TextureHandle` for a prebaked
+    /// `.btr` block (#2371), or `0` when the block has none — the synth
+    /// path, FO4's model-space `_msn` variant, and any quad whose `_n`
+    /// sibling is missing. Refcounted and dropped exactly like
+    /// `texture_handle`.
+    pub normal_texture_handle: u32,
     pub hole_mask: u16,
 }
 
@@ -516,19 +522,24 @@ pub struct WorldStreamingState {
     /// blocks whose hole mask changed regenerate. The Slice-1 ring spawned
     /// these once and never tracked them — re-entry leaked ~600 blocks and
     /// the hole-out went stale as the player walked.
-    pub lod_blocks: HashMap<(i32, i32), LodBlock>,
+    pub lod_blocks: HashMap<(i32, i32, i32), LodBlock>,
     /// Terrain-LOD coordinates that were reconciled but produced no mesh,
     /// keyed to the hole mask that was attempted. This is the terrain
     /// equivalent of the empty sentinels stored directly in the object and
     /// placement maps: incremental initialization must not retry the same
     /// absent asset every frame and starve all later coordinates.
-    pub lod_missing_blocks: HashMap<(i32, i32), u16>,
-    /// Distant **object** LOD quads, keyed by the quad's SW-corner cell
-    /// (EXAL step 6). Skyrim+/FO4 only — each entry is the baked `.bto`
-    /// macro-mesh's spawned sub-meshes (or an empty sentinel for a quad with
-    /// no baked LOD). Reconciled progressively alongside `lod_blocks`; quads
-    /// load only outside the full-detail ring.
-    pub object_lod_blocks: HashMap<(i32, i32), crate::cell_loader::ObjectLodBlock>,
+    pub lod_missing_blocks: HashMap<(i32, i32, i32), u16>,
+    /// Distant **object** LOD quads, keyed by `(level, qx, qy)` — the quad's
+    /// LOD band plus its SW-corner cell (EXAL step 6). Skyrim+/FO4 only —
+    /// each entry is the baked `.bto` macro-mesh's spawned sub-meshes (or an
+    /// empty sentinel for a quad with no baked LOD). Reconciled progressively
+    /// alongside `lod_blocks`; quads load only outside the full-detail ring.
+    ///
+    /// The `level` is part of the key because the same ground is covered by a
+    /// different quad in every band (#2371): a band switch is an unload of
+    /// the old `(level, …)` entry plus a load of the new one, which is what
+    /// keeps two levels from ever double-drawing it.
+    pub object_lod_blocks: HashMap<(i32, i32, i32), crate::cell_loader::ObjectLodBlock>,
     /// Distant **object** LOD cells for Oblivion's placement scheme, keyed
     /// by cell `(x, y)`. Each entry is the cell's
     /// `DistantLOD\*.lod` instanced `_far.nif` meshes (or an empty sentinel
@@ -679,6 +690,7 @@ impl WorldStreamingState {
             lod_water_form,
             player_grid,
             self.radius_unload,
+            self.wctx.record_index.game,
         );
     }
 
