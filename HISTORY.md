@@ -24,6 +24,77 @@ Commits hold that record.
 
 ---
 
+## Session 66 — twelve-report audit sweep and the bug-bash that drained it; exterior slices land  (2026-08-11 → 2026-08-13, `17d9135e..53a398f1`, 69 commits)
+
+Session 65 closed on a playable vertical slice and a physical lighting
+backbone; Session 66 spent its budget paying for them. Twelve audit reports
+landed on 2026-08-12 — renderer (×2), safety (×2), concurrency (×2), FO4,
+Starfield, NIFAL, scripting, performance, tech-debt — and the rest of the
+session drained the backlog they produced: 36 of the 51 non-merge commits are
+`/fix-issue` bundles, 83 distinct issues referenced. Running alongside that,
+the exterior track converted six EX-numbered plan items into shipped slices.
+No milestone opened or closed; this was backlog drainage.
+
+- **Audit bug-bash (the bulk).** Renderer: draw-sort key hoisting measured
+  then *disproved*, partition self-swap, `GpuBuffer` flush SAFETY comments and
+  six undocumented `unsafe` fns (`#2681`–`#2684`); TAA sky-silhouette edge
+  crawl plus stale mesh-ID / `Vertex`-size comments (`#2757`–`#2761`);
+  `cluster_cull` near-plane precision, glass mesh-ID write mask, `ray_hit.glsl`
+  frame mismatch (`#2744`–`#2747`); resize fence null-out, FSR mask writes,
+  `GpuInstance` lockstep test (`#2739`–`#2750`); fence-gated bindless
+  descriptor writes (`#2715`–`#2717`); every unpinned UBO block size pinned
+  (`#2464`); ReSTIR shadow *term* faded rather than the light itself (`#2554`).
+- **Materials / NIFAL.** `MAT_FLAG_TRANSLUCENCY` made scalar-reachable, and FO4
+  three-channel `_msn` model-space normals stopped having their authored blue
+  channel overwritten — the BC1-vs-BC3 distinction now resolves once at load
+  time behind a material flag instead of per-fragment (`#2823`–`#2826`). The
+  BGSM Phase-1 flag tests were rewritten against the real merge after being
+  found to be mirror tests that re-implemented the gate locally and *could not
+  fail*, and `merge_external_material`'s `bool` became `MergeOutcome` so
+  "resolved and populated" is distinguishable from "resolved and forwarded
+  nothing" — the state most Starfield content is in (`#2702`–`#2709`).
+  Starfield CDB bytes cached across provider rebuilds and fabricated PBR
+  overrides on empty stubs stopped (`#2705`–`#2708`); FaceTint authored slots
+  and the MultiLayerParallax inner layer routed (`#2693`, `#2694`).
+- **Exterior / EXAL.** Character mode gated on a verified ground probe (EX-04,
+  `#2375`); the exterior matrix gated on environment values (EX-05, `#2368`);
+  cancellation and resource-ownership soak (EX-08, `#2374`); ground-cover
+  canonical types and translate boundary (EX-14 Phase 0); FO4 precombines
+  routed by their own CSG name hash (EX-15, `#2369`); Gamebryo NAVM geometry
+  and cross-cell connectivity (EX-16b, `#2738`). Baked-LOD 4/8/16/32 bands with
+  `.btr` normal maps, far-plane reach and depth policy, and LOD work bounded by
+  wall clock with per-phase percentiles (`#2371`, `#2376`). REGN RDAT region
+  data and non-climate PNAM parent-worldspace inheritance (`#2737`, `#2735`).
+- **Scripting.** VMAD scripts attached on the actor spawn path (`#2662`);
+  fragment `Activate()` effects delivered at the head of the next frame
+  (`#2654`); an unambiguous quest receiver required for `Reset()` /
+  `SetActive()` (`#2653`); Papyrus flag-loop newline crossing and boolean-pass
+  fall-through (`#2655`, `#2656`–`#2659`).
+- **Concurrency + safety.** Late-stage access declarations completed, the
+  scheduler pin floored, spent one-shot markers consumed; TLAS state committed
+  only after success; lock-cycle detection generalised to cycles of any length.
+- **Refactors.** Four >2000-LOC files split by topic and the two flagged hot
+  functions extracted; named-field parsing routed through `CommonNamedFields`;
+  `parse_qust` decomposed; image barriers deduped.
+- **Left open, deliberately.** `#2809` (froxel temporal clamp gathered from the
+  history volume; asymmetric emissive time constant) was investigated and *not*
+  fixed: its suggested cheap fix reads a reprojected history emission share
+  that is never stored — the froxel is `RGBA16F` carrying `rgb = inscatter`,
+  `a = extinction` — and the alternative is a second-pass restructure. Both are
+  GPU-verification-only changes on a path where `#2241` is still open, so the
+  two confirmed mechanisms were recorded in `volumetrics_inject.comp` instead,
+  along with a warning against the radiance-delta "fix" the surrounding comment
+  already rules out.
+
+Net: tests 4660 → **4942** (+282), still one failing — the `fire_lights`
+derived-reach canary, now unaddressed for three sessions. Rust total LOC
++15 599; source files 868 → 908; workspace members unchanged at 27; open issue
+dirs 2533 → 2731. Bench-of-record `28155b79` folded a **fourth** time to 186
+commits stale. Found at close: CI has been red on `main` for at least five
+commits because the runner cannot find `vulkan/vulkan.h` when building
+`byroredux-fsr3-sys` — an environmental break, not a code one, but it means CI
+gave no signal for any of this session's merges.
+
 ## Session 65 — playable vertical slice opens; physical lighting backbone; RT decomposition harness  (2026-08-09 → 2026-08-11, `a705423a..65217327`, 36 commits)
 
 With Session 64's audit backlog drained, the project turned from "parses and
