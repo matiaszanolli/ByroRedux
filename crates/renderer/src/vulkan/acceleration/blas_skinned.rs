@@ -513,6 +513,19 @@ impl AccelerationManager {
         let scratch_buffer = self.blas_scratch_buffer.as_ref().context(
             "blas_scratch_buffer absent — must be allocated by build_skinned_blas_batched_on_cmd first",
         )?;
+        // #2460 — this UPDATE submits the shared scratch address with no
+        // size re-query and no growth path, so an under-sized buffer is
+        // a silent GPU-side overrun. `shrink_blas_scratch_to_fit` is the
+        // only writer that can shrink it beneath this entry's needs;
+        // trip in debug if a future change reintroduces a peak walk that
+        // misses `skinned_blas`.
+        debug_assert!(
+            scratch_buffer.size >= entry.build_scratch_size,
+            "skinned BLAS refit for entity {entity_id}: shared scratch is {} B but this entry \
+             was built against {} B — see #2460",
+            scratch_buffer.size,
+            entry.build_scratch_size,
+        );
 
         // #2170 — the skinned slot output is position-only, so the AS
         // build strides by 12 B, not by the 104 B `Vertex`. These two

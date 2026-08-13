@@ -56,6 +56,22 @@ impl App {
         };
         let player_grid = streaming::world_pos_to_grid(player_pos.x, player_pos.z);
         let state = self.streaming.as_mut().unwrap();
+        // #2451 / EXAL-03 — a cell may pin its own CLMT via XCCM, which
+        // re-resolves sky + weather (through the same crossfade a
+        // worldspace change uses) when it differs from what is installed.
+        // Deliberately OUTSIDE the `grid_changed` guard below: bootstrap
+        // seeds `last_player_grid` before the first step, so a session
+        // starting *inside* an override cell would otherwise never apply
+        // it until the player left and came back. Costs one map lookup
+        // and an `Option<u32>` compare on every other frame.
+        crate::scene::apply_cell_climate_override(
+            &mut self.world,
+            ctx,
+            &state.tex_provider,
+            &state.wctx,
+            player_grid,
+            &mut state.applied_climate_form,
+        );
         let grid_changed = state.last_player_grid != Some(player_grid);
         if grid_changed {
             let dispatch_started = Instant::now();

@@ -862,19 +862,15 @@ pub fn build_exterior_world_context(
         );
     });
     let default_weather = climate.as_ref().and_then(|climate| {
-        let best = climate
-            .weathers
-            .iter()
-            .filter(|w| w.chance >= 0)
-            .max_by_key(|w| w.chance)?;
-        let wthr = record_index.weathers.get(&best.weather_form_id)?.clone();
+        let (wthr, chance) =
+            crate::env_translate::resolve_default_weather(climate, &record_index.weathers)?;
         log::info!(
             "Default weather: '{}' ({:08X}, chance {})",
             wthr.editor_id,
             wthr.form_id,
-            best.chance,
+            chance,
         );
-        Some(wthr)
+        Some(wthr.clone())
     });
 
     // Resolve the worldspace-default water once (#1305 / OBL-D6-NEW-02).

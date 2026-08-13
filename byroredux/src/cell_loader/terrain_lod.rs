@@ -37,7 +37,9 @@ use crate::components::IsLodTerrain;
 use crate::streaming::LodBlock;
 
 use super::lod_bands::{self, quad_min_chebyshev, LodBandLadder, LodBandSelection};
-use super::lod_support::{worldspace_cell_bounds, LodReconcileInput, LodWorkBudget};
+use super::lod_support::{
+    baked_lod_supported, worldspace_cell_bounds, LodReconcileInput, LodWorkBudget,
+};
 
 /// Cells per LOD-block edge. A block is one merged mesh covering
 /// `LOD_BLOCK_CELLS²` cells (4×4 = 16 cells = 16384×16384 BU). Bigger
@@ -506,7 +508,7 @@ pub(crate) fn stream_lod_blocks(
         // Coarse bands (`level > k`) exist *only* as `.btr`: the descent
         // above only proposes them where one is baked, and the synth builder
         // is finest-band-only (its hole mask is a `u16`, one bit per cell).
-        let btr_block = if mask == 0 && matches!(game, GameKind::Skyrim | GameKind::Fallout4) {
+        let btr_block = if mask == 0 && baked_lod_supported(game) {
             super::terrain_lod_btr::spawn_btr_block(
                 world,
                 ctx,

@@ -659,6 +659,16 @@ pub struct WorldStreamingState {
     /// suppress no-op streaming work when the player hasn't crossed a
     /// cell boundary.
     pub last_player_grid: Option<(i32, i32)>,
+    /// CLMT FormID currently driving the installed sky / weather
+    /// resources — the worldspace climate at bootstrap, or a cell's own
+    /// `XCCM` override once the player walks into a cell that authors
+    /// one. `None` means no climate resolved (procedural fallback sky).
+    ///
+    /// Owned here rather than recomputed because it records what was
+    /// *applied*, which is the only thing a boundary crossing can compare
+    /// against to know whether re-applying is needed. See
+    /// `scene::apply_cell_climate_override` (#2451 / EXAL-03).
+    pub applied_climate_form: Option<u32>,
     /// Whether the three distant-LOD rings still have deferred reconcile
     /// work. Foreground-first bootstrap and cell-boundary movement set this;
     /// idle frames clear it progressively through the shared LOD budget.
@@ -717,6 +727,12 @@ impl WorldStreamingState {
         // accept; clamping here means a future caller passing
         // `radius_unload = radius_load` doesn't cause boundary thrash.
         let radius_load = radius_load.max(0);
+        // Seed the applied-climate tracker from the worldspace resolve
+        // (#2451): bootstrap installs that climate's sky, so the first
+        // boundary crossing must compare against it, not against `None`
+        // — otherwise every crossing in a worldspace with no XCCM cells
+        // would read as a change and re-apply the same environment.
+        let wctx_climate_form = wctx.climate.as_ref().map(|c| c.form_id);
         let (request_tx, request_rx) = mpsc::channel::<LoadCellRequest>();
         let (payload_tx, payload_rx) = mpsc::channel::<LoadCellPayload>();
         let worker = std::thread::Builder::new()
@@ -740,6 +756,7 @@ impl WorldStreamingState {
             radius_load,
             radius_unload: radius_load + 1,
             last_player_grid: None,
+            applied_climate_form: wctx_climate_form,
             lod_reconcile_pending: false,
             telemetry: StreamingTelemetry::default(),
             worker: Some(worker),

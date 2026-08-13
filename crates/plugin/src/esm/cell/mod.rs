@@ -843,13 +843,26 @@ pub struct TextureSet {
 /// - `DNAM` — default land/water height (2 × f32); only the second
 ///   (water) is kept, as [`default_water_height`](Self::default_water_height).
 /// - `NAM3`/`NAM4` — LOD water type FormID + LOD water height (#1849).
-/// - `OFST` — per-cell offset table (#1849).
 ///
 /// Sub-records not consumed here (parsed-past by the walker so the
 /// next record still aligns): `WCTR` (TES5 centre cell), `MNAM` (map
 /// camera data), `RNAM` (region overrides), `MHDT` (Skyrim+ map
-/// height data), `CLSZ`/`WLEV` (FO4). See OpenMW reference
+/// height data), `CLSZ`/`WLEV` (FO4), and `OFST` (per-cell offset
+/// table — see below). See OpenMW reference
 /// `components/esm4/loadwrld.cpp` and audit OBL-D3-NEW-01 / #965.
+///
+/// `OFST` was captured verbatim as raw `u32` words by #1849, on the
+/// stated premise that a future LAND streamer would interpret the
+/// table. That streamer exists now (`byroredux::cell_loader`) and
+/// enumerates `EsmIndex.cells.exterior_cells` keys instead — it never
+/// needed the offsets, because this engine indexes the CELL records it
+/// has already parsed rather than seeking into the plugin by file
+/// offset the way the original engine's streamer did. The capture was
+/// therefore pure cost: up to ~44k `u32` per worldspace held for the
+/// process lifetime (the sub-record runs to 177 KB on FalloutNV.esm),
+/// plus a parsed field that read as a live capability. Dropped by
+/// #2454 / EXAL-08; restore it alongside a real consumer, not ahead of
+/// one. See exal.md §5.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct WorldspaceRecord {
     /// FormID of the WRLD record itself.
@@ -907,19 +920,6 @@ pub struct WorldspaceRecord {
     /// they differ on 22 of 30 Skyrim.esm worldspaces and 6 of 28
     /// Fallout3.esm. `None` on Oblivion (no NAM4). See #1849.
     pub lod_water_height: Option<f32>,
-    /// Per-cell offset table (OFST) as raw little-endian `u32`s.
-    ///
-    /// Captured verbatim: the table's *grid* interpretation is
-    /// game-specific and not settled (sizes observed on disk range
-    /// from 36 B to 177 KB and are only guaranteed to be a multiple of
-    /// 4), so the parser stores the words and leaves the layout to a
-    /// future LAND streamer rather than inventing a shape. Empty when
-    /// the sub-record is absent or zero-length (Oblivion authors a
-    /// 0-byte OFST on some worldspaces). Note the sub-record routinely
-    /// exceeds the 16-bit sub-record size field and arrives via the
-    /// `XXXX` extended-size escape — see `EsmReader::read_sub_records`.
-    /// See #1849.
-    pub cell_offsets: Vec<u32>,
 }
 
 impl WorldspaceRecord {
