@@ -1,0 +1,20 @@
+# REN-D19-02: the `MAT_FLAG_MODEL_SPACE_NORMALS` branch overwrites the authored blue channel of three-channel FO4 `_msn` maps with `+sqrt(1 − x² − y²)`
+
+- **Severity**: MEDIUM (escalates to HIGH the moment terrain `_msn` binding lands)
+- **Dimension**: 19 — Tangent-Space
+- **Location**: `crates/renderer/shaders/triangle.frag` — the `if ((mat.materialFlags & MAT_FLAG_MODEL_SPACE_NORMALS) != 0u)` arm inside the normal-map block
+- **Status**: NEW
+- **Description**: The branch applies the BC5 two-channel Z-reconstruction (`mn.z = sqrt(max(0.0, 1.0 - dot(mn.xy, mn.xy)))`) to model-space normal maps. That reconstruction is only valid for a tangent-space map, where `z > 0` holds by construction. A model-space normal legitimately has `z < 0` over roughly half of a closed mesh, and FO4's `_msn` textures are not BC5 — they are BC3/BC1 with a populated third channel. The branch therefore discards authored data and forces a non-negative Z, mirroring those normals through the model XY plane.
+- **Evidence**: Decoded directly from the shipped FO4 archives (BA2 DX10 records; per-texture `dxgi_format` at base record byte 21). `Textures\Terrain\…` (6120 files, DXGI 77 = BC3_UNORM): `|2·RGB−1|` median 0.994 (unit vector ⇒ all three channels authored), blue median 0.032, 45% of texels have z < 0. `Textures\Actors\Character\FaceCustomization\…` (1100 files, DXGI 71 = BC1_UNORM): B = 0.000 ± 0.000 — genuinely two-channel, reconstruction required. `PiperHead_msn.DDS` (DXGI 77 = BC3_UNORM): B 0.586 ± 0.276, 42% of texels z < 0. Plain tangent-space `_n` maps in the same archives are 878 × DXGI 83 = BC5_UNORM, the format the code comment assumes. On a typical terrain texel (x ≈ 0.1, y ≈ 0.8) the branch computes z = +0.59 where the authored value is ≈ 0.03. Flag reachability is fully plumbed: `crates/bgsm/src/bgsm.rs` → `byroredux/src/asset_provider/material.rs` and the `TXST_FLAG_MODEL_SPACE_NORMALS` path in `byroredux/src/cell_loader/refr.rs` → `pack_imported_material_flags` → `MAT_FLAG_MODEL_SPACE_NORMALS`. The measurements also settle a related question in the negative: terrain `_msn` has mean G = 0.900, i.e. authored Y-up matching the imported mesh space — no additional Z-up→Y-up swap is needed.
+- **Impact**: Wrong shading normal on every three-channel `_msn` surface. Today the reachable vanilla-FO4 population is small (`PiperHead_msn` plus any modded/DLC three-channel `_msn`), because terrain `_msn` is not bound yet — `btr_normal_path` resolves only `…_n.dds` and its module docs state the FO4 `_msn` variant "is not bound yet". This becomes HIGH the moment that binding lands, since it would put 6120 wrong-basis textures across the whole Commonwealth exterior. Visual only.
+- **Related**: REN-D19-01 (the other wrong-basis site, filed separately, #2822); `btr_normal_path`'s deferred FO4 `_msn` work.
+- **Suggested Fix**: Make the reconstruction conditional rather than unconditional — keep the authored `mn.z` when the sampled blue carries signal and fall back to `sqrt(max(0, 1 − dot(mn.xy, mn.xy)))` only when it does not. Since the two encodings are distinguishable at load time from the DDS format, the cleaner boundary is a material flag set in the texture registry rather than a per-fragment heuristic. Verify any shader-side change against a real `PiperHead_msn` capture — not observable from `cargo test`.
+
+## Completeness Checks
+- [ ] **CANONICAL-BOUNDARY**: If the fix moves the BC5-vs-BC3/BC1 distinction to load time, it lands as a material flag set at the texture-registry / NIFAL parser→`Material` boundary — never re-derived per-fragment in the shader
+- [ ] **SIBLING**: Same reachability check applied to the pending terrain `_msn` binding (`btr_normal_path`) before it lands
+- [ ] **TESTS**: A regression captures a real `PiperHead_msn` (or equivalent three-channel `_msn`) sample and asserts the authored blue channel survives
+
+---
+**Source**: `docs/audits/AUDIT_RENDERER_2026-08-12b.md` (finding `REN-D19-02`)
+**GitHub**: https://github.com/matiaszanolli/ByroRedux/issues/2826
