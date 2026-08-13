@@ -321,7 +321,8 @@ mod world_setup;
 // reuse them on Interior→Exterior swaps — same boot-path code, no
 // duplication. See cell_loader::transition.
 pub(crate) use world_setup::{
-    apply_worldspace_weather, stream_initial_radius, ExteriorBootstrapMode,
+    apply_cell_climate_override, apply_worldspace_weather, stream_initial_radius,
+    ExteriorBootstrapMode,
 };
 // The four `scene/*_tests.rs` child modules reach for these helpers
 // via `use super::*;` so they need to be in scope at the parent

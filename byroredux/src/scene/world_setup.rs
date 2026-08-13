@@ -208,6 +208,32 @@ pub(crate) fn apply_worldspace_weather(
     tex_provider: &TextureProvider,
     wctx: &cell_loader::ExteriorWorldContext,
 ) {
+    apply_environment(
+        world,
+        ctx,
+        tex_provider,
+        wctx.climate.as_ref(),
+        wctx.default_weather.as_ref(),
+    );
+    install_ground_cover(world, wctx);
+}
+
+/// Install the canonical lighting / sky / weather resources for one
+/// resolved `(climate, weather)` pair.
+///
+/// Split out of [`apply_worldspace_weather`] (#2451) because the pair is
+/// not always the worldspace's: a cell with an `XCCM` override supplies
+/// its own, via [`apply_cell_climate_override`]. Everything here is
+/// climate-scoped — the sky textures, the TOD breakpoints, the weather
+/// crossfade. Ground cover stays with the worldspace wrapper: it is
+/// keyed by the worldspace name chain, not by the climate in effect.
+fn apply_environment(
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    tex_provider: &TextureProvider,
+    climate: Option<&byroredux_plugin::esm::records::ClimateRecord>,
+    default_weather: Option<&byroredux_plugin::esm::records::WeatherRecord>,
+) {
     // Bootstrap sun direction from the canonical sun model (EXAL step 4):
     // `tod_hours` + the engine south-tilt drive `compute_sun_arc` — the same
     // model `weather_system` runs every frame — so the initial resources seed
@@ -236,10 +262,10 @@ pub(crate) fn apply_worldspace_weather(
     // (procedural-fallback branch). See the function doc for the two
     // failure modes this prevents.
     collapse_weather_transition(world);
-    if let Some(ref wthr) = wctx.default_weather {
+    if let Some(wthr) = default_weather {
         let sun_dir = compute_sun_arc(
             bootstrap_hour,
-            crate::env_translate::climate_tod_hours(wctx.climate.as_ref()),
+            crate::env_translate::climate_tod_hours(climate),
         )
         .0;
         // Canonical day-slot lighting (EXAL boundary). The per-frame
@@ -279,7 +305,7 @@ pub(crate) fn apply_worldspace_weather(
                 ctx,
             ),
         ];
-        let sun_sprite = resolve_sun_sprite(wctx.climate.as_ref(), tex_provider, ctx);
+        let sun_sprite = resolve_sun_sprite(climate, tex_provider, ctx);
         let sky = crate::env_translate::translate_sky(
             wthr,
             sun_dir,
@@ -322,7 +348,7 @@ pub(crate) fn apply_worldspace_weather(
         }
         // Full NAM0 table + per-climate TOD breakpoints + Skyrim DALC cube
         // (Z-up→Y-up once), all resolved at the EXAL boundary.
-        let new_weather = crate::env_translate::translate_weather(wthr, wctx.climate.as_ref());
+        let new_weather = crate::env_translate::translate_weather(wthr, climate);
         // First-time bootstrap: insert directly. A subsequent worldspace
         // change (door-walking interior↔exterior, M40 Phase 2) will
         // trigger the 8-second crossfade via WeatherTransitionRes.
@@ -362,8 +388,85 @@ pub(crate) fn apply_worldspace_weather(
             ctx.texture_registry.drop_texture(&ctx.device, handle);
         }
     }
+}
 
-    install_ground_cover(world, wctx);
+/// Re-resolve the climate in effect for the cell the player just entered,
+/// re-applying sky + weather when it differs from what is installed
+/// (#2451 / EXAL-03 — the per-cell `XCCM` hook).
+///
+/// `applied_climate` is the CLMT FormID currently driving the installed
+/// resources (`None` = climateless / procedural fallback); the caller owns
+/// it across boundary crossings (`WorldStreamingState::applied_climate_form`,
+/// seeded from the worldspace climate at bootstrap). Returns `true` when
+/// the environment was re-applied.
+///
+/// Runs only on a real climate change, which on vanilla content means
+/// entering or leaving one of the handful of cells that author `XCCM` — so
+/// the common crossing costs one map lookup and a comparison. The re-apply
+/// itself goes through [`apply_environment`], so an override transition
+/// gets the same 8-second `WeatherTransitionRes` crossfade and the same
+/// acquire-new-then-release-old sky-texture handling as a worldspace
+/// change; it does not snap.
+///
+/// Ground cover is deliberately not re-installed: it is keyed by the
+/// worldspace name chain, which a per-cell climate override does not
+/// change.
+pub(crate) fn apply_cell_climate_override(
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    tex_provider: &TextureProvider,
+    wctx: &cell_loader::ExteriorWorldContext,
+    player_grid: (i32, i32),
+    applied_climate: &mut Option<u32>,
+) -> bool {
+    let cell = wctx
+        .record_index
+        .cells
+        .exterior_cells
+        .get(&wctx.worldspace_key)
+        .and_then(|cells| cells.get(&player_grid));
+    let effective = crate::env_translate::resolve_cell_climate(
+        cell.and_then(|c| c.climate_override),
+        wctx.climate.as_ref().map(|c| c.form_id),
+        &wctx.record_index.climates,
+    );
+    if effective == *applied_climate {
+        return false;
+    }
+
+    let climate = effective.and_then(|fid| wctx.record_index.climates.get(&fid));
+    let weather = climate
+        .and_then(|c| crate::env_translate::resolve_default_weather(c, &wctx.record_index.weathers))
+        .map(|(wthr, _chance)| wthr);
+    if climate.is_some() && weather.is_none() {
+        // The override resolves to a CLMT whose weather list is empty or
+        // points at WTHR records this load order never supplied. Applying
+        // it would drop the sky into the procedural fallback — further
+        // from the author's intent than the sky already showing. Leave
+        // `applied_climate` untouched so a later fix (or a different cell)
+        // is still re-evaluated.
+        log::warn!(
+            "Cell ({},{}) climate override {:08X?} resolves no default weather — keeping the \
+             current sky",
+            player_grid.0,
+            player_grid.1,
+            effective,
+        );
+        return false;
+    }
+
+    log::info!(
+        "Cell ({},{}) climate change: {:08X?} → {:08X?} ('{}', weather '{}')",
+        player_grid.0,
+        player_grid.1,
+        *applied_climate,
+        effective,
+        climate.map(|c| c.editor_id.as_str()).unwrap_or("<none>"),
+        weather.map(|w| w.editor_id.as_str()).unwrap_or("<none>"),
+    );
+    apply_environment(world, ctx, tex_provider, climate, weather);
+    *applied_climate = effective;
+    true
 }
 
 /// EXAL ground-cover translate site (#2369, design §7).

@@ -120,6 +120,18 @@ cross-fades. The `Option<DalcCubeYup>` is **not** a leak — it is the canonical
 encoding of "this game has no DALC ambient cube", consumed uniformly. **Status:
 canonical.** EXAL only moves the WTHR→`WeatherDataRes` decode under the boundary.
 
+Climate resolution has two inputs, both settled at the boundary in
+`env_translate`: the worldspace `CNAM` (chasing the `WNAM` parent chain when the
+`PNAM` climate-inherit bit is set — `resolve_worldspace_climate`, #2450 /
+EXAL-02) and the **per-cell `XCCM` override** (`resolve_cell_climate`, #2451 /
+EXAL-03). The override is re-resolved on each cell-boundary crossing by
+`scene::apply_cell_climate_override`, which re-applies sky + weather through the
+same `apply_environment` path a worldspace change uses — so an override
+transition gets the normal 8-second crossfade and the normal sky-texture
+acquire/release, not a snap. An `XCCM` pointing at an unparsed CLMT falls back to
+the worldspace climate (never to the procedural sky), and an override climate
+with no resolvable default weather leaves the current sky in place.
+
 ### Water (WATR) — **carved out into [WATAL](watal.md) (its own double-ended layer)**
 
 > **Moved (2026-06-19):** water graduated from an EXAL sub-category to its own
@@ -376,10 +388,16 @@ NIF-hint-driven:
 
 What runtime LOD **does** need that we don't parse yet (new, small parser work):
 the **VWD / "Has Distant LOD" record-header flag** (§5.2, tracked by #1731).
-The WRLD `NAM3`/`NAM4` LOD-water fields + `OFST` cell-offset table **are now
-parsed** (#1849) onto `WorldspaceRecord::lod_water_form` / `lod_water_height` /
-`cell_offsets`. `OFST` stays captured-but-unconsumed (its per-cell offset
-grid interpretation is unsettled — #1849). `NAM3`/`NAM4` are consumed as of
+The WRLD `NAM3`/`NAM4` LOD-water fields **are now parsed** (#1849) onto
+`WorldspaceRecord::lod_water_form` / `lod_water_height`. The `OFST`
+cell-offset table, parsed alongside them by #1849 for "a future LAND
+streamer", is **no longer captured** (#2454 / EXAL-08): that streamer landed
+and resolves cells by enumerating the parsed `exterior_cells` index rather
+than seeking into the plugin by file offset, so the words — up to ~44k `u32`
+per worldspace, 177 KB on FalloutNV.esm — were held for no reader while
+reading as a live capability. `OFST` is now walked past like any other
+unconsumed sub-record; re-add the capture with its first real consumer, not
+before. `NAM3`/`NAM4` are consumed as of
 #2449 / EXAL-01: `env_translate::translate_lod_water` reads them, and
 `cell_loader::water::spawn_lod_water_plane` spawns a single worldspace-wide
 LOD water quad (a hole-cut annulus excluding the full-detail streamed area)

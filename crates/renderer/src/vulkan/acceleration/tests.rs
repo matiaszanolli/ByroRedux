@@ -872,6 +872,59 @@ fn scratch_shrink_skipped_on_exactly_2x_ratio() {
     assert!(!scratch_should_shrink(64 * MB, 32 * MB));
 }
 
+// ── shared_blas_scratch_peak (#2460 / AS-D1-NEW-01) ──────────────
+//
+// `blas_scratch_buffer` is ONE allocation shared by the static
+// (mesh-keyed) builders and the per-entity skinned builder/refitter.
+// The shrink target must therefore be the max over both maps: the
+// skinned refit re-queries no sizes and grows nothing, so a peak
+// walked over `blas_entries` alone reallocates the buffer below what
+// a live NPC's next `mode = UPDATE` writes into it.
+
+#[test]
+fn shared_scratch_peak_takes_the_max_across_both_blas_maps() {
+    // A live skinned entity out-scratching every static survivor is
+    // the reachable failure shape: interior cell whose static peak is
+    // ~1 MB, NPCs from the outgoing cell still resident at 40 MB.
+    let static_sizes = [MB, 512 * 1024];
+    let skinned_sizes = [40 * MB, 3 * MB];
+    assert_eq!(
+        shared_blas_scratch_peak(static_sizes, skinned_sizes),
+        40 * MB,
+        "skinned entries must not be ignored — they share the buffer"
+    );
+
+    // …and symmetrically, a large static survivor still wins over a
+    // small skinned set.
+    assert_eq!(shared_blas_scratch_peak([80 * MB], [2 * MB, MB]), 80 * MB,);
+}
+
+#[test]
+fn shared_scratch_peak_is_zero_only_when_both_maps_are_empty() {
+    // The `peak == 0` arm drops the buffer outright, so it must not
+    // fire while a skinned BLAS is still resident — pre-#2460 that
+    // failed every refit with "blas_scratch_buffer absent" until a
+    // first-sight rebuild.
+    assert_eq!(shared_blas_scratch_peak([], [7 * MB]), 7 * MB);
+    assert_eq!(shared_blas_scratch_peak([7 * MB], []), 7 * MB);
+    assert_eq!(shared_blas_scratch_peak([], []), 0);
+}
+
+#[test]
+fn shrink_decision_uses_the_union_peak_not_the_static_one() {
+    // The #2460 scenario end-to-end at the predicate level: 40 MB
+    // buffer, 1 MB static survivors, 30 MB skinned survivor. On the
+    // static-only peak the hysteresis fires (40 > 2 MB and excess
+    // 39 MB > 16 MB slack) and the buffer is reallocated at 1 MB —
+    // beneath the skinned entry's build scratch. On the union peak it
+    // correctly declines.
+    let static_only = shared_blas_scratch_peak([MB], []);
+    assert!(scratch_should_shrink(40 * MB, static_only));
+
+    let union = shared_blas_scratch_peak([MB], [30 * MB]);
+    assert!(!scratch_should_shrink(40 * MB, union));
+}
+
 // ── tlas_scratch_should_shrink (#1226) ────────────────────────────
 //
 // Pre-#1226 the TLAS scratch shrink path called `scratch_should_shrink`
@@ -1705,7 +1758,10 @@ mod tlas_commit_ordering_tests {
             .find("if let Some(mut old) = self.tlas[frame_index].take()")
             .expect("ensure_tlas_state must still retire the old slot");
         for (needle, what) in [
-            ("GpuBuffer::create_host_visible(", "the instance staging buffer"),
+            (
+                "GpuBuffer::create_host_visible(",
+                "the instance staging buffer",
+            ),
             (
                 "let mut instance_buffer_device = GpuBuffer::create_device_local_uninit(",
                 "the device-local instance buffer",
@@ -1774,8 +1830,14 @@ mod tlas_commit_ordering_tests {
                 "std::mem::swap(\n            &mut tlas.last_blas_addresses,",
                 "the last_blas_addresses promotion",
             ),
-            ("tlas.needs_full_rebuild = false;", "the needs_full_rebuild clear"),
-            ("tlas.last_blas_map_gen = map_gen;", "the map-generation stamp"),
+            (
+                "tlas.needs_full_rebuild = false;",
+                "the needs_full_rebuild clear",
+            ),
+            (
+                "tlas.last_blas_map_gen = map_gen;",
+                "the map-generation stamp",
+            ),
         ] {
             let commit_pos = TLAS_RS
                 .find(needle)

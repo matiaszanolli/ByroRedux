@@ -32,6 +32,25 @@ pub(crate) struct LodReconcileInput<'a> {
     pub(crate) max_full_cell_radius: i32,
 }
 
+/// Whether `game` ships Bethesda's prebaked **combined** distant LOD —
+/// the `.bto` object quads and `.btr` terrain quads named by quadtree
+/// level and quad coordinate. Skyrim (LE/SE) and FO4 only; Oblivion and
+/// FO3/FNV predate the scheme and keep the synthesized heightmap ring
+/// plus, on Oblivion, `DistantLOD\*.lod` placement
+/// ([`super::placement_lod::placement_lod_supported`], its per-game
+/// sibling).
+///
+/// One named decision per quirk, per exal.md §4: the same
+/// `Skyrim | Fallout4` literal was previously written inline at each
+/// consumer, which is exactly the drift the doctrine forbids — a title
+/// gaining or losing baked LOD would have to be found in every provider
+/// rather than changed here. [`LodBandLadder::for_game`] answers the
+/// same question in data form (a ladder exists ⟺ baked LOD exists); the
+/// tests below pin the two to agree. #2452 / EXAL-04.
+pub(crate) fn baked_lod_supported(game: GameKind) -> bool {
+    matches!(game, GameKind::Skyrim | GameKind::Fallout4)
+}
+
 /// Canonical baked-LOD grid origin for the active worldspace (#2586).
 ///
 /// Skyrim+/FO4 align `.bto` and `.btr` quad coordinates relative to the
@@ -40,10 +59,7 @@ pub(crate) struct LodReconcileInput<'a> {
 /// back to the component-wise minimum of their explicit exterior cells.
 /// Older games keep their existing absolute synth/placement grids.
 pub(crate) fn worldspace_lod_grid_origin(wctx: &ExteriorWorldContext) -> (i32, i32) {
-    if !matches!(
-        wctx.record_index.game,
-        GameKind::Skyrim | GameKind::Fallout4
-    ) {
+    if !baked_lod_supported(wctx.record_index.game) {
         return (0, 0);
     }
 
@@ -310,6 +326,42 @@ mod tests {
             Vec::new(), // uvs
             Vec::new(), // indices
         )
+    }
+
+    /// #2452 / EXAL-04 — per-variant, mirroring
+    /// `placement_lod_supported_is_oblivion_only`. Skyrim and FO4 ship
+    /// `.bto`/`.btr`; every other title falls to the synth ring.
+    #[test]
+    fn baked_lod_supported_is_skyrim_and_fo4_only() {
+        assert!(baked_lod_supported(GameKind::Skyrim));
+        assert!(baked_lod_supported(GameKind::Fallout4));
+        assert!(!baked_lod_supported(GameKind::Oblivion));
+        assert!(!baked_lod_supported(GameKind::Fallout3NV));
+        assert!(!baked_lod_supported(GameKind::Fallout76));
+        assert!(!baked_lod_supported(GameKind::Starfield));
+    }
+
+    /// The predicate and the band ladder answer the same question in
+    /// two forms — a title with baked LOD has a quadtree ladder and
+    /// vice versa. Pinned so the two can't drift apart the way the
+    /// inline `matches!` copies did.
+    #[test]
+    fn baked_lod_predicate_agrees_with_the_band_ladder() {
+        use super::super::lod_bands::LodBandLadder;
+        for game in [
+            GameKind::Oblivion,
+            GameKind::Fallout3NV,
+            GameKind::Skyrim,
+            GameKind::Fallout4,
+            GameKind::Fallout76,
+            GameKind::Starfield,
+        ] {
+            assert_eq!(
+                baked_lod_supported(game),
+                LodBandLadder::for_game(game).is_some(),
+                "{game:?}: baked-LOD predicate and band ladder disagree"
+            );
+        }
     }
 
     #[test]

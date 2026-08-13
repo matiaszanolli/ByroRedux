@@ -167,23 +167,19 @@ pub(crate) fn parse_wrld_group(
                                 sub.data[3],
                             ]));
                         }
-                        // OFST — per-cell offset table. Stored as raw u32
-                        // words; the grid interpretation is game-specific
-                        // and unsettled, so the parser captures without
-                        // inventing a shape (#1849). Routinely oversized
-                        // (177 KB in FalloutNV.esm) and therefore arriving
+                        // OFST — per-cell offset table. Deliberately NOT
+                        // captured: #1849 stored the raw u32 words for a
+                        // future LAND streamer, and the streamer that
+                        // arrived enumerates parsed CELL records instead of
+                        // seeking by file offset, so the words had no
+                        // reader. Falls to the `_ => {}` arm below like
+                        // every other unconsumed sub-record — it is still
+                        // walked past correctly (routinely oversized at
+                        // 177 KB in FalloutNV.esm and therefore arriving
                         // through the XXXX extended-size escape, which
-                        // `read_sub_records` already handles. A trailing
-                        // partial word (never observed on vanilla content —
-                        // every sampled OFST is a multiple of 4) is dropped
-                        // by `chunks_exact`.
-                        b"OFST" => {
-                            record.cell_offsets = sub
-                                .data
-                                .chunks_exact(4)
-                                .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-                                .collect();
-                        }
+                        // `read_sub_records` handles either way). #2454 /
+                        // EXAL-08; see `WorldspaceRecord` docs.
+                        //
                         // ICON — pause-menu map texture (zstring).
                         b"ICON" => {
                             record.map_texture = read_zstring(&sub.data);

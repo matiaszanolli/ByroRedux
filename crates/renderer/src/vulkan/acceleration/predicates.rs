@@ -291,6 +291,37 @@ pub(super) fn scratch_needs_growth(
     }
 }
 
+/// The scratch capacity a shrink must preserve: the largest
+/// `build_scratch_size` across **both** BLAS sets that share
+/// `blas_scratch_buffer`.
+///
+/// The buffer is one allocation serving the static (mesh-keyed) builders
+/// *and* the per-entity skinned builder/refitter, so a shrink target
+/// derived from `blas_entries` alone can drop it below what a live
+/// skinned entity's next `refit_skinned_blas` needs — and that refit
+/// path re-queries nothing and grows nothing, it just submits `mode =
+/// UPDATE` against the buffer's device address. Walking only the static
+/// map is therefore an AS build-scratch overrun, not merely an
+/// under-shrink. Both call sites that could fire with skinned BLAS
+/// resident are reachable: `recreate_swapchain_core` (window resize,
+/// every skinned BLAS survives) and `finish_unload_batch` (the outgoing
+/// cell's skinned BLAS are only queued for unload, drained a later
+/// frame). See #2460 / AS-D1-NEW-01.
+///
+/// Skinned entries carry the *build* scratch size and an UPDATE never
+/// needs more than its BUILD did, so taking the build size for them is
+/// conservative in the safe direction.
+pub(super) fn shared_blas_scratch_peak(
+    static_sizes: impl IntoIterator<Item = vk::DeviceSize>,
+    skinned_sizes: impl IntoIterator<Item = vk::DeviceSize>,
+) -> vk::DeviceSize {
+    static_sizes
+        .into_iter()
+        .chain(skinned_sizes)
+        .max()
+        .unwrap_or(0)
+}
+
 /// Decide whether a persisted scratch buffer is disproportionately
 /// large and should be shrunk to match the post-eviction peak.
 ///

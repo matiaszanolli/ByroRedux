@@ -6,7 +6,8 @@ use super::super::allocator::SharedAllocator;
 use super::super::buffer::GpuBuffer;
 use super::constants::WORKING_SET_FLOOR;
 use super::predicates::{
-    scratch_should_shrink, tlas_instance_should_shrink, tlas_scratch_should_shrink,
+    scratch_alignment_padding, scratch_should_shrink, shared_blas_scratch_peak,
+    tlas_instance_should_shrink, tlas_scratch_should_shrink,
 };
 use super::AccelerationManager;
 use crate::deferred_destroy::DEFAULT_COUNTDOWN;
@@ -17,6 +18,14 @@ impl AccelerationManager {
     /// current surviving BLAS set, if the high-water mark has grown
     /// disproportionately vs the current peak (see
     /// [`scratch_should_shrink`] for the threshold).
+    ///
+    /// "Surviving BLAS set" means **both** maps that share this one
+    /// buffer — static `blas_entries` and per-entity `skinned_blas`
+    /// (see [`shared_blas_scratch_peak`]). A static-only peak walk
+    /// under-sizes the buffer beneath a live skinned entity's next
+    /// `refit_skinned_blas`, which validates no size and grows nothing:
+    /// an AS build-scratch overrun, not just wasted VRAM. #2460 /
+    /// AS-D1-NEW-01.
     ///
     /// Call at cell-unload boundaries — **not** from inside a BLAS
     /// build path.
@@ -57,18 +66,22 @@ impl AccelerationManager {
             None => return, // nothing to shrink
         };
 
-        let peak: vk::DeviceSize = self
-            .blas_entries
-            .iter()
-            .flatten()
-            .map(|e| e.build_scratch_size)
-            .max()
-            .unwrap_or(0);
+        let peak: vk::DeviceSize = shared_blas_scratch_peak(
+            self.blas_entries
+                .iter()
+                .flatten()
+                .map(|e| e.build_scratch_size),
+            self.skinned_blas.values().map(|e| e.build_scratch_size),
+        );
 
         if peak == 0 {
-            // No BLAS survives — drop the scratch entirely. Next build
-            // will allocate fresh (via `scratch_needs_growth`'s None
-            // arm) at whatever the new build's peak is.
+            // Neither map holds a BLAS — drop the scratch entirely. Next
+            // build will allocate fresh (via `scratch_needs_growth`'s
+            // None arm) at whatever the new build's peak is. The union
+            // walk is what makes this arm safe: on a static-only walk it
+            // fired with skinned entities still resident, and every one
+            // of their refits then failed the `blas_scratch_buffer
+            // absent` context until a first-sight rebuild.
             //
             // #1782: deferred, not immediate — see this fn's doc.
             if let Some(old) = self.blas_scratch_buffer.take() {
@@ -88,20 +101,31 @@ impl AccelerationManager {
         // Reallocate to the current peak size. A future build that
         // exceeds the new capacity will grow via `scratch_needs_growth`.
         // #1782: deferred, not immediate — see this fn's doc.
+        //
+        // Carries the same `scratch_alignment_padding` headroom every
+        // build path allocates (#1386): consumers round the buffer's
+        // device address up to `scratch_align` before submitting, and
+        // the skinned refit has no growth check to correct a buffer
+        // sized to the bare peak. Immaterial to the shrink decision
+        // above — `align` is 128–256 bytes against a 16 MB slack.
+        let target = peak.saturating_add(scratch_alignment_padding(self.scratch_align));
         if let Some(old) = self.blas_scratch_buffer.take() {
             self.pending_destroy_scratch.push(old, DEFAULT_COUNTDOWN);
         }
         match GpuBuffer::create_device_local_uninit(
             device,
             allocator,
-            peak,
+            target,
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
         ) {
             Ok(new_buf) => {
                 log::debug!(
-                    "BLAS scratch shrunk: {:.1} MB → {:.1} MB (peak survivor)",
+                    "BLAS scratch shrunk: {:.1} MB → {:.1} MB (peak survivor across {} static \
+                     + {} skinned BLAS)",
                     current as f64 / (1024.0 * 1024.0),
-                    peak as f64 / (1024.0 * 1024.0),
+                    target as f64 / (1024.0 * 1024.0),
+                    self.live_static_blas_count(),
+                    self.skinned_blas.len(),
                 );
                 self.blas_scratch_buffer = Some(new_buf);
             }

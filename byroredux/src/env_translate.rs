@@ -300,6 +300,66 @@ pub(crate) fn resolve_worldspace_climate(
     }
 }
 
+/// Resolve the climate in effect for one exterior cell: its own `XCCM`
+/// override when it authors one, otherwise the worldspace climate
+/// [`resolve_worldspace_climate`] settled (#2451 / EXAL-03).
+///
+/// Skyrim+ cells can pin a CLMT for one cell — scripted weather pockets,
+/// boss arenas, exteriors meant to feel enclosed. Pre-fix `XCCM` was
+/// parsed onto `CellData::climate_override` and read by nothing, so every
+/// such cell silently rendered the worldspace default.
+///
+/// An override that doesn't resolve to a parsed CLMT (missing master, a
+/// FormID the load order never supplied) falls back to the worldspace
+/// climate rather than to no climate at all: the alternative would drop a
+/// cell with an authored-but-broken override into the procedural fallback
+/// sky, which is strictly further from what the author asked for. Logged
+/// at `warn` so the broken link is diagnosable.
+///
+/// Takes the already-extracted `CellData::climate_override` rather than the
+/// cell: the decision is about two FormIDs and their resolvability, and
+/// keeping the record out of the signature keeps it pure and testable
+/// without an ESM or a Vulkan context.
+pub(crate) fn resolve_cell_climate(
+    cell_climate_override: Option<u32>,
+    worldspace_climate: Option<u32>,
+    climates: &HashMap<u32, ClimateRecord>,
+) -> Option<u32> {
+    let Some(override_fid) = cell_climate_override else {
+        return worldspace_climate;
+    };
+    if climates.contains_key(&override_fid) {
+        return Some(override_fid);
+    }
+    log::warn!(
+        "resolve_cell_climate: cell XCCM climate {override_fid:08X} is not among parsed CLMT \
+         records — falling back to the worldspace climate {worldspace_climate:08X?}",
+    );
+    worldspace_climate
+}
+
+/// The default weather for `climate`: its highest-chance WTHR entry that
+/// resolves to a parsed record.
+///
+/// Negative chances are mod sentinels / subtractive weights and are
+/// filtered before the max (#476). Shared by the once-per-worldspace
+/// resolve in `build_exterior_world_context` and the per-cell XCCM
+/// re-resolve (#2451), so a cell override picks its weather by exactly the
+/// same rule the worldspace default did.
+pub(crate) fn resolve_default_weather<'a>(
+    climate: &ClimateRecord,
+    weathers: &'a HashMap<u32, WeatherRecord>,
+) -> Option<(&'a WeatherRecord, i32)> {
+    let best = climate
+        .weathers
+        .iter()
+        .filter(|w| w.chance >= 0)
+        .max_by_key(|w| w.chance)?;
+    weathers
+        .get(&best.weather_form_id)
+        .map(|wthr| (wthr, best.chance))
+}
+
 /// Every worldspace key from `start_key` up its `WNAM` parent chain, most
 /// specific first.
 ///
@@ -1128,6 +1188,139 @@ mod tests {
             default_water_for_worldspace(&map, "c", GameKind::Oblivion),
             (Some(0.0), Some(0x0000_00CD)),
         );
+    }
+
+    // ── resolve_cell_climate (#2451 / EXAL-03) ────────────────────
+
+    /// The parsed CLMT set the override has to resolve against.
+    fn climate_records(form_ids: &[u32]) -> HashMap<u32, ClimateRecord> {
+        form_ids
+            .iter()
+            .map(|&form_id| {
+                (
+                    form_id,
+                    ClimateRecord {
+                        form_id,
+                        editor_id: format!("CLMT{form_id:08X}"),
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// The finding itself: a cell that authors XCCM must resolve to the
+    /// override, not to the worldspace default. Pre-#2451
+    /// `CellData::climate_override` was parsed on both CELL walk paths
+    /// and read by nothing, so every such cell rendered the worldspace
+    /// sky.
+    #[test]
+    fn cell_xccm_override_wins_over_the_worldspace_climate() {
+        let climates = climate_records(&[0x0001_A2B3, 0x0000_1234]);
+        assert_eq!(
+            resolve_cell_climate(Some(0x0001_A2B3), Some(0x0000_1234), &climates),
+            Some(0x0001_A2B3),
+        );
+    }
+
+    /// No XCCM — inherit the worldspace climate unchanged. This is the
+    /// overwhelmingly common case (vanilla content authors XCCM on a
+    /// handful of cells), so it must stay a pure pass-through.
+    #[test]
+    fn cell_without_xccm_inherits_the_worldspace_climate() {
+        let climates = climate_records(&[0x0000_1234]);
+        assert_eq!(
+            resolve_cell_climate(None, Some(0x0000_1234), &climates),
+            Some(0x0000_1234),
+        );
+        // Climateless worldspace + no override stays climateless (the
+        // caller's procedural-fallback sky), not fabricated.
+        assert_eq!(resolve_cell_climate(None, None, &climates), None);
+    }
+
+    /// An override pointing at a CLMT the load order never supplied
+    /// (missing master, stale mod edit) falls back to the worldspace
+    /// climate rather than to `None` — dropping into the procedural
+    /// fallback sky would be further from the author's intent than the
+    /// worldspace's own weather.
+    #[test]
+    fn unresolvable_override_falls_back_to_the_worldspace_climate() {
+        let climates = climate_records(&[0x0000_1234]);
+        assert_eq!(
+            resolve_cell_climate(Some(0xDEAD_BEEF), Some(0x0000_1234), &climates),
+            Some(0x0000_1234),
+        );
+        assert_eq!(
+            resolve_cell_climate(Some(0xDEAD_BEEF), None, &climates),
+            None,
+        );
+    }
+
+    // ── resolve_default_weather (#2451) ───────────────────────────
+
+    /// Highest chance wins, negative chances are mod sentinels and are
+    /// filtered out entirely (#476), and an entry whose WTHR the load
+    /// order never supplied yields `None` rather than a lower-chance
+    /// substitute — the caller keeps the sky it has instead.
+    #[test]
+    fn default_weather_picks_the_highest_resolvable_chance() {
+        use byroredux_plugin::esm::records::climate::ClimateWeather;
+
+        let weathers = HashMap::from([
+            (
+                0x0000_0011,
+                WeatherRecord {
+                    form_id: 0x0000_0011,
+                    editor_id: "Clear".to_string(),
+                    ..Default::default()
+                },
+            ),
+            (
+                0x0000_0022,
+                WeatherRecord {
+                    form_id: 0x0000_0022,
+                    editor_id: "Storm".to_string(),
+                    ..Default::default()
+                },
+            ),
+        ]);
+        let climate = ClimateRecord {
+            weathers: vec![
+                ClimateWeather {
+                    weather_form_id: 0x0000_0011,
+                    chance: 30,
+                },
+                ClimateWeather {
+                    weather_form_id: 0x0000_0022,
+                    chance: 70,
+                },
+                // Negative sentinel — must never win despite being last.
+                ClimateWeather {
+                    weather_form_id: 0x0000_0099,
+                    chance: -1,
+                },
+            ],
+            ..Default::default()
+        };
+        let (wthr, chance) = resolve_default_weather(&climate, &weathers).expect("resolves");
+        assert_eq!(wthr.form_id, 0x0000_0022);
+        assert_eq!(chance, 70);
+
+        // Winner unresolvable → None, not the runner-up.
+        let dangling = ClimateRecord {
+            weathers: vec![
+                ClimateWeather {
+                    weather_form_id: 0x0000_0011,
+                    chance: 30,
+                },
+                ClimateWeather {
+                    weather_form_id: 0xDEAD_BEEF,
+                    chance: 90,
+                },
+            ],
+            ..Default::default()
+        };
+        assert!(resolve_default_weather(&dangling, &weathers).is_none());
     }
 
     // ── resolve_worldspace_climate ────────────────────────────────

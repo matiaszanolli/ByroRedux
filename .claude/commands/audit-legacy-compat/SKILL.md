@@ -177,10 +177,12 @@ table, §5 LOD, §7 rollout status).
   because FO3/FNV ship **zero** `distantlod\*.lod` files in any vanilla archive
   (FO3-D4-01 / #2086) — "FO3/FNV distant-object LOD is missing" is a real gap but
   not a `PlacementLodProvider` gap. `docs/engine/exal.md` §5 is the coverage
-  source of truth for what remains open here. WRLD `NAM3`/`NAM4` LOD-water +
-  `OFST` are now **parsed** (#1849, onto `WorldspaceRecord::lod_water_form` /
-  `lod_water_height` / `cell_offsets`) but not yet consumed — a consumer gap,
-  not a parse gap.
+  source of truth for what remains open here. WRLD `NAM3`/`NAM4` LOD-water are
+  **parsed** (#1849, onto `WorldspaceRecord::lod_water_form` /
+  `lod_water_height`) **and consumed** (#2449 / EXAL-01). WRLD `OFST` is
+  deliberately **not** captured (#2454 / EXAL-08) — the LAND streamer resolves
+  cells from the parsed index, not by file offset; a finding that "OFST is
+  dropped" is a premise error, not a parse gap.
   Per `exal.md` §5.4: runtime LOD is asset-driven — neither NIF LOD nodes nor STAT `MNAM`
   unblock it. The **VWD / "Has Distant LOD" record-header flag** is now parsed and exposed
   (`RecordHeader::is_visible_when_distant()`, #1731) but has zero consumers — wiring it
