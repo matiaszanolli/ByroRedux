@@ -8,7 +8,7 @@ use std::collections::HashSet;
 use crate::blocks::collision::*;
 use crate::blocks::tri_shape::NiTriStripsData;
 use crate::scene::NifScene;
-use crate::types::BlockRef;
+use crate::types::{BlockRef, NiPoint3};
 
 use byroredux_core::ecs::components::collision::CollisionShape;
 use byroredux_core::math::{Quat, Vec3};
@@ -398,17 +398,80 @@ fn resolve_tri_strips_data_refs(
         // #2285 — validate against THIS data_ref's own vertex count before
         // offsetting, not the eventual cross-data_ref merged total (see
         // `push_local_triangles`).
+        //
+        // #2302 (NIFAL-D6-08) — cross-check each triangle's raw winding
+        // against `data.normals` before offsetting, mirroring the sibling
+        // `packed_triangle_winding` check `resolve_packed_mesh` already
+        // applies to `BhkPackedNiTriStripsShape`. Not a fix for #2193 (that
+        // repro's own investigation found zero disagreements across all
+        // 913 triangles) — defense-in-depth for content #2193 didn't cover.
         push_local_triangles(
             base_idx,
             data.vertices.len() as u32,
             data.to_triangles()
                 .into_iter()
-                .map(|tri| [tri[0] as u32, tri[1] as u32, tri[2] as u32]),
+                .map(|tri| [tri[0] as u32, tri[1] as u32, tri[2] as u32])
+                .map(|tri| tri_strips_triangle_winding(&data.vertices, &data.normals, tri)),
             &mut all_indices,
         );
     }
 
     finish_trimesh(all_verts, all_indices)
+}
+
+/// #2302 (NIFAL-D6-08) — cross-check a `bhkNiTriStripsShape`-derived
+/// triangle's raw winding against `NiTriStripsData.normals`, mirroring
+/// `packed_triangle_winding`'s check for the sibling
+/// `BhkPackedNiTriStripsShape` path. Operates on raw (pre-`havok_to_engine`)
+/// local indices/vertices/normals, same as that sibling.
+///
+/// Unlike `PackedTriangle`'s single authored normal per triangle,
+/// `NiTriStripsData` carries one authored normal per VERTEX. Sum the three
+/// corner normals as the authored reference direction for the sign
+/// comparison: for a triangle whose index order matches what was
+/// authored, the flat geometric normal (`cross(v1-v0, v2-v0)`) and the
+/// summed vertex normals can never disagree in sign, however smoothly the
+/// mesh is shaded — a disagreement means the raw index order is backwards
+/// relative to the authored geometry, exactly the class of bug
+/// `packed_triangle_winding` was added to catch on the sibling path (#2193).
+///
+/// Silently returns `tri` unmodified (no correction attempted) when
+/// `normals` doesn't have one entry per vertex — older NIF versions may
+/// omit per-vertex normals entirely — or when any of the triangle's three
+/// indices are out of range (`push_local_triangles`' own bounds check
+/// still runs afterward regardless).
+fn tri_strips_triangle_winding(vertices: &[NiPoint3], normals: &[NiPoint3], tri: [u32; 3]) -> [u32; 3] {
+    if normals.len() != vertices.len() {
+        return tri;
+    }
+    let Some(a) = vertices.get(tri[0] as usize) else {
+        return tri;
+    };
+    let Some(b) = vertices.get(tri[1] as usize) else {
+        return tri;
+    };
+    let Some(c) = vertices.get(tri[2] as usize) else {
+        return tri;
+    };
+    let Some(na) = normals.get(tri[0] as usize) else {
+        return tri;
+    };
+    let Some(nb) = normals.get(tri[1] as usize) else {
+        return tri;
+    };
+    let Some(nc) = normals.get(tri[2] as usize) else {
+        return tri;
+    };
+    let a = Vec3::new(a.x, a.y, a.z);
+    let b = Vec3::new(b.x, b.y, b.z);
+    let c = Vec3::new(c.x, c.y, c.z);
+    let authored = Vec3::new(na.x + nb.x + nc.x, na.y + nb.y + nc.y, na.z + nb.z + nc.z);
+    let geometric = (b - a).cross(c - a);
+    if geometric.dot(authored) < 0.0 {
+        [tri[0], tri[2], tri[1]]
+    } else {
+        tri
+    }
 }
 
 /// Convert hkPackedNiTriStripsData into a TriMesh. `havok_scale` is the world
@@ -1222,6 +1285,127 @@ mod cycle_tests {
                         if i % 2 == 0 { "even" } else { "odd" },
                     );
                 }
+            }
+            other => panic!("expected TriMesh, got {other:?}"),
+        }
+    }
+
+    /// Like [`tri_strips_data`], but also populates `normals` — used by
+    /// the #2302 (NIFAL-D6-08) winding-cross-check tests below, which
+    /// need an authored per-vertex normal to check the raw index order
+    /// against. `tri_strips_data`'s existing (many) callers deliberately
+    /// keep `normals: Vec::new()`, which no-ops the check (see
+    /// `tri_strips_triangle_winding`'s doc comment) — this variant is
+    /// separate so those callers stay unaffected.
+    fn tri_strips_data_with_normals(
+        verts: Vec<NiPoint3>,
+        normals: Vec<NiPoint3>,
+        strip: Vec<u16>,
+    ) -> Box<dyn NiObject> {
+        Box::new(NiTriStripsData {
+            vertices: verts,
+            normals,
+            center: NiPoint3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            radius: 0.0,
+            vertex_colors: Vec::new(),
+            uv_sets: Vec::new(),
+            num_triangles: 0,
+            strips: vec![strip],
+        })
+    }
+
+    /// #2302 (NIFAL-D6-08) — sibling of
+    /// `tri_strips_floor_keeps_an_upward_normal_through_the_coord_swap`,
+    /// but for a triangle whose RAW winding disagrees with its authored
+    /// per-vertex normals. A single-triangle strip (no de-strip parity
+    /// involved) wound `[0, 2, 1]` — geometrically `-Z` (down) — with all
+    /// three vertex normals authored `+Z` (up). Pre-#2302 nothing checked
+    /// this on the `bhkNiTriStripsShape` path (unlike the sibling
+    /// `BhkPackedNiTriStripsShape` path's `packed_triangle_winding`), so
+    /// the resolved triangle would keep its backwards winding and read
+    /// `-Y` (down) in engine space — the same class of inverted collision
+    /// normal #2193 investigated. With the fix, winding is corrected to
+    /// match the authored normal and the resolved triangle must read `+Y`.
+    #[test]
+    fn tri_strips_triangle_wound_backwards_is_corrected_to_match_authored_normal() {
+        let mut scene = NifScene::default();
+        scene.havok_scale = 1.0;
+        scene.blocks.push(Box::new(BhkNiTriStripsShape {
+            data_refs: vec![BlockRef(1u32)],
+            material: 0,
+            radius: 0.0,
+            scale: [1.0, 1.0, 1.0, 0.0],
+            filters: Vec::new(),
+        }));
+        let p = |x: f32, y: f32| NiPoint3 { x, y, z: 0.0 };
+        let up = NiPoint3 {
+            x: 0.0,
+            y: 0.0,
+            z: 1.0,
+        };
+        scene.blocks.push(tri_strips_data_with_normals(
+            vec![p(0.0, 0.0), p(1.0, 0.0), p(0.0, 1.0)],
+            vec![up, up, up],
+            // Backwards relative to the natural (0,1,2) → +Z winding:
+            // (v2-v0)×(v1-v0) = (0,1,0)×(1,0,0) = -Z.
+            vec![0, 2, 1],
+        ));
+        let mut visited = HashSet::new();
+        match resolve_shape(&scene, BlockRef(0u32), &mut visited) {
+            Some(CollisionShape::TriMesh { vertices, indices }) => {
+                assert_eq!(indices.len(), 1);
+                let n = tri_normal(&vertices, indices[0]);
+                assert!(
+                    n.y > 0.99,
+                    "backwards-wound triangle must be corrected to match its \
+                     authored +Z normal, reading +Y (up) in engine space; got {n:?}"
+                );
+            }
+            other => panic!("expected TriMesh, got {other:?}"),
+        }
+    }
+
+    /// Sibling of the above: a triangle whose raw winding ALREADY agrees
+    /// with its authored normal must be left untouched — the check must
+    /// not double-flip a correctly-wound triangle.
+    #[test]
+    fn tri_strips_triangle_already_matching_authored_normal_is_untouched() {
+        let mut scene = NifScene::default();
+        scene.havok_scale = 1.0;
+        scene.blocks.push(Box::new(BhkNiTriStripsShape {
+            data_refs: vec![BlockRef(1u32)],
+            material: 0,
+            radius: 0.0,
+            scale: [1.0, 1.0, 1.0, 0.0],
+            filters: Vec::new(),
+        }));
+        let p = |x: f32, y: f32| NiPoint3 { x, y, z: 0.0 };
+        let up = NiPoint3 {
+            x: 0.0,
+            y: 0.0,
+            z: 1.0,
+        };
+        scene.blocks.push(tri_strips_data_with_normals(
+            vec![p(0.0, 0.0), p(1.0, 0.0), p(0.0, 1.0)],
+            vec![up, up, up],
+            // Natural (0,1,2) → (1,0,0)×(0,1,0) = +Z, already agrees.
+            vec![0, 1, 2],
+        ));
+        let mut visited = HashSet::new();
+        match resolve_shape(&scene, BlockRef(0u32), &mut visited) {
+            Some(CollisionShape::TriMesh { vertices, indices }) => {
+                assert_eq!(indices.len(), 1);
+                assert_eq!(
+                    indices[0],
+                    [0, 1, 2],
+                    "already-correct winding must not be altered"
+                );
+                let n = tri_normal(&vertices, indices[0]);
+                assert!(n.y > 0.99, "got {n:?}");
             }
             other => panic!("expected TriMesh, got {other:?}"),
         }

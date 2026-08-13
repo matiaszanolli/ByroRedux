@@ -146,6 +146,24 @@ fn effect_shader_surface_is_tlas_eligible_for_optical_rays() {
     assert!(draw_command_eligible_for_tlas(&cmd));
 }
 
+/// Regression for #2297 / MAT-D1-NEW-02. `MATERIAL_KIND_FIRE_REFRACTION`
+/// is documented raster-only (`scene_buffer::constants`: "must not cast
+/// shadows, receive GI hits, enter reflections, or synthesize a physics
+/// collider") — must be excluded from the TLAS even with `in_tlas=true`,
+/// mirroring the `is_water` precedent. Today `render::static_meshes`
+/// already computes `in_tlas=false` for this kind, so this is
+/// defense-in-depth against a future producer that forgets to.
+#[test]
+fn fire_refraction_surface_excluded_even_with_in_tlas_set() {
+    let mut cmd = make_draw_command(true, false);
+    cmd.material_kind = crate::MATERIAL_KIND_FIRE_REFRACTION;
+    assert!(
+        !draw_command_eligible_for_tlas(&cmd),
+        "MATERIAL_KIND_FIRE_REFRACTION must exclude the draw from the \
+         TLAS regardless of in_tlas (raster-only per its own doc contract)"
+    );
+}
+
 /// Regression for #679 / AS-8-9. The skinned-BLAS rebuild
 /// predicate must fire only when the in-place refit chain has
 /// reached the configured threshold; below the threshold the

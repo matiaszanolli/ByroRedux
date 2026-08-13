@@ -417,7 +417,7 @@ pub(super) fn blas_over_budget(
 
 /// Decide whether a `DrawCommand` should emit a TLAS instance.
 ///
-/// Two-axis gate (#516 + #1024):
+/// Three-axis gate (#516 + #1024 + #2297):
 /// - `in_tlas == false` excludes particles / UI quads / other
 ///   draws that are by design rasterized-only.
 /// - `is_water == true` excludes water surfaces unconditionally
@@ -427,12 +427,33 @@ pub(super) fn blas_over_budget(
 ///   `for_rt = false` (no BLAS allocated), this predicate keeps the
 ///   exclusion explicit on the consumer side so a future BLAS-add
 ///   on the same mesh handle can't silently reintroduce self-hits.
+/// - `material_kind == MATERIAL_KIND_FIRE_REFRACTION` is excluded to
+///   match that constant's own documented contract (raster-only: "must
+///   not cast shadows, receive GI hits, enter reflections, or
+///   synthesize a physics collider" —
+///   `scene_buffer::constants::MATERIAL_KIND_FIRE_REFRACTION`). Today
+///   the only production producer of `in_tlas == true` draws
+///   (`render::static_meshes`) already computes `in_tlas = false` for
+///   this kind, so this arm is currently redundant with that upstream
+///   gate — kept here as defense-in-depth (#2297 / MAT-D1-NEW-02) so a
+///   future producer that forgets the exclusion still can't slip a
+///   fire-refraction proxy into the TLAS through this consumer-side
+///   choke point, mirroring the `is_water` precedent above.
+///
+///   `MATERIAL_KIND_EFFECT_SHADER` is deliberately NOT excluded here:
+///   `render::static_meshes` retains effect-shader surfaces in the TLAS
+///   on purpose, so optical/GI rays can see them even though opaque
+///   shadow masks don't (`shadow_mask_for_instance` below routes them
+///   to `VISIBILITY_LAYER_EFFECT` for exactly that reason). Excluding
+///   it here would silently break that design.
 ///
 /// Pure function so the unit test can pin the contract without a
 /// live Vulkan device.
 #[inline]
 pub(super) fn draw_command_eligible_for_tlas(draw_cmd: &DrawCommand) -> bool {
-    draw_cmd.in_tlas && !draw_cmd.is_water
+    draw_cmd.in_tlas
+        && !draw_cmd.is_water
+        && draw_cmd.material_kind != crate::vulkan::scene_buffer::MATERIAL_KIND_FIRE_REFRACTION
 }
 
 /// Prior writer to the shared `blas_scratch_buffer` within the current

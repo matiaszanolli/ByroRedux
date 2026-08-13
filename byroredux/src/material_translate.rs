@@ -370,6 +370,31 @@ mod tests {
     // normal_map_index 7, gloss_map_index 0.
     const PASS: (u32, f32, f32, u32, u32) = (0, 0.0, 0.0, 7, 0);
 
+    /// Regression for #2296 / MAT-D1-NEW-01. `crates/nif` depends on
+    /// `byroredux-core` only — never `byroredux-renderer` — so the NIF
+    /// importer's `material_kind` assignments
+    /// (`crates/nif/src/import/material/dedicated_shader.rs` and
+    /// `legacy_properties.rs`) are raw `101`/`102`/`103` literals with no
+    /// compile-time link to `byroredux_renderer::MATERIAL_KIND_*`. This
+    /// binary is the one crate that depends on both, so it's the only
+    /// place a cross-crate assert can live. Pins the literals to the
+    /// named constants they must always agree with — a future renumber
+    /// of the renderer-side constants breaks this loudly instead of
+    /// silently misrouting shading for every effect/no-lighting/fire-haze
+    /// surface.
+    #[test]
+    fn nif_importer_material_kind_literals_match_renderer_constants() {
+        // dedicated_shader.rs:536 (material_reference early-return guard)
+        // and :663 (primary effect-shader detection; pinned in-crate by
+        // `effect_shader_sets_material_kind_to_101`).
+        assert_eq!(101u32, byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER);
+        // legacy_properties.rs:545 (BSShaderNoLightingProperty branch).
+        assert_eq!(102u32, byroredux_renderer::MATERIAL_KIND_NO_LIGHTING);
+        // dedicated_shader.rs:481 / legacy_properties.rs:451 (FireRefraction
+        // shader-flag detection, both dedicated + legacy property paths).
+        assert_eq!(103u32, byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION);
+    }
+
     #[test]
     fn fire_refraction_uses_sanitized_authored_strength_as_optical_payload() {
         let kind = byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION;
