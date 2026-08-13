@@ -418,32 +418,44 @@ impl Parser {
         })
     }
 
+    /// #2656 (SCR-D4-NEW11-01) — matches on [`Self::peek_raw`], NOT
+    /// [`Self::peek`]. `peek` skips `Token::Newline`, so a loop driven by
+    /// it doesn't stop at the end of the property declaration line — it
+    /// scans into subsequent lines looking for more flags. `Auto` is both
+    /// a property flag AND the leading token of a top-level `Auto State`
+    /// item, so a short-form property declaration immediately followed by
+    /// `Auto State` had its `Auto` swallowed here, and `parse_state` built
+    /// the state with `is_auto: false` — silently, no diagnostic. Per the
+    /// grammar (`type Property IDENT (= expr)? property_flag* NEWLINE`),
+    /// every flag is on the property's own line, so stopping at the raw
+    /// next token being a `Newline` (rather than skipping past it) is
+    /// exactly the intended boundary.
     fn parse_property_flags(&mut self) -> PropertyFlags {
         let mut flags = PropertyFlags::empty();
         loop {
-            match self.peek() {
+            match self.peek_raw() {
                 Some(Token::KwAuto) => {
-                    self.advance().unwrap();
+                    self.advance_raw().unwrap();
                     flags |= PropertyFlags::AUTO;
                 }
                 Some(Token::KwAutoReadOnly) => {
-                    self.advance().unwrap();
+                    self.advance_raw().unwrap();
                     flags |= PropertyFlags::AUTO_READ_ONLY;
                 }
                 Some(Token::KwConst) => {
-                    self.advance().unwrap();
+                    self.advance_raw().unwrap();
                     flags |= PropertyFlags::CONST;
                 }
                 Some(Token::KwMandatory) => {
-                    self.advance().unwrap();
+                    self.advance_raw().unwrap();
                     flags |= PropertyFlags::MANDATORY;
                 }
                 Some(Token::KwHidden) => {
-                    self.advance().unwrap();
+                    self.advance_raw().unwrap();
                     flags |= PropertyFlags::HIDDEN;
                 }
                 Some(Token::KwConditional) => {
-                    self.advance().unwrap();
+                    self.advance_raw().unwrap();
                     flags |= PropertyFlags::CONDITIONAL;
                 }
                 _ => break,
@@ -972,6 +984,122 @@ EndState
             }
             other => panic!("expected State, got {other:?}"),
         }
+    }
+
+    // ── #2656 (SCR-D4-NEW11-01) — short-form property flags must not
+    // reach across the newline into a following `Auto State` ──────
+
+    fn find_state<'a>(s: &'a Script, name: &str) -> &'a State {
+        s.body
+            .iter()
+            .find_map(|item| match &item.node {
+                ScriptItem::State(state) if state.name.node.0 == name => Some(state),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no state named {name:?} in parsed script"))
+    }
+
+    /// Case A (the bug). A short-form `Auto` property immediately
+    /// followed by `Auto State` — pre-fix, `parse_property_flags`
+    /// scanned past the property's own newline and consumed the
+    /// state's `Auto`, so `Waiting.is_auto` came out `false` with zero
+    /// reported errors.
+    #[test]
+    fn property_immediately_before_auto_state_does_not_swallow_its_auto() {
+        let src = "\
+ScriptName Foo
+
+Int Property Bar = 5 Auto
+
+Auto State Waiting
+EndState
+";
+        let s = parse(src);
+        assert!(
+            find_state(&s, "Waiting").is_auto,
+            "the state's own Auto must not be consumed by the preceding \
+             property's flag loop (#2656)"
+        );
+    }
+
+    /// Case B (control). The same adjacency, but a plain (non-Auto)
+    /// `State` — must read `is_auto == false`, so this and case A are
+    /// verified to produce genuinely DIFFERENT ASTs. Pre-fix, A and B
+    /// produced byte-identical ASTs (both `false`) because the bug
+    /// swallowed A's `Auto` regardless of what state followed.
+    #[test]
+    fn property_immediately_before_plain_state_reports_not_auto() {
+        let src = "\
+ScriptName Foo
+
+Int Property Bar = 5 Auto
+
+State Waiting
+EndState
+";
+        let s = parse(src);
+        assert!(!find_state(&s, "Waiting").is_auto);
+    }
+
+    /// Case C. A `Function` item between the property and the `Auto
+    /// State` already broke the buggy loop pre-fix (`Function` isn't a
+    /// flag token) — pinned so a future refactor can't silently
+    /// reintroduce a wider reach that this case would have caught.
+    #[test]
+    fn property_before_auto_state_separated_by_function_stays_auto() {
+        let src = "\
+ScriptName Foo
+
+Int Property Bar = 5 Auto
+
+Function DoNothing()
+EndFunction
+
+Auto State Waiting
+EndState
+";
+        let s = parse(src);
+        assert!(find_state(&s, "Waiting").is_auto);
+    }
+
+    /// Case D. A full-form property (its own `EndProperty` terminates
+    /// `parse_property_accessors` before `parse_state` ever runs) — was
+    /// already safe pre-fix, pinned as a control.
+    #[test]
+    fn full_form_property_before_auto_state_stays_auto() {
+        let src = "\
+ScriptName Foo
+
+Int Property Bar
+  Int Function GetBar()
+    Return 5
+  EndFunction
+EndProperty
+
+Auto State Waiting
+EndState
+";
+        let s = parse(src);
+        assert!(find_state(&s, "Waiting").is_auto);
+    }
+
+    /// Case E. A top-level variable declaration between the property
+    /// and the `Auto State` — also already safe pre-fix (`Ident` isn't
+    /// a flag token either), pinned as a control.
+    #[test]
+    fn property_before_auto_state_separated_by_variable_stays_auto() {
+        let src = "\
+ScriptName Foo
+
+Int Property Bar = 5 Auto
+
+Int SomeVar = 0
+
+Auto State Waiting
+EndState
+";
+        let s = parse(src);
+        assert!(find_state(&s, "Waiting").is_auto);
     }
 
     /// #2125 — a parser-level error in ONE function inside a `State` must

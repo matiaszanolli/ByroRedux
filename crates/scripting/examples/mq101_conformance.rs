@@ -29,9 +29,10 @@ use byroredux_plugin::esm::records::script_instance::SceneFragmentEvent;
 use byroredux_plugin::esm::records::{
     SceneActionType, QUEST_FLAG_START_GAME_ENABLED, SCENE_BEGIN_ON_QUEST_START,
 };
+use byroredux_scripting::fragment::quest_property_names;
 use byroredux_scripting::papyrus_demo::PlayerEntity;
 use byroredux_scripting::quest_stages::QuestStageState;
-use byroredux_scripting::translate::effects::{lower_fragment, Effect};
+use byroredux_scripting::translate::effects::{lower_fragment_with_quest_properties, Effect};
 use byroredux_scripting::{
     dispatch_player_cinematic_animation_event, image_space_modifier_system,
     install_engine_start_quest, install_image_space_modifiers, install_scene_quest_aliases,
@@ -1384,6 +1385,13 @@ fn run() -> Result<Checks, Box<dyn Error>> {
                                 _ => None,
                             })
                             .collect();
+                        // #2658 (SCR-D5-NEW11-03) — computed once per script,
+                        // matching the production caller
+                        // (`populate_quest_fragments_from_script`), and fed to
+                        // `lower_fragment_with_quest_properties` at both call
+                        // sites below so this conformance gate measures the
+                        // SAME lowering path production runs.
+                        let quest_properties = quest_property_names(&script);
 
                         let mut missing_bindings = Vec::new();
                         let mut no_op = 0usize;
@@ -1404,7 +1412,10 @@ fn run() -> Result<Checks, Box<dyn Error>> {
                                 continue;
                             }
                             behavioral += 1;
-                            if let Some(fragment_effects) = lower_fragment(&function.body) {
+                            if let Some(fragment_effects) = lower_fragment_with_quest_properties(
+                                &function.body,
+                                &quest_properties,
+                            ) {
                                 lowered += 1;
                                 for effect in &fragment_effects {
                                     *effects.entry(effect_kind(effect)).or_default() += 1;
@@ -1445,9 +1456,9 @@ fn run() -> Result<Checks, Box<dyn Error>> {
                                 )
                             },
                         );
-                        let cart_init_effects = functions
-                            .get("fragment_175")
-                            .and_then(|function| lower_fragment(&function.body));
+                        let cart_init_effects = functions.get("fragment_175").and_then(|function| {
+                            lower_fragment_with_quest_properties(&function.body, &quest_properties)
+                        });
                         let cart_init_kinds = cart_init_effects.as_ref().map(|effects| {
                             let mut kinds = BTreeMap::<&'static str, usize>::new();
                             for effect in effects {
