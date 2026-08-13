@@ -417,6 +417,20 @@ fn apply_alias_injections(
 /// Unless an alias opts into `Allow Reuse`, one entity fills only the first
 /// matching role in authored alias order; this is what lets two MQ101 soldier
 /// aliases sharing one LCRT select two distinct actors deterministically.
+///
+/// FO4 `ALCS` reference-collection aliases (`alias.is_collection`) are
+/// excluded from this fill loop entirely (#2661 / SCR-D6-NEW11-04) — they
+/// are a documented Phase 4+ deferral
+/// (`docs/engine/m47-3-quest-alias-design.md`, "Reference collections")
+/// with no collection-fill runtime yet. Pre-fix, a collection alias
+/// carrying match conditions fell through to the ordinary single-entity
+/// `eligible` path below: it bound exactly ONE candidate, which then
+/// received the whole collection's injected factions/inventory via
+/// `apply_alias_injections`, while `quest_alias_diagnostics` reported
+/// `Bound` — a documented "not built yet" path silently half-working
+/// instead of declining. `quest_alias_diagnostics` already classifies an
+/// unbound collection alias as `ReferenceCollectionRuntimeUnavailable`;
+/// simply never binding it here is what makes that diagnostic accurate.
 pub fn refresh_scene_actor_bindings(world: &World) -> usize {
     let should_refresh = world
         .try_resource::<SceneActorBindings>()
@@ -457,7 +471,10 @@ pub fn refresh_scene_actor_bindings(world: &World) -> usize {
 
     for (quest, aliases) in &quests {
         let mut used = HashSet::new();
-        for alias in aliases.iter().filter(|alias| !alias.is_location) {
+        for alias in aliases
+            .iter()
+            .filter(|alias| !alias.is_location && !alias.is_collection)
+        {
             if let Some(AliasFillType::ExternalAlias {
                 quest: source_quest,
                 alias_id: source_alias,

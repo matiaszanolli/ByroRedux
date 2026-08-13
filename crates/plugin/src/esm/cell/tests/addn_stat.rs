@@ -114,8 +114,9 @@ fn parse_stat_with_vmad_sets_has_script() {
     // were dropped on the walker's `_` arm. The minimum-viable
     // signal is a `has_script: bool` on `StaticObject` so the count
     // of script-bearing records is at least visible. Full VMAD
-    // decoding (Papyrus script names + property bindings) stays
-    // gated on the scripting-as-ECS work.
+    // decoding (Papyrus script names + property bindings) landed in
+    // #2663 — see `parse_stat_with_vmad_decodes_script_instance`
+    // below for the payload-level regression.
     let mut sub_data = Vec::new();
     let edid = "ScriptedDoor\0";
     sub_data.extend_from_slice(b"EDID");
@@ -157,6 +158,10 @@ fn parse_stat_with_vmad_sets_has_script() {
 
     let s = statics.get(&0x77).expect("STAT entry present");
     assert!(s.has_script, "VMAD presence must flip has_script");
+    assert!(
+        s.script_instance.is_some(),
+        "VMAD presence must also populate script_instance (#2663), even with zero scripts"
+    );
 }
 
 #[test]
@@ -182,6 +187,75 @@ fn parse_stat_without_vmad_leaves_has_script_false() {
 
     let s = statics.get(&0x88).expect("STAT entry present");
     assert!(!s.has_script);
+    assert!(s.script_instance.is_none());
+}
+
+/// Regression for #2663 (SCR-D7-NEW11-02) — a STAT (standing in for the
+/// whole MODL-only world-placement family: MSTT/FURN/DOOR/LIGH/FLOR/
+/// IDLM/BNDS/ADDN/TACT all route through the same
+/// `build_static_object_from_subs`) with a REAL VMAD payload (one named
+/// script) must decode into `StaticObject.script_instance`, not just flip
+/// the presence flag. Pre-fix, `Index::base_record_script_instance` had
+/// no typed map for this family to consult even if the payload had been
+/// decoded — the sibling gap to #2189's item-family fix.
+#[test]
+fn parse_stat_with_vmad_decodes_script_instance() {
+    let mut sub_data = Vec::new();
+    let edid = "GenPullChainAnim01NoPlayer\0";
+    sub_data.extend_from_slice(b"EDID");
+    sub_data.extend_from_slice(&(edid.len() as u16).to_le_bytes());
+    sub_data.extend_from_slice(edid.as_bytes());
+    let modl = "clutter\\lever01.nif\0";
+    sub_data.extend_from_slice(b"MODL");
+    sub_data.extend_from_slice(&(modl.len() as u16).to_le_bytes());
+    sub_data.extend_from_slice(modl.as_bytes());
+
+    // VMAD: version 5, objectFormat 2, one script "LeverPullScript",
+    // zero properties — same shape as
+    // `common::tests::common_named_fields_decodes_vmad_script_instance`.
+    let mut vmad = Vec::new();
+    vmad.extend_from_slice(&5i16.to_le_bytes());
+    vmad.extend_from_slice(&2i16.to_le_bytes());
+    vmad.extend_from_slice(&1u16.to_le_bytes());
+    let name = b"LeverPullScript";
+    vmad.extend_from_slice(&(name.len() as u16).to_le_bytes());
+    vmad.extend_from_slice(name);
+    vmad.push(0); // script status
+    vmad.extend_from_slice(&0u16.to_le_bytes()); // propCount = 0
+    sub_data.extend_from_slice(b"VMAD");
+    sub_data.extend_from_slice(&(vmad.len() as u16).to_le_bytes());
+    sub_data.extend_from_slice(&vmad);
+
+    let mut stat = Vec::new();
+    stat.extend_from_slice(b"STAT");
+    stat.extend_from_slice(&(sub_data.len() as u32).to_le_bytes());
+    stat.extend_from_slice(&0u32.to_le_bytes());
+    stat.extend_from_slice(&0x99u32.to_le_bytes());
+    stat.extend_from_slice(&[0u8; 8]);
+    stat.extend_from_slice(&sub_data);
+
+    let total_size = 24 + stat.len();
+    let mut group = Vec::new();
+    group.extend_from_slice(b"GRUP");
+    group.extend_from_slice(&(total_size as u32).to_le_bytes());
+    group.extend_from_slice(b"STAT");
+    group.extend_from_slice(&0u32.to_le_bytes());
+    group.extend_from_slice(&[0u8; 8]);
+    group.extend_from_slice(&stat);
+
+    let mut reader = EsmReader::new(&group);
+    let gh = reader.read_group_header().unwrap();
+    let end = reader.group_content_end(&gh);
+    let mut statics = HashMap::new();
+    parse_modl_group(&mut reader, end, &mut statics).unwrap();
+
+    let s = statics.get(&0x99).expect("STAT entry present");
+    let inst = s
+        .script_instance
+        .as_ref()
+        .expect("VMAD payload must decode into script_instance (#2663)");
+    assert_eq!(inst.scripts.len(), 1);
+    assert_eq!(inst.scripts[0].name, "LeverPullScript");
 }
 
 // Helper: build a STAT record with an explicit record-header `flags` word.

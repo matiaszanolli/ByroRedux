@@ -271,15 +271,19 @@ fn resolve_property_form_id(vmad: Option<&ScriptInstanceData>, name: &str) -> Op
 
 /// Resolve an [`ObjectRef`] all the way to a live entity. Direct VMAD object
 /// properties go through FormID → loaded entity; alias-bound properties go
-/// through the owning quest's [`crate::scene::SceneActorBindings`].
-/// `debug`-logs and returns `None` at whichever hop fails — an unresolved
-/// object is a runtime data fact (not loaded, not spawned yet), not a shape
-/// the fragment failed to understand.
+/// through the owning quest's [`crate::scene::SceneActorBindings`] snapshot
+/// (`bindings`, captured by [`DeferredFragmentEffects::new`] before the
+/// quest-state guards are taken — #2660 / SCR-D6-NEW11-03 — rather than
+/// acquired live here, which would nest a `SceneActorBindings` read inside
+/// that scope). `debug`-logs and returns `None` at whichever hop fails — an
+/// unresolved object is a runtime data fact (not loaded, not spawned yet),
+/// not a shape the fragment failed to understand.
 fn resolve_object(
     vmad: Option<&ScriptInstanceData>,
     world: &World,
     context: QuestFormId,
     via: &ObjectRef,
+    bindings: &crate::scene::SceneActorBindings,
 ) -> Option<byroredux_core::ecs::storage::EntityId> {
     let name = via.property_name();
     let Some(value) = vmad?
@@ -295,9 +299,9 @@ fn resolve_object(
         PropertyValue::Object { form_id, alias: -1 } => {
             crate::condition::resolve_entity_by_global_form_id(world, *form_id)
         }
-        PropertyValue::Object { alias, .. } if *alias >= 0 => world
-            .try_resource::<crate::scene::SceneActorBindings>()
-            .and_then(|bindings| bindings.resolve(context, i32::from(*alias))),
+        PropertyValue::Object { alias, .. } if *alias >= 0 => {
+            bindings.resolve(context, i32::from(*alias))
+        }
         _ => None,
     };
     if entity.is_none() {
@@ -311,12 +315,13 @@ fn resolve_actor(
     world: &World,
     context: QuestFormId,
     via: &ActorRef,
+    bindings: &crate::scene::SceneActorBindings,
 ) -> Option<byroredux_core::ecs::storage::EntityId> {
     match via {
         ActorRef::Player => world
             .try_resource::<crate::papyrus_demo::PlayerEntity>()
             .map(|player| player.0),
-        ActorRef::Object(via) => resolve_object(vmad, world, context, via),
+        ActorRef::Object(via) => resolve_object(vmad, world, context, via, bindings),
     }
 }
 
@@ -325,9 +330,10 @@ fn actors_3d_loaded(
     world: &World,
     context: QuestFormId,
     actors: &[ActorRef],
+    bindings: &crate::scene::SceneActorBindings,
 ) -> bool {
     actors.iter().all(|actor| {
-        resolve_actor(vmad, world, context, actor)
+        resolve_actor(vmad, world, context, actor, bindings)
             .is_some_and(|entity| world.has::<Transform>(entity))
     })
 }
@@ -376,10 +382,34 @@ enum DeferredCinematicPresentationEffect {
 ///
 /// Construct the batch before taking those guards, then apply it after they
 /// drop. This prevents nested acquisitions of `QuestDefinitionRegistry` and
-/// the presentation/alias-binding resources (#2269, #2539).
+/// the presentation/alias-binding resources (#2269, #2539), and — as of
+/// #2660 (SCR-D6-NEW11-03) — of `SceneActorBindings` itself: every
+/// `resolve_object` alias lookup previously called `world.try_resource::
+/// <SceneActorBindings>()` directly, nesting a read acquisition inside the
+/// `(QuestStageState, QuestObjectiveState)` scope even after #2539 stopped
+/// nesting the *write* side (`mark_scene_actor_bindings_dirty`). Reads now
+/// go through the snapshot below instead.
+///
+/// This does NOT eliminate every nested acquisition inside that scope —
+/// `PlayerControlState` (3 writes) and 12 component-storage acquisitions
+/// (`Inventory` for `AddItem`, `GlobalTransform`+`Transform` for `MoveTo`,
+/// and others across `apply_effect`'s match arms) are direct ECS mutations
+/// the effects perform, not alias lookups, and stay nested. See
+/// `apply_effect`'s doc for the current complete list and the exclusive-
+/// scheduling invariant that makes it safe today.
 #[derive(Debug)]
 pub struct DeferredFragmentEffects {
     quest_definitions: Option<crate::QuestDefinitionRegistry>,
+    /// #2660 (SCR-D6-NEW11-03) — snapshot of `SceneActorBindings`, cloned
+    /// before the quest-state guards so `resolve_object` can resolve
+    /// alias-bound `ObjectRef`s without a nested resource acquisition.
+    /// `SceneActorBindings::resolve` only reads; nothing inside the guard
+    /// scope can invalidate this snapshot mid-cascade (the table is only
+    /// ever rebuilt by a separate, later-scheduled system after this one's
+    /// `scene_actor_bindings_dirty` flag below is applied), so a snapshot
+    /// taken once at the top of the exclusive system is behaviorally
+    /// identical to a live read throughout.
+    scene_actor_bindings: crate::scene::SceneActorBindings,
     cinematic_presentation: Vec<DeferredCinematicPresentationEffect>,
     scene_actor_bindings_dirty: bool,
     /// `(target, activator)` pairs from `Effect::Activate`, handed to
@@ -398,11 +428,19 @@ impl DeferredFragmentEffects {
     /// struct above. `QuestDefinitionRegistry::clone()` is an O(1) `Arc`
     /// refcount bump (#2659 / SCR-D6-NEW11-02), not a deep copy — that's
     /// what keeps this unconditional call cheap on every load-order size.
+    /// `SceneActorBindings::clone()` (#2660) is a real `HashMap` clone, but
+    /// the table only holds bound aliases for currently-active quests, not
+    /// the whole load order — negligible next to the per-frame ECS work
+    /// this system already does.
     pub fn new(world: &World) -> Self {
         Self {
             quest_definitions: world
                 .try_resource::<crate::QuestDefinitionRegistry>()
                 .map(|definitions| definitions.clone()),
+            scene_actor_bindings: world
+                .try_resource::<crate::scene::SceneActorBindings>()
+                .map(|bindings| bindings.clone())
+                .unwrap_or_default(),
             cinematic_presentation: Vec::new(),
             scene_actor_bindings_dirty: false,
             activations: Vec::new(),
@@ -451,23 +489,34 @@ impl DeferredFragmentEffects {
 /// [`QuestStageAdvanced`] when the effect was a `SetStage` (so the caller
 /// can cascade), or `None` otherwise / when a target can't resolve.
 ///
-/// **Nested-lock safety depends on exclusive scheduling.** The
-/// `AddItem`/`MoveTo` arms take `Inventory`/`GlobalTransform`/`Transform`
-/// component locks while the caller ([`quest_fragment_dispatch_system`])
-/// still holds the `QuestStageFragments`/`QuestStageState`/
-/// `QuestObjectiveState` resource locks for the whole cascade loop. This is
-/// only safe because every system that touches those quest resources is
-/// registered `add_exclusive` in `byroredux/src/boot.rs` (parallel systems
-/// never run concurrently with an exclusive one), so no other holder can
-/// ever form the other half of an ABBA cycle. Adding a new nested
-/// component/resource lock here, or moving `quest_fragment_dispatch_system`
-/// (or any sibling quest-resource system) onto the parallel lane, needs the
-/// same analysis re-derived — see SCR-D6-NEW3-03 / #2126.
+/// **Nested-lock safety depends on exclusive scheduling.** The full
+/// residual list, current as of #2660 (SCR-D6-NEW11-03):
+///   - `PlayerControlState` (3 writes — `SetPlayerControls`-family arms)
+///   - 12 component-storage acquisitions across the match arms below,
+///     including `Inventory` (`AddItem`) and `GlobalTransform` +
+///     `Transform` (`MoveTo`)
 ///
-/// Quest-definition reads use the snapshot in `deferred`, and presentation /
-/// alias-binding mutations are appended to it instead of acquired here. Every
-/// production caller constructs the batch before taking quest resource guards
-/// and applies it only after those guards have dropped (#2269, #2539).
+/// all taken while the caller ([`quest_fragment_dispatch_system`]) still
+/// holds the `QuestStageFragments`/`QuestStageState`/`QuestObjectiveState`
+/// resource locks for the whole cascade loop. This is only safe because
+/// every system that touches those quest resources is registered
+/// `add_exclusive` in `byroredux/src/boot.rs` (parallel systems never run
+/// concurrently with an exclusive one), so no other holder can ever form
+/// the other half of an ABBA cycle. Adding a new nested component/resource
+/// lock here, or moving `quest_fragment_dispatch_system` (or any sibling
+/// quest-resource system) onto the parallel lane, needs the same analysis
+/// re-derived — see SCR-D6-NEW3-03 / #2126, and record the change under
+/// the house-rule doc #2270 asks for.
+///
+/// `SceneActorBindings` used to be part of this residual list too (every
+/// `resolve_object` alias lookup read it live) but is now resolved through
+/// the pre-lock snapshot in `deferred` instead (#2660) — see
+/// [`DeferredFragmentEffects`]'s doc for why a snapshot is safe here.
+/// Quest-definition reads use the same snapshot, and presentation /
+/// alias-binding *mutations* are appended to it rather than acquired here.
+/// Every production caller constructs the batch before taking quest
+/// resource guards and applies it only after those guards have dropped
+/// (#2269, #2539, #2660).
 fn apply_effect(
     effect: &Effect,
     context: QuestFormId,
@@ -483,7 +532,7 @@ fn apply_effect(
             item,
             count,
         } => {
-            let container_entity = resolve_object(vmad, world, context, container)?;
+            let container_entity = resolve_object(vmad, world, context, container, &deferred.scene_actor_bindings)?;
             let item_form_id = resolve_property_form_id(vmad, item.property_name())?;
             let Some(mut inventories) = world.query_mut::<Inventory>() else {
                 log::debug!("fragment AddItem skipped: Inventory component never registered");
@@ -508,7 +557,7 @@ fn apply_effect(
             item,
             silent: _,
         } => {
-            let actor = resolve_actor(vmad, world, context, actor)?;
+            let actor = resolve_actor(vmad, world, context, actor, &deferred.scene_actor_bindings)?;
             let item_form_id = resolve_property_form_id(vmad, item.property_name())?;
             let Some(slot_mask) = world
                 .try_resource::<crate::EquipItemCatalog>()
@@ -553,8 +602,8 @@ fn apply_effect(
             None
         }
         Effect::MoveTo { moved, destination } => {
-            let moved_entity = resolve_object(vmad, world, context, moved)?;
-            let destination_entity = resolve_object(vmad, world, context, destination)?;
+            let moved_entity = resolve_object(vmad, world, context, moved, &deferred.scene_actor_bindings)?;
+            let destination_entity = resolve_object(vmad, world, context, destination, &deferred.scene_actor_bindings)?;
             let Some(translation) = world
                 .get::<GlobalTransform>(destination_entity)
                 .map(|gt| gt.translation)
@@ -640,9 +689,9 @@ fn apply_effect(
             }
         }
         Effect::Activate { target, activator } => {
-            let target_entity = resolve_object(vmad, world, context, target)?;
+            let target_entity = resolve_object(vmad, world, context, target, &deferred.scene_actor_bindings)?;
             let activator = match activator {
-                Some(activator) => resolve_object(vmad, world, context, activator)?,
+                Some(activator) => resolve_object(vmad, world, context, activator, &deferred.scene_actor_bindings)?,
                 None => world
                     .try_resource::<crate::papyrus_demo::PlayerEntity>()
                     .map(|player| player.0)
@@ -661,7 +710,7 @@ fn apply_effect(
             None
         }
         Effect::SetOpen { target, open } => {
-            let target_entity = resolve_object(vmad, world, context, target)?;
+            let target_entity = resolve_object(vmad, world, context, target, &deferred.scene_actor_bindings)?;
             if !crate::vm_state::set_two_state_open(world, target_entity, *open) {
                 log::debug!(
                     "fragment SetOpen skipped: '{}' is not a recognized two-state activator",
@@ -713,7 +762,7 @@ fn apply_effect(
             None
         }
         Effect::PlayIdle { actor, idle } => {
-            let actor = resolve_actor(vmad, world, context, actor)?;
+            let actor = resolve_actor(vmad, world, context, actor, &deferred.scene_actor_bindings)?;
             let idle_form_id = resolve_property_form_id(vmad, idle.property_name())?;
             if !update_actor_cinematic_state(world, actor, |state| {
                 state.request_idle(idle_form_id);
@@ -723,9 +772,9 @@ fn apply_effect(
             None
         }
         Effect::SetVehicle { actor, vehicle } => {
-            let actor = resolve_actor(vmad, world, context, actor)?;
+            let actor = resolve_actor(vmad, world, context, actor, &deferred.scene_actor_bindings)?;
             let vehicle = match vehicle {
-                Some(vehicle) => Some(resolve_object(vmad, world, context, vehicle)?),
+                Some(vehicle) => Some(resolve_object(vmad, world, context, vehicle, &deferred.scene_actor_bindings)?),
                 None => None,
             };
             let relative_pose = vehicle.and_then(|vehicle| {
@@ -755,8 +804,8 @@ fn apply_effect(
             None
         }
         Effect::TetherToHorse { cart, horse } => {
-            let cart = resolve_object(vmad, world, context, cart)?;
-            let horse = resolve_object(vmad, world, context, horse)?;
+            let cart = resolve_object(vmad, world, context, cart, &deferred.scene_actor_bindings)?;
+            let horse = resolve_object(vmad, world, context, horse, &deferred.scene_actor_bindings)?;
             let Some(cart_transform) = world.get::<Transform>(cart) else {
                 log::debug!("fragment TetherToHorse skipped: cart has no Transform");
                 return None;
@@ -803,7 +852,7 @@ fn apply_effect(
             motion_type,
             allow_activate,
         } => {
-            let target = resolve_object(vmad, world, context, target)?;
+            let target = resolve_object(vmad, world, context, target, &deferred.scene_actor_bindings)?;
             if let Some(mut requests) = world.query_mut::<crate::MotionTypeChangeRequest>() {
                 requests.insert(
                     target,
@@ -822,7 +871,7 @@ fn apply_effect(
             None
         }
         Effect::ExitCart { actor, seat } => {
-            let actor = resolve_object(vmad, world, context, actor)?;
+            let actor = resolve_object(vmad, world, context, actor, &deferred.scene_actor_bindings)?;
             let idle_form_id = exit_cart_idle_property(*seat)
                 .and_then(|property| resolve_property_form_id(vmad, property));
             let attachment = world
@@ -877,7 +926,7 @@ fn apply_effect(
             None
         }
         Effect::EvaluatePackage { actor } => {
-            let actor = resolve_object(vmad, world, context, actor)?;
+            let actor = resolve_object(vmad, world, context, actor, &deferred.scene_actor_bindings)?;
             if let Some(mut requests) = world.query_mut::<crate::EvaluatePackageRequest>() {
                 requests.insert(actor, crate::EvaluatePackageRequest);
             }
@@ -1076,7 +1125,7 @@ pub fn apply_effects(
             Effect::WaitForActors3DLoaded {
                 actors,
                 poll_seconds,
-            } if !actors_3d_loaded(vmad, world, context, actors) => Some((
+            } if !actors_3d_loaded(vmad, world, context, actors, &deferred.scene_actor_bindings) => Some((
                 *poll_seconds,
                 FragmentResumeCondition::Actors3DLoaded {
                     actors: actors.clone(),
@@ -1122,6 +1171,12 @@ pub fn apply_effects(
 /// `Utility.Wait` has elapsed. A resumed tail can encounter another wait and
 /// requeue itself through [`apply_effects`].
 pub fn fragment_continuation_system(world: &World, dt: f32) {
+    // #2660 (SCR-D6-NEW11-03) — constructed up front (before the resume-
+    // condition loop below, which needs the `SceneActorBindings` snapshot
+    // for its own `actors_3d_loaded` check) rather than only once `ready`
+    // is known non-empty. Matches `DeferredFragmentEffects::new`'s
+    // documented "called unconditionally by every production caller" rule.
+    let mut deferred = DeferredFragmentEffects::new(world);
     let mut ready = Vec::new();
     let pending = {
         let Some(mut queue) = world.try_resource_mut::<FragmentExecutionQueue>() else {
@@ -1143,7 +1198,13 @@ pub fn fragment_continuation_system(world: &World, dt: f32) {
                 poll_seconds,
                 elapsed_seconds,
             } => {
-                if actors_3d_loaded(pending.vmad.as_ref(), world, pending.context, actors) {
+                if actors_3d_loaded(
+                    pending.vmad.as_ref(),
+                    world,
+                    pending.context,
+                    actors,
+                    &deferred.scene_actor_bindings,
+                ) {
                     ready.push(pending);
                 } else {
                     *elapsed_seconds += *poll_seconds;
@@ -1178,7 +1239,6 @@ pub fn fragment_continuation_system(world: &World, dt: f32) {
     }
 
     let mut emitted = Vec::new();
-    let mut deferred = DeferredFragmentEffects::new(world);
     for pending in ready {
         let advances = {
             let (mut stages, mut objectives) =

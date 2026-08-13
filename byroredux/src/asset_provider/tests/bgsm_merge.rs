@@ -705,6 +705,127 @@ fn bgem_merge_forwards_color_enable_bit_via_real_merge() {
     );
 }
 
+/// Regression for #2643 (SF-D9-2026-08-07-04), real merge path: a BGEM
+/// authoring BOTH the shared `grayscale_to_palette_color` bit and its own
+/// `grayscale_to_palette_alpha` bit at once (the format permits this) must
+/// forward BOTH `bgsm_greyscale_lut_color` and `bgsm_greyscale_lut_is_alpha`
+/// as true, so `pack_imported_material_flags` packs both
+/// `EFFECT_PALETTE_COLOR` and `EFFECT_PALETTE_ALPHA` instead of losing the
+/// color variant to a mutually-exclusive choice.
+#[test]
+fn bgem_merge_forwards_both_palette_bits_when_both_authored() {
+    let mut pool = byroredux_core::string::StringPool::new();
+    let path = "materials/tests/both_palette_bits.bgem";
+    let mut provider = MaterialProvider::new();
+    provider.insert_bgem_for_test(
+        path,
+        BgemFile {
+            grayscale_texture: "textures\\effects\\gradients\\fire.dds".into(),
+            grayscale_to_palette_alpha: true,
+            base: byroredux_bgsm::BaseMaterial {
+                grayscale_to_palette_color: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    );
+    let mut mesh = imported_mesh_with_material_path(&mut pool, path);
+
+    assert!(merge_external_material(
+        &mut mesh.material,
+        &mut provider,
+        &mut pool,
+    ));
+    assert!(
+        mesh.material.bgsm_greyscale_lut_enabled,
+        "either enable bit alone must already enable the remap"
+    );
+    assert!(
+        mesh.material.bgsm_greyscale_lut_color,
+        "grayscale_to_palette_color=true must forward even when the alpha bit is also set (#2643)"
+    );
+    assert!(
+        mesh.material.bgsm_greyscale_lut_is_alpha,
+        "grayscale_to_palette_alpha=true must forward even when the color bit is also set (#2643)"
+    );
+}
+
+/// Regression for #2643 (SF-D9-2026-08-07-04), real merge path: a BGEM
+/// authoring `envmap_texture`/`envmap_mask_texture` but leaving the
+/// version-appropriate `env_mapping_enabled()` bit off must NOT fill
+/// `textures.environment`/`environment_mask`. Pre-fix these filled
+/// unconditionally, ignoring the same enable bit
+/// `bgem_uses_glass_behavior` already consults.
+#[test]
+fn bgem_merge_skips_envmap_fill_when_env_mapping_disabled() {
+    let mut pool = byroredux_core::string::StringPool::new();
+    let path = "materials/tests/envmap_disabled.bgem";
+    let mut provider = MaterialProvider::new();
+    provider.insert_bgem_for_test(
+        path,
+        BgemFile {
+            base: byroredux_bgsm::BaseMaterial {
+                environment_mapping: false, // v2 default reads the shared bit
+                ..Default::default()
+            },
+            envmap_texture: "Shared/Cubemaps/mipblur_DefaultOutside1.dds".into(),
+            envmap_mask_texture: "Effects/Glass/glassmask.dds".into(),
+            ..Default::default()
+        },
+    );
+    let mut mesh = imported_mesh_with_material_path(&mut pool, path);
+
+    assert!(merge_external_material(
+        &mut mesh.material,
+        &mut provider,
+        &mut pool,
+    ));
+    assert!(
+        mesh.material.textures.environment.is_none(),
+        "env_mapping_enabled()==false must skip the environment texture fill (#2643)"
+    );
+    assert!(
+        mesh.material.textures.environment_mask.is_none(),
+        "env_mapping_enabled()==false must skip the environment mask fill (#2643)"
+    );
+}
+
+/// Sibling of the above with the enable bit ON — the envmap textures must
+/// still fill via the real merge path.
+#[test]
+fn bgem_merge_fills_envmap_when_env_mapping_enabled() {
+    let mut pool = byroredux_core::string::StringPool::new();
+    let path = "materials/tests/envmap_enabled.bgem";
+    let mut provider = MaterialProvider::new();
+    provider.insert_bgem_for_test(
+        path,
+        BgemFile {
+            base: byroredux_bgsm::BaseMaterial {
+                environment_mapping: true,
+                ..Default::default()
+            },
+            envmap_texture: "Shared/Cubemaps/mipblur_DefaultOutside1.dds".into(),
+            envmap_mask_texture: "Effects/Glass/glassmask.dds".into(),
+            ..Default::default()
+        },
+    );
+    let mut mesh = imported_mesh_with_material_path(&mut pool, path);
+
+    assert!(merge_external_material(
+        &mut mesh.material,
+        &mut provider,
+        &mut pool,
+    ));
+    assert!(
+        mesh.material.textures.environment.is_some(),
+        "env_mapping_enabled()==true must fill the environment texture (#2643)"
+    );
+    assert!(
+        mesh.material.textures.environment_mask.is_some(),
+        "env_mapping_enabled()==true must fill the environment mask (#2643)"
+    );
+}
+
 #[test]
 fn closed_bgem_glass_does_not_select_thin_surface_behavior() {
     let bgem = BgemFile {

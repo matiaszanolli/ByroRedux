@@ -1011,6 +1011,9 @@ pub(crate) fn merge_external_material(
             // already won the texture slot.
             if material.textures.greyscale_lut.is_none() && !bgsm.greyscale_texture.is_empty() {
                 material.bgsm_greyscale_lut_enabled = bgsm.base.grayscale_to_palette_color;
+                // #2643 — BGSM has no alpha-variant field, so the color
+                // bit is the only one this format can author.
+                material.bgsm_greyscale_lut_color = bgsm.base.grayscale_to_palette_color;
             }
             fill(
                 &mut material.textures.greyscale_lut,
@@ -1250,32 +1253,51 @@ pub(crate) fn merge_external_material(
         // `EFFECT_PALETTE_COLOR` flag.
         if material.textures.greyscale_lut.is_none() && !bgem.grayscale_texture.is_empty() {
             material.textures.greyscale_lut = Some(pool.intern(&bgem.grayscale_texture));
-            // #1580 — BGEM's own alpha-variant bool decides whether the LUT
-            // gates EFFECT_PALETTE_ALPHA or the default EFFECT_PALETTE_COLOR;
-            // see `pack_imported_material_flags` in `cell_loader.rs`.
+            // #1580 / #2643 — BGEM's own alpha-variant bool and the shared
+            // color bit are independent authoring (the format permits
+            // setting both at once), so track them as two separate flags
+            // and let `pack_imported_material_flags` OR both
+            // EFFECT_PALETTE_COLOR / EFFECT_PALETTE_ALPHA in independently
+            // — see `pack_imported_material_flags` in `cell_loader.rs`.
+            // Previously `bgsm_greyscale_lut_is_alpha` alone decided
+            // COLOR-vs-ALPHA, which silently dropped the color variant
+            // whenever a BGEM authored both bits.
             material.bgsm_greyscale_lut_is_alpha = bgem.grayscale_to_palette_alpha;
+            material.bgsm_greyscale_lut_color = bgem.base.grayscale_to_palette_color;
             // #2108 (SF-D9-01) — either enable bit (the shared
             // `grayscale_to_palette_color`, or BGEM's alpha-variant
             // `grayscale_to_palette_alpha`) turns the remap on; which of
             // COLOR/ALPHA the packer sets is decided separately, above, by
-            // `bgsm_greyscale_lut_is_alpha`. The texture slot being filled
-            // is not itself an enable signal.
+            // `bgsm_greyscale_lut_color` / `bgsm_greyscale_lut_is_alpha`.
+            // The texture slot being filled is not itself an enable signal.
             material.bgsm_greyscale_lut_enabled =
                 bgem.base.grayscale_to_palette_color || bgem.grayscale_to_palette_alpha;
             touched = true;
         }
-        fill(
-            &mut material.textures.environment,
-            &bgem.envmap_texture,
-            &mut touched,
-            pool,
-        );
-        fill(
-            &mut material.textures.environment_mask,
-            &bgem.envmap_mask_texture,
-            &mut touched,
-            pool,
-        );
+        // #2643 (SF-D9-2026-08-07-04) — gate the envmap texture fill on
+        // the authored `env_mapping_enabled()` bit, the version-aware
+        // accessor `bgem_uses_glass_behavior` above already consults
+        // (`reflective_surface_maps`, #2358). Previously this filled
+        // unconditionally from `envmap_texture`/`envmap_mask_texture`
+        // regardless of whether the material actually enabled env
+        // mapping, so the same authored bit was honoured for glass
+        // classification and ignored for texture binding within one
+        // file — a BGEM with a stale/unused envmap slot but the enable
+        // bit off would still bind it.
+        if bgem.env_mapping_enabled() {
+            fill(
+                &mut material.textures.environment,
+                &bgem.envmap_texture,
+                &mut touched,
+                pool,
+            );
+            fill(
+                &mut material.textures.environment_mask,
+                &bgem.envmap_mask_texture,
+                &mut touched,
+                pool,
+            );
+        }
         // #1076 / FO4-D6-002 SIBLING — BGEM also exposes
         // `specular_texture` + `lighting_texture` (the two BGSM v>2
         // slots that exist on the BGEM side too; BGEM does NOT

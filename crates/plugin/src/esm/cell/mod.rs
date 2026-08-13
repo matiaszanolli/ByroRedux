@@ -721,6 +721,18 @@ pub struct StaticObject {
     /// at least makes the count of script-bearing records discoverable.
     /// See #369.
     pub has_script: bool,
+    /// Decoded `VMAD` script attachments + property bindings (Skyrim+),
+    /// mirroring [`super::records::common::CommonNamedFields::script_instance`].
+    /// `None` when the record has no `VMAD` (or wasn't built by
+    /// `build_static_object_from_subs`, which is the only populator today
+    /// — #2663 / SCR-D7-NEW11-02). Before this field existed, the whole
+    /// MODL-only world-placement family (STAT/MSTT/FURN/DOOR/LIGH/FLOR/
+    /// IDLM/BNDS/ADDN/TACT) decoded `VMAD` as a presence-only flag with the
+    /// payload dropped, and `Index::base_record_script_instance` had no
+    /// typed map to consult even if it hadn't been — the exact sibling gap
+    /// #2189 fixed for the item family. Measured impact: 42 unreachable
+    /// scripted base records in `Skyrim.esm`, 442 in `Fallout4.esm`.
+    pub script_instance: Option<ScriptInstanceData>,
     /// True when the base record's header carries the **Visible-When-Distant**
     /// / "Has Distant LOD" flag (`0x00010000`,
     /// [`crate::esm::reader::FLAG_VISIBLE_WHEN_DISTANT`], surfaced via

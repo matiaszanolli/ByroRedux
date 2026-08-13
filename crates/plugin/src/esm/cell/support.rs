@@ -52,6 +52,7 @@ pub(crate) fn build_static_object_from_subs(
     let mut addon_index: Option<i32> = None;
     let mut addon_dnam: Option<(u16, u16)> = None;
     let mut has_script = false;
+    let mut script_instance = None;
     let mut xpwr_form_id: Option<u32> = None;
 
     for sub in subs {
@@ -71,7 +72,17 @@ pub(crate) fn build_static_object_from_subs(
                     bad,
                 ),
             },
-            b"VMAD" => has_script = true,
+            // #2663 (SCR-D7-NEW11-02) — decode the full VMAD payload,
+            // mirroring `CommonNamedFields::from_subs`'s `VMAD` arm. This
+            // was presence-only (`has_script = true`, payload dropped)
+            // until this fix; the sibling gap to #2189, which taught
+            // `CommonItemFields` the same decode for the item family.
+            b"VMAD" => {
+                has_script = true;
+                script_instance = Some(
+                    super::super::records::script_instance::ScriptInstanceData::parse(&sub.data),
+                );
+            }
             b"DATA" if is_ligh && sub.data.len() >= 12 => {
                 let radius =
                     u32::from_le_bytes([sub.data[4], sub.data[5], sub.data[6], sub.data[7]]) as f32;
@@ -300,6 +311,7 @@ pub(crate) fn build_static_object_from_subs(
             light_data,
             addon_data,
             has_script,
+            script_instance,
             visible_when_distant,
         })
     } else {
@@ -556,6 +568,10 @@ pub(crate) fn parse_scol_group(
                         // physics). Propagate so Papyrus event dispatch
                         // doesn't skip scripted SCOL placements.
                         has_script: record.has_script,
+                        // #2663 — `parse_scol` doesn't decode VMAD past
+                        // presence (out of this issue's scope; no vanilla
+                        // SCOL carries one). Not the same gap as STAT/etc.
+                        script_instance: None,
                         visible_when_distant: header.is_visible_when_distant(),
                     },
                 );
@@ -616,6 +632,7 @@ pub(crate) fn parse_pkin_group(
                         light_data: None,
                         addon_data: None,
                         has_script: false,
+                        script_instance: None,
                         // Nominal expansion-trigger entry (empty model_path);
                         // the flag rides the real PKIN header for completeness,
                         // though the synthetic child placements are what render.
@@ -680,6 +697,10 @@ pub(crate) fn parse_movs_group(
                         light_data: None,
                         addon_data: None,
                         has_script: record.has_script,
+                        // #2663 — `parse_movs` doesn't decode VMAD past
+                        // presence (out of this issue's scope; vanilla
+                        // Fallout4.esm ships zero MOVS records).
+                        script_instance: None,
                         visible_when_distant: header.is_visible_when_distant(),
                     },
                 );

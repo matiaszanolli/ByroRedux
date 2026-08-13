@@ -125,9 +125,19 @@ pub struct QuestAlias {
     /// (Reference). Most fill-type fields are exclusive to one kind
     /// (documented per-variant on [`AliasFillType`]).
     pub is_location: bool,
-    /// FO4 `ALCS` reference-collection alias.
+    /// FO4 `ALCS` reference-collection alias. Excluded from the ordinary
+    /// single-entity fill loop in
+    /// `byroredux_scripting::scene::refresh_scene_actor_bindings` (#2661 /
+    /// SCR-D6-NEW11-04) — reference collections are a documented Phase 4+
+    /// deferral with no collection-fill runtime yet; the diagnostic
+    /// reports `ReferenceCollectionRuntimeUnavailable` for these until
+    /// one exists.
     pub is_collection: bool,
-    /// FO4 `ALMI` collection fill limit.
+    /// FO4 `ALMI` collection fill limit. Parsed and carried, but has NO
+    /// consumer yet (#2661) — collection aliases decline at the fill
+    /// stage entirely (see `is_collection`), so there is nothing to bound
+    /// with a fill limit today. Intentionally not dropped: the Phase 4+
+    /// collection-fill runtime will need this value when it exists.
     pub max_initial_fill_count: Option<u8>,
     /// `ALID` — the alias name (e.g. `"Location"`, `"QuestGiver"`),
     /// substituted into dynamically-generated journal/dialogue text.

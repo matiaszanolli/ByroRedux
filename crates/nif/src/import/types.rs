@@ -488,6 +488,21 @@ pub struct ImportedMaterial {
     pub backlight_power: f32,
     pub grayscale_to_palette_scale: f32,
     pub bgsm_greyscale_lut_is_alpha: bool,
+    /// #2643 (SF-D9-2026-08-07-04) — BGEM's `grayscale_to_palette_color`
+    /// enable bit, tracked independently from
+    /// `bgsm_greyscale_lut_is_alpha`. The BGEM format permits authoring
+    /// BOTH the shared `grayscale_to_palette_color` bit and BGEM's own
+    /// `grayscale_to_palette_alpha` bit at once — `bgsm_greyscale_lut_is_alpha`
+    /// alone can't represent that combination, so a BGEM authoring both
+    /// used to silently lose the color variant (only `EFFECT_PALETTE_ALPHA`
+    /// packed). `pack_imported_material_flags` now ORs `EFFECT_PALETTE_COLOR`
+    /// and `EFFECT_PALETTE_ALPHA` independently from this field and
+    /// `bgsm_greyscale_lut_is_alpha`, matching how the inline NIF
+    /// effect-shader path (`pack_effect_shader_flags`) already derives the
+    /// two bits independently. Always mirrors the BGSM/BGEM `base.
+    /// grayscale_to_palette_color` bit; BGSM materials (no alpha variant)
+    /// only ever set this one.
+    pub bgsm_greyscale_lut_color: bool,
     /// #2108 (SF-D9-01) — the authored BGSM/BGEM palette-remap ENABLE bit
     /// (`grayscale_to_palette_color`, or BGEM's `grayscale_to_palette_alpha`
     /// as an alternate enable), captured at the same merge step that fills
@@ -561,6 +576,7 @@ impl Default for ImportedMaterial {
             backlight_power: 0.0,
             grayscale_to_palette_scale: 1.0,
             bgsm_greyscale_lut_is_alpha: false,
+            bgsm_greyscale_lut_color: false,
             bgsm_greyscale_lut_enabled: false,
             fresnel_power: 5.0,
             uv_offset: [0.0, 0.0],

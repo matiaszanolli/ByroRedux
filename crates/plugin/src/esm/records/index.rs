@@ -598,10 +598,11 @@ impl EsmIndex {
     /// translation layer decompiles to canonical ECS behavior.
     ///
     /// Covers the same base-record families `base_record_script` walks —
-    /// activators, containers, NPCs/creatures, items — in the same
+    /// activators, containers, NPCs/creatures, items — plus (#2663) the
+    /// MODL-only world-placement family (STAT/MSTT/FURN/DOOR/LIGH/FLOR/
+    /// IDLM/BNDS/ADDN/TACT, via `cells.statics`) and terminals, in that
     /// priority order. Returns `None` when the record is absent or
-    /// carries no `VMAD`. (Terminals still don't decode `VMAD`, so they
-    /// never match here.)
+    /// carries no `VMAD`.
     pub fn base_record_script_instance(
         &self,
         base_form_id: u32,
@@ -624,6 +625,25 @@ impl EsmIndex {
         // so every scripted item silently declined to attach.
         if let Some(r) = self.items.get(&base_form_id) {
             return r.common.script_instance.as_ref();
+        }
+        // #2663 (SCR-D7-NEW11-02) — the MODL-only world-placement family
+        // (STAT/MSTT/FURN/DOOR/LIGH/FLOR/IDLM/BNDS/ADDN/TACT), the exact
+        // sibling gap to #2189: `build_static_object_from_subs` decoded
+        // `VMAD` as a presence-only flag with the payload dropped, and
+        // `self.cells.statics` had nowhere to keep it even if it hadn't.
+        // Placed LAST — deliberately lower priority than every typed map
+        // above, so a form that also has a typed entry (e.g. an ACTI also
+        // reachable via `self.activators`) resolves through the more
+        // specific map first.
+        if let Some(r) = self.cells.statics.get(&base_form_id) {
+            return r.script_instance.as_ref();
+        }
+        // #2663 — TERM is parsed through `CommonNamedFields` (full VMAD
+        // decode) but `parse_term` discarded `script_instance`; FO4 ships
+        // 207 VMAD-bearing TERM records, so the "TERM is FO3/FNV-only"
+        // premise that justified skipping this arm was wrong.
+        if let Some(r) = self.terminals.get(&base_form_id) {
+            return r.script_instance.as_ref();
         }
         None
     }
@@ -1111,5 +1131,130 @@ mod tests {
             },
         );
         assert!(idx.base_record_script_instance(PLAIN).is_none());
+    }
+
+    /// Regression for #2663 (SCR-D7-NEW11-02) — the MODL-only
+    /// world-placement family (STAT/MSTT/FURN/DOOR/LIGH/FLOR/IDLM/BNDS/
+    /// ADDN/TACT), reached via `cells.statics` since none of those types
+    /// gets its own typed map. Mirrors
+    /// `base_record_script_instance_resolves_an_item_records_vmad`.
+    #[test]
+    fn base_record_script_instance_resolves_a_statics_familys_vmad() {
+        use crate::esm::cell::StaticObject;
+        use crate::esm::records::script_instance::{ScriptInstance, ScriptInstanceData};
+
+        const FURNITURE: u32 = 0x0002_4001;
+
+        let mut idx = EsmIndex::default();
+        idx.cells.statics.insert(
+            FURNITURE,
+            StaticObject {
+                form_id: FURNITURE,
+                editor_id: "GenPullChainAnim01NoPlayer".to_string(),
+                model_path: "furniture\\leverpull01.nif".to_string(),
+                record_type: crate::record::RecordType::FURN,
+                light_data: None,
+                addon_data: None,
+                has_script: true,
+                script_instance: Some(ScriptInstanceData {
+                    version: 5,
+                    object_format: 2,
+                    scripts: vec![ScriptInstance {
+                        name: "LeverPullScript".to_string(),
+                        status: 0,
+                        properties: Vec::new(),
+                    }],
+                }),
+                visible_when_distant: false,
+            },
+        );
+
+        let inst = idx
+            .base_record_script_instance(FURNITURE)
+            .expect("a world-placement base record's VMAD must be reachable (#2663)");
+        assert_eq!(inst.scripts.len(), 1);
+        assert_eq!(inst.scripts[0].name, "LeverPullScript");
+    }
+
+    /// A `cells.statics` entry with no VMAD still declines.
+    #[test]
+    fn base_record_script_instance_declines_a_static_without_vmad() {
+        use crate::esm::cell::StaticObject;
+
+        const PLAIN: u32 = 0x0002_4002;
+
+        let mut idx = EsmIndex::default();
+        idx.cells.statics.insert(
+            PLAIN,
+            StaticObject {
+                form_id: PLAIN,
+                editor_id: "PlainStatic".to_string(),
+                model_path: "clutter\\plain01.nif".to_string(),
+                record_type: crate::record::RecordType::STAT,
+                light_data: None,
+                addon_data: None,
+                has_script: false,
+                script_instance: None,
+                visible_when_distant: false,
+            },
+        );
+        assert!(idx.base_record_script_instance(PLAIN).is_none());
+    }
+
+    /// Regression for #2663 (SCR-D7-NEW11-02) — TERM is parsed through
+    /// `CommonNamedFields` (full VMAD decode) but `parse_term` used to
+    /// discard `script_instance`, and this arm didn't exist. FO4 ships
+    /// 207 VMAD-bearing TERM records; the "TERM is FO3/FNV-only" premise
+    /// that justified skipping this was factually wrong.
+    #[test]
+    fn base_record_script_instance_resolves_a_terminals_vmad() {
+        use crate::esm::records::TermRecord;
+        use crate::esm::records::script_instance::{ScriptInstance, ScriptInstanceData};
+
+        const TERMINAL: u32 = 0x0002_5001;
+
+        let mut idx = EsmIndex::default();
+        idx.terminals.insert(
+            TERMINAL,
+            TermRecord {
+                form_id: TERMINAL,
+                editor_id: "VRWorkshopShared_VRTerminalMusicSubMenu".to_string(),
+                script_instance: Some(ScriptInstanceData {
+                    version: 5,
+                    object_format: 2,
+                    scripts: vec![ScriptInstance {
+                        name: "TerminalMenuScript".to_string(),
+                        status: 0,
+                        properties: Vec::new(),
+                    }],
+                }),
+                ..Default::default()
+            },
+        );
+
+        let inst = idx
+            .base_record_script_instance(TERMINAL)
+            .expect("an FO4 TERM record's VMAD must be reachable (#2663)");
+        assert_eq!(inst.scripts.len(), 1);
+        assert_eq!(inst.scripts[0].name, "TerminalMenuScript");
+    }
+
+    /// A terminal with no VMAD (the FO3/FNV common case) still declines.
+    #[test]
+    fn base_record_script_instance_declines_a_terminal_without_vmad() {
+        use crate::esm::records::TermRecord;
+
+        const TERMINAL: u32 = 0x0002_5002;
+
+        let mut idx = EsmIndex::default();
+        idx.terminals.insert(
+            TERMINAL,
+            TermRecord {
+                form_id: TERMINAL,
+                editor_id: "MainframeTerminal".to_string(),
+                ..Default::default()
+            },
+        );
+        assert!(idx.base_record_script_instance(TERMINAL).is_none());
     }
 }

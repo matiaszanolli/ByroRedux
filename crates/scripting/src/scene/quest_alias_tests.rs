@@ -142,6 +142,90 @@ fn quest_alias_diagnostics_classify_runtime_boundaries_and_dependencies() {
         .all(|diagnostic| diagnostic.state == QuestAliasResolutionState::QuestNotRunning));
 }
 
+/// Regression for #2661 (SCR-D6-NEW11-04) — an `ALCS` reference-collection
+/// alias whose fill mechanism WOULD otherwise match a real candidate
+/// (unlike the no-fill-type/no-match-conditions alias 8 in the diagnostics
+/// test above, which never had anything to bind to even pre-fix) must
+/// still decline entirely: no candidate binds, the diagnostic reports
+/// `ReferenceCollectionRuntimeUnavailable` rather than `Bound`, and the
+/// candidate that would have matched receives none of the collection's
+/// injected overlays. Pre-fix, `refresh_scene_actor_bindings`'s fill loop
+/// only excluded `is_location` aliases, so this collection alias fell
+/// through to the ordinary single-entity `eligible` path and bound the one
+/// matching candidate, which then received the whole collection's
+/// injected faction — exactly the "one arbitrary member gets the
+/// collection's data, and diagnostics say it filled correctly" failure
+/// mode the design doc's Phase 4+ deferral is meant to prevent.
+#[test]
+fn quest_alias_collection_fill_type_still_declines_not_binds() {
+    let mut world = World::new();
+    crate::register(&mut world);
+    world.insert_resource(QuestStageState::default());
+    world
+        .resource_mut::<QuestStageState>()
+        .start_quest(QuestFormId(QUEST), None);
+
+    let candidate_entity = world.spawn();
+    world.insert(
+        candidate_entity,
+        SceneAliasCandidate {
+            reference_form_id: 0xA1,
+            base_form_id: 0xB1,
+            linked_refs: Vec::new(),
+            location_ref_types: Vec::new(),
+        },
+    );
+
+    const COLLECTION_FACTION: u32 = 0xF00D;
+    install_scene_quest_aliases(
+        &mut world,
+        [QustRecord {
+            form_id: QUEST,
+            aliases: vec![QuestAlias {
+                alias_id: 8,
+                is_collection: true,
+                // A fill mechanism that WOULD match `candidate_entity` if
+                // this alias were treated as an ordinary single-entity
+                // alias — this is exactly the shape the audit's "match
+                // conditions" case exercises (a fill path that CAN
+                // resolve, not one that trivially can't).
+                fill_type: Some(AliasFillType::ForcedReference(0xA1)),
+                injected: byroredux_plugin::esm::records::AliasInjectedData {
+                    factions: vec![COLLECTION_FACTION],
+                    ..Default::default()
+                },
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+    );
+
+    assert_eq!(
+        refresh_scene_actor_bindings(&world),
+        0,
+        "a collection alias must never bind via the ordinary single-entity fill loop (#2661)"
+    );
+    let bindings = world.resource::<SceneActorBindings>();
+    assert_eq!(
+        bindings.resolve(QuestFormId(QUEST), 8),
+        None,
+        "collection alias must stay unbound even though its fill_type matches a real candidate"
+    );
+
+    let diagnostics = quest_alias_diagnostics(&world, QuestFormId(QUEST)).unwrap();
+    assert_eq!(
+        diagnostics[0].state,
+        QuestAliasResolutionState::ReferenceCollectionRuntimeUnavailable,
+        "must decline with the documented diagnostic, not report false success"
+    );
+
+    let ranks = world.get::<FactionRanks>(candidate_entity);
+    assert!(
+        ranks.is_none_or(|ranks| ranks.rank(COLLECTION_FACTION).is_none()),
+        "the matching candidate must NOT receive the collection's injected faction (#2661)"
+    );
+}
+
 #[test]
 fn quest_alias_refresh_resolves_direct_unique_and_distinct_xlrt_roles() {
     let mut world = World::new();

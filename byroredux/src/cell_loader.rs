@@ -259,10 +259,19 @@ pub(crate) fn pack_imported_material_flags(
     //
     // #1580 — BGEM's `grayscale_to_palette_alpha` bool (BGSM has no
     // alpha-variant field, so it's always false there) picks
-    // EFFECT_PALETTE_ALPHA instead of the color default so the palette
-    // remap targets alpha rather than luminance, matching how
+    // EFFECT_PALETTE_ALPHA in addition to the color bit, matching how
     // `pack_effect_shader_flags` derives the two bits independently for
     // the inline-effect-shader path.
+    //
+    // #2643 (SF-D9-2026-08-07-04) — the BGEM format permits authoring
+    // BOTH the shared `grayscale_to_palette_color` bit and BGEM's own
+    // `grayscale_to_palette_alpha` bit at once. This used to be an
+    // if/else keyed on `bgsm_greyscale_lut_is_alpha` alone, so a BGEM
+    // authoring both bits packed EFFECT_PALETTE_ALPHA only, silently
+    // dropping the color variant. `bgsm_greyscale_lut_color` and
+    // `bgsm_greyscale_lut_is_alpha` are now independent flags — OR each
+    // bit in on its own, exactly like `pack_effect_shader_flags` does for
+    // `effect_palette_color`/`effect_palette_alpha`.
     //
     // #2108 (SF-D9-01) — gated on `bgsm_greyscale_lut_enabled`, the
     // authored `grayscale_to_palette_color`/`_alpha` ENABLE bit
@@ -278,10 +287,11 @@ pub(crate) fn pack_imported_material_flags(
     // an empty slot, but a remap with no LUT to sample would be a no-op
     // at best and reads confusingly if it slipped through.
     if material.textures.greyscale_lut.is_some() && material.bgsm_greyscale_lut_enabled {
+        if material.bgsm_greyscale_lut_color {
+            flags |= EFFECT_PALETTE_COLOR;
+        }
         if material.bgsm_greyscale_lut_is_alpha {
             flags |= EFFECT_PALETTE_ALPHA;
-        } else {
-            flags |= EFFECT_PALETTE_COLOR;
         }
     }
     // #1147 Phase 2b — translucency parameter-shape bits. Only
@@ -377,6 +387,7 @@ mod pack_imported_material_flags_tests {
         let mut pool = byroredux_core::string::StringPool::new();
         material.textures.greyscale_lut = Some(pool.intern("textures\\actors\\ghoul_palette.dds"));
         material.bgsm_greyscale_lut_enabled = true;
+        material.bgsm_greyscale_lut_color = true;
         assert_eq!(
             pack_imported_material_flags(&material) & EFFECT_PALETTE_COLOR,
             EFFECT_PALETTE_COLOR,
@@ -413,9 +424,11 @@ mod pack_imported_material_flags_tests {
 
     /// Regression for #1580 — a BGEM's `grayscale_to_palette_alpha` bool
     /// (forwarded onto `bgsm_greyscale_lut_is_alpha` by the BGEM merge arm
-    /// in `asset_provider/material.rs`) must pack `EFFECT_PALETTE_ALPHA`
-    /// instead of the color default, and the two bits are mutually
-    /// exclusive for a single greyscale LUT path.
+    /// in `asset_provider/material.rs`) must pack `EFFECT_PALETTE_ALPHA`.
+    /// When only the alpha bit is authored (color bit left unset), only
+    /// EFFECT_PALETTE_ALPHA packs — see
+    /// `bgem_both_palette_bits_pack_both_effect_flags` below for the case
+    /// where a BGEM authors both bits at once (#2643).
     #[test]
     fn bgem_alpha_variant_sets_effect_palette_alpha_not_color() {
         use byroredux_renderer::vulkan::material::material_flag::EFFECT_PALETTE_ALPHA;
@@ -435,7 +448,40 @@ mod pack_imported_material_flags_tests {
         assert_eq!(
             flags & EFFECT_PALETTE_COLOR,
             0,
-            "alpha variant must not also set EFFECT_PALETTE_COLOR"
+            "color bit was not authored on this material, so EFFECT_PALETTE_COLOR must stay clear"
+        );
+    }
+
+    /// Regression for #2643 (SF-D9-2026-08-07-04) — a BGEM authoring BOTH
+    /// the shared `grayscale_to_palette_color` bit and its own
+    /// `grayscale_to_palette_alpha` bit (the format permits this; the
+    /// inline NIF effect-shader path already handles it via
+    /// `pack_effect_shader_flags`) must pack BOTH `EFFECT_PALETTE_COLOR`
+    /// and `EFFECT_PALETTE_ALPHA`. Pre-fix, `bgsm_greyscale_lut_is_alpha`
+    /// alone decided COLOR-vs-ALPHA as a mutually-exclusive choice, so
+    /// this input packed ALPHA only and silently dropped the color
+    /// variant.
+    #[test]
+    fn bgem_both_palette_bits_pack_both_effect_flags() {
+        use byroredux_renderer::vulkan::material::material_flag::EFFECT_PALETTE_ALPHA;
+
+        let mut material = empty_material();
+        let mut pool = byroredux_core::string::StringPool::new();
+        material.textures.greyscale_lut =
+            Some(pool.intern("textures\\effects\\gradients\\fire.dds"));
+        material.bgsm_greyscale_lut_enabled = true;
+        material.bgsm_greyscale_lut_color = true;
+        material.bgsm_greyscale_lut_is_alpha = true;
+        let flags = pack_imported_material_flags(&material);
+        assert_eq!(
+            flags & EFFECT_PALETTE_COLOR,
+            EFFECT_PALETTE_COLOR,
+            "both palette bits authored → EFFECT_PALETTE_COLOR must still pack (#2643)"
+        );
+        assert_eq!(
+            flags & EFFECT_PALETTE_ALPHA,
+            EFFECT_PALETTE_ALPHA,
+            "both palette bits authored → EFFECT_PALETTE_ALPHA must still pack (#2643)"
         );
     }
 

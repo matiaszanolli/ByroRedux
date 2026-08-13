@@ -933,13 +933,19 @@ pub struct TermRecord {
     /// CTDA conditions) which is deferred; the stub just captures
     /// the labels so the menu tree isn't lost.
     pub menu_items: Vec<String>,
+    /// Decoded `VMAD` script attachments (Skyrim+ inline Papyrus). `None`
+    /// on FO3/FNV terminals (those use the `SCRI` → SCPT/Obscript path
+    /// via `script_form_id`). #2663 (SCR-D7-NEW11-02) — FO4 ships 207
+    /// VMAD-bearing `TERM` records (`Fallout4.esm`); the shared helper
+    /// already decoded this, `parse_term` just wasn't copying it out.
+    pub script_instance: Option<super::super::script_instance::ScriptInstanceData>,
 }
 
 pub fn parse_term(form_id: u32, subs: &[SubRecord]) -> TermRecord {
-    // EDID / FULL / MODL / SCRI via the shared helper (TD2-109 / #2068).
-    // TERM is FO3/FNV-only, so the helper's VMAD arm never fires here and
-    // `TermRecord` carries no script-instance field; only the terminal-
-    // specific password / footer / menu arms remain below.
+    // EDID / FULL / MODL / SCRI / VMAD via the shared helper (TD2-109 /
+    // #2068). TERM is NOT FO3/FNV-only — FO4 ships 207 VMAD-bearing TERM
+    // records — so the helper's VMAD arm fires there; #2663 fixed
+    // `parse_term` dropping the decoded `script_instance` on the floor.
     let common = CommonNamedFields::from_subs(subs);
     let mut out = TermRecord {
         form_id,
@@ -947,6 +953,7 @@ pub fn parse_term(form_id: u32, subs: &[SubRecord]) -> TermRecord {
         full_name: common.full_name,
         model_path: common.model_path,
         script_form_id: common.script_form_id,
+        script_instance: common.script_instance,
         ..Default::default()
     };
     for sub in subs {
@@ -1233,6 +1240,39 @@ mod tests {
         assert!(t.password.is_empty());
         assert_eq!(t.body_size, 0);
         assert!(t.menu_items.is_empty());
+    }
+
+    /// Regression for #2663 (SCR-D7-NEW11-02) — `parse_term` used to
+    /// discard `CommonNamedFields::script_instance` even though the
+    /// shared helper fully decoded it (mirrors
+    /// `parse_acti_decodes_vmad_into_script_instance`). FO4 ships 207
+    /// VMAD-bearing TERM records — the parser's own "TERM is FO3/FNV-only"
+    /// comment justifying the drop was factually wrong.
+    #[test]
+    fn parse_term_decodes_vmad_into_script_instance() {
+        // version 5, objectFormat 2, 1 script "TerminalMenuScript", 0 props.
+        let mut vmad = Vec::new();
+        vmad.extend_from_slice(&5i16.to_le_bytes());
+        vmad.extend_from_slice(&2i16.to_le_bytes());
+        vmad.extend_from_slice(&1u16.to_le_bytes());
+        let name = b"TerminalMenuScript";
+        vmad.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        vmad.extend_from_slice(name);
+        vmad.push(0); // script status
+        vmad.extend_from_slice(&0u16.to_le_bytes()); // propCount = 0
+
+        let subs = vec![
+            sub(b"EDID", b"VRWorkshopShared_VRTerminalMusicSubMenu\0"),
+            sub(b"MODL", b"setdressing\\workshop\\terminal01.nif\0"),
+            sub(b"VMAD", &vmad),
+        ];
+        let t = parse_term(0x0002_5001, &subs);
+        assert_eq!(t.editor_id, "VRWorkshopShared_VRTerminalMusicSubMenu");
+        let inst = t
+            .script_instance
+            .expect("VMAD must survive the CommonNamedFields hand-off (#2663)");
+        assert_eq!(inst.scripts.len(), 1);
+        assert_eq!(inst.scripts[0].name, "TerminalMenuScript");
     }
 
     // ── #808 / FNV-D2-NEW-01 stubs ─────────────────────────────────
