@@ -40,9 +40,32 @@ const FOG_HEIGHT_REFERENCE_RAY_MAX_DISTANCE: f32 = 4096.0;
 /// Falls back to the camera's own Y — the pre-fix behavior — when no
 /// ground is found below (open sky, no `PhysicsWorld` resource yet).
 fn fog_height_reference(world: &World, cam_pos: Vec3) -> f32 {
+    // The player capsule must be excluded (#2859). In `PlayerMode::Character`
+    // the camera is pinned to `body_pos + eye_height*Y` at the body's own XZ,
+    // and `CharacterController::HUMAN` is deliberately sized so the eye sits
+    // INSIDE the capsule (`eye_height 52 < half_height 46 + radius 18`). The
+    // capsule is `KinematicPositionBased`, which `exclude_dynamic()` does not
+    // filter, so with `solid = true` the ray returned a `toi = 0` self-hit —
+    // i.e. exactly `cam_pos.y`, numerically identical to the fallback below.
+    // That silently reverted this whole function to the pre-#2225 behaviour
+    // it exists to remove, with no log and no test failure.
+    let excluded_body = world
+        .try_resource::<crate::systems::PlayerEntity>()
+        .and_then(|player| player.0)
+        .and_then(|entity| {
+            world
+                .query::<byroredux_physics::RapierHandles>()
+                .and_then(|handles| handles.get(entity).map(|h| h.body))
+        });
     world
         .try_resource::<PhysicsWorld>()
-        .and_then(|pw| pw.cast_ray_down(cam_pos, FOG_HEIGHT_REFERENCE_RAY_MAX_DISTANCE))
+        .and_then(|pw| {
+            pw.cast_ray_down(
+                cam_pos,
+                FOG_HEIGHT_REFERENCE_RAY_MAX_DISTANCE,
+                excluded_body,
+            )
+        })
         .unwrap_or(cam_pos.y)
 }
 
@@ -109,6 +132,68 @@ mod fog_height_reference_tests {
         assert_ne!(
             reference, cam_pos.y,
             "must not fall back to camera Y when a floor exists"
+        );
+    }
+
+    /// #2859 — in `PlayerMode::Character` the camera sits INSIDE the player
+    /// capsule by design (`eye_height 52 < half_height 46 + radius 18`), and
+    /// the capsule is `KinematicPositionBased`, which `exclude_dynamic()`
+    /// does not filter. With `solid = true` the ray returned a `toi = 0`
+    /// self-hit — i.e. exactly `cam_pos.y`, numerically identical to the
+    /// fallback — so the whole #2225 height-fog fix was a silent no-op in
+    /// every gameplay cell. The three tests above cannot see it because none
+    /// of them registers a player body.
+    #[test]
+    fn excludes_the_player_capsule_the_camera_sits_inside() {
+        use byroredux_core::ecs::components::MotionType;
+
+        let mut world = World::new();
+        world.insert_resource(PhysicsWorld::new());
+        world.register::<RapierHandles>();
+
+        let floor = world.spawn();
+        world.insert(floor, CollisionShape::Ball { radius: 16.0 });
+        world.insert(floor, RigidBodyData::STATIC);
+        world.insert(
+            floor,
+            GlobalTransform::new(Vec3::new(0.0, 100.0, 0.0), Quat::IDENTITY, 1.0),
+        );
+
+        // Player capsule centred at 300 spans [236, 364]; the eye sits at
+        // 352, inside it — exactly the production geometry.
+        let player = world.spawn();
+        world.insert(
+            player,
+            CollisionShape::Capsule {
+                half_height: 46.0,
+                radius: 18.0,
+            },
+        );
+        world.insert(
+            player,
+            RigidBodyData {
+                motion_type: MotionType::CharacterKinematic,
+                ..RigidBodyData::STATIC
+            },
+        );
+        world.insert(
+            player,
+            GlobalTransform::new(Vec3::new(0.0, 300.0, 0.0), Quat::IDENTITY, 1.0),
+        );
+
+        physics_sync_system(&world, 0.0);
+        world.resource_mut::<PhysicsWorld>().update_query_pipeline();
+        world.insert_resource(crate::systems::PlayerEntity(Some(player)));
+
+        let cam_pos = Vec3::new(0.0, 352.0, 0.0);
+        let reference = fog_height_reference(&world, cam_pos);
+        assert_ne!(
+            reference, cam_pos.y,
+            "self-hit on the player capsule — the #2859 regression"
+        );
+        assert!(
+            (reference - 116.0).abs() < 0.1,
+            "expected the floor's top surface (~116.0), got {reference}"
         );
     }
 }

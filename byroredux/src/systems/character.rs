@@ -244,22 +244,72 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
     // accumulating any velocity that would survive landing. This is
     // the Bethesda-engine convention: gravity is suppressed while
     // grounded; only the falling-edge of ground contact unlocks it.
+    // #2857 — the probe must be bounded by the ACTUAL support surface, not
+    // sent as an unclamped fixed `-step_height`.
+    //
+    // The KCC resolves motion by sweeping the capsule along the requested
+    // direction with `target_distance = offset`. A grounded capsule rests
+    // ~`offset` above its floor, i.e. already inside that band, and in that
+    // configuration parry's cast against a CONVEX primitive frequently
+    // reports no interference at all — whereupon rapier's `else` branch
+    // (`character_controller.rs:317-322`) applies the ENTIRE requested
+    // translation and `break`s. A fixed -32 BU request therefore drove the
+    // capsule 32 BU/frame straight through solid `BhkBoxShape` floors and
+    // every synthesized packed-Havok AABB proxy, staying `grounded` for 2-3
+    // frames (post-loop `snap_to_ground` re-asserts it) before free-falling
+    // out of the world. TriMesh floors happen to be immune, which is why
+    // interiors mostly worked and this survived. Measured: 48/80 convex
+    // configurations sank; whether it fires is selected by the collider's
+    // absolute world Y, so it reads as intermittent.
+    //
+    // Bounding the request alone is not enough — any positive amount walks
+    // the capsule down over successive frames once the cast stops clamping.
+    // So measure the gap to the real support first and ask for exactly that,
+    // which keeps `snap_to_ground` engaged (the anti-drift property the fixed
+    // probe existed for) while making tunnelling arithmetically impossible.
+    let kcc_offset = world
+        .try_resource::<byroredux_physics::ContactConfig>()
+        .map(|r| r.kcc_offset_bu)
+        .unwrap_or(byroredux_physics::ContactConfig::DEFAULT.kcc_offset_bu);
+    let pw = world.resource::<byroredux_physics::PhysicsWorld>();
     let desired_vertical = if controller.is_grounded && !jump_fired {
-        -controller.step_height
+        // Probe down for the surface the capsule is standing on. The player's
+        // own body must be excluded or the sweep instantly self-hits (#2859).
+        let support_y = pw.cast_capsule_down(
+            current_pos,
+            controller.half_height,
+            controller.radius,
+            controller.step_height + kcc_offset.max(0.0),
+            body_handle,
+        );
+        match support_y {
+            Some(surface_y) => {
+                // Move exactly to resting contact — `offset` above the
+                // support — and no further. Signed on purpose: correcting
+                // a capsule that has crept slightly BELOW the contact band
+                // is the anti-drift property the old fixed probe provided
+                // (via the KCC clamping -32 back to the offset every frame),
+                // and losing it would reintroduce the 0.05 BU/frame creep on
+                // inclined TriMeshes that the probe was added for. Bounded
+                // below by `step_height` so a legitimate step-down still
+                // resolves in one frame, and above by `offset` so the
+                // correction can never launch the capsule.
+                let feet_y = current_pos.y - controller.half_height - controller.radius;
+                let offset = kcc_offset.max(0.0);
+                let correction = -(feet_y - surface_y - offset);
+                correction.clamp(-controller.step_height, offset)
+            }
+            // Nothing within reach: we are grounded per the last frame but
+            // have walked off an edge taller than the probe. Hand back to
+            // gravity rather than inventing a descent.
+            None => vertical_velocity * dt,
+        }
     } else {
         vertical_velocity * dt
     };
     let desired_translation = horizontal_translation + Vec3::Y * desired_vertical;
 
     // Ask Rapier's KCC for the collide-and-slide-corrected motion.
-    // Snapshot ContactConfig once per tick — the offset is the only
-    // value the KCC consumes and we don't want to hold a separate
-    // resource borrow across the PhysicsWorld read.
-    let kcc_offset = world
-        .try_resource::<byroredux_physics::ContactConfig>()
-        .map(|r| r.kcc_offset_bu)
-        .unwrap_or(byroredux_physics::ContactConfig::DEFAULT.kcc_offset_bu);
-    let pw = world.resource::<byroredux_physics::PhysicsWorld>();
     let result = pw.move_character(byroredux_physics::CharacterMoveParams {
         capsule_half_height: controller.half_height,
         capsule_radius: controller.radius,
@@ -372,8 +422,8 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
     // this on their next step. Best-effort — failures are physics-
     // backend-internal and we still wrote the engine-side Transform
     // above. `body_handle` is the same `body` field on `RapierHandles`
-    // — the EntityId-keyed helper does the actual lookup.
-    let _ = body_handle; // suppress unused (the helper takes the EntityId)
+    // — the EntityId-keyed helper does the actual lookup. (`body_handle`
+    // itself is consumed by the grounded support probe above, #2857.)
     byroredux_physics::set_kinematic_translation(world, player_entity, new_pos);
 }
 

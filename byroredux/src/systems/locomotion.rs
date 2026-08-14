@@ -61,7 +61,17 @@ pub(crate) fn step_toward(
             current.y + LOCOMOTION_GROUND_RAY_UP_OFFSET,
             new_pos.z,
         );
-        if let Some(ground_y) = pw.cast_ray_down(ray_origin, LOCOMOTION_GROUND_RAY_MAX_DISTANCE) {
+        // NOTE: `None` here is a known, separately-tracked defect (#2873),
+        // not an assertion that nothing needs excluding. `step_toward`
+        // receives neither the actor's `EntityId` nor its `RapierHandles`,
+        // and each of an actor's ~18 keyframed ragdoll bones is a *separate*
+        // `KinematicPositionBased` body, so a single `exclude_rigid_body`
+        // would not be sufficient anyway — #2873 needs either a skeleton-root
+        // filter predicate or an "actor bone" collision-group bit. Left
+        // explicit so the gap stays visible at the call site.
+        if let Some(ground_y) =
+            pw.cast_ray_down(ray_origin, LOCOMOTION_GROUND_RAY_MAX_DISTANCE, None)
+        {
             new_pos.y = ground_y;
         }
         // No collider hit (e.g. a synthetic test World, or a stale query
