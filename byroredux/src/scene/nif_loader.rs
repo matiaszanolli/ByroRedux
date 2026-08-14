@@ -989,7 +989,13 @@ pub(crate) fn load_nif_bytes_with_skeleton(
         // ONCE into the canonical Material now that MaterialTextureHandles is
         // attached (mirrors the cell-loader spawn
         // path), instead of recomputing it per draw in the render path.
-        crate::material_translate::resolve_normal_alpha_spec_roughness(world, entity);
+        // #2606 — pass the "a real BGSM authored the PBR scalars" signal so
+        // the legacy fallback cannot clobber them.
+        crate::material_translate::resolve_normal_alpha_spec_roughness(
+            world,
+            entity,
+            mesh.material.bgsm_pbr_scalars_authored,
+        );
         // #2826 (REN-D19-02) — same pattern, for whether the model-space
         // normal map's blue channel carries authored Z.
         crate::material_translate::resolve_msn_z_source(world, entity);

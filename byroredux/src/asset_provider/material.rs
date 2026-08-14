@@ -52,6 +52,85 @@ pub(crate) fn forward_bgsm_phase1_flags(
     }
 }
 
+/// #2607 (FO4-D7-02) — forward BGSM's rim / backlight / subsurface shading
+/// scalars onto `ImportedMaterial`'s matching sinks.
+///
+/// The parser has decoded these since the crate existed, `ImportedMaterial`
+/// has had `rimlight_power` / `backlight_power` / `subsurface_rolloff` since
+/// #2284 wired the NIF-native path, and `translate_material` already forwards
+/// all three onto the canonical `Material` — only this hop was missing, so
+/// every BGSM-authored surface fed the Disney subsurface/rimlight lobe
+/// hardcoded zeros. #1352 (unconditional `MAT_FLAG_PBR_BSDF` for BGSM
+/// content) is what makes that visible rather than inert.
+///
+/// **Gated on the authored enable bits, deliberately.** The parser reads this
+/// whole group only on the `version < 8` branch — the v>=8 layout spends those
+/// bytes on the translucency suite instead — so on a modern BGSM `rim_power`
+/// and `subsurface_lighting_rolloff` still hold their struct defaults of
+/// 2.0 / 0.3. Those are never-parsed values, and forwarding them would be
+/// fabrication, not translation. `rim_lighting` / `subsurface_lighting` are
+/// false in exactly that case, which makes them the correct and complete gate.
+///
+/// `back_light_power` shares the rim enable bit: the format gives it none of
+/// its own, and the Bethesda Material Editor authors it in the rim-lighting
+/// group.
+///
+/// Child-first precedence via the caller's sentinels, matching every other
+/// payload-carrying field in the walk. Extracted from the merge loop for the
+/// same reason as [`forward_bgsm_phase1_flags`] (#2702): so the regression
+/// tests drive the real production logic rather than a hand-copied mirror.
+pub(crate) fn forward_bgsm_rim_subsurface(
+    material: &mut ImportedMaterial,
+    bgsm: &BgsmFile,
+    set_rim: &mut bool,
+    set_subsurface: &mut bool,
+    touched: &mut bool,
+) {
+    if !*set_rim && bgsm.rim_lighting {
+        material.rimlight_power = bgsm.rim_power;
+        material.backlight_power = bgsm.back_light_power;
+        *set_rim = true;
+        *touched = true;
+    }
+    if !*set_subsurface && bgsm.subsurface_lighting {
+        material.subsurface_rolloff = bgsm.subsurface_lighting_rolloff;
+        *set_subsurface = true;
+        *touched = true;
+    }
+}
+
+/// #2608 (FO4-D7-03) — forward BGSM's authored env-map mask scale.
+///
+/// Same drop-at-the-merge-boundary class as [`forward_bgsm_rim_subsurface`]:
+/// `merge_external_material` forwards env-map *textures* but was dropping the
+/// scale that modulates them.
+///
+/// **Gated on `base.environment_mapping`, deliberately.**
+/// `BaseMaterial::parse_after_magic` reads the `(environment_mapping,
+/// environment_mapping_mask_scale)` pair only when `version < 10`; from v10
+/// those bytes became `depth_bias` and the parser substitutes a synthetic
+/// `(false, 1.0)`. Forwarding unconditionally would stamp `env_map_scale =
+/// 1.0` onto every modern BGSM, and `Material::resolve_pbr`'s
+/// `env_map_scale > 0.3` arm reads that as authored reflection intent — a
+/// fabricated input driving real roughness on the majority of FO4 content.
+/// The enable bit is false in precisely the never-parsed case.
+///
+/// (BGSM has no v>=10 re-read of this pair, so the base bit is the whole
+/// story here. BGEM's `env_mapping_enabled()` accessor exists because BGEM
+/// *does* re-read it in its own subclass section.)
+pub(crate) fn forward_bgsm_env_map_scale(
+    material: &mut ImportedMaterial,
+    bgsm: &BgsmFile,
+    set_env_map_scale: &mut bool,
+    touched: &mut bool,
+) {
+    if !*set_env_map_scale && bgsm.base.environment_mapping {
+        material.env_map_scale = bgsm.base.environment_mapping_mask_scale;
+        *set_env_map_scale = true;
+        *touched = true;
+    }
+}
+
 /// Process-lifetime cache of extracted Starfield CDB bytes, keyed by
 /// `"<archive source>|<in-archive path>"`. #2705 (SF-D3-01) —
 /// `build_material_provider` constructs a brand-new `MaterialProvider` (and
@@ -629,6 +708,21 @@ impl MaterialProvider {
 
     /// Seed a parsed BGEM directly so merge tests exercise the production
     /// dispatch path without constructing an archive fixture.
+    /// Seed a resolved BGSM chain directly so merge tests exercise the real
+    /// `merge_external_material` BGSM arm rather than a hand-copied mirror of
+    /// its loop (#2702's failure mode). The BGEM sibling below has existed
+    /// since the BGEM arm landed; this one was missing only because
+    /// `TemplateCache` had no insert.
+    #[cfg(test)]
+    pub(crate) fn insert_bgsm_for_test(
+        &mut self,
+        path: &str,
+        resolved: byroredux_bgsm::template::ResolvedMaterial,
+    ) {
+        let key = normalize_material_path(path).to_ascii_lowercase();
+        self.bgsm_cache.insert_resolved(&key, Arc::new(resolved));
+    }
+
     #[cfg(test)]
     pub(crate) fn insert_bgem_for_test(&mut self, path: &str, bgem: BgemFile) {
         let key = normalize_material_path(path).to_ascii_lowercase();
@@ -932,6 +1026,12 @@ pub(crate) fn merge_external_material(
     let mut set_blend = false;
     let mut set_fresnel = false;
     let mut set_palette_scale = false;
+    // #2607 — the v<8 rim / backlight / subsurface group. Backlight shares
+    // `set_rim`: the format gives it no enable bit of its own.
+    let mut set_rim = false;
+    let mut set_subsurface = false;
+    // #2608 — env-map mask scale, authored only on the v<10 base layout.
+    let mut set_env_map_scale = false;
     // #2212 (NIFAL-D8-01) — chain-local, unlike `material.alpha_test`
     // itself. The NIF F4SF2 bit-25 path (`dedicated_shader.rs`) can
     // pre-set `material.alpha_test = true` before this loop ever runs, so
@@ -1048,6 +1148,13 @@ pub(crate) fn merge_external_material(
         let roughness = (1.0 - leaf.smoothness).clamp(0.04, 1.0);
         material.metalness_override = Some(metalness);
         material.roughness_override = Some(roughness);
+        // #2609 — the flag whose meaning is "authoritative PBR scalars were
+        // merged", set at the exact site that merges them. `from_bgsm` above
+        // cannot serve that role: the BGEM arm sets it too while leaving both
+        // overrides `None` (BGEM authors no smoothness/specular), so a
+        // consumer reading `from_bgsm` as "scalars present" is wrong on every
+        // effect material. Keep this write adjacent to the two it describes.
+        material.bgsm_pbr_scalars_authored = true;
         if metalness > 0.5 {
             // #1591 — blend toward the mult-free `specular_color`, NOT
             // `spec_*` (= specular_color × specular_mult); the mult-bearing
@@ -1227,6 +1334,19 @@ pub(crate) fn merge_external_material(
                 set_palette_scale = true;
                 touched = true;
             }
+            // #2607 / #2608 (FO4-D7-02 / FO4-D7-03) — two more BGSM field
+            // groups that decoded correctly and were dropped at this exact
+            // hop. Both are enable-bit gated; see the fn docs for why
+            // unconditional forwarding would be fabrication rather than
+            // translation.
+            forward_bgsm_rim_subsurface(
+                material,
+                bgsm,
+                &mut set_rim,
+                &mut set_subsurface,
+                &mut touched,
+            );
+            forward_bgsm_env_map_scale(material, bgsm, &mut set_env_map_scale, &mut touched);
             if !set_alpha {
                 material.mat_alpha = bgsm.base.alpha;
                 set_alpha = true;
@@ -1465,15 +1585,26 @@ pub(crate) fn merge_external_material(
             // #2109 (SF-D9-02) — the v21+/v22 glass-overlay suite
             // (`glass_fresnel_color`, `glass_refraction_scale_base`,
             // `glass_blur_scale_base`, `glass_blur_scale_factor`,
-            // `glass_roughness_scratch`, `glass_dirt_overlay`) and
-            // `environment_mapping_mask_scale` all decode correctly on the
-            // BGEM parser side (`bgem.rs`) but have no `ImportedMesh` sink
-            // here — same deferred-consumer class as `emittance_color`
-            // above. Mod-added FO76/Starfield-era BGEM glass renders with
-            // engine-default refraction/tint instead of these authored
-            // values; low severity, since the renderer has no binding to
-            // consume them yet even if forwarded. Deferred renderer-
-            // binding follow-up, not a parser gap.
+            // `glass_roughness_scratch`, `glass_dirt_overlay`) decodes
+            // correctly on the BGEM parser side (`bgem.rs`) but has no
+            // `ImportedMesh` sink here — same deferred-consumer class as
+            // `emittance_color` above. Mod-added FO76/Starfield-era BGEM
+            // glass renders with engine-default refraction/tint instead of
+            // these authored values; low severity, since the renderer has no
+            // binding to consume them yet even if forwarded. Deferred
+            // renderer-binding follow-up, not a parser gap.
+            //
+            // #2608 correction: `environment_mapping_mask_scale` was listed
+            // above as sink-less, and no longer is —
+            // `ImportedMaterial.env_map_scale` is now wired on the BGSM arm
+            // (`forward_bgsm_env_map_scale`), and `env_mapping_enabled()` is
+            // the exact authored gate on this side. It is left unforwarded
+            // DELIBERATELY rather than overlooked: BGEM leaves the PBR
+            // overrides `None`, so `Material::resolve_pbr` runs its keyword
+            // classifier, whose `env_map_scale > 0.3` arm would then start
+            // moving roughness on every env-mapped FO4 effect material. That
+            // is a shading change to evaluate on its own evidence, not a
+            // drop to fix in passing.
         }
         // Soft-particle depth fade + view-angle falloff cone. The NIF
         // `BSEffectShaderProperty` path fills `material.effect_shader` from the

@@ -458,9 +458,28 @@ pub struct ImportedMaterial {
     pub is_pbr: bool,
     pub has_translucency: bool,
     pub model_space_normals: bool,
+    /// **Provenance only**: an external `.bgsm` *or* `.bgem` file resolved for
+    /// this material. Says nothing about which fields it supplied — the BGEM
+    /// arm sets this too, and BGEM authors no smoothness/specular at all.
+    /// Load-bearing for the FO4-vs-Skyrim glass-keyword discriminator
+    /// (`classify_glass_into_material`, #2710), which is why it stays set on
+    /// both arms. For "authoritative PBR scalars were merged" use
+    /// [`Self::bgsm_pbr_scalars_authored`] instead (#2609).
     pub from_bgsm: bool,
     pub bgem_glass: bool,
     pub thin_glass: bool,
+    /// #2609 — the BGSM arm of `merge_external_material` resolved authoritative
+    /// spec-glossiness scalars and wrote them into
+    /// [`Self::metalness_override`] / [`Self::roughness_override`].
+    ///
+    /// Distinct from [`Self::from_bgsm`], which is set on the BGEM arm as well
+    /// even though BGEM leaves both overrides `None`. It is also distinct from
+    /// `roughness_override.is_some()`: legacy inline-NIF content arrives with
+    /// `Some(...)` from the keyword classifier, which is a *guess*, not
+    /// authored data. Only this flag means "a real material file said so", so
+    /// it is the correct gate for any heuristic that would otherwise overwrite
+    /// resolved roughness.
+    pub bgsm_pbr_scalars_authored: bool,
     pub metalness_override: Option<f32>,
     pub roughness_override: Option<f32>,
     pub translucency_subsurface_color: [f32; 3],
@@ -549,6 +568,7 @@ impl Default for ImportedMaterial {
             from_bgsm: false,
             bgem_glass: false,
             thin_glass: false,
+            bgsm_pbr_scalars_authored: false,
             metalness_override: None,
             roughness_override: None,
             translucency_subsurface_color: [0.0; 3],

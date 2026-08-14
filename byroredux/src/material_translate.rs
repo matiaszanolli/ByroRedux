@@ -294,7 +294,31 @@ pub(crate) fn normal_alpha_spec_roughness(
     normal_map_index: u32,
     gloss_map_index: u32,
     normal_has_alpha: bool,
+    bgsm_pbr_scalars_authored: bool,
 ) -> Option<f32> {
+    // #2606 (FO4-D7-01) — never overwrite roughness a real material file
+    // authored. This is a Skyrim/Gamebryo-era fallback for content that
+    // supplies no smoothness signal at all; an FO4 BGSM supplies one
+    // directly (`roughness = 1 - smoothness`), so for BGSM content the
+    // heuristic has nothing to add and everything to lose.
+    //
+    // Live, not latent: `ImportedMaterial::default().env_map_scale` is 0.0,
+    // so the `env_map_scale <= 0.3` gate below is satisfied by DEFAULT rather
+    // than only when a low value was authored — and #2608 shows the BGSM merge
+    // has no authored value to put there for a v>=10 material. Any BGSM with a
+    // normal map, no smooth/spec texture and `specular_mult > 1.2` therefore
+    // reached the overwrite. #1352 makes it bite: `MAT_FLAG_PBR_BSDF` is now
+    // unconditional for BGSM content, so the Disney lobe consumes the
+    // clobbered roughness directly.
+    //
+    // Gated on `bgsm_pbr_scalars_authored`, NOT on `from_bgsm`/`BGSM_AUTHORED`
+    // (which the BGEM arm sets while leaving both overrides `None` — #2609)
+    // and NOT on `roughness_override.is_some()` (true for keyword-classified
+    // legacy content too, which would disable this fallback for the very
+    // population it exists to serve).
+    if bgsm_pbr_scalars_authored {
+        return None;
+    }
     if !normal_alpha_spec_applies(
         material_kind,
         metalness,
@@ -326,7 +350,11 @@ pub(crate) fn normal_alpha_spec_roughness(
 /// its timing (once at spawn, not every frame) change. Idempotent (see
 /// [`normal_alpha_spec_roughness`]). Call after all three components are
 /// attached to `entity`.
-pub(crate) fn resolve_normal_alpha_spec_roughness(world: &mut World, entity: EntityId) {
+pub(crate) fn resolve_normal_alpha_spec_roughness(
+    world: &mut World,
+    entity: EntityId,
+    bgsm_pbr_scalars_authored: bool,
+) {
     let Some((material_kind, metalness, env_map_scale, glossiness, specular_strength)) =
         world.get::<Material>(entity).map(|m| {
             (
@@ -359,6 +387,7 @@ pub(crate) fn resolve_normal_alpha_spec_roughness(world: &mut World, entity: Ent
         normal_map_index,
         gloss_map_index,
         normal_has_alpha,
+        bgsm_pbr_scalars_authored,
     ) {
         if let Some(m) = world.get_mut::<Material>(entity) {
             m.roughness = r;
@@ -494,16 +523,18 @@ mod tests {
     #[test]
     fn alpha_normal_preserves_translate_resolved_roughness() {
         // Normal alpha is specular intensity, never gloss/roughness.
-        let r =
-            normal_alpha_spec_roughness(PASS.0, PASS.1, PASS.2, 80.0, 1.0, PASS.3, PASS.4, true);
+        let r = normal_alpha_spec_roughness(
+            PASS.0, PASS.1, PASS.2, 80.0, 1.0, PASS.3, PASS.4, true, false,
+        );
         assert_eq!(r, None);
     }
 
     #[test]
     fn alphaless_normal_uses_specular_strength_when_above_neutral() {
         // specular_strength 2.0 → 0.85 - (1.0)*0.1 = 0.75.
-        let r =
-            normal_alpha_spec_roughness(PASS.0, PASS.1, PASS.2, 80.0, 2.0, PASS.3, PASS.4, false);
+        let r = normal_alpha_spec_roughness(
+            PASS.0, PASS.1, PASS.2, 80.0, 2.0, PASS.3, PASS.4, false, false,
+        );
         assert!((r.unwrap() - 0.75).abs() < 1e-5, "{r:?}");
     }
 
@@ -511,9 +542,79 @@ mod tests {
     fn alphaless_normal_with_neutral_specular_keeps_resolved_roughness() {
         // specular_strength 1.0 (<= 1.2) and no normal alpha → None (caller
         // keeps the translate-resolved roughness, no override).
-        let r =
-            normal_alpha_spec_roughness(PASS.0, PASS.1, PASS.2, 80.0, 1.0, PASS.3, PASS.4, false);
+        let r = normal_alpha_spec_roughness(
+            PASS.0, PASS.1, PASS.2, 80.0, 1.0, PASS.3, PASS.4, false, false,
+        );
         assert_eq!(r, None);
+    }
+
+    /// Regression for #2606 (FO4-D7-01) — a BGSM that authored its own PBR
+    /// scalars must keep the roughness `merge_external_material` derived from
+    /// its `smoothness`, never have it replaced by this Skyrim-era fallback.
+    ///
+    /// The inputs are the real trigger shape, not a contrived one:
+    /// `env_map_scale = 0.0` is `ImportedMaterial`'s DEFAULT (so the
+    /// `<= 0.3` gate was satisfied without anything authoring a low value —
+    /// which is what made this live rather than latent), plus a normal map,
+    /// no smooth/spec texture, and `specular_mult > 1.2`. Both arms are
+    /// asserted in one body: the `false` arm proves the overwrite still
+    /// happens for the legacy population this fallback exists to serve, so
+    /// the `true` arm cannot pass vacuously.
+    #[test]
+    fn authored_bgsm_scalars_survive_the_normal_alpha_spec_fallback() {
+        const DEFAULT_ENV_MAP_SCALE: f32 = 0.0;
+        let call = |authored: bool| {
+            normal_alpha_spec_roughness(
+                0,   // lit material kind
+                0.0, // metalness < 0.3
+                DEFAULT_ENV_MAP_SCALE,
+                80.0,
+                2.0, // specular_mult > 1.2
+                7,   // normal map bound
+                0,   // no dedicated gloss/spec map
+                false,
+                authored,
+            )
+        };
+
+        assert_eq!(
+            call(true),
+            None,
+            "BGSM-authored roughness must not be overwritten by the heuristic"
+        );
+        assert!(
+            call(false).is_some(),
+            "the same inputs without authored scalars must still take the \
+             legacy fallback — otherwise the assertion above proves nothing"
+        );
+    }
+
+    /// #2609 — the gate is specifically NOT `from_bgsm`/`BGSM_AUTHORED`.
+    /// A BGEM sets those while leaving both overrides `None`, so an effect
+    /// material has no authored roughness to protect and must keep taking the
+    /// fallback like any other non-BGSM content.
+    #[test]
+    fn bgem_provenance_alone_does_not_suppress_the_fallback() {
+        let material = ImportedMaterial {
+            from_bgsm: true,
+            bgsm_pbr_scalars_authored: false,
+            ..Default::default()
+        };
+        assert!(
+            normal_alpha_spec_roughness(
+                0,
+                0.0,
+                0.0,
+                80.0,
+                2.0,
+                7,
+                0,
+                false,
+                material.bgsm_pbr_scalars_authored,
+            )
+            .is_some(),
+            "`from_bgsm` is provenance, not a scalar-authored signal"
+        );
     }
 
     #[test]
@@ -536,7 +637,9 @@ mod tests {
     fn roughness_clamps_to_renderer_ranges() {
         // huge specular_strength → 0.85 - big, clamped to 0.4 floor.
         assert_eq!(
-            normal_alpha_spec_roughness(PASS.0, PASS.1, PASS.2, 80.0, 99.0, PASS.3, PASS.4, false),
+            normal_alpha_spec_roughness(
+                PASS.0, PASS.1, PASS.2, 80.0, 99.0, PASS.3, PASS.4, false, false
+            ),
             Some(0.4)
         );
     }
@@ -544,8 +647,9 @@ mod tests {
     #[test]
     fn alpha_normal_ignores_even_non_finite_glossiness() {
         for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-            let r =
-                normal_alpha_spec_roughness(PASS.0, PASS.1, PASS.2, bad, 1.0, PASS.3, PASS.4, true);
+            let r = normal_alpha_spec_roughness(
+                PASS.0, PASS.1, PASS.2, bad, 1.0, PASS.3, PASS.4, true, false,
+            );
             assert_eq!(
                 r, None,
                 "normal-alpha spec intensity must not derive roughness from {bad}"
@@ -559,10 +663,12 @@ mod tests {
         // prior write is a no-op —
         // the property that makes the resolve-at-spawn relocation safe to run
         // more than once (#1480).
-        let first =
-            normal_alpha_spec_roughness(PASS.0, PASS.1, PASS.2, 65.0, 2.0, PASS.3, PASS.4, false);
-        let second =
-            normal_alpha_spec_roughness(PASS.0, PASS.1, PASS.2, 65.0, 2.0, PASS.3, PASS.4, false);
+        let first = normal_alpha_spec_roughness(
+            PASS.0, PASS.1, PASS.2, 65.0, 2.0, PASS.3, PASS.4, false, false,
+        );
+        let second = normal_alpha_spec_roughness(
+            PASS.0, PASS.1, PASS.2, 65.0, 2.0, PASS.3, PASS.4, false, false,
+        );
         assert_eq!(first, second);
         assert!((first.unwrap() - 0.75).abs() < 1e-5, "{first:?}");
     }

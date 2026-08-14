@@ -137,6 +137,23 @@ impl TemplateCache {
         self.entries.is_empty()
     }
 
+    /// Seed an already-resolved chain under `path`, bypassing the resolver.
+    ///
+    /// Exists so callers can drive their BGSM code paths against synthetic
+    /// materials without standing up archive IO. Before this, the engine's
+    /// BGSM merge tests had no way to reach the real `merge_external_material`
+    /// BGSM arm at all (the BGEM arm had `insert_bgem_for_test`, backed by a
+    /// plain `HashMap`, but this cache had no insert), so they tested
+    /// hand-copied mirrors of the merge loop instead — the failure mode #2702
+    /// documents, where a mirror silently diverged from production and the
+    /// suite stayed green.
+    ///
+    /// Keys are lowercased like [`Self::resolve`]'s, and the entry
+    /// participates in normal LRU bookkeeping.
+    pub fn insert_resolved(&mut self, path: &str, resolved: Arc<ResolvedMaterial>) {
+        self.insert(path.to_ascii_lowercase(), resolved);
+    }
+
     /// Resolve a BGSM + its template chain. The same path is guaranteed
     /// to return `Arc::ptr_eq`-identical results between calls as long
     /// as the entry stays in the cache.

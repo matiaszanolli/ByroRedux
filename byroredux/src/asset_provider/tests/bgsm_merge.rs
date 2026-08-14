@@ -237,6 +237,178 @@ fn bgsm_merge_forwards_phase1_shader_flags() {
     assert!(touched);
 }
 
+/// Regression for #2607 (FO4-D7-02) — BGSM's v<8 rim / backlight /
+/// subsurface group reached `ImportedMaterial`'s long-existing sinks, which
+/// `translate_material` already forwards onto the canonical `Material`. Before
+/// this, every BGSM-authored surface fed the (now unconditionally live, #1352)
+/// Disney subsurface/rimlight lobe hardcoded zeros no matter what the artist
+/// wrote.
+#[test]
+fn bgsm_merge_forwards_rim_and_subsurface_when_enabled() {
+    let bgsm = BgsmFile {
+        rim_lighting: true,
+        rim_power: 4.5,
+        back_light_power: 1.25,
+        subsurface_lighting: true,
+        subsurface_lighting_rolloff: 0.75,
+        ..Default::default()
+    };
+
+    let mut material = ImportedMaterial::default();
+    let (mut set_rim, mut set_subsurface, mut touched) = (false, false, false);
+    forward_bgsm_rim_subsurface(
+        &mut material,
+        &bgsm,
+        &mut set_rim,
+        &mut set_subsurface,
+        &mut touched,
+    );
+
+    assert_eq!(material.rimlight_power, 4.5);
+    assert_eq!(
+        material.backlight_power, 1.25,
+        "backlight rides the rim enable bit — the format gives it none of its own"
+    );
+    assert_eq!(material.subsurface_rolloff, 0.75);
+    assert!(touched);
+}
+
+/// The gate half of #2607, and the load-bearing one. The parser reads this
+/// whole group ONLY on the `version < 8` branch — v>=8 spends those bytes on
+/// the translucency suite — so a modern BGSM arrives with `rim_power = 2.0`
+/// and `subsurface_lighting_rolloff = 0.3` still at their struct defaults,
+/// never having been read off disk. Forwarding those would be fabrication.
+/// The enable bools are false in exactly that case.
+#[test]
+fn bgsm_merge_does_not_forward_never_parsed_rim_defaults() {
+    // Exactly what `BgsmFile::parse` leaves behind for a v>=8 file: the
+    // enables never read (so `false`), the payloads still holding the seed
+    // values the parse initializer sets before the version branch — 2.0 and
+    // 0.3, from `crates/bgsm/src/bgsm.rs`. Written out rather than taken from
+    // `BgsmFile::default()`, which zeroes them and so would not model the
+    // never-parsed case this gate exists for.
+    let bgsm = BgsmFile {
+        base: byroredux_bgsm::BaseMaterial {
+            version: 8,
+            ..Default::default()
+        },
+        rim_lighting: false,
+        rim_power: 2.0,
+        back_light_power: 0.0,
+        subsurface_lighting: false,
+        subsurface_lighting_rolloff: 0.3,
+        ..Default::default()
+    };
+
+    let mut material = ImportedMaterial::default();
+    let (mut set_rim, mut set_subsurface, mut touched) = (false, false, false);
+    forward_bgsm_rim_subsurface(
+        &mut material,
+        &bgsm,
+        &mut set_rim,
+        &mut set_subsurface,
+        &mut touched,
+    );
+
+    assert_eq!(material.rimlight_power, 0.0);
+    assert_eq!(material.backlight_power, 0.0);
+    assert_eq!(material.subsurface_rolloff, 0.0);
+    assert!(
+        !touched,
+        "a disabled group must not count as merged authored data"
+    );
+}
+
+/// Child-first precedence, matching every other payload field in the walk:
+/// a closer BGSM that authored the group wins, and an ancestor cannot
+/// overwrite it.
+#[test]
+fn bgsm_merge_rim_subsurface_honors_child_first_chain() {
+    let child = BgsmFile {
+        rim_lighting: true,
+        rim_power: 4.0,
+        subsurface_lighting: true,
+        subsurface_lighting_rolloff: 0.9,
+        ..Default::default()
+    };
+    let parent = BgsmFile {
+        rim_lighting: true,
+        rim_power: 99.0,
+        subsurface_lighting: true,
+        subsurface_lighting_rolloff: 99.0,
+        ..Default::default()
+    };
+
+    let mut material = ImportedMaterial::default();
+    let (mut set_rim, mut set_subsurface, mut touched) = (false, false, false);
+    for bgsm in [&child, &parent] {
+        forward_bgsm_rim_subsurface(
+            &mut material,
+            bgsm,
+            &mut set_rim,
+            &mut set_subsurface,
+            &mut touched,
+        );
+    }
+
+    assert_eq!(material.rimlight_power, 4.0, "child must win");
+    assert_eq!(material.subsurface_rolloff, 0.9, "child must win");
+}
+
+/// Regression for #2608 (FO4-D7-03) — the authored env-map mask scale reaches
+/// `ImportedMaterial.env_map_scale`, which `translate_material` already
+/// forwards to the canonical `Material`.
+#[test]
+fn bgsm_merge_forwards_authored_env_map_mask_scale() {
+    let bgsm = BgsmFile {
+        base: byroredux_bgsm::BaseMaterial {
+            version: 2,
+            environment_mapping: true,
+            environment_mapping_mask_scale: 2.5,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let mut material = ImportedMaterial::default();
+    let (mut set_scale, mut touched) = (false, false);
+    forward_bgsm_env_map_scale(&mut material, &bgsm, &mut set_scale, &mut touched);
+
+    assert_eq!(material.env_map_scale, 2.5);
+    assert!(touched);
+}
+
+/// The gate half of #2608. From version 10 the `(environment_mapping,
+/// environment_mapping_mask_scale)` bytes became `depth_bias`, and the parser
+/// substitutes a synthetic `(false, 1.0)`. That 1.0 is not authored data:
+/// forwarding it would put every modern BGSM above `resolve_pbr`'s
+/// `env_map_scale > 0.3` arm, fabricating reflection intent that then drives
+/// real roughness on the bulk of FO4 content.
+#[test]
+fn bgsm_merge_does_not_forward_synthetic_v10_env_map_scale() {
+    let bgsm = BgsmFile {
+        base: byroredux_bgsm::BaseMaterial {
+            version: 10,
+            environment_mapping: false,
+            // Exactly what `parse_after_magic` substitutes on the v>=10 path.
+            environment_mapping_mask_scale: 1.0,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let mut material = ImportedMaterial::default();
+    let before = material.env_map_scale;
+    let (mut set_scale, mut touched) = (false, false);
+    forward_bgsm_env_map_scale(&mut material, &bgsm, &mut set_scale, &mut touched);
+
+    assert_eq!(
+        material.env_map_scale, before,
+        "a never-parsed 1.0 must not reach the canonical material"
+    );
+    assert!(!touched);
+}
+
 /// Companion: with all three flags `false` on the BGSM, the
 /// translucency / model-space-normal mesh fields must stay at their
 /// defaults (a `false` author doesn't override). `is_pbr` is the
@@ -658,6 +830,133 @@ fn bgem_merge_leaves_palette_disabled_when_neither_enable_bit_is_authored() {
         "neither grayscale_to_palette_color nor _alpha was authored — the \
          remap must stay disabled despite the filled LUT slot (#2108)"
     );
+}
+
+/// Regression for #2609 (FO4-D7-04) — `from_bgsm` and
+/// `bgsm_pbr_scalars_authored` mean different things, and the BGEM arm is
+/// where they diverge.
+///
+/// Pre-split, `from_bgsm` was set identically on both arms while only the
+/// BGSM arm populated `metalness_override`/`roughness_override`, so any
+/// consumer reading it as "PBR scalars authored" — which is precisely what
+/// #2606's fix needed — would be wrong on every effect material. The BGEM arm
+/// keeps `from_bgsm` (it is load-bearing for the FO4-vs-Skyrim glass-keyword
+/// discriminator, #2710) and must leave the scalar flag clear.
+#[test]
+fn bgem_merge_sets_provenance_but_not_the_scalar_authored_flag() {
+    let mut pool = byroredux_core::string::StringPool::new();
+    let path = "materials/tests/scalar_flag.bgem";
+    let mut provider = MaterialProvider::new();
+    provider.insert_bgem_for_test(path, BgemFile::default());
+    let mut mesh = imported_mesh_with_material_path(&mut pool, path);
+
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool).merged());
+
+    assert!(
+        mesh.material.from_bgsm,
+        "provenance stays set on the BGEM arm — #2710's glass discriminator \
+         depends on it"
+    );
+    assert!(
+        !mesh.material.bgsm_pbr_scalars_authored,
+        "BGEM authors no smoothness/specular, so it must not claim to have \
+         authored PBR scalars (#2609)"
+    );
+    assert_eq!(
+        (
+            mesh.material.metalness_override,
+            mesh.material.roughness_override
+        ),
+        (None, None),
+        "the flag's meaning must match what the arm actually populated"
+    );
+}
+
+/// The other half of #2609, and the one that keeps #2606's fix from becoming
+/// a silent no-op: the BGSM arm must SET `bgsm_pbr_scalars_authored`, right
+/// where it populates the two overrides the flag describes. If that write went
+/// missing, every FO4 BGSM would fall back through the #2606 gate again with
+/// nothing to catch it.
+///
+/// Drives the real `merge_external_material` BGSM arm via the seeded template
+/// cache — not a mirror of its loop.
+#[test]
+fn bgsm_merge_sets_the_scalar_authored_flag_alongside_the_overrides() {
+    let mut pool = byroredux_core::string::StringPool::new();
+    let path = "materials/tests/scalar_flag.bgsm";
+    let mut provider = MaterialProvider::new();
+    provider.insert_bgsm_for_test(
+        path,
+        ResolvedMaterial {
+            file: BgsmFile {
+                smoothness: 0.8,
+                specular_color: [1.0, 1.0, 1.0],
+                specular_mult: 1.0,
+                ..Default::default()
+            },
+            parent: None,
+        },
+    );
+    let mut mesh = imported_mesh_with_material_path(&mut pool, path);
+
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool).merged());
+
+    assert!(mesh.material.from_bgsm, "provenance");
+    assert!(
+        mesh.material.bgsm_pbr_scalars_authored,
+        "the BGSM arm authored metalness/roughness, so the flag gating \
+         #2606's overwrite must be set"
+    );
+    assert!(mesh.material.metalness_override.is_some());
+    assert!(
+        mesh.material.roughness_override.is_some(),
+        "roughness = 1 - smoothness is exactly what #2606 protects"
+    );
+    // 1 - 0.8, clamped to the renderer's [0.04, 1.0] band.
+    let roughness = mesh.material.roughness_override.unwrap();
+    assert!(
+        (roughness - 0.2).abs() < 1e-5,
+        "authored smoothness must drive roughness; got {roughness}"
+    );
+}
+
+/// End-to-end companion for #2607/#2608 through the real merge: an authored
+/// v<10 BGSM carrying rim, subsurface and env-mask values lands all of them on
+/// `ImportedMaterial`. The extracted-function tests above pin the gates; this
+/// pins that the merge loop actually calls them.
+#[test]
+fn bgsm_merge_forwards_rim_subsurface_and_env_scale_end_to_end() {
+    let mut pool = byroredux_core::string::StringPool::new();
+    let path = "materials/tests/rim_env.bgsm";
+    let mut provider = MaterialProvider::new();
+    provider.insert_bgsm_for_test(
+        path,
+        ResolvedMaterial {
+            file: BgsmFile {
+                rim_lighting: true,
+                rim_power: 3.5,
+                back_light_power: 0.5,
+                subsurface_lighting: true,
+                subsurface_lighting_rolloff: 0.6,
+                base: byroredux_bgsm::BaseMaterial {
+                    version: 2,
+                    environment_mapping: true,
+                    environment_mapping_mask_scale: 1.75,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            parent: None,
+        },
+    );
+    let mut mesh = imported_mesh_with_material_path(&mut pool, path);
+
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool).merged());
+
+    assert_eq!(mesh.material.rimlight_power, 3.5);
+    assert_eq!(mesh.material.backlight_power, 0.5);
+    assert_eq!(mesh.material.subsurface_rolloff, 0.6);
+    assert_eq!(mesh.material.env_map_scale, 1.75);
 }
 
 /// The `grayscale_to_palette_color` enable bit alone (no alpha variant)
