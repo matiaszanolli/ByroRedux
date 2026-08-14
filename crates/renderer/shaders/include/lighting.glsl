@@ -191,6 +191,15 @@ vec3 shadowableLightRadiance(
         // same weight relative to diffuse as the /PI direct-sun path.
         diffuseBrdf = (dd.diffuse + dd.sheen) * PI * (1.0 - metalness);
     } else {
+        // #2569 (OBL-D4-02) — KNOWN DIVERGENCE from triangle.frag's
+        // no-cluster directional fallback, which computes the same legacy
+        // arm as `kD * albedo / PI` and then scales the whole lobe by 0.8.
+        // fallback/clustered is therefore 0.8/PI (~0.2546) on diffuse but
+        // 0.8 on specular. This site is the named legacy reference
+        // convention; reconciling them changes brightness on a path no test
+        // can observe, so it is deliberately unfixed pending a live capture.
+        // Pinned by `shader_constants.rs`'s
+        // `legacy_lambert_arms_are_pinned_divergent_pending_a_capture`.
         diffuseBrdf = kD * albedo;
     }
     vec3 brdfResult = (diffuseBrdf + specular * specStrength * specColor) * NdotL;

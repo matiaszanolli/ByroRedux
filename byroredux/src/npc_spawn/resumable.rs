@@ -57,6 +57,16 @@ struct RuntimeNpcState {
     placement_root: EntityId,
     skel_root: Option<EntityId>,
     skel_map: SkeletonMap,
+    /// Skeleton NIF for this actor. Per-game canonical path for `NPC_`;
+    /// the record's own MODL for `CREA`, whose skeleton is per-creature
+    /// (#2567). A field rather than a `humanoid_skeleton_path(game)` call in
+    /// the Skeleton phase precisely so the two can differ.
+    skeleton_path: String,
+    /// Actor-specific idle clip, when the actor doesn't animate off the
+    /// shared per-cell humanoid idle pool. `Some` for creatures — a rat's
+    /// skeleton shares no bone names with the humanoid rig, so the pooled
+    /// clip drives nothing (#2567).
+    idle_kf_path: Option<String>,
     body_paths: Vec<String>,
     head_path: Option<String>,
     hair_path: Option<String>,
@@ -227,7 +237,6 @@ impl NpcSpawnJob {
                     world,
                     ctx,
                     &self.npc,
-                    self.game,
                     tex_provider,
                     mat_provider.as_deref_mut(),
                     idle_pool,
@@ -313,6 +322,18 @@ fn prepare_runtime_state(
         ref_pos.z,
         ref_scale,
     );
+
+    // #2567 (OBL-D3-01) — creatures reuse this whole state machine (skeleton
+    // → parts → armor → finalize) but fill it from a different source. Their
+    // MODL *is* the skeleton and their meshes come from NIFZ beside it, so
+    // none of the humanoid recipe below (canonical body paths, RACE head,
+    // hair / brow / eye head-parts) applies: a `CREA` references no RACE at
+    // all — Oblivion's `CREA` `RNAM` is a 1-byte attack reach, not a FormID.
+    // Return early with the creature shape rather than threading `if
+    // is_creature` through every lookup.
+    if npc.is_creature {
+        return prepare_creature_state(world, npc, game, index, placement_root);
+    }
 
     let gender = Gender::from_acbs_flags(npc.acbs_flags);
     let effective_inventory =
@@ -410,12 +431,78 @@ fn prepare_runtime_state(
         placement_root,
         skel_root: None,
         skel_map: HashMap::new(),
+        skeleton_path: humanoid_skeleton_path(game).unwrap_or_default().to_owned(),
+        idle_kf_path: None,
         body_paths,
         head_path,
         hair_path,
         brow_path,
         eye_paths,
         eye_texture_override,
+        inventory: Some(inventory),
+        equipment_slots: Some(equipment_slots),
+        armor,
+        equipped_armor_count: 0,
+        phase: RuntimePhase::Skeleton,
+    }
+}
+
+/// The `CREA` counterpart of [`prepare_runtime_state`]'s humanoid recipe
+/// (#2567). Everything a creature needs is authored in one directory keyed
+/// off its MODL — skeleton, `NIFZ` part meshes, and `idle.kf` — so this is a
+/// path derivation plus the shared inventory build, and the same
+/// [`RuntimePhase`] machine runs it from there.
+///
+/// Head / hair / brow / eye stay `None`: those are head-*part* records
+/// reached through RACE, and a creature has no RACE. Its face, where it has
+/// one, is simply another `NIFZ` entry (`Head.NIF` beside `Rat.NIF`).
+fn prepare_creature_state(
+    world: &mut World,
+    npc: &NpcRecord,
+    game: GameKind,
+    index: &EsmIndex,
+    placement_root: EntityId,
+) -> RuntimeNpcState {
+    let (skeleton_path, dir) = creature_skeleton_and_dir(&npc.model_path).unwrap_or_default();
+    let body_paths = creature_body_paths(&dir, &npc.body_part_models);
+    if skeleton_path.is_empty() {
+        log::debug!(
+            "Creature {:08X} ({}): no MODL — cannot locate a skeleton, spawning identity only",
+            npc.form_id,
+            npc.editor_id,
+        );
+    } else if body_paths.is_empty() {
+        // The skeleton NIF carries no geometry of its own, so a creature
+        // with no NIFZ is invisible. Worth a line: it means either an
+        // unparsed sub-record or genuinely mesh-less content.
+        log::debug!(
+            "Creature {:08X} ({}): skeleton '{}' has no NIFZ body parts — no visible mesh",
+            npc.form_id,
+            npc.editor_id,
+            skeleton_path,
+        );
+    }
+    let idle_kf_path = (!dir.is_empty()).then(|| creature_idle_kf_path(&dir));
+
+    let gender = Gender::from_acbs_flags(npc.acbs_flags);
+    let effective_inventory =
+        byroredux_plugin::equip::resolve_inherited_inventory(npc, npc.level, index);
+    let (inventory, equipment_slots, armor) =
+        build_runtime_equip_state(npc, game, gender, index, effective_inventory);
+
+    let _ = world;
+    RuntimeNpcState {
+        placement_root,
+        skel_root: None,
+        skel_map: HashMap::new(),
+        skeleton_path,
+        idle_kf_path,
+        body_paths,
+        head_path: None,
+        hair_path: None,
+        brow_path: None,
+        eye_paths: Vec::new(),
+        eye_texture_override: None,
         inventory: Some(inventory),
         equipment_slots: Some(equipment_slots),
         armor,
@@ -517,7 +604,9 @@ fn advance_runtime_unit(
     world: &mut World,
     ctx: &mut VulkanContext,
     npc: &NpcRecord,
-    game: GameKind,
+    // #2567 — `game` used to select the skeleton path here; that moved onto
+    // `RuntimeNpcState::skeleton_path` at prepare time so creatures can carry
+    // their own, and nothing else in this function needed it.
     tex_provider: &TextureProvider,
     mat_provider: Option<&mut MaterialProvider>,
     idle_pool: &[u32],
@@ -525,9 +614,14 @@ fn advance_runtime_unit(
 ) -> UnitOutcome {
     match state.phase {
         RuntimePhase::Skeleton => {
-            let Some(skel_path) = humanoid_skeleton_path(game) else {
+            // #2567 — was `humanoid_skeleton_path(game)`; now whatever the
+            // prepare step resolved, so a creature loads its own per-species
+            // skeleton instead of the humanoid rig.
+            if state.skeleton_path.is_empty() {
                 return UnitOutcome::Complete(None);
-            };
+            }
+            let skel_path = state.skeleton_path.clone();
+            let skel_path = skel_path.as_str();
             let Some(skel_data) = tex_provider.extract_mesh(skel_path) else {
                 log::warn!(
                     "NPC {:08X} ({}): skeleton '{}' not found in archives — skipping spawn",
@@ -764,7 +858,28 @@ fn advance_runtime_unit(
                         consumed_idle_serial: 0,
                     },
                 );
-                if let Some(handle) = pick_idle_handle(idle_pool, npc.form_id) {
+                // #2567 — a creature animates off its own `idle.kf`, beside
+                // its skeleton. The shared per-cell pool holds the humanoid
+                // clip, whose bone names a creature rig doesn't have, so
+                // falling back to it would play nothing. Load-on-finalize
+                // (rather than at prepare) because this is where the
+                // `TextureProvider` is in hand.
+                let idle_handle = match state.idle_kf_path.as_deref() {
+                    Some(path) => {
+                        let handle = load_kf_clip_by_path(world, tex_provider, path);
+                        if handle.is_none() {
+                            log::debug!(
+                                "Creature {:08X} ({}): no idle clip at '{}' — spawning unanimated",
+                                npc.form_id,
+                                npc.editor_id,
+                                path,
+                            );
+                        }
+                        handle
+                    }
+                    None => pick_idle_handle(idle_pool, npc.form_id),
+                };
+                if let Some(handle) = idle_handle {
                     let duration = world
                         .resource::<AnimationClipRegistry>()
                         .get(handle)

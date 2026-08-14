@@ -409,7 +409,6 @@ pub fn load_cell_with_masters(
         &cell.references,
         &index.cells,
         &index,
-        &index.npcs,
         &index.races,
         index.game,
         world,

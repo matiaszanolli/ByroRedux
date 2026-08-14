@@ -172,7 +172,26 @@ pub struct NpcRecord {
     pub editor_id: String,
     pub full_name: String,
     /// Model path (typically from MODL — head/body mesh, optional).
+    ///
+    /// **On `CREA` this is the creature's SKELETON**, not a body mesh —
+    /// e.g. `Creatures\Rat\Skeleton.NIF`. The body meshes are in
+    /// [`Self::body_part_models`]. See #2567.
     pub model_path: String,
+    /// `CREA` `NIFZ` — the creature's body-part mesh list, as authored:
+    /// bare filenames relative to [`Self::model_path`]'s directory (e.g.
+    /// `Eyes.NIF`, `Head.NIF`, `Rat.NIF`, `Whiskers.NIF` beside
+    /// `Creatures\Rat\Skeleton.NIF`). Empty for `NPC_`, which has no such
+    /// sub-record — humanoid bodies come from the per-game canonical
+    /// paths instead. See #2567.
+    pub body_part_models: Vec<String>,
+    /// True when this record came from a `CREA` group rather than `NPC_`.
+    ///
+    /// The two share `parse_npc` because they share almost every
+    /// sub-record, but they do **not** share a spawn shape: creatures carry
+    /// their own skeleton + part list and reference no `RACE` (Oblivion
+    /// `CREA` `RNAM` is a 1-byte attack reach, not a race FormID), so the
+    /// humanoid body/head/hair/eye recipe does not apply to them. See #2567.
+    pub is_creature: bool,
     /// Race form ID (RNAM).
     pub race_form_id: u32,
     /// Class form ID (CNAM).
@@ -561,6 +580,8 @@ pub fn parse_npc(
         editor_id: common.editor_id,
         full_name: common.full_name,
         model_path: common.model_path,
+        body_part_models: Vec::new(),
+        is_creature: false,
         race_form_id: 0,
         class_form_id: 0,
         voice_form_id: 0,
@@ -679,6 +700,24 @@ fn parse_npc_core(
         b"SCRI" if sub.data.len() >= 4 => {
             let raw = SubReader::new(&sub.data).u32_or_default();
             record.script_form_id = remap_fid(raw, remap);
+        }
+        // NIFZ — CREA-only body-part mesh list (#2567). A run of
+        // null-terminated names with a trailing empty terminator, each
+        // relative to MODL's directory:
+        //
+        //   "Eyes.NIF\0Head.NIF\0mange.NIF\0Rat.NIF\0Whiskers.NIF\0\0"
+        //
+        // (verified against `Oblivion.esm`'s SE11SanctifiedRat). Without
+        // these a creature has only its skeleton, which carries no
+        // geometry — the animated actor path would spawn an invisible
+        // actor. `NPC_` never ships NIFZ, so this arm is self-gating.
+        b"NIFZ" if !sub.data.is_empty() => {
+            record.body_part_models.extend(
+                sub.data
+                    .split(|&b| b == 0)
+                    .filter(|part| !part.is_empty())
+                    .map(|part| String::from_utf8_lossy(part).into_owned()),
+            );
         }
         // SNAM (FNV NPC_): faction form ID (u32) + rank (i8) + pad x3
         b"SNAM" if sub.data.len() >= 8 => {

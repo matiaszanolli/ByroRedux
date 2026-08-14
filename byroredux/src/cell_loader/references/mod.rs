@@ -191,14 +191,13 @@ fn worldspace_extent_over_rt_ceiling(bounds_min: Vec3, bounds_max: Vec3) -> Opti
 #[tracing::instrument(
     name = "load_references",
     skip_all,
-    fields(ref_count = refs.len(), npc_count = npcs.len(), race_count = races.len(), game = ?game, label = label),
+    fields(ref_count = refs.len(), actor_count = record_index.npcs.len() + record_index.creatures.len(), race_count = races.len(), game = ?game, label = label),
 )]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn load_references(
     refs: &[esm::cell::PlacedRef],
     index: &esm::cell::EsmCellIndex,
     record_index: &byroredux_plugin::esm::records::EsmIndex,
-    npcs: &HashMap<u32, byroredux_plugin::esm::records::NpcRecord>,
     races: &HashMap<u32, byroredux_plugin::esm::records::RaceRecord>,
     game: byroredux_plugin::esm::reader::GameKind,
     world: &mut World,
@@ -220,7 +219,6 @@ pub(super) fn load_references(
         refs,
         index,
         record_index,
-        npcs,
         races,
         game,
         world,
@@ -252,7 +250,6 @@ pub(super) fn load_references_budgeted(
     refs: &[esm::cell::PlacedRef],
     index: &esm::cell::EsmCellIndex,
     record_index: &byroredux_plugin::esm::records::EsmIndex,
-    npcs: &HashMap<u32, byroredux_plugin::esm::records::NpcRecord>,
     races: &HashMap<u32, byroredux_plugin::esm::records::RaceRecord>,
     game: byroredux_plugin::esm::reader::GameKind,
     world: &mut World,
@@ -542,7 +539,13 @@ pub(super) fn load_references_budgeted(
             // placement root alive across frames, advancing one body/head/
             // armor part at a time.  Synchronous interiors drive this exact
             // job with an unlimited budget through `load_references`.
-            if let Some(npc) = npcs.get(&child_form_id) {
+            // #2567 (OBL-D3-01) — `record_index.actor` covers `NPC_` **and**
+            // `CREA`. This site used to read the `npcs` map alone, so every
+            // placed creature (Oblivion `ACRE`, and `ACHR`→`CREA` from FO3 on)
+            // missed the actor pipeline entirely and fell through to the
+            // static-mesh path below — which rendered the creature's MODL, i.e.
+            // its bare skeleton, and never animated it.
+            if let Some(npc) = record_index.actor(child_form_id) {
                 if job.active_npc.is_none() {
                     job.accum.bounds_min = job.accum.bounds_min.min(ref_pos);
                     job.accum.bounds_max = job.accum.bounds_max.max(ref_pos);

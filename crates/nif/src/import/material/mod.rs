@@ -1457,6 +1457,13 @@ mod alpha_flag_tests;
 #[allow(clippy::field_reassign_with_default)] // Tests model staged legacy material translation.
 mod legacy_pbr_translation_tests;
 
+/// #2570 (OBL-D4-04) — the negative direction of the above: deriving
+/// legacy PBR *scalars* must never promote the material onto the Disney
+/// lobe. Pins `is_pbr == false` for external-material-file-less input,
+/// which is what makes `MAT_FLAG_PBR_BSDF` provably 0 for Oblivion.
+#[cfg(test)]
+mod legacy_is_pbr_tests;
+
 /// Regression tests for issue #345 — `BSEffectShaderProperty` rich
 /// material fields used to be dropped on import. The capture path is
 /// covered by direct `capture_effect_shader_data` tests; full
