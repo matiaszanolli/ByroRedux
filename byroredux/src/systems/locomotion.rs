@@ -61,14 +61,16 @@ pub(crate) fn step_toward(
             current.y + LOCOMOTION_GROUND_RAY_UP_OFFSET,
             new_pos.z,
         );
-        // NOTE: `None` here is a known, separately-tracked defect (#2873),
-        // not an assertion that nothing needs excluding. `step_toward`
-        // receives neither the actor's `EntityId` nor its `RapierHandles`,
-        // and each of an actor's ~18 keyframed ragdoll bones is a *separate*
-        // `KinematicPositionBased` body, so a single `exclude_rigid_body`
-        // would not be sufficient anyway — #2873 needs either a skeleton-root
-        // filter predicate or an "actor bone" collision-group bit. Left
-        // explicit so the gap stays visible at the call site.
+        // `None` is correct here, not a gap (#2873, fixed). The thing this
+        // ray must not hit is the moving actor's own ~18 keyframed ragdoll
+        // bones, and `exclude_rigid_body` could never cover them: each bone
+        // is a *separate* `KinematicPositionBased` body, and `step_toward`
+        // receives neither the actor's `EntityId` nor its `RapierHandles`.
+        // They are masked out wholesale instead — the bones carry
+        // `ACTOR_BONE_GROUP` and `cast_ray_down` filters that group out for
+        // every caller. Pre-fix, the ray hit the actor's upper body, re-seated
+        // its root at that bone's height, and — since the bones follow the
+        // root — climbed again next tick: an elevator, not an offset.
         if let Some(ground_y) =
             pw.cast_ray_down(ray_origin, LOCOMOTION_GROUND_RAY_MAX_DISTANCE, None)
         {

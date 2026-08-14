@@ -502,6 +502,11 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // Pre-register component storages that the physics sync system
     // queries on the first frame (before anything has been inserted).
     world.register::<byroredux_physics::RapierHandles>();
+    // #2873 — registration reads this to file a live actor's ragdoll-bone
+    // colliders under `ACTOR_BONE_GROUP` so ground probes skip them. Must
+    // exist before the first `collect_newcomers`, which spawns NPCs' bones
+    // in the same frame the cell loads.
+    world.register::<byroredux_physics::ActorBoneCollider>();
     // MQ101 scene CTDAs read actor death and authored CELL identity through
     // shared sparse components. Register them before any scene/cell exists so
     // condition evaluation safely sees the default alive/unowned state.

@@ -19,6 +19,27 @@ impl Component for RapierHandles {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// Marks an entity whose collider belongs to a **live actor's skeleton** —
+/// one of the ~18 ragdoll bone bodies `keyframe_live_ragdoll_bones` flips
+/// from Dynamic to Keyframed before first registration (#1698).
+///
+/// `physics_sync_system` Phase 1 reads this to put the resulting colliders in
+/// [`crate::ACTOR_BONE_GROUP`], which every downward floor probe masks out.
+/// Without it a ground-snap ray cast from above an actor's root hits the
+/// actor's own upper-body bone instead of the floor, and because the bones
+/// are driven from the root's animated transform the actor climbs a little
+/// further every tick — a monotonic elevator, not a fixed offset (#2873).
+///
+/// Purely a query-side label: contact generation is unaffected (the bones'
+/// collision *filter* mask stays `Group::ALL`), and death-time ragdoll
+/// activation rebuilds its own simulated bodies regardless.
+#[derive(Debug, Clone, Copy)]
+pub struct ActorBoneCollider;
+
+impl Component for ActorBoneCollider {
+    type Storage = SparseSetStorage<Self>;
+}
+
 /// Kinematic character-controller body (M28.5). The high-level
 /// player rig — combines the capsule shape used by the physics layer
 /// with the movement-state fields the per-frame controller system

@@ -56,6 +56,39 @@ pub const BU_PER_METER: f32 = byroredux_core::lighting::BETHESDA_UNITS_PER_METER
 /// [`PhysicsWorld::step`].
 pub const KILL_PLANE_Y: f32 = -25_000.0;
 
+/// Collision-group bit reserved for a **live actor's keyframed ragdoll-bone**
+/// colliders (#2873).
+///
+/// `keyframe_live_ragdoll_bones` flips each of an actor's ~18 skeleton bone
+/// bodies from Dynamic to Keyframed *before* first registration, so every
+/// bone lands in Rapier as a `KinematicPositionBased` body with a real
+/// collider — ~480+ of them across a dense interior. `exclude_dynamic()` does
+/// not filter kinematic bodies, so a ground probe cast from above an actor's
+/// root meets the actor's own upper-body bone long before it reaches the
+/// floor. Excluding a single rigid-body handle cannot fix that: each bone is a
+/// *separate* body.
+///
+/// Registration puts exactly those colliders in this membership group (and
+/// nothing else), and every downward floor probe filters it out via
+/// [`ground_probe_groups`]. Their *filter* mask stays `Group::ALL`, so contact
+/// generation against the rest of the world is unchanged — this bit is a
+/// query-side label, not a solver-side layer.
+pub const ACTOR_BONE_GROUP: rapier3d::prelude::Group = rapier3d::prelude::Group::GROUP_32;
+
+/// Interaction groups every downward floor probe queries with: sees
+/// everything except [`ACTOR_BONE_GROUP`].
+///
+/// Deliberately *not* a blanket "fixed bodies only" filter. The FO4+/Starfield
+/// packed-Havok compatibility proxy (`cell_loader::spawn`) registers real
+/// architecture as `MotionType::Keyframed`, so excluding the whole kinematic
+/// family would blind the spawn probe to the very floors that fallback exists
+/// to provide.
+#[inline]
+fn ground_probe_groups() -> rapier3d::prelude::InteractionGroups {
+    use rapier3d::prelude::{Group, InteractionGroups};
+    InteractionGroups::new(Group::ALL, Group::ALL & !ACTOR_BONE_GROUP)
+}
+
 /// One collider found by [`PhysicsWorld::colliders_near_xz`] (#2202).
 ///
 /// `body_type` is the Rapier label of the *parent* body, because that is the
@@ -584,6 +617,11 @@ impl PhysicsWorld {
     /// (rather than a defaulted sibling method) so every call site has to
     /// decide — a silent self-hit is invisible, since the returned
     /// `origin.y` is exactly what most callers use as their fallback (#2859).
+    ///
+    /// A live actor's keyframed ragdoll bones need no handle here: they carry
+    /// [`ACTOR_BONE_GROUP`] and are masked out wholesale by
+    /// [`ground_probe_groups`] (#2873). That matters because each bone is a
+    /// separate body — `excluded_body` could never cover all ~18 of them.
     pub fn cast_ray_down(
         &self,
         origin: byroredux_core::math::Vec3,
@@ -599,7 +637,7 @@ impl PhysicsWorld {
         // standing on a dropped barrel. `exclude_dynamic()` is an
         // associated-fn constructor on `QueryFilter`, not a builder
         // method; call it directly.
-        let mut filter = QueryFilter::exclude_dynamic();
+        let mut filter = QueryFilter::exclude_dynamic().groups(ground_probe_groups());
         if let Some(body) = excluded_body {
             filter = filter.exclude_rigid_body(body);
         }
@@ -723,7 +761,20 @@ impl PhysicsWorld {
         })
     }
 
-    fn cast_capsule_down_surface_and_normal(
+    /// The unfiltered form of [`cast_capsule_down_onto_walkable_surface`]:
+    /// returns `(surface_y, normal1.y)` for the first hit, walkable or not.
+    ///
+    /// Public because the walkable wrapper collapses two very different
+    /// outcomes into `None` — "the swept capsule hit nothing" and "it hit
+    /// something whose slope failed the walkable test" — and a spawn that
+    /// misses every rung needs to tell those apart. Re-running the probe
+    /// through this entry point on the failure path is what lets
+    /// `dump_spawn_collider_census` report *"unfiltered sweep hit y=… with
+    /// normal_y=… → REJECTED as non-walkable"* instead of mis-attributing a
+    /// 60° ramp to a transform-composition bug (#2874).
+    ///
+    /// [`cast_capsule_down_onto_walkable_surface`]: Self::cast_capsule_down_onto_walkable_surface
+    pub fn cast_capsule_down_surface_and_normal(
         &self,
         origin: byroredux_core::math::Vec3,
         capsule_half_height: f32,
@@ -735,7 +786,7 @@ impl PhysicsWorld {
         use rapier3d::prelude::*;
         let shape = SharedShape::capsule_y(capsule_half_height.max(1e-3), capsule_radius.max(1e-3));
         let pos = Isometry::translation(origin.x, origin.y, origin.z);
-        let mut filter = QueryFilter::exclude_dynamic();
+        let mut filter = QueryFilter::exclude_dynamic().groups(ground_probe_groups());
         if let Some(body) = excluded_body {
             filter = filter.exclude_rigid_body(body);
         }
@@ -810,9 +861,22 @@ impl PhysicsWorld {
     /// This one is deliberately unfiltered: the *point* is to see colliders
     /// the spawn probe cannot. Returned entries carry the parent body handle
     /// so the caller can resolve it back to an entity and its
-    /// `PhysicsSourceForm`; sorted by AABB centre Y, descending, so the
-    /// nearest thing above the probe reads first.
-    pub fn colliders_near_xz(&self, x: f32, z: f32, radius: f32) -> Vec<NearbyCollider> {
+    /// `PhysicsSourceForm`.
+    ///
+    /// Sorted by **distance from `probe_y`**, nearest first (#2875). The
+    /// pre-fix ordering sorted by absolute AABB centre Y descending and took
+    /// only the first N, which inverted the diagnostic: the question is "is
+    /// there a floor at or below the spawn?", whose answer lives at the low
+    /// end of the column, while a two-storey inn's roof beams and upper
+    /// landing monopolise the high end. In the dense-interior case this
+    /// census exists for, the evidence was exactly what got truncated away.
+    pub fn colliders_near_xz(
+        &self,
+        x: f32,
+        probe_y: f32,
+        z: f32,
+        radius: f32,
+    ) -> Vec<NearbyCollider> {
         use rapier3d::prelude::*;
         let mut out = Vec::new();
         for (_h, c) in self.colliders.iter() {
@@ -844,10 +908,19 @@ impl PhysicsWorld {
                 aabb_max: [aabb.maxs.x, aabb.maxs.y, aabb.maxs.z],
             });
         }
+        // Distance from the probe height, nearest first. Ties (a floor slab
+        // and a ceiling slab equidistant from the probe) break downward, so
+        // the one that could actually be a floor reads first.
+        let distance = |c: &NearbyCollider| {
+            let centre = 0.5 * (c.aabb_min[1] + c.aabb_max[1]);
+            ((centre - probe_y).abs(), centre > probe_y)
+        };
         out.sort_by(|a, b| {
-            let ac = a.aabb_min[1] + a.aabb_max[1];
-            let bc = b.aabb_min[1] + b.aabb_max[1];
-            bc.partial_cmp(&ac).unwrap_or(std::cmp::Ordering::Equal)
+            let (ad, a_above) = distance(a);
+            let (bd, b_above) = distance(b);
+            ad.partial_cmp(&bd)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a_above.cmp(&b_above))
         });
         out
     }
@@ -1129,7 +1202,7 @@ mod tests {
             "exclude_dynamic probe must not see a Dynamic floor"
         );
 
-        let near = w.colliders_near_xz(0.0, 0.0, 64.0);
+        let near = w.colliders_near_xz(0.0, 0.0, 0.0, 64.0);
         assert_eq!(near.len(), 1, "census must see it");
         assert_eq!(near[0].body_type, "Dynamic");
         assert!(!near[0].is_sensor);
@@ -1150,7 +1223,7 @@ mod tests {
             w.static_colliders_aabb().is_some(),
             "cell-wide census still reports a populated collision world"
         );
-        assert!(w.colliders_near_xz(0.0, 0.0, 64.0).is_empty());
+        assert!(w.colliders_near_xz(0.0, 0.0, 0.0, 64.0).is_empty());
     }
 
     /// Column overlap is an AABB test, not a centre-distance test: a slab
@@ -1163,30 +1236,71 @@ mod tests {
         // Centre 60 BU away in X, half-extent 50 ⇒ AABB spans x ∈ [10, 110].
         insert_slab(&mut w, Vec3::new(60.0, 0.0, 0.0), false);
         w.update_query_pipeline();
-        assert_eq!(w.colliders_near_xz(0.0, 0.0, 16.0).len(), 1);
+        assert_eq!(w.colliders_near_xz(0.0, 0.0, 0.0, 16.0).len(), 1);
         // Same slab, column now well clear of x ∈ [10, 110].
-        assert!(w.colliders_near_xz(-100.0, 0.0, 16.0).is_empty());
+        assert!(w.colliders_near_xz(-100.0, 0.0, 0.0, 16.0).is_empty());
     }
 
-    /// Results come back nearest-above-first so the entry most likely to be
-    /// the missing floor reads at the top of the dump.
+    /// #2875 — results come back nearest-to-the-probe first, so the entry
+    /// most likely to be the missing floor reads at the top of the dump.
     #[test]
-    fn census_sorts_by_aabb_centre_y_descending() {
+    fn census_sorts_by_distance_from_the_probe_height() {
         let mut w = PhysicsWorld::new();
         insert_slab(&mut w, Vec3::new(0.0, -500.0, 0.0), false);
         insert_slab(&mut w, Vec3::new(0.0, 300.0, 0.0), false);
         insert_slab(&mut w, Vec3::new(0.0, 0.0, 0.0), false);
         w.update_query_pipeline();
 
-        let near = w.colliders_near_xz(0.0, 0.0, 16.0);
+        // Probe at y=40: the floor at 0 is 40 away, the ceiling at 300 is
+        // 260, the basement at -500 is 540.
+        let near = w.colliders_near_xz(0.0, 40.0, 0.0, 16.0);
         assert_eq!(near.len(), 3);
         let centres: Vec<f32> = near
             .iter()
             .map(|n| 0.5 * (n.aabb_min[1] + n.aabb_max[1]))
             .collect();
-        assert!(
-            centres[0] > centres[1] && centres[1] > centres[2],
-            "expected descending centre Y, got {centres:?}"
+        assert_eq!(
+            centres,
+            vec![0.0, 300.0, -500.0],
+            "expected nearest-to-probe ordering, got {centres:?}"
+        );
+    }
+
+    /// #2875 — the ordering fix only matters because the census truncates,
+    /// and the pre-fix absolute-Y-descending sort put the floor *past* the
+    /// cut in exactly the dense column the diagnostic was written for.
+    ///
+    /// Models a two-storey interior: a stack of ceiling/beam/upper-landing
+    /// slabs above the probe, and one floor slab just below it. With
+    /// `SPAWN_CENSUS_DETAIL_CAP` entries printed, the floor must survive.
+    #[test]
+    fn census_keeps_the_floor_inside_the_detail_cap_in_a_dense_column() {
+        const DETAIL_CAP: usize = 24;
+        let mut w = PhysicsWorld::new();
+        let probe_y = 100.0;
+        // 40 slabs stacked above the probe — roof, rafters, upper floor.
+        for i in 0..40 {
+            insert_slab(
+                &mut w,
+                Vec3::new(0.0, probe_y + 200.0 * (i + 1) as f32, 0.0),
+                false,
+            );
+        }
+        // The floor the spawn is actually looking for, 20 BU under the probe.
+        insert_slab(&mut w, Vec3::new(0.0, probe_y - 20.0, 0.0), false);
+        w.update_query_pipeline();
+
+        let near = w.colliders_near_xz(0.0, probe_y, 0.0, 64.0);
+        assert_eq!(near.len(), 41);
+        let printed: Vec<f32> = near
+            .iter()
+            .take(DETAIL_CAP)
+            .map(|n| 0.5 * (n.aabb_min[1] + n.aabb_max[1]))
+            .collect();
+        assert_eq!(
+            printed[0],
+            probe_y - 20.0,
+            "the floor must be the FIRST entry printed, got {printed:?}"
         );
     }
 
@@ -1691,6 +1805,107 @@ mod audit_2026_08_13_regressions {
         assert!(
             filtered.is_some_and(|y| (y - 0.0).abs() < 0.5),
             "excluding the player body must reach the floor, got {filtered:?}"
+        );
+    }
+
+    // ── #2873 — ground probes must not see an actor's own bones ──────
+
+    /// Register a keyframed ragdoll-bone body the way `physics_sync_system`
+    /// does for a live actor: `KinematicPositionBased`, real collider,
+    /// membership in [`ACTOR_BONE_GROUP`].
+    fn actor_bone(w: &mut PhysicsWorld, centre: Vec3, tagged: bool) -> RigidBodyHandle {
+        use rapier3d::prelude::{Group, InteractionGroups};
+        let body = w.bodies.insert(
+            RigidBodyBuilder::kinematic_position_based()
+                .translation(vector![centre.x, centre.y, centre.z])
+                .build(),
+        );
+        let groups = if tagged {
+            InteractionGroups::new(ACTOR_BONE_GROUP, Group::ALL)
+        } else {
+            InteractionGroups::all()
+        };
+        w.colliders.insert_with_parent(
+            ColliderBuilder::ball(6.0).collision_groups(groups).build(),
+            body,
+            &mut w.bodies,
+        );
+        body
+    }
+
+    /// The defect: `step_toward` casts from `current.y + 256` straight down
+    /// through the actor it is trying to ground-snap. Its ~18 bones are
+    /// separate `KinematicPositionBased` bodies, which `exclude_dynamic()`
+    /// keeps, so the ray reports the actor's own upper body as the floor —
+    /// and since the bones follow the root, the next tick casts from higher
+    /// still. `ACTOR_BONE_GROUP` masks all of them at once.
+    #[test]
+    fn ground_ray_skips_actor_bones_and_reaches_the_floor() {
+        let mut w = PhysicsWorld::new();
+        floor_slab(&mut w, 0.0, 500.0);
+        // Stand-in for a head/spine bone at chest height, and the
+        // locomotion ray origin 256 BU above the actor's root.
+        let origin = Vec3::new(0.0, 256.0, 0.0);
+
+        let mut untagged = PhysicsWorld::new();
+        floor_slab(&mut untagged, 0.0, 500.0);
+        actor_bone(&mut untagged, Vec3::new(0.0, 120.0, 0.0), false);
+        untagged.update_query_pipeline();
+        assert_eq!(
+            untagged.cast_ray_down(origin, 1000.0, None),
+            Some(126.0),
+            "pre-fix behaviour: the ray stops on the actor's own bone, not the floor"
+        );
+
+        actor_bone(&mut w, Vec3::new(0.0, 120.0, 0.0), true);
+        w.update_query_pipeline();
+        let hit = w.cast_ray_down(origin, 1000.0, None);
+        assert!(
+            hit.is_some_and(|y| y.abs() < 0.5),
+            "a tagged actor bone must be invisible to the ground ray, got {hit:?}"
+        );
+    }
+
+    /// The capsule probes share the filter, so a spawn sweep cannot land the
+    /// player on an NPC's shoulder either.
+    #[test]
+    fn capsule_floor_probe_skips_actor_bones() {
+        let mut w = PhysicsWorld::new();
+        floor_slab(&mut w, 0.0, 500.0);
+        actor_bone(&mut w, Vec3::new(0.0, 120.0, 0.0), true);
+        w.update_query_pipeline();
+
+        let surface = w.cast_capsule_down(Vec3::new(0.0, 400.0, 0.0), 46.0, 18.0, 1000.0, None);
+        assert!(
+            surface.is_some_and(|y| y.abs() < 1.0),
+            "capsule sweep must pass through a tagged actor bone, got {surface:?}"
+        );
+    }
+
+    /// The mask is query-side only. Non-bone kinematic colliders — above all
+    /// the FO4+/Starfield packed-Havok proxy, which registers real
+    /// architecture as `MotionType::Keyframed` — must stay probeable, or the
+    /// fix would blind the spawn probe to the floors that fallback provides.
+    #[test]
+    fn ground_probe_still_sees_untagged_kinematic_architecture() {
+        let mut w = PhysicsWorld::new();
+        let body = w.bodies.insert(
+            RigidBodyBuilder::kinematic_position_based()
+                .translation(vector![0.0, 0.0, 0.0])
+                .build(),
+        );
+        w.colliders.insert_with_parent(
+            ColliderBuilder::cuboid(500.0, 10.0, 500.0).build(),
+            body,
+            &mut w.bodies,
+        );
+        w.update_query_pipeline();
+
+        let hit = w.cast_ray_down(Vec3::new(0.0, 300.0, 0.0), 1000.0, None);
+        assert!(
+            hit.is_some_and(|y| (y - 10.0).abs() < 0.5),
+            "an untagged Keyframed floor (the packed-Havok proxy) must stay \
+             probeable, got {hit:?}"
         );
     }
 

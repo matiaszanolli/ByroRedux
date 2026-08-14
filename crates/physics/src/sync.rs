@@ -24,7 +24,7 @@ use rapier3d::prelude::{ColliderBuilder, RigidBodyBuilder, RigidBodyType};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::components::RapierHandles;
+use crate::components::{ActorBoneCollider, RapierHandles};
 use crate::config::ContactConfig;
 use crate::convert::{
     collision_shape_to_parts, iso_from_trs, quat_from_na, vec3_from_translation, vec3_to_na,
@@ -335,7 +335,96 @@ fn dump_awake_fallers(world: &World) {
 /// Number of nearby colliders named individually by
 /// [`dump_spawn_collider_census`]. A vestibule is a handful of architecture
 /// pieces; anything past this is a wall of log that hides the answer.
+///
+/// Safe to truncate at because the entries are ordered by distance from the
+/// probe height (#2875) — the cut falls on the far end of the column, not on
+/// the floor. Before that fix the ordering was absolute-Y descending, so in
+/// any two-storey interior these 24 slots went to roof beams and the upper
+/// landing while the spawn-height geometry landed in the "omitted" tail.
 const SPAWN_CENSUS_DETAIL_CAP: usize = 24;
+
+/// Cell-wide collision-authoring totals, forwarded into the census so a
+/// `0 total` column can name its cause (#2874).
+///
+/// Summed by the caller over the cell's `CachedNifImport` entries — the same
+/// `CollisionAuthoringSummary` counts the spawn path already uses to pick the
+/// packed-Havok proxy. Without them the census's `0 total` bucket conflates
+/// "nothing was authored" with "N classic shapes were authored and every one
+/// was dropped in translation", which is exactly the distinction that summary
+/// was built to remove (`docs/engine/physics.md`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SpawnCensusAuthoring {
+    /// `BhkCollisionObject` chains — decodable classic Havok.
+    pub classic: u32,
+    /// `BhkNPCollisionObject` — FO4+ packed Havok, payload still opaque.
+    pub new_physics: u32,
+    /// `BhkPCollisionObject` — Skyrim+ phantom / trigger volumes.
+    pub phantom: u32,
+}
+
+/// Everything [`dump_spawn_collider_census`] needs about the spawn probe that
+/// failed, so the diagnostic can reproduce the sweep instead of guessing at
+/// its geometry.
+#[derive(Debug, Clone, Copy)]
+pub struct SpawnCensusProbe {
+    /// Probe XZ — the column to census.
+    pub x: f32,
+    /// Probe height. Both the census sort key and the origin of the
+    /// unfiltered re-sweep.
+    pub y: f32,
+    pub z: f32,
+    /// Column half-width, BU.
+    pub radius: f32,
+    /// Capsule the failing rungs swept, so the re-sweep matches them.
+    pub capsule_half_height: f32,
+    pub capsule_radius: f32,
+    pub max_distance: f32,
+    /// Walkability threshold the rungs applied to `normal1.y`.
+    pub min_walkable_normal_y: f32,
+    /// Cell-wide authoring totals; `None` when the caller has no NIF cache to
+    /// sum (a synthetic World, or the loose-NIF path).
+    pub authoring: Option<SpawnCensusAuthoring>,
+}
+
+/// Verdict of the unfiltered re-sweep run on the census path (#2874).
+///
+/// `cast_capsule_down_onto_walkable_surface` returns `None` for both "hit
+/// nothing" and "hit something too steep to stand on", so the three-rung
+/// ladder cannot report which happened. Re-running through
+/// `cast_capsule_down_surface_and_normal` recovers the normal it discarded.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SpawnProbeVerdict {
+    /// The swept capsule met nothing at all within `max_distance`.
+    NoHit,
+    /// It met a surface whose slope failed the walkable test — the spawn was
+    /// blocked by a ramp/wall, NOT by a missing or mis-transformed collider.
+    RejectedNonWalkable { surface_y: f32, normal_y: f32 },
+    /// It met a walkable surface. Reaching this from the all-rungs-missed
+    /// path means the census probe and the spawn rungs disagree (different
+    /// origin, capsule, or a query pipeline refreshed in between).
+    Walkable { surface_y: f32, normal_y: f32 },
+}
+
+impl SpawnProbeVerdict {
+    fn classify(hit: Option<(f32, f32)>, min_walkable_normal_y: f32) -> Self {
+        match hit {
+            None => Self::NoHit,
+            Some((surface_y, normal_y)) => {
+                if normal_y.abs() >= min_walkable_normal_y.clamp(0.0, 1.0) {
+                    Self::Walkable {
+                        surface_y,
+                        normal_y,
+                    }
+                } else {
+                    Self::RejectedNonWalkable {
+                        surface_y,
+                        normal_y,
+                    }
+                }
+            }
+        }
+    }
+}
 
 /// One line of a spawn-column census (#2202). Pure data so the grouping is
 /// unit-testable without a live `World`.
@@ -394,13 +483,46 @@ fn census_tally(entries: &[SpawnCensusEntry]) -> (usize, usize, usize, usize, us
 ///
 /// Pure logging, no state change. Called only on the all-rungs-missed path,
 /// so a healthy spawn costs nothing.
-pub fn dump_spawn_collider_census(world: &World, x: f32, z: f32, radius: f32) {
+///
+/// `probe` is the failed spawn probe itself: the XZ column to census, the Y
+/// the floor was expected near, and the capsule the three rungs swept. It
+/// drives three things the pre-fix census could not do (#2874 / #2875) —
+/// ordering the column by distance from the probe rather than by absolute
+/// world Y, re-running the sweep *unfiltered* so a walkability rejection is
+/// distinguishable from a genuine miss, and (via `authoring`) splitting
+/// "no collider authored" from "authored but dropped in translation".
+pub fn dump_spawn_collider_census(world: &World, probe: SpawnCensusProbe) {
+    let SpawnCensusProbe {
+        x,
+        y: probe_y,
+        z,
+        radius,
+        capsule_half_height,
+        capsule_radius,
+        max_distance,
+        min_walkable_normal_y,
+        authoring,
+    } = probe;
     // Same lock-order discipline as `dump_awake_fallers` (#2136): snapshot
     // everything `PhysicsWorld` can answer, drop the guard, then open ECS
     // storages.
-    let nearby = {
+    let (nearby, verdict) = {
         let pw = world.resource::<PhysicsWorld>();
-        pw.colliders_near_xz(x, z, radius)
+        let nearby = pw.colliders_near_xz(x, probe_y, z, radius);
+        // Re-run the rungs' own sweep WITHOUT the walkability filter, so the
+        // normal `cast_capsule_down_onto_walkable_surface` discards is
+        // available to the log (#2874).
+        let hit = pw.cast_capsule_down_surface_and_normal(
+            byroredux_core::math::Vec3::new(x, probe_y, z),
+            capsule_half_height,
+            capsule_radius,
+            max_distance,
+            None,
+        );
+        (
+            nearby,
+            SpawnProbeVerdict::classify(hit, min_walkable_normal_y),
+        )
     };
 
     let mut body_to_entity: HashMap<rapier3d::prelude::RigidBodyHandle, EntityId> = HashMap::new();
@@ -442,13 +564,70 @@ pub fn dump_spawn_collider_census(world: &World, x: f32, z: f32, radius: f32) {
         .collect();
 
     let (fixed, dynamic, kinematic, sensors, orphan) = census_tally(&entries);
+    // #2874 — the walkability arm the pre-fix summary was missing entirely.
+    // It comes FIRST because when it fires, the column tallies below are a
+    // red herring: there is a surface here, it is simply too steep to stand
+    // on, and the old text would have steered the reader at "Fixed>0 at a
+    // wrong Y ⇒ transform composition".
+    match verdict {
+        SpawnProbeVerdict::RejectedNonWalkable {
+            surface_y,
+            normal_y,
+        } => log::warn!(
+            "#2874 unfiltered sweep from y={probe_y:.0} HIT y={surface_y:.1} with \
+             normal_y={normal_y:.3} ⇒ REJECTED as non-walkable (min={min_walkable_normal_y:.3}). \
+             The spawn is blocked by a slope, not by a missing or mis-transformed collider — \
+             the collider census below is NOT the cause.",
+        ),
+        SpawnProbeVerdict::NoHit => log::warn!(
+            "#2874 unfiltered sweep from y={probe_y:.0} over {max_distance:.0} BU hit NOTHING \
+             (walkability is not the cause; the column census below is).",
+        ),
+        SpawnProbeVerdict::Walkable {
+            surface_y,
+            normal_y,
+        } => log::warn!(
+            "#2874 unfiltered sweep from y={probe_y:.0} hit a WALKABLE surface y={surface_y:.1} \
+             normal_y={normal_y:.3} — the census probe and the spawn rungs disagree (different \
+             origin/capsule, or the query pipeline was refreshed between them).",
+        ),
+    }
+    // #2874 — split `0 total` into "nothing authored" vs "authored, dropped
+    // in translation". `CollisionAuthoringSummary` already computes the
+    // discriminator; the pre-fix census read the Rapier side only and so
+    // re-introduced the exact conflation that summary exists to remove.
+    match authoring {
+        Some(a) if entries.is_empty() && a.classic + a.new_physics + a.phantom > 0 => log::warn!(
+            "#2874 …but the cell's NIFs DID author collision: classic={} new_physics={} \
+             phantom={} ⇒ the shapes were DROPPED IN TRANSLATION (decode/registration), not \
+             absent from the source. `new_physics>0` additionally means FO4+ packed Havok whose \
+             payload is still opaque — the compatibility proxy should have covered it.",
+            a.classic,
+            a.new_physics,
+            a.phantom,
+        ),
+        Some(_) if entries.is_empty() => log::warn!(
+            "#2874 …and the cell's NIFs authored NO collision at all (classic=0 new_physics=0 \
+             phantom=0) ⇒ genuinely non-colliding content or a REFR-level gap, NOT a \
+             translation drop.",
+        ),
+        Some(a) => log::warn!(
+            "#2874 cell collision authoring: classic={} new_physics={} phantom={}.",
+            a.classic,
+            a.new_physics,
+            a.phantom,
+        ),
+        None => log::warn!(
+            "#2874 cell collision authoring unavailable (no NIF import cache) — `0 total` below \
+             cannot be split into 'nothing authored' vs 'dropped in translation'.",
+        ),
+    }
     log::warn!(
-        "#2202 spawn-column census at XZ ({x:.1}, {z:.1}) ±{radius:.0} BU: {} colliders \
-         (Fixed={fixed} Dynamic={dynamic} Kinematic={kinematic} orphan={orphan}, of which \
-         {sensors} sensors). Fixed=0 with Dynamic>0 ⇒ the floor is authored non-Fixed and both \
-         the spawn probe (exclude_dynamic) and the static census are blind to it; Fixed>0 at a \
-         wrong Y ⇒ transform composition; 0 total ⇒ the collider never spawned (per-NIF \
-         trimesh-fallback gate, or a REFR-level gap). Nearest {} by AABB centre Y:",
+        "#2202 spawn-column census at XZ ({x:.1}, {z:.1}) ±{radius:.0} BU around y={probe_y:.0}: \
+         {} colliders (Fixed={fixed} Dynamic={dynamic} Kinematic={kinematic} orphan={orphan}, of \
+         which {sensors} sensors). Fixed=0 with Dynamic>0 ⇒ the floor is authored non-Fixed and \
+         both the spawn probe (exclude_dynamic) and the static census are blind to it; Fixed>0 \
+         at a wrong Y ⇒ transform composition. Nearest {} by distance from the probe height:",
         entries.len(),
         entries.len().min(SPAWN_CENSUS_DETAIL_CAP),
     );
@@ -489,6 +668,9 @@ struct Newcomer {
     shape: CollisionShape,
     body_data: RigidBodyData,
     global: GlobalTransform,
+    /// Entity carries [`ActorBoneCollider`] — its colliders join
+    /// [`crate::ACTOR_BONE_GROUP`] so ground probes skip them (#2873).
+    is_actor_bone: bool,
 }
 
 impl Newcomer {
@@ -539,6 +721,9 @@ fn collect_newcomers(world: &World) -> Vec<Newcomer> {
         return out;
     };
 
+    // Optional — a World with no live actors never registers the storage.
+    let bone_q = world.query::<ActorBoneCollider>();
+
     for (entity, shape) in shape_q.iter() {
         if handles_q.contains(entity) {
             continue;
@@ -554,6 +739,7 @@ fn collect_newcomers(world: &World) -> Vec<Newcomer> {
             shape: shape.clone(),
             body_data: body_data.clone(),
             global: *global,
+            is_actor_bone: bone_q.as_ref().is_some_and(|q| q.contains(entity)),
         });
     }
 
@@ -637,6 +823,18 @@ fn register_newcomers(world: &World, newcomers: Vec<Newcomer>) {
         let part_mass = n.body_data.mass.max(0.0) / parts.len() as f32;
         let contact_skin = cfg.default_contact_skin_bu.max(0.0);
         let mut first_collider_handle: Option<rapier3d::prelude::ColliderHandle> = None;
+        // #2873 — label a live actor's ragdoll-bone colliders so downward
+        // floor probes can mask them out. Membership only: the filter half
+        // stays `Group::ALL`, so the bones still collide with everything
+        // they did before; this changes what *queries* see, not the solver.
+        let groups = if n.is_actor_bone {
+            rapier3d::prelude::InteractionGroups::new(
+                crate::ACTOR_BONE_GROUP,
+                rapier3d::prelude::Group::ALL,
+            )
+        } else {
+            rapier3d::prelude::InteractionGroups::all()
+        };
         for (iso, shape) in parts {
             let collider = ColliderBuilder::new(shape)
                 .position(iso)
@@ -644,6 +842,7 @@ fn register_newcomers(world: &World, newcomers: Vec<Newcomer>) {
                 .restitution(n.body_data.restitution)
                 .mass(part_mass)
                 .contact_skin(contact_skin)
+                .collision_groups(groups)
                 .build();
             let handle = colliders.insert_with_parent(collider, body_handle, bodies);
             if first_collider_handle.is_none() {
@@ -1158,5 +1357,125 @@ mod faller_diag_tests {
     #[test]
     fn resolves_to_none_when_neither_present() {
         assert_eq!(resolve_source_form(None, None), None);
+    }
+}
+
+// ── #2873 / #2874 ───────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod actor_bone_group_tests {
+    use super::*;
+    use crate::components::ActorBoneCollider;
+    use crate::world::PhysicsWorld;
+    use byroredux_core::ecs::components::collision::{CollisionShape, MotionType, RigidBodyData};
+    use byroredux_core::ecs::components::{GlobalTransform, Parent, Transform};
+    use byroredux_core::ecs::world::World;
+    use glam::{Quat, Vec3};
+
+    fn world() -> World {
+        let mut world = World::new();
+        world.register::<Transform>();
+        world.register::<GlobalTransform>();
+        world.register::<Parent>();
+        world.register::<CollisionShape>();
+        world.register::<RigidBodyData>();
+        world.register::<RapierHandles>();
+        world.register::<ActorBoneCollider>();
+        world.insert_resource(PhysicsWorld::new());
+        world
+    }
+
+    fn spawn_bone(world: &mut World, tag: bool) -> EntityId {
+        let e = world.spawn();
+        world.insert(e, Transform::new(Vec3::ZERO, Quat::IDENTITY, 1.0));
+        world.insert(e, GlobalTransform::new(Vec3::ZERO, Quat::IDENTITY, 1.0));
+        world.insert(
+            e,
+            CollisionShape::Cuboid {
+                half_extents: Vec3::splat(4.0),
+            },
+        );
+        world.insert(
+            e,
+            RigidBodyData {
+                motion_type: MotionType::Keyframed,
+                ..Default::default()
+            },
+        );
+        if tag {
+            world.insert(e, ActorBoneCollider);
+        }
+        e
+    }
+
+    /// #2873 — registration must file a tagged bone's collider under
+    /// `ACTOR_BONE_GROUP` (membership only, filter untouched) and leave an
+    /// untagged body on the default groups, so ground probes discriminate
+    /// between an actor's shoulder and the packed-Havok floor proxy.
+    #[test]
+    fn tagged_bones_register_into_the_actor_bone_group() {
+        let mut world = world();
+        let bone = spawn_bone(&mut world, true);
+        let prop = spawn_bone(&mut world, false);
+
+        physics_sync_system(&world, 0.0);
+
+        let handles = world.query::<RapierHandles>().expect("storage");
+        let pw = world.resource::<PhysicsWorld>();
+        let groups = |e: EntityId| {
+            let h = handles.get(e).copied().expect("registered");
+            pw.colliders
+                .get(h.collider)
+                .expect("collider")
+                .collision_groups()
+        };
+
+        assert_eq!(groups(bone).memberships, crate::ACTOR_BONE_GROUP);
+        assert_eq!(
+            groups(bone).filter,
+            rapier3d::prelude::Group::ALL,
+            "the mask is query-side only — contact generation must be unchanged"
+        );
+        assert_eq!(
+            groups(prop),
+            rapier3d::prelude::InteractionGroups::all(),
+            "an untagged keyframed body keeps the default groups"
+        );
+    }
+
+    /// #2874 — `cast_capsule_down_onto_walkable_surface` collapses "hit
+    /// nothing" and "hit something too steep" into a single `None`, which is
+    /// what made the census mis-attribute a ramp to a transform bug. The
+    /// verdict must keep them apart.
+    #[test]
+    fn probe_verdict_separates_a_miss_from_a_walkability_rejection() {
+        assert_eq!(
+            SpawnProbeVerdict::classify(None, 0.6),
+            SpawnProbeVerdict::NoHit
+        );
+        assert_eq!(
+            SpawnProbeVerdict::classify(Some((12.0, 0.45)), 0.6),
+            SpawnProbeVerdict::RejectedNonWalkable {
+                surface_y: 12.0,
+                normal_y: 0.45,
+            },
+            "a 63° ramp is a rejection, not a missing collider"
+        );
+        assert_eq!(
+            SpawnProbeVerdict::classify(Some((12.0, 0.98)), 0.6),
+            SpawnProbeVerdict::Walkable {
+                surface_y: 12.0,
+                normal_y: 0.98,
+            }
+        );
+        // Legacy Havok architecture can be inward-wound, so orientation is
+        // deliberately ignored — matching the walkable wrapper's own contract.
+        assert_eq!(
+            SpawnProbeVerdict::classify(Some((12.0, -0.98)), 0.6),
+            SpawnProbeVerdict::Walkable {
+                surface_y: 12.0,
+                normal_y: -0.98,
+            }
+        );
     }
 }
