@@ -1329,6 +1329,11 @@ impl MaterialInfo {
             from_bgsm: false,
             bgem_glass: false,
             thin_glass: false,
+            // #2609 — the NIF importer never reads an external material file,
+            // so the overrides below are the keyword classifier's guess, not
+            // authored scalars. Consumers gating on "authoritative" must see
+            // false here even when `metalness_override` is `Some`.
+            bgsm_pbr_scalars_authored: false,
             // #2707 (SF-D8-01) — `None` when `classify_legacy_pbr` had
             // literally no signal to classify from (the Starfield
             // material-reference stub case), so `translate_material` seeds

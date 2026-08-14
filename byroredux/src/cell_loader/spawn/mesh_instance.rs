@@ -550,7 +550,13 @@ pub(super) fn spawn_mesh_instance(
     // attached, instead of recomputing it per
     // draw in the render path. Reads the same components the renderer
     // reads, so the value is identical — only canonical + tooling-visible.
-    crate::material_translate::resolve_normal_alpha_spec_roughness(world, entity);
+    // #2606 — pass the "a real BGSM authored the PBR scalars" signal so the
+    // legacy fallback cannot clobber them.
+    crate::material_translate::resolve_normal_alpha_spec_roughness(
+        world,
+        entity,
+        mesh.material.bgsm_pbr_scalars_authored,
+    );
     // #2826 (REN-D19-02) — same "resolve once from MaterialTextureHandles"
     // pattern, for whether the model-space normal map's blue channel
     // carries authored Z.
