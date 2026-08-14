@@ -204,10 +204,15 @@ impl VulkanContext {
             // `false` means this frame's upload failed, so fall back to
             // direct draws rather than issue `cmd_draw_indexed_indirect`
             // over a stale/uninitialized buffer.
+            // #2751 — `batches.len()` is the fourth limb: the loop below
+            // derives `byte_offset` from `i` over this exact slice, so a
+            // count the indirect buffer can't hold must reject the path
+            // outright rather than record a read past the allocation.
             let use_indirect = should_use_indirect_draws(
                 global_bound,
                 self.device_caps.multi_draw_indirect_supported,
                 self.indirect_upload_ok,
+                batches.len(),
             );
             let indirect_buffer = self.scene_buffers.indirect_buffer(frame);
             let indirect_stride = std::mem::size_of::<vk::DrawIndexedIndirectCommand>() as u32;

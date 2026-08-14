@@ -2802,10 +2802,19 @@ impl VulkanContext {
         )
         .context("create frame upscaler")?;
         // EX-05 / #2736 — one small host-visible counter buffer per frame slot.
+        //
+        // #2752 / REN-D4-05 — `create_host_readback` (`GpuToCpu`), not
+        // `create_host_visible` (`CpuToGpu`). The shader `atomicAdd`s into
+        // these and the HOST drains them every frame right after the fence
+        // wait, so they are readback buffers; allocating them from the upload
+        // preset put a per-frame host-read on memory gpu-allocator steers
+        // toward uncached write-combined BAR on a discrete card. `GpuToCpu`
+        // additionally prefers `HOST_CACHED` — which is exactly why
+        // `collect_image_health` must now invalidate before reading.
         let mut image_health_buffers = Vec::with_capacity(sync::MAX_FRAMES_IN_FLIGHT);
         for _ in 0..sync::MAX_FRAMES_IN_FLIGHT {
             image_health_buffers.push(
-                super::buffer::GpuBuffer::create_host_visible(
+                super::buffer::GpuBuffer::create_host_readback(
                     &device,
                     &gpu_allocator,
                     IMAGE_HEALTH_BUFFER_BYTES,
@@ -2817,9 +2826,16 @@ impl VulkanContext {
         // gpu-allocator makes no zero-init guarantee, so the very first frame
         // would otherwise read whatever was in the suballocation and report a
         // phantom NaN count before the shader had written anything.
+        //
+        // This is a host WRITE, so it needs the flush half of the pair — on a
+        // non-coherent readback type the zeroing would otherwise sit in a
+        // dirty cache line the shader's first `atomicAdd` never sees.
         for buffer in image_health_buffers.iter_mut() {
             if let Ok(bytes) = buffer.mapped_slice_mut() {
                 bytes.fill(0);
+            }
+            if let Err(e) = buffer.flush_if_needed(&device) {
+                log::warn!("image-health buffer zero-init flush failed: {e}");
             }
         }
         let health_handles: Vec<vk::Buffer> =

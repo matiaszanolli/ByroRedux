@@ -503,7 +503,7 @@ pub(crate) const NON_COHERENT_ATOM_SIZE: vk::DeviceSize = 256;
 ///
 /// Used instead of `VK_WHOLE_SIZE` so flushes don't extend past the
 /// gpu-allocator sub-allocation into unrelated memory.
-fn aligned_flush_range(
+pub(crate) fn aligned_flush_range(
     offset: vk::DeviceSize,
     size: vk::DeviceSize,
 ) -> (vk::DeviceSize, vk::DeviceSize) {
@@ -743,6 +743,91 @@ impl GpuBuffer {
         })
     }
 
+    /// Create a host-visible buffer for device→host **readback**.
+    ///
+    /// #2752 / REN-D4-05 — the readback sibling of [`Self::create_host_visible`],
+    /// which pins `MemoryLocation::CpuToGpu`. The two locations are not
+    /// interchangeable: `CpuToGpu` exists for staging *uploads*, and
+    /// gpu-allocator resolves it toward `HOST_VISIBLE | HOST_COHERENT` —
+    /// frequently device-local BAR memory on a discrete card, i.e. uncached
+    /// write-combined from the CPU's point of view. `GpuToCpu` is the
+    /// readback preset and additionally prefers `HOST_CACHED`, which is what
+    /// a buffer the host drains every frame on the hot path actually wants.
+    ///
+    /// Kept as a separate constructor rather than a `location` parameter on
+    /// `create_host_visible` so that function's #423 audit guard ("every call
+    /// site MUST be per-frame mutable upload") keeps its meaning — a reader
+    /// checking either constructor's call sites is checking one intent, not
+    /// two.
+    ///
+    /// **`HOST_CACHED` is exactly the case where a missing invalidate becomes
+    /// observable**, so every caller must run [`Self::invalidate_if_needed`]
+    /// after the fence wait and before reading through
+    /// [`Self::mapped_slice_mut`]. That ordering is the whole point of this
+    /// pair — see #2740 (REN-D4-04) for why a fence alone does not make
+    /// device writes visible to the host.
+    pub fn create_host_readback(
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+        size: vk::DeviceSize,
+        usage: vk::BufferUsageFlags,
+    ) -> Result<Self> {
+        let buffer_info = vk::BufferCreateInfo::default()
+            .size(size)
+            .usage(usage)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+
+        // SAFETY: `device` is the caller's live logical device, valid for the
+        // call; `buffer_info` is a fully-populated valid VkBufferCreateInfo.
+        let buffer = unsafe {
+            device
+                .create_buffer(&buffer_info, None)
+                .context("Failed to create host-readback buffer")?
+        };
+
+        // SAFETY: `buffer` was just created by this device above and is live;
+        // the device outlives the call.
+        let requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
+
+        let allocation = allocator
+            .lock()
+            .expect("allocator lock poisoned")
+            .allocate(&vulkan::AllocationCreateDesc {
+                name: "host_readback_buffer",
+                requirements,
+                location: MemoryLocation::GpuToCpu,
+                linear: true,
+                allocation_scheme: vulkan::AllocationScheme::GpuAllocatorManaged,
+            })
+            .context("Failed to allocate host-readback memory")?;
+        // Same mapping-policy tripwire as the upload path: every reader
+        // reaches `mapped_slice_mut` on its hot path, so catch a regression
+        // at construction rather than on the first drain.
+        debug_assert_cpu_to_gpu_mapped(&allocation, "create_host_readback");
+
+        // SAFETY: `buffer` and `allocation` were both created here from this
+        // device; the memory/offset come from the allocation that satisfied
+        // `buffer`'s memory requirements, and the buffer is not yet bound.
+        unsafe {
+            device
+                .bind_buffer_memory(buffer, allocation.memory(), allocation.offset())
+                .context("Failed to bind host-readback buffer")?;
+        }
+
+        let is_coherent = allocation
+            .memory_properties()
+            .contains(vk::MemoryPropertyFlags::HOST_COHERENT);
+
+        Ok(Self {
+            buffer,
+            size,
+            allocation: Some(allocation),
+            is_coherent,
+            device: device.clone(),
+            allocator: Some(allocator.clone()),
+        })
+    }
+
     /// Create a DEVICE_LOCAL buffer without initial data.
     ///
     /// Used for GPU-only buffers that are populated by device commands
@@ -807,18 +892,17 @@ impl GpuBuffer {
     /// Get the mapped memory slice for direct writes (no intermediate Vec).
     /// Call `flush_if_needed()` after writing to ensure GPU visibility.
     ///
-    /// #2793 (REN-D5-05) — this type has no `vkInvalidateMappedMemoryRanges`
-    /// counterpart to `flush_if_needed()`. That's fine for the write-then-
-    /// flush usage this doc comment describes, but a caller that instead
-    /// READS GPU-written bytes back through this same slice (e.g. an
+    /// #2793 (REN-D5-05) described the gap that #2752 then closed: a caller
+    /// that READS GPU-written bytes back through this slice (an
     /// atomic-counter buffer the shader writes and the host later drains)
-    /// gets no equivalent visibility guarantee from this type — it's
-    /// correct today only because every current `mapped_slice_mut` caller's
-    /// buffer is `create_host_visible` (`CpuToGpu`), and gpu-allocator
-    /// 0.27's `CpuToGpu` preset requires (not merely prefers)
-    /// `HOST_COHERENT`, so `is_coherent` is always `true` in practice. Add
-    /// an `invalidate_if_needed()` sibling to `flush_if_needed()` before
-    /// this type is ever used with a non-coherent-eligible allocation.
+    /// needs the device→host counterpart, not `flush_if_needed()`. That
+    /// counterpart now exists — [`Self::invalidate_if_needed`] — and every
+    /// reader must call it after the fence wait and before reading here.
+    /// The image-health buffers were the case in point: they are allocated
+    /// via [`Self::create_host_readback`] (`GpuToCpu`, which prefers
+    /// `HOST_CACHED`) precisely because they are drained every frame, and
+    /// `HOST_CACHED` is the memory type where skipping the invalidate stops
+    /// being theoretical.
     pub fn mapped_slice_mut(&mut self) -> Result<&mut [u8]> {
         let alloc = self
             .allocation
@@ -861,6 +945,56 @@ impl GpuBuffer {
                 device
                     .flush_mapped_memory_ranges(&[range])
                     .context("Failed to flush mapped memory")?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Invalidate mapped memory if not HOST_COHERENT. Call BEFORE reading
+    /// device-written bytes back through [`Self::mapped_slice_mut`].
+    ///
+    /// #2752 / REN-D4-05 — the device→host counterpart to
+    /// [`Self::flush_if_needed`], and the prerequisite that let the
+    /// image-health buffers move to `MemoryLocation::GpuToCpu`. Waiting on a
+    /// fence proves the submission *completed*; it does not make the device's
+    /// writes *visible to the host*, because a fence's memory-dependency
+    /// access scope covers device access only (#2740 / REN-D4-04). On a
+    /// `HOST_CACHED` allocation — exactly what `GpuToCpu` prefers — the host
+    /// can otherwise read stale cache lines.
+    ///
+    /// A no-op on coherent memory, which is what the dev card resolves to, so
+    /// this is insurance against a memory-type change rather than something
+    /// observable here. That is also why it cannot be falsified by
+    /// `cargo test`: it needs a device that hands back a non-coherent
+    /// readback type, or a validation-layer run.
+    pub fn invalidate_if_needed(&mut self, device: &ash::Device) -> Result<()> {
+        let alloc = self
+            .allocation
+            .as_ref()
+            .context("Buffer has no allocation")?;
+
+        if !self.is_coherent {
+            let (aligned_offset, aligned_size) = aligned_flush_range(alloc.offset(), alloc.size());
+            debug_assert_flush_range_bounded(alloc, aligned_offset, aligned_size);
+            // SAFETY: identical range-widening argument to `flush_if_needed`
+            // above — `aligned_flush_range` rounds the offset DOWN and the
+            // size UP to `NON_COHERENT_ATOM_SIZE`, producing a strict
+            // SUPERSET of this allocation that stays inside the parent
+            // `GpuAllocatorManaged` block. Invalidating a superset is safe in
+            // a way flushing one is not: it discards possibly-stale host
+            // cache lines for a neighbouring suballocation, forcing a re-read
+            // from memory, rather than publishing this allocation's bytes
+            // over anything. `IMAGE_HEALTH_BUFFER_BYTES` is 8, far below a
+            // typical 64-byte `nonCoherentAtomSize`, so the widening is the
+            // normal case here, not the edge case.
+            unsafe {
+                let range = vk::MappedMemoryRange::default()
+                    .memory(alloc.memory())
+                    .offset(aligned_offset)
+                    .size(aligned_size);
+                device
+                    .invalidate_mapped_memory_ranges(&[range])
+                    .context("Failed to invalidate mapped memory")?;
             }
         }
         Ok(())
@@ -1375,6 +1509,75 @@ mod tests {
                 "aligned end must round UP, never down past the real end"
             );
         }
+    }
+
+    /// #2752 (REN-D4-05) — `IMAGE_HEALTH_BUFFER_BYTES` is 8, far below the
+    /// 256-byte `NON_COHERENT_ATOM_SIZE`, so for the readback buffer this fix
+    /// is about, the widening is the *normal* case rather than an edge case:
+    /// an 8-byte invalidate always covers a whole atom. That is sound for an
+    /// invalidate (it only discards possibly-stale host cache lines, forcing
+    /// a re-read) in a way it would not be for a flush, and it is why the
+    /// invalidate path can share `aligned_flush_range` unchanged.
+    #[test]
+    fn eight_byte_readback_range_widens_to_a_whole_atom() {
+        let (aligned_offset, aligned_size) = aligned_flush_range(0, 8);
+        assert_eq!(aligned_offset, 0);
+        assert_eq!(
+            aligned_size, NON_COHERENT_ATOM_SIZE,
+            "an 8-byte counter buffer invalidates a full atom, not 8 bytes"
+        );
+
+        // Mid-block placement: gpu-allocator suballocates on
+        // `VkMemoryRequirements.alignment`, so the image-health buffer will
+        // not generally start atom-aligned.
+        let (aligned_offset, aligned_size) = aligned_flush_range(NON_COHERENT_ATOM_SIZE + 8, 8);
+        assert_eq!(aligned_offset, NON_COHERENT_ATOM_SIZE);
+        assert!(
+            aligned_offset + aligned_size >= NON_COHERENT_ATOM_SIZE + 16,
+            "the widened range must still cover the real 8 bytes"
+        );
+    }
+
+    /// #2752 — the readback pair has to stay wired the way the fix left it,
+    /// and none of it is reachable from a unit test: the allocation location
+    /// needs a device, and on the dev card gpu-allocator resolves both
+    /// presets to coherent memory, so a missing invalidate is invisible
+    /// anyway (that's what #2740 means by "needs a device to falsify").
+    /// Source-scan is the honest pin — it catches the realistic regression,
+    /// which is someone copying `create_host_visible` into a new readback
+    /// site or dropping the invalidate as redundant.
+    #[test]
+    fn readback_constructor_uses_the_readback_memory_location() {
+        let src = include_str!("buffer.rs");
+        let start = src
+            .find("pub fn create_host_readback(")
+            .expect("create_host_readback must still exist (#2752)");
+        let body = &src[start..];
+        let end = body
+            .find("pub fn create_device_local_uninit(")
+            .expect("create_host_readback must still be followed by its sibling");
+        let body = &body[..end];
+        assert!(
+            body.contains("MemoryLocation::GpuToCpu"),
+            "the readback constructor must allocate GpuToCpu — CpuToGpu is \
+             the upload preset and steers toward uncached write-combined BAR"
+        );
+        assert!(
+            !body.contains("MemoryLocation::CpuToGpu"),
+            "no CpuToGpu allocation may survive inside the readback constructor"
+        );
+
+        // The invalidate primitive is the prerequisite that made the location
+        // switch safe; it must not be deleted as an apparent no-op.
+        assert!(
+            src.contains("pub fn invalidate_if_needed("),
+            "GpuBuffer::invalidate_if_needed is what makes a non-coherent \
+             readback allocation sound (#2740 / REN-D4-04)"
+        );
+        assert!(
+            src.contains("invalidate_mapped_memory_ranges"),
+            "invalidate_if_needed must actually issue vkInvalidateMappedMemoryRanges"
+        );
     }
 
     /// Regression for #2683 (SAFE-D4-01) — `flush_range_within` (the pure

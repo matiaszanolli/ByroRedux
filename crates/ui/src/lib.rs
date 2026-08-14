@@ -14,7 +14,7 @@ mod navigator;
 mod player;
 mod profile;
 
-use std::rc::Rc;
+use std::sync::Arc;
 
 pub use avm2_host::ScaleformHostObjectState;
 pub use catalog::{
@@ -84,7 +84,7 @@ impl UiManager {
     /// Gamebryo archive resource provider.
     pub fn load_swf_from_resource_provider(
         &mut self,
-        provider: Rc<dyn ScaleformResourceProvider>,
+        provider: Arc<dyn ScaleformResourceProvider>,
         movie_path: &str,
         name: &str,
         profile: ScaleformProfile,

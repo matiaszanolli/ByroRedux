@@ -96,25 +96,40 @@ impl VulkanContext {
     /// screen and then goes. A gate that only sampled the current frame would
     /// miss it; the total is what makes the smoke check reliable.
     ///
-    /// #2793 (REN-D5-05) — this reads GPU-written data through
-    /// `mapped_slice_mut()` with no `vkInvalidateMappedMemoryRanges` call
-    /// (`GpuBuffer` has no invalidate primitive at all), then writes the
-    /// reset-to-zero bytes back through the same mapping with no
-    /// `flush_if_needed()` — despite `mapped_slice_mut`'s own doc mandating
-    /// one after writes. Both omissions are visibility gaps on paper. They
-    /// are benign in practice ONLY because `image_health_buffers` is a
-    /// `create_host_visible` (`MemoryLocation::CpuToGpu`) allocation, and
-    /// gpu-allocator 0.27's `CpuToGpu` preset puts `HOST_COHERENT` in the
-    /// *required* (not just preferred) memory-property flags — so
-    /// `is_coherent` is always `true` here and both the GPU write and this
-    /// host read/write stay automatically visible to each other with no
-    /// explicit barrier. That's a property of this specific allocator
-    /// version, not a Vulkan-spec guarantee; it doesn't hold if this buffer
-    /// is ever changed to a non-coherent-eligible allocation.
+    /// #2793 (REN-D5-05) described the visibility gaps here; #2752
+    /// (REN-D4-05) closes them, and the two halves had to move together.
+    ///
+    /// This reads GPU-written data through `mapped_slice_mut()` and then
+    /// writes the reset-to-zero bytes back through the same mapping. Both
+    /// directions need an explicit step on non-coherent memory: an
+    /// **invalidate** before the read (a fence proves the submission
+    /// completed, but its memory-dependency access scope covers device
+    /// access only — #2740 / REN-D4-04), and a **flush** after the zeroing so
+    /// the next frame's shader `atomicAdd` doesn't accumulate onto a stale
+    /// line.
+    ///
+    /// Both were previously absent, benign only because the buffer was a
+    /// `CpuToGpu` allocation whose gpu-allocator preset *requires*
+    /// `HOST_COHERENT`. That is a property of one allocator version, not a
+    /// spec guarantee — and #2752 deliberately moved this buffer to
+    /// `GpuToCpu` (which merely *prefers* `HOST_CACHED`), so the coincidence
+    /// no longer covers it. Both calls are no-ops on a coherent allocation.
     pub(super) fn collect_image_health(&mut self, frame: usize) {
+        // Split-borrow: `invalidate_if_needed`/`flush_if_needed` take the
+        // device, which lives on `self` alongside the buffer vec.
+        let device = self.device.clone();
         let Some(buffer) = self.image_health_buffers.get_mut(frame) else {
             return;
         };
+        // Before the read. A failure here means the counters may be stale, so
+        // the honest move is to skip this frame's sample rather than fold a
+        // possibly-stale value into the running total the smoke gate asserts on.
+        if let Err(e) = buffer.invalidate_if_needed(&device) {
+            log::warn!(
+                "image-health readback invalidate failed: {e} — skipping this frame's sample"
+            );
+            return;
+        }
         let Ok(bytes) = buffer.mapped_slice_mut() else {
             return;
         };
@@ -124,6 +139,11 @@ impl VulkanContext {
         let rgb = u32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
         let alpha = u32::from_ne_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
         bytes[..8].fill(0);
+        // After the zeroing write, so the shader's next `atomicAdd` starts
+        // from zero rather than a dirty host cache line.
+        if let Err(e) = buffer.flush_if_needed(&device) {
+            log::warn!("image-health counter reset flush failed: {e}");
+        }
 
         self.image_health_last = (rgb, alpha);
         self.image_health_total.0 = self.image_health_total.0.saturating_add(u64::from(rgb));
@@ -635,6 +655,86 @@ mod tests {
             mod_src.contains("HOST_COHERENT") || mod_src.contains("collect_image_health"),
             "image_health_buffers field doc must point to the corrected \
              explanation (#2740)"
+        );
+    }
+
+    /// #2752 (REN-D4-05) — the readback path's two halves must stay together.
+    /// #2740 said not to blind-fix the location, because switching to
+    /// `GpuToCpu` (which prefers `HOST_CACHED`) is exactly what turns a
+    /// missing invalidate from theoretical into observable. So the allocation
+    /// change and the invalidate call are one change, and this pins that
+    /// neither can be removed without the other.
+    ///
+    /// Source-scan for the same reason as the sibling test above: on the dev
+    /// card gpu-allocator resolves both presets to coherent memory, so
+    /// `is_coherent` is true and the invalidate is a no-op — there is no
+    /// device-free way to observe the difference. What this *can* catch is
+    /// the realistic regression: the invalidate being deleted as dead code,
+    /// or the buffer drifting back to the upload constructor.
+    #[test]
+    fn image_health_readback_allocates_gputocpu_and_invalidates_before_reading() {
+        let resources_src_full = include_str!("resources.rs");
+        let production = &resources_src_full[..resources_src_full
+            .find("mod tests {")
+            .expect("resources.rs must have a `mod tests` block")];
+        let mod_src = include_str!("mod.rs");
+
+        assert!(
+            mod_src.contains("GpuBuffer::create_host_readback("),
+            "image_health_buffers must be allocated through the readback \
+             constructor — `create_host_visible` is CpuToGpu, an upload \
+             preset, on a buffer the host drains every frame (#2752)"
+        );
+
+        // Scope to the function BODY — the doc comment above it necessarily
+        // names both `mapped_slice_mut` and the invalidate while explaining
+        // the ordering, which would make a whole-file scan self-satisfying.
+        let body_start = production
+            .find("pub(super) fn collect_image_health(")
+            .expect("collect_image_health must still exist");
+        let body = &production[body_start..];
+        let body = &body[..body
+            .find("\n    /// ")
+            .expect("collect_image_health must be followed by another doc-commented item")];
+
+        let invalidate = body
+            .find("invalidate_if_needed")
+            .expect("collect_image_health must invalidate before reading (#2752)");
+        let read = body
+            .find("mapped_slice_mut")
+            .expect("collect_image_health must still read through mapped_slice_mut");
+        assert!(
+            invalidate < read,
+            "the invalidate must precede the read — after it, the host may \
+             already have consumed a stale cache line"
+        );
+
+        // The zeroing write that follows the read needs the other half of the
+        // pair, or the next frame's atomicAdd accumulates onto a dirty line.
+        assert!(
+            body[read..].contains("flush_if_needed"),
+            "the counter reset written through the same mapping must be \
+             flushed (#2793's write-side half)"
+        );
+    }
+
+    /// The screenshot staging buffer has always been `GpuToCpu`, so it was
+    /// the site most exposed to the missing-invalidate gap even before #2752
+    /// moved the image-health buffers there. A stale read hands a torn or
+    /// previous-frame image to the golden-frame comparison — the one consumer
+    /// that cannot tell the difference.
+    #[test]
+    fn screenshot_readback_invalidates_before_mapping() {
+        let src = include_str!("screenshot.rs");
+        let invalidate = src
+            .find("invalidate_mapped_memory_ranges")
+            .expect("screenshot readback must invalidate (#2752 sibling)");
+        let read = src
+            .find("allocation.mapped_slice()")
+            .expect("screenshot readback must still read the staging mapping");
+        assert!(
+            invalidate < read,
+            "the invalidate must precede the staging-buffer read"
         );
     }
 }
