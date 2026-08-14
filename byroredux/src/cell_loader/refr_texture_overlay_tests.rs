@@ -477,3 +477,126 @@ fn build_overlay_xtxr_slot_1_adopts_model_space_normals_flag() {
         "XTXR slot 1 swap must adopt the swap TXST's HasModelSpaceNormals bit"
     );
 }
+
+// ── #2695 — one slot→role table for both sites ──────────────────────────
+
+/// The defect: the REFR overlay resolved `BSShaderTextureSet` slot indices
+/// through its own fixed table while the NIF importer resolved them per
+/// `BSLightingShaderType`, and the two already disagreed.
+///
+/// These pin the agreement rather than the overlay in isolation — a fix that
+/// only touched one side is exactly what #2695 is about. `slot_to_role` is now
+/// the single owner, so asserting against it *is* asserting that the overlay
+/// and the importer land in the same canonical role.
+mod slot_role_agreement {
+    use byroredux_nif::import::{slot_to_role, TextureRole};
+
+    /// Slot indices the overlay stores, in its own field order. The overlay's
+    /// field *names* are NIF-slot names, not role names — `glow` is "slot 2",
+    /// not "the emissive role" — which is precisely how the flat table read as
+    /// correct for so long.
+    const OVERLAY_SLOTS: [(u32, &str); 8] = [
+        (0, "diffuse"),
+        (1, "normal"),
+        (2, "glow"),
+        (3, "height"),
+        (4, "env"),
+        (5, "env_mask"),
+        (6, "inner"),
+        (7, "specular"),
+    ];
+
+    /// On an ordinary material the overlay's historical field names ARE the
+    /// canonical roles — this is the majority of content and it must not move.
+    #[test]
+    fn default_shader_type_matches_the_overlays_historical_table() {
+        let expected = [
+            Some(TextureRole::BaseColor),
+            Some(TextureRole::Normal),
+            Some(TextureRole::Emissive),
+            Some(TextureRole::Height),
+            Some(TextureRole::Environment),
+            Some(TextureRole::EnvironmentMask),
+            None,                        // inner layer is type-11 only
+            Some(TextureRole::Specular), // MSN only
+        ];
+        for ((slot, name), want) in OVERLAY_SLOTS.iter().zip(expected) {
+            assert_eq!(
+                slot_to_role(0, *slot, /* model_space_normals */ true),
+                want,
+                "slot {slot} ({name}) moved for the default shader type"
+            );
+        }
+    }
+
+    /// FaceTint (4) — the case that motivated #2694 and, through the flat
+    /// table, made an XTXR slot-2 swap bind a skin-tint mask as a glow map and
+    /// a slot-3 swap ray-march POM over a face.
+    #[test]
+    fn face_tint_overrides_no_longer_land_in_the_wrong_role() {
+        assert_eq!(slot_to_role(4, 2, false), Some(TextureRole::Tint));
+        assert_ne!(slot_to_role(4, 2, false), Some(TextureRole::Emissive));
+        assert_eq!(slot_to_role(4, 3, false), Some(TextureRole::Detail));
+        assert_ne!(slot_to_role(4, 3, false), Some(TextureRole::Height));
+        // Slots 4/5 are absent on 100% of vanilla FaceTint; an override there
+        // must be dropped, not bound as an env cube.
+        assert_eq!(slot_to_role(4, 4, false), None);
+        assert_eq!(slot_to_role(4, 5, false), None);
+    }
+
+    /// SkinTint/HairTint: slot 2 is the tint mask, and a stray slot-4 override
+    /// must not spuriously bind an env cube (#1350).
+    #[test]
+    fn tint_family_overrides_skip_the_env_slots() {
+        for ty in [5u32, 6] {
+            assert_eq!(slot_to_role(ty, 2, false), Some(TextureRole::Tint));
+            assert_eq!(slot_to_role(ty, 4, false), None);
+            assert_eq!(slot_to_role(ty, 5, false), None);
+            // #2742 — slot 7 IS the alternate specular here under MSN; #1350's
+            // guard had dropped it.
+            assert_eq!(slot_to_role(ty, 7, true), Some(TextureRole::Specular));
+        }
+    }
+
+    /// MultiLayerParallax: slot 6 is the inner layer (#2693), and slot 7 is a
+    /// back-lighting map with no canonical role — the overlay used to write it
+    /// into specular/smooth-spec regardless.
+    #[test]
+    fn multi_layer_parallax_inner_and_backlight_slots() {
+        assert_eq!(slot_to_role(11, 6, false), Some(TextureRole::InnerLayer));
+        assert_eq!(slot_to_role(11, 7, true), None);
+        assert_eq!(slot_to_role(11, 7, false), None);
+    }
+
+    /// The four slots the audit measured as divergent must now every one of
+    /// them resolve to something *other* than the overlay's old flat answer.
+    #[test]
+    fn every_audited_disagreement_is_resolved() {
+        let old_flat = |slot: u32| match slot {
+            2 => Some(TextureRole::Emissive),
+            3 => Some(TextureRole::Height),
+            4 => Some(TextureRole::Environment),
+            5 => Some(TextureRole::EnvironmentMask),
+            7 => Some(TextureRole::Specular),
+            _ => None,
+        };
+        // (shader_type, slot) pairs the audit named.
+        for (ty, slot) in [
+            (4u32, 2u32),
+            (5, 2),
+            (6, 2),
+            (4, 3),
+            (5, 4),
+            (5, 5),
+            (6, 4),
+            (6, 5),
+            (11, 7),
+        ] {
+            assert_ne!(
+                slot_to_role(ty, slot, true),
+                old_flat(slot),
+                "shader_type {ty} slot {slot} still resolves the flat-table way"
+            );
+        }
+    }
+}

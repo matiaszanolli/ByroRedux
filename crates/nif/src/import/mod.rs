@@ -18,7 +18,9 @@ mod walk;
 // Re-export the public material capture types so `ImportedMesh`'s
 // `effect_shader` field can name `BsEffectShaderData` without leaking
 // the internal module path.
-pub use material::{BsEffectShaderData, NoLightingFalloff, ShaderTypeFields};
+pub use material::{
+    slot_to_role, BsEffectShaderData, NoLightingFalloff, ShaderTypeFields, TextureRole,
+};
 
 use crate::scene::NifScene;
 use crate::types::NiTransform;

@@ -32,6 +32,32 @@ pub(super) fn apply_dedicated_alpha_property(
     }
 }
 
+/// Effective `BSLightingShaderType` for slot→role resolution (#2695).
+///
+/// The numeric `shader_type` alone is not sufficient to identify the tint
+/// family. Skyrim FaceTint parses to `ShaderTypeData::None` (that variant's own
+/// doc lists "Type … 4 (Face Tint)"), and FO76 carries its skin tint in
+/// `Fo76SkinTint`, so a mesh can be a skin-tint material while its numeric type
+/// says otherwise. #2694 traced every vanilla Skyrim head binding its
+/// `*_sk.dds` skin-tint mask as a GLOW map to exactly this gap.
+///
+/// Normalising here — rather than widening `slot_to_role`'s signature — keeps
+/// the shared table a pure function of `(shader_type, slot,
+/// model_space_normals)`, which is all the REFR overlay can supply. The
+/// overlay recovers the *normalised* value from
+/// `ImportedMaterial::shader_type`, so both sites resolve identically.
+fn normalize_shader_type(shader: &BSLightingShaderProperty) -> u32 {
+    let data_says_skin_tint = matches!(
+        &shader.shader_type_data,
+        ShaderTypeData::SkinTint { .. } | ShaderTypeData::Fo76SkinTint { .. }
+    );
+    if data_says_skin_tint {
+        slot_role::bs_lighting::SKIN_TINT
+    } else {
+        shader.shader_type
+    }
+}
+
 /// Skyrim+: dedicated `shader_property_ref`. Dispatches to whichever of
 /// the four BS*ShaderProperty variants the block resolves as — mirrors
 /// the sequential `if let Some(shader) = scene.get_as::<X>(idx)` checks
@@ -94,249 +120,58 @@ fn apply_bs_lighting_shader(
         if model_space_normals {
             info.model_space_normals = true;
         }
+        // #2695 — record the normalised type BEFORE the texture-set lookup, so
+        // a shader property carrying no `BSShaderTextureSet` (an XTXR-only
+        // placement is exactly that case) still tells the REFR overlay which
+        // table to resolve its slots with.
+        info.shader_type = normalize_shader_type(shader);
         if let Some(ts_idx) = shader.texture_set_ref.index() {
             if let Some(tex_set) = scene.get_as::<BSShaderTextureSet>(ts_idx) {
-                if let Some(path) = tex_set.textures.first() {
-                    info.texture_path = intern_texture_path(pool, path);
-                }
-                // Normal map is textures[1] in BSShaderTextureSet.
-                if let Some(normal) = tex_set.textures.get(1) {
-                    info.normal_map = intern_texture_path(pool, normal);
-                }
-                // Slot 2 is polymorphic. SkinTint uses it as the skin /
-                // subsurface tint texture; the other legacy lighting paths
-                // use it as glow. Resolve the role here so downstream code
-                // never has to reinterpret the raw index.
-                // #2694 — FaceTint (4) belongs in this branch too. It is a
-                // skin-tint shader: every vanilla FaceTint property carries an
-                // `*_sk.dds` skin-tint mask in slot 2 (3158/3158 in
-                // `Skyrim - Meshes0.bsa`), the same role SkinTint (5) puts
-                // there. It was excluded only because the gate keys on
-                // `shader_type == 5` or `ShaderTypeData::SkinTint`, and Skyrim
-                // FaceTint parses to `ShaderTypeData::None` (that variant's own
-                // doc lists "Type … 4 (Face Tint)"), so every vanilla head bound
-                // its skin-tint mask as a GLOW map — latent only because
-                // `emissive_color` is black, one authored value away from
-                // glowing faces.
-                // HairTint (6) is included on the same evidence: its slot 2 is
-                // `_sk` on all 16 of the 10 815 HairTint properties that
-                // populate it, and the `5 | 6 =>` arm below already treats 5
-                // and 6 as one tint family — so excluding 6 here made the gate
-                // disagree with its own sibling arm.
-                let skin_tint_slot = matches!(shader.shader_type, 4 | 5 | 6)
-                    || matches!(
-                        &shader.shader_type_data,
-                        ShaderTypeData::SkinTint { .. } | ShaderTypeData::Fo76SkinTint { .. }
-                    );
-                if skin_tint_slot {
-                    if info.tint_map.is_none() {
-                        if let Some(tint) = tex_set.textures.get(2) {
-                            info.tint_map = intern_texture_path(pool, tint);
-                        }
-                    }
-                } else if info.glow_map.is_none() {
-                    if let Some(glow) = tex_set.textures.get(2) {
-                        info.glow_map = intern_texture_path(pool, glow);
-                    }
-                }
-                // Parallax / height (textures[3]). Used by
-                // BSLightingShaderProperty ParallaxOcc +
-                // MultiLayerParallax shader-type variants. The
-                // scale / passes scalars already arrive via
-                // `apply_shader_type_data`; pair them with the
-                // texture here. #452.
+                // #2695 — slot→role resolution now goes through the single
+                // shared table in `super::slot_role`, which the REFR texture
+                // overlay also calls. Before this, the overlay resolved the
+                // same NIF slot indices through its own shader-type-agnostic
+                // table and the two already disagreed on slots 2, 3, 4/5 and 7;
+                // every per-slot rule and its supporting occupancy evidence now
+                // lives in one place. `None` means the slot has no canonical
+                // destination for this shader type — drop it rather than guess.
                 //
-                // #2694 — NOT on FaceTint (4). nif.xml's field table calls
-                // slot 3 "Height/Parallax" generically, but every vanilla
-                // FaceTint property puts a *detail* map there
-                // (`MaleHeadDetail_Rough01.dds`, `BlankDetailmap.dds`,
-                // 3149/3158 in `Skyrim - Meshes0.bsa`). Feeding that to
-                // `parallax_map` made `triangle.frag` ray-march POM over a
-                // face complexion map — its POM branch gates only on
-                // `parallaxMapIndex != 0u`, with no `materialKind` check.
-                // The `4 =>` arm below routes slot 3 to `detail_map` instead.
-                if shader.shader_type != 4 && info.parallax_map.is_none() {
-                    if let Some(px) = tex_set.textures.get(3) {
-                        info.parallax_map = intern_texture_path(pool, px);
+                // The importer's `shader_type` is normalised first: Skyrim
+                // FaceTint parses to `ShaderTypeData::None`, and some FO76
+                // meshes carry the tint family only in `shader_type_data`, so
+                // the numeric type alone would miss them (#2694).
+                let effective_type = info.shader_type;
+                for slot in 0..8u32 {
+                    let Some(role) = slot_to_role(effective_type, slot, model_space_normals) else {
+                        continue;
+                    };
+                    let Some(raw) = tex_set.textures.get(slot as usize) else {
+                        continue;
+                    };
+                    // Slots 0-3 historically accepted an empty string (it
+                    // interns to `None` anyway); the per-type arms filtered
+                    // explicitly. Filter uniformly — an empty slot never
+                    // carries a role.
+                    if raw.is_empty() {
+                        continue;
                     }
-                }
-                // Slot 4 / 5 / 7 routing branches on
-                // `BSLightingShaderType` per nif.xml. Pre-#563 the
-                // importer treated slot 4 as the env-cube on every
-                // shader_type variant, which positively misbinds
-                // FaceTint (4) — its slot 4 is `Detail`, NOT
-                // envmap — and silently drops slot 7
-                // (FaceTint's `Tint` and MultiLayerParallax's
-                // inner `Layer`). EyeEnvmap (16) is the one
-                // variant that actually does carry env at slot 4,
-                // and falls through to the default arm.
-                match shader.shader_type {
-                    4 => {
-                        // FaceTint. #2694 — this arm used to read slot 4 →
-                        // detail and slot 7 → tint, from nif.xml's enum prose
-                        // ("Enables Detail(TS4), Tint(TS7)"). Both slots are
-                        // empty on 100% of vanilla FaceTint properties (they
-                        // never appear at all across the 3158 in
-                        // `Skyrim - Meshes0.bsa`), so the arm was inert while
-                        // the three slots that ARE authored each landed wrong.
-                        //
-                        // Measured occupancy, all 3158 properties:
-                        //   0 diffuse            3158  MaleHead.dds
-                        //   1 normal (_msn/_n)   3158
-                        //   2 skin-tint mask     3158  MaleHead_sk.dds
-                        //   3 detail             3149  MaleHeadDetail_Rough01.dds
-                        //   6 FaceGen tint       3150  FaceTint\Skyrim.esm\<formid>.dds
-                        //   4, 5, 7              absent
-                        //
-                        // Slots 0/1 route generically; slot 2 now goes through
-                        // the `skin_tint_slot` gate above (→ `tint_map`, the
-                        // same role SkinTint gives it). Slot 3 is handled here
-                        // because the generic slot-3 read is suppressed for
-                        // this shader type — see the note at that site.
-                        if info.detail_map.is_none() {
-                            if let Some(detail) = tex_set.textures.get(3).filter(|s| !s.is_empty())
-                            {
-                                info.detail_map = intern_texture_path(pool, detail);
-                            }
-                        }
-                        // Slot 6 (the per-NPC baked FaceGen tint) is knowingly
-                        // NOT routed, and this is a real remaining gap rather
-                        // than a no-op park.
-                        //
-                        // It is not the skin-tint mask — that is slot 2 — so it
-                        // cannot share `tint`; it is a baked per-actor overlay,
-                        // semantically closest to a diffuse. `MaterialTextureSet`
-                        // has no role for that, and giving it one is a feature,
-                        // not a slot mapping: a new role + `GpuMaterial` index
-                        // (with the GLSL mirror in lockstep) plus a decision on
-                        // how it composites against the authored diffuse.
-                        //
-                        // That decision belongs to the FaceGen path (#2095),
-                        // which today overrides the diffuse from the ACTOR's
-                        // form id rather than from this slot — and only when
-                        // `material_kind == MATERIAL_KIND_SKIN_TINT` (5), so it
-                        // does not fire for FaceTint (4) at all. Routing slot 6
-                        // to `base_color` here would silently pre-empt that
-                        // design, which is the class of guess this fix removes.
-                    }
-                    11 => {
-                        // MultiLayerParallax. Slot 4 carries the env cube,
-                        // paired with the `envmap_strength` scalar from
-                        // `ShaderTypeData::MultiLayerParallax`; slot 5 its mask.
-                        if info.env_map.is_none() {
-                            if let Some(env) = tex_set.textures.get(4).filter(|s| !s.is_empty()) {
-                                info.env_map = intern_texture_path(pool, env);
-                            }
-                        }
-                        if info.env_mask.is_none() {
-                            if let Some(mask) = tex_set.textures.get(5).filter(|s| !s.is_empty()) {
-                                info.env_mask = intern_texture_path(pool, mask);
-                            }
-                        }
-                        // #2553-adjacent role fix, #2693 — the inner layer is
-                        // slot **6**, not slot 7.
-                        //
-                        // nif.xml contradicts itself here. Its
-                        // `BSLightingShaderType` enum prose says "Enables EnvMap
-                        // Mask(TS6), Layer(TS7)"; its `BSShaderTextureSet` field
-                        // table says slot 6 = "Subsurface for Multilayer
-                        // Parallax", slot 7 = "Back Lighting Map
-                        // (SLSF2_Back_Lighting)". The field table wins, on three
-                        // independent grounds:
-                        //
-                        //   * Shipped data. Across `Skyrim - Meshes0.bsa`'s 607
-                        //     type-11 properties, slot 6 is non-empty on 607/607
-                        //     (`IceCaveWall02`, `IceFrozen03`,
-                        //     `RiftenWindowInner01`) while slot 7 is non-empty on
-                        //     370 and holds tint maps
-                        //     (`IceCaveSubsurfacetint01`). Meshes1.bsa agrees on
-                        //     all 55 of its type-11 shapes.
-                        //   * The enum's OTHER claim is demonstrably false: it
-                        //     calls slot 6 the envmap mask, but slot 5 already
-                        //     carries that (and this arm reads it there), and a
-                        //     100%-populated slot cannot be an optional mask.
-                        //   * This engine's own REFR overlay table already maps
-                        //     NIF slot 6 → `inner` (`cell_loader/refr.rs`), so
-                        //     the pre-fix importer disagreed with its sibling.
-                        //
-                        // Slot 7 (back lighting) is deliberately NOT read: there
-                        // is no back-lighting role in `MaterialTextureSet` and no
-                        // shader consumer for one, so inventing a mapping would
-                        // be fabrication. Park it here rather than silently
-                        // routing it somewhere it does not belong — which is
-                        // exactly the bug being fixed.
-                        if info.inner_layer_map.is_none() {
-                            if let Some(inner) = tex_set.textures.get(6).filter(|s| !s.is_empty()) {
-                                info.inner_layer_map = intern_texture_path(pool, inner);
-                            }
-                        }
-                    }
-                    5 | 6 => {
-                        // SkinTint (5) / HairTint (6) — nif.xml
-                        // BSLightingShaderType: "Enables Skin/Hair
-                        // Tint Color". These drive a tint COLOUR
-                        // (Color4 / Color3 shader fields), NOT a
-                        // texture set slot — they declare no TS slot
-                        // 4 or 5. Pre-#1350 they fell into the
-                        // default arm, which would route a non-empty
-                        // slot 4 → `env_map`; vanilla content leaves
-                        // those slots empty so the empty-filter hid
-                        // the misroute, but a modded / mis-exported
-                        // SkinTint NIF with a stray slot-4 string
-                        // would spuriously bind an env cube. Skip
-                        // slots 4/5 explicitly so that can't happen.
-                        // (The tint colour itself is a separate
-                        // capture path, not a texture set lookup.)
-                        //
-                        // #2742 — slot 7 is NOT covered by that same
-                        // "declares no TS slot" reasoning: with
-                        // model-space normals, slot 7 is the alternate
-                        // specular intensity/colour texture (see the
-                        // `_ =>` arm below), and that's independent of
-                        // shader type. Diverting 5/6 out of the default
-                        // arm (#1350, to guard slots 4/5) silently
-                        // dropped this too. Measured on real data:
-                        // 390/390 slot-7-bearing SkinTint properties in
-                        // `Skyrim - Meshes0.bsa` (4/4 in `Meshes1.bsa`)
-                        // are model-space-normal — every Skyrim
-                        // body/hands/beast-skin `_S.dds` specular mask
-                        // was being decoded and discarded.
-                        if model_space_normals && info.specular_map.is_none() {
-                            if let Some(spec) = tex_set.textures.get(7).filter(|s| !s.is_empty()) {
-                                info.specular_map = intern_texture_path(pool, spec);
-                            }
-                        }
-                    }
-                    _ => {
-                        // Default arm — EnvironmentMap (1),
-                        // EyeEnvmap (16), and every other variant
-                        // route slot 4 → env cube, slot 5 →
-                        // env mask. Variants whose nif.xml entry
-                        // doesn't reference slot 4/5 (Default 0,
-                        // Glow 2, Parallax 3, ParallaxOcc 7,
-                        // Landscape 8-10, etc.) either author empty
-                        // strings or skip the slots entirely — the
-                        // empty-filter skips them silently.
-                        if info.env_map.is_none() {
-                            if let Some(env) = tex_set.textures.get(4).filter(|s| !s.is_empty()) {
-                                info.env_map = intern_texture_path(pool, env);
-                            }
-                        }
-                        if info.env_mask.is_none() {
-                            if let Some(mask) = tex_set.textures.get(5).filter(|s| !s.is_empty()) {
-                                info.env_mask = intern_texture_path(pool, mask);
-                            }
-                        }
-                        // With model-space normals, slot 7 is the alternate
-                        // specular intensity/colour texture rather than the
-                        // normal backlight role. Keep that semantic named at
-                        // the import boundary and out of the tangent basis and
-                        // roughness paths.
-                        if model_space_normals && info.specular_map.is_none() {
-                            if let Some(spec) = tex_set.textures.get(7).filter(|s| !s.is_empty()) {
-                                info.specular_map = intern_texture_path(pool, spec);
-                            }
-                        }
+                    // First-wins across every source, matching the pre-#2695
+                    // `if info.X.is_none()` guards: a BGSM/BGEM merge or an
+                    // earlier property may already own the role.
+                    let dest = match role {
+                        TextureRole::BaseColor => &mut info.texture_path,
+                        TextureRole::Normal => &mut info.normal_map,
+                        TextureRole::Emissive => &mut info.glow_map,
+                        TextureRole::Tint => &mut info.tint_map,
+                        TextureRole::Detail => &mut info.detail_map,
+                        TextureRole::Height => &mut info.parallax_map,
+                        TextureRole::Environment => &mut info.env_map,
+                        TextureRole::EnvironmentMask => &mut info.env_mask,
+                        TextureRole::InnerLayer => &mut info.inner_layer_map,
+                        TextureRole::Specular => &mut info.specular_map,
+                    };
+                    if dest.is_none() {
+                        *dest = intern_texture_path(pool, raw);
                     }
                 }
             }

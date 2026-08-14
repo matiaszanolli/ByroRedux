@@ -46,10 +46,12 @@ pub(super) fn intern_texture_path(pool: &mut StringPool, path: &str) -> Option<F
 mod dedicated_shader;
 mod legacy_properties;
 mod shader_data;
+pub mod slot_role;
 mod walker;
 
 pub use shader_data::ShaderTypeFields;
 pub(crate) use shader_data::{apply_shader_type_data, capture_effect_shader_data};
+pub use slot_role::{slot_to_role, TextureRole};
 // Re-exported only for the per-mod test sibling
 // `shader_type_data_tests.rs` — production callers go through
 // `apply_shader_type_data` instead. Marked `allow(unused_imports)` so
@@ -446,6 +448,13 @@ pub(super) struct MaterialInfo {
     /// `material_kind == 4` dispatch had nothing to sample. See
     /// nif.xml `BSLightingShaderType::FaceTint` ("Enables Detail(TS4),
     /// Tint(TS7)") and #563.
+    /// Normalised `BSLightingShaderType` (#2695) — the value
+    /// `slot_role::slot_to_role` was resolved with, including
+    /// `ShaderTypeData`-derived corrections that the raw numeric type misses.
+    /// Rides through to `ImportedMaterial` so the REFR texture overlay can
+    /// resolve an `XTXR` slot the same way the mesh's own texture set was.
+    /// `0` (Default) when no dedicated BSLightingShaderProperty was seen.
+    pub shader_type: u32,
     pub tint_map: Option<FixedString>,
     /// MultiLayerParallax inner-layer texture (`BSShaderTextureSet`
     /// slot 7). Sampled beneath the diffuse layer for ice / glass /
@@ -1032,6 +1041,7 @@ impl Default for MaterialInfo {
             parallax_map: None,
             env_map: None,
             env_mask: None,
+            shader_type: 0,
             tint_map: None,
             inner_layer_map: None,
             vertex_color_mode: VertexColorMode::AmbientDiffuse,
@@ -1384,6 +1394,7 @@ impl MaterialInfo {
             z_function: self.z_function,
             effect_shader: self.effect_shader,
             material_kind: self.material_kind,
+            shader_type: self.shader_type,
             shader_type_fields,
             no_lighting_falloff: self.no_lighting_falloff,
             wireframe: self.wireframe,

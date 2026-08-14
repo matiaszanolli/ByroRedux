@@ -543,6 +543,13 @@ pub struct ImportedMaterial {
     pub z_function: u8,
     pub effect_shader: Option<BsEffectShaderData>,
     pub material_kind: u32,
+    /// Normalised `BSLightingShaderType` this material's texture slots were
+    /// resolved with (#2695). The REFR texture overlay reads it back so an
+    /// `XTXR` slot swap lands in the same canonical role
+    /// [`crate::import::material::slot_to_role`] gave the mesh's own slot.
+    /// `0` (Default) for materials with no dedicated BSLightingShaderProperty
+    /// — legacy FO3/FNV/Oblivion property chains, BGSM/BGEM-only, synthesized.
+    pub shader_type: u32,
     pub shader_type_fields: byroredux_core::ecs::components::material::ShaderTypeFields,
     pub no_lighting_falloff: Option<NoLightingFalloff>,
     pub wireframe: bool,
@@ -608,6 +615,7 @@ impl Default for ImportedMaterial {
             z_function: 3,
             effect_shader: None,
             material_kind: 0,
+            shader_type: 0,
             shader_type_fields: Default::default(),
             no_lighting_falloff: None,
             wireframe: false,

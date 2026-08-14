@@ -8,6 +8,8 @@
 //! was widened.
 
 use super::*;
+use byroredux_core::string::FixedString;
+use byroredux_nif::import::{slot_to_role, TextureRole};
 
 /// Effective per-mesh texture-slot paths, resolved in one StringPool
 /// lock (#882). Promoted to module scope from `spawn_placed_instances`
@@ -61,12 +63,74 @@ pub(super) fn resolve_mesh_paths(
                 ov.and_then(|o| o.normal).or(mesh.material.textures.normal),
             )
             .or_else(|| textures.base_color.as_deref().map(derive_normal_map_path));
-            textures.emissive = resolve_to_owned(
-                &pool,
-                ov.and_then(|o| o.glow).or(mesh.material.textures.emissive),
-            );
+            // #2695 — the overlay stores its slots under NIF-slot names
+            // (`glow` IS slot 2, `height` IS slot 3, `inner` IS slot 6,
+            // `specular` IS slot 7), but which canonical role a slot means
+            // depends on the host mesh's `BSLightingShaderType`. Resolve
+            // through the SAME table the importer used, with the shader type
+            // the importer recorded, so an XTXR swap lands where the mesh's own
+            // texture set would have landed.
+            //
+            // Pre-fix the overlay used a flat shader-type-agnostic table
+            // (0→diffuse, 1→normal, 2→glow, 3→height, 4→env, 5→env_mask,
+            // 6→inner, 7→specular) and the two disagreed on slots 2, 3, 4/5 and
+            // 7 — so an override on a FaceTint / SkinTint / MultiLayerParallax
+            // placement changed shading *semantics*, not just the texture.
+            //
+            // `slot_role_pick` yields the overlay path only when this slot
+            // really does carry the role being filled. A slot with no canonical
+            // role for this shader type resolves to `None`, and the override is
+            // dropped rather than guessed at — matching the importer, which
+            // parks the same slots.
+            let shader_type = mesh.material.shader_type;
+            // Computed before the slot routing because slot 7's role depends on
+            // it (alternate specular vs. nothing).
             let effective_model_space_normals =
                 mesh.material.model_space_normals || ov.is_some_and(|o| o.model_space_normals);
+            let msn = effective_model_space_normals;
+            let pick = |slot: u32, raw: Option<FixedString>, role: TextureRole| {
+                raw.filter(|_| slot_to_role(shader_type, slot, msn) == Some(role))
+            };
+
+            textures.emissive = resolve_to_owned(
+                &pool,
+                ov.and_then(|o| pick(2, o.glow, TextureRole::Emissive))
+                    .or(mesh.material.textures.emissive),
+            );
+            // Slot 2 on the tint family (FaceTint / SkinTint / HairTint) is the
+            // `*_sk.dds` skin-tint mask, not a glow map.
+            textures.tint = resolve_to_owned(
+                &pool,
+                ov.and_then(|o| pick(2, o.glow, TextureRole::Tint))
+                    .or(mesh.material.textures.tint),
+            );
+            textures.height = resolve_to_owned(
+                &pool,
+                ov.and_then(|o| pick(3, o.height, TextureRole::Height))
+                    .or(mesh.material.textures.height),
+            );
+            // Slot 3 on FaceTint is a complexion detail map; routing it to
+            // `height` made the shader ray-march POM over a face.
+            textures.detail = resolve_to_owned(
+                &pool,
+                ov.and_then(|o| pick(3, o.height, TextureRole::Detail))
+                    .or(mesh.material.textures.detail),
+            );
+            textures.environment = resolve_to_owned(
+                &pool,
+                ov.and_then(|o| pick(4, o.env, TextureRole::Environment))
+                    .or(mesh.material.textures.environment),
+            );
+            textures.environment_mask = resolve_to_owned(
+                &pool,
+                ov.and_then(|o| pick(5, o.env_mask, TextureRole::EnvironmentMask))
+                    .or(mesh.material.textures.environment_mask),
+            );
+            textures.inner_layer = resolve_to_owned(
+                &pool,
+                ov.and_then(|o| pick(6, o.inner, TextureRole::InnerLayer))
+                    .or(mesh.material.textures.inner_layer),
+            );
             if effective_model_space_normals {
                 // Slot 7 changes role on model-space-normal materials: it is
                 // alternate specular intensity/colour, not smoothness. Keep
@@ -74,30 +138,19 @@ pub(super) fn resolve_mesh_paths(
                 // lane so it cannot change roughness downstream.
                 textures.specular = resolve_to_owned(
                     &pool,
-                    ov.and_then(|o| o.specular)
+                    ov.and_then(|o| pick(7, o.specular, TextureRole::Specular))
                         .or(mesh.material.textures.specular),
                 );
             } else {
-                textures.smooth_spec = resolve_to_owned(
-                    &pool,
-                    ov.and_then(|o| o.specular)
-                        .or(mesh.material.textures.smooth_spec),
-                );
+                // Without MSN the table gives slot 7 no role, so the overlay
+                // cannot override here — but the mesh's own authored
+                // smooth-spec still rides through. (Pre-#2695 an XTXR slot-7
+                // swap wrote smoothness on every material regardless of type,
+                // including type 11 where slot 7 is a back-lighting map.)
+                textures.smooth_spec = resolve_to_owned(&pool, mesh.material.textures.smooth_spec);
             }
-            textures.height = resolve_to_owned(
-                &pool,
-                ov.and_then(|o| o.height).or(mesh.material.textures.height),
-            );
-            textures.environment = resolve_to_owned(
-                &pool,
-                ov.and_then(|o| o.env)
-                    .or(mesh.material.textures.environment),
-            );
-            textures.environment_mask = resolve_to_owned(
-                &pool,
-                ov.and_then(|o| o.env_mask)
-                    .or(mesh.material.textures.environment_mask),
-            );
+            // `wrinkle` is an FO4/FO76 TX02 role, not a BSShaderTextureSet slot
+            // index, so it does not go through the slot table.
             textures.wrinkle = resolve_to_owned(
                 &pool,
                 ov.and_then(|o| o.wrinkle)
