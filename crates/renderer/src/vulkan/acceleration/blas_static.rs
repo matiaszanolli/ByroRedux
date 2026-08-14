@@ -190,14 +190,20 @@ impl AccelerationManager {
         // static BLAS pool grow past the budget. Mirror the
         // batched-path call so eviction fires uniformly across the
         // two BLAS-creating entry points.
-        // SAFETY: `device` + `allocator` are live for this call; evicted
-        // entries are gated to idle >= MAX_FRAMES_IN_FLIGHT + 1, so no
-        // in-flight command buffer or TLAS build references them.
+        // #2692 — this call used to be `unsafe` and its SAFETY comment named
+        // the `idle >= MAX_FRAMES_IN_FLIGHT + 1` gate as the guarantee that no
+        // in-flight command buffer or TLAS build references an evicted entry.
+        // That has not been the mechanism since #1449: eviction routes through
+        // `pending_destroy_blas` and the `DEFAULT_COUNTDOWN` deferral is what
+        // provides cross-frame safety, while the idle gate is now purely LRU
+        // policy. Stating the wrong invariant here made `MIN_IDLE_FRAMES` — a
+        // tuning knob — look load-bearing, and conversely made the deferred
+        // path look removable. See `evict_unused_blas`'s own body doc.
         //
         // #1792 — `pending_bytes = 0`: this single-shot path hasn't sized
         // its own result buffer yet at this point, so it has nothing to
         // report as pending on top of the already-committed total.
-        unsafe {
+        {
             self.evict_unused_blas(device, allocator, 0);
         }
 
@@ -600,14 +606,16 @@ impl AccelerationManager {
         // (`evict_unused_blas` early-returns under budget); helps cell
         // transitions where the outgoing cell's BLAS still holds live
         // memory that the incoming cell's batch is about to need. #510.
-        // SAFETY: `device` + `allocator` are live; the prepared buffers
-        // for this batch are not yet in `blas_entries`, and eviction only
-        // frees entries past the idle threshold, so no in-flight build is
-        // aliased.
+        // #2692 — as at the single-shot site above: eviction is deferred
+        // through `pending_destroy_blas` + `DEFAULT_COUNTDOWN`, which is the
+        // real cross-frame guarantee; the idle threshold this comment used to
+        // cite is LRU policy only (#1449). The prepared buffers for this batch
+        // are additionally not yet in `blas_entries`, so they cannot be
+        // candidates at all.
         //
         // #1792 — `pending_bytes = 0`: nothing in this batch has been
         // sized yet at this point (the loop below hasn't run).
-        unsafe {
+        {
             self.evict_unused_blas(device, allocator, 0);
         }
 
@@ -652,9 +660,7 @@ impl AccelerationManager {
                 // already-allocated result buffers had grown — the
                 // trigger above fired, but the callee it called was
                 // structurally blind to the very bytes that triggered it.
-                unsafe {
-                    self.evict_unused_blas(device, allocator, pending_bytes);
-                }
+                self.evict_unused_blas(device, allocator, pending_bytes);
             }
 
             let primitive_count = index_count / 3;
@@ -1223,25 +1229,25 @@ impl AccelerationManager {
     /// (= `MAX_FRAMES_IN_FLIGHT`) now stands in for the fence wait, exactly as
     /// `drop_blas` / `drop_skinned` already do.
     ///
-    /// # Safety
-    ///
-    /// Caller must ensure `device` and `allocator` are valid and live. (The
-    /// "no in-flight references" precondition is no longer required — the
-    /// deferred-destroy queue guarantees it. The `unsafe` marker is retained
-    /// only for call-site signature stability; this body performs no unsafe
-    /// operation now that the destroy is deferred.)
-    pub unsafe fn evict_unused_blas(
+    /// #2692 — this used to be `pub unsafe fn` with a `# Safety` section, and
+    /// the marker was documented in its own body as vestigial. It is now a safe
+    /// fn: eviction only moves entries onto `pending_destroy_blas`, and the
+    /// actual `vkDestroyAccelerationStructureKHR` happens in
+    /// `tick_deferred_destroy`. `device`/`allocator` are still taken so the
+    /// call sites keep a stable signature (and so the deferred path can be
+    /// re-inlined without another churn), but nothing here dereferences them.
+    pub fn evict_unused_blas(
         &mut self,
         device: &ash::Device,
         allocator: &SharedAllocator,
         pending_bytes: vk::DeviceSize,
     ) {
-        // The GPU free is now deferred (see the loop body), so this function no
-        // longer touches `device`/`allocator` directly — `tick_deferred_destroy`
-        // does. The params are retained so the call sites
-        // (`build_blas`/`build_blas_batched`/`draw.rs`) keep a stable signature;
-        // the `unsafe` marker is likewise vestigial and can be dropped in a
-        // follow-up once a non-`unsafe` signature is threaded through callers.
+        // The GPU free is deferred (see the loop body), so this function never
+        // touches `device`/`allocator` directly — `tick_deferred_destroy` does.
+        // The params are retained so the call sites
+        // (`build_blas`/`build_blas_batched`/`draw.rs`) keep a stable signature.
+        // The vestigial `unsafe` marker this comment used to promise a follow-up
+        // for was dropped in #2692.
         let _ = (device, allocator);
 
         if !blas_over_budget(

@@ -445,6 +445,19 @@ pub(super) fn collect_static_mesh_draws(
                 // fine — the alpha-blended exterior plus the IOR
                 // refraction path in triangle.frag's glassIOR
                 // branch already shows the scene through the cup.
+                //
+                // PERF-D2-02 / #2691 — this override is also what makes
+                // `needs_two_sided_blend_split` (`vulkan::context::draw`)
+                // structurally dead for engine-classified glass: it clears
+                // `two_sided` before the `DrawCommand` exists, so that
+                // predicate's `b.two_sided && order_dependent_glass` limb can
+                // never be satisfied through the `MATERIAL_KIND_GLASS` arm of
+                // `is_refractive_glass`. The two are independent mitigations
+                // for the same #1804/#2237 artifact and only this one is live;
+                // see that predicate's doc before treating the split as the
+                // active fix. Keep the cross-reference in both directions —
+                // the dormancy has been rediscovered empirically more than
+                // once because neither site pointed at the other.
                 let two_sided = if material_kind == byroredux_renderer::MATERIAL_KIND_GLASS {
                     false
                 } else {
@@ -727,7 +740,7 @@ pub(super) fn collect_static_mesh_draws(
                     is_water: false,
                 };
                 // #781 / PERF-N4 — `intern_by_hash` skips the
-                // `to_gpu_material()` 260-byte construction on the
+                // `to_gpu_material()` 348-byte construction on the
                 // dedup-hit path (~97% of calls on Prospector).
                 cmd.material_id =
                     material_table.intern_by_hash(cmd.material_hash(), || cmd.to_gpu_material());

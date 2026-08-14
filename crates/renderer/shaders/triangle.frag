@@ -1758,14 +1758,23 @@ void main() {
             // tinted opaque blob — the "translucent but no scene
             // visible behind" symptom from issue #789.
             //
-            // Identity check by texture: every part of a single glass
-            // prop shares one diffuse texture (verified across FNV/FO3
-            // chem props, cafeteria glassware, lab equipment), so
-            // `tInst.textureIndex == inst.textureIndex` flags both
-            // self-hits and sibling-part-hits as "skip past." Two
-            // beakers using the same `drinkingglass01.dds` will also
-            // skip each other — that's correct: clear glass IS
+            // Identity check by MATERIAL KIND, not by texture: the hit is
+            // skipped when `materials[hInst.materialId].materialKind ==
+            // MATERIAL_KIND_GLASS` (see `hitIsGlass` below). Every glass
+            // surface is therefore transparent to the refraction ray —
+            // self-hits, sibling parts of a multi-NiTriShape prop, and a
+            // second beaker alike, which is correct: clear glass IS
             // see-through-multiple-layers in the real world.
+            //
+            // #2692 — this paragraph used to describe an
+            // `tInst.textureIndex == inst.textureIndex` texture-equality
+            // test. That was replaced in `a09d2b76` precisely because it
+            // misfired when glass shared a diffuse with opaque geometry, and
+            // `tInst` does not even exist at this point in the function. Do
+            // not reintroduce texture keying on the strength of this
+            // comment — that is what re-opens #789's see-through-walls
+            // regression. (`fallbackTexture` below is a separate
+            // unresolved-placeholder skip, not an identity check.)
             //
             // Fixed budget of 2 passthrus handles the dominant case
             // (front + back of one shell, or two stacked beakers); a

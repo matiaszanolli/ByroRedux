@@ -94,7 +94,8 @@ fn gpu_instance_field_offsets_match_shader_contract() {
 #[test]
 fn gpu_instance_does_not_re_expand_with_per_material_fields() {
     // Build trivially via Default and rely on the size assertion
-    // above (112 B) to fail loudly if a field is reintroduced.
+    // above (128 B — #2692; this said 112 B, three lines under an
+    // assertion of 128) to fail loudly if a field is reintroduced.
     // The list below is documentary only; the size guard is what
     // catches actual regressions.
     let _ = GpuInstance::default();
@@ -1102,7 +1103,8 @@ fn parse_glsl_struct_fields(src: &str, decl: &str) -> Vec<String> {
         // GpuInstance-only types (#2219 skinned_vertex_address + padding).
         "uint64_t", "uvec2",
     ];
-    let body = extract_struct_body(src, decl).unwrap_or_else(|| panic!("source must declare `{decl}`"));
+    let body =
+        extract_struct_body(src, decl).unwrap_or_else(|| panic!("source must declare `{decl}`"));
     let mut out = Vec::new();
     for raw in body.lines() {
         // Drop any trailing line comment first (also collapses `///` /
@@ -1307,10 +1309,7 @@ fn gpu_instance_glsl_copies_stay_in_lockstep() {
             include_str!("../../../shaders/triangle.vert"),
         ),
         ("ui.vert", include_str!("../../../shaders/ui.vert")),
-        (
-            "water.vert",
-            include_str!("../../../shaders/water.vert"),
-        ),
+        ("water.vert", include_str!("../../../shaders/water.vert")),
         (
             "caustic_splat.comp",
             include_str!("../../../shaders/caustic_splat.comp"),
@@ -1486,7 +1485,10 @@ fn disney_sheen_color_uses_luminance_normalised_tint_not_raw_albedo() {
         "vec3 sheenTintColor = sheenLuminance > 0.0 ? albedo / sheenLuminance : vec3(1.0);",
         "vec3 sheenColor = mix(vec3(1.0), sheenTintColor, sheenTint);",
     ] {
-        assert!(pbr.contains(needle), "sheen luminance-normalisation `{needle}` is missing");
+        assert!(
+            pbr.contains(needle),
+            "sheen luminance-normalisation `{needle}` is missing"
+        );
     }
     assert!(
         !pbr.contains("vec3 sheenColor = mix(vec3(1.0), albedo, sheenTint);"),

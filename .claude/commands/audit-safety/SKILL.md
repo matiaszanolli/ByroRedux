@@ -86,7 +86,7 @@ guard below.
 - **ECS cached-pointer contract (regression guard, #35 + #1367).** `World::get`
   (`crates/core/src/ecs/world.rs`) returns a `ComponentRef<'_, T>`, NOT a raw
   pointer with a dropped guard (the unsound #35 pattern). `ComponentRef`,
-  `StorageRef`, and `StorageRefMut` in `crates/core/src/ecs/query.rs` cache a
+  `QueryRead`, and `QueryWrite` in `crates/core/src/ecs/query.rs` cache a
   `*const T` / `*mut T` resolved once in `new()` and deref it in the hot path
   (#1367). Each cached-deref `unsafe` block carries a SAFETY comment tying the
   pointer's validity to the lock guard the wrapper pins. The invariant: **the
@@ -162,10 +162,17 @@ guard below.
   call site? A correct unsafe block with no comment is still a MEDIUM finding
   (`_audit-severity` Special Rules). A commented block whose invariant is FALSE is
   the higher-severity finding.
-- Heaviest in `crates/renderer/src/vulkan/` ash FFI — the SAFETY/unsafe count gap
-  (~676 vs ~761) is the haystack. Spot-check the ash dispatch wrappers, the
-  gpu-allocator `Arc<Mutex<…>>` interactions, and any `from_raw_parts` / `cast` on
-  mapped memory.
+- **Do NOT hunt a "SAFETY vs unsafe count gap."** #2692 retired that work item:
+  the ~676-vs-~761 spread this section used to cite is a **token-counting
+  artefact**, not a comment gap. A bare `grep -c unsafe` also counts `unsafe fn`
+  declarations, `unsafe impl`, and the word in prose, none of which take a
+  SAFETY comment. Counting actual `unsafe {` blocks against SAFETY comments
+  shows no meaningful shortfall. Chasing the phantom gap burns a dimension's
+  budget on a haystack with no needle.
+- Heaviest in `crates/renderer/src/vulkan/` ash FFI. Spot-check the ash dispatch
+  wrappers, the gpu-allocator `Arc<Mutex<…>>` interactions, and any
+  `from_raw_parts` / `cast` on mapped memory — by reading invariants, not by
+  counting.
 - Report unsafe blocks lacking comments as a batched MEDIUM finding (list the
   sites) rather than one finding per block, unless an invariant is actually unsound.
 

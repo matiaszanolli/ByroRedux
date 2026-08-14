@@ -1178,6 +1178,36 @@ pub(super) fn group_state(
 /// front-facing by construction, so their FRONT-cull pass rasterizes zero
 /// fragments — pure wasted vertex work, plus the batch falls out of
 /// indirect grouping into two direct draws.
+///
+/// # This predicate is structurally dormant for engine-classified glass
+///
+/// PERF-D2-02 / #2691 — the dormancy repeatedly rediscovered as an empirical
+/// observation ("`blended && two_sided == 0` on every measured cell") is
+/// actually a **guarantee**, and the guarantee lives upstream:
+/// `byroredux::render::static_meshes::collect_static_mesh_draws` — the only
+/// producer of glass `DrawCommand`s — unconditionally clears `two_sided` for
+/// `MATERIAL_KIND_GLASS` before the command is built. So `b.two_sided` is
+/// false for every engine-classified glass batch *by construction*, and the
+/// `material_kind == MATERIAL_KIND_GLASS` arm of [`is_refractive_glass`] can
+/// never satisfy this predicate.
+///
+/// The only population that can reach it is an alpha-blended, two-sided,
+/// kind-11 (MultiLayerParallax) draw with `multi_layer_refraction_scale > 0`
+/// — a rare Skyrim+ authoring case. The other two `DrawCommand` producers are
+/// excluded too: `render::particles::emit_particles` hardcodes
+/// `MATERIAL_KIND_EFFECT_SHADER` (rejected by `is_refractive_glass`, which is
+/// #2165 working as intended), and `render::water::reemit_water_planes` only
+/// flips `is_water` on an already-emitted command, which `skip_batch` keeps
+/// out of batch formation.
+///
+/// Consequences worth stating rather than re-deriving:
+/// * The #1804/#2237 glass compositing artifact has **two** mitigations, and
+///   for engine-classified glass the live one is the single-sided override,
+///   not this split — it removes back faces entirely, at the documented cost
+///   of glass interiors not rendering.
+/// * Changes here are runtime no-ops on all currently-tested content, so
+///   batch-count movement must not be attributed to them (cf. #2215, where
+///   the depth-primary alpha-over sort was the real cause).
 pub(super) fn needs_two_sided_blend_split(b: &DrawBatch) -> bool {
     let is_blend = matches!(b.pipeline_key, PipelineKey::Blended { .. });
     is_blend && b.two_sided && b.order_dependent_glass
@@ -1711,8 +1741,10 @@ impl VulkanContext {
         // stayed put, producing silently-wrong material/transform reads
         // on every RT hit downstream (shadows / reflections / GI /
         // caustics / primary-hit fallback in `triangle.frag`). See
-        // `crates/renderer/src/vulkan/acceleration.rs::build_tlas` and
-        // the SSBO builder below — both must honour this map.
+        // `AccelerationManager::build_tlas` (`vulkan::acceleration::tlas`) and
+        // the SSBO builder below — both must honour this map. (#2692 — the
+        // path anchor here predated the `acceleration.rs` → `acceleration/`
+        // split; symbols survive refactors, file paths do not.)
         let tlas_t0 = Instant::now();
         let instance_map: Vec<Option<u32>> = super::super::acceleration::build_instance_map(
             draw_commands.len(),

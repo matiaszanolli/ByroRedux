@@ -366,6 +366,16 @@ impl Context {
     ///
     /// `info` must contain live, mutually compatible Vulkan handles and the
     /// matching `vkGetDeviceProcAddr`. Those objects must outlive the result.
+    ///
+    /// The caller must also ensure the device is idle with respect to FSR
+    /// resources before the returned [`Context`] is dropped — no submitted
+    /// command buffer may still reference them. `Drop` cannot check this and
+    /// destroys the SDK context unconditionally.
+    ///
+    /// #2692 — this clause was previously only on the [`Context`] type doc,
+    /// while `Drop`'s SAFETY comment cited *this* section as its source. A
+    /// reader following that cross-reference found no idle requirement here
+    /// and could reasonably conclude `Drop` was idle-safe on its own.
     pub unsafe fn create(info: VulkanCreateInfo) -> Result<Self, Error> {
         let desc = RawCreateDesc {
             vk_device: info.device,
@@ -472,7 +482,11 @@ impl Drop for Context {
     fn drop(&mut self) {
         let mut raw = self.raw.as_ptr();
         // SAFETY: this is the unique pointer returned by context creation. The
-        // Vulkan-idle requirement is part of `Context::create`'s contract.
+        // Vulkan-idle requirement is part of `Context::create`'s `# Safety`
+        // contract (and restated on the `Context` type doc). The renderer
+        // honours it by retiring this context after `device_wait_idle` — see
+        // `frame_upscaler.rs`, whose #2158 Drop-ordering source pins assert the
+        // FSR context is destroyed before `vkDestroyDevice`.
         let code = unsafe { byro_fsr3_context_destroy(&mut raw) };
         if code != 0 {
             eprintln!("failed to destroy FSR context: {}", Error { code });

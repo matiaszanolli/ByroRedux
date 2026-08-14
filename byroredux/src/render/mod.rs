@@ -820,9 +820,20 @@ pub(crate) fn build_render_data(
     // where serial wins. 3000 is the first size where the two are reliably
     // interchangeable and above which parallel pulls away.
     //
-    // Typical Bethesda cell counts sit in 400–1500 (Prospector ~811,
-    // GSDocMitchell ~263, exterior radius-3 grid ~1200), so serial remains
-    // the common path either way; this only moves the 2000–3000 band. The
+    // PERF-D2-03 / #2691 — the old prose here claimed "typical Bethesda cell
+    // counts sit in 400–1500 … so serial remains the common path either way".
+    // The repo's own checked-in runtime baselines contradict that: see the
+    // `bench_draws_cmds` column of `.claude/audit-baselines/runtime/*.tsv`,
+    // where exactly one of five cells falls in that band, three sit in the
+    // 1800–2600 range, and the FO4 baseline is *above* this gate and takes the
+    // parallel path. Cited rather than transcribed, per the audit's
+    // cite-don't-copy rule — a number copied here is a number that rots.
+    //
+    // The constant is unaffected: the crossover table above is what places it,
+    // and it still holds. This note exists so the next person tuning it does
+    // not reason from the stale band and lower the gate back into the
+    // 2000–2750 range where that same table measures serial winning. The
+
     // threshold is applied to the raster-visible prefix, not the complete
     // instance/TLAS list: RT-only occluders never enter a raster batch and
     // do not benefit from pipeline/mesh/depth ordering. Large visible sets

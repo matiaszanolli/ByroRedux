@@ -183,7 +183,9 @@ pub struct SkinCoverageFrame {
 /// guarantees no in-flight command buffer still references the slot's
 /// descriptor sets / output buffer / matching skinned BLAS, so
 /// synchronous destroy is safe. Mirrors
-/// `acceleration.rs::evict_unused_blas` for the static-mesh BLAS path.
+/// [`AccelerationManager::evict_unused_blas`](crate::vulkan::acceleration::AccelerationManager::evict_unused_blas)
+/// for the static-mesh BLAS path. (#2692 — re-anchored on the symbol; the
+/// monolithic `acceleration.rs` became the `acceleration/` module directory.)
 ///
 /// `last_used_frame == 0` is a sentinel for "never dispatched" — the
 /// predicate skips eviction in that case so a slot created mid-frame
