@@ -51,12 +51,18 @@ pub enum RenderLayer {
     /// floor's Y; without bias every standing NPC z-fights the floor at
     /// the foot-plant patch.
     Actor = 2,
-    /// True decals (NIF-flagged blood splats, scorch marks, bullet holes)
-    /// AND alpha-tested overlays (rugs, posters, fences, cutout foliage)
-    /// — anything authored to lie flat against another surface. Strongest
-    /// bias. The escalation rule lives at the cell-loader spawn site:
-    /// `mesh.is_decal || mesh.alpha_test_func != 0` → `RenderLayer::Decal`
-    /// regardless of base record type.
+    /// True decals — NIF-flagged blood splats, scorch marks, bullet holes.
+    /// Strongest bias. Reached only via `mesh.is_decal`, applied at the
+    /// spawn sites through [`render_layer_with_decal_escalation`], which
+    /// overrides whatever the base record type mapped to.
+    ///
+    /// #2446 (MAT-D3-04) — this doc used to say alpha-tested overlays
+    /// (rugs, posters, fences, cutout foliage) land here too, escalated by
+    /// `mesh.alpha_test_func != 0`. Both halves were wrong: the gate is the
+    /// `alpha_test` **bool** (see the escalation fn's own doc for why the
+    /// func value cannot be used), and cutout architecture escalates to
+    /// [`RenderLayer::Clutter`], not here — a gentle bias rather than the
+    /// depth-inverting Decal anchor.
     Decal = 3,
 }
 

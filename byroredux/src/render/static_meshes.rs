@@ -116,9 +116,11 @@ pub(super) fn collect_static_mesh_draws(
     // cell-load time from the REFR's base-record `RecordType` (see
     // `RecordType::render_layer`). Absent component falls back to
     // `Architecture` (zero bias) — identical to pre-fix behaviour.
-    // The Decal escalation (`mesh.is_decal || alpha_test_func != 0`)
-    // is applied at spawn time, not here, so this query reads the
-    // final per-entity layer directly.
+    // The overlay escalation is applied at spawn time, not here, so this
+    // query reads the final per-entity layer directly: `mesh.is_decal` →
+    // `Decal`, `mesh.alpha_test` → `Clutter`. (#2446 — previously written
+    // here as `mesh.is_decal || alpha_test_func != 0` → Decal, wrong in
+    // both the gating field and the resulting layer.)
     let render_layer_q = world.query::<RenderLayer>();
     let texture_maps_q = world.query::<MaterialTextureHandles>();
     let terrain_tile_q = world.query::<TerrainTileSlot>();
@@ -406,20 +408,30 @@ pub(super) fn collect_static_mesh_draws(
                 // texture binding (transient, not canonical state), gated by
                 // the SAME shared predicate the spawn write-back uses so the
                 // two cannot diverge.
-                {
-                    let env_map_scale = mat.map(|m| m.env_map_scale).unwrap_or(0.0);
-                    if normal_has_alpha
-                        && crate::material_translate::normal_alpha_spec_applies(
-                            material_kind,
-                            metalness,
-                            env_map_scale,
-                            normal_map_index,
-                            gloss_map_index,
-                        )
-                    {
-                        gloss_map_index =
-                            normal_map_index | crate::material_translate::NORMAL_ALPHA_SPEC_BIT;
-                    }
+                //
+                // #2445 (MAT-D3-03) — gated on `mat.is_some()`, which is what
+                // makes the "cannot diverge" claim above actually true. The
+                // shared predicate was necessary but not sufficient: the
+                // spawn-side write-back early-returns on any entity with no
+                // `Material`, while this side had no such guard and fed it
+                // the no-`Material` fallback scalars — which still pass the
+                // gate. So a `Material`-less draw bound the gloss slot here
+                // with nothing having resolved the paired roughness at spawn.
+                // MAT-D3-02 (#2444) removed the only population in that shape
+                // (exterior terrain / LOD); this keeps the invariant enforced
+                // structurally rather than by the absence of such a
+                // population, so the next one to appear can't silently fall
+                // into the gap.
+                if crate::material_translate::normal_alpha_spec_binding_applies(
+                    mat,
+                    normal_has_alpha,
+                    material_kind,
+                    metalness,
+                    normal_map_index,
+                    gloss_map_index,
+                ) {
+                    gloss_map_index =
+                        normal_map_index | crate::material_translate::NORMAL_ALPHA_SPEC_BIT;
                 }
 
                 // Glass single-sided override — Bethesda authors many

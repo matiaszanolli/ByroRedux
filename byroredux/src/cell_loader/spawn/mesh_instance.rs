@@ -645,14 +645,25 @@ pub(super) fn spawn_mesh_instance(
     }
     // #renderlayer — derive the per-entity content-class layer.
     // Base layer comes from the REFR's record type
-    // (`stat.record_type.render_layer()`); the per-mesh
-    // `mesh.material.is_decal` (NIF-flagged decals — blood splats, scorch
-    // marks) and `mesh.material.alpha_test_func != 0` (alpha-tested rugs /
-    // posters / fences / cutout foliage) escalate to
-    // [`RenderLayer::Decal`] regardless of the base, so any
-    // coplanar overlay wins its z-fight against the surface
-    // beneath. Architecture (zero bias) is the safe default for
-    // the rare "neither base nor mesh hints decal" path.
+    // (`stat.record_type.render_layer()`); two per-mesh signals then
+    // escalate it, so a coplanar overlay wins its z-fight against the
+    // surface beneath:
+    //   - `mesh.material.is_decal` (NIF-flagged decals — blood splats,
+    //     scorch marks) → `RenderLayer::Decal`, the strongest bias;
+    //   - `mesh.material.alpha_test` (alpha-tested rugs / posters / fences /
+    //     cutout foliage) → `RenderLayer::Clutter`, a gentle bias, and only
+    //     when the base was Architecture.
+    // Architecture (zero bias) is the safe default for the rare "neither
+    // base nor mesh hints an overlay" path.
+    //
+    // #2446 (MAT-D3-04) — this comment used to name `alpha_test_func != 0`
+    // as the second signal and `Decal` as its output. Both wrong, and the
+    // field half is the one that matters: `alpha_test_func` defaults to
+    // `6` (GREATEREQUAL) on every imported material whether or not testing
+    // is on, so gating on it would escalate every architectural mesh in the
+    // cell — the exact bug `render_layer_with_decal_escalation`'s doc and
+    // its `alpha_test_disabled_does_not_escalate_regardless_of_default_func`
+    // test exist to keep out.
     //
     // Pre-#renderlayer this site also inserted a `Decal` marker
     // component when `mesh.material.is_decal` — that marker is retired now

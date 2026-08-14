@@ -764,8 +764,10 @@ fn spawn_lod_block(
     let quad_path = lod_quad_texture_path(world_form_id, bx0, by0);
     let lod_quad_tex = resolve_texture(ctx, tex_provider, Some(&quad_path));
     let baked = lod_quad_tex != 0;
-    let tex_handle = if baked {
-        lod_quad_tex
+    // #2444 (MAT-D3-02) — the path travels with the handle: it is the
+    // classifier input for this block's canonical `Material` at spawn.
+    let (tex_handle, base_texture_path) = if baked {
+        (lod_quad_tex, Some(quad_path.clone()))
     } else {
         let base_ltex = (0..k)
             .flat_map(|dy| (0..k).map(move |dx| (dx, dy)))
@@ -776,11 +778,14 @@ fn spawn_lod_block(
                     .and_then(|land| land.quadrants.iter().find_map(|q| q.base))
             });
         match base_ltex {
-            Some(ltex_id) if ltex_id != 0 => landscape_textures
-                .get(&ltex_id)
-                .map(|path| resolve_texture(ctx, tex_provider, Some(path.as_str())))
-                .unwrap_or(0),
-            _ => 0,
+            Some(ltex_id) if ltex_id != 0 => match landscape_textures.get(&ltex_id) {
+                Some(path) => (
+                    resolve_texture(ctx, tex_provider, Some(path.as_str())),
+                    Some(path.clone()),
+                ),
+                None => (0, None),
+            },
+            _ => (0, None),
         }
     };
     if tex_handle == 0 {
@@ -844,6 +849,16 @@ fn spawn_lod_block(
         world.insert(entity, TextureHandle(tex_handle));
     }
     world.insert(entity, bound);
+    // #2444 (MAT-D3-02) — canonical `Material` from the same boundary helper
+    // the full-detail terrain uses, classified off whichever distant texture
+    // this block actually resolved (baked LOD quad or tiled base LTEX). Keeps
+    // the near/far terrain shading consistent across the full-detail ring
+    // boundary instead of 0.85 inside it and the render path's hardcoded 0.5
+    // outside.
+    world.insert(
+        entity,
+        crate::material_translate::translate_texture_only_material(base_texture_path),
+    );
     // Architecture layer (zero depth bias) — same canonical baseline the
     // full-detail terrain uses.
     world.insert(entity, RenderLayer::Architecture);

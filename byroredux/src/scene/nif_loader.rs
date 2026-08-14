@@ -891,10 +891,13 @@ pub(crate) fn load_nif_bytes_with_skeleton(
         }
         // #renderlayer — loose-NIF path has no REFR base record, so
         // the base layer defaults to Architecture (zero bias). The
-        // per-mesh `is_decal` / `alpha_test_func` escalation still
-        // applies — a NIF authored with explicit decal flags or
-        // alpha-test cutout fringes gets the Decal layer regardless
-        // of how it was spawned. NPC body / head / armor meshes
+        // per-mesh escalation still applies regardless of how the mesh
+        // was spawned: `is_decal` → `RenderLayer::Decal`, `alpha_test`
+        // (cutout fringes) → `RenderLayer::Clutter`. (#2446 — this said
+        // `alpha_test_func` and `Decal` for both; see
+        // `render_layer_with_decal_escalation`'s doc for why the func
+        // value, which defaults to `6`, cannot be the gate.)
+        // NPC body / head / armor meshes
         // overwrite this with Actor in `npc_spawn::tag_descendants_as_actor`
         // after the spawn returns. Pre-#renderlayer this site also
         // inserted a `Decal` marker — retired in favour of

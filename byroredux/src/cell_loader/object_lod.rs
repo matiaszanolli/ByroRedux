@@ -301,6 +301,22 @@ fn spawn_object_lod_quad(
             world.insert(entity, TextureHandle(atlas));
         }
         world.insert(entity, bound);
+        // #2444 (MAT-D3-02) — imposters are drawn surfaces and need a
+        // canonical `Material` like everything else. There is no per-object
+        // source record to carry through (a quad bakes many statics into one
+        // atlas-sampling mesh), so the honest classifier input is the atlas
+        // this draw actually samples. That lands on the same matte default
+        // the full architecture models resolve to, which is what closes the
+        // shading pop the pre-fix hardcoded 0.5 stacked on top of the
+        // geometric LOD pop.
+        world.insert(
+            entity,
+            crate::material_translate::translate_texture_only_material(if atlas != 0 {
+                Some(atlas_path.clone())
+            } else {
+                None
+            }),
+        );
         world.insert(entity, RenderLayer::Architecture);
         // No BLAS, lean static draw, kept out of the TLAS (shared with terrain
         // LOD). The active full-model VWD cull is deferred; quads load only

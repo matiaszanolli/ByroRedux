@@ -272,12 +272,21 @@ impl RecordType {
     ///   but might be passed in by an unforeseen caller; safe inert
     ///   value.
     ///
-    /// The "lay-flat overlay" decal escalation (alpha-tested rugs,
-    /// NIF-flagged blood splats, etc.) is **not** handled here — it
-    /// lives at the cell-loader spawn site as
-    /// `mesh.is_decal || mesh.alpha_test_func != 0` →
-    /// [`RenderLayer::Decal`], which overrides whatever this method
-    /// returns for the base record. See `byroredux/src/cell_loader.rs`.
+    /// The "lay-flat overlay" escalation is **not** handled here — it lives
+    /// at the spawn sites, which pass this method's result through
+    /// `render_layer_with_decal_escalation`: NIF-flagged decals
+    /// (`mesh.is_decal`) become [`RenderLayer::Decal`], and alpha-tested
+    /// cutout architecture (`mesh.alpha_test`) becomes
+    /// `RenderLayer::Clutter`. Either overrides what this method returns for
+    /// the base record. See `byroredux/src/cell_loader/spawn/mesh_instance.rs`
+    /// and `byroredux/src/scene/nif_loader.rs`.
+    ///
+    /// #2446 (MAT-D3-04) — this used to describe the rule as
+    /// `mesh.is_decal || mesh.alpha_test_func != 0` → `Decal`, wrong in both
+    /// the input field and the output layer (`alpha_test_func` defaults to
+    /// `6`/GREATEREQUAL on every imported material, which is precisely why
+    /// the bool is the gate), and pointed at a `cell_loader.rs` that has
+    /// since been split into a directory.
     pub const fn render_layer(&self) -> byroredux_core::ecs::components::RenderLayer {
         use byroredux_core::ecs::components::RenderLayer;
         match *self {
@@ -504,9 +513,11 @@ mod tests {
     //   Actor:        NPC_, CREA
     //   Default:      Architecture (zero-bias inert fallback)
     //
-    // The Decal layer is set at the cell-loader spawn site via the
-    // `mesh.is_decal || mesh.alpha_test_func != 0` escalation rule —
-    // not via this classifier — so no RecordType maps to Decal.
+    // The Decal layer is set at the spawn sites via
+    // `render_layer_with_decal_escalation`'s `mesh.is_decal` arm — not via
+    // this classifier — so no RecordType maps to Decal. (#2446: the rule was
+    // described here as `is_decal || alpha_test_func != 0`; the alpha half
+    // gates on the `alpha_test` bool and escalates to Clutter, not Decal.)
 
     use byroredux_core::ecs::components::RenderLayer;
 

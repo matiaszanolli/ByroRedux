@@ -403,6 +403,15 @@ struct FarSubMesh {
     local_radius: f32,
     /// Resolved diffuse texture (`0` = fallback / untextured).
     texture: u32,
+    /// Canonical material, translated once per sub-mesh and cloned onto each
+    /// placement instance. #2444 (MAT-D3-02) sibling — this LOD path had the
+    /// same "spawns a draw with no `Material`" shape as the three the audit
+    /// named, so its draws also fell into `render/static_meshes.rs`'s
+    /// hardcoded-literal arm. Unlike terrain and object LOD it *does* have a
+    /// source record — `_far.nif` sub-meshes carry a real `ImportedMaterial`
+    /// — so it routes through the full `translate_material` boundary rather
+    /// than the texture-path-only helper.
+    material: byroredux_core::ecs::components::Material,
 }
 
 /// Resolve + import + spawn one cell's `.lod`. Returns `None` when the cell
@@ -493,11 +502,27 @@ fn spawn_placement_lod_cell(
             mesh_handles.push(handle);
 
             // Diffuse texture from the `_far.nif`'s own shader texture set.
-            let tex_str = mesh
+            // #2444 sibling — the whole owned texture set (not just the
+            // diffuse) is resolved here because it is also the input to the
+            // canonical material translation below.
+            let owned_textures = mesh
                 .material
                 .textures
-                .base_color
-                .and_then(|fs| pool.resolve(fs).map(str::to_owned));
+                .map_ref(|sym| sym.and_then(|s| pool.resolve(s)).map(str::to_owned));
+            let material = crate::material_translate::translate_material(
+                &mesh.material,
+                mesh.name.as_deref(),
+                crate::material_translate::ResolvedPaths {
+                    textures: owned_textures.clone(),
+                    material_path: mesh
+                        .material
+                        .material_path
+                        .and_then(|s| pool.resolve(s))
+                        .map(str::to_owned),
+                },
+                0,
+            );
+            let tex_str = owned_textures.base_color.clone();
             let raw = resolve_texture(ctx, tex_provider, tex_str.as_deref());
             let texture = if raw == ctx.texture_registry.fallback() {
                 0
@@ -522,6 +547,7 @@ fn spawn_placement_lod_cell(
                 local_centre,
                 local_radius,
                 texture,
+                material,
             });
         }
 
@@ -550,6 +576,11 @@ fn spawn_placement_lod_cell(
                     world.insert(entity, TextureHandle(sub.texture));
                 }
                 world.insert(entity, bound);
+                // #2444 (MAT-D3-02) sibling — canonical `Material` per
+                // placement instance. Cloned from the once-translated
+                // sub-mesh material rather than re-translated per placement:
+                // the boundary ran once, at import.
+                world.insert(entity, sub.material.clone());
                 world.insert(entity, RenderLayer::Architecture);
                 // No BLAS, lean static draw, kept out of the TLAS (shared with
                 // terrain / object LOD). Cells load only outside the

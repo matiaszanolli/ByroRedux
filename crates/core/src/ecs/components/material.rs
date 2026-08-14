@@ -263,18 +263,20 @@ pub struct Material {
     ///
     /// #2592 (SKY-D7-04) — this doc used to justify that shape by citing
     /// "the existing `grayscale_to_palette_scale` precedent (see that
-    /// field's doc)". There is no such field on `Material`, and the
-    /// pointer was worse than dangling: `grayscale_to_palette_scale`
-    /// lives on `byroredux_nif`'s `ImportedMaterial` — the raw tier —
-    /// and `translate_material` drops it, so it never reaches this type
-    /// at all. It is therefore not a precedent for "captured here but
-    /// unshaded"; it is a strictly earlier failure mode, and the six
-    /// scalars above already go one tier further than it does. Note the
-    /// contrast with `greyscale_texture` below: the palette *LUT* does
-    /// cross the boundary and is consumed, while the palette *scale
-    /// modulator* does not — which is why `triangle.frag` performs an
-    /// unmodulated direct lookup. Tracked in `docs/engine/nifal.md`'s
-    /// parked-passthrough inventory.
+    /// field's doc)". At the time there was no such field on `Material`,
+    /// and the pointer was worse than dangling: `grayscale_to_palette_scale`
+    /// lived only on `byroredux_nif`'s `ImportedMaterial` — the raw tier —
+    /// with `translate_material` dropping it, so it never reached this type
+    /// at all. It was therefore not a precedent for "captured here but
+    /// unshaded" but a strictly *earlier* failure mode, one tier back.
+    ///
+    /// #2443 (MAT-D3-01) closed that gap:
+    /// [`grayscale_to_palette_scale`](Self::grayscale_to_palette_scale) is
+    /// now a canonical field copied at the boundary, so it has caught up to
+    /// these six and the two groups are genuinely the same shape — captured,
+    /// awaiting a `GpuMaterial`/shader consumer. Both remain listed in
+    /// `docs/engine/nifal.md`'s parked-passthrough inventory until that
+    /// consumer lands.
     pub lighting_effect_1: f32,
     pub lighting_effect_2: f32,
     pub subsurface_rolloff: f32,
@@ -289,6 +291,30 @@ pub struct Material {
     /// and forwarded to `GpuMaterial.greyscale_lut_index` at draw build
     /// time. `None` for every non-BSEffect mesh. See #890 Stage 2c.
     pub greyscale_texture: Option<String>,
+    /// `BSEffectShaderProperty` / BGEM palette-remap strength (BSVER >= 130,
+    /// FO4+). Modulates the [`greyscale_texture`](Self::greyscale_texture)
+    /// palette lookup above; `1.0` (the format default) means "full-strength
+    /// remap", which is the behaviour every material got before this field
+    /// existed.
+    ///
+    /// #2443 (MAT-D3-01) — captured by both producers (the inline
+    /// `BSLightingShaderProperty`/`BSEffectShaderProperty` parser and the
+    /// BGSM/BGEM merge, the latter with parent-template precedence and its
+    /// own round-trip test) but dropped at the translation boundary: there
+    /// was no canonical field for `translate_material` to copy into. Because
+    /// `EFFECT_PALETTE_COLOR`/`ALPHA` is a *replace*, not a blend, an authored
+    /// 0.5 that should soften a shared greyscale ramp rendered as the full
+    /// palette colour instead.
+    ///
+    /// Captured here, not yet shaded — `triangle.frag`'s palette branch still
+    /// performs an unmodulated direct lookup, and the `GpuMaterial` slot plus
+    /// the multiply in its `MAT_FLAG_EFFECT_PALETTE_COLOR` block are a
+    /// separate, independently-reviewable follow-up. This is the same
+    /// captured-then-shaded staging the #2284 scalars above use; what it is
+    /// no longer is the *earlier* failure mode those field docs contrast
+    /// themselves against ("`grayscale_to_palette_scale` never reaches
+    /// `Material` at all" — true until this landed, see #2592 / SKY-D7-04).
+    pub grayscale_to_palette_scale: f32,
     /// Canonical PBR metalness `[0, 1]` — **fully resolved, no Option,
     /// no render-time fallback**. Populated once at the translation
     /// boundary (`byroredux::material_translate::translate_material`):
@@ -441,6 +467,9 @@ impl Default for Material {
             backlight_power: 0.0,
             fresnel_power: 5.0,
             greyscale_texture: None,
+            // 1.0 = full-strength palette remap, the BGEM/nif.xml format
+            // default and the pre-#2443 hardcoded shader behaviour.
+            grayscale_to_palette_scale: 1.0,
             // Canonical PBR defaults — match the renderer's no-Material
             // fallback (`static_meshes.rs`): dielectric, mid roughness.
             metalness: 0.0,

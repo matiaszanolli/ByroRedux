@@ -83,16 +83,20 @@ single translation site; the remaining work is a GPU-side follow-up, not a
 boundary leak.
 
 That paragraph and the `Material` doc used to call this "matching the existing
-`grayscale_to_palette_scale` precedent". It is not one, and the correction
-(#2592 / SKY-D7-04) is what keeps this section's **converged** verdict honest:
-`grayscale_to_palette_scale` never reaches `Material` at all. It is captured on
+`grayscale_to_palette_scale` precedent". It was not one, and the correction
+(#2592 / SKY-D7-04) is what kept this section's **converged** verdict honest:
+`grayscale_to_palette_scale` did not reach `Material` at all. It was captured on
 `ImportedMaterial` (`asset_provider/material.rs` reads it off the BGSM) and
 then dropped by `translate_material` — an actual boundary omission, one tier
-earlier than the #2284 fields, listed in the parked inventory below. The
-adjacent `greyscale_texture` shows the contrast: the palette *LUT* does cross
-the boundary and is consumed as `GpuMaterial.greyscale_lut_index`, while the
-palette *scale modulator* does not, which is why `triangle.frag` performs an
-unmodulated direct lookup.
+earlier than the #2284 fields.
+
+**#2443 (MAT-D3-01) closed it**: `Material::grayscale_to_palette_scale` now
+exists and `translate_material` copies it, so the field has caught up to the
+#2284 six and the two groups really are the same shape — captured, awaiting a
+`GpuMaterial`/shader consumer. `triangle.frag`'s palette branch still performs
+an unmodulated direct lookup, so the *rendered* behaviour is unchanged until
+that follow-up lands; what changed is that the authored value now survives to
+the canonical tier instead of dying at the boundary.
 
 ### Geometry / transform — **converged (reference template)**
 
@@ -484,7 +488,7 @@ the record that each gap is known and bounded, with its unblocking consumer:
 | inv marker | `BSInvMarker` | parsed, not walked into `Imported*` | inventory-icon system |
 | `NiSwitchNode` identity | `NiSwitchNode` | walked via **active-index** (furniture states, sheaths, destruction); the type discriminator is not surfaced. Content-present (Skyrim ~165, FO4 ~51) | geometry state-switching driver (gameplay) |
 | `bs_bound` | `BSBound` extra-data | consumed on the **loose-NIF** path only (`nif_loader.rs`), not the cell path | a cell-path bound consumer (low value — the cell path already derives `WorldBound` from geometry) |
-| `grayscale_to_palette_scale` | FO4+ BGSM (`asset_provider/material.rs`) | on `ImportedMaterial` only — **dropped by `translate_material`** (#2592 / SKY-D7-04). Unlike the rest of this table it is not blocked on a missing feature: the consumer it modulates already ships. `triangle.frag`'s palette branch is live and its own comment says the modulator "is not yet plumbed to GpuMaterial — direct lookup for now", so authored non-1.0 scales are silently ignored. FO4-facing; Skyrim never authors the field (SKY-D7-01) | a canonical `Material` field + `GpuMaterial` slot + the multiply in `triangle.frag`'s existing `MAT_FLAG_EFFECT_PALETTE_COLOR` block |
+| `grayscale_to_palette_scale` | FO4+ BGSM (`asset_provider/material.rs`) + inline BSVER>=130 shader block | **boundary crossed (#2443 / MAT-D3-01)** — `Material::grayscale_to_palette_scale` exists and `translate_material` copies it; the field is captured but not yet shaded. Was "dropped by `translate_material`, no canonical field to land in" (#2592 / SKY-D7-04). Unlike the rest of this table it is not blocked on a missing feature: the consumer it modulates already ships — `triangle.frag`'s palette branch is live and its own comment still says the modulator "is not yet plumbed to GpuMaterial — direct lookup for now", so authored non-1.0 scales remain ignored *at the GPU*. FO4-facing; Skyrim never authors the field (SKY-D7-01) | a `GpuMaterial` slot + the multiply in `triangle.frag`'s existing `MAT_FLAG_EFFECT_PALETTE_COLOR` block |
 
 **In-cell LOD (2026-06-02, user-directed):** measured prevalence before building. `NiLODNode`
 (node-level Z-depth LOD) is **content-absent** across all target games; the parser +

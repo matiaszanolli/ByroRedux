@@ -201,6 +201,12 @@ pub(crate) fn translate_material(
         // #890 Stage 2c — BSEffectShaderProperty greyscale LUT path;
         // resolved to a bindless handle at draw-build time.
         greyscale_texture: textures.greyscale_lut,
+        // #2443 (MAT-D3-01) — the LUT's strength modulator. Captured by both
+        // producers (inline BSVER>=130 shader block, BGSM/BGEM merge) but
+        // dropped here until now, because no canonical field existed to copy
+        // into — the palette *LUT* crossed the boundary while its *scale* did
+        // not. Captured, not yet shaded (see the field doc on `Material`).
+        grayscale_to_palette_scale: source.grayscale_to_palette_scale,
         // Canonical PBR — seed authored BGSM/BGEM scalars
         // (`merge_external_material`) or a NaN sentinel for legacy
         // inline-shader content; `resolve_pbr` below fills any sentinel
@@ -243,6 +249,66 @@ pub(crate) fn translate_material(
     material
 }
 
+/// Canonical `Material` for a drawn surface that has **no source material
+/// record** — only a bound diffuse texture path.
+///
+/// Three exterior draw populations are in this shape: LAND terrain
+/// (`cell_loader/terrain.rs`), distant terrain LOD (`terrain_lod.rs`), and
+/// object-LOD imposters (`object_lod.rs`). None of them comes from a NIF
+/// shader property or a BGSM/BGEM, so [`translate_material`] — which takes an
+/// `ImportedMaterial` — has nothing to translate. What they *do* have is the
+/// real texture they sample, which is exactly the input
+/// [`Material::resolve_pbr`]'s keyword classifier consumes.
+///
+/// #2444 (MAT-D3-02) — before this, all three spawned without any `Material`
+/// component at all, so their draws fell into `render/static_meshes.rs`'s
+/// no-`Material` arm and picked up an 11-tuple of hardcoded literals
+/// (`roughness 0.5`, `metalness 0.0`, …). That was a second materialization
+/// site living in the render path, outside the documented single source of
+/// truth, and it made the NIFAL invariant "every drawn surface's canonical
+/// material is produced at one boundary" false for the entire outdoors. It
+/// also shaded landscape with a markedly tighter GGX lobe (0.5) than the
+/// stone/dirt statics standing on it (the classifier's 0.85), a visible
+/// mismatch at every ground-meets-architecture seam, and gave object-LOD
+/// imposters a shading pop on top of their geometric one.
+///
+/// This is deliberately *not* a fourth ad hoc materialization site: it owns
+/// no scalar literals of its own. Every canonical value it produces comes
+/// from `Material::default()` or from `resolve_pbr`'s classifier, the same
+/// one `translate_material` calls, so terrain now classifies by the same
+/// rules as the architecture standing on it.
+pub(crate) fn translate_texture_only_material(texture_path: Option<String>) -> Material {
+    let mut material = Material {
+        texture_path,
+        // NaN sentinel = "no authored override" — exactly what
+        // `translate_material` seeds for inline-shader content, and what
+        // makes `resolve_pbr` run its keyword classifier rather than just
+        // clamping the `Material::default()` values through unchanged.
+        metalness: f32::NAN,
+        roughness: f32::NAN,
+        // `Material::default()` is 1.0 here, which is right for its own
+        // purpose — it mirrors the neutral value `BSShaderPPLighting`
+        // authors on nearly every FNV surface. These populations have no
+        // shader property at all, so nothing authored environment mapping
+        // for them and 0.0 is the honest input.
+        //
+        // Load-bearing twice over. It steers the classifier: a non-zero
+        // scale takes `classify_pbr_keyword`'s env_map_scale arm (roughness
+        // 0.8) instead of the matte default (0.85) that ordinary
+        // architecture lands on, which is the number this whole fix is about
+        // matching. And `render/static_meshes.rs` forwards `env_map_scale`
+        // to `GpuMaterial` as the cubemap reflection strength — reading
+        // `0.0` for these draws before they had a `Material` at all — so
+        // inheriting the 1.0 default would have switched distant terrain and
+        // LOD imposters into full-strength environment reflections as a side
+        // effect of a PBR-scalar fix.
+        env_map_scale: 0.0,
+        ..Material::default()
+    };
+    material.resolve_pbr();
+    material
+}
+
 /// High bit OR'd into the gloss texture slot to tell the fragment shader
 /// "sample the per-pixel spec/smoothness mask from the NORMAL map's alpha
 /// channel" — the Skyrim/Gamebryo normal-alpha-as-spec convention. The
@@ -275,6 +341,43 @@ pub(crate) fn normal_alpha_spec_applies(
     gloss_map_index: u32,
 ) -> bool {
     material_kind < 100 && normal_map_index != 0 && gloss_map_index == 0
+}
+
+/// Should the per-draw gloss slot be re-pointed at the normal map with the
+/// [`NORMAL_ALPHA_SPEC_BIT`]? The render-side half of the pair whose spawn-side
+/// half is [`resolve_normal_alpha_spec_roughness`].
+///
+/// #2445 (MAT-D3-03) — the `material.is_none()` arm is the point of this
+/// function existing. The two halves were documented as unable to diverge
+/// because they share [`normal_alpha_spec_applies`], which is necessary but
+/// not sufficient: the spawn half *early-returns* on an entity with no
+/// `Material` (it reads its inputs out of that component), while the render
+/// half had no equivalent guard and simply substituted its no-`Material`
+/// fallback scalars — which still pass the shared predicate. A `Material`-less
+/// draw carrying a normal map therefore bound the gloss slot with nothing
+/// having resolved the paired roughness. #2444 removed the only population in
+/// that shape (exterior terrain / LOD, which do carry normal maps), so this
+/// makes the invariant hold by construction rather than by the accident of no
+/// such population existing.
+pub(crate) fn normal_alpha_spec_binding_applies(
+    material: Option<&Material>,
+    normal_has_alpha: bool,
+    material_kind: u32,
+    metalness: f32,
+    normal_map_index: u32,
+    gloss_map_index: u32,
+) -> bool {
+    let Some(material) = material else {
+        return false;
+    };
+    normal_has_alpha
+        && normal_alpha_spec_applies(
+            material_kind,
+            metalness,
+            material.env_map_scale,
+            normal_map_index,
+            gloss_map_index,
+        )
 }
 
 /// Canonical roughness for the normal-alpha-as-spec population, or `None`
@@ -703,6 +806,167 @@ mod tests {
         assert_eq!(material.rimlight_power, 2.50);
         assert_eq!(material.backlight_power, 1.75);
         assert_eq!(material.fresnel_power, 3.5);
+    }
+
+    /// Regression: #2443 (MAT-D3-01) — the palette-remap strength must
+    /// survive the boundary. Both producers (the inline BSVER>=130 shader
+    /// block and the BGSM/BGEM merge) captured it on `ImportedMaterial`, but
+    /// `translate_material` dropped it because `Material` had no such field —
+    /// the same shape as #2284 above, one tier earlier. Because
+    /// `EFFECT_PALETTE_COLOR`/`ALPHA` is a replace rather than a blend, an
+    /// authored 0.5 that should soften a shared greyscale ramp rendered as
+    /// the full palette colour.
+    #[test]
+    fn translate_material_copies_grayscale_to_palette_scale() {
+        let source = ImportedMaterial {
+            grayscale_to_palette_scale: 0.5,
+            ..ImportedMaterial::default()
+        };
+        let paths = ResolvedPaths {
+            textures: MaterialTextureSet::default(),
+            material_path: None,
+        };
+        let material = translate_material(&source, None, paths, 0);
+        assert_eq!(material.grayscale_to_palette_scale, 0.5);
+
+        // The format default must also arrive verbatim rather than being
+        // re-derived — 1.0 is "full-strength remap", the pre-fix behaviour.
+        let default_material = translate_material(
+            &ImportedMaterial::default(),
+            None,
+            ResolvedPaths {
+                textures: MaterialTextureSet::default(),
+                material_path: None,
+            },
+            0,
+        );
+        assert_eq!(default_material.grayscale_to_palette_scale, 1.0);
+    }
+
+    /// #2444 (MAT-D3-02) — the texture-path-only boundary helper must
+    /// produce classifier-resolved PBR scalars, not the render path's
+    /// hardcoded `roughness 0.5` fallback. The three exterior populations
+    /// that use it (LAND terrain, terrain LOD, object LOD) have no source
+    /// material record, only the texture they sample.
+    #[test]
+    fn texture_only_material_classifies_from_its_texture_path() {
+        // Landscape dirt: no classifier keyword → the matte default that
+        // ordinary architecture also lands on. This is the value the
+        // hardcoded 0.5 was visibly mismatching at ground/architecture
+        // seams.
+        let land =
+            translate_texture_only_material(Some("textures\\landscape\\dirt02.dds".to_string()));
+        assert_eq!(land.roughness, 0.85);
+        assert_eq!(land.metalness, 0.0);
+
+        // Same classifier as every other surface — a rock landscape texture
+        // resolves through the stone/rock arm, not a terrain-special case.
+        let rock =
+            translate_texture_only_material(Some("textures\\landscape\\rock01.dds".to_string()));
+        assert_eq!(rock.roughness, 0.85);
+
+        // No path at all (unresolved LTEX / untextured LOD atlas) still
+        // exits with explicit, in-range canonical scalars — never NaN, which
+        // is what the NaN seed would leave if `resolve_pbr` were skipped.
+        let untextured = translate_texture_only_material(None);
+        assert!(untextured.roughness.is_finite() && untextured.metalness.is_finite());
+        assert!((0.04..=1.0).contains(&untextured.roughness));
+
+        // `env_map_scale` stays 0.0 rather than inheriting
+        // `Material::default()`'s neutral 1.0. `render/static_meshes.rs`
+        // forwards it to `GpuMaterial` as the cubemap reflection strength
+        // and read 0.0 for these draws while they had no `Material` at all,
+        // so a 1.0 here would turn distant terrain and LOD imposters
+        // reflective as a side effect of a PBR-scalar fix.
+        for m in [&land, &rock, &untextured] {
+            assert_eq!(m.env_map_scale, 0.0);
+        }
+    }
+
+    /// #2444 (MAT-D3-02) — every exterior draw population must spawn with a
+    /// canonical `Material`, produced at this boundary. The spawners need a
+    /// live `VulkanContext` (mesh upload + texture resolve), so this pins the
+    /// wiring at the source level: what regressed before was not a wrong
+    /// value but a missing `world.insert`, which silently rerouted the draw
+    /// into `render/static_meshes.rs`'s hardcoded-literal arm.
+    #[test]
+    fn every_exterior_spawner_inserts_a_boundary_material() {
+        // The three the audit named have no source material record, so they
+        // use the texture-path-only helper. `placement_lod` (Oblivion
+        // `_far.nif`) is the sibling the audit missed — same missing-`Material`
+        // shape, but its sub-meshes DO carry an `ImportedMaterial`, so it goes
+        // through the full boundary instead.
+        for (name, src, boundary_fn) in [
+            (
+                "cell_loader/terrain.rs",
+                include_str!("cell_loader/terrain.rs"),
+                "translate_texture_only_material(",
+            ),
+            (
+                "cell_loader/terrain_lod.rs",
+                include_str!("cell_loader/terrain_lod.rs"),
+                "translate_texture_only_material(",
+            ),
+            (
+                "cell_loader/object_lod.rs",
+                include_str!("cell_loader/object_lod.rs"),
+                "translate_texture_only_material(",
+            ),
+            (
+                "cell_loader/placement_lod.rs",
+                include_str!("cell_loader/placement_lod.rs"),
+                "translate_material(",
+            ),
+        ] {
+            assert!(
+                src.contains(boundary_fn),
+                "{name}: exterior draws must get their canonical `Material` from the \
+                 translation boundary (`{boundary_fn}`). Without one they fall into the \
+                 render path's no-`Material` arm and shade against hardcoded literals — \
+                 a second materialization site outside the single source of truth (#2444)."
+            );
+        }
+    }
+
+    /// #2445 (MAT-D3-03) — a `Material`-less entity must not pass the
+    /// render-side gloss-slot gate. The spawn-side write-back early-returns
+    /// for such an entity, so if the render side binds anyway the two halves
+    /// of a pair documented as "cannot diverge" have done exactly that.
+    #[test]
+    fn normal_alpha_spec_binding_requires_a_material() {
+        // Inputs that satisfy the shared predicate outright: lit kind, a
+        // normal map bound, no dedicated gloss map, alpha-bearing normal.
+        const KIND: u32 = 0;
+        const NORMAL: u32 = 7;
+        const GLOSS: u32 = 0;
+
+        let material = Material {
+            env_map_scale: 0.0,
+            ..Material::default()
+        };
+        assert!(
+            normal_alpha_spec_binding_applies(Some(&material), true, KIND, 0.0, NORMAL, GLOSS),
+            "the population this binding exists for must still bind"
+        );
+        assert!(
+            !normal_alpha_spec_binding_applies(None, true, KIND, 0.0, NORMAL, GLOSS),
+            "a Material-less draw must not bind the gloss slot — its spawn-side \
+             roughness counterpart never ran (#2445)"
+        );
+
+        // The pre-existing gates are untouched by the new guard.
+        assert!(
+            !normal_alpha_spec_binding_applies(Some(&material), false, KIND, 0.0, NORMAL, GLOSS),
+            "an alpha-less normal carries no per-pixel spec mask"
+        );
+        assert!(
+            !normal_alpha_spec_binding_applies(Some(&material), true, 100, 0.0, NORMAL, GLOSS),
+            "glass/effect kinds own their optics"
+        );
+        assert!(
+            !normal_alpha_spec_binding_applies(Some(&material), true, KIND, 0.0, NORMAL, 9),
+            "a dedicated gloss map wins over the normal-alpha fallback"
+        );
     }
 
     /// #2826 (REN-D19-02) — `MAT_FLAG_MSN_HAS_AUTHORED_Z` must only be

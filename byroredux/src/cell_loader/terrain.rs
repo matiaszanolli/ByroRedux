@@ -518,25 +518,29 @@ pub(super) fn spawn_terrain_mesh(
     // own quadrants and the ATXT splat layers paint the rest. See #470
     // (D7 follow-up).
     let base_ltex = land.quadrants.iter().find_map(|q| q.base);
-    let tex_handle = {
-        if let Some(ltex_id) = base_ltex {
-            if ltex_id == 0 {
-                // BTXT with form ID 0 = "default dirt" per UESP.
-                resolve_texture(ctx, tex_provider, Some("textures\\landscape\\dirt02.dds"))
-            } else if let Some(tex_path) = landscape_textures.get(&ltex_id) {
-                resolve_texture(ctx, tex_provider, Some(tex_path.as_str()))
-            } else {
+    // #2444 (MAT-D3-02) — the path is retained, not just the handle: it is
+    // the classifier input for this tile's canonical `Material` below, so
+    // landscape shades by the same rules as the statics standing on it.
+    const DEFAULT_LAND_TEXTURE: &str = "textures\\landscape\\dirt02.dds";
+    let base_texture_path: Option<&str> = match base_ltex {
+        // BTXT with form ID 0 = "default dirt" per UESP.
+        Some(0) | None => Some(DEFAULT_LAND_TEXTURE),
+        Some(ltex_id) => match landscape_textures.get(&ltex_id) {
+            Some(path) => Some(path.as_str()),
+            None => {
                 log::debug!(
                     "Terrain ({},{}): LTEX {:08X} not in landscape_textures map",
                     grid_x,
                     grid_y,
                     ltex_id,
                 );
-                0
+                None
             }
-        } else {
-            resolve_texture(ctx, tex_provider, Some("textures\\landscape\\dirt02.dds"))
-        }
+        },
+    };
+    let tex_handle = match base_texture_path {
+        Some(path) => resolve_texture(ctx, tex_provider, Some(path)),
+        None => 0,
     };
     let base_texture_set = base_ltex.and_then(|id| landscape_texture_sets.get(&id));
     let base_normal_index = resolve_optional_terrain_texture(
@@ -593,6 +597,18 @@ pub(super) fn spawn_terrain_mesh(
     if tex_handle != 0 {
         world.insert(entity, TextureHandle(tex_handle));
     }
+    // #2444 (MAT-D3-02) — LAND tiles are drawn surfaces and therefore need a
+    // canonical `Material` like every other draw. Without it these fell into
+    // `render/static_meshes.rs`'s no-`Material` arm and rendered against
+    // hardcoded literals (roughness 0.5) instead of the classifier value the
+    // stone/dirt statics standing on the same ground get (0.85) — a visible
+    // GGX mismatch at every ground-meets-architecture seam.
+    world.insert(
+        entity,
+        crate::material_translate::translate_texture_only_material(
+            base_texture_path.map(str::to_string),
+        ),
+    );
     if base_normal_index != 0 || base_specular_index != 0 {
         let textures = MaterialTextureSet {
             base_color: tex_handle,
