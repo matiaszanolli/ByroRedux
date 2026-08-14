@@ -306,7 +306,12 @@ pub fn activate_ragdoll(world: &World, actor: EntityId) -> Result<usize, String>
                 // with, regardless of any later live GlobalTransform.scale
                 // mutation.
                 scale: gt.scale,
-                shape: b.shape.clone(),
+                // #2868 — the seed translation above is composed WITH
+                // `gt.scale`, so the collider must be resized by the same
+                // factor or a scaled actor ragdolls with bind-size limbs at
+                // scaled-apart positions. Rapier colliders carry no scale of
+                // their own; the geometry itself has to change.
+                shape: b.shape.scaled(gt.scale),
                 mass: b.mass,
                 linear_damping: b.linear_damping,
                 angular_damping: b.angular_damping,
@@ -314,13 +319,29 @@ pub fn activate_ragdoll(world: &World, actor: EntityId) -> Result<usize, String>
                 restitution: b.restitution,
             });
         }
+        // #2868 — the joint pivots are authored in the same bind space as the
+        // shapes and must be seeded against the same scale as the body poses
+        // above. `activate_ragdoll` is the one boundary where the live actor
+        // scale and the authored spec meet, so the multiplication belongs
+        // here; `build_joint` stays unit-agnostic. Each side takes its own
+        // endpoint body's scale, since each pivot is in that body's frame.
+        // A constraint naming an out-of-range body index is left unscaled —
+        // `orient_tree` drops it, and fabricating a scale for a body that
+        // doesn't exist would hide the upstream defect.
         let constraints = template
             .constraints
             .iter()
-            .map(|c| RagdollConstraintSpec {
-                body_a: c.body_a,
-                body_b: c.body_b,
-                joint: c.joint.clone(),
+            .map(|c| {
+                let scale_of = |index: usize| bodies.get(index).map(|b: &RagdollBodySpec| b.scale);
+                let joint = match (scale_of(c.body_a), scale_of(c.body_b)) {
+                    (Some(scale_a), Some(scale_b)) => c.joint.scaled_pivots(scale_a, scale_b),
+                    _ => c.joint.clone(),
+                };
+                RagdollConstraintSpec {
+                    body_a: c.body_a,
+                    body_b: c.body_b,
+                    joint,
+                }
             })
             .collect();
         RagdollSpec {
@@ -739,6 +760,110 @@ mod tests {
             end.y < init_y - 1.0,
             "writeback should move the bone down under gravity: {init_y} → {}",
             end.y
+        );
+    }
+
+    /// Regression for #2868 — the end-to-end half. `activate_ragdoll` is the
+    /// single boundary where the live actor scale meets the authored template,
+    /// so it owns scaling both the collider geometry and the joint pivots.
+    ///
+    /// Two bones of a 2x actor sit 100 apart with authored ±25 pivots (bind
+    /// separation 50). Pre-fix the pivots went through verbatim and multibody
+    /// forward kinematics pulled the child back to 50 on the first step — a
+    /// scaled NPC's corpse crushed to bind proportions while the writeback
+    /// kept stretching its bones to 2x, the "visibly crushed, interpenetrating
+    /// corpse" symptom. `scale = 1.0` is the majority case every other test
+    /// covers, which is exactly why this one was invisible.
+    #[test]
+    fn scaled_actor_ragdoll_keeps_its_seeded_bone_separation() {
+        let mut world = World::new();
+        world.register::<Transform>();
+        world.register::<GlobalTransform>();
+        world.register::<RagdollTemplate>();
+        world.register::<RagdollActive>();
+        world.register::<Ragdoll>();
+        world.insert_resource(PhysicsWorld::new());
+
+        const ACTOR_SCALE: f32 = 2.0;
+        const SEEDED_SEPARATION: f32 = 100.0;
+
+        let actor = world.spawn();
+        let bones: Vec<_> = (0..2)
+            .map(|index| {
+                let bone = world.spawn();
+                world.insert(
+                    bone,
+                    GlobalTransform {
+                        translation: Vec3::new(index as f32 * SEEDED_SEPARATION, 1000.0, 0.0),
+                        rotation: Quat::IDENTITY,
+                        scale: ACTOR_SCALE,
+                    },
+                );
+                bone
+            })
+            .collect();
+
+        world.insert(
+            actor,
+            RagdollTemplate {
+                bodies: bones
+                    .iter()
+                    .map(|&bone| RagdollTemplateBody {
+                        bone,
+                        local_translation: Vec3::ZERO,
+                        local_rotation: Quat::IDENTITY,
+                        shape: CollisionShape::Ball { radius: 5.0 },
+                        mass: 4.0,
+                        linear_damping: 0.05,
+                        angular_damping: 0.05,
+                        friction: 0.5,
+                        restitution: 0.0,
+                    })
+                    .collect(),
+                // Authored in BIND units: ±25 → a bind separation of 50, half
+                // the distance the 2x bones are actually seeded apart.
+                constraints: vec![RagdollTemplateConstraint {
+                    body_a: 0,
+                    body_b: 1,
+                    joint: RagdollJointSpec::Ragdoll {
+                        twist_a: Vec3::X,
+                        plane_a: Vec3::Y,
+                        pivot_a: Vec3::new(25.0, 0.0, 0.0),
+                        twist_b: Vec3::X,
+                        plane_b: Vec3::Y,
+                        pivot_b: Vec3::new(-25.0, 0.0, 0.0),
+                        cone_max: std::f32::consts::PI,
+                        twist_min: -std::f32::consts::PI,
+                        twist_max: std::f32::consts::PI,
+                    },
+                }],
+            },
+        );
+
+        activate_ragdoll(&world, actor).expect("activation should succeed");
+
+        let handles: Vec<_> = {
+            let ragdolls = world.query::<Ragdoll>().unwrap();
+            let ragdoll = ragdolls.get(actor).unwrap();
+            ragdoll
+                .bodies
+                .iter()
+                .map(|(_, handle, _)| *handle)
+                .collect()
+        };
+        {
+            let mut pw = world.resource_mut::<PhysicsWorld>();
+            pw.step(PHYSICS_DT);
+        }
+
+        let pw = world.resource::<PhysicsWorld>();
+        let root = body_pose(&pw, handles[0]).unwrap().0;
+        let child = body_pose(&pw, handles[1]).unwrap().0;
+        let separation = (child - root).length();
+        assert!(
+            (separation - SEEDED_SEPARATION).abs() < 1.0,
+            "the 2x actor's bones collapsed toward bind separation: \
+             {SEEDED_SEPARATION} → {separation}"
         );
     }
 

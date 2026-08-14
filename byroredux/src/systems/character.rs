@@ -644,6 +644,135 @@ pub fn snap_character_body_to_camera(world: &mut byroredux_core::ecs::World) -> 
     true
 }
 
+/// Ground the character capsule at a **floor-level** destination — the arrival
+/// half of a runtime door transition.
+///
+/// #2869. The transition path used to call [`snap_character_body_to_camera`]
+/// right after [`reposition_camera`](crate::cell_loader::reposition_camera)
+/// had placed the camera at the raw XTEL destination. That helper is correct
+/// for its original caller (`toggle_player_mode`, where the camera genuinely
+/// *is* at eye height) but wrong here: it subtracts `eye_height` from a pose
+/// that is already at floor level, putting the capsule *centre* at
+/// `dest.y - eye_height` and its feet a further `half_height + radius` below
+/// that. Cold start, meanwhile, places the capsule centre at
+/// `floor + half_height + radius + kcc_offset` — so the two engine paths
+/// disagreed by ~120 BU for the very same door, and the transition path ran no
+/// ground probe, no walkable-normal check and no grounded verification at all.
+/// It handed a capsule buried in the destination floor to gravity, and since
+/// the body is kinematic and Rapier's penetration recovery is a stub, nothing
+/// pushed it back out.
+///
+/// Routes through the same two pieces cold start uses —
+/// [`probe_walkable_floor_near`](crate::scene::probe_walkable_floor_near) then
+/// [`character_spawn_center_y`](crate::scene::character_spawn_center_y) — so
+/// the door-arrival ladder cannot drift from the boot ladder again. The probe
+/// excludes the player's own capsule, which (unlike at cold start) already
+/// exists and is standing in the sweep.
+///
+/// A probe miss falls back to the authored destination height, matching the
+/// cold-start ladder's own fallback: the destination is floor level by
+/// construction, so standing on it beats sinking below it.
+///
+/// The camera is pulled to `body + eye_height` here rather than left for
+/// `camera_follow_system` to fix next tick — the caller has just signalled a
+/// temporal discontinuity for this jump, and letting the camera spend a frame
+/// at the floor-level pose would produce exactly the unsignalled second jump
+/// #1874 was about.
+pub fn ground_character_body_at(world: &mut byroredux_core::ecs::World, destination: Vec3) -> bool {
+    let Some(player) = world.try_resource::<PlayerEntity>().and_then(|r| r.0) else {
+        log::warn!(
+            "ground_character_body_at: no PlayerEntity registered — \
+             fly-cam-only boot, nothing to ground. No-op."
+        );
+        return false;
+    };
+    let Some(cc) = world
+        .query::<byroredux_physics::CharacterController>()
+        .and_then(|q| q.get(player).copied())
+    else {
+        log::warn!("ground_character_body_at: player has no CharacterController. Aborting.");
+        return false;
+    };
+
+    // The destination cell's colliders were inserted into `ColliderSet` by the
+    // load, but the query pipeline only learns about them via a pipeline step —
+    // without this flush the probe sweeps an empty BVH and always misses. Same
+    // dt=0 register-then-flush the cold-start probe does.
+    byroredux_physics::physics_sync_system(world, 0.0);
+    {
+        let mut pw = world.resource_mut::<byroredux_physics::PhysicsWorld>();
+        pw.update_query_pipeline();
+    }
+
+    let floor_y = crate::scene::probe_walkable_floor_near(
+        world,
+        destination.x,
+        destination.z,
+        destination.y,
+        cc,
+        Some(player),
+    );
+    let center_y =
+        crate::scene::character_spawn_center_y(world, floor_y.unwrap_or(destination.y), cc);
+    let body_pos = Vec3::new(destination.x, center_y, destination.z);
+    log::info!(
+        "Transition arrival: grounding capsule at ({:.1}, {:.1}, {:.1}) — floor {} \
+         (destination y={:.1})",
+        body_pos.x,
+        body_pos.y,
+        body_pos.z,
+        match floor_y {
+            Some(y) => format!("probed at {y:.1}"),
+            None => "probe MISSED, using destination height".to_string(),
+        },
+        destination.y,
+    );
+
+    {
+        let Some(mut tq) = world.query_mut::<Transform>() else {
+            return false;
+        };
+        if let Some(t) = tq.get_mut(player) {
+            t.translation = body_pos;
+            t.rotation = Quat::IDENTITY;
+        }
+    }
+    {
+        let Some(mut cq) = world.query_mut::<byroredux_physics::CharacterController>() else {
+            return false;
+        };
+        if let Some(c) = cq.get_mut(player) {
+            c.vertical_velocity = 0.0;
+            c.is_grounded = false;
+            c.wants_jump = false;
+        }
+    }
+    byroredux_physics::set_kinematic_translation(world, player, body_pos);
+    pin_camera_above_body(world, body_pos, cc.eye_height);
+    true
+}
+
+/// Move the active camera to `body + eye_height` without disturbing its
+/// rotation, writing `Transform` and `GlobalTransform` together the way
+/// `camera_follow_system` does — the transition path runs outside the
+/// scheduler, so there is no propagation pass left to refresh the global.
+fn pin_camera_above_body(world: &mut byroredux_core::ecs::World, body_pos: Vec3, eye_height: f32) {
+    let Some(cam_entity) = world.try_resource::<ActiveCamera>().map(|active| active.0) else {
+        return;
+    };
+    let cam_pos = body_pos + Vec3::Y * eye_height;
+    if let Some(mut tq) = world.query_mut::<Transform>() {
+        if let Some(t) = tq.get_mut(cam_entity) {
+            t.translation = cam_pos;
+        }
+    }
+    if let Some(mut gq) = world.query_mut::<GlobalTransform>() {
+        if let Some(g) = gq.get_mut(cam_entity) {
+            g.translation = cam_pos;
+        }
+    }
+}
+
 pub fn toggle_player_mode(world: &mut byroredux_core::ecs::World) {
     let current = world
         .try_resource::<PlayerMode>()
@@ -731,6 +860,146 @@ mod tests {
             byroredux_scripting::ActorControlState { restrained: true },
         );
         assert!(!player_accepts_movement_input(&world, player));
+    }
+
+    /// #2869 — a door arrival must land the capsule ON the destination floor,
+    /// standing at the same height cold start would place it, not `eye_height`
+    /// below the floor-level XTEL pose.
+    ///
+    /// The two engine paths disagreed by ~120 BU for the same door: cold start
+    /// puts the capsule *centre* at `floor + half_height + radius +
+    /// kcc_offset` (= +68 for HUMAN), while the transition path handed the
+    /// floor-level camera pose to `snap_character_body_to_camera`, which
+    /// subtracts `eye_height` (= -52). The assertion is written against the
+    /// cold-start formula rather than a literal so a controller re-tune moves
+    /// both together, plus an explicit floor-not-below check that fails on the
+    /// pre-fix number for any tuning.
+    #[test]
+    fn door_arrival_grounds_the_capsule_on_the_destination_floor() {
+        const FLOOR_Y: f32 = 200.0;
+
+        let mut world = World::new();
+        world.register::<Transform>();
+        world.register::<GlobalTransform>();
+        world.register::<byroredux_core::ecs::components::collision::CollisionShape>();
+        world.register::<byroredux_core::ecs::components::collision::RigidBodyData>();
+        world.register::<byroredux_physics::CharacterController>();
+        world.register::<byroredux_physics::RapierHandles>();
+        world.insert_resource(byroredux_physics::PhysicsWorld::new());
+
+        // A wide static slab whose TOP surface is the destination floor.
+        let floor = world.spawn();
+        let slab_half_height = 10.0;
+        let slab_center = Vec3::new(0.0, FLOOR_Y - slab_half_height, 0.0);
+        world.insert(floor, Transform::new(slab_center, Quat::IDENTITY, 1.0));
+        world.insert(
+            floor,
+            GlobalTransform::new(slab_center, Quat::IDENTITY, 1.0),
+        );
+        world.insert(
+            floor,
+            byroredux_core::ecs::components::collision::CollisionShape::Cuboid {
+                half_extents: Vec3::new(500.0, slab_half_height, 500.0),
+            },
+        );
+        world.insert(
+            floor,
+            byroredux_core::ecs::components::collision::RigidBodyData::STATIC,
+        );
+
+        // The player capsule, parked far away in the "source cell".
+        let cc = byroredux_physics::CharacterController::HUMAN;
+        let player = world.spawn();
+        let stale = Vec3::new(-9000.0, -9000.0, -9000.0);
+        world.insert(player, Transform::new(stale, Quat::IDENTITY, 1.0));
+        world.insert(player, GlobalTransform::new(stale, Quat::IDENTITY, 1.0));
+        world.insert(player, cc);
+        world.insert_resource(PlayerEntity(Some(player)));
+
+        let camera = world.spawn();
+        world.insert(camera, Transform::IDENTITY);
+        world.insert(camera, GlobalTransform::IDENTITY);
+        world.insert_resource(ActiveCamera(camera));
+
+        // The XTEL destination: floor level, as authored.
+        let destination = Vec3::new(0.0, FLOOR_Y, 0.0);
+        assert!(ground_character_body_at(&mut world, destination));
+
+        let body_y = world
+            .query::<Transform>()
+            .unwrap()
+            .get(player)
+            .unwrap()
+            .translation
+            .y;
+        let kcc_offset = byroredux_physics::ContactConfig::DEFAULT.kcc_offset_bu;
+        let expected = FLOOR_Y + cc.half_height + cc.radius + kcc_offset;
+        assert!(
+            (body_y - expected).abs() < 1.0,
+            "capsule centre landed at {body_y}, want the cold-start height {expected}"
+        );
+
+        // The pre-fix path put the capsule CENTRE below the floor (and its
+        // feet a further `half_height + radius` under that). Independent of
+        // any tuning, the feet must end up at or above the floor.
+        let feet_y = body_y - cc.half_height - cc.radius;
+        assert!(
+            feet_y >= FLOOR_Y - 0.5,
+            "capsule feet at {feet_y} are below the destination floor {FLOOR_Y} — \
+             buried, exactly the #2869 failure"
+        );
+
+        // The camera follows FROM the body, not the other way round.
+        let camera_y = world
+            .query::<Transform>()
+            .unwrap()
+            .get(camera)
+            .unwrap()
+            .translation
+            .y;
+        assert!((camera_y - (body_y + cc.eye_height)).abs() < 1e-3);
+    }
+
+    /// A destination with no floor beneath it must fall back to the authored
+    /// height rather than to the eye-height subtraction — the cold-start
+    /// ladder's own fallback. Nothing is spawned to stand on here, so the
+    /// probe misses by construction.
+    #[test]
+    fn door_arrival_with_no_probe_hit_falls_back_to_the_authored_height() {
+        let mut world = World::new();
+        world.register::<Transform>();
+        world.register::<GlobalTransform>();
+        world.register::<byroredux_core::ecs::components::collision::CollisionShape>();
+        world.register::<byroredux_core::ecs::components::collision::RigidBodyData>();
+        world.register::<byroredux_physics::CharacterController>();
+        world.register::<byroredux_physics::RapierHandles>();
+        world.insert_resource(byroredux_physics::PhysicsWorld::new());
+
+        let cc = byroredux_physics::CharacterController::HUMAN;
+        let player = world.spawn();
+        world.insert(player, Transform::IDENTITY);
+        world.insert(player, GlobalTransform::IDENTITY);
+        world.insert(player, cc);
+        world.insert_resource(PlayerEntity(Some(player)));
+
+        let destination = Vec3::new(12.0, 500.0, -34.0);
+        assert!(ground_character_body_at(&mut world, destination));
+
+        let body = world
+            .query::<Transform>()
+            .unwrap()
+            .get(player)
+            .unwrap()
+            .translation;
+        let kcc_offset = byroredux_physics::ContactConfig::DEFAULT.kcc_offset_bu;
+        let expected = destination.y + cc.half_height + cc.radius + kcc_offset;
+        assert!(
+            (body.y - expected).abs() < 1e-3,
+            "probe miss should stand ON the authored destination height, got {}",
+            body.y
+        );
+        assert!((body.x - destination.x).abs() < 1e-3);
+        assert!((body.z - destination.z).abs() < 1e-3);
     }
 
     /// Free-fall: gravity accumulates frame-by-frame, capped at

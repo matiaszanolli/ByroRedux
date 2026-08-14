@@ -93,6 +93,80 @@ pub enum RagdollJointSpec {
     },
 }
 
+impl RagdollJointSpec {
+    /// Scale the body-local **pivot** vectors, leaving every axis untouched.
+    ///
+    /// #2868 — the pivots arrive from the NIF importer in authored bind-space
+    /// units, but a scaled actor's bodies are seeded a scaled distance apart.
+    /// Because a ragdoll joint is a *multibody* (reduced-coordinate) joint,
+    /// the child link's translation is not a soft constraint that the seeded
+    /// separation can win: forward kinematics *defines* it as
+    /// `parent_pose ∘ frame1 ∘ joint_rot ∘ frame2⁻¹`, so bind-scale pivots
+    /// overwrite the seeded pose on the very first step and the ragdoll
+    /// collapses to bind proportions. Scaling the pivots to match the seed is
+    /// what keeps the two consistent.
+    ///
+    /// `twist_*` / `plane_*` / `axis_*` / `perp_*` are unit **directions**
+    /// defining frame orientation — scaling them would be meaningless at best
+    /// and would corrupt the frame basis at worst. They stay as authored.
+    ///
+    /// Each side takes its own body's scale because each pivot lives in its
+    /// own body's local frame; `build_joint`'s `flip` swaps the already-scaled
+    /// pair, so orientation and scaling stay independent.
+    pub fn scaled_pivots(&self, scale_a: f32, scale_b: f32) -> Self {
+        let factor = |scale: f32| {
+            if scale.is_finite() && scale > 0.0 {
+                scale
+            } else {
+                1.0
+            }
+        };
+        let (scale_a, scale_b) = (factor(scale_a), factor(scale_b));
+        match self {
+            Self::Ragdoll {
+                twist_a,
+                plane_a,
+                pivot_a,
+                twist_b,
+                plane_b,
+                pivot_b,
+                cone_max,
+                twist_min,
+                twist_max,
+            } => Self::Ragdoll {
+                twist_a: *twist_a,
+                plane_a: *plane_a,
+                pivot_a: *pivot_a * scale_a,
+                twist_b: *twist_b,
+                plane_b: *plane_b,
+                pivot_b: *pivot_b * scale_b,
+                cone_max: *cone_max,
+                twist_min: *twist_min,
+                twist_max: *twist_max,
+            },
+            Self::LimitedHinge {
+                axis_a,
+                perp_a,
+                pivot_a,
+                axis_b,
+                perp_b,
+                pivot_b,
+                min_angle,
+                max_angle,
+            } => Self::LimitedHinge {
+                axis_a: *axis_a,
+                perp_a: *perp_a,
+                pivot_a: *pivot_a * scale_a,
+                axis_b: *axis_b,
+                perp_b: *perp_b,
+                pivot_b: *pivot_b * scale_b,
+                min_angle: *min_angle,
+                max_angle: *max_angle,
+            },
+        }
+    }
+}
+
 /// One joint linking two bodies by index into [`RagdollSpec::bodies`].
 #[derive(Debug, Clone)]
 pub struct RagdollConstraintSpec {
@@ -624,6 +698,109 @@ mod tests {
             "first step replaced the seeded child rotation: \
              {expected_rotation:?} → {actual_rotation:?}"
         );
+    }
+
+    /// #2868 — reproduces the audit's measured probe. A 2x actor seeds its
+    /// bodies 100 apart, but the authored pivots are ±25 in bind units (bind
+    /// separation 50). Because a ragdoll joint is a *multibody* joint, the
+    /// child's translation is not a soft constraint the seed can win: forward
+    /// kinematics recomputes it from the frames, so unscaled pivots discard
+    /// the seeded pose on the very first step and the ragdoll snaps to bind
+    /// proportions.
+    ///
+    /// Both directions are asserted in one test deliberately. The collapse
+    /// arm is the evidence that the scaled arm is actually load-bearing —
+    /// `first_step_preserves_seeded_child_pose` passes only because its
+    /// hand-written pivots happen to match its body separation at scale 1, so
+    /// an assertion on the scaled arm alone would look identical to a test
+    /// that never exercised the scaling at all.
+    #[test]
+    fn scaled_pivots_preserve_a_scaled_actors_seeded_separation() {
+        fn separation_after_one_step(joint: RagdollJointSpec) -> f32 {
+            let mut pw = PhysicsWorld::new();
+            pw.gravity = Vector::zeros();
+            let spec = RagdollSpec {
+                bodies: vec![ball_body(1, 0.0, 1000.0), ball_body(2, 100.0, 1000.0)],
+                constraints: vec![RagdollConstraintSpec {
+                    body_a: 0,
+                    body_b: 1,
+                    joint,
+                }],
+            };
+            let rag = build_ragdoll(&mut pw, &spec, &ContactConfig::DEFAULT);
+            pw.step(PHYSICS_DT);
+            let root = body_translation(&pw, rag.bodies[0].1).unwrap();
+            let child = body_translation(&pw, rag.bodies[1].1).unwrap();
+            (child - root).length()
+        }
+
+        let authored = loose_ragdoll(0, 1).joint;
+        let collapsed = separation_after_one_step(authored.clone());
+        assert!(
+            (collapsed - 50.0).abs() < 1.0,
+            "bind-scale pivots should pull the seeded 100 apart back to the \
+             authored 50 — got {collapsed}. If this changed, the mechanism \
+             #2868 fixes is gone and the assertion below proves nothing."
+        );
+
+        let preserved = separation_after_one_step(authored.scaled_pivots(2.0, 2.0));
+        assert!(
+            (preserved - 100.0).abs() < 1.0,
+            "scaled pivots must hold the 2x actor's seeded 100-unit separation \
+             through the first step — got {preserved}"
+        );
+    }
+
+    /// Axes are unit directions defining frame ORIENTATION; scaling them would
+    /// corrupt the frame basis. Only the pivots — body-local positions — move.
+    #[test]
+    fn scaled_pivots_leaves_axes_and_limits_untouched() {
+        let scaled = loose_ragdoll(0, 1).joint.scaled_pivots(3.0, 4.0);
+        let RagdollJointSpec::Ragdoll {
+            twist_a,
+            plane_a,
+            pivot_a,
+            pivot_b,
+            cone_max,
+            ..
+        } = scaled
+        else {
+            panic!("variant changed");
+        };
+        assert!(
+            (twist_a - Vec3::X).length() < 1e-6,
+            "twist axis must not scale"
+        );
+        assert!(
+            (plane_a - Vec3::Y).length() < 1e-6,
+            "plane axis must not scale"
+        );
+        assert!((pivot_a - Vec3::new(75.0, 0.0, 0.0)).length() < 1e-5);
+        assert!(
+            (pivot_b - Vec3::new(-100.0, 0.0, 0.0)).length() < 1e-5,
+            "each side scales by its OWN body's factor"
+        );
+        assert!(
+            (cone_max - std::f32::consts::PI).abs() < 1e-6,
+            "limits are angles"
+        );
+    }
+
+    /// A degenerate scale must leave pivots alone rather than collapsing every
+    /// joint onto its parent's origin.
+    #[test]
+    fn scaled_pivots_rejects_non_positive_factors() {
+        for bad in [0.0, -1.0, f32::NAN] {
+            let RagdollJointSpec::Ragdoll { pivot_a, .. } =
+                loose_ragdoll(0, 1).joint.scaled_pivots(bad, bad)
+            else {
+                panic!("variant changed");
+            };
+            assert!(
+                (pivot_a - Vec3::new(25.0, 0.0, 0.0)).length() < 1e-6,
+                "factor {bad} altered the pivot"
+            );
+        }
     }
 
     /// #2338 — overlapping links in one ragdoll must not generate contact

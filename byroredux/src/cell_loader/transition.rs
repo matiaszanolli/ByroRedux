@@ -418,9 +418,15 @@ pub fn load_interior_cell(
     // fight, not a single bad motion vector, is what let a ghosted/
     // doubled TAA-SVGF history artifact "stick" indefinitely after a
     // door transition. No-ops harmlessly in FlyCam mode (no player
-    // body to snap). See `snap_character_body_to_camera`'s doc comment
-    // for the full mechanism.
-    crate::systems::snap_character_body_to_camera(world);
+    // body to snap).
+    //
+    // #2869 — this was `snap_character_body_to_camera`, which derives the
+    // body from the camera by subtracting `eye_height`. The camera has just
+    // been placed at the FLOOR-level XTEL destination, so that buried the
+    // capsule ~116 BU below the destination floor. `dest_pos` is the floor,
+    // so ground the body against it directly and let the camera follow from
+    // the body — the same direction cold start works in.
+    crate::systems::ground_character_body_at(world, dest_pos);
     Ok(dest_pos)
 }
 

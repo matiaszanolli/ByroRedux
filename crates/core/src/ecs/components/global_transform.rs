@@ -95,6 +95,38 @@ impl GlobalTransform {
         )
     }
 
+    /// Inverse of [`Self::compose_trs`] for the translation/rotation pair:
+    /// given a child's **world** pose and its parent's world transform,
+    /// recover the **local** translation/rotation that `compose` maps back
+    /// onto that world pose.
+    ///
+    /// Lives beside `compose_trs` deliberately — the composition order has a
+    /// single home, so its inverse must too, or the two drift apart. Scale is
+    /// not returned: the only caller (physics Phase 4 writeback) never
+    /// simulates scale, and a body's world scale is by construction the one it
+    /// was registered with.
+    ///
+    /// A parent whose scale has collapsed to ~0 is not invertible; rather than
+    /// emitting infinities that would propagate into the render transform, the
+    /// scale division is skipped (treated as 1.0). Such a parent is already
+    /// degenerate — its children render at zero size either way.
+    pub fn local_from_world(
+        parent: &GlobalTransform,
+        world_translation: Vec3,
+        world_rotation: Quat,
+    ) -> (Vec3, Quat) {
+        let inverse_rotation = parent.rotation.inverse();
+        let inverse_scale = if parent.scale.abs() > 1e-6 {
+            1.0 / parent.scale
+        } else {
+            1.0
+        };
+        (
+            inverse_rotation * (world_translation - parent.translation) * inverse_scale,
+            inverse_rotation * world_rotation,
+        )
+    }
+
     /// Translation-only half of [`Self::compose_trs`]: place a child point
     /// `local_translation` into the parent's world frame. Used by placement
     /// sites (lights, particle emitters) that carry no meaningful child
@@ -166,6 +198,64 @@ mod tests {
             GlobalTransform::compose(&parent, Vec3::new(1.0, 0.0, 0.0), Quat::IDENTITY, 1.0);
         assert!(child.translation.x.abs() < 1e-4);
         assert!((child.translation.z + 1.0).abs() < 1e-4);
+    }
+
+    /// #2866 — physics Phase 4 pulls a WORLD-space Rapier pose and must store
+    /// a LOCAL `Transform`, or the next propagation pass applies the parent
+    /// chain a second time. `local_from_world` is that inverse, so it must
+    /// round-trip `compose` exactly for a parent carrying translation,
+    /// rotation AND scale simultaneously — the case where getting the order
+    /// or the scale division wrong still looks plausible.
+    #[test]
+    fn local_from_world_inverts_compose() {
+        let parent = GlobalTransform::new(
+            Vec3::new(100.0, -20.0, 7.5),
+            Quat::from_rotation_y(FRAC_PI_2) * Quat::from_rotation_x(0.3),
+            2.5,
+        );
+        let local_translation = Vec3::new(5.0, 3.0, -11.0);
+        let local_rotation = Quat::from_rotation_z(0.7);
+
+        let world = GlobalTransform::compose(&parent, local_translation, local_rotation, 1.0);
+        let (recovered_translation, recovered_rotation) =
+            GlobalTransform::local_from_world(&parent, world.translation, world.rotation);
+
+        assert!(
+            (recovered_translation - local_translation).length() < 1e-3,
+            "got {recovered_translation:?}, want {local_translation:?}"
+        );
+        assert!(
+            recovered_rotation.dot(local_rotation).abs() > 1.0 - 1e-5,
+            "got {recovered_rotation:?}, want {local_rotation:?}"
+        );
+    }
+
+    /// A root body (no parent) round-trips through an identity parent
+    /// unchanged — the fallback path Phase 4 takes for parentless entities
+    /// must stay a no-op rather than perturbing the pose.
+    #[test]
+    fn local_from_world_through_identity_parent_is_the_world_pose() {
+        let world_translation = Vec3::new(1.0, 2.0, 3.0);
+        let world_rotation = Quat::from_rotation_y(0.4);
+        let (translation, rotation) = GlobalTransform::local_from_world(
+            &GlobalTransform::IDENTITY,
+            world_translation,
+            world_rotation,
+        );
+        assert!((translation - world_translation).length() < 1e-6);
+        assert!(rotation.dot(world_rotation).abs() > 1.0 - 1e-6);
+    }
+
+    /// A parent collapsed to zero scale is not invertible. The division must
+    /// be skipped rather than emitting infinities that would propagate into
+    /// the render transform and poison the frustum/bounds math downstream.
+    #[test]
+    fn local_from_world_survives_a_degenerate_parent_scale() {
+        let parent = GlobalTransform::new(Vec3::ZERO, Quat::IDENTITY, 0.0);
+        let (translation, rotation) =
+            GlobalTransform::local_from_world(&parent, Vec3::new(4.0, 0.0, 0.0), Quat::IDENTITY);
+        assert!(translation.is_finite());
+        assert!(rotation.is_finite());
     }
 
     #[test]
