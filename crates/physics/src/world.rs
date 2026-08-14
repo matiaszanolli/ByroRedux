@@ -1026,7 +1026,7 @@ mod tests {
     /// produces exactly one part (every primitive variant does; the
     /// tests here only feed primitives).
     fn single_shape(s: &CollisionShape) -> rapier3d::prelude::SharedShape {
-        let mut parts = collision_shape_to_parts(s, &crate::config::ContactConfig::DEFAULT);
+        let mut parts = collision_shape_to_parts(s, 1.0, &crate::config::ContactConfig::DEFAULT);
         assert_eq!(parts.len(), 1, "test helper expects a single part");
         parts.swap_remove(0).1
     }

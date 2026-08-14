@@ -1,3 +1,8 @@
+# ARCHIVED — harness=e153b50c (pre-f19f7f15) mode=parked camera=none
+# 17-column schema: no mode/camera/sim_time_s/lights/tlas/state_hash, so the
+# scene-state fingerprint gate cannot run on these rows (#2835). f19f7f15 both
+# widened the schema AND switched the workload to --bench-mode renderer-stepped,
+# so these figures are NOT comparable with any current-harness run.
 scene	config	run	wall_fps	wall_ms	fence_ms	brd_ms	gpu_main	gpu_svgf	gpu_composite	gpu_ssao	gpu_volumetrics	gpu_upscale	gpu_presentation	gpu_bloom	entities	draws
 cornell	taa	1	320.7	3.12	2.86	0.01	1.741	0.560	0.023	0.072	0.234	0.012	0.008	0.031	25	21/10b/10c
 cornell	taa	2	327.8	3.05	2.79	0.01	1.707	0.561	0.023	0.072	0.236	0.012	0.007	0.031	25	21/10b/10c

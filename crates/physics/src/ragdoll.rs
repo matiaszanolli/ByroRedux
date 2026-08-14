@@ -241,8 +241,22 @@ pub fn build_ragdoll(pw: &mut PhysicsWorld, spec: &RagdollSpec, cfg: &ContactCon
         // ragdoll body; a raw trimesh gives Rapier a degenerate inertia
         // tensor even with the `.mass()` override below. See
         // `ragdoll_dynamic_shape`.
-        let parts = collision_shape_to_parts(&ragdoll_dynamic_shape(&b.shape), cfg);
+        // #2860 sibling — the ragdoll builder is the third collider producer
+        // and had the same drop. `b.scale` is the bone's `GlobalTransform`
+        // scale at seed time, and `RagdollSpec` already scales the *joint
+        // pivots* by it (`scaled_pivots`); leaving the shape unscaled meant a
+        // scaled actor's limb colliders were sized for bind proportions while
+        // their articulation was sized for the seed — a self-inconsistent rig.
+        let parts = collision_shape_to_parts(&ragdoll_dynamic_shape(&b.shape), b.scale, cfg);
         let part_mass = b.mass.max(1e-3) / parts.len() as f32;
+        // #2861 — the anti-leak contact margin `register_newcomers` applies to
+        // every other collider in the engine. Rapier sums the skin of both
+        // colliders in a pair, so an unskinned ragdoll limb got half the
+        // intended margin against skinned world geometry and *zero* against
+        // another ragdoll — exactly the mixed-skin seam `ContactConfig` exists
+        // to eliminate. `config.rs`'s module doc enumerates the unification
+        // sites and simply never listed this one.
+        let contact_skin = cfg.default_contact_skin_bu.max(0.0);
         let PhysicsWorld {
             ref mut bodies,
             ref mut colliders,
@@ -254,6 +268,7 @@ pub fn build_ragdoll(pw: &mut PhysicsWorld, spec: &RagdollSpec, cfg: &ContactCon
                 .friction(b.friction.max(0.0))
                 .restitution(b.restitution.clamp(0.0, 1.0))
                 .mass(part_mass)
+                .contact_skin(contact_skin)
                 .build();
             colliders.insert_with_parent(col, h, bodies);
         }
@@ -611,6 +626,66 @@ mod tests {
                 twist_max: std::f32::consts::PI,
             },
         }
+    }
+
+    /// #2861 — `build_ragdoll` is the only production collider site that
+    /// omitted `default_contact_skin_bu`. Rapier sums the skin of both
+    /// colliders in a pair, so an unskinned limb got half the intended margin
+    /// against skinned world geometry and zero against another ragdoll —
+    /// precisely the mixed-skin seam `ContactConfig` exists to close.
+    #[test]
+    fn ragdoll_colliders_carry_the_engine_contact_skin() {
+        let mut pw = PhysicsWorld::new();
+        let spec = RagdollSpec {
+            bodies: vec![ball_body(1, 0.0, 0.0), ball_body(2, 50.0, 0.0)],
+            constraints: vec![loose_ragdoll(0, 1)],
+        };
+        let cfg = ContactConfig::DEFAULT;
+        let rag = build_ragdoll(&mut pw, &spec, &cfg);
+
+        assert!(cfg.default_contact_skin_bu > 0.0, "config precondition");
+        for (_, body, _) in &rag.bodies {
+            let rb = pw.bodies.get(*body).expect("body");
+            assert!(!rb.colliders().is_empty(), "each limb has a collider");
+            for handle in rb.colliders() {
+                assert_eq!(
+                    pw.colliders.get(*handle).expect("collider").contact_skin(),
+                    cfg.default_contact_skin_bu,
+                    "ragdoll limb must carry the same skin register_newcomers applies"
+                );
+            }
+        }
+    }
+
+    /// #2860 sibling — `RagdollSpec` already scales joint *pivots* by the
+    /// bone's seed scale (`scaled_pivots`), but the limb *shape* was built at
+    /// bind size, so a scaled actor's colliders and its articulation
+    /// disagreed. Both must follow `b.scale`.
+    #[test]
+    fn ragdoll_collider_shape_follows_the_bone_seed_scale() {
+        let mut pw = PhysicsWorld::new();
+        let mut scaled = ball_body(1, 0.0, 0.0);
+        scaled.scale = 2.0;
+        let spec = RagdollSpec {
+            bodies: vec![scaled, ball_body(2, 50.0, 0.0)],
+            constraints: vec![loose_ragdoll(0, 1)],
+        };
+        let rag = build_ragdoll(&mut pw, &spec, &ContactConfig::DEFAULT);
+
+        let radius_of = |index: usize| {
+            let rb = pw.bodies.get(rag.bodies[index].1).expect("body");
+            let handle = rb.colliders()[0];
+            pw.colliders
+                .get(handle)
+                .expect("collider")
+                .shape()
+                .as_ball()
+                .expect("ball")
+                .radius
+        };
+        // `ball_body` authors radius 5.0.
+        assert_eq!(radius_of(0), 10.0, "2× bone must build a 2× limb collider");
+        assert_eq!(radius_of(1), 5.0, "an unscaled sibling is untouched");
     }
 
     /// A 3-body horizontal chain hung from a pinned root: under gravity it

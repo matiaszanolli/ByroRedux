@@ -488,6 +488,8 @@ execution phase 7 (2026-07-24) FSR Quality is the default** and
 | Reactive mask | New render-resolution `R8_UNORM`, cleared to zero and MAX-blended during transparency. Glass, particles, water, and alpha-blended decals write `min(alpha, 0.9)` as the baseline policy. Stable alpha-blended meshes still write motion where available. |
 | Transparency/composition mask | New render-resolution `R8_UNORM`, cleared to zero and MAX-blended for shading whose color evolution is not represented by depth/motion: refractive glass, animated particles/UVs, water/reflections, emissive transparent layers, and alpha-composited decals. Start material-driven rather than marking the entire frame. |
 | Output | Output-resolution `RGBA16F` image with storage and sampled usage, written by FSR and read by post-processing. |
+| View-space unit | **`viewSpaceToMetersFactor = 1 / BETHESDA_UNITS_PER_METER` (≈ 0.0142857)**, sourced from `byroredux_core::lighting`, not a literal. The camera near/far/FOV above are Bethesda units, so the view-space depth FSR derives from them is in BU; the SDK converts it with `GetViewSpaceDepthInMeters(d) = GetViewSpaceDepth(d) * ViewSpaceToMetersFactor()` and two of its heuristics are tuned in real metres — `ReconstructedDepthMvPxThreshold` ramps over 0–100 m, and `fDistanceFactor = saturate(0.75 − farthestDepthInMeters / 20)` feeds the history-rectification box scale. Leaving this at the SDK default of `1.0` pinned both to their far-field values scene-wide (#2834), and flat-topped `prepare_inputs.h`'s FP16 depth clamp at 65 504 BU ≈ 936 m against a 300 000 BU `Camera::far`. |
+| Sharpening | RCAS is **off**: `enableSharpening = false` with `sharpness = 0.0`. Reconstruction quality is evaluated without a post-sharpen so the SSIM matrix measures FSR itself; enabling it is a user-facing visual preference, not part of this contract. |
 
 `IsDecalMesh`/the renderer's decal layer selects the decal mask policy;
 `Vertex.color.a` participates in the authored alpha value. This extends the
@@ -842,6 +844,17 @@ unexercised.
    | Whiterun (3406 ent) | 100.8 fps / 9.92 ms | 168.7 fps / 5.93 ms | +3.99 ms (+40%) |
    | MedTek (31495 ent) | 15.2 fps / 65.88 ms | 46.7 fps / 21.41 ms | +44.47 ms (+68%) |
    | Dugout Inn (6978 ent) | 32.1 fps / 31.17 ms | 62.6 fps / 15.98 ms | +15.19 ms (+49%) |
+
+   > **Harness provenance (#2835): taken on `e153b50c`, the pre-`f19f7f15`
+   > parked-camera harness.** `f19f7f15` (2026-08-11) changed the measurement
+   > conditions — every run now executes
+   > `--bench-mode renderer-stepped --bench-camera "$CAMERA_PATH"` instead of a
+   > parked capture — *and* widened the TSV from 17 to 23 columns, without
+   > re-taking the baseline it invalidates. These figures therefore describe a
+   > workload the current harness no longer runs and **cannot be compared
+   > against a current-harness run**; they are retained as the record of what
+   > the default switch was decided on. A stepped-camera re-bench is the
+   > outstanding half of #2835.
 
    The upscale dispatch costs 0.15–0.17 ms and presentation ~0.01 ms, both
    effectively flat across scenes — so on every game scene the net recovery
