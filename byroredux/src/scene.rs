@@ -243,7 +243,9 @@ fn probe_spawn_ground(
     let aabb_height = (max[1] - min[1]).max(1.0);
     let ray_origin = Vec3::new(cam_pos.x, max[1] + 50.0, cam_pos.z);
     let searched_bu = aabb_height + 100.0;
-    match pw.cast_ray_down(ray_origin, searched_bu) {
+    // Runs before the player capsule is spawned, so there is no self-hit to
+    // exclude (#2859).
+    match pw.cast_ray_down(ray_origin, searched_bu, None) {
         Some(surface_y) => GroundProbe::Grounded {
             surface_y,
             spawn_y: character_spawn_center_y(world, surface_y, cc),
@@ -987,17 +989,43 @@ pub(crate) fn setup_scene(
             // search near that height finds the real local floor (or
             // correctly reports nothing nearby, rather than a false hit
             // far above).
-            const FLOOR_PROBE_RANGE_BU: f32 = 150.0;
+            // #2858 — the sweep must START above the floor it is looking
+            // for. The probe capsule's own half-extent is
+            // `half_height + radius` (64 BU for HUMAN), so the previous
+            // fixed `+50.0` origin put the capsule's BOTTOM 14 BU *below*
+            // door height. Every floor within ~15 BU of the door — i.e. the
+            // door's own floor, which is the normal case given "doors sit at
+            // floor level by construction" — was then either an
+            // initial-penetration configuration (discarded by
+            // `stop_at_penetration: false`, or reported at
+            // `time_of_impact = 0` with a degenerate normal the walkable
+            // filter rejects) or simply outside the swept half-space. Rungs 1
+            // and 2 could therefore never answer on an ordinary flat
+            // threshold, and every door spawn silently degraded to the rung-3
+            // ceiling sweep this code documents as unreliable — which also
+            // made the `floor_rung` telemetry mis-attribute the cause.
+            //
+            // Derive the lift from the capsule rather than hard-coding it, so
+            // a `CharacterController` re-tune cannot reintroduce the blind
+            // zone, and extend the range by the same amount so the band
+            // searched BELOW the door is unchanged.
+            const FLOOR_PROBE_CLEARANCE_BU: f32 = 16.0;
+            const FLOOR_PROBE_REACH_BELOW_DOOR_BU: f32 = 164.0;
+            let probe_lift = cc.half_height + cc.radius + FLOOR_PROBE_CLEARANCE_BU;
+            let floor_probe_range = FLOOR_PROBE_CLEARANCE_BU + FLOOR_PROBE_REACH_BELOW_DOOR_BU;
             let min_walkable_normal_y = cc.max_slope_climb_deg.to_radians().cos();
             let near_door_floor_y = {
                 let pw = world.resource::<byroredux_physics::PhysicsWorld>();
-                let probe_origin = Vec3::new(nudged_x, door_pos.y + 50.0, nudged_z);
+                let probe_origin = Vec3::new(nudged_x, door_pos.y + probe_lift, nudged_z);
                 pw.cast_capsule_down_onto_walkable_surface(
                     probe_origin,
                     cc.half_height,
                     cc.radius,
-                    FLOOR_PROBE_RANGE_BU,
+                    floor_probe_range,
                     min_walkable_normal_y,
+                    // No player body exists yet — the capsule is spawned
+                    // later in `setup_scene`, so there is nothing to self-hit.
+                    None,
                 )
             };
             // Second rung — the nudge itself can be the problem. It moves
@@ -1011,13 +1039,14 @@ pub(crate) fn setup_scene(
             // of whatever shaft the nudge happened to point at.
             let door_xz_floor_y = near_door_floor_y.or_else(|| {
                 let pw = world.resource::<byroredux_physics::PhysicsWorld>();
-                let probe_origin = Vec3::new(door_pos.x, door_pos.y + 50.0, door_pos.z);
+                let probe_origin = Vec3::new(door_pos.x, door_pos.y + probe_lift, door_pos.z);
                 pw.cast_capsule_down_onto_walkable_surface(
                     probe_origin,
                     cc.half_height,
                     cc.radius,
-                    FLOOR_PROBE_RANGE_BU,
+                    floor_probe_range,
                     min_walkable_normal_y,
+                    None,
                 )
             });
 
@@ -1040,14 +1069,19 @@ pub(crate) fn setup_scene(
             let wide_floor_y = door_xz_floor_y.or_else(|| {
                 aabb.and_then(|(min, max, _)| {
                     let pw = world.resource::<byroredux_physics::PhysicsWorld>();
-                    let probe_origin = Vec3::new(nudged_x, max[1] + 50.0, nudged_z);
-                    let max_distance = (max[1] - min[1]).max(1.0) + 100.0;
+                    // Same capsule-half-extent clearance as rungs 1 and 2
+                    // (#2858), so a floor sitting near the cell's own AABB
+                    // ceiling is inside the swept band rather than behind
+                    // the probe's starting penetration.
+                    let probe_origin = Vec3::new(nudged_x, max[1] + probe_lift, nudged_z);
+                    let max_distance = (max[1] - min[1]).max(1.0) + probe_lift + 100.0;
                     pw.cast_capsule_down_onto_walkable_surface(
                         probe_origin,
                         cc.half_height,
                         cc.radius,
                         max_distance,
                         min_walkable_normal_y,
+                        None,
                     )
                 })
             });

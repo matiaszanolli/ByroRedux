@@ -372,7 +372,6 @@ impl PhysicsWorld {
             self.accumulator = 0.0;
             return 0;
         }
-        self.pending_wake = false;
 
         // Anti-spiral wall-clock budget (#1698). Time the catch-up loop so a
         // settle storm can't pin the frame at the full 5-substep cost; once
@@ -418,6 +417,21 @@ impl PhysicsWorld {
                 self.accumulator = 0.0;
                 break;
             }
+        }
+        // Consume the wake only once a substep has actually run (#2856).
+        // Clearing it before the loop dropped one-shot wakes on any frame
+        // where `accumulator < PHYSICS_DT` — i.e. every frame above 60 fps.
+        // The next frame then saw `pending_wake == false` with the island
+        // lists still stale (they only update inside `pipeline.step`), took
+        // the fast path above, and ZEROED the accumulator — so the banked
+        // sub-tick time could never reach `PHYSICS_DT` and the scene stayed
+        // frozen. Ragdoll activation was the worst case: the debug server is
+        // a `Stage::Late` exclusive, so its `wake()` always landed on the
+        // next frame's `step()`. Keeping the flag armed until work happens
+        // makes the wake survive however many sub-tick frames it takes to
+        // accumulate one full tick (2 frames at 120 fps, 17 at 1000 fps).
+        if steps > 0 {
+            self.pending_wake = false;
         }
         // Kill-plane. Clutter spawned without a floor beneath it (missing or
         // failed static collision under the placement) free-falls forever: it
@@ -560,10 +574,21 @@ impl PhysicsWorld {
     /// Returns the world-space Y of the hit; the caller adds capsule
     /// `half_height + offset` to place the capsule centre above the
     /// surface.
+    ///
+    /// `excluded_body` must be passed whenever the origin can lie inside a
+    /// body — the player capsule, or an actor's own keyframed ragdoll bones.
+    /// `exclude_dynamic()` does NOT cover those: both are
+    /// `KinematicPositionBased`, and with `solid = true` rapier returns an
+    /// impact at `toi = 0` for a ray starting inside a shape, which always
+    /// wins the closest-hit search. The parameter is deliberately mandatory
+    /// (rather than a defaulted sibling method) so every call site has to
+    /// decide — a silent self-hit is invisible, since the returned
+    /// `origin.y` is exactly what most callers use as their fallback (#2859).
     pub fn cast_ray_down(
         &self,
         origin: byroredux_core::math::Vec3,
         max_distance: f32,
+        excluded_body: Option<rapier3d::prelude::RigidBodyHandle>,
     ) -> Option<f32> {
         use rapier3d::prelude::*;
         let ray = Ray::new(
@@ -574,7 +599,10 @@ impl PhysicsWorld {
         // standing on a dropped barrel. `exclude_dynamic()` is an
         // associated-fn constructor on `QueryFilter`, not a builder
         // method; call it directly.
-        let filter = QueryFilter::exclude_dynamic();
+        let mut filter = QueryFilter::exclude_dynamic();
+        if let Some(body) = excluded_body {
+            filter = filter.exclude_rigid_body(body);
+        }
         self.query_pipeline
             .cast_ray(
                 &self.bodies,
@@ -654,12 +682,14 @@ impl PhysicsWorld {
         capsule_half_height: f32,
         capsule_radius: f32,
         max_distance: f32,
+        excluded_body: Option<rapier3d::prelude::RigidBodyHandle>,
     ) -> Option<f32> {
         self.cast_capsule_down_surface_and_normal(
             origin,
             capsule_half_height,
             capsule_radius,
             max_distance,
+            excluded_body,
         )
         .map(|(surface_y, _)| surface_y)
     }
@@ -679,12 +709,14 @@ impl PhysicsWorld {
         capsule_radius: f32,
         max_distance: f32,
         min_walkable_normal_y: f32,
+        excluded_body: Option<rapier3d::prelude::RigidBodyHandle>,
     ) -> Option<f32> {
         self.cast_capsule_down_surface_and_normal(
             origin,
             capsule_half_height,
             capsule_radius,
             max_distance,
+            excluded_body,
         )
         .and_then(|(surface_y, normal_y)| {
             (normal_y.abs() >= min_walkable_normal_y.clamp(0.0, 1.0)).then_some(surface_y)
@@ -697,12 +729,16 @@ impl PhysicsWorld {
         capsule_half_height: f32,
         capsule_radius: f32,
         max_distance: f32,
+        excluded_body: Option<rapier3d::prelude::RigidBodyHandle>,
     ) -> Option<(f32, f32)> {
         use rapier3d::parry::query::ShapeCastOptions;
         use rapier3d::prelude::*;
         let shape = SharedShape::capsule_y(capsule_half_height.max(1e-3), capsule_radius.max(1e-3));
         let pos = Isometry::translation(origin.x, origin.y, origin.z);
-        let filter = QueryFilter::exclude_dynamic();
+        let mut filter = QueryFilter::exclude_dynamic();
+        if let Some(body) = excluded_body {
+            filter = filter.exclude_rigid_body(body);
+        }
         self.query_pipeline
             .cast_shape(
                 &self.bodies,
@@ -1024,6 +1060,7 @@ mod tests {
             5.0,
             200.0,
             50.0_f32.to_radians().cos(),
+            None,
         );
 
         assert_eq!(hit, Some(1.0));
@@ -1052,7 +1089,7 @@ mod tests {
         w.update_query_pipeline();
 
         assert!(
-            w.cast_capsule_down(Vec3::new(0.0, 150.0, 0.0), 10.0, 5.0, 300.0)
+            w.cast_capsule_down(Vec3::new(0.0, 150.0, 0.0), 10.0, 5.0, 300.0, None)
                 .is_some(),
             "the unfiltered capsule sweep must observe the wall contact"
         );
@@ -1063,6 +1100,7 @@ mod tests {
                 5.0,
                 300.0,
                 50.0_f32.to_radians().cos(),
+                None,
             ),
             None,
             "a horizontal door-frame contact is not a spawn floor"
@@ -1086,7 +1124,7 @@ mod tests {
              is the premise of this diagnostic"
         );
         assert!(
-            w.cast_capsule_down(Vec3::new(0.0, 100.0, 0.0), 60.0, 20.0, 500.0)
+            w.cast_capsule_down(Vec3::new(0.0, 100.0, 0.0), 60.0, 20.0, 500.0, None)
                 .is_none(),
             "exclude_dynamic probe must not see a Dynamic floor"
         );
@@ -1530,5 +1568,307 @@ mod tests {
         let dead = w2.bodies.insert(RigidBodyBuilder::dynamic().build());
         w2.remove_body(dead);
         assert!(!w.add_force(dead, up), "dead handle must be a no-op");
+    }
+}
+
+#[cfg(test)]
+mod audit_2026_08_13_regressions {
+    use super::*;
+    use crate::config::ContactConfig;
+    use byroredux_core::math::Vec3;
+
+    /// Insert a Fixed cuboid slab whose TOP surface is at `top_y`.
+    fn floor_slab(w: &mut PhysicsWorld, top_y: f32, half_extent: f32) {
+        let half_thickness = 4.0;
+        let body = w.bodies.insert(
+            RigidBodyBuilder::fixed()
+                .translation(vector![0.0, top_y - half_thickness, 0.0])
+                .build(),
+        );
+        w.colliders.insert_with_parent(
+            ColliderBuilder::cuboid(half_extent, half_thickness, half_extent)
+                .contact_skin(ContactConfig::DEFAULT.default_contact_skin_bu)
+                .build(),
+            body,
+            &mut w.bodies,
+        );
+    }
+
+    /// A `KinematicPositionBased` capsule standing in for the player body.
+    fn player_capsule(w: &mut PhysicsWorld, centre: Vec3) -> RigidBodyHandle {
+        let body = w.bodies.insert(
+            RigidBodyBuilder::kinematic_position_based()
+                .translation(vector![centre.x, centre.y, centre.z])
+                .build(),
+        );
+        w.colliders.insert_with_parent(
+            ColliderBuilder::capsule_y(46.0, 18.0).build(),
+            body,
+            &mut w.bodies,
+        );
+        body
+    }
+
+    // ── #2856 — one-shot wake must survive sub-tick frames ───────────
+
+    /// The regression itself: above 60 fps every frame is sub-tick, so
+    /// clearing `pending_wake` before the substep loop consumed the wake
+    /// without stepping, and the next frame's fast path then zeroed the
+    /// accumulator — an absorbing state the sim could never leave.
+    #[test]
+    fn one_shot_wake_survives_sub_tick_frames_and_eventually_steps() {
+        let mut w = PhysicsWorld::new();
+        // Quiesce: no awake dynamic body at all.
+        let _ = w.step(PHYSICS_DT);
+        assert_eq!(
+            w.step(PHYSICS_DT),
+            0,
+            "scene must be quiesced for this test"
+        );
+
+        w.wake();
+        let mut total = 0u32;
+        for _ in 0..600 {
+            total += w.step(PHYSICS_DT / 2.0);
+        }
+        assert!(
+            total > 0,
+            "a one-shot wake() was swallowed across 600 sub-tick frames (#2856)"
+        );
+    }
+
+    /// The wake must not be spent by a frame that ran no substep, but it
+    /// *must* be spent once one does — otherwise the fast path could never
+    /// re-engage and the static-scene optimisation would be dead.
+    #[test]
+    fn wake_is_consumed_once_a_substep_actually_runs() {
+        let mut w = PhysicsWorld::new();
+        let _ = w.step(PHYSICS_DT);
+        assert_eq!(w.step(PHYSICS_DT), 0);
+
+        w.wake();
+        assert_eq!(w.step(PHYSICS_DT / 2.0), 0, "half a tick cannot step yet");
+        assert!(
+            w.pending_wake(),
+            "wake must still be armed after a 0-substep frame"
+        );
+        assert_eq!(
+            w.step(PHYSICS_DT / 2.0),
+            1,
+            "the banked half-ticks must now step"
+        );
+        assert!(
+            !w.pending_wake(),
+            "wake must be consumed once work happened"
+        );
+        assert_eq!(w.step(PHYSICS_DT), 0, "fast path must re-engage afterwards");
+    }
+
+    // ── #2859 — casts must be able to exclude their caster ───────────
+
+    /// The camera sits *inside* the player capsule by design, and the
+    /// capsule is `KinematicPositionBased`, which `exclude_dynamic()` does
+    /// not filter. With `solid = true` rapier returns a `toi = 0` self-hit,
+    /// so the cast returned `origin.y` — numerically identical to the
+    /// caller's fallback, making the whole height-fog fix a silent no-op.
+    #[test]
+    fn cast_ray_down_self_hits_without_exclusion_and_finds_the_floor_with_it() {
+        let mut w = PhysicsWorld::new();
+        floor_slab(&mut w, 0.0, 500.0);
+        let eye = Vec3::new(0.0, 152.0, 0.0);
+        // Capsule centred at 100 spans [36, 164] — the eye is inside it.
+        let body = player_capsule(&mut w, Vec3::new(0.0, 100.0, 0.0));
+        w.update_query_pipeline();
+
+        let unfiltered = w.cast_ray_down(eye, 1000.0, None);
+        assert_eq!(
+            unfiltered,
+            Some(eye.y),
+            "unfiltered ray must self-hit at toi 0 — this is the #2859 bug"
+        );
+
+        let filtered = w.cast_ray_down(eye, 1000.0, Some(body));
+        assert!(
+            filtered.is_some_and(|y| (y - 0.0).abs() < 0.5),
+            "excluding the player body must reach the floor, got {filtered:?}"
+        );
+    }
+
+    /// The capsule probes needed the same parameter — the #2857 support
+    /// probe casts from the player's own position, so without exclusion it
+    /// would measure a zero gap against itself every frame.
+    #[test]
+    fn cast_capsule_down_can_exclude_the_probing_body() {
+        let mut w = PhysicsWorld::new();
+        floor_slab(&mut w, 0.0, 500.0);
+        let centre = Vec3::new(0.0, 68.0, 0.0);
+        let body = player_capsule(&mut w, centre);
+        w.update_query_pipeline();
+
+        let surface = w.cast_capsule_down(centre, 46.0, 18.0, 200.0, Some(body));
+        assert!(
+            surface.is_some_and(|y| (y - 0.0).abs() < 0.5),
+            "excluded probe must find the floor, got {surface:?}"
+        );
+    }
+
+    // ── #2858 — the walkable probe must start ABOVE the target floor ──
+
+    /// The audit's truth table: with the old `+50` origin the probe capsule's
+    /// bottom (`half_height + radius` = 64 BU below the origin) started
+    /// *below* the door's own floor, so rungs 1 and 2 were structurally blind
+    /// to every floor within ~15 BU of door height — the normal case.
+    #[test]
+    fn walkable_probe_sees_a_floor_at_door_height_with_capsule_clearance() {
+        let (hh, r) = (46.0_f32, 18.0_f32);
+        let min_walkable = 50.0_f32.to_radians().cos();
+        let door_y = 0.0_f32;
+
+        for floor_top in [0.0_f32, -2.0, -5.0, -10.0, -14.0] {
+            let mut w = PhysicsWorld::new();
+            floor_slab(&mut w, floor_top, 500.0);
+            w.update_query_pipeline();
+
+            // Old behaviour: origin only 50 BU above the door, so the probe
+            // capsule's bottom started at `door_y - 14`. It fails in one of
+            // two ways depending on where the floor sits relative to that
+            // penetrating start — either no hit at all, or a PHANTOM surface
+            // pinned at the capsule's own bottom (`origin.y - 64`) rather
+            // than the real floor. Both are the #2858 defect; assert only
+            // that it does not report the truth.
+            let old = w.cast_capsule_down_onto_walkable_surface(
+                Vec3::new(0.0, door_y + 50.0, 0.0),
+                hh,
+                r,
+                150.0,
+                min_walkable,
+                None,
+            );
+            if floor_top > -14.0 {
+                assert!(
+                    !old.is_some_and(|y| (y - floor_top).abs() < 0.5),
+                    "pre-fix origin must not resolve floor_top={floor_top}, got {old:?} \
+                     (documents #2858)"
+                );
+            }
+
+            // Fixed behaviour: lift by the capsule's own half-extent + clearance.
+            let lift = hh + r + 16.0;
+            let new = w.cast_capsule_down_onto_walkable_surface(
+                Vec3::new(0.0, door_y + lift, 0.0),
+                hh,
+                r,
+                16.0 + 164.0,
+                min_walkable,
+                None,
+            );
+            assert!(
+                new.is_some_and(|y| (y - floor_top).abs() < 0.5),
+                "lifted origin must find floor_top={floor_top}, got {new:?}"
+            );
+        }
+    }
+
+    // ── #2857 — a grounded capsule must never sink through a convex floor ──
+
+    /// Mirrors what `character_controller_system` now does each grounded
+    /// frame: probe for the real support, move exactly to resting contact,
+    /// then step. The old code sent a fixed `-step_height`, which rapier
+    /// applied verbatim whenever its sweep reported no interference —
+    /// 32 BU/frame straight through a solid `Cuboid`.
+    ///
+    /// Reproducing it requires the capsule to SETTLE under gravity first
+    /// (which lands it at a gap of ~3.996 rather than exactly `offset`), and
+    /// it then fires only at certain absolute floor Y values — which is why
+    /// the bug reads as intermittent in play. Both policies are run over the
+    /// same sweep so the test proves it still has teeth.
+    #[test]
+    fn grounded_capsule_does_not_sink_through_convex_floors_across_absolute_y() {
+        let (hh, r) = (46.0_f32, 18.0_f32);
+        let kcc_offset = ContactConfig::DEFAULT.kcc_offset_bu;
+        let step_height = 32.0_f32;
+        const SETTLE_FRAMES: usize = 3;
+
+        let mut sank_old = 0;
+        let mut sank_new = 0;
+        let mut checked = 0;
+
+        for &bounded in &[false, true] {
+            // Two floor heights confirmed to trigger the pre-fix punch-through
+            // (`0.0`, `137.0`) plus a spread so the sweep is not overfitted to
+            // them. Which values fire is a float-precision property of the
+            // resting gap, not something a content author controls.
+            let mut floors = vec![0.0_f32, 137.0];
+            floors.extend((0..40).map(|i| -60.0 + (i as f32) * 7.3));
+            for floor_top in floors {
+                for half_extent in [50.0_f32, 500.0] {
+                    if bounded {
+                        checked += 1;
+                    }
+                    let mut w = PhysicsWorld::new();
+                    floor_slab(&mut w, floor_top, half_extent);
+                    w.update_query_pipeline();
+
+                    // Start above the floor and let gravity settle it, the
+                    // way the real controller reaches its grounded state.
+                    let mut pos = Vec3::new(0.0, floor_top + hh + r + kcc_offset + 10.0, 0.0);
+                    let mut vv = 0.0f32;
+
+                    for f in 0..120 {
+                        let desired_y = if f < SETTLE_FRAMES {
+                            vv += -1220.8 * PHYSICS_DT;
+                            vv * PHYSICS_DT
+                        } else if bounded {
+                            // The fixed probe-bounded correction (#2857).
+                            match w.cast_capsule_down(pos, hh, r, step_height + kcc_offset, None) {
+                                Some(surface_y) => {
+                                    let feet_y = pos.y - hh - r;
+                                    let correction = -(feet_y - surface_y - kcc_offset);
+                                    correction.clamp(-step_height, kcc_offset)
+                                }
+                                None => vv * PHYSICS_DT,
+                            }
+                        } else {
+                            // The pre-fix fixed probe.
+                            -step_height
+                        };
+                        let res = w.move_character(CharacterMoveParams {
+                            capsule_half_height: hh,
+                            capsule_radius: r,
+                            position: pos,
+                            desired_translation: Vec3::new(0.0, desired_y, 0.0),
+                            dt: PHYSICS_DT,
+                            max_slope_climb_deg: 50.0,
+                            step_height,
+                            step_min_width: 8.0,
+                            snap_to_ground: step_height,
+                            exclude_collider: None,
+                            kcc_offset_bu: kcc_offset,
+                        });
+                        pos += res.translation;
+                    }
+
+                    let feet = pos.y - hh - r;
+                    if feet < floor_top - 1.0 {
+                        if bounded {
+                            sank_new += 1;
+                        } else {
+                            sank_old += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        assert!(
+            sank_old > 0,
+            "the pre-fix fixed -step_height probe sank 0/{checked} configurations — this test \
+             no longer reproduces #2857 and has lost its teeth"
+        );
+        assert_eq!(
+            sank_new, 0,
+            "{sank_new}/{checked} grounded configurations sank through a convex floor (#2857); \
+             the pre-fix policy sank {sank_old}/{checked}"
+        );
     }
 }
