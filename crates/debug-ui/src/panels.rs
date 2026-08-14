@@ -23,7 +23,13 @@ use crate::PanelState;
 pub struct PanelSnapshot {
     /// Native in-world HUD prompt. Unlike the debug panels, this remains
     /// visible when the F3 operator overlay is closed.
-    pub interaction_prompt: Option<String>,
+    ///
+    /// `&'static str`, not `String` (#2680 / PERF-D1-02): this is the one
+    /// field rebuilt on every frame including the overlay-hidden path, and
+    /// every prompt the producer can name is a compile-time constant. A
+    /// future prompt that interpolates a reference name wants
+    /// `Cow<'static, str>` here, not a per-frame `String`.
+    pub interaction_prompt: Option<&'static str>,
     pub metrics: Option<MetricsSnapshotView>,
     /// Deterministically ordered clone of the universal settings registry.
     /// Settings are small and only cloned while the overlay is visible.
@@ -37,7 +43,7 @@ pub struct PanelSnapshot {
 
 /// Draw the small gameplay HUD layer shared with the debug renderer.
 pub fn draw_hud(ctx: &Context, snapshot: &PanelSnapshot) {
-    let Some(prompt) = snapshot.interaction_prompt.as_deref() else {
+    let Some(prompt) = snapshot.interaction_prompt else {
         return;
     };
 
@@ -603,7 +609,7 @@ mod tests {
         draw_hud(
             &ctx,
             &PanelSnapshot {
-                interaction_prompt: Some("[E] Open".to_string()),
+                interaction_prompt: Some("[E] Open"),
                 ..Default::default()
             },
         );

@@ -98,12 +98,31 @@ impl EguiPass {
         in_flight_frames: usize,
     ) -> Result<Self> {
         let render_pass = create_render_pass(&device, swapchain_format)?;
-        let framebuffers = create_framebuffers(
+        // #2685 / SAFE-D10-01 (sibling) — `render_pass` is a raw handle owned
+        // by nothing until the `Self` at the bottom of this function exists.
+        // Both fallible steps below therefore have to hand it back themselves;
+        // `?` alone leaked it (and, on the renderer step, the framebuffers too)
+        // for the process lifetime. `EguiPass::new` failing is non-fatal at
+        // both of its call sites — the overlay is simply disabled — so this is
+        // a reachable path, not a theoretical one.
+        let destroy_render_pass = || {
+            // SAFETY: `render_pass` was created by this `device` immediately
+            // above and has never been bound into a command buffer or a
+            // framebuffer that outlives this function.
+            unsafe { device.destroy_render_pass(render_pass, None) };
+        };
+        let framebuffers = match create_framebuffers(
             &device,
             render_pass,
             swapchain_image_views,
             swapchain_extent,
-        )?;
+        ) {
+            Ok(framebuffers) => framebuffers,
+            Err(e) => {
+                destroy_render_pass();
+                return Err(e);
+            }
+        };
 
         let opts = Options {
             in_flight_frames,
@@ -119,8 +138,19 @@ impl EguiPass {
             srgb_framebuffer: is_srgb_format(swapchain_format),
         };
 
-        let renderer = Renderer::with_gpu_allocator(allocator, device, render_pass, opts)
-            .map_err(|e| anyhow!("egui-ash-renderer init failed: {e:?}"))?;
+        let renderer =
+            match Renderer::with_gpu_allocator(allocator, device.clone(), render_pass, opts) {
+                Ok(renderer) => renderer,
+                Err(e) => {
+                    for fb in framebuffers {
+                        // SAFETY: created by this `device` just above, never
+                        // recorded into a command buffer.
+                        unsafe { device.destroy_framebuffer(fb, None) };
+                    }
+                    destroy_render_pass();
+                    return Err(anyhow!("egui-ash-renderer init failed: {e:?}"));
+                }
+            };
 
         Ok(Self {
             renderer,
@@ -418,12 +448,23 @@ fn create_framebuffers(
         // SAFETY: `device` is live; `info` references `render_pass` (caller-
         // supplied, live) and `attachments` (this loop iteration's `view`,
         // live for the call's duration).
-        let fb = unsafe {
-            device
-                .create_framebuffer(&info, None)
-                .map_err(|e| anyhow!("egui framebuffer: {e}"))?
-        };
-        out.push(fb);
+        let created = unsafe { device.create_framebuffer(&info, None) };
+        match created {
+            Ok(fb) => out.push(fb),
+            Err(e) => {
+                // #2685 / SAFE-D10-01 (sibling) — `out` is a bare `Vec` of
+                // raw handles, so returning `Err` mid-loop used to strand
+                // every framebuffer created before the failure. No caller
+                // can free them: they never reach an owner.
+                for fb in out {
+                    // SAFETY: each `fb` was created by this `device` moments
+                    // ago and was never recorded into a command buffer, so
+                    // nothing references it.
+                    unsafe { device.destroy_framebuffer(fb, None) };
+                }
+                return Err(anyhow!("egui framebuffer: {e}"));
+            }
+        }
     }
     Ok(out)
 }

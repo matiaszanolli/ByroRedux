@@ -904,12 +904,33 @@ impl VulkanContext {
         // teardown/rebuild cost there was never worth guarding.
         if let Some(mut pass) = self.egui_pass.take() {
             if pass.format() == self.swapchain_state.format.format {
-                pass.recreate_framebuffers(
+                // #2685 / SAFE-D10-01 — `EguiPass` has no `Drop`; its render
+                // pass and framebuffers are freed only by the explicit
+                // `destroy`. `?`-ing straight through here dropped the *taken*
+                // pass on a framebuffer-creation failure, leaking one
+                // `VkRenderPass` per failed resize until process exit (live
+                // objects at `vkDestroyDevice`). Every sibling `take()` in this
+                // function destroys immediately with no fallible call in
+                // between; egui was the only asymmetric site, and the
+                // format-CHANGE arm below was already correct, which is why
+                // #2475 did not cover this.
+                match pass.recreate_framebuffers(
                     &self.device,
                     &self.swapchain_state.image_views,
                     self.swapchain_state.extent,
-                )?;
-                self.egui_pass = Some(pass);
+                ) {
+                    Ok(()) => self.egui_pass = Some(pass),
+                    Err(e) => {
+                        // SAFETY: `device_wait_idle` at the top of
+                        // `recreate_swapchain_core` guarantees no in-flight
+                        // command buffer references the render pass, and
+                        // `recreate_framebuffers` drained + destroyed the old
+                        // framebuffers before failing, so `destroy` frees the
+                        // render pass exactly once.
+                        pass.destroy(&self.device);
+                        return Err(e).context("recreate egui overlay framebuffers");
+                    }
+                }
             } else {
                 // SAFETY: `device_wait_idle` at the top of
                 // `recreate_swapchain_core` guarantees no in-flight command
@@ -1610,7 +1631,10 @@ mod tests {
         let cheap_path_pos = src
             .find("pass.recreate_framebuffers(")
             .expect("the format-stable path must still exist");
-        let destroy_pos = src.find("pass.destroy(&self.device);").expect(
+        // `rfind`: #2685 added a second `pass.destroy` on the format-STABLE
+        // arm's error path, which sits earlier in the source. The one this
+        // test is about is the last, in the format-changed arm.
+        let destroy_pos = src.rfind("pass.destroy(&self.device);").expect(
             "the format-changed arm must destroy the old render pass / \
                  framebuffers before reconstructing — a bare reassignment would \
                  leak the raw vk::RenderPass / vk::Framebuffer handles, which \
@@ -1628,6 +1652,47 @@ mod tests {
             format_check_pos < destroy_pos && destroy_pos < rebuild_pos,
             "the format-changed arm must destroy the old pass BEFORE \
              reconstructing a new one (#2475)"
+        );
+    }
+
+    /// #2685 / SAFE-D10-01 — the format-STABLE arm `take()`s the pass out of
+    /// `self.egui_pass` and then makes a fallible call. `EguiPass` has no
+    /// `Drop` impl, so a bare `?` there drops the taken pass without
+    /// `destroy()` and strands its `vk::RenderPass` (plus any framebuffers
+    /// already created) until process exit. Static source check — provoking a
+    /// framebuffer-creation failure needs a real device under memory
+    /// pressure, unavailable to `cargo test`.
+    #[test]
+    fn egui_framebuffer_recreate_failure_destroys_the_taken_pass() {
+        let src = production_src();
+
+        let take_pos = src
+            .find("if let Some(mut pass) = self.egui_pass.take() {")
+            .expect("the egui resize block must still take the pass out of self");
+        let recreate_pos = src[take_pos..]
+            .find("pass.recreate_framebuffers(")
+            .map(|off| take_pos + off)
+            .expect("the format-stable path must still exist");
+        let rebuild_pos = src
+            .find("super::super::egui_pass::EguiPass::new(")
+            .expect("the format-changed arm must reconstruct via EguiPass::new");
+
+        assert!(
+            !src[recreate_pos..rebuild_pos].contains(")?;"),
+            "the format-stable arm must not `?` through `recreate_framebuffers` — \
+             the taken EguiPass has no Drop impl, so the error path has to call \
+             destroy() itself (#2685)"
+        );
+        let destroy_pos = src[recreate_pos..rebuild_pos]
+            .find("pass.destroy(&self.device);")
+            .map(|off| recreate_pos + off)
+            .expect(
+                "the format-stable arm's Err path must destroy the taken pass \
+                 before propagating (#2685)",
+            );
+        assert!(
+            src[recreate_pos..destroy_pos].contains("Err(e) =>"),
+            "the destroy must live on the recreate_framebuffers Err arm (#2685)"
         );
     }
 }

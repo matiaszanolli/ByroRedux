@@ -70,6 +70,24 @@ const CAUSTIC_SPLAT_COMP_SPV: &[u8] = include_bytes!("../../shaders/caustic_spla
 pub const CAUSTIC_FORMAT: vk::Format = vk::Format::R32_UINT;
 const CAUSTIC_COLOR_LAYERS: u32 = 3;
 
+/// Screen-sized bytes per pixel this pipeline allocates across every
+/// frame-in-flight — the figure `docs/engine/memory-budget.md` publishes in
+/// its "Glass + Water Caustics" table.
+///
+/// #2679 / PERF-D3-03 — the RGB conversion (`610cb170`) tripled the glass
+/// accumulator's layer count and the ledger did not follow, understating it
+/// by 16 B/px. Deriving the number from the live constants and pinning it in
+/// a test makes the next layer-count change fail here instead of drifting
+/// silently.
+pub(crate) const CAUSTIC_BYTES_PER_PIXEL: u32 =
+    4 * CAUSTIC_COLOR_LAYERS * MAX_FRAMES_IN_FLIGHT as u32;
+
+/// Decimal MB (matching `memory-budget.md`) this pipeline's accumulators
+/// occupy at `width × height`.
+fn caustic_megabytes(width: u32, height: u32) -> f64 {
+    (width as f64) * (height as f64) * (CAUSTIC_BYTES_PER_PIXEL as f64) / 1_000_000.0
+}
+
 /// Ceiling on the parked-camera EMA decay factor. `N/(N+1)` would reach
 /// 1.0 only in the limit, but the cap keeps it strictly below so the
 /// accumulator never stops admitting new energy (a true 1.0 freezes the
@@ -462,7 +480,20 @@ impl CausticPipeline {
             instance_buffer_size,
         );
 
-        log::info!("Caustic pipeline created: {}x{}", width, height);
+        // #2679 / PERF-D3-03 — attributing telemetry, same mechanism #1814
+        // established for the ReSTIR reservoirs: the accumulator is
+        // screen-sized AND layer-count-sized, so the two ways it can grow
+        // (resolution, RGB layers) both report themselves here rather than
+        // being rediscovered by the next memory audit.
+        log::info!(
+            "Caustic pipeline created: {}x{}, {} layers × {} FIF = {} B/px, {:.1} MB",
+            width,
+            height,
+            CAUSTIC_COLOR_LAYERS,
+            MAX_FRAMES_IN_FLIGHT,
+            CAUSTIC_BYTES_PER_PIXEL,
+            caustic_megabytes(width, height),
+        );
         Ok(partial)
     }
 
@@ -1120,6 +1151,15 @@ impl CausticPipeline {
         if let Err(e) = unsafe { self.initialize_layouts(device, queue, command_pool) } {
             log::warn!("Caustic layout re-init after resize failed: {e}");
         }
+        // #2679 / PERF-D3-03 — a resize is the other point where this
+        // footprint changes; see the sibling log in `new_inner`.
+        log::info!(
+            "Caustic pipeline recreated: {}x{}, {} B/px, {:.1} MB",
+            width,
+            height,
+            CAUSTIC_BYTES_PER_PIXEL,
+            caustic_megabytes(width, height),
+        );
         Ok(())
     }
 
@@ -1182,7 +1222,44 @@ impl CausticPipeline {
 
 #[cfg(test)]
 mod tests {
-    use super::{caustic_subresource_range, CAUSTIC_COLOR_LAYERS};
+    use super::{
+        caustic_megabytes, caustic_subresource_range, CAUSTIC_BYTES_PER_PIXEL, CAUSTIC_COLOR_LAYERS,
+    };
+
+    /// #2679 / PERF-D3-03 — pins the "Glass + Water Caustics" table in
+    /// `docs/engine/memory-budget.md` against the live layer count. The doc
+    /// still said 16 B/px combined after the RGB conversion tripled the glass
+    /// side to 24 B/px (water contributes the remaining 8: one R32_UINT layer
+    /// × 2 FIF, `water_caustic.rs`'s `.array_layers(1)`). If the layers or
+    /// frames-in-flight change, this fails as the nudge to update the doc —
+    /// same guard #1814 put on the ReSTIR reservoirs.
+    #[test]
+    fn caustic_bytes_per_pixel_matches_documented_memory_budget() {
+        const WATER_BYTES_PER_PIXEL: u32 = 4 * super::MAX_FRAMES_IN_FLIGHT as u32;
+        assert_eq!(CAUSTIC_BYTES_PER_PIXEL, 24);
+        assert_eq!(CAUSTIC_BYTES_PER_PIXEL + WATER_BYTES_PER_PIXEL, 32);
+
+        // (width, height, glass-side MB, glass+water MB as documented)
+        for (w, h, glass_mb, combined_mb) in [
+            (1920u32, 1080u32, 49.8, 66.4),
+            (2560, 1440, 88.5, 118.0),
+            (3840, 2160, 199.1, 265.4),
+        ] {
+            let glass = caustic_megabytes(w, h);
+            let combined = (w as f64)
+                * (h as f64)
+                * ((CAUSTIC_BYTES_PER_PIXEL + WATER_BYTES_PER_PIXEL) as f64)
+                / 1_000_000.0;
+            assert!(
+                (glass - glass_mb).abs() < 0.1,
+                "{w}x{h}: glass {glass:.1} MB != documented {glass_mb} MB"
+            );
+            assert!(
+                (combined - combined_mb).abs() < 0.1,
+                "{w}x{h}: combined {combined:.1} MB != documented {combined_mb} MB"
+            );
+        }
+    }
 
     #[test]
     fn caustic_accumulator_spans_rgb_array_layers() {

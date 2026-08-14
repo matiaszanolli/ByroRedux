@@ -290,7 +290,13 @@ pub(super) fn collect_lights(
     let suffix = &mut gpu_lights[directional_count..];
     sort_scratch.clear();
     sort_scratch.extend(suffix.iter().map(|l| (gi_priority_score(l), *l)));
-    sort_scratch.sort_by(|a, b| b.0.total_cmp(&a.0));
+    // #2680 / PERF-D1-02 — `sort_unstable_by`, not `sort_by`: the stable sort
+    // heap-allocates a light-count-sized temporary above its insertion-sort
+    // cutoff, which would undo the caller-owned scratch #2172 just introduced.
+    // Stability buys nothing on a freshly decorated buffer, and pattern-defeating
+    // quicksort is still deterministic for a given input, so the GI prefix does
+    // not flicker frame to frame.
+    sort_scratch.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
     for (slot, (_, light)) in suffix.iter_mut().zip(sort_scratch.iter()) {
         *slot = *light;
     }

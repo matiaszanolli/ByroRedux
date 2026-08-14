@@ -47,6 +47,22 @@ fn skinned_world_bound(
     merged
 }
 
+/// Did anything this skin's world bound depends on move this frame?
+///
+/// `g_dirty` is the sorted + deduped `GlobalTransform` dirty set, so each
+/// probe is a `binary_search`. A skinned bound is a function of the bone
+/// palettes alone (see [`skinned_world_bound`]) — the mesh entity's own
+/// `GlobalTransform` never enters it — but the mesh is probed too so a
+/// re-placed actor whose bones happen to be identity still refolds.
+fn skin_pose_dirty(entity: EntityId, skin: &SkinnedMesh, g_dirty: &[EntityId]) -> bool {
+    g_dirty.binary_search(&entity).is_ok()
+        || skin
+            .bones
+            .iter()
+            .flatten()
+            .any(|bone| g_dirty.binary_search(bone).is_ok())
+}
+
 /// Compute each entity's world-space `WorldBound`.
 ///
 /// Two passes:
@@ -182,12 +198,27 @@ pub(crate) fn make_world_bound_propagation_system() -> impl FnMut(&World, f32) +
         }
 
         // A mesh's own GlobalTransform does not describe its final skinned
-        // position. Recompute every skinned leaf whenever any world transform
-        // changed: the dirty entity may be one of its bones rather than the
-        // mesh entity itself. Actor counts are small, and this keeps the static
-        // world's incremental fast path intact.
+        // position, so this leaf pass is keyed on the skin's *bones* rather
+        // than on the mesh entity.
+        //
+        // #2677 / PERF-D1-01 — pre-fix this block was the one ungated pass in
+        // an otherwise fully dirty-gated system: it refolded every
+        // `SkinnedMesh` whenever *anything* in the world moved, and camera
+        // motion alone writes `GlobalTransform` (fly camera → billboards), so
+        // "anything moved" is every frame the player moves. On the repo's own
+        // `fnv-FreesideAtomicWrangler` baseline that is 677 live skins ×
+        // bones-per-skin `Mat4 × Mat4` + three `Vec3::length()` per bone, paid
+        // for actors that are asleep. `g_dirty` is already sorted + deduped by
+        // pass 1's incremental branch, so the gate is a `binary_search` per
+        // bone — cheaper than one palette multiply. The structural branch stays
+        // ungated: a skin can gain bones (or a `LocalBound`) without any of
+        // them being written this frame, and that branch is the correctness
+        // floor for exactly those cases.
         if let Some(ref sq) = skin_q {
             for (entity, skin) in sq.iter() {
+                if !structural_changed && !skin_pose_dirty(entity, skin, &g_dirty) {
+                    continue;
+                }
                 let Some(local) = lb_q.get(entity) else {
                     continue;
                 };
@@ -449,6 +480,52 @@ mod tests {
 
         assert!((bound.center - Vec3::ZERO).length() < 1e-5);
         assert!((bound.radius - 11.0).abs() < 1e-5);
+    }
+
+    /// #2677 / PERF-D1-01 — a skin whose bones did not move must not be
+    /// refolded just because some unrelated entity did (camera motion alone
+    /// dirties `GlobalTransform` every frame the player moves). Observed by
+    /// poking a sentinel into the mesh's `WorldBound`: if the skinned block
+    /// runs it overwrites the sentinel with the real palette bound.
+    #[test]
+    fn clean_skin_is_not_refolded_when_an_unrelated_entity_moves() {
+        let mut world = World::new();
+        let bone = world.spawn();
+        world.insert(bone, GlobalTransform::IDENTITY);
+        let mesh = spawn_leaf(&mut world, Vec3::ZERO, 1.0, Vec3::ZERO, 1.0);
+        world.insert(
+            mesh,
+            SkinnedMesh::new_with_global(
+                None,
+                vec![Some(bone)],
+                vec![Mat4::IDENTITY],
+                Mat4::IDENTITY,
+            ),
+        );
+        let other = spawn_leaf(&mut world, Vec3::new(50.0, 0.0, 0.0), 1.0, Vec3::ZERO, 1.0);
+
+        let mut sys = make_world_bound_propagation_system();
+        sys(&world, 0.016); // structural rebuild seeds every bound
+
+        const SENTINEL: f32 = 77.0;
+        {
+            let mut wb = world.query_mut::<WorldBound>().unwrap();
+            *wb.get_mut(mesh).unwrap() = WorldBound::new(Vec3::ZERO, SENTINEL);
+            let mut gq = world.query_mut::<GlobalTransform>().unwrap();
+            gq.get_mut(other).unwrap().translation = Vec3::new(60.0, 0.0, 0.0);
+        }
+        sys(&world, 0.016);
+
+        let wb_q = world.query::<WorldBound>().unwrap();
+        assert_eq!(
+            wb_q.get(mesh).unwrap().radius,
+            SENTINEL,
+            "a clean skin must be skipped when only an unrelated entity moved",
+        );
+        assert!(
+            (wb_q.get(other).unwrap().center - Vec3::new(60.0, 0.0, 0.0)).length() < 1e-5,
+            "the moved entity itself must still refold",
+        );
     }
 
     #[test]

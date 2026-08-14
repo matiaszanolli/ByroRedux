@@ -77,23 +77,43 @@ final visibility ray re-validates every shaded sample.
 ## RT-Denoiser & Post-Process Screen-Sized Resources
 
 Like the ReSTIR reservoirs above, every one of these scales with
-**swapchain resolution**, not a fixed constant, and every one of them
+resolution, not a fixed constant, and every one of them
 had **no ledger entry here** until this sweep (#1872 — sibling finding
 from #1814's ReSTIR audit: grep confirmed zero mentions of SVGF, Bloom,
 SSAO, TAA, Volumetrics, Water, or Caustic anywhere on this page).
 
+The resolution that matters is `frame_extents.render`, **not** the output /
+swapchain extent: `context/mod.rs` and the resize path both pass
+`render_extent.width/height` to every constructor on this page. Under the
+shipped FSR 3.1 Quality default that is 1/1.5 of output per axis, so the
+per-resolution rows below are upper bounds labelled by render resolution —
+a 4K *output* frame allocates the 2560×1440 row, not the 3840×2160 one.
+`presentation` and the upscaler's own output images are the exception; they
+are output-sized.
+
 ### SVGF (indirect-lighting denoiser)
 
-[`svgf.rs`](../../crates/renderer/src/vulkan/svgf.rs) — two double-buffered
-(`MAX_FRAMES_IN_FLIGHT` = 2) history images per slot: `indirect_history`
-(B10G11R11_UFLOAT_PACK32, 4 B/px) and `moments_history` (RGBA16F, 8 B/px).
-12 B/px/slot × 2 FIF = 24 B/px total.
+[`svgf.rs`](../../crates/renderer/src/vulkan/svgf.rs) — **four** screen-sized
+images per frame-in-flight (`MAX_FRAMES_IN_FLIGHT` = 2), all allocated in the
+same per-FIF loop in `SvgfPipeline::new_inner`:
 
-| Resolution | Total (both histories, 2 FIF) |
+| Image | Format | B/px |
+|---|---|---|
+| `indirect_history` | B10G11R11_UFLOAT_PACK32 | 4 |
+| `moments_history` | RGBA16F | 8 |
+| `atrous_color` ×2 (à-trous ping-pong, consumed by the `ATROUS_ITERATIONS` = 3 spatial pass) | B10G11R11_UFLOAT_PACK32 | 4 each |
+
+20 B/px/slot × 2 FIF = **40 B/px** total. The à-trous pair was missing from
+this ledger until #2679 (PERF-D3-03), which published 24 B/px. `svgf.rs`'s
+`SVGF_BYTES_PER_PIXEL` derives the number from the live formats and
+`bytes_per_pixel_matches_documented_memory_budget` pins the table below
+against it; `SvgfPipeline::new_inner` / `recreate_on_resize` log it.
+
+| Resolution | Total (4 images, 2 FIF) |
 |---|---|
-| 1920×1080 | ~49.8 MB |
-| 2560×1440 | ~88.5 MB |
-| 3840×2160 | ~199.1 MB |
+| 1920×1080 | ~82.9 MB |
+| 2560×1440 | ~147.5 MB |
+| 3840×2160 | ~331.8 MB |
 
 ### TAA
 
@@ -111,15 +131,28 @@ as SVGF (current frame writes one slot, reads the other as history).
 
 [`caustic.rs`](../../crates/renderer/src/vulkan/caustic.rs) (glass-side)
 and [`water_caustic.rs`](../../crates/renderer/src/vulkan/water_caustic.rs)
-(water-side) each own a full-resolution R32_UINT (4 B/px) atomic
-accumulator image, double-buffered per FIF — two independent
-accumulators, 16 B/px combined.
+(water-side) each own a full-resolution R32_UINT atomic accumulator image,
+double-buffered per FIF. They are **not** the same size: the glass side is a
+three-layer array (`CAUSTIC_COLOR_LAYERS` = 3) so RGB radiance survives the
+scalar image atomics, while the water side stays at `.array_layers(1)`.
 
-| Resolution | Total (both accumulators, 2 FIF) |
-|---|---|
-| 1920×1080 | ~33.2 MB |
-| 2560×1440 | ~59.0 MB |
-| 3840×2160 | ~132.7 MB |
+| Accumulator | Layers | B/px (2 FIF) |
+|---|---|---|
+| Glass (`caustic.rs`) | 3 | 24 |
+| Water (`water_caustic.rs`) | 1 | 8 |
+
+**32 B/px** combined. This ledger said 16 B/px until #2679 (PERF-D3-03) —
+the RGB conversion (`610cb170`, 2026-08-11) tripled the glass side and the
+doc did not follow. `caustic.rs`'s `CAUSTIC_BYTES_PER_PIXEL` derives the
+glass half from `CAUSTIC_COLOR_LAYERS` and
+`caustic_bytes_per_pixel_matches_documented_memory_budget` pins both halves
+against the table below; `CausticPipeline::new` / `recreate_on_resize` log it.
+
+| Resolution | Glass | Total (both accumulators, 2 FIF) |
+|---|---|---|
+| 1920×1080 | ~49.8 MB | ~66.4 MB |
+| 2560×1440 | ~88.5 MB | ~118.0 MB |
+| 3840×2160 | ~199.1 MB | ~265.4 MB |
 
 ### SSAO
 
@@ -406,9 +439,9 @@ the fence slot is complete before the tick runs (#418).
 | G-buffer (8 attachments × 2 FIF, incl. FSR reactive/transparency masks) | ~23 MB | ~47 MB (4K) |
 | Scene SSBOs | ~223 MB | ~223 MB |
 | ReSTIR reservoirs (2 FIF) | ~133 MB (1080p) | ~531 MB (4K) |
-| SVGF history (2 FIF) | ~50 MB (1080p) | ~199 MB (4K) |
+| SVGF history + à-trous pair (2 FIF) | ~83 MB (1080p) | ~332 MB (4K) |
 | TAA history (2 FIF) | ~33 MB (1080p) | ~133 MB (4K) |
-| Glass + water caustics (2 FIF) | ~33 MB (1080p) | ~133 MB (4K) |
+| Glass + water caustics (2 FIF) | ~66 MB (1080p) | ~265 MB (4K) |
 | SSAO (2 FIF) | ~4 MB (1080p) | ~17 MB (4K) |
 | Bloom pyramid (2 FIF) | ~11 MB (1080p) | ~44 MB (4K) |
 | Volumetrics froxel grid (2 volumes, 2 FIF) | ~29.5 MB (1080p) | ~118 MB (4K) |
@@ -418,7 +451,7 @@ the fence slot is complete before the tick runs (#418).
 | BLAS structures | ~300 MB | ~1 GB (heavy scene) |
 | TLAS + scratch | ~50 MB | ~256 MB |
 | Pipeline cache blob | < 10 MB | — |
-| **Estimated total** | **~1.52 GB** | **< 4 GB target** |
+| **Estimated total** | **~1.59 GB** | **< 4 GB target** |
 
 The 6 GB RT-minimum and 4 GB budget ceiling are not enforced by code;
 they are design targets. The RTX 4070 Ti (12 GB) has headroom for all

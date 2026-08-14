@@ -177,6 +177,21 @@ impl InteractionKind {
             Self::Door => "Open",
         }
     }
+
+    /// The composed HUD prompt for this kind.
+    ///
+    /// #2680 / PERF-D1-02 — a const table rather than `format!("[E] {verb}")`:
+    /// the prompt is rebuilt on **every** frame (it is the one snapshot field
+    /// #1376 deliberately keeps populated while the operator overlay is
+    /// hidden), so composing it allocated a `String` per frame for as long as
+    /// the player looked at anything activatable. Both halves are compile-time
+    /// constants, so there is nothing to compose at runtime.
+    const fn prompt(self) -> &'static str {
+        match self {
+            Self::Activate => "[E] Activate",
+            Self::Door => "[E] Open",
+        }
+    }
 }
 
 /// The single reference selected by the camera-forward interaction query.
@@ -196,9 +211,8 @@ pub(crate) struct InteractionState {
 impl Resource for InteractionState {}
 
 impl InteractionState {
-    pub(crate) fn prompt(&self) -> Option<String> {
-        self.target
-            .map(|target| format!("[E] {}", target.kind.verb()))
+    pub(crate) fn prompt(&self) -> Option<&'static str> {
+        self.target.map(|target| target.kind.prompt())
     }
 }
 

@@ -46,7 +46,9 @@ pub(super) fn collect_fog_volumes(
 
     // Cluster overflow retains earlier entries. Near-to-far ordering therefore
     // makes the bounded list prefer media most likely to affect the camera.
-    out.sort_by(|a, b| {
+    // #2680 / PERF-D1-02 — unstable sort: the stable one allocates a
+    // volume-count-sized temporary on every frame that collects any media.
+    out.sort_unstable_by(|a, b| {
         let distance_squared = |volume: &GpuFogVolume| {
             Vec3::new(
                 volume.center_shape[0],

@@ -120,6 +120,30 @@ const INDIRECT_HIST_FORMAT: vk::Format = vk::Format::B10G11R11_UFLOAT_PACK32;
 /// precision — luminance² values up to 100+ need 10+ bit mantissa.
 const MOMENTS_HIST_FORMAT: vk::Format = vk::Format::R16G16B16A16_SFLOAT;
 
+/// À-trous ping-pong colour images allocated per frame-in-flight. Two, not
+/// `ATROUS_ITERATIONS`: the spatial pass ping-pongs between the same pair
+/// regardless of how many iterations run (`atrous_dst_pp` is `k % 2`).
+const ATROUS_PING_PONG_IMAGES: u32 = 2;
+
+/// Screen-sized bytes per pixel this pipeline allocates across every
+/// frame-in-flight — the figure `docs/engine/memory-budget.md` publishes in
+/// its "SVGF" table.
+///
+/// #2679 / PERF-D3-03 — the doc counted the two history images and missed
+/// the à-trous pair entirely, understating SVGF by 16 B/px since the pass
+/// landed. Derived here and pinned in a test so a new screen-sized image
+/// cannot be added without the ledger moving with it.
+pub(crate) const SVGF_BYTES_PER_PIXEL: u32 = (4 /* indirect_history, R11G11B10F */
+    + 8 /* moments_history, RGBA16F */
+    + ATROUS_PING_PONG_IMAGES * 4)
+    * MAX_FRAMES_IN_FLIGHT as u32;
+
+/// Decimal MB (matching `memory-budget.md`) this pipeline's screen-sized
+/// images occupy at `width × height`.
+fn svgf_megabytes(width: u32, height: u32) -> f64 {
+    (width as f64) * (height as f64) * (SVGF_BYTES_PER_PIXEL as f64) / 1_000_000.0
+}
+
 /// Destination ping-pong slot for à-trous iteration `k`: `k % 2`.
 const fn atrous_dst_pp(k: usize) -> usize {
     k % 2
@@ -457,7 +481,7 @@ impl SvgfPipeline {
             partial.moments_history.push(mom);
             // À-trous ping-pong colour buffers (2 per frame-in-flight),
             // same packed format as the indirect history.
-            for pp in 0..2 {
+            for pp in 0..ATROUS_PING_PONG_IMAGES as usize {
                 let at = try_or_cleanup!(Self::create_history_image(
                     device,
                     allocator,
@@ -666,11 +690,18 @@ impl SvgfPipeline {
             depth_view,
         ));
 
+        // #2679 / PERF-D3-03 — attributing telemetry, same mechanism #1814
+        // established for the ReSTIR reservoirs. Reports the whole
+        // screen-sized footprint (histories AND the à-trous pair, whose
+        // 16 B/px the ledger had never counted), so the next added image
+        // announces itself instead of waiting for an audit to find it.
         log::info!(
-            "SVGF pipeline created: {}x{} (temporal + {}-iter à-trous)",
+            "SVGF pipeline created: {}x{} (temporal + {}-iter à-trous), {} B/px, {:.1} MB",
             width,
             height,
             ATROUS_ITERATIONS,
+            SVGF_BYTES_PER_PIXEL,
+            svgf_megabytes(width, height),
         );
         Ok(partial)
     }
@@ -1518,6 +1549,15 @@ impl SvgfPipeline {
         if let Err(e) = unsafe { self.initialize_layouts(device, queue, command_pool) } {
             log::warn!("SVGF layout re-init after resize failed: {e}");
         }
+        // #2679 / PERF-D3-03 — a resize is the other point where this
+        // footprint changes; see the sibling log in `new_inner`.
+        log::info!(
+            "SVGF pipeline recreated: {}x{}, {} B/px, {:.1} MB",
+            width,
+            height,
+            SVGF_BYTES_PER_PIXEL,
+            svgf_megabytes(width, height),
+        );
         Ok(())
     }
 
@@ -1660,6 +1700,29 @@ impl SvgfPipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #2679 / PERF-D3-03 — pins the "SVGF (indirect-lighting denoiser)"
+    /// table in `docs/engine/memory-budget.md`. The doc counted
+    /// `indirect_history` + `moments_history` and stopped there, so the
+    /// à-trous ping-pong pair `new_inner` allocates in the same per-FIF loop
+    /// (2 × R11G11B10F) went unledgered — 24 B/px published against 40 B/px
+    /// actual. Fails if an image is added or a format changes, which is the
+    /// point: the doc is the authoritative input to every VRAM decision.
+    #[test]
+    fn bytes_per_pixel_matches_documented_memory_budget() {
+        assert_eq!(SVGF_BYTES_PER_PIXEL, 40);
+        for (w, h, expected_mb) in [
+            (1920u32, 1080u32, 82.9),
+            (2560, 1440, 147.5),
+            (3840, 2160, 331.8),
+        ] {
+            let mb = svgf_megabytes(w, h);
+            assert!(
+                (mb - expected_mb).abs() < 0.1,
+                "{w}x{h}: {mb:.1} MB != documented {expected_mb} MB"
+            );
+        }
+    }
 
     /// #674 — at the steady state (no recent discontinuity), the
     /// temporal-α floor is 0.2 for both color and moments. Counter

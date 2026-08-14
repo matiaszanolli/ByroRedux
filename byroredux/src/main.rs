@@ -595,7 +595,7 @@ fn build_debug_ui_snapshot(
     }
 }
 
-fn build_interaction_prompt(world: &World) -> Option<String> {
+fn build_interaction_prompt(world: &World) -> Option<&'static str> {
     world
         .try_resource::<crate::interaction::InteractionState>()
         .and_then(|state| state.prompt())
