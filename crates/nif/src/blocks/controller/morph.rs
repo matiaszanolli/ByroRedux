@@ -94,13 +94,20 @@ impl NiGeomMorpherController {
         // (NiMorphData) started 24 B late and read garbage num_morphs,
         // truncating the file (15 blocks dropped). Oblivion's bsver-11
         // morph rigs (e.g. `meshes\oblivion\gate\obgatemini01.nif`,
-        // v20.0.0.4) still read the field — `bsver > 9` keeps them, and
-        // the #687 fix that added this read, working. The upper version
-        // bound is `until=20.0.0.5` (was 20.1.0.3); FNV/FO3 (20.2.0.7)
-        // and Skyrim+ skip it on the version gate as before.
+        // v20.0.0.4) still read the field — `bsver >= MORPH_LEGACY_CUTOFF`
+        // keeps them, and the #687 fix that added this read, working. The
+        // upper version bound is `until=20.0.0.5` (was 20.1.0.3); FNV/FO3
+        // (20.2.0.7) and Skyrim+ skip it on the version gate as before.
+        //
+        // #2423 / TD7-001 — `#GT# 9` is spelled `>= MORPH_LEGACY_CUTOFF`
+        // (10) rather than `> 9` so this gate and `NiMorphData`'s
+        // complementary `< MORPH_LEGACY_CUTOFF` half key on one value.
         let version = stream.version();
         let bsver = stream.bsver();
-        if version >= NifVersion::V10_2_0_0 && version <= NifVersion::V20_0_0_5 && bsver > 9 {
+        if version >= NifVersion::V10_2_0_0
+            && version <= NifVersion::V20_0_0_5
+            && bsver >= crate::version::bsver::MORPH_LEGACY_CUTOFF
+        {
             let num_unknown_ints = stream.read_u32_le()?;
             // Sanity bound: `num_unknown_ints` is a count that has
             // never been observed > a handful in practice. A drifted
@@ -195,16 +202,21 @@ impl NiMorphData {
         // morph and allocated a ~118 GB vector when a garbage num_keys
         // happened to be a huge number.
         //
-        // Oblivion (v20.0.0.5, BSVER < 10 — vanilla bsver=11 is
-        // correctly excluded here) hits the legacy_weight window;
-        // FNV / FO3 (BSVER 34) and everything later do not. Gate
-        // matches nif.xml `vercond="#BSVER# #LT# 10"`. See
+        // Only pre-collision-v2 dev content (bsver < 10) hits the
+        // legacy_weight window: vanilla Oblivion ships bsver=11 and is
+        // correctly excluded, as are FNV / FO3 (BSVER 34) and everything
+        // later. Gate matches nif.xml `vercond="#BSVER# #LT# 10"`. See
         // NIF-D1-NEW-02 (audit 2026-05-12).
+        //
+        // #2423 / TD7-001 — the complementary half of
+        // `NiGeomMorpherController`'s `>= MORPH_LEGACY_CUTOFF` gate above;
+        // both key on the one constant so the cut can't drift apart.
         let version = stream.version();
         let bsver = stream.bsver();
         let has_keys = version <= NifVersion::V10_1_0_0;
-        let has_legacy_weight =
-            version >= NifVersion::V10_1_0_104 && version <= NifVersion::V20_1_0_2 && bsver < 10;
+        let has_legacy_weight = version >= NifVersion::V10_1_0_104
+            && version <= NifVersion::V20_1_0_2
+            && bsver < crate::version::bsver::MORPH_LEGACY_CUTOFF;
 
         // Already bounded by the 65_536 sanity check above; route
         // through allocate_vec for consistency with #408 sweep.

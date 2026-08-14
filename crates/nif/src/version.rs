@@ -325,6 +325,26 @@ pub mod bsver {
     /// (e.g. boxtest skeleton.nif, bsver=6) hit this; standard Oblivion
     /// (bsver=11) does not. See #549.
     pub const RIGID_BODY_EXTRA_FLOATS: u32 = 9;
+    /// The single BSVER cut that splits the morph family's legacy layout
+    /// from its modern one (#2423 / TD7-001).
+    ///
+    /// nif.xml expresses it from both sides, and these are the *only*
+    /// three fields in the whole spec that key on the 9/10 boundary:
+    ///   * `NiGeomMorpherController.Num Unknown Ints` / `Unknown Ints`
+    ///     — `vercond="#BSVER# #GT# 9"`, i.e. present at `bsver >= 10`.
+    ///   * `Morph.Legacy Weight` — `vercond="#BSVER# #LT# 10"`, i.e.
+    ///     present at `bsver <= 9`.
+    ///
+    /// Because the two halves are exact complements over integers, one
+    /// constant is the honest encoding: two separately-named constants
+    /// at 9 and 10 would let the halves of a single cut drift apart.
+    /// Read the call-site comments in
+    /// `blocks/controller/morph.rs` for which field each side gates.
+    ///
+    /// **Not** [`RIGID_BODY_EXTRA_FLOATS`] despite the adjacent value —
+    /// that constant gates `bhkBlendCollisionObject`'s trailing floats
+    /// and is semantically unrelated; see its own warning.
+    pub const MORPH_LEGACY_CUTOFF: u32 = 10;
     /// Oblivion BSVER (v20.0.0.4 / v20.0.0.5 or v20.2.0.7 with uv=11).
     /// Pre-collision v2 content ships `bsver < RIGID_BODY_EXTRA_FLOATS`;
     /// standard Oblivion content ships at exactly 11.
