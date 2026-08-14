@@ -31,6 +31,51 @@ impl VulkanContext {
         let width = extent.width;
         let height = extent.height;
 
+        // #2752 sibling — this staging buffer has ALWAYS been `GpuToCpu`
+        // (unlike the image-health buffers, which #2752 moved there), so it
+        // has always been the site most exposed to the missing-invalidate gap
+        // #2740 / REN-D4-04 describes: `GpuToCpu` prefers `HOST_CACHED`, and
+        // the fence wait that precedes this read makes the copy *complete*
+        // without making it *visible to the host* — a fence's memory
+        // dependency has device-only access scope. A stale read here hands a
+        // torn or previous-frame image to the golden-frame comparison, which
+        // is the one consumer that cannot tell the difference.
+        //
+        // Not routed through `GpuBuffer::invalidate_if_needed` because the
+        // screenshot staging is a raw `vk_alloc::Allocation`, not a
+        // `GpuBuffer`; the range arithmetic is the shared helper, so the two
+        // paths cannot drift on alignment. No-op on coherent memory.
+        if !allocation
+            .memory_properties()
+            .contains(vk::MemoryPropertyFlags::HOST_COHERENT)
+        {
+            let (aligned_offset, aligned_size) =
+                super::super::buffer::aligned_flush_range(allocation.offset(), allocation.size());
+            // SAFETY: `allocation` is live and mapped (checked below), and
+            // `aligned_flush_range` widens outward to `NON_COHERENT_ATOM_SIZE`,
+            // producing a superset of this suballocation that stays inside the
+            // parent `GpuAllocatorManaged` block. Invalidating a superset only
+            // discards possibly-stale host cache lines, forcing a re-read from
+            // memory — it publishes nothing, so widening is safe here in a way
+            // it is not for a flush.
+            // SAFETY (`Allocation::memory`): returns the underlying
+            // `VkDeviceMemory` this suballocation lives in. Sound here
+            // because the handle is only used to name the memory object in a
+            // `VkMappedMemoryRange` — it is neither freed, mapped, nor bound
+            // through this call, and `allocation` is owned by
+            // `self.screenshot_staging` for the duration.
+            let result = unsafe {
+                let range = vk::MappedMemoryRange::default()
+                    .memory(allocation.memory())
+                    .offset(aligned_offset)
+                    .size(aligned_size);
+                self.device.invalidate_mapped_memory_ranges(&[range])
+            };
+            if let Err(e) = result {
+                log::warn!("Screenshot readback invalidate failed: {e} — image may be stale");
+            }
+        }
+
         // Read the staging buffer.
         let data = match allocation.mapped_slice() {
             Some(slice) => &slice[..size as usize],

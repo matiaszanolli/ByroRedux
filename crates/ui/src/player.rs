@@ -6,7 +6,6 @@
 
 use anyhow::{anyhow, Result};
 use std::any::Any;
-use std::rc::Rc;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use ruffle_core::external::Value as ExternalValue;
@@ -144,7 +143,7 @@ impl SwfPlayer {
 
     /// Load a menu and all of its relative imports through one archive source.
     pub fn from_resource_provider(
-        provider: Rc<dyn ScaleformResourceProvider>,
+        provider: Arc<dyn ScaleformResourceProvider>,
         movie_path: &str,
         width: u32,
         height: u32,
