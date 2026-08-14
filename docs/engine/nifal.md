@@ -247,9 +247,10 @@ params now **override** the preset's guesses where they are genuinely authored:
   speed_variation, declination, declination_variation, life, life_variation).
   Verified against FNV + Oblivion content (these are authored and distinctive —
   oasis torch `speed 24 / var 45.6 / life 1.33±0.67`). `initial_color` (shipped as
-  the white nif.xml default) and `initial_radius` (default 1.0) are **intentionally
-  not applied** — colour stays owned by the `color_curve` override, size by the
-  preset — to avoid washing out tuned presets with defaults.
+  the white nif.xml default) is **intentionally not applied** — colour stays owned by
+  the `color_curve` override — to avoid washing out tuned presets with defaults.
+  `initial_radius` **is** applied, via `initial_radius × base_scale`; see the
+  "Particle **size** is authored too" paragraph below, which owns that contract.
 
 Spawn **rate** (particles/sec) is also authored now: `NiPSysEmitterCtlr` is a typed
 block carrying its `interpolator_ref`; `extract_emitter_rate` follows it to the
@@ -267,6 +268,13 @@ would be ~7× oversized. The grow→steady→fade *bell shape* the modifier enco
 map to the canonical linear `start_size→end_size`, so only the authored *magnitude*
 is translated (a size-over-life curve is future work). `initial_color` is still not
 applied (white nif.xml default; colour stays with the `color_curve` override).
+
+This paragraph is the authority on particle size. Until #2488 the bullet above still
+carried the pre-size-work claim that `initial_radius` was "intentionally not applied"
+and that size stayed owned by the preset — the opposite of both this paragraph and
+`systems::particle::apply_emitter_params`, and the first of the two an auditor reads.
+A change that "restored the documented invariant" by dropping the size override would
+regress FNV oasis smoke back to ~7× oversized.
 
 **Still pending (follow-ups):** size-over-life *curve* (the grow/fade bell shape needs
 a richer canonical size model), and per-emitter (vs scene-first) attribution for

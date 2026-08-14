@@ -538,6 +538,16 @@ impl Texture {
             device.destroy_image_view(self.image_view, None);
             device.destroy_image(self.image, None);
         }
+        // #2487 / D5-02 (sibling) — same nulling as `GpuBuffer::destroy`, and
+        // for the same reason: `image` / `image_view` are `pub`, so a struct
+        // that outlives its own `destroy()` would otherwise hand a descriptor
+        // write a destroyed handle. Every current call site drops the
+        // `Texture` immediately after (deferred-destroy drain, upload-failure
+        // unwind, registry teardown), so this closes a latent path, not a live
+        // one. `vkDestroy*` on `VK_NULL_HANDLE` is always valid, so the Drop
+        // safety net below stays correct.
+        self.image_view = vk::ImageView::null();
+        self.image = vk::Image::null();
         if let Some(alloc) = self.allocation.take() {
             allocator
                 .lock()
@@ -593,6 +603,11 @@ impl Drop for Texture {
             self.device.destroy_image_view(self.image_view, None);
             self.device.destroy_image(self.image, None);
         }
+        // #2487 / D5-02 (sibling) — mirrors `destroy()` so the two teardown
+        // arms stay identical; redundant on this path, where nothing can read
+        // the fields afterwards.
+        self.image_view = vk::ImageView::null();
+        self.image = vk::Image::null();
         if let Some(alloc) = self.allocation.take() {
             // Invariant: if `allocation` was `Some`, `allocator` is
             // also `Some` — `destroy()` clears them together (#927).

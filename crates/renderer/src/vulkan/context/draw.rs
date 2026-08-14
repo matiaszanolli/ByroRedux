@@ -3427,6 +3427,24 @@ impl VulkanContext {
         std::mem::swap(&mut self.previous_rigid_models, &mut current_rigid_models);
         current_rigid_models.clear();
         self.current_rigid_models_scratch = current_rigid_models;
+        // #2486 / D5-01 — same shrink policy the two scratch Vecs get at the
+        // bottom of this function. Both maps are `clear()`-then-`reserve(
+        // draw_commands.len())`, so without this their capacity is the session
+        // high-water mark rather than the working set, and one large-exterior
+        // peak stays resident through the walk back into a small interior.
+        // `previous_rigid_models` post-swap holds this frame's entries, which
+        // is the working set for both.
+        let working_rigid = self.previous_rigid_models.len();
+        super::super::acceleration::shrink_map_scratch_if_oversized(
+            &mut self.previous_rigid_models,
+            working_rigid,
+            512,
+        );
+        super::super::acceleration::shrink_map_scratch_if_oversized(
+            &mut self.current_rigid_models_scratch,
+            working_rigid,
+            512,
+        );
 
         // Present.
         let swapchains = [self.swapchain_state.swapchain];
@@ -3469,6 +3487,7 @@ impl VulkanContext {
         // slack band against frame-to-frame variance, and the 512
         // floor avoids reallocations on common-case small scenes.
         let working_instances = gpu_instances.len();
+        let working_previous = previous_models.len();
         let working_batches = batches.len();
         self.gpu_instances_scratch = gpu_instances;
         self.previous_models_scratch = previous_models;
@@ -3476,6 +3495,15 @@ impl VulkanContext {
         super::super::acceleration::shrink_scratch_if_oversized(
             &mut self.gpu_instances_scratch,
             working_instances,
+            512,
+        );
+        // #2486 / D5-01 — `previous_models_scratch` was restored here but
+        // never shrunk, so it pinned its peak (~16 MB at `MAX_INSTANCES`) for
+        // the session. It grows one entry per instance, so its own `len()` is
+        // the working set.
+        super::super::acceleration::shrink_scratch_if_oversized(
+            &mut self.previous_models_scratch,
+            working_previous,
             512,
         );
         super::super::acceleration::shrink_scratch_if_oversized(

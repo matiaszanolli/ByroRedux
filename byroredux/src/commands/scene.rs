@@ -496,7 +496,18 @@ impl ConsoleCommand for MatListCommand {
 pub(crate) struct MatSetCommand;
 impl MatSetCommand {
     /// Parse `n` whitespace-separated floats from `parts`, erroring if the
-    /// count or any parse is wrong.
+    /// count or any parse is wrong, or if any value is non-finite.
+    ///
+    /// #2489 (NIFAL-D6-2026-08-07-03) — the non-finite rejection is the
+    /// load-bearing half. `"NaN".parse::<f32>()` and `"inf".parse::<f32>()`
+    /// both succeed, and `mat.set` is the only writer that reaches a resolved
+    /// `Material` after `translate_material`, so a typo put a NaN straight
+    /// into `GpuMaterial`. That is the exact failure #1535 exists to prevent
+    /// on the translate side ("NaN GGX terms poison the lit color and stick
+    /// in SVGF/TAA history") — and because it sticks in the temporal history,
+    /// it outlives the correction and reads as a renderer bug rather than a
+    /// console typo. Rejecting at the parse site covers every arm, colours
+    /// included: a NaN `diffuse_color` poisons the frame just as well.
     fn floats(parts: &[&str], n: usize) -> Result<Vec<f32>, String> {
         if parts.len() != n {
             return Err(format!("expected {n} value(s), got {}", parts.len()));
@@ -504,8 +515,17 @@ impl MatSetCommand {
         parts
             .iter()
             .map(|s| {
-                s.parse::<f32>()
-                    .map_err(|_| format!("`{s}` is not a number"))
+                let v = s
+                    .parse::<f32>()
+                    .map_err(|_| format!("`{s}` is not a number"))?;
+                if !v.is_finite() {
+                    return Err(format!(
+                        "`{s}` is not finite — a NaN/inf material scalar poisons the \
+                         shading term and persists in SVGF/TAA history after the \
+                         value is corrected (#1535 / #2489)"
+                    ));
+                }
+                Ok(v)
             })
             .collect()
     }
@@ -557,9 +577,42 @@ impl ConsoleCommand for MatSetCommand {
         };
 
         let result = match field.to_ascii_lowercase().as_str() {
-            "metalness" | "metal" => set_scalar(&mut m.metalness, &vals),
-            "roughness" | "rough" => set_scalar(&mut m.roughness, &vals),
-            "alpha" => set_scalar(&mut m.alpha, &vals),
+            // #2489 (NIFAL-D6-2026-08-07-03) — `metalness` / `roughness`
+            // carry an engine-wide invariant (`metalness ∈ [0,1]`,
+            // `roughness ∈ [0.04,1]`, "fully resolved, no render-time
+            // fallback") that the render path relies on by reading them
+            // verbatim into `GpuMaterial`. `mat.set` is the only writer that
+            // reaches them after `translate_material`, and it stored the
+            // parsed value raw — so `mat.set <id> roughness 0`, a plausible
+            // typo, landed below the 0.04 floor and diverged the console
+            // writer from the translate writer. `resolve_pbr` is the same
+            // clamp `translate_material` applies, is idempotent, and cannot
+            // reach its NaN-classifier branch here because `floats` already
+            // rejected non-finite input. Report the STORED value, not the
+            // input, so the console shows the clamp when it fires.
+            "metalness" | "metal" => match set_scalar(&mut m.metalness, &vals) {
+                Ok(_) => {
+                    m.resolve_pbr();
+                    Ok(format!("{:.4}", m.metalness))
+                }
+                Err(e) => Err(e),
+            },
+            "roughness" | "rough" => match set_scalar(&mut m.roughness, &vals) {
+                Ok(_) => {
+                    m.resolve_pbr();
+                    Ok(format!("{:.4}", m.roughness))
+                }
+                Err(e) => Err(e),
+            },
+            // `alpha` documents its own range (0.0 transparent → 1.0 opaque)
+            // but has no `resolve_pbr` equivalent, so clamp it here.
+            "alpha" => match set_scalar(&mut m.alpha, &vals) {
+                Ok(_) => {
+                    m.alpha = m.alpha.clamp(0.0, 1.0);
+                    Ok(format!("{:.4}", m.alpha))
+                }
+                Err(e) => Err(e),
+            },
             "glossiness" | "gloss" => set_scalar(&mut m.glossiness, &vals),
             "emissive_mult" | "emult" => set_scalar(&mut m.emissive_mult, &vals),
             "specular_strength" | "spec" => set_scalar(&mut m.specular_strength, &vals),
@@ -570,6 +623,14 @@ impl ConsoleCommand for MatSetCommand {
             // the Cornell harness had no way to reach the field live, so
             // every fire-refraction gap this session had to be found by
             // static code reading instead of the harness.
+            // #2489 — no range clamp here, deliberately: `ior` is the one
+            // scalar with two incompatible authored ranges (a physical
+            // refractive index ~1.0–2.5 for the dielectric/glass path, and a
+            // 0–1 heat-haze distortion strength under
+            // `MATERIAL_KIND_FIRE_REFRACTION` — see #2232). `mat.set` cannot
+            // know which the caller means, so clamping to either would break
+            // the other. The finite check in `floats` is the guard that does
+            // apply to both.
             "ior" | "distortion_strength" => set_scalar(&mut m.ior, &vals),
             // #2514 (REN-D21-2026-08-07-02) — the Cornell harness had no
             // way to reach `subsurface`/`sheen`/`sheen_tint`/`anisotropic`
@@ -792,5 +853,102 @@ mod mat_set_tests {
         assert_eq!(m.translucency_transmissive_scale, 0.75);
         assert_eq!(m.translucency_turbulence, 0.3);
         assert_eq!(m.translucency_subsurface_color, [0.1, 0.2, 0.3]);
+    }
+
+    /// Regression for #2489 (NIFAL-D6-2026-08-07-03): non-finite input is
+    /// rejected rather than silently stored. `"NaN"`/`"inf"` both parse as
+    /// `f32`, and `mat.set` is the only writer reaching a resolved
+    /// `Material`, so this was the one path that could put the exact value
+    /// #1535 guards against on the translate side into `GpuMaterial` — where
+    /// it sticks in SVGF/TAA history after the value is corrected.
+    #[test]
+    fn non_finite_scalars_are_rejected_not_stored() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, Material::default());
+        let before = world.query::<Material>().unwrap().get(e).unwrap().roughness;
+
+        for literal in ["NaN", "nan", "inf", "-inf", "infinity"] {
+            let out = MatSetCommand.execute(&world, &format!("{e} roughness {literal}"));
+            let joined = out.lines.join("\n");
+            assert!(
+                joined.contains("not finite"),
+                "`{literal}` must be reported as non-finite, got: {joined}"
+            );
+            let m = world.query::<Material>().unwrap();
+            let after = m.get(e).unwrap().roughness;
+            assert_eq!(
+                after, before,
+                "`{literal}` must leave roughness untouched, got {after}"
+            );
+        }
+
+        // Colours go through the same parse site — a NaN tint poisons the
+        // frame just as well as a NaN scalar.
+        let out = MatSetCommand.execute(&world, &format!("{e} diffuse_color 1 NaN 1"));
+        assert!(out.lines.join("\n").contains("not finite"));
+    }
+
+    /// Regression for #2489: the canonical PBR scalars must land inside the
+    /// documented invariant ranges (`metalness ∈ [0,1]`,
+    /// `roughness ∈ [0.04,1]`, `alpha ∈ [0,1]`) whether the writer is
+    /// `translate_material` or the console, and the console must report the
+    /// stored value so the clamp is visible.
+    #[test]
+    fn out_of_range_pbr_scalars_are_clamped_to_the_resolve_pbr_invariant() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, Material::default());
+
+        // (field, input, expected stored value)
+        for (field, input, expected) in [
+            ("roughness", "0", 0.04_f32), // the plausible typo from the issue
+            ("roughness", "5", 1.0),
+            ("metalness", "-1", 0.0),
+            ("metalness", "3", 1.0),
+            ("alpha", "-0.5", 0.0),
+            ("alpha", "2", 1.0),
+        ] {
+            let out = MatSetCommand.execute(&world, &format!("{e} {field} {input}"));
+            let joined = out.lines.join("\n");
+            assert!(
+                joined.contains(&format!("{field} = {expected:.4}")),
+                "{field} {input} must report the clamped value {expected:.4}, got: {joined}"
+            );
+            let q = world.query::<Material>().unwrap();
+            let stored = match field {
+                "roughness" => q.get(e).unwrap().roughness,
+                "metalness" => q.get(e).unwrap().metalness,
+                _ => q.get(e).unwrap().alpha,
+            };
+            assert_eq!(stored, expected, "{field} {input} stored out of range");
+        }
+
+        // In-range values pass through untouched.
+        MatSetCommand.execute(&world, &format!("{e} roughness 0.37"));
+        assert_eq!(
+            world.query::<Material>().unwrap().get(e).unwrap().roughness,
+            0.37
+        );
+    }
+
+    /// #2489 — `ior` is deliberately NOT range-clamped: it carries a
+    /// physical refractive index (~1.5 for glass) on the dielectric path and
+    /// a 0–1 distortion strength under `MATERIAL_KIND_FIRE_REFRACTION`
+    /// (#2232). Clamping to either range would corrupt the other.
+    #[test]
+    fn ior_keeps_its_dual_range_but_still_rejects_non_finite() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, Material::default());
+
+        MatSetCommand.execute(&world, &format!("{e} ior 1.5"));
+        assert_eq!(world.query::<Material>().unwrap().get(e).unwrap().ior, 1.5);
+        MatSetCommand.execute(&world, &format!("{e} ior 0.25"));
+        assert_eq!(world.query::<Material>().unwrap().get(e).unwrap().ior, 0.25);
+
+        let out = MatSetCommand.execute(&world, &format!("{e} ior NaN"));
+        assert!(out.lines.join("\n").contains("not finite"));
+        assert_eq!(world.query::<Material>().unwrap().get(e).unwrap().ior, 0.25);
     }
 }

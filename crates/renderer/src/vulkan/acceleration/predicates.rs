@@ -398,6 +398,35 @@ pub fn shrink_scratch_if_oversized<T>(vec: &mut Vec<T>, working_set: usize, floo
     }
 }
 
+/// [`shrink_scratch_if_oversized`] for a per-frame scratch `HashMap` —
+/// identical `2 × max(working_set, floor)` hysteresis band, same rationale.
+///
+/// #2486 / D5-01 — the per-frame scratch cluster in `draw_frame` is
+/// documented as one amortization group, but the shrink half of the policy
+/// was only ever wired to two of its five members. The two rigid-motion
+/// history maps are `clear()`-then-`reserve(draw_commands.len())` like the
+/// Vecs, so their capacity was the session high-water mark: a single large
+/// exterior peak pinned ~20 MB per map for the rest of the session, surviving
+/// the walk back into a small interior. Host RAM only — no GPU allocation and
+/// no per-frame growth, which is why this is LOW rather than a leak.
+///
+/// `HashMap::shrink_to` is a lower bound, not an exact resize (the table
+/// rounds up to its own capacity policy), so this can only be asserted as
+/// "no larger than before, and still able to hold the working set".
+pub fn shrink_map_scratch_if_oversized<K, V, S>(
+    map: &mut std::collections::HashMap<K, V, S>,
+    working_set: usize,
+    floor: usize,
+) where
+    K: std::hash::Hash + Eq,
+    S: std::hash::BuildHasher,
+{
+    let target = 2 * working_set.max(floor);
+    if map.capacity() > target {
+        map.shrink_to(target);
+    }
+}
+
 /// Mid-batch BLAS eviction trigger (#510).
 ///
 /// Returns `true` when the *projected* live BLAS footprint

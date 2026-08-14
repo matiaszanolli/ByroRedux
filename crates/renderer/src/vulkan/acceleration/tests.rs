@@ -339,6 +339,55 @@ fn shrink_scratch_preserves_hysteresis_band() {
     assert_eq!(under.capacity(), 800);
 }
 
+/// #2486 / D5-01 — the map variant of the same policy, used for the two
+/// rigid-motion history maps. `HashMap::shrink_to` is documented as a lower
+/// bound (the table rounds up to its own capacity policy), so the peak case
+/// asserts "reclaimed something and can still hold the floor" rather than an
+/// exact capacity the way the `Vec` test can.
+#[test]
+fn shrink_map_scratch_reclaims_capacity_after_peak() {
+    use std::collections::HashMap;
+    const FLOOR: usize = 512;
+
+    let mut peak: HashMap<u32, [f32; 16]> = HashMap::with_capacity(10_000);
+    let peak_capacity = peak.capacity();
+    shrink_map_scratch_if_oversized(&mut peak, 50, FLOOR);
+    assert!(
+        peak.capacity() < peak_capacity,
+        "a 10k peak with a 50-entry working set must give capacity back, \
+         still had {}",
+        peak.capacity()
+    );
+    assert!(
+        peak.capacity() >= FLOOR,
+        "the floor must survive the shrink so small frames don't realloc, \
+         got {}",
+        peak.capacity()
+    );
+
+    // Inside the 2× hysteresis band — left alone, exactly like the Vec.
+    let mut under: HashMap<u32, [f32; 16]> = HashMap::with_capacity(800);
+    let under_capacity = under.capacity();
+    shrink_map_scratch_if_oversized(&mut under, 500, FLOOR);
+    assert_eq!(
+        under.capacity(),
+        under_capacity,
+        "capacity within the 2× band must not be touched"
+    );
+
+    // Live entries survive: this runs on `previous_rigid_models` while it
+    // holds the frame's history, so a shrink that dropped entries would
+    // silently zero out motion vectors.
+    let mut live: HashMap<u32, [f32; 16]> = HashMap::with_capacity(10_000);
+    for id in 0..40u32 {
+        live.insert(id, [id as f32; 16]);
+    }
+    let live_working = live.len();
+    shrink_map_scratch_if_oversized(&mut live, live_working, FLOOR);
+    assert_eq!(live.len(), 40);
+    assert_eq!(live.get(&7), Some(&[7.0; 16]));
+}
+
 /// Regression for #645 / MEM-2-3: the TLAS-instance-buffer shrink
 /// predicate must fire when a past peak (e.g. 32 K-instance
 /// exterior cell) has settled back into a small working set, but

@@ -3264,6 +3264,26 @@ impl VulkanContext {
             capacity: self.batches_scratch.capacity(),
             elem_size_bytes: size_of::<draw::DrawBatch>(),
         });
+        // #2486 / D5-01 — the two rigid-motion history maps are members of
+        // the same per-frame scratch cluster (`clear` + `reserve` + shrink),
+        // so they belong in the same report. Like the `skin_dispatch_seen`
+        // HashSet row above, `capacity × elem_size` under-counts a hash
+        // table's real footprint (no control bytes / load-factor slack);
+        // it is a proportional signal, not an allocator-accurate figure.
+        for (name, map) in [
+            ("previous_rigid_models", &self.previous_rigid_models),
+            (
+                "current_rigid_models_scratch",
+                &self.current_rigid_models_scratch,
+            ),
+        ] {
+            rows.push(ScratchRow {
+                name,
+                len: map.len(),
+                capacity: map.capacity(),
+                elem_size_bytes: size_of::<(u32, [f32; 16])>(),
+            });
+        }
         rows.push(ScratchRow {
             name: "indirect_draws_scratch",
             len: self.indirect_draws_scratch.len(),

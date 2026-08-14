@@ -40,7 +40,7 @@ pub use types::{BlasBuildSource, BlasEntry, SkinnedBlasGeometry, TlasState};
 // owns alongside the AccelerationManager's own scratch). `pub(super)`
 // restricts visibility to the `vulkan` module — no external crate
 // callers, by design.
-pub(super) use predicates::shrink_scratch_if_oversized;
+pub(super) use predicates::{shrink_map_scratch_if_oversized, shrink_scratch_if_oversized};
 
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;

@@ -1121,6 +1121,18 @@ impl GpuBuffer {
             unsafe {
                 device.destroy_buffer(self.buffer, None);
             }
+            // #2487 / D5-02 — null the handle, matching the convention the
+            // sibling helpers already follow (`destroy_depth_resources`,
+            // `TextureRegistry::destroy`). The `allocation.take()` above
+            // already prevents a double-free, and Drop already short-circuits;
+            // what was undefended was a *read*. A caller that destroys through
+            // a long-lived `&mut GpuBuffer` and later binds `.buffer` (a `pub`
+            // field) got a destroyed handle with no way to tell — a class of
+            // bug invisible to `cargo test` and visible only as a
+            // validation-layer complaint or a GPU fault. `VK_NULL_HANDLE` at
+            // least makes the misuse loud and its own destroy a documented
+            // no-op.
+            self.buffer = vk::Buffer::null();
             allocator
                 .lock()
                 .expect("allocator lock poisoned")
@@ -1298,6 +1310,11 @@ impl Drop for GpuBuffer {
         unsafe {
             self.device.destroy_buffer(self.buffer, None);
         }
+        // #2487 / D5-02 — same nulling as `destroy()`. Redundant on the Drop
+        // path (nothing can read the field afterwards), kept so the two
+        // teardown arms stay literally identical and neither can drift into
+        // being the one that leaves a live-looking handle behind.
+        self.buffer = vk::Buffer::null();
         if let Some(alloc) = self.allocation.take() {
             // Invariant: if `allocation` was `Some`, `allocator` is
             // also `Some` — `destroy()` clears them together. Hitting
@@ -1690,6 +1707,63 @@ mod tests {
                 "evicting {} entries left {} bytes — could have evicted one fewer",
                 evict - 1,
                 over,
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod destroyed_handle_nulling_tests {
+    //! #2487 / D5-02 — after `destroy()`, a `GpuBuffer`'s `pub buffer` field
+    //! (and a `Texture`'s `pub image` / `image_view`) must read as
+    //! `VK_NULL_HANDLE`, not as the destroyed handle. Constructing either
+    //! type needs a live `ash::Device` and allocator, so this pins the shape
+    //! at the source level — the same approach `staging_guard_coverage_tests`
+    //! above takes for the leak window it guards.
+
+    /// Everything before the first test module, so this file's own
+    /// assertion needles cannot match themselves.
+    fn production_src(src: &'static str) -> &'static str {
+        src.split_once("\n#[cfg(test)]")
+            .expect("source lost its test modules")
+            .0
+    }
+
+    /// Both teardown arms of each type: the explicit `destroy()` and the
+    /// `Drop` safety net. Counting occurrences (rather than just checking
+    /// for one) is what keeps the two arms in lockstep — the defect was
+    /// exactly one arm having the nulling the other lacked.
+    #[test]
+    fn every_teardown_arm_nulls_its_handles() {
+        let buffer_src = production_src(include_str!("buffer.rs"));
+        let texture_src = production_src(include_str!("texture.rs"));
+        for (name, src, needle, expected) in [
+            (
+                "buffer.rs",
+                buffer_src,
+                "self.buffer = vk::Buffer::null();",
+                2,
+            ),
+            (
+                "texture.rs",
+                texture_src,
+                "self.image = vk::Image::null();",
+                2,
+            ),
+            (
+                "texture.rs",
+                texture_src,
+                "self.image_view = vk::ImageView::null();",
+                2,
+            ),
+        ] {
+            assert_eq!(
+                src.matches(needle).count(),
+                expected,
+                "{name}: expected {expected} `{needle}` (one per teardown arm: \
+                 destroy() and the Drop safety net). A destroyed handle left in \
+                 a pub field is invisible to cargo test and surfaces only as a \
+                 validation-layer complaint or a GPU fault (#2487)."
             );
         }
     }
