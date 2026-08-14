@@ -282,6 +282,41 @@ fn skyrim_catalog_is_pinned_sorted_and_profile_specific() {
     );
 }
 
+/// Regression for #2726 / #2727. Both catalogs are scraped from decompiled
+/// ActionScript, and the FO4 one shipped `functiononGPSModeButtonClicked` —
+/// `function onGPSModeButtonClicked` with the space collapsed. Nothing could
+/// detect it: the sortedness window passed (a mangled name still sorts), the
+/// length assertion counted it as valid, and the only corpus guard asserts
+/// `referenced ⊆ catalog`, which is silent about catalog entries no menu
+/// references. A malformed entry costs a dead forwarder plus two dead pool
+/// strings in every patched SWF, and makes the *real* method fall through to
+/// `ScaleformHostDispatch::Unknown`. Every genuine Scaleform host method is a
+/// plain Camel/camelCase ASCII identifier, so well-formedness alone catches the
+/// whole artifact class — cheaply, in the default suite, with no game install.
+#[test]
+fn catalog_names_are_well_formed_actionscript_identifiers() {
+    for profile in [ScaleformProfile::SkyrimAvm1, ScaleformProfile::Fallout4Avm2] {
+        for method in ScaleformHostCatalog::for_profile(profile).methods() {
+            let name = method.name;
+            assert!(
+                name.starts_with(|first: char| first.is_ascii_alphabetic())
+                    && name
+                        .chars()
+                        .all(|character| character.is_ascii_alphanumeric()),
+                "{profile:?} catalog entry {name:?} is not a plain ActionScript identifier"
+            );
+            let lowercased = name.to_ascii_lowercase();
+            for keyword in ["function", "var", "return", "const", "class"] {
+                assert!(
+                    !lowercased.contains(keyword),
+                    "{profile:?} catalog entry {name:?} embeds the ActionScript keyword \
+                     {keyword:?} — likely a whitespace-collapse scraping artifact"
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn fallout4_object_transport_is_normalized_and_cataloged() {
     let bridge = ScaleformHostBridge::new(ScaleformProfile::Fallout4Avm2);
@@ -402,7 +437,6 @@ fn avm2_input_and_external_interface_are_bidirectional_headlessly() {
     dispatch_representative_input(&player);
     assert_external_interface_round_trip(&player, &bridge, ScaleformProfile::Fallout4Avm2);
 }
-
 
 #[test]
 #[ignore = "requires an installed Skyrim Special Edition corpus"]
