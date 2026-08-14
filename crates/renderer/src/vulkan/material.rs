@@ -1333,6 +1333,30 @@ impl MaterialTable {
 
 #[cfg(test)]
 mod tests {
+    /// #2515 — `Material::alpha` reaches `GpuMaterial.material_alpha` and is
+    /// hashed by `hash_gpu_material_fields`, so it is part of the dedup
+    /// identity `MaterialTable::intern_by_hash` keys on. The Cornell
+    /// harness's `glass()` doc comment used to call the value "currently
+    /// unconsumed downstream", which is true only of `taa.comp` /
+    /// `composite.frag`; read as "inert" it invites a future edit that
+    /// silently splits or merges material-table slots. Pin the fact.
+    #[test]
+    fn material_alpha_participates_in_the_dedup_hash() {
+        let mut a = GpuMaterial {
+            material_alpha: 1.0,
+            ..Default::default()
+        };
+        let opaque = super::hash_gpu_material_fields(&a);
+        a.material_alpha = 0.25; // the Cornell glass() probe value
+        let glassy = super::hash_gpu_material_fields(&a);
+        assert_ne!(
+            opaque, glassy,
+            "material_alpha must change the dedup hash — two otherwise \
+             identical materials differing only in alpha have to occupy \
+             distinct MaterialTable slots"
+        );
+    }
+
     use super::*;
 
     /// Pin the std430 layout. Any growth must be intentional and

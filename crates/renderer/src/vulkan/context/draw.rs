@@ -1315,6 +1315,23 @@ pub struct FrameInputs<'a> {
 }
 
 impl VulkanContext {
+    /// Whether FSR is not merely the *selected* upscaler mode but is
+    /// actually dispatching this frame (#2518).
+    ///
+    /// `self.fsr_temporal.is_some()` answers a different question: it stays
+    /// `Some` for the whole of `UpscalerMode::Fsr3(..)`, including when the
+    /// FSR context never got created or `dispatch_failure` has latched. In
+    /// those states the frame falls back to an unjittered native blit, so
+    /// every "is FSR's projection jitter in play?" decision — the camera
+    /// jitter itself and the DOF gate that exists to avoid conflicting with
+    /// it — must key on this, not on mode selection. Sharing one accessor
+    /// is what keeps the two from drifting apart again.
+    fn is_fsr_dispatch_active(&self) -> bool {
+        self.frame_upscaler
+            .as_ref()
+            .is_some_and(|upscaler| upscaler.is_fsr_dispatch_active())
+    }
+
     pub fn draw_frame(&mut self, inputs: FrameInputs) -> Result<bool> {
         let FrameInputs {
             clear_color,
@@ -1731,11 +1748,7 @@ impl VulkanContext {
                 (jx, jy, None, false)
             }
             super::super::upscaling::UpscalerMode::Fsr3(_) => {
-                if !self
-                    .frame_upscaler
-                    .as_ref()
-                    .is_some_and(|upscaler| upscaler.is_fsr_dispatch_active())
-                {
+                if !self.is_fsr_dispatch_active() {
                     (0.0, 0.0, None, false)
                 } else {
                     let fsr = self
@@ -1774,7 +1787,19 @@ impl VulkanContext {
         // rationale and the #1525 degenerate-`focus_dist` guard live in
         // `dof_effective_view_proj`.
         // FSR forces the pinhole path — rationale in `fsr_gated_dof`.
-        let active_dof = fsr_gated_dof(dof, self.fsr_temporal.is_some());
+        //
+        // #2518 — gate on FSR actually *dispatching*, not merely on FSR
+        // mode being selected. `fsr_temporal` is `Some` for the whole of
+        // `UpscalerMode::Fsr3(..)`, including when the FSR context never got
+        // created or `dispatch_failure` has latched. In those states the
+        // frame runs completely unjittered on the native blit (the jitter
+        // gate above sets `fsr_jitter_pixel = None` and `jx/jy = 0.0` on
+        // exactly this predicate), so the stated rationale — that the
+        // independent Halton(5,7) lens sequence would conflict with FSR's
+        // own projection jitter — does not apply, yet authored DOF was
+        // still being silently dropped. Both facts now come from one
+        // predicate so they cannot diverge again.
+        let active_dof = fsr_gated_dof(dof, self.is_fsr_dispatch_active());
         let (effective_vp, effective_cam_pos) = dof_effective_view_proj(
             &active_dof,
             self.frame_counter,
