@@ -12,6 +12,7 @@ use std::collections::HashSet;
 use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_channel::{Receiver, Sender};
@@ -32,7 +33,14 @@ use url::{ParseError, Url};
 /// Paths use backslashes and are relative to the game data root, such as
 /// `interface\fonts_en.swf`. Returning `Ok(None)` means the source does not
 /// contain the requested resource.
-pub trait ScaleformResourceProvider {
+///
+/// `Send + Sync` (#2734): the provider is held behind an `Arc` so the archive
+/// extract can move off the main loop to a worker. `BsaArchive`/`Ba2Archive`
+/// already satisfy this — each serialises its `File` cursor behind a `Mutex`
+/// so `extract` can take `&self` (#360) — so the bound costs nothing today
+/// and is what makes sharing the streaming worker's provider possible rather
+/// than a fresh archive handle per menu.
+pub trait ScaleformResourceProvider: Send + Sync {
     fn load(&self, path: &str) -> io::Result<Option<Vec<u8>>>;
 }
 
@@ -84,7 +92,7 @@ impl ScaleformNavigatorRuntime {
     pub(crate) fn create(
         movie_path: &str,
         movie_data: &[u8],
-        provider: Rc<dyn ScaleformResourceProvider>,
+        provider: Arc<dyn ScaleformResourceProvider>,
     ) -> Result<(ScaleformNavigator, Self, String), String> {
         let movie_url = archive_movie_url(movie_path)?;
         let executor = NullExecutor::new();
@@ -126,44 +134,134 @@ impl ScaleformNavigatorRuntime {
 
 pub(crate) struct ScaleformNavigator {
     movie_url: Url,
-    provider: Rc<dyn ScaleformResourceProvider>,
+    provider: Arc<dyn ScaleformResourceProvider>,
     spawner: NullSpawner,
     state: Rc<RefCell<NavigatorState>>,
 }
 
+/// Record a fetch failure and answer with an empty placeholder movie.
+///
+/// Free function rather than a method so the deferred half of [`fetch`] —
+/// which owns a cloned `state` handle and cannot name `self` — reports
+/// failures through the exact same path as the eager half. See
+/// [`ScaleformNavigator::fetch`].
+///
+/// #2720 — this used to build an `ErrorResponse`, and returning that `Err` is
+/// what froze the menu, not only through the engine-side latch that fix
+/// removes. Ruffle sets `MovieClip::preload_progress.awaiting_import` before
+/// spawning an `ImportAssets` fetch and clears it **only** on
+/// `LoadManager::load_asset_movie`'s success path; `MovieClip::preload`
+/// returns `false` for as long as that flag is set, and the root timeline will
+/// not advance past a frame it has not preloaded. So a failed dependency fetch
+/// wedges the movie inside Ruffle, no matter how the caller handles the error.
+///
+/// Handing back a valid, empty SWF lets the import *complete* with no symbols:
+/// whatever the menu imported is missing (Ruffle logs the unresolved
+/// character), but the movie preloads, runs, and draws. The failure is not
+/// swallowed — it is recorded for `SwfPlayer::resource_errors` and logged by
+/// the owning player, which is what makes "this menu is missing an asset" a
+/// diagnosis rather than a silent hang.
+///
+/// [`fetch`]: ScaleformNavigator::fetch
+fn record_degraded(
+    state: &Rc<RefCell<NavigatorState>>,
+    url: &str,
+    message: impl Into<String>,
+) -> Box<dyn SuccessResponse> {
+    let message = message.into();
+    log::debug!("Scaleform archive fetch failed, substituting an empty movie: {message}");
+    state.borrow_mut().errors.push(message);
+    Box::new(MemoryResponse {
+        url: url.to_string(),
+        body: placeholder_movie(),
+        chunk_sent: false,
+    })
+}
+
+/// The deferred half of [`ScaleformNavigator::fetch`]: everything that costs
+/// real time.
+///
+/// #2734 (CONC-D7-UI-06) — `fetch` returns an `OwnedFuture`, but every path
+/// used to do its work *eagerly* and hand back an already-computed value
+/// wrapped in `Box::pin(async move { Ok(..) })`. That work is not cheap: a
+/// full `provider.load` archive extract (zlib/LZ4 inflate for BSA/BA2), and
+/// for import assets a `decompress_swf` + `parse_swf` + tag-record rewrite.
+/// Ruffle calls `fetch` from inside `player.preload()` / `player.tick()`, so
+/// all of it landed as one main-loop stall with no opportunity for the local
+/// executor to interleave — `MAX_ARCHIVE_PRELOAD_PASSES` bounds the pass
+/// count but not the per-pass cost.
+///
+/// Moving it here makes the future actually lazy: `drive_archive_preload`
+/// alternates `preload()` with `run_until_stalled()`, so the cost is now
+/// amortised across pump passes instead of blocking one of them. Combined
+/// with the `Arc` provider, this is also the shape a real worker handoff
+/// needs — the body no longer closes over the navigator.
+///
+/// Infallible since #2720: every failure below answers with
+/// [`record_degraded`]'s placeholder movie rather than an `Err`, so the
+/// signature says so.
+fn load_archive_resource(
+    provider: &dyn ScaleformResourceProvider,
+    state: &Rc<RefCell<NavigatorState>>,
+    request_url: String,
+    resolved: Url,
+    archive_path: String,
+) -> Box<dyn SuccessResponse> {
+    let body = match provider.load(&archive_path) {
+        Ok(Some(body)) => body,
+        Ok(None) => {
+            return record_degraded(
+                state,
+                &request_url,
+                format!(
+                    "Scaleform resource {archive_path:?} was not found in the configured archive"
+                ),
+            );
+        }
+        Err(source) => {
+            return record_degraded(
+                state,
+                &request_url,
+                format!("failed to extract Scaleform resource {archive_path:?}: {source}"),
+            );
+        }
+    };
+    let is_import_asset = state.borrow().import_asset_paths.contains(&archive_path);
+    let (body, import_preload_rewritten) = if is_import_asset {
+        match prepare_import_asset_swf(&body) {
+            Ok(body) => body,
+            Err(message) => return record_degraded(state, &request_url, message),
+        }
+    } else {
+        (body, false)
+    };
+    if is_import_asset {
+        match import_asset_paths(&resolved, &body) {
+            Ok(paths) => state.borrow_mut().import_asset_paths.extend(paths),
+            Err(message) => return record_degraded(state, &request_url, message),
+        }
+    }
+
+    state.borrow_mut().loads.push(ScaleformResourceLoad {
+        request_url,
+        archive_path,
+        byte_len: body.len(),
+        import_preload_rewritten,
+    });
+    Box::new(MemoryResponse {
+        url: resolved.to_string(),
+        body,
+        chunk_sent: false,
+    })
+}
+
 impl ScaleformNavigator {
-    /// Record a fetch failure and answer with an empty placeholder movie.
-    ///
-    /// #2720 — returning `Err` here is what froze the menu, and not only
-    /// through the engine-side latch this fix removes. Ruffle sets
-    /// `MovieClip::preload_progress.awaiting_import` before spawning an
-    /// `ImportAssets` fetch and clears it **only** on
-    /// `LoadManager::load_asset_movie`'s success path; `MovieClip::preload`
-    /// returns `false` for as long as that flag is set, and the root timeline
-    /// will not advance past a frame it has not preloaded. So a failed
-    /// dependency fetch wedges the movie inside Ruffle, no matter how the
-    /// caller handles the error.
-    ///
-    /// Handing back a valid, empty SWF lets the import *complete* with no
-    /// symbols: whatever the menu imported is missing (Ruffle logs the
-    /// unresolved character), but the movie preloads, runs, and draws. The
-    /// failure is not swallowed — it is recorded for
-    /// `SwfPlayer::resource_errors` and logged by the owning player, which is
-    /// what makes "this menu is missing an asset" a diagnosis rather than a
-    /// silent hang.
     fn degraded(&self, url: &str, message: impl Into<String>) -> Box<dyn SuccessResponse> {
-        let message = message.into();
-        log::debug!("Scaleform archive fetch failed, substituting an empty movie: {message}");
-        self.state.borrow_mut().errors.push(message);
-        Box::new(MemoryResponse {
-            url: url.to_string(),
-            body: placeholder_movie(),
-            chunk_sent: false,
-        })
+        record_degraded(&self.state, url, message)
     }
 }
 
-/// A valid, empty, single-frame SWF — see [`ScaleformNavigator::degraded`].
+/// A valid, empty, single-frame SWF — see [`record_degraded`].
 ///
 /// Deliberately carries no `FileAttributes` tag: an imported movie with no
 /// exports has nothing for either VM to run, and the AVM1 form is the one
@@ -214,63 +312,21 @@ impl NavigatorBackend for ScaleformNavigator {
                 return Box::pin(async move { Ok(response) });
             }
         };
-        let body = match self.provider.load(&archive_path) {
-            Ok(Some(body)) => body,
-            Ok(None) => {
-                let response = self.degraded(
-                    &request_url,
-                    format!(
-                        "Scaleform resource {archive_path:?} was not found in the configured archive"
-                    ),
-                );
-                return Box::pin(async move { Ok(response) });
-            }
-            Err(source) => {
-                let response = self.degraded(
-                    &request_url,
-                    format!("failed to extract Scaleform resource {archive_path:?}: {source}"),
-                );
-                return Box::pin(async move { Ok(response) });
-            }
-        };
-        let is_import_asset = self
-            .state
-            .borrow()
-            .import_asset_paths
-            .contains(&archive_path);
-        let (body, import_preload_rewritten) = if is_import_asset {
-            match prepare_import_asset_swf(&body) {
-                Ok(body) => body,
-                Err(message) => {
-                    let response = self.degraded(&request_url, message);
-                    return Box::pin(async move { Ok(response) });
-                }
-            }
-        } else {
-            (body, false)
-        };
-        if is_import_asset {
-            match import_asset_paths(&resolved, &body) {
-                Ok(paths) => self.state.borrow_mut().import_asset_paths.extend(paths),
-                Err(message) => {
-                    let response = self.degraded(&request_url, message);
-                    return Box::pin(async move { Ok(response) });
-                }
-            }
-        }
-
-        self.state.borrow_mut().loads.push(ScaleformResourceLoad {
-            request_url,
-            archive_path,
-            byte_len: body.len(),
-            import_preload_rewritten,
-        });
-        let response: Box<dyn SuccessResponse> = Box::new(MemoryResponse {
-            url: resolved.to_string(),
-            body,
-            chunk_sent: false,
-        });
-        Box::pin(async move { Ok(response) })
+        // #2734 — everything above is pure string/URL validation: cheap, and
+        // worth keeping eager so a malformed request is still recorded in
+        // `errors` immediately rather than waiting for a pump pass. Everything
+        // below touches the archive, so it moves into the future body.
+        let provider = Arc::clone(&self.provider);
+        let state = Rc::clone(&self.state);
+        Box::pin(async move {
+            Ok(load_archive_resource(
+                provider.as_ref(),
+                &state,
+                request_url,
+                resolved,
+                archive_path,
+            ))
+        })
     }
 
     fn resolve_url(&self, url: &str) -> Result<Url, ParseError> {
@@ -512,14 +568,14 @@ fn raw_tag_records(data: &[u8]) -> Result<Vec<(u16, usize)>, String> {
 mod tests {
     use std::collections::HashMap;
     use std::io;
-    use std::rc::Rc;
+    use std::sync::Arc;
 
     use futures::executor::block_on;
     use ruffle_core::backend::navigator::{NavigatorBackend, Request};
     use swf::{FileAttributes, SwfStr, Tag};
 
     use super::{
-        archive_movie_url, archive_path_from_url, ScaleformNavigatorRuntime,
+        archive_movie_url, archive_path_from_url, placeholder_movie, ScaleformNavigatorRuntime,
         ScaleformResourceProvider,
     };
     use crate::{ScaleformProfile, SwfPlayer};
@@ -532,9 +588,122 @@ mod tests {
         }
     }
 
+    /// Counts `load` calls so a test can tell "the future was constructed"
+    /// from "the archive was actually read".
+    struct CountingProvider {
+        inner: MemoryProvider,
+        loads: std::sync::atomic::AtomicUsize,
+    }
+
+    impl CountingProvider {
+        fn count(&self) -> usize {
+            self.loads.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    impl ScaleformResourceProvider for CountingProvider {
+        fn load(&self, path: &str) -> io::Result<Option<Vec<u8>>> {
+            self.loads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner.load(path)
+        }
+    }
+
+    /// Regression for #2734 (CONC-D7-UI-06) — `fetch` returns an
+    /// `OwnedFuture`, so it must not have done the work by the time it
+    /// returns. Pre-fix every path ran `provider.load` (a full zlib/LZ4
+    /// archive inflate on real data) plus, for import assets, a
+    /// `decompress_swf` + `parse_swf` + tag rewrite, then wrapped the
+    /// finished value in `Box::pin(async move { Ok(..) })`. Ruffle calls
+    /// `fetch` from inside `preload()`/`tick()`, so that landed as a
+    /// main-loop stall the local executor had no chance to interleave.
+    ///
+    /// Holding the future unpolled is the whole test: a provider whose
+    /// `load` has not been called yet proves the work is deferred, and
+    /// driving it afterwards proves nothing was lost by deferring.
+    #[test]
+    fn fetch_defers_archive_io_until_the_future_is_polled() {
+        let provider = Arc::new(CountingProvider {
+            inner: MemoryProvider(HashMap::from([(
+                "interface\\fonts_en.swf".to_string(),
+                b"font movie".to_vec(),
+            )])),
+            loads: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let (navigator, runtime, _) = ScaleformNavigatorRuntime::create(
+            "interface\\hudmenu.swf",
+            b"",
+            provider.clone() as Arc<dyn ScaleformResourceProvider>,
+        )
+        .unwrap();
+
+        let pending = navigator.fetch(Request::get("fonts_en.swf".to_string()));
+        assert_eq!(
+            provider.count(),
+            0,
+            "constructing the fetch future must not touch the archive — that \
+             is the entire point of returning a future"
+        );
+        assert!(
+            runtime.loads().is_empty(),
+            "no load may be recorded before the future runs"
+        );
+
+        let response = match block_on(pending) {
+            Ok(response) => response,
+            Err(error) => panic!("deferred fetch should succeed: {}", error.error),
+        };
+        assert_eq!(provider.count(), 1, "polling must perform exactly one load");
+        assert_eq!(block_on(response.body()).unwrap(), b"font movie");
+        assert_eq!(runtime.loads()[0].archive_path, "interface\\fonts_en.swf");
+    }
+
+    /// The cheap half stays eager on purpose: a malformed URL is pure string
+    /// validation, so it is recorded immediately without waiting for a pump
+    /// pass — and it must never reach the archive.
+    ///
+    /// The *answer* is a placeholder movie rather than an `Err` since #2720:
+    /// Ruffle's `awaiting_import` flag only clears on a successful fetch, so
+    /// returning `Err` here wedges the importing movie's preload. The failure
+    /// still lands in `errors`, which is what the player reports.
+    #[test]
+    fn malformed_request_is_recorded_eagerly_without_touching_the_archive() {
+        let provider = Arc::new(CountingProvider {
+            inner: MemoryProvider(HashMap::new()),
+            loads: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let (navigator, mut runtime, _) = ScaleformNavigatorRuntime::create(
+            "interface\\hudmenu.swf",
+            b"",
+            provider.clone() as Arc<dyn ScaleformResourceProvider>,
+        )
+        .unwrap();
+
+        // Non-local scheme — rejected by `archive_path_from_url`.
+        let pending = navigator.fetch(Request::get("http://example.com/x.swf".to_string()));
+        let errors = runtime.take_errors();
+        assert_eq!(
+            errors.len(),
+            1,
+            "URL validation stays eager, so the failure is visible immediately: {errors:?}"
+        );
+        let Ok(response) = block_on(pending) else {
+            panic!("a rejected URL degrades to a placeholder, it does not Err");
+        };
+        assert_eq!(
+            block_on(response.body()).unwrap(),
+            placeholder_movie(),
+            "the answer must be the empty placeholder movie"
+        );
+        assert_eq!(
+            provider.count(),
+            0,
+            "a rejected URL must not hit the archive"
+        );
+    }
+
     #[test]
     fn relative_urls_resolve_to_the_movie_archive_directory() {
-        let provider = Rc::new(MemoryProvider(HashMap::from([(
+        let provider = Arc::new(MemoryProvider(HashMap::from([(
             "interface\\fonts_en.swf".to_string(),
             b"font movie".to_vec(),
         )])));
@@ -573,7 +742,7 @@ mod tests {
                 imports: Vec::new(),
             },
         ]);
-        let provider = Rc::new(MemoryProvider(HashMap::from([
+        let provider = Arc::new(MemoryProvider(HashMap::from([
             ("interface\\hudmenu.swf".to_string(), root),
             ("interface\\fonts_en.swf".to_string(), imported),
         ])));
@@ -617,7 +786,7 @@ mod tests {
             },
         ]);
         // Deliberately NOT supplying interface\fonts_en.swf.
-        let provider = Rc::new(MemoryProvider(HashMap::from([(
+        let provider = Arc::new(MemoryProvider(HashMap::from([(
             "interface\\hudmenu.swf".to_string(),
             root,
         )])));
@@ -675,7 +844,7 @@ mod tests {
     /// changing must hand the caller pixels once and then stop.
     #[test]
     fn a_static_movie_stops_handing_back_pixels_after_the_first_frame() {
-        let provider = Rc::new(MemoryProvider(HashMap::from([(
+        let provider = Arc::new(MemoryProvider(HashMap::from([(
             "interface\\hudmenu.swf".to_string(),
             movie(vec![Tag::FileAttributes(
                 FileAttributes::IS_ACTION_SCRIPT_3,

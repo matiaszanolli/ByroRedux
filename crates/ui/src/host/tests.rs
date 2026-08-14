@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use byroredux_bsa::{Ba2Archive, BsaArchive};
@@ -464,7 +463,7 @@ fn installed_fallout4_representative_menus_obey_host_object_lifecycle() {
         "/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data",
     )
     .join("Fallout4 - Interface.ba2");
-    let archive = Rc::new(Ba2Archive::open(&archive_path).expect("open Fallout 4 interface BA2"));
+    let archive = Arc::new(Ba2Archive::open(&archive_path).expect("open Fallout 4 interface BA2"));
     let cases = [
         (
             "HUD",

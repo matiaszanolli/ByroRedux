@@ -10,6 +10,7 @@ use super::super::scene_buffer::{
     INSTANCE_FLAG_DIFFUSE_ALPHA, INSTANCE_FLAG_FLAT_SHADING, INSTANCE_FLAG_NON_UNIFORM_SCALE,
     INSTANCE_FLAG_TERRAIN_SPLAT, INSTANCE_RENDER_LAYER_MASK, INSTANCE_RENDER_LAYER_SHIFT,
     INSTANCE_TERRAIN_TILE_MASK, INSTANCE_TERRAIN_TILE_SHIFT, MATERIAL_KIND_GLASS,
+    MAX_INDIRECT_DRAWS,
 };
 use super::super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::super::upscaling::fsr_camera_parameters;
@@ -1196,12 +1197,38 @@ pub(super) fn needs_two_sided_blend_split(b: &DrawBatch) -> bool {
 /// (on a slot's first use) uninitialized command list — the GPU fetches
 /// and executes `index_count`/`vertex_offset` from it, so that's a
 /// page-fault/TDR risk, not a misrender.
+///
+/// #2751 / REN-D12-2026-08-12-01 adds the fourth: the batch count must fit
+/// the indirect buffer. `upload_indirect_draws` clamps its write to
+/// [`MAX_INDIRECT_DRAWS`] and warns — the RP-1 "log and continue" policy —
+/// but the draw loop walked the *unclamped* `batches` slice and derived
+/// `byte_offset = i * stride` from it, so an overflowing frame recorded a
+/// call whose `offset + drawCount × stride` ran past the allocation
+/// (`indirect_buffers[frame]` is sized exactly `MAX_INDIRECT_DRAWS`
+/// commands). That violates VUID-vkCmdDrawIndexedIndirect-offset-00556 and
+/// has the GPU fetch `indexCount`/`vertexOffset`/`firstInstance` from
+/// unallocated memory — device-lost class, the same failure #2504 closed on
+/// the upload-failure axis and left open on the overflow axis.
+///
+/// Rejecting the whole frame rather than clamping the loop is the safer of
+/// the two fixes the finding offers: the direct-draw fallback reads no
+/// indirect buffer at all, so every batch still renders. Clamping the loop
+/// would instead silently drop the tail beyond the ceiling, compounding the
+/// producer's own silent drop. Reachability is a deep tail — it needs
+/// >262 144 post-merge rasterized batches in one frame, ~20× the densest
+/// cell this codebase's own comments cite — which is why this is
+/// defence-in-depth at an already-declared lossy ceiling rather than a live
+/// spec violation.
 pub(super) fn should_use_indirect_draws(
     global_bound: bool,
     multi_draw_indirect_supported: bool,
     indirect_upload_ok: bool,
+    batch_count: usize,
 ) -> bool {
-    global_bound && multi_draw_indirect_supported && indirect_upload_ok
+    global_bound
+        && multi_draw_indirect_supported
+        && indirect_upload_ok
+        && batch_count <= MAX_INDIRECT_DRAWS
 }
 
 /// All per-frame inputs consumed by [`VulkanContext::draw_frame`].
@@ -4278,27 +4305,69 @@ mod should_use_indirect_draws_tests {
     //! `cmd_draw_indexed_indirect` reading a stale/uninitialized buffer.
     use super::*;
 
-    /// All three prerequisites hold — the happy path that actually reaches
+    /// All prerequisites hold — the happy path that actually reaches
     /// `cmd_draw_indexed_indirect`.
     #[test]
     fn true_when_bound_supported_and_upload_succeeded() {
-        assert!(should_use_indirect_draws(true, true, true));
+        assert!(should_use_indirect_draws(true, true, true, 1));
     }
 
     /// The regression case: everything else says "go indirect" but this
     /// frame's upload failed. Must fall back to direct draws.
     #[test]
     fn false_when_upload_failed_even_if_otherwise_eligible() {
-        assert!(!should_use_indirect_draws(true, true, false));
+        assert!(!should_use_indirect_draws(true, true, false, 1));
     }
 
     #[test]
     fn false_when_global_buffer_not_bound() {
-        assert!(!should_use_indirect_draws(false, true, true));
+        assert!(!should_use_indirect_draws(false, true, true, 1));
     }
 
     #[test]
     fn false_when_device_lacks_multi_draw_indirect() {
-        assert!(!should_use_indirect_draws(true, false, true));
+        assert!(!should_use_indirect_draws(true, false, true, 1));
+    }
+
+    /// #2751 / REN-D12-2026-08-12-01 — the batch count is the limb this
+    /// predicate was missing. `indirect_buffers[frame]` holds exactly
+    /// `MAX_INDIRECT_DRAWS` commands, and the draw loop derives its
+    /// `byte_offset` from the *unclamped* batch index, so one batch past the
+    /// ceiling is already a read past the allocation
+    /// (VUID-vkCmdDrawIndexedIndirect-offset-00556) — not a misrender but a
+    /// device-lost-class fetch of `indexCount`/`vertexOffset` from
+    /// unallocated memory.
+    #[test]
+    fn false_when_batch_count_exceeds_the_indirect_buffer() {
+        assert!(
+            !should_use_indirect_draws(true, true, true, MAX_INDIRECT_DRAWS + 1),
+            "one batch past the ceiling must reject the indirect path"
+        );
+        assert!(
+            !should_use_indirect_draws(true, true, true, MAX_INDIRECT_DRAWS * 4),
+            "a wildly overflowing frame must reject it too"
+        );
+    }
+
+    /// Exactly `MAX_INDIRECT_DRAWS` batches is the last legal count, not the
+    /// first illegal one: the loop's final `byte_offset + stride` lands
+    /// exactly on the buffer end. An off-by-one here would silently drop the
+    /// indirect path for a frame that fits.
+    #[test]
+    fn true_at_exactly_the_indirect_buffer_capacity() {
+        assert!(should_use_indirect_draws(
+            true,
+            true,
+            true,
+            MAX_INDIRECT_DRAWS
+        ));
+    }
+
+    /// An empty frame stays eligible — the draw loop simply records nothing.
+    /// Rejecting here would be harmless but would misattribute the fallback
+    /// in any future telemetry on this predicate.
+    #[test]
+    fn true_for_an_empty_batch_list() {
+        assert!(should_use_indirect_draws(true, true, true, 0));
     }
 }
