@@ -55,12 +55,7 @@ pub(crate) fn inject_host_object_adapter(
         decompress_swf(swf_data).map_err(|error| format!("decompressing SWF: {error}"))?;
     let mut movie = parse_swf(&decompressed).map_err(|error| format!("parsing SWF: {error}"))?;
     let declares_contract = movie.tags.iter().any(|tag| {
-        let abc = match tag {
-            Tag::DoAbc(data) => Some(*data),
-            Tag::DoAbc2(do_abc) => Some(do_abc.data),
-            _ => None,
-        };
-        abc.is_some_and(|abc| {
+        abc_payload(tag).is_some_and(|abc| {
             contains_bytes(abc, b"BGSCodeObj") && contains_bytes(abc, b"onCodeObjCreate")
         })
     });
@@ -74,12 +69,7 @@ pub(crate) fn inject_host_object_adapter(
     let mut root_abc_index = None;
     let mut root_class = None;
     for (index, tag) in movie.tags.iter().enumerate() {
-        let data = match tag {
-            Tag::DoAbc(data) => Some(*data),
-            Tag::DoAbc2(do_abc) => Some(do_abc.data),
-            _ => None,
-        };
-        let Some(data) = data else {
+        let Some(data) = abc_payload(tag) else {
             continue;
         };
         let abc = Reader::new(data)
@@ -105,11 +95,8 @@ pub(crate) fn inject_host_object_adapter(
         .ok_or_else(|| "Fallout 4 BGSCodeObj lifecycle class was not found".to_string())?;
     let root_class =
         root_class.ok_or_else(|| "Fallout 4 lifecycle class has no qualified name".to_string())?;
-    let root_abc = match &movie.tags[root_abc_index] {
-        Tag::DoAbc(data) => *data,
-        Tag::DoAbc2(do_abc) => do_abc.data,
-        _ => unreachable!("root ABC index must reference an ABC tag"),
-    };
+    let root_abc = abc_payload(&movie.tags[root_abc_index])
+        .ok_or_else(|| "Fallout 4 root ABC index does not reference an ABC tag".to_string())?;
     let patched_root_abc = patch_root_constructor(root_abc, &root_class)?;
 
     let adapter = build_adapter_abc(catalog)
@@ -206,12 +193,7 @@ pub(crate) fn referenced_host_methods(swf_data: &[u8]) -> Result<BTreeSet<String
     let mut methods = BTreeSet::new();
 
     for tag in &movie.tags {
-        let data = match tag {
-            Tag::DoAbc(data) => Some(*data),
-            Tag::DoAbc2(do_abc) => Some(do_abc.data),
-            _ => None,
-        };
-        let Some(data) = data else {
+        let Some(data) = abc_payload(tag) else {
             continue;
         };
         let abc = Reader::new(data)
@@ -468,20 +450,17 @@ fn patch_root_constructor(abc_data: &[u8], root_class: &[u8]) -> Result<Vec<u8>,
     }
 
     let empty_string = add_string(&mut abc.constant_pool.strings, Vec::new());
-    abc.constant_pool
-        .namespaces
-        .push(Namespace::Package(empty_string));
-    let public_namespace = Index::new(abc.constant_pool.namespaces.len() as u32);
+    let public_namespace = add_namespace(
+        &mut abc.constant_pool.namespaces,
+        Namespace::Package(empty_string),
+    );
     let install_string = add_string(
         &mut abc.constant_pool.strings,
         INSTALL_HELPER.as_bytes().to_vec(),
     );
     let install = add_multiname(
         &mut abc.constant_pool.multinames,
-        Multiname::QName {
-            namespace: public_namespace,
-            name: install_string,
-        },
+        qname(public_namespace, install_string),
     );
 
     let body = abc
@@ -523,6 +502,19 @@ fn patch_root_constructor(abc_data: &[u8], root_class: &[u8]) -> Result<Vec<u8>,
     Ok(bytes)
 }
 
+/// #2728 — the single place that knows which SWF tags carry ABC bytecode.
+/// Both `DoAbc` (SWF 9) and `DoAbc2` (SWF 10+, the form Fallout 4 ships) hold
+/// a raw ABC payload; every reader in this module wants that payload and
+/// nothing else. Keeping one match means a future ABC-bearing tag is added
+/// here, not in four places two of which used to `unreachable!()`.
+fn abc_payload<'a>(tag: &Tag<'a>) -> Option<&'a [u8]> {
+    match tag {
+        Tag::DoAbc(data) => Some(data),
+        Tag::DoAbc2(do_abc) => Some(do_abc.data),
+        _ => None,
+    }
+}
+
 fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
     haystack
         .windows(needle.len())
@@ -537,71 +529,71 @@ fn build_adapter_abc(catalog: ScaleformHostCatalog) -> std::io::Result<Vec<u8>> 
     let object = catalog
         .host_object()
         .expect("AVM2 adapter requires a host-object profile");
-    let mut strings = vec![
-        Vec::new(),
-        b"flash.external".to_vec(),
-        b"flash.display".to_vec(),
-        b"ExternalInterface".to_vec(),
-        b"LoaderInfo".to_vec(),
-        b"call".to_vec(),
-        b"apply".to_vec(),
-        b"unshift".to_vec(),
-        b"getLoaderInfoByDefinition".to_vec(),
-        b"addEventListener".to_vec(),
-        b"target".to_vec(),
-        b"content".to_vec(),
-        b"complete".to_vec(),
-        object.property.as_bytes().to_vec(),
-        object.on_create.as_bytes().to_vec(),
-        INSTALL_HELPER.as_bytes().to_vec(),
-        b"addCallback".to_vec(),
-        READY_HELPER.as_bytes().to_vec(),
-        READY_CALLBACK.as_bytes().to_vec(),
-        b"flash.utils".to_vec(),
-        b"setTimeout".to_vec(),
-        LOADED_CALLBACK.as_bytes().to_vec(),
-        object.on_destroy.as_bytes().to_vec(),
-        DESTROY_HELPER.as_bytes().to_vec(),
-        DESTROY_CALLBACK.as_bytes().to_vec(),
-        DESTROYED_EVENT.as_bytes().to_vec(),
-        b"__byro_fallout4_root".to_vec(),
-    ];
-    let mut multinames = vec![
-        qname(2, 4),  // flash.external::ExternalInterface
-        qname(3, 5),  // flash.display::LoaderInfo
-        qname(1, 6),  // call
-        qname(1, 7),  // apply
-        qname(1, 8),  // unshift
-        qname(1, 9),  // getLoaderInfoByDefinition
-        qname(1, 10), // addEventListener
-        qname(1, 11), // target
-        qname(1, 12), // content
-        qname(1, 14), // BGSCodeObj
-        qname(1, 15), // onCodeObjCreate
-        qname(1, 16), // install helper
-        qname(1, 17), // addCallback
-        qname(1, 18), // ready helper
-        qname(4, 21), // flash.utils::setTimeout
-        qname(1, 23), // onCodeObjDestruction
-        qname(1, 24), // destroy helper
-    ];
-    let external_interface = Index::new(1);
-    let call = Index::new(3);
-    let apply = Index::new(4);
-    let unshift = Index::new(5);
-    let code_object = Index::new(10);
-    let on_create = Index::new(11);
-    let install_helper = Index::new(12);
-    let add_callback = Index::new(13);
-    let ready_helper = Index::new(14);
-    let on_destroy = Index::new(16);
-    let destroy_helper = Index::new(17);
-    let ready_callback_string = Index::new(19);
-    let loaded_callback_string = Index::new(22);
-    let destroy_callback_string = Index::new(25);
-    let destroyed_event_string = Index::new(26);
-    let root_slot_string: Index<String> = Index::new(27);
-    let root_slot = add_multiname(&mut multinames, qname(1, root_slot_string.0));
+    // #2724 / #2725 — every constant-pool entry is *derived* from the push that
+    // creates it, never transcribed as a positional `Index::new(N)` literal. The
+    // pools are 1-based (ABC index 0 is the "any" sentinel), so an off-by-one or
+    // a mid-pool insertion used to produce a valid-but-wrong ABC that still
+    // parsed and still passed every count-based test, while forwarding calls
+    // under the wrong names. Only `Index::new(0)` — the sentinel itself — is
+    // written literally below.
+    let mut strings = Vec::new();
+    let empty_string = add_string(&mut strings, Vec::new());
+    let flash_external_string = add_string(&mut strings, b"flash.external".to_vec());
+    let external_interface_string = add_string(&mut strings, b"ExternalInterface".to_vec());
+    let call_string = add_string(&mut strings, b"call".to_vec());
+    let apply_string = add_string(&mut strings, b"apply".to_vec());
+    let unshift_string = add_string(&mut strings, b"unshift".to_vec());
+    let code_object_string = add_string(&mut strings, object.property.as_bytes().to_vec());
+    let on_create_string = add_string(&mut strings, object.on_create.as_bytes().to_vec());
+    let install_helper_string = add_string(&mut strings, INSTALL_HELPER.as_bytes().to_vec());
+    let add_callback_string = add_string(&mut strings, b"addCallback".to_vec());
+    let ready_helper_string = add_string(&mut strings, READY_HELPER.as_bytes().to_vec());
+    let ready_callback_string = add_string(&mut strings, READY_CALLBACK.as_bytes().to_vec());
+    let loaded_callback_string = add_string(&mut strings, LOADED_CALLBACK.as_bytes().to_vec());
+    let on_destroy_string = add_string(&mut strings, object.on_destroy.as_bytes().to_vec());
+    let destroy_helper_string = add_string(&mut strings, DESTROY_HELPER.as_bytes().to_vec());
+    let destroy_callback_string = add_string(&mut strings, DESTROY_CALLBACK.as_bytes().to_vec());
+    let destroyed_event_string = add_string(&mut strings, DESTROYED_EVENT.as_bytes().to_vec());
+    let root_slot_string = add_string(&mut strings, b"__byro_fallout4_root".to_vec());
+
+    // Only two namespaces survive: the public (empty-name) package every helper
+    // lives in, and `flash.external` for `ExternalInterface`. The pool used to
+    // also declare `flash.display` and `flash.utils` for the abandoned
+    // `LoaderInfo.getLoaderInfoByDefinition` / `setTimeout` install strategy the
+    // constructor patch superseded (#2725).
+    let mut namespaces = Vec::new();
+    let public_namespace = add_namespace(&mut namespaces, Namespace::Package(empty_string));
+    let flash_external_namespace =
+        add_namespace(&mut namespaces, Namespace::Package(flash_external_string));
+
+    let mut multinames = Vec::new();
+    let external_interface = add_multiname(
+        &mut multinames,
+        qname(flash_external_namespace, external_interface_string),
+    );
+    let call = add_multiname(&mut multinames, qname(public_namespace, call_string));
+    let apply = add_multiname(&mut multinames, qname(public_namespace, apply_string));
+    let unshift = add_multiname(&mut multinames, qname(public_namespace, unshift_string));
+    let code_object = add_multiname(&mut multinames, qname(public_namespace, code_object_string));
+    let on_create = add_multiname(&mut multinames, qname(public_namespace, on_create_string));
+    let install_helper = add_multiname(
+        &mut multinames,
+        qname(public_namespace, install_helper_string),
+    );
+    let add_callback = add_multiname(
+        &mut multinames,
+        qname(public_namespace, add_callback_string),
+    );
+    let ready_helper = add_multiname(
+        &mut multinames,
+        qname(public_namespace, ready_helper_string),
+    );
+    let on_destroy = add_multiname(&mut multinames, qname(public_namespace, on_destroy_string));
+    let destroy_helper = add_multiname(
+        &mut multinames,
+        qname(public_namespace, destroy_helper_string),
+    );
+    let root_slot = add_multiname(&mut multinames, qname(public_namespace, root_slot_string));
 
     let mut methods = Vec::with_capacity(catalog.len() + 4);
     let mut method_bodies = Vec::with_capacity(catalog.len() + 4);
@@ -626,8 +618,12 @@ fn build_adapter_abc(catalog: ScaleformHostCatalog) -> std::io::Result<Vec<u8>> 
             add_string(&mut strings, format!("{}.{}", object.property, method.name));
         let method_property_string = add_string(&mut strings, method.name);
 
-        let helper_multiname = add_multiname(&mut multinames, qname(1, helper_string.0));
-        let method_property = add_multiname(&mut multinames, qname(1, method_property_string.0));
+        let helper_multiname =
+            add_multiname(&mut multinames, qname(public_namespace, helper_string));
+        let method_property = add_multiname(
+            &mut multinames,
+            qname(public_namespace, method_property_string),
+        );
         helper_multinames.push(helper_multiname);
         method_property_multinames.push(method_property);
 
@@ -682,7 +678,7 @@ fn build_adapter_abc(catalog: ScaleformHostCatalog) -> std::io::Result<Vec<u8>> 
     let ready_method = Index::new(methods.len() as u32);
     let ready_body = Index::new(method_bodies.len() as u32);
     methods.push(Method {
-        name: Index::new(18),
+        name: ready_helper_string,
         params: Vec::new(),
         return_type: Index::new(0),
         flags: MethodFlags::empty(),
@@ -712,7 +708,7 @@ fn build_adapter_abc(catalog: ScaleformHostCatalog) -> std::io::Result<Vec<u8>> 
     let destroy_method = Index::new(methods.len() as u32);
     let destroy_body = Index::new(method_bodies.len() as u32);
     methods.push(Method {
-        name: Index::new(24),
+        name: destroy_helper_string,
         params: Vec::new(),
         return_type: Index::new(0),
         flags: MethodFlags::empty(),
@@ -756,7 +752,7 @@ fn build_adapter_abc(catalog: ScaleformHostCatalog) -> std::io::Result<Vec<u8>> 
     let installer_method = Index::new(methods.len() as u32);
     let installer_body = Index::new(method_bodies.len() as u32);
     methods.push(Method {
-        name: Index::new(16),
+        name: install_helper_string,
         params: vec![MethodParam {
             name: None,
             kind: Index::new(0),
@@ -878,12 +874,7 @@ fn build_adapter_abc(catalog: ScaleformHostCatalog) -> std::io::Result<Vec<u8>> 
             uints: Vec::new(),
             doubles: Vec::new(),
             strings,
-            namespaces: vec![
-                Namespace::Package(Index::new(1)),
-                Namespace::Package(Index::new(2)),
-                Namespace::Package(Index::new(3)),
-                Namespace::Package(Index::new(20)),
-            ],
+            namespaces,
             namespace_sets: Vec::new(),
             multinames,
         },
@@ -903,16 +894,18 @@ fn build_adapter_abc(catalog: ScaleformHostCatalog) -> std::io::Result<Vec<u8>> 
     Ok(bytes)
 }
 
-fn qname(namespace: u32, name: u32) -> Multiname {
-    Multiname::QName {
-        namespace: Index::new(namespace),
-        name: Index::new(name),
-    }
+fn qname(namespace: Index<Namespace>, name: Index<String>) -> Multiname {
+    Multiname::QName { namespace, name }
 }
 
 fn add_string(strings: &mut Vec<Vec<u8>>, value: impl Into<Vec<u8>>) -> Index<String> {
     strings.push(value.into());
     Index::new(strings.len() as u32)
+}
+
+fn add_namespace(namespaces: &mut Vec<Namespace>, value: Namespace) -> Index<Namespace> {
+    namespaces.push(value);
+    Index::new(namespaces.len() as u32)
 }
 
 fn add_multiname(multinames: &mut Vec<Multiname>, value: Multiname) -> Index<Multiname> {
@@ -950,7 +943,7 @@ mod tests {
 
     use super::{
         build_adapter_abc, inject_host_object_adapter, max_stack_with_injected_bootstrap_headroom,
-        referenced_host_methods, write_ops, DESTROYED_EVENT,
+        referenced_host_methods, write_ops, DESTROYED_EVENT, LOADED_CALLBACK,
     };
     use crate::{ScaleformHostCatalog, ScaleformProfile};
 
@@ -1005,7 +998,55 @@ mod tests {
                 callback_names.push(value.0);
             }
         }
-        assert_eq!(callback_names, [22]);
+        // #2724 — assert the *identity* of the pushed callback name, not the
+        // raw pool position it happens to occupy. The old `== [22]` could only
+        // report "expected 22, got 23" for a whole-pool shift, and said nothing
+        // about the other sixteen indices.
+        assert_eq!(callback_names.len(), 1);
+        let pushed = &abc.constant_pool.strings[callback_names[0] as usize - 1];
+        assert_eq!(pushed.as_slice(), LOADED_CALLBACK.as_bytes());
+    }
+
+    /// Regression for #2725: the adapter's constant pool once carried the
+    /// vocabulary of a superseded install strategy — a `LoaderInfo` /
+    /// `getLoaderInfoByDefinition` / `addEventListener` / `complete` root
+    /// lookup and a `flash.utils::setTimeout` deferral — that no emitted op
+    /// ever referenced, shipped inside every FO4 menu the engine patches. The
+    /// adapter reaches the root through the patched lifecycle constructor
+    /// instead, so none of it is reachable. Exact pool sizes are pinned too:
+    /// the dead entries accumulated silently precisely because nothing counted.
+    #[test]
+    fn generated_adapter_pool_carries_no_abandoned_loader_strategy() {
+        let catalog = ScaleformHostCatalog::for_profile(ScaleformProfile::Fallout4Avm2);
+        let bytes = build_adapter_abc(catalog).unwrap();
+        let abc = Reader::new(&bytes).read().unwrap();
+
+        for abandoned in [
+            "flash.display",
+            "flash.utils",
+            "LoaderInfo",
+            "getLoaderInfoByDefinition",
+            "addEventListener",
+            "setTimeout",
+            "target",
+            "content",
+            "complete",
+        ] {
+            assert!(
+                !abc.constant_pool
+                    .strings
+                    .iter()
+                    .any(|string| string.as_slice() == abandoned.as_bytes()),
+                "adapter constant pool still ships the abandoned {abandoned:?} entry"
+            );
+        }
+
+        // 18 fixed strings + 3 per catalog method (helper name, `BGSCodeObj.X`
+        // transport name, bare method name); 12 fixed multinames + 2 per method
+        // (helper, installed property); public + `flash.external` namespaces.
+        assert_eq!(abc.constant_pool.strings.len(), 18 + catalog.len() * 3);
+        assert_eq!(abc.constant_pool.multinames.len(), 12 + catalog.len() * 2);
+        assert_eq!(abc.constant_pool.namespaces.len(), 2);
     }
 
     #[test]
@@ -1017,6 +1058,7 @@ mod tests {
         let archive =
             Ba2Archive::open(std::path::Path::new(&path).join("Fallout4 - Interface.ba2")).unwrap();
         let catalog = ScaleformHostCatalog::for_profile(ScaleformProfile::Fallout4Avm2);
+        let mut referenced = std::collections::BTreeSet::new();
 
         for movie in [
             "interface\\hudmenu.swf",
@@ -1033,6 +1075,28 @@ mod tests {
             assert!(
                 unknown.is_empty(),
                 "{movie} references uncataloged BGSCodeObj methods: {unknown:?}; all={methods:?}"
+            );
+            referenced.extend(methods);
+        }
+
+        // #2727 — the reverse direction. `methods ⊆ catalog` alone can never
+        // fail on a *bogus* catalog entry, which is how the mangled
+        // `functiononGPSModeButtonClicked` (#2726) survived into a checked-in
+        // 138-method catalog. This is a warning list rather than an assertion:
+        // the three-movie sample is not the whole menu set, so legitimate
+        // entries for other menus are expected to appear here.
+        let unreferenced = catalog
+            .methods()
+            .iter()
+            .map(|method| method.name)
+            .filter(|name| !referenced.contains(*name))
+            .collect::<Vec<_>>();
+        if !unreferenced.is_empty() {
+            eprintln!(
+                "note: {} of {} catalog entries are unreferenced by the 3-movie sample \
+                 (expected for menus outside it — scan for malformed names): {unreferenced:?}",
+                unreferenced.len(),
+                catalog.len()
             );
         }
     }
@@ -1169,8 +1233,7 @@ mod tests {
         // doc comment above rather than leaving a stale exclusion. If it
         // has GROWN, a new menu just started hitting the same gap.
         assert_eq!(
-            still_missing_on_destroy,
-            KNOWN_MISSING_ON_DESTROY_TRAIT,
+            still_missing_on_destroy, KNOWN_MISSING_ON_DESTROY_TRAIT,
             "the set of menus hitting the known on-destroy-trait gap changed — \
              update KNOWN_MISSING_ON_DESTROY_TRAIT (and file/link the follow-up \
              issue this comment references) rather than leaving this stale"
