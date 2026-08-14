@@ -2878,6 +2878,46 @@ impl VulkanContext {
             });
         }
 
+        // #2913 / REN-D1-01 — pin the AS↔SSBO index contract.
+        //
+        // `build_instance_map` (above) is documented as the single source of
+        // truth that the TLAS `instance_custom_index` and the compacted SSBO
+        // position must agree on, but only ONE of its two consumers actually
+        // reads it: `build_tlas_instances` indexes `instance_map[i]`, while
+        // the SSBO builder above re-derives the same compaction from
+        // `gpu_instances.len()` behind its own copy of the predicate. They
+        // agree today purely because both spell the `mesh_registry.get()`
+        // reject identically, ~800 lines apart in one function. #419 removed
+        // the divergence but not the fragility, and nothing `cargo test` can
+        // see would catch its return.
+        //
+        // This is the one point where the two counts must match EXACTLY: the
+        // draw loop has finished and the UI quad (which the map does not
+        // cover) has not been appended yet. A mismatch means a `continue` was
+        // added to the SSBO loop without a matching term in the map's
+        // predicate — which silently shifts every later SSBO entry while the
+        // TLAS custom indices stay put, so every RT hit reads the wrong
+        // `GpuInstance` (wrong model matrix, wrong `material_id`, wrong
+        // `surface_id`). That is the severity table's CRITICAL
+        // "SSBO index mismatch" row, and it fails silently — garbage
+        // material/transform in shadows/reflections/GI, not a crash or a
+        // validation error.
+        //
+        // debug_assert, matching the sibling `previous_models` pin below: the
+        // condition is an internal-consistency invariant that can only break
+        // via a code change, never via content, so it cannot fire on a user's
+        // machine mid-recording the way the content-dependent MAX_INSTANCES
+        // check could (#956).
+        debug_assert_eq!(
+            gpu_instances.len(),
+            instance_map.iter().flatten().count(),
+            "AS<->SSBO index contract broken: the SSBO compaction produced {} \
+             entries but build_instance_map mapped {} draw commands. A filter \
+             was added to one compaction and not the other (#419 / #2913).",
+            gpu_instances.len(),
+            instance_map.iter().flatten().count(),
+        );
+
         // Append UI instance (if needed) BEFORE the bulk upload so it's
         // included in the single flush. Avoids the need for a separate raw
         // pointer write + flush that was missing on non-coherent memory (#189).

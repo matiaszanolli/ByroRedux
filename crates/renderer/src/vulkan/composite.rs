@@ -1796,4 +1796,59 @@ mod composite_params_layout_tests {
              before the add — a uint-domain sum wraps mod 2^32 (#1575)"
         );
     }
+
+    /// Regression for #2920 (REN-D8-01) — both arms of composite's
+    /// sky/geometry split must reassemble the SAME set of lighting terms.
+    ///
+    /// A blend pipeline runs `depth_write_enable(false)`, so an
+    /// alpha-blended fragment with nothing opaque behind it leaves depth at
+    /// the cleared 1.0 and lands in the `is_sky` arm. #2466 restored
+    /// `direct` for those fragments; the demodulated GI term was left
+    /// behind, so the identical surface one pixel to the side — over opaque
+    /// geometry — got `indirect * albedo` while this one did not. The
+    /// symptom is a brightness discontinuity along the silhouette wherever
+    /// LIT alpha-blended geometry crosses the horizon.
+    ///
+    /// Pinned as "the sky arm reads both aux MRTs and adds their product",
+    /// not as an exact expression, so the arm can be reformatted without
+    /// tripping the guard — but not silently reverted to sky+direct only.
+    #[test]
+    fn composite_sky_arm_reassembles_indirect_like_the_geometry_arm() {
+        let shader = include_str!("../../shaders/composite.frag");
+
+        // Comment-strip first: the #2466 commentary above the branch quotes
+        // `if (is_sky) { ...; return; }` verbatim, so a naive split lands in
+        // prose instead of code.
+        let executable: String = shader
+            .lines()
+            .map(str::trim_start)
+            .filter(|l| !l.starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let sky_arm = executable
+            .split("if (is_sky) {")
+            .nth(1)
+            .and_then(|rest| rest.split("} else {").next())
+            .expect("composite.frag must retain the is_sky / geometry branch split")
+            .to_string();
+        let sky_arm = sky_arm.as_str();
+
+        assert!(
+            sky_arm.contains("indirectTex") && sky_arm.contains("albedoTex"),
+            "the is_sky arm must sample both aux MRTs — dropping either one \
+             discards the albedo-demodulated GI for alpha-blended fragments \
+             silhouetted against sky (#2920)"
+        );
+        assert!(
+            sky_arm.contains("skyIndirect * skyAlbedo"),
+            "the is_sky arm must add `indirect * albedo` the way the geometry \
+             arm does; sky + direct alone is the #2920 discontinuity"
+        );
+        assert!(
+            sky_arm.contains("compute_sky(dir) * (1.0 - coverage)")
+                && sky_arm.contains("+ direct"),
+            "#2466's coverage-weighted sky and direct terms must survive \
+             alongside the #2920 indirect term"
+        );
+    }
 }

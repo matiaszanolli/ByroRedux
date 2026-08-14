@@ -1959,3 +1959,50 @@ fn gpu_terrain_tile_glsl_and_rust_fields_stay_in_lockstep() {
          texture indices on every exterior cell with nothing failing (#2463)."
     );
 }
+
+/// Regression for #2916 (REN-D2-01) — every secondary-ray terminus must
+/// derive its surface colour through `rayHitAlbedo(mat, baseRgb)`
+/// (`texel × mat.diffuse*`), never through `GpuInstance.avgAlbedo*`.
+///
+/// `avg_albedo_*` stopped being the material tint at #1628 (`93add433`):
+/// `draw.rs` now uploads `draw_cmd.avg_albedo * handle_avg_rgb(texture)`,
+/// i.e. `diffuse_color × the diffuse texture's MEAN texel`. The IOR
+/// refraction terminus in `triangle.frag` still multiplied its own
+/// `textureLod` sample by that value, so the texture entered the product
+/// twice and everything seen through refractive glass rendered ~2–5× too
+/// dark relative to the same surface seen directly or in a mirror.
+///
+/// This is pinned as a source assertion rather than a numeric one because
+/// the failure is invisible to every runtime harness available: the
+/// `--cornell` reference scene is untextured, and `handle_avg_rgb` returns
+/// `None` for untextured handles, which collapses the double-multiply to
+/// identity on exactly that content.
+#[test]
+fn refraction_terminus_tints_through_ray_hit_albedo_not_instance_avg_albedo() {
+    let src = include_str!("../../../shaders/triangle.frag");
+
+    assert!(
+        src.contains("vec3 tColor = rayHitAlbedo(tMat, tAlbedo);"),
+        "the IOR refraction terminus must tint its texel sample with the hit \
+         material's own diffuse colour via rayHitAlbedo, the same helper \
+         traceReflection / the GI bounce / traceWaterRay / \
+         traceShadowTransmittance all use (#2916)"
+    );
+
+    // The prohibition is the load-bearing half: avgAlbedo may still be
+    // *mentioned* in commentary, but no executable read of the field may
+    // remain in this shader. `caustic_splat.comp` is the field's remaining
+    // legitimate consumer (set 0, not migrated) and is out of scope here.
+    let executable: String = src
+        .lines()
+        .map(str::trim_start)
+        .filter(|l| !l.starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !executable.contains("avgAlbedo"),
+        "triangle.frag must not read GpuInstance.avgAlbedo* — since #1628 the \
+         field is `diffuse_color × texel-mean`, so multiplying a sampled texel \
+         by it counts the texture twice (#2916)"
+    );
+}

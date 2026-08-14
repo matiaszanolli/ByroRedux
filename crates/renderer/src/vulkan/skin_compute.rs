@@ -1186,6 +1186,49 @@ mod tests {
         ));
     }
 
+    /// Regression for #2925 (PERF-D3-01) — the other half of the contract
+    /// the test above describes.
+    ///
+    /// `VulkanContext::frame_counter` has two readers: the #913 Halton-jitter
+    /// realignment, which `recreate_screen_passes` zeroes on every swapchain
+    /// recreate, and THIS LRU, which stamps `slot.last_used_frame` from the
+    /// same counter. `should_evict_skin_slot` deliberately keeps a
+    /// future-dated stamp (the safe direction — see the sibling test), so a
+    /// reset without a matching rebase silently pins every pre-reset slot
+    /// against eviction until the counter climbs back past its stale stamp:
+    /// as many frames as the session had already run. The skinned BLAS is
+    /// released through the same sweep, so the VRAM is held alongside.
+    ///
+    /// Source-asserted because the reset lives on a `&mut self` method that
+    /// needs a live device; the invariant is an ordering between two lines,
+    /// not a computable value.
+    #[test]
+    fn swapchain_recreate_rebases_skin_slot_stamps_when_it_zeroes_frame_counter() {
+        let src = include_str!("context/resize.rs");
+
+        let reset = src
+            .find("self.frame_counter = 0;")
+            .expect("recreate_screen_passes must still zero frame_counter (#913)");
+        let rebase = src
+            .find("for slot in self.skin_slots.values_mut()")
+            .expect(
+                "zeroing frame_counter must be paired with a rebase of the \
+                 SkinSlot LRU stamps that are measured against it (#2925)",
+            );
+
+        assert!(
+            rebase > reset,
+            "the SkinSlot stamp rebase must follow the frame_counter reset"
+        );
+        assert!(
+            src[rebase..].contains("last_used_frame = 0"),
+            "the rebase must reset each slot to the established \
+             `never dispatched` sentinel (0), so the slot simply skips \
+             eviction until its next dispatch re-stamps it into the new \
+             epoch (#643 / MEM-2-1 semantics reused by #2925)"
+        );
+    }
+
     // ── #1297 / #1298 (DIM12-A-01) — slot-capacity reconciliation ───
 
     /// A slot whose allocated vertex count matches the live mesh is

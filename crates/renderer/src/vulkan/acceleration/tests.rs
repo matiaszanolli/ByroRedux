@@ -1901,3 +1901,77 @@ mod tlas_commit_ordering_tests {
         }
     }
 }
+
+// ── AS↔SSBO compaction-count contract (#2913 / REN-D1-01) ──────
+//
+// `build_instance_map` is the documented single source of truth for
+// the TLAS `instance_custom_index` ↔ compacted-SSBO-position
+// agreement, but only `build_tlas_instances` reads it — the SSBO
+// builder in `draw.rs` re-derives the same compaction from
+// `gpu_instances.len()`. `draw_frame` now pins the two with a
+// `debug_assert_eq!` against `instance_map.iter().flatten().count()`.
+// These tests pin the counting rule that assert depends on, so a
+// change to the map's representation can't quietly make the guard
+// vacuous (e.g. always-0, or counting rejected slots too).
+
+#[test]
+fn instance_map_kept_count_equals_accepted_predicate_count() {
+    // The property `draw_frame`'s debug_assert relies on: the number of
+    // Some entries is exactly the number of draw commands the predicate
+    // accepted — which is what the SSBO loop's `gpu_instances.len()`
+    // independently arrives at.
+    for (total, reject) in [
+        (0_usize, vec![]),
+        (5, vec![]),
+        (5, vec![0_usize]),
+        (5, vec![1, 3]),
+        (5, vec![0, 1, 2, 3, 4]),
+        (9, vec![4]),
+    ] {
+        let map = build_instance_map(total, NO_CAP, |i| !reject.contains(&i));
+        let kept = map.iter().flatten().count();
+        assert_eq!(
+            kept,
+            total - reject.len(),
+            "flatten().count() must equal the accepted-predicate count \
+             (total={total}, rejected={reject:?})"
+        );
+        // And the compacted indices must be exactly 0..kept with no gaps —
+        // otherwise a matching COUNT could still hide a mismatched
+        // ASSIGNMENT, and the debug_assert would pass on corrupt indices.
+        let mut seen: Vec<u32> = map.iter().flatten().copied().collect();
+        seen.sort_unstable();
+        assert_eq!(
+            seen,
+            (0..kept as u32).collect::<Vec<_>>(),
+            "kept entries must compact to a dense 0..N range"
+        );
+    }
+}
+
+#[test]
+fn instance_map_kept_count_is_capped_the_same_way_the_ssbo_is() {
+    // The cap arm matters to the same contract: if the map stops mapping
+    // at `max_kept` but the SSBO loop kept pushing, the counts diverge and
+    // every TLAS custom index past the cap addresses the wrong instance.
+    let map = build_instance_map(8, 3, |_| true);
+    assert_eq!(
+        map.iter().flatten().count(),
+        3,
+        "the map must stop issuing indices at max_kept"
+    );
+    assert_eq!(
+        map,
+        vec![
+            Some(0),
+            Some(1),
+            Some(2),
+            None,
+            None,
+            None,
+            None,
+            None
+        ],
+        "over-cap draw commands must map to None, not to a wrapped index"
+    );
+}

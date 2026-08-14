@@ -1129,6 +1129,31 @@ impl VulkanContext {
         // resize frame.
         self.frame_counter = 0;
 
+        // #2925 / PERF-D3-01 — `frame_counter` has a SECOND reader that the
+        // #913 jitter reset above did not account for: it is the clock the
+        // `SkinSlot` LRU measures idleness against
+        // (`skinned_blas_refit.rs` stamps `slot.last_used_frame =
+        // self.frame_counter`, and the eviction sweep passes the same counter
+        // as `now` to `should_evict_skin_slot`). Zeroing the counter without
+        // rebasing the stamps leaves every slot holding a stamp from the old
+        // epoch, and `should_evict_skin_slot`'s `current.saturating_sub(last)`
+        // then floors to 0 — so those slots read as "used this frame" and are
+        // pinned against eviction until the counter climbs back past their
+        // stale stamp, i.e. for as many frames as the session had run before
+        // the resize. Their skinned BLAS is released through the same sweep,
+        // so the VRAM stays held too.
+        //
+        // Rebase to 0, which is already the established
+        // "never dispatched" sentinel (#643 / MEM-2-1): the affected slots
+        // simply skip eviction until their next dispatch re-stamps them into
+        // the new epoch, after which normal aging resumes. Slots that are
+        // still being drawn re-stamp on the very next frame and are
+        // unaffected; the population this actually rescues is the idle slots
+        // — exactly the ones eviction exists to reclaim.
+        for slot in self.skin_slots.values_mut() {
+            slot.last_used_frame = 0;
+        }
+
         // Force a few-frame TAA history reset + SVGF α-elevation
         // window so the first post-resize frames are clean
         // accumulations rather than reprojections against the

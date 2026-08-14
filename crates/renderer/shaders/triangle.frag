@@ -2052,19 +2052,31 @@ void main() {
                 // softens. This is what makes refraction read as "bending
                 // the scene behind" rather than a flat translucent wash.
                 float refrMip = 0.4 + roughness * 5.0;
-                vec3 tAlbedo = textureLod(
-                    textures[nonuniformEXT(tInst.textureIndex)], tUV, refrMip).rgb;
+                vec3 tAlbedo = sampleRayHitBase(tInst, tMat, tUV, refrMip).rgb;
 
-                // CRITICAL — multiply by the hit's canonical avgAlbedo
-                // (the material diffuse_color). The texture alone is the
-                // neutral white fallback for untextured/vertex-coloured
-                // surfaces (Cornell walls), so without this the refracted
+                // CRITICAL — tint the sampled texel by the hit material's
+                // own diffuse colour, through the same `rayHitAlbedo` helper
+                // every other secondary-ray terminus uses (`traceReflection`,
+                // the GI bounce loop, `traceWaterRay`,
+                // `traceShadowTransmittance`). The texture alone is the
+                // neutral white fallback for untextured / vertex-coloured
+                // surfaces (Cornell walls), so without a tint the refracted
                 // red/green walls read as flat white and the bending is
-                // invisible. For textured content avgAlbedo is the white
-                // tint, so detail is preserved. Same fix shape as the GI
-                // bounce colour (#avg_albedo).
-                vec3 tColor = tAlbedo
-                    * vec3(tInst.avgAlbedoR, tInst.avgAlbedoG, tInst.avgAlbedoB);
+                // invisible.
+                //
+                // #2916 — this used to multiply by `tInst.avgAlbedo*`, which
+                // was correct while avgAlbedo WAS the material tint. #1628
+                // redefined it as `diffuse_color × the diffuse texture's mean
+                // texel` (`draw.rs`, `gi_albedo`), so from that commit on the
+                // texture entered the product twice and every surface seen
+                // THROUGH refractive glass rendered darker than the same
+                // surface seen directly or in a mirror, by its own mean texel
+                // luminance (~2–5× on typical Bethesda diffuse maps). The
+                // Cornell harness structurally could not catch it:
+                // `handle_avg_rgb` returns None for untextured handles, which
+                // degenerates the double-multiply to identity on exactly the
+                // untextured content that scene is made of.
+                vec3 tColor = rayHitAlbedo(tMat, tAlbedo);
 
                 // Light the refracted surface with the SAME real one-bounce
                 // direct-light evaluation the GI bounce uses (giHitIrradiance:

@@ -441,9 +441,35 @@ void main() {
         // equation says. `direct` is already premultiplied against the
         // transparent-black clear the host uses whenever this branch is
         // live (`draw.rs::hdr_clear`), so it adds in directly.
+        //
+        // #2920 / REN-D8-01 — restore the INDIRECT half of the same fix.
+        // #2466 above rescued `direct` for these fragments but left the
+        // demodulated GI term behind: this branch never read `indirectTex`
+        // / `albedoTex`, so the identical surface one pixel to the side —
+        // over opaque geometry, taking the `else` arm — got
+        // `indirect * albedo` added while this one did not. The visible
+        // result was a brightness discontinuity along the silhouette
+        // wherever a LIT alpha-blended draw crosses the horizon (cloth
+        // banners, hanging signs, lit alpha-blended card geometry). Draws
+        // that early-out with `outRawIndirect = vec4(0.0)` — the
+        // effect-shader / `MAT_FLAG_EFFECT_SOFT` arm, `MATERIAL_KIND_NO_LIGHTING`,
+        // and both glass exits — are unaffected either way, which is why the
+        // gap survived: the most common sky-silhouetted draws zero the term
+        // anyway.
+        //
+        // Deliberately CONSISTENT with the geometry arm, not exact: the
+        // demodulated reassembly `indirect * albedo` is not linear in the
+        // blend operator, so over the transparent-black clear the product
+        // carries coverage twice (`coverage²·(I·A)`). Matching the `else`
+        // arm is the smaller and safer change; making it exact would mean
+        // dividing the premultiply out once — and only once — on both arms.
         vec3 dir = screen_to_world_dir(fragUV);
         float coverage = clamp(direct4.a, 0.0, 1.0);
-        combined = compute_sky(dir) * (1.0 - coverage) + direct;
+        vec3 skyIndirect = texture(indirectTex, fragUV).rgb;
+        vec3 skyAlbedo = texture(albedoTex, fragUV).rgb;
+        combined = compute_sky(dir) * (1.0 - coverage)
+            + direct
+            + skyIndirect * skyAlbedo;
     } else {
         // Geometry pixel: combine direct + (indirect × albedo) and tone map.
         // The shader wrote lighting-only indirect (no local albedo) so
