@@ -1773,9 +1773,25 @@ void main() {
             // which reads as "frosted glass behind glass" — visually
             // acceptable and bounded in cost.
             const int REFRACT_PASSTHRU_BUDGET = 2;
+            // Total world-space reach of the refraction ray, shared across
+            // every passthru segment (#2482). Previously each iteration
+            // re-issued the query with a fresh hard-coded 2000.0 tMax while
+            // advancing `rayOrigin` past the skipped interface, so with
+            // BUDGET = 2 the ray could travel ~6000 units across three
+            // segments while the code and comments described a 2000-unit
+            // reach. `accumulatedDist` was tracked for the distance
+            // attenuation term but never fed back into tMax. Decrement it
+            // per segment, matching the three sibling traversal loops
+            // (`raytrace.glsl::traceReflection`'s `remaining -= advance`,
+            // `shadow_transport.glsl::traceShadowTransmittance`,
+            // `traceWaterRay`). A segment that exhausts the budget yields a
+            // zero-length query, which reports no hit and takes the
+            // existing `hit = false` escape path — no extra guard needed.
+            const float REFRACT_MAX_REACH = 2000.0;
             vec3 rayOrigin = fragWorldPos - N_geom_view * 0.1;
             float rayTMin = 0.05;
             float accumulatedDist = 0.0;
+            float refrRemaining = REFRACT_MAX_REACH;
             // The entry refraction above placed this ray inside the primary
             // glass volume. Track medium transitions explicitly: the former
             // loop treated every later glass hit as an exit, so the air gap
@@ -1798,7 +1814,7 @@ void main() {
                 rayQueryInitializeEXT(
                     refrRQ, topLevelAS,
                     gl_RayFlagsOpaqueEXT, 0xFF,
-                    rayOrigin, rayTMin, refractDir, 2000.0
+                    rayOrigin, rayTMin, refractDir, refrRemaining
                 );
                 // Refraction shades the committed surface; traversal-order
                 // any-hit is only valid for visibility queries.
@@ -1889,6 +1905,10 @@ void main() {
                     rayOrigin = exitPoint + refractDir * 0.05;
                     rayTMin = 0.0;
                     accumulatedDist += hDist;
+                    // Charge this segment (plus the re-origin epsilon) to
+                    // the shared reach so the three segments together span
+                    // REFRACT_MAX_REACH rather than 3× it (#2482).
+                    refrRemaining = max(refrRemaining - (hDist + 0.05), 0.0);
                     continue;
                 }
 
