@@ -248,10 +248,21 @@ pub struct FunctionInfo {
     pub object_name: String,
     pub state_name: String,
     pub function_name: String,
-    /// `Method` / `Getter` / `Setter`; `Method` when the byte is unknown.
+    /// `Method` / `Getter` / `Setter`; `None` when the byte is unknown — the
+    /// `Option` exists for exactly that case (`reader.rs`'s `_ => None` arm).
     pub function_type: Option<FunctionType>,
-    /// One source line per instruction — the decompiler's boolean-operator
-    /// reconstruction uses these to avoid merging across source lines.
+    /// One source line per instruction, parsed to keep the debug-info stream
+    /// aligned. **Currently unread** — no consumer anywhere in the workspace.
+    ///
+    /// #2665 — this used to claim the boolean-operator pass consults these to
+    /// reject merges spanning source lines. It does not, and the difference is
+    /// load-bearing rather than cosmetic: declining that check is
+    /// `decompile::boolean`'s deliberate departure 1 from Champollion, and the
+    /// *edge shape* is what carries the guard instead (#2655 — without it a
+    /// `While` whose body recomputes the loop condition was silently collapsed
+    /// into an `&&` and the loop vanished). A reader trusting this docstring
+    /// would conclude a line check already backstops that pass and dismiss a
+    /// real cross-line merge bug as impossible.
     pub line_numbers: Vec<u16>,
 }
 

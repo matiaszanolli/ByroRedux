@@ -253,32 +253,23 @@ impl PersistentCellApplyJob {
                 return PersistentCellApplyProgress::Pending(self);
             }
             let placed = &self.logical_stub_refs[self.next_logical_stub];
-            let entity = world.spawn();
-            let plugin_name =
-                super::load_order::plugin_for_form_id(placed.form_id, &wctx.load_order)
-                    .unwrap_or("Engine.esm");
-            let form_id = world
-                .resource_mut::<byroredux_core::form_id::FormIdPool>()
-                .intern(byroredux_core::form_id::FormIdPair {
-                    plugin: byroredux_core::form_id::PluginId::from_filename(plugin_name),
-                    local: byroredux_core::form_id::LocalFormId(placed.form_id),
-                });
-            world.insert(
-                entity,
-                byroredux_core::ecs::components::FormIdComponent(form_id),
-            );
-            world.insert(
-                entity,
-                byroredux_scripting::SceneAliasCandidate {
-                    reference_form_id: placed.form_id,
-                    base_form_id: placed.base_form_id,
-                    linked_refs: placed
-                        .linked_refs
-                        .iter()
-                        .map(|link| (link.keyword, link.target))
-                        .collect(),
-                    location_ref_types: placed.location_ref_types.clone(),
-                },
+            // #2664 (SCR-D7-NEW11-03) — this used to open-code
+            // `stamp_quest_reference`'s body and insert nothing else. Two
+            // problems, one of them live: the copy would drift from the
+            // canonical stamper as `SceneAliasCandidate` grows (the
+            // divergence #2541 guards against), and it left the entity with
+            // no transform at all, which excludes it from every
+            // distance-ranked alias fill (see
+            // `spawn_logical_quest_reference`'s docs). `placed.position` was
+            // available the whole time. Same conversion as the REFR
+            // placement path in `references::load_references_budgeted`.
+            super::references::spawn_logical_quest_reference(
+                world,
+                placed,
+                &wctx.load_order,
+                super::transition::position_zup_to_yup(placed.position),
+                super::transition::rotation_zup_to_yup_quat(placed.rotation),
+                placed.scale,
             );
             self.next_logical_stub += 1;
             budget.complete_unit();
@@ -409,6 +400,50 @@ fn persistent_position_is_local(
     let gx = (position_zup[0] / EXTERIOR_CELL_UNITS).floor() as i32;
     let gy = (position_zup[1] / EXTERIOR_CELL_UNITS).floor() as i32;
     (gx - center_grid.0).abs().max((gy - center_grid.1).abs()) <= radius.max(0)
+}
+
+/// Regression for #2664 (SCR-D7-NEW11-03): the persistent-cell logical-actor
+/// stub must route through the one shared spawner.
+///
+/// Driving `PersistentCellApplyJob::apply` needs a `VulkanContext` and on-disk
+/// game data, out of `cargo test` scope — so this pins the wiring the way the
+/// reference loader's own untestable paths are pinned (see
+/// `references/source_pin_tests.rs`). What it guards is the *duplication*: the
+/// loop used to carry a verbatim copy of `stamp_quest_reference`'s body, which
+/// both drifts as `SceneAliasCandidate` grows (#2541's invariant) and — the
+/// live consequence — inserted no transform, excluding the entity from every
+/// distance-ranked alias fill. The behavioural half is pinned in
+/// `byroredux-scripting`'s
+/// `quest_alias_closest_fill_needs_a_transform_on_its_only_candidate`.
+#[cfg(test)]
+mod logical_stub_source_pin_tests {
+    /// This file's own source. Self-matching is not a risk here: the literals
+    /// below appear in the assertions themselves, so each is checked for a
+    /// count rather than mere presence where that matters.
+    const SRC: &str = include_str!("exterior.rs");
+
+    #[test]
+    fn logical_actor_stubs_spawn_through_the_shared_transform_bearing_helper() {
+        assert!(
+            SRC.contains("references::spawn_logical_quest_reference("),
+            "the persistent-cell logical stub must call the shared spawner, not \
+             open-code the identity components"
+        );
+        assert!(
+            SRC.contains("transition::position_zup_to_yup(placed.position)"),
+            "the stub must be given the REFR's own placement, converted the same \
+             way the reference loader converts it"
+        );
+        // The hand-rolled block this replaced constructed the candidate inline.
+        // One occurrence is this assertion's own literal.
+        assert_eq!(
+            SRC.matches("SceneAliasCandidate {").count(),
+            1,
+            "the alias-candidate component must be built only by \
+             `stamp_quest_reference`; a second construction site here is the \
+             duplication #2664 removed"
+        );
+    }
 }
 
 #[cfg(test)]

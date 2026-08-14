@@ -30,7 +30,14 @@
 //! 2. **Termination guard.** The C++ unconditionally re-processes the
 //!    source block after a potential `||`; we re-process only when a
 //!    collapse actually merged a non-exit block (which strictly shrinks
-//!    the graph), so the loop always terminates.
+//!    the graph), so the `while` loop in [`BoolPass::rebuild`] terminates.
+//!
+//!    #2667 — that argument covers the *iterative* loop only. The same
+//!    edge adoption can drive `rebuild`'s **recursion** back into the block
+//!    range it is already walking (the adopted `next` points at the range
+//!    start for `&&`, `on_false` for `||`), and nothing about a shrinking
+//!    graph bounds that. [`MAX_REBUILD_DEPTH`] is what bounds it, and the
+//!    resulting `RecursionLimit` is a clean decline.
 
 use std::collections::BTreeMap;
 
@@ -133,6 +140,10 @@ impl BoolPass<'_> {
     fn rebuild(&mut self, start: usize, end: usize, depth: usize) -> Result<(), DecompileError> {
         if depth > MAX_REBUILD_DEPTH {
             return Err(DecompileError::RecursionLimit {
+                // #2667 — not "control-flow": this pass runs one step before
+                // that one, and a chain that overflows here used to be
+                // reported under the other pass's name.
+                pass: "short-circuit boolean",
                 function: self.func_name.to_string(),
                 limit: MAX_REBUILD_DEPTH,
             });
@@ -177,17 +188,36 @@ impl BoolPass<'_> {
     /// `op`. Returns `true` when a collapse merged a non-exit rejoin block
     /// (so `current` should be re-processed for a further chain).
     fn collapse(&mut self, current: usize, cond: &str, op: BoolOp) -> Result<bool, DecompileError> {
-        let src = self
-            .cfg
-            .block(current)
-            .cloned()
-            .expect("source block exists");
+        // #2667 (SCR-D3-NEW11-02) — this was `.expect("source block exists")`,
+        // an invariant *inherited* rather than local. `rebuild` verifies the
+        // block exists, but then recurses into the operand range before
+        // calling here, and a nested `collapse` whose rejoin is an enclosing
+        // (on-stack) block removes that ancestor from the CFG. The panic
+        // survived only because the adopted edge necessarily points back into
+        // the range being walked, so `rebuild` re-enters and `MAX_REBUILD_DEPTH`
+        // fires first — a crafted `.pex` reaches `RecursionLimit`, not this
+        // line. That is a real guarantee today and no guarantee at all if the
+        // cap is ever raised or bypassed, so decline locally instead.
+        let Some(src) = self.cfg.block(current).cloned() else {
+            return Ok(false);
+        };
         // For `&&` the operand is the true block and the rejoin is the
         // false block; for `||` they swap.
         let (operand_key, rejoin_key) = match op {
             BoolOp::And => (src.on_true(), src.on_false),
             BoolOp::Or => (src.on_false, src.on_true()),
         };
+        if operand_key == current || rejoin_key == current {
+            // #2667 — a self-referential edge. Sibling of the degenerate shape
+            // below: folding `current` into itself would have the rejoin merge
+            // remove the very block being rewritten (`blocks.remove(&rejoin_key)`
+            // after `blocks.get_mut(&current)`), leaving every predecessor
+            // pointing at a hole. Declining here is also what keeps the two
+            // remaining `get_mut(&current).expect(…)` uses below *locally*
+            // sound: after this guard, nothing between the lookup above and
+            // those calls can remove `current`.
+            return Ok(false);
+        }
         if operand_key == rejoin_key {
             // Degenerate/adversarial shape (SCR-D3-NEW-01 / #2028): a
             // conditional block whose true and false edges are the same
@@ -226,9 +256,14 @@ impl BoolPass<'_> {
 
         // Build the combined expression onto the source scope.
         let mut src_scope = self.scopes.remove(&current).unwrap_or_default();
-        let left = src_scope
-            .pop()
-            .expect("conditional source has a last statement");
+        // #2667 — likewise inherited, not local: `rebuild` checked
+        // `!scope.is_empty()` on a *clone* taken before the recursive
+        // `rebuild` call, which can have merged this scope away in the
+        // meantime. Put it back and decline rather than panic.
+        let Some(left) = src_scope.pop() else {
+            self.scopes.insert(current, src_scope);
+            return Ok(false);
+        };
         src_scope.push(combine(left, op.as_str(), right, cond));
 
         // The operand block is now folded into the expression — drop it.
@@ -549,6 +584,172 @@ mod tests {
         );
     }
 
+    /// #2667 (SCR-D3-NEW11-02) — `collapse` must not assume the block it was
+    /// asked about still exists.
+    ///
+    /// `rebuild` verifies it before recursing into the operand range, but a
+    /// nested collapse whose rejoin is an *enclosing* (on-stack) block removes
+    /// that ancestor from the CFG; the ancestor's own `collapse` then ran
+    /// `self.cfg.block(current).expect("source block exists")` on a hole. The
+    /// panic was unreachable only because the adopted edge forces `rebuild`
+    /// back into the range it is walking, so `MAX_REBUILD_DEPTH` fires first —
+    /// a property of a *cap*, not a local invariant. Calling `collapse`
+    /// directly is what separates the two: no recursion is involved here, so
+    /// nothing but the guard itself is under test.
+    #[test]
+    fn collapse_declines_when_its_source_block_is_gone() {
+        let mut cfg = Cfg {
+            blocks: BTreeMap::new(),
+            entry: 0,
+            exit: 2,
+        };
+        // Deliberately empty: `current` was removed by an inner collapse.
+        let mut scopes: BTreeMap<usize, Vec<Node>> = BTreeMap::new();
+        let mut pass = BoolPass {
+            cfg: &mut cfg,
+            scopes: &mut scopes,
+            func_name: "VanishedSource",
+        };
+
+        let collapsed = pass
+            .collapse(0, "t", BoolOp::And)
+            .expect("a missing source block must decline, not error");
+        assert!(!collapsed, "nothing was merged, so nothing to re-process");
+    }
+
+    /// #2667 — the same locality point for the source *scope*. `rebuild`
+    /// checks `!scope.is_empty()` on a clone taken before its recursive call,
+    /// so by the time `collapse` pops the last statement the scope may have
+    /// been merged away. Declining must also leave the scope where it was:
+    /// `collapse` removes it from the map before popping.
+    #[test]
+    fn collapse_declines_and_restores_when_the_source_scope_is_empty() {
+        let mut cfg = Cfg {
+            blocks: BTreeMap::new(),
+            entry: 0,
+            exit: 3,
+        };
+        cfg.blocks.insert(
+            0,
+            CodeBlock {
+                begin: 0,
+                end: 0,
+                next: 1,
+                on_false: 2,
+                condition: Some("t".to_string()),
+            },
+        );
+        // Operand falls through to the rejoin, so the collapse gets as far as
+        // popping the source scope's last statement.
+        cfg.blocks.insert(
+            1,
+            CodeBlock {
+                begin: 1,
+                end: 1,
+                next: 2,
+                on_false: END,
+                condition: None,
+            },
+        );
+        cfg.blocks.insert(
+            2,
+            CodeBlock {
+                begin: 2,
+                end: 2,
+                next: 3,
+                on_false: END,
+                condition: None,
+            },
+        );
+        let mut scopes: BTreeMap<usize, Vec<Node>> = BTreeMap::new();
+        scopes.insert(0, Vec::new());
+        scopes.insert(
+            1,
+            vec![Node::assign(
+                SYNTH_IP,
+                Node::constant(SYNTH_IP, id("t")),
+                Node::constant(SYNTH_IP, id("b")),
+            )],
+        );
+        let mut pass = BoolPass {
+            cfg: &mut cfg,
+            scopes: &mut scopes,
+            func_name: "EmptySource",
+        };
+
+        let collapsed = pass
+            .collapse(0, "t", BoolOp::And)
+            .expect("an empty source scope must decline, not error");
+        assert!(!collapsed);
+        assert!(
+            pass.scopes.contains_key(&0),
+            "the declined source scope must be put back, not left removed"
+        );
+        assert!(
+            pass.cfg.blocks.contains_key(&1) && pass.scopes.contains_key(&1),
+            "declining must not consume the operand block"
+        );
+    }
+
+    /// #2667 — a self-referential rejoin edge. Merging it would run
+    /// `blocks.remove(&rejoin_key)` on the very block just rewritten through
+    /// `blocks.get_mut(&current)`, leaving every predecessor pointing at a
+    /// hole. Sibling of `collapse_declines_when_operand_and_rejoin_keys_are_equal`.
+    #[test]
+    fn collapse_declines_when_the_rejoin_is_the_source_itself() {
+        let mut cfg = Cfg {
+            blocks: BTreeMap::new(),
+            entry: 0,
+            exit: 2,
+        };
+        cfg.blocks.insert(
+            0,
+            CodeBlock {
+                begin: 0,
+                end: 0,
+                next: 1,
+                // `&&` takes the false edge as the rejoin — point it at self.
+                on_false: 0,
+                condition: Some("t".to_string()),
+            },
+        );
+        cfg.blocks.insert(
+            1,
+            CodeBlock {
+                begin: 1,
+                end: 1,
+                next: 0,
+                on_false: END,
+                condition: None,
+            },
+        );
+        let mut scopes: BTreeMap<usize, Vec<Node>> = BTreeMap::new();
+        for key in [0usize, 1] {
+            scopes.insert(
+                key,
+                vec![Node::assign(
+                    SYNTH_IP,
+                    Node::constant(SYNTH_IP, id("t")),
+                    Node::constant(SYNTH_IP, id("a")),
+                )],
+            );
+        }
+        let mut pass = BoolPass {
+            cfg: &mut cfg,
+            scopes: &mut scopes,
+            func_name: "SelfRejoin",
+        };
+
+        let collapsed = pass
+            .collapse(0, "t", BoolOp::And)
+            .expect("a self-referential rejoin must decline, not error");
+        assert!(!collapsed);
+        assert!(
+            pass.cfg.blocks.contains_key(&0),
+            "the source block must survive its own declined collapse"
+        );
+    }
+
     /// SCR-D2-01 (#1815) — an adversarial / malformed `.pex` that would nest
     /// short-circuit operands deeper than the cap is rejected with a
     /// `RecursionLimit` error rather than overflowing the stack. Mirrors
@@ -573,6 +774,18 @@ mod tests {
         assert!(
             matches!(err, DecompileError::RecursionLimit { limit, .. } if limit == MAX_REBUILD_DEPTH),
             "got {err:?}"
+        );
+        // #2667 — and it must name *this* pass. The message used to hardcode
+        // "control-flow reconstruction", so a short-circuit-chain overflow
+        // sent triage to the other file.
+        let text = err.to_string();
+        assert!(
+            text.contains("short-circuit boolean"),
+            "a boolean-pass overflow must say so: {text}"
+        );
+        assert!(
+            !text.contains("control-flow"),
+            "and must not attribute itself to the control-flow pass: {text}"
         );
     }
 }

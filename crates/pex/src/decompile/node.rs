@@ -433,3 +433,170 @@ pub(crate) fn is_temp_var(name: &str) -> bool {
     (name.len() > 6 && name.starts_with("::temp") && !name.ends_with("_var"))
         || name.eq_ignore_ascii_case("::nonevar")
 }
+
+/// #2666 (SCR-D2-NEW11-01) — [`Node::child_nodes`] and
+/// [`Node::child_nodes_mut`] are two independently maintained traversals over
+/// the same shape, and copy-propagation splits its work across them: the
+/// count runs on the immutable one, the substitution on the mutable one.
+///
+/// They agreed by inspection but nothing pinned it, and this file had no
+/// tests at all. A variant enumerated by one and not the other is a silent
+/// wrong AST — `lift::rebuild_expression` now fails closed on the mismatch
+/// instead of a `debug_assert!`, but the mismatch itself should never get
+/// that far.
+#[cfg(test)]
+mod child_traversal_parity_tests {
+    use super::*;
+
+    /// Bump together with [`variant_name`]'s match — the count is what turns
+    /// "added a `NodeKind` variant and an arm, but no sample" into a failure
+    /// rather than a silent coverage hole.
+    const NODE_KIND_VARIANTS: usize = 16;
+
+    fn leaf(tag: &str) -> Node {
+        Node::constant(0, Value::Identifier(tag.to_string()))
+    }
+
+    /// Exhaustive by construction: adding a `NodeKind` variant stops this
+    /// compiling until it is named here (there is deliberately no `_` arm).
+    fn variant_name(kind: &NodeKind) -> &'static str {
+        match kind {
+            NodeKind::Constant(_) => "Constant",
+            NodeKind::IdentifierString(_) => "IdentifierString",
+            NodeKind::BinaryOp { .. } => "BinaryOp",
+            NodeKind::UnaryOp { .. } => "UnaryOp",
+            NodeKind::Copy { .. } => "Copy",
+            NodeKind::Cast { .. } => "Cast",
+            NodeKind::Assign { .. } => "Assign",
+            NodeKind::CallMethod { .. } => "CallMethod",
+            NodeKind::Return { .. } => "Return",
+            NodeKind::PropertyAccess { .. } => "PropertyAccess",
+            NodeKind::ArrayCreate { .. } => "ArrayCreate",
+            NodeKind::ArrayLength { .. } => "ArrayLength",
+            NodeKind::ArrayAccess { .. } => "ArrayAccess",
+            NodeKind::StructCreate { .. } => "StructCreate",
+            NodeKind::IfElse { .. } => "IfElse",
+            NodeKind::While { .. } => "While",
+        }
+    }
+
+    /// One node per variant. Multi-child shapes get *distinguishable*
+    /// children so the comparison below catches a reordering, not just a
+    /// count change.
+    fn one_of_every_kind() -> Vec<Node> {
+        vec![
+            leaf("bare"),
+            Node::identifier_string(0, "Parent"),
+            Node {
+                kind: NodeKind::BinaryOp {
+                    left: Box::new(leaf("l")),
+                    op: "+".to_string(),
+                    right: Box::new(leaf("r")),
+                },
+                result: None,
+                begin: 0,
+                end: 0,
+                precedence: 0,
+            },
+            wrap(NodeKind::UnaryOp {
+                op: "!".to_string(),
+                operand: Box::new(leaf("o")),
+            }),
+            wrap(NodeKind::Copy {
+                value: Box::new(leaf("v")),
+            }),
+            wrap(NodeKind::Cast {
+                value: Box::new(leaf("v")),
+                target_type: "Int".to_string(),
+            }),
+            wrap(NodeKind::Assign {
+                dest: Box::new(leaf("d")),
+                value: Box::new(leaf("v")),
+            }),
+            wrap(NodeKind::CallMethod {
+                object: Box::new(leaf("obj")),
+                method: "Foo".to_string(),
+                params: vec![leaf("p0"), leaf("p1")],
+                experimental: false,
+            }),
+            wrap(NodeKind::Return {
+                value: Some(Box::new(leaf("rv"))),
+            }),
+            // The `None` payload is its own shape — zero children through a
+            // field that usually has one.
+            wrap(NodeKind::Return { value: None }),
+            wrap(NodeKind::PropertyAccess {
+                object: Box::new(leaf("obj")),
+                property: "Bar".to_string(),
+            }),
+            wrap(NodeKind::ArrayCreate {
+                element_type: "Int".to_string(),
+                size: Box::new(leaf("n")),
+            }),
+            wrap(NodeKind::ArrayLength {
+                array: Box::new(leaf("a")),
+            }),
+            wrap(NodeKind::ArrayAccess {
+                array: Box::new(leaf("a")),
+                index: Box::new(leaf("i")),
+            }),
+            wrap(NodeKind::StructCreate {
+                struct_type: "S".to_string(),
+            }),
+            wrap(NodeKind::IfElse {
+                condition: Box::new(leaf("c")),
+                body: vec![leaf("b0")],
+                else_body: vec![leaf("e0"), leaf("e1")],
+                else_if: vec![leaf("ei0")],
+            }),
+            wrap(NodeKind::While {
+                condition: Box::new(leaf("c")),
+                body: vec![leaf("b0"), leaf("b1")],
+            }),
+        ]
+    }
+
+    fn wrap(kind: NodeKind) -> Node {
+        Node {
+            kind,
+            result: None,
+            begin: 0,
+            end: 0,
+            precedence: 0,
+        }
+    }
+
+    #[test]
+    fn child_nodes_and_child_nodes_mut_enumerate_the_same_children() {
+        for mut node in one_of_every_kind() {
+            let name = variant_name(&node.kind);
+            let immutable: Vec<Node> = node.child_nodes().into_iter().cloned().collect();
+            let mutable: Vec<Node> = node
+                .child_nodes_mut()
+                .into_iter()
+                .map(|child| child.clone())
+                .collect();
+            assert_eq!(
+                immutable, mutable,
+                "{name}: child_nodes() and child_nodes_mut() disagree — \
+                 copy-propagation counts with one and substitutes with the \
+                 other, so a divergence here is a wrong AST (#2666)"
+            );
+        }
+    }
+
+    #[test]
+    fn every_node_kind_variant_is_covered() {
+        let mut names: Vec<&'static str> = one_of_every_kind()
+            .iter()
+            .map(|node| variant_name(&node.kind))
+            .collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(
+            names.len(),
+            NODE_KIND_VARIANTS,
+            "the parity sample must cover every NodeKind variant; covered: {names:?}"
+        );
+    }
+}

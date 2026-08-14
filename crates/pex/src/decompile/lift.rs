@@ -400,7 +400,26 @@ pub(super) fn rebuild_expression(
                 let producer = std::mem::replace(&mut scope[i], placeholder);
                 let mut slot = Some(producer);
                 replace_constant_id(&mut scope[j], &temp, &mut slot);
-                debug_assert!(slot.is_none(), "verified single match must be consumed");
+                if slot.is_some() {
+                    // #2666 / SCR-D2-NEW11-01 — this was a `debug_assert!`,
+                    // i.e. nothing at all in release. The postcondition it
+                    // states ("the match `count_constant_id` verified was
+                    // consumed") spans two independently maintained
+                    // traversals: the count walks `Node::child_nodes()`, the
+                    // replace walks `Node::child_nodes_mut()`. They agree
+                    // today — pinned by `node.rs`'s parity test as of this
+                    // fix — but if one ever gains an arm the other lacks, the
+                    // release build would take the *success* path with the
+                    // producer still in hand: the statement is unlinked below
+                    // and dropped, while its consumer keeps a dangling
+                    // `::tempN` reference. That is a wrong AST emitted
+                    // without an error, the one degradation this pass's `>1`
+                    // arm already refuses to make. Fail closed the same way.
+                    return Err(DecompileError::ExpressionRebuildFailed {
+                        function: func_name.to_string(),
+                        ip: scope[j].begin,
+                    });
+                }
 
                 // Unlink `i` from the live chain.
                 removed[i] = true;

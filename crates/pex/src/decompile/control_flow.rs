@@ -107,6 +107,7 @@ impl Reconstructor {
     ) -> Result<Vec<Node>, DecompileError> {
         if depth > MAX_REBUILD_DEPTH {
             return Err(DecompileError::RecursionLimit {
+                pass: "control-flow",
                 function: self.func_name.clone(),
                 limit: MAX_REBUILD_DEPTH,
             });
@@ -277,6 +278,9 @@ mod tests {
             matches!(err, DecompileError::RecursionLimit { limit, .. } if limit == MAX_REBUILD_DEPTH),
             "got {err:?}"
         );
+        // #2667 — the message is per-pass now; this is the pass whose name it
+        // used to hardcode for both.
+        assert!(err.to_string().contains("control-flow"), "got {err}");
     }
 
     /// SCR-D3-01 (#1732) — when the block before the false exit is itself

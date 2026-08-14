@@ -442,6 +442,95 @@ fn quest_alias_closest_to_alias_selects_by_world_distance() {
     );
 }
 
+/// Regression for #2664 (SCR-D7-NEW11-03): a distance-ranked alias whose only
+/// candidate is a logical identity stub — a REFR that produced no 3D — must
+/// still fill.
+///
+/// The ranking loop reads `world.get::<GlobalTransform>(entity)?` *inside a
+/// `filter_map`*, so a candidate without one is not ranked last, it is dropped
+/// from the `min_by` entirely and `chosen` comes back `None`. The alias then
+/// stays unfilled with no log line and no error. That is exactly the shape the
+/// worldspace persistent-cell loader used to spawn for remote / spawn-less
+/// persistent `ACHR`s — the population M47.3 was built around — because it
+/// open-coded `stamp_quest_reference` and inserted no transform.
+///
+/// Both directions are asserted: the transform-bearing stub fills, and the
+/// transform-less one silently does not. The second half is what makes the
+/// first half meaningful rather than incidentally true.
+#[test]
+fn quest_alias_closest_fill_needs_a_transform_on_its_only_candidate() {
+    use byroredux_core::math::{Quat, Vec3};
+
+    fn resolve_with_stub(stub_has_transform: bool) -> (World, Option<EntityId>) {
+        let mut world = World::new();
+        crate::register(&mut world);
+        world.register::<GlobalTransform>();
+        let anchor = world.spawn();
+        let stub = world.spawn();
+        for (entity, reference, base) in [(anchor, 0xA0, 0xB0), (stub, 0xA1, 0xB1)] {
+            world.insert(
+                entity,
+                SceneAliasCandidate {
+                    reference_form_id: reference,
+                    base_form_id: base,
+                    linked_refs: Vec::new(),
+                    location_ref_types: Vec::new(),
+                },
+            );
+        }
+        world.insert(
+            anchor,
+            GlobalTransform::new(Vec3::new(0.0, 0.0, 0.0), Quat::IDENTITY, 1.0),
+        );
+        if stub_has_transform {
+            world.insert(
+                stub,
+                GlobalTransform::new(Vec3::new(5.0, 0.0, 0.0), Quat::IDENTITY, 1.0),
+            );
+        }
+        install_scene_quest_aliases(
+            &mut world,
+            [QustRecord {
+                form_id: QUEST,
+                aliases: vec![
+                    QuestAlias {
+                        alias_id: 0,
+                        fill_type: Some(AliasFillType::ForcedReference(0xA0)),
+                        ..Default::default()
+                    },
+                    QuestAlias {
+                        alias_id: 1,
+                        fill_type: Some(AliasFillType::UniqueActor(0xB1)),
+                        closest_to_alias: Some(0),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }],
+        );
+        refresh_scene_actor_bindings(&world);
+        let resolved = world
+            .resource::<SceneActorBindings>()
+            .resolve(QuestFormId(QUEST), 1);
+        (world, resolved)
+    }
+
+    let (_world, transform_bearing) = resolve_with_stub(true);
+    assert!(
+        transform_bearing.is_some(),
+        "a logical stub carrying a transform must still be rankable, or every \
+         distance-anchored alias over 3D-less references is unfillable"
+    );
+
+    let (_world, positionless) = resolve_with_stub(false);
+    assert_eq!(
+        positionless, None,
+        "premise check: without a transform the candidate is filtered out of the \
+         ranking entirely — this is the silent failure #2664 fixes at the spawn \
+         site, not something the resolver can recover from"
+    );
+}
+
 #[test]
 fn quest_alias_near_alias_resolves_linked_ref_child() {
     let mut world = World::new();
