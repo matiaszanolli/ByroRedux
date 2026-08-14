@@ -837,6 +837,51 @@ unexercised.
    recovered and net frame recovery separately, so the gross pixel saving is
    never quoted as the player-visible win.
 
+   **Current table — stepped camera, engine `34074b93`, 2026-08-14 (#2835).**
+   Raw rows: `docs/audits/BENCH_stepped-camera_34074b93.tsv`. 75 runs, zero
+   failures, every scene-state fingerprint gate passing.
+
+   | scene | TAA | FSR Quality | net recovery |
+   |---|---:|---:|---:|
+   | Cornell (37 ent) | 175.7 fps / 5.69 ms | 277.6 fps / 3.60 ms | +2.09 ms (+37%) |
+   | Prospector (3757 ent) | 71.0 fps / 14.08 ms | 129.2 fps / 7.74 ms | +6.34 ms (+45%) |
+   | Whiterun (5183 ent) | 89.9 fps / 11.12 ms | 157.5 fps / 6.35 ms | +4.77 ms (+43%) |
+   | MedTek (32920 ent) | 42.5 fps / 23.52 ms | 69.4 fps / 14.40 ms | +9.12 ms (+39%) |
+   | Dugout Inn (7346 ent) | 81.9 fps / 12.21 ms | 103.9 fps / 9.63 ms | +2.58 ms (+21%) |
+
+   > **Not comparable with the superseded table below**, and the gap is not a
+   > regression. Three things changed at once: the workload (`f19f7f15` swapped
+   > a parked capture for `--bench-mode renderer-stepped --bench-camera orbit`,
+   > so the camera now moves and every frame pays disocclusion), the framing
+   > (`76373774` fixed the orbit/dolly radius, which had been the camera's
+   > distance from the **world origin** — Prospector and Dugout were previously
+   > rendering an *empty view*, `gpu_main_render` 0.010 ms against 1214 draws),
+   > and the engine (`4de5e78e` corrected `viewSpaceToMetersFactor`, which per
+   > #2834 shifts FSR's own distance-tuned thresholds — that shift *is* the
+   > measurement of the fix). Entity counts also moved with content work.
+   >
+   > What survives the methodology change is the shape of the result, which is
+   > the part the default switch rests on: FSR Quality is a net win on every
+   > scene, and the ordering across presets is unchanged.
+
+   The upscale dispatch costs 0.15–0.23 ms and presentation ~0.01 ms, both
+   effectively flat across scenes — so on every game scene the net recovery
+   tracks the render-work recovery closely, and the preset's cost is a rounding
+   error against what it saves.
+
+   **Native AA is at best break-even and usually a net loss** (−5% to +1%;
+   Prospector's +1% is inside its own ±0.22 ms run spread, i.e. not a win).
+   That is the expected result, not a defect: at 1.0× it pays reconstruction
+   with no pixel savings. It exists to separate reconstruction quality from
+   upscaling quality, and should not be offered as a performance option.
+
+   **Dugout Inn is the weakest case for Quality (+21%)** and the one scene
+   where the preset ladder matters most — Performance recovers +59% there. Its
+   render-resolution work (8.87 ms at Quality) stays a larger share of the
+   frame than elsewhere, so less of the frame is upscaler-addressable.
+
+   <details><summary>Superseded — parked camera, harness <code>e153b50c</code>, 2026-07-24</summary>
+
    | scene | TAA | FSR Quality | net recovery |
    |---|---:|---:|---:|
    | Cornell (25 ent) | 363.1 fps / 2.75 ms | 535.4 fps / 1.87 ms | +0.88 ms (+32%) |
@@ -845,26 +890,11 @@ unexercised.
    | MedTek (31495 ent) | 15.2 fps / 65.88 ms | 46.7 fps / 21.41 ms | +44.47 ms (+68%) |
    | Dugout Inn (6978 ent) | 32.1 fps / 31.17 ms | 62.6 fps / 15.98 ms | +15.19 ms (+49%) |
 
-   > **Harness provenance (#2835): taken on `e153b50c`, the pre-`f19f7f15`
-   > parked-camera harness.** `f19f7f15` (2026-08-11) changed the measurement
-   > conditions — every run now executes
-   > `--bench-mode renderer-stepped --bench-camera "$CAMERA_PATH"` instead of a
-   > parked capture — *and* widened the TSV from 17 to 23 columns, without
-   > re-taking the baseline it invalidates. These figures therefore describe a
-   > workload the current harness no longer runs and **cannot be compared
-   > against a current-harness run**; they are retained as the record of what
-   > the default switch was decided on. A stepped-camera re-bench is the
-   > outstanding half of #2835.
+   Taken on the pre-`f19f7f15` parked-camera harness. Retained as the record of
+   what the default switch was originally decided on; see the note above for
+   why it cannot be diffed against the current table.
 
-   The upscale dispatch costs 0.15–0.17 ms and presentation ~0.01 ms, both
-   effectively flat across scenes — so on every game scene the net recovery
-   tracks the render-work recovery closely, and the preset's cost is a rounding
-   error against what it saves.
-
-   **Native AA is consistently slower than TAA** (−1% to −9%). That is the
-   expected result, not a defect: at 1.0× it pays reconstruction with no pixel
-   savings. It exists to separate reconstruction quality from upscaling
-   quality, and should not be offered as a performance option.
+   </details>
 
 2. ✅ **Documentation.** Frame graph corrected in `renderer.md` and
    `pipeline-overview.md` (both still described composite as tone-mapping and
