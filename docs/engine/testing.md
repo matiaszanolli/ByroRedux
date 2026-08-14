@@ -85,7 +85,7 @@ each crate's `tests/` directory and the binary crate's own
 
 ### Renderer — `byroredux-renderer`
 The renderer crate carries real unit tests now, not just doc-tests. Coverage that runs without a GPU lives in pure-data modules:
-- **Vertex + mesh** — `vertex.rs` pins the 100-byte stride / 9 attribute descriptions; `mesh.rs` exercises the cube/triangle/quad helpers and SSBO bookkeeping
+- **Vertex + mesh** — `vertex.rs` pins the 104-byte stride / 9 attribute descriptions; `mesh.rs` exercises the cube/triangle/quad helpers and SSBO bookkeeping
 - **Scene-buffer GPU contract** — [`crates/renderer/src/vulkan/scene_buffer/`](../../crates/renderer/src/vulkan/scene_buffer/) tests pin the `#[repr(C)]` std430 layout (`gpu_instance_layout_tests`, `instance_hash_tests`, `material_hash_tests`, `scene_descriptor_reflection_tests`), guarding the Shader Struct Sync contract
 - **DDS / texture registry** — `vulkan/dds.rs` header parsing, `texture_registry_tests` + `texture_registry_bindless_tests`
 - **Shader reflection** — `vulkan/reflect.rs` and `shader_constants.rs` keep the GLSL-side constants in lockstep

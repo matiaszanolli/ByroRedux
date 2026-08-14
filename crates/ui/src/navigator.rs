@@ -110,8 +110,17 @@ impl ScaleformNavigatorRuntime {
         self.state.borrow().loads.clone()
     }
 
-    pub(crate) fn first_error(&self) -> Option<String> {
-        self.state.borrow().errors.first().cloned()
+    /// Remove and return the fetch failures recorded since the previous call.
+    ///
+    /// #2720 — this used to be `first_error()`, a *peek* at a list nothing
+    /// ever cleared. One failed dependency therefore answered `Some` forever,
+    /// and the player's `tick` copied that into a latch whose first statement
+    /// was an early return: a single missing file — including the entirely
+    /// routine "not in this archive" case — froze the whole menu for the rest
+    /// of the session. Draining makes each failure a one-time event the owner
+    /// records and moves past.
+    pub(crate) fn take_errors(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.state.borrow_mut().errors)
     }
 }
 
@@ -123,14 +132,49 @@ pub(crate) struct ScaleformNavigator {
 }
 
 impl ScaleformNavigator {
-    fn fail(&self, url: &str, message: impl Into<String>) -> ErrorResponse {
+    /// Record a fetch failure and answer with an empty placeholder movie.
+    ///
+    /// #2720 — returning `Err` here is what froze the menu, and not only
+    /// through the engine-side latch this fix removes. Ruffle sets
+    /// `MovieClip::preload_progress.awaiting_import` before spawning an
+    /// `ImportAssets` fetch and clears it **only** on
+    /// `LoadManager::load_asset_movie`'s success path; `MovieClip::preload`
+    /// returns `false` for as long as that flag is set, and the root timeline
+    /// will not advance past a frame it has not preloaded. So a failed
+    /// dependency fetch wedges the movie inside Ruffle, no matter how the
+    /// caller handles the error.
+    ///
+    /// Handing back a valid, empty SWF lets the import *complete* with no
+    /// symbols: whatever the menu imported is missing (Ruffle logs the
+    /// unresolved character), but the movie preloads, runs, and draws. The
+    /// failure is not swallowed — it is recorded for
+    /// `SwfPlayer::resource_errors` and logged by the owning player, which is
+    /// what makes "this menu is missing an asset" a diagnosis rather than a
+    /// silent hang.
+    fn degraded(&self, url: &str, message: impl Into<String>) -> Box<dyn SuccessResponse> {
         let message = message.into();
-        self.state.borrow_mut().errors.push(message.clone());
-        ErrorResponse {
+        log::debug!("Scaleform archive fetch failed, substituting an empty movie: {message}");
+        self.state.borrow_mut().errors.push(message);
+        Box::new(MemoryResponse {
             url: url.to_string(),
-            error: Error::FetchError(message),
-        }
+            body: placeholder_movie(),
+            chunk_sent: false,
+        })
     }
+}
+
+/// A valid, empty, single-frame SWF — see [`ScaleformNavigator::degraded`].
+///
+/// Deliberately carries no `FileAttributes` tag: an imported movie with no
+/// exports has nothing for either VM to run, and the AVM1 form is the one
+/// Ruffle accepts from every importer.
+fn placeholder_movie() -> Vec<u8> {
+    let mut header = swf::Header::default_with_swf_version(9);
+    header.num_frames = 1;
+    let mut bytes = Vec::new();
+    swf::write_swf(&header, &[Tag::ShowFrame], &mut bytes)
+        .expect("writing a fixed, empty in-memory SWF cannot fail");
+    bytes
 }
 
 impl NavigatorBackend for ScaleformNavigator {
@@ -146,47 +190,47 @@ impl NavigatorBackend for ScaleformNavigator {
     fn fetch(&self, request: Request) -> OwnedFuture<Box<dyn SuccessResponse>, ErrorResponse> {
         let request_url = request.url().to_string();
         if request.method() != NavigationMethod::Get {
-            let error = self.fail(
+            let response = self.degraded(
                 &request_url,
                 format!("Scaleform archive fetch only supports GET: {request_url}"),
             );
-            return Box::pin(async move { Err(error) });
+            return Box::pin(async move { Ok(response) });
         }
 
         let resolved = match self.resolve_url(&request_url) {
             Ok(url) => url,
             Err(error) => {
-                let error = self.fail(
+                let response = self.degraded(
                     &request_url,
                     format!("invalid Scaleform resource URL {request_url:?}: {error}"),
                 );
-                return Box::pin(async move { Err(error) });
+                return Box::pin(async move { Ok(response) });
             }
         };
         let archive_path = match archive_path_from_url(&resolved) {
             Ok(path) => path,
             Err(message) => {
-                let error = self.fail(&request_url, message);
-                return Box::pin(async move { Err(error) });
+                let response = self.degraded(&request_url, message);
+                return Box::pin(async move { Ok(response) });
             }
         };
         let body = match self.provider.load(&archive_path) {
             Ok(Some(body)) => body,
             Ok(None) => {
-                let error = self.fail(
+                let response = self.degraded(
                     &request_url,
                     format!(
                         "Scaleform resource {archive_path:?} was not found in the configured archive"
                     ),
                 );
-                return Box::pin(async move { Err(error) });
+                return Box::pin(async move { Ok(response) });
             }
             Err(source) => {
-                let error = self.fail(
+                let response = self.degraded(
                     &request_url,
                     format!("failed to extract Scaleform resource {archive_path:?}: {source}"),
                 );
-                return Box::pin(async move { Err(error) });
+                return Box::pin(async move { Ok(response) });
             }
         };
         let is_import_asset = self
@@ -198,8 +242,8 @@ impl NavigatorBackend for ScaleformNavigator {
             match prepare_import_asset_swf(&body) {
                 Ok(body) => body,
                 Err(message) => {
-                    let error = self.fail(&request_url, message);
-                    return Box::pin(async move { Err(error) });
+                    let response = self.degraded(&request_url, message);
+                    return Box::pin(async move { Ok(response) });
                 }
             }
         } else {
@@ -209,8 +253,8 @@ impl NavigatorBackend for ScaleformNavigator {
             match import_asset_paths(&resolved, &body) {
                 Ok(paths) => self.state.borrow_mut().import_asset_paths.extend(paths),
                 Err(message) => {
-                    let error = self.fail(&request_url, message);
-                    return Box::pin(async move { Err(error) });
+                    let response = self.degraded(&request_url, message);
+                    return Box::pin(async move { Ok(response) });
                 }
             }
         }
@@ -550,6 +594,115 @@ mod tests {
         player.tick(1.0 / 30.0);
         assert_eq!(player.current_frame(), Some(1));
         assert_eq!(player.resource_error(), None);
+    }
+
+    /// Regression for #2720 / CONC-D7-UI-04: a dependency that isn't in the
+    /// configured archive must not stop the menu.
+    ///
+    /// `ScaleformNavigator::fail` pushed onto a `NavigatorState::errors` list
+    /// nothing ever cleared, `first_error()` peeked at it, and `tick`'s first
+    /// statement returned early whenever that peek was `Some`. So **one**
+    /// missing file — including the entirely routine `Ok(None)` "not in this
+    /// archive" case, on a navigator that holds exactly one archive — froze
+    /// the whole movie for the rest of the session, leaving the last uploaded
+    /// frame on screen. The failure has to be recorded and reported, not
+    /// latched.
+    #[test]
+    fn a_missing_dependency_is_recorded_without_freezing_the_movie() {
+        let root = movie(vec![
+            Tag::FileAttributes(FileAttributes::IS_ACTION_SCRIPT_3),
+            Tag::ImportAssets {
+                url: SwfStr::from_utf8_str("fonts_en.swf"),
+                imports: Vec::new(),
+            },
+        ]);
+        // Deliberately NOT supplying interface\fonts_en.swf.
+        let provider = Rc::new(MemoryProvider(HashMap::from([(
+            "interface\\hudmenu.swf".to_string(),
+            root,
+        )])));
+
+        let mut player = SwfPlayer::from_resource_provider(
+            provider,
+            "interface\\hudmenu.swf",
+            64,
+            64,
+            ScaleformProfile::Fallout4Avm2,
+        )
+        .expect("a missing dependency must not fail the load of a root movie that parsed");
+
+        let error = player
+            .resource_error()
+            .expect("the failed fetch must still be reported");
+        assert!(
+            error.contains("fonts_en.swf"),
+            "the report must name the missing file: {error}"
+        );
+        assert_eq!(
+            player.resource_errors().len(),
+            1,
+            "one missing file, one recorded failure: {:?}",
+            player.resource_errors()
+        );
+        // The placeholder answer is what lets Ruffle's own `awaiting_import`
+        // flag clear (`LoadManager::load_asset_movie` only calls
+        // `finish_importing()` on its success path), so the preload settles
+        // rather than wedging the root timeline behind an unpreloaded frame.
+        assert!(
+            !player.preload_stalled(),
+            "the placeholder import must let the preload settle"
+        );
+
+        // And the movie runs: the latch is what's gone, not the player.
+        for _ in 0..3 {
+            player.tick(1.0 / 30.0);
+        }
+        assert_eq!(player.current_frame(), Some(1));
+        assert_eq!(
+            player.resource_errors().len(),
+            1,
+            "a repeated failure must dedup rather than accumulate: {:?}",
+            player.resource_errors()
+        );
+    }
+
+    /// Regression for #2719 / CONC-D7-UI-03: `tick` ended with an
+    /// unconditional `self.dirty = true`, so `render`'s `if !self.dirty`
+    /// early exit was dead code and a *static* menu re-rendered, re-read back
+    /// and re-uploaded a full-viewport RGBA image every single frame. Each of
+    /// those uploads builds a fresh `VkImage` and blocks on a one-time
+    /// submit's fence ahead of `draw_frame`. A movie whose picture is not
+    /// changing must hand the caller pixels once and then stop.
+    #[test]
+    fn a_static_movie_stops_handing_back_pixels_after_the_first_frame() {
+        let provider = Rc::new(MemoryProvider(HashMap::from([(
+            "interface\\hudmenu.swf".to_string(),
+            movie(vec![Tag::FileAttributes(
+                FileAttributes::IS_ACTION_SCRIPT_3,
+            )]),
+        )])));
+        let mut player = SwfPlayer::from_resource_provider(
+            provider,
+            "interface\\hudmenu.swf",
+            64,
+            64,
+            ScaleformProfile::Fallout4Avm2,
+        )
+        .unwrap();
+
+        player.tick(1.0 / 30.0);
+        assert!(
+            player.render().is_some(),
+            "the first frame must always be uploaded — the caller has no texture yet"
+        );
+
+        for frame in 0..8 {
+            player.tick(1.0 / 30.0);
+            assert!(
+                player.render().is_none(),
+                "frame {frame} of a static movie re-uploaded an unchanged image"
+            );
+        }
     }
 
     fn movie(mut tags: Vec<Tag<'_>>) -> Vec<u8> {

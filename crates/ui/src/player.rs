@@ -28,6 +28,36 @@ use crate::{
 
 const MAX_ARCHIVE_PRELOAD_PASSES: usize = 64;
 
+/// Consecutive frames an unsettled archive preload may suppress the movie's
+/// own `tick` before the player advances it anyway (#2720).
+///
+/// The pre-fix code returned from `tick` on every unsettled frame, forever,
+/// with no log line, no recorded error and no state change — a preload that
+/// never settles was indistinguishable from a hang, and the identical
+/// condition is a hard `Err` at construction. One second of grace at 60 Hz is
+/// far more than the handful of frames a real cross-archive import needs, and
+/// after it a degraded menu (some imported symbols missing) beats a frozen
+/// one: the stall is logged once and surfaced through
+/// [`SwfPlayer::preload_stalled`].
+const MAX_CONSECUTIVE_PRELOAD_STALL_FRAMES: u32 = 60;
+
+/// Whether an unsettled preload has held the movie back long enough that
+/// `tick` should advance it anyway (#2720).
+///
+/// Split out (pure) so the default suite can pin the property that actually
+/// matters — that the wait *terminates* — without having to synthesize a
+/// preload that never settles.
+fn preload_stall_grace_expired(consecutive_stall_frames: u32) -> bool {
+    consecutive_stall_frames >= MAX_CONSECUTIVE_PRELOAD_STALL_FRAMES
+}
+
+/// Distinct archive-fetch failures a player retains (#2720).
+///
+/// Failures are deduplicated, so this only binds a movie that keeps asking
+/// for *different* missing files every frame. It is a leak stop, not a
+/// capacity estimate — a real menu records zero or one.
+const MAX_RECORDED_RESOURCE_ERRORS: usize = 64;
+
 /// Process-wide Ruffle GPU bundle, created on first menu load (#2733).
 ///
 /// Pre-fix every [`SwfPlayer`] built its own wgpu instance, adapter, device
@@ -100,10 +130,23 @@ pub struct SwfPlayer {
     height: u32,
     pixel_buffer: Vec<u8>,
     dirty: bool,
+    /// Whether [`Self::render`] has handed its buffer to the caller at least
+    /// once, so the content comparison in #2719 can't suppress the very first
+    /// upload (see there).
+    uploaded_once: bool,
     host_bridge: ScaleformHostBridge,
     host_object_state: ScaleformHostObjectState,
     navigator_runtime: Option<ScaleformNavigatorRuntime>,
-    resource_error: Option<String>,
+    /// Distinct archive-fetch failures seen so far, oldest first (#2720).
+    /// Recorded and reported, never latched — see [`Self::tick`].
+    resource_errors: Vec<String>,
+    /// One-shot latch for the [`MAX_RECORDED_RESOURCE_ERRORS`] cap warning.
+    resource_errors_capped: bool,
+    /// Consecutive frames the archive preload has failed to settle (#2720).
+    preload_stall_frames: u32,
+    /// Whether the stall grace period has been exhausted and the movie is
+    /// being advanced without a settled preload (#2720).
+    preload_stalled: bool,
 }
 
 impl SwfPlayer {
@@ -177,10 +220,34 @@ impl SwfPlayer {
             host_object_state,
             Some((navigator, runtime)),
         )?;
-        if !player.drive_archive_preload()? {
-            return Err(anyhow!(
-                "Scaleform archive preload did not settle after {MAX_ARCHIVE_PRELOAD_PASSES} passes"
-            ));
+        // #2720 — a dependency that fails to fetch is recorded, not fatal: the
+        // root movie loaded, and a menu missing an imported font is worth more
+        // than no menu.
+        //
+        // The two failure modes are the same event in Ruffle, which is why
+        // this is one check rather than two. `MovieClip::preload` returns
+        // `false` forever while `awaiting_import` is set, and
+        // `LoadManager::load_asset_movie` only calls `finish_importing()` on
+        // its success path — so a failed `ImportAssets` fetch *is* a preload
+        // that never settles. Refusing to load in that case would just move
+        // the pre-fix freeze from tick time to load time.
+        //
+        // A stall we cannot explain is still a hard error: nothing was
+        // reported, so there is no diagnosis to degrade gracefully under.
+        if !player.drive_archive_preload() {
+            if player.resource_errors.is_empty() {
+                return Err(anyhow!(
+                    "Scaleform archive preload did not settle after \
+                     {MAX_ARCHIVE_PRELOAD_PASSES} passes"
+                ));
+            }
+            log::warn!(
+                "Scaleform archive preload for {movie_path:?} did not settle after \
+                 {MAX_ARCHIVE_PRELOAD_PASSES} passes; loading the menu anyway with \
+                 {} failed dependency fetch(es) (#2720)",
+                player.resource_errors.len(),
+            );
+            player.preload_stalled = true;
         }
         Ok(player)
     }
@@ -240,43 +307,71 @@ impl SwfPlayer {
             height,
             pixel_buffer,
             dirty: true,
+            uploaded_once: false,
             host_bridge,
             host_object_state,
             navigator_runtime,
-            resource_error: None,
+            resource_errors: Vec::new(),
+            resource_errors_capped: false,
+            preload_stall_frames: 0,
+            preload_stalled: false,
         })
     }
 
     /// Advance the player by `dt` seconds. Ruffle handles frame accumulation
     /// internally — just call tick() each frame with the real delta time.
+    ///
+    /// #2720 — neither an archive failure nor an unsettled preload latches the
+    /// movie off any more. A failed *dependency* fetch is recorded and playback
+    /// continues (see [`Self::resource_errors`]); only a failure of the root
+    /// movie, which happens at construction, is fatal. An unsettled preload
+    /// still suppresses the tick, but for a bounded number of frames and with a
+    /// log line and an observable state, instead of silently forever.
     pub fn tick(&mut self, dt: f64) {
-        if self.resource_error.is_some() {
-            return;
-        }
-        if self.navigator_runtime.is_some() {
-            match self.drive_archive_preload() {
-                Ok(true) => {}
-                Ok(false) => return,
-                Err(error) => {
-                    let error = error.to_string();
-                    log::error!("{error}");
-                    self.resource_error = Some(error);
+        if self.navigator_runtime.is_some() && !self.drive_archive_preload() {
+            self.preload_stall_frames = self.preload_stall_frames.saturating_add(1);
+            if !self.preload_stalled {
+                if self.preload_stall_frames == 1 {
+                    log::warn!(
+                        "Scaleform archive preload did not settle after \
+                         {MAX_ARCHIVE_PRELOAD_PASSES} passes; retrying next frame"
+                    );
+                }
+                if !preload_stall_grace_expired(self.preload_stall_frames) {
                     return;
                 }
+                self.preload_stalled = true;
+                self.record_resource_errors(vec![format!(
+                    "Scaleform archive preload stalled for \
+                     {MAX_CONSECUTIVE_PRELOAD_STALL_FRAMES} consecutive frames; advancing the \
+                     movie without a settled preload"
+                )]);
             }
+            // Fall through: a menu missing some imported symbols is worth more
+            // than a menu frozen on its last uploaded frame.
+        } else {
+            self.preload_stall_frames = 0;
+            self.preload_stalled = false;
         }
-        {
+        let needs_render = {
             let mut player = self.player.lock().unwrap();
             player.tick(FloatDuration::from_secs(dt));
-        }
+            player.needs_render()
+        };
         if let Some(runtime) = &mut self.navigator_runtime {
             runtime.run_until_stalled();
-            if let Some(error) = runtime.first_error() {
-                log::error!("{error}");
-                self.resource_error = Some(error);
-            }
+            let errors = runtime.take_errors();
+            self.record_resource_errors(errors);
         }
-        self.dirty = true;
+        // #2719 — only mark dirty when Ruffle says the stage actually changed.
+        // An unconditional `self.dirty = true` here made `render`'s early exit
+        // dead code, so a *static* menu re-rendered, re-read back and
+        // re-uploaded a full-viewport RGBA image every frame — at 1920×1080
+        // that is an 8.3 MB readback plus a fresh `VkImage` and a blocking
+        // one-time submit, ahead of `draw_frame`, for a picture that did not
+        // move. Ruffle raises this flag whenever a frame ran or the mouse
+        // state changed, and clears it in `Player::render`.
+        self.dirty |= needs_render;
     }
 
     /// Forward a platform-neutral input event to Ruffle.
@@ -296,7 +391,17 @@ impl SwfPlayer {
     }
 
     /// Render the current frame to the internal pixel buffer.
-    /// Returns the RGBA pixel data if the frame is dirty, None otherwise.
+    ///
+    /// Returns the RGBA pixel data only when it differs from what the caller
+    /// was last handed, and `None` otherwise — a `None` means "keep showing
+    /// the texture you already have", not "nothing was drawn".
+    ///
+    /// #2719 — the caller's response to `Some` is a full-viewport
+    /// `update_rgba`, which builds a **new** `VkImage` and blocks on a
+    /// one-time submit's fence ahead of `draw_frame`. Ruffle re-rendering is
+    /// not the same thing as the picture changing (a timeline frame can
+    /// advance with nothing visibly moving), so the returned-pixels decision
+    /// is made on content, not on the render having happened.
     pub fn render(&mut self) -> Option<&[u8]> {
         if !self.dirty {
             return None;
@@ -310,6 +415,7 @@ impl SwfPlayer {
 
         // Capture the rendered frame by downcasting to the concrete backend type.
         // This follows the same pattern as Ruffle's exporter crate.
+        let mut changed = false;
         {
             let mut player = self.player.lock().unwrap();
             let renderer = player.renderer_mut();
@@ -319,7 +425,10 @@ impl SwfPlayer {
                 if let Some(image) = wgpu_backend.capture_frame() {
                     let rgba = image.into_raw();
                     if rgba.len() == self.pixel_buffer.len() {
-                        self.pixel_buffer.copy_from_slice(&rgba);
+                        changed = rgba != self.pixel_buffer;
+                        if changed {
+                            self.pixel_buffer.copy_from_slice(&rgba);
+                        }
                     } else {
                         log::warn!(
                             "Ruffle frame size mismatch: got {} bytes, expected {}",
@@ -332,6 +441,13 @@ impl SwfPlayer {
         }
 
         self.dirty = false;
+        // The very first render must always be handed over: the caller has no
+        // texture yet, and an all-zero movie would otherwise compare equal to
+        // the freshly zeroed buffer and never upload.
+        if !changed && self.uploaded_once {
+            return None;
+        }
+        self.uploaded_once = true;
         Some(&self.pixel_buffer)
     }
 
@@ -367,7 +483,47 @@ impl SwfPlayer {
 
     /// First archive loading failure encountered after construction.
     pub fn resource_error(&self) -> Option<&str> {
-        self.resource_error.as_deref()
+        self.resource_errors.first().map(String::as_str)
+    }
+
+    /// Every distinct archive loading failure seen so far, oldest first.
+    ///
+    /// #2720 — these are diagnostics, not a kill switch: the movie keeps
+    /// playing after each one. A non-empty list on a menu that looks wrong is
+    /// the first thing to read.
+    pub fn resource_errors(&self) -> &[String] {
+        &self.resource_errors
+    }
+
+    /// Whether the archive preload exhausted its stall grace period and the
+    /// movie is being advanced without having settled (#2720).
+    pub fn preload_stalled(&self) -> bool {
+        self.preload_stalled
+    }
+
+    /// Record fetch failures, deduplicated and bounded.
+    ///
+    /// Deduplication is what keeps a per-frame retry of the same missing file
+    /// from both flooding the log and growing the list without limit; the hard
+    /// cap covers the pathological case of endlessly *distinct* failures.
+    fn record_resource_errors(&mut self, errors: Vec<String>) {
+        for error in errors {
+            if self.resource_errors.contains(&error) {
+                continue;
+            }
+            if self.resource_errors.len() >= MAX_RECORDED_RESOURCE_ERRORS {
+                if !self.resource_errors_capped {
+                    self.resource_errors_capped = true;
+                    log::error!(
+                        "Scaleform resource failures hit the {MAX_RECORDED_RESOURCE_ERRORS}-entry \
+                         cap; further distinct failures are neither recorded nor logged"
+                    );
+                }
+                continue;
+            }
+            log::error!("{error}");
+            self.resource_errors.push(error);
+        }
     }
 
     /// Invoke a callback registered through `ExternalInterface.addCallback`.
@@ -393,25 +549,35 @@ impl SwfPlayer {
         Some(ScaleformValue::from(&result))
     }
 
-    fn drive_archive_preload(&mut self) -> Result<bool> {
+    /// Pump Ruffle's preload and the navigator's local executor until the
+    /// preload settles, returning whether it did.
+    ///
+    /// #2720 — a dependency fetch that fails is drained into
+    /// [`Self::resource_errors`] and the pump continues. It used to abort the
+    /// whole preload with an `Err`, which the caller turned into the permanent
+    /// latch; but `ScaleformNavigator::fail` fires for the entirely routine
+    /// "this file is not in the configured archive" case, and the navigator
+    /// holds exactly one archive.
+    fn drive_archive_preload(&mut self) -> bool {
         for _ in 0..MAX_ARCHIVE_PRELOAD_PASSES {
             let finished = {
                 let mut execution_limit = ExecutionLimit::none();
                 self.player.lock().unwrap().preload(&mut execution_limit)
             };
-            let runtime = self
+            let errors = self
                 .navigator_runtime
                 .as_mut()
+                .map(|runtime| {
+                    runtime.run_until_stalled();
+                    runtime.take_errors()
+                })
                 .expect("archive preload requires a navigator runtime");
-            runtime.run_until_stalled();
-            if let Some(error) = runtime.first_error() {
-                return Err(anyhow!("Scaleform archive preload failed: {error}"));
-            }
+            self.record_resource_errors(errors);
             if finished {
-                return Ok(true);
+                return true;
             }
         }
-        Ok(false)
+        false
     }
 }
 
@@ -422,6 +588,33 @@ impl Drop for SwfPlayer {
                 let _ = player.call_internal_interface(DESTROY_CALLBACK, []);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod preload_stall_tests {
+    use super::{preload_stall_grace_expired, MAX_CONSECUTIVE_PRELOAD_STALL_FRAMES};
+
+    /// #2720 — the pre-fix `tick` mapped an unsettled preload to a bare
+    /// `return` with no log, no recorded error and no state change, re-checked
+    /// the same condition next frame, and so suppressed the movie *forever* if
+    /// the preload never settled: a hang and a stall were indistinguishable.
+    /// The property that fixes it is simply that the wait ends — pin the
+    /// boundary in both directions so a future edit can't quietly restore an
+    /// unbounded one (e.g. by making the comparison strict on a counter that
+    /// saturates).
+    #[test]
+    fn the_preload_stall_wait_terminates() {
+        assert!(!preload_stall_grace_expired(0));
+        assert!(!preload_stall_grace_expired(
+            MAX_CONSECUTIVE_PRELOAD_STALL_FRAMES - 1
+        ));
+        assert!(preload_stall_grace_expired(
+            MAX_CONSECUTIVE_PRELOAD_STALL_FRAMES
+        ));
+        // `preload_stall_frames` saturates rather than wrapping, so the
+        // saturated value must still count as expired.
+        assert!(preload_stall_grace_expired(u32::MAX));
     }
 }
 
