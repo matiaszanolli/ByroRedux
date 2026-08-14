@@ -8,7 +8,6 @@
 //! `BGSCodeObj`; that bootstrap fills the object and forwards each call through
 //! ExternalInterface without relying on Ruffle's private AVM2 object model.
 
-#[cfg(test)]
 use std::collections::BTreeSet;
 
 use swf::avm2::read::Reader;
@@ -99,7 +98,46 @@ pub(crate) fn inject_host_object_adapter(
         .ok_or_else(|| "Fallout 4 root ABC index does not reference an ABC tag".to_string())?;
     let patched_root_abc = patch_root_constructor(root_abc, &root_class)?;
 
-    let adapter = build_adapter_abc(catalog)
+    // #2718 (SAFEUI-04) — the catalog is a hand-transcribed inventory of a
+    // third-party reconstruction of the vanilla sources, and it is the ONLY
+    // thing that used to decide which properties exist on `BGSCodeObj`. A
+    // method the catalog missed resolves to an absent property on a dynamic
+    // object, which AVM2 reports as a call on `undefined` (Error #1006) — it
+    // aborts the executing frame handler, so the menu renders and then stops
+    // responding, with the true cause (a missing string in a Rust table)
+    // invisible from the failure. Take the union with what this movie
+    // actually calls, so an uncataloged method still gets a forwarder and
+    // degrades into a recorded `ScaleformHostDispatch::Unknown` returning
+    // null instead of throwing — which is also what makes the bridge's
+    // `unknown_methods()` diagnostic reachable at all.
+    //
+    // A scan failure is deliberately non-fatal: the inventory is a bonus on
+    // top of the catalog, and refusing to load a menu because its bytecode
+    // has a shape the scanner cannot walk would be strictly worse than the
+    // pre-fix behaviour.
+    let referenced = match referenced_host_methods_in_tags(&movie.tags) {
+        Ok(referenced) => referenced,
+        Err(error) => {
+            log::warn!(
+                "Fallout 4 host-call inventory scan failed ({error}); installing the \
+                 catalog's {} forwarders only",
+                catalog.len()
+            );
+            BTreeSet::new()
+        }
+    };
+    let uncataloged = uncataloged_host_methods(catalog, &referenced);
+    if !uncataloged.is_empty() {
+        log::info!(
+            "Fallout 4 menu calls {} BGSCodeObj method(s) outside the {}-entry catalog; \
+             forwarding them too (#2718): {:?}",
+            uncataloged.len(),
+            catalog.len(),
+            uncataloged,
+        );
+    }
+
+    let adapter = build_adapter_abc(catalog, &uncataloged)
         .map_err(|error| format!("building Fallout 4 AVM2 adapter: {error}"))?;
     let replacement = match &movie.tags[root_abc_index] {
         Tag::DoAbc(_) => Tag::DoAbc(&patched_root_abc),
@@ -185,14 +223,24 @@ fn multiname_local_name(abc: &AbcFile, index: Index<Multiname>) -> Option<Vec<u8
         .cloned()
 }
 
+/// Every `BGSCodeObj.<method>(…)` call site a movie's bytecode contains, from
+/// its raw (still compressed) bytes — the corpus sweeps' entry point.
+/// Injection itself scans the movie it has already parsed, through
+/// [`referenced_host_methods_in_tags`].
 #[cfg(test)]
 pub(crate) fn referenced_host_methods(swf_data: &[u8]) -> Result<BTreeSet<String>, String> {
     let decompressed =
         decompress_swf(swf_data).map_err(|error| format!("decompressing SWF: {error}"))?;
     let movie = parse_swf(&decompressed).map_err(|error| format!("parsing SWF: {error}"))?;
+    referenced_host_methods_in_tags(&movie.tags)
+}
+
+/// [`referenced_host_methods`] over already-parsed tags, so the injection path
+/// scans the movie it has in hand instead of decompressing it a second time.
+fn referenced_host_methods_in_tags(tags: &[Tag<'_>]) -> Result<BTreeSet<String>, String> {
     let mut methods = BTreeSet::new();
 
-    for tag in &movie.tags {
+    for tag in tags {
         let Some(data) = abc_payload(tag) else {
             continue;
         };
@@ -238,7 +286,36 @@ pub(crate) fn referenced_host_methods(swf_data: &[u8]) -> Result<BTreeSet<String
     Ok(methods)
 }
 
-#[cfg(test)]
+/// Members every AVM2 `Object` already answers. A forwarder installed over one
+/// of these would shadow the real thing for any menu that legitimately calls
+/// it on `BGSCodeObj`, so a call site naming one is never taken as evidence of
+/// a host method — unlike a genuinely uncataloged name, whose only possible
+/// meaning is "the game filled this in natively".
+const OBJECT_PROTOTYPE_MEMBERS: &[&str] = &[
+    "hasOwnProperty",
+    "isPrototypeOf",
+    "propertyIsEnumerable",
+    "setPropertyIsEnumerable",
+    "toLocaleString",
+    "toString",
+    "valueOf",
+];
+
+/// Referenced host methods the catalog does not already cover, in the order
+/// their forwarders get installed. Split out (pure, `&str`-only) so the union
+/// rule can be pinned without building an ABC.
+fn uncataloged_host_methods(
+    catalog: ScaleformHostCatalog,
+    referenced: &BTreeSet<String>,
+) -> Vec<String> {
+    referenced
+        .iter()
+        .filter(|method| !catalog.contains(method))
+        .filter(|method| !OBJECT_PROTOTYPE_MEMBERS.contains(&method.as_str()))
+        .cloned()
+        .collect()
+}
+
 #[derive(Clone)]
 enum InventoryStackValue {
     BgsCodeObj,
@@ -246,7 +323,6 @@ enum InventoryStackValue {
     Other,
 }
 
-#[cfg(test)]
 fn method_called_with_bgs_receiver(abc: &AbcFile, ops: &[Op]) -> Option<Vec<u8>> {
     for mut stack in [
         vec![InventoryStackValue::BgsCodeObj],
@@ -525,7 +601,28 @@ fn helper_name(index: usize) -> String {
     format!("{HELPER_PREFIX}{index}")
 }
 
-fn build_adapter_abc(catalog: ScaleformHostCatalog) -> std::io::Result<Vec<u8>> {
+/// Names the adapter installs on the host object: the catalog, plus whatever
+/// #2718's per-movie scan found that the catalog missed. One flat list because
+/// each installed method's trait carries a sequential `disp_id`.
+fn installed_method_names<'a>(
+    catalog: ScaleformHostCatalog,
+    uncataloged: &'a [String],
+) -> Vec<&'a str>
+where
+    'static: 'a,
+{
+    catalog
+        .methods()
+        .iter()
+        .map(|method| method.name)
+        .chain(uncataloged.iter().map(String::as_str))
+        .collect()
+}
+
+fn build_adapter_abc(
+    catalog: ScaleformHostCatalog,
+    uncataloged: &[String],
+) -> std::io::Result<Vec<u8>> {
     let object = catalog
         .host_object()
         .expect("AVM2 adapter requires a host-object profile");
@@ -595,11 +692,12 @@ fn build_adapter_abc(catalog: ScaleformHostCatalog) -> std::io::Result<Vec<u8>> 
     );
     let root_slot = add_multiname(&mut multinames, qname(public_namespace, root_slot_string));
 
-    let mut methods = Vec::with_capacity(catalog.len() + 4);
-    let mut method_bodies = Vec::with_capacity(catalog.len() + 4);
-    let mut traits = Vec::with_capacity(catalog.len() + 4);
-    let mut helper_multinames = Vec::with_capacity(catalog.len());
-    let mut method_property_multinames = Vec::with_capacity(catalog.len());
+    let installed = installed_method_names(catalog, uncataloged);
+    let mut methods = Vec::with_capacity(installed.len() + 4);
+    let mut method_bodies = Vec::with_capacity(installed.len() + 4);
+    let mut traits = Vec::with_capacity(installed.len() + 4);
+    let mut helper_multinames = Vec::with_capacity(installed.len());
+    let mut method_property_multinames = Vec::with_capacity(installed.len());
     traits.push(Trait {
         name: root_slot,
         kind: TraitKind::Slot {
@@ -612,11 +710,10 @@ fn build_adapter_abc(catalog: ScaleformHostCatalog) -> std::io::Result<Vec<u8>> 
         is_override: false,
     });
 
-    for (index, method) in catalog.methods().iter().enumerate() {
+    for (index, method) in installed.iter().enumerate() {
         let helper_string = add_string(&mut strings, helper_name(index));
-        let transport_string =
-            add_string(&mut strings, format!("{}.{}", object.property, method.name));
-        let method_property_string = add_string(&mut strings, method.name);
+        let transport_string = add_string(&mut strings, format!("{}.{}", object.property, method));
+        let method_property_string = add_string(&mut strings, *method);
 
         let helper_multiname =
             add_multiname(&mut multinames, qname(public_namespace, helper_string));
@@ -702,7 +799,7 @@ fn build_adapter_abc(catalog: ScaleformHostCatalog) -> std::io::Result<Vec<u8>> 
     traits.push(method_trait(
         ready_helper,
         ready_method,
-        catalog.len() as u32 + 1,
+        installed.len() as u32 + 1,
     ));
 
     let destroy_method = Index::new(methods.len() as u32);
@@ -746,7 +843,7 @@ fn build_adapter_abc(catalog: ScaleformHostCatalog) -> std::io::Result<Vec<u8>> 
     traits.push(method_trait(
         destroy_helper,
         destroy_method,
-        catalog.len() as u32 + 2,
+        installed.len() as u32 + 2,
     ));
 
     let installer_method = Index::new(methods.len() as u32);
@@ -826,7 +923,7 @@ fn build_adapter_abc(catalog: ScaleformHostCatalog) -> std::io::Result<Vec<u8>> 
     traits.push(method_trait(
         install_helper,
         installer_method,
-        catalog.len() as u32 + 3,
+        installed.len() as u32 + 3,
     ));
 
     let init_method = Index::new(methods.len() as u32);
@@ -943,14 +1040,51 @@ mod tests {
 
     use super::{
         build_adapter_abc, inject_host_object_adapter, max_stack_with_injected_bootstrap_headroom,
-        referenced_host_methods, write_ops, DESTROYED_EVENT, LOADED_CALLBACK,
+        referenced_host_methods, uncataloged_host_methods, write_ops, DESTROYED_EVENT,
+        LOADED_CALLBACK,
     };
     use crate::{ScaleformHostCatalog, ScaleformProfile};
+
+    /// FO4 interface archive used by the corpus sweeps, or `None` when the
+    /// game isn't installed on this machine (the corpus is multi-gigabyte
+    /// game data that can't ship with the repo, so the sweeps self-skip
+    /// rather than failing — see #2717).
+    fn fallout4_interface_archive(test_name: &str) -> Option<Ba2Archive> {
+        let path = std::env::var("BYROREDUX_FO4_DATA").unwrap_or_else(|_| {
+            "/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data".to_string()
+        });
+        let archive_path = std::path::Path::new(&path).join("Fallout4 - Interface.ba2");
+        match Ba2Archive::open(&archive_path) {
+            Ok(archive) => Some(archive),
+            Err(_) => {
+                eprintln!(
+                    "skipping {test_name}: {archive_path:?} not available \
+                     (set BYROREDUX_FO4_DATA to override)"
+                );
+                None
+            }
+        }
+    }
+
+    fn fallout4_swf_paths(archive: &Ba2Archive) -> Vec<String> {
+        let mut swf_paths: Vec<String> = archive
+            .list_files()
+            .into_iter()
+            .filter(|path| path.ends_with(".swf"))
+            .map(str::to_string)
+            .collect();
+        swf_paths.sort();
+        assert!(
+            !swf_paths.is_empty(),
+            "expected .swf files in the FO4 interface archive"
+        );
+        swf_paths
+    }
 
     #[test]
     fn generated_adapter_is_valid_abc_with_one_helper_per_method() {
         let catalog = ScaleformHostCatalog::for_profile(ScaleformProfile::Fallout4Avm2);
-        let bytes = build_adapter_abc(catalog).unwrap();
+        let bytes = build_adapter_abc(catalog, &[]).unwrap();
         let abc = Reader::new(&bytes).read().unwrap();
 
         assert_eq!(abc.scripts.len(), 1);
@@ -1018,7 +1152,7 @@ mod tests {
     #[test]
     fn generated_adapter_pool_carries_no_abandoned_loader_strategy() {
         let catalog = ScaleformHostCatalog::for_profile(ScaleformProfile::Fallout4Avm2);
-        let bytes = build_adapter_abc(catalog).unwrap();
+        let bytes = build_adapter_abc(catalog, &[]).unwrap();
         let abc = Reader::new(&bytes).read().unwrap();
 
         for abandoned in [
@@ -1049,42 +1183,81 @@ mod tests {
         assert_eq!(abc.constant_pool.namespaces.len(), 2);
     }
 
+    /// #2718 (SAFEUI-04) — the corpus sweep the pre-fix version of this test
+    /// could not be: it inspected **three** movies out of 311 and was
+    /// `#[ignore]`d, so 308 shipped menus were unverified against the catalog
+    /// and nothing ran in a normal `cargo test`. It now walks every `.swf` in
+    /// the interface archive, and self-skips (like its `all_installed_…`
+    /// sibling) instead of being permanently opted out.
+    ///
+    /// The assertion also changed shape with the fix. `referenced ⊆ catalog`
+    /// is no longer the safety property — an uncataloged method is no longer
+    /// fatal, because injection installs a forwarder for the *union* of the
+    /// catalog and this movie's own call sites. What must hold now is that
+    /// the scan those forwarders come from actually succeeds on every real
+    /// menu: a scan failure silently degrades injection back to catalog-only
+    /// and re-arms the Error #1006 the fix removes. The catalog gap itself is
+    /// reported rather than asserted — it is a to-do list for the catalog's
+    /// `kind`/response metadata, not a load-blocker.
     #[test]
-    #[ignore = "requires an installed Fallout 4 corpus"]
-    fn installed_fallout4_host_calls_are_cataloged() {
-        let path = std::env::var("BYROREDUX_FO4_DATA").unwrap_or_else(|_| {
-            "/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data".to_string()
-        });
-        let archive =
-            Ba2Archive::open(std::path::Path::new(&path).join("Fallout4 - Interface.ba2")).unwrap();
+    fn installed_fallout4_host_calls_are_all_forwarded() {
+        let Some(archive) =
+            fallout4_interface_archive("installed_fallout4_host_calls_are_all_forwarded")
+        else {
+            return;
+        };
         let catalog = ScaleformHostCatalog::for_profile(ScaleformProfile::Fallout4Avm2);
-        let mut referenced = std::collections::BTreeSet::new();
+        let swf_paths = fallout4_swf_paths(&archive);
 
-        for movie in [
-            "interface\\hudmenu.swf",
-            "interface\\pipboymenu.swf",
-            "programs\\atomiccommand.swf",
-        ] {
-            let swf = archive.extract(movie).unwrap();
-            let methods = referenced_host_methods(&swf).unwrap();
-            let unknown = methods
-                .iter()
-                .filter(|method| !catalog.contains(method))
-                .cloned()
-                .collect::<Vec<_>>();
-            assert!(
-                unknown.is_empty(),
-                "{movie} references uncataloged BGSCodeObj methods: {unknown:?}; all={methods:?}"
-            );
-            referenced.extend(methods);
+        let mut referenced = std::collections::BTreeSet::new();
+        let mut uncataloged = std::collections::BTreeSet::new();
+        let mut failures = Vec::new();
+        let mut scanned = 0usize;
+        for movie in &swf_paths {
+            let swf = match archive.extract(movie) {
+                Ok(swf) => swf,
+                Err(error) => {
+                    failures.push(format!("{movie}: extract failed: {error}"));
+                    continue;
+                }
+            };
+            match referenced_host_methods(&swf) {
+                Ok(methods) => {
+                    scanned += 1;
+                    uncataloged.extend(uncataloged_host_methods(catalog, &methods));
+                    referenced.extend(methods);
+                }
+                Err(error) => failures.push(format!("{movie}: host-call scan failed: {error}")),
+            }
         }
 
-        // #2727 — the reverse direction. `methods ⊆ catalog` alone can never
+        assert!(
+            failures.is_empty(),
+            "{} of {} FO4 SWFs could not be scanned for BGSCodeObj call sites — injection \
+             falls back to catalog-only forwarders for these, which is exactly the \
+             Error #1006 exposure #2718 removes:\n{}",
+            failures.len(),
+            swf_paths.len(),
+            failures.join("\n"),
+        );
+
+        if !uncataloged.is_empty() {
+            eprintln!(
+                "note: {} BGSCodeObj method(s) called by the {scanned}-movie corpus are \
+                 outside the {}-entry catalog. These are forwarded (and land as \
+                 `ScaleformHostDispatch::Unknown`) since #2718, but carry no catalog \
+                 `kind`: {uncataloged:?}",
+                uncataloged.len(),
+                catalog.len(),
+            );
+        }
+
+        // #2727 — the reverse direction. `referenced ⊆ catalog` alone can never
         // fail on a *bogus* catalog entry, which is how the mangled
         // `functiononGPSModeButtonClicked` (#2726) survived into a checked-in
-        // 138-method catalog. This is a warning list rather than an assertion:
-        // the three-movie sample is not the whole menu set, so legitimate
-        // entries for other menus are expected to appear here.
+        // 138-method catalog. Still a warning list rather than an assertion:
+        // menus outside this archive (and dynamically-dispatched call sites the
+        // scanner cannot see) legitimately leave entries unreferenced.
         let unreferenced = catalog
             .methods()
             .iter()
@@ -1093,10 +1266,71 @@ mod tests {
             .collect::<Vec<_>>();
         if !unreferenced.is_empty() {
             eprintln!(
-                "note: {} of {} catalog entries are unreferenced by the 3-movie sample \
-                 (expected for menus outside it — scan for malformed names): {unreferenced:?}",
+                "note: {} of {} catalog entries are unreferenced by the whole {scanned}-movie \
+                 corpus (scan for malformed names): {unreferenced:?}",
                 unreferenced.len(),
                 catalog.len()
+            );
+        }
+    }
+
+    /// #2718 — the union rule itself. A method the movie calls but the catalog
+    /// lacks must be installed; one the catalog already has must not be
+    /// installed twice (each forwarder's trait carries a sequential `disp_id`);
+    /// and a plain `Object` member must never be shadowed by a forwarder that
+    /// would send `toString()` to the engine.
+    #[test]
+    fn uncataloged_methods_are_the_union_minus_catalog_and_object_members() {
+        let catalog = ScaleformHostCatalog::for_profile(ScaleformProfile::Fallout4Avm2);
+        let referenced = ["PlaySound", "SomeUnknownFO4Method", "toString", "valueOf"]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(catalog.contains("PlaySound"), "test premise");
+
+        assert_eq!(
+            uncataloged_host_methods(catalog, &referenced),
+            vec!["SomeUnknownFO4Method".to_string()]
+        );
+    }
+
+    /// #2718 — and the union really reaches the emitted bytecode: an extra
+    /// method adds one more forwarder, one more installed property, and its
+    /// name to the transport strings, without disturbing the fixed tail
+    /// (ready / destroy / installer / script init).
+    #[test]
+    fn an_uncataloged_method_gets_its_own_installed_forwarder() {
+        let catalog = ScaleformHostCatalog::for_profile(ScaleformProfile::Fallout4Avm2);
+        let extra = vec!["SomeUnknownFO4Method".to_string()];
+        let bytes = build_adapter_abc(catalog, &extra).unwrap();
+        let abc = Reader::new(&bytes).read().unwrap();
+        let installed = catalog.len() + extra.len();
+
+        assert_eq!(abc.methods.len(), installed + 4);
+        assert_eq!(abc.method_bodies.len(), installed + 4);
+        assert_eq!(abc.scripts[0].traits.len(), installed + 4);
+
+        let installer = &abc.method_bodies[installed + 2];
+        let mut reader = Reader::new(&installer.code);
+        let mut installed_properties = 0;
+        while !reader.as_slice().is_empty() {
+            if matches!(
+                reader.read_op().unwrap(),
+                swf::avm2::types::Op::SetProperty { .. }
+            ) {
+                installed_properties += 1;
+            }
+        }
+        // One per installed method, plus the root-slot store.
+        assert_eq!(installed_properties, installed + 1);
+
+        for expected in ["SomeUnknownFO4Method", "BGSCodeObj.SomeUnknownFO4Method"] {
+            assert!(
+                abc.constant_pool
+                    .strings
+                    .iter()
+                    .any(|string| string.as_slice() == expected.as_bytes()),
+                "adapter pool is missing {expected:?}"
             );
         }
     }
@@ -1144,30 +1378,13 @@ mod tests {
             "interface\\terminalmenu.swf",
         ];
 
-        let path = std::env::var("BYROREDUX_FO4_DATA").unwrap_or_else(|_| {
-            "/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data".to_string()
-        });
-        let archive_path = std::path::Path::new(&path).join("Fallout4 - Interface.ba2");
-        let Ok(archive) = Ba2Archive::open(&archive_path) else {
-            eprintln!(
-                "skipping all_installed_fallout4_swfs_round_trip_through_injection: \
-                 {archive_path:?} not available (set BYROREDUX_FO4_DATA to override)"
-            );
+        let Some(archive) =
+            fallout4_interface_archive("all_installed_fallout4_swfs_round_trip_through_injection")
+        else {
             return;
         };
         let catalog = ScaleformHostCatalog::for_profile(ScaleformProfile::Fallout4Avm2);
-
-        let mut swf_paths: Vec<String> = archive
-            .list_files()
-            .into_iter()
-            .filter(|path| path.ends_with(".swf"))
-            .map(str::to_string)
-            .collect();
-        swf_paths.sort();
-        assert!(
-            !swf_paths.is_empty(),
-            "expected .swf files in the FO4 interface archive at {archive_path:?}"
-        );
+        let swf_paths = fallout4_swf_paths(&archive);
 
         let mut injected_count = 0usize;
         let mut failures = Vec::new();

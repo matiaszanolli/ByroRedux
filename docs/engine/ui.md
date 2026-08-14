@@ -269,7 +269,7 @@ with:
   normal / motion-vector / mesh-id G-buffer.
 - **Lightweight vertex format.** The UI quad uses `UiVertex` (position +
   UV only, **20 bytes** — `[f32; 3]` + `[f32; 2]`, 2 attribute
-  descriptions) rather than the full 100-byte scene `Vertex`. The split
+  descriptions) rather than the full 104-byte scene `Vertex`. The split
   landed alongside the M-NORMALS vertex work (#783); the 20-byte size and
   field offsets are pinned by tests in `crates/renderer/src/vertex.rs`.
 - **Bindless texture sampling.** `ui.frag` samples
