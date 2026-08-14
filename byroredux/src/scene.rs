@@ -143,7 +143,69 @@ fn capsule_center_y_on_surface(
     surface_y + half_height + radius + kcc_offset_bu
 }
 
-fn character_spawn_center_y(
+/// #2858 — a downward capsule sweep must START above the floor it is looking
+/// for. The probe capsule's own half-extent is `half_height + radius`, so
+/// lifting the origin by that plus a clearance margin keeps the door's own
+/// floor out of the initial-penetration blind zone. Derived from the
+/// controller rather than hard-coded so a `CharacterController` re-tune cannot
+/// reintroduce the blind zone.
+const FLOOR_PROBE_CLEARANCE_BU: f32 = 16.0;
+/// How far below the reference height the probe keeps searching.
+const FLOOR_PROBE_REACH_BELOW_DOOR_BU: f32 = 164.0;
+
+fn floor_probe_lift(cc: byroredux_physics::CharacterController) -> f32 {
+    cc.half_height + cc.radius + FLOOR_PROBE_CLEARANCE_BU
+}
+
+fn min_walkable_normal_y(cc: byroredux_physics::CharacterController) -> f32 {
+    cc.max_slope_climb_deg.to_radians().cos()
+}
+
+/// Probe for the nearest walkable floor beneath `(x, z)`, searching a bounded
+/// band around `reference_y`.
+///
+/// The shared rung of the spawn-grounding ladder. Doors and XTEL destinations
+/// sit at floor level by construction, so a band centred on that height finds
+/// the real local floor — or correctly reports nothing nearby, rather than a
+/// false hit far above.
+///
+/// `exclude` is the entity whose own rigid body must not count as floor. Cold
+/// start passes `None` (the capsule does not exist yet); the runtime
+/// door-transition path passes the player, whose capsule is very much alive
+/// and standing in the sweep (#2869).
+///
+/// Requires a fresh query pipeline — see
+/// [`byroredux_physics::PhysicsWorld::update_query_pipeline`].
+pub(crate) fn probe_walkable_floor_near(
+    world: &World,
+    x: f32,
+    z: f32,
+    reference_y: f32,
+    cc: byroredux_physics::CharacterController,
+    exclude: Option<byroredux_core::ecs::storage::EntityId>,
+) -> Option<f32> {
+    // Resolve the exclusion handle and release the component guard before
+    // taking the `PhysicsWorld` lock — `RapierHandles` → `PhysicsWorld` is the
+    // order `push_kinematic` uses, and holding the query across the resource
+    // would be a second edge for the same pair.
+    let excluded_body = exclude.and_then(|entity| {
+        world
+            .query::<byroredux_physics::RapierHandles>()
+            .and_then(|handles| handles.get(entity).map(|h| h.body))
+    });
+    let probe_lift = floor_probe_lift(cc);
+    let pw = world.resource::<byroredux_physics::PhysicsWorld>();
+    pw.cast_capsule_down_onto_walkable_surface(
+        Vec3::new(x, reference_y + probe_lift, z),
+        cc.half_height,
+        cc.radius,
+        FLOOR_PROBE_CLEARANCE_BU + FLOOR_PROBE_REACH_BELOW_DOOR_BU,
+        min_walkable_normal_y(cc),
+        excluded_body,
+    )
+}
+
+pub(crate) fn character_spawn_center_y(
     world: &World,
     surface_y: f32,
     cc: byroredux_physics::CharacterController,
@@ -1009,25 +1071,10 @@ pub(crate) fn setup_scene(
             // a `CharacterController` re-tune cannot reintroduce the blind
             // zone, and extend the range by the same amount so the band
             // searched BELOW the door is unchanged.
-            const FLOOR_PROBE_CLEARANCE_BU: f32 = 16.0;
-            const FLOOR_PROBE_REACH_BELOW_DOOR_BU: f32 = 164.0;
-            let probe_lift = cc.half_height + cc.radius + FLOOR_PROBE_CLEARANCE_BU;
-            let floor_probe_range = FLOOR_PROBE_CLEARANCE_BU + FLOOR_PROBE_REACH_BELOW_DOOR_BU;
-            let min_walkable_normal_y = cc.max_slope_climb_deg.to_radians().cos();
-            let near_door_floor_y = {
-                let pw = world.resource::<byroredux_physics::PhysicsWorld>();
-                let probe_origin = Vec3::new(nudged_x, door_pos.y + probe_lift, nudged_z);
-                pw.cast_capsule_down_onto_walkable_surface(
-                    probe_origin,
-                    cc.half_height,
-                    cc.radius,
-                    floor_probe_range,
-                    min_walkable_normal_y,
-                    // No player body exists yet — the capsule is spawned
-                    // later in `setup_scene`, so there is nothing to self-hit.
-                    None,
-                )
-            };
+            // No player body exists yet on this path — the capsule is spawned
+            // later in `setup_scene` — so there is nothing to self-hit.
+            let near_door_floor_y =
+                probe_walkable_floor_near(world, nudged_x, nudged_z, door_pos.y, cc, None);
             // Second rung — the nudge itself can be the problem. It moves
             // the XZ 64 BU into the room, and when that lands over a hole
             // (Skyrim's `BleakFallsBarrow01`: the nudged XZ has no floor
@@ -1038,16 +1085,7 @@ pub(crate) fn setup_scene(
             // Standing on the threshold is a better spawn than the bottom
             // of whatever shaft the nudge happened to point at.
             let door_xz_floor_y = near_door_floor_y.or_else(|| {
-                let pw = world.resource::<byroredux_physics::PhysicsWorld>();
-                let probe_origin = Vec3::new(door_pos.x, door_pos.y + probe_lift, door_pos.z);
-                pw.cast_capsule_down_onto_walkable_surface(
-                    probe_origin,
-                    cc.half_height,
-                    cc.radius,
-                    floor_probe_range,
-                    min_walkable_normal_y,
-                    None,
-                )
+                probe_walkable_floor_near(world, door_pos.x, door_pos.z, door_pos.y, cc, None)
             });
 
             // Third rung — neither XZ has floor near door height, so the
@@ -1073,6 +1111,7 @@ pub(crate) fn setup_scene(
                     // (#2858), so a floor sitting near the cell's own AABB
                     // ceiling is inside the swept band rather than behind
                     // the probe's starting penetration.
+                    let probe_lift = floor_probe_lift(cc);
                     let probe_origin = Vec3::new(nudged_x, max[1] + probe_lift, nudged_z);
                     let max_distance = (max[1] - min[1]).max(1.0) + probe_lift + 100.0;
                     pw.cast_capsule_down_onto_walkable_surface(
@@ -1080,7 +1119,7 @@ pub(crate) fn setup_scene(
                         cc.half_height,
                         cc.radius,
                         max_distance,
-                        min_walkable_normal_y,
+                        min_walkable_normal_y(cc),
                         None,
                     )
                 })

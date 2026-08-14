@@ -15,7 +15,7 @@
 
 use byroredux_core::ecs::components::collision::{CollisionShape, MotionType, RigidBodyData};
 use byroredux_core::ecs::components::{
-    FormIdComponent, GlobalTransform, PhysicsSourceForm, RenderLayer, Transform,
+    FormIdComponent, GlobalTransform, Parent, PhysicsSourceForm, RenderLayer, Transform,
 };
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::world::World;
@@ -504,7 +504,26 @@ impl Newcomer {
 fn collect_newcomers(world: &World) -> Vec<Newcomer> {
     let mut out = Vec::new();
 
-    let handles_q = world.query::<RapierHandles>();
+    // #2867 — this check used to live at the BOTTOM of `register_newcomers`,
+    // *after* every newcomer's body and colliders had already been committed
+    // to Rapier. Missing storage there meant returning with live solver
+    // objects and no ECS row pointing at them: `release_victim_rapier_bodies`
+    // walks `RapierHandles`/`Ragdoll` rows, so nothing could ever free them.
+    // Worse, the skip below is gated on the same query, so the identical
+    // newcomer set — full `TriMesh` vertex/index clones included — was
+    // re-collected and re-inserted every single frame, unbounded (the #1520
+    // leak shape on a different trigger). Refusing to collect at all keeps
+    // the miss path from reaching the solver, and stops the re-collect with
+    // the same edit.
+    let Some(handles_q) = world.query::<RapierHandles>() else {
+        log::error!(
+            "RapierHandles storage missing — call World::register::<RapierHandles>() \
+             during setup before running physics_sync_system. No colliders will be \
+             registered this frame (registering them would leak into Rapier with no \
+             ECS handle to free them by)."
+        );
+        return out;
+    };
 
     let (Some(shape_q), Some(body_q)) = (
         world.query::<CollisionShape>(),
@@ -521,10 +540,8 @@ fn collect_newcomers(world: &World) -> Vec<Newcomer> {
     };
 
     for (entity, shape) in shape_q.iter() {
-        if let Some(ref hq) = handles_q {
-            if hq.contains(entity) {
-                continue;
-            }
+        if handles_q.contains(entity) {
+            continue;
         }
         let Some(body_data) = body_q.get(entity) else {
             continue;
@@ -666,13 +683,21 @@ fn register_newcomers(world: &World, newcomers: Vec<Newcomer>) {
     // get `&World`. We work around this by pre-registering storage and
     // going through the QueryWrite::insert path, which IS available.
     if !registered.is_empty() {
-        // Ensure storage exists for QueryWrite to succeed.
+        // #2867 — a defensive net, not the gate. The gate is in
+        // `collect_newcomers`: reaching here with a non-empty batch means the
+        // storage existed when the batch was collected, and nothing between
+        // then and now can remove it. Keep the arm anyway, but note that by
+        // this point the bodies and colliders are already in the solver — if
+        // this ever fires, the batch leaks. Any future edit that wants to
+        // reject a newcomer for a storage reason must do it before the
+        // `pw.bodies.insert` above, not here.
         let mut handles_q = match world.query_mut::<RapierHandles>() {
             Some(q) => q,
             None => {
                 log::error!(
-                    "RapierHandles storage missing — call World::register::<RapierHandles>() \
-                     during setup before running physics_sync_system"
+                    "RapierHandles storage disappeared between collection and registration — \
+                     {} bodies are now orphaned in Rapier with no ECS handle to free them by",
+                    registered.len(),
                 );
                 return;
             }
@@ -753,6 +778,23 @@ fn pull_dynamic(world: &World) {
     // before taking the Transform write lock.
     let mut updates: Vec<(EntityId, glam::Vec3, glam::Quat)> = Vec::new();
     {
+        // #2866 — Rapier's pose is WORLD-space by construction (Phase 1 seeds
+        // the body from `GlobalTransform`), but the write target below is the
+        // entity's LOCAL `Transform`. For a root those coincide; for a
+        // parented body they do not, and the next propagation pass composes
+        // `parent_global ∘ local`, applying the parent chain a second time —
+        // the body renders offset from where it simulates, by exactly the
+        // parent transform. `load_nif_scene_hierarchical` produces precisely
+        // this shape (a non-root `NiNode` carrying a Dynamic `bhkCollisionObject`
+        // under a non-identity parent chain), so `cargo run -- mesh.nif` reaches
+        // it. Divide the parent back out instead of restricting the loader.
+        //
+        // Both guards are read queries acquired here and dropped with this
+        // block, before the `Transform` write below — `transform_propagation_system`
+        // holds `Transform` while acquiring `Parent`/`GlobalTransform`, so
+        // holding these across the write lock would be the reverse edge (#2135).
+        let parent_q = world.query::<Parent>();
+        let global_q = world.query::<GlobalTransform>();
         let pw = world.resource::<PhysicsWorld>();
         for (entity, handles) in handles_q.iter() {
             let Some(body_data) = body_q.get(entity) else {
@@ -767,6 +809,19 @@ fn pull_dynamic(world: &World) {
             let iso = *body.position();
             let translation = vec3_from_translation(iso.translation);
             let rotation = quat_from_na(iso.rotation);
+            // A parent that has no `GlobalTransform` cannot be divided out;
+            // propagation `continue`s on that same case, so the child's global
+            // is never recomposed either and the world pose stays correct.
+            let parent_global = parent_q
+                .as_ref()
+                .and_then(|pq| pq.get(entity))
+                .and_then(|parent| global_q.as_ref().and_then(|gq| gq.get(parent.0)));
+            let (translation, rotation) = match parent_global {
+                Some(parent_global) => {
+                    GlobalTransform::local_from_world(parent_global, translation, rotation)
+                }
+                None => (translation, rotation),
+            };
             updates.push((entity, translation, rotation));
         }
     }
@@ -791,6 +846,189 @@ fn pull_dynamic(world: &World) {
             t.translation = pos;
             t.rotation = rot;
         }
+    }
+}
+
+#[cfg(test)]
+mod phase_sync_tests {
+    use super::physics_sync_system;
+    use crate::components::RapierHandles;
+    use crate::world::PhysicsWorld;
+    use byroredux_core::ecs::components::collision::{CollisionShape, MotionType, RigidBodyData};
+    use byroredux_core::ecs::components::{GlobalTransform, Parent, Transform};
+    use byroredux_core::ecs::world::World;
+    use glam::{Quat, Vec3};
+
+    fn dynamic_body() -> RigidBodyData {
+        RigidBodyData {
+            motion_type: MotionType::Dynamic,
+            ..Default::default()
+        }
+    }
+
+    fn unit_box() -> CollisionShape {
+        CollisionShape::Cuboid {
+            half_extents: Vec3::splat(1.0),
+        }
+    }
+
+    /// Everything `physics_sync_system` touches, minus `RapierHandles` — the
+    /// storage whose absence #2867 is about.
+    fn world_without_handles_storage() -> World {
+        let mut world = World::new();
+        world.register::<Transform>();
+        world.register::<GlobalTransform>();
+        world.register::<Parent>();
+        world.register::<CollisionShape>();
+        world.register::<RigidBodyData>();
+        world.insert_resource(PhysicsWorld::new());
+        world
+    }
+
+    fn physics_world() -> World {
+        let mut world = world_without_handles_storage();
+        world.register::<RapierHandles>();
+        world
+    }
+
+    /// #2866 — Rapier's pose is world-space, the write target is the LOCAL
+    /// `Transform`. A parented dynamic body must have its parent chain divided
+    /// back out, or `transform_propagation_system` composes it a second time
+    /// and the body renders a whole parent transform away from where it
+    /// simulates. Pre-fix this stored the raw world pose, so the child's local
+    /// came back as the world `(30, 0, 0)` rather than the local `(5, 0, 0)`.
+    ///
+    /// `dt = 0` so the solver cannot advance the body: the pose the pull reads
+    /// back is exactly the pose registration seeded, which makes the assertion
+    /// about the local/world contract alone rather than about integration.
+    #[test]
+    fn parented_dynamic_body_pulls_back_a_local_not_world_transform() {
+        let mut world = physics_world();
+
+        // Parent: translated, rotated a quarter turn about Y, scaled 2x — so a
+        // pass that drops any one of the three still fails.
+        let parent_global = GlobalTransform::new(
+            Vec3::new(20.0, 5.0, -3.0),
+            Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
+            2.0,
+        );
+        let parent = world.spawn();
+        world.insert(parent, Transform::IDENTITY);
+        world.insert(parent, parent_global);
+
+        let local_translation = Vec3::new(5.0, 0.0, 0.0);
+        let child_global =
+            GlobalTransform::compose(&parent_global, local_translation, Quat::IDENTITY, 1.0);
+        let child = world.spawn();
+        world.insert(child, Transform::IDENTITY);
+        world.insert(child, child_global);
+        world.insert(child, Parent(parent));
+        world.insert(child, unit_box());
+        world.insert(child, dynamic_body());
+
+        physics_sync_system(&world, 0.0);
+
+        let transforms = world.query::<Transform>().unwrap();
+        let local = transforms.get(child).copied().unwrap();
+        assert!(
+            (local.translation - local_translation).length() < 1e-2,
+            "child local Transform is {:?}, want the LOCAL {:?} — a world-space \
+             pose here gets the parent chain applied twice by propagation",
+            local.translation,
+            local_translation,
+        );
+
+        // The round trip is what actually matters: recomposing the stored
+        // local under the parent must land back on the simulated world pose.
+        let recomposed =
+            GlobalTransform::compose(&parent_global, local.translation, local.rotation, 1.0);
+        assert!((recomposed.translation - child_global.translation).length() < 1e-2);
+    }
+
+    /// A parentless dynamic body still receives the raw world pose — the
+    /// fallback must not perturb the far more common root case.
+    #[test]
+    fn root_dynamic_body_still_pulls_back_the_world_pose() {
+        let mut world = physics_world();
+        let seed = Vec3::new(11.0, 22.0, 33.0);
+        let entity = world.spawn();
+        world.insert(entity, Transform::IDENTITY);
+        world.insert(entity, GlobalTransform::new(seed, Quat::IDENTITY, 1.0));
+        world.insert(entity, unit_box());
+        world.insert(entity, dynamic_body());
+
+        physics_sync_system(&world, 0.0);
+
+        let transforms = world.query::<Transform>().unwrap();
+        assert!((transforms.get(entity).unwrap().translation - seed).length() < 1e-2);
+    }
+
+    /// #2867 — with `RapierHandles` storage missing there is no way to record
+    /// a handle, so nothing may reach the solver: an inserted body would be
+    /// unreachable from `release_victim_rapier_bodies` (which walks
+    /// `RapierHandles`/`Ragdoll` rows) and therefore unfreeable. Pre-fix the
+    /// bodies and colliders went in first and the check ran forty lines later.
+    ///
+    /// Ticking repeatedly is the load-bearing half: the newcomer skip is gated
+    /// on the same missing query, so the pre-fix path re-collected and
+    /// re-inserted the identical batch every frame, unbounded.
+    #[test]
+    fn missing_handles_storage_registers_nothing_and_does_not_accumulate() {
+        let mut world = world_without_handles_storage();
+        for index in 0..4 {
+            let entity = world.spawn();
+            world.insert(entity, Transform::IDENTITY);
+            world.insert(
+                entity,
+                GlobalTransform::new(
+                    Vec3::new(index as f32 * 10.0, 0.0, 0.0),
+                    Quat::IDENTITY,
+                    1.0,
+                ),
+            );
+            world.insert(entity, unit_box());
+            world.insert(entity, dynamic_body());
+        }
+
+        for tick in 1..=8 {
+            physics_sync_system(&world, 1.0 / 60.0);
+            let pw = world.resource::<PhysicsWorld>();
+            assert_eq!(
+                (pw.bodies.len(), pw.colliders.len()),
+                (0, 0),
+                "tick {tick}: bodies/colliders reached the solver with no ECS row to free them by",
+            );
+        }
+    }
+
+    /// The same scene with the storage registered must still register
+    /// normally — the #2867 guard rejects only the misconfigured case, and
+    /// registers each newcomer exactly once across repeated ticks.
+    #[test]
+    fn registered_handles_storage_admits_each_newcomer_exactly_once() {
+        let mut world = physics_world();
+        for index in 0..4 {
+            let entity = world.spawn();
+            world.insert(entity, Transform::IDENTITY);
+            world.insert(
+                entity,
+                GlobalTransform::new(
+                    Vec3::new(index as f32 * 10.0, 0.0, 0.0),
+                    Quat::IDENTITY,
+                    1.0,
+                ),
+            );
+            world.insert(entity, unit_box());
+            world.insert(entity, dynamic_body());
+        }
+
+        for _ in 0..8 {
+            physics_sync_system(&world, 1.0 / 60.0);
+        }
+
+        let pw = world.resource::<PhysicsWorld>();
+        assert_eq!(pw.bodies.len(), 4, "one body per newcomer, registered once");
+        assert_eq!(pw.colliders.len(), 4);
     }
 }
 
