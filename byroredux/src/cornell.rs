@@ -556,9 +556,20 @@ fn pbr_bsdf_lobes(
 /// `materialKind == MATERIAL_KIND_GLASS && roughness < 0.35`, not `alpha`),
 /// matching the spawn-time `classify_glass_into_material` contract.
 /// `alpha: 0.25` below sets `finalAlpha` for these probes to ~0.25 (not
-/// 1.0) — currently unconsumed downstream (`taa.comp`/`composite.frag`
-/// don't read it), but latent-fragile if a future composite branch keys
-/// on alpha for glass/decal classification. See #676 / DEN-6.
+/// 1.0). It is unconsumed by the *composite/TAA passes* specifically
+/// (`taa.comp`/`composite.frag` don't read it), and latent-fragile if a
+/// future composite branch keys on alpha for glass/decal classification.
+/// See #676 / DEN-6.
+///
+/// It is NOT inert engine-wide (#2515): the value reaches
+/// `GpuMaterial.material_alpha` through `to_gpu_material` and is hashed by
+/// `hash_gpu_material_fields` (`material.rs` writes
+/// `mat.material_alpha.to_bits()`), which `MaterialTable::intern_by_hash`
+/// keys on. So it is part of the material dedup identity, and changing it
+/// splits or merges material-table slots — these glass probes already
+/// occupy a slot distinct from an otherwise identical opaque dielectric
+/// purely because of it. Relevant to anyone measuring dedup ratio via
+/// `ctx.scratch` (#780 / PERF-N1) against the Cornell scene.
 fn glass(color: [f32; 3]) -> Material {
     let mut material = Material {
         diffuse_color: color,

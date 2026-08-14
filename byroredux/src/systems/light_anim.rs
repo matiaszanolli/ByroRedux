@@ -89,6 +89,34 @@ pub(crate) fn canonical_light_animation_flags(game: GameKind, source_flags: u32)
 /// gated. A verified per-game divergence gets its own `match` arm here,
 /// exactly like `GameKind::Fallout4` does above.
 ///
+/// ## The asymmetry with the animation sibling is deliberate (#2517)
+///
+/// These two canonicalizers apply *opposite* defaults to bits that a
+/// game's own LIGH layout does not name, and that is a decision rather
+/// than drift:
+///
+/// * **Animation decode is strict-by-default.** `FO4`/`FO76` are narrowed
+///   to `FLICKER|PULSE` precisely because `0x40`/`0x100` are unnamed
+///   there, and an unnamed bit must not decode into *motion* — a light
+///   that visibly pulses when the record never asked for it is an obvious,
+///   reported artifact.
+/// * **Shadow decode is permissive-by-default.** Dropping a shadow bit
+///   that a game *does* name is the strictly worse error: the light
+///   silently stops casting RT shadows and the scene just looks flat, with
+///   nothing to trace it back to. So an unverified bit stays enabled.
+///
+/// The concrete open question this leaves: of the three bits, only `0x400`
+/// (Spot Shadow) is believed to be named in the Oblivion / FO3 / FNV
+/// layouts, so an Oblivion LIGH carrying `0x800`/`0x1000` as reserved junk
+/// would be promoted to "casts shadows". Narrowing those games to
+/// `LIGHT_FLAG_SHADOW_SPOTLIGHT` alone requires reading xEdit's
+/// `wbDefinitionsTES4.pas` / `wbDefinitionsFNV.pas` LIGH flag lists
+/// directly — the same authority `equip.rs` cites for biped slots. Those
+/// files are not vendored in this tree, and narrowing on the *assumption*
+/// that the bits are unnamed would be exactly the guess the shadow-side
+/// default exists to avoid. Left permissive pending that evidence; see
+/// #2517 for the measurement that would settle it.
+///
 /// `GameKind::Starfield` is excluded from that default for the same
 /// reason `canonical_light_animation_flags` excludes it (#2251): SF1Edit's
 /// live LIGH definition has no named Flags field at all in the
@@ -205,6 +233,23 @@ pub(crate) fn translate_light(
 /// instead of touching this constant.
 const FLICKER_INTENSITY_DAMPING: f32 = 0.5;
 
+/// Noise samples per authored flicker period (#2516).
+///
+/// The FLICKER path interpolates between hash buckets; this sets how many
+/// buckets one authored `period_secs` spans. `6.0` is picked so Skyrim's
+/// vanilla 0.5 s candle steps at `6 / 0.5 = 12` Hz — exactly the rate
+/// Phase 19 arrived at by eye (Phase 17's 24 Hz read as a jerky strobe
+/// rather than a candle's gentle dance) — while a longer authored period
+/// now actually flickers more slowly instead of being ignored.
+const FLICKER_BUCKETS_PER_PERIOD: f32 = 6.0;
+
+/// Fallback period for a `LightFlicker` that somehow carries a
+/// non-positive `period_secs`. Matches the vanilla Skyrim candle default
+/// `attach.rs` already substitutes for pre-Skyrim records (#2478), so the
+/// two agree; this copy exists only to keep [`flicker_intensity`] total
+/// for direct unit-test callers.
+const DEFAULT_FLICKER_PERIOD_SECS: f32 = 0.5;
+
 /// Cheap deterministic hash → `[-1.0, 1.0]`. Wang-style integer hash;
 /// flicker is purely cosmetic so a real PRNG would be overkill.
 fn hash_to_unit(seed: u32) -> f32 {
@@ -260,7 +305,32 @@ fn flicker_intensity(entity: EntityId, flicker: &LightFlicker, total_time: f32) 
         let phase = phase_secs / effective_period;
         (phase * std::f32::consts::TAU).sin()
     } else if flags & (LIGHT_FLAG_FLICKER | LIGHT_FLAG_FLICKER_SLOW) != 0 {
-        let raw = (total_time + flicker.phase_offset_secs) * 12.0 * speed_scale;
+        // Derive the bucket rate from the authored period (#2516). Before
+        // this the flicker branch stepped at a hardcoded 12 Hz and never
+        // read `period_secs` at all, so every flickering light in a scene
+        // ran at an identical rate no matter what its FNAM asked for —
+        // `phase_offset_secs` was the only per-light variation left, and a
+        // roomful of mixed fixtures flickered homogeneously. The pulse
+        // branch immediately above always honoured the period; this is the
+        // asymmetry, not a deliberate override.
+        //
+        // `FLICKER_BUCKETS_PER_PERIOD / period_secs` is chosen so Skyrim's
+        // vanilla 0.5 s candle still lands on exactly the 12 Hz that Phase
+        // 19 tuned by eye (24 Hz read as a jerky strobe), while a longer
+        // authored period now genuinely steps slower. Pre-Skyrim games are
+        // safe here: #2478 / REN-D22-03 made `attach.rs` substitute the
+        // vanilla 0.5 s candle default when a record authors no period, so
+        // `period_secs` is always a real value by the time it reaches this
+        // function — which is why this fix had to wait for that one.
+        let period_secs = if flicker.period_secs > 0.0 {
+            flicker.period_secs
+        } else {
+            // Defensive only — `attach.rs` guarantees a positive period.
+            // Keeps this pure function total for direct unit-test callers.
+            DEFAULT_FLICKER_PERIOD_SECS
+        };
+        let buckets_per_sec = FLICKER_BUCKETS_PER_PERIOD / period_secs;
+        let raw = (total_time + flicker.phase_offset_secs) * buckets_per_sec * speed_scale;
         let bucket = raw.floor() as u32;
         let bucket_t = raw.fract();
         // Smoothstep on the lerp factor — Hermite curve hides the
@@ -444,6 +514,68 @@ mod tests {
         let f = flicker(0, 0.25, 0.5);
         assert_eq!(flicker_intensity(1, &f, 0.0), 1.0);
         assert_eq!(flicker_intensity(1, &f, 3.7), 1.0);
+    }
+
+    /// #2516 — the FLICKER path stepped its hash buckets at a hardcoded
+    /// 12 Hz and never read `period_secs`, so every flickering light ran at
+    /// an identical rate whatever its FNAM authored. Count zero-crossings
+    /// of the modulation over a fixed window: a short authored period must
+    /// produce strictly more of them than a long one.
+    #[test]
+    fn flicker_rate_follows_the_authored_period() {
+        fn crossings(period: f32) -> usize {
+            let f = flicker(LIGHT_FLAG_FLICKER, 0.25, period);
+            let mut prev = flicker_intensity(7, &f, 0.0) - 1.0;
+            let mut n = 0;
+            // 4 s window, 1 ms resolution — fine enough to resolve 60 Hz.
+            for i in 1..4000 {
+                let cur = flicker_intensity(7, &f, i as f32 * 0.001) - 1.0;
+                if prev.signum() != cur.signum() {
+                    n += 1;
+                }
+                prev = cur;
+            }
+            n
+        }
+
+        let fast = crossings(0.25);
+        let candle = crossings(0.5);
+        let slow = crossings(4.0);
+        assert!(
+            fast > candle && candle > slow,
+            "flicker rate must track the authored period: \
+             0.25s={fast} 0.5s={candle} 4.0s={slow}"
+        );
+        // The long period must be *visibly* slower, not marginally so.
+        assert!(
+            slow * 4 < candle,
+            "a 4 s period should flicker far slower than a 0.5 s candle: \
+             {slow} vs {candle}"
+        );
+    }
+
+    /// The 0.5 s vanilla Skyrim candle must still step at the 12 Hz that
+    /// Phase 19 tuned by eye — `FLICKER_BUCKETS_PER_PERIOD` is chosen for
+    /// exactly this, so a future retune cannot silently drift it.
+    #[test]
+    fn vanilla_candle_period_still_steps_at_twelve_hz() {
+        let rate = FLICKER_BUCKETS_PER_PERIOD / 0.5;
+        assert!(
+            (rate - 12.0).abs() < 1e-6,
+            "expected the tuned 12 Hz for a 0.5 s candle, got {rate}"
+        );
+    }
+
+    /// A non-positive period must not divide by zero or produce a NaN
+    /// intensity — `attach.rs` guarantees a positive value, but this pure
+    /// function is called directly by tests and must stay total.
+    #[test]
+    fn flicker_survives_a_non_positive_authored_period() {
+        for bad in [0.0_f32, -1.0] {
+            let f = flicker(LIGHT_FLAG_FLICKER, 0.25, bad);
+            let v = flicker_intensity(3, &f, 1.234);
+            assert!(v.is_finite(), "period {bad} produced {v}");
+        }
     }
 
     #[test]
