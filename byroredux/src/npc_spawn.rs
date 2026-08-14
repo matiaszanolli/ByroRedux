@@ -184,15 +184,38 @@ pub fn build_character_ruleset(
 /// keeping it out of the dynamic solver entirely. Death-time ragdoll activation
 /// (`RagdollActive` / `build_ragdoll`) is unaffected — it rebuilds the
 /// simulated ragdoll separately.
+///
+/// #2873 — each skeleton bone that carries a collision shape also gets an
+/// [`ActorBoneCollider`](byroredux_physics::ActorBoneCollider) marker, so
+/// registration files its colliders under
+/// [`ACTOR_BONE_GROUP`](byroredux_physics::ACTOR_BONE_GROUP) and downward
+/// floor probes skip them. Without it, `locomotion::step_toward`'s ground-snap
+/// ray — cast from 256 BU above the actor's own root — meets the actor's
+/// upper-body bone before it reaches the floor and re-seats the root at that
+/// bone's height; because the bones are then driven from the root's
+/// `GlobalTransform`, the next tick casts from higher still. That is a
+/// monotonic elevator, not a one-off offset: walking NPCs ascend out of the
+/// cell. `exclude_rigid_body` cannot fix it — each bone is a separate body.
 fn keyframe_live_ragdoll_bones(
     world: &mut World,
     skel_map: &std::collections::HashMap<std::sync::Arc<str>, EntityId>,
 ) {
+    use byroredux_core::ecs::components::collision::CollisionShape;
+
     for &bone in skel_map.values() {
         if let Some(body) = world.get_mut::<RigidBodyData>(bone) {
             if body.motion_type == MotionType::Dynamic {
                 body.motion_type = MotionType::Keyframed;
             }
+        }
+        // Tag every bone that actually registers a collider, whatever its
+        // authored motion type — a bone shipped Keyframed upstream is just as
+        // self-hittable as one flipped above.
+        let has_shape = world
+            .query::<CollisionShape>()
+            .is_some_and(|q| q.contains(bone));
+        if has_shape {
+            world.insert(bone, byroredux_physics::ActorBoneCollider);
         }
     }
 }

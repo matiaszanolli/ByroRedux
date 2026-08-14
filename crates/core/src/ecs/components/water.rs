@@ -224,9 +224,80 @@ pub struct WaterFlow {
     /// currents (rivers) keep Y=0. Set from the WATR `wind_direction`
     /// angle after the Z→Y swizzle in `cell_loader/water.rs`.
     pub direction: [f32; 3],
-    /// World units per second. Typical: 0.5 (calm river) … 8.0
-    /// (whitewater rapids) … 25.0 (Tamriel-tall waterfall sheet).
+    /// World units per second, always inside
+    /// [`WaterFlow::SPEED_MIN`]`..=`[`WaterFlow::SPEED_MAX`] when built
+    /// through [`WaterFlow::new`] / [`WaterFlow::for_kind`]. Typical:
+    /// 0.5 (calm river) … 8.0 (whitewater rapids) … 25.0 (Tamriel-tall
+    /// waterfall sheet).
     pub speed: f32,
+}
+
+impl WaterFlow {
+    /// Slowest current the physics sink will simulate — the "calm river"
+    /// anchor of [`Self::speed`]'s documented band. BU/s.
+    pub const SPEED_MIN: f32 = 0.5;
+    /// Fastest current the physics sink will simulate — the "Tamriel-tall
+    /// waterfall sheet" anchor of [`Self::speed`]'s documented band. BU/s.
+    ///
+    /// This is a hard ceiling, not a hint: `physics::water::current_force`
+    /// drives clutter toward `speed` as a terminal velocity, so an
+    /// unclamped value is an unbounded velocity target (#2872).
+    pub const SPEED_MAX: f32 = 25.0;
+
+    /// Speed for the "whitewater rapids" anchor of the documented band.
+    pub const SPEED_RAPIDS: f32 = 8.0;
+
+    /// Build a canonical flow: `direction` normalised, `speed` clamped into
+    /// the documented [`Self::SPEED_MIN`]`..=`[`Self::SPEED_MAX`] band.
+    ///
+    /// Every translate-side producer must come through here. A
+    /// degenerate/non-finite direction resolves to `+Z` at `SPEED_MIN`
+    /// rather than propagating NaN into the solver.
+    pub fn new(direction: [f32; 3], speed: f32) -> Self {
+        let [x, y, z] = direction;
+        let len = (x * x + y * y + z * z).sqrt();
+        let direction = if len.is_finite() && len > 1e-6 {
+            [x / len, y / len, z / len]
+        } else {
+            [0.0, 0.0, 1.0]
+        };
+        let speed = if speed.is_finite() {
+            speed.clamp(Self::SPEED_MIN, Self::SPEED_MAX)
+        } else {
+            Self::SPEED_MIN
+        };
+        Self { direction, speed }
+    }
+
+    /// Canonical current speed implied by a [`WaterKind`], in BU/s.
+    ///
+    /// #2872 — the physics current is synthesized from the *kind* rather
+    /// than from the WATR wind field, which carries no usable per-record
+    /// speed: across vanilla Fallout 3, Fallout: New Vegas and Skyrim SE,
+    /// the float at the head of `WATR.DATA` / `DNAM` is `90.0` on 146 of
+    /// 165 records (every 196- and 228-byte record, i.e. all of Skyrim and
+    /// ~85% of the Fallouts) — a constant, and exactly the value the
+    /// shorter legacy layouts carry in the *direction* slot. A field with
+    /// no variance across three games cannot be an authored per-water
+    /// velocity, and 90 BU/s is 3.6× this band's ceiling. Resolving which
+    /// offset actually holds the wind velocity in the newer layouts is a
+    /// decode-side question owned by the ESM parser, not something the
+    /// physics sink should guess at; these three values are the anchors
+    /// [`Self::speed`] already documents.
+    pub const fn speed_for_kind(kind: WaterKind) -> f32 {
+        match kind {
+            // Calm water carries no `WaterFlow` at all; the arm exists so
+            // the match stays total if a caller asks anyway.
+            WaterKind::Calm | WaterKind::River => Self::SPEED_MIN,
+            WaterKind::Rapids => Self::SPEED_RAPIDS,
+            WaterKind::Waterfall => Self::SPEED_MAX,
+        }
+    }
+
+    /// Canonical flow for a `kind` travelling along `direction`.
+    pub fn for_kind(kind: WaterKind, direction: [f32; 3]) -> Self {
+        Self::new(direction, Self::speed_for_kind(kind))
+    }
 }
 
 impl Component for WaterFlow {

@@ -1192,11 +1192,27 @@ pub(crate) fn setup_scene(
             // healthy spawn pays nothing.
             if floor_probe_failed {
                 const SPAWN_CENSUS_RADIUS_BU: f32 = 256.0;
+                // Mirror rung 1's geometry exactly so the census's unfiltered
+                // re-sweep answers for the probe that actually failed (#2874),
+                // and so the column ordering centres on the height the floor
+                // was expected at rather than on the world's ceiling (#2875).
+                let probe_lift = floor_probe_lift(cc);
+                let authoring = world
+                    .try_resource::<crate::cell_loader::NifImportRegistry>()
+                    .map(|registry| registry.collision_authoring_totals());
                 byroredux_physics::dump_spawn_collider_census(
                     world,
-                    spawn.x,
-                    spawn.z,
-                    SPAWN_CENSUS_RADIUS_BU,
+                    byroredux_physics::SpawnCensusProbe {
+                        x: spawn.x,
+                        y: door_pos.y + probe_lift,
+                        z: spawn.z,
+                        radius: SPAWN_CENSUS_RADIUS_BU,
+                        capsule_half_height: cc.half_height,
+                        capsule_radius: cc.radius,
+                        max_distance: FLOOR_PROBE_CLEARANCE_BU + FLOOR_PROBE_REACH_BELOW_DOOR_BU,
+                        min_walkable_normal_y: min_walkable_normal_y(cc),
+                        authoring,
+                    },
                 );
             }
             if floor_probe_failed {

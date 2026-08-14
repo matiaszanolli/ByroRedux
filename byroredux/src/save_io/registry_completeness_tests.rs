@@ -210,6 +210,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("TwoStateTransitionBatch", "one-shot presentation batch drained every tick; the state it summarizes (TwoStateActivator) is already registered"),
         ("UiMessageCommand", "one-shot command marker drained every frame; its only writer is unreachable in production today (same reason as MG07LabyrinthianDoor)"),
         // ── crates/physics/src/ ──────────────────────────────────────
+        ("ActorBoneCollider", "derived label, not state: re-applied to every skeleton bone by keyframe_live_ragdoll_bones on each NPC spawn, which a load re-runs (#2873)"),
         ("CharacterController", "mutable per-frame fields (velocity/grounded/jump) are deliberately zeroed on reload by the pose-restore path, not carried over"),
         ("ContactConfig", "boot-time tunable resource, no runtime mutator (no resource_mut call exists outside tests)"),
         ("PhysicsWaterConstants", "boot-time tunable resource, no runtime mutator (no resource_mut call exists outside tests)"),

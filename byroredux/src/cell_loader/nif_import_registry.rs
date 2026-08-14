@@ -265,6 +265,43 @@ impl NifImportRegistry {
         self.core.len()
     }
 
+    /// Sum every cached model's [`CollisionAuthoringSummary`] into the
+    /// spawn-census view of "was collision authored at all?" (#2874).
+    ///
+    /// The spawn census reads the Rapier side only, so its `0 colliders in
+    /// this column` bucket cannot tell "the source NIFs author no collision"
+    /// from "they author it and every shape was dropped in translation" —
+    /// the exact conflation `CollisionAuthoringSummary` exists to remove.
+    /// These totals supply the discriminator.
+    ///
+    /// Scoped to the *cache*, not to one cell: the registry is keyed by model
+    /// path and lives for the process, so on a cell-to-cell traversal the
+    /// totals cover every model loaded so far. That is a superset of the
+    /// current cell, which is the safe direction for this diagnostic —
+    /// nonzero totals never prove the drop happened in *this* cell, but zero
+    /// totals do prove nothing colliding was ever authored, and that is the
+    /// arm the census was mis-reporting.
+    ///
+    /// [`CollisionAuthoringSummary`]: byroredux_nif::import::collision::CollisionAuthoringSummary
+    pub(crate) fn collision_authoring_totals(&self) -> byroredux_physics::SpawnCensusAuthoring {
+        let mut out = byroredux_physics::SpawnCensusAuthoring::default();
+        for key in self.core.keys() {
+            let Some(Some(entry)) = self.core.get(key) else {
+                continue;
+            };
+            out.classic = out
+                .classic
+                .saturating_add(entry.collision_authoring.classic);
+            out.new_physics = out
+                .new_physics
+                .saturating_add(entry.collision_authoring.new_physics);
+            out.phantom = out
+                .phantom
+                .saturating_add(entry.collision_authoring.phantom);
+        }
+        out
+    }
+
     /// Configured LRU cap (`0` = unlimited).
     pub(crate) fn max_entries(&self) -> usize {
         self.max_entries

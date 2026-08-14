@@ -401,6 +401,19 @@ pub(crate) fn worldspace_name_chain(
     }
 }
 
+/// Shader UV-scroll rate produced by 1 BU/s of canonical [`WaterFlow`]
+/// (#2872).
+///
+/// Calibrated against the two constants the engine already documents, not
+/// invented: `WaterMaterial::default().scroll_a == [0.020, 0.011]` — a
+/// magnitude of `hypot(0.020, 0.011) ≈ 0.02283` UV/s — is the authored look
+/// of the slowest current [`WaterFlow::speed`] documents, its
+/// `SPEED_MIN` "calm river" anchor of 0.5 BU/s. So one BU/s of flow scrolls
+/// the wave layer `0.02283 / 0.5 ≈ 0.04565` UV/s, and a `River` plane
+/// reproduces the default appearance exactly while `Rapids` / `Waterfall`
+/// scale up in proportion to the current the physics sink is simulating.
+const WATER_SCROLL_UV_PER_BU_PER_S: f32 = 0.045_651;
+
 /// Resolve a cell's `XCWT` FormID to an engine [`WaterMaterial`]
 /// plus a [`WaterKind`] (currently always `Calm`) plus an optional
 /// [`WaterFlow`] and an optional normal-texture path the cell loader
@@ -470,22 +483,38 @@ pub(crate) fn resolve_water_material(
                 kind = WaterKind::River;
                 mat.foam_strength = 0.20;
             }
-            // Synthesise a flow vector from WATR's wind speed +
-            // direction when the kind implies flow. Bethesda's
-            // wind_direction is in radians from north (UESP).
+            // Synthesise a flow vector from WATR's wind direction + the
+            // canonical per-`WaterKind` current speed when the kind
+            // implies flow. Bethesda's wind_direction is in radians from
+            // north (UESP).
+            //
+            // #2872 — the *speed* deliberately does NOT come from
+            // `rec.params.wind_speed`. That field is `90.0` on every
+            // 196-byte (FO3/FNV) and 228-byte (Skyrim) vanilla WATR — a
+            // constant carrying no per-water information, three and a half
+            // times the top of `WaterFlow`'s documented BU/s band, and the
+            // same value the shorter legacy layouts carry in the direction
+            // slot. Feeding it straight through made one scalar serve as
+            // both a ~0.02-magnitude UV scroll rate and an unbounded
+            // physics velocity target, which cannot be dimensionally
+            // correct in both. `WaterFlow::for_kind` supplies the physics
+            // current from the band `WaterFlow::speed` already documents,
+            // and the shader scroll below is now *derived from* that
+            // canonical flow instead of sharing its raw source field — one
+            // scalar, one meaning. Re-deriving the true wind-velocity
+            // offset in the newer DATA/DNAM layouts is a decode-side fix.
             if !matches!(kind, WaterKind::Calm) {
                 let theta = rec.params.wind_direction;
                 // Compute once — cos/sin were duplicated pre-#1068 (F-WAT-06).
                 let (sin_theta, cos_theta) = theta.sin_cos();
-                let speed = rec.params.wind_speed.abs().max(0.5);
-                flow = Some(WaterFlow {
-                    direction: [cos_theta, 0.0, sin_theta],
-                    speed,
-                });
-                // Rebuild scroll vectors to bias along the flow axis.
-                mat.scroll_a = [cos_theta * speed * 0.5, sin_theta * speed * 0.5];
-                // Perpendicular shear at half speed for the second layer.
-                mat.scroll_b = [-sin_theta * speed * 0.25, cos_theta * speed * 0.25];
+                let canonical = WaterFlow::for_kind(kind, [cos_theta, 0.0, sin_theta]);
+                // Rebuild scroll vectors to bias along the flow axis,
+                // converting out of BU/s at the documented rate.
+                let scroll = canonical.speed * WATER_SCROLL_UV_PER_BU_PER_S;
+                mat.scroll_a = [cos_theta * scroll, sin_theta * scroll];
+                // Perpendicular shear at half rate for the second layer.
+                mat.scroll_b = [-sin_theta * scroll * 0.5, cos_theta * scroll * 0.5];
+                flow = Some(canonical);
             }
             // TNAM is the diffuse / noise texture — used as the
             // bindless normal map for the shader. Empty path =
@@ -1605,6 +1634,99 @@ mod tests {
             "wave_frequency must round-trip from WATR"
         );
         assert!(matches!(kind, WaterKind::Calm));
+    }
+
+    // ── #2872 — WaterFlow.speed unit ──────────────────────────────
+
+    /// The regression itself. Every vanilla FO3 / FNV / Skyrim WATR whose
+    /// DATA is 196 bytes (or DNAM 228) carries `90.0` in the float the
+    /// parser reads as `wind_speed` — a constant, the same value the shorter
+    /// legacy layouts put in the *direction* slot. Feeding it straight into
+    /// `WaterFlow::speed` made the physics current's terminal velocity 90
+    /// BU/s (3.6× the documented ceiling) and blew `scroll_a` out to ~45
+    /// against a documented default of `[0.020, 0.011]`.
+    ///
+    /// The canonical speed must now come from the `WaterKind` band and be
+    /// completely independent of that field.
+    #[test]
+    fn flow_speed_ignores_the_watr_wind_field_and_stays_in_band() {
+        // The real vanilla value, and two adversarial ones.
+        for wind_speed in [90.0_f32, 0.0, -1e9] {
+            let rec = calm_watr(
+                0x000B_0001,
+                "WaterRiverFallingSlow",
+                WaterParams {
+                    wind_speed,
+                    wind_direction: 0.0,
+                    ..WaterParams::default()
+                },
+            );
+            let mut waters = HashMap::new();
+            waters.insert(rec.form_id, rec);
+
+            let (mat, kind, flow, _) = resolve_water_material(&waters, Some(0x000B_0001));
+            let flow = flow.expect("a river EDID must synthesize a flow");
+            assert!(matches!(kind, WaterKind::River));
+            assert_eq!(
+                flow.speed,
+                WaterFlow::speed_for_kind(WaterKind::River),
+                "speed must come from the kind, not from wind_speed={wind_speed}"
+            );
+            assert!(
+                (WaterFlow::SPEED_MIN..=WaterFlow::SPEED_MAX).contains(&flow.speed),
+                "speed {} escaped the documented band",
+                flow.speed
+            );
+            // The shader scroll is derived from the same canonical scalar,
+            // so it can no longer diverge from the physics current.
+            let scroll = (mat.scroll_a[0].powi(2) + mat.scroll_a[1].powi(2)).sqrt();
+            assert!(
+                scroll < 0.05,
+                "scroll_a magnitude {scroll} is nowhere near the documented \
+                 [0.020, 0.011] default — the pre-fix value was ~45"
+            );
+        }
+    }
+
+    /// Rapids are faster than rivers, and the whole ladder stays inside the
+    /// band `WaterFlow::speed` documents — so `current_force`'s terminal
+    /// velocity target is bounded for every kind the translate site emits.
+    #[test]
+    fn flow_speed_ladder_is_ordered_and_bounded() {
+        let mut waters = HashMap::new();
+        for (form, edid) in [(0x000C_0001, "WhiteRapidsFast"), (0x000C_0002, "RiverSlow")] {
+            waters.insert(form, calm_watr(form, edid, WaterParams::default()));
+        }
+        let (_, rapids_kind, rapids, _) = resolve_water_material(&waters, Some(0x000C_0001));
+        let (_, river_kind, river, _) = resolve_water_material(&waters, Some(0x000C_0002));
+        assert!(matches!(rapids_kind, WaterKind::Rapids));
+        assert!(matches!(river_kind, WaterKind::River));
+
+        let rapids = rapids.expect("rapids flow");
+        let river = river.expect("river flow");
+        assert!(
+            rapids.speed > river.speed,
+            "rapids ({}) must run faster than a river ({})",
+            rapids.speed,
+            river.speed
+        );
+        for speed in [rapids.speed, river.speed] {
+            assert!((WaterFlow::SPEED_MIN..=WaterFlow::SPEED_MAX).contains(&speed));
+        }
+    }
+
+    /// Calm water carries no flow at all, so the physics current never
+    /// engages on a lake and the material keeps its default scroll.
+    #[test]
+    fn calm_water_carries_no_flow_and_default_scroll() {
+        let rec = calm_watr(0x000D_0001, "DefaultWater", WaterParams::default());
+        let mut waters = HashMap::new();
+        waters.insert(rec.form_id, rec);
+
+        let (mat, kind, flow, _) = resolve_water_material(&waters, Some(0x000D_0001));
+        assert!(matches!(kind, WaterKind::Calm));
+        assert!(flow.is_none());
+        assert_eq!(mat.scroll_a, WaterMaterial::default().scroll_a);
     }
 
     /// WATAL translate-up contract (docs/engine/watal.md §3/§4): a poorer

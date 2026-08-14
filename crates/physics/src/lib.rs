@@ -25,17 +25,18 @@ pub mod sync;
 pub mod water;
 pub mod world;
 
-pub use components::{CharacterController, Ragdoll, RapierHandles};
+pub use components::{ActorBoneCollider, CharacterController, Ragdoll, RapierHandles};
 pub use config::{ContactConfig, TriMeshFlagBits};
 pub use ragdoll::{
     build_ragdoll, RagdollBodySpec, RagdollConstraintSpec, RagdollJointSpec, RagdollSpec,
 };
 pub use sync::{
     dump_spawn_collider_census, physics_sync_system, set_kinematic_translation,
-    set_linear_velocity, SpawnCensusEntry,
+    set_linear_velocity, SpawnCensusAuthoring, SpawnCensusEntry, SpawnCensusProbe,
+    SpawnProbeVerdict,
 };
 pub use water::{buoyancy_force, submerged_fraction, PhysicsWaterConstants};
 pub use world::{
     CharacterMoveParams, CharacterMoveResult, NearbyCollider, PhysicsRayHit, PhysicsWorld,
-    PHYSICS_DT,
+    ACTOR_BONE_GROUP, PHYSICS_DT,
 };
