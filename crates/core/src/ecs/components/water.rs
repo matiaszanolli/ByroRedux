@@ -91,11 +91,22 @@ pub struct WaterMaterial {
     /// Colour seen looking down through deep water (refraction ray
     /// distance ≥ [`Self::fog_far`]).
     pub deep_color: [f32; 3],
-    /// Distance through water (world units) at which the shallow
-    /// colour reaches 50% mix.
+    /// NEAR PLANE of the underwater fog ramp (world units): the water
+    /// column is clear out to this distance, and absorption starts here.
+    ///
+    /// #2785 — this said "distance at which the shallow colour reaches 50%
+    /// mix", which is not what WATR authors. Vanilla measurements:
+    /// Skyrim's `BlackreachWater` 0/290, `MarkarthWater` 0/110,
+    /// `HorseTroughWater01` 220/4710; FNV's `NVCleanWaterGS` 7/58;
+    /// Oblivion's median `fog_near/fog_far` 0.001. It is `0` for nearly
+    /// every water body — a *ramp start*, meaningless as a half-distance
+    /// (which would make all that water instantly opaque). Same pair
+    /// semantics as the cell-lighting fog range.
     pub fog_near: f32,
-    /// Distance through water at which the deep colour fully takes
-    /// over (refraction tint converges to `deep_color`).
+    /// FAR PLANE of the same ramp: distance through water at which the
+    /// deep colour fully takes over (refraction tint converges to
+    /// `deep_color`). Always `> fog_near` — the ESM parser clamps it to
+    /// `fog_near + 1` at minimum.
     pub fog_far: f32,
     /// Schlick F0 at normal incidence. ~0.02 for clean water; ~0.04
     /// for muddy / chemical / Hubris Comics water. Drives fresnel.

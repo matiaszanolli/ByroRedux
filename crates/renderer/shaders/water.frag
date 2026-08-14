@@ -346,12 +346,39 @@ vec3 traceWaterRay(
 
 // ── Beer-Lambert through the water column ─────────────────────────────
 //
-// `hitDist` is the refraction-ray length under water. Attenuation
-// uses `fog_far` as the extinction reciprocal: at `fog_far`, the
-// refracted radiance reaches 1/e ≈ 37% of its surface value, and the
-// deep-water colour fully takes over.
+// `hitDist` is the refraction-ray length under water. Attenuation ramps
+// across the authored WATR fog range: clear until `fog_near`, then
+// darkening to full `deep_color` by `fog_far`.
+//
+// #2785 (REN-D15-04) — `fog_near` (`push.shallow.a`) travelled the entire
+// EXAL water arm and nothing read it: `t` was `hitDist / fog_far`, so the
+// curve was identical for every water body in every game and the authored
+// near plane was discarded at the last step.
+//
+// It is the NEAR PLANE of a linear fog range, not a "50% mix distance" —
+// which is what the component docs claimed, and what made this look like a
+// one-line `exp2(-d/fog_near)` fix. Measured over vanilla:
+//
+//   Skyrim.esm  34 WATR — fog_near 0 for most (BlackreachWater 0/290,
+//                         MarkarthWater 0/110, HorseTroughWater01 220/4710)
+//   FalloutNV   78 WATR — 0 for most (NVCleanWaterGS 7/58)
+//   Oblivion    23 WATR — median fog_near/fog_far = 0.001
+//
+// A half-distance reading would set the 50% point to ZERO for nearly all
+// vanilla water and turn every pond opaque. As a ramp start it is
+// bit-identical to the old curve wherever `fog_near == 0` (the vanilla
+// majority) and only gives the authored clear margin back to the few
+// bodies that ask for one. Same pair semantics the cell-lighting fog
+// already uses (`components.rs`: "evaluating `fog_near..fog_far`").
+//
+// The `exp(-2t)` shape itself is unchanged and still empirical.
 vec3 absorbWaterColumn(vec3 refractedRadiance, float hitDist) {
-    float t = clamp(hitDist / max(push.deep.a, 1.0), 0.0, 1.0);
+    float fogNear = push.shallow.a;
+    float fogFar = push.deep.a;
+    // The ESM parser already clamps `fog_far >= fog_near + 1`, so the span
+    // is positive; `max` covers a hand-built push block.
+    float span = max(fogFar - fogNear, 1.0);
+    float t = clamp((hitDist - fogNear) / span, 0.0, 1.0);
     float absorption = exp(-t * 2.0); // empirical multiplier — tunable
     return mix(push.deep.rgb, refractedRadiance * push.shallow.rgb, absorption);
 }
@@ -766,9 +793,23 @@ void main() {
                     if (floorClip.w > 0.0) {
                         vec2 ndc = floorClip.xy / floorClip.w;
                         vec2 uv01 = ndc * 0.5 + 0.5;
-                        if (all(greaterThanEqual(uv01, vec2(0.0)))
-                            && all(lessThanEqual(uv01, vec2(1.0)))) {
-                            ivec2 pixel = ivec2(uv01 * screen.xy);
+                        // #2784 (REN-D15-03) — reject on the INTEGER pixel
+                        // against the image size, the way `caustic_splat.comp`
+                        // does, instead of on the float uv. The old guard was
+                        // `lessThanEqual(uv01, vec2(1.0))`, so `uv01.x == 1.0`
+                        // exactly produced `pixel.x == screen.x` — one past the
+                        // last texel. Harmless in practice only because Vulkan
+                        // defines out-of-range image writes as discarded, and
+                        // that robustness rule was also the sole thing keeping
+                        // the wholesale conversion in bounds when the pass runs
+                        // against the 1x1 `placeholder_caustic_sink` fallback.
+                        // Making the bound explicit means the splat no longer
+                        // depends on it, and the two caustic writers now state
+                        // the same rule.
+                        ivec2 pixel = ivec2(uv01 * screen.xy);
+                        ivec2 causticSize = ivec2(screen.xy);
+                        if (all(greaterThanEqual(pixel, ivec2(0)))
+                            && all(lessThan(pixel, causticSize))) {
                             // 5. Directional weighting — caustic
                             // intensity scales with how
                             // perpendicular the water surface is

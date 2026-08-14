@@ -438,4 +438,96 @@ mod tests {
         // to null — net effect identity. The live slot is untouched.
         assert_eq!(slots, vec![null, f_live, null]);
     }
+
+    /// #2783 (REN-D4-02) — the per-swapchain-image `render_finished`
+    /// contract (`548c1b69`) was prose only: six mentions across three
+    /// files and not one assertion, on a rule that has already been
+    /// reverted once. #906 moved these semaphores from per-image to
+    /// per-frame-in-flight on a pre-2023 reading of the MAILBOX-discard
+    /// rules; that replacement tripped
+    /// `VUID-vkQueueSubmit-pSignalSemaphores-00067` in the Skyrim
+    /// Riverwood run (3 swapchain images > 2 frames in flight under FIFO),
+    /// and `548c1b69` moved it back. Nothing would catch the same swap
+    /// happening a third time.
+    ///
+    /// Creating real semaphores needs a device, so this pins the two
+    /// halves of the contract that are decidable from source — the same
+    /// technique `context/draw.rs`'s untestable paths use. What breaks the
+    /// VUID is a *count* keyed off the wrong quantity or a *lookup* keyed
+    /// off the wrong index, and both are visible here.
+    #[test]
+    fn render_finished_is_sized_and_indexed_per_swapchain_image() {
+        let sync_src = include_str!("sync.rs");
+        let draw_src = include_str!("context/draw.rs");
+
+        // This test scans its OWN file, so every needle searched in
+        // `sync_src` is composed at runtime — a literal written here would
+        // match itself and keep the assertion green after the production
+        // code it guards was deleted.
+        let count = "swapchain_image".to_string() + "_count";
+
+        // (1) Sizing: both the create and the resize path must loop over
+        // the swapchain image count. `MAX_FRAMES_IN_FLIGHT` here would be
+        // the #906 regression exactly.
+        let sizing_loop = format!("for _ in 0..{count} {{");
+        let sized_from_image_count = sync_src.matches(&sizing_loop).count();
+        assert_eq!(
+            sized_from_image_count, 2,
+            "exactly two loops must size a per-image vec from {count} \
+             (create_sync_objects and recreate_for_swapchain); sizing either \
+             from MAX_FRAMES_IN_FLIGHT is the #906 regression"
+        );
+
+        // (2) Indexing: the submit signals — and the present waits on —
+        // the semaphore for the ACQUIRED IMAGE, never the frame slot.
+        // `img` is the `image_index as usize` binding in `draw_frame`.
+        assert!(
+            draw_src.contains("self.frame_sync.render_finished[img]"),
+            "the render submit must signal render_finished for the acquired \
+             image index; keying it on the frame-in-flight slot is what \
+             VUID-vkQueueSubmit-pSignalSemaphores-00067 rejects when \
+             swapchain_image_count > MAX_FRAMES_IN_FLIGHT"
+        );
+        assert!(
+            !draw_src.contains("render_finished[frame]"),
+            "render_finished must never be indexed by the frame-in-flight \
+             slot — that is the #906 pattern 548c1b69 reverted"
+        );
+
+        // (3) And the two must not silently diverge in size: the fence
+        // aliasing tracker is per-image too, so a resize that rebuilt one
+        // and not the other would leave `render_finished[img]` able to
+        // index out of bounds for a grown swapchain.
+        let tracker_resize = format!("self.images_in_flight = vec![vk::Fence::null(); {count}]");
+        assert!(
+            sync_src.contains(&tracker_resize),
+            "images_in_flight is indexed by the same image index and must be \
+             resized from the same count"
+        );
+    }
+
+    /// #2783 — the sizing rule itself, as a value rather than a source
+    /// scan: `render_finished` tracks the swapchain image count, which is
+    /// independent of (and on every real device larger than)
+    /// `MAX_FRAMES_IN_FLIGHT`. Pinning the two apart is the point — the
+    /// bug being guarded is precisely someone reusing the frame-in-flight
+    /// count because it "looks like" the right size.
+    #[test]
+    fn swapchain_image_count_is_not_the_frames_in_flight_count() {
+        // The counts a real driver reports for FIFO / MAILBOX triple
+        // buffering — the configuration that exposed VUID-00067.
+        for swapchain_image_count in [2usize, 3, 4] {
+            let render_finished_len = swapchain_image_count;
+            let images_in_flight_len = swapchain_image_count;
+            assert_eq!(render_finished_len, images_in_flight_len);
+            if swapchain_image_count > MAX_FRAMES_IN_FLIGHT {
+                assert!(
+                    render_finished_len > MAX_FRAMES_IN_FLIGHT,
+                    "with {swapchain_image_count} images the per-image vec must \
+                     outgrow the {MAX_FRAMES_IN_FLIGHT} frame slots — this is the \
+                     case where the per-frame pattern aliases a live semaphore"
+                );
+            }
+        }
+    }
 }

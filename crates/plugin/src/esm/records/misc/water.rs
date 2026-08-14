@@ -81,11 +81,20 @@ pub struct WaterParams {
     /// Linear RGB of the reflection tint — multiplied into the RT
     /// reflection ray hit colour by the water shader.
     pub reflection_color: [f32; 3],
-    /// Fog distance (world units) at which the shallow tint reaches
-    /// 50% mix. Default `80.0` — UESP-documented FNV vanilla median.
+    /// NEAR PLANE of the underwater fog ramp (world units) — absorption
+    /// starts here; the column is clear before it.
+    ///
+    /// #2785 — was documented as "the distance at which the shallow tint
+    /// reaches 50% mix", which the data contradicts: vanilla authors `0`
+    /// for nearly every record (Skyrim 34 WATR, FNV 78, Oblivion 23 —
+    /// median `fog_near/fog_far` ≤ 0.001). Read as a half-distance it
+    /// would make almost all vanilla water opaque on contact. The
+    /// `80.0` default below is a mid-range clear margin, not a median of
+    /// authored values.
     pub fog_near: f32,
-    /// Fog distance at which the deep tint fully takes over.
-    /// Default `600.0`.
+    /// FAR PLANE of that ramp — distance at which the deep tint fully
+    /// takes over. Default `600.0`. Clamped to at least `fog_near + 1`
+    /// on parse so the ramp span is never zero.
     pub fog_far: f32,
     /// 0..1 reflectivity multiplier (`reflectivity_amount`).
     pub reflectivity: f32,
