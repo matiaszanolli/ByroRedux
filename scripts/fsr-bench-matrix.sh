@@ -130,7 +130,19 @@ run_scene_args() {
 SCENES=("${FSR_BENCH_SCENES:-cornell prospector whiterun medtek dugout}")
 read -r -a SCENES <<< "${SCENES[0]}"
 
-printf 'scene\tconfig\trun\tmode\tcamera\twall_fps\twall_ms\tfence_ms\tbrd_ms\tgpu_main\tgpu_svgf\tgpu_composite\tgpu_ssao\tgpu_volumetrics\tgpu_upscale\tgpu_presentation\tgpu_bloom\tsim_time_s\tentities\tdraws\tlights\ttlas\tstate_hash\n' > "$TSV"
+# #2835 — stamp the harness + engine commits into the artefact itself. Both
+# the measurement conditions and the column set have changed once already
+# (f19f7f15 switched from a parked camera to `--bench-mode renderer-stepped`
+# and added six columns) and the archived TSVs recorded neither, so nothing in
+# a committed table said which harness produced it. `fsr_bench_report.py`
+# skips `#` lines, so this is metadata to the tool and provenance to a reader.
+HARNESS_COMMIT="$(git -C "$REPO" log -1 --format=%h -- scripts/fsr-bench-matrix.sh 2>/dev/null || echo unknown)"
+ENGINE_COMMIT="$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+{
+  printf '# harness=%s engine=%s mode=renderer-stepped camera=%s runs=%s frames=%s\n' \
+    "$HARNESS_COMMIT" "$ENGINE_COMMIT" "$CAMERA_PATH" "$RUNS" "$FRAMES"
+  printf 'scene\tconfig\trun\tmode\tcamera\twall_fps\twall_ms\tfence_ms\tbrd_ms\tgpu_main\tgpu_svgf\tgpu_composite\tgpu_ssao\tgpu_volumetrics\tgpu_upscale\tgpu_presentation\tgpu_bloom\tsim_time_s\tentities\tdraws\tlights\ttlas\tstate_hash\n'
+} > "$TSV"
 
 for scene in "${SCENES[@]}"; do
   dir="$(scene_dir "$scene")"

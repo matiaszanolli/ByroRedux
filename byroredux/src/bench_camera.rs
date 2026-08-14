@@ -110,6 +110,15 @@ impl BenchCameraPath {
     /// cannot pass through the geometry it is looking at.
     const DOLLY_CLOSE_FRACTION: f32 = 0.35;
 
+    /// Fallback subject distance, BU, when the caller could not measure one
+    /// (no `PhysicsWorld`, or the camera looks at open sky).
+    ///
+    /// Room scale: 512 BU is ~7.3 m at the engine's 70 BU/m, i.e. the far wall
+    /// of an ordinary Bethesda interior. Only reached when a real measurement
+    /// is unavailable — `subject_distance` is otherwise a cast result, not a
+    /// tuning constant.
+    pub const FALLBACK_SUBJECT_DISTANCE_BU: f32 = 512.0;
+
     /// Three complete cells guarantees three boundary transitions from any
     /// finite starting X coordinate while leaving enough frames between them
     /// for the async worker and resumable main-thread apply to settle.
@@ -144,8 +153,38 @@ impl BenchCameraPath {
     ///
     /// Clamps rather than wraps past the end: the final pose is held, so a
     /// capture taken one frame late still lands on the intended view.
-    pub fn pose(self, frame: u32, total_frames: u32, origin: Vec3, forward: Vec3) -> CameraPose {
+    ///
+    /// `subject_distance` is how far ahead of `origin` the thing being looked
+    /// at actually is, in BU — measured by the caller with a forward ray cast
+    /// (see `App::measure_bench_subject_distance`), falling back to
+    /// [`Self::FALLBACK_SUBJECT_DISTANCE_BU`]. Only `Orbit` and `Dolly` read
+    /// it; the other paths ignore it entirely.
+    ///
+    /// Pre-fix both derived their radius as `origin.distance(Vec3::ZERO)` —
+    /// the camera's distance from the **world origin**, which is not a subject
+    /// distance but an artefact of where the cell happens to be placed. On
+    /// FNV's `GSProspectorSaloonInterior` the camera spawns 3610 BU from the
+    /// origin, so `Orbit` put its target 3610 BU ahead of a camera standing in
+    /// a small saloon room and swung the viewpoint ~1100 BU sideways — clean
+    /// out of the building. Measured on `4de5e78e`: `gpu_main_render` fell
+    /// from 11.526 ms under `pan` to **0.010 ms** under `orbit` at an
+    /// identical 1214 draws, i.e. the bench was timing an empty view. FO4's
+    /// Dugout Inn showed the same signature. Cornell only escaped it by being
+    /// authored at the origin.
+    pub fn pose(
+        self,
+        frame: u32,
+        total_frames: u32,
+        origin: Vec3,
+        forward: Vec3,
+        subject_distance: f32,
+    ) -> CameraPose {
         let forward = normalize_or(forward, -Vec3::Z);
+        let subject_distance = if subject_distance.is_finite() && subject_distance > 0.0 {
+            subject_distance
+        } else {
+            Self::FALLBACK_SUBJECT_DISTANCE_BU
+        };
         let progress = if total_frames <= 1 {
             0.0
         } else {
@@ -164,7 +203,7 @@ impl BenchCameraPath {
             Self::Orbit => {
                 // Orbit the point the camera already looks at, so the subject
                 // stays framed while the viewpoint sweeps around it.
-                let radius = origin.distance(Vec3::ZERO).max(1.0);
+                let radius = subject_distance;
                 let target = origin + forward * radius;
                 let angle = Self::ORBIT_ARC_RADIANS * progress;
                 let offset = yaw_about_up(origin - target, angle);
@@ -175,8 +214,10 @@ impl BenchCameraPath {
                 }
             }
             Self::Dolly => {
-                let radius = origin.distance(Vec3::ZERO).max(1.0);
-                let travel = radius * Self::DOLLY_CLOSE_FRACTION * progress;
+                // Same defect, same fix: the fraction must close on the real
+                // subject, or a cell placed far from the world origin dollies
+                // straight through it.
+                let travel = subject_distance * Self::DOLLY_CLOSE_FRACTION * progress;
                 CameraPose {
                     position: origin + forward * travel,
                     forward,
@@ -226,6 +267,7 @@ impl BenchCameraPath {
                         total_frames,
                         origin,
                         forward,
+                        subject_distance,
                     )
                 }
             }
@@ -370,8 +412,14 @@ mod tests {
     const FORWARD: Vec3 = Vec3::new(0.0, 0.0, -1.0);
     const FRAMES: u32 = 60;
 
+    /// Subject distance the unit tests orbit/dolly about. A plain
+    /// stand-in for the forward-ray-cast measurement the engine makes at
+    /// runtime — the paths must be correct for whatever distance they are
+    /// handed, which is the property these tests check.
+    const SUBJECT: f32 = 400.0;
+
     fn pose(path: BenchCameraPath, frame: u32) -> CameraPose {
-        path.pose(frame, FRAMES, ORIGIN, FORWARD)
+        path.pose(frame, FRAMES, ORIGIN, FORWARD, SUBJECT)
     }
 
     /// The property the whole harness rests on: the same frame index yields
@@ -392,8 +440,8 @@ mod tests {
     #[test]
     fn path_shape_is_independent_of_bench_length() {
         for path in BenchCameraPath::ALL {
-            let short = path.pose(59, 60, ORIGIN, FORWARD);
-            let long = path.pose(299, 300, ORIGIN, FORWARD);
+            let short = path.pose(59, 60, ORIGIN, FORWARD, SUBJECT);
+            let long = path.pose(299, 300, ORIGIN, FORWARD, SUBJECT);
             assert!(
                 short.position.distance(long.position) < 1e-3,
                 "{path}: end position drifted with bench length"
@@ -436,8 +484,7 @@ mod tests {
     /// initially stays on the forward ray for the whole path.
     #[test]
     fn orbit_keeps_the_look_at_point_centred() {
-        let radius = ORIGIN.distance(Vec3::ZERO).max(1.0);
-        let target = ORIGIN + FORWARD * radius;
+        let target = ORIGIN + FORWARD * SUBJECT;
         for frame in [0, 20, 40, FRAMES - 1] {
             let p = pose(BenchCameraPath::Orbit, frame);
             let to_target = (target - p.position).normalize();
@@ -445,6 +492,85 @@ mod tests {
                 to_target.dot(p.forward) > 0.999,
                 "orbit lost the target at frame {frame}: dot {}",
                 to_target.dot(p.forward)
+            );
+        }
+    }
+
+    /// The #2835 follow-up defect: `Orbit` and `Dolly` derived their radius
+    /// from `origin.distance(Vec3::ZERO)`, so the path shape depended on where
+    /// the *cell* happened to be authored relative to the world origin rather
+    /// than on anything the camera could see.
+    ///
+    /// On FNV's `GSProspectorSaloonInterior` the camera spawns 3610 BU from
+    /// the origin, which put the orbit target 3610 BU ahead of a camera in a
+    /// small room and swung it out of the building: measured on `4de5e78e`,
+    /// `gpu_main_render` collapsed from 11.526 ms under `pan` to 0.010 ms
+    /// under `orbit` at an identical 1214 draws. Translating the whole scene
+    /// must now leave the path's *shape* untouched.
+    #[test]
+    fn orbit_and_dolly_are_independent_of_distance_from_the_world_origin() {
+        // Same local geometry, one placed at the origin and one 3610 BU away
+        // — the real Prospector offset.
+        let near = Vec3::new(0.0, 2.0, 10.0);
+        let far = Vec3::new(536.0, 3560.0, -272.0);
+        assert!(
+            far.distance(Vec3::ZERO) > 3600.0,
+            "fixture must be off-origin"
+        );
+
+        for path in [BenchCameraPath::Orbit, BenchCameraPath::Dolly] {
+            for frame in [0, 20, FRAMES - 1] {
+                let a = path.pose(frame, FRAMES, near, FORWARD, SUBJECT);
+                let b = path.pose(frame, FRAMES, far, FORWARD, SUBJECT);
+                // Displacement from each path's own origin must match.
+                let da = a.position - near;
+                let db = b.position - far;
+                assert!(
+                    da.distance(db) < 1e-2,
+                    "{path} at frame {frame}: displacement differs with world \
+                     placement ({da:?} vs {db:?}) — the radius is leaking the \
+                     cell's offset from the world origin again"
+                );
+                assert!(
+                    a.forward.distance(b.forward) < 1e-4,
+                    "{path}: forward differs"
+                );
+            }
+        }
+    }
+
+    /// The orbit radius must be the *supplied* subject distance, so a measured
+    /// cast result actually reaches the path.
+    #[test]
+    fn orbit_radius_tracks_the_supplied_subject_distance() {
+        for subject in [50.0_f32, 400.0, 5000.0] {
+            let start = BenchCameraPath::Orbit.pose(0, FRAMES, ORIGIN, FORWARD, subject);
+            let target = ORIGIN + FORWARD * subject;
+            assert!(
+                (start.position.distance(target) - subject).abs() < 1e-2,
+                "subject {subject}: orbit radius is {}",
+                start.position.distance(target)
+            );
+        }
+    }
+
+    /// A degenerate measurement must not produce a degenerate path: a miss,
+    /// a zero, or a NaN resolves to the documented room-scale fallback rather
+    /// than collapsing the orbit onto the camera.
+    #[test]
+    fn degenerate_subject_distance_falls_back_to_room_scale() {
+        for bad in [0.0_f32, -10.0, f32::NAN, f32::INFINITY] {
+            let p = BenchCameraPath::Orbit.pose(FRAMES - 1, FRAMES, ORIGIN, FORWARD, bad);
+            let expected = BenchCameraPath::Orbit.pose(
+                FRAMES - 1,
+                FRAMES,
+                ORIGIN,
+                FORWARD,
+                BenchCameraPath::FALLBACK_SUBJECT_DISTANCE_BU,
+            );
+            assert!(
+                p.position.distance(expected.position) < 1e-3,
+                "subject {bad} must resolve to the fallback"
             );
         }
     }
@@ -470,11 +596,15 @@ mod tests {
         assert_eq!(start.position, ORIGIN);
         assert_eq!(end.forward, FORWARD);
         let travelled = start.position.distance(end.position);
-        let radius = ORIGIN.distance(Vec3::ZERO);
         assert!(travelled > 0.0, "dolly did not advance");
         assert!(
-            travelled < radius,
-            "dolly overshot the subject: travelled {travelled} of {radius}"
+            travelled < SUBJECT,
+            "dolly overshot the subject: travelled {travelled} of {SUBJECT}"
+        );
+        assert!(
+            (travelled - SUBJECT * BenchCameraPath::DOLLY_CLOSE_FRACTION).abs() < 1e-3,
+            "dolly must close the documented fraction of the SUBJECT distance, \
+             not of the camera's distance from the world origin (#2835 follow-up)"
         );
     }
 
@@ -484,13 +614,14 @@ mod tests {
     #[test]
     fn grid_cross_traverses_three_complete_exterior_cells() {
         let origin = Vec3::new(EXTERIOR_CELL_UNITS * 0.37, 42.0, -500.0);
-        let start = BenchCameraPath::GridCross.pose(0, FRAMES, origin, Vec3::X);
-        let end = BenchCameraPath::GridCross.pose(FRAMES - 1, FRAMES, origin, Vec3::X);
+        let start = BenchCameraPath::GridCross.pose(0, FRAMES, origin, Vec3::X, SUBJECT);
+        let end = BenchCameraPath::GridCross.pose(FRAMES - 1, FRAMES, origin, Vec3::X, SUBJECT);
         let settle = BenchCameraPath::GridCross.pose(
             (FRAMES as f32 * BenchCameraPath::GRID_CROSS_MOVE_FRACTION).ceil() as u32,
             FRAMES,
             origin,
             Vec3::X,
+            SUBJECT,
         );
         assert_eq!(start.position, origin);
         assert_eq!(end.position.y, origin.y);
@@ -563,7 +694,7 @@ mod tests {
     #[test]
     fn degenerate_forward_falls_back_instead_of_producing_nan() {
         for path in BenchCameraPath::ALL {
-            let p = path.pose(30, FRAMES, ORIGIN, Vec3::ZERO);
+            let p = path.pose(30, FRAMES, ORIGIN, Vec3::ZERO, SUBJECT);
             assert!(
                 p.forward.is_finite() && p.position.is_finite(),
                 "{path} produced a non-finite pose"
@@ -588,7 +719,7 @@ mod tests {
     #[test]
     fn single_frame_run_is_degenerate_but_safe() {
         for path in BenchCameraPath::ALL {
-            let p = path.pose(0, 1, ORIGIN, FORWARD);
+            let p = path.pose(0, 1, ORIGIN, FORWARD, SUBJECT);
             assert_eq!(p.position, ORIGIN);
             assert!(!path.is_cut_frame(0, 1));
         }
@@ -603,8 +734,9 @@ mod tests {
         // The gate compares the end state against a baseline taken at the same
         // position. If the path finished mid-traversal, the far cell would
         // still be resident and every run would report a false leak.
-        let start = BenchCameraPath::GridSoak.pose(0, SOAK_FRAMES, ORIGIN, Vec3::X);
-        let end = BenchCameraPath::GridSoak.pose(SOAK_FRAMES - 1, SOAK_FRAMES, ORIGIN, Vec3::X);
+        let start = BenchCameraPath::GridSoak.pose(0, SOAK_FRAMES, ORIGIN, Vec3::X, SUBJECT);
+        let end =
+            BenchCameraPath::GridSoak.pose(SOAK_FRAMES - 1, SOAK_FRAMES, ORIGIN, Vec3::X, SUBJECT);
         assert_eq!(start.position, ORIGIN);
         assert!(
             (end.position - ORIGIN).length() < 1e-2,
@@ -621,7 +753,7 @@ mod tests {
         let peak = (0..SOAK_FRAMES)
             .map(|f| {
                 BenchCameraPath::GridSoak
-                    .pose(f, SOAK_FRAMES, ORIGIN, Vec3::X)
+                    .pose(f, SOAK_FRAMES, ORIGIN, Vec3::X, SUBJECT)
                     .position
                     .x
             })
@@ -684,7 +816,7 @@ mod tests {
             {
                 continue;
             }
-            let pose = BenchCameraPath::GridSoak.pose(frame, SOAK_FRAMES, ORIGIN, Vec3::X);
+            let pose = BenchCameraPath::GridSoak.pose(frame, SOAK_FRAMES, ORIGIN, Vec3::X, SUBJECT);
             let drift = (pose.position - ORIGIN).length();
             assert!(
                 drift < 0.06 * EXTERIOR_CELL_UNITS,

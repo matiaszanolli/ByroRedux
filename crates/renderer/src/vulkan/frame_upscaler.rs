@@ -20,6 +20,30 @@ use gpu_allocator::vulkan as vk_alloc;
 use gpu_allocator::MemoryLocation;
 use std::ffi::c_void;
 
+/// Metres per unit of the engine's **view space**, for
+/// `fsr3::DispatchDescription::view_space_to_meters_factor` (#2834).
+///
+/// The whole renderer works in Bethesda units, and `camera_near` /
+/// `camera_far` / `camera_fov_angle_vertical` are sourced from `Camera` in
+/// BU, so the depth FSR reconstructs from them is in BU too. The SDK converts
+/// it with `GetViewSpaceDepthInMeters(d) = GetViewSpaceDepth(d) *
+/// ViewSpaceToMetersFactor()`, and two of its heuristics are tuned in real
+/// metres:
+///
+/// * `ReconstructedDepthMvPxThreshold` ramps `0.25 → 0.75 px` over 0–100 m.
+///   At a factor of 1.0 it saturated past 100 BU ≈ 1.43 m, so effectively the
+///   whole frame ran on the far-field motion-vector threshold.
+/// * `fDistanceFactor = saturate(0.75 - farthestDepthInMeters / 20)` is zero
+///   past 15 BU ≈ 0.21 m, so the term was dead scene-wide — and it feeds the
+///   history-rectification box scale, so near geometry never got the tighter,
+///   more history-rejecting clipping box AMD tuned for it.
+///
+/// Sourced from the same constant `volumetrics` and `shader_constants_data`
+/// use, so the engine has exactly one definition of the BU↔metre scale rather
+/// than a literal per subsystem.
+const FSR_VIEW_SPACE_TO_METERS_FACTOR: f32 =
+    1.0 / byroredux_core::lighting::BETHESDA_UNITS_PER_METER;
+
 /// Camera and temporal values that change for every FSR dispatch.
 #[derive(Debug, Clone, Copy)]
 pub struct FsrFrameParameters {
@@ -496,7 +520,7 @@ impl FrameUpscaler {
                 camera_near: frame_params.camera_near,
                 camera_far: frame_params.camera_far,
                 camera_fov_angle_vertical: frame_params.camera_fov_angle_vertical,
-                view_space_to_meters_factor: 1.0,
+                view_space_to_meters_factor: FSR_VIEW_SPACE_TO_METERS_FACTOR,
                 enable_sharpening: false,
                 sharpness: 0.0,
             })
@@ -1188,7 +1212,11 @@ mod tests {
 
         // (source, needle identifying the fn, human label)
         let sites: &[(&str, &str, &str)] = &[
-            (FRAME_UPSCALER_RS, "unsafe fn record_native_blit(", "record_native_blit"),
+            (
+                FRAME_UPSCALER_RS,
+                "unsafe fn record_native_blit(",
+                "record_native_blit",
+            ),
             (
                 FRAME_UPSCALER_RS,
                 "unsafe fn record_fsr_barriers_before(",
@@ -1384,6 +1412,53 @@ mod fsr_input_barrier_tests {
             body.contains("vk::ImageLayout::GENERAL"),
             "the output image's read -> write transition to GENERAL was folded \
              away — it is not the execution-only shape",
+        );
+    }
+
+    /// #2834 — the engine's view space is Bethesda units, so the SDK must be
+    /// told one view-space unit is 1/70 of a metre. Pre-fix the dispatch
+    /// declared `1.0`, inflating every "metres" quantity inside FSR 70×.
+    #[test]
+    fn view_space_to_meters_factor_is_the_bethesda_unit_scale() {
+        assert_eq!(
+            FSR_VIEW_SPACE_TO_METERS_FACTOR,
+            1.0 / byroredux_core::lighting::BETHESDA_UNITS_PER_METER,
+        );
+        // The two distance-tuned SDK heuristics must now see plausible
+        // metre values rather than saturating on the first metre of depth.
+        let hundred_metres_in_bu = 100.0 * byroredux_core::lighting::BETHESDA_UNITS_PER_METER;
+        assert!(
+            (hundred_metres_in_bu * FSR_VIEW_SPACE_TO_METERS_FACTOR - 100.0).abs() < 1e-3,
+            "the 0-100 m ReconstructedDepthMvPxThreshold ramp must span 7000 BU",
+        );
+        // `prepare_inputs.h` clamps view-space depth to FP16 max; at the
+        // correct factor a 300 000 BU far plane maps well inside it.
+        let far_in_metres = 300_000.0 * FSR_VIEW_SPACE_TO_METERS_FACTOR;
+        assert!(
+            far_in_metres < 65_504.0,
+            "far-plane depth {far_in_metres} m must not flat-top FP16",
+        );
+    }
+
+    /// The value must stay *derived*. A future edit that re-hard-codes the
+    /// field is invisible to every runtime check — it is not a crash, not a
+    /// validation error, and the SSIM matrix scores FSR against the engine's
+    /// own TAA rather than ground truth — so pin it at the source level.
+    #[test]
+    fn view_space_to_meters_factor_is_not_a_bare_literal() {
+        let src = production_src();
+        assert!(
+            src.contains("view_space_to_meters_factor: FSR_VIEW_SPACE_TO_METERS_FACTOR"),
+            "the dispatch must pass the derived constant",
+        );
+        assert!(
+            !src.contains("view_space_to_meters_factor: 1.0"),
+            "view_space_to_meters_factor was re-hard-coded to 1.0 (#2834)",
+        );
+        assert!(
+            src.contains("byroredux_core::lighting::BETHESDA_UNITS_PER_METER"),
+            "the constant must be sourced from the engine-wide BU definition, \
+             not restated as a local literal",
         );
     }
 

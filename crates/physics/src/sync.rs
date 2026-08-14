@@ -777,7 +777,13 @@ fn register_newcomers(world: &World, newcomers: Vec<Newcomer>) {
         // idiomatic path for mixed-composite compositions (#373, which
         // eliminated the 9,555/30s parry3d panic storm the previous
         // single-compound path produced on exterior cells).
-        let parts = collision_shape_to_parts(&n.shape, &cfg);
+        // #2860 — `GlobalTransform::scale` must be baked into the shape here.
+        // Rapier's body isometry below carries translation + rotation only, so
+        // this is the last point at which the placement's uniform scale can
+        // reach the collider at all; dropping it gave every scaled REFR a
+        // collider of the authored size (a 2× rock's collider half the visible
+        // stone) while `compose_trs` still spread its parts apart.
+        let parts = collision_shape_to_parts(&n.shape, n.global.scale, &cfg);
         if parts.is_empty() {
             continue;
         }
@@ -1441,6 +1447,54 @@ mod actor_bone_group_tests {
             rapier3d::prelude::InteractionGroups::all(),
             "an untagged keyframed body keeps the default groups"
         );
+    }
+
+    /// #2860 end-to-end: `GlobalTransform::scale` must survive the whole
+    /// registration path, not just `collision_shape_to_parts` in isolation.
+    /// No test exercised a non-unit scale through the collider boundary
+    /// before, which is exactly why the drop was invisible to `cargo test`.
+    #[test]
+    fn placement_scale_reaches_the_registered_collider() {
+        let mut world = world();
+        let scaled = world.spawn();
+        world.insert(scaled, Transform::new(Vec3::ZERO, Quat::IDENTITY, 2.0));
+        world.insert(
+            scaled,
+            GlobalTransform::new(Vec3::new(100.0, 0.0, 0.0), Quat::IDENTITY, 2.0),
+        );
+        world.insert(
+            scaled,
+            CollisionShape::Cuboid {
+                half_extents: Vec3::splat(10.0),
+            },
+        );
+        world.insert(
+            scaled,
+            RigidBodyData {
+                motion_type: MotionType::Static,
+                ..Default::default()
+            },
+        );
+
+        physics_sync_system(&world, 0.0);
+
+        let handles = world.query::<RapierHandles>().expect("storage");
+        let pw = world.resource::<PhysicsWorld>();
+        let h = handles.get(scaled).copied().expect("registered");
+        let collider = pw.colliders.get(h.collider).expect("collider");
+        let half = collider
+            .shape()
+            .as_cuboid()
+            .expect("cuboid survived registration")
+            .half_extents;
+        assert_eq!(
+            (half.x, half.y, half.z),
+            (20.0, 20.0, 20.0),
+            "a 2× placement must register a 2× collider"
+        );
+        // The body pose still carries translation + rotation only — the scale
+        // lives in the shape, which is the whole point of baking it here.
+        assert_eq!(pw.bodies.get(h.body).expect("body").translation().x, 100.0);
     }
 
     /// #2874 — `cast_capsule_down_onto_walkable_surface` collapses "hit

@@ -19,6 +19,22 @@ use rapier3d::prelude::SharedShape;
 /// trust it. #2543.
 const MAX_SANE_SHAPE_EXTENT: f32 = 1_048_576.0;
 
+/// Sanitise a caller-supplied uniform scale (#2860).
+///
+/// Mirrors `RagdollJointSpec::scaled_pivots`' `factor` closure so both
+/// scale-consuming boundaries in this crate reject the same inputs the same
+/// way: a non-finite or non-positive scale is meaningless for a collider
+/// (zero collapses the shape, negative mirrors it) and resolves to `1.0`
+/// rather than propagating into Rapier.
+#[inline]
+fn sanitize_scale(scale: f32) -> f32 {
+    if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    }
+}
+
 // ── glam ↔ nalgebra ─────────────────────────────────────────────────────
 
 #[inline]
@@ -87,6 +103,26 @@ pub fn iso_from_trs(translation: Vec3, rotation: Quat) -> Isometry3<f32> {
 /// An empty compound with no viable leaves emits a single tiny-ball
 /// part so the caller can still register a collider.
 ///
+/// `scale` is the uniform world scale the shape is placed at — a REFR's
+/// `XSCL` composed with any node scale, i.e. `GlobalTransform::scale`
+/// (#2860). Every emitted primitive dimension, vertex set **and** composed
+/// child translation is multiplied by it, so a `2.0` placement produces a
+/// collider twice the size *and* twice as far apart in its parts.
+///
+/// It is a required parameter rather than an `Option` or a field read
+/// downstream precisely because it used to be dropped silently: Rapier's
+/// body isometry carries translation and rotation only, so nothing after
+/// this boundary can recover the scale, and a collider that is simply the
+/// wrong size looks like correct code. Pass `1.0` when the shape is already
+/// in world units. The engine's `Transform`/`GlobalTransform` scale is a
+/// scalar `f32`, so the non-uniform case this guidance usually warns about
+/// cannot arise here.
+///
+/// This makes the bhk path agree with the other two collider producers,
+/// which already pre-bake scale: `synthesize_static_trimesh` multiplies
+/// every vertex by `world_scale`, and `spawn_packed_havok_proxy` passes
+/// `ref_scale` through (see `docs/engine/physics.md`).
+///
 /// `cfg` carries the engine-wide TriMesh flags. The default
 /// (`ContactConfig::DEFAULT`) preserves the pre-unification behaviour
 /// (`FIX_INTERNAL_EDGES`, which transitively ORs in `ORIENTED |
@@ -94,10 +130,17 @@ pub fn iso_from_trs(translation: Vec3, rotation: Quat) -> Isometry3<f32> {
 /// can pass a `ContactConfig` with a different `trimesh_flags`.
 pub fn collision_shape_to_parts(
     shape: &CollisionShape,
+    scale: f32,
     cfg: &ContactConfig,
 ) -> Vec<(Isometry3<f32>, SharedShape)> {
     let mut out: Vec<(Isometry3<f32>, SharedShape)> = Vec::new();
-    flatten_to_parts(shape, Isometry3::identity(), cfg, &mut out);
+    flatten_to_parts(
+        shape,
+        Isometry3::identity(),
+        sanitize_scale(scale),
+        cfg,
+        &mut out,
+    );
     if out.is_empty() {
         out.push((Isometry3::identity(), SharedShape::ball(1e-3)));
     }
@@ -108,21 +151,33 @@ pub fn collision_shape_to_parts(
 /// we descend. Non-compound variants are emitted as a single part at
 /// `parent_iso`; compounds recurse without emitting anything
 /// themselves.
+///
+/// `scale` is already sanitised by [`collision_shape_to_parts`] and applies
+/// uniformly at every depth. Scaling each child's *local* translation on the
+/// way down is equivalent to scaling the fully-composed offset, because the
+/// rotations in between are unchanged: `s·t₁ + R₁·(s·t₂) = s·(t₁ + R₁·t₂)`.
+/// Doing it per-level keeps the leaf arms free of any depth bookkeeping.
+///
+/// Pre-#2860 the compound arm scaled *neither* — but `GlobalTransform::
+/// compose_trs` on the producer side did scale each part's placement, so a
+/// multi-part assembly on a scaled REFR had its parts spread apart while each
+/// kept its authored size, opening literal gaps between adjacent colliders.
 fn flatten_to_parts(
     shape: &CollisionShape,
     parent_iso: Isometry3<f32>,
+    scale: f32,
     cfg: &ContactConfig,
     out: &mut Vec<(Isometry3<f32>, SharedShape)>,
 ) {
     match shape {
         CollisionShape::Compound { children } => {
             for (t, r, child) in children {
-                let composed = parent_iso * iso_from_trs(*t, *r);
-                flatten_to_parts(child, composed, cfg, out);
+                let composed = parent_iso * iso_from_trs(*t * scale, *r);
+                flatten_to_parts(child, composed, scale, cfg, out);
             }
         }
         CollisionShape::Ball { radius } => {
-            out.push((parent_iso, SharedShape::ball((*radius).max(1e-3))));
+            out.push((parent_iso, SharedShape::ball((*radius * scale).max(1e-3))));
         }
         CollisionShape::Cuboid { half_extents } => {
             debug_assert!(
@@ -150,12 +205,14 @@ fn flatten_to_parts(
                     1e-3
                 }
             };
+            // Scale BEFORE the clamp so the #2543 sanity ceiling bounds the
+            // value Rapier actually receives, not the pre-scale authored one.
             out.push((
                 parent_iso,
                 SharedShape::cuboid(
-                    clamp_lane(half_extents.x),
-                    clamp_lane(half_extents.y),
-                    clamp_lane(half_extents.z),
+                    clamp_lane(half_extents.x * scale),
+                    clamp_lane(half_extents.y * scale),
+                    clamp_lane(half_extents.z * scale),
                 ),
             ));
         }
@@ -165,7 +222,10 @@ fn flatten_to_parts(
         } => {
             out.push((
                 parent_iso,
-                SharedShape::capsule_y((*half_height).max(1e-3), (*radius).max(1e-3)),
+                SharedShape::capsule_y(
+                    (*half_height * scale).max(1e-3),
+                    (*radius * scale).max(1e-3),
+                ),
             ));
         }
         CollisionShape::Cylinder {
@@ -174,11 +234,15 @@ fn flatten_to_parts(
         } => {
             out.push((
                 parent_iso,
-                SharedShape::cylinder((*half_height).max(1e-3), (*radius).max(1e-3)),
+                SharedShape::cylinder(
+                    (*half_height * scale).max(1e-3),
+                    (*radius * scale).max(1e-3),
+                ),
             ));
         }
         CollisionShape::ConvexHull { vertices } => {
-            let pts: Vec<Point3<f32>> = vertices.iter().copied().map(vec3_to_point).collect();
+            let pts: Vec<Point3<f32>> =
+                vertices.iter().map(|v| vec3_to_point(*v * scale)).collect();
             let shape = SharedShape::convex_hull(&pts).unwrap_or_else(|| {
                 log::warn!(
                     "convex hull with {} pts rejected by Rapier; falling back to ball",
@@ -199,7 +263,8 @@ fn flatten_to_parts(
                 out.push((parent_iso, SharedShape::ball(1e-3)));
                 return;
             }
-            let pts: Vec<Point3<f32>> = vertices.iter().copied().map(vec3_to_point).collect();
+            let pts: Vec<Point3<f32>> =
+                vertices.iter().map(|v| vec3_to_point(*v * scale)).collect();
             let idx: Vec<[u32; 3]> = indices.clone();
             // M28.5 follow-up — TriMesh contact-normal treatment is
             // owned by `ContactConfig::trimesh_flags`. The default
@@ -226,7 +291,7 @@ mod tests {
     /// Test helper — call `collision_shape_to_parts` with the default
     /// `ContactConfig` so existing assertions stay shape-agnostic.
     fn parts(shape: &CollisionShape) -> Vec<(Isometry3<f32>, SharedShape)> {
-        collision_shape_to_parts(shape, &ContactConfig::DEFAULT)
+        collision_shape_to_parts(shape, 1.0, &ContactConfig::DEFAULT)
     }
 
     #[test]
@@ -409,6 +474,235 @@ mod tests {
         assert_eq!(parts.len(), 1);
         assert_eq!(shape_type_of(&parts, 0), ShapeType::Ball);
         assert!((parts[0].0.translation.y - 3.0).abs() < 1e-6);
+    }
+
+    // ── #2860 — uniform placement scale must reach the collider ──────
+
+    /// The headline regression: a `ref_scale = 2.0` cuboid must emit doubled
+    /// half-extents. Pre-fix `GlobalTransform::scale` was read by nobody in
+    /// this crate, so a 2× rock got a collider sized for the 1× mesh.
+    #[test]
+    fn scale_multiplies_cuboid_half_extents() {
+        let shape = CollisionShape::Cuboid {
+            half_extents: Vec3::new(1.0, 2.0, 3.0),
+        };
+        let scaled = collision_shape_to_parts(&shape, 2.0, &ContactConfig::DEFAULT);
+        let he = scaled[0].1.as_cuboid().unwrap().half_extents;
+        assert_eq!((he.x, he.y, he.z), (2.0, 4.0, 6.0));
+    }
+
+    /// Every primitive arm scales, not just the cuboid the issue named.
+    #[test]
+    fn scale_multiplies_every_primitive_dimension() {
+        let cfg = &ContactConfig::DEFAULT;
+
+        let ball = collision_shape_to_parts(&CollisionShape::Ball { radius: 2.0 }, 3.0, cfg);
+        assert_eq!(ball[0].1.as_ball().unwrap().radius, 6.0);
+
+        let capsule = collision_shape_to_parts(
+            &CollisionShape::Capsule {
+                half_height: 10.0,
+                radius: 4.0,
+            },
+            0.5,
+            cfg,
+        );
+        let c = capsule[0].1.as_capsule().unwrap();
+        assert_eq!(c.radius, 2.0);
+        assert!((c.half_height() - 5.0).abs() < 1e-6);
+
+        let cylinder = collision_shape_to_parts(
+            &CollisionShape::Cylinder {
+                half_height: 10.0,
+                radius: 4.0,
+            },
+            0.25,
+            cfg,
+        );
+        let cy = cylinder[0].1.as_cylinder().unwrap();
+        assert_eq!(cy.radius, 1.0);
+        assert_eq!(cy.half_height, 2.5);
+    }
+
+    /// Vertex-set shapes scale too — a convex hull or trimesh collider on a
+    /// scaled REFR must bound the scaled geometry, not the authored mesh.
+    #[test]
+    fn scale_multiplies_vertex_sets() {
+        let cfg = &ContactConfig::DEFAULT;
+        let hull = CollisionShape::ConvexHull {
+            vertices: vec![
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(10.0, 0.0, 0.0),
+                Vec3::new(0.0, 10.0, 0.0),
+                Vec3::new(0.0, 0.0, 10.0),
+            ],
+        };
+        let parts = collision_shape_to_parts(&hull, 2.0, cfg);
+        let aabb = parts[0].1.compute_local_aabb();
+        assert!(
+            (aabb.maxs.x - 20.0).abs() < 1e-4,
+            "hull must span the scaled extent, got {:?}",
+            aabb.maxs
+        );
+
+        let mesh = CollisionShape::TriMesh {
+            vertices: vec![
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(10.0, 0.0, 0.0),
+                Vec3::new(0.0, 0.0, 10.0),
+            ],
+            indices: vec![[0, 1, 2]],
+        };
+        let parts = collision_shape_to_parts(&mesh, 3.0, cfg);
+        let aabb = parts[0].1.compute_local_aabb();
+        assert!(
+            (aabb.maxs.x - 30.0).abs() < 1e-4,
+            "trimesh must span the scaled extent, got {:?}",
+            aabb.maxs
+        );
+    }
+
+    /// The multi-part case the issue calls out as worse than the sizing bug:
+    /// `compose_trs` already scaled each part's *placement* on the producer
+    /// side, so leaving the shapes unscaled spread a scaled assembly apart
+    /// while each part kept its authored size — opening gaps a KCC falls
+    /// through. Size and separation must scale together.
+    #[test]
+    fn scale_moves_and_resizes_compound_parts_together() {
+        let compound = CollisionShape::Compound {
+            children: vec![
+                (
+                    Vec3::new(0.0, 0.0, 0.0),
+                    Quat::IDENTITY,
+                    Box::new(CollisionShape::Cuboid {
+                        half_extents: Vec3::splat(10.0),
+                    }),
+                ),
+                (
+                    // Placed exactly touching the first box.
+                    Vec3::new(20.0, 0.0, 0.0),
+                    Quat::IDENTITY,
+                    Box::new(CollisionShape::Cuboid {
+                        half_extents: Vec3::splat(10.0),
+                    }),
+                ),
+            ],
+        };
+        let parts = collision_shape_to_parts(&compound, 2.0, &ContactConfig::DEFAULT);
+        assert_eq!(parts.len(), 2);
+
+        let half = parts[0].1.as_cuboid().unwrap().half_extents.x;
+        assert_eq!(half, 20.0, "part half-extent must scale");
+        let separation = parts[1].0.translation.x - parts[0].0.translation.x;
+        assert_eq!(separation, 40.0, "part separation must scale");
+        assert_eq!(
+            separation,
+            2.0 * half,
+            "the two boxes must still touch after scaling — any mismatch is \
+             the gap dynamic bodies fall through"
+        );
+    }
+
+    /// Depth doesn't compound the scale: applying it per level is equivalent
+    /// to scaling the fully-composed offset, so a 3-deep chain of +1 Y at
+    /// scale 2 lands at +6, not +8.
+    #[test]
+    fn scale_applies_once_across_nesting_depth() {
+        let level3 = CollisionShape::Compound {
+            children: vec![(
+                Vec3::new(0.0, 1.0, 0.0),
+                Quat::IDENTITY,
+                Box::new(CollisionShape::Ball { radius: 1.0 }),
+            )],
+        };
+        let level2 = CollisionShape::Compound {
+            children: vec![(Vec3::new(0.0, 1.0, 0.0), Quat::IDENTITY, Box::new(level3))],
+        };
+        let level1 = CollisionShape::Compound {
+            children: vec![(Vec3::new(0.0, 1.0, 0.0), Quat::IDENTITY, Box::new(level2))],
+        };
+        let parts = collision_shape_to_parts(&level1, 2.0, &ContactConfig::DEFAULT);
+        assert!((parts[0].0.translation.y - 6.0).abs() < 1e-6);
+    }
+
+    /// A rotated child proves the per-level scaling is a true uniform scale
+    /// and not a translation hack: `s·t₁ + R₁·(s·t₂) == s·(t₁ + R₁·t₂)`.
+    #[test]
+    fn scale_commutes_with_rotation_in_a_compound() {
+        // Inner ball offset +10 X, rotated a quarter turn about Y at the
+        // outer level so that offset becomes -10 Z (or +10 Z, sign per
+        // convention) — either way the magnitude must be 10 × scale.
+        let inner = CollisionShape::Compound {
+            children: vec![(
+                Vec3::new(10.0, 0.0, 0.0),
+                Quat::IDENTITY,
+                Box::new(CollisionShape::Ball { radius: 1.0 }),
+            )],
+        };
+        let outer = CollisionShape::Compound {
+            children: vec![(
+                Vec3::ZERO,
+                Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
+                Box::new(inner),
+            )],
+        };
+        let parts = collision_shape_to_parts(&outer, 3.0, &ContactConfig::DEFAULT);
+        let t = parts[0].0.translation.vector;
+        assert!(
+            (t.norm() - 30.0).abs() < 1e-4,
+            "rotated child must sit at 10 × 3 from the origin, got {t:?}"
+        );
+    }
+
+    /// A meaningless scale must not reach Rapier: zero would collapse the
+    /// shape, negative would mirror it, NaN would poison the broad-phase.
+    #[test]
+    fn degenerate_scales_fall_back_to_unity() {
+        let shape = CollisionShape::Cuboid {
+            half_extents: Vec3::splat(5.0),
+        };
+        for bad in [0.0_f32, -2.0, f32::NAN, f32::INFINITY] {
+            let parts = collision_shape_to_parts(&shape, bad, &ContactConfig::DEFAULT);
+            let he = parts[0].1.as_cuboid().unwrap().half_extents;
+            assert_eq!(
+                (he.x, he.y, he.z),
+                (5.0, 5.0, 5.0),
+                "scale {bad} must resolve to 1.0, not reach Rapier"
+            );
+        }
+    }
+
+    /// #2543's sanity ceiling must bound the value Rapier receives, so a
+    /// corrupt scale on a large authored extent cannot slip past it.
+    #[test]
+    fn scale_is_applied_before_the_sanity_ceiling() {
+        let shape = CollisionShape::Cuboid {
+            half_extents: Vec3::splat(MAX_SANE_SHAPE_EXTENT * 0.75),
+        };
+        let parts = collision_shape_to_parts(&shape, 1000.0, &ContactConfig::DEFAULT);
+        let he = parts[0].1.as_cuboid().unwrap().half_extents;
+        assert_eq!(he.x, MAX_SANE_SHAPE_EXTENT);
+    }
+
+    /// Unit scale must be byte-identical to the pre-#2860 output, so the
+    /// overwhelmingly common unscaled placement is provably untouched.
+    #[test]
+    fn unit_scale_is_a_no_op() {
+        let shape = CollisionShape::Compound {
+            children: vec![(
+                Vec3::new(1.0, 2.0, 3.0),
+                Quat::from_rotation_z(0.5),
+                Box::new(CollisionShape::Capsule {
+                    half_height: 7.0,
+                    radius: 2.0,
+                }),
+            )],
+        };
+        let parts = collision_shape_to_parts(&shape, 1.0, &ContactConfig::DEFAULT);
+        let c = parts[0].1.as_capsule().unwrap();
+        assert_eq!(c.radius, 2.0);
+        assert!((c.half_height() - 7.0).abs() < 1e-6);
+        assert_eq!(parts[0].0.translation.vector, Vector3::new(1.0, 2.0, 3.0));
     }
 
     #[test]

@@ -191,6 +191,12 @@ struct App {
     /// camera sync also runs in the scheduler, so the post-scheduler phase
     /// reapplies this exact pose before streaming and rendering.
     bench_camera_applied_pose: Option<crate::bench_camera::CameraPose>,
+    /// Distance in BU from the bench camera's seeded origin to the geometry it
+    /// looks at, measured once by a forward ray cast on the first stepped
+    /// frame with a populated collision world. `Orbit`'s radius and `Dolly`'s
+    /// travel derive from it. `None` until measured — physics is still empty
+    /// when `seed_bench_camera_origin` runs.
+    bench_camera_subject_distance: Option<f32>,
     /// Logical path frame for `grid-cross`. Unlike rendered-frame count this
     /// pauses while a boundary transaction is active, making each measured
     /// handoff independent of GPU frame rate and preventing the benchmark
@@ -413,6 +419,7 @@ impl App {
             bench_camera: None,
             bench_camera_origin: None,
             bench_camera_applied_pose: None,
+            bench_camera_subject_distance: None,
             bench_camera_path_frame: 0,
             pending_soak_cycle: None,
             bench_start: None,

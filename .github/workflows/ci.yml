@@ -38,6 +38,10 @@ jobs:
       - uses: actions/checkout@v4
       - name: Recompile and compare every first-party shader
         run: scripts/check-shader-artifacts.sh
+      # #2835 — the bench archives are read by hand, so nothing else catches a
+      # report script that crashes on its own committed TSV schema.
+      - name: FSR bench report reads both TSV schemas
+        run: python3 scripts/fsr_bench_report.py --self-test
 
   # ──────────────────────────────────────────────────────────────────────────
   # Standard checks — no GPU required

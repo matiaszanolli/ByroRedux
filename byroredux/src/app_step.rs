@@ -303,6 +303,47 @@ impl App {
         );
     }
 
+    /// Measure how far ahead of the bench camera the scene actually is, in BU.
+    ///
+    /// `Orbit` and `Dolly` need a *subject* distance. They previously used
+    /// `origin.distance(Vec3::ZERO)`, which is the cell's placement offset from
+    /// the world origin and has nothing to do with what the camera can see —
+    /// on `GSProspectorSaloonInterior` that put the orbit target 3610 BU ahead
+    /// of a camera inside a small room and swung it out of the building, so the
+    /// bench timed an empty view (`gpu_main_render` 11.526 ms under `pan` vs
+    /// 0.010 ms under `orbit`, identical draw counts).
+    ///
+    /// A forward ray cast is the direct measurement of the same quantity. It
+    /// cannot run in [`Self::seed_bench_camera_origin`]: that is deliberately
+    /// ordered *before* the startup scheduler pass, so `physics_sync_system`
+    /// has not registered any collider yet and the query pipeline is empty.
+    /// Hence the lazy fill on the first stepped frame, by which point Phase 1
+    /// has registered the cell and refreshed the BVH.
+    ///
+    /// Returns `None` while no `PhysicsWorld` exists or the collision world is
+    /// still empty, so the caller retries next frame instead of caching a miss.
+    /// A cast that reaches nothing (camera pointed at open sky) is a real
+    /// answer, not a retry — it resolves to the documented fallback.
+    fn measure_bench_subject_distance(
+        &self,
+        origin: crate::bench_camera::CameraPose,
+    ) -> Option<f32> {
+        let pw = self
+            .world
+            .try_resource::<byroredux_physics::PhysicsWorld>()?;
+        if pw.static_colliders_aabb().is_none() {
+            return None;
+        }
+        // Far enough to cross any interior and most of an exterior grid; the
+        // fallback covers a miss.
+        const MAX_PROBE_BU: f32 = 32_768.0;
+        let hit = pw
+            .cast_ray(origin.position, origin.forward, MAX_PROBE_BU, None)
+            .map(|hit| hit.distance)
+            .filter(|d| d.is_finite() && *d > 1.0);
+        Some(hit.unwrap_or(crate::bench_camera::BenchCameraPath::FALLBACK_SUBJECT_DISTANCE_BU))
+    }
+
     pub(crate) fn step_bench_camera(&mut self) {
         if !crate::bench::harness_active(self.bench_summary_printed) {
             // `--bench-hold` is an interactive inspection session once the
@@ -345,7 +386,27 @@ impl App {
         } else {
             self.bench_frames_count
         };
-        let pose = path.pose(frame, total_frames, origin.position, origin.forward);
+        // Lazy one-shot: physics is empty at seed time (see
+        // `measure_bench_subject_distance`), so the first stepped frame with a
+        // populated collision world resolves the subject distance and every
+        // later frame reuses it — a per-frame re-cast would make the orbit
+        // radius drift as the camera moves, which is not a fixed-radius orbit.
+        if self.bench_camera_subject_distance.is_none() {
+            self.bench_camera_subject_distance = self.measure_bench_subject_distance(origin);
+            if let Some(distance) = self.bench_camera_subject_distance {
+                log::info!("bench camera subject distance {distance:.1} BU (forward ray cast)");
+            }
+        }
+        let subject_distance = self
+            .bench_camera_subject_distance
+            .unwrap_or(crate::bench_camera::BenchCameraPath::FALLBACK_SUBJECT_DISTANCE_BU);
+        let pose = path.pose(
+            frame,
+            total_frames,
+            origin.position,
+            origin.forward,
+            subject_distance,
+        );
         self.bench_camera_applied_pose = Some(pose);
         self.apply_bench_camera_pose(active, pose);
 

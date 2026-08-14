@@ -104,6 +104,14 @@ Full matrix, 5 scenes × 5 configs × 3 runs of 300 frames, median with range,
 1280×720 output, per-scene CWD set to that game's `Data/`. 75 runs, zero
 failures. Repro: `scripts/fsr-bench-matrix.sh 3 300`.
 
+> **Harness provenance (#2835): taken on `e153b50c`, the pre-`f19f7f15`
+> parked-camera harness.** `f19f7f15` (2026-08-11) switched every run to
+> `--bench-mode renderer-stepped --bench-camera "$CAMERA_PATH"` and widened
+> the TSV from 17 to 23 columns, so re-running the repro line above no longer
+> measures the workload these numbers describe. Until a stepped-camera
+> re-bench lands, "LIVE" means *most recent*, not *reproducible on the current
+> harness* — the outstanding half of #2835.
+
 | Scene | TAA (native) | FSR Quality | net recovery | FSR Performance |
 |---|---:|---:|---:|---:|
 | Prospector (3626 ent) | **136.4 FPS / 7.33 ms** | 265.9 FPS / 3.76 ms | +3.57 ms (+49%) | 381.4 / 2.62 (+64%) |
