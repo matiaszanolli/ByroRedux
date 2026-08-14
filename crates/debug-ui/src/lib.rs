@@ -285,11 +285,6 @@ impl DebugUiState {
     }
 }
 
-// Re-export the public-facing pieces of the upstream crates so the
-// binary doesn't have to add a direct dep on each one.
-pub use egui;
-pub use egui_winit;
-
 #[cfg(test)]
 mod hidden_overlay_drain_tests {
     /// #2831 — `DebugUiState::run`'s hidden-overlay early return must still

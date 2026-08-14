@@ -127,6 +127,15 @@ fn an_unrecognized_pex_is_a_silent_miss() {
         eprintln!("SKIP: probe script not found (no game data?)");
         return;
     };
-    // No panic / no error — either recognized or a clean None.
-    let _ = translate_pex(&bytes, GameKind::Skyrim, None, None);
+    // #2432 (TD9-001) — this used to `let _ = …` the result, so the very
+    // regression the test's name describes (a future recognizer growing broad
+    // enough to claim a vanilla utility script) would have passed silently.
+    // The contract is a clean `None`, not merely "no panic".
+    let got = translate_pex(&bytes, GameKind::Skyrim, None, None);
+    assert!(
+        got.is_none(),
+        "ObjectReference.pex is a plain utility script that no recognizer \
+         should claim — a `Some` here means a recognizer's match is too broad \
+         and is now silently attaching components to unrelated scripts (#2432)"
+    );
 }

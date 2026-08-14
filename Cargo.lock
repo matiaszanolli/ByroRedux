@@ -678,7 +678,6 @@ dependencies = [
  "ash-window",
  "byroredux-core",
  "byroredux-fsr3-sys",
- "byroredux-platform",
  "egui",
  "egui-ash-renderer",
  "gpu-allocator 0.28.0",
@@ -688,7 +687,6 @@ dependencies = [
  "rspirv",
  "rustc-hash 2.1.2",
  "thiserror 2.0.18",
- "winit",
 ]
 
 [[package]]

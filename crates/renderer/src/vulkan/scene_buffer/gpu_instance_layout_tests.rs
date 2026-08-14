@@ -88,17 +88,84 @@ fn gpu_instance_field_offsets_match_shader_contract() {
     assert_eq!(offset_of!(GpuInstance, _reserved), 120);
 }
 
-/// R1 Phase 6 sentinel — list of fields that USED to live on
-/// `GpuInstance` and were collapsed onto the `MaterialTable` SSBO.
-/// If this test grows back any of those names, R1 is being undone.
+/// R1 Phase 6 sentinel — the fields that USED to live on `GpuInstance`
+/// and were collapsed onto the `MaterialTable` SSBO. If any of those names
+/// grows back here, R1 is being undone.
+///
+/// #2433 (TD9-002) — this test used to build a `GpuInstance::default()` and
+/// discard it. Since the struct derives `Default` that cannot fail under any
+/// circumstance: it was permanently green regardless of the struct's shape,
+/// and its comment deferred to "the list below", which was empty. (The stale
+/// "112 B" the audit also flagged was already corrected by #2692.)
+///
+/// Deferring to the size guard was not sufficient either, which is why this
+/// now asserts on names rather than being deleted as a duplicate:
+/// `GpuInstance` carries 8 bytes of `_reserved` padding at offset 120, so two
+/// `u32` per-material fields can be reintroduced *into that padding* with the
+/// struct still exactly 128 B and every existing offset unchanged. The size
+/// and offset pins both stay green through that; only a name check catches it.
 #[test]
 fn gpu_instance_does_not_re_expand_with_per_material_fields() {
-    // Build trivially via Default and rely on the size assertion
-    // above (128 B — #2692; this said 112 B, three lines under an
-    // assertion of 128) to fail loudly if a field is reintroduced.
-    // The list below is documentary only; the size guard is what
-    // catches actual regressions.
-    let _ = GpuInstance::default();
+    const GPU_TYPES_RS: &str = include_str!("gpu_types.rs");
+
+    // Per-material state that lives on `GpuMaterial` (see
+    // `vulkan/material.rs`) and must not reappear per-draw. Deliberately
+    // excludes the three material-shaped fields `GpuInstance` keeps on
+    // purpose: `texture_index` (per-draw base texture, and also a legitimate
+    // `GpuMaterial` member), `ior`, and `avg_albedo_*` (read by the caustic
+    // compute pass off its own descriptor set).
+    const COLLAPSED_ONTO_MATERIAL_TABLE: &[&str] = &[
+        "roughness",
+        "metalness",
+        "material_flags",
+        "material_kind",
+        "material_alpha",
+        "emissive_mult",
+        "emissive_r",
+        "emissive_g",
+        "emissive_b",
+        "specular_strength",
+        "specular_r",
+        "specular_g",
+        "specular_b",
+        "diffuse_r",
+        "diffuse_g",
+        "diffuse_b",
+        "ambient_r",
+        "ambient_g",
+        "ambient_b",
+        "alpha_threshold",
+        "alpha_test_func",
+        "normal_map_index",
+        "glow_map_index",
+        "dark_map_index",
+        "detail_map_index",
+        "gloss_map_index",
+        "parallax_map_index",
+        "env_map_index",
+        "env_mask_index",
+        "parallax_height_scale",
+        "parallax_max_passes",
+        "uv_offset_u",
+        "uv_offset_v",
+        "uv_scale_u",
+        "uv_scale_v",
+    ];
+
+    let fields = parse_rust_struct_fields(GPU_TYPES_RS, "pub struct GpuInstance");
+    assert!(
+        !fields.is_empty(),
+        "failed to parse GpuInstance's fields — the guard below would be vacuous"
+    );
+    for banned in COLLAPSED_ONTO_MATERIAL_TABLE {
+        assert!(
+            !fields.iter().any(|f| f == banned),
+            "`GpuInstance.{banned}` is per-MATERIAL state that R1 Phase 6 collapsed \
+             onto the MaterialTable SSBO — reintroducing it per-draw undoes that \
+             dedup (fields: {fields:?}). If this is deliberate, the material-table \
+             rationale in `gpu_types.rs` needs rewriting first (#2433)."
+        );
+    }
 }
 
 /// Regression: #309 — `VkDrawIndexedIndirectCommand` is a Vulkan-
