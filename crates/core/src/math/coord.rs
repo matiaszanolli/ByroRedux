@@ -133,7 +133,43 @@ pub fn zup_to_yup_quat_wxyz(wxyz: [f32; 4]) -> [f32; 4] {
 /// the pre-fix formula for A/B triage.
 #[inline]
 pub fn euler_zup_to_quat_yup(rx: f32, ry: f32, rz: f32) -> Quat {
-    Quat::from_rotation_y(-rz) * Quat::from_rotation_z(ry) * Quat::from_rotation_x(-rx)
+    euler_zup_to_quat_yup_mode(REFR_ROTATION_MODE_SHIP, rx, ry, rz)
+}
+
+/// The shipping REFR rotation mode — CW angle convention, ZYX product.
+/// [`euler_zup_to_quat_yup`] is exactly this mode; the other three are
+/// diagnostic-only. See [`euler_zup_to_quat_yup_mode`].
+pub const REFR_ROTATION_MODE_SHIP: u8 = 1;
+
+/// The four candidate Euler→Y-up conversions the REFR-placement A/B
+/// triage sweeps over. **Single source of truth** for the formulas —
+/// `byroredux::cell_loader::euler`'s `--rotation-mode N` dispatcher and
+/// the `byroredux-plugin` `cell_rot_sweep` example both route here
+/// (#2438 / COORD-5; pre-fix the example hand-copied all four arms, so a
+/// retune of the dispatcher would have left the triage tool reporting
+/// conclusions about a convention the engine no longer used).
+///
+///   0: CW + XYZ-product  — `Rx(-rx) · Rz(ry) · Ry(-rz)`
+///      (pre-2026-05-26 ship; kept for A/B triage only)
+///   1: CW + ZYX-product  — `Ry(-rz) · Rz(ry) · Rx(-rx)`
+///      (current ship; matches OpenMW — see [`euler_zup_to_quat_yup`])
+///   2: CCW + ZYX-product — `Ry(rz) · Rz(-ry) · Rx(rx)` (no negation)
+///   3: CCW + XYZ-product — `Rx(rx) · Rz(-ry) · Ry(rz)` (no negation)
+///
+/// Modes 0 and 1 agree whenever only `rz` is non-zero — which is why the
+/// single-cell `GSDocMitchellHouse` sign-off (2026-05-07) could not tell
+/// them apart. Any mode outside `0..=3` falls back to the shipping
+/// default so a bad `--rotation-mode` argument can't produce garbage
+/// placement.
+#[inline]
+pub fn euler_zup_to_quat_yup_mode(mode: u8, rx: f32, ry: f32, rz: f32) -> Quat {
+    match mode {
+        0 => Quat::from_rotation_x(-rx) * Quat::from_rotation_z(ry) * Quat::from_rotation_y(-rz),
+        2 => Quat::from_rotation_y(rz) * Quat::from_rotation_z(-ry) * Quat::from_rotation_x(rx),
+        3 => Quat::from_rotation_x(rx) * Quat::from_rotation_z(-ry) * Quat::from_rotation_y(rz),
+        // Mode 1 and any out-of-range value: the shipping formula.
+        _ => Quat::from_rotation_y(-rz) * Quat::from_rotation_z(ry) * Quat::from_rotation_x(-rx),
+    }
 }
 
 /// Normalise a quaternion to unit length. Zero-length input is
@@ -328,5 +364,67 @@ mod tests {
             cell_grid_to_world_yup(-2, -3),
             Vec3::new(-8192.0, 0.0, 12288.0)
         );
+    }
+
+    /// Angle between two unit quaternions, sign-insensitive (`q == -q`).
+    /// Mirrors the `cell_rot_sweep` example's comparison.
+    fn quat_angle(a: Quat, b: Quat) -> f32 {
+        2.0 * a.dot(b).abs().clamp(-1.0, 1.0).acos()
+    }
+
+    /// #2438 / COORD-5 — the shipping helper must stay byte-identical to
+    /// mode 1 of the dispatcher, so `--rotation-mode 1` and every
+    /// non-REFR caller agree by construction rather than by convention.
+    #[test]
+    fn ship_helper_equals_mode_one() {
+        for (rx, ry, rz) in [
+            (0.0_f32, 0.0, 0.0),
+            (0.3, -1.2, 2.4),
+            (-0.7, 0.9, -0.15),
+            (1.5707964, 0.5, -2.0),
+        ] {
+            let ship = euler_zup_to_quat_yup(rx, ry, rz);
+            let mode1 = euler_zup_to_quat_yup_mode(REFR_ROTATION_MODE_SHIP, rx, ry, rz);
+            assert_eq!(
+                ship.to_array(),
+                mode1.to_array(),
+                "ship helper diverged from mode 1 at ({rx}, {ry}, {rz})"
+            );
+        }
+    }
+
+    /// The historical trap the 2026-05-07 `GSDocMitchellHouse` sign-off
+    /// fell into: modes 0 and 1 are indistinguishable on Z-only REFRs
+    /// and diverge only once a second axis is non-zero. Pinning both
+    /// halves keeps the sweep example's premise honest.
+    #[test]
+    fn modes_zero_and_one_agree_only_on_z_only_rotations() {
+        let z_only = quat_angle(
+            euler_zup_to_quat_yup_mode(0, 0.0, 0.0, 1.1),
+            euler_zup_to_quat_yup_mode(1, 0.0, 0.0, 1.1),
+        );
+        assert!(z_only < 1e-4, "Z-only modes 0/1 must agree, got {z_only}");
+
+        let multi_axis = quat_angle(
+            euler_zup_to_quat_yup_mode(0, 0.4, 0.0, 1.1),
+            euler_zup_to_quat_yup_mode(1, 0.4, 0.0, 1.1),
+        );
+        assert!(
+            multi_axis > 1e-3,
+            "multi-axis modes 0/1 must diverge, got {multi_axis}"
+        );
+    }
+
+    /// An out-of-range `--rotation-mode` must land on the shipping
+    /// formula, not on garbage placement.
+    #[test]
+    fn out_of_range_mode_falls_back_to_ship() {
+        for mode in [4u8, 9, 255] {
+            assert_eq!(
+                euler_zup_to_quat_yup_mode(mode, 0.4, -0.8, 1.1).to_array(),
+                euler_zup_to_quat_yup(0.4, -0.8, 1.1).to_array(),
+                "mode {mode} must fall back to the shipping formula"
+            );
+        }
     }
 }

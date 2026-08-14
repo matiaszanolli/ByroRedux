@@ -5,28 +5,21 @@
 //! between modes. These are the only REFRs that can be visually affected by the
 //! shipped ZYX-vs-XYZ flip.
 //!
-//! Modes (mirror `byroredux/src/cell_loader/euler.rs`):
-//!   0: CW + XYZ — `Rx(-rx) * Rz(ry) * Ry(-rz)` (pre-2026-05-26 ship)
-//!   1: CW + ZYX — `Ry(-rz) * Rz(ry) * Rx(-rx)` (current ship, OpenMW)
-//!   2: CCW + ZYX — `Ry(rz) * Rz(-ry) * Rx(rx)`
-//!   3: CCW + XYZ — `Rx(rx) * Rz(-ry) * Ry(rz)`
+//! Modes are defined once in
+//! [`byroredux_core::math::coord::euler_zup_to_quat_yup_mode`] — the same
+//! function `byroredux/src/cell_loader/euler.rs`'s `--rotation-mode N`
+//! dispatcher calls. #2438 / COORD-5: this example used to hand-copy all
+//! four formulas, so a retune of the dispatcher would have left the
+//! sweep reporting conclusions about a convention the engine no longer
+//! used — for a tool whose entire purpose is arbitrating that dispute.
 //!
 //! Usage:
 //!   cargo run -p byroredux-plugin --example cell_rot_sweep -- <ESM> <CELL_EDID> [limit]
 
+use byroredux_core::math::coord::euler_zup_to_quat_yup_mode as mode_quat;
 use byroredux_core::math::Quat;
 use byroredux_plugin::esm;
 use std::collections::HashMap;
-
-fn mode_quat(mode: u8, rx: f32, ry: f32, rz: f32) -> Quat {
-    match mode {
-        0 => Quat::from_rotation_x(-rx) * Quat::from_rotation_z(ry) * Quat::from_rotation_y(-rz),
-        1 => Quat::from_rotation_y(-rz) * Quat::from_rotation_z(ry) * Quat::from_rotation_x(-rx),
-        2 => Quat::from_rotation_y(rz) * Quat::from_rotation_z(-ry) * Quat::from_rotation_x(rx),
-        3 => Quat::from_rotation_x(rx) * Quat::from_rotation_z(-ry) * Quat::from_rotation_y(rz),
-        _ => unreachable!(),
-    }
-}
 
 /// Angle (radians) between two unit quaternions, ignoring sign (q == -q).
 fn quat_angle(a: Quat, b: Quat) -> f32 {

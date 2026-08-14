@@ -179,3 +179,47 @@ fn ni_transform_to_yup_matrix_scale_baked_in() {
     // W column still identity.
     assert!((m[3][3] - 1.0).abs() < 1e-6);
 }
+
+// ── #2467 / REN-D9-NEW-01 — zero-weight quads never leave the importer ──
+
+/// The packed-half (Skyrim SE / FO4 / Starfield) paths pass decoded
+/// weights through untouched, so an all-zero quad used to reach the GPU
+/// — where `skin_vertices.comp` substituted identity and wrote a raw
+/// NIF-local coordinate into an absolute-world-space BLAS. Rebinding to
+/// bone 0 at full weight matches what `densify_sparse_weights` has
+/// always done on the classic path.
+#[test]
+fn all_zero_weight_quad_rebinds_to_bone_zero() {
+    let mut indices = [[7u16, 3, 9, 2], [1, 0, 0, 0]];
+    let mut weights = [[0.0f32, 0.0, 0.0, 0.0], [0.6, 0.4, 0.0, 0.0]];
+
+    let rebound = bind_unweighted_to_bone_zero(&mut indices, &mut weights);
+
+    assert_eq!(rebound, 1, "only the zero-weight vertex should be rebound");
+    assert_eq!(indices[0], [0, 0, 0, 0]);
+    assert_eq!(weights[0], [1.0, 0.0, 0.0, 0.0]);
+    // The weighted vertex is untouched — no renormalise, no reindex.
+    assert_eq!(indices[1], [1, 0, 0, 0]);
+    assert_eq!(weights[1], [0.6, 0.4, 0.0, 0.0]);
+}
+
+/// Below-epsilon-but-nonzero quads land on the same side of the cliff as
+/// the shaders' `wsum < 0.001` guard, so import and GPU agree on which
+/// vertices are "unweighted".
+#[test]
+fn subepsilon_and_nan_weight_quads_rebind() {
+    let mut indices = [[5u16, 5, 5, 5], [6, 6, 6, 6], [8, 8, 8, 8]];
+    let mut weights = [
+        [0.0002f32, 0.0001, 0.0, 0.0],
+        [f32::NAN, 0.0, 0.0, 0.0],
+        // Exactly at the threshold — kept, matching `wsum < 0.001`.
+        [UNWEIGHTED_VERTEX_EPSILON, 0.0, 0.0, 0.0],
+    ];
+
+    let rebound = bind_unweighted_to_bone_zero(&mut indices, &mut weights);
+
+    assert_eq!(rebound, 2);
+    assert_eq!(weights[0], [1.0, 0.0, 0.0, 0.0]);
+    assert_eq!(weights[1], [1.0, 0.0, 0.0, 0.0]);
+    assert_eq!(indices[2], [8, 8, 8, 8], "at-threshold vertex is weighted");
+}

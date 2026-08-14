@@ -108,7 +108,7 @@ pub fn extract_skin_bs_tri_shape(scene: &NifScene, shape: &BsTriShape) -> Option
     // (`wsum < 0.001` in `triangle.vert:151`), rendering NPCs in
     // bind pose. Fall back to the decoded global-buffer payload
     // when the inline arrays are empty.
-    let (vertex_bone_weights, vertex_bone_indices) = if shape.bone_weights.is_empty() {
+    let (mut vertex_bone_weights, mut vertex_bone_indices) = if shape.bone_weights.is_empty() {
         match decode_sse_skin_payload(scene, shape) {
             Some((weights, raw_indices)) => {
                 let remapped = remap_bs_tri_shape_bone_indices(scene, shape, &raw_indices);
@@ -125,6 +125,12 @@ pub fn extract_skin_bs_tri_shape(scene: &NifScene, shape: &BsTriShape) -> Option
             remap_bs_tri_shape_bone_indices(scene, shape, &shape.bone_indices),
         )
     };
+    // #2467 / REN-D9-NEW-01 — the packed-half path is pure pass-through
+    // (no renormalise, no zero fallback), unlike the classic
+    // `densify_sparse_weights` path. Enforce the same invariant here so
+    // a decoded all-zero quad can't reach the GPU. See
+    // [`bind_unweighted_to_bone_zero`].
+    bind_unweighted_to_bone_zero(&mut vertex_bone_indices, &mut vertex_bone_weights);
 
     // Skyrim LE path: NiSkinInstance + NiSkinData (bone list + bind transforms).
     // Borrow bone_refs instead of cloning — they're only iterated. #279 D5-11.
@@ -263,6 +269,11 @@ fn convert_bs_geometry_skin_weights(
         weights.push(crate::blocks::tri_shape::renormalize_skin_weights(w));
         indices.push(idx);
     }
+    // #2467 — `renormalize_skin_weights` returns an all-zero quad
+    // unchanged (its `sum <= 1e-6` early-out), so the same zero-weight
+    // gap the FO4 `BsTriShape` path has applies here. Enforce the
+    // bone-0 invariant before the arrays leave this function.
+    bind_unweighted_to_bone_zero(&mut indices, &mut weights);
     (indices, weights)
 }
 
@@ -568,6 +579,57 @@ pub fn bs_bone_to_inverse_matrix(b: &crate::blocks::skin::BsSkinBoneTrans) -> [[
         scale: b.scale,
     };
     ni_transform_to_yup_matrix(&t)
+}
+
+/// Threshold below which a vertex's four bone weights are treated as
+/// "unweighted". Matches the `wsum < 0.001` branch both
+/// `crates/renderer/shaders/triangle.vert` and
+/// `crates/renderer/shaders/skin_vertices.comp` take, so the import-side
+/// invariant and the shader-side guard agree on where the cliff is.
+pub const UNWEIGHTED_VERTEX_EPSILON: f32 = 0.001;
+
+/// Bind every all-zero weight quad to bone 0 at full weight, matching
+/// the fallback [`densify_sparse_weights`] has always applied on the
+/// classic `NiSkinData` path.
+///
+/// #2467 / REN-D9-NEW-01. The packed-half Skyrim SE / FO4 / Starfield
+/// paths decode per-vertex weights straight out of the vertex buffer
+/// with no renormalise and no zero fallback, so an all-zero quad reaches
+/// the GPU unmodified. There the two skinning shaders **disagree**:
+/// `triangle.vert` substitutes the instance's world matrix (correct
+/// placement for raster), while `skin_vertices.comp` substitutes
+/// identity — and the skinned BLAS it feeds is instanced into the TLAS
+/// with an IDENTITY transform because its vertices are already absolute
+/// world space. A single zero-weight vertex therefore drags that
+/// entity's BLAS AABB from the actor's bounding box out to the world
+/// origin: in an exterior cell, a ~10^5-unit sliver that every shadow /
+/// reflection / GI ray must intersect-test, presenting as an
+/// unexplained RT perf cliff with raster showing nothing wrong.
+///
+/// Binding to bone 0 (rather than leaving zeros for the shaders to
+/// paper over) keeps the vertex inside the actor under *both* paths and
+/// makes the shaders' defensive branches unreachable on imported
+/// content. Returns the number of vertices rebound, for callers that
+/// want to log the gap.
+///
+/// Trailing entries of the longer vector are left alone — a
+/// weights/indices length mismatch is the caller's contract violation,
+/// not something to silently paper over here.
+pub fn bind_unweighted_to_bone_zero(indices: &mut [[u16; 4]], weights: &mut [[f32; 4]]) -> usize {
+    let mut rebound = 0;
+    for (idx, w) in indices.iter_mut().zip(weights.iter_mut()) {
+        // NaN weights sum to NaN, which fails `< EPSILON` and would slip
+        // through; test the finite sum explicitly so a corrupt payload
+        // is rebound rather than propagated.
+        let sum = w[0] + w[1] + w[2] + w[3];
+        if sum.is_finite() && sum >= UNWEIGHTED_VERTEX_EPSILON {
+            continue;
+        }
+        *idx = [0, 0, 0, 0];
+        *w = [1.0, 0.0, 0.0, 0.0];
+        rebound += 1;
+    }
+    rebound
 }
 
 /// Densify sparse per-bone weight lists to per-vertex `[bone_idx; 4]` +

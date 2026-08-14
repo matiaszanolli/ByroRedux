@@ -626,6 +626,45 @@ fn blend_gbuffer_attachments(
     }
 }
 
+/// Alpha-lane blend factors for the HDR attachment, turning its alpha
+/// channel into an **accumulated coverage lane** (#2466 / REN-D8-N01).
+///
+/// `composite.frag`'s sky branch needs to know how much of a `depth ==
+/// 1.0` pixel is already owned by transparent geometry: blend pipelines
+/// run with `depth_write_enable(false)`, so an alpha-blended fragment
+/// with nothing opaque behind it leaves depth at the cleared 1.0 and
+/// composite classifies the pixel as sky. Pre-fix the branch *replaced*
+/// the pixel with `compute_sky(dir)` and the fragment's HDR contribution
+/// was discarded outright — smoke, steam, magic billboards, banners and
+/// glass panes silhouetted against open sky simply vanished.
+///
+/// The rule the lane implements is `a' = 1 - (1 - a) · D`, where `D` is
+/// how much of the destination this draw's colour equation preserves —
+/// i.e. exactly the authored Gamebryo destination factor:
+///
+/// * `dst = ONE` (additive fire / glow / magic FX): `D = 1`, the draw
+///   occludes nothing, so coverage must pass through untouched —
+///   `(ZERO, ONE)`. Getting this wrong would darken the sky behind every
+///   additive effect card by `1 - alpha`.
+/// * `dst = ONE_MINUS_SRC_ALPHA` (the classic alpha blend): `D = 1 - a`,
+///   giving `a' = a + a_dst·(1 - a)` — proper over-operator coverage
+///   accumulation across a stack of translucent layers, which the old
+///   `(ONE, ZERO)` "last writer wins" pair could not express.
+/// * anything else: same structural form, `a' = a_src + a_dst · D`.
+///   Vulkan evaluates a colour-flavoured factor's alpha component in the
+///   alpha equation, so exotic authored factors stay well-defined.
+///
+/// The lane has no other consumer: `taa.comp` forwards HDR alpha
+/// untouched and `composite.frag` forwards it to the swapchain, which
+/// ignores it (#676 / DEN-6, DEN-11).
+fn coverage_alpha_factors(dst_factor: vk::BlendFactor) -> (vk::BlendFactor, vk::BlendFactor) {
+    if dst_factor == vk::BlendFactor::ONE {
+        (vk::BlendFactor::ZERO, vk::BlendFactor::ONE)
+    } else {
+        (vk::BlendFactor::ONE, dst_factor)
+    }
+}
+
 pub fn create_blend_pipeline(
     ctx: BlendPipelineCtx,
     src: u8,
@@ -701,14 +740,15 @@ pub fn create_blend_pipeline(
 
     let src_factor = gamebryo_to_vk_blend_factor(src);
     let dst_factor = gamebryo_to_vk_blend_factor(dst);
+    let (src_alpha_factor, dst_alpha_factor) = coverage_alpha_factors(dst_factor);
     let hdr_blend = vk::PipelineColorBlendAttachmentState::default()
         .color_write_mask(vk::ColorComponentFlags::RGBA)
         .blend_enable(true)
         .src_color_blend_factor(src_factor)
         .dst_color_blend_factor(dst_factor)
         .color_blend_op(vk::BlendOp::ADD)
-        .src_alpha_blend_factor(vk::BlendFactor::ONE)
-        .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
+        .src_alpha_blend_factor(src_alpha_factor)
+        .dst_alpha_blend_factor(dst_alpha_factor)
         .alpha_blend_op(vk::BlendOp::ADD);
     let attachments = blend_gbuffer_attachments(hdr_blend, preserve_opaque_gbuffer);
     let color_blending = vk::PipelineColorBlendStateCreateInfo::default()
@@ -1015,6 +1055,43 @@ mod tests {
         }
     }
 
+    /// #2466 / REN-D8-N01 — the HDR attachment's alpha lane carries the
+    /// accumulated transparent coverage `composite.frag`'s sky branch
+    /// weighs `compute_sky()` against. The two cases that matter:
+    ///
+    /// * additive FX (`dst = ONE`) preserve the destination entirely, so
+    ///   they must contribute **zero** occlusion — otherwise every fire /
+    ///   glow / magic card would darken the sky behind it by `1 - alpha`.
+    /// * a classic alpha blend (`dst = ONE_MINUS_SRC_ALPHA`) must
+    ///   accumulate as the over operator, `a' = a + a_dst·(1 - a)`, so a
+    ///   stack of translucent layers reports combined coverage instead of
+    ///   whichever layer happened to draw last.
+    #[test]
+    fn coverage_alpha_lane_tracks_the_authored_destination_factor() {
+        assert_eq!(
+            coverage_alpha_factors(vk::BlendFactor::ONE),
+            (vk::BlendFactor::ZERO, vk::BlendFactor::ONE),
+            "additive draws must pass coverage through untouched"
+        );
+        assert_eq!(
+            coverage_alpha_factors(vk::BlendFactor::ONE_MINUS_SRC_ALPHA),
+            (vk::BlendFactor::ONE, vk::BlendFactor::ONE_MINUS_SRC_ALPHA),
+            "alpha blends must accumulate coverage as the over operator"
+        );
+        // Every other authored destination factor keeps the same
+        // structural form (`a' = a_src + a_dst · D`) with D taken from
+        // the colour equation, so no Gamebryo factor is left on the old
+        // "last writer wins" pair.
+        for gb in (0u8..=10).filter(|gb| *gb != 0) {
+            let dst = gamebryo_to_vk_blend_factor(gb);
+            assert_eq!(
+                coverage_alpha_factors(dst),
+                (vk::BlendFactor::ONE, dst),
+                "factor {gb} ({dst:?}) must mirror its colour destination factor"
+            );
+        }
+    }
+
     /// Regression: the cache key must distinguish all the combos that
     /// previously collapsed to the same static pipeline. `(6, 7)` (alpha)
     /// and `(6, 0)` (additive) are the two combos the old code handled;
@@ -1137,7 +1214,12 @@ mod tests {
         );
         // The rest of the "preserve opaque" set must still be masked off —
         // this fix is scoped to mesh_id only.
-        for (idx, name) in [(1, "normal"), (2, "motion"), (4, "raw_indirect"), (5, "albedo")] {
+        for (idx, name) in [
+            (1, "normal"),
+            (2, "motion"),
+            (4, "raw_indirect"),
+            (5, "albedo"),
+        ] {
             assert_eq!(
                 glass[idx].color_write_mask,
                 vk::ColorComponentFlags::empty(),

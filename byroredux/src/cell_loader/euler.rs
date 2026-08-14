@@ -55,29 +55,19 @@ pub fn set_refr_rotation_mode_diag(mode: u8) {
 
 /// Diagnostic-mode-aware variant of [`euler_zup_to_quat_yup`] used
 /// only on the REFR placement code path.
+///
+/// The four formulas themselves live in
+/// [`byroredux_core::math::coord::euler_zup_to_quat_yup_mode`] — this
+/// function is only the atomic-backed mode selection. #2438 / COORD-5:
+/// `crates/plugin/examples/cell_rot_sweep.rs` used to hand-copy the
+/// match arms, so retuning the dispatcher would silently desync the
+/// triage tool that exists to arbitrate exactly these disputes.
 pub(crate) fn euler_zup_to_quat_yup_refr(rx: f32, ry: f32, rz: f32) -> Quat {
     use std::sync::atomic::Ordering;
-    match REFR_ROTATION_MODE.load(Ordering::Relaxed) {
-        // Mode 0 — pre-2026-05-26 ship (deprecated; kept for A/B
-        // triage only). CW + XYZ-product (Z applied first).
-        // R_zup = Rx_cw · Ry_cw · Rz_cw ⇒
-        // R_yup = Rx(-rx) · Rz(ry) · Ry(-rz). Agrees with mode 1
-        // for Z-only rotations (why GSDocMitchellHouse passed
-        // sign-off); diverges for multi-axis REFRs.
-        0 => Quat::from_rotation_x(-rx) * Quat::from_rotation_z(ry) * Quat::from_rotation_y(-rz),
-        // Mode 1 — current ship. CW + ZYX-product (X applied first,
-        // Z applied last). R_zup = Rz_cw · Ry_cw · Rx_cw ⇒
-        // R_yup = Ry(-rz) · Rz(ry) · Rx(-rx). Matches OpenMW's
-        // canonical formula at objectpaging.cpp:853-855 and
-        // Bethesda CK convention.
-        1 => Quat::from_rotation_y(-rz) * Quat::from_rotation_z(ry) * Quat::from_rotation_x(-rx),
-        // Mode 2 — CCW + ZYX-product (no angle negation).
-        // R_zup = Rz · Ry · Rx ⇒ R_yup = Ry(rz) · Rz(-ry) · Rx(rx).
-        2 => Quat::from_rotation_y(rz) * Quat::from_rotation_z(-ry) * Quat::from_rotation_x(rx),
-        // Mode 3 — CCW + XYZ-product.
-        // R_zup = Rx · Ry · Rz ⇒ R_yup = Rx(rx) · Rz(-ry) · Ry(rz).
-        3 => Quat::from_rotation_x(rx) * Quat::from_rotation_z(-ry) * Quat::from_rotation_y(rz),
-        // Unknown mode — fall back to shipping default (mode 1).
-        _ => Quat::from_rotation_y(-rz) * Quat::from_rotation_z(ry) * Quat::from_rotation_x(-rx),
-    }
+    byroredux_core::math::coord::euler_zup_to_quat_yup_mode(
+        REFR_ROTATION_MODE.load(Ordering::Relaxed),
+        rx,
+        ry,
+        rz,
+    )
 }

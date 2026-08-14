@@ -420,8 +420,30 @@ void main() {
     vec3 combined;
     if (is_sky) {
         // Sky pixel: reconstruct view direction and compute sky color.
+        //
+        // #2466 / REN-D8-N01 — composite the sky BEHIND the main pass
+        // result rather than instead of it. Blend pipelines run with
+        // `depth_write_enable(false)`, so an alpha-blended fragment with
+        // nothing opaque behind it leaves depth at the cleared 1.0 and
+        // lands in this branch. Pre-fix `combined = compute_sky(dir)`
+        // dropped `direct4.rgb` outright, so every translucent draw
+        // silhouetted purely against open sky vanished — smoke / steam /
+        // magic billboards, alpha-blended banners, glass panes on a
+        // skyline. (The FSR masks were never lost, so FSR was being told
+        // a transparent surface was there after its colour had been
+        // erased.)
+        //
+        // `direct4.a` is the accumulated coverage lane
+        // (`pipeline::coverage_alpha_factors`): 0 where nothing drew,
+        // the over-operator coverage for classic alpha blends, and
+        // untouched by additive FX — which contribute through `direct`
+        // without occluding the sky, exactly as their `dst = ONE`
+        // equation says. `direct` is already premultiplied against the
+        // transparent-black clear the host uses whenever this branch is
+        // live (`draw.rs::hdr_clear`), so it adds in directly.
         vec3 dir = screen_to_world_dir(fragUV);
-        combined = compute_sky(dir);
+        float coverage = clamp(direct4.a, 0.0, 1.0);
+        combined = compute_sky(dir) * (1.0 - coverage) + direct;
     } else {
         // Geometry pixel: combine direct + (indirect × albedo) and tone map.
         // The shader wrote lighting-only indirect (no local albedo) so
@@ -611,13 +633,13 @@ void main() {
 
     // Pass `direct4.a` through (mirroring the pre-fix geometry branch) so
     // the alpha-blend marker bit `DEN-6 / #676` preserves through TAA
-    // consistently across both sky and geometry pixels. Sky pixels by
-    // construction don't have a glass surface in front of them today, so
-    // today's `direct4.a` on a sky pixel is zero — but a future decal
-    // pass / transparent UI / lens-flare feature that asks "is this
-    // swapchain pixel sky?" via swapchain alpha would see an asymmetric
-    // "1.0 = sky, anything else = geometry" contract that's harder to
-    // reason about than the symmetric "alpha is the marker bit, branch on
-    // it the same way." DEN-11.
+    // consistently across both sky and geometry pixels. #2466 sharpened
+    // what that lane means: it is the accumulated transparent coverage of
+    // the pixel (`pipeline::coverage_alpha_factors`), zero on an
+    // untouched sky pixel and non-zero exactly where translucent geometry
+    // drew — which is what the sky branch above now weighs
+    // `compute_sky()` against. Forwarding it symmetrically from both
+    // branches keeps the "alpha is the marker, branch on it the same way"
+    // contract rather than an asymmetric "1.0 = sky" one. DEN-11.
     outColor = vec4(combined, direct4.a);
 }

@@ -1123,6 +1123,15 @@ pub struct VulkanContext {
     /// maps are `mem::take`n, cleared, and swapped in `draw.rs`, so no
     /// per-frame heap churn — hashing was the only remaining cost.
     previous_rigid_models: FxHashMap<u32, [f32; 16]>,
+    /// Previous frame's caustic scene key — the light rig plus every
+    /// caustic-source instance's placement, folded to a `u64` (#2468 /
+    /// REN-D14-2026-08-07-01). The caustic accumulator's parked-camera
+    /// EMA holds up to ~200 frames of history with no per-pixel
+    /// invalidation of its own, so a change here (or a moved rigid
+    /// instance, or a dirty skinned pose) has to reset it: otherwise a
+    /// player standing still while a torch-carrying NPC walks past keeps
+    /// a ~3 s caustic ghost of the old pool.
+    prev_caustic_scene_key: u64,
     /// Current-frame map reused while assembling the next submitted history.
     current_rigid_models_scratch: FxHashMap<u32, [f32; 16]>,
     /// Previous transforms realigned to this frame's sorted instance indices.
@@ -3002,6 +3011,7 @@ impl VulkanContext {
             prev_cam_forward: [0.0, 0.0, -1.0],
             gpu_instances_scratch: Vec::new(),
             previous_rigid_models: FxHashMap::default(),
+            prev_caustic_scene_key: 0,
             current_rigid_models_scratch: FxHashMap::default(),
             previous_models_scratch: Vec::new(),
             batches_scratch: Vec::new(),

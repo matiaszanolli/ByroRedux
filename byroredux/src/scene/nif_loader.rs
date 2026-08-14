@@ -717,22 +717,37 @@ pub(crate) fn load_nif_bytes_with_skeleton(
                 if let Some(skin) = skin_vertex_data {
                     // Guard against parallel-vector truncation — if the
                     // sparse skin upload filled fewer vertices than the
-                    // mesh has positions, fall back to rigid for the
-                    // remainder rather than panicking on index.
-                    if i < skin.vertex_bone_indices.len() && i < skin.vertex_bone_weights.len() {
-                        let idx = skin.vertex_bone_indices[i];
-                        let w = skin.vertex_bone_weights[i];
-                        let mut v = Vertex::new_skinned_rgba(
-                            position,
-                            color,
-                            normal,
-                            uv,
-                            [idx[0] as u32, idx[1] as u32, idx[2] as u32, idx[3] as u32],
-                            w,
-                        );
-                        v.tangent = tangent;
-                        return v;
-                    }
+                    // mesh has positions, bind the remainder to bone 0
+                    // rather than panicking on index.
+                    //
+                    // #2467 SIBLING — the tail used to fall back to
+                    // `Vertex::new_rgba`, i.e. all-zero weights. That is the
+                    // rigid marker, but the mesh is *skinned*: it goes
+                    // through `skin_vertices.comp` and its output feeds a
+                    // BLAS instanced into the TLAS with IDENTITY because it
+                    // holds absolute world-space vertices. A zero-weight
+                    // vertex there lands at raw NIF-local coordinates and
+                    // stretches the entity's BLAS AABB to the world origin.
+                    // Bone 0 at full weight is the same fallback the
+                    // importer applies (`bind_unweighted_to_bone_zero`), so
+                    // the truncated tail stays inside the actor.
+                    let (idx, w) = if i < skin.vertex_bone_indices.len()
+                        && i < skin.vertex_bone_weights.len()
+                    {
+                        (skin.vertex_bone_indices[i], skin.vertex_bone_weights[i])
+                    } else {
+                        ([0u16; 4], [1.0f32, 0.0, 0.0, 0.0])
+                    };
+                    let mut v = Vertex::new_skinned_rgba(
+                        position,
+                        color,
+                        normal,
+                        uv,
+                        [idx[0] as u32, idx[1] as u32, idx[2] as u32, idx[3] as u32],
+                        w,
+                    );
+                    v.tangent = tangent;
+                    return v;
                 }
                 let mut v = Vertex::new_rgba(position, color, normal, uv);
                 v.tangent = tangent;

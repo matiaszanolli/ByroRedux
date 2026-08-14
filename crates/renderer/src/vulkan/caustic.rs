@@ -112,18 +112,50 @@ const CAUSTIC_DECAY_MAX: f32 = 0.995;
 /// 0.0 returned here wipes the current slot immediately, and the other
 /// slots' images are equally stale from the old viewpoint, so their
 /// counters must not survive to over-weight the next parked run.
+///
+/// #2468 / REN-D14-2026-08-07-01 — `history_valid` is **not** just
+/// "camera parked". Every landing point in the pool is a function of the
+/// camera *and* of the scene: a swinging lantern, a walking NPC with a
+/// torch, an occluder crossing between the light and the glass, or a
+/// glass door opening all invalidate the accumulated pool while the
+/// camera never moves. This path has no per-pixel motion-vector /
+/// mesh-ID / normal rejection of the kind `svgf_temporal.comp` and
+/// `taa.comp` use, so with a camera-only gate the cap held up to
+/// `1/(1 - 0.995) = 200` frames (~3 s at 60 fps) of stale pool at up to
+/// 99.5% weight. The host now folds a scene-dirty signal in — see
+/// `context::draw`'s `caustic_history_valid`.
 fn advance_parked_visits(
     parked: &mut [u32; MAX_FRAMES_IN_FLIGHT],
     frame: usize,
-    camera_static: bool,
+    history_valid: bool,
 ) -> f32 {
-    if !camera_static {
+    if !history_valid {
         *parked = [0; MAX_FRAMES_IN_FLIGHT];
         return 0.0;
     }
     parked[frame] = parked[frame].saturating_add(1);
     let n = parked[frame] as f32;
     (n / (n + 1.0)).min(CAUSTIC_DECAY_MAX)
+}
+
+/// FNV-1a offset basis / prime — the caustic scene key's mixer.
+const CAUSTIC_KEY_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+const CAUSTIC_KEY_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+/// Fold one `f32` into a caustic scene key (#2468).
+///
+/// Hashes the raw bit pattern, so `-0.0` and `0.0` key differently and a
+/// NaN keys stably — both err toward "scene changed", which only costs a
+/// re-accumulation, never a stale pool.
+#[inline]
+pub(crate) fn fold_caustic_key_f32(key: u64, v: f32) -> u64 {
+    (key ^ v.to_bits() as u64).wrapping_mul(CAUSTIC_KEY_PRIME)
+}
+
+/// Start a caustic scene key. See [`fold_caustic_key_f32`].
+#[inline]
+pub(crate) fn caustic_key_seed() -> u64 {
+    CAUSTIC_KEY_BASIS
 }
 
 #[inline]
@@ -781,7 +813,7 @@ impl CausticPipeline {
         device: &ash::Device,
         cmd: vk::CommandBuffer,
         frame: usize,
-        camera_static: bool,
+        history_valid: bool,
     ) -> Result<()> {
         // ── Upload params ─────────────────────────────────────────────
         let params = CausticParams {
@@ -838,8 +870,9 @@ impl CausticPipeline {
         // accumulator a true running average that converges to ground truth
         // the longer the camera stays parked. Capped at 0.995 so it never
         // freezes (a true 1.0 would stop admitting new energy). Resets on
-        // motion (decay 0 → single-frame clear, no smear).
-        let decay_factor = advance_parked_visits(&mut self.parked_frames, frame, camera_static);
+        // motion (decay 0 → single-frame clear, no smear) — camera motion
+        // *or* scene motion (#2468); see `advance_parked_visits`.
+        let decay_factor = advance_parked_visits(&mut self.parked_frames, frame, history_valid);
         let slot_img = self.slots[frame].image;
         let clear_range = caustic_subresource_range();
 
@@ -863,7 +896,7 @@ impl CausticPipeline {
             b
         };
 
-        if camera_static {
+        if history_valid {
             // Wait for the slot's previous use (prior splat compute-write +
             // composite fragment-read) before the decay pass scales it.
             let pre_decay = vk::ImageMemoryBarrier::default()
@@ -1321,7 +1354,10 @@ mod tests {
 
 #[cfg(test)]
 mod parked_visit_tests {
-    use super::{advance_parked_visits, CAUSTIC_DECAY_MAX, MAX_FRAMES_IN_FLIGHT};
+    use super::{
+        advance_parked_visits, caustic_key_seed, fold_caustic_key_f32, CAUSTIC_DECAY_MAX,
+        MAX_FRAMES_IN_FLIGHT,
+    };
 
     /// #2401 / CHAIN2-D2-02 — after k parked *global* frames, the slot
     /// visited on the k-th of them must see `n` equal to its own visit
@@ -1376,6 +1412,61 @@ mod parked_visit_tests {
             "every slot's counter must reset on motion, or the next parked \
              run over-weights a slot holding pre-motion energy (#2401)",
         );
+    }
+
+    /// #2468 / REN-D14-2026-08-07-01 — a parked camera is not enough to
+    /// keep the pool: the accumulator has no per-pixel invalidation of its
+    /// own, so the host's scene-dirty signal has to reach it through the
+    /// same gate camera motion uses. Without this, a player standing still
+    /// while an NPC walks past with a torch kept up to
+    /// `1/(1 - CAUSTIC_DECAY_MAX)` frames of stale pool.
+    #[test]
+    fn scene_motion_invalidates_the_pool_like_camera_motion() {
+        let mut parked = [0u32; MAX_FRAMES_IN_FLIGHT];
+        // Park long enough that the pool is at the decay ceiling — the
+        // regime where a stale splat is held at up to 99.5% weight.
+        for _ in 0..1_000 {
+            advance_parked_visits(&mut parked, 0, true);
+        }
+        assert_eq!(
+            advance_parked_visits(&mut parked, 0, true),
+            CAUSTIC_DECAY_MAX
+        );
+
+        // Camera still parked, but the host reports the scene moved.
+        let decay = advance_parked_visits(&mut parked, 0, false);
+        assert_eq!(
+            decay, 0.0,
+            "a scene-dirty frame must clear the pool outright, not decay it"
+        );
+        assert!(parked.iter().all(|n| *n == 0));
+        // And the next parked frame restarts convergence from scratch
+        // rather than resuming near the ceiling.
+        assert_eq!(advance_parked_visits(&mut parked, 0, true), 0.5);
+    }
+
+    /// The caustic scene key must actually distinguish the states the host
+    /// feeds it — a folder that collapsed inputs would report "unchanged"
+    /// through a moving light rig and reintroduce the ghost.
+    #[test]
+    fn caustic_key_separates_moved_inputs_and_is_order_sensitive() {
+        let fold = |vals: &[f32]| {
+            vals.iter()
+                .fold(caustic_key_seed(), |k, v| fold_caustic_key_f32(k, *v))
+        };
+        let base = fold(&[1.0, 2.0, 3.0]);
+        assert_eq!(base, fold(&[1.0, 2.0, 3.0]), "key must be deterministic");
+        assert_ne!(
+            base,
+            fold(&[1.0, 2.0, 3.0001]),
+            "a moved light must key differently"
+        );
+        assert_ne!(base, fold(&[3.0, 2.0, 1.0]), "key must be order-sensitive");
+        // A light entering / leaving the set changes the length prefix the
+        // host folds in, so it can't alias a same-length rig.
+        assert_ne!(base, fold(&[1.0, 2.0, 3.0, 0.0]));
+        // Sign of zero is a real transform difference; err toward dirty.
+        assert_ne!(fold(&[0.0]), fold(&[-0.0]));
     }
 
     /// The cap keeps the accumulator admitting new energy no matter how

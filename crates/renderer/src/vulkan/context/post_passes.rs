@@ -212,7 +212,11 @@ impl VulkanContext {
         cmd: vk::CommandBuffer,
         frame: usize,
         img: usize,
-        camera_static: bool,
+        // #2468 — camera parked AND the scene unchanged. The caustic
+        // accumulator's EMA is the only consumer down here; SVGF and TAA
+        // reject stale history per pixel and keep the camera-only flag,
+        // which they read at their own upload sites in `draw.rs`.
+        caustic_history_valid: bool,
         camera_pos: [f32; 3],
         render_origin: byroredux_core::math::Vec3,
         vp: &[f32; 16],
@@ -234,7 +238,7 @@ impl VulkanContext {
         image_space_modifier: ImageSpaceModifierView,
     ) {
         self.record_svgf_pass(cmd, frame);
-        self.record_caustic_splat_pass(cmd, frame, camera_static);
+        self.record_caustic_splat_pass(cmd, frame, caustic_history_valid);
         self.record_volumetrics_pass(
             cmd,
             frame,
@@ -352,7 +356,7 @@ impl VulkanContext {
         &mut self,
         cmd: vk::CommandBuffer,
         frame: usize,
-        camera_static: bool,
+        history_valid: bool,
     ) {
         // SAFETY: `cmd` is recording outside a render pass, and the live
         // caustic/TLAS resources are indexed by the current in-flight `frame`.
@@ -380,7 +384,7 @@ impl VulkanContext {
                             timers.cmd_caustic_splat_start(&self.device, cmd, frame);
                         }
                         let caustic_result =
-                            caustic.dispatch(&self.device, cmd, frame, camera_static);
+                            caustic.dispatch(&self.device, cmd, frame, history_valid);
                         if let Some(ref mut timers) = self.gpu_timers {
                             timers.cmd_caustic_splat_end(&self.device, cmd, frame);
                         }

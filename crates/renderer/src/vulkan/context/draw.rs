@@ -1690,11 +1690,27 @@ impl VulkanContext {
                 float32: [0.0, 0.0, 0.0, 0.0],
             },
         };
+        // #2466 / REN-D8-N01 — when `composite.frag`'s sky branch owns the
+        // background, the HDR attachment is a pure accumulator for whatever
+        // transparent geometry draws over the sky: composite now adds
+        // `direct` on top of `compute_sky(dir)` weighted by the alpha
+        // coverage lane (`pipeline::coverage_alpha_factors`), instead of
+        // discarding it. An opaque placeholder clear there would tint every
+        // such pixel (and feed the bloom pyramid a flat wash), so clear to
+        // transparent black — zero colour, zero coverage — leaving the
+        // caller's `clear_color` for frames composite actually shows it on
+        // (interiors and the loose-NIF demo). The gate is
+        // `sky_params.is_exterior`, the *same* value that becomes
+        // `depth_params.x` above, so host and shader cannot disagree about
+        // who owns the background.
+        let hdr_clear = if sky_params.is_exterior {
+            [0.0, 0.0, 0.0, 0.0]
+        } else {
+            clear_color
+        };
         let clear_values = [
             vk::ClearValue {
-                color: vk::ClearColorValue {
-                    float32: clear_color,
-                },
+                color: vk::ClearColorValue { float32: hdr_clear },
             },
             zero_f, // normal
             zero_f, // motion
@@ -2506,6 +2522,21 @@ impl VulkanContext {
         let mut batches: Vec<DrawBatch> = std::mem::take(&mut self.batches_scratch);
         batches.clear();
         batches.reserve(draw_commands.len());
+        // #2468 — scene-dirty accumulators for the caustic accumulator's
+        // parked-camera EMA, gathered inside the loop below where the
+        // matrices are already hot rather than in a second pass. Two
+        // complementary signals, because they cover disjoint draws:
+        //   * `rigid_instance_moved` — the rigid-history compare the loop
+        //     already performs, which is free here and catches an occluder
+        //     crossing between light and glass, or physics clutter settling.
+        //   * `caustic_scene_key` — the placement of the caustic SOURCES
+        //     themselves (a glass door swinging open). Those are
+        //     alpha-blended, so `uses_rigid_motion_history` excludes them
+        //     from the compare above and they need their own key.
+        // Skinned actors are covered by `pose_dirty`, and the light rig is
+        // folded into the key after the loop.
+        let mut rigid_instance_moved = false;
+        let mut caustic_scene_key = crate::vulkan::caustic::caustic_key_seed();
 
         // Sort contract for draw_commands is owned by render.rs
         // `build_render_data`. The per-field cluster order is covered
@@ -2533,7 +2564,17 @@ impl VulkanContext {
             };
             previous_models.push(rebase_model_matrix(previous_source, render_origin));
             if uses_rigid_history {
+                // #2468 — `previous_source` is this entity's last submitted
+                // model matrix (or `m` itself on first sight / camera cut),
+                // so an inequality here is exactly "this instance moved".
+                rigid_instance_moved |= previous_source != m;
                 current_rigid_models.insert(draw_cmd.entity_id, *m);
+            }
+            if is_caustic_source(draw_cmd) {
+                for v in current_model.iter().flatten() {
+                    caustic_scene_key =
+                        crate::vulkan::caustic::fold_caustic_key_f32(caustic_scene_key, *v);
+                }
             }
 
             // #1260 / PERF-D3-NEW-05 — flag-bit assembly is rasterizer-
@@ -2853,6 +2894,37 @@ impl VulkanContext {
             } else {
                 None
             };
+
+        // #2468 — finish the caustic scene key with the light rig. Every
+        // splat is a refraction of a specific light through a specific
+        // surface, so a lantern being carried, a light being coloured /
+        // dimmed by a weather or script change, or a light entering or
+        // leaving the visible set all move the pool. `lights` is bounded
+        // by the streaming-RIS visible set, so this is a short loop.
+        caustic_scene_key =
+            crate::vulkan::caustic::fold_caustic_key_f32(caustic_scene_key, lights.len() as f32);
+        for light in lights {
+            for v in light
+                .position_radius
+                .iter()
+                .chain(light.color_type.iter())
+                .chain(light.direction_angle.iter())
+                .chain(light.params.iter())
+            {
+                caustic_scene_key =
+                    crate::vulkan::caustic::fold_caustic_key_f32(caustic_scene_key, *v);
+            }
+        }
+        // The accumulator's history is valid only when nothing that
+        // determines a splat's landing point changed: the camera (the
+        // pre-#2468 gate), the light rig or caustic-source placement (the
+        // key), rigid instances (the compare in the loop above), or
+        // skinned poses (`pose_dirty` — a walking NPC's torch shadow).
+        let caustic_scene_static = !rigid_instance_moved
+            && pose_dirty.is_empty()
+            && caustic_scene_key == self.prev_caustic_scene_key;
+        self.prev_caustic_scene_key = caustic_scene_key;
+        let caustic_history_valid = camera_static && caustic_scene_static;
 
         // #647 / RP-1 — guard against `gl_InstanceIndex` outrunning
         // the `MAX_INSTANCES` SSBO allocation. Post-#992 the mesh_id
@@ -3215,7 +3287,7 @@ impl VulkanContext {
                 cmd,
                 frame,
                 img,
-                camera_static,
+                caustic_history_valid,
                 camera_pos,
                 render_origin,
                 vp,

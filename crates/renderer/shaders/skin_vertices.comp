@@ -120,18 +120,32 @@ void main() {
         inputVertexData[src_base + 19u]
     );
 
-    // Rigid vs skinned vertex selection — mirrors triangle.vert:153.
-    // Identity falls back to bind-pose for the (rare) zero-weight
-    // vertex inside a skinned mesh (every Bethesda actor body has all
-    // vertices weighted, but defensive). The rigid `inst.model` path
-    // doesn't apply here: skinned meshes encode the world transform
-    // through the bone palette, so identity at zero weight outputs
-    // the un-transformed bind-pose vertex (same as the vertex shader's
-    // pre-#178 fallback). See feedback in the M29 plan.
+    // Rigid vs skinned vertex selection.
+    //
+    // #2467 / REN-D9-NEW-01 — this branch used to substitute
+    // `mat4(1.0)`, on the (asserted, never derived) reasoning that
+    // "skinned meshes encode the world transform through the bone
+    // palette, so identity outputs the un-transformed bind-pose
+    // vertex". That is wrong for an actor standing anywhere other than
+    // the world origin: this buffer feeds a skinned BLAS that is
+    // instanced into the TLAS with an IDENTITY transform precisely
+    // because it holds ABSOLUTE world-space vertices, so an identity
+    // fallback writes a raw NIF-local coordinate into absolute space
+    // and stretches the entity's BLAS AABB out to the origin. Raster
+    // showed nothing (triangle.vert falls back to `inst.model`), so the
+    // symptom was an unexplained RT cost / shadow streak.
+    //
+    // `bones[bone_offset]` is bone 0's palette matrix — bind-pose →
+    // world for this entity — so the fallback now rigidly attaches the
+    // vertex to bone 0, exactly matching the bone-0 binding the
+    // importer applies (`bind_unweighted_to_bone_zero`, and
+    // `densify_sparse_weights` before it). With that invariant enforced
+    // at import this branch is unreachable on imported content; it stays
+    // as the defensive floor for procedurally-authored geometry.
     float wsum = boneW.x + boneW.y + boneW.z + boneW.w;
     mat4 xform;
     if (wsum < 0.001) {
-        xform = mat4(1.0);
+        xform = bones[bone_offset];
     } else {
         // #651 / SH-6 — clamp every per-vertex bone index to this
         // mesh's palette (`< MAX_BONES_PER_MESH`). Bethesda meshes
