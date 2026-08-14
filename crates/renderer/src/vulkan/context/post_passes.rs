@@ -59,9 +59,34 @@ impl VulkanContext {
             base_array_layer: 0,
             layer_count: 1,
         };
+        // #2484 — the first access scope must name the depth WRITE, not
+        // only reads. The data being copied here *is* the render pass's
+        // depth-attachment write, and a barrier whose source scope contains
+        // only reads performs no availability operation for that write.
+        //
+        // This was almost certainly legal already, by dependency chaining:
+        // `helpers.rs::create_render_pass`'s `dependency_out` declares
+        // `dst_stage = FRAGMENT_SHADER | COMPUTE_SHADER` / `dst_access =
+        // SHADER_READ`, and this barrier's first scope contains
+        // `FRAGMENT_SHADER` + `SHADER_READ`, so the two scopes intersect and
+        // the pass's `DEPTH_STENCIL_ATTACHMENT_WRITE` availability
+        // propagates through. But that makes the correctness of a depth read
+        // depend on an incidental overlap with a dependency declared for an
+        // unrelated consumer (SSAO / SVGF / composite): narrowing
+        // `dependency_out` — a plausible future optimisation — would
+        // silently break this copy, and the symptom (stale soft-particle
+        // depth fade) is invisible to `cargo test`.
+        //
+        // Naming the write here makes the barrier self-sufficient. This is a
+        // strict widening of both source scopes — adding access flags can
+        // only make more memory available and adding a stage can only pull
+        // more prior work into the dependency — so it cannot invalidate a
+        // guarantee that held before it.
         let depth_to_src = vk::ImageMemoryBarrier::default()
             .src_access_mask(
-                vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ | vk::AccessFlags::SHADER_READ,
+                vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE
+                    | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ
+                    | vk::AccessFlags::SHADER_READ,
             )
             .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
             .old_layout(vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL)
@@ -118,7 +143,13 @@ impl VulkanContext {
         unsafe {
             self.device.cmd_pipeline_barrier(
                 cmd,
-                vk::PipelineStageFlags::LATE_FRAGMENT_TESTS
+                // EARLY_FRAGMENT_TESTS joins LATE (#2484): depth writes are
+                // produced by both fragment-test stages, so naming only LATE
+                // left the early-Z write out of the source synchronization
+                // scope. Same strict-widening rationale as `depth_to_src`'s
+                // access mask above.
+                vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS
+                    | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS
                     | vk::PipelineStageFlags::FRAGMENT_SHADER,
                 vk::PipelineStageFlags::TRANSFER,
                 vk::DependencyFlags::empty(),

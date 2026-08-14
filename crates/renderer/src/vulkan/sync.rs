@@ -9,9 +9,22 @@ pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
 // `context/mod.rs:580-582` is a single VkImage shared across all
 // frames-in-flight (NOT per-frame like the G-buffer / TAA / SVGF /
 // caustic / SSAO attachments). Frame N+1's main-render-pass
-// LOAD_OP_CLEAR on depth would race against frame N's compute
-// consumers (SSAO sampler, SVGF depth read) UNLESS frame N's
-// compute work has retired before frame N+1 begins. The double-fence
+// LOAD_OP_CLEAR on depth would race against frame N's consumers of
+// that shared image UNLESS frame N's work has retired before frame
+// N+1 begins. The consumer list is:
+//   * the SSAO sampler,
+//   * the SVGF depth read,
+//   * FSR (#2485) — `context/post_passes.rs::record_upscale_pass`
+//     passes `depth: self.depth_image` into `UpscaleDispatchInputs`
+//     with no frame index, so `frame_upscaler.rs` reads the same
+//     single image,
+//   * `copy_depth_to_history`'s transfer read.
+// Treat that list as load-bearing rather than illustrative: whoever
+// next evaluates making the depth image per-frame-in-flight must size
+// the work off all of them, and a future MAX_FRAMES_IN_FLIGHT bump
+// review must not read a short list as exhaustive. The safety
+// argument itself is unchanged — the both-slots fence wait covers
+// every consumer at 2 slots. The double-fence
 // wait at `context/draw.rs:108-120` (#282) guarantees this *only*
 // while waiting on both `in_flight[frame]` and `in_flight[(frame+1)
 // % MAX_FRAMES_IN_FLIGHT]` is equivalent to device-idle for prior

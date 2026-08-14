@@ -124,7 +124,10 @@ pub struct GpuInstance {
     /// R1 — index into the per-frame `MaterialTable` SSBO. Most
     /// per-material reads go through `materials[material_id].<field>`;
     /// Phase 6 dropped the redundant per-instance copies that used to
-    /// inflate this struct from 112 B (now) to 400 B.
+    /// inflate this struct from 112 B to 400 B. (112 B was the size right
+    /// after that drop; #2219 later grew the struct to its current 128 B
+    /// for the unrelated `skinned_vertex_address` — see the layout history
+    /// on `GpuInstance` itself.)
     pub material_id: u32, // 4 B, offset 88
     /// Per-draw optical IOR. This occupies the former padding slot so the
     /// std430 layout size didn't change when this field was added (112 B
