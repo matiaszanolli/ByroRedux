@@ -209,7 +209,6 @@ impl PersistentCellApplyJob {
                 &self.local_refs,
                 &wctx.record_index.cells,
                 &wctx.record_index,
-                &wctx.record_index.npcs,
                 &wctx.record_index.races,
                 wctx.record_index.game,
                 world,
@@ -320,7 +319,10 @@ impl PersistentCellApplyJob {
         let local_actor_refs: Vec<_> = self
             .local_refs
             .iter()
-            .filter(|placed| wctx.record_index.npcs.contains_key(&placed.base_form_id))
+            // #2567 — `is_actor` covers CREA as well as NPC_, so a
+            // persistent creature is counted and stubbed like any other actor
+            // instead of being invisible to the actor bookkeeping entirely.
+            .filter(|placed| wctx.record_index.is_actor(placed.base_form_id))
             .collect();
         self.local_actor_count = local_actor_refs.len();
         self.local_actor_3d = local_actor_refs
@@ -367,7 +369,7 @@ pub(crate) fn begin_worldspace_persistent_cell(
     for placed in &cell.references {
         if persistent_position_is_local(placed.position, center_grid, full_3d_radius) {
             local_refs.push(placed.clone());
-        } else if wctx.record_index.npcs.contains_key(&placed.base_form_id) {
+        } else if wctx.record_index.is_actor(placed.base_form_id) {
             remote_actor_refs.push(placed.clone());
         }
     }
@@ -1239,7 +1241,6 @@ impl ExteriorCellApplyJob {
             &cell.references,
             index,
             &wctx.record_index,
-            &wctx.record_index.npcs,
             &wctx.record_index.races,
             wctx.record_index.game,
             world,

@@ -283,6 +283,63 @@ mod tests {
         }
     }
 
+    /// #2569 (OBL-D4-02) — the legacy (non-`MAT_FLAG_PBR_BSDF`) Lambert arm
+    /// is duplicated across the two direct-lighting paths, and the copies do
+    /// **not** agree:
+    ///
+    /// - `lighting.glsl` (clustered per-light): `kD * albedo`, then `* NdotL`.
+    ///   Documented as "the legacy non-/PI Lambert convention".
+    /// - `triangle.frag` (no-cluster directional fallback):
+    ///   `kD * albedo / PI`, then `* vec3(0.8) * NdotL`.
+    ///
+    /// So `fallback / clustered` is `0.8/PI ≈ 0.2546` for diffuse but `0.8`
+    /// for specular — the fallback is ~3.9× darker on diffuse and the two
+    /// lobes are not even scaled consistently relative to each other. The
+    /// same 0.8/PI gap applies to the Disney arm (clustered multiplies the
+    /// lobe by `PI`, the fallback doesn't), so this is a whole-path
+    /// convention split, not a legacy-only one. It shows up as a brightness
+    /// pop when a fragment crosses the cluster-population threshold, and as
+    /// systematically dark Oblivion / FO3 / FNV exteriors.
+    ///
+    /// **This test pins the divergence rather than asserting parity, on
+    /// purpose.** Reconciling the two sites changes image brightness on a
+    /// path `cargo test` cannot observe, and this project does not ship
+    /// speculative shader changes without a live capture (see the issue's own
+    /// completeness checklist). Until that capture exists the honest state is
+    /// "known-divergent, deliberately unfixed" — and a tripwire that fires the
+    /// moment either arm is edited is worth more than a green assertion that
+    /// silently stops describing the code.
+    ///
+    /// When the capture lands: make the two expressions identical, then turn
+    /// the two `assert!`s below into the equality this test is named for.
+    #[test]
+    fn legacy_lambert_arms_are_pinned_divergent_pending_a_capture() {
+        let lighting = include_str!("../shaders/include/lighting.glsl");
+        let triangle = include_str!("../shaders/triangle.frag");
+
+        assert!(
+            lighting.contains("diffuseBrdf = kD * albedo;"),
+            "clustered per-light Lambert arm changed shape — if this is the \
+             #2569 reconciliation, update this test to assert parity instead"
+        );
+        assert!(
+            triangle.contains("diffuseBrdf = kD * albedo / PI;"),
+            "no-cluster fallback Lambert arm changed shape — if this is the \
+             #2569 reconciliation, update this test to assert parity instead"
+        );
+        assert!(
+            triangle.contains("* vec3(0.8) * NdotL;"),
+            "the fallback's 0.8 whole-lobe scale is half of the #2569 \
+             divergence; if it moved, the ratio this test documents is stale"
+        );
+        // The clustered path applies no such scale — that asymmetry IS the bug.
+        assert!(
+            !lighting.contains("vec3(0.8)"),
+            "the clustered path gaining a 0.8 scale would change which side of \
+             #2569 is the reference convention"
+        );
+    }
+
     /// Verify all affected shaders include the shared header.
     ///
     /// #1780 (D14-LOW-01) — this allow-list MUST cover every shader that

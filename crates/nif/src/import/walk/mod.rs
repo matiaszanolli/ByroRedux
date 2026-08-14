@@ -571,6 +571,13 @@ pub(super) fn walk_node_hierarchical(
     // `legacy_particle::*`, NOT `NiPSysBlock`, so a NiPSysBlock downcast
     // never matched them — that dead arm was removed in #1327. The target
     // games all author the modern NiParticleSystem stack.)
+    //
+    // #2568 — that last sentence was challenged as false for Oblivion and is
+    // now **measured true for every target game**: zero legacy particle
+    // blocks across 54 202 vanilla NIFs (Oblivion + Shivering Isles + FO3 +
+    // FNV + Skyrim SE), against 3 635 `NiParticleSystem`. The per-archive
+    // counts are in `blocks/mod.rs`'s dispatch arm for those types. An
+    // emission arm for the legacy stack would be unreachable code.
     if let Some(ps) = block
         .as_any()
         .downcast_ref::<crate::blocks::particle::NiParticleSystem>()

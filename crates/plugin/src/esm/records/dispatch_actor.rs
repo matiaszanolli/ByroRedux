@@ -42,9 +42,14 @@ pub(super) fn dispatch_actor_group(
         b"CREA" => {
             let crea_remap = reader.get_form_id_remap();
             extract_records_with_modl(reader, end, b"CREA", statics, &mut |fid, subs| {
-                index
-                    .creatures
-                    .insert(fid, parse_npc(fid, subs, game, &crea_remap));
+                let mut record = parse_npc(fid, subs, game, &crea_remap);
+                // #2567 — the spawn path has to tell the two apart: a
+                // creature's MODL is its skeleton and its meshes come from
+                // NIFZ, where an NPC_'s body comes from per-game canonical
+                // paths and its head from RACE. Set at the one site that
+                // knows which group it read.
+                record.is_creature = true;
+                index.creatures.insert(fid, record);
             })?
         }
         b"RACE" => extract_records(reader, end, b"RACE", &mut |fid, subs| {

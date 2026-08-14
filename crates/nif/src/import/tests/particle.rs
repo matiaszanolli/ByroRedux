@@ -23,6 +23,11 @@ use super::{identity_transform, make_ni_node, scene_from_blocks, translated};
 /// to `legacy_particle::*` (not `NiPSysBlock`) and are deliberately not
 /// surfaced as emitters (#1327) — so they are not used as emitter fixtures
 /// here.
+///
+/// #2568 re-examined that decision and confirmed it: zero legacy particle
+/// blocks exist across 54 202 vanilla NIFs spanning all five target games
+/// (per-archive counts in `blocks/mod.rs`). These assertions pin a
+/// deliberate scope boundary backed by measurement, not an unfixed gap.
 fn synthetic_particle_block(type_name: &str) -> Box<dyn crate::blocks::NiObject> {
     match type_name {
         "NiParticleSystem" | "NiMeshParticleSystem" | "NiParticles" | "BSStripParticleSystem" => {

@@ -227,6 +227,55 @@ pub fn humanoid_skeleton_path(game: GameKind) -> Option<&'static str> {
 /// Fallout - Meshes.bsa). Mods may add a separate female set; the
 /// gender split can be re-introduced on the signature at that point.
 /// See TD8-018 / #1117 for the placeholder-arg removal rationale.
+/// Split a creature's `CREA` MODL into `(skeleton path, directory prefix)`,
+/// both normalised to the archive's `meshes\…` convention.
+///
+/// #2567 — a creature's whole asset set lives in one directory, keyed off
+/// MODL. Verified against `Oblivion.esm` + `Oblivion - Meshes.bsa`:
+/// `MODL = "Creatures\Rat\Skeleton.NIF"`, and beside it in the archive sit
+/// `rat.nif`, `head.nif`, `whiskers.nif` (the `NIFZ` list) plus `idle.kf`,
+/// `forward.kf`, `turnleft.kf` … So the directory *is* the creature's
+/// namespace, and every path this module derives for a creature is that
+/// prefix plus an authored filename — never a guessed one.
+///
+/// `None` when the record has no MODL (nothing to anchor to).
+pub fn creature_skeleton_and_dir(model_path: &str) -> Option<(String, String)> {
+    if model_path.is_empty() {
+        return None;
+    }
+    let skeleton = normalize_mesh_path(model_path).into_owned();
+    // Both separators: MODL is authored with backslashes, but a mod tool can
+    // emit forward slashes and the archive layer accepts either.
+    let dir_end = skeleton.rfind(['\\', '/'])?;
+    let dir = skeleton[..=dir_end].to_owned();
+    Some((skeleton, dir))
+}
+
+/// Resolve a creature's `NIFZ` body-part filenames against its MODL
+/// directory (#2567). Entries are authored bare (`Rat.NIF`), so they are
+/// joined to the prefix from [`creature_skeleton_and_dir`] rather than
+/// normalised independently — a bare name has no `meshes\` to normalise.
+/// Case is left as authored; the archive layer lowercases on lookup.
+pub fn creature_body_paths(dir: &str, body_part_models: &[String]) -> Vec<String> {
+    body_part_models
+        .iter()
+        .filter(|name| !name.is_empty())
+        .map(|name| format!("{dir}{name}"))
+        .collect()
+}
+
+/// A creature's own idle clip, beside its skeleton (#2567).
+///
+/// Creatures do not share the humanoid `idle.kf` — a rat's skeleton has
+/// none of the humanoid bone names, so the shared per-cell idle pool
+/// animates nothing. Every vanilla Oblivion creature directory ships its
+/// own `idle.kf` (verified over `Oblivion - Meshes.bsa`); a creature whose
+/// directory lacks one simply gets no idle, which is the pre-#2567 status
+/// quo rather than a regression.
+pub fn creature_idle_kf_path(dir: &str) -> String {
+    format!("{dir}idle.kf")
+}
+
 pub fn humanoid_body_paths(game: GameKind) -> &'static [&'static str] {
     match game {
         // Oblivion's mesh layout uses the same `_male\` directory shape

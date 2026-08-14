@@ -654,3 +654,165 @@ fn apply_ai_package_behavior_tags_nothing_without_ai_packages() {
     assert!(world.get::<GuardBehavior>(placement_root).is_none());
     assert!(world.get::<PatrolBehavior>(placement_root).is_none());
 }
+
+// ── #2567 (OBL-D3-01) — creature asset-path derivation ────────────
+
+/// The creature path rules, on the exact shape `Oblivion.esm` authors:
+/// `MODL` is the skeleton, `NIFZ` entries are bare filenames beside it.
+#[test]
+fn creature_paths_derive_from_the_modl_directory() {
+    let (skeleton, dir) = creature_skeleton_and_dir(r"Creatures\Rat\Skeleton.NIF")
+        .expect("a MODL with a directory resolves");
+    assert_eq!(skeleton, r"meshes\Creatures\Rat\Skeleton.NIF");
+    assert_eq!(dir, r"meshes\Creatures\Rat\");
+
+    let parts = creature_body_paths(
+        &dir,
+        &[
+            "Rat.NIF".to_string(),
+            "Head.NIF".to_string(),
+            "Whiskers.NIF".to_string(),
+        ],
+    );
+    assert_eq!(
+        parts,
+        vec![
+            r"meshes\Creatures\Rat\Rat.NIF".to_string(),
+            r"meshes\Creatures\Rat\Head.NIF".to_string(),
+            r"meshes\Creatures\Rat\Whiskers.NIF".to_string(),
+        ],
+        "NIFZ entries are authored bare and resolve against the MODL directory"
+    );
+    assert_eq!(creature_idle_kf_path(&dir), r"meshes\Creatures\Rat\idle.kf");
+}
+
+/// A creature whose MODL is already archive-prefixed must not gain a second
+/// `meshes\`, and one with no MODL at all must decline rather than derive
+/// paths from an empty prefix (which would produce `meshes\` + filename and
+/// silently look up the wrong files).
+#[test]
+fn creature_path_derivation_is_idempotent_and_declines_without_a_modl() {
+    let (skeleton, dir) = creature_skeleton_and_dir(r"meshes\Creatures\Rat\Skeleton.NIF").unwrap();
+    assert_eq!(skeleton, r"meshes\Creatures\Rat\Skeleton.NIF");
+    assert_eq!(dir, r"meshes\Creatures\Rat\");
+
+    assert!(creature_skeleton_and_dir("").is_none());
+    // Forward slashes (mod tooling) split on the same rule.
+    let (_, dir) = creature_skeleton_and_dir("Creatures/Rat/Skeleton.NIF").unwrap();
+    assert_eq!(dir, r"meshes\Creatures/Rat/");
+}
+
+/// #2567 corpus check: every path this module derives for a real Oblivion
+/// creature must actually exist in the shipped archive. This is what
+/// separates "routes through the actor pipeline" from "routes there and
+/// loads nothing" — the audit's suggested fix (check both maps, reuse the
+/// humanoid recipe) would have passed a routing test while spawning a human
+/// torso for a rat.
+///
+/// Self-skips without the game installed, like the other corpus sweeps in
+/// this tree; set `BYROREDUX_OBLIVION_DATA` to override the path.
+#[test]
+fn installed_oblivion_creature_assets_resolve_from_their_records() {
+    let data = std::env::var("BYROREDUX_OBLIVION_DATA")
+        .unwrap_or_else(|_| "/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data".to_string());
+    let esm_path = std::path::Path::new(&data).join("Oblivion.esm");
+    let Ok(esm_bytes) = std::fs::read(&esm_path) else {
+        eprintln!(
+            "skipping installed_oblivion_creature_assets_resolve_from_their_records: \
+             {esm_path:?} not available"
+        );
+        return;
+    };
+    // EVERY mesh archive, not just the base one: Shivering Isles creatures
+    // (Grummite / Elytra / Hunger) live in `DLCShiveringIsles - Meshes.bsa`,
+    // and the engine has them all open per load order. Checking one archive
+    // would report a two-thirds hit rate for a derivation that is correct.
+    let archives: Vec<byroredux_bsa::BsaArchive> = std::fs::read_dir(&data)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.to_string_lossy()
+                .to_ascii_lowercase()
+                .ends_with("meshes.bsa")
+        })
+        .filter_map(|path| byroredux_bsa::BsaArchive::open(&path).ok())
+        .collect();
+    if archives.is_empty() {
+        eprintln!(
+            "skipping installed_oblivion_creature_assets_resolve_from_their_records: \
+             no mesh archives under {data:?}"
+        );
+        return;
+    }
+    let archive = |path: &str| archives.iter().any(|a| a.contains(path));
+    let index = byroredux_plugin::esm::parse_esm(&esm_bytes).expect("parse Oblivion.esm");
+    assert!(
+        !index.creatures.is_empty(),
+        "Oblivion.esm must yield CREA records"
+    );
+
+    let mut skeletons = (0usize, 0usize);
+    let mut parts = (0usize, 0usize);
+    let mut idles = (0usize, 0usize);
+    let mut misses = Vec::new();
+    for record in index.creatures.values() {
+        assert!(
+            record.is_creature,
+            "{:08X} came from the CREA group and must be flagged",
+            record.form_id
+        );
+        let Some((skeleton, dir)) = creature_skeleton_and_dir(&record.model_path) else {
+            continue;
+        };
+        if archive(&skeleton) {
+            skeletons.0 += 1;
+        } else {
+            skeletons.1 += 1;
+            if misses.len() < 8 {
+                misses.push(format!("skeleton {skeleton}"));
+            }
+        }
+        for path in creature_body_paths(&dir, &record.body_part_models) {
+            if archive(&path) {
+                parts.0 += 1;
+            } else {
+                parts.1 += 1;
+                if misses.len() < 8 {
+                    misses.push(format!("part {path}"));
+                }
+            }
+        }
+        if archive(&creature_idle_kf_path(&dir)) {
+            idles.0 += 1;
+        } else {
+            idles.1 += 1;
+        }
+    }
+
+    eprintln!(
+        "Oblivion creatures: skeletons {}/{} found, NIFZ parts {}/{} found, idle.kf {}/{} found",
+        skeletons.0,
+        skeletons.0 + skeletons.1,
+        parts.0,
+        parts.0 + parts.1,
+        idles.0,
+        idles.0 + idles.1,
+    );
+    // The derivation is the thing under test, so with every mesh archive open
+    // it has to be right for essentially all of them. A residual few point at
+    // meshes shipped only with a DLC plugin the base install may not have.
+    let skeleton_total = skeletons.0 + skeletons.1;
+    let part_total = parts.0 + parts.1;
+    assert!(
+        skeletons.0 * 100 >= skeleton_total * 90,
+        "only {}/{skeleton_total} creature skeletons resolved: {misses:?}",
+        skeletons.0
+    );
+    assert!(
+        parts.0 * 100 >= part_total * 90,
+        "only {}/{part_total} creature NIFZ parts resolved: {misses:?}",
+        parts.0
+    );
+}

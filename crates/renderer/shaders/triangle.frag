@@ -2514,8 +2514,14 @@ void main() {
             );
             diffuseBrdf = (dd.diffuse + dd.sheen) * (1.0 - metalness);
         } else {
+            // #2569 (OBL-D4-02) — KNOWN DIVERGENCE from lighting.glsl's
+            // clustered per-light arm, which is `kD * albedo` with no /PI and
+            // no 0.8 below. See the comment there; this is the fallback side.
             diffuseBrdf = kD * albedo / PI;
         }
+        // The `vec3(0.8)` is the other half of the #2569 divergence: the
+        // clustered path applies no whole-lobe scale, so this path's specular
+        // lands at 0.8x and its diffuse at 0.8/PI x of the clustered values.
         Lo = (diffuseBrdf + specular * specStrength * specColor) * vec3(0.8) * NdotL;
     } else {
         // Clustered lighting with streaming RIS shadow sampling.

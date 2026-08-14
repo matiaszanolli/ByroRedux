@@ -359,6 +359,29 @@ pub struct EsmIndex {
 }
 
 impl EsmIndex {
+    /// The base actor record a placed actor REFR points at — `NPC_` first,
+    /// then `CREA`.
+    ///
+    /// #2567 (OBL-D3-01) — `NPC_` and `CREA` parse into two disjoint maps of
+    /// the same `NpcRecord` type, and every "is this REFR an actor?" test in
+    /// the cell loader consulted **only** `npcs`. `creatures` had zero readers
+    /// anywhere under `byroredux/src/`, so a placed `ACRE` (Oblivion) or
+    /// `ACHR`→`CREA` (FO3+) fell through to the generic static-mesh path: it
+    /// rendered its MODL — which for a creature is the *skeleton* — and never
+    /// animated. Route both through this one accessor so the two maps cannot
+    /// drift apart again at a call site.
+    pub fn actor(&self, form_id: u32) -> Option<&NpcRecord> {
+        self.npcs
+            .get(&form_id)
+            .or_else(|| self.creatures.get(&form_id))
+    }
+
+    /// Whether `form_id` names a placeable actor base record (`NPC_` or
+    /// `CREA`) — the cheap predicate half of [`Self::actor`].
+    pub fn is_actor(&self, form_id: u32) -> bool {
+        self.npcs.contains_key(&form_id) || self.creatures.contains_key(&form_id)
+    }
+
     /// Single source of truth for the per-category breakdown.
     ///
     /// Each row is `(label, count_fn)`. [`total`] sums these counts;
@@ -1208,8 +1231,8 @@ mod tests {
     /// that justified skipping this was factually wrong.
     #[test]
     fn base_record_script_instance_resolves_a_terminals_vmad() {
-        use crate::esm::records::TermRecord;
         use crate::esm::records::script_instance::{ScriptInstance, ScriptInstanceData};
+        use crate::esm::records::TermRecord;
 
         const TERMINAL: u32 = 0x0002_5001;
 

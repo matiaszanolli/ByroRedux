@@ -372,10 +372,29 @@ fn parse_block_inner(
         // NiTextureEffect — projected env-map / gobo / fog projector.
         // See issue #163.
         "NiTextureEffect" => Ok(Box::new(texture::NiTextureEffect::parse(stream)?)),
-        // Legacy (pre-NiPSys) particle stack — Oblivion magic FX, fire,
-        // dust, blood. See issue #143. NiBSPArrayController is an empty
-        // NiParticleSystemController subclass (zero additional fields)
-        // so it aliases to the same parser.
+        // Legacy (pre-NiPSys) particle stack. See issue #143.
+        // NiBSPArrayController is an empty NiParticleSystemController
+        // subclass (zero additional fields) so it aliases to the same parser.
+        //
+        // #2568 — this comment used to say "Oblivion magic FX, fire, dust,
+        // blood", and a later audit took it at face value and filed the
+        // absence of an emission arm as a HIGH-severity Oblivion rendering
+        // gap. **No target game authors this stack.** Measured over every
+        // installed vanilla mesh archive, counting these three block types:
+        //
+        //   Oblivion - Meshes      8032 NIFs -> 0   (NiParticleSystem:  547)
+        //   DLCShiveringIsles      1438 NIFs -> 0   (NiParticleSystem:  231)
+        //   Fallout New Vegas     14881 NIFs -> 0   (NiParticleSystem: 1262)
+        //   Fallout 3             10989 NIFs -> 0   (NiParticleSystem:  422)
+        //   Skyrim SE - Meshes0   18862 NIFs -> 0   (NiParticleSystem: 1173)
+        //
+        // Oblivion (v20.0.0.5) is already fully on the modern
+        // `NiParticleSystem` + `NiPSysEmitter` stack; the legacy types are
+        // Morrowind-era. The parsers stay because the dispatcher's job is to
+        // consume any well-formed block without truncating the stream (a
+        // dropped arm shifts every later block), NOT because the emission
+        // path is missing an Oblivion feature. Before adding one, re-measure:
+        // an import arm nothing can reach is dead code.
         "NiParticleSystemController" | "NiBSPArrayController" => Ok(Box::new(
             legacy_particle::NiParticleSystemController::parse(stream)?,
         )),
