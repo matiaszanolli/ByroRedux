@@ -813,6 +813,10 @@ use synth_child::{
     attach_quest_reference_script, refr_script_instance_for_synth_child, spawn_synth_child,
     stamp_quest_reference,
 };
+// #2664 — the exterior persistent-cell loader spawns the same logical
+// identity entity for a 3D-less persistent ACHR, so the one spawner is
+// shared rather than copied.
+pub(crate) use synth_child::spawn_logical_quest_reference;
 
 // Tests live in sibling files by topic (#2409 / TD1-006).
 #[cfg(test)]

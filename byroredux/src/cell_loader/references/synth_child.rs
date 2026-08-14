@@ -38,7 +38,22 @@ pub(super) fn stamp_quest_reference(
     byroredux_scripting::mark_scene_actor_bindings_dirty(world);
 }
 
-fn spawn_logical_quest_reference(
+/// Spawn the identity-only entity for a REFR that produced no 3D, carrying a
+/// transform so it stays a *rankable* alias candidate.
+///
+/// The transform is the load-bearing part, not decoration: `resolve_alias_
+/// bindings` ranks distance-anchored aliases (`closest_to_alias`, or
+/// `ALIAS_FLAG_CLOSEST` anchored on the player) with
+/// `world.get::<GlobalTransform>(entity)?` *inside a `filter_map`*, so a
+/// candidate without one is dropped from the `min_by` entirely rather than
+/// merely ranked last. An alias whose only candidates are transform-less
+/// stubs silently stays unfilled — no log line, no error.
+///
+/// `pub(crate)` since #2664: the worldspace persistent-cell loader
+/// (`cell_loader::exterior`) has the same "logical actor identity, no 3D"
+/// case for remote / spawn-less persistent `ACHR`s, and used to open-code a
+/// copy of [`stamp_quest_reference`] that omitted the transform.
+pub(crate) fn spawn_logical_quest_reference(
     world: &mut World,
     placed_ref: &esm::cell::PlacedRef,
     load_order: &[String],
