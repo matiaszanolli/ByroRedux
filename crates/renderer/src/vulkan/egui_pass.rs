@@ -336,11 +336,27 @@ fn create_render_pass(
         .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
         .color_attachments(&color_attachments);
 
-    // Incoming dep — chain after composite's swapchain write. The
-    // composite RP's outgoing dependency sets `dstStage = NONE`, so
-    // the egui RP must declare its own
-    // COLOR_ATTACHMENT_OUTPUT/WRITE → COLOR_ATTACHMENT_OUTPUT/READ|WRITE
-    // edge to stitch the two passes.
+    // Incoming dep — chain after the pass that wrote the swapchain image.
+    //
+    // #2786 — that pass is `PresentationPipeline` (`presentation.rs`), not
+    // composite: since the FSR tail the frame graph is
+    //
+    //   main render pass → composite (linear HDR) → frame upscale
+    //     → presentation (tone map → SWAPCHAIN) → egui overlay → present
+    //
+    // so composite's outgoing dependency has nothing to do with this edge —
+    // it hands off an HDR intermediate, not the swapchain. The comment here
+    // used to say composite wrote the swapchain and left `dstStage = NONE`,
+    // which was true before the upscale boundary landed.
+    //
+    // The current presentation RP's outgoing dep is *not* NONE either: #2143
+    // gave it `dstStage = COLOR_ATTACHMENT_OUTPUT | TRANSFER`, naming this
+    // overlay and the screenshot copy as its two consumers. So the chain is
+    // now stitched from both ends, and this incoming dep is the matching
+    // half — still required (a render pass may not rely on the other pass's
+    // dst scope alone) and no longer the only thing holding the edge
+    // together. If this dep's stage/access masks change, `presentation.rs`'s
+    // outgoing `dst_stage_mask` has to change with it.
     let in_dep = vk::SubpassDependency::default()
         .src_subpass(vk::SUBPASS_EXTERNAL)
         .dst_subpass(0)
@@ -425,4 +441,70 @@ fn is_srgb_format(format: vk::Format) -> bool {
             | vk::Format::B8G8R8_SRGB
             | vk::Format::R8G8B8_SRGB
     )
+}
+
+/// #2786 (REN-D4-03) — the egui overlay's incoming dependency and the
+/// pass that hands it the swapchain image are two halves of one edge, in
+/// two files. They drifted once already: the comment here described
+/// composite as the upstream writer with `dstStage = NONE`, which stopped
+/// being true when the FSR tail moved the swapchain write to
+/// `PresentationPipeline` and #2143 gave that pass a real outgoing scope.
+/// Nothing failed, because a wrong *comment* compiles.
+///
+/// The masks themselves are unreachable from `cargo test` (building either
+/// render pass needs a device), so pin the pairing at the source level:
+/// whatever `presentation.rs` names as its downstream consumers must still
+/// include the stage this pass actually waits at.
+#[cfg(test)]
+mod dependency_chain_tests {
+    /// The upstream half. `PresentationPipeline`'s outgoing dependency must
+    /// name COLOR_ATTACHMENT_OUTPUT among its destination stages — that is
+    /// this overlay's entry point.
+    #[test]
+    fn presentation_outgoing_dep_still_names_this_overlay_as_a_consumer() {
+        let presentation = include_str!("presentation.rs");
+        let outgoing = presentation
+            .find("let outgoing = vk::SubpassDependency::default()")
+            .expect("presentation.rs no longer declares an outgoing dependency");
+        // Bound the slice to that statement so a match elsewhere in the file
+        // (the incoming dep uses the same flag) cannot satisfy this.
+        let stmt_end = presentation[outgoing..]
+            .find(';')
+            .map(|off| outgoing + off)
+            .expect("unterminated outgoing dependency statement");
+        let stmt = &presentation[outgoing..stmt_end];
+        assert!(
+            stmt.contains("dst_stage_mask")
+                && stmt.contains("PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT"),
+            "presentation's outgoing dep must keep COLOR_ATTACHMENT_OUTPUT in \
+             its dst scope — that is the egui overlay's half of the chain \
+             (#2143 added it; #2786 corrected the comment describing it)"
+        );
+        assert!(
+            stmt.contains("PipelineStageFlags::TRANSFER"),
+            "and TRANSFER for the screenshot copy — the other named consumer"
+        );
+    }
+
+    /// The downstream half, in this file: the overlay waits at
+    /// COLOR_ATTACHMENT_OUTPUT and must not claim composite is upstream.
+    #[test]
+    fn egui_incoming_dep_waits_at_the_stage_presentation_signals() {
+        let src = include_str!("egui_pass.rs");
+        let in_dep = src
+            .find("let in_dep = vk::SubpassDependency::default()")
+            .expect("the incoming dependency changed shape");
+        let stmt_end = src[in_dep..]
+            .find(';')
+            .map(|off| in_dep + off)
+            .expect("unterminated in_dep statement");
+        let stmt = &src[in_dep..stmt_end];
+        assert!(
+            stmt.contains(".src_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)")
+                && stmt
+                    .contains(".dst_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)"),
+            "the overlay chains COLOR_ATTACHMENT_OUTPUT -> COLOR_ATTACHMENT_OUTPUT; \
+             changing either side means updating presentation.rs's outgoing dep too"
+        );
+    }
 }

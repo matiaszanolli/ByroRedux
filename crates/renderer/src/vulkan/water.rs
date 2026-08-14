@@ -71,9 +71,16 @@ pub struct WaterPush {
     pub timing: [f32; 4],
     /// xyz = flow direction (unit vector), w = flow speed (wu/s).
     pub flow: [f32; 4],
-    /// rgb = shallow_color (linear), a = fog_near.
+    /// rgb = shallow_color (linear), a = fog_near — the near plane of the
+    /// absorption ramp. Consumed by `absorbWaterColumn` since #2785; it
+    /// travelled the whole EXAL water arm unread before that, so every
+    /// water body in every game shared one hard-coded curve. Wiring it up
+    /// cost no push-constant space (the value was already uploaded here),
+    /// so the 128-byte ceiling below is unchanged and `misc.w` remains the
+    /// only free slot.
     pub shallow: [f32; 4],
-    /// rgb = deep_color (linear), a = fog_far.
+    /// rgb = deep_color (linear), a = fog_far — the far plane of that same
+    /// ramp.
     pub deep: [f32; 4],
     /// xy = scroll_a, zw = scroll_b (wu/s).
     pub scroll: [f32; 4],
@@ -1058,5 +1065,118 @@ mod pass_bind_hoist_tests {
              per-plane loop (byte {loop_head}) — binding inside it is the \
              regression #2175 removed",
         );
+    }
+}
+
+/// #2785 (REN-D15-04) — the underwater absorption ramp, mirrored from
+/// `water.frag`'s `absorbWaterColumn` so its shape can be pinned without a
+/// GPU. GLSL is the source of truth; this exists to make "wiring `fog_near`
+/// in does not change vanilla water" a checked claim rather than a hope.
+#[cfg(test)]
+mod absorption_ramp_tests {
+    /// `t` as `absorbWaterColumn` computes it. Kept to the same three
+    /// statements as the shader so a divergence is visible by inspection.
+    fn ramp_t(hit_dist: f32, fog_near: f32, fog_far: f32) -> f32 {
+        let span = (fog_far - fog_near).max(1.0);
+        ((hit_dist - fog_near) / span).clamp(0.0, 1.0)
+    }
+
+    /// The pre-#2785 curve: `fog_near` unread, `t = hitDist / fog_far`.
+    fn legacy_t(hit_dist: f32, fog_far: f32) -> f32 {
+        (hit_dist / fog_far.max(1.0)).clamp(0.0, 1.0)
+    }
+
+    /// The compatibility claim that makes this change safe to ship without a
+    /// capture: with `fog_near == 0` — which is what Skyrim, FNV and
+    /// Oblivion author for nearly every water body — the new ramp is
+    /// *identical* to the curve it replaces. Vanilla water cannot shift.
+    #[test]
+    fn a_zero_near_plane_reproduces_the_legacy_curve_exactly() {
+        // fog_far values taken from real records: MarkarthWater 110,
+        // BlackreachWater 290, NVMurkyWater2 94, Vault101eWaterType 1.
+        for fog_far in [1.0f32, 94.0, 110.0, 290.0, 4710.0] {
+            for hit in [0.0f32, 0.5, 7.0, 50.0, 110.0, 1000.0, 1.0e5] {
+                assert_eq!(
+                    ramp_t(hit, 0.0, fog_far),
+                    legacy_t(hit, fog_far),
+                    "fog_near=0 must be a no-op (fog_far={fog_far}, hit={hit})"
+                );
+            }
+        }
+    }
+
+    /// And it does something for the records that DO author a near plane:
+    /// clear water out to `fog_near`, then the same ramp compressed into
+    /// the remaining span. `HorseTroughWater01` (220/4710) is the strongest
+    /// vanilla case.
+    #[test]
+    fn an_authored_near_plane_keeps_the_column_clear_until_it() {
+        let (near, far) = (220.0f32, 4710.0);
+        assert_eq!(ramp_t(0.0, near, far), 0.0);
+        assert_eq!(ramp_t(near, near, far), 0.0, "clear right up to fog_near");
+        assert!(
+            ramp_t(near + 1.0, near, far) > 0.0,
+            "and absorbing immediately past it"
+        );
+        assert_eq!(ramp_t(far, near, far), 1.0, "fully deep by fog_far");
+        // The legacy curve was already 4.7% absorbed at the near plane and
+        // reached only 1.0 at fog_far by coincidence of the same clamp.
+        assert!(
+            legacy_t(near, far) > 0.0,
+            "premise: the old curve did not honour the near plane"
+        );
+    }
+
+    /// The Rust mirrors above are only worth anything if they still
+    /// describe the GLSL. Pin the two expressions they model, and #2784's
+    /// sibling guard in the same file: the caustic splat must reject on the
+    /// INTEGER pixel against the image size — the way `caustic_splat.comp`
+    /// does — rather than on `lessThanEqual(uv01, vec2(1.0))`, which admits
+    /// `uv01 == 1.0` and writes one texel past the edge.
+    #[test]
+    fn the_shader_still_computes_what_these_tests_model() {
+        let src = include_str!("../../shaders/water.frag");
+
+        // #2785 — the ramp, not `hitDist / fog_far`.
+        assert!(
+            src.contains("float span = max(fogFar - fogNear, 1.0);")
+                && src.contains("float t = clamp((hitDist - fogNear) / span, 0.0, 1.0);"),
+            "absorbWaterColumn no longer computes the fog_near..fog_far ramp \
+             these tests mirror"
+        );
+        assert!(
+            src.contains("float fogNear = push.shallow.a;"),
+            "fog_near must be read from shallow.a — an unread slot is the \
+             #2785 defect"
+        );
+
+        // #2784 — the caustic splat bound.
+        assert!(
+            src.contains("&& all(lessThan(pixel, causticSize))"),
+            "the caustic splat must reject the upper edge on the integer \
+             pixel (mirrors caustic_splat.comp's `greaterThanEqual(pixel, size)`)"
+        );
+        // The active-code form, not the bare call: the shader comment
+        // quotes the retired guard while explaining what replaced it, and a
+        // looser needle would match that prose and fail a correct file.
+        assert!(
+            !src.contains("&& all(lessThanEqual(uv01, vec2(1.0)))"),
+            "the inclusive float guard is the #2784 off-by-one: uv01 == 1.0 \
+             maps to pixel == screen, one past the last texel"
+        );
+    }
+
+    /// Degenerate spans cannot divide by zero or invert. The ESM parser
+    /// clamps `fog_far >= fog_near + 1`, but a hand-built `WaterPush` (the
+    /// Cornell harness, a test fixture) is not bound by that.
+    #[test]
+    fn a_degenerate_span_stays_finite_and_clamped() {
+        for (near, far) in [(100.0f32, 100.0f32), (100.0, 0.0), (0.0, 0.0)] {
+            for hit in [0.0f32, 1.0, 1000.0] {
+                let t = ramp_t(hit, near, far);
+                assert!(t.is_finite(), "t must stay finite for {near}/{far}");
+                assert!((0.0..=1.0).contains(&t), "t must stay in 0..=1");
+            }
+        }
     }
 }
