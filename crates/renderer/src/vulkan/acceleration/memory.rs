@@ -177,6 +177,13 @@ impl AccelerationManager {
         device: &ash::Device,
         allocator: &SharedAllocator,
     ) -> bool {
+        // #2929 — `device` / `allocator` are retained for call-site
+        // stability now that this function only RECORDS the shrink intent
+        // and `ensure_tlas_state` performs the destroy (same convention as
+        // `evict_unused_blas`, #2692). They come back into use the moment
+        // this path needs to free anything directly again.
+        let _ = (device, allocator);
+
         const INSTANCE_STRIDE: vk::DeviceSize =
             std::mem::size_of::<vk::AccelerationStructureInstanceKHR>() as vk::DeviceSize;
         // [`WORKING_SET_FLOOR`] matches the build-path floor
@@ -195,24 +202,43 @@ impl AccelerationManager {
             return false;
         }
 
-        // Tear down the slot. The next build_tlas re-creates from
-        // scratch via the `tlas[slot_index].is_none()` arm at line
-        // 1804 — that path also sets `needs_full_rebuild = true` so
-        // we don't try to UPDATE-mode an empty slot.
-        if let Some(mut old) = self.tlas[slot_index].take() {
-            log::debug!(
-                "TLAS[{}] instance buffer shrunk: {} → 0 instances ({:.1} MB → 0 MB, working set {})",
-                slot_index,
-                old.max_instances,
-                current_capacity_bytes as f64 / (1024.0 * 1024.0),
-                working_set,
-            );
-            self.accel_loader
-                .destroy_acceleration_structure(old.accel, None);
-            old.buffer.destroy(device, allocator);
-            old.instance_buffer.destroy(device, allocator);
-            old.instance_buffer_device.destroy(device, allocator);
-        }
+        // #2929 / CON-D1-01 — REQUEST the shrink; do not perform it here.
+        //
+        // This used to `take()` the slot and destroy the AS + its three
+        // buffers outright, relying on the next `build_tlas` to recreate
+        // from the `tlas[slot_index].is_none()` arm. That published a
+        // dangling handle: scene descriptor set-1 binding 2 goes on naming
+        // the destroyed `VkAccelerationStructureKHR` until a *successful*
+        // build calls `write_tlas`, and `draw_frame`'s build-failure arm
+        // can only re-point the binding at an AS the manager still owns
+        // (`if let Some(stale_handle) = accel.tlas_handle(frame)`) — after
+        // this teardown it owns nothing, so that guard cannot fire and the
+        // geometry pass runs with an invalid statically-used descriptor
+        // (binding 2 is not `PARTIALLY_BOUND`, and `triangle.frag`
+        // statically uses `topLevelAS`, so the runtime `rt_flag` gate does
+        // not downgrade static use to dynamic use).
+        //
+        // The two events are correlated, not independent: this shrink is
+        // triggered by VRAM pressure, which is precisely when the
+        // replacement allocation is likeliest to fail.
+        //
+        // Recording the intent instead lets `ensure_tlas_state` fold the
+        // shrink into its existing ALLOCATE-THEN-SWAP path (#2673), which
+        // retires the old slot only after every fallible step of the
+        // replacement has succeeded. Memory is reclaimed one build later
+        // rather than immediately; if that build fails we simply keep the
+        // oversized TLAS, downgrading a dangling-descriptor hazard into a
+        // missed optimisation.
+        let old_max = slot.max_instances;
+        self.tlas_shrink_pending[slot_index] = true;
+        log::debug!(
+            "TLAS[{}] shrink requested: {} instances ({:.1} MB) vs working set {} — \
+             will be rebuilt smaller on the next build via allocate-then-swap (#2929)",
+            slot_index,
+            old_max,
+            current_capacity_bytes as f64 / (1024.0 * 1024.0),
+            working_set,
+        );
         true
     }
 

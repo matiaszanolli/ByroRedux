@@ -2358,7 +2358,7 @@ impl VulkanContext {
                     if let Some(ref mut timers) = self.gpu_timers {
                         timers.cmd_tlas_build_start(&self.device, cmd, frame);
                     }
-                    if let Err(e) = accel.build_tlas(
+                    let tlas_build_failed = if let Err(e) = accel.build_tlas(
                         &self.device,
                         alloc,
                         cmd,
@@ -2394,24 +2394,53 @@ impl VulkanContext {
                         {
                             log::warn!("Failed to clear rt_flag after TLAS build failure: {e}");
                         }
+                        true
                     } else {
                         if let Some(ref mut timers) = self.gpu_timers {
                             timers.cmd_tlas_build_end(&self.device, cmd, frame);
                         }
-                        // Memory barrier: TLAS build → ray-query consumers
-                        // (FRAGMENT_SHADER for main render pass +
-                        // COMPUTE_SHADER for caustic_splat.comp). See
-                        // #415 for the COMPUTE_SHADER widening.
-                        // AS_BUILD_KHR → FRAGMENT_SHADER|COMPUTE_SHADER
-                        memory_barrier(
-                            &self.device,
-                            cmd,
-                            vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
-                            vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR,
-                            vk::PipelineStageFlags::FRAGMENT_SHADER
-                                | vk::PipelineStageFlags::COMPUTE_SHADER,
-                            vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR,
-                        );
+                        false
+                    };
+
+                    // Memory barrier: AS writes → ray-query consumers
+                    // (FRAGMENT_SHADER for main render pass +
+                    // COMPUTE_SHADER for caustic_splat.comp and the
+                    // volumetrics inject dispatch). See #415 for the
+                    // COMPUTE_SHADER widening.
+                    // AS_BUILD_KHR → FRAGMENT_SHADER|COMPUTE_SHADER
+                    //
+                    // #2931 / CON-D2-01 — this runs on BOTH arms, not just
+                    // the success arm. It does not only publish the TLAS
+                    // build: `record_skinned_blas_refit` ran earlier in this
+                    // same command buffer, and this is the frame's ONLY
+                    // AS_WRITE → AS_READ barrier, so it is what makes those
+                    // refits visible too.
+                    //
+                    // Clearing `rt_flag` on the failure arm is not
+                    // sufficient cover. `rt_flag` gates the FRAGMENT
+                    // consumers; the volumetrics inject dispatch gates on
+                    // `accel.tlas_handle(frame)` instead
+                    // (`post_passes.rs::record_volumetrics_pass`), and
+                    // post-#2673 a failed build deliberately keeps the
+                    // previous AS alive — so `tlas_handle` is still `Some`,
+                    // volumetrics still ray-queries from COMPUTE, and
+                    // without this barrier it reads skinned BLAS whose
+                    // refit writes were never made visible.
+                    //
+                    // An extra barrier on a path that only runs when a TLAS
+                    // build has already failed costs nothing measurable;
+                    // skipping it is a real RAW hazard.
+                    memory_barrier(
+                        &self.device,
+                        cmd,
+                        vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+                        vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR,
+                        vk::PipelineStageFlags::FRAGMENT_SHADER
+                            | vk::PipelineStageFlags::COMPUTE_SHADER,
+                        vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR,
+                    );
+
+                    if !tlas_build_failed {
                         if let Some(tlas_handle) = accel.tlas_handle(frame) {
                             // Capture whether this is the first time the
                             // TLAS lands for this FIF slot — `write_tlas`

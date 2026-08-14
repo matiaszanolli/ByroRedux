@@ -64,6 +64,30 @@ pub struct AccelerationManager {
     /// Per-frame-in-flight TLAS state. Each slot is independently
     /// created/resized when that frame slot first needs it.
     pub tlas: [Option<TlasState>; MAX_FRAMES_IN_FLIGHT],
+    /// Per-slot "this TLAS is oversized, rebuild it smaller next time"
+    /// request, set by [`Self::shrink_tlas_to_fit`] and consumed by
+    /// `ensure_tlas_state` (#2929 / CON-D1-01).
+    ///
+    /// The shrink used to free the slot outright and rely on the next
+    /// `build_tlas` to recreate it. That published a dangling handle:
+    /// scene descriptor set-1 binding 2 keeps naming the destroyed
+    /// `VkAccelerationStructureKHR` until a *successful* build calls
+    /// `write_tlas`, and `draw_frame`'s failure arm can only re-point the
+    /// binding at an AS the manager still owns — after a shrink it owns
+    /// nothing, so the `if let Some(stale_handle)` guard cannot fire.
+    /// Binding 2 is not `PARTIALLY_BOUND` and `triangle.frag` statically
+    /// uses `topLevelAS`, so the whole geometry pass would run against an
+    /// invalid statically-used descriptor. The two events correlate rather
+    /// than being independent: the shrink fires under VRAM pressure, which
+    /// is exactly when the follow-up allocation is likeliest to fail.
+    ///
+    /// Deferring the request instead lets `ensure_tlas_state` perform the
+    /// shrink through its existing ALLOCATE-THEN-SWAP path (#2673) — the
+    /// old slot is retired only once every fallible step of the
+    /// replacement has succeeded, so no dangling handle is ever published.
+    /// A failed shrink simply keeps the oversized TLAS, which is a missed
+    /// optimisation rather than a hazard.
+    pub(super) tlas_shrink_pending: [bool; MAX_FRAMES_IN_FLIGHT],
     /// Per-frame-in-flight TLAS scratch buffer. Grows to the high-water
     /// mark across full rebuilds (`need_new_tlas`); refit/update passes
     /// reuse the existing buffer. See #60 / #424 SIBLING — never a
@@ -235,6 +259,7 @@ impl AccelerationManager {
             blas_entries: Vec::new(),
             tlas: [None, None],
             scratch_buffers: [None, None],
+            tlas_shrink_pending: [false; MAX_FRAMES_IN_FLIGHT],
             tlas_scratch_peak_bytes: [0, 0],
             blas_scratch_buffer: None,
             tlas_instances_scratch: Vec::new(),

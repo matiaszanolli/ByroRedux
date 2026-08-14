@@ -1975,3 +1975,116 @@ fn instance_map_kept_count_is_capped_the_same_way_the_ssbo_is() {
         "over-cap draw commands must map to None, not to a wrapped index"
     );
 }
+
+// ── TLAS shrink must not publish a dangling handle (#2929 / CON-D1-01) ──
+//
+// `shrink_tlas_to_fit` used to destroy the slot's AS outright and rely on
+// the next `build_tlas` to recreate it. Scene descriptor set-1 binding 2
+// keeps naming the destroyed handle until a *successful* build re-points
+// it, and `draw_frame`'s failure arm can only re-point at an AS the
+// manager still owns — after a teardown it owns nothing. Binding 2 is not
+// PARTIALLY_BOUND and `triangle.frag` statically uses `topLevelAS`, so the
+// geometry pass would run against an invalid statically-used descriptor.
+// The shrink fires under VRAM pressure, which is exactly when the
+// replacement allocation is likeliest to fail — the two correlate.
+//
+// The fix routes the shrink through `ensure_tlas_state`'s allocate-then-
+// swap (#2673). These are source assertions because the hazard needs a
+// live device plus a failing allocation to reproduce.
+
+#[test]
+fn tlas_shrink_records_intent_instead_of_destroying_the_live_slot() {
+    let src = include_str!("memory.rs");
+    let shrink = src
+        .split("pub unsafe fn shrink_tlas_to_fit")
+        .nth(1)
+        .and_then(|rest| rest.split("\n    pub ").next())
+        .expect("shrink_tlas_to_fit must still exist");
+
+    assert!(
+        shrink.contains("self.tlas_shrink_pending[slot_index] = true;"),
+        "shrink_tlas_to_fit must RECORD the shrink for ensure_tlas_state to \
+         perform via allocate-then-swap (#2929)"
+    );
+    assert!(
+        !shrink.contains("destroy_acceleration_structure"),
+        "shrink_tlas_to_fit must not destroy the slot's acceleration \
+         structure itself — that leaves scene binding 2 naming a dead \
+         handle until a SUCCESSFUL rebuild, and the rebuild is likeliest to \
+         fail under the very VRAM pressure that triggered the shrink (#2929)"
+    );
+    assert!(
+        !shrink.contains("self.tlas[slot_index].take()"),
+        "the slot must stay live until its replacement is committed (#2929)"
+    );
+}
+
+#[test]
+fn ensure_tlas_state_consumes_the_shrink_request_past_the_commit_point() {
+    let src = include_str!("tlas.rs");
+
+    assert!(
+        src.contains("|| self.tlas_shrink_pending[frame_index];"),
+        "a pending shrink must force the rebuild path, otherwise the request \
+         is recorded and never acted on (#2929)"
+    );
+
+    let clear = src
+        .find("self.tlas_shrink_pending[frame_index] = false;")
+        .expect("ensure_tlas_state must clear the shrink request (#2929)");
+    let commit = src
+        .find("self.tlas[frame_index] = Some(TlasState {")
+        .expect("ensure_tlas_state must still commit the new slot");
+    assert!(
+        clear > commit,
+        "the shrink request must be cleared only AFTER the replacement is \
+         committed — clearing it earlier drops the retry when a fallible \
+         step fails, stranding the oversized TLAS forever (#2929)"
+    );
+}
+
+// ── The frame's only AS_WRITE→AS_READ barrier is unconditional (#2931) ──
+
+/// Regression for #2931 (CON-D2-01). The `AS_BUILD → FRAGMENT|COMPUTE`
+/// barrier in `draw_frame` used to sit inside the `build_tlas` SUCCESS arm
+/// only. It does not merely publish the TLAS build: `record_skinned_blas_refit`
+/// runs earlier in the same command buffer and this is the frame's ONLY
+/// `ACCELERATION_STRUCTURE_WRITE → ACCELERATION_STRUCTURE_READ` barrier, so
+/// it is what makes those refits visible too.
+///
+/// Clearing `rt_flag` on the failure arm does not cover it: `rt_flag` gates
+/// the FRAGMENT consumers, while the volumetrics inject dispatch gates on
+/// `accel.tlas_handle(frame)` (`post_passes.rs`), and post-#2673 a failed
+/// build deliberately keeps the previous AS alive — so `tlas_handle` is
+/// still `Some`, volumetrics still ray-queries from COMPUTE, and the
+/// skinned refits reach it unpublished.
+#[test]
+fn as_build_to_ray_query_barrier_runs_on_both_build_tlas_arms() {
+    let src = include_str!("../context/draw.rs");
+
+    let barrier = src
+        .find("vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR")
+        .expect("draw_frame must still emit the AS_BUILD -> ray-query barrier");
+    let failure_arm = src
+        .find("log::warn!(\"TLAS build failed: {e}\");")
+        .expect("the build_tlas failure arm must still exist");
+    let rt_flag_clear = src
+        .find("Failed to clear rt_flag after TLAS build failure")
+        .expect("the failure arm must still clear rt_flag");
+
+    // The barrier must sit AFTER the whole if/else, not nested in the
+    // success arm — i.e. past the failure arm's last statement.
+    assert!(
+        barrier > failure_arm && barrier > rt_flag_clear,
+        "the AS_WRITE -> AS_READ barrier must run on both arms of the \
+         build_tlas result; nesting it in the success arm leaves that \
+         frame's skinned-BLAS refits unpublished to the volumetrics \
+         compute ray query on a failed build (#2931)"
+    );
+
+    assert!(
+        src.contains("if !tlas_build_failed {"),
+        "the post-build descriptor write must stay gated on build success \
+         while the barrier itself does not (#2931)"
+    );
+}

@@ -733,8 +733,18 @@ impl AccelerationManager {
         instance_count: u32,
     ) -> Result<()> {
         // Create/resize instance buffer if needed for this frame slot.
+        //
+        // #2929 / CON-D1-01 — a pending shrink request also forces the
+        // rebuild. `shrink_tlas_to_fit` no longer frees the slot itself
+        // (that published a dangling binding-2 handle whenever the
+        // follow-up build failed); it records the intent and the
+        // allocate-then-swap below performs it, sizing from the now-smaller
+        // `instance_count` exactly as a grow would. The flag is cleared
+        // only on success, so a failed shrink retries next frame while the
+        // oversized-but-live TLAS keeps serving.
         let need_new_tlas = self.tlas[frame_index].is_none()
-            || self.tlas[frame_index].as_ref().unwrap().max_instances < instance_count;
+            || self.tlas[frame_index].as_ref().unwrap().max_instances < instance_count
+            || self.tlas_shrink_pending[frame_index];
 
         if need_new_tlas {
             // #2673 / CONC-D1-NEW-01 — ALLOCATE-THEN-SWAP. Every fallible
@@ -1021,6 +1031,15 @@ impl AccelerationManager {
                 // set this to instance_count. (#1083)
                 built_primitive_count: 0,
             });
+
+            // #2929 / CON-D1-01 — the shrink request (if any) is now
+            // satisfied: the replacement is live and the oversized slot has
+            // been retired above. Cleared only here, past the commit point,
+            // so an `Err` from any fallible step leaves the flag set and
+            // the shrink is simply retried on the next build — with the
+            // old, oversized, but still-valid TLAS continuing to serve
+            // binding 2 in the meantime.
+            self.tlas_shrink_pending[frame_index] = false;
         }
         Ok(())
     }
