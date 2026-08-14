@@ -1801,3 +1801,94 @@ fn derive_ax_ay_clamps_anisotropic_against_nan_and_floor_escape() {
         );
     }
 }
+
+// ── GpuTerrainTile layout + GLSL lockstep (#2463 / REN-D3-2026-08-07-01) ──
+
+/// `GpuTerrainTile` is a `#[repr(C)]` struct uploaded to the set 1 /
+/// binding 10 SSBO and hand-mirrored in `include/bindings.glsl`, exactly
+/// like `GpuInstance`, `GpuMaterial`, `GpuLight` and `GpuFogVolume` — but
+/// unlike all of those it had no size pin, no offset pin, and no GLSL
+/// lockstep check. The only thing coupling the two declarations was a
+/// comment.
+///
+/// The asymmetry is what makes drift silent: the SSBO is *sized* from the
+/// Rust side (`buffers.rs`'s `size_of::<GpuTerrainTile>() *
+/// MAX_TERRAIN_TILES`) and the upload memcpy uses the Rust stride, while
+/// the shader indexes `terrainTiles[tileIdx]` with the GLSL stride. Adding
+/// a fourth layer role on the Rust side alone (say `layer_glow_index:
+/// [u32; 8]`, a natural next step for LAND splatting) makes the strides
+/// 128 vs 96, and every tile from index 1 onward reads misaligned bindless
+/// texture indices — garbage diffuse/normal/specular layers across every
+/// exterior cell. No test fails, no validation layer fires: the byte count
+/// is legal either way.
+#[test]
+fn gpu_terrain_tile_is_96_bytes() {
+    assert_eq!(
+        size_of::<GpuTerrainTile>(),
+        96,
+        "GpuTerrainTile must stay 96 B (3 × uint[8]) to match the std430 \
+         `struct GpuTerrainTile` in include/bindings.glsl. The shipped \
+         triangle.frag.spv carries `ArrayStride 96` for this type; changing \
+         the Rust side alone silently misaligns every tile after index 0."
+    );
+    // `uint[8]` members are 4-byte-aligned scalars in std430 (no vec4
+    // rounding), so the Rust and GLSL offsets coincide only while every
+    // member stays a plain `[u32; N]`. A `[f32; 3]`/`vec3` member would
+    // introduce std430 padding the Rust side does not reproduce.
+    assert_eq!(align_of::<GpuTerrainTile>(), 4);
+}
+
+#[test]
+fn gpu_terrain_tile_field_offsets_match_shader_contract() {
+    // Matches `OpDecorate ... ArrayStride 96` + members at 0 / 32 / 64 in
+    // the shipped triangle.frag.spv.
+    assert_eq!(offset_of!(GpuTerrainTile, layer_diffuse_index), 0);
+    assert_eq!(offset_of!(GpuTerrainTile, layer_normal_index), 32);
+    assert_eq!(offset_of!(GpuTerrainTile, layer_specular_index), 64);
+}
+
+/// The Rust field list and the GLSL field list must declare the same
+/// members in the same order. Catches the case the size pin cannot: a
+/// same-width reorder (swapping `layer_normal_index` and
+/// `layer_specular_index`) keeps the struct 96 B while every tile samples
+/// its normal maps as specular and vice versa.
+#[test]
+fn gpu_terrain_tile_glsl_and_rust_fields_stay_in_lockstep() {
+    const BINDINGS_GLSL: &str = include_str!("../../../shaders/include/bindings.glsl");
+    const GPU_TYPES_RS: &str = include_str!("gpu_types.rs");
+
+    let glsl = strip_struct_body(
+        extract_struct_body(BINDINGS_GLSL, "struct GpuTerrainTile")
+            .expect("include/bindings.glsl must declare `struct GpuTerrainTile`"),
+    );
+    let glsl_fields: Vec<String> = glsl
+        .iter()
+        .filter_map(|line| {
+            // `uint layerDiffuseIndex[8];` → `layerdiffuseindex`
+            let name = line.split_whitespace().nth(1)?;
+            let name = name.split('[').next()?.trim_end_matches(';');
+            Some(name.to_ascii_lowercase().replace('_', ""))
+        })
+        .collect();
+
+    let rust_fields: Vec<String> =
+        parse_rust_struct_fields(GPU_TYPES_RS, "pub struct GpuTerrainTile")
+            .iter()
+            .map(|f| f.to_ascii_lowercase().replace('_', ""))
+            .collect();
+
+    assert_eq!(
+        rust_fields.len(),
+        3,
+        "GpuTerrainTile gained or lost a Rust field ({rust_fields:?}) — update the \
+         GLSL mirror in include/bindings.glsl, the 96 B size pin, and the offset \
+         pin above together (#2463)"
+    );
+    assert_eq!(
+        glsl_fields, rust_fields,
+        "GpuTerrainTile GLSL/Rust field lists diverged (GLSL {glsl_fields:?} vs Rust \
+         {rust_fields:?}). The SSBO is sized and memcpy'd with the RUST stride while \
+         the shader indexes with the GLSL one, so drift here corrupts terrain splat \
+         texture indices on every exterior cell with nothing failing (#2463)."
+    );
+}

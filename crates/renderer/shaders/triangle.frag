@@ -1912,7 +1912,34 @@ void main() {
                         }
                     }
                     rayOrigin = exitPoint + refractDir * 0.05;
-                    rayTMin = 0.0;
+                    // #2462 (REN-D2-2026-08-07-02) — `rayTMin` stays 0.05
+                    // for every iteration; this arm used to reset it to 0.0
+                    // with no rationale. `raytrace.glsl`'s tMin note cites
+                    // this loop as one of the sites honouring the shared
+                    // 0.05 convention, but it only honoured it on the first
+                    // of up to three iterations.
+                    //
+                    // The reset made the just-crossed triangle committable
+                    // at t ≈ 0: the only clearance from iteration 2 onward
+                    // was the 0.05 nudge along the NEWLY refracted
+                    // direction, and at a grazing exit (common approaching
+                    // total internal reflection) that projects to well under
+                    // 0.05 of perpendicular clearance. The loop's terminus
+                    // guards (`terminusOnSelf` / `terminusOnGlass` /
+                    // `terminusOnFallback`) only catch a self-hit that ends
+                    // the loop — a mid-loop one is consumed as a passthru and
+                    // burns budget, so the ray terminates an interface early
+                    // and the fragment falls to the ambient escape path.
+                    // That is the same failure #1017 fixed on
+                    // `traceReflection`, which keeps its 0.05 literal on
+                    // every iteration and advances a full 0.1 past each hit.
+                    //
+                    // Cost of keeping it: 0.05 tMin plus the 0.05 origin
+                    // nudge skips 0.10 units along the ray from `exitPoint`.
+                    // No authored pane is that thin (≈1.4 mm at 1 BU ≈
+                    // 1.43 cm), and iteration 1 already pays a larger
+                    // effective skip (0.1 perpendicular bias + 0.05 tMin),
+                    // so nothing reachable is newly missed.
                     accumulatedDist += hDist;
                     // Charge this segment (plus the re-origin epsilon) to
                     // the shared reach so the three segments together span
@@ -3380,7 +3407,38 @@ void main() {
             // per-fragment perturbed normal. Normal maps describe the local
             // scattering frame; they must not aim transport rays into the
             // underlying macro surface.
+            //
+            // #2461 (REN-D2-2026-08-07-01) — orient it toward the viewer,
+            // mirroring the fire-refraction (`macroN`) and glass
+            // (`glassViewNormal`) branches, which are the other two
+            // `fragNormalEffective` consumers that need a viewer-facing
+            // frame and both flip locally.
+            //
+            // The two-sided back-face flip near the top of main() rewrites
+            // `N`, not `fragNormalEffective`. So on a back-facing fragment
+            // of a two-sided draw (foliage/vine/grass cards, curtains, some
+            // architecture) the raw value points AWAY from the viewer while
+            // `N_bias` — which `giOrigin` below biases along — points toward
+            // it. Every cosine-weighted `giDir` then had a positive component
+            // straight through the surface plane, starting 0.1 units off the
+            // opposite side: with tMin 0.05 the plane crossing lands at
+            // t ≈ 0.1/dot(giDir, planeN) ≈ 0.15, comfortably committable, and
+            // the fragment's own triangle is in the TLAS (two-sided draws are
+            // not excluded). The path then gathered the back side of its own
+            // card instead of the room, and `rtAO`'s
+            // smoothstep(60, 500, pathDistance) pinned to its 0.3 floor.
+            // Single-sided geometry is back-face culled, so `gl_FrontFacing`
+            // is always true there and this is a no-op for it.
+            //
+            // Deliberately NOT hoisted into a shared viewer-oriented value:
+            // the ReSTIR `geomN` / `rc.pad0` pair and the SVGF normal-history
+            // G-buffer write also read raw `fragNormalEffective`, and those
+            // are reprojection identities that must match what the *previous*
+            // frame wrote — they only change as a pair, on their own terms.
             vec3 N_geom = normalize(fragNormalEffective);
+            if (dot(N_geom, V) < 0.0) {
+                N_geom = -N_geom;
+            }
             vec3 giDir = cosineWeightedHemisphere(N_geom, n1, n2);
             vec3 giOrigin = fragWorldPos + N_bias * 0.1;
 

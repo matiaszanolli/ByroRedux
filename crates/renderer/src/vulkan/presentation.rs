@@ -244,6 +244,41 @@ impl PresentationPipeline {
             .dst_access_mask(
                 vk::AccessFlags::SHADER_READ | vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
             );
+        // #2465 (REN-D4-2026-08-07-01) — MEASURED, deliberately unchanged.
+        //
+        // The concern: this pass is the swapchain writer, its attachment is
+        // `UNDEFINED → PRESENT_SRC_KHR`, so it performs an automatic
+        // `UNDEFINED → COLOR_ATTACHMENT_OPTIMAL` transition. Per spec that
+        // transition is ordered between the two synchronization scopes of
+        // this `SUBPASS_EXTERNAL` dependency — whose dst scope is
+        // `FRAGMENT_SHADER | COLOR_ATTACHMENT_OUTPUT`. `draw_frame` waits
+        // `image_available` at `COLOR_ATTACHMENT_OUTPUT` only, and
+        // `FRAGMENT_SHADER` is logically EARLIER than that, so the
+        // transition is not provably ordered after the acquire. The
+        // `FRAGMENT_SHADER` limb exists for the upscaled-image sampler read
+        // (a different resource), but subpass-dependency scopes are
+        // pass-wide, so the swapchain attachment inherits the looser
+        // ordering. The `AUDIT_RENDERER_2026-04-25.md` invariant note
+        // recorded `(UNDEFINED, wait at COLOR_ATTACHMENT_OUTPUT)` as
+        // load-bearing back when *composite* was the swapchain writer; the
+        // writer moved here with a wider dependency and it was not re-checked.
+        //
+        // Verified 2026-08-14, release build, `BYRO_VALIDATION=1` (which
+        // enables `SYNCHRONIZATION_VALIDATION` unconditionally — see
+        // `instance.rs`), 300 frames on a live FNV exterior (1214 draws,
+        // 3757 entities): **zero SYNC-HAZARD reports**. The only validation
+        // output was a pre-existing, unrelated `shaderInt64` capability
+        // complaint.
+        //
+        // So this stays as-is. The two candidate hardenings — dropping the
+        // `FRAGMENT_SHADER` limb (needs proof the upscaler already barriers
+        // its own output, else it trades a theoretical hazard for a real
+        // read-before-write one) and widening `wait_stages` (serializes the
+        // whole frame behind acquire, since the wait applies to the entire
+        // submit and the swapchain is only touched by this pass at the tail)
+        // both cost more than the measurement justifies. Revisit only with
+        // an actual sync-val hazard or a driver-observed artifact; a repeat
+        // of the static reading alone is not new evidence.
         // #2143 / CONC-D1-2026-07-25-01 — declaring this dependency at all
         // *replaces* Vulkan's implicit end-of-pass dependency, so a
         // `dst_stage_mask` of NONE left the pass's COLOR_ATTACHMENT_WRITE with
