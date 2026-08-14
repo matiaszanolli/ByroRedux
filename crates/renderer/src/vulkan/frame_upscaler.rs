@@ -420,7 +420,8 @@ impl FrameUpscaler {
         // same way a rejected dispatch does instead: latch, blit, carry on.
         let Some(frame_params) = fsr_frame else {
             log::error!(
-                "FSR context is active but frame parameters are absent;                  falling back to the native HDR blit for this swapchain generation"
+                "FSR context is active but frame parameters are absent; \
+                 falling back to the native HDR blit for this swapchain generation"
             );
             self.dispatch_failure =
                 Some("FSR context is active but frame parameters are absent".to_string());

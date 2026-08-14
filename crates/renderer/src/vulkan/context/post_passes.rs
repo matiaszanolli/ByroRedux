@@ -951,12 +951,13 @@ impl VulkanContext {
         // SAFETY: `cmd` is recording outside a render pass, and presentation,
         // exposure, swapchain-image, and timer resources are live for this frame.
         unsafe {
-            let exposure = self
-                .exposure
-                .as_ref()
-                .map_or(super::super::exposure::DEFAULT_EXPOSURE, |value| {
-                    value.value()
-                });
+            // #2833 — when the resource is absent FSR is handed a null
+            // exposure and the SDK substitutes 1.0, so the tone mapper must
+            // use the same number or the two grade the frame differently.
+            let exposure = self.exposure.as_ref().map_or(
+                super::super::exposure::NO_EXPOSURE_RESOURCE_FALLBACK,
+                |value| value.value(),
+            );
             if let Some(ref mut timers) = self.gpu_timers {
                 timers.cmd_presentation_start(&self.device, cmd, frame);
             }

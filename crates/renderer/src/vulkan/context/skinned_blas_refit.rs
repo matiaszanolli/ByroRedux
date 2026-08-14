@@ -939,7 +939,9 @@ mod skin_eviction_runs_without_global_vertex_buffer_tests {
         let skin_chain_ns_pos = src
             .find("self.last_skin_coverage_frame.cpu_skin_chain_ns =")
             .expect(
-                "record_skinned_blas_refit must record its elapsed time as the last thing                  it does (#2803 gave the measurement a consumer; it is still the anchor                  for the eviction-ordering assertions below)",
+                "record_skinned_blas_refit must record its elapsed time as the last thing \
+                 it does (#2803 gave the measurement a consumer; it is still the anchor \
+                 for the eviction-ordering assertions below)",
             );
 
         assert!(

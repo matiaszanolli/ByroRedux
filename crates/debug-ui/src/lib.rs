@@ -231,6 +231,23 @@ impl DebugUiState {
     /// a supplied gameplay prompt can still produce render output.
     pub fn run(&mut self, window: &Window, snapshot: &PanelSnapshot) -> PanelOutputs {
         if !self.visible && snapshot.interaction_prompt.is_none() {
+            // #2831 — still drain. `on_window_event` is forwarded for EVERY
+            // `WindowEvent`, unconditionally, and appends onto egui-winit's
+            // private `egui_input.events`; `take_egui_input` is its only
+            // drain and this is its only caller. Returning early therefore
+            // retained one `egui::Event` per forwarded mouse-move / key /
+            // wheel / touch for the lifetime of the process — and a hidden
+            // overlay is the steady state, since it is opt-in behind F3, so
+            // a fly-camera session grows the queue monotonically.
+            //
+            // Draining rather than gating the forwarding: egui-winit also
+            // tracks viewport, modifier and focus state in the same call, and
+            // skipping `on_window_event` would lose that across the toggle so
+            // the first visible frame came up with stale modifiers. This way
+            // the bookkeeping stays current and only the event backlog — which
+            // no one will ever consume — is discarded. Without it the first F3
+            // press replays the entire accumulated backlog in one `RawInput`.
+            let _ = self.egui_winit.take_egui_input(window);
             return PanelOutputs::default();
         }
         let raw_input = self.egui_winit.take_egui_input(window);
@@ -272,3 +289,60 @@ impl DebugUiState {
 // binary doesn't have to add a direct dep on each one.
 pub use egui;
 pub use egui_winit;
+
+#[cfg(test)]
+mod hidden_overlay_drain_tests {
+    /// #2831 — `DebugUiState::run`'s hidden-overlay early return must still
+    /// drain egui-winit's raw-input queue.
+    ///
+    /// A runtime assertion is not reachable here: exercising the real queue
+    /// needs a live `winit::Window` and an `egui_winit::State`, neither of
+    /// which can be constructed in a headless test, and egui-winit keeps
+    /// `egui_input.events` private so its length is not observable even with
+    /// one. The defect is structural anyway — an early return placed *before*
+    /// the only `take_egui_input` call — so the source is the right thing to
+    /// pin.
+    #[test]
+    fn hidden_run_drains_before_returning() {
+        let src = include_str!("lib.rs");
+        let run = src
+            .split_once("pub fn run(&mut self, window: &Window, snapshot: &PanelSnapshot)")
+            .expect("DebugUiState::run must exist")
+            .1;
+        let early_return = run
+            .find("return PanelOutputs::default();")
+            .expect("the hidden-overlay early return must exist");
+        let drain = run
+            .find("take_egui_input(window)")
+            .expect("run must drain egui-winit's raw input somewhere");
+        assert!(
+            drain < early_return,
+            "the hidden-overlay branch returns before draining take_egui_input — \
+             every forwarded pointer/key event then accumulates for the lifetime \
+             of the process, and the first F3 replays the whole backlog (#2831)"
+        );
+    }
+
+    /// The fix must stay a *drain*, not a gate on the forwarding side:
+    /// skipping `on_window_event` would lose egui's modifier/focus/viewport
+    /// bookkeeping across the visibility toggle, so the first visible frame
+    /// would come up with stale state.
+    #[test]
+    fn window_events_are_still_forwarded_unconditionally() {
+        let src = include_str!("lib.rs");
+        let forward = src
+            .split_once("pub fn on_window_event(")
+            .expect("on_window_event must exist")
+            .1;
+        // Body only — stop at the function's closing brace, or the neighbouring
+        // `toggle()` (which legitimately reads `self.visible`) lands in scope.
+        let body = forward
+            .split_once("\n    }")
+            .expect("on_window_event must have a body")
+            .0;
+        assert!(
+            !body.contains("self.visible"),
+            "on_window_event must not gate on visibility — drain in `run` instead (#2831)"
+        );
+    }
+}

@@ -16,6 +16,28 @@ use gpu_allocator::MemoryLocation;
 pub const EXPOSURE_FORMAT: vk::Format = vk::Format::R32_SFLOAT;
 pub const DEFAULT_EXPOSURE: f32 = 0.85;
 
+/// Exposure both consumers must assume when [`ExposureResource`] does not
+/// exist at all — i.e. its 1×1 image allocation failed at startup (#2833).
+///
+/// **Not** [`DEFAULT_EXPOSURE`], and deliberately so. On the happy path one
+/// resource feeds both consumers and they agree exactly: FSR's
+/// `PrepareRgb(rgb, exposure, preExposure)` does `rgb /= preExposure; rgb *=
+/// exposure` (`ffx_fsr2_common.h`), and the tone mapper multiplies by the same
+/// texel. On the failure path FSR receives a *null* exposure resource and the
+/// SDK substitutes its own default, whose accessor rewrites a zero texel to
+/// `1.0` — a value the engine cannot override, because the only lever left is
+/// `preExposure`, and that field means "what the input colour was already
+/// multiplied by" (it also feeds the SDK's cross-frame `deltaPreExposure` /
+/// `previousFramePreExposure` bookkeeping), so bending it to smuggle a grading
+/// constant through would corrupt reconstruction rather than align it.
+///
+/// Presentation therefore matches the SDK instead of the reverse. Pre-fix the
+/// two fell back independently — 0.85 for the tone mapper against the SDK's
+/// 1.0 — so reconstruction normalised its luma against a ~1.18× different
+/// exposure than the frame was graded at, in exactly the domain FSR uses for
+/// locking and history rectification.
+pub const NO_EXPOSURE_RESOURCE_FALLBACK: f32 = 1.0;
+
 /// Persistent 1x1 exposure texture shared by FSR and final composition.
 pub struct ExposureResource {
     image: vk::Image,
@@ -261,5 +283,45 @@ mod tests {
     fn fsr_exposure_contract_is_one_r32_float_texel() {
         assert_eq!(EXPOSURE_FORMAT, vk::Format::R32_SFLOAT);
         assert_eq!(DEFAULT_EXPOSURE, 0.85);
+    }
+
+    /// #2833 — with no `ExposureResource`, FSR gets a null exposure and the
+    /// SDK substitutes `1.0`. The tone mapper has to agree, or reconstruction
+    /// normalises its luma against a different exposure than the frame is
+    /// graded at.
+    #[test]
+    fn absent_resource_fallback_matches_the_sdk_substitution() {
+        assert_eq!(
+            NO_EXPOSURE_RESOURCE_FALLBACK, 1.0,
+            "the SDK's null-exposure accessor rewrites a zero texel to 1.0; \
+             this constant exists to mirror it"
+        );
+        assert_ne!(
+            NO_EXPOSURE_RESOURCE_FALLBACK, DEFAULT_EXPOSURE,
+            "these are deliberately different: DEFAULT_EXPOSURE seeds a live \
+             resource, this one only applies when no resource exists at all"
+        );
+    }
+
+    /// Pin the consumer, not just the constant: the presentation fallback is
+    /// what actually has to move in lockstep with the SDK, and a future edit
+    /// reverting it to `DEFAULT_EXPOSURE` restores the ~1.18× mismatch with
+    /// nothing at runtime to catch it.
+    #[test]
+    fn presentation_falls_back_to_the_shared_constant() {
+        let src = include_str!("context/post_passes.rs");
+        assert!(
+            src.contains("exposure::NO_EXPOSURE_RESOURCE_FALLBACK"),
+            "presentation must fall back to the shared no-resource constant"
+        );
+        let fallback_site = src
+            .split_once("let exposure = self")
+            .expect("presentation still reads an exposure fallback")
+            .1;
+        let head = &fallback_site[..fallback_site.len().min(400)];
+        assert!(
+            !head.contains("DEFAULT_EXPOSURE"),
+            "presentation's no-resource branch drifted back to DEFAULT_EXPOSURE (#2833)"
+        );
     }
 }

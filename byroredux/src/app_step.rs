@@ -320,28 +320,88 @@ impl App {
     /// Hence the lazy fill on the first stepped frame, by which point Phase 1
     /// has registered the cell and refreshed the BVH.
     ///
-    /// Returns `None` while no `PhysicsWorld` exists or the collision world is
-    /// still empty, so the caller retries next frame instead of caching a miss.
-    /// A cast that reaches nothing (camera pointed at open sky) is a real
-    /// answer, not a retry — it resolves to the documented fallback.
+    /// Two sources, in order of directness:
+    ///
+    /// 1. **Forward ray cast** against the collision world — literally "how far
+    ///    is the surface I am pointed at". Used whenever it hits.
+    /// 2. **Distance to the rendered scene's centroid**, over the world-space
+    ///    positions of every `MeshHandle` entity. Covers the cases the cast
+    ///    cannot answer: a scene with no physics at all (the `--cornell`
+    ///    redistributable control registers no colliders), and a camera aimed
+    ///    at open sky.
+    ///
+    /// Deliberately **no fixed-BU fallback** on this path. The two bench scene
+    /// families do not share a unit scale: cell scenes are Bethesda units
+    /// (Prospector's room is ~150 BU deep) while `--cornell` is a ~8-unit box
+    /// with its camera at `(0, 1.5, 4)`. Any constant large enough for one is
+    /// absurd for the other — a 512 BU fallback flung the Cornell camera 175
+    /// units out of an 8-unit room and collapsed `gpu_main_render` from
+    /// 4.498 ms to 0.086 ms. A scene-derived measurement is scale-free by
+    /// construction; `BenchCameraPath::FALLBACK_SUBJECT_DISTANCE_BU` remains
+    /// only as `pose`'s guard against a degenerate *argument*.
+    ///
+    /// Returns `None` when neither source can answer yet — no collision world
+    /// *and* no rendered geometry — so the caller retries next frame rather
+    /// than caching a miss.
+    /// Returns the distance and which source produced it, so the bench log
+    /// names its own provenance instead of asserting a cast that may not have
+    /// run.
     fn measure_bench_subject_distance(
         &self,
         origin: crate::bench_camera::CameraPose,
-    ) -> Option<f32> {
-        let pw = self
+    ) -> Option<(f32, &'static str)> {
+        // Far enough to cross any interior and most of an exterior grid.
+        const MAX_PROBE_BU: f32 = 32_768.0;
+        let cast = self
             .world
-            .try_resource::<byroredux_physics::PhysicsWorld>()?;
-        if pw.static_colliders_aabb().is_none() {
+            .try_resource::<byroredux_physics::PhysicsWorld>()
+            .filter(|pw| pw.static_colliders_aabb().is_some())
+            .and_then(|pw| pw.cast_ray(origin.position, origin.forward, MAX_PROBE_BU, None))
+            .map(|hit| hit.distance)
+            .filter(|d| d.is_finite() && *d > 1e-3);
+        if let Some(distance) = cast {
+            return Some((distance, "forward ray cast"));
+        }
+        self.scene_centroid_distance(origin.position)
+            .map(|distance| (distance, "rendered-scene centroid"))
+    }
+
+    /// Distance from `from` to the centroid of every rendered mesh placement,
+    /// in whatever unit the scene is authored in.
+    ///
+    /// The centroid is taken over `GlobalTransform` translations of entities
+    /// carrying a `MeshHandle` — the one geometry signal present in *every*
+    /// bench scene. `LocalBound`/`WorldBound` would be tighter but the
+    /// synthetic `--cornell` scene attaches neither, which is precisely the
+    /// scene this path exists to serve.
+    ///
+    /// Falls back to the placement spread (half the AABB diagonal) when the
+    /// camera sits essentially *on* the centroid, so the orbit still has a
+    /// non-degenerate radius without introducing a unit-bound constant.
+    fn scene_centroid_distance(&self, from: byroredux_core::math::Vec3) -> Option<f32> {
+        use byroredux_core::ecs::components::MeshHandle;
+        use byroredux_core::ecs::GlobalTransform;
+
+        let meshes = self.world.query::<MeshHandle>()?;
+        let globals = self.world.query::<GlobalTransform>()?;
+        let mut min = byroredux_core::math::Vec3::splat(f32::INFINITY);
+        let mut max = byroredux_core::math::Vec3::splat(f32::NEG_INFINITY);
+        let mut count = 0u32;
+        for (entity, _) in meshes.iter() {
+            let Some(global) = globals.get(entity) else {
+                continue;
+            };
+            if !global.translation.is_finite() {
+                continue;
+            }
+            min = min.min(global.translation);
+            max = max.max(global.translation);
+            count += 1;
+        }
+        if count == 0 {
             return None;
         }
-        // Far enough to cross any interior and most of an exterior grid; the
-        // fallback covers a miss.
-        const MAX_PROBE_BU: f32 = 32_768.0;
-        let hit = pw
-            .cast_ray(origin.position, origin.forward, MAX_PROBE_BU, None)
-            .map(|hit| hit.distance)
-            .filter(|d| d.is_finite() && *d > 1.0);
-        Some(hit.unwrap_or(crate::bench_camera::BenchCameraPath::FALLBACK_SUBJECT_DISTANCE_BU))
+        Some(centroid_subject_distance(min, max, from))
     }
 
     pub(crate) fn step_bench_camera(&mut self) {
@@ -392,9 +452,9 @@ impl App {
         // later frame reuses it — a per-frame re-cast would make the orbit
         // radius drift as the camera moves, which is not a fixed-radius orbit.
         if self.bench_camera_subject_distance.is_none() {
-            self.bench_camera_subject_distance = self.measure_bench_subject_distance(origin);
-            if let Some(distance) = self.bench_camera_subject_distance {
-                log::info!("bench camera subject distance {distance:.1} BU (forward ray cast)");
+            if let Some((distance, source)) = self.measure_bench_subject_distance(origin) {
+                self.bench_camera_subject_distance = Some(distance);
+                log::info!("bench camera subject distance {distance:.1} BU ({source})");
             }
         }
         let subject_distance = self
@@ -837,5 +897,92 @@ mod tests {
             "the `event_loop.exit()` must sit in set_upscaler_mode's own Err arm, \
              not somewhere further down the file (#2156)",
         );
+    }
+}
+
+/// Subject distance implied by a rendered-geometry AABB, seen from `from`.
+///
+/// Split out of [`App::scene_centroid_distance`] so the scale-free property
+/// can be tested without constructing an `App`: the two bench scene families
+/// differ by ~70× in unit scale, and the whole point of deriving this from the
+/// scene is that neither is special-cased.
+fn centroid_subject_distance(
+    min: byroredux_core::math::Vec3,
+    max: byroredux_core::math::Vec3,
+    from: byroredux_core::math::Vec3,
+) -> f32 {
+    let centre = (min + max) * 0.5;
+    let distance = from.distance(centre);
+    if distance > 1e-3 {
+        distance
+    } else {
+        // Camera sits on the centroid — orbit the placement spread instead so
+        // the radius is non-degenerate without inventing a unit-bound number.
+        ((max - min).length() * 0.5).max(1e-3)
+    }
+}
+
+#[cfg(test)]
+mod bench_subject_distance_tests {
+    use super::centroid_subject_distance;
+    use byroredux_core::math::Vec3;
+
+    /// The property that broke Cornell: the measurement must follow the
+    /// scene's own scale. A constant sized for a Bethesda interior (512 BU)
+    /// flung the `--cornell` camera 175 units out of an 8-unit box and
+    /// collapsed `gpu_main_render` from 4.498 ms to 0.086 ms.
+    #[test]
+    fn subject_distance_tracks_the_scene_scale() {
+        // Cornell: ~8-unit box at the origin, camera at (0, 1.5, 4).
+        let cornell = centroid_subject_distance(
+            Vec3::splat(-4.0),
+            Vec3::splat(4.0),
+            Vec3::new(0.0, 1.5, 4.0),
+        );
+        assert!(
+            (1.0..20.0).contains(&cornell),
+            "Cornell-scale subject distance {cornell} is not room-scale for an 8-unit box"
+        );
+
+        // A Bethesda interior placed far off-origin — the Prospector shape.
+        let interior = centroid_subject_distance(
+            Vec3::new(400.0, 3500.0, -400.0),
+            Vec3::new(700.0, 3700.0, -100.0),
+            Vec3::new(536.0, 3560.0, -272.0),
+        );
+        assert!(
+            (1.0..500.0).contains(&interior),
+            "interior subject distance {interior} is not room-scale"
+        );
+        // Crucially it is NOT the camera's distance from the world origin,
+        // which is what the pre-fix radius used.
+        let from_world_origin = Vec3::new(536.0, 3560.0, -272.0).distance(Vec3::ZERO);
+        assert!(
+            interior < from_world_origin / 10.0,
+            "subject distance {interior} is tracking the cell's 3610 BU offset \
+             from the world origin again"
+        );
+    }
+
+    /// A camera sitting exactly on the centroid must still get a usable
+    /// radius rather than collapsing the orbit to a point.
+    #[test]
+    fn camera_on_the_centroid_falls_back_to_the_placement_spread() {
+        let centre = Vec3::new(10.0, 20.0, 30.0);
+        let distance = centroid_subject_distance(
+            centre - Vec3::splat(50.0),
+            centre + Vec3::splat(50.0),
+            centre,
+        );
+        assert!(distance > 1.0, "degenerate radius {distance}");
+    }
+
+    /// A single-placement scene has zero spread; the result must still be
+    /// finite and positive.
+    #[test]
+    fn degenerate_aabb_is_still_positive() {
+        let p = Vec3::new(5.0, 5.0, 5.0);
+        let distance = centroid_subject_distance(p, p, p);
+        assert!(distance > 0.0 && distance.is_finite(), "got {distance}");
     }
 }
