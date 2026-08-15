@@ -230,6 +230,57 @@ impl Component for MaterialTextureHandles {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// Provenance retained alongside each resolved material texture role.
+///
+/// [`MaterialTextureHandles`] is the compact render-facing contract; this
+/// sibling is the correctness-oracle contract used by `mat.dump`. Keeping the
+/// two separate avoids putting owned paths on the per-frame hot path while
+/// preserving enough information to prove that an XTXR/TXST override landed
+/// in the intended semantic role.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum MaterialTextureSource {
+    /// No path was authored or synthesized for this semantic role.
+    #[default]
+    Absent,
+    /// The effective path arrived with the imported mesh material. This can
+    /// be an inline NIF texture set or a path filled by BGSM/BGEM/.mat merge.
+    MeshMaterial,
+    /// A placement-level XATO/XTNM/XTXR texture-set override won.
+    TxstOverride,
+    /// The legacy `<base>_n.dds` convention synthesized a normal path.
+    DerivedNormal,
+    /// A runtime caller replaced an authored path (currently FaceGen tint).
+    RuntimeOverride,
+}
+
+impl MaterialTextureSource {
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Absent => "absent",
+            Self::MeshMaterial => "mesh-material",
+            Self::TxstOverride => "txst-override",
+            Self::DerivedNormal => "derived-normal",
+            Self::RuntimeOverride => "runtime-override",
+        }
+    }
+}
+
+/// Cold-path material texture oracle attached at mesh spawn time.
+///
+/// `paths` and `sources` use the same canonical role order as the NIF import
+/// and renderer contracts. `mat.dump` zips them with
+/// [`MaterialTextureHandles`] to expose path → provenance → bindless index.
+#[derive(Debug, Clone)]
+pub(crate) struct MaterialTextureDebugInfo {
+    pub(crate) paths: byroredux_nif::import::MaterialTextureSet<Option<String>>,
+    pub(crate) sources: byroredux_nif::import::MaterialTextureSet<MaterialTextureSource>,
+    pub(crate) clamp_mode: u8,
+}
+
+impl Component for MaterialTextureDebugInfo {
+    type Storage = SparseSetStorage<Self>;
+}
+
 /// Terrain splat-layer tile index into the renderer's
 /// `GpuTerrainTile` SSBO (scene set 1, binding 10). Attached only to
 /// LAND terrain entities when ATXT/VTXT splat layers are present.
@@ -384,8 +435,8 @@ mod cell_lighting_res_tests {
         CellLighting {
             ambient: [0.10, 0.10, 0.12],
             directional_color: [1.0, 0.95, 0.80],
-            directional_rotation_xy: 0.0,
-            directional_rotation_z: 0.0,
+            directional_azimuth: 0.0,
+            directional_elevation: 0.0,
             fog_color: [0.50, 0.45, 0.30],
             fog_near: 100.0,
             fog_far: 8000.0,
@@ -409,8 +460,8 @@ mod cell_lighting_res_tests {
         CellLighting {
             ambient: [0.05, 0.05, 0.06],
             directional_color: [0.8, 0.85, 1.0],
-            directional_rotation_xy: 0.5,
-            directional_rotation_z: 0.3,
+            directional_azimuth: 0.5,
+            directional_elevation: 0.3,
             fog_color: [0.20, 0.25, 0.35],
             fog_near: 50.0,
             fog_far: 5000.0,
@@ -498,8 +549,8 @@ mod cell_lighting_res_tests {
         let lit = CellLighting {
             ambient: [0.30, 0.30, 0.30],
             directional_color: [0.90, 0.90, 0.85],
-            directional_rotation_xy: 0.0,
-            directional_rotation_z: 0.0,
+            directional_azimuth: 0.0,
+            directional_elevation: 0.0,
             fog_color: [0.40, 0.40, 0.50],
             fog_near: 200.0,
             fog_far: 4000.0,

@@ -912,6 +912,8 @@ impl VulkanContext {
             // those latches set for a dispatch that never reached the GPU.
             // See `FrameUpscaler::record`'s doc comment before adding any
             // fallible call between here and the submit.
+            let force_native_debug =
+                crate::shader_constants::debug_viz_requires_raw_output(self.render_debug_flags);
             self.frame_upscaler
                 .as_mut()
                 .expect("frame upscaler must exist while recording")
@@ -929,6 +931,7 @@ impl VulkanContext {
                         transparency: transparency_mask,
                     },
                     fsr_frame,
+                    force_native_debug,
                 );
             if let Some(ref mut timers) = self.gpu_timers {
                 timers.cmd_upscale_end(&self.device, cmd, frame);
@@ -977,6 +980,7 @@ impl VulkanContext {
                         exposure,
                         underwater,
                         image_space: image_space_modifier,
+                        render_debug_flags: self.render_debug_flags,
                     },
                 );
             if let Some(ref mut timers) = self.gpu_timers {

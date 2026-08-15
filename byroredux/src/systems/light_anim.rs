@@ -466,16 +466,14 @@ mod tests {
         assert!(geom.direction[2].abs() < 1e-6);
     }
 
-    /// Parity with `euler_zup_to_quat_yup_tests.rs`'s own validated
-    /// convention (`xcll_dir_yup`/`matches_refr_placement_rotation_of_
-    /// model_direction`): a non-trivial `ref_rot` must rotate the
-    /// `(1, 0, 0)` model direction exactly like that test's XCLL path
-    /// does, since both derive from the same Gamebryo model-direction
-    /// contract.
+    /// A non-trivial REFR rotation must rotate the `(1, 0, 0)` model
+    /// direction through the dedicated placement-Euler conversion. XCLL uses
+    /// authored spherical azimuth/elevation and intentionally does not share
+    /// this helper.
     #[test]
     fn translate_light_direction_matches_refr_rotation_of_model_direction() {
         let ld = light_data(LIGHT_FLAG_SPOT, 90.0);
-        let ref_rot = crate::cell_loader::euler_zup_to_quat_yup(0.25, 0.4, 0.0);
+        let ref_rot = crate::cell_loader::euler_zup_to_quat_yup_refr(0.25, 0.4, 0.0);
         let geom = translate_light(&ld, GameKind::Skyrim, ref_rot);
         let expected = ref_rot * byroredux_core::math::Vec3::new(1.0, 0.0, 0.0);
         assert!((geom.direction[0] - expected.x).abs() < 1e-6);

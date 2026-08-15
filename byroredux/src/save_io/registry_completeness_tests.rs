@@ -127,6 +127,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("LocalBound", "write-once at NIF import/mesh spawn, read-only thereafter to derive WorldBound"),
         // Material: FIXED — registered (#2378 / SAVE-D1-13), no longer
         // allowlisted here.
+        ("MaterialTextureDebugInfo", "cold-path material provenance used only by mat.dump; deterministically rebuilt from NIF/TXST translation at mesh spawn"),
         ("MeshHandle", "GPU MeshRegistry index, explicitly named in this file's own exclusion doc, rebuilt from the mesh path every reload"),
         ("ParticleEmitter", "per-particle simulation state (positions/velocities/ages) is purely cosmetic VFX with no gameplay/script hooks; re-seeds from static rate/shape config within under a second of reload"),
         ("PatrolBehavior", "active-package-derived config rebuilt at spawn and replaced by ambient_ai_package_system; mutable companion PatrolState is registered"),

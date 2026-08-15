@@ -82,8 +82,27 @@ static/pan/orbit/dolly/cut. It retains raw stochastic RT error while gating on
 a fixed linear low-pass structural metric, rejects a controlled 64x64
 corruption, and reports correctness separately from the measured same-machine
 p50/p95 performance envelope. The bisect wrapper returns `0` for the clean
-control and `101` for the injected fault. R0 is therefore usable; R2 TLAS and
-cluster-integrity evidence is the next blocking slice.
+control and `101` for the injected fault. R0 is therefore usable. R1-R3's
+transport-facing spine is now in place: XCLL directionals take the physical
+type-2 path through ReSTIR visibility; four-scene persistent TLAS/cluster
+integrity captures named Cydonia's 656-light SSBO overflow and 305-light
+cluster high-water; capacities are now 1023 lights globally and 512 per
+cluster; every secondary-ray consumer uses the shared scale-aware origin; and
+selected-light, visibility, material-lobe and RT-LOD views bypass temporal
+upscaling plus the complete composite/presentation look stack. Generated
+shader flags, the FO3/FNV TXST↔NIF 2-5 permutation, `light.dump`, and
+`mat.dump` close the principal ingestion/material observability gaps.
+The data-driven `--cornell-oracle l0|l1|l2` scene now supplies the dark,
+analytic directional, and opaque-blocker rungs. Its first raw captures found
+and removed the shader's hidden zero-light synthetic sun: L0 is now black, L1
+is the expected constant directional response, and L2 is a white visibility
+field with the blocker plus its geometrically predicted hard shadow in black;
+all three frames report `rt-integrity verdict=PASS`. Remaining recovery gates
+are scheduling the now-passing `cornell_rt_oracle` scalar gate on the
+RT-capable CI worker, a selected-ray pixel probe, the measured RT-LOD sweep,
+forced-eviction recovery, per-format material provenance and the L3-L5/
+five-game fixture matrix; the detailed status is maintained in the linked
+recovery plan.
 Water work that is headless (character contact/current response and
 coverage/ESM sweeps) may proceed; renderer-facing water tuning and new expected
 captures wait for the R3 visibility gate. The underlying playable-slice closure

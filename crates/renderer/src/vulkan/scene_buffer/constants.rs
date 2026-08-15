@@ -7,8 +7,12 @@
 use ash::vk;
 
 /// Maximum lights we can upload per frame. The SSBO is pre-allocated to this size.
-/// 512 lights × 64 bytes = 32 KB per frame — trivial.
-pub(super) const MAX_LIGHTS: usize = 512;
+/// 1023 lights × 64 bytes is just under 64 KB per frame. Raised from 512 after
+/// the R2 integrity oracle measured 656 authored lights in Cydonia; the old
+/// cap discarded 144 before cluster assignment. The non-power-of-two ceiling
+/// is deliberate: ReSTIR packs the selected index into 10 bits and reserves
+/// `0x3ff` (1023) as its invalid sentinel, leaving valid indices 0..=1022.
+pub(super) const MAX_LIGHTS: usize = 1023;
 
 /// Maximum bones we can upload per frame across all skinned meshes.
 /// 196608 × 64 B = 12 MB/frame × 3 frames-in-flight = 36 MB total.

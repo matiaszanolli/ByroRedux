@@ -99,6 +99,7 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(LightAttenCommand);
     registry.register(ScriptActivateCommand);
     registry.register(MatListCommand);
+    registry.register(MatDumpCommand);
     registry.register(MatSetCommand);
     registry.register(RagdollCommand);
     // M45 — save/load (the matching `SaveRegistry` + `SaveState`

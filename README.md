@@ -181,6 +181,18 @@ cargo run -- path/to/mesh.nif [--kf path/to/anim.kf]
 cargo run --release -- --cornell
 cargo run --release -- --cornell-sun
 
+# Controlled correctness ladder: L0 dark plane, L1 analytic directional
+# Lambert response, L2 the same scene plus one opaque hard-shadow blocker.
+cargo run --release -- --cornell-oracle l0
+cargo run --release -- --cornell-oracle l1
+cargo run --release -- --cornell-oracle l2
+# Raw oracle captures (direct L0/L1; selected-light visibility L2):
+BYROREDUX_RENDER_DEBUG=0x4000000 cargo run --release -- --cornell-oracle l0 --upscaler taa
+BYROREDUX_RENDER_DEBUG=0x4000000 cargo run --release -- --cornell-oracle l1 --upscaler taa
+BYROREDUX_RENDER_DEBUG=0x84000000 cargo run --release -- --cornell-oracle l2 --upscaler taa
+# RT-capable integration gate: analytic pixels + rt-integrity preconditions.
+cargo test --release -p byroredux --test cornell_rt_oracle -- --ignored --nocapture
+
 # Per-game NIF parse-rate sweep (requires game data)
 cargo test -p byroredux-nif --release --test parse_real_nifs -- --ignored
 

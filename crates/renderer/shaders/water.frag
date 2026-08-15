@@ -292,7 +292,7 @@ vec3 traceWaterRay(
         rayQueryInitializeEXT(
             rq, topLevelAS,
             gl_RayFlagsOpaqueEXT, 0xFF,
-            rayOrigin, 0.05, direction, remaining
+            rayOrigin, 0.0, direction, remaining
         );
         while (rayQueryProceedEXT(rq)) {}
 
@@ -330,13 +330,16 @@ vec3 traceWaterRay(
                  + rayHitEmission(mat, uv, baseSample.rgb, 0.0);
         }
 
-        float advance = max(localT + 0.05, 0.05);
+        vec3 hitPoint = rayOrigin + direction * localT;
+        vec3 nextOrigin = offsetRayOriginForDirection(
+            hitPoint, getHitTriNormal(instIdx, primIdx), direction);
+        float advance = length(nextOrigin - rayOrigin);
         travelled += advance;
         remaining = maxDist - travelled;
-        if (remaining <= 0.05) {
+        if (remaining <= 0.0) {
             break;
         }
-        rayOrigin = origin + direction * travelled;
+        rayOrigin = nextOrigin;
     }
 
     hit = false;
@@ -405,10 +408,13 @@ float foamShoreline(vec3 worldPos, vec3 surfaceNormal) {
         return 0.0;
     }
     rayQueryEXT rq;
+    vec3 rayDirection = -surfaceNormal;
+    vec3 rayOrigin = offsetRayOriginForDirection(
+        worldPos, surfaceNormal, rayDirection);
     rayQueryInitializeEXT(
         rq, topLevelAS,
         gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT, 0xFF,
-        worldPos, 0.05, -surfaceNormal, push.tune.z
+        rayOrigin, 0.0, rayDirection, push.tune.z
     );
     rayQueryProceedEXT(rq);
     if (rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionNoneEXT) {
@@ -598,7 +604,7 @@ void main() {
     // reflected ray escaped sparse TLAS geometry.
     vec3 reflectionMiss = jitter.w > 0.5 ? skyTint.xyz : sceneFlags.yzw;
     vec3 reflColor = traceWaterRay(
-        vWorldPos + N * 0.05,
+        offsetRayOriginForDirection(vWorldPos, N, R),
         R,
         REFLECTION_MAX_DIST,
         reflectionMiss,
@@ -636,7 +642,7 @@ void main() {
             // exterior — but conceptually it should land in the deep
             // water column, NOT in the sky above). #1015.
             vec3 hitColor = traceWaterRay(
-                vWorldPos - N * 0.05,
+                offsetRayOriginForDirection(vWorldPos, N, Tdir),
                 Tdir,
                 REFRACTION_MAX_DIST,
                 push.deep.rgb,
@@ -761,22 +767,17 @@ void main() {
             if (length(refractDir) > 1e-4) {
                 // 3. Find floor via TLAS ray (single bounce).
                 //
-                // Origin bias steps INTO the water along -N: the refracted
-                // ray transmits to the -N side, so the floor we want lies
-                // below the surface. This matches the transmission
-                // convention used by triangle.frag's pane refraction
-                // (`fragWorldPos - N * 0.15`) and caustic_splat.comp
-                // (`G - ns * 0.1`) — NOT the +N shadow-ray convention. A +N
-                // bias would push the origin above the surface so this
-                // downward refractDir would re-cross the water plane and
-                // self-intersect the surface mesh. tMin 0.05 matches the
-                // shadow-ray sibling above, foamShoreline, caustic_splat,
-                // and triangle.frag's refraction loop (RT-01 / #1388).
+                // Select the transmission side from refractDir and advance
+                // by representable floats. This starts below the surface
+                // without a fixed engine-unit epsilon and shares the same
+                // zero-tMin contract as triangle and caustic transport.
                 rayQueryEXT floorRq;
+                vec3 floorOrigin = offsetRayOriginForDirection(
+                    vWorldPos, Nsurface, refractDir);
                 rayQueryInitializeEXT(
                     floorRq, topLevelAS,
                     gl_RayFlagsOpaqueEXT, 0xFF,
-                    vWorldPos - Nsurface * 0.05, 0.05, refractDir, 5000.0
+                    floorOrigin, 0.0, refractDir, 5000.0
                 );
                 while (rayQueryProceedEXT(floorRq)) {}
                 if (rayQueryGetIntersectionTypeEXT(floorRq, true)

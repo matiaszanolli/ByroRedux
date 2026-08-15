@@ -1,4 +1,7 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "include/shader_constants.glsl"
 
 layout(set = 0, binding = 0) uniform sampler2D upscaledScene;
 
@@ -21,7 +24,7 @@ layout(set = 0, binding = 1) buffer ImageHealth {
 layout(push_constant) uniform PresentationParams {
     vec4 underwater;
     float exposure;
-    float padding0;
+    float renderDebugFlags;
     float padding1;
     float padding2;
     vec4 lens;
@@ -123,6 +126,20 @@ void main() {
     }
     if (isnan(raw.a) || isinf(raw.a)) {
         atomicAdd(health.nonFiniteAlpha, 1u);
+    }
+
+    // The main/composite passes have already encoded the debug oracle in
+    // display-linear [0,1]. Preserve categorical colours, scalar visibility,
+    // and isolated lighting energy exactly: no lens kernels, grading,
+    // exposure, ACES, underwater treatment, or scripted fades.
+    uint dbgFlags = floatBitsToUint(params.renderDebugFlags);
+    bool rawDebug = (dbgFlags & DBG_VIZ_SELECTED_LIGHT) != 0u
+        || (dbgFlags & DBG_VIZ_DIRECT) != 0u
+        || (dbgFlags & DBG_VIZ_RAW_INDIRECT) != 0u
+        || (dbgFlags & DBG_VIZ_RT_LOD) == DBG_VIZ_RT_LOD;
+    if (rawDebug) {
+        outColor = vec4(clamp(raw.rgb, 0.0, 1.0), raw.a);
+        return;
     }
 
     vec4 scene = sampleImageSpace(fragUV);

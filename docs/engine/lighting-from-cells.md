@@ -1,6 +1,6 @@
 # Cell-Based Lighting Architecture
 
-> Status as of Session 42 (2026-05-28). The "Per-mesh NiLight" and
+> Status reconciled 2026-08-15 through the RT-lighting recovery. The "Per-mesh NiLight" and
 > "Where the data lives today" sections describe what is actually wired
 > in the current tree; the Tier 0/1/2 material below is the original
 > design vision (authored Session ~9, M28/N26 era) — kept for intent,
@@ -63,7 +63,8 @@ Result: the renderer sees both "cell environment light" (XCLL) and
 [`build_render_data()`](../../byroredux/src/render/mod.rs) path
 (light collection itself lives in
 [`byroredux/src/render/lights.rs::collect_lights`](../../byroredux/src/render/lights.rs)),
-feeding the same SSBO and the same ray query shadow pass. From the
+feeding the same SSBO, cluster assignment, ReSTIR selection, and selected-ray
+visibility path. From the
 renderer's perspective there's no difference between a torch inside a
 REFR and a cell's ambient colour.
 
@@ -115,7 +116,8 @@ ground truth:
 
 [`crates/plugin/src/esm/cell/mod.rs`](../../crates/plugin/src/esm/cell/mod.rs)
 parses the interior `XCLL` sub-record into a `CellLighting` struct. Base
-fields (`ambient`, `directional_color`, `directional_rotation`,
+fields (`ambient`, `directional_color`, `directional_azimuth`,
+`directional_elevation`,
 `fog_color`, `fog_near`, `fog_far`) are shared across all games. The
 Skyrim+ 92-byte XCLL adds `Option` fields, all `None` on pre-Skyrim:
 `directional_fade`, `fog_clip`, `fog_power`, `fog_far_color`, `fog_max`,
@@ -228,8 +230,8 @@ and is indexed in `EsmIndex.lighting_templates`. The resolution chain is
    its `LTMP` resolves through `index.lighting_templates`, the template's
    ambient / directional / fog scalars (plus `directional_fade` /
    `fog_clip` / `fog_power`) project into a fresh `CellLighting`. Fields
-   the LGTM stub doesn't carry (`directional_rotation`, the ambient cube,
-   specular) stay at pre-XCLL defaults — `directional_rotation = [0, 0]`
+   the LGTM stub doesn't carry (directional azimuth/elevation, the ambient cube,
+   specular) stay at pre-XCLL defaults — azimuth/elevation `[0, 0]`
    (sun-from-+X), Skyrim-extended optionals `None`.
 3. **No XCLL and no resolvable LGTM** → `None` → engine-default ambient.
 
@@ -256,6 +258,13 @@ splits source selection between interior and exterior:
   `sun_intensity / SUN_INTENSITY_PEAK` (`SUN_INTENSITY_PEAK = 4.0`),
   so the directional tracks the TOD sun.
 
+XCLL's two source angles do not use the shared REFR/NIF Euler helper. They are
+semantic azimuth/elevation fields and translate once at the cell boundary via
+`xcll_direction_yup`; the helper preserves azimuth, maps the common FNV
+`(0°, 270°)` authoring to an overhead +Y source direction, and is pinned by
+axis/unit tests plus a real-FNV corpus census. This isolates cell-light
+conventions from NIF animation and placed-reference transforms.
+
 After that source boundary, both emitted variants upload the standard
 directional `radius = 0` contract and run through the same Lambert/GGX evaluation,
 ReSTIR shadow reservoir, ray query, and distance fade. GI inputs remain
@@ -268,6 +277,13 @@ generated renderer constants and are consumed by opaque geometry, water,
 and volumetrics. The directional trace covers the complete fade interval,
 so no environment loses occlusion before its shadow contribution has
 tapered to zero.
+
+`light.dump` exposes the CPU-side side of this contract: cell/sky/time state
+plus every live `LightSource` entity's kind, ancestor FormID when present,
+position/direction, radiant colour, dimmer/intensity, range, cone, attenuation,
+visibility mask and legacy flags. GPU membership and cluster high-water/drop
+evidence live beside it in `rt.integrity`; selected reservoir identity is the
+raw `DBG_VIZ_SELECTED_LIGHT` false-colour view.
 
 ### TOD clock — `weather_system`
 

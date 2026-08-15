@@ -103,8 +103,8 @@ pub(crate) use refr::{
     build_refr_texture_overlay, expand_pkin_placements, expand_scol_placements, RefrTextureOverlay,
 };
 
+pub(crate) use euler::euler_zup_to_quat_yup_refr;
 pub use euler::set_refr_rotation_mode_diag;
-pub(crate) use euler::{euler_zup_to_quat_yup, euler_zup_to_quat_yup_refr};
 
 pub(crate) use exterior::{
     begin_worldspace_persistent_cell, ExteriorCellApplyJob, ExteriorCellApplyProgress,

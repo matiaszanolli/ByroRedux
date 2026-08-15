@@ -186,6 +186,12 @@ fn light_dump_handles_missing_and_present_resources() {
         current_dalc_cube: None,
     });
     world.insert_resource(GameTimeRes::new(10.5, 30.0));
+    let emitter = world.spawn();
+    world.insert(
+        emitter,
+        GlobalTransform::new(Vec3::new(1.0, 2.0, 3.0), Quat::IDENTITY, 1.0),
+    );
+    world.insert(emitter, LightSource::default());
 
     let lines = cmd.execute(&world, "").lines;
     let joined = lines.join("\n");
@@ -212,6 +218,14 @@ fn light_dump_handles_missing_and_present_resources() {
     assert!(
         joined.contains("procedural disc fallback"),
         "sun_texture_index=0 must annotate procedural fallback: {}",
+        joined
+    );
+    assert!(
+        joined.contains("LightSource emitters: 1")
+            && joined.contains(&format!("entity={emitter}"))
+            && joined.contains("kind=Point")
+            && joined.contains("source=nif/synthetic"),
+        "live emitter provenance row missing: {}",
         joined
     );
 }
@@ -501,6 +515,71 @@ fn mat_list_tabulates_materials() {
     );
     assert!(out.contains("probe_a"), "name missing: {out}");
     assert!(out.contains("kind"), "header missing: {out}");
+}
+
+#[test]
+fn mat_dump_reports_texture_path_provenance_and_binding_contract() {
+    use byroredux_nif::import::MaterialTextureSet;
+
+    let mut world = World::new();
+    world.insert_resource(StringPool::new());
+    let entity = world.spawn();
+    let mut material = Material::default();
+    material.effect_shader_flags = byroredux_renderer::vulkan::material::material_flag::PBR_BSDF
+        | byroredux_renderer::vulkan::material::material_flag::MODEL_SPACE_NORMALS;
+    world.insert(entity, material);
+
+    let mut paths = MaterialTextureSet::default();
+    paths.base_color = Some(r"textures\architecture\wall_d.dds".to_string());
+    paths.normal = Some(r"textures\architecture\wall_n.dds".to_string());
+    paths.environment = Some(r"textures\cubemaps\interior.dds".to_string());
+    let mut sources = MaterialTextureSet::default();
+    sources.base_color = MaterialTextureSource::MeshMaterial;
+    sources.normal = MaterialTextureSource::DerivedNormal;
+    sources.environment = MaterialTextureSource::TxstOverride;
+    world.insert(
+        entity,
+        MaterialTextureDebugInfo {
+            paths,
+            sources,
+            clamp_mode: 2,
+        },
+    );
+    let mut handles = MaterialTextureSet::default();
+    handles.base_color = 17;
+    handles.normal = 18;
+    handles.environment = 19;
+    world.insert(
+        entity,
+        MaterialTextureHandles {
+            textures: handles,
+            normal_has_alpha: true,
+            parallax_height_scale: 0.04,
+            parallax_max_passes: 4.0,
+        },
+    );
+
+    let out = MatDumpCommand
+        .execute(&world, &entity.to_string())
+        .lines
+        .join("\n");
+    assert!(out.contains("flags=0x000000a0"), "flag word missing: {out}");
+    assert!(out.contains("lobe=disney-pbr"), "lobe missing: {out}");
+    assert!(
+        out.contains("base_color") && out.contains("mesh-material") && out.contains(r"wall_d.dds"),
+        "base slot provenance missing: {out}"
+    );
+    assert!(
+        out.contains("derived-normal") && out.contains(r"wall_n.dds"),
+        "derived normal provenance missing: {out}"
+    );
+    assert!(
+        out.contains("environment")
+            && out.contains("set=0 binding=1")
+            && out.contains("txst-override")
+            && out.contains("cube"),
+        "cubemap binding/provenance missing: {out}"
+    );
 }
 
 // ── `world.owners` — EX-08 ownership soak surface (#2374) ──────────

@@ -25,7 +25,8 @@ use crate::asset_provider::{
 };
 use crate::components::{
     decal_uses_implicit_alpha_blend, texture_path_is_fx_mesh, AlphaBlend, DoorTeleport,
-    IsDecalMesh, IsFxMesh, MaterialTextureHandles, TwoSided,
+    IsDecalMesh, IsFxMesh, MaterialTextureDebugInfo, MaterialTextureHandles, MaterialTextureSource,
+    TwoSided,
 };
 
 use super::nif_import_registry::CachedNifImport;

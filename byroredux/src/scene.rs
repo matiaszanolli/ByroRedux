@@ -432,18 +432,26 @@ pub(crate) fn setup_scene(
     // `None`. See cell_loader::transition.
     world.insert_resource(cell_loader::PendingCellTransitionSlot::default());
 
-    // Cornell-box test harness (`--cornell` / `--cornell-sun`) — a
+    // Cornell-box test harness (`--cornell`, `--cornell-sun`, or the
+    // controlled `--cornell-oracle l0|l1|l2` ladder) — a
     // self-contained RT validation scene needing no on-disk game data.
     // Takes precedence over the ESM / NIF / demo paths. Returns the
     // camera pose to use (overridable by the usual `--camera-pos` /
     // `--camera-forward`). `--cornell-sun` selects the exterior /
     // sun-only variant (#1942); see `crate::cornell`.
+    let cornell_oracle =
+        crate::cornell::cornell_oracle_rung(&args).unwrap_or_else(|message| panic!("{message}"));
     let cornell_sun = cornell_sun_mode(&args);
-    let cornell = cornell_sun.is_some();
+    let cornell = cornell_oracle.is_some() || cornell_sun.is_some();
     let mut cornell_cam: Option<(Vec3, Vec3)> = None;
 
     // Cell loading mode: --esm <path> --cell <editor_id> OR --wrld <name> --grid <x>,<y>
-    if let Some(sun) = cornell_sun {
+    if let Some(rung) = cornell_oracle {
+        let (pos, target) = crate::cornell::setup_cornell_oracle_scene(world, ctx, rung);
+        cornell_cam = Some((pos, target));
+        cam_center = target;
+        has_nif_content = true;
+    } else if let Some(sun) = cornell_sun {
         let (pos, target) = crate::cornell::setup_cornell_scene(world, ctx, sun);
         cornell_cam = Some((pos, target));
         cam_center = target;

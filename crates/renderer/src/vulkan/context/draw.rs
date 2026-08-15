@@ -583,7 +583,7 @@ struct CompositeParamsInputs<'a> {
     fog_power: f32,
     fog_height_reference: f32,
     sky_params: &'a SkyParams,
-    exposure_value: f32,
+    render_debug_flags: u32,
     frame_counter: u32,
     volume_far_distance: f32,
     /// Froxel grid depth (slice count) — #2470, `volumetrics::extent().depth`.
@@ -618,7 +618,7 @@ fn build_composite_params(
         fog_power,
         fog_height_reference,
         sky_params,
-        exposure_value,
+        render_debug_flags,
         frame_counter,
         volume_far_distance,
         froxel_slice_count,
@@ -645,15 +645,10 @@ fn build_composite_params(
         fog_params: [fog_near, fog_far, fog_clip, fog_power],
         depth_params: [
             if sky_params.is_exterior { 1.0 } else { 0.0 },
-            // Exposure — vestigial in the composite UBO. `composite.frag`
-            // does not read `depth_params.y`; the live exposure consumer
-            // is `presentation.frag`'s `exposure` push constant, sourced
-            // from this same shared exposure producer separately in
-            // `record_presentation_pass`. Kept here for UBO layout
-            // parity (default Bethesda-era HDR target; promote to WTHR
-            // field #743). Falls back to the const when the 1x1
-            // resource failed to allocate.
-            exposure_value,
+            // Categorical debug views must bypass fog, caustics, bloom and
+            // dither in the composite pass. Bitcast the same flag word the
+            // camera UBO supplies to triangle.frag; no numeric conversion.
+            f32::from_bits(render_debug_flags),
             // #1013 — host-side mirror of the volumetric-output gate.
             // Vestigial: #1926 removed the `composite.frag` branch that
             // used to read this slot, so `vol.a`/`vol.rgb` consumption
@@ -810,7 +805,7 @@ mod composite_params_tests {
             fog_power: 222.0,
             fog_height_reference: 50.0,
             sky_params: &sky_params,
-            exposure_value: 1.5,
+            render_debug_flags: crate::shader_constants::DBG_VIZ_SHADOW_VISIBILITY,
             frame_counter: 42,
             volume_far_distance: 4096.0,
             froxel_slice_count: 64.0,
@@ -828,8 +823,9 @@ mod composite_params_tests {
         assert_eq!(params.fog_color, [0.7, 0.8, 0.9, 1.0]);
         assert_eq!(params.depth_params[0], 1.0, "is_exterior must map through");
         assert_eq!(
-            params.depth_params[1], 1.5,
-            "exposure_value must map through"
+            params.depth_params[1].to_bits(),
+            crate::shader_constants::DBG_VIZ_SHADOW_VISIBILITY,
+            "render_debug_flags must map through without numeric conversion"
         );
         assert_eq!(params.volume_params[0], 4096.0);
         assert_eq!(params.sky_zenith, [0.1, 0.2, 0.3, 0.9998]);
@@ -865,7 +861,7 @@ mod composite_params_tests {
             fog_power: 0.0,
             fog_height_reference: 0.0,
             sky_params: &sky_params,
-            exposure_value: 0.0,
+            render_debug_flags: 0,
             frame_counter: 0,
             volume_far_distance: 0.0,
             froxel_slice_count: 0.0,
@@ -3220,10 +3216,7 @@ impl VulkanContext {
                 fog_power,
                 fog_height_reference,
                 sky_params,
-                exposure_value: self
-                    .exposure
-                    .as_ref()
-                    .map_or(super::super::exposure::DEFAULT_EXPOSURE, |e| e.value()),
+                render_debug_flags: self.render_debug_flags,
                 frame_counter: self.frame_counter,
                 volume_far_distance: self
                     .volumetrics

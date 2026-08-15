@@ -97,10 +97,10 @@ fn engine_default_interior_lighting() -> CellLightingRes {
 /// installing *something* is the fix — callers no longer branch on it.
 ///
 /// For `Some`, routes the authored XCLL Euler angles through
-/// `euler_zup_to_quat_yup` (the CW-convention helper REFR placements use),
-/// then applies the Y-up quaternion to Gamebryo's `NiDirectionalLight` model
-/// direction `(1,0,0)` (2.3 `NiDirectionalLight.h`: "The model direction of
-/// the light is (1,0,0)"; the Z-up → Y-up swap leaves +X invariant).
+/// XCLL stores azimuth and cyclic elevation, not a REFR Euler triple. The
+/// dedicated spherical conversion preserves the authored horizontal angle;
+/// routing it through the shared REFR helper discards azimuth because an
+/// X-axis rotation cannot move the `(1,0,0)` model vector.
 /// `is_interior` is always `true` — `load_cell_with_masters` only loads
 /// interior cells, and the flag makes `CellLightingRes` skip the
 /// directional as a scene light to prevent wall light leakage. The 9
@@ -112,12 +112,7 @@ pub(crate) fn apply_interior_cell_lighting(
 ) {
     let res = match lighting {
         Some(lit) => {
-            let quat = super::euler_zup_to_quat_yup(
-                lit.directional_rotation_xy,
-                lit.directional_rotation_z,
-                0.0,
-            );
-            let dir_v = quat * Vec3::new(1.0, 0.0, 0.0);
+            let dir_v = xcll_direction_yup(lit.directional_azimuth, lit.directional_elevation);
             let dir = [dir_v.x, dir_v.y, dir_v.z];
             log::info!(
                 "Cell lighting: ambient={:?} directional={:?} dir={:?} fog={:?} near={:.0} far={:.0}",
@@ -138,6 +133,23 @@ pub(crate) fn apply_interior_cell_lighting(
         }
     };
     world.insert_resource(res);
+}
+
+/// Convert XCLL's signed-degree azimuth/elevation pair into the renderer's
+/// Y-up unit direction **toward** the directional source.
+///
+/// The on-disk elevation is cyclic: 0° is horizontal, 90° points below, and
+/// 270° points overhead. That sign is pinned by FalloutNV.esm's 252 active
+/// directionals: 96 use `(azimuth=0°, elevation=270°)`, the dominant authored
+/// key-light preset. Source Z-up `(x,y,z)` becomes renderer Y-up `(x,z,-y)`.
+pub(super) fn xcll_direction_yup(azimuth: f32, elevation: f32) -> Vec3 {
+    let (sin_azimuth, cos_azimuth) = azimuth.sin_cos();
+    let (sin_elevation, cos_elevation) = elevation.sin_cos();
+    Vec3::new(
+        cos_elevation * cos_azimuth,
+        -sin_elevation,
+        -cos_elevation * sin_azimuth,
+    )
 }
 
 /// Surface parsed `GLOB` runtime values as the `Globals` `World` resource,
@@ -557,8 +569,8 @@ fn lighting_from_template(template: &esm::records::LgtmRecord) -> esm::cell::Cel
     esm::cell::CellLighting {
         ambient: template.ambient,
         directional_color: template.directional,
-        directional_rotation_xy: template.directional_rotation[0],
-        directional_rotation_z: template.directional_rotation[1],
+        directional_azimuth: template.directional_rotation[0],
+        directional_elevation: template.directional_rotation[1],
         fog_color: template.fog_color,
         fog_near: template.fog_near,
         fog_far: template.fog_far,
@@ -619,8 +631,8 @@ fn inherit_lighting_fields(
         local.fog_far = template.fog_far;
     }
     if flags & XCLL_INHERIT_DIRECTIONAL_ROTATION != 0 {
-        local.directional_rotation_xy = template.directional_rotation[0];
-        local.directional_rotation_z = template.directional_rotation[1];
+        local.directional_azimuth = template.directional_rotation[0];
+        local.directional_elevation = template.directional_rotation[1];
     }
     if flags & XCLL_INHERIT_DIRECTIONAL_FADE != 0 && template.directional_fade.is_some() {
         local.directional_fade = template.directional_fade;
@@ -740,8 +752,8 @@ mod tests {
         esm::cell::CellLighting {
             ambient: [0.10, 0.10, 0.12],
             directional_color: [1.0, 0.95, 0.80],
-            directional_rotation_xy: 0.0,
-            directional_rotation_z: 0.0,
+            directional_azimuth: 0.0,
+            directional_elevation: 0.0,
             fog_color: [0.50, 0.45, 0.30],
             fog_near: 100.0,
             fog_far: 8000.0,

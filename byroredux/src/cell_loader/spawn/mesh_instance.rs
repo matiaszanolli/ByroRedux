@@ -16,6 +16,7 @@ use byroredux_nif::import::{slot_to_role, TextureRole};
 /// so `resolve_mesh_paths` + `spawn_mesh_instance` can share it (#2057).
 pub(super) struct ResolvedMeshPaths {
     textures: byroredux_nif::import::MaterialTextureSet<Option<String>>,
+    sources: byroredux_nif::import::MaterialTextureSet<MaterialTextureSource>,
     material_path: Option<String>,
     name_sym: Option<byroredux_core::string::FixedString>,
 }
@@ -43,26 +44,51 @@ pub(super) fn resolve_mesh_paths(
                 .material
                 .textures
                 .map_ref(|path| resolve_to_owned(&pool, *path));
+            let mut sources = mesh.material.textures.map_ref(|path| {
+                if path.is_some() {
+                    MaterialTextureSource::MeshMaterial
+                } else {
+                    MaterialTextureSource::Absent
+                }
+            });
+            let resolve_effective =
+                |override_path: Option<FixedString>, mesh_path: Option<FixedString>| {
+                    if let Some(path) = override_path {
+                        (
+                            resolve_to_owned(&pool, Some(path)),
+                            MaterialTextureSource::TxstOverride,
+                        )
+                    } else if let Some(path) = mesh_path {
+                        (
+                            resolve_to_owned(&pool, Some(path)),
+                            MaterialTextureSource::MeshMaterial,
+                        )
+                    } else {
+                        (None, MaterialTextureSource::Absent)
+                    }
+                };
             // Effective texture slot paths. REFR overlay
             // (XATO/XTNM/XTXR) wins over the NIF-authored paths
             // when present; for slots the overlay left empty the
             // cached NIF's texture rides through. `None` on both
             // sides means the slot has no texture. See #584.
-            textures.base_color = resolve_to_owned(
-                &pool,
-                ov.and_then(|o| o.diffuse)
-                    .or(mesh.material.textures.base_color),
+            (textures.base_color, sources.base_color) = resolve_effective(
+                ov.and_then(|o| o.diffuse),
+                mesh.material.textures.base_color,
             );
             // Oblivion/FO3 ship normal maps via the `<base>_n.dds`
             // load-time convention, not an explicit NIF slot. When the
             // mesh left both normal/bump slots empty, derive the sibling
             // from the (effective) diffuse path; it resolves like any
             // texture and fails soft if absent (#1303 / OBL-D4-NEW-01).
-            textures.normal = resolve_to_owned(
-                &pool,
-                ov.and_then(|o| o.normal).or(mesh.material.textures.normal),
-            )
-            .or_else(|| textures.base_color.as_deref().map(derive_normal_map_path));
+            (textures.normal, sources.normal) =
+                resolve_effective(ov.and_then(|o| o.normal), mesh.material.textures.normal);
+            if textures.normal.is_none() {
+                textures.normal = textures.base_color.as_deref().map(derive_normal_map_path);
+                if textures.normal.is_some() {
+                    sources.normal = MaterialTextureSource::DerivedNormal;
+                }
+            }
             // #2695 — the overlay stores its slots under NIF-slot names
             // (`glow` IS slot 2, `height` IS slot 3, `inner` IS slot 6,
             // `specular` IS slot 7), but which canonical role a slot means
@@ -92,54 +118,46 @@ pub(super) fn resolve_mesh_paths(
                 raw.filter(|_| slot_to_role(shader_type, slot, msn) == Some(role))
             };
 
-            textures.emissive = resolve_to_owned(
-                &pool,
-                ov.and_then(|o| pick(2, o.glow, TextureRole::Emissive))
-                    .or(mesh.material.textures.emissive),
+            (textures.emissive, sources.emissive) = resolve_effective(
+                ov.and_then(|o| pick(2, o.glow, TextureRole::Emissive)),
+                mesh.material.textures.emissive,
             );
             // Slot 2 on the tint family (FaceTint / SkinTint / HairTint) is the
             // `*_sk.dds` skin-tint mask, not a glow map.
-            textures.tint = resolve_to_owned(
-                &pool,
-                ov.and_then(|o| pick(2, o.glow, TextureRole::Tint))
-                    .or(mesh.material.textures.tint),
+            (textures.tint, sources.tint) = resolve_effective(
+                ov.and_then(|o| pick(2, o.glow, TextureRole::Tint)),
+                mesh.material.textures.tint,
             );
-            textures.height = resolve_to_owned(
-                &pool,
-                ov.and_then(|o| pick(3, o.height, TextureRole::Height))
-                    .or(mesh.material.textures.height),
+            (textures.height, sources.height) = resolve_effective(
+                ov.and_then(|o| pick(3, o.height, TextureRole::Height)),
+                mesh.material.textures.height,
             );
             // Slot 3 on FaceTint is a complexion detail map; routing it to
             // `height` made the shader ray-march POM over a face.
-            textures.detail = resolve_to_owned(
-                &pool,
-                ov.and_then(|o| pick(3, o.height, TextureRole::Detail))
-                    .or(mesh.material.textures.detail),
+            (textures.detail, sources.detail) = resolve_effective(
+                ov.and_then(|o| pick(3, o.height, TextureRole::Detail)),
+                mesh.material.textures.detail,
             );
-            textures.environment = resolve_to_owned(
-                &pool,
-                ov.and_then(|o| pick(4, o.env, TextureRole::Environment))
-                    .or(mesh.material.textures.environment),
+            (textures.environment, sources.environment) = resolve_effective(
+                ov.and_then(|o| pick(4, o.env, TextureRole::Environment)),
+                mesh.material.textures.environment,
             );
-            textures.environment_mask = resolve_to_owned(
-                &pool,
-                ov.and_then(|o| pick(5, o.env_mask, TextureRole::EnvironmentMask))
-                    .or(mesh.material.textures.environment_mask),
+            (textures.environment_mask, sources.environment_mask) = resolve_effective(
+                ov.and_then(|o| pick(5, o.env_mask, TextureRole::EnvironmentMask)),
+                mesh.material.textures.environment_mask,
             );
-            textures.inner_layer = resolve_to_owned(
-                &pool,
-                ov.and_then(|o| pick(6, o.inner, TextureRole::InnerLayer))
-                    .or(mesh.material.textures.inner_layer),
+            (textures.inner_layer, sources.inner_layer) = resolve_effective(
+                ov.and_then(|o| pick(6, o.inner, TextureRole::InnerLayer)),
+                mesh.material.textures.inner_layer,
             );
             if effective_model_space_normals {
                 // Slot 7 changes role on model-space-normal materials: it is
                 // alternate specular intensity/colour, not smoothness. Keep
                 // the REFR override in the canonical standalone-specular
                 // lane so it cannot change roughness downstream.
-                textures.specular = resolve_to_owned(
-                    &pool,
-                    ov.and_then(|o| pick(7, o.specular, TextureRole::Specular))
-                        .or(mesh.material.textures.specular),
+                (textures.specular, sources.specular) = resolve_effective(
+                    ov.and_then(|o| pick(7, o.specular, TextureRole::Specular)),
+                    mesh.material.textures.specular,
                 );
             } else {
                 // Without MSN the table gives slot 7 no role, so the overlay
@@ -151,11 +169,8 @@ pub(super) fn resolve_mesh_paths(
             }
             // `wrinkle` is an FO4/FO76 TX02 role, not a BSShaderTextureSet slot
             // index, so it does not go through the slot table.
-            textures.wrinkle = resolve_to_owned(
-                &pool,
-                ov.and_then(|o| o.wrinkle)
-                    .or(mesh.material.textures.wrinkle),
-            );
+            (textures.wrinkle, sources.wrinkle) =
+                resolve_effective(ov.and_then(|o| o.wrinkle), mesh.material.textures.wrinkle);
             let material_path = resolve_to_owned(
                 &pool,
                 ov.and_then(|o| o.material_path)
@@ -169,6 +184,7 @@ pub(super) fn resolve_mesh_paths(
             let name_sym = mesh.name.as_deref().map(|n| pool.intern(n));
             ResolvedMeshPaths {
                 textures,
+                sources,
                 material_path,
                 name_sym,
             }
@@ -596,6 +612,14 @@ pub(super) fn spawn_mesh_instance(
             normal_has_alpha,
             parallax_height_scale: mesh.material.parallax_height_scale.unwrap_or(0.04),
             parallax_max_passes: mesh.material.parallax_max_passes.unwrap_or(4.0),
+        },
+    );
+    world.insert(
+        entity,
+        MaterialTextureDebugInfo {
+            paths: eff_textures,
+            sources: paths.sources,
+            clamp_mode: mesh.material.texture_clamp_mode,
         },
     );
     // #1480 / REN-D22-NEW-01 — resolve the normal-alpha-as-spec roughness

@@ -45,22 +45,9 @@ vec4 traceReflection(vec3 origin, vec3 direction, float maxDist, float mipBias,
     bool _isExt = jitter.w > 0.5;
     vec3 missCol = _isExt ? (skyTint.xyz * 0.5 + sceneFlags.yzw * 0.5)
                           : sceneFlags.yzw;
-    // tMin = 0.05 matches the N_bias offset every caller already
-    // applies to `origin`. Live callers (grep for `traceReflection(`):
-    //   * glass IOR reflection — bias 0.05, maxDist 3000
-    //   * metal jittered reflection — bias 0.1, maxDist 5000
-    // Same 0.05 tMin convention every other ray-query site in this
-    // shader uses (grep `rayQueryInitializeEXT`): window portal,
-    // refraction loop, cluster shadow, GI bounce. Pre-#1017 this was
-    // 0.01 — five times smaller than the bias — which let perturbed-
-    // normal flips at grazing angles fire the ray back through the
-    // surface and self-hit, producing black speckle on metals. Same
-    // fix shape as the GI-tMin normalisation (grep `giRQ`).
-    //
-    // Note: previous revisions of this comment cited line numbers
-    // (1486/1633/1702/2049/2408/2472/2484) but Session 34's split
-    // and subsequent refactors drift them every release; #1158 fix
-    // (2026-05-18) replaces them with grep-friendly anchors.
+    // Every caller supplies a scale-aware origin from offsetRayOriginForDirection.
+    // Continue alpha/self skips with the same representable-float offset and a
+    // zero tMin; no world-space epsilon is valid across all seven games.
     const int MAX_TRANSPARENT_SKIPS = 8;
     vec3 rayOrigin = origin;
     float remaining = maxDist;
@@ -70,12 +57,13 @@ vec4 traceReflection(vec3 origin, vec3 direction, float maxDist, float mipBias,
     vec2 hitBary = vec2(0.0);
     vec2 hitUV = vec2(0.0);
     vec4 hitBase = vec4(0.0);
+    vec3 hitPosition = vec3(0.0);
 
     for (int layer = 0; layer < MAX_TRANSPARENT_SKIPS; ++layer) {
         rayQueryEXT rq;
         rayQueryInitializeEXT(
             rq, topLevelAS, gl_RayFlagsOpaqueEXT, 0xFF,
-            rayOrigin, 0.05, direction, remaining);
+            rayOrigin, 0.0, direction, remaining);
         while (rayQueryProceedEXT(rq)) {}
         if (rayQueryGetIntersectionTypeEXT(rq, true)
             == gl_RayQueryCommittedIntersectionNoneEXT) break;
@@ -104,15 +92,21 @@ vec4 traceReflection(vec3 origin, vec3 direction, float maxDist, float mipBias,
             hitBary = candidateBary;
             hitUV = candidateUV;
             hitBase = candidateBase;
+            hitPosition = rayOrigin + direction * candidateT;
             travelled += candidateT;
             break;
         }
 
-        float advance = candidateT + 0.1;
+        vec3 hitPoint = rayOrigin + direction * candidateT;
+        vec3 candidateNormal = getHitTriNormal(
+            uint(candidateIdx), uint(candidatePrim));
+        vec3 nextOrigin = offsetRayOriginForDirection(
+            hitPoint, candidateNormal, direction);
+        float advance = length(nextOrigin - rayOrigin);
         travelled += advance;
         remaining -= advance;
-        if (remaining <= 0.05) break;
-        rayOrigin += direction * advance;
+        if (remaining <= 0.0) break;
+        rayOrigin = nextOrigin;
     }
 
     if (hitInstanceIdx < 0) {
@@ -158,7 +152,7 @@ vec4 traceReflection(vec3 origin, vec3 direction, float maxDist, float mipBias,
     vec3 hitColor = rayHitAlbedo(hitMat, hitBaseRgb);
 
     float hitDist = travelled;
-    vec3 hitPos = origin + direction * hitDist;
+    vec3 hitPos = hitPosition;
     vec3 hitN = getHitTriNormal(uint(hitInstanceIdx), uint(hitPrimitiveIdx));
     if (dot(hitN, direction) > 0.0) hitN = -hitN;
     vec3 hitIrradiance = reflectionHitIrradiance(

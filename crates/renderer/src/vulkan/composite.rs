@@ -51,9 +51,9 @@ pub struct CompositeParams {
     /// Legacy XCLL curve inputs retained for the offline physical-fit
     /// conversion. Runtime fog does not evaluate this linear/cubic ramp.
     pub fog_params: [f32; 4],
-    /// x = is_exterior (1.0 = sky enabled), y = exposure — vestigial,
-    /// `composite.frag` does not read it; the live exposure consumer is
-    /// `presentation.frag`'s `exposure` push constant. z =
+    /// x = is_exterior (1.0 = sky enabled), y = render-debug flags bitcast
+    /// through `f32` so categorical transport/material views can bypass every
+    /// composite term. z =
     /// volumetric_consumed flag (1.0 when host
     /// `volumetrics::VOLUMETRIC_OUTPUT_CONSUMED` is true, else 0.0) —
     /// mirrors the host const but no longer gates anything in

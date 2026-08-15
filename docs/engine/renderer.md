@@ -9,15 +9,14 @@ and falls back to non-RT rendering on devices without the extension. The Vulkan 
 
 Source: `crates/renderer/src/vulkan/`
 
-> **Status note (2026-05-28).** This doc was last fully reconciled at
-> Session 42. The Session-12 (2026-04) material/RT narrative is preserved
-> below and extended forward through the work that landed since: the
-> material-table R1 refactor (#785), the Disney BSDF port (#1248–#1257),
-> water + water-side caustics (M38 / #1210), bloom (M58) and volumetrics
-> (M55) scaffolds, GPU bone-palette skinning (M29.5/M29.6), the egui debug
-> overlay, per-pass GPU timers (#1194), and the Session-35 `acceleration/`
-> + `scene_buffer/` submodule splits. Per-frame benchmark numbers are
-> tracked in [ROADMAP.md](../../ROADMAP.md), not duplicated here.
+> **Status note (2026-08-15).** Reconciled through the RT-lighting/material
+> recovery work after Session 64: deterministic anchor comparison, persistent
+> TLAS/cluster integrity telemetry, the physical XCLL directional path,
+> scale-aware secondary-ray origins, generated material flags, and material /
+> light provenance commands. Per-frame benchmark numbers are tracked in
+> [ROADMAP.md](../../ROADMAP.md), not duplicated here. The detailed recovery
+> gates and remaining Cornell/RT-LOD work live in
+> [RT Lighting and Material Correctness Recovery](rt-lighting-material-recovery.md).
 
 ## High-level capabilities
 
@@ -27,15 +26,17 @@ Source: `crates/renderer/src/vulkan/`
   memory barriers, LRU eviction (budget = `device_local / 3`, floored at
   256 MB), `ALLOW_COMPACTION` + async occupancy query + compacted copy
   (M36: 20–50% BLAS memory reduction), batched build submission
-- **Multi-light SSBO**: up to `MAX_LIGHTS = 512` point / spot / directional
-  lights consumed by the fragment shader, with `VK_KHR_ray_query` shadow
-  rays per light and a per-light `falloff_exponent` attenuation contract
+- **Multi-light SSBO**: up to `MAX_LIGHTS = 1023` point / spot / directional
+  lights consumed by the fragment shader, with reservoir-selected
+  `VK_KHR_ray_query` visibility and a per-light `falloff_exponent`
+  attenuation contract
 - **Streaming RIS direct lighting** (M31.5): 16 independent weighted reservoirs
   per fragment (`NUM_RESERVOIRS = 16`), each sampled from the full cluster
   proportional to luminance;
   unbiased W = resWSum / (K · w_sel) clamped at 64×
-- **G-buffer** (5 attachments + the HDR color target): octahedral normal,
-  motion vector, mesh ID, raw indirect, albedo
+- **G-buffer** (7 auxiliary attachments + the HDR color target): octahedral
+  normal, motion vector, mesh ID, raw indirect, albedo, FSR reactive, and FSR
+  transparency/composition
 - **SVGF temporal denoiser** for indirect lighting — motion-vector reprojection,
   mesh-id disocclusion, albedo-demodulated accumulation
 - **Composite pass**: direct + denoised indirect reassembly (multiplies
@@ -46,8 +47,9 @@ Source: `crates/renderer/src/vulkan/`
   3×3 YCoCg neighborhood variance clamp (γ = 1.25), mesh-id disocclusion,
   luma-weighted α = 0.1 blend
 - **Clustered lighting** (`cluster_cull.comp`) — 16×9×24 froxel grid
-  (`CLUSTER_TILES_X/Y` × `CLUSTER_SLICES_Z`), up to 128 lights per cluster,
-  frustum assignment for direct shading candidates
+  (`CLUSTER_TILES_X/Y` × `CLUSTER_SLICES_Z`), up to 512 lights per cluster,
+  frustum assignment for direct shading candidates plus fence-lagged overflow,
+  drop-count, and high-water telemetry
 - **SSAO** (`ssao.comp`) compute pass with noise texture + kernel samples
 - **Disney BSDF** (#1248–#1257): per-material IOR → Fresnel F0, Burley
   retro-reflective diffuse + Hanrahan-Krueger fake-SSS subsurface + Fresnel
@@ -137,8 +139,9 @@ Source: `crates/renderer/src/vulkan/`
   written by `water.frag`'s `imageAtomicAdd`, sampled by composite.
 - **Material-feature flag rename** (Stage 3, `ae364e29`): the per-material
   feature bits dropped their `BGSM_` prefix; the shader reads game-agnostic
-  `MAT_FLAG_*` names. The five effect flags come from the build-generated
-  shader include; the PBR/Disney bits are hand-`#define`d in `triangle.frag`.
+  `MAT_FLAG_*` names. All shader-visible material flags now come from the
+  build-generated shader include and are pinned bit-for-bit against Rust;
+  `BGSM_AUTHORED` remains intentionally host-only provenance.
 
 ## Module map
 
@@ -269,8 +272,9 @@ the allocator fires after the logical device has already been destroyed.
    `patch_camera_rt_flag` flips it in-place after `write_tlas` succeeds,
    killing the cell-load warmup flash — #1227). The motion-vector
    attachment is computed from **un-jittered** positions.
-7. Update the scene SSBO with the per-frame `GpuLight` array (point/spot/dir)
-   and upload the `MaterialTable` SSBO (binding 13).
+7. Update the scene SSBO with the per-frame `GpuLight` array (point/spot/dir,
+   capped at 1023 with submitted/uploaded counts retained) and upload the
+   `MaterialTable` SSBO (binding 13).
 8. **Bone-palette skin chain** (M29.5/M29.6) — dispatch `skin_palette.comp`
    to write per-entity bone-world matrices into the persistent palette SSBO,
    then `skin_vertices.comp` (M29) to write pre-skinned vertices into each
@@ -374,7 +378,10 @@ guard `VUID-03667` at refit time (#1144 / #1145).
   `MIN_BLAS_BUDGET_BYTES = 256 MB`. When a new build would exceed budget,
   the LRU entries are evicted and their instances drop out of the next TLAS
   rebuild. `missing_blas` is counted split by cause — skinned / rigid /
-  ssbo_evicted (#1228) — and throttled to 1 log/sec.
+  ssbo_evicted (#1228). The latest complete membership snapshot is persisted
+  in `RtIntegrityStats`; `rt.integrity` prints the RT publication flag,
+  eligible/emitted/missing instances, the cause split, light upload counts,
+  and GPU cluster overflow telemetry in one machine-readable line.
 - **Per-skinned-entity BLAS** (M29): keyed by `EntityId`, built on the
   per-frame command buffer at first sight with `ALLOW_UPDATE |
   PREFER_FAST_BUILD` (batched — `build_skinned_blas_batched_on_cmd` is the
@@ -400,20 +407,22 @@ guard `VUID-03667` at refit time (#1144 / #1145).
   for reading an acceleration STRUCTURE itself and trips sync validation
   as a copy→build RAW hazard (#1436). `MAX_INSTANCES = 0x40000` (262144);
   `MAX_INDIRECT_DRAWS` is sized identically.
-- **Ray query in the fragment shader + caustic splat compute**: shadow,
-  reflection, bounded path-traced GI, window-portal, and refracted-light
-  caustic rays — all against the same TLAS. Shadow query is driven by the
-  streaming-RIS reservoir pipeline (M31.5). Reflection rays get exponential
-  distance falloff + roughness-driven angular jitter (#320). GI samples an
-  initial cosine-weighted hemisphere direction, then transports an
-  energy-conserving diffuse/GGX BSDF through up to two diffuse events and
-  bounded glass/specular segments. Environment misses are directional and
-  secondary direct light uses material-aware next-event evaluation.
-  `tMin = 0.05` matches the origin bias (#669); far hits retain a smoothed
-  fade across the `rtLOD` boundary (#9873add6).
-  Caustic ray uses `OPAQUE | TerminateOnFirstHit` (#640). Every consumer is
-  gated on `sceneFlags.x > 0.5` (rt_flag = ray_query supported AND TLAS
-  written this frame).
+- **Shared TLAS consumers**: reservoir-selected direct visibility,
+  reflection, bounded path-traced GI, window portals, material-aware/POM
+  shadow hits, glass/MultiLayerParallax caustic splats, water reflection /
+  refraction, and water-side sun/floor caustic rays all query the same TLAS.
+  Reflection rays get exponential distance falloff + roughness-driven angular
+  jitter (#320). GI samples an initial cosine-weighted hemisphere direction,
+  then transports an energy-conserving diffuse/GGX BSDF through up to two
+  diffuse events and bounded glass/specular segments. Environment misses are
+  directional and secondary direct light uses material-aware next-event
+  evaluation. Numerical self-intersection avoidance uses the shared
+  representable-float `offsetRayOriginForDirection` contract and `tMin = 0.0`;
+  named non-zero distances are physical/range policy, not a global epsilon.
+  Far hits retain a smoothed fade across the `rtLOD` boundary (#9873add6), and
+  `DBG_VIZ_RT_LOD` exposes the selected tier. Every consumer is gated on
+  `sceneFlags.x > 0.5` (rt_flag = ray_query supported AND TLAS written this
+  frame).
 
 The `VK_KHR_ray_query` extension is queried at device-pick time. When it's
 not present, the fragment shader falls back to non-shadowed multi-light.
@@ -422,7 +431,7 @@ not present, the fragment shader falls back to non-shadowed multi-light.
 
 Located in [`vulkan/gbuffer.rs`](../../crates/renderer/src/vulkan/gbuffer.rs).
 
-Five render targets (plus the HDR color image) written by the main geometry
+Seven auxiliary render targets plus the HDR color image written by the main geometry
 pass (`triangle.frag`). One image per frame-in-flight slot for each
 attachment:
 
@@ -434,6 +443,8 @@ attachment:
 | Mesh ID | R32_UINT | Disocclusion detection (SVGF + TAA); bit 31 = alpha-blend marker |
 | Raw indirect | B10G11R11_UFLOAT_PACK32 | Albedo-demodulated indirect (#268) |
 | Albedo | B10G11R11_UFLOAT_PACK32 | Re-modulation target in composite |
+| Reactive | R8_UNORM | FSR reactive mask for transparent/dynamic coverage |
+| Transparency | R8_UNORM | FSR transparency-and-composition mask |
 
 The normal attachment was narrowed from RGBA16 to RG16_SNORM via octahedral
 encoding (#275); the raw-indirect + albedo attachments use the packed
@@ -489,14 +500,16 @@ Per-frame flow:
 Located in [`vulkan/composite.rs`](../../crates/renderer/src/vulkan/composite.rs)
 with `shaders/composite.vert` + `shaders/composite.frag`.
 
-Fullscreen quad. Reads the direct HDR, the SVGF-denoised indirect, the
-albedo attachment, the glass and water caustic accumulators, and the bloom
-output; computes `direct + indirect * albedo + caustic + bloom` (re-applying
-the #268 demodulation invariant), runs ACES tone mapping, and writes to the
-swapchain color attachment (or to the TAA input when TAA is enabled). The
-volumetric term is folded in via `final = scene * vol.a + vol.rgb`, but its
-contribution is currently multiplied by 0.0 (`VOLUMETRIC_OUTPUT_CONSUMED`
-gate) until the M55 inject/integrate passes produce real scattering.
+Fullscreen scene-composition pass. Reads the direct HDR, the SVGF-denoised
+indirect, the albedo attachment, the glass and water caustic accumulators, and
+the bloom output; computes `direct + indirect * albedo + caustic + bloom`
+(re-applying the #268 demodulation invariant) into a render-resolution
+linear-HDR image. Upscaling/native resolve and the output-resolution
+presentation pass run afterward; presentation owns exposure, ACES tone
+mapping, and the swapchain write. The volumetric term is folded in via
+`final = scene * vol.a + vol.rgb`, but its contribution is currently
+multiplied by 0.0 (`VOLUMETRIC_OUTPUT_CONSUMED` gate) until the M55
+inject/integrate passes produce real scattering.
 
 ## Material table (R1)
 
@@ -522,13 +535,12 @@ collapse to the same id via `MaterialTable::intern`. `triangle.frag` reads
 The material **feature flags** are game-agnostic: the parser→Material
 boundary resolves all per-game shader-property differences into a small
 flag set, and the shader reads only those flags. The full set lives in
-[`material.rs`](../../crates/renderer/src/vulkan/material.rs). Only the five
-effect flags (`MAT_FLAG_VERTEX_COLOR_EMISSIVE`, `_EFFECT_SOFT`,
-`_EFFECT_PALETTE_COLOR`, `_EFFECT_PALETTE_ALPHA`, `_EFFECT_LIT`) are mirrored
-into the build-generated `shaders/include/shader_constants.glsl`; the
-PBR/Disney bits (`MAT_FLAG_PBR_BSDF`, `MAT_FLAG_TRANSLUCENCY` + variants,
-`MAT_FLAG_MODEL_SPACE_NORMALS`) are hand-`#define`d directly in
-`triangle.frag`, and `material_flag::BGSM_AUTHORED` is host-side only:
+[`material.rs`](../../crates/renderer/src/vulkan/material.rs). Every
+shader-visible flag—including the effect, PBR/Disney, translucency,
+model-space-normal, and thin-glass families—is generated into
+`shaders/include/shader_constants.glsl` from `shader_constants_data.rs` and
+tested bit-for-bit against the Rust constants. `material_flag::BGSM_AUTHORED`
+is host-side provenance only and is intentionally not mirrored:
 
 | Flag | Meaning |
 |------|---------|
@@ -538,6 +550,14 @@ PBR/Disney bits (`MAT_FLAG_PBR_BSDF`, `MAT_FLAG_TRANSLUCENCY` + variants,
 | `MAT_FLAG_TRANSLUCENCY` (+ `_THICK_OBJECT` / `_MIX_ALBEDO`) | Subsurface translucency |
 | `MAT_FLAG_MODEL_SPACE_NORMALS` | Model-space (vs tangent-space) normal map |
 | `material_flag::BGSM_AUTHORED` | Host-side only (NOT mirrored to the shader): material came from a BGSM/BGEM file (drives spec-glossiness → metallic-roughness translation) |
+
+The operator-facing material oracle is `mat.dump <entity|.>`. It prints the
+material kind, flag word, selected BRDF lobe, scalar inputs, and each canonical
+texture role with its resolved path, captured source, bindless handle,
+descriptor binding, dimensionality, and sRGB/linear interpretation. In
+particular, environment maps are pinned to set 0/binding 1 as cubes; ordinary
+2D roles use binding 0. `DBG_VIZ_MATERIAL_LOBES` renders the active lobe as a
+stable false colour without involving the final composite.
 
 `material_kind` carries the special-case render path selector
 (`MATERIAL_KIND_GLASS = 100`, `MATERIAL_KIND_EFFECT_SHADER = 101`,
@@ -653,7 +673,8 @@ phase) and ray-march integration.
 Located in [`vulkan/scene_buffer/`](../../crates/renderer/src/vulkan/scene_buffer/). Split across `mod.rs` (re-exports), `constants.rs` (capacity ceilings + flag bits), `gpu_types.rs` (`#[repr(C)]` shader-contract structs), `buffers.rs` (`SceneBuffers` struct + `new()` + accessors), `upload.rs` (per-SSBO upload-and-flush), and `descriptors.rs` (descriptor-set writes for AO / GBuffer / cluster / TLAS).
 
 The renderer uses an SSBO (not a UBO) so the shader can iterate a variable
-number of lights without recompiling the pipeline (`MAX_LIGHTS = 512`). Each
+number of lights without recompiling the pipeline (`MAX_LIGHTS = 1023`). The
+ceiling leaves packed ReSTIR index `0x3ff` reserved as "no selection". Each
 `GpuLight` is a 64-byte struct of four `vec4`s: `position_radius`
 (xyz = world position, w = radius), `color_type` (rgb = color, w = type:
 0 point / 1 spot / 2 directional), `direction_angle` (xyz = direction,
@@ -663,7 +684,11 @@ bits, w = `AttenuationModel`). The fragment shader evaluates the current
 cluster's candidates with the standardized attenuation contract
 (`fc338d90`), then the ReSTIR-DI reservoir path selects and validates the
 shadowed sample against the TLAS. It is not an unconditional ray-per-light
-loop.
+loop. Cluster assignment is capped at `MAX_LIGHTS_PER_CLUSTER = 512`; the
+compute pass atomically records overflowed clusters, dropped references, and
+the observed high-water count into a per-frame readback buffer. Together with
+the SSBO submitted/uploaded counts and TLAS membership snapshot, this is the
+`rt.integrity` precondition gate for interpreting a shadow result.
 
 The SSBO is double-buffered between frames-in-flight and updated on the host
 with `HOST_VISIBLE` memory.
@@ -676,6 +701,36 @@ uses N.L, BRDF evaluation, the ReSTIR selection path, and TLAS visibility like
 the exterior directional source. LIGH records become point/spot/directional
 lights with their translated range, color, cone and visibility policy. See
 [Cell Lighting](lighting-from-cells.md) for the full pipeline.
+
+`light.dump` complements the GPU integrity line with authored provenance. It
+prints the current cell/sky/time sources and every live `LightSource` emitter's
+kind, ancestor FormID (when present), position/direction, radiance, range,
+cone, attenuation, visibility, and legacy flags. `DBG_VIZ_SELECTED_LIGHT`
+hashes the final reservoir-selected light index to a stable false colour, with
+reserved colours for no candidate and invalid indices.
+`DBG_VIZ_SHADOW_VISIBILITY` shows the corresponding pre-BRDF transmittance as
+greyscale (black blocked, white visible, intermediate glass transmission) and
+uses magenta for no valid selected sample, so missing selection cannot be
+mistaken for an occluder hit.
+
+These categorical/scalar views, plus `DBG_VIZ_DIRECT` and
+`DBG_VIZ_RAW_INDIRECT`, are raw frame-graph oracles, not graded looks.
+Composite returns the direct attachment before fog, caustics, bloom and
+dither; the upscaler uses deterministic native linear blit instead of temporal
+FSR; presentation returns the clamped raw value before lens effects, colour
+grade, exposure, ACES, underwater extinction and fades. This is required for
+term isolation: automatic exposure must not turn a zero-light plane grey. The
+debug selector is carried through both push-constant layouts, and a
+source-contract test pins the bypass at all three stages.
+
+For synthetic isolation, `--cornell-oracle l0|l1|l2` builds a data-driven
+dark-plane → analytic directional → opaque-blocker ladder. Its manifest owns
+the camera, source, expected unshadowed Lambert value, primary raw view and
+linear tolerance; CPU tests pin the one-variable progression and L2 shadow /
+control probe geometry before image capture is involved. The initial L0 raw
+capture found the former `lightCount == 0` synthetic directional fallback;
+that path is removed and a source contract now requires zero lights to produce
+zero direct transport.
 
 ## Pipeline cache
 

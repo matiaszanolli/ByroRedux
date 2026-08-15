@@ -89,9 +89,177 @@ const T: f32 = 0.05;
 /// vector.
 const SUN_DIR_RAW: Vec3 = Vec3::new(0.6, 0.84, 0.4);
 
+/// First hardware-independent rungs of the renderer correctness ladder.
+///
+/// These are deliberately separate from the material-showcase variants above:
+/// every rung adds exactly one variable, so a failed capture names the first
+/// broken contract instead of producing another plausible-looking Cornell
+/// image with several possible causes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CornellOracleRung {
+    L0,
+    L1,
+    L2,
+}
+
+/// Data contract shared by scene construction, analytic tests, and capture
+/// tooling. L3-L5 can extend this table without adding another constructor.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CornellOracleManifest {
+    pub name: &'static str,
+    pub directional_radiance: [f32; 3],
+    /// World-space unit vector from the surface toward the source.
+    pub direction_toward_source: [f32; 3],
+    pub blocker: bool,
+    pub camera_position: Vec3,
+    pub camera_target: Vec3,
+    pub primary_debug_view: &'static str,
+    pub max_linear_error: f32,
+}
+
+// Normalized (1, 1, 2). The receiver faces +Z; the asymmetric source makes
+// L2's hard shadow visible below-left of the blocker while retaining a
+// hand-derivable N.L.
+const ORACLE_LIGHT_DIRECTION: [f32; 3] = [0.408_248_3, 0.408_248_3, 0.816_496_6];
+const ORACLE_CAMERA_POSITION: Vec3 = Vec3::new(0.0, 4.0, 10.0);
+const ORACLE_CAMERA_TARGET: Vec3 = Vec3::new(0.0, 4.0, 0.0);
+
+pub(crate) fn cornell_oracle_manifest(rung: CornellOracleRung) -> CornellOracleManifest {
+    let (name, directional_radiance, blocker, primary_debug_view) = match rung {
+        CornellOracleRung::L0 => ("l0_dark_plane", [0.0; 3], false, "direct"),
+        CornellOracleRung::L1 => ("l1_directional_lambert", [1.0; 3], false, "direct"),
+        CornellOracleRung::L2 => ("l2_opaque_blocker", [1.0; 3], true, "shadow_visibility"),
+    };
+    CornellOracleManifest {
+        name,
+        directional_radiance,
+        direction_toward_source: ORACLE_LIGHT_DIRECTION,
+        blocker,
+        camera_position: ORACLE_CAMERA_POSITION,
+        camera_target: ORACLE_CAMERA_TARGET,
+        primary_debug_view,
+        // Linear-light probe tolerance. Image-level thresholds remain owned by
+        // the capture runner rather than being hidden in this scene builder.
+        max_linear_error: 0.015,
+    }
+}
+
+/// Parse `--cornell-oracle l0|l1|l2` without silently falling back to the
+/// demo scene on a typo. Later rungs intentionally remain errors until their
+/// full scene and assertions exist.
+pub(crate) fn cornell_oracle_rung(args: &[String]) -> Result<Option<CornellOracleRung>, String> {
+    let Some(index) = args.iter().position(|arg| arg == "--cornell-oracle") else {
+        return Ok(None);
+    };
+    let value = args
+        .get(index + 1)
+        .ok_or_else(|| "--cornell-oracle requires one of: l0, l1, l2".to_string())?;
+    let rung = match value.to_ascii_lowercase().as_str() {
+        "l0" => CornellOracleRung::L0,
+        "l1" => CornellOracleRung::L1,
+        "l2" => CornellOracleRung::L2,
+        _ => {
+            return Err(format!(
+                "unknown Cornell oracle rung '{value}'; expected one of: l0, l1, l2"
+            ));
+        }
+    };
+    Ok(Some(rung))
+}
+
+impl CornellOracleManifest {
+    /// Expected legacy-Lambert direct term on the +Z receiver. Oracle materials
+    /// set IOR=1 and specular strength=0, so Fresnel and specular are exactly
+    /// absent and the clustered-light arm reduces to albedo * Li * N.L.
+    pub(crate) fn expected_unshadowed_direct(self, albedo: [f32; 3]) -> [f32; 3] {
+        let n_dot_l = self.direction_toward_source[2].max(0.0);
+        [
+            albedo[0] * self.directional_radiance[0] * n_dot_l,
+            albedo[1] * self.directional_radiance[1] * n_dot_l,
+            albedo[2] * self.directional_radiance[2] * n_dot_l,
+        ]
+    }
+}
+
 /// Unit-length [`SUN_DIR_RAW`].
 fn sun_dir() -> [f32; 3] {
     SUN_DIR_RAW.normalize().to_array()
+}
+
+/// Construct the controlled L0-L2 correctness scene selected by
+/// `--cornell-oracle`. The richer `--cornell` showcase remains untouched.
+pub(crate) fn setup_cornell_oracle_scene(
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    rung: CornellOracleRung,
+) -> (Vec3, Vec3) {
+    let manifest = cornell_oracle_manifest(rung);
+    let expected_unshadowed = manifest.expected_unshadowed_direct([1.0; 3]);
+    world.insert_resource(CellLightingRes {
+        ambient: [0.0; 3],
+        directional_color: manifest.directional_radiance,
+        directional_dir: manifest.direction_toward_source,
+        is_interior: true,
+        fog_color: [0.0; 3],
+        fog_near: 100_000.0,
+        fog_far: 1_000_000.0,
+        fog_medium: crate::fog::FogMedium::from_legacy_ramp(100_000.0, 1_000_000.0, None),
+        // Preserve the manifest's radiance exactly instead of applying the
+        // legacy 0.6 XCLL fallback calibration.
+        directional_fade: Some(1.0),
+        fog_clip: None,
+        fog_power: None,
+        fog_far_color: None,
+        fog_max: None,
+        light_fade_begin: None,
+        light_fade_end: None,
+        directional_ambient: None,
+        specular_color: None,
+        specular_alpha: None,
+        fresnel_power: None,
+        inheritance_flags: None,
+    });
+
+    let neutral = TextureHandle(ctx.texture_registry.neutral_fallback());
+    let mut builder = MeshBuilder::new(ctx);
+    let receiver_mesh = builder.box_mesh([4.0, 4.0, 0.05]);
+    let mut oracle_matte = matte([1.0; 3]);
+    oracle_matte.ior = 1.0;
+    oracle_matte.specular_strength = 0.0;
+    spawn_object(
+        world,
+        receiver_mesh,
+        neutral,
+        Vec3::new(0.0, 4.0, -0.05),
+        Quat::IDENTITY,
+        oracle_matte.clone(),
+        "oracle_receiver",
+    );
+
+    if manifest.blocker {
+        let blocker_mesh = builder.box_mesh([0.75, 0.75, 0.75]);
+        spawn_object(
+            world,
+            blocker_mesh,
+            neutral,
+            Vec3::new(0.0, 4.0, 0.75),
+            Quat::IDENTITY,
+            oracle_matte,
+            "oracle_blocker",
+        );
+    }
+    builder.finish();
+
+    log::info!(
+        "Cornell oracle {} ready: blocker={}, debug={}, expected unshadowed direct={:?}, \
+         linear tolerance={:.4}",
+        manifest.name,
+        manifest.blocker,
+        manifest.primary_debug_view,
+        expected_unshadowed,
+        manifest.max_linear_error,
+    );
+    (manifest.camera_position, manifest.camera_target)
 }
 
 /// Build the Cornell box into `world`, uploading all meshes + BLAS through
@@ -799,6 +967,69 @@ mod tests {
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn cornell_oracle_cli_names_only_complete_rungs() {
+        assert_eq!(cornell_oracle_rung(&args(&[])).unwrap(), None);
+        assert_eq!(
+            cornell_oracle_rung(&args(&["--cornell-oracle", "l0"])).unwrap(),
+            Some(CornellOracleRung::L0)
+        );
+        assert_eq!(
+            cornell_oracle_rung(&args(&["--cornell-oracle", "L2"])).unwrap(),
+            Some(CornellOracleRung::L2)
+        );
+        assert!(cornell_oracle_rung(&args(&["--cornell-oracle"])).is_err());
+        assert!(cornell_oracle_rung(&args(&["--cornell-oracle", "l3"])).is_err());
+    }
+
+    #[test]
+    fn cornell_oracle_l0_l2_add_exactly_light_then_blocker() {
+        let l0 = cornell_oracle_manifest(CornellOracleRung::L0);
+        let l1 = cornell_oracle_manifest(CornellOracleRung::L1);
+        let l2 = cornell_oracle_manifest(CornellOracleRung::L2);
+
+        assert_eq!(l0.directional_radiance, [0.0; 3]);
+        assert!(!l0.blocker);
+        assert_eq!(l1.directional_radiance, [1.0; 3]);
+        assert!(!l1.blocker);
+        assert_eq!(l2.directional_radiance, l1.directional_radiance);
+        assert_eq!(l2.direction_toward_source, l1.direction_toward_source);
+        assert!(l2.blocker);
+        assert_eq!(l2.primary_debug_view, "shadow_visibility");
+    }
+
+    #[test]
+    fn cornell_oracle_lambert_expectation_is_analytic() {
+        let l0 = cornell_oracle_manifest(CornellOracleRung::L0);
+        let l1 = cornell_oracle_manifest(CornellOracleRung::L1);
+        assert_eq!(l0.expected_unshadowed_direct([1.0; 3]), [0.0; 3]);
+
+        let direction = Vec3::from_array(l1.direction_toward_source);
+        assert!((direction.length() - 1.0).abs() < 1e-6);
+        let expected = l1.expected_unshadowed_direct([1.0; 3]);
+        for channel in expected {
+            assert!((channel - direction.z).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn cornell_oracle_l2_probe_ray_crosses_the_declared_blocker() {
+        let l2 = cornell_oracle_manifest(CornellOracleRung::L2);
+        let direction = Vec3::from_array(l2.direction_toward_source);
+        let at_mid_depth = 0.75 / direction.z;
+
+        // The blocker is [-0.75, 0.75] in X, [3.25, 4.75] in Y, and
+        // [0, 1.5] in Z. This receiver point reaches its centre at mid-depth
+        // when traced toward the source, while the control remains outside.
+        let shadow_probe = Vec3::new(-0.375, 3.625, 0.0);
+        let inside = shadow_probe + direction * at_mid_depth;
+        assert!(inside.x.abs() < 0.75 && (inside.y - 4.0).abs() < 0.75);
+
+        let unshadowed_probe = Vec3::new(2.5, 6.5, 0.0);
+        let outside = unshadowed_probe + direction * at_mid_depth;
+        assert!(outside.x.abs() > 0.75 && (outside.y - 4.0).abs() > 0.75);
     }
 
     /// #1942 — `--cornell-sun` selects the exterior variant, plain

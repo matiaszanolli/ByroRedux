@@ -78,8 +78,9 @@ layout(location = 7) out float outFsrTransparency;
 #include "include/lighting.glsl"
 #include "include/material_sampling.glsl"
 
-// ReSTIR reservoir word packing. Ten low bits cover all 512 scene lights
-// plus an explicit 1023 invalid value; the remaining 22 bits hold the
+// ReSTIR reservoir word packing. Ten low bits cover up to 1023 scene lights
+// (valid indices 0..1022) plus the explicit 1023 invalid value; the remaining
+// 22 bits hold the
 // stable per-entity surface ID (`GpuInstance.surface_id` = entity_id + 1,
 // #883f57cd). Unlike the pre-#883f57cd instance index, this is NOT bounded
 // by MAX_INSTANCES — it grows with cumulative session spawns (entity IDs
@@ -725,8 +726,12 @@ void main() {
     //   rtLOD 2–3: background (~6–20 m) — Fresnel highlight only, no RT rays
     //   rtLOD ≥ 3: far field           — plain alpha-blend, no glass effects
     //
-    // The LOD_SCALE constant controls the transition distances; raise to
-    // favour quality (more pixels at tier 0), lower to favour performance.
+    // The LOD_SCALE constant controls the transition footprint. Tier N starts
+    // when `rtFootprint >= 2^N / RT_LOD_SCALE`; raising the scale therefore
+    // moves the same fragment to a CHEAPER tier sooner (favours performance),
+    // while lowering it retains expensive rays farther away. Keep the current
+    // value until fixed-camera DBG_VIZ_RT_LOD captures provide a distribution
+    // oracle; the former comment stated this relationship backwards.
     const float RT_LOD_SCALE   = 6.0;
     // Reflection-ray reach. Raised 2.0→3.0 (the full rtLOD range) so the
     // environment reflection isn't cut at ~2m on grazing surfaces — the
@@ -979,7 +984,7 @@ void main() {
         float distortionStrength = clamp(mat.ior, 0.0, 1.0);
         vec3 throughDir = normalize(-V + tangentWarp * distortionStrength);
         vec4 distortedScene = traceReflection(
-            fragWorldPos + throughDir * 0.1,
+            offsetRayOriginForDirection(fragWorldPos, macroN, throughDir),
             throughDir,
             2000.0,
             0.0,
@@ -1498,13 +1503,15 @@ void main() {
             // direction at every surviving fragment and break portal
             // escape. See REN-D9-NEW-02 / #821.
             vec3 throughDir = -N;
+            vec3 windowOrigin = offsetRayOriginForDirection(
+                fragWorldPos, N, throughDir);
             rayQueryEXT windowRQ;
             rayQueryInitializeEXT(
                 windowRQ, topLevelAS,
                 gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT,
                 0xFF,
-                fragWorldPos - N * 0.15, // start slightly outside the pane (#269 R2-08: reduced from 0.5 to shrink blind zone)
-                0.05,
+                windowOrigin,
+                0.0,
                 throughDir,
                 2000.0 // if nothing hit within 2000 units, it's "outside"
             );
@@ -1694,7 +1701,8 @@ void main() {
         if (fresnelScalar > 0.05) {
             vec3 R = reflect(-V, N_geom_view);
             vec4 reflRay = traceReflection(
-                fragWorldPos + N_geom_view * 0.05, R, 3000.0,
+                offsetRayOriginForDirection(fragWorldPos, N_geom_view, R),
+                R, 3000.0,
                 roughness * 8.0, fragInstanceIndex);
             reflColor = reflRay.rgb;
         }
@@ -1797,8 +1805,9 @@ void main() {
             // zero-length query, which reports no hit and takes the
             // existing `hit = false` escape path — no extra guard needed.
             const float REFRACT_MAX_REACH = 2000.0;
-            vec3 rayOrigin = fragWorldPos - N_geom_view * 0.1;
-            float rayTMin = 0.05;
+            vec3 rayOrigin = offsetRayOriginForDirection(
+                fragWorldPos, N_geom_view, refractDir);
+            float rayTMin = 0.0;
             float accumulatedDist = 0.0;
             float refrRemaining = REFRACT_MAX_REACH;
             // The entry refraction above placed this ray inside the primary
@@ -1911,40 +1920,16 @@ void main() {
                             refractDir = normalize(reflect(refractDir, interfaceN));
                         }
                     }
-                    rayOrigin = exitPoint + refractDir * 0.05;
-                    // #2462 (REN-D2-2026-08-07-02) — `rayTMin` stays 0.05
-                    // for every iteration; this arm used to reset it to 0.0
-                    // with no rationale. `raytrace.glsl`'s tMin note cites
-                    // this loop as one of the sites honouring the shared
-                    // 0.05 convention, but it only honoured it on the first
-                    // of up to three iterations.
-                    //
-                    // The reset made the just-crossed triangle committable
-                    // at t ≈ 0: the only clearance from iteration 2 onward
-                    // was the 0.05 nudge along the NEWLY refracted
-                    // direction, and at a grazing exit (common approaching
-                    // total internal reflection) that projects to well under
-                    // 0.05 of perpendicular clearance. The loop's terminus
-                    // guards (`terminusOnSelf` / `terminusOnGlass` /
-                    // `terminusOnFallback`) only catch a self-hit that ends
-                    // the loop — a mid-loop one is consumed as a passthru and
-                    // burns budget, so the ray terminates an interface early
-                    // and the fragment falls to the ambient escape path.
-                    // That is the same failure #1017 fixed on
-                    // `traceReflection`, which keeps its 0.05 literal on
-                    // every iteration and advances a full 0.1 past each hit.
-                    //
-                    // Cost of keeping it: 0.05 tMin plus the 0.05 origin
-                    // nudge skips 0.10 units along the ray from `exitPoint`.
-                    // No authored pane is that thin (≈1.4 mm at 1 BU ≈
-                    // 1.43 cm), and iteration 1 already pays a larger
-                    // effective skip (0.1 perpendicular bias + 0.05 tMin),
-                    // so nothing reachable is newly missed.
-                    accumulatedDist += hDist;
-                    // Charge this segment (plus the re-origin epsilon) to
-                    // the shared reach so the three segments together span
-                    // REFRACT_MAX_REACH rather than 3× it (#2482).
-                    refrRemaining = max(refrRemaining - (hDist + 0.05), 0.0);
+                    vec3 nextOrigin = offsetRayOriginForDirection(
+                        exitPoint, getHitTriNormal(uint(hIdx), uint(
+                            rayQueryGetIntersectionPrimitiveIndexEXT(refrRQ, true))),
+                        refractDir);
+                    float segmentAdvance = length(nextOrigin - rayOrigin);
+                    rayOrigin = nextOrigin;
+                    accumulatedDist += segmentAdvance;
+                    // Charge the representable-float re-origin step to the
+                    // shared reach so all segments still span one budget.
+                    refrRemaining = max(refrRemaining - segmentAdvance, 0.0);
                     continue;
                 }
 
@@ -2323,6 +2308,8 @@ void main() {
     vec3 ambientFill = sceneFlags.yzw * AMBIENT_FILL;
     vec3 ambient = max(dielectricAmbient + metallicAmbient, ambientFill);
     vec3 Lo = vec3(0.0); // Accumulated outgoing radiance.
+    uint selectedLightDebug = 0xFFFFFFFFu;
+    vec3 selectedVisibilityDebug = vec3(-1.0);
 
     // ── RT reflection for metallic/glossy surfaces ──────────────────
     //
@@ -2452,7 +2439,9 @@ void main() {
             // right reflection colour on hit AND miss (sky-tint), per the
             // unified traceReflection contract (#1029).
             vec4 reflResult =
-                traceReflection(fragWorldPos + N_bias * 0.1, R, 5000.0,
+                traceReflection(
+                                offsetRayOriginForDirection(fragWorldPos, N_bias, R),
+                                R, 5000.0,
                                 roughness * 8.0, fragInstanceIndex);
             // Fade the RT-ray contribution to the ambient approximation across
             // the last octave of the reach so ray and fallback are continuous.
@@ -2484,95 +2473,12 @@ void main() {
     float worldDist = length(fragWorldPos - cameraPos.xyz);
     uint clusterIdx = getClusterIndex(gl_FragCoord.xy, worldDist, screen.xy);
 
-    if (lightCount == 0) {
-        // Fallback: single directional light.
-        vec3 L = normalize(vec3(0.4, 0.8, 0.5));
-        vec3 H = normalize(V + L);
-        float NdotL = max(dot(N, L), 0.0);
-        float NdotH = max(dot(N, H), 0.0);
-        float HdotV = max(dot(H, V), 0.0);
-
-        // Specular AA — widen roughness by per-fragment normal
-        // variance (Kaplanyan-Hoffman 2016). Smears bright/dark
-        // banding across pixels on corrugated / high-frequency-
-        // normal-map surfaces at distance.
-        float aaRoughness = ((dbgFlags & DBG_DISABLE_SPECULAR_AA) != 0u)
-            ? roughness
-            : specularAaRoughness(N, roughness);
-        // #1250 — anisotropic GGX gate. Skipped when mat.anisotropic
-        // is zero (every legacy NIF) so the cheaper isotropic NDF
-        // stays on the fast path. Tangent guard: fragTangent.xyz can
-        // be zero on synthetic / pre-tangent content (see #783
-        // perturbNormal fallback) — fall back to isotropic in that
-        // case rather than feeding a zero tangent into HdotX/HdotY.
-        float D;
-        if (mat.anisotropic > 0.0
-            && dot(fragTangent.xyz, fragTangent.xyz) > 1e-4)
-        {
-            vec3 T = normalize(fragTangent.xyz);
-            // #1274 — Gram-Schmidt against N. Mirrors `perturbNormal`
-            // Path-1; without this T tilts off-axis at smoothing-group
-            // seams and the anisotropic lobe orientation drifts from
-            // the bump-mapped normal frame.
-            T = normalize(T - dot(T, N) * N);
-            // Clamp the interpolated handedness to ±1 (REN-D19-04 / #2512) —
-            // the per-vertex ±1 guarantee doesn't survive interpolation
-            // across a mixed-sign (UV-fold) triangle, and a raw fractional
-            // multiply here shortens B and skews the anisotropic lobe.
-            float tangentSign = fragTangent.w < 0.0 ? -1.0 : 1.0;
-            vec3 B = normalize(cross(N, T)) * tangentSign;
-            float HdotX = dot(H, T);
-            float HdotY = dot(H, B);
-            float ax;
-            float ay;
-            deriveAxAy(aaRoughness, mat.anisotropic, ax, ay);
-            D = distributionGGXAniso(NdotH, HdotX, HdotY, ax, ay);
-        } else {
-            D = distributionGGX(NdotH, aaRoughness);
-        }
-        float G = geometrySmith(NdotV, NdotL, aaRoughness);
-        vec3 F = fresnelSchlick(HdotV, F0);
-
-        vec3 kD = (1.0 - F) * (1.0 - metalness);
-        vec3 specular = (D * G * F) / max(4.0 * NdotV * NdotL, 0.01);
-        // Multi-scatter energy compensation (Fdez-Agüera / Filament) —
-        // matches the per-light path in lighting.glsl so the no-cluster
-        // fallback directional shades rough metal identically. No-op at
-        // low roughness; never widens the reflection gate.
-        if ((dbgFlags & DBG_DISABLE_MULTISCATTER) == 0u) {
-            specular *= multiScatterEnergyCompensation(F0, NdotV, aaRoughness);
-        }
-        // #1249 — Disney diffuse for PBR-authored content; plain
-        // Lambert for legacy NIF. Gated on MAT_FLAG_PBR_BSDF so
-        // every NIF without a v>=8 BGSM keeps the pre-fix value.
-        // Multiply by (1 - metalness) only — Disney's Fd already
-        // encodes the Fresnel-grazing energy loss via FL/FV.
-        //
-        // #1252 — split helper returns diffuse (/PI) + sheen (no /PI)
-        // separately so each lobe gets the right scaling. This site
-        // expects the diffuse value /PI (matches the Lambert
-        // `kD * albedo / PI` shape below) and sheen NOT /PI (per
-        // Disney spec).
-        vec3 diffuseBrdf;
-        if ((mat.materialFlags & MAT_FLAG_PBR_BSDF) != 0u) {
-            float HdotL = max(dot(H, L), 0.0);
-            DisneyDiffuseSplit dd = disneyDiffuseSplit(
-                albedo, roughness, mat.subsurface, mat.sheen, mat.sheenTint,
-                NdotL, NdotV, HdotL
-            );
-            diffuseBrdf = (dd.diffuse + dd.sheen) * (1.0 - metalness);
-        } else {
-            // #2569 (OBL-D4-02) — KNOWN DIVERGENCE from lighting.glsl's
-            // clustered per-light arm, which is `kD * albedo` with no /PI and
-            // no 0.8 below. See the comment there; this is the fallback side.
-            diffuseBrdf = kD * albedo / PI;
-        }
-        // The `vec3(0.8)` is the other half of the #2569 divergence: the
-        // clustered path applies no whole-lobe scale, so this path's specular
-        // lands at 0.8x and its diffuse at 0.8/PI x of the clustered values.
-        Lo = (diffuseBrdf + specular * specStrength * specColor) * vec3(0.8) * NdotL;
-    } else {
-        // Clustered lighting with streaming RIS shadow sampling.
+    // Zero submitted lights means zero direct-light transport. The old
+    // no-light arm synthesized a hard-coded directional source, so an empty
+    // scene could never render black and a failed ingestion/SSBO path looked
+    // plausibly lit. The clustered path is valid with an empty cluster and
+    // naturally leaves `Lo` at zero, preserving L0 as a real oracle.
+    // Clustered lighting with streaming RIS shadow sampling.
         //
         // Each fragment maintains K weighted reservoirs that sample the
         // full cluster proportional to each light's unshadowed luminance
@@ -3098,6 +3004,7 @@ void main() {
             if (restirY != 0xFFFFFFFFu && restirM > 0.0 && restirPHat > 1e-6) {
                 restirW = min(restirWSum / (restirM * restirPHat), RESERVOIR_W_CLAMP);
             }
+            selectedLightDebug = restirY;
             vec3 frameContribution = vec3(0.0); // this frame's rad·W·V estimate
             // #2554 / FNV-D3-01 — `shadowFade` no longer gates this block.
             //
@@ -3188,6 +3095,7 @@ void main() {
                 // shadowed radiance: rad·W·V̄ (V̄ = K-ray averaged visibility,
                 // distance-faded toward fully-lit per #2554).
                 frameContribution = rad * restirW * visibility;
+                selectedVisibilityDebug = visibility;
             }
 
             // EMA-accumulate the colour estimate with a bounded history. Four
@@ -3352,7 +3260,6 @@ void main() {
         }
         } // end legacy WRS pass-2 (else of useRestir)
 #endif
-    }
 
     // ── Bounded path-traced ambient GI ──────────────────────────────
     //
@@ -3422,9 +3329,10 @@ void main() {
             // of a two-sided draw (foliage/vine/grass cards, curtains, some
             // architecture) the raw value points AWAY from the viewer while
             // `N_bias` — which `giOrigin` below biases along — points toward
-            // it. Every cosine-weighted `giDir` then had a positive component
-            // straight through the surface plane, starting 0.1 units off the
-            // opposite side: with tMin 0.05 the plane crossing lands at
+            // it. Before the shared scale-aware-origin fix, every cosine-
+            // weighted `giDir` then had a positive component straight
+            // through the surface plane, starting 0.1 units off the opposite
+            // side: with the old tMin 0.05 the plane crossing landed at
             // t ≈ 0.1/dot(giDir, planeN) ≈ 0.15, comfortably committable, and
             // the fragment's own triangle is in the TLAS (two-sided draws are
             // not excluded). The path then gathered the back side of its own
@@ -3443,7 +3351,8 @@ void main() {
                 N_geom = -N_geom;
             }
             vec3 giDir = cosineWeightedHemisphere(N_geom, n1, n2);
-            vec3 giOrigin = fragWorldPos + N_bias * 0.1;
+            vec3 giOrigin = offsetRayOriginForDirection(
+                fragWorldPos, N_geom, giDir);
 
             // Bounded material-aware path. Two diffuse events provide real
             // second-bounce illumination and colour bleeding. GGX and glass
@@ -3468,7 +3377,7 @@ void main() {
                 rayQueryEXT giRQ;
                 rayQueryInitializeEXT(
                     giRQ, topLevelAS, gl_RayFlagsOpaqueEXT, 0xFF,
-                    pathOrigin, 0.05, pathDir, 6000.0);
+                    pathOrigin, 0.0, pathDir, 6000.0);
                 while (rayQueryProceedEXT(giRQ)) {}
 
                 if (rayQueryGetIntersectionTypeEXT(giRQ, true)
@@ -3494,7 +3403,8 @@ void main() {
                 if (!rayHitHasCoverage(
                         uint(hitIdx), uint(hitPrim), hitBary,
                         hitInst, hitMat, hitUV, hitBase)) {
-                    pathOrigin = hitPos + pathDir * 0.1;
+                    pathOrigin = offsetRayOriginForDirection(
+                        hitPos, rawHitN, pathDir);
                     continue;
                 }
 
@@ -3525,7 +3435,8 @@ void main() {
                         pathDir = normalize(transmittedDir);
                         throughput *= mix(vec3(1.0), glassTint, 0.25);
                     }
-                    pathOrigin = hitPos + pathDir * 0.1;
+                    pathOrigin = offsetRayOriginForDirection(
+                        hitPos, rawHitN, pathDir);
                     continue;
                 }
 
@@ -3566,7 +3477,8 @@ void main() {
                 throughput *= bsdfWeight;
                 if (max(max(throughput.r, throughput.g), throughput.b) < 0.02) break;
 
-                pathOrigin = hitPos + hitN * 0.1;
+                pathOrigin = offsetRayOriginForDirection(
+                    hitPos, rawHitN, pathDir);
             }
             // One complete bounded path is one Monte Carlo sample for this
             // pixel. Clamp its luminance, not the reservoir weight and not
@@ -3750,7 +3662,63 @@ void main() {
     // avoiding multi-frame ghosting on fog transitions. `fog` UBO is
     // still read above for the RT ray-miss background color.
 
-    if ((dbgFlags & DBG_VIZ_NONFINITE) != 0u) {
+    if ((dbgFlags & DBG_VIZ_SHADOW_VISIBILITY) == DBG_VIZ_SHADOW_VISIBILITY) {
+        // Raw selected-sample visibility. Keep "no candidate/no ray" magenta
+        // so it cannot alias an opaque hit (black). Glass transmittance is
+        // collapsed to Rec.709 luminance for a one-channel transport answer.
+        bool hasVisibilitySample = selectedVisibilityDebug.x >= 0.0;
+        float visibilityLuma = dot(
+            max(selectedVisibilityDebug, vec3(0.0)),
+            vec3(0.2126, 0.7152, 0.0722));
+        vec3 visibilityColor = hasVisibilitySample
+            ? vec3(clamp(visibilityLuma, 0.0, 1.0))
+            : vec3(1.0, 0.0, 1.0);
+        outColor = vec4(visibilityColor, 1.0);
+        outRawIndirect = vec4(0.0);
+        outAlbedo = vec4(1.0);
+    } else if ((dbgFlags & DBG_VIZ_MATERIAL_LOBES) == DBG_VIZ_MATERIAL_LOBES) {
+        // Shading-family view. This deliberately keys off the exact material
+        // gates used above, not texture-name heuristics:
+        // blue=glass, magenta=translucency, gold=Disney/PBR,
+        // orange=effect/no-lighting, grey=legacy lit.
+        vec3 lobeColor = isGlass
+            ? vec3(0.10, 0.35, 1.00)
+            : ((mat.materialFlags & MAT_FLAG_TRANSLUCENCY) != 0u)
+                ? vec3(1.00, 0.10, 0.80)
+            : ((mat.materialFlags & MAT_FLAG_PBR_BSDF) != 0u)
+                ? vec3(1.00, 0.65, 0.05)
+            : (mat.materialKind == MATERIAL_KIND_EFFECT_SHADER
+                || mat.materialKind == MATERIAL_KIND_NO_LIGHTING)
+                ? vec3(1.00, 0.25, 0.05)
+                : vec3(0.45);
+        outColor = vec4(lobeColor, 1.0);
+        outRawIndirect = vec4(0.0);
+        outAlbedo = vec4(1.0);
+    } else if ((dbgFlags & DBG_VIZ_RT_LOD) == DBG_VIZ_RT_LOD) {
+        // Continuous heatmap: blue=tier 0/full rays, cyan/green=tier 1,
+        // yellow=tier 2, red=tier 3/no secondary material rays.
+        float t = rtLOD * (1.0 / 3.0);
+        vec3 lodColor = clamp(
+            vec3(1.5 * t, 1.0 - abs(2.0 * t - 1.0), 1.5 * (1.0 - t)),
+            vec3(0.0),
+            vec3(1.0));
+        outColor = vec4(lodColor, 1.0);
+        outRawIndirect = vec4(0.0);
+        outAlbedo = vec4(1.0);
+    } else if ((dbgFlags & DBG_VIZ_SELECTED_LIGHT) != 0u) {
+        vec3 selectedColor = vec3(0.0);
+        if (selectedLightDebug != 0xFFFFFFFFu) {
+            uint h = selectedLightDebug * 1664525u + 1013904223u;
+            selectedColor = vec3(
+                float((h >> 0u) & 0xFFu),
+                float((h >> 8u) & 0xFFu),
+                float((h >> 16u) & 0xFFu)) * (1.0 / 255.0);
+            selectedColor = vec3(0.15) + selectedColor * 0.85;
+        }
+        outColor = vec4(selectedColor, 1.0);
+        outRawIndirect = vec4(0.0);
+        outAlbedo = vec4(1.0);
+    } else if ((dbgFlags & DBG_VIZ_NONFINITE) != 0u) {
         // #2218 — bisect which shading term first goes non-finite. Checked
         // upstream to downstream since a non-finite value poisons every sum
         // it feeds: `indirect` (raw GI bounce) → `indirectLight` (+ambient
@@ -3787,10 +3755,10 @@ void main() {
         outRawIndirect = vec4(0.0);
         outAlbedo = vec4(1.0);
     } else if ((dbgFlags & DBG_VIZ_DIRECT) != 0u) {
-        // Route the resolved direct estimator through HDR while explicitly
-        // suppressing the indirect attachment. Composite still applies the
-        // scene's exposure/tone map, so captures remain comparable to normal
-        // output while no SVGF/albedo-remodulated energy can hide the result.
+        // Route the resolved direct estimator through the direct attachment
+        // while explicitly suppressing indirect. The downstream frame graph
+        // preserves this display-linear value without exposure or tone
+        // mapping, so zero transport remains exactly black.
         outColor = vec4(directLight, 1.0);
         outRawIndirect = vec4(0.0);
         outAlbedo = vec4(1.0);

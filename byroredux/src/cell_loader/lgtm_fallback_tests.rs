@@ -89,8 +89,8 @@ fn explicit_xcll_takes_priority_over_lgtm_template() {
     cell.lighting = Some(CellLighting {
         ambient: xcll_ambient,
         directional_color: [0.30, 0.30, 0.40],
-        directional_rotation_xy: 0.0,
-        directional_rotation_z: 0.0,
+        directional_azimuth: 0.0,
+        directional_elevation: 0.0,
         fog_color: [0.10, 0.12, 0.18],
         fog_near: 0.0,
         fog_far: 100.0,
@@ -134,8 +134,8 @@ fn xcll_inheritance_mask_merges_only_selected_lgtm_groups() {
     cell.lighting = Some(CellLighting {
         ambient: [0.01; 3],
         directional_color: [0.02; 3],
-        directional_rotation_xy: local_rotation[0],
-        directional_rotation_z: local_rotation[1],
+        directional_azimuth: local_rotation[0],
+        directional_elevation: local_rotation[1],
         fog_color: [0.03; 3],
         fog_near: 3.0,
         fog_far: 4.0,
@@ -175,8 +175,8 @@ fn xcll_inheritance_mask_merges_only_selected_lgtm_groups() {
     assert_eq!(resolved.fog_max, template.fog_max);
     assert_eq!(resolved.light_fade_begin, template.light_fade_begin);
     assert_eq!(resolved.light_fade_end, template.light_fade_end);
-    assert_eq!(resolved.directional_rotation_xy, local_rotation[0]);
-    assert_eq!(resolved.directional_rotation_z, local_rotation[1]);
+    assert_eq!(resolved.directional_azimuth, local_rotation[0]);
+    assert_eq!(resolved.directional_elevation, local_rotation[1]);
     assert_eq!(resolved.directional_fade, local_directional_fade);
 }
 
@@ -186,8 +186,8 @@ fn xcll_full_inheritance_includes_rotation_and_directional_fade() {
     cell.lighting = Some(CellLighting {
         ambient: [0.0; 3],
         directional_color: [0.0; 3],
-        directional_rotation_xy: 0.0,
-        directional_rotation_z: 0.0,
+        directional_azimuth: 0.0,
+        directional_elevation: 0.0,
         fog_color: [0.0; 3],
         fog_near: 0.0,
         fog_far: 0.0,
@@ -214,11 +214,11 @@ fn xcll_full_inheritance_includes_rotation_and_directional_fade() {
 
     let resolved = resolve_cell_lighting(&cell, &index).expect("resolved full inheritance");
     assert_eq!(
-        resolved.directional_rotation_xy,
+        resolved.directional_azimuth,
         template.directional_rotation[0]
     );
     assert_eq!(
-        resolved.directional_rotation_z,
+        resolved.directional_elevation,
         template.directional_rotation[1]
     );
     assert_eq!(resolved.directional_fade, template.directional_fade);
@@ -250,11 +250,11 @@ fn missing_xcll_with_lgtm_template_synthesizes_cell_lighting() {
     assert_eq!(resolved.fog_clip, template.fog_clip);
     assert_eq!(resolved.fog_power, template.fog_power);
     assert_eq!(
-        resolved.directional_rotation_xy,
+        resolved.directional_azimuth,
         template.directional_rotation[0]
     );
     assert_eq!(
-        resolved.directional_rotation_z,
+        resolved.directional_elevation,
         template.directional_rotation[1]
     );
     assert_eq!(resolved.directional_ambient, template.directional_ambient);

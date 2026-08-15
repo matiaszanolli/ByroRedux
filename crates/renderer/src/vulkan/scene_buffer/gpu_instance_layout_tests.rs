@@ -10,6 +10,21 @@ use std::mem::size_of;
 
 use std::mem::offset_of;
 
+/// The ReSTIR history packs a selected light into ten bits and uses the
+/// all-ones value as an invalid sentinel. The upload cap must leave that value
+/// unoccupied; otherwise real light 1023 and "no selection" alias in temporal
+/// and spatial reuse.
+#[test]
+fn max_lights_leaves_the_packed_restir_sentinel_unoccupied() {
+    const RESERVOIR_LIGHT_MASK: usize = 0x3ff;
+    assert!(MAX_LIGHTS <= RESERVOIR_LIGHT_MASK);
+    assert_eq!(MAX_LIGHTS, RESERVOIR_LIGHT_MASK);
+
+    let shader = include_str!("../../../shaders/triangle.frag");
+    assert!(shader.contains("const uint RESERVOIR_LIGHT_MASK = 0x3FFu;"));
+    assert!(shader.contains("explicit 1023 invalid value"));
+}
+
 /// Regression guard for the Shader Struct Sync invariant (#318 / #417).
 /// The `GpuInstance` struct is duplicated across **five** GLSL
 /// sources — `include/bindings.glsl` (the shared copy `triangle.frag`
@@ -602,7 +617,7 @@ fn get_hit_tri_world_positions_returns_absolute_space_on_both_branches() {
 /// large coordinates and light leaks at small/detail scale.
 #[test]
 fn shadow_transport_uses_scale_aware_ray_origin_offset() {
-    let hit = include_str!("../../../shaders/include/ray_hit.glsl");
+    let origin = include_str!("../../../shaders/include/ray_origin.glsl");
     let shadow = include_str!("../../../shaders/include/shadow_transport.glsl");
     let lighting = include_str!("../../../shaders/include/lighting.glsl");
 
@@ -611,7 +626,10 @@ fn shadow_transport_uses_scale_aware_ray_origin_offset() {
         "intBitsToFloat(floatBitsToInt(p.x)",
         "const float INT_SCALE = 256.0",
     ] {
-        assert!(hit.contains(needle), "robust offset is missing `{needle}`");
+        assert!(
+            origin.contains(needle),
+            "robust offset is missing `{needle}`"
+        );
     }
     assert!(
         shadow.contains("opaqueOrigin, 0.0, direction, opaqueRemaining")
@@ -624,6 +642,72 @@ fn shadow_transport_uses_scale_aware_ray_origin_offset() {
         lighting.contains("offsetRayOrigin(p, n)"),
         "secondary-hit direct-light shadows must share the robust offset"
     );
+}
+
+/// Every main secondary-ray consumer must use the same scale-aware origin
+/// contract. A fixed engine-unit epsilon cannot be correct in both a small
+/// interior detail and Starfield's large-coordinate cells.
+#[test]
+fn all_secondary_ray_consumers_use_scale_aware_origins() {
+    let origin = include_str!("../../../shaders/include/ray_origin.glsl");
+    let reflection = include_str!("../../../shaders/include/raytrace.glsl");
+    let triangle = include_str!("../../../shaders/triangle.frag");
+    let water = include_str!("../../../shaders/water.frag");
+    let caustic = include_str!("../../../shaders/caustic_splat.comp");
+
+    assert!(origin.contains("vec3 offsetRayOriginForDirection("));
+    for (source, name) in [
+        (reflection, "reflection"),
+        (triangle, "triangle"),
+        (water, "water"),
+        (caustic, "caustic"),
+    ] {
+        assert!(
+            source.contains("offsetRayOriginForDirection("),
+            "{name} rays must select the robust offset side from their outgoing direction"
+        );
+    }
+
+    for (source, forbidden) in [
+        (reflection, "rayOrigin, 0.05, direction"),
+        (triangle, "pathOrigin, 0.05, pathDir"),
+        (triangle, "fragWorldPos - N * 0.15"),
+        (triangle, "fragWorldPos + N_bias * 0.1"),
+        (water, "rayOrigin, 0.05, direction"),
+        (water, "worldPos, 0.05, -surfaceNormal"),
+        (water, "vWorldPos - Nsurface * 0.05, 0.05"),
+        (caustic, "G + ns * 0.1"),
+        (caustic, "G - ns * 0.1"),
+        (caustic, "exitPoint + receiverDir * 0.1"),
+        (caustic, "receiverOrigin, 0.05"),
+    ] {
+        assert!(
+            !source.contains(forbidden),
+            "secondary-ray transport reintroduced fixed offset/tMin `{forbidden}`"
+        );
+    }
+}
+
+/// A transport image is an oracle only if later frame-graph terms preserve
+/// it. Pin the bypass through composite, temporal upscale, and presentation
+/// so fog/bloom/ACES cannot make black, white, or isolated energy ambiguous.
+#[test]
+fn correctness_debug_views_bypass_non_transport_frame_graph_terms() {
+    let composite = include_str!("../../../shaders/composite.frag");
+    let presentation = include_str!("../../../shaders/presentation.frag");
+    for (source, name) in [(composite, "composite"), (presentation, "presentation")] {
+        assert!(
+            source.contains("(dbgFlags & DBG_VIZ_SELECTED_LIGHT) != 0u")
+                && source.contains("(dbgFlags & DBG_VIZ_DIRECT) != 0u")
+                && source.contains("(dbgFlags & DBG_VIZ_RAW_INDIRECT) != 0u")
+                && source.contains("(dbgFlags & DBG_VIZ_RT_LOD) == DBG_VIZ_RT_LOD")
+                && source.contains("if (rawDebug)"),
+            "{name} must preserve renderer correctness-oracle output"
+        );
+    }
+    let post = include_str!("../context/post_passes.rs");
+    assert!(post.contains("debug_viz_requires_raw_output"));
+    assert!(post.contains("force_native_debug"));
 }
 
 /// Tier zero is the pre-timing watchdog-safe floor. Zero path limits must
@@ -747,10 +831,10 @@ fn water_reflection_and_refraction_keep_distinct_two_sided_semantics() {
         "water reflection misses must use sky only outdoors and cell ambient indoors."
     );
     assert!(
-        frag.contains("vWorldPos - N * 0.05")
+        frag.contains("offsetRayOriginForDirection(vWorldPos, N, Tdir)")
             && frag.contains("? (1.0 / max(ior, 1.0))")
             && frag.contains(": max(ior, 1.0);"),
-        "refraction must bias through the surface and reverse eta underwater."
+        "refraction must select the robust transmission side and reverse eta underwater."
     );
 }
 
@@ -1604,12 +1688,13 @@ fn unresolved_glass_keeps_tint_and_low_angle_reflections() {
     );
 }
 
-/// #2243 — Disney diffuse is /PI while sheen is not. The clustered-light
+/// #2243 — Disney diffuse is /PI while sheen is not. The canonical clustered
 /// path deliberately uses the legacy non-/PI Lambert convention, so it must
 /// rescale the complete Disney lobe. Scaling diffuse alone makes sheen PI
-/// times weaker relative to diffuse than in the direct-sun path.
+/// times weaker relative to diffuse. Directional sources use this same path;
+/// the former synthetic no-light sun and its duplicate lobe are gone.
 #[test]
-fn disney_sheen_keeps_its_relative_weight_across_direct_light_paths() {
+fn disney_sheen_keeps_its_relative_weight_in_canonical_direct_path() {
     let frag = include_str!("../../../shaders/triangle.frag");
     let lighting = include_str!("../../../shaders/include/lighting.glsl");
 
@@ -1618,12 +1703,13 @@ fn disney_sheen_keeps_its_relative_weight_across_direct_light_paths() {
         "clustered lighting must rescale diffuse and sheen together"
     );
     assert!(
-        frag.contains("diffuseBrdf = (dd.diffuse + dd.sheen) * (1.0 - metalness);"),
-        "direct-sun lighting must retain the normalized Disney lobe"
-    );
-    assert!(
         !lighting.contains("dd.diffuse * PI + dd.sheen"),
         "scaling only Disney diffuse changes sheen's relative weight by PI"
+    );
+    assert!(
+        !frag.contains("diffuseBrdf = (dd.diffuse + dd.sheen)")
+            && !frag.contains("Fallback: single directional light"),
+        "triangle.frag must not reintroduce a duplicate synthetic-sun BRDF path"
     );
 }
 

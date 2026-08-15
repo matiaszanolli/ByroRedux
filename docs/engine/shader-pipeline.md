@@ -7,6 +7,13 @@ responsibilities, GPU data layouts, and descriptor bindings. For the high-level
 renderer architecture (BLAS/TLAS, sync, swapchain, teardown ordering) see
 [renderer.md](renderer.md).
 
+> **Contract checkpoint (2026-08-15).** Reconciled with the RT
+> lighting/material recovery: 1023-light SSBO, 512-light cluster lists,
+> ReSTIR-selected visibility, generated material flags, scale-aware secondary
+> origins, and raw correctness output (including direct/indirect term
+> isolation) through composite/upscale/presentation. Zero lights no longer
+> synthesize a renderer-owned fallback sun.
+
 ---
 
 ## Shader Files
@@ -99,10 +106,12 @@ graphics+compute queue. Pass ordering is inside
                            no tone-map, does NOT write the swapchain)
 17 frame_upscaler.record  ─  FSR 3.1 SDK dispatch (Quality preset default) or
                            native-blit fallback (`--upscaler taa`) — render-
-                           resolution HDR → output-resolution HDR
+                           resolution HDR → output-resolution HDR. Raw
+                           correctness debug views force the native path.
 18 [Presentation pass]    ─  raster: composite.vert / presentation.frag —
                            exposure + ACES tone-map + underwater extinction,
-                           writes the swapchain (`PRESENT_SRC_KHR`)
+                           writes the swapchain (`PRESENT_SRC_KHR`). Raw debug
+                           views bypass these look transforms.
 19 [Egui render pass]    ─  egui overlay (blended on swapchain)
 20 [Screenshot copy]     ─  transfer blit → staging buffer (if requested)
 21 Queue submit
@@ -290,7 +299,8 @@ lighting-influence value for `MAT_FLAG_EFFECT_LIT` materials, read as
 ### `GpuLight` — 64 bytes, SSBO (Set 1, Binding 0)
 
 Prefixed by a 16-byte header (`u32 count` + 3 × `u32` padding). Up to
-`MAX_LIGHTS` = 512 entries per frame.
+`MAX_LIGHTS` = 1023 entries per frame. Index 1023 (`0x3ff`) remains the packed
+ReSTIR invalid-selection sentinel and is never occupied by a real light.
 
 | Offset | Field | Contents |
 |---|---|---|
@@ -313,7 +323,8 @@ Prefixed by a 16-byte header (`u32 count` + 3 × `u32` padding). Up to
 
 | Constant | Value | Notes |
 |---|---|---|
-| `MAX_LIGHTS` | 512 | Per-frame point/spot/directional lights |
+| `MAX_LIGHTS` | 1023 | Per-frame point/spot/directional lights; packed index 1023 remains invalid |
+| `MAX_LIGHTS_PER_CLUSTER` | 512 | Candidate indices retained by each 16×9×24 cluster; overflow/high-water/drop telemetry is fence-lagged |
 | `MAX_INSTANCES` | 262 144 | One indirect draw command per instance worst-case |
 | `MAX_MATERIALS` | 16 384 | 348 B each; deduplicated per frame |
 | `MAX_TOTAL_BONES` | 196 608 | `floor(196 608 / 144)` = 1 365 palette slots, minus reserved slot 0 → **1 364 allocatable** skinned meshes (M29.6). Not an exact product: 1 365 × 144 = 196 560 leaves a 48-bone unused tail |
@@ -460,19 +471,17 @@ world space:
 - Ray origins reconstructed in `triangle.frag` (`fragWorldPos`, lighting,
   fog) — the absolute reconstruction above feeds them.
 
-The f32 ULP at coordinate magnitude `X` is `2^(floor(log2 X) − 23)`. The
-RT shadow/reflection/GI rays bias their origins off the surface by
-~`0.05–0.15` u (tMin + normal-bias). Headroom (ULP vs the bias margin):
+The f32 ULP at coordinate magnitude `X` is `2^(floor(log2 X) − 23)`. Numerical
+self-intersection avoidance no longer assumes one engine-unit epsilon:
+`include/ray_origin.glsl` moves each origin to the next representable float on
+the outgoing side of the surface and numerical ray initializers use `tMin =
+0`. Reflection, GI, glass/window continuation, water reflection/refraction/
+shoreline/caustic, and caustic-splat source/entry/exit/receiver queries share
+that contract. Named non-zero ray distances are therefore physical thickness,
+segment exclusion, range, or LOD policy—not a hidden fixed epsilon.
 
-| `\|world\|`        | f32 ULP   | vs ~0.05–0.15 u bias margin |
-|------------------|-----------|------------------------------|
-| ~131k (`2^17`)   | 0.0156 u  | ~3–10× headroom             |
-| ~176k            | ~0.02 u   | ~2–7× headroom (REN2-10)    |
-| ~524k (`2^19`)   | 0.0625 u  | tight 0.05 u margin lost     |
-| ~1.05M (`2^20`)  | 0.125 u   | even the 0.15 u margin lost  |
-
-So absolute-space RT precision **starts thinning near ~0.5 M units and
-the ceiling is ~1 M** (`REN2-10` / **#1495**). Vanilla worldspaces top
+Absolute-space AS transforms still have a finite representable range, so the
+conservative ceiling remains ~1 M units (`REN2-10` / **#1495**). Vanilla worldspaces top
 out far below this (Skyrim Tamriel ≈ ±233 k), so nothing ships near the
 limit — but a future mega-worldspace could trip it silently. The cell
 loader guards against that: `cell_loader/references.rs` computes the
@@ -480,7 +489,8 @@ loaded cell's worldspace bounds and `debug_assert!`s the max `|coord|`
 stays below `RT_ABSOLUTE_PRECISION_CEILING` (`2^20 = 1_048_576` u). The
 predicate (`worldspace_extent_over_rt_ceiling`) is unit-tested.
 
-**Any future absolute-space shader consumer inherits this same ceiling.**
+**Any future absolute-space shader consumer inherits this same ceiling.** It
+must include the shared origin helper rather than adding a local bias.
 
 ## See Also
 

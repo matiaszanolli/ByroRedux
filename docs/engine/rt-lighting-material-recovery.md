@@ -46,54 +46,66 @@ carried forward.
 
 ## Execution status
 
-- **R1.1 complete at `77b540d0`.** XCLL directional colour now emits a type-2
-  directional light with full structural visibility. The normal-independent
-  type-3 `Lo` bypass is gone from direct lighting, GI, and caustic selection;
-  source canaries and rebuilt SPIR-V pin the contract.
-- **Vulkan validation prerequisite complete in the next recovery change.**
-  The committed shader set declares SPIR-V `Int64` through the shared
-  `GpuInstance` device-address field. Device selection now requires
-  `shaderInt64`, logical-device creation enables it, and a 30-frame Cornell
-  run completes under validation without
-  `VUID-VkShaderModuleCreateInfo-pCode-08740`.
-- **R0.1 harness and current-HEAD leg complete in the next recovery change.**
-  `check-bench-determinism.sh` now runs three cold processes, accepts static
-  or stepped camera workloads and arbitrary scene arguments, and writes
-  per-run manifests with engine/harness hashes, GPU identity, selected
-  upscaler, render/output extents, scene summary, fingerprint and verdict.
-  Three-run fingerprints matched for Cornell static
-  (`e015a9c223a17993`), Cornell orbit (`8654b184aa132b16`), and Prospector
-  orbit (`a4c4725f647c5381`). R0.2 subsequently closed the explicit anchor leg.
-- **R0.2 runner and anchor leg complete in the next recovery change.**
-  `scripts/check-render-anchor.sh` stages two explicit binaries and
-  captures static/pan/orbit/dolly/cut without mutating the caller's worktree.
-  Each path writes PNGs, logs, binary/config/state manifests, a 4x diff
-  heatmap, linear-light SSIM/error percentiles/outlier rate, and separately
-  classified correctness/performance verdicts. Raw linear metrics remain in
-  the artifact for stochastic-transport diagnosis; the gate scores a fixed
-  5x5 linear binomial low-pass so a different Monte Carlo speckle realization
-  cannot masquerade as a structural regression.
-- Three complete 60-frame same-binary matrices passed. Across their 15 raw
-  comparisons the worst observations were SSIM `0.999486`, max delta
-  `0.266802`, p99 delta `0.006161`, outliers `0.0189%`, and mean delta
-  `0.000127`. Same-machine timing variation peaked at `1.071x`/`1.074x` and
-  `+0.40`/`+0.50 ms` for p50/p95; those measurements set the committed
-  `1.10x + 0.10 ms` fence.
-- Baseline `c25f61e6` versus current candidate `77b540d0` then passed three
-  complete 60-frame matrices. Across those 15 comparisons, gated SSIM stayed
-  at or above `0.999887`, max delta stayed at or below `0.055870`, p99 at or
-  below `0.002165`, outliers at or below `0.0015%`, and mean delta at or below
-  `0.000089`. The raw counterparts are retained and reached SSIM `0.999496`,
-  max `0.207589`, p99 `0.005953`, outliers `0.0189%`, and mean `0.000117`.
-- A controlled 64x64 magenta corruption fails the filtered gate on SSIM
-  (`0.995710`), max delta (`0.804306`), outliers (`0.5004%`), and mean delta
-  (`0.001828`). `scripts/bisect-render-anchor.sh` builds the checkout under
-  test and returns `0` for the clean control and `101` for that fault, which is
-  a valid `git bisect run` bad verdict.
-- **Next blocking slice: R2.** Persist TLAS-integrity and cluster-overflow
-  evidence, then capture Dugout Inn, MedTek, Prospector, and Cydonia. R1.2
-  provenance/angle work may proceed independently, but neither result becomes
-  shadow-transport evidence until both R1 and R2 are green.
+- **R0 complete.** `check-bench-determinism.sh` produces three cold-process
+  manifests, and `check-render-anchor.sh` compares explicit binaries over the
+  static/pan/orbit/dolly/cut paths without mutating the caller's worktree.
+  Three same-binary matrices and three `c25f61e6`-vs-`77b540d0` matrices
+  passed; the bisect wrapper returns `0` for the clean control and `101` for a
+  controlled 64x64 corruption. Raw stochastic metrics remain diagnostic while
+  the fixed linear low-pass metric is the correctness gate.
+- **R1 transport-facing work complete; provenance refinement remains.** XCLL
+  directional colour emits a type-2 directional light with no type-3/flat-`Lo`
+  bypass. The parser names azimuth/elevation explicitly and the dedicated
+  `xcll_direction_yup` conversion is pinned by axis tests plus an ignored
+  real-FNV census (388 XCLL cells, 252 active directionals, 96 at the authored
+  `(0°, 270°)` overhead convention). `light.dump` reports every live light's
+  kind, direction/position, photometric values, visibility and entity/FormID
+  provenance. Exact translation source, GPU index, and assigned-cluster count
+  are still not retained per light.
+- **R2 complete for normal runtime pressure.** Persistent RT-integrity and
+  fence-lagged cluster telemetry were captured on Dugout Inn, MedTek,
+  Prospector, and Cydonia. Cydonia exposed two capacity failures: 656 live
+  lights exceeded the old 512-light SSBO, and clusters reached 305 candidates,
+  dropping 3,729 references at the old 128 cap. `MAX_LIGHTS = 1023` now leaves
+  packed ReSTIR index 1023 as the invalid sentinel; the per-cluster cap is 512.
+  Adaptive cold-start ray budgeting prevents the former Cydonia device loss.
+  A forced-low-BLAS-budget eviction/rebuild recovery test is still required.
+- **R3 core transport complete; measurement closure remains.** Selected-light,
+  shadow-visibility, direct, raw-indirect, material-lobe, and RT-LOD views are
+  available through the existing debug selectors. Every correctness view
+  bypasses composite fog/caustics/bloom/dither, temporal FSR dispatch,
+  presentation grading, exposure, ACES, underwater and fade processing. Every
+  secondary-ray consumer now uses the shared representable-float origin offset
+  with numerical `tMin = 0`. The first L0 capture also exposed and removed the
+  shader's hard-coded no-light directional fallback, so zero submitted lights
+  now leave direct transport at zero. A bounded pixel probe, a runtime
+  enum/command, and the measured `RT_LOD_SCALE` sweep remain open.
+- **R4 L0-L2 scene and manual runtime gate complete.** `--cornell-oracle l0|l1|l2`
+  constructs the ladder from one manifest: a dark white plane, the same plane
+  under one analytic directional source, then the same scene with one opaque
+  blocker. CPU tests pin CLI selection, one-variable progression, source unit
+  length/Lambert expectation, and shadow/control ray geometry. RTX 4070 Ti
+  captures using the raw direct/direct/visibility selectors passed TLAS/light/
+  cluster integrity: L0 is exactly black, L1 is spatially constant, and L2
+  contains the predicted black blocker-shadow silhouette on white visibility.
+  The ignored `cornell_rt_oracle` integration gate now captures those three
+  frames, requires `rt-integrity verdict=PASS`, and checks analytic L0/L1 plus
+  blocked/control L2 pixels. It passes locally on the RTX 4070 Ti and is ready
+  for the RT-capable CI worker. CI scheduling/artifact publication remains;
+  L3-L5 are not built.
+- **R5 core role/flag observability complete; fixture breadth remains.** The
+  PBR/translucency/model-space-normal bits are generated with the other shader
+  constants, the FO3/FNV TXST↔NIF 2-5 permutation is explicit, `mat.dump`
+  prints all semantic roles with path/source/binding/dimensionality/colour
+  space, and the lobe view is raw. Vanilla BGSM stays on its authored legacy
+  spec-gloss lobe unless a resolved template explicitly opts into PBR. Current
+  provenance still coalesces inline NIF and external material-file roles as
+  `MeshMaterial`; per-format source fields and the five-game fixture matrix
+  remain open.
+- **R6 partially complete.** `renderer.md` is reconciled with the live light,
+  cluster, origin, debug-view, flag and dump contracts. This plan, ROADMAP, and
+  the adjacent lighting/shader/material documents are being brought to the
+  same checkpoint; CI enforcement for documentation drift remains future work.
 
 ## Recovery rules
 
@@ -229,7 +241,7 @@ as a new evidence artifact rather than editing old raw tables.
 ### R1.1 Separate ambient irradiance from the directional key
 
 XCLL flat ambient and six-axis directional ambient remain on the camera/DALC
-path. XCLL `directional_color + directional_rotation + directional_fade`
+path. XCLL `directional_color + directional_azimuth/elevation + directional_fade`
 emits one type-2 directional `GpuLight` with full structural visibility.
 
 Remove the type-3 normal-independent branch from the main and GI shaders. No
@@ -309,7 +321,8 @@ but make the command and benchmark artifact authoritative.
 
 Add a small per-frame `ClusterCullStats` storage buffer containing:
 
-- number of clusters whose candidate count exceeded 128;
+- number of clusters whose candidate count exceeded
+  `MAX_LIGHTS_PER_CLUSTER` (512 after Cydonia proved the old 128 cap lossy);
 - maximum candidate count observed;
 - total dropped assignments;
 - frame/light-count identity.
@@ -425,7 +438,7 @@ threshold.
 | Rung | Adds exactly one variable | Primary assertion |
 |---|---|---|
 | L0 | albedo plane, no emitted/ambient light | radiance is zero before display encoding |
-| L1 | one white directional, Lambert material | N.L gradient and energy match the analytic CPU result |
+| L1 | one white directional, specular-disabled Lambert plane | constant N.L and energy match the analytic CPU result |
 | L2 | one opaque blocker | binary visibility mask and penumbra-free hard edge match geometry |
 | L3 | point/spot cluster plus reservoir selection | candidate list and selected-light identity are deterministic |
 | L4 | one diffuse bounce and coloured Cornell walls | indirect-only channel has expected sign, colour bleed and bounded energy |
@@ -475,7 +488,7 @@ from the entire vanilla corpus. If measurement disproves that, document the
 material-class rule explicitly. In either case, remove stale mirror tests and
 add a real provider-backed merge test.
 
-### R5.3 `material.dump <entity>`
+### R5.3 `mat.dump <entity>`
 
 Print the translated material and one row per canonical role:
 
@@ -574,7 +587,7 @@ For a failed fixed frame, stop at the first failing row:
 | visibility correct, direct-only wrong | BRDF/light-ingestion bug | inspect `light.dump` and lobe view |
 | direct correct, indirect wrong | GI/SVGF bug | inspect indirect-only/history channels |
 | lighting terms correct, final wrong | composite/exposure/bloom/fog bug | isolate composite terms |
-| lobe correct, texture wrong | role/path/view/sampler bug | inspect `material.dump` |
+| lobe correct, texture wrong | role/path/view/sampler bug | inspect `mat.dump` |
 
 This table is the working meaning of "fix it once and for all": future
 failures become a bounded layer diagnosis instead of another renderer-wide

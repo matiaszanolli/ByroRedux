@@ -34,9 +34,8 @@ layout(set = 0, binding = 3) uniform CompositeParams {
     // Runtime no longer evaluates this non-physical curve. It remains in the
     // contract until XCLL/WTHR values are fitted offline into sigma_t tables.
     vec4 fog_params;
-    vec4 depth_params;   // x = is_exterior, y = exposure (vestigial — unread here,
-                         // live consumer is presentation.frag's exposure push
-                         // constant), z = volumetric consumed (vestigial — mirrors
+    vec4 depth_params;   // x = is_exterior, y = uintBitsToFloat(debug flags),
+                         // z = volumetric consumed (vestigial — mirrors
                          // the host const but #1926 removed the shader branch that
                          // used to read it; vol.a/vol.rgb consumption below is now
                          // unconditional), w = frame index
@@ -395,6 +394,19 @@ void main() {
     outTransparency = 0.0;
     vec4 direct4 = texture(hdrTex, fragUV);
     vec3 direct = direct4.rgb;
+
+    // Correctness oracles are already final in the main-pass direct
+    // attachment. Do not let caustics, fog, volumetrics, bloom, or dither
+    // turn transport visibility/energy into a different question.
+    uint dbgFlags = floatBitsToUint(params.depth_params.y);
+    bool rawDebug = (dbgFlags & DBG_VIZ_SELECTED_LIGHT) != 0u
+        || (dbgFlags & DBG_VIZ_DIRECT) != 0u
+        || (dbgFlags & DBG_VIZ_RAW_INDIRECT) != 0u
+        || (dbgFlags & DBG_VIZ_RT_LOD) == DBG_VIZ_RT_LOD;
+    if (rawDebug) {
+        outColor = direct4;
+        return;
+    }
 
     // Depth is a classification signal here, not a continuously filtered
     // colour. Fetch the exact render-resolution texel so a geometry/clear

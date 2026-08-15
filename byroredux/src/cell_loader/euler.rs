@@ -1,23 +1,10 @@
 //! Z-up (Bethesda) → Y-up (engine) Euler-angle → quaternion conversion
-//! helpers used by REFR placement and XCLL directional lighting.
+//! helpers used by REFR placement.
 //!
-//! The shipping default ([`euler_zup_to_quat_yup`]) is a thin re-export
-//! of [`byroredux_core::math::coord::euler_zup_to_quat_yup`] — the
-//! single source of truth post-#1044 / TD3-003 — so non-REFR callers
-//! (XCLL directional in `scene.rs`, #380) route through one canonical
-//! formula. The diagnostic-mode dispatcher stays in this module
-//! because the four-candidate triage is REFR-placement-specific and
-//! the `2026-05-07 GSDocMitchellHouse` sign-off was on a single cell.
+//! XCLL directional lighting deliberately does not use these helpers: its
+//! two fields are a spherical azimuth/elevation pair, not a REFR Euler triple.
 
 use byroredux_core::math::Quat;
-
-/// Convert Euler angles (radians, Z-up Bethesda convention) to a Y-up
-/// quaternion. See [`byroredux_core::math::coord::euler_zup_to_quat_yup`]
-/// for the full derivation; this is `pub(crate)` so the existing
-/// REFR / XCLL call sites keep their qualified path.
-pub(crate) fn euler_zup_to_quat_yup(rx: f32, ry: f32, rz: f32) -> Quat {
-    byroredux_core::math::coord::euler_zup_to_quat_yup(rx, ry, rz)
-}
 
 /// Diagnostic switch for the REFR Euler→Y-up quaternion conversion.
 ///
@@ -43,18 +30,15 @@ pub(crate) fn euler_zup_to_quat_yup(rx: f32, ry: f32, rz: f32) -> Quat {
 ///   2: CCW + ZYX-product (no angle negation, ZYX order)
 ///   3: CCW + XYZ-product (no angle negation, XYZ order)
 ///
-/// Other call sites (XCLL directional lighting in `scene.rs`) go
-/// through [`euler_zup_to_quat_yup`] directly, not this dispatcher,
-/// so the helper is the single source of truth; this dispatcher's
-/// mode-0/2/3 paths are kept for diagnostic-only triage.
+/// The mode-0/2/3 paths are kept for diagnostic-only triage.
 static REFR_ROTATION_MODE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(1);
 
 pub fn set_refr_rotation_mode_diag(mode: u8) {
     REFR_ROTATION_MODE.store(mode, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// Diagnostic-mode-aware variant of [`euler_zup_to_quat_yup`] used
-/// only on the REFR placement code path.
+/// Diagnostic-mode-aware Euler conversion used only on the REFR placement
+/// code path.
 ///
 /// The four formulas themselves live in
 /// [`byroredux_core::math::coord::euler_zup_to_quat_yup_mode`] — this

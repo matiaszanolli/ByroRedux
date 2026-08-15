@@ -23,14 +23,13 @@ pub const CLUSTER_FAR_FALLBACK: f32 = 50_000.0;
 // regression). Buffer grows from 3456 * 32 * 4 = 442 KB to 3456 * 128
 // * 4 = 1.7 MB — trivial against the multi-GB VRAM budget.
 //
-// 128 is sized for vanilla FO4 / FO76 dense-lighting interiors: live
-// observation on Bioscience saw ~80-100 cluster-overlapping lights on
-// the densest tiles after the range extension; 128 leaves headroom
-// for modded / FO76-scale public-event scenes. Future workgroup-local
-// sort would let us keep the cap lower by ordering by distance —
-// deferred until the cap proves insufficient on Starfield / FO76
-// content.
-pub const MAX_LIGHTS_PER_CLUSTER: u32 = 128;
+// 128 proved insufficient once the R2 GPU telemetry was exercised on
+// Starfield: Cydonia measured 305 overlaps in its densest cluster and dropped
+// 3,729 light references across 52 clusters. 512 retains the complete measured
+// set with 68% headroom. The flat index list grows to 3456 * 512 * 4 = 6.75 MB
+// per frame-in-flight and the workgroup-local index array to 2 KB, both modest
+// on the renderer's 6 GB minimum target.
+pub const MAX_LIGHTS_PER_CLUSTER: u32 = 512;
 
 // Vertex layout (global SSBO)
 pub const VERTEX_STRIDE_FLOATS: u32 = 26;
@@ -606,6 +605,32 @@ pub const DBG_DISABLE_REFLECTION_GLASS_RAYS: u32 = 0x20000000;
 /// the main-pass ray budget rather than a whole-frame RT-off measurement.
 pub const DBG_DISABLE_ALL_MAIN_RAYS: u32 = 0x40000000;
 
+/// 0x80000000 — false-colour the final ReSTIR-selected light index. A stable
+/// integer hash maps each SSBO index to a distinct colour; black means the
+/// fragment had no valid reservoir selection. This makes a selected-index /
+/// shadow-ray payload mismatch visible without conflating it with BRDF,
+/// visibility, denoising, or composite energy.
+pub const DBG_VIZ_SELECTED_LIGHT: u32 = 0x80000000;
+
+/// Compound selector (not a new bit): false-colour the material shading lobe
+/// while preserving every legacy one-bit debug flag. Enable it by setting both
+/// `DBG_VIZ_MATERIAL_STATE` and `DBG_VIZ_SELECTED_LIGHT`; the shader checks
+/// this exact combination before either constituent view.
+pub const DBG_VIZ_MATERIAL_LOBES: u32 = DBG_VIZ_MATERIAL_STATE | DBG_VIZ_SELECTED_LIGHT;
+
+/// Compound selector (not a new bit): false-colour the continuous `rtLOD`
+/// value used by reflection/GI/glass gates. Enable both constituent bits.
+/// This is the measurement surface required before retuning RT_LOD_SCALE.
+pub const DBG_VIZ_RT_LOD: u32 = DBG_VIZ_MATERIAL_STATE | DBG_VIZ_GI_BOUNCE;
+
+/// Compound selector (not a new bit): display the final selected direct-light
+/// visibility before BRDF, ReSTIR weight, temporal accumulation, indirect,
+/// composite, exposure, or tone mapping. Greyscale is luminance of the
+/// material-aware RGB transmittance (black=blocked, white=fully visible);
+/// magenta means no valid reservoir sample/ray existed for the fragment, so
+/// "occluded" can never be confused with "nothing selected".
+pub const DBG_VIZ_SHADOW_VISIBILITY: u32 = DBG_VIZ_SELECTED_LIGHT | DBG_VIZ_DIRECT;
+
 /// Single source of truth for every `DBG_*` debug-viz bit, in emit order.
 /// Both `build.rs` (GLSL header emit) and `shader_constants.rs`'s test
 /// module (`generated_header_contains_all_defines` value-pin,
@@ -654,6 +679,10 @@ pub const DBG_BITS: &[(&str, u32)] = &[
         DBG_DISABLE_REFLECTION_GLASS_RAYS,
     ),
     ("DBG_DISABLE_ALL_MAIN_RAYS", DBG_DISABLE_ALL_MAIN_RAYS),
+    ("DBG_VIZ_SELECTED_LIGHT", DBG_VIZ_SELECTED_LIGHT),
+    ("DBG_VIZ_MATERIAL_LOBES", DBG_VIZ_MATERIAL_LOBES),
+    ("DBG_VIZ_RT_LOD", DBG_VIZ_RT_LOD),
+    ("DBG_VIZ_SHADOW_VISIBILITY", DBG_VIZ_SHADOW_VISIBILITY),
 ];
 
 /// #1799 / PERF-D5-NEW-01 — compile-time gate for the legacy 16-slot WRS

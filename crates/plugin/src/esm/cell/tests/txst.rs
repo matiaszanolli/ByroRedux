@@ -144,6 +144,50 @@ fn parse_txst_resolves_skyrim_ck_roles() {
     assert!(set.wrinkle.is_none());
 }
 
+/// FO3/FNV use the same ESM `TXST` ordering as Skyrim, including the
+/// four-role permutation relative to a NIF `BSShaderTextureSet`:
+/// TX02/TX03/TX04/TX05 = env-mask/glow/height/environment, while the NIF
+/// slots 2/3/4/5 = glow/height/environment/env-mask. Pin the legacy game
+/// dispatch explicitly so a future cross-game unification cannot collapse the
+/// two wire formats back into one positional table.
+#[test]
+fn parse_txst_resolves_fo3_fnv_middle_slot_permutation() {
+    let txst = build_txst_record(
+        0xF003,
+        &[
+            (b"TX02", "textures/legacy_env_mask.dds"),
+            (b"TX03", "textures/legacy_glow.dds"),
+            (b"TX04", "textures/legacy_height.dds"),
+            (b"TX05", "textures/legacy_environment.dds"),
+        ],
+    );
+    let group = wrap_in_txst_group(&[txst]);
+    let mut reader = EsmReader::new(&group);
+    let header = reader.read_group_header().expect("group header");
+    let end = reader.group_content_end(&header);
+    let mut diffuse_only = HashMap::new();
+    let mut sets = HashMap::new();
+
+    parse_txst_group(
+        &mut reader,
+        end,
+        &mut diffuse_only,
+        &mut sets,
+        GameKind::Fallout3NV,
+    )
+    .expect("parse");
+
+    let set = sets.get(&0xF003).expect("FO3/FNV TextureSet");
+    assert_eq!(
+        set.env_mask.as_deref(),
+        Some("textures/legacy_env_mask.dds")
+    );
+    assert_eq!(set.glow.as_deref(), Some("textures/legacy_glow.dds"));
+    assert_eq!(set.height.as_deref(), Some("textures/legacy_height.dds"));
+    assert_eq!(set.env.as_deref(), Some("textures/legacy_environment.dds"));
+    assert!(set.wrinkle.is_none());
+}
+
 /// FO4/FO76 reuse TX02 for wrinkles. It must never reach the environment
 /// mask sampler, while TX03..TX05 retain their named CK roles.
 #[test]

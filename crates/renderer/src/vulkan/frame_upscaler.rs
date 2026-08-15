@@ -391,9 +391,10 @@ impl FrameUpscaler {
         frame: usize,
         inputs: UpscaleDispatchInputs,
         fsr_frame: Option<FsrFrameParameters>,
+        force_native_blit: bool,
     ) {
         self.dispatched_this_frame = false;
-        if !self.is_fsr_dispatch_active() {
+        if force_native_blit || !self.is_fsr_dispatch_active() {
             unsafe {
                 // SAFETY: `record_native_blit` shares this fn's own `# Safety`
                 // contract (`cmd` recording outside a render pass, input

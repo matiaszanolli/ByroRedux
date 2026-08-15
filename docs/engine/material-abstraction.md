@@ -11,6 +11,15 @@
 >   longer `Option` on the ECS `Material`; they are plain resolved `metalness`/
 >   `roughness: f32` populated once in `material_translate::translate_material`
 >   (`resolve_pbr` + clamp). There is no render-time `classify_pbr` fallback.
+>
+> **2026-08-15 RT-recovery checkpoint.** Material shader flags, including
+> PBR/translucency/model-space normals, now come from the generated Rust→GLSL
+> constants contract. The FO3/FNV TXST↔NIF slot 2-5 permutation is pinned as
+> semantic roles, and `mat.dump <entity>` reports every resolved role's
+> path, provenance class, GPU handle/set/binding, dimensionality and colour
+> space. Inline-NIF versus BGSM/BGEM/.mat per-role provenance and the five-game
+> fixture matrix remain recovery work; see
+> [RT Lighting and Material Correctness Recovery](rt-lighting-material-recovery.md).
 
 **Status**: DESIGN / in progress (opened 2026-05-27) — see banner above for current state.
 **Goal**: every supported engine version (Oblivion / FO3 / FNV / Skyrim / FO4 / FO76 / Starfield) translates its native material data into **one canonical `Material`** with **one convention**, classified **at parse time**. The renderer/shader consumes that canonical material **identically** for all games. _All glass behaves the same. All cameras look the same._
@@ -170,11 +179,10 @@ roughness, and it gets it explicitly. Pinned by
    Pinned by `glass_material_tokens_are_unconditionally_smooth`,
    `glass_container_tokens_match_render_gate_but_not_classifier_arm` (core),
    and the `helpers::glass_classification_tests` suite (byroredux).
-   **Still pending**: (a) the FO4 BGSM glass material flag (a BGSM glass bottle
+   **Still pending**: the FO4 BGSM glass material flag (a BGSM glass bottle
    with no keyword in texture/name won't classify — needs the BGSM
-   transparency signal plumbed); (b) deleting the now-subsumed render-side
-   glass heuristic in `static_meshes.rs` (spawn is a superset of it; left as a
-   defensive fallback for now).
+   transparency signal plumbed). The old render-side fallback has been deleted;
+   classification remains owned by translation/spawn.
 4. **Emissive scale unification** — reconcile `emissive_mult` scale across games (Q2).
 5. **Ambient** *(optional, lower priority)* — consider a synthesized DALC-equivalent for non-Skyrim cells so the ambient model is uniform, or accept the data-driven difference.
 
@@ -190,6 +198,8 @@ Each step ships independently with `cargo test` coverage; no step touches the Vu
 
 ## 6. Tooling added for this work
 
+- `mat.dump <entity|.>` — live canonical material,
+  flags/lobes, and all semantic texture roles with source/binding/view metadata.
 - `crates/nif/examples/material_dump.rs` — per-mesh canonical-material dump.
 - `crates/nif/examples/dump_nolighting.rs` / `dump_alpha.rs` — shader-property + alpha-blend inspection.
 - `crates/bsa/examples/ba2_grep.rs` / `ba2_extract_one.rs` — BA2 path search + single-file extract.

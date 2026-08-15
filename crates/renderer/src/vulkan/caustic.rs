@@ -1310,7 +1310,7 @@ mod tests {
             "bool needsVisibility = visibilityMaskNeedsTrace(L.params.z);",
             "uint sourceMask = visibilityOpaqueMask(L.params.z);",
             "visibilityMaskUsesGlass(L.params.z)",
-            "G + ns * 0.1",
+            "offsetRayOriginForDirection(G, ns, -LtoG)",
             "-LtoG",
             "sourceVisibilityDist",
         ] {

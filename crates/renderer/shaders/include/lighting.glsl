@@ -188,18 +188,12 @@ vec3 shadowableLightRadiance(
         );
         // This path keeps the legacy non-/PI Lambert convention below.
         // Rescale the complete Disney lobe together so sheen retains the
-        // same weight relative to diffuse as the /PI direct-sun path.
+        // authored weight relative to diffuse.
         diffuseBrdf = (dd.diffuse + dd.sheen) * PI * (1.0 - metalness);
     } else {
-        // #2569 (OBL-D4-02) — KNOWN DIVERGENCE from triangle.frag's
-        // no-cluster directional fallback, which computes the same legacy
-        // arm as `kD * albedo / PI` and then scales the whole lobe by 0.8.
-        // fallback/clustered is therefore 0.8/PI (~0.2546) on diffuse but
-        // 0.8 on specular. This site is the named legacy reference
-        // convention; reconciling them changes brightness on a path no test
-        // can observe, so it is deliberately unfixed pending a live capture.
-        // Pinned by `shader_constants.rs`'s
-        // `legacy_lambert_arms_are_pinned_divergent_pending_a_capture`.
+        // Canonical legacy non-/PI Lambert convention. Directional, point and
+        // spot sources all arrive through this function; triangle.frag no
+        // longer carries a duplicate synthetic no-light sun/BRDF arm.
         diffuseBrdf = kD * albedo;
     }
     vec3 brdfResult = (diffuseBrdf + specular * specStrength * specColor) * NdotL;

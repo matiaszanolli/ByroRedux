@@ -1,6 +1,6 @@
 //! Scene / lighting / material / script-state commands.
 //!
-//! `light.dump`, `light.atten`, `door.teleport`, `script.activate`, `mat.list`, `mat.set`, `ragdoll`.
+//! `light.dump`, `light.atten`, `door.teleport`, `script.activate`, `mat.list`, `mat.dump`, `mat.set`, `ragdoll`.
 
 use super::shared::*;
 
@@ -180,6 +180,77 @@ impl ConsoleCommand for LightDumpCommand {
             None => {
                 lines.push("GameTimeRes: <not present>".to_string());
             }
+        }
+
+        // ── Live physical emitters ───────────────────────────────────
+        // Copy the rows out before consulting GlobalTransform/Name/Parent so
+        // the command never nests component-storage locks in an order that
+        // differs from the scheduler's TypeId ordering contract.
+        let mut emitters: Vec<(EntityId, LightSource)> = world
+            .query::<LightSource>()
+            .map(|q| q.iter().map(|(entity, light)| (entity, *light)).collect())
+            .unwrap_or_default();
+        emitters.sort_by_key(|(entity, _)| *entity);
+        lines.push(String::new());
+        lines.push(format!("LightSource emitters: {}", emitters.len()));
+        for (entity, light) in emitters {
+            let emitter = light.emitter;
+            let rgb = emitter.radiant_intensity.get();
+            let position = world
+                .get::<GlobalTransform>(entity)
+                .map(|transform| transform.translation)
+                .unwrap_or(Vec3::ZERO);
+            let name = resolve_entity_name(world, entity).unwrap_or_else(|| "-".into());
+
+            // Cell-spawned NIF/LIGH emitters are children of the placement
+            // root carrying FormIdComponent. Walk that short chain so the
+            // dump names authored provenance rather than merely an ECS id.
+            let mut cursor = entity;
+            let mut source_form = None;
+            for _ in 0..16 {
+                if let Some(form) = world.get::<FormIdComponent>(cursor) {
+                    source_form = Some(format!("{:?}", form.0));
+                    break;
+                }
+                let Some(parent) = world.get::<Parent>(cursor) else {
+                    break;
+                };
+                cursor = parent.0;
+            }
+            let provenance = source_form
+                .map(|form| format!("esm-refr {form}"))
+                .unwrap_or_else(|| "nif/synthetic (no FormId ancestor)".into());
+            lines.push(format!(
+                "  entity={entity} name={name:?} kind={:?} source={provenance}",
+                emitter.kind
+            ));
+            lines.push(format!(
+                "    position=[{:.2},{:.2},{:.2}] direction=[{:.4},{:.4},{:.4}]",
+                position.x,
+                position.y,
+                position.z,
+                emitter.direction[0],
+                emitter.direction[1],
+                emitter.direction[2],
+            ));
+            lines.push(format!(
+                "    radiant=[{:.4},{:.4},{:.4}] dimmer={:.3} intensity={:.3} range_m={:.3} cone_cos={:.4}",
+                rgb[0],
+                rgb[1],
+                rgb[2],
+                light.dimmer,
+                light.intensity,
+                emitter.range.get(),
+                emitter.outer_cone_cos,
+            ));
+            lines.push(format!(
+                "    attenuation={:?} falloff={:.3} visibility=0x{:02x} legacy_flags=0x{:08x} shadow_flags=0x{:08x}",
+                emitter.attenuation,
+                emitter.falloff_exponent,
+                emitter.visibility.bits(),
+                light.flags,
+                light.shadow_flags,
+            ));
         }
 
         CommandOutput::lines(lines)
@@ -482,6 +553,246 @@ impl ConsoleCommand for MatListCommand {
                 m.diffuse_color[2],
             ));
         }
+        CommandOutput::lines(lines)
+    }
+}
+
+/// `mat.dump <entity|.>` — lossless material/texture inspection at the ECS
+/// → renderer boundary. Unlike `mat.list`, this includes the packed shading
+/// flags and every canonical texture role with its final path, provenance,
+/// bindless handle, descriptor binding, and colour-space interpretation.
+pub(crate) struct MatDumpCommand;
+impl ConsoleCommand for MatDumpCommand {
+    fn name(&self) -> &str {
+        "mat.dump"
+    }
+
+    fn description(&self) -> &str {
+        "Dump one material and every resolved texture role: mat.dump <entity|.>"
+    }
+
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let token = args.trim();
+        if token.is_empty() {
+            return CommandOutput::line("usage: mat.dump <entity_id|.>");
+        }
+        let entity = match resolve_console_entity(world, token) {
+            Ok(entity) => entity,
+            Err(error) => return CommandOutput::line(format!("mat.dump: {error}")),
+        };
+        let Some(material) = world.get::<Material>(entity) else {
+            return CommandOutput::line(format!("mat.dump: entity {entity} has no Material."));
+        };
+
+        use byroredux_renderer::vulkan::material::material_flag;
+        let flags = material.effect_shader_flags;
+        let lobe = if material.material_kind == byroredux_renderer::MATERIAL_KIND_GLASS {
+            "glass"
+        } else if flags & material_flag::TRANSLUCENCY != 0 {
+            "translucency"
+        } else if flags & material_flag::PBR_BSDF != 0 {
+            "disney-pbr"
+        } else {
+            "legacy"
+        };
+        let name = resolve_entity_name(world, entity).unwrap_or_else(|| "-".to_string());
+        let mut lines = vec![
+            format!("Material {entity} ({name}):"),
+            format!(
+                "  kind={} flags=0x{flags:08x} lobe={lobe}",
+                material.material_kind
+            ),
+            format!(
+                "  flag gates: pbr={} translucency={} model_space_normals={} thin_glass={}",
+                flags & material_flag::PBR_BSDF != 0,
+                flags & material_flag::TRANSLUCENCY != 0,
+                flags & material_flag::MODEL_SPACE_NORMALS != 0,
+                flags & material_flag::THIN_GLASS != 0,
+            ),
+            format!(
+                "  PBR: metalness={:.4} roughness={:.4} ior={:.4} glossiness={:.4}",
+                material.metalness, material.roughness, material.ior, material.glossiness
+            ),
+            format!(
+                "  alpha={:.4} test={} threshold={:.4} func={} env_scale={:.4}",
+                material.alpha,
+                material.alpha_test,
+                material.alpha_threshold,
+                material.alpha_test_func,
+                material.env_map_scale,
+            ),
+            format!(
+                "  material_path={}",
+                material.material_path.as_deref().unwrap_or("<none>")
+            ),
+        ];
+
+        let handles = world.get::<MaterialTextureHandles>(entity);
+        let debug = world.get::<MaterialTextureDebugInfo>(entity);
+        let (Some(handles), Some(debug)) = (handles, debug) else {
+            lines.push(
+                "  texture oracle: unavailable (synthetic/terrain material did not pass through the NIF material resolver)"
+                    .to_string(),
+            );
+            return CommandOutput::lines(lines);
+        };
+
+        lines.push(format!(
+            "  sampler clamp_mode={} normal_has_alpha={} pom_scale={:.4} pom_passes={:.1}",
+            debug.clamp_mode,
+            handles.normal_has_alpha,
+            handles.parallax_height_scale,
+            handles.parallax_max_passes,
+        ));
+        lines.push(
+            "  textures (role | handle | set binding | color | view | source | path):".into(),
+        );
+
+        let p = &debug.paths;
+        let s = &debug.sources;
+        let h = &handles.textures;
+        let slots: [(&str, Option<&str>, MaterialTextureSource, u32, &str, &str); 18] = [
+            (
+                "base_color",
+                p.base_color.as_deref(),
+                s.base_color,
+                h.base_color,
+                "sRGB",
+                "2D",
+            ),
+            (
+                "normal",
+                p.normal.as_deref(),
+                s.normal,
+                h.normal,
+                "linear",
+                "2D",
+            ),
+            (
+                "emissive",
+                p.emissive.as_deref(),
+                s.emissive,
+                h.emissive,
+                "sRGB",
+                "2D",
+            ),
+            (
+                "detail",
+                p.detail.as_deref(),
+                s.detail,
+                h.detail,
+                "sRGB",
+                "2D",
+            ),
+            (
+                "smooth_spec",
+                p.smooth_spec.as_deref(),
+                s.smooth_spec,
+                h.smooth_spec,
+                "linear",
+                "2D",
+            ),
+            ("dark", p.dark.as_deref(), s.dark, h.dark, "sRGB", "2D"),
+            (
+                "height",
+                p.height.as_deref(),
+                s.height,
+                h.height,
+                "linear",
+                "2D",
+            ),
+            (
+                "environment",
+                p.environment.as_deref(),
+                s.environment,
+                h.environment,
+                "sRGB",
+                "cube",
+            ),
+            (
+                "environment_mask",
+                p.environment_mask.as_deref(),
+                s.environment_mask,
+                h.environment_mask,
+                "linear",
+                "2D",
+            ),
+            ("tint", p.tint.as_deref(), s.tint, h.tint, "sRGB", "2D"),
+            (
+                "inner_layer",
+                p.inner_layer.as_deref(),
+                s.inner_layer,
+                h.inner_layer,
+                "sRGB",
+                "2D",
+            ),
+            (
+                "specular",
+                p.specular.as_deref(),
+                s.specular,
+                h.specular,
+                "linear",
+                "2D",
+            ),
+            (
+                "lighting",
+                p.lighting.as_deref(),
+                s.lighting,
+                h.lighting,
+                "linear",
+                "2D",
+            ),
+            ("flow", p.flow.as_deref(), s.flow, h.flow, "linear", "2D"),
+            (
+                "wrinkle",
+                p.wrinkle.as_deref(),
+                s.wrinkle,
+                h.wrinkle,
+                "linear",
+                "2D",
+            ),
+            (
+                "greyscale_lut",
+                p.greyscale_lut.as_deref(),
+                s.greyscale_lut,
+                h.greyscale_lut,
+                "sRGB",
+                "2D",
+            ),
+            (
+                "reflectance",
+                p.reflectance.as_deref(),
+                s.reflectance,
+                h.reflectance,
+                "linear",
+                "2D",
+            ),
+            (
+                "emittance_gradient",
+                p.emittance_gradient.as_deref(),
+                s.emittance_gradient,
+                h.emittance_gradient,
+                "sRGB",
+                "2D",
+            ),
+        ];
+        for (role, path, source, handle, color, view) in slots {
+            let binding = if view == "cube" { 1 } else { 0 };
+            lines.push(format!(
+                "    {role:<20} {handle:>5}  set=0 binding={binding}  {color:<6} {view:<4} {:<16} {}",
+                source.label(),
+                path.unwrap_or("<none>")
+            ));
+        }
+        for i in 0..4 {
+            lines.push(format!(
+                "    decal[{i}]             {:>5}  set=0 binding=0  sRGB   2D   {:<16} {}",
+                h.decals[i],
+                s.decals[i].label(),
+                p.decals[i].as_deref().unwrap_or("<none>")
+            ));
+        }
+
         CommandOutput::lines(lines)
     }
 }

@@ -2,24 +2,17 @@
 //!
 //! Same qualified path preserved (`euler_zup_to_quat_yup_tests::FOO`).
 
-//! Regression tests for #380 / audit F3-09 — XCLL directional
-//! rotation math. The Bethesda author specifies rotation via two
-//! Euler angles (Z-up, CW-positive per Gamebryo). Pre-#380 the
-//! `setup_scene` XCLL branch inlined a spherical-math formula
-//! that treated `ry` as elevation-from-horizon and drifted from
-//! the authored intent as `ry` grew. The fix routes those angles
-//! through the same `euler_zup_to_quat_yup` helper the REFR
-//! placement path uses, applied to Gamebryo's
-//! `NiDirectionalLight` model direction `(1, 0, 0)` (per the 2.3
-//! source: "The model direction of the light is (1,0,0)").
+//! Regression tests for XCLL's dedicated azimuth/elevation conversion.
+//! These angles are not a REFR Euler triple and must not use the shared
+//! placement helper.
 use super::*;
 
 fn approx_eq(a: f32, b: f32) -> bool {
     (a - b).abs() < 1e-5
 }
 
-fn xcll_dir_yup(rx: f32, ry: f32) -> Vec3 {
-    euler_zup_to_quat_yup(rx, ry, 0.0) * Vec3::new(1.0, 0.0, 0.0)
+fn xcll_dir_yup(azimuth: f32, elevation: f32) -> Vec3 {
+    load::xcll_direction_yup(azimuth, elevation)
 }
 
 /// Baseline: `(rx, ry) = (0, 0)` must leave the model direction
@@ -34,34 +27,24 @@ fn zero_rotation_returns_model_direction_unchanged() {
     assert!(approx_eq(dir.z, 0.0), "z should be 0, got {}", dir.z);
 }
 
-/// `ry = π/2` rotates the model direction around the Z-up Y axis
-/// by a quarter turn CW. The helper maps that to `Rz(ry)` in
-/// Y-up, so `(1, 0, 0)` rotates CCW around +Z to `(0, 1, 0)`.
-/// Guards against a sign flip on the elevation component.
+/// Rotation XY is azimuth: a quarter turn must move the horizontal source
+/// direction from +X to source +Y, which maps to renderer -Z.
 #[test]
-fn elevation_ry_quarter_turn_moves_to_y_axis() {
-    let dir = xcll_dir_yup(0.0, std::f32::consts::FRAC_PI_2);
+fn azimuth_quarter_turn_moves_to_renderer_negative_z() {
+    let dir = xcll_dir_yup(std::f32::consts::FRAC_PI_2, 0.0);
+    assert!(approx_eq(dir.x, 0.0), "x should be 0, got {}", dir.x);
+    assert!(approx_eq(dir.y, 0.0), "y should be 0, got {}", dir.y);
+    assert!(approx_eq(dir.z, -1.0), "z should be -1, got {}", dir.z);
+}
+
+/// The FNV population resolves the elevation sign: 96 of 252 active XCLL
+/// directionals use 270 degrees as the overhead key-light preset.
+#[test]
+fn elevation_270_degrees_points_to_renderer_up() {
+    let dir = xcll_dir_yup(0.0, 3.0 * std::f32::consts::FRAC_PI_2);
     assert!(approx_eq(dir.x, 0.0), "x should be 0, got {}", dir.x);
     assert!(approx_eq(dir.y, 1.0), "y should be 1, got {}", dir.y);
     assert!(approx_eq(dir.z, 0.0), "z should be 0, got {}", dir.z);
-}
-
-/// Known defect: XCLL Directional Rotation XY is azimuth, so changing it
-/// must change the light direction. The current Euler call applies it as an
-/// X-axis rotation to the +X model vector and therefore discards it.
-///
-/// Rust has no native `xfail`; keep this ignored while the XY/Z sign oracle
-/// is unresolved. Running ignored tests must fail until the conversion is
-/// corrected, instead of making the default suite defend the defect.
-#[test]
-#[ignore = "known defect: XCLL Rotation XY is discarded by the Euler conversion"]
-fn rotation_xy_must_affect_direction() {
-    let baseline = xcll_dir_yup(0.0, 0.0);
-    let rotated = xcll_dir_yup(std::f32::consts::FRAC_PI_2, 0.0);
-    assert!(
-        (rotated - baseline).length() > 1e-5,
-        "Rotation XY changed but direction stayed {rotated:?}"
-    );
 }
 
 /// Output vector must always be unit length — XCLL rotations are
@@ -77,24 +60,4 @@ fn output_is_unit_length_for_arbitrary_angles() {
         "quaternion rotation must preserve length (got {})",
         len
     );
-}
-
-/// Parity with the REFR path: applying `euler_zup_to_quat_yup`
-/// to the X axis must match the result of rotating `(0, 0, 0)`
-/// translation + the same Euler angles through the REFR
-/// placement's `ref_rot * model_dir` composition. Pre-#380 the
-/// two paths diverged.
-#[test]
-fn matches_refr_placement_rotation_of_model_direction() {
-    let rx = 0.25;
-    let ry = 0.4;
-    let dir_xcll = xcll_dir_yup(rx, ry);
-    // REFR path: identical to the XCLL path now that both route
-    // through `euler_zup_to_quat_yup`. Spelling out the REFR
-    // composition explicitly to pin the invariant.
-    let refr_quat = euler_zup_to_quat_yup(rx, ry, 0.0);
-    let dir_refr = refr_quat * Vec3::new(1.0, 0.0, 0.0);
-    assert!(approx_eq(dir_xcll.x, dir_refr.x));
-    assert!(approx_eq(dir_xcll.y, dir_refr.y));
-    assert!(approx_eq(dir_xcll.z, dir_refr.z));
 }

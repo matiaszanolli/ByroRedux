@@ -30,6 +30,16 @@ pub const SKIN_OUTPUT_STRIDE_BYTES: u64 = SKIN_OUTPUT_STRIDE_FLOATS as u64 * 4;
 /// ray can travel another `DIRECTIONAL_SHADOW_TRACE_DISTANCE` toward a caster.
 pub const LOD_SHADOW_CASTER_DISTANCE: f32 = SHADOW_FADE_END + DIRECTIONAL_SHADOW_TRACE_DISTANCE;
 
+/// Whether a debug visualization is a correctness oracle that must bypass
+/// fog, caustics, bloom, temporal upscaling, grading, exposure, and tone
+/// mapping. This includes categorical/scalar views and the direct/indirect
+/// term-isolation views: automatic exposure can otherwise turn a zero-light
+/// Cornell rung grey and destroy the meaning of a black pixel.
+pub const fn debug_viz_requires_raw_output(flags: u32) -> bool {
+    flags & (DBG_VIZ_SELECTED_LIGHT | DBG_VIZ_DIRECT | DBG_VIZ_RAW_INDIRECT) != 0
+        || (flags & DBG_VIZ_RT_LOD) == DBG_VIZ_RT_LOD
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -77,6 +87,16 @@ mod tests {
             "shader_constants::MAX_BONES_PER_MESH must equal \
              byroredux_core::ecs::components::MAX_BONES_PER_MESH"
         );
+    }
+
+    #[test]
+    fn correctness_debug_views_require_raw_frame_graph_output() {
+        assert!(debug_viz_requires_raw_output(DBG_VIZ_SELECTED_LIGHT));
+        assert!(debug_viz_requires_raw_output(DBG_VIZ_SHADOW_VISIBILITY));
+        assert!(debug_viz_requires_raw_output(DBG_VIZ_MATERIAL_LOBES));
+        assert!(debug_viz_requires_raw_output(DBG_VIZ_RT_LOD));
+        assert!(debug_viz_requires_raw_output(DBG_VIZ_DIRECT));
+        assert!(debug_viz_requires_raw_output(DBG_VIZ_RAW_INDIRECT));
     }
 
     #[test]
@@ -283,60 +303,21 @@ mod tests {
         }
     }
 
-    /// #2569 (OBL-D4-02) — the legacy (non-`MAT_FLAG_PBR_BSDF`) Lambert arm
-    /// is duplicated across the two direct-lighting paths, and the copies do
-    /// **not** agree:
-    ///
-    /// - `lighting.glsl` (clustered per-light): `kD * albedo`, then `* NdotL`.
-    ///   Documented as "the legacy non-/PI Lambert convention".
-    /// - `triangle.frag` (no-cluster directional fallback):
-    ///   `kD * albedo / PI`, then `* vec3(0.8) * NdotL`.
-    ///
-    /// So `fallback / clustered` is `0.8/PI ≈ 0.2546` for diffuse but `0.8`
-    /// for specular — the fallback is ~3.9× darker on diffuse and the two
-    /// lobes are not even scaled consistently relative to each other. The
-    /// same 0.8/PI gap applies to the Disney arm (clustered multiplies the
-    /// lobe by `PI`, the fallback doesn't), so this is a whole-path
-    /// convention split, not a legacy-only one. It shows up as a brightness
-    /// pop when a fragment crosses the cluster-population threshold, and as
-    /// systematically dark Oblivion / FO3 / FNV exteriors.
-    ///
-    /// **This test pins the divergence rather than asserting parity, on
-    /// purpose.** Reconciling the two sites changes image brightness on a
-    /// path `cargo test` cannot observe, and this project does not ship
-    /// speculative shader changes without a live capture (see the issue's own
-    /// completeness checklist). Until that capture exists the honest state is
-    /// "known-divergent, deliberately unfixed" — and a tripwire that fires the
-    /// moment either arm is edited is worth more than a green assertion that
-    /// silently stops describing the code.
-    ///
-    /// When the capture lands: make the two expressions identical, then turn
-    /// the two `assert!`s below into the equality this test is named for.
+    /// An empty light buffer is an ingestion/scene result, not permission to
+    /// invent a renderer-owned sun. Pin removal of the former hard-coded
+    /// no-cluster directional arm: L0 must stay exactly black so a dead light
+    /// ingestion or upload path cannot masquerade as plausible illumination.
     #[test]
-    fn legacy_lambert_arms_are_pinned_divergent_pending_a_capture() {
-        let lighting = include_str!("../shaders/include/lighting.glsl");
+    fn zero_lights_do_not_synthesize_a_directional_source() {
         let triangle = include_str!("../shaders/triangle.frag");
-
         assert!(
-            lighting.contains("diffuseBrdf = kD * albedo;"),
-            "clustered per-light Lambert arm changed shape — if this is the \
-             #2569 reconciliation, update this test to assert parity instead"
+            triangle.contains("Zero submitted lights means zero direct-light transport"),
+            "the zero-light transport contract must remain explicit"
         );
         assert!(
-            triangle.contains("diffuseBrdf = kD * albedo / PI;"),
-            "no-cluster fallback Lambert arm changed shape — if this is the \
-             #2569 reconciliation, update this test to assert parity instead"
-        );
-        assert!(
-            triangle.contains("* vec3(0.8) * NdotL;"),
-            "the fallback's 0.8 whole-lobe scale is half of the #2569 \
-             divergence; if it moved, the ratio this test documents is stale"
-        );
-        // The clustered path applies no such scale — that asymmetry IS the bug.
-        assert!(
-            !lighting.contains("vec3(0.8)"),
-            "the clustered path gaining a 0.8 scale would change which side of \
-             #2569 is the reference convention"
+            !triangle.contains("Fallback: single directional light")
+                && !triangle.contains("normalize(vec3(0.4, 0.8, 0.5))"),
+            "zero lights must not fall back to a synthetic directional source"
         );
     }
 
@@ -494,6 +475,52 @@ mod tests {
                  the #define from shader_constants.glsl is the source of truth (#1162)",
             );
         }
+    }
+
+    #[test]
+    fn material_lobe_view_is_an_explicit_compound_selector() {
+        assert_eq!(
+            DBG_VIZ_MATERIAL_LOBES,
+            DBG_VIZ_MATERIAL_STATE | DBG_VIZ_SELECTED_LIGHT
+        );
+        let src = include_str!("../shaders/triangle.frag");
+        assert!(src.contains("(dbgFlags & DBG_VIZ_MATERIAL_LOBES) == DBG_VIZ_MATERIAL_LOBES"));
+        assert!(src.contains("MAT_FLAG_TRANSLUCENCY"));
+        assert!(src.contains("MAT_FLAG_PBR_BSDF"));
+    }
+
+    #[test]
+    fn rt_lod_view_precedes_constituent_debug_views() {
+        assert_eq!(DBG_VIZ_RT_LOD, DBG_VIZ_MATERIAL_STATE | DBG_VIZ_GI_BOUNCE);
+        let src = include_str!("../shaders/triangle.frag");
+        let compound = src
+            .find("(dbgFlags & DBG_VIZ_RT_LOD) == DBG_VIZ_RT_LOD")
+            .expect("rtLOD compound view branch");
+        let constituent = src
+            .find("(dbgFlags & DBG_VIZ_GI_BOUNCE) != 0u")
+            .expect("GI constituent view branch");
+        assert!(compound < constituent);
+    }
+
+    #[test]
+    fn shadow_visibility_view_is_raw_and_distinguishes_no_sample() {
+        assert_eq!(
+            DBG_VIZ_SHADOW_VISIBILITY,
+            DBG_VIZ_SELECTED_LIGHT | DBG_VIZ_DIRECT
+        );
+        let src = include_str!("../shaders/triangle.frag");
+        let visibility = src
+            .find("(dbgFlags & DBG_VIZ_SHADOW_VISIBILITY) == DBG_VIZ_SHADOW_VISIBILITY")
+            .expect("shadow-visibility compound view branch");
+        let selected = src
+            .find("(dbgFlags & DBG_VIZ_SELECTED_LIGHT) != 0u")
+            .expect("selected-light constituent view branch");
+        let direct = src
+            .find("(dbgFlags & DBG_VIZ_DIRECT) != 0u")
+            .expect("direct constituent view branch");
+        assert!(visibility < selected && visibility < direct);
+        assert!(src.contains("selectedVisibilityDebug = visibility"));
+        assert!(src.contains("vec3(1.0, 0.0, 1.0)"));
     }
 
     /// TD4-208 / #1151 — `cluster_cull.comp` must NOT redeclare

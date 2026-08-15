@@ -64,6 +64,61 @@ fn parse_real_fnv_esm() {
     }
 }
 
+/// Real-content oracle for the two signed-degree fields in FNV XCLL. Keep
+/// this ignored because it needs the proprietary master, but make the authored
+/// population reproducible when the engine's direction convention is audited.
+#[test]
+#[ignore]
+fn fnv_xcll_direction_population_oracle() {
+    use std::collections::BTreeMap;
+
+    let path = crate::esm::test_paths::fnv_esm();
+    if !path.exists() {
+        eprintln!("Skipping: FalloutNV.esm not found at {}", path.display());
+        return;
+    }
+    let data = std::fs::read(&path).unwrap();
+    let index = parse_esm_cells(&data).unwrap();
+    let mut xcll_count = 0usize;
+    let mut population = BTreeMap::<(i32, i32), Vec<&str>>::new();
+    for cell in index.cells.values() {
+        let Some(lighting) = cell.lighting.as_ref() else {
+            continue;
+        };
+        xcll_count += 1;
+        if lighting.directional_color.iter().copied().sum::<f32>() <= 0.0
+            || lighting.directional_fade == Some(0.0)
+        {
+            continue;
+        }
+        let azimuth = lighting.directional_azimuth.to_degrees().round() as i32;
+        let elevation = lighting.directional_elevation.to_degrees().round() as i32;
+        population
+            .entry((azimuth, elevation))
+            .or_default()
+            .push(cell.editor_id.as_str());
+    }
+
+    let authored_count: usize = population.values().map(Vec::len).sum();
+    eprintln!("FNV XCLL population: {xcll_count} cells, {authored_count} active directionals");
+    for ((azimuth, elevation), cells) in &population {
+        eprintln!(
+            "  azimuth={azimuth:>4} elevation={elevation:>4} count={:>3} examples={:?}",
+            cells.len(),
+            &cells[..cells.len().min(4)]
+        );
+    }
+    assert_eq!(
+        authored_count, 252,
+        "the vanilla FNV active-directional population changed; re-audit the angle oracle"
+    );
+    assert_eq!(
+        population.get(&(0, 270)).map(Vec::len),
+        Some(96),
+        "the dominant vanilla FNV overhead preset changed; 270° elevation is the sign-convention oracle"
+    );
+}
+
 /// Regression guard: proves the existing FNV-shaped XCLL parser is
 /// byte-compatible with Oblivion for the fields we consume.
 ///
@@ -126,8 +181,8 @@ fn oblivion_cells_populate_xcll_lighting() {
             "  '{name}': ambient={:.3?} directional={:.3?} rot=[{:.1},{:.1}]°",
             lit.ambient,
             lit.directional_color,
-            lit.directional_rotation_xy.to_degrees(),
-            lit.directional_rotation_z.to_degrees(),
+            lit.directional_azimuth.to_degrees(),
+            lit.directional_elevation.to_degrees(),
         );
 
         // Sanity: normalized color channels must sit in [0, 1].

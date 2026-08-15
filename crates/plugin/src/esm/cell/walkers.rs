@@ -389,8 +389,8 @@ pub(crate) fn parse_cell_group(
                             let fog_color = r.rgb_color().unwrap_or([0.0; 3]);
                             let fog_near = r.f32_or_default();
                             let fog_far = r.f32_or_default();
-                            let rotation_xy = (r.i32_or_default() as f32).to_radians();
-                            let rotation_z = (r.i32_or_default() as f32).to_radians();
+                            let directional_azimuth = (r.i32_or_default() as f32).to_radians();
+                            let directional_elevation = (r.i32_or_default() as f32).to_radians();
 
                             // #1293 — Starfield's 108-byte XCLL diverges from
                             // the Skyrim layout at offset 40: bytes 40-107 are a
@@ -434,8 +434,8 @@ pub(crate) fn parse_cell_group(
                                 lighting = Some(CellLighting {
                                     ambient,
                                     directional_color,
-                                    directional_rotation_xy: rotation_xy,
-                                    directional_rotation_z: rotation_z,
+                                    directional_azimuth,
+                                    directional_elevation,
                                     fog_color,
                                     fog_near,
                                     fog_far,
@@ -526,8 +526,8 @@ pub(crate) fn parse_cell_group(
                             lighting = Some(CellLighting {
                                 ambient,
                                 directional_color,
-                                directional_rotation_xy: rotation_xy,
-                                directional_rotation_z: rotation_z,
+                                directional_azimuth,
+                                directional_elevation,
                                 fog_color,
                                 fog_near,
                                 fog_far,

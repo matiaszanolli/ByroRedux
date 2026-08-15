@@ -29,7 +29,7 @@ use crate::asset_provider::{
 };
 use crate::components::{
     decal_uses_implicit_alpha_blend, texture_path_is_fx_mesh, AlphaBlend, IsDecalMesh, IsFxMesh,
-    MaterialTextureHandles, TwoSided,
+    MaterialTextureDebugInfo, MaterialTextureHandles, MaterialTextureSource, TwoSided,
 };
 use crate::helpers::add_child;
 
@@ -810,18 +810,28 @@ pub(crate) fn load_nif_bytes_with_skeleton(
                 resolve_owned(mesh.material.material_path),
             )
         };
+        let mut texture_sources = mesh.material.textures.map_ref(|path| {
+            if path.is_some() {
+                MaterialTextureSource::MeshMaterial
+            } else {
+                MaterialTextureSource::Absent
+            }
+        });
 
         // Oblivion/FO3 ship normal maps via the `<base>_n.dds` load-time
         // convention, not an explicit NIF slot. When the mesh authored no
         // normal/bump slot, derive the sibling from the diffuse path; it
         // resolves like any texture below and fails soft if absent
         // (#1303 / OBL-D4-NEW-01).
-        owned_textures.normal = owned_textures.normal.or_else(|| {
-            owned_textures
+        if owned_textures.normal.is_none() {
+            owned_textures.normal = owned_textures
                 .base_color
                 .as_deref()
-                .map(derive_normal_map_path)
-        });
+                .map(derive_normal_map_path);
+            if owned_textures.normal.is_some() {
+                texture_sources.normal = MaterialTextureSource::DerivedNormal;
+            }
+        }
 
         // #2095 / SKY-D3-NEW-03 — the per-call pre-baked FaceGen tint
         // replaces only the SkinTint head diffuse. A FaceGeom NIF also
@@ -832,11 +842,15 @@ pub(crate) fn load_nif_bytes_with_skeleton(
         // sibling from the head's authored diffuse, not the tint DDS.
         // Flows into both the bound `TextureHandle` and the canonical
         // `Material.texture_path` below.
+        let authored_base_color = owned_textures.base_color.clone();
         owned_textures.base_color = select_facegen_diffuse(
-            owned_textures.base_color,
+            authored_base_color.clone(),
             diffuse_override,
             mesh.material.material_kind,
         );
+        if owned_textures.base_color != authored_base_color {
+            texture_sources.base_color = MaterialTextureSource::RuntimeOverride;
+        }
 
         let tex_handle = resolve_texture_with_clamp(
             ctx,
@@ -1001,6 +1015,14 @@ pub(crate) fn load_nif_bytes_with_skeleton(
                 normal_has_alpha,
                 parallax_height_scale: mesh.material.parallax_height_scale.unwrap_or(0.04),
                 parallax_max_passes: mesh.material.parallax_max_passes.unwrap_or(4.0),
+            },
+        );
+        world.insert(
+            entity,
+            MaterialTextureDebugInfo {
+                paths: owned_textures,
+                sources: texture_sources,
+                clamp_mode: mesh.material.texture_clamp_mode,
             },
         );
         // #1480 / REN-D22-NEW-01 — resolve the normal-alpha-as-spec roughness
