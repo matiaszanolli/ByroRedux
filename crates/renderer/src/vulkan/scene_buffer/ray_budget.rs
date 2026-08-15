@@ -2,8 +2,11 @@
 
 /// Shader contract for scene set 1, binding 11.
 ///
-/// The first word remains the atomic glass-ray counter. The remaining words
-/// are immutable for the duration of a frame and select bounded loop limits.
+/// The first word remains the atomic glass-work telemetry counter. The
+/// remaining words are immutable for the duration of a frame and select
+/// bounded loop limits. `glass_ray_limit` is retained in the ABI for telemetry
+/// comparison; it is not a per-fragment admission threshold because unordered
+/// atomic winners would split a glass surface between incompatible paths.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GpuRayBudget {

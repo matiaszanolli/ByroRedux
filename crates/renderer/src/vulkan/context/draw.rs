@@ -1644,6 +1644,16 @@ impl VulkanContext {
                 ib.buffer,
                 ib.size,
             );
+            if let Some(ref caustic) = self.caustic {
+                caustic.write_geometry_buffers(
+                    &self.device,
+                    frame,
+                    vb.buffer,
+                    vb.size,
+                    ib.buffer,
+                    ib.size,
+                );
+            }
         }
 
         // Record command buffer. Indexed by frame-in-flight (not swapchain

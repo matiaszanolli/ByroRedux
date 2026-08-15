@@ -132,14 +132,14 @@ const _: () = {
     );
 };
 
-// Glass / IOR ray budget. The per-frame atomic ray pool for the glass
-// IOR refraction path; when exhausted, glass fragments drop to the
-// cheaper Fresnel-only fallback. The old 8192 (≈2048 IOR fragments)
-// starved on any large/close glass — a full-screen pane or a hand-held
-// sphere blew it in a 16×16 px patch, and the binary IOR/fallback split
-// painted a per-fragment stipple. Two megarays cover 524,288 IOR fragments
-// at the four-ray worst-case claim: enough for close hero props while the
-// fallback bounds full-screen bottle/pane overdraw.
+// Glass / IOR ray-work telemetry. GLASS_RAY_COST is the tier-0 estimate
+// (one optional reflection + three refraction queries); the shader records
+// two more estimated queries per adaptive quality tier as its interface
+// allowance grows from 2 to 8. GLASS_RAY_BUDGET is retained as the tier-3
+// controller comparison ceiling. The atomic counter is deliberately not a
+// per-fragment admission pool: unordered winners split alpha glass between
+// IOR and Fresnel paths and create permanent stipple. The controller chooses
+// one coherent quality tier for the next frame instead.
 pub const GLASS_RAY_BUDGET: u32 = 2_097_152;
 pub const GLASS_RAY_COST: u32 = 4;
 
@@ -378,8 +378,8 @@ pub const DBG_VIZ_RENDER_LAYER: u32 = 0x40;
 
 /// 0x80 — glass IOR refraction passthru-loop diagnostic (#789
 /// follow-up). Tints glass fragments by where the loop terminated:
-///   * black   — IOR not allowed (rtLOD ≥ 2.0, !isGlass post-LOD-downgrade,
-///     ray budget exhausted, isWindow not demoted).
+///   * black   — IOR not allowed (thin glass, RT globally disabled, or an
+///     architectural window whose portal classification remained valid).
 ///   * red     — IOR fired but ray escaped scene (sky fallback).
 ///   * yellow  — terminated on first hit, no passthru (different texture
 ///     from start — desk / wall / non-glass behind the surface).
@@ -387,9 +387,8 @@ pub const DBG_VIZ_RENDER_LAYER: u32 = 0x40;
 ///     then real scene geometry).
 ///   * cyan    — passthru ×2 with non-self terminus (two self skips +
 ///     real geometry, e.g. through one stacked beaker to wall behind).
-///   * magenta — budget exhausted, terminus STILL same-texture
-///     (passthru never escaped the glass — three+ glass surfaces in a
-///     row).
+///   * magenta — interface allowance exhausted, terminus STILL glass
+///     (passthru never escaped the overlapping surfaces at this tier).
 pub const DBG_VIZ_GLASS_PASSTHRU: u32 = 0x80;
 
 /// 0x100 — disable specular antialiasing (`specularAaRoughness`).
@@ -619,7 +618,8 @@ pub const DBG_VIZ_SELECTED_LIGHT: u32 = 0x80000000;
 pub const DBG_VIZ_MATERIAL_LOBES: u32 = DBG_VIZ_MATERIAL_STATE | DBG_VIZ_SELECTED_LIGHT;
 
 /// Compound selector (not a new bit): false-colour the continuous `rtLOD`
-/// value used by reflection/GI/glass gates. Enable both constituent bits.
+/// value used by reflection/GI and portal-cost gates. Glass identity and thick
+/// transmission are deliberately not distance-gated. Enable both bits.
 /// This is the measurement surface required before retuning RT_LOD_SCALE.
 pub const DBG_VIZ_RT_LOD: u32 = DBG_VIZ_MATERIAL_STATE | DBG_VIZ_GI_BOUNCE;
 

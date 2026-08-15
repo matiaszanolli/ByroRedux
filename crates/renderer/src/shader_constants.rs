@@ -487,6 +487,16 @@ mod tests {
         assert!(src.contains("(dbgFlags & DBG_VIZ_MATERIAL_LOBES) == DBG_VIZ_MATERIAL_LOBES"));
         assert!(src.contains("MAT_FLAG_TRANSLUCENCY"));
         assert!(src.contains("MAT_FLAG_PBR_BSDF"));
+        let lobe_view = src
+            .find("(dbgFlags & DBG_VIZ_MATERIAL_LOBES) == DBG_VIZ_MATERIAL_LOBES")
+            .expect("material-lobe compound view branch");
+        let glass_ior = src
+            .find("if (glassIORAllowed)")
+            .expect("thick-glass IOR branch");
+        assert!(
+            lobe_view < glass_ior,
+            "material-lobe oracle must run before thick glass returns early"
+        );
     }
 
     #[test]
@@ -500,6 +510,13 @@ mod tests {
             .find("(dbgFlags & DBG_VIZ_GI_BOUNCE) != 0u")
             .expect("GI constituent view branch");
         assert!(compound < constituent);
+        let glass_ior = src
+            .find("if (glassIORAllowed)")
+            .expect("thick-glass IOR branch");
+        assert!(
+            compound < glass_ior,
+            "rtLOD oracle must run before thick glass returns early"
+        );
     }
 
     #[test]
@@ -1038,6 +1055,78 @@ mod tests {
         assert!(
             src.contains("N = glassViewNormal;"),
             "the non-IOR glass base path must use the same view-facing macro normal"
+        );
+    }
+
+    /// Material identity must not depend on a per-fragment LOD or roughness
+    /// value. The old tier-3 arm set `isGlass=false`, so a glass mesh crossed
+    /// into opaque legacy/PBR shading with distance; derivative variation made
+    /// the transition happen triangle-by-triangle on large curved meshes.
+    #[test]
+    fn triangle_frag_keeps_glass_identity_and_ior_across_rt_lods() {
+        let src = include_str!("../shaders/triangle.frag");
+        let executable: String = src
+            .lines()
+            .map(str::trim_start)
+            .filter(|line| !line.starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            executable.contains("bool isGlass = mat.materialKind == MATERIAL_KIND_GLASS;"),
+            "glass classification must key only on the canonical material kind"
+        );
+        assert!(
+            !executable.contains("isGlass = false") && !executable.contains("roughness < 0.35"),
+            "roughness/LOD must not demote glass into an opaque shading family"
+        );
+        assert!(
+            executable.contains(
+                "bool glassIORAllowed = isGlass && !isThinGlass\n&& reflectionGlassRayEnabled && !isWindow;"
+            ) && !executable.contains("rtLOD < RT_LOD_IOR"),
+            "thick glass transmission must be adaptive-quality bounded, not distance-disabled"
+        );
+    }
+
+    /// Complex legacy meshes can place many independently-authored glass
+    /// submeshes along one view ray. Interface depth grows only when the
+    /// adaptive controller has measured headroom, and every extra query is
+    /// included in telemetry. The tier must apply coherently to all eligible
+    /// fragments; unordered atomic admission produces visible stipple.
+    #[test]
+    fn triangle_frag_scales_glass_interface_depth_with_honest_ray_cost() {
+        let src = include_str!("../shaders/triangle.frag");
+
+        assert!(src.contains("refractPassthruBudget = 2 + int(budgetTier) * 2;"));
+        assert!(src.contains("glassRayCost = GLASS_RAY_COST + budgetTier * 2u;"));
+        assert!(src.contains("const int MAX_REFRACT_PASSTHRUS = 8;"));
+        assert!(src.contains("passthru < refractPassthruBudget"));
+        assert!(src.contains("atomicAdd(rayBudget.rayBudgetCount, glassRayCost)"));
+        assert!(
+            !src.contains("old + glassRayCost <= rayBudget.glassRayLimit"),
+            "glass IOR must not depend on unordered atomic winners; alpha glass \
+             bypasses history, so the split is permanent salt-and-pepper noise"
+        );
+        assert!(
+            !src.contains("REFRACT_PASSTHRU_BUDGET = 2"),
+            "glass traversal must not regress to the fixed two-interface limit"
+        );
+    }
+
+    /// Same-IOR overlapping shells are one optical medium. A blind boolean
+    /// toggle at every committed glass hit treats an internal body/wing/scale
+    /// overlap as another air boundary and produces a triangle-shaped chrome
+    /// mosaic on articulated glass meshes.
+    #[test]
+    fn triangle_frag_tracks_glass_medium_depth_from_hit_facing() {
+        let src = include_str!("../shaders/triangle.frag");
+        assert!(src.contains("int glassMediumDepth = 1;"));
+        assert!(src.contains("rayQueryGetIntersectionFrontFaceEXT(refrRQ, true)"));
+        assert!(src.contains("bool entersGlass = !wasInsideGlass && nextMediumDepth > 0;"));
+        assert!(src.contains("bool exitsGlass = wasInsideGlass && nextMediumDepth == 0;"));
+        assert!(
+            !src.contains("bool rayInsideGlass"),
+            "glass traversal must not blindly toggle medium state at every overlap"
         );
     }
 

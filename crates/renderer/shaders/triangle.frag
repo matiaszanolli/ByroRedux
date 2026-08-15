@@ -741,11 +741,6 @@ void main() {
     // (roughness < 0.6) to fire the ray at all.
     const float RT_LOD_REFLECT = 3.0;
     const float RT_LOD_GI      = 2.0;  // GI ray ceiling
-    // Room-scale glass must keep resolved transmission. Many FNV cups and
-    // broken pitchers are authored as opaque-pipeline NiTriShapes, so their
-    // fallback alpha cannot reveal the framebuffer; the old tier-0-only gate
-    // turned them into flat blue solids at ordinary table-view distances.
-    const float RT_LOD_IOR     = 2.0;  // Phase-3 glass IOR ceiling (budget-gated)
     float rtFootprint = max(length(dFdx(fragWorldPosRel)), length(dFdy(fragWorldPosRel)));  // #1496 — derivative on relative pos
     float rtLOD = clamp(log2(rtFootprint * RT_LOD_SCALE), 0.0, 3.0);
 
@@ -1430,7 +1425,12 @@ void main() {
     // the portal-escape branch below — still texColor-gated but now
     // nested under a stable parent classification. See Tier C Phase 2.
     bool isAlphaBlend = (inst.flags & INSTANCE_FLAG_ALPHA_BLEND) != 0u;
-    bool isGlass = mat.materialKind == MATERIAL_KIND_GLASS && roughness < 0.35;
+    // Material identity is authored on the CPU and must stay stable across
+    // every fragment and distance tier. `roughness` is a lobe parameter, not
+    // a classifier: etched/frosted glass is still glass, and texture/derivative
+    // variation must never eject individual triangles into the opaque PBR
+    // path.
+    bool isGlass = mat.materialKind == MATERIAL_KIND_GLASS;
     bool isThinGlass = isGlass
         && (mat.materialFlags & MAT_FLAG_THIN_GLASS) != 0u;
     uint renderLayer =
@@ -1444,15 +1444,50 @@ void main() {
     bool isWindow = isGlass && isArchitecturalGlass
         && texColor.a < 0.5 && texColor.a > 0.02;
 
-    // RT mipmap glass tier downgrade:
-    //   Tier 3 (rtLOD ≥ 3.0): plain alpha-blend — glass effects disabled entirely.
-    //   Tier 2 (rtLOD ≥ 2.0): Fresnel highlight only — window portal ray suppressed.
-    //   Tiers 0–1 keep isGlass/isWindow as-is.
-    if (rtLOD >= 3.0) {
-        isGlass  = false;
+    // Portal classification may become cheaper with distance, but the
+    // material must remain glass. The former tier-3 arm set `isGlass=false`,
+    // routing distant glass through ordinary opaque PBR. Because rtLOD is
+    // per-fragment, a single mesh became a grey/chrome polygon mosaic at the
+    // transition. Thick-object refraction is bounded independently by the
+    // adaptive interface-depth controller below; distant objects cover fewer pixels and do
+    // not need a semantic material downgrade.
+    if (rtLOD >= 2.0) {
         isWindow = false;
-    } else if (rtLOD >= 2.0) {
-        isWindow = false;
+    }
+
+    // Correctness views must run before any portal/IOR early return. The old
+    // copies lived at the end of main(), so the fragments that actually took
+    // the thick-glass path returned before they were classified; the lobe and
+    // rtLOD oracles therefore visualised only the fallback population.
+    if ((dbgFlags & DBG_VIZ_MATERIAL_LOBES) == DBG_VIZ_MATERIAL_LOBES) {
+        // blue=glass, magenta=translucency, gold=Disney/PBR,
+        // orange=effect/no-lighting, grey=legacy lit.
+        vec3 lobeColor = isGlass
+            ? vec3(0.10, 0.35, 1.00)
+            : ((mat.materialFlags & MAT_FLAG_TRANSLUCENCY) != 0u)
+                ? vec3(1.00, 0.10, 0.80)
+            : ((mat.materialFlags & MAT_FLAG_PBR_BSDF) != 0u)
+                ? vec3(1.00, 0.65, 0.05)
+            : (mat.materialKind == MATERIAL_KIND_EFFECT_SHADER
+                || mat.materialKind == MATERIAL_KIND_NO_LIGHTING)
+                ? vec3(1.00, 0.25, 0.05)
+                : vec3(0.45);
+        outColor = vec4(lobeColor, 1.0);
+        outRawIndirect = vec4(0.0);
+        outAlbedo = vec4(1.0);
+        return;
+    } else if ((dbgFlags & DBG_VIZ_RT_LOD) == DBG_VIZ_RT_LOD) {
+        // Continuous heatmap: blue=tier 0, cyan/green=tier 1,
+        // yellow=tier 2, red=tier 3.
+        float t = rtLOD * (1.0 / 3.0);
+        vec3 lodColor = clamp(
+            vec3(1.5 * t, 1.0 - abs(2.0 * t - 1.0), 1.5 * (1.0 - t)),
+            vec3(0.0),
+            vec3(1.0));
+        outColor = vec4(lodColor, 1.0);
+        outRawIndirect = vec4(0.0);
+        outAlbedo = vec4(1.0);
+        return;
     }
 
     // Glass bulk-colour: replace the per-texel surface detail with a
@@ -1587,45 +1622,44 @@ void main() {
         glassFresnel = fresnelSchlickScalar(glassNdotV, f0Dielectric);
         // Dielectric Fresnel already defines the correct specular energy.
         // Boosting legacy specular strength to 3× made the bounded fallback
-        // read as chrome whenever the IOR budget was exhausted.
+        // read as chrome whenever thick-object transmission fell back.
         specStrength = min(specStrength, 1.0);
         F0 = glassF0;
     }
 
-    // RT glass Phase 3: IOR refraction + reflection for tier-0 fragments
-    // (rtLOD < RT_LOD_IOR = 2.0, i.e. arm's-reach and room-scale glass).
-    // Gated by the per-frame ray budget counter — atomicAdd claims the
-    // WORST-CASE ray cost upfront and falls back to the Fresnel-highlight
-    // path when the budget is exhausted (glassFresnel + specStrength still
-    // active). Window surfaces (isWindow) are excluded here — actual wall
+    // RT glass Phase 3: IOR refraction + reflection for thick glass.
+    // Distance does not change material identity or disable transmission;
+    // the adaptive controller selects one bounded interface depth coherently
+    // for the whole frame. Its atomic word is telemetry only — per-fragment
+    // admission would split an alpha surface into incompatible paths.
+    // Window surfaces (isWindow) are excluded here — actual wall
     // portals returned via the sky-transmission branch above. Surfaces
     // classified as windows by α alone but whose portal-escape ray hit
     // interior geometry have already been demoted to `isWindow = false`
     // above.
     //
-    // Worst-case ray cost per IOR fragment (#916 / REN-D9-NEW-03):
+    // Ray cost per IOR fragment (#916 / REN-D9-NEW-03):
     //   * Up to 1 reflection ray (`traceReflection`, fired only when the
     //     Fresnel contribution exceeds the face-on floor).
-    //   * Up to 3 refraction rays — the `REFRACT_PASSTHRU_BUDGET = 2`
-    //     glass-passthru loop below iterates `passthru = 0..=2`, so the
-    //     extreme of stacked self-textured glass shells (per #789) emits
-    //     three `rayQueryProceedEXT` calls before the terminus iteration
-    //     commits whatever it hits.
-    // Pre-#916 the gate claimed 2 units (matching the no-passthru common
-    // case). Stacked glass-on-glass scenes therefore reported half the
-    // real ray cost — bounded in hardware impact (atomic still
-    // terminates the per-frame ray flood) but wrong for any future RT
-    // budget telemetry / tuning overlay. We now claim 4 units upfront so
-    // the bookkeeping matches the worst case. The visible IOR band
-    // tightens from ~10% to ~5% of glass fragments under the documented
-    // load model — accepted trade for honest accounting.
+    //   * 3/5/7/9 refraction rays at adaptive quality tiers 0/1/2/3. The
+    //     passthru allowance grows 2/4/6/8 interfaces, plus one terminating
+    //     query. Skyrim creatures are split into many overlapping submeshes;
+    //     a fixed two-interface allowance terminated inside another glass
+    //     part and exposed the model's triangle topology as a colour mosaic.
+    // Pre-#916 the counter claimed 2 units (matching the no-passthru common
+    // case). Stacked glass-on-glass scenes therefore reported half the real
+    // ray cost and misled the adaptive controller. Tier 0 now records 4 units;
+    // each higher tier adds two passthrus and two estimated rays, reaching ten
+    // at tier 3. The counter measures coherent whole-frame work; it does not
+    // choose individual fragments.
     //
-    // The budget covers 524,288 IOR fragments at the worst-case four-ray
-    // claim. This is enough for close hero glass while bounding pathological
-    // full-screen bottle overdraw; the old full-1080p-layer budget allowed
-    // reflection-hit shading to push those views below 20 FPS.
-    // GLASS_RAY_BUDGET and GLASS_RAY_COST from shader_constants.glsl.
-    // REFRACT_PASSTHRU_BUDGET declared inside the IOR block below.
+    // The controller selects one interface-depth tier for the whole frame.
+    // Do not turn its ray-count estimate into a per-fragment admission gate:
+    // alpha glass bypasses temporal history, and unordered atomic winners
+    // therefore appear as permanent salt-and-pepper patches where some
+    // fragments run IOR transport and adjacent fragments fall back to the
+    // Fresnel-only path. The counter remains telemetry; the coherent quality
+    // decision is `qualityTier` and applies to every eligible fragment.
     // Thin non-occluding shells have only one authored optical interface.
     // Sending them through the thick-object Snell path bends the view on
     // entry but can never resolve an exit interface, making them dark lenses.
@@ -1633,22 +1667,16 @@ void main() {
     // between this path and the fallback, producing screen-space checkerboard
     // blocks. Thin glass stays wholly on the shared, zero-ray Fresnel path.
     bool glassIORAllowed = isGlass && !isThinGlass
-        && reflectionGlassRayEnabled && !isWindow && rtLOD < RT_LOD_IOR;
+        && reflectionGlassRayEnabled && !isWindow;
+    int refractPassthruBudget = 2;
     if (glassIORAllowed) {
-        // IOR-03 — the atomicAdd claims GLASS_RAY_COST UNCONDITIONALLY, then
-        // tests the returned value. Threads that lose the race (old + cost >
-        // budget) still leave their claim in the counter: there is no cheap
-        // lock-free "un-claim" after an atomicAdd, and a CAS retry loop would
-        // cost more contention than it saves for a counter that is zeroed
-        // every frame (reset_ray_budget, scene_buffer/descriptors.rs). The
-        // gate stays correct — rejected fragments fall to the Fresnel path —
-        // but `rayBudgetCount` overshoots `glassRayLimit` by up to
-        // (in-flight rejected threads × GLASS_RAY_COST). The overshoot has no
-        // render effect; it only matters if a future telemetry/tuning overlay
-        // reads the counter back, in which case the CPU reader MUST clamp the
-        // displayed value to `glassRayLimit`. No CPU code reads it today.
-        uint old = atomicAdd(rayBudget.rayBudgetCount, GLASS_RAY_COST);
-        glassIORAllowed = (old + GLASS_RAY_COST <= rayBudget.glassRayLimit);
+        uint budgetTier = min(rayBudget.qualityTier, 3u);
+        refractPassthruBudget = 2 + int(budgetTier) * 2;
+        uint glassRayCost = GLASS_RAY_COST + budgetTier * 2u;
+        // Count estimated query work for diagnostics. Admission is deliberately
+        // not based on the unordered return value; qualityTier is the coherent
+        // frame-wide limiter (see the block comment above).
+        atomicAdd(rayBudget.rayBudgetCount, glassRayCost);
     }
     if (glassIORAllowed) {
         // ── RT glass (Phase 3) ────────────────────────────────────────
@@ -1784,12 +1812,10 @@ void main() {
             // regression. (`fallbackTexture` below is a separate
             // unresolved-placeholder skip, not an identity check.)
             //
-            // Fixed budget of 2 passthrus handles the dominant case
-            // (front + back of one shell, or two stacked beakers); a
-            // third+ glass surface terminates as the sample target,
-            // which reads as "frosted glass behind glass" — visually
-            // acceptable and bounded in cost.
-            const int REFRACT_PASSTHRU_BUDGET = 2;
+            // The adaptive interface allowance is 2/4/6/8 at quality tiers
+            // 0/1/2/3. Keep a compile-time maximum on the loop so SPIR-V has
+            // an explicit upper bound even though the active limit is dynamic.
+            const int MAX_REFRACT_PASSTHRUS = 8;
             // Total world-space reach of the refraction ray, shared across
             // every passthru segment (#2482). Previously each iteration
             // re-issued the query with a fresh hard-coded 2000.0 tMax while
@@ -1810,12 +1836,17 @@ void main() {
             float rayTMin = 0.0;
             float accumulatedDist = 0.0;
             float refrRemaining = REFRACT_MAX_REACH;
-            // The entry refraction above placed this ray inside the primary
-            // glass volume. Track medium transitions explicitly: the former
-            // loop treated every later glass hit as an exit, so the air gap
-            // between stacked cups was counted as solid-glass absorption and
-            // refracted with glass→air eta at both entry and exit.
-            bool rayInsideGlass = true;
+            // The primary raster face is front-facing, and the entry
+            // refraction above placed this ray one level inside glass. Track
+            // the union depth of same-IOR shells using the committed
+            // triangle's front/back classification. Overlapping creature
+            // parts (body, wing membrane, scales) then remain one optical
+            // medium: an internal front face increments depth, an internal
+            // back face decrements it, and Snell bending occurs only on the
+            // air↔glass transitions at depth 0↔1. The former blind boolean
+            // toggle bent at every overlap and turned articulated meshes into
+            // a discontinuous chrome mosaic.
+            int glassMediumDepth = 1;
             int tIdx = -1;
             int tPrim = 0;
             vec2 tBary = vec2(0.0);
@@ -1827,7 +1858,10 @@ void main() {
             int diagPassthru = 0;
             bool diagSelfTerminus = false;
 
-            for (int passthru = 0; passthru <= REFRACT_PASSTHRU_BUDGET; ++passthru) {
+            for (int passthru = 0; passthru <= MAX_REFRACT_PASSTHRUS; ++passthru) {
+                if (passthru > refractPassthruBudget) {
+                    break;
+                }
                 rayQueryEXT refrRQ;
                 rayQueryInitializeEXT(
                     refrRQ, topLevelAS,
@@ -1881,43 +1915,51 @@ void main() {
                 // post-loop branch below maps a fallback-texture
                 // terminus to the !hit escape path so the magenta
                 // texture is never SAMPLED.
-                if ((hitIsGlass || fallbackTexture) && passthru < REFRACT_PASSTHRU_BUDGET) {
+                if ((hitIsGlass || fallbackTexture)
+                    && passthru < refractPassthruBudget) {
                     vec3 exitPoint = rayOrigin + refractDir * hDist;
                     // Bend at each real medium transition. A second prop is
                     // entered air→glass and then exited glass→air; it is not
-                    // another exit from the primary prop. Only distance
-                    // travelled while `rayInsideGlass` contributes to bulk
+                    // another exit from the primary prop. Same-IOR overlaps
+                    // change depth without introducing a fictitious optical
+                    // interface. Only in-medium distance contributes to bulk
                     // absorption.
                     if (hitIsGlass) {
                         uint hPrim =
                             uint(rayQueryGetIntersectionPrimitiveIndexEXT(refrRQ, true));
                         vec3 interfaceN = getHitTriNormal(uint(hIdx), hPrim);
-                        if (rayInsideGlass) {
+                        bool hitFrontFace =
+                            rayQueryGetIntersectionFrontFaceEXT(refrRQ, true);
+                        bool wasInsideGlass = glassMediumDepth > 0;
+                        if (wasInsideGlass) {
                             glassDistance += hDist;
-                            // Exit normal points with the incident ray; refract
-                            // expects the normal against it.
-                            if (dot(interfaceN, refractDir) < 0.0) {
-                                interfaceN = -interfaceN;
-                            }
-                            interfaceN = -interfaceN;
-                        } else {
-                            // Entry normal points back into the incident air.
+                        }
+
+                        int nextMediumDepth = hitFrontFace
+                            ? glassMediumDepth + 1
+                            : max(glassMediumDepth - 1, 0);
+                        bool entersGlass = !wasInsideGlass && nextMediumDepth > 0;
+                        bool exitsGlass = wasInsideGlass && nextMediumDepth == 0;
+                        if (entersGlass || exitsGlass) {
+                            // refract() requires a normal opposing the incident
+                            // propagation direction on both entry and exit.
                             if (dot(interfaceN, refractDir) > 0.0) {
                                 interfaceN = -interfaceN;
                             }
-                        }
-                        float interfaceEta = rayInsideGlass
-                            ? GLASS_IOR : ETA_AIR_TO_GLASS;
-                        vec3 interfaceDir = refract(
-                            refractDir, interfaceN, interfaceEta);
-                        if (dot(interfaceDir, interfaceDir) > 1e-4) {
-                            refractDir = normalize(interfaceDir);
-                            rayInsideGlass = !rayInsideGlass;
+                            float interfaceEta = exitsGlass
+                                ? GLASS_IOR : ETA_AIR_TO_GLASS;
+                            vec3 interfaceDir = refract(
+                                refractDir, interfaceN, interfaceEta);
+                            if (dot(interfaceDir, interfaceDir) > 1e-4) {
+                                refractDir = normalize(interfaceDir);
+                                glassMediumDepth = nextMediumDepth;
+                            } else {
+                                // Total internal reflection does not cross the
+                                // boundary, so preserve medium depth.
+                                refractDir = normalize(reflect(refractDir, interfaceN));
+                            }
                         } else {
-                            // Total internal reflection stays in the current
-                            // medium; continue from the same interface with a
-                            // reflected direction instead of crossing it.
-                            refractDir = normalize(reflect(refractDir, interfaceN));
+                            glassMediumDepth = nextMediumDepth;
                         }
                     }
                     vec3 nextOrigin = offsetRayOriginForDirection(
@@ -2028,7 +2070,7 @@ void main() {
                 // spatially instead. `3.0 + r*4` keeps lighting
                 // plausible while washing the grain out; pre-#789-fix
                 // `1.5 + r*4` showed raw checker grain on clear (low-
-                // roughness) glass once the budget allowed IOR to fire
+                // roughness) glass once thick-object IOR fired
                 // at scale.
                 // Mip floor scales with roughness only: clear glass
                 // (roughness≈0.1) now refracts a SHARP image (mip≈0.4)
@@ -2185,21 +2227,20 @@ void main() {
         // IOR-refracted pixel's colour tracks what's behind it, not its
         // own motion vector. Without this, glass flips its transparency
         // mask between 1.0 (Fresnel-fallback tail) and 0.0 (this branch)
-        // frame-to-frame purely from the adaptive ray budget.
+        // frame-to-frame purely from incoherent per-fragment admission.
         outFsrReactive = isAlphaBlend ? min(resolvedAlpha, 0.9) : 0.0;
         outFsrTransparency = 1.0;
         return;
     }
 
-    // Fresnel-path glass (LOD 1–2, or LOD-0 glass that exhausted the ray
-    // budget): override to the smooth geometric normal for PBR specular so
-    // the bump-map ribbing pattern doesn't produce crosshatch highlights at
-    // the boosted specStrength = 3.0. IOR glass already returned above.
+    // Fresnel fallback for thin glass or globally disabled RT. Material
+    // identity no longer changes with rtLOD. Override to the smooth geometric
+    // normal for PBR specular so the bump-map ribbing pattern does not produce
+    // crosshatch highlights.
     if (isGlass) {
         // Glass passthru diagnostic — paint black for glass fragments
-        // that didn't enter the IOR branch (rtLOD >= RT_LOD_IOR, or
-        // the per-frame ray budget was already exhausted). The IOR
-        // branch's own diagnostic returned above for fragments that
+        // that did not enter the IOR branch (thin or globally disabled).
+        // The IOR branch's own diagnostic returned above for fragments that
         // did enter.
         if ((dbgFlags & DBG_VIZ_GLASS_PASSTHRU) != 0u) {
             outColor = vec4(0.0, 0.0, 0.0, 1.0);
@@ -2356,9 +2397,9 @@ void main() {
     // the last octave, so ray result and fallback meet without a seam.
     // Mirrors the GI gate's giLodFade. (Most surfaces are matte post-material-
     // default and never enter this block, so the wider reach stays cheap.)
-    // Glass either returned from the budgeted IOR branch (which already cast
-    // its reflection ray) or is on the deliberately cheap Fresnel fallback.
-    // Do not let fallback glass escape the glass ray budget through this
+    // Glass either returned from the bounded-interface IOR branch (which
+    // already cast its reflection ray) or is on the deliberately cheap
+    // Fresnel fallback. Do not duplicate glass reflection through this
     // general glossy-surface path.
     bool hasAuthoredCubemap = mat.envMapIndex != 0u;
     bool hasExplicitEnvironment =
@@ -3674,35 +3715,6 @@ void main() {
             ? vec3(clamp(visibilityLuma, 0.0, 1.0))
             : vec3(1.0, 0.0, 1.0);
         outColor = vec4(visibilityColor, 1.0);
-        outRawIndirect = vec4(0.0);
-        outAlbedo = vec4(1.0);
-    } else if ((dbgFlags & DBG_VIZ_MATERIAL_LOBES) == DBG_VIZ_MATERIAL_LOBES) {
-        // Shading-family view. This deliberately keys off the exact material
-        // gates used above, not texture-name heuristics:
-        // blue=glass, magenta=translucency, gold=Disney/PBR,
-        // orange=effect/no-lighting, grey=legacy lit.
-        vec3 lobeColor = isGlass
-            ? vec3(0.10, 0.35, 1.00)
-            : ((mat.materialFlags & MAT_FLAG_TRANSLUCENCY) != 0u)
-                ? vec3(1.00, 0.10, 0.80)
-            : ((mat.materialFlags & MAT_FLAG_PBR_BSDF) != 0u)
-                ? vec3(1.00, 0.65, 0.05)
-            : (mat.materialKind == MATERIAL_KIND_EFFECT_SHADER
-                || mat.materialKind == MATERIAL_KIND_NO_LIGHTING)
-                ? vec3(1.00, 0.25, 0.05)
-                : vec3(0.45);
-        outColor = vec4(lobeColor, 1.0);
-        outRawIndirect = vec4(0.0);
-        outAlbedo = vec4(1.0);
-    } else if ((dbgFlags & DBG_VIZ_RT_LOD) == DBG_VIZ_RT_LOD) {
-        // Continuous heatmap: blue=tier 0/full rays, cyan/green=tier 1,
-        // yellow=tier 2, red=tier 3/no secondary material rays.
-        float t = rtLOD * (1.0 / 3.0);
-        vec3 lodColor = clamp(
-            vec3(1.5 * t, 1.0 - abs(2.0 * t - 1.0), 1.5 * (1.0 - t)),
-            vec3(0.0),
-            vec3(1.0));
-        outColor = vec4(lodColor, 1.0);
         outRawIndirect = vec4(0.0);
         outAlbedo = vec4(1.0);
     } else if ((dbgFlags & DBG_VIZ_SELECTED_LIGHT) != 0u) {

@@ -18,8 +18,11 @@
 // bit 2 of `flags` (the caustic-source bit, set CPU-side by
 // `draw::is_caustic_source` — MATERIAL_KIND_GLASS or MultiLayerParallax
 // with non-zero refraction scale, see #922) do work. For each such pixel, we:
-//   1. Reconstruct the refractive surface's world pos + normal from the
-//      G-buffer (depth + octahedral normal).
+//   1. Reconstruct the refractive surface's world pos + geometric normal
+//      from a camera ray against the glass TLAS layer. The blended glass
+//      pipeline intentionally preserves opaque depth + normal, so those
+//      G-buffer values describe the receiver behind the glass, not the
+//      source surface.
 //   2. For each of the first N lights, refract the light's incidence
 //      direction through the surface normal with IOR 1.5 (glass default).
 //   3. Trace to the exit interface of closed glass, apply the matching
@@ -125,6 +128,20 @@ layout(set = 0, binding = 8) uniform CausticParams {
     vec4 causticTune;     // x = fixed-point scale, y = IOR, z = max_lights, w = strength
 };
 
+// Current global geometry. Streaming may replace these buffers, so the host
+// refreshes both descriptors for the idle frame slot before every dispatch.
+// The flat-float ABI matches bindings.glsl / Vertex (104 bytes = 26 floats).
+layout(std430, set = 0, binding = 9) readonly buffer GlobalVertices {
+    float vertexData[];
+};
+layout(std430, set = 0, binding = 10) readonly buffer GlobalIndices {
+    uint indexData[];
+};
+
+layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer SkinnedVertexRef {
+    float data[];
+};
+
 // Per-dispatch mode. The host runs the splat pipeline twice with a parked
 // camera: once with decayOnly=1 (every pixel multiplies its accumulator by
 // decayFactor — the temporal EMA decay that replaces the per-frame clear),
@@ -155,6 +172,44 @@ vec3 reconstructWorldPos(ivec2 pixel, float depth) {
     // #markarth-precision — invViewProj is the camera-RELATIVE inverse; lift to
     // ABSOLUTE world (caustic source selection + TLAS interactions are absolute).
     return world.xyz / world.w + renderOrigin.xyz;
+}
+
+void getCausticHitTriWorldPositions(
+    uint instanceIdx,
+    uint primitiveIdx,
+    out vec3 w0,
+    out vec3 w1,
+    out vec3 w2
+) {
+    GpuInstance hit = instances[instanceIdx];
+    uint i0 = indexData[hit.indexOffset + primitiveIdx * 3u + 0u];
+    uint i1 = indexData[hit.indexOffset + primitiveIdx * 3u + 1u];
+    uint i2 = indexData[hit.indexOffset + primitiveIdx * 3u + 2u];
+    if (hit.boneOffset != 0u && hit.skinnedVertexAddress != 0ul) {
+        SkinnedVertexRef skinned = SkinnedVertexRef(hit.skinnedVertexAddress);
+        uint p0 = i0 * SKIN_OUTPUT_STRIDE_FLOATS;
+        uint p1 = i1 * SKIN_OUTPUT_STRIDE_FLOATS;
+        uint p2 = i2 * SKIN_OUTPUT_STRIDE_FLOATS;
+        w0 = vec3(skinned.data[p0], skinned.data[p0 + 1u], skinned.data[p0 + 2u]);
+        w1 = vec3(skinned.data[p1], skinned.data[p1 + 1u], skinned.data[p1 + 2u]);
+        w2 = vec3(skinned.data[p2], skinned.data[p2 + 1u], skinned.data[p2 + 2u]);
+        return;
+    }
+    uint p0 = (hit.vertexOffset + i0) * VERTEX_STRIDE_FLOATS;
+    uint p1 = (hit.vertexOffset + i1) * VERTEX_STRIDE_FLOATS;
+    uint p2 = (hit.vertexOffset + i2) * VERTEX_STRIDE_FLOATS;
+    vec3 v0 = vec3(vertexData[p0], vertexData[p0 + 1u], vertexData[p0 + 2u]);
+    vec3 v1 = vec3(vertexData[p1], vertexData[p1 + 1u], vertexData[p1 + 2u]);
+    vec3 v2 = vec3(vertexData[p2], vertexData[p2 + 1u], vertexData[p2 + 2u]);
+    w0 = (hit.model * vec4(v0, 1.0)).xyz + renderOrigin.xyz;
+    w1 = (hit.model * vec4(v1, 1.0)).xyz + renderOrigin.xyz;
+    w2 = (hit.model * vec4(v2, 1.0)).xyz + renderOrigin.xyz;
+}
+
+vec3 getCausticHitTriNormal(uint instanceIdx, uint primitiveIdx) {
+    vec3 w0, w1, w2;
+    getCausticHitTriWorldPositions(instanceIdx, primitiveIdx, w0, w1, w2);
+    return normalize(cross(w1 - w0, w2 - w0));
 }
 
 void main() {
@@ -239,13 +294,35 @@ void main() {
     uint flags = instances[instIdx].flags;
     if ((flags & INSTANCE_FLAG_CAUSTIC_SOURCE) == 0u) return;
 
-    // Reconstruct the refractive surface point.
+    // The glass blend pipeline preserves opaque depth and normal so SVGF,
+    // SSAO and the composite continue to describe the opaque receiver. They
+    // therefore cannot reconstruct the glass source. Use the glass-only TLAS
+    // layer along this pixel's camera ray and validate its live instance
+    // index against the raster mesh-id marker before spending any light rays.
     float depth = texelFetch(depthTex, pixel, 0).r;
-    if (depth >= 1.0) return; // far plane
-    vec3 G = reconstructWorldPos(pixel, depth);
-
-    vec2 nEnc = texelFetch(normalTex, pixel, 0).rg;
-    vec3 N = octDecode(nEnc);
+    vec3 cameraRayPoint = reconstructWorldPos(pixel, 0.5);
+    vec3 cameraRayDir = normalize(cameraRayPoint - cameraPos.xyz);
+    float sourceMax = 100000.0;
+    if (depth < 1.0) {
+        sourceMax = length(reconstructWorldPos(pixel, depth) - cameraPos.xyz) + 1.0;
+    }
+    rayQueryEXT sourceRQ;
+    rayQueryInitializeEXT(
+        sourceRQ, topLevelAS, gl_RayFlagsOpaqueEXT,
+        VISIBILITY_LAYER_GLASS,
+        cameraPos.xyz, 0.0, cameraRayDir, sourceMax);
+    while (rayQueryProceedEXT(sourceRQ)) {}
+    if (rayQueryGetIntersectionTypeEXT(sourceRQ, true)
+        == gl_RayQueryCommittedIntersectionNoneEXT) return;
+    uint sourceIdx = uint(
+        rayQueryGetIntersectionInstanceCustomIndexEXT(sourceRQ, true));
+    if (sourceIdx != instIdx) return;
+    uint sourcePrim = uint(
+        rayQueryGetIntersectionPrimitiveIndexEXT(sourceRQ, true));
+    float sourceT = rayQueryGetIntersectionTEXT(sourceRQ, true);
+    vec3 G = cameraPos.xyz + cameraRayDir * sourceT;
+    vec3 N = getCausticHitTriNormal(sourceIdx, sourcePrim);
+    if (dot(N, cameraRayDir) > 0.0) N = -N;
 
     // Average albedo is pre-computed per instance. Preserve it per channel so
     // beer, bottle and stained-glass sources cast their authored hue instead
@@ -414,10 +491,11 @@ void main() {
         // Closed-surface transport. First find the nearest glass interface
         // along the in-glass direction. This prevents the bottle/beaker back
         // face from being mistaken for the caustic receiver. The compute pass
-        // does not bind vertex/index SSBOs, so use the entry normal as a
-        // parallel-interface approximation for the exit normal: exact for
-        // panes, bounded for curved clutter. The subsequent receiver query is
-        // restricted to opaque TLAS instances and resolves the closest hit.
+        // reconstructs the committed exit triangle from the current global
+        // geometry. The former parallel-interface approximation reused the
+        // entry normal and produced unbounded projection errors on curved or
+        // articulated meshes. The subsequent receiver query is restricted to
+        // opaque TLAS instances and resolves the closest hit.
         //
         // Select the transmission side from `refr`, then move by a bounded
         // number of representable floats. This retains #670's requirement
@@ -437,13 +515,19 @@ void main() {
             != gl_RayQueryCommittedIntersectionNoneEXT) {
             float exitT = rayQueryGetIntersectionTEXT(exitRQ, true);
             vec3 exitPoint = receiverOrigin + receiverDir * exitT;
-            vec3 exitDir = refract(receiverDir, ns, ior);
+            uint exitIdx = uint(
+                rayQueryGetIntersectionInstanceCustomIndexEXT(exitRQ, true));
+            uint exitPrim = uint(
+                rayQueryGetIntersectionPrimitiveIndexEXT(exitRQ, true));
+            vec3 exitN = getCausticHitTriNormal(exitIdx, exitPrim);
+            if (dot(exitN, receiverDir) > 0.0) exitN = -exitN;
+            vec3 exitDir = refract(receiverDir, exitN, ior);
             if (dot(exitDir, exitDir) < 0.0001) {
-                exitDir = reflect(receiverDir, ns);
+                exitDir = reflect(receiverDir, exitN);
             }
             receiverDir = normalize(exitDir);
             receiverOrigin = offsetRayOriginForDirection(
-                exitPoint, ns, receiverDir);
+                exitPoint, exitN, receiverDir);
             glassTravel = exitT;
         }
 

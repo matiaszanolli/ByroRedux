@@ -333,10 +333,12 @@ struct GpuTerrainTile {
     uint layerNormalIndex[8];
     uint layerSpecularIndex[8];
 };
-// Binding 11: RT mipmap glass ray budget counter. The CPU zeroes this
-// before each render pass; Phase-3 IOR glass fragments atomically increment
-// it. Once the count exceeds GLASS_RAY_BUDGET the fragment falls back to
-// the cheaper Fresnel-highlight path for the rest of that frame.
+// Binding 11: adaptive RT quality + glass-work telemetry. The CPU zeroes the
+// first word before each render pass; Phase-3 IOR glass fragments atomically
+// add their estimated query cost. `qualityTier` selects bounded loop limits
+// coherently for the whole frame. Never use the unordered counter return as a
+// per-fragment IOR admission gate: alpha glass has no temporal history, so
+// atomic winners/losers become a permanent stipple.
 layout(std430, set = 1, binding = 11) coherent buffer RayBudgetBuffer {
     uint rayBudgetCount;
     uint glassRayLimit;

@@ -181,6 +181,13 @@ cargo run -- path/to/mesh.nif [--kf path/to/anim.kf]
 cargo run --release -- --cornell
 cargo run --release -- --cornell-sun
 
+# Native-scale material stress scene: a larger Cornell enclosure containing
+# Skyrim SE's authored bronze-dragon display mesh, with every imported submesh
+# forced to solid smooth glass (normal detail retained when present; all
+# skin/color/effect maps removed). The game profile supplies the numbered mesh
+# and texture archives.
+cargo run --release -- --game skyrim_se --cornell-glass-dragon
+
 # Controlled correctness ladder: L0 dark plane, L1 analytic directional
 # Lambert response, L2 the same scene plus one opaque hard-shadow blocker.
 cargo run --release -- --cornell-oracle l0

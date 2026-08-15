@@ -39,6 +39,8 @@
 //! | 6       | TLAS               | acceleration_structure (per-frame)  |
 //! | 7       | caustic accum      | uimage2DArray r32ui (RGB layers)    |
 //! | 8       | CausticParams      | UBO (this module, per-frame)        |
+//! | 9       | GlobalVertices     | SSBO (mesh registry, current)       |
+//! | 10      | GlobalIndices      | SSBO (mesh registry, current)       |
 
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
@@ -424,6 +426,20 @@ impl CausticPipeline {
                 .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            // 9 global vertices. Written per frame because streaming can
+            // replace the mesh registry's backing buffer.
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(9)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            // 10 global indices. Paired with binding 9 for committed-hit
+            // triangle reconstruction in caustic_splat.comp.
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(10)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
         ];
         validate_set_layout(
             0,
@@ -722,6 +738,44 @@ impl CausticPipeline {
             // buffers / image views owned by `self` and caller-borrowed
             // G-buffer / scene resources (live for this call's duration).
             unsafe { device.update_descriptor_sets(&writes, &[]) };
+        }
+    }
+
+    /// Point committed-hit reconstruction at the current global geometry.
+    ///
+    /// Mesh streaming can replace both buffers, so `draw_frame` refreshes
+    /// these bindings for the idle frame-in-flight slot before recording the
+    /// caustic dispatch. This mirrors SceneBuffers bindings 8/9 rather than
+    /// retaining a stale buffer handle across a geometry-pool rebuild.
+    pub fn write_geometry_buffers(
+        &self,
+        device: &ash::Device,
+        frame_index: usize,
+        vertex_buffer: vk::Buffer,
+        vertex_size: vk::DeviceSize,
+        index_buffer: vk::Buffer,
+        index_size: vk::DeviceSize,
+    ) {
+        let vertex_info = [vk::DescriptorBufferInfo {
+            buffer: vertex_buffer,
+            offset: 0,
+            range: vertex_size,
+        }];
+        let index_info = [vk::DescriptorBufferInfo {
+            buffer: index_buffer,
+            offset: 0,
+            range: index_size,
+        }];
+        let set = self.descriptor_sets[frame_index];
+        let writes = [
+            write_storage_buffer(set, 9, &vertex_info),
+            write_storage_buffer(set, 10, &index_info),
+        ];
+        unsafe {
+            // SAFETY: this FIF descriptor set is idle when called from
+            // draw_frame; the mesh-registry buffers and both descriptor-info
+            // arrays remain live for the duration of update_descriptor_sets.
+            device.update_descriptor_sets(&writes, &[])
         }
     }
 
@@ -1301,6 +1355,46 @@ mod tests {
         let shader = include_str!("../../shaders/caustic_splat.comp");
         assert!(shader.contains("uniform uimage2DArray causticAccum;"));
         assert!(shader.contains("imageAtomicAdd(causticAccum, ivec3(q, channel), fv)"));
+    }
+
+    #[test]
+    fn glass_caustic_source_comes_from_committed_glass_hit_not_opaque_gbuffer() {
+        let shader = include_str!("../../shaders/caustic_splat.comp");
+        for contract in [
+            "VISIBILITY_LAYER_GLASS,",
+            "sourceIdx != instIdx",
+            "rayQueryGetIntersectionPrimitiveIndexEXT(sourceRQ, true)",
+            "getCausticHitTriNormal(sourceIdx, sourcePrim)",
+            "layout(std430, set = 0, binding = 9) readonly buffer GlobalVertices",
+            "layout(std430, set = 0, binding = 10) readonly buffer GlobalIndices",
+        ] {
+            assert!(
+                shader.contains(contract),
+                "caustic source reconstruction lost committed-hit contract: {contract}"
+            );
+        }
+
+        let executable: String = shader
+            .lines()
+            .map(str::trim_start)
+            .filter(|line| !line.starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !executable.contains("vec3 N = octDecode"),
+            "glass blend preserves the opaque normal attachment; using it as the \
+             caustic source normal starts transport on the receiver behind glass"
+        );
+
+        let host = include_str!("caustic.rs");
+        assert!(host.contains("write_storage_buffer(set, 9, &vertex_info)"));
+        assert!(host.contains("write_storage_buffer(set, 10, &index_info)"));
+
+        let draw = include_str!("context/draw.rs");
+        assert!(
+            draw.contains("caustic.write_geometry_buffers"),
+            "streaming buffer reallocations must refresh caustic geometry descriptors"
+        );
     }
 
     #[test]
