@@ -47,9 +47,15 @@ use super::derived::{DerivedInput, DerivedStatFormula};
 
 /// One environmental affliction's **resistance** descriptor: which actor value
 /// holds the resistance, and how that value derives from a SPECIAL attribute in
-/// FO3/FNV. 24 bytes, `Copy`; the `&'static str` EditorIDs are resolved to
-/// AVIF FormIDs at load time (resolve-or-skip), like every other CHARAL AV ref.
-/// 40 bytes (two `&'static str` fat pointers + two `f32`), `Copy`.
+/// FO3/FNV. The `&'static str` EditorIDs are resolved to AVIF FormIDs at load
+/// time (resolve-or-skip), like every other CHARAL AV ref.
+///
+/// 40 bytes (two `&'static str` fat pointers + two `f32`), `Copy` — pinned by
+/// `descriptors_are_copy_and_compact`. (#2954: this block used to open with a
+/// smaller, stale size left over from a pre-EditorID shape and then contradict
+/// itself two lines later. This crate treats struct-size assertions as real
+/// contracts, so the size stated here is the one the test pins — state it
+/// once.)
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Affliction {
     /// Resistance AV EditorID (e.g. `"RadResist"`).
@@ -163,6 +169,16 @@ mod tests {
         assert_copy::<Affliction>();
         // Two `&'static str` fat pointers (16 each) + two f32 = 40 bytes.
         assert_eq!(std::mem::size_of::<Affliction>(), 40);
+        // #2954 — the doc block above the struct used to open with a stale
+        // "24 bytes" claim and contradict itself two lines later. This crate
+        // treats struct-size assertions as contracts, so the documented size
+        // and the asserted size must not diverge again.
+        let src = include_str!("resistance.rs");
+        let doc_end = src.find("pub struct Affliction").unwrap();
+        assert!(
+            !src[..doc_end].contains("24 bytes"),
+            "the stale 24-byte Affliction size claim is back (#2954)"
+        );
         assert_eq!(Affliction::ALL.len(), 2);
     }
 }

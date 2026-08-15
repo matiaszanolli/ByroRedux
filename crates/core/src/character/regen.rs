@@ -44,7 +44,27 @@ pub const POOL_REGEN_DT: f32 = 1.0 / 60.0;
 
 /// Spiral-of-death guard: caps how many 60 Hz ticks a single frame can catch
 /// up on (a load/hitch shouldn't dump a large batch of regen at once).
-/// Mirrors `crates/physics::MAX_SUBSTEPS`.
+///
+/// **Not** a mirror of `crates/physics`'s substep cap, despite the shared
+/// accumulator shape (#2953). That cap is `5`; this one is `8`, so after a
+/// hitch the two fixed clocks catch up at different rates — regen advances up
+/// to ~133 ms of simulated pool time in one frame where physics advances at
+/// most ~83 ms. The clamp bodies are otherwise identical; this constant is the
+/// only divergence.
+///
+/// The `8` has no recorded rationale in the introducing commit and no capture
+/// document specifies it (it is an engine tuning choice, not a game rule), so
+/// it is left as-is rather than "corrected" to `5` on the strength of a stale
+/// comment. `crates/core` cannot depend on `crates/physics` (the dependency
+/// runs the other way), so this can only ever be a hand-copy — which is
+/// exactly how it drifted. Any future attempt to genuinely unify the two
+/// clocks needs a shared home for the constant, not a comment asserting
+/// parity.
+///
+/// Also unlike physics, regen has no wall-clock escape hatch: `crates/physics`
+/// carries a second guard (`SUBSTEP_TIME_BUDGET`) that abandons substeps when
+/// the step itself runs long. Regen has no analogue, so this count is its only
+/// bound.
 const MAX_REGEN_SUBSTEPS: u32 = 8;
 
 /// Fatigue's flat per-second regen rate (`fFatigueReturnBase`) — vanilla
@@ -156,6 +176,41 @@ pub fn pool_regen_tick_system(world: &World, frame_dt: f32) {
 
 #[cfg(test)]
 mod tests {
+
+    /// Regression for #2953. `MAX_REGEN_SUBSTEPS` (8) is deliberately NOT the
+    /// physics substep cap (5), and `crates/core` cannot depend on
+    /// `crates/physics` to enforce that — so the only thing standing between
+    /// the two constants is this file's doc comment. A comment claiming
+    /// parity while the values differ is what this guards against; it caused
+    /// the original finding.
+    #[test]
+    fn substep_cap_does_not_claim_to_mirror_physics() {
+        let src = include_str!("regen.rs");
+        let doc_start = src
+            .find("Spiral-of-death guard")
+            .expect("the MAX_REGEN_SUBSTEPS doc block must still exist");
+        let doc_end = src[doc_start..]
+            .find("const MAX_REGEN_SUBSTEPS")
+            .expect("the doc block must still precede the constant")
+            + doc_start;
+        let doc = &src[doc_start..doc_end];
+
+        assert!(
+            !doc.contains("Mirrors `crates/physics::MAX_SUBSTEPS`"),
+            "MAX_REGEN_SUBSTEPS is 8 and crates/physics::MAX_SUBSTEPS is 5 — \
+             a doc comment asserting they mirror each other is false (#2953). \
+             If the two are ever genuinely unified, give the constant a shared \
+             home rather than re-adding the claim."
+        );
+        assert!(
+            doc.contains("**Not** a mirror"),
+            "the divergence from the physics substep cap must stay stated \
+             explicitly — it is the only record that 8 vs 5 is known, not a \
+             typo (#2953)"
+        );
+        assert_eq!(MAX_REGEN_SUBSTEPS, 8, "value change needs its own rationale");
+    }
+
     use super::*;
 
     #[test]

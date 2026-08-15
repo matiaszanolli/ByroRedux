@@ -459,29 +459,40 @@ single shared constant, not per-faction.
 **Per-faction threshold arrays — AUTHORED.** Each axis (Fame *and* Infamy, independently)
 crosses Range 0→1→2→3 at these per-faction minimums (one array, applied to both axes):
 
-| Faction / Settlement | R0 | R1 | R2 | R3 |
-|----------------------|----|----|----|----|
-| Boomers              | 0  | 8  | 25 | 50 |
-| Brotherhood of Steel | 0  | 3  | 10 | 20 |
-| Caesar's Legion      | 0  | 15 | 50 | 100|
-| Followers of the Apocalypse | 0 | 8 | 25 | 50 |
-| Great Khans          | 0  | 5  | 15 | 30 |
-| Powder Gangers       | 0  | 5  | 15 | 50 |
-| NCR                  | 0  | 12 | 40 | 80 |
-| White Glove Society  | 0  | 2  | 5  | 10 |
-| Freeside             | 0  | 11 | 35 | 70 |
-| Goodsprings          | 0  | 3  | 8  | 15 |
-| Novac                | 0  | 3  | 10 | 20 |
-| Primm                | 0  | 5  | 15 | 30 |
-| The Strip            | 0  | 6  | 20 | 40 |
+The **REPU FormID** column is the fallback table's key. All thirteen were confirmed
+against `FalloutNV.esm` record headers on **2026-08-15** (#2951): every one resolves to a
+`REPU` record, which is the record type `GetReputation`'s `param_1` carries — *not* the
+`FACT` faction record. Rows are listed in `BY_FORM_ID` order so the table and the code
+can be diffed line-for-line.
 
-These are per-faction AUTHORED data (live on the faction's record in the ESM; hardcode
-only as a fallback, GMST/record-source them like the rest of CHARAL). The **canonical
-FalloutNV.esm faction FormIDs** are now captured (*Gamebryo console commands*) and the
-fallback table is keyed by them — `reputation::fnv_faction_thresholds::{BY_FORM_ID,
-thresholds_for(form_id)}` — e.g. Boomers `000FFAE8`, NCR `000F43DE`, Legion `000F43DD`,
-BoS `0011E662`. So the reference thresholds resolve by canonical identity until the live
-faction-record path lands.
+| Faction / Settlement | REPU FormID | R0 | R1 | R2 | R3 |
+|----------------------|-------------|----|----|----|----|
+| Boomers              | `000FFAE8`  | 0  | 8  | 25 | 50 |
+| Brotherhood of Steel | `0011E662`  | 0  | 3  | 10 | 20 |
+| Caesar's Legion      | `000F43DD`  | 0  | 15 | 50 | 100|
+| Followers of the Apocalypse | `00124AD1` | 0 | 8 | 25 | 50 |
+| Great Khans          | `0011989B`  | 0  | 5  | 15 | 30 |
+| Powder Gangers       | `001558E6`  | 0  | 5  | 15 | 50 |
+| NCR                  | `000F43DE`  | 0  | 12 | 40 | 80 |
+| White Glove Society  | `00116F16`  | 0  | 2  | 5  | 10 |
+| Freeside             | `00129A7A`  | 0  | 11 | 35 | 70 |
+| Goodsprings          | `00104C22`  | 0  | 3  | 8  | 15 |
+| Novac                | `00129A79`  | 0  | 3  | 10 | 20 |
+| Primm                | `000F2406`  | 0  | 5  | 15 | 30 |
+| The Strip            | `00118F61`  | 0  | 6  | 20 | 40 |
+
+These are per-faction AUTHORED data (live on the reputation record in the ESM; hardcode
+only as a fallback, GMST/record-source them like the rest of CHARAL). The fallback table
+is keyed by the FormIDs above — `reputation::fnv_faction_thresholds::{BY_FORM_ID,
+thresholds_for(form_id)}` — so the reference thresholds resolve by canonical identity
+until the live record path lands.
+
+**Note on the key's record type.** These are `REPU` FormIDs. `crates/plugin` already
+parses `REPU` as its own record type, and `FactionRanks.faction_form_id`
+(`crates/core/src/ecs/components/faction_ranks.rs`) holds genuine `FACT` FormIDs from
+`NPC_.SNAM` — a different FormID space. Passing a FACT id to `thresholds_for` yields
+`None` → Range 0 → Neutral, which is a plausible-looking wrong answer rather than an
+error, so the two must not be conflated (#2952).
 
 **Title = a 4×4 canonical grid** of (Fame range × Infamy range) → 16 standing titles
 (shared across all factions; positive=green, mixed=black, negative=red):

@@ -104,7 +104,7 @@ impl Component for Background {
 /// threshold is 100, so `u16` is ample headroom.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FactionStanding {
-    pub faction_form_id: u32,
+    pub repu_form_id: u32,
     pub fame: u16,
     pub infamy: u16,
 }
@@ -122,24 +122,24 @@ pub struct FactionReputation {
 
 impl FactionReputation {
     #[inline]
-    fn find(&self, faction_form_id: u32) -> Option<&FactionStanding> {
+    fn find(&self, repu_form_id: u32) -> Option<&FactionStanding> {
         self.entries
             .iter()
-            .find(|f| f.faction_form_id == faction_form_id)
+            .find(|f| f.repu_form_id == repu_form_id)
     }
 
     /// Mutable accessor that inserts a zeroed entry if the faction is unknown,
     /// so callers can accumulate without a prior `set`.
-    fn entry_mut(&mut self, faction_form_id: u32) -> &mut FactionStanding {
+    fn entry_mut(&mut self, repu_form_id: u32) -> &mut FactionStanding {
         if let Some(i) = self
             .entries
             .iter()
-            .position(|f| f.faction_form_id == faction_form_id)
+            .position(|f| f.repu_form_id == repu_form_id)
         {
             &mut self.entries[i]
         } else {
             self.entries.push(FactionStanding {
-                faction_form_id,
+                repu_form_id,
                 fame: 0,
                 infamy: 0,
             });
@@ -147,58 +147,58 @@ impl FactionReputation {
         }
     }
 
-    /// Accrued Fame with `faction_form_id` (`0` if unknown).
+    /// Accrued Fame with `repu_form_id` (`0` if unknown).
     #[inline]
-    pub fn fame(&self, faction_form_id: u32) -> u16 {
-        self.find(faction_form_id).map_or(0, |f| f.fame)
+    pub fn fame(&self, repu_form_id: u32) -> u16 {
+        self.find(repu_form_id).map_or(0, |f| f.fame)
     }
 
-    /// Accrued Infamy with `faction_form_id` (`0` if unknown).
+    /// Accrued Infamy with `repu_form_id` (`0` if unknown).
     #[inline]
-    pub fn infamy(&self, faction_form_id: u32) -> u16 {
-        self.find(faction_form_id).map_or(0, |f| f.infamy)
+    pub fn infamy(&self, repu_form_id: u32) -> u16 {
+        self.find(repu_form_id).map_or(0, |f| f.infamy)
     }
 
     /// Add Fame (monotonic — never decreases, clamped to the per-axis gameplay
     /// max [`REPUTATION_AXIS_MAX`] of 100). `points` is the already-resolved
     /// bump magnitude (see
     /// [`reputation_bump_points`](super::reputation::reputation_bump_points)).
-    pub fn add_fame(&mut self, faction_form_id: u32, points: u16) {
-        let e = self.entry_mut(faction_form_id);
+    pub fn add_fame(&mut self, repu_form_id: u32, points: u16) {
+        let e = self.entry_mut(repu_form_id);
         e.fame = e.fame.saturating_add(points).min(REPUTATION_AXIS_MAX);
     }
 
     /// Add Infamy (monotonic — never decreases, clamped to
     /// [`REPUTATION_AXIS_MAX`]).
-    pub fn add_infamy(&mut self, faction_form_id: u32, points: u16) {
-        let e = self.entry_mut(faction_form_id);
+    pub fn add_infamy(&mut self, repu_form_id: u32, points: u16) {
+        let e = self.entry_mut(repu_form_id);
         e.infamy = e.infamy.saturating_add(points).min(REPUTATION_AXIS_MAX);
     }
 
     /// Zero both axes for a faction — the scripted-reset exception (NCR/Legion
     /// story beats, faction-armour disguise). No-op if the faction is unknown.
-    pub fn reset(&mut self, faction_form_id: u32) {
+    pub fn reset(&mut self, repu_form_id: u32) {
         if let Some(f) = self
             .entries
             .iter_mut()
-            .find(|f| f.faction_form_id == faction_form_id)
+            .find(|f| f.repu_form_id == repu_form_id)
         {
             f.fame = 0;
             f.infamy = 0;
         }
     }
 
-    /// The [`ReputationStanding`] with `faction_form_id` given that faction's
+    /// The [`ReputationStanding`] with `repu_form_id` given that faction's
     /// thresholds — bridges the stored Fame/Infamy to the 4×4 classifier.
     #[inline]
     pub fn standing(
         &self,
-        faction_form_id: u32,
+        repu_form_id: u32,
         thresholds: &FactionRepThresholds,
     ) -> ReputationStanding {
         ReputationStanding::classify(
-            u32::from(self.fame(faction_form_id)),
-            u32::from(self.infamy(faction_form_id)),
+            u32::from(self.fame(repu_form_id)),
+            u32::from(self.infamy(repu_form_id)),
             thresholds,
         )
     }

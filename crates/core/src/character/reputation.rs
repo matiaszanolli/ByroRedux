@@ -133,8 +133,9 @@ pub const REPUTATION_AXIS_MAX: u16 = 100;
 /// independently to both axes of a faction. `u16` is ample — the largest
 /// vanilla threshold is Caesar's Legion's `100`. 6 bytes, `Copy`.
 ///
-/// These are AUTHORED data — vanilla FNV values live on the faction record;
-/// the named constants below are reference/fallback values.
+/// These are AUTHORED data — vanilla FNV values live on the **`REPU`
+/// reputation record**, not the `FACT` faction record (#2952); the named
+/// constants below are reference/fallback values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FactionRepThresholds {
     /// Minimum points for Range 1.
@@ -168,8 +169,8 @@ impl FactionRepThresholds {
 }
 
 /// FNV vanilla per-faction reputation thresholds (reference values; the
-/// authoritative source is the parsed faction record). Same array applies to
-/// both the Fame and Infamy axes of the faction.
+/// authoritative source is the parsed **`REPU`** record). Same array applies
+/// to both the Fame and Infamy axes of the faction.
 pub mod fnv_faction_thresholds {
     use super::FactionRepThresholds;
 
@@ -188,11 +189,23 @@ pub mod fnv_faction_thresholds {
     pub const PRIMM: FactionRepThresholds = FactionRepThresholds::new(5, 15, 30);
     pub const THE_STRIP: FactionRepThresholds = FactionRepThresholds::new(6, 20, 40);
 
-    /// `(FalloutNV.esm base FormID, thresholds)` for every vanilla faction /
-    /// settlement — reference/fallback keyed by canonical identity (the
-    /// authoritative source remains the parsed faction record, load-order
-    /// -resolved). FormIDs from fandom *Gamebryo console commands*. The
-    /// threshold values reference the named constants above (single source).
+    /// `(REPU FormID, thresholds)` for every vanilla faction / settlement —
+    /// reference/fallback keyed by canonical identity (the authoritative
+    /// source remains the parsed **`REPU`** record, load-order-resolved).
+    ///
+    /// **These keys are `REPU` FormIDs, not `FACT` faction FormIDs** (#2952).
+    /// All thirteen were confirmed against `FalloutNV.esm` record headers on
+    /// 2026-08-15 (#2951) and every one resolves to a `REPU` record — the type
+    /// `GetReputation`'s `param_1` carries. The identically-shaped
+    /// `FactionRanks::faction_form_id`
+    /// (`crates/core/src/ecs/components/faction_ranks.rs`) holds genuine
+    /// `FACT` ids from `NPC_.SNAM`; feeding one of those to `thresholds_for`
+    /// returns `None` → Range 0 → `Neutral`, a plausible-looking wrong answer
+    /// rather than an error. Full table with FormIDs:
+    /// `docs/engine/charal-fnv-fo3-ruleset.md`.
+    ///
+    /// The threshold values reference the named constants above (single
+    /// source).
     pub const BY_FORM_ID: [(u32, FactionRepThresholds); 13] = [
         (0x000F_FAE8, BOOMERS),
         (0x0011_E662, BROTHERHOOD_OF_STEEL),
@@ -209,7 +222,8 @@ pub mod fnv_faction_thresholds {
         (0x0011_8F61, THE_STRIP),
     ];
 
-    /// Vanilla thresholds for a faction by its FalloutNV.esm base FormID.
+    /// Vanilla thresholds for a faction by its `FalloutNV.esm` **`REPU`**
+    /// FormID (not the `FACT` faction id — see `BY_FORM_ID`).
     pub fn thresholds_for(form_id: u32) -> Option<FactionRepThresholds> {
         BY_FORM_ID
             .iter()
@@ -703,5 +717,66 @@ mod tests {
         assert_eq!(std::mem::size_of::<ReputationStanding>(), 1);
         assert_eq!(std::mem::size_of::<ReputationSentiment>(), 1);
         assert_eq!(std::mem::size_of::<FactionRepThresholds>(), 6);
+    }
+
+    /// Regression for #2951 / #2952 — the fallback table is keyed by `REPU`
+    /// FormIDs, and every one of the thirteen was confirmed against
+    /// `FalloutNV.esm` record headers (2026-08-15). The capture document now
+    /// carries the same thirteen rows, so this pins the two against silent
+    /// divergence: a row edited in one place and not the other.
+    ///
+    /// Pinned as the exact key set rather than a count, because the failure
+    /// this guards is a *wrong* FormID (which still counts 13) — e.g. a `FACT`
+    /// faction id substituted for a `REPU` one, which `thresholds_for` would
+    /// answer with `None` → Range 0 → `Neutral` rather than an error.
+    #[test]
+    fn by_form_id_keys_are_the_verified_repu_form_ids() {
+        use fnv_faction_thresholds::BY_FORM_ID;
+
+        // Order matches `docs/engine/charal-fnv-fo3-ruleset.md`'s table so the
+        // two can be diffed line-for-line.
+        const EXPECTED: [u32; 13] = [
+            0x000F_FAE8, // Boomers
+            0x0011_E662, // Brotherhood of Steel
+            0x000F_43DD, // Caesar's Legion
+            0x0012_4AD1, // Followers of the Apocalypse
+            0x0011_989B, // Great Khans
+            0x0015_58E6, // Powder Gangers
+            0x000F_43DE, // NCR
+            0x0011_6F16, // White Glove Society
+            0x0012_9A7A, // Freeside
+            0x0010_4C22, // Goodsprings
+            0x0012_9A79, // Novac
+            0x000F_2406, // Primm
+            0x0011_8F61, // The Strip
+        ];
+
+        let actual: Vec<u32> = BY_FORM_ID.iter().map(|(id, _)| *id).collect();
+        assert_eq!(
+            actual,
+            EXPECTED.to_vec(),
+            "BY_FORM_ID keys drifted from the REPU FormIDs verified against \
+             FalloutNV.esm and captured in charal-fnv-fo3-ruleset.md (#2951)"
+        );
+
+        // Keys must be unique — a duplicate makes one faction unreachable
+        // through `thresholds_for`'s linear scan.
+        let mut sorted = actual.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), BY_FORM_ID.len(), "duplicate REPU key");
+
+        // Spot-check the lookup actually resolves by these keys.
+        assert_eq!(
+            fnv_faction_thresholds::thresholds_for(0x000F_43DD),
+            Some(fnv_faction_thresholds::CAESARS_LEGION),
+            "Caesar's Legion must resolve by its REPU FormID"
+        );
+        // A FACT-space id must NOT resolve — this is the #2952 confusion.
+        assert_eq!(
+            fnv_faction_thresholds::thresholds_for(0x0000_0000),
+            None,
+            "an id outside the REPU key set must return None, not a default"
+        );
     }
 }
