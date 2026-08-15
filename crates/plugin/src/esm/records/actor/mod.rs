@@ -44,6 +44,20 @@ pub struct NpcFaceMorph {
     pub setting: [f32; 9],
 }
 
+/// ACBS flag bit 7 — "PC Level Mult".
+///
+/// When set, [`NpcRecord::level`] is **not** an absolute level: it is a
+/// fixed-point multiplier applied to the player's level, clamped to the
+/// record's `calcMin..=calcMax` band. Confirmed against vanilla data
+/// (#2955): on `FalloutNV.esm` this bit and `level > 100` select the exact
+/// same 268 records, and the out-of-range values are exclusively round steps
+/// (`500`, `750`, … `2000`) rather than plausible levels.
+///
+/// Anything reading `level` as a level — the CHARAL population path, leveled
+/// list expansion, XP curves — must consult this first, or a generic raider
+/// reads as level 1000 and draws the top tier of every leveled list.
+pub const ACBS_PC_LEVEL_MULT: u32 = 0x0080;
+
 /// FO4 NPC face-morph block. Set on `NpcRecord` only when at least one
 /// of the underlying sub-records was present — most generic settler
 /// NPCs ship none and stay at `None`. See #591 / FO4-DIM6-06.
@@ -213,7 +227,22 @@ pub struct NpcRecord {
     /// Death item leveled list (DEST in some games, INAM in others).
     pub death_item_form_id: u32,
     /// Base level (from DATA).
+    ///
+    /// **Overloaded on FO3/FNV.** When [`ACBS_PC_LEVEL_MULT`] is set in
+    /// [`Self::acbs_flags`], this field is a fixed-point *multiplier* on the
+    /// player's level, not an absolute level — vanilla values are round steps
+    /// (`500`, `1000`, `2000`, …), and `1000` alone covers 184 FNV / 103 FO3
+    /// records. Consumers must check the flag before treating it as a level;
+    /// use [`Self::calc_min`] for those actors (#2955).
     pub level: i16,
+    /// ACBS `calcMin` — the level floor for PC-level-multiplier actors.
+    ///
+    /// Meaningful only when [`ACBS_PC_LEVEL_MULT`] is set: the actor's real
+    /// level is a function of the player's, clamped to `calc_min..=calc_max`.
+    /// The player-relative half is not modelled yet, so the floor is the
+    /// honest stand-in — it is the game's own data rather than a derived
+    /// guess. `0` when the record does not carry one.
+    pub calc_min: u16,
     /// Disposition base (from ACBS — i16 at offset 20). FNV vanilla
     /// default is 50; values are signed so unfriendly NPCs can sit
     /// below 0. Reading the high byte was being dropped pre-#377,
@@ -591,6 +620,7 @@ pub fn parse_npc(
         ai_packages: Vec::new(),
         death_item_form_id: 0,
         level: 1,
+        calc_min: 0,
         disposition_base: 50,
         acbs_flags: 0,
         has_script: common.has_script,
@@ -779,6 +809,7 @@ fn parse_npc_core(
             record.acbs_flags = r.u32_or_default();
             r.skip_or_eof(6); // baseSpell(u16) + fatigue(u16) + barterGold(u16)
             record.level = r.i16_or_default();
+            record.calc_min = r.u16_or_default(); // calcMin@12 (#2955)
             // disposition_base / template_flags stay at their
             // constructor defaults — Oblivion ACBS carries neither.
         }
@@ -797,7 +828,8 @@ fn parse_npc_core(
             record.acbs_flags = r.u32_or_default();
             r.skip_or_eof(2); // XP value offset (i16)
             record.level = r.i16_or_default();
-            r.skip_or_eof(4); // calc_min + calc_max (u16 x2)
+            record.calc_min = r.u16_or_default(); // #2955
+            r.skip_or_eof(2); // calc_max (u16)
             record.disposition_base = r.i16_or_default();
             record.template_flags = r.u16_or_default();
         }
@@ -813,7 +845,8 @@ fn parse_npc_core(
             // FalloutSnip). Pre-#377 the parser read a single byte
             // here, so any value outside 0..=127 lost its high byte
             // (and signed values past -128 had the sign chopped).
-            r.skip_or_eof(10); // calc_min/calc_max/speed_mult (u16 × 3) + karma (f32)
+            record.calc_min = r.u16_or_default(); // #2955
+            r.skip_or_eof(8); // calc_max/speed_mult (u16 × 2) + karma (f32)
             if sub.data.len() >= 22 {
                 record.disposition_base = r.i16_or_default();
             }

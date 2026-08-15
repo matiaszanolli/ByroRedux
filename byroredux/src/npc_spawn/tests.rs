@@ -816,3 +816,65 @@ fn installed_oblivion_creature_assets_resolve_from_their_records() {
         parts.0
     );
 }
+
+// ── #2955 — the ACBS level field is overloaded ────────────────────────────
+
+/// `NpcRecord::level` is not a level when the ACBS `PC Level Mult` bit is set:
+/// it is a fixed-point multiplier on the *player's* level. Vanilla FNV has 268
+/// such records (the bit and `level > 100` select exactly the same set), with
+/// values that are round steps — `1000` alone covers 184 of them.
+///
+/// Two consumers read the value as a number: `expand_leveled_form_id` filters
+/// `entry.level <= actor_level` and then takes the **highest** eligible tier,
+/// so a multiplier of 1000 made every entry eligible and always drew the top
+/// one; and `xp_to_next` asked for 150 050 XP instead of ~200.
+#[test]
+fn pc_level_mult_actors_resolve_to_calc_min_not_the_raw_multiplier() {
+    use byroredux_plugin::esm::records::ACBS_PC_LEVEL_MULT;
+
+    // A plain actor: the flag is clear, so the field IS the level.
+    let mut plain = test_npc(0x0100, "PlainRaider");
+    plain.level = 12;
+    plain.calc_min = 0;
+    plain.acbs_flags = 0;
+    assert_eq!(effective_actor_level(&plain), 12);
+
+    // A PC-level-scaled actor, shaped like vanilla FNV: level carries the
+    // multiplier, calc_min carries the real floor.
+    let mut scaled = test_npc(0x0101, "ScaledTrooper");
+    scaled.level = 1000;
+    scaled.calc_min = 6;
+    scaled.acbs_flags = ACBS_PC_LEVEL_MULT;
+    assert_eq!(
+        effective_actor_level(&scaled),
+        6,
+        "a PC-level-mult actor must resolve to its ACBS calcMin, never the \
+         raw multiplier — 1000 makes every leveled-list entry eligible and \
+         always draws the top tier (#2955)"
+    );
+
+    // calc_min == 0 (record carries none) floors at 1, not 0: level 0 would
+    // make a leveled list resolve to nothing, trading over-levelled gear for
+    // no gear at all.
+    let mut no_floor = test_npc(0x0102, "ScaledNoFloor");
+    no_floor.level = 500;
+    no_floor.calc_min = 0;
+    no_floor.acbs_flags = ACBS_PC_LEVEL_MULT;
+    assert_eq!(effective_actor_level(&no_floor), 1);
+
+    // The gate keys on the multiplier bit specifically, not on "level looks
+    // too big" — a hand-authored level of 120 with the bit clear is a real
+    // level and must survive.
+    let mut high_but_real = test_npc(0x0103, "Deathclaw");
+    high_but_real.level = 120;
+    high_but_real.calc_min = 0;
+    high_but_real.acbs_flags = 0x0010; // auto-calc stats, NOT the mult bit
+    assert_eq!(effective_actor_level(&high_but_real), 120);
+
+    // Negative levels still clamp to 0 on the non-mult path (pre-existing
+    // behaviour, preserved).
+    let mut negative = test_npc(0x0104, "Odd");
+    negative.level = -5;
+    negative.acbs_flags = 0;
+    assert_eq!(effective_actor_level(&negative), 0);
+}

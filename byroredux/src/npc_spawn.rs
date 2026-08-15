@@ -106,6 +106,28 @@ fn stamp_actor_values(
     );
 }
 
+/// The actor's effective level for anything that treats level as a number.
+///
+/// #2955 — `NpcRecord::level` is overloaded on FO3/FNV: with the ACBS
+/// `PC Level Mult` bit set it carries a fixed-point multiplier on the *player's*
+/// level (vanilla values are round steps up to 2000), not an absolute level.
+/// Feeding that raw into a leveled-list filter makes every entry eligible, so
+/// the actor always draws the top tier; feeding it into an XP curve asks for
+/// 150 050 XP instead of ~200.
+///
+/// The player-relative half is not modelled yet, so multiplier actors resolve
+/// to their ACBS `calcMin` — the record's own level floor, which is game data
+/// rather than a derived guess. `calcMin` is `0` on records that carry none, so
+/// the result is floored at 1: level 0 would make a leveled list resolve to
+/// nothing at all, which trades over-levelled gear for no gear.
+fn effective_actor_level(npc: &byroredux_plugin::esm::records::NpcRecord) -> i16 {
+    if npc.acbs_flags & byroredux_plugin::esm::records::ACBS_PC_LEVEL_MULT != 0 {
+        npc.calc_min.max(1) as i16
+    } else {
+        npc.level.max(0)
+    }
+}
+
 /// Stamp the CHARAL structural components — [`CharacterLevel`],
 /// [`Background`], and [`Perks`] — on the NPC's placement root. Level +
 /// race/class come from every game's `NPC_`; perks from FO4+ `PRKR`.
@@ -113,11 +135,17 @@ fn stamp_actor_values(
 /// land the full canonical character state an actor carries at spawn.
 fn stamp_character_components(world: &mut World, placement_root: EntityId, npc: &NpcRecord) {
     use byroredux_core::character::{Background, CharacterLevel, PerkRank, Perks};
-    // Level: the NPC's base level (clamped non-negative). NPCs carry no XP.
+    // Level: the NPC's base level. NPCs carry no XP.
+    //
+    // #2955 — routed through `effective_actor_level` so a PC-level-multiplier
+    // record contributes its ACBS `calcMin`, not the raw multiplier. Writing
+    // the multiplier here put 268 FNV / ~190 FO3 base actors two to three
+    // orders of magnitude out, and this field feeds `DerivedInput::LEVEL`,
+    // the leveling model and the M45 save snapshot.
     world.insert(
         placement_root,
         CharacterLevel {
-            level: npc.level.max(0) as u16,
+            level: effective_actor_level(npc).max(0) as u16,
             xp: 0,
         },
     );
@@ -651,7 +679,11 @@ fn build_npc_equip_state<'a>(
     let mut inventory = Inventory::new();
     let mut equipment_slots = EquipmentSlots::new();
     let mut armor_to_spawn: Vec<ResolvedArmor<'a>> = Vec::new();
-    let actor_level = npc.level;
+    // #2955 — same gate as `stamp_character_components`: a PC-level-multiplier
+    // record's `level` is not a level, and `expand_leveled_form_id` filters
+    // `entry.level <= actor_level` then takes the highest eligible tier, so the
+    // raw multiplier made every entry eligible and always drew the top one.
+    let actor_level = effective_actor_level(npc);
     let mut expanded: Vec<u32> = Vec::new();
 
     // #2093 / SKY-D3-NEW-01 — race default skin (`RACE.WNAM`), equipped

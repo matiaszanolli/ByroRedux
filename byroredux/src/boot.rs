@@ -363,6 +363,15 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
         ..Default::default()
     });
     world.insert_resource(DebugStats::default());
+    // #2950 — `pool_regen_tick_system` needs BOTH `PoolRegenConfig` (per-game,
+    // inserted when a live `CharacterRuleset` lands) and this accumulator.
+    // `try_resource_mut` does not default-insert, so leaving the accumulator to
+    // the same future wiring commit would have left the tick returning at its
+    // second line forever — registered, declared in `sys.accesses`, and silently
+    // dead. The accumulator is game-agnostic (`Default` + `Copy`, a single f32)
+    // and a no-op while no config exists, so it is armed unconditionally here
+    // and only the per-game config remains outstanding.
+    world.insert_resource(byroredux_core::character::PoolRegenAccumulator::default());
     world.insert_resource(byroredux_core::ecs::ScratchTelemetry::default());
     // EX-08 / #2374 — cross-subsystem ownership accounting. `Telemetry` is the
     // latest sample (refreshed on the throttled stats cadence); `Tracker` holds
@@ -854,11 +863,16 @@ pub(crate) fn build_scheduler() -> Scheduler {
     );
     // CHARAL pool regen (Fatigue/Magicka) — a fixed 60 Hz tick decoupled
     // from the variable frame rate, mirroring `physics_sync_system`'s
-    // accumulator (`crates/core/src/character/regen.rs`). No-ops today:
-    // `PoolRegenConfig` is only inserted once a game's live `CharacterRuleset`
-    // wiring reaches Oblivion (`build_character_ruleset` currently returns
-    // `None` for it, per `npc_spawn.rs`) — registered now so the tick is
-    // already live the moment that wiring lands.
+    // accumulator (`crates/core/src/character/regen.rs`).
+    //
+    // No-ops today, gated on TWO resources (#2950): `PoolRegenAccumulator`,
+    // now inserted unconditionally in `build_world` above, and
+    // `PoolRegenConfig`, which is per-game and arrives only once a live
+    // `CharacterRuleset` wiring reaches Oblivion (`build_character_ruleset`
+    // returns `None` for it today, per `npc_spawn.rs`). With the accumulator
+    // armed here, the config insertion really is the only thing left — which
+    // is what this comment used to claim while a second, undocumented gate
+    // sat one line below the first inside the system.
     // #2391 / ECS-D5B-03 — declared via `add_exclusive_with_access` (the
     // #1236 channel, previously unused in production). This system is
     // #2153's site: it builds a 3-deep hold stack (`PoolRegenConfig` read

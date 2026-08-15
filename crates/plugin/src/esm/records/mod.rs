@@ -41,7 +41,7 @@ pub use scol::{parse_scol, ScolPart, ScolPlacement, ScolRecord};
 
 pub use actor::{
     parse_clas, parse_fact, parse_npc, parse_race, ClassRecord, FactionMembership, FactionRecord,
-    FactionRelation, NpcInventoryEntry, NpcRecord, RaceRecord,
+    FactionRelation, NpcInventoryEntry, NpcRecord, RaceRecord, ACBS_PC_LEVEL_MULT,
 };
 pub use actor_value_derive::derive_npc_actor_values;
 pub use climate::{parse_clmt, ClimateRecord, ClimateWeather};

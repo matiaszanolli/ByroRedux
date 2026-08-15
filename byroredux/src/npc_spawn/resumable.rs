@@ -336,8 +336,11 @@ fn prepare_runtime_state(
     }
 
     let gender = Gender::from_acbs_flags(npc.acbs_flags);
-    let effective_inventory =
-        byroredux_plugin::equip::resolve_inherited_inventory(npc, npc.level, index);
+    let effective_inventory = byroredux_plugin::equip::resolve_inherited_inventory(
+        npc,
+        super::effective_actor_level(npc),
+        index,
+    );
     let mut body_covered_buf = Vec::new();
     let body_covered = effective_inventory.iter().any(|entry| {
         if entry.count.max(0) == 0 {
@@ -346,7 +349,7 @@ fn prepare_runtime_state(
         body_covered_buf.clear();
         byroredux_plugin::equip::expand_leveled_form_id(
             entry.item_form_id,
-            npc.level,
+            super::effective_actor_level(npc),
             index,
             &mut body_covered_buf,
         );
@@ -485,8 +488,11 @@ fn prepare_creature_state(
     let idle_kf_path = (!dir.is_empty()).then(|| creature_idle_kf_path(&dir));
 
     let gender = Gender::from_acbs_flags(npc.acbs_flags);
-    let effective_inventory =
-        byroredux_plugin::equip::resolve_inherited_inventory(npc, npc.level, index);
+    let effective_inventory = byroredux_plugin::equip::resolve_inherited_inventory(
+        npc,
+        super::effective_actor_level(npc),
+        index,
+    );
     let (inventory, equipment_slots, armor) =
         build_runtime_equip_state(npc, game, gender, index, effective_inventory);
 
@@ -539,7 +545,7 @@ fn build_runtime_equip_state(
         resolved_buf.clear();
         byroredux_plugin::equip::expand_leveled_form_id(
             entry.item_form_id,
-            npc.level,
+            super::effective_actor_level(npc),
             index,
             &mut resolved_buf,
         );

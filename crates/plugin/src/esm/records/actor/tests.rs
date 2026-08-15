@@ -1246,3 +1246,69 @@ fn oblivion_race_data_36b_still_decodes() {
     let r = parse_race(0x901, &subs, GameKind::Oblivion);
     assert_eq!(r.base_height.0, 2.0, "Oblivion DATA must still decode");
 }
+
+/// #2955 — `calcMin` must decode on every ACBS layout that carries it.
+///
+/// The field sits immediately after `level` in all four layouts and was
+/// previously skipped. It is the level floor for PC-level-multiplier actors
+/// (`ACBS_PC_LEVEL_MULT`), whose `level` field is a multiplier rather than a
+/// level — so without `calcMin` there is no sourced level for 268 vanilla FNV
+/// and ~190 FO3 base actors, and the consumer is left reading the multiplier.
+///
+/// Byte offsets are pinned per layout because the skip lengths around the read
+/// are what a future edit gets wrong: shifting the cursor by two bytes decodes
+/// `calcMax` (or half of `karma`) as the floor, silently.
+#[test]
+fn acbs_calc_min_decodes_on_every_layout() {
+    // ── FNV / FO3: flags(4) fatigue(2) barter(2) level(2) calcMin@10 ──
+    let mut fnv = Vec::new();
+    fnv.extend_from_slice(&super::ACBS_PC_LEVEL_MULT.to_le_bytes()); // flags@0
+    fnv.extend_from_slice(&[0u8; 4]); // fatigue + barter
+    fnv.extend_from_slice(&1000i16.to_le_bytes()); // level@8 = the multiplier
+    fnv.extend_from_slice(&6u16.to_le_bytes()); // calcMin@10
+    fnv.extend_from_slice(&30u16.to_le_bytes()); // calcMax@12
+    fnv.extend_from_slice(&[0u8; 10]); // speed_mult + karma → 24 bytes
+    assert_eq!(fnv.len(), 24);
+    let n = parse_npc(0x0001, &[sub(b"ACBS", &fnv)], GameKind::Fallout3NV, &None);
+    assert_eq!(n.level, 1000, "the raw multiplier still decodes as-is");
+    assert_eq!(n.calc_min, 6, "FNV calcMin@10 must decode");
+    assert_ne!(
+        n.calc_min, 30,
+        "reading calcMax as calcMin is the two-byte cursor slip this pins"
+    );
+    assert!(
+        n.acbs_flags & super::ACBS_PC_LEVEL_MULT != 0,
+        "the multiplier bit must survive so consumers can gate on it"
+    );
+
+    // ── Oblivion: flags(4) baseSpell(2) fatigue(2) barter(2) level(2) calcMin@12 ──
+    let mut obl = Vec::new();
+    obl.extend_from_slice(&0u32.to_le_bytes());
+    obl.extend_from_slice(&[0u8; 6]);
+    obl.extend_from_slice(&6i16.to_le_bytes()); // level@10
+    obl.extend_from_slice(&4u16.to_le_bytes()); // calcMin@12
+    obl.extend_from_slice(&9u16.to_le_bytes()); // calcMax@14
+    assert_eq!(obl.len(), 16);
+    let n = parse_npc(0x0002, &[sub(b"ACBS", &obl)], GameKind::Oblivion, &None);
+    assert_eq!(n.level, 6);
+    assert_eq!(n.calc_min, 4, "Oblivion calcMin@12 must decode");
+
+    // ── FO4: flags(4) xp_offset(2) level(2) calcMin@8 calcMax(2) disposition(2) ──
+    let mut fo4 = Vec::new();
+    fo4.extend_from_slice(&0u32.to_le_bytes());
+    fo4.extend_from_slice(&0i16.to_le_bytes()); // xp offset
+    fo4.extend_from_slice(&15i16.to_le_bytes()); // level@6
+    fo4.extend_from_slice(&11u16.to_le_bytes()); // calcMin@8
+    fo4.extend_from_slice(&40u16.to_le_bytes()); // calcMax@10
+    fo4.extend_from_slice(&50i16.to_le_bytes()); // disposition@12
+    fo4.extend_from_slice(&[0u8; 6]); // template_flags + bleedout + unknown
+    assert_eq!(fo4.len(), 20);
+    let n = parse_npc(0x0003, &[sub(b"ACBS", &fo4)], GameKind::Fallout4, &None);
+    assert_eq!(n.level, 15);
+    assert_eq!(n.calc_min, 11, "FO4 calcMin@8 must decode");
+    assert_eq!(
+        n.disposition_base, 50,
+        "the fields AFTER calcMin must not shift — the skip length was \
+         narrowed from 4 to 2 when calcMin started being read"
+    );
+}

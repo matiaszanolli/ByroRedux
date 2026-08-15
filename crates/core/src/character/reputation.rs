@@ -273,7 +273,7 @@ impl AffinityBand {
             AffinityBand::Friend => "Friend",
             AffinityBand::Admiration => "Admiration",
             AffinityBand::Confidant => "Confidant",
-            AffinityBand::Idolize => "Infatuation",
+            AffinityBand::Idolize => "Idolize",
         }
     }
 }
@@ -444,7 +444,25 @@ impl ReputationStanding {
         Self::from_ranges(t.range(fame), t.range(infamy))
     }
 
-    /// Positive / Mixed / Negative bucket (the grid's green/black/red colour).
+    /// Positive / Mixed / Negative bucket, nominally the grid's
+    /// green/black/red colour.
+    ///
+    /// **UNSOURCED — this bucketing is an internal heuristic, not captured
+    /// data (#2949).** `charal-fnv-fo3-ruleset.md` records the sixteen
+    /// *titles* and a colour *legend*, but never which colour each individual
+    /// cell renders. The mapping below is internally coherent — green where
+    /// the fame range leads and infamy is low, red for the mirror image,
+    /// black on the contested diagonal — but it is inferred, not cited.
+    ///
+    /// Two cells are outright judgement calls, and they are exactly where a
+    /// from-memory transcription would go wrong: `DarkHero` (fame 3 / infamy
+    /// 2) and `SoftHeartedDevil` (fame 2 / infamy 3) are both classed `Mixed`
+    /// rather than following the "higher axis wins" rule the other fourteen
+    /// obey.
+    ///
+    /// Treat the result as provisional until the per-cell colours are captured
+    /// from the source page. Do not build a gameplay gate on the two cells
+    /// above without checking them first.
     pub const fn sentiment(self) -> ReputationSentiment {
         use ReputationStanding::*;
         match self {
@@ -571,8 +589,16 @@ mod tests {
         assert_eq!(ReputationStanding::from_ranges(9, 9), WildChild);
     }
 
+    /// NOTE: this asserts *self-consistency*, not fidelity to the source
+    /// grid (#2949). It iterates lists hardcoded in this test and compares
+    /// them against the buckets `sentiment()` assigns in the same file, so it
+    /// can only fail when someone edits one list and not the other — it cannot
+    /// detect a mis-transcribed colour. Renamed from
+    /// *standing_sentiment_matches_grid_colours*, whose name claimed a
+    /// verification it never performed. A real fidelity test needs the
+    /// per-cell colours captured first.
     #[test]
-    fn standing_sentiment_matches_grid_colours() {
+    fn standing_sentiment_buckets_are_self_consistent() {
         use ReputationStanding::*;
         // Green (positive).
         for s in [
@@ -717,6 +743,34 @@ mod tests {
         assert_eq!(std::mem::size_of::<ReputationStanding>(), 1);
         assert_eq!(std::mem::size_of::<ReputationSentiment>(), 1);
         assert_eq!(std::mem::size_of::<FactionRepThresholds>(), 6);
+    }
+
+    /// Regression for #2948 — every `AffinityBand::name()` must match the
+    /// band name the capture document records. `Idolize` used to return
+    /// `"Infatuation"`, a string in no CHARAL capture document, disagreeing
+    /// with both its own enum variant and `charal.md`. Nothing pinned any of
+    /// the seven names, and `Idolize` is the band that gates the companion
+    /// perk — the one most likely to reach UI or a quest condition.
+    #[test]
+    fn affinity_band_names_match_the_capture_document() {
+        use AffinityBand::*;
+        for (band, expected) in [
+            (Hatred, "Hatred"),
+            (Disdain, "Disdain"),
+            (Neutral, "Neutral"),
+            (Friend, "Friend"),
+            (Admiration, "Admiration"),
+            (Confidant, "Confidant"),
+            (Idolize, "Idolize"),
+        ] {
+            assert_eq!(
+                band.name(),
+                expected,
+                "AffinityBand::{band:?} name drifted from the capture document \
+                 (docs/engine/charal.md). A name that disagrees with its own \
+                 enum variant is #2948."
+            );
+        }
     }
 
     /// Regression for #2951 / #2952 — the fallback table is keyed by `REPU`

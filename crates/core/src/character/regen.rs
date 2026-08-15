@@ -135,8 +135,19 @@ impl Resource for PoolRegenConfig {}
 /// ids (a different game, or an entity that isn't a full actor) are simply
 /// skipped, not force-populated with a zero entry.
 ///
-/// A no-op if [`PoolRegenConfig`] hasn't been inserted (no game loaded yet /
-/// not wired for this game) or if less than one 60 Hz tick has elapsed.
+/// Gated on **two** resources, not one (#2950):
+///
+/// * [`PoolRegenConfig`] — per-game resolved AVIF ids, inserted when a live
+///   [`CharacterRuleset`] lands (absent until Oblivion's wiring arrives).
+/// * [`PoolRegenAccumulator`] — the cross-frame clock, inserted unconditionally
+///   at boot (`byroredux/src/boot.rs`, `build_world`).
+///
+/// Both are `try_resource` lookups and `World` does **not** default-insert, so
+/// a missing accumulator silently returns at the second line — indistinguishable
+/// from "no game loaded" at a glance. The accumulator is armed at boot precisely
+/// so the config is the only outstanding precondition.
+///
+/// Also a no-op if less than one 60 Hz tick has elapsed.
 pub fn pool_regen_tick_system(world: &World, frame_dt: f32) {
     let Some(config) = world.try_resource::<PoolRegenConfig>() else {
         return;
