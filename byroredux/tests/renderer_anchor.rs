@@ -11,7 +11,7 @@
 mod image_metrics;
 
 use image::{Rgb, RgbImage};
-use image_metrics::{compare_linear, LinearImageMetrics};
+use image_metrics::{compare_linear, compare_linear_low_pass, LinearImageMetrics};
 use serde::Serialize;
 use std::env;
 use std::fs;
@@ -195,7 +195,9 @@ struct PathResult {
     compared_candidate_png: PathBuf,
     heatmap_png: PathBuf,
     metrics_json: PathBuf,
+    comparison_filter: &'static str,
     metrics: MetricValues,
+    raw_metrics: MetricValues,
     reference_performance: BenchPerformance,
     candidate_performance: BenchPerformance,
     correctness_failures: Vec<String>,
@@ -314,7 +316,12 @@ fn run_from_env() -> Result<(), String> {
             candidate.png.clone()
         };
 
-        let metrics = compare_linear(
+        let raw_metrics = compare_linear(
+            &reference_image,
+            &candidate_image,
+            config.thresholds.outlier_abs_delta,
+        )?;
+        let metrics = compare_linear_low_pass(
             &reference_image,
             &candidate_image,
             config.thresholds.outlier_abs_delta,
@@ -360,14 +367,16 @@ fn run_from_env() -> Result<(), String> {
             compared_candidate_png,
             heatmap_png,
             metrics_json: metrics_json.clone(),
+            comparison_filter: "linear RGB separable 5x5 binomial low-pass",
             metrics: metrics.into(),
+            raw_metrics: raw_metrics.into(),
             reference_performance: reference.manifest.performance,
             candidate_performance: candidate.manifest.performance,
             correctness_failures,
             performance_failures,
         };
         write_json(&metrics_json, &result)?;
-        eprintln!("anchor: {path}: {metrics}");
+        eprintln!("anchor: {path}: gated {metrics}; raw {raw_metrics}");
         results.push(result);
     }
 

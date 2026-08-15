@@ -48,8 +48,13 @@ pub struct AdaptiveRayBudget {
 impl Default for AdaptiveRayBudget {
     fn default() -> Self {
         Self {
-            // Start at the previous renderer's four direct-shadow rays.
-            tier: 2,
+            // Cold-start conservatively. Until the first completed GPU timer
+            // sample exists the controller cannot know whether the scene is a
+            // Cornell box or Cydonia's 97k-instance TLAS. Starting at tier 2
+            // made that unknown first frame launch the four-shadow/two-hit GI
+            // workload and could trip a device watchdog before feedback had a
+            // chance to reduce it.
+            tier: 0,
             smoothed_lighting_ms: None,
             under_budget_frames: 0,
             cooldown_frames: 0,
@@ -99,8 +104,12 @@ impl AdaptiveRayBudget {
                 ray_count: 0,
                 glass_ray_limit: 262_144,
                 direct_shadow_samples: 1,
-                max_path_segments: 2,
-                max_shaded_hits: 1,
+                // True safe floor: gather GPU timing with direct shadows but
+                // no diffuse path. A non-zero minimum here defeated the
+                // controller on Cydonia: the 97k-instance first frame could
+                // lose the device before a timing sample existed.
+                max_path_segments: 0,
+                max_shaded_hits: 0,
                 volumetric_light_cap: 2,
                 quality_tier: 0,
                 reserved: 0,
@@ -144,27 +153,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn starts_at_the_previous_four_shadow_ray_quality() {
+    fn cold_start_uses_the_watchdog_safe_quality_floor() {
         let budget = AdaptiveRayBudget::default().settings();
-        assert_eq!(budget.direct_shadow_samples, 4);
-        assert_eq!(budget.quality_tier, 2);
+        assert_eq!(budget.direct_shadow_samples, 1);
+        assert_eq!(budget.max_path_segments, 0);
+        assert_eq!(budget.max_shaded_hits, 0);
+        assert_eq!(budget.quality_tier, 0);
     }
 
     #[test]
     fn overload_reduces_quality_without_oscillation() {
         let mut controller = AdaptiveRayBudget::default();
         controller.observe(Some(20.0));
-        assert_eq!(controller.settings().quality_tier, 1);
+        assert_eq!(controller.settings().quality_tier, 0);
         for _ in 0..20 {
             controller.observe(Some(1.0));
         }
-        assert_eq!(controller.settings().quality_tier, 1);
+        assert_eq!(controller.settings().quality_tier, 0);
     }
 
     #[test]
     fn stable_headroom_eventually_spends_more_rays() {
         let mut controller = AdaptiveRayBudget::default();
-        for _ in 0..60 {
+        for _ in 0..200 {
             controller.observe(Some(1.0));
         }
         assert_eq!(controller.settings().quality_tier, 3);

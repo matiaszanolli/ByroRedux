@@ -93,6 +93,7 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(MemFragCommand);
     registry.register(WorldOwnersCommand);
     registry.register(RenderHealthCommand);
+    registry.register(RtIntegrityCommand);
     registry.register(EnvHealthCommand);
     registry.register(LightDumpCommand);
     registry.register(LightAttenCommand);

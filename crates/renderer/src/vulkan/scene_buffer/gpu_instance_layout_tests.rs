@@ -626,6 +626,25 @@ fn shadow_transport_uses_scale_aware_ray_origin_offset() {
     );
 }
 
+/// Tier zero is the pre-timing watchdog-safe floor. Zero path limits must
+/// suppress the GI branch before its internal clamps turn them back into a
+/// one-segment/one-hit workload.
+#[test]
+fn gi_zero_budget_is_a_true_no_ray_floor() {
+    let triangle = include_str!("../../../shaders/triangle.frag");
+    assert!(
+        triangle.contains("&& rayBudget.maxPathSegments > 0u")
+            && triangle.contains("&& rayBudget.maxShadedHits > 0u"),
+        "the outer GI gate must consume the tier-zero sentinels before the \
+         path loop clamps active tiers"
+    );
+    assert!(
+        triangle.contains("clamp(rayBudget.maxPathSegments, 1u, 6u)")
+            && triangle.contains("clamp(rayBudget.maxShadedHits, 1u, 2u)"),
+        "active GI tiers still require bounded non-zero loop limits"
+    );
+}
+
 /// The legacy normal-map alpha lane is authored as specular intensity. It
 /// must gate local-light specular and serve as the environment-reflection
 /// fallback only when no dedicated environment mask is present. It must not

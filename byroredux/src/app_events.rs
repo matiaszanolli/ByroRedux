@@ -13,8 +13,8 @@
 //! Moved verbatim: the split is a relocation, not a rewrite.
 
 use byroredux_core::ecs::{
-    ActiveCamera, Camera, DebugStats, DeltaTime, EngineConfig, ScratchTelemetry, SkinCoverageStats,
-    TotalTime,
+    ActiveCamera, Camera, DebugStats, DeltaTime, EngineConfig, RtIntegrityStats, ScratchTelemetry,
+    SkinCoverageStats, TotalTime,
 };
 use byroredux_core::settings::SettingsRegistry;
 use byroredux_platform::window::{self, WindowConfig};
@@ -554,6 +554,10 @@ impl ApplicationHandler for App {
             let mut cov = self.world.resource_mut::<SkinCoverageStats>();
             ctx.fill_skin_coverage_stats(&mut cov);
         }
+        if let Some(ref ctx) = self.renderer {
+            let mut integrity = self.world.resource_mut::<RtIntegrityStats>();
+            ctx.fill_rt_integrity_stats(&mut integrity);
+        }
 
         // Refresh the upscaler line `ctx.upscaler` prints — the FSR provider
         // version and the SDK's own GPU reservation, which live outside
@@ -781,6 +785,10 @@ impl ApplicationHandler for App {
                             ]
                         })
                         .unwrap_or([0.0; 12]);
+                    let rt_integrity_line = self
+                        .world
+                        .try_resource::<RtIntegrityStats>()
+                        .map(|snapshot| snapshot.machine_line());
                     println!(
                         "bench: mode={} gate={} dt={} camera={} frames={} \
                          wall_fps={:.1} wall_ms={:.2} \
@@ -852,6 +860,9 @@ impl ApplicationHandler for App {
                         scene_state.tlas_eligible,
                         scene_state.state_hash,
                     );
+                    if let Some(line) = rt_integrity_line {
+                        println!("{line}");
+                    }
                     drop(stats);
                     if let Some(streaming) = self.streaming.as_ref() {
                         println!("{}", streaming.telemetry.bench_line());

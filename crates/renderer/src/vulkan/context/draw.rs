@@ -1504,6 +1504,9 @@ impl VulkanContext {
         // `collect_image_health`'s doc comment for why that holds here.
         // #2740 (REN-D4-04).
         self.collect_image_health(frame);
+        if let Some(ref mut cluster_cull) = self.cluster_cull {
+            cluster_cull.collect_telemetry(&self.device, frame);
+        }
 
         // #1194 — read this slot's TIMESTAMP results (from the prior
         // cycle's use of this slot), then reset the pool for the
@@ -2135,9 +2138,17 @@ impl VulkanContext {
                 if fsr_reset_pending { 1.0 } else { 0.0 },
             ],
         };
-        self.scene_buffers
-            .upload_camera(&self.device, frame, &camera)
-            .unwrap_or_else(|e| log::warn!("Failed to upload camera: {e}"));
+        self.rt_flag_last_frame =
+            match self
+                .scene_buffers
+                .upload_camera(&self.device, frame, &camera)
+            {
+                Ok(()) => rt_flag > 0.5,
+                Err(error) => {
+                    log::warn!("Failed to upload camera: {error}");
+                    false
+                }
+            };
         // #993 — upload the per-TOD-lerped 6-axis directional ambient
         // cube (Skyrim WTHR.DALC). When the cell carries no DALC
         // (FNV / FO3 / Oblivion), `sky_params.dalc_cube` is `None`;
@@ -2352,6 +2363,7 @@ impl VulkanContext {
         // `bone_offset != 0` override in `build_tlas`. Static draws
         // continue using the per-mesh `blas_entries` table.
         // SAFETY: `cmd` is recording; `accel` and `alloc` are live. `build_tlas` records the TLAS build into `cmd` over this frame's just-refit BLAS; the following AS_BUILD_WRITE -> FRAGMENT|COMPUTE READ barrier sequences it before the ray-query consumers. `write_tlas` / `patch_camera_rt_flag` touch this frame's descriptor + UBO, idle by the fence wait.
+        self.tlas_build_succeeded_last_frame = false;
         unsafe {
             if let Some(ref mut accel) = self.accel_manager {
                 if let Some(alloc) = self.allocator.as_ref() {
@@ -2394,6 +2406,7 @@ impl VulkanContext {
                         {
                             log::warn!("Failed to clear rt_flag after TLAS build failure: {e}");
                         }
+                        self.rt_flag_last_frame = false;
                         true
                     } else {
                         if let Some(ref mut timers) = self.gpu_timers {
@@ -2442,6 +2455,7 @@ impl VulkanContext {
 
                     if !tlas_build_failed {
                         if let Some(tlas_handle) = accel.tlas_handle(frame) {
+                            self.tlas_build_succeeded_last_frame = true;
                             // Capture whether this is the first time the
                             // TLAS lands for this FIF slot — `write_tlas`
                             // flips `tlas_written[frame] = true`, but
@@ -2464,13 +2478,16 @@ impl VulkanContext {
                             // slot's first valid-TLAS frame — steady
                             // state pays nothing.
                             if first_tlas_this_slot && self.device_caps.ray_query_supported {
-                                if let Err(e) = self.scene_buffers.patch_camera_rt_flag(
-                                    &self.device,
-                                    frame,
-                                    1.0,
-                                ) {
-                                    log::warn!("Failed to patch rt_flag post-TLAS: {e}");
-                                }
+                                self.rt_flag_last_frame = match self
+                                    .scene_buffers
+                                    .patch_camera_rt_flag(&self.device, frame, 1.0)
+                                {
+                                    Ok(()) => true,
+                                    Err(error) => {
+                                        log::warn!("Failed to patch rt_flag post-TLAS: {error}");
+                                        false
+                                    }
+                                };
                             }
                         }
                         // #1792 — `pending_bytes = 0`: no in-flight batch
@@ -2489,7 +2506,7 @@ impl VulkanContext {
         // that the fragment shader reads during the render pass.
         // SAFETY: `cmd` is recording; `cc` (cluster-cull pipeline) and its per-frame cluster SSBOs are live. The leading HOST_WRITE -> COMPUTE barrier makes the host-written light/camera buffers visible before `dispatch`; the trailing COMPUTE_WRITE -> FRAGMENT_READ barrier sequences the cluster SSBO outputs before the render pass reads them.
         unsafe {
-            if let Some(ref cc) = self.cluster_cull {
+            if let Some(ref mut cc) = self.cluster_cull {
                 // Barrier: host writes to light/camera SSBOs must be visible
                 // to the compute shader before dispatch. Required by Vulkan
                 // spec even for HOST_COHERENT memory. Instance data is NOT

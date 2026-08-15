@@ -152,6 +152,52 @@ pub fn compare_linear(
     candidate: &RgbImage,
     outlier_abs_delta: f64,
 ) -> Result<LinearImageMetrics, String> {
+    validate_linear_inputs(reference, candidate, outlier_abs_delta)?;
+    let reference_planes = linear_rgb_planes(reference);
+    let candidate_planes = linear_rgb_planes(candidate);
+    Ok(compare_linear_planes(
+        &reference_planes,
+        &candidate_planes,
+        reference.width(),
+        reference.height(),
+        outlier_abs_delta,
+    ))
+}
+
+/// Compare low-frequency image structure in linear light.
+///
+/// The path tracer intentionally emits stochastic high-frequency samples. A
+/// semantically irrelevant shader-control-flow edit can change that sample
+/// realization without changing the converged image, so raw per-pixel metrics
+/// are diagnostic rather than a safe cross-binary gate. Apply a small,
+/// deterministic 5x5 binomial filter (`[1,4,6,4,1] / 16`, separable) to each
+/// linear RGB plane before scoring. Large/localized faults survive; individual
+/// Monte Carlo speckles do not dominate the verdict.
+pub fn compare_linear_low_pass(
+    reference: &RgbImage,
+    candidate: &RgbImage,
+    outlier_abs_delta: f64,
+) -> Result<LinearImageMetrics, String> {
+    validate_linear_inputs(reference, candidate, outlier_abs_delta)?;
+    let (width, height) = reference.dimensions();
+    let reference_planes =
+        linear_rgb_planes(reference).map(|plane| binomial_low_pass_5(&plane, width, height));
+    let candidate_planes =
+        linear_rgb_planes(candidate).map(|plane| binomial_low_pass_5(&plane, width, height));
+    Ok(compare_linear_planes(
+        &reference_planes,
+        &candidate_planes,
+        width,
+        height,
+        outlier_abs_delta,
+    ))
+}
+
+fn validate_linear_inputs(
+    reference: &RgbImage,
+    candidate: &RgbImage,
+    outlier_abs_delta: f64,
+) -> Result<(), String> {
     if reference.dimensions() != candidate.dimensions() {
         return Err(format!(
             "dimension mismatch: reference {:?} vs candidate {:?}",
@@ -169,16 +215,25 @@ pub fn compare_linear(
     if pixel_count == 0 {
         return Err("cannot compare empty images".to_owned());
     }
+    Ok(())
+}
+
+fn compare_linear_planes(
+    reference: &[Vec<f64>; 3],
+    candidate: &[Vec<f64>; 3],
+    width: u32,
+    height: u32,
+    outlier_abs_delta: f64,
+) -> LinearImageMetrics {
+    let pixel_count = u64::from(width) * u64::from(height);
 
     let mut deltas = Vec::with_capacity(pixel_count as usize * 3);
     let mut outliers = 0u64;
     let mut sum_abs = 0.0f64;
-    for (reference_pixel, candidate_pixel) in reference.pixels().zip(candidate.pixels()) {
+    for index in 0..pixel_count as usize {
         let mut pixel_is_outlier = false;
         for channel in 0..3 {
-            let reference_linear = srgb_u8_to_linear(reference_pixel[channel]);
-            let candidate_linear = srgb_u8_to_linear(candidate_pixel[channel]);
-            let delta = (reference_linear - candidate_linear).abs();
+            let delta = (reference[channel][index] - candidate[channel][index]).abs();
             sum_abs += delta;
             deltas.push(delta as f32);
             pixel_is_outlier |= delta > outlier_abs_delta;
@@ -189,14 +244,14 @@ pub fn compare_linear(
     }
     deltas.sort_unstable_by(f32::total_cmp);
 
-    let reference_luma = linear_luma_plane(reference);
-    let candidate_luma = linear_luma_plane(candidate);
-    Ok(LinearImageMetrics {
+    let reference_luma = linear_luma_from_planes(reference);
+    let candidate_luma = linear_luma_from_planes(candidate);
+    LinearImageMetrics {
         ssim: mean_ssim_planes(
             &reference_luma,
             &candidate_luma,
-            reference.width(),
-            reference.height(),
+            width,
+            height,
             (0.01f64).powi(2),
             (0.03f64).powi(2),
         ),
@@ -205,7 +260,7 @@ pub fn compare_linear(
         p99_abs_delta: nearest_rank(&deltas, 0.99),
         outlier_pct: outliers as f64 / pixel_count as f64 * 100.0,
         mean_abs_delta: sum_abs / (pixel_count * 3) as f64,
-    })
+    }
 }
 
 /// Window side length for the local SSIM statistics.
@@ -363,15 +418,64 @@ fn luma_plane(image: &RgbImage) -> Vec<f64> {
         .collect()
 }
 
-fn linear_luma_plane(image: &RgbImage) -> Vec<f64> {
-    image
-        .pixels()
-        .map(|pixel| {
-            0.2126 * srgb_u8_to_linear(pixel[0])
-                + 0.7152 * srgb_u8_to_linear(pixel[1])
-                + 0.0722 * srgb_u8_to_linear(pixel[2])
+fn linear_rgb_planes(image: &RgbImage) -> [Vec<f64>; 3] {
+    let len = image.width() as usize * image.height() as usize;
+    let mut planes = [
+        Vec::with_capacity(len),
+        Vec::with_capacity(len),
+        Vec::with_capacity(len),
+    ];
+    for pixel in image.pixels() {
+        for channel in 0..3 {
+            planes[channel].push(srgb_u8_to_linear(pixel[channel]));
+        }
+    }
+    planes
+}
+
+fn linear_luma_from_planes(planes: &[Vec<f64>; 3]) -> Vec<f64> {
+    (0..planes[0].len())
+        .map(|index| {
+            0.2126 * planes[0][index] + 0.7152 * planes[1][index] + 0.0722 * planes[2][index]
         })
         .collect()
+}
+
+fn binomial_low_pass_5(input: &[f64], width: u32, height: u32) -> Vec<f64> {
+    const WEIGHTS: [f64; 5] = [1.0, 4.0, 6.0, 4.0, 1.0];
+    const NORMALIZER: f64 = 16.0;
+    let width = width as usize;
+    let height = height as usize;
+    let mut horizontal = vec![0.0; input.len()];
+    for y in 0..height {
+        for x in 0..width {
+            let mut sum = 0.0;
+            for (kernel_index, weight) in WEIGHTS.iter().enumerate() {
+                let sample_x = x
+                    .saturating_add(kernel_index)
+                    .saturating_sub(2)
+                    .min(width - 1);
+                sum += input[y * width + sample_x] * weight;
+            }
+            horizontal[y * width + x] = sum / NORMALIZER;
+        }
+    }
+
+    let mut output = vec![0.0; input.len()];
+    for y in 0..height {
+        for x in 0..width {
+            let mut sum = 0.0;
+            for (kernel_index, weight) in WEIGHTS.iter().enumerate() {
+                let sample_y = y
+                    .saturating_add(kernel_index)
+                    .saturating_sub(2)
+                    .min(height - 1);
+                sum += horizontal[sample_y * width + x] * weight;
+            }
+            output[y * width + x] = sum / NORMALIZER;
+        }
+    }
+    output
 }
 
 fn srgb_u8_to_linear(channel: u8) -> f64 {
@@ -447,6 +551,32 @@ mod tests {
         assert!(metrics.ssim < 0.9, "{}", metrics.ssim);
         assert!(metrics.max_abs_delta > 0.5, "{}", metrics.max_abs_delta);
         assert!(metrics.p99_abs_delta > 0.1, "{}", metrics.p99_abs_delta);
+        assert!(metrics.outlier_pct > 20.0, "{}", metrics.outlier_pct);
+    }
+
+    #[test]
+    fn linear_low_pass_attenuates_a_single_stochastic_speckle() {
+        let reference = checkerboard(64, 64, 8);
+        let mut candidate = reference.clone();
+        candidate.put_pixel(32, 32, Rgb([255, 0, 255]));
+        let raw = compare_linear(&reference, &candidate, 0.03).unwrap();
+        let filtered = compare_linear_low_pass(&reference, &candidate, 0.03).unwrap();
+        assert!(filtered.max_abs_delta < raw.max_abs_delta / 4.0);
+        assert!(filtered.ssim > raw.ssim);
+    }
+
+    #[test]
+    fn linear_low_pass_preserves_a_localized_structural_fault() {
+        let reference = checkerboard(128, 128, 8);
+        let mut candidate = reference.clone();
+        for y in 32..96 {
+            for x in 32..96 {
+                candidate.put_pixel(x, y, Rgb([255, 0, 255]));
+            }
+        }
+        let metrics = compare_linear_low_pass(&reference, &candidate, 0.03).unwrap();
+        assert!(metrics.ssim < 0.9, "{}", metrics.ssim);
+        assert!(metrics.max_abs_delta > 0.5, "{}", metrics.max_abs_delta);
         assert!(metrics.outlier_pct > 20.0, "{}", metrics.outlier_pct);
     }
 

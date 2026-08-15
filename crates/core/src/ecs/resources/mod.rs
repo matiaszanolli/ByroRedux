@@ -741,6 +741,109 @@ impl ImageHealth {
 
 impl Resource for ImageHealth {}
 
+/// Last completed renderer integrity snapshot for RT lighting.
+///
+/// This joins the three gates that must all hold before a shadow-ray result is
+/// meaningful: the camera UBO actually published RT, every TLAS-eligible draw
+/// became an instance, the light SSBO retained every submitted light, and
+/// clustered-light assignment did not exceed its fixed per-cluster capacity.
+/// The renderer fills the resource once per frame; `rt.integrity` and finite
+/// benchmark summaries expose the same stable line.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct RtIntegrityStats {
+    /// Monotonic renderer frame associated with the CPU/TLAS sample.
+    pub frame: u64,
+    /// At least one renderer frame has populated this resource.
+    pub sampled: bool,
+    /// The selected Vulkan device exposes the required ray-query path.
+    pub rt_supported: bool,
+    /// `GpuCamera.flags[0]` was successfully uploaded/patched to `1.0` for
+    /// the most recently recorded frame.
+    pub rt_flag: bool,
+    /// The most recent TLAS build completed and produced a live handle.
+    pub tlas_build_succeeded: bool,
+    /// Draws which passed the renderer's TLAS eligibility predicate.
+    pub tlas_eligible: u32,
+    /// Acceleration-structure instances emitted for those draws.
+    pub tlas_emitted: u32,
+    /// Eligible skinned draws missing their per-entity BLAS.
+    pub missing_skinned_blas: u32,
+    /// Eligible rigid draws missing their mesh BLAS (the LRU-eviction signal).
+    pub missing_rigid_blas: u32,
+    /// Eligible draws missing the matching compacted instance-SSBO entry.
+    pub missing_ssbo_instance: u32,
+    /// Lights submitted by render-data collection before the global SSBO cap.
+    pub lights_submitted: u32,
+    /// Lights retained in the GPU SSBO after applying the global cap.
+    pub lights_uploaded: u32,
+    /// Submitted lights discarded before cluster assignment.
+    pub lights_dropped: u32,
+    /// A completed cluster-cull readback has populated the fields below.
+    pub cluster_sampled: bool,
+    /// Number of clusters whose candidate count exceeded the hard cap.
+    pub cluster_overflowed: u32,
+    /// Total candidate references discarded across overflowing clusters.
+    pub cluster_dropped: u32,
+    /// Largest unclamped candidate count observed in any cluster.
+    pub cluster_max_lights: u32,
+}
+
+impl RtIntegrityStats {
+    /// Stable four-state verdict for automation and operator diagnostics.
+    pub fn verdict(&self) -> &'static str {
+        if !self.sampled || !self.cluster_sampled {
+            "PENDING"
+        } else if !self.rt_supported {
+            "UNSUPPORTED"
+        } else if self.rt_flag
+            && self.tlas_build_succeeded
+            && self.tlas_emitted == self.tlas_eligible
+            && self.missing_skinned_blas == 0
+            && self.missing_rigid_blas == 0
+            && self.missing_ssbo_instance == 0
+            && self.lights_dropped == 0
+            && self.cluster_overflowed == 0
+            && self.cluster_dropped == 0
+        {
+            "PASS"
+        } else {
+            "FAIL"
+        }
+    }
+
+    /// Machine-readable line shared by the console and benchmark harness.
+    pub fn machine_line(&self) -> String {
+        format!(
+            "rt-integrity: frame={} sampled={} rt_supported={} rt_flag={} \
+             tlas_build={} tlas_eligible={} tlas_emitted={} \
+             missing_skinned={} missing_rigid={} missing_ssbo={} \
+             lights_submitted={} lights_uploaded={} lights_dropped={} \
+             cluster_sampled={} cluster_overflowed={} cluster_dropped={} \
+             cluster_max={} verdict={}",
+            self.frame,
+            u8::from(self.sampled),
+            u8::from(self.rt_supported),
+            u8::from(self.rt_flag),
+            u8::from(self.tlas_build_succeeded),
+            self.tlas_eligible,
+            self.tlas_emitted,
+            self.missing_skinned_blas,
+            self.missing_rigid_blas,
+            self.missing_ssbo_instance,
+            self.lights_submitted,
+            self.lights_uploaded,
+            self.lights_dropped,
+            u8::from(self.cluster_sampled),
+            self.cluster_overflowed,
+            self.cluster_dropped,
+            self.cluster_max_lights,
+            self.verdict(),
+        )
+    }
+}
+
+impl Resource for RtIntegrityStats {}
+
 pub mod ownership;
 pub use ownership::{
     FindingKind, OwnerClass, OwnershipFinding, OwnershipSnapshot, OwnershipTelemetry,
@@ -1035,6 +1138,93 @@ mod tests {
             ..Default::default()
         };
         assert!(!cov.fully_covered());
+    }
+
+    #[test]
+    fn rt_integrity_requires_a_complete_cross_layer_sample() {
+        let pending = RtIntegrityStats::default();
+        assert_eq!(pending.verdict(), "PENDING");
+
+        let unsupported = RtIntegrityStats {
+            sampled: true,
+            cluster_sampled: true,
+            ..Default::default()
+        };
+        assert_eq!(unsupported.verdict(), "UNSUPPORTED");
+
+        let clean = RtIntegrityStats {
+            frame: 42,
+            sampled: true,
+            rt_supported: true,
+            rt_flag: true,
+            tlas_build_succeeded: true,
+            tlas_eligible: 17,
+            tlas_emitted: 17,
+            cluster_sampled: true,
+            cluster_max_lights: 23,
+            ..Default::default()
+        };
+        assert_eq!(clean.verdict(), "PASS");
+        assert_eq!(
+            clean.machine_line(),
+            "rt-integrity: frame=42 sampled=1 rt_supported=1 rt_flag=1 \
+             tlas_build=1 tlas_eligible=17 tlas_emitted=17 missing_skinned=0 \
+             missing_rigid=0 missing_ssbo=0 lights_submitted=0 \
+             lights_uploaded=0 lights_dropped=0 cluster_sampled=1 \
+             cluster_overflowed=0 cluster_dropped=0 cluster_max=23 verdict=PASS"
+        );
+    }
+
+    #[test]
+    fn rt_integrity_fails_each_silent_drop_class() {
+        let clean = RtIntegrityStats {
+            sampled: true,
+            rt_supported: true,
+            rt_flag: true,
+            tlas_build_succeeded: true,
+            tlas_eligible: 3,
+            tlas_emitted: 3,
+            cluster_sampled: true,
+            ..Default::default()
+        };
+
+        for broken in [
+            RtIntegrityStats {
+                rt_flag: false,
+                ..clean
+            },
+            RtIntegrityStats {
+                tlas_build_succeeded: false,
+                ..clean
+            },
+            RtIntegrityStats {
+                tlas_emitted: 2,
+                missing_rigid_blas: 1,
+                ..clean
+            },
+            RtIntegrityStats {
+                missing_skinned_blas: 1,
+                ..clean
+            },
+            RtIntegrityStats {
+                missing_ssbo_instance: 1,
+                ..clean
+            },
+            RtIntegrityStats {
+                lights_submitted: 513,
+                lights_uploaded: 512,
+                lights_dropped: 1,
+                ..clean
+            },
+            RtIntegrityStats {
+                cluster_overflowed: 1,
+                cluster_dropped: 9,
+                cluster_max_lights: 137,
+                ..clean
+            },
+        ] {
+            assert_eq!(broken.verdict(), "FAIL", "{broken:?}");
+        }
     }
 
     #[test]

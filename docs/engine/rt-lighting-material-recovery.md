@@ -63,27 +63,37 @@ carried forward.
   upscaler, render/output extents, scene summary, fingerprint and verdict.
   Three-run fingerprints matched for Cornell static
   (`e015a9c223a17993`), Cornell orbit (`8654b184aa132b16`), and Prospector
-  orbit (`a4c4725f647c5381`). The anchor leg remains blocked on R0.2's explicit
-  reference binary, not on state determinism at HEAD.
-- **R0.2 runner and current-HEAD control complete in the next recovery
-  change.** `scripts/check-render-anchor.sh` stages two explicit binaries and
+  orbit (`a4c4725f647c5381`). R0.2 subsequently closed the explicit anchor leg.
+- **R0.2 runner and anchor leg complete in the next recovery change.**
+  `scripts/check-render-anchor.sh` stages two explicit binaries and
   captures static/pan/orbit/dolly/cut without mutating the caller's worktree.
   Each path writes PNGs, logs, binary/config/state manifests, a 4x diff
   heatmap, linear-light SSIM/error percentiles/outlier rate, and separately
-  classified correctness/performance verdicts. Three complete 60-frame
-  same-binary matrices passed. Across their 15 comparisons the worst visual
-  observations were SSIM `0.999486`, max delta `0.266802`, p99 delta
-  `0.006161`, outliers `0.0189%`, and mean delta `0.000127`. Same-machine timing
-  variation peaked at `1.071x`/`1.074x` and `+0.40`/`+0.50 ms` for p50/p95;
-  those measurements set the committed `1.10x + 0.10 ms` fence. A controlled
-  64x64 magenta corruption failed four correctness terms (SSIM `0.997856`, max
-  delta `0.822786`, outliers `0.4618%`, mean delta `0.001850`).
-- **Next blocking slice: R0.2 anchor leg, then R2.** Build baseline
-  `c25f61e6` as the explicit reference, run the five-path predicate against
-  current HEAD three times, and smoke-test the stable exit code through
-  `git bisect run`. R1.2 provenance/angle work and R2 telemetry may proceed
-  behind that gate; their results do not become release evidence until R0
-  exits.
+  classified correctness/performance verdicts. Raw linear metrics remain in
+  the artifact for stochastic-transport diagnosis; the gate scores a fixed
+  5x5 linear binomial low-pass so a different Monte Carlo speckle realization
+  cannot masquerade as a structural regression.
+- Three complete 60-frame same-binary matrices passed. Across their 15 raw
+  comparisons the worst observations were SSIM `0.999486`, max delta
+  `0.266802`, p99 delta `0.006161`, outliers `0.0189%`, and mean delta
+  `0.000127`. Same-machine timing variation peaked at `1.071x`/`1.074x` and
+  `+0.40`/`+0.50 ms` for p50/p95; those measurements set the committed
+  `1.10x + 0.10 ms` fence.
+- Baseline `c25f61e6` versus current candidate `77b540d0` then passed three
+  complete 60-frame matrices. Across those 15 comparisons, gated SSIM stayed
+  at or above `0.999887`, max delta stayed at or below `0.055870`, p99 at or
+  below `0.002165`, outliers at or below `0.0015%`, and mean delta at or below
+  `0.000089`. The raw counterparts are retained and reached SSIM `0.999496`,
+  max `0.207589`, p99 `0.005953`, outliers `0.0189%`, and mean `0.000117`.
+- A controlled 64x64 magenta corruption fails the filtered gate on SSIM
+  (`0.995710`), max delta (`0.804306`), outliers (`0.5004%`), and mean delta
+  (`0.001828`). `scripts/bisect-render-anchor.sh` builds the checkout under
+  test and returns `0` for the clean control and `101` for that fault, which is
+  a valid `git bisect run` bad verdict.
+- **Next blocking slice: R2.** Persist TLAS-integrity and cluster-overflow
+  evidence, then capture Dugout Inn, MedTek, Prospector, and Cydonia. R1.2
+  provenance/angle work may proceed independently, but neither result becomes
+  shadow-transport evidence until both R1 and R2 are green.
 
 ## Recovery rules
 
@@ -166,8 +176,12 @@ Use five camera cases:
 4. dolly;
 5. cut, for temporal reset/disocclusion.
 
-Compare the same post-warm-up frame range in linear space. Store SSIM, absolute
-error percentiles, outlier fraction, and image dimensions. Correctness and
+Compare the same post-warm-up frame range in linear space. Store both raw and
+fixed 5x5 low-pass SSIM, absolute error percentiles, outlier fraction, and image
+dimensions. The low-pass metric is the gate: the renderer contains stochastic
+RT sampling, so raw pixelwise agreement is diagnostic and can change when a
+semantically irrelevant shader edit produces a different noise realization.
+Correctness and
 performance are separate predicates:
 
 - correctness fails on manifest/fingerprint mismatch or an image threshold;
@@ -192,10 +206,16 @@ Reproduction:
 ```bash
 scripts/check-render-anchor.sh /path/to/reference/byroredux \
   /path/to/candidate/byroredux target/renderer-anchor 60
+
+# From an active bisect; this builds each checked-out candidate first.
+git bisect run scripts/bisect-render-anchor.sh \
+  /path/to/immutable/reference-byroredux target/renderer-anchor-bisect 60
 ```
 
-**Exit:** a deliberately perturbed shader is found by bisect; a no-op commit
-and three repeated HEAD runs remain PASS.
+**Exit:** three repeated baseline-vs-candidate runs PASS, the bisect wrapper
+returns a stable good verdict, and a controlled visual fault returns a stable
+bad verdict. A real regression range can now use the same command without
+changing the predicate.
 
 ### R0.3 Issue/roadmap disposition
 

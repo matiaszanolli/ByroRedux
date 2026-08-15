@@ -77,11 +77,13 @@ classification landed at `77b540d0`, Vulkan `shaderInt64` device enablement is
 validation-clean on Cornell, and the new three-run R0.1 gate produced identical
 HEAD fingerprints for Cornell static/orbit and Prospector orbit. R0.2's
 two-binary predicate is now implemented and passed three complete 60-frame
-same-binary matrices across static/pan/orbit/dolly/cut; it rejects a controlled
-64x64 corruption and reports correctness separately from the measured
-same-machine p50/p95 performance envelope. The remaining R0 blocker is the
-explicit `c25f61e6` anchor leg plus a `git bisect run` smoke test; R2 TLAS and
-cluster-integrity evidence follows immediately after.
+same-binary matrices plus three `c25f61e6`-vs-`77b540d0` anchor matrices across
+static/pan/orbit/dolly/cut. It retains raw stochastic RT error while gating on
+a fixed linear low-pass structural metric, rejects a controlled 64x64
+corruption, and reports correctness separately from the measured same-machine
+p50/p95 performance envelope. The bisect wrapper returns `0` for the clean
+control and `101` for the injected fault. R0 is therefore usable; R2 TLAS and
+cluster-integrity evidence is the next blocking slice.
 Water work that is headless (character contact/current response and
 coverage/ESM sweeps) may proceed; renderer-facing water tuning and new expected
 captures wait for the R3 visibility gate. The underlying playable-slice closure

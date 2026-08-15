@@ -25,6 +25,24 @@ struct ClusterEntry {
     count: u32,
 }
 
+/// Fence-lagged GPU cluster-capacity counters.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ClusterCullTelemetry {
+    pub sampled: bool,
+    pub overflowed_clusters: u32,
+    pub dropped_lights: u32,
+    pub max_lights: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct ClusterCullTelemetryGpu {
+    overflowed_clusters: u32,
+    dropped_lights: u32,
+    max_lights: u32,
+    _pad: u32,
+}
+
 /// Manages the cluster culling compute pipeline and its buffers.
 pub struct ClusterCullPipeline {
     /// Compute pipeline.
@@ -32,7 +50,8 @@ pub struct ClusterCullPipeline {
     pipeline_layout: vk::PipelineLayout,
     /// Descriptor set layout for the compute shader:
     /// binding 0 = lights SSBO (read), binding 1 = camera UBO (read),
-    /// binding 2 = cluster grid SSBO (write), binding 3 = light indices SSBO (write).
+    /// binding 2 = cluster grid SSBO (write), binding 3 = light indices SSBO (write),
+    /// binding 4 = overflow telemetry SSBO (atomic write).
     descriptor_set_layout: vk::DescriptorSetLayout,
     descriptor_pool: vk::DescriptorPool,
     /// One descriptor set per frame-in-flight.
@@ -41,6 +60,11 @@ pub struct ClusterCullPipeline {
     cluster_grid_buffers: Vec<GpuBuffer>,
     /// Per-frame light index list SSBOs.
     light_index_buffers: Vec<GpuBuffer>,
+    /// Per-frame GPU-to-CPU overflow counter buffers. Harvested only after
+    /// the owning frame slot's fence signals.
+    telemetry_buffers: Vec<GpuBuffer>,
+    telemetry_pending: [bool; MAX_FRAMES_IN_FLIGHT],
+    latest_telemetry: ClusterCullTelemetry,
     /// Descriptor set layout for fragment shader access to cluster data.
     /// Bindings 5+6 in the scene descriptor set.
     pub scene_cluster_grid_buffers: Vec<vk::Buffer>,
@@ -74,6 +98,9 @@ impl ClusterCullPipeline {
             descriptor_sets: Vec::new(),
             cluster_grid_buffers: Vec::new(),
             light_index_buffers: Vec::new(),
+            telemetry_buffers: Vec::new(),
+            telemetry_pending: [false; MAX_FRAMES_IN_FLIGHT],
+            latest_telemetry: ClusterCullTelemetry::default(),
             scene_cluster_grid_buffers: Vec::new(),
             scene_light_index_buffers: Vec::new(),
         };
@@ -112,6 +139,14 @@ impl ClusterCullPipeline {
                     vk::BufferUsageFlags::STORAGE_BUFFER,
                 )
             ));
+            partial
+                .telemetry_buffers
+                .push(try_or_cleanup!(GpuBuffer::create_host_readback(
+                    device,
+                    allocator,
+                    std::mem::size_of::<ClusterCullTelemetryGpu>() as vk::DeviceSize,
+                    vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
+                )));
         }
 
         // Compute descriptor set layout.
@@ -133,6 +168,11 @@ impl ClusterCullPipeline {
                 .stage_flags(vk::ShaderStageFlags::COMPUTE),
             vk::DescriptorSetLayoutBinding::default()
                 .binding(3)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(4)
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::COMPUTE),
@@ -225,12 +265,18 @@ impl ClusterCullPipeline {
                 offset: 0,
                 range: index_list_size,
             }];
+            let telemetry_info = [vk::DescriptorBufferInfo {
+                buffer: partial.telemetry_buffers[i].buffer,
+                offset: 0,
+                range: std::mem::size_of::<ClusterCullTelemetryGpu>() as vk::DeviceSize,
+            }];
             let set = partial.descriptor_sets[i];
             let writes = [
                 write_storage_buffer(set, 0, &light_info),
                 write_uniform_buffer(set, 1, &camera_info),
                 write_storage_buffer(set, 2, &grid_info),
                 write_storage_buffer(set, 3, &index_info),
+                write_storage_buffer(set, 4, &telemetry_info),
             ];
             // SAFETY: `partial` is still under construction — `set` was
             // just allocated above and isn't yet referenced by any command
@@ -277,7 +323,28 @@ impl ClusterCullPipeline {
     /// recording state, `frame` must be < `MAX_FRAMES_IN_FLIGHT`, the device
     /// must not be lost, and the bound buffers must not be in use by another
     /// in-flight command buffer.
-    pub unsafe fn dispatch(&self, device: &ash::Device, cmd: vk::CommandBuffer, frame: usize) {
+    pub unsafe fn dispatch(&mut self, device: &ash::Device, cmd: vk::CommandBuffer, frame: usize) {
+        let telemetry = &self.telemetry_buffers[frame];
+        let telemetry_size = std::mem::size_of::<ClusterCullTelemetryGpu>() as vk::DeviceSize;
+        device.cmd_fill_buffer(cmd, telemetry.buffer, 0, telemetry_size, 0);
+        let clear_to_compute = vk::BufferMemoryBarrier::default()
+            .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+            .dst_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .buffer(telemetry.buffer)
+            .offset(0)
+            .size(telemetry_size);
+        device.cmd_pipeline_barrier(
+            cmd,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::PipelineStageFlags::COMPUTE_SHADER,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[clear_to_compute],
+            &[],
+        );
+
         device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.pipeline);
         device.cmd_bind_descriptor_sets(
             cmd,
@@ -289,6 +356,57 @@ impl ClusterCullPipeline {
         );
 
         device.cmd_dispatch(cmd, CLUSTER_TILES_X, CLUSTER_TILES_Y, CLUSTER_SLICES_Z);
+
+        let compute_to_host = vk::BufferMemoryBarrier::default()
+            .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+            .dst_access_mask(vk::AccessFlags::HOST_READ)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .buffer(telemetry.buffer)
+            .offset(0)
+            .size(telemetry_size);
+        device.cmd_pipeline_barrier(
+            cmd,
+            vk::PipelineStageFlags::COMPUTE_SHADER,
+            vk::PipelineStageFlags::HOST,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[compute_to_host],
+            &[],
+        );
+        self.telemetry_pending[frame] = true;
+    }
+
+    /// Harvest the prior use of `frame` after its fence has signalled.
+    pub fn collect_telemetry(&mut self, device: &ash::Device, frame: usize) {
+        if !self.telemetry_pending[frame] {
+            return;
+        }
+        let result = (|| -> Result<ClusterCullTelemetry> {
+            let buffer = &mut self.telemetry_buffers[frame];
+            buffer.invalidate_if_needed(device)?;
+            let mapped = buffer.mapped_slice_mut()?;
+            let gpu = decode_cluster_telemetry(mapped)
+                .context("cluster telemetry readback was smaller than its shader contract")?;
+            Ok(ClusterCullTelemetry {
+                sampled: true,
+                overflowed_clusters: gpu.overflowed_clusters,
+                dropped_lights: gpu.dropped_lights,
+                max_lights: gpu.max_lights,
+            })
+        })();
+        self.telemetry_pending[frame] = false;
+        match result {
+            Ok(snapshot) => self.latest_telemetry = snapshot,
+            Err(error) => {
+                self.latest_telemetry = ClusterCullTelemetry::default();
+                log::warn!("Failed to collect cluster-cull telemetry: {error:#}");
+            }
+        }
+    }
+
+    pub fn latest_telemetry(&self) -> ClusterCullTelemetry {
+        self.latest_telemetry
     }
 
     /// Get the cluster grid buffer handle for a frame (for scene descriptor set writes).
@@ -338,10 +456,48 @@ impl ClusterCullPipeline {
             buf.destroy(device, allocator);
         }
         self.light_index_buffers.clear();
+        for buf in &mut self.telemetry_buffers {
+            buf.destroy(device, allocator);
+        }
+        self.telemetry_buffers.clear();
         device.destroy_pipeline(self.pipeline, None);
         device.destroy_pipeline_layout(self.pipeline_layout, None);
         device.destroy_descriptor_pool(self.descriptor_pool, None);
         device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
+    }
+}
+
+fn decode_cluster_telemetry(bytes: &[u8]) -> Option<ClusterCullTelemetryGpu> {
+    let word = |offset: usize| {
+        bytes
+            .get(offset..offset + 4)
+            .and_then(|slice| slice.try_into().ok())
+            .map(u32::from_ne_bytes)
+    };
+    Some(ClusterCullTelemetryGpu {
+        overflowed_clusters: word(0)?,
+        dropped_lights: word(4)?,
+        max_lights: word(8)?,
+        _pad: word(12)?,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cluster_telemetry_gpu_contract_is_four_words() {
+        assert_eq!(std::mem::size_of::<ClusterCullTelemetryGpu>(), 16);
+        let bytes = [3u32, 29, 157, 0]
+            .into_iter()
+            .flat_map(u32::to_ne_bytes)
+            .collect::<Vec<_>>();
+        let decoded = decode_cluster_telemetry(&bytes).unwrap();
+        assert_eq!(decoded.overflowed_clusters, 3);
+        assert_eq!(decoded.dropped_lights, 29);
+        assert_eq!(decoded.max_lights, 157);
+        assert!(decode_cluster_telemetry(&bytes[..15]).is_none());
     }
 }
 

@@ -469,6 +469,7 @@ impl AccelerationManager {
         let mut missing_skinned_blas: usize = 0;
         let mut missing_rigid_blas: usize = 0;
         let mut missing_ssbo_instance: usize = 0;
+        let mut eligible_instances: usize = 0;
         // REN-D8-NEW-14 — capture the first few offenders so the
         // warn-rate-limited log below identifies which meshes /
         // entities are dropping out of the TLAS instead of just
@@ -495,6 +496,7 @@ impl AccelerationManager {
             if !draw_command_eligible_for_tlas(draw_cmd) {
                 continue;
             }
+            eligible_instances += 1;
             // M29 Phase 2 — skinned draws (`bone_offset != 0`) reference
             // a per-entity BLAS that's refit each frame against the
             // SkinComputePipeline output buffer. Look up by entity_id
@@ -663,6 +665,14 @@ impl AccelerationManager {
 
         let instance_count = instances.len() as u32;
         let missing_blas_total = missing_skinned_blas + missing_rigid_blas + missing_ssbo_instance;
+        self.tlas_integrity = super::TlasIntegritySnapshot {
+            frame: self.frame_counter,
+            eligible: eligible_instances as u32,
+            emitted: instance_count,
+            missing_skinned_blas: missing_skinned_blas as u32,
+            missing_rigid_blas: missing_rigid_blas as u32,
+            missing_ssbo_instance: missing_ssbo_instance as u32,
+        };
         if missing_blas_total > 0 && frame_index == 0 {
             // Log once per second (at 60fps, frame_index 0 fires 30×/s — good enough).
             static LAST_LOG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -1047,5 +1057,10 @@ impl AccelerationManager {
     /// Get the TLAS acceleration structure handle for a frame slot (for descriptor binding).
     pub fn tlas_handle(&self, frame_index: usize) -> Option<vk::AccelerationStructureKHR> {
         self.tlas[frame_index].as_ref().map(|t| t.accel)
+    }
+
+    /// Most recent CPU-side TLAS membership accounting.
+    pub fn integrity_snapshot(&self) -> super::TlasIntegritySnapshot {
+        self.tlas_integrity
     }
 }

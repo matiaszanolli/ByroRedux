@@ -449,6 +449,25 @@ impl ConsoleCommand for RenderHealthCommand {
     }
 }
 
+/// `rt.integrity` — one-line cross-layer RT lighting precondition.
+pub(crate) struct RtIntegrityCommand;
+impl ConsoleCommand for RtIntegrityCommand {
+    fn name(&self) -> &str {
+        "rt.integrity"
+    }
+
+    fn description(&self) -> &str {
+        "RT flag, TLAS membership, and cluster-overflow correctness snapshot"
+    }
+
+    fn execute(&self, world: &World, _args: &str) -> CommandOutput {
+        let Some(snapshot) = world.try_resource::<RtIntegrityStats>() else {
+            return CommandOutput::line("RtIntegrityStats resource not present");
+        };
+        CommandOutput::line(snapshot.machine_line())
+    }
+}
+
 /// `world.owners` — cross-subsystem ownership accounting for the EX-08
 /// exterior soak (#2374).
 ///

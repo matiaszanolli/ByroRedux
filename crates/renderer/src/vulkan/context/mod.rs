@@ -1006,6 +1006,11 @@ pub struct VulkanContext {
     /// SVGF read the raw u32 directly (no precision issue on the
     /// Rust side).
     pub frame_counter: u32,
+    /// Exact publication state of `GpuCamera.flags[0]` for the last frame
+    /// recorded by `draw_frame` (including first-slot post-build patching).
+    rt_flag_last_frame: bool,
+    /// The last TLAS build returned success and exposed a live handle.
+    tlas_build_succeeded_last_frame: bool,
     /// Wall-clock-like animation time for stateless volumetric domain warp.
     /// Advanced only after a successful queue submit so failed/aborted frames
     /// cannot move density without producing the corresponding V-buffer.
@@ -2992,6 +2997,8 @@ impl VulkanContext {
             renderer_config,
             frame_extents,
             frame_counter: 0,
+            rt_flag_last_frame: false,
+            tlas_build_succeeded_last_frame: false,
             volumetric_time_seconds: 0.0,
             fsr_temporal,
             render_debug_flags: parse_render_debug_flags_env(),
@@ -3464,6 +3471,40 @@ impl VulkanContext {
         for &eid in self.failed_skin_slots.iter().take(16) {
             stats.failed_entity_ids.push(eid);
         }
+    }
+
+    /// Join the last frame's RT publication, TLAS membership, and clustered
+    /// light capacity counters into the engine's durable integrity resource.
+    pub fn fill_rt_integrity_stats(&self, stats: &mut byroredux_core::ecs::RtIntegrityStats) {
+        let tlas = self
+            .accel_manager
+            .as_ref()
+            .map(super::acceleration::AccelerationManager::integrity_snapshot)
+            .unwrap_or_default();
+        let cluster = self
+            .cluster_cull
+            .as_ref()
+            .map(super::compute::ClusterCullPipeline::latest_telemetry)
+            .unwrap_or_default();
+        let (lights_submitted, lights_uploaded) = self.scene_buffers.light_upload_counts();
+
+        stats.frame = tlas.frame;
+        stats.sampled = self.frame_counter > 0;
+        stats.rt_supported = self.device_caps.ray_query_supported;
+        stats.rt_flag = self.rt_flag_last_frame;
+        stats.tlas_build_succeeded = self.tlas_build_succeeded_last_frame;
+        stats.tlas_eligible = tlas.eligible;
+        stats.tlas_emitted = tlas.emitted;
+        stats.missing_skinned_blas = tlas.missing_skinned_blas;
+        stats.missing_rigid_blas = tlas.missing_rigid_blas;
+        stats.missing_ssbo_instance = tlas.missing_ssbo_instance;
+        stats.lights_submitted = lights_submitted;
+        stats.lights_uploaded = lights_uploaded;
+        stats.lights_dropped = lights_submitted.saturating_sub(lights_uploaded);
+        stats.cluster_sampled = cluster.sampled;
+        stats.cluster_overflowed = cluster.overflowed_clusters;
+        stats.cluster_dropped = cluster.dropped_lights;
+        stats.cluster_max_lights = cluster.max_lights;
     }
 
     // draw_frame is in draw.rs

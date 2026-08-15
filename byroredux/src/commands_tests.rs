@@ -667,3 +667,33 @@ fn r_health_without_the_resource_says_so_rather_than_panicking() {
     let text = RenderHealthCommand.execute(&world, "").lines.join("\n");
     assert!(text.contains("not present"), "{text}");
 }
+
+// ── `rt.integrity` — RT publication / TLAS / cluster oracle ────────
+
+#[test]
+fn rt_integrity_prints_the_shared_machine_line() {
+    let mut world = World::new();
+    world.insert_resource(byroredux_core::ecs::RtIntegrityStats {
+        frame: 9,
+        sampled: true,
+        rt_supported: true,
+        rt_flag: true,
+        tlas_build_succeeded: true,
+        tlas_eligible: 12,
+        tlas_emitted: 12,
+        cluster_sampled: true,
+        cluster_max_lights: 37,
+        ..Default::default()
+    });
+    let text = RtIntegrityCommand.execute(&world, "").lines.join("\n");
+    assert!(text.starts_with("rt-integrity: frame=9"), "{text}");
+    assert!(text.contains("tlas_eligible=12 tlas_emitted=12"), "{text}");
+    assert!(text.contains("cluster_max=37 verdict=PASS"), "{text}");
+}
+
+#[test]
+fn rt_integrity_without_resource_says_so() {
+    let world = World::new();
+    let text = RtIntegrityCommand.execute(&world, "").lines.join("\n");
+    assert!(text.contains("not present"), "{text}");
+}

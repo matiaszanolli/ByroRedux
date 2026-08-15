@@ -221,6 +221,11 @@ impl super::buffers::SceneBuffers {
         self.ray_budget_controller.settings()
     }
 
+    /// `(submitted, uploaded)` light counts from the latest scene upload.
+    pub fn light_upload_counts(&self) -> (u32, u32) {
+        self.last_light_counts
+    }
+
     /// Destroy all resources.
     ///
     /// Pre-#732 LIFE-N1 the per-Vec `buf.destroy()` loops below freed

@@ -374,6 +374,7 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.insert_resource(byroredux_core::ecs::UpscalerTelemetry::default());
     world.insert_resource(byroredux_core::ecs::PendingUpscalerSwitch::default());
     world.insert_resource(SkinCoverageStats::default());
+    world.insert_resource(byroredux_core::ecs::RtIntegrityStats::default());
     // REND-#1451 — live attenuation tuning, read into the renderer
     // each frame and mutated by the `light.atten` console command.
     // Seed from the config `[defaults]` so a benched knee persists

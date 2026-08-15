@@ -3374,7 +3374,10 @@ void main() {
         emissiveMult * max(emissiveColor.r, max(emissiveColor.g, emissiveColor.b));
     vec3 primaryDiffuseWeight = (1.0 - fresnelSchlick(NdotV, F0))
         * (1.0 - metalness);
-    if (giRayEnabled && !isWindow && !isGlass && giEmissiveLum < 0.01
+    if (giRayEnabled
+        && rayBudget.maxPathSegments > 0u
+        && rayBudget.maxShadedHits > 0u
+        && !isWindow && !isGlass && giEmissiveLum < 0.01
         && rtLOD < RT_LOD_GI
         && pathLuminance(primaryDiffuseWeight) > 1e-5) {
         float giDist = length(fragWorldPos - cameraPos.xyz);

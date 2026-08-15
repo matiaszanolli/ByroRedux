@@ -39,6 +39,11 @@ pub struct SceneBuffers {
     /// `upload_indirect_draws` had already gained the gate.
     /// See #2036 / PERF-D4-01 and #878 for the template.
     pub(super) last_uploaded_light_hash: [Option<u64>; MAX_FRAMES_IN_FLIGHT],
+    /// Most recent pre-cap light count and the prefix retained by the GPU
+    /// SSBO. Unlike the upload hash these are refreshed on every call so the
+    /// RT integrity snapshot cannot hide a repeated overflow behind the dirty
+    /// upload gate.
+    pub(super) last_light_counts: (u32, u32),
     /// One UBO per frame-in-flight (camera data).
     pub(super) camera_buffers: Vec<GpuBuffer>,
     /// DEVICE_LOCAL | STORAGE_BUFFER bone palette per frame-in-flight.
@@ -919,6 +924,7 @@ impl SceneBuffers {
             last_uploaded_previous_model_hash: [None; MAX_FRAMES_IN_FLIGHT],
             last_uploaded_indirect_hash: [None; MAX_FRAMES_IN_FLIGHT],
             last_uploaded_light_hash: [None; MAX_FRAMES_IN_FLIGHT],
+            last_light_counts: (0, 0),
         })
     }
 }

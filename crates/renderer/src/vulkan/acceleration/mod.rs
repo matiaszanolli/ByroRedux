@@ -50,6 +50,21 @@ use ash::vk;
 use byroredux_core::ecs::storage::EntityId;
 use predicates::compute_blas_budget;
 
+/// CPU-side accounting for the most recent TLAS instance gather.
+///
+/// Unlike the historical rate-limited warning, this snapshot persists zeroes
+/// and is therefore suitable for a positive correctness assertion: emitted
+/// must equal eligible and every missing-cause counter must remain zero.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct TlasIntegritySnapshot {
+    pub frame: u64,
+    pub eligible: u32,
+    pub emitted: u32,
+    pub missing_skinned_blas: u32,
+    pub missing_rigid_blas: u32,
+    pub missing_ssbo_instance: u32,
+}
+
 /// Manages BLAS and TLAS for RT ray queries.
 ///
 /// TLAS state is double-buffered per frame-in-flight to avoid
@@ -146,6 +161,10 @@ pub struct AccelerationManager {
     /// path are unavoidable (each is a unique `format!` describing a
     /// specific entity / mesh handle).
     pub(super) tlas_missing_samples_scratch: Vec<String>,
+    /// Persisted counters from the latest TLAS instance gather. Updated even
+    /// for a clean frame so consumers can distinguish "zero missing" from
+    /// "the warning did not happen to fire".
+    pub(super) tlas_integrity: TlasIntegritySnapshot,
     /// Monotonic frame counter for BLAS LRU tracking. **Shared across
     /// every TLAS slot** — there's no per-slot counter. Each TLAS slot's
     /// `last_used_frame` field on its `BlasEntry` references stamp this
@@ -265,6 +284,7 @@ impl AccelerationManager {
             tlas_instances_scratch: Vec::new(),
             tlas_addresses_scratch: Vec::new(),
             tlas_missing_samples_scratch: Vec::new(),
+            tlas_integrity: TlasIntegritySnapshot::default(),
             frame_counter: 0,
             total_blas_bytes: 0,
             static_blas_bytes: 0,

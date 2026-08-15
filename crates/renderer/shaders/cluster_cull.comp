@@ -82,6 +82,16 @@ layout(std430, set = 0, binding = 3) writeonly buffer ClusterLightIndices {
     uint lightIndices[];
 };
 
+// Cleared by the host immediately before every dispatch, then harvested after
+// this frame slot's fence signals. These are the capacity oracle for the hard
+// MAX_LIGHTS_PER_CLUSTER ceiling; atomics combine all 3456 workgroups.
+layout(std430, set = 0, binding = 4) buffer ClusterCullTelemetry {
+    uint overflowedClusters;
+    uint droppedLights;
+    uint maxLights;
+    uint _telemetryPad;
+};
+
 // ── Helpers ─────────────────────────────────────────────────────────
 
 // Source the cluster-grid far plane from the same `screen.w` the
@@ -278,6 +288,11 @@ void main() {
     // frame are now stale; the fragment shader iterates exactly
     // `cluster.count` entries so it never reads them.
     if (threadId == 0u) {
+        atomicMax(maxLights, sharedCount);
+        if (sharedCount > MAX_LIGHTS_PER_CLUSTER) {
+            atomicAdd(overflowedClusters, 1u);
+            atomicAdd(droppedLights, sharedCount - MAX_LIGHTS_PER_CLUSTER);
+        }
         uint count = min(sharedCount, MAX_LIGHTS_PER_CLUSTER);
         uint baseOffset = clusterIdx * MAX_LIGHTS_PER_CLUSTER;
         for (uint i = 0u; i < count; i++) {
