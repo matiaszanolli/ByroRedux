@@ -13,9 +13,9 @@
 //! re-derived at render time.
 
 use super::*;
+use crate::blocks::base::BSShaderPropertyData;
 use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
 use crate::blocks::properties::{NiFlagProperty, NiMaterialProperty};
-use crate::blocks::base::BSShaderPropertyData;
 use crate::blocks::shader::{BSShaderNoLightingProperty, BSShaderPPLightingProperty};
 use crate::blocks::tri_shape::NiTriShape;
 use crate::blocks::NiObject;

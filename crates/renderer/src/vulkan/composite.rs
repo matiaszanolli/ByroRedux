@@ -1845,8 +1845,7 @@ mod composite_params_layout_tests {
              arm does; sky + direct alone is the #2920 discontinuity"
         );
         assert!(
-            sky_arm.contains("compute_sky(dir) * (1.0 - coverage)")
-                && sky_arm.contains("+ direct"),
+            sky_arm.contains("compute_sky(dir) * (1.0 - coverage)") && sky_arm.contains("+ direct"),
             "#2466's coverage-weighted sky and direct terms must survive \
              alongside the #2920 indirect term"
         );

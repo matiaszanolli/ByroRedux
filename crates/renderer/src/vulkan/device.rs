@@ -151,6 +151,15 @@ pub struct DeviceCapabilities {
     pub texture_compression_bc: bool,
 }
 
+/// The committed geometry, water, UI, and caustic shader modules mirror
+/// `GpuInstance::skinned_vertex_address` as a `uint64_t`. That declaration
+/// emits the SPIR-V `Int64` capability even in stages that never dereference
+/// the address, so `shaderInt64` is a renderer requirement rather than an
+/// optional acceleration-path feature.
+fn supports_committed_shader_int64(features: &vk::PhysicalDeviceFeatures) -> bool {
+    features.shader_int64 == vk::TRUE
+}
+
 impl DeviceCapabilities {
     /// Whether the per-pass GPU timers (`gpu_timers.rs`) can run on this
     /// device. BOTH gates are required and independent of ray-query support:
@@ -344,7 +353,8 @@ pub fn pick_physical_device(
     let Some(selected) = selected else {
         anyhow::bail!(
             "No suitable GPU found (need graphics + present queues, swapchain support, \
-             and Vulkan 1.3 synchronization2 — RTX 20-series / RDNA1 / Arc or newer required)"
+             shaderInt64, and Vulkan 1.3 synchronization2 — RTX 20-series / RDNA1 / \
+             Arc or newer required)"
         );
     };
 
@@ -395,13 +405,18 @@ fn is_device_suitable(
     // allocations, not the driver's full residency view.
     let memory_budget_supported = has_extension(ash::ext::memory_budget::NAME);
 
-    // Query features + limits for optional features we care about.
-    // `samplerAnisotropy` is the only one right now (issue #136).
+    // Query core features + limits. The committed shader set declares the
+    // SPIR-V Int64 capability through the shared GpuInstance layout, so a
+    // device without shaderInt64 cannot legally create the renderer's shader
+    // modules (VUID-VkShaderModuleCreateInfo-pCode-08740).
     let features = unsafe {
         // SAFETY: `instance` is live and `device` was enumerated from it; the
         // query writes only into the returned features struct.
         instance.get_physical_device_features(device)
     };
+    if !supports_committed_shader_int64(&features) {
+        return Ok(None);
+    }
     let properties = unsafe {
         // SAFETY: `instance` is live and `device` was enumerated from it; the
         // query writes only into the returned properties struct.
@@ -612,6 +627,10 @@ pub fn create_logical_device(
     let mut device_features = vk::PhysicalDeviceFeatures::default()
         .sampler_anisotropy(caps.sampler_anisotropy_supported)
         .texture_compression_bc(caps.texture_compression_bc)
+        // Required by every committed shader stage that mirrors the shared
+        // GpuInstance uint64_t device-address field. Device suitability has
+        // already rejected hardware that does not expose this core feature.
+        .shader_int64(true)
         .independent_blend(true)
         // #309 — `vkCmdDrawIndexedIndirect` with drawCount > 1
         // collapses the per-batch `cmd_draw_indexed` loop into one API
@@ -846,7 +865,7 @@ pub fn create_logical_device(
 
 #[cfg(test)]
 mod caps_tests {
-    use super::{device_preference_key, DeviceCapabilities};
+    use super::{device_preference_key, supports_committed_shader_int64, DeviceCapabilities};
     use ash::vk;
 
     #[test]
@@ -873,6 +892,19 @@ mod caps_tests {
         );
         assert!(key(vk::PhysicalDeviceType::VIRTUAL_GPU) > key(vk::PhysicalDeviceType::OTHER));
         assert!(key(vk::PhysicalDeviceType::OTHER) > key(vk::PhysicalDeviceType::CPU));
+    }
+
+    /// The checked-in shader modules declare `OpCapability Int64` because
+    /// their shared GpuInstance mirror contains a 64-bit device address.
+    /// Accepting a device without the feature and then creating those modules
+    /// violates VUID-VkShaderModuleCreateInfo-pCode-08740.
+    #[test]
+    fn committed_shader_contract_requires_shader_int64() {
+        let unsupported = vk::PhysicalDeviceFeatures::default();
+        assert!(!supports_committed_shader_int64(&unsupported));
+
+        let supported = vk::PhysicalDeviceFeatures::default().shader_int64(true);
+        assert!(supports_committed_shader_int64(&supported));
     }
 
     /// #1636 / #1478 — the GPU-timer gate must require BOTH `timestamp` and

@@ -316,11 +316,7 @@ fn synthesize_tangents_yup_empty_inputs_return_empty() {
 /// name and a caller-supplied blob, registered as block 0 of a fresh
 /// scene. Returns the scene plus the `extra_data_refs` slice pointing
 /// at it, ready to hand to `extract_tangents_from_extra_data`.
-fn scene_with_tangent_blob(
-    name: &str,
-    type_name: &str,
-    binary_data: Option<Vec<u8>>,
-) -> NifScene {
+fn scene_with_tangent_blob(name: &str, type_name: &str, binary_data: Option<Vec<u8>>) -> NifScene {
     let extra = NiExtraData {
         type_name: type_name.to_string(),
         name: Some(std::sync::Arc::from(name)),
@@ -397,7 +393,11 @@ fn extract_tangents_from_extra_data_applies_bethesda_half_swap_and_zup_to_yup() 
         &[[0.0, 1.0, 0.0], [0.0, -1.0, 0.0]],
         &[[1.0, 0.0, 0.0], [-1.0, 0.0, 0.0]],
     );
-    assert_eq!(blob.len(), 2 * 24, "fixture must be exactly num_verts * 24 bytes");
+    assert_eq!(
+        blob.len(),
+        2 * 24,
+        "fixture must be exactly num_verts * 24 bytes"
+    );
 
     let scene = scene_with_tangent_blob(TANGENT_SPACE_NAME, "NiBinaryExtraData", Some(blob));
     let refs = [BlockRef(0)];
@@ -406,14 +406,22 @@ fn extract_tangents_from_extra_data_applies_bethesda_half_swap_and_zup_to_yup() 
     assert_eq!(tangents.len(), 2, "one tangent per vertex");
     // Vertex 0: bitangent half (1,0,0) Z-up → (1,0,0) Y-up (X axis is
     // identity under the swap); sign +1 for this right-handed fixture.
-    assert!((tangents[0][0] - 1.0).abs() < 1e-6, "v0.x = {}", tangents[0][0]);
+    assert!(
+        (tangents[0][0] - 1.0).abs() < 1e-6,
+        "v0.x = {}",
+        tangents[0][0]
+    );
     assert!(tangents[0][1].abs() < 1e-6, "v0.y = {}", tangents[0][1]);
     assert!(tangents[0][2].abs() < 1e-6, "v0.z = {}", tangents[0][2]);
     assert_eq!(tangents[0][3], 1.0, "v0 sign");
     // Vertex 1: bitangent half (-1,0,0) Z-up → (-1,0,0) Y-up. A
     // different offset than vertex 0 proves the `num_verts * 12`
     // second-half stride, not a stale first-vertex read repeated.
-    assert!((tangents[1][0] + 1.0).abs() < 1e-6, "v1.x = {}", tangents[1][0]);
+    assert!(
+        (tangents[1][0] + 1.0).abs() < 1e-6,
+        "v1.x = {}",
+        tangents[1][0]
+    );
     assert!(tangents[1][1].abs() < 1e-6, "v1.y = {}", tangents[1][1]);
     assert!(tangents[1][2].abs() < 1e-6, "v1.z = {}", tangents[1][2]);
     assert_eq!(tangents[1][3], 1.0, "v1 sign");

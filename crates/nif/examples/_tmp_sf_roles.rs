@@ -90,7 +90,8 @@ fn main() {
                 continue;
             };
             let mut pool = StringPool::new();
-            let meshes = byroredux_nif::import::import_nif_with_resolver(&scene, &mut pool, Some(&resolver));
+            let meshes =
+                byroredux_nif::import::import_nif_with_resolver(&scene, &mut pool, Some(&resolver));
             for m in &meshes {
                 n_meshes += 1;
                 let mp = m
@@ -158,7 +159,10 @@ fn main() {
     println!("mat meshes with ANY role filled: {mat_any_role}");
     println!("nopath meshes with ANY role filled: {nopath_any_role}");
     println!("decals any: {decals_all}");
-    println!("{:<20} {:>10} {:>10} {:>10}", "role", "all", "mat", "nopath");
+    println!(
+        "{:<20} {:>10} {:>10} {:>10}",
+        "role", "all", "mat", "nopath"
+    );
     for i in 0..18 {
         println!(
             "{:<20} {:>10} {:>10} {:>10}",

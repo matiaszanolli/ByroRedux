@@ -1962,16 +1962,7 @@ fn instance_map_kept_count_is_capped_the_same_way_the_ssbo_is() {
     );
     assert_eq!(
         map,
-        vec![
-            Some(0),
-            Some(1),
-            Some(2),
-            None,
-            None,
-            None,
-            None,
-            None
-        ],
+        vec![Some(0), Some(1), Some(2), None, None, None, None, None],
         "over-cap draw commands must map to None, not to a wrapped index"
     );
 }

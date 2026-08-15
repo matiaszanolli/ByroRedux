@@ -1666,8 +1666,12 @@ mod tests {
         install_engine_start_quest(&mut world, quest_b, Some(20));
 
         // The live registry sees both quests now...
-        assert!(world.resource::<QuestDefinitionRegistry>().contains(quest_a));
-        assert!(world.resource::<QuestDefinitionRegistry>().contains(quest_b));
+        assert!(world
+            .resource::<QuestDefinitionRegistry>()
+            .contains(quest_a));
+        assert!(world
+            .resource::<QuestDefinitionRegistry>()
+            .contains(quest_b));
         // ...but the earlier snapshot must still see only the first —
         // proving the shared allocation was cloned-on-write, not mutated
         // through the snapshot's own (still-live) Arc handle.

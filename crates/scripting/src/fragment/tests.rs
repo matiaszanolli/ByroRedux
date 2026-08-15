@@ -645,17 +645,15 @@ fn populate_from_script_resolves_decompiled_backing_variable_quest_property() {
                 // The decompiler's actual shape for `MQ101.Start()`:
                 // `::MQ101_var.Start()`, not the `.psc`-expressible
                 // `MQ101.Start()`.
-                body: vec![sp(Stmt::ExprStmt(sp(
-                    byroredux_papyrus::ast::Expr::Call {
-                        callee: Box::new(sp(byroredux_papyrus::ast::Expr::MemberAccess {
-                            object: Box::new(sp(byroredux_papyrus::ast::Expr::Ident(
-                                Identifier("::MQ101_var".into()),
-                            ))),
-                            member: sp(Identifier("Start".into())),
-                        })),
-                        args: Vec::new(),
-                    },
-                )))],
+                body: vec![sp(Stmt::ExprStmt(sp(byroredux_papyrus::ast::Expr::Call {
+                    callee: Box::new(sp(byroredux_papyrus::ast::Expr::MemberAccess {
+                        object: Box::new(sp(byroredux_papyrus::ast::Expr::Ident(Identifier(
+                            "::MQ101_var".into(),
+                        )))),
+                        member: sp(Identifier("Start".into())),
+                    })),
+                    args: Vec::new(),
+                })))],
                 doc_comment: None,
             })),
         ],

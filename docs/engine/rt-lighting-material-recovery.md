@@ -44,6 +44,47 @@ on that harness. They must be remeasured with identical stepped-camera code on
 both candidate and reference binaries before any performance conclusion is
 carried forward.
 
+## Execution status
+
+- **R1.1 complete at `77b540d0`.** XCLL directional colour now emits a type-2
+  directional light with full structural visibility. The normal-independent
+  type-3 `Lo` bypass is gone from direct lighting, GI, and caustic selection;
+  source canaries and rebuilt SPIR-V pin the contract.
+- **Vulkan validation prerequisite complete in the next recovery change.**
+  The committed shader set declares SPIR-V `Int64` through the shared
+  `GpuInstance` device-address field. Device selection now requires
+  `shaderInt64`, logical-device creation enables it, and a 30-frame Cornell
+  run completes under validation without
+  `VUID-VkShaderModuleCreateInfo-pCode-08740`.
+- **R0.1 harness and current-HEAD leg complete in the next recovery change.**
+  `check-bench-determinism.sh` now runs three cold processes, accepts static
+  or stepped camera workloads and arbitrary scene arguments, and writes
+  per-run manifests with engine/harness hashes, GPU identity, selected
+  upscaler, render/output extents, scene summary, fingerprint and verdict.
+  Three-run fingerprints matched for Cornell static
+  (`e015a9c223a17993`), Cornell orbit (`8654b184aa132b16`), and Prospector
+  orbit (`a4c4725f647c5381`). The anchor leg remains blocked on R0.2's explicit
+  reference binary, not on state determinism at HEAD.
+- **R0.2 runner and current-HEAD control complete in the next recovery
+  change.** `scripts/check-render-anchor.sh` stages two explicit binaries and
+  captures static/pan/orbit/dolly/cut without mutating the caller's worktree.
+  Each path writes PNGs, logs, binary/config/state manifests, a 4x diff
+  heatmap, linear-light SSIM/error percentiles/outlier rate, and separately
+  classified correctness/performance verdicts. Three complete 60-frame
+  same-binary matrices passed. Across their 15 comparisons the worst visual
+  observations were SSIM `0.999486`, max delta `0.266802`, p99 delta
+  `0.006161`, outliers `0.0189%`, and mean delta `0.000127`. Same-machine timing
+  variation peaked at `1.071x`/`1.074x` and `+0.40`/`+0.50 ms` for p50/p95;
+  those measurements set the committed `1.10x + 0.10 ms` fence. A controlled
+  64x64 magenta corruption failed four correctness terms (SSIM `0.997856`, max
+  delta `0.822786`, outliers `0.4618%`, mean delta `0.001850`).
+- **Next blocking slice: R0.2 anchor leg, then R2.** Build baseline
+  `c25f61e6` as the explicit reference, run the five-path predicate against
+  current HEAD three times, and smoke-test the stable exit code through
+  `git bisect run`. R1.2 provenance/angle work and R2 telemetry may proceed
+  behind that gate; their results do not become release evidence until R0
+  exits.
+
 ## Recovery rules
 
 - **Fix forward from current `main`.** A wholesale Session-63 revert would
@@ -135,6 +176,23 @@ performance are separate predicates:
 
 The runner emits a single stable exit code suitable for `git bisect run` and a
 directory containing both images, a diff heatmap, manifests, and metrics.
+
+Implemented as `scripts/check-render-anchor.sh` plus the ignored
+`renderer_anchor` integration test. The wrapper defaults to an owned Xvfb
+display, accepts `BYROREDUX_ANCHOR_XVFB=0` for an existing display, and stages
+the explicit binaries as stable hard links (copy fallback across filesystems)
+before Cargo can rebuild anything. The committed correctness thresholds are
+the three-run HEAD noise floor with margin; performance thresholds come from
+the measured same-machine p50/p95 envelope above. `summary.json` exposes
+`correctness_passed` and `performance_passed` independently as well as the
+combined bisect verdict.
+
+Reproduction:
+
+```bash
+scripts/check-render-anchor.sh /path/to/reference/byroredux \
+  /path/to/candidate/byroredux target/renderer-anchor 60
+```
 
 **Exit:** a deliberately perturbed shader is found by bisect; a no-op commit
 and three repeated HEAD runs remain PASS.
@@ -501,4 +559,3 @@ For a failed fixed frame, stop at the first failing row:
 This table is the working meaning of "fix it once and for all": future
 failures become a bounded layer diagnosis instead of another renderer-wide
 theory sweep.
-

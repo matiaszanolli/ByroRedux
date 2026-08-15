@@ -2,8 +2,8 @@
 //! BSEffectShaderProperty stub-vs-full split and whether full-body blocks
 //! carry a resolvable BSShaderTextureSet with any non-empty texture strings.
 use byroredux_bsa::Ba2Archive;
-use byroredux_nif::blocks::shader::{BSEffectShaderProperty, BSLightingShaderProperty};
 use byroredux_nif::blocks::shader::BSShaderTextureSet;
+use byroredux_nif::blocks::shader::{BSEffectShaderProperty, BSLightingShaderProperty};
 
 fn main() {
     let mut limit = usize::MAX;

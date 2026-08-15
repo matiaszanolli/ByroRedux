@@ -440,7 +440,11 @@ fn resolve_tri_strips_data_refs(
 /// omit per-vertex normals entirely — or when any of the triangle's three
 /// indices are out of range (`push_local_triangles`' own bounds check
 /// still runs afterward regardless).
-fn tri_strips_triangle_winding(vertices: &[NiPoint3], normals: &[NiPoint3], tri: [u32; 3]) -> [u32; 3] {
+fn tri_strips_triangle_winding(
+    vertices: &[NiPoint3],
+    normals: &[NiPoint3],
+    tri: [u32; 3],
+) -> [u32; 3] {
     if normals.len() != vertices.len() {
         return tri;
     }

@@ -53,12 +53,52 @@ pub struct ImageMetrics {
     pub mean_abs_delta: f64,
 }
 
+/// Linear-light comparison used by the reference-vs-candidate renderer gate.
+///
+/// Screenshots are stored as sRGB PNGs, but renderer regressions are energy
+/// errors. Convert channels back to linear light before measuring so the same
+/// encoded-byte delta is not treated as equally significant in shadows and
+/// highlights. Percentiles keep one pathological texel from dominating the
+/// verdict while `max_abs_delta` still records that texel for diagnosis.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LinearImageMetrics {
+    /// Mean SSIM over linear Rec.709 luma, in `[-1, 1]`.
+    pub ssim: f64,
+    /// Largest absolute linear-light channel error, in `[0, 1]`.
+    pub max_abs_delta: f64,
+    /// Nearest-rank 95th-percentile absolute channel error.
+    pub p95_abs_delta: f64,
+    /// Nearest-rank 99th-percentile absolute channel error.
+    pub p99_abs_delta: f64,
+    /// Percentage of pixels with any linear channel error strictly above the
+    /// caller-supplied outlier threshold.
+    pub outlier_pct: f64,
+    /// Mean absolute linear channel error.
+    pub mean_abs_delta: f64,
+}
+
 impl std::fmt::Display for ImageMetrics {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             formatter,
             "ssim {:.4}, max Δ {}, outliers {:.3}%, mean Δ {:.2}",
             self.ssim, self.max_channel_delta, self.outlier_pct, self.mean_abs_delta
+        )
+    }
+}
+
+impl std::fmt::Display for LinearImageMetrics {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "linear ssim {:.6}, max Δ {:.6}, p95 Δ {:.6}, p99 Δ {:.6}, \
+             outliers {:.4}%, mean Δ {:.6}",
+            self.ssim,
+            self.max_abs_delta,
+            self.p95_abs_delta,
+            self.p99_abs_delta,
+            self.outlier_pct,
+            self.mean_abs_delta,
         )
     }
 }
@@ -105,6 +145,69 @@ pub fn compare(reference: &RgbImage, candidate: &RgbImage) -> Result<ImageMetric
     })
 }
 
+/// Compare two tone-mapped PNGs after decoding their sRGB channels back to
+/// linear light.
+pub fn compare_linear(
+    reference: &RgbImage,
+    candidate: &RgbImage,
+    outlier_abs_delta: f64,
+) -> Result<LinearImageMetrics, String> {
+    if reference.dimensions() != candidate.dimensions() {
+        return Err(format!(
+            "dimension mismatch: reference {:?} vs candidate {:?}",
+            reference.dimensions(),
+            candidate.dimensions()
+        ));
+    }
+    if !(0.0..=1.0).contains(&outlier_abs_delta) || !outlier_abs_delta.is_finite() {
+        return Err(format!(
+            "linear outlier threshold must be finite and in [0, 1], got {outlier_abs_delta}"
+        ));
+    }
+
+    let pixel_count = u64::from(reference.width()) * u64::from(reference.height());
+    if pixel_count == 0 {
+        return Err("cannot compare empty images".to_owned());
+    }
+
+    let mut deltas = Vec::with_capacity(pixel_count as usize * 3);
+    let mut outliers = 0u64;
+    let mut sum_abs = 0.0f64;
+    for (reference_pixel, candidate_pixel) in reference.pixels().zip(candidate.pixels()) {
+        let mut pixel_is_outlier = false;
+        for channel in 0..3 {
+            let reference_linear = srgb_u8_to_linear(reference_pixel[channel]);
+            let candidate_linear = srgb_u8_to_linear(candidate_pixel[channel]);
+            let delta = (reference_linear - candidate_linear).abs();
+            sum_abs += delta;
+            deltas.push(delta as f32);
+            pixel_is_outlier |= delta > outlier_abs_delta;
+        }
+        if pixel_is_outlier {
+            outliers += 1;
+        }
+    }
+    deltas.sort_unstable_by(f32::total_cmp);
+
+    let reference_luma = linear_luma_plane(reference);
+    let candidate_luma = linear_luma_plane(candidate);
+    Ok(LinearImageMetrics {
+        ssim: mean_ssim_planes(
+            &reference_luma,
+            &candidate_luma,
+            reference.width(),
+            reference.height(),
+            (0.01f64).powi(2),
+            (0.03f64).powi(2),
+        ),
+        max_abs_delta: f64::from(*deltas.last().expect("non-empty image has channel deltas")),
+        p95_abs_delta: nearest_rank(&deltas, 0.95),
+        p99_abs_delta: nearest_rank(&deltas, 0.99),
+        outlier_pct: outliers as f64 / pixel_count as f64 * 100.0,
+        mean_abs_delta: sum_abs / (pixel_count * 3) as f64,
+    })
+}
+
 /// Window side length for the local SSIM statistics.
 ///
 /// Wang et al. (2004) use an 11×11 Gaussian; this uses a uniform 8×8 window,
@@ -132,13 +235,31 @@ fn mean_ssim(reference: &RgbImage, candidate: &RgbImage) -> f64 {
     let reference_luma = luma_plane(reference);
     let candidate_luma = luma_plane(candidate);
 
+    mean_ssim_planes(
+        &reference_luma,
+        &candidate_luma,
+        width,
+        height,
+        SSIM_C1,
+        SSIM_C2,
+    )
+}
+
+fn mean_ssim_planes(
+    reference_luma: &[f64],
+    candidate_luma: &[f64],
+    width: u32,
+    height: u32,
+    c1: f64,
+    c2: f64,
+) -> f64 {
     let mut total = 0.0;
     let mut windows = 0u64;
     let mut y = 0;
     while y + SSIM_WINDOW <= height {
         let mut x = 0;
         while x + SSIM_WINDOW <= width {
-            total += window_ssim(&reference_luma, &candidate_luma, width, x, y);
+            total += window_ssim(reference_luma, candidate_luma, width, x, y, c1, c2);
             windows += 1;
             x += SSIM_WINDOW;
         }
@@ -148,12 +269,30 @@ fn mean_ssim(reference: &RgbImage, candidate: &RgbImage) -> f64 {
     if windows == 0 {
         // Image smaller than one window — compare it as a single window
         // rather than reporting a meaningless 0.0.
-        return window_ssim_over(&reference_luma, &candidate_luma, width, 0, 0, width, height);
+        return window_ssim_over(
+            reference_luma,
+            candidate_luma,
+            width,
+            0,
+            0,
+            width,
+            height,
+            c1,
+            c2,
+        );
     }
     total / windows as f64
 }
 
-fn window_ssim(reference: &[f64], candidate: &[f64], width: u32, x: u32, y: u32) -> f64 {
+fn window_ssim(
+    reference: &[f64],
+    candidate: &[f64],
+    width: u32,
+    x: u32,
+    y: u32,
+    c1: f64,
+    c2: f64,
+) -> f64 {
     window_ssim_over(
         reference,
         candidate,
@@ -162,6 +301,8 @@ fn window_ssim(reference: &[f64], candidate: &[f64], width: u32, x: u32, y: u32)
         y,
         SSIM_WINDOW.min(width),
         SSIM_WINDOW,
+        c1,
+        c2,
     )
 }
 
@@ -173,6 +314,8 @@ fn window_ssim_over(
     y0: u32,
     window_width: u32,
     window_height: u32,
+    c1: f64,
+    c2: f64,
 ) -> f64 {
     let n = f64::from(window_width * window_height);
     let mut mean_r = 0.0;
@@ -207,8 +350,8 @@ fn window_ssim_over(
     var_c /= denominator;
     covariance /= denominator;
 
-    ((2.0 * mean_r * mean_c + SSIM_C1) * (2.0 * covariance + SSIM_C2))
-        / ((mean_r * mean_r + mean_c * mean_c + SSIM_C1) * (var_r + var_c + SSIM_C2))
+    ((2.0 * mean_r * mean_c + c1) * (2.0 * covariance + c2))
+        / ((mean_r * mean_r + mean_c * mean_c + c1) * (var_r + var_c + c2))
 }
 
 /// ITU-R BT.601 luma. The frames are already tone-mapped and encoded for
@@ -218,6 +361,31 @@ fn luma_plane(image: &RgbImage) -> Vec<f64> {
         .pixels()
         .map(|p| 0.299 * f64::from(p[0]) + 0.587 * f64::from(p[1]) + 0.114 * f64::from(p[2]))
         .collect()
+}
+
+fn linear_luma_plane(image: &RgbImage) -> Vec<f64> {
+    image
+        .pixels()
+        .map(|pixel| {
+            0.2126 * srgb_u8_to_linear(pixel[0])
+                + 0.7152 * srgb_u8_to_linear(pixel[1])
+                + 0.0722 * srgb_u8_to_linear(pixel[2])
+        })
+        .collect()
+}
+
+fn srgb_u8_to_linear(channel: u8) -> f64 {
+    let encoded = f64::from(channel) / 255.0;
+    if encoded <= 0.04045 {
+        encoded / 12.92
+    } else {
+        ((encoded + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+fn nearest_rank(sorted: &[f32], quantile: f64) -> f64 {
+    let rank = (sorted.len() as f64 * quantile).ceil() as usize;
+    f64::from(sorted[rank.saturating_sub(1).min(sorted.len() - 1)])
 }
 
 #[cfg(test)]
@@ -252,6 +420,45 @@ mod tests {
         assert_eq!(metrics.max_channel_delta, 0);
         assert_eq!(metrics.outlier_pct, 0.0);
         assert_eq!(metrics.mean_abs_delta, 0.0);
+    }
+
+    #[test]
+    fn identical_linear_images_have_zero_error_at_every_percentile() {
+        let image = checkerboard(64, 64, 4);
+        let metrics = compare_linear(&image, &image, 0.03).unwrap();
+        assert!((metrics.ssim - 1.0).abs() < 1e-12);
+        assert_eq!(metrics.max_abs_delta, 0.0);
+        assert_eq!(metrics.p95_abs_delta, 0.0);
+        assert_eq!(metrics.p99_abs_delta, 0.0);
+        assert_eq!(metrics.outlier_pct, 0.0);
+        assert_eq!(metrics.mean_abs_delta, 0.0);
+    }
+
+    #[test]
+    fn linear_metrics_catch_a_localized_magenta_fault() {
+        let reference = checkerboard(128, 128, 4);
+        let mut candidate = reference.clone();
+        for y in 32..96 {
+            for x in 32..96 {
+                candidate.put_pixel(x, y, Rgb([255, 0, 255]));
+            }
+        }
+        let metrics = compare_linear(&reference, &candidate, 0.03).unwrap();
+        assert!(metrics.ssim < 0.9, "{}", metrics.ssim);
+        assert!(metrics.max_abs_delta > 0.5, "{}", metrics.max_abs_delta);
+        assert!(metrics.p99_abs_delta > 0.1, "{}", metrics.p99_abs_delta);
+        assert!(metrics.outlier_pct > 20.0, "{}", metrics.outlier_pct);
+    }
+
+    #[test]
+    fn linear_metric_rejects_invalid_inputs() {
+        let image = solid(8, 8, [0, 0, 0]);
+        let different_size = solid(16, 8, [0, 0, 0]);
+        let empty = solid(0, 0, [0, 0, 0]);
+        assert!(compare_linear(&image, &different_size, 0.03).is_err());
+        assert!(compare_linear(&image, &image, -0.1).is_err());
+        assert!(compare_linear(&image, &image, f64::NAN).is_err());
+        assert!(compare_linear(&empty, &empty, 0.03).is_err());
     }
 
     /// A blurred image keeps its structure but loses local contrast, which is

@@ -360,13 +360,7 @@ fn contract_bearing_exclusives_declare_their_access() {
         .stages
         .iter()
         .flat_map(|s| s.systems.iter())
-        .map(|row| {
-            (
-                row.name.as_str(),
-                row.is_exclusive,
-                row.declared.is_some(),
-            )
-        })
+        .map(|row| (row.name.as_str(), row.is_exclusive, row.declared.is_some()))
         .collect();
 
     for needle in [

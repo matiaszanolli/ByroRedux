@@ -1456,9 +1456,13 @@ fn run() -> Result<Checks, Box<dyn Error>> {
                                 )
                             },
                         );
-                        let cart_init_effects = functions.get("fragment_175").and_then(|function| {
-                            lower_fragment_with_quest_properties(&function.body, &quest_properties)
-                        });
+                        let cart_init_effects =
+                            functions.get("fragment_175").and_then(|function| {
+                                lower_fragment_with_quest_properties(
+                                    &function.body,
+                                    &quest_properties,
+                                )
+                            });
                         let cart_init_kinds = cart_init_effects.as_ref().map(|effects| {
                             let mut kinds = BTreeMap::<&'static str, usize>::new();
                             for effect in effects {

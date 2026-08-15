@@ -72,7 +72,17 @@ and commit sequence live in
 This is a fix-forward recovery from current `main`: the stepped-camera harness,
 scale-aware ray-origin helper, generated material flags, canonical texture-role
 table, and recent AS synchronization fixes are prerequisites, not revert
-casualties. Water work that is headless (character contact/current response and
+casualties. The first recovery slice is green: physical XCLL directional
+classification landed at `77b540d0`, Vulkan `shaderInt64` device enablement is
+validation-clean on Cornell, and the new three-run R0.1 gate produced identical
+HEAD fingerprints for Cornell static/orbit and Prospector orbit. R0.2's
+two-binary predicate is now implemented and passed three complete 60-frame
+same-binary matrices across static/pan/orbit/dolly/cut; it rejects a controlled
+64x64 corruption and reports correctness separately from the measured
+same-machine p50/p95 performance envelope. The remaining R0 blocker is the
+explicit `c25f61e6` anchor leg plus a `git bisect run` smoke test; R2 TLAS and
+cluster-integrity evidence follows immediately after.
+Water work that is headless (character contact/current response and
 coverage/ESM sweeps) may proceed; renderer-facing water tuning and new expected
 captures wait for the R3 visibility gate. The underlying playable-slice closure
 contract remains in

@@ -1209,12 +1209,10 @@ mod tests {
         let reset = src
             .find("self.frame_counter = 0;")
             .expect("recreate_screen_passes must still zero frame_counter (#913)");
-        let rebase = src
-            .find("for slot in self.skin_slots.values_mut()")
-            .expect(
-                "zeroing frame_counter must be paired with a rebase of the \
+        let rebase = src.find("for slot in self.skin_slots.values_mut()").expect(
+            "zeroing frame_counter must be paired with a rebase of the \
                  SkinSlot LRU stamps that are measured against it (#2925)",
-            );
+        );
 
         assert!(
             rebase > reset,

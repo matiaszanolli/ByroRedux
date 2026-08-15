@@ -292,7 +292,8 @@ mod tests {
         // intended perf saving, and is what makes the default visibility of
         // 1.0 load-bearing rather than merely defensive.
         assert!(
-            src.contains("vec3 visibility = vec3(1.0);") && src.contains("if (shadowFade > 0.01) {"),
+            src.contains("vec3 visibility = vec3(1.0);")
+                && src.contains("if (shadowFade > 0.01) {"),
             "shadow rays must still be skipped past the fade, defaulting \
              visibility to fully lit"
         );

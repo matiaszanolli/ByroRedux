@@ -1418,11 +1418,7 @@ fn skin_tint_and_hair_tint_route_slot_7_to_alternate_specular_under_msn() {
             info.model_space_normals,
             "shader_type {shader_type} must report model_space_normals from SLSF1"
         );
-        assert_path(
-            &pool,
-            info.specular_map,
-            "skin_modelspace_7.dds",
-        );
+        assert_path(&pool, info.specular_map, "skin_modelspace_7.dds");
         // The #1350 guard (env_map/env_mask skipped for slots 4/5) must
         // still hold — this fix only adds slot 7, it doesn't reopen 4/5.
         assert!(

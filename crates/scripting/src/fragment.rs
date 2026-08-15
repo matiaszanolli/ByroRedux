@@ -532,7 +532,13 @@ fn apply_effect(
             item,
             count,
         } => {
-            let container_entity = resolve_object(vmad, world, context, container, &deferred.scene_actor_bindings)?;
+            let container_entity = resolve_object(
+                vmad,
+                world,
+                context,
+                container,
+                &deferred.scene_actor_bindings,
+            )?;
             let item_form_id = resolve_property_form_id(vmad, item.property_name())?;
             let Some(mut inventories) = world.query_mut::<Inventory>() else {
                 log::debug!("fragment AddItem skipped: Inventory component never registered");
@@ -602,8 +608,15 @@ fn apply_effect(
             None
         }
         Effect::MoveTo { moved, destination } => {
-            let moved_entity = resolve_object(vmad, world, context, moved, &deferred.scene_actor_bindings)?;
-            let destination_entity = resolve_object(vmad, world, context, destination, &deferred.scene_actor_bindings)?;
+            let moved_entity =
+                resolve_object(vmad, world, context, moved, &deferred.scene_actor_bindings)?;
+            let destination_entity = resolve_object(
+                vmad,
+                world,
+                context,
+                destination,
+                &deferred.scene_actor_bindings,
+            )?;
             let Some(translation) = world
                 .get::<GlobalTransform>(destination_entity)
                 .map(|gt| gt.translation)
@@ -689,9 +702,16 @@ fn apply_effect(
             }
         }
         Effect::Activate { target, activator } => {
-            let target_entity = resolve_object(vmad, world, context, target, &deferred.scene_actor_bindings)?;
+            let target_entity =
+                resolve_object(vmad, world, context, target, &deferred.scene_actor_bindings)?;
             let activator = match activator {
-                Some(activator) => resolve_object(vmad, world, context, activator, &deferred.scene_actor_bindings)?,
+                Some(activator) => resolve_object(
+                    vmad,
+                    world,
+                    context,
+                    activator,
+                    &deferred.scene_actor_bindings,
+                )?,
                 None => world
                     .try_resource::<crate::papyrus_demo::PlayerEntity>()
                     .map(|player| player.0)
@@ -710,7 +730,8 @@ fn apply_effect(
             None
         }
         Effect::SetOpen { target, open } => {
-            let target_entity = resolve_object(vmad, world, context, target, &deferred.scene_actor_bindings)?;
+            let target_entity =
+                resolve_object(vmad, world, context, target, &deferred.scene_actor_bindings)?;
             if !crate::vm_state::set_two_state_open(world, target_entity, *open) {
                 log::debug!(
                     "fragment SetOpen skipped: '{}' is not a recognized two-state activator",
@@ -774,7 +795,13 @@ fn apply_effect(
         Effect::SetVehicle { actor, vehicle } => {
             let actor = resolve_actor(vmad, world, context, actor, &deferred.scene_actor_bindings)?;
             let vehicle = match vehicle {
-                Some(vehicle) => Some(resolve_object(vmad, world, context, vehicle, &deferred.scene_actor_bindings)?),
+                Some(vehicle) => Some(resolve_object(
+                    vmad,
+                    world,
+                    context,
+                    vehicle,
+                    &deferred.scene_actor_bindings,
+                )?),
                 None => None,
             };
             let relative_pose = vehicle.and_then(|vehicle| {
@@ -805,7 +832,8 @@ fn apply_effect(
         }
         Effect::TetherToHorse { cart, horse } => {
             let cart = resolve_object(vmad, world, context, cart, &deferred.scene_actor_bindings)?;
-            let horse = resolve_object(vmad, world, context, horse, &deferred.scene_actor_bindings)?;
+            let horse =
+                resolve_object(vmad, world, context, horse, &deferred.scene_actor_bindings)?;
             let Some(cart_transform) = world.get::<Transform>(cart) else {
                 log::debug!("fragment TetherToHorse skipped: cart has no Transform");
                 return None;
@@ -852,7 +880,8 @@ fn apply_effect(
             motion_type,
             allow_activate,
         } => {
-            let target = resolve_object(vmad, world, context, target, &deferred.scene_actor_bindings)?;
+            let target =
+                resolve_object(vmad, world, context, target, &deferred.scene_actor_bindings)?;
             if let Some(mut requests) = world.query_mut::<crate::MotionTypeChangeRequest>() {
                 requests.insert(
                     target,
@@ -871,7 +900,8 @@ fn apply_effect(
             None
         }
         Effect::ExitCart { actor, seat } => {
-            let actor = resolve_object(vmad, world, context, actor, &deferred.scene_actor_bindings)?;
+            let actor =
+                resolve_object(vmad, world, context, actor, &deferred.scene_actor_bindings)?;
             let idle_form_id = exit_cart_idle_property(*seat)
                 .and_then(|property| resolve_property_form_id(vmad, property));
             let attachment = world
@@ -926,7 +956,8 @@ fn apply_effect(
             None
         }
         Effect::EvaluatePackage { actor } => {
-            let actor = resolve_object(vmad, world, context, actor, &deferred.scene_actor_bindings)?;
+            let actor =
+                resolve_object(vmad, world, context, actor, &deferred.scene_actor_bindings)?;
             if let Some(mut requests) = world.query_mut::<crate::EvaluatePackageRequest>() {
                 requests.insert(actor, crate::EvaluatePackageRequest);
             }
@@ -1125,14 +1156,23 @@ pub fn apply_effects(
             Effect::WaitForActors3DLoaded {
                 actors,
                 poll_seconds,
-            } if !actors_3d_loaded(vmad, world, context, actors, &deferred.scene_actor_bindings) => Some((
-                *poll_seconds,
-                FragmentResumeCondition::Actors3DLoaded {
-                    actors: actors.clone(),
-                    poll_seconds: *poll_seconds,
-                    elapsed_seconds: 0.0,
-                },
-            )),
+            } if !actors_3d_loaded(
+                vmad,
+                world,
+                context,
+                actors,
+                &deferred.scene_actor_bindings,
+            ) =>
+            {
+                Some((
+                    *poll_seconds,
+                    FragmentResumeCondition::Actors3DLoaded {
+                        actors: actors.clone(),
+                        poll_seconds: *poll_seconds,
+                        elapsed_seconds: 0.0,
+                    },
+                ))
+            }
             Effect::WaitForActors3DLoaded { .. } => None,
             _ => None,
         };
