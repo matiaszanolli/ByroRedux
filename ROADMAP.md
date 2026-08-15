@@ -63,19 +63,21 @@ cutoffs were unreachable on every real parse) and a collision-import
 hardening fix (#2285, cross-buffer index splicing on corrupt NIFs).
 Session narratives: [HISTORY.md](HISTORY.md) Sessions 60–63.
 
-**Active execution focus (2026-08-10): water correctness.** The playable-slice
-queue is temporarily water-led: first freeze a real-data Skyrim water-adjacent
-fixture and diagnostics, then close character swimming/current response,
-coverage + full-detail/LOD seams, and finally reflection/refraction/absorption/
-foam against fixed captures. The closure contract and W0–W4 order live in
-[`docs/engine/playable-vertical-slice.md`](docs/engine/playable-vertical-slice.md#water-focus--playable-traversal--ex-13-visual-closure);
-the double-ended render/physics design and implementation checkpoint live in
-[`docs/engine/watal.md`](docs/engine/watal.md). Bootstrap: dynamic-body current
-drag plus `water.dump` / `water.contacts` diagnostics landed in the active push;
-the cross-game exterior smoke now retains both command outputs and rejects leaked
-XCLW no-water sentinels. The real Skyrim `(2,-10)` probe also closed the missing
-CELL tri-state: absent XCLW inherits WRLD water, while authored `#INT_MIN#` or
-FLT_MAX keeps the cell dry.
+**Active execution focus (2026-08-14): RT lighting and material correctness
+recovery.** New TLAS consumers and unrelated visual goldens are frozen until
+the selected-light/visibility gate closes. The execution spine, current-HEAD
+reconciliation, evidence artifacts, Cornell L0-L5 ladder, material-role closure,
+and commit sequence live in
+[`docs/engine/rt-lighting-material-recovery.md`](docs/engine/rt-lighting-material-recovery.md).
+This is a fix-forward recovery from current `main`: the stepped-camera harness,
+scale-aware ray-origin helper, generated material flags, canonical texture-role
+table, and recent AS synchronization fixes are prerequisites, not revert
+casualties. Water work that is headless (character contact/current response and
+coverage/ESM sweeps) may proceed; renderer-facing water tuning and new expected
+captures wait for the R3 visibility gate. The underlying playable-slice closure
+contract remains in
+[`docs/engine/playable-vertical-slice.md`](docs/engine/playable-vertical-slice.md#water-focus--playable-traversal--ex-13-visual-closure),
+and the render/physics design remains in [`docs/engine/watal.md`](docs/engine/watal.md).
 
 **Superseded bench-of-record** (R6a-stale-15 refresh, HEAD `8a668eff`,
 2026-07-18, wall-clock bench, 300 frames × 3 runs/scene averaged, RTX 4070 Ti,

@@ -225,8 +225,7 @@ impl Default for GpuInstance {
 pub struct GpuLight {
     /// xyz = world position, w = radius (Bethesda units).
     pub position_radius: [f32; 4],
-    /// rgb = color (0–1), w = type
-    /// (0=point, 1=spot, 2=directional, 3=unshadowed ambient fill).
+    /// rgb = color (0–1), w = type (0=point, 1=spot, 2=directional).
     pub color_type: [f32; 4],
     /// xyz = direction (spot/directional), w = spot outer angle cosine.
     pub direction_angle: [f32; 4],

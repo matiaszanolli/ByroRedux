@@ -1684,6 +1684,18 @@ fn triangle_frag_has_no_unshadowed_point_light_ambient_fill() {
     );
 }
 
+/// XCLL directional colour is a physical key, distinct from XCLL/DALC
+/// ambient irradiance. It must not regain a type-specific shader bypass.
+#[test]
+fn triangle_frag_has_no_unshadowed_xcll_directional_fill() {
+    let frag = include_str!("../../../shaders/triangle.frag");
+    let lighting = include_str!("../../../shaders/include/lighting.glsl");
+
+    assert!(!frag.contains("INTERIOR_FILL_AMBIENT_FACTOR"));
+    assert!(!frag.contains("lightType > 2.5"));
+    assert!(!lighting.contains("lightType > 2.5"));
+}
+
 /// Quality work may change the estimator, but the accepted #2161 cost point is
 /// still a six-segment path with two diffuse events. Specular/glass transport
 /// fits inside the same segment ceiling and must not silently expand the

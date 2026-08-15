@@ -302,8 +302,8 @@ Prefixed by a 16-byte header (`u32 count` + 3 × `u32` padding). Up to
 | 44 | `spot_angle_cos` | Spot outer cone angle (cosine) |
 | 48 | `falloff_exponent` | LIGH DATA falloff exponent (0 = 1.0) |
 | 52 | `shadow_segment_radius` | Finite luminous-source radius used by shadow segments |
-| 56 | `shadow_policy` | `SHADOW_POLICY_*` encoded as f32 — see `decodeShadowPolicy` in `shadow_common.glsl` |
-| 60–63 | *(reserved)* | — |
+| 56 | `visibility_mask` | Exact f32 encoding of `VisibilityMask` bits; decoded to the ray-query cull mask by `decodeVisibilityMask` |
+| 60 | `attenuation_model` | `ATTENUATION_MODEL_*` discriminant encoded as f32 |
 
 ---
 

@@ -1,8 +1,6 @@
 //! Per-frame render data collection from ECS queries.
 
-use byroredux_core::ecs::{
-    resources::SkinSlotPool, ActiveCamera, EntityId, LightKind, Transform, World,
-};
+use byroredux_core::ecs::{resources::SkinSlotPool, ActiveCamera, EntityId, Transform, World};
 use byroredux_core::math::Vec3;
 use byroredux_physics::PhysicsWorld;
 use byroredux_renderer::vulkan::context::DrawCommand;
@@ -307,15 +305,16 @@ const SUN_INTENSITY_PEAK: f32 = 4.0;
 /// Beyond the renderer's shared shadow fade start, `shadowFade` decays
 /// to zero, leaving the unshadowed contribution un-cancelled.
 ///
-/// Returns an explicit canonical kind rather than smuggling the distinction
-/// through a negative radius. Interior XCLL is an unshadowed, isotropic
-/// ambient fill; exterior WTHR is a physical directional source.
+/// Both arms remain physical directional sources. Interior XCLL keeps its
+/// authored/fallback strength calibration, but its ambient irradiance is the
+/// separate flat/cube term on `CellLightingRes`/`GpuDalcCube`; reclassifying
+/// the directional colour as ambient would bypass N.L and visibility.
 fn compute_directional_upload(
     directional_color: &[f32; 3],
     is_interior: bool,
     sun_intensity: f32,
     directional_fade: Option<f32>,
-) -> ([f32; 3], LightKind) {
+) -> [f32; 3] {
     let source_scale = if is_interior {
         const LEGACY_INTERIOR_DIRECTIONAL_SOURCE_SCALE: f32 = 0.6;
         directional_fade
@@ -325,18 +324,11 @@ fn compute_directional_upload(
     } else {
         (sun_intensity / SUN_INTENSITY_PEAK).clamp(0.0, 1.0)
     };
-    (
-        [
-            directional_color[0] * source_scale,
-            directional_color[1] * source_scale,
-            directional_color[2] * source_scale,
-        ],
-        if is_interior {
-            LightKind::Ambient
-        } else {
-            LightKind::Directional
-        },
-    )
+    [
+        directional_color[0] * source_scale,
+        directional_color[1] * source_scale,
+        directional_color[2] * source_scale,
+    ]
 }
 
 /// Sort key for `DrawCommand`s — the batch-merge pass in
@@ -890,9 +882,9 @@ pub(crate) fn build_render_data(
 
     // Cell ambient color (or default).
     let cell_lit = world.try_resource::<CellLightingRes>();
-    // XCLL ambient passed through as-is — the per-light ambient fill in
-    // the shader (0.5 × lightColor × atten × albedo per light) provides
-    // the additional fill that Gamebryo's D3D9 equation contributes.
+    // XCLL ambient passed through as-is. This is the only flat/cube cell-fill
+    // input; XCLL directional colour follows the ordinary shadowable-light
+    // path so it cannot bypass N.L, visibility, or AO.
     let ambient = cell_lit
         .as_ref()
         .map(|l| l.ambient)

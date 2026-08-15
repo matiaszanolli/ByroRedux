@@ -210,7 +210,7 @@ layout(std430, set = 1, binding = 13) readonly buffer MaterialBuffer {
 
 struct GpuLight {
     vec4 position_radius;  // xyz = position, w = radius
-    vec4 color_type;       // rgb=color, w=type (0=point, 1=spot, 2=directional, 3=ambient fill)
+    vec4 color_type;       // rgb=color, w=type (0=point, 1=spot, 2=directional)
     vec4 direction_angle;  // xyz = direction, w = spot angle cosine
     vec4 params;           // x = falloff, y = source radius, z = visibility bits, w = attenuation model
 };

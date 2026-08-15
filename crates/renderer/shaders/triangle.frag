@@ -2739,22 +2739,10 @@ void main() {
                 // point lights.
                 atten *= clamp((spotFactor - spotAngle) / max(1.0 - spotAngle, 1e-4), 0.0, 1.0);
             } else {
-                // Directional light or explicit interior ambient fill.
+                // Directional light.
                 L = normalize(lights[i].direction_angle.xyz);
                 dist = DIRECTIONAL_SHADOW_TRACE_DISTANCE;
                 atten = 1.0;
-            }
-
-            // XCLL interior directional is a low-key aesthetic fill, not a
-            // physical sun. Keep it normal-independent so high-frequency
-            // normal maps cannot turn it into bright/dark bands, and skip
-            // BRDF/ReSTIR entirely. The CPU tags it as type 3 with an empty
-            // visibility mask; no radius sentinel survives translation.
-            if (lightType > 2.5) {
-                const float INTERIOR_FILL_AMBIENT_FACTOR = 0.4;
-                Lo += lightColor * atten * albedo
-                    * INTERIOR_FILL_AMBIENT_FACTOR;
-                continue;
             }
 
             float NdotL = max(dot(N, L), 0.0);

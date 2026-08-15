@@ -114,26 +114,16 @@ pub(super) fn collect_lights(
         .map(|sky| sky.sun_intensity)
         .unwrap_or(SUN_INTENSITY_PEAK);
     if let Some(cell_lit) = world.try_resource::<CellLightingRes>() {
-        let (dir_color, dir_kind) = compute_directional_upload(
+        let dir_color = compute_directional_upload(
             &cell_lit.directional_color,
             cell_lit.is_interior,
             sun_intensity,
             cell_lit.directional_fade,
         );
         if dir_color.iter().any(|channel| *channel > 0.0) {
-            let (gpu_type, visibility) = match dir_kind {
-                // XCLL's interior directional is the legacy engine's
-                // unshadowed, normal-independent room fill. Type 3 keeps
-                // that semantic explicit without the former radius=-1
-                // sentinel; an empty visibility mask guarantees it cannot
-                // enter the RT reservoir/shadow path.
-                LightKind::Ambient => (3.0, VisibilityMask::NONE),
-                LightKind::Directional => (2.0, VisibilityMask::FULL),
-                _ => unreachable!("cell directional translation emitted a local light kind"),
-            };
             gpu_lights.push(byroredux_renderer::GpuLight {
                 position_radius: [0.0, 0.0, 0.0, 0.0],
-                color_type: [dir_color[0], dir_color[1], dir_color[2], gpu_type],
+                color_type: [dir_color[0], dir_color[1], dir_color[2], 2.0],
                 direction_angle: [
                     cell_lit.directional_dir[0],
                     cell_lit.directional_dir[1],
@@ -144,12 +134,13 @@ pub(super) fn collect_lights(
                 // is a no-op for them but the shader still reads `params.x`
                 // unconditionally — pass `0.0` (the "use default" sentinel)
                 // so the shader's directional branch ignores it cleanly.
-                // z = explicit visibility policy. Exterior directionals trace
-                // the full scene; interior ambient fill traces nothing.
+                // z = explicit visibility policy. Both exterior WTHR and
+                // interior XCLL directionals are structural light sources;
+                // the separate ambient/cube term never enters this SSBO slot.
                 params: [
                     0.0,
                     0.0,
-                    visibility.bits() as f32,
+                    VisibilityMask::FULL.bits() as f32,
                     AttenuationModel::LegacySoftRange as u8 as f32,
                 ],
             });
@@ -415,9 +406,9 @@ mod directional_source_contract_tests {
     }
 
     /// An interior cell with persistent exterior `SkyParamsRes` must keep
-    /// its XCLL source calibration as explicit unshadowed ambient fill.
+    /// its XCLL calibration while remaining a shadowable directional key.
     #[test]
-    fn interior_with_persistent_sky_params_uses_ambient_fill_contract() {
+    fn interior_with_persistent_sky_params_uses_directional_contract() {
         let mut world = World::new();
         world.insert_resource(interior_cell_lit([0.8, 0.7, 0.5]));
         world.insert_resource(full_sun_sky_params());
@@ -428,15 +419,15 @@ mod directional_source_contract_tests {
         assert_eq!(
             lights.len(),
             1,
-            "interior with no LIGH refs must emit exactly one ambient-fill GpuLight"
+            "interior with no LIGH refs must emit exactly one directional GpuLight"
         );
         let l = &lights[0];
         assert!(
-            (l.color_type[3] - 3.0).abs() < 1e-6,
-            "GpuLight type slot must be 3.0 (ambient-fill marker), got {}",
+            (l.color_type[3] - 2.0).abs() < 1e-6,
+            "GpuLight type slot must be 2.0 (directional), got {}",
             l.color_type[3]
         );
-        assert_eq!(l.params[2], VisibilityMask::NONE.bits() as f32);
+        assert_eq!(l.params[2], VisibilityMask::FULL.bits() as f32);
         // Color must be SCALED — 0.6× the authored directional_color,
         // INDEPENDENT of sun_intensity (the XCLL value is the fill source).
         // 0.8 * 0.6 = 0.48; 0.7 * 0.6 = 0.42; 0.5 * 0.6 = 0.30.
@@ -536,7 +527,7 @@ mod directional_source_contract_tests {
     /// Interior without SkyParamsRes (no prior exterior load) keeps the
     /// same source calibration and standard directional contract.
     #[test]
-    fn interior_without_sky_params_uses_unshadowed_ambient_fill() {
+    fn interior_without_sky_params_uses_directional_contract() {
         let mut world = World::new();
         world.insert_resource(interior_cell_lit([1.0, 1.0, 1.0]));
         // No SkyParamsRes — fresh-boot or interior-only session.
@@ -547,8 +538,8 @@ mod directional_source_contract_tests {
         assert_eq!(lights.len(), 1);
         let l = &lights[0];
         assert!((l.position_radius[3] - 0.0).abs() < 1e-6);
-        assert!((l.color_type[3] - 3.0).abs() < 1e-6);
-        assert_eq!(l.params[2], VisibilityMask::NONE.bits() as f32);
+        assert!((l.color_type[3] - 2.0).abs() < 1e-6);
+        assert_eq!(l.params[2], VisibilityMask::FULL.bits() as f32);
         // 1.0 × 0.6 = 0.6.
         assert!((l.color_type[0] - 0.6).abs() < 1e-5);
         assert!((l.color_type[1] - 0.6).abs() < 1e-5);

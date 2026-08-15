@@ -658,21 +658,24 @@ number of lights without recompiling the pipeline (`MAX_LIGHTS = 512`). Each
 (xyz = world position, w = radius), `color_type` (rgb = color, w = type:
 0 point / 1 spot / 2 directional), `direction_angle` (xyz = direction,
 w = spot outer-angle cosine), and `params` (x = `falloff_exponent` from the
-LIGH DATA record, rest reserved). The fragment shader iterates the array and
-accumulates contributions with a standardized attenuation contract
-(`fc338d90`); for RT hardware it shoots a ray per light against the TLAS for
-hard shadows.
+LIGH DATA record, y = finite source radius, z = explicit `VisibilityMask`
+bits, w = `AttenuationModel`). The fragment shader evaluates the current
+cluster's candidates with the standardized attenuation contract
+(`fc338d90`), then the ReSTIR-DI reservoir path selects and validates the
+shadowed sample against the TLAS. It is not an unconditional ray-per-light
+loop.
 
 The SSBO is double-buffered between frames-in-flight and updated on the host
 with `HOST_VISIBLE` memory.
 
-Cell interior lighting (the `XCLL` sub-record from CELL records) becomes two
-entries: one ambient (modeled as a bottom-hemisphere directional) and one
-directional (the cell's "key light" rotation/color). The ambient fill is
-decoupled from the live light count so a sparse interior doesn't crush the
-fill floor (`636bcc96`). LIGH records become point lights with their declared
-radius and color. See [Cell Lighting](lighting-from-cells.md) for the full
-pipeline.
+Cell interior lighting (the `XCLL` sub-record from CELL records) has two
+separate consumers: flat/six-axis ambient irradiance is carried by the camera
+ambient and `GpuDalcCube`, while the authored rotation/color/fade emits one
+ordinary type-2 directional key with full structural visibility. It therefore
+uses N.L, BRDF evaluation, the ReSTIR selection path, and TLAS visibility like
+the exterior directional source. LIGH records become point/spot/directional
+lights with their translated range, color, cone and visibility policy. See
+[Cell Lighting](lighting-from-cells.md) for the full pipeline.
 
 ## Pipeline cache
 
