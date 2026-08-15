@@ -23,7 +23,7 @@ fn make_skinned_world(num_meshes: usize) -> World {
     world
 }
 
-fn run_build(world: &World) -> (Vec<[[f32; 4]; 4]>, HashMap<EntityId, u32>) {
+fn run_build(world: &World) -> (Vec<[[f32; 4]; 4]>, rustc_hash::FxHashMap<EntityId, u32>) {
     let mut draw_commands = Vec::new();
     let mut gpu_lights = Vec::new();
     // M29.6 — pre-multiplied palette → sparse bone_world (slot-indexed)
@@ -34,7 +34,7 @@ fn run_build(world: &World) -> (Vec<[[f32; 4]; 4]>, HashMap<EntityId, u32>) {
     // MBPM, which is byte-equivalent to the pre-M29.6 dense-pack
     // length at full saturation.
     let mut bone_world = Vec::new();
-    let mut skin_offsets = HashMap::new();
+    let mut skin_offsets = rustc_hash::FxHashMap::default();
     let mut material_table = byroredux_renderer::MaterialTable::new();
     let mut water_commands = Vec::new();
     // M29.6 — capacity matches main.rs's `App::new` construction:

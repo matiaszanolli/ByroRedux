@@ -41,11 +41,19 @@ use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::Window;
 
-pub use panels::{PanelOutputs, PanelSnapshot, PanelTab, QueuedLoad};
+pub use panels::{
+    GameMenuPage, GameMenuState, InteractionPrompt, PanelOutputs, PanelSnapshot, PanelTab,
+    QueuedLoad,
+};
 
 /// Stable registry key for the overlay's own scale control. Other engine
 /// modules can register settings beside it without depending on this crate.
 pub const OVERLAY_SCALE_SETTING_ID: &str = "interface.overlay_scale";
+
+/// Stable keys for the player-facing HUD and camera settings.
+pub const SHOW_CROSSHAIR_SETTING_ID: &str = "interface.show_crosshair";
+pub const SHOW_PROMPTS_SETTING_ID: &str = "interface.show_prompts";
+pub const FOV_SETTING_ID: &str = "gameplay.field_of_view";
 
 /// Stable registry key for the temporal reconstruction path. The value is the
 /// same spec string the `r.upscaler` console command and the `--upscaler` /
@@ -58,15 +66,40 @@ pub const UPSCALER_SETTING_ID: &str = "render.upscaler";
 /// gameplay modules can add their own entries through the same API over time.
 pub fn register_builtin_settings(registry: &mut SettingsRegistry) -> Result<(), SettingsError> {
     registry.register(SettingEntry::slider(
+        FOV_SETTING_ID,
+        "Gameplay",
+        "Field of view",
+        "Vertical camera field of view. Applies immediately without rebuilding the renderer.",
+        75.0,
+        55.0,
+        110.0,
+        1.0,
+        "°",
+    ))?;
+    registry.register(SettingEntry::slider(
         OVERLAY_SCALE_SETTING_ID,
         "Interface",
-        "Overlay scale",
-        "Scale the complete on-screen console and settings interface.",
+        "UI scale",
+        "Scale the HUD, pause menu, settings, and developer overlay.",
         1.0,
         0.75,
         2.0,
         0.05,
         "×",
+    ))?;
+    registry.register(SettingEntry::toggle(
+        SHOW_CROSSHAIR_SETTING_ID,
+        "Interface",
+        "Show crosshair",
+        "Keep a small reticle at screen center while controlling the world.",
+        true,
+    ))?;
+    registry.register(SettingEntry::toggle(
+        SHOW_PROMPTS_SETTING_ID,
+        "Interface",
+        "Show interaction prompts",
+        "Show the active key and action when an object can be used.",
+        true,
     ))?;
     registry.register(SettingEntry::choice(
         UPSCALER_SETTING_ID,
@@ -115,6 +148,9 @@ pub struct DebugUiState {
     /// Per-panel input + history state (loader form fields,
     /// console buffer + log, active tab). Persisted across frames.
     pub panels: PanelState,
+    /// Player-facing pause/settings navigation, independent from the F3
+    /// developer overlay.
+    game_menu: GameMenuState,
 }
 
 /// Per-panel input + history state. Lives on [`DebugUiState`] so it
@@ -164,6 +200,7 @@ impl DebugUiState {
             egui_winit,
             last_output: None,
             panels: PanelState::default(),
+            game_menu: GameMenuState::default(),
         }
     }
 
@@ -218,6 +255,35 @@ impl DebugUiState {
         }
     }
 
+    pub fn game_menu_visible(&self) -> bool {
+        self.game_menu.visible
+    }
+
+    /// Toggle the player-facing pause menu. Opening always returns to the
+    /// pause landing page so Escape is a predictable escape hatch from any
+    /// settings category.
+    pub fn toggle_game_menu(&mut self) -> bool {
+        self.game_menu.visible = !self.game_menu.visible;
+        if self.game_menu.visible {
+            self.game_menu.page = GameMenuPage::Pause;
+        } else {
+            self.last_output = None;
+        }
+        self.game_menu.visible
+    }
+
+    pub fn close_game_menu(&mut self) {
+        self.game_menu.visible = false;
+        self.game_menu.page = GameMenuPage::Pause;
+        self.last_output = None;
+    }
+
+    /// Native pause/settings owns every gameplay input event while open,
+    /// regardless of whether an individual egui widget consumed it.
+    pub fn captures_gameplay_input(&self) -> bool {
+        self.game_menu.visible
+    }
+
     /// Run one egui frame against a pre-built [`PanelSnapshot`].
     /// Returns the operator's actions in [`PanelOutputs`] — the
     /// binary applies those to the World after this method returns
@@ -230,7 +296,11 @@ impl DebugUiState {
     /// Returns an empty `PanelOutputs` when the debug overlay is hidden;
     /// a supplied gameplay prompt can still produce render output.
     pub fn run(&mut self, window: &Window, snapshot: &PanelSnapshot) -> PanelOutputs {
-        if !self.visible && snapshot.interaction_prompt.is_none() {
+        if !self.visible
+            && !self.game_menu.visible
+            && snapshot.interaction_prompt.is_none()
+            && !snapshot.show_crosshair
+        {
             // #2831 — still drain. `on_window_event` is forwarded for EVERY
             // `WindowEvent`, unconditionally, and appends onto egui-winit's
             // private `egui_input.events`; `take_egui_input` is its only
@@ -256,9 +326,19 @@ impl DebugUiState {
         // sugar fighting the borrow.
         self.egui_ctx.begin_pass(raw_input);
         let mut outputs = PanelOutputs::default();
-        panels::draw_hud(&self.egui_ctx, snapshot);
+        if !self.game_menu.visible {
+            panels::draw_hud(&self.egui_ctx, snapshot);
+        }
         if self.visible {
             panels::draw(&self.egui_ctx, snapshot, &mut self.panels, &mut outputs);
+        }
+        if self.game_menu.visible {
+            panels::draw_game_menu(
+                &self.egui_ctx,
+                &snapshot.settings,
+                &mut self.game_menu,
+                &mut outputs,
+            );
         }
         let output = self.egui_ctx.end_pass();
         // Hand the platform output back to egui-winit so OS-level

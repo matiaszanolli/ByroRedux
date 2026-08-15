@@ -14,7 +14,7 @@ use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{
     AnimatedAlpha, AnimatedAmbientColor, AnimatedDiffuseColor, AnimatedEmissiveColor,
     AnimatedMorphWeights, AnimatedShaderColor, AnimatedShaderFloat, AnimatedSpecularColor,
-    AnimatedUvTransform, AnimatedVisibility, Name, Transform, World,
+    AnimatedUvTransform, AnimatedVisibility, Name, ResourceRead, Transform, World,
 };
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_core::string::FixedString;
@@ -33,23 +33,38 @@ pub(crate) use byroredux_core::ecs::make_transform_propagation_system;
 
 // ── DRY helpers (shared between AnimationPlayer + AnimationStack paths) ──
 
-/// If a `SubtreeCache` is registered and doesn't yet have an entry for
-/// `root`, build the name→entity map for the subtree rooted at `root`
-/// and insert it. No-op if the cache is missing or already populated.
+/// Acquire the `SubtreeCache` read guard, building the name→entity map
+/// for the subtree rooted at `root` first if it isn't cached yet.
+/// `None` when the resource isn't registered.
 ///
 /// Both the flat-player path and the layered-stack path need the same
 /// "lazy build per-root scoped resolver" behaviour; pulling it here
 /// removes ~12 lines × 2 callsites from `animation_system`.
-fn ensure_subtree_cache(world: &World, root: EntityId) {
-    let needs_build = world
-        .try_resource::<SubtreeCache>()
-        .map(|c| !c.map.contains_key(&root))
-        .unwrap_or(false);
-    if needs_build {
-        let map = build_subtree_name_map(world, root);
-        let mut cache = world.resource_mut::<SubtreeCache>();
-        cache.map.insert(root, map);
+///
+/// #2924 / PERF-D1-02 — this used to be an `ensure_subtree_cache(world,
+/// root)` that acquired the cache, tested `contains_key`, dropped the
+/// guard, and returned nothing; every caller then immediately acquired
+/// the same resource again for the actual lookup. That is two
+/// acquisitions per animated entity per frame on the steady-state path
+/// (each one a `TypeId` probe into `resources` plus the
+/// `lock_tracker::track_read`/`untrack_read` pair, both std-hasher
+/// maps) for a cache that is already populated. Returning the guard the
+/// hit path already holds makes it one. The miss path still costs three
+/// — read, write, read — but that runs once per root, not per frame.
+fn subtree_cache(world: &World, root: Option<EntityId>) -> Option<ResourceRead<'_, SubtreeCache>> {
+    let cache = world.try_resource::<SubtreeCache>()?;
+    let Some(root) = root else {
+        return Some(cache);
+    };
+    if cache.map.contains_key(&root) {
+        return Some(cache);
     }
+    // Miss: release the read guard before `build_subtree_name_map`
+    // (which queries `Name`/`Children`) and the write that follows.
+    drop(cache);
+    let map = build_subtree_name_map(world, root);
+    world.resource_mut::<SubtreeCache>().map.insert(root, map);
+    world.try_resource::<SubtreeCache>()
 }
 
 /// Write a non-zero root-motion delta into `RootMotionDelta` on
@@ -531,11 +546,10 @@ fn animation_system_inner(world: &World, dt: f32, scratch: &mut AnimScratch) {
         };
         let current_time = ps.current_time;
 
-        // Scoped name lookup — persisted across frames (#278).
-        if let Some(root) = ps.root_entity {
-            ensure_subtree_cache(world, root);
-        }
-        let subtree_ref = world.try_resource::<SubtreeCache>();
+        // Scoped name lookup — persisted across frames (#278). One
+        // `SubtreeCache` acquisition per entity on the cache-hit path
+        // (#2924).
+        let subtree_ref = subtree_cache(world, ps.root_entity);
         let scoped_map = ps
             .root_entity
             .and_then(|root| subtree_ref.as_ref().and_then(|c| c.map.get(&root)));
@@ -580,11 +594,6 @@ fn animation_system_inner(world: &World, dt: f32, scratch: &mut AnimScratch) {
                     transform.scale = scale;
                 }
             }
-            drop(transform_query);
-
-            // Write root motion delta to the player entity.
-            write_root_motion(world, entity, root_motion);
-
             // Ground the skeleton (accum-root reset). The accumulation root
             // (e.g. FNV `Bip01`) is a root-motion *carrier*, not a pose node —
             // its skeleton *bind* translation (FNV rigs `Bip01` at Z≈67.77,
@@ -595,16 +604,30 @@ fn animation_system_inner(world: &World, dt: f32, scratch: &mut AnimScratch) {
             // NonAccum and floats the actor ~68 units off the floor. Zero the
             // accum-root translation in that case (rotation kept). Matches the
             // Gamebryo accum/non-accum model (cf. OpenMW `ResetAccumRootCallback`).
+            //
+            // #2924 / PERF-D1-02 — this runs inside the channel batch's
+            // still-live `transform_query`, not after it. It used to
+            // re-acquire `query_mut::<Transform>()` a few statements later,
+            // taking the same write lock twice per animated entity per
+            // frame — and on the COMMON branch, since the block exists
+            // precisely because most idle clips leave the accum root
+            // untouched. That eroded the one-guard-per-entity-per-component
+            // invariant #53 landed, and widened the surface for the ABBA
+            // hazards #313 / #827 / #1410 guard against. `write_root_motion`
+            // now runs after the guard drops, so `RootMotionDelta` is still
+            // taken with nothing else held — no new lock edge either way.
             if !accum_root_animated {
                 if let Some(accum_entity) = clip.accum_root_name.as_ref().and_then(&resolve_entity)
                 {
-                    if let Some(mut tq) = world.query_mut::<Transform>() {
-                        if let Some(t) = tq.get_mut(accum_entity) {
-                            t.translation = Vec3::ZERO;
-                        }
+                    if let Some(t) = transform_query.get_mut(accum_entity) {
+                        t.translation = Vec3::ZERO;
                     }
                 }
             }
+            drop(transform_query);
+
+            // Write root motion delta to the player entity.
+            write_root_motion(world, entity, root_motion);
         }
 
         // Apply float channels — alpha + UV params + shader floats +
@@ -660,18 +683,15 @@ fn animation_system_inner(world: &World, dt: f32, scratch: &mut AnimScratch) {
 
         // Ensure subtree cache is populated for this stack's root before we
         // take the AnimationStack read lock below (cache rebuild acquires a
-        // write lock on SubtreeCache, separate from AnimationStack).
-        {
+        // write lock on SubtreeCache, separate from AnimationStack). The
+        // `AnimationStack` guard is dropped first, so the ordering this
+        // block exists to enforce is unchanged; `subtree_cache` returns the
+        // guard the lookup below needs instead of acquiring twice (#2924).
+        let stack_root_entity = {
             let sq = world.query::<AnimationStack>().unwrap();
-            let stack = sq.get(entity).unwrap();
-            let root_entity = stack.root_entity;
-            drop(sq);
-            if let Some(root) = root_entity {
-                ensure_subtree_cache(world, root);
-            }
-        }
-
-        let subtree_ref2 = world.try_resource::<SubtreeCache>();
+            sq.get(entity).unwrap().root_entity
+        };
+        let subtree_ref2 = subtree_cache(world, stack_root_entity);
 
         // Phase 2: single read lock for everything that reads AnimationStack
         // (#287 — was 4 separate acquisitions, now 1). Collect all outputs

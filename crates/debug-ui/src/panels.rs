@@ -9,7 +9,9 @@
 //! `&mut DebugUiState` and the world references the panels would
 //! otherwise need.
 
-use egui::{Align2, Color32, Context, CornerRadius, Frame, Id, Margin, RichText, Window};
+use egui::{
+    Align2, Color32, Context, CornerRadius, Frame, Id, Margin, Order, RichText, Stroke, Window,
+};
 
 use byroredux_core::settings::{SettingChange, SettingControl, SettingEntry, SettingValue};
 
@@ -29,7 +31,11 @@ pub struct PanelSnapshot {
     /// every prompt the producer can name is a compile-time constant. A
     /// future prompt that interpolates a reference name wants
     /// `Cow<'static, str>` here, not a per-frame `String`.
-    pub interaction_prompt: Option<&'static str>,
+    pub interaction_prompt: Option<InteractionPrompt>,
+    /// Whether the native reticle should be drawn while gameplay owns input.
+    pub show_crosshair: bool,
+    /// Whether contextual interaction prompts should be drawn.
+    pub show_prompts: bool,
     pub metrics: Option<MetricsSnapshotView>,
     /// Deterministically ordered clone of the universal settings registry.
     /// Settings are small and only cloned while the overlay is visible.
@@ -41,9 +47,35 @@ pub struct PanelSnapshot {
     pub entities: Option<Vec<(u32, String)>>,
 }
 
+/// Allocation-free native prompt assembled from the active binding and the
+/// selected interaction's verb.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InteractionPrompt {
+    pub binding: &'static str,
+    pub verb: &'static str,
+}
+
 /// Draw the small gameplay HUD layer shared with the debug renderer.
 pub fn draw_hud(ctx: &Context, snapshot: &PanelSnapshot) {
-    let Some(prompt) = snapshot.interaction_prompt else {
+    if snapshot.show_crosshair {
+        egui::Area::new(Id::new("gameplay_crosshair"))
+            .anchor(Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .interactable(false)
+            .show(ctx, |ui| {
+                ui.label(
+                    RichText::new("+")
+                        .size(22.0)
+                        .strong()
+                        .color(Color32::from_white_alpha(220)),
+                );
+            });
+    }
+
+    let Some(prompt) = snapshot
+        .show_prompts
+        .then_some(snapshot.interaction_prompt)
+        .flatten()
+    else {
         return;
     };
 
@@ -57,7 +89,7 @@ pub fn draw_hud(ctx: &Context, snapshot: &PanelSnapshot) {
                 .inner_margin(Margin::symmetric(14, 8))
                 .show(ui, |ui| {
                     ui.label(
-                        RichText::new(prompt)
+                        RichText::new(format!("[{}] {}", prompt.binding, prompt.verb))
                             .size(20.0)
                             .strong()
                             .color(Color32::WHITE),
@@ -109,6 +141,214 @@ pub struct PanelOutputs {
     /// True when the operator asked to refresh the entity list.
     /// The binary rebuilds the snapshot's `entities` next frame.
     pub refresh_entities: bool,
+    /// Close the native pause menu and return input to the world.
+    pub resume_game: bool,
+    /// Perform the same orderly shutdown as the window close button.
+    pub quit_game: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GameMenuPage {
+    #[default]
+    Pause,
+    Settings,
+}
+
+/// Persistent navigation state for the player-facing native menu.
+#[derive(Debug, Clone, Default)]
+pub struct GameMenuState {
+    pub visible: bool,
+    pub page: GameMenuPage,
+    pub selected_section: String,
+}
+
+/// Player-facing pause/settings surface. This deliberately consumes the same
+/// `SettingEntry` snapshot and emits the same `SettingChange` values as the F3
+/// operator panel, so there is one validation/application path.
+pub fn draw_game_menu(
+    ctx: &Context,
+    settings: &[SettingEntry],
+    state: &mut GameMenuState,
+    outputs: &mut PanelOutputs,
+) {
+    let viewport = ctx.content_rect();
+    egui::Area::new(Id::new("game_menu_backdrop"))
+        .order(Order::Foreground)
+        .fixed_pos(viewport.min)
+        .interactable(true)
+        .show(ctx, |ui| {
+            Frame::new()
+                .fill(Color32::from_black_alpha(205))
+                .show(ui, |ui| {
+                    ui.set_min_size(viewport.size());
+                });
+        });
+
+    let title = match state.page {
+        GameMenuPage::Pause => "Paused",
+        GameMenuPage::Settings => "Settings",
+    };
+    Window::new(title)
+        .id(Id::new("game_menu_window"))
+        .order(Order::Foreground)
+        .anchor(Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .title_bar(false)
+        .collapsible(false)
+        .resizable(false)
+        .fixed_size(match state.page {
+            GameMenuPage::Pause => egui::vec2(360.0, 330.0),
+            GameMenuPage::Settings => egui::vec2(760.0, 620.0),
+        })
+        .frame(
+            Frame::window(&ctx.style())
+                .fill(Color32::from_rgb(20, 23, 29))
+                .stroke(Stroke::new(1.0, Color32::from_gray(75)))
+                .corner_radius(CornerRadius::same(10))
+                .inner_margin(Margin::same(22)),
+        )
+        .show(ctx, |ui| match state.page {
+            GameMenuPage::Pause => draw_pause_page(ui, state, outputs),
+            GameMenuPage::Settings => draw_game_settings(ui, settings, state, outputs),
+        });
+}
+
+fn draw_pause_page(ui: &mut egui::Ui, state: &mut GameMenuState, outputs: &mut PanelOutputs) {
+    ui.vertical_centered(|ui| {
+        ui.add_space(12.0);
+        ui.label(
+            RichText::new("BYROREDUX")
+                .size(13.0)
+                .strong()
+                .color(Color32::from_rgb(145, 175, 210)),
+        );
+        ui.heading(RichText::new("Paused").size(34.0));
+        ui.add_space(24.0);
+        if wide_button(ui, "Continue").clicked() {
+            outputs.resume_game = true;
+        }
+        ui.add_space(8.0);
+        if wide_button(ui, "Settings").clicked() {
+            state.page = GameMenuPage::Settings;
+        }
+        ui.add_space(8.0);
+        if wide_button(ui, "Quit to desktop").clicked() {
+            outputs.quit_game = true;
+        }
+        ui.add_space(20.0);
+        ui.label(RichText::new("Esc  Continue").small().color(Color32::GRAY));
+    });
+}
+
+fn wide_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    ui.add_sized(
+        [280.0, 42.0],
+        egui::Button::new(RichText::new(label).size(18.0)),
+    )
+}
+
+fn draw_game_settings(
+    ui: &mut egui::Ui,
+    settings: &[SettingEntry],
+    state: &mut GameMenuState,
+    outputs: &mut PanelOutputs,
+) {
+    ui.horizontal(|ui| {
+        if ui.button("← Back").clicked() {
+            state.page = GameMenuPage::Pause;
+        }
+        ui.heading("Settings");
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(
+                RichText::new("Changes are saved automatically")
+                    .small()
+                    .color(Color32::GRAY),
+            );
+        });
+    });
+    ui.separator();
+
+    let mut sections: Vec<&str> = settings
+        .iter()
+        .map(|entry| entry.section.as_str())
+        .collect();
+    sections.sort_unstable_by_key(|section| section_rank(section));
+    sections.dedup();
+    if !sections
+        .iter()
+        .any(|section| *section == state.selected_section)
+    {
+        state.selected_section = sections.first().copied().unwrap_or_default().to_owned();
+    }
+
+    ui.horizontal_wrapped(|ui| {
+        for section in &sections {
+            ui.selectable_value(&mut state.selected_section, (*section).to_owned(), *section);
+        }
+    });
+    ui.separator();
+
+    if sections.is_empty() {
+        ui.label("No settings are registered yet.");
+        return;
+    }
+
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            for entry in settings
+                .iter()
+                .filter(|entry| entry.section == state.selected_section)
+            {
+                draw_player_setting(ui, entry, outputs);
+                ui.add_space(7.0);
+            }
+        });
+}
+
+fn section_rank(section: &str) -> (u8, &str) {
+    let rank = match section {
+        "Gameplay" => 0,
+        "Controls" => 1,
+        "Interface" => 2,
+        "Rendering" => 3,
+        "Audio" => 4,
+        _ => 5,
+    };
+    (rank, section)
+}
+
+fn draw_player_setting(ui: &mut egui::Ui, entry: &SettingEntry, outputs: &mut PanelOutputs) {
+    ui.group(|ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                let mut title = RichText::new(&entry.label).strong().size(16.0);
+                if entry.restart_required {
+                    title = title.color(Color32::YELLOW);
+                }
+                ui.label(title);
+                if !entry.description.is_empty() {
+                    ui.label(
+                        RichText::new(&entry.description)
+                            .small()
+                            .color(Color32::GRAY),
+                    );
+                }
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if entry.value != entry.default && ui.small_button("Reset").clicked() {
+                    outputs
+                        .setting_changes
+                        .push(SettingChange::new(&entry.id, entry.default.clone()));
+                }
+                if let Some(value) = draw_setting_control(ui, entry) {
+                    outputs
+                        .setting_changes
+                        .push(SettingChange::new(&entry.id, value));
+                }
+            });
+        });
+    });
 }
 
 /// One queued load request. The binary maps this 1:1 onto a

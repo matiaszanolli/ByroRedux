@@ -6,7 +6,7 @@ fn run_build(world: &World) -> Vec<DrawCommand> {
     let mut draw_commands = Vec::new();
     let mut gpu_lights = Vec::new();
     let mut bone_world = Vec::new();
-    let mut skin_offsets = HashMap::new();
+    let mut skin_offsets = rustc_hash::FxHashMap::default();
     let max_skinned = ((byroredux_renderer::vulkan::scene_buffer::MAX_TOTAL_BONES
         / byroredux_core::ecs::components::MAX_BONES_PER_MESH)
         - 1) as u32;

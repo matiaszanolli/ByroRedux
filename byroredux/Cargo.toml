@@ -32,6 +32,8 @@ byroredux-platform = { workspace = true }
 # (ScriptTimer) so the M45 save registry can snapshot them.
 byroredux-scripting = { workspace = true, features = ["save"] }
 byroredux-nif = { workspace = true }
+# #2923 — `App::skin_offsets` is probed once per mesh draw per frame.
+rustc-hash = { workspace = true }
 byroredux-hkx = { workspace = true }
 byroredux-spt = { workspace = true }
 byroredux-bsa = { workspace = true }

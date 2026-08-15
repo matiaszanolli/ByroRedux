@@ -1364,7 +1364,7 @@ pub struct FrameInputs<'a> {
     /// slots already have `has_populated_output = true` AND a live BLAS skip
     /// both compute dispatch and refit. First-sight (no populated output yet)
     /// ignores the set and always dispatches. Paired with #1196.
-    pub pose_dirty: &'a std::collections::HashSet<EntityId>,
+    pub pose_dirty: &'a rustc_hash::FxHashSet<EntityId>,
 }
 
 impl VulkanContext {

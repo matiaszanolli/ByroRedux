@@ -4334,6 +4334,39 @@ mod rigid_history_hasher_tests {
              maps) — a `HashMap::new()` crept back into one of them (#2174)",
         );
     }
+
+    /// #2923 / PERF-D1-01 — the skinning path's half of the same pattern.
+    /// `#1368` and `#2174` both stopped at the `crates/renderer` boundary;
+    /// the skinning path crosses it, so `record_skinned_blas_refit`'s
+    /// once-per-skinned-BLAS `pose_dirty.contains()` probe was forced back
+    /// onto SipHash purely because `SkinSlotPool::pose_dirty()` returned a
+    /// std `HashSet` and `FrameInputs` pinned that type in its public
+    /// signature. Pinned here as well as in `skin_slot_pool.rs` because
+    /// either side alone can drag the other back.
+    #[test]
+    fn pose_dirty_crosses_the_crate_boundary_without_siphash() {
+        for (src, what) in [
+            (
+                include_str!("draw.rs"),
+                "FrameInputs.pose_dirty — the field that pins the type across \
+                 the core/renderer boundary",
+            ),
+            (
+                include_str!("skinned_blas_refit.rs"),
+                "record_skinned_blas_refit's pose_dirty parameter — probed once \
+                 per skinned BLAS entry per frame",
+            ),
+        ] {
+            assert!(
+                src.contains("rustc_hash::FxHashSet<EntityId>"),
+                "{what} must stay `FxHashSet` (#2923)"
+            );
+            assert!(
+                !src.contains("std::collections::HashSet<EntityId>"),
+                "{what} reverted to std's SipHash-1-3 (#2923)"
+            );
+        }
+    }
 }
 
 // #2480 / REN-D23-2026-08-07-01 — FSR startup-failure must promote to TAA,

@@ -21,7 +21,7 @@
 //! covers `(max_used_slot + 1) × MAX_BONES_PER_MESH` slots — stale-slot
 //! palettes are written but never read.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::sync::Once;
 
 use byroredux_core::ecs::{
@@ -74,7 +74,7 @@ pub(super) fn build_skinned_palettes(
     world: &World,
     frame_count: u64,
     bone_world_out: &mut Vec<[[f32; 4]; 4]>,
-    skin_offsets: &mut HashMap<EntityId, u32>,
+    skin_offsets: &mut FxHashMap<EntityId, u32>,
     pool: &mut SkinSlotPool,
 ) {
     let gt_q = world.query::<GlobalTransform>();
@@ -296,7 +296,7 @@ mod build_skinned_palettes_tests {
         let mut world = World::new();
         let mut pool = SkinSlotPool::new(10);
         let mut bone_world = vec![IDENTITY_4X4]; // caller-seeded slot 0, as build_render_data does
-        let mut skin_offsets = HashMap::new();
+        let mut skin_offsets = FxHashMap::default();
 
         let mesh = spawn_skinned(&mut world, Vec3::new(1.0, 0.0, 0.0));
         build_skinned_palettes(&world, 0, &mut bone_world, &mut skin_offsets, &mut pool);
@@ -328,7 +328,7 @@ mod build_skinned_palettes_tests {
         let mut world = World::new();
         let mut pool = SkinSlotPool::new(10);
         let mut bone_world = vec![IDENTITY_4X4];
-        let mut skin_offsets = HashMap::new();
+        let mut skin_offsets = FxHashMap::default();
 
         let mesh = spawn_skinned(&mut world, Vec3::ZERO); // 1 bone → tail is [1..MBPM)
         build_skinned_palettes(&world, 0, &mut bone_world, &mut skin_offsets, &mut pool);
@@ -354,7 +354,7 @@ mod build_skinned_palettes_tests {
         let mut world = World::new();
         let mut pool = SkinSlotPool::new(10);
         let mut bone_world = vec![IDENTITY_4X4];
-        let mut skin_offsets = HashMap::new();
+        let mut skin_offsets = FxHashMap::default();
 
         // Frame 0: one entity allocates slot 1 — required_slots grows
         // to 2 * MBPM.

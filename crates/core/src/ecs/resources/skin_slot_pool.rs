@@ -3,9 +3,31 @@
 //! Split out of `resources.rs` at #1869 (TD1-2026-07-03-01) once that file
 //! crossed the 2000-LOC Dim-1 threshold — this was the single largest
 //! cohesive unit in it (struct + impl + tests, ~870 lines).
+//!
+//! # Hasher
+//!
+//! Every collection on [`SkinSlotPool`] is an [`FxHashMap`] /
+//! [`FxHashSet`], not a std one (#2923). All five are keyed by
+//! [`EntityId`] — a small integer with no adversarial input — and all
+//! five are touched once (or more) per skinned entity per frame:
+//! `allocate` probes `entity_to_slot` and writes `last_seen_frame`,
+//! `try_mark_pose_dirty` probes `last_pose_hash` and writes
+//! `rollback_pose_hash` + `pose_dirty`, `sweep` walks
+//! `last_seen_frame` whole, and the renderer probes `pose_dirty` once
+//! per skinned BLAS. On the checked-in `fnv-FreesideAtomicWrangler`
+//! baseline that is ~677 live skinned entities × 5. SipHash-1-3 (std's
+//! default) buys DoS resistance nothing on this path needs, at a
+//! per-probe cost the repo has already twice decided against for maps
+//! of exactly this shape — #1368 (per-draw material hash + descriptor
+//! dirty-gates) and #2174 (rigid motion-history maps). Both sweeps
+//! stopped at the `crates/renderer` boundary; this path crosses it, so
+//! [`SkinSlotPool::pose_dirty`]'s return type is what lets
+//! `FrameInputs.pose_dirty` stay Fx-hashed on the renderer side too.
+//! Pinned by `skin_slot_pool_maps_are_not_siphash`.
 
 use crate::ecs::resource::Resource;
 use crate::ecs::storage::EntityId;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 /// Per-entity persistent slot pool for the GPU bone-palette
 /// (`bone_world` + `bind_inverses`) SSBOs.
@@ -53,7 +75,7 @@ use crate::ecs::storage::EntityId;
 pub struct SkinSlotPool {
     /// Stable slot ID per entity. Values are in `1..=max_slot`; slot 0
     /// is reserved.
-    entity_to_slot: std::collections::HashMap<EntityId, u32>,
+    entity_to_slot: FxHashMap<EntityId, u32>,
     /// Recycled slot IDs (popped LIFO so the most-recently-freed slot
     /// is reused first — cache-friendlier than FIFO on the persistent
     /// `bind_inverses` SSBO).
@@ -63,7 +85,7 @@ pub struct SkinSlotPool {
     next_slot: u32,
     /// Frame at which each entity was last seen via `mark_seen`.
     /// Drives the `sweep` reclaim.
-    last_seen_frame: std::collections::HashMap<EntityId, u64>,
+    last_seen_frame: FxHashMap<EntityId, u64>,
     /// `(slot_id, entity)` for entities that allocated a slot this
     /// frame and still need their `bind_inverses` uploaded to the
     /// persistent SSBO. Drained by the renderer once per frame.
@@ -78,20 +100,20 @@ pub struct SkinSlotPool {
     /// Per-entity hash of the last-uploaded `bone_world` slice. Set by
     /// `try_mark_pose_dirty`; absent for entities that haven't been
     /// hashed yet. #1195 / PERF-DIM7-01.
-    last_pose_hash: std::collections::HashMap<EntityId, u64>,
+    last_pose_hash: FxHashMap<EntityId, u64>,
     /// Entities whose pose hash differs from the previous frame's
     /// (or who have never been hashed). Cleared at frame start by
     /// `clear_pose_dirty`; populated by `try_mark_pose_dirty`. Drained
     /// by the renderer to gate skin compute dispatch + skinned-BLAS
     /// refit. #1195 / PERF-DIM7-01, paired with #1196 / PERF-DIM7-02.
-    pose_dirty: std::collections::HashSet<EntityId>,
+    pose_dirty: FxHashSet<EntityId>,
     /// Pre-image of `last_pose_hash` for every entity `try_mark_pose_dirty`
     /// committed dirty *this frame*, keyed by entity. `None` means the
     /// entity had no prior hash (first-sight). Cleared by `clear_pose_dirty`
     /// at the start of the next frame's hashing pass; drained by
     /// `rollback_pending_pose_commits` when the renderer discovers the
     /// commit was premature. #1796 / D6-02.
-    rollback_pose_hash: std::collections::HashMap<EntityId, Option<u64>>,
+    rollback_pose_hash: FxHashMap<EntityId, Option<u64>>,
     /// Monotonic cumulative count of over-cap `allocate()` **calls**
     /// (i.e. calls that returned `None`) since construction — **not** a
     /// distinct-entity count. An over-cap entity is never inserted into
@@ -116,16 +138,16 @@ impl SkinSlotPool {
             "SkinSlotPool requires capacity ≥ 1; got {max_skinned}"
         );
         Self {
-            entity_to_slot: std::collections::HashMap::new(),
+            entity_to_slot: FxHashMap::default(),
             free_list: Vec::new(),
             next_slot: 1,
-            last_seen_frame: std::collections::HashMap::new(),
+            last_seen_frame: FxHashMap::default(),
             pending_uploads: Vec::new(),
             max_slot: max_skinned,
             overflow_warned: false,
-            last_pose_hash: std::collections::HashMap::new(),
-            pose_dirty: std::collections::HashSet::new(),
-            rollback_pose_hash: std::collections::HashMap::new(),
+            last_pose_hash: FxHashMap::default(),
+            pose_dirty: FxHashSet::default(),
+            rollback_pose_hash: FxHashMap::default(),
             overflow_attempt_count: 0,
         }
     }
@@ -411,7 +433,7 @@ impl SkinSlotPool {
     /// uses this to gate skin compute dispatch (#1195) and skinned-
     /// BLAS refit (#1196) — entities NOT in this set whose slots
     /// already have populated output + live BLAS can skip both passes.
-    pub fn pose_dirty(&self) -> &std::collections::HashSet<EntityId> {
+    pub fn pose_dirty(&self) -> &FxHashSet<EntityId> {
         &self.pose_dirty
     }
 }
@@ -870,6 +892,73 @@ mod skin_slot_pool_tests {
             !pool.try_mark_pose_dirty(1, 0xCAFE),
             "committed baseline from a successful frame must survive an \
              unrelated later rollback call"
+        );
+    }
+}
+
+/// #2923 / PERF-D1-01 — pin the hasher on every `SkinSlotPool`
+/// collection.
+///
+/// A source assertion rather than a type assertion: the fields are
+/// private and `HashMap<K, V, S>`'s hasher is not observable from a
+/// value at runtime. The declaration text is the only observable, and
+/// it is exactly what regresses — #1368 removed std's SipHash-1-3 from
+/// the render hot path, #2174 removed it again from the rigid
+/// motion-history maps after `33d9a468` reintroduced it at a new site,
+/// and both sweeps missed this cluster entirely. Sibling of
+/// `crates/renderer/src/vulkan/context/mod.rs`'s
+/// `rigid_motion_history_maps_are_not_siphash`.
+#[cfg(test)]
+mod skin_slot_pool_hasher_tests {
+    const SKIN_SLOT_POOL_RS: &str = include_str!("skin_slot_pool.rs");
+
+    /// Everything before the test modules, so the needles below cannot
+    /// match this file's own assertion strings or the tests' local
+    /// std collections.
+    fn production_src() -> &'static str {
+        SKIN_SLOT_POOL_RS
+            .split_once("\n#[cfg(test)]")
+            .expect("skin_slot_pool.rs lost its test modules")
+            .0
+    }
+
+    #[test]
+    fn skin_slot_pool_maps_are_not_siphash() {
+        let src = production_src();
+        for (field, ty) in [
+            ("entity_to_slot", "FxHashMap<EntityId, u32>"),
+            ("last_seen_frame", "FxHashMap<EntityId, u64>"),
+            ("last_pose_hash", "FxHashMap<EntityId, u64>"),
+            ("pose_dirty", "FxHashSet<EntityId>"),
+            ("rollback_pose_hash", "FxHashMap<EntityId, Option<u64>>"),
+        ] {
+            let decl = format!("{field}: {ty},");
+            assert!(
+                src.contains(&decl),
+                "`{field}` is no longer declared `{decl}` — every one of these \
+                 is probed or written once per skinned entity per frame (~677 \
+                 live entities on the fnv-FreesideAtomicWrangler baseline, × 5 \
+                 maps), which is what makes SipHash-1-3 the wrong default here \
+                 (#2923, following #1368 / #2174)",
+            );
+        }
+    }
+
+    #[test]
+    fn pose_dirty_accessor_does_not_pin_siphash_across_the_crate_boundary() {
+        let src = production_src();
+        assert!(
+            src.contains("pub fn pose_dirty(&self) -> &FxHashSet<EntityId> {"),
+            "`pose_dirty()`'s return type is what `FrameInputs.pose_dirty` \
+             mirrors in `crates/renderer`; widening it back to a std HashSet \
+             forces `record_skinned_blas_refit`'s per-BLAS `contains` probe \
+             onto SipHash even though that crate already imports FxHashMap \
+             (#2923)",
+        );
+        assert!(
+            !src.contains("std::collections::HashMap")
+                && !src.contains("std::collections::HashSet"),
+            "a std-hasher collection crept back into SkinSlotPool (#2923)",
         );
     }
 }

@@ -2079,3 +2079,104 @@ fn as_build_to_ray_query_barrier_runs_on_both_build_tlas_arms() {
          while the barrier itself does not (#2931)"
     );
 }
+
+// ── BLAS compaction rollback + peak accounting ───────────────────────
+//
+// Both invariants live on `build_blas_batched`'s compaction phase, whose
+// only trigger is an allocator OOM part-way through a batch — a live
+// device plus a genuinely exhausted pool. Same source-position pinning
+// approach the file already uses for `blas_registration_releases_
+// occupied_slot_tests` and `tlas_commit_ordering_tests`.
+#[cfg(test)]
+mod blas_compaction_rollback_tests {
+    const BLAS_STATIC_RS: &str = include_str!("blas_static.rs");
+
+    /// #2926 / PERF-D3-02 — `alloc_compact`'s two early exits
+    /// (`create_device_local_uninit`'s `?` and the
+    /// `create_acceleration_structure` `bail!`) must not strand the
+    /// compaction destinations earlier iterations already allocated. A
+    /// `vk::AccelerationStructureKHR` has no `Drop` impl, so a
+    /// closure-owned `compact_accels` leaked one handle per already-
+    /// compacted mesh — on the one path (OOM) where leaking makes the
+    /// next attempt fail sooner. The vec must therefore be owned by the
+    /// caller and walked by the rollback arm.
+    #[test]
+    fn alloc_compact_failure_destroys_already_compacted_structures() {
+        let decl = BLAS_STATIC_RS
+            .find(
+                "let mut compact_accels: Vec<CompactedBlas> = Vec::with_capacity(prepared.len());",
+            )
+            .expect(
+                "`compact_accels` must be declared OUTSIDE `alloc_compact` so the \
+                 rollback arm can see what the closure allocated before it failed (#2926)",
+            );
+        let closure = BLAS_STATIC_RS
+            .find("let mut alloc_compact = |compact_accels: &mut Vec<CompactedBlas>|")
+            .expect(
+                "`alloc_compact` must take `compact_accels` by `&mut` rather than \
+                 owning it (#2926)",
+            );
+        assert!(
+            decl < closure,
+            "the caller-owned vec must be declared before the closure that fills it"
+        );
+
+        let err_arm = BLAS_STATIC_RS[closure..]
+            .find("match alloc_compact(&mut compact_accels)")
+            .map(|p| p + closure)
+            .expect("the call site must pass the caller-owned vec in");
+        // The rollback arm for the compaction-allocation failure runs
+        // before the `prepared` rollback that #316 already had.
+        let compact_cleanup = BLAS_STATIC_RS[err_arm..]
+            .find("for (_, accel, mut buf, _, _, _) in compact_accels {")
+            .map(|p| p + err_arm)
+            .expect(
+                "the `alloc_compact` failure arm must destroy every compaction \
+                 destination already allocated — each is a raw \
+                 vk::AccelerationStructureKHR with no Drop impl (#2926)",
+            );
+        let prepared_cleanup = BLAS_STATIC_RS[err_arm..]
+            .find("for mut p in prepared {")
+            .map(|p| p + err_arm)
+            .expect("the #316 `prepared` rollback must still run on this arm");
+        assert!(
+            compact_cleanup < prepared_cleanup,
+            "both rollbacks must run on the compaction-failure arm"
+        );
+    }
+
+    /// #2927 / PERF-D3-03 — the compaction phase is where static-BLAS
+    /// residency peaks (originals + destinations both live until Phase 7),
+    /// and the Phase-1 `pending_bytes` ledger never sees it. The budget
+    /// must be tested against `total_before + total_after` before the
+    /// first destination is allocated — the readback above it has already
+    /// made the exact peak knowable.
+    #[test]
+    fn compaction_phase_checks_the_budget_against_the_real_peak() {
+        let totals = BLAS_STATIC_RS
+            .find("let total_after: u64 = compacted_sizes.iter().sum();")
+            .expect("alloc_compact must still sum the compacted sizes");
+        let evict = BLAS_STATIC_RS[totals..]
+            .find("self.evict_unused_blas(")
+            .map(|p| p + totals)
+            .expect(
+                "the compaction phase must run a budget check — it is the phase \
+                 that pushes static-BLAS residency to its batch maximum, and \
+                 pre-#2927 it had no eviction call at all",
+            );
+        let alloc_loop = BLAS_STATIC_RS[totals..]
+            .find("for (i, p) in prepared.iter().enumerate() {")
+            .map(|p| p + totals)
+            .expect("the destination-allocation loop must still exist");
+        assert!(
+            evict < alloc_loop,
+            "the check must run BEFORE the first compaction destination is \
+             allocated, or it is measuring a peak it can no longer avoid (#2927)"
+        );
+        assert!(
+            BLAS_STATIC_RS[evict..alloc_loop].contains("total_before.saturating_add(total_after)"),
+            "the pending figure must be originals + destinations — both sets are \
+             simultaneously resident until Phase 7 destroys the originals (#2927)"
+        );
+    }
+}

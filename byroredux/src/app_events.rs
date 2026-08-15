@@ -22,7 +22,7 @@ use byroredux_renderer::VulkanContext;
 use byroredux_ui::UiManager;
 use std::time::Instant;
 use winit::application::ApplicationHandler;
-use winit::event::{DeviceEvent, DeviceId, ElementState, WindowEvent};
+use winit::event::{DeviceEvent, DeviceId, ElementState, MouseButton, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, WindowId};
@@ -33,6 +33,35 @@ use crate::components::InputState;
 use crate::helpers::world_resource_set;
 use crate::systems::toggle_player_mode;
 use crate::App;
+
+impl App {
+    /// Shared orderly shutdown for both the OS close button and the native
+    /// pause menu's Quit action.
+    pub(crate) fn shutdown(&mut self, event_loop: &ActiveEventLoop) {
+        log::info!("Shutdown requested");
+        if let (Some(ref mut state), Some(ref mut ctx)) =
+            (self.streaming.as_mut(), self.renderer.as_mut())
+        {
+            let cells: Vec<_> = state.loaded.drain().collect();
+            log::info!(
+                "Streaming shutdown: unloading {} streamed cells before ctx destroy",
+                cells.len()
+            );
+            for ((_gx, _gy), slot) in cells {
+                cell_loader::unload_cell(&mut self.world, ctx, slot.cell_root);
+            }
+            ctx.flush_pending_destroys();
+        }
+        if let Some(mut state) = self.streaming.take() {
+            state.shutdown(std::time::Duration::from_secs(1));
+        }
+        self.world
+            .remove_resource::<byroredux_renderer::vulkan::allocator::AllocatorResource>();
+        self.renderer.take();
+        self.window.take();
+        event_loop.exit();
+    }
+}
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
@@ -125,6 +154,7 @@ impl ApplicationHandler for App {
                 self.window = Some(win);
                 self.last_frame = Instant::now();
                 self.setup_scene();
+                crate::sync_camera_setting(&self.world);
                 // Preserve the scene/CLI-authored camera before the startup
                 // scheduler's character-follow system overwrites it. The
                 // frame loop will derive and reapply the requested bench path
@@ -165,6 +195,69 @@ impl ApplicationHandler for App {
         } else {
             false
         };
+
+        let pressed_key = match &event {
+            WindowEvent::KeyboardInput { event, .. }
+                if event.state == ElementState::Pressed && !event.repeat =>
+            {
+                match event.physical_key {
+                    PhysicalKey::Code(code) => Some(code),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        let game_menu_open = self
+            .debug_ui
+            .as_ref()
+            .is_some_and(byroredux_debug_ui::DebugUiState::game_menu_visible);
+        if game_menu_open {
+            if pressed_key == Some(KeyCode::Escape) {
+                self.toggle_game_menu();
+                return;
+            }
+            if !matches!(event, WindowEvent::CloseRequested | WindowEvent::Resized(_)) {
+                self.release_world_input_for_ui();
+                return;
+            }
+        }
+
+        // F3 is an engine-global developer binding. Treat the overlay as a
+        // modal native surface so it gets a visible cursor and world movement
+        // cannot continue behind a slider or text field.
+        if pressed_key == Some(KeyCode::F3) {
+            let visible = if let Some(ui) = self.debug_ui.as_mut() {
+                ui.toggle();
+                ui.visible
+            } else {
+                false
+            };
+            if visible {
+                self.release_world_input_for_ui();
+                if self
+                    .world
+                    .try_resource::<byroredux_core::ecs::SchedulerSystemTimings>()
+                    .is_none()
+                {
+                    self.world.insert_resource(
+                        byroredux_core::ecs::SchedulerSystemTimings::default(),
+                    );
+                }
+            } else {
+                self.capture_world_input();
+            }
+            return;
+        }
+        let debug_overlay_open = self
+            .debug_ui
+            .as_ref()
+            .is_some_and(|ui| ui.visible);
+        if debug_overlay_open
+            && !matches!(event, WindowEvent::CloseRequested | WindowEvent::Resized(_))
+        {
+            self.release_world_input_for_ui();
+            return;
+        }
         if egui_consumed && !matches!(event, WindowEvent::CloseRequested | WindowEvent::Resized(_))
         {
             return;
@@ -175,72 +268,7 @@ impl ApplicationHandler for App {
 
         match event {
             WindowEvent::CloseRequested => {
-                log::info!("Close requested — shutting down");
-                // M40 streaming cleanup: every per-cell streamed load owns
-                // GPU resources (BLAS / mesh buffers / texture refcounts)
-                // released only via `cell_loader::unload_cell`. Without
-                // this sweep the allocator finds 1 dangling ref per
-                // (BLAS + mesh + texture) per loaded cell at ctx
-                // destruction time, triggers the
-                // "leaking allocator to avoid use-after-free" path, and
-                // SIGSEGVs as the orphaned device handles get reaped.
-                if let (Some(ref mut state), Some(ref mut ctx)) =
-                    (self.streaming.as_mut(), self.renderer.as_mut())
-                {
-                    let cells: Vec<_> = state.loaded.drain().collect();
-                    log::info!(
-                        "Streaming shutdown: unloading {} streamed cells before ctx destroy",
-                        cells.len()
-                    );
-                    for ((_gx, _gy), slot) in cells {
-                        cell_loader::unload_cell(&mut self.world, ctx, slot.cell_root);
-                    }
-                    // #732 / LIFE-H2 — `unload_cell` queues per-cell
-                    // BLAS/mesh/texture into the renderer's deferred-
-                    // destroy lists with a `MAX_FRAMES_IN_FLIGHT`
-                    // countdown. The countdown only ticks inside
-                    // `draw_frame`, but the window-close path goes
-                    // straight from the unload sweep to `ctx Drop` with
-                    // no intervening render frames. `Drop`'s in-block
-                    // drain catches them eventually, but doing the
-                    // drain explicitly here releases the per-queue
-                    // entries' `Arc<Mutex<Allocator>>` clones before we
-                    // even start tearing down the context — keeps the
-                    // shutdown ordering visible at the call site rather
-                    // than buried inside `VulkanContext::Drop`.
-                    ctx.flush_pending_destroys();
-                }
-                // Drop the streaming state explicitly — joins the
-                // worker thread cleanly before we tear down the GPU.
-                // Without this, the worker could still be holding
-                // `Arc<TextureProvider>` file handles that the
-                // allocator's leak path would observe as outstanding
-                // refs.
-                //
-                // #856 / C6-NEW-03 — pre-fix this was a bare
-                // `self.streaming.take()` which detached the worker
-                // (the `JoinHandle` was dropped on the same line via
-                // `WorldStreamingState` Drop). `shutdown` drops
-                // `request_tx` first, then joins with a 1-second
-                // bound so a slow `BsaArchive::extract()` can't
-                // block process teardown.
-                if let Some(mut state) = self.streaming.take() {
-                    state.shutdown(std::time::Duration::from_secs(1));
-                    // `state` goes out of scope here. Drop runs but
-                    // `shutdown` already took `worker` and `request_tx`
-                    // so it short-circuits — the join is not repeated.
-                }
-                // Release the ECS clone of the GPU allocator before
-                // dropping the renderer.  VulkanContext::Drop calls
-                // Arc::try_unwrap on the allocator; if AllocatorResource
-                // is still in the world it holds an extra strong-count
-                // that makes try_unwrap fail, triggering the
-                // device+surface+instance leak path (#1406 / MEM-03).
-                self.world
-                    .remove_resource::<byroredux_renderer::vulkan::allocator::AllocatorResource>();
-                self.renderer.take();
-                self.window.take();
-                event_loop.exit();
+                self.shutdown(event_loop);
             }
             WindowEvent::Resized(size) => {
                 if let Some(ref mut ctx) = self.renderer {
@@ -277,23 +305,12 @@ impl ApplicationHandler for App {
                     let mut input = self.world.resource_mut::<InputState>();
                     match event.state {
                         ElementState::Pressed => {
-                            // Escape toggles mouse capture.
+                            // Escape opens the native pause menu. Scaleform
+                            // focus was routed above, so a compatibility menu
+                            // still receives its own Escape first.
                             if code == KeyCode::Escape && !event.repeat {
-                                let captured = !input.mouse_captured;
-                                input.mouse_captured = captured;
                                 drop(input);
-                                if let Some(ref win) = self.window {
-                                    if captured {
-                                        let _ =
-                                            win.set_cursor_grab(CursorGrabMode::Confined).or_else(
-                                                |_| win.set_cursor_grab(CursorGrabMode::Locked),
-                                            );
-                                        win.set_cursor_visible(false);
-                                    } else {
-                                        let _ = win.set_cursor_grab(CursorGrabMode::None);
-                                        win.set_cursor_visible(true);
-                                    }
-                                }
+                                self.toggle_game_menu();
                             } else if code == KeyCode::KeyF && !event.repeat {
                                 // M28.5 follow-up — Walk ↔ Fly mode toggle.
                                 // Temporary debug binding until an in-engine
@@ -314,39 +331,6 @@ impl ApplicationHandler for App {
                                 //   place until the user toggles back.
                                 drop(input);
                                 toggle_player_mode(&mut self.world);
-                            } else if code == KeyCode::F3 && !event.repeat {
-                                // Phase 4 of the debug-UI plan — F3
-                                // toggles the egui overlay. Doesn't
-                                // touch InputState so the camera
-                                // input layer is uninterrupted (the
-                                // overlay's own egui-winit handler
-                                // is the source of truth for any
-                                // mouse / keyboard egui needs).
-                                drop(input);
-                                if let Some(ref mut ui) = self.debug_ui {
-                                    ui.toggle();
-                                    // #2166 — the Metrics panel is the only
-                                    // consumer of the scheduler's per-system
-                                    // wall times, and the resource's presence
-                                    // is what arms that tracker. Insert it the
-                                    // first time the overlay opens rather than
-                                    // at world setup, so a run that never opens
-                                    // the overlay never pays for it. Left in
-                                    // place once armed: a toggle-off would
-                                    // otherwise blank the panel's history on
-                                    // every reopen, and the idle cost of the
-                                    // empty resource is a single probe.
-                                    if ui.visible
-                                        && self
-                                            .world
-                                            .try_resource::<byroredux_core::ecs::SchedulerSystemTimings>()
-                                            .is_none()
-                                    {
-                                        self.world.insert_resource(
-                                            byroredux_core::ecs::SchedulerSystemTimings::default(),
-                                        );
-                                    }
-                                }
                             } else {
                                 input.keys_held.insert(code);
                             }
@@ -355,6 +339,15 @@ impl ApplicationHandler for App {
                             input.keys_held.remove(&code);
                         }
                     }
+                }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                if !self.world.resource::<InputState>().mouse_captured {
+                    self.capture_world_input();
                 }
             }
             _ => {}
@@ -372,7 +365,11 @@ impl ApplicationHandler for App {
                 .ui_manager
                 .as_ref()
                 .is_some_and(UiManager::has_input_focus);
-            if ui_focused {
+            let native_ui_focused = self
+                .debug_ui
+                .as_ref()
+                .is_some_and(byroredux_debug_ui::DebugUiState::captures_gameplay_input);
+            if ui_focused || native_ui_focused {
                 self.release_world_input_for_ui();
                 return;
             }
@@ -388,7 +385,8 @@ impl ApplicationHandler for App {
             if input.mouse_captured {
                 let sensitivity = input.look_sensitivity;
                 input.yaw -= delta.0 as f32 * sensitivity;
-                input.pitch -= delta.1 as f32 * sensitivity;
+                let vertical_sign = if input.invert_look_y { 1.0 } else { -1.0 };
+                input.pitch += delta.1 as f32 * sensitivity * vertical_sign;
                 // Clamp pitch to avoid flipping.
                 input.pitch = input.pitch.clamp(
                     -std::f32::consts::FRAC_PI_2 + 0.01,
@@ -402,7 +400,12 @@ impl ApplicationHandler for App {
         // Menu focus can change through engine code without a corresponding
         // winit event. Enforce modal ownership before the scheduler reads
         // InputState so a held movement key cannot leak for one frame.
-        if self
+        let native_ui_focused = self
+            .debug_ui
+            .as_ref()
+            .is_some_and(byroredux_debug_ui::DebugUiState::captures_gameplay_input);
+        if native_ui_focused
+            || self
             .ui_manager
             .as_ref()
             .is_some_and(UiManager::has_input_focus)
@@ -438,9 +441,16 @@ impl ApplicationHandler for App {
         };
         self.last_frame = now;
 
+        let simulation_paused = self
+            .debug_ui
+            .as_ref()
+            .is_some_and(byroredux_debug_ui::DebugUiState::game_menu_visible);
+
         // Update time resources.
         world_resource_set::<DeltaTime>(&self.world, |r| r.0 = dt);
-        world_resource_set::<TotalTime>(&self.world, |r| r.0 += dt);
+        if !simulation_paused {
+            world_resource_set::<TotalTime>(&self.world, |r| r.0 += dt);
+        }
 
         // Update debug stats.
         //
@@ -578,7 +588,9 @@ impl ApplicationHandler for App {
 
         // Run all systems.
         let systems_t0 = Instant::now();
-        self.scheduler.run(&self.world, dt);
+        if !simulation_paused {
+            self.scheduler.run(&self.world, dt);
+        }
         let atw_scheduler_ns = systems_t0.elapsed().as_nanos() as u64;
         if self.bench_frames_target.is_some() && self.renderer.is_some() {
             self.bench_systems_ns += atw_scheduler_ns;

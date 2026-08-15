@@ -58,11 +58,25 @@ impl App {
         // a Vec of Strings every frame. Gate those diagnostics on
         // `visible`; the interaction prompt is the only snapshot field
         // populated while the operator overlay is hidden.
-        let snapshot = if self.debug_ui.as_ref().is_some_and(|ui| ui.visible) {
+        let snapshot = if self
+            .debug_ui
+            .as_ref()
+            .is_some_and(|ui| ui.visible || ui.game_menu_visible())
+        {
             build_debug_ui_snapshot(&self.world, self.debug_ui_refresh_entities)
         } else {
             byroredux_debug_ui::PanelSnapshot {
                 interaction_prompt: build_interaction_prompt(&self.world),
+                show_crosshair: setting_bool(
+                    &self.world,
+                    byroredux_debug_ui::SHOW_CROSSHAIR_SETTING_ID,
+                    true,
+                ),
+                show_prompts: setting_bool(
+                    &self.world,
+                    byroredux_debug_ui::SHOW_PROMPTS_SETTING_ID,
+                    true,
+                ),
                 ..Default::default()
             }
         };
@@ -77,12 +91,19 @@ impl App {
                 (None, byroredux_debug_ui::PanelOutputs::default())
             };
 
-        apply_debug_ui_outputs(
+        let (resume_game, quit_game) = apply_debug_ui_outputs(
             &mut self.world,
             outputs,
             &mut self.debug_ui_refresh_entities,
             self.debug_ui.as_mut(),
         );
+        if resume_game {
+            self.resume_from_game_menu();
+        }
+        if quit_game {
+            self.shutdown(event_loop);
+            return;
+        }
 
         if let Some(ref mut ctx) = self.renderer {
             if let Some((egui_ctx, output)) = egui_frame {

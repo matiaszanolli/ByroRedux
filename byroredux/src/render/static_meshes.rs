@@ -17,7 +17,7 @@
 //! shape (snapshot to `Vec<RenderInstance>` resource once per frame,
 //! iterate it here with zero locks held).
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 use byroredux_core::ecs::{
     AnimatedUvTransform, AnimatedVisibility, EntityId, GlobalTransform, Material, MeshHandle,
@@ -54,7 +54,7 @@ pub(super) fn collect_static_mesh_draws(
     frustum: &FrustumPlanes,
     vp_mat: Mat4,
     cam_pos: Vec3,
-    skin_offsets: &HashMap<EntityId, u32>,
+    skin_offsets: &FxHashMap<EntityId, u32>,
     draw_commands: &mut Vec<DrawCommand>,
     material_table: &mut MaterialTable,
 ) {

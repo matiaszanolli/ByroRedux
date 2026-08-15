@@ -23,7 +23,7 @@ impl VulkanContext {
         cmd: vk::CommandBuffer,
         frame: usize,
         draw_commands: &[DrawCommand],
-        pose_dirty: &std::collections::HashSet<EntityId>,
+        pose_dirty: &rustc_hash::FxHashSet<EntityId>,
     ) {
         // ── M29 Phase 2: GPU pre-skin + per-skinned-entity BLAS refit ─
         //

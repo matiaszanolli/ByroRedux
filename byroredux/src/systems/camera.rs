@@ -42,7 +42,7 @@ pub(crate) fn fly_camera_system(world: &World, dt: f32) {
     let pitch = input.pitch;
     let descend = input
         .keys_held
-        .contains(&winit::keyboard::KeyCode::ShiftLeft);
+        .contains(&winit::keyboard::KeyCode::KeyQ);
     drop(input);
 
     let Some(actions) = world.try_resource::<ActionState>() else {

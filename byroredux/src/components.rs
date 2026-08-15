@@ -1107,6 +1107,8 @@ impl NameIndex {
 }
 
 /// Tracks keyboard and mouse input state for the fly camera.
+pub(crate) const DEFAULT_LOOK_SENSITIVITY: f32 = 0.002;
+
 pub(crate) struct InputState {
     pub(crate) keys_held: HashSet<KeyCode>,
     /// Yaw (horizontal) and pitch (vertical) in radians.
@@ -1115,6 +1117,7 @@ pub(crate) struct InputState {
     pub(crate) mouse_captured: bool,
     pub(crate) move_speed: f32,
     pub(crate) look_sensitivity: f32,
+    pub(crate) invert_look_y: bool,
 }
 
 impl Resource for InputState {}
@@ -1127,7 +1130,8 @@ impl Default for InputState {
             pitch: 0.0,
             mouse_captured: false,
             move_speed: 200.0, // Bethesda units per second
-            look_sensitivity: 0.002,
+            look_sensitivity: DEFAULT_LOOK_SENSITIVITY,
+            invert_look_y: false,
         }
     }
 }

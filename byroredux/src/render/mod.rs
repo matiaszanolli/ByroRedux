@@ -7,7 +7,7 @@ use byroredux_renderer::vulkan::context::DrawCommand;
 use byroredux_renderer::vulkan::water::WaterDrawCommand;
 use byroredux_renderer::{MaterialTable, SkyParams};
 use rayon::slice::ParallelSliceMut;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 use crate::components::CellLightingRes;
 
@@ -645,7 +645,7 @@ pub(crate) fn build_render_data(
     // Caller-owned purely so its capacity survives the frame (#2172).
     light_sort_scratch: &mut Vec<(f32, byroredux_renderer::GpuLight)>,
     bone_world: &mut Vec<[[f32; 4]; 4]>,
-    skin_offsets: &mut HashMap<EntityId, u32>,
+    skin_offsets: &mut FxHashMap<EntityId, u32>,
     skin_slot_pool: &mut SkinSlotPool,
     material_table: &mut MaterialTable,
     particle_quad_handle: Option<u32>,

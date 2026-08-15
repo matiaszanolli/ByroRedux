@@ -8,7 +8,7 @@ fn run_view(world: &World) -> RenderFrameView {
     // M29.6 — bone_world sparse-indexed by SkinSlotPool; bind_inverses
     // moved to a persistent GPU SSBO (not visible at this test layer).
     let mut bone_world = Vec::new();
-    let mut skin_offsets = HashMap::new();
+    let mut skin_offsets = rustc_hash::FxHashMap::default();
     // M29.6 — same `(MAX_TOTAL_BONES / MBPM) - 1` capacity as main.rs.
     let max_skinned = ((byroredux_renderer::vulkan::scene_buffer::MAX_TOTAL_BONES
         / byroredux_core::ecs::components::MAX_BONES_PER_MESH)

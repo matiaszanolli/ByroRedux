@@ -628,6 +628,16 @@ impl AccelerationManager {
         // `static_blas_bytes` not `total_blas_bytes` so skinned-BLAS
         // residency on NPC-heavy scenes can't trigger eviction of static
         // BLAS that the budget can't actually free (#920).
+        //
+        // #2927 / PERF-D3-03 — this ledger deliberately covers Phase 1
+        // ONLY (the uncompacted originals). It is NOT the batch peak: the
+        // compaction phase allocates a second, compacted set alongside
+        // these while every original is still live, so real peak residency
+        // is `static_blas_bytes + pending_bytes + total_after`. That larger
+        // figure is checked once, with exact sizes, at the head of
+        // `alloc_compact` below — see the `evict_unused_blas` call there.
+        // Keep the two in sync: a future budget tune made against
+        // `pending_bytes` alone is being made against ~⅔ of the real number.
         let mut pending_bytes: vk::DeviceSize = 0;
         // Now build geometries referencing the stored triangles data.
         for (idx, source) in meshes.iter().enumerate() {
@@ -935,7 +945,23 @@ impl AccelerationManager {
         // every Vulkan handle whose Drop relies on the explicit `destroy`
         // calls in phase 7. Mirrors the build/copy-phase cleanup pattern
         // at lines 733-745 / 815-832.
-        let alloc_compact = || -> Result<(Vec<CompactedBlas>, u64, u64)> {
+        //
+        // #2926 / PERF-D3-02 — `compact_accels` is owned by the CALLER of
+        // the closure and passed in by `&mut`, NOT declared inside it.
+        // #316's rollback reached `prepared` + the query pool only: every
+        // compacted `vk::AccelerationStructureKHR` an earlier iteration had
+        // already pushed was dropped as plain memory on both of the
+        // closure's early exits (the `create_device_local_uninit` `?` and
+        // the `create_acceleration_structure` `bail!`). `GpuBuffer` has a
+        // `Drop` safety net (#656) that reclaims the buffer; the raw
+        // acceleration-structure handle has no `Drop` impl at all and
+        // leaked for the process lifetime — the same reasoning as #2481,
+        // on the one path (allocator OOM) where leaking makes the *next*
+        // attempt fail sooner. Owning the vec outside means whatever the
+        // closure managed to allocate survives the error and is visible to
+        // the rollback arm below.
+        let mut compact_accels: Vec<CompactedBlas> = Vec::with_capacity(prepared.len());
+        let mut alloc_compact = |compact_accels: &mut Vec<CompactedBlas>| -> Result<(u64, u64)> {
             let mut compacted_sizes = vec![0u64; prepared.len()];
             // SAFETY: the WAIT flag blocks until all `n` compaction-size
             // queries written above are available; `compacted_sizes` has one
@@ -954,6 +980,29 @@ impl AccelerationManager {
             let total_before: u64 = prepared.iter().map(|p| p.buffer.size).sum();
             let total_after: u64 = compacted_sizes.iter().sum();
 
+            // #2927 / PERF-D3-03 — the real static-BLAS peak for this
+            // batch. The Phase-1 `pending_bytes` ledger (which drove the
+            // mid-batch `should_evict_mid_batch` checks) stopped at
+            // `total_before`: it never saw the compaction destinations,
+            // which are a SECOND full set of buffers allocated below while
+            // every Phase-1 original is still live (they aren't destroyed
+            // until Phase 7, after the copy submission retires). True peak
+            // residency is therefore `static_blas_bytes + total_before +
+            // total_after`, ~1.5× what the budget was being tested
+            // against, and there was no eviction check anywhere inside
+            // this phase — the one that pushes residency to its maximum.
+            //
+            // Unlike the Phase-1 loop, this needs no interval amortization
+            // and no per-iteration re-check: `get_query_pool_results` above
+            // has already handed us every compacted size, so the exact peak
+            // is known here, before a single destination is allocated. One
+            // pre-emptive call with the true figure is both cheaper and
+            // strictly more effective than the per-N-iterations sampling
+            // #1792 installed upstream. No-op when under budget (the callee
+            // early-returns), which is every case on a 12 GB card; this is a
+            // 6 GB-RT-minimum-target path, like the rest of `blas_budget_bytes`.
+            self.evict_unused_blas(device, allocator, total_before.saturating_add(total_after));
+
             // Tuple: (mesh_handle, compacted accel, compacted buffer,
             // build_scratch_size, vertex_count, index_count). Scratch
             // size is propagated from `prepared` so the final
@@ -961,15 +1010,6 @@ impl AccelerationManager {
             // at build time (#495); vertex/index counts are propagated
             // for the refit-counts VUID check (#907 — static BLAS
             // never refit but we pin the counts for symmetry).
-            let mut compact_accels: Vec<(
-                u32,
-                vk::AccelerationStructureKHR,
-                GpuBuffer,
-                vk::DeviceSize,
-                u32,
-                u32,
-            )> = Vec::with_capacity(prepared.len());
-
             for (i, p) in prepared.iter().enumerate() {
                 let compact_size = compacted_sizes[i];
 
@@ -999,8 +1039,12 @@ impl AccelerationManager {
                         Err(e) => {
                             // Buffer was created in this iteration but not
                             // yet pushed into `compact_accels`, so the outer
-                            // cleanup loop won't see it — destroy it locally
-                            // before bubbling so the OOM path is leak-free.
+                            // cleanup loop (which since #2926 does exist and
+                            // does walk `compact_accels`) won't see it —
+                            // destroy it locally before bubbling so the OOM
+                            // path is leak-free. Earlier iterations' entries
+                            // are already in `compact_accels` and are the
+                            // rollback arm's responsibility.
                             let mut b = compact_buffer;
                             b.destroy(device, allocator);
                             anyhow::bail!("Failed to create compact BLAS: {e}");
@@ -1018,15 +1062,30 @@ impl AccelerationManager {
                 ));
             }
 
-            Ok((compact_accels, total_before, total_after))
+            Ok((total_before, total_after))
         };
 
-        let (compact_accels, total_before, total_after) = match alloc_compact() {
+        let (total_before, total_after) = match alloc_compact(&mut compact_accels) {
             Ok(v) => v,
             Err(e) => {
-                // Roll back: destroy the originals (phase 7's job on the
-                // happy path) and the query pool. Partial phase-6 compact
-                // state was already cleaned up inside `alloc_compact`.
+                // Roll back: destroy whatever compaction destinations were
+                // already allocated (#2926 — the closure's own early exits
+                // leave them in `compact_accels`; only the failing
+                // iteration's not-yet-pushed buffer is cleaned up inside),
+                // then the originals (phase 7's job on the happy path) and
+                // the query pool. Mirrors the `copy_result` failure arm
+                // below, which has always walked both vecs correctly.
+                for (_, accel, mut buf, _, _, _) in compact_accels {
+                    // SAFETY: the compaction allocation failed before any copy
+                    // was recorded, so no in-flight command buffer references
+                    // this compacted `accel`; each accel + buffer is owned by
+                    // `compact_accels`; device is live.
+                    unsafe {
+                        self.accel_loader
+                            .destroy_acceleration_structure(accel, None);
+                    }
+                    buf.destroy(device, allocator);
+                }
                 for mut p in prepared {
                     // SAFETY: the compaction allocation failed before any copy was
                     // recorded, so no in-flight command buffer references `p.accel`;

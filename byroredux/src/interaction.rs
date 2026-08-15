@@ -12,9 +12,15 @@ use byroredux_core::ecs::{
     ActiveCamera, EntityId, GlobalTransform, Resource, Transform, World, WorldBound,
 };
 use byroredux_core::math::Vec3;
+use byroredux_core::settings::{
+    SettingChange, SettingChoice, SettingEntry, SettingValue, SettingsError, SettingsRegistry,
+};
 use winit::keyboard::KeyCode;
 
-use crate::components::{DoorTeleport, InputState};
+use crate::components::{DoorTeleport, InputState, DEFAULT_LOOK_SENSITIVITY};
+
+pub(crate) const MOUSE_SENSITIVITY_SETTING_ID: &str = "controls.mouse_sensitivity";
+pub(crate) const INVERT_LOOK_Y_SETTING_ID: &str = "controls.invert_y";
 
 /// Maximum camera-forward activation reach in Bethesda units.
 ///
@@ -62,6 +68,47 @@ impl InputAction {
     const fn bit(self) -> u16 {
         1_u16 << self as u8
     }
+
+    const CONFIGURABLE: [Self; 8] = [
+        Self::MoveForward,
+        Self::MoveBackward,
+        Self::StrafeLeft,
+        Self::StrafeRight,
+        Self::Jump,
+        Self::Sprint,
+        Self::Activate,
+        Self::Inventory,
+    ];
+
+    const fn setting_id(self) -> &'static str {
+        match self {
+            Self::MoveForward => "controls.bind.move_forward",
+            Self::MoveBackward => "controls.bind.move_backward",
+            Self::StrafeLeft => "controls.bind.strafe_left",
+            Self::StrafeRight => "controls.bind.strafe_right",
+            Self::Jump => "controls.bind.jump",
+            Self::Sprint => "controls.bind.sprint",
+            Self::Activate => "controls.bind.activate",
+            Self::Inventory => "controls.bind.inventory",
+            Self::Attack | Self::Block | Self::Pause => "",
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::MoveForward => "Move forward",
+            Self::MoveBackward => "Move backward",
+            Self::StrafeLeft => "Strafe left",
+            Self::StrafeRight => "Strafe right",
+            Self::Jump => "Jump / ascend",
+            Self::Sprint => "Sprint / boost",
+            Self::Activate => "Activate",
+            Self::Inventory => "Inventory",
+            Self::Attack => "Attack",
+            Self::Block => "Block",
+            Self::Pause => "Pause",
+        }
+    }
 }
 
 /// Runtime-remappable keyboard bindings.
@@ -84,7 +131,7 @@ impl Default for ActionBindings {
                 (KeyCode::KeyA, InputAction::StrafeLeft),
                 (KeyCode::KeyD, InputAction::StrafeRight),
                 (KeyCode::Space, InputAction::Jump),
-                (KeyCode::ControlLeft, InputAction::Sprint),
+                (KeyCode::ShiftLeft, InputAction::Sprint),
                 (KeyCode::KeyE, InputAction::Activate),
                 (KeyCode::Tab, InputAction::Inventory),
             ]),
@@ -96,7 +143,38 @@ impl ActionBindings {
     /// Replace the action produced by a physical keyboard key.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn bind_key(&mut self, key: KeyCode, action: InputAction) {
+        self.rebind_key(key, action);
+    }
+
+    /// Assign one physical key to an action. If the key already belongs to a
+    /// different action, that action receives the target action's old key.
+    /// This keeps every configured action reachable and every key unique.
+    fn rebind_key(&mut self, key: KeyCode, action: InputAction) -> Option<(InputAction, KeyCode)> {
+        let old_key = self.key_for_action(action)?;
+        if old_key == key {
+            return None;
+        }
+        let displaced = self.keyboard.remove(&key);
+        self.keyboard.remove(&old_key);
+        if let Some(displaced_action) = displaced.filter(|other| *other != action) {
+            self.keyboard.insert(old_key, displaced_action);
+            self.keyboard.insert(key, action);
+            return Some((displaced_action, old_key));
+        }
         self.keyboard.insert(key, action);
+        None
+    }
+
+    pub(crate) fn key_for_action(&self, action: InputAction) -> Option<KeyCode> {
+        self.keyboard
+            .iter()
+            .find_map(|(key, bound)| (*bound == action).then_some(*key))
+    }
+
+    pub(crate) fn binding_label(&self, action: InputAction) -> &'static str {
+        self.key_for_action(action)
+            .map(key_label)
+            .unwrap_or("Unbound")
     }
 
     fn held_mask(&self, keys_held: &std::collections::HashSet<KeyCode>) -> u16 {
@@ -108,6 +186,215 @@ impl ActionBindings {
 
     fn action_for_key(&self, key: KeyCode) -> Option<InputAction> {
         self.keyboard.get(&key).copied()
+    }
+}
+
+/// Register the player-control settings owned by the action layer.
+pub(crate) fn register_input_settings(
+    registry: &mut SettingsRegistry,
+) -> Result<(), SettingsError> {
+    registry.register(SettingEntry::slider(
+        MOUSE_SENSITIVITY_SETTING_ID,
+        "Controls",
+        "Mouse sensitivity",
+        "Scale horizontal and vertical mouse-look speed.",
+        1.0,
+        0.1,
+        4.0,
+        0.05,
+        "×",
+    ))?;
+    registry.register(SettingEntry::toggle(
+        INVERT_LOOK_Y_SETTING_ID,
+        "Controls",
+        "Invert vertical look",
+        "Move the view up when the mouse moves down, and vice versa.",
+        false,
+    ))?;
+
+    let defaults = ActionBindings::default();
+    for action in InputAction::CONFIGURABLE {
+        let key = defaults
+            .key_for_action(action)
+            .expect("every configurable action has a default binding");
+        registry.register(SettingEntry::choice(
+            action.setting_id(),
+            "Controls",
+            action.label(),
+            "Selecting a key already in use swaps the two bindings.",
+            key_id(key),
+            key_choices(),
+        ))?;
+    }
+    Ok(())
+}
+
+/// Apply a control-owned setting to live input state. A key collision returns
+/// the companion registry update produced by the binding swap.
+pub(crate) fn apply_control_setting(
+    world: &World,
+    change: &SettingChange,
+) -> Option<SettingChange> {
+    match (change.id.as_str(), &change.value) {
+        (MOUSE_SENSITIVITY_SETTING_ID, SettingValue::Number(multiplier)) => {
+            world.resource_mut::<InputState>().look_sensitivity =
+                DEFAULT_LOOK_SENSITIVITY * multiplier;
+            None
+        }
+        (INVERT_LOOK_Y_SETTING_ID, SettingValue::Bool(inverted)) => {
+            world.resource_mut::<InputState>().invert_look_y = *inverted;
+            None
+        }
+        (id, SettingValue::Choice(key)) => {
+            let action = action_for_setting(id)?;
+            let key = parse_key_id(key)?;
+            let swapped = world
+                .resource_mut::<ActionBindings>()
+                .rebind_key(key, action);
+            // A held key must not migrate into a newly-bound action halfway
+            // through a press. The next physical press establishes fresh
+            // held/pressed edges.
+            world.resource_mut::<InputState>().keys_held.clear();
+            swapped.map(|(other, other_key)| {
+                SettingChange::new(
+                    other.setting_id(),
+                    SettingValue::Choice(key_id(other_key).to_owned()),
+                )
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Reapply all registered controls after persisted settings are overlaid.
+pub(crate) fn sync_registered_settings(world: &World) {
+    let changes: Vec<SettingChange> = world
+        .resource::<SettingsRegistry>()
+        .entries()
+        .filter(|entry| {
+            entry.id == MOUSE_SENSITIVITY_SETTING_ID
+                || entry.id == INVERT_LOOK_Y_SETTING_ID
+                || action_for_setting(&entry.id).is_some()
+        })
+        .map(|entry| SettingChange::new(&entry.id, entry.value.clone()))
+        .collect();
+
+    for change in changes {
+        if let Some(companion) = apply_control_setting(world, &change) {
+            if let Err(error) = world
+                .resource_mut::<SettingsRegistry>()
+                .set(&companion.id, companion.value)
+            {
+                log::warn!("could not synchronize swapped binding: {error}");
+            }
+        }
+    }
+}
+
+fn action_for_setting(id: &str) -> Option<InputAction> {
+    InputAction::CONFIGURABLE
+        .into_iter()
+        .find(|action| action.setting_id() == id)
+}
+
+fn key_choices() -> Vec<SettingChoice> {
+    SUPPORTED_KEYS
+        .iter()
+        .map(|key| SettingChoice::new(key_id(*key), key_label(*key)))
+        .collect()
+}
+
+const SUPPORTED_KEYS: &[KeyCode] = &[
+    KeyCode::KeyW,
+    KeyCode::KeyA,
+    KeyCode::KeyS,
+    KeyCode::KeyD,
+    KeyCode::KeyE,
+    KeyCode::KeyF,
+    KeyCode::KeyQ,
+    KeyCode::KeyR,
+    KeyCode::KeyC,
+    KeyCode::KeyI,
+    KeyCode::KeyJ,
+    KeyCode::KeyK,
+    KeyCode::KeyL,
+    KeyCode::KeyX,
+    KeyCode::KeyZ,
+    KeyCode::ArrowUp,
+    KeyCode::ArrowDown,
+    KeyCode::ArrowLeft,
+    KeyCode::ArrowRight,
+    KeyCode::Space,
+    KeyCode::ShiftLeft,
+    KeyCode::ControlLeft,
+    KeyCode::AltLeft,
+    KeyCode::Tab,
+    KeyCode::Enter,
+];
+
+fn key_id(key: KeyCode) -> &'static str {
+    match key {
+        KeyCode::KeyW => "key_w",
+        KeyCode::KeyA => "key_a",
+        KeyCode::KeyS => "key_s",
+        KeyCode::KeyD => "key_d",
+        KeyCode::KeyE => "key_e",
+        KeyCode::KeyF => "key_f",
+        KeyCode::KeyQ => "key_q",
+        KeyCode::KeyR => "key_r",
+        KeyCode::KeyC => "key_c",
+        KeyCode::KeyI => "key_i",
+        KeyCode::KeyJ => "key_j",
+        KeyCode::KeyK => "key_k",
+        KeyCode::KeyL => "key_l",
+        KeyCode::KeyX => "key_x",
+        KeyCode::KeyZ => "key_z",
+        KeyCode::ArrowUp => "arrow_up",
+        KeyCode::ArrowDown => "arrow_down",
+        KeyCode::ArrowLeft => "arrow_left",
+        KeyCode::ArrowRight => "arrow_right",
+        KeyCode::Space => "space",
+        KeyCode::ShiftLeft => "left_shift",
+        KeyCode::ControlLeft => "left_control",
+        KeyCode::AltLeft => "left_alt",
+        KeyCode::Tab => "tab",
+        KeyCode::Enter => "enter",
+        _ => "unsupported",
+    }
+}
+
+fn parse_key_id(id: &str) -> Option<KeyCode> {
+    SUPPORTED_KEYS.iter().copied().find(|key| key_id(*key) == id)
+}
+
+fn key_label(key: KeyCode) -> &'static str {
+    match key {
+        KeyCode::KeyW => "W",
+        KeyCode::KeyA => "A",
+        KeyCode::KeyS => "S",
+        KeyCode::KeyD => "D",
+        KeyCode::KeyE => "E",
+        KeyCode::KeyF => "F",
+        KeyCode::KeyQ => "Q",
+        KeyCode::KeyR => "R",
+        KeyCode::KeyC => "C",
+        KeyCode::KeyI => "I",
+        KeyCode::KeyJ => "J",
+        KeyCode::KeyK => "K",
+        KeyCode::KeyL => "L",
+        KeyCode::KeyX => "X",
+        KeyCode::KeyZ => "Z",
+        KeyCode::ArrowUp => "Up",
+        KeyCode::ArrowDown => "Down",
+        KeyCode::ArrowLeft => "Left",
+        KeyCode::ArrowRight => "Right",
+        KeyCode::Space => "Space",
+        KeyCode::ShiftLeft => "Left Shift",
+        KeyCode::ControlLeft => "Left Ctrl",
+        KeyCode::AltLeft => "Left Alt",
+        KeyCode::Tab => "Tab",
+        KeyCode::Enter => "Enter",
+        _ => "Unknown",
     }
 }
 
@@ -178,20 +465,6 @@ impl InteractionKind {
         }
     }
 
-    /// The composed HUD prompt for this kind.
-    ///
-    /// #2680 / PERF-D1-02 — a const table rather than `format!("[E] {verb}")`:
-    /// the prompt is rebuilt on **every** frame (it is the one snapshot field
-    /// #1376 deliberately keeps populated while the operator overlay is
-    /// hidden), so composing it allocated a `String` per frame for as long as
-    /// the player looked at anything activatable. Both halves are compile-time
-    /// constants, so there is nothing to compose at runtime.
-    const fn prompt(self) -> &'static str {
-        match self {
-            Self::Activate => "[E] Activate",
-            Self::Door => "[E] Open",
-        }
-    }
 }
 
 /// The single reference selected by the camera-forward interaction query.
@@ -211,8 +484,8 @@ pub(crate) struct InteractionState {
 impl Resource for InteractionState {}
 
 impl InteractionState {
-    pub(crate) fn prompt(&self) -> Option<&'static str> {
-        self.target.map(|target| target.kind.prompt())
+    pub(crate) fn prompt_verb(&self) -> Option<&'static str> {
+        self.target.map(|target| target.kind.verb())
     }
 }
 

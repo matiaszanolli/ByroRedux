@@ -42,6 +42,7 @@ mod scene;
 mod scene_import_cache;
 #[cfg(test)]
 mod scheduler_access_tests;
+mod settings_io;
 mod sf_smoke;
 mod streaming;
 mod streaming_helpers;
@@ -51,12 +52,11 @@ mod ui_input;
 use anyhow::Result;
 use byroredux_core::console::CommandRegistry;
 use byroredux_core::ecs::{Scheduler, World};
-use byroredux_core::settings::SettingsRegistry;
+use byroredux_core::settings::{SettingChange, SettingValue, SettingsRegistry};
 use byroredux_core::string::StringPool;
 use byroredux_renderer::vulkan::context::DrawCommand;
 use byroredux_renderer::{RendererConfig, VulkanContext};
 use byroredux_ui::UiManager;
-use std::collections::HashMap;
 use std::time::Instant;
 use winit::event::WindowEvent;
 use winit::window::{CursorGrabMode, Window};
@@ -143,9 +143,15 @@ struct App {
     skin_slot_pool: byroredux_core::ecs::resources::SkinSlotPool,
     /// Reusable per-frame entity → bone-offset map. Populated by the
     /// skinned-mesh pass in `build_render_data` and read during draw
-    /// command emission. Retained across frames so the HashMap's bucket
+    /// command emission. Retained across frames so the map's bucket
     /// allocation persists — see #253.
-    skin_offsets: HashMap<byroredux_core::ecs::EntityId, u32>,
+    ///
+    /// `FxHashMap`, not std (#2923): `collect_static_mesh_draws` probes
+    /// this once for **every** mesh entity in the draw-emit loop, not
+    /// just the skinned ones, so most probes are misses on a map keyed
+    /// by a small integer — the shape #1368 / #2174 already moved off
+    /// SipHash-1-3 elsewhere on the render hot path.
+    skin_offsets: rustc_hash::FxHashMap<byroredux_core::ecs::EntityId, u32>,
     /// R1 — per-frame deduplicated material table. Cleared at the
     /// top of `build_render_data`, populated as DrawCommands are
     /// emitted, uploaded as an SSBO before draw. Phase 2 builds it
@@ -327,7 +333,7 @@ impl Drop for App {
 }
 
 impl App {
-    fn new(debug_mode: bool, args: &[String], renderer_config: RendererConfig) -> Self {
+    fn new(debug_mode: bool, args: &[String], mut renderer_config: RendererConfig) -> Self {
         // Three-phase construction (#1670) — see the helpers in `boot`.
         let mut world = boot::build_world(debug_mode, args);
         let mut scheduler = boot::build_scheduler();
@@ -365,19 +371,40 @@ impl App {
         let mut settings = SettingsRegistry::default();
         byroredux_debug_ui::register_builtin_settings(&mut settings)
             .expect("debug-UI built-in settings must be valid and unique");
-        // Seed the upscaler entry from what the CLI actually selected, so the
-        // panel opens describing the running configuration instead of the
-        // registry's `taa` default. A spec the choice list doesn't offer
-        // (nothing today, but the CLI grammar is the looser of the two) is
-        // reported and left at the default rather than silently accepted.
-        let active_upscaler = renderer_config.upscaler.to_string();
-        if let Err(error) = settings.set(
-            byroredux_debug_ui::UPSCALER_SETTING_ID,
-            byroredux_core::settings::SettingValue::Choice(active_upscaler.clone()),
-        ) {
-            log::warn!("could not seed the upscaler setting from '{active_upscaler}': {error}");
+        interaction::register_input_settings(&mut settings)
+            .expect("input settings must be valid and unique");
+        let settings_persistence = settings_io::SettingsPersistence::discover();
+        settings_io::load(&mut settings, &settings_persistence);
+
+        // Explicit command-line renderer selection wins for reproducible
+        // benchmarks and diagnostics. Ordinary launches inherit the persisted
+        // menu selection before VulkanContext is created, avoiding an
+        // expensive first-frame upscaler rebuild.
+        let explicit_upscaler = args
+            .iter()
+            .any(|arg| arg == "--upscaler" || arg == "--fsr-quality");
+        if explicit_upscaler {
+            let active_upscaler = renderer_config.upscaler.to_string();
+            if let Err(error) = settings.set(
+                byroredux_debug_ui::UPSCALER_SETTING_ID,
+                SettingValue::Choice(active_upscaler.clone()),
+            ) {
+                log::warn!(
+                    "could not seed the upscaler setting from '{active_upscaler}': {error}"
+                );
+            }
+        } else if let Some(SettingValue::Choice(spec)) = settings
+            .get(byroredux_debug_ui::UPSCALER_SETTING_ID)
+            .map(|entry| &entry.value)
+        {
+            match cli_args::parse_upscaler_spec(spec) {
+                Ok(mode) => renderer_config.upscaler = mode,
+                Err(error) => log::warn!("persisted upscaler '{spec}' is invalid: {error}"),
+            }
         }
         world.insert_resource(settings);
+        world.insert_resource(settings_persistence);
+        interaction::sync_registered_settings(&world);
 
         Self {
             window: None,
@@ -409,7 +436,7 @@ impl App {
                     / byroredux_core::ecs::components::MAX_BONES_PER_MESH)
                     - 1) as u32,
             ),
-            skin_offsets: HashMap::new(),
+            skin_offsets: rustc_hash::FxHashMap::default(),
             material_table: byroredux_renderer::MaterialTable::new(),
             bench_mode: None,
             bench_frames_target: None,
@@ -514,6 +541,36 @@ impl App {
             }
         }
     }
+
+    /// Return mouse look to gameplay after a native modal closes.
+    fn capture_world_input(&mut self) {
+        self.world.resource_mut::<InputState>().mouse_captured = true;
+        if let Some(window) = self.window.as_ref() {
+            let _ = window
+                .set_cursor_grab(CursorGrabMode::Confined)
+                .or_else(|_| window.set_cursor_grab(CursorGrabMode::Locked));
+            window.set_cursor_visible(false);
+        }
+    }
+
+    fn toggle_game_menu(&mut self) {
+        let opened = self
+            .debug_ui
+            .as_mut()
+            .is_some_and(byroredux_debug_ui::DebugUiState::toggle_game_menu);
+        if opened {
+            self.release_world_input_for_ui();
+        } else {
+            self.capture_world_input();
+        }
+    }
+
+    fn resume_from_game_menu(&mut self) {
+        if let Some(ui) = self.debug_ui.as_mut() {
+            ui.close_game_menu();
+        }
+        self.capture_world_input();
+    }
 }
 
 // Tear down the active exterior streaming state: drain every loaded
@@ -589,16 +646,38 @@ fn build_debug_ui_snapshot(
 
     byroredux_debug_ui::PanelSnapshot {
         interaction_prompt: build_interaction_prompt(world),
+        show_crosshair: setting_bool(
+            world,
+            byroredux_debug_ui::SHOW_CROSSHAIR_SETTING_ID,
+            true,
+        ),
+        show_prompts: setting_bool(world, byroredux_debug_ui::SHOW_PROMPTS_SETTING_ID, true),
         metrics,
         settings,
         entities,
     }
 }
 
-fn build_interaction_prompt(world: &World) -> Option<&'static str> {
-    world
+fn build_interaction_prompt(world: &World) -> Option<byroredux_debug_ui::InteractionPrompt> {
+    let verb = world
         .try_resource::<crate::interaction::InteractionState>()
-        .and_then(|state| state.prompt())
+        .and_then(|state| state.prompt_verb())?;
+    let binding = world
+        .try_resource::<crate::interaction::ActionBindings>()
+        .map(|bindings| bindings.binding_label(crate::interaction::InputAction::Activate))
+        .unwrap_or("E");
+    Some(byroredux_debug_ui::InteractionPrompt { binding, verb })
+}
+
+fn setting_bool(world: &World, id: &str, fallback: bool) -> bool {
+    world
+        .try_resource::<SettingsRegistry>()
+        .and_then(|registry| registry.get(id).map(|entry| entry.value.clone()))
+        .and_then(|value| match value {
+            SettingValue::Bool(value) => Some(value),
+            _ => None,
+        })
+        .unwrap_or(fallback)
 }
 
 /// Apply the [`PanelOutputs`] the overlay produced back to the world. Queued
@@ -611,8 +690,11 @@ fn apply_debug_ui_outputs(
     outputs: byroredux_debug_ui::PanelOutputs,
     refresh_entities_flag: &mut bool,
     debug_ui: Option<&mut byroredux_debug_ui::DebugUiState>,
-) {
+) -> (bool, bool) {
     let mut debug_ui = debug_ui;
+    let resume_game = outputs.resume_game;
+    let quit_game = outputs.quit_game;
+    let mut settings_changed = false;
     if outputs.refresh_entities {
         *refresh_entities_flag = true;
     }
@@ -632,10 +714,22 @@ fn apply_debug_ui_outputs(
             settings.set(&change.id, change.value.clone())
         };
         match result {
-            Ok(_) => {
+            Ok(changed) => {
+                settings_changed |= changed;
                 if let Some(ui) = debug_ui.as_deref_mut() {
                     ui.apply_setting_change(&change);
                 }
+                if let Some(companion) = interaction::apply_control_setting(world, &change) {
+                    let companion_changed = world
+                        .resource_mut::<SettingsRegistry>()
+                        .set(&companion.id, companion.value)
+                        .unwrap_or_else(|error| {
+                            log::warn!("rejected companion binding change: {error}");
+                            false
+                        });
+                    settings_changed |= companion_changed;
+                }
+                apply_camera_setting(world, &change);
                 // The upscaler entry cannot be applied here: switching
                 // rebuilds every render-resolution target and needs
                 // `&mut VulkanContext`. Stage it for the frame boundary,
@@ -658,8 +752,13 @@ fn apply_debug_ui_outputs(
             }
         }
     }
+    if settings_changed {
+        let persistence = world.resource::<settings_io::SettingsPersistence>().clone();
+        let settings = world.resource::<SettingsRegistry>();
+        settings_io::save(&settings, &persistence);
+    }
     if outputs.console_evals.is_empty() {
-        return;
+        return (resume_game, quit_game);
     }
     // Collect responses first, then push into the overlay's
     // scrollback. Splitting the two phases keeps the `&World`
@@ -679,5 +778,35 @@ fn apply_debug_ui_outputs(
         for line in response_lines {
             ui.push_console_line(line);
         }
+    }
+    (resume_game, quit_game)
+}
+
+fn apply_camera_setting(world: &World, change: &SettingChange) {
+    if change.id != byroredux_debug_ui::FOV_SETTING_ID {
+        return;
+    }
+    let SettingValue::Number(degrees) = change.value else {
+        return;
+    };
+    let Some(active) = world.try_resource::<byroredux_core::ecs::ActiveCamera>() else {
+        return;
+    };
+    let entity = active.0;
+    drop(active);
+    if let Some(mut cameras) = world.query_mut::<byroredux_core::ecs::Camera>() {
+        if let Some(camera) = cameras.get_mut(entity) {
+            camera.fov_y = degrees.to_radians();
+        }
+    }
+}
+
+fn sync_camera_setting(world: &World) {
+    let change = world
+        .resource::<SettingsRegistry>()
+        .get(byroredux_debug_ui::FOV_SETTING_ID)
+        .map(|entry| SettingChange::new(&entry.id, entry.value.clone()));
+    if let Some(change) = change {
+        apply_camera_setting(world, &change);
     }
 }
