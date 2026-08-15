@@ -119,8 +119,26 @@ impl CharacterRuleset {
         found.then_some(sum)
     }
 
-    /// Number of derived stats this game computes.
-    pub fn derived_len(&self) -> usize {
+    /// #2934 — DOCTRINE GAP (recorded, not fixed here). CHARAL's spec gives
+    /// this struct a `skill_calc: SkillDerivation { base, attr_mult, luck_mult }`
+    /// field so the FNV/FO3 auto-calc *rule* (`skill = 2 + 2·governing +
+    /// ceil(Luck/2)`) lives with the other per-game rules. That field does not
+    /// exist workspace-wide; the coefficients currently sit in
+    /// `crates/plugin/src/esm/records/actor_value_derive.rs`, i.e. in a
+    /// consumer rather than in the ruleset. The attribute-roster half of the
+    /// duplication is closed (that module now reads `AttributeSet::FALLOUT`);
+    /// the rule half is deliberately paired with sourcing those coefficients
+    /// from GMSTs (#2942), which is what would populate the field.
+    ///
+    /// Number of derived-stat formula **rows** — not the number of distinct
+    /// stats.
+    ///
+    /// #2935 — a stat may be registered across several rows whose values sum
+    /// (`derived_value` adds every row matching an output id; TES Fatigue is
+    /// the motivating case, and Oblivion registers 8 rows for 5 stats). The
+    /// old name and docstring said "derived stats", which reads as a stat
+    /// count and made the flat-`Vec` sizing rationale look tighter than it is.
+    pub fn derived_row_len(&self) -> usize {
         self.derived.len()
     }
 }
@@ -168,7 +186,7 @@ mod tests {
         assert_eq!(rs.derived_value(AV_AP, &avs, 1), Some(120.0));
         // Carry Weight: 200 + 10·7 = 270.
         assert_eq!(rs.derived_value(AV_CARRY, &avs, 1), Some(270.0));
-        assert_eq!(rs.derived_len(), 3);
+        assert_eq!(rs.derived_row_len(), 3);
     }
 
     #[test]

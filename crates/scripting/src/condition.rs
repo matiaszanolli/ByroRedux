@@ -422,7 +422,9 @@ pub fn evaluate_function(
             // (function 14 is in the CTDA form-id-param list, #1666), the same
             // space `ActorValues` is keyed in — a direct lookup, no FormIdPool
             // hop (the key IS the AV's id, not the actor's identity). #1663.
-            use byroredux_core::character::{CharacterLevel, CharacterRuleset, DerivedScope};
+            use byroredux_core::character::{
+                CharacterLevel, CharacterRuleset, DerivedOutput, DerivedScope,
+            };
             use byroredux_core::ecs::components::ActorValues;
             let Some(avs) = world.get::<ActorValues>(entity) else {
                 return 0.0; // no `ActorValues` → absent-AV default
@@ -442,7 +444,24 @@ pub fn evaluate_function(
                 // this stat (multi-row stats like TES Fatigue — see
                 // `CharacterRuleset::derived_value`).
                 if let Some(formula) = rs.derived_formula(condition.param_1) {
-                    if formula.scope == DerivedScope::ActorGeneral {
+                    // #2933 — BOTH contract fields must be honoured, not just
+                    // `scope`. A `DerivedOutput::Multiplier` row's `eval`
+                    // returns a *ratio* for a combat/XP consumer to multiply
+                    // by; `GetActorValue` is neither, and Bethesda's own
+                    // `GetActorValue` yields an actor-value reading. FO4's
+                    // Melee Damage is `×(1 + 0.1·STR)` and actor-general, so
+                    // it passed the scope check and leaked a bare 1.0..=2.0
+                    // where a condition expected a damage value — small enough
+                    // to satisfy `> 0` gates and fail realistic thresholds,
+                    // with nothing crashing. Oblivion's two armour-rating rows
+                    // are the same shape and would behave identically once
+                    // wired. Multiplier stats fall through to the absent-AV
+                    // default, exactly as player-only stats already do; a
+                    // dedicated accessor is the place to expose them to the
+                    // consumers actually meant to read them.
+                    if formula.scope == DerivedScope::ActorGeneral
+                        && formula.kind == DerivedOutput::Absolute
+                    {
                         let level = world.get::<CharacterLevel>(entity).map_or(0, |l| l.level);
                         return rs
                             .derived_value(condition.param_1, &avs, level)
@@ -1631,5 +1650,76 @@ mod tests {
             self.param_2 = p;
             self
         }
+    }
+
+    /// Regression for #2933 — `GetActorValue` must honour BOTH contract fields
+    /// on `DerivedStatFormula`, not just `scope`.
+    ///
+    /// A `DerivedOutput::Multiplier` row's `eval` returns a *ratio* meant for a
+    /// combat/XP consumer to multiply by. FO4's Melee Damage is
+    /// `x(1 + 0.1*STR)` and actor-general, so it passed the scope check and
+    /// leaked a bare 1.0..=2.0 where Bethesda's own `GetActorValue` yields an
+    /// actor-value reading — small enough to satisfy `> 0` gates and fail
+    /// realistic thresholds, with nothing crashing and no test failing.
+    #[test]
+    fn get_actor_value_skips_multiplier_kind_rows() {
+        use byroredux_core::character::derived::{DerivedInput, DerivedStatFormula};
+        use byroredux_core::character::leveling::LevelingModel;
+        use byroredux_core::character::CharacterRuleset;
+        use byroredux_core::ecs::components::ActorValues;
+
+        const STRENGTH: u32 = 0x20;
+        const MELEE_DAMAGE: u32 = 0x21;
+        const CARRY_WEIGHT: u32 = 0x22;
+
+        let mut rs = CharacterRuleset::new(LevelingModel::FO4);
+        // FO4 Melee Damage: x(1 + 0.1*STR), actor-general + MULTIPLIER.
+        rs.push_derived(
+            MELEE_DAMAGE,
+            DerivedStatFormula::affine(DerivedInput::actor_value(STRENGTH), 0.1, 1.0)
+                .as_multiplier(),
+        );
+        // A control row of the same scope but ABSOLUTE kind, so the test
+        // proves the gate keys on `kind` and not on "derived rows are skipped".
+        rs.push_derived(
+            CARRY_WEIGHT,
+            DerivedStatFormula::affine(DerivedInput::actor_value(STRENGTH), 10.0, 25.0),
+        );
+
+        let mut world = World::new();
+        world.insert_resource(rs);
+        let e = world.spawn();
+        world.insert(e, ActorValues::from_pairs([(STRENGTH, 5.0)]));
+
+        let multiplier = evaluate_function(
+            ConditionFunction::GetActorValue,
+            &Condition {
+                param_1: MELEE_DAMAGE,
+                ..cond(14, ComparisonOp::Eq, 0.0, false)
+            },
+            e,
+            &world,
+        );
+        assert_eq!(
+            multiplier, 0.0,
+            "a Multiplier-kind row must fall through to the absent-AV default, \
+             exactly as a player-only row already does — returning 1.5 here is \
+             the #2933 leak"
+        );
+
+        let absolute = evaluate_function(
+            ConditionFunction::GetActorValue,
+            &Condition {
+                param_1: CARRY_WEIGHT,
+                ..cond(14, ComparisonOp::Eq, 0.0, false)
+            },
+            e,
+            &world,
+        );
+        assert_eq!(
+            absolute, 75.0,
+            "absolute actor-general rows must still resolve (10*5 + 25) — the \
+             gate keys on `kind`, not on derived-ness"
+        );
     }
 }

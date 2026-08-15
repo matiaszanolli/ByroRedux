@@ -159,7 +159,7 @@ mod tests {
         assert_eq!(rs.skills.len(), 18);
         assert_eq!(rs.leveling, LM::SKYRIM);
         assert_eq!(
-            rs.derived_len(),
+            rs.derived_row_len(),
             0,
             "unresolved AVIFs mean nothing populates"
         );
@@ -181,7 +181,7 @@ mod tests {
         use crate::ecs::components::ActorValues;
 
         let rs = skyrim_ruleset(full);
-        assert_eq!(rs.derived_len(), 2, "Light Armor + Carry Weight");
+        assert_eq!(rs.derived_row_len(), 2, "Light Armor + Carry Weight");
         // ×(1 + 0.004·LightArmor). Skill 50 → 1.20×.
         let avs = ActorValues::from_pairs([(0x101, 50.0)]);
         let mult = rs.derived_value(0x100, &avs, 1).unwrap();
@@ -200,7 +200,7 @@ mod tests {
             other => full(other),
         };
         let rs = skyrim_ruleset(partial);
-        assert_eq!(rs.derived_len(), 1, "only Carry Weight resolves");
+        assert_eq!(rs.derived_row_len(), 1, "only Carry Weight resolves");
     }
 
     #[test]
@@ -231,7 +231,7 @@ mod tests {
             other => full(other),
         };
         let rs = skyrim_ruleset(partial);
-        assert_eq!(rs.derived_len(), 1, "only Light Armor resolves");
+        assert_eq!(rs.derived_row_len(), 1, "only Light Armor resolves");
     }
 
     #[test]

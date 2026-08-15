@@ -55,29 +55,37 @@
 use super::actor::NpcRecord;
 use super::index::EsmIndex;
 use crate::esm::reader::GameKind;
-use byroredux_core::character::{Attribute, SkillSet};
+use byroredux_core::character::{Attribute, AttributeSet, SkillSet};
 
-/// The 7 SPECIAL attributes, in `ATTR`/`ClassRecord::base_attributes`
-/// order, paired with their `AVIF` EditorID.
-const SPECIAL: [&str; 7] = [
-    "Strength",
-    "Perception",
-    "Endurance",
-    "Charisma",
-    "Intelligence",
-    "Agility",
-    "Luck",
-];
-
-/// The governing SPECIAL's index into [`SPECIAL`] / `class.base_attributes`
-/// for a canonical [`Attribute`]. `None` for a non-SPECIAL attribute (never
-/// happens for a Fallout skill governor). The [`SPECIAL`] editor-id order is
-/// the ATTR order, so a position search yields the class-attribute index.
+/// The governing SPECIAL's index into `class.base_attributes` for a canonical
+/// [`Attribute`]. `None` for a non-SPECIAL attribute (never happens for a
+/// Fallout skill governor).
+///
+/// #2934 — reads the roster from [`AttributeSet::FALLOUT`] rather than a local
+/// copy. The array that used to live here duplicated CHARAL's attribute roster
+/// in a second crate, so a canonical-order change would have desynced silently:
+/// this is a *positional* lookup into `ClassRecord::base_attributes` (ATTR
+/// order), and a mismatched index reads the wrong attribute for every
+/// auto-calc skill. `fallout_roster_matches_attr_order` pins the two orders
+/// against each other.
 fn special_index(attr: Attribute) -> Option<usize> {
-    SPECIAL.iter().position(|id| *id == attr.editor_id())
+    AttributeSet::FALLOUT
+        .members()
+        .iter()
+        .position(|a| *a == attr)
 }
 
 // Derived-skill game-setting defaults (geckwiki Derived Skill Settings).
+//
+// #2934 — DOCTRINE NOTE. These three coefficients are a per-game *rule*, and
+// CHARAL's stated shape puts rules on `CharacterRuleset` (the spec's
+// `skill_calc: SkillDerivation { base, attr_mult, luck_mult }` field), not in
+// a consumer crate. They live here because nothing populates that field yet —
+// it does not exist workspace-wide. Moving them is deliberately paired with
+// sourcing them from GMSTs (#2942): the values would then have one place to be
+// read into, and `derive_npc_actor_values` would take the ruleset rather than
+// re-deriving the rule. Until then this is a known, recorded deviation rather
+// than a silent one.
 const SKILL_BASE: f32 = 2.0; // fAVDSkill<name>Base
 const SKILL_ATTR_MULT: f32 = 2.0; // fAVDSkillPrimaryBonusMult
 const SKILL_LUCK_MULT: f32 = 0.5; // fAVDSkillLuckBonusMult
@@ -148,9 +156,10 @@ fn derive_autocalc_actor_values(npc: &NpcRecord, index: &EsmIndex) -> Vec<(u32, 
     let luck = special[6];
 
     let skills = SkillSet::FALLOUT_FO3_FNV;
-    let mut out = Vec::with_capacity(SPECIAL.len() + skills.len());
-    for (i, editor_id) in SPECIAL.iter().enumerate() {
-        if let Some(fid) = index.actor_value_form_id(editor_id) {
+    let roster = AttributeSet::FALLOUT.members();
+    let mut out = Vec::with_capacity(roster.len() + skills.len());
+    for (i, attr) in roster.iter().enumerate() {
+        if let Some(fid) = index.actor_value_form_id(attr.editor_id()) {
             out.push((fid, f32::from(special[i])));
         }
     }
@@ -171,6 +180,44 @@ fn derive_autocalc_actor_values(npc: &NpcRecord, index: &EsmIndex) -> Vec<(u32, 
 
 #[cfg(test)]
 mod tests {
+
+    /// #2934 — `special_index` is a POSITIONAL lookup into
+    /// `ClassRecord::base_attributes`, which is stored in ATTR order
+    /// (S-P-E-C-I-A-L). It now reads that order from `AttributeSet::FALLOUT`
+    /// instead of a local duplicate, so the two must stay identical: a reordered
+    /// canonical roster would silently shift every governing-attribute lookup and
+    /// mis-derive all 13 auto-calc skills, with no type error and no panic.
+    #[test]
+    fn fallout_roster_matches_attr_order() {
+        let roster: Vec<&str> = AttributeSet::FALLOUT
+            .members()
+            .iter()
+            .map(|a| a.editor_id())
+            .collect();
+        assert_eq!(
+            roster,
+            vec![
+                "Strength",
+                "Perception",
+                "Endurance",
+                "Charisma",
+                "Intelligence",
+                "Agility",
+                "Luck",
+            ],
+            "AttributeSet::FALLOUT must stay in ATTR / ClassRecord::base_attributes \
+         order — special_index() indexes base_attributes by position (#2934)"
+        );
+        // And the positional contract itself, spelled out.
+        assert_eq!(special_index(Attribute::Strength), Some(0));
+        assert_eq!(special_index(Attribute::Luck), Some(6));
+        assert_eq!(
+            special_index(Attribute::Willpower),
+            None,
+            "a non-Fallout attribute must not resolve to a SPECIAL slot"
+        );
+    }
+
     use super::*;
     use crate::esm::records::{AvifRecord, ClassRecord};
 
@@ -186,8 +233,13 @@ mod tests {
     /// skills, with deterministic FormIDs (0x100 + slot).
     fn fnv_index_with_class(class_form_id: u32, base: [u8; 7]) -> EsmIndex {
         let mut index = EsmIndex::default();
+        let roster: Vec<&str> = AttributeSet::FALLOUT
+            .members()
+            .iter()
+            .map(|a| a.editor_id())
+            .collect();
         for (fid, name) in (0x100u32..).zip(
-            SPECIAL.iter().chain(
+            roster.iter().chain(
                 [
                     "Barter",
                     "EnergyWeapons",

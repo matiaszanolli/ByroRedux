@@ -183,7 +183,11 @@ mod tests {
     #[test]
     fn fo4_ruleset_evaluates_and_scopes() {
         let rs = fallout4_ruleset(full);
-        assert_eq!(rs.derived_len(), 4, "Health, AP, CarryWeight, MeleeDamage");
+        assert_eq!(
+            rs.derived_row_len(),
+            4,
+            "Health, AP, CarryWeight, MeleeDamage"
+        );
         let avs = ActorValues::from_pairs([(0x05, 7.0), (0x07, 5.0), (0x0A, 6.0)]);
         assert_eq!(rs.derived_value(0x2C9, &avs, 1), Some(105.0)); // Health floor(105)
         assert_eq!(rs.derived_value(0x2D0, &avs, 1), Some(120.0)); // AP 60 + 10·6
@@ -203,8 +207,8 @@ mod tests {
     fn fnv_and_fo3_share_skill_stats_but_differ_on_health_ap() {
         let fnv = falloutnv_ruleset(full);
         let fo3 = fallout3_ruleset(full);
-        assert_eq!(fnv.derived_len(), 8);
-        assert_eq!(fo3.derived_len(), 8);
+        assert_eq!(fnv.derived_row_len(), 8);
+        assert_eq!(fo3.derived_row_len(), 8);
         let avs = ActorValues::from_pairs([
             (0x07, 5.0),  // END
             (0x0A, 5.0),  // AGI
@@ -256,6 +260,6 @@ mod tests {
             other => full(other),
         };
         let rs = fallout4_ruleset(partial);
-        assert_eq!(rs.derived_len(), 2, "only Health + AP resolved");
+        assert_eq!(rs.derived_row_len(), 2, "only Health + AP resolved");
     }
 }

@@ -123,9 +123,7 @@ pub struct FactionReputation {
 impl FactionReputation {
     #[inline]
     fn find(&self, repu_form_id: u32) -> Option<&FactionStanding> {
-        self.entries
-            .iter()
-            .find(|f| f.repu_form_id == repu_form_id)
+        self.entries.iter().find(|f| f.repu_form_id == repu_form_id)
     }
 
     /// Mutable accessor that inserts a zeroed entry if the faction is unknown,

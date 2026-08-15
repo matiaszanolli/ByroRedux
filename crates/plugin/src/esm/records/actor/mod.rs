@@ -809,7 +809,8 @@ fn parse_npc_core(
             record.acbs_flags = r.u32_or_default();
             r.skip_or_eof(6); // baseSpell(u16) + fatigue(u16) + barterGold(u16)
             record.level = r.i16_or_default();
-            record.calc_min = r.u16_or_default(); // calcMin@12 (#2955)
+            // calcMin@12 (#2955).
+            record.calc_min = r.u16_or_default();
             // disposition_base / template_flags stay at their
             // constructor defaults — Oblivion ACBS carries neither.
         }

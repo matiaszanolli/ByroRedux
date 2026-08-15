@@ -33,6 +33,7 @@
 //!   status-effect component exists (same "mechanism ahead of its data"
 //!   deferral already used for `affliction`'s real threshold tables).
 
+use super::derived::DerivedScope;
 use super::ruleset::CharacterRuleset;
 use crate::ecs::components::ActorValues;
 use crate::ecs::resource::Resource;
@@ -172,13 +173,28 @@ pub fn pool_regen_tick_system(world: &World, frame_dt: f32) {
         if avs.get(config.fatigue_avif).is_some() {
             avs.restore(config.fatigue_avif, FATIGUE_REGEN_PER_SEC * elapsed);
         }
-        if avs.get(config.magicka_avif).is_some() {
+        if let Some(base_max) = avs.get(config.magicka_avif).map(|av| av.base) {
             let willpower = avs.current(config.willpower_avif);
-            // Level doesn't gate Magicka's formula (`2×Intelligence`), so any
-            // fixed level value here is correct.
-            let max_magicka = ruleset
-                .derived_value(config.magicka_avif, avs, 1)
-                .unwrap_or(0.0);
+            // #2932 — honour `DerivedScope`, which `derived_value`
+            // deliberately does NOT enforce (it is a caller contract; the
+            // sibling consumer in `scripting/condition.rs` checks it). This
+            // loop runs over EVERY entity carrying `ActorValues`, and
+            // Oblivion's max-Magicka formula is `.player_only()` precisely
+            // because NPCs ship baked pool values. Evaluating it here gave
+            // every NPC a regen rate derived from the player-only
+            // `2 × Intelligence` curve instead of its own baked base.
+            //
+            // Actor-general rows still resolve through the ruleset; player-
+            // only ones fall back to the actor's own base layer, which is the
+            // value the formula exists to approximate. The old
+            // `.unwrap_or(0.0)` was the same gap seen from the other side: an
+            // actor with a populated Magicka pool but no matching row
+            // regenerated nothing at all.
+            let scoped_max = ruleset
+                .derived_formula(config.magicka_avif)
+                .filter(|f| f.scope == DerivedScope::ActorGeneral)
+                .and_then(|_| ruleset.derived_value(config.magicka_avif, avs, 1));
+            let max_magicka = scoped_max.unwrap_or(base_max);
             let rate = magicka_regen_per_sec(willpower, max_magicka, false);
             avs.restore(config.magicka_avif, rate * elapsed);
         }
@@ -187,6 +203,61 @@ pub fn pool_regen_tick_system(world: &World, frame_dt: f32) {
 
 #[cfg(test)]
 mod tests {
+
+    /// Regression for #2932 — the tick must honour `DerivedScope`.
+    ///
+    /// `derived_value` deliberately does not enforce scope (it is a caller
+    /// contract), and this system runs over EVERY entity with `ActorValues`.
+    /// Oblivion's max-Magicka row is `.player_only()` because NPCs ship baked
+    /// pools, so evaluating it here derived every NPC's regen rate from the
+    /// player-only curve. A player-only row must now fall back to the actor's
+    /// own base layer instead.
+    #[test]
+    fn magicka_regen_ignores_player_only_rows_and_uses_the_actors_base() {
+        use crate::character::derived::{DerivedInput, DerivedStatFormula};
+        use crate::character::ruleset::CharacterRuleset;
+        use crate::ecs::components::ActorValues;
+
+        const MAGICKA: u32 = 0x10;
+        const WILLPOWER: u32 = 0x11;
+        const INT: u32 = 0x12;
+
+        // Baked NPC pool of 50, and a player-only row that would compute a
+        // very different max (2 x Intelligence = 200).
+        let mut rs = CharacterRuleset::new(crate::character::leveling::LevelingModel::FNV);
+        rs.push_derived(
+            MAGICKA,
+            DerivedStatFormula::affine(DerivedInput::actor_value(INT), 2.0, 0.0).player_only(),
+        );
+
+        let mut world = World::new();
+        world.insert_resource(rs);
+        world.insert_resource(PoolRegenConfig {
+            fatigue_avif: 0x01,
+            magicka_avif: MAGICKA,
+            willpower_avif: WILLPOWER,
+        });
+        world.insert_resource(PoolRegenAccumulator::default());
+        let e = world.spawn();
+        let mut avs = ActorValues::from_pairs([(MAGICKA, 50.0), (WILLPOWER, 30.0), (INT, 100.0)]);
+        // Drain the pool so `restore` has room to move.
+        avs.apply_damage(MAGICKA, 40.0);
+        world.insert(e, avs);
+
+        pool_regen_tick_system(&world, POOL_REGEN_DT * 2.0);
+
+        let got = world.get::<ActorValues>(e).unwrap().current(MAGICKA);
+        // rate = (30*0.02 + 0.75) * (base_max/100) = 1.35 * 0.5 = 0.675/s.
+        // Two fixed ticks = 2/60 s -> ~0.0225 restored on top of 10.0.
+        let expected_base_driven = 10.0 + 1.35 * (50.0 / 100.0) * (POOL_REGEN_DT * 2.0);
+        assert!(
+            (got - expected_base_driven).abs() < 1e-4,
+            "player-only max-Magicka row must NOT drive NPC regen; expected the \
+             actor's own base (50) to set the rate, got {got} (base-driven \
+             would be {expected_base_driven}); a 200 max would give a ~4x rate \
+             (#2932)"
+        );
+    }
 
     /// Regression for #2953. `MAX_REGEN_SUBSTEPS` (8) is deliberately NOT the
     /// physics substep cap (5), and `crates/core` cannot depend on
@@ -219,7 +290,10 @@ mod tests {
              explicitly — it is the only record that 8 vs 5 is known, not a \
              typo (#2953)"
         );
-        assert_eq!(MAX_REGEN_SUBSTEPS, 8, "value change needs its own rationale");
+        assert_eq!(
+            MAX_REGEN_SUBSTEPS, 8,
+            "value change needs its own rationale"
+        );
     }
 
     use super::*;
