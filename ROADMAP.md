@@ -12,13 +12,15 @@ proposes a single synchronised edit across ROADMAP / HISTORY / README.
 Ritual-driven, not hook-driven — one checkpoint per session, not N per
 commit.
 
-**Last verified**: 2026-08-13 (Session 66 closeout — tests 4942, +282, **one
-failing** (unchanged: the `fire_lights` canary); Rust total LOC +15 599;
-workspace members unchanged at 27; open issue dirs 2533 → 2731. A twelve-report
-audit sweep landed on 2026-08-12 and the rest of the session drained the
-backlog it produced — 83 distinct issues referenced across 36 `/fix-issue`
-bundles — alongside six EX-numbered exterior slices. **No milestone opened or
-closed**: this was backlog drainage, not milestone churn. Bench-of-record was
+**Last verified**: 2026-08-15 (Session 67 closeout — tests 5179, +237, **one
+failing** (unchanged: the `fire_lights` canary); Rust `src/` LOC +8 813;
+workspace members unchanged at 27; open issue dirs 2731 → 2823. Eight audit
+reports landed (ESM, ECS, physics, incremental on 08-13; the `rt-deep` suite of
+renderer + performance + concurrency on 08-14; CHARAL on 08-15) and 33 of the 45
+non-merge commits drained the backlog they produced — 136 distinct issues
+referenced. Two of the eight were their subsystem's **first ever** audit.
+**No milestone opened or closed**: this was backlog drainage, not milestone
+churn. Bench-of-record was
 **re-taken on 2026-08-14 at HEAD `34074b93`** (#2835), clearing R6a-stale-19
 after four consecutive folds and 186 commits of drift. It is the first matrix
 reproducible on the current stepped-camera harness, and the first in which all
@@ -1026,7 +1028,9 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 
 - [ ] **CI is red on `main` for an environmental reason — the runner cannot build `byroredux-fsr3-sys` (found 2026-08-13, Session 66 close).** The `Test + Check + Clippy` job fails at `third_party/fidelityfx-sdk-v1.1.4/ffx-api/include/ffx_api/vk/ffx_api_vk.h:26: fatal error: 'vulkan/vulkan.h' file not found` — the FidelityFX headers `#include` the Vulkan SDK headers, which the GitHub runner image does not provide and the workflow does not install. This is **not** a code failure and reproduces on every recent `main` commit (`663b2a44`, `2ce30136`, `c7e5f30a`, `16336a09`, `d48193db` all red), so it predates the commits it is currently failing. Practical effect: every PR this session merged red, and CI currently provides **no** signal — a real regression would be indistinguishable from this. The sibling jobs (shader parity, dhat-heap, ABBA, lavapipe validation) are unaffected and still meaningful. Fix is one workflow line (install `libvulkan-dev` / the LunarG SDK before `cargo test`), not a code change.
 
-- [ ] **Workspace suite is red — the `fire_lights` derived-reach canary fires (2026-08-11).** `render::fire_lights::tests::derived_reach_is_currently_oversized_pending_a_unit_correct_derivation` ([`byroredux/src/render/fire_lights.rs`](byroredux/src/render/fire_lights.rs)) asserts that a torch-sized emissive volume still derives a reach >1024 world units — the known-oversized state documented on [`fire_lights_enabled`](byroredux/src/render/fire_lights.rs). After this session's radiometry work (`b8412ccc` fire-temperature classification, `a0f75fc5` colour-space/shader constants) `derive_fire_light` yields **386.66** units, the same order as the ~512 vanilla torch LIGH radius. The test is behaving correctly: the condition it guarded has changed. Its own failure message states the remedy — replace it with a real assertion against the vanilla reach and flip `BYRO_FIRE_LIGHTS` on by default. Neither was done, deliberately: flipping a renderer default on one canary needs a visual check, not a green test. Until then `cargo test --workspace` **bails at this failure** and reports 993 passing instead of 4942; use `--no-fail-fast` for a true count. **Still unaddressed at Session 66 close (2026-08-13)** — three sessions running; the remedy has not changed and still needs a visual check, not a green test.
+- [ ] **Workspace suite is red — the `fire_lights` derived-reach canary fires (2026-08-11).** `render::fire_lights::tests::derived_reach_is_currently_oversized_pending_a_unit_correct_derivation` ([`byroredux/src/render/fire_lights.rs`](byroredux/src/render/fire_lights.rs)) asserts that a torch-sized emissive volume still derives a reach >1024 world units — the known-oversized state documented on [`fire_lights_enabled`](byroredux/src/render/fire_lights.rs). After this session's radiometry work (`b8412ccc` fire-temperature classification, `a0f75fc5` colour-space/shader constants) `derive_fire_light` yields **386.66** units, the same order as the ~512 vanilla torch LIGH radius. The test is behaving correctly: the condition it guarded has changed. Its own failure message states the remedy — replace it with a real assertion against the vanilla reach and flip `BYRO_FIRE_LIGHTS` on by default. Neither was done, deliberately: flipping a renderer default on one canary needs a visual check, not a green test. Until then `cargo test --workspace` **bails at this failure** and reports 1175 passing instead of 5179; use `--no-fail-fast` for a true count. **Still unaddressed at Session 67 close (2026-08-15)** — four sessions running; the remedy has not changed and still needs a visual check, not a green test.
+
+- [ ] **~60 % of shipped CHARAL is runtime-dead — the gap is wiring, not formulas (found 2026-08-15, Session 67, first CHARAL audit).** [`AUDIT_CHARACTER_2026-08-15.md`](docs/audits/AUDIT_CHARACTER_2026-08-15.md) verified **62 constants against the capture documents with zero numeric mismatch** in any derived-stat formula — the numbers are right. What is not wired: five of seven games have complete, tested rulesets but only **FO4 and FNV reach an actor**; Oblivion and Skyrim are fully assembled with no construction site, and FO3's `fallout3_ruleset` is shadowed by FNV's (`#2941`). Two subsystems are built but inert — `regen` is registered in `boot.rs` and, until `PoolRegenConfig` is inserted per-game, no-ops (its accumulator half was armed under `#2950`), and `affliction_tick_system` is never registered and has no shipped table. FO76 is the only game whose capture is fully LOCKED with no builder; Starfield is correctly blocked on PENDING data. Tracked as `#2932`–`#2962`; 12 closed at session end.
 
 - [x] No sky, sun, clouds, or atmosphere — **closed (M33 + M33.1)**. Sky gradient, sun disc with game-time arc, TOD interpolation, 4-layer clouds (DNAM/CNAM/ANAM/BNAM with parallax scroll), fog, weather fade transitions (8 s blend), procedural fallback all working.
 - [x] Bench measured GPU submit time only — **fixed** in `e6e8091`. Wall-clock bench now counts rendered frames; ticks_per_frame confirms ~1 on this compositor. 192.8 FPS / 5.19 ms at Prospector.
@@ -1224,17 +1228,17 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 
 ## Project Stats
 
-Ground-truth as of 2026-08-13 (Session 66 closeout, HEAD `53a398f1`). Every
+Ground-truth as of 2026-08-15 (Session 67 closeout, HEAD `819c4491`). Every
 figure in this table was measured at that HEAD, not carried forward.
 
 | Metric                                  | Value                        |
 |-----------------------------------------|------------------------------|
-| Rust source lines (`src/` dirs)         | ~370 223                      |
-| Rust total lines (all `.rs`, excl. `target/`) | ~394 404                 |
-| Source files (`.rs`, excl. `target/`)   | 908 total · 846 outside `tests/` dirs |
+| Rust source lines (`src/` dirs)         | ~379 036                      |
+| Rust total lines (all `.rs`, excl. `target/`) | ~410 836                 |
+| Source files (`.rs`, excl. `target/`)   | 918 total · 854 outside `tests/` dirs |
 | Workspace members                       | 27 (24 crates + `byroredux` binary + 2 tools) |
-| Tests                                   | **4942 passing, 1 failing, 136 ignored** (`cargo test --workspace --no-fail-fast`, 2026-08-13). The failure is the `fire_lights` derived-reach canary — see [Known Issues](#known-issues). Without `--no-fail-fast` the run bails at that failure and reports only 993. |
-| Open issue directories                  | 2731 (`.claude/issues/`)     |
+| Tests                                   | **5179 passing, 1 failing, 137 ignored** (`cargo test --workspace --no-fail-fast`, 2026-08-15). The failure is the `fire_lights` derived-reach canary — see [Known Issues](#known-issues). Without `--no-fail-fast` the run bails at that failure and reports only 1175. |
+| Open issue directories                  | 2823 (`.claude/issues/`)     |
 | NIFs in per-game integration sweeps     | 184 886                       |
 | Per-game NIF clean-parse rate           | See the [compatibility matrix](#compatibility-matrix) — it is the single home for per-game parse rates, sweep dates and residual truncation tails. Summary only: 100% clean on FO3 / FNV / Skyrim SE / FO4 / FO76, Oblivion 99.93%, Starfield 99.99% aggregate; recoverable 100% on all seven. |
 | Supported archive formats               | BSA v103/v104/v105, BA2 v1/v2/v3/v7/v8 |

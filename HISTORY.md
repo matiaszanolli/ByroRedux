@@ -24,6 +24,96 @@ Commits hold that record.
 
 ---
 
+## Session 67 — eight audit reports, two of them a subsystem's first ever; the bench becomes reproducible  (2026-08-13 → 2026-08-15, `654e3be6..819c4491`, 65 commits)
+
+Session 66 drained a twelve-report backlog; Session 67 refilled it deliberately
+and then drained most of that too. Eight reports landed — ESM, ECS, physics and
+incremental on 08-13, the `rt-deep` suite (renderer + performance + concurrency)
+on 08-14, CHARAL on 08-15 — and 33 of the 45 non-merge commits are `/fix-issue`
+bundles, 136 distinct issues referenced. Two of the eight were the **first audit
+their subsystem has ever had**, which is the point of the four owner-audits added
+at the end of Session 66: `/audit-esm` and `/audit-character` exist precisely
+because `/audit-ecs` checked those components' *shape* while nothing checked
+their *numbers*. No milestone opened or closed; this was backlog drainage plus
+the bench work that makes the next one measurable.
+
+- **CHARAL's first audit — the numbers held, the wiring did not.** 34 findings
+  (1 HIGH, 14 MEDIUM, 19 LOW) across six dimensions. **62 constants verified
+  against the capture documents with zero numeric mismatch** in any derived-stat
+  formula; the cross term is non-zero in exactly the one row that should have it,
+  rounding modes appear only where documented, and the "cap `0` means uncapped"
+  trap turned out to be designed out (`f32::INFINITY` sentinel, no `Default`
+  derive). What the coverage matrix found instead: **~60 % of shipped CHARAL is
+  runtime-dead** — five of seven games have complete, tested rulesets and only
+  FO4 and FNV reach an actor, while `regen` is registered and permanently no-ops
+  and `affliction_tick_system` is never registered at all.
+- **The HIGH: a level that was never a level (`#2955`).** `NpcRecord::level` is
+  overloaded on FO3/FNV — with the ACBS `PC Level Mult` bit set it carries a
+  fixed-point multiplier on the *player's* level. It was being written verbatim
+  into `CharacterLevel` and seeded as `actor_level`, so 268 FNV / ~190 FO3 base
+  actors read as level 500–4000, made every leveled-list entry eligible, and
+  always drew the top tier. `calcMin` is now parsed on all four ACBS layouts and
+  a single `effective_actor_level` helper gates every consumer; a probe over
+  vanilla `FalloutNV.esm` / `Fallout3.esm` confirmed the flag partitions exactly
+  the affected records and that `calcMin` decodes to plausible levels (1–21 FNV,
+  1–12 FO3). The SIBLING sweep found four further raw-`level` sites in
+  `npc_spawn/resumable.rs` the finding had not named.
+- **Contract fields with one honouring consumer and one ignoring it
+  (`#2932`, `#2933`).** `DerivedStatFormula` carries `scope` and `kind` as caller
+  contracts the ruleset deliberately does not enforce. `pool_regen_tick_system`
+  ignored `scope`, deriving every NPC's Magicka regen from Oblivion's
+  `.player_only()` curve; `GetActorValue` ignored `kind`, leaking FO4 Melee
+  Damage's `×(1 + 0.1·STR)` ratio where an actor-value reading was expected.
+  Both now gated, with the regen path falling back to the actor's own base layer.
+- **RT slice (`rt-deep`).** Glass refraction was multiplying the hit texture in
+  twice — it read `GpuInstance.avgAlbedo`, which stopped meaning "material tint"
+  at `#1628` — so everything seen *through* glass rendered 2–5× too dark, and the
+  `--cornell` harness structurally could not catch it (untextured handles
+  collapse the double-multiply to identity) (`#2916`). Composite's `is_sky` arm
+  got the indirect half of `#2466`'s fix (`#2920`); the AS↔SSBO index contract —
+  a CRITICAL-severity invariant held only by a duplicated predicate 800 lines
+  apart — is now pinned by an assert (`#2913`); the skinned-BLAS LRU stopped
+  measuring idleness against a counter that swapchain recreate zeroes (`#2925`);
+  the TLAS shrink routes through `ensure_tlas_state`'s allocate-then-swap instead
+  of publishing a dangling descriptor (`#2929`); and the frame's only
+  AS_WRITE→AS_READ barrier now runs on both arms of the `build_tlas` result
+  (`#2931`).
+- **Sync-validation became a practical gate, and refuted a finding.** Two of the
+  concurrency findings were filed as explicit HYPOTHESIS rows under the standing
+  no-speculative-Vulkan-fixes rule. A release build with Khronos
+  Synchronization Validation over `--cornell` and MedTek Research 01 (32 920
+  entities, 300 frames each) reported **zero hazards** — which *refuted* `#2930`
+  on the workload that would have exposed it, and left `#2931` to be confirmed by
+  tracing the consumer gate instead, since its failure arm is never taken in a
+  healthy run. MedTek runs at ~48 FPS with validation live, so this is a routine
+  gate rather than the "debug is too slow" framing suggested.
+- **The bench is reproducible again (`#2835`).** Bench-of-record was re-taken at
+  `34074b93` after `76373774` fixed the orbit/dolly radius (which had been
+  measuring distance from the *world origin*, so Prospector and Dugout were
+  benchmarking an empty view) and `#2834` corrected FSR's
+  `viewSpaceToMetersFactor`. First matrix in which all five scenes actually
+  render; R6a-stale-19 cleared after four consecutive folds and 186 commits.
+- **ESM / physics / UI.** Packed Creation-Engine `NVNM` navmesh bodies decode
+  (`#2738`); the PHYSAL report's 35 issues drove the local/world contract,
+  registration order and two scale/height ladders (`#2866`–`#2869`), the wake,
+  grounding and cast-exclusion paths (`#2856`–`#2859`), and placement scale baked
+  into colliders (`#2834`); the FO4 `BGSCodeObj` catalog and the navigator pump
+  were repaired (`#2718`–`#2721`).
+- **Documentation and doctrine gaps recorded rather than papered over.** The
+  reputation table's keys were named `faction_form_id` while holding `REPU` ids —
+  two FormID spaces behind one name in one crate — now renamed and captured with
+  their FormIDs in the ruleset document (`#2951`, `#2952`). Where a rule sits in
+  the wrong layer (`skill_calc` belonging on `CharacterRuleset`) or a value has no
+  citable source (`sentiment()`'s 16-cell bucketing), the gap is now stated at
+  both ends and cross-linked to the work that would close it, instead of being
+  silently absent (`#2934`, `#2949`).
+
+Net: tests **4942 → 5179 passing** (+237, 1 failing unchanged — the `fire_lights`
+canary), Rust `src/` lines ~370 223 → ~379 036 (+8 813), issue directories
+2731 → 2823 (+92). Bench-of-record re-taken at `34074b93` (2026-08-14) and 22
+commits from HEAD at close — inside the 30-commit window, but the next session
+should expect to re-run it.
+
 ## Session 66 — twelve-report audit sweep and the bug-bash that drained it; exterior slices land  (2026-08-11 → 2026-08-13, `17d9135e..53a398f1`, 69 commits)
 
 Session 65 closed on a playable vertical slice and a physical lighting
