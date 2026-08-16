@@ -105,14 +105,21 @@ is the expected constant directional response, and L2 is a white visibility
 field with the blocker plus its geometrically predicted hard shadow in black;
 all three frames report `rt-integrity verdict=PASS`. Remaining recovery gates
 are scheduling the now-passing `cornell_rt_oracle` scalar gate on the
-RT-capable CI worker, the measured RT-LOD sweep,
-per-format material provenance and the L3-L5/five-game fixture matrix; the
+RT-capable CI worker, per-format material provenance and the
+L3-L5/five-game fixture matrix; the
 detailed status is maintained in the linked recovery plan. Forced BLAS pressure
 is now covered by an explicit one-byte diagnostic budget gate: eligible rigid
 draws are protected before recovery builds, missing retained rigid BLAS are
 restored from dedicated or global geometry buffers before TLAS publication,
 and the pressured Cornell L2 hardware oracle preserves both TLAS instances and
-the analytic blocked/control shadow probes.
+the analytic blocked/control shadow probes. R3 measurement is now closed:
+`scripts/rt-lod-sweep.sh` measured `{1e-6,6,16,32,64}` across Cornell,
+Prospector, Whiterun, MedTek and Dugout with separate counter/timing passes;
+scale 6 is the largest candidate above the 0.995 linear block-SSIM floor
+(worst 0.996442). A three-repeat L2 gate and a one-million-unit translated
+variant exposed the absolute-space 256-ULP origin jump (16 world units); the
+shared helper now steps in camera-relative space before reconstructing an
+absolute ray origin, restoring blocker hit/visibility agreement.
 Water work that is headless (character contact/current response and
 coverage/ESM sweeps) may proceed; renderer-facing water tuning and new expected
 captures wait for the R3 visibility gate. The underlying playable-slice closure

@@ -33,7 +33,7 @@ re-implement or revert them.
 | R0 measurement | Named benchmark modes; `renderer-stepped` owns a fixed 1/60 s delta; moving pan/orbit/dolly/cut cameras; scene fingerprints; five-scene stepped-camera bench at `34074b93` | Three-run verdict reproducibility; a true HEAD-vs-anchor visual predicate; separate performance and correctness thresholds |
 | R1 ingestion | XCLL rotation fields renamed; the axis-invariant test is ignored as an explicit xfail; punctual per-light flat fill removed | Remove the XCLL type-3 `Lo` bypass; validate an XCLL-specific angle conversion; emit kind/direction/fade/provenance in `light.dump` |
 | R2 TLAS | Missing TLAS instances split into skinned/rigid/SSBO causes; `patch_camera_rt_flag`; off-frustum occluders retained; AS publication and shrink synchronization fixed by `c25f61e6` | Persist counters beyond rate-limited logs; cluster overflow telemetry; four-scene runtime integrity captures |
-| R3 transport | Wächter-Binder-style `offsetRayOrigin`; shared material-aware shadow transport; structured correctness views and bounded selected-ray probe | Derive `RT_LOD_SCALE` from a measured sweep; repeat the probe contract across three runs and a large-coordinate scene |
+| R3 transport | Wächter-Binder-style `offsetRayOrigin`; shared material-aware shadow transport; structured correctness views and bounded selected-ray probe | Closed: measured five-scene RT-LOD sweep plus repeated and one-million-unit Cornell visibility/probe gates |
 | R4 oracle | Redistributable Cornell scene; one cube golden test; same-revision upscaler SSIM test | Six-rung Cornell lighting/material ladder and CI comparison artifacts |
 | R5 materials | `GpuMaterial` flags generated from Rust; semantic `MaterialTextureSet`; one NIF slot-to-role table; FO3/FNV TXST-to-NIF role permutation pinned | Material provenance dump; BGSM diffuse-lobe contract; complete REFR/BGSM role forwarding; lobe view; cross-game fixture matrix |
 | R6 contracts | `lighting-from-cells.md` describes directional and ambient as separate controls | Reconcile renderer/shader/material docs with live code and pin critical GPU-layout claims |
@@ -75,7 +75,7 @@ carried forward.
   same blocked/control visibility probes as the normal L2 oracle. It passes on
   the RTX 4070 Ti. Missing retained rigid BLAS are restored from dedicated or
   global source buffers before the next TLAS publication.
-- **R3 core transport and selected-ray observability complete; measurement closure remains.** Selected-light,
+- **R3 complete.** Selected-light,
   shadow-visibility, direct, raw-indirect, material-lobe, and RT-LOD views are
   available through the existing debug selectors. Every correctness view
   bypasses composite fog/caustics/bloom/dither, temporal FSR dispatch,
@@ -89,7 +89,13 @@ carried forward.
   `render.debug probe <x> <y>`) arms one atomically bounded SSBO record and
   reports the selected GPU-light record, absolute ray geometry, tMin/tMax,
   decoded visibility mask, averaged transmittance, and first committed hit.
-  The measured `RT_LOD_SCALE` sweep remains open.
+  The measured five-scene sweep selected scale 6 at a declared 0.995 linear
+  block-SSIM floor. A three-repeat L2 visibility gate plus the same scene
+  translated by `(1,000,000, 0, -1,000,000)` exposed a 16-unit absolute-space
+  ray-origin jump; stepping in camera-relative space fixed it. The post-fix
+  translated probes select light 0/mask `0x3f`: the blocked pixel commits
+  blocker instance 1 at `0.993879` with zero visibility, while the control
+  commits no hit with unit visibility.
 - **R4 L0-L2 scene and manual runtime gate complete.** `--cornell-oracle l0|l1|l2`
   constructs the ladder from one manifest: a dark white plane, the same plane
   under one analytic directional source, then the same scene with one opaque
@@ -456,21 +462,49 @@ a named generated constant with a test and units; no anonymous `0.05` remains
 in a ray initializer.
 
 **Implemented.** All secondary-ray consumers use the shared representable-float
-origin offset and numerical `tMin = 0`; named physical segment/range limits
-remain separate from self-intersection avoidance and are source-contract
-tested.
+origin offset and numerical `tMin = 0`. The 256-ULP step is evaluated after
+subtracting `renderOrigin`, then converted back to an absolute representable
+point. Direct absolute stepping moved a one-million-unit Cornell ray by 16
+units and skipped its blocker; the relative-space contract limits that case to
+one absolute ULP (`0.0625`). Named physical segment/range limits remain
+separate from self-intersection avoidance and are source-contract tested.
 
 ### R3.5 RT LOD derivation
 
 Sweep `RT_LOD_SCALE` over a declared range on Cornell plus the four real
-scenes. Record traced/culled hits, visibility SSIM against the no-LOD reference,
-and ray-query GPU time. Choose the smallest scale inside the visual threshold
-and write the measured contract next to the generated constant. Correct the
-comment in the same commit.
+scenes. Record traced/culled hits, final-radiance SSIM against the no-LOD
+reference, and ray-query GPU time. Direct visibility is intentionally not the
+image metric: RT LOD gates GI/reflection, not selected-light shadow visibility,
+so a visibility-only image would be invariant and falsely report every scale
+as perfect. Choose the **largest** scale inside the visual threshold (larger
+means earlier culling) and write the measured contract next to the constant.
 
-**Exit:** for a fixed pixel, selected-light colour, probe index, ray geometry,
-visibility image and committed hit agree; visibility is stable across three
-runs and across a large-coordinate scene.
+**Implemented.** `scripts/rt-lod-sweep.sh` runs one instrumented capture and
+separate uninstrumented timing samples per scale; `rt_lod_report.py` computes
+8×8 linear-RGB block SSIM and enforces identical scene fingerprints. The
+declared range is `{0.000001, 6, 16, 32, 64}`, quality tier is fixed at 3, and
+the cross-scene threshold is `SSIM >= 0.995`. Local RTX 4070 Ti acceptance used
+120 fixed-camera frames; the harness defaults to three 300-frame timing runs.
+
+| Scene | SSIM at 6 | GPU main ms, no-LOD → 6 | reflection traced / LOD-culled | GI traced / LOD-culled |
+|---|---:|---:|---:|---:|
+| Cornell | 0.999117 | 12.712 → 12.681 | 119,522 / 3 | 1,033,565 / 115 |
+| Prospector | 0.996442 | 20.675 → 18.211 | 2,813,991 / 204,801 | 2,499,231 / 921,494 |
+| Whiterun | 0.999505 | 26.833 → 14.896 | 19,417 / 9,018 | 783,752 / 2,017,498 |
+| MedTek | 0.997847 | 77.624 → 33.586 | 459,581 / 79,629 | 858,234 / 2,432,981 |
+| Dugout | 0.999607 | 17.717 → 15.652 | 1,489 / 210 | 1,532,304 / 411,052 |
+
+Scale 6 is the largest declared candidate that passes every scene (worst
+Prospector `0.996442`). Scale 16 is rejected by Prospector (`0.987343`) and
+MedTek (`0.993832`). The shipping value therefore remains 6, now derived
+rather than guessed.
+
+**Exit: passed.** Three origin L2 captures are pixel-identical at the declared
+tolerance. The translated capture preserves the blocked/control probes and
+changes fewer than 0.5% of pixels (edge rasterization allowance). Origin and
+translated detailed probes agree on selected light 0, mask `0x3f`, tMin 0,
+tMax 12000, blocker/no-blocker identity and black/white visibility; translated
+origins differ only by the scene offset plus representable-float quantization.
 
 ## R4 - Build the Cornell L0-L5 oracle
 

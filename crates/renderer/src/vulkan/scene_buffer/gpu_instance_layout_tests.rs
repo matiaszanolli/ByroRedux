@@ -692,7 +692,9 @@ fn shadow_transport_uses_scale_aware_ray_origin_offset() {
 
     for needle in [
         "vec3 offsetRayOrigin(vec3 p, vec3 n)",
-        "intBitsToFloat(floatBitsToInt(p.x)",
+        "vec3 relativePoint = p - renderOrigin.xyz",
+        "intBitsToFloat(floatBitsToInt(relativePoint.x)",
+        "return relativeOffset + renderOrigin.xyz",
         "const float INT_SCALE = 256.0",
     ] {
         assert!(

@@ -753,9 +753,16 @@ void main() {
     // The LOD_SCALE constant controls the transition footprint. Tier N starts
     // when `rtFootprint >= 2^N / RT_LOD_SCALE`; raising the scale therefore
     // moves the same fragment to a CHEAPER tier sooner (favours performance),
-    // while lowering it retains expensive rays farther away. Keep the current
-    // value until fixed-camera DBG_VIZ_RT_LOD captures provide a distribution
-    // oracle; the former comment stated this relationship backwards.
+    // while lowering it retains expensive rays farther away.
+    //
+    // Measured contract (RTX 4070 Ti, 2026-08-16):
+    // `scripts/rt-lod-sweep.sh` swept {1e-6, 6, 16, 32, 64} on Cornell,
+    // Prospector, Whiterun, MedTek and Dugout at fixed tier 3. Scale 6 is the
+    // largest candidate whose final linear block-SSIM stays >= 0.995 against
+    // the no-LOD reference in EVERY scene (worst 0.996442, Prospector).
+    // Scale 16 fails Prospector (0.987343) and MedTek (0.993832). Separate
+    // instrumented/timing passes record the LOD bins, traced/culled reflection
+    // and GI populations, and gpu_main_render without charging debug atomics.
     const float RT_LOD_SCALE   = 6.0;
     // Reflection-ray reach. Raised 2.0→3.0 (the full rtLOD range) so the
     // environment reflection isn't cut at ~2m on grazing surfaces — the
