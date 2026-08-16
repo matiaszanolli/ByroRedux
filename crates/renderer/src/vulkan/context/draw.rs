@@ -584,6 +584,7 @@ struct CompositeParamsInputs<'a> {
     fog_height_reference: f32,
     sky_params: &'a SkyParams,
     render_debug_flags: u32,
+    render_debug_mode: u32,
     frame_counter: u32,
     volume_far_distance: f32,
     /// Froxel grid depth (slice count) — #2470, `volumetrics::extent().depth`.
@@ -619,6 +620,7 @@ fn build_composite_params(
         fog_height_reference,
         sky_params,
         render_debug_flags,
+        render_debug_mode,
         frame_counter,
         volume_far_distance,
         froxel_slice_count,
@@ -649,22 +651,9 @@ fn build_composite_params(
             // dither in the composite pass. Bitcast the same flag word the
             // camera UBO supplies to triangle.frag; no numeric conversion.
             f32::from_bits(render_debug_flags),
-            // #1013 — host-side mirror of the volumetric-output gate.
-            // Vestigial: #1926 removed the `composite.frag` branch that
-            // used to read this slot, so `vol.a`/`vol.rgb` consumption
-            // there is now unconditional. The value is still pinned to
-            // the host const so a future flip of
-            // `VOLUMETRIC_OUTPUT_CONSUMED` stays a single-line change on
-            // the host side — but the shader-side off-path no longer
-            // exists; it now relies entirely on the neutral clear
-            // (`volumetrics.rs::initialize_layouts`, rgb=0/a=1) leaving
-            // `vol.a` == 1 and `vol.rgb` == 0 when the volumetric
-            // dispatches are skipped.
-            if super::super::volumetrics::VOLUMETRIC_OUTPUT_CONSUMED {
-                1.0
-            } else {
-                0.0
-            },
+            // Structured mode duplicated from `GpuCamera.render_debug.x`;
+            // composite has its own UBO and does not declare CameraUBO.
+            f32::from_bits(render_debug_mode),
             (frame_counter & 0x00ff_ffff) as f32,
         ],
         volume_params: [
@@ -806,6 +795,7 @@ mod composite_params_tests {
             fog_height_reference: 50.0,
             sky_params: &sky_params,
             render_debug_flags: crate::shader_constants::DBG_VIZ_SHADOW_VISIBILITY,
+            render_debug_mode: crate::shader_constants::RENDER_DEBUG_SHADOW_VISIBILITY,
             frame_counter: 42,
             volume_far_distance: 4096.0,
             froxel_slice_count: 64.0,
@@ -826,6 +816,11 @@ mod composite_params_tests {
             params.depth_params[1].to_bits(),
             crate::shader_constants::DBG_VIZ_SHADOW_VISIBILITY,
             "render_debug_flags must map through without numeric conversion"
+        );
+        assert_eq!(
+            params.depth_params[2].to_bits(),
+            crate::shader_constants::RENDER_DEBUG_SHADOW_VISIBILITY,
+            "render_debug_mode must map through without numeric conversion"
         );
         assert_eq!(params.volume_params[0], 4096.0);
         assert_eq!(params.sky_zenith, [0.1, 0.2, 0.3, 0.9998]);
@@ -862,6 +857,7 @@ mod composite_params_tests {
             fog_height_reference: 0.0,
             sky_params: &sky_params,
             render_debug_flags: 0,
+            render_debug_mode: crate::shader_constants::RENDER_DEBUG_FINAL,
             frame_counter: 0,
             volume_far_distance: 0.0,
             froxel_slice_count: 0.0,
@@ -1452,6 +1448,7 @@ impl VulkanContext {
         }
 
         let frame = self.current_frame;
+        let mut armed_selected_ray_probe_generation = None;
         let volumetric_time_seconds = self.volumetric_time_seconds;
         // Use a local to avoid borrow complexity; copy out at end.
         let mut t = FrameTimings::default();
@@ -1502,6 +1499,44 @@ impl VulkanContext {
         self.collect_image_health(frame);
         if let Some(ref mut cluster_cull) = self.cluster_cull {
             cluster_cull.collect_telemetry(&self.device, frame);
+        }
+        match self
+            .scene_buffers
+            .collect_selected_ray_probe(&self.device, frame)
+        {
+            Ok(Some(record)) => {
+                self.selected_ray_probe_result =
+                    Some(super::super::render_debug::SelectedRayProbeResult::from_gpu(record));
+            }
+            Ok(None) => {}
+            Err(error) => log::warn!("selected-ray probe readback failed: {error}"),
+        }
+        if self.renderer_config.rt_test_lod_telemetry {
+            match self
+                .scene_buffers
+                .collect_rt_lod_telemetry(&self.device, frame)
+            {
+                Ok(sample) if sample.fragments > 0 && self.frame_counter % 60 == 0 => {
+                    let scale = self
+                        .renderer_config
+                        .rt_test_lod_scale_bits
+                        .map(f32::from_bits)
+                        .unwrap_or(6.0);
+                    log::info!(
+                        "rt-lod-telemetry: scale={scale:.6} fragments={} bins={:?} \
+                         reflection_traced={} reflection_lod_culled={} gi_traced={} \
+                         gi_lod_culled={}",
+                        sample.fragments,
+                        sample.bins,
+                        sample.reflection_traced,
+                        sample.reflection_lod_culled,
+                        sample.gi_traced,
+                        sample.gi_lod_culled,
+                    );
+                }
+                Ok(_) => {}
+                Err(error) => log::warn!("RT-LOD telemetry readback failed: {error}"),
+            }
         }
 
         // #1194 — read this slot's TIMESTAMP results (from the prior
@@ -2142,6 +2177,12 @@ impl VulkanContext {
                 render_origin.y,
                 render_origin.z,
                 if fsr_reset_pending { 1.0 } else { 0.0 },
+            ],
+            render_debug: [
+                self.render_debug_mode.shader_value(),
+                self.renderer_config.rt_test_lod_scale_bits.unwrap_or(0),
+                u32::from(self.renderer_config.rt_test_lod_telemetry),
+                0,
             ],
         };
         self.rt_flag_last_frame =
@@ -3077,7 +3118,12 @@ impl VulkanContext {
             })
             .filter(|ms| *ms > 0.0);
         self.scene_buffers
-            .reset_ray_budget(&self.device, frame, measured_lighting_ms)
+            .reset_ray_budget(
+                &self.device,
+                frame,
+                measured_lighting_ms,
+                self.renderer_config.rt_test_ray_quality_tier,
+            )
             .unwrap_or_else(|e| log::warn!("Failed to upload adaptive ray budget: {e}"));
 
         // Reupload the terrain tile SSBO when cell load mutated it.
@@ -3227,6 +3273,7 @@ impl VulkanContext {
                 fog_height_reference,
                 sky_params,
                 render_debug_flags: self.render_debug_flags,
+                render_debug_mode: self.render_debug_mode.shader_value(),
                 frame_counter: self.frame_counter,
                 volume_far_distance: self
                     .volumetrics
@@ -3297,6 +3344,20 @@ impl VulkanContext {
         // input_view descriptor update (which depends on the
         // render-pass HDR output) stays in dispatch().
 
+        let selected_ray_probe_request = self
+            .pending_selected_ray_probe
+            .map(|request| (request.generation, request.pixel));
+        if let Err(error) = self.scene_buffers.arm_selected_ray_probe(
+            &self.device,
+            frame,
+            selected_ray_probe_request,
+        ) {
+            log::warn!("selected-ray probe arm failed: {error}");
+        } else {
+            armed_selected_ray_probe_generation =
+                selected_ray_probe_request.map(|(generation, _)| generation);
+        }
+
         // Barrier: make the instance SSBO host write (and any remaining
         // light/camera/bone host writes) visible to the vertex + fragment
         // shaders in the upcoming render pass. Also covers all UBO host
@@ -3321,6 +3382,7 @@ impl VulkanContext {
                     | vk::PipelineStageFlags::COMPUTE_SHADER
                     | vk::PipelineStageFlags::DRAW_INDIRECT,
                 vk::AccessFlags::SHADER_READ
+                    | vk::AccessFlags::SHADER_WRITE
                     | vk::AccessFlags::UNIFORM_READ
                     | vk::AccessFlags::INDIRECT_COMMAND_READ,
             );
@@ -3355,6 +3417,18 @@ impl VulkanContext {
         // recording-order contract; this is the same single `unsafe` scope
         // `draw_frame` opened before the geometry pass was extracted (#1748).
         unsafe {
+            // Publish the bounded fragment-shader probe record to the host.
+            // The matching CPU read occurs only after this slot's fence wait
+            // on its next use and performs a non-coherent invalidate first.
+            memory_barrier(
+                &self.device,
+                cmd,
+                vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::AccessFlags::SHADER_WRITE,
+                vk::PipelineStageFlags::HOST,
+                vk::AccessFlags::HOST_READ,
+            );
+
             // Soft-particle depth fade: snapshot this frame's opaque depth
             // into the sampleable history image so next frame's effect-shader
             // FX can feather their alpha against the geometry behind them.
@@ -3551,6 +3625,12 @@ impl VulkanContext {
         // path may no longer target this slot until the next `begin_frame`
         // (post fence-wait) call re-confirms it idle.
         self.texture_registry.note_frame_submitted(frame);
+        if self
+            .pending_selected_ray_probe
+            .is_some_and(|request| Some(request.generation) == armed_selected_ray_probe_generation)
+        {
+            self.pending_selected_ray_probe = None;
+        }
 
         // #917 / REN-D10-NEW-03 — advance SVGF + TAA `frames_since_
         // creation` counters now that `queue_submit` returned success.

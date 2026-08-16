@@ -2,9 +2,9 @@
 //! Counts pre-FO4 NIFs with BSXFlags bit 5 set and how many carry real
 //! geometry (i.e. would be wholesale-dropped by the cell loader).
 use byroredux_bsa::BsaArchive;
+use byroredux_core::string::StringPool;
 use byroredux_nif::import::{extract_bsx_flags, import_nif_with_collision};
 use byroredux_nif::parse_nif;
-use byroredux_core::string::StringPool;
 
 fn main() {
     let mut total = 0usize;
@@ -26,8 +26,12 @@ fn main() {
             .collect();
         eprintln!("{path}: {} nifs", names.len());
         for name in &names {
-            let Ok(bytes) = arc.extract(name) else { continue };
-            let Ok(scene) = parse_nif(&bytes) else { continue };
+            let Ok(bytes) = arc.extract(name) else {
+                continue;
+            };
+            let Ok(scene) = parse_nif(&bytes) else {
+                continue;
+            };
             total += 1;
             let bsx = extract_bsx_flags(&scene);
             if bsx & 0x20 == 0 {

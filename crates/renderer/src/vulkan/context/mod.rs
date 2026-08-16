@@ -1061,6 +1061,12 @@ pub struct VulkanContext {
     /// bisection of texture / lighting artifacts. See engineering
     /// notes around the Dragonsreach "ghost carving" diagnosis.
     pub render_debug_flags: u32,
+    /// Mutually-exclusive named correctness view. `LegacyFlags` preserves
+    /// launch-time categorical selectors until `render.debug` chooses a mode.
+    pub render_debug_mode: super::render_debug::RenderDebugMode,
+    pub(super) pending_selected_ray_probe: Option<super::render_debug::SelectedRayProbeRequest>,
+    pub(super) selected_ray_probe_result: Option<super::render_debug::SelectedRayProbeResult>,
+    pub(super) next_selected_ray_probe_generation: u32,
     /// REND-#1451 — live-tunable point/spot attenuation knee fraction,
     /// uploaded into `GpuCamera.dof_params.z`. `knee = kneeFrac × cull
     /// radius` is the authored radius where the physical near-zone
@@ -2003,6 +2009,7 @@ impl VulkanContext {
                 &device,
                 physical_device,
                 device_caps.min_accel_struct_scratch_offset_alignment,
+                renderer_config.rt_test_blas_budget_bytes,
             );
             // Build an empty TLAS per frame-in-flight slot via one-time command
             // buffers so all descriptor sets have a valid acceleration structure
@@ -3002,6 +3009,10 @@ impl VulkanContext {
             volumetric_time_seconds: 0.0,
             fsr_temporal,
             render_debug_flags: parse_render_debug_flags_env(),
+            render_debug_mode: super::render_debug::RenderDebugMode::default(),
+            pending_selected_ray_probe: None,
+            selected_ray_probe_result: None,
+            next_selected_ray_probe_generation: 1,
             // REND-#1451 — default knee = 0.5 (authored radius at half
             // the cull radius). `light_atten_legacy` starts false; the
             // env path (`BYROREDUX_RENDER_DEBUG=0x1000`) can still force
@@ -3646,6 +3657,7 @@ pub use draw::FrameInputs;
 mod geometry_pass;
 mod helpers;
 mod post_passes;
+mod render_debug;
 mod resize;
 mod resources;
 mod screenshot;

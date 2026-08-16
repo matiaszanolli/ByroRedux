@@ -25,7 +25,7 @@ layout(push_constant) uniform PresentationParams {
     vec4 underwater;
     float exposure;
     float renderDebugFlags;
-    float padding1;
+    float renderDebugMode;
     float padding2;
     vec4 lens;
     vec4 radialCurve;
@@ -133,10 +133,13 @@ void main() {
     // and isolated lighting energy exactly: no lens kernels, grading,
     // exposure, ACES, underwater treatment, or scripted fades.
     uint dbgFlags = floatBitsToUint(params.renderDebugFlags);
-    bool rawDebug = (dbgFlags & DBG_VIZ_SELECTED_LIGHT) != 0u
-        || (dbgFlags & DBG_VIZ_DIRECT) != 0u
-        || (dbgFlags & DBG_VIZ_RAW_INDIRECT) != 0u
-        || (dbgFlags & DBG_VIZ_RT_LOD) == DBG_VIZ_RT_LOD;
+    uint debugMode = floatBitsToUint(params.renderDebugMode);
+    bool rawDebug = debugMode == RENDER_DEBUG_LEGACY_FLAGS
+        ? ((dbgFlags & DBG_VIZ_SELECTED_LIGHT) != 0u
+            || (dbgFlags & DBG_VIZ_DIRECT) != 0u
+            || (dbgFlags & DBG_VIZ_RAW_INDIRECT) != 0u
+            || (dbgFlags & DBG_VIZ_RT_LOD) == DBG_VIZ_RT_LOD)
+        : debugMode != RENDER_DEBUG_FINAL;
     if (rawDebug) {
         outColor = vec4(clamp(raw.rgb, 0.0, 1.0), raw.a);
         return;

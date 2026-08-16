@@ -8,6 +8,44 @@ use byroredux_core::ecs::World;
 use byroredux_core::math::{Quat, Vec3};
 
 #[test]
+fn render_debug_command_queues_named_mode_and_bounded_probe_pixel() {
+    let mut world = World::new();
+    world.insert_resource(crate::components::RenderDebugControl::default());
+
+    let output = RenderDebugCommand
+        .execute(&world, "shadow_visibility 320 180")
+        .lines
+        .join("\n");
+    assert!(output.contains("mode=shadow_visibility"));
+    assert!(output.contains("probe=(320, 180)"));
+
+    let control = world.resource::<crate::components::RenderDebugControl>();
+    assert_eq!(
+        control.pending_mode,
+        Some(byroredux_renderer::RenderDebugMode::ShadowVisibility)
+    );
+    assert_eq!(control.pending_probe_pixel, Some([320, 180]));
+}
+
+#[test]
+fn render_debug_command_rejects_unknown_mode_and_incomplete_probe() {
+    let mut world = World::new();
+    world.insert_resource(crate::components::RenderDebugControl::default());
+
+    let unknown = RenderDebugCommand
+        .execute(&world, "banana")
+        .lines
+        .join("\n");
+    assert!(unknown.contains("unknown render debug mode"));
+
+    let incomplete = RenderDebugCommand
+        .execute(&world, "probe 10")
+        .lines
+        .join("\n");
+    assert!(incomplete.contains("expected `render.debug"));
+}
+
+#[test]
 fn input_hold_command_enters_through_the_action_binding() {
     use crate::components::InputState;
     use crate::interaction::{

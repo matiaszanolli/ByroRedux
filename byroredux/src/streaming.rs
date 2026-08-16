@@ -432,11 +432,10 @@ pub struct LodBlock {
 /// tracks the moving full-detail boundary every reconcile. Continuous
 /// per-block water LOD (mirroring `LodBlock` exactly) was assessed
 /// too high-risk for this pass: `LodBlock`'s global-pool-only mesh upload
-/// makes it eligible for the renderer's shadow-caster-range auto-BLAS-build
-/// path (`build_global_blas_for_draws`), which would make a water quad
-/// RT-hittable — breaking the water pipeline's terminate-on-hit ray
-/// policy — and that interaction can't be verified without a live/RenderDoc
-/// pass. This entity instead uses the SAME safe per-mesh-buffer upload path
+/// makes it a candidate for the renderer's pre-TLAS static-BLAS recovery path
+/// (`restore_missing_static_blas_for_draws`). That path shares the TLAS
+/// eligibility predicate and therefore excludes water, but this entity also
+/// uses the SAME safe per-mesh-buffer upload path
 /// (`rt_enabled: false`) every full-detail `WaterPlane` already uses, which
 /// is proven never to reach the TLAS regardless of `in_tlas`'s computed
 /// value (see `cell_loader::water`'s module doc).

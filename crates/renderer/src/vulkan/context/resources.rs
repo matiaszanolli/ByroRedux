@@ -3,6 +3,7 @@
 use super::VulkanContext;
 use anyhow::Result;
 
+use crate::vulkan::acceleration::draw_command_eligible_for_tlas;
 use crate::vulkan::scene_buffer::GpuTerrainTile;
 
 /// Free-function core of `fill_terrain_tile_scratch_if_dirty` — lifted
@@ -246,48 +247,87 @@ impl VulkanContext {
         }
     }
 
-    /// Build the nearby global-only LOD meshes selected for this frame's TLAS.
+    /// Restore every missing rigid BLAS needed by this frame before TLAS build.
     ///
-    /// Sources are byte-offset subranges of the global buffers, so exterior
-    /// terrain/object LOD gains structure shadows without restoring per-block
-    /// buffer allocations or upload fence waits. Existing BLAS are filtered
-    /// before batching; the per-frame scan also catches an already-resident
-    /// LOD block the moment camera motion brings it into shadow range.
-    pub fn build_global_blas_for_draws(&mut self, draw_commands: &[super::DrawCommand]) -> usize {
-        let (Some(global_vb), Some(global_ib), Some(accel)) = (
-            self.mesh_registry.global_vertex_buffer.as_ref(),
-            self.mesh_registry.global_index_buffer.as_ref(),
-            self.accel_manager.as_ref(),
-        ) else {
+    /// Static BLAS eviction is allowed to reclaim an off-screen mesh under
+    /// pressure, but a retained `MeshHandle` can become visible again without
+    /// another cell-load callback. The old global-LOD-only pass left ordinary
+    /// dedicated-buffer meshes absent forever in that case: raster kept
+    /// drawing them while shadows, reflections and GI silently lost them.
+    ///
+    /// This pass covers both retained source layouts:
+    /// - ordinary RT-capable meshes use their dedicated vertex/index buffers;
+    /// - global-only terrain/object LOD meshes use byte-offset subranges of the
+    ///   global geometry buffers.
+    ///
+    /// All currently eligible rigid handles are LRU-stamped before the batch.
+    /// `build_blas_batched` may evict internally to make room, so this ordering
+    /// prevents recovery of one visible mesh from evicting another mesh needed
+    /// by the same upcoming TLAS.
+    pub fn restore_missing_static_blas_for_draws(
+        &mut self,
+        draw_commands: &[super::DrawCommand],
+    ) -> usize {
+        let Some(accel) = self.accel_manager.as_mut() else {
             return 0;
         };
 
         let mut handles: Vec<u32> = draw_commands
             .iter()
             .filter_map(|cmd| {
-                if !cmd.in_tlas || accel.has_blas(cmd.mesh_handle) {
+                if cmd.bone_offset != 0 || !draw_command_eligible_for_tlas(cmd) {
                     return None;
                 }
-                let mesh = self.mesh_registry.get(cmd.mesh_handle)?;
-                (mesh.vertex_buffer.is_none() && mesh.index_buffer.is_none())
-                    .then_some(cmd.mesh_handle)
+                Some(cmd.mesh_handle)
             })
             .collect();
         handles.sort_unstable();
         handles.dedup();
 
+        // Protect the complete upcoming rigid TLAS set before the builder's
+        // pre-/mid-batch budget checks can select eviction candidates.
+        accel.mark_static_blas_used(&handles);
+        handles.retain(|&handle| !accel.has_blas(handle));
+
+        if handles.is_empty() {
+            return 0;
+        }
+
         let vertex_stride = std::mem::size_of::<crate::Vertex>() as u64;
         let index_stride = std::mem::size_of::<u32>() as u64;
+        let global_vertex_buffer = self
+            .mesh_registry
+            .global_vertex_buffer
+            .as_ref()
+            .map(|buffer| buffer.buffer);
+        let global_index_buffer = self
+            .mesh_registry
+            .global_index_buffer
+            .as_ref()
+            .map(|buffer| buffer.buffer);
         let sources: Vec<crate::vulkan::acceleration::BlasBuildSource> = handles
             .into_iter()
             .filter_map(|handle| {
                 let mesh = self.mesh_registry.get(handle)?;
+                let (vertex_buffer, index_buffer, vertex_byte_offset, index_byte_offset) =
+                    match (mesh.vertex_buffer.as_ref(), mesh.index_buffer.as_ref()) {
+                        (Some(vertex), Some(index)) if mesh.rt_capable => {
+                            (vertex.buffer, index.buffer, 0, 0)
+                        }
+                        (None, None) => (
+                            global_vertex_buffer?,
+                            global_index_buffer?,
+                            u64::from(mesh.global_vertex_offset) * vertex_stride,
+                            u64::from(mesh.global_index_offset) * index_stride,
+                        ),
+                        _ => return None,
+                    };
                 Some(crate::vulkan::acceleration::BlasBuildSource {
                     mesh_handle: handle,
-                    vertex_buffer: global_vb.buffer,
-                    index_buffer: global_ib.buffer,
-                    vertex_byte_offset: u64::from(mesh.global_vertex_offset) * vertex_stride,
-                    index_byte_offset: u64::from(mesh.global_index_offset) * index_stride,
+                    vertex_buffer,
+                    index_buffer,
+                    vertex_byte_offset,
+                    index_byte_offset,
                     vertex_count: mesh.vertex_count,
                     index_count: mesh.index_count,
                 })
@@ -298,10 +338,6 @@ impl VulkanContext {
             return 0;
         }
         let allocator = self.allocator.as_ref().expect("allocator missing");
-        let accel = self
-            .accel_manager
-            .as_mut()
-            .expect("checked acceleration manager above");
         match accel.build_blas_batched(
             &self.device,
             allocator,
@@ -311,11 +347,11 @@ impl VulkanContext {
             &sources,
         ) {
             Ok(count) => {
-                log::debug!("Built {count} global-buffer LOD shadow BLAS");
+                log::debug!("Restored {count} missing static shadow BLAS before TLAS build");
                 count
             }
             Err(e) => {
-                log::warn!("Global-buffer LOD BLAS batch failed: {e}");
+                log::warn!("Pre-TLAS static BLAS recovery batch failed: {e}");
                 0
             }
         }
@@ -421,6 +457,53 @@ impl VulkanContext {
 mod tests {
     use super::*;
     use crate::vulkan::scene_buffer::MAX_TERRAIN_TILES;
+
+    /// An evicted rigid mesh must be recoverable from either retained source
+    /// layout before the next TLAS publication. The current draw set must also
+    /// be protected before `build_blas_batched` runs its internal eviction
+    /// checks, or restoring one newly-visible mesh can remove another one from
+    /// the same frame's TLAS.
+    #[test]
+    fn static_blas_recovery_covers_both_sources_and_protects_current_draws() {
+        let source = include_str!("resources.rs");
+        let production = &source[..source
+            .find("#[cfg(test)]\nmod tests")
+            .expect("resources.rs must retain its test module")];
+        let start = production
+            .find("pub fn restore_missing_static_blas_for_draws(")
+            .expect("pre-TLAS static BLAS recovery entry point must exist");
+        let body = &production[start..];
+        let body = &body[..body
+            .find("\n    /// Register the fullscreen quad")
+            .expect("static BLAS recovery must remain a bounded method")];
+
+        assert!(
+            body.contains("draw_command_eligible_for_tlas(cmd)")
+                && body.contains("cmd.bone_offset != 0"),
+            "recovery must share TLAS eligibility and exclude per-entity skinned BLAS"
+        );
+        assert!(
+            body.contains("mesh.rt_capable")
+                && body.contains("mesh.vertex_buffer.as_ref()")
+                && body.contains("global_vertex_buffer?")
+                && body.contains("mesh.global_vertex_offset"),
+            "recovery must cover dedicated RT buffers and global-buffer subranges"
+        );
+
+        let protect = body
+            .find("accel.mark_static_blas_used(&handles)")
+            .expect("current-frame rigid handles must be protected from eviction");
+        let missing_filter = body
+            .find("handles.retain(|&handle| !accel.has_blas(handle))")
+            .expect("only missing BLAS should enter the recovery batch");
+        let build = body
+            .find("accel.build_blas_batched(")
+            .expect("missing static BLAS must be rebuilt before TLAS");
+        assert!(
+            protect < missing_filter && missing_filter < build,
+            "protect the complete draw set, then select missing handles, then rebuild"
+        );
+    }
 
     /// Regression for #496 / #497: the fill helper must reuse the
     /// caller's scratch buffer capacity across repeated dirty refills.

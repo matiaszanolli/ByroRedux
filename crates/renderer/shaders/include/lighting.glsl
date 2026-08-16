@@ -218,6 +218,30 @@ vec3 traceLightTransmittance(
     );
 }
 
+vec3 traceLightTransmittanceDetailed(
+    uint lightIndex,
+    vec3 origin,
+    vec3 direction,
+    float maxDist,
+    out uint visibilityMask,
+    out uint committedInstance,
+    out float committedDistance
+) {
+    visibilityMask = decodeVisibilityMask(lights[lightIndex].params.z);
+    committedInstance = 0xFFFFFFFFu;
+    committedDistance = uintBitsToFloat(0x7F800000u);
+    if (!visibilityMaskNeedsTrace(lights[lightIndex].params.z)) return vec3(1.0);
+    return traceShadowTransmittanceDetailed(
+        origin,
+        direction,
+        maxDist,
+        lights[lightIndex].params.y,
+        visibilityMask,
+        committedInstance,
+        committedDistance
+    );
+}
+
 // ── Indirect-hit lighting ───────────────────────────────────────────
 
 bool giLightSample(

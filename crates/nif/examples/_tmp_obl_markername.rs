@@ -30,8 +30,12 @@ fn main() {
             if !name.to_ascii_lowercase().ends_with(".nif") {
                 continue;
             }
-            let Ok(bytes) = arc.extract(name) else { continue };
-            let Ok(scene) = parse_nif(&bytes) else { continue };
+            let Ok(bytes) = arc.extract(name) else {
+                continue;
+            };
+            let Ok(scene) = parse_nif(&bytes) else {
+                continue;
+            };
             files += 1;
             for i in 0..scene.len() {
                 let Some(s) = scene.get_as::<NiTriShape>(i) else {
@@ -48,7 +52,10 @@ fn main() {
         }
     }
     println!("files scanned: {files}");
-    println!("distinct geometry-node names matching is_editor_marker: {}", hits.len());
+    println!(
+        "distinct geometry-node names matching is_editor_marker: {}",
+        hits.len()
+    );
     let mut v: Vec<_> = hits.into_iter().collect();
     v.sort_by_key(|(_, c)| std::cmp::Reverse(*c));
     let total: usize = v.iter().map(|(_, c)| *c).sum();

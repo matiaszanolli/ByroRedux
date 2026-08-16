@@ -73,6 +73,22 @@ impl AccelerationManager {
             .is_some_and(Option::is_some)
     }
 
+    /// Protect the currently eligible rigid draw set from LRU eviction.
+    ///
+    /// The pre-TLAS recovery pass calls this before it builds any missing
+    /// static BLAS. `build_blas_batched` may run budget eviction internally,
+    /// so stamping every already-resident draw first prevents that build from
+    /// evicting a different mesh which is needed by the same upcoming TLAS.
+    /// Missing handles are harmless here; the builder registers them with the
+    /// current frame stamp later in the same pass.
+    pub fn mark_static_blas_used(&mut self, handles: &[u32]) {
+        for &handle in handles {
+            if let Some(Some(entry)) = self.blas_entries.get_mut(handle as usize) {
+                entry.last_used_frame = self.frame_counter;
+            }
+        }
+    }
+
     /// Drain and destroy BLAS entries whose defer countdown has reached
     /// zero, and retired `blas_scratch_buffer` allocations
     /// (`pending_destroy_scratch`, #1782) alongside them. Call once per

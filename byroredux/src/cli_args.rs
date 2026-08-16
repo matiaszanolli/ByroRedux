@@ -99,9 +99,55 @@ pub fn parse_renderer_config(args: &[String]) -> Result<RendererConfig> {
         grid_far_meters: parse_u32("--fog-grid-far-m", defaults.grid_far_meters)?,
     }
     .validate()?;
+    let rt_test_blas_budget_bytes = option("--rt-test-blas-budget-bytes")?
+        .map(|value| {
+            let bytes = value.parse::<u64>().map_err(|_| {
+                anyhow::anyhow!(
+                    "--rt-test-blas-budget-bytes requires a positive integer, got '{value}'"
+                )
+            })?;
+            if bytes == 0 {
+                bail!("--rt-test-blas-budget-bytes must be greater than zero");
+            }
+            Ok(bytes)
+        })
+        .transpose()?;
+    let rt_test_lod_scale_bits = option("--rt-test-lod-scale")?
+        .map(|value| {
+            let scale = value.parse::<f32>().map_err(|_| {
+                anyhow::anyhow!(
+                    "--rt-test-lod-scale requires a finite number in 0.000001..=64, got '{value}'"
+                )
+            })?;
+            if !scale.is_finite() || !(0.000_001..=64.0).contains(&scale) {
+                bail!(
+                    "--rt-test-lod-scale requires a finite number in 0.000001..=64, got '{value}'"
+                );
+            }
+            Ok(scale.to_bits())
+        })
+        .transpose()?;
+    let rt_test_lod_telemetry = args.iter().any(|arg| arg == "--rt-test-lod-telemetry");
+    let rt_test_ray_quality_tier = option("--rt-test-ray-quality-tier")?
+        .map(|value| {
+            let tier = value.parse::<u32>().map_err(|_| {
+                anyhow::anyhow!(
+                    "--rt-test-ray-quality-tier requires an integer in 0..=3, got '{value}'"
+                )
+            })?;
+            if tier > 3 {
+                bail!("--rt-test-ray-quality-tier requires an integer in 0..=3, got '{value}'");
+            }
+            Ok(tier)
+        })
+        .transpose()?;
     Ok(RendererConfig {
         upscaler,
         volumetrics,
+        rt_test_blas_budget_bytes,
+        rt_test_lod_scale_bits,
+        rt_test_lod_telemetry,
+        rt_test_ray_quality_tier,
     })
 }
 
@@ -272,6 +318,66 @@ mod tests {
             parse_renderer_config(&args(&["byroredux", "--fog-grid-far-m", "not-a-number"]))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn renderer_config_parses_explicit_rt_test_blas_budget() {
+        let parsed = parse_renderer_config(&args(&[
+            "byroredux",
+            "--rt-test-blas-budget-bytes",
+            "1048576",
+        ]))
+        .unwrap();
+        assert_eq!(parsed.rt_test_blas_budget_bytes, Some(1_048_576));
+
+        assert!(
+            parse_renderer_config(&args(&["byroredux", "--rt-test-blas-budget-bytes", "0",]))
+                .is_err()
+        );
+        assert!(parse_renderer_config(&args(&[
+            "byroredux",
+            "--rt-test-blas-budget-bytes",
+            "tiny",
+        ]))
+        .is_err());
+        assert!(
+            parse_renderer_config(&args(&["byroredux", "--rt-test-blas-budget-bytes",])).is_err()
+        );
+    }
+
+    #[test]
+    fn renderer_config_parses_bounded_rt_lod_diagnostics_independently() {
+        let parsed = parse_renderer_config(&args(&[
+            "byroredux",
+            "--rt-test-lod-scale",
+            "8.5",
+            "--rt-test-lod-telemetry",
+            "--rt-test-ray-quality-tier",
+            "3",
+        ]))
+        .unwrap();
+        assert_eq!(parsed.rt_test_lod_scale_bits.map(f32::from_bits), Some(8.5));
+        assert!(parsed.rt_test_lod_telemetry);
+        assert_eq!(parsed.rt_test_ray_quality_tier, Some(3));
+
+        let timing_only =
+            parse_renderer_config(&args(&["byroredux", "--rt-test-lod-scale", "4"])).unwrap();
+        assert!(!timing_only.rt_test_lod_telemetry);
+        for invalid in ["0", "-1", "65", "NaN", "infinite"] {
+            assert!(
+                parse_renderer_config(&args(&["byroredux", "--rt-test-lod-scale", invalid,]))
+                    .is_err()
+            );
+        }
+        assert!(parse_renderer_config(&args(&["byroredux", "--rt-test-lod-scale"])).is_err());
+        for invalid in ["4", "-1", "high"] {
+            assert!(parse_renderer_config(&args(&[
+                "byroredux",
+                "--rt-test-ray-quality-tier",
+                invalid,
+            ]))
+            .is_err());
+        }
     }
 
     #[test]

@@ -40,6 +40,15 @@ pub const fn debug_viz_requires_raw_output(flags: u32) -> bool {
         || (flags & DBG_VIZ_RT_LOD) == DBG_VIZ_RT_LOD
 }
 
+/// Raw-output decision for the full structured/legacy debug contract.
+pub const fn render_debug_requires_raw_output(flags: u32, mode: u32) -> bool {
+    if mode == RENDER_DEBUG_LEGACY_FLAGS {
+        debug_viz_requires_raw_output(flags)
+    } else {
+        mode != RENDER_DEBUG_FINAL
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -97,6 +106,14 @@ mod tests {
         assert!(debug_viz_requires_raw_output(DBG_VIZ_RT_LOD));
         assert!(debug_viz_requires_raw_output(DBG_VIZ_DIRECT));
         assert!(debug_viz_requires_raw_output(DBG_VIZ_RAW_INDIRECT));
+        for mode in 1..=RENDER_DEBUG_MODE_MAX {
+            assert!(render_debug_requires_raw_output(0, mode));
+        }
+        assert!(!render_debug_requires_raw_output(0, RENDER_DEBUG_FINAL));
+        assert!(render_debug_requires_raw_output(
+            DBG_VIZ_DIRECT,
+            RENDER_DEBUG_LEGACY_FLAGS
+        ));
     }
 
     #[test]
@@ -146,6 +163,10 @@ mod tests {
             ("CLUSTER_TILES_Y", format!("#define CLUSTER_TILES_Y {CLUSTER_TILES_Y}u")),
             ("CLUSTER_SLICES_Z", format!("#define CLUSTER_SLICES_Z {CLUSTER_SLICES_Z}u")),
             ("MAX_LIGHTS_PER_CLUSTER", format!("#define MAX_LIGHTS_PER_CLUSTER {MAX_LIGHTS_PER_CLUSTER}u")),
+            ("MAX_LIGHTS", format!("#define MAX_LIGHTS {MAX_LIGHTS}u")),
+            ("RESERVOIR_LIGHT_BITS", format!("#define RESERVOIR_LIGHT_BITS {RESERVOIR_LIGHT_BITS}u")),
+            ("RESERVOIR_LIGHT_MASK", format!("#define RESERVOIR_LIGHT_MASK {RESERVOIR_LIGHT_MASK}u")),
+            ("RESERVOIR_SURFACE_MASK", format!("#define RESERVOIR_SURFACE_MASK {RESERVOIR_SURFACE_MASK}u")),
             ("VERTEX_STRIDE_FLOATS", format!("#define VERTEX_STRIDE_FLOATS {VERTEX_STRIDE_FLOATS}u")),
             // #2234 (REN-D9-01) — was emitted by build.rs but missing from
             // this pin-list, unlike its VERTEX_STRIDE_FLOATS/MAX_BONES_PER_MESH/
@@ -516,6 +537,40 @@ mod tests {
         assert!(
             compound < glass_ior,
             "rtLOD oracle must run before thick glass returns early"
+        );
+    }
+
+    #[test]
+    fn rt_lod_scale_and_counters_are_explicit_diagnostic_contracts() {
+        let shader = include_str!("../shaders/triangle.frag");
+        let bindings = include_str!("../shaders/include/bindings.glsl");
+        let draw = include_str!("vulkan/context/draw.rs");
+        assert!(shader.contains("renderDebug.y == 0u"));
+        assert!(shader.contains("uintBitsToFloat(renderDebug.y)"));
+        assert!(shader.contains("bool rtLodTelemetryEnabled = renderDebug.z != 0u"));
+        for counter in [
+            "rtLodFragments",
+            "rtLodBin0",
+            "rtLodBin1",
+            "rtLodBin2",
+            "rtLodBin3",
+            "rtReflectionTraced",
+            "rtReflectionLodCulled",
+            "rtGiTraced",
+            "rtGiLodCulled",
+        ] {
+            assert!(
+                bindings.contains(counter),
+                "missing shader ABI counter {counter}"
+            );
+            assert!(shader.contains(&format!("rayBudget.{counter}")));
+        }
+        assert!(draw.contains("rt_test_lod_scale_bits.unwrap_or(0)"));
+        assert!(draw.contains("u32::from(self.renderer_config.rt_test_lod_telemetry)"));
+        assert!(
+            shader.find("if (rtLodTelemetryEnabled)").unwrap()
+                < shader.find("atomicAdd(rayBudget.rtLodFragments").unwrap(),
+            "shipping frames must skip the diagnostic atomics"
         );
     }
 
@@ -947,13 +1002,13 @@ mod tests {
     fn triangle_frag_direct_visualization_excludes_indirect_attachments() {
         let src = include_str!("../shaders/triangle.frag");
         let branch = src
-            .split("DBG_VIZ_DIRECT")
+            .split("} else if (viewDirectOnly) {")
             .nth(1)
-            .expect("triangle.frag must implement DBG_VIZ_DIRECT");
+            .expect("triangle.frag must implement the structured direct-only view");
         let branch = branch
-            .split("} else {")
+            .split("} else if")
             .next()
-            .expect("DBG_VIZ_DIRECT branch must terminate before normal output");
+            .expect("direct-only branch must terminate before normal output");
         assert!(branch.contains("outColor = vec4(directLight, 1.0);"));
         assert!(branch.contains("outRawIndirect = vec4(0.0);"));
         assert!(branch.contains("outAlbedo = vec4(1.0);"));

@@ -35,7 +35,10 @@ fn main() {
             hit_bases.insert(fid, norm(&s.model_path));
         }
     }
-    eprintln!("base records referencing a dropped model: {}", hit_bases.len());
+    eprintln!(
+        "base records referencing a dropped model: {}",
+        hit_bases.len()
+    );
 
     let mut per_model: HashMap<String, usize> = HashMap::new();
     let mut interior_cells = HashSet::new();
@@ -88,8 +91,14 @@ fn main() {
     }
 
     println!("TOTAL dropped-model REFR placements: {total}");
-    println!("  distinct interior cells affected: {}", interior_cells.len());
-    println!("  distinct exterior cells affected: {}", exterior_cells.len());
+    println!(
+        "  distinct interior cells affected: {}",
+        interior_cells.len()
+    );
+    println!(
+        "  distinct exterior cells affected: {}",
+        exterior_cells.len()
+    );
     let mut v: Vec<_> = per_model.into_iter().collect();
     v.sort_by_key(|(_, c)| std::cmp::Reverse(*c));
     for (m, c) in v {

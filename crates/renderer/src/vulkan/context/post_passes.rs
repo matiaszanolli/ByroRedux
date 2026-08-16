@@ -653,7 +653,11 @@ impl VulkanContext {
                                 fog_reference: [
                                     fog_height_reference,
                                     crate::vulkan::volumetrics::DEFAULT_EMISSIVE_HISTORY_WEIGHT,
-                                    self.scene_buffers.current_ray_budget().volumetric_light_cap
+                                    self.scene_buffers
+                                        .current_ray_budget(
+                                            self.renderer_config.rt_test_ray_quality_tier,
+                                        )
+                                        .volumetric_light_cap
                                         as f32,
                                     0.0,
                                 ],
@@ -914,8 +918,10 @@ impl VulkanContext {
             // those latches set for a dispatch that never reached the GPU.
             // See `FrameUpscaler::record`'s doc comment before adding any
             // fallible call between here and the submit.
-            let force_native_debug =
-                crate::shader_constants::debug_viz_requires_raw_output(self.render_debug_flags);
+            let force_native_debug = crate::shader_constants::render_debug_requires_raw_output(
+                self.render_debug_flags,
+                self.render_debug_mode.shader_value(),
+            );
             self.frame_upscaler
                 .as_mut()
                 .expect("frame upscaler must exist while recording")
@@ -983,6 +989,7 @@ impl VulkanContext {
                         underwater,
                         image_space: image_space_modifier,
                         render_debug_flags: self.render_debug_flags,
+                        render_debug_mode: self.render_debug_mode.shader_value(),
                     },
                 );
             if let Some(ref mut timers) = self.gpu_timers {

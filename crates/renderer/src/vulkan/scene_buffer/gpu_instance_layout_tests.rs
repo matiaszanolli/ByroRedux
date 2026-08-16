@@ -5,6 +5,7 @@
 //! stays in lockstep.
 
 use super::*;
+use crate::shader_constants::{RESERVOIR_LIGHT_BITS, RESERVOIR_LIGHT_MASK, RESERVOIR_SURFACE_MASK};
 use ash::vk;
 use std::mem::size_of;
 
@@ -16,13 +17,70 @@ use std::mem::offset_of;
 /// and spatial reuse.
 #[test]
 fn max_lights_leaves_the_packed_restir_sentinel_unoccupied() {
-    const RESERVOIR_LIGHT_MASK: usize = 0x3ff;
-    assert!(MAX_LIGHTS <= RESERVOIR_LIGHT_MASK);
-    assert_eq!(MAX_LIGHTS, RESERVOIR_LIGHT_MASK);
+    assert_eq!(MAX_LIGHTS, RESERVOIR_LIGHT_MASK as usize);
+    assert_eq!(RESERVOIR_LIGHT_MASK, (1u32 << RESERVOIR_LIGHT_BITS) - 1);
+    assert_eq!(RESERVOIR_SURFACE_MASK, u32::MAX >> RESERVOIR_LIGHT_BITS);
 
+    let header = include_str!("../../../shaders/include/shader_constants.glsl");
     let shader = include_str!("../../../shaders/triangle.frag");
-    assert!(shader.contains("const uint RESERVOIR_LIGHT_MASK = 0x3FFu;"));
+    assert!(header.contains("#define MAX_LIGHTS 1023u"));
+    assert!(header.contains("#define RESERVOIR_LIGHT_BITS 10u"));
+    assert!(header.contains("#define RESERVOIR_LIGHT_MASK 1023u"));
+    assert!(header.contains("#define RESERVOIR_SURFACE_MASK 4194303u"));
+    assert!(!shader.contains("const uint RESERVOIR_LIGHT_MASK"));
+    assert!(shader.contains(">> RESERVOIR_LIGHT_BITS"));
+    assert!(shader.contains("<< RESERVOIR_LIGHT_BITS"));
     assert!(shader.contains("explicit 1023 invalid value"));
+}
+
+/// The categorical selected-light oracle distinguishes a legitimate absence
+/// (black) from a corrupt non-sentinel index (magenta).
+#[test]
+fn selected_light_debug_marks_out_of_range_indices_magenta() {
+    let shader = include_str!("../../../shaders/triangle.frag");
+    assert!(shader.contains("selectedLightDebug >= lightCount"));
+    assert!(shader.contains("selectedLightDebug != 0xFFFFFFFFu"));
+    assert!(shader.contains("selectedColor = vec3(1.0, 0.0, 1.0);"));
+}
+
+/// The selected-ray diagnostic is bounded to one atomically-claimed record
+/// and carries the exact geometry/mask/hit/light payload required to
+/// correlate the selected-light and visibility views.
+#[test]
+fn selected_ray_probe_is_bounded_and_captures_the_detailed_shadow_query() {
+    let bindings = include_str!("../../../shaders/include/bindings.glsl");
+    let shadow = include_str!("../../../shaders/include/shadow_transport.glsl");
+    let lighting = include_str!("../../../shaders/include/lighting.glsl");
+    let triangle = include_str!("../../../shaders/triangle.frag");
+    let draw = include_str!("../context/draw.rs");
+
+    assert!(bindings.contains("binding = 19) coherent buffer SelectedRayProbeBuffer"));
+    assert!(shadow.contains("traceShadowTransmittanceDetailed("));
+    assert!(lighting.contains("traceLightTransmittanceDetailed("));
+    assert!(triangle.contains("atomicCompSwap(selectedRayProbeControl.y, 1u, 2u)"));
+    assert!(triangle.contains("selectedRayProbeLightParams = lights[selectedLightDebug].params"));
+    assert!(triangle.contains("atomicExchange(selectedRayProbeControl.y, 3u)"));
+    let arm_barrier = draw
+        .split_once("// Barrier: make the instance SSBO host write")
+        .and_then(|(_, tail)| tail.split_once("// #1255").map(|(block, _)| block))
+        .expect("selected-ray arm must precede the shared host-to-shader barrier");
+    assert!(arm_barrier.contains("vk::PipelineStageFlags::HOST"));
+    assert!(arm_barrier.contains("vk::AccessFlags::HOST_WRITE"));
+    assert!(arm_barrier.contains("vk::PipelineStageFlags::FRAGMENT_SHADER"));
+    assert!(arm_barrier.contains("vk::AccessFlags::SHADER_READ"));
+    assert!(arm_barrier.contains("vk::AccessFlags::SHADER_WRITE"));
+
+    let publish_barrier = draw
+        .split_once("// Publish the bounded fragment-shader probe record to the host.")
+        .and_then(|(_, tail)| {
+            tail.split_once("// Soft-particle depth fade:")
+                .map(|(block, _)| block)
+        })
+        .expect("selected-ray publish must have a fragment-to-host barrier");
+    assert!(publish_barrier.contains("vk::PipelineStageFlags::FRAGMENT_SHADER"));
+    assert!(publish_barrier.contains("vk::AccessFlags::SHADER_WRITE"));
+    assert!(publish_barrier.contains("vk::PipelineStageFlags::HOST"));
+    assert!(publish_barrier.contains("vk::AccessFlags::HOST_READ"));
 }
 
 /// Regression guard for the Shader Struct Sync invariant (#318 / #417).
@@ -55,10 +113,10 @@ fn gpu_instance_is_128_bytes_std430_compatible() {
 }
 
 /// Regression for #1028 / R-D6-01, updated for #markarth-precision.
-/// `GpuCamera` must stay 336 B — three `mat4` (192 B) plus nine
-/// trailing `vec4` (144 B): `position`, `flags`, `screen`, `fog`,
+/// `GpuCamera` must stay 352 B — three `mat4` (192 B) plus ten
+/// trailing 16-byte vectors (160 B): `position`, `flags`, `screen`, `fog`,
 /// `jitter`, `sky_tint`, `sun_direction` (#1210 Phase A+B),
-/// `dof_params`, `render_origin` (#markarth-precision).
+/// `dof_params`, `render_origin` (#markarth-precision), `render_debug`.
 /// Every shader that re-declares `CameraUBO` (`triangle.vert`,
 /// `triangle.frag`, `water.vert`, `water.frag`, `cluster_cull.comp`,
 /// `caustic_splat.comp`) must match this size — pre-#1028 some
@@ -71,17 +129,28 @@ fn gpu_instance_is_128_bytes_std430_compatible() {
 /// declares `CameraUBO` — they use their own param blocks in
 /// origin-relative space.)
 #[test]
-fn gpu_camera_is_336_bytes() {
+fn gpu_camera_is_352_bytes() {
     assert_eq!(
             size_of::<GpuCamera>(),
-            336,
-            "GpuCamera must be 336 B (320 B + 16 B render_origin vec4, #markarth-precision) to match \
+            352,
+            "GpuCamera must be 352 B (336 B + 16 B render_debug uvec4) to match \
              the CameraUBO declaration in all 6 re-declaring shaders (triangle.vert, triangle.frag, \
              water.vert, water.frag, cluster_cull.comp, caustic_splat.comp — each pinned against the \
-             shipped .spv by the reflect.rs uniform_block_size_by_name check). render_origin was \
-             APPENDED at the end; every re-declarer must carry the full field list up to and \
-             including render_origin so std140 offsets line up."
+             shipped .spv by the reflect.rs uniform_block_size_by_name check). render_debug is \
+             APPENDED at the end; every re-declarer must carry the full field list through it."
         );
+}
+
+#[test]
+fn selected_ray_probe_is_144_bytes_std430_compatible() {
+    assert_eq!(size_of::<GpuSelectedRayProbe>(), 144);
+    assert_eq!(offset_of!(GpuSelectedRayProbe, control), 0);
+    assert_eq!(offset_of!(GpuSelectedRayProbe, ids), 16);
+    assert_eq!(offset_of!(GpuSelectedRayProbe, origin_tmin), 32);
+    assert_eq!(offset_of!(GpuSelectedRayProbe, direction_tmax), 48);
+    assert_eq!(offset_of!(GpuSelectedRayProbe, hit_visibility), 64);
+    assert_eq!(offset_of!(GpuSelectedRayProbe, light_position_radius), 80);
+    assert_eq!(offset_of!(GpuSelectedRayProbe, light_params), 128);
 }
 
 #[test]
@@ -701,12 +770,13 @@ fn correctness_debug_views_bypass_non_transport_frame_graph_terms() {
                 && source.contains("(dbgFlags & DBG_VIZ_DIRECT) != 0u")
                 && source.contains("(dbgFlags & DBG_VIZ_RAW_INDIRECT) != 0u")
                 && source.contains("(dbgFlags & DBG_VIZ_RT_LOD) == DBG_VIZ_RT_LOD")
+                && source.contains("RENDER_DEBUG_LEGACY_FLAGS")
                 && source.contains("if (rawDebug)"),
             "{name} must preserve renderer correctness-oracle output"
         );
     }
     let post = include_str!("../context/post_passes.rs");
-    assert!(post.contains("debug_viz_requires_raw_output"));
+    assert!(post.contains("render_debug_requires_raw_output"));
     assert!(post.contains("force_native_debug"));
 }
 

@@ -32,8 +32,8 @@ re-implement or revert them.
 |---|---|---|
 | R0 measurement | Named benchmark modes; `renderer-stepped` owns a fixed 1/60 s delta; moving pan/orbit/dolly/cut cameras; scene fingerprints; five-scene stepped-camera bench at `34074b93` | Three-run verdict reproducibility; a true HEAD-vs-anchor visual predicate; separate performance and correctness thresholds |
 | R1 ingestion | XCLL rotation fields renamed; the axis-invariant test is ignored as an explicit xfail; punctual per-light flat fill removed | Remove the XCLL type-3 `Lo` bypass; validate an XCLL-specific angle conversion; emit kind/direction/fade/provenance in `light.dump` |
-| R2 TLAS | Missing TLAS instances split into skinned/rigid/SSBO causes; `patch_camera_rt_flag`; off-frustum occluders retained; AS publication and shrink synchronization fixed by `c25f61e6` | Persist counters beyond rate-limited logs; cluster overflow telemetry; four-scene runtime integrity captures; a forced-low-budget eviction test |
-| R3 transport | Wächter-Binder-style `offsetRayOrigin`; shared material-aware shadow transport | Visibility-only and selected-light views; eliminate residual manual fixed offsets/tMin values; derive `RT_LOD_SCALE` from a sweep |
+| R2 TLAS | Missing TLAS instances split into skinned/rigid/SSBO causes; `patch_camera_rt_flag`; off-frustum occluders retained; AS publication and shrink synchronization fixed by `c25f61e6` | Persist counters beyond rate-limited logs; cluster overflow telemetry; four-scene runtime integrity captures |
+| R3 transport | Wächter-Binder-style `offsetRayOrigin`; shared material-aware shadow transport; structured correctness views and bounded selected-ray probe | Derive `RT_LOD_SCALE` from a measured sweep; repeat the probe contract across three runs and a large-coordinate scene |
 | R4 oracle | Redistributable Cornell scene; one cube golden test; same-revision upscaler SSIM test | Six-rung Cornell lighting/material ladder and CI comparison artifacts |
 | R5 materials | `GpuMaterial` flags generated from Rust; semantic `MaterialTextureSet`; one NIF slot-to-role table; FO3/FNV TXST-to-NIF role permutation pinned | Material provenance dump; BGSM diffuse-lobe contract; complete REFR/BGSM role forwarding; lobe view; cross-game fixture matrix |
 | R6 contracts | `lighting-from-cells.md` describes directional and ambient as separate controls | Reconcile renderer/shader/material docs with live code and pin critical GPU-layout claims |
@@ -62,15 +62,20 @@ carried forward.
   kind, direction/position, photometric values, visibility and entity/FormID
   provenance. Exact translation source, GPU index, and assigned-cluster count
   are still not retained per light.
-- **R2 complete for normal runtime pressure.** Persistent RT-integrity and
+- **R2 complete.** Persistent RT-integrity and
   fence-lagged cluster telemetry were captured on Dugout Inn, MedTek,
   Prospector, and Cydonia. Cydonia exposed two capacity failures: 656 live
   lights exceeded the old 512-light SSBO, and clusters reached 305 candidates,
   dropping 3,729 references at the old 128 cap. `MAX_LIGHTS = 1023` now leaves
   packed ReSTIR index 1023 as the invalid sentinel; the per-cluster cap is 512.
   Adaptive cold-start ray budgeting prevents the former Cydonia device loss.
-  A forced-low-BLAS-budget eviction/rebuild recovery test is still required.
-- **R3 core transport complete; measurement closure remains.** Selected-light,
+  The ignored `cornell_forced_low_blas_budget_preserves_rt_shadows` hardware
+  gate runs L2 with a one-byte static-BLAS budget, requires the explicit
+  pressure-override warning and a complete two-instance TLAS, then checks the
+  same blocked/control visibility probes as the normal L2 oracle. It passes on
+  the RTX 4070 Ti. Missing retained rigid BLAS are restored from dedicated or
+  global source buffers before the next TLAS publication.
+- **R3 core transport and selected-ray observability complete; measurement closure remains.** Selected-light,
   shadow-visibility, direct, raw-indirect, material-lobe, and RT-LOD views are
   available through the existing debug selectors. Every correctness view
   bypasses composite fog/caustics/bloom/dither, temporal FSR dispatch,
@@ -78,8 +83,13 @@ carried forward.
   secondary-ray consumer now uses the shared representable-float origin offset
   with numerical `tMin = 0`. The first L0 capture also exposed and removed the
   shader's hard-coded no-light directional fallback, so zero submitted lights
-  now leave direct transport at zero. A bounded pixel probe, a runtime
-  enum/command, and the measured `RT_LOD_SCALE` sweep remain open.
+  now leave direct transport at zero. `RenderDebugMode` is carried in a
+  dedicated camera UBO lane and is live-selectable with
+  `render.debug <mode>`. `render.debug <mode> <x> <y>` (or
+  `render.debug probe <x> <y>`) arms one atomically bounded SSBO record and
+  reports the selected GPU-light record, absolute ray geometry, tMin/tMax,
+  decoded visibility mask, averaged transmittance, and first committed hit.
+  The measured `RT_LOD_SCALE` sweep remains open.
 - **R4 L0-L2 scene and manual runtime gate complete.** `--cornell-oracle l0|l1|l2`
   constructs the ladder from one manifest: a dark white plane, the same plane
   under one analytic directional source, then the same scene with one opaque
@@ -91,8 +101,9 @@ carried forward.
   The ignored `cornell_rt_oracle` integration gate now captures those three
   frames, requires `rt-integrity verdict=PASS`, and checks analytic L0/L1 plus
   blocked/control L2 pixels. It passes locally on the RTX 4070 Ti and is ready
-  for the RT-capable CI worker. CI scheduling/artifact publication remains;
-  L3-L5 are not built.
+  for the RT-capable CI worker. Its forced-low-BLAS sibling also passes with an
+  intentionally impossible one-byte budget. CI scheduling/artifact publication
+  remains; L3-L5 are not built.
 - **R5 core role/flag observability complete; fixture breadth remains.** The
   PBR/translucency/model-space-normal bits are generated with the other shader
   constants, the FO3/FNV TXST↔NIF 2-5 permutation is explicit, `mat.dump`
@@ -338,17 +349,19 @@ the result through `rt.integrity` and benchmark manifests.
 
 ### R2.3 Reproducible eviction pressure
 
-Add a test-only/diagnostic BLAS-budget override with an explicit byte value and
-startup log. It must be rejected outside diagnostic builds or require an
-unmistakable `--rt-test-blas-budget-mb` CLI flag. Use it to force eviction on
-the development GPU and prove one of two contracts:
+Use the explicit diagnostic BLAS-budget override
+`--rt-test-blas-budget-bytes <BYTES>`. It emits an unmistakable startup warning
+and is never populated by normal renderer configuration. Use it to force
+eviction pressure on the development GPU and prove one of two contracts:
 
 - visible/eligible rigid BLAS are pinned and never evicted; or
 - an evicted eligible static BLAS is queued for on-command rebuild before the
   next TLAS publication.
 
-The current state, where an evicted rigid BLAS can remain absent until cell
-reload, is not an acceptable final contract.
+The pre-TLAS app-frame pass restores missing eligible rigid BLAS from either
+retained dedicated mesh buffers or global geometry-buffer subranges. It first
+LRU-stamps the complete eligible rigid draw set so its own blocking batch build
+cannot evict another BLAS required by the same upcoming TLAS publication.
 
 ### R2.4 Runtime matrix
 
@@ -387,6 +400,14 @@ reserved camera/debug field and settable by `render.debug <mode>`:
 Keep orthogonal low-level toggles as flags. A mutually exclusive visualization
 belongs to the enum. Unknown values render magenta and log once.
 
+**Implemented.** The dense `RenderDebugMode` contract lives in generated
+Rust/GLSL constants and rides `GpuCamera.render_debug.x`, leaving
+`jitter.z`'s legacy feature-ablation flags intact. The command accepts the
+seven required names plus `rt_lod`; invalid command names are rejected and
+warn once, while an invalid GPU discriminant renders magenta. Composite,
+native-debug upscale, and presentation receive the same mode, so every named
+correctness view bypasses temporal reconstruction and display grading.
+
 ### R3.2 Visibility-only view
 
 After the final reservoir sample is revalidated, output its scalar/broadband
@@ -396,12 +417,29 @@ means both "occluded" and "nothing selected". Capture selected light index,
 ray origin/direction/tMin/tMax, mask, committed-hit instance and distance in a
 bounded pixel probe record.
 
+**Implemented.** Binding 19 is one 144-byte per-frame-in-flight record. The
+first eligible fragment at the requested render pixel claims it with an
+atomic state transition; a fence-lagged host read distinguishes no fragment,
+no selected ray, no hit, and an opaque/glass hit without an unbounded log or
+GPU append buffer.
+
 ### R3.3 Selected-light view
 
 Hash the final selected `GpuLight` index to a stable false colour. Reserve
 black for no candidate and magenta for an out-of-range index. The pixel probe
 must also print the selected light's `light.dump` record, making a mismatch
 between index and ray geometry observable in one round trip.
+
+**Implemented.** The probe copies the exact four-`vec4` `GpuLight` record
+addressed by the final reservoir selection, so the command output is the GPU
+upload contract rather than a second ECS-side index reconstruction.
+
+The 2026-08-16 RTX 4070 Ti L2 runtime proof selected light 0 with mask `0x3f`
+at both fixed pixels. The blocked pixel `(620, 460)` committed blocker instance
+1 at distance `1.019840` and returned visibility `(0, 0, 0)`; the control pixel
+`(857, 143)` committed no hit and returned `(1, 1, 1)`. Both records printed
+the same exact uploaded directional `GpuLight`, so selection, ray geometry,
+hit identity and final visibility agree in the controlled scene.
 
 ### R3.4 Shared origin/range contract
 
@@ -416,6 +454,11 @@ manual `position +/- normal * 0.05` origins in water, glass, reflection,
 refraction, caustic and GI paths. A non-zero semantic distance remains only as
 a named generated constant with a test and units; no anonymous `0.05` remains
 in a ray initializer.
+
+**Implemented.** All secondary-ray consumers use the shared representable-float
+origin offset and numerical `tMin = 0`; named physical segment/range limits
+remain separate from self-intersection avoidance and are source-contract
+tested.
 
 ### R3.5 RT LOD derivation
 

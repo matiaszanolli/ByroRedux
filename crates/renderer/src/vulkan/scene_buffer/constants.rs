@@ -12,7 +12,7 @@ use ash::vk;
 /// cap discarded 144 before cluster assignment. The non-power-of-two ceiling
 /// is deliberate: ReSTIR packs the selected index into 10 bits and reserves
 /// `0x3ff` (1023) as its invalid sentinel, leaving valid indices 0..=1022.
-pub(super) const MAX_LIGHTS: usize = 1023;
+pub(super) const MAX_LIGHTS: usize = crate::shader_constants::MAX_LIGHTS;
 
 /// Maximum bones we can upload per frame across all skinned meshes.
 /// 196608 × 64 B = 12 MB/frame × 3 frames-in-flight = 36 MB total.
@@ -194,7 +194,7 @@ pub const MAX_MATERIALS: usize = 16384;
 /// Each frame's slot must start on a `minStorageBufferOffsetAlignment`
 /// boundary; 256 covers every common desktop / mobile GPU
 /// (NVIDIA = 16, AMD = 4, Intel = 16, mobile up to 256). The actual
-/// payload is 4 bytes — the rest is alignment padding. Total buffer
+/// payload is currently 68 bytes — the rest is alignment padding. Total buffer
 /// at MAX_FRAMES_IN_FLIGHT = 2 is 512 bytes.
 pub const RAY_BUDGET_STRIDE: vk::DeviceSize = 256;
 

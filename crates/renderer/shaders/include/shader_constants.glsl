@@ -16,6 +16,12 @@
 #define CLUSTER_FAR_FALLBACK 50000.0
 #define MAX_LIGHTS_PER_CLUSTER 512u
 
+// ReSTIR reservoir packing + scene-light upload count
+#define MAX_LIGHTS 1023u
+#define RESERVOIR_LIGHT_BITS 10u
+#define RESERVOIR_LIGHT_MASK 1023u
+#define RESERVOIR_SURFACE_MASK 4194303u
+
 // Vertex layout (global SSBO)
 #define VERTEX_STRIDE_FLOATS 26u
 // Skinned-vertex output stride — position only (#2170).
@@ -114,6 +120,18 @@
 // Local fog-volume clustering (M55/Session 62).
 #define FOG_VOLUME_CLUSTER_DIM 16u
 #define MAX_FOG_VOLUMES_PER_CLUSTER 8u
+
+// Structured renderer correctness views (`GpuCamera.renderDebug.x`).
+#define RENDER_DEBUG_FINAL 0u
+#define RENDER_DEBUG_SHADOW_VISIBILITY 1u
+#define RENDER_DEBUG_SELECTED_LIGHT 2u
+#define RENDER_DEBUG_DIRECT_ONLY 3u
+#define RENDER_DEBUG_INDIRECT_ONLY 4u
+#define RENDER_DEBUG_MATERIAL_LOBE 5u
+#define RENDER_DEBUG_COMPOSITE_TERM 6u
+#define RENDER_DEBUG_RT_LOD 7u
+#define RENDER_DEBUG_MODE_MAX 7u
+#define RENDER_DEBUG_LEGACY_FLAGS 4294967295u
 
 // Debug-viz bit flags (set via console for renderer bisects).
 #define DBG_BYPASS_POM 1u

@@ -23,7 +23,8 @@ struct PresentationPushConstants {
     underwater: [f32; 4],
     exposure: f32,
     render_debug_flags: f32,
-    padding: [f32; 2],
+    render_debug_mode: f32,
+    padding: f32,
     lens: [f32; 4],
     radial_curve: [f32; 4],
     grade: [f32; 4],
@@ -80,6 +81,7 @@ pub(crate) struct PresentationFrame {
     pub underwater: [f32; 4],
     pub image_space: ImageSpaceModifierView,
     pub render_debug_flags: u32,
+    pub render_debug_mode: u32,
 }
 
 pub struct PresentationPipeline {
@@ -482,7 +484,8 @@ impl PresentationPipeline {
             underwater: input.underwater,
             exposure: input.exposure,
             render_debug_flags: f32::from_bits(input.render_debug_flags),
-            padding: [0.0; 2],
+            render_debug_mode: f32::from_bits(input.render_debug_mode),
+            padding: 0.0,
             lens: [
                 input.image_space.blur_radius_pixels,
                 input.image_space.double_vision_strength,

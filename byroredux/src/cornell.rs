@@ -189,6 +189,41 @@ pub(crate) fn cornell_oracle_rung(args: &[String]) -> Result<Option<CornellOracl
     Ok(Some(rung))
 }
 
+/// Parse the diagnostic world translation applied to every Cornell oracle
+/// object and its fixed camera. This keeps the analytic scene identical while
+/// exercising camera-relative rendering and absolute ray-query coordinates.
+pub(crate) fn cornell_oracle_world_offset(args: &[String]) -> Result<Vec3, String> {
+    let Some(index) = args
+        .iter()
+        .position(|arg| arg == "--cornell-oracle-world-offset")
+    else {
+        return Ok(Vec3::ZERO);
+    };
+    let value = args.get(index + 1).ok_or_else(|| {
+        "--cornell-oracle-world-offset requires finite comma-separated x,y,z".to_string()
+    })?;
+    let parts: Vec<_> = value.split(',').collect();
+    if parts.len() != 3 {
+        return Err(format!(
+            "--cornell-oracle-world-offset requires finite comma-separated x,y,z, got '{value}'"
+        ));
+    }
+    let mut coordinates = [0.0; 3];
+    for (slot, part) in coordinates.iter_mut().zip(parts) {
+        *slot = part.parse::<f32>().map_err(|_| {
+            format!(
+                "--cornell-oracle-world-offset requires finite comma-separated x,y,z, got '{value}'"
+            )
+        })?;
+        if !slot.is_finite() {
+            return Err(format!(
+                "--cornell-oracle-world-offset requires finite comma-separated x,y,z, got '{value}'"
+            ));
+        }
+    }
+    Ok(Vec3::from_array(coordinates))
+}
+
 impl CornellOracleManifest {
     /// Expected legacy-Lambert direct term on the +Z receiver. Oracle materials
     /// set IOR=1 and specular strength=0, so Fresnel and specular are exactly
@@ -214,6 +249,7 @@ pub(crate) fn setup_cornell_oracle_scene(
     world: &mut World,
     ctx: &mut VulkanContext,
     rung: CornellOracleRung,
+    world_offset: Vec3,
 ) -> (Vec3, Vec3) {
     let manifest = cornell_oracle_manifest(rung);
     let expected_unshadowed = manifest.expected_unshadowed_direct([1.0; 3]);
@@ -252,7 +288,7 @@ pub(crate) fn setup_cornell_oracle_scene(
         world,
         receiver_mesh,
         neutral,
-        Vec3::new(0.0, 4.0, -0.05),
+        Vec3::new(0.0, 4.0, -0.05) + world_offset,
         Quat::IDENTITY,
         oracle_matte.clone(),
         "oracle_receiver",
@@ -264,7 +300,7 @@ pub(crate) fn setup_cornell_oracle_scene(
             world,
             blocker_mesh,
             neutral,
-            Vec3::new(0.0, 4.0, 0.75),
+            Vec3::new(0.0, 4.0, 0.75) + world_offset,
             Quat::IDENTITY,
             oracle_matte,
             "oracle_blocker",
@@ -273,15 +309,19 @@ pub(crate) fn setup_cornell_oracle_scene(
     builder.finish();
 
     log::info!(
-        "Cornell oracle {} ready: blocker={}, debug={}, expected unshadowed direct={:?}, \
-         linear tolerance={:.4}",
+        "Cornell oracle {} ready: blocker={}, debug={}, world_offset={:?}, \
+         expected unshadowed direct={:?}, linear tolerance={:.4}",
         manifest.name,
         manifest.blocker,
         manifest.primary_debug_view,
+        world_offset,
         expected_unshadowed,
         manifest.max_linear_error,
     );
-    (manifest.camera_position, manifest.camera_target)
+    (
+        manifest.camera_position + world_offset,
+        manifest.camera_target + world_offset,
+    )
 }
 
 /// Whether the separate native-scale Skyrim glass-dragon experiment was
@@ -1220,6 +1260,27 @@ mod tests {
         );
         assert!(cornell_oracle_rung(&args(&["--cornell-oracle"])).is_err());
         assert!(cornell_oracle_rung(&args(&["--cornell-oracle", "l3"])).is_err());
+    }
+
+    #[test]
+    fn cornell_oracle_world_offset_is_explicit_finite_and_three_dimensional() {
+        assert_eq!(cornell_oracle_world_offset(&args(&[])).unwrap(), Vec3::ZERO);
+        assert_eq!(
+            cornell_oracle_world_offset(&args(&[
+                "--cornell-oracle-world-offset",
+                "1000000,0,-1000000",
+            ]))
+            .unwrap(),
+            Vec3::new(1_000_000.0, 0.0, -1_000_000.0)
+        );
+        for invalid in ["1,2", "1,2,3,4", "1,NaN,3", "far,0,0"] {
+            assert!(cornell_oracle_world_offset(&args(&[
+                "--cornell-oracle-world-offset",
+                invalid,
+            ]))
+            .is_err());
+        }
+        assert!(cornell_oracle_world_offset(&args(&["--cornell-oracle-world-offset"])).is_err());
     }
 
     #[test]

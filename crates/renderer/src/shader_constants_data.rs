@@ -31,6 +31,23 @@ pub const CLUSTER_FAR_FALLBACK: f32 = 50_000.0;
 // on the renderer's 6 GB minimum target.
 pub const MAX_LIGHTS_PER_CLUSTER: u32 = 512;
 
+// ReSTIR reservoir word packing. The low ten bits store a scene-light index;
+// their all-ones value is reserved as the packed invalid sentinel, so the
+// upload capacity is a COUNT of 1023 and valid uploaded indices are 0..=1022.
+// The remaining bits hold the stable surface ID used by spatial reuse.
+//
+// Keep this complete contract here rather than duplicating masks and shift
+// literals between scene-buffer sizing and triangle.frag (#2778).
+pub const RESERVOIR_LIGHT_BITS: u32 = 10;
+pub const RESERVOIR_LIGHT_MASK: u32 = (1u32 << RESERVOIR_LIGHT_BITS) - 1;
+pub const RESERVOIR_SURFACE_MASK: u32 = u32::MAX >> RESERVOIR_LIGHT_BITS;
+pub const MAX_LIGHTS: usize = RESERVOIR_LIGHT_MASK as usize;
+
+const _: () = {
+    assert!(MAX_LIGHTS == 1023);
+    assert!(RESERVOIR_SURFACE_MASK == 0x003f_ffff);
+};
+
 // Vertex layout (global SSBO)
 pub const VERTEX_STRIDE_FLOATS: u32 = 26;
 // Skinned-vertex OUTPUT stride (`SkinSlot::output_buffer`) — position
@@ -97,8 +114,7 @@ pub const VISIBILITY_LAYER_EFFECT: u32 =
     byroredux_core::lighting::VisibilityMask::EFFECT.bits() as u32;
 pub const VISIBILITY_MASK_ALL_OPAQUE: u32 =
     byroredux_core::lighting::VisibilityMask::ALL_OPAQUE.bits() as u32;
-pub const VISIBILITY_MASK_FULL: u32 =
-    byroredux_core::lighting::VisibilityMask::FULL.bits() as u32;
+pub const VISIBILITY_MASK_FULL: u32 = byroredux_core::lighting::VisibilityMask::FULL.bits() as u32;
 
 pub const ATTENUATION_MODEL_LEGACY_SOFT_RANGE: u32 =
     byroredux_core::lighting::AttenuationModel::LegacySoftRange as u32;
@@ -320,6 +336,37 @@ pub const RT_ABLATION_GI: u32 = 1 << 1;
 pub const RT_ABLATION_REFLECTION_GLASS: u32 = 1 << 2;
 pub const RT_ABLATION_ALL_RAYS: u32 = 1 << 3;
 pub const RT_COMPILE_ABLATION_MASK: u32 = 0;
+
+// Structured, mutually-exclusive renderer correctness views. These values
+// ride `GpuCamera.render_debug.x`; the legacy all-bits sentinel preserves the
+// launch-time `BYROREDUX_RENDER_DEBUG` categorical selectors until an operator
+// explicitly chooses a named runtime mode.
+pub const RENDER_DEBUG_FINAL: u32 = 0;
+pub const RENDER_DEBUG_SHADOW_VISIBILITY: u32 = 1;
+pub const RENDER_DEBUG_SELECTED_LIGHT: u32 = 2;
+pub const RENDER_DEBUG_DIRECT_ONLY: u32 = 3;
+pub const RENDER_DEBUG_INDIRECT_ONLY: u32 = 4;
+pub const RENDER_DEBUG_MATERIAL_LOBE: u32 = 5;
+pub const RENDER_DEBUG_COMPOSITE_TERM: u32 = 6;
+pub const RENDER_DEBUG_RT_LOD: u32 = 7;
+pub const RENDER_DEBUG_MODE_MAX: u32 = RENDER_DEBUG_RT_LOD;
+pub const RENDER_DEBUG_LEGACY_FLAGS: u32 = u32::MAX;
+
+pub const RENDER_DEBUG_MODES: &[(&str, u32)] = &[
+    ("RENDER_DEBUG_FINAL", RENDER_DEBUG_FINAL),
+    (
+        "RENDER_DEBUG_SHADOW_VISIBILITY",
+        RENDER_DEBUG_SHADOW_VISIBILITY,
+    ),
+    ("RENDER_DEBUG_SELECTED_LIGHT", RENDER_DEBUG_SELECTED_LIGHT),
+    ("RENDER_DEBUG_DIRECT_ONLY", RENDER_DEBUG_DIRECT_ONLY),
+    ("RENDER_DEBUG_INDIRECT_ONLY", RENDER_DEBUG_INDIRECT_ONLY),
+    ("RENDER_DEBUG_MATERIAL_LOBE", RENDER_DEBUG_MATERIAL_LOBE),
+    ("RENDER_DEBUG_COMPOSITE_TERM", RENDER_DEBUG_COMPOSITE_TERM),
+    ("RENDER_DEBUG_RT_LOD", RENDER_DEBUG_RT_LOD),
+    ("RENDER_DEBUG_MODE_MAX", RENDER_DEBUG_MODE_MAX),
+    ("RENDER_DEBUG_LEGACY_FLAGS", RENDER_DEBUG_LEGACY_FLAGS),
+];
 
 // Debug-viz bit flags packed into `jitter.z` by the renderer
 // (`parse_render_debug_flags_env` + `GpuCamera` upload). Runtime-set

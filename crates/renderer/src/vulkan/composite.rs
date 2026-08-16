@@ -51,17 +51,11 @@ pub struct CompositeParams {
     /// Legacy XCLL curve inputs retained for the offline physical-fit
     /// conversion. Runtime fog does not evaluate this linear/cubic ramp.
     pub fog_params: [f32; 4],
-    /// x = is_exterior (1.0 = sky enabled), y = render-debug flags bitcast
-    /// through `f32` so categorical transport/material views can bypass every
-    /// composite term. z =
-    /// volumetric_consumed flag (1.0 when host
-    /// `volumetrics::VOLUMETRIC_OUTPUT_CONSUMED` is true, else 0.0) —
-    /// mirrors the host const but no longer gates anything in
-    /// `composite.frag`: #1926 removed that shader-side branch, so
-    /// `combined * vol.a + vol.rgb` runs unconditionally and this slot
-    /// is read nowhere (see #1013 for the original gate, #1926 / REN-D8-01
-    /// for the removal). w = frame index for pre-resolve blue-noise
-    /// dither.
+    /// x = is_exterior (1.0 = sky enabled), y = legacy render-debug flags
+    /// bitcast through `f32`, z = structured `RenderDebugMode` discriminant
+    /// bitcast through `f32`, w = frame index for pre-resolve blue-noise
+    /// dither. The z lane was the vestigial volumetric-consumed flag until
+    /// #1926 made that consumption unconditional.
     pub depth_params: [f32; 4],
     /// x = froxel grid far plane, y = linear-depth floor, z = linear
     /// slice fraction, w = pre-resolve dither amplitude.

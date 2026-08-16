@@ -164,7 +164,9 @@ pub struct SceneBuffers {
     /// at `offset = frame * RAY_BUDGET_STRIDE`. The CPU uploads a
     /// [`GpuRayBudget`] before each render pass; the fragment shader
     /// atomically increments its first word per IOR ray pair and consumes
-    /// the remaining words as adaptive direct/GI loop limits.
+    /// the next words as adaptive direct/GI loop limits. The tail is a
+    /// diagnostic-only RT-LOD counter block, zero-cost unless explicitly
+    /// enabled through the test configuration.
     ///
     /// Pre-fix this was `Vec<GpuBuffer>` with one allocation per frame
     /// for a single u32 — `gpu-allocator` rounded each up to the
@@ -173,6 +175,10 @@ pub struct SceneBuffers {
     /// buffer collapses both frames into one ~512 B sub-allocation.
     /// See #683 / MEM-2-8.
     pub(super) ray_budget_buffer: GpuBuffer,
+    /// One bounded selected-ray debug record per frame-in-flight. Host-cached
+    /// readback memory is armed by the CPU, written by `triangle.frag`, and
+    /// drained only after the slot fence signals.
+    pub(super) selected_ray_probe_buffers: Vec<GpuBuffer>,
     pub(super) ray_budget_controller: AdaptiveRayBudget,
     /// Size of the terrain tile buffer in bytes — stashed so upload
     /// paths don't have to recompute it from `MAX_TERRAIN_TILES`.
@@ -391,6 +397,14 @@ pub(crate) fn build_scene_descriptor_bindings(
             .descriptor_count(1)
             .stage_flags(vk::ShaderStageFlags::VERTEX),
     );
+    // Binding 19: one bounded selected-light visibility-ray probe record.
+    bindings.push(
+        vk::DescriptorSetLayoutBinding::default()
+            .binding(19)
+            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+    );
     bindings
 }
 
@@ -429,6 +443,7 @@ struct SceneRenderBuffers {
     terrain_tile_buf_size: vk::DeviceSize,
     // #683 / MEM-2-8 — single shared buffer with per-frame stride slots.
     ray_budget_buffer: GpuBuffer,
+    selected_ray_probe_buffers: Vec<GpuBuffer>,
 }
 
 /// Allocate all Vulkan buffers needed by the scene render pipeline.
@@ -480,6 +495,7 @@ fn allocate_scene_render_buffers(
     let mut indirect_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
     let mut material_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
     let mut dalc_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+    let mut selected_ray_probe_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
     for _ in 0..MAX_FRAMES_IN_FLIGHT {
         light_buffers.push(GpuBuffer::create_host_visible(
             device,
@@ -548,6 +564,12 @@ fn allocate_scene_render_buffers(
             allocator,
             dalc_buf_size,
             vk::BufferUsageFlags::UNIFORM_BUFFER,
+        )?);
+        selected_ray_probe_buffers.push(GpuBuffer::create_host_readback(
+            device,
+            allocator,
+            std::mem::size_of::<GpuSelectedRayProbe>() as vk::DeviceSize,
+            vk::BufferUsageFlags::STORAGE_BUFFER,
         )?);
         // Ray budget counter is a SINGLE shared buffer (created below)
         // with per-frame slots at `frame * RAY_BUDGET_STRIDE`. #683 / MEM-2-8.
@@ -625,6 +647,7 @@ fn allocate_scene_render_buffers(
         terrain_tile_buffer,
         terrain_tile_buf_size,
         ray_budget_buffer,
+        selected_ray_probe_buffers,
     })
 }
 
@@ -810,6 +833,11 @@ fn create_scene_descriptors(
             offset: 0,
             range: bufs.dalc_buf_size,
         }];
+        let selected_ray_probe_buf_info = [vk::DescriptorBufferInfo {
+            buffer: bufs.selected_ray_probe_buffers[i].buffer,
+            offset: 0,
+            range: std::mem::size_of::<GpuSelectedRayProbe>() as vk::DeviceSize,
+        }];
         let writes = [
             write_storage_buffer(set, 0, &light_buf_info),
             write_uniform_buffer(set, 1, &camera_buf_info),
@@ -821,6 +849,7 @@ fn create_scene_descriptors(
             write_storage_buffer(set, 13, &material_buf_info),
             write_uniform_buffer(set, 14, &dalc_buf_info),
             write_storage_buffer(set, 18, &previous_model_buf_info),
+            write_storage_buffer(set, 19, &selected_ray_probe_buf_info),
         ];
         unsafe {
             // SAFETY: `device` is live; `set` is one of the just-allocated device-owned
@@ -881,6 +910,17 @@ impl SceneBuffers {
                 return Err(e);
             }
         }
+        let disabled_probe = GpuSelectedRayProbe::default();
+        for buf in &mut bufs.selected_ray_probe_buffers {
+            if let Err(e) = buf.write_mapped(device, std::slice::from_ref(&disabled_probe)) {
+                // Same raw-handle ownership window as the DALC seed above.
+                unsafe {
+                    device.destroy_descriptor_pool(descriptor_pool, None);
+                    device.destroy_descriptor_set_layout(descriptor_set_layout, None);
+                }
+                return Err(e);
+            }
+        }
 
         log::info!(
             "Scene buffers created: {} frames, {} max lights ({} bytes/frame)",
@@ -914,6 +954,7 @@ impl SceneBuffers {
             terrain_tile_buffer: bufs.terrain_tile_buffer,
             terrain_tile_buf_size: bufs.terrain_tile_buf_size,
             ray_budget_buffer: bufs.ray_budget_buffer,
+            selected_ray_probe_buffers: bufs.selected_ray_probe_buffers,
             ray_budget_controller: AdaptiveRayBudget::default(),
             descriptor_pool,
             descriptor_set_layout,

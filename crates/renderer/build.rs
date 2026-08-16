@@ -68,6 +68,21 @@ fn main() {
     .unwrap();
     writeln!(out).unwrap();
 
+    writeln!(
+        out,
+        "// ReSTIR reservoir packing + scene-light upload count"
+    )
+    .unwrap();
+    writeln!(out, "#define MAX_LIGHTS {MAX_LIGHTS}u").unwrap();
+    writeln!(out, "#define RESERVOIR_LIGHT_BITS {RESERVOIR_LIGHT_BITS}u").unwrap();
+    writeln!(out, "#define RESERVOIR_LIGHT_MASK {RESERVOIR_LIGHT_MASK}u").unwrap();
+    writeln!(
+        out,
+        "#define RESERVOIR_SURFACE_MASK {RESERVOIR_SURFACE_MASK}u"
+    )
+    .unwrap();
+    writeln!(out).unwrap();
+
     writeln!(out, "// Vertex layout (global SSBO)").unwrap();
     writeln!(out, "#define VERTEX_STRIDE_FLOATS {VERTEX_STRIDE_FLOATS}u").unwrap();
     writeln!(
@@ -382,6 +397,16 @@ fn main() {
         "#define MAX_FOG_VOLUMES_PER_CLUSTER {MAX_FOG_VOLUMES_PER_CLUSTER}u"
     )
     .unwrap();
+    writeln!(out).unwrap();
+
+    writeln!(
+        out,
+        "// Structured renderer correctness views (`GpuCamera.renderDebug.x`)."
+    )
+    .unwrap();
+    for (name, value) in RENDER_DEBUG_MODES {
+        writeln!(out, "#define {name} {value}u").unwrap();
+    }
     writeln!(out).unwrap();
 
     writeln!(

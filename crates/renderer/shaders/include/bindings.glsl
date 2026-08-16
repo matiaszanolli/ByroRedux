@@ -240,6 +240,7 @@ layout(set = 1, binding = 1) uniform CameraUBO {
     vec4 sunDirection;
     vec4 dofParams;      // x = aperture half-radius (0.0 = pinhole), y = focus_dist, z = atten knee frac, w = camera_static (1.0 = parked).
     vec4 renderOrigin;   // #markarth-precision / #1496 — camera-relative render origin (cell-grid snapped). main() adds .xyz to the render-origin-relative `fragWorldPosRel` varying to reconstruct the absolute world position for lighting / RT / fog.
+    uvec4 renderDebug;   // x = structured RENDER_DEBUG_* mode; y = optional bitcast RT LOD scale, z = LOD telemetry enable, w reserved. Legacy feature-ablation flags remain in jitter.z.
 };
 
 layout(set = 1, binding = 2) uniform accelerationStructureEXT topLevelAS;
@@ -348,6 +349,15 @@ layout(std430, set = 1, binding = 11) coherent buffer RayBudgetBuffer {
     uint volumetricLightCap;
     uint qualityTier;
     uint _rayBudgetReserved;
+    uint rtLodFragments;
+    uint rtLodBin0;
+    uint rtLodBin1;
+    uint rtLodBin2;
+    uint rtLodBin3;
+    uint rtReflectionTraced;
+    uint rtReflectionLodCulled;
+    uint rtGiTraced;
+    uint rtGiLodCulled;
 } rayBudget;
 
 layout(std430, set = 1, binding = 10) readonly buffer TerrainTileBuffer {
@@ -398,4 +408,19 @@ layout(std430, set = 1, binding = 16) buffer ReservoirCurrBuffer {
 };
 layout(std430, set = 1, binding = 17) readonly buffer ReservoirPrevBuffer {
     Reservoir reservoirsPrev[];
+};
+
+// One bounded selected-light visibility-ray record per frame-in-flight.
+// control.y is atomically claimed by the first eligible invocation at the
+// requested pixel: 0=disabled, 1=armed, 2=claimed, 3=ready.
+layout(std430, set = 1, binding = 19) coherent buffer SelectedRayProbeBuffer {
+    uvec4 selectedRayProbeControl;       // generation, state, pixel x, pixel y
+    uvec4 selectedRayProbeIds;           // light index, mask, hit instance, flags
+    vec4 selectedRayProbeOriginTMin;     // origin.xyz, tMin
+    vec4 selectedRayProbeDirectionTMax;  // direction.xyz, tMax
+    vec4 selectedRayProbeHitVisibility;  // hit distance, averaged visibility.rgb
+    vec4 selectedRayProbeLightPositionRadius;
+    vec4 selectedRayProbeLightColorType;
+    vec4 selectedRayProbeLightDirectionAngle;
+    vec4 selectedRayProbeLightParams;
 };

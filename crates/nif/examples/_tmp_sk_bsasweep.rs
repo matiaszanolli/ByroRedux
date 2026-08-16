@@ -10,7 +10,11 @@ fn main() {
                 continue;
             }
         };
-        let names: Vec<String> = arc.list_files().into_iter().map(|s| s.to_string()).collect();
+        let names: Vec<String> = arc
+            .list_files()
+            .into_iter()
+            .map(|s| s.to_string())
+            .collect();
         let mut ok = 0usize;
         let mut fail = 0usize;
         let mut bytes_total: u64 = 0;

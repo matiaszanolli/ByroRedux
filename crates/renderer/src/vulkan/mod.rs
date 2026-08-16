@@ -21,6 +21,7 @@ pub mod pipeline;
 pub mod placeholder;
 pub mod presentation;
 pub mod reflect;
+pub mod render_debug;
 pub mod restir;
 pub mod scene_buffer;
 pub mod skin_compute;

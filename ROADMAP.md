@@ -65,7 +65,7 @@ cutoffs were unreachable on every real parse) and a collision-import
 hardening fix (#2285, cross-buffer index splicing on corrupt NIFs).
 Session narratives: [HISTORY.md](HISTORY.md) Sessions 60–63.
 
-**Active execution focus (2026-08-14): RT lighting and material correctness
+**Active execution focus (2026-08-16): RT lighting and material correctness
 recovery.** New TLAS consumers and unrelated visual goldens are frozen until
 the selected-light/visibility gate closes. The execution spine, current-HEAD
 reconciliation, evidence artifacts, Cornell L0-L5 ladder, material-role closure,
@@ -92,7 +92,11 @@ cluster high-water; capacities are now 1023 lights globally and 512 per
 cluster; every secondary-ray consumer uses the shared scale-aware origin; and
 selected-light, visibility, material-lobe and RT-LOD views bypass temporal
 upscaling plus the complete composite/presentation look stack. Generated
-shader flags, the FO3/FNV TXST↔NIF 2-5 permutation, `light.dump`, and
+`RenderDebugMode` now makes those views live-selectable through
+`render.debug <mode>` without spending another bit, and the same command can
+arm one bounded pixel record that returns the selected uploaded `GpuLight`,
+ray origin/direction/tMin/tMax, visibility mask, averaged transmission and
+committed hit. Generated shader flags, the FO3/FNV TXST↔NIF 2-5 permutation, `light.dump`, and
 `mat.dump` close the principal ingestion/material observability gaps.
 The data-driven `--cornell-oracle l0|l1|l2` scene now supplies the dark,
 analytic directional, and opaque-blocker rungs. Its first raw captures found
@@ -101,10 +105,14 @@ is the expected constant directional response, and L2 is a white visibility
 field with the blocker plus its geometrically predicted hard shadow in black;
 all three frames report `rt-integrity verdict=PASS`. Remaining recovery gates
 are scheduling the now-passing `cornell_rt_oracle` scalar gate on the
-RT-capable CI worker, a selected-ray pixel probe, the measured RT-LOD sweep,
-forced-eviction recovery, per-format material provenance and the L3-L5/
-five-game fixture matrix; the detailed status is maintained in the linked
-recovery plan.
+RT-capable CI worker, the measured RT-LOD sweep,
+per-format material provenance and the L3-L5/five-game fixture matrix; the
+detailed status is maintained in the linked recovery plan. Forced BLAS pressure
+is now covered by an explicit one-byte diagnostic budget gate: eligible rigid
+draws are protected before recovery builds, missing retained rigid BLAS are
+restored from dedicated or global geometry buffers before TLAS publication,
+and the pressured Cornell L2 hardware oracle preserves both TLAS instances and
+the analytic blocked/control shadow probes.
 Water work that is headless (character contact/current response and
 coverage/ESM sweeps) may proceed; renderer-facing water tuning and new expected
 captures wait for the R3 visibility gate. The underlying playable-slice closure

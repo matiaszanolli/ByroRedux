@@ -18,10 +18,19 @@ pub struct GpuRayBudget {
     pub volumetric_light_cap: u32,
     pub quality_tier: u32,
     pub reserved: u32,
+    pub lod_fragments: u32,
+    pub lod_bin_0: u32,
+    pub lod_bin_1: u32,
+    pub lod_bin_2: u32,
+    pub lod_bin_3: u32,
+    pub reflection_traced: u32,
+    pub reflection_lod_culled: u32,
+    pub gi_traced: u32,
+    pub gi_lod_culled: u32,
 }
 
 impl GpuRayBudget {
-    pub const WORDS: usize = 8;
+    pub const WORDS: usize = 17;
 
     pub const fn words(self) -> [u32; Self::WORDS] {
         [
@@ -33,7 +42,74 @@ impl GpuRayBudget {
             self.volumetric_light_cap,
             self.quality_tier,
             self.reserved,
+            self.lod_fragments,
+            self.lod_bin_0,
+            self.lod_bin_1,
+            self.lod_bin_2,
+            self.lod_bin_3,
+            self.reflection_traced,
+            self.reflection_lod_culled,
+            self.gi_traced,
+            self.gi_lod_culled,
         ]
+    }
+
+    const fn settings(
+        glass_ray_limit: u32,
+        direct_shadow_samples: u32,
+        max_path_segments: u32,
+        max_shaded_hits: u32,
+        volumetric_light_cap: u32,
+        quality_tier: u32,
+    ) -> Self {
+        Self {
+            ray_count: 0,
+            glass_ray_limit,
+            direct_shadow_samples,
+            max_path_segments,
+            max_shaded_hits,
+            volumetric_light_cap,
+            quality_tier,
+            reserved: 0,
+            lod_fragments: 0,
+            lod_bin_0: 0,
+            lod_bin_1: 0,
+            lod_bin_2: 0,
+            lod_bin_3: 0,
+            reflection_traced: 0,
+            reflection_lod_culled: 0,
+            gi_traced: 0,
+            gi_lod_culled: 0,
+        }
+    }
+}
+
+/// Fence-lagged counters for a single instrumented main pass.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct RtLodTelemetry {
+    pub fragments: u32,
+    pub bins: [u32; 4],
+    pub reflection_traced: u32,
+    pub reflection_lod_culled: u32,
+    pub gi_traced: u32,
+    pub gi_lod_culled: u32,
+}
+
+impl From<GpuRayBudget> for RtLodTelemetry {
+    fn from(value: GpuRayBudget) -> Self {
+        Self {
+            fragments: value.lod_fragments,
+            bins: [
+                value.lod_bin_0,
+                value.lod_bin_1,
+                value.lod_bin_2,
+                value.lod_bin_3,
+            ],
+            reflection_traced: value.reflection_traced,
+            reflection_lod_culled: value.reflection_lod_culled,
+            gi_traced: value.gi_traced,
+            gi_lod_culled: value.gi_lod_culled,
+        }
     }
 }
 
@@ -102,51 +178,22 @@ impl AdaptiveRayBudget {
     }
 
     pub const fn settings(&self) -> GpuRayBudget {
-        match self.tier {
-            0 => GpuRayBudget {
-                ray_count: 0,
-                glass_ray_limit: 262_144,
-                direct_shadow_samples: 1,
+        Self::settings_for_tier(self.tier)
+    }
+
+    pub const fn settings_for_tier(tier: u32) -> GpuRayBudget {
+        match tier {
+            0 => GpuRayBudget::settings(
+                262_144, 1,
                 // True safe floor: gather GPU timing with direct shadows but
                 // no diffuse path. A non-zero minimum here defeated the
                 // controller on Cydonia: the 97k-instance first frame could
                 // lose the device before a timing sample existed.
-                max_path_segments: 0,
-                max_shaded_hits: 0,
-                volumetric_light_cap: 2,
-                quality_tier: 0,
-                reserved: 0,
-            },
-            1 => GpuRayBudget {
-                ray_count: 0,
-                glass_ray_limit: 524_288,
-                direct_shadow_samples: 2,
-                max_path_segments: 3,
-                max_shaded_hits: 1,
-                volumetric_light_cap: 4,
-                quality_tier: 1,
-                reserved: 0,
-            },
-            2 => GpuRayBudget {
-                ray_count: 0,
-                glass_ray_limit: 1_048_576,
-                direct_shadow_samples: 4,
-                max_path_segments: 4,
-                max_shaded_hits: 2,
-                volumetric_light_cap: 6,
-                quality_tier: 2,
-                reserved: 0,
-            },
-            _ => GpuRayBudget {
-                ray_count: 0,
-                glass_ray_limit: 2_097_152,
-                direct_shadow_samples: 8,
-                max_path_segments: 6,
-                max_shaded_hits: 2,
-                volumetric_light_cap: 8,
-                quality_tier: 3,
-                reserved: 0,
-            },
+                0, 0, 2, 0,
+            ),
+            1 => GpuRayBudget::settings(524_288, 2, 3, 1, 4, 1),
+            2 => GpuRayBudget::settings(1_048_576, 4, 4, 2, 6, 2),
+            _ => GpuRayBudget::settings(2_097_152, 8, 6, 2, 8, 3),
         }
     }
 }
@@ -186,7 +233,7 @@ mod tests {
 
     #[test]
     fn shader_contract_fits_in_the_aligned_slot() {
-        assert_eq!(std::mem::size_of::<GpuRayBudget>(), 32);
+        assert_eq!(std::mem::size_of::<GpuRayBudget>(), 68);
         assert!(std::mem::size_of::<GpuRayBudget>() as u64 <= super::super::RAY_BUDGET_STRIDE);
     }
 }

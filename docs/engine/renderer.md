@@ -713,6 +713,16 @@ greyscale (black blocked, white visible, intermediate glass transmission) and
 uses magenta for no valid selected sample, so missing selection cannot be
 mistaken for an occluder hit.
 
+The operator-facing path is `render.debug <mode>` rather than a compound flag
+word. Modes are `final`, `shadow_visibility`, `selected_light`, `direct_only`,
+`indirect_only`, `material_lobe`, `composite_term`, and `rt_lod`; the legacy
+bitmask remains for orthogonal feature ablations. Appending `<x> <y>` (render
+pixels, upper-left origin), or using `render.debug probe <x> <y>`, arms one
+bounded selected-ray record. A later no-argument `render.debug` prints whether
+the fragment/ray existed, the selected GPU index and exact four-vec4 light
+record, origin/direction/tMin/tMax, decoded visibility mask, averaged RGB
+transmission, and the first committed instance/distance.
+
 These categorical/scalar views, plus `DBG_VIZ_DIRECT` and
 `DBG_VIZ_RAW_INDIRECT`, are raw frame-graph oracles, not graded looks.
 Composite returns the direct attachment before fog, caustics, bloom and

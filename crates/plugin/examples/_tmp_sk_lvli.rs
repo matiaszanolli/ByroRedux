@@ -17,7 +17,9 @@ fn main() {
     }
     println!("\nAll LVLI LVLF flag byte histogram:");
     for (f, c) in &all_flags {
-        println!("  0x{f:02X}  {c}   (0x01 all-levels, 0x02 each-item, 0x04 USE-ALL, 0x08 special)");
+        println!(
+            "  0x{f:02X}  {c}   (0x01 all-levels, 0x02 each-item, 0x04 USE-ALL, 0x08 special)"
+        );
     }
 
     // Reachable-from-outfit closure.
@@ -47,7 +49,10 @@ fn main() {
             }
         }
     }
-    println!("\nLVLI reachable from an OTFT: {}", reach_flags.values().sum::<usize>());
+    println!(
+        "\nLVLI reachable from an OTFT: {}",
+        reach_flags.values().sum::<usize>()
+    );
     for (f, c) in &reach_flags {
         println!("  0x{f:02X}  {c}");
     }
@@ -63,7 +68,10 @@ fn main() {
             if let Some(l) = index.leveled_items.get(it) {
                 if l.flags & 0x04 != 0 && shown < 8 {
                     shown += 1;
-                    println!("  OTFT {:08X} -> LVLI {:08X} flags=0x{:02X}", ofid, it, l.flags);
+                    println!(
+                        "  OTFT {:08X} -> LVLI {:08X} flags=0x{:02X}",
+                        ofid, it, l.flags
+                    );
                     for e in &l.entries {
                         let name = index
                             .items
@@ -94,6 +102,14 @@ fn main() {
         .values()
         .filter(|n| n.default_outfit.is_some_and(|f| bad_outfits.contains(&f)))
         .count();
-    println!("\nOTFTs containing >=1 USE-ALL LVLI: {} / {}", bad_outfits.len(), index.outfits.len());
-    println!("NPC_ records whose default outfit is one of those: {} / {}", npcs_hit, index.npcs.len());
+    println!(
+        "\nOTFTs containing >=1 USE-ALL LVLI: {} / {}",
+        bad_outfits.len(),
+        index.outfits.len()
+    );
+    println!(
+        "NPC_ records whose default outfit is one of those: {} / {}",
+        npcs_hit,
+        index.npcs.len()
+    );
 }

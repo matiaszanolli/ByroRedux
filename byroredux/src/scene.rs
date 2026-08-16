@@ -454,7 +454,10 @@ pub(crate) fn setup_scene(
         cam_center = target;
         has_nif_content = true;
     } else if let Some(rung) = cornell_oracle {
-        let (pos, target) = crate::cornell::setup_cornell_oracle_scene(world, ctx, rung);
+        let world_offset = crate::cornell::cornell_oracle_world_offset(&args)
+            .unwrap_or_else(|message| panic!("{message}"));
+        let (pos, target) =
+            crate::cornell::setup_cornell_oracle_scene(world, ctx, rung, world_offset);
         cornell_cam = Some((pos, target));
         cam_center = target;
         has_nif_content = true;

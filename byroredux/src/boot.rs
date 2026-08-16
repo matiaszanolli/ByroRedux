@@ -214,6 +214,17 @@ pub(crate) fn run() -> Result<()> {
 
     let renderer_config = parse_renderer_config(&args)?;
     log::info!("Renderer upscaler selection: {}", renderer_config.upscaler);
+    if renderer_config.rt_test_lod_scale_bits.is_some()
+        || renderer_config.rt_test_lod_telemetry
+        || renderer_config.rt_test_ray_quality_tier.is_some()
+    {
+        log::warn!(
+            "RT TEST LOD diagnostics active: scale={:?} telemetry={} quality_tier={:?}",
+            renderer_config.rt_test_lod_scale_bits.map(f32::from_bits),
+            renderer_config.rt_test_lod_telemetry,
+            renderer_config.rt_test_ray_quality_tier,
+        );
+    }
 
     log::info!("ByroRedux starting");
     log::info!("{}", byroredux_cxx_bridge::ffi::native_hello());
@@ -398,6 +409,7 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
         light_tuning.legacy = legacy;
     }
     world.insert_resource(light_tuning);
+    world.insert_resource(crate::components::RenderDebugControl::default());
     // CPU-side per-frame timings — fence_wait / submit_present /
     // etc. Filled by the binary's RedrawRequested handler after
     // each `draw_frame` from the renderer's `FrameTimings`

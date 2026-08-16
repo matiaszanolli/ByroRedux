@@ -196,7 +196,7 @@ impl App {
                     .retain(|command| ctx.mesh_registry.is_geometry_resident(command.mesh_handle));
             }
 
-            ctx.build_global_blas_for_draws(&self.draw_commands);
+            ctx.restore_missing_static_blas_for_draws(&self.draw_commands);
 
             world_resource_set::<DebugStats>(&self.world, |s| {
                 s.draw_command_count = self.draw_commands.len() as u32;
@@ -338,6 +338,51 @@ impl App {
                 camera_far: frame.camera_far,
                 camera_fov_y: frame.camera_fov_y,
             };
+            // Apply deferred named debug-view / bounded-ray requests at the
+            // frame boundary, then harvest any fence-lagged result from the
+            // prior frame slot. Console execution never reaches into the
+            // Vulkan context directly.
+            let (pending_debug_mode, pending_probe_pixel) = self
+                .world
+                .try_resource_mut::<crate::components::RenderDebugControl>()
+                .map_or((None, None), |mut control| {
+                    (
+                        control.pending_mode.take(),
+                        control.pending_probe_pixel.take(),
+                    )
+                });
+            if let Some(mode) = pending_debug_mode {
+                ctx.set_render_debug_mode(mode);
+            }
+            let probe_request_result = pending_probe_pixel.map(|pixel| {
+                ctx.request_selected_ray_probe(pixel)
+                    .map(|generation| (pixel, generation))
+            });
+            let completed_probe = ctx.take_selected_ray_probe_result();
+            if let Some(mut control) = self
+                .world
+                .try_resource_mut::<crate::components::RenderDebugControl>()
+            {
+                control.active_mode = ctx.render_debug_mode();
+                if let Some(result) = probe_request_result {
+                    match result {
+                        Ok((_pixel, generation)) => {
+                            control.pending_probe_generation = Some(generation);
+                            control.last_error = None;
+                        }
+                        Err(error) => {
+                            control.pending_probe_generation = None;
+                            control.last_error = Some(error);
+                        }
+                    }
+                }
+                if let Some(probe) = completed_probe {
+                    if control.pending_probe_generation == Some(probe.generation) {
+                        control.pending_probe_generation = None;
+                    }
+                    control.last_probe = Some(probe);
+                }
+            }
             // REND-#1451 — push live point/spot attenuation tuning
             // (LightTuning resource, mutated by the `light.atten`
             // console command) into the renderer so the controlled

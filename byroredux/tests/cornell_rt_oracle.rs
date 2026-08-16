@@ -29,6 +29,7 @@ fn cornell_l0_l2_transport_ladder_matches_analytic_probes() {
         DIRECT_DEBUG,
         "lights_uploaded=0",
         "tlas_emitted=1",
+        &[],
     );
     assert!(
         l0.pixels()
@@ -42,6 +43,7 @@ fn cornell_l0_l2_transport_ladder_matches_analytic_probes() {
         DIRECT_DEBUG,
         "lights_uploaded=1",
         "tlas_emitted=1",
+        &[],
     );
     // Receiver normal is +Z and the normalized source vector is (1,1,2),
     // hence N.L = 2/sqrt(6). The raw presentation path still writes through
@@ -58,7 +60,71 @@ fn cornell_l0_l2_transport_ladder_matches_analytic_probes() {
         SHADOW_VISIBILITY_DEBUG,
         "lights_uploaded=1",
         "tlas_emitted=2",
+        &[],
     );
+    assert_l2_shadow_transport(&l2);
+}
+
+/// Force the static-BLAS budget below even this tiny scene's live set. The
+/// pre-TLAS pass must protect both eligible rigid meshes, preserve a complete
+/// TLAS and keep the blocked/unblocked visibility probes unchanged.
+#[test]
+#[ignore = "requires an RT-capable Vulkan device and a display/Xvfb"]
+fn cornell_forced_low_blas_budget_preserves_rt_shadows() {
+    let workdir = tempfile::tempdir().expect("create forced-budget Cornell tempdir");
+    let l2 = capture(
+        workdir.path(),
+        "l2",
+        SHADOW_VISIBILITY_DEBUG,
+        "lights_uploaded=1",
+        "tlas_emitted=2",
+        &["--rt-test-blas-budget-bytes", "1"],
+    );
+    assert_l2_shadow_transport(&l2);
+}
+
+/// Repeat the binary visibility oracle and then translate the complete scene
+/// one million units in X/Z. The normalized receiver image and fixed probes
+/// must stay stable under camera-relative rendering; detailed selected-ray
+/// record equality is exercised by the paired live `render.debug probe`
+/// acceptance run documented in the RT recovery plan.
+#[test]
+#[ignore = "requires an RT-capable Vulkan device and a display/Xvfb"]
+fn cornell_l2_visibility_is_repeatable_and_large_coordinate_stable() {
+    let workdir = tempfile::tempdir().expect("create translated Cornell tempdir");
+    let mut captures = Vec::new();
+    for _ in 0..3 {
+        captures.push(capture(
+            workdir.path(),
+            "l2",
+            SHADOW_VISIBILITY_DEBUG,
+            "lights_uploaded=1",
+            "tlas_emitted=2",
+            &[],
+        ));
+    }
+    for repeat in &captures[1..] {
+        assert_visibility_images_stable(&captures[0], repeat, 0.0, "repeated origin run");
+    }
+
+    let translated = capture(
+        workdir.path(),
+        "l2",
+        SHADOW_VISIBILITY_DEBUG,
+        "lights_uploaded=1",
+        "tlas_emitted=2",
+        &["--cornell-oracle-world-offset", "1000000,0,-1000000"],
+    );
+    assert_l2_shadow_transport(&translated);
+    assert_visibility_images_stable(
+        &captures[0],
+        &translated,
+        0.005,
+        "one-million-unit translated run",
+    );
+}
+
+fn assert_l2_shadow_transport(l2: &RgbImage) {
     // These normalized points are owned by the fixed oracle camera/manifest:
     // the first lies inside the blocker-cast horizontal shadow arm and the
     // second is the receiver's unobstructed upper-right control.
@@ -87,12 +153,39 @@ fn cornell_l0_l2_transport_ladder_matches_analytic_probes() {
     assert_eq!(magenta, 0, "L2 receiver contains no-sample magenta pixels");
 }
 
+fn assert_visibility_images_stable(
+    reference: &RgbImage,
+    candidate: &RgbImage,
+    max_changed_fraction: f64,
+    label: &str,
+) {
+    assert_eq!(reference.dimensions(), candidate.dimensions());
+    let changed = reference
+        .pixels()
+        .zip(candidate.pixels())
+        .filter(|(left, right)| {
+            left.0
+                .iter()
+                .zip(right.0.iter())
+                .any(|(a, b)| a.abs_diff(*b) > 2)
+        })
+        .count();
+    let fraction = changed as f64 / (reference.width() as f64 * reference.height() as f64);
+    assert!(
+        fraction <= max_changed_fraction,
+        "{label} changed {changed} pixels ({:.4}%), limit {:.4}%",
+        fraction * 100.0,
+        max_changed_fraction * 100.0,
+    );
+}
+
 fn capture(
     workdir: &Path,
     rung: &str,
     debug_flags: &str,
     expected_lights: &str,
     expected_tlas: &str,
+    extra_args: &[&str],
 ) -> RgbImage {
     let output_path = workdir.join(format!("cornell-{rung}.png"));
     let output_string = output_path
@@ -106,7 +199,7 @@ fn capture(
     } else {
         Command::new(env!("CARGO"))
     };
-    let output = command
+    command
         .env("RUST_LOG", "warn")
         .env("BYROREDUX_RENDER_DEBUG", debug_flags)
         .args([
@@ -128,6 +221,8 @@ fn capture(
             "--screenshot",
             output_string,
         ])
+        .args(extra_args);
+    let output = command
         .output()
         .unwrap_or_else(|error| panic!("launch Cornell {rung}: {error}"));
 
@@ -147,6 +242,19 @@ fn capture(
         assert!(
             stdout.contains(expected),
             "Cornell {rung} output is missing `{expected}`\nstdout:\n{stdout}"
+        );
+    }
+    if let Some(index) = extra_args
+        .iter()
+        .position(|arg| *arg == "--rt-test-blas-budget-bytes")
+    {
+        let bytes = extra_args
+            .get(index + 1)
+            .expect("test BLAS budget flag must carry a value");
+        let marker = format!("RT TEST BLAS memory budget override active: {bytes} bytes");
+        assert!(
+            stderr.contains(&marker),
+            "Cornell {rung} did not activate the requested pressure override `{marker}`\nstderr:\n{stderr}"
         );
     }
 

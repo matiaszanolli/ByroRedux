@@ -510,7 +510,7 @@ pub(super) fn blas_over_budget(
 /// Pure function so the unit test can pin the contract without a
 /// live Vulkan device.
 #[inline]
-pub(super) fn draw_command_eligible_for_tlas(draw_cmd: &DrawCommand) -> bool {
+pub(in crate::vulkan) fn draw_command_eligible_for_tlas(draw_cmd: &DrawCommand) -> bool {
     draw_cmd.in_tlas
         && !draw_cmd.is_water
         && draw_cmd.material_kind != crate::vulkan::scene_buffer::MATERIAL_KIND_FIRE_REFRACTION

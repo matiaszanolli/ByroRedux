@@ -28,10 +28,14 @@ bool advanceShadowRayPastHit(
     return remaining > 0.0;
 }
 
-vec3 traceShadowTransmittance(
+vec3 traceShadowTransmittanceDetailed(
     vec3 origin, vec3 direction, float maxDist, float emitterRadius,
-    uint visibilityMask
+    uint visibilityMask,
+    out uint committedInstance,
+    out float committedDistance
 ) {
+    committedInstance = 0xFFFFFFFFu;
+    committedDistance = uintBitsToFloat(0x7F800000u);
     const int MAX_OPAQUE_LAYERS = 8;
     vec3 opaqueOrigin = origin;
     float opaqueRemaining = maxDist;
@@ -51,6 +55,10 @@ vec3 traceShadowTransmittance(
         int hitPrim = rayQueryGetIntersectionPrimitiveIndexEXT(opaqueRQ, true);
         vec2 hitBary = rayQueryGetIntersectionBarycentricsEXT(opaqueRQ, true);
         float hitT = rayQueryGetIntersectionTEXT(opaqueRQ, true);
+        if (committedInstance == 0xFFFFFFFFu) {
+            committedInstance = uint(hitIdx);
+            committedDistance = (maxDist - opaqueRemaining) + hitT;
+        }
         GpuInstance hitInst = instances[hitIdx];
         GpuMaterial hitMat = materials[hitInst.materialId];
         // Effects have their own non-opaque visibility layer and therefore
@@ -109,6 +117,10 @@ vec3 traceShadowTransmittance(
         int hitPrim = rayQueryGetIntersectionPrimitiveIndexEXT(glassRQ, true);
         vec2 hitBary = rayQueryGetIntersectionBarycentricsEXT(glassRQ, true);
         float hitT = rayQueryGetIntersectionTEXT(glassRQ, true);
+        if (committedInstance == 0xFFFFFFFFu) {
+            committedInstance = uint(hitIdx);
+            committedDistance = (maxDist - remaining) + hitT;
+        }
         GpuInstance hitInst = instances[hitIdx];
         GpuMaterial hitMat = materials[hitInst.materialId];
         vec2 hitUV = resolveRayHitUV(
@@ -144,6 +156,23 @@ vec3 traceShadowTransmittance(
                 rayOrigin, remaining, direction, hitT)) break;
     }
     return transmission;
+}
+
+vec3 traceShadowTransmittance(
+    vec3 origin, vec3 direction, float maxDist, float emitterRadius,
+    uint visibilityMask
+) {
+    uint committedInstance;
+    float committedDistance;
+    return traceShadowTransmittanceDetailed(
+        origin,
+        direction,
+        maxDist,
+        emitterRadius,
+        visibilityMask,
+        committedInstance,
+        committedDistance
+    );
 }
 
 #endif

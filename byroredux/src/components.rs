@@ -1260,6 +1260,34 @@ impl Default for LightTuning {
     }
 }
 
+/// Deferred operator control for named renderer views and the one-record
+/// selected visibility-ray probe. Console commands mutate this resource;
+/// `render_one_frame` applies requests at the next frame boundary, where it
+/// has exclusive access to `VulkanContext`.
+pub(crate) struct RenderDebugControl {
+    pub(crate) active_mode: byroredux_renderer::RenderDebugMode,
+    pub(crate) pending_mode: Option<byroredux_renderer::RenderDebugMode>,
+    pub(crate) pending_probe_pixel: Option<[u32; 2]>,
+    pub(crate) pending_probe_generation: Option<u32>,
+    pub(crate) last_probe: Option<byroredux_renderer::SelectedRayProbeResult>,
+    pub(crate) last_error: Option<String>,
+}
+
+impl Resource for RenderDebugControl {}
+
+impl Default for RenderDebugControl {
+    fn default() -> Self {
+        Self {
+            active_mode: byroredux_renderer::RenderDebugMode::default(),
+            pending_mode: None,
+            pending_probe_pixel: None,
+            pending_probe_generation: None,
+            last_probe: None,
+            last_error: None,
+        }
+    }
+}
+
 /// M42 — furniture seats currently occupied (or claimed this frame) by a
 /// sandboxing actor. Each `(furniture entity, sit-marker index)` key maps to
 /// its claimant so streaming cleanup can release a seat when either side

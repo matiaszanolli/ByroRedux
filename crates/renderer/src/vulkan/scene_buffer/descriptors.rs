@@ -7,6 +7,7 @@ use super::super::allocator::SharedAllocator;
 use super::super::descriptors::{
     write_acceleration_structure, write_combined_image_sampler, write_storage_buffer,
 };
+use super::ray_budget::AdaptiveRayBudget;
 use super::*;
 use anyhow::Result;
 use ash::vk;
@@ -200,9 +201,13 @@ impl super::buffers::SceneBuffers {
         device: &ash::Device,
         frame: usize,
         measured_lighting_ms: Option<f32>,
+        test_quality_tier: Option<u32>,
     ) -> Result<()> {
         self.ray_budget_controller.observe(measured_lighting_ms);
-        let budget = self.ray_budget_controller.settings();
+        let budget = test_quality_tier.map_or_else(
+            || self.ray_budget_controller.settings(),
+            AdaptiveRayBudget::settings_for_tier,
+        );
         let offset = (frame as vk::DeviceSize) * RAY_BUDGET_STRIDE;
         let off_usize = offset as usize;
         let mapped = self.ray_budget_buffer.mapped_slice_mut()?;
@@ -217,13 +222,78 @@ impl super::buffers::SceneBuffers {
         )
     }
 
-    pub fn current_ray_budget(&self) -> GpuRayBudget {
-        self.ray_budget_controller.settings()
+    pub fn current_ray_budget(&self, test_quality_tier: Option<u32>) -> GpuRayBudget {
+        test_quality_tier.map_or_else(
+            || self.ray_budget_controller.settings(),
+            AdaptiveRayBudget::settings_for_tier,
+        )
+    }
+
+    /// Read one retired frame slot's diagnostic RT-LOD counters.
+    ///
+    /// The caller has already waited for this slot's fence and the command
+    /// buffer publishes fragment writes through a FRAGMENT→HOST barrier.
+    /// Invalidation is still required on a non-coherent host-visible heap.
+    pub(crate) fn collect_rt_lod_telemetry(
+        &mut self,
+        device: &ash::Device,
+        frame: usize,
+    ) -> Result<RtLodTelemetry> {
+        self.ray_budget_buffer.invalidate_if_needed(device)?;
+        let offset = frame * RAY_BUDGET_STRIDE as usize;
+        let size = std::mem::size_of::<GpuRayBudget>();
+        let mapped = self.ray_budget_buffer.mapped_slice_mut()?;
+        let bytes = &mapped[offset..offset + size];
+        // The per-FIF byte stride is Vulkan-aligned, but the mapped slice's
+        // Rust pointer has no typed-alignment guarantee.
+        let budget = unsafe { std::ptr::read_unaligned(bytes.as_ptr().cast::<GpuRayBudget>()) };
+        Ok(budget.into())
     }
 
     /// `(submitted, uploaded)` light counts from the latest scene upload.
     pub fn light_upload_counts(&self) -> (u32, u32) {
         self.last_light_counts
+    }
+
+    /// Read the prior use of this frame slot after its fence has signalled.
+    /// An armed-but-not-ready record is still returned: it means the requested
+    /// pixel had no eligible main-pass fragment, an important result rather
+    /// than a request that should wait forever.
+    pub(crate) fn collect_selected_ray_probe(
+        &mut self,
+        device: &ash::Device,
+        frame: usize,
+    ) -> Result<Option<GpuSelectedRayProbe>> {
+        let buffer = &mut self.selected_ray_probe_buffers[frame];
+        buffer.invalidate_if_needed(device)?;
+        let bytes = buffer.mapped_slice_mut()?;
+        if bytes.len() < std::mem::size_of::<GpuSelectedRayProbe>() {
+            anyhow::bail!("selected-ray probe buffer is smaller than its GPU contract");
+        }
+        // SAFETY: the length check above covers the complete repr(C), Copy
+        // record. The mapped byte slice need not satisfy the struct's native
+        // alignment, so use read_unaligned rather than creating a reference.
+        let record: GpuSelectedRayProbe =
+            unsafe { std::ptr::read_unaligned(bytes.as_ptr().cast()) };
+        if record.control[0] == 0 || record.control[1] == GpuSelectedRayProbe::STATUS_DISABLED {
+            Ok(None)
+        } else {
+            Ok(Some(record))
+        }
+    }
+
+    /// Arm (or disable) the bounded selected-ray record for this frame slot.
+    /// Must run after the slot fence wait and before the HOST→FRAGMENT barrier.
+    pub(crate) fn arm_selected_ray_probe(
+        &mut self,
+        device: &ash::Device,
+        frame: usize,
+        request: Option<(u32, [u32; 2])>,
+    ) -> Result<()> {
+        let record = request.map_or_else(GpuSelectedRayProbe::default, |(generation, pixel)| {
+            GpuSelectedRayProbe::armed(generation, pixel)
+        });
+        self.selected_ray_probe_buffers[frame].write_mapped(device, std::slice::from_ref(&record))
     }
 
     /// Destroy all resources.
@@ -293,6 +363,10 @@ impl super::buffers::SceneBuffers {
         self.indirect_buffers.clear();
         // #683 / MEM-2-8 — single shared buffer, single destroy.
         self.ray_budget_buffer.destroy(device, allocator);
+        for buf in &mut self.selected_ray_probe_buffers {
+            buf.destroy(device, allocator);
+        }
+        self.selected_ray_probe_buffers.clear();
         self.terrain_tile_buffer.destroy(device, allocator);
         device.destroy_descriptor_pool(self.descriptor_pool, None);
         device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);

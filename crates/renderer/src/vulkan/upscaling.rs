@@ -149,6 +149,22 @@ pub enum VolumetricsConfigError {
 pub struct RendererConfig {
     pub upscaler: UpscalerMode,
     pub volumetrics: VolumetricsConfig,
+    /// Explicit diagnostic override for the static-BLAS residency budget.
+    /// `None` derives the shipping budget from VRAM. The application only
+    /// populates this through the unmistakable
+    /// `--rt-test-blas-budget-bytes` correctness-test flag.
+    pub rt_test_blas_budget_bytes: Option<u64>,
+    /// Positive finite RT-footprint scale encoded with [`f32::to_bits`].
+    /// `None` selects the measured shipping constant in `triangle.frag`.
+    /// The bits keep this configuration exactly comparable without giving
+    /// ordinary runtime settings a floating-point equality contract.
+    pub rt_test_lod_scale_bits: Option<u32>,
+    /// Enable per-fragment RT-LOD population/ray counters. Kept independent
+    /// from the scale override so timing sweeps do not measure debug atomics.
+    pub rt_test_lod_telemetry: bool,
+    /// Fixed adaptive-ray quality tier for controlled RT measurements.
+    /// `None` leaves the shipping GPU-time controller authoritative.
+    pub rt_test_ray_quality_tier: Option<u32>,
 }
 
 /// Scene-render and presentation extents for one swapchain generation.

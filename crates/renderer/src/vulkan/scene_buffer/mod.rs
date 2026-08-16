@@ -26,10 +26,11 @@ mod upload;
 
 pub use buffers::SceneBuffers;
 pub use constants::*;
+pub(crate) use gpu_types::GpuSelectedRayProbe;
 pub use gpu_types::{
     GpuCamera, GpuDalcCube, GpuInstance, GpuLight, GpuPreviousModel, GpuTerrainTile,
 };
-pub use ray_budget::GpuRayBudget;
+pub use ray_budget::{GpuRayBudget, RtLodTelemetry};
 
 #[cfg(test)]
 mod gpu_instance_layout_tests;

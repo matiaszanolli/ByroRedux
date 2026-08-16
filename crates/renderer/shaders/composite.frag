@@ -35,10 +35,8 @@ layout(set = 0, binding = 3) uniform CompositeParams {
     // contract until XCLL/WTHR values are fitted offline into sigma_t tables.
     vec4 fog_params;
     vec4 depth_params;   // x = is_exterior, y = uintBitsToFloat(debug flags),
-                         // z = volumetric consumed (vestigial — mirrors
-                         // the host const but #1926 removed the shader branch that
-                         // used to read it; vol.a/vol.rgb consumption below is now
-                         // unconditional), w = frame index
+                         // z = uintBitsToFloat(structured debug mode),
+                         // w = frame index
     vec4 volume_params;  // x = grid far, y = linear floor, z = linear fraction, w = dither amplitude
     vec4 height_fog_params; // x = sigma_t0, y = scale height, z = albedo, w = fallback enabled
     vec4 sky_zenith;     // xyz = zenith color (linear RGB), w = sun_size (cos threshold)
@@ -402,10 +400,20 @@ void main() {
     // attachment. Do not let caustics, fog, volumetrics, bloom, or dither
     // turn transport visibility/energy into a different question.
     uint dbgFlags = floatBitsToUint(params.depth_params.y);
-    bool rawDebug = (dbgFlags & DBG_VIZ_SELECTED_LIGHT) != 0u
-        || (dbgFlags & DBG_VIZ_DIRECT) != 0u
-        || (dbgFlags & DBG_VIZ_RAW_INDIRECT) != 0u
-        || (dbgFlags & DBG_VIZ_RT_LOD) == DBG_VIZ_RT_LOD;
+    uint debugMode = floatBitsToUint(params.depth_params.z);
+    if (debugMode != RENDER_DEBUG_LEGACY_FLAGS
+        && debugMode > RENDER_DEBUG_MODE_MAX)
+    {
+        outColor = vec4(1.0, 0.0, 1.0, 1.0);
+        return;
+    }
+    bool rawDebug = debugMode == RENDER_DEBUG_LEGACY_FLAGS
+        ? ((dbgFlags & DBG_VIZ_SELECTED_LIGHT) != 0u
+            || (dbgFlags & DBG_VIZ_DIRECT) != 0u
+            || (dbgFlags & DBG_VIZ_RAW_INDIRECT) != 0u
+            || (dbgFlags & DBG_VIZ_RT_LOD) == DBG_VIZ_RT_LOD)
+        : (debugMode != RENDER_DEBUG_FINAL
+            && debugMode != RENDER_DEBUG_COMPOSITE_TERM);
     if (rawDebug) {
         outColor = direct4;
         return;
@@ -652,6 +660,13 @@ void main() {
     // pixels — e.g. a bright sun disc — never bloomed).
     vec3 bloom = texture(bloomTex, fragUV).rgb;
     combined += bloom * BLOOM_INTENSITY;
+    if (debugMode == RENDER_DEBUG_COMPOSITE_TERM) {
+        // Final render-resolution linear composite: direct + denoised
+        // indirect/albedo + caustics + volumetrics/fog + bloom, before
+        // stochastic dither, temporal reconstruction, exposure or grading.
+        outColor = vec4(max(combined, vec3(0.0)), direct4.a);
+        return;
+    }
     combined += vec3(preResolveDither());
     float fogOpacity = clamp(1.0 - fogTransmittance, 0.0, 1.0);
     // Fog has no coherent surface motion. Route its coverage through the
@@ -659,18 +674,6 @@ void main() {
     // reactive so FSR does not lock onto the geometry behind it.
     outTransparency = fogOpacity;
     outReactive = smoothstep(0.35, 0.8, fogOpacity) * 0.9;
-
-    // Aerial-perspective fog fallback (Markarth probe 2026-05-10)
-    // stood in for the volumetric froxel pipeline while M-LIGHT v2
-    // was gated off. `VOLUMETRIC_OUTPUT_CONSUMED` (volumetrics.rs)
-    // flipped to `true` once M-LIGHT v2 landed — `depth_params.z` is
-    // now permanently pinned to 1.0 (draw.rs), so this fallback's
-    // `depth_params.z < 0.5` guard can never pass. Removed per the
-    // lockstep note this branch used to carry (#1926 / REN-D8-01);
-    // the volumetric path (`vol.a` / `vol.rgb` above) plus the analytic
-    // beyond-grid continuation are the sole fog sources now.
-    // `fog_color` tints that continuation; `fog_params` remains reserved
-    // for an explicit legacy-compatibility mode.
 
     // Pass `direct4.a` through (mirroring the pre-fix geometry branch) so
     // the alpha-blend marker bit `DEN-6 / #676` preserves through TAA

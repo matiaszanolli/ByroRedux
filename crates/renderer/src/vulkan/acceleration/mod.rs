@@ -40,7 +40,9 @@ pub use types::{BlasBuildSource, BlasEntry, SkinnedBlasGeometry, TlasState};
 // owns alongside the AccelerationManager's own scratch). `pub(super)`
 // restricts visibility to the `vulkan` module — no external crate
 // callers, by design.
-pub(super) use predicates::{shrink_map_scratch_if_oversized, shrink_scratch_if_oversized};
+pub(super) use predicates::{
+    draw_command_eligible_for_tlas, shrink_map_scratch_if_oversized, shrink_scratch_if_oversized,
+};
 
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
@@ -261,12 +263,30 @@ impl AccelerationManager {
         device: &ash::Device,
         physical_device: vk::PhysicalDevice,
         scratch_align: u32,
+        rt_test_blas_budget_bytes: Option<vk::DeviceSize>,
     ) -> Self {
         let accel_loader = ash::khr::acceleration_structure::Device::new(instance, device);
-        let blas_budget_bytes = compute_blas_budget(instance, physical_device);
+        let derived_budget_bytes = compute_blas_budget(instance, physical_device);
+        let blas_budget_bytes = match rt_test_blas_budget_bytes {
+            Some(bytes) if bytes > 0 => {
+                log::warn!(
+                    "RT TEST BLAS memory budget override active: {bytes} bytes ({:.3} MB); derived shipping budget was {} MB",
+                    bytes as f64 / (1024.0 * 1024.0),
+                    derived_budget_bytes / (1024 * 1024),
+                );
+                bytes
+            }
+            Some(_) => {
+                log::error!(
+                    "ignored zero-byte RT test BLAS budget supplied outside the validated CLI path"
+                );
+                derived_budget_bytes
+            }
+            None => derived_budget_bytes,
+        };
         log::info!(
-            "BLAS memory budget: {} MB (derived from VRAM); scratch alignment: {} B",
-            blas_budget_bytes / (1024 * 1024),
+            "BLAS memory budget: {} bytes; scratch alignment: {} B",
+            blas_budget_bytes,
             scratch_align,
         );
         // Caller (`device::pick_physical_device`) clamps to 1 when RT is

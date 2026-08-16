@@ -235,13 +235,56 @@ pub struct GpuLight {
     pub params: [f32; 4],
 }
 
-/// GPU-side camera data (**336 bytes**, std140-compatible).
+/// One bounded selected-light visibility-ray record (144 bytes, std430).
 ///
-/// Layout pinned by `gpu_camera_is_336_bytes` test — three `mat4` (3×64 = 192 B) +
-/// nine trailing `vec4` (9×16 = 144 B: position, flags, screen, fog, jitter,
-/// sky_tint, sun_direction, dof_params, render_origin) → 336 B. The size grew
+/// Binding 19 exposes one record per frame-in-flight. `control.y` is the
+/// atomic state word: 0=disabled, 1=armed, 2=claimed, 3=ready. The fragment
+/// shader can therefore publish at most one record for the requested pixel,
+/// even when overlapping alpha-blended draws cover it.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct GpuSelectedRayProbe {
+    /// x=generation, y=status, z=pixel x, w=pixel y.
+    pub control: [u32; 4],
+    /// x=selected light, y=visibility mask, z=hit instance, w=flags.
+    pub ids: [u32; 4],
+    /// xyz=absolute ray origin, w=tMin.
+    pub origin_tmin: [f32; 4],
+    /// xyz=ray direction, w=tMax.
+    pub direction_tmax: [f32; 4],
+    /// x=committed hit distance, yzw=averaged RGB visibility.
+    pub hit_visibility: [f32; 4],
+    pub light_position_radius: [f32; 4],
+    pub light_color_type: [f32; 4],
+    pub light_direction_angle: [f32; 4],
+    pub light_params: [f32; 4],
+}
+
+impl GpuSelectedRayProbe {
+    pub(crate) const STATUS_DISABLED: u32 = 0;
+    pub(crate) const STATUS_ARMED: u32 = 1;
+    pub(crate) const STATUS_READY: u32 = 3;
+    pub(crate) const INVALID_INDEX: u32 = u32::MAX;
+    pub(crate) const FLAG_RAY_VALID: u32 = 1;
+
+    pub(crate) fn armed(generation: u32, pixel: [u32; 2]) -> Self {
+        Self {
+            control: [generation, Self::STATUS_ARMED, pixel[0], pixel[1]],
+            ids: [Self::INVALID_INDEX, 0, Self::INVALID_INDEX, 0],
+            hit_visibility: [f32::INFINITY, -1.0, -1.0, -1.0],
+            ..Self::default()
+        }
+    }
+}
+
+/// GPU-side camera data (**352 bytes**, std140-compatible).
+///
+/// Layout pinned by `gpu_camera_is_352_bytes` test — three `mat4` (3×64 = 192 B) +
+/// ten trailing `vec4` (10×16 = 160 B: position, flags, screen, fog, jitter,
+/// sky_tint, sun_direction, dof_params, render_origin, render_debug) → 352 B. The size grew
 /// 304 → 320 B with the DOF `dof_params` field and 320 → 336 B with the
-/// `render_origin` field (#markarth-precision / #1492).
+/// `render_origin` field (#markarth-precision / #1492), then 336 → 352 B with
+/// the structured renderer-debug control.
 /// Every
 /// shader that re-declares this struct
 /// MUST keep field order and field count in lockstep:
@@ -368,6 +411,12 @@ pub struct GpuCamera {
     /// `render_origin`); `volumetrics_inject.comp` receives the origin via
     /// `VolumetricsParams`.
     pub render_origin: [f32; 4],
+    /// x = [`RenderDebugMode`](crate::vulkan::render_debug::RenderDebugMode)
+    /// shader discriminant; y = optional `f32::to_bits` RT-LOD scale;
+    /// z = diagnostic LOD-counter enable; w reserved. Kept separate from `jitter.z` so
+    /// named mutually-exclusive views do not consume or reinterpret the
+    /// orthogonal legacy feature-ablation bitmask.
+    pub render_debug: [u32; 4],
 }
 
 impl Default for GpuCamera {
@@ -402,6 +451,7 @@ impl Default for GpuCamera {
             // Identity origin: unbootstrapped frames render in absolute
             // world space (rel == abs), matching pre-camera-relative behaviour.
             render_origin: [0.0; 4],
+            render_debug: [crate::shader_constants::RENDER_DEBUG_LEGACY_FLAGS, 0, 0, 0],
         }
     }
 }

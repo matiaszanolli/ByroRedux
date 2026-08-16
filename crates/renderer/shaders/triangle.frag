@@ -78,9 +78,10 @@ layout(location = 7) out float outFsrTransparency;
 #include "include/lighting.glsl"
 #include "include/material_sampling.glsl"
 
-// ReSTIR reservoir word packing. Ten low bits cover up to 1023 scene lights
-// (valid indices 0..1022) plus the explicit 1023 invalid value; the remaining
-// 22 bits hold the
+// ReSTIR reservoir word packing. The masks, shift and MAX_LIGHTS upload count
+// come from the generated Rust/GLSL contract. Ten low bits cover up to 1023
+// scene lights (valid indices 0..1022) plus the explicit 1023 invalid value;
+// the remaining 22 bits hold the
 // stable per-entity surface ID (`GpuInstance.surface_id` = entity_id + 1,
 // #883f57cd). Unlike the pre-#883f57cd instance index, this is NOT bounded
 // by MAX_INSTANCES — it grows with cumulative session spawns (entity IDs
@@ -89,16 +90,14 @@ layout(location = 7) out float outFsrTransparency;
 // but distinct surface; the per-sample final visibility ray still
 // re-validates, so this is a soft, self-correcting bound, not a hard
 // safety requirement (REN-RESTIR-01).
-const uint RESERVOIR_LIGHT_MASK = 0x3FFu;
-const uint RESERVOIR_SURFACE_MASK = 0x3FFFFFu;
 uint reservoirLightIndex(uint lightAndSurface) {
     return lightAndSurface & RESERVOIR_LIGHT_MASK;
 }
 uint reservoirSurfaceId(uint lightAndSurface) {
-    return lightAndSurface >> 10u;
+    return lightAndSurface >> RESERVOIR_LIGHT_BITS;
 }
 uint packReservoirLightAndSurface(uint lightIndex, uint surfaceId) {
-    return ((surfaceId & RESERVOIR_SURFACE_MASK) << 10u)
+    return ((surfaceId & RESERVOIR_SURFACE_MASK) << RESERVOIR_LIGHT_BITS)
         | (lightIndex & RESERVOIR_LIGHT_MASK);
 }
 
@@ -139,6 +138,22 @@ void main() {
 
     // Decode debug-bypass flags (zero on production runs).
     uint dbgFlags = floatBitsToUint(jitter.z);
+    uint debugMode = renderDebug.x;
+    bool legacyDebugMode = debugMode == RENDER_DEBUG_LEGACY_FLAGS;
+    bool viewShadowVisibility = debugMode == RENDER_DEBUG_SHADOW_VISIBILITY
+        || (legacyDebugMode
+            && (dbgFlags & DBG_VIZ_SHADOW_VISIBILITY) == DBG_VIZ_SHADOW_VISIBILITY);
+    bool viewSelectedLight = debugMode == RENDER_DEBUG_SELECTED_LIGHT
+        || (legacyDebugMode && (dbgFlags & DBG_VIZ_SELECTED_LIGHT) != 0u);
+    bool viewDirectOnly = debugMode == RENDER_DEBUG_DIRECT_ONLY
+        || (legacyDebugMode && (dbgFlags & DBG_VIZ_DIRECT) != 0u);
+    bool viewIndirectOnly = debugMode == RENDER_DEBUG_INDIRECT_ONLY
+        || (legacyDebugMode && (dbgFlags & DBG_VIZ_RAW_INDIRECT) != 0u);
+    bool viewMaterialLobe = debugMode == RENDER_DEBUG_MATERIAL_LOBE
+        || (legacyDebugMode
+            && (dbgFlags & DBG_VIZ_MATERIAL_LOBES) == DBG_VIZ_MATERIAL_LOBES);
+    bool viewRtLod = debugMode == RENDER_DEBUG_RT_LOD
+        || (legacyDebugMode && (dbgFlags & DBG_VIZ_RT_LOD) == DBG_VIZ_RT_LOD);
 
     // Read per-instance + per-material data up-front — parallax-
     // occlusion mapping displaces `fragUV` before the base-albedo
@@ -542,6 +557,15 @@ void main() {
     uint meshIdBase = alphaBlendFrag ? sortedInstanceId : stableSurfaceId;
     outMeshID = meshIdBase | (alphaBlendFrag ? 0x80000000u : 0u);
 
+    // A corrupted/unrecognised structured mode is a contract failure. Keep it
+    // visually unmistakable while still publishing valid G-buffer outputs.
+    if (!legacyDebugMode && debugMode > RENDER_DEBUG_MODE_MAX) {
+        outColor = vec4(1.0, 0.0, 1.0, 1.0);
+        outRawIndirect = vec4(0.0);
+        outAlbedo = vec4(1.0);
+        return;
+    }
+
     // Debug normal-visualization exit. World-space N is fully resolved
     // here (post normal-map perturb), so this is the right place to
     // route it to the colour output. SVGF / composite see zero
@@ -742,7 +766,19 @@ void main() {
     const float RT_LOD_REFLECT = 3.0;
     const float RT_LOD_GI      = 2.0;  // GI ray ceiling
     float rtFootprint = max(length(dFdx(fragWorldPosRel)), length(dFdy(fragWorldPosRel)));  // #1496 — derivative on relative pos
-    float rtLOD = clamp(log2(rtFootprint * RT_LOD_SCALE), 0.0, 3.0);
+    float rtLodScale = renderDebug.y == 0u
+        ? RT_LOD_SCALE
+        : uintBitsToFloat(renderDebug.y);
+    float rtLOD = clamp(log2(rtFootprint * rtLodScale), 0.0, 3.0);
+    bool rtLodTelemetryEnabled = renderDebug.z != 0u;
+    if (rtLodTelemetryEnabled) {
+        atomicAdd(rayBudget.rtLodFragments, 1u);
+        uint rtLodBin = min(uint(floor(rtLOD)), 3u);
+        if (rtLodBin == 0u) atomicAdd(rayBudget.rtLodBin0, 1u);
+        else if (rtLodBin == 1u) atomicAdd(rayBudget.rtLodBin1, 1u);
+        else if (rtLodBin == 2u) atomicAdd(rayBudget.rtLodBin2, 1u);
+        else atomicAdd(rayBudget.rtLodBin3, 1u);
+    }
 
     // ── #706 / FX-1: BSEffectShaderProperty emit-only early-out ─────
     //
@@ -1459,7 +1495,7 @@ void main() {
     // copies lived at the end of main(), so the fragments that actually took
     // the thick-glass path returned before they were classified; the lobe and
     // rtLOD oracles therefore visualised only the fallback population.
-    if ((dbgFlags & DBG_VIZ_MATERIAL_LOBES) == DBG_VIZ_MATERIAL_LOBES) {
+    if (viewMaterialLobe) {
         // blue=glass, magenta=translucency, gold=Disney/PBR,
         // orange=effect/no-lighting, grey=legacy lit.
         vec3 lobeColor = isGlass
@@ -1476,7 +1512,7 @@ void main() {
         outRawIndirect = vec4(0.0);
         outAlbedo = vec4(1.0);
         return;
-    } else if ((dbgFlags & DBG_VIZ_RT_LOD) == DBG_VIZ_RT_LOD) {
+    } else if (viewRtLod) {
         // Continuous heatmap: blue=tier 0, cyan/green=tier 1,
         // yellow=tier 2, red=tier 3.
         float t = rtLOD * (1.0 / 3.0);
@@ -2351,6 +2387,14 @@ void main() {
     vec3 Lo = vec3(0.0); // Accumulated outgoing radiance.
     uint selectedLightDebug = 0xFFFFFFFFu;
     vec3 selectedVisibilityDebug = vec3(-1.0);
+    bool selectedRayDebugValid = false;
+    uint selectedRayVisibilityMask = 0u;
+    uint selectedRayHitInstance = 0xFFFFFFFFu;
+    float selectedRayHitDistance = uintBitsToFloat(0x7F800000u);
+    vec3 selectedRayOrigin = vec3(0.0);
+    vec3 selectedRayDirection = vec3(0.0);
+    float selectedRayTMin = 0.0;
+    float selectedRayTMax = 0.0;
 
     // ── RT reflection for metallic/glossy surfaces ──────────────────
     //
@@ -2471,6 +2515,10 @@ void main() {
                 : sceneFlags.yzw * (1.0 / PI);
         }
         vec3 envColor;
+        if (rtLodTelemetryEnabled && reflectionGlassRayEnabled) {
+            if (rtLOD < RT_LOD_REFLECT) atomicAdd(rayBudget.rtReflectionTraced, 1u);
+            else atomicAdd(rayBudget.rtReflectionLodCulled, 1u);
+        }
         if (reflectionGlassRayEnabled && rtLOD < RT_LOD_REFLECT) {
             // Deterministic rough reflection: a single SHARP ray, GGX-lobe
             // blur applied as a roughness-scaled mip on the hit sample
@@ -3120,8 +3168,28 @@ void main() {
                             rayDir = normalize(jitteredDir);
                             rayDist = DIRECTIONAL_SHADOW_TRACE_DISTANCE;
                         }
-                        transmissionSum += traceLightTransmittance(
-                            i, rayOrigin, rayDir, max(rayDist, 0.01));
+                        float rayTMax = max(rayDist, 0.01);
+                        vec3 sampleTransmission;
+                        if (sr == 0) {
+                            sampleTransmission = traceLightTransmittanceDetailed(
+                                i,
+                                rayOrigin,
+                                rayDir,
+                                rayTMax,
+                                selectedRayVisibilityMask,
+                                selectedRayHitInstance,
+                                selectedRayHitDistance
+                            );
+                            selectedRayDebugValid = true;
+                            selectedRayOrigin = rayOrigin;
+                            selectedRayDirection = rayDir;
+                            selectedRayTMin = 0.0;
+                            selectedRayTMax = rayTMax;
+                        } else {
+                            sampleTransmission = traceLightTransmittance(
+                                i, rayOrigin, rayDir, rayTMax);
+                        }
+                        transmissionSum += sampleTransmission;
                     }
                     vec3 transmissionFrame = transmissionSum / float(shadowRayCount);
                     // Fade the SHADOW, not the light: at shadowFade == 1 this is
@@ -3322,15 +3390,19 @@ void main() {
         emissiveMult * max(emissiveColor.r, max(emissiveColor.g, emissiveColor.b));
     vec3 primaryDiffuseWeight = (1.0 - fresnelSchlick(NdotV, F0))
         * (1.0 - metalness);
-    if (giRayEnabled
+    bool giTransportEligible = giRayEnabled
         && rayBudget.maxPathSegments > 0u
         && rayBudget.maxShadedHits > 0u
         && !isWindow && !isGlass && giEmissiveLum < 0.01
-        && rtLOD < RT_LOD_GI
-        && pathLuminance(primaryDiffuseWeight) > 1e-5) {
-        float giDist = length(fragWorldPos - cameraPos.xyz);
-        float giFade = 1.0 - smoothstep(4000.0, 6000.0, giDist);
-        if (giFade > 0.01) {
+        && pathLuminance(primaryDiffuseWeight) > 1e-5;
+    float giDist = length(fragWorldPos - cameraPos.xyz);
+    float giFade = 1.0 - smoothstep(4000.0, 6000.0, giDist);
+    giTransportEligible = giTransportEligible && giFade > 0.01;
+    if (rtLodTelemetryEnabled && giTransportEligible) {
+        if (rtLOD < RT_LOD_GI) atomicAdd(rayBudget.rtGiTraced, 1u);
+        else atomicAdd(rayBudget.rtGiLodCulled, 1u);
+    }
+    if (giTransportEligible && rtLOD < RT_LOD_GI) {
             // GI noise seed. Hold it for 4 frames while the camera MOVES to
             // suppress flicker (SVGF history is short under motion). When the
             // camera is PARKED (dofParams.w = camera_static), advance the seed
@@ -3553,7 +3625,6 @@ void main() {
             // near the cutoff.
             float giLodFade = 1.0 - smoothstep(RT_LOD_GI - 0.75, RT_LOD_GI, rtLOD);
             indirect *= giLodFade;
-        }
     }
 
     // Sample ambient occlusion from the SSAO texture (computed last frame).
@@ -3703,7 +3774,42 @@ void main() {
     // avoiding multi-frame ghosting on fog transitions. `fog` UBO is
     // still read above for the RT ray-miss background color.
 
-    if ((dbgFlags & DBG_VIZ_SHADOW_VISIBILITY) == DBG_VIZ_SHADOW_VISIBILITY) {
+    // One bounded selected-ray capture. The atomic state claim makes this a
+    // single-record probe even when multiple blended fragments cover the
+    // requested pixel. An armed record left untouched is interpreted by the
+    // host as "no eligible main-pass fragment" after the slot fence signals.
+    uvec2 probePixel = uvec2(gl_FragCoord.xy);
+    if (all(equal(probePixel, selectedRayProbeControl.zw))
+        && atomicCompSwap(selectedRayProbeControl.y, 1u, 2u) == 1u)
+    {
+        selectedRayProbeIds = uvec4(
+            selectedLightDebug,
+            selectedRayVisibilityMask,
+            selectedRayHitInstance,
+            selectedRayDebugValid ? 1u : 0u
+        );
+        selectedRayProbeOriginTMin = vec4(selectedRayOrigin, selectedRayTMin);
+        selectedRayProbeDirectionTMax = vec4(selectedRayDirection, selectedRayTMax);
+        selectedRayProbeHitVisibility = vec4(
+            selectedRayHitDistance,
+            selectedVisibilityDebug
+        );
+        if (selectedLightDebug < lightCount) {
+            selectedRayProbeLightPositionRadius = lights[selectedLightDebug].position_radius;
+            selectedRayProbeLightColorType = lights[selectedLightDebug].color_type;
+            selectedRayProbeLightDirectionAngle = lights[selectedLightDebug].direction_angle;
+            selectedRayProbeLightParams = lights[selectedLightDebug].params;
+        } else {
+            selectedRayProbeLightPositionRadius = vec4(0.0);
+            selectedRayProbeLightColorType = vec4(0.0);
+            selectedRayProbeLightDirectionAngle = vec4(0.0);
+            selectedRayProbeLightParams = vec4(0.0);
+        }
+        memoryBarrierBuffer();
+        atomicExchange(selectedRayProbeControl.y, 3u);
+    }
+
+    if (viewShadowVisibility) {
         // Raw selected-sample visibility. Keep "no candidate/no ray" magenta
         // so it cannot alias an opaque hit (black). Glass transmittance is
         // collapsed to Rec.709 luminance for a one-channel transport answer.
@@ -3717,9 +3823,14 @@ void main() {
         outColor = vec4(visibilityColor, 1.0);
         outRawIndirect = vec4(0.0);
         outAlbedo = vec4(1.0);
-    } else if ((dbgFlags & DBG_VIZ_SELECTED_LIGHT) != 0u) {
+    } else if (viewSelectedLight) {
         vec3 selectedColor = vec3(0.0);
-        if (selectedLightDebug != 0xFFFFFFFFu) {
+        if (selectedLightDebug >= lightCount
+            && selectedLightDebug != 0xFFFFFFFFu) {
+            // A non-sentinel index outside the uploaded light range is a
+            // contract failure, not a valid categorical selection.
+            selectedColor = vec3(1.0, 0.0, 1.0);
+        } else if (selectedLightDebug != 0xFFFFFFFFu) {
             uint h = selectedLightDebug * 1664525u + 1013904223u;
             selectedColor = vec3(
                 float((h >> 0u) & 0xFFu),
@@ -3757,7 +3868,7 @@ void main() {
         outColor = vec4(indirect, 1.0);
         outRawIndirect = vec4(0.0);
         outAlbedo = vec4(1.0);
-    } else if ((dbgFlags & DBG_VIZ_RAW_INDIRECT) != 0u) {
+    } else if (viewIndirectOnly) {
         // Route the single-frame, pre-SVGF signal through the direct
         // attachment so composite cannot temporally filter it or multiply it
         // by local albedo. This is intentionally noisy: noise proves rays are
@@ -3766,7 +3877,7 @@ void main() {
         outColor = vec4(indirectLight, 1.0);
         outRawIndirect = vec4(0.0);
         outAlbedo = vec4(1.0);
-    } else if ((dbgFlags & DBG_VIZ_DIRECT) != 0u) {
+    } else if (viewDirectOnly) {
         // Route the resolved direct estimator through the direct attachment
         // while explicitly suppressing indirect. The downstream frame graph
         // preserves this display-linear value without exposure or tone

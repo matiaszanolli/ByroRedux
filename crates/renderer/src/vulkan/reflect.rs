@@ -760,8 +760,8 @@ mod tests {
         let spv = include_bytes!("../../shaders/composite.frag.spv");
         let count = count_branch_conditionals(spv).expect("reflect composite.frag.spv");
         assert_eq!(
-            count, 21,
-            "composite.frag.spv has {count} OpBranchConditional instructions, expected 21 — \
+            count, 24,
+            "composite.frag.spv has {count} OpBranchConditional instructions, expected 24 — \
              the committed .spv looks stale relative to composite.frag; recompile it \
              (glslangValidator -V composite.frag -o composite.frag.spv from \
              crates/renderer/shaders). The raw correctness-debug guard is intentionally \

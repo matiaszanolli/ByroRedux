@@ -468,6 +468,170 @@ impl ConsoleCommand for RtIntegrityCommand {
     }
 }
 
+/// `render.debug <mode> [x y]` — select a named correctness view and
+/// optionally queue one bounded selected-light visibility-ray capture.
+pub(crate) struct RenderDebugCommand;
+impl ConsoleCommand for RenderDebugCommand {
+    fn name(&self) -> &str {
+        "render.debug"
+    }
+
+    fn description(&self) -> &str {
+        "Named render view / selected-ray probe: render.debug <mode> [x y]"
+    }
+
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let Some(mut control) = world.try_resource_mut::<crate::components::RenderDebugControl>()
+        else {
+            return CommandOutput::line("RenderDebugControl resource not present");
+        };
+        let words = args.split_whitespace().collect::<Vec<_>>();
+        if words.is_empty() {
+            let mut lines = vec![
+                format!("render debug mode: {}", control.active_mode),
+                format!(
+                    "  pending mode: {}",
+                    control.pending_mode.map_or("none", |mode| mode.as_str())
+                ),
+                format!(
+                    "  pending probe: {}",
+                    control.pending_probe_pixel.map_or_else(
+                        || "none".to_string(),
+                        |pixel| format!("({}, {})", pixel[0], pixel[1])
+                    )
+                ),
+                format!(
+                    "  usage: render.debug <{}> [x y]",
+                    byroredux_renderer::RenderDebugMode::user_mode_names()
+                ),
+                "         render.debug probe <x> <y>".to_string(),
+            ];
+            if let Some(error) = &control.last_error {
+                lines.push(format!("  last error: {error}"));
+            }
+            if let Some(probe) = control.last_probe {
+                lines.extend(format_selected_ray_probe(probe));
+            }
+            return CommandOutput::lines(lines);
+        }
+
+        let (mode, pixel_words) = if words[0].eq_ignore_ascii_case("probe") {
+            (None, &words[1..])
+        } else {
+            let mode = match words[0].parse::<byroredux_renderer::RenderDebugMode>() {
+                Ok(mode) => mode,
+                Err(error) => {
+                    static LOG_UNKNOWN_MODE_ONCE: std::sync::Once = std::sync::Once::new();
+                    LOG_UNKNOWN_MODE_ONCE.call_once(|| log::warn!("{error}"));
+                    return CommandOutput::line(format!("rejected: {error}"));
+                }
+            };
+            (Some(mode), &words[1..])
+        };
+
+        let pixel = match pixel_words {
+            [] => None,
+            [x, y] => {
+                let parse = |value: &str, axis: &str| {
+                    value
+                        .parse::<u32>()
+                        .map_err(|_| format!("{axis} pixel must be a non-negative integer"))
+                };
+                let x = match parse(x, "x") {
+                    Ok(value) => value,
+                    Err(error) => return CommandOutput::line(format!("rejected: {error}")),
+                };
+                let y = match parse(y, "y") {
+                    Ok(value) => value,
+                    Err(error) => return CommandOutput::line(format!("rejected: {error}")),
+                };
+                Some([x, y])
+            }
+            _ => return CommandOutput::line(
+                "rejected: expected `render.debug <mode> [x y]` or `render.debug probe <x> <y>`",
+            ),
+        };
+        if mode.is_none() && pixel.is_none() {
+            return CommandOutput::line("rejected: probe requires x and y pixels");
+        }
+
+        if let Some(mode) = mode {
+            control.pending_mode = Some(mode);
+        }
+        if let Some(pixel) = pixel {
+            control.pending_probe_pixel = Some(pixel);
+            control.pending_probe_generation = None;
+        }
+        control.last_error = None;
+
+        let mut queued = Vec::new();
+        if let Some(mode) = mode {
+            queued.push(format!("mode={mode}"));
+        }
+        if let Some(pixel) = pixel {
+            queued.push(format!("probe=({}, {})", pixel[0], pixel[1]));
+        }
+        CommandOutput::line(format!("queued {} (applies next frame)", queued.join(" ")))
+    }
+}
+
+fn format_selected_ray_probe(probe: byroredux_renderer::SelectedRayProbeResult) -> Vec<String> {
+    let mut lines = vec![format!(
+        "  probe generation={} pixel=({}, {}) fragment={} ray={}",
+        probe.generation, probe.pixel[0], probe.pixel[1], probe.fragment_captured, probe.ray_valid,
+    )];
+    if !probe.fragment_captured {
+        lines.push("    no eligible main-pass fragment reached the probe site".to_string());
+        return lines;
+    }
+    lines.push(format!(
+        "    selected_light={} visibility_mask=0x{:02x}",
+        probe
+            .selected_light_index
+            .map_or_else(|| "none".to_string(), |index| index.to_string()),
+        probe.visibility_mask,
+    ));
+    lines.push(format!(
+        "    ray origin=({:.6},{:.6},{:.6}) tMin={:.6} direction=({:.7},{:.7},{:.7}) tMax={:.6}",
+        probe.ray_origin[0],
+        probe.ray_origin[1],
+        probe.ray_origin[2],
+        probe.ray_t_min,
+        probe.ray_direction[0],
+        probe.ray_direction[1],
+        probe.ray_direction[2],
+        probe.ray_t_max,
+    ));
+    lines.push(format!(
+        "    committed_hit={} distance={} visibility=({:.6},{:.6},{:.6})",
+        probe
+            .committed_hit_instance
+            .map_or_else(|| "none".to_string(), |index| index.to_string()),
+        probe
+            .committed_hit_distance
+            .map_or_else(|| "none".to_string(), |distance| format!("{distance:.6}")),
+        probe.averaged_visibility[0],
+        probe.averaged_visibility[1],
+        probe.averaged_visibility[2],
+    ));
+    if let Some(index) = probe.selected_light_index {
+        lines.push(format!(
+            "    GpuLight[{index}] (exact uploaded light.dump record):"
+        ));
+        lines.push(format!(
+            "      position_radius={:?}",
+            probe.light_position_radius
+        ));
+        lines.push(format!("      color_type={:?}", probe.light_color_type));
+        lines.push(format!(
+            "      direction_angle={:?}",
+            probe.light_direction_angle
+        ));
+        lines.push(format!("      params={:?}", probe.light_params));
+    }
+    lines
+}
+
 /// `world.owners` — cross-subsystem ownership accounting for the EX-08
 /// exterior soak (#2374).
 ///

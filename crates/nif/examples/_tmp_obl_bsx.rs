@@ -27,8 +27,12 @@ fn main() {
             .collect();
         eprintln!("{path}: {} nifs", names.len());
         for name in &names {
-            let Ok(bytes) = arc.extract(name) else { continue };
-            let Ok(scene) = parse_nif(&bytes) else { continue };
+            let Ok(bytes) = arc.extract(name) else {
+                continue;
+            };
+            let Ok(scene) = parse_nif(&bytes) else {
+                continue;
+            };
             total += 1;
             let bsx = extract_bsx_flags(&scene);
             if bsx & 0x20 == 0 {
@@ -45,7 +49,14 @@ fn main() {
                 bit5_pure_marker += 1;
             } else {
                 bit5_real += 1;
-                samples.push((name.clone(), meshes.len(), tris, cols.len(), bsx, scene.bsver));
+                samples.push((
+                    name.clone(),
+                    meshes.len(),
+                    tris,
+                    cols.len(),
+                    bsx,
+                    scene.bsver,
+                ));
             }
         }
     }
