@@ -2180,3 +2180,66 @@ mod blas_compaction_rollback_tests {
         );
     }
 }
+
+/// #2928 / PERF-D3-04 — the BLAS budget must derive from the
+/// **smallest** DEVICE_LOCAL heap, not the sum of all of them.
+///
+/// `compute_blas_budget` itself needs a live `VkInstance` +
+/// `VkPhysicalDevice`, so it splits into a pure `blas_budget_for_heap`
+/// (tested directly) plus the heap query (pinned at the source level).
+/// The distinction is invisible on the single-heap dev card, which is
+/// exactly why it needs a test rather than an observation.
+#[test]
+fn blas_budget_derives_from_the_smallest_heap_not_the_sum() {
+    use super::constants::MIN_BLAS_BUDGET_BYTES;
+
+    // 12 GB single-heap desktop part → 4 GB, the figure the
+    // `blas_budget_bytes` field doc quotes.
+    assert_eq!(
+        blas_budget_for_heap(12 * 1024 * 1024 * 1024),
+        4 * 1024 * 1024 * 1024
+    );
+    // 6 GB RT-minimum target → 2 GB, likewise.
+    assert_eq!(
+        blas_budget_for_heap(6 * 1024 * 1024 * 1024),
+        2 * 1024 * 1024 * 1024
+    );
+    // Floor holds for tiny and degenerate (no DEVICE_LOCAL heap → 0) heaps.
+    assert_eq!(blas_budget_for_heap(0), MIN_BLAS_BUDGET_BYTES);
+    assert_eq!(
+        blas_budget_for_heap(64 * 1024 * 1024),
+        MIN_BLAS_BUDGET_BYTES
+    );
+
+    // The multi-heap case this fix is about: an 8 GB main VRAM heap
+    // alongside a 256 MB DEVICE_LOCAL|HOST_VISIBLE BAR window. Summing
+    // yields a budget ~85 MB above what the allocator can actually
+    // serve; the smallest heap is the honest ceiling.
+    let main = 8 * 1024 * 1024 * 1024u64;
+    let bar = 256 * 1024 * 1024u64;
+    assert_ne!(
+        blas_budget_for_heap(main.min(bar)),
+        blas_budget_for_heap(main + bar),
+        "min-vs-sum must be distinguishable on a multi-heap layout"
+    );
+
+    let src = include_str!("predicates.rs");
+    let body = src
+        .split("pub(super) fn compute_blas_budget")
+        .nth(1)
+        .and_then(|rest| rest.split("\n}").next())
+        .expect("compute_blas_budget must still exist");
+    assert!(
+        body.contains("smallest_device_local_heap_bytes"),
+        "compute_blas_budget must query the smallest DEVICE_LOCAL heap — \
+         `total_device_local_bytes` sums heaps that are not disjoint \
+         physical memory on AMD/hybrid layouts, over-stating VRAM and \
+         putting the eviction line above where allocation starts failing \
+         (#2928). `allocator.rs`'s pressure warning already uses the \
+         smallest heap (#1572); the two policies must agree."
+    );
+    assert!(
+        !body.contains("total_device_local_bytes"),
+        "the summing query must not come back (#2928)"
+    );
+}

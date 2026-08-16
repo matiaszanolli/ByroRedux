@@ -651,13 +651,50 @@ pub(super) fn align_scratch_address(raw: vk::DeviceAddress, align: u32) -> vk::D
     aligned
 }
 
+/// The static-BLAS residency budget: one third of the DEVICE_LOCAL heap,
+/// floored at [`MIN_BLAS_BUDGET_BYTES`]. Pure so the unit test can pin
+/// the math without a live Vulkan device.
+#[inline]
+pub(super) fn blas_budget_for_heap(heap_bytes: vk::DeviceSize) -> vk::DeviceSize {
+    (heap_bytes / 3).max(MIN_BLAS_BUDGET_BYTES)
+}
+
+/// Derive `blas_budget_bytes` from the device's VRAM.
+///
+/// #2928 / PERF-D3-04 — the heap figure is
+/// [`smallest_device_local_heap_bytes`](super::super::device::smallest_device_local_heap_bytes),
+/// NOT `total_device_local_bytes`. This used to sum every DEVICE_LOCAL
+/// heap while all three prose sites (this function, the
+/// `blas_budget_bytes` field doc, `memory-budget.md`'s
+/// `MIN_BLAS_BUDGET_BYTES` row) described a single heap — the
+/// implementation was the outlier, not the docs.
+///
+/// The distinction matters on any device exposing more than one
+/// DEVICE_LOCAL heap: the common AMD / hybrid layout reports a small
+/// `DEVICE_LOCAL | HOST_VISIBLE` BAR window alongside the main VRAM heap,
+/// and the two are not disjoint physical memory, so summing over-counts
+/// available VRAM and puts the eviction line above where allocation
+/// actually starts failing. That is the exact opposite of this budget's
+/// stated purpose ("so smaller-VRAM GPUs evict before hitting an
+/// out-of-memory condition", #387). The smallest heap is the tighter
+/// ceiling — an allocator run to that limit fails first — which is why
+/// `allocator.rs`'s 80%-of-heap pressure warning already uses it (#1572).
+/// Both VRAM-ceiling policies now agree.
+///
+/// Single-heap NVIDIA desktop parts (the RTX 4070 Ti dev card included)
+/// report one heap, so `min` and `sum` coincide and this is a no-op
+/// there — it cannot be observed on the target hardware.
+///
+/// The [`MIN_BLAS_BUDGET_BYTES`] floor still covers the degenerate case
+/// (`smallest_device_local_heap_bytes` returns 0 when no DEVICE_LOCAL
+/// heap exists at all).
 pub(super) fn compute_blas_budget(
     instance: &ash::Instance,
     physical_device: vk::PhysicalDevice,
 ) -> vk::DeviceSize {
-    let device_local_bytes =
-        super::super::device::total_device_local_bytes(instance, physical_device);
-    (device_local_bytes / 3).max(MIN_BLAS_BUDGET_BYTES)
+    let heap_bytes =
+        super::super::device::smallest_device_local_heap_bytes(instance, physical_device);
+    blas_budget_for_heap(heap_bytes)
 }
 
 /// Build the 8-bit ray-query mask for one TLAS instance.

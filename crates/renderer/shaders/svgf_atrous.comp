@@ -72,7 +72,10 @@ float luminance(vec3 c) {
     return dot(c, vec3(0.2126, 0.7152, 0.0722));
 }
 
-// Octahedral decode (matches svgf_temporal.comp:62 / triangle.frag:267).
+// Octahedral decode — inverse of `octEncode` in
+// `include/math_common.glsl` (the encoder every `outNormal` write in
+// triangle.frag goes through). Must stay bit-identical to the
+// `octDecode` copies in `svgf_temporal.comp` and `caustic_splat.comp`.
 vec3 octDecode(vec2 e) {
     vec3 n = vec3(e.xy, 1.0 - abs(e.x) - abs(e.y));
     if (n.z < 0.0) {

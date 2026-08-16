@@ -433,8 +433,9 @@ impl VulkanContext {
     /// and integrate dispatches are live GPU work, not dead weight; do not
     /// "optimize" them away as unused work. See #928 / 977eb95a.
     ///
-    /// Gated on TLAS being available, mirroring caustic (caustic.rs:627 /
-    /// draw.rs:1648). When no TLAS exists (RT unsupported, scene not yet
+    /// Gated on TLAS being available, mirroring the same `tlas_handle`
+    /// check in `record_caustic_pass` / the caustic dispatch. When no
+    /// TLAS exists (RT unsupported, scene not yet
     /// built, accel_manager absent) we skip BOTH the descriptor write and
     /// the dispatch — composite reads the prior frame's integrated
     /// volume, which retains its last valid contents (or the
@@ -534,7 +535,7 @@ impl VulkanContext {
                                 * crate::shader_constants::TOTAL_CLUSTERS as vk::DeviceSize
                                 * crate::shader_constants::MAX_LIGHTS_PER_CLUSTER as vk::DeviceSize;
                             // Compute→compute visibility: cluster_cull's own
-                            // trailing barrier (draw_frame, ~line 2960) only
+                            // trailing barrier in `draw_frame` only
                             // targets FRAGMENT_SHADER (the rasterizer's read).
                             // This dispatch reads the same buffers from a LATER
                             // COMPUTE_SHADER stage, which that barrier does not
@@ -788,7 +789,8 @@ impl VulkanContext {
     ///
     /// Why pre-TAA: TAA's resolved output is consumed by composite
     /// separately (`composite.rebind_hdr_views` rewires the descriptor at
-    /// `context/mod.rs:1715-1717`, but the `hdr_image_views` field still
+    /// `VulkanContext::new`'s `rebind_hdr_views` call, but the
+    /// `hdr_image_views` field still
     /// references the raw attachment — only the descriptor was swapped).
     /// Bloom intentionally shares the raw view because the blur pyramid
     /// smears out sub-pixel jitter, making the bloom haloes spatially
@@ -798,7 +800,7 @@ impl VulkanContext {
     /// rewire-composite-to-TAA work this commit references.
     ///
     /// The `if let Some(...)` guard below is dead at runtime (#1276):
-    /// `VulkanContext::new` at `context/mod.rs:1958-1967` hard-fails with
+    /// `VulkanContext::new`'s bloom-init arm hard-fails with
     /// `anyhow::anyhow!(...)` if bloom init returns `None` (policy from
     /// #1081 — no fallback binding for bloomTex when bloom is absent), so
     /// the engine never reaches `draw_frame` with `self.bloom == None`.

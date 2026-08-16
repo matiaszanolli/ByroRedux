@@ -295,6 +295,7 @@ lighting-influence value for `MAT_FLAG_EFFECT_LIT` materials, read as
 | 100 | `MATERIAL_KIND_GLASS` | Alpha-blend + metalness < 0.3 → RT reflection/refraction path |
 | 101 | `MATERIAL_KIND_EFFECT_SHADER` | BSEffectShaderProperty — emissive additive, no scene lights |
 | 102 | `MATERIAL_KIND_NO_LIGHTING` | BSShaderNoLightingProperty — fullbright, no lights/GI |
+| 103 | `MATERIAL_KIND_FIRE_REFRACTION` | Fire-proxy heat haze. `shadow_transport.glsl` folds it into `effectCard` so fire proxies cast no shadow (#2224); `triangle.frag` reinterprets `mat.ior` as a 0–1 distortion scalar rather than a refractive index (#2232) |
 
 ### `GpuLight` — 64 bytes, SSBO (Set 1, Binding 0)
 
@@ -353,16 +354,17 @@ pipeline. Defined in
 | 1 | 5 | `STORAGE_BUFFER` | Cluster grid (`ClusterEntry[]`) | triangle |
 | 1 | 6 | `STORAGE_BUFFER` | Cluster light index list | triangle |
 | 1 | 7 | `COMBINED_IMAGE_SAMPLER` | SSAO texture | triangle |
-| 1 | 8 | `STORAGE_BUFFER` | Global vertex SSBO (RT UV fetch) | triangle |
-| 1 | 9 | `STORAGE_BUFFER` | Global index SSBO (RT UV fetch) | triangle |
+| 1 | 8 | `STORAGE_BUFFER` | Global vertex SSBO (RT UV fetch) | triangle, water (via `ray_hit.glsl::resolveRayHitUV`) |
+| 1 | 9 | `STORAGE_BUFFER` | Global index SSBO (RT UV fetch) | triangle, water (via `ray_hit.glsl::resolveRayHitUV`) |
 | 1 | 10 | `STORAGE_BUFFER` | Terrain tile buffer | triangle |
-| 1 | 11 | `STORAGE_BUFFER` | Ray budget counter (`u32`) | triangle |
+| 1 | 11 | `STORAGE_BUFFER` | `GpuRayBudget` — 8 × `u32` (32 B): `rayBudgetCount`, `glassRayLimit`, `directShadowSamples`, `maxPathSegments`, `maxShadedHits`, `volumetricLightCap`, `qualityTier`, reserved. Only word 0 is the CPU-zeroed atomic counter; sizing a range/flush/barrier from `u32` is 28 B short | triangle |
 | 1 | 12 | `STORAGE_BUFFER` | Bone palette (previous frame) | triangle |
-| 1 | 13 | `STORAGE_BUFFER` | Material table (`GpuMaterial[]`) | triangle |
+| 1 | 13 | `STORAGE_BUFFER` | Material table (`GpuMaterial[]`) | triangle, water (`materials[inst.materialId]` in the secondary-ray hit path) |
 | 1 | 14 | `UNIFORM_BUFFER` | DALC cube (6-axis ambient) | triangle |
 | 1 | 15 | `COMBINED_IMAGE_SAMPLER` | Depth history texture (previous frame, D32) | triangle (soft-particle feather) |
 | 1 | 16 | `STORAGE_BUFFER` | ReSTIR reservoir buffer (current frame) | triangle (Session-49 ReSTIR) |
 | 1 | 17 | `STORAGE_BUFFER` | ReSTIR reservoir buffer (previous frame) | triangle (Session-49 ReSTIR) |
+| 1 | 18 | `STORAGE_BUFFER` | Previous-frame rigid instance model matrices (rigid motion vectors). Entries align **index-for-index** with binding 4's current-frame `GpuInstance[]` after sorting/batching, so `gl_InstanceIndex` addresses both without depending on last frame's draw order | triangle (vertex stage) |
 | 2 | 0 | `STORAGE_IMAGE` (`R32_UINT`) | Water caustic accumulator | water.frag (atomic add) |
 
 Volumetrics uses its own private `set = 0` layout, split across two shaders

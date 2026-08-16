@@ -197,7 +197,8 @@ pub fn next_svgf_temporal_alpha(recovery_frames: u32) -> (f32, f32, u32) {
 /// `frames_since_creation` and the new G-buffer / history images
 /// haven't been written enough times to host a useful prior. The
 /// dispatch maps the result onto `SvgfTemporalParams.params.z`
-/// (`1.0 = reset history`, see `svgf_temporal.comp:81`); the shader
+/// (`1.0 = reset history`, read by `svgf_temporal.comp` as the
+/// `params.z < 0.5` test inside `reprojectOk`); the shader
 /// short-circuits the bilinear-tap reprojection and writes the
 /// current frame's indirect+moments without any history blend.
 ///
@@ -1243,7 +1244,7 @@ impl SvgfPipeline {
         // Barrier: the previous use of this frame's OUT slots (writes in
         // the previous use of this frame-in-flight index, at least two
         // frames ago) finished long before — the both-slots
-        // `wait_for_fences` at `draw.rs:170-181` (#282) guarantees the
+        // both-slots `wait_for_fences` in `draw_frame` (#282) guarantees the
         // prior-frame COMPUTE write AND the prior-frame composite
         // FRAGMENT read of `indirect_view(frame)` have retired. We
         // still emit an execution dependency on SHADER_WRITE so
@@ -1258,8 +1259,8 @@ impl SvgfPipeline {
         // narrowing is deferred to a RenderDoc-validated session per
         // the speculative-Vulkan-fix policy — cosmetic over-sync is
         // strictly safer than a missed access-mask dep that only some
-        // IHV drivers flag. Sibling barriers in `taa.rs:789`,
-        // `caustic.rs:816`, `volumetrics.rs:846` follow the same
+        // IHV drivers flag. The sibling compute passes (`taa.rs`,
+        // `caustic.rs`, `volumetrics.rs`) follow the same
         // defensive pattern and would warrant their own re-audits if
         // this site is ever narrowed.
         let out_ind_img = self.indirect_history[frame].image;
@@ -2057,6 +2058,128 @@ mod unsubmitted_dispatch_tests {
                 "{null_reset} must immediately follow {destroy_call} so a \
                  second destroy() call (double-free on failed resize, #2741) \
                  finds the guard already disarmed"
+            );
+        }
+    }
+}
+
+/// #2922 / REN-D8-03 — the denoiser/composite sources must navigate by
+/// symbol, not by bare `file:NN`.
+///
+/// Every anchor in this dimension had rotted, and several pointed at code
+/// of the *opposite* kind — the one in triangle.frag cited as the
+/// octahedral encode contract landed in the decal-index array, and the one
+/// in draw.rs cited as the both-slots fence wait that makes the shared
+/// depth view and prev-slot G-buffer reads legal landed in a
+/// `skinnedVertexAddress` doc block. A reader following either can
+/// reasonably conclude a real invariant is absent. The repo already ruled
+/// on this class in #1040 and the audit protocol mandates symbols over
+/// line numbers; the renderer shaders never got the sweep.
+///
+/// Scoped to the Dim-8 sources deliberately: #2773 / #2757 / #2510 /
+/// #2755 track the same rot in other subsystems and are still open, so a
+/// crate-wide assertion would fail on their sites rather than on a
+/// regression of this one. Widen the list as those close.
+#[cfg(test)]
+mod denoiser_anchor_rot_tests {
+    /// `(label, source)` for every file #2922 swept.
+    const DIM8_SOURCES: &[(&str, &str)] = &[
+        (
+            "shaders/svgf_temporal.comp",
+            include_str!("../../shaders/svgf_temporal.comp"),
+        ),
+        (
+            "shaders/svgf_atrous.comp",
+            include_str!("../../shaders/svgf_atrous.comp"),
+        ),
+        (
+            "shaders/composite.frag",
+            include_str!("../../shaders/composite.frag"),
+        ),
+        ("vulkan/svgf.rs", include_str!("svgf.rs")),
+        (
+            "vulkan/context/post_passes.rs",
+            include_str!("context/post_passes.rs"),
+        ),
+    ];
+
+    /// Matches a bare `name.ext:123` anchor without pulling in a regex
+    /// dependency: find each `.ext:` and check the next byte is a digit.
+    ///
+    /// Deliberately scans EVERY line, doc comments included — several of
+    /// the anchors #2922 removed lived in `///` blocks, so skipping those
+    /// would make this guard vacuous. This module's own prose therefore
+    /// names extensions and numbers separately ("triangle.frag line 267")
+    /// so it doesn't trip its own check.
+    fn find_line_anchor(src: &str) -> Option<String> {
+        const EXTS: &[&str] = &[".rs:", ".comp:", ".frag:", ".vert:", ".glsl:"];
+        for line in src.lines() {
+            for ext in EXTS {
+                let mut from = 0;
+                while let Some(rel) = line[from..].find(ext) {
+                    let after = from + rel + ext.len();
+                    if line[after..].starts_with(|c: char| c.is_ascii_digit()) {
+                        return Some(line.trim().to_string());
+                    }
+                    from = after;
+                }
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn dim8_sources_carry_no_bare_line_number_anchors() {
+        for (label, src) in DIM8_SOURCES {
+            assert!(
+                find_line_anchor(src).is_none(),
+                "{label} regained a bare `file:NN` anchor: {}\n\
+                 Line numbers rot silently — every one of these pointed at \
+                 unrelated code within weeks (#2922). Name the symbol \
+                 instead (`octEncode`, `wait_for_fences` in `draw_frame`, \
+                 `nearest_sampler`, `rebind_hdr_views`, the `tlas_handle` \
+                 gate); see #1040 and `_audit-common.md`'s Path-Reference \
+                 Convention.",
+                find_line_anchor(src).unwrap_or_default(),
+            );
+        }
+    }
+
+    /// The sweep is only worth pinning if the replacements actually name
+    /// the symbols — an anchor deleted without a referent is no better.
+    #[test]
+    fn the_replaced_anchors_name_their_symbols() {
+        for (label, needle, src) in [
+            (
+                "svgf_temporal octDecode",
+                "octEncode",
+                include_str!("../../shaders/svgf_temporal.comp"),
+            ),
+            (
+                "svgf_atrous octDecode",
+                "octEncode",
+                include_str!("../../shaders/svgf_atrous.comp"),
+            ),
+            (
+                "composite waterCausticTex sampler rule",
+                "nearest_sampler",
+                include_str!("../../shaders/composite.frag"),
+            ),
+            (
+                "svgf dispatch fence precondition",
+                "wait_for_fences",
+                include_str!("svgf.rs"),
+            ),
+            (
+                "post_passes bloom view rebind",
+                "rebind_hdr_views",
+                include_str!("context/post_passes.rs"),
+            ),
+        ] {
+            assert!(
+                src.contains(needle),
+                "{label}: the rotted anchor was removed without naming \
+                 `{needle}` in its place (#2922)"
             );
         }
     }

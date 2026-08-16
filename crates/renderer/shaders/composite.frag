@@ -83,7 +83,8 @@ layout(set = 0, binding = 6) uniform sampler3D volumetricFroxel;
 layout(set = 0, binding = 7) uniform sampler2D bloomTex;
 // #1257 / Phase E of #1210 — water-side caustic accumulator (R32_UINT,
 // NEAREST sampler per the existing integer-format-sampling rule
-// documented at composite.rs:360). Written by water.frag's
+// carried by `composite.rs`'s `nearest_sampler` field and its
+// `create_sampler` call). Written by water.frag's
 // `imageAtomicAdd` during the main render pass (#1256), read here
 // after the post-render-pass barrier (#1255). Summed alongside
 // `causticTex` so both writers (caustic_splat.comp for glass +
@@ -311,8 +312,9 @@ vec3 compute_sky(vec3 dir) {
     //
     // `elevation > 0.0` matches the cloud-layer gate convention above
     // and stops the disc painting over the below-horizon ground tint
-    // at sunset/sunrise (the sky-lower mix at L107 produces a "ground"
-    // colour that the disc would otherwise overwrite). #800.
+    // at sunset/sunrise (the `mix(horizon, params.sky_lower.xyz, below)`
+    // in `compute_sky` produces a "ground" colour that the disc would
+    // otherwise overwrite). #800.
     float cos_angle = dot(dir, sun_direction);
     float sun_edge_start = sun_size - 0.002; // soft outer fringe
     if (cos_angle > sun_edge_start && elevation > 0.0) {
@@ -370,7 +372,8 @@ vec3 compute_sky(vec3 dir) {
     //
     // #799 — multiply by `sun_intensity` so the halo fades with the
     // disc through the day/night ramp. Pre-fix the disc faded
-    // correctly (line 222) but the halo stayed at constant 0.15 *
+    // correctly (its `sky += disc_color * sun_intensity * disc`
+    // already carried the factor) but the halo stayed at constant 0.15 *
     // sun_col, so a WTHR with non-zero `SKY_SUN[NIGHT]` (e.g.
     // Skyrim's MoonShadow) painted a faint warm halo at midnight.
     //

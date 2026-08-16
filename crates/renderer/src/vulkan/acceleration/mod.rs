@@ -192,7 +192,10 @@ pub struct AccelerationManager {
     /// Derived at construction time from DEVICE_LOCAL heap size (VRAM / 3)
     /// with a 256 MB floor. On a 12 GB GPU this yields 4 GB (eviction
     /// virtually never fires); on a 6 GB GPU it yields 2 GB (eviction
-    /// fires before OOM).
+    /// fires before OOM). "Heap size" is the *smallest* DEVICE_LOCAL heap,
+    /// matching the allocator's pressure warning — see
+    /// [`compute_blas_budget`](super::predicates::compute_blas_budget) for
+    /// why summing heaps over-states VRAM on multi-heap parts (#2928).
     pub(super) blas_budget_bytes: vk::DeviceSize,
     /// Entries removed by [`blas_static::drop_blas`] still referenced by
     /// an in-flight TLAS build. Each entry carries a countdown measured

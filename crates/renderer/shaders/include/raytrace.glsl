@@ -56,7 +56,6 @@ vec4 traceReflection(vec3 origin, vec3 direction, float maxDist, float mipBias,
     int hitPrimitiveIdx = 0;
     vec2 hitBary = vec2(0.0);
     vec2 hitUV = vec2(0.0);
-    vec4 hitBase = vec4(0.0);
     vec3 hitPosition = vec3(0.0);
 
     for (int layer = 0; layer < MAX_TRANSPARENT_SKIPS; ++layer) {
@@ -91,7 +90,6 @@ vec4 traceReflection(vec3 origin, vec3 direction, float maxDist, float mipBias,
             hitPrimitiveIdx = candidatePrim;
             hitBary = candidateBary;
             hitUV = candidateUV;
-            hitBase = candidateBase;
             hitPosition = rayOrigin + direction * candidateT;
             travelled += candidateT;
             break;
@@ -148,6 +146,19 @@ vec4 traceReflection(vec3 origin, vec3 direction, float maxDist, float mipBias,
     // GGX-cone jitter, so rough-metal reflections carry no per-frame
     // sampling noise (the caller passes roughness-scaled mip and a sharp
     // reflection ray). Smooth surfaces pass mipBias 0 → razor-sharp.
+    //
+    // #2919 — this is a SECOND fetch, and deliberately so: the traversal
+    // loop's `rayHitHasCoverage` already sampled this surface, but at a
+    // hardcoded LOD 0 (`sampleRayHitBase(inst, mat, uv, 0.0)` in
+    // `ray_hit.glsl`) because coverage is an alpha test that must not be
+    // blurred across a mip. Reusing that sample to "optimise away" the
+    // fetch below silently drops the roughness-scaled blur and puts the
+    // per-frame sampling noise back into rough-metal reflections. The
+    // dead `hitBase` carry-out that used to sit alongside `hitUV` and
+    // invite exactly that mistake was removed; every other
+    // `rayHitHasCoverage` caller (shadow_transport, water.frag,
+    // triangle.frag's path loop) genuinely wants the LOD-0 sample and
+    // keeps its own.
     vec3 hitBaseRgb = sampleRayHitBase(hitInst, hitMat, hitUV, mipBias).rgb;
     vec3 hitColor = rayHitAlbedo(hitMat, hitBaseRgb);
 
