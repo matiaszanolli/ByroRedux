@@ -205,7 +205,7 @@ crates/renderer/src/vulkan/
     ├── mod.rs          VulkanContext struct definition + new() / Drop
     ├── draw.rs         draw_frame() — per-frame command recording + submission
     ├── resize.rs       recreate_swapchain() — atomic handoff on window resize
-    ├── resources.rs    build_blas_for_mesh, register_ui_quad, log_memory_usage,
+    ├── resources.rs    register_ui_quad, log_memory_usage,
     │                   swapchain_extent, rebind_hdr_views
     ├── helpers.rs      find_depth_format, create_render_pass, create_framebuffers
     └── screenshot.rs   ScreenshotBridge / readback copy for debug captures

@@ -264,12 +264,19 @@ impl AccelerationManager {
     ///    scratch via [`scratch_needs_growth`]'s `None` arm.
     /// 2. `tlas[slot_index]` is live — compare the scratch capacity
     ///    against `tlas_scratch_peak_bytes[slot_index]` (recorded at
-    ///    last fresh build). If hysteresis fires, reallocate at
-    ///    peak. The peak is a static property of the live slot's
-    ///    geometry between fresh builds, so this is a reliable
-    ///    target.
+    ///    last fresh build). If hysteresis fires, reallocate at peak
+    ///    **plus [`scratch_alignment_padding`]** (#2915 — the recorded
+    ///    peak is the unpadded `build_scratch_size`, and `build_tlas`
+    ///    rounds the device address up before submitting). The peak is a
+    ///    static property of the live slot's geometry between fresh
+    ///    builds, so this is a reliable target. The replacement is
+    ///    allocated before the old buffer is retired, so a failed
+    ///    allocation leaves the slot exactly as it was rather than
+    ///    stranding a live TLAS with no scratch (#2915 / #2673).
     ///
-    /// Returns `true` when the scratch was destroyed or reallocated.
+    /// Returns `true` when the scratch was destroyed or reallocated —
+    /// `false` when nothing changed, including when the case-2 realloc
+    /// failed and the existing buffer was kept.
     ///
     /// # Safety
     ///
@@ -317,36 +324,72 @@ impl AccelerationManager {
             return false;
         }
 
+        // #2915 / REN-D1-03 (defect 1) — carry the same
+        // `scratch_alignment_padding` headroom `ensure_tlas_state` and
+        // `shrink_blas_scratch_to_fit` allocate (#1386). `build_tlas`
+        // rounds the buffer's device address up via
+        // `align_scratch_address` before submitting, so a buffer sized to
+        // the bare `peak` lets the build's scratch range run past the
+        // allocation by up to `align - 1` bytes on a driver whose
+        // `GpuOnly` addresses aren't already
+        // `minAccelerationStructureScratchOffsetAlignment`-aligned.
+        //
+        // Unlike the BLAS path this is NOT self-correcting: the TLAS
+        // growth check (`scratch_needs_growth`) lives inside
+        // `ensure_tlas_state`'s `need_new_tlas` block, which may not run
+        // for many frames after a shrink. Immaterial to the shrink
+        // decision above — `align` is 128–256 B against a 256 KB slack.
+        let target = peak.saturating_add(scratch_alignment_padding(self.scratch_align));
+
+        // #2915 / REN-D1-03 (defect 2) — allocate the replacement BEFORE
+        // retiring the old buffer, the same allocate-then-swap discipline
+        // #2673 applied to `ensure_tlas_state` (whose own comment names
+        // this exact failure mode) and which the BLAS sibling gets for
+        // free by deferring the old buffer instead of destroying it.
+        //
+        // Destroy-first left `scratch_buffers[slot] == None` on the error
+        // path **with `tlas[slot]` still `Some`**. The next `build_tlas`
+        // for that slot then finds `max_instances >= instance_count`, so
+        // `ensure_tlas_state` returns early without allocating scratch,
+        // and `build_tlas` reaches its scratch lookup with nothing there —
+        // a hard abort mid-`draw_frame`, under exactly the VRAM pressure
+        // this shrink exists to relieve. Case 1 above may still leave
+        // `None`, but only because it also leaves `tlas[slot] == None`,
+        // which routes the next build through the fresh-allocate arm.
+        let new_buf = match GpuBuffer::create_device_local_uninit(
+            device,
+            allocator,
+            target,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+        ) {
+            Ok(b) => b,
+            Err(e) => {
+                // Keep the oversized-but-live buffer. Nothing was
+                // retired, so the slot stays fully buildable and the
+                // shrink simply doesn't happen this tick — `false`
+                // because no scratch was destroyed or reallocated.
+                log::warn!(
+                    "TLAS[{}] scratch shrink realloc failed: {e}; keeping the existing \
+                     {:.1} MB scratch",
+                    slot_index,
+                    current as f64 / (1024.0 * 1024.0),
+                );
+                return false;
+            }
+        };
+
+        // Past the last fallible step — retire the old buffer and commit.
         if let Some(mut old) = self.scratch_buffers[slot_index].take() {
             old.destroy(device, allocator);
         }
-        match GpuBuffer::create_device_local_uninit(
-            device,
-            allocator,
-            peak,
-            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-        ) {
-            Ok(new_buf) => {
-                log::debug!(
-                    "TLAS[{}] scratch shrunk: {:.1} MB → {:.1} MB (slot peak)",
-                    slot_index,
-                    current as f64 / (1024.0 * 1024.0),
-                    peak as f64 / (1024.0 * 1024.0),
-                );
-                self.scratch_buffers[slot_index] = Some(new_buf);
-                true
-            }
-            Err(e) => {
-                // Allocation failed — leave the slot's scratch as
-                // `None`. The next build's `scratch_needs_growth(None,
-                // ...)` arm will re-allocate. Degraded but correct.
-                log::warn!(
-                    "TLAS[{}] scratch shrink realloc failed: {e}; next build will re-allocate",
-                    slot_index,
-                );
-                true
-            }
-        }
+        log::debug!(
+            "TLAS[{}] scratch shrunk: {:.1} MB → {:.1} MB (slot peak)",
+            slot_index,
+            current as f64 / (1024.0 * 1024.0),
+            target as f64 / (1024.0 * 1024.0),
+        );
+        self.scratch_buffers[slot_index] = Some(new_buf);
+        true
     }
 
     /// Current total BLAS memory in bytes (static + skinned). Use for

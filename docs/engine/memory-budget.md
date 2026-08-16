@@ -297,14 +297,20 @@ overhead that exceeds the traversal saving). Switching back recovered
 `BATCH_EVICTION_CHECK_INTERVAL` = 64 BLAS builds. LRU victim = the BLAS
 with the smallest last-used frame tick.
 
-Two more call sites (#1911 / REN-D1-01), both `pending_bytes = 0` (#1792 —
-neither has an in-flight batch context to report on top of): a per-frame
-call at the end of `draw_frame`'s TLAS-build block
-([`draw.rs`](../../crates/renderer/src/vulkan/context/draw.rs)), and a
-single-shot guard inside `build_blas` itself
-([`blas_static.rs`](../../crates/renderer/src/vulkan/acceleration/blas_static.rs))
-for the ad-hoc / UI-quad / lazy-upload path that sits outside the M40
-cell-loader batched hot path (#915).
+One more call site (#1911 / REN-D1-01), with `pending_bytes = 0` (#1792 —
+it has no in-flight batch context to report on top of): a per-frame call at
+the end of `draw_frame`'s TLAS-build block
+([`draw.rs`](../../crates/renderer/src/vulkan/context/draw.rs)).
+
+#2914 — this paragraph used to name a third site, "a single-shot guard
+inside `build_blas` itself … for the ad-hoc / UI-quad / lazy-upload path".
+That was wrong twice over: the single-shot `build_blas` /
+`build_blas_for_mesh` pair had **no caller anywhere in the workspace**, and
+the UI quad is uploaded with `for_rt = false`, so it never had a BLAS to
+guard. Both functions were deleted under #2914, following the #1141
+precedent that removed the skinned sibling `build_skinned_blas`. Every
+static BLAS is now built through `build_blas_batched` (the M40 cell-loader
+path), which carries its own pre-batch and mid-batch eviction guards.
 
 BLAS refit count before a forced rebuild: `SKINNED_BLAS_REFIT_THRESHOLD`
 = 600 frames (~10 seconds at 60 FPS). After 600 refits the BLAS is

@@ -193,37 +193,16 @@ impl VulkanContext {
     ) -> bool {
         fill_terrain_tiles(&self.terrain_tiles, &mut self.terrain_tiles_dirty, dest)
     }
-    /// Build a BLAS for a mesh (RT only). Call after uploading a mesh.
-    pub fn build_blas_for_mesh(&mut self, mesh_handle: u32, vertex_count: u32, index_count: u32) {
-        let Some(ref mut accel) = self.accel_manager else {
-            return;
-        };
-        let Some(mesh) = self.mesh_registry.get(mesh_handle) else {
-            return;
-        };
-        let allocator = self.allocator.as_ref().expect("allocator missing");
-        if let Err(e) = accel.build_blas(
-            crate::vulkan::GpuUploadCtx {
-                device: &self.device,
-                allocator,
-                queue: &self.graphics_queue,
-                command_pool: self.transfer_pool,
-            },
-            Some(&self.transfer_fence),
-            mesh_handle,
-            mesh,
-            vertex_count,
-            index_count,
-        ) {
-            log::warn!("BLAS build failed for mesh {}: {e}", mesh_handle);
-        }
-    }
-
     /// Build BLAS for multiple meshes in a single GPU submission.
     ///
-    /// Call this after uploading all meshes during scene/cell load to
-    /// avoid the per-mesh fence stall of `build_blas_for_mesh`. Returns
-    /// the number of BLAS successfully built.
+    /// Call this after uploading all meshes during scene/cell load.
+    /// Returns the number of BLAS successfully built.
+    ///
+    /// The only static-BLAS entry point since #2914 removed the
+    /// never-called single-shot `build_blas_for_mesh`, whose per-mesh
+    /// fence stall this batched form existed to avoid. It filters on
+    /// `mesh.rt_capable`, so global-only meshes are skipped rather than
+    /// reaching a per-mesh vertex-buffer `expect`.
     pub fn build_blas_batched(&mut self, mesh_specs: &[(u32, u32, u32)]) -> usize {
         let Some(ref mut accel) = self.accel_manager else {
             return 0;

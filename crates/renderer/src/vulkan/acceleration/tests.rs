@@ -1718,48 +1718,47 @@ fn shadow_mask_bucket_selection_is_pinned() {
 // `rigid_history_hasher_tests`, `context/skinned_blas_refit.rs`'s
 // `skin_built_this_frame_skip_tests`) — this pins the fix at the source
 // level: the release call must appear, and must appear strictly before
-// the registration it guards, at all three sites.
+// the registration it guards, at both surviving sites.
+//
+// #2914 deleted the third — the never-called single-shot
+// `blas_static::build_blas` — so `build_blas_releases_before_overwriting`
+// went with it. `blas_static.rs` now holds exactly ONE static
+// registration site (`build_blas_batched`'s Phase 7); the test below
+// asserts that count directly, so reviving a second static build path
+// without its `drop_blas` guard fails here rather than silently leaking a
+// `vk::AccelerationStructureKHR`.
 #[cfg(test)]
 mod blas_registration_releases_occupied_slot_tests {
     const BLAS_STATIC_RS: &str = include_str!("blas_static.rs");
     const BLAS_SKINNED_RS: &str = include_str!("blas_skinned.rs");
 
     #[test]
-    fn build_blas_releases_before_overwriting() {
-        let guard_pos = BLAS_STATIC_RS
-            .find("self.drop_blas(mesh_handle);")
-            .expect("build_blas must release any occupied handle before overwriting it (#2481)");
+    fn build_blas_batched_releases_before_overwriting() {
+        // #2914 — `build_blas_batched`'s Phase 7 is now the ONLY static
+        // registration site. Pinning the count is what keeps this test
+        // honest: a revived second static build path that forgot its
+        // guard would otherwise sail past a bare "find the first one".
+        assert_eq!(
+            BLAS_STATIC_RS
+                .matches("self.blas_entries[handle] = Some(BlasEntry {")
+                .count(),
+            1,
+            "blas_static.rs gained a second static registration site — give it \
+             a `drop_blas` guard and extend this test, or the entry it \
+             overwrites leaks its vk::AccelerationStructureKHR (#2481/#2914)"
+        );
+        let guard_pos = BLAS_STATIC_RS.find("self.drop_blas(mesh_handle);").expect(
+            "build_blas_batched's Phase 7 registration must release any \
+             occupied handle before overwriting it (#2481)",
+        );
         let assign_pos = BLAS_STATIC_RS
-            .find("self.blas_entries[handle] = Some(BlasEntry {\n                accel,")
-            .expect("build_blas's registration assignment must still exist");
+            .find("self.blas_entries[handle] = Some(BlasEntry {")
+            .expect("build_blas_batched's registration assignment must still exist");
         assert!(
             guard_pos < assign_pos,
             "the release must run BEFORE the overwrite, or the entry being \
              replaced is still live when it's dropped as plain memory"
         );
-    }
-
-    #[test]
-    fn build_blas_batched_releases_before_overwriting() {
-        let guard_pos = BLAS_STATIC_RS
-            .find("self.drop_blas(mesh_handle);")
-            .expect("a drop_blas guard must exist");
-        // Two call sites share the same needle text (`build_blas` and
-        // `build_blas_batched`'s Phase 7); confirm a SECOND occurrence
-        // exists for the batched path specifically.
-        let second_guard_pos = BLAS_STATIC_RS[guard_pos + 1..]
-            .find("self.drop_blas(mesh_handle);")
-            .map(|p| p + guard_pos + 1)
-            .expect(
-                "build_blas_batched's Phase 7 registration must ALSO release \
-                 any occupied handle before overwriting it (#2481) — the two \
-                 static registration sites must both carry the guard",
-            );
-        let assign_pos = BLAS_STATIC_RS[second_guard_pos..]
-            .find("self.blas_entries[handle] = Some(BlasEntry {")
-            .map(|p| p + second_guard_pos)
-            .expect("build_blas_batched's registration assignment must still exist");
-        assert!(second_guard_pos < assign_pos);
     }
 
     #[test]
@@ -2242,4 +2241,87 @@ fn blas_budget_derives_from_the_smallest_heap_not_the_sum() {
         !body.contains("total_device_local_bytes"),
         "the summing query must not come back (#2928)"
     );
+}
+
+/// #2915 / REN-D1-03 — two latent defects in `shrink_tlas_scratch_to_fit`'s
+/// live-slot arm. Both need a live device plus a failing allocation under
+/// an arm that is currently unreachable (#2774), so — matching this file's
+/// convention for rollback/ordering invariants — they are pinned at the
+/// source level.
+#[cfg(test)]
+mod tlas_scratch_shrink_tests {
+    const MEMORY_RS: &str = include_str!("memory.rs");
+    const TLAS_RS: &str = include_str!("tlas.rs");
+
+    /// The live-slot arm's body, so the assertions can't match the
+    /// `shrink_blas_scratch_to_fit` sibling above it.
+    fn live_slot_arm() -> &'static str {
+        let body = MEMORY_RS
+            .split("pub unsafe fn shrink_tlas_scratch_to_fit")
+            .nth(1)
+            .expect("shrink_tlas_scratch_to_fit must still exist");
+        body.split("\n    /// Current total BLAS memory")
+            .next()
+            .expect("the fn must still be followed by total_blas_bytes' doc")
+    }
+
+    /// Defect 1 — the realloc target must carry the alignment headroom
+    /// `build_tlas`'s `align_scratch_address` round-up consumes. The
+    /// recorded peak is the *unpadded* `build_scratch_size`, and unlike
+    /// the BLAS path there is no per-build growth check to correct it.
+    #[test]
+    fn live_slot_realloc_target_carries_alignment_padding() {
+        let arm = live_slot_arm();
+        assert!(
+            arm.contains("peak.saturating_add(scratch_alignment_padding(self.scratch_align))"),
+            "the TLAS scratch shrink must reallocate at peak + \
+             scratch_alignment_padding, as `shrink_blas_scratch_to_fit` and \
+             `ensure_tlas_state` both do — sizing to the bare peak lets the \
+             build's scratch range overrun the allocation by up to `align - 1` \
+             bytes on a misaligning driver (#2915 / #1386)"
+        );
+    }
+
+    /// Defect 2 — allocate-then-swap. Destroy-first left the slot's
+    /// scratch `None` with `tlas[slot]` still `Some` on the error path,
+    /// which the next `build_tlas` turns into an abort mid-recording.
+    #[test]
+    fn live_slot_allocates_replacement_before_retiring_the_old_buffer() {
+        let arm = live_slot_arm();
+        let alloc = arm
+            .find("let new_buf = match GpuBuffer::create_device_local_uninit(")
+            .expect("the live-slot arm must allocate its replacement into a local (#2915)");
+        let destroy = arm
+            .find("if let Some(mut old) = self.scratch_buffers[slot_index].take() {\n            old.destroy(device, allocator);\n        }\n        log::debug!(")
+            .expect("the live-slot arm must still retire the old buffer");
+        assert!(
+            alloc < destroy,
+            "the replacement must be allocated BEFORE the old buffer is \
+             retired — destroy-first strands a live TLAS slot with no scratch \
+             when the allocation fails, under exactly the VRAM pressure the \
+             shrink exists to relieve (#2915, mirroring #2673)"
+        );
+        assert!(
+            arm.contains("return false;"),
+            "the failure path must keep the existing buffer and report that \
+             nothing changed, not claim a reallocation happened (#2915)"
+        );
+    }
+
+    /// `build_tlas` must not abort the process inside an open command
+    /// buffer recording if a slot's scratch is ever missing.
+    #[test]
+    fn build_tlas_does_not_unwrap_the_slot_scratch() {
+        assert!(
+            !TLAS_RS.contains("self.scratch_buffers[frame_index].as_ref().unwrap()"),
+            "build_tlas must not `unwrap` the slot scratch — the panic lands \
+             inside an open command-buffer recording, so the frame is never \
+             ended or submitted. Return Err instead and let draw_frame's \
+             `tlas_build_failed` arm degrade to no-RT for the frame (#2915)"
+        );
+        assert!(
+            TLAS_RS.contains("the slot is live but its \\\n                     scratch was retired without a replacement"),
+            "the replacement must explain the invariant it guards (#2915)"
+        );
+    }
 }

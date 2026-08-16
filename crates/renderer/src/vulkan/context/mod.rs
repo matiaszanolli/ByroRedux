@@ -3508,7 +3508,7 @@ impl VulkanContext {
     }
 
     // draw_frame is in draw.rs
-    // build_blas_for_mesh, register_ui_quad, swapchain_extent, log_memory_usage are in resources.rs
+    // register_ui_quad, swapchain_extent, log_memory_usage are in resources.rs
     // recreate_swapchain is in resize.rs
 
     /// Initialise the debug-UI overlay pass (Phase 4 of the

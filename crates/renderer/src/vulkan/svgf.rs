@@ -189,26 +189,6 @@ pub fn next_svgf_temporal_alpha(recovery_frames: u32) -> (f32, f32, u32) {
     }
 }
 
-/// Should the temporal pass force a full history reset on this frame?
-///
-/// `true` when the SVGF state has fewer than `MAX_FRAMES_IN_FLIGHT`
-/// successful dispatches under its belt — either because the slot
-/// pair was just created, or because `recreate_on_resize` zeroed
-/// `frames_since_creation` and the new G-buffer / history images
-/// haven't been written enough times to host a useful prior. The
-/// dispatch maps the result onto `SvgfTemporalParams.params.z`
-/// (`1.0 = reset history`, read by `svgf_temporal.comp` as the
-/// `params.z < 0.5` test inside `reprojectOk`); the shader
-/// short-circuits the bilinear-tap reprojection and writes the
-/// current frame's indirect+moments without any history blend.
-///
-/// Pinned as a pure helper (#648 / RP-2) so a future change to the
-/// MAX_FRAMES_IN_FLIGHT boundary or to the resize-zero policy
-/// surfaces as a unit-test failure. Pre-#648 the audit flagged
-/// "G-buffer images sampled by SVGF temporal before any color write
-/// on first 2-3 frames after resize" — the existing
-/// `frames_since_creation` reset path already addresses it; this
-/// extraction is the regression guard the audit asked for.
 /// Advance the per-FIF history age for whichever slots were dispatched, and
 /// clear their latches.
 ///
@@ -234,6 +214,26 @@ pub(super) fn advance_completed_frames(
     }
 }
 
+/// Should the temporal pass force a full history reset on this frame?
+///
+/// `true` when the SVGF state has fewer than `MAX_FRAMES_IN_FLIGHT`
+/// successful dispatches under its belt — either because the slot
+/// pair was just created, or because `recreate_on_resize` zeroed
+/// `frames_since_creation` and the new G-buffer / history images
+/// haven't been written enough times to host a useful prior. The
+/// dispatch maps the result onto `SvgfTemporalParams.params.z`
+/// (`1.0 = reset history`, read by `svgf_temporal.comp` as the
+/// `params.z < 0.5` test inside `reprojectOk`); the shader
+/// short-circuits the bilinear-tap reprojection and writes the
+/// current frame's indirect+moments without any history blend.
+///
+/// Pinned as a pure helper (#648 / RP-2) so a future change to the
+/// MAX_FRAMES_IN_FLIGHT boundary or to the resize-zero policy
+/// surfaces as a unit-test failure. Pre-#648 the audit flagged
+/// "G-buffer images sampled by SVGF temporal before any color write
+/// on first 2-3 frames after resize" — the existing
+/// `frames_since_creation` reset path already addresses it; this
+/// extraction is the regression guard the audit asked for.
 pub(super) fn should_force_history_reset(frames_since_creation: u32) -> bool {
     frames_since_creation < MAX_FRAMES_IN_FLIGHT as u32
 }
@@ -2182,5 +2182,57 @@ mod denoiser_anchor_rot_tests {
                  `{needle}` in its place (#2922)"
             );
         }
+    }
+}
+
+/// #2921 / REN-D8-02 — `should_force_history_reset`'s doc block must be
+/// attached to `should_force_history_reset`.
+///
+/// A lost blank line concatenated it onto `advance_completed_frames`, so
+/// `advance_completed_frames`' rustdoc *opened* by describing a different
+/// function's contract and the #648 helper — extracted specifically so the
+/// reset policy would be discoverable — carried no doc at all. That is
+/// load-bearing rather than cosmetic: `upload_params` says "See
+/// `should_force_history_reset`'s doc for the cross-link", and a reader
+/// following that pointer landed on a bare `fn`.
+#[cfg(test)]
+mod doc_attachment_tests {
+    const SVGF_RS: &str = include_str!("svgf.rs");
+
+    /// Text immediately preceding `needle`'s definition, back to the
+    /// nearest non-doc line.
+    fn doc_block_above(src: &str, needle: &str) -> String {
+        let at = src
+            .find(needle)
+            .unwrap_or_else(|| panic!("{needle} must still exist"));
+        src[..at]
+            .lines()
+            .rev()
+            .take_while(|l| l.trim_start().starts_with("///"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn each_helper_owns_its_own_doc_summary() {
+        let reset = doc_block_above(SVGF_RS, "pub(super) fn should_force_history_reset");
+        assert!(
+            reset.contains("Should the temporal pass force a full history reset"),
+            "should_force_history_reset must carry its own summary — it was \
+             extracted under #648 precisely so the reset policy is \
+             discoverable, and `upload_params` cross-links to this doc (#2921)"
+        );
+
+        let advance = doc_block_above(SVGF_RS, "pub(super) fn advance_completed_frames");
+        assert!(
+            advance.contains("Advance the per-FIF history age"),
+            "advance_completed_frames must still carry its own summary (#2921)"
+        );
+        assert!(
+            !advance.contains("Should the temporal pass force a full history reset"),
+            "advance_completed_frames' doc has re-absorbed \
+             should_force_history_reset's paragraph — the blank line between \
+             the two `///` runs was lost again (#2921)"
+        );
     }
 }

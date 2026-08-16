@@ -272,9 +272,26 @@ impl AccelerationManager {
                     }),
             });
 
+        // #2915 / REN-D1-03 — was `.unwrap()`. Every path that can leave
+        // this slot's scratch `None` while `tlas[frame_index]` is `Some`
+        // has been closed (`ensure_tlas_state` under #2673,
+        // `shrink_tlas_scratch_to_fit`'s live-slot arm under #2915), so
+        // this is defence-in-depth rather than a live case. It matters
+        // because the failure it guards is a panic inside an OPEN command
+        // buffer recording — the process aborts mid-`draw_frame` with the
+        // frame's command buffer never ended or submitted. Returning `Err`
+        // instead routes through `draw_frame`'s existing
+        // `tlas_build_failed` arm, which clears `rt_flag` and still
+        // publishes the AS barrier (#2931), degrading to no-RT for the
+        // frame instead of killing the process.
+        let scratch_buffer = self.scratch_buffers[frame_index].as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "TLAS[{frame_index}] build has no scratch buffer — the slot is live but its \
+                     scratch was retired without a replacement (see #2915 / #2673)"
+            )
+        })?;
         let raw_scratch = device.get_buffer_device_address(
-            &vk::BufferDeviceAddressInfo::default()
-                .buffer(self.scratch_buffers[frame_index].as_ref().unwrap().buffer),
+            &vk::BufferDeviceAddressInfo::default().buffer(scratch_buffer.buffer),
         );
         // Round up to `scratch_align` (no-op on aligned drivers); the
         // padding reserved at allocation absorbs the shift, enforcing

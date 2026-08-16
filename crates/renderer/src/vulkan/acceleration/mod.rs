@@ -205,10 +205,10 @@ pub struct AccelerationManager {
     /// Retired `blas_scratch_buffer` allocations awaiting a
     /// `MAX_FRAMES_IN_FLIGHT` countdown before destruction. The shared
     /// scratch buffer is grow-only-replaced (a new, larger allocation
-    /// swaps in) from three sites — [`blas_static::build_blas`],
-    /// [`blas_static::build_blas_batched`], and
-    /// [`memory::shrink_blas_scratch_to_fit`] — the last two of which
-    /// run from `step_streaming` (`about_to_wait`), a window where the
+    /// swaps in) from two sites — [`blas_static::build_blas_batched`]
+    /// and [`memory::shrink_blas_scratch_to_fit`] (#2914 removed a third,
+    /// the never-called single-shot `blas_static::build_blas`) — both of
+    /// which run from `step_streaming` (`about_to_wait`), a window where the
     /// previously-submitted frame may still be executing on the GPU
     /// and recording a skinned-BLAS refit/first-sight build whose
     /// scratch device address was captured from the *old* buffer at

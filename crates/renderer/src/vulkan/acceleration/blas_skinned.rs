@@ -214,7 +214,7 @@ impl AccelerationManager {
         );
         if need_new_scratch {
             // SAFETY / not a #1782 sibling: unlike the immediate-destroy
-            // bug fixed in `blas_static::build_blas`/`build_blas_batched`
+            // bug fixed in `blas_static::build_blas_batched`
             // and `memory::shrink_blas_scratch_to_fit` (which run from
             // `step_streaming` in `about_to_wait`, while a just-
             // submitted frame may still be executing), this call site
