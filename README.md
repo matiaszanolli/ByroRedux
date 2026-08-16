@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.jpg" alt="ByroRedux — game engine" width="180">
+</p>
+
 # ByroRedux
 
 A clean Rust + Vulkan rebuild of the Gamebryo / Creation engine lineage
