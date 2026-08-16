@@ -41,8 +41,10 @@ those here.
 **Engine-side wiring** (Dimension 7 — outside the crate):
 `byroredux/src/ui_input.rs` (winit → `UiInputEvent` translation,
 `dispatch_window_event`, `release_world_input`, `is_debug_overlay_key`),
-`byroredux/src/main.rs` (the per-frame tick → `drain_host_calls` → `render` →
-`update_rgba` chain and `ui_texture_handle`), `byroredux/src/scene.rs`
+`byroredux/src/app_frame.rs` (the per-frame tick → `drain_host_calls` → `render` →
+`update_rgba` chain and `ui_texture_handle` — moved out of *main.rs* by the
+#2731 split; window/input event routing is its sibling `byroredux/src/app_events.rs`),
+`byroredux/src/scene.rs`
 (`UiManager` construction), and the renderer side
 `crates/renderer/src/vulkan/context/resources.rs` (`register_ui_quad`) with
 `crates/renderer/shaders/ui.vert` / `crates/renderer/shaders/ui.frag`.
@@ -190,7 +192,8 @@ fail a test — it produces a movie that loads and misbehaves.
 - `find` case-normalization: the catalog is documented as case-preserving with
   case-insensitive lookup. Verify exactly one normalization point.
 - Methods observed at runtime but absent from the catalog surface through
-  `unknown_methods()`. Verify that path is live (not test-only) — `main.rs` logs
+  `unknown_methods()`. Verify that path is live (not test-only) — the frame
+  driver (`byroredux/src/app_frame.rs`, post-#2731) logs
   a one-shot warn per unknown method; confirm the de-dup set actually suppresses
   repeats and is not cleared per frame.
 **Output**: `/tmp/audit/ui/dim_4.md`
@@ -223,7 +226,7 @@ fail a test — it produces a movie that loads and misbehaves.
 ### Dimension 6: Render Path & Device Lifecycle
 **Entry points**: `crates/ui/src/player.rs` — `SwfPlayer::new` (wgpu instance /
 adapter / device creation, `Descriptors`, `TextureTarget`, `WgpuRenderBackend`),
-`tick`, `render`, `dimensions`; `byroredux/src/main.rs` (the
+`tick`, `render`, `dimensions`; `byroredux/src/app_frame.rs` (the
 `update_rgba` upload); `crates/renderer/src/vulkan/context/resources.rs`
 (`register_ui_quad`)
 **Checklist**:
@@ -252,9 +255,18 @@ adapter / device creation, `Descriptors`, `TextureTarget`, `WgpuRenderBackend`),
 
 ### Dimension 7: Engine Wiring & Input Routing
 **Entry points**: `byroredux/src/ui_input.rs` — `dispatch_window_event`,
-`release_world_input`, `is_debug_overlay_key`; `byroredux/src/main.rs` — the UI
-block in the frame loop (tick → `drain_host_calls` → `render` → upload), the
-`has_input_focus` gates; `crates/ui/src/lib.rs` — `UiManager::handle_input`,
+`release_world_input`, `is_debug_overlay_key` (still called from
+`byroredux/src/main.rs`'s `route_scaleform_window_event`);
+`byroredux/src/app_frame.rs` — the UI block in the frame loop (tick →
+`drain_host_calls` → `render` → upload); `byroredux/src/app_events.rs` — the
+winit event arm and `release_world_input_for_ui`, the
+`has_input_focus` gates. **Note (2026-08-15/16)**: this dimension now shares the
+input surface with the un-owned gameplay slice — `byroredux/src/interaction.rs`
+became the canonical player-action producer (`ActionState`/`InputAction`, the
+hold/look edges) and its `interaction_system` is the first `Stage::Update`
+exclusive. UI focus must still win over world controls; a menu-open frame that
+leaks an `InputAction` edge into `combat_input_system` is a Dim 7 finding.
+`crates/ui/src/lib.rs` — `UiManager::handle_input`,
 `set_mouse_in_stage`, `has_input_focus`, `visible`, `menu_name`
 **Checklist**:
 - **Focus is a two-state contract**: when the menu has focus the world must stop

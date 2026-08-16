@@ -67,7 +67,9 @@ Plugin/ESM:      crates/plugin/src/                   (esm/{mod, reader, sub_rea
 Platform:        crates/platform/src/
 UI (Ruffle/M48): crates/ui/src/                       (lib.rs UiManager + player.rs SwfPlayer (Ruffle wrapper, offscreen wgpu + pixel readback); R4/M48 host layer added Session 61: profile.rs ScaleformProfile::{SkyrimAvm1, Fallout4Avm2}, host.rs + host/ ScaleformHostBridge (bidirectional ExternalInterface: AS→engine queue, engine→AS via call_internal_interface, records unknown methods + callback registrations), avm2_host.rs (FO4 BGSCodeObj lifecycle + generated AVM2 forwarding adapter), navigator.rs (archive-backed BSA/BA2 resource resolution + local-executor pump), input.rs, catalog.rs (menu catalog). Engine side: byroredux/src/ui_input.rs (winit→UiInputEvent translation + focus release) and the per-frame tick/drain/render/upload block in main.rs. Doc: docs/engine/ui.md. Owner audit: /audit-ui.)
 CXX Bridge:      crates/cxx-bridge/
-Binary:          byroredux/src/main.rs (App struct + construction + the winit ApplicationHandler + the per-frame render driver; still >2k LOC — a split along those seams is tracked debt, so route findings against the live file, not against a remembered split)
+Binary:          byroredux/src/main.rs (App struct + construction + the debug-UI snapshot bridge; 834 LOC. The >2k-LOC monolith WAS split under #2731 — the winit ApplicationHandler moved to app_events.rs and the per-frame render driver to app_frame.rs. Skill text telling you to "route findings against the live main.rs, not a remembered split" is stale: the split is real, so route render-loop findings to app_frame.rs and window/device/input-event findings to app_events.rs.)
+                 · app_events.rs — the winit ApplicationHandler (resumed / window_event / device_event / about_to_wait). Owns input dispatch into interaction.rs + the game-menu/pause routing.
+                 · app_frame.rs — App::render_one_frame, the per-frame render driver. Owns the draw_frame call, the skin_dispatch_ran rollback gate (#1791/#1796, moved here from main.rs) and its skin_dispatch_ran_rollback_scope_tests guard.
 Binary modules:  byroredux/src/ — the top-level files no other row below covers.
                  · boot.rs — scheduler construction: every add_system / add_exclusive registration and its declared resource access. The authority for "which stage does X run in".
                  · app_step.rs — per-tick streaming / debug-load / save / cell-transition steppers.
@@ -75,8 +77,13 @@ Binary modules:  byroredux/src/ — the top-level files no other row below cover
                  · save_io.rs + save_io/ (*_tests.rs only) — the ENGINE side of M45: command queue, live reload, registry completeness, round-trip, serde-default guard, validation gate. crates/save is the crate half; both are owned by /audit-save.
                  · streaming.rs + streaming_helpers.rs + streaming_tests.rs — M40 cell lifecycle.
                  · fog.rs — fog-volume assembly (EXAL consumer, feeds render/fog_volumes.rs).
-                 · interaction.rs + ui_input.rs — activation/pick interaction + winit→UI input routing (/audit-ui Dim 7).
-                 · debug_load.rs, list_cells.rs, name_lookup.rs, parsed_nif_cache.rs, scene_import_cache.rs, ownership_sample.rs, groundcover_translate.rs, anim_convert.rs, helpers.rs, bench.rs, bench_camera.rs, scheduler_access_tests.rs.
+                 · interaction.rs (1356 LOC) + ui_input.rs — winit→UI input routing (/audit-ui Dim 7) AND, since 2026-08-15, the canonical player-interaction producer: InputAction/ActionState, camera_ray, activation/pick, and the hold/look action edges every OnActivate consumer reads. Its interaction_system is the first exclusive in Stage::Update (boot.rs). It has outgrown the "/audit-ui Dim 7" framing — the UI-routing half is /audit-ui's, the action/ray/activation half belongs to the gameplay slice below.
+                 · debug_load.rs, list_cells.rs, name_lookup.rs, parsed_nif_cache.rs, scene_import_cache.rs, ownership_sample.rs, groundcover_translate.rs, anim_convert.rs, helpers.rs, bench.rs, bench_camera.rs, scheduler_access_tests.rs, groundcover_translate_tests.rs, ownership_sample_tests.rs.
+Gameplay Slice:  byroredux/src/{combat,inventory,settings_io}.rs + the action half of interaction.rs — the P2 playable-vertical-slice runtime, added 2026-08-15/16. **NO owner audit skill** (see coverage note below); this is the project's active execution focus, so an audit that ignores it is auditing last month's engine.
+                 · combat.rs (407 LOC) — first melee vertical slice. MELEE_REACH_BU = 180.0, MELEE_COOLDOWN_SECONDS = 0.45, UNARMED_DAMAGE = 8.0. combat_input_system + combat_damage_system are both Stage::Update exclusives (boot.rs); CombatState is a Resource holding cooldown + the CombatTraceEntry smoke evidence. Casts from the active camera, resolves a ragdoll bone through ActorColliderOwner, emits the canonical scripting HitEvent, applies damage to the Health ActorValue and owns the alive→dead transition (Dead + the AI-behavior teardown). Transient HitEvent cleanup stays in the scripting Late stage — do not report that as a leak.
+                 · inventory.rs (546 LOC) — native inventory presentation + player-facing equipment mutation. Canonical state stays Inventory + EquipmentSlots (crates/core); this module only carries immutable item metadata (InventoryCatalog / InventoryItemDefinition, FxHashMap-keyed by form id) and seeds the player from base NPC_ 0x00000014. A finding that it duplicates canonical inventory state is a real NIFAL-style boundary violation; a finding that it *caches* record metadata is by design.
+                 · settings_io.rs (334 LOC) — settings persistence behind the game menu.
+                 · Gates: docs/smoke-tests/{p0-door-interaction,p1-character-traversal,p2-melee-core}.sh, specs docs/engine/playable-vertical-slice.md + docs/engine/p2-combat-fixture.md (P2 combat core passing 2026-08-16; corpse loot / authored response anim / save-reload continuity still open).
 Systems:         byroredux/src/systems.rs (module index) → systems/{animation, audio, billboard, bounds, camera, character, cinematic, debug, escort, follow, guard, light_anim, locomotion, metrics, particle, patrol, sandbox, travel, wander, water, weather}.rs (character.rs is the PLAYER/character controller — physics, not CHARAL; cinematic.rs drives the M47.2 scripted-camera slice) (particle.rs carries apply_emitter_params, fed by the typed NIF emitter pipeline; sandbox/wander/travel/follow/escort/guard/patrol.rs are the M42 AI-package procedure runtimes — see "Sandbox AI" row below; locomotion.rs is their shared `step_toward` walk-to-point primitive)
 Scene Setup:     byroredux/src/scene.rs (thin) → scene/{nif_loader, world_setup}.rs (+ *_tests.rs siblings: climate_tod_hours, cloud_tile_scale, procedural_fallback, radius_parse)
 Render Data:     byroredux/src/render/ (mod.rs carries build_render_data + draw enumeration) → render/{camera, lights, fire_lights, fog_volumes, skinned, static_meshes, particles, sky, water}.rs (+ *_tests.rs siblings)
@@ -137,11 +144,13 @@ sfmaterial, spt, ui.
 Use this as a coverage sanity check: an audit that never touches a relevant
 crate here is incomplete.
 
-Crate → owner audit map (refreshed 2026-08-13):
+Crate → owner audit map (refreshed 2026-08-16):
 
 | Crate | Owner audit |
 |---|---|
 | `crates/audio` | `/audit-audio` |
+| `crates/facegen` | `/audit-skyrim` (pre-baked FaceGen head path) + `/audit-fo3` — no dedicated owner |
+| `crates/debug-ui` | `/audit-renderer` (egui_pass) — command/panel surface itself is un-owned |
 | `crates/bgsm`, `crates/sfmaterial` | `/audit-fo4`, `/audit-starfield` (+ `/audit-nifal` for the material boundary) |
 | `crates/bsa` | `/audit-nif` (archive feed) + per-game |
 | `crates/core` (ECS half) | `/audit-ecs` |
@@ -157,12 +166,15 @@ Crate → owner audit map (refreshed 2026-08-13):
 
 ### Un-owned subsystems (coverage gaps — read before claiming a sweep is complete)
 
-Four subsystems still have **no owner audit skill**. An audit that touches them
+Six subsystems still have **no owner audit skill** (refreshed 2026-08-16 — the
+list grew by the gameplay slice and FaceGen). An audit that touches them
 does so incidentally, so nothing guarantees they are ever examined. Do not
 report "full coverage" without saying which of these you skipped:
 
 | Subsystem | Code | Nearest owner today | Why it matters now |
 |---|---|---|---|
+| **Gameplay slice (P2)** | `byroredux/src/combat.rs`, `byroredux/src/inventory.rs`, `byroredux/src/settings_io.rs`, the action half of `byroredux/src/interaction.rs` | `/audit-ecs` (system/resource shape) + `/audit-runtime` (the p0/p1/p2 smoke gates) | **The project's active execution focus.** ~2.6k LOC landed 2026-08-15/16 with three Stage::Update exclusives and a Resource, and nothing owns its damage/equip/activation invariants. Highest-value gap on this list |
+| FaceGen | `crates/facegen/src/` | `/audit-skyrim` (incidental, via the NPC head path) | `.tri`/`.egt` morph + texture blend on untrusted archive input, with no parser-discipline dimension of its own |
 | Mod Runtime (sandboxed mods) | `crates/mod-runtime/src/` | `/audit-safety` Dimension 11 (added 2026-08-13) | A trust boundary between untrusted WASM guest code and the host. Still has **no consumer in the engine** — audit it as a contract, not as a live path |
 | FSR3 upscaler + FFI | `crates/fsr3-sys/`, `crates/renderer/src/vulkan/{frame_upscaler,upscaling,presentation,exposure}.rs` | `/audit-renderer` Dim 23 + `/audit-safety` Dim 1 | Engine-default render path since phase 7; the only live FFI crossing in the workspace |
 | Havok packfile reader | `crates/hkx/src/` | `/audit-scripting` Dim 8 (cinematic slice) | Untrusted binary input with no parser-discipline dimension of its own; sole consumer is `byroredux/src/asset_provider/animation.rs` |
@@ -219,6 +231,19 @@ See `.claude/commands/_audit-severity.md` for the unified severity scale (CRITIC
 - **Drop ordering**: Validate destroy-before-parent relationships (Vulkan objects).
 - **Vulkan validation**: Reference Khronos spec for behavior guarantees.
 - **Lock ordering**: Verify TypeId-sorted acquisition for multi-component queries.
+- **Hot-path hashing (#2923, 2026-08-15)**: `rustc-hash` is a workspace dep
+  (`crates/core`, `crates/renderer`, `byroredux`). The per-frame render/skinning
+  path is `FxHashMap`/`FxHashSet` end-to-end and must stay that way across the
+  crate boundary — every collection on `SkinSlotPool`
+  (`crates/core/src/ecs/resources/skin_slot_pool.rs`), the `pose_dirty` set it
+  hands the renderer, `FrameInputs.pose_dirty`, and the `skin_offsets` map
+  threaded through `byroredux/src/render/`. A reintroduced
+  `std::collections::HashMap`/`HashSet` on any of those is the regression
+  (SipHash on a per-frame per-entity keyspace); the guard is the
+  `"{what} must stay \`FxHashSet\` (#2923)"` assertion in
+  `crates/renderer/src/vulkan/context/mod.rs`. This is a *hot-path* rule, not a
+  blanket one — std hashing in load-time or parser code is fine, and DoS-facing
+  maps should stay std.
 
 ## Context Management Rules
 

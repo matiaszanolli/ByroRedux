@@ -155,7 +155,8 @@ offset, do not run them concurrently.
 
 > **Where each metric lives.** The bench scalars (`wall_fps`, `draws=N/Mb/Kc`,
 > `entities=`) are on the single `bench:` line printed at `--bench-frames` exit
-> (`byroredux/src/main.rs`, the `println!("bench: …")` block) — they land in the
+> (`byroredux/src/app_events.rs` ~line 833, the `"bench: mode=…"` block — moved
+> out of *main.rs* by the #2731 split) — they land in the
 > `.engine.log`, NOT the `byro-dbg` stream. The `skin=L/M+S` line is emitted to
 > the `engine::stats` log target once per wall-second
 > (`byroredux/src/systems/debug.rs`, format `skin={}/{}+{}`), so grep the
@@ -192,7 +193,8 @@ Quirks of these scalars (don't fabricate around them):
   seconds) — `bench_fps_p50` and `bench_fps_avg` both map from that same
   number (re-run and average if you want a true cross-run mean). But a real
   per-frame CPU distribution now exists alongside it: `bench_frame_distribution`
-  (`byroredux/src/main.rs`) nearest-rank-percentiles the per-frame
+  (the helper stays in `byroredux/src/main.rs` ~line 81; its caller is
+  `byroredux/src/app_events.rs` ~line 768) nearest-rank-percentiles the per-frame
   `bench_cpu_frame_ms` samples (one push per rendered frame, `about_to_wait`
   wall-clock) into `frame_p50_ms`/`frame_p95_ms`/`frame_max_ms` on the same
   `bench:` line, unconditionally — not gated behind `--bench-camera` or
@@ -307,7 +309,9 @@ Compare `/tmp/audit/runtime/<game>-<cell>.current.tsv` against
 
 - **Determinism**: TAA jitter is frame-counter-driven (Halton(2,3)), so
   frame-240 telemetry is reproducible. `BYROREDUX_FIXED_DT=0`
-  (`byroredux/src/main.rs`, the `BYROREDUX_FIXED_DT` env read) freezes the
+  (`byroredux/src/bench.rs`, the `BYROREDUX_FIXED_DT` env read — it lives with
+  the bench-mode parsing, not in *main.rs*; an explicit `--bench-mode` rejects
+  it) freezes the
   wall-clock dt so animation / camera / spin don't advance — recommended when
   capturing tolerance metrics.
 - **Per-game data**: resolved via the `--game` profile registry
@@ -325,6 +329,17 @@ Compare `/tmp/audit/runtime/<game>-<cell>.current.tsv` against
 - This workstream: [#1283](https://github.com/matiaszanolli/ByroRedux/issues/1283)
 - Symptom record: [docs/audits/FALLOUT_SYMPTOMS_2026-05-26.md](../../docs/audits/FALLOUT_SYMPTOMS_2026-05-26.md)
 - Smoke-test pattern (`--bench-hold` + `byro-dbg` attach): [docs/smoke-tests/README.md](../../docs/smoke-tests/README.md)
+- **Playable-slice gates (2026-08-16)** — the P0/P1/P2 scripts are the runtime
+  contract for the gameplay slice, which has no owner audit skill. When this
+  audit is run to bless a build, run them and report pass/fail alongside the
+  scalar telemetry rather than silently skipping them:
+  [p0-door-interaction.sh](../../docs/smoke-tests/p0-door-interaction.sh) (activation +
+  cell transition), [p1-character-traversal.sh](../../docs/smoke-tests/p1-character-traversal.sh)
+  (movement/collision/camera), [p2-melee-core.sh](../../docs/smoke-tests/p2-melee-core.sh)
+  (combat core — Health derives to 50, seven bound attacks emit seven canonical
+  `HitEvent`s, zero Health yields one `Dead` transition plus an 18-body ragdoll;
+  passing as of 2026-08-16). Specs: [docs/engine/playable-vertical-slice.md](../../docs/engine/playable-vertical-slice.md),
+  [docs/engine/p2-combat-fixture.md](../../docs/engine/p2-combat-fixture.md)
 - Determinism precedent: [byroredux/tests/golden_frames.rs](../../byroredux/tests/golden_frames.rs)
 - Import-side sibling harness: [crates/nif/tests/translation_completeness.rs](../../crates/nif/tests/translation_completeness.rs)
 - NIFAL static audit (the `tex.missing` proxy's code-side counterpart):

@@ -147,9 +147,11 @@ not a stage. Exclusive systems run serially after the stage's parallel batch.
   The default for both `System::access()` and the per-entry override is `None`.
 - **M27 Phase 1+2** (`a9810d40`): every parallel-stage system on the engine
   binary declares reads/writes via `Scheduler::add_to_with_access` at the
-  registration site in `byroredux/src/boot.rs` (`build_scheduler`; 10 such
-  calls today — closures can't impl `System::access`). Any parallel system
-  registered via plain `add_to` (no declared access) is a regression.
+  registration site in `byroredux/src/boot.rs` (`build_scheduler`; **13** such
+  calls as of 2026-08-16 — closures can't impl `System::access`). Any parallel
+  system registered via plain `add_to` (no declared access) is a regression.
+  Count this fresh rather than quoting the number — it has drifted twice
+  (10 → 13) between skill refreshes.
 - **M27 Phase 3** (`05fe2bac`): 4 analyzer-visible conflicts were resolved two
   ways — one dispatcher merge plus two exclusive re-stages. `player_controller_system`
   (Stage::Early) stays **parallel** and declares the *union* of `fly_camera` +
@@ -268,6 +270,31 @@ not a stage. Exclusive systems run serially after the stage's parallel batch.
   `ActivateEvent` / `HitEvent` / `TimerExpired` are removed by
   `event_cleanup_system` (registered `add_exclusive(Stage::Late, …)`) — verify
   single-frame lifetime.
+- **Gameplay slice (P2, added 2026-08-15/16 — no owner audit, so it is in scope
+  here)**: three `add_exclusive(Stage::Update, …)` registrations in
+  `byroredux/src/boot.rs`, in this order — `interaction::interaction_system`,
+  then `combat::combat_input_system`, then `combat::combat_damage_system`.
+  Ordering is load-bearing: `interaction_system` is the canonical producer of
+  the action edges (`ActionState`/`InputAction`) both combat systems consume, and
+  it must stay ahead of every `OnActivate` consumer. Check:
+  - `combat_damage_system` emits the canonical `HitEvent`
+    (`crates/scripting/src/events.rs`) and relies on the Late-stage
+    `event_cleanup_system` above for teardown — a combat-local cleanup would
+    double-free the marker, and a missed Late registration leaks it. Do not
+    report the Late-stage cleanup as combat's leak.
+  - The alive→dead transition inserts `Dead` and tears down the AI-behavior
+    component set (`SandboxBehavior`/`WanderBehavior`/`TravelBehavior`/
+    `FollowBehavior`/`EscortBehavior`/`GuardBehavior`/`PatrolBehavior` + their
+    `*State`/`Seated`/`Traveled`/`Escorted` siblings). A behavior component
+    surviving death re-animates a corpse — verify the teardown list against the
+    live seven-procedure roster above, since it must grow with it.
+  - `CombatState` (a `Resource`) holds cooldown plus a `CombatTraceEntry` trace
+    used as smoke evidence by `docs/smoke-tests/p2-melee-core.sh` — unbounded
+    trace growth across a long session is a real leak.
+  - `inventory.rs` must not become a second source of truth: canonical state is
+    `Inventory` + `EquipmentSlots` (`crates/core`), and `InventoryCatalog` is a
+    rebuilt-on-plugin-install metadata cache keyed by form id. Stale catalog
+    entries after a load-order change are the failure mode to look for.
 - **ScriptTimer** (`crates/scripting/src/timer.rs`): `timer_tick_system`
   decrements per-frame, fires `TimerExpired` on hit — verify no negative-time
   accumulation.

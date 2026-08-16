@@ -117,7 +117,7 @@ over threshold).
   splits are render-pass-adjacent — see `feedback_speculative_vulkan_fixes.md`
   before proposing barrier/order changes.
 - `byroredux/src/asset_provider/` → BSA/BA2 resolution vs TextureProvider vs mesh extraction.
-- `byroredux/src/main.rs` → App/ApplicationHandler event loop vs system registration vs boot/config.
+- ~~`byroredux/src/main.rs` → App/ApplicationHandler event loop vs system registration vs boot/config.~~ **DONE (#2731)** — main.rs is 834 LOC; the ApplicationHandler moved to `byroredux/src/app_events.rs` and the frame driver to `byroredux/src/app_frame.rs`. Do not re-propose this split. The live oversized-file candidates in the binary are now `byroredux/src/interaction.rs` (1356 LOC, and it mixes UI input routing with the canonical player-action/activation producer — a real seam) and `byroredux/src/app_events.rs` (1039 LOC).
 - `byroredux/src/commands/` → console-command groups, already split per-domain (world_info / assets / view / scene / shared) under #1323; check the submodules stay cohesive, not re-bloated.
 - `crates/nif/src/blocks/particle.rs` → typed emitter/ctlr structs vs the opaque `NiPSysBlock` fallback vs grow/fade modifiers.
 - `crates/nif/src/import/collision/mod.rs` → split per bhk shape family (primitive/compound/mesh/compressed), mirroring `crates/nif/src/blocks/collision/`.
@@ -199,7 +199,7 @@ misdirect future audits.
 **Discovery**:
 ```bash
 .claude/commands/_audit-validate.sh            # structural path gate (#1114)
-ls .claude/commands/audit-*.md docs/audits/
+ls .claude/commands/_audit-*.md .claude/commands/audit-*/SKILL.md docs/audits/
 ```
 - STALE refs from the gate that live in *other* audit skills → Dim 4 findings (trivial).
 - Symbol-anchor refs the gate cannot verify (e.g. `crates/audio/src/lib.rs::drain_pending_oneshots`) — spot-check the symbol still exists.

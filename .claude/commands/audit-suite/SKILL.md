@@ -107,11 +107,20 @@ catches what static audits structurally can't see:
 24. `/audit-regression`
 25. `/audit-runtime --game all`
 
-With the four 2026-08-13 additions this preset now covers every crate in the
-`_audit-common.md` crate→owner map. The residual gaps it does **not** cover are
-`crates/mod-runtime` (folded into `/audit-safety` Dim 11), `crates/hkx` (folded
-into `/audit-scripting` Dim 8), and `crates/debug-server` / `crates/debug-protocol`
-(no owner). Name them in the summary rather than claiming full coverage.
+With the four 2026-08-13 additions this preset covers every crate in the
+`_audit-common.md` crate→owner map. It does **not** cover the six un-owned
+subsystems in that file's "Un-owned subsystems" table (refreshed 2026-08-16) —
+name them in the summary rather than claiming full coverage:
+
+- **the P2 gameplay slice** (`byroredux/src/{combat,inventory,settings_io}.rs` +
+  the action half of `interaction.rs`) — no owner, and the project's active
+  execution focus. If this preset is run to bless a release, run `/audit-ecs`
+  and `/audit-runtime` with these files explicitly in scope first.
+- `crates/facegen` (incidental to `/audit-skyrim` only)
+- `crates/mod-runtime` (folded into `/audit-safety` Dim 11)
+- `crates/hkx` (folded into `/audit-scripting` Dim 8)
+- `crates/debug-server` / `crates/debug-protocol` (no owner)
+- `crates/fsr3-sys` + the upscaler passes (folded into `/audit-renderer` Dim 23)
 
 ### `--preset tech-debt-deep`
 Surface accumulated debt (run after a milestone closes, before opening the next):

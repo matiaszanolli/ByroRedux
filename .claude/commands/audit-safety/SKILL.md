@@ -138,8 +138,10 @@ guard below.
   queue — a missed drain leaks GPU memory across the app lifetime, a too-early
   destroy is use-after-free (CRITICAL).
 - **`AllocatorResource` drop ordering (regression guard, #1406, `299e6a84`).**
-  `AllocatorResource` (`crates/renderer/src/vulkan/allocator.rs`; held in
-  `byroredux/src/main.rs`) must be removed from the ECS `World` BEFORE
+  `AllocatorResource` (`crates/renderer/src/vulkan/allocator.rs`; the live
+  remove/insert sites are in `byroredux/src/app_events.rs` — `remove_resource`
+  at ~line 59, re-insert on `resumed` at ~line 126, post-#2731; *main.rs* only
+  carries the explanatory comment now) must be removed from the ECS `World` BEFORE
   `VulkanContext::drop()` runs. The allocator holds a live `Arc<Device>`; if the
   `World` outlives the context, the allocator's `Drop` calls the driver against a
   destroyed logical device (use-after-free → CRITICAL). Verify the main loop

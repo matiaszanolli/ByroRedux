@@ -56,8 +56,9 @@ the crate; the crate audit is incomplete without it):
 
 **Cross-cut ground truth — read before auditing the relevant dimension**:
 - `byroredux/src/boot.rs` — registry/state install at boot (~line 1137);
-  `byroredux/src/main.rs` — the per-frame ordering of `capture_player_pose` THEN
-  `step_save_loads` (~line 1401); `byroredux/src/app_step.rs` — `step_save_loads`
+  `byroredux/src/app_events.rs` — the per-frame ordering of `capture_player_pose`
+  THEN `step_save_loads` (in `about_to_wait`, ~line 658; moved out of *main.rs*
+  by the #2731 split); `byroredux/src/app_step.rs` — `step_save_loads`
   body (~line 291).
 - `byroredux/src/cell_loader/transition.rs` — `CurrentCellContext` (the saved
   cell identity), `reposition_camera` (FlyCam restore target).
@@ -365,8 +366,9 @@ the gate actually exists, runs before write, and covers the references that matt
 **Entry points**: `crates/save/src/driver.rs` — `save_world` (read-only capture),
 `restore_world` (`&mut World`); `byroredux/src/save_io.rs` —
 `SaveCommand` (read-only), `LoadCommand` (queues), `execute_pending_save_loads`
-(the `&mut World` drain), `capture_player_pose`; `byroredux/src/main.rs` run-loop
-ordering (~line 2300).
+(the `&mut World` drain), `capture_player_pose`; `byroredux/src/app_events.rs`
+run-loop ordering (the `about_to_wait` arm, ~line 658 — post-#2731; do not look
+for it in *main.rs*).
 **Checklist**:
 - **Capture is read-only and consistent.** `save_world` takes `&World` (queries +
   `try_resource`), so it can run as a console command without `&mut`. Verify the
@@ -376,7 +378,7 @@ ordering (~line 2300).
   is between ticks (no system holds a storage write lock). A capture interleaved
   with a running system would snapshot torn state (e.g. half-propagated transforms)
   — CRITICAL if a system can be mid-mutation during the capture.
-- **`capture_player_pose` ordering.** It runs in main.rs AFTER the scheduler's
+- **`capture_player_pose` ordering.** It runs in `app_events.rs` (`about_to_wait`) AFTER the scheduler's
   camera systems published this frame's `Transform`/`GlobalTransform` and BEFORE
   `step_save_loads`, every frame. Verify the pose source is post-propagation
   (reads `Transform.translation` of the body in Character mode, camera in FlyCam),
