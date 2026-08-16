@@ -1286,6 +1286,49 @@ fn synthetic_hedr_routes_to_expected_gamekind() {
     );
 }
 
+#[test]
+fn fallout_inventory_categories_follow_components_and_loose_mod_links() {
+    let loose_mod_id = 0x0001_0100u32;
+    let junk_id = 0x0001_0101u32;
+    let misc_id = 0x0001_0102u32;
+
+    // Put OMOD before MISC deliberately. Category resolution must happen
+    // after the full walk rather than depending on Bethesda's GRUP order.
+    let omod = build_record(
+        b"OMOD",
+        0x0002_0001,
+        &[(b"LNAM", loose_mod_id.to_le_bytes().to_vec())],
+    );
+    let mut misc_records = build_record(
+        b"MISC",
+        loose_mod_id,
+        &[(b"FULL", b"Long Barrel ".to_vec())],
+    );
+    let mut component = Vec::new();
+    component.extend_from_slice(&0x0003_0001u32.to_le_bytes());
+    component.extend_from_slice(&2u32.to_le_bytes());
+    misc_records.extend_from_slice(&build_record(
+        b"MISC",
+        junk_id,
+        &[(b"FULL", b"Desk Fan ".to_vec()), (b"CVPA", component)],
+    ));
+    misc_records.extend_from_slice(&build_record(
+        b"MISC",
+        misc_id,
+        &[(b"FULL", b"Overdue Book ".to_vec())],
+    ));
+
+    let mut esm = tes4_with_hedr(1.0);
+    esm.extend_from_slice(&wrap_group(b"OMOD", &omod));
+    esm.extend_from_slice(&wrap_group(b"MISC", &misc_records));
+    let index = parse_esm(&esm).expect("parse Fallout inventory categories");
+
+    assert!(matches!(index.items[&loose_mod_id].kind, ItemKind::Mod));
+    assert!(matches!(index.items[&junk_id].kind, ItemKind::Junk));
+    assert!(matches!(index.items[&misc_id].kind, ItemKind::Misc));
+    assert_eq!(index.object_mod_loose_items[&0x0002_0001], loose_mod_id);
+}
+
 /// #1538 — SCOL is a Gamebryo-Fallout record (FO3 54, FNV 98), NOT FO4-only.
 /// FNV must PARSE its SCOL GRUP; pre-fix the `is_fo4_plus` gate skipped it,
 /// dropping all 98 FalloutNV.esm SCOL bases and orphaning 1084 REFRs.

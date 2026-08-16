@@ -1288,6 +1288,7 @@ pub(crate) fn setup_scene(
                 .intern(PLAYER_FORM_ID_PAIR);
             world.insert(body, FormIdComponent(fid));
         }
+        crate::inventory::attach_to_player(world, body);
         world.insert_resource(crate::systems::PlayerEntity(Some(body)));
         // M47.0 — the scripting crate's papyrus_demo systems
         // (rumble_on_activate, quest_advance, mg07_door,

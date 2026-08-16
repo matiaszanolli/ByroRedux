@@ -10,7 +10,7 @@
 //! by 4-char code and ignore anything they don't recognize.
 
 use super::common::CommonItemFields;
-use crate::esm::reader::{GameKind, SubRecord};
+use crate::esm::reader::{FormIdRemap, GameKind, SubRecord};
 use crate::esm::sub_reader::SubReader;
 
 /// What kind of item this is, with kind-specific stats.
@@ -18,6 +18,13 @@ use crate::esm::sub_reader::SubReader;
 pub enum ItemKind {
     /// MISC: weight + value already on the parent record. No extra fields.
     Misc,
+    /// Fallout 4 / 76 MISC carrying component rows (`CVPA`). These are shown
+    /// under Junk rather than the generic Misc inventory category.
+    Junk,
+    /// Fallout 4 / 76 loose object-mod item. The inventory object is a MISC
+    /// record referenced by an OMOD's `LNAM`; the OMOD definition itself is
+    /// not the carried stack.
+    Mod,
     /// BOOK: notes, skill book teach data.
     Book {
         /// Skill bonus form ID (AVIF) when this is a skill book; 0 for plain books.
@@ -116,7 +123,10 @@ impl ItemKind {
     /// Type-name string for diagnostics / counting.
     pub fn label(&self) -> &'static str {
         match self {
-            ItemKind::Misc => "MISC",
+            // Junk and Mods are Fallout inventory categories layered over
+            // carried MISC records; keep diagnostics truthful about the
+            // underlying plugin record type.
+            ItemKind::Misc | ItemKind::Junk | ItemKind::Mod => "MISC",
             ItemKind::Book { .. } => "BOOK",
             ItemKind::Note { .. } => "NOTE",
             ItemKind::Ingredient { .. } => "INGR",
@@ -469,20 +479,47 @@ pub fn parse_ammo(form_id: u32, subs: &[SubRecord], game: GameKind) -> ItemRecor
     }
 }
 
-pub fn parse_misc(form_id: u32, subs: &[SubRecord]) -> ItemRecord {
+pub fn parse_misc(form_id: u32, subs: &[SubRecord], game: GameKind) -> ItemRecord {
     let mut common = CommonItemFields::from_subs(subs);
+    let mut has_components = false;
     for sub in subs {
-        if &sub.sub_type == b"DATA" {
-            let mut r = SubReader::new(&sub.data);
-            common.value = r.u32_or_default();
-            common.weight = r.f32_or_default();
+        match &sub.sub_type {
+            b"DATA" => {
+                let mut r = SubReader::new(&sub.data);
+                common.value = r.u32_or_default();
+                common.weight = r.f32_or_default();
+            }
+            // FO4 / FO76 MISC CVPA is an array of
+            // `(component FormID: u32, count: u32)` rows. Its presence is
+            // the authored distinction between junk that can be broken down
+            // at a workbench and an ordinary miscellaneous item.
+            b"CVPA" if sub.data.len() >= 8 => has_components = true,
+            _ => {}
         }
     }
     ItemRecord {
         form_id,
         common,
-        kind: ItemKind::Misc,
+        kind: if has_components && matches!(game, GameKind::Fallout4 | GameKind::Fallout76) {
+            ItemKind::Junk
+        } else {
+            ItemKind::Misc
+        },
     }
+}
+
+/// Extract the carried MISC record referenced by a Fallout 4 / 76 OMOD.
+///
+/// OMOD is the modification definition; `LNAM` is its optional "Loose Mod"
+/// base object. Inventory stacks contain that loose object, so callers keep a
+/// reverse classification map and promote the corresponding MISC item to
+/// [`ItemKind::Mod`] after the complete plugin has been walked.
+pub fn parse_omod_loose_item(subs: &[SubRecord], remap: &Option<FormIdRemap>) -> u32 {
+    subs.iter()
+        .find(|sub| &sub.sub_type == b"LNAM" && sub.data.len() >= 4)
+        .map(|sub| SubReader::new(&sub.data).u32_or_default())
+        .map(|raw| remap.as_ref().map_or(raw, |mapping| mapping.remap(raw)))
+        .unwrap_or(0)
 }
 
 pub fn parse_keym(form_id: u32, subs: &[SubRecord]) -> ItemRecord {
@@ -757,10 +794,39 @@ mod tests {
         data.extend_from_slice(&15u32.to_le_bytes());
         data.extend_from_slice(&0.25f32.to_le_bytes());
         let subs = vec![sub(b"EDID", b"M\0"), sub(b"DATA", &data)];
-        let item = parse_misc(0x300, &subs);
+        let item = parse_misc(0x300, &subs, GameKind::Fallout3NV);
         assert_eq!(item.common.value, 15);
         assert!((item.common.weight - 0.25).abs() < 1e-6);
         assert!(matches!(item.kind, ItemKind::Misc));
+    }
+
+    #[test]
+    fn fallout_component_misc_is_junk_but_legacy_misc_stays_misc() {
+        let mut component = Vec::new();
+        component.extend_from_slice(&0x1234_5678u32.to_le_bytes());
+        component.extend_from_slice(&2u32.to_le_bytes());
+        let subs = vec![sub(b"CVPA", &component)];
+
+        let fallout4 = parse_misc(0x301, &subs, GameKind::Fallout4);
+        assert!(matches!(&fallout4.kind, ItemKind::Junk));
+        assert_eq!(fallout4.kind.label(), "MISC");
+        assert!(matches!(
+            parse_misc(0x301, &subs, GameKind::Fallout76).kind,
+            ItemKind::Junk
+        ));
+        assert!(matches!(
+            parse_misc(0x301, &subs, GameKind::Fallout3NV).kind,
+            ItemKind::Misc
+        ));
+    }
+
+    #[test]
+    fn omod_lnam_resolves_the_loose_mod_inventory_item() {
+        let subs = vec![sub(b"LNAM", &0x0100_1234u32.to_le_bytes())];
+        let remap = Some(FormIdRemap::regular(2, vec![0]));
+
+        assert_eq!(parse_omod_loose_item(&subs, &remap), 0x0200_1234);
+        assert_eq!(parse_omod_loose_item(&[], &remap), 0);
     }
 
     // ── Skyrim regression guards (issue #347 / S6-02) ──────────────────

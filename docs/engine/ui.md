@@ -455,6 +455,14 @@ Pointer coordinates are scaled from the current native window extent into the
 movie's persistent viewport, which also keeps input aligned after a swapchain
 resize.
 
+The native player-facing modal uses the same boundary: Escape opens pause and
+Tab opens Inventory only when no focused Scaleform movie owns input. Both
+release world input. Inventory presentation snapshots the player's
+canonical `Inventory` and `EquipmentSlots`; equip actions are applied after the
+egui frame, avoiding simultaneous UI reads and ECS mutation. Fallout 4/76 Mods,
+Junk, and Misc are separate categories based on OMOD loose-item links and MISC
+component data.
+
 The current manager still owns one active menu. A real menu stack must define
 which visible layer receives focus and how non-modal HUD movies coexist with a
 modal pause/container/Pip-Boy layer. Gamepad translation is also a later slice;

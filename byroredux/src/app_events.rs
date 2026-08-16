@@ -211,9 +211,29 @@ impl ApplicationHandler for App {
             .debug_ui
             .as_ref()
             .is_some_and(byroredux_debug_ui::DebugUiState::game_menu_visible);
+        let inventory_pressed = pressed_key.is_some_and(|key| {
+            self.world
+                .try_resource::<crate::interaction::ActionBindings>()
+                .and_then(|bindings| {
+                    bindings.key_for_action(crate::interaction::InputAction::Inventory)
+                })
+                == Some(key)
+        });
         if game_menu_open {
             if pressed_key == Some(KeyCode::Escape) {
                 self.toggle_game_menu();
+                return;
+            }
+            if inventory_pressed {
+                if self
+                    .debug_ui
+                    .as_ref()
+                    .is_some_and(byroredux_debug_ui::DebugUiState::inventory_menu_visible)
+                {
+                    self.toggle_game_menu();
+                } else {
+                    self.open_inventory_menu();
+                }
                 return;
             }
             if !matches!(event, WindowEvent::CloseRequested | WindowEvent::Resized(_)) {
@@ -307,6 +327,9 @@ impl ApplicationHandler for App {
                             if code == KeyCode::Escape && !event.repeat {
                                 drop(input);
                                 self.toggle_game_menu();
+                            } else if inventory_pressed && !event.repeat {
+                                drop(input);
+                                self.open_inventory_menu();
                             } else if code == KeyCode::KeyF && !event.repeat {
                                 // M28.5 follow-up — Walk ↔ Fly mode toggle.
                                 // Temporary debug binding until an in-engine

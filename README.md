@@ -30,7 +30,7 @@ shadows on RTX 4070 Ti. Current entity count + bench numbers in
 | **Renderer** | Vulkan 1.3 + `VK_KHR_ray_query` — multi-light RT shadows, reflections, bounded material-aware path-traced GI, SVGF temporal denoiser, TAA, streaming RIS (8 reservoirs/fragment), BLAS compaction + LRU eviction, Disney/Burley BSDF lobe for PBR (BGSM/BGEM + Starfield) content |
 | **Physics** | Rapier3D — collision import from NIF `bhk` chain, dynamic bodies, fixed 60 Hz substep |
 | **Scripting** | Papyrus `.psc` parser (full AST) + `.pex` bytecode decompiler; recognizer-driven attach of compiled vanilla scripts at cell load; ECS-native event + timer runtime |
-| **UI** | Native egui HUD + pause/settings menu; Scaleform / SWF compatibility menus via Ruffle (offscreen wgpu → Vulkan texture overlay) |
+| **UI** | Native egui HUD + pause/settings/inventory menus; Scaleform / SWF compatibility menus via Ruffle (offscreen wgpu → Vulkan texture overlay) |
 
 ## Start here
 
@@ -49,10 +49,10 @@ launcher. It does not redistribute Bethesda game data.
 ## Player controls
 
 The interactive default layout is `WASD` movement, `Space` jump/ascend,
-`Left Shift` sprint/boost, `E` activate, and `Q` descend in
+`Left Shift` sprint/boost, `E` activate, `Tab` inventory, and `Q` descend in
 the developer fly camera. Click the game view to capture mouse look. `Escape`
-opens the native pause menu; `F3` opens the developer overlay. Both native
-menus release the cursor and prevent held world input from leaking through.
+opens the native pause menu; `F3` opens the developer overlay. Native menus
+release the cursor and prevent held world input from leaking through.
 
 The pause menu's Settings screen applies mouse sensitivity, invert-Y, field of
 view, HUD visibility, UI scale, upscaler selection, and keyboard bindings live.
@@ -62,6 +62,14 @@ one. Values persist to the platform config directory
 `$HOME/.config/byroredux/settings.toml`). Set `BYROREDUX_SETTINGS_PATH` to use
 an explicit file in automated or portable runs. Explicit renderer CLI flags
 still win for that launch.
+
+The native Inventory screen reads the player's canonical `Inventory` and
+`EquipmentSlots` components. It filters by resolved category and shows counts,
+weight, value, and equipped state; armor with authored biped slots can be
+equipped or unequipped directly. Fallout 4/76 keep `Mods`, `Junk`, and `Misc`
+distinct: component-bearing MISC records are Junk, while an OMOD's loose MISC
+object appears under Mods. Weapon selection and visible player-mesh attachment
+remain follow-up work.
 
 ## Highlights
 

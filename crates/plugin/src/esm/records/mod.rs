@@ -52,7 +52,7 @@ pub use container::{
 pub use global::{parse_glob, parse_gmst, GameSetting, GlobalRecord, SettingValue};
 pub use items::{
     parse_alch, parse_ammo, parse_armo, parse_book, parse_ingr, parse_keym, parse_misc, parse_note,
-    parse_weap, ItemKind, ItemRecord,
+    parse_omod_loose_item, parse_weap, ItemKind, ItemRecord,
 };
 pub use misc::{
     active_escort_location, active_escort_target, active_follow_target, active_guard_location,
@@ -384,7 +384,7 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
                 )?;
             }
             b"WEAP" | b"ARMO" | b"AMMO" | b"MISC" | b"KEYM" | b"ALCH" | b"INGR" | b"BOOK"
-            | b"NOTE" => {
+            | b"NOTE" | b"OMOD" => {
                 dispatch_items::dispatch_item_group(
                     &label,
                     &mut reader,
@@ -467,6 +467,12 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
             landscape_textures.insert(*ltex_id, path.clone());
         }
     }
+
+    // Fallout's Mods tab contains the loose MISC object referenced by an
+    // OMOD's LNAM, not the OMOD definition itself. OMOD groups commonly
+    // follow MISC, so classification is a post-walk pass rather than an
+    // order-dependent mutation inside either dispatcher.
+    index.classify_fallout_inventory_kinds();
     // Keep the full LTEX → TXST material association alongside the legacy
     // diffuse-only lookup. LAND rendering needs TX01/TX07 for normal and
     // specular/smoothness layers; reducing the relation to TX00 here made

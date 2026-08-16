@@ -42,8 +42,8 @@ use winit::event_loop::ActiveEventLoop;
 use winit::window::Window;
 
 pub use panels::{
-    GameMenuPage, GameMenuState, InteractionPrompt, PanelOutputs, PanelSnapshot, PanelTab,
-    QueuedLoad,
+    GameMenuPage, GameMenuState, InteractionPrompt, InventoryAction, InventoryItemView,
+    InventorySnapshot, PanelOutputs, PanelSnapshot, PanelTab, QueuedLoad,
 };
 
 /// Stable registry key for the overlay's own scale control. Other engine
@@ -274,6 +274,16 @@ impl DebugUiState {
         self.game_menu.visible
     }
 
+    /// Open the native menu directly on the player's inventory page.
+    pub fn open_inventory_menu(&mut self) {
+        self.game_menu.visible = true;
+        self.game_menu.page = GameMenuPage::Inventory;
+    }
+
+    pub fn inventory_menu_visible(&self) -> bool {
+        self.game_menu.visible && self.game_menu.page == GameMenuPage::Inventory
+    }
+
     pub fn close_game_menu(&mut self) {
         self.game_menu.visible = false;
         self.game_menu.page = GameMenuPage::Pause;
@@ -335,12 +345,7 @@ impl DebugUiState {
             panels::draw(&self.egui_ctx, snapshot, &mut self.panels, &mut outputs);
         }
         if self.game_menu.visible {
-            panels::draw_game_menu(
-                &self.egui_ctx,
-                &snapshot.settings,
-                &mut self.game_menu,
-                &mut outputs,
-            );
+            panels::draw_game_menu(&self.egui_ctx, snapshot, &mut self.game_menu, &mut outputs);
         }
         let output = self.egui_ctx.end_pass();
         // Hand the platform output back to egui-winit so OS-level

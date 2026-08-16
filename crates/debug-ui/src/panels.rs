@@ -40,6 +40,9 @@ pub struct PanelSnapshot {
     /// Deterministically ordered clone of the universal settings registry.
     /// Settings are small and only cloned while the overlay is visible.
     pub settings: Vec<SettingEntry>,
+    /// Player inventory, populated only while the native inventory page is
+    /// visible. `None` means the current scene has no character player.
+    pub inventory: Option<InventorySnapshot>,
     /// `(entity_id, name)` pairs. `None` until the operator opens
     /// the Entities panel — populating this on every frame would
     /// be unnecessary work for an overlay that's hidden most of
@@ -53,6 +56,31 @@ pub struct PanelSnapshot {
 pub struct InteractionPrompt {
     pub binding: &'static str,
     pub verb: &'static str,
+}
+
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct InventorySnapshot {
+    pub items: Vec<InventoryItemView>,
+    pub total_weight: f32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct InventoryItemView {
+    pub index: u32,
+    pub form_id: u32,
+    pub name: String,
+    pub category: &'static str,
+    pub details: String,
+    pub count: u32,
+    pub value: u32,
+    pub weight: f32,
+    pub equipped: bool,
+    pub equippable: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InventoryAction {
+    ToggleEquip { index: u32 },
 }
 
 /// Draw the small gameplay HUD layer shared with the debug renderer.
@@ -141,6 +169,9 @@ pub struct PanelOutputs {
     pub console_evals: Vec<String>,
     /// Validated by the universal registry after the egui frame completes.
     pub setting_changes: Vec<SettingChange>,
+    /// Mutations applied to canonical player inventory state after egui drops
+    /// its read-only frame snapshot.
+    pub inventory_actions: Vec<InventoryAction>,
     /// True when the operator asked to refresh the entity list.
     /// The binary rebuilds the snapshot's `entities` next frame.
     pub refresh_entities: bool,
@@ -155,6 +186,7 @@ pub enum GameMenuPage {
     #[default]
     Pause,
     Settings,
+    Inventory,
 }
 
 /// Persistent navigation state for the player-facing native menu.
@@ -163,6 +195,8 @@ pub struct GameMenuState {
     pub visible: bool,
     pub page: GameMenuPage,
     pub selected_section: String,
+    pub selected_inventory_category: String,
+    pub selected_inventory_index: Option<u32>,
 }
 
 /// Player-facing pause/settings surface. This deliberately consumes the same
@@ -170,7 +204,7 @@ pub struct GameMenuState {
 /// operator panel, so there is one validation/application path.
 pub fn draw_game_menu(
     ctx: &Context,
-    settings: &[SettingEntry],
+    snapshot: &PanelSnapshot,
     state: &mut GameMenuState,
     outputs: &mut PanelOutputs,
 ) {
@@ -190,6 +224,7 @@ pub fn draw_game_menu(
     let title = match state.page {
         GameMenuPage::Pause => "Paused",
         GameMenuPage::Settings => "Settings",
+        GameMenuPage::Inventory => "Inventory",
     };
     Window::new(title)
         .id(Id::new("game_menu_window"))
@@ -199,8 +234,9 @@ pub fn draw_game_menu(
         .collapsible(false)
         .resizable(false)
         .fixed_size(match state.page {
-            GameMenuPage::Pause => egui::vec2(360.0, 330.0),
+            GameMenuPage::Pause => egui::vec2(360.0, 390.0),
             GameMenuPage::Settings => egui::vec2(760.0, 620.0),
+            GameMenuPage::Inventory => egui::vec2(900.0, 620.0),
         })
         .frame(
             Frame::window(&ctx.style())
@@ -211,7 +247,10 @@ pub fn draw_game_menu(
         )
         .show(ctx, |ui| match state.page {
             GameMenuPage::Pause => draw_pause_page(ui, state, outputs),
-            GameMenuPage::Settings => draw_game_settings(ui, settings, state, outputs),
+            GameMenuPage::Settings => draw_game_settings(ui, &snapshot.settings, state, outputs),
+            GameMenuPage::Inventory => {
+                draw_inventory_page(ui, snapshot.inventory.as_ref(), state, outputs)
+            }
         });
 }
 
@@ -232,6 +271,10 @@ fn draw_pause_page(ui: &mut egui::Ui, state: &mut GameMenuState, outputs: &mut P
         ui.add_space(8.0);
         if wide_button(ui, "Settings").clicked() {
             state.page = GameMenuPage::Settings;
+        }
+        ui.add_space(8.0);
+        if wide_button(ui, "Inventory").clicked() {
+            state.page = GameMenuPage::Inventory;
         }
         ui.add_space(8.0);
         if wide_button(ui, "Quit to desktop").clicked() {
@@ -306,6 +349,184 @@ fn draw_game_settings(
                 ui.add_space(7.0);
             }
         });
+}
+
+fn draw_inventory_page(
+    ui: &mut egui::Ui,
+    inventory: Option<&InventorySnapshot>,
+    state: &mut GameMenuState,
+    outputs: &mut PanelOutputs,
+) {
+    ui.horizontal(|ui| {
+        if ui.button("← Back").clicked() {
+            state.page = GameMenuPage::Pause;
+        }
+        ui.heading("Inventory");
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(
+                RichText::new("Tab / Esc  Close")
+                    .small()
+                    .color(Color32::GRAY),
+            );
+        });
+    });
+    ui.separator();
+
+    let Some(inventory) = inventory else {
+        ui.vertical_centered(|ui| {
+            ui.add_space(120.0);
+            ui.heading("Inventory unavailable");
+            ui.label("Enter character mode in a loaded game cell to use the player inventory.");
+        });
+        return;
+    };
+    if inventory.items.is_empty() {
+        ui.vertical_centered(|ui| {
+            ui.add_space(120.0);
+            ui.heading("Your inventory is empty");
+        });
+        return;
+    }
+
+    let mut categories: Vec<&str> = inventory.items.iter().map(|item| item.category).collect();
+    categories.sort_unstable();
+    categories.dedup();
+    if state.selected_inventory_category.is_empty()
+        || (state.selected_inventory_category != "All"
+            && !categories.contains(&state.selected_inventory_category.as_str()))
+    {
+        state.selected_inventory_category = "All".to_owned();
+    }
+    ui.horizontal_wrapped(|ui| {
+        ui.selectable_value(
+            &mut state.selected_inventory_category,
+            "All".to_owned(),
+            "All",
+        );
+        for category in &categories {
+            ui.selectable_value(
+                &mut state.selected_inventory_category,
+                (*category).to_owned(),
+                *category,
+            );
+        }
+    });
+    ui.separator();
+
+    let selected_category = state.selected_inventory_category.clone();
+    let category_matches =
+        |item: &InventoryItemView| selected_category == "All" || item.category == selected_category;
+
+    if !inventory
+        .items
+        .iter()
+        .filter(|item| category_matches(item))
+        .any(|item| Some(item.index) == state.selected_inventory_index)
+    {
+        state.selected_inventory_index = inventory
+            .items
+            .iter()
+            .find(|item| category_matches(item))
+            .map(|item| item.index);
+    }
+
+    let visible_count = inventory
+        .items
+        .iter()
+        .filter(|item| category_matches(item))
+        .count();
+
+    ui.columns(2, |columns| {
+        columns[0].set_width(430.0);
+        columns[0].label(
+            RichText::new(format!(
+                "{} of {} stacks  ·  {:.1} total weight",
+                visible_count,
+                inventory.items.len(),
+                inventory.total_weight
+            ))
+            .small()
+            .color(Color32::GRAY),
+        );
+        columns[0].add_space(6.0);
+        egui::ScrollArea::vertical()
+            .id_salt("native_inventory_items")
+            .auto_shrink([false, false])
+            .show(&mut columns[0], |ui| {
+                for item in inventory.items.iter().filter(|item| category_matches(item)) {
+                    let suffix = if item.count > 1 {
+                        format!(" ×{}", item.count)
+                    } else {
+                        String::new()
+                    };
+                    let equipped = if item.equipped { "  ◆" } else { "" };
+                    let response = ui.selectable_label(
+                        state.selected_inventory_index == Some(item.index),
+                        format!("{}{}{}", item.name, suffix, equipped),
+                    );
+                    if response.clicked() {
+                        state.selected_inventory_index = Some(item.index);
+                    }
+                    response.on_hover_text(format!("{} · {:08X}", item.category, item.form_id));
+                }
+            });
+
+        let selected = state
+            .selected_inventory_index
+            .and_then(|index| inventory.items.iter().find(|item| item.index == index));
+        let Some(item) = selected else {
+            return;
+        };
+        columns[1].heading(&item.name);
+        columns[1].label(
+            RichText::new(item.category)
+                .strong()
+                .color(Color32::from_rgb(145, 175, 210)),
+        );
+        columns[1].add_space(12.0);
+        if !item.details.is_empty() {
+            columns[1].label(&item.details);
+        }
+        egui::Grid::new("native_inventory_details")
+            .num_columns(2)
+            .spacing([24.0, 8.0])
+            .show(&mut columns[1], |ui| {
+                ui.label("Count");
+                ui.monospace(item.count.to_string());
+                ui.end_row();
+                ui.label("Weight");
+                ui.monospace(format!("{:.1}", item.weight));
+                ui.end_row();
+                ui.label("Value");
+                ui.monospace(item.value.to_string());
+                ui.end_row();
+                ui.label("Form ID");
+                ui.monospace(format!("{:08X}", item.form_id));
+                ui.end_row();
+            });
+        columns[1].add_space(24.0);
+        if item.equippable {
+            let label = if item.equipped { "Unequip" } else { "Equip" };
+            if columns[1]
+                .add_sized(
+                    [220.0, 42.0],
+                    egui::Button::new(RichText::new(label).size(18.0)),
+                )
+                .clicked()
+            {
+                outputs
+                    .inventory_actions
+                    .push(InventoryAction::ToggleEquip { index: item.index });
+            }
+        } else {
+            columns[1].add_enabled(false, egui::Button::new("Equip unavailable"));
+            columns[1].label(
+                RichText::new("This item type has no runtime equipment contract yet.")
+                    .small()
+                    .color(Color32::GRAY),
+            );
+        }
+    });
 }
 
 fn section_rank(section: &str) -> (u8, &str) {
@@ -891,11 +1112,87 @@ mod tests {
             ..Default::default()
         };
         let mut outputs = PanelOutputs::default();
-        draw_game_menu(&ctx, &[], &mut state, &mut outputs);
+        draw_game_menu(&ctx, &PanelSnapshot::default(), &mut state, &mut outputs);
         let output = ctx.end_pass();
         assert!(!output.shapes.is_empty());
         assert!(!outputs.resume_game);
         assert!(!outputs.quit_game);
+    }
+
+    #[test]
+    fn native_inventory_page_draws_real_item_details() {
+        let ctx = Context::default();
+        ctx.begin_pass(egui::RawInput::default());
+        let snapshot = PanelSnapshot {
+            inventory: Some(InventorySnapshot {
+                total_weight: 30.0,
+                items: vec![InventoryItemView {
+                    index: 0,
+                    form_id: 0x1234,
+                    name: "Iron Armor".to_owned(),
+                    category: "Armor",
+                    details: "Armor rating 25.0".to_owned(),
+                    count: 1,
+                    value: 125,
+                    weight: 30.0,
+                    equipped: true,
+                    equippable: true,
+                }],
+            }),
+            ..Default::default()
+        };
+        let mut state = GameMenuState {
+            visible: true,
+            page: GameMenuPage::Inventory,
+            ..Default::default()
+        };
+        let mut outputs = PanelOutputs::default();
+        draw_game_menu(&ctx, &snapshot, &mut state, &mut outputs);
+        let output = ctx.end_pass();
+        assert!(!output.shapes.is_empty());
+        assert_eq!(state.selected_inventory_category, "All");
+        assert_eq!(state.selected_inventory_index, Some(0));
+        assert!(outputs.inventory_actions.is_empty());
+    }
+
+    #[test]
+    fn inventory_category_filter_selects_a_visible_item() {
+        let ctx = Context::default();
+        ctx.begin_pass(egui::RawInput::default());
+        let item = |index: u32, name: &str, category: &'static str| InventoryItemView {
+            index,
+            form_id: 0x1000 + index,
+            name: name.to_owned(),
+            category,
+            details: String::new(),
+            count: 1,
+            value: 1,
+            weight: 1.0,
+            equipped: false,
+            equippable: false,
+        };
+        let snapshot = PanelSnapshot {
+            inventory: Some(InventorySnapshot {
+                total_weight: 2.0,
+                items: vec![item(0, "Long Barrel", "Mods"), item(1, "Desk Fan", "Junk")],
+            }),
+            ..Default::default()
+        };
+        let mut state = GameMenuState {
+            visible: true,
+            page: GameMenuPage::Inventory,
+            selected_inventory_category: "Junk".to_owned(),
+            selected_inventory_index: Some(0),
+            ..Default::default()
+        };
+        let mut outputs = PanelOutputs::default();
+
+        draw_game_menu(&ctx, &snapshot, &mut state, &mut outputs);
+        let output = ctx.end_pass();
+
+        assert!(!output.shapes.is_empty());
+        assert_eq!(state.selected_inventory_category, "Junk");
+        assert_eq!(state.selected_inventory_index, Some(1));
     }
 
     #[test]

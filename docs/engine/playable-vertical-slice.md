@@ -179,7 +179,11 @@ pause surface with Continue, categorized Settings, and orderly Quit; simulation
 stops while it is open, while rendering and menu interaction continue. Settings
 cover FOV, HUD visibility, UI scale, upscaler, mouse look, and the keyboard
 actions currently consumed by gameplay, with validated TOML persistence and
-stale-entry recovery. Inventory/container/equip presentation, bars,
+stale-entry recovery. Tab now opens a native inventory backed by the player's
+canonical `Inventory` / `EquipmentSlots`: it resolves authored item metadata,
+filters by category, shows stack/value/weight/equipped state, and mutates armor equip slots. Fallout
+4/76 `Mods`, component-bearing `Junk`, and ordinary `Misc` remain distinct.
+Container/corpse transfer, weapon equip, visible player-mesh attachment, bars,
 notifications, and objective text remain the P3 closure work.
 
 ### P4 — Authored objective and dialogue loop

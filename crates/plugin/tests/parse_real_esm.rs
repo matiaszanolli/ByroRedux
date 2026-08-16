@@ -1000,13 +1000,23 @@ fn parse_rate_fo4_esm() {
         .values()
         .map(|s| s.parts.iter().map(|p| p.placements.len()).sum::<usize>())
         .sum();
+    let junk_items = index
+        .items
+        .values()
+        .filter(|item| matches!(item.kind, byroredux_plugin::esm::records::ItemKind::Junk))
+        .count();
+    let loose_mod_items = index
+        .items
+        .values()
+        .filter(|item| matches!(item.kind, byroredux_plugin::esm::records::ItemKind::Mod))
+        .count();
 
     eprintln!(
         "[FO4] total={} game={:?} | cells={} statics={} scols={} \
          (placements={}) packins={} movables={} material_swaps={} \
          texture_sets={} items={} containers={} LVLI={} LVLN={} NPCs={} \
          races={} classes={} factions={} globals={} game_settings={} \
-         weathers={} climates={} trees={}",
+         weathers={} climates={} trees={} OMOD-links={} junk={} mods={}",
         index.total(),
         index.game,
         index.cells.cells.len(),
@@ -1030,6 +1040,9 @@ fn parse_rate_fo4_esm() {
         index.weathers.len(),
         index.climates.len(),
         index.trees.len(),
+        index.object_mod_loose_items.len(),
+        junk_items,
+        loose_mod_items,
     );
 
     // HEDR → GameKind dispatch. Pre-#439 the FO4 master would
@@ -1039,6 +1052,21 @@ fn parse_rate_fo4_esm() {
         GameKind::Fallout4,
         "FO4 ESM classified as {:?}, expected Fallout4",
         index.game,
+    );
+    assert!(
+        index.object_mod_loose_items.len() >= 2_300,
+        "OMOD loose-item relations={} (expected >= 2300; vanilla yields 2409)",
+        index.object_mod_loose_items.len(),
+    );
+    assert!(
+        junk_items >= 600,
+        "FO4 Junk={} (expected >= 600; vanilla yields 620 component-bearing MISC records)",
+        junk_items,
+    );
+    assert!(
+        loose_mod_items >= 1_200,
+        "FO4 Mods={} (expected >= 1200; vanilla yields 1283 OMOD-linked loose MISC records)",
+        loose_mod_items,
     );
 
     // Primary baseline. With #817 categories landed, observed 2026-05-04

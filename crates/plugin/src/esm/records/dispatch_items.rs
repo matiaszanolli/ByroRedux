@@ -38,7 +38,7 @@ pub(super) fn dispatch_item_group(
             index.items.insert(fid, parse_ammo(fid, subs, game));
         })?,
         b"MISC" => extract_records_with_modl(reader, end, b"MISC", statics, &mut |fid, subs| {
-            index.items.insert(fid, parse_misc(fid, subs));
+            index.items.insert(fid, parse_misc(fid, subs, game));
         })?,
         b"KEYM" => extract_records_with_modl(reader, end, b"KEYM", statics, &mut |fid, subs| {
             index.items.insert(fid, parse_keym(fid, subs));
@@ -55,6 +55,17 @@ pub(super) fn dispatch_item_group(
         b"NOTE" => extract_records_with_modl(reader, end, b"NOTE", statics, &mut |fid, subs| {
             index.items.insert(fid, parse_note(fid, subs));
         })?,
+        // OMOD is a modification definition, not the stack shown in the
+        // Pip-Boy. Keep only its LNAM relationship here; the post-walk pass
+        // promotes that referenced loose MISC object to ItemKind::Mod.
+        b"OMOD" => {
+            let remap = reader.get_form_id_remap();
+            extract_records(reader, end, b"OMOD", &mut |fid, subs| {
+                index
+                    .object_mod_loose_items
+                    .insert(fid, parse_omod_loose_item(subs, &remap));
+            })?
+        }
         _ => unreachable!("dispatch_item_group: unexpected label {label:?}"),
     }
     Ok(())

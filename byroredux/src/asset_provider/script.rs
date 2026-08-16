@@ -160,6 +160,7 @@ pub(crate) fn populate_scene_runtime(
     world: &mut byroredux_core::ecs::world::World,
     index: &byroredux_plugin::esm::records::EsmIndex,
 ) {
+    crate::inventory::install_catalog(world, index);
     let imad_count = byroredux_scripting::install_image_space_modifiers(
         world,
         index.imagespace_modifiers.values().cloned(),

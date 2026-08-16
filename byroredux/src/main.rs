@@ -29,6 +29,7 @@ mod game_profiles;
 mod groundcover_translate;
 mod helpers;
 mod interaction;
+mod inventory;
 mod list_cells;
 mod material_translate;
 mod name_lookup;
@@ -573,6 +574,13 @@ impl App {
         }
     }
 
+    fn open_inventory_menu(&mut self) {
+        if let Some(ui) = self.debug_ui.as_mut() {
+            ui.open_inventory_menu();
+            self.release_world_input_for_ui();
+        }
+    }
+
     fn resume_from_game_menu(&mut self) {
         if let Some(ui) = self.debug_ui.as_mut() {
             ui.close_game_menu();
@@ -609,6 +617,7 @@ impl App {
 fn build_debug_ui_snapshot(
     world: &World,
     refresh_entities: bool,
+    include_inventory: bool,
 ) -> byroredux_debug_ui::PanelSnapshot {
     let metrics = world
         .try_resource::<byroredux_core::ecs::MetricsSnapshot>()
@@ -658,6 +667,9 @@ fn build_debug_ui_snapshot(
         show_prompts: setting_bool(world, byroredux_debug_ui::SHOW_PROMPTS_SETTING_ID, true),
         metrics,
         settings,
+        inventory: include_inventory
+            .then(|| inventory::snapshot(world))
+            .flatten(),
         entities,
     }
 }
@@ -699,6 +711,11 @@ fn apply_debug_ui_outputs(
     let resume_game = outputs.resume_game;
     let quit_game = outputs.quit_game;
     let mut settings_changed = false;
+    for action in outputs.inventory_actions {
+        if inventory::apply_action(world, action) == inventory::MutationResult::Unavailable {
+            log::warn!("native inventory action was unavailable for the current player/item");
+        }
+    }
     if outputs.refresh_entities {
         *refresh_entities_flag = true;
     }

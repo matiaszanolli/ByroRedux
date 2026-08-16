@@ -69,7 +69,7 @@ impl InputAction {
         1_u16 << self as u8
     }
 
-    const CONFIGURABLE: [Self; 7] = [
+    const CONFIGURABLE: [Self; 8] = [
         Self::MoveForward,
         Self::MoveBackward,
         Self::StrafeLeft,
@@ -77,6 +77,7 @@ impl InputAction {
         Self::Jump,
         Self::Sprint,
         Self::Activate,
+        Self::Inventory,
     ];
 
     const fn setting_id(self) -> &'static str {

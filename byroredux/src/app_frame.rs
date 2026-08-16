@@ -65,7 +65,15 @@ impl App {
             .as_ref()
             .is_some_and(|ui| ui.visible || ui.game_menu_visible())
         {
-            build_debug_ui_snapshot(&self.world, self.debug_ui_refresh_entities)
+            let include_inventory = self
+                .debug_ui
+                .as_ref()
+                .is_some_and(byroredux_debug_ui::DebugUiState::inventory_menu_visible);
+            build_debug_ui_snapshot(
+                &self.world,
+                self.debug_ui_refresh_entities,
+                include_inventory,
+            )
         } else {
             byroredux_debug_ui::PanelSnapshot {
                 interaction_prompt: build_interaction_prompt(&self.world),

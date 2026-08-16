@@ -409,7 +409,8 @@ it grew from 18 maps in Session 12 to ~90 today. The struct opens with
 - **Items & containers** — `items` (WEAP/ARMO/AMMO/MISC/KEYM/ALCH/
   INGR/BOOK/NOTE → one `ItemRecord`), `containers`, `leveled_items`
   (LVLI), `leveled_npcs` (LVLN), `leveled_creatures` (LVLC, #448),
-  `recipes` (COBJ).
+  `recipes` (COBJ). `object_mod_loose_items` preserves the Fallout 4/76
+  OMOD→LNAM relation used to classify the referenced carried MISC under Mods.
 - **Actors** — `npcs` (NPC_), `creatures` (CREA, #442 — shares
   `parse_npc`), `races`, `classes`, `factions`, `outfits` (OTFT,
   Skyrim+, #896), `body_parts` (BPTD), `armor_addons` (ARMA),
@@ -473,6 +474,8 @@ pub struct ItemRecord {
 
 pub enum ItemKind {
     Misc,
+    Junk, // Fallout 4/76 component-bearing MISC (CVPA)
+    Mod,  // Fallout 4/76 loose MISC referenced by OMOD.LNAM
     Book { teaches_skill, skill_bonus, flags },
     Note { note_type, topic_form },
     Ingredient { magic_effects },

@@ -40,6 +40,11 @@ pub struct EsmIndex {
     pub game: GameKind,
     pub cells: EsmCellIndex,
     pub items: HashMap<u32, ItemRecord>,
+    /// Fallout 4 / 76 OMOD FormID → optional loose MISC item (`LNAM`).
+    /// Kept separate from `items`: the OMOD is a modification definition,
+    /// while the referenced MISC is the object carried in the Mods category.
+    /// A zero value records an override that deliberately clears LNAM.
+    pub object_mod_loose_items: HashMap<u32, u32>,
     pub containers: HashMap<u32, ContainerRecord>,
     pub leveled_items: HashMap<u32, LeveledList>,
     pub leveled_npcs: HashMap<u32, LeveledList>,
@@ -359,6 +364,32 @@ pub struct EsmIndex {
 }
 
 impl EsmIndex {
+    /// Reconcile Fallout inventory categories after a complete parse or
+    /// load-order merge. OMOD groups can appear after MISC, and later plugins
+    /// may override either side of the relationship, so this cannot safely be
+    /// done in the individual record parser.
+    pub(crate) fn classify_fallout_inventory_kinds(&mut self) {
+        if !matches!(self.game, GameKind::Fallout4 | GameKind::Fallout76) {
+            return;
+        }
+
+        for item in self.items.values_mut() {
+            if matches!(item.kind, super::ItemKind::Mod) {
+                item.kind = super::ItemKind::Misc;
+            }
+        }
+        for &loose_item in self.object_mod_loose_items.values() {
+            if loose_item == 0 {
+                continue;
+            }
+            if let Some(item) = self.items.get_mut(&loose_item) {
+                if matches!(item.kind, super::ItemKind::Misc | super::ItemKind::Junk) {
+                    item.kind = super::ItemKind::Mod;
+                }
+            }
+        }
+    }
+
     /// The base actor record a placed actor REFR points at — `NPC_` first,
     /// then `CREA`.
     ///
@@ -713,6 +744,9 @@ impl EsmIndex {
 
         // Top-level record maps — last-write-wins per HashMap::extend.
         self.items.extend(other.items);
+        self.object_mod_loose_items
+            .extend(other.object_mod_loose_items);
+        self.classify_fallout_inventory_kinds();
         self.containers.extend(other.containers);
         self.leveled_items.extend(other.leveled_items);
         self.leveled_npcs.extend(other.leveled_npcs);
