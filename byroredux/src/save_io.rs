@@ -96,6 +96,10 @@ const MUTABLE_DELTA_COLUMNS: &[&str] = &[
     // global-space AVIF FormID (u32, stable across reload) with four `f32`
     // composition layers — no FixedString / EntityId / session handle.
     "ActorValues",
+    // Combat state is session-stable: the weapon points into the saved
+    // Inventory by u32 index and Dead is a zero-field lifecycle marker.
+    "EquippedWeapon",
+    "Dead",
     // #2014 / SAVE-D1-NEW-01 — delta-safe subset of the seven M42
     // AI-procedure runtime-state components: WanderState/TravelState/
     // GuardState/PatrolState are plain Vec3/enum/u32 fields, and
@@ -203,9 +207,9 @@ impl Resource for PendingSaveLoadSlot {}
 pub fn build_save_registry() -> SaveRegistry {
     use byroredux_core::animation::{AnimationPlayer, AnimationStack};
     use byroredux_core::ecs::components::{
-        ActorValues, Children, EquipmentSlots, EscortState, Escorted, FollowState, GuardState,
-        Inventory, LightFlicker, LightSource, Material, Name, Parent, PatrolState, RigidBodyData,
-        Seated, Transform, TravelState, Traveled, WanderState,
+        ActorValues, ActorVitals, Children, Dead, EquipmentSlots, EquippedWeapon, EscortState,
+        Escorted, FollowState, GuardState, Inventory, LightFlicker, LightSource, Material, Name,
+        Parent, PatrolState, RigidBodyData, Seated, Transform, TravelState, Traveled, WanderState,
     };
     use byroredux_core::ecs::resources::ItemInstancePool;
     use byroredux_scripting::papyrus_demo::RumbleOnActivate;
@@ -242,6 +246,9 @@ pub fn build_save_registry() -> SaveRegistry {
         // reverted every edited/permanent/temporary/damage layer to the
         // re-derived spawn base. Also a MUTABLE_DELTA_COLUMN (delta-safe).
         .register_component::<ActorValues>("ActorValues")
+        .register_component::<ActorVitals>("ActorVitals")
+        .register_component::<EquippedWeapon>("EquippedWeapon")
+        .register_component::<Dead>("Dead")
         // #2014 / SAVE-D1-NEW-01 — the seven M42 AI-procedure runtime-state
         // components. Continuously-updated state (WanderState/PatrolState/
         // GuardState) is cosmetically self-correcting if lost (the owning

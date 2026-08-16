@@ -648,7 +648,7 @@ fn advance_runtime_unit(
                 None,
                 None,
             );
-            keyframe_live_ragdoll_bones(world, &skel_map);
+            keyframe_live_ragdoll_bones(world, state.placement_root, &skel_map);
             if let Some(root) = skel_root {
                 parent_part(world, state.placement_root, root);
             } else {
@@ -1053,6 +1053,9 @@ fn prepare_prebaked_state(
         .collect();
     world.insert(placement_root, equip.inventory);
     world.insert(placement_root, equip.equipment_slots);
+    if let Some(weapon) = equip.equipped_weapon {
+        world.insert(placement_root, weapon);
+    }
 
     PrebakedNpcState {
         placement_root,
@@ -1102,7 +1105,7 @@ fn advance_prebaked_unit(
                 None,
                 None,
             );
-            keyframe_live_ragdoll_bones(world, &skel_map);
+            keyframe_live_ragdoll_bones(world, state.placement_root, &skel_map);
             if let Some(root) = skel_root {
                 parent_part(world, state.placement_root, root);
             }

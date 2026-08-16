@@ -65,6 +65,17 @@ fn main() -> anyhow::Result<()> {
             let inventory = resolve_inherited_inventory(npc, actor_level, &index);
             let actor_values =
                 byroredux_plugin::esm::records::derive_npc_actor_values(npc, &index, index.game);
+            let health = index
+                .health_actor_value_key(index.game)
+                .and_then(|health_form_id| {
+                    actor_values
+                        .iter()
+                        .find_map(|(form_id, value)| (*form_id == health_form_id).then_some(*value))
+                });
+            let race_starting_health = index
+                .races
+                .get(&npc.race_form_id)
+                .and_then(|race| race.starting_health);
             let factions = npc
                 .factions
                 .iter()
@@ -107,7 +118,8 @@ fn main() -> anyhow::Result<()> {
 
             println!(
                 "  NPC ref={:08X} base={:08X} edid={} level={} pos=({:.1},{:.1},{:.1}) \
-                 factions=[{}] actor_values={} outfit={} death_item={} weapons=[{}]",
+                 factions=[{}] actor_values={} health={} race_health={} health_offset={} \
+                 outfit={} death_item={} weapons=[{}]",
                 placed.form_id,
                 npc.form_id,
                 npc.editor_id,
@@ -117,6 +129,13 @@ fn main() -> anyhow::Result<()> {
                 placed.position[2],
                 factions,
                 actor_values.len(),
+                health
+                    .map(|value| format!("{value:.1}"))
+                    .unwrap_or_else(|| "none".to_string()),
+                race_starting_health
+                    .map(|value| format!("{value:.1}"))
+                    .unwrap_or_else(|| "none".to_string()),
+                npc.health_offset,
                 npc.default_outfit
                     .map(|form_id| format!("{form_id:08X}"))
                     .unwrap_or_else(|| "none".to_string()),

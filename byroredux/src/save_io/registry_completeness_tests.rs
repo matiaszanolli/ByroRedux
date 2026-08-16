@@ -115,7 +115,6 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("CellRoot", "stamped once per entity at cell load, idempotent across reloads of the same cell"),
         ("ChildAttachConnections", "write-once NIF-import data, no runtime mutator, same file/pattern as AttachPoints"),
         ("CollisionShape", "NIF/Havok-derived static geometry, only read by physics sync to register Rapier colliders"),
-        ("Dead", "forward-latent — no live inserter exists yet outside tests (#2293); register the moment a death-resolution system lands"),
         ("EscortBehavior", "active-package-derived config rebuilt at spawn and replaced by ambient_ai_package_system; mutable companion EscortState is registered"),
         ("FactionRanks", "already covered by the NPC-spawn-stamped guard's own REDERIVED_NOT_SAVED list above (#1835)"),
         ("FogVolume", "converted once at cell/scene load from static XCLL/WTHR/NiFogProperty data, only read by the froxel injector"),
@@ -212,6 +211,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("UiMessageCommand", "one-shot command marker drained every frame; its only writer is unreachable in production today (same reason as MG07LabyrinthianDoor)"),
         // ── crates/physics/src/ ──────────────────────────────────────
         ("ActorBoneCollider", "derived label, not state: re-applied to every skeleton bone by keyframe_live_ragdoll_bones on each NPC spawn, which a load re-runs (#2873)"),
+        ("ActorColliderOwner", "derived skeleton-bone to placement-root link rebuilt by keyframe_live_ragdoll_bones on every NPC spawn"),
         ("CharacterController", "mutable per-frame fields (velocity/grounded/jump) are deliberately zeroed on reload by the pose-restore path, not carried over"),
         ("ContactConfig", "boot-time tunable resource, no runtime mutator (no resource_mut call exists outside tests)"),
         ("PhysicsWaterConstants", "boot-time tunable resource, no runtime mutator (no resource_mut call exists outside tests)"),
@@ -235,6 +235,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("CellLightingRes", "WTHR ambient/directional CPU-side mirror, re-flowed from the plugin's parsed lighting record every cell load"),
         ("CellRootIndex", "inverted CellRoot->owned-entities index, repopulated by cell_loader::stamp_cell_root every cell load (#791)"),
         ("CloudSimState", "cloud-scroll accumulator, freshly seeded at [0,0] by every apply_worldspace_weather call (see its own #803 doc)"),
+        ("CombatState", "session-local attack timing and smoke telemetry; canonical Health/Dead/EquippedWeapon state is saved separately"),
         ("CurrentCellRoot", "tracks the interior placement-root entity, set fresh by load_cell_with_masters and cleared by execute_pending before each cell load"),
         ("DebugLoadArchiveSet", "debug cell.load console-command bookkeeping (#2078), outside the normal single-launch CLI path"),
         ("DoorTeleport", "XTEL destination data, rederived identically from the plugin's parsed REFR every cell load"),

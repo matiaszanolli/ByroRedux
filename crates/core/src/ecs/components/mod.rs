@@ -41,7 +41,7 @@ pub mod water;
 pub mod world_bound;
 
 pub use actor_state::Dead;
-pub use actor_values::{ActorValue, ActorValues};
+pub use actor_values::{ActorValue, ActorValues, ActorVitals};
 pub use animated::{
     AnimatedAlpha, AnimatedAmbientColor, AnimatedDiffuseColor, AnimatedEmissiveColor,
     AnimatedMorphWeights, AnimatedShaderColor, AnimatedShaderFloat, AnimatedSpecularColor,
@@ -63,7 +63,8 @@ pub use global_transform::GlobalTransform;
 pub use guard::{GuardBehavior, GuardState};
 pub use hierarchy::{Children, Parent};
 pub use inventory::{
-    EquipmentSlots, Inventory, InventoryIndex, ItemInstanceId, ItemStack, MAX_BIPED_SLOTS,
+    EquipmentSlots, EquippedWeapon, Inventory, InventoryIndex, ItemInstanceId, ItemStack,
+    MAX_BIPED_SLOTS,
 };
 pub use light::{
     LightFlicker, LightKind, LightSource, LIGHT_FLAG_FLICKER, LIGHT_FLAG_FLICKER_SLOW,

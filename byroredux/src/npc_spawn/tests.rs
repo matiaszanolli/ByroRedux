@@ -268,6 +268,63 @@ fn misc_item(form_id: u32) -> byroredux_plugin::esm::records::ItemRecord {
     }
 }
 
+fn weapon_item(form_id: u32, damage: u32) -> byroredux_plugin::esm::records::ItemRecord {
+    byroredux_plugin::esm::records::ItemRecord {
+        form_id,
+        common: byroredux_plugin::esm::records::common::CommonItemFields::default(),
+        kind: ItemKind::Weapon {
+            ammo_form: 0,
+            damage,
+            clip_size: 0,
+            anim_type: 0,
+            ap_cost: 0,
+            skill_form: 0,
+            min_spread: 0.0,
+            spread: 0.0,
+            crit_mult: 0.0,
+            reload_anim: 0,
+        },
+    }
+}
+
+#[test]
+fn prebaked_equip_state_selects_one_highest_damage_weapon() {
+    use byroredux_plugin::esm::records::NpcInventoryEntry;
+
+    const NPC: u32 = 0x0100_0010;
+    const BATTLEAXE: u32 = 0x0001_CB64;
+    const GREATSWORD: u32 = 0x0002_36A5;
+    let mut npc = test_npc(NPC, "DraugrWeaponFixture");
+    // Deliberately duplicate both candidates, matching the frozen P2 fixture's
+    // multiple leveled-list outcomes. Inventory can represent each row, but
+    // combat must own exactly one deterministic weapon.
+    for form_id in [GREATSWORD, BATTLEAXE, GREATSWORD, BATTLEAXE] {
+        npc.inventory.push(NpcInventoryEntry {
+            item_form_id: form_id,
+            count: 1,
+        });
+    }
+    let mut index = EsmIndex {
+        game: GameKind::Skyrim,
+        ..Default::default()
+    };
+    index.items.insert(BATTLEAXE, weapon_item(BATTLEAXE, 18));
+    index.items.insert(GREATSWORD, weapon_item(GREATSWORD, 17));
+
+    let state = build_npc_equip_state(&npc, &index, GameKind::Skyrim, Gender::Male);
+    let equipped = state.equipped_weapon.expect("one weapon must be equipped");
+    assert_eq!(equipped.base_form_id, BATTLEAXE);
+    assert_eq!(equipped.damage, 18.0);
+    assert_eq!(
+        state
+            .inventory
+            .get(equipped.inventory_index)
+            .map(|stack| stack.base_form_id),
+        Some(BATTLEAXE),
+        "equipped state must point at the winning inventory row"
+    );
+}
+
 /// A templated Skyrim NPC with an empty own CNTO and
 /// `TEMPLATE_FLAG_USE_INVENTORY` set must inherit its base's gear via
 /// the TPLT walk — pre-fix `build_npc_equip_state` read `npc.inventory`
@@ -417,6 +474,7 @@ fn prebaked_equip_state_falls_back_to_race_skin_for_uncovered_slots() {
         base_height: (1.0, 1.0),
         base_weight: (1.0, 1.0),
         race_flags: 0,
+        starting_health: None,
         base_attributes: None,
         default_hair: None,
         voice_forms: None,
@@ -504,6 +562,7 @@ fn prebaked_equip_state_drops_skin_mesh_fully_displaced_by_gear() {
         base_height: (1.0, 1.0),
         base_weight: (1.0, 1.0),
         race_flags: 0,
+        starting_health: None,
         base_attributes: None,
         default_hair: None,
         voice_forms: None,

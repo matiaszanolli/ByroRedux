@@ -131,6 +131,24 @@ impl Component for Inventory {
 #[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct InventoryIndex(pub u32);
 
+/// The single weapon an actor currently presents to combat.
+///
+/// `inventory_index` keeps equip state anchored to the canonical Inventory
+/// row, while the copied base FormID and damage make the hot attack path
+/// independent of plugin-record storage. Weapon meshes/animation families
+/// can refine this component without changing damage ownership.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
+pub struct EquippedWeapon {
+    pub inventory_index: InventoryIndex,
+    pub base_form_id: u32,
+    pub damage: f32,
+}
+
+impl Component for EquippedWeapon {
+    type Storage = SparseSetStorage<Self>;
+}
+
 /// The number of biped-slot bits an actor's equipment can occupy.
 ///
 /// FO3 / FNV `BMDT.biped_flags` is the low 16 bits; Skyrim+ `BOD2` is
@@ -235,6 +253,18 @@ mod tests {
         assert_eq!(b, InventoryIndex(1));
         assert_eq!(inv.get(a).unwrap().count, 1);
         assert_eq!(inv.get(b).unwrap().count, 2);
+    }
+
+    #[test]
+    fn equipped_weapon_points_at_inventory_and_carries_base_damage() {
+        let weapon = EquippedWeapon {
+            inventory_index: InventoryIndex(2),
+            base_form_id: 0x0001_CB64,
+            damage: 18.0,
+        };
+        assert_eq!(weapon.inventory_index, InventoryIndex(2));
+        assert_eq!(weapon.base_form_id, 0x0001_CB64);
+        assert_eq!(weapon.damage, 18.0);
     }
 
     #[test]

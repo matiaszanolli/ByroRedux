@@ -448,6 +448,7 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.insert_resource(InjectedKeyHold::default());
     world.insert_resource(InteractionState::default());
     world.insert_resource(InteractionTrace::default());
+    world.insert_resource(crate::combat::CombatState::default());
     world.insert_resource(StringPool::new());
     // #1212 / D1-NEW-01 — FormIdPool is the intern table backing
     // `FormIdComponent` and `World::find_by_form_id`. Every
@@ -519,6 +520,9 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // exist before the first `collect_newcomers`, which spawns NPCs' bones
     // in the same frame the cell loads.
     world.register::<byroredux_physics::ActorBoneCollider>();
+    world.register::<byroredux_physics::ActorColliderOwner>();
+    world.register::<byroredux_core::ecs::components::ActorVitals>();
+    world.register::<byroredux_core::ecs::components::EquippedWeapon>();
     // MQ101 scene CTDAs read actor death and authored CELL identity through
     // shared sparse components. Register them before any scene/cell exists so
     // condition evaluation safely sees the default alive/unowned state.
@@ -770,6 +774,11 @@ pub(crate) fn build_scheduler() -> Scheduler {
     // Canonical player interaction runs before every OnActivate consumer so
     // a fresh E-key edge is visible to scripts in the same frame.
     scheduler.add_exclusive(Stage::Update, crate::interaction::interaction_system);
+    // Combat follows the same producer-before-consumer event contract as
+    // activation: physical Attack emits HitEvent, then health/death resolves
+    // before script consumers and Late-stage transient cleanup.
+    scheduler.add_exclusive(Stage::Update, crate::combat::combat_input_system);
+    scheduler.add_exclusive(Stage::Update, crate::combat::combat_damage_system);
     // #2654 — quest fragments queue their `<Ref>.Activate()` targets rather
     // than inserting `ActivateEvent` directly, because
     // `quest_fragment_dispatch` runs *after* three of the four consumers

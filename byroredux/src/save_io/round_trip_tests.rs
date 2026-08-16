@@ -45,6 +45,10 @@ fn delta_columns_carry_only_session_stable_fields() {
         // Keys are global-space FormIDs (stable across reload); values are
         // plain f32s. No FixedString / EntityId / session handle → delta-safe.
         "ActorValues",
+        // EquippedWeapon: u32 inventory index + u32 base FormID + f32
+        // damage. Dead: empty marker. Neither carries session identity.
+        "EquippedWeapon",
+        "Dead",
         // #2014 — WanderState/PatrolState: home/target Vec3 + WanderPhase
         // enum (Walking, or Paused{remaining: f32}) + pick_count u32.
         // TravelState: destination Vec3. GuardState: anchor Vec3.

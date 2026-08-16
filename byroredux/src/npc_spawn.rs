@@ -9,8 +9,8 @@
 use byroredux_core::animation::AnimationClipRegistry;
 use byroredux_core::animation::AnimationPlayer;
 use byroredux_core::ecs::components::{
-    EquipmentSlots, FactionRanks, GlobalTransform, Inventory, InventoryIndex, ItemStack,
-    MotionType, Name, Parent, RigidBodyData, Transform,
+    EquipmentSlots, EquippedWeapon, FactionRanks, GlobalTransform, Inventory, InventoryIndex,
+    ItemStack, MotionType, Name, Parent, RigidBodyData, Transform,
 };
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::World;
@@ -85,10 +85,9 @@ fn stamp_faction_ranks(world: &mut World, placement_root: EntityId, npc: &NpcRec
 }
 
 /// Stamp an [`ActorValues`] component on the NPC's placement root, derived
-/// from its class's base SPECIAL via the documented FNV/FO3 auto-calc model,
-/// so the M47.1 `GetActorValue` condition reads real values (#1663). No-op
-/// when the derivation yields nothing — a non-FNV/FO3 game, an NPC with no
-/// (parsed) class, or an index whose `AVIF` records don't resolve.
+/// from the active game's authored/derived character rules, so condition and
+/// combat systems read the same values. No-op when the derivation yields
+/// nothing or the index cannot resolve the required records.
 fn stamp_actor_values(
     world: &mut World,
     placement_root: EntityId,
@@ -100,10 +99,19 @@ fn stamp_actor_values(
     if pairs.is_empty() {
         return;
     }
+    let health = index
+        .health_actor_value_key(game)
+        .filter(|health| pairs.iter().any(|(form_id, _)| form_id == health));
     world.insert(
         placement_root,
         byroredux_core::ecs::components::ActorValues::from_pairs(pairs),
     );
+    if let Some(health) = health {
+        world.insert(
+            placement_root,
+            byroredux_core::ecs::components::ActorVitals { health },
+        );
+    }
 }
 
 /// The actor's effective level for anything that treats level as a number.
@@ -226,6 +234,7 @@ pub fn build_character_ruleset(
 /// cell. `exclude_rigid_body` cannot fix it — each bone is a separate body.
 fn keyframe_live_ragdoll_bones(
     world: &mut World,
+    actor_root: EntityId,
     skel_map: &std::collections::HashMap<std::sync::Arc<str>, EntityId>,
 ) {
     use byroredux_core::ecs::components::collision::CollisionShape;
@@ -244,6 +253,7 @@ fn keyframe_live_ragdoll_bones(
             .is_some_and(|q| q.contains(bone));
         if has_shape {
             world.insert(bone, byroredux_physics::ActorBoneCollider);
+            world.insert(bone, byroredux_physics::ActorColliderOwner(actor_root));
         }
     }
 }
@@ -658,6 +668,7 @@ struct ResolvedArmor<'a> {
 struct NpcEquipState<'a> {
     inventory: Inventory,
     equipment_slots: EquipmentSlots,
+    equipped_weapon: Option<EquippedWeapon>,
     armor_to_spawn: Vec<ResolvedArmor<'a>>,
 }
 
@@ -678,6 +689,7 @@ fn build_npc_equip_state<'a>(
 ) -> NpcEquipState<'a> {
     let mut inventory = Inventory::new();
     let mut equipment_slots = EquipmentSlots::new();
+    let mut equipped_weapon: Option<EquippedWeapon> = None;
     let mut armor_to_spawn: Vec<ResolvedArmor<'a>> = Vec::new();
     // #2955 — same gate as `stamp_character_components`: a PC-level-multiplier
     // record's `level` is not a level, and `expand_leveled_form_id` filters
@@ -766,10 +778,27 @@ fn build_npc_equip_state<'a>(
             // master-list miss. Silent — the inventory row stays.
             continue;
         };
-        let ItemKind::Armor { biped_flags, .. } = item.kind else {
-            // Non-armor inventory (food, ammo, weapons, MISC) keep
-            // their inventory row but don't equip / spawn mesh.
-            continue;
+        let biped_flags = match &item.kind {
+            ItemKind::Weapon { damage, .. } => {
+                let candidate = EquippedWeapon {
+                    inventory_index: inv_idx,
+                    base_form_id: form_id,
+                    damage: *damage as f32,
+                };
+                let replace = equipped_weapon.is_none_or(|current| {
+                    candidate.damage > current.damage
+                        || (candidate.damage == current.damage
+                            && candidate.base_form_id < current.base_form_id)
+                });
+                if replace {
+                    equipped_weapon = Some(candidate);
+                }
+                continue;
+            }
+            ItemKind::Armor { biped_flags, .. } => *biped_flags,
+            // Food, ammo, MISC, and other non-equipment inventory keeps its
+            // row but has no live equip state in this slice.
+            _ => continue,
         };
 
         equipment_slots.equip(biped_flags, inv_idx);
@@ -798,6 +827,7 @@ fn build_npc_equip_state<'a>(
     NpcEquipState {
         inventory,
         equipment_slots,
+        equipped_weapon,
         armor_to_spawn,
     }
 }

@@ -34,6 +34,7 @@ pub(crate) fn release_world_input(world: &World) -> bool {
     let was_captured = {
         let mut input = world.resource_mut::<InputState>();
         input.keys_held.clear();
+        input.mouse_buttons_held.clear();
         std::mem::replace(&mut input.mouse_captured, false)
     };
     crate::interaction::clear_debug_input(world);

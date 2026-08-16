@@ -25,7 +25,9 @@ pub mod sync;
 pub mod water;
 pub mod world;
 
-pub use components::{ActorBoneCollider, CharacterController, Ragdoll, RapierHandles};
+pub use components::{
+    ActorBoneCollider, ActorColliderOwner, CharacterController, Ragdoll, RapierHandles,
+};
 pub use config::{ContactConfig, TriMeshFlagBits};
 pub use ragdoll::{
     build_ragdoll, RagdollBodySpec, RagdollConstraintSpec, RagdollJointSpec, RagdollSpec,

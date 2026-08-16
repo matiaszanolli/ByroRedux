@@ -5,7 +5,9 @@
 //! from the master NPC record, and translates native-menu actions back into
 //! those existing components.
 
-use byroredux_core::ecs::components::{EquipmentSlots, Inventory, InventoryIndex, ItemStack};
+use byroredux_core::ecs::components::{
+    EquipmentSlots, EquippedWeapon, Inventory, InventoryIndex, ItemStack,
+};
 use byroredux_core::ecs::{Resource, World};
 use byroredux_plugin::esm::records::{EsmIndex, ItemKind, NpcRecord, ACBS_PC_LEVEL_MULT};
 use rustc_hash::FxHashMap;
@@ -40,6 +42,7 @@ impl Resource for InventoryCatalog {}
 pub(crate) struct PlayerInventoryTemplate {
     inventory: Inventory,
     equipment: EquipmentSlots,
+    equipped_weapon: Option<EquippedWeapon>,
 }
 
 impl Resource for PlayerInventoryTemplate {}
@@ -120,6 +123,7 @@ fn build_player_template(index: &EsmIndex) -> PlayerInventoryTemplate {
     let actor_level = effective_actor_level(player);
     let mut inventory = Inventory::new();
     let mut equipment = EquipmentSlots::new();
+    let mut equipped_weapon = None;
     let mut expanded = Vec::new();
 
     // Skyrim+ authors initial worn gear through OTFT. Older games generally
@@ -137,6 +141,7 @@ fn build_player_template(index: &EsmIndex) -> PlayerInventoryTemplate {
                 for resolved in expanded.drain(..) {
                     let item_index = add_stack(&mut inventory, resolved, 1);
                     equip_armor(index, &mut equipment, resolved, item_index);
+                    prefer_weapon(index, resolved, item_index, &mut equipped_weapon);
                 }
             }
         }
@@ -160,12 +165,14 @@ fn build_player_template(index: &EsmIndex) -> PlayerInventoryTemplate {
             if equip_carried_armor {
                 equip_armor(index, &mut equipment, resolved, item_index);
             }
+            prefer_weapon(index, resolved, item_index, &mut equipped_weapon);
         }
     }
 
     PlayerInventoryTemplate {
         inventory,
         equipment,
+        equipped_weapon,
     }
 }
 
@@ -205,6 +212,32 @@ fn equip_armor(
     }
 }
 
+/// Select one deterministic weapon from authored inventory: highest base
+/// damage wins, then lowest FormID breaks ties. Multiple LVLI outcomes can
+/// still be carried, but only one becomes live combat state.
+fn prefer_weapon(
+    index: &EsmIndex,
+    form_id: u32,
+    inventory_index: InventoryIndex,
+    equipped: &mut Option<EquippedWeapon>,
+) {
+    let Some(ItemKind::Weapon { damage, .. }) = index.items.get(&form_id).map(|item| &item.kind)
+    else {
+        return;
+    };
+    let candidate = EquippedWeapon {
+        inventory_index,
+        base_form_id: form_id,
+        damage: *damage as f32,
+    };
+    if equipped.is_none_or(|current| {
+        candidate.damage > current.damage
+            || (candidate.damage == current.damage && candidate.base_form_id < current.base_form_id)
+    }) {
+        *equipped = Some(candidate);
+    }
+}
+
 /// Attach canonical inventory state to a newly-created player body.
 pub(crate) fn attach_to_player(world: &mut World, player: byroredux_core::ecs::EntityId) {
     let template = world
@@ -213,6 +246,9 @@ pub(crate) fn attach_to_player(world: &mut World, player: byroredux_core::ecs::E
         .unwrap_or_default();
     world.insert(player, template.inventory);
     world.insert(player, template.equipment);
+    if let Some(weapon) = template.equipped_weapon {
+        world.insert(player, weapon);
+    }
 }
 
 /// Build the presentation snapshot only while the native inventory is visible.

@@ -7,19 +7,16 @@
 //! Distinct from the string-keyed [`crate`]-external `ActorStats` prototype
 //! under `papyrus_demo`: that one keys by Papyrus source name for one demo
 //! script and stores a flat value. This is the production store — keyed by
-//! AVIF FormID, layered (base / permanent / temporary / damage), and shared
-//! by every gameplay reader.
+//! the source game's canonical actor-value identifier, layered (base /
+//! permanent / temporary / damage), and shared by every gameplay reader.
 //!
-//! ## FormID space
+//! ## Key space
 //!
-//! Keyed by **AVIF FormID in global load-order space** — the same space a
-//! CTDA's `param_1` is promoted to at parse time (function 9 is in the
-//! form-id-param list, so `remap_condition_form_ids` rewrites it; see
-//! `crates/plugin/src/esm/records/condition.rs`) and the same space
-//! `EsmIndex::actor_values` is keyed in (the AVIF walker applies the remap).
-//! So `GetActorValue` looks the value up by the remapped `param_1` directly —
-//! no per-entity FormIdPool resolution, and correct across multi-plugin loads
-//! (unlike the source-space [`super::FactionRanks`] key).
+//! Record-backed actor values use their **AVIF FormID in global load-order
+//! space**. Built-in TES5 actor values use Skyrim's engine enum index (for
+//! example Health is 24), because vanilla does not author AVIF records for
+//! them. [`ActorVitals`] carries the canonical Health key alongside each
+//! actor so gameplay consumers do not need game-specific lookup rules.
 //!
 //! ## Composition
 //!
@@ -59,7 +56,7 @@ impl ActorValue {
     }
 }
 
-/// An actor's layered actor values, keyed by global-space AVIF FormID.
+/// An actor's layered actor values, keyed by the game's canonical identifier.
 ///
 /// Sparse storage — most entities are not actors. Map-backed because an actor
 /// carries many values (SPECIAL + skills + resistances + resources + derived,
@@ -68,6 +65,21 @@ impl ActorValue {
 #[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct ActorValues {
     values: HashMap<u32, ActorValue>,
+}
+
+/// Canonical keys for an actor's vital resource values.
+///
+/// ActorValues remains a game-agnostic map. This companion supplies the
+/// per-game Health key so combat never hard-codes or guesses which entry is
+/// health.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
+pub struct ActorVitals {
+    pub health: u32,
+}
+
+impl Component for ActorVitals {
+    type Storage = SparseSetStorage<Self>;
 }
 
 impl ActorValues {

@@ -1,12 +1,14 @@
 //! NPC actor-value population (#1663 FNV/FO3 + CHARAL FO4).
 //!
-//! Produces the `(AVIF FormID, value)` pairs that seed an `ActorValues`
+//! Produces the `(canonical actor-value key, value)` pairs that seed an `ActorValues`
 //! component the `GetActorValue` condition reads. Two per-game mechanisms
 //! converge on the same output shape:
 //!
 //! - **FNV / FO3 (auto-calc):** computes SPECIAL + base skills from the
 //!   NPC's class, per the documented GECK auto-calculate model, and
 //!   resolves each to its `AVIF` FormID (the original #1663 path, below).
+//! - **Skyrim (race + offset):** seeds Health from the race's starting
+//!   Health plus the NPC's signed TES5 ACBS Health offset.
 //! - **FO4+ (stored):** FO4 stores actor values rather than deriving them
 //!   — the `NPC_` `PRPS` property array already *is* `(AVIF FormID, value)`
 //!   pairs, with baked `Calculated Health`/`Action Points` in `DNAM`. The
@@ -41,7 +43,8 @@
 //! - **Non-auto-calc NPCs.** NPCs with "Auto-calculate stats" off store
 //!   their own SPECIAL; we always use the class base attributes. Correct
 //!   for the auto-calc majority; an approximation for hand-tuned actors.
-//! - **Derived attributes** (Health, Action Points, Carry Weight, …).
+//! - **Derived attributes** beyond Skyrim Health and FO4's baked Health /
+//!   Action Points (Carry Weight, regeneration, …).
 //!
 //! ## FormID space
 //!
@@ -102,12 +105,15 @@ fn base_skill(governing: u8, luck: u8) -> f32 {
 ///   not derived — the `PRPS` property pairs are the SPECIAL + overrides
 ///   verbatim, plus the baked `DNAM` Calculated Health / Action Points.
 ///   See [`derive_stored_actor_values`].
+/// - **Skyrim**: Health is `RACE.DATA.starting_health +
+///   NPC_.ACBS.health_offset`, resolved through the load order's Health AVIF.
 /// - **FNV / FO3**: actor values are *auto-calculated* from the NPC's
 ///   class base SPECIAL (the documented GECK model) — the 7 SPECIAL plus
 ///   every skill whose `AVIF` resolves. See [`derive_autocalc_actor_values`].
 ///
-/// Empty for every other game (Oblivion / Skyrim — not yet modelled), an
-/// FO4 NPC with no `PRPS`, or an FNV NPC whose class wasn't parsed.
+/// Empty for every other game (Oblivion), a Skyrim NPC whose race or Health
+/// AVIF is missing, an FO4 NPC with no `PRPS`, or an FNV NPC whose class
+/// wasn't parsed.
 ///
 /// [`ActorValues::from_pairs`]: byroredux_core::ecs::components::ActorValues::from_pairs
 pub fn derive_npc_actor_values(
@@ -117,11 +123,34 @@ pub fn derive_npc_actor_values(
 ) -> Vec<(u32, f32)> {
     if game.uses_actor_value_properties() {
         derive_stored_actor_values(npc, index)
+    } else if matches!(game, GameKind::Skyrim) {
+        derive_skyrim_actor_values(npc, index)
     } else if matches!(game, GameKind::Fallout3NV) {
         derive_autocalc_actor_values(npc, index)
     } else {
         Vec::new()
     }
+}
+
+/// TES5 NPC Health is authored as a race starting value plus a signed actor
+/// offset. Health uses Skyrim's built-in actor-value enum key; vanilla does
+/// not provide a `Health` AVIF record to resolve.
+fn derive_skyrim_actor_values(npc: &NpcRecord, index: &EsmIndex) -> Vec<(u32, f32)> {
+    let Some(health_key) = index.health_actor_value_key(GameKind::Skyrim) else {
+        return Vec::new();
+    };
+    let Some(starting_health) = index
+        .races
+        .get(&npc.race_form_id)
+        .and_then(|race| race.starting_health)
+    else {
+        return Vec::new();
+    };
+    let health = starting_health + f32::from(npc.health_offset);
+    if !health.is_finite() || health <= 0.0 {
+        return Vec::new();
+    }
+    vec![(health_key, health)]
 }
 
 /// FO4+ stored actor values: the `PRPS` `(AVIF FormID, value)` pairs
@@ -219,7 +248,7 @@ mod tests {
     }
 
     use super::*;
-    use crate::esm::records::{AvifRecord, ClassRecord};
+    use crate::esm::records::{AvifRecord, ClassRecord, RaceRecord};
 
     fn avif(form_id: u32, editor_id: &str) -> AvifRecord {
         AvifRecord {
@@ -318,18 +347,62 @@ mod tests {
     }
 
     #[test]
-    fn empty_without_class_or_wrong_game() {
+    fn empty_without_class_or_unsupported_game() {
         let index = fnv_index_with_class(0x2000, [5; 7]);
         // NPC referencing an unparsed class → empty.
         assert!(
             derive_npc_actor_values(&npc_with_class(0x9999), &index, GameKind::Fallout3NV)
                 .is_empty()
         );
-        // Right NPC, not-yet-modelled game → empty (Skyrim has neither the
-        // FNV auto-calc class model nor the FO4 PRPS property model).
+        // Right NPC, unsupported game → empty.
         assert!(
-            derive_npc_actor_values(&npc_with_class(0x2000), &index, GameKind::Skyrim).is_empty()
+            derive_npc_actor_values(&npc_with_class(0x2000), &index, GameKind::Oblivion).is_empty()
         );
+    }
+
+    #[test]
+    fn skyrim_health_is_race_start_plus_signed_npc_offset() {
+        let mut index = EsmIndex::default();
+        index.races.insert(
+            0x13746,
+            RaceRecord {
+                form_id: 0x13746,
+                starting_health: Some(50.0),
+                ..Default::default()
+            },
+        );
+        let npc = NpcRecord {
+            race_form_id: 0x13746,
+            health_offset: -15,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            derive_npc_actor_values(&npc, &index, GameKind::Skyrim),
+            vec![(EsmIndex::SKYRIM_HEALTH_ACTOR_VALUE, 35.0)]
+        );
+    }
+
+    #[test]
+    fn skyrim_health_skips_when_race_health_is_missing_or_invalid() {
+        let npc = NpcRecord {
+            race_form_id: 0x13746,
+            health_offset: 10,
+            ..Default::default()
+        };
+        let no_race = EsmIndex::default();
+        assert!(derive_npc_actor_values(&npc, &no_race, GameKind::Skyrim).is_empty());
+
+        let mut invalid_race = EsmIndex::default();
+        invalid_race.races.insert(
+            0x13746,
+            RaceRecord {
+                form_id: 0x13746,
+                starting_health: Some(f32::NAN),
+                ..Default::default()
+            },
+        );
+        assert!(derive_npc_actor_values(&npc, &invalid_race, GameKind::Skyrim).is_empty());
     }
 
     #[test]

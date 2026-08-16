@@ -365,6 +365,19 @@ impl ApplicationHandler for App {
                 button: MouseButton::Left,
                 ..
             } if !self.world.resource::<InputState>().mouse_captured => self.capture_world_input(),
+            WindowEvent::MouseInput { state, button, .. }
+                if self.world.resource::<InputState>().mouse_captured =>
+            {
+                let mut input = self.world.resource_mut::<InputState>();
+                match state {
+                    ElementState::Pressed => {
+                        input.mouse_buttons_held.insert(button);
+                    }
+                    ElementState::Released => {
+                        input.mouse_buttons_held.remove(&button);
+                    }
+                }
+            }
             _ => {}
         }
     }

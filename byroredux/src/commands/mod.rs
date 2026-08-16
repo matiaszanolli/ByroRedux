@@ -84,6 +84,8 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(CamPosCommand);
     registry.register(CamTpCommand);
     registry.register(InteractionStatusCommand);
+    registry.register(CombatStatusCommand);
+    registry.register(CombatApproachCommand);
     registry.register(InputPressCommand);
     registry.register(InputHoldCommand);
     registry.register(InputLookCommand);

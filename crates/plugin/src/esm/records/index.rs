@@ -364,6 +364,13 @@ pub struct EsmIndex {
 }
 
 impl EsmIndex {
+    /// TES5's built-in `Health` actor-value enum index.
+    ///
+    /// Skyrim addresses its built-in actor values by engine enum index rather
+    /// than by an `AVIF` record. Vanilla `Skyrim.esm` therefore does not need
+    /// to contain a `Health` AVIF for NPC health to be usable.
+    pub const SKYRIM_HEALTH_ACTOR_VALUE: u32 = 24;
+
     /// Reconcile Fallout inventory categories after a complete parse or
     /// load-order merge. OMOD groups can appear after MISC, and later plugins
     /// may override either side of the relationship, so this cannot safely be
@@ -581,6 +588,19 @@ impl EsmIndex {
             .values()
             .find(|avif| avif.editor_id.eq_ignore_ascii_case(editor_id))
             .map(|avif| avif.form_id)
+    }
+
+    /// Resolve the active game's canonical key for the Health actor value.
+    ///
+    /// Record-backed games use the parsed `AVIF` FormID. Skyrim uses the
+    /// built-in actor-value enum because vanilla does not author a `Health`
+    /// `AVIF` record.
+    pub fn health_actor_value_key(&self, game: GameKind) -> Option<u32> {
+        if matches!(game, GameKind::Skyrim) {
+            Some(Self::SKYRIM_HEALTH_ACTOR_VALUE)
+        } else {
+            self.actor_value_form_id("Health")
+        }
     }
 
     /// Format the per-category breakdown as a single line — used by the

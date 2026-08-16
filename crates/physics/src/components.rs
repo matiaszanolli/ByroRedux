@@ -40,6 +40,19 @@ impl Component for ActorBoneCollider {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// Canonical actor-root ownership for a live skeleton collider.
+///
+/// Ray casts return Rapier body handles, which resolve to the individual bone
+/// entity carrying that body. Combat needs the placement root that owns
+/// ActorValues and lifecycle state; storing it at skeleton registration makes
+/// that resolution direct and independent of scene-graph name/form heuristics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ActorColliderOwner(pub EntityId);
+
+impl Component for ActorColliderOwner {
+    type Storage = SparseSetStorage<Self>;
+}
+
 /// Kinematic character-controller body (M28.5). The high-level
 /// player rig — combines the capsule shape used by the physics layer
 /// with the movement-state fields the per-frame controller system
@@ -228,5 +241,10 @@ mod tests {
         assert_eq!(c.vertical_velocity, 0.0);
         assert!(!c.is_grounded);
         assert!(!c.wants_jump);
+    }
+
+    #[test]
+    fn actor_collider_owner_preserves_actor_root() {
+        assert_eq!(ActorColliderOwner(42).0, 42);
     }
 }

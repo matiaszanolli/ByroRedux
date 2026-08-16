@@ -243,6 +243,17 @@ pub struct NpcRecord {
     /// honest stand-in — it is the game's own data rather than a derived
     /// guess. `0` when the record does not carry one.
     pub calc_min: u16,
+    /// Skyrim ACBS signed Magicka offset (`i16 @ 4`). Combined with the
+    /// actor's race starting Magicka by the TES5 character ruleset. Parsed
+    /// alongside Health even though combat does not consume it yet, so the
+    /// three TES5 resource offsets stay one verified wire-layout unit.
+    pub magicka_offset: i16,
+    /// Skyrim ACBS signed Stamina offset (`i16 @ 6`). See
+    /// [`Self::magicka_offset`].
+    pub stamina_offset: i16,
+    /// Skyrim ACBS signed Health offset (`i16 @ 20`). Combat combines this
+    /// with [`RaceRecord::starting_health`] to seed the Health actor value.
+    pub health_offset: i16,
     /// Disposition base (from ACBS — i16 at offset 20). FNV vanilla
     /// default is 50; values are signed so unfriendly NPCs can sit
     /// below 0. Reading the high byte was being dropped pre-#377,
@@ -345,7 +356,7 @@ pub struct NpcRecord {
     pub perks: Vec<(u32, u8)>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RaceRecord {
     pub form_id: u32,
     pub editor_id: String,
@@ -419,6 +430,9 @@ pub struct RaceRecord {
     /// `Flies` — vanilla Oblivion uses bit 0 + bit 2 = 0x05 for
     /// playable beast-race overrides).
     pub race_flags: u32,
+    /// TES5 RACE `DATA` starting Health (`f32 @ 36`). `None` for games whose
+    /// layout has not been modelled and for malformed/non-finite values.
+    pub starting_health: Option<f32>,
     /// Per-gender base attributes from the Oblivion-only `ATTR`
     /// sub-record. 8 attributes per gender (Strength / Intelligence
     /// / Willpower / Agility / Speed / Endurance / Personality /
@@ -621,6 +635,9 @@ pub fn parse_npc(
         death_item_form_id: 0,
         level: 1,
         calc_min: 0,
+        magicka_offset: 0,
+        stamina_offset: 0,
+        health_offset: 0,
         disposition_base: 50,
         acbs_flags: 0,
         has_script: common.has_script,
@@ -833,6 +850,28 @@ fn parse_npc_core(
             r.skip_or_eof(2); // calc_max (u16)
             record.disposition_base = r.i16_or_default();
             record.template_flags = r.u16_or_default();
+        }
+        // Skyrim ACBS is a distinct 24-byte TES5 layout:
+        //   flags(u32), magicka_offset(i16), stamina_offset(i16),
+        //   level_or_pc_mult(u16), calc_min(u16), calc_max(u16),
+        //   speed_mult(u16), disposition(i16), template_flags(u16),
+        //   health_offset(i16), bleedout_override(u16).
+        //
+        // It must precede the generic 24-byte FNV/FO3 arm below. The shared
+        // byte length hid the mismatch: that arm read magicka/stamina as
+        // fatigue/barter, shifted level by two bytes, and interpreted the
+        // TES5 tail as karma/disposition/template flags.
+        b"ACBS" if matches!(game, GameKind::Skyrim) && sub.data.len() >= 24 => {
+            let mut r = SubReader::new(&sub.data);
+            record.acbs_flags = r.u32_or_default();
+            record.magicka_offset = r.i16_or_default();
+            record.stamina_offset = r.i16_or_default();
+            record.level = r.u16_or_default() as i16;
+            record.calc_min = r.u16_or_default();
+            r.skip_or_eof(4); // calc_max(u16) + speed_mult(u16)
+            record.disposition_base = r.i16_or_default();
+            record.template_flags = r.u16_or_default();
+            record.health_offset = r.i16_or_default();
         }
         // ACBS (FNV NPC_): flags(u32), fatigue(u16), barter(u16), level(i16),
         // calc_min(u16), calc_max(u16), speed_mult(u16), karma(f32),
@@ -1076,6 +1115,7 @@ pub fn parse_race(form_id: u32, subs: &[SubRecord], game: GameKind) -> RaceRecor
         base_height: (1.0, 1.0),
         base_weight: (1.0, 1.0),
         race_flags: 0,
+        starting_health: None,
         base_attributes: None,
         default_hair: None,
         voice_forms: None,
@@ -1153,7 +1193,8 @@ pub fn parse_race(form_id: u32, subs: &[SubRecord], game: GameKind) -> RaceRecor
             //   … then 92 / 128 B of TES5-only tail (starting health /
             //     magicka / stamina, carry weight, accel + decel rates,
             //     regen rates, unarmed damage and reach, biped object slots)
-            //     which no consumer needs yet.
+            //     of which the combat actor-value path currently consumes
+            //     starting health.
             //
             // Layout per OpenMW `esm4/loadrace.cpp:154-170`, and verified
             // byte-for-byte against vanilla `Skyrim.esm` (2026-08-12), which
@@ -1188,6 +1229,10 @@ pub fn parse_race(form_id: u32, subs: &[SubRecord], game: GameKind) -> RaceRecor
                 record.base_height = (h_m, h_f);
                 record.base_weight = (w_m, w_f);
                 record.race_flags = r.u32_or_default();
+                let starting_health = r.f32_or_default();
+                if starting_health.is_finite() && starting_health > 0.0 {
+                    record.starting_health = Some(starting_health);
+                }
             }
             // DATA (FO4 200 B / FO76 216 B) — a third layout again, and
             // deliberately only partially decoded.

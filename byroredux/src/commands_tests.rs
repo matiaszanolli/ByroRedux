@@ -485,6 +485,59 @@ fn cam_tp_no_args_no_selection_reports_usage() {
 }
 
 #[test]
+fn combat_approach_positions_and_aims_the_real_player_without_attacking() {
+    let mut world = World::new();
+    world.insert_resource(InputState::default());
+    world.insert_resource(crate::combat::CombatState::default());
+
+    let camera = world.spawn();
+    world.insert(camera, Transform::from_translation(Vec3::ZERO));
+    world.insert_resource(ActiveCamera(camera));
+
+    let player = world.spawn();
+    world.insert(player, Transform::from_translation(Vec3::ZERO));
+    world.insert(player, byroredux_physics::CharacterController::HUMAN);
+    world.insert_resource(crate::systems::PlayerEntity(Some(player)));
+
+    let target = world.spawn();
+    let target_pos = Vec3::new(100.0, 20.0, 300.0);
+    world.insert(
+        target,
+        GlobalTransform::new(target_pos, Quat::IDENTITY, 1.0),
+    );
+    world.insert(
+        target,
+        byroredux_core::ecs::components::ActorVitals { health: 24 },
+    );
+
+    let out = CombatApproachCommand
+        .execute(&world, &target.to_string())
+        .lines
+        .join("\n");
+    assert!(out.contains(&format!("entity {target}")), "{out}");
+    assert!(
+        out.contains("physics_synced=false"),
+        "fixture has no Rapier body: {out}"
+    );
+
+    let transforms = world.query::<Transform>().unwrap();
+    assert_eq!(
+        transforms.get(player).unwrap().translation,
+        target_pos - Vec3::Z * 120.0 + Vec3::Y * 64.0
+    );
+    assert_eq!(
+        transforms.get(camera).unwrap().translation,
+        target_pos - Vec3::Z * 120.0 + Vec3::Y * 116.0
+    );
+    drop(transforms);
+    let input = world.resource::<InputState>();
+    assert!(input.yaw.is_finite() && input.pitch.is_finite());
+    let combat = world.resource::<crate::combat::CombatState>();
+    assert_eq!(combat.attacks_started, 0);
+    assert_eq!(combat.hits_landed, 0);
+}
+
+#[test]
 fn look_at_degenerate_zero_distance_returns_zero() {
     // Target equals source — no meaningful direction; return zero
     // instead of producing NaN or an arbitrary unit vector.

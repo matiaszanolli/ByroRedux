@@ -11,6 +11,7 @@ use byroredux_core::math::Vec3;
 use byroredux_core::string::FixedString;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use winit::event::MouseButton;
 use winit::keyboard::KeyCode;
 
 /// Marker component for entities that should spin in the demo scene.
@@ -1111,6 +1112,7 @@ pub(crate) const DEFAULT_LOOK_SENSITIVITY: f32 = 0.002;
 
 pub(crate) struct InputState {
     pub(crate) keys_held: HashSet<KeyCode>,
+    pub(crate) mouse_buttons_held: HashSet<MouseButton>,
     /// Yaw (horizontal) and pitch (vertical) in radians.
     pub(crate) yaw: f32,
     pub(crate) pitch: f32,
@@ -1126,6 +1128,7 @@ impl Default for InputState {
     fn default() -> Self {
         Self {
             keys_held: HashSet::new(),
+            mouse_buttons_held: HashSet::new(),
             yaw: 0.0,
             pitch: 0.0,
             mouse_captured: false,

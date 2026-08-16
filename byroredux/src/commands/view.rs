@@ -1,7 +1,8 @@
 //! Camera + selection / picking commands.
 //!
 //! `prid`, `cam.where`, `near`, `pick`, `cam.pos`, `cam.tp`,
-//! `interaction.status`, `input.press`, `input.hold`, `input.look`,
+//! `interaction.status`, `combat.status`, `combat.approach`, `input.press`,
+//! `input.hold`, `input.look`,
 //! `player.status`.
 
 use super::shared::*;
@@ -57,11 +58,11 @@ impl ConsoleCommand for InteractionStatusCommand {
     }
 }
 
-/// `input.press activate` — queue one debug/smoke E-key pulse.
+/// `input.press <action>` — queue one debug/smoke gameplay-key pulse.
 ///
-/// The next Update tick maps physical `KeyE` through `ActionBindings` and
-/// derives a normal pressed edge; this command does not call activation or
-/// door transition code directly.
+/// The next Update tick maps the action's live keyboard binding through
+/// `ActionBindings` and derives a normal pressed edge; this command never
+/// invokes interaction or combat effects directly.
 pub(crate) struct InputPressCommand;
 impl ConsoleCommand for InputPressCommand {
     fn name(&self) -> &str {
@@ -69,19 +70,167 @@ impl ConsoleCommand for InputPressCommand {
     }
 
     fn description(&self) -> &str {
-        "Queue a one-frame gameplay input pulse (usage: input.press activate)"
+        "Queue a one-frame gameplay input pulse (usage: input.press <action>)"
     }
 
     fn execute(&self, world: &World, args: &str) -> CommandOutput {
-        match args.trim().to_ascii_lowercase().as_str() {
-            "activate" | "e" => match crate::interaction::queue_debug_activate_press(world) {
-                Ok(()) => CommandOutput::line(
-                    "input.press: queued KeyE through the normal Activate binding",
-                ),
-                Err(error) => CommandOutput::line(format!("input.press: {error}")),
-            },
-            _ => CommandOutput::line("usage: input.press activate"),
+        match crate::interaction::queue_debug_action_press(world, args) {
+            Ok(message) => CommandOutput::line(message),
+            Err(error) => CommandOutput::line(format!("input.press: {error}")),
         }
+    }
+}
+
+/// `combat.status` — show timing plus the last resolved attack/hit/death.
+pub(crate) struct CombatStatusCommand;
+impl ConsoleCommand for CombatStatusCommand {
+    fn name(&self) -> &str {
+        "combat.status"
+    }
+
+    fn description(&self) -> &str {
+        "Show melee cooldown, counters, and the last combat result"
+    }
+
+    fn execute(&self, world: &World, _args: &str) -> CommandOutput {
+        let state = world
+            .try_resource::<crate::combat::CombatState>()
+            .map(|state| state.clone())
+            .unwrap_or_default();
+        let mut lines = vec!["Combat status:".to_string()];
+        lines.push(format!(
+            "  cooldown={:.3} blocking={} attacks={} hits={} kills={}",
+            state.cooldown_remaining,
+            state.blocking,
+            state.attacks_started,
+            state.hits_landed,
+            state.kills,
+        ));
+        if let Some(last) = state.last {
+            lines.push(format!(
+                "  last_target={} damage={:.1} health_before={} health_after={} killed={}",
+                last.target
+                    .map(|entity| entity.to_string())
+                    .unwrap_or_else(|| "none".to_owned()),
+                last.damage,
+                last.health_before
+                    .map(|health| format!("{health:.1}"))
+                    .unwrap_or_else(|| "none".to_owned()),
+                last.health_after
+                    .map(|health| format!("{health:.1}"))
+                    .unwrap_or_else(|| "none".to_owned()),
+                last.killed,
+            ));
+            lines.push(format!("  outcome={}", last.outcome));
+        } else {
+            lines.push("  last_target=none".to_owned());
+        }
+        CommandOutput::lines(lines)
+    }
+}
+
+/// `combat.approach <entity|.>` — deterministic smoke-test positioning.
+///
+/// This command only moves the real character capsule and aims the normal
+/// gameplay camera. It never emits a hit or mutates combat state; the attack
+/// must still enter through `input.press attack` and the ordinary action,
+/// ray-cast, event, damage, and death systems.
+pub(crate) struct CombatApproachCommand;
+impl ConsoleCommand for CombatApproachCommand {
+    fn name(&self) -> &str {
+        "combat.approach"
+    }
+
+    fn description(&self) -> &str {
+        "Place the character in melee range of an actor (usage: combat.approach <entity|.>)"
+    }
+
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let Ok(target) = resolve_console_entity(world, args.trim()) else {
+            return CommandOutput::line("combat.approach: usage: combat.approach <entity_id|.>");
+        };
+        if world
+            .get::<byroredux_core::ecs::components::ActorVitals>(target)
+            .is_none()
+        {
+            return CommandOutput::line(format!(
+                "combat.approach: entity {target} is not a damageable actor"
+            ));
+        }
+        let Some(target_pos) = world
+            .get::<GlobalTransform>(target)
+            .map(|transform| transform.translation)
+        else {
+            return CommandOutput::line(format!(
+                "combat.approach: entity {target} has no GlobalTransform"
+            ));
+        };
+        let Some(player) = world
+            .try_resource::<crate::systems::PlayerEntity>()
+            .and_then(|player| player.0)
+        else {
+            return CommandOutput::line("combat.approach: no character player entity");
+        };
+        let Some(camera) = world.try_resource::<ActiveCamera>().map(|camera| camera.0) else {
+            return CommandOutput::line("combat.approach: no active camera");
+        };
+        let controller = world
+            .get::<byroredux_physics::CharacterController>(player)
+            .map(|controller| *controller)
+            .unwrap_or(byroredux_physics::CharacterController::HUMAN);
+
+        // The frozen P2 fixture has clear floor on the negative-Z side. Keep
+        // the distance inside the 180-BU melee reach and aim at torso height,
+        // not the actor root at its feet.
+        let body_pos =
+            target_pos - Vec3::Z * 120.0 + Vec3::Y * (controller.half_height + controller.radius);
+        let camera_pos = body_pos + Vec3::Y * controller.eye_height;
+        let aim_pos = target_pos + Vec3::Y * controller.eye_height * 1.15;
+        let (yaw, pitch) = look_at_yaw_pitch(camera_pos, aim_pos);
+        let camera_rotation = Quat::from_rotation_y(yaw) * Quat::from_rotation_x(pitch);
+
+        {
+            let Some(mut transforms) = world.query_mut::<Transform>() else {
+                return CommandOutput::line("combat.approach: Transform storage unavailable");
+            };
+            let Some(player_transform) = transforms.get_mut(player) else {
+                return CommandOutput::line(format!(
+                    "combat.approach: player entity {player} has no Transform"
+                ));
+            };
+            player_transform.translation = body_pos;
+            player_transform.rotation = Quat::IDENTITY;
+            let Some(camera_transform) = transforms.get_mut(camera) else {
+                return CommandOutput::line(format!(
+                    "combat.approach: camera entity {camera} has no Transform"
+                ));
+            };
+            camera_transform.translation = camera_pos;
+            camera_transform.rotation = camera_rotation;
+        }
+        if let Some(mut controllers) = world.query_mut::<byroredux_physics::CharacterController>() {
+            if let Some(controller) = controllers.get_mut(player) {
+                controller.vertical_velocity = 0.0;
+                controller.is_grounded = false;
+                controller.wants_jump = false;
+            }
+        }
+        if let Some(mut input) = world.try_resource_mut::<InputState>() {
+            input.yaw = yaw;
+            input.pitch = pitch;
+        }
+        let physics_synced = byroredux_physics::set_kinematic_translation(world, player, body_pos);
+
+        CommandOutput::lines(vec![
+            format!(
+                "Character placed in melee range of entity {target} at ({:.2}, {:.2}, {:.2})",
+                target_pos.x, target_pos.y, target_pos.z,
+            ),
+            format!(
+                "  body=({:.2}, {:.2}, {:.2}) distance=120.0 physics_synced={physics_synced}",
+                body_pos.x, body_pos.y, body_pos.z,
+            ),
+        ])
     }
 }
 

@@ -138,6 +138,36 @@ fn fallout4_20byte_acbs_parses_gender_level_and_template_flags() {
     assert_eq!(n.template_flags, 0x0002);
 }
 
+/// Skyrim shares FNV's 24-byte ACBS length but not its field layout. Pin all
+/// three signed pool offsets plus the fields on either side of the Health
+/// offset so the generic Fallout arm cannot silently reclaim this payload.
+#[test]
+fn skyrim_24byte_acbs_parses_tes5_resource_offsets() {
+    let mut acbs = Vec::with_capacity(24);
+    acbs.extend_from_slice(&0x0081u32.to_le_bytes()); // female + PC level mult
+    acbs.extend_from_slice(&(-20i16).to_le_bytes()); // magicka offset @4
+    acbs.extend_from_slice(&15i16.to_le_bytes()); // stamina offset @6
+    acbs.extend_from_slice(&750u16.to_le_bytes()); // level multiplier @8
+    acbs.extend_from_slice(&3u16.to_le_bytes()); // calc min @10
+    acbs.extend_from_slice(&12u16.to_le_bytes()); // calc max @12
+    acbs.extend_from_slice(&100u16.to_le_bytes()); // speed @14
+    acbs.extend_from_slice(&(-10i16).to_le_bytes()); // disposition @16
+    acbs.extend_from_slice(&0x0002u16.to_le_bytes()); // use stats @18
+    acbs.extend_from_slice(&25i16.to_le_bytes()); // health offset @20
+    acbs.extend_from_slice(&40u16.to_le_bytes()); // bleedout @22
+    assert_eq!(acbs.len(), 24);
+
+    let npc = parse_npc(0x45A0, &[sub(b"ACBS", &acbs)], GameKind::Skyrim, &None);
+    assert_eq!(npc.acbs_flags, 0x0081);
+    assert_eq!(npc.magicka_offset, -20);
+    assert_eq!(npc.stamina_offset, 15);
+    assert_eq!(npc.level, 750);
+    assert_eq!(npc.calc_min, 3);
+    assert_eq!(npc.disposition_base, -10);
+    assert_eq!(npc.template_flags, 0x0002);
+    assert_eq!(npc.health_offset, 25);
+}
+
 /// Regression for #1273 — `SCRI` attached-script FormID on NPC_
 /// and CREA records was silently dropped. 24 % of FO3 named NPCs
 /// and 27 % of FO3 creatures author SCRI; FNV similar. The audit
@@ -1106,6 +1136,7 @@ fn skyrim_race_data_uses_the_tes5_layout_not_tes4() {
     data[24..28].copy_from_slice(&0.9f32.to_le_bytes());
     data[28..32].copy_from_slice(&1.1f32.to_le_bytes());
     data[32..36].copy_from_slice(&0x50a0_8943u32.to_le_bytes());
+    data[36..40].copy_from_slice(&50.0f32.to_le_bytes());
 
     let r = parse_race(0x900, &[sub(b"DATA", &data)], GameKind::Skyrim);
     assert_eq!(
@@ -1117,6 +1148,7 @@ fn skyrim_race_data_uses_the_tes5_layout_not_tes4() {
     assert_eq!(r.base_height, (1.03, 1.0));
     assert_eq!(r.base_weight, (0.9, 1.1));
     assert_eq!(r.race_flags, 0x50a0_8943);
+    assert_eq!(r.starting_health, Some(50.0));
 }
 
 /// #2455 — the real thing. Vanilla `Skyrim.esm` `NordRace` DATA, first 36

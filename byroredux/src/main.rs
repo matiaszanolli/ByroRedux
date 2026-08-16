@@ -19,6 +19,7 @@ mod bench_camera;
 mod boot;
 pub(crate) mod cell_loader;
 mod cli_args;
+mod combat;
 mod commands;
 mod components;
 mod cornell;

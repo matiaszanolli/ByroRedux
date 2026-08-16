@@ -15,6 +15,7 @@ use byroredux_core::math::Vec3;
 use byroredux_core::settings::{
     SettingChange, SettingChoice, SettingEntry, SettingValue, SettingsError, SettingsRegistry,
 };
+use winit::event::MouseButton;
 use winit::keyboard::KeyCode;
 
 use crate::components::{DoorTeleport, InputState, DEFAULT_LOOK_SENSITIVITY};
@@ -55,9 +56,7 @@ pub(crate) enum InputAction {
     Jump,
     Sprint,
     Activate,
-    #[expect(dead_code, reason = "no input source yet — see the enum docs (#2732)")]
     Attack,
-    #[expect(dead_code, reason = "no input source yet — see the enum docs (#2732)")]
     Block,
     Inventory,
     #[expect(dead_code, reason = "no input source yet — see the enum docs (#2732)")]
@@ -69,7 +68,7 @@ impl InputAction {
         1_u16 << self as u8
     }
 
-    const CONFIGURABLE: [Self; 8] = [
+    const CONFIGURABLE: [Self; 10] = [
         Self::MoveForward,
         Self::MoveBackward,
         Self::StrafeLeft,
@@ -77,6 +76,8 @@ impl InputAction {
         Self::Jump,
         Self::Sprint,
         Self::Activate,
+        Self::Attack,
+        Self::Block,
         Self::Inventory,
     ];
 
@@ -89,8 +90,10 @@ impl InputAction {
             Self::Jump => "controls.bind.jump",
             Self::Sprint => "controls.bind.sprint",
             Self::Activate => "controls.bind.activate",
+            Self::Attack => "controls.bind.attack",
+            Self::Block => "controls.bind.block",
             Self::Inventory => "controls.bind.inventory",
-            Self::Attack | Self::Block | Self::Pause => "",
+            Self::Pause => "",
         }
     }
 
@@ -118,6 +121,7 @@ impl InputAction {
 #[derive(Debug, Clone)]
 pub(crate) struct ActionBindings {
     keyboard: HashMap<KeyCode, InputAction>,
+    mouse: HashMap<MouseButton, InputAction>,
 }
 
 impl Resource for ActionBindings {}
@@ -133,7 +137,13 @@ impl Default for ActionBindings {
                 (KeyCode::Space, InputAction::Jump),
                 (KeyCode::ShiftLeft, InputAction::Sprint),
                 (KeyCode::KeyE, InputAction::Activate),
+                (KeyCode::KeyR, InputAction::Attack),
+                (KeyCode::KeyC, InputAction::Block),
                 (KeyCode::Tab, InputAction::Inventory),
+            ]),
+            mouse: HashMap::from([
+                (MouseButton::Left, InputAction::Attack),
+                (MouseButton::Right, InputAction::Block),
             ]),
         }
     }
@@ -177,11 +187,19 @@ impl ActionBindings {
             .unwrap_or("Unbound")
     }
 
-    fn held_mask(&self, keys_held: &std::collections::HashSet<KeyCode>) -> u16 {
-        keys_held
+    fn held_mask(
+        &self,
+        keys_held: &std::collections::HashSet<KeyCode>,
+        mouse_buttons_held: &std::collections::HashSet<MouseButton>,
+    ) -> u16 {
+        let keyboard = keys_held
             .iter()
             .filter_map(|key| self.keyboard.get(key))
-            .fold(0, |mask, action| mask | action.bit())
+            .fold(0, |mask, action| mask | action.bit());
+        mouse_buttons_held
+            .iter()
+            .filter_map(|button| self.mouse.get(button))
+            .fold(keyboard, |mask, action| mask | action.bit())
     }
 
     fn action_for_key(&self, key: KeyCode) -> Option<InputAction> {
@@ -255,6 +273,10 @@ pub(crate) fn apply_control_setting(
             // through a press. The next physical press establishes fresh
             // held/pressed edges.
             world.resource_mut::<InputState>().keys_held.clear();
+            world
+                .resource_mut::<InputState>()
+                .mouse_buttons_held
+                .clear();
             swapped.map(|(other, other_key)| {
                 SettingChange::new(
                     other.setting_id(),
@@ -450,12 +472,26 @@ impl InjectedKeyHold {
     }
 }
 
-pub(crate) fn queue_debug_activate_press(world: &World) -> Result<(), &'static str> {
+pub(crate) fn queue_debug_action_press(world: &World, action_name: &str) -> Result<String, String> {
+    let action =
+        debug_action(action_name).ok_or_else(|| format!("unknown action `{action_name}`"))?;
+    let (key, label) = {
+        let bindings = world
+            .try_resource::<ActionBindings>()
+            .ok_or_else(|| "ActionBindings resource is not installed".to_string())?;
+        let key = bindings
+            .key_for_action(action)
+            .ok_or_else(|| format!("{} is unbound", action.label()))?;
+        (key, bindings.binding_label(action))
+    };
     let mut pulse = world
         .try_resource_mut::<InjectedKeyPulse>()
-        .ok_or("InjectedKeyPulse resource is not installed")?;
-    pulse.key = Some(KeyCode::KeyE);
-    Ok(())
+        .ok_or_else(|| "InjectedKeyPulse resource is not installed".to_string())?;
+    pulse.key = Some(key);
+    Ok(format!(
+        "input.press: queued {} through the {label} binding",
+        action.label()
+    ))
 }
 
 /// Queue a finite physical-key hold for a named gameplay action.
@@ -502,6 +538,8 @@ fn debug_action(name: &str) -> Option<InputAction> {
         "jump" | "space" => Some(InputAction::Jump),
         "sprint" | "shift" => Some(InputAction::Sprint),
         "activate" | "e" => Some(InputAction::Activate),
+        "attack" | "r" => Some(InputAction::Attack),
+        "block" | "c" => Some(InputAction::Block),
         "inventory" | "tab" => Some(InputAction::Inventory),
         _ => None,
     }
@@ -645,6 +683,7 @@ pub(crate) fn refresh_action_state(world: &World) {
         return;
     };
     let keys_held = input.keys_held.clone();
+    let mouse_buttons_held = input.mouse_buttons_held.clone();
     drop(input);
     let injected_key = world
         .try_resource_mut::<InjectedKeyPulse>()
@@ -655,7 +694,7 @@ pub(crate) fn refresh_action_state(world: &World) {
     let Some(bindings) = world.try_resource::<ActionBindings>() else {
         return;
     };
-    let mut next_held = bindings.held_mask(&keys_held);
+    let mut next_held = bindings.held_mask(&keys_held, &mouse_buttons_held);
     if let Some(action) = injected_key.and_then(|key| bindings.action_for_key(key)) {
         next_held |= action.bit();
     }
@@ -761,7 +800,7 @@ fn collider_belongs_to_target(world: &World, collider_entity: EntityId, target: 
     target_form.is_some() && target_form == collider_form
 }
 
-fn camera_ray(world: &World) -> Option<(Vec3, Vec3)> {
+pub(crate) fn camera_ray(world: &World) -> Option<(Vec3, Vec3)> {
     let camera = world.try_resource::<ActiveCamera>()?.0;
     let pose = world
         .get::<Transform>(camera)
@@ -1005,7 +1044,7 @@ mod tests {
     #[test]
     fn injected_e_key_pulse_uses_binding_and_releases_next_frame() {
         let world = input_fixture();
-        queue_debug_activate_press(&world).unwrap();
+        queue_debug_action_press(&world, "activate").unwrap();
 
         refresh_action_state(&world);
         assert!(world
@@ -1066,6 +1105,35 @@ mod tests {
         ] {
             assert!(actions.is_held(action), "{action:?} binding was ignored");
         }
+    }
+
+    #[test]
+    fn mouse_buttons_drive_attack_and_block_actions() {
+        let world = input_fixture();
+        world
+            .resource_mut::<InputState>()
+            .mouse_buttons_held
+            .extend([MouseButton::Left, MouseButton::Right]);
+
+        refresh_action_state(&world);
+        let actions = world.resource::<ActionState>();
+        assert!(actions.was_pressed(InputAction::Attack));
+        assert!(actions.is_held(InputAction::Block));
+    }
+
+    #[test]
+    fn injected_attack_pulse_uses_the_live_keyboard_binding() {
+        let world = input_fixture();
+        world
+            .resource_mut::<ActionBindings>()
+            .bind_key(KeyCode::KeyX, InputAction::Attack);
+        let message = queue_debug_action_press(&world, "attack").unwrap();
+        assert!(message.contains("through the X binding"));
+
+        refresh_action_state(&world);
+        assert!(world
+            .resource::<ActionState>()
+            .was_pressed(InputAction::Attack));
     }
 
     #[test]
@@ -1142,6 +1210,10 @@ mod tests {
             .resource_mut::<InputState>()
             .keys_held
             .extend([KeyCode::KeyW, KeyCode::KeyE]);
+        world
+            .resource_mut::<InputState>()
+            .mouse_buttons_held
+            .insert(MouseButton::Left);
         refresh_action_state(&world);
 
         queue_debug_action_hold(&world, "forward", 30).unwrap();
@@ -1150,7 +1222,11 @@ mod tests {
         refresh_action_state(&world);
 
         let actions = world.resource::<ActionState>();
-        for action in [InputAction::MoveForward, InputAction::Activate] {
+        for action in [
+            InputAction::MoveForward,
+            InputAction::Activate,
+            InputAction::Attack,
+        ] {
             assert!(!actions.is_held(action));
             assert!(actions.was_released(action));
             assert!(!actions.was_pressed(action));
