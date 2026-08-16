@@ -220,14 +220,11 @@ pub(super) struct PlacementCtx<'a> {
 
 /// Replace one authored alpha-over fog/smoke mesh with an analytic local
 /// medium before any texture upload, raster entity, or BLAS work occurs.
-pub(super) fn spawn_fog_mesh_instance(
-    world: &mut World,
+fn prepare_fog_mesh_instance(
     pc: &PlacementCtx,
     mesh: &byroredux_nif::import::ImportedMesh,
     paths: &ResolvedMeshPaths,
-) -> bool {
-    use byroredux_core::ecs::{Name, Parent};
-
+) -> Option<byroredux_core::ecs::FogVolume> {
     let texture_path = paths.textures.base_color.as_deref();
     let fog_semantics = pc.mesh_cache_key.is_some_and(crate::fog::has_fog_token)
         || texture_path.is_some_and(crate::fog::has_fog_token)
@@ -247,7 +244,7 @@ pub(super) fn spawn_fog_mesh_instance(
                 mesh.material.material_kind,
             );
         }
-        return false;
+        return None;
     };
     log::debug!(
         target: "byroredux::fog",
@@ -256,6 +253,18 @@ pub(super) fn spawn_fog_mesh_instance(
         texture_path,
         mesh.name,
     );
+
+    Some(fog_volume)
+}
+
+fn spawn_fog_mesh_instance(
+    world: &mut World,
+    pc: &PlacementCtx,
+    mesh: &byroredux_nif::import::ImportedMesh,
+    paths: &ResolvedMeshPaths,
+    fog_volume: byroredux_core::ecs::FogVolume,
+) {
+    use byroredux_core::ecs::{Name, Parent};
 
     let nif_rotation = Quat::from_xyzw(
         mesh.rotation[0],
@@ -288,7 +297,149 @@ pub(super) fn spawn_fog_mesh_instance(
     if let Some(symbol) = paths.name_sym {
         world.insert(entity, Name(symbol));
     }
-    true
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum PreparedMeshUpload {
+    Fog(byroredux_core::ecs::FogVolume),
+    Ready { handle: u32, fresh_for_rt: bool },
+    Failed,
+}
+
+struct FreshMeshUpload {
+    sub_mesh_index: usize,
+    vertices: Vec<byroredux_renderer::Vertex>,
+    for_rt: bool,
+}
+
+/// Resolve cache hits up front, then upload every fresh submesh through one
+/// packed transfer submission. Entity creation remains in the original
+/// submesh order after this preparation step, preserving hierarchy and stable
+/// placement semantics while eliminating two fence waits per fresh submesh.
+pub(super) fn prepare_mesh_uploads(
+    ctx: &mut VulkanContext,
+    pc: &PlacementCtx,
+    imported: &[byroredux_nif::import::ImportedMesh],
+    paths: &[ResolvedMeshPaths],
+) -> Vec<PreparedMeshUpload> {
+    let mut prepared = vec![PreparedMeshUpload::Failed; imported.len()];
+    let mut fresh = Vec::new();
+
+    for (sub_mesh_index, mesh) in imported.iter().enumerate() {
+        if let Some(fog_volume) = prepare_fog_mesh_instance(pc, mesh, &paths[sub_mesh_index]) {
+            prepared[sub_mesh_index] = PreparedMeshUpload::Fog(fog_volume);
+            continue;
+        }
+        let sub_mesh_index_u32 = sub_mesh_index as u32;
+        if let Some(handle) = pc
+            .mesh_cache_key
+            .and_then(|key| ctx.mesh_registry.acquire_cached(key, sub_mesh_index_u32))
+        {
+            prepared[sub_mesh_index] = PreparedMeshUpload::Ready {
+                handle,
+                fresh_for_rt: false,
+            };
+            continue;
+        }
+
+        let for_rt = ctx.device_caps.ray_query_supported
+            && mesh.material.material_kind != byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION
+            && !mesh.material.is_decal;
+        fresh.push(FreshMeshUpload {
+            sub_mesh_index,
+            vertices: super::super::lod_support::imported_mesh_to_vertices(mesh),
+            for_rt,
+        });
+    }
+
+    if fresh.is_empty() {
+        return prepared;
+    }
+
+    let uploads = fresh
+        .iter()
+        .map(|fresh_mesh| {
+            let mesh = &imported[fresh_mesh.sub_mesh_index];
+            SceneMeshUpload {
+                vertices: &fresh_mesh.vertices,
+                indices: &mesh.indices,
+                rt_enabled: fresh_mesh.for_rt,
+                cache_key: pc
+                    .mesh_cache_key
+                    .map(|key| (key, fresh_mesh.sub_mesh_index as u32)),
+            }
+        })
+        .collect::<Vec<_>>();
+    let allocator = ctx.allocator.as_ref().expect("renderer allocator missing");
+    let upload_ctx = GpuUploadCtx {
+        device: &ctx.device,
+        allocator,
+        queue: &ctx.graphics_queue,
+        command_pool: ctx.transfer_pool,
+    };
+    let transfer_fence = std::sync::Arc::clone(&ctx.transfer_fence);
+    match ctx.mesh_registry.upload_scene_meshes_batched(
+        upload_ctx,
+        &uploads,
+        transfer_fence.as_ref(),
+    ) {
+        Ok(handles) => {
+            for (fresh_mesh, handle) in fresh.iter().zip(handles) {
+                prepared[fresh_mesh.sub_mesh_index] = PreparedMeshUpload::Ready {
+                    handle,
+                    fresh_for_rt: fresh_mesh.for_rt,
+                };
+            }
+        }
+        Err(batch_error) => {
+            // Preserve the scalar path as a compatibility fallback. A single
+            // malformed/empty submesh must not suppress every valid sibling
+            // just because they shared a proposed transfer transaction.
+            log::warn!(
+                "Batched mesh upload failed for {} submeshes: {batch_error:#}; \
+                 falling back to individual uploads",
+                fresh.len(),
+            );
+            for fresh_mesh in &fresh {
+                let mesh = &imported[fresh_mesh.sub_mesh_index];
+                let allocator = ctx.allocator.as_ref().expect("renderer allocator missing");
+                let upload_ctx = GpuUploadCtx {
+                    device: &ctx.device,
+                    allocator,
+                    queue: &ctx.graphics_queue,
+                    command_pool: ctx.transfer_pool,
+                };
+                let upload_result = match pc.mesh_cache_key {
+                    Some(key) => ctx.mesh_registry.register_scene_mesh_keyed(
+                        upload_ctx,
+                        &fresh_mesh.vertices,
+                        &mesh.indices,
+                        fresh_mesh.for_rt,
+                        None,
+                        (key, fresh_mesh.sub_mesh_index as u32),
+                    ),
+                    None => ctx.mesh_registry.upload_scene_mesh(
+                        upload_ctx,
+                        &fresh_mesh.vertices,
+                        &mesh.indices,
+                        fresh_mesh.for_rt,
+                        None,
+                    ),
+                };
+                match upload_result {
+                    Ok(handle) => {
+                        prepared[fresh_mesh.sub_mesh_index] = PreparedMeshUpload::Ready {
+                            handle,
+                            fresh_for_rt: fresh_mesh.for_rt,
+                        };
+                    }
+                    Err(error) => log::warn!("Failed to upload mesh: {error}"),
+                }
+            }
+        }
+    }
+
+    prepared
 }
 
 /// Spawn the render entity (+ optional physics ghost + ESM light
@@ -304,20 +455,19 @@ pub(super) fn spawn_mesh_instance(
     cached: &CachedNifImport,
     mesh: &byroredux_nif::import::ImportedMesh,
     paths: &ResolvedMeshPaths,
-    sub_mesh_index: usize,
     count: usize,
+    prepared: PreparedMeshUpload,
     blas_specs: &mut Vec<(u32, u32, u32)>,
     synthesized_collision_proxy: &mut bool,
 ) -> bool {
     use byroredux_core::ecs::{Name, Parent};
-    use byroredux_renderer::Vertex;
     let PlacementCtx {
         tex_provider,
         ref_pos,
         ref_rot,
         ref_scale,
         base_layer,
-        mesh_cache_key,
+        mesh_cache_key: _,
         refr_overlay,
         light_data,
         light_animation_flags,
@@ -329,85 +479,24 @@ pub(super) fn spawn_mesh_instance(
         collision_fallback,
         spawned_nif_lights,
     } = *pc;
-    let num_verts = mesh.positions.len();
-    let sub_mesh_index_u32 = sub_mesh_index as u32;
-
-    // #879 / CELL-PERF-01 — refcounted GPU mesh dedup. First
-    // placement of `chair.nif` uploads the vertex/index pair and
-    // registers it under `(model_path, sub_mesh_index)`; the next
-    // 39 chair placements bump the entry's refcount and reuse
-    // the same `mesh_handle` (and the same BLAS — skipping the
-    // batched BLAS build entry for the cached hit). Without
-    // `mesh_cache_key` (terrain / single-NIF CLI view) the cache
-    // is bypassed and we keep the legacy fresh-upload-per-call
-    // shape.
-    let cache_hit_handle =
-        mesh_cache_key.and_then(|key| ctx.mesh_registry.acquire_cached(key, sub_mesh_index_u32));
-
-    let mesh_handle = if let Some(handle) = cache_hit_handle {
-        // Cached: skip the CPU vertex-build, the GPU upload, AND
-        // the BLAS batch entry. The existing BLAS for this handle
-        // is already attached to live placements in earlier cells
-        // (or earlier in this same cell).
-        handle
-    } else {
-        // #2410 / TD1-007 — the per-attribute fallback assembly the issue
-        // asks to extract already exists as `imported_mesh_to_vertices`
-        // (`lod_support.rs`, serving the object- and placement-LOD paths).
-        // The inline copy here was semantically identical — same colour /
-        // normal / UV defaults, same authored-tangent copy — so this reuses
-        // it rather than adding a second spelling of the same logic.
-        let vertices: Vec<Vertex> = super::super::lod_support::imported_mesh_to_vertices(mesh);
-
-        let alloc = ctx.allocator.as_ref().unwrap();
-        let upload_ctx = GpuUploadCtx {
-            device: &ctx.device,
-            allocator: alloc,
-            queue: &ctx.graphics_queue,
-            command_pool: ctx.transfer_pool,
-        };
-        // Effect surfaces need a BLAS even though they must not cast opaque
-        // shadows. Authored glass assemblies put emissive BSEffectShader
-        // layers behind their outer shell (Skyrim's alchemy workbench is the
-        // regression fixture); reflection/refraction rays must see those
-        // layers. TLAS visibility masks put them in VISIBILITY_LAYER_EFFECT,
-        // which shadow traversal excludes while optical/GI rays may include.
-        let for_rt = ctx.device_caps.ray_query_supported
-            && mesh.material.material_kind != byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION
-            && !mesh.material.is_decal;
-        let upload_result = match mesh_cache_key {
-            Some(key) => ctx.mesh_registry.register_scene_mesh_keyed(
-                upload_ctx,
-                &vertices,
-                &mesh.indices,
-                for_rt,
-                None,
-                (key, sub_mesh_index_u32),
-            ),
-            None => ctx.mesh_registry.upload_scene_mesh(
-                upload_ctx,
-                &vertices,
-                &mesh.indices,
-                for_rt,
-                None,
-            ),
-        };
-        let handle = match upload_result {
-            Ok(h) => h,
-            Err(e) => {
-                log::warn!("Failed to upload mesh: {}", e);
-                return false;
-            }
-        };
-
-        // Fresh ray-visible surface upload — this handle needs a BLAS. Subsequent
-        // cache hits for the same `(path, sub_mesh_index)` reuse
-        // this BLAS entry without re-submitting.
-        if for_rt {
-            blas_specs.push((handle, num_verts as u32, mesh.indices.len() as u32));
+    let (mesh_handle, fresh_for_rt) = match prepared {
+        PreparedMeshUpload::Fog(fog_volume) => {
+            spawn_fog_mesh_instance(world, pc, mesh, paths, fog_volume);
+            return true;
         }
-        handle
+        PreparedMeshUpload::Ready {
+            handle,
+            fresh_for_rt,
+        } => (handle, fresh_for_rt),
+        PreparedMeshUpload::Failed => return false,
     };
+    if fresh_for_rt {
+        blas_specs.push((
+            mesh_handle,
+            mesh.positions.len() as u32,
+            mesh.indices.len() as u32,
+        ));
+    }
 
     // Pre-resolved texture slot paths from the single-lock
     // pre-pass above (#882). Cloned per-mesh because the Material

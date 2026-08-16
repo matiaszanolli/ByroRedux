@@ -16,7 +16,7 @@ use byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_plugin::esm;
 use byroredux_renderer::vulkan::GpuUploadCtx;
-use byroredux_renderer::VulkanContext;
+use byroredux_renderer::{SceneMeshUpload, VulkanContext};
 use std::time::{Duration, Instant};
 
 use crate::asset_provider::{
@@ -637,11 +637,8 @@ pub(super) fn spawn_placed_instances(
         collision_fallback,
         spawned_nif_lights,
     };
-    for (sub_mesh_index, mesh) in imported.iter().enumerate() {
-        if spawn_fog_mesh_instance(world, &pc, mesh, &resolved_paths[sub_mesh_index]) {
-            count += 1;
-            continue;
-        }
+    let prepared_meshes = prepare_mesh_uploads(ctx, &pc, imported, &resolved_paths);
+    for (sub_mesh_index, (mesh, prepared)) in imported.iter().zip(prepared_meshes).enumerate() {
         if spawn_mesh_instance(
             world,
             ctx,
@@ -649,8 +646,8 @@ pub(super) fn spawn_placed_instances(
             cached,
             mesh,
             &resolved_paths[sub_mesh_index],
-            sub_mesh_index,
             count,
+            prepared,
             &mut blas_specs,
             &mut synthesized_collision_proxy,
         ) {
@@ -1121,9 +1118,7 @@ fn spawn_collision_shapes(
 
 // Per-sub-mesh instance spawn (#2410 / TD1-007).
 mod mesh_instance;
-use mesh_instance::{
-    resolve_mesh_paths, spawn_fog_mesh_instance, spawn_mesh_instance, PlacementCtx,
-};
+use mesh_instance::{prepare_mesh_uploads, resolve_mesh_paths, spawn_mesh_instance, PlacementCtx};
 
 #[cfg(test)]
 mod synthesize_trimesh_tests;

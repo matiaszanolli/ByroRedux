@@ -3,9 +3,9 @@
 use crate::deferred_destroy::{DeferredDestroyQueue, DEFAULT_COUNTDOWN};
 use crate::vertex::{UiVertex, Vertex};
 use crate::vulkan::allocator::SharedAllocator;
-use crate::vulkan::buffer::{GpuBuffer, StagingPool};
+use crate::vulkan::buffer::{DeviceLocalBufferUpload, GpuBuffer, StagingPool};
 use crate::vulkan::GpuUploadCtx;
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use ash::vk;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -99,6 +99,17 @@ pub(crate) fn geometry_rebuild_needs_idle(
 /// handle while a `corpse.nif`'s body + helmet sub-meshes get distinct
 /// entries.
 pub type MeshCacheKey = (String, u32);
+
+/// One scene mesh participating in a shared upload submission.
+///
+/// The destination buffers remain per-mesh (BLAS and lifetime ownership are
+/// unchanged); only their staging copies share a command buffer and fence.
+pub struct SceneMeshUpload<'a> {
+    pub vertices: &'a [Vertex],
+    pub indices: &'a [u32],
+    pub rt_enabled: bool,
+    pub cache_key: Option<(&'a str, u32)>,
+}
 
 /// A mesh stored on the GPU: vertex + index buffers and index count.
 pub struct GpuMesh {
@@ -629,6 +640,120 @@ impl MeshRegistry {
         Ok(handle)
     }
 
+    /// Upload a set of fresh scene meshes with one transfer submission.
+    ///
+    /// This is the bulk counterpart of [`Self::upload_scene_mesh`] and
+    /// [`Self::register_scene_mesh_keyed`]. Global-pool offsets, stable handle
+    /// slots, refcounts, cache keys, and per-mesh vertex/index buffers keep the
+    /// exact same representation; only the staging copies are packed together.
+    pub fn upload_scene_meshes_batched(
+        &mut self,
+        ctx: GpuUploadCtx,
+        uploads: &[SceneMeshUpload<'_>],
+        transfer_fence: &std::sync::Mutex<vk::Fence>,
+    ) -> Result<Vec<u32>> {
+        if uploads.is_empty() {
+            return Ok(Vec::new());
+        }
+        let projected_slots = self
+            .meshes
+            .len()
+            .checked_add(uploads.len())
+            .context("MeshRegistry slot count overflow")?;
+        if projected_slots > MAX_MESH_SLOTS as usize {
+            bail!(
+                "MeshRegistry slot overflow: {} existing + {} uploads (cap {}). \
+                 Likely a cell-unload leak — meshes are uploaded without matching drop_mesh calls.",
+                self.meshes.len(),
+                uploads.len(),
+                MAX_MESH_SLOTS,
+            );
+        }
+
+        let sanitized = uploads
+            .iter()
+            .map(|upload| Self::sanitize_scene_indices(upload.vertices.len(), upload.indices))
+            .collect::<Vec<_>>();
+        let old_vertex_len = self.pending_vertices.len();
+        let old_index_len = self.pending_indices.len();
+        let old_dirty = self.geometry_dirty;
+        let mut global_offsets = Vec::with_capacity(uploads.len());
+        for (upload, indices) in uploads.iter().zip(&sanitized) {
+            match self.accumulate_global_geometry(upload.vertices, indices) {
+                Ok(offsets) => global_offsets.push(offsets),
+                Err(error) => {
+                    self.pending_vertices.truncate(old_vertex_len);
+                    self.pending_indices.truncate(old_index_len);
+                    self.geometry_dirty = old_dirty;
+                    return Err(error).context("accumulate batched scene geometry");
+                }
+            }
+        }
+
+        let mut buffer_uploads = Vec::with_capacity(uploads.len() * 2);
+        for (upload, indices) in uploads.iter().zip(&sanitized) {
+            let rt_usage = if upload.rt_enabled {
+                vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
+                    | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+            } else {
+                vk::BufferUsageFlags::empty()
+            };
+            buffer_uploads.push(DeviceLocalBufferUpload {
+                bytes: vertex_slice_bytes(upload.vertices),
+                usage: vk::BufferUsageFlags::VERTEX_BUFFER | rt_usage,
+            });
+            buffer_uploads.push(DeviceLocalBufferUpload {
+                bytes: index_slice_bytes(indices),
+                usage: vk::BufferUsageFlags::INDEX_BUFFER | rt_usage,
+            });
+        }
+
+        if self.geometry_staging_pool.is_none() {
+            self.geometry_staging_pool =
+                Some(StagingPool::new(ctx.device.clone(), ctx.allocator.clone()));
+        }
+        let buffers = match GpuBuffer::create_device_local_buffers_batched(
+            ctx,
+            &buffer_uploads,
+            self.geometry_staging_pool.as_mut(),
+            transfer_fence,
+        ) {
+            Ok(buffers) => buffers,
+            Err(error) => {
+                self.pending_vertices.truncate(old_vertex_len);
+                self.pending_indices.truncate(old_index_len);
+                self.geometry_dirty = old_dirty;
+                return Err(error).context("upload batched scene geometry");
+            }
+        };
+
+        debug_assert_eq!(buffers.len(), uploads.len() * 2);
+        let mut buffers = buffers.into_iter();
+        let mut handles = Vec::with_capacity(uploads.len());
+        for ((upload, indices), (global_vertex_offset, global_index_offset)) in
+            uploads.iter().zip(&sanitized).zip(global_offsets)
+        {
+            let id = self.meshes.len() as u32;
+            self.meshes.push(Some(GpuMesh {
+                vertex_buffer: Some(buffers.next().expect("batched vertex buffer missing")),
+                index_buffer: Some(buffers.next().expect("batched index buffer missing")),
+                index_count: indices.len() as u32,
+                global_vertex_offset,
+                global_index_offset,
+                vertex_count: upload.vertices.len() as u32,
+                is_scene_mesh: true,
+                rt_capable: upload.rt_enabled,
+            }));
+            self.mesh_ref_counts.push(1);
+            if let Some((model_path, sub_mesh_index)) = upload.cache_key {
+                self.mesh_cache
+                    .insert((model_path.to_string(), sub_mesh_index), id);
+            }
+            handles.push(id);
+        }
+        Ok(handles)
+    }
+
     /// Live refcount for `handle`, or `None` if the slot is empty
     /// (never allocated or already freed — refcount == 0). Read-only
     /// — used by the cell-unload pre-pass (#879) to decide whether
@@ -1057,6 +1182,25 @@ impl MeshRegistry {
         if let Some(mut pool) = self.geometry_staging_pool.take() {
             pool.destroy();
         }
+    }
+}
+
+fn vertex_slice_bytes(values: &[Vertex]) -> &[u8] {
+    unsafe {
+        // SAFETY: `Vertex` is `#[repr(C)]` and its scalar/array fields occupy
+        // the complete 104-byte shader contract without padding. Every byte
+        // is initialized by construction, and the returned view cannot
+        // outlive the source slice.
+        std::slice::from_raw_parts(values.as_ptr().cast::<u8>(), std::mem::size_of_val(values))
+    }
+}
+
+fn index_slice_bytes(values: &[u32]) -> &[u8] {
+    unsafe {
+        // SAFETY: every bit pattern in a `u32` is initialized and valid; the
+        // returned byte view covers exactly the borrowed slice and cannot
+        // outlive it.
+        std::slice::from_raw_parts(values.as_ptr().cast::<u8>(), std::mem::size_of_val(values))
     }
 }
 

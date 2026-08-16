@@ -23,7 +23,14 @@ impl App {
     /// cooperative and guarantees one atomic unit of progress, so an
     /// unusually expensive NIF/REFR may exceed this target once; the next
     /// unit then waits for the following frame.
-    const STREAMING_APPLY_BUDGET: Duration = Duration::from_millis(4);
+    ///
+    /// Four milliseconds proved counterproductive in the FO4 boundary gate:
+    /// hundreds of otherwise-cheap hashes/REFRs were serialized behind a
+    /// complete render cycle whose own CPU/GPU cost was much larger than the
+    /// apply allowance. One 60 Hz frame budget amortizes that fixed cost while
+    /// preserving a hard yield point between atomic units; it does not enlarge
+    /// the already-dominant single-hash outlier.
+    const STREAMING_APPLY_BUDGET: Duration = Duration::from_millis(16);
     /// Deferred EXAL work per active LOD provider on a frame where no
     /// full-detail cell payload was applied. Terrain plus exactly one of
     /// object/placement can therefore spend at most four attempts.

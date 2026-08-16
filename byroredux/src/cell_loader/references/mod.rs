@@ -667,16 +667,35 @@ pub(super) fn load_references_budgeted(
     complete_reference_load(job, game, world, ctx, label, load_order)
 }
 
-/// Flush textures accumulated by one completed or yielded reference slice.
-///
-/// The synchronous loader calls this once at cell completion. Resumable
-/// exterior application also calls it before yielding so a dense cell does
-/// not defer hundreds of DDS uploads into one final fence wait.
+/// Minimum number of queued DDS textures worth a synchronous submit/fence
+/// round trip at a cooperative yield. Phase and cell completion still force a
+/// flush regardless of count. FO4 boundary traces showed 145 post-bootstrap
+/// flushes for only ~550 new textures (typically 3–17 per batch); accumulating
+/// up to this threshold preserves bounded staging memory while avoiding those
+/// tiny serial submissions.
+const YIELDED_TEXTURE_UPLOAD_BATCH_MIN: usize = 64;
+
+fn should_flush_pending_cell_textures(pending_uploads: usize, force: bool) -> bool {
+    pending_uploads > 0 && (force || pending_uploads >= YIELDED_TEXTURE_UPLOAD_BATCH_MIN)
+}
+
+/// Flush textures accumulated by a completed reference phase or cell.
 pub(super) fn flush_pending_cell_textures(ctx: &mut VulkanContext) {
+    flush_pending_cell_textures_inner(ctx, true);
+}
+
+/// Flush a yielded slice only after enough DDS work has accumulated to
+/// amortize one command-buffer submit and fence wait.
+pub(super) fn flush_pending_cell_textures_on_yield(ctx: &mut VulkanContext) {
+    flush_pending_cell_textures_inner(ctx, false);
+}
+
+fn flush_pending_cell_textures_inner(ctx: &mut VulkanContext, force: bool) {
     let pending_uploads = ctx.texture_registry.pending_dds_upload_count();
-    if pending_uploads == 0 {
+    if !should_flush_pending_cell_textures(pending_uploads, force) {
         return;
     }
+    let started = std::time::Instant::now();
     match ctx.texture_registry.flush_pending_uploads(
         &ctx.device,
         ctx.allocator
@@ -686,10 +705,35 @@ pub(super) fn flush_pending_cell_textures(ctx: &mut VulkanContext) {
         ctx.transfer_pool,
         &ctx.transfer_fence,
     ) {
-        Ok(n) => {
-            log::info!("  Cell texture upload batch: {n}/{pending_uploads} DDS textures uploaded")
-        }
+        Ok(n) => log::info!(
+            "  Cell texture upload batch: {n}/{pending_uploads} DDS textures uploaded in {:.2} ms",
+            started.elapsed().as_secs_f64() * 1000.0,
+        ),
         Err(e) => log::warn!("Cell texture upload batch failed ({pending_uploads} pending): {e}"),
+    }
+}
+
+#[cfg(test)]
+mod texture_flush_policy_tests {
+    use super::{should_flush_pending_cell_textures, YIELDED_TEXTURE_UPLOAD_BATCH_MIN};
+
+    #[test]
+    fn yielded_slices_accumulate_until_the_batch_threshold() {
+        assert!(!should_flush_pending_cell_textures(0, false));
+        assert!(!should_flush_pending_cell_textures(
+            YIELDED_TEXTURE_UPLOAD_BATCH_MIN - 1,
+            false,
+        ));
+        assert!(should_flush_pending_cell_textures(
+            YIELDED_TEXTURE_UPLOAD_BATCH_MIN,
+            false,
+        ));
+    }
+
+    #[test]
+    fn completion_forces_any_nonempty_texture_batch() {
+        assert!(!should_flush_pending_cell_textures(0, true));
+        assert!(should_flush_pending_cell_textures(1, true));
     }
 }
 

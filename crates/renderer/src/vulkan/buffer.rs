@@ -1,9 +1,9 @@
 //! GPU buffer abstraction backed by `gpu_allocator`.
 
 use super::allocator::SharedAllocator;
-use super::texture::with_one_time_commands;
+use super::texture::{with_one_time_commands, with_one_time_commands_reuse_fence};
 use super::GpuUploadCtx;
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use ash::vk;
 use gpu_allocator::vulkan;
 use gpu_allocator::MemoryLocation;
@@ -425,6 +425,39 @@ impl StagingGuard {
             .context("Staging buffer not host-mapped")
     }
 
+    /// Publish host writes before a staged transfer when the allocator chose
+    /// non-coherent memory. Most desktop upload heaps are coherent, but the
+    /// batched mesh path fills one large arena directly and must not inherit
+    /// that hardware assumption.
+    pub fn flush_if_needed(&self, device: &ash::Device) -> Result<()> {
+        let alloc = self
+            .allocation
+            .as_ref()
+            .context("StagingGuard allocation already released")?;
+        if alloc
+            .memory_properties()
+            .contains(vk::MemoryPropertyFlags::HOST_COHERENT)
+        {
+            return Ok(());
+        }
+
+        let (aligned_offset, aligned_size) = aligned_flush_range(alloc.offset(), alloc.size());
+        debug_assert_flush_range_bounded(alloc, aligned_offset, aligned_size);
+        unsafe {
+            // SAFETY: `alloc` is live and persistently mapped; the outward-
+            // aligned range follows the same GpuAllocatorManaged contract as
+            // `GpuBuffer::flush_if_needed`, and the staging allocation stays
+            // alive until the transfer fence signals.
+            device
+                .flush_mapped_memory_ranges(&[vk::MappedMemoryRange::default()
+                    .memory(alloc.memory())
+                    .offset(aligned_offset)
+                    .size(aligned_size)])
+                .context("Failed to flush staging memory")?;
+        }
+        Ok(())
+    }
+
     /// Consume the guard and return the staging buffer + allocation to
     /// a pool for reuse instead of destroying them. Pre-#239 the pool's
     /// release arm was unreachable — every upload path called
@@ -601,6 +634,126 @@ pub struct GpuBuffer {
 }
 
 impl GpuBuffer {
+    /// Create several device-local buffers through one packed staging arena
+    /// and one submit/fence cycle.
+    ///
+    /// Exterior precombined NIFs routinely contain 100-200 submeshes. The
+    /// scalar upload path submits once for each vertex buffer and once for
+    /// each index buffer; this helper preserves distinct destination buffers
+    /// for BLAS ownership while collapsing all of their copies into one GPU
+    /// transaction.
+    pub fn create_device_local_buffers_batched(
+        ctx: GpuUploadCtx,
+        uploads: &[DeviceLocalBufferUpload<'_>],
+        mut staging_pool: Option<&mut StagingPool>,
+        transfer_fence: &std::sync::Mutex<vk::Fence>,
+    ) -> Result<Vec<Self>> {
+        if uploads.is_empty() {
+            return Ok(Vec::new());
+        }
+        let sizes = uploads
+            .iter()
+            .map(|upload| upload.bytes.len() as vk::DeviceSize)
+            .collect::<Vec<_>>();
+        let (offsets, staging_size) = packed_copy_layout(&sizes)?;
+
+        let GpuUploadCtx {
+            device,
+            allocator,
+            queue,
+            command_pool,
+        } = ctx;
+        let (staging_buffer, staging_alloc) = if let Some(pool) = staging_pool.as_deref_mut() {
+            pool.acquire(staging_size)?
+        } else {
+            create_staging_buffer(device, allocator, staging_size, "batched_buffer_staging")?
+        };
+        let mut staging = StagingGuard::new(
+            staging_buffer,
+            staging_alloc,
+            device.clone(),
+            allocator.clone(),
+        );
+        {
+            let mapped = staging.mapped_slice_mut()?;
+            for (upload, &offset) in uploads.iter().zip(&offsets) {
+                let start = offset as usize;
+                let end = start + upload.bytes.len();
+                mapped[start..end].copy_from_slice(upload.bytes);
+            }
+        }
+        staging.flush_if_needed(device)?;
+
+        let mut buffers = Vec::with_capacity(uploads.len());
+        for (index, upload) in uploads.iter().enumerate() {
+            match Self::create_device_local_uninit(
+                device,
+                allocator,
+                sizes[index],
+                upload.usage | vk::BufferUsageFlags::TRANSFER_DST,
+            ) {
+                Ok(buffer) => buffers.push(buffer),
+                Err(error) => {
+                    for mut buffer in buffers {
+                        buffer.destroy(device, allocator);
+                    }
+                    return Err(error).context("create batched device-local destination");
+                }
+            }
+        }
+
+        let record_result = with_one_time_commands_reuse_fence(
+            device,
+            queue,
+            command_pool,
+            transfer_fence,
+            |cmd| {
+                for ((buffer, &src_offset), &size) in buffers.iter().zip(&offsets).zip(&sizes) {
+                    unsafe {
+                        // SAFETY: `cmd` is recording; staging and every
+                        // destination are live with TRANSFER_SRC/DST usage;
+                        // `packed_copy_layout` produces 4-byte-aligned,
+                        // non-overlapping source ranges whose sizes match the
+                        // corresponding destination buffers.
+                        device.cmd_copy_buffer(
+                            cmd,
+                            staging.buffer,
+                            buffer.buffer,
+                            &[vk::BufferCopy {
+                                src_offset,
+                                dst_offset: 0,
+                                size,
+                            }],
+                        );
+                    }
+                }
+                Ok(())
+            },
+        );
+        if let Err(error) = record_result {
+            // A submit/wait failure does not tell us whether the command is
+            // still executing. Conservatively leak both sides instead of
+            // risking a host-side destroy racing an in-flight transfer. This
+            // is a fatal-style GPU failure path; retaining the allocations is
+            // safer than attempting recovery with ambiguous queue ownership.
+            std::mem::forget(staging);
+            std::mem::forget(buffers);
+            return Err(error).context("submit batched device-local uploads");
+        }
+
+        if let Some(pool) = staging_pool {
+            let capacity = staging
+                .allocation
+                .as_ref()
+                .map(|allocation| allocation.size())
+                .unwrap_or(staging_size);
+            staging.release_to(pool, capacity);
+        } else {
+            staging.destroy();
+        }
+        Ok(buffers)
+    }
+
     /// Create a vertex buffer in DEVICE_LOCAL memory via staging upload.
     /// When `rt_enabled` is true, adds usage flags needed for BLAS builds.
     pub fn create_vertex_buffer<T: Copy>(
@@ -1281,6 +1434,35 @@ impl GpuBuffer {
     }
 }
 
+/// One destination buffer in a packed upload transaction.
+pub struct DeviceLocalBufferUpload<'a> {
+    pub bytes: &'a [u8],
+    pub usage: vk::BufferUsageFlags,
+}
+
+/// Four-byte-align packed copy regions and return `(offsets, total_size)`.
+/// `vkCmdCopyBuffer` requires source/destination offsets and sizes to be
+/// multiples of four; mesh vertex/index payloads naturally satisfy the size
+/// half of that contract.
+fn packed_copy_layout(sizes: &[vk::DeviceSize]) -> Result<(Vec<vk::DeviceSize>, vk::DeviceSize)> {
+    let mut offsets = Vec::with_capacity(sizes.len());
+    let mut cursor = 0u64;
+    for &size in sizes {
+        if size == 0 || size % 4 != 0 {
+            bail!("batched buffer upload size must be non-zero and 4-byte aligned (got {size})");
+        }
+        cursor = cursor
+            .checked_add(3)
+            .context("batched buffer upload offset overflow")?
+            & !3;
+        offsets.push(cursor);
+        cursor = cursor
+            .checked_add(size)
+            .context("batched buffer upload size overflow")?;
+    }
+    Ok((offsets, cursor))
+}
+
 impl Drop for GpuBuffer {
     /// Safety net mirroring `Texture::Drop` (#656). When the canonical
     /// path called `destroy(device, allocator)`, `allocation` is None
@@ -1505,6 +1687,20 @@ mod tests {
         assert_ne!(sz, vk::WHOLE_SIZE);
         let (_, sz) = aligned_flush_range(1024 * 1024, 4096);
         assert_ne!(sz, vk::WHOLE_SIZE);
+    }
+
+    #[test]
+    fn packed_copy_layout_aligns_and_preserves_order() {
+        let (offsets, total) = packed_copy_layout(&[104, 12, 208, 24]).unwrap();
+        assert_eq!(offsets, vec![0, 104, 116, 324]);
+        assert_eq!(total, 348);
+        assert!(offsets.iter().all(|offset| offset % 4 == 0));
+    }
+
+    #[test]
+    fn packed_copy_layout_rejects_invalid_copy_sizes() {
+        assert!(packed_copy_layout(&[0]).is_err());
+        assert!(packed_copy_layout(&[6]).is_err());
     }
 
     /// Regression for #2683 (SAFE-D4-01) — `aligned_flush_range`'s outward

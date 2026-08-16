@@ -14,7 +14,8 @@ use crate::asset_provider::{MaterialProvider, TextureProvider};
 use super::load::{register_cell_root, stamp_cell_root_range};
 use super::load_order::parse_record_indexes_in_load_order;
 use super::references::{
-    flush_pending_cell_textures, load_references_budgeted, ReferenceLoadJob, ReferenceLoadProgress,
+    flush_pending_cell_textures, flush_pending_cell_textures_on_yield, load_references_budgeted,
+    ReferenceLoadJob, ReferenceLoadProgress,
 };
 use super::{terrain, water, FrameTimeBudget};
 
@@ -230,7 +231,7 @@ impl PersistentCellApplyJob {
                         self.first_entity,
                         world.next_entity_id(),
                     );
-                    flush_pending_cell_textures(ctx);
+                    flush_pending_cell_textures_on_yield(ctx);
                     return PersistentCellApplyProgress::Pending(self);
                 }
                 ReferenceLoadProgress::Complete(result) => {
@@ -248,7 +249,7 @@ impl PersistentCellApplyJob {
                     self.first_entity,
                     world.next_entity_id(),
                 );
-                flush_pending_cell_textures(ctx);
+                flush_pending_cell_textures_on_yield(ctx);
                 return PersistentCellApplyProgress::Pending(self);
             }
             let placed = &self.logical_stub_refs[self.next_logical_stub];
@@ -1212,7 +1213,7 @@ impl ExteriorCellApplyJob {
                         first_entity,
                         world.next_entity_id(),
                     );
-                    flush_pending_cell_textures(ctx);
+                    flush_pending_cell_textures_on_yield(ctx);
                     return ExteriorCellApplyProgress::Pending(self);
                 }
                 super::precombined::PrecombinedSpawnProgress::Complete { spawned, .. } => {
@@ -1258,7 +1259,7 @@ impl ExteriorCellApplyJob {
         match progress {
             ReferenceLoadProgress::Pending(references) => {
                 self.references = Some(references);
-                flush_pending_cell_textures(ctx);
+                flush_pending_cell_textures_on_yield(ctx);
                 ExteriorCellApplyProgress::Pending(self)
             }
             ReferenceLoadProgress::Complete(result) => {

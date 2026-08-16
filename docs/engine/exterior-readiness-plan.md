@@ -256,6 +256,33 @@ The first live boundary matrix on 2026-08-04 established the EX-06 baseline:
   settlement, and device stability. Apply max was 291 ms and frame max 551 ms;
   the latter is now outside unload and remains tied to global geometry work.
 
+The 2026-08-16 upload pass removed the next identified per-hash cost without
+splitting a hash across render frames. Every fresh submesh in one NIF/hash now
+keeps its own vertex/index destination buffers, cache identity, and BLAS
+ownership, but its copies share one aligned staging arena, command buffer, and
+fence wait; cache hits are resolved first, entity spawn order is unchanged,
+and the scalar uploader remains the compatibility fallback. Against a release
+binary built immediately before the change, the deterministic FO4 radius-1
+static load reached the streaming-context marker in about 13 s instead of
+114 s. Its worst precombine CPU-spawn span fell from 1,627.79 to 342.77 ms
+(78.9%), worst complete hash from 1,714.01 to 357.25 ms (79.2%), and BLAS max
+from 66.62 to 54.90 ms, while preserving 59,232 entities, roughly 22,989
+draws, 17,071 meshes, 1,979 textures, and a 22,715-instance TLAS. FO3 Megaton
+fell from about 4 s to about 1 s with the same 3,451 entities, 1,091 draws,
+and 1,087-instance TLAS. Both image/environment/RT gates passed and neither
+run used the scalar fallback.
+
+The post-change FO4 `grid-cross` gate also passed all three crossings with no
+failed NIFs, supersession, unsettled work, device loss, or upload fallback.
+Its worst apply slice improved from the preceding 291 ms result to 174.51 ms,
+and unload remained bounded at 40.32 ms. It is not yet a traversal-throughput
+win: this capture accumulated 104,210 entities / 25,154 draws and reported
+58.71/59.45 s full-detail/LOD maxima plus a 1.50 s worst frame. The upload
+transaction is therefore complete as a subtarget, while aggregate cooperative
+apply pacing and global-geometry/LOD rebuild work remain the active EX-07
+bottleneck. Artifacts are retained at `/tmp/byro-perf-after-fo4`,
+`/tmp/byro-perf-after-fo3`, and `/tmp/byro-perf-after-fo4-boundary`.
+
 ### Tranche B — make entry and traversal safe
 
 1. [x] Define a foreground-ready result carrying center source, terrain/reference
@@ -284,13 +311,16 @@ The first live boundary matrix on 2026-08-04 established the EX-06 baseline:
    whole-frame telemetry (EX-06).
 3. [ ] Bring remaining atomic apply, unload, global-geometry, and LOD work under the shared wall-clock
    deadline.
-   Precombined cells now yield between hashes. The next slice must move/defer
-   single-hash CPU preparation/upload without serializing every mesh behind a
-   rendered frame; BLAS is already one measured 20–24 ms batch per hash.
-   Global unload finalization, ECS row removal, and mesh/texture cache purges
-   are batched. The measured unload tail is now 40 ms total / 23 ms GPU;
-   global-geometry rebuild and single-hash upload are the next frame-tail
-   targets.
+   Precombined cells yield between hashes, and the 2026-08-16 packed staging
+   path completes the single-hash upload subtarget: all fresh submeshes in a
+   hash copy through one transfer submission while the existing one-batch BLAS
+   contract and entity ordering remain intact. Global unload finalization, ECS
+   row removal, and mesh/texture cache purges are also batched. The measured
+   unload tail remains about 40 ms total / 21–23 ms GPU and worst apply fell to
+   174.51 ms, but the new boundary gate still reaches 58.71/59.45 s
+   full-detail/LOD settlement and a 1.50 s frame tail. Aggregate cooperative
+   apply pacing plus global-geometry and LOD rebuilds are the remaining
+   deadline targets.
 4. [x] Run cancellation/ownership soak loops and repair leaked owners (EX-08).
 
 The soak is `m-exteriors.sh <profile> soak`. It drives the new `grid-soak`
