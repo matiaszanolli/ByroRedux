@@ -69,7 +69,7 @@ impl InputAction {
         1_u16 << self as u8
     }
 
-    const CONFIGURABLE: [Self; 8] = [
+    const CONFIGURABLE: [Self; 7] = [
         Self::MoveForward,
         Self::MoveBackward,
         Self::StrafeLeft,
@@ -77,7 +77,6 @@ impl InputAction {
         Self::Jump,
         Self::Sprint,
         Self::Activate,
-        Self::Inventory,
     ];
 
     const fn setting_id(self) -> &'static str {
@@ -310,8 +309,9 @@ const SUPPORTED_KEYS: &[KeyCode] = &[
     KeyCode::KeyS,
     KeyCode::KeyD,
     KeyCode::KeyE,
-    KeyCode::KeyF,
-    KeyCode::KeyQ,
+    // F (walk/fly toggle) and Q (fly-camera descend) remain global debug
+    // controls, so exposing either here would create a binding that fires two
+    // actions at once. Add them only after those paths join ActionState.
     KeyCode::KeyR,
     KeyCode::KeyC,
     KeyCode::KeyI,
@@ -364,7 +364,10 @@ fn key_id(key: KeyCode) -> &'static str {
 }
 
 fn parse_key_id(id: &str) -> Option<KeyCode> {
-    SUPPORTED_KEYS.iter().copied().find(|key| key_id(*key) == id)
+    SUPPORTED_KEYS
+        .iter()
+        .copied()
+        .find(|key| key_id(*key) == id)
 }
 
 fn key_label(key: KeyCode) -> &'static str {
@@ -464,7 +467,6 @@ impl InteractionKind {
             Self::Door => "Open",
         }
     }
-
 }
 
 /// The single reference selected by the camera-forward interaction query.
@@ -915,7 +917,7 @@ mod tests {
             KeyCode::KeyR,
             KeyCode::KeyD,
             KeyCode::Space,
-            KeyCode::ControlLeft,
+            KeyCode::ShiftLeft,
         ]);
 
         refresh_action_state(&world);
@@ -928,6 +930,73 @@ mod tests {
         ] {
             assert!(actions.is_held(action), "{action:?} binding was ignored");
         }
+    }
+
+    #[test]
+    fn rebinding_an_occupied_key_swaps_actions_and_clears_held_input() {
+        let world = input_fixture();
+        world
+            .resource_mut::<InputState>()
+            .keys_held
+            .insert(KeyCode::KeyW);
+
+        let companion = apply_control_setting(
+            &world,
+            &SettingChange::new(
+                InputAction::Activate.setting_id(),
+                SettingValue::Choice("key_w".to_owned()),
+            ),
+        )
+        .expect("W was occupied by MoveForward, so the swap must be reported");
+
+        let bindings = world.resource::<ActionBindings>();
+        assert_eq!(
+            bindings.key_for_action(InputAction::Activate),
+            Some(KeyCode::KeyW)
+        );
+        assert_eq!(
+            bindings.key_for_action(InputAction::MoveForward),
+            Some(KeyCode::KeyE)
+        );
+        assert_eq!(bindings.binding_label(InputAction::Activate), "W");
+        drop(bindings);
+        assert_eq!(companion.id, InputAction::MoveForward.setting_id());
+        assert_eq!(companion.value, SettingValue::Choice("key_e".to_owned()));
+        assert!(world.resource::<InputState>().keys_held.is_empty());
+    }
+
+    #[test]
+    fn registered_control_settings_apply_sensitivity_and_invert_y() {
+        let world = input_fixture();
+        apply_control_setting(
+            &world,
+            &SettingChange::new(MOUSE_SENSITIVITY_SETTING_ID, SettingValue::Number(2.5)),
+        );
+        apply_control_setting(
+            &world,
+            &SettingChange::new(INVERT_LOOK_Y_SETTING_ID, SettingValue::Bool(true)),
+        );
+        let input = world.resource::<InputState>();
+        assert_eq!(input.look_sensitivity, DEFAULT_LOOK_SENSITIVITY * 2.5);
+        assert!(input.invert_look_y);
+    }
+
+    #[test]
+    fn every_configurable_action_registers_a_valid_binding_setting() {
+        let mut registry = SettingsRegistry::default();
+        register_input_settings(&mut registry).unwrap();
+        assert_eq!(
+            registry.entries().len(),
+            InputAction::CONFIGURABLE.len() + 2
+        );
+        for action in InputAction::CONFIGURABLE {
+            let entry = registry
+                .get(action.setting_id())
+                .expect("missing configurable action setting");
+            assert!(matches!(entry.value, SettingValue::Choice(_)));
+        }
+        assert!(parse_key_id("key_f").is_none());
+        assert!(parse_key_id("key_q").is_none());
     }
 
     #[test]

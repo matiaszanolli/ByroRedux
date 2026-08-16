@@ -73,13 +73,17 @@ Goal: walking around the reference route is boringly reliable.
 - Record a deterministic traversal smoke: spawn → walk route → cross door →
   cross exterior cell boundary → return.
 
-**Current state (2026-08-10):** character and fly-camera WASD, jump/ascent, and
-sprint/boost consumers read `ActionState`; fly-camera Shift descend remains a
+**Current state (2026-08-15):** character and fly-camera WASD, jump/ascent, and
+sprint/boost consumers read `ActionState`; fly-camera Q descend remains a
 debug-only physical axis. The action snapshot refreshes once in `Stage::Early`
 and is shared with `Stage::Update` interaction, preserving one-frame edges.
 Regression tests pin remapped movement actions and focused-UI transfer clearing
-world keys/cursor capture into release-only action edges. Mouse/gamepad sources
-and the deterministic character traversal smoke remain open.
+world keys/cursor capture into release-only action edges. The native Escape
+menu now owns pause/focus/cursor transfer, Shift is the default sprint/boost
+binding, Q is fly-camera descend, and settings-backed key rebinding swaps
+collisions without losing an action. Mouse sensitivity and invert-Y apply live
+and persist with the rest of the universal registry. Gamepad sources and the
+deterministic character traversal smoke remain open.
 
 ### Water focus — playable traversal + EX-13 visual closure
 
@@ -168,6 +172,15 @@ Goal: the player can understand and change game state without diagnostics.
 - Add pause/menu input routing and settings-backed key rebinding.
 - Preserve Scaleform as a compatibility frontend; native UI is the reference
   slice's reliable path.
+
+**Partial 2026-08-15:** the native HUD now has a configurable crosshair and its
+interaction prompt reflects the live Activate binding. Escape opens a modal
+pause surface with Continue, categorized Settings, and orderly Quit; simulation
+stops while it is open, while rendering and menu interaction continue. Settings
+cover FOV, HUD visibility, UI scale, upscaler, mouse look, and the keyboard
+actions currently consumed by gameplay, with validated TOML persistence and
+stale-entry recovery. Inventory/container/equip presentation, bars,
+notifications, and objective text remain the P3 closure work.
 
 ### P4 — Authored objective and dialogue loop
 

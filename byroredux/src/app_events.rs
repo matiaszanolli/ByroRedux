@@ -25,7 +25,7 @@ use winit::application::ApplicationHandler;
 use winit::event::{DeviceEvent, DeviceId, ElementState, MouseButton, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{KeyCode, PhysicalKey};
-use winit::window::{CursorGrabMode, WindowId};
+use winit::window::WindowId;
 
 use crate::bench_frame_distribution;
 use crate::cell_loader;
@@ -239,19 +239,15 @@ impl ApplicationHandler for App {
                     .try_resource::<byroredux_core::ecs::SchedulerSystemTimings>()
                     .is_none()
                 {
-                    self.world.insert_resource(
-                        byroredux_core::ecs::SchedulerSystemTimings::default(),
-                    );
+                    self.world
+                        .insert_resource(byroredux_core::ecs::SchedulerSystemTimings::default());
                 }
             } else {
                 self.capture_world_input();
             }
             return;
         }
-        let debug_overlay_open = self
-            .debug_ui
-            .as_ref()
-            .is_some_and(|ui| ui.visible);
+        let debug_overlay_open = self.debug_ui.as_ref().is_some_and(|ui| ui.visible);
         if debug_overlay_open
             && !matches!(event, WindowEvent::CloseRequested | WindowEvent::Resized(_))
         {
@@ -345,11 +341,7 @@ impl ApplicationHandler for App {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } => {
-                if !self.world.resource::<InputState>().mouse_captured {
-                    self.capture_world_input();
-                }
-            }
+            } if !self.world.resource::<InputState>().mouse_captured => self.capture_world_input(),
             _ => {}
         }
     }
@@ -406,9 +398,9 @@ impl ApplicationHandler for App {
             .is_some_and(byroredux_debug_ui::DebugUiState::captures_gameplay_input);
         if native_ui_focused
             || self
-            .ui_manager
-            .as_ref()
-            .is_some_and(UiManager::has_input_focus)
+                .ui_manager
+                .as_ref()
+                .is_some_and(UiManager::has_input_focus)
         {
             self.release_world_input_for_ui();
         }

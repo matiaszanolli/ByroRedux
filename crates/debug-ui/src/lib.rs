@@ -70,8 +70,10 @@ pub fn register_builtin_settings(registry: &mut SettingsRegistry) -> Result<(), 
         "Gameplay",
         "Field of view",
         "Vertical camera field of view. Applies immediately without rebuilding the renderer.",
-        75.0,
-        55.0,
+        // Match `Camera::default()` so merely loading the settings registry
+        // does not change the established view or benchmark framing.
+        45.0,
+        45.0,
         110.0,
         1.0,
         "°",
@@ -281,7 +283,7 @@ impl DebugUiState {
     /// Native pause/settings owns every gameplay input event while open,
     /// regardless of whether an individual egui widget consumed it.
     pub fn captures_gameplay_input(&self) -> bool {
-        self.game_menu.visible
+        self.game_menu.visible || self.visible
     }
 
     /// Run one egui frame against a pre-built [`PanelSnapshot`].
@@ -362,6 +364,25 @@ impl DebugUiState {
     /// renderer doesn't need a separate window handle.
     pub fn pixels_per_point(&self) -> f32 {
         self.egui_ctx.pixels_per_point()
+    }
+}
+
+#[cfg(test)]
+mod builtin_settings_tests {
+    use super::*;
+
+    #[test]
+    fn default_fov_preserves_the_core_camera_framing() {
+        let mut registry = SettingsRegistry::default();
+        register_builtin_settings(&mut registry).unwrap();
+        let SettingValue::Number(degrees) = registry.get(FOV_SETTING_ID).unwrap().value else {
+            panic!("FOV must remain a numeric setting");
+        };
+
+        assert!(
+            (degrees.to_radians() - byroredux_core::ecs::Camera::default().fov_y).abs()
+                < f32::EPSILON
+        );
     }
 }
 

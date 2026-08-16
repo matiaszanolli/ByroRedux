@@ -61,6 +61,8 @@ use std::time::Instant;
 use winit::event::WindowEvent;
 use winit::window::{CursorGrabMode, Window};
 
+use crate::components::InputState;
+
 fn main() -> Result<()> {
     boot::run()
 }
@@ -389,9 +391,7 @@ impl App {
                 byroredux_debug_ui::UPSCALER_SETTING_ID,
                 SettingValue::Choice(active_upscaler.clone()),
             ) {
-                log::warn!(
-                    "could not seed the upscaler setting from '{active_upscaler}': {error}"
-                );
+                log::warn!("could not seed the upscaler setting from '{active_upscaler}': {error}");
             }
         } else if let Some(SettingValue::Choice(spec)) = settings
             .get(byroredux_debug_ui::UPSCALER_SETTING_ID)
@@ -544,6 +544,14 @@ impl App {
 
     /// Return mouse look to gameplay after a native modal closes.
     fn capture_world_input(&mut self) {
+        if self
+            .ui_manager
+            .as_ref()
+            .is_some_and(UiManager::has_input_focus)
+        {
+            self.release_world_input_for_ui();
+            return;
+        }
         self.world.resource_mut::<InputState>().mouse_captured = true;
         if let Some(window) = self.window.as_ref() {
             let _ = window
@@ -646,11 +654,7 @@ fn build_debug_ui_snapshot(
 
     byroredux_debug_ui::PanelSnapshot {
         interaction_prompt: build_interaction_prompt(world),
-        show_crosshair: setting_bool(
-            world,
-            byroredux_debug_ui::SHOW_CROSSHAIR_SETTING_ID,
-            true,
-        ),
+        show_crosshair: setting_bool(world, byroredux_debug_ui::SHOW_CROSSHAIR_SETTING_ID, true),
         show_prompts: setting_bool(world, byroredux_debug_ui::SHOW_PROMPTS_SETTING_ID, true),
         metrics,
         settings,
@@ -786,7 +790,7 @@ fn apply_camera_setting(world: &World, change: &SettingChange) {
     if change.id != byroredux_debug_ui::FOV_SETTING_ID {
         return;
     }
-    let SettingValue::Number(degrees) = change.value else {
+    let SettingValue::Number(degrees) = &change.value else {
         return;
     };
     let Some(active) = world.try_resource::<byroredux_core::ecs::ActiveCamera>() else {

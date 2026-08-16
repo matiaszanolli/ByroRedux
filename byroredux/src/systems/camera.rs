@@ -40,16 +40,14 @@ pub(crate) fn fly_camera_system(world: &World, dt: f32) {
     let speed = input.move_speed * dt;
     let yaw = input.yaw;
     let pitch = input.pitch;
-    let descend = input
-        .keys_held
-        .contains(&winit::keyboard::KeyCode::KeyQ);
+    let descend = input.keys_held.contains(&winit::keyboard::KeyCode::KeyQ);
     drop(input);
 
     let Some(actions) = world.try_resource::<ActionState>() else {
         return;
     };
 
-    // Build movement from gameplay actions. Shift remains a raw debug-camera
+    // Build movement from gameplay actions. Q remains a raw debug-camera
     // descend axis; it has no on-foot gameplay intent to expose.
     let mut move_dir = Vec3::ZERO;
     if actions.is_held(InputAction::MoveForward) {

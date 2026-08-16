@@ -58,17 +58,20 @@ pub struct InteractionPrompt {
 /// Draw the small gameplay HUD layer shared with the debug renderer.
 pub fn draw_hud(ctx: &Context, snapshot: &PanelSnapshot) {
     if snapshot.show_crosshair {
-        egui::Area::new(Id::new("gameplay_crosshair"))
-            .anchor(Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .interactable(false)
-            .show(ctx, |ui| {
-                ui.label(
-                    RichText::new("+")
-                        .size(22.0)
-                        .strong()
-                        .color(Color32::from_white_alpha(220)),
-                );
-            });
+        let center = ctx.content_rect().center();
+        let painter = ctx.layer_painter(egui::LayerId::new(
+            Order::Middle,
+            Id::new("gameplay_crosshair"),
+        ));
+        let stroke = Stroke::new(1.5, Color32::from_white_alpha(220));
+        for (from, to) in [
+            (egui::vec2(-7.0, 0.0), egui::vec2(-2.0, 0.0)),
+            (egui::vec2(2.0, 0.0), egui::vec2(7.0, 0.0)),
+            (egui::vec2(0.0, -7.0), egui::vec2(0.0, -2.0)),
+            (egui::vec2(0.0, 2.0), egui::vec2(0.0, 7.0)),
+        ] {
+            painter.line_segment([center + from, center + to], stroke);
+        }
     }
 
     let Some(prompt) = snapshot
@@ -849,7 +852,11 @@ mod tests {
         draw_hud(
             &ctx,
             &PanelSnapshot {
-                interaction_prompt: Some("[E] Open"),
+                interaction_prompt: Some(InteractionPrompt {
+                    binding: "E",
+                    verb: "Open",
+                }),
+                show_prompts: true,
                 ..Default::default()
             },
         );
@@ -858,6 +865,37 @@ mod tests {
             !output.shapes.is_empty(),
             "a gameplay prompt must generate renderable HUD geometry"
         );
+    }
+
+    #[test]
+    fn crosshair_produces_hud_shapes_without_an_interaction_target() {
+        let ctx = Context::default();
+        ctx.begin_pass(egui::RawInput::default());
+        draw_hud(
+            &ctx,
+            &PanelSnapshot {
+                show_crosshair: true,
+                ..Default::default()
+            },
+        );
+        let output = ctx.end_pass();
+        assert!(!output.shapes.is_empty());
+    }
+
+    #[test]
+    fn native_pause_menu_draws_without_the_debug_overlay() {
+        let ctx = Context::default();
+        ctx.begin_pass(egui::RawInput::default());
+        let mut state = GameMenuState {
+            visible: true,
+            ..Default::default()
+        };
+        let mut outputs = PanelOutputs::default();
+        draw_game_menu(&ctx, &[], &mut state, &mut outputs);
+        let output = ctx.end_pass();
+        assert!(!output.shapes.is_empty());
+        assert!(!outputs.resume_game);
+        assert!(!outputs.quit_game);
     }
 
     #[test]

@@ -26,7 +26,9 @@ use crate::render::build_render_data;
 use crate::streaming;
 use crate::systems::compute_underwater_params;
 use crate::App;
-use crate::{apply_debug_ui_outputs, build_debug_ui_snapshot, build_interaction_prompt};
+use crate::{
+    apply_debug_ui_outputs, build_debug_ui_snapshot, build_interaction_prompt, setting_bool,
+};
 
 impl App {
     /// Phase 14 — pulled out of the original `WindowEvent::RedrawRequested`
@@ -58,7 +60,7 @@ impl App {
         // a Vec of Strings every frame. Gate those diagnostics on
         // `visible`; the interaction prompt is the only snapshot field
         // populated while the operator overlay is hidden.
-        let snapshot = if self
+        let mut snapshot = if self
             .debug_ui
             .as_ref()
             .is_some_and(|ui| ui.visible || ui.game_menu_visible())
@@ -80,6 +82,11 @@ impl App {
                 ..Default::default()
             }
         };
+        // Benchmark screenshots are renderer evidence rather than gameplay
+        // captures. Keep the new HUD reticle out of those established images.
+        if self.bench_frames_target.is_some() {
+            snapshot.show_crosshair = false;
+        }
         self.debug_ui_refresh_entities = false;
 
         let (egui_frame, outputs) =

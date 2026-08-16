@@ -127,7 +127,10 @@ fn save_to_path(registry: &SettingsRegistry, path: &Path) -> std::io::Result<()>
     })
     .map_err(std::io::Error::other)?;
 
-    if let Some(parent) = path.parent() {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
         fs::create_dir_all(parent)?;
     }
     let temp_path = temporary_path(path);
