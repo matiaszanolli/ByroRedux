@@ -678,7 +678,7 @@ pub fn snap_character_body_to_camera(world: &mut byroredux_core::ecs::World) -> 
 /// temporal discontinuity for this jump, and letting the camera spend a frame
 /// at the floor-level pose would produce exactly the unsignalled second jump
 /// #1874 was about.
-pub fn ground_character_body_at(world: &mut byroredux_core::ecs::World, destination: Vec3) -> bool {
+pub fn ground_character_body_at(world: &byroredux_core::ecs::World, destination: Vec3) -> bool {
     let Some(player) = world.try_resource::<PlayerEntity>().and_then(|r| r.0) else {
         log::warn!(
             "ground_character_body_at: no PlayerEntity registered — \
@@ -756,7 +756,7 @@ pub fn ground_character_body_at(world: &mut byroredux_core::ecs::World, destinat
 /// rotation, writing `Transform` and `GlobalTransform` together the way
 /// `camera_follow_system` does — the transition path runs outside the
 /// scheduler, so there is no propagation pass left to refresh the global.
-fn pin_camera_above_body(world: &mut byroredux_core::ecs::World, body_pos: Vec3, eye_height: f32) {
+fn pin_camera_above_body(world: &byroredux_core::ecs::World, body_pos: Vec3, eye_height: f32) {
     let Some(cam_entity) = world.try_resource::<ActiveCamera>().map(|active| active.0) else {
         return;
     };

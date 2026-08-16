@@ -179,11 +179,26 @@ impl ConsoleCommand for CombatApproachCommand {
             .map(|controller| *controller)
             .unwrap_or(byroredux_physics::CharacterController::HUMAN);
 
-        // The frozen P2 fixture has clear floor on the negative-Z side. Keep
-        // the distance inside the 180-BU melee reach and aim at torso height,
-        // not the actor root at its feet.
-        let body_pos =
-            target_pos - Vec3::Z * 120.0 + Vec3::Y * (controller.half_height + controller.radius);
+        // Keep the distance inside the 180-BU melee reach. A live engine uses
+        // the same walkable-floor probe as door arrivals; the resource-light
+        // command test falls back to the authored floor height.
+        let authored_floor_pos = target_pos - Vec3::Z * 120.0;
+        let body_pos = if world
+            .try_resource::<byroredux_physics::PhysicsWorld>()
+            .is_some()
+        {
+            if !crate::systems::ground_character_body_at(world, authored_floor_pos) {
+                return CommandOutput::line("combat.approach: failed to ground character body");
+            }
+            world
+                .get::<Transform>(player)
+                .map(|transform| transform.translation)
+                .unwrap_or(
+                    authored_floor_pos + Vec3::Y * (controller.half_height + controller.radius),
+                )
+        } else {
+            authored_floor_pos + Vec3::Y * (controller.half_height + controller.radius)
+        };
         let camera_pos = body_pos + Vec3::Y * controller.eye_height;
         let aim_pos = target_pos + Vec3::Y * controller.eye_height * 1.15;
         let (yaw, pitch) = look_at_yaw_pitch(camera_pos, aim_pos);
@@ -193,13 +208,10 @@ impl ConsoleCommand for CombatApproachCommand {
             let Some(mut transforms) = world.query_mut::<Transform>() else {
                 return CommandOutput::line("combat.approach: Transform storage unavailable");
             };
-            let Some(player_transform) = transforms.get_mut(player) else {
-                return CommandOutput::line(format!(
-                    "combat.approach: player entity {player} has no Transform"
-                ));
-            };
-            player_transform.translation = body_pos;
-            player_transform.rotation = Quat::IDENTITY;
+            if let Some(player_transform) = transforms.get_mut(player) {
+                player_transform.translation = body_pos;
+                player_transform.rotation = Quat::IDENTITY;
+            }
             let Some(camera_transform) = transforms.get_mut(camera) else {
                 return CommandOutput::line(format!(
                     "combat.approach: camera entity {camera} has no Transform"

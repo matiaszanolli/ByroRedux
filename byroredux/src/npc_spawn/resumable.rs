@@ -109,6 +109,16 @@ struct PrebakedNpcState {
     phase: PrebakedPhase,
 }
 
+impl PrebakedNpcState {
+    /// Missing per-NPC FaceGen is a visual degradation, not the end of the
+    /// spawn job. Armor, animation/ragdoll targeting, AI, and descendant
+    /// tagging still have to finalize on the already-loaded skeleton.
+    fn skip_missing_facegen(&mut self) -> UnitOutcome {
+        self.phase = PrebakedPhase::Armor(0);
+        UnitOutcome::Continue
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PrebakedPhase {
     Skeleton,
@@ -1120,7 +1130,7 @@ fn advance_prebaked_unit(
                     "NPC {:08X}: empty plugin name in load order; skipping pre-baked FaceGen",
                     npc.form_id,
                 );
-                return UnitOutcome::Complete(Some(state.placement_root));
+                return state.skip_missing_facegen();
             };
             let Some(data) = tex_provider.extract_mesh(facegen_path) else {
                 log::debug!(
@@ -1130,7 +1140,7 @@ fn advance_prebaked_unit(
                     npc.editor_id,
                     facegen_path,
                 );
-                return UnitOutcome::Complete(Some(state.placement_root));
+                return state.skip_missing_facegen();
             };
             let tint_path = state
                 .tint_path
@@ -1303,6 +1313,30 @@ mod tests {
         assert_ne!(RuntimePhase::Head, RuntimePhase::Hair);
         assert_ne!(RuntimePhase::Eye(0), RuntimePhase::Eye(1));
         assert_ne!(RuntimePhase::Armor(0), RuntimePhase::Armor(1));
+    }
+
+    #[test]
+    fn missing_prebaked_facegen_continues_to_armor_and_finalization() {
+        let mut world = World::new();
+        let placement_root = world.spawn();
+        let mut state = PrebakedNpcState {
+            placement_root,
+            skel_root: Some(world.spawn()),
+            skel_map: HashMap::new(),
+            facegen_path: None,
+            tint_path: None,
+            armor: Vec::new(),
+            equipped_armor_count: 0,
+            phase: PrebakedPhase::Facegen,
+        };
+
+        assert!(matches!(
+            state.skip_missing_facegen(),
+            UnitOutcome::Continue
+        ));
+        assert_eq!(state.phase, PrebakedPhase::Armor(0));
+        assert_eq!(state.placement_root, placement_root);
+        assert!(state.skel_root.is_some());
     }
 
     /// Regression for #2276 (PERF-D7-02): `parent_part` used to re-walk
