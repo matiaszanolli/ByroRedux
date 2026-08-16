@@ -588,6 +588,18 @@ order concrete: add Skyrim Health derivation first, then actor-root ownership
 for bone-body ray hits/ragdoll activation and deterministic weapon selection;
 only then connect Attack → `HitEvent` → damage/death/loot.
 
+**P2 combat core landed 2026-08-16:**
+[`docs/smoke-tests/p2-melee-core.sh`](docs/smoke-tests/p2-melee-core.sh)
+passes the frozen reference through the production path: Skyrim race Health +
+signed ACBS offset → actor-owned bone ray hit → bound Attack edge → canonical
+`HitEvent` → layered Health damage → one `Dead`/AI-disable transition → the
+existing 18-body ragdoll. Deterministic weapon selection is attached as
+equipment state (highest authored damage, FormID tie-break); the current
+player fixture is unarmed and therefore exercises the explicit 8-damage
+fallback. This is a core checkpoint, not P2 closure: authored attack/hit/death
+animation and sound, corpse interaction/loot transfer, and save → exit →
+reload continuity remain.
+
 **Two axes.** Milestones (`M…`) ship user-visible capability.
 Risk-reducers (`R…`) are structural fixes flagged in the 2026-04-22
 architectural review — not new features, but prevention work to stop

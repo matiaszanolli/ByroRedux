@@ -1,11 +1,19 @@
 # P2 Combat Fixture
 
-**Status:** frozen 2026-08-10
+**Status:** fixture frozen 2026-08-10; combat core passing 2026-08-16
 
 This fixture is the single real-data target for the playable vertical slice's
 first combat loop. It deliberately avoids leveled-actor placement and weapon
 family breadth so implementation failures stay attributable to engine state,
 not content selection.
+
+The combat-core checkpoint now passes via
+[`p2-melee-core.sh`](../smoke-tests/p2-melee-core.sh): vanilla Health derives
+to 50, the player ray resolves a skeleton bone back to this placement root,
+seven bound unarmed attacks emit seven canonical `HitEvent`s, and zero Health
+produces one `Dead` transition plus an 18-body ragdoll. The full P2 closure
+below remains open for authored response animation/sound, corpse loot, and
+save/reload continuity.
 
 ## Frozen actor and weapon family
 
@@ -49,7 +57,7 @@ Greatsword leaves, while all 32 `EquipmentSlots` occupants were empty. That
 confirms the production spawn path and makes the current leveled expansion /
 weapon-selection ambiguity observable rather than hypothetical.
 
-## Existing runtime surface
+## Pre-implementation runtime surface (2026-08-10 trace)
 
 | Surface | Ready now | P2 gap exposed by the fixture |
 |---|---|---|
