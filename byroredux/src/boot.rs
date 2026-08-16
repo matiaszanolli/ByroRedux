@@ -17,7 +17,8 @@ use crate::cli_args::{parse_renderer_config, parse_string_arg, parse_vec3_arg};
 use crate::commands::build_command_registry;
 use crate::components::{CellRootIndex, FootstepConfig, InputState, NameIndex, SubtreeCache};
 use crate::interaction::{
-    ActionBindings, ActionState, InjectedKeyPulse, InteractionState, InteractionTrace,
+    ActionBindings, ActionState, InjectedKeyHold, InjectedKeyPulse, InteractionState,
+    InteractionTrace,
 };
 use crate::systems::{
     animate_lights_system, footstep_system, log_stats_system, make_animation_system,
@@ -444,6 +445,7 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.insert_resource(ActionBindings::default());
     world.insert_resource(ActionState::default());
     world.insert_resource(InjectedKeyPulse::default());
+    world.insert_resource(InjectedKeyHold::default());
     world.insert_resource(InteractionState::default());
     world.insert_resource(InteractionTrace::default());
     world.insert_resource(StringPool::new());
@@ -666,6 +668,7 @@ pub(crate) fn build_scheduler() -> Scheduler {
             .reads_resource::<ActionState>()
             .writes_resource::<ActionState>()
             .writes_resource::<InjectedKeyPulse>()
+            .writes_resource::<InjectedKeyHold>()
             .reads_resource::<byroredux_scripting::PlayerControlState>()
             .reads_resource::<byroredux_physics::PhysicsWorld>()
             .writes_resource::<byroredux_physics::PhysicsWorld>()

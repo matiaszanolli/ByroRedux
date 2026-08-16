@@ -73,7 +73,7 @@ Goal: walking around the reference route is boringly reliable.
 - Record a deterministic traversal smoke: spawn → walk route → cross door →
   cross exterior cell boundary → return.
 
-**Current state (2026-08-15):** character and fly-camera WASD, jump/ascent, and
+**Current state (2026-08-16):** character and fly-camera WASD, jump/ascent, and
 sprint/boost consumers read `ActionState`; fly-camera Q descend remains a
 debug-only physical axis. The action snapshot refreshes once in `Stage::Early`
 and is shared with `Stage::Update` interaction, preserving one-frame edges.
@@ -82,8 +82,18 @@ world keys/cursor capture into release-only action edges. The native Escape
 menu now owns pause/focus/cursor transfer, Shift is the default sprint/boost
 binding, Q is fly-camera descend, and settings-backed key rebinding swaps
 collisions without losing an action. Mouse sensitivity and invert-Y apply live
-and persist with the rest of the universal registry. Gamepad sources and the
-deterministic character traversal smoke remain open.
+and persist with the rest of the universal registry.
+
+The deterministic character gate now passes via
+[`p1-character-traversal.sh`](../smoke-tests/p1-character-traversal.sh): the
+real capsule walks away from and back to the Bannered Mare threshold, activates
+both sides of the XTEL pair, crosses `WhiterunWorld (6,-2) → (6,-3) → (6,-2)`
+through live collision/streaming, and returns grounded to the interior. The
+smoke's bounded holds resolve through live bindings, its look fixture writes
+the normal mouse-look accumulator, and no camera/body teleport participates in
+the route. Door transitions now honor an explicit `--radius`, allowing the gate
+to retain a radius-1 exterior ring. Gamepad physical sources remain open, so P1
+as a whole is not closed yet.
 
 ### Water focus — playable traversal + EX-13 visual closure
 
@@ -234,5 +244,6 @@ Goal: the complete slice survives ordinary play behavior.
    action + water-contact boundaries; close enter → swim → surface → exit first.
 3. Use those captures to choose the first W2/W3 defect by evidence (coverage/seam
    before local shading polish), then re-run the same fixture.
-4. Resume P1 door-return traversal and P2 combat readiness after the water gate,
-   carrying the water-adjacent boundary through the eventual 30-minute soak.
+4. Add P1 gamepad physical sources and resume P2 combat readiness after the
+   water gate, carrying the now-passing door-return boundary route through the
+   eventual 30-minute soak.

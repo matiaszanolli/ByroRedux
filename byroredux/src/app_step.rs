@@ -692,11 +692,7 @@ impl App {
         let dest_label = cell_loader::log_transition_header(&pending);
         let args: Vec<String> = crate::cli_args::effective_args();
 
-        // Default exterior-load radius — matches the CLI default (5 →
-        // 11×11 grid). A future enhancement can plumb the boot-time
-        // `--radius` through `LoadedPluginSet` to honor the operator's
-        // chosen value across transitions.
-        const DEFAULT_TRANSITION_RADIUS: i32 = 5;
+        let transition_radius = exterior_transition_radius(&args);
 
         match pending.destination {
             cell_loader::TransitionDestination::Interior {
@@ -786,7 +782,7 @@ impl App {
                     &esm_path,
                     grid.0,
                     grid.1,
-                    DEFAULT_TRANSITION_RADIUS,
+                    transition_radius,
                     Some(&worldspace),
                 ) {
                     Ok(wctx) => {
@@ -809,7 +805,7 @@ impl App {
                             wctx,
                             tex_provider,
                             mat_provider,
-                            DEFAULT_TRANSITION_RADIUS,
+                            transition_radius,
                         );
                         state.last_player_grid = Some(grid);
                         state.spawn_lod_water(&mut self.world, ctx);
@@ -869,8 +865,33 @@ impl App {
     }
 }
 
+/// Preserve the historical door-transition default, but honor an explicit
+/// boot-time radius so traversal smokes and constrained machines do not
+/// unexpectedly expand to an 11×11 exterior ring.
+fn exterior_transition_radius(args: &[String]) -> i32 {
+    const DEFAULT_TRANSITION_RADIUS: i32 = 5;
+    args.iter()
+        .position(|arg| arg == "--radius")
+        .and_then(|index| args.get(index + 1))
+        .map(|value| crate::scene::parse_exterior_radius(value))
+        .unwrap_or(DEFAULT_TRANSITION_RADIUS)
+}
+
 #[cfg(test)]
 mod tests {
+    use super::exterior_transition_radius;
+
+    #[test]
+    fn door_transition_honors_the_boot_radius() {
+        let args = vec!["byroredux".into(), "--radius".into(), "1".into()];
+        assert_eq!(exterior_transition_radius(&args), 1);
+    }
+
+    #[test]
+    fn door_transition_keeps_its_historical_default_radius() {
+        assert_eq!(exterior_transition_radius(&[]), 5);
+    }
+
     /// #2156 / RL-D6-03 — the other half of the fix (the rollback itself
     /// lives in `renderer::vulkan::context::resize`). An `Err` out of
     /// `set_upscaler_mode` means even the rollback to the previous upscaler

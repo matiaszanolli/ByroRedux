@@ -7,6 +7,90 @@ use byroredux_core::ecs::components::{GlobalTransform, Name, SkinnedMesh, Transf
 use byroredux_core::ecs::World;
 use byroredux_core::math::{Quat, Vec3};
 
+#[test]
+fn input_hold_command_enters_through_the_action_binding() {
+    use crate::components::InputState;
+    use crate::interaction::{
+        ActionBindings, ActionState, InjectedKeyHold, InjectedKeyPulse, InputAction,
+    };
+
+    let mut world = World::new();
+    world.insert_resource(InputState::default());
+    world.insert_resource(ActionBindings::default());
+    world.insert_resource(ActionState::default());
+    world.insert_resource(InjectedKeyPulse::default());
+    world.insert_resource(InjectedKeyHold::default());
+
+    let output = InputHoldCommand
+        .execute(&world, "forward 2")
+        .lines
+        .join("\n");
+    assert!(output.contains("Move forward through the W binding for 2 frames"));
+
+    crate::interaction::refresh_action_state(&world);
+    assert!(world
+        .resource::<ActionState>()
+        .is_held(InputAction::MoveForward));
+    crate::interaction::refresh_action_state(&world);
+    assert!(world
+        .resource::<ActionState>()
+        .is_held(InputAction::MoveForward));
+    crate::interaction::refresh_action_state(&world);
+    assert!(world
+        .resource::<ActionState>()
+        .was_released(InputAction::MoveForward));
+}
+
+#[test]
+fn input_look_updates_the_gameplay_accumulator_without_moving_the_camera() {
+    use crate::components::InputState;
+
+    let mut world = World::new();
+    world.insert_resource(InputState::default());
+    let camera = world.spawn();
+    world.insert(
+        camera,
+        Transform::from_translation(Vec3::new(1.0, 2.0, 3.0)),
+    );
+    world.insert_resource(ActiveCamera(camera));
+
+    let output = InputLookCommand.execute(&world, "-45 120").lines.join("\n");
+    assert!(output.contains("yaw=-45.0° pitch=89.0°"));
+    let input = world.resource::<InputState>();
+    assert!((input.yaw.to_degrees() + 45.0).abs() < 0.01);
+    assert!((input.pitch.to_degrees() - 89.0).abs() < 0.01);
+    drop(input);
+    assert_eq!(
+        world.get::<Transform>(camera).unwrap().translation,
+        Vec3::new(1.0, 2.0, 3.0)
+    );
+}
+
+#[test]
+fn player_status_reports_character_body_grid_and_grounding() {
+    use crate::systems::{PlayerEntity, PlayerMode};
+
+    let mut world = World::new();
+    let player = world.spawn();
+    world.insert(
+        player,
+        Transform::from_translation(Vec3::new(24_650.0, 120.0, 7_900.0)),
+    );
+    let mut controller = byroredux_physics::CharacterController::HUMAN;
+    controller.is_grounded = true;
+    world.insert(player, controller);
+    world.insert_resource(PlayerEntity(Some(player)));
+    world.insert_resource(PlayerMode::Character);
+    world.insert_resource(ActiveCamera(player));
+
+    let output = PlayerStatusCommand.execute(&world, "").lines.join("\n");
+    assert!(output.contains("mode=Character"));
+    assert!(output.contains("grid=(6,-2)"));
+    assert!(output.contains("grounded=true"));
+    assert!(output.contains("camera=(24650.00, 120.00, 7900.00)"));
+    assert!(output.contains("input_hold_frames_remaining=0"));
+}
+
 /// `skin.dump` regression for #841 — the dump must surface the
 /// resolved bone entity, its `Name`, the per-bone `bind_inverse`
 /// translation, and the composed palette translation in the

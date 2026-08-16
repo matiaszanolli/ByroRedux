@@ -244,6 +244,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("HavokAnimationTarget", "skeleton_root + consumed_idle_serial are both spawn-time-resolved (serial always starts at 0), rederived identically every load"),
         ("HavokIdleCatalog", "process-lifetime IDLE FormID -> animation handle mapping, populated once and read-only afterward — same posture as AnimationClipRegistry"),
         ("InjectedKeyPulse", "one-frame debug/smoke input ingress drained by refresh_action_state; never canonical gameplay state"),
+        ("InjectedKeyHold", "bounded debug/smoke input ingress drained by refresh_action_state; never canonical gameplay state"),
         ("InputState", "live keyboard/mouse state for the fly camera, inherently process-session-local"),
         ("InventoryCatalog", "read-only item presentation metadata rebuilt from the resolved plugin index on every content load"),
         ("InteractionState", "camera-forward target derived from live transforms and interactable components every frame"),

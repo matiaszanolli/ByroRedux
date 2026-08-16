@@ -414,12 +414,114 @@ pub(crate) struct InjectedKeyPulse {
 
 impl Resource for InjectedKeyPulse {}
 
+/// Bounded physical-key hold used by real-data traversal automation.
+///
+/// Like [`InjectedKeyPulse`], this sits upstream of [`ActionState`]. The
+/// command resolves an action to its *current* keyboard binding once, then
+/// feeds that physical key through the normal binding map for exactly the
+/// requested number of action refreshes. It therefore exercises the same
+/// held/pressed/released edges as a real keyboard hold without depending on
+/// wall-clock sleeps in smoke scripts.
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct InjectedKeyHold {
+    key: Option<KeyCode>,
+    remaining_frames: u32,
+}
+
+impl Resource for InjectedKeyHold {}
+
+impl InjectedKeyHold {
+    fn take_key_for_frame(&mut self) -> Option<KeyCode> {
+        if self.remaining_frames == 0 {
+            self.key = None;
+            return None;
+        }
+        self.remaining_frames -= 1;
+        let key = self.key;
+        if self.remaining_frames == 0 {
+            self.key = None;
+        }
+        key
+    }
+
+    fn clear(&mut self) {
+        self.key = None;
+        self.remaining_frames = 0;
+    }
+}
+
 pub(crate) fn queue_debug_activate_press(world: &World) -> Result<(), &'static str> {
     let mut pulse = world
         .try_resource_mut::<InjectedKeyPulse>()
         .ok_or("InjectedKeyPulse resource is not installed")?;
     pulse.key = Some(KeyCode::KeyE);
     Ok(())
+}
+
+/// Queue a finite physical-key hold for a named gameplay action.
+///
+/// The debug frontend is intentionally only an alternate input source: the
+/// returned key still passes through [`ActionBindings`] and the ordinary
+/// character controller on subsequent frames.
+pub(crate) fn queue_debug_action_hold(
+    world: &World,
+    action_name: &str,
+    frames: u32,
+) -> Result<String, String> {
+    if frames == 0 {
+        return Err("frame count must be greater than zero".to_string());
+    }
+    let action =
+        debug_action(action_name).ok_or_else(|| format!("unknown action `{action_name}`"))?;
+    let (key, label) = {
+        let bindings = world
+            .try_resource::<ActionBindings>()
+            .ok_or_else(|| "ActionBindings resource is not installed".to_string())?;
+        let key = bindings
+            .key_for_action(action)
+            .ok_or_else(|| format!("{} is unbound", action.label()))?;
+        (key, bindings.binding_label(action))
+    };
+    let mut hold = world
+        .try_resource_mut::<InjectedKeyHold>()
+        .ok_or_else(|| "InjectedKeyHold resource is not installed".to_string())?;
+    hold.key = Some(key);
+    hold.remaining_frames = frames;
+    Ok(format!(
+        "input.hold: queued {} through the {label} binding for {frames} frames",
+        action.label()
+    ))
+}
+
+fn debug_action(name: &str) -> Option<InputAction> {
+    match name.trim().to_ascii_lowercase().as_str() {
+        "forward" | "move_forward" | "w" => Some(InputAction::MoveForward),
+        "backward" | "move_backward" | "s" => Some(InputAction::MoveBackward),
+        "left" | "strafe_left" | "a" => Some(InputAction::StrafeLeft),
+        "right" | "strafe_right" | "d" => Some(InputAction::StrafeRight),
+        "jump" | "space" => Some(InputAction::Jump),
+        "sprint" | "shift" => Some(InputAction::Sprint),
+        "activate" | "e" => Some(InputAction::Activate),
+        "inventory" | "tab" => Some(InputAction::Inventory),
+        _ => None,
+    }
+}
+
+/// Cancel all synthetic physical input when a modal frontend takes focus.
+pub(crate) fn clear_debug_input(world: &World) {
+    if let Some(mut pulse) = world.try_resource_mut::<InjectedKeyPulse>() {
+        pulse.key = None;
+    }
+    if let Some(mut hold) = world.try_resource_mut::<InjectedKeyHold>() {
+        hold.clear();
+    }
+}
+
+pub(crate) fn injected_hold_frames_remaining(world: &World) -> u32 {
+    world
+        .try_resource::<InjectedKeyHold>()
+        .map(|hold| hold.remaining_frames)
+        .unwrap_or(0)
 }
 
 /// Derived per-frame action state with held/pressed/released semantics.
@@ -547,11 +649,17 @@ pub(crate) fn refresh_action_state(world: &World) {
     let injected_key = world
         .try_resource_mut::<InjectedKeyPulse>()
         .and_then(|mut pulse| pulse.key.take());
+    let injected_held_key = world
+        .try_resource_mut::<InjectedKeyHold>()
+        .and_then(|mut hold| hold.take_key_for_frame());
     let Some(bindings) = world.try_resource::<ActionBindings>() else {
         return;
     };
     let mut next_held = bindings.held_mask(&keys_held);
     if let Some(action) = injected_key.and_then(|key| bindings.action_for_key(key)) {
+        next_held |= action.bit();
+    }
+    if let Some(action) = injected_held_key.and_then(|key| bindings.action_for_key(key)) {
         next_held |= action.bit();
     }
     drop(bindings);
@@ -839,6 +947,7 @@ mod tests {
         world.insert_resource(ActionBindings::default());
         world.insert_resource(ActionState::default());
         world.insert_resource(InjectedKeyPulse::default());
+        world.insert_resource(InjectedKeyHold::default());
         world.insert_resource(InteractionState::default());
         world.insert_resource(InteractionTrace::default());
         world
@@ -906,6 +1015,32 @@ mod tests {
         assert!(world
             .resource::<ActionState>()
             .was_released(InputAction::Activate));
+    }
+
+    #[test]
+    fn injected_hold_uses_remapped_binding_for_exact_frame_count() {
+        let world = input_fixture();
+        world
+            .resource_mut::<ActionBindings>()
+            .bind_key(KeyCode::KeyR, InputAction::MoveForward);
+        let queued = queue_debug_action_hold(&world, "forward", 3).unwrap();
+        assert!(queued.contains("through the R binding for 3 frames"));
+
+        for frame in 0..3 {
+            refresh_action_state(&world);
+            let actions = world.resource::<ActionState>();
+            assert!(actions.is_held(InputAction::MoveForward), "frame {frame}");
+            assert_eq!(
+                actions.was_pressed(InputAction::MoveForward),
+                frame == 0,
+                "only the first held frame is a press edge"
+            );
+        }
+
+        refresh_action_state(&world);
+        let actions = world.resource::<ActionState>();
+        assert!(!actions.is_held(InputAction::MoveForward));
+        assert!(actions.was_released(InputAction::MoveForward));
     }
 
     #[test]
@@ -1008,6 +1143,8 @@ mod tests {
             .keys_held
             .extend([KeyCode::KeyW, KeyCode::KeyE]);
         refresh_action_state(&world);
+
+        queue_debug_action_hold(&world, "forward", 30).unwrap();
 
         assert!(!crate::ui_input::release_world_input(&world));
         refresh_action_state(&world);

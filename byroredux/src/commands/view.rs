@@ -1,7 +1,8 @@
 //! Camera + selection / picking commands.
 //!
 //! `prid`, `cam.where`, `near`, `pick`, `cam.pos`, `cam.tp`,
-//! `interaction.status`, `input.press`.
+//! `interaction.status`, `input.press`, `input.hold`, `input.look`,
+//! `player.status`.
 
 use super::shared::*;
 
@@ -81,6 +82,166 @@ impl ConsoleCommand for InputPressCommand {
             },
             _ => CommandOutput::line("usage: input.press activate"),
         }
+    }
+}
+
+/// `input.hold <action> <frames>` — queue a bounded physical-key hold.
+///
+/// This is the traversal-smoke counterpart to [`InputPressCommand`]. It
+/// resolves the action through the live keyboard bindings and lets the normal
+/// action refresh plus character controller consume every held frame.
+pub(crate) struct InputHoldCommand;
+impl ConsoleCommand for InputHoldCommand {
+    fn name(&self) -> &str {
+        "input.hold"
+    }
+
+    fn description(&self) -> &str {
+        "Hold a gameplay action for N frames (usage: input.hold forward 120)"
+    }
+
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        const MAX_HOLD_FRAMES: u32 = 10_000;
+        let mut parts = args.split_whitespace();
+        let Some(action) = parts.next() else {
+            return CommandOutput::line("usage: input.hold <action> <frames>");
+        };
+        let Some(frames) = parts.next().and_then(|value| value.parse::<u32>().ok()) else {
+            return CommandOutput::line("usage: input.hold <action> <frames>");
+        };
+        if parts.next().is_some() || frames == 0 || frames > MAX_HOLD_FRAMES {
+            return CommandOutput::line(format!(
+                "input.hold: frames must be in 1..={MAX_HOLD_FRAMES}"
+            ));
+        }
+        match crate::interaction::queue_debug_action_hold(world, action, frames) {
+            Ok(message) => CommandOutput::line(message),
+            Err(error) => CommandOutput::line(format!("input.hold: {error}")),
+        }
+    }
+}
+
+/// `input.look <yaw-degrees> [pitch-degrees]` — set the gameplay look
+/// accumulator used by both mouse look and character movement alignment.
+///
+/// This is a deterministic smoke-test frontend for the normal `InputState`
+/// boundary. It never writes camera or character transforms directly.
+pub(crate) struct InputLookCommand;
+impl ConsoleCommand for InputLookCommand {
+    fn name(&self) -> &str {
+        "input.look"
+    }
+
+    fn description(&self) -> &str {
+        "Set gameplay yaw/pitch in degrees (usage: input.look <yaw> [pitch])"
+    }
+
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let mut parts = args.split_whitespace();
+        let Some(yaw_degrees) = parts.next().and_then(|value| value.parse::<f32>().ok()) else {
+            return CommandOutput::line("usage: input.look <yaw-degrees> [pitch-degrees]");
+        };
+        let pitch_degrees = match parts.next() {
+            Some(value) => match value.parse::<f32>() {
+                Ok(value) => value,
+                Err(_) => {
+                    return CommandOutput::line("usage: input.look <yaw-degrees> [pitch-degrees]");
+                }
+            },
+            None => 0.0,
+        };
+        if parts.next().is_some() || !yaw_degrees.is_finite() || !pitch_degrees.is_finite() {
+            return CommandOutput::line("usage: input.look <yaw-degrees> [pitch-degrees]");
+        }
+        let Some(mut input) = world.try_resource_mut::<InputState>() else {
+            return CommandOutput::line("input.look: InputState resource not present");
+        };
+        input.yaw = yaw_degrees.to_radians();
+        input.pitch = pitch_degrees.clamp(-89.0, 89.0).to_radians();
+        CommandOutput::line(format!(
+            "input.look: yaw={:.1}° pitch={:.1}°",
+            input.yaw.to_degrees(),
+            input.pitch.to_degrees(),
+        ))
+    }
+}
+
+/// `player.status` — report the grounded traversal state used by P1 smokes.
+pub(crate) struct PlayerStatusCommand;
+impl ConsoleCommand for PlayerStatusCommand {
+    fn name(&self) -> &str {
+        "player.status"
+    }
+
+    fn description(&self) -> &str {
+        "Show player mode, body/camera positions, exterior grid, and grounding"
+    }
+
+    fn execute(&self, world: &World, _args: &str) -> CommandOutput {
+        let mode = world
+            .try_resource::<crate::systems::PlayerMode>()
+            .map(|mode| *mode)
+            .unwrap_or_default();
+        let player = world
+            .try_resource::<crate::systems::PlayerEntity>()
+            .and_then(|player| player.0);
+        let camera_entity = world.try_resource::<ActiveCamera>().map(|active| active.0);
+        let camera = camera_entity
+            .and_then(|entity| world.get::<Transform>(entity))
+            .map(|transform| transform.translation);
+        let look = world
+            .try_resource::<InputState>()
+            .map(|input| (input.yaw.to_degrees(), input.pitch.to_degrees()));
+
+        let mut lines = vec!["Player status:".to_string()];
+        lines.push(format!(
+            "  mode={mode:?} player={}",
+            player
+                .map(|entity| entity.to_string())
+                .unwrap_or_else(|| "none".to_string())
+        ));
+        if let Some(player) = player {
+            let body = world
+                .get::<Transform>(player)
+                .map(|transform| transform.translation);
+            let controller = world.get::<byroredux_physics::CharacterController>(player);
+            match (body, controller) {
+                (Some(body), Some(controller)) => {
+                    let grid = crate::streaming::world_pos_to_grid(body.x, body.z);
+                    lines.push(format!(
+                        "  body=({:.2}, {:.2}, {:.2}) grid=({},{}) grounded={} vertical_velocity={:.2}",
+                        body.x,
+                        body.y,
+                        body.z,
+                        grid.0,
+                        grid.1,
+                        controller.is_grounded,
+                        controller.vertical_velocity,
+                    ));
+                }
+                (Some(body), None) => lines.push(format!(
+                    "  body=({:.2}, {:.2}, {:.2}) controller=none",
+                    body.x, body.y, body.z
+                )),
+                (None, _) => lines.push("  body=none".to_string()),
+            }
+        }
+        lines.push(match camera {
+            Some(camera) => format!(
+                "  camera=({:.2}, {:.2}, {:.2})",
+                camera.x, camera.y, camera.z
+            ),
+            None => "  camera=none".to_string(),
+        });
+        lines.push(match look {
+            Some((yaw, pitch)) => format!("  look=(yaw={yaw:.1}°, pitch={pitch:.1}°)"),
+            None => "  look=none".to_string(),
+        });
+        lines.push(format!(
+            "  input_hold_frames_remaining={}",
+            crate::interaction::injected_hold_frames_remaining(world)
+        ));
+        CommandOutput::lines(lines)
     }
 }
 
