@@ -9,12 +9,28 @@ use byroredux_core::ecs::components::{
     EquipmentSlots, EquippedWeapon, Inventory, InventoryIndex, ItemStack,
 };
 use byroredux_core::ecs::{Resource, World};
+use byroredux_plugin::esm::reader::GameKind;
 use byroredux_plugin::esm::records::{EsmIndex, ItemKind, NpcRecord, ACBS_PC_LEVEL_MULT};
 use rustc_hash::FxHashMap;
 
 use crate::systems::PlayerEntity;
 
-const PLAYER_BASE_FORM_ID: u32 = 0x0000_0014;
+const PLAYER_NPC_FORM_ID: u32 = 0x0000_0007;
+
+/// Resolve the base `NPC_` record for the player, never the placed player
+/// reference (`0x00000014`). Every currently supported master preserves the
+/// lineage-wide `Player` base at FormID 7; keeping the exhaustive game table
+/// here makes a future variant divergence an explicit compiler-visible edit.
+fn player_npc_form_id(game: GameKind) -> u32 {
+    match game {
+        GameKind::Oblivion
+        | GameKind::Fallout3NV
+        | GameKind::Skyrim
+        | GameKind::Fallout4
+        | GameKind::Fallout76
+        | GameKind::Starfield => PLAYER_NPC_FORM_ID,
+    }
+}
 
 /// Immutable display/equipment metadata derived from the active plugin set.
 #[derive(Debug, Clone)]
@@ -117,7 +133,16 @@ fn describe_kind(kind: &ItemKind) -> (&'static str, String, Option<u32>) {
 }
 
 fn build_player_template(index: &EsmIndex) -> PlayerInventoryTemplate {
-    let Some(player) = index.npcs.get(&PLAYER_BASE_FORM_ID) else {
+    build_player_template_for(index, player_npc_form_id(index.game))
+}
+
+fn build_player_template_for(index: &EsmIndex, player_form_id: u32) -> PlayerInventoryTemplate {
+    let Some(player) = index.npcs.get(&player_form_id) else {
+        log::error!(
+            "Player inventory unavailable: {:?} NPC_ {:08X} is missing from the resolved index",
+            index.game,
+            player_form_id,
+        );
         return PlayerInventoryTemplate::default();
     };
     let actor_level = effective_actor_level(player);
@@ -479,9 +504,10 @@ mod tests {
 
         let armor_form = 0x0001_2345;
         let ammo_form = 0x0001_2346;
+        let synthetic_player_form = 0x00AB_CDEF;
         let mut index = EsmIndex::default();
         index.npcs.insert(
-            PLAYER_BASE_FORM_ID,
+            synthetic_player_form,
             NpcRecord {
                 inventory: vec![
                     NpcInventoryEntry {
@@ -529,7 +555,7 @@ mod tests {
             },
         );
 
-        let template = build_player_template(&index);
+        let template = build_player_template_for(&index, synthetic_player_form);
         assert_eq!(template.inventory.items.len(), 2);
         assert_eq!(
             template
@@ -542,5 +568,54 @@ mod tests {
             20
         );
         assert_eq!(template.equipment.at(12), Some(InventoryIndex(0)));
+    }
+
+    #[test]
+    fn player_npc_form_id_is_canonical_across_supported_games() {
+        for game in [
+            GameKind::Oblivion,
+            GameKind::Fallout3NV,
+            GameKind::Skyrim,
+            GameKind::Fallout4,
+            GameKind::Fallout76,
+            GameKind::Starfield,
+        ] {
+            assert_eq!(player_npc_form_id(game), 0x0000_0007, "{game:?}");
+        }
+    }
+
+    #[test]
+    fn installed_fnv_player_base_builds_a_nonempty_template() {
+        let data = std::env::var_os("BYROREDUX_FNV_DATA")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::PathBuf::from(
+                    "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data",
+                )
+            });
+        let esm = data.join("FalloutNV.esm");
+        let Ok(bytes) = std::fs::read(&esm) else {
+            eprintln!(
+                "skipping real-data #3099 regression: {} absent",
+                esm.display()
+            );
+            return;
+        };
+        let index = byroredux_plugin::esm::parse_esm(&bytes).expect("parse FalloutNV.esm");
+        let player_form_id = player_npc_form_id(index.game);
+        let player = index
+            .npcs
+            .get(&player_form_id)
+            .expect("canonical Player NPC_ 00000007");
+
+        assert_eq!(player.editor_id, "Player");
+        assert!(
+            index.npcs.get(&0x0000_0014).is_none(),
+            "00000014 is the placed player reference, not an NPC_ base",
+        );
+        assert!(
+            !build_player_template(&index).inventory.items.is_empty(),
+            "the authored Player inventory must reach the startup template",
+        );
     }
 }
