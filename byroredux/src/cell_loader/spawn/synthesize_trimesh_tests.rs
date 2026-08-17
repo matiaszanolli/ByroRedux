@@ -18,6 +18,7 @@ use byroredux_core::{
     math::{Quat, Vec3},
 };
 use byroredux_nif::import::collision::CollisionAuthoringSummary;
+use byroredux_physics::{physics_sync_system, PhysicsWorld, RapierHandles};
 
 /// A single unit triangle synthesizes into a 1-triangle TriMesh
 /// with a Static body. Baseline that the geometry round-trips.
@@ -25,7 +26,7 @@ use byroredux_nif::import::collision::CollisionAuthoringSummary;
 fn single_triangle_round_trips() {
     let positions = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
     let indices = [0u32, 1, 2];
-    let (shape, body) = synthesize_static_trimesh(&positions, &indices, 1.0).expect("one triangle");
+    let (shape, body) = synthesize_static_trimesh(&positions, &indices).expect("one triangle");
     match shape {
         CollisionShape::TriMesh { vertices, indices } => {
             assert_eq!(vertices.len(), 3);
@@ -106,28 +107,43 @@ fn placement_trimesh_ghost_keeps_reference_ownership_backlink() {
     assert_eq!(backlink, Some(PhysicsSourceForm(source_form)));
 }
 
-/// `world_scale` bakes into the vertex positions — the physics sync
-/// ignores `GlobalTransform` scale, so the collider must carry it.
+/// Regression for #3064: the synthesized shape stays in canonical local
+/// space and the shared PHYSAL converter applies the ghost's placement
+/// scale once. A 2× placement must therefore produce a 2× collider, not
+/// the broken 4× result from baking scale at both sites.
 #[test]
-fn world_scale_bakes_into_vertices() {
-    let positions = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]];
+fn placement_scale_is_applied_once_by_the_shared_converter() {
+    let positions = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
     let indices = [0u32, 1, 2];
-    let (shape, _) = synthesize_static_trimesh(&positions, &indices, 2.0).expect("scaled triangle");
-    match shape {
-        CollisionShape::TriMesh { vertices, .. } => {
-            assert_eq!(vertices[0].to_array(), [2.0, 4.0, 6.0]);
-            assert_eq!(vertices[2].to_array(), [14.0, 16.0, 18.0]);
-        }
-        other => panic!("expected TriMesh, got {other:?}"),
-    }
+    let mut world = World::new();
+    world.register::<RapierHandles>();
+    world.insert_resource(PhysicsWorld::new());
+
+    assert!(spawn_trimesh_collider_ghost(
+        &mut world,
+        &positions,
+        &indices,
+        Vec3::ZERO,
+        Quat::IDENTITY,
+        2.0,
+        None,
+    ));
+    physics_sync_system(&world, 0.0);
+
+    let physics = world.resource::<PhysicsWorld>();
+    let nearby = physics.colliders_near_xz(0.5, 0.0, 0.0, 4.0);
+    assert_eq!(nearby.len(), 1, "the ghost must register one collider");
+    let aabb = &nearby[0];
+    assert!((aabb.aabb_max[0] - 2.0).abs() < 1e-4, "{aabb:?}");
+    assert!((aabb.aabb_max[1] - 2.0).abs() < 1e-4, "{aabb:?}");
 }
 
 /// Fewer than 3 indices → no triangle → `None`.
 #[test]
 fn degenerate_index_count_returns_none() {
     let positions = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]];
-    assert!(synthesize_static_trimesh(&positions, &[0, 1], 1.0).is_none());
-    assert!(synthesize_static_trimesh(&positions, &[], 1.0).is_none());
+    assert!(synthesize_static_trimesh(&positions, &[0, 1]).is_none());
+    assert!(synthesize_static_trimesh(&positions, &[]).is_none());
 }
 
 /// Triangles that reference out-of-range vertices are dropped (a
@@ -140,8 +156,7 @@ fn out_of_range_indices_are_dropped() {
     // Second triangle references vertex 9 (out of range, only 3
     // verts). First triangle is valid.
     let indices = [0u32, 1, 2, 0, 1, 9];
-    let (shape, _) =
-        synthesize_static_trimesh(&positions, &indices, 1.0).expect("one valid triangle");
+    let (shape, _) = synthesize_static_trimesh(&positions, &indices).expect("one valid triangle");
     match shape {
         CollisionShape::TriMesh { indices, .. } => {
             assert_eq!(indices, vec![[0, 1, 2]], "out-of-range triangle dropped");
@@ -150,7 +165,7 @@ fn out_of_range_indices_are_dropped() {
     }
     // All-out-of-range → None.
     let all_bad = [9u32, 10, 11];
-    assert!(synthesize_static_trimesh(&positions, &all_bad, 1.0).is_none());
+    assert!(synthesize_static_trimesh(&positions, &all_bad).is_none());
 }
 
 #[test]

@@ -102,6 +102,13 @@ not re-decode shapes — it reuses the canonical ones and adds the *articulation
 (graph + joints + simulation) NIFAL stops short of. Clean dependency, zero
 duplication.
 
+`CollisionShape` geometry remains in canonical local units. Placement or bone
+scale travels separately on `GlobalTransform` / `RagdollBodySpec` and the shared
+`collision_shape_to_parts` converter applies it exactly once at the Rapier sink.
+Producers must not bake that scale into vertices or primitive dimensions; doing
+both produces scale² geometry while ragdoll articulation remains scale¹ (#3064,
+#3065).
+
 ---
 
 ## 3. Ragdolls — the reference realisation

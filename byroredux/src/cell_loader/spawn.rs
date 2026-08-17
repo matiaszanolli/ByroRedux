@@ -313,11 +313,9 @@ pub(crate) fn is_spawnable_nif_light(light: &byroredux_nif::import::ImportedLigh
 }
 
 /// F3 (2026-05-27) — build a static `CollisionShape::TriMesh` +
-/// `RigidBodyData` from a render mesh's geometry, baking `world_scale`
-/// (the composed `ref_scale × mesh.scale`) into the vertices so the
-/// collider matches the rendered geometry (the physics sync places
-/// bodies by translation+rotation only, ignoring `GlobalTransform`
-/// scale).
+/// `RigidBodyData` from a render mesh's canonical local geometry.
+/// Placement scale stays on `GlobalTransform`; the shared PHYSAL
+/// converter applies it exactly once when registering the collider.
 ///
 /// Used as a fallback when the source NIF authored no bhk collision —
 /// the FO4+ Havok-content-system case. Returns `None` when the mesh
@@ -327,7 +325,6 @@ pub(crate) fn is_spawnable_nif_light(light: &byroredux_nif::import::ImportedLigh
 fn synthesize_static_trimesh(
     positions: &[[f32; 3]],
     mesh_indices: &[u32],
-    world_scale: f32,
 ) -> Option<(
     byroredux_core::ecs::components::CollisionShape,
     byroredux_core::ecs::components::RigidBodyData,
@@ -340,7 +337,7 @@ fn synthesize_static_trimesh(
     }
     let vertices: Vec<Vec3> = positions
         .iter()
-        .map(|p| Vec3::new(p[0] * world_scale, p[1] * world_scale, p[2] * world_scale))
+        .map(|p| Vec3::new(p[0], p[1], p[2]))
         .collect();
     let vert_count = vertices.len() as u32;
     let mut indices: Vec<[u32; 3]> = Vec::with_capacity(tri_count);
@@ -388,7 +385,7 @@ pub(crate) fn spawn_trimesh_collider_ghost(
     scale: f32,
     source_form: Option<byroredux_core::form_id::FormId>,
 ) -> bool {
-    let Some((shape, body)) = synthesize_static_trimesh(positions, mesh_indices, scale) else {
+    let Some((shape, body)) = synthesize_static_trimesh(positions, mesh_indices) else {
         return false;
     };
     let ghost = world.spawn();

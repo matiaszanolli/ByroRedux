@@ -243,13 +243,21 @@ fn flatten_to_parts(
         CollisionShape::ConvexHull { vertices } => {
             let pts: Vec<Point3<f32>> =
                 vertices.iter().map(|v| vec3_to_point(*v * scale)).collect();
-            let shape = SharedShape::convex_hull(&pts).unwrap_or_else(|| {
+            let fallback = || {
                 log::warn!(
                     "convex hull with {} pts rejected by Rapier; falling back to ball",
                     pts.len()
                 );
                 SharedShape::ball(1e-3)
-            });
+            };
+            // #3066 — parry panics rather than returning `None` below its
+            // documented three-point precondition, so the fallback must guard
+            // the call itself for untrusted NIF collision data.
+            let shape = if pts.len() < 3 {
+                fallback()
+            } else {
+                SharedShape::convex_hull(&pts).unwrap_or_else(fallback)
+            };
             out.push((parent_iso, shape));
         }
         CollisionShape::TriMesh { vertices, indices } => {
@@ -560,6 +568,25 @@ mod tests {
             "trimesh must span the scaled extent, got {:?}",
             aabb.maxs
         );
+    }
+
+    /// Regression for #3066: parry panics when asked to construct a convex
+    /// hull from fewer than three points. The PHYSAL boundary must reject the
+    /// knowable bad precondition before entering the library.
+    #[test]
+    fn undersized_convex_hulls_fall_back_to_a_ball_without_panicking() {
+        for count in 0..3 {
+            let shape = CollisionShape::ConvexHull {
+                vertices: (0..count).map(|x| Vec3::new(x as f32, 0.0, 0.0)).collect(),
+            };
+            let parts = parts(&shape);
+            assert_eq!(parts.len(), 1);
+            assert_eq!(
+                shape_type_of(&parts, 0),
+                ShapeType::Ball,
+                "{count}-point hull must use the safe fallback"
+            );
+        }
     }
 
     /// The multi-part case the issue calls out as worse than the sizing bug:

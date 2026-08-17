@@ -306,12 +306,12 @@ pub fn activate_ragdoll(world: &World, actor: EntityId) -> Result<usize, String>
                 // with, regardless of any later live GlobalTransform.scale
                 // mutation.
                 scale: gt.scale,
-                // #2868 — the seed translation above is composed WITH
-                // `gt.scale`, so the collider must be resized by the same
-                // factor or a scaled actor ragdolls with bind-size limbs at
-                // scaled-apart positions. Rapier colliders carry no scale of
-                // their own; the geometry itself has to change.
-                shape: b.shape.scaled(gt.scale),
+                // #2868 / #3065 — retain canonical authored geometry here.
+                // `build_ragdoll` passes this snapshotted scale to the shared
+                // PHYSAL converter, which resizes every shape variant exactly
+                // once. Pre-scaling here produced scale² limb geometry while
+                // the joint pivots below remained scale¹.
+                shape: b.shape.clone(),
                 mass: b.mass,
                 linear_damping: b.linear_damping,
                 angular_damping: b.angular_damping,
@@ -763,9 +763,10 @@ mod tests {
         );
     }
 
-    /// Regression for #2868 — the end-to-end half. `activate_ragdoll` is the
-    /// single boundary where the live actor scale meets the authored template,
-    /// so it owns scaling both the collider geometry and the joint pivots.
+    /// Regression for #2868 and #3065. `activate_ragdoll` is the boundary
+    /// where the live actor scale meets the authored template: it snapshots
+    /// that scale for the shared collider converter and applies it to the
+    /// joint pivots. Geometry and articulation must both end at scale¹.
     ///
     /// Two bones of a 2x actor sit 100 apart with authored ±25 pivots (bind
     /// separation 50). Pre-fix the pivots went through verbatim and multibody
@@ -851,6 +852,17 @@ mod tests {
                 .map(|(_, handle, _)| *handle)
                 .collect()
         };
+        {
+            let pw = world.resource::<PhysicsWorld>();
+            let root = pw.colliders_near_xz(0.0, 1000.0, 0.0, 25.0);
+            assert_eq!(root.len(), 1, "only the root limb overlaps this probe");
+            let diameter = root[0].aabb_max[0] - root[0].aabb_min[0];
+            assert!(
+                (diameter - 20.0).abs() < 1e-3,
+                "a 2× actor with an authored radius-5 limb needs diameter 20, not scale²: \
+                 {diameter}"
+            );
+        }
         {
             let mut pw = world.resource_mut::<PhysicsWorld>();
             pw.step(PHYSICS_DT);
