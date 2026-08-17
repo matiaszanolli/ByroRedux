@@ -135,6 +135,8 @@ pub const FOG_VOLUME_PROFILE_HOMOGENEOUS: f32 = 0.0;
 pub const FOG_VOLUME_PROFILE_SMOKE: f32 = 1.0;
 /// A hot particle plume: a fast, tapered, emissive tongue profile.
 pub const FOG_VOLUME_PROFILE_FLAME: f32 = 2.0;
+/// A one-shot combustion impulse: expanding fireball, cooling shell, smoke.
+pub const FOG_VOLUME_PROFILE_EXPLOSION: f32 = 3.0;
 /// Camera-centered world-space cluster resolution used for local fog.
 /// #2229 / REN-D3-02 — derived from `shader_constants_data.rs`'s
 /// `FOG_VOLUME_CLUSTER_DIM` (the single source of truth shared with
@@ -165,8 +167,8 @@ pub struct GpuFogVolume {
     /// rgb = single-scatter albedo; w = normalized edge softness.
     pub albedo_edge: [f32; 4],
     /// rgb = emitted radiance `L_e` in linear RGB; w = source blackbody
-    /// temperature in kelvin (diagnostic / simulation state, not read by the
-    /// current inject pass).
+    /// temperature in kelvin. The inject pass uses it to couple local flame
+    /// colour and radiance to the same temperature field that shapes density.
     ///
     /// The shader multiplies `rgb` by the froxel's locally evaluated
     /// absorption coefficient `sigma_a = sigma_t * (1 - albedo)` to form the
@@ -177,7 +179,8 @@ pub struct GpuFogVolume {
     /// All-zero for passive media (fog, mist, cooled smoke), which is the
     /// overwhelming majority — the emission branch is skipped for them.
     pub emission_temperature: [f32; 4],
-    /// x = procedural density profile (`FOG_VOLUME_PROFILE_*`); yzw reserved.
+    /// x = procedural density profile (`FOG_VOLUME_PROFILE_*`); for an
+    /// explosion, y = normalized age and z = lifetime seconds. w is reserved.
     ///
     /// Source provenance belongs here instead of being inferred from albedo or
     /// emission in the shader: passive particle smoke and an authored fog box
@@ -464,7 +467,8 @@ fn build_fog_volume_clusters(
 /// light, miss = lit" test, the shader actually casts up to 10 ray-query
 /// traversals per froxel in the worst case (1 opaque + 1 glass-masked sun
 /// ray, plus up to `MAX_FROXEL_LIGHTS` local lights x up to 2 rays each) —
-/// ~9.2M ray queries/frame at the default 160x90x64 grid. See
+/// ~36.9M ray queries/frame at the default 320x180x64 grid for a 1280x720
+/// render extent. See
 /// REN-D16-2026-08-07-02 / #2509.
 pub const VOLUMETRIC_OUTPUT_CONSUMED: bool = true;
 
@@ -2024,6 +2028,25 @@ mod unit_tests {
     }
 
     #[test]
+    fn combustion_profiles_couple_density_temperature_and_scattering() {
+        let shader = include_str!("../../shaders/volumetrics_inject.comp");
+        for contract in [
+            "const float LOCAL_PROFILE_EXPLOSION = 3.0;",
+            "vec3 blackbodyChromaticity(float kelvin)",
+            "float explosionAge = clamp(volume.profile_params.y",
+            "float localTemperature =",
+            "pow(localTemperature / sourceTemperature, 4.0)",
+            "mix(vec3(0.12), cooledSmokeAlbedo, smokeTransition)",
+            "float shell =",
+        ] {
+            assert!(
+                shader.contains(contract),
+                "volumetric combustion lost a coupled physical contract: {contract}"
+            );
+        }
+    }
+
+    #[test]
     fn every_contributing_local_fog_light_obeys_structural_visibility() {
         let shader = include_str!("../../shaders/volumetrics_inject.comp");
         for contract in [
@@ -2107,7 +2130,7 @@ mod unit_tests {
             },
             VolumetricsConfig::default(),
         );
-        assert_eq!([extent.width, extent.height, extent.depth], [160, 90, 64]);
+        assert_eq!([extent.width, extent.height, extent.depth], [320, 180, 64]);
     }
 
     #[test]

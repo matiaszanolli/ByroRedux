@@ -175,7 +175,7 @@ against real content before being treated as final.
 ## Configuration
 
 ```text
---froxel-xy-divisor <4..32>   default 12
+--froxel-xy-divisor <2..32>   default 4
 --froxel-z-slices <16..256>   default 64
 --fog-grid-far-m <32..512>    default 128
 ```
@@ -184,7 +184,7 @@ Example:
 
 ```bash
 cargo run --release -- --game fnv --cell GSProspectorSaloonInterior \
-  --froxel-xy-divisor 12 --froxel-z-slices 64 --fog-grid-far-m 128
+  --froxel-xy-divisor 4 --froxel-z-slices 64 --fog-grid-far-m 128
 ```
 
 ## Measurement table

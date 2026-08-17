@@ -22,8 +22,8 @@
 // sun ray for interiors (disambiguating a missing-ceiling no-hit from
 // a real window), then up to MAX_FROXEL_LIGHTS local lights x up to 2
 // rays each (opaque mask, then glass mask) = up to 10 ray-query
-// traversals per froxel. At the default 160x90x64 grid that is a
-// worst-case ~9.2M ray queries/frame from this pass alone. See
+// traversals per froxel. At the default 320x180x64 grid that is a
+// worst-case ~36.9M ray queries/frame from this pass alone. See
 // REN-D16-2026-08-07-02 / #2509.
 #version 460
 #extension GL_EXT_ray_query : require
@@ -139,7 +139,7 @@ struct GpuFogVolume {
     vec4 inverse_rotation;         // world-to-local quaternion
     vec4 albedo_edge;              // rgb single-scatter albedo, w edge softness
     vec4 emission_temperature;     // rgb emitted radiance L_e, w blackbody K
-    vec4 profile_params;           // x 0 authored / 1 smoke / 2 flame, yzw reserved
+    vec4 profile_params;           // x 0 authored / 1 smoke / 2 flame / 3 explosion; y explosion age, z lifetime
 };
 
 layout(std430, set = 0, binding = 7) readonly buffer FogVolumeBuffer {
@@ -171,6 +171,7 @@ const vec3 LUMA_REC709 = vec3(0.2126, 0.7152, 0.0722);
 const float LOCAL_PROFILE_HOMOGENEOUS = 0.0;
 const float LOCAL_PROFILE_SMOKE = 1.0;
 const float LOCAL_PROFILE_FLAME = 2.0;
+const float LOCAL_PROFILE_EXPLOSION = 3.0;
 // FOG_VOLUME_CLUSTER_DIM / MAX_FOG_VOLUMES_PER_CLUSTER come from the
 // #include'd shader_constants.glsl header (generated from
 // shader_constants_data.rs — #2229 / REN-D3-02). Previously hand-declared
@@ -218,12 +219,13 @@ vec2 sampleLocalTurbulence(
     float seed,
     float timeSeconds
 ) {
-    bool isFlame = profileKind > 1.5;
-    bool isSmoke = profileKind > 0.5 && !isFlame;
-    float baseFrequency = isFlame ? 0.72 : (isSmoke ? 0.42 : 0.31);
-    float detailFrequency = isFlame ? 1.67 : (isSmoke ? 0.96 : 0.83);
-    float baseRise = isFlame ? 0.32 : (isSmoke ? 0.075 : 0.013);
-    float detailRise = isFlame ? 0.63 : (isSmoke ? 0.14 : 0.025);
+    bool isExplosion = profileKind > 2.5;
+    bool isFlame = profileKind > 1.5 && !isExplosion;
+    bool isSmoke = profileKind > 0.5 && !isFlame && !isExplosion;
+    float baseFrequency = isExplosion ? 0.58 : (isFlame ? 0.72 : (isSmoke ? 0.42 : 0.31));
+    float detailFrequency = isExplosion ? 1.35 : (isFlame ? 1.67 : (isSmoke ? 0.96 : 0.83));
+    float baseRise = isExplosion ? 0.11 : (isFlame ? 0.32 : (isSmoke ? 0.075 : 0.013));
+    float detailRise = isExplosion ? 0.25 : (isFlame ? 0.63 : (isSmoke ? 0.14 : 0.025));
     vec3 phase = vec3(seed, fract(seed * 1.6180339), fract(seed * 2.4142136));
     vec3 slowCoords = normalizedOffset * baseFrequency + phase
         + vec3(0.013, -baseRise, 0.009) * timeSeconds;
@@ -244,10 +246,24 @@ float localProfileRadius(
     float authoredRadius,
     float profileKind,
     float seed,
-    float timeSeconds
+    float timeSeconds,
+    float explosionAge
 ) {
     if (profileKind < 0.5) {
         return authoredRadius;
+    }
+
+    if (profileKind > 2.5) {
+        float expansion = 1.0 - exp(-5.0 * explosionAge);
+        float radius = mix(0.10, 0.96, expansion);
+        float phase = seed * 2.0 * PI;
+        vec2 wobble = mix(0.015, 0.12, explosionAge) * vec2(
+            sin(phase + timeSeconds * 1.7),
+            cos(phase * 1.37 + timeSeconds * 1.3)
+        );
+        float buoyantLift = smoothstep(0.28, 1.0, explosionAge) * 0.18;
+        vec3 displaced = normalizedOffset - vec3(wobble.x, buoyantLift, wobble.y);
+        return length(displaced) / max(radius, 0.04);
     }
 
     float height = clamp(normalizedOffset.y * 0.5 + 0.5, 0.0, 1.0);
@@ -281,12 +297,28 @@ float localDensityProfile(
     float profileKind,
     vec2 turbulence,
     float seed,
-    float timeSeconds
+    float timeSeconds,
+    float explosionAge
 ) {
     float boundary = 1.0 - smoothstep(1.0 - edge, 1.0, profileRadius);
     if (profileKind < 0.5) {
         float genericNoise = turbulence.x * 0.72 + turbulence.y * 0.28;
         return boundary * mix(0.55, 1.15, genericNoise);
+    }
+
+    if (profileKind > 2.5) {
+        float core = 1.0 - smoothstep(0.10, 0.94, profileRadius);
+        float shellCenter = mix(0.52, 0.76, smoothstep(0.0, 0.72, explosionAge));
+        float shell = 1.0 - smoothstep(0.10, 0.27, abs(profileRadius - shellCenter));
+        float smokeTransition = smoothstep(0.20, 0.72, explosionAge);
+        float clumps = mix(
+            0.34,
+            1.48,
+            smoothstep(0.20, 0.82, turbulence.x * 0.64 + turbulence.y * 0.36)
+        );
+        float evolvingBody = mix(core + shell * 0.22, shell + core * 0.16, smokeTransition);
+        float dissipate = 1.0 - smoothstep(0.80, 1.0, explosionAge);
+        return boundary * evolvingBody * clumps * dissipate;
     }
 
     float height = clamp(normalizedOffset.y * 0.5 + 0.5, 0.0, 1.0);
@@ -314,6 +346,25 @@ float localDensityProfile(
     float licks = smoothstep(threshold - 0.18, threshold + 0.24, lickNoise + split * 0.13);
     float hotCore = 1.0 - smoothstep(0.0, 0.42, profileRadius);
     return boundary * rootFade * (mix(0.24, 1.42, licks) + hotCore * 0.28);
+}
+
+// Approximate blackbody chromaticity from Planck's law at representative
+// linear-sRGB wavelengths. Energy is normalized to unit Rec. 709 luminance;
+// the physically dominant T^4 radiance scaling is applied separately below.
+vec3 blackbodyChromaticity(float kelvin) {
+    float temperature = clamp(kelvin, 700.0, 12000.0);
+    vec3 wavelengthNm = vec3(610.0, 550.0, 460.0);
+    const float referenceNm = 610.0;
+    const float c2NmK = 1.438776877e7;
+    float referenceDenominator = exp(clamp(c2NmK / (referenceNm * temperature), 0.0, 80.0)) - 1.0;
+    vec3 denominator = exp(clamp(
+        vec3(c2NmK) / (wavelengthNm * temperature),
+        vec3(0.0),
+        vec3(80.0)
+    )) - vec3(1.0);
+    vec3 spectral = pow(vec3(referenceNm) / wavelengthNm, vec3(5.0))
+        * referenceDenominator / max(denominator, vec3(1.0e-6));
+    return spectral / max(dot(spectral, LUMA_REC709), 1.0e-4);
 }
 
 // Returns the local media coefficients at worldPos.
@@ -363,16 +414,18 @@ LocalMedium sampleLocalMedium(vec3 worldPos) {
         float profileKind = clamp(
             volume.profile_params.x,
             LOCAL_PROFILE_HOMOGENEOUS,
-            LOCAL_PROFILE_FLAME
+            LOCAL_PROFILE_EXPLOSION
         );
         float timeSeconds = params.temporal_params.z;
         float seed = localVolumeSeed(volume.center_shape.xyz);
+        float explosionAge = clamp(volume.profile_params.y, 0.0, 1.0);
         float profileRadius = localProfileRadius(
             normalizedOffset,
             normalizedRadius,
             profileKind,
             seed,
-            timeSeconds
+            timeSeconds,
+            explosionAge
         );
         if (profileRadius >= 1.0) {
             continue;
@@ -392,10 +445,45 @@ LocalMedium sampleLocalMedium(vec3 worldPos) {
             profileKind,
             localTurbulence,
             seed,
-            timeSeconds
+            timeSeconds,
+            explosionAge
         );
         float sigmaT = max(volume.half_extents_extinction.w, 0.0) * densityProfile;
         vec3 albedo = clamp(volume.albedo_edge.rgb, vec3(0.0), vec3(1.0));
+        vec3 emissiveRadiance = max(volume.emission_temperature.rgb, vec3(0.0));
+
+        if (profileKind > 2.5) {
+            float smokeTransition = smoothstep(0.20, 0.72, explosionAge);
+            vec3 cooledSmokeAlbedo = vec3(0.78, 0.72, 0.66);
+            albedo = mix(vec3(0.12), cooledSmokeAlbedo, smokeTransition);
+
+            float sourceTemperature = max(volume.emission_temperature.w, 2800.0);
+            float cooling = smoothstep(0.06, 0.78, explosionAge);
+            float localTemperature = mix(sourceTemperature * 1.18, 850.0, cooling)
+                * mix(0.92, 1.08, localTurbulence.y);
+            localTemperature = clamp(localTemperature, 700.0, 4200.0);
+            float baseEmissionLuma = dot(emissiveRadiance, LUMA_REC709);
+            float thermalEnergy = pow(localTemperature / sourceTemperature, 4.0);
+            float visibleFire = 1.0 - smoothstep(0.18, 0.66, explosionAge);
+            emissiveRadiance = blackbodyChromaticity(localTemperature)
+                * baseEmissionLuma
+                * clamp(thermalEnergy, 0.0, 2.6)
+                * visibleFire;
+        } else if (profileKind > 1.5) {
+            float height = clamp(normalizedOffset.y * 0.5 + 0.5, 0.0, 1.0);
+            float sourceTemperature = max(volume.emission_temperature.w, 800.0);
+            float localTemperature = sourceTemperature
+                * mix(1.18, 0.62, pow(height, 1.15))
+                * mix(0.90, 1.10, localTurbulence.y);
+            localTemperature = clamp(localTemperature, 800.0, 3200.0);
+            float baseEmissionLuma = dot(emissiveRadiance, LUMA_REC709);
+            float thermalEnergy = pow(localTemperature / sourceTemperature, 4.0);
+            float hotCore = 1.0 - smoothstep(0.12, 0.88, profileRadius);
+            emissiveRadiance = blackbodyChromaticity(localTemperature)
+                * baseEmissionLuma
+                * clamp(thermalEnergy, 0.15, 2.4)
+                * mix(0.18, 1.15, hotCore);
+        }
         medium.extinction += sigmaT;
         medium.scattering += sigmaT * albedo;
 
@@ -413,7 +501,6 @@ LocalMedium sampleLocalMedium(vec3 worldPos) {
         // multiplies by slab thickness and accumulated transmittance, which
         // is exactly the emission integral. Fire composites, denoises, and
         // reprojects through the machinery fog already uses.
-        vec3 emissiveRadiance = max(volume.emission_temperature.rgb, vec3(0.0));
         medium.emission += sigmaT * (vec3(1.0) - albedo) * emissiveRadiance;
     }
     return medium;

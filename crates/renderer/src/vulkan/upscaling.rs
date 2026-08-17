@@ -112,7 +112,7 @@ pub struct VolumetricsConfig {
 impl Default for VolumetricsConfig {
     fn default() -> Self {
         Self {
-            froxel_xy_divisor: 8,
+            froxel_xy_divisor: 4,
             froxel_z_slices: 64,
             grid_far_meters: 128,
         }
@@ -121,7 +121,7 @@ impl Default for VolumetricsConfig {
 
 impl VolumetricsConfig {
     pub fn validate(self) -> Result<Self, VolumetricsConfigError> {
-        if !(4..=32).contains(&self.froxel_xy_divisor) {
+        if !(2..=32).contains(&self.froxel_xy_divisor) {
             return Err(VolumetricsConfigError::XyDivisor(self.froxel_xy_divisor));
         }
         if !(16..=256).contains(&self.froxel_z_slices) {
@@ -136,7 +136,7 @@ impl VolumetricsConfig {
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum VolumetricsConfigError {
-    #[error("froxel XY divisor {0} is outside the supported 4..=32 range")]
+    #[error("froxel XY divisor {0} is outside the supported 2..=32 range")]
     XyDivisor(u32),
     #[error("froxel Z slice count {0} is outside the supported 16..=256 range")]
     ZSlices(u32),
@@ -412,9 +412,9 @@ mod tests {
     }
 
     #[test]
-    fn default_volumetrics_resolve_one_froxel_per_eight_pixels() {
+    fn default_volumetrics_resolve_one_froxel_per_four_pixels() {
         let config = VolumetricsConfig::default();
-        assert_eq!(config.froxel_xy_divisor, 8);
+        assert_eq!(config.froxel_xy_divisor, 4);
         assert_eq!(config.froxel_z_slices, 64);
     }
 

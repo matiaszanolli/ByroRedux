@@ -992,7 +992,13 @@ fn spawn_particle_emitters(
                 entity,
                 GlobalTransform::new(world_pos, ref_rot, ref_scale.abs().max(1.0e-4)),
             );
+            let now_seconds = { world.resource::<byroredux_core::ecs::TotalTime>().0 };
+            let combustion_state =
+                crate::fog::combustion_state_from_particle(fog_volume, &preset, now_seconds);
             world.insert(entity, fog_volume);
+            if let Some(state) = combustion_state {
+                world.insert(entity, state);
+            }
             continue;
         }
         if preset.dst_blend == 7 {

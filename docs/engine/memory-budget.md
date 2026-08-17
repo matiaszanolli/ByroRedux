@@ -219,25 +219,26 @@ every other entry in this section, the froxel grid scales with the
 **render** resolution (`froxel_extent`, deliberately downstream of the FSR
 preset query — using the final output resolution here would silently
 overspend whenever FSR Quality/Balanced/Performance is active). One froxel
-column per `froxel_xy_divisor` (default 12) render pixels in X/Y,
+column per `froxel_xy_divisor` (default 4) render pixels in X/Y,
 `froxel_z_slices` (default 64) depth slices, RGBA16F (8 B/froxel). Two
 volumes per frame (lighting + integrated) × 2 FIF.
 
-Formula: `ceil(width / 12) × ceil(height / 12) × 64 froxels × 8 B × 2 volumes × 2 FIF`
+Formula: `ceil(width / 4) × ceil(height / 4) × 64 froxels × 8 B × 2 volumes × 2 FIF`
 
 | Resolution | Grid (W×H×64) | Total (2 volumes, 2 FIF) |
 |---|---|---|
-| 1920×1080 | 160×90×64 | ~29.5 MB |
-| 2560×1440 | 214×120×64 | ~52.6 MB |
-| 3840×2160 | 320×180×64 | ~118.0 MB |
+| 1920×1080 | 480×270×64 | ~265.4 MB |
+| 2560×1440 | 640×360×64 | ~471.9 MB |
+| 3840×2160 | 960×540×64 | ~1061.7 MB |
 
 Prior to Session 62 (2026-07-26→2026-08-01) the grid was a **fixed**
 160×90×128 volume regardless of resolution (≈59.0 MB total, the flat
 `56 MB` figure this section previously documented at every resolution —
 that older figure used a binary-MiB basis rather than this doc's
 decimal-MB convention elsewhere) — understating peak 4K VRAM by almost
-exactly 2× (118.0 MB vs. 59.0 MB) until this table was recomputed against
-the current formula.
+exactly 2× (118.0 MB vs. 59.0 MB) at that time. The current `/4` quality
+default is intentionally denser so compact fire and smoke do not collapse to
+one blocky ray column; FSR presets reduce the actual render-grid footprint.
 
 ---
 

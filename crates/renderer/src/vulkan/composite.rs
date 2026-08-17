@@ -1743,6 +1743,23 @@ mod composite_params_layout_tests {
         );
     }
 
+    /// Compact local media often cover only a handful of froxel columns.
+    /// Nearest-column reconstruction exposed those columns as square blocks;
+    /// unconstrained trilinear reconstruction fixed the blocks by restoring
+    /// wall leaks. Pin the bilateral contract that is required to do both.
+    #[test]
+    fn volumetric_reconstruction_is_bilinear_and_depth_aware() {
+        let shader = include_str!("../../shaders/composite.frag");
+
+        assert!(shader.contains("float froxelColumnDepthWeight("));
+        assert!(shader.contains("referenceIsSurface != candidateIsSurface"));
+        assert!(shader.contains("float tolerance = max(2.0, referenceDistance * 0.01);"));
+        assert!(shader.contains("for (int y = 0; y < 2; ++y)"));
+        assert!(shader.contains("for (int x = 0; x < 2; ++x)"));
+        assert!(shader.contains("accumulated / accumulatedWeight"));
+        assert!(shader.contains("sampleVolumetricColumn(fragUV, sliceTexel, depth)"));
+    }
+
     /// #2217 — the caustic term is semantically fragile in a way the
     /// SPIR-V reflection test cannot see. That test pins structural and
     /// branch properties; it passes just as happily when the combined

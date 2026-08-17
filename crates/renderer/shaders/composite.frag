@@ -121,20 +121,58 @@ float hybridSliceCoordinate(float distanceAlongRay) {
         * log(d / linearDepth) / log(farDistance / linearDepth);
 }
 
-// Sample the cumulative volume linearly along depth, but never across XY
-// froxel columns. Adjacent columns are independent camera rays and can be
-// separated by opaque structure; sampler3D's trilinear XY filtering would
-// otherwise blend lit radiance into a shadowed wall-side column. The coarse
-// native grid remains visible at hard boundaries by design until a
-// depth/geometry-aware reconstruction pass can prove that neighboring rays
-// belong to the same region.
-vec4 sampleVolumetricColumn(vec2 uv, float normalizedDepth) {
-    ivec3 size = textureSize(volumetricFroxel, 0);
-    ivec2 column = clamp(
-        ivec2(uv * vec2(size.xy)),
+float linearViewDepth(float deviceDepth) {
+    float nearPlane = max(params.fog_params.x, 1.0e-4);
+    float farPlane = max(params.fog_params.y, nearPlane + 1.0);
+    return nearPlane * farPlane
+        / max(farPlane - deviceDepth * (farPlane - nearPlane), 1.0e-4);
+}
+
+// Depth-aware bilateral reconstruction of the coarse froxel image. Ordinary
+// trilinear sampling is unsafe here: neighboring camera rays may lie on
+// opposite sides of a doorway or wall and carry unrelated visibility. The
+// old nearest-column resolve avoided that leak, but exposed every 4-8 pixel
+// froxel as a square in compact fire, smoke, and explosion volumes. Rebuild
+// the bilinear footprint explicitly and reject columns whose representative
+// scene depth is incompatible with this fragment. Z remains a linear blend
+// between cumulative slab back faces.
+float froxelColumnDepthWeight(
+    ivec2 column,
+    ivec3 froxelSize,
+    float referenceDepth
+) {
+    ivec2 depthSize = textureSize(depthTex, 0);
+    ivec2 representativePixel = clamp(
+        ivec2((vec2(column) + 0.5) * vec2(depthSize) / vec2(froxelSize.xy)),
         ivec2(0),
-        size.xy - ivec2(1)
+        depthSize - ivec2(1)
     );
+    float candidateDepth = texelFetch(depthTex, representativePixel, 0).r;
+    bool referenceIsSurface = referenceDepth < 1.0;
+    bool candidateIsSurface = candidateDepth < 1.0;
+    if (referenceIsSurface != candidateIsSurface) {
+        return 0.0;
+    }
+    if (!referenceIsSurface) {
+        return 1.0;
+    }
+
+    float referenceDistance = linearViewDepth(referenceDepth);
+    float candidateDistance = linearViewDepth(candidateDepth);
+    float tolerance = max(2.0, referenceDistance * 0.01);
+    return 1.0 - smoothstep(tolerance, tolerance * 4.0,
+        abs(candidateDistance - referenceDistance));
+}
+
+vec4 sampleVolumetricColumn(
+    vec2 uv,
+    float normalizedDepth,
+    float referenceDepth
+) {
+    ivec3 size = textureSize(volumetricFroxel, 0);
+    vec2 texelPosition = uv * vec2(size.xy) - 0.5;
+    ivec2 baseColumn = ivec2(floor(texelPosition));
+    vec2 blend = fract(texelPosition);
 
     // Convert normalized sampler coordinates to texel space. Integration
     // stores cumulative state at slab back faces; the caller remaps those
@@ -146,10 +184,43 @@ vec4 sampleVolumetricColumn(vec2 uv, float normalizedDepth) {
     );
     int z0 = int(floor(z));
     int z1 = min(z0 + 1, size.z - 1);
+    float zBlend = fract(z);
+
+    vec4 accumulated = vec4(0.0);
+    float accumulatedWeight = 0.0;
+    for (int y = 0; y < 2; ++y) {
+        for (int x = 0; x < 2; ++x) {
+            ivec2 column = clamp(
+                baseColumn + ivec2(x, y),
+                ivec2(0),
+                size.xy - ivec2(1)
+            );
+            vec2 axisWeight = mix(vec2(1.0) - blend, blend, vec2(x, y));
+            float weight = axisWeight.x * axisWeight.y
+                * froxelColumnDepthWeight(column, size, referenceDepth);
+            vec4 columnValue = mix(
+                texelFetch(volumetricFroxel, ivec3(column, z0), 0),
+                texelFetch(volumetricFroxel, ivec3(column, z1), 0),
+                zBlend
+            );
+            accumulated += columnValue * weight;
+            accumulatedWeight += weight;
+        }
+    }
+
+    if (accumulatedWeight > 1.0e-5) {
+        return accumulated / accumulatedWeight;
+    }
+
+    ivec2 nearestColumn = clamp(
+        ivec2(uv * vec2(size.xy)),
+        ivec2(0),
+        size.xy - ivec2(1)
+    );
     return mix(
-        texelFetch(volumetricFroxel, ivec3(column, z0), 0),
-        texelFetch(volumetricFroxel, ivec3(column, z1), 0),
-        fract(z)
+        texelFetch(volumetricFroxel, ivec3(nearestColumn, z0), 0),
+        texelFetch(volumetricFroxel, ivec3(nearestColumn, z1), 0),
+        zBlend
     );
 }
 
@@ -631,7 +702,7 @@ void main() {
         // the texel-center grid before the tap.
         float sliceCount = max(params.sky_horizon.w, 1.0);
         float sliceTexel = clamp((slice * sliceCount - 0.5) / sliceCount, 0.0, 1.0);
-        vec4 vol = sampleVolumetricColumn(fragUV, sliceTexel);
+        vec4 vol = sampleVolumetricColumn(fragUV, sliceTexel, depth);
         // vol.rgb = ∫inscatter accumulated 0..slice (HDR-linear)
         // vol.a   = cumulative transmittance through 0..slice
         //

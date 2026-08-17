@@ -135,9 +135,62 @@ pub enum FogSource {
     AuthoredMesh,
     /// A legacy fog/smoke particle emitter replaced by a local volume.
     ParticleEmitter,
+    /// A transient combustion source whose hot fireball expands into a
+    /// cooling smoke shell. The GPU profile owns that time evolution while
+    /// this variant preserves explicit provenance across the ECS boundary.
+    Explosion,
+}
+
+/// Timeline attached to a transient combustion volume.
+///
+/// Persistent fire and smoke need no per-entity clock. Explosions do: their
+/// density, temperature, scattering, and emission all evolve from the same
+/// normalized age, and the renderer must stop collecting them after the
+/// authored lifetime instead of looping a fireball forever.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
+pub struct CombustionState {
+    /// Absolute engine time at which the impulse begins.
+    pub start_time_seconds: f32,
+    /// Duration of the fireball-to-smoke evolution.
+    pub lifetime_seconds: f32,
+}
+
+impl CombustionState {
+    pub fn one_shot(start_time_seconds: f32, lifetime_seconds: f32) -> Self {
+        Self {
+            start_time_seconds: if start_time_seconds.is_finite() {
+                start_time_seconds
+            } else {
+                0.0
+            },
+            lifetime_seconds: if lifetime_seconds.is_finite() {
+                lifetime_seconds.max(0.05)
+            } else {
+                0.05
+            },
+        }
+    }
+
+    /// Active normalized age in `[0, 1)`, or `None` after the impulse ends.
+    pub fn normalized_age(self, now_seconds: f32) -> Option<f32> {
+        if !now_seconds.is_finite() {
+            return None;
+        }
+        let elapsed = now_seconds - self.start_time_seconds;
+        if elapsed < 0.0 {
+            return None;
+        }
+        let age = (elapsed / self.lifetime_seconds).max(0.0);
+        (age < 1.0 - 4.0 * f32::EPSILON).then_some(age)
+    }
 }
 
 impl Component for FogVolume {
+    type Storage = SparseSetStorage<Self>;
+}
+
+impl Component for CombustionState {
     type Storage = SparseSetStorage<Self>;
 }
 
@@ -207,5 +260,15 @@ mod tests {
             ..ellipsoid
         };
         assert_eq!(sphere.bounding_radius(), 7.0);
+    }
+
+    #[test]
+    fn combustion_timeline_is_monotonic_and_expires() {
+        let state = CombustionState::one_shot(10.0, 2.0);
+        assert_eq!(state.normalized_age(9.0), None);
+        assert_eq!(state.normalized_age(10.0), Some(0.0));
+        assert_eq!(state.normalized_age(11.0), Some(0.5));
+        assert_eq!(state.normalized_age(12.0), None);
+        assert_eq!(state.normalized_age(f32::NAN), None);
     }
 }

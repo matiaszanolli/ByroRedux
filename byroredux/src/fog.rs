@@ -6,7 +6,7 @@
 //! runtime code consumes only [`FogMedium`].
 
 use byroredux_core::ecs::{
-    EmitterShape, FogBounds, FogShape, FogSource, FogVolume, ParticleEmitter,
+    CombustionState, EmitterShape, FogBounds, FogShape, FogSource, FogVolume, ParticleEmitter,
 };
 use byroredux_core::math::{Quat, Vec3};
 
@@ -22,6 +22,7 @@ const MAX_SIGMA_PER_METER: f32 = 10.0;
 const LOCAL_VOLUME_ALBEDO_PEAK: f32 = 0.9;
 const LOCAL_VOLUME_EDGE_SOFTNESS: f32 = 0.45;
 const LOCAL_VOLUME_ALPHA_FALLBACK: f32 = 0.35;
+const SMOKE_FALLBACK_ALBEDO: [f32; 3] = [0.72, 0.67, 0.61];
 
 /// Canonical, game-independent fog parameters stored on cell/weather runtime
 /// resources. No legacy near/far distances participate in volumetric shading.
@@ -117,6 +118,15 @@ pub(crate) fn particle_preset(host_name: &str, texture_path: Option<&str>) -> Pa
 
     if has_fog_token(&host_name) || has_fog_token(&texture_path) || has_component_prefix("ash") {
         ParticleEmitter::smoke()
+    } else if contains_any(&[
+        "explosion",
+        "explode",
+        "detonate",
+        "fireball",
+        "shockwave",
+        "blast",
+    ]) {
+        ParticleEmitter::explosion()
     } else if contains_any(&["spark", "ember", "cinder"]) {
         ParticleEmitter::embers()
     } else if contains_any(&["torch", "fire", "flame", "brazier", "candle"]) {
@@ -270,7 +280,19 @@ pub(crate) fn medium_from_particle(
     emitter: &ParticleEmitter,
 ) -> Option<FogVolume> {
     fog_volume_from_particle(host_name, emitter)
+        .or_else(|| explosion_volume_from_particle(host_name, emitter))
         .or_else(|| fire_volume_from_particle(host_name, emitter))
+}
+
+/// Build the one-shot timeline that makes an explosion genuinely transient.
+/// Persistent fire/smoke return `None`; only an impulse needs authored age.
+pub(crate) fn combustion_state_from_particle(
+    volume: FogVolume,
+    emitter: &ParticleEmitter,
+    start_time_seconds: f32,
+) -> Option<CombustionState> {
+    (volume.source == FogSource::Explosion)
+        .then(|| CombustionState::one_shot(start_time_seconds, emitter.life))
 }
 
 /// Whether additive thermal emitters are replaced by emissive media.
@@ -341,19 +363,20 @@ pub(crate) fn fog_volume_from_particle(
     let a0 = emitter.start_color[3].max(0.0);
     let a1 = emitter.end_color[3].max(0.0);
     let alpha_sum = a0 + a1;
-    let tint = if alpha_sum > 1.0e-5 {
-        Vec3::new(
+    let single_scatter_albedo = if alpha_sum > 1.0e-5 {
+        let tint = Vec3::new(
             (emitter.start_color[0] * a0 + emitter.end_color[0] * a1) / alpha_sum,
             (emitter.start_color[1] * a0 + emitter.end_color[1] * a1) / alpha_sum,
             (emitter.start_color[2] * a0 + emitter.end_color[2] * a1) / alpha_sum,
         )
+        .max(Vec3::ZERO);
+        let tint_peak = tint.max_element().max(1.0e-4);
+        (tint / tint_peak * LOCAL_VOLUME_ALBEDO_PEAK).clamp(Vec3::ZERO, Vec3::splat(0.99))
     } else {
-        Vec3::ONE
-    }
-    .max(Vec3::ZERO);
-    let tint_peak = tint.max_element().max(1.0e-4);
-    let single_scatter_albedo =
-        (tint / tint_peak * LOCAL_VOLUME_ALBEDO_PEAK).clamp(Vec3::ZERO, Vec3::splat(0.99));
+        // Missing interior colour keys must not turn soot into white steam.
+        // This is an absolute albedo, not a tint normalized back to 0.9.
+        Vec3::from_array(SMOKE_FALLBACK_ALBEDO)
+    };
 
     Some(FogVolume {
         bounds: Some(FogBounds {
@@ -427,6 +450,57 @@ const FLAME_OPTICAL_DEPTH: f32 = 0.4;
 ///
 /// Wants a visual A/B against real content before it is treated as final.
 const FLAME_REFERENCE_RADIANCE: f32 = 12.0;
+
+/// Short-lived explosion cores are hotter and brighter than an open wood
+/// flame before expansion cools them into smoke in the GPU profile.
+const EXPLOSION_TEMPERATURE_K: f32 = 2800.0;
+const EXPLOSION_REFERENCE_RADIANCE: f32 = 24.0;
+const EXPLOSION_OPTICAL_DEPTH: f32 = 0.9;
+
+/// Build the shared-medium representation of an impulsive combustion event.
+/// The fixed coefficients describe its initial hot state; the explosion GPU
+/// profile evolves density, temperature, scattering, and emission together.
+pub(crate) fn explosion_volume_from_particle(
+    host_name: &str,
+    emitter: &ParticleEmitter,
+) -> Option<FogVolume> {
+    if !fire_volumes_enabled() || !is_explosion_particle(host_name, emitter.texture_path.as_deref())
+    {
+        return None;
+    }
+
+    let PlumeBounds {
+        center,
+        half_extents,
+    } = plume_bounds(emitter);
+    // The impulse starts at the emitter origin. Preserve the entire swept
+    // particle plume by enlarging the sphere instead of displacing its hot
+    // core halfway up the future trajectory.
+    let radius = (half_extents.max_element() + center.length()).max(0.25);
+    let representative_width_m = (2.0 * radius / WORLD_UNITS_PER_METER).max(0.01);
+    let extinction_per_meter = (EXPLOSION_OPTICAL_DEPTH / representative_width_m)
+        .clamp(MIN_SIGMA_PER_METER, MAX_SIGMA_PER_METER);
+    let emissive_radiance = byroredux_core::radiometry::blackbody_radiance_srgb(
+        EXPLOSION_TEMPERATURE_K,
+        FLAME_TEMPERATURE_K,
+        EXPLOSION_REFERENCE_RADIANCE,
+    )?;
+
+    Some(FogVolume {
+        bounds: Some(FogBounds {
+            center: Vec3::ZERO,
+            rotation: Quat::IDENTITY,
+            half_extents: Vec3::splat(radius),
+            shape: FogShape::Sphere,
+        }),
+        extinction_per_meter,
+        single_scatter_albedo: [0.12; 3],
+        edge_softness: 0.3,
+        emissive_radiance,
+        emission_temperature_k: EXPLOSION_TEMPERATURE_K,
+        source: FogSource::Explosion,
+    })
+}
 
 /// Translate an additive thermal particle emitter into an emissive medium.
 ///
@@ -519,6 +593,9 @@ fn fire_temperature(host_name: &str, texture_path: Option<&str>) -> Option<f32> 
     if has_fog_token(host_name) || has_fog_token(texture_path) {
         return None;
     }
+    if has_explosion_token(host_name) || has_explosion_token(texture_path) {
+        return None;
+    }
     if has_ember_token(host_name) || has_ember_token(texture_path) {
         return Some(EMBER_TEMPERATURE_K);
     }
@@ -546,6 +623,27 @@ fn has_flame_token(value: &str) -> bool {
     const FLAME_TOKENS: [&str; 6] = ["fire", "flame", "torch", "candle", "blaze", "campfire"];
     let value = value.to_ascii_lowercase();
     FLAME_TOKENS.iter().any(|token| value.contains(token))
+}
+
+fn has_explosion_token(value: &str) -> bool {
+    const EXPLOSION_TOKENS: [&str; 6] = [
+        "explosion",
+        "explode",
+        "detonate",
+        "fireball",
+        "shockwave",
+        "blast",
+    ];
+    let value = value.to_ascii_lowercase();
+    EXPLOSION_TOKENS.iter().any(|token| value.contains(token))
+}
+
+fn is_explosion_particle(host_name: &str, texture_path: Option<&str>) -> bool {
+    let texture_path = texture_path.unwrap_or("");
+    if has_fog_token(host_name) || has_fog_token(texture_path) {
+        return false;
+    }
+    has_explosion_token(host_name) || has_explosion_token(texture_path)
 }
 
 fn is_fog_particle(host_name: &str, texture_path: Option<&str>, dst_blend: u8) -> bool {
@@ -846,16 +944,49 @@ mod tests {
             ("CampfireSmoke01", ParticleEmitter::smoke()),
             ("TorchFire01", ParticleEmitter::torch_flame()),
             ("FireEmbers01", ParticleEmitter::embers()),
+            ("ExplosionFireball01", ParticleEmitter::explosion()),
             ("MagicSparkle", ParticleEmitter::magic_sparkles()),
         ];
         for (host, emitter) in cases {
             let smoke = fog_volume_from_particle(host, &emitter).is_some();
             let fire = fire_volume_from_particle(host, &emitter).is_some();
+            let explosion = explosion_volume_from_particle(host, &emitter).is_some();
             assert!(
-                !(smoke && fire),
-                "{host} was claimed by both the smoke and fire classifiers"
+                u8::from(smoke) + u8::from(fire) + u8::from(explosion) <= 1,
+                "{host} was claimed by multiple combustion classifiers"
             );
         }
+    }
+
+    #[test]
+    fn explosion_is_a_grounded_hot_sphere_with_a_one_shot_timeline() {
+        if !fire_path_active() {
+            return;
+        }
+        let emitter = ParticleEmitter::explosion();
+        let volume = explosion_volume_from_particle("ExplosionFireball01", &emitter)
+            .expect("an explosion emitter must become a transient medium");
+        let bounds = volume.bounds.expect("explosion bounds");
+        assert_eq!(volume.source, FogSource::Explosion);
+        assert_eq!(bounds.shape, FogShape::Sphere);
+        assert_eq!(bounds.center, Vec3::ZERO);
+        assert_eq!(bounds.half_extents, Vec3::splat(bounds.half_extents.x));
+        assert_eq!(volume.emission_temperature_k, EXPLOSION_TEMPERATURE_K);
+        assert!(volume.is_emissive());
+
+        let state = combustion_state_from_particle(volume, &emitter, 7.0)
+            .expect("an explosion needs a one-shot timeline");
+        assert_eq!(state.normalized_age(7.0), Some(0.0));
+        assert!(state.normalized_age(7.0 + emitter.life).is_none());
+    }
+
+    #[test]
+    fn smoke_semantics_win_over_explosion_tokens() {
+        let mut emitter = ParticleEmitter::explosion();
+        emitter.dst_blend = 7;
+        emitter.texture_path = Some("textures\\effects\\explosion_smoke.dds".to_string());
+        assert!(explosion_volume_from_particle("ExplosionSmoke", &emitter).is_none());
+        assert!(fog_volume_from_particle("ExplosionSmoke", &emitter).is_some());
     }
 
     /// Smoke must stay passive — the emission field exists, so it would be
@@ -904,6 +1035,10 @@ mod tests {
             assert!(
                 medium_from_particle("TorchFire01", &ParticleEmitter::torch_flame())
                     .is_some_and(|v| v.is_emissive())
+            );
+            assert!(
+                medium_from_particle("ExplosionFireball", &ParticleEmitter::explosion())
+                    .is_some_and(|v| v.source == FogSource::Explosion)
             );
         }
         assert!(medium_from_particle("MagicSparkle", &ParticleEmitter::magic_sparkles()).is_none());
@@ -1029,6 +1164,17 @@ mod tests {
         let volume = fog_volume_from_particle("SuperSpray01-Emitter", &emitter).unwrap();
         assert!(volume.extinction_per_meter.is_finite());
         assert!(volume.extinction_per_meter > 0.0);
+        assert_eq!(volume.single_scatter_albedo, SMOKE_FALLBACK_ALBEDO);
+    }
+
+    #[test]
+    fn explosion_texture_selects_the_impulse_preset_before_flame() {
+        let preset = particle_preset(
+            "FireEmitter",
+            Some("textures\\effects\\explosionfireball01.dds"),
+        );
+        assert_eq!(preset.life, ParticleEmitter::explosion().life);
+        assert_eq!(preset.end_size, ParticleEmitter::explosion().end_size);
     }
 
     #[test]

@@ -346,6 +346,36 @@ impl ParticleEmitter {
         }
     }
 
+    /// Heuristic preset for an impulsive combustion event. The particle
+    /// values define conservative world bounds and a fallback billboard;
+    /// when volumetric combustion is enabled the renderer evolves the same
+    /// source from a hot expanding fireball into a buoyant smoke shell.
+    pub fn explosion() -> Self {
+        Self {
+            shape: EmitterShape::Sphere { radius: 5.0 },
+            rate: 96.0,
+            max_particles: 192,
+            life: 2.4,
+            life_variation: 0.25,
+            speed: 16.0,
+            speed_variation: 5.0,
+            declination: std::f32::consts::FRAC_PI_2,
+            declination_variation: std::f32::consts::FRAC_PI_2,
+            gravity: [0.0, 4.0, 0.0],
+            start_color: [1.0, 0.82, 0.35, 1.0],
+            end_color: [0.18, 0.16, 0.15, 0.0],
+            start_size: 8.0,
+            end_size: 42.0,
+            texture_path: Some("textures\\effects\\explosionfireball01.dds".to_string()),
+            src_blend: 6,
+            dst_blend: 0,
+            spawn_accumulator: 0.0,
+            force_fields: Vec::new(),
+            start_size_variation: 2.0,
+            particles: ParticleSoA::default(),
+        }
+    }
+
     /// Heuristic preset for grey smoke. Used when the host node name
     /// contains `smoke` / `steam` / `ash`.
     ///
@@ -511,6 +541,7 @@ mod tests {
     fn presets_have_finite_nondefault_config() {
         for preset in [
             ParticleEmitter::torch_flame(),
+            ParticleEmitter::explosion(),
             ParticleEmitter::smoke(),
             ParticleEmitter::magic_sparkles(),
             ParticleEmitter::embers(),
@@ -531,6 +562,7 @@ mod tests {
     fn buoyant_presets_use_engine_y_up() {
         for preset in [
             ParticleEmitter::torch_flame(),
+            ParticleEmitter::explosion(),
             ParticleEmitter::smoke(),
             ParticleEmitter::embers(),
         ] {
@@ -598,5 +630,18 @@ mod tests {
             smoke.start_color[0] >= smoke.start_color[2],
             "smoke base should be warm-tinted (R >= B)"
         );
+    }
+
+    #[test]
+    fn explosion_preset_expands_and_cools() {
+        let explosion = ParticleEmitter::explosion();
+        assert!(explosion.end_size > explosion.start_size * 4.0);
+        assert!(explosion.start_color[0] > explosion.end_color[0]);
+        assert!(explosion.life >= 2.0);
+        assert_eq!(explosion.dst_blend, 0);
+        assert!(explosion
+            .texture_path
+            .as_deref()
+            .is_some_and(|path| path.contains("explosion")));
     }
 }

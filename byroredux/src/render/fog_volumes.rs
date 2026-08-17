@@ -1,10 +1,13 @@
 //! ECS local fog-volume collection and GPU translation.
 
-use byroredux_core::ecs::{FogShape, FogSource, FogVolume, GlobalTransform, World};
+use byroredux_core::ecs::{
+    CombustionState, FogShape, FogSource, FogVolume, GlobalTransform, TotalTime, World,
+};
 use byroredux_core::math::Vec3;
 use byroredux_renderer::vulkan::volumetrics::{
-    GpuFogVolume, FOG_VOLUME_PROFILE_FLAME, FOG_VOLUME_PROFILE_HOMOGENEOUS,
-    FOG_VOLUME_PROFILE_SMOKE, MAX_GPU_FOG_VOLUMES, WORLD_UNITS_PER_METER,
+    GpuFogVolume, FOG_VOLUME_PROFILE_EXPLOSION, FOG_VOLUME_PROFILE_FLAME,
+    FOG_VOLUME_PROFILE_HOMOGENEOUS, FOG_VOLUME_PROFILE_SMOKE, MAX_GPU_FOG_VOLUMES,
+    WORLD_UNITS_PER_METER,
 };
 
 use super::camera::FrustumPlanes;
@@ -22,12 +25,34 @@ pub(super) fn collect_fog_volumes(
     let Some(transform_query) = world.query::<GlobalTransform>() else {
         return;
     };
+    let combustion_query = world.query::<CombustionState>();
+    let now_seconds = world.resource::<TotalTime>().0;
 
     for (entity, volume) in volume_query.iter() {
         let Some(transform) = transform_query.get(entity) else {
             continue;
         };
-        let Some(gpu) = gpu_volume_from_ecs(*volume, *transform) else {
+        let combustion = combustion_query
+            .as_ref()
+            .and_then(|query| query.get(entity))
+            .copied();
+        let explosion_age = if volume.source == FogSource::Explosion {
+            match combustion {
+                Some(state) => match state.normalized_age(now_seconds) {
+                    Some(age) => Some((age, state.lifetime_seconds)),
+                    None => continue,
+                },
+                // An explicitly authored Explosion without a timeline still
+                // renders its initial state. All particle-conversion paths
+                // attach `CombustionState`, so this is principally a safe
+                // editor/debug default rather than a looping runtime effect.
+                None => Some((0.0, 0.0)),
+            }
+        } else {
+            None
+        };
+        let Some(gpu) = gpu_volume_from_ecs_with_explosion_age(*volume, *transform, explosion_age)
+        else {
             continue;
         };
         let center = Vec3::new(
@@ -63,7 +88,16 @@ pub(super) fn collect_fog_volumes(
     out.truncate(MAX_GPU_FOG_VOLUMES);
 }
 
+#[cfg(test)]
 fn gpu_volume_from_ecs(volume: FogVolume, transform: GlobalTransform) -> Option<GpuFogVolume> {
+    gpu_volume_from_ecs_with_explosion_age(volume, transform, None)
+}
+
+fn gpu_volume_from_ecs_with_explosion_age(
+    volume: FogVolume,
+    transform: GlobalTransform,
+    explosion_age: Option<(f32, f32)>,
+) -> Option<GpuFogVolume> {
     if !volume.is_renderable() {
         return None;
     }
@@ -112,6 +146,7 @@ fn gpu_volume_from_ecs(volume: FogVolume, transform: GlobalTransform) -> Option<
     };
     let inverse_rotation = rotation.conjugate();
     let profile = match (volume.source, volume.is_emissive()) {
+        (FogSource::Explosion, _) => FOG_VOLUME_PROFILE_EXPLOSION,
         (FogSource::ParticleEmitter, true) => FOG_VOLUME_PROFILE_FLAME,
         (FogSource::ParticleEmitter, false) => FOG_VOLUME_PROFILE_SMOKE,
         _ => FOG_VOLUME_PROFILE_HOMOGENEOUS,
@@ -145,7 +180,12 @@ fn gpu_volume_from_ecs(volume: FogVolume, transform: GlobalTransform) -> Option<
             sanitize_emission(volume.emissive_radiance[2]),
             volume.emission_temperature_k.max(0.0),
         ],
-        profile_params: [profile, 0.0, 0.0, 0.0],
+        profile_params: if profile == FOG_VOLUME_PROFILE_EXPLOSION {
+            let (age, lifetime) = explosion_age.unwrap_or((0.0, 0.0));
+            [profile, age.clamp(0.0, 1.0), lifetime.max(0.0), 0.0]
+        } else {
+            [profile, 0.0, 0.0, 0.0]
+        },
     })
 }
 
@@ -189,7 +229,7 @@ mod tests {
     }
 
     #[test]
-    fn gpu_profile_distinguishes_authored_fog_smoke_and_flame() {
+    fn gpu_profile_distinguishes_authored_fog_smoke_flame_and_explosion() {
         let make_volume = |source, emissive_radiance| FogVolume {
             bounds: Some(FogBounds {
                 center: Vec3::ZERO,
@@ -224,10 +264,20 @@ mod tests {
             GlobalTransform::IDENTITY,
         )
         .unwrap();
+        let explosion = gpu_volume_from_ecs_with_explosion_age(
+            make_volume(FogSource::Explosion, [24.0, 12.0, 2.0]),
+            GlobalTransform::IDENTITY,
+            Some((0.375, 2.4)),
+        )
+        .unwrap();
 
         assert_eq!(authored.profile_params[0], FOG_VOLUME_PROFILE_HOMOGENEOUS);
         assert_eq!(smoke.profile_params[0], FOG_VOLUME_PROFILE_SMOKE);
         assert_eq!(flame.profile_params[0], FOG_VOLUME_PROFILE_FLAME);
+        assert_eq!(
+            explosion.profile_params,
+            [FOG_VOLUME_PROFILE_EXPLOSION, 0.375, 2.4, 0.0]
+        );
     }
 
     #[test]

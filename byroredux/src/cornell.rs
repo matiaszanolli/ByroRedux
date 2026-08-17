@@ -44,8 +44,8 @@
 //! `mat.set <id> color r g b` tweak fully recolors a probe.
 
 use byroredux_core::ecs::{
-    FogBounds, FogShape, FogSource, FogVolume, GlobalTransform, LightSource, Material, MeshHandle,
-    TextureHandle, Transform, World,
+    CombustionState, FogBounds, FogShape, FogSource, FogVolume, GlobalTransform, LightSource,
+    Material, MeshHandle, TextureHandle, TotalTime, Transform, World,
 };
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_core::string::StringPool;
@@ -726,6 +726,9 @@ pub(crate) fn setup_cornell_scene(
         Vec3::new(1.3, 1.3, 1.3),
         "fog_volume_probe",
     );
+    if std::env::var_os("BYRO_COMBUSTION_PROBE").is_some() {
+        spawn_combustion_probe(world, Vec3::new(0.0, 1.35, -0.4));
+    }
 
     // ── Local lights (interior variant only) ────────────────────────
     // In sun mode every one of these is skipped: a bisection harness for
@@ -1280,6 +1283,41 @@ fn spawn_fog_volume_with_extinction(
         },
     );
     name_entity(world, e, name);
+}
+
+/// Opt-in one-shot used to validate the complete explosion profile without
+/// depending on game data. It starts one second after the first Cornell frame
+/// so capture tooling can observe the hot core, expansion, and cooled shell.
+fn spawn_combustion_probe(world: &mut World, pos: Vec3) {
+    let e = world.spawn();
+    world.insert(e, Transform::new(pos, Quat::IDENTITY, 1.0));
+    world.insert(e, GlobalTransform::new(pos, Quat::IDENTITY, 1.0));
+    let emissive_radiance =
+        byroredux_core::radiometry::blackbody_radiance_srgb(2800.0, 1850.0, 24.0)
+            .expect("the finite Cornell combustion probe temperature is representable");
+    world.insert(
+        e,
+        FogVolume {
+            bounds: Some(FogBounds {
+                center: Vec3::ZERO,
+                rotation: Quat::IDENTITY,
+                half_extents: Vec3::splat(1.55),
+                shape: FogShape::Sphere,
+            }),
+            extinction_per_meter: 10.0,
+            single_scatter_albedo: [0.12; 3],
+            edge_softness: 0.3,
+            emissive_radiance,
+            emission_temperature_k: 2800.0,
+            source: FogSource::Explosion,
+        },
+    );
+    let now_seconds = { world.resource::<TotalTime>().0 };
+    // Keep the opt-in probe slow enough for a debugger to capture its hot,
+    // transitional, and smoke-dominant phases without changing production
+    // particle lifetimes.
+    world.insert(e, CombustionState::one_shot(now_seconds + 2.0, 8.0));
+    name_entity(world, e, "combustion_explosion_probe");
 }
 
 fn name_entity(world: &mut World, entity: byroredux_core::ecs::EntityId, name: &str) {

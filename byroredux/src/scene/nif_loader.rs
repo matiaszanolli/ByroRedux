@@ -632,7 +632,13 @@ pub(crate) fn load_nif_bytes_with_skeleton(
             child
         };
         if let Some(fog_volume) = fog_volume {
+            let now_seconds = { world.resource::<byroredux_core::ecs::TotalTime>().0 };
+            let combustion_state =
+                crate::fog::combustion_state_from_particle(fog_volume, &preset, now_seconds);
             world.insert(target_entity, fog_volume);
+            if let Some(state) = combustion_state {
+                world.insert(target_entity, state);
+            }
         } else {
             world.insert(
                 target_entity,
