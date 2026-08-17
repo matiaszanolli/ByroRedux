@@ -48,48 +48,12 @@ pub(crate) fn finish_partial_import(
     {
         return;
     }
-    // Editor markers — pre-warmed scene gets cached as `None` so future
-    // placements skip silently. Matches the `parse_and_import_nif` skip
-    // semantics: BSXFlags bit 5 means `EditorMarker` on Oblivion/FO3/FNV,
-    // but was re-purposed to `MultiBoundNode` on Skyrim+/FO4/FO76/Starfield
-    // (BSVER >= FALLOUT4) — treating it as an editor marker on those games
-    // silently drops legitimate architecture (#2046 / TD2-103, mirrors fix
-    // commit `6feac029` in `references::import::parse_and_import_nif`).
-    let bsx_editor_marker =
-        partial.bsx & 0x20 != 0 && partial.bsver < byroredux_nif::version::bsver::FALLOUT4;
-    if bsx_editor_marker {
-        log::debug!(
-            "[stream-drain] Skipping editor marker NIF '{}' (BSXFlags 0x{:X}, BSVER {})",
-            model_path,
-            partial.bsx,
-            partial.bsver,
-        );
-        let freed = {
-            let mut reg = world.resource_mut::<NifImportRegistry>();
-            reg.insert(cache_key, None)
-        };
-        // #863 — release any LRU-evicted clip handles. Negative-cache
-        // insert can still trigger eviction of pre-existing entries
-        // when `BYRO_NIF_CACHE_MAX > 0`.
-        if !freed.is_empty() {
-            let mut clip_reg =
-                world.resource_mut::<byroredux_core::animation::AnimationClipRegistry>();
-            for h in freed {
-                clip_reg.release(h);
-            }
-        }
-        return;
-    }
-
     let crate::streaming::PartialNifImport {
         scene,
         // #1214 — surface BSXFlags onto the cache entry so the spawn
         // site can attach a `BSXFlags` ECS row on the placement root.
         // Pre-#1214 this field was discarded.
         bsx,
-        // #2046 — only needed for the game-era gate above; not carried
-        // onto `CachedNifImport`.
-        bsver: _,
         // #1235 / LC-D1-NEW-01 — root NiAVObject.flags for placement-root
         // SceneFlags parity with the loose-NIF loader.
         root_flags,
@@ -148,11 +112,10 @@ pub(crate) fn finish_partial_import(
         // Partial NIFs are decoded from streamed bytes — no SpeedTree
         // placeholder path runs through here, so no billboard mode.
         placement_root_billboard: None,
-        // #1214 — BSXFlags surfaced from the streaming partial. The
-        // game-era-gated editor-marker check (#2046) is applied
-        // upstream, above; any cached entry reaching here either has
-        // bit 5 clear, or has it set but was correctly NOT classified
-        // as an editor marker (Skyrim+/FO4/FO76/Starfield MultiBoundNode).
+        // #1214 / #3036 — BSXFlags surfaced from the streaming partial.
+        // Bit 5 means marker children are present on classic content (and
+        // MultiBound metadata on later content), never that the whole NIF
+        // is a marker. The shared walker culls marker children individually.
         bsx_flags: bsx,
         // #1235 / LC-D1-NEW-01 — root NiAVObject.flags surfaced from
         // the streaming partial for placement-root SceneFlags parity.

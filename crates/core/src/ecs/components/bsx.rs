@@ -16,7 +16,8 @@ use crate::ecs::storage::Component;
 /// - Bit 2: Ragdoll
 /// - Bit 3: Complex (multi-shape collision)
 /// - Bit 4: Addon node
-/// - Bit 5: Editor marker
+/// - Bit 5: Editor-marker children present on classic content; repurposed by
+///   later games. It never means the whole NIF is an editor marker.
 /// - Bit 6: Dynamic (not static — can move at runtime)
 /// - Bit 7: Articulated (multi-body Havok)
 /// - Bit 8: Needs transform updates
@@ -31,7 +32,7 @@ impl BSXFlags {
     pub const RAGDOLL: u32 = 1 << 2;
     pub const COMPLEX: u32 = 1 << 3;
     pub const ADDON: u32 = 1 << 4;
-    pub const EDITOR_MARKER: u32 = 1 << 5;
+    pub const MARKER_CHILDREN_PRESENT: u32 = 1 << 5;
     pub const DYNAMIC: u32 = 1 << 6;
     pub const ARTICULATED: u32 = 1 << 7;
     pub const NEEDS_TRANSFORM_UPDATES: u32 = 1 << 8;
@@ -49,8 +50,8 @@ impl BSXFlags {
         self.0 & Self::ANIMATED != 0
     }
 
-    pub fn is_editor_marker(self) -> bool {
-        self.0 & Self::EDITOR_MARKER != 0
+    pub fn contains_marker_children(self) -> bool {
+        self.0 & Self::MARKER_CHILDREN_PRESENT != 0
     }
 }
 
@@ -93,5 +94,12 @@ mod tests {
         assert!(flags.is_dynamic());
         assert!(flags.is_animated());
         assert!(!flags.has_havok());
+    }
+
+    #[test]
+    fn bit_five_reports_marker_presence_not_whole_file_identity() {
+        let flags = BSXFlags(BSXFlags::MARKER_CHILDREN_PRESENT | BSXFlags::HAVOK);
+        assert!(flags.contains_marker_children());
+        assert!(flags.has_havok(), "real collision may coexist with markers");
     }
 }

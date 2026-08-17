@@ -13,6 +13,17 @@ use super::*;
 use byroredux_core::animation::AnimationClipRegistry;
 use byroredux_core::ecs::World;
 use byroredux_core::string::StringPool;
+use byroredux_nif::{
+    blocks::{
+        base::{NiAVObjectData, NiObjectNETData},
+        node::NiNode,
+        tri_shape::{NiTriShape, NiTriShapeData},
+        NiObject,
+    },
+    scene::NifScene,
+    types::{BlockRef, NiPoint3, NiTransform},
+};
+use std::sync::Arc as StdArc;
 
 fn dummy_cached() -> Arc<CachedNifImport> {
     Arc::new(CachedNifImport {
@@ -33,14 +44,108 @@ fn dummy_cached() -> Arc<CachedNifImport> {
 }
 
 fn dummy_partial() -> crate::streaming::PartialNifImport {
-    dummy_partial_with(0, 0)
+    dummy_partial_with(0)
 }
 
-fn dummy_partial_with(bsx: u32, bsver: u32) -> crate::streaming::PartialNifImport {
+fn dummy_partial_with(bsx: u32) -> crate::streaming::PartialNifImport {
     crate::streaming::PartialNifImport {
         scene: byroredux_nif::scene::NifScene::default(),
         bsx,
-        bsver,
+        root_flags: 0,
+        lights: Vec::new(),
+        particle_emitters: Vec::new(),
+        embedded_clip: None,
+    }
+}
+
+fn marker_scene(include_real_geometry: bool) -> NifScene {
+    fn av(name: &str) -> NiAVObjectData {
+        NiAVObjectData {
+            net: NiObjectNETData {
+                name: Some(StdArc::from(name)),
+                extra_data_refs: Vec::new(),
+                controller_ref: BlockRef::NULL,
+            },
+            flags: 0,
+            transform: NiTransform::default(),
+            properties: Vec::new(),
+            collision_ref: BlockRef::NULL,
+        }
+    }
+    fn shape(name: &str, data_ref: u32) -> NiTriShape {
+        NiTriShape {
+            av: av(name),
+            data_ref: BlockRef(data_ref),
+            skin_instance_ref: BlockRef::NULL,
+            shader_property_ref: BlockRef::NULL,
+            alpha_property_ref: BlockRef::NULL,
+            num_materials: 0,
+            active_material_index: 0,
+        }
+    }
+    fn data() -> NiTriShapeData {
+        NiTriShapeData {
+            vertices: vec![
+                NiPoint3::default(),
+                NiPoint3 {
+                    x: 1.0,
+                    ..NiPoint3::default()
+                },
+                NiPoint3 {
+                    y: 1.0,
+                    ..NiPoint3::default()
+                },
+            ],
+            normals: vec![
+                NiPoint3 {
+                    z: 1.0,
+                    ..NiPoint3::default()
+                };
+                3
+            ],
+            center: NiPoint3 {
+                x: 0.33,
+                y: 0.33,
+                z: 0.0,
+            },
+            radius: 1.0,
+            vertex_colors: Vec::new(),
+            uv_sets: vec![vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]],
+            triangles: vec![[0, 1, 2]],
+        }
+    }
+
+    let children = if include_real_geometry {
+        vec![BlockRef(1), BlockRef(3)]
+    } else {
+        vec![BlockRef(1)]
+    };
+    let root = NiNode {
+        av: av("Scene Root"),
+        children,
+        effects: Vec::new(),
+    };
+    let mut blocks: Vec<Box<dyn NiObject>> = vec![
+        Box::new(root),
+        Box::new(shape("EditorMarker", 2)),
+        Box::new(data()),
+    ];
+    if include_real_geometry {
+        blocks.push(Box::new(shape("StoolGeometry", 4)));
+        blocks.push(Box::new(data()));
+    }
+    NifScene {
+        blocks,
+        root_index: Some(0),
+        bsver: 34,
+        ..NifScene::default()
+    }
+}
+
+fn partial_with_marker_scene(include_real_geometry: bool) -> crate::streaming::PartialNifImport {
+    crate::streaming::PartialNifImport {
+        scene: marker_scene(include_real_geometry),
+        bsx: 0x20,
         root_flags: 0,
         lights: Vec::new(),
         particle_emitters: Vec::new(),
@@ -145,15 +250,7 @@ fn finish_partial_import_early_outs_with_mixed_case_model_path() {
     assert!(reg.get("rock_cliff.nif").is_some());
 }
 
-// ── #2046 / TD2-103 — game-era-gated BSXFlags bit-5 regression ──
-//
-// `references::import::parse_and_import_nif` (the sync REFR path) was
-// fixed under commit 6feac029 to treat BSXFlags bit 5 as `EditorMarker`
-// only below BSVER FALLOUT4 — on Skyrim+/FO4/FO76/Starfield the bit was
-// re-purposed to `MultiBoundNode`, and blanket-skipping it drops real
-// architecture (`hitfloorsolidfull01.nif`-class FO4 content, BSXFlags
-// 0xA2). `finish_partial_import` (the async exterior-streaming drain
-// path) never received that fix. These tests pin it now that it has.
+// ── #3036 / #3102 — BSXFlags bit 5 is presence, not identity ──
 
 /// FO4-era content (BSVER >= FALLOUT4) with bit 5 set must NOT be
 /// treated as an editor marker — the cache entry must be a POSITIVE
@@ -161,7 +258,7 @@ fn finish_partial_import_early_outs_with_mixed_case_model_path() {
 #[test]
 fn finish_partial_import_fo4_bsx_bit5_is_not_editor_marker() {
     let mut world = world_with_registries();
-    let partial = dummy_partial_with(0xA2, byroredux_nif::version::bsver::FALLOUT4);
+    let partial = dummy_partial_with(0xA2);
 
     finish_partial_import(&mut world, None, None, "hitfloorsolidfull01.nif", partial);
 
@@ -176,21 +273,38 @@ fn finish_partial_import_fo4_bsx_bit5_is_not_editor_marker() {
     );
 }
 
-/// Pre-FO4 content (Oblivion/FO3/FNV, BSVER < FALLOUT4) with bit 5 set
-/// IS a genuine editor marker and must still be skipped — the fix must
-/// not regress the case it was never wrong about.
+/// A marker-only subtree naturally imports to zero meshes because the NIF
+/// walker culls that child. Bit 5 must not turn the cache entry into a
+/// whole-file parse failure.
 #[test]
-fn finish_partial_import_oblivion_bsx_bit5_is_still_editor_marker() {
+fn finish_partial_import_marker_only_scene_imports_empty() {
     let mut world = world_with_registries();
-    let partial = dummy_partial_with(0x20, byroredux_nif::version::bsver::OBLIVION);
+    let partial = partial_with_marker_scene(false);
 
     finish_partial_import(&mut world, None, None, "xmarkerheading.nif", partial);
 
     let reg = world.resource::<NifImportRegistry>();
     let entry = reg.get("xmarkerheading.nif").expect("cache entry inserted");
-    assert!(
-        entry.is_none(),
-        "Oblivion-era BSXFlags bit 5 is a genuine editor marker and must \
-         still be skipped (negative cache entry)"
-    );
+    let cached = entry
+        .as_ref()
+        .expect("marker-only scene parsed successfully");
+    assert!(cached.meshes.is_empty(), "marker child must stay culled");
+}
+
+/// The #3036 headline regression: a pre-FO4 bit-5 scene can contain a
+/// marker child and real geometry. Cull the former and preserve the latter.
+#[test]
+fn finish_partial_import_bsx_bit5_keeps_real_geometry_sibling() {
+    let mut world = world_with_registries();
+    let partial = partial_with_marker_scene(true);
+
+    finish_partial_import(&mut world, None, None, "stool01.nif", partial);
+
+    let reg = world.resource::<NifImportRegistry>();
+    let cached = reg
+        .get("stool01.nif")
+        .expect("cache entry inserted")
+        .as_ref()
+        .expect("bit 5 must not reject the whole NIF");
+    assert_eq!(cached.meshes.len(), 1, "only real geometry survives");
 }

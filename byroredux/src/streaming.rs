@@ -535,18 +535,10 @@ pub struct PartialNifImport {
     /// Parsed scene — needed by the main-thread import step
     /// (`import_nif_with_collision` walks this).
     pub scene: byroredux_nif::scene::NifScene,
-    /// BSXFlags bit-set extracted from the scene root. The drain step
-    /// honours the `0x20` bit, game-era gated via [`Self::bsver`] — see
-    /// that field's doc comment (#2046 / TD2-103).
+    /// BSXFlags bit-set extracted from the scene root. Bit 5 indicates
+    /// marker children on classic content; the NIF walker filters those
+    /// children individually while preserving sibling geometry (#3036).
     pub bsx: u32,
-    /// `NifHeader.user_version_2` (BSVER) — needed alongside `bsx` to
-    /// interpret BSXFlags bit 5 correctly: it means `EditorMarker` on
-    /// Oblivion/FO3/FNV but was re-purposed to `MultiBoundNode` on
-    /// Skyrim+/FO4/FO76/Starfield (see `references::import::parse_and_import_nif`,
-    /// fix commit `6feac029`). Without this field the drain step can't
-    /// apply the same game-era gate and silently drops legitimate
-    /// architecture NIFs with bit 5 set on those games.
-    pub bsver: u32,
     /// Root NiNode `NiAVObject.flags` (SELECTIVE_UPDATE / DISABLE_SORTING
     /// / DISPLAY_OBJECT / IS_NODE / …) for placement-root SceneFlags
     /// parity with the loose-NIF loader. See #1235 / LC-D1-NEW-01.
@@ -1071,10 +1063,6 @@ fn parse_one_nif((path, bytes): (String, Option<Vec<u8>>)) -> (String, Option<Pa
             }
         };
         let bsx = byroredux_nif::import::extract_bsx_flags(&scene);
-        // `NifScene` already retains BSVER as `scene.bsver` (set from the
-        // header during the `parse_nif` call above) — no need to re-parse
-        // the header. #2111.
-        let bsver = scene.bsver;
         let root_flags = byroredux_nif::import::extract_root_flags(&scene);
         let lights = byroredux_nif::import::import_nif_lights(&scene);
         let particle_emitters = byroredux_nif::import::import_nif_particle_emitters(&scene);
@@ -1082,7 +1070,6 @@ fn parse_one_nif((path, bytes): (String, Option<Vec<u8>>)) -> (String, Option<Pa
         Some(PartialNifImport {
             scene,
             bsx,
-            bsver,
             root_flags,
             lights,
             particle_emitters,

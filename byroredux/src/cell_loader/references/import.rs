@@ -65,37 +65,14 @@ pub(super) fn parse_and_import_nif(
         }
     };
 
-    // BSXFlags bit 5 — semantics differ across game eras:
-    //   * Oblivion / FO3 / FNV (BSVER < FALLOUT4): bit 5 = `EditorMarker`.
-    //     The NIF is an invisible CK pin (XMarker, PrisonMarker, etc.)
-    //     and must not render.
-    //   * Skyrim / FO4 / FO76 / Starfield (BSVER >= FALLOUT4):
-    //     bit 5 = `MultiBoundNode` (Bethesda re-purposed it). A hint
-    //     that the NIF carries an authored BSMultiBound for culling.
-    //     Filtering on it drops legitimate architecture — F4 in the
-    //     2026-05-26 sweep was caused by `hitfloorsolidfull01.nif`
-    //     (FO4 Institute floor, BSXFlags = 0xA2, bit 5 set) and 14
-    //     siblings being wrongly classified as editor markers.
-    //
-    // For FO4+ we rely on the name-based check in `walk/mod.rs:1430`
-    // (`is_editor_marker`) which catches names matching `EditorMarker*`,
-    // `marker_*`, `MarkerX`, `marker:*`, `MapMarker` — every shipping
-    // FO4 editor-marker NIF authored a name in that family.
+    // #3036 — BSXFlags bit 5 is file-level metadata saying editor-marker
+    // children are present; it does not classify the whole NIF as a marker.
+    // FNV stool01.nif is the canonical counterexample: bit 5 coexists with
+    // real geometry and collision. Marker children are culled individually
+    // by the NIF walker, leaving a pure marker import empty naturally.
+    // Skyrim+ also reuses this bit for MultiBound metadata, reinforcing that
+    // no game era may use it as a whole-file rejection gate.
     let bsx = byroredux_nif::import::extract_bsx_flags(&scene);
-    // `NifScene` already retains BSVER as `scene.bsver` (set from the
-    // header during the `parse_nif` call above) — no need to re-parse
-    // the header. #2111.
-    let bsver = scene.bsver;
-    let bsx_editor_marker = bsx & 0x20 != 0 && bsver < byroredux_nif::version::bsver::FALLOUT4;
-    if bsx_editor_marker {
-        log::debug!(
-            "Skipping editor marker NIF '{}' (BSXFlags 0x{:X}, BSVER {})",
-            label,
-            bsx,
-            bsver,
-        );
-        return None;
-    }
     // Root-node NiAVObject.flags — surfaced for the placement-root
     // SceneFlags row. See #1235 / LC-D1-NEW-01.
     let root_flags = byroredux_nif::import::extract_root_flags(&scene);
@@ -207,10 +184,9 @@ pub(super) fn parse_and_import_nif(
         placement_root_billboard: None,
         // #1214 / D1-NEW-03 — surface the BSXFlags bits on the cache
         // entry so the spawn site can attach a `BSXFlags` ECS row on
-        // the placement root. The editor-marker bit (0x20) is consumed
-        // above as an early-return; the remaining bits (havok-managed,
-        // ragdoll, articulated, externally-emitted-particles, etc.)
-        // ride through to the ECS for downstream consumers.
+        // the placement root. Bit 5 rides through as marker-presence /
+        // MultiBound metadata; the walker has already culled individual
+        // editor-marker children without discarding their real siblings.
         bsx_flags: bsx,
         // #1235 / LC-D1-NEW-01 — root-node NiAVObject.flags for
         // placement-root SceneFlags parity with the loose-NIF loader.

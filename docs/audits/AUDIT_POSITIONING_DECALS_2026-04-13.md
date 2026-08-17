@@ -23,11 +23,11 @@ The floating diamonds and the red sphere have clear root causes:
 
 ## Findings
 
-### PD-01: BSXFlags editor marker bit (0x20) never consumed
+### PD-01: BSXFlags marker-presence bit (0x20) was misinterpreted
 - **Severity**: HIGH
-- **Location**: `crates/nif/src/import/mod.rs:241-244` (parsed), `byroredux/src/cell_loader.rs` (never checked)
-- **Description**: BSXFlags bit 5 marks an entire NIF as "editor marker — do not render." It is parsed into `ImportedScene.bsx_flags` but the flat import path (`import_nif()`) does not return it, and `cell_loader.rs` never checks it. Editor marker NIFs (the red/green/blue octahedron shapes) render as visible geometry.
-- **Fix**: Return `bsx_flags` from `import_nif()`, check `bsx_flags & 0x20 != 0` in cell_loader, skip the entire NIF if set.
+- **Location**: `crates/nif/src/import/walk/` (child filtering), cell-loader NIF import entry points
+- **Correction (2026-08-17)**: The original finding incorrectly said bit 5 marks the entire NIF. nif.xml defines it as editor markers **present**. Vanilla FNV `stool01.nif` carries bit 5 alongside real geometry and collision; only its marker child is editor-only. Whole-file rejection deleted 223 real FNV assets (#3036).
+- **Fix**: Preserve the file, cull marker children in the NIF walker, and let a genuinely marker-only scene import to zero meshes. Never reject a NIF solely because `BSXFlags & 0x20 != 0`.
 
 ### PD-02: APP_CULLED flag (0x20) not checked in NIF walker
 - **Severity**: HIGH
