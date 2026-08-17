@@ -17,6 +17,7 @@ use byroredux_plugin::esm::reader::GameKind;
 use byroredux_renderer::Vertex;
 
 use crate::asset_provider::TextureProvider;
+use crate::env_translate::{terrain_lod_layout, TerrainLodLayout};
 
 use super::exterior::ExteriorWorldContext;
 
@@ -32,23 +33,35 @@ pub(crate) struct LodReconcileInput<'a> {
     pub(crate) max_full_cell_radius: i32,
 }
 
-/// Whether `game` ships Bethesda's prebaked **combined** distant LOD —
-/// the `.bto` object quads and `.btr` terrain quads named by quadtree
-/// level and quad coordinate. Skyrim (LE/SE) and FO4 only; Oblivion and
-/// FO3/FNV predate the scheme and keep the synthesized heightmap ring
-/// plus, on Oblivion, `DistantLOD\*.lod` placement
-/// ([`super::placement_lod::placement_lod_supported`], its per-game
-/// sibling).
+/// Whether `game` ships Bethesda's prebaked **combined** distant LOD — the
+/// `.bto` object quads and `.btr` terrain quads named by quadtree level and
+/// quad coordinate. Skyrim (LE/SE) and FO4 only. Oblivion and FO3/FNV have
+/// authored terrain LOD too, but in their older NIF/DDS layouts; that separate
+/// capability is [`legacy_landscape_lod_supported`] (#3100).
 ///
 /// One named decision per quirk, per exal.md §4: the same
 /// `Skyrim | Fallout4` literal was previously written inline at each
 /// consumer, which is exactly the drift the doctrine forbids — a title
 /// gaining or losing baked LOD would have to be found in every provider
-/// rather than changed here. [`LodBandLadder::for_game`] answers the
-/// same question in data form (a ladder exists ⟺ baked LOD exists); the
-/// tests below pin the two to agree. #2452 / EXAL-04.
-pub(crate) fn baked_lod_supported(game: GameKind) -> bool {
-    matches!(game, GameKind::Skyrim | GameKind::Fallout4)
+/// rather than changed here. [`LodBandLadder::for_game`] answers the same
+/// combined-`.btr` question in data form; the tests below pin the two to
+/// agree. #2452 / EXAL-04.
+pub(crate) fn combined_lod_supported(game: GameKind) -> bool {
+    terrain_lod_layout(game) == TerrainLodLayout::Combined
+}
+
+/// Whether `game` ships an authored pre-`.btr` landscape LOD family.
+///
+/// Both generations are translated by EXAL before the synth renderer sees
+/// them: Oblivion uses FormID-keyed 32-cell NIF/DDS quads, while FO3/FNV use
+/// EditorID-keyed level 4/8/16/32 NIF/DDS quads. This predicate deliberately
+/// says nothing about `.bto`/`.btr`; callers needing that combined format use
+/// [`combined_lod_supported`] instead (#3100).
+pub(crate) fn legacy_landscape_lod_supported(game: GameKind) -> bool {
+    matches!(
+        terrain_lod_layout(game),
+        TerrainLodLayout::OblivionLegacy | TerrainLodLayout::FalloutLegacy
+    )
 }
 
 /// Canonical baked-LOD grid origin for the active worldspace (#2586).
@@ -59,7 +72,7 @@ pub(crate) fn baked_lod_supported(game: GameKind) -> bool {
 /// back to the component-wise minimum of their explicit exterior cells.
 /// Older games keep their existing absolute synth/placement grids.
 pub(crate) fn worldspace_lod_grid_origin(wctx: &ExteriorWorldContext) -> (i32, i32) {
-    if !baked_lod_supported(wctx.record_index.game) {
+    if !combined_lod_supported(wctx.record_index.game) {
         return (0, 0);
     }
 
@@ -328,25 +341,31 @@ mod tests {
         )
     }
 
-    /// #2452 / EXAL-04 — per-variant, mirroring
-    /// `placement_lod_supported_is_oblivion_only`. Skyrim and FO4 ship
-    /// `.bto`/`.btr`; every other title falls to the synth ring.
+    /// #2452 / EXAL-04 — Skyrim and FO4 alone ship combined `.bto`/`.btr`.
+    /// #3100 keeps that fact distinct from the older authored landscape-only
+    /// LOD families so neither capability lies about the other.
     #[test]
-    fn baked_lod_supported_is_skyrim_and_fo4_only() {
-        assert!(baked_lod_supported(GameKind::Skyrim));
-        assert!(baked_lod_supported(GameKind::Fallout4));
-        assert!(!baked_lod_supported(GameKind::Oblivion));
-        assert!(!baked_lod_supported(GameKind::Fallout3NV));
-        assert!(!baked_lod_supported(GameKind::Fallout76));
-        assert!(!baked_lod_supported(GameKind::Starfield));
+    fn combined_and_legacy_lod_capabilities_are_disjoint() {
+        assert!(combined_lod_supported(GameKind::Skyrim));
+        assert!(combined_lod_supported(GameKind::Fallout4));
+        assert!(!combined_lod_supported(GameKind::Oblivion));
+        assert!(!combined_lod_supported(GameKind::Fallout3NV));
+        assert!(!combined_lod_supported(GameKind::Fallout76));
+        assert!(!combined_lod_supported(GameKind::Starfield));
+
+        assert!(legacy_landscape_lod_supported(GameKind::Oblivion));
+        assert!(legacy_landscape_lod_supported(GameKind::Fallout3NV));
+        assert!(!legacy_landscape_lod_supported(GameKind::Skyrim));
+        assert!(!legacy_landscape_lod_supported(GameKind::Fallout4));
+        assert!(!legacy_landscape_lod_supported(GameKind::Fallout76));
+        assert!(!legacy_landscape_lod_supported(GameKind::Starfield));
     }
 
-    /// The predicate and the band ladder answer the same question in
-    /// two forms — a title with baked LOD has a quadtree ladder and
-    /// vice versa. Pinned so the two can't drift apart the way the
-    /// inline `matches!` copies did.
+    /// The combined-format predicate and band ladder answer the same question
+    /// in two forms. Pinned so the two can't drift apart the way the inline
+    /// `matches!` copies did.
     #[test]
-    fn baked_lod_predicate_agrees_with_the_band_ladder() {
+    fn combined_lod_predicate_agrees_with_the_band_ladder() {
         use super::super::lod_bands::LodBandLadder;
         for game in [
             GameKind::Oblivion,
@@ -357,9 +376,9 @@ mod tests {
             GameKind::Starfield,
         ] {
             assert_eq!(
-                baked_lod_supported(game),
+                combined_lod_supported(game),
                 LodBandLadder::for_game(game).is_some(),
-                "{game:?}: baked-LOD predicate and band ladder disagree"
+                "{game:?}: combined-LOD predicate and band ladder disagree"
             );
         }
     }

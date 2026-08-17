@@ -28,8 +28,10 @@
 //!   those quads sit far outside the streaming radius, so their hole mask is
 //!   always 0.
 //!
-//! The synth path stays the universal fallback: Oblivion / FO3 / FNV bake no
-//! quadtree at all and keep their single synthesized ring unchanged.
+//! The synth path stays the geometry fallback for Oblivion / FO3 / FNV. Those
+//! games do ship older NIF terrain quadtrees (confirmed in #3100); they are not
+//! `.btr`, so EXAL routes their authored diffuse/normal DDS siblings onto the
+//! single synthesized ring instead of pretending the assets do not exist.
 //!
 //! ## Format (EXAL §5 / Q2, docs/engine/exal.md)
 //!

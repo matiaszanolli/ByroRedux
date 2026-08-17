@@ -366,10 +366,11 @@ mod tests {
         assert_eq!(fo4().coarsest_level(), 32);
     }
 
-    /// Titles with no baked quadtree keep their existing single-band
-    /// schemes — there is no coarser source to select between.
+    /// Titles with no combined `.btr` quadtree keep their existing single-band
+    /// geometry schemes. FO3/FNV's older NIF/DDS tree is a separate EXAL
+    /// capability (#3100), not evidence that they support this ladder.
     #[test]
-    fn pre_skyrim_games_have_no_ladder() {
+    fn pre_skyrim_games_have_no_combined_btr_ladder() {
         assert!(LodBandLadder::for_game(GameKind::Oblivion).is_none());
         assert!(LodBandLadder::for_game(GameKind::Fallout3NV).is_none());
     }

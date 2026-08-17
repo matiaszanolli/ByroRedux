@@ -36,6 +36,116 @@ use byroredux_plugin::esm::records::{ClimateRecord, WeatherRecord};
 
 use crate::components::{CellLightingRes, DalcCubeYup, SkyParamsRes, WeatherDataRes};
 
+/// On-disk distant-terrain family selected at the EXAL boundary.
+///
+/// The two baked families are not interchangeable. Skyrim and FO4 use the
+/// combined `.btr`/`.bto` quadtree under `terrain`, while Oblivion and
+/// FO3/FNV use older NIF terrain quads under `landscape\\lod` with different
+/// texture naming. Keeping the distinction here prevents renderer-facing LOD
+/// code from growing per-game filename branches (#3100).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TerrainLodLayout {
+    /// Oblivion's FormID-keyed 32-cell NIF/DDS quads.
+    OblivionLegacy,
+    /// FO3/FNV's editor-ID-keyed level 4/8/16/32 NIF/DDS quadtree.
+    FalloutLegacy,
+    /// Skyrim/FO4's combined `.btr`/`.bto` quadtree.
+    Combined,
+    /// No currently supported authored distant-terrain family.
+    None,
+}
+
+/// Canonical per-game distant-terrain source decision.
+pub(crate) const fn terrain_lod_layout(game: GameKind) -> TerrainLodLayout {
+    match game {
+        GameKind::Oblivion => TerrainLodLayout::OblivionLegacy,
+        GameKind::Fallout3NV => TerrainLodLayout::FalloutLegacy,
+        GameKind::Skyrim | GameKind::Fallout4 => TerrainLodLayout::Combined,
+        GameKind::Fallout76 | GameKind::Starfield => TerrainLodLayout::None,
+    }
+}
+
+/// One authored diffuse quad translated to the common LOD-ring contract.
+/// `quad_origin` and `quad_cells` describe the image's world-cell footprint
+/// and therefore the UV remap independently of its source naming scheme.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TranslatedTerrainLodTexture {
+    pub(crate) diffuse_path: String,
+    pub(crate) normal_path: String,
+    pub(crate) quad_origin: (i32, i32),
+    pub(crate) quad_cells: i32,
+}
+
+fn fmt_oblivion_lod_coord(coord: i32) -> String {
+    if coord == 0 {
+        "00".to_string()
+    } else {
+        coord.to_string()
+    }
+}
+
+/// Translate a legacy game's authored distant-terrain diffuse/normal pair
+/// into the common texture/UV contract used by the synthesized LOD mesh.
+///
+/// Disk survey on 2026-08-17 confirmed that these are real baked families,
+/// not tiled-LTEX-only games: FNV ships 2,663 terrain NIFs and 4,986 DDS
+/// diffuse/normal files, FO3 ships 2,153 NIFs and 3,870 DDS files, and
+/// Oblivion ships 100 NIFs plus 200 DDS diffuse/normal files. The Fallout
+/// layout names each level-sized quad by worldspace EditorID; Oblivion names
+/// a fixed 32-cell quad by the load-order-independent low 24 bits of its WRLD
+/// FormID. Skyrim/FO4 are intentionally `None` here because their `.btr`
+/// provider resolves its own texture siblings (#3100).
+pub(crate) fn translate_terrain_lod_textures(
+    game: GameKind,
+    worldspace_key: &str,
+    world_form_id: u32,
+    level: i32,
+    qx: i32,
+    qy: i32,
+) -> Option<TranslatedTerrainLodTexture> {
+    match terrain_lod_layout(game) {
+        TerrainLodLayout::OblivionLegacy => {
+            const QUAD_CELLS: i32 = 32;
+            let ox = qx.div_euclid(QUAD_CELLS) * QUAD_CELLS;
+            let oy = qy.div_euclid(QUAD_CELLS) * QUAD_CELLS;
+            Some(TranslatedTerrainLodTexture {
+                diffuse_path: format!(
+                    "textures\\landscapelod\\generated\\{}.{}.{}.{}.dds",
+                    world_form_id & 0x00FF_FFFF,
+                    fmt_oblivion_lod_coord(ox),
+                    fmt_oblivion_lod_coord(oy),
+                    QUAD_CELLS,
+                ),
+                normal_path: format!(
+                    "textures\\landscapelod\\generated\\{}.{}.{}.{}_fn.dds",
+                    world_form_id & 0x00FF_FFFF,
+                    fmt_oblivion_lod_coord(ox),
+                    fmt_oblivion_lod_coord(oy),
+                    QUAD_CELLS,
+                ),
+                quad_origin: (ox, oy),
+                quad_cells: QUAD_CELLS,
+            })
+        }
+        TerrainLodLayout::FalloutLegacy if level > 0 => {
+            let world = worldspace_key.to_ascii_lowercase();
+            Some(TranslatedTerrainLodTexture {
+                diffuse_path: format!(
+                    "textures\\landscape\\lod\\{world}\\diffuse\\{world}.n.level{level}.x{qx}.y{qy}.dds"
+                ),
+                normal_path: format!(
+                    "textures\\landscape\\lod\\{world}\\normals\\{world}.n.level{level}.x{qx}.y{qy}.dds"
+                ),
+                quad_origin: (qx, qy),
+                quad_cells: level,
+            })
+        }
+        TerrainLodLayout::FalloutLegacy | TerrainLodLayout::Combined | TerrainLodLayout::None => {
+            None
+        }
+    }
+}
+
 /// Resolve the worldspace-default water for exterior cells with no XCLW.
 /// Returns `(default height, default water-type form)`.
 ///
@@ -882,6 +992,66 @@ mod tests {
     /// tests keep measuring exactly what they measured pre-#2735.
     fn solo(wrld: WorldspaceRecord) -> HashMap<String, WorldspaceRecord> {
         HashMap::from([("w".to_string(), wrld)])
+    }
+
+    /// #3100 — FNV's real archive path must survive the EXAL translation
+    /// byte-for-byte. This exact quad was resolved from Fallout - Textures2.bsa
+    /// during the audit; before the fix the LOD ring only tried Oblivion's
+    /// FormID-based path and silently fell through to a tiled LTEX.
+    #[test]
+    fn fnv_baked_lod_textures_translate_to_the_shipped_paths() {
+        let translated = translate_terrain_lod_textures(
+            GameKind::Fallout3NV,
+            "WastelandNV",
+            0x000D_DDDA,
+            4,
+            4,
+            0,
+        )
+        .expect("FO3/FNV have a legacy baked terrain layout");
+        assert_eq!(
+            translated.diffuse_path,
+            "textures\\landscape\\lod\\wastelandnv\\diffuse\\wastelandnv.n.level4.x4.y0.dds"
+        );
+        assert_eq!(
+            translated.normal_path,
+            "textures\\landscape\\lod\\wastelandnv\\normals\\wastelandnv.n.level4.x4.y0.dds"
+        );
+        assert_eq!(translated.quad_origin, (4, 0));
+        assert_eq!(translated.quad_cells, 4);
+    }
+
+    #[test]
+    fn oblivion_baked_lod_textures_keep_form_id_and_32_cell_alignment() {
+        let translated =
+            translate_terrain_lod_textures(GameKind::Oblivion, "Tamriel", 0xAB00_003C, 4, 17, -1)
+                .expect("Oblivion has its own legacy baked terrain layout");
+        assert_eq!(
+            translated.diffuse_path,
+            "textures\\landscapelod\\generated\\60.00.-32.32.dds"
+        );
+        assert_eq!(
+            translated.normal_path,
+            "textures\\landscapelod\\generated\\60.00.-32.32_fn.dds"
+        );
+        assert_eq!(translated.quad_origin, (0, -32));
+        assert_eq!(translated.quad_cells, 32);
+    }
+
+    #[test]
+    fn combined_and_unsupported_layouts_do_not_claim_legacy_texture_paths() {
+        for game in [
+            GameKind::Skyrim,
+            GameKind::Fallout4,
+            GameKind::Fallout76,
+            GameKind::Starfield,
+        ] {
+            assert_eq!(
+                translate_terrain_lod_textures(game, "world", 1, 4, 0, 0),
+                None,
+                "{game:?} must not be routed through a legacy LOD path"
+            );
+        }
     }
 
     /// #1305 / OBL-D6-NEW-02 — an Oblivion worldspace with a NAM2 default

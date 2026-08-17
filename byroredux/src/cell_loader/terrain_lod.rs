@@ -6,7 +6,8 @@
 //! heightmaps already parsed at load time (`ExteriorWorldContext`). A block:
 //!   * samples each cell's 33×33 grid at `STRIDE` (`SAMPLES_PER_CELL` quads
 //!     per cell edge) — ~1/64th the triangles of full-detail terrain,
-//!   * uses a single base ground texture (no per-vertex splat blend),
+//!   * uses an authored legacy LOD diffuse/normal quad where available, then a
+//!     single base ground texture fallback (no per-vertex splat blend),
 //!   * builds **no BLAS** and spawns with [`IsLodTerrain`] so the renderer
 //!     keeps it out of the TLAS — distant terrain needs no RT shadows/GI,
 //!     costing zero ray-tracing budget,
@@ -28,17 +29,20 @@ use byroredux_core::ecs::{
 };
 use byroredux_core::math::coord::{zup_to_yup_pos, EXTERIOR_CELL_UNITS};
 use byroredux_core::math::Vec3;
+use byroredux_nif::import::MaterialTextureSet;
 use byroredux_plugin::esm::cell::CellData;
 use byroredux_plugin::esm::reader::GameKind;
 use byroredux_renderer::{Vertex, VulkanContext};
 
 use crate::asset_provider::{resolve_texture, TextureProvider};
-use crate::components::IsLodTerrain;
+use crate::components::{IsLodTerrain, MaterialTextureHandles};
+use crate::env_translate::translate_terrain_lod_textures;
 use crate::streaming::LodBlock;
 
 use super::lod_bands::{self, quad_min_chebyshev, LodBandLadder, LodBandSelection};
 use super::lod_support::{
-    baked_lod_supported, worldspace_cell_bounds, LodReconcileInput, LodWorkBudget,
+    combined_lod_supported, legacy_landscape_lod_supported, worldspace_cell_bounds,
+    LodReconcileInput, LodWorkBudget,
 };
 
 /// Cells per LOD-block edge. A block is one merged mesh covering
@@ -53,45 +57,6 @@ pub(crate) const LOD_BLOCK_CELLS: i32 = 4;
 /// full-detail radius-5 view (20 480 BU). Tunable; the camera far plane
 /// (`Camera::default`) is sized to cover the resulting far-corner diagonal.
 pub(crate) const LOD_RADIUS_BLOCKS: i32 = 12;
-
-/// Cells per baked distant-LOD texture quad (Oblivion `landscapelod\generated`
-/// scheme). Each quad texture covers a `LOD_TEXTURE_QUAD_CELLS²` square and is
-/// keyed by the worldspace's decimal form id + the quad's SW-corner cell
-/// coords; the same `32` doubles as the LOD-level suffix in the filename.
-/// Verified against `Oblivion - Textures - Compressed.bsa` (Tamriel = form 60,
-/// quads `60.<x>.<y>.32.dds` on a 32-aligned grid). Worlds shipping no such
-/// textures (Oblivion "Small World" city worldspaces like AnvilWorld) get no
-/// distant terrain LOD at all — the block is suppressed rather than draping the
-/// translucent checker placeholder over full-detail content.
-const LOD_TEXTURE_QUAD_CELLS: i32 = 32;
-
-/// Oblivion LOD-quad coordinate formatting: zero is written `"00"`, every other
-/// value as its plain signed decimal (e.g. `-96`, `32`). Matches the shipped
-/// filenames (`60.00.-32.32.dds`, `60.-96.-64.32.dds`).
-fn fmt_lod_coord(n: i32) -> String {
-    if n == 0 {
-        "00".to_string()
-    } else {
-        n.to_string()
-    }
-}
-
-/// Path to the baked distant-terrain texture quad covering cell `(cx, cy)` in
-/// worldspace `world_form_id` (low 24 bits = the decimal id Oblivion bakes into
-/// the filename; the mod-index byte is stripped). The caller resolves it and
-/// treats a miss as "no distant LOD here".
-fn lod_quad_texture_path(world_form_id: u32, cx: i32, cy: i32) -> String {
-    let q = LOD_TEXTURE_QUAD_CELLS;
-    let qx = cx.div_euclid(q) * q;
-    let qy = cy.div_euclid(q) * q;
-    format!(
-        "textures\\landscapelod\\generated\\{}.{}.{}.{}.dds",
-        world_form_id & 0x00FF_FFFF,
-        fmt_lod_coord(qx),
-        fmt_lod_coord(qy),
-        q,
-    )
-}
 
 /// Heightmap sample stride within a cell's 33-vertex grid. 8 → 4 quads per
 /// cell edge (5 samples incl. the shared seam), 1/64th the triangles.
@@ -293,17 +258,17 @@ pub(crate) fn lod_ring_reach_cells(game: GameKind) -> i32 {
 /// reconcile, closest-first so a budgeted initialization grows outward
 /// deterministically instead of following HashMap iteration order.
 ///
-/// Two regimes, by whether the game bakes a quadtree at all (#2371):
+/// Two regimes, by whether the game uses the combined `.btr` quadtree (#2371):
 ///
 /// * **Skyrim / FO4** descend [`super::lod_bands`]' 4/8/16/32 ladder. A
 ///   coarse band is only offered where the game actually baked a `.btr`;
 ///   where it did not, the descent subdivides instead of leaving a hole,
 ///   and the finest band always reports available because heightmap synth
 ///   can cover any footprint.
-/// * **Oblivion / FO3 / FNV** ship no baked quadtree, so there is nothing to
-///   select between: they keep the single synthesized
-///   [`LOD_RADIUS_BLOCKS`]-deep ring they have always used, emitted at the
-///   finest level. `has_btr` is never consulted for them.
+/// * **Oblivion / FO3 / FNV** ship older NIF/DDS terrain quadtrees, not `.btr`.
+///   Their current geometry provider remains the single synthesized
+///   [`LOD_RADIUS_BLOCKS`]-deep ring at the finest level, with EXAL supplying
+///   its authored level-4 texture quads (#3100). `has_btr` is never consulted.
 #[allow(clippy::too_many_arguments)]
 fn desired_lod_quads(
     ladder: Option<&LodBandLadder>,
@@ -387,8 +352,9 @@ pub(crate) fn stream_lod_blocks(
     let Some(cells_map) = index.exterior_cells.get(&wctx.worldspace_key) else {
         return true;
     };
-    // Prebaked `.btr` distant terrain is a Skyrim+/FO4 scheme (older games use
-    // the heightmap synth fallback exclusively — EXAL §5).
+    // Combined `.btr` distant terrain is a Skyrim/FO4 scheme. Legacy games
+    // keep the heightmap-synth geometry, but EXAL can now supply their
+    // authored NIF-era diffuse quads to that common path (#3100).
     let game = wctx.record_index.game;
     let worldspace_key = wctx.worldspace_key.as_str();
     // Worldspace form id — keys the baked `landscapelod\generated` distant-LOD
@@ -508,7 +474,7 @@ pub(crate) fn stream_lod_blocks(
         // Coarse bands (`level > k`) exist *only* as `.btr`: the descent
         // above only proposes them where one is baked, and the synth builder
         // is finest-band-only (its hole mask is a `u16`, one bit per cell).
-        let btr_block = if mask == 0 && baked_lod_supported(game) {
+        let btr_block = if mask == 0 && combined_lod_supported(game) {
             super::terrain_lod_btr::spawn_btr_block(
                 world,
                 ctx,
@@ -548,6 +514,8 @@ pub(crate) fn stream_lod_blocks(
                 qy,
                 player_grid,
                 max_full_cell_radius,
+                game,
+                worldspace_key,
                 world_form_id,
             )
         });
@@ -632,6 +600,8 @@ fn spawn_lod_block(
     by0: i32,
     player_grid: (i32, i32),
     max_full_cell_radius: i32,
+    game: GameKind,
+    worldspace_key: &str,
     world_form_id: u32,
 ) -> Option<LodBlock> {
     let k = LOD_BLOCK_CELLS;
@@ -750,24 +720,42 @@ fn spawn_lod_block(
     let bound = block_bound(&vertices, &holes);
 
     // Distant-terrain texture. Priority:
-    //   1. Oblivion's baked `landscapelod\generated\<fid>.<x>.<y>.32.dds` quad
-    //      — one image covering this block's 32×32-cell quad, UV-mapped by world
-    //      position (the proper distant-LOD look). `_baked = true`.
-    //   2. The block's first BTXT base LTEX, tiled like the full-detail terrain
-    //      (FO3/FNV/Skyrim worlds + Oblivion worlds whose quad is absent).
+    //   1. EXAL's authored legacy diffuse quad: Oblivion's FormID-keyed
+    //      32-cell DDS or FO3/FNV's EditorID-keyed level-4 DDS (#3100).
+    //      Both are UV-mapped by their translated world-cell footprint.
+    //   2. The block's first BTXT base LTEX, tiled like full-detail terrain
+    //      (Skyrim/FO4 boundary blocks and legacy worlds whose quad is absent).
     //   3. Neither resolves → return `None`. Pre-#1745 this fell back to a
     //      hardcoded `landscape\dirt02.dds` that doesn't exist in Oblivion, so
     //      the block got the translucent magenta-checker placeholder and ghosted
     //      over full-detail content (Small World city worldspaces like AnvilWorld
     //      ship no LOD textures at all). Suppressing the block is correct: those
     //      worlds have no distant terrain.
-    let quad_path = lod_quad_texture_path(world_form_id, bx0, by0);
-    let lod_quad_tex = resolve_texture(ctx, tex_provider, Some(&quad_path));
-    let baked = lod_quad_tex != 0;
+    let translated_lod = if legacy_landscape_lod_supported(game) {
+        translate_terrain_lod_textures(game, worldspace_key, world_form_id, k, bx0, by0)
+    } else {
+        None
+    };
+    let lod_quad_tex = translated_lod
+        .as_ref()
+        .map(|lod| resolve_texture(ctx, tex_provider, Some(lod.diffuse_path.as_str())))
+        .unwrap_or(0);
+    let translated_lod = translated_lod
+        .filter(|_| lod_quad_tex != 0 && lod_quad_tex != ctx.texture_registry.fallback());
+    let resolved_normal = translated_lod
+        .as_ref()
+        .map(|lod| resolve_texture(ctx, tex_provider, Some(lod.normal_path.as_str())))
+        .unwrap_or(0);
+    let normal_texture_handle =
+        if resolved_normal != 0 && resolved_normal != ctx.texture_registry.fallback() {
+            resolved_normal
+        } else {
+            0
+        };
     // #2444 (MAT-D3-02) — the path travels with the handle: it is the
     // classifier input for this block's canonical `Material` at spawn.
-    let (tex_handle, base_texture_path) = if baked {
-        (lod_quad_tex, Some(quad_path.clone()))
+    let (tex_handle, base_texture_path) = if let Some(lod) = translated_lod.as_ref() {
+        (lod_quad_tex, Some(lod.diffuse_path.clone()))
     } else {
         let base_ltex = (0..k)
             .flat_map(|dy| (0..k).map(move |dx| (dx, dy)))
@@ -793,16 +781,15 @@ fn spawn_lod_block(
         return None;
     }
 
-    // Re-map UVs for the baked quad: the texture spans the whole 32×32-cell
-    // quad, so each vertex samples it by world position rather than the
-    // per-cell tiling the LTEX path uses. `world_y_zup = -position.z` is the
+    // Re-map UVs for the baked quad: each vertex samples it by world position
+    // over the footprint EXAL translated rather than by the per-cell tiling
+    // the LTEX path uses. `world_y_zup = -position.z` is the
     // algebraic inverse of `zup_to_yup_pos`'s Z component (`z_yup = -y_zup`),
     // not a fresh derivation — no forward swizzle to replace here.
-    if baked {
-        let q = LOD_TEXTURE_QUAD_CELLS;
-        let quad_origin_x = (bx0.div_euclid(q) * q) as f32 * EXTERIOR_CELL_UNITS;
-        let quad_origin_y = (by0.div_euclid(q) * q) as f32 * EXTERIOR_CELL_UNITS;
-        let quad_bu = q as f32 * EXTERIOR_CELL_UNITS;
+    if let Some(lod) = translated_lod.as_ref() {
+        let quad_origin_x = lod.quad_origin.0 as f32 * EXTERIOR_CELL_UNITS;
+        let quad_origin_y = lod.quad_origin.1 as f32 * EXTERIOR_CELL_UNITS;
+        let quad_bu = lod.quad_cells as f32 * EXTERIOR_CELL_UNITS;
         for v in vertices.iter_mut() {
             let wx = v.position[0];
             let wy_zup = -v.position[2];
@@ -837,6 +824,10 @@ fn spawn_lod_block(
             if tex_handle != 0 {
                 ctx.texture_registry.drop_texture(&ctx.device, tex_handle);
             }
+            if normal_texture_handle != 0 {
+                ctx.texture_registry
+                    .drop_texture(&ctx.device, normal_texture_handle);
+            }
             return None;
         }
     };
@@ -847,6 +838,20 @@ fn spawn_lod_block(
     world.insert(entity, MeshHandle(mesh_handle));
     if tex_handle != 0 {
         world.insert(entity, TextureHandle(tex_handle));
+    }
+    if normal_texture_handle != 0 {
+        world.insert(
+            entity,
+            MaterialTextureHandles {
+                textures: MaterialTextureSet {
+                    normal: normal_texture_handle,
+                    ..Default::default()
+                },
+                normal_has_alpha: false,
+                parallax_height_scale: 0.04,
+                parallax_max_passes: 4.0,
+            },
+        );
     }
     world.insert(entity, bound);
     // #2444 (MAT-D3-02) — canonical `Material` from the same boundary helper
@@ -871,9 +876,7 @@ fn spawn_lod_block(
         entity,
         mesh_handle,
         texture_handle: tex_handle,
-        // The synth path paints a single tiled ground diffuse and has no
-        // authored per-quad normal map; only `.btr` blocks carry one.
-        normal_texture_handle: 0,
+        normal_texture_handle,
         hole_mask,
     })
 }
@@ -1043,8 +1046,8 @@ mod tests {
             "the pinned maximum is looser than any real ring — tighten it"
         );
 
-        // Games with no baked quadtree keep the synthesized ring; the ladder
-        // games reach further, which is what moved the far plane.
+        // Games with no combined `.btr` ladder keep the synthesized ring; the
+        // combined-ladder games reach further, which is what moved the far plane.
         assert_eq!(
             lod_ring_reach_cells(GameKind::Oblivion),
             LOD_RADIUS_BLOCKS * LOD_BLOCK_CELLS
@@ -1052,13 +1055,13 @@ mod tests {
         assert!(lod_ring_reach_cells(GameKind::Skyrim) > LOD_RADIUS_BLOCKS * LOD_BLOCK_CELLS);
     }
 
-    /// #2371 — Oblivion / FO3 / FNV ship no baked quadtree, so their terrain
-    /// ring must be byte-for-byte what it was before band selection existed:
+    /// #2371 / #3100 — Oblivion / FO3 / FNV have no combined `.btr` ladder, so
+    /// their geometry ring remains what it was before band selection existed:
     /// one finest-level ring, `LOD_RADIUS_BLOCKS` blocks deep, centred on the
     /// player's block. A regression here is a silently shrunken horizon on
     /// the three games that have no coarser source to fall back to.
     #[test]
-    fn games_without_a_baked_quadtree_keep_the_single_synth_ring() {
+    fn games_without_a_combined_btr_ladder_keep_the_single_synth_ring() {
         let grid_origin = (0, 0);
         let player = (5, -3);
         let quads = desired_lod_quads(
