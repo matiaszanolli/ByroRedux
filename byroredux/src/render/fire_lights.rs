@@ -23,65 +23,38 @@
 //! light there would double-count the illumination, so a fire whose extent
 //! already contains an authored light is treated as *already lit* and
 //! suppressed. The derived light is therefore additive only where the original
-//! engine had nothing — fires without a companion LIGH, and (once M55's
-//! explosion path lands) transient fireballs, which by their nature cannot
-//! have hand-placed lights.
+//! engine had nothing — fires without a companion LIGH and transient
+//! fireballs, which by their nature cannot have hand-placed lights.
 
-use byroredux_core::lighting::{AttenuationModel, VisibilityMask};
+#[cfg(test)]
+use byroredux_core::lighting::AttenuationModel;
+use byroredux_core::lighting::{Emitter, Meters, RadiantIntensityRgb, VisibilityMask};
 use byroredux_core::radiometry::linear_srgb_luminance;
 use byroredux_renderer::{GpuFogVolume, GpuLight};
 
-use super::lights::{FALLOFF_EXPONENT_DEFAULT, LIGHT_RANGE_EXTENSION};
-
-/// Whether emissive media contribute derived light sources.
-///
-/// **Default off, because the magnitude derivation below is known wrong.**
-///
-/// Measured on Skyrim `WhiterunBanneredMare`: each hearth flame derived a
-/// light of colour `[8.2, 1.9, 0.0]` — close to the `SUN_INTENSITY_PEAK = 4.0`
-/// daytime reference in luminance — with a ~1200-unit attenuation knee inside
-/// a room roughly 1500 units across. Four of those left the tavern flooded
-/// orange, and because `volumetrics_inject.comp`'s local-light loop scatters
-/// every clustered light through the medium, they washed out the volumetric
-/// pass as well.
-///
-/// The root cause is a unit mismatch in [`derive_fire_light`]: radiant
-/// intensity is formed as `L * A` with `A` in Bethesda units squared, then
-/// divided by a cutoff documented as being in linear HDR units. Those do not
-/// share a dimension, so the resulting `sqrt` is not a distance in world
-/// units at all. Fixing it needs the derivation restated in the units
-/// `GpuLight.color_type` and `pointSpotAtten` actually use, rather than a
-/// retuned constant.
-///
-/// Set `BYRO_FIRE_LIGHTS=1` to re-enable while working on that.
-fn fire_lights_enabled() -> bool {
-    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| matches!(std::env::var("BYRO_FIRE_LIGHTS").as_deref(), Ok("1")))
-}
+use super::lights::gpu_light_from_emitter;
+#[cfg(test)]
+use super::lights::LIGHT_RANGE_EXTENSION;
 
 /// Cutoff used to size a derived light's reach.
 ///
-/// **This value is not derived — it is fitted, and the fit is wrong.** It was
-/// chosen so that a torch-sized flame produced a radius near the ~512 units
-/// Bethesda authors on vanilla torch LIGH records. An earlier revision of this
-/// comment described that agreement as an independent cross-check on the
-/// radiance anchor, optical depth and absorption fraction. It was not: the
-/// constant was picked to produce it, so the check was circular and reported
-/// success while the real reach came out 2-3x too large (see
-/// [`fire_lights_enabled`]).
+/// The canonical inverse-square shader treats `GpuLight.color_type.rgb` as
+/// radiant intensity (W·sr⁻¹) and physical distance in metres. This threshold
+/// therefore has the matching scene-irradiance unit and determines only the
+/// finite cluster/cull reach; it does not alter illumination inside the range.
 const CUTOFF_IRRADIANCE: f32 = 1.0e-3;
 
-/// Upper bound on a derived light's influence radius, world units.
+/// Upper bound on a derived light's influence range, metres.
 ///
 /// A large, hot volume can otherwise derive a reach that spans an entire
 /// worldspace, which would defeat the clustered-light binning the froxel and
 /// fragment passes both rely on. Matches the scale of the largest radii
 /// vanilla content authors.
-const MAX_DERIVED_RADIUS: f32 = 4096.0;
+const MAX_DERIVED_RANGE_METERS: f32 = 4096.0 / byroredux_core::lighting::BETHESDA_UNITS_PER_METER;
 
-/// Minimum useful radius, world units. Below this a light influences nothing
+/// Minimum useful range, metres. Below this a light influences nothing
 /// but its own froxel and is not worth a cluster slot.
-const MIN_DERIVED_RADIUS: f32 = 16.0;
+const MIN_DERIVED_RANGE_METERS: f32 = 16.0 / byroredux_core::lighting::BETHESDA_UNITS_PER_METER;
 
 /// Append one derived point light per emissive volume that is not already
 /// served by an authored light.
@@ -91,17 +64,9 @@ const MIN_DERIVED_RADIUS: f32 = 16.0;
 /// after the sort would strand them at the tail of the array regardless of how
 /// much they matter.
 pub(super) fn append_fire_lights(fog_volumes: &[GpuFogVolume], gpu_lights: &mut Vec<GpuLight>) {
-    if !fire_lights_enabled() {
-        return;
-    }
     append_derived_lights(fog_volumes, gpu_lights);
 }
 
-/// The derivation and suppression algorithm, independent of the feature gate.
-///
-/// Split out so the suppression rules stay under test while
-/// [`fire_lights_enabled`] is off — otherwise disabling the feature would
-/// silently reduce those tests to asserting that nothing happens.
 fn append_derived_lights(fog_volumes: &[GpuFogVolume], gpu_lights: &mut Vec<GpuLight>) {
     let authored_count = gpu_lights.len();
     for volume in fog_volumes {
@@ -166,14 +131,20 @@ fn bounding_radius(volume: &GpuFogVolume) -> f32 {
 ///    is the exact solution of the radiative transfer equation for such a
 ///    slab, and it saturates correctly: a very thick flame approaches `L_e`
 ///    rather than growing without bound as a naive `sigma_a * L_e * d` would.
-/// 2. **Radiant intensity.** `I = L * A`, using the projected area of a sphere
-///    with the volume's mean half extent. An ellipsoid's projected area is
+/// 2. **Radiant intensity.** `I = L * A`, using projected area in square
+///    metres (never Bethesda units squared) so the result matches the
+///    canonical [`RadiantIntensityRgb`] contract. An ellipsoid's area is
 ///    view-dependent; the mean is the isotropic proxy, which is appropriate
 ///    because a point light has no orientation to carry the anisotropy anyway.
 /// 3. **Reach.** Inverse-square down to [`CUTOFF_IRRADIANCE`]. The engine then
 ///    applies its own `pointSpotAtten` curve within that radius — this step
 ///    sizes the influence sphere, it does not replace the falloff model.
 fn derive_fire_light(volume: &GpuFogVolume) -> Option<GpuLight> {
+    let (center, emitter) = derive_fire_emitter(volume)?;
+    Some(gpu_light_from_emitter(center, emitter, 1.0))
+}
+
+fn derive_fire_emitter(volume: &GpuFogVolume) -> Option<([f32; 3], Emitter)> {
     let emission = [
         volume.emission_temperature[0],
         volume.emission_temperature[1],
@@ -219,44 +190,26 @@ fn derive_fire_light(volume: &GpuFogVolume) -> Option<GpuLight> {
     }
 
     // Radiant intensity of a sphere of this size at this surface radiance.
-    let projected_area = std::f32::consts::PI * mean_half_extent * mean_half_extent;
-    let intensity = luminance * projected_area;
-    let radius = (intensity / CUTOFF_IRRADIANCE).sqrt();
-    if !radius.is_finite() || radius < MIN_DERIVED_RADIUS {
+    // The GPU attenuation law converts its world-space distance to metres, so
+    // this area must be m² and the uploaded RGB must be I = L*A, not bare L.
+    let source_radius = Meters::from_bethesda_units(mean_half_extent);
+    let projected_area_m2 = std::f32::consts::PI * source_radius.get().powi(2);
+    let radiant_intensity = emergent.map(|channel| channel * projected_area_m2);
+    let intensity_luminance = linear_srgb_luminance(radiant_intensity);
+    let range_meters = (intensity_luminance / CUTOFF_IRRADIANCE).sqrt();
+    if !range_meters.is_finite() || range_meters < MIN_DERIVED_RANGE_METERS {
         return None;
     }
-    let radius = radius.min(MAX_DERIVED_RADIUS);
+    let range = Meters::new(range_meters.min(MAX_DERIVED_RANGE_METERS));
 
     let center = center_of(volume);
-    Some(GpuLight {
-        // `collect_lights` uploads `radius * LIGHT_RANGE_EXTENSION` for
-        // authored lights, so the shader's cull window means the same thing
-        // for both. Applying it here keeps a derived light on exactly the
-        // attenuation contract every other local light uses.
-        position_radius: [
-            center[0],
-            center[1],
-            center[2],
-            radius * LIGHT_RANGE_EXTENSION,
-        ],
-        // Colour is the emergent radiance, which already carries the
-        // blackbody chromaticity — no separate tint, and no `dimmer` /
-        // `intensity` split, because a fire has no authored dimmer curve to
-        // reproduce. Its brightness is its temperature.
-        color_type: [emergent[0], emergent[1], emergent[2], 0.0],
-        direction_angle: [0.0, 0.0, 0.0, 0.0],
-        // The luminous body is the flame itself, so the emitter proxy is its
-        // actual extent rather than the 5%-of-radius guess `emitter_radius`
-        // makes for authored lights with no known geometry. Shadow rays stop
-        // at the flame surface instead of treating the fire as its own
-        // occluder.
-        params: [
-            FALLOFF_EXPONENT_DEFAULT,
-            mean_half_extent.max(1.0),
-            VisibilityMask::FULL.bits() as f32,
-            AttenuationModel::InverseSquare as u8 as f32,
-        ],
-    })
+    let emitter = Emitter::inverse_square_point(
+        RadiantIntensityRgb::new(radiant_intensity),
+        range,
+        source_radius,
+        VisibilityMask::FULL,
+    );
+    Some((center, emitter))
 }
 
 #[cfg(test)]
@@ -299,42 +252,48 @@ mod tests {
         );
     }
 
-    /// Documents the KNOWN-BAD magnitude rather than asserting it is correct.
-    ///
-    /// The previous version of this test asserted the derived radius landed in
-    /// `256..=1024` and called that an independent cross-check against vanilla
-    /// torch LIGH radii. It was circular — `CUTOFF_IRRADIANCE` had been chosen
-    /// to produce exactly that — so it passed while the live result on
-    /// `WhiterunBanneredMare` was a ~1200-unit knee in a ~1500-unit room.
-    ///
-    /// Pinning the wrong number on purpose keeps the defect visible and makes
-    /// the fix show up as a deliberate test change instead of silently
-    /// flipping a green assertion to a different green assertion.
     #[test]
-    fn derived_reach_is_currently_oversized_pending_a_unit_correct_derivation() {
-        let light = derive_fire_light(&torch_volume()).expect("torch flame is emissive");
-        let radius = light.position_radius[3] / LIGHT_RANGE_EXTENSION;
+    fn derived_light_uses_metre_area_and_radiant_intensity() {
+        let volume = torch_volume();
+        let (_, emitter) = derive_fire_emitter(&volume).expect("torch flame is emissive");
+        let intensity = emitter.radiant_intensity.get();
+
+        // A 5-world-unit source has a 7.14 cm physical radius. Its projected
+        // area is ~0.016 m², so the uploaded intensity must be much smaller
+        // than the source radiance. Treating 5 as metres (or uploading bare
+        // radiance) fails this by orders of magnitude.
+        let source_radius_m = 5.0 / byroredux_core::lighting::BETHESDA_UNITS_PER_METER;
+        let area_m2 = std::f32::consts::PI * source_radius_m.powi(2);
+        assert!((emitter.source_radius.get() - source_radius_m).abs() < 1.0e-6);
+        for (channel, source_radiance) in intensity
+            .iter()
+            .zip(volume.emission_temperature[..3].iter())
+        {
+            assert!(*channel > 0.0);
+            assert!(*channel < *source_radiance * area_m2);
+        }
+
+        // The finite range is physical metres, converted back to world units
+        // only by the shared renderer boundary.
+        assert!(emitter.range.get() > 5.0 && emitter.range.get() < 6.0);
+        let light = derive_fire_light(&volume).expect("emissive");
+        let range_world = light.position_radius[3] / LIGHT_RANGE_EXTENSION;
         assert!(
-            radius > 1024.0,
-            "expected the known-oversized reach (see `fire_lights_enabled`); \
-             got {radius}. If this now fails, the unit mismatch has been fixed \
-             — replace this test with a real assertion and flip the default on."
+            (range_world - emitter.range.to_bethesda_units()).abs() < 1.0e-4,
+            "GPU packing must perform exactly one metres -> world conversion"
+        );
+        assert_eq!(&light.color_type[..3], &intensity);
+        assert_eq!(
+            light.params[3],
+            AttenuationModel::InverseSquare as u8 as f32
         );
     }
 
-    /// The feature must stay off until that derivation is corrected, so a
-    /// cell load cannot silently regain the orange flood.
     #[test]
-    fn derived_lights_are_disabled_by_default() {
-        if fire_lights_enabled() {
-            return; // developer opted in via BYRO_FIRE_LIGHTS=1
-        }
+    fn derived_lights_are_enabled_without_a_runtime_feature_gate() {
         let mut lights = Vec::new();
         append_fire_lights(&[torch_volume()], &mut lights);
-        assert!(
-            lights.is_empty(),
-            "derived fire lights must stay gated off by default"
-        );
+        assert_eq!(lights.len(), 1, "emissive media must light nearby surfaces");
     }
 
     /// A fire is warm-coloured; the derived light must carry that through
@@ -359,12 +318,14 @@ mod tests {
     fn emergent_radiance_saturates_for_optically_thick_media() {
         let mut thick = torch_volume();
         thick.half_extents_extinction[3] = 100.0; // absurdly dense
-        let light = derive_fire_light(&thick).expect("emissive");
+        let (_, emitter) = derive_fire_emitter(&thick).expect("emissive");
+        let intensity = emitter.radiant_intensity.get();
+        let area_m2 = std::f32::consts::PI * emitter.source_radius.get().powi(2);
         for channel in 0..3 {
             assert!(
-                light.color_type[channel] <= thick.emission_temperature[channel] + 1.0e-3,
-                "channel {channel} exceeded the source radiance: {} > {}",
-                light.color_type[channel],
+                intensity[channel] / area_m2 <= thick.emission_temperature[channel] + 1.0e-3,
+                "channel {channel} exceeded the source radiance after removing area: {} > {}",
+                intensity[channel] / area_m2,
                 thick.emission_temperature[channel]
             );
         }

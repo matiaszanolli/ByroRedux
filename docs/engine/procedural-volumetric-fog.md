@@ -10,8 +10,9 @@ weather-classified coverage). Emissive media (fire) landed as an emission
 source term on the same primitives plus derived light sources; a voxel fire
 simulation is the open follow-up.
 
-**Location:** `crates/renderer/src/vulkan/volumetrics.rs`,
-`crates/renderer/shaders/volumetrics_{inject,integrate}.comp`,
+**Location:** `byroredux/src/render/{fog_volumes,fire_lights,lights}.rs`,
+`crates/renderer/src/vulkan/volumetrics.rs`,
+`crates/renderer/shaders/volumetrics_{inject,integrate}.comp`, and
 `crates/renderer/shaders/composite.frag`.
 
 **Decision:** fog and light shafts are one participating-medium calculation.
@@ -45,6 +46,11 @@ of them one physical and temporal contract.
 - XCLL/WTHR near/far ramps are converted once at the cell/weather translation
   boundary. Runtime volumetrics consume extinction in inverse metres,
   single-scatter albedo, and coverage; they never evaluate the legacy ramp.
+- Authored LIGH records and procedural combustion both cross the render
+  boundary as the same canonical `Emitter`: position in metres, radiant
+  intensity in watts per steradian, and range in metres. The shared GPU
+  encoder owns the only Bethesda-unit conversion, so runtime lighting has no
+  game-specific unit or schema branches.
 - The authored linear fog colour is normalized by its strongest channel and
   multiplied into the global single-scatter albedo. This preserves the legacy
   hue without changing extinction or raising the medium's peak scattering
@@ -154,6 +160,13 @@ primitives and differ only in their coefficients:
   where the original engine had nothing — which is also what makes the
   explosion path viable, since transient fireballs cannot have hand-placed
   lights.
+- Explosion age is resolved once at the ECS→GPU boundary. One cooling curve
+  produces the instantaneous temperature, blackbody chromaticity, visible-fire
+  envelope, and `T^4` energy loss consumed by both the emissive volume and its
+  derived point light. The shader adds only local thermal/turbulent variation;
+  it does not independently reinterpret global lifetime. This keeps smoke and
+  surface illumination phase-locked and prevents an optically cooled fireball
+  from retaining a peak-bright point light.
 - Emissive froxels use a shorter temporal history weight
   (`DEFAULT_EMISSIVE_HISTORY_WEIGHT`, `fog_reference.y`) blended in by the
   emissive fraction of the source term. This is deliberately not a rejection
@@ -169,8 +182,11 @@ else is physics. It is derived rather than eyeballed — the path integral
 reduces to `optical_depth * (1 - albedo) * L_e`, about `0.3 * L_e`,
 independent of flame size — and the resulting torch reach lands within a
 factor of two of vanilla authored torch LIGH radii, which is a cross-check on
-the whole chain rather than an input to it. It still wants a visual A/B
-against real content before being treated as final.
+the whole chain rather than an input to it. A synthetic runtime lifecycle A/B
+on 2026-08-17 confirmed that the cooling phase restores nearby material detail
+and expiry removes both the volume and derived light. A visual A/B against
+real shipped fire content remains before treating the exposure choice as
+final.
 
 ## Configuration
 

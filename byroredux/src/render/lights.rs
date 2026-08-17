@@ -13,7 +13,7 @@
 //! `feedback_format_translation.md`.
 
 use byroredux_core::ecs::{GlobalTransform, LightKind, LightSource, World};
-use byroredux_core::lighting::{AttenuationModel, VisibilityMask};
+use byroredux_core::lighting::{AttenuationModel, Emitter, VisibilityMask};
 
 use crate::components::{CellLightingRes, SkyParamsRes};
 
@@ -61,6 +61,58 @@ pub const LIGHT_RANGE_EXTENSION: f32 = byroredux_core::lighting::LEGACY_LIGHT_CU
 /// principle: defaults applied CPU-side so the shader never sees a
 /// sentinel value.
 pub const FALLOFF_EXPONENT_DEFAULT: f32 = 1.0;
+
+/// Encode one canonical emitter for the renderer light buffer.
+///
+/// Every producer reaches this boundary with physical metres, scene-linear
+/// radiant intensity, a resolved attenuation model, and an explicit
+/// visibility policy. Keeping the final metres -> Bethesda-units conversion
+/// and GPU enum packing here prevents procedural emitters from growing a
+/// second, subtly different light contract beside authored `LIGH` records.
+pub(super) fn gpu_light_from_emitter(
+    position: [f32; 3],
+    emitter: Emitter,
+    intensity_scale: f32,
+) -> byroredux_renderer::GpuLight {
+    let light_type = match emitter.kind {
+        LightKind::Point | LightKind::Ambient => 0.0,
+        LightKind::Spot => 1.0,
+        LightKind::Directional => 2.0,
+    };
+    let outer_angle_cos = if emitter.kind == LightKind::Spot {
+        emitter.outer_cone_cos
+    } else {
+        0.0
+    };
+    let radiant_intensity = emitter.radiant_intensity.scaled(intensity_scale);
+
+    byroredux_renderer::GpuLight {
+        position_radius: [
+            position[0],
+            position[1],
+            position[2],
+            emitter.range.to_bethesda_units() * LIGHT_RANGE_EXTENSION,
+        ],
+        color_type: [
+            radiant_intensity[0],
+            radiant_intensity[1],
+            radiant_intensity[2],
+            light_type,
+        ],
+        direction_angle: [
+            emitter.direction[0],
+            emitter.direction[1],
+            emitter.direction[2],
+            outer_angle_cos,
+        ],
+        params: [
+            emitter.falloff_exponent,
+            emitter.source_radius.to_bethesda_units(),
+            emitter.visibility.bits() as f32,
+            emitter.attenuation as u8 as f32,
+        ],
+    }
+}
 
 /// PERF-D5-NEW-02 / #1800 — cheap CPU-side "how much does this light
 /// matter for one-bounce GI" proxy: sum of the light's RGB channels
@@ -172,69 +224,16 @@ pub(super) fn collect_lights(
                 // and the value already sits on `light.emitter.range`
                 // from the same code path.
                 let scale = light.dimmer * light.intensity;
-                // ── LIGH → standard light translation ──────────────
-                // Pre-compute the renderer-standard fields here so the
-                // shader consumes ready-to-use values. Raw LIGH inputs
-                // (`emitter.range`, `emitter.falloff_exponent`) never
-                // reach GLSL — only the post-translation `effective_
-                // range` and `falloff_shape`.
-                let effective_range =
-                    light.emitter.range.to_bethesda_units() * LIGHT_RANGE_EXTENSION;
-                let source_radius = light.emitter.source_radius.to_bethesda_units();
-                let falloff_shape = light.emitter.falloff_exponent;
-                // #2205 — `GpuLight.color_type.w` type code (see its doc
-                // comment: 0=point, 1=spot, 2=directional). `Ambient` has
-                // no radiating representation in that contract and falls
-                // back to the point code — a pre-existing gap tracked
-                // separately as NIFAL-D3-02, not this fix's concern.
-                let light_type = match light.emitter.kind {
-                    LightKind::Point | LightKind::Ambient => 0.0,
-                    LightKind::Spot => 1.0,
-                    LightKind::Directional => 2.0,
-                };
-                // `direction_angle.w` is the spot outer-angle COSINE, not
-                // the authored radians — the shader never sees a raw
-                // angle (same translation-layer convention as `radius` /
-                // `falloff_exponent` above).
-                let outer_angle_cos = if light.emitter.kind == LightKind::Spot {
-                    light.emitter.outer_cone_cos
-                } else {
-                    0.0
-                };
-                let radiant_intensity = light.emitter.radiant_intensity.scaled(scale);
-                gpu_lights.push(byroredux_renderer::GpuLight {
-                    position_radius: [
-                        t.translation.x,
-                        t.translation.y,
-                        t.translation.z,
-                        effective_range,
-                    ],
-                    color_type: [
-                        radiant_intensity[0],
-                        radiant_intensity[1],
-                        radiant_intensity[2],
-                        light_type,
-                    ],
-                    direction_angle: [
-                        light.emitter.direction[0],
-                        light.emitter.direction[1],
-                        light.emitter.direction[2],
-                        outer_angle_cos,
-                    ],
-                    // x = standardized attenuation curve shape; y = finite
-                    // emitter proxy used to stop shadow segments at the
-                    // luminous shell instead of inside the fixture; z = the
-                    // unified policy consumed by every visibility pass; w is
-                    // z = explicit VisibilityMask bits; w = attenuation model.
-                    // Both were resolved before this render boundary, so no
-                    // game-format radius/flag interpretation reaches GLSL.
-                    params: [
-                        falloff_shape,
-                        source_radius,
-                        light.emitter.visibility.bits() as f32,
-                        light.emitter.attenuation as u8 as f32,
-                    ],
-                });
+                // ── Canonical emitter → renderer light ──────────────
+                // The legacy translator has already resolved game-format
+                // radius/flags into `Emitter`; this shared boundary performs
+                // the same final unit conversion and packing for authored and
+                // procedural sources.
+                gpu_lights.push(gpu_light_from_emitter(
+                    [t.translation.x, t.translation.y, t.translation.z],
+                    light.emitter,
+                    scale,
+                ));
             }
         }
     }

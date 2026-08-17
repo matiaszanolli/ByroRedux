@@ -4,6 +4,7 @@ use byroredux_core::ecs::{
     CombustionState, FogShape, FogSource, FogVolume, GlobalTransform, TotalTime, World,
 };
 use byroredux_core::math::Vec3;
+use byroredux_core::radiometry::{blackbody_chromaticity_srgb, linear_srgb_luminance};
 use byroredux_renderer::vulkan::volumetrics::{
     GpuFogVolume, FOG_VOLUME_PROFILE_EXPLOSION, FOG_VOLUME_PROFILE_FLAME,
     FOG_VOLUME_PROFILE_HOMOGENEOUS, FOG_VOLUME_PROFILE_SMOKE, MAX_GPU_FOG_VOLUMES,
@@ -151,6 +152,14 @@ fn gpu_volume_from_ecs_with_explosion_age(
         (FogSource::ParticleEmitter, false) => FOG_VOLUME_PROFILE_SMOKE,
         _ => FOG_VOLUME_PROFILE_HOMOGENEOUS,
     };
+    let base_emission = volume.emissive_radiance.map(sanitize_emission);
+    let base_temperature = volume.emission_temperature_k.max(0.0);
+    let (emission, emission_temperature) = if profile == FOG_VOLUME_PROFILE_EXPLOSION {
+        let age = explosion_age.map_or(0.0, |(age, _)| age);
+        explosion_emission_state(base_emission, base_temperature, age)
+    } else {
+        (base_emission, base_temperature)
+    };
     Some(GpuFogVolume {
         center_shape: [center.x, center.y, center.z, shape],
         half_extents_extinction: [
@@ -166,20 +175,15 @@ fn gpu_volume_from_ecs_with_explosion_age(
             volume.single_scatter_albedo[2].clamp(0.0, 1.0),
             volume.edge_softness.clamp(0.0, 1.0),
         ],
-        // Emitted radiance passes through unscaled: unlike extinction it is a
-        // radiance, not a per-length coefficient, so it carries no world-unit
-        // conversion. The shader multiplies it by the locally evaluated
-        // `sigma_a` — which IS per world unit — to form the source term.
+        // Emitted radiance carries no world-unit conversion. Explosion
+        // temperature, chromaticity, and energy evolve here once so both the
+        // froxel injector and the derived surface light consume the same
+        // instantaneous source state; the shader adds only local turbulence.
         //
         // Negative or non-finite emission is clamped away rather than
         // rejected, so a bad authored value dims a flame instead of poisoning
         // the froxel accumulation buffer with NaN.
-        emission_temperature: [
-            sanitize_emission(volume.emissive_radiance[0]),
-            sanitize_emission(volume.emissive_radiance[1]),
-            sanitize_emission(volume.emissive_radiance[2]),
-            volume.emission_temperature_k.max(0.0),
-        ],
+        emission_temperature: [emission[0], emission[1], emission[2], emission_temperature],
         profile_params: if profile == FOG_VOLUME_PROFILE_EXPLOSION {
             let (age, lifetime) = explosion_age.unwrap_or((0.0, 0.0));
             [profile, age.clamp(0.0, 1.0), lifetime.max(0.0), 0.0]
@@ -187,6 +191,54 @@ fn gpu_volume_from_ecs_with_explosion_age(
             [profile, 0.0, 0.0, 0.0]
         },
     })
+}
+
+/// Resolve the global emission state of an explosion at one normalized age.
+///
+/// This is deliberately CPU-side at the ECS -> renderer boundary. The same
+/// aged `GpuFogVolume` feeds both volumetric injection and derived point-light
+/// integration, so the room illumination cannot remain at peak intensity
+/// after the visible fireball has cooled into smoke.
+fn explosion_emission_state(
+    base_emission: [f32; 3],
+    source_temperature_k: f32,
+    age: f32,
+) -> ([f32; 3], f32) {
+    const COOLING_START_AGE: f32 = 0.06;
+    const COOLING_END_AGE: f32 = 0.78;
+    const VISIBLE_FIRE_START_AGE: f32 = 0.18;
+    const VISIBLE_FIRE_END_AGE: f32 = 0.66;
+    const COOLED_SMOKE_TEMPERATURE_K: f32 = 850.0;
+
+    let age = age.clamp(0.0, 1.0);
+    let source_temperature = if source_temperature_k.is_finite() {
+        source_temperature_k.clamp(COOLED_SMOKE_TEMPERATURE_K, 4200.0)
+    } else {
+        COOLED_SMOKE_TEMPERATURE_K
+    };
+    let cooling = smoothstep(COOLING_START_AGE, COOLING_END_AGE, age);
+    let temperature = (source_temperature
+        + (COOLED_SMOKE_TEMPERATURE_K - source_temperature) * cooling)
+        .clamp(700.0, 4200.0);
+    let visible_fire = 1.0 - smoothstep(VISIBLE_FIRE_START_AGE, VISIBLE_FIRE_END_AGE, age);
+    let thermal_energy = (temperature / source_temperature).powi(4);
+    let luminance = linear_srgb_luminance(base_emission) * thermal_energy * visible_fire;
+    let emission = blackbody_chromaticity_srgb(temperature)
+        .map(|chromaticity| {
+            // Gamut clipping in the core spectral conversion can move the
+            // resulting Rec.709 luminance slightly away from one. Normalize
+            // after clipping so this boundary preserves the intended energy
+            // envelope exactly while retaining its blackbody hue.
+            let chromaticity_luminance = linear_srgb_luminance(chromaticity).max(1.0e-6);
+            chromaticity.map(|channel| channel * luminance / chromaticity_luminance)
+        })
+        .unwrap_or([0.0; 3]);
+    (emission, temperature)
+}
+
+fn smoothstep(edge0: f32, edge1: f32, value: f32) -> f32 {
+    let t = ((value - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
 /// Clamp one emitted-radiance channel into a finite, non-negative value.
@@ -278,6 +330,32 @@ mod tests {
             explosion.profile_params,
             [FOG_VOLUME_PROFILE_EXPLOSION, 0.375, 2.4, 0.0]
         );
+        assert!(
+            linear_srgb_luminance(explosion.emission_temperature[..3].try_into().unwrap())
+                < linear_srgb_luminance([24.0, 12.0, 2.0]),
+            "an explosion partway through its lifetime must have cooled"
+        );
+        assert!(explosion.emission_temperature[3] < 1850.0);
+    }
+
+    #[test]
+    fn explosion_emission_cools_and_extinguishes_once_for_all_consumers() {
+        let base = [24.0, 12.0, 2.0];
+        let base_luminance = linear_srgb_luminance(base);
+        let (hot, hot_temperature) = explosion_emission_state(base, 2800.0, 0.0);
+        let (cooling, cooling_temperature) = explosion_emission_state(base, 2800.0, 0.45);
+        let (smoke, smoke_temperature) = explosion_emission_state(base, 2800.0, 0.70);
+
+        assert!((linear_srgb_luminance(hot) - base_luminance).abs() < 1.0e-4);
+        assert_eq!(hot_temperature, 2800.0);
+        assert!(cooling_temperature < hot_temperature);
+        assert!(linear_srgb_luminance(cooling) < base_luminance * 0.1);
+        assert_eq!(smoke, [0.0; 3]);
+        assert!(smoke_temperature <= cooling_temperature);
+
+        // Cooling shifts blackbody chromaticity toward red before the fire
+        // envelope reaches zero.
+        assert!(cooling[1] / cooling[0] < hot[1] / hot[0]);
     }
 
     #[test]

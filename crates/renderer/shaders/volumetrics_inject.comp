@@ -457,18 +457,19 @@ LocalMedium sampleLocalMedium(vec3 worldPos) {
             vec3 cooledSmokeAlbedo = vec3(0.78, 0.72, 0.66);
             albedo = mix(vec3(0.12), cooledSmokeAlbedo, smokeTransition);
 
-            float sourceTemperature = max(volume.emission_temperature.w, 2800.0);
-            float cooling = smoothstep(0.06, 0.78, explosionAge);
-            float localTemperature = mix(sourceTemperature * 1.18, 850.0, cooling)
+            // Global cooling, chromaticity, T^4 energy loss, and the
+            // visible-fire envelope are already resolved in the uploaded
+            // volume so this pass and the derived point light see one source
+            // state. Only spatial turbulence belongs in the froxel shader.
+            float sourceTemperature = max(volume.emission_temperature.w, 850.0);
+            float localTemperature = sourceTemperature
                 * mix(0.92, 1.08, localTurbulence.y);
             localTemperature = clamp(localTemperature, 700.0, 4200.0);
             float baseEmissionLuma = dot(emissiveRadiance, LUMA_REC709);
             float thermalEnergy = pow(localTemperature / sourceTemperature, 4.0);
-            float visibleFire = 1.0 - smoothstep(0.18, 0.66, explosionAge);
             emissiveRadiance = blackbodyChromaticity(localTemperature)
                 * baseEmissionLuma
-                * clamp(thermalEnergy, 0.0, 2.6)
-                * visibleFire;
+                * clamp(thermalEnergy, 0.6, 1.5);
         } else if (profileKind > 1.5) {
             float height = clamp(normalizedOffset.y * 0.5 + 0.5, 0.0, 1.0);
             float sourceTemperature = max(volume.emission_temperature.w, 800.0);
