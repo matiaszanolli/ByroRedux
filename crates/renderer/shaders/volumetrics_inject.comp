@@ -618,6 +618,31 @@ bool reprojectHistory(vec3 worldPos, out vec3 previousUvw) {
         && all(lessThanEqual(previousUvw, vec3(1.0)));
 }
 
+// Reproject within one prior camera-ray column. A trilinear sampler would
+// interpolate XY history across walls and window frames before any temporal
+// rejection can see it. Depth remains linear because adjacent Z texels are
+// consecutive slabs along the same ray.
+vec4 sampleHistoryColumn(vec3 uvw) {
+    ivec3 size = textureSize(previousFroxel, 0);
+    ivec2 column = clamp(
+        ivec2(uvw.xy * vec2(size.xy)),
+        ivec2(0),
+        size.xy - ivec2(1)
+    );
+    float z = clamp(
+        uvw.z * float(size.z) - 0.5,
+        0.0,
+        float(size.z - 1)
+    );
+    int z0 = int(floor(z));
+    int z1 = min(z0 + 1, size.z - 1);
+    return mix(
+        texelFetch(previousFroxel, ivec3(column, z0), 0),
+        texelFetch(previousFroxel, ivec3(column, z1), 0),
+        fract(z)
+    );
+}
+
 void main() {
     ivec3 coord = ivec3(gl_GlobalInvocationID.xyz);
     ivec3 size = imageSize(froxel);
@@ -830,47 +855,7 @@ void main() {
     if (params.prev_camera_pos.w > 0.5) {
         vec3 previousUvw;
         if (reprojectHistory(world_pos, previousUvw)) {
-            vec4 history = texture(previousFroxel, previousUvw);
-            // #2809 (REN-D16-04), KNOWN LIMITATION — the 3×3 statistics
-            // below are gathered from `previousFroxel`, i.e. the history
-            // volume itself, not the current frame. `taa.comp` takes its
-            // moments from `uCurrHdr` and `svgf_temporal.comp` its firefly
-            // statistic from `currIndirectTex`; clamping a value to a
-            // neighbourhood that CONTAINS that value removes single-froxel
-            // spatial spikes but places no bound whatever on disagreement
-            // with the current frame, so a spatially smooth but temporally
-            // stale history passes through untouched. Fixing it properly
-            // needs the current frame's computed inscatter/extinction
-            // neighbourhood, i.e. a shared-memory or second-pass
-            // restructure — deliberately not attempted blind, since the
-            // effect is quality-only and needs RenderDoc to evaluate.
-            ivec3 historySize = textureSize(previousFroxel, 0);
-            vec3 texel = 1.0 / vec3(historySize);
-            vec3 historyMean = vec3(0.0);
-            vec3 historySecondMoment = vec3(0.0);
-            for (int y = -1; y <= 1; ++y) {
-                for (int x = -1; x <= 1; ++x) {
-                    vec3 sampleUvw = clamp(
-                        previousUvw + vec3(float(x), float(y), 0.0) * texel,
-                        texel * 0.5,
-                        vec3(1.0) - texel * 0.5
-                    );
-                    vec3 neighborhood = texture(previousFroxel, sampleUvw).rgb;
-                    historyMean += neighborhood;
-                    historySecondMoment += neighborhood * neighborhood;
-                }
-            }
-            historyMean *= 1.0 / 9.0;
-            historySecondMoment *= 1.0 / 9.0;
-            vec3 historySigma = sqrt(max(
-                historySecondMoment - historyMean * historyMean,
-                vec3(0.0)
-            ));
-            history.rgb = clamp(
-                history.rgb,
-                historyMean - historySigma * 1.75,
-                historyMean + historySigma * 1.75
-            );
+            vec4 history = sampleHistoryColumn(previousUvw);
             float relativeDensityDelta = abs(history.a - current.a)
                 / max(max(history.a, current.a), 1.0e-6);
 

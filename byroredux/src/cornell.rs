@@ -52,7 +52,7 @@ use byroredux_core::string::StringPool;
 use byroredux_nif::import::ImportedMaterial;
 use byroredux_renderer::vulkan::GpuUploadCtx;
 use byroredux_renderer::{
-    box_vertices_colored, uv_sphere, VulkanContext, MATERIAL_KIND_FIRE_REFRACTION,
+    box_vertices_colored, uv_sphere, RenderDebugMode, VulkanContext, MATERIAL_KIND_FIRE_REFRACTION,
     MATERIAL_KIND_GLASS,
 };
 
@@ -127,7 +127,8 @@ pub(crate) enum CornellOracleRung {
 }
 
 /// Data contract shared by scene construction, analytic tests, and capture
-/// tooling. L3-L5 can extend this table without adding another constructor.
+/// tooling. Later rungs can extend this table without adding another
+/// constructor.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct CornellOracleManifest {
     pub name: &'static str,
@@ -150,6 +151,11 @@ pub(crate) struct CornellOracleManifest {
 const ORACLE_LIGHT_DIRECTION: [f32; 3] = [0.408_248_3, 0.408_248_3, 0.816_496_6];
 const ORACLE_CAMERA_POSITION: Vec3 = Vec3::new(0.0, 4.0, 10.0);
 const ORACLE_CAMERA_TARGET: Vec3 = Vec3::new(0.0, 4.0, 0.0);
+/// The surface-shadow oracle is intentionally unit-scale, but volumetrics use
+/// Bethesda-world distances (70 units/metre) and a first froxel slab roughly
+/// 44 units deep. Scaling L3/L4 gives the medium multiple depth samples while
+/// preserving exactly the same projected scene and optical depth.
+const ORACLE_VOLUMETRIC_SCALE: f32 = 100.0;
 
 pub(crate) fn cornell_oracle_manifest(rung: CornellOracleRung) -> CornellOracleManifest {
     let (name, directional_radiance, blocker, volumetric_probe, primary_debug_view) = match rung {
@@ -162,8 +168,14 @@ pub(crate) fn cornell_oracle_manifest(rung: CornellOracleRung) -> CornellOracleM
             false,
             "shadow_visibility",
         ),
-        CornellOracleRung::L3 => ("l3_point_fog_open", [0.0; 3], false, true, "final"),
-        CornellOracleRung::L4 => ("l4_point_fog_partition", [0.0; 3], true, true, "final"),
+        CornellOracleRung::L3 => ("l3_point_fog_open", [0.0; 3], false, true, "composite_term"),
+        CornellOracleRung::L4 => (
+            "l4_point_fog_partition",
+            [0.0; 3],
+            true,
+            true,
+            "composite_term",
+        ),
     };
     CornellOracleManifest {
         name,
@@ -171,8 +183,18 @@ pub(crate) fn cornell_oracle_manifest(rung: CornellOracleRung) -> CornellOracleM
         direction_toward_source: ORACLE_LIGHT_DIRECTION,
         blocker,
         volumetric_probe,
-        camera_position: ORACLE_CAMERA_POSITION,
-        camera_target: ORACLE_CAMERA_TARGET,
+        camera_position: ORACLE_CAMERA_POSITION
+            * if volumetric_probe {
+                ORACLE_VOLUMETRIC_SCALE
+            } else {
+                1.0
+            },
+        camera_target: ORACLE_CAMERA_TARGET
+            * if volumetric_probe {
+                ORACLE_VOLUMETRIC_SCALE
+            } else {
+                1.0
+            },
         primary_debug_view,
         // Linear-light probe tolerance. Image-level thresholds remain owned by
         // the capture runner rather than being hidden in this scene builder.
@@ -268,6 +290,12 @@ pub(crate) fn setup_cornell_oracle_scene(
     world_offset: Vec3,
 ) -> (Vec3, Vec3) {
     let manifest = cornell_oracle_manifest(rung);
+    if manifest.volumetric_probe {
+        // Include the volumetric integral but bypass presentation exposure,
+        // grading and stochastic dither. The capture then remains a direct
+        // HDR-linear transport oracle.
+        ctx.set_render_debug_mode(RenderDebugMode::CompositeTerm);
+    }
     let expected_unshadowed = manifest.expected_unshadowed_direct([1.0; 3]);
     world.insert_resource(CellLightingRes {
         ambient: [0.0; 3],
@@ -296,7 +324,12 @@ pub(crate) fn setup_cornell_oracle_scene(
 
     let neutral = TextureHandle(ctx.texture_registry.neutral_fallback());
     let mut builder = MeshBuilder::new(ctx);
-    let receiver_mesh = builder.box_mesh([4.0, 4.0, 0.05]);
+    let oracle_scale = if manifest.volumetric_probe {
+        ORACLE_VOLUMETRIC_SCALE
+    } else {
+        1.0
+    };
+    let receiver_mesh = builder.box_mesh([4.0, 4.0, 0.05].map(|v| v * oracle_scale));
     // L3/L4 use a black surface so the final capture contains only
     // in-scattered volumetric radiance; direct and indirect surface terms
     // cannot masquerade as a fog visibility result.
@@ -312,7 +345,7 @@ pub(crate) fn setup_cornell_oracle_scene(
         world,
         receiver_mesh,
         neutral,
-        Vec3::new(0.0, 4.0, -0.05) + world_offset,
+        Vec3::new(0.0, 4.0, -0.05) * oracle_scale + world_offset,
         Quat::IDENTITY,
         oracle_matte.clone(),
         "oracle_receiver",
@@ -339,27 +372,31 @@ pub(crate) fn setup_cornell_oracle_scene(
         // is edge-on to the camera, its only substantial image-space effect is
         // the visibility boundary in the fog rather than a broad foreground
         // surface.
-        spawn_fog_volume(
+        spawn_fog_volume_with_extinction(
             world,
-            Vec3::new(0.0, 4.0, 5.0) + world_offset,
-            Vec3::new(3.5, 3.5, 4.0),
+            Vec3::new(0.0, 4.0, 5.0) * oracle_scale + world_offset,
+            Vec3::new(3.5, 3.5, 4.0) * oracle_scale,
+            40.0 / oracle_scale,
             "oracle_fog_volume",
         );
         spawn_point_light(
             world,
-            Vec3::new(2.5, 4.0, 5.0) + world_offset,
-            20.0,
+            Vec3::new(2.5, 4.0, 5.0) * oracle_scale + world_offset,
+            20.0 * oracle_scale,
             [2.0; 3],
             "oracle_point_light",
         );
 
         if manifest.blocker {
-            let partition_mesh = builder.box_mesh([0.08, 4.0, 4.0]);
+            // Half a native unit thick after scaling: enough for a robust
+            // ray-query hit, but narrow enough in screen space that a failed
+            // XY reconstruction cannot hide its halo inside a broad surface.
+            let partition_mesh = builder.box_mesh([0.005, 4.0, 4.0].map(|v| v * oracle_scale));
             spawn_object(
                 world,
                 partition_mesh,
                 neutral,
-                Vec3::new(0.0, 4.0, 4.0) + world_offset,
+                Vec3::new(0.0, 4.0, 4.0) * oracle_scale + world_offset,
                 Quat::IDENTITY,
                 oracle_matte,
                 "oracle_opaque_partition",
@@ -1212,6 +1249,16 @@ fn spawn_point_light(world: &mut World, pos: Vec3, radius: f32, color: [f32; 3],
 /// path (`render/fog_volumes.rs`) applies the same `WORLD_UNITS_PER_METER`
 /// conversion either way, so there's no Cornell-specific scaling here.
 fn spawn_fog_volume(world: &mut World, pos: Vec3, half_extents: Vec3, name: &str) {
+    spawn_fog_volume_with_extinction(world, pos, half_extents, 40.0, name);
+}
+
+fn spawn_fog_volume_with_extinction(
+    world: &mut World,
+    pos: Vec3,
+    half_extents: Vec3,
+    extinction_per_meter: f32,
+    name: &str,
+) {
     let e = world.spawn();
     world.insert(e, Transform::new(pos, Quat::IDENTITY, 1.0));
     world.insert(e, GlobalTransform::new(pos, Quat::IDENTITY, 1.0));
@@ -1224,7 +1271,7 @@ fn spawn_fog_volume(world: &mut World, pos: Vec3, half_extents: Vec3, name: &str
                 half_extents,
                 shape: FogShape::Box,
             }),
-            extinction_per_meter: 40.0,
+            extinction_per_meter,
             single_scatter_albedo: [0.92, 0.92, 0.97],
             edge_softness: 0.35,
             emissive_radiance: [0.0; 3],
@@ -1462,8 +1509,8 @@ mod tests {
         assert!(l4.blocker);
         assert_eq!(l3.camera_position, l4.camera_position);
         assert_eq!(l3.camera_target, l4.camera_target);
-        assert_eq!(l3.primary_debug_view, "final");
-        assert_eq!(l4.primary_debug_view, "final");
+        assert_eq!(l3.primary_debug_view, "composite_term");
+        assert_eq!(l4.primary_debug_view, "composite_term");
     }
 
     #[test]

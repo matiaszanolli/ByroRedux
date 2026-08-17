@@ -1,4 +1,4 @@
-//! Hardware-gated L0-L2 ray-transport oracle.
+//! Hardware-gated L0-L4 ray-transport oracle.
 //!
 //! Run on an RT-capable integration worker:
 //!
@@ -6,9 +6,10 @@
 //! cargo test --release -p byroredux --test cornell_rt_oracle -- --ignored --nocapture
 //! ```
 //!
-//! The test deliberately uses raw renderer debug outputs rather than normal
-//! presentation. Exposure, ACES, temporal upscale, fog, bloom and grading are
-//! bypassed, so each sampled pixel answers exactly one transport question.
+//! The tests deliberately use raw renderer debug outputs rather than normal
+//! presentation. L0-L2 isolate direct surface transport; L3-L4 capture the
+//! HDR-linear composite term so the volumetric integral is present while
+//! exposure, ACES, bloom, grading and presentation dither remain bypassed.
 
 use image::RgbImage;
 use std::path::Path;
@@ -17,6 +18,7 @@ use std::process::Command;
 const FRAMES: &str = "30";
 const DIRECT_DEBUG: &str = "0x4000000";
 const SHADOW_VISIBILITY_DEBUG: &str = "0x84000000";
+const COMPOSITE_DEBUG: &str = "0";
 
 #[test]
 #[ignore = "requires an RT-capable Vulkan device and a display/Xvfb"]
@@ -63,6 +65,58 @@ fn cornell_l0_l2_transport_ladder_matches_analytic_probes() {
         &[],
     );
     assert_l2_shadow_transport(&l2);
+}
+
+/// L3 is an unobstructed point-lit local medium. L4 changes exactly one thing:
+/// a thin opaque partition separates its left half from the light. Besides
+/// testing ray-query visibility, the narrow edge band catches any later XY
+/// blur or trilinear froxel upscale that mixes the lit column across the wall.
+#[test]
+#[ignore = "requires an RT-capable Vulkan device and a display/Xvfb"]
+fn cornell_l3_l4_volumetric_partition_does_not_leak() {
+    let workdir = tempfile::tempdir().expect("create volumetric Cornell tempdir");
+    let l3 = capture(
+        workdir.path(),
+        "l3",
+        COMPOSITE_DEBUG,
+        "lights_uploaded=1",
+        "tlas_emitted=1",
+        &[],
+    );
+    let l4 = capture(
+        workdir.path(),
+        "l4",
+        COMPOSITE_DEBUG,
+        "lights_uploaded=1",
+        "tlas_emitted=2",
+        &[],
+    );
+
+    let left = [0.30, 0.25, 0.43, 0.75];
+    let right = [0.575, 0.25, 0.70, 0.75];
+    let edge_left = [0.490_625, 0.25, 0.493_75, 0.75];
+    let l3_left = mean_linear_luma(&l3, left);
+    let l3_right = mean_linear_luma(&l3, right);
+    let l4_left = mean_linear_luma(&l4, left);
+    let l4_right = mean_linear_luma(&l4, right);
+    let l4_edge_left = mean_linear_luma(&l4, edge_left);
+
+    assert!(
+        (l3_left - l3_right).abs() <= 0.01,
+        "L3 open medium must be balanced: left={l3_left:.6}, right={l3_right:.6}"
+    );
+    assert!(
+        (l4_right - l3_right).abs() <= 0.01,
+        "L4 lit control changed when only the partition was added: L3={l3_right:.6}, L4={l4_right:.6}"
+    );
+    assert!(
+        l4_left <= l3_left * 0.08,
+        "L4 broad shadow leaked: shadow={l4_left:.6}, open={l3_left:.6}"
+    );
+    assert!(
+        l4_edge_left <= l4_right * 0.18,
+        "L4 wall-adjacent froxel leaked: edge={l4_edge_left:.6}, lit={l4_right:.6}"
+    );
 }
 
 /// Force the static-BLAS budget below even this tiny scene's live set. The
@@ -194,7 +248,18 @@ fn capture(
 
     let mut command = if std::env::var_os("DISPLAY").is_none() {
         let mut command = Command::new("xvfb-run");
-        command.args(["-a", env!("CARGO")]);
+        // Winit prefers a stale inherited Wayland session hint over X11 on
+        // some headless workers. Clear both hints inside xvfb-run so the
+        // generated DISPLAY is the only available presentation backend.
+        command.args([
+            "-a",
+            "env",
+            "-u",
+            "WAYLAND_DISPLAY",
+            "-u",
+            "XDG_SESSION_TYPE",
+            env!("CARGO"),
+        ]);
         command
     } else {
         Command::new(env!("CARGO"))
@@ -281,6 +346,34 @@ fn normalized_probes(image: &RgbImage, probes: &[(f32, f32)]) -> Vec<(u32, u32)>
         .collect()
 }
 
+fn mean_linear_luma(image: &RgbImage, region: [f32; 4]) -> f32 {
+    let (width, height) = image.dimensions();
+    let x0 = (region[0] * width as f32)
+        .floor()
+        .clamp(0.0, width as f32 - 1.0) as u32;
+    let y0 = (region[1] * height as f32)
+        .floor()
+        .clamp(0.0, height as f32 - 1.0) as u32;
+    let x1 = (region[2] * width as f32)
+        .ceil()
+        .clamp((x0 + 1) as f32, width as f32) as u32;
+    let y1 = (region[3] * height as f32)
+        .ceil()
+        .clamp((y0 + 1) as f32, height as f32) as u32;
+
+    let mut sum = 0.0;
+    let mut count = 0_u32;
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let pixel = image.get_pixel(x, y);
+            let linear = pixel.0.map(srgb_u8_to_linear);
+            sum += linear[0] * 0.2126 + linear[1] * 0.7152 + linear[2] * 0.0722;
+            count += 1;
+        }
+    }
+    sum / count as f32
+}
+
 fn assert_greyscale_near(
     image: &RgbImage,
     x: u32,
@@ -308,7 +401,17 @@ fn linear_to_srgb_u8(linear: f32) -> u8 {
     (encoded.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
+fn srgb_u8_to_linear(encoded: u8) -> f32 {
+    let encoded = encoded as f32 / 255.0;
+    if encoded <= 0.040_45 {
+        encoded / 12.92
+    } else {
+        ((encoded + 0.055) / 1.055).powf(2.4)
+    }
+}
+
 #[test]
 fn analytic_l1_encoding_is_pinned() {
     assert_eq!(linear_to_srgb_u8(2.0 / 6.0_f32.sqrt()), 233);
+    assert!((srgb_u8_to_linear(233) - 2.0 / 6.0_f32.sqrt()).abs() < 0.005);
 }

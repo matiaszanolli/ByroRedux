@@ -699,7 +699,10 @@ impl VolumetricsPipeline {
             vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST,
         )));
 
-        // Linear filtering is used for reprojection across froxel boundaries.
+        // History must never filter across XY froxel boundaries: adjacent
+        // columns can be separated by opaque structure. The shader performs
+        // explicit nearest-XY/linear-Z texelFetch reconstruction, and the
+        // nearest sampler keeps accidental future texture() calls conservative.
         // All volumes remain in GENERAL for storage writes and history reads.
         // SAFETY: `device` is live; the create info contains no borrowed
         // extension chain, and the resulting sampler is owned by `partial`
@@ -708,8 +711,8 @@ impl VolumetricsPipeline {
             device
                 .create_sampler(
                     &vk::SamplerCreateInfo::default()
-                        .mag_filter(vk::Filter::LINEAR)
-                        .min_filter(vk::Filter::LINEAR)
+                        .mag_filter(vk::Filter::NEAREST)
+                        .min_filter(vk::Filter::NEAREST)
                         .mipmap_mode(vk::SamplerMipmapMode::NEAREST)
                         .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
                         .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
@@ -2037,6 +2040,26 @@ mod unit_tests {
         assert!(
             !shader.contains("MAX_SHADOWED_FROXEL_LIGHTS"),
             "a contributing local fog light must not bypass visibility by list position"
+        );
+    }
+
+    #[test]
+    fn temporal_history_never_filters_across_camera_ray_columns() {
+        let shader = include_str!("../../shaders/volumetrics_inject.comp");
+        for contract in [
+            "vec4 sampleHistoryColumn(vec3 uvw)",
+            "ivec2 column = clamp(",
+            "texelFetch(previousFroxel, ivec3(column, z0), 0)",
+            "vec4 history = sampleHistoryColumn(previousUvw);",
+        ] {
+            assert!(
+                shader.contains(contract),
+                "volumetric history lost its wall-safe column contract: {contract}"
+            );
+        }
+        assert!(
+            !shader.contains("texture(previousFroxel"),
+            "trilinear history sampling can blend light through opaque XY boundaries"
         );
     }
 
