@@ -234,6 +234,9 @@ pub(crate) fn character_spawn_center_y(
 pub(crate) enum GroundProbe {
     /// A collider was found beneath the spawn column.
     Grounded {
+        /// Exact world column shared by the probe and final capsule placement.
+        x: f32,
+        z: f32,
         /// Surface Y the ray hit.
         surface_y: f32,
         /// Capsule-centre Y derived from it.
@@ -243,6 +246,8 @@ pub(crate) enum GroundProbe {
     },
     /// Static colliders exist, but none beneath the spawn column.
     NoFloorBeneath {
+        x: f32,
+        z: f32,
         searched_bu: f32,
         collider_count: u32,
     },
@@ -272,16 +277,29 @@ impl GroundProbe {
     pub(crate) fn telemetry_line(&self) -> String {
         match self {
             Self::Grounded {
-                surface_y, spawn_y, ..
+                x,
+                z,
+                surface_y,
+                spawn_y,
+                ..
             } => format!(
-                "spawn-probe: result=grounded colliders={} surface_y={:.1} spawn_y={:.1}",
+                "spawn-probe: result=grounded colliders={} x={:.1} z={:.1} surface_y={:.1} spawn_y={:.1}",
                 self.collider_count(),
+                x,
+                z,
                 surface_y,
                 spawn_y
             ),
-            Self::NoFloorBeneath { searched_bu, .. } => format!(
-                "spawn-probe: result=no-floor colliders={} searched_bu={:.1}",
+            Self::NoFloorBeneath {
+                x,
+                z,
+                searched_bu,
+                ..
+            } => format!(
+                "spawn-probe: result=no-floor colliders={} x={:.1} z={:.1} searched_bu={:.1}",
                 self.collider_count(),
+                x,
+                z,
                 searched_bu
             ),
             Self::NoColliders => "spawn-probe: result=no-colliders colliders=0".to_string(),
@@ -309,11 +327,15 @@ fn probe_spawn_ground(
     // exclude (#2859).
     match pw.cast_ray_down(ray_origin, searched_bu, None) {
         Some(surface_y) => GroundProbe::Grounded {
+            x: cam_pos.x,
+            z: cam_pos.z,
             surface_y,
             spawn_y: character_spawn_center_y(world, surface_y, cc),
             collider_count,
         },
         None => GroundProbe::NoFloorBeneath {
+            x: cam_pos.x,
+            z: cam_pos.z,
             searched_bu,
             collider_count,
         },
@@ -369,14 +391,196 @@ fn spawn_position_from_probe(
     }
 }
 
-fn spawn_on_camera_ground(
+#[derive(Debug, Clone, Copy)]
+struct CharacterSpawnPlan {
+    body_pos: Vec3,
+    controller: byroredux_physics::CharacterController,
+    ground_probe: GroundProbe,
+}
+
+impl CharacterSpawnPlan {
+    fn new(
+        body_pos: Vec3,
+        controller: byroredux_physics::CharacterController,
+        ground_probe: GroundProbe,
+    ) -> Self {
+        if let GroundProbe::Grounded { x, z, .. } | GroundProbe::NoFloorBeneath { x, z, .. } =
+            ground_probe
+        {
+            debug_assert!((body_pos.x - x).abs() < 0.01);
+            debug_assert!((body_pos.z - z).abs() < 0.01);
+        }
+        Self {
+            body_pos,
+            controller,
+            ground_probe,
+        }
+    }
+}
+
+/// Resolve one character spawn plan before mode selection.
+///
+/// The selected door/camera column, controller dimensions, ground result and
+/// final body position travel together. This prevents the startup gate from
+/// certifying the camera column and then spawning a differently-sized capsule
+/// at an independently-selected door column (#3002).
+fn plan_character_spawn(
     world: &World,
     cam_pos: Vec3,
-    cc: byroredux_physics::CharacterController,
-    reason: &str,
-) -> Vec3 {
-    let probe = probe_spawn_ground(world, cam_pos, cc);
-    spawn_position_from_probe(probe, cam_pos, cc, world, reason)
+    controller: byroredux_physics::CharacterController,
+    exterior_foreground: Option<(i32, i32)>,
+) -> CharacterSpawnPlan {
+    let door_spawn = {
+        let doors = world.query::<crate::components::DoorTeleport>();
+        let transforms = world.query::<Transform>();
+        match (doors, transforms) {
+            (Some(doors), Some(transforms)) => select_door_spawn_position(
+                doors
+                    .iter()
+                    .filter_map(|(entity, _)| transforms.get(entity).map(|t| t.translation)),
+                exterior_foreground,
+            ),
+            _ => None,
+        }
+    };
+
+    if let Some(door_pos) = door_spawn {
+        const INWARD_NUDGE_BU: f32 = 64.0;
+        let aabb = world
+            .resource::<byroredux_physics::PhysicsWorld>()
+            .static_colliders_aabb();
+        let inward_xz = aabb.and_then(|(min, max, _)| {
+            let centre = Vec3::new(0.5 * (min[0] + max[0]), 0.0, 0.5 * (min[2] + max[2]));
+            let to_centre = Vec3::new(centre.x - door_pos.x, 0.0, centre.z - door_pos.z);
+            (to_centre.length_squared() > 1.0).then(|| to_centre.normalize())
+        });
+        let nudge = inward_xz.unwrap_or(Vec3::ZERO) * INWARD_NUDGE_BU;
+        let nudged_x = door_pos.x + nudge.x;
+        let nudged_z = door_pos.z + nudge.z;
+
+        // Prefer the inward column, fall back to the threshold itself, then
+        // search the full cell height at the inward column. Every rung uses
+        // the exact controller that will be inserted on the player entity.
+        let near_door_floor_y =
+            probe_walkable_floor_near(world, nudged_x, nudged_z, door_pos.y, controller, None);
+        let door_xz_floor_y = near_door_floor_y
+            .is_none()
+            .then(|| {
+                probe_walkable_floor_near(
+                    world, door_pos.x, door_pos.z, door_pos.y, controller, None,
+                )
+            })
+            .flatten();
+        let wide_floor_y = if near_door_floor_y.is_none() && door_xz_floor_y.is_none() {
+            aabb.and_then(|(min, max, _)| {
+                let probe_lift = floor_probe_lift(controller);
+                world
+                    .resource::<byroredux_physics::PhysicsWorld>()
+                    .cast_capsule_down_onto_walkable_surface(
+                        Vec3::new(nudged_x, max[1] + probe_lift, nudged_z),
+                        controller.half_height,
+                        controller.radius,
+                        (max[1] - min[1]).max(1.0) + probe_lift + 100.0,
+                        min_walkable_normal_y(controller),
+                        None,
+                    )
+            })
+        } else {
+            None
+        };
+
+        let resolved = near_door_floor_y
+            .map(|surface_y| (surface_y, nudged_x, nudged_z, "nudged XZ near door height"))
+            .or_else(|| {
+                door_xz_floor_y.map(|surface_y| {
+                    (
+                        surface_y,
+                        door_pos.x,
+                        door_pos.z,
+                        "door XZ near door height (nudge landed over a hole)",
+                    )
+                })
+            })
+            .or_else(|| {
+                wide_floor_y.map(|surface_y| {
+                    (
+                        surface_y,
+                        nudged_x,
+                        nudged_z,
+                        "full-cell sweep at nudged XZ",
+                    )
+                })
+            });
+
+        if let Some((surface_y, spawn_x, spawn_z, floor_rung)) = resolved {
+            let spawn_y = character_spawn_center_y(world, surface_y, controller);
+            let body_pos = Vec3::new(spawn_x, spawn_y, spawn_z);
+            let collider_count = aabb.map_or(0, |(_, _, count)| count);
+            log::info!(
+                "M28.5 spawn at door teleporter: door at ({:.1}, {:.1}, {:.1}); \
+                 floor probe hit y={surface_y:.1} via {floor_rung}; placing capsule \
+                 at ({:.1}, {:.1}, {:.1}){}",
+                door_pos.x,
+                door_pos.y,
+                door_pos.z,
+                body_pos.x,
+                body_pos.y,
+                body_pos.z,
+                if inward_xz.is_none() {
+                    " — NUDGE DEGRADED: no usable AABB-centre direction"
+                } else {
+                    ""
+                },
+            );
+            return CharacterSpawnPlan::new(
+                body_pos,
+                controller,
+                GroundProbe::Grounded {
+                    x: body_pos.x,
+                    z: body_pos.z,
+                    surface_y,
+                    spawn_y,
+                    collider_count,
+                },
+            );
+        }
+
+        log::warn!(
+            "M28.5 spawn at door teleporter: all floor probes missed at door \
+             ({:.1}, {:.1}, {:.1}); rejecting the door column",
+            door_pos.x,
+            door_pos.y,
+            door_pos.z,
+        );
+        const SPAWN_CENSUS_RADIUS_BU: f32 = 256.0;
+        let probe_lift = floor_probe_lift(controller);
+        let authoring = world
+            .try_resource::<crate::cell_loader::NifImportRegistry>()
+            .map(|registry| registry.collision_authoring_totals());
+        byroredux_physics::dump_spawn_collider_census(
+            world,
+            byroredux_physics::SpawnCensusProbe {
+                x: nudged_x,
+                y: door_pos.y + probe_lift,
+                z: nudged_z,
+                radius: SPAWN_CENSUS_RADIUS_BU,
+                capsule_half_height: controller.half_height,
+                capsule_radius: controller.radius,
+                max_distance: FLOOR_PROBE_CLEARANCE_BU + FLOOR_PROBE_REACH_BELOW_DOOR_BU,
+                min_walkable_normal_y: min_walkable_normal_y(controller),
+                authoring,
+            },
+        );
+    }
+
+    let reason = if door_spawn.is_some() {
+        "door floor probe missed"
+    } else {
+        "no foreground DoorTeleport"
+    };
+    let ground_probe = probe_spawn_ground(world, cam_pos, controller);
+    let body_pos = spawn_position_from_probe(ground_probe, cam_pos, controller, world, reason);
+    CharacterSpawnPlan::new(body_pos, controller, ground_probe)
 }
 
 mod world_setup;
@@ -882,8 +1086,8 @@ pub(crate) fn setup_scene(
     // Only run when Character is actually reachable: `--fly`, Cornell and
     // content-less loads all resolve to FlyCam regardless, and the probe costs
     // an early physics sync.
-    let cc_for_probe = byroredux_physics::CharacterController::HUMAN;
-    let ground_probe = if want_fly || cornell || !(has_nif_content || want_player) {
+    let character_controller = byroredux_physics::CharacterController::HUMAN;
+    let spawn_plan = if want_fly || (!want_player && (cornell || !has_nif_content)) {
         None
     } else {
         // `physics_sync_system` inserts the colliders into `ColliderSet`, but
@@ -895,12 +1099,16 @@ pub(crate) fn setup_scene(
             let mut pw = world.resource_mut::<byroredux_physics::PhysicsWorld>();
             pw.update_query_pipeline();
         }
-        let probe = probe_spawn_ground(world, cam_pos, cc_for_probe);
+        let exterior_foreground = streaming_slot
+            .as_ref()
+            .and_then(|state| state.last_player_grid);
+        let plan = plan_character_spawn(world, cam_pos, character_controller, exterior_foreground);
         // Greppable telemetry line for the smoke matrix — EX-04 asks for the
         // static-collider count and the probe result to be captured.
-        log::info!("{}", probe.telemetry_line());
-        Some(probe)
+        log::info!("{}", plan.ground_probe.telemetry_line());
+        Some(plan)
     };
+    let ground_probe = spawn_plan.map(|plan| plan.ground_probe);
     // Absent probe = a path that was never going to pick Character, so it must
     // not veto anything; `true` keeps the pre-existing precedence intact.
     let ground_walkable = ground_probe.is_none_or(|p| p.is_walkable());
@@ -947,300 +1155,9 @@ pub(crate) fn setup_scene(
     // updates; `camera_follow_system` re-pins the camera to the body
     // head each frame.
     if player_mode == crate::systems::PlayerMode::Character {
-        use byroredux_physics::CharacterController;
-        let cc = CharacterController::HUMAN;
-
-        // M28.5 — physics_sync_system normally runs in the scheduler's
-        // Stage::Physics, but the character body needs to spawn at a
-        // position that doesn't overlap any cell collider. We need
-        // the static-collider AABB to pick a safe Y. Force one early
-        // physics tick (dt=0 so no movement, just newcomer registration)
-        // so the AABB is available.
-        //
-        // This also means the player body's own newcomer registration
-        // happens on the FIRST scheduler-driven tick, not this one —
-        // which is correct, since the body isn't spawned yet.
-        // The dt=0 sync and BVH flush this path used to perform now happen
-        // above, before the mode decision, so the ground probe can veto
-        // Character mode rather than discovering the missing floor too late
-        // (#2375). Re-running them here would be redundant work.
-
-        // Spawn precedence:
-        //   1. **Door-teleporter spawn** — find any REFR with a
-        //      `DoorTeleport` component (XTEL — the entries/exits of
-        //      this cell) and place the player at that door's
-        //      `Transform.translation`, offset upward by capsule
-        //      `half_height + offset_skin` so the capsule's feet rest
-        //      on the door's floor reference. This matches Bethesda's
-        //      own spawn convention — when you teleport INTO a cell,
-        //      you appear at the door REFR that pointed at the cell
-        //      you came from. Spawning at one of THIS cell's doors at
-        //      cold-start gives the same "you walked in here" effect
-        //      without needing to know which exterior cell you came
-        //      from. See user-requested change M28.5 follow-up:
-        //      "always spawn in the proper spawn point for a room
-        //      (this should be on the end of a teleporter object like
-        //      a door)".
-        //   2. **Ray-cast down** — when there's no DoorTeleport in
-        //      the cell (debug `--mesh` loads, exterior cells without
-        //      teleporter REFRs, etc.) — fall back to the previous
-        //      M28.5 strategy: ray-cast from `aabb.max.y + 50 BU` and
-        //      place the capsule above the first solid floor.
-        //   3. **AABB + slack** — ray-cast found nothing within the
-        //      AABB-height + 100 BU budget. Place at `aabb.max.y +
-        //      200` (very rare; was the pre-#1230 path).
-        //   4. **No static colliders** — bare `cam_pos - eye_height`.
-        //
-        // Offset 4.0 BU on the upward shift matches the KCC's
-        // `controller.offset`, so the capsule rests against (not
-        // embedded in) the door's floor reference.
-        let exterior_foreground = streaming_slot
-            .as_ref()
-            .and_then(|state| state.last_player_grid);
-        let door_spawn = {
-            let dq = world.query::<crate::components::DoorTeleport>();
-            let tq = world.query::<Transform>();
-            match (dq, tq) {
-                (Some(dq), Some(tq)) => select_door_spawn_position(
-                    dq.iter()
-                        .filter_map(|(entity, _door)| tq.get(entity).map(|t| t.translation)),
-                    exterior_foreground,
-                ),
-                _ => None,
-            }
-        };
-        let body_pos = if let Some(door_pos) = door_spawn {
-            // Door REFRs are placed at the door's outer threshold — the
-            // boundary between cell interior and exterior. Spawning the
-            // capsule at exactly `door_pos` puts its centre on that
-            // boundary; with capsule radius 18 BU the capsule projects
-            // beyond the static-collider AABB and lands in the void
-            // (observed at WhiterunBanneredMare: door Z=1152.0, AABB
-            // Z_max=1151.9, character free-falls). Push the spawn
-            // *inward* along the XZ vector from door to the static-
-            // collider AABB centre so the capsule's XZ lands well past
-            // the threshold, independent of door rotation conventions or
-            // per-game subtleties.
-            const INWARD_NUDGE_BU: f32 = 64.0;
-            let aabb = {
-                let pw = world.resource::<byroredux_physics::PhysicsWorld>();
-                pw.static_colliders_aabb()
-            };
-            let inward_xz = aabb.and_then(|(min, max, _)| {
-                let centre = Vec3::new(0.5 * (min[0] + max[0]), 0.0, 0.5 * (min[2] + max[2]));
-                let to_centre = Vec3::new(centre.x - door_pos.x, 0.0, centre.z - door_pos.z);
-                let len_sq = to_centre.length_squared();
-                if len_sq > 1.0 {
-                    Some(to_centre / len_sq.sqrt())
-                } else {
-                    // Door is at the AABB centre already — no
-                    // meaningful inward direction. Skip the nudge.
-                    None
-                }
-            });
-            let nudge = inward_xz.unwrap_or(Vec3::ZERO) * INWARD_NUDGE_BU;
-            let nudged_x = door_pos.x + nudge.x;
-            let nudged_z = door_pos.z + nudge.z;
-
-            // #2013 — trusting `door_pos.y` as the floor height (the
-            // pre-fix behavior) assumes the door's own Y is the spawn
-            // floor, but the inward nudge moves the XZ position off the
-            // threshold into whatever is 64 BU further into the room —
-            // which empirically is NOT always clear floor: on Skyrim's
-            // WhiterunDragonsreach the nudge lands over open space (the
-            // capsule free-falls forever, `grounded` never true) and on
-            // Oblivion's ICMarketDistrictTheGildedCarafe it wedges against
-            // a sloped surface a few BU below door height (confirmed via a
-            // one-off downward-cast probe: the resting contact normal's
-            // dot-up was -0.44 — a slanted surface, not a floor — so the
-            // character sits blocked but ungrounded rather than free-
-            // falling). Re-verify the nudged XZ against the actual
-            // architecture with a capsule-shaped downward probe (a bare
-            // ray can slip through gaps beside sloped/narrow geometry the
-            // KCC's own capsule would still clip) instead of trusting door
-            // height blindly.
-            //
-            // The probe starts a modest margin above the DOOR's own
-            // height, not the whole cell's AABB ceiling — starting from
-            // the ceiling picks up whatever clutter (shelves, beams,
-            // upper floors) happens to sit anywhere above the nudged XZ,
-            // which is *not* the floor the door actually opens onto.
-            // Doors sit at floor level by construction, so a bounded
-            // search near that height finds the real local floor (or
-            // correctly reports nothing nearby, rather than a false hit
-            // far above).
-            // #2858 — the sweep must START above the floor it is looking
-            // for. The probe capsule's own half-extent is
-            // `half_height + radius` (64 BU for HUMAN), so the previous
-            // fixed `+50.0` origin put the capsule's BOTTOM 14 BU *below*
-            // door height. Every floor within ~15 BU of the door — i.e. the
-            // door's own floor, which is the normal case given "doors sit at
-            // floor level by construction" — was then either an
-            // initial-penetration configuration (discarded by
-            // `stop_at_penetration: false`, or reported at
-            // `time_of_impact = 0` with a degenerate normal the walkable
-            // filter rejects) or simply outside the swept half-space. Rungs 1
-            // and 2 could therefore never answer on an ordinary flat
-            // threshold, and every door spawn silently degraded to the rung-3
-            // ceiling sweep this code documents as unreliable — which also
-            // made the `floor_rung` telemetry mis-attribute the cause.
-            //
-            // Derive the lift from the capsule rather than hard-coding it, so
-            // a `CharacterController` re-tune cannot reintroduce the blind
-            // zone, and extend the range by the same amount so the band
-            // searched BELOW the door is unchanged.
-            // No player body exists yet on this path — the capsule is spawned
-            // later in `setup_scene` — so there is nothing to self-hit.
-            let near_door_floor_y =
-                probe_walkable_floor_near(world, nudged_x, nudged_z, door_pos.y, cc, None);
-            // Second rung — the nudge itself can be the problem. It moves
-            // the XZ 64 BU into the room, and when that lands over a hole
-            // (Skyrim's `BleakFallsBarrow01`: the nudged XZ has no floor
-            // anywhere near door height) the threshold the door actually
-            // opens onto is still solid. Doors sit at floor level by
-            // construction — the same premise rung 1 relies on — so probe
-            // the UN-nudged door XZ before resorting to a deep sweep.
-            // Standing on the threshold is a better spawn than the bottom
-            // of whatever shaft the nudge happened to point at.
-            let door_xz_floor_y = near_door_floor_y.or_else(|| {
-                probe_walkable_floor_near(world, door_pos.x, door_pos.z, door_pos.y, cc, None)
-            });
-
-            // Third rung — neither XZ has floor near door height, so the
-            // room genuinely isn't flat here (stairwell gap, balcony edge,
-            // multi-level drop). Sweep the cell's whole vertical extent.
-            //
-            // #2013 follow-up: this rung previously could not reach the
-            // cell floor at all. It destructured the AABB as `(_, max, _)`,
-            // discarding `min`, and substituted `door_pos.y` for the cell's
-            // bottom — so from an origin of `max.y + 50` it travelled only
-            // `(max.y - door_pos.y) + 150`, terminating 100 BU BELOW THE
-            // DOOR rather than below the cell. On `BleakFallsBarrow01` that
-            // is y=412 against colliders reaching y=-4514: the sweep
-            // covered 100 of the 5026 BU beneath the spawn and reported a
-            // miss, and the character free-fell out of the world from door
-            // height with every asset loaded (black screen, 0 draws). Now
-            // spans `max.y - min.y` like the no-door ray-cast branch below,
-            // which had this right all along.
-            let wide_floor_y = door_xz_floor_y.or_else(|| {
-                aabb.and_then(|(min, max, _)| {
-                    let pw = world.resource::<byroredux_physics::PhysicsWorld>();
-                    // Same capsule-half-extent clearance as rungs 1 and 2
-                    // (#2858), so a floor sitting near the cell's own AABB
-                    // ceiling is inside the swept band rather than behind
-                    // the probe's starting penetration.
-                    let probe_lift = floor_probe_lift(cc);
-                    let probe_origin = Vec3::new(nudged_x, max[1] + probe_lift, nudged_z);
-                    let max_distance = (max[1] - min[1]).max(1.0) + probe_lift + 100.0;
-                    pw.cast_capsule_down_onto_walkable_surface(
-                        probe_origin,
-                        cc.half_height,
-                        cc.radius,
-                        max_distance,
-                        min_walkable_normal_y(cc),
-                        None,
-                    )
-                })
-            });
-            let floor_y = wide_floor_y;
-            // Which rung answered, so a bad spawn names its own cause in one
-            // run instead of needing a bisect. Derived by comparison rather
-            // than threaded through the `or_else` chain to keep the ladder
-            // readable.
-            let floor_rung = if near_door_floor_y.is_some() {
-                "nudged XZ near door height"
-            } else if door_xz_floor_y.is_some() {
-                "door XZ near door height (nudge landed over a hole)"
-            } else if wide_floor_y.is_some() {
-                "full-cell sweep at nudged XZ"
-            } else {
-                "none"
-            };
-            let spawn_y = character_spawn_center_y(world, floor_y.unwrap_or(door_pos.y), cc);
-            // Rung 2 resolves the threshold's own floor, so the capsule must
-            // stand on the threshold rather than at the nudged XZ it just
-            // rejected as floor-less.
-            let (spawn_x, spawn_z) = if near_door_floor_y.is_none() && door_xz_floor_y.is_some() {
-                (door_pos.x, door_pos.z)
-            } else {
-                (nudged_x, nudged_z)
-            };
-            let spawn = Vec3::new(spawn_x, spawn_y, spawn_z);
-
-            let nudge_degraded = inward_xz.is_none();
-            let floor_probe_failed = floor_y.is_none();
-            log::info!(
-                "M28.5 spawn at door teleporter: door at ({:.1}, {:.1}, {:.1}); \
-                 inward nudge ({:.1}, _, {:.1}) BU; floor probe {}; placing capsule \
-                 at ({:.1}, {:.1}, {:.1}){}{}",
-                door_pos.x,
-                door_pos.y,
-                door_pos.z,
-                nudge.x,
-                nudge.z,
-                match floor_y {
-                    Some(y) => format!("hit y={y:.1} via {floor_rung}"),
-                    None => "MISS on all 3 rungs (rejecting door spawn)".to_string(),
-                },
-                spawn.x,
-                spawn.y,
-                spawn.z,
-                if nudge_degraded {
-                    " — NUDGE DEGRADED: no static colliders for AABB-centre \
-                     computation; capsule will rest ON the door threshold and \
-                     may project beyond a thin floor (#1295). If the character \
-                     free-falls from this spawn, the root cause is missing \
-                     static colliders, not the spawn position."
-                } else {
-                    ""
-                },
-                if floor_probe_failed {
-                    " — FLOOR PROBE MISS: nudged XZ found no floor within range; \
-                     rejecting this door and using the camera-ground fallback."
-                } else {
-                    ""
-                },
-            );
-            // #2202 — all three rungs missed, so the column really is empty
-            // to the probe. Census what IS there before the character starts
-            // falling: the probe filters to non-Dynamic bodies and the
-            // static-AABB sanity log counts only Fixed ones, so between them
-            // an authored-Dynamic floor is invisible twice over and reads
-            // identically to no floor at all. Only on the failure path — a
-            // healthy spawn pays nothing.
-            if floor_probe_failed {
-                const SPAWN_CENSUS_RADIUS_BU: f32 = 256.0;
-                // Mirror rung 1's geometry exactly so the census's unfiltered
-                // re-sweep answers for the probe that actually failed (#2874),
-                // and so the column ordering centres on the height the floor
-                // was expected at rather than on the world's ceiling (#2875).
-                let probe_lift = floor_probe_lift(cc);
-                let authoring = world
-                    .try_resource::<crate::cell_loader::NifImportRegistry>()
-                    .map(|registry| registry.collision_authoring_totals());
-                byroredux_physics::dump_spawn_collider_census(
-                    world,
-                    byroredux_physics::SpawnCensusProbe {
-                        x: spawn.x,
-                        y: door_pos.y + probe_lift,
-                        z: spawn.z,
-                        radius: SPAWN_CENSUS_RADIUS_BU,
-                        capsule_half_height: cc.half_height,
-                        capsule_radius: cc.radius,
-                        max_distance: FLOOR_PROBE_CLEARANCE_BU + FLOOR_PROBE_REACH_BELOW_DOOR_BU,
-                        min_walkable_normal_y: min_walkable_normal_y(cc),
-                        authoring,
-                    },
-                );
-            }
-            if floor_probe_failed {
-                spawn_on_camera_ground(world, cam_pos, cc, "door floor probe missed")
-            } else {
-                spawn
-            }
-        } else {
-            spawn_on_camera_ground(world, cam_pos, cc, "no foreground DoorTeleport")
-        };
+        let plan = spawn_plan.expect("Character mode requires a resolved spawn plan");
+        let cc = plan.controller;
+        let body_pos = plan.body_pos;
         let body = world.spawn();
         world.insert(body, Transform::new(body_pos, Quat::IDENTITY, 1.0));
         world.insert(body, GlobalTransform::new(body_pos, Quat::IDENTITY, 1.0));

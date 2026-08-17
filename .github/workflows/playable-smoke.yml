@@ -1,0 +1,53 @@
+name: Playable Smoke Gates
+
+on:
+  workflow_dispatch:
+    inputs:
+      gate:
+        description: Playable-slice gate to execute
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - p0-door-interaction
+          - p1-character-traversal
+          - p2-melee-core
+
+jobs:
+  smoke:
+    name: ${{ inputs.gate }}
+    runs-on: [self-hosted, linux, x64, byroredux-game-data]
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build smoke binaries
+        run: cargo build --release -p byroredux -p byro-dbg
+      - name: Run requested gate
+        env:
+          BYROREDUX_SKYRIM_DATA: ${{ vars.BYROREDUX_SKYRIM_DATA }}
+        run: |
+          run_gate() {
+            local gate="$1"
+            set +e
+            xvfb-run -a --server-args="-screen 0 1280x720x24" \
+              "docs/smoke-tests/$gate.sh"
+            local status=$?
+            set -e
+            if (( status == 77 )); then
+              echo "::error::$gate skipped because Skyrim data is unavailable"
+              exit 1
+            fi
+            return "$status"
+          }
+
+          case "${{ inputs.gate }}" in
+            all)
+              run_gate p0-door-interaction
+              run_gate p1-character-traversal
+              run_gate p2-melee-core
+              ;;
+            *) run_gate "${{ inputs.gate }}" ;;
+          esac

@@ -136,6 +136,54 @@ impl ConsoleCommand for CombatStatusCommand {
 /// must still enter through `input.press attack` and the ordinary action,
 /// ray-cast, event, damage, and death systems.
 pub(crate) struct CombatApproachCommand;
+
+const COMBAT_APPROACH_RADII_BU: [f32; 3] = [120.0, 96.0, 144.0];
+const COMBAT_APPROACH_ANGLE_STEPS: usize = 16;
+pub(super) const COMBAT_APPROACH_MAX_RAY_BU: f32 = 176.0;
+
+pub(super) fn combat_approach_offsets() -> impl Iterator<Item = Vec3> {
+    COMBAT_APPROACH_RADII_BU.into_iter().flat_map(|radius| {
+        (0..COMBAT_APPROACH_ANGLE_STEPS).map(move |step| {
+            let angle = step as f32 * std::f32::consts::TAU / COMBAT_APPROACH_ANGLE_STEPS as f32;
+            Vec3::new(angle.sin() * radius, 0.0, -angle.cos() * radius)
+        })
+    })
+}
+
+fn find_walkable_combat_approach(
+    world: &World,
+    player: EntityId,
+    target_pos: Vec3,
+    controller: byroredux_physics::CharacterController,
+) -> Option<(Vec3, f32)> {
+    byroredux_physics::physics_sync_system(world, 0.0);
+    {
+        let mut physics = world.resource_mut::<byroredux_physics::PhysicsWorld>();
+        physics.update_query_pipeline();
+    }
+
+    combat_approach_offsets().find_map(|offset| {
+        let candidate = target_pos + offset;
+        let surface_y = crate::scene::probe_walkable_floor_near(
+            world,
+            candidate.x,
+            candidate.z,
+            target_pos.y,
+            controller,
+            Some(player),
+        )?;
+        let body_pos = Vec3::new(
+            candidate.x,
+            crate::scene::character_spawn_center_y(world, surface_y, controller),
+            candidate.z,
+        );
+        let camera_pos = body_pos + Vec3::Y * controller.eye_height;
+        let aim_pos = target_pos + Vec3::Y * controller.eye_height * 1.15;
+        (camera_pos.distance(aim_pos) <= COMBAT_APPROACH_MAX_RAY_BU)
+            .then_some((body_pos, surface_y))
+    })
+}
+
 impl ConsoleCommand for CombatApproachCommand {
     fn name(&self) -> &str {
         "combat.approach"
@@ -179,25 +227,30 @@ impl ConsoleCommand for CombatApproachCommand {
             .map(|controller| *controller)
             .unwrap_or(byroredux_physics::CharacterController::HUMAN);
 
-        // Keep the distance inside the 180-BU melee reach. A live engine uses
-        // the same walkable-floor probe as door arrivals; the resource-light
-        // command test falls back to the authored floor height.
+        // Keep the distance inside the 180-BU melee reach. The frozen ambush
+        // actor is not itself standing over architecture, so a live engine
+        // searches a deterministic ring for a nearby authored floor and
+        // rejects candidates whose vertical separation would put the actor
+        // outside the attack ray. Resource-light command tests retain the
+        // direct authored-height fallback.
         let authored_floor_pos = target_pos - Vec3::Z * 120.0;
-        let body_pos = if world
+        let (body_pos, floor_y) = if world
             .try_resource::<byroredux_physics::PhysicsWorld>()
             .is_some()
         {
-            if !crate::systems::ground_character_body_at(world, authored_floor_pos) {
-                return CommandOutput::line("combat.approach: failed to ground character body");
-            }
-            world
-                .get::<Transform>(player)
-                .map(|transform| transform.translation)
-                .unwrap_or(
-                    authored_floor_pos + Vec3::Y * (controller.half_height + controller.radius),
-                )
+            let Some(approach) =
+                find_walkable_combat_approach(world, player, target_pos, controller)
+            else {
+                return CommandOutput::line(
+                    "combat.approach: no authored floor within grounded melee reach",
+                );
+            };
+            approach
         } else {
-            authored_floor_pos + Vec3::Y * (controller.half_height + controller.radius)
+            (
+                authored_floor_pos + Vec3::Y * (controller.half_height + controller.radius),
+                authored_floor_pos.y,
+            )
         };
         let camera_pos = body_pos + Vec3::Y * controller.eye_height;
         let aim_pos = target_pos + Vec3::Y * controller.eye_height * 1.15;
@@ -239,8 +292,12 @@ impl ConsoleCommand for CombatApproachCommand {
                 target_pos.x, target_pos.y, target_pos.z,
             ),
             format!(
-                "  body=({:.2}, {:.2}, {:.2}) distance=120.0 physics_synced={physics_synced}",
-                body_pos.x, body_pos.y, body_pos.z,
+                "  body=({:.2}, {:.2}, {:.2}) floor_y={floor_y:.2} distance={:.2} \
+                 physics_synced={physics_synced}",
+                body_pos.x,
+                body_pos.y,
+                body_pos.z,
+                Vec3::new(body_pos.x, target_pos.y, body_pos.z).distance(target_pos),
             ),
         ])
     }

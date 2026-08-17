@@ -982,12 +982,17 @@ impl ApplicationHandler for App {
                     self.bench_summary_printed = true;
                     if !self.bench_hold {
                         event_loop.exit();
-                    } else {
+                    } else if let Some(endpoint) = self.debug_server_endpoint() {
                         eprintln!(
                             "bench-hold: engine held open in live interactive mode — \
                              attach via `cargo run -p byro-dbg` \
-                             (port {}). Ctrl+C / window close to exit.",
-                            std::env::var("BYRO_DEBUG_PORT").unwrap_or_else(|_| "9876".to_string()),
+                             ({endpoint}). Ctrl+C / window close to exit.",
+                        );
+                    } else {
+                        eprintln!(
+                            "bench-hold-unavailable: engine is held open, but the debug \
+                             server did not bind; byro-dbg cannot attach. Ctrl+C / \
+                             window close to exit."
                         );
                     }
                 }

@@ -44,7 +44,7 @@ for required in \
     "$SKYRIM_DATA/Skyrim - Misc.bsa"; do
     if [[ ! -f "$required" ]]; then
         echo "smoke[p1-character-traversal]: SKIP -- missing $required"
-        exit 0
+        exit 77
     fi
 done
 
@@ -248,7 +248,7 @@ run_hold backward 130 "interior threshold return"
 wait_for_debug_pattern "interaction.status" "prompt=[E] Open" "$interaction_log" "door prompt recovered after walking"
 
 debug_command "input.press activate" "$command_log" || fail "could not activate the interior door"
-grep -Fq "normal Activate binding" "$command_log" \
+grep -Fq "input.press: queued action=Activate binding=E" "$command_log" \
     || fail "interior door activation bypassed the action binding"
 wait_for_engine_log \
     "Cell transition applied: → exterior 'whiterunworld' (6,-2)" \
@@ -282,6 +282,8 @@ move_until backward z ge 7670 "reverse-door approach" 30
 wait_for_debug_pattern "interaction.status" "prompt=[E] Open" "$interaction_log" "reverse exterior door prompt is reachable"
 
 debug_command "input.press activate" "$command_log" || fail "could not activate the reverse door"
+grep -Fq "input.press: queued action=Activate binding=E" "$command_log" \
+    || fail "reverse door activation bypassed the action binding"
 wait_for_engine_log \
     "Cell transition applied: → interior 'WhiterunBanneredMare'" \
     "exterior-to-interior transition completed"

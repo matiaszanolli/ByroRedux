@@ -160,9 +160,9 @@ Goal: one hostile encounter has a complete cause-and-effect loop.
 Defer weapon-family breadth, advanced perks, dismemberment, and generalized
 behavior-graph parity until the one-family closure gate passes.
 
-**Fixture frozen 2026-08-10:**
+**Fixture frozen 2026-08-10; grounded placement corrected 2026-08-17:**
 [`p2-combat-fixture.md`](p2-combat-fixture.md) pins direct NPC reference
-`000380B4` in `BleakFallsBarrow01`, a level-1 Draugr with explicit creature /
+`000383F7` in `BleakFallsBarrow01`, a level-1 Draugr with explicit creature /
 Draugr factions, a death-item list, and one two-handed weapon family. The
 surface trace found the first implementation blockers: Skyrim NPCs currently
 receive no `ActorValues`; weapon records stay inventory-only; actor ray hits

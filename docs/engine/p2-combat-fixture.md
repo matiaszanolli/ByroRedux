@@ -1,19 +1,19 @@
 # P2 Combat Fixture
 
-**Status:** fixture frozen 2026-08-10; combat core passing 2026-08-16
+**Status:** fixture frozen 2026-08-10; grounded placement corrected 2026-08-17
 
 This fixture is the single real-data target for the playable vertical slice's
 first combat loop. It deliberately avoids leveled-actor placement and weapon
 family breadth so implementation failures stay attributable to engine state,
 not content selection.
 
-The combat-core checkpoint now passes via
+The combat-core checkpoint runs via
 [`p2-melee-core.sh`](../smoke-tests/p2-melee-core.sh): vanilla Health derives
 to 50, the player ray resolves a skeleton bone back to this placement root,
-seven bound unarmed attacks emit seven canonical `HitEvent`s, and zero Health
-produces one `Dead` transition plus an 18-body ragdoll. The full P2 closure
-below remains open for authored response animation/sound, corpse loot, and
-save/reload continuity.
+and bound attacks emit canonical `HitEvent`s until zero Health produces one
+`Dead` transition plus an 18-body ragdoll. Attack count is derived from the
+live player's resolved weapon damage (or the documented unarmed fallback), so
+landing an authored player loadout does not invalidate the gate.
 
 ## Frozen actor and weapon family
 
@@ -21,9 +21,9 @@ save/reload continuity.
 |---|---|
 | Plugin | `Skyrim.esm` |
 | Interior CELL | `BleakFallsBarrow01` (`000371DE`) |
-| Placed reference | `000380B4` |
+| Placed reference | `000383F7` |
 | Base NPC | `000E9895` (`EncDraugr01AmbushMelee2HHeadM06`) |
-| Authored position (Z-up) | `(9015.6, -4724.6, -2053.7)` |
+| Authored position (Z-up) | `(6637.7, -8671.9, -2567.9)` |
 | Level | `1` |
 | Factions | `00000013 CreatureFaction`, `0002430D DraugrFaction` |
 | Default outfit | `0001F85E` |
@@ -37,7 +37,10 @@ path. Both concrete weapon leaves use the same two-handed animation family;
 P2 may choose one deterministically without broadening its animation or timing
 contract. The smoke will position the player near this actor and explicitly
 start the encounter, so the initial ambush presentation is not a prerequisite
-for the combat gate.
+for the combat gate. Reference `000380B4`, the fixture's original placement,
+has no walkable collision within the 180-BU melee reach; `000383F7` is the
+same direct base NPC and weapon family in a location where the real character
+capsule remains grounded on authored collision throughout every swing.
 
 The data contract can be rechecked without Vulkan or archive loading:
 
@@ -46,12 +49,12 @@ cargo run -p byroredux-plugin --example probe_combat_fixture -- \
   "$BYROREDUX_SKYRIM_DATA/Skyrim.esm" BleakFallsBarrow01
 ```
 
-The probe must report CELL `000371DE`, direct NPC reference `000380B4`, both
+The probe must report CELL `000371DE`, direct NPC reference `000383F7`, both
 factions, death item `0003AD7F`, and the two concrete weapon leaves above.
 
-A release-build live preflight on 2026-08-10 also resolved the actor by its
+A release-build live preflight on 2026-08-17 also resolved the actor by its
 editor ID after the full cell load. Its root landed at renderer Y-up position
-`(9015.58, -2053.70, 4724.62)`, matching the authored transform. Inspection
+`(6637.7, -2567.9, 8671.9)`, matching the authored transform. Inspection
 showed ten inventory rows, including four copies each of the Battleaxe and
 Greatsword leaves, while all 32 `EquipmentSlots` occupants were empty. That
 confirms the production spawn path and makes the current leveled expansion /
@@ -101,6 +104,8 @@ Attack edge -> actor-owned ray hit -> one HitEvent -> Health decreases
             -> corpse activation -> inventory transfer -> reload continuity
 ```
 
-The smoke also asserts the frozen reference/base FormIDs and weapon family at
-preflight. Unit tests may construct the individual state transitions, but P2
-does not close until the chain passes against this real `Skyrim.esm` actor.
+The smoke parses `Skyrim.esm` at preflight and asserts the frozen CELL,
+reference/base FormIDs, and both concrete weapon leaves. It then reads the
+player's live `inventory.status` and requires every reported hit to use that
+resolved damage. Unit tests may construct the individual state transitions,
+but P2 does not close until the chain passes against this real actor.

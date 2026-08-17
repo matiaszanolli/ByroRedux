@@ -274,10 +274,9 @@ struct App {
     /// Debug server lifecycle owner (#855 / C6-NEW-02). Holding the
     /// handle keeps the TCP listener thread alive; the natural App::Drop
     /// fires the handle's Drop, which sets the shutdown flag and joins
-    /// the listener cleanly instead of detaching it. Read-side never
-    /// touches it — the field exists purely for its Drop side-effect.
+    /// the listener cleanly instead of detaching it. Bench-hold also
+    /// reads the confirmed bound endpoint before advertising attachability.
     #[cfg(feature = "debug-server")]
-    #[allow(dead_code)]
     debug_server: Option<byroredux_debug_server::DebugServerHandle>,
     /// Debug-UI overlay state — egui context + winit input
     /// translator. `None` until `resumed` constructs the window;
@@ -364,7 +363,13 @@ impl App {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(9876);
-            Some(byroredux_debug_server::start(&mut scheduler, debug_port))
+            match byroredux_debug_server::start(&mut scheduler, debug_port) {
+                Ok(handle) => Some(handle),
+                Err(error) => {
+                    log::error!("Debug server failed to bind 127.0.0.1:{debug_port}: {error}");
+                    None
+                }
+            }
         };
 
         boot::install_runtime_registries(&mut world, &scheduler);
@@ -472,6 +477,19 @@ impl App {
             in_use_mesh_scratch: std::collections::HashSet::new(),
             in_use_tex_scratch: std::collections::HashSet::new(),
             last_redraw_end: None,
+        }
+    }
+
+    fn debug_server_endpoint(&self) -> Option<String> {
+        #[cfg(feature = "debug-server")]
+        {
+            self.debug_server
+                .as_ref()
+                .map(|server| server.local_addr().to_string())
+        }
+        #[cfg(not(feature = "debug-server"))]
+        {
+            None
         }
     }
 

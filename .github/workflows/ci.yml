@@ -11,6 +11,14 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  playable-smoke-contracts:
+    name: Playable smoke gate contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Invoke every playable smoke gate without game data
+        run: scripts/check-playable-smoke-contracts.sh
+
   # ──────────────────────────────────────────────────────────────────────────
   # Offline shader source/artifact parity
   #

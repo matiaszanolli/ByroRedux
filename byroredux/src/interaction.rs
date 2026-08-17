@@ -488,8 +488,11 @@ pub(crate) fn queue_debug_action_press(world: &World, action_name: &str) -> Resu
         .try_resource_mut::<InjectedKeyPulse>()
         .ok_or_else(|| "InjectedKeyPulse resource is not installed".to_string())?;
     pulse.key = Some(key);
+    // Machine-readable tokens are part of the playable-slice smoke contract.
+    // Keep the prose-free `action=... binding=...` shape stable so a harmless
+    // wording change cannot silently make the P0/P1/P2 gates unusable again.
     Ok(format!(
-        "input.press: queued {} through the {label} binding",
+        "input.press: queued action={} binding={label}",
         action.label()
     ))
 }
@@ -1044,7 +1047,8 @@ mod tests {
     #[test]
     fn injected_e_key_pulse_uses_binding_and_releases_next_frame() {
         let world = input_fixture();
-        queue_debug_action_press(&world, "activate").unwrap();
+        let message = queue_debug_action_press(&world, "activate").unwrap();
+        assert_eq!(message, "input.press: queued action=Activate binding=E");
 
         refresh_action_state(&world);
         assert!(world
@@ -1128,7 +1132,7 @@ mod tests {
             .resource_mut::<ActionBindings>()
             .bind_key(KeyCode::KeyX, InputAction::Attack);
         let message = queue_debug_action_press(&world, "attack").unwrap();
-        assert!(message.contains("through the X binding"));
+        assert_eq!(message, "input.press: queued action=Attack binding=X");
 
         refresh_action_state(&world);
         assert!(world

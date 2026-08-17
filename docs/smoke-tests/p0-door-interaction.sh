@@ -39,7 +39,7 @@ for required in \
     "$SKYRIM_DATA/Skyrim - Misc.bsa"; do
     if [[ ! -f "$required" ]]; then
         echo "smoke[p0-door-interaction]: SKIP -- missing $required"
-        exit 0
+        exit 77
     fi
 done
 
@@ -112,7 +112,7 @@ input.press activate
 .quit
 EOF
 require_in "$press_log" \
-    "input.press: queued KeyE through the normal Activate binding" \
+    "input.press: queued action=Activate binding=E" \
     "smoke input entered through the normal KeyE binding"
 
 deadline=$(( $(date +%s) + TIMEOUT ))

@@ -11,6 +11,8 @@
 //!   `ctx.scratch`, `world.owners`, `r.health`)
 //! - [`env_health`] — environment-value gate over the live lighting/sky
 //!   resources (`env.health`)
+//! - [`gameplay`] — inventory/equipment and persistent-settings diagnostics
+//!   (`inventory.status`, `settings.status`)
 //! - [`assets`] — texture / mesh / skin diagnostics
 //!   (`tex.*`, `mesh.*`, `skin.*`)
 //! - [`view`] — camera + selection / picking
@@ -29,6 +31,7 @@ mod actor_value;
 mod assets;
 mod condition;
 mod env_health;
+mod gameplay;
 mod quest;
 mod scene;
 mod shared;
@@ -41,6 +44,7 @@ use actor_value::*;
 use assets::*;
 use condition::*;
 use env_health::*;
+use gameplay::*;
 use quest::*;
 use scene::*;
 use shared::*;
@@ -90,6 +94,8 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(InputHoldCommand);
     registry.register(InputLookCommand);
     registry.register(PlayerStatusCommand);
+    registry.register(InventoryStatusCommand);
+    registry.register(SettingsStatusCommand);
     registry.register(WaterDumpCommand);
     registry.register(WaterContactsCommand);
     registry.register(DoorTeleportCommand);

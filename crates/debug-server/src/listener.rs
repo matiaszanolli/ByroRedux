@@ -8,7 +8,7 @@
 use crate::system::DebugDrainSystem;
 use byroredux_debug_protocol::{wire, DebugRequest, DebugResponse};
 use std::io::BufWriter;
-use std::net::{Shutdown, TcpListener, TcpStream};
+use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, Weak};
@@ -94,6 +94,7 @@ pub(crate) fn try_enqueue_command(
 pub struct DebugServerHandle {
     listener: Option<JoinHandle<()>>,
     shutdown: Arc<AtomicBool>,
+    local_addr: SocketAddr,
     /// Registry of accepted client streams (`Weak` so naturally-
     /// disconnected clients are pruned by reference-count alone).
     /// On `shutdown_and_join` the handle iterates this list AFTER the
@@ -105,6 +106,12 @@ pub struct DebugServerHandle {
 }
 
 impl DebugServerHandle {
+    /// Confirmed address of the bound listener. Construction cannot succeed
+    /// until bind + non-blocking setup have both completed.
+    pub fn local_addr(&self) -> SocketAddr {
+        self.local_addr
+    }
+
     /// Signal shutdown to the listener and (best-effort) join its thread.
     /// Idempotent; subsequent calls are no-ops. Per-client threads stay
     /// detached but will observe the same flag on their next read.
@@ -144,7 +151,14 @@ impl Drop for DebugServerHandle {
 /// Spawn the TCP listener thread and return the drain system + the
 /// shutdown-aware handle. Holding the handle keeps the listener thread
 /// alive; dropping it signals shutdown and joins cleanly.
-pub fn spawn(port: u16) -> (DebugDrainSystem, DebugServerHandle) {
+pub fn spawn(port: u16) -> std::io::Result<(DebugDrainSystem, DebugServerHandle)> {
+    // Bind synchronously so callers cannot announce readiness while the
+    // background thread is still racing (or has already failed) to claim the
+    // port. Port 0 remains useful for collision-free tests.
+    let listener = TcpListener::bind(("127.0.0.1", port))?;
+    listener.set_nonblocking(true)?;
+    let local_addr = listener.local_addr()?;
+
     let queue: CommandQueue = Arc::new(Mutex::new(Vec::new()));
     let system = DebugDrainSystem::new(queue.clone());
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -154,43 +168,27 @@ pub fn spawn(port: u16) -> (DebugDrainSystem, DebugServerHandle) {
 
     let handle = thread::Builder::new()
         .name("byro-debug-listener".to_string())
-        .spawn(move || listener_loop(port, queue, shutdown_listener, active_streams_listener))
-        .expect("failed to spawn debug listener thread");
+        .spawn(move || {
+            listener_loop(listener, queue, shutdown_listener, active_streams_listener)
+        })?;
 
-    (
+    Ok((
         system,
         DebugServerHandle {
             listener: Some(handle),
             shutdown,
+            local_addr,
             active_streams,
         },
-    )
+    ))
 }
 
 fn listener_loop(
-    port: u16,
+    listener: TcpListener,
     queue: CommandQueue,
     shutdown: Arc<AtomicBool>,
     active_streams: StreamRegistry,
 ) {
-    // Bind hostname is currently hardcoded to 127.0.0.1 — debug
-    // server is loopback-only by design (no exposed port to the
-    // network). The matching log line in `lib.rs::start` says the
-    // same thing; both must move in lockstep if a future feature
-    // adds a host argument. See #857.
-    let listener = match TcpListener::bind(format!("127.0.0.1:{}", port)) {
-        Ok(l) => l,
-        Err(e) => {
-            log::error!("Debug server failed to bind port {}: {}", port, e);
-            return;
-        }
-    };
-
-    // Non-blocking accept so the thread can be joined on shutdown.
-    listener
-        .set_nonblocking(true)
-        .expect("failed to set listener non-blocking");
-
     loop {
         if shutdown.load(Ordering::Acquire) {
             log::info!("Debug listener received shutdown signal — exiting cleanly");
@@ -363,7 +361,8 @@ mod tests {
     /// over a hardcoded port).
     #[test]
     fn dropping_handle_joins_listener_thread() {
-        let (drain, handle) = spawn(0);
+        let (drain, handle) = spawn(0).unwrap();
+        assert_ne!(handle.local_addr().port(), 0);
         // Drain system is held just to mirror the production flow where
         // it's moved into the scheduler. Dropping the handle is what
         // exercises the bug.
@@ -382,6 +381,18 @@ mod tests {
             "DebugServerHandle Drop took {:?} — listener join did not honour shutdown",
             elapsed,
         );
+    }
+
+    #[test]
+    fn occupied_port_is_reported_before_a_handle_is_returned() {
+        let occupied = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = occupied.local_addr().unwrap().port();
+
+        let error = match spawn(port) {
+            Ok(_) => panic!("debug listener unexpectedly bound occupied port {port}"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), std::io::ErrorKind::AddrInUse);
     }
 
     fn empty_queue() -> CommandQueue {

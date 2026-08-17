@@ -129,6 +129,21 @@ fn player_status_reports_character_body_grid_and_grounding() {
     assert!(output.contains("input_hold_frames_remaining=0"));
 }
 
+#[test]
+fn combat_approach_search_is_deterministic_and_stays_inside_melee_reach() {
+    let offsets: Vec<Vec3> = super::view::combat_approach_offsets().collect();
+    assert_eq!(offsets.len(), 48);
+    assert_eq!(offsets[0], Vec3::new(0.0, 0.0, -120.0));
+    assert!(offsets.iter().all(|offset| {
+        let radius = offset.length();
+        offset.y == 0.0
+            && radius <= super::view::COMBAT_APPROACH_MAX_RAY_BU
+            && [96.0_f32, 120.0, 144.0]
+                .iter()
+                .any(|expected| (radius - expected).abs() < 0.01)
+    }));
+}
+
 /// `skin.dump` regression for #841 — the dump must surface the
 /// resolved bone entity, its `Name`, the per-bone `bind_inverse`
 /// translation, and the composed palette translation in the

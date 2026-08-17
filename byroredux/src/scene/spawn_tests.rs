@@ -1,6 +1,6 @@
 use super::{
     capsule_center_y_on_surface, select_door_spawn_position, select_initial_player_mode,
-    GroundProbe,
+    CharacterSpawnPlan, GroundProbe,
 };
 use crate::systems::PlayerMode;
 use byroredux_core::math::Vec3;
@@ -142,12 +142,16 @@ fn character_needs_content_foreground_and_ground_together() {
 #[test]
 fn only_a_grounded_probe_is_walkable() {
     assert!(GroundProbe::Grounded {
+        x: 1.0,
+        z: 2.0,
         surface_y: 10.0,
         spawn_y: 78.0,
         collider_count: 416,
     }
     .is_walkable());
     assert!(!GroundProbe::NoFloorBeneath {
+        x: 1.0,
+        z: 2.0,
         searched_bu: 5000.0,
         collider_count: 416,
     }
@@ -159,6 +163,8 @@ fn only_a_grounded_probe_is_walkable() {
 fn probe_telemetry_is_greppable_and_names_the_collider_count() {
     // The smoke matrix greps this line, so its shape is a contract.
     let grounded = GroundProbe::Grounded {
+        x: 10.0,
+        z: 20.0,
         surface_y: -1234.5,
         spawn_y: -1150.0,
         collider_count: 416,
@@ -169,6 +175,8 @@ fn probe_telemetry_is_greppable_and_names_the_collider_count() {
     assert!(line.contains("colliders=416"), "{line}");
 
     let missing = GroundProbe::NoFloorBeneath {
+        x: 10.0,
+        z: 20.0,
         searched_bu: 5000.0,
         collider_count: 19,
     };
@@ -180,4 +188,32 @@ fn probe_telemetry_is_greppable_and_names_the_collider_count() {
     let none = GroundProbe::NoColliders;
     assert!(none.telemetry_line().contains("result=no-colliders"));
     assert_eq!(none.collider_count(), 0);
+}
+
+#[test]
+fn spawn_plan_reuses_the_probed_column_and_controller() {
+    let controller = byroredux_physics::CharacterController::HUMAN;
+    let body_pos = Vec3::new(11.0, 78.0, 22.0);
+    let plan = CharacterSpawnPlan::new(
+        body_pos,
+        controller,
+        GroundProbe::Grounded {
+            x: body_pos.x,
+            z: body_pos.z,
+            surface_y: 10.0,
+            spawn_y: body_pos.y,
+            collider_count: 4,
+        },
+    );
+
+    assert_eq!(plan.body_pos, body_pos);
+    assert_eq!(plan.controller.half_height, controller.half_height);
+    assert_eq!(plan.controller.radius, controller.radius);
+    assert_eq!(plan.controller.eye_height, controller.eye_height);
+    match plan.ground_probe {
+        GroundProbe::Grounded { x, z, .. } => {
+            assert_eq!((x, z), (plan.body_pos.x, plan.body_pos.z));
+        }
+        other => panic!("expected grounded spawn plan, got {other:?}"),
+    }
 }
