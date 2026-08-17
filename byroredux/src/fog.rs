@@ -6,7 +6,8 @@
 //! runtime code consumes only [`FogMedium`].
 
 use byroredux_core::ecs::{
-    CombustionState, EmitterShape, FogBounds, FogShape, FogSource, FogVolume, ParticleEmitter,
+    CombustionState, EmitterShape, FogBounds, FogProfile, FogShape, FogSource, FogVolume,
+    ParticleEmitter,
 };
 use byroredux_core::math::{Quat, Vec3};
 
@@ -291,7 +292,7 @@ pub(crate) fn combustion_state_from_particle(
     emitter: &ParticleEmitter,
     start_time_seconds: f32,
 ) -> Option<CombustionState> {
-    (volume.source == FogSource::Explosion)
+    (volume.profile == FogProfile::Explosion)
         .then(|| CombustionState::one_shot(start_time_seconds, emitter.life))
 }
 
@@ -388,6 +389,7 @@ pub(crate) fn fog_volume_from_particle(
         extinction_per_meter,
         single_scatter_albedo: single_scatter_albedo.to_array(),
         edge_softness: LOCAL_VOLUME_EDGE_SOFTNESS,
+        profile: FogProfile::Smoke,
         // Alpha-over smoke is passive: cooled soot scatters, it does not
         // radiate. The emissive path belongs to `fire_volume_from_particle`.
         emissive_radiance: [0.0; 3],
@@ -496,9 +498,10 @@ pub(crate) fn explosion_volume_from_particle(
         extinction_per_meter,
         single_scatter_albedo: [0.12; 3],
         edge_softness: 0.3,
+        profile: FogProfile::Explosion,
         emissive_radiance,
         emission_temperature_k: EXPLOSION_TEMPERATURE_K,
-        source: FogSource::Explosion,
+        source: FogSource::ParticleEmitter,
     })
 }
 
@@ -558,6 +561,7 @@ pub(crate) fn fire_volume_from_particle(
         // it scatters neutrally.
         single_scatter_albedo: [FLAME_SINGLE_SCATTER_ALBEDO; 3],
         edge_softness: LOCAL_VOLUME_EDGE_SOFTNESS,
+        profile: FogProfile::Flame,
         emissive_radiance,
         emission_temperature_k: temperature,
         source: FogSource::ParticleEmitter,
@@ -744,6 +748,7 @@ pub(crate) fn fog_volume_from_mesh(
         extinction_per_meter,
         single_scatter_albedo: single_scatter_albedo.to_array(),
         edge_softness: 0.35,
+        profile: FogProfile::Homogeneous,
         emissive_radiance: [0.0; 3],
         emission_temperature_k: 0.0,
         source: FogSource::AuthoredMesh,
@@ -967,7 +972,8 @@ mod tests {
         let volume = explosion_volume_from_particle("ExplosionFireball01", &emitter)
             .expect("an explosion emitter must become a transient medium");
         let bounds = volume.bounds.expect("explosion bounds");
-        assert_eq!(volume.source, FogSource::Explosion);
+        assert_eq!(volume.source, FogSource::ParticleEmitter);
+        assert_eq!(volume.profile, FogProfile::Explosion);
         assert_eq!(bounds.shape, FogShape::Sphere);
         assert_eq!(bounds.center, Vec3::ZERO);
         assert_eq!(bounds.half_extents, Vec3::splat(bounds.half_extents.x));
@@ -1038,7 +1044,7 @@ mod tests {
             );
             assert!(
                 medium_from_particle("ExplosionFireball", &ParticleEmitter::explosion())
-                    .is_some_and(|v| v.source == FogSource::Explosion)
+                    .is_some_and(|v| v.profile == FogProfile::Explosion)
             );
         }
         assert!(medium_from_particle("MagicSparkle", &ParticleEmitter::magic_sparkles()).is_none());

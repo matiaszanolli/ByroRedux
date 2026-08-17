@@ -30,6 +30,14 @@ pub struct FogVolume {
     /// Fraction of the normalized primitive radius occupied by the soft edge.
     /// `0` is a hard boundary; `1` fades from the primitive center outward.
     pub edge_softness: f32,
+    /// Canonical density/evolution behavior selected at the authoring -> ECS
+    /// translation boundary.
+    ///
+    /// Runtime systems consume this directly. They must not reconstruct it
+    /// from [`Self::source`], authored game identity, blend modes, or optical
+    /// coefficients: those inputs can be ambiguous, and doing so would spread
+    /// legacy schema policy through otherwise game-independent logic.
+    pub profile: FogProfile,
     /// Emitted radiance `L_e` in linear RGB (Rec. 709 primaries) — the
     /// emission source term of the radiative transfer equation.
     ///
@@ -119,7 +127,29 @@ pub enum FogShape {
     Box,
 }
 
-/// Provenance of a fog volume.
+/// Canonical local-medium behavior.
+///
+/// These variants describe simulation/render intent, not which game or file
+/// format produced the entity. Importers translate legacy authoring into one
+/// of these profiles exactly once; downstream ECS and renderer code remain
+/// game-independent and exhaustively match the canonical domain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
+pub enum FogProfile {
+    /// Preserve the authored primitive with only low-contrast heterogeneity.
+    Homogeneous,
+    /// A passive, buoyant plume of cooled particulates.
+    Smoke,
+    /// A persistent hot, tapered, emissive plume.
+    Flame,
+    /// A transient hot impulse that expands and cools into smoke.
+    Explosion,
+}
+
+/// Provenance of a fog volume, retained for diagnostics only.
+///
+/// Runtime behavior belongs to [`FogProfile`]. Consumers must not branch on
+/// provenance to recover behavior that the translation boundary already knew.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub enum FogSource {
@@ -135,10 +165,8 @@ pub enum FogSource {
     AuthoredMesh,
     /// A legacy fog/smoke particle emitter replaced by a local volume.
     ParticleEmitter,
-    /// A transient combustion source whose hot fireball expands into a
-    /// cooling smoke shell. The GPU profile owns that time evolution while
-    /// this variant preserves explicit provenance across the ECS boundary.
-    Explosion,
+    /// A synthetic or gameplay-spawned effect with no legacy authoring record.
+    RuntimeEffect,
 }
 
 /// Timeline attached to a transient combustion volume.
@@ -210,6 +238,7 @@ mod tests {
             extinction_per_meter: 0.4,
             single_scatter_albedo: [0.8, 0.75, 0.7],
             edge_softness: 0.35,
+            profile: FogProfile::Smoke,
             emissive_radiance: [0.0; 3],
             emission_temperature_k: 0.0,
             source: FogSource::ParticleEmitter,
@@ -225,6 +254,7 @@ mod tests {
             extinction_per_meter: 0.1,
             single_scatter_albedo: [0.9; 3],
             edge_softness: 0.0,
+            profile: FogProfile::Homogeneous,
             emissive_radiance: [0.0; 3],
             emission_temperature_k: 0.0,
             source: FogSource::Xcll,

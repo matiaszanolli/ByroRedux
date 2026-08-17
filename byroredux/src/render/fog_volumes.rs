@@ -1,7 +1,7 @@
 //! ECS local fog-volume collection and GPU translation.
 
 use byroredux_core::ecs::{
-    CombustionState, FogShape, FogSource, FogVolume, GlobalTransform, TotalTime, World,
+    CombustionState, FogProfile, FogShape, FogVolume, GlobalTransform, TotalTime, World,
 };
 use byroredux_core::math::Vec3;
 use byroredux_core::radiometry::{blackbody_chromaticity_srgb, linear_srgb_luminance};
@@ -37,7 +37,7 @@ pub(super) fn collect_fog_volumes(
             .as_ref()
             .and_then(|query| query.get(entity))
             .copied();
-        let explosion_age = if volume.source == FogSource::Explosion {
+        let explosion_age = if volume.profile == FogProfile::Explosion {
             match combustion {
                 Some(state) => match state.normalized_age(now_seconds) {
                     Some(age) => Some((age, state.lifetime_seconds)),
@@ -146,11 +146,11 @@ fn gpu_volume_from_ecs_with_explosion_age(
         FogShape::Box => 2.0,
     };
     let inverse_rotation = rotation.conjugate();
-    let profile = match (volume.source, volume.is_emissive()) {
-        (FogSource::Explosion, _) => FOG_VOLUME_PROFILE_EXPLOSION,
-        (FogSource::ParticleEmitter, true) => FOG_VOLUME_PROFILE_FLAME,
-        (FogSource::ParticleEmitter, false) => FOG_VOLUME_PROFILE_SMOKE,
-        _ => FOG_VOLUME_PROFILE_HOMOGENEOUS,
+    let profile = match volume.profile {
+        FogProfile::Homogeneous => FOG_VOLUME_PROFILE_HOMOGENEOUS,
+        FogProfile::Smoke => FOG_VOLUME_PROFILE_SMOKE,
+        FogProfile::Flame => FOG_VOLUME_PROFILE_FLAME,
+        FogProfile::Explosion => FOG_VOLUME_PROFILE_EXPLOSION,
     };
     let base_emission = volume.emissive_radiance.map(sanitize_emission);
     let base_temperature = volume.emission_temperature_k.max(0.0);
@@ -268,6 +268,7 @@ mod tests {
             extinction_per_meter: 0.7,
             single_scatter_albedo: [0.9, 0.8, 0.7],
             edge_softness: 0.4,
+            profile: FogProfile::Smoke,
             emissive_radiance: [0.0; 3],
             emission_temperature_k: 0.0,
             source: FogSource::ParticleEmitter,
@@ -281,8 +282,8 @@ mod tests {
     }
 
     #[test]
-    fn gpu_profile_distinguishes_authored_fog_smoke_flame_and_explosion() {
-        let make_volume = |source, emissive_radiance| FogVolume {
+    fn canonical_profile_drives_gpu_behavior_independent_of_provenance() {
+        let make_volume = |source, profile, emissive_radiance| FogVolume {
             bounds: Some(FogBounds {
                 center: Vec3::ZERO,
                 rotation: Quat::IDENTITY,
@@ -292,6 +293,7 @@ mod tests {
             extinction_per_meter: 0.7,
             single_scatter_albedo: [0.8; 3],
             edge_softness: 0.4,
+            profile,
             emissive_radiance,
             emission_temperature_k: if emissive_radiance == [0.0; 3] {
                 0.0
@@ -302,22 +304,35 @@ mod tests {
         };
 
         let authored = gpu_volume_from_ecs(
-            make_volume(FogSource::AuthoredMesh, [0.0; 3]),
+            make_volume(FogSource::AuthoredMesh, FogProfile::Homogeneous, [0.0; 3]),
             GlobalTransform::IDENTITY,
         )
         .unwrap();
         let smoke = gpu_volume_from_ecs(
-            make_volume(FogSource::ParticleEmitter, [0.0; 3]),
+            make_volume(FogSource::ParticleEmitter, FogProfile::Smoke, [0.0; 3]),
             GlobalTransform::IDENTITY,
         )
         .unwrap();
         let flame = gpu_volume_from_ecs(
-            make_volume(FogSource::ParticleEmitter, [8.0, 3.0, 0.5]),
+            make_volume(
+                FogSource::ParticleEmitter,
+                FogProfile::Flame,
+                [8.0, 3.0, 0.5],
+            ),
+            GlobalTransform::IDENTITY,
+        )
+        .unwrap();
+        let passive_runtime_flame = gpu_volume_from_ecs(
+            make_volume(FogSource::RuntimeEffect, FogProfile::Flame, [0.0; 3]),
             GlobalTransform::IDENTITY,
         )
         .unwrap();
         let explosion = gpu_volume_from_ecs_with_explosion_age(
-            make_volume(FogSource::Explosion, [24.0, 12.0, 2.0]),
+            make_volume(
+                FogSource::ParticleEmitter,
+                FogProfile::Explosion,
+                [24.0, 12.0, 2.0],
+            ),
             GlobalTransform::IDENTITY,
             Some((0.375, 2.4)),
         )
@@ -326,6 +341,11 @@ mod tests {
         assert_eq!(authored.profile_params[0], FOG_VOLUME_PROFILE_HOMOGENEOUS);
         assert_eq!(smoke.profile_params[0], FOG_VOLUME_PROFILE_SMOKE);
         assert_eq!(flame.profile_params[0], FOG_VOLUME_PROFILE_FLAME);
+        assert_eq!(
+            passive_runtime_flame.profile_params[0], FOG_VOLUME_PROFILE_FLAME,
+            "runtime behavior must come from the canonical profile, not be re-inferred from \
+             provenance or current emission"
+        );
         assert_eq!(
             explosion.profile_params,
             [FOG_VOLUME_PROFILE_EXPLOSION, 0.375, 2.4, 0.0]
@@ -365,6 +385,7 @@ mod tests {
             extinction_per_meter: 0.5,
             single_scatter_albedo: [0.9; 3],
             edge_softness: 0.4,
+            profile: FogProfile::Homogeneous,
             emissive_radiance: [0.0; 3],
             emission_temperature_k: 0.0,
             source: FogSource::Xcll,
@@ -390,6 +411,7 @@ mod tests {
             extinction_per_meter: 0.5,
             single_scatter_albedo: [0.9; 3],
             edge_softness: 0.4,
+            profile: FogProfile::Smoke,
             emissive_radiance: [0.0; 3],
             emission_temperature_k: 0.0,
             source: FogSource::ParticleEmitter,

@@ -10,7 +10,8 @@ weather-classified coverage). Emissive media (fire) landed as an emission
 source term on the same primitives plus derived light sources; a voxel fire
 simulation is the open follow-up.
 
-**Location:** `byroredux/src/render/{fog_volumes,fire_lights,lights}.rs`,
+**Location:** `crates/core/src/ecs/components/fog_volume.rs`,
+`byroredux/src/{fog,render/{fog_volumes,fire_lights,lights}}.rs`,
 `crates/renderer/src/vulkan/volumetrics.rs`,
 `crates/renderer/shaders/volumetrics_{inject,integrate}.comp`, and
 `crates/renderer/shaders/composite.frag`.
@@ -49,6 +50,11 @@ of them one physical and temporal contract.
 - XCLL/WTHR near/far ramps are converted once at the cell/weather translation
   boundary. Runtime volumetrics consume extinction in inverse metres,
   single-scatter albedo, and coverage; they never evaluate the legacy ramp.
+- Local authoring is likewise translated once into a canonical `FogProfile`
+  (`Homogeneous`, `Smoke`, `Flame`, or `Explosion`). `FogSource` is diagnostic
+  provenance only. ECS and renderer code consume the profile directly and
+  never infer behavior from game identity, import source, blend mode, or a
+  coincidental combination of optical coefficients.
 - Authored LIGH records and procedural combustion both cross the render
   boundary as the same canonical `Emitter`: position in metres, radiant
   intensity in watts per steradian, and range in metres. The shared GPU
@@ -98,7 +104,9 @@ of them one physical and temporal contract.
   cell's fog.
 - Alpha-over particle systems whose host or texture identifies fog, smoke,
   mist, steam, vapor, cloud, or dust are replaced at the NIF→ECS boundary.
-  Additive flame/ember/magic particles remain billboards.
+  Thermally identified flame, ember, and explosion emitters cross the same
+  boundary as `Flame` or `Explosion` profiles regardless of blend mode;
+  non-thermal additive magic particles remain billboards.
 - Particle preset selection inspects the sprite texture as well as the host
   node. This covers generic Bethesda hosts such as `SuperSpray01-Emitter`
   whose only smoke intent is `fxsmokewispsthin01.dds`. When the retained
@@ -124,8 +132,10 @@ of them one physical and temporal contract.
 ## Emissive media (fire)
 
 Fire is not a separate subsystem. A flame and its smoke are one physical
-material — soot — distinguished only by temperature, so both are `FogVolume`
-primitives and differ only in their coefficients:
+material — soot — represented by the same `FogVolume` contract. Their optical
+coefficients follow temperature, while the canonical profile states whether
+the current source is a persistent hot plume, cooled smoke plume, homogeneous
+authored medium, or transient combustion impulse:
 
 | | extinction | single-scatter albedo | emission `L_e` |
 |---|---|---|---|
@@ -287,7 +297,9 @@ the current combined timer as a final budget verdict.
 
 1. add a transported combustion field for fuel, temperature, soot, and
    velocity so fire rolls, entrains air, cools into smoke, and drives explosion
-   pressure rather than remaining an analytic primitive;
+   pressure rather than remaining an analytic primitive. Canonical
+   `FogProfile` values become solver emitter presets at this boundary; the
+   solver itself must not branch on game or authoring provenance;
 2. extend authored-mesh replacement to the loose-NIF route and add the optional
    tri-planar 2D-mask density path for silhouettes that need texture fidelity;
 3. map the verified Starfield height-fog block without guessing its curve;

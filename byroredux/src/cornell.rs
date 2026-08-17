@@ -44,8 +44,8 @@
 //! `mat.set <id> color r g b` tweak fully recolors a probe.
 
 use byroredux_core::ecs::{
-    CombustionState, FogBounds, FogShape, FogSource, FogVolume, GlobalTransform, LightSource,
-    Material, MeshHandle, TextureHandle, TotalTime, Transform, World,
+    CombustionState, FogBounds, FogProfile, FogShape, FogSource, FogVolume, GlobalTransform,
+    LightSource, Material, MeshHandle, TextureHandle, TotalTime, Transform, World,
 };
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_core::string::StringPool;
@@ -1277,6 +1277,7 @@ fn spawn_fog_volume_with_extinction(
             extinction_per_meter,
             single_scatter_albedo: [0.92, 0.92, 0.97],
             edge_softness: 0.35,
+            profile: FogProfile::Homogeneous,
             emissive_radiance: [0.0; 3],
             emission_temperature_k: 0.0,
             source: FogSource::AuthoredMesh,
@@ -1307,9 +1308,10 @@ fn spawn_combustion_probe(world: &mut World, pos: Vec3) {
             extinction_per_meter: 10.0,
             single_scatter_albedo: [0.12; 3],
             edge_softness: 0.3,
+            profile: FogProfile::Explosion,
             emissive_radiance,
             emission_temperature_k: 2800.0,
-            source: FogSource::Explosion,
+            source: FogSource::RuntimeEffect,
         },
     );
     let now_seconds = { world.resource::<TotalTime>().0 };
