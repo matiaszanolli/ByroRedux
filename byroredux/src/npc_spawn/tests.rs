@@ -168,7 +168,7 @@ fn skeleton_path_per_game() {
 #[test]
 fn body_paths_kf_era_include_separate_hand_meshes() {
     for game in [GameKind::Oblivion, GameKind::Fallout3NV] {
-        let paths = humanoid_body_paths(game);
+        let paths = humanoid_body_paths(game, Gender::Male, false);
         assert_eq!(
             paths.len(),
             3,
@@ -189,6 +189,84 @@ fn body_paths_kf_era_include_separate_hand_meshes() {
     }
 }
 
+#[test]
+fn body_paths_kf_era_select_gender_and_child_variants() {
+    assert_eq!(
+        humanoid_body_paths(GameKind::Fallout3NV, Gender::Female, false),
+        &[
+            r"meshes\characters\_male\femaleupperbody.nif",
+            r"meshes\characters\_male\femalelefthand.nif",
+            r"meshes\characters\_male\femalerighthand.nif",
+        ],
+    );
+    assert_eq!(
+        humanoid_body_paths(GameKind::Fallout3NV, Gender::Male, true),
+        &[
+            r"meshes\characters\_male\childupperbody.nif",
+            r"meshes\characters\_male\lefthand.nif",
+            r"meshes\characters\_male\righthand.nif",
+        ],
+    );
+    assert_eq!(
+        humanoid_body_paths(GameKind::Fallout3NV, Gender::Female, true),
+        &[
+            r"meshes\characters\_male\childfemaleupperbody.nif",
+            r"meshes\characters\_male\femalelefthand.nif",
+            r"meshes\characters\_male\femalerighthand.nif",
+        ],
+    );
+
+    // Oblivion shares FO3/FNV's historical `_male` directory and female
+    // filename prefix, but DATA bit 2 means BeastRace there, not Child.
+    assert_eq!(
+        humanoid_body_paths(GameKind::Oblivion, Gender::Female, false),
+        &[
+            r"meshes\characters\_male\femaleupperbody.nif",
+            r"meshes\characters\_male\femalelefthand.nif",
+            r"meshes\characters\_male\femalerighthand.nif",
+        ],
+    );
+}
+
+#[test]
+fn installed_fnv_sunny_smiles_selects_the_female_body() {
+    let data = std::env::var_os("BYROREDUX_FNV_DATA")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::path::PathBuf::from(
+                "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data",
+            )
+        });
+    let esm = data.join("FalloutNV.esm");
+    let Ok(bytes) = std::fs::read(&esm) else {
+        eprintln!(
+            "skipping real-data #3037 regression: {} absent",
+            esm.display()
+        );
+        return;
+    };
+    let index = byroredux_plugin::esm::parse_esm(&bytes).expect("parse FalloutNV.esm");
+    let sunny = index.npcs.get(&0x0010_4E84).expect("GSSunnySmiles NPC_");
+    let race = index
+        .races
+        .get(&sunny.race_form_id)
+        .expect("Sunny's Hispanic race");
+    let gender = Gender::from_acbs_flags(sunny.acbs_flags);
+    let is_child = race.race_flags & 0x04 != 0;
+
+    assert_eq!(gender, Gender::Female);
+    assert!(!is_child);
+    assert_eq!(
+        humanoid_body_paths(GameKind::Fallout3NV, gender, is_child)[0],
+        r"meshes\characters\_male\femaleupperbody.nif",
+    );
+    assert_eq!(
+        humanoid_skeleton_path(GameKind::Fallout3NV),
+        Some(r"meshes\characters\_male\skeleton.nif"),
+        "female bodies retain the shared vanilla skeleton",
+    );
+}
+
 /// Skyrim+/FO4+ stand on the pre-baked-FaceGen track — head + body
 /// ship in one per-NPC `facegeom.nif`. The body resolver must
 /// return an empty slice for those variants so the NPC-spawn loop
@@ -201,7 +279,7 @@ fn body_paths_facegen_era_returns_empty_slice() {
         GameKind::Fallout76,
         GameKind::Starfield,
     ] {
-        let paths = humanoid_body_paths(game);
+        let paths = humanoid_body_paths(game, Gender::Male, false);
         assert!(
             paths.is_empty(),
             "{game:?} should defer body to FaceGen path, got {paths:?}",

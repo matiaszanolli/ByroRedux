@@ -269,25 +269,6 @@ pub fn humanoid_skeleton_path(game: GameKind) -> Option<&'static str> {
     }
 }
 
-/// Hardcoded vanilla body NIF paths.
-///
-/// On FNV / FO3 the RACE record's `MODL` fields carry **head** mesh
-/// paths (e.g. `Characters\Head\HeadHuman.NIF`), not body — the body
-/// ships at canonical paths per gender that every humanoid race shares.
-/// FNV's `Fallout - Meshes.bsa` ships hands as separate NIFs alongside
-/// the upperbody, so a single path is not enough to fully cover a kf-
-/// era humanoid (#793 — pre-fix every NPC rendered without hands).
-///
-/// Returns `&[]` for game variants on the pre-baked-FaceGen track —
-/// SSE / FO4 / FO76 / Starfield don't ship a separate skinned body
-/// NIF; the per-NPC `facegendata\facegeom\<plugin>\<formid:08x>.nif`
-/// carries head + body in one mesh. That spawn path lands in Phase 4.
-///
-/// Female humanoids on FNV vanilla re-use the male body (verified
-/// 2026-04-28 — `_female\` directory not present in vanilla
-/// Fallout - Meshes.bsa). Mods may add a separate female set; the
-/// gender split can be re-introduced on the signature at that point.
-/// See TD8-018 / #1117 for the placeholder-arg removal rationale.
 /// Split a creature's `CREA` MODL into `(skeleton path, directory prefix)`,
 /// both normalised to the archive's `meshes\…` convention.
 ///
@@ -337,18 +318,51 @@ pub fn creature_idle_kf_path(dir: &str) -> String {
     format!("{dir}idle.kf")
 }
 
-pub fn humanoid_body_paths(game: GameKind) -> &'static [&'static str] {
-    match game {
-        // Oblivion's mesh layout uses the same `_male\` directory shape
-        // as FO3 / FNV; if Oblivion ships hands at different paths the
-        // load will silently miss (debug-logged) like any other modded
-        // path. Verification deferred per #793 issue body.
-        GameKind::Oblivion | GameKind::Fallout3NV => &[
+/// Hardcoded vanilla body NIF paths for KF-era humanoids.
+///
+/// The TES4/Fallout RACE `MODL` entries describe head parts, not the body.
+/// Body meshes live under `characters\_male` in all three games, but the
+/// directory name is historical rather than a gender discriminator: shipped
+/// female meshes use `female*` filename prefixes in that same directory.
+/// FO3/FNV child races set RACE DATA flag `0x04` and select the corresponding
+/// `child*upperbody` mesh; hands remain the gendered adult hand meshes because
+/// those are the only hand variants the archives ship (#3037).
+///
+/// Archive listings re-verified 2026-08-17 against Oblivion, FO3, and FNV.
+/// Every returned body variant skins against the same canonical skeleton from
+/// [`humanoid_skeleton_path`]. Skyrim+ uses its separate FaceGen body path and
+/// therefore returns an empty slice here.
+pub fn humanoid_body_paths(
+    game: GameKind,
+    gender: Gender,
+    is_child: bool,
+) -> &'static [&'static str] {
+    match (game, gender, is_child) {
+        (GameKind::Fallout3NV, Gender::Male, true) => &[
+            r"meshes\characters\_male\childupperbody.nif",
+            r"meshes\characters\_male\lefthand.nif",
+            r"meshes\characters\_male\righthand.nif",
+        ],
+        (GameKind::Fallout3NV, Gender::Female, true) => &[
+            r"meshes\characters\_male\childfemaleupperbody.nif",
+            r"meshes\characters\_male\femalelefthand.nif",
+            r"meshes\characters\_male\femalerighthand.nif",
+        ],
+        (GameKind::Oblivion | GameKind::Fallout3NV, Gender::Female, _) => &[
+            r"meshes\characters\_male\femaleupperbody.nif",
+            r"meshes\characters\_male\femalelefthand.nif",
+            r"meshes\characters\_male\femalerighthand.nif",
+        ],
+        (GameKind::Oblivion | GameKind::Fallout3NV, Gender::Male, _) => &[
             r"meshes\characters\_male\upperbody.nif",
             r"meshes\characters\_male\lefthand.nif",
             r"meshes\characters\_male\righthand.nif",
         ],
-        GameKind::Skyrim | GameKind::Fallout4 | GameKind::Fallout76 | GameKind::Starfield => &[],
+        (
+            GameKind::Skyrim | GameKind::Fallout4 | GameKind::Fallout76 | GameKind::Starfield,
+            _,
+            _,
+        ) => &[],
     }
 }
 
