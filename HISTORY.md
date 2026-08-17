@@ -24,6 +24,95 @@ Commits hold that record.
 
 ---
 
+## Session 68 — a thirteen-report sweep, a native UI for the playable slice, and gates that stop lying  (2026-08-15 → 2026-08-17, `83655bdf..23068af0`, 26 commits)
+
+Session 67 closed on the observation that the four owner-audits added at the end
+of Session 66 were finding what the shape-checking audits structurally could
+not. Session 68 took that to its conclusion: **thirteen reports in a single
+08-16 sweep**, the largest to date, filing #3008 through #3098. Unlike Session
+67 this is a deliberate refill — only the UI and renderer slices were worked
+down in-session, so the backlog is the sweep's output rather than its residue.
+The other arc is the playable vertical slice growing the two things it lacked:
+a UI the player can actually operate, and smoke gates that fail when the thing
+they gate is broken.
+
+- **The gates were lying, and now they don't (`23068af0`).** `/audit-runtime`
+  found all three playable gates unsound at once, which is the single most
+  useful finding of the sweep because every other gate-verified claim rested on
+  them. `p0-door-interaction.sh` and `p1-character-traversal.sh` were
+  deterministically RED from one reworded log line; `p2-melee-core.sh` *passed*
+  on a fixture whose player had no floor, because it asserted `physics_synced`
+  and never `grounded`; the walkable-spawn gate certified the camera column
+  while the character spawns at the door column; and no CI job ran any of them,
+  so all three exited 0 whenever Skyrim data was absent. Fixed with a
+  `playable-smoke.yml` workflow, a `check-playable-smoke-contracts.sh` contract
+  checker that pins each gate's own assertions, and a 535-line `scene.rs`
+  rework. Addresses #3000–#3003 and #3007 — none auto-closed, since the commit
+  body carried no `Fix` refs.
+- **Native UI: inventory, settings, and input the engine can drive
+  (`09682c71`, `4a404f5c`, `ef3b5fd0`).** An egui inventory screen reading the
+  canonical `Inventory`/`EquipmentSlots` components, with equip/unequip on
+  armor carrying authored biped slots; FO4/76 now keep Mods, Junk and Misc
+  distinct (a component-bearing MISC record is Junk, an OMOD's loose MISC
+  object is a Mod). Settings persist to the platform config directory and apply
+  live, with occupied-key binds swapping the two actions rather than silently
+  unbinding one. `InjectedKeyHold` plus `InputHoldCommand`/`InputLookCommand`
+  give the debug server bounded synthetic input — which is what made
+  `p1-character-traversal.sh` possible at all.
+- **P2 combat core (`eb5d76fe`, `adbc3f77`).** Skyrim race Health + signed ACBS
+  offset → actor-owned bone ray hit → bound Attack edge → canonical `HitEvent`
+  → layered damage → one `Dead`/AI-disable transition → the existing 18-body
+  ragdoll, all through the production path rather than a test harness.
+  `EquippedWeapon` selects the highest authored damage with a FormID tie-break.
+  A core checkpoint, not P2 closure: the fixture player is unarmed and so
+  exercises the explicit 8-damage fallback, and authored attack/hit/death
+  animation, corpse looting and save→reload continuity all remain open.
+- **R3 measurement closed (`e6d96c4f`, `8e7582ed`, `3d3e3a7b`).**
+  `scripts/rt-lod-sweep.sh` swept `{1e-6,6,16,32,64}` across Cornell,
+  Prospector, Whiterun, MedTek and Dugout with separate counter and timing
+  passes; scale 6 is the largest candidate above the 0.995 linear block-SSIM
+  floor (worst 0.996442). A three-repeat L2 gate and a one-million-unit
+  translated variant exposed a 256-ULP absolute-space origin jump — 16 whole
+  world units — so the shared helper now steps in camera-relative space before
+  reconstructing an absolute ray origin, restoring blocker hit/visibility
+  agreement. `RenderDebugMode` makes the decomposition views live-selectable
+  through `render.debug <mode>` without spending another instance-flag bit, and
+  `GpuSelectedRayProbe` returns one bounded pixel record (the selected uploaded
+  `GpuLight`, ray origin/direction/tMin/tMax, visibility mask, averaged
+  transmission, committed hit). `GpuCamera` grew 336 → 352 B with an appended
+  `render_debug` uvec4, which all six `CameraUBO` re-declarers carry through.
+- **Volumetric fog gains combustion (`5be840d2`, `0ff7b537`, `8170c007`).**
+  Homogeneous, smoke and flame profiles on `GpuFogVolume`; a `CombustionState`
+  component giving explosions the per-entity clock that persistent fire and
+  smoke don't need; depth-aware bilateral reconstruction and a retuned froxel
+  grid; particle spawn-size variation and stable roll preserved. The save
+  subsystem's completeness guard caught `CombustionState` shipping unclassified
+  and was the workspace's second red test until this close, where it was
+  classified `NOT_SAVED_BY_DESIGN` — its `start_time_seconds` is an *absolute*
+  engine-time stamp, so restoring one would either read as already-expired or
+  replay a fireball against an unrelated clock.
+- **Bug-bash: UI and renderer.** `b661d20e` closed the UI audit's D1–D7
+  findings — fatal ABC injection on four shipped FO4 menus now degrades to "no
+  host object" instead of failing outright, the host bridge's movie-keyed
+  `BTreeSet`s and `NavigatorState.loads` are bounded, and the AVM1 request-ID
+  heuristic no longer strips leading integral Numbers from non-`GameDelegate`
+  calls. `999478ef` (#2914, #2915, #2921) deleted the dead single-shot BLAS
+  path — `build_blas_for_mesh` had zero callers workspace-wide — and defused a
+  latent `draw_frame` panic in the TLAS scratch-shrink arm, which now allocates
+  at peak + alignment padding and swaps rather than destroying first.
+  `9aea0aa0` (#2928, #2919, #2918, #2922, #2781) sized the BLAS budget off the
+  smallest heap.
+- **Smaller landings.** FO4 WATR visual-data decoding (`47e7eb66`), texture
+  upload batching (`687e0a67`), `FxHashMap`/`FxHashSet` across hot collections
+  (`5d47f073`), NPC FaceGen handling (`869cdf76`).
+
+Net: tests 5179 → 5263 (+84), still one failing (unchanged: the `fire_lights`
+canary, now five sessions running). Rust `src/` LOC +13 349; total +8 067;
+source files +14; workspace members unchanged at 27. Open issue dirs 2823 →
+2963 (+140); 34 distinct issues referenced. No milestone opened or closed.
+Bench-of-record untouched at `34074b93` and now 49 commits stale — filed as
+R6a-stale-20, three days after stale-19 was cleared.
+
 ## Session 67 — eight audit reports, two of them a subsystem's first ever; the bench becomes reproducible  (2026-08-13 → 2026-08-15, `654e3be6..819c4491`, 65 commits)
 
 Session 66 drained a twelve-report backlog; Session 67 refilled it deliberately
