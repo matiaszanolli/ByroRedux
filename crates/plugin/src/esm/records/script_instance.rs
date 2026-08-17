@@ -162,6 +162,24 @@ impl ScriptInstanceData {
         Self::parse_with_consumed(data).0
     }
 
+    /// Decode a `VMAD` payload and promote every Object property's FormID
+    /// from plugin-local space into the active global load-order space.
+    ///
+    /// Keep [`Self::parse`] as the identity/no-load-order entry point used by
+    /// standalone fixtures and fragment-prefix seeking. Production ESM
+    /// walkers must use this variant whenever they have a remap available.
+    pub fn parse_with_remap(data: &[u8], remap: &Option<crate::esm::reader::FormIdRemap>) -> Self {
+        let mut out = Self::parse(data);
+        if let Some(remap) = remap {
+            for script in &mut out.scripts {
+                for property in &mut script.properties {
+                    remap_property_value(&mut property.value, remap);
+                }
+            }
+        }
+        out
+    }
+
     /// Decode a `VMAD` scripts section, also returning the byte offset at
     /// which decoding stopped — i.e. the start of any trailing per-record
     /// *fragment* section (QUST / INFO / PACK / SCEN). Object records
@@ -234,6 +252,21 @@ impl ScriptInstanceData {
             }
         }
         (out, c.pos)
+    }
+}
+
+/// VMAD Object arrays recursively contain the same Object wire value as a
+/// scalar property. Remap at this one typed boundary so every current and
+/// future caller gets identical scalar/array behaviour.
+fn remap_property_value(value: &mut PropertyValue, remap: &crate::esm::reader::FormIdRemap) {
+    match value {
+        PropertyValue::Object { form_id, .. } => *form_id = remap.remap(*form_id),
+        PropertyValue::Array(values) => {
+            for value in values {
+                remap_property_value(value, remap);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -534,6 +567,10 @@ mod tests {
     // alias -1. Mirrors the real `Skyrim.esm` ACTI layout the decoder was
     // derived from.
     fn synthetic_vmad() -> Vec<u8> {
+        synthetic_vmad_with_form_id(0x0002_42af)
+    }
+
+    fn synthetic_vmad_with_form_id(form_id: u32) -> Vec<u8> {
         let mut v = Vec::new();
         v.extend_from_slice(&5i16.to_le_bytes()); // version
         v.extend_from_slice(&2i16.to_le_bytes()); // objectFormat
@@ -552,7 +589,7 @@ mod tests {
         v.push(1); // prop status
         v.extend_from_slice(&0u16.to_le_bytes()); // unused (objectFormat 2)
         v.extend_from_slice(&(-1i16).to_le_bytes()); // alias
-        v.extend_from_slice(&0x0002_42afu32.to_le_bytes()); // formId
+        v.extend_from_slice(&form_id.to_le_bytes()); // formId
         v
     }
 
@@ -577,6 +614,58 @@ mod tests {
             }
             other => panic!("expected Object, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn object_properties_remap_to_global_load_order_space() {
+        // One declared master means raw mod index 1 is a self-reference.
+        // Load the plugin at global regular slot 2 so identity-remap bugs
+        // cannot make this test pass accidentally.
+        let remap = Some(crate::esm::reader::FormIdRemap::regular(2, vec![0]));
+        let d =
+            ScriptInstanceData::parse_with_remap(&synthetic_vmad_with_form_id(0x0102_42AF), &remap);
+        assert_eq!(d.scripts[0].object_form_id("MyQuest"), Some(0x0202_42AF));
+    }
+
+    #[test]
+    fn object_arrays_remap_recursively_and_preserve_null() {
+        let mut v = Vec::new();
+        v.extend_from_slice(&5i16.to_le_bytes()); // version
+        v.extend_from_slice(&2i16.to_le_bytes()); // objectFormat
+        v.extend_from_slice(&1u16.to_le_bytes()); // scriptCount
+        v.extend_from_slice(&1u16.to_le_bytes());
+        v.extend_from_slice(b"S");
+        v.push(0); // script status
+        v.extend_from_slice(&1u16.to_le_bytes()); // propCount
+        v.extend_from_slice(&1u16.to_le_bytes());
+        v.extend_from_slice(b"A");
+        v.push(11); // Object array
+        v.push(0); // property status
+        v.extend_from_slice(&2u32.to_le_bytes()); // element count
+        for form_id in [0u32, 0x0100_1234] {
+            v.extend_from_slice(&0u16.to_le_bytes());
+            v.extend_from_slice(&(-1i16).to_le_bytes());
+            v.extend_from_slice(&form_id.to_le_bytes());
+        }
+
+        let remap = Some(crate::esm::reader::FormIdRemap::regular(2, vec![0]));
+        let d = ScriptInstanceData::parse_with_remap(&v, &remap);
+        let PropertyValue::Array(values) = &d.scripts[0].property("A").unwrap().value else {
+            panic!("expected Object array")
+        };
+        assert_eq!(
+            values,
+            &vec![
+                PropertyValue::Object {
+                    form_id: 0,
+                    alias: -1,
+                },
+                PropertyValue::Object {
+                    form_id: 0x0200_1234,
+                    alias: -1,
+                },
+            ]
+        );
     }
 
     #[test]

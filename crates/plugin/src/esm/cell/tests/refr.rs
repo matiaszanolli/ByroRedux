@@ -76,6 +76,90 @@ fn parse_one_refr(record: &[u8]) -> PlacedRef {
     refs.remove(0)
 }
 
+fn parse_one_refr_with_remap(record: &[u8], remap: crate::esm::reader::FormIdRemap) -> PlacedRef {
+    let mut reader = EsmReader::new(record);
+    reader.set_form_id_remap(remap);
+    let end = record.len();
+    let mut refs = Vec::new();
+    let mut land = None;
+    let mut navmeshes = Vec::new();
+    parse_refr_group(&mut reader, end, &mut refs, &mut land, &mut navmeshes).unwrap();
+    assert_eq!(refs.len(), 1, "exactly one REFR expected");
+    refs.remove(0)
+}
+
+/// #2906 / ESM-D3-01 — every FormID-bearing REFR field must cross the
+/// plugin-local → global boundary. The plugin declares one master (raw self
+/// index 1) but is loaded at global slot 2, making the remap deliberately
+/// non-identity.
+#[test]
+fn refr_embedded_form_ids_remap_to_global_space() {
+    let fid = |local: u32| 0x0100_0000 | local;
+
+    let mut xesp = fid(0x101).to_le_bytes().to_vec();
+    xesp.push(1);
+    let mut xtel = fid(0x102).to_le_bytes().to_vec();
+    xtel.extend_from_slice(&[0u8; 24]);
+    let mut xlkr = fid(0x103).to_le_bytes().to_vec();
+    xlkr.extend_from_slice(&fid(0x104).to_le_bytes());
+    let xlrt = fid(0x105).to_le_bytes();
+    let mut xrmr = 2u32.to_le_bytes().to_vec();
+    xrmr.extend_from_slice(&fid(0x106).to_le_bytes());
+    xrmr.extend_from_slice(&fid(0x107).to_le_bytes());
+    let mut xpod = fid(0x108).to_le_bytes().to_vec();
+    xpod.extend_from_slice(&fid(0x109).to_le_bytes());
+    let xato = fid(0x10A).to_le_bytes();
+    let xtnm = fid(0x10B).to_le_bytes();
+    let mut xtxr = fid(0x10C).to_le_bytes().to_vec();
+    xtxr.extend_from_slice(&3u32.to_le_bytes());
+    let xemi = fid(0x10D).to_le_bytes();
+    let xmsp = fid(0x10E).to_le_bytes();
+    let xown = fid(0x10F).to_le_bytes();
+    let xglb = fid(0x110).to_le_bytes();
+
+    let record = build_refr_with_subs(
+        fid(0x100),
+        &[
+            (b"XESP", &xesp),
+            (b"XTEL", &xtel),
+            (b"XLKR", &xlkr),
+            (b"XLRT", &xlrt),
+            (b"XRMR", &xrmr),
+            (b"XPOD", &xpod),
+            (b"XATO", &xato),
+            (b"XTNM", &xtnm),
+            (b"XTXR", &xtxr),
+            (b"XEMI", &xemi),
+            (b"XMSP", &xmsp),
+            (b"XOWN", &xown),
+            (b"XGLB", &xglb),
+        ],
+    );
+    let placed = parse_one_refr_with_remap(
+        &record,
+        crate::esm::reader::FormIdRemap::regular(2, vec![0]),
+    );
+    let global = |local: u32| 0x0200_0000 | local;
+
+    assert_eq!(placed.base_form_id, global(0x100));
+    assert_eq!(placed.enable_parent.unwrap().form_id, global(0x101));
+    assert_eq!(placed.teleport.unwrap().destination, global(0x102));
+    assert_eq!(placed.linked_refs[0].keyword, global(0x103));
+    assert_eq!(placed.linked_refs[0].target, global(0x104));
+    assert_eq!(placed.location_ref_types, vec![global(0x105)]);
+    assert_eq!(placed.rooms, vec![global(0x106), global(0x107)]);
+    assert_eq!(placed.portals[0].origin, global(0x108));
+    assert_eq!(placed.portals[0].destination, global(0x109));
+    assert_eq!(placed.alt_texture_ref, Some(global(0x10A)));
+    assert_eq!(placed.land_texture_ref, Some(global(0x10B)));
+    assert_eq!(placed.texture_slot_swaps[0].texture_set, global(0x10C));
+    assert_eq!(placed.emissive_light_ref, Some(global(0x10D)));
+    assert_eq!(placed.material_swap_ref, Some(global(0x10E)));
+    let ownership = placed.ownership.expect("XOWN tuple");
+    assert_eq!(ownership.owner_form_id, global(0x10F));
+    assert_eq!(ownership.global_var_form_id, Some(global(0x110)));
+}
+
 /// SCR-D7-01 (#1737) — a Skyrim+ placed reference can carry its OWN `VMAD`
 /// (the objectReference override scripts on a uniquely-scripted lever /
 /// quest item / activator). The REFR walker must decode it into

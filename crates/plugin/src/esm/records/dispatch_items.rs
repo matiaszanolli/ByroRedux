@@ -17,6 +17,7 @@ pub(super) fn dispatch_item_group(
     index: &mut EsmIndex,
     game: GameKind,
 ) -> Result<()> {
+    let remap = reader.get_form_id_remap();
     match label {
         // ── Dual-target labels — typed record + cells.statics in one walk. ──
         //
@@ -29,43 +30,40 @@ pub(super) fn dispatch_item_group(
         // once and dispatches both consumers from the same
         // `subs` slice.
         b"WEAP" => extract_records_with_modl(reader, end, b"WEAP", statics, &mut |fid, subs| {
-            index.items.insert(fid, parse_weap(fid, subs, game));
+            index.items.insert(fid, parse_weap(fid, subs, game, &remap));
         })?,
         b"ARMO" => extract_records_with_modl(reader, end, b"ARMO", statics, &mut |fid, subs| {
-            index.items.insert(fid, parse_armo(fid, subs, game));
+            index.items.insert(fid, parse_armo(fid, subs, game, &remap));
         })?,
         b"AMMO" => extract_records_with_modl(reader, end, b"AMMO", statics, &mut |fid, subs| {
-            index.items.insert(fid, parse_ammo(fid, subs, game));
+            index.items.insert(fid, parse_ammo(fid, subs, game, &remap));
         })?,
         b"MISC" => extract_records_with_modl(reader, end, b"MISC", statics, &mut |fid, subs| {
-            index.items.insert(fid, parse_misc(fid, subs, game));
+            index.items.insert(fid, parse_misc(fid, subs, game, &remap));
         })?,
         b"KEYM" => extract_records_with_modl(reader, end, b"KEYM", statics, &mut |fid, subs| {
-            index.items.insert(fid, parse_keym(fid, subs));
+            index.items.insert(fid, parse_keym(fid, subs, &remap));
         })?,
         b"ALCH" => extract_records_with_modl(reader, end, b"ALCH", statics, &mut |fid, subs| {
-            index.items.insert(fid, parse_alch(fid, subs));
+            index.items.insert(fid, parse_alch(fid, subs, &remap));
         })?,
         b"INGR" => extract_records_with_modl(reader, end, b"INGR", statics, &mut |fid, subs| {
-            index.items.insert(fid, parse_ingr(fid, subs));
+            index.items.insert(fid, parse_ingr(fid, subs, &remap));
         })?,
         b"BOOK" => extract_records_with_modl(reader, end, b"BOOK", statics, &mut |fid, subs| {
-            index.items.insert(fid, parse_book(fid, subs));
+            index.items.insert(fid, parse_book(fid, subs, &remap));
         })?,
         b"NOTE" => extract_records_with_modl(reader, end, b"NOTE", statics, &mut |fid, subs| {
-            index.items.insert(fid, parse_note(fid, subs));
+            index.items.insert(fid, parse_note(fid, subs, &remap));
         })?,
         // OMOD is a modification definition, not the stack shown in the
         // Pip-Boy. Keep only its LNAM relationship here; the post-walk pass
         // promotes that referenced loose MISC object to ItemKind::Mod.
-        b"OMOD" => {
-            let remap = reader.get_form_id_remap();
-            extract_records(reader, end, b"OMOD", &mut |fid, subs| {
-                index
-                    .object_mod_loose_items
-                    .insert(fid, parse_omod_loose_item(subs, &remap));
-            })?
-        }
+        b"OMOD" => extract_records(reader, end, b"OMOD", &mut |fid, subs| {
+            index
+                .object_mod_loose_items
+                .insert(fid, parse_omod_loose_item(subs, &remap));
+        })?,
         _ => unreachable!("dispatch_item_group: unexpected label {label:?}"),
     }
     Ok(())

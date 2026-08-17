@@ -327,6 +327,13 @@ impl FormIdRemap {
     /// preserved; the load-order portion is rewritten to the global slot
     /// of whichever plugin owns this form. See [`GlobalSlot::compose`].
     pub fn remap(&self, raw: u32) -> u32 {
+        // FormID zero is the cross-record NULL sentinel, not a form owned by
+        // the plugin at local object index zero. This matters for ESLs: their
+        // self slot composes into 0xFE... and would otherwise turn an absent
+        // optional reference into a live-looking light-space FormID.
+        if raw == 0 {
+            return 0;
+        }
         let mod_index = (raw >> 24) as usize;
         let slot = if mod_index == self.master_slots.len() {
             // Self-reference — top byte equals master count per the
@@ -852,6 +859,15 @@ mod tests {
         // Self-references (top byte = 0 = master_count) pass through.
         assert_eq!(remap.remap(0x0001_2345), 0x0001_2345);
         assert_eq!(remap.remap(0x00CA_FEBA), 0x00CA_FEBA);
+    }
+
+    #[test]
+    fn form_id_remap_preserves_null_for_light_plugins() {
+        let remap = FormIdRemap {
+            plugin_slot: GlobalSlot::Light(7),
+            master_slots: Vec::new(),
+        };
+        assert_eq!(remap.remap(0), 0, "NULL must not become 0xFE00_7000");
     }
 
     /// #1308 / OBL-D6-NEW-04 — vanilla `Oblivion.esm` loaded standalone

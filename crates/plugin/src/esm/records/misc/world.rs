@@ -2,7 +2,7 @@
 //! lighting templates, image-space adapters, activators, terminals.
 
 use super::super::common::{read_zstring, CommonNamedFields};
-use crate::esm::reader::SubRecord;
+use crate::esm::reader::{FormIdRemap, SubRecord};
 use crate::esm::sub_reader::SubReader;
 
 /// Navigation mesh master record (`NAVI`). Skyrim+ splits navigation
@@ -1092,13 +1092,13 @@ pub struct ActiRecord {
     pub script_instance: Option<crate::esm::records::script_instance::ScriptInstanceData>,
 }
 
-pub fn parse_acti(form_id: u32, subs: &[SubRecord]) -> ActiRecord {
+pub fn parse_acti(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>) -> ActiRecord {
     // EDID / FULL / MODL / SCRI / VMAD via the shared helper (TD2-109 /
     // #2068). VMAD is the Skyrim+ inline Papyrus attachment — absent on
     // FO3/FNV, which carry SCRI instead — and the helper decodes it so the
     // M47.2 attach path can decompile the named `.pex` and bind its
     // properties. Only the ACTI-specific sound / radio arms remain below.
-    let common = CommonNamedFields::from_subs(subs);
+    let common = CommonNamedFields::from_subs_with_remap(subs, remap);
     let mut out = ActiRecord {
         form_id,
         editor_id: common.editor_id,
@@ -1161,12 +1161,12 @@ pub struct TermRecord {
     pub script_instance: Option<super::super::script_instance::ScriptInstanceData>,
 }
 
-pub fn parse_term(form_id: u32, subs: &[SubRecord]) -> TermRecord {
+pub fn parse_term(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>) -> TermRecord {
     // EDID / FULL / MODL / SCRI / VMAD via the shared helper (TD2-109 /
     // #2068). TERM is NOT FO3/FNV-only — FO4 ships 207 VMAD-bearing TERM
     // records — so the helper's VMAD arm fires there; #2663 fixed
     // `parse_term` dropping the decoded `script_instance` on the floor.
-    let common = CommonNamedFields::from_subs(subs);
+    let common = CommonNamedFields::from_subs_with_remap(subs, remap);
     let mut out = TermRecord {
         form_id,
         editor_id: common.editor_id,
@@ -1374,7 +1374,7 @@ mod tests {
             sub(b"SCRI", &0x0010_ABCDu32.to_le_bytes()),
             sub(b"SNAM", &0x0009_0000u32.to_le_bytes()),
         ];
-        let a = parse_acti(0x0002_9E7A, &subs);
+        let a = parse_acti(0x0002_9E7A, &subs, &None);
         assert_eq!(a.editor_id, "NukaColaMachine01");
         assert_eq!(a.full_name, "Nuka-Cola Machine");
         assert_eq!(a.model_path, "activators\\nukacolamachine01.nif");
@@ -1411,7 +1411,7 @@ mod tests {
             sub(b"MODL", b"clutter\\lever01.nif\0"),
             sub(b"VMAD", &vmad),
         ];
-        let a = parse_acti(0x0001_0000, &subs);
+        let a = parse_acti(0x0001_0000, &subs, &None);
         assert_eq!(a.editor_id, "SkyrimLever01");
         assert_eq!(a.model_path, "clutter\\lever01.nif");
         let inst = a
@@ -1437,7 +1437,7 @@ mod tests {
             sub(b"MNAM", b"Disable Security\0"),
             sub(b"SCRI", &0x0004_2CD2u32.to_le_bytes()),
         ];
-        let t = parse_term(0x0004_2424, &subs);
+        let t = parse_term(0x0004_2424, &subs, &None);
         assert_eq!(t.editor_id, "Vault21OverseerTerminal");
         assert_eq!(t.password, "tranquility");
         assert!(t.footer_text.starts_with("Welcome, Overseer"));
@@ -1456,7 +1456,7 @@ mod tests {
             sub(b"FULL", b"School Terminal\0"),
             sub(b"DNAM", b"Primer by Mr. Goodsprings.\0"),
         ];
-        let t = parse_term(0x0008_1111, &subs);
+        let t = parse_term(0x0008_1111, &subs, &None);
         assert!(t.password.is_empty());
         assert_eq!(t.body_size, 0);
         assert!(t.menu_items.is_empty());
@@ -1486,7 +1486,7 @@ mod tests {
             sub(b"MODL", b"setdressing\\workshop\\terminal01.nif\0"),
             sub(b"VMAD", &vmad),
         ];
-        let t = parse_term(0x0002_5001, &subs);
+        let t = parse_term(0x0002_5001, &subs, &None);
         assert_eq!(t.editor_id, "VRWorkshopShared_VRTerminalMusicSubMenu");
         let inst = t
             .script_instance

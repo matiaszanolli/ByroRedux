@@ -617,7 +617,7 @@ pub fn parse_npc(
     // EDID / FULL / MODL / VMAD shared with every named record — drain
     // them through the helper so the per-record loop below only carries
     // NPC-specific subrecords. TD3-203 / #1113.
-    let common = CommonNamedFields::from_subs(subs);
+    let common = CommonNamedFields::from_subs_with_remap(subs, remap);
     let mut record = NpcRecord {
         form_id,
         editor_id: common.editor_id,

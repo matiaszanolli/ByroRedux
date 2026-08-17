@@ -17,6 +17,7 @@ pub(super) fn dispatch_misc_gameplay_b_group(
     index: &mut EsmIndex,
     game: GameKind,
 ) -> Result<()> {
+    let remap = reader.get_form_id_remap();
     match label {
         b"SPEL" => extract_records(reader, end, b"SPEL", &mut |fid, subs| {
             index.spells.insert(fid, parse_spel(fid, subs));
@@ -65,10 +66,10 @@ pub(super) fn dispatch_misc_gameplay_b_group(
         // them again for the typed parser; the fused helper does
         // both in one walk.
         b"ACTI" => extract_records_with_modl(reader, end, b"ACTI", statics, &mut |fid, subs| {
-            index.activators.insert(fid, parse_acti(fid, subs));
+            index.activators.insert(fid, parse_acti(fid, subs, &remap));
         })?,
         b"TERM" => extract_records_with_modl(reader, end, b"TERM", statics, &mut |fid, subs| {
-            index.terminals.insert(fid, parse_term(fid, subs));
+            index.terminals.insert(fid, parse_term(fid, subs, &remap));
         })?,
         // FLST FormID lists — flat arrays referenced by
         // `IsInList <flst>` perk-entry-point conditions, COBJ

@@ -167,7 +167,7 @@ pub fn parse_scen(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
         match &sub.sub_type {
             b"VMAD" => {
                 out.fragments = parse_scene_fragments(&sub.data);
-                out.script_instance = Some(ScriptInstanceData::parse(&sub.data));
+                out.script_instance = Some(ScriptInstanceData::parse_with_remap(&sub.data, remap));
             }
             // HNAM alternates open/close. Consecutive HNAMs are the end of
             // one phase followed by the start of the next.

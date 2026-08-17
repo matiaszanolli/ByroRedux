@@ -155,7 +155,7 @@ pub(crate) fn parse_record_indexes_in_load_order(
     // dependents, so a single forward pass assigns every slot before it's
     // referenced.
     let mut slots: Vec<esm::reader::GlobalSlot> = Vec::with_capacity(plugin_paths.len());
-    let mut next_regular: u8 = 0;
+    let mut next_regular: u16 = 0;
     let mut next_light: u16 = 0;
 
     for (idx, path) in plugin_paths.iter().enumerate() {
@@ -180,15 +180,8 @@ pub(crate) fn parse_record_indexes_in_load_order(
                 .map_err(|e| anyhow::anyhow!("Failed to read TES4 header for '{}': {}", path, e))?
         };
 
-        let plugin_slot = if header.light_master {
-            let slot = esm::reader::GlobalSlot::Light(next_light);
-            next_light += 1;
-            slot
-        } else {
-            let slot = esm::reader::GlobalSlot::Regular(next_regular);
-            next_regular += 1;
-            slot
-        };
+        let plugin_slot =
+            allocate_global_slot(header.light_master, &mut next_regular, &mut next_light)?;
         slots.push(plugin_slot);
 
         let remap = build_remap_for_plugin(path, &header, plugin_slot, &load_order, &slots)?;
@@ -206,6 +199,41 @@ pub(crate) fn parse_record_indexes_in_load_order(
         merged.merge_from(plugin_records);
     }
     Ok((merged, load_order))
+}
+
+/// Allocate one global load-order slot without ever entering reserved or
+/// truncated FormID space. Regular plugins own `0x00..=0xFD`; light masters
+/// share `0xFE` through a 12-bit `0x000..=0xFFF` sub-index.
+fn allocate_global_slot(
+    light_master: bool,
+    next_regular: &mut u16,
+    next_light: &mut u16,
+) -> anyhow::Result<esm::reader::GlobalSlot> {
+    if light_master {
+        const MAX_LIGHT_SLOT: u16 = 0x0FFF;
+        if *next_light > MAX_LIGHT_SLOT {
+            return Err(anyhow::anyhow!(
+                "Load order exceeds the 4096 light-master slot limit"
+            ));
+        }
+        let slot = esm::reader::GlobalSlot::Light(*next_light);
+        *next_light = next_light
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("Light-master slot counter overflow"))?;
+        Ok(slot)
+    } else {
+        const MAX_REGULAR_SLOT: u16 = 0x00FD;
+        if *next_regular > MAX_REGULAR_SLOT {
+            return Err(anyhow::anyhow!(
+                "Load order exceeds the 254 regular-plugin slot limit"
+            ));
+        }
+        let slot = esm::reader::GlobalSlot::Regular(*next_regular as u8);
+        *next_regular = next_regular
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("Regular-plugin slot counter overflow"))?;
+        Ok(slot)
+    }
 }
 
 #[cfg(test)]
@@ -313,6 +341,36 @@ mod tests {
         let path = dir.join(format!("{stem}.esm"));
         fs::write(&path, &esm_bytes).unwrap();
         path
+    }
+
+    #[test]
+    fn regular_slot_allocator_rejects_the_255th_plugin() {
+        let mut next_regular = 0;
+        let mut next_light = 0;
+        for expected in 0u16..254 {
+            assert_eq!(
+                allocate_global_slot(false, &mut next_regular, &mut next_light).unwrap(),
+                esm::reader::GlobalSlot::Regular(expected as u8),
+            );
+        }
+        let err = allocate_global_slot(false, &mut next_regular, &mut next_light)
+            .expect_err("0xFE is reserved for light masters");
+        assert!(err.to_string().contains("254 regular-plugin"));
+    }
+
+    #[test]
+    fn light_slot_allocator_rejects_the_4097th_plugin() {
+        let mut next_regular = 0;
+        let mut next_light = 0;
+        for expected in 0u16..4096 {
+            assert_eq!(
+                allocate_global_slot(true, &mut next_regular, &mut next_light).unwrap(),
+                esm::reader::GlobalSlot::Light(expected),
+            );
+        }
+        let err = allocate_global_slot(true, &mut next_regular, &mut next_light)
+            .expect_err("light sub-index is 12-bit");
+        assert!(err.to_string().contains("4096 light-master"));
     }
 
     /// #1553 / SK-D4-02 — end-to-end wiring: a Localized plugin on disk

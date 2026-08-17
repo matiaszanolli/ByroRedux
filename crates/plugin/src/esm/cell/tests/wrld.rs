@@ -57,7 +57,17 @@ pub(super) fn build_wrld_group(records: &[Vec<u8>]) -> Vec<u8> {
 
 /// Drive `parse_wrld_group` over a synthetic GRUP-WRLD buffer.
 pub(super) fn parse_synthetic_wrld(buf: &[u8]) -> SyntheticWrldParse {
+    parse_synthetic_wrld_with_remap(buf, None)
+}
+
+fn parse_synthetic_wrld_with_remap(
+    buf: &[u8],
+    remap: Option<crate::esm::reader::FormIdRemap>,
+) -> SyntheticWrldParse {
     let mut reader = EsmReader::new(buf);
+    if let Some(remap) = remap {
+        reader.set_form_id_remap(remap);
+    }
     let gh = reader.read_group_header().expect("WRLD group header");
     let end = reader.group_content_end(&gh);
     let mut exterior = HashMap::new();
@@ -295,16 +305,16 @@ fn parse_wrld_exterior_cell_captures_precombined_xcri_xpri() {
         v.extend_from_slice(&3u32.to_le_bytes()); // ref_count (visibility group)
         v.extend_from_slice(&0xDEAD_BEEF_u32.to_le_bytes()); // hash 0
         v.extend_from_slice(&0xCAFE_BABE_u32.to_le_bytes()); // hash 1
-        v.extend_from_slice(&0x0100_0001_u32.to_le_bytes()); // vis-group ref (NOT absorbed)
-        v.extend_from_slice(&0x0100_0002_u32.to_le_bytes());
-        v.extend_from_slice(&0x0100_0003_u32.to_le_bytes());
+        v.extend_from_slice(&0x0100_1001_u32.to_le_bytes()); // vis-group ref (NOT absorbed)
+        v.extend_from_slice(&0x0100_1002_u32.to_le_bytes());
+        v.extend_from_slice(&0x0100_1003_u32.to_le_bytes());
         v
     };
     // XPRI: 2 REFR formids that MUST land in absorbed_refs.
     let xpri = {
         let mut v = Vec::with_capacity(2 * 4);
-        v.extend_from_slice(&0x0200_0001_u32.to_le_bytes());
-        v.extend_from_slice(&0x0200_0002_u32.to_le_bytes());
+        v.extend_from_slice(&0x0100_0001_u32.to_le_bytes());
+        v.extend_from_slice(&0x0100_0002_u32.to_le_bytes());
         v
     };
 
@@ -337,7 +347,10 @@ fn parse_wrld_exterior_cell_captures_precombined_xcri_xpri() {
     buf.extend_from_slice(&[0u8; 8]); // timestamp + VC
     buf.extend_from_slice(&wrld_grup_payload);
 
-    let (_worldspaces, _climates, exterior, _persistent) = parse_synthetic_wrld(&buf);
+    let (_worldspaces, _climates, exterior, _persistent) = parse_synthetic_wrld_with_remap(
+        &buf,
+        Some(crate::esm::reader::FormIdRemap::regular(2, vec![0])),
+    );
     let commonwealth = exterior
         .get("commonwealth")
         .expect("Commonwealth WRLD's children must be indexed");
@@ -360,9 +373,12 @@ fn parse_wrld_exterior_cell_captures_precombined_xcri_xpri() {
     // Visibility-group refs (XCRI tail) must NOT leak into absorbed_refs —
     // that was the regression from #1188 first-iteration where Dugout
     // Inn's bar / couch / lamps went invisible.
-    assert!(!cell.absorbed_refs.contains(&0x0100_0001));
-    assert!(!cell.absorbed_refs.contains(&0x0100_0002));
-    assert!(!cell.absorbed_refs.contains(&0x0100_0003));
+    assert!(!cell.absorbed_refs.contains(&0x0100_1001));
+    assert!(!cell.absorbed_refs.contains(&0x0100_1002));
+    assert!(!cell.absorbed_refs.contains(&0x0100_1003));
+    assert!(!cell.absorbed_refs.contains(&0x0200_1001));
+    assert!(!cell.absorbed_refs.contains(&0x0200_1002));
+    assert!(!cell.absorbed_refs.contains(&0x0200_1003));
 }
 
 #[test]

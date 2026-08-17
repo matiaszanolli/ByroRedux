@@ -106,7 +106,7 @@ pub fn parse_cont(
     // remapped below, overriding the helper's raw value — mirrors
     // `parse_npc`'s pattern of re-deriving fields the shared helper can't
     // remap on its own.
-    let common = CommonNamedFields::from_subs(subs);
+    let common = CommonNamedFields::from_subs_with_remap(subs, remap);
     let mut record = ContainerRecord {
         form_id,
         editor_id: common.editor_id,

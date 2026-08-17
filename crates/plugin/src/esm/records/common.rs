@@ -270,6 +270,16 @@ impl CommonNamedFields {
     /// All other sub-records are silently ignored — the caller handles them
     /// in its own loop.
     pub fn from_subs(subs: &[SubRecord]) -> Self {
+        Self::from_subs_with_remap(subs, &None)
+    }
+
+    /// Load-order-aware form of [`Self::from_subs`]. Use this whenever the
+    /// returned `script_instance` survives into `EsmIndex`; VMAD Object
+    /// properties are authored in plugin-local FormID space.
+    pub fn from_subs_with_remap(
+        subs: &[SubRecord],
+        remap: &Option<crate::esm::reader::FormIdRemap>,
+    ) -> Self {
         let mut out = Self::default();
         for sub in subs {
             match &sub.sub_type {
@@ -285,8 +295,11 @@ impl CommonNamedFields {
                     // Presence flag unchanged; the decoded attachments +
                     // property bindings are now available alongside it.
                     out.has_script = true;
-                    out.script_instance =
-                        Some(super::script_instance::ScriptInstanceData::parse(&sub.data));
+                    out.script_instance = Some(
+                        super::script_instance::ScriptInstanceData::parse_with_remap(
+                            &sub.data, remap,
+                        ),
+                    );
                 }
                 _ => {}
             }
@@ -335,6 +348,15 @@ impl CommonItemFields {
     /// type-specific parser starts from this and then handles its own DNAM /
     /// type-specific blocks.
     pub fn from_subs(subs: &[SubRecord]) -> Self {
+        Self::from_subs_with_remap(subs, &None)
+    }
+
+    /// Load-order-aware item common-field decode. Item records retain their
+    /// VMAD attachments, so production dispatch must use this entry point.
+    pub fn from_subs_with_remap(
+        subs: &[SubRecord],
+        remap: &Option<crate::esm::reader::FormIdRemap>,
+    ) -> Self {
         // #2414 / TD2-117 — the six universal arms here were a verbatim
         // second copy of `CommonNamedFields::from_subs`. That copy has
         // already cost real bugs: #2189's own field doc below records that
@@ -343,7 +365,7 @@ impl CommonItemFields {
         // unattached until it was found again. Delegating makes the two
         // structurally impossible to diverge; `value`/`weight` stay on this
         // struct and are filled by the per-record parser as before.
-        let named = CommonNamedFields::from_subs(subs);
+        let named = CommonNamedFields::from_subs_with_remap(subs, remap);
         Self {
             editor_id: named.editor_id,
             full_name: named.full_name,

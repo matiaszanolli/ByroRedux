@@ -150,8 +150,13 @@ pub struct ItemRecord {
 
 // ── Per-type parsers ──────────────────────────────────────────────────
 
-pub fn parse_weap(form_id: u32, subs: &[SubRecord], game: GameKind) -> ItemRecord {
-    let mut common = CommonItemFields::from_subs(subs);
+pub fn parse_weap(
+    form_id: u32,
+    subs: &[SubRecord],
+    game: GameKind,
+    remap: &Option<FormIdRemap>,
+) -> ItemRecord {
+    let mut common = CommonItemFields::from_subs_with_remap(subs, remap);
     let mut ammo_form = 0u32;
     let mut damage = 0u32;
     let mut clip_size = 0u8;
@@ -279,8 +284,13 @@ pub fn parse_weap(form_id: u32, subs: &[SubRecord], game: GameKind) -> ItemRecor
     }
 }
 
-pub fn parse_armo(form_id: u32, subs: &[SubRecord], game: GameKind) -> ItemRecord {
-    let mut common = CommonItemFields::from_subs(subs);
+pub fn parse_armo(
+    form_id: u32,
+    subs: &[SubRecord],
+    game: GameKind,
+    remap: &Option<FormIdRemap>,
+) -> ItemRecord {
+    let mut common = CommonItemFields::from_subs_with_remap(subs, remap);
     let mut biped_flags = 0u32;
     let mut dt = 0.0f32;
     let mut dr = 0u32;
@@ -401,8 +411,13 @@ pub fn parse_armo(form_id: u32, subs: &[SubRecord], game: GameKind) -> ItemRecor
     }
 }
 
-pub fn parse_ammo(form_id: u32, subs: &[SubRecord], game: GameKind) -> ItemRecord {
-    let mut common = CommonItemFields::from_subs(subs);
+pub fn parse_ammo(
+    form_id: u32,
+    subs: &[SubRecord],
+    game: GameKind,
+    remap: &Option<FormIdRemap>,
+) -> ItemRecord {
+    let mut common = CommonItemFields::from_subs_with_remap(subs, remap);
     let mut damage = 0.0f32;
     let dt_mult = 1.0f32;
     let spread = 0.0f32;
@@ -479,8 +494,13 @@ pub fn parse_ammo(form_id: u32, subs: &[SubRecord], game: GameKind) -> ItemRecor
     }
 }
 
-pub fn parse_misc(form_id: u32, subs: &[SubRecord], game: GameKind) -> ItemRecord {
-    let mut common = CommonItemFields::from_subs(subs);
+pub fn parse_misc(
+    form_id: u32,
+    subs: &[SubRecord],
+    game: GameKind,
+    remap: &Option<FormIdRemap>,
+) -> ItemRecord {
+    let mut common = CommonItemFields::from_subs_with_remap(subs, remap);
     let mut has_components = false;
     for sub in subs {
         match &sub.sub_type {
@@ -522,8 +542,8 @@ pub fn parse_omod_loose_item(subs: &[SubRecord], remap: &Option<FormIdRemap>) ->
         .unwrap_or(0)
 }
 
-pub fn parse_keym(form_id: u32, subs: &[SubRecord]) -> ItemRecord {
-    let mut common = CommonItemFields::from_subs(subs);
+pub fn parse_keym(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>) -> ItemRecord {
+    let mut common = CommonItemFields::from_subs_with_remap(subs, remap);
     for sub in subs {
         if &sub.sub_type == b"DATA" {
             let mut r = SubReader::new(&sub.data);
@@ -538,8 +558,8 @@ pub fn parse_keym(form_id: u32, subs: &[SubRecord]) -> ItemRecord {
     }
 }
 
-pub fn parse_alch(form_id: u32, subs: &[SubRecord]) -> ItemRecord {
-    let mut common = CommonItemFields::from_subs(subs);
+pub fn parse_alch(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>) -> ItemRecord {
+    let mut common = CommonItemFields::from_subs_with_remap(subs, remap);
     let mut magic_effects = Vec::new();
     let mut addiction_chance = 0.0f32;
 
@@ -574,8 +594,8 @@ pub fn parse_alch(form_id: u32, subs: &[SubRecord]) -> ItemRecord {
     }
 }
 
-pub fn parse_ingr(form_id: u32, subs: &[SubRecord]) -> ItemRecord {
-    let common = CommonItemFields::from_subs(subs);
+pub fn parse_ingr(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>) -> ItemRecord {
+    let common = CommonItemFields::from_subs_with_remap(subs, remap);
     let mut magic_effects = Vec::new();
     for sub in subs {
         if &sub.sub_type == b"EFID" {
@@ -589,8 +609,8 @@ pub fn parse_ingr(form_id: u32, subs: &[SubRecord]) -> ItemRecord {
     }
 }
 
-pub fn parse_book(form_id: u32, subs: &[SubRecord]) -> ItemRecord {
-    let mut common = CommonItemFields::from_subs(subs);
+pub fn parse_book(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>) -> ItemRecord {
+    let mut common = CommonItemFields::from_subs_with_remap(subs, remap);
     let mut teaches_skill = 0u32;
     let mut skill_bonus = 0u8;
     let mut flags = 0u8;
@@ -623,8 +643,8 @@ pub fn parse_book(form_id: u32, subs: &[SubRecord]) -> ItemRecord {
     }
 }
 
-pub fn parse_note(form_id: u32, subs: &[SubRecord]) -> ItemRecord {
-    let mut common = CommonItemFields::from_subs(subs);
+pub fn parse_note(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>) -> ItemRecord {
+    let mut common = CommonItemFields::from_subs_with_remap(subs, remap);
     let mut note_type = 0u8;
     let mut topic_form = 0u32;
 
@@ -687,7 +707,7 @@ mod tests {
             sub(b"DATA", &build_data_weap(250, 1.5, 12, 8)),
             sub(b"AMMO", &0xDEADBEEFu32.to_le_bytes()),
         ];
-        let item = parse_weap(0x100, &subs, GameKind::Fallout3NV);
+        let item = parse_weap(0x100, &subs, GameKind::Fallout3NV, &None);
         assert_eq!(item.form_id, 0x100);
         assert_eq!(item.common.editor_id, "WeapTest");
         assert_eq!(item.common.full_name, "Test Pistol");
@@ -729,7 +749,7 @@ mod tests {
             sub(b"DATA", &build_data_weap(100, 5.5, 18, 5)),
             sub(b"DNAM", &dnam),
         ];
-        let item = parse_weap(0x14DCE, &subs, GameKind::Fallout3NV);
+        let item = parse_weap(0x14DCE, &subs, GameKind::Fallout3NV, &None);
         match item.kind {
             ItemKind::Weapon {
                 anim_type,
@@ -766,7 +786,7 @@ mod tests {
             sub(b"DATA", &data),
             sub(b"DNAM", &dnam),
         ];
-        let item = parse_armo(0x200, &subs, GameKind::Fallout3NV);
+        let item = parse_armo(0x200, &subs, GameKind::Fallout3NV, &None);
         match item.kind {
             ItemKind::Armor {
                 biped_flags,
@@ -794,7 +814,7 @@ mod tests {
         data.extend_from_slice(&15u32.to_le_bytes());
         data.extend_from_slice(&0.25f32.to_le_bytes());
         let subs = vec![sub(b"EDID", b"M\0"), sub(b"DATA", &data)];
-        let item = parse_misc(0x300, &subs, GameKind::Fallout3NV);
+        let item = parse_misc(0x300, &subs, GameKind::Fallout3NV, &None);
         assert_eq!(item.common.value, 15);
         assert!((item.common.weight - 0.25).abs() < 1e-6);
         assert!(matches!(item.kind, ItemKind::Misc));
@@ -807,15 +827,15 @@ mod tests {
         component.extend_from_slice(&2u32.to_le_bytes());
         let subs = vec![sub(b"CVPA", &component)];
 
-        let fallout4 = parse_misc(0x301, &subs, GameKind::Fallout4);
+        let fallout4 = parse_misc(0x301, &subs, GameKind::Fallout4, &None);
         assert!(matches!(&fallout4.kind, ItemKind::Junk));
         assert_eq!(fallout4.kind.label(), "MISC");
         assert!(matches!(
-            parse_misc(0x301, &subs, GameKind::Fallout76).kind,
+            parse_misc(0x301, &subs, GameKind::Fallout76, &None).kind,
             ItemKind::Junk
         ));
         assert!(matches!(
-            parse_misc(0x301, &subs, GameKind::Fallout3NV).kind,
+            parse_misc(0x301, &subs, GameKind::Fallout3NV, &None).kind,
             ItemKind::Misc
         ));
     }
@@ -843,7 +863,7 @@ mod tests {
         data.extend_from_slice(&12.0f32.to_le_bytes()); // weight
         data.extend_from_slice(&17u16.to_le_bytes()); // damage
         let subs = vec![sub(b"EDID", b"IronSword\0"), sub(b"DATA", &data)];
-        let item = parse_weap(0x12EB7, &subs, GameKind::Skyrim);
+        let item = parse_weap(0x12EB7, &subs, GameKind::Skyrim, &None);
         assert_eq!(item.common.value, 1000);
         assert!((item.common.weight - 12.0).abs() < 1e-6);
         match item.kind {
@@ -877,7 +897,7 @@ mod tests {
             sub(b"DATA", &data),
             sub(b"DNAM", &dnam),
         ];
-        let item = parse_armo(0x13938, &subs, GameKind::Skyrim);
+        let item = parse_armo(0x13938, &subs, GameKind::Skyrim, &None);
         assert_eq!(item.common.value, 1250);
         assert!((item.common.weight - 35.0).abs() < 1e-6);
         match item.kind {
@@ -914,7 +934,7 @@ mod tests {
         let mut dnam = Vec::new();
         dnam.extend_from_slice(&2500u32.to_le_bytes()); // armor_rating_x100
         let subs = vec![sub(b"DATA", &data), sub(b"DNAM", &dnam)];
-        let item = parse_armo(0x1, &subs, GameKind::Skyrim);
+        let item = parse_armo(0x1, &subs, GameKind::Skyrim, &None);
         match item.kind {
             ItemKind::Armor {
                 dt,
@@ -957,7 +977,7 @@ mod tests {
         ];
         assert_eq!(data.len(), 30);
         let subs = vec![sub(b"EDID", b"SE13TrophySword1\0"), sub(b"DATA", &data)];
-        let item = parse_weap(0x000966A9, &subs, GameKind::Oblivion);
+        let item = parse_weap(0x000966A9, &subs, GameKind::Oblivion, &None);
         assert_eq!(item.common.value, 500, "value at offset 16, not 0");
         assert!(
             (item.common.weight - 35.0).abs() < 1e-6,
@@ -992,8 +1012,8 @@ mod tests {
             0x0e, 0x00, // damage
         ];
         let subs = vec![sub(b"DATA", &oblivion_data)];
-        let oblivion = parse_weap(0x1, &subs, GameKind::Oblivion);
-        let fnv = parse_weap(0x1, &subs, GameKind::Fallout3NV);
+        let oblivion = parse_weap(0x1, &subs, GameKind::Oblivion, &None);
+        let fnv = parse_weap(0x1, &subs, GameKind::Fallout3NV, &None);
         assert_eq!(oblivion.common.value, 500);
         assert_ne!(
             fnv.common.value, 500,
@@ -1022,7 +1042,7 @@ mod tests {
             sub(b"BMDT", &bmdt),
             sub(b"DATA", &data),
         ];
-        let item = parse_armo(0x000972BB, &subs, GameKind::Oblivion);
+        let item = parse_armo(0x000972BB, &subs, GameKind::Oblivion, &None);
         assert_eq!(
             item.common.value, 400,
             "value at offset 2 (after armor u16)"
@@ -1058,7 +1078,7 @@ mod tests {
             0x00, 0x00, 0xc8, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         ];
         let subs = vec![sub(b"BMDT", &bmdt), sub(b"DATA", &data)];
-        let item = parse_armo(0x1, &subs, GameKind::Oblivion);
+        let item = parse_armo(0x1, &subs, GameKind::Oblivion, &None);
         match item.kind {
             ItemKind::Armor { biped_flags, .. } => assert_eq!(biped_flags, 0x4),
             _ => panic!("expected Armor kind"),
@@ -1082,7 +1102,7 @@ mod tests {
             sub(b"EDID", b"SE30MadnessMagicArrowA\0"),
             sub(b"DATA", &data),
         ];
-        let item = parse_ammo(0x0009277E, &subs, GameKind::Oblivion);
+        let item = parse_ammo(0x0009277E, &subs, GameKind::Oblivion, &None);
         assert_eq!(item.common.value, 2);
         assert!((item.common.weight - 0.1).abs() < 1e-4);
         match item.kind {
@@ -1113,7 +1133,7 @@ mod tests {
         data.extend_from_slice(&8.0f32.to_le_bytes()); // damage
         data.extend_from_slice(&1u32.to_le_bytes()); // value
         let subs = vec![sub(b"EDID", b"ArrowIron\0"), sub(b"DATA", &data)];
-        let item = parse_ammo(0x139BE, &subs, GameKind::Skyrim);
+        let item = parse_ammo(0x139BE, &subs, GameKind::Skyrim, &None);
         assert_eq!(item.common.value, 1);
         match item.kind {
             ItemKind::Ammo {

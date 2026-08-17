@@ -457,7 +457,7 @@ pub(crate) fn parse_wrld_children(
                             absorbed_refs.reserve(sub.data.len() / 4);
                             for chunk in sub.data.chunks_exact(4) {
                                 let fid = u32::from_le_bytes(chunk.try_into().unwrap());
-                                absorbed_refs.insert(fid);
+                                absorbed_refs.insert(reader.remap_form_id(fid));
                             }
                         }
                         _ => {}

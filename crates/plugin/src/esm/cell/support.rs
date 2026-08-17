@@ -43,6 +43,7 @@ pub(crate) fn build_static_object_from_subs(
     record_type: &[u8; 4],
     visible_when_distant: bool,
     subs: &[SubRecord],
+    remap: &Option<crate::esm::reader::FormIdRemap>,
 ) -> Option<StaticObject> {
     let is_ligh = record_type == b"LIGH";
     let is_addn = record_type == b"ADDN";
@@ -80,7 +81,9 @@ pub(crate) fn build_static_object_from_subs(
             b"VMAD" => {
                 has_script = true;
                 script_instance = Some(
-                    super::super::records::script_instance::ScriptInstanceData::parse(&sub.data),
+                    super::super::records::script_instance::ScriptInstanceData::parse_with_remap(
+                        &sub.data, remap,
+                    ),
                 );
             }
             b"DATA" if is_ligh && sub.data.len() >= 12 => {
@@ -326,6 +329,7 @@ pub(crate) fn parse_modl_group(
     end: usize,
     statics: &mut HashMap<u32, StaticObject>,
 ) -> Result<()> {
+    let remap = reader.get_form_id_remap();
     while reader.position() < end && reader.remaining() > 0 {
         if reader.is_group() {
             let sub = reader.read_group_header()?;
@@ -341,6 +345,7 @@ pub(crate) fn parse_modl_group(
             &header.record_type,
             header.is_visible_when_distant(),
             &subs,
+            &remap,
         ) {
             statics.insert(header.form_id, stat);
         }
@@ -796,7 +801,7 @@ mod ligh_dat2_tests {
             sub(b"DAT2", dat2_bytes(512.0, [200, 150, 100], 0x0010)),
         ];
 
-        let obj = build_static_object_from_subs(0x000027BB, b"LIGH", false, &subs)
+        let obj = build_static_object_from_subs(0x000027BB, b"LIGH", false, &subs, &None)
             .expect("Starfield LIGH with DAT2 must produce a StaticObject");
 
         let ld = obj.light_data.expect("DAT2 must yield light_data");
@@ -834,7 +839,7 @@ mod ligh_dat2_tests {
         data[9] = 200;
         data[10] = 128;
         let subs = vec![sub(b"DATA", data)];
-        let obj = build_static_object_from_subs(0x1, b"LIGH", false, &subs)
+        let obj = build_static_object_from_subs(0x1, b"LIGH", false, &subs, &None)
             .expect("Skyrim LIGH DATA must still produce a StaticObject");
         let ld = obj.light_data.expect("DATA must yield light_data");
         assert_eq!(ld.radius, 300.0, "Skyrim radius is a u32 cast to f32");
@@ -862,7 +867,7 @@ mod ligh_dat2_tests {
         // value. Pre-fix this was misread as `period_secs`.
         data[28..32].copy_from_slice(&1.5f32.to_le_bytes());
         let subs = vec![sub(b"DATA", data)];
-        let obj = build_static_object_from_subs(0x3, b"LIGH", false, &subs)
+        let obj = build_static_object_from_subs(0x3, b"LIGH", false, &subs, &None)
             .expect("pre-Skyrim LIGH DATA must still produce a StaticObject");
         let ld = obj.light_data.expect("DATA must yield light_data");
         assert_eq!(ld.falloff_exponent, 2.0, "falloff exponent is still read");
@@ -895,7 +900,7 @@ mod ligh_dat2_tests {
         data[32..36].copy_from_slice(&0.25f32.to_le_bytes()); // intensity amplitude
         data[36..40].copy_from_slice(&0.1f32.to_le_bytes()); // movement amplitude
         let subs = vec![sub(b"DATA", data)];
-        let obj = build_static_object_from_subs(0x4, b"LIGH", false, &subs)
+        let obj = build_static_object_from_subs(0x4, b"LIGH", false, &subs, &None)
             .expect("Skyrim+ LIGH DATA must produce a StaticObject");
         let ld = obj.light_data.expect("DATA must yield light_data");
         assert_eq!(ld.period_secs, 2.0, "flicker period at offset 28");
@@ -918,8 +923,9 @@ mod ligh_dat2_tests {
         let mut pre_skyrim = vec![0u8; 32];
         pre_skyrim[4..8].copy_from_slice(&300u32.to_le_bytes());
         pre_skyrim[20..24].copy_from_slice(&35.0f32.to_le_bytes());
-        let obj = build_static_object_from_subs(0x5, b"LIGH", false, &[sub(b"DATA", pre_skyrim)])
-            .expect("pre-Skyrim LIGH DATA must produce a StaticObject");
+        let obj =
+            build_static_object_from_subs(0x5, b"LIGH", false, &[sub(b"DATA", pre_skyrim)], &None)
+                .expect("pre-Skyrim LIGH DATA must produce a StaticObject");
         assert_eq!(
             obj.light_data.expect("must yield light_data").fov_degrees,
             35.0,
@@ -929,8 +935,9 @@ mod ligh_dat2_tests {
         let mut skyrim_plus = vec![0u8; 48];
         skyrim_plus[4..8].copy_from_slice(&300u32.to_le_bytes());
         skyrim_plus[20..24].copy_from_slice(&35.0f32.to_le_bytes());
-        let obj = build_static_object_from_subs(0x6, b"LIGH", false, &[sub(b"DATA", skyrim_plus)])
-            .expect("Skyrim+ LIGH DATA must produce a StaticObject");
+        let obj =
+            build_static_object_from_subs(0x6, b"LIGH", false, &[sub(b"DATA", skyrim_plus)], &None)
+                .expect("Skyrim+ LIGH DATA must produce a StaticObject");
         assert_eq!(
             obj.light_data.expect("must yield light_data").fov_degrees,
             35.0,
@@ -944,7 +951,7 @@ mod ligh_dat2_tests {
     fn non_ligh_dat2_is_not_treated_as_light() {
         let subs = vec![sub(b"DAT2", dat2_bytes(512.0, [200, 150, 100], 0))];
         // AMMO with only a DAT2 and no MODL → no light_data, no model → None.
-        let obj = build_static_object_from_subs(0x2, b"AMMO", false, &subs);
+        let obj = build_static_object_from_subs(0x2, b"AMMO", false, &subs, &None);
         assert!(
             obj.is_none() || obj.unwrap().light_data.is_none(),
             "DAT2 on a non-LIGH record must not synthesize light_data"

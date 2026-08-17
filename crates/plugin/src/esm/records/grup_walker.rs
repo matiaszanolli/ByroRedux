@@ -21,6 +21,7 @@ pub(super) fn extract_records_with_modl(
     statics: &mut HashMap<u32, StaticObject>,
     f: &mut dyn FnMut(u32, &[SubRecord]),
 ) -> Result<()> {
+    let remap = reader.get_form_id_remap();
     while reader.position() < end && reader.remaining() > 0 {
         if reader.is_group() {
             let sub_group = reader.read_group_header()?;
@@ -37,6 +38,7 @@ pub(super) fn extract_records_with_modl(
                 &header.record_type,
                 header.is_visible_when_distant(),
                 &subs,
+                &remap,
             ) {
                 statics.insert(header.form_id, stat);
             }

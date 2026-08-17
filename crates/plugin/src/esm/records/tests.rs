@@ -507,6 +507,24 @@ fn parse_real_fnv_esm_record_counts() {
 fn parse_esm_with_load_order_remaps_self_form_ids() {
     let mut subs: Vec<(&[u8; 4], Vec<u8>)> = Vec::new();
     subs.push((b"EDID", b"TestWeap\0".to_vec()));
+    subs.push((b"VMAD", {
+        let mut v = Vec::new();
+        v.extend_from_slice(&5i16.to_le_bytes()); // version
+        v.extend_from_slice(&2i16.to_le_bytes()); // objectFormat
+        v.extend_from_slice(&1u16.to_le_bytes()); // scriptCount
+        v.extend_from_slice(&1u16.to_le_bytes());
+        v.extend_from_slice(b"S");
+        v.push(0); // script status
+        v.extend_from_slice(&1u16.to_le_bytes()); // propCount
+        v.extend_from_slice(&6u16.to_le_bytes());
+        v.extend_from_slice(b"Target");
+        v.push(1); // Object
+        v.push(0); // property status
+        v.extend_from_slice(&0u16.to_le_bytes());
+        v.extend_from_slice(&(-1i16).to_le_bytes());
+        v.extend_from_slice(&0x0100_CAFEu32.to_le_bytes()); // DLC self-ref
+        v
+    }));
     subs.push((b"DATA", {
         let mut d = Vec::new();
         d.extend_from_slice(&100u32.to_le_bytes()); // value
@@ -538,6 +556,16 @@ fn parse_esm_with_load_order_remaps_self_form_ids() {
     assert!(
         !index.items.contains_key(&0x0100_BEEF),
         "raw pre-remap FormID must not leak through once the remap is installed"
+    );
+    let vmad = index.items[&remapped_key]
+        .common
+        .script_instance
+        .as_ref()
+        .expect("WEAP VMAD retained");
+    assert_eq!(
+        vmad.scripts[0].object_form_id("Target"),
+        Some(0x0200_CAFE),
+        "VMAD Object properties must land in the same global space as record keys",
     );
 }
 

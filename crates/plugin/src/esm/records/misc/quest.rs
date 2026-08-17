@@ -571,7 +571,7 @@ fn parse_qust_header(
         // effect resolves to a FormID).
         b"VMAD" => {
             out.fragments = parse_quest_fragments(&sub.data);
-            out.script_instance = Some(ScriptInstanceData::parse(&sub.data));
+            out.script_instance = Some(ScriptInstanceData::parse_with_remap(&sub.data, remap));
         }
         b"ANAM" if sub.data.len() >= 4 => {
             out.next_alias_id = Some(SubReader::new(&sub.data).u32_or_default());

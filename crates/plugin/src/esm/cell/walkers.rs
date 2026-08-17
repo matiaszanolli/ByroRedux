@@ -307,7 +307,7 @@ pub(crate) fn parse_cell_group(
                             absorbed_refs.reserve(sub.data.len() / 4);
                             for chunk in sub.data.chunks_exact(4) {
                                 let fid = u32::from_le_bytes(chunk.try_into().unwrap());
-                                absorbed_refs.insert(fid);
+                                absorbed_refs.insert(reader.remap_form_id(fid));
                             }
                         }
                         // #693 / O3-N-05 — XCMT pre-Skyrim music enum
@@ -681,7 +681,9 @@ pub(crate) fn parse_refr_group(
                     // prefix and tolerates any trailing objectReference
                     // fragment data, so it is safe on untrusted REFR VMADs.
                     b"VMAD" => {
-                        ref_script_instance = Some(ScriptInstanceData::parse(&sub.data));
+                        let remap = reader.get_form_id_remap();
+                        ref_script_instance =
+                            Some(ScriptInstanceData::parse_with_remap(&sub.data, &remap));
                     }
                     b"DATA" if sub.data.len() >= 24 => {
                         // 6 floats: posX, posY, posZ, rotX, rotY, rotZ
@@ -700,7 +702,7 @@ pub(crate) fn parse_refr_group(
                     // load; the cell loader now skips these via
                     // `enable_parent.default_disabled()`.
                     b"XESP" if sub.data.len() >= 5 => {
-                        let form_id = r.u32_or_default();
+                        let form_id = reader.remap_form_id(r.u32_or_default());
                         let inverted = r.u8_or_default() & 1 != 0;
                         enable_parent = Some(EnableParent { form_id, inverted });
                     }
@@ -712,7 +714,7 @@ pub(crate) fn parse_refr_group(
                     // same as Skyrim/FO4. Pre-#412 every interior door
                     // was dead on activation.
                     b"XTEL" if sub.data.len() >= 28 => {
-                        let destination = r.u32_or_default();
+                        let destination = reader.remap_form_id(r.u32_or_default());
                         let dest_pos = r.f32_array::<3>().unwrap_or([0.0; 3]);
                         let dest_rot = r.f32_array::<3>().unwrap_or([0.0; 3]);
                         teleport = Some(TeleportDest {
@@ -743,8 +745,8 @@ pub(crate) fn parse_refr_group(
                     // targets). Pre-#412 NPCs didn't patrol and doors
                     // didn't pair.
                     b"XLKR" if sub.data.len() >= 8 => {
-                        let keyword = r.u32_or_default();
-                        let target = r.u32_or_default();
+                        let keyword = reader.remap_form_id(r.u32_or_default());
+                        let target = reader.remap_form_id(r.u32_or_default());
                         linked_refs.push(LinkedRef { keyword, target });
                     }
                     // XLRT — one or more LCRT FormIDs classifying this
@@ -767,15 +769,15 @@ pub(crate) fn parse_refr_group(
                         let n = count.min(max);
                         rooms.reserve(n);
                         for _ in 0..n {
-                            rooms.push(r.u32_or_default());
+                            rooms.push(reader.remap_form_id(r.u32_or_default()));
                         }
                     }
                     // XPOD — Portal origin/destination pair. 8 bytes.
                     // Multiple XPOD sub-records allowed (one per portal
                     // connected to this REFR).
                     b"XPOD" if sub.data.len() >= 8 => {
-                        let origin = r.u32_or_default();
-                        let destination = r.u32_or_default();
+                        let origin = reader.remap_form_id(r.u32_or_default());
+                        let destination = reader.remap_form_id(r.u32_or_default());
                         portals.push(PortalLink {
                             origin,
                             destination,
@@ -807,7 +809,7 @@ pub(crate) fn parse_refr_group(
                     // parse_refr_group and the FO4 overlay fixtures
                     // re-validated. Same caveat applies to XTNM/XTXR below.
                     b"XATO" => {
-                        alt_texture_ref = r.u32().ok();
+                        alt_texture_ref = r.u32().ok().map(|fid| reader.remap_form_id(fid));
                     }
                     // XTNM — landscape TXST override form ID. Same
                     // 4-byte layout as XATO but scopes the override to
@@ -815,7 +817,7 @@ pub(crate) fn parse_refr_group(
                     // completeness; the LAND-side consumer path is
                     // separate from the mesh path wired for XATO. #584.
                     b"XTNM" => {
-                        land_texture_ref = r.u32().ok();
+                        land_texture_ref = r.u32().ok().map(|fid| reader.remap_form_id(fid));
                     }
                     // XTXR — per-slot texture swap. 8 bytes: TXST
                     // FormID(u32) + slot_index(u32). Lets a REFR
@@ -824,7 +826,7 @@ pub(crate) fn parse_refr_group(
                     // XTXR sub-records allowed per REFR; we collect
                     // them in authoring order. #584.
                     b"XTXR" if sub.data.len() >= 8 => {
-                        let texture_set = r.u32_or_default();
+                        let texture_set = reader.remap_form_id(r.u32_or_default());
                         let slot_index = r.u32_or_default();
                         texture_slot_swaps.push(TextureSlotSwap {
                             texture_set,
@@ -837,7 +839,7 @@ pub(crate) fn parse_refr_group(
                     // for completeness; consumer wiring (per-REFR
                     // emissive light spawn) is follow-up work. #584.
                     b"XEMI" => {
-                        emissive_light_ref = r.u32().ok();
+                        emissive_light_ref = r.u32().ok().map(|fid| reader.remap_form_id(fid));
                     }
                     // XMSP — per-REFR MSWP (Material Swap) FormID. 4 bytes.
                     // Resolves against `EsmCellIndex.material_swaps` at
@@ -849,20 +851,20 @@ pub(crate) fn parse_refr_group(
                     // wagon rust, and Vault decay overlays all rendered
                     // with the base mesh's textures. See FO4-D4-NEW-08.
                     b"XMSP" => {
-                        material_swap_ref = r.u32().ok();
+                        material_swap_ref = r.u32().ok().map(|fid| reader.remap_form_id(fid));
                     }
                     // #692 — per-REFR ownership override (mirrors the
                     // CELL walker arms). XOWN owner FormID, XRNK
                     // faction-rank gate, XGLB global-var gate. Same
                     // 4-byte layout as the CELL form. Cross-game.
                     b"XOWN" => {
-                        ownership_owner = r.u32().ok();
+                        ownership_owner = r.u32().ok().map(|fid| reader.remap_form_id(fid));
                     }
                     b"XRNK" => {
                         ownership_rank = r.i32().ok();
                     }
                     b"XGLB" => {
-                        ownership_global = r.u32().ok();
+                        ownership_global = r.u32().ok().map(|fid| reader.remap_form_id(fid));
                     }
                     _ => {}
                 }

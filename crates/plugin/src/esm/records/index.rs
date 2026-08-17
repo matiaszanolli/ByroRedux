@@ -1060,6 +1060,7 @@ mod tests {
         let acti = parse_acti(
             0xAAAA_0003,
             &[sub(b"EDID", b"VmadActi\0"), sub(b"VMAD", &vmad)],
+            &None,
         );
 
         let mut idx = EsmIndex::default();
@@ -1072,7 +1073,7 @@ mod tests {
         assert_eq!(si.scripts[0].name, "MyActivatorScript");
 
         // A record with no VMAD resolves to None (not an empty struct).
-        let plain = parse_acti(0xAAAA_0004, &[sub(b"EDID", b"PlainActi\0")]);
+        let plain = parse_acti(0xAAAA_0004, &[sub(b"EDID", b"PlainActi\0")], &None);
         idx.activators.insert(0xAAAA_0004, plain);
         assert!(idx.base_record_script_instance(0xAAAA_0004).is_none());
         // And an unknown id is None.

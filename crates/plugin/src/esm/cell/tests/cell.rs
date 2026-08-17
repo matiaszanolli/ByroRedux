@@ -231,6 +231,50 @@ fn parse_cell_skyrim_extended_subrecords() {
     assert_eq!(cell.water_height, None);
 }
 
+/// #2698 — interior CELL XPRI entries must be promoted into the same global
+/// FormID space as the REFR record headers they suppress. Raw self index 1 is
+/// loaded at slot 2 so an identity-only implementation fails this fixture.
+#[test]
+fn parse_cell_xpri_absorbed_refs_remap_to_global_space() {
+    let mut sub_data = Vec::new();
+    let edid = b"DlcPrecombineInterior\0";
+    sub_data.extend_from_slice(b"EDID");
+    sub_data.extend_from_slice(&(edid.len() as u16).to_le_bytes());
+    sub_data.extend_from_slice(edid);
+    sub_data.extend_from_slice(b"DATA");
+    sub_data.extend_from_slice(&1u16.to_le_bytes());
+    sub_data.push(0x01); // interior
+    sub_data.extend_from_slice(b"XPRI");
+    sub_data.extend_from_slice(&8u16.to_le_bytes());
+    sub_data.extend_from_slice(&0x0100_0101u32.to_le_bytes());
+    sub_data.extend_from_slice(&0x0100_0102u32.to_le_bytes());
+
+    let mut buf = Vec::new();
+    buf.extend_from_slice(b"CELL");
+    buf.extend_from_slice(&(sub_data.len() as u32).to_le_bytes());
+    buf.extend_from_slice(&0u32.to_le_bytes());
+    buf.extend_from_slice(&0x0100_0010u32.to_le_bytes());
+    buf.extend_from_slice(&[0u8; 8]);
+    buf.extend_from_slice(&sub_data);
+
+    let mut reader =
+        crate::esm::reader::EsmReader::with_variant(&buf, crate::esm::reader::EsmVariant::Tes5Plus);
+    reader.set_form_id_remap(crate::esm::reader::FormIdRemap::regular(2, vec![0]));
+    let mut cells = HashMap::new();
+    parse_cell_group(
+        &mut reader,
+        buf.len(),
+        &mut cells,
+        crate::esm::reader::GameKind::Fallout4,
+    )
+    .unwrap();
+
+    let cell = cells.get("dlcprecombineinterior").expect("CELL indexed");
+    assert!(cell.absorbed_refs.contains(&0x0200_0101));
+    assert!(cell.absorbed_refs.contains(&0x0200_0102));
+    assert!(!cell.absorbed_refs.contains(&0x0100_0101));
+}
+
 /// Regression for #624 / SK-D6-NEW-02. Skyrim cells DO ship FULL —
 /// `WhiterunBanneredMare` carries `"The Bannered Mare"` per UESP. The
 /// pre-fix walker dropped FULL on the catch-all `_` arm, so the
