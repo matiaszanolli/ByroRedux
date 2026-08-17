@@ -2954,7 +2954,27 @@ void main() {
                 vec3 rpGeomN = octDecode(
                     unpackSnorm2x16(floatBitsToUint(rp.pad0)));
                 const float TEMPORAL_NORMAL_COS = 0.906; // cos 25°
+                // A stable surface id identifies the draw, not a unique
+                // point on that draw. Large architectural meshes therefore
+                // need a depth check as well: after camera motion, an
+                // occlusion edge can reproject a lit point on one wall panel
+                // onto a different point of the same mesh behind a partition.
+                // Reusing its accumulated radiance produced the wall-sized
+                // light islands seen in WhiterunBanneredMare even though the
+                // current frame's selected shadow ray was fully occluded.
+                //
+                // Temporal reprojection is point-to-point, so keep this much
+                // tighter than the 2% / 8-BU spatial-neighbour tolerance. The
+                // 2-BU floor covers half-float depth quantization and subpixel
+                // camera motion; larger motion safely gives up history rather
+                // than accepting a thin-wall jump.
+                float temporalDepthTolerance = max(
+                    2.0,
+                    max(worldDist, rpHistoryDepth.y) * 0.005);
+                bool temporalDepthCompatible =
+                    abs(rpHistoryDepth.y - worldDist) <= temporalDepthTolerance;
                 bool sameSurface = rpSurfaceId == surfaceId
+                    && temporalDepthCompatible
                     && dot(geomN, rpGeomN) >= TEMPORAL_NORMAL_COS;
                 // Selection reuse: guard against first-frame / garbage
                 // contents (surface identity + geometric normal + light index

@@ -170,12 +170,14 @@ mod tests {
     }
 
     #[test]
-    fn temporal_reuse_validates_surface_and_does_not_seed_neighbor_radiance() {
+    fn temporal_reuse_validates_surface_depth_and_does_not_seed_neighbor_radiance() {
         let src = include_str!("../../shaders/triangle.frag");
         assert!(
             src.contains("rpSurfaceId == surfaceId")
+                && src.contains("temporalDepthCompatible")
+                && src.contains("abs(rpHistoryDepth.y - worldDist)")
                 && src.contains("dot(geomN, rpGeomN) >= TEMPORAL_NORMAL_COS"),
-            "ReSTIR temporal history must validate surface identity and normal"
+            "ReSTIR temporal history must validate surface identity, depth, and normal"
         );
         assert!(
             !src.contains("SPATIAL_SEED_HIST") && !src.contains("spatColSum"),
