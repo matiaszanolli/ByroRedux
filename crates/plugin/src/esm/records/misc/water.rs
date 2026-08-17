@@ -1,7 +1,7 @@
 //! Water record (`WATR`) and decoded water parameters.
 
 use super::super::common::{read_zstring, CommonNamedFields};
-use crate::esm::reader::SubRecord;
+use crate::esm::reader::{GameKind, SubRecord};
 use crate::esm::sub_reader::SubReader;
 
 /// Water record — referenced by `CELL.XCWT` (water type form ID on a
@@ -24,9 +24,14 @@ use crate::esm::sub_reader::SubReader;
 /// - FO3 / FNV DATA: 196-byte extension of the Oblivion layout —
 ///   first 60 bytes preserve the FNV/FO3-compatible prefix.
 ///
-/// **Best-effort decode** for Skyrim+ DNAM (252+ bytes) — the field
+/// **Best-effort decode** for Skyrim DNAM (252+ bytes) — the field
 /// names are documented but the offsets vary between 1.5 / 1.6
 /// patches; we read what we can and leave the rest at default.
+///
+/// **Exact prefix decode** for Fallout 4 DNAM (201 bytes), following
+/// xEdit's `wbDefinitionsFO4.pas`: fog colours at 4/8, underwater fog
+/// near/far at 44/48, reflectivity/Fresnel at 64/68, reflection colour
+/// at 96, and first-layer noise direction/speed at 128/140.
 #[derive(Debug, Clone, Default)]
 pub struct WatrRecord {
     pub form_id: u32,
@@ -292,7 +297,75 @@ fn decode_dnam_skyrim(data: &[u8]) -> WaterParams {
     p
 }
 
-pub fn parse_watr(form_id: u32, subs: &[SubRecord]) -> WatrRecord {
+#[inline]
+fn read_f32_at(data: &[u8], offset: usize) -> Option<f32> {
+    let bytes: [u8; 4] = data.get(offset..offset + 4)?.try_into().ok()?;
+    let value = f32::from_le_bytes(bytes);
+    value.is_finite().then_some(value)
+}
+
+#[inline]
+fn read_rgb_at(data: &[u8], offset: usize) -> Option<[f32; 3]> {
+    let rgb = data.get(offset..offset + 3)?;
+    Some([
+        u8_to_linear(rgb[0]),
+        u8_to_linear(rgb[1]),
+        u8_to_linear(rgb[2]),
+    ])
+}
+
+/// Decode Fallout 4's 201-byte `WATR.DNAM` visual-data structure.
+///
+/// This layout is not a prefixed Skyrim layout. Its first bytes are a
+/// depth amount followed immediately by shallow/deep RGBA colours. Treating
+/// them as Skyrim wind/wave floats made the default exterior ocean resolve
+/// to saturated blue, full Fresnel/reflectivity, and a 20x normal strength.
+/// The offsets below follow xEdit's authoritative FO4 record definition and
+/// are also byte-checked against vanilla `ExtOceanWater` (FormID `0x18`).
+fn decode_dnam_fo4(data: &[u8]) -> WaterParams {
+    let mut p = WaterParams::default();
+
+    if let Some(color) = read_rgb_at(data, 4) {
+        p.shallow_color = color;
+    }
+    if let Some(color) = read_rgb_at(data, 8) {
+        p.deep_color = color;
+    }
+    if let Some(near) = read_f32_at(data, 44) {
+        p.fog_near = near.max(0.0);
+    }
+    if let Some(far) = read_f32_at(data, 48) {
+        p.fog_far = far.max(p.fog_near + 1.0);
+    } else {
+        p.fog_far = p.fog_far.max(p.fog_near + 1.0);
+    }
+    if let Some(reflectivity) = read_f32_at(data, 64) {
+        p.reflectivity = reflectivity.clamp(0.0, 1.0);
+    }
+    if let Some(fresnel) = read_f32_at(data, 68) {
+        p.fresnel = fresnel.clamp(0.0, 1.0);
+    }
+    if let Some(color) = read_rgb_at(data, 96) {
+        p.reflection_color = color;
+    }
+
+    // FO4 stores three noise-layer directions in degrees at 128..140 and
+    // three layer speeds at 140..152. The canonical view currently carries
+    // one layer, so retain layer 1 and convert the angle to radians.
+    if let Some(direction_degrees) = read_f32_at(data, 128) {
+        p.wind_direction = direction_degrees.to_radians();
+    }
+    if let Some(speed) = read_f32_at(data, 140) {
+        p.wind_speed = speed.max(0.0);
+    }
+
+    // FO4's layer amplitude/UV scale are unitless noise controls, not the
+    // legacy world-space wave amplitude/frequency represented by WaterParams.
+    // Keep the canonical sentinels until that projection is calibrated.
+    p
+}
+
+pub fn parse_watr(form_id: u32, subs: &[SubRecord], game: GameKind) -> WatrRecord {
     let mut out = WatrRecord {
         form_id,
         ..Default::default()
@@ -315,9 +388,13 @@ pub fn parse_watr(form_id: u32, subs: &[SubRecord]) -> WatrRecord {
                 out.raw_data = sub.data.clone();
             }
             b"DNAM" => {
-                // Skyrim+ path — best-effort decode (see
-                // `decode_dnam_skyrim`).
-                out.params = decode_dnam_skyrim(&sub.data);
+                out.params = match game {
+                    GameKind::Fallout4 => decode_dnam_fo4(&sub.data),
+                    // Skyrim remains best-effort. FO76 and Starfield keep
+                    // their pre-existing fallback until their divergent
+                    // DNAM layouts receive explicit projections.
+                    _ => decode_dnam_skyrim(&sub.data),
+                };
                 out.raw_dnam = sub.data.clone();
             }
             b"GNAM" => {
@@ -337,11 +414,8 @@ pub fn parse_watr(form_id: u32, subs: &[SubRecord]) -> WatrRecord {
 }
 
 /// Adapter from a parsed `WatrRecord` onto a `WaterParams` view.
-/// The per-game decode happens inside `parse_watr` (DATA vs DNAM
-/// sub-records); this helper just returns the structured view.
-/// Re-introduce a `GameKind` parameter when a divergent per-game
-/// projection actually ships (TD8-017 / #1120 — the placeholder was
-/// dropped per CLAUDE.md's "no `_var` hypothetical-future" rule).
+/// The per-game decode happens inside `parse_watr`; this helper just returns
+/// the structured view.
 pub fn watr_to_params(record: &WatrRecord) -> WaterParams {
     record.params
 }
@@ -364,7 +438,7 @@ mod tests {
             sub(b"FULL", b"Fresh Water\0"),
             sub(b"TNAM", b"textures\\water\\fresh.dds\0"),
         ];
-        let w = parse_watr(0x1234, &subs);
+        let w = parse_watr(0x1234, &subs, GameKind::Skyrim);
         assert_eq!(w.form_id, 0x1234);
         assert_eq!(w.editor_id, "WaterFreshDefault");
         assert_eq!(w.full_name, "Fresh Water");
@@ -390,7 +464,7 @@ mod tests {
         data.extend_from_slice(&[0xC0, 0xD0, 0xE0, 0xFF]); // reflection RGBA
 
         let subs = vec![sub(b"DATA", &data)];
-        let w = parse_watr(0xAAAA, &subs);
+        let w = parse_watr(0xAAAA, &subs, GameKind::Fallout3NV);
         assert!((w.params.wind_speed - 1.5).abs() < 1e-6);
         assert!((w.params.wave_frequency - 0.80).abs() < 1e-6);
         assert!((w.params.reflectivity - 0.65).abs() < 1e-6);
@@ -419,7 +493,7 @@ mod tests {
         data[44..48].copy_from_slice(&[13, 13, 11, 0]); // deep
         data[48..52].copy_from_slice(&[41, 48, 46, 0]); // reflection
 
-        let w = parse_watr(0x00100000, &[sub(b"DATA", &data)]);
+        let w = parse_watr(0x00100000, &[sub(b"DATA", &data)], GameKind::Fallout3NV);
         assert!((w.params.shallow_color[0] - 36.0 / 255.0).abs() < 1e-6);
         assert!((w.params.shallow_color[1] - 47.0 / 255.0).abs() < 1e-6);
         assert!((w.params.deep_color[2] - 11.0 / 255.0).abs() < 1e-6);
@@ -443,7 +517,7 @@ mod tests {
         data.extend_from_slice(&1.0f32.to_le_bytes());
         data.extend_from_slice(&0.5f32.to_le_bytes());
         let subs = vec![sub(b"DATA", &data)];
-        let w = parse_watr(0xBBBB, &subs);
+        let w = parse_watr(0xBBBB, &subs, GameKind::Fallout3NV);
         assert!((w.params.wind_speed - 3.0).abs() < 1e-6);
         assert!((w.params.wave_amplitude - 0.5).abs() < 1e-6);
         // Defaults preserved past offset 12.
@@ -473,12 +547,50 @@ mod tests {
         data.extend_from_slice(&[0xA0, 0xB0, 0xC0, 0xFF]); // reflection
 
         let subs = vec![sub(b"DNAM", &data)];
-        let w = parse_watr(0xCCCC, &subs);
+        let w = parse_watr(0xCCCC, &subs, GameKind::Skyrim);
         assert!((w.params.wind_speed - 2.0).abs() < 1e-6);
         assert!((w.params.reflectivity - 0.75).abs() < 1e-6);
         assert!((w.params.fog_far - 500.0).abs() < 1e-3);
         assert_eq!(w.raw_dnam.len(), 52);
         assert!(w.raw_data.is_empty());
+    }
+
+    #[test]
+    fn parse_watr_decodes_fo4_visual_data_layout() {
+        // Vanilla Fallout4.esm ExtOceanWater (FormID 0x18) values at the
+        // exact xEdit FO4 offsets. The full record is 201 bytes; fields not
+        // represented by WaterParams remain zero in this focused fixture.
+        let mut data = vec![0u8; 201];
+        data[0..4].copy_from_slice(&3007.0f32.to_le_bytes()); // depth amount
+        data[4..8].copy_from_slice(&[45, 62, 62, 0]); // shallow colour
+        data[8..12].copy_from_slice(&[46, 61, 57, 0]); // deep colour
+        data[44..48].copy_from_slice(&(-6400.0f32).to_le_bytes()); // underwater near
+        data[48..52].copy_from_slice(&1700.0f32.to_le_bytes()); // underwater far
+        data[64..68].copy_from_slice(&0.2935f32.to_le_bytes()); // reflectivity
+        data[68..72].copy_from_slice(&0.058f32.to_le_bytes()); // Fresnel
+        data[96..100].copy_from_slice(&[51, 68, 70, 0]); // reflection colour
+        data[128..132].copy_from_slice(&67.824f32.to_le_bytes()); // layer 1 direction (deg)
+        data[140..144].copy_from_slice(&0.0109f32.to_le_bytes()); // layer 1 speed
+
+        let w = parse_watr(0x18, &[sub(b"DNAM", &data)], GameKind::Fallout4);
+        assert_eq!(w.raw_dnam.len(), 201);
+        assert!((w.params.shallow_color[0] - 45.0 / 255.0).abs() < 1e-6);
+        assert!((w.params.deep_color[2] - 57.0 / 255.0).abs() < 1e-6);
+        assert!((w.params.reflection_color[1] - 68.0 / 255.0).abs() < 1e-6);
+        assert_eq!(w.params.fog_near, 0.0);
+        assert_eq!(w.params.fog_far, 1700.0);
+        assert!((w.params.reflectivity - 0.2935).abs() < 1e-6);
+        assert!((w.params.fresnel - 0.058).abs() < 1e-6);
+        assert!((w.params.wind_direction - 67.824f32.to_radians()).abs() < 1e-6);
+        assert!((w.params.wind_speed - 0.0109).abs() < 1e-6);
+        assert_eq!(
+            w.params.wave_amplitude,
+            WaterParams::default().wave_amplitude
+        );
+        assert_eq!(
+            w.params.wave_frequency,
+            WaterParams::default().wave_frequency
+        );
     }
 
     #[test]
@@ -494,7 +606,7 @@ mod tests {
                 b"Data\\Textures\\Water\\WastelandWaterPotomac.dds\0",
             ),
         ];
-        let w = parse_watr(0x100A8C, &subs);
+        let w = parse_watr(0x100A8C, &subs, GameKind::Fallout3NV);
         assert_eq!(w.editor_id, "PotomacNRShallow");
         assert_eq!(
             w.texture_path,
@@ -509,7 +621,7 @@ mod tests {
         gnam.extend_from_slice(&0x22222222u32.to_le_bytes());
         gnam.extend_from_slice(&0x33333333u32.to_le_bytes());
         let subs = vec![sub(b"GNAM", &gnam)];
-        let w = parse_watr(0xDDDD, &subs);
+        let w = parse_watr(0xDDDD, &subs, GameKind::Skyrim);
         assert_eq!(w.noise_textures, [0x11111111, 0x22222222, 0x33333333]);
     }
 }

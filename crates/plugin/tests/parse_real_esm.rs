@@ -994,6 +994,25 @@ fn parse_rate_fo4_esm() {
     let parse_elapsed = parse_start.elapsed();
     eprintln!("[FO4] parse_esm wall={:?}", parse_elapsed);
 
+    let default_water = index
+        .waters
+        .get(&0x0000_0018)
+        .expect("Fallout4.esm default WATR 0x18");
+    eprintln!(
+        "[FO4] WATR 0x18 {} DNAM={} params={:?}",
+        default_water.editor_id,
+        default_water.raw_dnam.len(),
+        default_water.params,
+    );
+    assert_eq!(default_water.editor_id, "ExtOceanWater");
+    assert_eq!(default_water.raw_dnam.len(), 201);
+    assert!((default_water.params.shallow_color[0] - 45.0 / 255.0).abs() < 1e-6);
+    assert!((default_water.params.deep_color[2] - 57.0 / 255.0).abs() < 1e-6);
+    assert!((default_water.params.reflectivity - 0.2935).abs() < 1e-6);
+    assert!((default_water.params.fresnel - 0.058).abs() < 1e-6);
+    assert_eq!(default_water.params.fog_near, 0.0);
+    assert_eq!(default_water.params.fog_far, 1700.0);
+
     let scol_placements: usize = index
         .cells
         .scols
