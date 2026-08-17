@@ -1,9 +1,10 @@
 //! ECS local fog-volume collection and GPU translation.
 
-use byroredux_core::ecs::{FogShape, FogVolume, GlobalTransform, World};
+use byroredux_core::ecs::{FogShape, FogSource, FogVolume, GlobalTransform, World};
 use byroredux_core::math::Vec3;
 use byroredux_renderer::vulkan::volumetrics::{
-    GpuFogVolume, MAX_GPU_FOG_VOLUMES, WORLD_UNITS_PER_METER,
+    GpuFogVolume, FOG_VOLUME_PROFILE_FLAME, FOG_VOLUME_PROFILE_HOMOGENEOUS,
+    FOG_VOLUME_PROFILE_SMOKE, MAX_GPU_FOG_VOLUMES, WORLD_UNITS_PER_METER,
 };
 
 use super::camera::FrustumPlanes;
@@ -110,6 +111,11 @@ fn gpu_volume_from_ecs(volume: FogVolume, transform: GlobalTransform) -> Option<
         FogShape::Box => 2.0,
     };
     let inverse_rotation = rotation.conjugate();
+    let profile = match (volume.source, volume.is_emissive()) {
+        (FogSource::ParticleEmitter, true) => FOG_VOLUME_PROFILE_FLAME,
+        (FogSource::ParticleEmitter, false) => FOG_VOLUME_PROFILE_SMOKE,
+        _ => FOG_VOLUME_PROFILE_HOMOGENEOUS,
+    };
     Some(GpuFogVolume {
         center_shape: [center.x, center.y, center.z, shape],
         half_extents_extinction: [
@@ -139,6 +145,7 @@ fn gpu_volume_from_ecs(volume: FogVolume, transform: GlobalTransform) -> Option<
             sanitize_emission(volume.emissive_radiance[2]),
             volume.emission_temperature_k.max(0.0),
         ],
+        profile_params: [profile, 0.0, 0.0, 0.0],
     })
 }
 
@@ -178,6 +185,49 @@ mod tests {
         assert_eq!(gpu.center_shape[..3], [10.0, 24.0, 30.0]);
         assert_eq!(gpu.half_extents_extinction[..3], [6.0, 8.0, 10.0]);
         assert!((gpu.half_extents_extinction[3] * WORLD_UNITS_PER_METER - 0.7).abs() < 1.0e-6);
+        assert_eq!(gpu.profile_params[0], FOG_VOLUME_PROFILE_SMOKE);
+    }
+
+    #[test]
+    fn gpu_profile_distinguishes_authored_fog_smoke_and_flame() {
+        let make_volume = |source, emissive_radiance| FogVolume {
+            bounds: Some(FogBounds {
+                center: Vec3::ZERO,
+                rotation: Quat::IDENTITY,
+                half_extents: Vec3::splat(4.0),
+                shape: FogShape::Ellipsoid,
+            }),
+            extinction_per_meter: 0.7,
+            single_scatter_albedo: [0.8; 3],
+            edge_softness: 0.4,
+            emissive_radiance,
+            emission_temperature_k: if emissive_radiance == [0.0; 3] {
+                0.0
+            } else {
+                1850.0
+            },
+            source,
+        };
+
+        let authored = gpu_volume_from_ecs(
+            make_volume(FogSource::AuthoredMesh, [0.0; 3]),
+            GlobalTransform::IDENTITY,
+        )
+        .unwrap();
+        let smoke = gpu_volume_from_ecs(
+            make_volume(FogSource::ParticleEmitter, [0.0; 3]),
+            GlobalTransform::IDENTITY,
+        )
+        .unwrap();
+        let flame = gpu_volume_from_ecs(
+            make_volume(FogSource::ParticleEmitter, [8.0, 3.0, 0.5]),
+            GlobalTransform::IDENTITY,
+        )
+        .unwrap();
+
+        assert_eq!(authored.profile_params[0], FOG_VOLUME_PROFILE_HOMOGENEOUS);
+        assert_eq!(smoke.profile_params[0], FOG_VOLUME_PROFILE_SMOKE);
+        assert_eq!(flame.profile_params[0], FOG_VOLUME_PROFILE_FLAME);
     }
 
     #[test]

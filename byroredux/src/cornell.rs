@@ -122,6 +122,8 @@ pub(crate) enum CornellOracleRung {
     L0,
     L1,
     L2,
+    L3,
+    L4,
 }
 
 /// Data contract shared by scene construction, analytic tests, and capture
@@ -133,6 +135,9 @@ pub(crate) struct CornellOracleManifest {
     /// World-space unit vector from the surface toward the source.
     pub direction_toward_source: [f32; 3],
     pub blocker: bool,
+    /// Local point-light + fog-volume transport is active. L3 is the open
+    /// control and L4 changes only by adding an opaque partition.
+    pub volumetric_probe: bool,
     pub camera_position: Vec3,
     pub camera_target: Vec3,
     pub primary_debug_view: &'static str,
@@ -147,16 +152,25 @@ const ORACLE_CAMERA_POSITION: Vec3 = Vec3::new(0.0, 4.0, 10.0);
 const ORACLE_CAMERA_TARGET: Vec3 = Vec3::new(0.0, 4.0, 0.0);
 
 pub(crate) fn cornell_oracle_manifest(rung: CornellOracleRung) -> CornellOracleManifest {
-    let (name, directional_radiance, blocker, primary_debug_view) = match rung {
-        CornellOracleRung::L0 => ("l0_dark_plane", [0.0; 3], false, "direct"),
-        CornellOracleRung::L1 => ("l1_directional_lambert", [1.0; 3], false, "direct"),
-        CornellOracleRung::L2 => ("l2_opaque_blocker", [1.0; 3], true, "shadow_visibility"),
+    let (name, directional_radiance, blocker, volumetric_probe, primary_debug_view) = match rung {
+        CornellOracleRung::L0 => ("l0_dark_plane", [0.0; 3], false, false, "direct"),
+        CornellOracleRung::L1 => ("l1_directional_lambert", [1.0; 3], false, false, "direct"),
+        CornellOracleRung::L2 => (
+            "l2_opaque_blocker",
+            [1.0; 3],
+            true,
+            false,
+            "shadow_visibility",
+        ),
+        CornellOracleRung::L3 => ("l3_point_fog_open", [0.0; 3], false, true, "final"),
+        CornellOracleRung::L4 => ("l4_point_fog_partition", [0.0; 3], true, true, "final"),
     };
     CornellOracleManifest {
         name,
         directional_radiance,
         direction_toward_source: ORACLE_LIGHT_DIRECTION,
         blocker,
+        volumetric_probe,
         camera_position: ORACLE_CAMERA_POSITION,
         camera_target: ORACLE_CAMERA_TARGET,
         primary_debug_view,
@@ -166,23 +180,25 @@ pub(crate) fn cornell_oracle_manifest(rung: CornellOracleRung) -> CornellOracleM
     }
 }
 
-/// Parse `--cornell-oracle l0|l1|l2` without silently falling back to the
-/// demo scene on a typo. Later rungs intentionally remain errors until their
-/// full scene and assertions exist.
+/// Parse `--cornell-oracle l0|l1|l2|l3|l4` without silently falling back to
+/// the demo scene on a typo. Later rungs intentionally remain errors until
+/// their full scene and assertions exist.
 pub(crate) fn cornell_oracle_rung(args: &[String]) -> Result<Option<CornellOracleRung>, String> {
     let Some(index) = args.iter().position(|arg| arg == "--cornell-oracle") else {
         return Ok(None);
     };
     let value = args
         .get(index + 1)
-        .ok_or_else(|| "--cornell-oracle requires one of: l0, l1, l2".to_string())?;
+        .ok_or_else(|| "--cornell-oracle requires one of: l0, l1, l2, l3, l4".to_string())?;
     let rung = match value.to_ascii_lowercase().as_str() {
         "l0" => CornellOracleRung::L0,
         "l1" => CornellOracleRung::L1,
         "l2" => CornellOracleRung::L2,
+        "l3" => CornellOracleRung::L3,
+        "l4" => CornellOracleRung::L4,
         _ => {
             return Err(format!(
-                "unknown Cornell oracle rung '{value}'; expected one of: l0, l1, l2"
+                "unknown Cornell oracle rung '{value}'; expected one of: l0, l1, l2, l3, l4"
             ));
         }
     };
@@ -243,7 +259,7 @@ fn sun_dir() -> [f32; 3] {
     SUN_DIR_RAW.normalize().to_array()
 }
 
-/// Construct the controlled L0-L2 correctness scene selected by
+/// Construct the controlled L0-L4 correctness scene selected by
 /// `--cornell-oracle`. The richer `--cornell` showcase remains untouched.
 pub(crate) fn setup_cornell_oracle_scene(
     world: &mut World,
@@ -281,7 +297,15 @@ pub(crate) fn setup_cornell_oracle_scene(
     let neutral = TextureHandle(ctx.texture_registry.neutral_fallback());
     let mut builder = MeshBuilder::new(ctx);
     let receiver_mesh = builder.box_mesh([4.0, 4.0, 0.05]);
-    let mut oracle_matte = matte([1.0; 3]);
+    // L3/L4 use a black surface so the final capture contains only
+    // in-scattered volumetric radiance; direct and indirect surface terms
+    // cannot masquerade as a fog visibility result.
+    let receiver_color = if manifest.volumetric_probe {
+        [0.0; 3]
+    } else {
+        [1.0; 3]
+    };
+    let mut oracle_matte = matte(receiver_color);
     oracle_matte.ior = 1.0;
     oracle_matte.specular_strength = 0.0;
     spawn_object(
@@ -294,7 +318,7 @@ pub(crate) fn setup_cornell_oracle_scene(
         "oracle_receiver",
     );
 
-    if manifest.blocker {
+    if manifest.blocker && !manifest.volumetric_probe {
         let blocker_mesh = builder.box_mesh([0.75, 0.75, 0.75]);
         spawn_object(
             world,
@@ -302,17 +326,54 @@ pub(crate) fn setup_cornell_oracle_scene(
             neutral,
             Vec3::new(0.0, 4.0, 0.75) + world_offset,
             Quat::IDENTITY,
-            oracle_matte,
+            oracle_matte.clone(),
             "oracle_blocker",
         );
+    }
+
+    if manifest.volumetric_probe {
+        // The local medium fills the camera-to-receiver segment. L3 is the
+        // open control. L4 adds one thin, edge-on partition at x=0: points on
+        // its left must be shadowed from the right-side point light while the
+        // right half remains an unchanged lit control. Because the partition
+        // is edge-on to the camera, its only substantial image-space effect is
+        // the visibility boundary in the fog rather than a broad foreground
+        // surface.
+        spawn_fog_volume(
+            world,
+            Vec3::new(0.0, 4.0, 5.0) + world_offset,
+            Vec3::new(3.5, 3.5, 4.0),
+            "oracle_fog_volume",
+        );
+        spawn_point_light(
+            world,
+            Vec3::new(2.5, 4.0, 5.0) + world_offset,
+            20.0,
+            [2.0; 3],
+            "oracle_point_light",
+        );
+
+        if manifest.blocker {
+            let partition_mesh = builder.box_mesh([0.08, 4.0, 4.0]);
+            spawn_object(
+                world,
+                partition_mesh,
+                neutral,
+                Vec3::new(0.0, 4.0, 4.0) + world_offset,
+                Quat::IDENTITY,
+                oracle_matte,
+                "oracle_opaque_partition",
+            );
+        }
     }
     builder.finish();
 
     log::info!(
-        "Cornell oracle {} ready: blocker={}, debug={}, world_offset={:?}, \
+        "Cornell oracle {} ready: blocker={}, volumetric={}, debug={}, world_offset={:?}, \
          expected unshadowed direct={:?}, linear tolerance={:.4}",
         manifest.name,
         manifest.blocker,
+        manifest.volumetric_probe,
         manifest.primary_debug_view,
         world_offset,
         expected_unshadowed,
@@ -1258,8 +1319,12 @@ mod tests {
             cornell_oracle_rung(&args(&["--cornell-oracle", "L2"])).unwrap(),
             Some(CornellOracleRung::L2)
         );
+        assert_eq!(
+            cornell_oracle_rung(&args(&["--cornell-oracle", "l4"])).unwrap(),
+            Some(CornellOracleRung::L4)
+        );
         assert!(cornell_oracle_rung(&args(&["--cornell-oracle"])).is_err());
-        assert!(cornell_oracle_rung(&args(&["--cornell-oracle", "l3"])).is_err());
+        assert!(cornell_oracle_rung(&args(&["--cornell-oracle", "l5"])).is_err());
     }
 
     #[test]
@@ -1382,6 +1447,23 @@ mod tests {
         assert_eq!(l2.direction_toward_source, l1.direction_toward_source);
         assert!(l2.blocker);
         assert_eq!(l2.primary_debug_view, "shadow_visibility");
+    }
+
+    #[test]
+    fn cornell_oracle_l3_l4_add_exactly_the_opaque_partition() {
+        let l3 = cornell_oracle_manifest(CornellOracleRung::L3);
+        let l4 = cornell_oracle_manifest(CornellOracleRung::L4);
+
+        assert!(l3.volumetric_probe);
+        assert!(l4.volumetric_probe);
+        assert_eq!(l3.directional_radiance, [0.0; 3]);
+        assert_eq!(l4.directional_radiance, l3.directional_radiance);
+        assert!(!l3.blocker);
+        assert!(l4.blocker);
+        assert_eq!(l3.camera_position, l4.camera_position);
+        assert_eq!(l3.camera_target, l4.camera_target);
+        assert_eq!(l3.primary_debug_view, "final");
+        assert_eq!(l4.primary_debug_view, "final");
     }
 
     #[test]

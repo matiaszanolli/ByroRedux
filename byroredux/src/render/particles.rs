@@ -47,6 +47,36 @@ fn quantize_fade(t: f32) -> f32 {
     (t * COLOR_FADE_STEPS).round() / COLOR_FADE_STEPS
 }
 
+/// Preserve the per-particle spawn-size variation while applying the
+/// emitter's authored grow/fade curve as a scale. The old path interpolated
+/// the emitter endpoints directly and silently discarded `ParticleSoA::sizes`.
+fn particle_size_at_age(emitter_start: f32, emitter_end: f32, spawn_size: f32, t: f32) -> f32 {
+    let curve_size = emitter_start + (emitter_end - emitter_start) * t;
+    if emitter_start.is_finite() && emitter_start.abs() > 1.0e-5 && spawn_size.is_finite() {
+        spawn_size * (curve_size / emitter_start)
+    } else {
+        curve_size
+    }
+}
+
+/// Stable per-particle billboard roll. Lifespan and spawn size are immutable
+/// after birth, so the seed does not shimmer as the particle moves; age adds a
+/// slow spin that breaks the conspicuous stack of identically oriented flame
+/// triangles without changing authored trajectories or blend semantics.
+fn particle_roll(entity: u32, life: f32, spawn_size: f32, age: f32) -> f32 {
+    let mut hash = entity ^ life.to_bits().rotate_left(11) ^ spawn_size.to_bits().rotate_left(23);
+    hash ^= hash >> 16;
+    hash = hash.wrapping_mul(0x7FEB_352D);
+    hash ^= hash >> 15;
+    hash = hash.wrapping_mul(0x846C_A68B);
+    hash ^= hash >> 16;
+
+    let phase = (hash as f32) / (u32::MAX as f32);
+    let speed_sample = (hash.rotate_left(13) as f32) / (u32::MAX as f32);
+    let direction = if hash & 1 == 0 { 1.0 } else { -1.0 };
+    phase * std::f32::consts::TAU + age * direction * (0.18 + 0.54 * speed_sample)
+}
+
 /// Emit one DrawCommand per live particle into `draw_commands`.
 ///
 /// Skipped entirely when `particle_quad_handle == None` (no unit-quad
@@ -90,7 +120,7 @@ pub(super) fn emit_particles(
             // (its outward normal — see `quad_vertices` which
             // sets normals to (0,0,1)) toward the camera.
             let to_cam = cam_pos - world_pos;
-            let rot = if to_cam.length_squared() > 1.0e-6 {
+            let face_camera = if to_cam.length_squared() > 1.0e-6 {
                 Quat::from_rotation_arc(Vec3::Z, to_cam.normalize())
             } else {
                 Quat::IDENTITY
@@ -103,7 +133,7 @@ pub(super) fn emit_particles(
             // so same-emitter particles collapse onto a handful of
             // `material_hash` values instead of one per particle per frame.
             let color_t = quantize_fade(t);
-            let start_c = em.start_color;
+            let start_c = em.particles.colors[i];
             let end_c = em.end_color;
             let color = [
                 start_c[0] + (end_c[0] - start_c[0]) * color_t,
@@ -111,7 +141,8 @@ pub(super) fn emit_particles(
                 start_c[2] + (end_c[2] - start_c[2]) * color_t,
                 start_c[3] + (end_c[3] - start_c[3]) * color_t,
             ];
-            let size = em.start_size + (em.end_size - em.start_size) * t;
+            let spawn_size = em.particles.sizes[i];
+            let size = particle_size_at_age(em.start_size, em.end_size, spawn_size, t);
             if !size.is_finite()
                 || size <= 0.0
                 || !frustum.contains_sphere(world_pos, size * std::f32::consts::SQRT_2)
@@ -119,6 +150,13 @@ pub(super) fn emit_particles(
                 continue;
             }
 
+            let roll = particle_roll(
+                entity,
+                em.particles.lifes[i],
+                spawn_size,
+                em.particles.ages[i],
+            );
+            let rot = face_camera * Quat::from_rotation_z(roll);
             let model = Mat4::from_scale_rotation_translation(Vec3::splat(size), rot, world_pos);
             let pos_clip = vp_mat * Vec4::new(world_pos.x, world_pos.y, world_pos.z, 1.0);
             let sort_depth = f32_sortable_u32(pos_clip.w);
@@ -252,7 +290,10 @@ pub(super) fn emit_particles(
 
 #[cfg(test)]
 mod quantize_fade_tests {
-    use super::{emit_particles, quantize_fade, FrustumPlanes, COLOR_FADE_STEPS};
+    use super::{
+        emit_particles, particle_roll, particle_size_at_age, quantize_fade, FrustumPlanes,
+        COLOR_FADE_STEPS,
+    };
     use byroredux_core::ecs::{ParticleEmitter, TextureHandle, World};
     use byroredux_core::math::{Mat4, Vec3};
     use byroredux_renderer::MaterialTable;
@@ -320,6 +361,22 @@ mod quantize_fade_tests {
     fn endpoints_are_stable() {
         assert_eq!(quantize_fade(0.0), 0.0);
         assert_eq!(quantize_fade(1.0), 1.0);
+    }
+
+    #[test]
+    fn particle_size_curve_preserves_spawn_variation() {
+        assert_eq!(particle_size_at_age(5.0, 10.0, 6.0, 0.0), 6.0);
+        assert_eq!(particle_size_at_age(5.0, 10.0, 6.0, 0.5), 9.0);
+        assert_eq!(particle_size_at_age(5.0, 10.0, 6.0, 1.0), 12.0);
+    }
+
+    #[test]
+    fn particle_roll_is_stable_but_not_emitter_synchronized() {
+        let a = particle_roll(10, 1.2, 5.0, 0.4);
+        assert_eq!(a, particle_roll(10, 1.2, 5.0, 0.4));
+        assert_ne!(a, particle_roll(11, 1.2, 5.0, 0.4));
+        assert_ne!(a, particle_roll(10, 1.3, 5.0, 0.4));
+        assert_ne!(a, particle_roll(10, 1.2, 5.0, 0.6));
     }
 
     #[test]

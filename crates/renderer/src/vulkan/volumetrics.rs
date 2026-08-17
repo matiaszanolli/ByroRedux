@@ -129,6 +129,12 @@ pub struct VolumetricsParams {
 
 /// Maximum authored local volumes uploaded after CPU frustum/distance culling.
 pub const MAX_GPU_FOG_VOLUMES: usize = 128;
+/// Preserve the authored primitive shape with only low-contrast density noise.
+pub const FOG_VOLUME_PROFILE_HOMOGENEOUS: f32 = 0.0;
+/// A cooled particle plume: slow rising billows that broaden with height.
+pub const FOG_VOLUME_PROFILE_SMOKE: f32 = 1.0;
+/// A hot particle plume: a fast, tapered, emissive tongue profile.
+pub const FOG_VOLUME_PROFILE_FLAME: f32 = 2.0;
 /// Camera-centered world-space cluster resolution used for local fog.
 /// #2229 / REN-D3-02 — derived from `shader_constants_data.rs`'s
 /// `FOG_VOLUME_CLUSTER_DIM` (the single source of truth shared with
@@ -171,6 +177,13 @@ pub struct GpuFogVolume {
     /// All-zero for passive media (fog, mist, cooled smoke), which is the
     /// overwhelming majority — the emission branch is skipped for them.
     pub emission_temperature: [f32; 4],
+    /// x = procedural density profile (`FOG_VOLUME_PROFILE_*`); yzw reserved.
+    ///
+    /// Source provenance belongs here instead of being inferred from albedo or
+    /// emission in the shader: passive particle smoke and an authored fog box
+    /// can have identical radiometric coefficients but need very different
+    /// silhouettes and advection.
+    pub profile_params: [f32; 4],
 }
 
 #[repr(C)]
@@ -2076,18 +2089,18 @@ mod unit_tests {
 
     #[test]
     fn gpu_fog_volume_layout_matches_std430_shader_contract() {
-        assert_eq!(std::mem::size_of::<GpuFogVolume>(), 80);
+        assert_eq!(std::mem::size_of::<GpuFogVolume>(), 96);
         assert_eq!(std::mem::align_of::<GpuFogVolume>(), 16);
         assert_eq!(
             std::mem::size_of::<GpuFogVolumeUpload>(),
-            16 + MAX_GPU_FOG_VOLUMES * 80
+            16 + MAX_GPU_FOG_VOLUMES * 96
         );
         assert_eq!(std::mem::size_of::<GpuFogClusterEntry>(), 8);
     }
 
     /// #2228 / REN-D3-01 — the size/align pin above cannot catch a within-
     /// struct field reorder: every `GpuFogVolume` field is an identically
-    /// sized 16 B `vec4`, so any permutation still sums to 64 B / align 16
+    /// sized 16 B `vec4`, so any permutation still sums to 96 B / align 16
     /// and passes that test while silently swapping what each field means
     /// on the GPU (e.g. `inverse_rotation` read as `albedo_edge`). Pin each
     /// field's exact byte offset here — the source-of-truth order the GLSL
@@ -2100,6 +2113,7 @@ mod unit_tests {
         assert_eq!(offset_of!(GpuFogVolume, inverse_rotation), 32);
         assert_eq!(offset_of!(GpuFogVolume, albedo_edge), 48);
         assert_eq!(offset_of!(GpuFogVolume, emission_temperature), 64);
+        assert_eq!(offset_of!(GpuFogVolume, profile_params), 80);
     }
 
     /// #2228 / REN-D3-01 — cross-checks `volumetrics_inject.comp`'s
@@ -2111,12 +2125,13 @@ mod unit_tests {
     /// does for `GpuMaterial` (scene_buffer/gpu_instance_layout_tests.rs).
     #[test]
     fn gpu_fog_volume_glsl_field_order_matches_rust_struct() {
-        const RUST_FIELD_ORDER: [&str; 5] = [
+        const RUST_FIELD_ORDER: [&str; 6] = [
             "center_shape",
             "half_extents_extinction",
             "inverse_rotation",
             "albedo_edge",
             "emission_temperature",
+            "profile_params",
         ];
 
         let glsl_src = include_str!("../../shaders/volumetrics_inject.comp");
@@ -2158,6 +2173,7 @@ mod unit_tests {
             inverse_rotation: [0.0, 0.0, 0.0, 1.0],
             albedo_edge: [0.9, 0.9, 0.9, 0.4],
             emission_temperature: [0.0; 4],
+            profile_params: [FOG_VOLUME_PROFILE_SMOKE, 0.0, 0.0, 0.0],
         };
         let mut upload = GpuFogVolumeUpload::default();
         let mut entries = Box::new([GpuFogClusterEntry::default(); FOG_VOLUME_CLUSTER_COUNT]);
@@ -2189,6 +2205,7 @@ mod unit_tests {
             inverse_rotation: [0.0, 0.0, 0.0, 1.0],
             albedo_edge: [0.9, 0.9, 0.9, 0.4],
             emission_temperature: [0.0; 4],
+            profile_params: [FOG_VOLUME_PROFILE_HOMOGENEOUS, 0.0, 0.0, 0.0],
         };
         let mut upload = GpuFogVolumeUpload::default();
         let mut entries = Box::new([GpuFogClusterEntry::default(); FOG_VOLUME_CLUSTER_COUNT]);

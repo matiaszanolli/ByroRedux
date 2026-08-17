@@ -277,6 +277,7 @@ mod tests {
             inverse_rotation: [0.0, 0.0, 0.0, 1.0],
             albedo_edge: [0.25, 0.25, 0.25, 0.45],
             emission_temperature: [12.0, 6.5, 2.0, 1850.0],
+            profile_params: [2.0, 0.0, 0.0, 0.0],
         }
     }
 

@@ -121,6 +121,38 @@ float hybridSliceCoordinate(float distanceAlongRay) {
         * log(d / linearDepth) / log(farDistance / linearDepth);
 }
 
+// Sample the cumulative volume linearly along depth, but never across XY
+// froxel columns. Adjacent columns are independent camera rays and can be
+// separated by opaque structure; sampler3D's trilinear XY filtering would
+// otherwise blend lit radiance into a shadowed wall-side column. The coarse
+// native grid remains visible at hard boundaries by design until a
+// depth/geometry-aware reconstruction pass can prove that neighboring rays
+// belong to the same region.
+vec4 sampleVolumetricColumn(vec2 uv, float normalizedDepth) {
+    ivec3 size = textureSize(volumetricFroxel, 0);
+    ivec2 column = clamp(
+        ivec2(uv * vec2(size.xy)),
+        ivec2(0),
+        size.xy - ivec2(1)
+    );
+
+    // Convert normalized sampler coordinates to texel space. Integration
+    // stores cumulative state at slab back faces; the caller remaps those
+    // faces to texel centers before reaching this helper.
+    float z = clamp(
+        normalizedDepth * float(size.z) - 0.5,
+        0.0,
+        float(size.z - 1)
+    );
+    int z0 = int(floor(z));
+    int z1 = min(z0 + 1, size.z - 1);
+    return mix(
+        texelFetch(volumetricFroxel, ivec3(column, z0), 0),
+        texelFetch(volumetricFroxel, ivec3(column, z1), 0),
+        fract(z)
+    );
+}
+
 // Analytic optical depth for sigma_t(y)=sigma0*exp(-(y-y0)/H).
 // Keep the horizontal-ray branch explicit: the general quotient becomes 0/0
 // as dy/ds approaches zero and was a plausible source of exterior white-outs.
@@ -569,8 +601,9 @@ void main() {
     // radiance and the scene together.
     //
     // The volumetric volume is screen-space in XY and hybrid linear /
-    // exponential in Z. One sampler3D tap retrieves the pre-integrated
-    // result through the fragment.
+    // exponential in Z. Preserve a single XY ray column while interpolating
+    // between cumulative depth slices; unconditional XY filtering crosses
+    // opaque structure boundaries and creates wall leaks.
     //
     // REN-D8-02 / REN-D16-02 — gated on `has_surface || is_sky`, not
     // `has_surface` alone. `depth == 1.0` still reconstructs a valid
@@ -598,16 +631,9 @@ void main() {
         // the texel-center grid before the tap.
         float sliceCount = max(params.sky_horizon.w, 1.0);
         float sliceTexel = clamp((slice * sliceCount - 0.5) / sliceCount, 0.0, 1.0);
-        vec4 vol = texture(volumetricFroxel, vec3(fragUV, sliceTexel));
+        vec4 vol = sampleVolumetricColumn(fragUV, sliceTexel);
         // vol.rgb = ∫inscatter accumulated 0..slice (HDR-linear)
         // vol.a   = cumulative transmittance through 0..slice
-        //
-        // M55 Phase 2c volumetric contribution was gated off
-        // 2026-05-09 (per-froxel single-shadow-ray produced
-        // ~8px-wide vertical banding on Prospector Saloon lantern
-        // content) and re-enabled once M-LIGHT v2 (the 3x3 spatial
-        // blur in `volumetrics_integrate.comp`) resolved it — see
-        // `volumetrics::VOLUMETRIC_OUTPUT_CONSUMED`.
         //
         // `params.depth_params.z` mirrors that host-side const, so
         // it's always 1.0 here; `vol.a` genuinely carries cumulative
