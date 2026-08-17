@@ -507,6 +507,11 @@ pub fn froxel_extent(render_extent: vk::Extent2D, config: VolumetricsConfig) -> 
 /// alpha-equivalent (the implicit 0.0 we'd reconstruct) loses the
 /// transmittance channel entirely.
 const FROXEL_FORMAT: vk::Format = vk::Format::R16G16B16A16_SFLOAT;
+/// One scalar per froxel recording what fraction of the current source term
+/// came from deterministic thermal emission. R32 is a core storage-image
+/// format, avoiding a `shaderStorageImageExtendedFormats` requirement for the
+/// temporal correctness sidecar. #2809 (REN-D16-04).
+const EMISSION_HISTORY_FORMAT: vk::Format = vk::Format::R32_SFLOAT;
 const DENSITY_NOISE_FORMAT: vk::Format = vk::Format::R8_UNORM;
 
 struct FroxelSlot {
@@ -529,10 +534,15 @@ pub struct VolumetricsPipeline {
     extent: vk::Extent3D,
     config: VolumetricsConfig,
     /// Per frame-in-flight injection-pass output: per-froxel
-    /// `(rgb=inscatter, a=extinction)`. Read by the integration pass.
-    /// Phase 5 will additionally read the prior slot for temporal
-    /// reprojection.
+    /// `(rgb=inscatter, a=extinction)`. Read by the integration pass and by
+    /// the next frame's temporal reprojection.
     lighting_volumes: Vec<FroxelSlot>,
+    /// Per frame-in-flight scalar emissive-source share. Kept separate from
+    /// `lighting_volumes` because its RGBA channels are already committed to
+    /// in-scatter plus extinction. The injector writes the current slot and
+    /// reprojects the previous slot to make fire/explosion history symmetric
+    /// on leading and trailing edges.
+    emission_history_volumes: Vec<FroxelSlot>,
     /// Per frame-in-flight host-mapped UBO carrying
     /// `VolumetricsParams`. Written each frame from `dispatch()`.
     param_buffers: Vec<GpuBuffer>,
@@ -557,9 +567,9 @@ pub struct VolumetricsPipeline {
     /// cumulative `(rgb=∫inscatter, a=T_cum)`. Composite samples this
     /// once per fragment with a sampler3D.
     integrated_volumes: Vec<FroxelSlot>,
-    /// Single-shot integration UBO holding `dt`. Written once in
-    /// `new_inner` because dt is constant under linear slice
-    /// distribution; Phase 5 will switch to per-frame exponential dt.
+    /// Per-frame-in-flight integration UBO holding the hybrid-Z grid
+    /// parameters. The shader derives each slab's exact view-space width from
+    /// these values while walking the column.
     integration_param_buffers: Vec<GpuBuffer>,
     history_valid: bool,
     dispatched_this_frame: bool,
@@ -614,6 +624,7 @@ impl VolumetricsPipeline {
             extent,
             config,
             lighting_volumes: Vec::new(),
+            emission_history_volumes: Vec::new(),
             param_buffers: Vec::new(),
             fog_volume_buffers: Vec::new(),
             fog_cluster_buffers: Vec::new(),
@@ -652,8 +663,9 @@ impl VolumetricsPipeline {
         }
 
         // ── 1. Allocate per-frame-in-flight froxel volumes ────────────
-        // Two volumes per frame: lighting (injection output → integration
-        // input) and integrated (integration output → composite read).
+        // Three volumes per frame: lighting (injection output → integration
+        // input), integrated (integration output → composite read), and a
+        // scalar emission-provenance history sidecar for temporal rejection.
         for i in 0..MAX_FRAMES_IN_FLIGHT {
             let slot = try_or_cleanup!(Self::create_volume(
                 device,
@@ -666,6 +678,17 @@ impl VolumetricsPipeline {
                     | vk::ImageUsageFlags::TRANSFER_DST,
             ));
             partial.lighting_volumes.push(slot);
+            let emission_history = try_or_cleanup!(Self::create_volume(
+                device,
+                allocator,
+                &format!("volumetrics_emission_history_{i}"),
+                extent,
+                EMISSION_HISTORY_FORMAT,
+                vk::ImageUsageFlags::STORAGE
+                    | vk::ImageUsageFlags::SAMPLED
+                    | vk::ImageUsageFlags::TRANSFER_DST,
+            ));
+            partial.emission_history_volumes.push(emission_history);
             let integrated = try_or_cleanup!(Self::create_volume(
                 device,
                 allocator,
@@ -864,6 +887,19 @@ impl VolumetricsPipeline {
                 .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            // 12/13: current write + previous sampled scalar emission share.
+            // This provenance cannot be reconstructed from the RGBA V-buffer
+            // after thermal emission and stochastic lighting are combined.
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(12)
+                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(13)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
         ];
         validate_set_layout(
             0,
@@ -943,6 +979,13 @@ impl VolumetricsPipeline {
                 .sampler(partial.history_sampler)
                 .image_view(partial.lighting_volumes[previous].view)
                 .image_layout(vk::ImageLayout::GENERAL)];
+            let emission_history_write_info = [vk::DescriptorImageInfo::default()
+                .image_view(partial.emission_history_volumes[f].view)
+                .image_layout(vk::ImageLayout::GENERAL)];
+            let previous_emission_history_info = [vk::DescriptorImageInfo::default()
+                .sampler(partial.history_sampler)
+                .image_view(partial.emission_history_volumes[previous].view)
+                .image_layout(vk::ImageLayout::GENERAL)];
             let params_info = [vk::DescriptorBufferInfo {
                 buffer: partial.param_buffers[f].buffer,
                 offset: 0,
@@ -988,6 +1031,8 @@ impl VolumetricsPipeline {
                 write_storage_buffer(set, 9, &fog_index_info),
                 write_combined_image_sampler(set, 10, &base_noise_info),
                 write_combined_image_sampler(set, 11, &detail_noise_info),
+                write_storage_image(set, 12, &emission_history_write_info),
+                write_combined_image_sampler(set, 13, &previous_emission_history_info),
             ];
             // SAFETY: the written descriptor sets and the referenced froxel image
             // view + param UBO are freshly created here and not yet in use by any
@@ -1138,14 +1183,15 @@ impl VolumetricsPipeline {
         }
 
         log::info!(
-            "Volumetrics pipeline created from render {}x{}: {}x{}x{} froxels (1/{} XY), 2× {} MiB / slot, far={} m",
+            "Volumetrics pipeline created from render {}x{}: {}x{}x{} froxels (1/{} XY), {} MiB / slot (2×RGBA16F + R32F), far={} m",
             render_extent.width,
             render_extent.height,
             extent.width,
             extent.height,
             extent.depth,
             config.froxel_xy_divisor,
-            (extent.width as u64 * extent.height as u64 * extent.depth as u64 * 8) / (1024 * 1024),
+            (extent.width as u64 * extent.height as u64 * extent.depth as u64 * 20)
+                / (1024 * 1024),
             config.grid_far_meters,
         );
 
@@ -1250,10 +1296,11 @@ impl VolumetricsPipeline {
         })
     }
 
-    /// One-time UNDEFINED → GENERAL transition for every froxel volume
-    /// (both injection-output and integration-output) followed by a
-    /// `cmd_clear_color_image` that writes `(rgb=0 inscatter, a=1
-    /// transmittance)`. Without this clear, uninitialized `vol.a ≈ 0`
+    /// One-time UNDEFINED → GENERAL transition for every writable froxel
+    /// volume followed by a `cmd_clear_color_image`: lighting/integration use
+    /// `(rgb=0 inscatter, a=1 transmittance)`, while the scalar emission-share
+    /// history uses zero. Without the integrated clear, uninitialized
+    /// `vol.a ≈ 0`
     /// makes the composite formula `final = scene * vol.a + vol.rgb`
     /// collapse the scene to black on the first frame volumetrics is
     /// enabled (#1082). Call once after `new()`.
@@ -1315,11 +1362,12 @@ impl VolumetricsPipeline {
             let detail_noise = self.detail_noise_volume.as_ref().expect("detail noise");
 
             // ── 1. Initialize writable froxels and upload-only noise images.
-            let mut barriers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT * 2 + 2);
+            let mut barriers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT * 3 + 2);
             for slot in self
                 .lighting_volumes
                 .iter()
                 .chain(self.integrated_volumes.iter())
+                .chain(self.emission_history_volumes.iter())
             {
                 barriers.push(image_barrier_undef_to_general(slot.image).dst_access_mask(
                     vk::AccessFlags::SHADER_READ
@@ -1374,6 +1422,20 @@ impl VolumetricsPipeline {
                         slot.image,
                         vk::ImageLayout::GENERAL,
                         &clear_value,
+                        &[full_range],
+                    );
+                }
+            }
+            let clear_emission_history = vk::ClearColorValue { float32: [0.0; 4] };
+            for slot in &self.emission_history_volumes {
+                // SAFETY: same ownership/layout/usage contract as the RGBA
+                // froxels above; R32F consumes only the first clear channel.
+                unsafe {
+                    device.cmd_clear_color_image(
+                        cmd,
+                        slot.image,
+                        vk::ImageLayout::GENERAL,
+                        &clear_emission_history,
                         &[full_range],
                     );
                 }
@@ -1577,11 +1639,13 @@ impl VolumetricsPipeline {
 
         let subresource = super::descriptors::color_subresource_single_mip();
 
-        // ── Stage B: pre-injection barrier on the lighting volume ────
-        // Both volumes live in GENERAL across their lifetime (set by
-        // `initialize_layouts`), so no layout transitions occur. The
-        // barrier sequences last frame's integration READ of this
-        // image against this frame's injection WRITE.
+        // ── Stage B: pre-injection history barriers ─────────────────
+        // The raw lighting volumes and scalar emission-provenance sidecars
+        // live in GENERAL across their lifetime (set by
+        // `initialize_layouts`), so no layout transitions occur. Sequence
+        // the slot being recycled from last frame's history READ to this
+        // frame's WRITE, and publish the previous slot's WRITE to both
+        // reprojected history reads.
         let pre_inject = vk::ImageMemoryBarrier::default()
             .src_access_mask(vk::AccessFlags::SHADER_READ)
             .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
@@ -1597,6 +1661,20 @@ impl VolumetricsPipeline {
             .new_layout(vk::ImageLayout::GENERAL)
             .image(self.lighting_volumes[previous].image)
             .subresource_range(subresource);
+        let pre_emission_history_write = vk::ImageMemoryBarrier::default()
+            .src_access_mask(vk::AccessFlags::SHADER_READ)
+            .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
+            .old_layout(vk::ImageLayout::GENERAL)
+            .new_layout(vk::ImageLayout::GENERAL)
+            .image(self.emission_history_volumes[frame].image)
+            .subresource_range(subresource);
+        let emission_history_ready = vk::ImageMemoryBarrier::default()
+            .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+            .dst_access_mask(vk::AccessFlags::SHADER_READ)
+            .old_layout(vk::ImageLayout::GENERAL)
+            .new_layout(vk::ImageLayout::GENERAL)
+            .image(self.emission_history_volumes[previous].image)
+            .subresource_range(subresource);
         device.cmd_pipeline_barrier(
             cmd,
             vk::PipelineStageFlags::COMPUTE_SHADER,
@@ -1604,7 +1682,12 @@ impl VolumetricsPipeline {
             vk::DependencyFlags::empty(),
             &[],
             &[],
-            &[pre_inject, history_ready],
+            &[
+                pre_inject,
+                history_ready,
+                pre_emission_history_write,
+                emission_history_ready,
+            ],
         );
 
         // ── Stage C: dispatch injection ──────────────────────────────
@@ -1876,6 +1959,7 @@ impl VolumetricsPipeline {
         for slot in self
             .lighting_volumes
             .drain(..)
+            .chain(self.emission_history_volumes.drain(..))
             .chain(self.integrated_volumes.drain(..))
             .chain(self.base_noise_volume.take())
             .chain(self.detail_noise_volume.take())
@@ -2083,6 +2167,73 @@ mod unit_tests {
         assert!(
             !shader.contains("texture(previousFroxel"),
             "trilinear history sampling can blend light through opaque XY boundaries"
+        );
+    }
+
+    #[test]
+    fn emissive_history_uses_previous_provenance_on_trailing_edges() {
+        let shader = include_str!("../../shaders/volumetrics_inject.comp");
+        for contract in [
+            "layout(r32f, set = 0, binding = 12) uniform writeonly image3D emissionHistory;",
+            "layout(set = 0, binding = 13) uniform sampler3D previousEmissionHistory;",
+            "imageStore(emissionHistory, coord, vec4(currentEmissionFraction",
+            "float previousEmissionFraction = clamp(",
+            "float temporalEmissionFraction = max(",
+            "currentEmissionFraction,",
+            "previousEmissionFraction",
+            "mix(steadyWeight, emissiveWeight, temporalEmissionFraction)",
+        ] {
+            assert!(
+                shader.contains(contract),
+                "emissive history lost its symmetric leading/trailing-edge contract: {contract}"
+            );
+        }
+        assert!(
+            shader.contains("texelFetch(previousEmissionHistory, ivec3(column, z0), 0).r"),
+            "emission provenance must use the same wall-safe column reprojection as radiance"
+        );
+    }
+
+    #[test]
+    fn exponential_slab_transport_saturates_dense_smoke() {
+        fn source_integral(extinction: f32, width: f32) -> f32 {
+            let optical_depth = extinction * width;
+            if optical_depth < 1.0e-3 {
+                width * (1.0 - 0.5 * optical_depth)
+            } else {
+                (1.0 - (-optical_depth).exp()) / extinction
+            }
+        }
+
+        // For q = sigma_t * L_eq, an optically thick homogeneous slab must
+        // approach L_eq rather than the rectangle rule's unbounded q*dt.
+        let extinction = 100.0;
+        let width = 1.0;
+        let equilibrium_radiance = 3.5;
+        let source = extinction * equilibrium_radiance;
+        let exact = source * source_integral(extinction, width);
+        assert!((exact - equilibrium_radiance).abs() < 1.0e-5);
+        assert!(source * width > exact * 50.0);
+
+        // The series branch preserves the vacuum/thin-medium limit.
+        let thin = source_integral(1.0e-7, 2.0);
+        assert!((thin - 2.0).abs() < 1.0e-6);
+
+        let shader = include_str!("../../shaders/volumetrics_integrate.comp");
+        for contract in [
+            "float slabTransmittance = exp(-opticalDepth);",
+            "float sourceIntegral = opticalDepth < 1.0e-3",
+            ": (1.0 - slabTransmittance) / sigmaT;",
+            "inscatter_total += inscatter * trans_cumulative * sourceIntegral;",
+        ] {
+            assert!(
+                shader.contains(contract),
+                "integration shader lost exact homogeneous-slab transport: {contract}"
+            );
+        }
+        assert!(
+            !shader.contains("inscatter * trans_cumulative * dt"),
+            "rectangle-rule source integration would over-brighten dense smoke"
         );
     }
 

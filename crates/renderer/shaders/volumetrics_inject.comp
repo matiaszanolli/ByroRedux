@@ -164,6 +164,14 @@ layout(std430, set = 0, binding = 9) readonly buffer FogClusterIndexBuffer {
 layout(set = 0, binding = 10) uniform sampler3D baseDensityNoise;
 layout(set = 0, binding = 11) uniform sampler3D detailDensityNoise;
 
+// Current and previous deterministic emissive share. The raw V-buffer cannot
+// reconstruct this after emission, authored fog, and stochastic lighting have
+// been folded into one RGB source. Keeping one scalar history channel lets a
+// departing flame retain the same short temporal time constant as its leading
+// edge without treating binary shadow-ray changes as disocclusions. #2809.
+layout(r32f, set = 0, binding = 12) uniform writeonly image3D emissionHistory;
+layout(set = 0, binding = 13) uniform sampler3D previousEmissionHistory;
+
 const float PI = 3.14159265358979323846;
 // Rec. 709 luma weights, matching `byroredux_core::radiometry`'s
 // `linear_srgb_luminance` so CPU and GPU agree on what "brightness" means.
@@ -731,6 +739,29 @@ vec4 sampleHistoryColumn(vec3 uvw) {
     );
 }
 
+// Match `sampleHistoryColumn` exactly: nearest camera-ray column, linear
+// interpolation only along consecutive depth slabs.
+float sampleEmissionHistoryColumn(vec3 uvw) {
+    ivec3 size = textureSize(previousEmissionHistory, 0);
+    ivec2 column = clamp(
+        ivec2(uvw.xy * vec2(size.xy)),
+        ivec2(0),
+        size.xy - ivec2(1)
+    );
+    float z = clamp(
+        uvw.z * float(size.z) - 0.5,
+        0.0,
+        float(size.z - 1)
+    );
+    int z0 = int(floor(z));
+    int z1 = min(z0 + 1, size.z - 1);
+    return mix(
+        texelFetch(previousEmissionHistory, ivec3(column, z0), 0).r,
+        texelFetch(previousEmissionHistory, ivec3(column, z1), 0).r,
+        fract(z)
+    );
+}
+
 void main() {
     ivec3 coord = ivec3(gl_GlobalInvocationID.xyz);
     ivec3 size = imageSize(froxel);
@@ -940,10 +971,30 @@ void main() {
     }
 
     vec4 current = vec4(inscatter, extinction_coef);
+    float currentEmissionLuma = dot(local_medium.emission, LUMA_REC709);
+    float currentSourceLuma = dot(current.rgb, LUMA_REC709);
+    float currentEmissionFraction = clamp(
+        currentEmissionLuma / max(currentSourceLuma, 1.0e-6),
+        0.0,
+        1.0
+    );
+    // Store the current share, not the temporally widened one. Otherwise a
+    // single flash would feed its own history indefinitely instead of
+    // decaying after one previous-frame interval.
+    imageStore(emissionHistory, coord, vec4(currentEmissionFraction, 0.0, 0.0, 0.0));
     if (params.prev_camera_pos.w > 0.5) {
         vec3 previousUvw;
         if (reprojectHistory(world_pos, previousUvw)) {
             vec4 history = sampleHistoryColumn(previousUvw);
+            float previousEmissionFraction = clamp(
+                sampleEmissionHistoryColumn(previousUvw),
+                0.0,
+                1.0
+            );
+            float temporalEmissionFraction = max(
+                currentEmissionFraction,
+                previousEmissionFraction
+            );
             float relativeDensityDelta = abs(history.a - current.a)
                 / max(max(history.a, current.a), 1.0e-6);
 
@@ -962,44 +1013,20 @@ void main() {
             // deterministic given the volume — so keying the shorter time
             // constant on how much of the source term is emissive isolates
             // the fast-changing signal without touching the noisy one.
-            // #2809 (REN-D16-04), KNOWN LIMITATION — this time constant is
-            // ASYMMETRIC: fast on, slow off. `emissionFraction` is derived
-            // from the CURRENT sample alone, so on a trailing edge (a froxel
-            // a flame has just left) `local_medium.emission → 0`, which both
-            // drives `emissionAgreement → 1` (disabling the only radiance-
-            // based rejection) and makes the `mix` below select
-            // `steadyWeight` (~12-frame decay) instead of `emissiveWeight`
-            // (~3.5 frames). Net effect: emissive smear trailing moving
-            // fire/explosion fronts.
-            //
-            // Partly self-limiting: when the departing volume also dominated
-            // the froxel's extinction, `relativeDensityDelta ≈ 1` and
-            // `exp(-DENSITY_REJECTION)` collapses `historyWeight` anyway. The
-            // case that survives is a froxel where the ambient/global medium
-            // dominates sigma_t — fogged exteriors, or a bright but optically
-            // thin flame.
-            //
-            // NOT fixable by reading history emission: the froxel image is
-            // RGBA16F with rgb = inscatter and a = extinction, so the
-            // emissive share is never stored and cannot be reprojected. A
-            // real fix needs an extra per-frame emission-share image.
-            // And do NOT "fix" it by folding in a history-vs-current
-            // radiance drop — that is exactly the radiance-delta rejection
-            // the paragraph below rules out, and it would suppress
-            // accumulation at the god-ray edges accumulation exists to clean
-            // up.
-            float emissionLuma = dot(local_medium.emission, LUMA_REC709);
-            float sourceLuma = dot(current.rgb, LUMA_REC709);
-            float emissionFraction =
-                clamp(emissionLuma / max(sourceLuma, 1.0e-6), 0.0, 1.0);
+            // #2809 (REN-D16-04): the dedicated scalar history image makes
+            // the short emissive time constant symmetric. A leading edge is
+            // keyed by the current share; a trailing edge is keyed by the
+            // reprojected previous share. It intentionally stores only source
+            // provenance, never radiance, so the stochastic binary sun ray
+            // remains governed by the steady atmospheric history path.
             float steadyWeight = clamp(params.temporal_params.x, 0.0, 0.98);
             float emissiveWeight = clamp(params.fog_reference.y, 0.0, 0.98);
             float relativeRadianceDelta = dot(abs(history.rgb - current.rgb), LUMA_REC709)
-                / max(max(dot(history.rgb, LUMA_REC709), sourceLuma), 1.0e-5);
+                / max(max(dot(history.rgb, LUMA_REC709), currentSourceLuma), 1.0e-5);
             float emissionAgreement = exp(
-                -2.5 * relativeRadianceDelta * emissionFraction);
+                -2.5 * relativeRadianceDelta * temporalEmissionFraction);
             float historyWeight =
-                mix(steadyWeight, emissiveWeight, emissionFraction)
+                mix(steadyWeight, emissiveWeight, temporalEmissionFraction)
                 * exp(-params.temporal_params.y * relativeDensityDelta)
                 * emissionAgreement;
             current = mix(current, history, historyWeight);

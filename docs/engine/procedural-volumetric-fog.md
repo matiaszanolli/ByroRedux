@@ -37,12 +37,15 @@ of them one physical and temporal contract.
 
 - The grid derives from the render extent after the FSR preset query, never
   from output resolution.
-- Defaults are one froxel per 12×12 render pixels, 64 Z slices, and a 128 m
+- Defaults are one froxel per 4×4 render pixels, 64 Z slices, and a 128 m
   grid far plane.
 - The first 5 m consume the first 1/8 of Z linearly. The remaining slices are
   exponential from 5 m to the configured far plane.
-- The raw V-buffer stores `(in-scattered radiance.rgb, sigma_t)`. The
-  integrated volume stores `(accumulated radiance.rgb, transmittance)`.
+- The raw V-buffer stores `(source radiance per metre.rgb, sigma_t)`. The
+  integrated volume stores `(accumulated radiance.rgb, transmittance)`. A
+  separate R32F history sidecar stores the deterministic thermal-emission
+  fraction because that provenance cannot be reconstructed after emission,
+  scattering, and stochastic visibility have been summed into RGB.
 - XCLL/WTHR near/far ramps are converted once at the cell/weather translation
   boundary. Runtime volumetrics consume extinction in inverse metres,
   single-scatter albedo, and coverage; they never evaluate the legacy ramp.
@@ -70,9 +73,18 @@ of them one physical and temporal contract.
   octaves plus Perlin detail). Both are generated once at renderer boot,
   uploaded through staging, then sampled with trilinear repeat. Total resident
   density data is 288 KiB.
-- One jittered sample is evaluated per froxel. Previous raw V-buffer history
-  is reprojected with the previous camera matrix and blended at 0.92 steady
-  state. Relative extinction changes exponentially reduce that weight.
+- One jittered sample is evaluated per froxel. Previous raw V-buffer and
+  emission-provenance history are reprojected with the previous camera matrix.
+  Steady media blend at 0.92; an emissive leading or trailing edge selects the
+  shorter fire history through `max(current_emission, previous_emission)`.
+  Relative extinction changes exponentially reduce either weight. Storing the
+  current share rather than the widened value prevents a departed flame from
+  sustaining its own fast-history classification indefinitely.
+- Integration treats every hybrid-Z slab as a homogeneous medium and applies
+  the exact Beer-Lambert source integral
+  `(1 - exp(-sigma_t * dt)) / sigma_t`, with a cancellation-safe series near
+  vacuum. Thick smoke therefore converges to its equilibrium radiance instead
+  of growing brighter without bound under the former rectangle rule.
 - The medium uses extinction, single-scatter albedo, and a dual-lobe
   Henyey-Greenstein phase function (`g_forward=0.8`, `g_backward=-0.3`,
   forward mix `0.7`).
@@ -126,11 +138,13 @@ primitives and differ only in their coefficients:
   structure instead of filling it uniformly. It is added unconditionally —
   independent of the phase function and of the shadow ray — because a flame
   radiates from being hot, not from being lit.
-- No new render pass, buffer, or sort order. `volumetrics_integrate.comp`
-  already treats the injection buffer's rgb as radiance added per unit length
-  and multiplies by slab thickness and accumulated transmittance, which *is*
-  the emission integral. Fire therefore composites, denoises, reprojects, and
-  meets the FSR contract through the machinery fog already uses.
+- No new render pass or sort order. `volumetrics_integrate.comp` treats the
+  injection buffer's RGB as a source coefficient per unit length and evaluates
+  its exact homogeneous-slab integral against Beer-Lambert attenuation and
+  accumulated transmittance. Fire therefore composites, denoises, reprojects,
+  and meets the FSR contract through the machinery fog already uses. The only
+  added image is the scalar temporal-provenance sidecar described above; it
+  carries no radiance and is not sampled by composite.
 - Emission colour and brightness both derive from one temperature via
   `byroredux_core::radiometry`: chromaticity from Planck's law integrated
   against the CIE 1931 observer, magnitude from the visible-band `Y` integral.
@@ -169,11 +183,14 @@ primitives and differ only in their coefficients:
   from retaining a peak-bright point light.
 - Emissive froxels use a shorter temporal history weight
   (`DEFAULT_EMISSIVE_HISTORY_WEIGHT`, `fog_reference.y`) blended in by the
-  emissive fraction of the source term. This is deliberately not a rejection
-  on radiance delta: the sun visibility test is a single jittered *binary*
-  sample that legitimately flips at shadow boundaries, so rejecting on that
-  delta would suppress accumulation exactly at the god-ray edges M-LIGHT v2
-  added it to clean up.
+  larger of the current and reprojected previous emissive fractions. The
+  previous share makes the response symmetric: newly arrived and newly
+  departed fire both reject stale radiance quickly instead of leaving a slow
+  tail. Provenance remains separate from the stochastic radiance term because
+  the sun visibility test is a single jittered *binary* sample that
+  legitimately flips at shadow boundaries; using that flip as a generic
+  disocclusion would suppress accumulation exactly at the god-ray edges
+  M-LIGHT v2 added it to clean up.
 
 ### Open calibration
 
@@ -212,6 +229,7 @@ The timer brackets inject plus integrate.
 
 | Dimension | Value | Froxel extent | Volumetrics GPU | Status / evidence |
 |---|---:|---:|---:|---|
+| XY divisor | 4 | 214×120×64 | 0.17–0.20 ms | default; exact slab transport + emissive sidecar, Vulkan validation runtime |
 | XY divisor | 8 | 107×60×64 | — | allocation/dispatch smoke passed; timed warmup pending |
 | XY divisor | 12 | 72×40×64 | 0.10–0.11 ms | Perlin-Worley/detail volumes; repeated FNV warm frames |
 | XY divisor | 16 | 54×30×64 | — | pending |
@@ -232,7 +250,9 @@ inject+integrate after the texture-volume change, versus 0.110–0.125 ms for
 the prior three-octave ALU field. Shipping rotation mode 1 moved from 0.116 to
 0.105 ms; the four-mode mean fell from 0.1163 to 0.1035 ms (about 11%).
 
-Target ranges for the reference 160×90×64 grid remain 0.2–0.5 ms inject and
+At the default 214×120×64 grid, the two RGBA16F fields plus the R32F emissive
+history sidecar consume about 31 MiB per frame slot. Target ranges for the
+reference 160×90×64 grid remain 0.2–0.5 ms inject and
 0.3–0.8 ms integrate. Record inject and integrate separately before treating
 the current combined timer as a final budget verdict.
 
@@ -265,9 +285,12 @@ the current combined timer as a final budget verdict.
 
 ## Follow-up boundary
 
-1. extend authored-mesh replacement to the loose-NIF route and add the optional
+1. add a transported combustion field for fuel, temperature, soot, and
+   velocity so fire rolls, entrains air, cools into smoke, and drives explosion
+   pressure rather than remaining an analytic primitive;
+2. extend authored-mesh replacement to the loose-NIF route and add the optional
    tri-planar 2D-mask density path for silhouettes that need texture fidelity;
-2. map the verified Starfield height-fog block without guessing its curve;
-3. add the 32³ aerial-perspective LUT and a non-RT cascade visibility variant;
-4. extend the existing glass transmittance hook with ratio tracking and a
+3. map the verified Starfield height-fog block without guessing its curve;
+4. add the 32³ aerial-perspective LUT and a non-RT cascade visibility variant;
+5. extend the existing glass transmittance hook with ratio tracking and a
    majorant grid for path-traced heterogeneous media.

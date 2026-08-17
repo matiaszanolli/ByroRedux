@@ -6,13 +6,15 @@
 // and Unified Volumetric Rendering in Frostbite," SIGGRAPH 2015,
 // §5.3 — Light Scattering Integration):
 //
-//   per slab i (thickness dt):
-//     integrated_inscatter += inscatter[i] * T_cum * dt
-//     T_cum *= exp(-extinction[i] * dt)
+//   per slab i (thickness dt, homogeneous coefficients):
+//     T_slab = exp(-extinction[i] * dt)
+//     source_integral = (1 - T_slab) / extinction[i]
+//     integrated_inscatter += inscatter[i] * T_cum * source_integral
+//     T_cum *= T_slab
 //     write (integrated_inscatter, T_cum) at slice i
 //
-// dt is constant (linear slice→view-distance distribution); Phase 5
-// will swap in the exponential distribution and a per-slice dt.
+// dt is derived per slice from the hybrid linear/exponential depth
+// distribution below, so every slab uses its exact view-space width.
 //
 // The output volume stores per-slice cumulative state, so composite
 // reads a single sampler3D tap at `slice = worldDist / VOLUME_FAR`
@@ -80,11 +82,26 @@ void main() {
         vec3 inscatter = inj.rgb;
         float extinction = inj.a;
 
-        // Injection evaluates one jittered sample inside this exact hybrid-Z
-        // slab. Integrate with the slab's analytic width and store cumulative
-        // state at its back face.
-        inscatter_total += inscatter * trans_cumulative * dt;
-        trans_cumulative *= exp(-extinction * dt);
+        // Injection evaluates one jittered set of homogeneous coefficients
+        // inside this exact hybrid-Z slab. Integrate the source term against
+        // Beer-Lambert attenuation analytically:
+        //
+        //   integral_0^dt exp(-sigma_t*s) ds
+        //     = (1 - exp(-sigma_t*dt)) / sigma_t.
+        //
+        // The prior rectangle rule (`source * dt`) grows without bound for a
+        // dense slab and turns thick smoke brighter than its equilibrium
+        // radiance. The closed form saturates as optical depth grows. Use the
+        // first two terms of the series near zero to avoid cancellation while
+        // retaining the vacuum limit exactly. #2241 (REN-D16-03).
+        float sigmaT = max(extinction, 0.0);
+        float opticalDepth = sigmaT * dt;
+        float slabTransmittance = exp(-opticalDepth);
+        float sourceIntegral = opticalDepth < 1.0e-3
+            ? dt * (1.0 - 0.5 * opticalDepth)
+            : (1.0 - slabTransmittance) / sigmaT;
+        inscatter_total += inscatter * trans_cumulative * sourceIntegral;
+        trans_cumulative *= slabTransmittance;
 
         imageStore(
             integrated,
