@@ -155,17 +155,13 @@ fn fo76_skin_tint_splits_rgba_into_rgb_plus_alpha() {
 /// Regression for #612 / SK-D3-04 — FO76 BSShaderType155 numbers
 /// SkinTint as 4, but the renderer's `materialKind == 5u` branch
 /// dispatches on the legacy BSLightingShaderType numbering.
-/// `apply_shader_type_data` must remap so every FO76 NPC reaches
-/// the SkinTint shader path. Pre-fix the simulated upstream
-/// `info.material_kind = 4` survived and the shader gate skipped
-/// the multiply silently.
+/// The dedicated-shader boundary must remap so every FO76 NPC reaches
+/// the SkinTint shader path. Payload application must then leave that
+/// canonical kind intact.
 #[test]
 fn fo76_skin_tint_remaps_material_kind_to_skyrim_constant() {
     let mut info = MaterialInfo::default();
-    // Simulate the upstream write at material.rs:606:
-    // `info.material_kind = shader.shader_type as u8` — for FO76
-    // bsver==155 this is the BSShaderType155 value `4`.
-    info.material_kind = 4;
+    info.material_kind = canonical_shader_type(TextureSlotLayout::Fallout76, 4);
     apply_shader_type_data(
         &mut info,
         &ShaderTypeData::Fo76SkinTint {
@@ -177,6 +173,22 @@ fn fo76_skin_tint_remaps_material_kind_to_skyrim_constant() {
         "FO76 SkinTint must remap to the legacy SkinTint constant \
              so `materialKind == 5u` in triangle.frag fires"
     );
+}
+
+/// #2579 sibling — FO76 raw type 5 means HairTint, while canonical type 5
+/// means SkinTint. The shared boundary must translate it to 6 before the
+/// payload reaches the renderer's `materialKind == 6u` branch.
+#[test]
+fn fo76_hair_tint_remaps_material_kind_to_skyrim_constant() {
+    let mut info = MaterialInfo::default();
+    info.material_kind = canonical_shader_type(TextureSlotLayout::Fallout76, 5);
+    apply_shader_type_data(
+        &mut info,
+        &ShaderTypeData::HairTint {
+            hair_tint_color: [0.3, 0.15, 0.05],
+        },
+    );
+    assert_eq!(info.material_kind, 6);
 }
 
 /// Skyrim/FO4 `SkinTint` (legacy enum value 5) must not be touched

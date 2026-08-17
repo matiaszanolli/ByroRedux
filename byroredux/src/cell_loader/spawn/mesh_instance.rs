@@ -9,7 +9,7 @@
 
 use super::*;
 use byroredux_core::string::FixedString;
-use byroredux_nif::import::{slot_to_role, TextureRole};
+use byroredux_nif::import::{slot_to_role, TextureRole, TextureSlotContext};
 
 /// Effective per-mesh texture-slot paths, resolved in one StringPool
 /// lock (#882). Promoted to module scope from `spawn_placed_instances`
@@ -108,14 +108,18 @@ pub(super) fn resolve_mesh_paths(
             // role for this shader type resolves to `None`, and the override is
             // dropped rather than guessed at — matching the importer, which
             // parks the same slots.
-            let shader_type = mesh.material.shader_type;
             // Computed before the slot routing because slot 7's role depends on
             // it (alternate specular vs. nothing).
             let effective_model_space_normals =
                 mesh.material.model_space_normals || ov.is_some_and(|o| o.model_space_normals);
-            let msn = effective_model_space_normals;
+            let slot_context = TextureSlotContext {
+                layout: mesh.material.texture_slot_layout,
+                shader_type: mesh.material.shader_type,
+                glow_map: mesh.material.slot2_glow_enabled,
+                model_space_normals: effective_model_space_normals,
+            };
             let pick = |slot: u32, raw: Option<FixedString>, role: TextureRole| {
-                raw.filter(|_| slot_to_role(shader_type, slot, msn) == Some(role))
+                raw.filter(|_| slot_to_role(slot_context, slot) == Some(role))
             };
 
             (textures.emissive, sources.emissive) = resolve_effective(
@@ -131,6 +135,10 @@ pub(super) fn resolve_mesh_paths(
             (textures.height, sources.height) = resolve_effective(
                 ov.and_then(|o| pick(3, o.height, TextureRole::Height)),
                 mesh.material.textures.height,
+            );
+            (textures.greyscale_lut, sources.greyscale_lut) = resolve_effective(
+                ov.and_then(|o| pick(3, o.height, TextureRole::GreyscaleLut)),
+                mesh.material.textures.greyscale_lut,
             );
             // Slot 3 on FaceTint is a complexion detail map; routing it to
             // `height` made the shader ray-march POM over a face.
@@ -150,23 +158,15 @@ pub(super) fn resolve_mesh_paths(
                 ov.and_then(|o| pick(6, o.inner, TextureRole::InnerLayer)),
                 mesh.material.textures.inner_layer,
             );
-            if effective_model_space_normals {
-                // Slot 7 changes role on model-space-normal materials: it is
-                // alternate specular intensity/colour, not smoothness. Keep
-                // the REFR override in the canonical standalone-specular
-                // lane so it cannot change roughness downstream.
-                (textures.specular, sources.specular) = resolve_effective(
-                    ov.and_then(|o| pick(7, o.specular, TextureRole::Specular)),
-                    mesh.material.textures.specular,
-                );
-            } else {
-                // Without MSN the table gives slot 7 no role, so the overlay
-                // cannot override here — but the mesh's own authored
-                // smooth-spec still rides through. (Pre-#2695 an XTXR slot-7
-                // swap wrote smoothness on every material regardless of type,
-                // including type 11 where slot 7 is a back-lighting map.)
-                textures.smooth_spec = resolve_to_owned(&pool, mesh.material.textures.smooth_spec);
-            }
+            // Specular comes from Skyrim/FO4 slot 7 or FO76 slot 6. The table
+            // chooses the source; the overlay field names remain raw-slot
+            // names, so both candidates must be offered here (#2998/#3085).
+            let specular_override = ov.and_then(|o| {
+                pick(6, o.inner, TextureRole::Specular)
+                    .or_else(|| pick(7, o.specular, TextureRole::Specular))
+            });
+            (textures.specular, sources.specular) =
+                resolve_effective(specular_override, mesh.material.textures.specular);
             // `wrinkle` is an FO4/FO76 TX02 role, not a BSShaderTextureSet slot
             // index, so it does not go through the slot table.
             (textures.wrinkle, sources.wrinkle) =
@@ -940,4 +940,106 @@ pub(super) fn spawn_mesh_instance(
         }
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use byroredux_core::ecs::World;
+    use byroredux_core::string::StringPool;
+    use byroredux_nif::import::{ImportedMesh, TextureSlotLayout};
+
+    fn empty_mesh() -> ImportedMesh {
+        ImportedMesh::from_geometry(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+    }
+
+    #[test]
+    fn xtxr_slot_six_reaches_skyrim_inner_layer_consumer() {
+        let mut pool = StringPool::new();
+        let base = pool.intern(r"textures\ice\base_inner.dds");
+        let replacement = pool.intern(r"textures\ice\override_inner.dds");
+        let mut world = World::new();
+        world.insert_resource(pool);
+
+        let mut mesh = empty_mesh();
+        mesh.material.texture_slot_layout = TextureSlotLayout::Skyrim;
+        mesh.material.shader_type = 11; // MultiLayerParallax
+        mesh.material.textures.inner_layer = Some(base);
+        let overlay = RefrTextureOverlay {
+            inner: Some(replacement),
+            ..Default::default()
+        };
+
+        let resolved = resolve_mesh_paths(&mut world, &[mesh], Some(&overlay));
+        assert_eq!(
+            resolved[0].textures.inner_layer.as_deref(),
+            Some(r"textures\ice\override_inner.dds"),
+            "the populated RefrTextureOverlay.inner field must reach its live consumer (#2713)"
+        );
+        assert_eq!(
+            resolved[0].sources.inner_layer,
+            MaterialTextureSource::TxstOverride
+        );
+    }
+
+    #[test]
+    fn xtxr_fo4_palette_and_specular_follow_the_fo4_table() {
+        let mut pool = StringPool::new();
+        let palette = pool.intern(r"textures\fo4\palette_lgrad.dds");
+        let specular = pool.intern(r"textures\fo4\surface_s.dds");
+        let mut world = World::new();
+        world.insert_resource(pool);
+
+        let mut mesh = empty_mesh();
+        mesh.material.texture_slot_layout = TextureSlotLayout::Fallout4;
+        let overlay = RefrTextureOverlay {
+            height: Some(palette),
+            specular: Some(specular),
+            ..Default::default()
+        };
+
+        let resolved = resolve_mesh_paths(&mut world, &[mesh], Some(&overlay));
+        assert_eq!(
+            resolved[0].textures.greyscale_lut.as_deref(),
+            Some(r"textures\fo4\palette_lgrad.dds")
+        );
+        assert!(resolved[0].textures.height.is_none());
+        assert_eq!(
+            resolved[0].textures.specular.as_deref(),
+            Some(r"textures\fo4\surface_s.dds"),
+            "FO4 slot 7 must route without the MSN flag (#2998)"
+        );
+    }
+
+    #[test]
+    fn xtxr_fo76_slot_six_reaches_specular_not_inner_layer() {
+        let mut pool = StringPool::new();
+        let specular = pool.intern(r"textures\fo76\surface_s.dds");
+        let mut world = World::new();
+        world.insert_resource(pool);
+
+        let mut mesh = empty_mesh();
+        mesh.material.texture_slot_layout = TextureSlotLayout::Fallout76;
+        let overlay = RefrTextureOverlay {
+            inner: Some(specular),
+            ..Default::default()
+        };
+
+        let resolved = resolve_mesh_paths(&mut world, &[mesh], Some(&overlay));
+        assert_eq!(
+            resolved[0].textures.specular.as_deref(),
+            Some(r"textures\fo76\surface_s.dds")
+        );
+        assert!(
+            resolved[0].textures.inner_layer.is_none(),
+            "FO76 slot 6 is measured specular, not Skyrim inner-layer (#3085)"
+        );
+    }
 }

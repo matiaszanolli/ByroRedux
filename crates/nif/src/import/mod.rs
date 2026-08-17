@@ -19,7 +19,8 @@ mod walk;
 // `effect_shader` field can name `BsEffectShaderData` without leaking
 // the internal module path.
 pub use material::{
-    slot_to_role, BsEffectShaderData, NoLightingFalloff, ShaderTypeFields, TextureRole,
+    canonical_shader_type, slot_to_role, unrouted_texture_slot_bindings, BsEffectShaderData,
+    NoLightingFalloff, ShaderTypeFields, TextureRole, TextureSlotContext, TextureSlotLayout,
 };
 
 use crate::scene::NifScene;

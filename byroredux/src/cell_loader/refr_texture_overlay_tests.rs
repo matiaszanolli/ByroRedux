@@ -489,7 +489,16 @@ fn build_overlay_xtxr_slot_1_adopts_model_space_normals_flag() {
 /// the single owner, so asserting against it *is* asserting that the overlay
 /// and the importer land in the same canonical role.
 mod slot_role_agreement {
-    use byroredux_nif::import::{slot_to_role, TextureRole};
+    use byroredux_nif::import::{slot_to_role, TextureRole, TextureSlotContext, TextureSlotLayout};
+
+    fn skyrim(shader_type: u32, model_space_normals: bool) -> TextureSlotContext {
+        TextureSlotContext {
+            layout: TextureSlotLayout::Skyrim,
+            shader_type,
+            glow_map: true,
+            model_space_normals,
+        }
+    }
 
     /// Slot indices the overlay stores, in its own field order. The overlay's
     /// field *names* are NIF-slot names, not role names — `glow` is "slot 2",
@@ -522,7 +531,7 @@ mod slot_role_agreement {
         ];
         for ((slot, name), want) in OVERLAY_SLOTS.iter().zip(expected) {
             assert_eq!(
-                slot_to_role(0, *slot, /* model_space_normals */ true),
+                slot_to_role(skyrim(0, true), *slot),
                 want,
                 "slot {slot} ({name}) moved for the default shader type"
             );
@@ -534,14 +543,17 @@ mod slot_role_agreement {
     /// a slot-3 swap ray-march POM over a face.
     #[test]
     fn face_tint_overrides_no_longer_land_in_the_wrong_role() {
-        assert_eq!(slot_to_role(4, 2, false), Some(TextureRole::Tint));
-        assert_ne!(slot_to_role(4, 2, false), Some(TextureRole::Emissive));
-        assert_eq!(slot_to_role(4, 3, false), Some(TextureRole::Detail));
-        assert_ne!(slot_to_role(4, 3, false), Some(TextureRole::Height));
+        assert_eq!(slot_to_role(skyrim(4, false), 2), Some(TextureRole::Tint));
+        assert_ne!(
+            slot_to_role(skyrim(4, false), 2),
+            Some(TextureRole::Emissive)
+        );
+        assert_eq!(slot_to_role(skyrim(4, false), 3), Some(TextureRole::Detail));
+        assert_ne!(slot_to_role(skyrim(4, false), 3), Some(TextureRole::Height));
         // Slots 4/5 are absent on 100% of vanilla FaceTint; an override there
         // must be dropped, not bound as an env cube.
-        assert_eq!(slot_to_role(4, 4, false), None);
-        assert_eq!(slot_to_role(4, 5, false), None);
+        assert_eq!(slot_to_role(skyrim(4, false), 4), None);
+        assert_eq!(slot_to_role(skyrim(4, false), 5), None);
     }
 
     /// SkinTint/HairTint: slot 2 is the tint mask, and a stray slot-4 override
@@ -549,12 +561,15 @@ mod slot_role_agreement {
     #[test]
     fn tint_family_overrides_skip_the_env_slots() {
         for ty in [5u32, 6] {
-            assert_eq!(slot_to_role(ty, 2, false), Some(TextureRole::Tint));
-            assert_eq!(slot_to_role(ty, 4, false), None);
-            assert_eq!(slot_to_role(ty, 5, false), None);
+            assert_eq!(slot_to_role(skyrim(ty, false), 2), Some(TextureRole::Tint));
+            assert_eq!(slot_to_role(skyrim(ty, false), 4), None);
+            assert_eq!(slot_to_role(skyrim(ty, false), 5), None);
             // #2742 — slot 7 IS the alternate specular here under MSN; #1350's
             // guard had dropped it.
-            assert_eq!(slot_to_role(ty, 7, true), Some(TextureRole::Specular));
+            assert_eq!(
+                slot_to_role(skyrim(ty, true), 7),
+                Some(TextureRole::Specular)
+            );
         }
     }
 
@@ -563,9 +578,12 @@ mod slot_role_agreement {
     /// into specular/smooth-spec regardless.
     #[test]
     fn multi_layer_parallax_inner_and_backlight_slots() {
-        assert_eq!(slot_to_role(11, 6, false), Some(TextureRole::InnerLayer));
-        assert_eq!(slot_to_role(11, 7, true), None);
-        assert_eq!(slot_to_role(11, 7, false), None);
+        assert_eq!(
+            slot_to_role(skyrim(11, false), 6),
+            Some(TextureRole::InnerLayer)
+        );
+        assert_eq!(slot_to_role(skyrim(11, true), 7), None);
+        assert_eq!(slot_to_role(skyrim(11, false), 7), None);
     }
 
     /// The four slots the audit measured as divergent must now every one of
@@ -593,7 +611,7 @@ mod slot_role_agreement {
             (11, 7),
         ] {
             assert_ne!(
-                slot_to_role(ty, slot, true),
+                slot_to_role(skyrim(ty, true), slot),
                 old_flat(slot),
                 "shader_type {ty} slot {slot} still resolves the flat-table way"
             );

@@ -1224,14 +1224,14 @@ fn tint_family_routes_slot_2_to_tint_not_glow() {
     }
 }
 
-/// Negative guard for the above: a non-tint shader keeps slot 2 as glow, so
-/// the widened gate cannot quietly swallow every shader type.
+/// Negative guard for the above: a non-tint shader with Skyrim's explicit
+/// `SLSF2_Glow_Map` bit keeps slot 2 as glow.
 #[test]
 fn non_tint_shader_keeps_slot_2_as_glow() {
-    let blocks: Vec<Box<dyn NiObject>> = vec![
-        Box::new(lighting_shader_with_type_and_texset(0, 1)),
-        Box::new(full_8_slot_tex_set("wall")),
-    ];
+    let mut shader = lighting_shader_with_type_and_texset(0, 1);
+    shader.shader_flags_2 |= crate::shader_flags::skyrim_slsf2::GLOW_MAP;
+    let blocks: Vec<Box<dyn NiObject>> =
+        vec![Box::new(shader), Box::new(full_8_slot_tex_set("wall"))];
     let scene = NifScene {
         blocks,
         ..NifScene::default()
@@ -1244,6 +1244,81 @@ fn non_tint_shader_keeps_slot_2_as_glow() {
     assert!(
         info.tint_map.is_none(),
         "Default (0) is not a tint shader — slot 2 stays the glow map"
+    );
+}
+
+/// #3068 — slot 2 is multiplexed. Without `SLSF2_Glow_Map`, Skyrim uses it
+/// for soft/rim-lighting masks, which have no canonical texture role yet.
+#[test]
+fn skyrim_non_tint_slot_2_without_glow_flag_is_not_emissive() {
+    let blocks: Vec<Box<dyn NiObject>> = vec![
+        Box::new(lighting_shader_with_type_and_texset(0, 1)),
+        Box::new(full_8_slot_tex_set("soft_mask")),
+    ];
+    let scene = NifScene {
+        blocks,
+        bsver: crate::version::bsver::SKYRIM_SE,
+        ..NifScene::default()
+    };
+    let mut shape = make_tri_shape_with_props(Vec::new());
+    shape.shader_property_ref = BlockRef(0);
+    let (info, _pool) = extract_with_pool(&scene, &shape, &[]);
+
+    assert!(
+        info.glow_map.is_none(),
+        "Glow_Map-clear Skyrim slot 2 must not become emissive (#3068)"
+    );
+}
+
+#[test]
+fn fo4_slot_3_is_greyscale_lut_and_slot_7_is_specular_without_msn() {
+    let blocks: Vec<Box<dyn NiObject>> = vec![
+        Box::new(lighting_shader_with_type_and_texset(0, 1)),
+        Box::new(full_8_slot_tex_set("fo4")),
+    ];
+    let scene = NifScene {
+        blocks,
+        bsver: crate::version::bsver::FALLOUT4,
+        ..NifScene::default()
+    };
+    let mut shape = make_tri_shape_with_props(Vec::new());
+    shape.shader_property_ref = BlockRef(0);
+    let (info, pool) = extract_with_pool(&scene, &shape, &[]);
+
+    assert_path(&pool, info.greyscale_lut_map, "fo4_p.dds");
+    assert!(
+        info.parallax_map.is_none(),
+        "FO4 palette gradient must not enter the POM height lane (#2997)"
+    );
+    assert_path(&pool, info.specular_map, "fo4_7.dds");
+    assert!(
+        !info.model_space_normals,
+        "fixture must prove FO4 specular no longer depends on MSN (#2998)"
+    );
+}
+
+#[test]
+fn fo76_slot_6_reaches_specular_and_hair_kind_is_canonical() {
+    let mut shader = lighting_shader_with_type_and_texset(5, 1);
+    shader.shader_type_data = ShaderTypeData::HairTint {
+        hair_tint_color: [0.3, 0.15, 0.05],
+    };
+    let blocks: Vec<Box<dyn NiObject>> =
+        vec![Box::new(shader), Box::new(full_8_slot_tex_set("fo76"))];
+    let scene = NifScene {
+        blocks,
+        bsver: crate::version::bsver::FO76,
+        ..NifScene::default()
+    };
+    let mut shape = make_tri_shape_with_props(Vec::new());
+    shape.shader_property_ref = BlockRef(0);
+    let (info, pool) = extract_with_pool(&scene, &shape, &[]);
+
+    assert_path(&pool, info.specular_map, "fo76_6.dds");
+    assert_eq!(
+        info.material_kind,
+        slot_role::bs_lighting::HAIR_TINT,
+        "FO76 raw type 5 must reach canonical HairTint kind 6 (#2579)"
     );
 }
 

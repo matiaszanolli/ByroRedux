@@ -550,6 +550,11 @@ pub struct ImportedMaterial {
     /// `0` (Default) for materials with no dedicated BSLightingShaderProperty
     /// — legacy FO3/FNV/Oblivion property chains, BGSM/BGEM-only, synthesized.
     pub shader_type: u32,
+    /// Per-game slot vocabulary used by `BSShaderTextureSet` and REFR XTXR.
+    pub texture_slot_layout: crate::import::TextureSlotLayout,
+    /// Host material's explicit slot-2 glow enable. Required because Skyrim
+    /// also puts soft/rim masks in slot 2 (#3068).
+    pub slot2_glow_enabled: bool,
     pub shader_type_fields: byroredux_core::ecs::components::material::ShaderTypeFields,
     pub no_lighting_falloff: Option<NoLightingFalloff>,
     pub wireframe: bool,
@@ -616,6 +621,8 @@ impl Default for ImportedMaterial {
             effect_shader: None,
             material_kind: 0,
             shader_type: 0,
+            texture_slot_layout: crate::import::TextureSlotLayout::default(),
+            slot2_glow_enabled: false,
             shader_type_fields: Default::default(),
             no_lighting_falloff: None,
             wireframe: false,

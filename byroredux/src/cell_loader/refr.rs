@@ -59,9 +59,9 @@ pub(crate) struct RefrTextureOverlay {
     pub(crate) height: Option<FixedString>,
     pub(crate) env: Option<FixedString>,
     pub(crate) env_mask: Option<FixedString>,
-    /// BSShaderTextureSet slot 6 — MultiLayerParallax inner layer.
-    /// Preserved for parity with `TextureSet.inner` so the slot_index=6
-    /// XTXR swap round-trips.
+    /// Raw BSShaderTextureSet slot 6 — Skyrim MultiLayerParallax inner layer,
+    /// FO76 specular. Preserved under the wire-slot name so the shared
+    /// game-aware table chooses the canonical destination at spawn.
     pub(crate) inner: Option<FixedString>,
     pub(crate) specular: Option<FixedString>,
     /// FO4/FO76 TX02 wrinkle texture. This is a distinct canonical role;

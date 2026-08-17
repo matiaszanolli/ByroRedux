@@ -41,20 +41,17 @@ pub(super) fn apply_dedicated_alpha_property(
 /// says otherwise. #2694 traced every vanilla Skyrim head binding its
 /// `*_sk.dds` skin-tint mask as a GLOW map to exactly this gap.
 ///
-/// Normalising here — rather than widening `slot_to_role`'s signature — keeps
-/// the shared table a pure function of `(shader_type, slot,
-/// model_space_normals)`, which is all the REFR overlay can supply. The
-/// overlay recovers the *normalised* value from
-/// `ImportedMaterial::shader_type`, so both sites resolve identically.
-fn normalize_shader_type(shader: &BSLightingShaderProperty) -> u32 {
-    let data_says_skin_tint = matches!(
-        &shader.shader_type_data,
-        ShaderTypeData::SkinTint { .. } | ShaderTypeData::Fo76SkinTint { .. }
-    );
-    if data_says_skin_tint {
-        slot_role::bs_lighting::SKIN_TINT
-    } else {
-        shader.shader_type
+/// The raw integer is first translated from the active game's enum (#2579),
+/// then strengthened by parsed trailing data when that carries a more precise
+/// semantic tag than the numeric field (#2694).
+fn normalize_shader_type(shader: &BSLightingShaderProperty, layout: TextureSlotLayout) -> u32 {
+    match &shader.shader_type_data {
+        ShaderTypeData::SkinTint { .. } | ShaderTypeData::Fo76SkinTint { .. } => {
+            slot_role::bs_lighting::SKIN_TINT
+        }
+        ShaderTypeData::HairTint { .. } => slot_role::bs_lighting::HAIR_TINT,
+        ShaderTypeData::EyeEnvmap { .. } => slot_role::bs_lighting::EYE_ENVMAP,
+        _ => canonical_shader_type(layout, shader.shader_type),
     }
 }
 
@@ -87,6 +84,28 @@ fn apply_bs_lighting_shader(
     info: &mut MaterialInfo,
 ) {
     if let Some(shader) = scene.get_as::<BSLightingShaderProperty>(idx) {
+        let slot_layout = TextureSlotLayout::from_bsver(scene.bsver);
+        let slot2_glow_enabled = match slot_layout {
+            TextureSlotLayout::Skyrim => {
+                shader.shader_flags_2 & crate::shader_flags::skyrim_slsf2::GLOW_MAP != 0
+            }
+            TextureSlotLayout::Fallout4 => {
+                shader.shader_flags_2 & crate::shader_flags::fo4_slsf2::GLOW_MAP != 0
+            }
+            TextureSlotLayout::Fallout76 | TextureSlotLayout::Starfield => {
+                crate::shader_flags::bs_shader_crc32::contains_any(
+                    &shader.sf1_crcs,
+                    &[crate::shader_flags::bs_shader_crc32::GLOWMAP],
+                ) || crate::shader_flags::bs_shader_crc32::contains_any(
+                    &shader.sf2_crcs,
+                    &[crate::shader_flags::bs_shader_crc32::GLOWMAP],
+                )
+            }
+        };
+        info.texture_slot_layout = slot_layout;
+        info.slot2_glow_enabled = slot2_glow_enabled;
+        info.shader_type = normalize_shader_type(shader, slot_layout);
+
         // Delegate to the shared helper so `.bgsm`, `.bgem`, and `.mat`
         // (Starfield JSON materials) are all captured, and trailing
         // whitespace / null bytes are trimmed. Pre-#976 this used an
@@ -120,11 +139,6 @@ fn apply_bs_lighting_shader(
         if model_space_normals {
             info.model_space_normals = true;
         }
-        // #2695 — record the normalised type BEFORE the texture-set lookup, so
-        // a shader property carrying no `BSShaderTextureSet` (an XTXR-only
-        // placement is exactly that case) still tells the REFR overlay which
-        // table to resolve its slots with.
-        info.shader_type = normalize_shader_type(shader);
         if let Some(ts_idx) = shader.texture_set_ref.index() {
             if let Some(tex_set) = scene.get_as::<BSShaderTextureSet>(ts_idx) {
                 // #2695 — slot→role resolution now goes through the single
@@ -141,10 +155,13 @@ fn apply_bs_lighting_shader(
                 // meshes carry the tint family only in `shader_type_data`, so
                 // the numeric type alone would miss them (#2694).
                 let effective_type = info.shader_type;
+                let context = TextureSlotContext {
+                    layout: slot_layout,
+                    shader_type: effective_type,
+                    glow_map: slot2_glow_enabled,
+                    model_space_normals,
+                };
                 for slot in 0..8u32 {
-                    let Some(role) = slot_to_role(effective_type, slot, model_space_normals) else {
-                        continue;
-                    };
                     let Some(raw) = tex_set.textures.get(slot as usize) else {
                         continue;
                     };
@@ -155,6 +172,10 @@ fn apply_bs_lighting_shader(
                     if raw.is_empty() {
                         continue;
                     }
+                    let Some(role) = slot_to_role(context, slot) else {
+                        slot_role::record_unrouted_texture_slot(context, slot);
+                        continue;
+                    };
                     // First-wins across every source, matching the pre-#2695
                     // `if info.X.is_none()` guards: a BGSM/BGEM merge or an
                     // earlier property may already own the role.
@@ -165,6 +186,7 @@ fn apply_bs_lighting_shader(
                         TextureRole::Tint => &mut info.tint_map,
                         TextureRole::Detail => &mut info.detail_map,
                         TextureRole::Height => &mut info.parallax_map,
+                        TextureRole::GreyscaleLut => &mut info.greyscale_lut_map,
                         TextureRole::Environment => &mut info.env_map,
                         TextureRole::EnvironmentMask => &mut info.env_mask,
                         TextureRole::InnerLayer => &mut info.inner_layer_map,
@@ -214,8 +236,9 @@ fn apply_bs_lighting_shader(
         // here — F4SF1 bit 12 (`Model_Space_Normals`) and F4SF2 bit 25
         // (`Alpha_Test`) — both of which mean other things on Skyrim
         // (which routes alpha-test through `NiAlphaProperty` instead). The
-        // `Glow_Map` bit (F4SF2 bit 6) is NOT sourced here — glow comes
-        // from the texture-set / BGSM, not this flag (FO4-2026-06-23-L01).
+        // `Glow_Map` bit (F4SF2 bit 6) participates only in the texture-slot
+        // vocabulary above; the BGSM merge remains authoritative for external
+        // FO4 material files.
         // These are a LOWER-priority source than the BGSM merge — vanilla
         // FO4 leaves them unset and sources the same attributes from the
         // `.bgsm` (authoritative); `asset_provider`'s BGSM merge
@@ -296,7 +319,7 @@ fn apply_bs_lighting_shader(
         // silently masked any `shader_type >= 256`. Both sides of
         // the pipeline are u32 now (parser → ImportedMesh → ECS
         // Material → GpuMaterial); see #570 (SK-D3-03).
-        info.material_kind = shader.shader_type;
+        info.material_kind = info.shader_type;
         apply_shader_type_data(info, &shader.shader_type_data);
         // Skyrim/FO4 fire heat-haze planes are ordinary
         // BSLightingShaderProperty meshes whose diffuse and normal slots

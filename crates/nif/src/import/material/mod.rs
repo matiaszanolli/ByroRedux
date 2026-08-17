@@ -51,7 +51,10 @@ mod walker;
 
 pub use shader_data::ShaderTypeFields;
 pub(crate) use shader_data::{apply_shader_type_data, capture_effect_shader_data};
-pub use slot_role::{slot_to_role, TextureRole};
+pub use slot_role::{
+    canonical_shader_type, slot_to_role, unrouted_texture_slot_bindings, TextureRole,
+    TextureSlotContext, TextureSlotLayout,
+};
 // Re-exported only for the per-mod test sibling
 // `shader_type_data_tests.rs` — production callers go through
 // `apply_shader_type_data` instead. Marked `allow(unused_imports)` so
@@ -441,13 +444,10 @@ pub(super) struct MaterialInfo {
     /// edges and rim highlights so only the polished surface reflects.
     /// See #452.
     pub env_mask: Option<FixedString>,
-    /// FaceTint per-NPC tint overlay (`BSShaderTextureSet` slot 7).
-    /// Drives the per-face NPC color overlay (warpaint, race tint,
-    /// scars). Pre-#563 the importer never read slot 7, so FaceTint
-    /// materials silently dropped the tint texture and the per-NPC
-    /// `material_kind == 4` dispatch had nothing to sample. See
-    /// nif.xml `BSLightingShaderType::FaceTint` ("Enables Detail(TS4),
-    /// Tint(TS7)") and #563.
+    /// FO4/FO76 `BSShaderTextureSet` slot 3 palette-gradient lookup.
+    /// Kept separate from `parallax_map`: routing the gradient into height
+    /// makes the renderer ray-march palette data as POM (#2997).
+    pub greyscale_lut_map: Option<FixedString>,
     /// Normalised `BSLightingShaderType` (#2695) — the value
     /// `slot_role::slot_to_role` was resolved with, including
     /// `ShaderTypeData`-derived corrections that the raw numeric type misses.
@@ -455,12 +455,19 @@ pub(super) struct MaterialInfo {
     /// resolve an `XTXR` slot the same way the mesh's own texture set was.
     /// `0` (Default) when no dedicated BSLightingShaderProperty was seen.
     pub shader_type: u32,
+    /// Game-specific texture-slot vocabulary used for this material.
+    pub texture_slot_layout: TextureSlotLayout,
+    /// Whether slot 2 is explicitly enabled as a glow map. Skyrim multiplexes
+    /// the same slot with soft/rim masks, so presence alone is insufficient.
+    pub slot2_glow_enabled: bool,
+    /// Skin/hair tint mask from `BSShaderTextureSet` slot 2. FaceGen's baked
+    /// per-NPC slot-6 texture remains owned by the actor-specific path.
     pub tint_map: Option<FixedString>,
     /// MultiLayerParallax inner-layer texture (`BSShaderTextureSet`
-    /// slot 7). Sampled beneath the diffuse layer for ice / glass /
+    /// slot 6). Sampled beneath the diffuse layer for ice / glass /
     /// crystal surfaces — paired with `multi_layer_inner_thickness` /
     /// `multi_layer_inner_layer_scale`. Pre-#563 the importer never
-    /// read slot 7, so Dragonborn DLC ice walls and modded glass
+    /// read the slot, so Dragonborn DLC ice walls and modded glass
     /// shaders silently lost their inner layer. See nif.xml
     /// `BSLightingShaderType::MultiLayerParallax` ("Enables …
     /// Layer(TS7)") and #563.
@@ -1041,7 +1048,10 @@ impl Default for MaterialInfo {
             parallax_map: None,
             env_map: None,
             env_mask: None,
+            greyscale_lut_map: None,
             shader_type: 0,
+            texture_slot_layout: TextureSlotLayout::default(),
+            slot2_glow_enabled: false,
             tint_map: None,
             inner_layer_map: None,
             vertex_color_mode: VertexColorMode::AmbientDiffuse,
@@ -1174,10 +1184,12 @@ impl MaterialInfo {
             ),
             flow: None,
             wrinkle: None,
-            greyscale_lut: intern_effect_path(
-                pool,
-                effect.and_then(|data| data.greyscale_texture.as_deref()),
-            ),
+            greyscale_lut: self.greyscale_lut_map.or_else(|| {
+                intern_effect_path(
+                    pool,
+                    effect.and_then(|data| data.greyscale_texture.as_deref()),
+                )
+            }),
             reflectance: intern_effect_path(
                 pool,
                 effect.and_then(|data| data.reflectance_texture.as_deref()),
@@ -1395,6 +1407,8 @@ impl MaterialInfo {
             effect_shader: self.effect_shader,
             material_kind: self.material_kind,
             shader_type: self.shader_type,
+            texture_slot_layout: self.texture_slot_layout,
+            slot2_glow_enabled: self.slot2_glow_enabled,
             shader_type_fields,
             no_lighting_falloff: self.no_lighting_falloff,
             wireframe: self.wireframe,

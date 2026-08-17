@@ -127,6 +127,10 @@ pub mod skyrim_slsf2 {
     /// equivalent F2 bit; those games route back-face via
     /// `NiStencilProperty`. See #441.
     pub const DOUBLE_SIDED: u32 = 0x0000_0010;
+    /// Bit 6 — `Glow_Map`. Enables the third texture-set slot as an
+    /// emissive map. Without it, Skyrim uses that same slot for soft/rim
+    /// lighting masks; slot presence alone does not imply glow (#3068).
+    pub const GLOW_MAP: u32 = 0x0000_0040;
     /// Bit 17 — `Weapon_Blood`. Blood decals on weapons specifically.
     pub const WEAPON_BLOOD: u32 = 0x0002_0000;
     /// Bit 20 — `Cloud_LOD`. Per nif.xml `SkyrimShaderPropertyFlags2`
@@ -197,8 +201,9 @@ pub mod fo4_slsf1 {
 
 /// FO4+ `Fallout4ShaderPropertyFlags2` — second flag word.
 ///
-/// **The FO4 F2 layout diverges sharply from Skyrim SLSF2**:
-/// - Bit 6 is `Glow_Map` on FO4 (Skyrim doesn't have an SLSF2 glow bit)
+/// **The FO4 F2 layout diverges sharply from Skyrim SLSF2** while retaining
+/// a few shared positions:
+/// - Bit 6 is `Glow_Map` on both FO4 and Skyrim
 /// - Bit 15 is `Dismemberment` on FO4
 /// - Bit 21 is `Anisotropic_Lighting` on FO4 (Skyrim: `Cloud_LOD`,
 ///   FO3/FNV F2: `Alpha_Decal` — **three different semantics on the
@@ -216,8 +221,7 @@ pub mod fo4_slsf2 {
     /// Bit 4 — `Double_Sided`. Same bit as Skyrim SLSF2.
     pub const DOUBLE_SIDED: u32 = 0x0000_0010;
     pub const VERTEX_COLORS: u32 = 0x0000_0020;
-    /// Bit 6 — `Glow_Map`. FO4-specific — Skyrim's glow signal is the
-    /// texture-set slot-2 presence, not a flag bit.
+    /// Bit 6 — `Glow_Map`. Same position and semantic as Skyrim SLSF2.
     pub const GLOW_MAP: u32 = 0x0000_0040;
     pub const TRANSFORM_CHANGED: u32 = 0x0000_0080;
     pub const DISMEMBERMENT_MEATCUFF: u32 = 0x0000_0100;
@@ -384,6 +388,14 @@ mod tests {
     fn slsf2_double_sided_matches_nif_xml() {
         // nif.xml SkyrimShaderPropertyFlags2 bit 4 = Double_Sided.
         assert_eq!(skyrim_slsf2::DOUBLE_SIDED, 1u32 << 4);
+    }
+
+    #[test]
+    fn skyrim_and_fo4_share_the_slsf2_glow_map_bit() {
+        // nif.xml SkyrimShaderPropertyFlags2 and
+        // Fallout4ShaderPropertyFlags2 both define Glow_Map at bit 6.
+        assert_eq!(skyrim_slsf2::GLOW_MAP, 1u32 << 6);
+        assert_eq!(fo4_slsf2::GLOW_MAP, skyrim_slsf2::GLOW_MAP);
     }
 
     /// #414 — FO4 shares SLSF1 bits 26/27 with Skyrim + FO3/FNV for

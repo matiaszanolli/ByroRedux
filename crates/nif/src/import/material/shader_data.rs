@@ -100,18 +100,10 @@ pub(crate) fn apply_shader_type_data(info: &mut MaterialInfo, data: &ShaderTypeD
     if let ShaderTypeData::EnvironmentMap { env_map_scale } = *data {
         info.env_map_scale = env_map_scale;
     }
-    // FO76 BSShaderType155 numbers SkinTint as 4 (Color4), but the
-    // legacy BSLightingShaderType + the renderer's `materialKind == 5u`
-    // branch use 5. The Color4 alpha and Color3 RGB are both written
-    // into the same `skin_tint_color` + `skin_tint_alpha` slots
-    // upstream (Skyrim's Color3 path leaves alpha defaulted to 1.0,
-    // FO76's Color4 path supplies a real value), and the shader's
-    // `mix(albedo, albedo*tint, alpha)` formula handles both. Remap
-    // here so every NPC/creature reaches the same shader branch.
-    // See #612 / SK-D3-04.
-    if matches!(data, ShaderTypeData::Fo76SkinTint { .. }) {
-        info.material_kind = 5;
-    }
+    // Game-specific shader-type integers are already translated once in
+    // `dedicated_shader::normalize_shader_type`. Keep this function limited to
+    // the variant payload: remapping one tag here was the partial fix that left
+    // FO76 FaceTint/HairTint/EyeEnvmap cross-contaminated (#2579).
     let fields = capture_shader_type_fields(data);
     // #623 / SK-D3-07: GpuInstance packs `multi_layer_envmap_strength`
     // into the `w` slot of the `hair_tint_{r,g,b,_}` vec4 to save
