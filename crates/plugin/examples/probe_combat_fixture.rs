@@ -63,15 +63,12 @@ fn main() -> anyhow::Result<()> {
         for (placed, npc) in direct_npcs {
             let actor_level = npc.level.max(1);
             let inventory = resolve_inherited_inventory(npc, actor_level, &index);
-            let actor_values =
-                byroredux_plugin::esm::records::derive_npc_actor_values(npc, &index, index.game);
-            let health = index
-                .health_actor_value_key(index.game)
-                .and_then(|health_form_id| {
-                    actor_values
-                        .iter()
-                        .find_map(|(form_id, value)| (*form_id == health_form_id).then_some(*value))
-                });
+            let actor_values = byroredux_plugin::esm::records::derive_npc_actor_values(npc, &index);
+            let health = index.health_actor_value_key().and_then(|health_form_id| {
+                actor_values
+                    .iter()
+                    .find_map(|(form_id, value)| (*form_id == health_form_id).then_some(*value))
+            });
             let race_starting_health = index
                 .races
                 .get(&npc.race_form_id)

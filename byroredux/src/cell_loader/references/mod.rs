@@ -272,7 +272,7 @@ pub(super) fn load_references_budgeted(
             .try_resource::<byroredux_core::character::CharacterRuleset>()
             .is_none()
         {
-            if let Some(rs) = crate::npc_spawn::build_character_ruleset(game, record_index) {
+            if let Some(rs) = crate::npc_spawn::build_character_ruleset(record_index) {
                 world.insert_resource(rs);
             }
         }

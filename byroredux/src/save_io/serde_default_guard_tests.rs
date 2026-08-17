@@ -131,11 +131,6 @@ fn serde_attr_declares_default(line: &str) -> bool {
 /// mirroring the `texture.rs` / `draw.rs` `include_str!` ordering checks.
 #[test]
 fn serde_default_on_saved_struct_requires_format_major_bump() {
-    // Once a migrator chain governs evolution past v1, intra-type change
-    // is handled by migration rather than this blanket ban — let it pass.
-    if byroredux_save::FORMAT_MAJOR > 1 {
-        return;
-    }
     let manifest = env!("CARGO_MANIFEST_DIR");
     let mut offenders = Vec::new();
     for rel in SAVE_TYPE_SOURCES {

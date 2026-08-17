@@ -324,18 +324,18 @@ mod tests {
         // Resolver knows the attributes but NOT the Magicka output id.
         let resolve = |id: &str| -> Option<u32> {
             Some(match id {
-                "Strength" => 0x00,
-                "Intelligence" => 0x01,
-                "Willpower" => 0x02,
-                "Agility" => 0x03,
-                "Endurance" => 0x05,
+                "Strength" => 0x10,
+                "Intelligence" => 0x11,
+                "Willpower" => 0x12,
+                "Agility" => 0x13,
+                "Endurance" => 0x15,
                 "Health" => 0x90,
                 // "Magicka" and "Fatigue" intentionally absent.
                 _ => return None,
             })
         };
         let rs = oblivion_ruleset(resolve);
-        let avs = ActorValues::from_pairs([(0x01, 50.0), (0x05, 45.0)]);
+        let avs = ActorValues::from_pairs([(0x11, 50.0), (0x15, 45.0)]);
         assert_eq!(rs.derived_value(0x90, &avs, 1), Some(90.0)); // Health present
         assert_eq!(rs.derived_value(0x92, &avs, 1), None); // Magicka skipped
     }

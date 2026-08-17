@@ -63,6 +63,101 @@ const FO4_TOTAL_FLOOR: usize = 70_000;
 
 #[test]
 #[ignore]
+fn fnv_actor_value_roster_and_health_resolve_on_shipped_master() {
+    let Some(data) = data_dir(
+        "BYROREDUX_FNV_DATA",
+        "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data",
+    ) else {
+        eprintln!("[FNV AVIF] skipping: game data unavailable");
+        return;
+    };
+    let bytes = std::fs::read(data.join("FalloutNV.esm")).expect("read FalloutNV.esm");
+    let index = parse_esm(&bytes).expect("parse FalloutNV.esm");
+
+    assert_eq!(index.actor_value_form_id("Strength"), Some(0x0000_03E8));
+    assert_eq!(index.health_actor_value_key(), Some(0x0000_0450));
+    assert_eq!(
+        index.character_rules,
+        byroredux_core::character::CharacterRulesProfile::FALLOUT_NEW_VEGAS
+    );
+    for skill in byroredux_core::character::SkillSet::FALLOUT_NV.skills() {
+        assert!(
+            index.actor_value_form_id(skill.editor_id).is_some(),
+            "FNV roster entry '{}' must resolve against FalloutNV.esm",
+            skill.editor_id
+        );
+    }
+    assert!(
+        byroredux_core::character::SkillSet::FALLOUT_NV
+            .get("BigGuns")
+            .is_none(),
+        "the shipped AVBigGuns record is explicitly obsolete"
+    );
+
+    let (npc, pairs) = index
+        .npcs
+        .values()
+        .filter(|npc| index.classes.contains_key(&npc.class_form_id))
+        .find_map(|npc| {
+            let pairs = byroredux_plugin::esm::records::derive_npc_actor_values(npc, &index);
+            pairs
+                .iter()
+                .any(|(form_id, value)| *form_id == 0x450 && *value > 0.0)
+                .then_some((npc, pairs))
+        })
+        .expect("at least one class-backed FNV NPC must derive positive Health");
+    assert!(
+        pairs.len() >= 21,
+        "{} derived only {} actor values",
+        npc.editor_id,
+        pairs.len()
+    );
+}
+
+#[test]
+#[ignore]
+fn skyrim_health_resolves_to_authored_avif_form_id() {
+    let Some(data) = data_dir(
+        "BYROREDUX_SKYRIMSE_DATA",
+        "/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data",
+    ) else {
+        eprintln!("[Skyrim AVIF] skipping: game data unavailable");
+        return;
+    };
+    let bytes = std::fs::read(data.join("Skyrim.esm")).expect("read Skyrim.esm");
+    let index = parse_esm(&bytes).expect("parse Skyrim.esm");
+    assert_eq!(index.health_actor_value_key(), Some(0x0000_03E8));
+    assert!(index.npcs.values().any(|npc| {
+        byroredux_plugin::esm::records::derive_npc_actor_values(npc, &index)
+            .iter()
+            .any(|(form_id, value)| *form_id == 0x3E8 && *value > 0.0)
+    }));
+}
+
+#[test]
+#[ignore]
+fn fo4_ruleset_uses_only_authored_avif_outputs() {
+    let Some(data) = data_dir(
+        "BYROREDUX_FO4_DATA",
+        "/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data",
+    ) else {
+        eprintln!("[FO4 AVIF] skipping: game data unavailable");
+        return;
+    };
+    let bytes = std::fs::read(data.join("Fallout4.esm")).expect("read Fallout4.esm");
+    let index = parse_esm(&bytes).expect("parse Fallout4.esm");
+    let ruleset = byroredux_core::character::fallout4_ruleset(|editor_id| {
+        index.actor_value_form_id(editor_id)
+    });
+    assert_eq!(ruleset.derived_row_len(), 3);
+    assert_eq!(index.actor_value_form_id("Health"), Some(0x0000_02D4));
+    assert_eq!(index.actor_value_form_id("ActionPoints"), Some(0x0000_02D5));
+    assert_eq!(index.actor_value_form_id("CarryWeight"), Some(0x0000_02DC));
+    assert_eq!(index.actor_value_form_id("MeleeDamage"), None);
+}
+
+#[test]
+#[ignore]
 fn parse_rate_fnv_esm() {
     let Some(data) = data_dir(
         "BYROREDUX_FNV_DATA",

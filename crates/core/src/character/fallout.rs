@@ -14,9 +14,9 @@
 //! or derive them differently; Carry Weight / Melee Damage / Critical Chance
 //! / Unarmed Damage are actor-general.
 //!
-//! FO3/FNV attach both the [`AttributeSet::FALLOUT`] SPECIAL roster and the
-//! canonical [`SkillSet::FALLOUT_FO3_FNV`] skill roster + governing-SPECIAL
-//! map — the single source the population path
+//! FO3/FNV attach both the [`AttributeSet::FALLOUT`] SPECIAL roster and their
+//! distinct [`SkillSet::FALLOUT3`] / [`SkillSet::FALLOUT_NV`] skill roster +
+//! governing-SPECIAL map — the single source the population path
 //! (`crates/plugin/.../actor_value_derive.rs`) now consumes for auto-calc base
 //! values. FO4/FO76 genuinely have no skills, so they keep the empty roster.
 
@@ -71,7 +71,9 @@ fn add_fnv_fo3_shared<F: Fn(&str) -> Option<u32>>(rs: &mut CharacterRuleset, res
 }
 
 /// FO4 — SPECIAL-only (no skills). Health/AP player-only (NPCs ship baked
-/// `DNAM`); Carry Weight / Melee Damage actor-general.
+/// `DNAM`); Carry Weight actor-general. The Strength melee multiplier is a
+/// combat-use formula rather than an AVIF-backed derived row: vanilla FO4
+/// authors no `MeleeDamage` AVIF to key such a row.
 pub fn fallout4_ruleset<F: Fn(&str) -> Option<u32>>(resolve: F) -> CharacterRuleset {
     let mut rs = CharacterRuleset::new(LevelingModel::FO4).with_attributes(AttributeSet::FALLOUT);
     let strength = resolve("Strength");
@@ -95,13 +97,6 @@ pub fn fallout4_ruleset<F: Fn(&str) -> Option<u32>>(resolve: F) -> CharacterRule
     if let (Some(out), Some(s)) = (resolve("CarryWeight"), strength) {
         rs.push_derived(out, DerivedStatFormula::affine(av(s), 10.0, 200.0));
     }
-    // Melee Damage = ×(1 + 0.1·STR).
-    if let (Some(out), Some(s)) = (resolve("MeleeDamage"), strength) {
-        rs.push_derived(
-            out,
-            DerivedStatFormula::affine(av(s), 0.1, 1.0).as_multiplier(),
-        );
-    }
     rs
 }
 
@@ -110,7 +105,7 @@ pub fn fallout4_ruleset<F: Fn(&str) -> Option<u32>>(resolve: F) -> CharacterRule
 pub fn fallout3_ruleset<F: Fn(&str) -> Option<u32>>(resolve: F) -> CharacterRuleset {
     let mut rs = CharacterRuleset::new(LevelingModel::FO3)
         .with_attributes(AttributeSet::FALLOUT)
-        .with_skills(SkillSet::FALLOUT_FO3_FNV);
+        .with_skills(SkillSet::FALLOUT3);
     if let (Some(out), Some(e)) = (resolve("Health"), resolve("Endurance")) {
         rs.push_derived(
             out,
@@ -134,7 +129,7 @@ pub fn fallout3_ruleset<F: Fn(&str) -> Option<u32>>(resolve: F) -> CharacterRule
 pub fn falloutnv_ruleset<F: Fn(&str) -> Option<u32>>(resolve: F) -> CharacterRuleset {
     let mut rs = CharacterRuleset::new(LevelingModel::FNV)
         .with_attributes(AttributeSet::FALLOUT)
-        .with_skills(SkillSet::FALLOUT_FO3_FNV);
+        .with_skills(SkillSet::FALLOUT_NV);
     if let (Some(out), Some(e)) = (resolve("Health"), resolve("Endurance")) {
         rs.push_derived(
             out,
@@ -180,13 +175,18 @@ mod tests {
         })
     }
 
+    /// FO4's authored AVIF set is the shared fixture minus `MeleeDamage`.
+    fn fo4_full(id: &str) -> Option<u32> {
+        (id != "MeleeDamage").then(|| full(id)).flatten()
+    }
+
     #[test]
     fn fo4_ruleset_evaluates_and_scopes() {
-        let rs = fallout4_ruleset(full);
+        let rs = fallout4_ruleset(fo4_full);
         assert_eq!(
             rs.derived_row_len(),
-            4,
-            "Health, AP, CarryWeight, MeleeDamage"
+            3,
+            "Health, AP, CarryWeight; FO4 authors no MeleeDamage AVIF"
         );
         let avs = ActorValues::from_pairs([(0x05, 7.0), (0x07, 5.0), (0x0A, 6.0)]);
         assert_eq!(rs.derived_value(0x2C9, &avs, 1), Some(105.0)); // Health floor(105)
@@ -241,23 +241,24 @@ mod tests {
     #[test]
     fn skill_and_attribute_rosters_travel_with_the_ruleset() {
         use crate::character::{AttributeSet, SkillSet};
-        for build in [falloutnv_ruleset, fallout3_ruleset] {
-            let rs = build(full);
-            assert_eq!(rs.attributes, AttributeSet::FALLOUT);
-            assert_eq!(rs.skills, SkillSet::FALLOUT_FO3_FNV);
-        }
+        let fnv = falloutnv_ruleset(full);
+        assert_eq!(fnv.attributes, AttributeSet::FALLOUT);
+        assert_eq!(fnv.skills, SkillSet::FALLOUT_NV);
+        let fo3 = fallout3_ruleset(full);
+        assert_eq!(fo3.attributes, AttributeSet::FALLOUT);
+        assert_eq!(fo3.skills, SkillSet::FALLOUT3);
         // FO4 has SPECIAL but no skills (perks replace them).
-        let fo4 = fallout4_ruleset(full);
+        let fo4 = fallout4_ruleset(fo4_full);
         assert_eq!(fo4.attributes, AttributeSet::FALLOUT);
         assert!(fo4.skills.is_empty());
     }
 
     #[test]
     fn unresolved_editor_ids_are_skipped() {
-        // A resolver missing Strength → Carry Weight + Melee Damage skipped.
+        // A resolver missing Strength → Carry Weight skipped.
         let partial = |id: &str| match id {
             "Strength" => None,
-            other => full(other),
+            other => fo4_full(other),
         };
         let rs = fallout4_ruleset(partial);
         assert_eq!(rs.derived_row_len(), 2, "only Health + AP resolved");

@@ -4,9 +4,10 @@
 //! component the `GetActorValue` condition reads. Two per-game mechanisms
 //! converge on the same output shape:
 //!
-//! - **FNV / FO3 (auto-calc):** computes SPECIAL + base skills from the
-//!   NPC's class, per the documented GECK auto-calculate model, and
-//!   resolves each to its `AVIF` FormID (the original #1663 path, below).
+//! - **FNV / FO3 (auto-calc):** computes SPECIAL + base skills and Health
+//!   from the NPC's class/level, per the documented GECK auto-calculate
+//!   model, and resolves each to its `AVIF` FormID (the original #1663 path,
+//!   below).
 //! - **Skyrim (race + offset):** seeds Health from the race's starting
 //!   Health plus the NPC's signed TES5 ACBS Health offset.
 //! - **FO4+ (stored):** FO4 stores actor values rather than deriving them
@@ -25,11 +26,12 @@
 //!   (geckwiki *Derived Skill Settings*). Defaults: base **2**, primary
 //!   mult **2**, luck mult **0.5**. Worked example (geckwiki): END 5 +
 //!   Luck 5 → Unarmed = 2 + 5×2 + ceil(5×0.5) = 15.
-//! - **Governing SPECIAL per FNV skill**: fallout.fandom *New Vegas SPECIAL*
-//!   / geckwiki *SPECIAL*. FO3's Small Guns (→Agility) and Big Guns
-//!   (→Endurance) are included so the same table serves both games — each
-//!   game populates only the skills whose `AVIF` exists (the others resolve
-//!   to `None` and are skipped).
+//! - **Governing SPECIAL per skill**: fallout.fandom *New Vegas SPECIAL* /
+//!   geckwiki *SPECIAL*. FO3 and FNV use distinct canonical 13-skill rosters;
+//!   FNV's displayed Guns/Survival retain the `AVSmallGuns`/`AVThrowing`
+//!   record identities.
+//! - **Health**: FO3 `90 + 20·END + 10·Level`; FNV
+//!   `100 + 20·END + 5·(Level−1)`, from the locked CHARAL ruleset capture.
 //!
 //! ## Deferred (intentionally, not guessed)
 //!
@@ -43,8 +45,8 @@
 //! - **Non-auto-calc NPCs.** NPCs with "Auto-calculate stats" off store
 //!   their own SPECIAL; we always use the class base attributes. Correct
 //!   for the auto-calc majority; an approximation for hand-tuned actors.
-//! - **Derived attributes** beyond Skyrim Health and FO4's baked Health /
-//!   Action Points (Carry Weight, regeneration, …).
+//! - **Derived attributes** beyond FO3/FNV/Skyrim Health and FO4's baked
+//!   Health / Action Points (Carry Weight, regeneration, …).
 //!
 //! ## FormID space
 //!
@@ -55,10 +57,9 @@
 //! time (`parse_npc`'s `remap` param — see #1996), so the `index.classes`
 //! lookup is exact on multi-plugin loads too.
 
-use super::actor::NpcRecord;
+use super::actor::{NpcRecord, ACBS_PC_LEVEL_MULT};
 use super::index::EsmIndex;
-use crate::esm::reader::GameKind;
-use byroredux_core::character::{Attribute, AttributeSet, SkillSet};
+use byroredux_core::character::{Attribute, AttributeSet, CharacterRulesProfile, NpcStatModel};
 
 /// The governing SPECIAL's index into `class.base_attributes` for a canonical
 /// [`Attribute`]. `None` for a non-SPECIAL attribute (never happens for a
@@ -99,7 +100,8 @@ fn base_skill(governing: u8, luck: u8) -> f32 {
 }
 
 /// Derive an NPC's `(AVIF FormID, value)` actor-value pairs for the
-/// [`ActorValues::from_pairs`] population. The mechanism is per-game:
+/// [`ActorValues::from_pairs`] population. The index's canonical character
+/// profile selects the mechanism:
 ///
 /// - **FO4+** (`uses_actor_value_properties`): actor values are *stored*,
 ///   not derived — the `PRPS` property pairs are the SPECIAL + overrides
@@ -107,36 +109,31 @@ fn base_skill(governing: u8, luck: u8) -> f32 {
 ///   See [`derive_stored_actor_values`].
 /// - **Skyrim**: Health is `RACE.DATA.starting_health +
 ///   NPC_.ACBS.health_offset`, resolved through the load order's Health AVIF.
-/// - **FNV / FO3**: actor values are *auto-calculated* from the NPC's
-///   class base SPECIAL (the documented GECK model) — the 7 SPECIAL plus
-///   every skill whose `AVIF` resolves. See [`derive_autocalc_actor_values`].
+/// - **FNV / FO3**: actor values are *auto-calculated* from the NPC's class
+///   base SPECIAL (the documented GECK model) — the 7 SPECIAL, the profile's
+///   exact skill roster, and its sourced Health curve. See
+///   [`derive_autocalc_actor_values`].
 ///
 /// Empty for every other game (Oblivion), a Skyrim NPC whose race or Health
 /// AVIF is missing, an FO4 NPC with no `PRPS`, or an FNV NPC whose class
 /// wasn't parsed.
 ///
 /// [`ActorValues::from_pairs`]: byroredux_core::ecs::components::ActorValues::from_pairs
-pub fn derive_npc_actor_values(
-    npc: &NpcRecord,
-    index: &EsmIndex,
-    game: GameKind,
-) -> Vec<(u32, f32)> {
-    if game.uses_actor_value_properties() {
-        derive_stored_actor_values(npc, index)
-    } else if matches!(game, GameKind::Skyrim) {
-        derive_skyrim_actor_values(npc, index)
-    } else if matches!(game, GameKind::Fallout3NV) {
-        derive_autocalc_actor_values(npc, index)
-    } else {
-        Vec::new()
+pub fn derive_npc_actor_values(npc: &NpcRecord, index: &EsmIndex) -> Vec<(u32, f32)> {
+    match index.character_rules.npc_stat_model() {
+        NpcStatModel::Stored => derive_stored_actor_values(npc, index),
+        NpcStatModel::RaceBaseOffsets => derive_skyrim_actor_values(npc, index),
+        NpcStatModel::ClassAutoCalc { health } => {
+            derive_autocalc_actor_values(npc, index, index.character_rules, health)
+        }
+        NpcStatModel::None => Vec::new(),
     }
 }
 
 /// TES5 NPC Health is authored as a race starting value plus a signed actor
-/// offset. Health uses Skyrim's built-in actor-value enum key; vanilla does
-/// not provide a `Health` AVIF record to resolve.
+/// offset. Health resolves through vanilla Skyrim's authored `AVHealth` AVIF.
 fn derive_skyrim_actor_values(npc: &NpcRecord, index: &EsmIndex) -> Vec<(u32, f32)> {
-    let Some(health_key) = index.health_actor_value_key(GameKind::Skyrim) else {
+    let Some(health_key) = index.health_actor_value_key() else {
         return Vec::new();
     };
     let Some(starting_health) = index
@@ -175,18 +172,35 @@ fn derive_stored_actor_values(npc: &NpcRecord, index: &EsmIndex) -> Vec<(u32, f3
     out
 }
 
+/// The authored level used by NPC auto-calc. PC-level-multiplier actors carry
+/// a fixed-point multiplier in `level`, so use their authored `calcMin` floor
+/// until the player-relative half of that model exists.
+fn effective_npc_level(npc: &NpcRecord) -> u16 {
+    if npc.acbs_flags & ACBS_PC_LEVEL_MULT != 0 {
+        npc.calc_min.max(1)
+    } else {
+        npc.level.max(1) as u16
+    }
+}
+
 /// FNV / FO3 auto-calc: SPECIAL = the NPC's class base attributes, skills
-/// derived via the GECK formula (`base_skill`). The #1663 reference path.
-fn derive_autocalc_actor_values(npc: &NpcRecord, index: &EsmIndex) -> Vec<(u32, f32)> {
+/// derived via the GECK formula (`base_skill`), and Health derived from the
+/// locked per-game END + level curve. The #1663 reference path.
+fn derive_autocalc_actor_values(
+    npc: &NpcRecord,
+    index: &EsmIndex,
+    profile: CharacterRulesProfile,
+    health_curve: byroredux_core::character::NpcHealthCurve,
+) -> Vec<(u32, f32)> {
     let Some(class) = index.classes.get(&npc.class_form_id) else {
         return Vec::new();
     };
     let special = class.base_attributes;
     let luck = special[6];
 
-    let skills = SkillSet::FALLOUT_FO3_FNV;
+    let skills = profile.skills();
     let roster = AttributeSet::FALLOUT.members();
-    let mut out = Vec::with_capacity(roster.len() + skills.len());
+    let mut out = Vec::with_capacity(roster.len() + skills.len() + 1);
     for (i, attr) in roster.iter().enumerate() {
         if let Some(fid) = index.actor_value_form_id(attr.editor_id()) {
             out.push((fid, f32::from(special[i])));
@@ -203,6 +217,12 @@ fn derive_autocalc_actor_values(npc: &NpcRecord, index: &EsmIndex) -> Vec<(u32, 
         if let Some(fid) = index.actor_value_form_id(skill.editor_id) {
             out.push((fid, base_skill(special[gov], luck)));
         }
+    }
+    if let Some(fid) = index.health_actor_value_key() {
+        let endurance = f32::from(special[2]);
+        let level = f32::from(effective_npc_level(npc));
+        let health = health_curve.evaluate(endurance, level);
+        out.push((fid, health));
     }
     out
 }
@@ -259,9 +279,12 @@ mod tests {
     }
 
     /// Build an index whose AVIF records cover the 7 SPECIAL + 13 FNV
-    /// skills, with deterministic FormIDs (0x100 + slot).
+    /// skills + Health, with deterministic FormIDs (0x100 + slot). The
+    /// records use shipped-data `AV` prefixes and record identities rather
+    /// than the canonical/display spellings consumed by CHARAL.
     fn fnv_index_with_class(class_form_id: u32, base: [u8; 7]) -> EsmIndex {
         let mut index = EsmIndex::default();
+        index.character_rules = CharacterRulesProfile::FALLOUT_NEW_VEGAS;
         let roster: Vec<&str> = AttributeSet::FALLOUT
             .members()
             .iter()
@@ -273,21 +296,24 @@ mod tests {
                     "Barter",
                     "EnergyWeapons",
                     "Explosives",
-                    "Guns",
                     "Lockpick",
                     "Medicine",
                     "MeleeWeapons",
                     "Repair",
                     "Science",
+                    "SmallGuns",
                     "Sneak",
                     "Speech",
-                    "Survival",
+                    "Throwing",
                     "Unarmed",
+                    "Health",
                 ]
                 .iter(),
             ),
         ) {
-            index.actor_values.insert(fid, avif(fid, name));
+            index
+                .actor_values
+                .insert(fid, avif(fid, &format!("AV{name}")));
         }
         index.classes.insert(
             class_form_id,
@@ -303,6 +329,7 @@ mod tests {
     fn npc_with_class(class_form_id: u32) -> NpcRecord {
         NpcRecord {
             class_form_id,
+            level: 1,
             ..Default::default()
         }
     }
@@ -323,7 +350,7 @@ mod tests {
         let base = [5, 6, 5, 4, 7, 6, 5];
         let index = fnv_index_with_class(0x2000, base);
         let npc = npc_with_class(0x2000);
-        let pairs = derive_npc_actor_values(&npc, &index, GameKind::Fallout3NV);
+        let pairs = derive_npc_actor_values(&npc, &index);
 
         // Helper: value for a named AV via its resolved FormID.
         let val = |name: &str| -> f32 {
@@ -338,31 +365,31 @@ mod tests {
 
         // Skills via 2 + 2*gov + ceil(Luck/2); Luck 5 → +3.
         assert_eq!(val("Unarmed"), 2.0 + 2.0 * 5.0 + 3.0, "END 5"); // 15
-        assert_eq!(val("Guns"), 2.0 + 2.0 * 6.0 + 3.0, "AGI 6"); // 17
+        assert_eq!(val("SmallGuns"), 2.0 + 2.0 * 6.0 + 3.0, "AGI 6"); // Guns = 17
+        assert_eq!(val("Throwing"), 2.0 + 2.0 * 5.0 + 3.0, "END 5"); // Survival = 15
         assert_eq!(val("Science"), 2.0 + 2.0 * 7.0 + 3.0, "INT 7"); // 19
         assert_eq!(val("Barter"), 2.0 + 2.0 * 4.0 + 3.0, "CHA 4"); // 13
+        assert_eq!(val("Health"), 200.0, "100 + 20·END at level 1");
 
-        // 7 SPECIAL + 13 FNV skills resolved (SmallGuns/BigGuns absent here).
-        assert_eq!(pairs.len(), 20);
+        // 7 SPECIAL + 13 FNV skills + Health.
+        assert_eq!(pairs.len(), 21);
     }
 
     #[test]
     fn empty_without_class_or_unsupported_game() {
-        let index = fnv_index_with_class(0x2000, [5; 7]);
+        let mut index = fnv_index_with_class(0x2000, [5; 7]);
         // NPC referencing an unparsed class → empty.
-        assert!(
-            derive_npc_actor_values(&npc_with_class(0x9999), &index, GameKind::Fallout3NV)
-                .is_empty()
-        );
-        // Right NPC, unsupported game → empty.
-        assert!(
-            derive_npc_actor_values(&npc_with_class(0x2000), &index, GameKind::Oblivion).is_empty()
-        );
+        assert!(derive_npc_actor_values(&npc_with_class(0x9999), &index).is_empty());
+        // Right NPC, unsupported profile → empty.
+        index.character_rules = CharacterRulesProfile::NONE;
+        assert!(derive_npc_actor_values(&npc_with_class(0x2000), &index).is_empty());
     }
 
     #[test]
     fn skyrim_health_is_race_start_plus_signed_npc_offset() {
         let mut index = EsmIndex::default();
+        index.character_rules = CharacterRulesProfile::SKYRIM;
+        index.actor_values.insert(0x3E8, avif(0x3E8, "AVHealth"));
         index.races.insert(
             0x13746,
             RaceRecord {
@@ -377,10 +404,7 @@ mod tests {
             ..Default::default()
         };
 
-        assert_eq!(
-            derive_npc_actor_values(&npc, &index, GameKind::Skyrim),
-            vec![(EsmIndex::SKYRIM_HEALTH_ACTOR_VALUE, 35.0)]
-        );
+        assert_eq!(derive_npc_actor_values(&npc, &index), vec![(0x3E8, 35.0)]);
     }
 
     #[test]
@@ -390,10 +414,17 @@ mod tests {
             health_offset: 10,
             ..Default::default()
         };
-        let no_race = EsmIndex::default();
-        assert!(derive_npc_actor_values(&npc, &no_race, GameKind::Skyrim).is_empty());
+        let no_race = EsmIndex {
+            character_rules: CharacterRulesProfile::SKYRIM,
+            ..EsmIndex::default()
+        };
+        assert!(derive_npc_actor_values(&npc, &no_race).is_empty());
 
         let mut invalid_race = EsmIndex::default();
+        invalid_race.character_rules = CharacterRulesProfile::SKYRIM;
+        invalid_race
+            .actor_values
+            .insert(0x3E8, avif(0x3E8, "AVHealth"));
         invalid_race.races.insert(
             0x13746,
             RaceRecord {
@@ -402,7 +433,32 @@ mod tests {
                 ..Default::default()
             },
         );
-        assert!(derive_npc_actor_values(&npc, &invalid_race, GameKind::Skyrim).is_empty());
+        assert!(derive_npc_actor_values(&npc, &invalid_race).is_empty());
+    }
+
+    #[test]
+    fn actor_value_lookup_normalizes_av_prefix_and_rejects_null_form_ids() {
+        let mut index = EsmIndex::default();
+        index.actor_values.insert(0x3E8, avif(0x3E8, "AVHealth"));
+        index.actor_values.insert(0, avif(0, "AVStrength"));
+        assert_eq!(index.actor_value_form_id("Health"), Some(0x3E8));
+        assert_eq!(index.actor_value_form_id("AVHealth"), Some(0x3E8));
+        assert_eq!(index.actor_value_form_id("health"), Some(0x3E8));
+        assert_eq!(index.actor_value_form_id("Strength"), None);
+
+        index.actor_values.insert(0x500, avif(0x500, "Health"));
+        assert_eq!(
+            index.actor_value_form_id("Health"),
+            Some(0x500),
+            "an exact canonical spelling wins deterministically"
+        );
+        index.actor_values.insert(u32::MAX, avif(u32::MAX, "Luck"));
+        index.actor_values.insert(0x3EE, avif(0x3EE, "AVLuck"));
+        assert_eq!(
+            index.actor_value_form_id("Luck"),
+            Some(0x3EE),
+            "an invalid exact match must not hide a usable AV-prefixed record"
+        );
     }
 
     #[test]
@@ -410,6 +466,7 @@ mod tests {
         // FO4 stores AVs: PRPS pairs pass through unchanged; the baked
         // DNAM Health/AP resolve via their AVIF EditorIDs.
         let mut index = EsmIndex::default();
+        index.character_rules = CharacterRulesProfile::FALLOUT4;
         index.actor_values.insert(0x900, avif(0x900, "Health"));
         index
             .actor_values
@@ -421,7 +478,7 @@ mod tests {
             calculated_action_points: 90,
             ..Default::default()
         };
-        let pairs = derive_npc_actor_values(&npc, &index, GameKind::Fallout4);
+        let pairs = derive_npc_actor_values(&npc, &index);
 
         assert!(pairs.contains(&(0x2A0, 7.0)), "Strength prop passthrough");
         assert!(pairs.contains(&(0x2A6, 5.0)), "Luck prop passthrough");
@@ -440,12 +497,38 @@ mod tests {
     fn fo4_zero_baked_stats_skipped_and_no_class_needed() {
         // 0 = absent: no Health/AP appended. And FO4 needs no class record
         // (unlike the FNV auto-calc path) — PRPS alone populates.
-        let index = EsmIndex::default(); // no AVIF needed for PRPS passthrough
+        let index = EsmIndex {
+            character_rules: CharacterRulesProfile::FALLOUT4,
+            ..EsmIndex::default()
+        }; // no AVIF needed for PRPS passthrough
         let npc = NpcRecord {
             actor_value_props: vec![(0x2A0, 7.0)],
             ..Default::default()
         };
-        let pairs = derive_npc_actor_values(&npc, &index, GameKind::Fallout4);
+        let pairs = derive_npc_actor_values(&npc, &index);
         assert_eq!(pairs, vec![(0x2A0, 7.0)]);
+    }
+
+    #[test]
+    fn later_creation_profiles_retain_stored_actor_value_population() {
+        for profile in [
+            CharacterRulesProfile::FALLOUT76,
+            CharacterRulesProfile::STARFIELD,
+        ] {
+            let index = EsmIndex {
+                character_rules: profile,
+                ..EsmIndex::default()
+            };
+            let npc = NpcRecord {
+                actor_value_props: vec![(0x2A0, 7.0)],
+                ..NpcRecord::default()
+            };
+            assert_eq!(
+                derive_npc_actor_values(&npc, &index),
+                vec![(0x2A0, 7.0)],
+                "{} must keep the stored PRPS path",
+                profile.name()
+            );
+        }
     }
 }

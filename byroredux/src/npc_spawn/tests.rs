@@ -9,9 +9,93 @@
 
 use super::*;
 use byroredux_core::ecs::components::{
-    EscortBehavior, FollowBehavior, GuardBehavior, PatrolBehavior, SandboxBehavior, TravelBehavior,
-    WanderBehavior,
+    ActorValues, ActorVitals, Dead, EscortBehavior, FollowBehavior, GuardBehavior, PatrolBehavior,
+    SandboxBehavior, TravelBehavior, WanderBehavior,
 };
+
+#[test]
+fn fnv_spawned_actor_gets_derived_health_and_combat_consumes_it() {
+    use byroredux_core::character::CharacterRulesProfile;
+    use byroredux_plugin::esm::records::{AvifRecord, ClassRecord};
+
+    let mut world = World::new();
+    byroredux_scripting::register(&mut world);
+    world.register::<ActorValues>();
+    world.register::<ActorVitals>();
+    world.register::<EquippedWeapon>();
+    world.register::<Dead>();
+
+    let health = 0x450;
+    let mut index = EsmIndex {
+        character_rules: CharacterRulesProfile::FALLOUT_NEW_VEGAS,
+        ..EsmIndex::default()
+    };
+    index.actor_values.insert(
+        0x3EA,
+        AvifRecord {
+            form_id: 0x3EA,
+            editor_id: "AVEndurance".to_owned(),
+            ..AvifRecord::default()
+        },
+    );
+    index.actor_values.insert(
+        health,
+        AvifRecord {
+            form_id: health,
+            editor_id: "AVHealth".to_owned(),
+            ..AvifRecord::default()
+        },
+    );
+    index.classes.insert(
+        0x2000,
+        ClassRecord {
+            form_id: 0x2000,
+            base_attributes: [5; 7],
+            ..ClassRecord::default()
+        },
+    );
+    let npc = NpcRecord {
+        class_form_id: 0x2000,
+        level: 1,
+        ..NpcRecord::default()
+    };
+
+    let target = world.spawn();
+    stamp_actor_values(&mut world, target, &npc, &index);
+    assert_eq!(world.get::<ActorVitals>(target).unwrap().health, health);
+    assert_eq!(
+        world.get::<ActorValues>(target).unwrap().current(health),
+        200.0
+    );
+
+    let aggressor = world.spawn();
+    world.insert(
+        aggressor,
+        EquippedWeapon {
+            inventory_index: InventoryIndex(0),
+            base_form_id: 0x1CB64,
+            damage: 18.0,
+        },
+    );
+    world.insert(
+        target,
+        byroredux_scripting::HitEvent {
+            aggressor,
+            source: aggressor,
+            projectile: 0,
+            power_attack: false,
+            sneak_attack: false,
+            bash_attack: false,
+            blocked: false,
+        },
+    );
+
+    crate::combat::combat_damage_system(&world, 0.0);
+    assert_eq!(
+        world.get::<ActorValues>(target).unwrap().current(health),
+        182.0
+    );
+}
 
 // ── M41.5 Phase A — idle desync + pool selection ──────────────────
 

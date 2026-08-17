@@ -95,6 +95,7 @@ use super::cell::wrld::parse_wrld_group;
 use super::cell::{CellData, EsmCellIndex, StaticObject, TextureSet};
 use super::reader::{EsmReader, FormIdRemap, GameKind};
 use anyhow::{Context, Result};
+use byroredux_core::character::CharacterRulesProfile;
 use std::collections::HashMap;
 
 // ── #1118 / TD9-003 split — see `index.rs` and `grup_walker.rs` ─────
@@ -132,6 +133,22 @@ pub fn parse_esm(data: &[u8]) -> Result<EsmIndex> {
     parse_esm_with_load_order(data, None)
 }
 
+/// Translate the parser's binary-layout family into the character-policy row.
+/// This is the only FO3/FNV rules split: their record layouts share
+/// `GameKind::Fallout3NV`, while the measured master HEDRs remain distinct
+/// (FO3 0.85/0.94, New Vegas 1.34).
+fn character_rules_profile(game: GameKind, hedr_version: f32) -> CharacterRulesProfile {
+    match game {
+        GameKind::Oblivion => CharacterRulesProfile::OBLIVION,
+        GameKind::Fallout3NV if hedr_version < 1.0 => CharacterRulesProfile::FALLOUT3,
+        GameKind::Fallout3NV => CharacterRulesProfile::FALLOUT_NEW_VEGAS,
+        GameKind::Skyrim => CharacterRulesProfile::SKYRIM,
+        GameKind::Fallout4 => CharacterRulesProfile::FALLOUT4,
+        GameKind::Fallout76 => CharacterRulesProfile::FALLOUT76,
+        GameKind::Starfield => CharacterRulesProfile::STARFIELD,
+    }
+}
+
 /// Parse an ESM/ESP with an explicit load-order remap.
 ///
 /// `remap` rewrites every record's FormID top byte into the global
@@ -167,6 +184,7 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
     // (NPC spawn dispatcher) can route per-version without
     // re-deriving from a HEDR they no longer have.
     index.game = game;
+    index.character_rules = character_rules_profile(game, file_header.hedr_version);
     log::info!(
         "ESM file: {} records, {} master files",
         file_header.record_count,

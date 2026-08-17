@@ -93,14 +93,13 @@ fn stamp_actor_values(
     placement_root: EntityId,
     npc: &NpcRecord,
     index: &EsmIndex,
-    game: GameKind,
 ) {
-    let pairs = byroredux_plugin::esm::records::derive_npc_actor_values(npc, index, game);
+    let pairs = byroredux_plugin::esm::records::derive_npc_actor_values(npc, index);
     if pairs.is_empty() {
         return;
     }
     let health = index
-        .health_actor_value_key(game)
+        .health_actor_value_key()
         .filter(|health| pairs.iter().any(|(form_id, _)| form_id == health));
     world.insert(
         placement_root,
@@ -181,25 +180,14 @@ fn stamp_character_components(world: &mut World, placement_root: EntityId, npc: 
 }
 
 /// Build the per-game [`CharacterRuleset`](byroredux_core::character::CharacterRuleset)
-/// from the parsed AVIF set — resolving each derived formula's input/output
-/// EditorIDs through `index`. `None` for games CHARAL doesn't model yet
-/// (Oblivion / Skyrim / FO76 / Starfield).
-///
-/// `GameKind::Fallout3NV` covers **both** FO3 and FNV; the *actor-general*
-/// derived stats (Carry Weight / Melee Damage / Crit Chance / Unarmed Damage —
-/// the only ones a non-player consumer computes) are identical between them,
-/// so it resolves to the FNV ruleset. The FO3↔FNV-divergent *player* Health/AP
-/// would need master-name disambiguation — deferred with the player actor.
+/// from the parsed AVIF set. The parser-selected character profile owns the
+/// per-game ruleset choice; this consumer only supplies authored FormID
+/// resolution.
 pub fn build_character_ruleset(
-    game: GameKind,
     index: &EsmIndex,
 ) -> Option<byroredux_core::character::CharacterRuleset> {
     let resolve = |editor_id: &str| index.actor_value_form_id(editor_id);
-    Some(match game {
-        GameKind::Fallout4 => byroredux_core::character::fallout4_ruleset(resolve),
-        GameKind::Fallout3NV => byroredux_core::character::falloutnv_ruleset(resolve),
-        _ => return None,
-    })
+    index.character_rules.build_ruleset(resolve)
 }
 
 /// #1698 — keyframe a live NPC's ragdoll bones.

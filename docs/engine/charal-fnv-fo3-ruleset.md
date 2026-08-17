@@ -18,9 +18,17 @@ each starts at **5**, 40 total (vs FO4's 1+21). Range 1–10.
 
 ## Skills — BUILT (auto-calc) + LOCKED (governing table)
 
-13 skills each. **FNV:** Barter, Energy Weapons, Explosives, Guns, Lockpick, Medicine,
-Melee Weapons, Repair, Science, Sneak, Speech, Survival, Unarmed. **FO3:** same minus
-{Guns, Survival}, plus {Small Guns, Big Guns}.
+13 skills each. **FNV display names:** Barter, Energy Weapons, Explosives, Guns,
+Lockpick, Medicine, Melee Weapons, Repair, Science, Sneak, Speech, Survival, Unarmed.
+**FO3:** same minus {Guns, Survival}, plus {Small Guns, Big Guns}.
+
+The record identities do not follow both New Vegas display-name changes:
+`AVSmallGuns` displays as **Guns**, `AVThrowing` displays as **Survival**, and the
+still-authored `AVBigGuns` displays as **Big Guns - OBSOLETE**. CHARAL therefore
+uses separate 13-entry rosters: FO3 includes `SmallGuns` + `BigGuns`; FNV includes
+`SmallGuns` + `Throwing` and deliberately excludes obsolete `BigGuns`. The parser
+boundary normalizes the lineage-wide `AV` prefix, so these table keys remain the
+record-identity suffixes rather than wire-format spellings.
 
 Governing SPECIAL (per `actor_value_derive.rs::SKILLS`, geckwiki *SPECIAL*):
 
@@ -82,7 +90,7 @@ base + tag it's the **complete player skill model** for FO3/FNV.
 
 | Stat | Gov | FO3 formula | FNV formula | Status |
 |---|---|---|---|---|
-| Health | END + level | `90 + END·20 + Level·10` | `100 + END·20 + (Level−1)·5` | **LOCKED** (player) |
+| Health | END + level | `90 + END·20 + Level·10` | `100 + END·20 + (Level−1)·5` | **BUILT** (player ruleset + NPC auto-calc seed) |
 | Action Points | AGI | `65 + 2·AGI` (cap 85) | `65 + 3·AGI` (cap 95) | **LOCKED** |
 | Carry Weight | STR | `150 + 10·STR` | `150 + 10·STR` | **LOCKED** (actor-general) |
 | Critical Chance | Luck | `Luck × 1%` (cap 10%) | `Luck × 1%` (Luck>10 inert) | **LOCKED** (`critchance` AV) |

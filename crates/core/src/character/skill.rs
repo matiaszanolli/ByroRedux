@@ -12,7 +12,8 @@
 //! * **TES classic** (Morrowind / Oblivion) — every skill is governed by one
 //!   attribute; raising governed skills drives the level-up attribute bonus.
 //! * **Fallout FO3 / FNV** — skills are governed by a SPECIAL for auto-calc
-//!   base values (that map lives at the population boundary,
+//!   base values. The games have distinct 13-skill rosters (that map lives at
+//!   the population boundary,
 //!   `crates/plugin/.../actor_value_derive.rs`).
 //! * **Skyrim** — 18 skills, **ungoverned** (`None`): attributes were removed,
 //!   skills carry their own XP and drive leveling directly.
@@ -148,30 +149,48 @@ impl SkillSet {
         ],
     };
 
-    /// Fallout 3 + New Vegas — the **union** of both games' 13 skills (15
-    /// total, resolve-or-skip picks each game's subset: FO3 has SmallGuns /
-    /// BigGuns, FNV replaces them with Guns / Survival). Each governed by a
-    /// SPECIAL attribute — the auto-calc governing map (GECK), the single
-    /// source consumed by the FNV/FO3 population path
-    /// (`crates/plugin/.../actor_value_derive.rs`). Luck governs no skill
-    /// directly (it adds the `ceil(Luck/2)` term to every skill's base).
-    pub const FALLOUT_FO3_FNV: Self = Self {
+    /// Fallout 3's 13 skills, keyed by the suffix of their `AVIF` EditorID
+    /// (`AVSmallGuns` → `SmallGuns`). Each is governed by one SPECIAL for
+    /// class auto-calculation. Luck governs no skill directly; it contributes
+    /// the shared `ceil(Luck/2)` term instead.
+    pub const FALLOUT3: Self = Self {
         skills: &[
             SkillDef::governed("Barter", Attribute::Charisma),
+            SkillDef::governed("BigGuns", Attribute::Endurance),
             SkillDef::governed("EnergyWeapons", Attribute::Perception),
             SkillDef::governed("Explosives", Attribute::Perception),
-            SkillDef::governed("Guns", Attribute::Agility), // FNV
             SkillDef::governed("Lockpick", Attribute::Perception),
             SkillDef::governed("Medicine", Attribute::Intelligence),
             SkillDef::governed("MeleeWeapons", Attribute::Strength),
             SkillDef::governed("Repair", Attribute::Intelligence),
             SkillDef::governed("Science", Attribute::Intelligence),
+            SkillDef::governed("SmallGuns", Attribute::Agility),
             SkillDef::governed("Sneak", Attribute::Agility),
             SkillDef::governed("Speech", Attribute::Charisma),
-            SkillDef::governed("Survival", Attribute::Endurance), // FNV
             SkillDef::governed("Unarmed", Attribute::Endurance),
-            SkillDef::governed("SmallGuns", Attribute::Agility), // FO3
-            SkillDef::governed("BigGuns", Attribute::Endurance), // FO3
+        ],
+    };
+
+    /// Fallout: New Vegas' 13 skills, keyed by actual `AVIF` record identity.
+    /// Bethesda changed two display names without changing their EditorIDs:
+    /// `AVSmallGuns` displays as “Guns”, and `AVThrowing` displays as
+    /// “Survival”. `AVBigGuns` remains in the master only as an obsolete
+    /// record and is deliberately absent from this roster.
+    pub const FALLOUT_NV: Self = Self {
+        skills: &[
+            SkillDef::governed("Barter", Attribute::Charisma),
+            SkillDef::governed("EnergyWeapons", Attribute::Perception),
+            SkillDef::governed("Explosives", Attribute::Perception),
+            SkillDef::governed("Lockpick", Attribute::Perception),
+            SkillDef::governed("Medicine", Attribute::Intelligence),
+            SkillDef::governed("MeleeWeapons", Attribute::Strength),
+            SkillDef::governed("Repair", Attribute::Intelligence),
+            SkillDef::governed("Science", Attribute::Intelligence),
+            SkillDef::governed("SmallGuns", Attribute::Agility), // display: Guns
+            SkillDef::governed("Sneak", Attribute::Agility),
+            SkillDef::governed("Speech", Attribute::Charisma),
+            SkillDef::governed("Throwing", Attribute::Endurance), // display: Survival
+            SkillDef::governed("Unarmed", Attribute::Endurance),
         ],
     };
 
@@ -212,16 +231,35 @@ impl SkillSet {
     /// Resolve every skill to AUTHORED FormIDs: the skill's own AVIF id and
     /// its governing attribute's AVIF id. `resolve` maps EditorID → FormID
     /// (the parsed AVIF set). A skill whose own EditorID doesn't resolve is
-    /// dropped; an unresolved governing attribute degrades to `None` rather
-    /// than dropping the skill (the skill still exists, just without a
-    /// resolved governor — the loader logs the gap).
+    /// dropped with a warning; an unresolved governing attribute degrades to
+    /// `None` with a warning rather than dropping the skill (the skill still
+    /// exists, just without a resolved governor).
     pub fn resolve<F: Fn(&str) -> Option<u32>>(&self, resolve: F) -> Vec<ResolvedSkill> {
         self.skills
             .iter()
             .filter_map(|s| {
-                resolve(s.editor_id).map(|skill_av| ResolvedSkill {
+                let Some(skill_av) = resolve(s.editor_id) else {
+                    log::warn!(
+                        "CHARAL skill roster entry '{}' did not resolve to an AVIF",
+                        s.editor_id
+                    );
+                    return None;
+                };
+                let governing_av = s.governing.and_then(|attribute| {
+                    let editor_id = attribute.editor_id();
+                    let resolved = resolve(editor_id);
+                    if resolved.is_none() {
+                        log::warn!(
+                            "CHARAL governing attribute '{}' for skill '{}' did not resolve to an AVIF",
+                            editor_id,
+                            s.editor_id
+                        );
+                    }
+                    resolved
+                });
+                Some(ResolvedSkill {
                     skill_av,
-                    governing_av: s.governing.and_then(|a| resolve(a.editor_id())),
+                    governing_av,
                 })
             })
             .collect()
@@ -348,24 +386,38 @@ mod tests {
     }
 
     #[test]
-    fn fallout_skill_governors_are_special_attributes() {
+    fn fallout_skill_rosters_are_distinct_and_governed_by_special() {
         use crate::character::AttributeSet;
-        let fo = SkillSet::FALLOUT_FO3_FNV;
-        assert_eq!(fo.len(), 15); // FO3 ∪ FNV
-                                  // Spot-check the governing map (GECK auto-calc).
-        assert_eq!(fo.governing("Barter"), Some(Attribute::Charisma));
-        assert_eq!(fo.governing("Guns"), Some(Attribute::Agility)); // FNV
-        assert_eq!(fo.governing("BigGuns"), Some(Attribute::Endurance)); // FO3
-        assert_eq!(fo.governing("MeleeWeapons"), Some(Attribute::Strength));
-        // Every governor is a Fallout SPECIAL attribute; Luck governs none.
-        for s in fo.skills() {
-            let g = s.governing.expect("governed");
-            assert!(
-                AttributeSet::FALLOUT.contains(g),
-                "{} → non-SPECIAL",
-                s.editor_id
-            );
-            assert_ne!(g, Attribute::Luck, "{} claims Luck governor", s.editor_id);
+        let fo3 = SkillSet::FALLOUT3;
+        let fnv = SkillSet::FALLOUT_NV;
+        assert_eq!(fo3.len(), 13);
+        assert_eq!(fnv.len(), 13);
+        assert!(fo3.get("BigGuns").is_some());
+        assert!(fnv.get("BigGuns").is_none(), "obsolete on New Vegas");
+        assert!(fo3.get("Throwing").is_none());
+        assert_eq!(fnv.governing("Throwing"), Some(Attribute::Endurance));
+        assert_eq!(fnv.governing("SmallGuns"), Some(Attribute::Agility));
+        assert!(fnv.get("Guns").is_none(), "display name is not the EDID");
+        assert!(
+            fnv.get("Survival").is_none(),
+            "display name is not the EDID"
+        );
+
+        for roster in [fo3, fnv] {
+            for skill in roster.skills() {
+                let governor = skill.governing.expect("governed");
+                assert!(
+                    AttributeSet::FALLOUT.contains(governor),
+                    "{} → non-SPECIAL",
+                    skill.editor_id
+                );
+                assert_ne!(
+                    governor,
+                    Attribute::Luck,
+                    "{} claims Luck governor",
+                    skill.editor_id
+                );
+            }
         }
     }
 }

@@ -273,10 +273,17 @@ Multiplier-kind formulas apply at combat/use time against a base (weapon damage)
 absolute-kind formulas produce the AV the runtime reads. The `0.1` coefficient is
 presumably a `GMST` (not named on this page).
 
+Vanilla `Fallout4.esm` authors **no `MeleeDamage` AVIF** (nor any AVIF whose
+EditorID contains `Melee`). Consequently this formula is not registered in the
+AVIF-keyed `CharacterRuleset::derived` table: it belongs at the combat-use boundary
+that already has the weapon's base damage and can apply the multiplier directly.
+The synthetic `MeleeDamage` output key previously used by the builder was removed.
+
 ### Derived table — core complete ✅
 
-All four AV-backed derived stats are locked (Health, Action Points, Carry Weight,
-Melee Damage). The remaining governance rows (VATS, persuasion, barter, settler cap,
+The three AV-backed derived stats are locked (Health, Action Points, Carry Weight).
+Melee Damage is a locked combat-use multiplier but not an AV-backed output row. The
+remaining governance rows (VATS, persuasion, barter, settler cap,
 hacking, sneak, XP-mult, crit, sprint-AP-drain) are gameplay-system inputs or
 storage-TBD modifiers, not blockers for the `derived` table.
 

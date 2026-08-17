@@ -38,6 +38,9 @@ pub struct EsmIndex {
     /// Consumed by the cell loader's NPC dispatch (M41.0 Phase 1b)
     /// to gate runtime-FaceGen vs pre-baked-FaceGen spawn paths.
     pub game: GameKind,
+    /// Canonical character policy selected once from the source master header.
+    /// Unlike `game`, this deliberately distinguishes FO3 from New Vegas.
+    pub character_rules: byroredux_core::character::CharacterRulesProfile,
     pub cells: EsmCellIndex,
     pub items: HashMap<u32, ItemRecord>,
     /// Fallout 4 / 76 OMOD FormID → optional loose MISC item (`LNAM`).
@@ -364,13 +367,6 @@ pub struct EsmIndex {
 }
 
 impl EsmIndex {
-    /// TES5's built-in `Health` actor-value enum index.
-    ///
-    /// Skyrim addresses its built-in actor values by engine enum index rather
-    /// than by an `AVIF` record. Vanilla `Skyrim.esm` therefore does not need
-    /// to contain a `Health` AVIF for NPC health to be usable.
-    pub const SKYRIM_HEALTH_ACTOR_VALUE: u32 = 24;
-
     /// Reconcile Fallout inventory categories after a complete parse or
     /// load-order merge. OMOD groups can appear after MISC, and later plugins
     /// may override either side of the relationship, so this cannot safely be
@@ -572,35 +568,42 @@ impl EsmIndex {
         Self::categories().iter().map(|(_, f)| f(self)).sum()
     }
 
-    /// Resolve an actor value's global FormID by its `AVIF` EditorID
+    /// Resolve an actor value's global FormID by its canonical EditorID
     /// (case-insensitive), or `None` when no such `AVIF` was parsed.
     ///
-    /// Used to key `ActorValues` by the standard SPECIAL / skill actor
-    /// values during NPC stat population (#1663) — the EditorIDs are the
-    /// GECK names (`"Strength"`, `"Sneak"`, `"Guns"`, …). The returned
-    /// FormID is in the index's load-order space, the same space a
-    /// remapped CTDA `param_1` (and therefore `GetActorValue`) compares
-    /// against. Linear over `actor_values` (~100 records) — cheap enough
-    /// to call per-stat at spawn; cache the handful of standard ids on the
-    /// caller if a hot path ever needs it.
+    /// FO3/FNV/Skyrim author every AVIF EditorID with an `AV` prefix
+    /// (`AVStrength`); FO4+ use the bare canonical spelling (`Strength`).
+    /// That wire-format spelling difference is normalized here so the
+    /// shared CHARAL rosters remain game-independent. The returned FormID is
+    /// non-null and in the index's load-order space, the same space a remapped
+    /// CTDA `param_1` (and therefore `GetActorValue`) compares against.
+    /// Linear over `actor_values` (~100 records) — cheap enough to call
+    /// per-stat at spawn.
     pub fn actor_value_form_id(&self, editor_id: &str) -> Option<u32> {
+        let usable = |avif: &AvifRecord| avif.form_id != 0 && avif.form_id != u32::MAX;
         self.actor_values
             .values()
-            .find(|avif| avif.editor_id.eq_ignore_ascii_case(editor_id))
+            .find(|avif| usable(avif) && avif.editor_id.eq_ignore_ascii_case(editor_id))
+            .or_else(|| {
+                self.actor_values.values().find(|avif| {
+                    usable(avif)
+                        && avif
+                            .editor_id
+                            .get(..2)
+                            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("AV"))
+                        && avif
+                            .editor_id
+                            .get(2..)
+                            .is_some_and(|suffix| suffix.eq_ignore_ascii_case(editor_id))
+                })
+            })
             .map(|avif| avif.form_id)
     }
 
-    /// Resolve the active game's canonical key for the Health actor value.
-    ///
-    /// Record-backed games use the parsed `AVIF` FormID. Skyrim uses the
-    /// built-in actor-value enum because vanilla does not author a `Health`
-    /// `AVIF` record.
-    pub fn health_actor_value_key(&self, game: GameKind) -> Option<u32> {
-        if matches!(game, GameKind::Skyrim) {
-            Some(Self::SKYRIM_HEALTH_ACTOR_VALUE)
-        } else {
-            self.actor_value_form_id("Health")
-        }
+    /// Resolve Health in the same global AVIF FormID space as every other
+    /// actor value and CTDA `GetActorValue` operand.
+    pub fn health_actor_value_key(&self) -> Option<u32> {
+        self.actor_value_form_id("Health")
     }
 
     /// Format the per-category breakdown as a single line — used by the
@@ -758,6 +761,7 @@ impl EsmIndex {
         // `GameKind::default()` (Fallout3NV) until the first plugin's
         // parse populates it.
         self.game = other.game;
+        self.character_rules = other.character_rules;
 
         // Nested cell index — needs per-worldspace handling.
         self.cells.merge_from(other.cells);

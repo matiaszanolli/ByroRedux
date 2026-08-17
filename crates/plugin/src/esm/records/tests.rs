@@ -4,6 +4,40 @@
 
 use super::*;
 
+#[test]
+fn esm_header_selects_one_canonical_character_profile() {
+    use byroredux_core::character::CharacterRulesProfile;
+
+    assert_eq!(
+        character_rules_profile(GameKind::Fallout3NV, 0.94),
+        CharacterRulesProfile::FALLOUT3
+    );
+    assert_eq!(
+        character_rules_profile(GameKind::Fallout3NV, 0.85),
+        CharacterRulesProfile::FALLOUT3
+    );
+    assert_eq!(
+        character_rules_profile(GameKind::Fallout3NV, 1.34),
+        CharacterRulesProfile::FALLOUT_NEW_VEGAS
+    );
+    assert_eq!(
+        character_rules_profile(GameKind::Skyrim, 1.71),
+        CharacterRulesProfile::SKYRIM
+    );
+    assert_eq!(
+        character_rules_profile(GameKind::Fallout4, 1.0),
+        CharacterRulesProfile::FALLOUT4
+    );
+    assert_eq!(
+        character_rules_profile(GameKind::Fallout76, 1.0),
+        CharacterRulesProfile::FALLOUT76
+    );
+    assert_eq!(
+        character_rules_profile(GameKind::Starfield, 1.0),
+        CharacterRulesProfile::STARFIELD
+    );
+}
+
 /// Build a single STAT-style record bytes for the given type code, form ID,
 /// and sub-record list.
 fn build_record(typ: &[u8; 4], form_id: u32, subs: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {

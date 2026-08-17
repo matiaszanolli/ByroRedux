@@ -322,7 +322,7 @@ fn prepare_runtime_state(
     ref_scale: f32,
     index: &EsmIndex,
 ) -> RuntimeNpcState {
-    let placement_root = spawn_placement_root(world, npc, game, ref_pos, ref_rot, ref_scale, index);
+    let placement_root = spawn_placement_root(world, npc, ref_pos, ref_rot, ref_scale, index);
     log::info!(
         "NPC {:08X} ({}) spawning at world [{:.0},{:.0},{:.0}] scale={:.2}",
         npc.form_id,
@@ -1054,7 +1054,7 @@ fn prepare_prebaked_state(
     ref_scale: f32,
     index: &EsmIndex,
 ) -> PrebakedNpcState {
-    let placement_root = spawn_placement_root(world, npc, game, ref_pos, ref_rot, ref_scale, index);
+    let placement_root = spawn_placement_root(world, npc, ref_pos, ref_rot, ref_scale, index);
     let gender = Gender::from_acbs_flags(npc.acbs_flags);
     let equip = build_npc_equip_state(npc, index, game, gender);
     let armor = equip
@@ -1236,7 +1236,6 @@ fn advance_prebaked_unit(
 fn spawn_placement_root(
     world: &mut World,
     npc: &NpcRecord,
-    game: GameKind,
     ref_pos: Vec3,
     ref_rot: Quat,
     ref_scale: f32,
@@ -1256,7 +1255,7 @@ fn spawn_placement_root(
         world.insert(placement_root, Name(symbol));
     }
     stamp_faction_ranks(world, placement_root, npc);
-    stamp_actor_values(world, placement_root, npc, index, game);
+    stamp_actor_values(world, placement_root, npc, index);
     stamp_character_components(world, placement_root, npc);
     placement_root
 }

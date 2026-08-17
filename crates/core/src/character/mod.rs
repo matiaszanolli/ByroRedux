@@ -43,6 +43,7 @@ pub mod components;
 pub mod derived;
 pub mod fallout;
 pub mod leveling;
+pub mod profile;
 pub mod regen;
 pub mod reputation;
 pub mod resistance;
@@ -62,6 +63,7 @@ pub use components::{
 pub use derived::{DerivedInput, DerivedOutput, DerivedScope, DerivedStatFormula, RoundMode};
 pub use fallout::{fallout3_ruleset, fallout4_ruleset, falloutnv_ruleset};
 pub use leveling::{LevelReward, LevelingModel};
+pub use profile::{CharacterRulesProfile, NpcHealthCurve, NpcStatModel};
 pub use regen::{
     magicka_regen_per_sec, pool_regen_tick_system, PoolRegenAccumulator, PoolRegenConfig,
     FATIGUE_REGEN_PER_SEC, MAGICKA_REGEN_BASE, MAGICKA_REGEN_WILLPOWER_COEFF, POOL_REGEN_DT,

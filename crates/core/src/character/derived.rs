@@ -53,9 +53,12 @@ impl DerivedInput {
     /// Reads the character level rather than an actor value.
     pub const LEVEL: Self = Self(u32::MAX);
 
-    /// An actor value by global-space AVIF FormID. (Caller guarantees the
-    /// id is neither `0` nor `u32::MAX` — real Bethesda FormIDs never are.)
+    /// An actor value by global-space AVIF FormID.
     pub const fn actor_value(avif_form_id: u32) -> Self {
+        debug_assert!(
+            avif_form_id != 0 && avif_form_id != u32::MAX,
+            "DerivedInput actor values must be non-null AVIF FormIDs"
+        );
         Self(avif_form_id)
     }
 
