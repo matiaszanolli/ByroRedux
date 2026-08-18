@@ -129,6 +129,8 @@ pub const COMBUSTION_REACTION_RATE_PER_SECOND: f32 =
     byroredux_core::combustion::REACTION_RATE_PER_SECOND;
 pub const COMBUSTION_RICH_SOOT_YIELD: f32 = byroredux_core::combustion::RICH_SOOT_YIELD;
 pub const COMBUSTION_LEAN_SOOT_YIELD: f32 = byroredux_core::combustion::LEAN_SOOT_YIELD;
+pub const COMBUSTION_SOOT_OXIDATION_RATE_PER_SECOND: f32 =
+    byroredux_core::combustion::SOOT_OXIDATION_RATE_PER_SECOND;
 pub const EXPLOSION_EXPANSION_TIME_SECONDS: f32 =
     byroredux_core::combustion::EXPLOSION_EXPANSION_TIME_SECONDS;
 pub const EXPLOSION_IMPULSE_DURATION_SECONDS: f32 =

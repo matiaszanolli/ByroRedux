@@ -27,6 +27,10 @@ pub const RICH_SOOT_YIELD: f32 = 0.06;
 /// normalized fuel.
 pub const LEAN_SOOT_YIELD: f32 = 0.004;
 
+/// First-order oxidation rate for soot while a transported cell is hot and
+/// oxygen-rich, per second.
+pub const SOOT_OXIDATION_RATE_PER_SECOND: f32 = 0.15;
+
 /// Time for the initial fireball to traverse its canonical source radius.
 ///
 /// This is deliberately independent of the effect lifetime: lifetime governs
@@ -208,6 +212,7 @@ mod tests {
         assert!(REACTION_RATE_PER_SECOND > 0.0);
         assert!(RICH_SOOT_YIELD > LEAN_SOOT_YIELD);
         assert!(LEAN_SOOT_YIELD > 0.0);
+        assert!(SOOT_OXIDATION_RATE_PER_SECOND > 0.0);
         assert!(EXPLOSION_EXPANSION_TIME_SECONDS > 0.0);
         assert!(EXPLOSION_IMPULSE_DURATION_SECONDS > EXPLOSION_EXPANSION_TIME_SECONDS);
         assert!(MAX_PRESSURE_ACCELERATION_MPS2 > 0.0);

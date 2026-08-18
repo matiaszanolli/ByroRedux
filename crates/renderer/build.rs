@@ -199,6 +199,11 @@ fn main() {
     .unwrap();
     writeln!(
         out,
+        "#define COMBUSTION_SOOT_OXIDATION_RATE_PER_SECOND {COMBUSTION_SOOT_OXIDATION_RATE_PER_SECOND:?}"
+    )
+    .unwrap();
+    writeln!(
+        out,
         "#define EXPLOSION_EXPANSION_TIME_SECONDS {EXPLOSION_EXPANSION_TIME_SECONDS:?}"
     )
     .unwrap();

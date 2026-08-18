@@ -1830,6 +1830,15 @@ void transportCombustion(
         const float sootSingleScatterAlbedo = 0.08;
         chemistry.z += sootSigmaT;
         optical.rgb += sootSigmaT * vec3(sootSingleScatterAlbedo);
+        float hotSootOxidation = smoothstep(1100.0, 1800.0, chemistry.y)
+            * oxidizer;
+        float sootRetention = exp(
+            -COMBUSTION_SOOT_OXIDATION_RATE_PER_SECOND
+                * hotSootOxidation
+                * dt
+        );
+        chemistry.z *= sootRetention;
+        optical.rgb *= sootRetention;
 
         chemistry.x *= exp(-0.025 * dt);
         // Soot is transported matter, not another emissive time envelope.
