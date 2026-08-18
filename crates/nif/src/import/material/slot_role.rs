@@ -14,6 +14,14 @@
 //! from the cached import ([`crate::import::ImportedMaterial::shader_type`]),
 //! which is why that field exists.
 //!
+//! ## Starfield / FO76 scope
+//!
+//! Starfield and FO76 `BSGeometry` materials deliberately do not enter this
+//! table: their authored texture roles come from the BGSM/BGEM material
+//! records (and Starfield's materialsbeta CDB), not a Skyrim-family
+//! `BSShaderTextureSet`. A zero Starfield hit here is therefore an explicit
+//! format boundary, not an unmeasured routing gap.
+//!
 //! ## The disagreements this resolves
 //!
 //! | slot | importer (was) | overlay (was) | now |
