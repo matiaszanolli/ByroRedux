@@ -176,10 +176,10 @@ layout(set = 0, binding = 13) uniform sampler3D previousEmissionHistory;
 // no source-game identity: per-game particle/material authoring has already
 // converged to GpuFogVolume::profile_params at the import boundary.
 //
-// chemistry = (fuel mass fraction, temperature K, absorption sigma_a/world-unit,
+// chemistry = (fuel mass fraction, temperature K, total extinction sigma_t/world-unit,
 //              visible-radiance calibration at 1850 K)
-// velocity  = (world-space velocity xyz in world-units/second,
-//              scattering sigma_s/world-unit)
+// velocity  = (world-space velocity xyz in world-units/second, reserved zero)
+// optical   = (spectral scattering sigma_s.rgb/world-unit, reserved zero)
 //
 // Current and previous slots are distinct frame-in-flight images, so this
 // shader can semi-Lagrangian backtrace the old field while writing the new
@@ -188,6 +188,8 @@ layout(rgba16f, set = 0, binding = 14) uniform writeonly image3D combustionState
 layout(set = 0, binding = 15) uniform sampler3D previousCombustionState;
 layout(rgba16f, set = 0, binding = 16) uniform writeonly image3D combustionVelocity;
 layout(set = 0, binding = 17) uniform sampler3D previousCombustionVelocity;
+layout(rgba16f, set = 0, binding = 22) uniform writeonly image3D combustionOptical;
+layout(set = 0, binding = 23) uniform sampler3D previousCombustionOptical;
 
 // Coarse radiant moments of the *transported* field, consumed by the host on
 // the next safe reuse of this frame-in-flight slot. This is the canonical
@@ -843,6 +845,7 @@ void applyCombustionSources(
     vec3 segmentEnd,
     inout vec4 chemistry,
     inout vec4 velocity,
+    inout vec4 optical,
     float dt
 ) {
     FogClusterEntry cluster;
@@ -887,19 +890,15 @@ void applyCombustionSources(
         float sourceMask = densityProfile * radialSource * basalSource;
         float sourceStateMask = stateProfile * radialSource * basalSource;
         float authoredSigmaT = max(volume.half_extents_extinction.w, 0.0);
-        float sourceAlbedo = clamp(
-            dot(clamp(volume.albedo_edge.rgb, vec3(0.0), vec3(1.0)), LUMA_REC709),
-            0.0,
-            1.0
-        );
+        vec3 sourceAlbedo = clamp(volume.albedo_edge.rgb, vec3(0.0), vec3(1.0));
 
         if (isLocalProfile(profileKind, FOG_VOLUME_PROFILE_SMOKE)) {
             // Passive smoke supplies aerosol and a mild warm/upward exhaust,
             // but no fuel. `max` models a continuously emitting boundary
             // without making density depend on frame rate.
             float sourceSigmaT = authoredSigmaT * sourceMask;
-            chemistry.z = max(chemistry.z, sourceSigmaT * (1.0 - sourceAlbedo));
-            velocity.w = max(velocity.w, sourceSigmaT * sourceAlbedo);
+            chemistry.z = max(chemistry.z, sourceSigmaT);
+            optical.rgb = max(optical.rgb, sourceSigmaT * sourceAlbedo);
             chemistry.y = max(
                 chemistry.y,
                 mix(AMBIENT_TEMPERATURE_K, 430.0, sourceStateMask)
@@ -934,8 +933,8 @@ void applyCombustionSources(
                 mix(AMBIENT_TEMPERATURE_K, sourceTemperature, reactionStateMask)
             );
             float sourceSigmaT = authoredSigmaT * reactionMask * 0.16;
-            chemistry.z = max(chemistry.z, sourceSigmaT * (1.0 - sourceAlbedo));
-            velocity.w = max(velocity.w, sourceSigmaT * sourceAlbedo);
+            chemistry.z = max(chemistry.z, sourceSigmaT);
+            optical.rgb = max(optical.rgb, sourceSigmaT * sourceAlbedo);
             float sourceRadianceLuma = max(
                 dot(volume.emission_temperature.rgb, LUMA_REC709),
                 0.0
@@ -1015,8 +1014,8 @@ void applyCombustionSources(
         );
         float sourceSigmaT = authoredSigmaT
             * (ignitionMask * 0.10 + smokeSeedMask * 1.15);
-        chemistry.z = max(chemistry.z, sourceSigmaT * (1.0 - sourceAlbedo));
-        velocity.w = max(velocity.w, sourceSigmaT * sourceAlbedo);
+        chemistry.z = max(chemistry.z, sourceSigmaT);
+        optical.rgb = max(optical.rgb, sourceSigmaT * sourceAlbedo);
         float sourceRadianceLuma = max(
             dot(volume.emission_temperature.rgb, LUMA_REC709),
             0.0
@@ -1322,17 +1321,28 @@ vec4 sanitizedVelocity(vec4 velocity) {
     if (speed > maxSpeed) {
         velocity.xyz *= maxSpeed / speed;
     }
-    velocity.w = clamp(velocity.w, 0.0, 0.20);
+    velocity.w = 0.0;
     return velocity;
+}
+
+vec4 sanitizedOptical(vec4 optical) {
+    if (any(isnan(optical)) || any(isinf(optical))) {
+        return vec4(0.0);
+    }
+    optical.rgb = clamp(optical.rgb, vec3(0.0), vec3(0.20));
+    optical.w = 0.0;
+    return optical;
 }
 
 bool samplePreviousTransport(
     vec3 worldPos,
     out vec4 chemistry,
-    out vec4 velocity
+    out vec4 velocity,
+    out vec4 optical
 ) {
     chemistry = vec4(0.0, AMBIENT_TEMPERATURE_K, 0.0, 0.0);
     velocity = vec4(0.0);
+    optical = vec4(0.0);
     if (params.prev_camera_pos.w <= 0.5) {
         return false;
     }
@@ -1342,24 +1352,26 @@ bool samplePreviousTransport(
     }
     chemistry = sanitizedChemistry(texture(previousCombustionState, previousUvw));
     velocity = sanitizedVelocity(texture(previousCombustionVelocity, previousUvw));
+    optical = sanitizedOptical(texture(previousCombustionOptical, previousUvw));
     return true;
 }
 
-bool carriesCombustion(vec4 chemistry, vec4 velocity) {
+bool carriesCombustion(vec4 chemistry, vec4 optical) {
     return chemistry.x > 1.0e-4
         || chemistry.z > 1.0e-6
-        || velocity.w > 1.0e-6
+        || any(greaterThan(optical.rgb, vec3(1.0e-6)))
         || chemistry.w > 1.0e-4
         || chemistry.y > AMBIENT_TEMPERATURE_K + 2.0;
 }
 
-float combustionActivity(vec4 chemistry, vec4 velocity) {
+float combustionActivity(vec4 chemistry, vec4 optical) {
     float temperatureExcess = max(
         (chemistry.y - AMBIENT_TEMPERATURE_K) / AMBIENT_TEMPERATURE_K,
         0.0
     );
+    float spectralScattering = max(optical.r, max(optical.g, optical.b));
     return clamp(
-        chemistry.x + (chemistry.z + velocity.w) * 80.0
+        chemistry.x + max(chemistry.z, spectralScattering) * 80.0
             + temperatureExcess * 0.12,
         0.0,
         1.0
@@ -1516,11 +1528,13 @@ bool incomingVelocityFromNeighbors(
         vec3 candidatePosition = worldPos + offsets[neighborIndex];
         vec4 candidateChemistry;
         vec4 candidateVelocity;
+        vec4 candidateOptical;
         if (!samplePreviousTransport(
                 candidatePosition,
                 candidateChemistry,
-                candidateVelocity)
-            || !carriesCombustion(candidateChemistry, candidateVelocity)) {
+                candidateVelocity,
+                candidateOptical)
+            || !carriesCombustion(candidateChemistry, candidateOptical)) {
             continue;
         }
 
@@ -1544,7 +1558,7 @@ bool incomingVelocityFromNeighbors(
             continue;
         }
 
-        float activity = combustionActivity(candidateChemistry, candidateVelocity);
+        float activity = combustionActivity(candidateChemistry, candidateOptical);
         float score = closingSpeed * (0.25 + activity);
         if (!found || score > bestScore) {
             found = true;
@@ -1568,18 +1582,21 @@ void transportCombustion(
     vec3 neighborStepZ,
     float dt,
     out vec4 chemistry,
-    out vec4 velocity
+    out vec4 velocity,
+    out vec4 optical
 ) {
     vec4 probeChemistry;
     vec4 destinationVelocity;
+    vec4 probeOptical;
     bool hadHistory = samplePreviousTransport(
         worldPos,
         probeChemistry,
-        destinationVelocity
+        destinationVelocity,
+        probeOptical
     );
     if (hadHistory && dt > 0.0) {
         bool destinationVelocityExtended = false;
-        if (combustionActivity(probeChemistry, destinationVelocity) < 0.08) {
+        if (combustionActivity(probeChemistry, probeOptical) < 0.08) {
             vec4 incomingVelocity;
             if (incomingVelocityFromNeighbors(
                     worldPos,
@@ -1594,17 +1611,24 @@ void transportCombustion(
         vec3 midpoint = worldPos - destinationVelocity.xyz * (0.5 * dt);
         vec4 midpointChemistry;
         vec4 midpointVelocity;
+        vec4 midpointOptical;
         if (destinationVelocityExtended
-            || !samplePreviousTransport(midpoint, midpointChemistry, midpointVelocity)) {
+            || !samplePreviousTransport(
+                midpoint,
+                midpointChemistry,
+                midpointVelocity,
+                midpointOptical)) {
             midpointVelocity = destinationVelocity;
         }
         vec3 sourcePosition = worldPos - midpointVelocity.xyz * dt;
         vec4 sourceChemistry;
         vec4 sourceVelocity;
+        vec4 sourceOptical;
         bool sourceInHistory = samplePreviousTransport(
             sourcePosition,
             sourceChemistry,
-            sourceVelocity
+            sourceVelocity,
+            sourceOptical
         );
         // Test the state being pulled into this destination, not the state
         // already living here. A previously empty cell on the far side of a
@@ -1613,17 +1637,20 @@ void transportCombustion(
         // without ever issuing the TLAS query.
         vec3 crossingNormal;
         bool blocked = sourceInHistory
-            && carriesCombustion(sourceChemistry, sourceVelocity)
+            && carriesCombustion(sourceChemistry, sourceOptical)
             && combustionPathBlocked(sourcePosition, worldPos, crossingNormal);
         if (blocked) {
             chemistry = probeChemistry;
             velocity = destinationVelocity;
+            optical = probeOptical;
         } else if (sourceInHistory) {
             chemistry = sourceChemistry;
             velocity = sourceVelocity;
+            optical = sourceOptical;
         } else {
             chemistry = probeChemistry;
             velocity = destinationVelocity;
+            optical = probeOptical;
         }
     } else {
         chemistry = hadHistory
@@ -1632,16 +1659,21 @@ void transportCombustion(
         velocity = hadHistory
             ? destinationVelocity
             : vec4(0.0);
+        optical = hadHistory
+            ? probeOptical
+            : vec4(0.0);
     }
 
     chemistry = sanitizedChemistry(chemistry);
     velocity = sanitizedVelocity(velocity);
+    optical = sanitizedOptical(optical);
     applyCombustionSources(
         worldPos,
         segmentStart,
         segmentEnd,
         chemistry,
         velocity,
+        optical,
         dt
     );
 
@@ -1651,9 +1683,8 @@ void transportCombustion(
             IGNITION_TEMPERATURE_K + 180.0,
             chemistry.y
         );
-        // The transported optical state uses velocity.w for scattering. A
-        // compact mixture fraction supplies the former oxidizer proxy: fresh
-        // air dominates dilute cells, while fuel-rich cores burn sootier.
+        // A compact mixture fraction supplies the oxidizer proxy: fresh air
+        // dominates dilute cells, while fuel-rich cores burn sootier.
         float oxidizer = clamp(1.0 - chemistry.x * 0.18, 0.0, 1.0);
         float reactionRate = 2.4 * chemistry.x * oxidizer * ignition;
         float burnedFuel = min(chemistry.x, reactionRate * dt);
@@ -1669,14 +1700,14 @@ void transportCombustion(
         float reactionHeatFraction = 1.0 - exp(-4.0 * burnedFuel);
         chemistry.y += temperatureDeficit * reactionHeatFraction;
         // Soot yield falls when oxidizer is abundant and rises in a rich,
-        // oxygen-starved flame. Split the produced extinction into absorption
-        // and scattering immediately so the radiative-transfer path consumes
-        // optical coefficients without a later age/material conversion.
+        // oxygen-starved flame. Encode it directly as canonical total
+        // extinction plus spectral scattering, so radiative transfer needs no
+        // later age/material conversion.
         float richYield = mix(0.004, 0.018, 1.0 - oxidizer);
         float sootSigmaT = burnedFuel * richYield;
         const float sootSingleScatterAlbedo = 0.08;
-        chemistry.z += sootSigmaT * (1.0 - sootSingleScatterAlbedo);
-        velocity.w += sootSigmaT * sootSingleScatterAlbedo;
+        chemistry.z += sootSigmaT;
+        optical.rgb += sootSigmaT * vec3(sootSingleScatterAlbedo);
 
         chemistry.x *= exp(-0.025 * dt);
         // Soot is transported matter, not another emissive time envelope.
@@ -1684,7 +1715,7 @@ void transportCombustion(
         // gives a ~15 s half-life instead of erasing an explosion cloud in the
         // first few seconds after its heat has cooled.
         chemistry.z *= exp(-COMBUSTION_AEROSOL_DISSIPATION_PER_SECOND * dt);
-        velocity.w *= exp(-COMBUSTION_AEROSOL_DISSIPATION_PER_SECOND * dt);
+        optical.rgb *= exp(-COMBUSTION_AEROSOL_DISSIPATION_PER_SECOND * dt);
         chemistry.w *= exp(-0.08 * dt);
         chemistry.y = AMBIENT_TEMPERATURE_K
             + (chemistry.y - AMBIENT_TEMPERATURE_K) * exp(-0.42 * dt);
@@ -1697,7 +1728,7 @@ void transportCombustion(
             * 0.58 * WORLD_UNITS_PER_METER;
         velocity.y += buoyantAcceleration * dt;
 
-        float activity = combustionActivity(chemistry, velocity);
+        float activity = combustionActivity(chemistry, optical);
         vec3 metres = worldPos / WORLD_UNITS_PER_METER;
         vec3 turbulentAcceleration = curlField(
             metres * 0.38
@@ -1710,7 +1741,7 @@ void transportCombustion(
         // of a wall. This forward probe handles the complementary source-side
         // boundary condition: remove only the inward normal component of the
         // updated flow and retain tangential slip with mild wall friction.
-        if (carriesCombustion(chemistry, velocity)
+        if (carriesCombustion(chemistry, optical)
             && dot(velocity.xyz, velocity.xyz) > 1.0e-8) {
             vec3 boundaryNormal;
             vec3 predictedPosition = worldPos + velocity.xyz * dt;
@@ -1727,25 +1758,26 @@ void transportCombustion(
 
     chemistry = sanitizedChemistry(chemistry);
     velocity = sanitizedVelocity(velocity);
+    optical = sanitizedOptical(optical);
 }
 
-LocalMedium combustionMedium(vec4 chemistry, vec4 velocity) {
+LocalMedium combustionMedium(vec4 chemistry, vec4 optical) {
     LocalMedium medium = emptyLocalMedium();
     chemistry = sanitizedChemistry(chemistry);
-    velocity = sanitizedVelocity(velocity);
+    optical = sanitizedOptical(optical);
     float fuelVapourSigmaT = chemistry.x * 0.0035;
     const float fuelVapourSingleScatterAlbedo = 0.10;
-    float sigmaA = chemistry.z
-        + fuelVapourSigmaT * (1.0 - fuelVapourSingleScatterAlbedo);
-    float sigmaS = velocity.w
-        + fuelVapourSigmaT * fuelVapourSingleScatterAlbedo;
-    float sigmaT = sigmaA + sigmaS;
+    float sigmaT = chemistry.z + fuelVapourSigmaT;
     if (sigmaT <= 1.0e-7) {
         return medium;
     }
 
+    vec3 sigmaS = optical.rgb
+        + fuelVapourSigmaT * vec3(fuelVapourSingleScatterAlbedo);
+    sigmaS = clamp(sigmaS, vec3(0.0), vec3(sigmaT));
+    vec3 sigmaA = vec3(sigmaT) - sigmaS;
     medium.extinction = sigmaT;
-    medium.scattering = vec3(sigmaS);
+    medium.scattering = sigmaS;
 
     float thermalLuma = chemistry.w
         * blackbodyVisibleRadianceRatio(chemistry.y, 1850.0);
@@ -1903,6 +1935,7 @@ void main() {
     float simulationDt = clamp(params.fog_reference.w, 0.0, 1.0 / 15.0);
     vec4 chemistry;
     vec4 combustion_velocity;
+    vec4 combustion_optical;
     transportCombustion(
         field_world_pos,
         field_segment_start,
@@ -1912,7 +1945,8 @@ void main() {
         neighbor_step_z,
         simulationDt,
         chemistry,
-        combustion_velocity
+        combustion_velocity,
+        combustion_optical
     );
     imageStore(combustionState, coord, chemistry);
     imageStore(
@@ -1920,6 +1954,7 @@ void main() {
         coord,
         combustion_velocity
     );
+    imageStore(combustionOptical, coord, combustion_optical);
 
     // View direction points FROM the sample point TOWARD the camera.
     vec3 view_dir = normalize(params.camera_pos.xyz - world_pos);
@@ -1948,7 +1983,7 @@ void main() {
     LocalMedium local_medium = sampleLocalMedium(field_world_pos);
     LocalMedium transported_combustion = combustionMedium(
         chemistry,
-        combustion_velocity
+        combustion_optical
     );
     accumulateCombustionLightMoment(
         coord,
