@@ -457,6 +457,20 @@ fn dispatch_is_noop_with_no_registered_fragments() {
         world.resource::<QuestObjectiveState>().get(Q, 1),
         Default::default()
     );
+
+    // The empty-fragment tick must not consume the journal transition. Once
+    // the table is populated, the same transition is still dispatched.
+    world.resource_mut::<QuestStageFragments>().insert(
+        Q,
+        10,
+        vec![Effect::SetObjectiveCompleted {
+            quest: QuestRef::SelfRef,
+            objective: 1,
+            completed: true,
+        }],
+    );
+    quest_fragment_dispatch_system(&world);
+    assert!(world.resource::<QuestObjectiveState>().get(Q, 1).completed);
 }
 
 #[test]

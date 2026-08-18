@@ -1532,6 +1532,12 @@ pub fn quest_fragment_dispatch_system(world: &World) {
     // This avoids a read→write nested resource-lock order and lets the paired
     // mutable resources use the ECS's TypeId-sorted deadlock-safe API.
     let frags = world.resource::<QuestStageFragments>().clone();
+    // Do not claim the destructive quest-event journal when there is no
+    // fragment table to consume it. The next install/population pass must
+    // still be able to dispatch these transitions (#3012).
+    if frags.is_empty() {
+        return;
+    }
 
     let mut chained: Vec<QuestStageAdvanced> = Vec::new();
     let mut deferred = DeferredFragmentEffects::new(world);
@@ -1572,7 +1578,7 @@ pub fn quest_fragment_dispatch_system(world: &World) {
             queue.push((event.quest, event.new_stage));
         }
 
-        if queue.is_empty() || frags.is_empty() {
+        if queue.is_empty() {
             return;
         }
 
