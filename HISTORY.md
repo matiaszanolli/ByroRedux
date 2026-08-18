@@ -24,6 +24,100 @@ Commits hold that record.
 
 ---
 
+## Session 69 — a transported combustion solver, and the nine boundary fixes that cleared the way  (2026-08-17 → 2026-08-18, `e3986e38..348f4cd0`, 34 commits)
+
+Session 68 gave `GpuFogVolume` three fog profiles and gave explosions a
+per-entity clock, but left fire *lighting* in its own opt-in module behind
+`BYRO_FIRE_LIGHTS`, deriving a reach that the workspace's one red test had
+been flagging as oversized for five sessions running. This session opened by
+draining the nine subsystem findings the 08-16 sweep had filed against
+non-renderer code, then spent its remaining twenty-five commits turning the
+fog slice into an actual transported combustion solver — advection around
+solid geometry, reaction chemistry, soot formation and oxidation,
+self-shadowing, overpressure — with every rate and threshold hoisted into one
+canonical module rather than tuned per effect. The `fire_lights` module did
+not survive that arc, and neither did the red test: surface illumination from
+fire is now reduced out of the transported field itself, inside the renderer,
+and it is on by default.
+
+- **Boundary fixes, nine subsystems (`b8c4e6af` → `b434e4c0`).** PHYSAL
+  hardened its collider conversion — parry panics rather than returning `None`
+  below its documented three-point convex-hull precondition, so the boundary
+  now rejects the knowable bad input before entering the library (#3066, plus
+  #3064 / #3065 / #2868 on ragdoll sizing). The marker-bearing-NIF gate was
+  wrong in kind, not just in game-era coverage: BSXFlags bit 5 means *marker
+  children are present*, never that the whole file is a marker, so the
+  whole-file skip is gone and the shared walker culls children individually
+  (#3036, #3102). Body-mesh selection learned that `characters\_male` is a
+  historical directory name rather than a gender discriminator, and that FO3 /
+  FNV child races select `child*upperbody` via RACE DATA flag `0x04` (#3037,
+  archive listings re-verified against Oblivion, FO3 and FNV). The player now
+  seeds from base NPC_ `0x00000007` rather than the placed reference (#3099).
+  Terrain LOD moved onto legacy texture quads through the EXAL boundary
+  (#2371, #2452, #3100).
+- **Per-game texture slots stop at the NIF import boundary (`86c41022`).**
+  Skyrim emission gated on `SLSF2_Glow_Map`; FO4 palette/specular and FO76
+  specular routed into canonical material roles; `BSShaderType155` normalised
+  at import. The same game-aware context now covers REFR texture overrides,
+  and unresolved authored slots are counted per game and per slot instead of
+  vanishing (#2579, #2694, #2713, #2997, #2998, #3068, #3085) — a NIFAL
+  boundary tightening, not a shader change.
+- **Embedded FormIDs remap by load order (`7fd85326`).** VMAD, REFR and XPRI
+  references are promoted into global load-order space, and regular/light slot
+  exhaustion is now rejected up front rather than being allowed to manufacture
+  FormID aliases (#2698, #2906).
+- **CHARAL selects one policy at the parser boundary (`b434e4c0`).** Authored
+  AVIF identities are normalised and damageable NPC health derives from the
+  chosen policy; stored-stat behaviour is preserved for the later Creation
+  games. Saves carrying the old Skyrim enum-space Health key are invalidated
+  rather than silently reinterpreted (#1663).
+- **Combustion and lighting coupled (`0ce1e6e6`, `2325c1de`).** First the two
+  light producers were made to share one encoder — `gpu_light_from_emitter` in
+  `render/lights.rs`, taking physical metres, scene-linear radiant intensity, a
+  resolved attenuation model and an explicit visibility policy — so a
+  procedural emitter could not grow a second, subtly different light contract
+  beside authored `LIGH` records. Then `fire_lights.rs` was deleted outright:
+  surface illumination is no longer derived from the analytic primitive but
+  *reduced out of the transported field*, in
+  `Volumetrics::append_combustion_surface_lights`, keeping the same
+  authored-LIGH suppression so derived lights stay additive only where vanilla
+  placed nothing. `FogSource` demotes to diagnostic provenance and the
+  canonical profile is selected once at the authoring-to-ECS boundary
+  (`d560427c`), giving the solver a game-independent input contract.
+- **The transported solver (`2325c1de` → `034ccaa3`).** Combustion advects
+  around solid geometry (`715b9230`), separates the flame inlet from the
+  reaction zone (`74f949d4`), unifies the fire/explosion regimes under a
+  bounded reaction heat (`b3ee5192`), self-shadows (`9e1ed0b5`), carries
+  spectral scattering (`e56d7654`) and preserves optical properties through
+  transport (`771e322d`). Explosion overpressure is transported as its own
+  decaying field (`2155cc91`) and vorticity is restored downstream
+  (`034ccaa3`). Dense slabs integrate analytically so smoke converges instead
+  of brightening without bound, with thermal source provenance tracked in an
+  R32F history sidecar so fire and explosion trails share one short history
+  (`c98436b7`, fixes #2241 and #2809).
+- **Soot chemistry and canonical constants (`9fb51301` → `1393896c`).**
+  Fuel-rich soot formation, oxidation in hot lean regions, and dilution of the
+  expanding volume, with the yields, rates and temperatures hoisted into
+  `crates/core/src/combustion.rs` and mirrored into GLSL through the generated
+  shader-constant path (`20839b28`, `1393896c`) rather than duplicated per
+  call site. Explosion impulse is decoupled from the authored effect lifetime
+  (`f20385ee`) — lifetime governs cooling-smoke persistence, radial expansion
+  is an impulse.
+- **Explosion afterlife (`4a35819e` → `348f4cd0`).** Expired explosions linger
+  as smoke inside one canonical window rather than popping out, with a seeded
+  transported shell, retained cooled-aerosol lift, and a test pinning the
+  linger window so the tuning cannot drift silently.
+
+Net: tests 5263 → 5303 (+40) and, for the first time in five sessions, **zero
+failing** — the `fire_lights` derived-reach canary was deleted along with the
+module it guarded, not fixed. Rust `src/` LOC +3 652; total +3 891; source
+files 932 → 933. Workspace members unchanged at 27; open issue dirs unchanged
+at 2963; 22 distinct issues referenced. No milestone opened or closed.
+`volumetrics_inject.comp` grew 1009 → 2625 lines (SPIR-V 64 776 → 156 004 B),
+which pushes bench-of-record `34074b93` to 84 commits stale and makes
+R6a-stale-20 the most urgent it has been — a compute shader that grew 2.4×
+against an unmeasured baseline.
+
 ## Session 68 — a thirteen-report sweep, a native UI for the playable slice, and gates that stop lying  (2026-08-15 → 2026-08-17, `83655bdf..23068af0`, 26 commits)
 
 Session 67 closed on the observation that the four owner-audits added at the end
