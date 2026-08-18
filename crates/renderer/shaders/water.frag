@@ -7,12 +7,18 @@
 #extension GL_EXT_buffer_reference : require
 #extension GL_ARB_gpu_shader_int64 : require
 
+// Water has storage-image side effects. Force depth/stencil testing before
+// fragment execution so fully occluded water neither runs its ray-query tree
+// nor deposits caustics through the visible foreground surface.
+layout(early_fragment_tests) in;
+
 // Shared shader-side constants (CAUSTIC_FIXED_SCALE, MAT_FLAG_* bits,
 // INSTANCE_FLAG_* bits, etc.) — generated from
 // `crates/renderer/src/shader_constants_data.rs` by build.rs so the
 // Rust + GLSL sides stay byte-equal. Required for #1256's
 // `imageAtomicAdd` fixed-point scale match against caustic_splat.comp.
 #include "include/shader_constants.glsl"
+#include "include/caustic_kernel.glsl"
 
 // ── Water surface fragment shader ─────────────────────────────────────
 //
@@ -830,10 +836,29 @@ void main() {
                                 * NdotSun * travelFall;
                             float scale = CAUSTIC_FIXED_SCALE;
                             float clamp_max = float(0xFFFFFFFFu) / scale;
-                            uint fixed_val =
-                                uint(clamp(contrib * scale, 0.0, clamp_max));
-                            if (fixed_val != 0u) {
-                                imageAtomicAdd(waterCausticAccum, pixel, fixed_val);
+                            // Match the glass writer's normalised 5x5
+                            // footprint. Water intentionally starts from a
+                            // clear accumulator every frame: its perturbed
+                            // normals animate even while the camera is parked,
+                            // so the glass path's static-scene EMA would leave
+                            // moving, misregistered trails here.
+                            for (int ky = -2; ky <= 2; ++ky) {
+                                for (int kx = -2; kx <= 2; ++kx) {
+                                    ivec2 q = pixel + ivec2(kx, ky);
+                                    if (any(lessThan(q, ivec2(0)))
+                                        || any(greaterThanEqual(q, causticSize))) {
+                                        continue;
+                                    }
+                                    float depositF = clamp(
+                                        contrib * causticGauss5Weight(kx, ky) * scale,
+                                        0.0,
+                                        clamp_max
+                                    );
+                                    uint fixedVal = uint(depositF);
+                                    if (fixedVal != 0u) {
+                                        imageAtomicAdd(waterCausticAccum, q, fixedVal);
+                                    }
+                                }
                             }
                         }
                     }

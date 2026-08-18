@@ -975,13 +975,14 @@ mod fsr_frame_parameter_tests {
 /// Return `true` when `cmd` represents a real refractive surface that the
 /// caustic compute pass (`caustic_splat.comp`) should splat from. The CPU
 /// gate produces `INSTANCE_FLAG_CAUSTIC_SOURCE` on the `GpuInstance.flags`
-/// word; the compute pass burns `max_lights` TLAS ray queries per flagged
-/// pixel, so the gate has to stay tight.
+/// word. The mesh-ID attachment preserves a live instance index only for
+/// alpha-blended pixels, and the compute pass spends its bounded light/ray
+/// budget per flagged pixel, so this gate has to stay tight.
 ///
 /// Accepted refractive signals:
 ///   * `material_kind == MATERIAL_KIND_GLASS` — engine-classified glass
-///     from `render::build_render_data` (alpha-blend + low metal + low
-///     roughness + not a decal). See #515 / #706.
+///     from `render::build_render_data` (low metal + low roughness + not a
+///     decal). See #515 / #706.
 ///   * Skyrim+ `MultiLayerParallax` (kind 11) with a non-zero inner-layer
 ///     refraction scale — real two-layer refractive surface.
 ///
@@ -991,7 +992,7 @@ mod fsr_frame_parameter_tests {
 /// (`is_decal` excluded by the glass classifier), `BSEffectShaderProperty`
 /// FX cards (kind 101 — MATERIAL_KIND_EFFECT_SHADER).
 fn is_caustic_source(cmd: &DrawCommand) -> bool {
-    is_refractive_glass(cmd)
+    cmd.alpha_blend && is_refractive_glass(cmd)
 }
 
 /// Whether a draw is a refractive glass-family surface.
@@ -4217,6 +4218,17 @@ mod is_caustic_source_tests {
         // Skyrim+ BSLightingShaderProperty MultiLayerParallax variant
         // with non-zero refraction scale — real two-layer refraction.
         assert!(is_caustic_source(&cmd(11, 0.3)));
+    }
+
+    #[test]
+    fn opaque_refractive_materials_are_not_caustic_sources() {
+        // Opaque mesh-ID pixels carry a stable surface ID rather than the
+        // live instance index caustic_splat.comp requires. Neither material
+        // classification alone may opt such a draw into the compute pass.
+        for mut draw in [cmd(MATERIAL_KIND_GLASS, 0.0), cmd(11, 0.3)] {
+            draw.alpha_blend = false;
+            assert!(!is_caustic_source(&draw));
+        }
     }
 
     #[test]

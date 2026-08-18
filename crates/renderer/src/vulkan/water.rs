@@ -1137,6 +1137,21 @@ mod absorption_ramp_tests {
     fn the_shader_still_computes_what_these_tests_model() {
         let src = include_str!("../../shaders/water.frag");
 
+        // #2782 — storage-image deposits must happen only after the depth
+        // test accepts the water fragment.
+        assert!(
+            src.contains("layout(early_fragment_tests) in;"),
+            "water.frag must request early fragment tests before its storage-image writes"
+        );
+
+        // #2789 — both post-TAA caustic writers use one normalized spatial
+        // footprint; water must not regress to a single-pixel atomic.
+        assert!(
+            src.contains("#include \"include/caustic_kernel.glsl\"")
+                && src.contains("causticGauss5Weight(kx, ky)"),
+            "water caustics must use the shared 5x5 Gaussian footprint"
+        );
+
         // #2785 — the ramp, not `hitDist / fog_far`.
         assert!(
             src.contains("float span = max(fogFar - fogNear, 1.0);")

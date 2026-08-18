@@ -1415,6 +1415,39 @@ mod tests {
         }
     }
 
+    /// #2775 — an occluded light must consume the per-pixel budget before
+    /// its visibility ray can `continue`; otherwise a dense list of blocked
+    /// lamps can traverse all `lightCount` entries despite `max_lights`.
+    #[test]
+    fn visibility_traversals_are_charged_before_occlusion_can_continue() {
+        let shader = include_str!("../../shaders/caustic_splat.comp");
+        let charged = shader.find("budgetedLights++;").expect("budget charge");
+        let visibility = shader
+            .find("bool needsVisibility = visibilityMaskNeedsTrace")
+            .expect("visibility block");
+        let occluded_continue = shader[visibility..]
+            .find("continue;")
+            .map(|offset| visibility + offset)
+            .expect("occluded-light continue");
+
+        assert!(charged < visibility && charged < occluded_continue);
+        assert!(
+            shader.contains("budgetedLights < maxLights"),
+            "the charged counter must remain the loop's max_lights bound"
+        );
+        assert!(
+            !shader.contains("processedLights"),
+            "the old accepted-light counter lets occluded visibility rays run for free"
+        );
+    }
+
+    #[test]
+    fn glass_caustics_use_the_shared_gaussian_footprint() {
+        let shader = include_str!("../../shaders/caustic_splat.comp");
+        assert!(shader.contains("#include \"include/caustic_kernel.glsl\""));
+        assert!(shader.contains("causticGauss5Weight(kx, ky)"));
+    }
+
     /// #2239 — under the parked-camera EMA (`pc.decayFactor > 0`), a dim
     /// caustic's per-tap deposit can round below one fixed-point ULP EVERY
     /// frame; the plain `uint()` floor then deposits exactly 0 forever while
