@@ -216,7 +216,7 @@ impl CombustionRegime {
     pub const EXPLOSION: Self = Self {
         temperature_k: 2800.0,
         reference_radiance: 24.0,
-        single_scatter_albedo: 0.12,
+        single_scatter_albedo: 0.26,
         ..Self::FLAME
     };
 
@@ -262,7 +262,7 @@ mod tests {
         assert_eq!(CombustionRegime::FLAME.single_scatter_albedo(), [0.25; 3]);
         assert_eq!(
             CombustionRegime::EXPLOSION.single_scatter_albedo(),
-            [0.12; 3]
+            [0.26; 3]
         );
         assert_eq!(ADIABATIC_FLAME_TEMPERATURE_K, 2350.0);
         assert!(REACTION_RATE_PER_SECOND > 0.0);
