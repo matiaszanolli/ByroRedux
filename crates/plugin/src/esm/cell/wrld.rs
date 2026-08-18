@@ -507,14 +507,27 @@ pub(crate) fn parse_wrld_children(
                     navmeshes: Vec::new(),
                 };
                 if force_persistent {
-                    *persistent_cell = Some(cell);
-                    current_cell = Some(None);
+                    if persistent_cell.is_none() {
+                        *persistent_cell = Some(cell);
+                        current_cell = Some(None);
+                    } else {
+                        log::warn!(
+                            "Skipping duplicate structurally persistent exterior CELL {:08X}",
+                            header.form_id,
+                        );
+                        current_cell = None;
+                    }
                 } else if let Some(g) = grid {
                     exterior_cells.insert(g, cell);
                     current_cell = Some(Some(g));
                 } else {
-                    *persistent_cell = Some(cell);
-                    current_cell = Some(None);
+                    log::warn!(
+                        "Skipping nested exterior CELL {:08X} without XCLC; \
+                         only the first CELL structurally owned by the type-1 \
+                         world group may be persistent",
+                        header.form_id,
+                    );
+                    current_cell = None;
                 }
             } else {
                 reader.skip_record(&header);

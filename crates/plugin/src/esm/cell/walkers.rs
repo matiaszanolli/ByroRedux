@@ -113,7 +113,7 @@ pub(crate) fn parse_cell_group(
     game: GameKind,
 ) -> Result<()> {
     // Track the last parsed interior cell so we can attach children groups to it.
-    let mut current_cell: Option<(u32, String)> = None;
+    let mut current_cell: Option<String> = None;
 
     while reader.position() < end && reader.remaining() > 0 {
         if reader.is_group() {
@@ -127,13 +127,12 @@ pub(crate) fn parse_cell_group(
                 }
                 // Cell children groups (6=temporary, 8=persistent, 9=visible distant).
                 6 | 8 | 9 => {
-                    if let Some((_, ref editor_id)) = current_cell {
-                        let key = editor_id.to_ascii_lowercase();
+                    if let Some(ref key) = current_cell {
                         let mut refs = Vec::new();
                         let mut _land = None; // Interior cells don't have LAND records
                         let mut navmeshes = Vec::new();
                         parse_refr_group(reader, sub_end, &mut refs, &mut _land, &mut navmeshes)?;
-                        if let Some(cell) = cells.get_mut(&key) {
+                        if let Some(cell) = cells.get_mut(key) {
                             cell.references.extend(refs);
                             cell.navmeshes.extend(navmeshes);
                         }
@@ -551,18 +550,19 @@ pub(crate) fn parse_cell_group(
                     }
                 }
 
-                if is_interior && !editor_id.is_empty() {
-                    let key = editor_id.to_ascii_lowercase();
+                if is_interior {
+                    let canonical_id = canonical_interior_cell_id(header.form_id, &editor_id);
+                    let key = canonical_id.to_ascii_lowercase();
                     let ownership = ownership_owner.map(|owner| CellOwnership {
                         owner_form_id: owner,
                         faction_rank: ownership_rank,
                         global_var_form_id: ownership_global,
                     });
                     cells.insert(
-                        key,
+                        key.clone(),
                         CellData {
                             form_id: header.form_id,
-                            editor_id: editor_id.clone(),
+                            editor_id: canonical_id,
                             display_name: display_name.clone(),
                             references: Vec::new(),
                             is_interior: true,
@@ -587,7 +587,7 @@ pub(crate) fn parse_cell_group(
                             navmeshes: Vec::new(),
                         },
                     );
-                    current_cell = Some((header.form_id, editor_id));
+                    current_cell = Some(key);
                 } else {
                     current_cell = None;
                 }

@@ -67,6 +67,73 @@ fn parse_cell_xclw_populates_water_height() {
     assert!(cell.water_height_is_explicit);
 }
 
+/// #2911 — 231 Fallout4.esm interiors omit EDID. They still need a stable
+/// lookup identity and, critically, their following child GRUP must remain
+/// attached so its REFR/ACHR/NAVM records are not discarded.
+#[test]
+fn parse_interior_without_edid_uses_form_id_identity_and_keeps_children() {
+    let cell_form_id: u32 = 0x00AB_CDEF;
+    let actor_form_id: u32 = 0x0012_3456;
+
+    let mut cell_subs = Vec::new();
+    cell_subs.extend_from_slice(b"DATA");
+    cell_subs.extend_from_slice(&1u16.to_le_bytes());
+    cell_subs.push(0x01); // is_interior; deliberately no EDID
+
+    let mut cell = Vec::new();
+    cell.extend_from_slice(b"CELL");
+    cell.extend_from_slice(&(cell_subs.len() as u32).to_le_bytes());
+    cell.extend_from_slice(&0u32.to_le_bytes());
+    cell.extend_from_slice(&cell_form_id.to_le_bytes());
+    cell.extend_from_slice(&[0u8; 8]);
+    cell.extend_from_slice(&cell_subs);
+
+    let mut actor_subs = Vec::new();
+    actor_subs.extend_from_slice(b"NAME");
+    actor_subs.extend_from_slice(&4u16.to_le_bytes());
+    actor_subs.extend_from_slice(&0x0000_0007u32.to_le_bytes());
+    actor_subs.extend_from_slice(b"DATA");
+    actor_subs.extend_from_slice(&24u16.to_le_bytes());
+    actor_subs.extend_from_slice(&[0u8; 24]);
+    let mut actor = Vec::new();
+    actor.extend_from_slice(b"ACHR");
+    actor.extend_from_slice(&(actor_subs.len() as u32).to_le_bytes());
+    actor.extend_from_slice(&0u32.to_le_bytes());
+    actor.extend_from_slice(&actor_form_id.to_le_bytes());
+    actor.extend_from_slice(&[0u8; 8]);
+    actor.extend_from_slice(&actor_subs);
+
+    let mut child_group = Vec::new();
+    child_group.extend_from_slice(b"GRUP");
+    child_group.extend_from_slice(&((24 + actor.len()) as u32).to_le_bytes());
+    child_group.extend_from_slice(&cell_form_id.to_le_bytes());
+    child_group.extend_from_slice(&8u32.to_le_bytes());
+    child_group.extend_from_slice(&[0u8; 8]);
+    child_group.extend_from_slice(&actor);
+    cell.extend_from_slice(&child_group);
+
+    let mut reader = super::super::super::reader::EsmReader::with_variant(
+        &cell,
+        super::super::super::reader::EsmVariant::Tes5Plus,
+    );
+    let mut cells = HashMap::new();
+    parse_cell_group(
+        &mut reader,
+        cell.len(),
+        &mut cells,
+        crate::esm::reader::GameKind::Fallout4,
+    )
+    .unwrap();
+
+    let parsed = cells
+        .get("cell_00abcdef")
+        .expect("FormID fallback must be a stable lowercase map key");
+    assert_eq!(parsed.editor_id, "cell_00ABCDEF");
+    assert_eq!(parsed.form_id, cell_form_id);
+    assert_eq!(parsed.references.len(), 1);
+    assert_eq!(parsed.references[0].form_id, actor_form_id);
+}
+
 /// Regression: #970 / OBL-D3-NEW-06 — Oblivion CELL RCLR
 /// (3-byte RGB regional tint) was silently dropped by the walker;
 /// editor-authored cell-level colour overrides never surfaced to

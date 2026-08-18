@@ -951,7 +951,10 @@ impl WorldspaceRecord {
 /// Result of parsing an ESM file for cell loading.
 #[derive(Debug, Default)]
 pub struct EsmCellIndex {
-    /// Interior cells, keyed by editor ID (lowercase).
+    /// Interior cells, keyed by canonical lookup ID (lowercase). Authored
+    /// EditorIDs remain the human-facing key; cells without EDID use the
+    /// stable `cell_<FORMID>` identity produced by
+    /// [`canonical_interior_cell_id`].
     pub cells: HashMap<String, CellData>,
     /// Exterior cells, keyed by (worldspace_name_lowercase, (grid_x, grid_y)).
     pub exterior_cells: HashMap<String, HashMap<(i32, i32), CellData>>,
@@ -1084,6 +1087,112 @@ fn merge_cell_references(base: &CellData, over: &mut CellData) {
     merge_placed_references(&base.references, &mut over.references);
 }
 
+/// Canonical human/CLI identity for an interior CELL. FO4 legitimately ships
+/// interiors without EDID, so FormID is the stable fallback rather than a
+/// reason to discard the record and its child hierarchy.
+pub(crate) fn canonical_interior_cell_id(form_id: u32, editor_id: &str) -> String {
+    if editor_id.is_empty() {
+        format!("cell_{form_id:08X}")
+    } else {
+        editor_id.to_string()
+    }
+}
+
+fn is_synthetic_interior_cell_id(form_id: u32, editor_id: &str) -> bool {
+    editor_id.eq_ignore_ascii_case(&canonical_interior_cell_id(form_id, ""))
+}
+
+fn merge_navmeshes(
+    base: &[crate::esm::records::NavmRecord],
+    over: &mut Vec<crate::esm::records::NavmRecord>,
+) {
+    let mut merged = base.to_vec();
+    let mut by_form: HashMap<u32, usize> = merged
+        .iter()
+        .enumerate()
+        .filter(|(_, navm)| navm.form_id != 0)
+        .map(|(index, navm)| (navm.form_id, index))
+        .collect();
+    for over_navm in over.drain(..) {
+        if over_navm.form_id != 0 {
+            if let Some(&index) = by_form.get(&over_navm.form_id) {
+                merged[index] = over_navm;
+                continue;
+            }
+            by_form.insert(over_navm.form_id, merged.len());
+        }
+        merged.push(over_navm);
+    }
+    *over = merged;
+}
+
+/// Apply Bethesda's partial-CELL override contract at the parser boundary.
+/// A child plugin only re-emits fields and child records it changes; absent
+/// payloads inherit from the base instead of erasing terrain, navmeshes,
+/// precombines, lighting, or other canonical cell state.
+fn merge_cell_override(base: &CellData, over: &mut CellData) {
+    if is_synthetic_interior_cell_id(over.form_id, &over.editor_id) && !base.editor_id.is_empty() {
+        over.editor_id.clone_from(&base.editor_id);
+    }
+    if over.display_name.is_none() {
+        over.display_name.clone_from(&base.display_name);
+    }
+    merge_cell_references(base, over);
+    if over.grid.is_none() {
+        over.grid = base.grid;
+    }
+    if over.lighting.is_none() {
+        over.lighting.clone_from(&base.lighting);
+    }
+    if over.landscape.is_none() {
+        over.landscape.clone_from(&base.landscape);
+    }
+    if !over.water_height_is_explicit {
+        over.water_height = base.water_height;
+        over.water_height_is_explicit = base.water_height_is_explicit;
+    }
+    if over.image_space_form.is_none() {
+        over.image_space_form = base.image_space_form;
+    }
+    if over.water_type_form.is_none() {
+        over.water_type_form = base.water_type_form;
+    }
+    if over.acoustic_space_form.is_none() {
+        over.acoustic_space_form = base.acoustic_space_form;
+    }
+    if over.music_type_form.is_none() {
+        over.music_type_form = base.music_type_form;
+    }
+    if over.music_type_enum.is_none() {
+        over.music_type_enum = base.music_type_enum;
+    }
+    if over.climate_override.is_none() {
+        over.climate_override = base.climate_override;
+    }
+    if over.location_form.is_none() {
+        over.location_form = base.location_form;
+    }
+    if over.regions.is_empty() {
+        over.regions.clone_from(&base.regions);
+    }
+    if over.lighting_template_form.is_none() {
+        over.lighting_template_form = base.lighting_template_form;
+    }
+    if over.ownership.is_none() {
+        over.ownership.clone_from(&base.ownership);
+    }
+    if over.regional_color_override.is_none() {
+        over.regional_color_override = base.regional_color_override;
+    }
+    if over.precombined_mesh_hashes.is_empty() {
+        over.precombined_mesh_hashes
+            .clone_from(&base.precombined_mesh_hashes);
+    }
+    over.absorbed_refs
+        .extend(base.absorbed_refs.iter().copied());
+    merge_navmeshes(&base.navmeshes, &mut over.navmeshes);
+}
+
 impl EsmCellIndex {
     /// Merge `other` into `self` with last-write-wins semantics on
     /// every map. Mirrors `EsmIndex::merge_from`'s contract — the
@@ -1094,33 +1203,48 @@ impl EsmCellIndex {
     /// (`HashMap<String, HashMap<(i32,i32), _>>`) need slightly
     /// different treatment than the flat record maps:
     ///
-    /// * A DLC override cell wins the base cell's CELL-level fields
-    ///   (lighting, water, extended sub-records) but its `references` are
-    ///   **merged per-REFR by FormID**, not whole-value replaced — a
-    ///   Bethesda override is a partial record that re-emits only the REFRs
-    ///   it adds/changes, so replacing the whole vec dropped every base REFR
-    ///   the DLC didn't re-emit (Dawnguard's `kagrenzel01` override carries
-    ///   0 REFRs over a 1017-REFR base — the whole cell went empty). See
-    ///   [`merge_cell_references`] and #1546.
+    /// * A DLC override cell wins with fields it actually authors; absent
+    ///   CELL payloads inherit from the base. Child collections are merged
+    ///   by their stable identities. In particular, `references` merge per
+    ///   REFR FormID rather than being whole-value replaced — Dawnguard's
+    ///   `kagrenzel01` override carries 0 REFRs over a 1017-REFR base, and
+    ///   replacing the vector made the whole cell empty. See
+    ///   [`merge_cell_override`], #1546, and #2910.
     /// * Exterior cells merge per-worldspace so a DLC adding a new
     ///   worldspace doesn't stomp the base game's exterior table.
-    ///   Within a shared worldspace, per-(x, y) overrides apply (with the
-    ///   same per-REFR merge as interiors).
+    ///   Within a shared worldspace, per-(x, y) overrides apply through the
+    ///   same partial-CELL merge as interiors.
     ///
     /// See M46.0 / #561.
     pub fn merge_from(&mut self, other: EsmCellIndex) {
+        let mut interior_keys_by_form: HashMap<u32, String> = self
+            .cells
+            .iter()
+            .map(|(key, cell)| (cell.form_id, key.clone()))
+            .collect();
         for (key, mut over_cell) in other.cells {
-            if let Some(base) = self.cells.get(&key) {
-                merge_cell_references(base, &mut over_cell);
+            let previous_key = interior_keys_by_form.get(&over_cell.form_id).cloned();
+            let base = previous_key
+                .as_ref()
+                .and_then(|existing_key| self.cells.remove(existing_key));
+            if let Some(base) = &base {
+                merge_cell_override(base, &mut over_cell);
             }
-            self.cells.insert(key, over_cell);
+            let insert_key =
+                if is_synthetic_interior_cell_id(over_cell.form_id, &over_cell.editor_id) {
+                    previous_key.unwrap_or(key)
+                } else {
+                    over_cell.editor_id.to_ascii_lowercase()
+                };
+            interior_keys_by_form.insert(over_cell.form_id, insert_key.clone());
+            self.cells.insert(insert_key, over_cell);
         }
 
         for (worldspace, grids) in other.exterior_cells {
             let entry = self.exterior_cells.entry(worldspace).or_default();
             for (coord, mut over_cell) in grids {
                 if let Some(base) = entry.get(&coord) {
-                    merge_cell_references(base, &mut over_cell);
+                    merge_cell_override(base, &mut over_cell);
                 }
                 entry.insert(coord, over_cell);
             }
@@ -1128,7 +1252,7 @@ impl EsmCellIndex {
 
         for (worldspace, mut over_cell) in other.worldspace_persistent_cells {
             if let Some(base) = self.worldspace_persistent_cells.get(&worldspace) {
-                merge_cell_references(base, &mut over_cell);
+                merge_cell_override(base, &mut over_cell);
             }
             self.worldspace_persistent_cells
                 .insert(worldspace, over_cell);

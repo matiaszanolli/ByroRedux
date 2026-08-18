@@ -332,6 +332,109 @@ fn merge_from_worldspace_persistent_cell_merges_refs_by_form_id() {
     assert_eq!(refs.get(&0x102), Some(&0xccc));
 }
 
+/// #2910 — a partial exterior CELL override inherits every child payload it
+/// omits. Dawnguard omits LAND on 218 Skyrim tiles; replacing the whole cell
+/// produced literal holes in the world. NAVM and FO4 precombine metadata use
+/// the same partial-record contract.
+#[test]
+fn merge_from_partial_exterior_override_preserves_authored_payloads() {
+    let mut base = make_interior_cell(0x0001_C000, "Tamriel05");
+    base.is_interior = false;
+    base.grid = Some((5, 7));
+    base.display_name = Some("Base tile".into());
+    base.landscape = Some(LandscapeData {
+        heights: vec![42.0],
+        normals: None,
+        vertex_colors: None,
+        quadrants: std::array::from_fn(|_| TerrainQuadrant::default()),
+    });
+    base.navmeshes = vec![crate::esm::records::NavmRecord {
+        form_id: 0x100,
+        version: 1,
+        ..Default::default()
+    }];
+    base.precombined_mesh_hashes = vec![0xDEAD_BEEF];
+    base.absorbed_refs.insert(0x200);
+
+    let mut master = EsmCellIndex::default();
+    master
+        .exterior_cells
+        .entry("tamriel".into())
+        .or_default()
+        .insert((5, 7), base);
+
+    let mut over = make_interior_cell(0x0001_C000, "Tamriel05");
+    over.is_interior = false;
+    over.grid = Some((5, 7));
+    over.navmeshes.push(crate::esm::records::NavmRecord {
+        form_id: 0x101,
+        version: 2,
+        ..Default::default()
+    });
+    over.absorbed_refs.insert(0x201);
+    let mut child = EsmCellIndex::default();
+    child
+        .exterior_cells
+        .entry("tamriel".into())
+        .or_default()
+        .insert((5, 7), over);
+
+    master.merge_from(child);
+    let merged = &master.exterior_cells["tamriel"][&(5, 7)];
+    assert_eq!(merged.display_name.as_deref(), Some("Base tile"));
+    assert_eq!(
+        merged
+            .landscape
+            .as_ref()
+            .map(|land| land.heights.as_slice()),
+        Some([42.0].as_slice()),
+        "an override without LAND must inherit the base terrain",
+    );
+    assert_eq!(
+        merged
+            .navmeshes
+            .iter()
+            .map(|navm| navm.form_id)
+            .collect::<Vec<_>>(),
+        vec![0x100, 0x101],
+    );
+    assert_eq!(merged.precombined_mesh_hashes, vec![0xDEAD_BEEF]);
+    assert_eq!(merged.absorbed_refs, [0x200, 0x201].into_iter().collect());
+}
+
+/// #2911 — CELL identity is the FormID, while EDID is an optional alias. An
+/// empty-EDID DLC override must merge into the named base cell rather than
+/// creating a second synthetic cell or dropping the override.
+#[test]
+fn merge_from_empty_edid_override_matches_interior_by_form_id() {
+    let form_id = 0x0001_AAAA;
+    let mut master = EsmCellIndex::default();
+    master.cells.insert(
+        "namedcell".into(),
+        cell_with_refs("NamedCell", vec![placed(0x10, 0xAA)]),
+    );
+    master.cells.get_mut("namedcell").unwrap().form_id = form_id;
+
+    let mut child = EsmCellIndex::default();
+    let synthetic_id = canonical_interior_cell_id(form_id, "");
+    let mut over = cell_with_refs(&synthetic_id, vec![placed(0x11, 0xBB)]);
+    over.form_id = form_id;
+    child.cells.insert(synthetic_id.to_ascii_lowercase(), over);
+
+    master.merge_from(child);
+    assert_eq!(master.cells.len(), 1);
+    let merged = master.cells.get("namedcell").expect("base alias retained");
+    assert_eq!(merged.editor_id, "NamedCell");
+    assert_eq!(
+        merged
+            .references
+            .iter()
+            .map(|reference| reference.form_id)
+            .collect::<Vec<_>>(),
+        vec![0x10, 0x11],
+    );
+}
+
 // ── WRLD record decoding (#965 / OBL-D3-NEW-01) ─────────────────────
 
 #[test]

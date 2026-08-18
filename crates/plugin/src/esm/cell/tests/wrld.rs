@@ -277,6 +277,44 @@ fn parse_wrld_indexes_persistent_cell_actor_references() {
     assert_eq!(cell.references[0].base_form_id, hadvar_base);
 }
 
+/// #2909 — Oblivion's ICMarketDistrict has a real type-1 persistent CELL
+/// (0002C12B, 58 persistent refs) followed by nested XCLC-less CELL 0002C134.
+/// The nested record is temporary topology, not a second persistent CELL.
+#[test]
+fn nested_xclc_less_cell_does_not_replace_worldspace_persistent_cell() {
+    let wrld_fid = 0x0002_C12A;
+    let persistent_fid = 0x0002_C12B;
+    let nested_fid = 0x0002_C134;
+    let persistent_ref = 0x0002_C12C;
+
+    let wrld = build_wrld_record(wrld_fid, &[(b"EDID", b"ICMarketDistrict\0".to_vec())]);
+    let persistent = build_cell_record(
+        persistent_fid,
+        &[(b"EDID", b"ICMarketDistrictPersistent\0".to_vec())],
+    );
+    let actor = build_placed_actor_record(persistent_ref, 0x0000_0007);
+    let persistent_children = build_cell_children_group(persistent_fid, 8, &actor);
+    let nested = build_cell_record(
+        nested_fid,
+        &[(b"EDID", b"ICMarketDistrictNested\0".to_vec())],
+    );
+    let nested_sub_block = build_cell_children_group(0, 5, &nested);
+    let nested_block = build_cell_children_group(0, 4, &nested_sub_block);
+
+    let mut world_payload = persistent;
+    world_payload.extend_from_slice(&persistent_children);
+    world_payload.extend_from_slice(&nested_block);
+    let children = build_world_children_group(wrld_fid, &world_payload);
+    let buf = build_wrld_group(&[wrld, children]);
+
+    let (_worldspaces, _climates, exterior, persistent) = parse_synthetic_wrld(&buf);
+    assert!(exterior["icmarketdistrict"].is_empty());
+    let kept = &persistent["icmarketdistrict"];
+    assert_eq!(kept.form_id, persistent_fid);
+    assert_eq!(kept.references.len(), 1);
+    assert_eq!(kept.references[0].form_id, persistent_ref);
+}
+
 /// #1220 / D3-NEW-01 regression — exterior CELL XCRI + XPRI sub-records
 /// must populate `precombined_mesh_hashes` + `absorbed_refs`. Pre-fix
 /// the exterior walker hardcoded both to empty on the wrong premise

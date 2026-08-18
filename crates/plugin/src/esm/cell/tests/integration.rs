@@ -378,6 +378,58 @@ fn parse_real_skyrim_esm() {
     );
 }
 
+/// #2910 — DLC plugins author partial exterior CELL overrides. Dawnguard
+/// omits LAND when it only changes another part of a Skyrim tile; merging
+/// the override must retain the base terrain rather than opening a hole.
+#[test]
+#[ignore]
+fn merge_real_dawnguard_partial_cells_preserves_skyrim_landscape() {
+    let data_dir = crate::esm::test_paths::skyrim_se_data_dir();
+    let skyrim_path = data_dir.join("Skyrim.esm");
+    let dawnguard_path = data_dir.join("Dawnguard.esm");
+    if !skyrim_path.exists() || !dawnguard_path.exists() {
+        eprintln!(
+            "Skipping: Skyrim.esm or Dawnguard.esm not found under {}",
+            data_dir.display(),
+        );
+        return;
+    }
+
+    let mut skyrim = parse_esm_cells(&std::fs::read(&skyrim_path).unwrap())
+        .expect("parse Skyrim.esm CELL index");
+    let dawnguard = parse_esm_cells(&std::fs::read(&dawnguard_path).unwrap())
+        .expect("parse Dawnguard.esm CELL index");
+
+    let inherited_land_tiles: Vec<_> = dawnguard
+        .exterior_cells
+        .iter()
+        .flat_map(|(worldspace, cells)| {
+            let base_cells = skyrim.exterior_cells.get(worldspace);
+            cells.iter().filter_map(move |(grid, over)| {
+                let base = base_cells.and_then(|cells| cells.get(grid))?;
+                (base.landscape.is_some() && over.landscape.is_none())
+                    .then(|| (worldspace.clone(), *grid))
+            })
+        })
+        .collect();
+    assert!(
+        !inherited_land_tiles.is_empty(),
+        "expected Dawnguard to contain partial exterior CELL overrides without LAND",
+    );
+
+    skyrim.merge_from(dawnguard);
+    for (worldspace, grid) in &inherited_land_tiles {
+        assert!(
+            skyrim.exterior_cells[worldspace][grid].landscape.is_some(),
+            "{worldspace} {grid:?} lost its inherited Skyrim LAND",
+        );
+    }
+    eprintln!(
+        "Dawnguard partial exterior overrides retaining Skyrim LAND: {}",
+        inherited_land_tiles.len(),
+    );
+}
+
 #[test]
 fn read_zstring_handles_null_terminator() {
     assert_eq!(read_zstring(b"Hello\0"), "Hello");

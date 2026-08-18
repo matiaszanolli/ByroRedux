@@ -862,6 +862,20 @@ fn parse_rate_oblivion_esm() {
         index.trees.len(),
     );
 
+    // #2909 — nested temporary CELL records without XCLC must not replace
+    // the type-1 world's structurally persistent CELL.
+    let market_persistent = index
+        .cells
+        .worldspace_persistent_cells
+        .get("icmarketdistrict")
+        .expect("ICMarketDistrict persistent CELL");
+    assert_eq!(market_persistent.form_id, 0x0002_C12B);
+    assert_eq!(
+        market_persistent.references.len(),
+        58,
+        "ICMarketDistrict persistent reference set was clobbered",
+    );
+
     // #533 / audit M33-01: Oblivion NAM0 is 160 B. Same gate failure as
     // FO3 pre-fix — every WTHR silently dropped. Assertion mirrors the
     // FO3 one.
@@ -1306,11 +1320,13 @@ fn parse_rate_fo4_esm() {
         scol_placements,
     );
 
-    // Cell + STAT floors — the FO4 cell loader pipeline depends
-    // on these populating before SCOL placements can resolve.
+    // Cell + STAT floors — the FO4 cell loader pipeline depends on these
+    // populating before SCOL placements can resolve. #2911 recovered 231
+    // legitimate interiors without EDID, lifting the vanilla count from
+    // 964 to 1195.
     assert!(
-        index.cells.cells.len() >= 900,
-        "FO4 cells={} (expected >= 900; vanilla ships 964)",
+        index.cells.cells.len() >= 1_190,
+        "FO4 cells={} (expected >= 1190; vanilla ships 1195)",
         index.cells.cells.len(),
     );
     assert!(
