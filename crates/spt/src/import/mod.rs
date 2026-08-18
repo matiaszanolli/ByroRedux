@@ -16,9 +16,9 @@
 //!
 //! - **Leaf texture** comes from (in priority order): the TREE
 //!   record's `ICON` field (passed via [`SptImportParams`]), the
-//!   `.spt` file's first leaf-texture tag (`4003`), or stays empty
-//!   when neither is available — the renderer's missing-texture
-//!   placeholder takes over.
+//!   `.spt` file's first relative leaf-texture tag (`4003`); absolute
+//!   exporter paths are rejected, leaving the renderer's missing-texture
+//!   placeholder reachable.
 //! - **Size** comes from the TREE record's `OBND` bounds, falling
 //!   back to a 256 × 512 game-unit default (Bethesda standard tree).
 //! - **Billboard mode** is `BsRotateAboutUp` (yaw-to-camera) — the
@@ -126,10 +126,18 @@ pub fn import_spt_scene(
     // ships several. The first one is the SpeedTree exporter's primary
     // — later entries (when present) are LOD-tier alternates that the
     // placeholder doesn't render at distance anyway. See #997.
-    let leaf_texture: Option<String> = params
-        .leaf_texture_override
-        .map(|s| s.to_string())
-        .or_else(|| scene.leaf_textures().first().map(|s| s.to_string()));
+    let leaf_texture: Option<String> =
+        params
+            .leaf_texture_override
+            .map(|s| s.to_string())
+            .or_else(|| {
+                scene
+                    .leaf_textures()
+                    .first()
+                    .copied()
+                    .filter(|path| is_relative_texture_path(path))
+                    .map(str::to_string)
+            });
 
     let texture_handle: Option<FixedString> = leaf_texture
         .as_deref()
@@ -142,9 +150,10 @@ pub fn import_spt_scene(
     // converts to Y-up below).
     let (bb_width, bb_height) = compute_billboard_size(params);
 
-    // Single root node — flagged as a billboard so the engine's
-    // `billboard_system` rotates the spawned entity each frame.
-    let root_node = placeholder_root_node(/* billboard */ true);
+    // Keep the placement root as a plain hierarchy anchor. The renderable
+    // quad carries the billboard mode itself; `billboard_system` updates its
+    // `GlobalTransform` after hierarchy propagation (#3076).
+    let root_node = placeholder_root_node(/* billboard */ false);
 
     // Single billboard quad, parented to the root.
     let mesh = placeholder_billboard_mesh(bb_width, bb_height, texture_handle);
@@ -320,13 +329,21 @@ fn placeholder_billboard_mesh(
         bs_lod_cutoffs: None,
         bs_sub_index: None,
         bs_geometry_lod_slot: None,
-        // Billboard mode for the .spt placeholder rides on the sibling
-        // `ImportedNode` root (`CachedNifImport::placement_root_billboard`,
-        // #994) — this is a different, per-mesh mechanism (#2206) for the
-        // general NIF `walk_node_flat` path that .spt scenes don't go
-        // through.
-        billboard_mode: None,
+        // Billboard updates operate on renderable mesh entities. Keeping the
+        // mode here avoids rotating the non-renderable placement root (#3076).
+        billboard_mode: Some(BILLBOARD_MODE_BS_ROTATE_ABOUT_UP),
     }
+}
+
+/// Tag 4003 stores the exporter's authoring path. Vanilla files use absolute
+/// Windows/UNC paths that cannot exist in a shipped archive. Leave those
+/// values unset so the renderer's documented fallback remains reachable.
+fn is_relative_texture_path(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    if bytes.is_empty() || matches!(bytes[0], b'/' | b'\\') {
+        return false;
+    }
+    !(bytes.len() >= 2 && bytes[1] == b':')
 }
 
 #[cfg(test)]
@@ -359,9 +376,13 @@ mod tests {
         assert_eq!(imported.nodes.len(), 1, "single root placeholder");
         assert_eq!(imported.meshes.len(), 1, "single billboard quad");
         assert_eq!(
-            imported.nodes[0].billboard_mode,
+            imported.nodes[0].billboard_mode, None,
+            "root is a plain anchor"
+        );
+        assert_eq!(
+            imported.meshes[0].billboard_mode,
             Some(BILLBOARD_MODE_BS_ROTATE_ABOUT_UP),
-            "root flagged as yaw-to-camera billboard",
+            "renderable quad flagged as yaw-to-camera billboard",
         );
         assert!(imported.bs_bound.is_none(), "no bounds without TREE OBND");
         assert!(imported.embedded_clip.is_none());
@@ -528,6 +549,20 @@ mod tests {
             .base_color
             .and_then(|h| pool.resolve(h).map(|s| s.to_string()));
         assert_eq!(texture.as_deref(), Some("trees\\bushleaf.dds"));
+    }
+
+    #[test]
+    fn ignores_absolute_spt_leaf_tag_path() {
+        let mut pool = StringPool::new();
+        let scene = scene_with_tag(
+            4003,
+            SptValue::String("C:\\Hope\\IDV\\Cottonwood\\TreeLeaves.tga".to_string()),
+        );
+        let imported = import_spt_scene(&scene, &SptImportParams::default(), &mut pool);
+        assert!(
+            imported.meshes[0].material.textures.base_color.is_none(),
+            "absolute exporter paths cannot resolve in game archives",
+        );
     }
 
     #[test]

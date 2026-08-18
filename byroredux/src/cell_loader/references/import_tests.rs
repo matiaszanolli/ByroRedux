@@ -6,7 +6,6 @@
 use super::*;
 // Test-only symbols not referenced by production code in this module
 // (they'd warn as unused at file scope). #1877 split.
-use byroredux_core::ecs::BillboardMode;
 use byroredux_core::string::StringPool;
 
 /// #1495 / REN2-10 — the RT absolute-space precision ceiling guard.
@@ -58,24 +57,26 @@ fn minimal_spt_bytes() -> Vec<u8> {
     bytes
 }
 
-/// #994 regression — the SpeedTree importer's placeholder root
-/// authors `billboard_mode = Some(BsRotateAboutUp)`. The cell-loader
-/// adapter must surface that as `CachedNifImport::placement_root_billboard`
-/// so `spawn_placed_instances` can attach a `Billboard` ECS component
-/// to the placement root. Pre-fix the field was dropped on the
-/// floor; trees rendered as static quads.
+/// #3076 regression — the renderable placeholder mesh, not its
+/// non-renderable placement root, carries the billboard mode.
 #[test]
-fn parse_and_import_spt_surfaces_billboard_mode_on_cache_entry() {
+fn parse_and_import_spt_surfaces_billboard_mode_on_mesh() {
     let bytes = minimal_spt_bytes();
     let mut pool = StringPool::new();
     let cached = parse_and_import_spt(&bytes, "trees\\test.spt", None, &mut pool)
         .expect("minimal spt parses through the importer");
-    assert_eq!(
-        cached.placement_root_billboard,
-        Some(BillboardMode::BsRotateAboutUp),
-        "SPT placeholder must flag the placement root as a yaw-billboard",
-    );
+    assert_eq!(cached.placement_root_billboard, None);
     assert_eq!(cached.meshes.len(), 1, "single placeholder quad");
+    assert_eq!(cached.meshes[0].billboard_mode, Some(5));
+}
+
+#[test]
+fn malformed_spt_still_produces_placeholder() {
+    let mut pool = StringPool::new();
+    let cached = parse_and_import_spt(b"not an spt", "trees\\broken.spt", None, &mut pool)
+        .expect("parse failure must degrade to a placeholder");
+    assert_eq!(cached.meshes.len(), 1);
+    assert_eq!(cached.meshes[0].billboard_mode, Some(5));
 }
 
 /// #1820 / SPT-NEW-01 — pins the logged sanity check
@@ -83,7 +84,7 @@ fn parse_and_import_spt_surfaces_billboard_mode_on_cache_entry() {
 /// call itself can't be observed without a log-capturing dependency
 /// (none exists in this workspace), so this asserts the value the
 /// production code path would log for the same fixture bytes
-/// `parse_and_import_spt_surfaces_billboard_mode_on_cache_entry`
+/// `parse_and_import_spt_surfaces_billboard_mode_on_mesh`
 /// exercises above — a vanilla `__IdvSpt_02_`-prefixed stream
 /// resolves to `V5Fnv` per `detect_variant`'s documented default.
 #[test]

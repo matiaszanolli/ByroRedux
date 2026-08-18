@@ -265,9 +265,9 @@ pub(super) fn find_flame_attach_offset(scene: &byroredux_nif::scene::NifScene) -
 /// real branch / frond meshes + per-leaf billboards without any
 /// signature change here.
 ///
-/// Returns `None` on parse failure or when the importer produces no
-/// usable geometry (e.g. `.spt` magic missing) so subsequent REFRs
-/// of the same model don't re-attempt the doomed parse.
+/// Parse failures degrade to the placeholder (with a warning) so a malformed
+/// `.spt` never removes its REFR from the world; the cache still prevents
+/// subsequent placements from re-attempting the doomed parse.
 pub(super) fn parse_and_import_spt(
     spt_data: &[u8],
     label: &str,
@@ -304,7 +304,9 @@ pub(super) fn parse_and_import_spt(
         }
         Err(e) => {
             log::warn!("Failed to parse SPT '{}': {}", label, e);
-            return None;
+            // TREE metadata is sufficient for the placeholder. A malformed
+            // parameter section must not erase the REFR (#3078).
+            byroredux_spt::SptScene::default()
         }
     };
 
@@ -356,12 +358,8 @@ pub(super) fn parse_and_import_spt(
 
     let imported = byroredux_spt::import_spt_scene(&scene, &params, pool);
 
-    // #994 — the placeholder root node is authored with
-    // `billboard_mode = Some(BsRotateAboutUp)` so the cell-loader spawn
-    // can attach a `Billboard` ECS component to the placement root.
-    // Pre-#994 this field was dropped because `CachedNifImport` carried
-    // no node metadata; trees rendered as static quads facing whichever
-    // direction the REFR was authored at.
+    // The placeholder mesh carries the billboard mode on the renderable
+    // entity; the placement root remains a plain transform anchor (#3076).
     let placement_root_billboard = imported
         .nodes
         .first()
