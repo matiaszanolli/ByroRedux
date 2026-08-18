@@ -15,6 +15,18 @@ use crate::radiometry::blackbody_radiance_srgb;
 /// temperature increment and run away toward the numerical safety ceiling.
 pub const ADIABATIC_FLAME_TEMPERATURE_K: f32 = 2350.0;
 
+/// First-order fuel/oxidizer reaction rate, per second, for the normalized
+/// transported mixture-fraction field.
+pub const REACTION_RATE_PER_SECOND: f32 = 5.8;
+
+/// Soot extinction yield in a maximally fuel-rich reaction zone, per unit of
+/// burned normalized fuel.
+pub const RICH_SOOT_YIELD: f32 = 0.06;
+
+/// Residual soot yield in an oxygen-rich reaction zone, per unit of burned
+/// normalized fuel.
+pub const LEAN_SOOT_YIELD: f32 = 0.004;
+
 /// Time for the initial fireball to traverse its canonical source radius.
 ///
 /// This is deliberately independent of the effect lifetime: lifetime governs
@@ -193,6 +205,9 @@ mod tests {
             [0.12; 3]
         );
         assert_eq!(ADIABATIC_FLAME_TEMPERATURE_K, 2350.0);
+        assert!(REACTION_RATE_PER_SECOND > 0.0);
+        assert!(RICH_SOOT_YIELD > LEAN_SOOT_YIELD);
+        assert!(LEAN_SOOT_YIELD > 0.0);
         assert!(EXPLOSION_EXPANSION_TIME_SECONDS > 0.0);
         assert!(EXPLOSION_IMPULSE_DURATION_SECONDS > EXPLOSION_EXPANSION_TIME_SECONDS);
         assert!(MAX_PRESSURE_ACCELERATION_MPS2 > 0.0);

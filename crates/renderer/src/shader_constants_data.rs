@@ -125,6 +125,10 @@ pub const ATTENUATION_MODEL_INVERSE_SQUARE: u32 =
 pub const WORLD_UNITS_PER_METER: f32 = byroredux_core::lighting::BETHESDA_UNITS_PER_METER;
 pub const ADIABATIC_FLAME_TEMPERATURE_K: f32 =
     byroredux_core::combustion::ADIABATIC_FLAME_TEMPERATURE_K;
+pub const COMBUSTION_REACTION_RATE_PER_SECOND: f32 =
+    byroredux_core::combustion::REACTION_RATE_PER_SECOND;
+pub const COMBUSTION_RICH_SOOT_YIELD: f32 = byroredux_core::combustion::RICH_SOOT_YIELD;
+pub const COMBUSTION_LEAN_SOOT_YIELD: f32 = byroredux_core::combustion::LEAN_SOOT_YIELD;
 pub const EXPLOSION_EXPANSION_TIME_SECONDS: f32 =
     byroredux_core::combustion::EXPLOSION_EXPANSION_TIME_SECONDS;
 pub const EXPLOSION_IMPULSE_DURATION_SECONDS: f32 =

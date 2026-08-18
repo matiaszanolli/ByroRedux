@@ -184,6 +184,21 @@ fn main() {
     .unwrap();
     writeln!(
         out,
+        "#define COMBUSTION_REACTION_RATE_PER_SECOND {COMBUSTION_REACTION_RATE_PER_SECOND:?}"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define COMBUSTION_RICH_SOOT_YIELD {COMBUSTION_RICH_SOOT_YIELD:?}"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define COMBUSTION_LEAN_SOOT_YIELD {COMBUSTION_LEAN_SOOT_YIELD:?}"
+    )
+    .unwrap();
+    writeln!(
+        out,
         "#define EXPLOSION_EXPANSION_TIME_SECONDS {EXPLOSION_EXPANSION_TIME_SECONDS:?}"
     )
     .unwrap();

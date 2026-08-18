@@ -1795,11 +1795,17 @@ void transportCombustion(
             IGNITION_TEMPERATURE_K + 180.0,
             chemistry.y
         );
-        // A compact mixture fraction supplies the oxidizer proxy: fresh air
-        // dominates dilute cells, while fuel-rich cores burn sootier.
-        float oxidizer = clamp(1.0 - chemistry.x * 0.18, 0.0, 1.0);
-        float reactionRate = 2.4 * chemistry.x * oxidizer * ignition;
-        float burnedFuel = min(chemistry.x, reactionRate * dt);
+        // `chemistry.x` is the canonical normalized fuel fraction. The
+        // complementary fraction is available oxidizer, so a fuel-rich core
+        // burns more slowly and produces more soot than a dilute edge. This
+        // is shared thermochemistry, not a source/profile heuristic.
+        float fuelFraction = clamp(chemistry.x, 0.0, 1.0);
+        float oxidizer = 1.0 - fuelFraction;
+        float reactionRate = COMBUSTION_REACTION_RATE_PER_SECOND
+            * fuelFraction
+            * oxidizer
+            * ignition;
+        float burnedFuel = min(fuelFraction, reactionRate * dt);
         chemistry.x -= burnedFuel;
         // Reaction heat approaches the canonical adiabatic equilibrium; it
         // is not a fixed kelvin increment. This makes the update independent
@@ -1815,8 +1821,12 @@ void transportCombustion(
         // oxygen-starved flame. Encode it directly as canonical total
         // extinction plus spectral scattering, so radiative transfer needs no
         // later age/material conversion.
-        float richYield = mix(0.004, 0.018, 1.0 - oxidizer);
-        float sootSigmaT = burnedFuel * richYield;
+        float sootYield = mix(
+            COMBUSTION_RICH_SOOT_YIELD,
+            COMBUSTION_LEAN_SOOT_YIELD,
+            oxidizer
+        );
+        float sootSigmaT = burnedFuel * sootYield;
         const float sootSingleScatterAlbedo = 0.08;
         chemistry.z += sootSigmaT;
         optical.rgb += sootSigmaT * vec3(sootSingleScatterAlbedo);
