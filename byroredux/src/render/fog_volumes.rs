@@ -44,10 +44,7 @@ pub(super) fn collect_fog_volumes(
                 Some(state) => match state.normalized_age(now_seconds) {
                     Some(age) => Some((age, state.lifetime_seconds)),
                     None => {
-                        let elapsed = now_seconds - state.start_time_seconds;
-                        if !elapsed.is_finite()
-                            || elapsed >= state.lifetime_seconds + AEROSOL_LINGER_SECONDS
-                        {
+                        if !explosion_smoke_linger_active(now_seconds, state) {
                             continue;
                         }
                         // The authored explosion has ended, but its soot
@@ -106,6 +103,13 @@ pub(super) fn collect_fog_volumes(
         distance_squared(a).total_cmp(&distance_squared(b))
     });
     out.truncate(MAX_GPU_FOG_VOLUMES);
+}
+
+fn explosion_smoke_linger_active(now_seconds: f32, state: CombustionState) -> bool {
+    let elapsed = now_seconds - state.start_time_seconds;
+    elapsed.is_finite()
+        && elapsed >= state.lifetime_seconds
+        && elapsed < state.lifetime_seconds + AEROSOL_LINGER_SECONDS
 }
 
 #[cfg(test)]
@@ -395,6 +399,21 @@ mod tests {
         // Cooling shifts blackbody chromaticity toward red before the fire
         // envelope reaches zero.
         assert!(cooling[1] / cooling[0] < hot[1] / hot[0]);
+    }
+
+    #[test]
+    fn expired_explosion_lingers_as_smoke_only_within_canonical_window() {
+        let state = CombustionState::one_shot(10.0, 8.0);
+        assert!(!explosion_smoke_linger_active(17.9, state));
+        assert!(explosion_smoke_linger_active(18.0, state));
+        assert!(explosion_smoke_linger_active(
+            18.0 + AEROSOL_LINGER_SECONDS - 0.001,
+            state
+        ));
+        assert!(!explosion_smoke_linger_active(
+            18.0 + AEROSOL_LINGER_SECONDS,
+            state
+        ));
     }
 
     #[test]
