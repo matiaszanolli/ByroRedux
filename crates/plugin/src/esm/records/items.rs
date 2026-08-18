@@ -58,8 +58,13 @@ pub enum ItemKind {
         dt_mult: f32,
         /// Spread modifier (rad).
         spread: f32,
+        /// Form ID of the projectile emitted by this ammunition.
+        projectile_form: u32,
         /// Form ID of casing item left after firing.
         casing_form: u32,
+        /// Charge / condition carried by the ammunition record (FO4 fusion
+        /// cores); zero when the source format has no such field.
+        health: u32,
         /// Clip rounds (FNV: usually 0 — meaningful per WEAP).
         clip_rounds: u8,
     },
@@ -74,14 +79,12 @@ pub enum ItemKind {
         dt: f32,
         /// Damage Resistance (FO3/FNV) — percentage absorbed. 0 on Skyrim+.
         dr: u32,
-        /// Health / condition durability (FO3/FNV only; Skyrim dropped it).
+        /// Health / condition durability (FO3/FNV/FO4; Skyrim dropped it).
         health: u32,
         /// Equip slot mask (FO3/FNV-only biped-flag low 16 bits).
         slot_mask: u16,
-        /// Armor rating × 100. Sourced from DATA on Oblivion (u16 at
-        /// offset 0) and from DNAM on Skyrim+. 0 on FO3/FNV/FO4 — use
-        /// `dt`/`dr` instead, which the original engine paired with a
-        /// separate damage-resist roll.
+        /// Armor rating × 100. Sourced from DATA on Oblivion, FNAM on FO4,
+        /// and DNAM on Skyrim+. 0 on FO3/FNV, which use `dt`/`dr` instead.
         armor_rating_x100: u32,
         /// Skyrim+: armor type from BOD2 second u32 (0=light, 1=clothing,
         /// 2=heavy). `None` on pre-Skyrim games.
@@ -101,11 +104,11 @@ pub enum ItemKind {
         /// Base damage per shot.
         damage: u32,
         /// Magazine capacity.
-        clip_size: u8,
+        clip_size: u16,
         /// Animation type (0 = handgun, 1 = rifle, 2 = launcher, ...).
         anim_type: u8,
         /// Action point cost (VATS).
-        ap_cost: u32,
+        ap_cost: f32,
         /// Skill required form (AVIF).
         skill_form: u32,
         /// Min spread (radians).
@@ -159,9 +162,9 @@ pub fn parse_weap(
     let mut common = CommonItemFields::from_subs_with_remap(subs, remap);
     let mut ammo_form = 0u32;
     let mut damage = 0u32;
-    let mut clip_size = 0u8;
+    let mut clip_size = 0u16;
     let mut anim_type = 0u8;
-    let ap_cost = 0u32;
+    let mut ap_cost = 0.0f32;
     let mut skill_form = 0u32;
     let mut min_spread = 0.0f32;
     let mut spread = 0.0f32;
@@ -194,16 +197,17 @@ pub fn parse_weap(
                         damage = r.u16_or_default() as u32;
                     }
                     // FO3/FNV WEAP DATA (15 bytes — measured): value(u32),
-                    // health(u32), weight(f32), damage(u16), clip(u8). FO4
-                    // groups here pending its own per-game arm (mis-bucketing
-                    // tracked separately, AUDIT_FNV_2026-04-20 follow-up).
-                    GameKind::Fallout3NV | GameKind::Fallout4 => {
+                    // health(u32), weight(f32), damage(u16), clip(u8).
+                    GameKind::Fallout3NV => {
                         common.value = r.u32_or_default();
                         let _health = r.u32_or_default();
                         common.weight = r.f32_or_default();
                         damage = r.u16_or_default() as u32;
-                        clip_size = r.u8_or_default();
+                        clip_size = r.u8_or_default() as u16;
                     }
+                    // FO4 WEAP has no DATA; all canonical fields are decoded
+                    // from its packed 132-byte DNAM below.
+                    GameKind::Fallout4 => {}
                     // Skyrim WEAP DATA (10 bytes): value(u32), weight(f32),
                     // damage(u16). No health, no clip. Skyrim dropped the
                     // condition/durability system and clip lives in DNAM.
@@ -236,6 +240,41 @@ pub fn parse_weap(
                                                  // TBD (may or may not duplicate the NAM6 spread). Not
                                                  // stored; NAM6 remains the authoritative spread source.
                 let _offset_20 = r.f32_or_default();
+            }
+            // FO4 WEAP DNAM is a packed, unaligned 132-byte structure. Keep
+            // the game-specific byte layout here at the parser boundary and
+            // expose only canonical item fields to gameplay code.
+            b"DNAM" if matches!(game, GameKind::Fallout4) => {
+                let mut r = SubReader::new(&sub.data);
+                ammo_form = r.u32_or_default(); // 0: AMMO FormID
+                let _speed = r.f32_or_default(); // 4
+                let _reload_speed = r.f32_or_default(); // 8
+                let _reach = r.f32_or_default(); // 12
+                let _min_range = r.f32_or_default(); // 16
+                let _max_range = r.f32_or_default(); // 20
+                let _attack_delay = r.f32_or_default(); // 24
+                let _unused = r.f32_or_default(); // 28
+                let _out_of_range_mult = r.f32_or_default(); // 32
+                let _on_hit = r.u32_or_default(); // 36
+
+                // 40: Skill and 44: Resist are zero on every vanilla record;
+                // consume their published slots without claiming semantics.
+                let _skill_form = r.u32_or_default();
+                let _resist_form = r.u32_or_default(); // 44
+                let _flags = r.u32_or_default(); // 48
+                clip_size = r.u16_or_default(); // 52
+                anim_type = r.u8_or_default(); // 54
+                let _secondary_damage = r.f32_or_default(); // 55
+                common.weight = r.f32_or_default(); // 59
+                common.value = r.u32_or_default(); // 63
+                damage = r.u16_or_default() as u32; // 67
+
+                // Sound level plus eight SNDR FormIDs occupy bytes 69..105.
+                r.skip_or_eof(36);
+                let _accuracy_bonus = r.u8_or_default(); // 105
+                let _attack_seconds = r.f32_or_default(); // 106
+                r.skip_or_eof(2); // 110: unknown
+                ap_cost = r.f32_or_default(); // 112
             }
             b"ANAM" => {
                 reload_anim = SubReader::new(&sub.data).u8_or_default();
@@ -340,12 +379,19 @@ pub fn parse_armo(
                         health = r.u32_or_default();
                         common.weight = r.f32_or_default();
                     }
-                    // FO3/FNV/FO4 ARMO DATA (12 bytes):
+                    // FO3/FNV ARMO DATA (12 bytes):
                     //   value(u32), health(u32), weight(f32).
-                    GameKind::Fallout3NV | GameKind::Fallout4 => {
+                    GameKind::Fallout3NV => {
                         common.value = r.u32_or_default();
                         health = r.u32_or_default();
                         common.weight = r.f32_or_default();
+                    }
+                    // FO4 keeps the same size but swaps the last two fields:
+                    // value(u32), weight(f32), health(u32).
+                    GameKind::Fallout4 => {
+                        common.value = r.u32_or_default();
+                        common.weight = r.f32_or_default();
+                        health = r.u32_or_default();
                     }
                     // Skyrim+ ARMO DATA (8 bytes):
                     //   value(u32), weight(f32). No health — condition/repair
@@ -368,21 +414,27 @@ pub fn parse_armo(
                     armatures.push(id);
                 }
             }
-            // DNAM exists on FO3/FNV/FO4 (DT/DR, 8 bytes) and Skyrim+
-            // (armor_rating × 100, 4 bytes). Oblivion has no DNAM —
+            // DNAM exists on FO3/FNV (DT/DR, 8 bytes) and Skyrim+
+            // (armor_rating × 100, 4 bytes). FO4 uses FNAM instead;
+            // Oblivion has no DNAM —
             // armor rating lives in DATA (handled above).
             b"DNAM" => {
                 let mut r = SubReader::new(&sub.data);
                 match game {
-                    GameKind::Fallout3NV | GameKind::Fallout4 => {
+                    GameKind::Fallout3NV => {
                         dt = r.f32_or_default();
                         dr = r.u32_or_default();
                     }
                     GameKind::Skyrim | GameKind::Fallout76 | GameKind::Starfield => {
                         armor_rating_x100 = r.u32_or_default();
                     }
-                    GameKind::Oblivion => {}
+                    GameKind::Oblivion | GameKind::Fallout4 => {}
                 }
+            }
+            // FO4 stores a raw u16 armor rating in FNAM. Canonicalize it to
+            // the ×100 unit already used by Oblivion and Skyrim consumers.
+            b"FNAM" if matches!(game, GameKind::Fallout4) => {
+                armor_rating_x100 = SubReader::new(&sub.data).u16_or_default() as u32 * 100;
             }
             _ => {}
         }
@@ -421,7 +473,9 @@ pub fn parse_ammo(
     let mut damage = 0.0f32;
     let dt_mult = 1.0f32;
     let spread = 0.0f32;
+    let mut projectile_form = 0u32;
     let mut casing_form = 0u32;
+    let mut health = 0u32;
     let mut clip_rounds = 0u8;
 
     for sub in subs {
@@ -443,19 +497,23 @@ pub fn parse_ammo(
                         damage = r.u16_or_default() as f32;
                     }
                     // FO3/FNV AMMO DATA (13 bytes): speed(f32), flags(u8),
-                    // pad(u8)×3, value(u32), clipRounds(u8). FO4 grouped
-                    // here pending its own arm; weight comes from DAT2.
-                    GameKind::Fallout3NV | GameKind::Fallout4 => {
+                    // pad(u8)×3, value(u32), clipRounds(u8).
+                    GameKind::Fallout3NV => {
                         let _speed = r.f32_or_default();
                         let _flags_pad = r.u32_or_default();
                         common.value = r.u32_or_default();
                         clip_rounds = r.u8_or_default();
                     }
+                    // FO4 AMMO DATA (8 bytes): value(u32), weight(f32).
+                    GameKind::Fallout4 => {
+                        common.value = r.u32_or_default();
+                        common.weight = r.f32_or_default();
+                    }
                     // Skyrim AMMO DATA (16 bytes): projectile_form(u32),
                     // flags(u32), damage(f32), value(u32). "Ignores weapon
                     // resistance" etc. live in the flags bitfield.
                     GameKind::Skyrim | GameKind::Fallout76 | GameKind::Starfield => {
-                        casing_form = r.u32_or_default();
+                        projectile_form = r.u32_or_default();
                         let _flags = r.u32_or_default();
                         damage = r.f32_or_default();
                         common.value = r.u32_or_default();
@@ -469,9 +527,20 @@ pub fn parse_ammo(
             b"DAT2" if matches!(game, GameKind::Fallout3NV) => {
                 let mut r = SubReader::new(&sub.data);
                 let _proj_count = r.u32_or_default();
-                let _proj = r.u32_or_default();
+                projectile_form = r.u32_or_default();
                 common.weight = r.f32_or_default();
                 casing_form = r.u32_or_default();
+            }
+            // FO4 AMMO DNAM: projectile(FormID), flags(u8), pad[3],
+            // damage(f32), health(u32). Damage intentionally remains zero:
+            // FO4 authors per-shot damage on WEAP rather than AMMO.
+            b"DNAM" if matches!(game, GameKind::Fallout4) => {
+                let mut r = SubReader::new(&sub.data);
+                projectile_form = r.u32_or_default();
+                let _flags = r.u8_or_default();
+                r.skip_or_eof(3);
+                let _unused_damage = r.f32_or_default();
+                health = r.u32_or_default();
             }
             // DAMG (rare/legacy FO3).
             b"DAMG" => {
@@ -488,7 +557,9 @@ pub fn parse_ammo(
             damage,
             dt_mult,
             spread,
+            projectile_form,
             casing_form,
+            health,
             clip_rounds,
         },
     }
@@ -609,7 +680,12 @@ pub fn parse_ingr(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
     }
 }
 
-pub fn parse_book(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>) -> ItemRecord {
+pub fn parse_book(
+    form_id: u32,
+    subs: &[SubRecord],
+    game: GameKind,
+    remap: &Option<FormIdRemap>,
+) -> ItemRecord {
     let mut common = CommonItemFields::from_subs_with_remap(subs, remap);
     let mut teaches_skill = 0u32;
     let mut skill_bonus = 0u8;
@@ -617,13 +693,30 @@ pub fn parse_book(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
 
     for sub in subs {
         match &sub.sub_type {
-            // DATA (FNV BOOK): flags(u8), skill(byte=AVIF index), value(i32), weight(f32)
             b"DATA" => {
                 let mut r = SubReader::new(&sub.data);
-                flags = r.u8_or_default();
-                skill_bonus = r.u8_or_default();
-                common.value = r.u32_or_default();
-                common.weight = r.f32_or_default();
+                match game {
+                    // FO4 BOOK DATA (8 bytes): value(u32), weight(f32).
+                    // Skill/perk teaching moved to its separate DNAM schema.
+                    GameKind::Fallout4 => {
+                        common.value = r.u32_or_default();
+                        common.weight = r.f32_or_default();
+                    }
+                    // FNV BOOK DATA (10 bytes): flags(u8), skill(byte=AVIF
+                    // index), value(i32), weight(f32). Preserve the existing
+                    // decode for the other families until their BOOK schemas
+                    // receive dedicated coverage.
+                    GameKind::Oblivion
+                    | GameKind::Fallout3NV
+                    | GameKind::Skyrim
+                    | GameKind::Fallout76
+                    | GameKind::Starfield => {
+                        flags = r.u8_or_default();
+                        skill_bonus = r.u8_or_default();
+                        common.value = r.u32_or_default();
+                        common.weight = r.f32_or_default();
+                    }
+                }
             }
             b"SKIL" => {
                 teaches_skill = SubReader::new(&sub.data).u32_or_default();
@@ -847,6 +940,139 @@ mod tests {
 
         assert_eq!(parse_omod_loose_item(&subs, &remap), 0x0200_1234);
         assert_eq!(parse_omod_loose_item(&[], &remap), 0);
+    }
+
+    // ── Fallout 4 item-schema regression guards (#2992–#2996) ──────────
+
+    #[test]
+    fn fo4_weap_dnam_decodes_packed_canonical_stats() {
+        // Ammo10mm / 10mm Pistol anchors from Fallout4.esm. The packed
+        // structure deliberately places floats and integers unaligned.
+        let mut dnam = vec![0u8; 132];
+        dnam[0..4].copy_from_slice(&0x0001_F276u32.to_le_bytes()); // ammo
+        dnam[40..44].copy_from_slice(&0x0000_1234u32.to_le_bytes()); // unverified slot
+        dnam[52..54].copy_from_slice(&12u16.to_le_bytes()); // capacity
+        dnam[54] = 9; // Gun
+        dnam[59..63].copy_from_slice(&3.0f32.to_le_bytes()); // weight
+        dnam[63..67].copy_from_slice(&45u32.to_le_bytes()); // value
+        dnam[67..69].copy_from_slice(&18u16.to_le_bytes()); // base damage
+        dnam[112..116].copy_from_slice(&28.0f32.to_le_bytes()); // AP cost
+
+        let item = parse_weap(
+            0x0000_1234,
+            &[sub(b"DNAM", &dnam)],
+            GameKind::Fallout4,
+            &None,
+        );
+        assert_eq!(item.common.value, 45);
+        assert!((item.common.weight - 3.0).abs() < 1e-6);
+        match item.kind {
+            ItemKind::Weapon {
+                ammo_form,
+                damage,
+                clip_size,
+                anim_type,
+                ap_cost,
+                skill_form,
+                ..
+            } => {
+                assert_eq!(ammo_form, 0x0001_F276);
+                assert_eq!(damage, 18);
+                assert_eq!(clip_size, 12);
+                assert_eq!(anim_type, 9);
+                assert!((ap_cost - 28.0).abs() < 1e-6);
+                assert_eq!(skill_form, 0, "unverified FO4 Skill slot stays unencoded");
+            }
+            _ => panic!("expected Weapon kind"),
+        }
+    }
+
+    #[test]
+    fn fo4_armo_data_and_fnam_keep_field_order_and_units() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&25u32.to_le_bytes());
+        data.extend_from_slice(&5.0f32.to_le_bytes());
+        data.extend_from_slice(&750u32.to_le_bytes());
+        let fnam = 3u16.to_le_bytes();
+        let item = parse_armo(
+            0x0000_1234,
+            &[sub(b"DATA", &data), sub(b"FNAM", &fnam)],
+            GameKind::Fallout4,
+            &None,
+        );
+        assert_eq!(item.common.value, 25);
+        assert!((item.common.weight - 5.0).abs() < 1e-6);
+        match item.kind {
+            ItemKind::Armor {
+                health,
+                armor_rating_x100,
+                dt,
+                dr,
+                ..
+            } => {
+                assert_eq!(health, 750);
+                assert_eq!(armor_rating_x100, 300);
+                assert_eq!(dt, 0.0);
+                assert_eq!(dr, 0);
+            }
+            _ => panic!("expected Armor kind"),
+        }
+    }
+
+    #[test]
+    fn fo4_ammo_uses_data_and_dnam_layouts() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&200u32.to_le_bytes());
+        data.extend_from_slice(&4.0f32.to_le_bytes());
+        let mut dnam = Vec::new();
+        dnam.extend_from_slice(&0x0000_C0DEu32.to_le_bytes());
+        dnam.extend_from_slice(&[1, 0, 0, 0]);
+        dnam.extend_from_slice(&99.0f32.to_le_bytes());
+        dnam.extend_from_slice(&500u32.to_le_bytes());
+        let item = parse_ammo(
+            0x0000_1234,
+            &[sub(b"DATA", &data), sub(b"DNAM", &dnam)],
+            GameKind::Fallout4,
+            &None,
+        );
+        assert_eq!(item.common.value, 200);
+        assert!((item.common.weight - 4.0).abs() < 1e-6);
+        match item.kind {
+            ItemKind::Ammo {
+                damage,
+                projectile_form,
+                health,
+                ..
+            } => {
+                assert_eq!(damage, 0.0, "FO4 damage belongs to WEAP");
+                assert_eq!(projectile_form, 0x0000_C0DE);
+                assert_eq!(health, 500);
+            }
+            _ => panic!("expected Ammo kind"),
+        }
+    }
+
+    #[test]
+    fn fo4_book_data_is_value_then_weight() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&125u32.to_le_bytes());
+        data.extend_from_slice(&0.5f32.to_le_bytes());
+        let item = parse_book(
+            0x0000_1234,
+            &[sub(b"DATA", &data)],
+            GameKind::Fallout4,
+            &None,
+        );
+        assert_eq!(item.common.value, 125);
+        assert!((item.common.weight - 0.5).abs() < 1e-6);
+        assert!(matches!(
+            item.kind,
+            ItemKind::Book {
+                teaches_skill: 0,
+                skill_bonus: 0,
+                flags: 0
+            }
+        ));
     }
 
     // ── Skyrim regression guards (issue #347 / S6-02) ──────────────────
@@ -1138,14 +1364,14 @@ mod tests {
         match item.kind {
             ItemKind::Ammo {
                 damage,
-                casing_form,
+                projectile_form,
                 clip_rounds,
                 ..
             } => {
                 assert!((damage - 8.0).abs() < 1e-6);
                 assert_eq!(
-                    casing_form, 0xC0DE,
-                    "projectile_form lands in casing_form slot"
+                    projectile_form, 0xC0DE,
+                    "Skyrim projectile FormID reaches the canonical projectile field"
                 );
                 assert_eq!(clip_rounds, 0);
             }

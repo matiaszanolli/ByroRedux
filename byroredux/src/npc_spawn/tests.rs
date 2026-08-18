@@ -439,7 +439,7 @@ fn weapon_item(form_id: u32, damage: u32) -> byroredux_plugin::esm::records::Ite
             damage,
             clip_size: 0,
             anim_type: 0,
-            ap_cost: 0,
+            ap_cost: 0.0,
             skill_form: 0,
             min_spread: 0.0,
             spread: 0.0,

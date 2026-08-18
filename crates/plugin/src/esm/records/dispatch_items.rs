@@ -51,7 +51,7 @@ pub(super) fn dispatch_item_group(
             index.items.insert(fid, parse_ingr(fid, subs, &remap));
         })?,
         b"BOOK" => extract_records_with_modl(reader, end, b"BOOK", statics, &mut |fid, subs| {
-            index.items.insert(fid, parse_book(fid, subs, &remap));
+            index.items.insert(fid, parse_book(fid, subs, game, &remap));
         })?,
         b"NOTE" => extract_records_with_modl(reader, end, b"NOTE", statics, &mut |fid, subs| {
             index.items.insert(fid, parse_note(fid, subs, &remap));

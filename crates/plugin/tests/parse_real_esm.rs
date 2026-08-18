@@ -1124,6 +1124,48 @@ fn parse_rate_fo4_esm() {
         .values()
         .filter(|item| matches!(item.kind, byroredux_plugin::esm::records::ItemKind::Mod))
         .count();
+    let decoded_weapons = index.items.values().filter_map(|item| match &item.kind {
+        byroredux_plugin::esm::records::ItemKind::Weapon { damage, .. } => Some(*damage),
+        _ => None,
+    });
+    let (weapon_count, nonzero_weapon_damage) = decoded_weapons
+        .fold((0usize, 0usize), |(count, nonzero), damage| {
+            (count + 1, nonzero + usize::from(damage > 0))
+        });
+    let (armor_count, armor_with_weight, armor_with_rating) = index.items.values().fold(
+        (0usize, 0usize, 0usize),
+        |(count, weighted, rated), item| match &item.kind {
+            byroredux_plugin::esm::records::ItemKind::Armor {
+                armor_rating_x100, ..
+            } => (
+                count + 1,
+                weighted + usize::from(item.common.weight > 0.0),
+                rated + usize::from(*armor_rating_x100 > 0),
+            ),
+            _ => (count, weighted, rated),
+        },
+    );
+    let (ammo_count, ammo_with_value, ammo_with_weight) = index.items.values().fold(
+        (0usize, 0usize, 0usize),
+        |(count, valued, weighted), item| match item.kind {
+            byroredux_plugin::esm::records::ItemKind::Ammo { .. } => (
+                count + 1,
+                valued + usize::from(item.common.value > 0),
+                weighted + usize::from(item.common.weight > 0.0),
+            ),
+            _ => (count, valued, weighted),
+        },
+    );
+    let (book_count, books_with_value) =
+        index
+            .items
+            .values()
+            .fold((0usize, 0usize), |(count, valued), item| match item.kind {
+                byroredux_plugin::esm::records::ItemKind::Book { .. } => {
+                    (count + 1, valued + usize::from(item.common.value > 0))
+                }
+                _ => (count, valued),
+            });
 
     eprintln!(
         "[FO4] total={} game={:?} | cells={} statics={} scols={} \
@@ -1181,6 +1223,26 @@ fn parse_rate_fo4_esm() {
         loose_mod_items >= 1_200,
         "FO4 Mods={} (expected >= 1200; vanilla yields 1283 OMOD-linked loose MISC records)",
         loose_mod_items,
+    );
+    assert!(
+        weapon_count >= 250 && nonzero_weapon_damage > 0,
+        "FO4 WEAP decode regressed: {weapon_count} records, \
+         {nonzero_weapon_damage} with authored damage",
+    );
+    assert!(
+        armor_count >= 680 && armor_with_weight > 0 && armor_with_rating > 0,
+        "FO4 ARMO decode regressed: {armor_count} records, {armor_with_weight} \
+         with weight, {armor_with_rating} with rating",
+    );
+    assert!(
+        ammo_count >= 55 && ammo_with_value > 0 && ammo_with_weight > 0,
+        "FO4 AMMO decode regressed: {ammo_count} records, {ammo_with_value} \
+         with value, {ammo_with_weight} with weight",
+    );
+    assert!(
+        book_count >= 320 && books_with_value > 0,
+        "FO4 BOOK decode regressed: {book_count} records, \
+         {books_with_value} with authored value",
     );
 
     // Primary baseline. With #817 categories landed, observed 2026-05-04
