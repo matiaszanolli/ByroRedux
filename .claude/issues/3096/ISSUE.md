@@ -1,12 +1,4 @@
-# SUBSYS-2026-08-16-01: weapon reach and speed have no canonical landing site
-
-**Issue**: #3096
-**Severity**: MEDIUM
-**Labels**: `medium,legacy-compat,gameplay,bug`
-**Source report**: `docs/audits/AUDIT_LEGACY_COMPAT_2026-08-16.md`
-**Filed**: 2026-08-17 via `/audit-publish`
-
----
+# SUBSYS-2026-08-16-01: authored weapon reach and speed have no canonical landing site — every melee weapon in every game has identical reach and swing cadence
 
 Filed from `docs/audits/AUDIT_LEGACY_COMPAT_2026-08-16.md` (subsystem-gap sweep).
 
@@ -43,7 +35,3 @@ Keep the constants as the unarmed/fallback path.
 - [ ] **SIBLING**: All games' parsers populate them, or explicitly record which do not and why
 - [ ] **FALLBACK**: The global constants remain the unarmed path rather than being deleted
 - [ ] **TESTS**: A regression test asserts two weapons with different authored reach behave differently
-
----
-
-*Immutable snapshot of the issue as filed. GitHub is authoritative for current state — query `gh issue view 3096 --json state` when live state is needed.*

@@ -492,6 +492,8 @@ mod tests {
                 inventory_index: InventoryIndex(1),
                 base_form_id: 0x1234,
                 damage: 10.0,
+                reach: 0.0,
+                speed: 0.0,
             },
         );
         let errors = validate_world(&world);

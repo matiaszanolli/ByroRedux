@@ -15,10 +15,16 @@ use crate::components::HavokAnimationTarget;
 use crate::interaction::{camera_ray, ActionState, InputAction};
 use crate::systems::{PlayerEntity, PlayerMode};
 
-/// Camera-forward melee reach in Bethesda units.
+/// Camera-forward melee reach in Bethesda units — the unarmed / no-weapon
+/// baseline. `EquippedWeapon::reach` is an authored *multiplier* on this
+/// baseline (1.0 = same reach as a longsword/mace; source: CS wiki's
+/// `fCombatDistance * NPCScale * Reach` formula), not an absolute distance.
 pub(crate) const MELEE_REACH_BU: f32 = 180.0;
 /// One attack edge per cooldown. Holding Attack never auto-repeats because
-/// ActionState contributes only the initial press edge.
+/// ActionState contributes only the initial press edge. This is the
+/// unarmed / no-weapon baseline; `EquippedWeapon::speed` is an authored
+/// cadence multiplier (>1.0 = faster attacks, matching the CS wiki's
+/// "numbers greater than one mean a fast weapon") that divides it.
 pub(crate) const MELEE_COOLDOWN_SECONDS: f32 = 0.45;
 /// Authored player records may start without a weapon. Keep that state
 /// playable with one explicit unarmed damage rule instead of inventing an
@@ -73,11 +79,21 @@ pub(crate) fn combat_input_system(world: &World, dt: f32) {
         })
         .unwrap_or((false, false));
 
+    // Resolved once up front: both the cooldown arm below and the reach
+    // used for the ray cast need the equipped weapon, and the cooldown has
+    // to be armed before the mode/aggressor gating below returns early.
+    let aggressor = world
+        .try_resource::<PlayerEntity>()
+        .and_then(|player| player.0);
+
     let attack_ready = if let Some(mut state) = world.try_resource_mut::<CombatState>() {
         state.blocking = block_held;
         state.cooldown_remaining = (state.cooldown_remaining - dt.max(0.0)).max(0.0);
         if attack_pressed && state.cooldown_remaining <= 0.0 {
-            state.cooldown_remaining = MELEE_COOLDOWN_SECONDS;
+            state.cooldown_remaining =
+                aggressor.map_or(MELEE_COOLDOWN_SECONDS, |aggressor| {
+                    attack_cooldown_seconds(world, aggressor)
+                });
             state.attacks_started = state.attacks_started.saturating_add(1);
             true
         } else {
@@ -94,10 +110,7 @@ pub(crate) fn combat_input_system(world: &World, dt: f32) {
         return;
     }
 
-    let Some(aggressor) = world
-        .try_resource::<PlayerEntity>()
-        .and_then(|player| player.0)
-    else {
+    let Some(aggressor) = aggressor else {
         record_miss(world, "no player entity");
         return;
     };
@@ -120,9 +133,10 @@ pub(crate) fn combat_input_system(world: &World, dt: f32) {
         }
         None => (None, Vec::new()),
     };
+    let reach = attack_reach_bu(world, aggressor);
     let hit = world
         .try_resource::<byroredux_physics::PhysicsWorld>()
-        .and_then(|physics| physics.cast_ray(origin, direction, MELEE_REACH_BU, excluded_body));
+        .and_then(|physics| physics.cast_ray(origin, direction, reach, excluded_body));
     let Some(hit_body) = hit.and_then(|hit| hit.body) else {
         record_miss(world, "melee swing missed");
         return;
@@ -250,6 +264,30 @@ fn attack_damage(world: &World, aggressor: EntityId) -> f32 {
         .map_or(UNARMED_DAMAGE, |weapon| weapon.damage.max(0.0))
 }
 
+/// Weapon-scaled melee reach. `EquippedWeapon::reach` is a multiplier on
+/// [`MELEE_REACH_BU`] (1.0 = same reach as a longsword/mace); `0.0` means
+/// the source game's weapon layout isn't decoded yet (see
+/// `ItemKind::Weapon::reach`), so it falls back to the flat baseline —
+/// same rule the unarmed case already uses.
+fn attack_reach_bu(world: &World, aggressor: EntityId) -> f32 {
+    world
+        .get::<EquippedWeapon>(aggressor)
+        .filter(|weapon| weapon.reach > 0.0)
+        .map_or(MELEE_REACH_BU, |weapon| MELEE_REACH_BU * weapon.reach)
+}
+
+/// Weapon-scaled swing cooldown. `EquippedWeapon::speed` is a cadence
+/// multiplier (>1.0 = faster attacks) on [`MELEE_COOLDOWN_SECONDS`]; `0.0`
+/// (unset/undecoded) falls back to the flat baseline.
+fn attack_cooldown_seconds(world: &World, aggressor: EntityId) -> f32 {
+    world
+        .get::<EquippedWeapon>(aggressor)
+        .filter(|weapon| weapon.speed > 0.0)
+        .map_or(MELEE_COOLDOWN_SECONDS, |weapon| {
+            MELEE_COOLDOWN_SECONDS / weapon.speed
+        })
+}
+
 fn apply_health_damage(
     world: &World,
     target: EntityId,
@@ -343,6 +381,8 @@ mod tests {
                     inventory_index: InventoryIndex(0),
                     base_form_id: 0x1CB64,
                     damage,
+                    reach: 0.0,
+                    speed: 0.0,
                 },
             );
         }
@@ -400,6 +440,80 @@ mod tests {
         assert_eq!(
             world.get::<ActorValues>(target).unwrap().current(0x2D4),
             12.0
+        );
+    }
+
+    #[test]
+    fn unarmed_or_undecoded_weapon_falls_back_to_flat_reach_and_cooldown() {
+        let mut world = World::new();
+        world.register::<EquippedWeapon>();
+        let unarmed = world.spawn();
+        assert_eq!(attack_reach_bu(&world, unarmed), MELEE_REACH_BU);
+        assert_eq!(attack_cooldown_seconds(&world, unarmed), MELEE_COOLDOWN_SECONDS);
+
+        // A weapon whose game's DNAM layout isn't decoded yet (reach/speed
+        // still 0.0 — e.g. Skyrim) gets the same unarmed-style fallback,
+        // not a zero-length / zero-cooldown swing.
+        let undecoded = world.spawn();
+        world.insert(
+            undecoded,
+            EquippedWeapon {
+                inventory_index: InventoryIndex(0),
+                base_form_id: 0x1234,
+                damage: 10.0,
+                reach: 0.0,
+                speed: 0.0,
+            },
+        );
+        assert_eq!(attack_reach_bu(&world, undecoded), MELEE_REACH_BU);
+        assert_eq!(attack_cooldown_seconds(&world, undecoded), MELEE_COOLDOWN_SECONDS);
+    }
+
+    #[test]
+    fn authored_reach_and_speed_scale_the_flat_baseline() {
+        let mut world = World::new();
+        world.register::<EquippedWeapon>();
+
+        // A dagger: short reach (0.7x), fast cadence (1.5x) — shorter
+        // cooldown, shorter effective range than a longsword.
+        let dagger = world.spawn();
+        world.insert(
+            dagger,
+            EquippedWeapon {
+                inventory_index: InventoryIndex(0),
+                base_form_id: 0xAAAA,
+                damage: 6.0,
+                reach: 0.7,
+                speed: 1.5,
+            },
+        );
+        // A warhammer: long reach (1.4x), slow cadence (0.5x).
+        let warhammer = world.spawn();
+        world.insert(
+            warhammer,
+            EquippedWeapon {
+                inventory_index: InventoryIndex(0),
+                base_form_id: 0xBBBB,
+                damage: 40.0,
+                reach: 1.4,
+                speed: 0.5,
+            },
+        );
+
+        let dagger_reach = attack_reach_bu(&world, dagger);
+        let hammer_reach = attack_reach_bu(&world, warhammer);
+        assert!(
+            dagger_reach < hammer_reach,
+            "dagger ({dagger_reach}) should reach less than a warhammer ({hammer_reach})"
+        );
+        assert!((dagger_reach - MELEE_REACH_BU * 0.7).abs() < 1e-6);
+        assert!((hammer_reach - MELEE_REACH_BU * 1.4).abs() < 1e-6);
+
+        let dagger_cooldown = attack_cooldown_seconds(&world, dagger);
+        let hammer_cooldown = attack_cooldown_seconds(&world, warhammer);
+        assert!(
+            dagger_cooldown < hammer_cooldown,
+            "dagger ({dagger_cooldown}) should swing faster than a warhammer ({hammer_cooldown})"
         );
     }
 

@@ -47,6 +47,11 @@ pub(crate) struct InventoryItemDefinition {
     pub(crate) details: String,
     pub(crate) equip_slot_mask: Option<u32>,
     pub(crate) weapon_damage: Option<f32>,
+    /// Authored reach/speed, `0.0` when the source game's weapon layout
+    /// isn't decoded (see `ItemKind::Weapon::reach`/`speed`). `combat.rs`
+    /// treats `0.0` as "fall back to the unarmed constant."
+    pub(crate) weapon_reach: f32,
+    pub(crate) weapon_speed: f32,
 }
 
 /// Process-local item lookup rebuilt whenever the plugin index is installed.
@@ -86,9 +91,11 @@ pub(crate) fn install_catalog(world: &mut World, index: &EsmIndex) {
                 format!("Item {form_id:08X}")
             };
             let (category, details, equip_slot_mask) = describe_kind(&item.kind);
-            let weapon_damage = match &item.kind {
-                ItemKind::Weapon { damage, .. } => Some(*damage as f32),
-                _ => None,
+            let (weapon_damage, weapon_reach, weapon_speed) = match &item.kind {
+                ItemKind::Weapon { damage, reach, speed, .. } => {
+                    (Some(*damage as f32), *reach, *speed)
+                }
+                _ => (None, 0.0, 0.0),
             };
             (
                 form_id,
@@ -100,6 +107,8 @@ pub(crate) fn install_catalog(world: &mut World, index: &EsmIndex) {
                     details,
                     equip_slot_mask,
                     weapon_damage,
+                    weapon_reach,
+                    weapon_speed,
                 },
             )
         })
@@ -261,7 +270,8 @@ fn prefer_weapon(
     inventory_index: InventoryIndex,
     equipped: &mut Option<EquippedWeapon>,
 ) {
-    let Some(ItemKind::Weapon { damage, .. }) = index.items.get(&form_id).map(|item| &item.kind)
+    let Some(ItemKind::Weapon { damage, reach, speed, .. }) =
+        index.items.get(&form_id).map(|item| &item.kind)
     else {
         return;
     };
@@ -269,6 +279,8 @@ fn prefer_weapon(
         inventory_index,
         base_form_id: form_id,
         damage: *damage as f32,
+        reach: *reach,
+        speed: *speed,
     };
     if equipped.is_none_or(|current| {
         candidate.damage > current.damage
@@ -424,18 +436,16 @@ fn reconcile_equipped_weapon(
             .and_then(|inventory| inventory.get(inventory_index).copied())
             .filter(|stack| stack.count > 0)
             .map(|stack| stack.base_form_id)?;
-        let damage = world
-            .try_resource::<InventoryCatalog>()
-            .and_then(|catalog| {
-                catalog
-                    .entries
-                    .get(&form_id)
-                    .and_then(|item| item.weapon_damage)
-            })?;
+        let (damage, reach, speed) = world.try_resource::<InventoryCatalog>().and_then(|catalog| {
+            let item = catalog.entries.get(&form_id)?;
+            Some((item.weapon_damage?, item.weapon_reach, item.weapon_speed))
+        })?;
         Some(EquippedWeapon {
             inventory_index,
             base_form_id: form_id,
             damage,
+            reach,
+            speed,
         })
     });
     if let Some(weapon) = candidate {
@@ -474,6 +484,8 @@ mod tests {
                         details: "Armor rating 25.0".to_owned(),
                         equip_slot_mask: Some(1 << 12),
                         weapon_damage: None,
+                        weapon_reach: 0.0,
+                        weapon_speed: 0.0,
                     },
                 ),
                 (
@@ -486,6 +498,8 @@ mod tests {
                         details: "Damage 8.0".to_owned(),
                         equip_slot_mask: None,
                         weapon_damage: None,
+                        weapon_reach: 0.0,
+                        weapon_speed: 0.0,
                     },
                 ),
                 (
@@ -498,6 +512,8 @@ mod tests {
                         details: "Damage 12".to_owned(),
                         equip_slot_mask: Some(WEAPON_EQUIP_SLOT_MASK),
                         weapon_damage: Some(12.0),
+                        weapon_reach: 90.0,
+                        weapon_speed: 1.1,
                     },
                 ),
             ]),
@@ -567,6 +583,8 @@ mod tests {
         assert_eq!(weapon.inventory_index, InventoryIndex(2));
         assert_eq!(weapon.base_form_id, 0x9ABC);
         assert_eq!(weapon.damage, 12.0);
+        assert_eq!(weapon.reach, 90.0);
+        assert_eq!(weapon.speed, 1.1);
         drop(weapon);
         assert_eq!(
             world

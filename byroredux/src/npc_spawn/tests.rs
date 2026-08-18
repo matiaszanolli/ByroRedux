@@ -75,6 +75,8 @@ fn fnv_spawned_actor_gets_derived_health_and_combat_consumes_it() {
             inventory_index: InventoryIndex(0),
             base_form_id: 0x1CB64,
             damage: 18.0,
+            reach: 0.0,
+            speed: 0.0,
         },
     );
     world.insert(
@@ -444,6 +446,8 @@ fn weapon_item(form_id: u32, damage: u32) -> byroredux_plugin::esm::records::Ite
             min_spread: 0.0,
             spread: 0.0,
             crit_mult: 0.0,
+            reach: 0.0,
+            speed: 0.0,
             reload_anim: 0,
         },
     }

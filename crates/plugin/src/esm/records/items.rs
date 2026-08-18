@@ -117,6 +117,15 @@ pub enum ItemKind {
         spread: f32,
         /// Critical chance multiplier.
         crit_mult: f32,
+        /// Melee/attack reach in Bethesda units. `0.0` means "not decoded
+        /// for this game" (Skyrim/FO3/FNV/76/Starfield DNAM layouts aren't
+        /// mapped yet) — combat.rs treats that as "use the unarmed
+        /// fallback constant." Populated for Oblivion (DATA) and FO4
+        /// (DNAM offset 12, #2992).
+        reach: f32,
+        /// Attack speed multiplier (1.0 = authored baseline cadence).
+        /// Same `0.0`-means-unset convention as `reach`.
+        speed: f32,
         /// Reload animation (0..n).
         reload_anim: u8,
     },
@@ -170,6 +179,8 @@ pub fn parse_weap(
     let mut spread = 0.0f32;
     let mut crit_mult = 1.0f32;
     let mut reload_anim = 0u8;
+    let mut reach = 0.0f32;
+    let mut speed = 0.0f32;
 
     for sub in subs {
         match &sub.sub_type {
@@ -188,8 +199,8 @@ pub fn parse_weap(
                     // anim_type at its 0 default rather than mix enums.
                     GameKind::Oblivion => {
                         let _type = r.u32_or_default();
-                        let _speed = r.f32_or_default();
-                        let _reach = r.f32_or_default();
+                        speed = r.f32_or_default();
+                        reach = r.f32_or_default();
                         let _flags = r.u32_or_default();
                         common.value = r.u32_or_default();
                         let _health = r.u32_or_default();
@@ -247,9 +258,9 @@ pub fn parse_weap(
             b"DNAM" if matches!(game, GameKind::Fallout4) => {
                 let mut r = SubReader::new(&sub.data);
                 ammo_form = r.u32_or_default(); // 0: AMMO FormID
-                let _speed = r.f32_or_default(); // 4
+                speed = r.f32_or_default(); // 4
                 let _reload_speed = r.f32_or_default(); // 8
-                let _reach = r.f32_or_default(); // 12
+                reach = r.f32_or_default(); // 12
                 let _min_range = r.f32_or_default(); // 16
                 let _max_range = r.f32_or_default(); // 20
                 let _attack_delay = r.f32_or_default(); // 24
@@ -318,6 +329,8 @@ pub fn parse_weap(
             min_spread,
             spread,
             crit_mult,
+            reach,
+            speed,
             reload_anim,
         },
     }
@@ -950,6 +963,8 @@ mod tests {
         // structure deliberately places floats and integers unaligned.
         let mut dnam = vec![0u8; 132];
         dnam[0..4].copy_from_slice(&0x0001_F276u32.to_le_bytes()); // ammo
+        dnam[4..8].copy_from_slice(&1.25f32.to_le_bytes()); // speed
+        dnam[12..16].copy_from_slice(&64.0f32.to_le_bytes()); // reach
         dnam[40..44].copy_from_slice(&0x0000_1234u32.to_le_bytes()); // unverified slot
         dnam[52..54].copy_from_slice(&12u16.to_le_bytes()); // capacity
         dnam[54] = 9; // Gun
@@ -974,6 +989,8 @@ mod tests {
                 anim_type,
                 ap_cost,
                 skill_form,
+                reach,
+                speed,
                 ..
             } => {
                 assert_eq!(ammo_form, 0x0001_F276);
@@ -982,6 +999,14 @@ mod tests {
                 assert_eq!(anim_type, 9);
                 assert!((ap_cost - 28.0).abs() < 1e-6);
                 assert_eq!(skill_form, 0, "unverified FO4 Skill slot stays unencoded");
+                assert!(
+                    (speed - 1.25).abs() < 1e-6,
+                    "speed at DNAM offset 4 (#3096)"
+                );
+                assert!(
+                    (reach - 64.0).abs() < 1e-6,
+                    "reach at DNAM offset 12 (#3096)"
+                );
             }
             _ => panic!("expected Weapon kind"),
         }
@@ -1211,10 +1236,22 @@ mod tests {
         );
         match item.kind {
             ItemKind::Weapon {
-                damage, clip_size, ..
+                damage,
+                clip_size,
+                reach,
+                speed,
+                ..
             } => {
                 assert_eq!(damage, 14, "damage u16 at offset 28");
                 assert_eq!(clip_size, 0, "Oblivion has no magazine system");
+                assert!(
+                    (speed - 0.8).abs() < 1e-6,
+                    "speed at offset 4 (#3096 — previously discarded)"
+                );
+                assert!(
+                    (reach - 1.3).abs() < 1e-6,
+                    "reach at offset 8 (#3096 — previously discarded)"
+                );
             }
             _ => panic!("expected Weapon kind"),
         }

@@ -55,7 +55,11 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// Version 3 makes quest lifecycle fields required. Version 2 briefly added
 /// them with `serde(default)`, which allowed older snapshots to load with
 /// silently invented state (#3020).
-pub const FORMAT_MAJOR: u16 = 3;
+/// Version 4 adds required `reach`/`speed` fields to `EquippedWeapon`
+/// (#3096). Pre-v4 saves have no on-disk value for either — rejecting them
+/// outright is correct here (per this doc's rule) rather than defaulting
+/// to `0.0`, which is indistinguishable from an authored "undecoded" weapon.
+pub const FORMAT_MAJOR: u16 = 4;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

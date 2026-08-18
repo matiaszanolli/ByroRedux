@@ -137,6 +137,8 @@ mod tests {
                 inventory_index: InventoryIndex(0),
                 base_form_id: 0x0001_CB64,
                 damage: 18.0,
+                reach: 0.0,
+                speed: 0.0,
             },
         );
 

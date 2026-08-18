@@ -143,6 +143,18 @@ pub struct EquippedWeapon {
     pub inventory_index: InventoryIndex,
     pub base_form_id: u32,
     pub damage: f32,
+    /// Authored melee reach in Bethesda units, `0.0` when the source
+    /// game's weapon layout isn't decoded yet. See `ItemKind::Weapon::reach`.
+    ///
+    /// Required (no `#[serde(default)]`) per SAVE-D2-01 (#1714): a default
+    /// here would silently backfill pre-#3096 saves with fabricated `0.0`
+    /// reach/speed instead of rejecting them. `byroredux_save::FORMAT_MAJOR`
+    /// was bumped for this field addition instead.
+    pub reach: f32,
+    /// Authored attack speed multiplier, `0.0` when undecoded. See
+    /// `ItemKind::Weapon::speed`. Required for the same SAVE-D2-01 reason
+    /// as `reach`.
+    pub speed: f32,
 }
 
 impl Component for EquippedWeapon {
@@ -261,10 +273,14 @@ mod tests {
             inventory_index: InventoryIndex(2),
             base_form_id: 0x0001_CB64,
             damage: 18.0,
+            reach: 140.0,
+            speed: 0.9,
         };
         assert_eq!(weapon.inventory_index, InventoryIndex(2));
         assert_eq!(weapon.base_form_id, 0x0001_CB64);
         assert_eq!(weapon.damage, 18.0);
+        assert_eq!(weapon.reach, 140.0);
+        assert_eq!(weapon.speed, 0.9);
     }
 
     #[test]

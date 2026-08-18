@@ -782,11 +782,13 @@ fn build_npc_equip_state<'a>(
             continue;
         };
         let biped_flags = match &item.kind {
-            ItemKind::Weapon { damage, .. } => {
+            ItemKind::Weapon { damage, reach, speed, .. } => {
                 let candidate = EquippedWeapon {
                     inventory_index: inv_idx,
                     base_form_id: form_id,
                     damage: *damage as f32,
+                    reach: *reach,
+                    speed: *speed,
                 };
                 let replace = equipped_weapon.is_none_or(|current| {
                     candidate.damage > current.damage
