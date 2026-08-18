@@ -73,6 +73,29 @@ pub enum LevelingModel {
 }
 
 impl LevelingModel {
+    /// Overlay authored GMST values on the engine-supplied fallback model.
+    /// Missing settings retain the sourced constants, keeping older masters
+    /// and synthetic fixtures deterministic while allowing mods to retune the
+    /// parsed curve.
+    pub fn with_gmst(self, gmst: impl Fn(&str) -> Option<f32>) -> Self {
+        match self {
+            Self::SkillXp {
+                xp_base,
+                xp_mult,
+                xp_per_skill_rank,
+                pool_pick_gain,
+                level_cap,
+            } => Self::SkillXp {
+                xp_base: gmst("fXPLevelUpBase").unwrap_or(xp_base),
+                xp_mult: gmst("fXPLevelUpMult").unwrap_or(xp_mult),
+                xp_per_skill_rank: gmst("fXPPerSkillRank").unwrap_or(xp_per_skill_rank),
+                pool_pick_gain,
+                level_cap,
+            },
+            other => other,
+        }
+    }
+
     /// FO4 — `75·L + 125`, +1 SPECIAL or a perk per level, no hard cap.
     pub const FO4: Self = Self::XpCurve {
         xp_a: 75.0,
@@ -290,6 +313,19 @@ mod tests {
         // The skill-XP methods are Skyrim-only.
         assert_eq!(LevelingModel::FO3.xp_from_skill_rank(50), None);
         assert_eq!(LevelingModel::OBLIVION.pool_pick_gain(), None);
+    }
+
+    #[test]
+    fn skyrim_gmst_overlay_replaces_authored_curve_values() {
+        let model = LevelingModel::SKYRIM.with_gmst(|name| match name {
+            "fXPLevelUpBase" => Some(80.0),
+            "fXPLevelUpMult" => Some(30.0),
+            "fXPPerSkillRank" => Some(1.5),
+            _ => None,
+        });
+        assert_eq!(model.xp_to_next(10), 380.0);
+        assert_eq!(model.xp_from_skill_rank(20), Some(30.0));
+        assert_eq!(model.pool_pick_gain(), Some(10.0));
     }
 
     #[test]

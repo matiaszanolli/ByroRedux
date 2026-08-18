@@ -143,13 +143,19 @@ impl CharacterRulesProfile {
     }
 
     /// Build the canonical runtime ruleset with authored AVIF FormIDs.
-    pub fn build_ruleset<F: Fn(&str) -> Option<u32>>(self, resolve: F) -> Option<CharacterRuleset> {
-        Some(match self.ruleset {
+    pub fn build_ruleset<F, G>(self, resolve: F, gmst: G) -> Option<CharacterRuleset>
+    where
+        F: Fn(&str) -> Option<u32>,
+        G: Fn(&str) -> Option<f32>,
+    {
+        let mut ruleset = match self.ruleset {
             RulesetBuilder::Fallout3 => fallout3_ruleset(resolve),
             RulesetBuilder::FalloutNewVegas => falloutnv_ruleset(resolve),
             RulesetBuilder::Fallout4 => fallout4_ruleset(resolve),
             RulesetBuilder::None => return None,
-        })
+        };
+        ruleset.leveling = ruleset.leveling.with_gmst(gmst);
+        Some(ruleset)
     }
 }
 

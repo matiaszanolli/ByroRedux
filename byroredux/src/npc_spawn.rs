@@ -187,7 +187,8 @@ pub fn build_character_ruleset(
     index: &EsmIndex,
 ) -> Option<byroredux_core::character::CharacterRuleset> {
     let resolve = |editor_id: &str| index.actor_value_form_id(editor_id);
-    index.character_rules.build_ruleset(resolve)
+    let gmst = |editor_id: &str| index.game_setting_float(editor_id);
+    index.character_rules.build_ruleset(resolve, gmst)
 }
 
 /// #1698 — keyframe a live NPC's ragdoll bones.

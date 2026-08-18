@@ -527,12 +527,13 @@ while). Struck-through items are done; the remaining two are genuinely open.
 5. ~~**Derived-stat deriver**~~ — shipped: `DerivedStatFormula` (`derived.rs`)
    + per-game formula tables for FO3/FNV/FO4 (`fallout.rs`) and Oblivion/Skyrim
    (`tes.rs`/`skyrim.rs`).
-6. **GMST sourcing** — still open. GMST record *parsing* exists
-   (`crates/plugin/src/esm/records/global.rs`), but
-   `actor_value_derive.rs`'s skill-base constants (`SKILL_BASE`,
-   `SKILL_ATTR_MULT`, `SKILL_LUCK_MULT` — the `fAVDSkill*` GMSTs) are still
-   hardcoded `f32` literals, not read from a parsed `GMST` lookup. The last
-   real AUTHORED gap.
+6. **GMST sourcing** — partially wired. GMST parsing and the editor-ID lookup
+   exist (`crates/plugin/src/esm/records/global.rs`,
+   `EsmIndex::game_setting_float`), and Skyrim's XP curve now overlays the
+   authored `fXPLevelUpBase`, `fXPLevelUpMult`, and `fXPPerSkillRank` values
+   with sourced fallbacks. The Fallout derived-skill constants
+   (`SKILL_BASE`, `SKILL_ATTR_MULT`, `SKILL_LUCK_MULT` — the `fAVDSkill*`
+   GMSTs) remain hardcoded and are the remaining GMST seam.
 7. ~~**TES family**~~ — shipped for Oblivion (`tes.rs`) and Skyrim
    (`skyrim.rs`); Morrowind stays out of scope (not in the compat list).
 8. **Starfield** — roster closed 2026-07-04 (`charal-starfield-ruleset.md`:

@@ -635,6 +635,21 @@ impl EsmIndex {
         self.actor_value_form_id("Health")
     }
 
+    /// Resolve a numeric GMST by EditorID for CHARAL's authored leveling
+    /// constants. GMST records are keyed by FormID on the wire, so consumers
+    /// must use this normalized EditorID lookup rather than guessing IDs.
+    pub fn game_setting_float(&self, editor_id: &str) -> Option<f32> {
+        self.game_settings
+            .values()
+            .find(|setting| setting.editor_id.eq_ignore_ascii_case(editor_id))
+            .and_then(|setting| match setting.value {
+                super::SettingValue::Float(value) => Some(value),
+                super::SettingValue::Int(value) => Some(value as f32),
+                super::SettingValue::Short(value) => Some(f32::from(value)),
+                super::SettingValue::String(_) => None,
+            })
+    }
+
     /// Format the per-category breakdown as a single line — used by the
     /// `parse_esm_with_load_order` end-of-parse log. Drives off
     /// [`categories`] so the line stays in lockstep with [`total`]. See
@@ -818,7 +833,7 @@ impl EsmIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::esm::records::{ActiRecord, ScenePhase};
+    use crate::esm::records::{ActiRecord, ScenePhase, SettingValue};
 
     #[test]
     fn merge_from_preserves_scene_timelines() {
@@ -1335,5 +1350,29 @@ mod tests {
             },
         );
         assert!(idx.base_record_script_instance(TERMINAL).is_none());
+    }
+
+    #[test]
+    fn game_setting_float_resolves_editor_id_and_numeric_variants() {
+        let mut idx = EsmIndex::default();
+        idx.game_settings.insert(
+            0x100,
+            GameSetting {
+                form_id: 0x100,
+                editor_id: "fXPLevelUpBase".to_string(),
+                value: SettingValue::Float(80.0),
+            },
+        );
+        idx.game_settings.insert(
+            0x101,
+            GameSetting {
+                form_id: 0x101,
+                editor_id: "iXPBase".to_string(),
+                value: SettingValue::Int(150),
+            },
+        );
+        assert_eq!(idx.game_setting_float("fxplevelupbase"), Some(80.0));
+        assert_eq!(idx.game_setting_float("iXPBase"), Some(150.0));
+        assert_eq!(idx.game_setting_float("missing"), None);
     }
 }
