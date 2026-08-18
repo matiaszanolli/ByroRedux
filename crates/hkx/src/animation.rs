@@ -45,6 +45,12 @@ pub struct HkxAnimation {
     pub annotations: Vec<HkxAnnotation>,
 }
 
+/// Bound the decoded transform sample matrix before allocating one `Vec` per
+/// track. A hostile packfile can otherwise provide a tiny set of blocks but a
+/// `num_frames` value large enough to make `Vec::with_capacity` abort the
+/// process (#3011).
+const MAX_TRANSFORM_SAMPLES: usize = 16_000_000;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct HkxAnnotation {
     pub track_name: String,
@@ -128,6 +134,13 @@ pub fn decode_spline_animation(bytes: &[u8]) -> Result<HkxAnimation> {
     let max_frames_per_block = pack.u32(object + 0x40, "maximum frames per block")?;
     let mask_size = pack.u32(object + 0x44, "mask table size")? as usize;
     let frame_duration = pack.f32(object + 0x50, "animation frame duration")?;
+    let frame_count = usize::try_from(num_frames)
+        .map_err(|_| HkxError::InvalidData("animation frame count overflows usize"))?;
+    let sample_count = transform_count
+        .checked_mul(frame_count)
+        .ok_or(HkxError::InvalidData(
+            "animation sample count overflows usize",
+        ))?;
     if !duration.is_finite()
         || duration < 0.0
         || !frame_duration.is_finite()
@@ -136,6 +149,7 @@ pub fn decode_spline_animation(bytes: &[u8]) -> Result<HkxAnimation> {
         || transform_count > 4096
         || float_count > 4096
         || num_frames == 0
+        || sample_count > MAX_TRANSFORM_SAMPLES
         || num_blocks == 0
         || num_blocks > 4096
         || max_frames_per_block < 2
@@ -228,7 +242,7 @@ pub fn decode_spline_animation(bytes: &[u8]) -> Result<HkxAnimation> {
     }
 
     let block_stride = max_frames_per_block - 1;
-    let mut tracks = vec![Vec::with_capacity(num_frames as usize); transform_count];
+    let mut tracks = vec![Vec::with_capacity(frame_count); transform_count];
     for frame in 0..num_frames {
         let block_index = ((frame / block_stride) as usize).min(num_blocks - 1);
         let first_frame = block_index as u32 * block_stride;
