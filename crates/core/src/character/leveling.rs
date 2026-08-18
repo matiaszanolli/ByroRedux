@@ -40,8 +40,9 @@ pub enum LevelReward {
 /// [`super::CharacterRuleset`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LevelingModel {
-    /// Fallout — an XP-to-next curve `xp_a·L + xp_b`, a hard `level_cap`
-    /// (`0` = uncapped; add-ons raise it), and a per-level [`LevelReward`].
+    /// Fallout — an XP-to-next curve `xp_a·L + xp_b`, a base-game `level_cap`
+    /// (`0` = uncapped), and a per-level [`LevelReward`]. DLC cap raises are
+    /// a loader concern and are not wired yet.
     XpCurve {
         xp_a: f32,
         xp_b: f32,
@@ -221,8 +222,9 @@ impl LevelingModel {
         }
     }
 
-    /// The base-game hard level cap (`0` = uncapped). Add-ons raise it; the
-    /// loader bumps it when DLC is present.
+    /// The base-game hard level cap (`0` = uncapped). DLC-specific raises are
+    /// not applied by the current loader; callers must treat this as the
+    /// authored base cap until that integration lands.
     #[inline]
     pub fn level_cap(&self) -> u16 {
         match self {
