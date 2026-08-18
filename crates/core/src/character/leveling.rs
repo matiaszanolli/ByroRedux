@@ -13,11 +13,11 @@
 //! * [`LevelingModel::SkillUse`] — **classic Elder Scrolls** (Morrowind /
 //!   Oblivion). No XP: a level becomes available once a fixed number of
 //!   increases accumulate in the character's *major* skills (Oblivion: 10).
-//!   The level-up attribute bonuses are the deferred leveling-efficiency
-//!   mechanic (`docs/engine/charal.md` §5), not modelled here. Sourced: UESP
+//!   The level-up attribute bonuses are implemented by the TES leveling
+//!   helpers (`docs/engine/charal.md` §5). Sourced: UESP
 //!   *Oblivion:Leveling*.
 //!
-//! Skyrim's per-skill-XP model (`SkillXp`) is a future third variant.
+//! Skyrim's per-skill-XP model (`SkillXp`) is the third shipped variant.
 
 /// What a single level-up grants in the [`LevelingModel::XpCurve`] (Fallout)
 /// model — the per-game progression seam.
