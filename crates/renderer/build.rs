@@ -204,6 +204,36 @@ fn main() {
     .unwrap();
     writeln!(
         out,
+        "#define COMBUSTION_VORTICITY_CONFINEMENT_SPEED_MPS {COMBUSTION_VORTICITY_CONFINEMENT_SPEED_MPS:?}"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define COMBUSTION_MAX_VORTICITY_ACCELERATION_MPS2 {COMBUSTION_MAX_VORTICITY_ACCELERATION_MPS2:?}"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define COMBUSTION_TURBULENCE_COARSE_EDDY_SCALE_METERS {COMBUSTION_TURBULENCE_COARSE_EDDY_SCALE_METERS:?}"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define COMBUSTION_TURBULENCE_DETAIL_EDDY_SCALE_METERS {COMBUSTION_TURBULENCE_DETAIL_EDDY_SCALE_METERS:?}"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define COMBUSTION_TURBULENCE_COARSE_RISE_SPEED_MPS {COMBUSTION_TURBULENCE_COARSE_RISE_SPEED_MPS:?}"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define COMBUSTION_TURBULENCE_DETAIL_RISE_SPEED_MPS {COMBUSTION_TURBULENCE_DETAIL_RISE_SPEED_MPS:?}"
+    )
+    .unwrap();
+    writeln!(
+        out,
         "#define COMBUSTION_AEROSOL_DISSIPATION_PER_SECOND {COMBUSTION_AEROSOL_DISSIPATION_PER_SECOND:?}"
     )
     .unwrap();

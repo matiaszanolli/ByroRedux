@@ -1376,47 +1376,96 @@ bool samplePreviousTransport(
     return true;
 }
 
-float previousSpecificOverpressure(vec3 worldPosition) {
-    if (params.prev_camera_pos.w <= 0.5) {
-        return 0.0;
-    }
-    vec3 previousUvw;
-    if (!reprojectHistory(worldPosition, previousUvw)) {
-        return 0.0;
-    }
-    return sanitizedDynamics(
-        texture(previousCombustionDynamics, previousUvw)
-    ).w;
-}
+float combustionActivity(vec4 chemistry, vec4 optical);
 
-// Recover ∇q in absolute world coordinates from the frustum-aligned froxel
-// basis, where q is transported specific overpressure (m²/s²). A plain sum
-// of axis differences would treat the perspective grid as orthogonal and
-// turn camera orientation into explosion dynamics; solving Bᵀ∇q = Δq keeps
-// pressure expansion in world space.
-bool previousOverpressureGradient(
+// One concern-specific differential derived from the six transported
+// neighbours. Pressure expansion, rotational flow, and the combustion
+// interface all consume this same world-space reconstruction rather than
+// restating camera-grid finite differences independently.
+struct CombustionDifferential {
+    vec3 pressureGradient;
+    vec3 vorticity;
+    vec3 activityGradient;
+};
+
+// Recover physical derivatives from the frustum-aligned froxel basis. A plain
+// sum of axis differences would treat the perspective grid as orthogonal and
+// turn camera orientation into combustion dynamics. With neighbour values D
+// and basis columns B, scalar gradients solve Bᵀ∇f = D while the velocity
+// Jacobian solves J B = Dᵤ.
+bool previousCombustionDifferential(
     vec3 worldPosition,
     vec3 stepX,
     vec3 stepY,
     vec3 stepZ,
-    out vec3 pressureGradient
+    out CombustionDifferential differential
 ) {
-    pressureGradient = vec3(0.0);
+    differential.pressureGradient = vec3(0.0);
+    differential.vorticity = vec3(0.0);
+    differential.activityGradient = vec3(0.0);
     mat3 basis = mat3(stepX, stepY, stepZ);
     float basisDeterminant = determinant(basis);
     if (abs(basisDeterminant) <= 1.0e-8) {
         return false;
     }
-    vec3 centralDifference = 0.5 * vec3(
-        previousSpecificOverpressure(worldPosition + stepX)
-            - previousSpecificOverpressure(worldPosition - stepX),
-        previousSpecificOverpressure(worldPosition + stepY)
-            - previousSpecificOverpressure(worldPosition - stepY),
-        previousSpecificOverpressure(worldPosition + stepZ)
-            - previousSpecificOverpressure(worldPosition - stepZ)
+
+    vec3 offsets[6] = vec3[6](
+        stepX, -stepX,
+        stepY, -stepY,
+        stepZ, -stepZ
     );
-    pressureGradient = inverse(transpose(basis)) * centralDifference;
-    return !any(isnan(pressureGradient)) && !any(isinf(pressureGradient));
+    vec4 chemistry[6];
+    vec4 dynamics[6];
+    vec4 optical[6];
+    for (int neighborIndex = 0; neighborIndex < 6; ++neighborIndex) {
+        if (!samplePreviousTransport(
+                worldPosition + offsets[neighborIndex],
+                chemistry[neighborIndex],
+                dynamics[neighborIndex],
+                optical[neighborIndex])) {
+            return false;
+        }
+    }
+
+    mat3 inverseBasis = inverse(basis);
+    mat3 inverseBasisTranspose = transpose(inverseBasis);
+    vec3 pressureDifferences = 0.5 * vec3(
+        dynamics[0].w - dynamics[1].w,
+        dynamics[2].w - dynamics[3].w,
+        dynamics[4].w - dynamics[5].w
+    );
+    differential.pressureGradient =
+        inverseBasisTranspose * pressureDifferences;
+
+    mat3 velocityDifferences = mat3(
+        0.5 * (dynamics[0].xyz - dynamics[1].xyz),
+        0.5 * (dynamics[2].xyz - dynamics[3].xyz),
+        0.5 * (dynamics[4].xyz - dynamics[5].xyz)
+    );
+    mat3 velocityJacobian = velocityDifferences * inverseBasis;
+    differential.vorticity = vec3(
+        velocityJacobian[1][2] - velocityJacobian[2][1],
+        velocityJacobian[2][0] - velocityJacobian[0][2],
+        velocityJacobian[0][1] - velocityJacobian[1][0]
+    );
+
+    vec3 activityDifferences = 0.5 * vec3(
+        combustionActivity(chemistry[0], optical[0])
+            - combustionActivity(chemistry[1], optical[1]),
+        combustionActivity(chemistry[2], optical[2])
+            - combustionActivity(chemistry[3], optical[3]),
+        combustionActivity(chemistry[4], optical[4])
+            - combustionActivity(chemistry[5], optical[5])
+    );
+    differential.activityGradient =
+        inverseBasisTranspose * activityDifferences;
+
+    return !any(isnan(differential.pressureGradient))
+        && !any(isinf(differential.pressureGradient))
+        && !any(isnan(differential.vorticity))
+        && !any(isinf(differential.vorticity))
+        && !any(isnan(differential.activityGradient))
+        && !any(isinf(differential.activityGradient));
 }
 
 bool carriesCombustion(vec4 chemistry, vec4 optical) {
@@ -1783,6 +1832,19 @@ void transportCombustion(
         chemistry.y = AMBIENT_TEMPERATURE_K
             + (chemistry.y - AMBIENT_TEMPERATURE_K) * exp(-0.42 * dt);
 
+        float activity = combustionActivity(chemistry, optical);
+        CombustionDifferential differential;
+        bool hasDifferential = false;
+        if (dynamics.w > 1.0e-5 || activity > 0.01) {
+            hasDifferential = previousCombustionDifferential(
+                worldPos,
+                neighborStepX,
+                neighborStepY,
+                neighborStepZ,
+                differential
+            );
+        }
+
         // Specific overpressure q is transported beside velocity but remains
         // source-agnostic after injection. Recover -grad(q) in world space so
         // every pressure-producing source expands through the same dynamics
@@ -1790,14 +1852,8 @@ void transportCombustion(
         // owns the cooled plume. q is stored in m²/s² while the grid basis is
         // expressed in world units, hence the squared world-unit conversion.
         if (dynamics.w > 1.0e-5) {
-            vec3 pressureGradient;
-            if (previousOverpressureGradient(
-                    worldPos,
-                    neighborStepX,
-                    neighborStepY,
-                    neighborStepZ,
-                    pressureGradient)) {
-                vec3 pressureAcceleration = -pressureGradient
+            if (hasDifferential) {
+                vec3 pressureAcceleration = -differential.pressureGradient
                     * (WORLD_UNITS_PER_METER * WORLD_UNITS_PER_METER);
                 float pressureAccelerationLength = length(pressureAcceleration);
                 float maxPressureAcceleration =
@@ -1814,6 +1870,64 @@ void transportCombustion(
             );
         }
 
+        // Semi-Lagrangian advection damps curl most aggressively at a thin
+        // fire/smoke interface. Use the same transported-neighbour
+        // differential to restore rotational motion there. This is an
+        // interface force, not an explosion/flame profile branch: any hot or
+        // optically active transported medium follows the same contract.
+        if (hasDifferential && activity > 0.01) {
+            float interfaceGradientLength =
+                length(differential.activityGradient);
+            float vorticityLength = length(differential.vorticity);
+            float meanStepWorld = (
+                length(neighborStepX)
+                    + length(neighborStepY)
+                    + length(neighborStepZ)
+            ) / 3.0;
+            float interfaceContrast = clamp(
+                interfaceGradientLength * meanStepWorld,
+                0.0,
+                1.0
+            );
+            if (interfaceGradientLength > 1.0e-7
+                && vorticityLength > 1.0e-4
+                && interfaceContrast > 0.005) {
+                vec3 interfaceNormal = differential.activityGradient
+                    / interfaceGradientLength;
+                // A pressure-dominated front should remain an expanding
+                // blast, not immediately turn its discretization curl into
+                // tangential motion. As transported q decays, confinement
+                // fades in continuously and rolls the decompressed hot-gas /
+                // smoke interface without knowing which source created it.
+                float decompressedWeight = 1.0 - smoothstep(
+                    0.04,
+                    0.40,
+                    dynamics.w
+                );
+                float confinementWeight = activity
+                    * decompressedWeight
+                    * smoothstep(0.005, 0.18, interfaceContrast);
+                vec3 vorticityAcceleration = cross(
+                    interfaceNormal,
+                    differential.vorticity
+                ) * (
+                    COMBUSTION_VORTICITY_CONFINEMENT_SPEED_MPS
+                        * WORLD_UNITS_PER_METER
+                        * confinementWeight
+                );
+                float vorticityAccelerationLength =
+                    length(vorticityAcceleration);
+                float maxVorticityAcceleration =
+                    COMBUSTION_MAX_VORTICITY_ACCELERATION_MPS2
+                    * WORLD_UNITS_PER_METER;
+                if (vorticityAccelerationLength > maxVorticityAcceleration) {
+                    vorticityAcceleration *= maxVorticityAcceleration
+                        / vorticityAccelerationLength;
+                }
+                dynamics.xyz += vorticityAcceleration * dt;
+            }
+        }
+
         float temperatureExcess = max(
             (chemistry.y - AMBIENT_TEMPERATURE_K) / AMBIENT_TEMPERATURE_K,
             0.0
@@ -1822,11 +1936,33 @@ void transportCombustion(
             * 0.58 * WORLD_UNITS_PER_METER;
         dynamics.y += buoyantAcceleration * dt;
 
-        float activity = combustionActivity(chemistry, optical);
         vec3 metres = worldPos / WORLD_UNITS_PER_METER;
-        vec3 turbulentAcceleration = curlField(
-            metres * 0.38
-                + vec3(0.0, -params.temporal_params.z * 0.23, 0.0)
+        float coarseWaveNumber = 2.0 * PI
+            / COMBUSTION_TURBULENCE_COARSE_EDDY_SCALE_METERS;
+        float detailWaveNumber = 2.0 * PI
+            / COMBUSTION_TURBULENCE_DETAIL_EDDY_SCALE_METERS;
+        vec3 coarseCurl = curlField(
+            metres * coarseWaveNumber
+                + vec3(
+                    0.06,
+                    -COMBUSTION_TURBULENCE_COARSE_RISE_SPEED_MPS,
+                    0.04
+                ) * (coarseWaveNumber * params.temporal_params.z)
+        );
+        const float detailRotation = 0.7417649321;
+        vec3 detailCurl = rotateY(
+            curlField(
+                rotateY(metres, detailRotation) * detailWaveNumber
+                    + vec3(
+                        -0.08,
+                        -COMBUSTION_TURBULENCE_DETAIL_RISE_SPEED_MPS,
+                        0.11
+                    ) * (detailWaveNumber * params.temporal_params.z)
+            ),
+            -detailRotation
+        );
+        vec3 turbulentAcceleration = (
+            coarseCurl * 0.72 + detailCurl * 0.42
         ) * (1.6 * WORLD_UNITS_PER_METER * activity);
         dynamics.xyz += turbulentAcceleration * dt;
         dynamics.xyz *= exp(-0.48 * dt);

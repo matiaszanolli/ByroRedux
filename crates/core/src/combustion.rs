@@ -39,6 +39,39 @@ pub const OVERPRESSURE_DISSIPATION_PER_SECOND: f32 = 2.8;
 /// tying the dynamics to an authored effect lifetime.
 pub const MAX_PRESSURE_ACCELERATION_MPS2: f32 = 18.0;
 
+/// Velocity scale used by interface vorticity confinement, metres per second.
+///
+/// Semi-Lagrangian transport is deliberately stable but numerically diffuses
+/// the rotational motion that rolls a flame or smoke boundary. This canonical
+/// scale restores that lost motion from the transported field itself; it is
+/// independent of the source profile and originating game.
+pub const VORTICITY_CONFINEMENT_SPEED_MPS: f32 = 0.75;
+
+/// Numerical ceiling for interface-confinement acceleration, metres per
+/// second squared.
+///
+/// Under-resolved velocity gradients can otherwise create a one-frame impulse
+/// at a froxel-size discontinuity. The cap preserves direction while keeping
+/// the dynamics inside the shared solver's physical range.
+pub const MAX_VORTICITY_ACCELERATION_MPS2: f32 = 5.0;
+
+/// Diameter of the broad transported-combustion eddies, metres.
+pub const TURBULENCE_COARSE_EDDY_SCALE_METERS: f32 = 1.6;
+
+/// Diameter of the interface-detail eddies, metres.
+///
+/// This remains above the combustion lab's near-field froxel spacing, so the
+/// solver resolves the motion instead of aliasing procedural detail into
+/// frame noise.
+pub const TURBULENCE_DETAIL_EDDY_SCALE_METERS: f32 = 0.48;
+
+/// Upward translation speed of the broad eddy field, metres per second.
+pub const TURBULENCE_COARSE_RISE_SPEED_MPS: f32 = 0.30;
+
+/// Upward translation speed of the smaller interface eddies, metres per
+/// second.
+pub const TURBULENCE_DETAIL_RISE_SPEED_MPS: f32 = 0.55;
+
 /// First-order removal rate for transported combustion aerosol.
 ///
 /// Absorption and scattering decay together so a plume keeps its canonical
@@ -163,6 +196,11 @@ mod tests {
         assert!(EXPLOSION_EXPANSION_TIME_SECONDS > 0.0);
         assert!(EXPLOSION_IMPULSE_DURATION_SECONDS > EXPLOSION_EXPANSION_TIME_SECONDS);
         assert!(MAX_PRESSURE_ACCELERATION_MPS2 > 0.0);
+        assert!(VORTICITY_CONFINEMENT_SPEED_MPS > 0.0);
+        assert!(MAX_VORTICITY_ACCELERATION_MPS2 > 0.0);
+        assert!(TURBULENCE_COARSE_EDDY_SCALE_METERS > TURBULENCE_DETAIL_EDDY_SCALE_METERS);
+        assert!(TURBULENCE_DETAIL_EDDY_SCALE_METERS > 0.0);
+        assert!(TURBULENCE_DETAIL_RISE_SPEED_MPS > TURBULENCE_COARSE_RISE_SPEED_MPS);
         let pressure_remaining =
             (-OVERPRESSURE_DISSIPATION_PER_SECOND * EXPLOSION_IMPULSE_DURATION_SECONDS).exp();
         assert!(pressure_remaining < 0.02);

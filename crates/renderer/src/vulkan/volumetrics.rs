@@ -2881,11 +2881,23 @@ mod unit_tests {
             "optical.rgb *= exp(-COMBUSTION_AEROSOL_DISSIPATION_PER_SECOND * dt);",
             "float specificOverpressure = 0.5 * expansionSpeedMps * expansionSpeedMps;",
             "dynamics.w = max(",
-            "bool previousOverpressureGradient(",
-            "pressureGradient = inverse(transpose(basis)) * centralDifference;",
-            "vec3 pressureAcceleration = -pressureGradient",
+            "struct CombustionDifferential {",
+            "bool previousCombustionDifferential(",
+            "mat3 inverseBasis = inverse(basis);",
+            "mat3 velocityJacobian = velocityDifferences * inverseBasis;",
+            "differential.activityGradient =",
+            "vec3 pressureAcceleration = -differential.pressureGradient",
             "COMBUSTION_MAX_PRESSURE_ACCELERATION_MPS2",
             "COMBUSTION_OVERPRESSURE_DISSIPATION_PER_SECOND",
+            "vec3 vorticityAcceleration = cross(",
+            "COMBUSTION_VORTICITY_CONFINEMENT_SPEED_MPS",
+            "COMBUSTION_MAX_VORTICITY_ACCELERATION_MPS2",
+            "float decompressedWeight = 1.0 - smoothstep(",
+            "COMBUSTION_TURBULENCE_COARSE_EDDY_SCALE_METERS",
+            "COMBUSTION_TURBULENCE_DETAIL_EDDY_SCALE_METERS",
+            "COMBUSTION_TURBULENCE_COARSE_RISE_SPEED_MPS",
+            "COMBUSTION_TURBULENCE_DETAIL_RISE_SPEED_MPS",
+            "coarseCurl * 0.72 + detailCurl * 0.42",
             "blackbodyVisibleRadianceRatio(chemistry.y, 1850.0)",
             "float buoyantAcceleration = min(temperatureExcess, 7.0)",
             "LocalMedium combustionMedium(vec4 chemistry, vec4 optical)",
@@ -2939,6 +2951,17 @@ mod unit_tests {
             !shader.contains("float sigmaS = dynamics.w")
                 && !shader.contains("float sigmaT = dynamics.w"),
             "canonical dynamics must not regain an optical side channel"
+        );
+        let differential_solver = shader
+            .split_once("bool previousCombustionDifferential(")
+            .and_then(|(_, tail)| tail.split_once("bool carriesCombustion("))
+            .map(|(body, _)| body)
+            .expect("canonical combustion differential body");
+        assert!(
+            !differential_solver.contains("profileKind")
+                && !differential_solver.contains("FOG_VOLUME_PROFILE_")
+                && !differential_solver.contains("GameKind"),
+            "local flow differentials must depend on transported state, never source identity"
         );
         assert!(
             !shader.contains("GameKind")
