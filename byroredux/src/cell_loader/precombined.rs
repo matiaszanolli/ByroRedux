@@ -400,6 +400,7 @@ impl PrecombinedSpawnJob {
                 Some(&path),
                 None,
                 None,
+                None,
             );
             let spawn_elapsed = spawn_started.elapsed();
             let total_elapsed = hash_started.elapsed();

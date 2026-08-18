@@ -256,6 +256,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("IsFxMesh", "spawn-time classification lifted from a per-frame material-path scan (PERF-D3-NEW-02/#1136), rederived identically every load"),
         ("IsLodTerrain", "spawn-time classification set only by terrain_lod::spawn_lod_block, rederived identically every load"),
         ("LightTuning", "live-tuning resource mutated only by the light.atten debug console command, for A/B comparison — not gameplay state"),
+        ("Locked", "XLOC lock data, rederived identically from the plugin's parsed REFR every cell load (#3098) — becomes save-relevant once a lockpicking/unlock system exists"),
         ("LoadedCellIndex", "read-only parsed-ESM cell index, Arc-shared scene metadata rebuilt every cell load"),
         ("LoadedPluginSet", "boot-time CLI --esm/--master capture, reused only to re-invoke load_cell_with_masters — not gameplay state"),
         ("MaterialTextureHandles", "bindless GPU texture handle set, rebuilt by the texture-upload path every load — handles aren't stable across process restarts"),

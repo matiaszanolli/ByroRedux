@@ -18,7 +18,7 @@ use byroredux_core::settings::{
 use winit::event::MouseButton;
 use winit::keyboard::KeyCode;
 
-use crate::components::{DoorTeleport, InputState, DEFAULT_LOOK_SENSITIVITY};
+use crate::components::{DoorTeleport, InputState, Locked, DEFAULT_LOOK_SENSITIVITY};
 
 pub(crate) const MOUSE_SENSITIVITY_SETTING_ID: &str = "controls.mouse_sensitivity";
 pub(crate) const INVERT_LOOK_Y_SETTING_ID: &str = "controls.invert_y";
@@ -880,6 +880,15 @@ fn collect_candidates(world: &World) -> Vec<(EntityId, InteractionKind)> {
 }
 
 fn activation_is_blocked(world: &World, entity: EntityId) -> bool {
+    // #3098 — locked ⇒ not activatable. This is the deliberately blunt
+    // first policy: no key check, no lockpicking, no "locked but you
+    // have the key" carve-out. Every REFR that reaches this gate with a
+    // `Locked` component was parsed off an authored `XLOC`, so this
+    // covers doors today and containers as soon as they gain an
+    // activation path of their own (see `Locked`'s doc for scope).
+    if world.get::<Locked>(entity).is_some() {
+        return true;
+    }
     world
         .get::<byroredux_scripting::papyrus_demo::mg07_door::MG07LabyrinthianDoor>(entity)
         .is_some_and(|door| door.disabled || door.activation_blocked)

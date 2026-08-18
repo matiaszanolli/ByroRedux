@@ -463,6 +463,45 @@ pub struct PlacedRef {
     /// this whole class of placed-reference scripting attached nothing.
     /// See audit SCR-D7-01.
     pub script_instance: Option<ScriptInstanceData>,
+    /// Lock state from the REFR's `XLOC` sub-record. `Some` iff the
+    /// placement author checked "Locked" in the Creation Kit / GECK —
+    /// the subrecord is entirely absent otherwise, so presence alone
+    /// means locked (confirmed against `openmw`'s `ESM4::Reference`
+    /// reader, which sets `mIsLocked = true` unconditionally on `XLOC`
+    /// presence). Applies to both doors and containers; `None` means
+    /// unlocked / not applicable. See #3098.
+    pub lock: Option<LockData>,
+}
+
+/// Lock state decoded from a REFR's `XLOC` sub-record.
+///
+/// Wire layout (12-byte common prefix, cross-game): `lock_level(u8)` +
+/// 3 unused bytes + `key(FormID, u32, 0 = none)` + `flags(u8)` + 3
+/// unused bytes. Oblivion sometimes pads to 16 bytes and Skyrim/FO3
+/// pad to 20 with additional trailing bytes of unconfirmed purpose
+/// (cross-checked against `openmw`'s `ESM4::Reference::load`, whose own
+/// comment flags the trailing byte as `// flag?` — not just this
+/// engine's uncertainty). We read the confirmed 12-byte prefix and
+/// ignore anything past it, the same tolerant-prefix approach already
+/// used for `XTEL` above.
+///
+/// Scope note (#3098): this is the **parse-and-store** half only. Key
+/// checks and the lockpicking minigame are deferred to a future
+/// milestone; today the only consumer policy is "locked ⇒ not
+/// activatable" (see `byroredux/src/interaction.rs`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LockData {
+    /// Lock difficulty (0 = trivial .. 100 = master-tier, roughly;
+    /// exact per-game tier boundaries are a gameplay-policy concern,
+    /// not a parse-time one).
+    pub lock_level: u8,
+    /// FormID of the key that opens this lock, if any. `None` when the
+    /// raw FormID is 0 (no key required — pure lockpick/level gate).
+    pub key_form_id: Option<u32>,
+    /// Raw flag byte trailing the key FormID. Bit semantics are not
+    /// confirmed against a primary source (see struct doc) so this
+    /// rides through unparsed rather than being guessed at.
+    pub flags: u8,
 }
 
 /// Per-slot texture swap from one `XTXR` sub-record — a TXST form ID

@@ -618,3 +618,55 @@ fn parse_real_fo3_esm_surfaces_wasteland_worldspace() {
         "FO3 Wasteland must author NAM0/NAM9"
     );
 }
+
+/// #3098 real-data oracle — the vanilla FNV master must actually author
+/// locked doors/containers, and the walker must surface them. An
+/// aggregate coverage assertion rather than a single pinned FormID:
+/// asserting one specific door's exact lock level would fabricate a
+/// fact this test can't independently verify (see the project's
+/// no-guessing policy). Counting real `XLOC` occurrences across the
+/// whole master is the honest version of "parses a known locked FNV
+/// door" — it fails loud if the parser regresses to seeing none.
+#[test]
+#[ignore]
+fn fnv_xloc_locks_are_parsed_from_real_data() {
+    let path = crate::esm::test_paths::fnv_esm();
+    if !path.exists() {
+        eprintln!("Skipping: FalloutNV.esm not found at {}", path.display());
+        return;
+    }
+    let data = std::fs::read(&path).unwrap();
+    let index = parse_esm_cells(&data).unwrap();
+
+    let all_refs = index.cells.values().flat_map(|c| c.references.iter()).chain(
+        index
+            .exterior_cells
+            .values()
+            .flat_map(|grid| grid.values())
+            .flat_map(|c| c.references.iter()),
+    );
+
+    let mut locked_count = 0usize;
+    let mut keyed_count = 0usize;
+    let mut min_level = u8::MAX;
+    let mut max_level = 0u8;
+    for r in all_refs {
+        let Some(lock) = r.lock else { continue };
+        locked_count += 1;
+        if lock.key_form_id.is_some() {
+            keyed_count += 1;
+        }
+        min_level = min_level.min(lock.lock_level);
+        max_level = max_level.max(lock.lock_level);
+    }
+
+    eprintln!(
+        "FNV: {locked_count} locked REFRs ({keyed_count} with a key FormID), \
+         lock_level range {min_level}..={max_level}"
+    );
+    assert!(
+        locked_count > 0,
+        "FalloutNV.esm ships locked doors/containers (Goodsprings, NCR, \
+         vaults, ...) — a zero count means XLOC regressed to unparsed"
+    );
+}

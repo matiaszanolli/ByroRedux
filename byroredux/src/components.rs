@@ -77,6 +77,36 @@ impl Component for DoorTeleport {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// REFR placement carries an XLOC lock — this entity (door or
+/// container) is locked and must not be treated as activatable until
+/// the deferred key-check / lockpicking policy exists.
+///
+/// Captured from `PlacedRef.lock` at spawn time (#3098). Deliberately a
+/// component of its own rather than a field bolted onto `DoorTeleport`:
+/// containers carry `XLOC` too and have no teleport data at all, so a
+/// shared component is the only shape that covers both. The interaction
+/// system's `activation_is_blocked` gate is the only consumer today —
+/// key checks, lock-level-gated lockpicking, and container activation
+/// itself are all deferred follow-up work (see the issue for scope).
+///
+/// Sparse storage — locked REFRs are a small minority of placements.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Locked {
+    /// Lock difficulty as authored (see `byroredux_plugin::esm::cell::LockData`
+    /// for the wire-level meaning). Not yet consumed by any policy —
+    /// present so the eventual lockpicking system doesn't need a second
+    /// data-plumbing pass.
+    #[allow(dead_code)]
+    pub(crate) lock_level: u8,
+    /// FormID of the key that opens this lock, if any. Not yet consumed
+    /// — key-carry / key-check gameplay is deferred (see struct doc).
+    #[allow(dead_code)]
+    pub(crate) key_form_id: Option<u32>,
+}
+impl Component for Locked {
+    type Storage = SparseSetStorage<Self>;
+}
+
 /// Marker component for "FX" decorative meshes (`effects/fx*`, `fxsoftglow`,
 /// `fxpartglow`, `fxparttiny`, `fxlightrays`) that the renderer drops on
 /// the floor. Lifted from a per-draw, per-frame substring scan over the

@@ -36,6 +36,7 @@ fn placed_ref(form_id: u32) -> PlacedRef {
         material_swap_ref: None,
         ownership: None,
         script_instance: None,
+        lock: None,
     }
 }
 

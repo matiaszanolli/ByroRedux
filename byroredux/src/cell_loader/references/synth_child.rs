@@ -567,6 +567,10 @@ pub(super) fn spawn_synth_child(
         Some(cache_key.as_str()),
         is_primary_synth.then_some(placement_pair),
         is_primary_synth.then_some(placed_ref.teleport).flatten(),
+        // #3098 — same primary-synth gating as `teleport` above: XLOC is
+        // REFR-level data, not per-synthetic-child, so only the first
+        // SCOL/PKIN-expansion child carries it.
+        is_primary_synth.then_some(placed_ref.lock).flatten(),
     );
     accum.entity_count += count;
     accum.packed_collision_fallbacks += spawn_stats.packed_collision_fallbacks;

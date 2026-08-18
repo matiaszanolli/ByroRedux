@@ -43,6 +43,7 @@ fn empty_placed_ref(base_form_id: u32) -> PlacedRef {
         material_swap_ref: None,
         ownership: None,
         script_instance: None,
+        lock: None,
     }
 }
 

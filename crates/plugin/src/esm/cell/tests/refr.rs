@@ -116,6 +116,10 @@ fn refr_embedded_form_ids_remap_to_global_space() {
     let xmsp = fid(0x10E).to_le_bytes();
     let xown = fid(0x10F).to_le_bytes();
     let xglb = fid(0x110).to_le_bytes();
+    // XLOC: lock_level(u8) + 3 pad + key FormID(u32) + flags(u8) + 3 pad.
+    let mut xloc = vec![7u8, 0, 0, 0];
+    xloc.extend_from_slice(&fid(0x111).to_le_bytes());
+    xloc.extend_from_slice(&[0u8; 4]); // flags + pad
 
     let record = build_refr_with_subs(
         fid(0x100),
@@ -133,6 +137,7 @@ fn refr_embedded_form_ids_remap_to_global_space() {
             (b"XMSP", &xmsp),
             (b"XOWN", &xown),
             (b"XGLB", &xglb),
+            (b"XLOC", &xloc),
         ],
     );
     let placed = parse_one_refr_with_remap(
@@ -158,6 +163,83 @@ fn refr_embedded_form_ids_remap_to_global_space() {
     let ownership = placed.ownership.expect("XOWN tuple");
     assert_eq!(ownership.owner_form_id, global(0x10F));
     assert_eq!(ownership.global_var_form_id, Some(global(0x110)));
+    let lock = placed.lock.expect("XLOC tuple");
+    assert_eq!(lock.lock_level, 7);
+    assert_eq!(lock.key_form_id, Some(global(0x111)));
+}
+
+/// #3098 — `XLOC` lock state. Layout cross-checked against `openmw`'s
+/// `ESM4::Reference::load` (the same reference used to confirm `XTEL`'s
+/// 28-byte prefix above): `lock_level(u8)` + 3 unused + `key(FormID)` +
+/// `flags(u8)` + 3 unused, 12 bytes minimum.
+#[test]
+fn parse_refr_extracts_xloc_lock_data() {
+    let mut xloc = vec![42u8, 0, 0, 0]; // lock_level=42, padding
+    xloc.extend_from_slice(&0x0001_2345u32.to_le_bytes()); // key FormID
+    xloc.push(0x03); // flags (raw, semantics unconfirmed)
+    xloc.extend_from_slice(&[0u8; 3]);
+
+    let record = build_refr_with_subs(0xABCD, &[(b"XLOC", &xloc)]);
+    let placed = parse_one_refr(&record);
+
+    let lock = placed.lock.expect("XLOC must decode into PlacedRef.lock");
+    assert_eq!(lock.lock_level, 42);
+    assert_eq!(lock.key_form_id, Some(0x0001_2345));
+    assert_eq!(lock.flags, 0x03);
+}
+
+/// A REFR with no `XLOC` sub-record at all is unlocked — the CK/GECK
+/// only writes the sub-record when "Locked" is checked, so absence
+/// (not a `lock_level == 0` sentinel) is the "unlocked" signal.
+#[test]
+fn parse_refr_without_xloc_is_unlocked() {
+    let record = build_refr_with_subs(0xABCD, &[]);
+    let placed = parse_one_refr(&record);
+    assert!(placed.lock.is_none());
+}
+
+/// A zero key FormID means "no key required" (pure lock-level /
+/// lockpick gate), not a dangling reference to form 0.
+#[test]
+fn parse_refr_xloc_zero_key_form_id_is_none() {
+    let mut xloc = vec![10u8, 0, 0, 0];
+    xloc.extend_from_slice(&0u32.to_le_bytes());
+    xloc.push(0);
+    xloc.extend_from_slice(&[0u8; 3]);
+
+    let record = build_refr_with_subs(0xABCD, &[(b"XLOC", &xloc)]);
+    let placed = parse_one_refr(&record);
+
+    let lock = placed.lock.expect("XLOC must decode even with no key");
+    assert_eq!(lock.lock_level, 10);
+    assert_eq!(lock.key_form_id, None);
+}
+
+/// Oblivion sometimes pads `XLOC` to 16 bytes and Skyrim/FO3 to 20 —
+/// both variants must parse identically to the 12-byte prefix (the
+/// trailing bytes are read-and-discarded, same tolerant-prefix
+/// approach as `XTEL`).
+#[test]
+fn parse_refr_xloc_tolerates_oblivion_and_skyrim_padding() {
+    let mut base = vec![5u8, 0, 0, 0];
+    base.extend_from_slice(&0x0000_9999u32.to_le_bytes());
+    base.push(0x01);
+    base.extend_from_slice(&[0u8; 3]);
+    assert_eq!(base.len(), 12);
+
+    let mut oblivion_16 = base.clone();
+    oblivion_16.extend_from_slice(&[0u8; 4]);
+    let mut skyrim_20 = base.clone();
+    skyrim_20.extend_from_slice(&[0u8; 8]);
+
+    for variant in [base, oblivion_16, skyrim_20] {
+        let record = build_refr_with_subs(0xABCD, &[(b"XLOC", &variant)]);
+        let placed = parse_one_refr(&record);
+        let lock = placed.lock.expect("XLOC must decode regardless of padding");
+        assert_eq!(lock.lock_level, 5);
+        assert_eq!(lock.key_form_id, Some(0x0000_9999));
+        assert_eq!(lock.flags, 0x01);
+    }
 }
 
 /// SCR-D7-01 (#1737) — a Skyrim+ placed reference can carry its OWN `VMAD`

@@ -25,8 +25,8 @@ use crate::asset_provider::{
 };
 use crate::components::{
     decal_uses_implicit_alpha_blend, texture_path_is_fx_mesh, AlphaBlend, DoorTeleport,
-    IsDecalMesh, IsFxMesh, MaterialTextureDebugInfo, MaterialTextureHandles, MaterialTextureSource,
-    TwoSided,
+    IsDecalMesh, IsFxMesh, Locked, MaterialTextureDebugInfo, MaterialTextureHandles,
+    MaterialTextureSource, TwoSided,
 };
 
 use super::nif_import_registry::CachedNifImport;
@@ -533,6 +533,10 @@ pub(super) fn spawn_placed_instances(
     // activate system) reads to drive cell-swap orchestration. `None` on
     // every non-door REFR + on the precombined / loose-NIF spawn paths.
     teleport: Option<esm::cell::TeleportDest>,
+    // #3098 — XLOC lock payload from `PlacedRef.lock`. `None` on the
+    // vast majority of REFRs (unlocked); `Some` on locked doors and
+    // containers. Threaded through the same way as `teleport` above.
+    lock: Option<esm::cell::LockData>,
 ) -> (byroredux_core::ecs::EntityId, usize, PlacementSpawnTimings) {
     let total_started = Instant::now();
     let imported = &cached.meshes;
@@ -561,6 +565,7 @@ pub(super) fn spawn_placed_instances(
         ref_scale,
         placement_form_id_pair,
         teleport,
+        lock,
     );
 
     // Pre-compute how many NIF lights will actually spawn. The
@@ -745,6 +750,10 @@ fn spawn_placement_root(
     ref_scale: f32,
     placement_form_id_pair: Option<FormIdPair>,
     teleport: Option<esm::cell::TeleportDest>,
+    // #3098 — XLOC lock payload from `PlacedRef.lock`. `Some` on any
+    // locked door or container; `None` (the common case) leaves the
+    // placement root without a `Locked` component.
+    lock: Option<esm::cell::LockData>,
 ) -> (
     byroredux_core::ecs::EntityId,
     Option<byroredux_core::form_id::FormId>,
@@ -806,6 +815,20 @@ fn spawn_placement_root(
                 destination_form_id: t.destination,
                 position_zup: t.position,
                 rotation_zup: t.rotation,
+            },
+        );
+    }
+    // #3098 — XLOC lock plumbing. Stamped on the placement root for any
+    // locked door OR container (this fn is generic across REFR base
+    // types, so this is the shared spawn site for both) so the
+    // interaction system's activation gate has something to consult.
+    // See `Locked`'s doc for what's deferred.
+    if let Some(l) = lock {
+        world.insert(
+            placement_root,
+            Locked {
+                lock_level: l.lock_level,
+                key_form_id: l.key_form_id,
             },
         );
     }

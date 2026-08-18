@@ -664,6 +664,10 @@ pub(crate) fn parse_refr_group(
             let mut ownership_owner: Option<u32> = None;
             let mut ownership_rank: Option<i32> = None;
             let mut ownership_global: Option<u32> = None;
+            // #3098 — REFR lock state. `Some` iff the placement carries
+            // an `XLOC` sub-record (the CK/GECK only writes it when
+            // "Locked" is checked), so presence alone is the lock gate.
+            let mut lock: Option<LockData> = None;
             // SCR-D7-01 / #1737 — the REFR's own `VMAD` (Skyrim+
             // objectReference override scripts), decoded so the cell loader
             // can attach them additively with the base record's scripts.
@@ -866,6 +870,25 @@ pub(crate) fn parse_refr_group(
                     b"XGLB" => {
                         ownership_global = r.u32().ok().map(|fid| reader.remap_form_id(fid));
                     }
+                    // XLOC — lock state (#3098). 12-byte common prefix:
+                    // lock_level(u8) + 3 unused + key FormID(u32) +
+                    // flags(u8) + 3 unused. Games pad this to 16
+                    // (Oblivion) or 20 (Skyrim/FO3) bytes with trailing
+                    // fields of unconfirmed purpose — see `LockData`'s
+                    // doc for the openmw cross-check. We read the
+                    // confirmed prefix and ignore the rest, same as the
+                    // `XTEL` tolerant-prefix read above.
+                    b"XLOC" if sub.data.len() >= 12 => {
+                        let lock_level = r.u8_or_default();
+                        r.skip_or_eof(3);
+                        let key = reader.remap_form_id(r.u32_or_default());
+                        let flags = r.u8_or_default();
+                        lock = Some(LockData {
+                            lock_level,
+                            key_form_id: (key != 0).then_some(key),
+                            flags,
+                        });
+                    }
                     _ => {}
                 }
             }
@@ -901,6 +924,7 @@ pub(crate) fn parse_refr_group(
                     material_swap_ref,
                     ownership,
                     script_instance: ref_script_instance,
+                    lock,
                 });
             }
         } else if &header.record_type == b"LAND" {
