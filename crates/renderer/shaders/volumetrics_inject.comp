@@ -944,11 +944,17 @@ void applyCombustionSources(
         // density at its current age once so an in-progress blast does not
         // disappear merely because storage was reset.
         float age = clamp(volume.profile_params.y, 0.0, 1.0);
+        float lifetime = max(volume.profile_params.z, 0.12);
+        float ageSeconds = age * lifetime;
         float ignitionEnvelope = 1.0 - smoothstep(0.18, 0.52, age);
         float smokeEnvelope = smoothstep(0.18, 0.72, age)
             * (1.0 - smoothstep(0.88, 1.0, age));
         bool coldHistory = params.prev_camera_pos.w <= 0.5;
-        float impulseEnvelope = 1.0 - smoothstep(0.12, 0.24, age);
+        float impulseEnvelope = 1.0 - smoothstep(
+            EXPLOSION_IMPULSE_DURATION_SECONDS * 0.35,
+            EXPLOSION_IMPULSE_DURATION_SECONDS,
+            ageSeconds
+        );
         float coreRadius = length(normalizedOffset);
         float compactCore = 1.0 - smoothstep(0.12, 0.36, coreRadius);
         float ignitionMask = densityProfile * (
@@ -997,13 +1003,12 @@ void applyCombustionSources(
         radialDirection = radialLength > 1.0e-4
             ? radialDirection / radialLength
             : vec3(0.0, 1.0, 0.0);
-        float lifetime = max(volume.profile_params.z, 0.12);
         float radius = max(
             volume.half_extents_extinction.x,
             max(volume.half_extents_extinction.y, volume.half_extents_extinction.z)
         );
         float expansionSpeed = min(
-            radius / lifetime * 2.2,
+            radius / EXPLOSION_EXPANSION_TIME_SECONDS,
             MAX_COMBUSTION_SPEED_MPS * WORLD_UNITS_PER_METER
         );
         float impulseScale = !coldHistory

@@ -14,6 +14,7 @@
 pub mod animation;
 pub mod character;
 pub mod combat;
+pub mod combustion;
 pub mod console;
 pub mod ecs;
 pub mod form_id;

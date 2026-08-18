@@ -43,12 +43,12 @@
 //! entirely through `Material::diffuse_color` so a single
 //! `mat.set <id> color r g b` tweak fully recolors a probe.
 
+use byroredux_core::combustion::CombustionRegime;
 use byroredux_core::ecs::{
     CombustionState, FogBounds, FogProfile, FogShape, FogSource, FogVolume, GlobalTransform,
     LightSource, Material, MeshHandle, TextureHandle, TotalTime, Transform, World,
 };
 use byroredux_core::math::{Quat, Vec3};
-use byroredux_core::radiometry::CombustionRegime;
 use byroredux_core::string::StringPool;
 use byroredux_nif::import::ImportedMaterial;
 use byroredux_renderer::vulkan::GpuUploadCtx;

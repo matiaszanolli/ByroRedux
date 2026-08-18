@@ -5,12 +5,12 @@
 //! pixel: conversion happens once when cell/weather data enters the ECS, and
 //! runtime code consumes only [`FogMedium`].
 
+use byroredux_core::combustion::CombustionRegime;
 use byroredux_core::ecs::{
     CombustionState, EmitterShape, FogBounds, FogProfile, FogShape, FogSource, FogVolume,
     ParticleEmitter,
 };
 use byroredux_core::math::{Quat, Vec3};
-use byroredux_core::radiometry::CombustionRegime;
 
 /// Bethesda world units per metre. Positions remain in Bethesda units in the
 /// renderer and TLAS; physical medium coefficients are stored per metre.

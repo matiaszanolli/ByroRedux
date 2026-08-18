@@ -2798,7 +2798,9 @@ mod unit_tests {
             "float inwardSpeed = min(dot(velocity.xyz, boundaryNormal), 0.0);",
             "velocity.xyz -= boundaryNormal * inwardSpeed;",
             "vec3 predictedPosition = worldPos + velocity.xyz * dt;",
-            "float impulseEnvelope = 1.0 - smoothstep(0.12, 0.24, age);",
+            "float ageSeconds = age * lifetime;",
+            "EXPLOSION_IMPULSE_DURATION_SECONDS * 0.35",
+            "radius / EXPLOSION_EXPANSION_TIME_SECONDS",
             "compactCore * impulseEnvelope",
             ": ignitionMask * 0.22;",
             "float reactionRate = 2.4 * chemistry.x * velocity.w * ignition;",
@@ -2835,6 +2837,10 @@ mod unit_tests {
         assert!(
             !shader.contains("chemistry.y + burnedFuel * 2350.0"),
             "combustion heat must approach equilibrium rather than add a runaway fixed increment"
+        );
+        assert!(
+            !shader.contains("radius / lifetime"),
+            "smoke lifetime must not slow the explosion's radial impulse"
         );
         assert!(
             !shader.contains("GameKind")

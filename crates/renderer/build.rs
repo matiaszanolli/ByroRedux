@@ -182,6 +182,16 @@ fn main() {
         "#define ADIABATIC_FLAME_TEMPERATURE_K {ADIABATIC_FLAME_TEMPERATURE_K:?}"
     )
     .unwrap();
+    writeln!(
+        out,
+        "#define EXPLOSION_EXPANSION_TIME_SECONDS {EXPLOSION_EXPANSION_TIME_SECONDS:?}"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define EXPLOSION_IMPULSE_DURATION_SECONDS {EXPLOSION_IMPULSE_DURATION_SECONDS:?}"
+    )
+    .unwrap();
     writeln!(out).unwrap();
     writeln!(out, "// Transported-combustion light-moment reduction").unwrap();
     writeln!(
