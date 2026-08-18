@@ -279,6 +279,16 @@ fn main() {
     .unwrap();
     writeln!(
         out,
+        "#define COMBUSTION_AEROSOL_LIFT_ACCELERATION_MPS2 {COMBUSTION_AEROSOL_LIFT_ACCELERATION_MPS2:?}"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define COMBUSTION_AEROSOL_LIFT_EXTINCTION_SCALE {COMBUSTION_AEROSOL_LIFT_EXTINCTION_SCALE:?}"
+    )
+    .unwrap();
+    writeln!(
+        out,
         "#define FLAME_FUEL_BOUNDARY_HEIGHT_FRACTION {FLAME_FUEL_BOUNDARY_HEIGHT_FRACTION:?}"
     )
     .unwrap();

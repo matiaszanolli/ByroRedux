@@ -1984,6 +1984,13 @@ void transportCombustion(
         float buoyantAcceleration = min(temperatureExcess, 7.0)
             * 0.58 * WORLD_UNITS_PER_METER;
         dynamics.y += buoyantAcceleration * dt;
+        float aerosolLift = clamp(
+            chemistry.z * COMBUSTION_AEROSOL_LIFT_EXTINCTION_SCALE,
+            0.0,
+            1.0
+        ) * COMBUSTION_AEROSOL_LIFT_ACCELERATION_MPS2
+            * WORLD_UNITS_PER_METER;
+        dynamics.y += aerosolLift * dt;
 
         vec3 metres = worldPos / WORLD_UNITS_PER_METER;
         float coarseWaveNumber = 2.0 * PI

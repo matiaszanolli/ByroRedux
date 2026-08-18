@@ -117,6 +117,14 @@ pub const AEROSOL_LINGER_CUTOFF_FRACTION: f32 = 0.03;
 /// canonical cutoff after the final emitter disappears.
 pub const AEROSOL_LINGER_SECONDS: f32 = 78.0;
 
+/// Upward entrainment acceleration retained by a cooled aerosol plume,
+/// metres per second squared.
+pub const AEROSOL_LIFT_ACCELERATION_MPS2: f32 = 0.20;
+
+/// Extinction-to-lift scale, inverse metres. Dense transported aerosol gets
+/// the full residual lift while a thin trailing edge fades smoothly.
+pub const AEROSOL_LIFT_EXTINCTION_SCALE: f32 = 20.0;
+
 /// Fraction of a persistent flame primitive occupied by the replenished fuel
 /// boundary, measured upward from its base. The remaining authored extent is
 /// a transport bound: buoyancy/advection must create the visible flame there.
@@ -245,6 +253,8 @@ mod tests {
         let remaining = (-AEROSOL_DISSIPATION_PER_SECOND * AEROSOL_LINGER_SECONDS).exp();
         assert!(remaining <= AEROSOL_LINGER_CUTOFF_FRACTION);
         assert!(remaining > AEROSOL_LINGER_CUTOFF_FRACTION * 0.95);
+        assert!(AEROSOL_LIFT_ACCELERATION_MPS2 > 0.0);
+        assert!(AEROSOL_LIFT_EXTINCTION_SCALE > 0.0);
         assert!(FLAME_FUEL_BOUNDARY_HEIGHT_FRACTION > 0.0);
         assert!(FLAME_REACTION_ZONE_FADE_START_FRACTION < FLAME_FUEL_BOUNDARY_HEIGHT_FRACTION);
         assert!(FLAME_FUEL_BOUNDARY_HEIGHT_FRACTION < FLAME_REACTION_ZONE_HEIGHT_FRACTION);
