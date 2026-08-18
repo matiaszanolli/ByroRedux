@@ -868,16 +868,12 @@ fn register_newcomers(world: &World, newcomers: Vec<Newcomer>) {
         ));
     }
 
-    // Refresh the query-pipeline BVH so the new colliders are visible to
-    // raycasts / contacts THIS frame — WITHOUT force-waking the simulation.
-    // Pre-fix this called `pw.wake()`, which force-stepped the whole sim on
-    // every registration; combined with dynamic newcomers spawning awake,
-    // that stepped thousands of free-falling bodies and stalled the frame for
-    // seconds (the exterior-freeze fix above). Dynamic newcomers now spawn
-    // asleep, so they need no settling step — only the BVH must refresh.
-    // Kinematic newcomers' motion still wakes the sim via `push_kinematic`.
+    // Defer the query-pipeline BVH rebuild until the physics boundary. The
+    // step path performs exactly one full rebuild after any substep (or on a
+    // no-step dirty fast path), avoiding duplicate O(all colliders) work on
+    // streaming frames (#2864).
     if !registered.is_empty() {
-        pw.update_query_pipeline();
+        pw.mark_colliders_dirty();
     }
 
     drop(pw);

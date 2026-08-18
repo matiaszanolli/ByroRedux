@@ -155,6 +155,10 @@ pub struct PhysicsWorld {
     /// pipeline run for a fully-asleep scene without missing the first
     /// frame of newly-introduced motion. See the static-scene fast path.
     pending_wake: bool,
+    /// Collider-set mutation awaiting a query-pipeline rebuild. Registration
+    /// defers this O(all colliders) work until after the physics step so a
+    /// streaming frame does not rebuild the BVH twice (#2864).
+    colliders_dirty: bool,
 }
 
 impl PhysicsWorld {
@@ -193,6 +197,7 @@ impl PhysicsWorld {
             // Step once on the first frame so any bodies present at startup
             // settle / populate the island state.
             pending_wake: true,
+            colliders_dirty: false,
         }
     }
 
@@ -234,6 +239,7 @@ impl PhysicsWorld {
             // deferred cleanup and those wake-ups are not stranded when the
             // scene is otherwise asleep (#2863).
             self.wake();
+            self.colliders_dirty = true;
         }
         removed
     }
@@ -411,6 +417,10 @@ impl PhysicsWorld {
         // Real kinematic *motion* is captured by `pending_wake` instead
         // (`push_kinematic` / `set_kinematic_translation` call `wake()`).
         if self.islands.active_dynamic_bodies().is_empty() && !self.pending_wake {
+            if self.colliders_dirty {
+                self.query_pipeline.update(&self.colliders);
+                self.colliders_dirty = false;
+            }
             self.accumulator = 0.0;
             return 0;
         }
@@ -508,8 +518,9 @@ impl PhysicsWorld {
         // One BVH refit per frame after all substeps, only when something
         // actually stepped (the fast-path early-return above skips this when
         // the scene is asleep and colliders haven't moved).
-        if steps > 0 {
+        if steps > 0 || self.colliders_dirty {
             self.query_pipeline.update(&self.colliders);
+            self.colliders_dirty = false;
         }
         steps
     }
@@ -597,6 +608,12 @@ impl PhysicsWorld {
     /// registration to flush the BVH.
     pub fn update_query_pipeline(&mut self) {
         self.query_pipeline.update(&self.colliders);
+        self.colliders_dirty = false;
+    }
+
+    /// Defer the query-pipeline rebuild until the next physics boundary.
+    pub fn mark_colliders_dirty(&mut self) {
+        self.colliders_dirty = true;
     }
 
     /// Cast a downward ray from `origin` and return the Y-coordinate
