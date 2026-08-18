@@ -286,14 +286,11 @@ fn resolve_inherited_inventory_inner<'a>(
 /// in-place so the caller can build a mixed flat list across multiple
 /// initial seeds without intermediate allocations.
 ///
-/// **Determinism.** The default (LVLI "calculate for each item" flag,
-/// bit 1 / value `0x02`, unset) single-picks the *highest-level entry
-/// whose level ≤ actor_level* — stable output per-actor without a seeded
-/// RNG. When that flag IS set the resolver multi-picks: every eligible
-/// entry is expanded, which over-equips slightly compared to Bethesda's
-/// per-item runtime roll but is the safer-than-skipping default for a
-/// rendering audit. Vanilla outfits rarely set the flag. Both branches
-/// are implemented (see the `multi_pick` split below).
+/// **Determinism.** Without TES5's `Use All` flag (bit 2 / `0x04`) or
+/// `Calculate for each item` (bit 1 / `0x02`), the resolver single-picks the
+/// *highest-level entry whose level ≤ actor_level*. Either multi-entry flag
+/// expands every eligible entry, preserving authored armour bundles instead
+/// of silently reducing them to one piece.
 ///
 /// **`chance_none`.** Treated as 0 (always produce a result) for the
 /// same render-audit reason. A future RNG-driven dispatch can opt in
@@ -342,11 +339,9 @@ fn expand_leveled_inner(
     };
 
     // Filter entries by `level <= actor_level`, then branch on the LVLI
-    // "calculate for each item" flag (bit 1, `0x02`) below: set → multi-pick
-    // (expand every eligible entry — over-equips slightly vs Bethesda's
-    // per-item runtime roll but safe for the render-audit use case); unset →
-    // single-pick the highest-level eligible entry (the Bethesda default),
-    // stable across reloads with no RNG.
+    // TES5's `Calculate for each item` (bit 1) and `Use All` (bit 2) both
+    // select every eligible entry. The latter is the flag that carries full
+    // armour bundles in vanilla Skyrim.
     let eligible: Vec<&_> = lvli
         .entries
         .iter()
@@ -356,7 +351,7 @@ fn expand_leveled_inner(
         return;
     }
 
-    let multi_pick = lvli.flags & 0x02 != 0;
+    let multi_pick = lvli.flags & (0x02 | 0x04) != 0;
     if multi_pick {
         for entry in &eligible {
             expand_leveled_inner(entry.form_id, actor_level, index, out, depth + 1);
@@ -726,6 +721,22 @@ mod tests {
         assert_eq!(out.len(), 2);
         assert!(out.contains(&0x00AA_AAAA));
         assert!(out.contains(&0x00BB_BBBB));
+    }
+
+    #[test]
+    fn expand_leveled_use_all_flag_lands_all_eligible() {
+        let mut idx = empty_index();
+        add_armo(&mut idx, 0x00CC_CCCC);
+        add_armo(&mut idx, 0x00DD_DDDD);
+        add_lvli(
+            &mut idx,
+            0x00EE_EEEE,
+            0x04, // TES5 LVLF Use All
+            vec![(1, 0x00CC_CCCC, 1), (1, 0x00DD_DDDD, 1)],
+        );
+        let mut out = Vec::new();
+        expand_leveled_form_id(0x00EE_EEEE, 10, &idx, &mut out);
+        assert_eq!(out, vec![0x00CC_CCCC, 0x00DD_DDDD]);
     }
 
     /// Nested LVLI: an outer list whose pick is itself a leveled list

@@ -84,7 +84,8 @@ pub struct LeveledList {
     pub editor_id: String,
     /// 0–100 chance the entire list rolls "nothing".
     pub chance_none: u8,
-    /// Flags (bit 0: calculate from all levels, bit 1: calculate for each item).
+    /// TES5 LVLF flags (bit 0: calculate from all levels, bit 1: calculate
+    /// for each item, bit 2: use all eligible entries).
     pub flags: u8,
     pub entries: Vec<LeveledEntry>,
 }
