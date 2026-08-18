@@ -65,6 +65,11 @@ pub const OVERPRESSURE_DISSIPATION_PER_SECOND: f32 = 2.8;
 /// tying the dynamics to an authored effect lifetime.
 pub const MAX_PRESSURE_ACCELERATION_MPS2: f32 = 18.0;
 
+/// Upper bound for volumetric dilution from a resolved expanding flow, per
+/// second. It limits under-resolved divergence without allowing an expanding
+/// blast to retain constant-density chemistry.
+pub const MAX_DILUTION_RATE_PER_SECOND: f32 = 3.5;
+
 /// Velocity scale used by interface vorticity confinement, metres per second.
 ///
 /// Semi-Lagrangian transport is deliberately stable but numerically diffuses
@@ -228,6 +233,7 @@ mod tests {
         assert!(EXPLOSION_EXPANSION_TIME_SECONDS > 0.0);
         assert!(EXPLOSION_IMPULSE_DURATION_SECONDS > EXPLOSION_EXPANSION_TIME_SECONDS);
         assert!(MAX_PRESSURE_ACCELERATION_MPS2 > 0.0);
+        assert!(MAX_DILUTION_RATE_PER_SECOND > 0.0);
         assert!(VORTICITY_CONFINEMENT_SPEED_MPS > 0.0);
         assert!(MAX_VORTICITY_ACCELERATION_MPS2 > 0.0);
         assert!(TURBULENCE_COARSE_EDDY_SCALE_METERS > TURBULENCE_DETAIL_EDDY_SCALE_METERS);

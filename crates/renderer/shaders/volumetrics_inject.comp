@@ -1386,6 +1386,7 @@ struct CombustionDifferential {
     vec3 pressureGradient;
     vec3 vorticity;
     vec3 activityGradient;
+    float velocityDivergence;
 };
 
 // Recover physical derivatives from the frustum-aligned froxel basis. A plain
@@ -1403,6 +1404,7 @@ bool previousCombustionDifferential(
     differential.pressureGradient = vec3(0.0);
     differential.vorticity = vec3(0.0);
     differential.activityGradient = vec3(0.0);
+    differential.velocityDivergence = 0.0;
     mat3 basis = mat3(stepX, stepY, stepZ);
     float basisDeterminant = determinant(basis);
     if (abs(basisDeterminant) <= 1.0e-8) {
@@ -1448,6 +1450,9 @@ bool previousCombustionDifferential(
         velocityJacobian[2][0] - velocityJacobian[0][2],
         velocityJacobian[0][1] - velocityJacobian[1][0]
     );
+    differential.velocityDivergence = velocityJacobian[0][0]
+        + velocityJacobian[1][1]
+        + velocityJacobian[2][2];
 
     vec3 activityDifferences = 0.5 * vec3(
         combustionActivity(chemistry[0], optical[0])
@@ -1465,7 +1470,9 @@ bool previousCombustionDifferential(
         && !any(isnan(differential.vorticity))
         && !any(isinf(differential.vorticity))
         && !any(isnan(differential.activityGradient))
-        && !any(isinf(differential.activityGradient));
+        && !any(isinf(differential.activityGradient))
+        && !isnan(differential.velocityDivergence)
+        && !isinf(differential.velocityDivergence);
 }
 
 bool carriesCombustion(vec4 chemistry, vec4 optical) {
@@ -1866,6 +1873,25 @@ void transportCombustion(
                 neighborStepZ,
                 differential
             );
+        }
+
+        // Positive divergence is resolved volumetric expansion. Dilute all
+        // transported per-volume chemistry and radiance with that same local
+        // Jacobian so an expanding fireball cannot keep a constant-density
+        // sphere while its velocity field grows. Compression is left to
+        // advection and bounded source injection rather than amplifying a
+        // noisy finite difference.
+        if (hasDifferential) {
+            float dilutionRate = clamp(
+                differential.velocityDivergence,
+                0.0,
+                COMBUSTION_MAX_DILUTION_RATE_PER_SECOND
+            );
+            float dilution = exp(-dilutionRate * dt);
+            chemistry.x *= dilution;
+            chemistry.z *= dilution;
+            chemistry.w *= dilution;
+            optical.rgb *= dilution;
         }
 
         // Specific overpressure q is transported beside velocity but remains

@@ -239,6 +239,11 @@ fn main() {
     .unwrap();
     writeln!(
         out,
+        "#define COMBUSTION_MAX_DILUTION_RATE_PER_SECOND {COMBUSTION_MAX_DILUTION_RATE_PER_SECOND:?}"
+    )
+    .unwrap();
+    writeln!(
+        out,
         "#define COMBUSTION_VORTICITY_CONFINEMENT_SPEED_MPS {COMBUSTION_VORTICITY_CONFINEMENT_SPEED_MPS:?}"
     )
     .unwrap();
