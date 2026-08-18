@@ -294,6 +294,11 @@ fn main() {
     .unwrap();
     writeln!(
         out,
+        "#define COMBUSTION_EXPLOSION_SMOKE_EXTINCTION_SCALE {COMBUSTION_EXPLOSION_SMOKE_EXTINCTION_SCALE:?}"
+    )
+    .unwrap();
+    writeln!(
+        out,
         "#define COMBUSTION_FUEL_VAPOUR_REMOVAL_PER_SECOND {COMBUSTION_FUEL_VAPOUR_REMOVAL_PER_SECOND:?}"
     )
     .unwrap();

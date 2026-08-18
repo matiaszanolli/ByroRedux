@@ -133,6 +133,11 @@ pub const AEROSOL_LIFT_EXTINCTION_SCALE: f32 = 20.0;
 /// thermal relaxation and transported dynamics take over.
 pub const COOLED_AEROSOL_SOURCE_TEMPERATURE_K: f32 = 620.0;
 
+/// Extinction multiplier for the finite cooling shell that seeds transported
+/// explosion smoke. The shell is non-emissive; this controls only enough
+/// aerosol mass for the post-fire plume to remain optically resolved.
+pub const EXPLOSION_SMOKE_EXTINCTION_SCALE: f32 = 4.0;
+
 /// First-order removal rate for unburned fuel vapour, per second.
 pub const FUEL_VAPOUR_REMOVAL_PER_SECOND: f32 = 0.025;
 

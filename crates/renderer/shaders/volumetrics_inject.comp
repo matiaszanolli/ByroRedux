@@ -1041,7 +1041,8 @@ void applyCombustionSources(
                 * WORLD_UNITS_PER_METER
         );
         float sourceSigmaT = authoredSigmaT
-            * (ignitionMask * 0.10 + smokeSeedMask * 1.15);
+            * (ignitionMask * 0.10
+                + smokeSeedMask * COMBUSTION_EXPLOSION_SMOKE_EXTINCTION_SCALE);
         chemistry.z = max(chemistry.z, sourceSigmaT);
         optical.rgb = max(optical.rgb, sourceSigmaT * sourceAlbedo);
         float sourceRadianceLuma = max(
