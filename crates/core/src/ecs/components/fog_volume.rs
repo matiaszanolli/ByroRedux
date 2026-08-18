@@ -135,15 +135,16 @@ pub enum FogShape {
 /// game-independent and exhaustively match the canonical domain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
+#[repr(u32)]
 pub enum FogProfile {
     /// Preserve the authored primitive with only low-contrast heterogeneity.
-    Homogeneous,
+    Homogeneous = 0,
     /// A passive, buoyant plume of cooled particulates.
-    Smoke,
+    Smoke = 1,
     /// A persistent hot, tapered, emissive plume.
-    Flame,
+    Flame = 2,
     /// A transient hot impulse that expands and cools into smoke.
-    Explosion,
+    Explosion = 3,
 }
 
 /// Provenance of a fog volume, retained for diagnostics only.
@@ -245,6 +246,14 @@ mod tests {
         };
         assert!(fog.is_renderable());
         assert_eq!(fog.source, FogSource::ParticleEmitter);
+    }
+
+    #[test]
+    fn canonical_profiles_have_a_stable_cross_backend_index() {
+        assert_eq!(FogProfile::Homogeneous as u32, 0);
+        assert_eq!(FogProfile::Smoke as u32, 1);
+        assert_eq!(FogProfile::Flame as u32, 2);
+        assert_eq!(FogProfile::Explosion as u32, 3);
     }
 
     #[test]

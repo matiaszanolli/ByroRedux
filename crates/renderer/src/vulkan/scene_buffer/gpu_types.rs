@@ -235,6 +235,16 @@ pub struct GpuLight {
     pub params: [f32; 4],
 }
 
+impl GpuLight {
+    /// Stable frame-wide influence proxy used to rank the fixed-prefix GI
+    /// light scan. Kept on the canonical GPU light type so authored lights
+    /// and renderer-derived transported-field lights cannot grow different
+    /// copies of the ordering rule.
+    pub fn gi_priority_score(&self) -> f32 {
+        (self.color_type[0] + self.color_type[1] + self.color_type[2]) * self.position_radius[3]
+    }
+}
+
 /// One bounded selected-light visibility-ray record (144 bytes, std430).
 ///
 /// Binding 19 exposes one record per frame-in-flight. `control.y` is the

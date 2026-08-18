@@ -495,7 +495,11 @@ impl VulkanContext {
                 if let Some(ref mut vol) = self.volumetrics {
                     let scatter_coef = fog_extinction_per_meter.max(0.0)
                         / super::super::volumetrics::WORLD_UNITS_PER_METER;
-                    if scatter_coef <= 0.0 && fog_volumes.is_empty() {
+                    if !vol.requires_dispatch(
+                        volumetric_time_seconds,
+                        scatter_coef > 0.0,
+                        fog_volumes,
+                    ) {
                         vol.record_neutral_frame(&self.device, cmd, frame);
                     } else {
                         let vol_tlas = self

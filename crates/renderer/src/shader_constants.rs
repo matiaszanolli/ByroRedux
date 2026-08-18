@@ -195,6 +195,10 @@ mod tests {
             ("WATER_WATERFALL", format!("#define WATER_WATERFALL {WATER_WATERFALL}u")),
             ("FOG_VOLUME_CLUSTER_DIM", format!("#define FOG_VOLUME_CLUSTER_DIM {FOG_VOLUME_CLUSTER_DIM}u")),
             ("MAX_FOG_VOLUMES_PER_CLUSTER", format!("#define MAX_FOG_VOLUMES_PER_CLUSTER {MAX_FOG_VOLUMES_PER_CLUSTER}u")),
+            ("FOG_VOLUME_PROFILE_HOMOGENEOUS", format!("#define FOG_VOLUME_PROFILE_HOMOGENEOUS {FOG_VOLUME_PROFILE_HOMOGENEOUS:?}")),
+            ("FOG_VOLUME_PROFILE_SMOKE", format!("#define FOG_VOLUME_PROFILE_SMOKE {FOG_VOLUME_PROFILE_SMOKE:?}")),
+            ("FOG_VOLUME_PROFILE_FLAME", format!("#define FOG_VOLUME_PROFILE_FLAME {FOG_VOLUME_PROFILE_FLAME:?}")),
+            ("FOG_VOLUME_PROFILE_EXPLOSION", format!("#define FOG_VOLUME_PROFILE_EXPLOSION {FOG_VOLUME_PROFILE_EXPLOSION:?}")),
             // #1920 — 10 defines `build.rs` emits that this value-pin had
             // never covered (found by an audit sweep alongside the former
             // shadow-mask constants, which shipped without a pin).
@@ -216,6 +220,14 @@ mod tests {
             ("ATTENUATION_MODEL_LEGACY_SOFT_RANGE", format!("#define ATTENUATION_MODEL_LEGACY_SOFT_RANGE {ATTENUATION_MODEL_LEGACY_SOFT_RANGE}u")),
             ("ATTENUATION_MODEL_INVERSE_SQUARE", format!("#define ATTENUATION_MODEL_INVERSE_SQUARE {ATTENUATION_MODEL_INVERSE_SQUARE}u")),
             ("WORLD_UNITS_PER_METER", format!("#define WORLD_UNITS_PER_METER {WORLD_UNITS_PER_METER:?}")),
+            ("COMBUSTION_LIGHT_GRID_X", format!("#define COMBUSTION_LIGHT_GRID_X {COMBUSTION_LIGHT_GRID_X}u")),
+            ("COMBUSTION_LIGHT_GRID_Y", format!("#define COMBUSTION_LIGHT_GRID_Y {COMBUSTION_LIGHT_GRID_Y}u")),
+            ("COMBUSTION_LIGHT_GRID_Z", format!("#define COMBUSTION_LIGHT_GRID_Z {COMBUSTION_LIGHT_GRID_Z}u")),
+            ("COMBUSTION_LIGHT_GRID_COUNT", format!("#define COMBUSTION_LIGHT_GRID_COUNT {COMBUSTION_LIGHT_GRID_COUNT}u")),
+            ("COMBUSTION_LIGHT_HALF_EXTENT_XZ_METERS", format!("#define COMBUSTION_LIGHT_HALF_EXTENT_XZ_METERS {COMBUSTION_LIGHT_HALF_EXTENT_XZ_METERS:?}")),
+            ("COMBUSTION_LIGHT_HALF_EXTENT_Y_METERS", format!("#define COMBUSTION_LIGHT_HALF_EXTENT_Y_METERS {COMBUSTION_LIGHT_HALF_EXTENT_Y_METERS:?}")),
+            ("COMBUSTION_LIGHT_FIXED_SCALE", format!("#define COMBUSTION_LIGHT_FIXED_SCALE {COMBUSTION_LIGHT_FIXED_SCALE:?}")),
+            ("COMBUSTION_LIGHT_VOLUME_FIXED_SCALE", format!("#define COMBUSTION_LIGHT_VOLUME_FIXED_SCALE {COMBUSTION_LIGHT_VOLUME_FIXED_SCALE:?}")),
             ("SHADOW_FADE_START", format!("#define SHADOW_FADE_START {SHADOW_FADE_START:?}")),
             ("SHADOW_FADE_END", format!("#define SHADOW_FADE_END {SHADOW_FADE_END:?}")),
             ("DIRECTIONAL_SHADOW_TRACE_DISTANCE", format!("#define DIRECTIONAL_SHADOW_TRACE_DISTANCE {DIRECTIONAL_SHADOW_TRACE_DISTANCE:?}")),
@@ -261,6 +273,13 @@ mod tests {
         // Every DBG_* bit, driven from the shared catalog so this
         // value-pin can never again cover a subset (#1482 / #1860).
         for (name, value) in DBG_BITS {
+            let expected = format!("#define {name} {value}u");
+            assert!(
+                header.contains(&expected),
+                "shader_constants.glsl missing or wrong value for {name}: expected `{expected}`",
+            );
+        }
+        for (name, value) in RENDER_DEBUG_MODES {
             let expected = format!("#define {name} {value}u");
             assert!(
                 header.contains(&expected),
@@ -632,6 +651,26 @@ mod tests {
                  the #define from shader_constants.glsl is the source of truth (#2229)",
             );
         }
+        for name in [
+            "FOG_VOLUME_PROFILE_HOMOGENEOUS",
+            "FOG_VOLUME_PROFILE_SMOKE",
+            "FOG_VOLUME_PROFILE_FLAME",
+            "FOG_VOLUME_PROFILE_EXPLOSION",
+        ] {
+            assert!(
+                !src.contains(&format!("const float {name}")),
+                "volumetrics_inject.comp must consume generated {name}, not redeclare it",
+            );
+        }
+    }
+
+    #[test]
+    fn volumetric_debug_view_isolated_after_froxel_integration() {
+        let src = include_str!("../shaders/composite.frag");
+        assert!(src.contains("debugMode != RENDER_DEBUG_VOLUMETRIC_TERM"));
+        assert!(src.contains("sampledVolume = vol;"));
+        assert!(src.contains("debugMode == RENDER_DEBUG_VOLUMETRIC_TERM"));
+        assert!(src.contains("max(mappedRadiance, vec3(opacity))"));
     }
 
     /// #2045 (TD7-101) — `triangle.frag` must NOT redeclare

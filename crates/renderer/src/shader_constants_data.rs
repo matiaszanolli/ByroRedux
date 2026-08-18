@@ -122,6 +122,33 @@ pub const ATTENUATION_MODEL_INVERSE_SQUARE: u32 =
     byroredux_core::lighting::AttenuationModel::InverseSquare as u32;
 pub const WORLD_UNITS_PER_METER: f32 = byroredux_core::lighting::BETHESDA_UNITS_PER_METER;
 
+// Transported-combustion -> surface-light reduction. The froxel injector
+// accumulates fixed-point radiant moments into this camera-centred grid; Rust
+// drains the exact same ABI after the frame-slot fence. Keep the dimensions,
+// domain, and quantization here so neither side can silently reinterpret a
+// bin. 8 x 4 x 8 resolves distinct room-scale fires while keeping readback to
+// 8 KiB per frame-in-flight slot (256 bins x 32 bytes).
+pub const COMBUSTION_LIGHT_GRID_X: u32 = 8;
+pub const COMBUSTION_LIGHT_GRID_Y: u32 = 4;
+pub const COMBUSTION_LIGHT_GRID_Z: u32 = 8;
+pub const COMBUSTION_LIGHT_GRID_COUNT: u32 =
+    COMBUSTION_LIGHT_GRID_X * COMBUSTION_LIGHT_GRID_Y * COMBUSTION_LIGHT_GRID_Z;
+pub const COMBUSTION_LIGHT_HALF_EXTENT_XZ_METERS: f32 = 32.0;
+pub const COMBUSTION_LIGHT_HALF_EXTENT_Y_METERS: f32 = 16.0;
+// 1/4096 radiant-intensity resolution keeps the 1e-3 irradiance cutoff
+// representable even for centimetre-scale test scenes. Per-invocation values
+// are still capped to 16 intensity units by the shader's 65535-word guard;
+// bins accumulate those bounded contributions in u32.
+pub const COMBUSTION_LIGHT_FIXED_SCALE: f32 = 4096.0;
+// Luminous volume needs finer resolution: 1/65536 m^3 is a ~2.4 cm sphere.
+pub const COMBUSTION_LIGHT_VOLUME_FIXED_SCALE: f32 = 65536.0;
+
+const _: () = {
+    assert!(COMBUSTION_LIGHT_GRID_COUNT == 256);
+    assert!(COMBUSTION_LIGHT_FIXED_SCALE > 0.0);
+    assert!(COMBUSTION_LIGHT_VOLUME_FIXED_SCALE > 0.0);
+};
+
 // Shared direct-shadow distance contract. These values apply to every
 // environment; cell kind may change light sources and GI inputs, never the
 // direct-light shadow reach. The trace distance covers the complete fade
@@ -326,6 +353,31 @@ pub const FOG_VOLUME_CLUSTER_DIM: u32 = 16;
 /// volumes because the CPU input list is distance-sorted.
 pub const MAX_FOG_VOLUMES_PER_CLUSTER: u32 = 8;
 
+// Canonical local-medium profiles. Source-format/game interpretation ends at
+// the FogVolume -> GpuFogVolume boundary; both Rust and GLSL consume these
+// generated renderer-domain identifiers rather than maintaining parallel
+// numeric tables.
+pub const FOG_VOLUME_PROFILE_HOMOGENEOUS: f32 =
+    byroredux_core::ecs::FogProfile::Homogeneous as u32 as f32;
+pub const FOG_VOLUME_PROFILE_SMOKE: f32 =
+    byroredux_core::ecs::FogProfile::Smoke as u32 as f32;
+pub const FOG_VOLUME_PROFILE_FLAME: f32 =
+    byroredux_core::ecs::FogProfile::Flame as u32 as f32;
+pub const FOG_VOLUME_PROFILE_EXPLOSION: f32 =
+    byroredux_core::ecs::FogProfile::Explosion as u32 as f32;
+pub const FOG_VOLUME_PROFILES: &[(&str, f32)] = &[
+    (
+        "FOG_VOLUME_PROFILE_HOMOGENEOUS",
+        FOG_VOLUME_PROFILE_HOMOGENEOUS,
+    ),
+    ("FOG_VOLUME_PROFILE_SMOKE", FOG_VOLUME_PROFILE_SMOKE),
+    ("FOG_VOLUME_PROFILE_FLAME", FOG_VOLUME_PROFILE_FLAME),
+    (
+        "FOG_VOLUME_PROFILE_EXPLOSION",
+        FOG_VOLUME_PROFILE_EXPLOSION,
+    ),
+];
+
 // Main-pass ray-query decomposition. The runtime `DBG_DISABLE_*` bits below
 // preserve the compiled shader's register allocation and isolate avoided
 // execution. `RT_COMPILE_ABLATION_MASK` selects the same feature groups at
@@ -349,7 +401,8 @@ pub const RENDER_DEBUG_INDIRECT_ONLY: u32 = 4;
 pub const RENDER_DEBUG_MATERIAL_LOBE: u32 = 5;
 pub const RENDER_DEBUG_COMPOSITE_TERM: u32 = 6;
 pub const RENDER_DEBUG_RT_LOD: u32 = 7;
-pub const RENDER_DEBUG_MODE_MAX: u32 = RENDER_DEBUG_RT_LOD;
+pub const RENDER_DEBUG_VOLUMETRIC_TERM: u32 = 8;
+pub const RENDER_DEBUG_MODE_MAX: u32 = RENDER_DEBUG_VOLUMETRIC_TERM;
 pub const RENDER_DEBUG_LEGACY_FLAGS: u32 = u32::MAX;
 
 pub const RENDER_DEBUG_MODES: &[(&str, u32)] = &[
@@ -364,6 +417,10 @@ pub const RENDER_DEBUG_MODES: &[(&str, u32)] = &[
     ("RENDER_DEBUG_MATERIAL_LOBE", RENDER_DEBUG_MATERIAL_LOBE),
     ("RENDER_DEBUG_COMPOSITE_TERM", RENDER_DEBUG_COMPOSITE_TERM),
     ("RENDER_DEBUG_RT_LOD", RENDER_DEBUG_RT_LOD),
+    (
+        "RENDER_DEBUG_VOLUMETRIC_TERM",
+        RENDER_DEBUG_VOLUMETRIC_TERM,
+    ),
     ("RENDER_DEBUG_MODE_MAX", RENDER_DEBUG_MODE_MAX),
     ("RENDER_DEBUG_LEGACY_FLAGS", RENDER_DEBUG_LEGACY_FLAGS),
 ];

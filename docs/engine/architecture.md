@@ -163,21 +163,37 @@ is enabled (landed with the M28.5 character-controller work).
 
 See [Vulkan Renderer](renderer.md) for the per-module breakdown.
 
-### 7. Per-game data, one canonical representation (NIFAL)
+### 7. Per-game data, one canonical runtime representation
 
-A standing directive of the project is **never branch per-game in the shader or
-renderer** — translate at the parser boundary instead
+A standing directive of the project is **never branch per-game in simulation,
+gameplay systems, shaders, or the renderer** — translate at an explicit source
+boundary instead
 ([`feedback_format_translation.md`](../../CLAUDE.md), the GameVariant pattern in
 [`per-game-translation-survey.md`](per-game-translation-survey.md)). The
-**NIF Abstraction Layer (NIFAL)** formalises this as a three-tier model and is
-the cornerstone of cross-game compatibility:
+concern-specific abstraction layers — NIFAL for NIF assets, EXAL for the
+environment, PHYSAL for physics, WATAL for water, and CHARAL for character
+rules — formalise this as a three-tier model and are the cornerstone of
+cross-game compatibility:
 
 ```
               parse                  translate()                consume
-  NIF bytes ─────────▶  Imported*  ─────────────▶  Canonical  ─────────▶  ECS / renderer
+  source bytes ──────▶  Imported*  ─────────────▶  Canonical  ─────────▶  ECS / renderer
             (per-game raw decode    (resolved, game-agnostic,            / gameplay
-             in crates/nif/blocks)   single convention)
+             and rules)              single convention)
 ```
+
+`GameKind` is therefore a source-dialect discriminator. It is valid in raw
+decoders, translation functions, launch/bootstrap selection, and diagnostics;
+it is not runtime behavior data. A downstream behavior difference must cross
+the boundary as a typed canonical value such as `FogProfile`, `Material`,
+`AttenuationModel`, or a concern-local ruleset. Prefer that value over a growing
+set of `has_*` booleans: booleans centralize spelling but still invite every
+consumer to reconstruct policy independently.
+
+This is deliberately **not** one global `GameProfile` God Object. Each concern
+owns one exhaustive source-to-canonical adapter and one canonical contract.
+Adding a game extends those adapters; it does not add `if game == ...` branches
+to the systems consuming their output.
 
 NIFAL opened 2026-05-28 (post-Session-42), generalising the earlier
 material-only work in

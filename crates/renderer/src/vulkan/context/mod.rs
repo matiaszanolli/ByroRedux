@@ -960,6 +960,31 @@ fn parse_render_debug_flags_env() -> u32 {
     }
 }
 
+/// Parse the mutually-exclusive renderer diagnostic selected at launch.
+///
+/// Named modes are intentionally separate from `BYROREDUX_RENDER_DEBUG`'s
+/// legacy bitmask: a full-frame correctness view is a canonical renderer
+/// concern, not a game- or scene-specific bootstrap condition. Absent or
+/// invalid input preserves the legacy selector so existing flag workflows
+/// remain unchanged.
+fn parse_render_debug_mode_env() -> super::render_debug::RenderDebugMode {
+    use super::render_debug::RenderDebugMode;
+
+    let Ok(value) = std::env::var("BYROREDUX_RENDER_DEBUG_MODE") else {
+        return RenderDebugMode::default();
+    };
+    match value.parse::<RenderDebugMode>() {
+        Ok(mode) => {
+            log::info!("BYROREDUX_RENDER_DEBUG_MODE = {mode}");
+            mode
+        }
+        Err(error) => {
+            log::warn!("{error}; preserving the legacy render-debug selector");
+            RenderDebugMode::default()
+        }
+    }
+}
+
 /// #1783 / CONC-D2-01 — decide whether `skin_compute` should be forced
 /// off given whether `skin_palette` initialised successfully.
 ///
@@ -1122,6 +1147,10 @@ pub struct VulkanContext {
     /// heap-allocating fresh each `draw_frame`. Cleared + reserved at the
     /// top of draw_frame. See issue #243.
     gpu_instances_scratch: Vec<scene_buffer::GpuInstance>,
+    /// Canonical scene lights plus delayed transported-combustion lights for
+    /// the current frame. The input slice belongs to the application, so the
+    /// renderer needs one reusable merge buffer before cluster upload.
+    frame_lights_scratch: Vec<scene_buffer::GpuLight>,
     /// Previous rigid transforms keyed by stable draw/entity id. Updated only
     /// after queue submission succeeds, matching temporal GPU history.
     ///
@@ -3009,7 +3038,7 @@ impl VulkanContext {
             volumetric_time_seconds: 0.0,
             fsr_temporal,
             render_debug_flags: parse_render_debug_flags_env(),
-            render_debug_mode: super::render_debug::RenderDebugMode::default(),
+            render_debug_mode: parse_render_debug_mode_env(),
             pending_selected_ray_probe: None,
             selected_ray_probe_result: None,
             next_selected_ray_probe_generation: 1,
@@ -3028,6 +3057,7 @@ impl VulkanContext {
             prev_render_origin: [0.0; 3],
             prev_cam_forward: [0.0, 0.0, -1.0],
             gpu_instances_scratch: Vec::new(),
+            frame_lights_scratch: Vec::new(),
             previous_rigid_models: FxHashMap::default(),
             prev_caustic_scene_key: 0,
             current_rigid_models_scratch: FxHashMap::default(),
@@ -3279,6 +3309,12 @@ impl VulkanContext {
             len: self.gpu_instances_scratch.len(),
             capacity: self.gpu_instances_scratch.capacity(),
             elem_size_bytes: size_of::<scene_buffer::GpuInstance>(),
+        });
+        rows.push(ScratchRow {
+            name: "frame_lights_scratch",
+            len: self.frame_lights_scratch.len(),
+            capacity: self.frame_lights_scratch.capacity(),
+            elem_size_bytes: size_of::<scene_buffer::GpuLight>(),
         });
         rows.push(ScratchRow {
             name: "previous_models_scratch",

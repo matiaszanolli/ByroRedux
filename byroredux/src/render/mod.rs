@@ -858,7 +858,7 @@ pub(crate) fn build_render_data(
     // Collect lights from ECS — cell directional + placed point lights.
     // See `render::lights::collect_lights`.
     let t_lights = mark(profile);
-    lights::collect_lights(world, gpu_lights, gpu_fog_volumes, light_sort_scratch);
+    lights::collect_lights(world, gpu_lights, light_sort_scratch);
     let ms_lights = took(t_lights);
     if profile {
         log::info!(
@@ -976,7 +976,6 @@ pub(crate) fn build_render_data(
 // orchestrator above acquires the World queries once and threads
 // references through.
 mod camera;
-mod fire_lights;
 mod fog_volumes;
 // `pub(crate)` so the `light.atten` console command (REND-#1451) can
 // read `LIGHT_RANGE_EXTENSION` to report the effective brightness at

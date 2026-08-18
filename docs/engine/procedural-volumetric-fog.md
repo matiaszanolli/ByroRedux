@@ -6,12 +6,18 @@
 spectral single scattering, temporal history, RT visibility, FSR contract,
 XCLL/WTHR → engine-native medium, smoke/fog particles → clustered local
 primitives, boot-generated tileable Perlin-Worley base/detail density,
-weather-classified coverage). Emissive media (fire) landed as an emission
-source term on the same primitives plus derived light sources; a voxel fire
-simulation is the open follow-up.
+weather-classified coverage). Emissive media now feed a double-buffered
+thermochemical/velocity field: world-space RK2 advection, fuel/oxidizer burn,
+soot production, cooling, entrainment, drag, turbulence, and buoyancy run in
+the froxel injector before radiative coefficients are derived. Conservative
+TLAS-backed solid blocking prevents RK2 backtraces from pulling chemistry
+through opaque geometry. A fixed-point GPU moment grid now reduces the
+transported emissive field into delayed canonical surface lights without a
+source-primitive proxy. Slip/pressure boundary response and real-content
+visual calibration remain open follow-ups.
 
 **Location:** `crates/core/src/ecs/components/fog_volume.rs`,
-`byroredux/src/{fog,render/{fog_volumes,fire_lights,lights}}.rs`,
+`byroredux/src/{fog,render/{fog_volumes,lights}}.rs`,
 `crates/renderer/src/vulkan/volumetrics.rs`,
 `crates/renderer/shaders/volumetrics_{inject,integrate}.comp`, and
 `crates/renderer/shaders/composite.frag`.
@@ -47,6 +53,13 @@ of them one physical and temporal contract.
   separate R32F history sidecar stores the deterministic thermal-emission
   fraction because that provenance cannot be reconstructed after emission,
   scattering, and stochastic visibility have been summed into RGB.
+- Two RGBA16F per-frame history volumes carry canonical combustion state:
+  `(fuel, temperature K, soot extinction, visible-radiance calibration)` and
+  `(world velocity vx/vy/vz, oxidizer)`. Each current froxel reconstructs an absolute world
+  position, reprojects it into the previous camera grid, and performs an RK2
+  semi-Lagrangian backtrace before sampling both fields with linear/clamp.
+  Storage is view-aligned, but transport is world-space and therefore does not
+  turn camera motion into fake fluid velocity.
 - XCLL/WTHR near/far ramps are converted once at the cell/weather translation
   boundary. Runtime volumetrics consume extinction in inverse metres,
   single-scatter albedo, and coverage; they never evaluate the legacy ramp.
@@ -132,37 +145,52 @@ of them one physical and temporal contract.
 ## Emissive media (fire)
 
 Fire is not a separate subsystem. A flame and its smoke are one physical
-material — soot — represented by the same `FogVolume` contract. Their optical
-coefficients follow temperature, while the canonical profile states whether
-the current source is a persistent hot plume, cooled smoke plume, homogeneous
-authored medium, or transient combustion impulse:
+material — soot — represented by the same canonical `FogVolume` source
+contract and transported combustion field. `FogProfile` controls how a source
+injects fuel, heat, soot, oxidizer, and momentum; it does not select a separate
+renderer. Homogeneous authored fog remains analytic, while `Smoke`, `Flame`,
+and `Explosion` feed the field and are not also rendered as pinned analytic
+bodies:
 
 | | extinction | single-scatter albedo | emission `L_e` |
 |---|---|---|---|
 | flame | high | **0.25** (soot absorbs) | blackbody at its temperature |
 | smoke | moderate | **0.9** (cooled soot scatters) | none |
 
+- Chemistry stores soot directly as optical extinction per world unit, avoiding
+  a second arbitrary density-to-optics conversion. Fuel burns above a 720 K
+  ignition window at a rate proportional to fuel × oxidizer; heat release and
+  oxygen-starved soot yield come from that same reaction. Exponential cooling,
+  soot/fuel dissipation, oxidizer entrainment, drag, divergence-free turbulent
+  acceleration, and temperature-driven buoyancy advance the state each frame.
+- Persistent flames replenish a compact basal fuel/heat boundary, passive smoke
+  replenishes soot and mild exhaust velocity, and explosions add a finite
+  radial heat/momentum impulse. A reset field seeds the explosion's current
+  normalized age directly; warm history receives a delta-scaled impulse so the
+  full blast cannot be added every frame. After an emitter disappears, a
+  20-second CPU latch keeps the solver advancing while soot decays below 3%.
 - The froxel emission source term is `sigma_a * L_e` with
   `sigma_a = sigma_t * (1 - albedo)`, evaluated per channel against the
-  *locally sampled* density, so emission inherits the primitive's procedural
-  structure instead of filling it uniformly. It is added unconditionally —
+  transported soot/fuel state, so emission moves and cools with the fluid
+  instead of filling or following an analytic primitive. It is unconditional —
   independent of the phase function and of the shadow ray — because a flame
   radiates from being hot, not from being lit.
 - No new render pass or sort order. `volumetrics_integrate.comp` treats the
   injection buffer's RGB as a source coefficient per unit length and evaluates
   its exact homogeneous-slab integral against Beer-Lambert attenuation and
   accumulated transmittance. Fire therefore composites, denoises, reprojects,
-  and meets the FSR contract through the machinery fog already uses. The only
-  added image is the scalar temporal-provenance sidecar described above; it
-  carries no radiance and is not sampled by composite.
-- Emission colour and brightness both derive from one temperature via
+  and meets the FSR contract through the machinery fog already uses. The
+  scalar temporal-provenance sidecar and two RGBA16F transport histories carry
+  no final radiance and are not sampled by composite.
+- Canonical source colour and brightness are produced by
   `byroredux_core::radiometry`: chromaticity from Planck's law integrated
   against the CIE 1931 observer, magnitude from the visible-band `Y` integral.
-  The magnitude law is deliberately **not** Stefan-Boltzmann `T^4`, which
-  describes total exitance — mostly infrared at flame temperatures — and would
-  understate how sharply a cooling flame dims. Note that across the whole
-  flame/ember range the blue primary is outside the sRGB gamut and clamps to
-  zero, so hue comparisons in that range must use green-over-red.
+  The field transports that source's luminance calibration separately from
+  temperature; per-froxel cooling applies a cheap Planck ratio at the 555 nm
+  photopic peak and recomputes blackbody chromaticity. The magnitude law is
+  deliberately **not** Stefan-Boltzmann `T^4`, which describes total exitance
+  — mostly infrared at flame temperatures — and would understate how sharply
+  a cooling flame dims.
 - Temperatures are physical properties of the combustion regime, not look
   development: 1850 K for a hydrocarbon diffusion flame's luminous zone,
   1100 K for embers and charcoal. Optical depth is pinned across the primitive
@@ -175,22 +203,22 @@ authored medium, or transient combustion impulse:
   temperature for them would fabricate physics the content never described.
   Set `BYRO_FIRE_VOLUMES=0` to keep thermal emitters on the billboard path for
   an A/B.
-- An emissive volume also derives a point light, so it illuminates surfaces
-  rather than only glowing. Emergent radiance uses the exact slab solution
-  `L_e * (1 - exp(-tau_a))` (it saturates at `L_e` instead of growing with
-  size), radiant intensity is that times projected area, and reach is
-  inverse-square down to a cutoff irradiance. A fire whose extent already
-  contains an authored LIGH is suppressed, so derived lights are additive only
-  where the original engine had nothing — which is also what makes the
-  explosion path viable, since transient fireballs cannot have hand-placed
-  lights.
-- Explosion age is resolved once at the ECS→GPU boundary. One cooling curve
-  produces the instantaneous temperature, blackbody chromaticity, visible-fire
-  envelope, and `T^4` energy loss consumed by both the emissive volume and its
-  derived point light. The shader adds only local thermal/turbulent variation;
-  it does not independently reinterpret global lifetime. This keeps smoke and
-  surface illumination phase-locked and prevents an optically cooled fireball
-  from retaining a peak-bright point light.
+- Surface illumination is reduced from the transported field, not from the
+  source primitive. Every emissive froxel integrates `j = sigma_a * L_e` over
+  its frustum-cell volume, applies a local optical-depth escape probability,
+  and atomically contributes fixed-point RGB intensity, centroid, and luminous
+  volume to a camera-centred 8×4×8 grid. After that frame slot's fence, the CPU
+  decodes at most 64 inverse-square `GpuLight`s and feeds them through the same
+  cluster/GI contract as authored lights. An authored LIGH inside a source
+  volume suppresses a reduced centroid only while that centroid remains inside
+  the same volume; advected plume/blast emission outside it remains eligible.
+- Explosion age is resolved once at the ECS→GPU boundary and enters the solver
+  as a canonical normalized source parameter. It controls the finite ignition/
+  smoke envelopes and reset seeding; subsequent temperature, soot, and motion
+  evolve in the transported field. Surface illumination follows those evolved
+  values after the normal frame-in-flight latency, so cooling, buoyant motion,
+  wall blocking, and source expiry affect the visible medium and nearby
+  surfaces through the same state.
 - Emissive froxels use a shorter temporal history weight
   (`DEFAULT_EMISSIVE_HISTORY_WEIGHT`, `fog_reference.y`) blended in by the
   larger of the current and reprojected previous emissive fractions. The
@@ -211,7 +239,7 @@ independent of flame size — and the resulting torch reach lands within a
 factor of two of vanilla authored torch LIGH radii, which is a cross-check on
 the whole chain rather than an input to it. A synthetic runtime lifecycle A/B
 on 2026-08-17 confirmed that the cooling phase restores nearby material detail
-and expiry removes both the volume and derived light. A visual A/B against
+and expiry removes both the volume and reduced field light. A visual A/B against
 real shipped fire content remains before treating the exposure choice as
 final.
 
@@ -221,6 +249,7 @@ final.
 --froxel-xy-divisor <2..32>   default 4
 --froxel-z-slices <16..256>   default 64
 --fog-grid-far-m <32..512>    default 128
+BYROREDUX_RENDER_DEBUG_MODE=volume   isolated raw integrated froxel field
 ```
 
 Example:
@@ -260,8 +289,9 @@ inject+integrate after the texture-volume change, versus 0.110–0.125 ms for
 the prior three-octave ALU field. Shipping rotation mode 1 moved from 0.116 to
 0.105 ms; the four-mode mean fell from 0.1163 to 0.1035 ms (about 11%).
 
-At the default 214×120×64 grid, the two RGBA16F fields plus the R32F emissive
-history sidecar consume about 31 MiB per frame slot. Target ranges for the
+At the default 214×120×64 grid, the four RGBA16F fields (raw, integrated,
+chemistry, velocity) plus the R32F emissive-history sidecar consume about
+56 MiB per frame slot. Target ranges for the
 reference 160×90×64 grid remain 0.2–0.5 ms inject and
 0.3–0.8 ms integrate. Record inject and integrate separately before treating
 the current combined timer as a final budget verdict.
@@ -295,11 +325,11 @@ the current combined timer as a final budget verdict.
 
 ## Follow-up boundary
 
-1. add a transported combustion field for fuel, temperature, soot, and
-   velocity so fire rolls, entrains air, cools into smoke, and drives explosion
-   pressure rather than remaining an analytic primitive. Canonical
-   `FogProfile` values become solver emitter presets at this boundary; the
-   solver itself must not branch on game or authoring provenance;
+1. extend conservative no-through solid blocking with boundary-normal slip /
+   pressure response, then calibrate source, decay, and field-light reduction
+   against shipped fire, smoke, and explosion content. Canonical `FogProfile`
+   values already act as solver emitter presets; the solver has no game or
+   authoring-provenance branch;
 2. extend authored-mesh replacement to the loose-NIF route and add the optional
    tri-planar 2D-mask density path for silhouettes that need texture fidelity;
 3. map the verified Starfield height-fog block without guessing its curve;

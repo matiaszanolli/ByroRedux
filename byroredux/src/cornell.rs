@@ -644,6 +644,7 @@ pub(crate) fn setup_cornell_scene(
     sun: bool,
 ) -> (Vec3, Vec3) {
     install_cornell_lighting(world, sun);
+    let combustion_probe = std::env::var_os("BYRO_COMBUSTION_PROBE").is_some();
 
     // Every probe is untextured by design — surface color comes entirely
     // from `Material::diffuse_color`. Bind the registry's white 1×1
@@ -726,7 +727,7 @@ pub(crate) fn setup_cornell_scene(
         Vec3::new(1.3, 1.3, 1.3),
         "fog_volume_probe",
     );
-    if std::env::var_os("BYRO_COMBUSTION_PROBE").is_some() {
+    if combustion_probe {
         spawn_combustion_probe(world, Vec3::new(0.0, 1.35, -0.4));
     }
 
@@ -1287,7 +1288,7 @@ fn spawn_fog_volume_with_extinction(
 }
 
 /// Opt-in one-shot used to validate the complete explosion profile without
-/// depending on game data. It starts one second after the first Cornell frame
+/// depending on game data. It starts two seconds after the first Cornell frame
 /// so capture tooling can observe the hot core, expansion, and cooled shell.
 fn spawn_combustion_probe(world: &mut World, pos: Vec3) {
     let e = world.spawn();

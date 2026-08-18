@@ -516,7 +516,8 @@ void main() {
             || (dbgFlags & DBG_VIZ_RAW_INDIRECT) != 0u
             || (dbgFlags & DBG_VIZ_RT_LOD) == DBG_VIZ_RT_LOD)
         : (debugMode != RENDER_DEBUG_FINAL
-            && debugMode != RENDER_DEBUG_COMPOSITE_TERM);
+            && debugMode != RENDER_DEBUG_COMPOSITE_TERM
+            && debugMode != RENDER_DEBUG_VOLUMETRIC_TERM);
     if (rawDebug) {
         outColor = direct4;
         return;
@@ -662,6 +663,7 @@ void main() {
     }
 
     float fogTransmittance = 1.0;
+    vec4 sampledVolume = vec4(0.0, 0.0, 0.0, 1.0);
 
     // M55 Phase 3 — volumetric modulation via single sampler3D tap.
     // The volumetric pipeline pre-integrates `(∫inscatter, T_cum)`
@@ -703,6 +705,7 @@ void main() {
         float sliceCount = max(params.sky_horizon.w, 1.0);
         float sliceTexel = clamp((slice * sliceCount - 0.5) / sliceCount, 0.0, 1.0);
         vec4 vol = sampleVolumetricColumn(fragUV, sliceTexel, depth);
+        sampledVolume = vol;
         // vol.rgb = ∫inscatter accumulated 0..slice (HDR-linear)
         // vol.a   = cumulative transmittance through 0..slice
         //
@@ -743,6 +746,18 @@ void main() {
             combined = combined * transmittance + aerial;
             fogTransmittance *= transmittance;
         }
+    }
+
+    if (debugMode == RENDER_DEBUG_VOLUMETRIC_TERM) {
+        // Isolate the integrated froxel field from surfaces, analytic
+        // beyond-grid fog, bloom, exposure, and grading. Exponential mapping
+        // makes HDR emission inspectable in a raw correctness view; opacity
+        // supplies a neutral floor so cold smoke remains visible too.
+        vec3 mappedRadiance = vec3(1.0)
+            - exp(-max(sampledVolume.rgb, vec3(0.0)));
+        float opacity = clamp(1.0 - sampledVolume.a, 0.0, 1.0);
+        outColor = vec4(max(mappedRadiance, vec3(opacity)), 1.0);
+        return;
     }
 
     // M58 — bloom add. Sampled with bilinear from mip 0 of the

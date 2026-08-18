@@ -753,7 +753,9 @@ mod tests {
     /// `caustic_flags.x > 0.5 ? … : 0u` gate on `waterCausticTex`, one
     /// more `OpBranchConditional`, bumping the count to 17. The
     /// depth-aware bilateral XY froxel reconstruction then added five
-    /// sample-selection conditionals, bringing the current count to 29.
+    /// sample-selection conditionals, bringing the count to 29. The isolated
+    /// volumetric-term correctness view adds one post-integration mode branch,
+    /// bringing the current count to 30.
     /// Pins the
     /// current count so a future stale-recompile of this file fails
     /// loudly instead of shipping silently, the same failure mode #1447
@@ -763,8 +765,8 @@ mod tests {
         let spv = include_bytes!("../../shaders/composite.frag.spv");
         let count = count_branch_conditionals(spv).expect("reflect composite.frag.spv");
         assert_eq!(
-            count, 29,
-            "composite.frag.spv has {count} OpBranchConditional instructions, expected 29 — \
+            count, 30,
+            "composite.frag.spv has {count} OpBranchConditional instructions, expected 30 — \
              the committed .spv looks stale relative to composite.frag; recompile it \
              (glslangValidator -V composite.frag -o composite.frag.spv from \
              crates/renderer/shaders). The raw correctness-debug guard is intentionally \

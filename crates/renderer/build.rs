@@ -176,6 +176,49 @@ fn main() {
         "#define WORLD_UNITS_PER_METER {WORLD_UNITS_PER_METER:?}"
     )
     .unwrap();
+    writeln!(out).unwrap();
+    writeln!(out, "// Transported-combustion light-moment reduction").unwrap();
+    writeln!(
+        out,
+        "#define COMBUSTION_LIGHT_GRID_X {COMBUSTION_LIGHT_GRID_X}u"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define COMBUSTION_LIGHT_GRID_Y {COMBUSTION_LIGHT_GRID_Y}u"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define COMBUSTION_LIGHT_GRID_Z {COMBUSTION_LIGHT_GRID_Z}u"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define COMBUSTION_LIGHT_GRID_COUNT {COMBUSTION_LIGHT_GRID_COUNT}u"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define COMBUSTION_LIGHT_HALF_EXTENT_XZ_METERS {COMBUSTION_LIGHT_HALF_EXTENT_XZ_METERS:?}"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define COMBUSTION_LIGHT_HALF_EXTENT_Y_METERS {COMBUSTION_LIGHT_HALF_EXTENT_Y_METERS:?}"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define COMBUSTION_LIGHT_FIXED_SCALE {COMBUSTION_LIGHT_FIXED_SCALE:?}"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define COMBUSTION_LIGHT_VOLUME_FIXED_SCALE {COMBUSTION_LIGHT_VOLUME_FIXED_SCALE:?}"
+    )
+    .unwrap();
+    writeln!(out).unwrap();
     writeln!(out, "#define SHADOW_FADE_START {SHADOW_FADE_START:?}").unwrap();
     writeln!(out, "#define SHADOW_FADE_END {SHADOW_FADE_END:?}").unwrap();
     writeln!(
@@ -397,6 +440,9 @@ fn main() {
         "#define MAX_FOG_VOLUMES_PER_CLUSTER {MAX_FOG_VOLUMES_PER_CLUSTER}u"
     )
     .unwrap();
+    for (name, value) in FOG_VOLUME_PROFILES {
+        writeln!(out, "#define {name} {value:?}").unwrap();
+    }
     writeln!(out).unwrap();
 
     writeln!(

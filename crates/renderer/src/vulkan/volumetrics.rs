@@ -27,12 +27,21 @@ use super::descriptors::{
     write_storage_image, write_uniform_buffer, DescriptorPoolBuilder,
 };
 use super::reflect::{validate_set_layout, ReflectedShader};
+use super::scene_buffer::GpuLight;
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::upscaling::VolumetricsConfig;
 use crate::shader_constants::{
+    ATTENUATION_MODEL_INVERSE_SQUARE, COMBUSTION_LIGHT_FIXED_SCALE,
+    COMBUSTION_LIGHT_GRID_COUNT as GLSL_COMBUSTION_LIGHT_GRID_COUNT, COMBUSTION_LIGHT_GRID_X,
+    COMBUSTION_LIGHT_GRID_Y, COMBUSTION_LIGHT_GRID_Z, COMBUSTION_LIGHT_HALF_EXTENT_XZ_METERS,
+    COMBUSTION_LIGHT_HALF_EXTENT_Y_METERS, COMBUSTION_LIGHT_VOLUME_FIXED_SCALE,
     FOG_VOLUME_CLUSTER_DIM as GLSL_FOG_VOLUME_CLUSTER_DIM,
-    MAX_FOG_VOLUMES_PER_CLUSTER as GLSL_MAX_FOG_VOLUMES_PER_CLUSTER, WORKGROUP_X, WORKGROUP_Y,
-    WORKGROUP_Z,
+    MAX_FOG_VOLUMES_PER_CLUSTER as GLSL_MAX_FOG_VOLUMES_PER_CLUSTER, MAX_LIGHTS,
+    VISIBILITY_MASK_FULL, WORKGROUP_X, WORKGROUP_Y, WORKGROUP_Z,
+};
+pub use crate::shader_constants::{
+    FOG_VOLUME_PROFILE_EXPLOSION, FOG_VOLUME_PROFILE_FLAME, FOG_VOLUME_PROFILE_HOMOGENEOUS,
+    FOG_VOLUME_PROFILE_SMOKE,
 };
 use anyhow::{Context, Result};
 use ash::vk;
@@ -123,20 +132,14 @@ pub struct VolumetricsParams {
     /// altitude. y = temporal history weight applied where the froxel's
     /// source term is dominated by thermal emission (see
     /// [`DEFAULT_EMISSIVE_HISTORY_WEIGHT`]). z = adaptive maximum local
-    /// lights evaluated per froxel. w reserved.
+    /// lights evaluated per froxel. w = simulation delta seconds, filled and
+    /// clamped by [`VolumetricsPipeline::dispatch`] after successful-history
+    /// time accounting.
     pub fog_reference: [f32; 4],
 }
 
 /// Maximum authored local volumes uploaded after CPU frustum/distance culling.
 pub const MAX_GPU_FOG_VOLUMES: usize = 128;
-/// Preserve the authored primitive shape with only low-contrast density noise.
-pub const FOG_VOLUME_PROFILE_HOMOGENEOUS: f32 = 0.0;
-/// A cooled particle plume: slow rising billows that broaden with height.
-pub const FOG_VOLUME_PROFILE_SMOKE: f32 = 1.0;
-/// A hot particle plume: a fast, tapered, emissive tongue profile.
-pub const FOG_VOLUME_PROFILE_FLAME: f32 = 2.0;
-/// A one-shot combustion impulse: expanding fireball, cooling shell, smoke.
-pub const FOG_VOLUME_PROFILE_EXPLOSION: f32 = 3.0;
 /// Camera-centered world-space cluster resolution used for local fog.
 /// #2229 / REN-D3-02 — derived from `shader_constants_data.rs`'s
 /// `FOG_VOLUME_CLUSTER_DIM` (the single source of truth shared with
@@ -187,6 +190,15 @@ pub struct GpuFogVolume {
     /// can have identical radiometric coefficients but need very different
     /// silhouettes and advection.
     pub profile_params: [f32; 4],
+}
+
+fn has_transport_emitter(volumes: &[GpuFogVolume]) -> bool {
+    volumes.iter().any(|volume| {
+        let profile = volume.profile_params[0];
+        profile.is_finite()
+            && (FOG_VOLUME_PROFILE_SMOKE - 0.5..=FOG_VOLUME_PROFILE_EXPLOSION + 0.5)
+                .contains(&profile)
+    })
 }
 
 #[repr(C)]
@@ -507,12 +519,189 @@ pub fn froxel_extent(render_extent: vk::Extent2D, config: VolumetricsConfig) -> 
 /// alpha-equivalent (the implicit 0.0 we'd reconstruct) loses the
 /// transmittance channel entirely.
 const FROXEL_FORMAT: vk::Format = vk::Format::R16G16B16A16_SFLOAT;
+/// Transported thermochemical and velocity fields share RGBA16F with the
+/// V-buffer. Chemistry stores `(fuel, temperature K, soot sigma_t,
+/// visible-radiance calibration)`; velocity stores world-units/second in xyz
+/// plus oxidizer in w. Half precision covers the bounded canonical ranges
+/// while keeping the two history fields affordable.
+const COMBUSTION_FIELD_FORMAT: vk::Format = vk::Format::R16G16B16A16_SFLOAT;
 /// One scalar per froxel recording what fraction of the current source term
 /// came from deterministic thermal emission. R32 is a core storage-image
 /// format, avoiding a `shaderStorageImageExtendedFormats` requirement for the
 /// temporal correctness sidecar. #2809 (REN-D16-04).
 const EMISSION_HISTORY_FORMAT: vk::Format = vk::Format::R32_SFLOAT;
 const DENSITY_NOISE_FORMAT: vk::Format = vk::Format::R8_UNORM;
+/// Continue advancing transported smoke after the source entity disappears.
+/// With the shader's 0.18/s soot dissipation this leaves <3% after the latch
+/// expires, avoiding both an abrupt cut and an indefinitely hot idle dispatch.
+const COMBUSTION_HISTORY_LINGER_SECONDS: f32 = 20.0;
+const COMBUSTION_LIGHT_GRID_COUNT: usize = GLSL_COMBUSTION_LIGHT_GRID_COUNT as usize;
+const MAX_COMBUSTION_SURFACE_LIGHTS: usize = 64;
+const COMBUSTION_LIGHT_CUTOFF_IRRADIANCE: f32 = 1.0e-3;
+const COMBUSTION_LIGHT_MIN_RANGE_METERS: f32 = 0.25;
+const COMBUSTION_LIGHT_MAX_RANGE_METERS: f32 = 64.0;
+/// `pointSpotAtten` treats half the uploaded cull radius as the physical
+/// inverse-square reach and uses the second half as a smooth cull window.
+const COMBUSTION_LIGHT_RANGE_EXTENSION: f32 = 2.0;
+
+/// Fixed-point ABI mirrored by `CombustionLightMoment` in
+/// `volumetrics_inject.comp` (std430: eight tightly packed uints).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct GpuCombustionLightMoment {
+    weight: u32,
+    weighted_x: u32,
+    weighted_y: u32,
+    weighted_z: u32,
+    radiant_r: u32,
+    radiant_g: u32,
+    radiant_b: u32,
+    luminous_volume: u32,
+}
+
+fn decode_combustion_light_moment(bytes: &[u8]) -> GpuCombustionLightMoment {
+    debug_assert!(bytes.len() >= std::mem::size_of::<GpuCombustionLightMoment>());
+    let word = |index: usize| {
+        let offset = index * std::mem::size_of::<u32>();
+        u32::from_ne_bytes(
+            bytes[offset..offset + 4]
+                .try_into()
+                .expect("four-byte word"),
+        )
+    };
+    GpuCombustionLightMoment {
+        weight: word(0),
+        weighted_x: word(1),
+        weighted_y: word(2),
+        weighted_z: word(3),
+        radiant_r: word(4),
+        radiant_g: word(5),
+        radiant_b: word(6),
+        luminous_volume: word(7),
+    }
+}
+
+fn combustion_light_from_moment(
+    bin_index: usize,
+    moment: GpuCombustionLightMoment,
+    camera_world: [f32; 3],
+) -> Option<GpuLight> {
+    if moment.weight == 0 {
+        return None;
+    }
+    let radiant = [
+        moment.radiant_r as f32 / COMBUSTION_LIGHT_FIXED_SCALE,
+        moment.radiant_g as f32 / COMBUSTION_LIGHT_FIXED_SCALE,
+        moment.radiant_b as f32 / COMBUSTION_LIGHT_FIXED_SCALE,
+    ];
+    let luma = radiant[0] * 0.2126 + radiant[1] * 0.7152 + radiant[2] * 0.0722;
+    if !luma.is_finite() || luma < COMBUSTION_LIGHT_CUTOFF_IRRADIANCE {
+        return None;
+    }
+
+    let grid_x = COMBUSTION_LIGHT_GRID_X as usize;
+    let grid_y = COMBUSTION_LIGHT_GRID_Y as usize;
+    let bin_x = bin_index % grid_x;
+    let yz = bin_index / grid_x;
+    let bin_y = yz % grid_y;
+    let bin_z = yz / grid_y;
+    if bin_z >= COMBUSTION_LIGHT_GRID_Z as usize {
+        return None;
+    }
+    let inverse_weight = 1.0 / moment.weight as f32;
+    let within = [
+        (moment.weighted_x as f32 * inverse_weight).clamp(0.0, 1.0),
+        (moment.weighted_y as f32 * inverse_weight).clamp(0.0, 1.0),
+        (moment.weighted_z as f32 * inverse_weight).clamp(0.0, 1.0),
+    ];
+    let half = [
+        COMBUSTION_LIGHT_HALF_EXTENT_XZ_METERS,
+        COMBUSTION_LIGHT_HALF_EXTENT_Y_METERS,
+        COMBUSTION_LIGHT_HALF_EXTENT_XZ_METERS,
+    ];
+    let dims = [
+        COMBUSTION_LIGHT_GRID_X as f32,
+        COMBUSTION_LIGHT_GRID_Y as f32,
+        COMBUSTION_LIGHT_GRID_Z as f32,
+    ];
+    let bins = [bin_x as f32, bin_y as f32, bin_z as f32];
+    let position: [f32; 3] = std::array::from_fn(|axis| {
+        let offset_metres =
+            -half[axis] + (bins[axis] + within[axis]) * 2.0 * half[axis] / dims[axis];
+        camera_world[axis] + offset_metres * WORLD_UNITS_PER_METER
+    });
+
+    let luminous_volume = moment.luminous_volume as f32 / COMBUSTION_LIGHT_VOLUME_FIXED_SCALE;
+    let source_radius_metres = if luminous_volume > 0.0 && luminous_volume.is_finite() {
+        (3.0 * luminous_volume / (4.0 * std::f32::consts::PI))
+            .cbrt()
+            .clamp(0.02, 8.0)
+    } else {
+        0.02
+    };
+    let range_metres = (luma / COMBUSTION_LIGHT_CUTOFF_IRRADIANCE).sqrt().clamp(
+        COMBUSTION_LIGHT_MIN_RANGE_METERS,
+        COMBUSTION_LIGHT_MAX_RANGE_METERS,
+    );
+
+    Some(GpuLight {
+        position_radius: [
+            position[0],
+            position[1],
+            position[2],
+            range_metres * WORLD_UNITS_PER_METER * COMBUSTION_LIGHT_RANGE_EXTENSION,
+        ],
+        color_type: [radiant[0], radiant[1], radiant[2], 0.0],
+        direction_angle: [0.0; 4],
+        params: [
+            1.0,
+            source_radius_metres * WORLD_UNITS_PER_METER,
+            VISIBILITY_MASK_FULL as f32,
+            ATTENUATION_MODEL_INVERSE_SQUARE as f32,
+        ],
+    })
+}
+
+fn volume_contains_position(volume: &GpuFogVolume, position: [f32; 3]) -> bool {
+    let dx = position[0] - volume.center_shape[0];
+    let dy = position[1] - volume.center_shape[1];
+    let dz = position[2] - volume.center_shape[2];
+    let radius_squared = volume.half_extents_extinction[0] * volume.half_extents_extinction[0]
+        + volume.half_extents_extinction[1] * volume.half_extents_extinction[1]
+        + volume.half_extents_extinction[2] * volume.half_extents_extinction[2];
+    dx * dx + dy * dy + dz * dz <= radius_squared
+}
+
+fn combustion_light_is_inside_authored_source(
+    light: &GpuLight,
+    source_volumes: &[GpuFogVolume],
+    authored_lights: &[GpuLight],
+) -> bool {
+    let light_position = [
+        light.position_radius[0],
+        light.position_radius[1],
+        light.position_radius[2],
+    ];
+    source_volumes.iter().any(|volume| {
+        let profile = volume.profile_params[0];
+        let transported = profile.is_finite()
+            && (FOG_VOLUME_PROFILE_SMOKE - 0.5..=FOG_VOLUME_PROFILE_EXPLOSION + 0.5)
+                .contains(&profile);
+        transported
+            && volume_contains_position(volume, light_position)
+            && authored_lights.iter().any(|candidate| {
+                candidate.color_type[3] <= 1.5
+                    && volume_contains_position(
+                        volume,
+                        [
+                            candidate.position_radius[0],
+                            candidate.position_radius[1],
+                            candidate.position_radius[2],
+                        ],
+                    )
+            })
+    })
+}
 
 struct FroxelSlot {
     image: vk::Image,
@@ -528,6 +717,7 @@ pub struct VolumetricsPipeline {
     descriptor_pool: vk::DescriptorPool,
     descriptor_sets: Vec<vk::DescriptorSet>,
     history_sampler: vk::Sampler,
+    transport_sampler: vk::Sampler,
     density_noise_sampler: vk::Sampler,
     base_noise_volume: Option<FroxelSlot>,
     detail_noise_volume: Option<FroxelSlot>,
@@ -543,6 +733,13 @@ pub struct VolumetricsPipeline {
     /// reprojects the previous slot to make fire/explosion history symmetric
     /// on leading and trailing edges.
     emission_history_volumes: Vec<FroxelSlot>,
+    /// Canonical transported `(fuel, temperature K, soot extinction,
+    /// visible-radiance calibration)` state, double-buffered by
+    /// frame-in-flight slot.
+    combustion_state_volumes: Vec<FroxelSlot>,
+    /// World-space combustion velocity in xyz (world units / second) and
+    /// oxidizer fraction in w. Sampled linearly for RK2 backtracing.
+    combustion_velocity_volumes: Vec<FroxelSlot>,
     /// Per frame-in-flight host-mapped UBO carrying
     /// `VolumetricsParams`. Written each frame from `dispatch()`.
     param_buffers: Vec<GpuBuffer>,
@@ -552,6 +749,17 @@ pub struct VolumetricsPipeline {
     fog_volume_buffers: Vec<GpuBuffer>,
     fog_cluster_buffers: Vec<GpuBuffer>,
     fog_cluster_index_buffers: Vec<GpuBuffer>,
+    /// GPU-written fixed-point radiant moments, one camera-centred coarse
+    /// grid per frame-in-flight slot. The host drains and zeroes a slot only
+    /// after its fence, so extraction never stalls the active submission.
+    combustion_light_moment_buffers: Vec<GpuBuffer>,
+    combustion_light_grid_centers: [[f32; 3]; MAX_FRAMES_IN_FLIGHT],
+    combustion_light_grid_valid: [bool; MAX_FRAMES_IN_FLIGHT],
+    combustion_light_candidates: Vec<(f32, GpuLight)>,
+    /// Last reduction counters emitted at debug level. Logging only changes
+    /// keeps the GPU-readback diagnostic useful without producing one line
+    /// per frame during a steady flame.
+    last_combustion_light_topology: Option<[usize; 4]>,
     /// Reused CPU staging state for cluster construction.
     fog_volume_upload: Box<GpuFogVolumeUpload>,
     fog_cluster_entries: Box<[GpuFogClusterEntry; FOG_VOLUME_CLUSTER_COUNT]>,
@@ -573,6 +781,13 @@ pub struct VolumetricsPipeline {
     integration_param_buffers: Vec<GpuBuffer>,
     history_valid: bool,
     dispatched_this_frame: bool,
+    /// Last successfully submitted simulation time and the time recorded by
+    /// the current command buffer. Promoting pending -> last only from
+    /// `mark_frame_completed` keeps failed submissions from advancing dt.
+    last_simulation_time_seconds: Option<f32>,
+    pending_simulation_time_seconds: Option<f32>,
+    /// CPU-side lifetime latch for transported soot after emitters vanish.
+    combustion_active_until_seconds: f32,
 
     /// Per-frame-in-flight latch: `true` once `write_tlas` has written
     /// binding 2 for this slot. The injection descriptor set is created
@@ -618,6 +833,7 @@ impl VolumetricsPipeline {
             descriptor_pool: vk::DescriptorPool::null(),
             descriptor_sets: Vec::new(),
             history_sampler: vk::Sampler::null(),
+            transport_sampler: vk::Sampler::null(),
             density_noise_sampler: vk::Sampler::null(),
             base_noise_volume: None,
             detail_noise_volume: None,
@@ -625,10 +841,17 @@ impl VolumetricsPipeline {
             config,
             lighting_volumes: Vec::new(),
             emission_history_volumes: Vec::new(),
+            combustion_state_volumes: Vec::new(),
+            combustion_velocity_volumes: Vec::new(),
             param_buffers: Vec::new(),
             fog_volume_buffers: Vec::new(),
             fog_cluster_buffers: Vec::new(),
             fog_cluster_index_buffers: Vec::new(),
+            combustion_light_moment_buffers: Vec::new(),
+            combustion_light_grid_centers: [[0.0; 3]; MAX_FRAMES_IN_FLIGHT],
+            combustion_light_grid_valid: [false; MAX_FRAMES_IN_FLIGHT],
+            combustion_light_candidates: Vec::new(),
+            last_combustion_light_topology: None,
             fog_volume_upload: Box::new(GpuFogVolumeUpload::default()),
             fog_cluster_entries: Box::new(
                 [GpuFogClusterEntry::default(); FOG_VOLUME_CLUSTER_COUNT],
@@ -643,6 +866,9 @@ impl VolumetricsPipeline {
             integration_param_buffers: Vec::new(),
             history_valid: false,
             dispatched_this_frame: false,
+            last_simulation_time_seconds: None,
+            pending_simulation_time_seconds: None,
+            combustion_active_until_seconds: f32::NEG_INFINITY,
             tlas_written: [false; MAX_FRAMES_IN_FLIGHT],
             lights_written: [false; MAX_FRAMES_IN_FLIGHT],
         };
@@ -663,9 +889,9 @@ impl VolumetricsPipeline {
         }
 
         // ── 1. Allocate per-frame-in-flight froxel volumes ────────────
-        // Three volumes per frame: lighting (injection output → integration
-        // input), integrated (integration output → composite read), and a
-        // scalar emission-provenance history sidecar for temporal rejection.
+        // Five volumes per frame: lighting (injection output → integration
+        // input), integrated (integration output → composite read), scalar
+        // emission provenance, and two transported-combustion history fields.
         for i in 0..MAX_FRAMES_IN_FLIGHT {
             let slot = try_or_cleanup!(Self::create_volume(
                 device,
@@ -689,6 +915,30 @@ impl VolumetricsPipeline {
                     | vk::ImageUsageFlags::TRANSFER_DST,
             ));
             partial.emission_history_volumes.push(emission_history);
+            let combustion_state = try_or_cleanup!(Self::create_volume(
+                device,
+                allocator,
+                &format!("volumetrics_combustion_state_{i}"),
+                extent,
+                COMBUSTION_FIELD_FORMAT,
+                vk::ImageUsageFlags::STORAGE
+                    | vk::ImageUsageFlags::SAMPLED
+                    | vk::ImageUsageFlags::TRANSFER_DST,
+            ));
+            partial.combustion_state_volumes.push(combustion_state);
+            let combustion_velocity = try_or_cleanup!(Self::create_volume(
+                device,
+                allocator,
+                &format!("volumetrics_combustion_velocity_{i}"),
+                extent,
+                COMBUSTION_FIELD_FORMAT,
+                vk::ImageUsageFlags::STORAGE
+                    | vk::ImageUsageFlags::SAMPLED
+                    | vk::ImageUsageFlags::TRANSFER_DST,
+            ));
+            partial
+                .combustion_velocity_volumes
+                .push(combustion_velocity);
             let integrated = try_or_cleanup!(Self::create_volume(
                 device,
                 allocator,
@@ -749,6 +999,27 @@ impl VolumetricsPipeline {
                 .context("Volumetrics history sampler")
         });
 
+        // Transport needs sub-froxel motion: nearest sampling would keep
+        // velocity pinned until it crossed a whole cell and produce blocky
+        // smoke. A dedicated linear/clamp sampler is safe here because the
+        // chemistry field is continuous; raw radiance history deliberately
+        // keeps its separate nearest-column sampler to avoid wall bleeding.
+        // SAFETY: same ownership/lifetime contract as `history_sampler`.
+        partial.transport_sampler = try_or_cleanup!(unsafe {
+            device
+                .create_sampler(
+                    &vk::SamplerCreateInfo::default()
+                        .mag_filter(vk::Filter::LINEAR)
+                        .min_filter(vk::Filter::LINEAR)
+                        .mipmap_mode(vk::SamplerMipmapMode::NEAREST)
+                        .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+                        .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+                        .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE),
+                    None,
+                )
+                .context("Volumetrics transport sampler")
+        });
+
         // The density generator is periodic at the voxel boundary, so
         // trilinear filtering remains continuous across every repeat seam.
         // SAFETY: `device` is live, the create info has no extension chain,
@@ -804,6 +1075,18 @@ impl VolumetricsPipeline {
                     vk::BufferUsageFlags::STORAGE_BUFFER,
                 )
             ));
+            let mut moment_buffer = try_or_cleanup!(GpuBuffer::create_host_readback(
+                device,
+                allocator,
+                std::mem::size_of::<[GpuCombustionLightMoment; COMBUSTION_LIGHT_GRID_COUNT]>()
+                    as vk::DeviceSize,
+                vk::BufferUsageFlags::STORAGE_BUFFER,
+            ));
+            try_or_cleanup!((|| -> Result<()> {
+                moment_buffer.mapped_slice_mut()?.fill(0);
+                moment_buffer.flush_if_needed(device)
+            })());
+            partial.combustion_light_moment_buffers.push(moment_buffer);
         }
 
         // ── 3. Descriptor set layout ──────────────────────────────────
@@ -900,6 +1183,36 @@ impl VolumetricsPipeline {
                 .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            // 14/15: current write + previous sampled canonical chemistry
+            // `(fuel, temperature, soot extinction, radiance calibration)`.
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(14)
+                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(15)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            // 16/17: current write + previous sampled world-space velocity.
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(16)
+                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(17)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            // 18: fixed-point transported-field radiant moments. GPU writes
+            // this slot; the host drains it only after the slot fence.
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(18)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
         ];
         validate_set_layout(
             0,
@@ -986,6 +1299,20 @@ impl VolumetricsPipeline {
                 .sampler(partial.history_sampler)
                 .image_view(partial.emission_history_volumes[previous].view)
                 .image_layout(vk::ImageLayout::GENERAL)];
+            let combustion_state_write_info = [vk::DescriptorImageInfo::default()
+                .image_view(partial.combustion_state_volumes[f].view)
+                .image_layout(vk::ImageLayout::GENERAL)];
+            let previous_combustion_state_info = [vk::DescriptorImageInfo::default()
+                .sampler(partial.transport_sampler)
+                .image_view(partial.combustion_state_volumes[previous].view)
+                .image_layout(vk::ImageLayout::GENERAL)];
+            let combustion_velocity_write_info = [vk::DescriptorImageInfo::default()
+                .image_view(partial.combustion_velocity_volumes[f].view)
+                .image_layout(vk::ImageLayout::GENERAL)];
+            let previous_combustion_velocity_info = [vk::DescriptorImageInfo::default()
+                .sampler(partial.transport_sampler)
+                .image_view(partial.combustion_velocity_volumes[previous].view)
+                .image_layout(vk::ImageLayout::GENERAL)];
             let params_info = [vk::DescriptorBufferInfo {
                 buffer: partial.param_buffers[f].buffer,
                 offset: 0,
@@ -1006,6 +1333,12 @@ impl VolumetricsPipeline {
                 buffer: partial.fog_cluster_index_buffers[f].buffer,
                 offset: 0,
                 range: std::mem::size_of::<[u32; FOG_VOLUME_INDEX_COUNT]>() as vk::DeviceSize,
+            }];
+            let combustion_light_moment_info = [vk::DescriptorBufferInfo {
+                buffer: partial.combustion_light_moment_buffers[f].buffer,
+                offset: 0,
+                range: std::mem::size_of::<[GpuCombustionLightMoment; COMBUSTION_LIGHT_GRID_COUNT]>(
+                ) as vk::DeviceSize,
             }];
             let set = partial.descriptor_sets[f];
             let base_noise_info = [vk::DescriptorImageInfo::default()
@@ -1033,6 +1366,11 @@ impl VolumetricsPipeline {
                 write_combined_image_sampler(set, 11, &detail_noise_info),
                 write_storage_image(set, 12, &emission_history_write_info),
                 write_combined_image_sampler(set, 13, &previous_emission_history_info),
+                write_storage_image(set, 14, &combustion_state_write_info),
+                write_combined_image_sampler(set, 15, &previous_combustion_state_info),
+                write_storage_image(set, 16, &combustion_velocity_write_info),
+                write_combined_image_sampler(set, 17, &previous_combustion_velocity_info),
+                write_storage_buffer(set, 18, &combustion_light_moment_info),
             ];
             // SAFETY: the written descriptor sets and the referenced froxel image
             // view + param UBO are freshly created here and not yet in use by any
@@ -1183,14 +1521,14 @@ impl VolumetricsPipeline {
         }
 
         log::info!(
-            "Volumetrics pipeline created from render {}x{}: {}x{}x{} froxels (1/{} XY), {} MiB / slot (2×RGBA16F + R32F), far={} m",
+            "Volumetrics pipeline created from render {}x{}: {}x{}x{} froxels (1/{} XY), {} MiB / slot (4×RGBA16F + R32F), far={} m",
             render_extent.width,
             render_extent.height,
             extent.width,
             extent.height,
             extent.depth,
             config.froxel_xy_divisor,
-            (extent.width as u64 * extent.height as u64 * extent.depth as u64 * 20)
+            (extent.width as u64 * extent.height as u64 * extent.depth as u64 * 36)
                 / (1024 * 1024),
             config.grid_far_meters,
         );
@@ -1298,8 +1636,9 @@ impl VolumetricsPipeline {
 
     /// One-time UNDEFINED → GENERAL transition for every writable froxel
     /// volume followed by a `cmd_clear_color_image`: lighting/integration use
-    /// `(rgb=0 inscatter, a=1 transmittance)`, while the scalar emission-share
-    /// history uses zero. Without the integrated clear, uninitialized
+    /// `(rgb=0 inscatter, a=1 transmittance)`, while emission provenance and
+    /// transported combustion fields use zero (the shader interprets empty
+    /// chemistry as ambient air). Without the integrated clear, uninitialized
     /// `vol.a ≈ 0`
     /// makes the composite formula `final = scene * vol.a + vol.rgb`
     /// collapse the scene to black on the first frame volumetrics is
@@ -1362,12 +1701,14 @@ impl VolumetricsPipeline {
             let detail_noise = self.detail_noise_volume.as_ref().expect("detail noise");
 
             // ── 1. Initialize writable froxels and upload-only noise images.
-            let mut barriers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT * 3 + 2);
+            let mut barriers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT * 5 + 2);
             for slot in self
                 .lighting_volumes
                 .iter()
                 .chain(self.integrated_volumes.iter())
                 .chain(self.emission_history_volumes.iter())
+                .chain(self.combustion_state_volumes.iter())
+                .chain(self.combustion_velocity_volumes.iter())
             {
                 barriers.push(image_barrier_undef_to_general(slot.image).dst_access_mask(
                     vk::AccessFlags::SHADER_READ
@@ -1426,16 +1767,22 @@ impl VolumetricsPipeline {
                     );
                 }
             }
-            let clear_emission_history = vk::ClearColorValue { float32: [0.0; 4] };
-            for slot in &self.emission_history_volumes {
+            let clear_history = vk::ClearColorValue { float32: [0.0; 4] };
+            for slot in self
+                .emission_history_volumes
+                .iter()
+                .chain(self.combustion_state_volumes.iter())
+                .chain(self.combustion_velocity_volumes.iter())
+            {
                 // SAFETY: same ownership/layout/usage contract as the RGBA
-                // froxels above; R32F consumes only the first clear channel.
+                // froxels above; R32F consumes only the first clear channel,
+                // while both RGBA16F transport fields consume all four.
                 unsafe {
                     device.cmd_clear_color_image(
                         cmd,
                         slot.image,
                         vk::ImageLayout::GENERAL,
-                        &clear_emission_history,
+                        &clear_history,
                         &[full_range],
                     );
                 }
@@ -1586,11 +1933,29 @@ impl VolumetricsPipeline {
         // to make the write visible to the compute stage.
         let mut frame_params = *params;
         frame_params.prev_camera_pos[3] = if self.history_valid { 1.0 } else { 0.0 };
+        let simulation_time = if frame_params.temporal_params[2].is_finite() {
+            frame_params.temporal_params[2].max(0.0)
+        } else {
+            self.last_simulation_time_seconds.unwrap_or(0.0)
+        };
+        let simulation_dt = if self.history_valid {
+            self.last_simulation_time_seconds
+                .map(|previous| (simulation_time - previous).clamp(0.0, 1.0 / 15.0))
+                .unwrap_or(1.0 / 60.0)
+        } else {
+            // Seed a newly created/reset field with one nominal frame of
+            // source input so a flame is visible immediately.
+            1.0 / 60.0
+        };
+        frame_params.fog_reference[3] = simulation_dt;
+        self.pending_simulation_time_seconds = Some(simulation_time);
         let camera_position = [
             frame_params.camera_pos[0],
             frame_params.camera_pos[1],
             frame_params.camera_pos[2],
         ];
+        self.combustion_light_grid_centers[frame] = camera_position;
+        self.combustion_light_grid_valid[frame] = true;
         let fog_far = self.far_distance_world().max(1.0);
         frame_params.local_volume_grid = if fog_volumes.is_empty() {
             self.fog_volume_upload.count = [0; 4];
@@ -1634,13 +1999,16 @@ impl VolumetricsPipeline {
             vk::PipelineStageFlags::HOST,
             vk::AccessFlags::HOST_WRITE,
             vk::PipelineStageFlags::COMPUTE_SHADER,
-            vk::AccessFlags::UNIFORM_READ | vk::AccessFlags::SHADER_READ,
+            vk::AccessFlags::UNIFORM_READ
+                | vk::AccessFlags::SHADER_READ
+                | vk::AccessFlags::SHADER_WRITE,
         );
 
         let subresource = super::descriptors::color_subresource_single_mip();
 
         // ── Stage B: pre-injection history barriers ─────────────────
-        // The raw lighting volumes and scalar emission-provenance sidecars
+        // The raw lighting volumes, scalar emission-provenance sidecars, and
+        // transported chemistry/velocity fields
         // live in GENERAL across their lifetime (set by
         // `initialize_layouts`), so no layout transitions occur. Sequence
         // the slot being recycled from last frame's history READ to this
@@ -1675,6 +2043,34 @@ impl VolumetricsPipeline {
             .new_layout(vk::ImageLayout::GENERAL)
             .image(self.emission_history_volumes[previous].image)
             .subresource_range(subresource);
+        let pre_combustion_state_write = vk::ImageMemoryBarrier::default()
+            .src_access_mask(vk::AccessFlags::SHADER_READ)
+            .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
+            .old_layout(vk::ImageLayout::GENERAL)
+            .new_layout(vk::ImageLayout::GENERAL)
+            .image(self.combustion_state_volumes[frame].image)
+            .subresource_range(subresource);
+        let combustion_state_ready = vk::ImageMemoryBarrier::default()
+            .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+            .dst_access_mask(vk::AccessFlags::SHADER_READ)
+            .old_layout(vk::ImageLayout::GENERAL)
+            .new_layout(vk::ImageLayout::GENERAL)
+            .image(self.combustion_state_volumes[previous].image)
+            .subresource_range(subresource);
+        let pre_combustion_velocity_write = vk::ImageMemoryBarrier::default()
+            .src_access_mask(vk::AccessFlags::SHADER_READ)
+            .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
+            .old_layout(vk::ImageLayout::GENERAL)
+            .new_layout(vk::ImageLayout::GENERAL)
+            .image(self.combustion_velocity_volumes[frame].image)
+            .subresource_range(subresource);
+        let combustion_velocity_ready = vk::ImageMemoryBarrier::default()
+            .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+            .dst_access_mask(vk::AccessFlags::SHADER_READ)
+            .old_layout(vk::ImageLayout::GENERAL)
+            .new_layout(vk::ImageLayout::GENERAL)
+            .image(self.combustion_velocity_volumes[previous].image)
+            .subresource_range(subresource);
         device.cmd_pipeline_barrier(
             cmd,
             vk::PipelineStageFlags::COMPUTE_SHADER,
@@ -1687,6 +2083,10 @@ impl VolumetricsPipeline {
                 history_ready,
                 pre_emission_history_write,
                 emission_history_ready,
+                pre_combustion_state_write,
+                combustion_state_ready,
+                pre_combustion_velocity_write,
+                combustion_velocity_ready,
             ],
         );
 
@@ -1765,6 +2165,18 @@ impl VolumetricsPipeline {
             &[],
             &[post_int],
         );
+        // Publish binding 18's atomic writes to the host. The actual read is
+        // deferred until this slot's fence is waited on at its next reuse;
+        // the barrier supplies the device->host memory dependency that the
+        // fence's device-only access scope does not create by itself.
+        memory_barrier(
+            device,
+            cmd,
+            vk::PipelineStageFlags::COMPUTE_SHADER,
+            vk::AccessFlags::SHADER_WRITE,
+            vk::PipelineStageFlags::HOST,
+            vk::AccessFlags::HOST_READ,
+        );
 
         self.dispatched_this_frame = true;
         Ok(())
@@ -1773,6 +2185,10 @@ impl VolumetricsPipeline {
     pub fn signal_history_reset(&mut self) {
         self.history_valid = false;
         self.dispatched_this_frame = false;
+        self.last_simulation_time_seconds = None;
+        self.pending_simulation_time_seconds = None;
+        self.combustion_active_until_seconds = f32::NEG_INFINITY;
+        self.combustion_light_grid_valid.fill(false);
     }
 
     /// Advance temporal validity only after the command buffer that wrote the
@@ -1781,6 +2197,7 @@ impl VolumetricsPipeline {
         if self.dispatched_this_frame {
             self.history_valid = true;
             self.dispatched_this_frame = false;
+            self.last_simulation_time_seconds = self.pending_simulation_time_seconds.take();
         }
     }
 
@@ -1794,6 +2211,129 @@ impl VolumetricsPipeline {
 
     pub fn far_distance_world(&self) -> f32 {
         self.config.grid_far_meters as f32 * WORLD_UNITS_PER_METER
+    }
+
+    /// Drain the prior use of `frame`'s transported-field radiant moments,
+    /// reset the buffer for this frame's injector, and append a bounded set of
+    /// inverse-square surface lights. The caller must have waited the frame
+    /// slot's fence. One frame-slot of latency is deliberate: it removes a
+    /// GPU->CPU stall while still following the advected/cooled field rather
+    /// than the current source primitive.
+    pub fn append_combustion_surface_lights(
+        &mut self,
+        device: &ash::Device,
+        frame: usize,
+        source_volumes: &[GpuFogVolume],
+        lights: &mut Vec<GpuLight>,
+    ) -> Result<usize> {
+        let camera_world = self.combustion_light_grid_centers[frame];
+        let had_grid = std::mem::take(&mut self.combustion_light_grid_valid[frame]);
+        let buffer = &mut self.combustion_light_moment_buffers[frame];
+        buffer.invalidate_if_needed(device)?;
+        let mut moments = [GpuCombustionLightMoment::default(); COMBUSTION_LIGHT_GRID_COUNT];
+        {
+            let bytes = buffer.mapped_slice_mut()?;
+            let stride = std::mem::size_of::<GpuCombustionLightMoment>();
+            anyhow::ensure!(
+                bytes.len() >= stride * COMBUSTION_LIGHT_GRID_COUNT,
+                "combustion light moment buffer is truncated"
+            );
+            for (index, moment) in moments.iter_mut().enumerate() {
+                let start = index * stride;
+                *moment = decode_combustion_light_moment(&bytes[start..start + stride]);
+            }
+            bytes[..stride * COMBUSTION_LIGHT_GRID_COUNT].fill(0);
+        }
+        buffer.flush_if_needed(device)?;
+        if !had_grid {
+            return Ok(0);
+        }
+
+        let occupied_bins = moments.iter().filter(|moment| moment.weight > 0).count();
+        let weight_quanta: u64 = moments.iter().map(|moment| u64::from(moment.weight)).sum();
+        let radiance_quanta: u64 = moments
+            .iter()
+            .map(|moment| {
+                u64::from(moment.radiant_r)
+                    + u64::from(moment.radiant_g)
+                    + u64::from(moment.radiant_b)
+            })
+            .sum();
+        let authored_count = lights.len();
+        let mut decoded_candidates = 0;
+        let mut suppressed_candidates = 0;
+        self.combustion_light_candidates.clear();
+        for (bin_index, moment) in moments.into_iter().enumerate() {
+            let Some(light) = combustion_light_from_moment(bin_index, moment, camera_world) else {
+                continue;
+            };
+            decoded_candidates += 1;
+            // An authored LIGH inside a steady source volume is already the
+            // content's surface-light surrogate. Suppress only while this
+            // centroid is also inside that same canonical volume; once the
+            // transported field leaves it (plume or blast), it contributes.
+            if combustion_light_is_inside_authored_source(
+                &light,
+                source_volumes,
+                &lights[..authored_count],
+            ) {
+                suppressed_candidates += 1;
+                continue;
+            }
+            self.combustion_light_candidates
+                .push((light.gi_priority_score(), light));
+        }
+        self.combustion_light_candidates
+            .sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
+        let available = MAX_LIGHTS.saturating_sub(lights.len());
+        let append_count = available
+            .min(MAX_COMBUSTION_SURFACE_LIGHTS)
+            .min(self.combustion_light_candidates.len());
+        lights.extend(
+            self.combustion_light_candidates[..append_count]
+                .iter()
+                .map(|(_, light)| *light),
+        );
+        let topology = [
+            occupied_bins,
+            decoded_candidates,
+            suppressed_candidates,
+            append_count,
+        ];
+        if self.last_combustion_light_topology != Some(topology) {
+            log::debug!(
+                "combustion light reduction: occupied_bins={occupied_bins} \
+                 decoded_candidates={decoded_candidates} \
+                 suppressed_candidates={suppressed_candidates} appended_lights={append_count} \
+                 weight_quanta={weight_quanta} radiance_quanta={radiance_quanta}"
+            );
+            self.last_combustion_light_topology = Some(topology);
+        }
+        Ok(append_count)
+    }
+
+    /// Decide whether the two volumetric passes need to run this frame.
+    /// Transported soot must outlive its emitter, so the old
+    /// `global fog || current volumes` test was insufficient: deleting an
+    /// explosion entity immediately froze/cleared its smoke. The latch is
+    /// canonical-profile based and therefore carries no source-game policy.
+    pub fn requires_dispatch(
+        &mut self,
+        total_time_seconds: f32,
+        has_global_medium: bool,
+        fog_volumes: &[GpuFogVolume],
+    ) -> bool {
+        let now = if total_time_seconds.is_finite() {
+            total_time_seconds.max(0.0)
+        } else {
+            self.last_simulation_time_seconds.unwrap_or(0.0)
+        };
+        if has_transport_emitter(fog_volumes) {
+            self.combustion_active_until_seconds = now + COMBUSTION_HISTORY_LINGER_SECONDS;
+        }
+        has_global_medium
+            || !fog_volumes.is_empty()
+            || (self.history_valid && now <= self.combustion_active_until_seconds)
     }
 
     /// Clear a frame slot to the neutral composite value when required RT or
@@ -1855,6 +2395,10 @@ impl VolumetricsPipeline {
         );
         self.history_valid = false;
         self.dispatched_this_frame = false;
+        self.last_simulation_time_seconds = None;
+        self.pending_simulation_time_seconds = None;
+        self.combustion_active_until_seconds = f32::NEG_INFINITY;
+        self.combustion_light_grid_valid[frame] = false;
     }
 
     /// All per-frame-in-flight integration-output views, in slot order.
@@ -1960,6 +2504,8 @@ impl VolumetricsPipeline {
             .lighting_volumes
             .drain(..)
             .chain(self.emission_history_volumes.drain(..))
+            .chain(self.combustion_state_volumes.drain(..))
+            .chain(self.combustion_velocity_volumes.drain(..))
             .chain(self.integrated_volumes.drain(..))
             .chain(self.base_noise_volume.take())
             .chain(self.detail_noise_volume.take())
@@ -1990,6 +2536,10 @@ impl VolumetricsPipeline {
             buf.destroy(device, allocator);
         }
         self.fog_cluster_index_buffers.clear();
+        for buf in &mut self.combustion_light_moment_buffers {
+            buf.destroy(device, allocator);
+        }
+        self.combustion_light_moment_buffers.clear();
         for buf in &mut self.integration_param_buffers {
             buf.destroy(device, allocator);
         }
@@ -2029,6 +2579,10 @@ impl VolumetricsPipeline {
         if self.history_sampler != vk::Sampler::null() {
             device.destroy_sampler(self.history_sampler, None);
             self.history_sampler = vk::Sampler::null();
+        }
+        if self.transport_sampler != vk::Sampler::null() {
+            device.destroy_sampler(self.transport_sampler, None);
+            self.transport_sampler = vk::Sampler::null();
         }
         if self.density_noise_sampler != vk::Sampler::null() {
             device.destroy_sampler(self.density_noise_sampler, None);
@@ -2112,22 +2666,159 @@ mod unit_tests {
     }
 
     #[test]
-    fn combustion_profiles_couple_density_temperature_and_scattering() {
+    fn combustion_profiles_feed_one_canonical_transported_field() {
         let shader = include_str!("../../shaders/volumetrics_inject.comp");
         for contract in [
-            "const float LOCAL_PROFILE_EXPLOSION = 3.0;",
+            "bool isLocalProfile(float actual, float expected)",
+            "FOG_VOLUME_PROFILE_EXPLOSION",
+            "layout(rgba16f, set = 0, binding = 14) uniform writeonly image3D combustionState;",
+            "layout(set = 0, binding = 15) uniform sampler3D previousCombustionState;",
+            "layout(rgba16f, set = 0, binding = 16) uniform writeonly image3D combustionVelocity;",
+            "layout(set = 0, binding = 17) uniform sampler3D previousCombustionVelocity;",
             "vec3 blackbodyChromaticity(float kelvin)",
-            "float explosionAge = clamp(volume.profile_params.y",
-            "float localTemperature =",
-            "pow(localTemperature / sourceTemperature, 4.0)",
-            "mix(vec3(0.12), cooledSmokeAlbedo, smokeTransition)",
-            "float shell =",
+            "void transportCombustion(",
+            "intersectUnitSphereSegment",
+            "intersectUnitBoxSegment",
+            "densityProfile *= segmentCoverage;",
+            "out float stateProfile",
+            "sourceStateMask * sourceRadianceLuma",
+            "vec3 sourcePosition = worldPos - midpointVelocity.xyz * dt;",
+            "bool combustionPathBlocked(vec3 sourcePosition, vec3 destinationPosition)",
+            "VISIBILITY_MASK_ALL_OPAQUE",
+            "float impulseEnvelope = 1.0 - smoothstep(0.12, 0.24, age);",
+            "compactCore * impulseEnvelope",
+            "float reactionRate = 2.4 * chemistry.x * velocity.w * ignition;",
+            "float richYield = mix(0.004, 0.018, 1.0 - velocity.w);",
+            "blackbodyVisibleRadianceRatio(chemistry.y, 1850.0)",
+            "float buoyantAcceleration = min(temperatureExcess, 7.0)",
+            "LocalMedium combustionMedium(vec4 chemistry)",
+            "imageStore(combustionState, coord, chemistry);",
+            "layout(std430, set = 0, binding = 18) buffer CombustionLightMomentBuffer",
+            "void accumulateCombustionLightMoment(",
+            "medium.emission * cellVolumeWorld",
+            "combustionLightMoments[binIndex].radiant_r",
         ] {
             assert!(
                 shader.contains(contract),
-                "volumetric combustion lost a coupled physical contract: {contract}"
+                "transported combustion lost a coupled physical contract: {contract}"
             );
         }
+        assert!(
+            shader.contains("|| isTransportedProfile(profileKind))"),
+            "dynamic profiles must not also render their old analytic body"
+        );
+        assert!(
+            !shader.contains("GameKind")
+                && !shader.contains("Fallout")
+                && !shader.contains("Skyrim"),
+            "the combustion solver must consume canonical profiles, never source-game identity"
+        );
+    }
+
+    #[test]
+    fn combustion_light_moment_abi_is_eight_std430_words() {
+        assert_eq!(std::mem::size_of::<GpuCombustionLightMoment>(), 32);
+        assert_eq!(std::mem::align_of::<GpuCombustionLightMoment>(), 4);
+        assert_eq!(COMBUSTION_LIGHT_GRID_COUNT, 256);
+    }
+
+    #[test]
+    fn transported_moment_decodes_to_bin_centroid_and_physical_light() {
+        let fixed_scale = COMBUSTION_LIGHT_FIXED_SCALE as u32;
+        let moment = GpuCombustionLightMoment {
+            weight: 16,
+            weighted_x: 8,
+            weighted_y: 8,
+            weighted_z: 8,
+            radiant_r: fixed_scale,
+            radiant_g: fixed_scale / 2,
+            radiant_b: fixed_scale / 4,
+            luminous_volume: COMBUSTION_LIGHT_VOLUME_FIXED_SCALE as u32,
+        };
+        let light = combustion_light_from_moment(0, moment, [0.0; 3])
+            .expect("nonzero radiant moment must produce a light");
+        let expected = [-28.0, -12.0, -28.0].map(|metres| metres * WORLD_UNITS_PER_METER);
+        for (actual, expected) in light.position_radius[..3].iter().zip(expected) {
+            assert!((actual - expected).abs() < 1.0e-3);
+        }
+        assert_eq!(&light.color_type[..3], &[1.0, 0.5, 0.25]);
+        assert_eq!(light.params[2], VISIBILITY_MASK_FULL as f32);
+        assert_eq!(light.params[3], ATTENUATION_MODEL_INVERSE_SQUARE as f32);
+        assert!(
+            light.params[1] > 0.0,
+            "luminous volume must derive source radius"
+        );
+    }
+
+    #[test]
+    fn authored_companion_suppresses_only_inside_its_canonical_source() {
+        let field_light = GpuLight {
+            position_radius: [10.0, 20.0, 30.0, 100.0],
+            params: [1.0, 8.0, VISIBILITY_MASK_FULL as f32, 1.0],
+            ..GpuLight::default()
+        };
+        let source = GpuFogVolume {
+            center_shape: [10.0, 20.0, 30.0, 0.0],
+            half_extents_extinction: [20.0, 20.0, 20.0, 0.01],
+            profile_params: [FOG_VOLUME_PROFILE_FLAME, 0.0, 0.0, 0.0],
+            ..GpuFogVolume::default()
+        };
+        let nearby = GpuLight {
+            position_radius: [20.0, 20.0, 30.0, 100.0],
+            ..GpuLight::default()
+        };
+        assert!(combustion_light_is_inside_authored_source(
+            &field_light,
+            &[source],
+            &[nearby]
+        ));
+        let far = GpuLight {
+            position_radius: [500.0, 20.0, 30.0, 100.0],
+            ..GpuLight::default()
+        };
+        assert!(!combustion_light_is_inside_authored_source(
+            &field_light,
+            &[source],
+            &[far]
+        ));
+        let directional = GpuLight {
+            color_type: [1.0, 1.0, 1.0, 2.0],
+            position_radius: field_light.position_radius,
+            ..GpuLight::default()
+        };
+        assert!(!combustion_light_is_inside_authored_source(
+            &field_light,
+            &[source],
+            &[directional]
+        ));
+        let transported_light = GpuLight {
+            position_radius: [200.0, 20.0, 30.0, 100.0],
+            ..field_light
+        };
+        assert!(!combustion_light_is_inside_authored_source(
+            &transported_light,
+            &[source],
+            &[nearby],
+        ));
+    }
+
+    #[test]
+    fn transport_emitter_detection_uses_canonical_profiles() {
+        let volume = |profile| GpuFogVolume {
+            profile_params: [profile, 0.0, 0.0, 0.0],
+            ..GpuFogVolume::default()
+        };
+        assert!(!has_transport_emitter(&[volume(
+            FOG_VOLUME_PROFILE_HOMOGENEOUS
+        )]));
+        for profile in [
+            FOG_VOLUME_PROFILE_SMOKE,
+            FOG_VOLUME_PROFILE_FLAME,
+            FOG_VOLUME_PROFILE_EXPLOSION,
+        ] {
+            assert!(has_transport_emitter(&[volume(profile)]));
+        }
+        assert!(!has_transport_emitter(&[volume(f32::NAN)]));
     }
 
     #[test]

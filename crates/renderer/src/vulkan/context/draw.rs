@@ -1821,6 +1821,34 @@ impl VulkanContext {
         // here stays valid through the move — it's a pure function of
         // draw_commands + mesh_registry state.
 
+        // Drain the completed transported combustion field before uploading
+        // scene lights. This is intentionally a renderer boundary: the app
+        // submits canonical medium primitives, while only the renderer owns
+        // the advected/cooled field that actually emits this delayed light.
+        let mut frame_lights = std::mem::take(&mut self.frame_lights_scratch);
+        frame_lights.clear();
+        frame_lights.extend_from_slice(lights);
+        if let Some(ref mut volumetrics) = self.volumetrics {
+            if let Err(error) = volumetrics.append_combustion_surface_lights(
+                &self.device,
+                frame,
+                fog_volumes,
+                &mut frame_lights,
+            ) {
+                log::warn!("combustion surface-light readback failed: {error}");
+            }
+        }
+        // The app already sorts authored local lights for the fixed-prefix GI
+        // scan. Re-sort after adding field-derived lights using the canonical
+        // score carried by GpuLight itself; directional lights remain pinned.
+        let directional_count = frame_lights
+            .iter()
+            .take_while(|light| light.color_type[3] > 1.5)
+            .count();
+        frame_lights[directional_count..]
+            .sort_unstable_by(|a, b| b.gi_priority_score().total_cmp(&a.gi_priority_score()));
+        let lights = frame_lights.as_slice();
+
         // Upload scene data (lights + camera) BEFORE the render pass begins.
         self.scene_buffers
             .upload_lights(&self.device, frame, lights)
@@ -3728,15 +3756,22 @@ impl VulkanContext {
         // slack band against frame-to-frame variance, and the 512
         // floor avoids reallocations on common-case small scenes.
         let working_instances = gpu_instances.len();
+        let working_lights = frame_lights.len();
         let working_previous = previous_models.len();
         let working_batches = batches.len();
         self.gpu_instances_scratch = gpu_instances;
+        self.frame_lights_scratch = frame_lights;
         self.previous_models_scratch = previous_models;
         self.batches_scratch = batches;
         super::super::acceleration::shrink_scratch_if_oversized(
             &mut self.gpu_instances_scratch,
             working_instances,
             512,
+        );
+        super::super::acceleration::shrink_scratch_if_oversized(
+            &mut self.frame_lights_scratch,
+            working_lights,
+            128,
         );
         // #2486 / D5-01 — `previous_models_scratch` was restored here but
         // never shrunk, so it pinned its peak (~16 MB at `MAX_INSTANCES`) for

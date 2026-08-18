@@ -79,7 +79,7 @@ layout(set = 0, binding = 1) uniform VolumetricsParams {
     // x = height-fog reference altitude (REN-D16-01 / #2225), absolute
     // world space matching camera_pos/render_origin — ground height near
     // the camera, or camera Y as a fallback. y = emissive history weight,
-    // z = adaptive local-light cap, w reserved.
+    // z = adaptive local-light cap, w = clamped simulation delta seconds.
     vec4 fog_reference;
 } params;
 
@@ -172,14 +172,52 @@ layout(set = 0, binding = 11) uniform sampler3D detailDensityNoise;
 layout(r32f, set = 0, binding = 12) uniform writeonly image3D emissionHistory;
 layout(set = 0, binding = 13) uniform sampler3D previousEmissionHistory;
 
+// Canonical transported combustion state. These fields deliberately contain
+// no source-game identity: per-game particle/material authoring has already
+// converged to GpuFogVolume::profile_params at the import boundary.
+//
+// chemistry = (fuel mass fraction, temperature K, soot sigma_t/world-unit,
+//              visible-radiance calibration at 1850 K)
+// velocity  = (world-space velocity xyz in world-units/second,
+//              oxidizer fraction)
+//
+// Current and previous slots are distinct frame-in-flight images, so this
+// shader can semi-Lagrangian backtrace the old field while writing the new
+// one without an intra-dispatch data hazard.
+layout(rgba16f, set = 0, binding = 14) uniform writeonly image3D combustionState;
+layout(set = 0, binding = 15) uniform sampler3D previousCombustionState;
+layout(rgba16f, set = 0, binding = 16) uniform writeonly image3D combustionVelocity;
+layout(set = 0, binding = 17) uniform sampler3D previousCombustionVelocity;
+
+// Coarse radiant moments of the *transported* field, consumed by the host on
+// the next safe reuse of this frame-in-flight slot. This is the canonical
+// bridge from participating-medium emission to surface lighting: no source
+// primitive or source-game identity is visible here. Each 32-byte bin stores
+// fixed-point total luma, luma-weighted bin-local centroid, RGB radiant
+// intensity, and luminous volume. Rust owns the matching repr(C) layout.
+struct CombustionLightMoment {
+    uint weight;
+    uint weighted_x;
+    uint weighted_y;
+    uint weighted_z;
+    uint radiant_r;
+    uint radiant_g;
+    uint radiant_b;
+    uint luminous_volume;
+};
+
+layout(std430, set = 0, binding = 18) buffer CombustionLightMomentBuffer {
+    CombustionLightMoment combustionLightMoments[];
+};
+
 const float PI = 3.14159265358979323846;
 // Rec. 709 luma weights, matching `byroredux_core::radiometry`'s
 // `linear_srgb_luminance` so CPU and GPU agree on what "brightness" means.
 const vec3 LUMA_REC709 = vec3(0.2126, 0.7152, 0.0722);
-const float LOCAL_PROFILE_HOMOGENEOUS = 0.0;
-const float LOCAL_PROFILE_SMOKE = 1.0;
-const float LOCAL_PROFILE_FLAME = 2.0;
-const float LOCAL_PROFILE_EXPLOSION = 3.0;
+const float AMBIENT_TEMPERATURE_K = 293.15;
+const float IGNITION_TEMPERATURE_K = 720.0;
+const float MAX_COMBUSTION_TEMPERATURE_K = 4200.0;
+const float MAX_COMBUSTION_SPEED_MPS = 28.0;
 // FOG_VOLUME_CLUSTER_DIM / MAX_FOG_VOLUMES_PER_CLUSTER come from the
 // #include'd shader_constants.glsl header (generated from
 // shader_constants_data.rs — #2229 / REN-D3-02). Previously hand-declared
@@ -217,6 +255,17 @@ float localVolumeSeed(vec3 center) {
     return fract((p.x + p.y) * p.z);
 }
 
+// Profile numbers are generated from core::FogProfile. Keep classification in
+// one named predicate so local-medium behavior never grows another parallel
+// table of midpoint literals.
+bool isLocalProfile(float actual, float expected) {
+    return abs(actual - expected) < 0.5;
+}
+
+bool isTransportedProfile(float profileKind) {
+    return !isLocalProfile(profileKind, FOG_VOLUME_PROFILE_HOMOGENEOUS);
+}
+
 // Local structure is source-relative and independent of weather coverage.
 // Smoke advects slowly in broad coherent cells; flame uses a faster, finer
 // field. Returning both bands lets each profile combine them without adding
@@ -227,9 +276,9 @@ vec2 sampleLocalTurbulence(
     float seed,
     float timeSeconds
 ) {
-    bool isExplosion = profileKind > 2.5;
-    bool isFlame = profileKind > 1.5 && !isExplosion;
-    bool isSmoke = profileKind > 0.5 && !isFlame && !isExplosion;
+    bool isExplosion = isLocalProfile(profileKind, FOG_VOLUME_PROFILE_EXPLOSION);
+    bool isFlame = isLocalProfile(profileKind, FOG_VOLUME_PROFILE_FLAME);
+    bool isSmoke = isLocalProfile(profileKind, FOG_VOLUME_PROFILE_SMOKE);
     float baseFrequency = isExplosion ? 0.58 : (isFlame ? 0.72 : (isSmoke ? 0.42 : 0.31));
     float detailFrequency = isExplosion ? 1.35 : (isFlame ? 1.67 : (isSmoke ? 0.96 : 0.83));
     float baseRise = isExplosion ? 0.11 : (isFlame ? 0.32 : (isSmoke ? 0.075 : 0.013));
@@ -257,11 +306,11 @@ float localProfileRadius(
     float timeSeconds,
     float explosionAge
 ) {
-    if (profileKind < 0.5) {
+    if (isLocalProfile(profileKind, FOG_VOLUME_PROFILE_HOMOGENEOUS)) {
         return authoredRadius;
     }
 
-    if (profileKind > 2.5) {
+    if (isLocalProfile(profileKind, FOG_VOLUME_PROFILE_EXPLOSION)) {
         float expansion = 1.0 - exp(-5.0 * explosionAge);
         float radius = mix(0.10, 0.96, expansion);
         float phase = seed * 2.0 * PI;
@@ -278,7 +327,7 @@ float localProfileRadius(
     float phase = seed * 2.0 * PI;
     vec2 centerline;
     float radius;
-    if (profileKind > 1.5) {
+    if (isLocalProfile(profileKind, FOG_VOLUME_PROFILE_FLAME)) {
         float swayAmplitude = mix(0.015, 0.15, height);
         centerline = swayAmplitude * vec2(
             sin(phase + height * 5.2 + timeSeconds * 1.7),
@@ -309,12 +358,12 @@ float localDensityProfile(
     float explosionAge
 ) {
     float boundary = 1.0 - smoothstep(1.0 - edge, 1.0, profileRadius);
-    if (profileKind < 0.5) {
+    if (isLocalProfile(profileKind, FOG_VOLUME_PROFILE_HOMOGENEOUS)) {
         float genericNoise = turbulence.x * 0.72 + turbulence.y * 0.28;
         return boundary * mix(0.55, 1.15, genericNoise);
     }
 
-    if (profileKind > 2.5) {
+    if (isLocalProfile(profileKind, FOG_VOLUME_PROFILE_EXPLOSION)) {
         float core = 1.0 - smoothstep(0.10, 0.94, profileRadius);
         float shellCenter = mix(0.52, 0.76, smoothstep(0.0, 0.72, explosionAge));
         float shell = 1.0 - smoothstep(0.10, 0.27, abs(profileRadius - shellCenter));
@@ -331,7 +380,7 @@ float localDensityProfile(
 
     float height = clamp(normalizedOffset.y * 0.5 + 0.5, 0.0, 1.0);
     float rootFade = smoothstep(-1.0, -0.78, normalizedOffset.y);
-    if (profileKind < 1.5) {
+    if (isLocalProfile(profileKind, FOG_VOLUME_PROFILE_SMOKE)) {
         float billowNoise = turbulence.x * 0.76 + turbulence.y * 0.24;
         float occupied = smoothstep(0.24, 0.78, billowNoise);
         float rolls = 0.5 + 0.5 * sin(
@@ -375,24 +424,130 @@ vec3 blackbodyChromaticity(float kelvin) {
     return spectral / max(dot(spectral, LUMA_REC709), 1.0e-4);
 }
 
-// Returns the local media coefficients at worldPos.
-LocalMedium sampleLocalMedium(vec3 worldPos) {
-    LocalMedium medium = emptyLocalMedium();
+// Visible-band blackbody-radiance ratio, evaluated at the photopic response
+// peak (555 nm). The CPU canonical source uses a full CIE integration; this
+// one-wavelength ratio is the inexpensive per-froxel approximation to the
+// same Planck-law magnitude trend. Calibration is transported separately, so
+// the ratio is exactly 1 at the shared 1850 K flame reference and preserves
+// each source's authored/canonical HDR exposure.
+float blackbodyVisibleRadianceRatio(float kelvin, float referenceKelvin) {
+    const float wavelengthNm = 555.0;
+    const float c2NmK = 1.438776877e7;
+    float temperature = clamp(kelvin, 700.0, 12000.0);
+    float referenceTemperature = clamp(referenceKelvin, 700.0, 12000.0);
+    float numerator = exp(clamp(
+        c2NmK / (wavelengthNm * referenceTemperature),
+        0.0,
+        80.0
+    )) - 1.0;
+    float denominator = exp(clamp(
+        c2NmK / (wavelengthNm * temperature),
+        0.0,
+        80.0
+    )) - 1.0;
+    return clamp(numerator / max(denominator, 1.0e-6), 0.0, 4096.0);
+}
+
+// Resolve the one camera-centred cluster containing a world-space sample.
+// Keeping this lookup and the primitive-shape evaluation shared prevents the
+// analytic homogeneous path and the transported combustion source path from
+// growing subtly different interpretations of the same canonical volume.
+bool localFogCluster(vec3 worldPos, out FogClusterEntry cluster) {
     if (fogVolumeCount == 0u || params.local_volume_grid.w <= 0.0) {
-        return medium;
+        return false;
     }
 
     vec3 gridCoord = (worldPos - params.local_volume_grid.xyz)
         * params.local_volume_grid.w;
     if (any(lessThan(gridCoord, vec3(0.0)))
             || any(greaterThanEqual(gridCoord, vec3(float(FOG_VOLUME_CLUSTER_DIM))))) {
-        return medium;
+        return false;
     }
     uvec3 cell = min(uvec3(gridCoord), uvec3(FOG_VOLUME_CLUSTER_DIM - 1u));
     uint clusterIndex = cell.x
         + cell.y * FOG_VOLUME_CLUSTER_DIM
         + cell.z * FOG_VOLUME_CLUSTER_DIM * FOG_VOLUME_CLUSTER_DIM;
-    FogClusterEntry cluster = fogClusters[clusterIndex];
+    cluster = fogClusters[clusterIndex];
+    return true;
+}
+
+bool evaluateLocalFogVolume(
+    GpuFogVolume volume,
+    vec3 worldPos,
+    out vec3 normalizedOffset,
+    out vec3 localOffset,
+    out float profileKind,
+    out float densityProfile,
+    out vec2 localTurbulence
+) {
+    vec3 extents = max(volume.half_extents_extinction.xyz, vec3(1.0e-4));
+    localOffset = rotateByQuaternion(
+        worldPos - volume.center_shape.xyz,
+        volume.inverse_rotation
+    );
+    normalizedOffset = localOffset / extents;
+    float shape = volume.center_shape.w;
+    float normalizedRadius;
+    if (shape > 1.5) {
+        normalizedRadius = max(
+            abs(normalizedOffset.x),
+            max(abs(normalizedOffset.y), abs(normalizedOffset.z))
+        );
+    } else if (shape < 0.5) {
+        normalizedRadius = length(localOffset) / extents.x;
+    } else {
+        normalizedRadius = length(normalizedOffset);
+    }
+    profileKind = clamp(
+        volume.profile_params.x,
+        FOG_VOLUME_PROFILE_HOMOGENEOUS,
+        FOG_VOLUME_PROFILE_EXPLOSION
+    );
+    float timeSeconds = params.temporal_params.z;
+    float seed = localVolumeSeed(volume.center_shape.xyz);
+    float explosionAge = clamp(volume.profile_params.y, 0.0, 1.0);
+    float profileRadius = localProfileRadius(
+        normalizedOffset,
+        normalizedRadius,
+        profileKind,
+        seed,
+        timeSeconds,
+        explosionAge
+    );
+    if (profileRadius >= 1.0) {
+        return false;
+    }
+
+    float edge = clamp(volume.albedo_edge.w, 1.0e-3, 1.0);
+    localTurbulence = sampleLocalTurbulence(
+        normalizedOffset,
+        profileKind,
+        seed,
+        timeSeconds
+    );
+    densityProfile = localDensityProfile(
+        normalizedOffset,
+        profileRadius,
+        edge,
+        profileKind,
+        localTurbulence,
+        seed,
+        timeSeconds,
+        explosionAge
+    );
+    return densityProfile > 1.0e-6;
+}
+
+// Returns only directly-authored homogeneous media. Smoke, flame, and
+// explosions enter the transported thermochemical field below; rendering
+// their old analytic body as well would double-count extinction and pin the
+// plume to its emitter instead of allowing advection to move it.
+LocalMedium sampleLocalMedium(vec3 worldPos) {
+    LocalMedium medium = emptyLocalMedium();
+    FogClusterEntry cluster;
+    if (!localFogCluster(worldPos, cluster)) {
+        return medium;
+    }
     uint primitiveCount = min(cluster.count, MAX_FOG_VOLUMES_PER_CLUSTER);
 
     for (uint i = 0u; i < primitiveCount; ++i) {
@@ -401,98 +556,25 @@ LocalMedium sampleLocalMedium(vec3 worldPos) {
             continue;
         }
         GpuFogVolume volume = fogVolumes[volumeIndex];
-        vec3 extents = max(volume.half_extents_extinction.xyz, vec3(1.0e-4));
-        vec3 localOffset = rotateByQuaternion(
-            worldPos - volume.center_shape.xyz,
-            volume.inverse_rotation
-        );
-        vec3 normalizedOffset = localOffset / extents;
-        float shape = volume.center_shape.w;
-        float normalizedRadius;
-        if (shape > 1.5) {
-            normalizedRadius = max(
-                abs(normalizedOffset.x),
-                max(abs(normalizedOffset.y), abs(normalizedOffset.z))
-            );
-        } else if (shape < 0.5) {
-            normalizedRadius = length(localOffset) / extents.x;
-        } else {
-            normalizedRadius = length(normalizedOffset);
-        }
-        float profileKind = clamp(
-            volume.profile_params.x,
-            LOCAL_PROFILE_HOMOGENEOUS,
-            LOCAL_PROFILE_EXPLOSION
-        );
-        float timeSeconds = params.temporal_params.z;
-        float seed = localVolumeSeed(volume.center_shape.xyz);
-        float explosionAge = clamp(volume.profile_params.y, 0.0, 1.0);
-        float profileRadius = localProfileRadius(
-            normalizedOffset,
-            normalizedRadius,
-            profileKind,
-            seed,
-            timeSeconds,
-            explosionAge
-        );
-        if (profileRadius >= 1.0) {
+        vec3 normalizedOffset;
+        vec3 localOffset;
+        float profileKind;
+        float densityProfile;
+        vec2 localTurbulence;
+        if (!evaluateLocalFogVolume(
+                volume,
+                worldPos,
+                normalizedOffset,
+                localOffset,
+                profileKind,
+                densityProfile,
+                localTurbulence)
+                || isTransportedProfile(profileKind)) {
             continue;
         }
-
-        float edge = clamp(volume.albedo_edge.w, 1.0e-3, 1.0);
-        vec2 localTurbulence = sampleLocalTurbulence(
-            normalizedOffset,
-            profileKind,
-            seed,
-            timeSeconds
-        );
-        float densityProfile = localDensityProfile(
-            normalizedOffset,
-            profileRadius,
-            edge,
-            profileKind,
-            localTurbulence,
-            seed,
-            timeSeconds,
-            explosionAge
-        );
         float sigmaT = max(volume.half_extents_extinction.w, 0.0) * densityProfile;
         vec3 albedo = clamp(volume.albedo_edge.rgb, vec3(0.0), vec3(1.0));
         vec3 emissiveRadiance = max(volume.emission_temperature.rgb, vec3(0.0));
-
-        if (profileKind > 2.5) {
-            float smokeTransition = smoothstep(0.20, 0.72, explosionAge);
-            vec3 cooledSmokeAlbedo = vec3(0.78, 0.72, 0.66);
-            albedo = mix(vec3(0.12), cooledSmokeAlbedo, smokeTransition);
-
-            // Global cooling, chromaticity, T^4 energy loss, and the
-            // visible-fire envelope are already resolved in the uploaded
-            // volume so this pass and the derived point light see one source
-            // state. Only spatial turbulence belongs in the froxel shader.
-            float sourceTemperature = max(volume.emission_temperature.w, 850.0);
-            float localTemperature = sourceTemperature
-                * mix(0.92, 1.08, localTurbulence.y);
-            localTemperature = clamp(localTemperature, 700.0, 4200.0);
-            float baseEmissionLuma = dot(emissiveRadiance, LUMA_REC709);
-            float thermalEnergy = pow(localTemperature / sourceTemperature, 4.0);
-            emissiveRadiance = blackbodyChromaticity(localTemperature)
-                * baseEmissionLuma
-                * clamp(thermalEnergy, 0.6, 1.5);
-        } else if (profileKind > 1.5) {
-            float height = clamp(normalizedOffset.y * 0.5 + 0.5, 0.0, 1.0);
-            float sourceTemperature = max(volume.emission_temperature.w, 800.0);
-            float localTemperature = sourceTemperature
-                * mix(1.18, 0.62, pow(height, 1.15))
-                * mix(0.90, 1.10, localTurbulence.y);
-            localTemperature = clamp(localTemperature, 800.0, 3200.0);
-            float baseEmissionLuma = dot(emissiveRadiance, LUMA_REC709);
-            float thermalEnergy = pow(localTemperature / sourceTemperature, 4.0);
-            float hotCore = 1.0 - smoothstep(0.12, 0.88, profileRadius);
-            emissiveRadiance = blackbodyChromaticity(localTemperature)
-                * baseEmissionLuma
-                * clamp(thermalEnergy, 0.15, 2.4)
-                * mix(0.18, 1.15, hotCore);
-        }
         medium.extinction += sigmaT;
         medium.scattering += sigmaT * albedo;
 
@@ -513,6 +595,325 @@ LocalMedium sampleLocalMedium(vec3 worldPos) {
         medium.emission += sigmaT * (vec3(1.0) - albedo) * emissiveRadiance;
     }
     return medium;
+}
+
+// Return the [0,1] interval where a normalized line segment lies inside a
+// unit sphere. Sphere and ellipsoid FogBounds both become a unit sphere after
+// division by their authored half extents.
+bool intersectUnitSphereSegment(vec3 start, vec3 end, out vec2 interval) {
+    vec3 direction = end - start;
+    float a = dot(direction, direction);
+    if (a <= 1.0e-10) {
+        interval = vec2(0.0, 1.0);
+        return dot(start, start) <= 1.0;
+    }
+    float b = dot(start, direction);
+    float c = dot(start, start) - 1.0;
+    float discriminant = b * b - a * c;
+    if (discriminant < 0.0) {
+        return false;
+    }
+    float root = sqrt(max(discriminant, 0.0));
+    interval = vec2((-b - root) / a, (-b + root) / a);
+    interval = clamp(interval, vec2(0.0), vec2(1.0));
+    return interval.y > interval.x;
+}
+
+// Slab intersection against a normalized [-1,1]^3 box.
+bool intersectUnitBoxSegment(vec3 start, vec3 end, out vec2 interval) {
+    vec3 direction = end - start;
+    float entry = 0.0;
+    float exit = 1.0;
+    for (int axis = 0; axis < 3; ++axis) {
+        if (abs(direction[axis]) <= 1.0e-8) {
+            if (abs(start[axis]) > 1.0) {
+                return false;
+            }
+            continue;
+        }
+        vec2 crossings = vec2(
+            (-1.0 - start[axis]) / direction[axis],
+            (1.0 - start[axis]) / direction[axis]
+        );
+        float axisEntry = min(crossings.x, crossings.y);
+        float axisExit = max(crossings.x, crossings.y);
+        entry = max(entry, axisEntry);
+        exit = min(exit, axisExit);
+        if (exit <= entry) {
+            return false;
+        }
+    }
+    interval = clamp(vec2(entry, exit), vec2(0.0), vec2(1.0));
+    return interval.y > interval.x;
+}
+
+// Conservative gather for an emitter that may be thinner than one froxel
+// depth slab. Point-sampling only the slab centre deterministically loses a
+// Bethesda-scale torch/explosion whenever it falls between two centres. We
+// intersect the entire camera-ray segment with the canonical primitive,
+// evaluate three deterministic interior points, and multiply by the occupied
+// segment fraction. The resulting coefficient preserves optical depth instead
+// of inflating a sub-slab source to fill the whole froxel.
+bool evaluateCombustionSource(
+    GpuFogVolume volume,
+    vec3 segmentStart,
+    vec3 segmentEnd,
+    out vec3 sourceWorldPos,
+    out vec3 normalizedOffset,
+    out float profileKind,
+    out float densityProfile,
+    out float stateProfile,
+    out vec2 turbulence
+) {
+    profileKind = clamp(
+        volume.profile_params.x,
+        FOG_VOLUME_PROFILE_HOMOGENEOUS,
+        FOG_VOLUME_PROFILE_EXPLOSION
+    );
+    if (!isTransportedProfile(profileKind)) {
+        return false;
+    }
+
+    vec3 extents = max(volume.half_extents_extinction.xyz, vec3(1.0e-4));
+    vec3 localStart = rotateByQuaternion(
+        segmentStart - volume.center_shape.xyz,
+        volume.inverse_rotation
+    ) / extents;
+    vec3 localEnd = rotateByQuaternion(
+        segmentEnd - volume.center_shape.xyz,
+        volume.inverse_rotation
+    ) / extents;
+    vec2 interval;
+    bool intersects = volume.center_shape.w > 1.5
+        ? intersectUnitBoxSegment(localStart, localEnd, interval)
+        : intersectUnitSphereSegment(localStart, localEnd, interval);
+    if (!intersects) {
+        return false;
+    }
+
+    float segmentCoverage = interval.y - interval.x;
+    densityProfile = 0.0;
+    stateProfile = 0.0;
+    sourceWorldPos = mix(segmentStart, segmentEnd, 0.5 * (interval.x + interval.y));
+    normalizedOffset = vec3(0.0);
+    turbulence = vec2(0.5);
+    for (int sampleIndex = 0; sampleIndex < 3; ++sampleIndex) {
+        float samplePhase = (float(sampleIndex) + 0.5) / 3.0;
+        vec3 candidateWorldPos = mix(
+            segmentStart,
+            segmentEnd,
+            mix(interval.x, interval.y, samplePhase)
+        );
+        vec3 candidateNormalizedOffset;
+        vec3 candidateLocalOffset;
+        float candidateProfile;
+        float candidateDensity;
+        vec2 candidateTurbulence;
+        if (evaluateLocalFogVolume(
+                volume,
+                candidateWorldPos,
+                candidateNormalizedOffset,
+                candidateLocalOffset,
+                candidateProfile,
+                candidateDensity,
+                candidateTurbulence)
+                && candidateDensity > densityProfile) {
+            densityProfile = candidateDensity;
+            stateProfile = candidateDensity;
+            sourceWorldPos = candidateWorldPos;
+            normalizedOffset = candidateNormalizedOffset;
+            turbulence = candidateTurbulence;
+        }
+    }
+    // Extensive quantities (fuel mass and optical extinction) occupy only
+    // part of this depth slab, so their volume average carries coverage.
+    // Intensive source state (temperature, radiance calibration, velocity)
+    // must retain the strongest occupied sample. Scaling both would apply
+    // coverage twice in `combustionMedium` (`sigma_t * L_e`) and can push a
+    // perfectly hot sub-froxel flame below ignition merely because the
+    // transport grid is coarse.
+    densityProfile *= segmentCoverage;
+    return densityProfile > 1.0e-7;
+}
+
+void applyCombustionSources(
+    vec3 worldPos,
+    vec3 segmentStart,
+    vec3 segmentEnd,
+    inout vec4 chemistry,
+    inout vec4 velocity,
+    float dt
+) {
+    FogClusterEntry cluster;
+    if (!localFogCluster(worldPos, cluster)) {
+        return;
+    }
+    uint primitiveCount = min(cluster.count, MAX_FOG_VOLUMES_PER_CLUSTER);
+    for (uint i = 0u; i < primitiveCount; ++i) {
+        uint volumeIndex = fogClusterIndices[cluster.offset + i];
+        if (volumeIndex >= fogVolumeCount) {
+            continue;
+        }
+        GpuFogVolume volume = fogVolumes[volumeIndex];
+        vec3 sourceWorldPos;
+        vec3 normalizedOffset;
+        float profileKind;
+        float densityProfile;
+        float stateProfile;
+        vec2 turbulence;
+        if (!evaluateCombustionSource(
+                volume,
+                segmentStart,
+                segmentEnd,
+                sourceWorldPos,
+                normalizedOffset,
+                profileKind,
+                densityProfile,
+                stateProfile,
+                turbulence)) {
+            continue;
+        }
+
+        float radialSource = 1.0 - smoothstep(0.28, 0.92, length(normalizedOffset.xz));
+        float basalSource = 1.0 - smoothstep(-0.72, 0.10, normalizedOffset.y);
+        float sourceMask = densityProfile * radialSource * basalSource;
+        float sourceStateMask = stateProfile * radialSource * basalSource;
+        float authoredSigmaT = max(volume.half_extents_extinction.w, 0.0);
+
+        if (isLocalProfile(profileKind, FOG_VOLUME_PROFILE_SMOKE)) {
+            // Passive smoke supplies soot and a mild warm/upward exhaust, but
+            // no fuel. `max` models a continuously emitting boundary without
+            // making density depend on frame rate.
+            chemistry.z = max(chemistry.z, authoredSigmaT * sourceMask);
+            chemistry.y = max(
+                chemistry.y,
+                mix(AMBIENT_TEMPERATURE_K, 430.0, sourceStateMask)
+            );
+            velocity.y = max(
+                velocity.y,
+                sourceStateMask * 0.42 * WORLD_UNITS_PER_METER
+            );
+            continue;
+        }
+
+        if (isLocalProfile(profileKind, FOG_VOLUME_PROFILE_FLAME)) {
+            // A flame is a replenished fuel/heat boundary. The transported
+            // solver, not this analytic profile, determines the plume above
+            // the source and the soot it leaves after combustion.
+            float sourceTemperature = clamp(
+                max(volume.emission_temperature.w, 1650.0),
+                IGNITION_TEMPERATURE_K,
+                MAX_COMBUSTION_TEMPERATURE_K
+            );
+            chemistry.x = max(chemistry.x, sourceMask * 0.82);
+            chemistry.y = max(
+                chemistry.y,
+                mix(AMBIENT_TEMPERATURE_K, sourceTemperature, sourceStateMask)
+            );
+            chemistry.z = max(chemistry.z, authoredSigmaT * sourceMask * 0.16);
+            float sourceRadianceLuma = max(
+                dot(volume.emission_temperature.rgb, LUMA_REC709),
+                0.0
+            );
+            float sourceVisibleRatio = blackbodyVisibleRadianceRatio(
+                sourceTemperature,
+                1850.0
+            );
+            chemistry.w = max(
+                chemistry.w,
+                sourceStateMask * sourceRadianceLuma / max(sourceVisibleRatio, 1.0e-4)
+            );
+            velocity.w = max(velocity.w, 0.90);
+            velocity.y = max(
+                velocity.y,
+                sourceStateMask * 1.35 * WORLD_UNITS_PER_METER
+            );
+            continue;
+        }
+
+        // Explosion: a finite radial momentum/heat/fuel impulse. The authored
+        // primitive is the *swept bound* of the legacy particle effect, not a
+        // continuously burning spherical volume. Re-injecting its whole
+        // age-expanded density body every frame pins a bright ball to the
+        // emitter and overwhelms advection. Warm history therefore receives
+        // only a compact, early core impulse; after that the transported field
+        // owns expansion, cooling, soot, and buoyancy.
+        //
+        // A cold history (camera cut/resize) is different: seed the canonical
+        // density at its current age once so an in-progress blast does not
+        // disappear merely because storage was reset.
+        float age = clamp(volume.profile_params.y, 0.0, 1.0);
+        float ignitionEnvelope = 1.0 - smoothstep(0.18, 0.52, age);
+        float smokeEnvelope = smoothstep(0.18, 0.72, age)
+            * (1.0 - smoothstep(0.88, 1.0, age));
+        bool coldHistory = params.prev_camera_pos.w <= 0.5;
+        float impulseEnvelope = 1.0 - smoothstep(0.12, 0.24, age);
+        float coreRadius = length(normalizedOffset);
+        float compactCore = 1.0 - smoothstep(0.12, 0.36, coreRadius);
+        float ignitionMask = densityProfile * (
+            coldHistory
+                ? ignitionEnvelope
+                : compactCore * impulseEnvelope
+        );
+        float ignitionStateMask = stateProfile * (
+            coldHistory
+                ? ignitionEnvelope
+                : compactCore * impulseEnvelope
+        );
+        float smokeSeedMask = coldHistory
+            ? densityProfile * smokeEnvelope
+            : ignitionMask * 0.10;
+        float sourceTemperature = clamp(
+            max(volume.emission_temperature.w, 2300.0),
+            IGNITION_TEMPERATURE_K,
+            MAX_COMBUSTION_TEMPERATURE_K
+        );
+        chemistry.x = max(chemistry.x, ignitionMask * 0.72);
+        chemistry.y = max(
+            chemistry.y,
+            mix(AMBIENT_TEMPERATURE_K, sourceTemperature, ignitionStateMask)
+        );
+        chemistry.z = max(
+            chemistry.z,
+            authoredSigmaT * (ignitionMask * 0.10 + smokeSeedMask * 1.15)
+        );
+        float sourceRadianceLuma = max(
+            dot(volume.emission_temperature.rgb, LUMA_REC709),
+            0.0
+        );
+        float sourceVisibleRatio = blackbodyVisibleRadianceRatio(
+            sourceTemperature,
+            1850.0
+        );
+        chemistry.w = max(
+            chemistry.w,
+            ignitionStateMask * sourceRadianceLuma / max(sourceVisibleRatio, 1.0e-4)
+        );
+        velocity.w = max(velocity.w, 0.85);
+
+        vec3 radialDirection = sourceWorldPos - volume.center_shape.xyz;
+        float radialLength = length(radialDirection);
+        radialDirection = radialLength > 1.0e-4
+            ? radialDirection / radialLength
+            : vec3(0.0, 1.0, 0.0);
+        float lifetime = max(volume.profile_params.z, 0.12);
+        float radius = max(
+            volume.half_extents_extinction.x,
+            max(volume.half_extents_extinction.y, volume.half_extents_extinction.z)
+        );
+        float expansionSpeed = min(
+            radius / lifetime * 2.2,
+            MAX_COMBUSTION_SPEED_MPS * WORLD_UNITS_PER_METER
+        );
+        float impulseScale = !coldHistory
+            ? dt * 7.0
+            : 0.45;
+        float radialImpulseMask = coldHistory
+            ? stateProfile * ignitionEnvelope
+            : stateProfile * compactCore * impulseEnvelope;
+        velocity.xyz += radialDirection * expansionSpeed
+            * radialImpulseMask * impulseScale;
+    }
 }
 
 // Simplified point/spot attenuation — mirrors `pointSpotAtten`'s
@@ -762,6 +1163,332 @@ float sampleEmissionHistoryColumn(vec3 uvw) {
     );
 }
 
+vec4 sanitizedChemistry(vec4 chemistry) {
+    if (any(isnan(chemistry)) || any(isinf(chemistry))) {
+        return vec4(0.0, AMBIENT_TEMPERATURE_K, 0.0, 0.0);
+    }
+    chemistry.x = clamp(chemistry.x, 0.0, 1.0);
+    chemistry.y = chemistry.y > 1.0
+        ? clamp(chemistry.y, AMBIENT_TEMPERATURE_K, MAX_COMBUSTION_TEMPERATURE_K)
+        : AMBIENT_TEMPERATURE_K;
+    chemistry.z = clamp(chemistry.z, 0.0, 0.08);
+    chemistry.w = clamp(chemistry.w, 0.0, 64.0);
+    return chemistry;
+}
+
+vec4 sanitizedVelocity(vec4 velocity) {
+    if (any(isnan(velocity)) || any(isinf(velocity))) {
+        return vec4(0.0, 0.0, 0.0, 1.0);
+    }
+    float maxSpeed = MAX_COMBUSTION_SPEED_MPS * WORLD_UNITS_PER_METER;
+    float speed = length(velocity.xyz);
+    if (speed > maxSpeed) {
+        velocity.xyz *= maxSpeed / speed;
+    }
+    velocity.w = clamp(velocity.w, 0.0, 1.0);
+    return velocity;
+}
+
+bool samplePreviousTransport(
+    vec3 worldPos,
+    out vec4 chemistry,
+    out vec4 velocity
+) {
+    chemistry = vec4(0.0, AMBIENT_TEMPERATURE_K, 0.0, 0.0);
+    velocity = vec4(0.0, 0.0, 0.0, 1.0);
+    if (params.prev_camera_pos.w <= 0.5) {
+        return false;
+    }
+    vec3 previousUvw;
+    if (!reprojectHistory(worldPos, previousUvw)) {
+        return false;
+    }
+    chemistry = sanitizedChemistry(texture(previousCombustionState, previousUvw));
+    velocity = sanitizedVelocity(texture(previousCombustionVelocity, previousUvw));
+    return true;
+}
+
+bool carriesCombustion(vec4 chemistry) {
+    return chemistry.x > 1.0e-4
+        || chemistry.z > 1.0e-6
+        || chemistry.w > 1.0e-4
+        || chemistry.y > AMBIENT_TEMPERATURE_K + 2.0;
+}
+
+// Semi-Lagrangian backtracing must not pull chemistry through a wall. The
+// destination sample already owns a TLAS for volumetric shadowing, so reuse
+// that canonical geometry boundary instead of maintaining a second CPU voxel
+// mask. This is deliberately a binary no-through test: resolving a collision
+// normal and tangential slip belongs to a later pressure/projection solver,
+// while retaining the destination state and cancelling its velocity is the
+// conservative failure mode for the current first-order field.
+bool combustionPathBlocked(vec3 sourcePosition, vec3 destinationPosition) {
+    vec3 displacement = destinationPosition - sourcePosition;
+    float distance = length(displacement);
+    if (distance <= 0.04) {
+        return false;
+    }
+    vec3 direction = displacement / distance;
+    float inset = min(0.02, distance * 0.25);
+    return traceShadowBinary(
+        sourcePosition,
+        direction,
+        inset,
+        distance - inset,
+        VISIBILITY_MASK_ALL_OPAQUE
+    );
+}
+
+// Advect in absolute world space even though storage is view-froxel aligned.
+// RK2 backtracing reduces the directional bias of first-order Euler transport:
+// sample velocity at the destination, estimate a midpoint, then use midpoint
+// velocity for the final source position in the previous grid.
+void transportCombustion(
+    vec3 worldPos,
+    vec3 segmentStart,
+    vec3 segmentEnd,
+    float dt,
+    out vec4 chemistry,
+    out vec4 velocity
+) {
+    vec4 probeChemistry;
+    vec4 destinationVelocity;
+    bool hadHistory = samplePreviousTransport(
+        worldPos,
+        probeChemistry,
+        destinationVelocity
+    );
+    if (hadHistory && dt > 0.0) {
+        vec3 midpoint = worldPos - destinationVelocity.xyz * (0.5 * dt);
+        vec4 midpointChemistry;
+        vec4 midpointVelocity;
+        if (!samplePreviousTransport(midpoint, midpointChemistry, midpointVelocity)) {
+            midpointVelocity = destinationVelocity;
+        }
+        vec3 sourcePosition = worldPos - midpointVelocity.xyz * dt;
+        bool blocked = carriesCombustion(probeChemistry)
+            && combustionPathBlocked(sourcePosition, worldPos);
+        if (blocked) {
+            chemistry = probeChemistry;
+            velocity = destinationVelocity;
+            velocity.xyz = vec3(0.0);
+        } else if (!samplePreviousTransport(sourcePosition, chemistry, velocity)) {
+            chemistry = probeChemistry;
+            velocity = destinationVelocity;
+        }
+    } else {
+        chemistry = hadHistory
+            ? probeChemistry
+            : vec4(0.0, AMBIENT_TEMPERATURE_K, 0.0, 0.0);
+        velocity = hadHistory
+            ? destinationVelocity
+            : vec4(0.0, 0.0, 0.0, 1.0);
+    }
+
+    chemistry = sanitizedChemistry(chemistry);
+    velocity = sanitizedVelocity(velocity);
+    applyCombustionSources(
+        worldPos,
+        segmentStart,
+        segmentEnd,
+        chemistry,
+        velocity,
+        dt
+    );
+
+    if (dt > 0.0) {
+        float ignition = smoothstep(
+            IGNITION_TEMPERATURE_K - 90.0,
+            IGNITION_TEMPERATURE_K + 180.0,
+            chemistry.y
+        );
+        float reactionRate = 2.4 * chemistry.x * velocity.w * ignition;
+        float burnedFuel = min(chemistry.x, reactionRate * dt);
+        chemistry.x -= burnedFuel;
+        velocity.w = max(velocity.w - burnedFuel * 0.78, 0.0);
+        chemistry.y = min(
+            chemistry.y + burnedFuel * 2350.0,
+            MAX_COMBUSTION_TEMPERATURE_K
+        );
+        // Soot yield falls when oxidizer is abundant and rises in a rich,
+        // oxygen-starved flame. It is stored directly as optical extinction,
+        // so the radiative-transfer path consumes the physically relevant
+        // quantity without a second arbitrary density conversion.
+        float richYield = mix(0.004, 0.018, 1.0 - velocity.w);
+        chemistry.z += burnedFuel * richYield;
+
+        float entrainment = 1.0 - exp(-0.34 * dt);
+        velocity.w = mix(velocity.w, 1.0, entrainment);
+        chemistry.x *= exp(-0.025 * dt);
+        chemistry.z *= exp(-0.18 * dt);
+        chemistry.w *= exp(-0.08 * dt);
+        chemistry.y = AMBIENT_TEMPERATURE_K
+            + (chemistry.y - AMBIENT_TEMPERATURE_K) * exp(-0.42 * dt);
+
+        float temperatureExcess = max(
+            (chemistry.y - AMBIENT_TEMPERATURE_K) / AMBIENT_TEMPERATURE_K,
+            0.0
+        );
+        float buoyantAcceleration = min(temperatureExcess, 7.0)
+            * 0.58 * WORLD_UNITS_PER_METER;
+        velocity.y += buoyantAcceleration * dt;
+
+        float activity = clamp(
+            chemistry.x + chemistry.z * 80.0 + temperatureExcess * 0.12,
+            0.0,
+            1.0
+        );
+        vec3 metres = worldPos / WORLD_UNITS_PER_METER;
+        vec3 turbulentAcceleration = curlField(
+            metres * 0.38
+                + vec3(0.0, -params.temporal_params.z * 0.23, 0.0)
+        ) * (1.6 * WORLD_UNITS_PER_METER * activity);
+        velocity.xyz += turbulentAcceleration * dt;
+        velocity.xyz *= exp(-0.48 * dt);
+    }
+
+    chemistry = sanitizedChemistry(chemistry);
+    velocity = sanitizedVelocity(velocity);
+}
+
+LocalMedium combustionMedium(vec4 chemistry) {
+    LocalMedium medium = emptyLocalMedium();
+    chemistry = sanitizedChemistry(chemistry);
+    float fuelVapourExtinction = chemistry.x * 0.0035;
+    float sigmaT = chemistry.z + fuelVapourExtinction;
+    if (sigmaT <= 1.0e-7) {
+        return medium;
+    }
+
+    float hot = smoothstep(650.0, 1750.0, chemistry.y);
+    vec3 cooledSmokeAlbedo = vec3(0.78, 0.72, 0.66);
+    vec3 hotSootAlbedo = vec3(0.10, 0.075, 0.055);
+    vec3 albedo = mix(cooledSmokeAlbedo, hotSootAlbedo, hot);
+    medium.extinction = sigmaT;
+    medium.scattering = sigmaT * albedo;
+
+    float thermalLuma = chemistry.w
+        * blackbodyVisibleRadianceRatio(chemistry.y, 1850.0);
+    vec3 thermalRadiance = blackbodyChromaticity(chemistry.y) * thermalLuma;
+    medium.emission = sigmaT * (vec3(1.0) - albedo) * thermalRadiance;
+    return medium;
+}
+
+uint quantizeCombustionMoment(float value, float scale) {
+    if (!(value > 0.0) || isnan(value) || isinf(value)) {
+        return 0u;
+    }
+    // Bound one invocation so even a corrupted half-float field cannot make
+    // one atomic contribution wrap a whole bin. The grid domain and ordinary
+    // sparse occupancy keep the aggregate comfortably below uint32 max.
+    return uint(min(floor(value * scale + 0.5), 65535.0));
+}
+
+void accumulateCombustionLightMoment(
+    ivec3 coord,
+    ivec3 froxelSize,
+    vec3 worldPosition,
+    float slabFront,
+    float slabBack,
+    LocalMedium medium
+) {
+    if (medium.extinction <= 1.0e-7
+        || dot(medium.emission, LUMA_REC709) <= 1.0e-7) {
+        return;
+    }
+
+    const vec3 halfExtentMetres = vec3(
+        COMBUSTION_LIGHT_HALF_EXTENT_XZ_METERS,
+        COMBUSTION_LIGHT_HALF_EXTENT_Y_METERS,
+        COMBUSTION_LIGHT_HALF_EXTENT_XZ_METERS
+    );
+    vec3 offsetMetres = (worldPosition - params.camera_pos.xyz)
+        / WORLD_UNITS_PER_METER;
+    vec3 domain = (offsetMetres + halfExtentMetres) / (2.0 * halfExtentMetres);
+    if (any(lessThan(domain, vec3(0.0)))
+        || any(greaterThanEqual(domain, vec3(1.0)))) {
+        return;
+    }
+
+    const uvec3 gridSize = uvec3(
+        COMBUSTION_LIGHT_GRID_X,
+        COMBUSTION_LIGHT_GRID_Y,
+        COMBUSTION_LIGHT_GRID_Z
+    );
+    uvec3 bin = min(uvec3(floor(domain * vec3(gridSize))), gridSize - uvec3(1u));
+    uint binIndex = bin.x + gridSize.x * (bin.y + gridSize.y * bin.z);
+    vec3 withinBin = fract(domain * vec3(gridSize));
+
+    // Mid-slab frustum-cell volume. The four reconstructed ray positions form
+    // the cross-section; multiplying its two-triangle area by slab depth is a
+    // conservative local quadrature for the truncated frustum cell.
+    vec2 uv0 = vec2(coord.xy) / vec2(froxelSize.xy);
+    vec2 uv1 = vec2(coord.xy + ivec2(1)) / vec2(froxelSize.xy);
+    float slabMid = 0.5 * (slabFront + slabBack);
+    vec3 p00 = froxel_to_world(uv0, slabMid);
+    vec3 p10 = froxel_to_world(vec2(uv1.x, uv0.y), slabMid);
+    vec3 p01 = froxel_to_world(vec2(uv0.x, uv1.y), slabMid);
+    vec3 p11 = froxel_to_world(uv1, slabMid);
+    float crossSection = 0.5 * length(cross(p10 - p00, p01 - p00))
+        + 0.5 * length(cross(p11 - p10, p11 - p01));
+    float cellVolumeWorld = crossSection * max(slabBack - slabFront, 0.0);
+    if (!(cellVolumeWorld > 0.0) || isnan(cellVolumeWorld) || isinf(cellVolumeWorld)) {
+        return;
+    }
+
+    // `medium.emission` is j = sigma_a * L_e per Bethesda unit. Integrating
+    // over BU^3 yields intensity times BU^2, hence the BU^2 -> m^2 divisor.
+    // The escape probability prevents an optically thick cell from exporting
+    // emission that its own soot would absorb before reaching the boundary.
+    float characteristicLength = pow(cellVolumeWorld, 1.0 / 3.0);
+    float opticalDepth = medium.extinction * characteristicLength;
+    float escapeProbability = opticalDepth > 1.0e-4
+        ? (1.0 - exp(-opticalDepth)) / opticalDepth
+        : 1.0;
+    vec3 radiantIntensity = medium.emission * cellVolumeWorld
+        * escapeProbability
+        / (WORLD_UNITS_PER_METER * WORLD_UNITS_PER_METER);
+    float luma = dot(radiantIntensity, LUMA_REC709);
+    uint qWeight = quantizeCombustionMoment(luma, COMBUSTION_LIGHT_FIXED_SCALE);
+    if (qWeight == 0u) {
+        return;
+    }
+
+    atomicAdd(combustionLightMoments[binIndex].weight, qWeight);
+    atomicAdd(
+        combustionLightMoments[binIndex].weighted_x,
+        uint(floor(withinBin.x * float(qWeight) + 0.5))
+    );
+    atomicAdd(
+        combustionLightMoments[binIndex].weighted_y,
+        uint(floor(withinBin.y * float(qWeight) + 0.5))
+    );
+    atomicAdd(
+        combustionLightMoments[binIndex].weighted_z,
+        uint(floor(withinBin.z * float(qWeight) + 0.5))
+    );
+    atomicAdd(
+        combustionLightMoments[binIndex].radiant_r,
+        quantizeCombustionMoment(radiantIntensity.r, COMBUSTION_LIGHT_FIXED_SCALE)
+    );
+    atomicAdd(
+        combustionLightMoments[binIndex].radiant_g,
+        quantizeCombustionMoment(radiantIntensity.g, COMBUSTION_LIGHT_FIXED_SCALE)
+    );
+    atomicAdd(
+        combustionLightMoments[binIndex].radiant_b,
+        quantizeCombustionMoment(radiantIntensity.b, COMBUSTION_LIGHT_FIXED_SCALE)
+    );
+    atomicAdd(
+        combustionLightMoments[binIndex].luminous_volume,
+        quantizeCombustionMoment(
+            cellVolumeWorld
+                / (WORLD_UNITS_PER_METER * WORLD_UNITS_PER_METER * WORLD_UNITS_PER_METER),
+            COMBUSTION_LIGHT_VOLUME_FIXED_SCALE
+        )
+    );
+}
+
 void main() {
     ivec3 coord = ivec3(gl_GlobalInvocationID.xyz);
     ivec3 size = imageSize(froxel);
@@ -771,11 +1498,35 @@ void main() {
 
     vec3 jitter = froxelJitter(coord);
     vec2 sampleUv = (vec2(coord.xy) + jitter.xy) / vec2(size.xy);
+    vec2 fieldUv = (vec2(coord.xy) + vec2(0.5)) / vec2(size.xy);
     float sliceFront = float(coord.z) / float(size.z);
     float sliceBack = float(coord.z + 1) / float(size.z);
     float t = mix(sliceDistance(sliceFront), sliceDistance(sliceBack), jitter.z);
+    float fieldFrontT = sliceDistance(sliceFront);
+    float fieldBackT = sliceDistance(sliceBack);
+    float fieldT = 0.5 * (fieldFrontT + fieldBackT);
 
     vec3 world_pos = froxel_to_world(sampleUv, t);
+    vec3 field_segment_start = froxel_to_world(fieldUv, fieldFrontT);
+    vec3 field_segment_end = froxel_to_world(fieldUv, fieldBackT);
+    vec3 field_world_pos = froxel_to_world(fieldUv, fieldT);
+    float simulationDt = clamp(params.fog_reference.w, 0.0, 1.0 / 15.0);
+    vec4 chemistry;
+    vec4 combustion_velocity;
+    transportCombustion(
+        field_world_pos,
+        field_segment_start,
+        field_segment_end,
+        simulationDt,
+        chemistry,
+        combustion_velocity
+    );
+    imageStore(combustionState, coord, chemistry);
+    imageStore(
+        combustionVelocity,
+        coord,
+        combustion_velocity
+    );
 
     // View direction points FROM the sample point TOWARD the camera.
     vec3 view_dir = normalize(params.camera_pos.xyz - world_pos);
@@ -801,7 +1552,19 @@ void main() {
     // density thins with real altitude instead of following the player.
     float density_scale = proceduralDensityScale(world_pos, params.fog_reference.x);
     float global_extinction = params.camera_pos.w * density_scale;
-    LocalMedium local_medium = sampleLocalMedium(world_pos);
+    LocalMedium local_medium = sampleLocalMedium(field_world_pos);
+    LocalMedium transported_combustion = combustionMedium(chemistry);
+    accumulateCombustionLightMoment(
+        coord,
+        size,
+        field_world_pos,
+        fieldFrontT,
+        fieldBackT,
+        transported_combustion
+    );
+    local_medium.extinction += transported_combustion.extinction;
+    local_medium.scattering += transported_combustion.scattering;
+    local_medium.emission += transported_combustion.emission;
     float extinction_coef = global_extinction + local_medium.extinction;
     vec3 global_albedo = clamp(params.fog_tint.rgb, vec3(0.0), vec3(1.0))
         * clamp(params.medium_params.x, 0.0, 1.0);
