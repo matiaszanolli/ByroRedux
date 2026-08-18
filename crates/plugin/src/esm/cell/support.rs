@@ -47,6 +47,11 @@ pub(crate) fn build_static_object_from_subs(
 ) -> Option<StaticObject> {
     let is_ligh = record_type == b"LIGH";
     let is_addn = record_type == b"ADDN";
+    // Skyrim+ ARMO records overload MODL with a fixed-width FormID pointing
+    // at an ARMA record. The typed item parser resolves that reference via
+    // `EsmIndex::armor_addons`; the cell-side StaticObject has no gender/race
+    // context and must therefore not reinterpret it as a mesh path (#3056).
+    let is_armor = record_type == b"ARMO";
     let mut editor_id = String::new();
     let mut model_path = String::new();
     let mut light_data = None;
@@ -59,6 +64,11 @@ pub(crate) fn build_static_object_from_subs(
     for sub in subs {
         match &sub.sub_type {
             b"EDID" => editor_id = read_zstring(&sub.data),
+            b"MODL" if is_armor && sub.data.len() == 4 => {
+                // Consumed by `parse_armo` as an ARMA FormID. ARMO records
+                // are inventory definitions, not world-placement meshes, so
+                // there is no StaticObject path to populate here.
+            }
             b"MODL" => match read_mesh_path(&sub.data) {
                 Ok(p) => model_path = p,
                 // #1620 — a MODL holding control bytes is a non-string value
@@ -956,5 +966,31 @@ mod ligh_dat2_tests {
             obj.is_none() || obj.unwrap().light_data.is_none(),
             "DAT2 on a non-LIGH record must not synthesize light_data"
         );
+    }
+}
+
+#[cfg(test)]
+mod starfield_armo_modl_tests {
+    use super::build_static_object_from_subs;
+    use crate::esm::reader::SubRecord;
+
+    #[test]
+    fn fixed_width_modl_is_not_reported_as_corrupt_mesh_path() {
+        let subs = vec![
+            SubRecord {
+                sub_type: *b"EDID",
+                data: b"StarfieldArmor\0".to_vec(),
+            },
+            SubRecord {
+                sub_type: *b"MODL",
+                data: 0x0012_3456u32.to_le_bytes().to_vec(),
+            },
+        ];
+
+        // ARMO's FormID is consumed by `parse_armo` and resolved through the
+        // ARMA table. The cell-side extractor has no placement mesh for an
+        // inventory definition, so it must simply decline the StaticObject
+        // without logging the generic #1620 corrupt-path warning.
+        assert!(build_static_object_from_subs(0x42, b"ARMO", false, &subs, &None).is_none());
     }
 }

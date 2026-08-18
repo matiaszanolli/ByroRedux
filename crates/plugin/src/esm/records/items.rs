@@ -1312,6 +1312,26 @@ mod tests {
     }
 
     #[test]
+    fn starfield_armo_modl_is_resolved_as_arma_form_id() {
+        let arma_form_id = 0x0012_3456u32;
+        let subs = vec![
+            sub(b"EDID", b"StarfieldArmor\0"),
+            sub(b"MODL", &arma_form_id.to_le_bytes()),
+        ];
+        let item = parse_armo(0x0000_0042, &subs, GameKind::Starfield, &None);
+        match item.kind {
+            ItemKind::Armor { armatures, .. } => {
+                assert_eq!(armatures, vec![arma_form_id]);
+            }
+            _ => panic!("expected Armor kind"),
+        }
+        assert!(
+            item.common.model_path.is_empty(),
+            "the fixed-width reference must not become a string path"
+        );
+    }
+
+    #[test]
     fn oblivion_ammo_data_is_18_bytes_with_damage_not_clip_rounds() {
         // SE30MadnessMagicArrowA (form 0x0009277E): an Oblivion arrow.
         // Layout: speed(f32) flags(u32) value(u32) weight(f32) damage(u16)
