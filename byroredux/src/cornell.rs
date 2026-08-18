@@ -74,6 +74,62 @@ const HEIGHT: f32 = 5.0;
 /// Wall slab half-thickness.
 const T: f32 = 0.05;
 
+const LAB_UNITS_PER_METER: f32 = byroredux_core::lighting::BETHESDA_UNITS_PER_METER;
+
+const fn lab_metres(value: f32) -> f32 {
+    value * LAB_UNITS_PER_METER
+}
+
+/// Meter-calibrated transported-combustion validation scene. Keeping these
+/// dimensions in one manifest makes scene construction and regression tests
+/// share the same physical contract instead of scattering scale literals.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CombustionLabManifest {
+    pub room_half_width: f32,
+    pub room_half_depth: f32,
+    pub room_height: f32,
+    pub wall_half_thickness: f32,
+    pub flame_position: Vec3,
+    pub flame_half_extents: Vec3,
+    pub explosion_position: Vec3,
+    pub explosion_radius: f32,
+    pub explosion_start_delay_seconds: f32,
+    pub explosion_lifetime_seconds: f32,
+    pub baffle_center: Vec3,
+    pub baffle_half_extents: Vec3,
+    pub camera_position: Vec3,
+    pub camera_target: Vec3,
+}
+
+pub(crate) const fn combustion_lab_manifest() -> CombustionLabManifest {
+    CombustionLabManifest {
+        room_half_width: lab_metres(3.0),
+        room_half_depth: lab_metres(4.0),
+        room_height: lab_metres(4.0),
+        wall_half_thickness: lab_metres(0.06),
+        flame_position: Vec3::new(lab_metres(-0.55), lab_metres(0.48), 0.0),
+        flame_half_extents: Vec3::new(lab_metres(0.28), lab_metres(0.42), lab_metres(0.28)),
+        explosion_position: Vec3::new(lab_metres(0.65), lab_metres(0.55), 0.0),
+        explosion_radius: lab_metres(0.45),
+        // Leave enough time for validation tooling to attach and capture a
+        // true pre-ignition baseline before the one-shot enters the field.
+        explosion_start_delay_seconds: 8.0,
+        explosion_lifetime_seconds: 8.0,
+        // Hood-scale clearance: the 0.90 m flame-source top sits 0.34 m
+        // below the underside, so the transported plume—not the source
+        // primitive—must reach and spread along the solid.
+        baffle_center: Vec3::new(0.0, lab_metres(1.30), 0.0),
+        baffle_half_extents: Vec3::new(lab_metres(1.25), lab_metres(0.06), lab_metres(0.8)),
+        camera_position: Vec3::new(0.0, lab_metres(2.0), lab_metres(5.5)),
+        camera_target: Vec3::new(0.0, lab_metres(1.10), 0.0),
+    }
+}
+
+/// Exact opt-in flag for the game-data-independent combustion harness.
+pub(crate) fn combustion_lab_mode(args: &[String]) -> bool {
+    args.iter().any(|arg| arg == "--combustion-lab")
+}
+
 /// Vanilla Skyrim SE bronze-dragon display mesh used by the large glass-
 /// material experiment. Unlike the actor NIF, this asset carries an authored
 /// static pose and therefore does not depend on creature HKX pose conversion.
@@ -632,9 +688,152 @@ fn setup_cornell_glass_dragon_room(world: &mut World, ctx: &mut VulkanContext) -
     (position, target)
 }
 
+/// Build a meter-scaled room for the transported combustion solver.
+///
+/// The ordinary Cornell showcase is intentionally only a few world units
+/// wide, while combustion velocity, buoyancy, extinction, and source size are
+/// physical metre contracts. This harness uses Bethesda's canonical 70
+/// units/metre conversion and places a thin rigid baffle above the source so
+/// one run exposes no-through transport and source-side tangential slip.
+pub(crate) fn setup_combustion_lab_scene(
+    world: &mut World,
+    ctx: &mut VulkanContext,
+) -> (Vec3, Vec3) {
+    let manifest = combustion_lab_manifest();
+    install_cornell_lighting(world, false);
+    let neutral = TextureHandle(ctx.texture_registry.neutral_fallback());
+    let mut builder = MeshBuilder::new(ctx);
+
+    let horizontal = builder.box_mesh([
+        manifest.room_half_width,
+        manifest.wall_half_thickness,
+        manifest.room_half_depth,
+    ]);
+    let back = builder.box_mesh([
+        manifest.room_half_width,
+        manifest.room_height * 0.5,
+        manifest.wall_half_thickness,
+    ]);
+    let side = builder.box_mesh([
+        manifest.wall_half_thickness,
+        manifest.room_height * 0.5,
+        manifest.room_half_depth,
+    ]);
+    let room_mid_y = manifest.room_height * 0.5;
+    for (mesh, position, color, name) in [
+        (
+            horizontal,
+            Vec3::new(0.0, -manifest.wall_half_thickness, 0.0),
+            WHITE,
+            "combustion_lab_floor",
+        ),
+        (
+            horizontal,
+            Vec3::new(
+                0.0,
+                manifest.room_height + manifest.wall_half_thickness,
+                0.0,
+            ),
+            WHITE,
+            "combustion_lab_ceiling",
+        ),
+        (
+            back,
+            Vec3::new(
+                0.0,
+                room_mid_y,
+                -manifest.room_half_depth - manifest.wall_half_thickness,
+            ),
+            WHITE,
+            "combustion_lab_back_wall",
+        ),
+        (
+            side,
+            Vec3::new(
+                -manifest.room_half_width - manifest.wall_half_thickness,
+                room_mid_y,
+                0.0,
+            ),
+            RED,
+            "combustion_lab_left_wall",
+        ),
+        (
+            side,
+            Vec3::new(
+                manifest.room_half_width + manifest.wall_half_thickness,
+                room_mid_y,
+                0.0,
+            ),
+            GREEN,
+            "combustion_lab_right_wall",
+        ),
+    ] {
+        spawn_object(
+            world,
+            mesh,
+            neutral,
+            position,
+            Quat::IDENTITY,
+            matte(color),
+            name,
+        );
+    }
+
+    let baffle = builder.box_mesh(manifest.baffle_half_extents.to_array());
+    spawn_object(
+        world,
+        baffle,
+        neutral,
+        manifest.baffle_center,
+        Quat::IDENTITY,
+        matte([0.55, 0.58, 0.62]),
+        "combustion_lab_overhead_baffle",
+    );
+
+    // A low, cool reference fill keeps the room legible before ignition. The
+    // transported field's delayed radiant moments remain the dominant warm
+    // source once the explosion starts, so surface-light coupling is visible
+    // instead of being hidden by a bright authored key.
+    spawn_point_light(
+        world,
+        Vec3::new(lab_metres(2.0), lab_metres(2.7), lab_metres(2.7)),
+        lab_metres(8.0),
+        [0.12, 0.15, 0.2],
+        "combustion_lab_reference_fill",
+    );
+    spawn_combustion_probe(
+        world,
+        CombustionProbeSpec {
+            kind: CombustionProbeKind::Flame,
+            position: manifest.flame_position,
+            half_extents: manifest.flame_half_extents,
+            name: "combustion_lab_flame",
+        },
+    );
+    spawn_combustion_probe(
+        world,
+        CombustionProbeSpec {
+            kind: CombustionProbeKind::Explosion {
+                start_delay_seconds: manifest.explosion_start_delay_seconds,
+                lifetime_seconds: manifest.explosion_lifetime_seconds,
+            },
+            position: manifest.explosion_position,
+            half_extents: Vec3::splat(manifest.explosion_radius),
+            name: "combustion_lab_explosion",
+        },
+    );
+
+    builder.finish();
+    log::info!(
+        "Combustion lab ready: room=6x4x8 m, flame+explosion sources, hood underside={:.2} m",
+        (manifest.baffle_center.y - manifest.baffle_half_extents.y) / LAB_UNITS_PER_METER,
+    );
+    (manifest.camera_position, manifest.camera_target)
+}
+
 /// Build the Cornell box into `world`, uploading all meshes + BLAS through
-/// `ctx`. Returns `(camera_position, camera_target)` so the caller can
-/// place the fly-camera looking into the open front of the box.
+/// `ctx`. Returns `(camera_position, camera_target)` so the caller can place
+/// the fly-camera looking into the open front of the box.
 ///
 /// `sun` selects the exterior variant (`--cornell-sun`): see the module
 /// header for what changes and why (#1942).
@@ -728,7 +927,18 @@ pub(crate) fn setup_cornell_scene(
         "fog_volume_probe",
     );
     if combustion_probe {
-        spawn_combustion_probe(world, Vec3::new(0.0, 1.35, -0.4));
+        spawn_combustion_probe(
+            world,
+            CombustionProbeSpec {
+                kind: CombustionProbeKind::Explosion {
+                    start_delay_seconds: 2.0,
+                    lifetime_seconds: 8.0,
+                },
+                position: Vec3::new(0.0, 1.35, -0.4),
+                half_extents: Vec3::splat(1.55),
+                name: "combustion_explosion_probe",
+            },
+        );
     }
 
     // ── Local lights (interior variant only) ────────────────────────
@@ -1287,40 +1497,91 @@ fn spawn_fog_volume_with_extinction(
     name_entity(world, e, name);
 }
 
-/// Opt-in one-shot used to validate the complete explosion profile without
-/// depending on game data. It starts two seconds after the first Cornell frame
-/// so capture tooling can observe the hot core, expansion, and cooled shell.
-fn spawn_combustion_probe(world: &mut World, pos: Vec3) {
+#[derive(Clone, Copy, Debug)]
+enum CombustionProbeKind {
+    Flame,
+    Explosion {
+        start_delay_seconds: f32,
+        lifetime_seconds: f32,
+    },
+}
+
+#[derive(Clone, Copy, Debug)]
+struct CombustionProbeSpec {
+    kind: CombustionProbeKind,
+    position: Vec3,
+    half_extents: Vec3,
+    name: &'static str,
+}
+
+/// Opt-in canonical combustion source used without game data. The kind is
+/// resolved here at the scene-production boundary; the renderer receives the
+/// same [`FogVolume`] contract as imported particle and runtime effects.
+fn spawn_combustion_probe(world: &mut World, spec: CombustionProbeSpec) {
     let e = world.spawn();
-    world.insert(e, Transform::new(pos, Quat::IDENTITY, 1.0));
-    world.insert(e, GlobalTransform::new(pos, Quat::IDENTITY, 1.0));
-    let emissive_radiance =
-        byroredux_core::radiometry::blackbody_radiance_srgb(2800.0, 1850.0, 24.0)
-            .expect("the finite Cornell combustion probe temperature is representable");
+    world.insert(e, Transform::new(spec.position, Quat::IDENTITY, 1.0));
+    world.insert(e, GlobalTransform::new(spec.position, Quat::IDENTITY, 1.0));
+    let (
+        profile,
+        shape,
+        temperature,
+        reference_radiance,
+        extinction_per_meter,
+        single_scatter_albedo,
+    ) = match spec.kind {
+        CombustionProbeKind::Flame => (
+            FogProfile::Flame,
+            FogShape::Ellipsoid,
+            1850.0,
+            12.0,
+            6.0,
+            [0.25; 3],
+        ),
+        CombustionProbeKind::Explosion { .. } => (
+            FogProfile::Explosion,
+            FogShape::Sphere,
+            2800.0,
+            24.0,
+            10.0,
+            [0.12; 3],
+        ),
+    };
+    let emissive_radiance = byroredux_core::radiometry::blackbody_radiance_srgb(
+        temperature,
+        1850.0,
+        reference_radiance,
+    )
+    .expect("the finite Cornell combustion probe temperature is representable");
     world.insert(
         e,
         FogVolume {
             bounds: Some(FogBounds {
                 center: Vec3::ZERO,
                 rotation: Quat::IDENTITY,
-                half_extents: Vec3::splat(1.55),
-                shape: FogShape::Sphere,
+                half_extents: spec.half_extents,
+                shape,
             }),
-            extinction_per_meter: 10.0,
-            single_scatter_albedo: [0.12; 3],
+            extinction_per_meter,
+            single_scatter_albedo,
             edge_softness: 0.3,
-            profile: FogProfile::Explosion,
+            profile,
             emissive_radiance,
-            emission_temperature_k: 2800.0,
+            emission_temperature_k: temperature,
             source: FogSource::RuntimeEffect,
         },
     );
-    let now_seconds = { world.resource::<TotalTime>().0 };
-    // Keep the opt-in probe slow enough for a debugger to capture its hot,
-    // transitional, and smoke-dominant phases without changing production
-    // particle lifetimes.
-    world.insert(e, CombustionState::one_shot(now_seconds + 2.0, 8.0));
-    name_entity(world, e, "combustion_explosion_probe");
+    if let CombustionProbeKind::Explosion {
+        start_delay_seconds,
+        lifetime_seconds,
+    } = spec.kind
+    {
+        let now_seconds = { world.resource::<TotalTime>().0 };
+        world.insert(
+            e,
+            CombustionState::one_shot(now_seconds + start_delay_seconds, lifetime_seconds),
+        );
+    }
+    name_entity(world, e, spec.name);
 }
 
 fn name_entity(world: &mut World, entity: byroredux_core::ecs::EntityId, name: &str) {
@@ -1394,6 +1655,35 @@ mod tests {
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn combustion_lab_flag_is_distinct_and_exact() {
+        assert!(!combustion_lab_mode(&args(&[])));
+        assert!(!combustion_lab_mode(&args(&["--combustion-lab-extra"])));
+        assert!(combustion_lab_mode(&args(&["--combustion-lab"])));
+    }
+
+    #[test]
+    fn combustion_lab_manifest_is_meter_scaled_and_hits_the_baffle() {
+        let manifest = combustion_lab_manifest();
+        assert_eq!(manifest.room_half_width / LAB_UNITS_PER_METER, 3.0);
+        assert_eq!(manifest.room_half_depth / LAB_UNITS_PER_METER, 4.0);
+        assert_eq!(manifest.room_height / LAB_UNITS_PER_METER, 4.0);
+        assert_eq!(manifest.explosion_radius / LAB_UNITS_PER_METER, 0.45);
+        assert!(manifest.explosion_radius > 20.0);
+        assert!(manifest.explosion_start_delay_seconds >= 3.0);
+
+        let baffle_bottom = manifest.baffle_center.y - manifest.baffle_half_extents.y;
+        let flame_top = manifest.flame_position.y + manifest.flame_half_extents.y;
+        let explosion_top = manifest.explosion_position.y + manifest.explosion_radius;
+        assert!(baffle_bottom > flame_top);
+        assert!(baffle_bottom > explosion_top);
+        assert!(baffle_bottom < manifest.room_height);
+        assert!(manifest.baffle_half_extents.x > manifest.explosion_position.x.abs());
+        assert!(manifest.baffle_half_extents.x > manifest.flame_position.x.abs());
+        assert!(manifest.baffle_half_extents.z > manifest.explosion_radius);
+        assert!(manifest.camera_position.z > manifest.room_half_depth);
     }
 
     #[test]

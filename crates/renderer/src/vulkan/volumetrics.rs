@@ -759,7 +759,10 @@ pub struct VolumetricsPipeline {
     /// Last reduction counters emitted at debug level. Logging only changes
     /// keeps the GPU-readback diagnostic useful without producing one line
     /// per frame during a steady flame.
-    last_combustion_light_topology: Option<[usize; 4]>,
+    /// Counts plus strongest-centroid quarter-metre cell. Including position
+    /// makes debug telemetry report real plume motion even when the number of
+    /// occupied reduction bins stays constant.
+    last_combustion_light_topology: Option<[i32; 7]>,
     /// Reused CPU staging state for cluster construction.
     fog_volume_upload: Box<GpuFogVolumeUpload>,
     fog_cluster_entries: Box<[GpuFogClusterEntry; FOG_VOLUME_CLUSTER_COUNT]>,
@@ -800,6 +803,10 @@ pub struct VolumetricsPipeline {
     /// cluster grid / light-index SSBOs) written via
     /// `write_lights_and_clusters`. See that method's doc comment.
     lights_written: [bool; MAX_FRAMES_IN_FLIGHT],
+    /// Same deferred-write latch for bindings 19/20/21: the current
+    /// per-frame instance table and canonical global geometry SSBOs used to
+    /// recover rigid triangle normals at combustion boundaries.
+    boundary_geometry_written: [bool; MAX_FRAMES_IN_FLIGHT],
 }
 
 impl VolumetricsPipeline {
@@ -871,6 +878,7 @@ impl VolumetricsPipeline {
             combustion_active_until_seconds: f32::NEG_INFINITY,
             tlas_written: [false; MAX_FRAMES_IN_FLIGHT],
             lights_written: [false; MAX_FRAMES_IN_FLIGHT],
+            boundary_geometry_written: [false; MAX_FRAMES_IN_FLIGHT],
         };
 
         macro_rules! try_or_cleanup {
@@ -1210,6 +1218,25 @@ impl VolumetricsPipeline {
             // this slot; the host drains it only after the slot fence.
             vk::DescriptorSetLayoutBinding::default()
                 .binding(18)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            // 19/20/21: current GpuInstance table plus canonical global
+            // vertex/index SSBOs. A TLAS committed hit's custom index lands
+            // directly in binding 19, and its primitive index addresses the
+            // matching rigid triangle in bindings 20/21.
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(19)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(20)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(21)
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::COMPUTE),
@@ -1926,6 +1953,12 @@ impl VolumetricsPipeline {
             frame,
         );
         self.lights_written[frame] = false;
+        debug_assert!(
+            self.boundary_geometry_written[frame],
+            "VolumetricsPipeline::dispatch called without prior write_boundary_geometry() for frame {}",
+            frame,
+        );
+        self.boundary_geometry_written[frame] = false;
         // ── Stage A: write injection-pass UBO ────────────────────────
         // The buffer is HOST_VISIBLE + HOST_COHERENT via
         // `GpuBuffer::create_host_visible`, but the execution
@@ -2294,18 +2327,36 @@ impl VolumetricsPipeline {
                 .iter()
                 .map(|(_, light)| *light),
         );
+        let strongest_centroid_metres = self
+            .combustion_light_candidates
+            .first()
+            .map(|(_, light)| {
+                [
+                    light.position_radius[0] / WORLD_UNITS_PER_METER,
+                    light.position_radius[1] / WORLD_UNITS_PER_METER,
+                    light.position_radius[2] / WORLD_UNITS_PER_METER,
+                ]
+            })
+            .unwrap_or([0.0; 3]);
         let topology = [
-            occupied_bins,
+            occupied_bins as i32,
             decoded_candidates,
             suppressed_candidates,
-            append_count,
+            append_count as i32,
+            (strongest_centroid_metres[0] * 4.0).round() as i32,
+            (strongest_centroid_metres[1] * 4.0).round() as i32,
+            (strongest_centroid_metres[2] * 4.0).round() as i32,
         ];
         if self.last_combustion_light_topology != Some(topology) {
             log::debug!(
                 "combustion light reduction: occupied_bins={occupied_bins} \
                  decoded_candidates={decoded_candidates} \
                  suppressed_candidates={suppressed_candidates} appended_lights={append_count} \
-                 weight_quanta={weight_quanta} radiance_quanta={radiance_quanta}"
+                 weight_quanta={weight_quanta} radiance_quanta={radiance_quanta} \
+                 strongest_centroid_m={:.2},{:.2},{:.2}",
+                strongest_centroid_metres[0],
+                strongest_centroid_metres[1],
+                strongest_centroid_metres[2],
             );
             self.last_combustion_light_topology = Some(topology);
         }
@@ -2490,6 +2541,51 @@ impl VolumetricsPipeline {
         // dispatch); the *_info arrays outlive the call.
         unsafe { device.update_descriptor_sets(&writes, &[]) };
         self.lights_written[frame] = true;
+    }
+
+    /// Update bindings 19/20/21 with the exact geometry backing this frame's
+    /// TLAS. `instance_custom_index` is defined to index the supplied
+    /// `instance_buffer`; the vertex/index offsets in that entry address the
+    /// two global geometry buffers. This keeps combustion collision response
+    /// on the renderer's canonical scene representation rather than building
+    /// a parallel obstacle grid or importing source-game rules into runtime.
+    #[allow(clippy::too_many_arguments)]
+    pub fn write_boundary_geometry(
+        &mut self,
+        device: &ash::Device,
+        frame: usize,
+        instance_buffer: vk::Buffer,
+        instance_buffer_size: vk::DeviceSize,
+        vertex_buffer: vk::Buffer,
+        vertex_buffer_size: vk::DeviceSize,
+        index_buffer: vk::Buffer,
+        index_buffer_size: vk::DeviceSize,
+    ) {
+        let instance_info = [vk::DescriptorBufferInfo {
+            buffer: instance_buffer,
+            offset: 0,
+            range: instance_buffer_size,
+        }];
+        let vertex_info = [vk::DescriptorBufferInfo {
+            buffer: vertex_buffer,
+            offset: 0,
+            range: vertex_buffer_size,
+        }];
+        let index_info = [vk::DescriptorBufferInfo {
+            buffer: index_buffer,
+            offset: 0,
+            range: index_buffer_size,
+        }];
+        let set = self.descriptor_sets[frame];
+        let writes = [
+            write_storage_buffer(set, 19, &instance_info),
+            write_storage_buffer(set, 20, &vertex_info),
+            write_storage_buffer(set, 21, &index_info),
+        ];
+        // SAFETY: this frame slot is idle and all three buffers are live for
+        // the subsequent dispatch; the descriptor infos outlive the call.
+        unsafe { device.update_descriptor_sets(&writes, &[]) };
+        self.boundary_geometry_written[frame] = true;
     }
 
     /// Destroy all froxel images, views, buffers, and pipeline objects.
@@ -2683,12 +2779,31 @@ mod unit_tests {
             "out float stateProfile",
             "sourceStateMask * sourceRadianceLuma",
             "vec3 sourcePosition = worldPos - midpointVelocity.xyz * dt;",
-            "bool combustionPathBlocked(vec3 sourcePosition, vec3 destinationPosition)",
-            "VISIBILITY_MASK_ALL_OPAQUE",
+            "bool sourceInHistory = samplePreviousTransport(",
+            "&& carriesCombustion(sourceChemistry)",
+            "bool incomingVelocityFromNeighbors(",
+            "float closingSpeed = dot(",
+            "combustionPathBlocked(\n                candidatePosition,",
+            "float combustionActivity(vec4 chemistry)",
+            "bool destinationVelocityExtended = false;",
+            "if (destinationVelocityExtended",
+            "vec3 neighbor_step_z = field_segment_end - field_segment_start;",
+            "bool combustionPathBlocked(",
+            "VISIBILITY_MASK_SOLID",
+            "layout(std430, set = 0, binding = 19) readonly buffer BoundaryInstanceBuffer",
+            "layout(std430, set = 0, binding = 20) readonly buffer BoundaryVertexBuffer",
+            "layout(std430, set = 0, binding = 21) readonly buffer BoundaryIndexBuffer",
+            "rayQueryGetIntersectionInstanceCustomIndexEXT(boundaryQuery, true)",
+            "bool rigidBoundaryNormal(",
+            "float inwardSpeed = min(dot(velocity.xyz, boundaryNormal), 0.0);",
+            "velocity.xyz -= boundaryNormal * inwardSpeed;",
+            "vec3 predictedPosition = worldPos + velocity.xyz * dt;",
             "float impulseEnvelope = 1.0 - smoothstep(0.12, 0.24, age);",
             "compactCore * impulseEnvelope",
+            ": ignitionMask * 0.22;",
             "float reactionRate = 2.4 * chemistry.x * velocity.w * ignition;",
             "float richYield = mix(0.004, 0.018, 1.0 - velocity.w);",
+            "chemistry.z *= exp(-0.045 * dt);",
             "blackbodyVisibleRadianceRatio(chemistry.y, 1850.0)",
             "float buoyantAcceleration = min(temperatureExcess, 7.0)",
             "LocalMedium combustionMedium(vec4 chemistry)",
@@ -2706,6 +2821,10 @@ mod unit_tests {
         assert!(
             shader.contains("|| isTransportedProfile(profileKind))"),
             "dynamic profiles must not also render their old analytic body"
+        );
+        assert!(
+            !shader.contains("bool blocked = carriesCombustion(probeChemistry)"),
+            "solid crossing must be gated by advected source chemistry, not the destination cell"
         );
         assert!(
             !shader.contains("GameKind")

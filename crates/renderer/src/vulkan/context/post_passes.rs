@@ -521,12 +521,44 @@ impl VulkanContext {
                                 cc.scene_light_index_buffers[frame],
                             )
                         });
+                        let vol_geometry = match (
+                            self.mesh_registry.global_vertex_buffer.as_ref(),
+                            self.mesh_registry.global_index_buffer.as_ref(),
+                        ) {
+                            (Some(vertex_buffer), Some(index_buffer)) => Some((
+                                self.scene_buffers.instance_buffers()[frame].buffer,
+                                self.scene_buffers.instance_buffer_size(),
+                                vertex_buffer.buffer,
+                                vertex_buffer.size,
+                                index_buffer.buffer,
+                                index_buffer.size,
+                            )),
+                            _ => None,
+                        };
                         if let (
                             Some(tlas),
                             Some((light_buf, light_buf_size, grid_buf, index_buf)),
-                        ) = (vol_tlas, vol_lights)
+                            Some((
+                                instance_buf,
+                                instance_buf_size,
+                                vertex_buf,
+                                vertex_buf_size,
+                                geometry_index_buf,
+                                geometry_index_buf_size,
+                            )),
+                        ) = (vol_tlas, vol_lights, vol_geometry)
                         {
                             vol.write_tlas(&self.device, frame, tlas);
+                            vol.write_boundary_geometry(
+                                &self.device,
+                                frame,
+                                instance_buf,
+                                instance_buf_size,
+                                vertex_buf,
+                                vertex_buf_size,
+                                geometry_index_buf,
+                                geometry_index_buf_size,
+                            );
                             // Cluster grid / light-index buffer sizes mirror the
                             // formulas in `ClusterCullPipeline::new`
                             // (`compute.rs`): grid entries are `{offset:u32,

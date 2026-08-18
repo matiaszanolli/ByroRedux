@@ -210,6 +210,12 @@ cargo run -- path/to/mesh.nif [--kf path/to/anim.kf]
 cargo run --release -- --cornell
 cargo run --release -- --cornell-sun
 
+# Meter-scaled, game-data-independent combustion lab. A sustained flame and
+# delayed explosion feed the canonical transported field beneath a rigid hood;
+# use the volume view to inspect hot, cooling, soot, and no-through phases.
+cargo run --release -- --combustion-lab
+BYROREDUX_RENDER_DEBUG_MODE=volume cargo run --release -- --combustion-lab
+
 # Native-scale material stress scene: a larger Cornell enclosure containing
 # Skyrim SE's authored bronze-dragon display mesh, with every imported submesh
 # forced to solid smooth glass (normal detail retained when present; all

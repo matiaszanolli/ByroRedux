@@ -58,6 +58,10 @@ of them one physical and temporal contract.
   `(world velocity vx/vy/vz, oxidizer)`. Each current froxel reconstructs an absolute world
   position, reprojects it into the previous camera grid, and performs an RK2
   semi-Lagrangian backtrace before sampling both fields with linear/clamp.
+  At a dilute leading edge, velocity is extended from the strongest adjacent
+  active cell whose flow points into the destination; chemistry still arrives
+  only through the backtrace. Without this upwind extension an empty cell asks
+  itself for velocity, receives zero, and a flame remains pinned to its source.
   Storage is view-aligned, but transport is world-space and therefore does not
   turn camera motion into fake fluid velocity.
 - XCLL/WTHR near/far ramps are converted once at the cell/weather translation
@@ -161,8 +165,10 @@ bodies:
   a second arbitrary density-to-optics conversion. Fuel burns above a 720 K
   ignition window at a rate proportional to fuel × oxidizer; heat release and
   oxygen-starved soot yield come from that same reaction. Exponential cooling,
-  soot/fuel dissipation, oxidizer entrainment, drag, divergence-free turbulent
+  fuel dissipation, oxidizer entrainment, drag, divergence-free turbulent
   acceleration, and temperature-driven buoyancy advance the state each frame.
+  Soot uses only a mild removal term (about a 15-second half-life); transport
+  and mixing, rather than the thermal envelope, disperse the visible cloud.
 - Persistent flames replenish a compact basal fuel/heat boundary, passive smoke
   replenishes soot and mild exhaust velocity, and explosions add a finite
   radial heat/momentum impulse. A reset field seeds the explosion's current
@@ -219,6 +225,14 @@ bodies:
   values after the normal frame-in-flight latency, so cooling, buoyant motion,
   wall blocking, and source expiry affect the visible medium and nearby
   surfaces through the same state.
+- Solid interaction is canonical too. The core `VisibilityMask::SOLID` contract
+  contains opaque geometry plus glass and excludes effect cards. The injector
+  ray-queries that mask for both the semi-Lagrangian source→destination path
+  and a forward velocity probe. A committed rigid hit recovers its triangle
+  normal from the same instance/global vertex/global index buffers that back
+  the TLAS, removes only inward normal velocity, and retains tangential slip
+  with mild wall friction. Malformed, degenerate, or skinned hits remain
+  no-through and fall back to a conservative opposing normal.
 - Emissive froxels use a shorter temporal history weight
   (`DEFAULT_EMISSIVE_HISTORY_WEIGHT`, `fog_reference.y`) blended in by the
   larger of the current and reprojected previous emissive fractions. The
@@ -229,6 +243,27 @@ bodies:
   legitimately flips at shadow boundaries; using that flip as a generic
   disocclusion would suppress accumulation exactly at the god-ray edges
   M-LIGHT v2 added it to clean up.
+
+### Game-data-independent lab
+
+`--combustion-lab` builds a six-by-four-by-eight-metre Cornell room using the
+canonical 70 Bethesda units/metre conversion. A persistent 1850 K flame and a
+delayed 2800 K one-shot explosion feed ordinary `FogVolume` profiles beneath a
+rigid hood whose underside is 1.24 m above the floor. The harness contains no
+game identity or import shortcut: it validates the same parser-independent ECS
+and GPU contracts that shipped particle effects reach after translation.
+
+```bash
+cargo run --release -- --combustion-lab
+BYROREDUX_RENDER_DEBUG_MODE=volume cargo run --release -- --combustion-lab
+```
+
+In the isolated volume view, verify a hot basal flame, a buoyant gray plume,
+occlusion through the hood depth with lateral reappearance above an edge, a
+separate explosion core, and a cooled soot cloud after its radiance falls. In
+the final composite, verify that the delayed transported-field light moments
+warm nearby surfaces and then recede with cooling. The named `volume` view
+maps both radiance and opacity, so non-emissive soot remains inspectable.
 
 ### Open calibration
 

@@ -87,7 +87,7 @@ pub(crate) fn cornell_sun_mode(args: &[String]) -> Option<bool> {
 fn select_initial_player_mode(
     want_fly: bool,
     want_player: bool,
-    cornell: bool,
+    diagnostic_scene: bool,
     has_content: bool,
     foreground_ready_for_character: bool,
     ground_walkable: bool,
@@ -96,9 +96,9 @@ fn select_initial_player_mode(
         crate::systems::PlayerMode::FlyCam
     } else if want_player {
         crate::systems::PlayerMode::Character
-    } else if cornell {
-        // The Cornell box has no colliders; a character capsule would fall
-        // through the floor. Fly-cam unless explicitly overridden.
+    } else if diagnostic_scene {
+        // Renderer harness geometry intentionally has no gameplay colliders;
+        // a character capsule would fall through it. Fly-cam unless explicit.
         crate::systems::PlayerMode::FlyCam
     } else if has_content && foreground_ready_for_character && ground_walkable {
         crate::systems::PlayerMode::Character
@@ -636,7 +636,7 @@ pub(crate) fn setup_scene(
     // `None`. See cell_loader::transition.
     world.insert_resource(cell_loader::PendingCellTransitionSlot::default());
 
-    // Cornell-box test harness (`--cornell`, `--cornell-sun`, the
+    // Renderer test harnesses (`--combustion-lab`, `--cornell`, `--cornell-sun`, the
     // controlled `--cornell-oracle l0|l1|l2` ladder, or the separate
     // native-scale `--cornell-glass-dragon` Skyrim experiment).
     // Takes precedence over the ESM / NIF / demo paths. Returns the
@@ -645,16 +645,23 @@ pub(crate) fn setup_scene(
     // sun-only variant (#1942); see `crate::cornell`.
     let cornell_oracle =
         crate::cornell::cornell_oracle_rung(&args).unwrap_or_else(|message| panic!("{message}"));
+    let combustion_lab = crate::cornell::combustion_lab_mode(&args);
     let cornell_glass_dragon = crate::cornell::glass_dragon_mode(&args);
     let cornell_sun = cornell_sun_mode(&args);
-    let cornell = cornell_glass_dragon || cornell_oracle.is_some() || cornell_sun.is_some();
-    let mut cornell_cam: Option<(Vec3, Vec3)> = None;
+    let diagnostic_scene =
+        combustion_lab || cornell_glass_dragon || cornell_oracle.is_some() || cornell_sun.is_some();
+    let mut harness_cam: Option<(Vec3, Vec3)> = None;
 
     // Cell loading mode: --esm <path> --cell <editor_id> OR --wrld <name> --grid <x>,<y>
-    if cornell_glass_dragon {
+    if combustion_lab {
+        let (pos, target) = crate::cornell::setup_combustion_lab_scene(world, ctx);
+        harness_cam = Some((pos, target));
+        cam_center = target;
+        has_nif_content = true;
+    } else if cornell_glass_dragon {
         let (pos, target) = crate::cornell::setup_cornell_glass_dragon_scene(world, ctx, &args)
             .unwrap_or_else(|message| panic!("{message}"));
-        cornell_cam = Some((pos, target));
+        harness_cam = Some((pos, target));
         cam_center = target;
         has_nif_content = true;
     } else if let Some(rung) = cornell_oracle {
@@ -662,12 +669,12 @@ pub(crate) fn setup_scene(
             .unwrap_or_else(|message| panic!("{message}"));
         let (pos, target) =
             crate::cornell::setup_cornell_oracle_scene(world, ctx, rung, world_offset);
-        cornell_cam = Some((pos, target));
+        harness_cam = Some((pos, target));
         cam_center = target;
         has_nif_content = true;
     } else if let Some(sun) = cornell_sun {
         let (pos, target) = crate::cornell::setup_cornell_scene(world, ctx, sun);
-        cornell_cam = Some((pos, target));
+        harness_cam = Some((pos, target));
         cam_center = target;
         // Skip the demo-primitive spawn + flag the scene as populated so
         // the player rig defaults sensibly (see FlyCam gate below).
@@ -1015,10 +1022,10 @@ pub(crate) fn setup_scene(
     // in which case the requested pose wins. Useful for offline
     // diagnostic renders without needing interactive WASD.
     let cam = world.spawn();
-    let cam_pos = match (camera_pos_override, cornell_cam) {
+    let cam_pos = match (camera_pos_override, harness_cam) {
         (Some((x, y, z)), _) => Vec3::new(x, y, z),
-        // Cornell box uses small world-unit scale (room ~8 units), so the
-        // NIF camera offset (100, 200) would put the camera far outside.
+        // Each renderer harness owns its physical scale, so its declared
+        // camera wins over the NIF-oriented fallback offset.
         (None, Some((pos, _))) => pos,
         (None, None) if has_nif_content => cam_center + Vec3::new(0.0, 100.0, 200.0),
         (None, None) => Vec3::new(0.0, 1.5, 4.0),
@@ -1087,7 +1094,7 @@ pub(crate) fn setup_scene(
     // content-less loads all resolve to FlyCam regardless, and the probe costs
     // an early physics sync.
     let character_controller = byroredux_physics::CharacterController::HUMAN;
-    let spawn_plan = if want_fly || (!want_player && (cornell || !has_nif_content)) {
+    let spawn_plan = if want_fly || (!want_player && (diagnostic_scene || !has_nif_content)) {
         None
     } else {
         // `physics_sync_system` inserts the colliders into `ColliderSet`, but
@@ -1116,7 +1123,7 @@ pub(crate) fn setup_scene(
     let player_mode = select_initial_player_mode(
         want_fly,
         want_player,
-        cornell,
+        diagnostic_scene,
         has_nif_content,
         foreground_ready_for_character,
         ground_walkable,

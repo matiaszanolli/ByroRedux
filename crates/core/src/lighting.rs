@@ -133,6 +133,10 @@ impl VisibilityMask {
 
     pub const ALL_OPAQUE: Self =
         Self(Self::ARCHITECTURE.0 | Self::STATIC_PROP.0 | Self::DYNAMIC_ACTOR.0 | Self::FOLIAGE.0);
+    /// Geometry that forms a physical no-through boundary for transported
+    /// media. Effect cards are visual emitters, not solid obstacles; glass is
+    /// optically transmissive but still impermeable to smoke and flame.
+    pub const SOLID: Self = Self(Self::ALL_OPAQUE.0 | Self::GLASS.0);
     pub const FULL: Self = Self(Self::ALL_OPAQUE.0 | Self::GLASS.0 | Self::EFFECT.0);
 
     pub const fn from_bits(bits: u8) -> Self {
@@ -371,6 +375,9 @@ mod tests {
             }
         }
         assert_eq!(VisibilityMask::FULL.bits(), 0x3f);
+        assert!(VisibilityMask::SOLID.contains(VisibilityMask::ALL_OPAQUE));
+        assert!(VisibilityMask::SOLID.contains(VisibilityMask::GLASS));
+        assert!(!VisibilityMask::SOLID.contains(VisibilityMask::EFFECT));
     }
 
     #[test]

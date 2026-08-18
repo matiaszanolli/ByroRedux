@@ -114,6 +114,8 @@ pub const VISIBILITY_LAYER_EFFECT: u32 =
     byroredux_core::lighting::VisibilityMask::EFFECT.bits() as u32;
 pub const VISIBILITY_MASK_ALL_OPAQUE: u32 =
     byroredux_core::lighting::VisibilityMask::ALL_OPAQUE.bits() as u32;
+pub const VISIBILITY_MASK_SOLID: u32 =
+    byroredux_core::lighting::VisibilityMask::SOLID.bits() as u32;
 pub const VISIBILITY_MASK_FULL: u32 = byroredux_core::lighting::VisibilityMask::FULL.bits() as u32;
 
 pub const ATTENUATION_MODEL_LEGACY_SOFT_RANGE: u32 =
@@ -169,6 +171,8 @@ const _: () = {
     assert!(VISIBILITY_MASK_FULL <= 0xFF);
     assert!(VISIBILITY_MASK_FULL.count_ones() == 6);
     assert!(VISIBILITY_MASK_ALL_OPAQUE & VISIBILITY_LAYER_GLASS == 0);
+    assert!(VISIBILITY_MASK_SOLID == VISIBILITY_MASK_ALL_OPAQUE | VISIBILITY_LAYER_GLASS);
+    assert!(VISIBILITY_MASK_SOLID & VISIBILITY_LAYER_EFFECT == 0);
     assert!(
         VISIBILITY_MASK_FULL
             == VISIBILITY_MASK_ALL_OPAQUE | VISIBILITY_LAYER_GLASS | VISIBILITY_LAYER_EFFECT

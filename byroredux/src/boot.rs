@@ -1455,6 +1455,7 @@ fn expand_game_profile_args(mut args: Vec<String>) -> Vec<String> {
         "--cornell-sun",
         "--cornell-oracle",
         "--cornell-glass-dragon",
+        "--combustion-lab",
     ]
     .iter()
     .any(|f| args.iter().any(|a| a == f));

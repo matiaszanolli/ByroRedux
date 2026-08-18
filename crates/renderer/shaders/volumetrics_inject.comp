@@ -210,6 +210,41 @@ layout(std430, set = 0, binding = 18) buffer CombustionLightMomentBuffer {
     CombustionLightMoment combustionLightMoments[];
 };
 
+// Geometry backing the current TLAS. `instance_custom_index` is built from
+// the same compacted index as this per-frame instance SSBO, so a committed
+// ray-query hit can recover its triangle without a second scene map. Only the
+// prefix needed for rigid boundary normals is named; `_boundaryTail` occupies
+// the u64 skinned-vertex address plus reserved words and preserves the exact
+// 128-byte std430 stride of the canonical Rust `GpuInstance`.
+struct GpuBoundaryInstance {
+    mat4 model;
+    uint textureIndex;
+    uint boneOffset;
+    uint vertexOffset;
+    uint indexOffset;
+    uint vertexCount;
+    uint flags;
+    uint materialId;
+    float ior;
+    float avgAlbedoR;
+    float avgAlbedoG;
+    float avgAlbedoB;
+    uint surfaceId;
+    uvec4 _boundaryTail;
+};
+
+layout(std430, set = 0, binding = 19) readonly buffer BoundaryInstanceBuffer {
+    GpuBoundaryInstance boundaryInstances[];
+};
+
+layout(std430, set = 0, binding = 20) readonly buffer BoundaryVertexBuffer {
+    float boundaryVertexData[];
+};
+
+layout(std430, set = 0, binding = 21) readonly buffer BoundaryIndexBuffer {
+    uint boundaryIndexData[];
+};
+
 const float PI = 3.14159265358979323846;
 // Rec. 709 luma weights, matching `byroredux_core::radiometry`'s
 // `linear_srgb_luminance` so CPU and GPU agree on what "brightness" means.
@@ -218,6 +253,7 @@ const float AMBIENT_TEMPERATURE_K = 293.15;
 const float IGNITION_TEMPERATURE_K = 720.0;
 const float MAX_COMBUSTION_TEMPERATURE_K = 4200.0;
 const float MAX_COMBUSTION_SPEED_MPS = 28.0;
+const float COMBUSTION_WALL_FRICTION_PER_SECOND = 0.35;
 // FOG_VOLUME_CLUSTER_DIM / MAX_FOG_VOLUMES_PER_CLUSTER come from the
 // #include'd shader_constants.glsl header (generated from
 // shader_constants_data.rs — #2229 / REN-D3-02). Previously hand-declared
@@ -862,7 +898,7 @@ void applyCombustionSources(
         );
         float smokeSeedMask = coldHistory
             ? densityProfile * smokeEnvelope
-            : ignitionMask * 0.10;
+            : ignitionMask * 0.22;
         float sourceTemperature = clamp(
             max(volume.emission_temperature.w, 2300.0),
             IGNITION_TEMPERATURE_K,
@@ -1215,14 +1251,106 @@ bool carriesCombustion(vec4 chemistry) {
         || chemistry.y > AMBIENT_TEMPERATURE_K + 2.0;
 }
 
-// Semi-Lagrangian backtracing must not pull chemistry through a wall. The
-// destination sample already owns a TLAS for volumetric shadowing, so reuse
-// that canonical geometry boundary instead of maintaining a second CPU voxel
-// mask. This is deliberately a binary no-through test: resolving a collision
-// normal and tangential slip belongs to a later pressure/projection solver,
-// while retaining the destination state and cancelling its velocity is the
-// conservative failure mode for the current first-order field.
-bool combustionPathBlocked(vec3 sourcePosition, vec3 destinationPosition) {
+float combustionActivity(vec4 chemistry) {
+    float temperatureExcess = max(
+        (chemistry.y - AMBIENT_TEMPERATURE_K) / AMBIENT_TEMPERATURE_K,
+        0.0
+    );
+    return clamp(
+        chemistry.x + chemistry.z * 80.0 + temperatureExcess * 0.12,
+        0.0,
+        1.0
+    );
+}
+
+bool rigidBoundaryNormal(
+    uint instanceIndex,
+    uint primitiveIndex,
+    out vec3 boundaryNormal
+) {
+    boundaryNormal = vec3(0.0);
+    if (instanceIndex >= uint(boundaryInstances.length())) {
+        return false;
+    }
+    GpuBoundaryInstance instance = boundaryInstances[instanceIndex];
+    // Skinned BLAS vertices are deformed into a separate per-entity buffer;
+    // the global SSBO remains bind pose. Fall back to the conservative ray
+    // direction for those hits rather than publishing a confidently wrong
+    // normal.
+    if (instance.boneOffset != 0u) {
+        return false;
+    }
+
+    uint indexCount = uint(boundaryIndexData.length());
+    if (instance.indexOffset > indexCount) {
+        return false;
+    }
+    uint remainingIndices = indexCount - instance.indexOffset;
+    if (primitiveIndex >= remainingIndices / 3u) {
+        return false;
+    }
+    uint firstIndex = instance.indexOffset + primitiveIndex * 3u;
+    uvec3 localIndices = uvec3(
+        boundaryIndexData[firstIndex],
+        boundaryIndexData[firstIndex + 1u],
+        boundaryIndexData[firstIndex + 2u]
+    );
+    if (any(greaterThanEqual(localIndices, uvec3(instance.vertexCount)))) {
+        return false;
+    }
+
+    uint vertexCapacity = uint(boundaryVertexData.length()) / VERTEX_STRIDE_FLOATS;
+    if (instance.vertexOffset > vertexCapacity
+        || any(greaterThanEqual(
+            localIndices,
+            uvec3(vertexCapacity - instance.vertexOffset)
+        ))) {
+        return false;
+    }
+    uvec3 globalIndices = uvec3(instance.vertexOffset) + localIndices;
+    uint base0 = globalIndices.x * VERTEX_STRIDE_FLOATS;
+    uint base1 = globalIndices.y * VERTEX_STRIDE_FLOATS;
+    uint base2 = globalIndices.z * VERTEX_STRIDE_FLOATS;
+    vec3 local0 = vec3(
+        boundaryVertexData[base0],
+        boundaryVertexData[base0 + 1u],
+        boundaryVertexData[base0 + 2u]
+    );
+    vec3 local1 = vec3(
+        boundaryVertexData[base1],
+        boundaryVertexData[base1 + 1u],
+        boundaryVertexData[base1 + 2u]
+    );
+    vec3 local2 = vec3(
+        boundaryVertexData[base2],
+        boundaryVertexData[base2 + 1u],
+        boundaryVertexData[base2 + 2u]
+    );
+    vec3 world0 = (instance.model * vec4(local0, 1.0)).xyz;
+    vec3 world1 = (instance.model * vec4(local1, 1.0)).xyz;
+    vec3 world2 = (instance.model * vec4(local2, 1.0)).xyz;
+    vec3 unnormalized = cross(world1 - world0, world2 - world0);
+    float lengthSquared = dot(unnormalized, unnormalized);
+    if (!(lengthSquared > 1.0e-12)
+        || isnan(lengthSquared)
+        || isinf(lengthSquared)) {
+        return false;
+    }
+    boundaryNormal = unnormalized * inversesqrt(lengthSquared);
+    return true;
+}
+
+// Both backward advection and the forward velocity update use this one
+// canonical solid-boundary query. Glass blocks transported matter even though
+// it transmits light; effect cards do neither. A malformed/degenerate or
+// skinned hit still blocks transport and receives a conservative normal that
+// cancels motion into the committed surface.
+bool combustionPathBlocked(
+    vec3 sourcePosition,
+    vec3 destinationPosition,
+    out vec3 boundaryNormal
+) {
+    boundaryNormal = vec3(0.0);
     vec3 displacement = destinationPosition - sourcePosition;
     float distance = length(displacement);
     if (distance <= 0.04) {
@@ -1230,13 +1358,98 @@ bool combustionPathBlocked(vec3 sourcePosition, vec3 destinationPosition) {
     }
     vec3 direction = displacement / distance;
     float inset = min(0.02, distance * 0.25);
-    return traceShadowBinary(
+    rayQueryEXT boundaryQuery;
+    rayQueryInitializeEXT(
+        boundaryQuery,
+        topLevelAS,
+        gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
+        VISIBILITY_MASK_SOLID,
         sourcePosition,
-        direction,
         inset,
-        distance - inset,
-        VISIBILITY_MASK_ALL_OPAQUE
+        direction,
+        distance - inset
     );
+    while (rayQueryProceedEXT(boundaryQuery)) {}
+    if (rayQueryGetIntersectionTypeEXT(boundaryQuery, true)
+        == gl_RayQueryCommittedIntersectionNoneEXT) {
+        return false;
+    }
+
+    uint instanceIndex = uint(
+        rayQueryGetIntersectionInstanceCustomIndexEXT(boundaryQuery, true));
+    uint primitiveIndex = uint(
+        rayQueryGetIntersectionPrimitiveIndexEXT(boundaryQuery, true));
+    if (!rigidBoundaryNormal(instanceIndex, primitiveIndex, boundaryNormal)) {
+        boundaryNormal = -direction;
+    } else if (dot(boundaryNormal, direction) > 0.0) {
+        boundaryNormal = -boundaryNormal;
+    }
+    return true;
+}
+
+// Semi-Lagrangian advection normally backtraces with the velocity already at
+// the destination. That is insufficient at a plume's leading edge: the empty
+// destination has zero velocity, so it can never discover the active cell
+// immediately upwind. Extend only velocity (not chemistry) from an adjacent
+// active cell whose flow points toward this destination. Chemistry still
+// arrives through the ordinary backtrace, preserving mass-like interpolation
+// and the solid-crossing rejection below.
+bool incomingVelocityFromNeighbors(
+    vec3 worldPos,
+    vec3 stepX,
+    vec3 stepY,
+    vec3 stepZ,
+    out vec4 incomingVelocity
+) {
+    vec3 offsets[6] = vec3[6](
+        stepX, -stepX,
+        stepY, -stepY,
+        stepZ, -stepZ
+    );
+    bool found = false;
+    float bestScore = 0.0;
+    incomingVelocity = vec4(0.0, 0.0, 0.0, 1.0);
+    for (int neighborIndex = 0; neighborIndex < 6; ++neighborIndex) {
+        vec3 candidatePosition = worldPos + offsets[neighborIndex];
+        vec4 candidateChemistry;
+        vec4 candidateVelocity;
+        if (!samplePreviousTransport(
+                candidatePosition,
+                candidateChemistry,
+                candidateVelocity)
+            || !carriesCombustion(candidateChemistry)) {
+            continue;
+        }
+
+        vec3 towardDestination = worldPos - candidatePosition;
+        float neighborDistance = length(towardDestination);
+        if (neighborDistance <= 1.0e-4) {
+            continue;
+        }
+        float closingSpeed = dot(
+            candidateVelocity.xyz,
+            towardDestination / neighborDistance
+        );
+        if (closingSpeed <= 0.04) {
+            continue;
+        }
+        vec3 crossingNormal;
+        if (combustionPathBlocked(
+                candidatePosition,
+                worldPos,
+                crossingNormal)) {
+            continue;
+        }
+
+        float activity = combustionActivity(candidateChemistry);
+        float score = closingSpeed * (0.25 + activity);
+        if (!found || score > bestScore) {
+            found = true;
+            bestScore = score;
+            incomingVelocity = candidateVelocity;
+        }
+    }
+    return found;
 }
 
 // Advect in absolute world space even though storage is view-froxel aligned.
@@ -1247,6 +1460,9 @@ void transportCombustion(
     vec3 worldPos,
     vec3 segmentStart,
     vec3 segmentEnd,
+    vec3 neighborStepX,
+    vec3 neighborStepY,
+    vec3 neighborStepZ,
     float dt,
     out vec4 chemistry,
     out vec4 velocity
@@ -1259,20 +1475,50 @@ void transportCombustion(
         destinationVelocity
     );
     if (hadHistory && dt > 0.0) {
+        bool destinationVelocityExtended = false;
+        if (combustionActivity(probeChemistry) < 0.08) {
+            vec4 incomingVelocity;
+            if (incomingVelocityFromNeighbors(
+                    worldPos,
+                    neighborStepX,
+                    neighborStepY,
+                    neighborStepZ,
+                    incomingVelocity)) {
+                destinationVelocity = incomingVelocity;
+                destinationVelocityExtended = true;
+            }
+        }
         vec3 midpoint = worldPos - destinationVelocity.xyz * (0.5 * dt);
         vec4 midpointChemistry;
         vec4 midpointVelocity;
-        if (!samplePreviousTransport(midpoint, midpointChemistry, midpointVelocity)) {
+        if (destinationVelocityExtended
+            || !samplePreviousTransport(midpoint, midpointChemistry, midpointVelocity)) {
             midpointVelocity = destinationVelocity;
         }
         vec3 sourcePosition = worldPos - midpointVelocity.xyz * dt;
-        bool blocked = carriesCombustion(probeChemistry)
-            && combustionPathBlocked(sourcePosition, worldPos);
+        vec4 sourceChemistry;
+        vec4 sourceVelocity;
+        bool sourceInHistory = samplePreviousTransport(
+            sourcePosition,
+            sourceChemistry,
+            sourceVelocity
+        );
+        // Test the state being pulled into this destination, not the state
+        // already living here. A previously empty cell on the far side of a
+        // wall is exactly where a source-side check matters: gating on
+        // `probeChemistry` lets active chemistry tunnel into that empty cell
+        // without ever issuing the TLAS query.
+        vec3 crossingNormal;
+        bool blocked = sourceInHistory
+            && carriesCombustion(sourceChemistry)
+            && combustionPathBlocked(sourcePosition, worldPos, crossingNormal);
         if (blocked) {
             chemistry = probeChemistry;
             velocity = destinationVelocity;
-            velocity.xyz = vec3(0.0);
-        } else if (!samplePreviousTransport(sourcePosition, chemistry, velocity)) {
+        } else if (sourceInHistory) {
+            chemistry = sourceChemistry;
+            velocity = sourceVelocity;
+        } else {
             chemistry = probeChemistry;
             velocity = destinationVelocity;
         }
@@ -1320,7 +1566,11 @@ void transportCombustion(
         float entrainment = 1.0 - exp(-0.34 * dt);
         velocity.w = mix(velocity.w, 1.0, entrainment);
         chemistry.x *= exp(-0.025 * dt);
-        chemistry.z *= exp(-0.18 * dt);
+        // Soot is transported matter, not another emissive time envelope.
+        // Let advection and mixing disperse it; this mild settling/removal term
+        // gives a ~15 s half-life instead of erasing an explosion cloud in the
+        // first few seconds after its heat has cooled.
+        chemistry.z *= exp(-0.045 * dt);
         chemistry.w *= exp(-0.08 * dt);
         chemistry.y = AMBIENT_TEMPERATURE_K
             + (chemistry.y - AMBIENT_TEMPERATURE_K) * exp(-0.42 * dt);
@@ -1333,11 +1583,7 @@ void transportCombustion(
             * 0.58 * WORLD_UNITS_PER_METER;
         velocity.y += buoyantAcceleration * dt;
 
-        float activity = clamp(
-            chemistry.x + chemistry.z * 80.0 + temperatureExcess * 0.12,
-            0.0,
-            1.0
-        );
+        float activity = combustionActivity(chemistry);
         vec3 metres = worldPos / WORLD_UNITS_PER_METER;
         vec3 turbulentAcceleration = curlField(
             metres * 0.38
@@ -1345,6 +1591,24 @@ void transportCombustion(
         ) * (1.6 * WORLD_UNITS_PER_METER * activity);
         velocity.xyz += turbulentAcceleration * dt;
         velocity.xyz *= exp(-0.48 * dt);
+
+        // Semi-Lagrangian no-through rejection above protects the empty side
+        // of a wall. This forward probe handles the complementary source-side
+        // boundary condition: remove only the inward normal component of the
+        // updated flow and retain tangential slip with mild wall friction.
+        if (carriesCombustion(chemistry)
+            && dot(velocity.xyz, velocity.xyz) > 1.0e-8) {
+            vec3 boundaryNormal;
+            vec3 predictedPosition = worldPos + velocity.xyz * dt;
+            if (combustionPathBlocked(
+                    worldPos,
+                    predictedPosition,
+                    boundaryNormal)) {
+                float inwardSpeed = min(dot(velocity.xyz, boundaryNormal), 0.0);
+                velocity.xyz -= boundaryNormal * inwardSpeed;
+                velocity.xyz *= exp(-COMBUSTION_WALL_FRICTION_PER_SECOND * dt);
+            }
+        }
     }
 
     chemistry = sanitizedChemistry(chemistry);
@@ -1510,6 +1774,16 @@ void main() {
     vec3 field_segment_start = froxel_to_world(fieldUv, fieldFrontT);
     vec3 field_segment_end = froxel_to_world(fieldUv, fieldBackT);
     vec3 field_world_pos = froxel_to_world(fieldUv, fieldT);
+    vec2 fieldTexel = 1.0 / vec2(size.xy);
+    vec3 neighbor_step_x = froxel_to_world(
+        fieldUv + vec2(fieldTexel.x, 0.0),
+        fieldT
+    ) - field_world_pos;
+    vec3 neighbor_step_y = froxel_to_world(
+        fieldUv + vec2(0.0, fieldTexel.y),
+        fieldT
+    ) - field_world_pos;
+    vec3 neighbor_step_z = field_segment_end - field_segment_start;
     float simulationDt = clamp(params.fog_reference.w, 0.0, 1.0 / 15.0);
     vec4 chemistry;
     vec4 combustion_velocity;
@@ -1517,6 +1791,9 @@ void main() {
         field_world_pos,
         field_segment_start,
         field_segment_end,
+        neighbor_step_x,
+        neighbor_step_y,
+        neighbor_step_z,
         simulationDt,
         chemistry,
         combustion_velocity
