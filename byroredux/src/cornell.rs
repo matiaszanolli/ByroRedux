@@ -48,6 +48,7 @@ use byroredux_core::ecs::{
     LightSource, Material, MeshHandle, TextureHandle, TotalTime, Transform, World,
 };
 use byroredux_core::math::{Quat, Vec3};
+use byroredux_core::radiometry::CombustionRegime;
 use byroredux_core::string::StringPool;
 use byroredux_nif::import::ImportedMaterial;
 use byroredux_renderer::vulkan::GpuUploadCtx;
@@ -1521,37 +1522,23 @@ fn spawn_combustion_probe(world: &mut World, spec: CombustionProbeSpec) {
     let e = world.spawn();
     world.insert(e, Transform::new(spec.position, Quat::IDENTITY, 1.0));
     world.insert(e, GlobalTransform::new(spec.position, Quat::IDENTITY, 1.0));
-    let (
-        profile,
-        shape,
-        temperature,
-        reference_radiance,
-        extinction_per_meter,
-        single_scatter_albedo,
-    ) = match spec.kind {
+    let (profile, shape, regime, extinction_per_meter) = match spec.kind {
         CombustionProbeKind::Flame => (
             FogProfile::Flame,
             FogShape::Ellipsoid,
-            1850.0,
-            12.0,
+            CombustionRegime::FLAME,
             6.0,
-            [0.25; 3],
         ),
         CombustionProbeKind::Explosion { .. } => (
             FogProfile::Explosion,
             FogShape::Sphere,
-            2800.0,
-            24.0,
+            CombustionRegime::EXPLOSION,
             10.0,
-            [0.12; 3],
         ),
     };
-    let emissive_radiance = byroredux_core::radiometry::blackbody_radiance_srgb(
-        temperature,
-        1850.0,
-        reference_radiance,
-    )
-    .expect("the finite Cornell combustion probe temperature is representable");
+    let emissive_radiance = regime
+        .emissive_radiance()
+        .expect("the finite Cornell combustion probe temperature is representable");
     world.insert(
         e,
         FogVolume {
@@ -1562,11 +1549,11 @@ fn spawn_combustion_probe(world: &mut World, spec: CombustionProbeSpec) {
                 shape,
             }),
             extinction_per_meter,
-            single_scatter_albedo,
+            single_scatter_albedo: regime.single_scatter_albedo(),
             edge_softness: 0.3,
             profile,
             emissive_radiance,
-            emission_temperature_k: temperature,
+            emission_temperature_k: regime.temperature_k(),
             source: FogSource::RuntimeEffect,
         },
     );

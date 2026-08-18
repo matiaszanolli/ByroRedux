@@ -10,6 +10,7 @@ use byroredux_core::ecs::{
     ParticleEmitter,
 };
 use byroredux_core::math::{Quat, Vec3};
+use byroredux_core::radiometry::CombustionRegime;
 
 /// Bethesda world units per metre. Positions remain in Bethesda units in the
 /// renderer and TLAS; physical medium coefficients are stored per metre.
@@ -398,34 +399,6 @@ pub(crate) fn fog_volume_from_particle(
     })
 }
 
-/// Luminous-zone temperature of a hydrocarbon diffusion flame, kelvin.
-///
-/// This is the soot-incandescence temperature that gives an ordinary open
-/// flame — candle, torch, campfire, oil lamp — its colour. It is a physical
-/// property of the combustion regime, not a look-development number: all the
-/// content this path sees burns wood, pitch, tallow or oil in open air, so
-/// they share it. Colour and relative brightness both follow from it through
-/// [`byroredux_core::radiometry`].
-const FLAME_TEMPERATURE_K: f32 = 1850.0;
-
-/// Temperature of glowing embers / charcoal, kelvin.
-///
-/// Well below the flame's luminous zone — embers are past the volatile-burning
-/// stage — which is exactly why they read as deep orange-red rather than
-/// yellow-white, and why they are dramatically dimmer despite often being
-/// authored at similar sprite brightness.
-const EMBER_TEMPERATURE_K: f32 = 1100.0;
-
-/// Single-scatter albedo of flame soot in the visible band.
-///
-/// Soot is strongly *absorbing*, not scattering. That is the whole reason a
-/// flame is an emitter: `sigma_a = sigma_t * (1 - albedo)` is the coefficient
-/// multiplying its emitted radiance, so a low albedo means nearly all of the
-/// extinction converts to emission. It is also what distinguishes fire from
-/// its own smoke, which is the same soot cooled — see
-/// [`LOCAL_VOLUME_ALBEDO_PEAK`], an order of magnitude higher.
-const FLAME_SINGLE_SCATTER_ALBEDO: f32 = 0.25;
-
 /// Optical depth across the width of a flame primitive.
 ///
 /// Unlike smoke, an additive emitter's authored alpha encodes brightness, not
@@ -437,26 +410,8 @@ const FLAME_SINGLE_SCATTER_ALBEDO: f32 = 0.25;
 /// purely because it is bigger.
 const FLAME_OPTICAL_DEPTH: f32 = 0.4;
 
-/// Emitted radiance anchor for a primitive at [`FLAME_TEMPERATURE_K`], in the
-/// renderer's linear HDR units.
-///
-/// This is the one exposure choice in the fire path; everything else is
-/// physics. It is derived rather than eyeballed: the froxel integral
-/// accumulates `sigma_a * L_e` over the primitive's depth, and since
-/// `sigma_t` is pinned by [`FLAME_OPTICAL_DEPTH`] the path integral reduces to
-/// `FLAME_OPTICAL_DEPTH * (1 - FLAME_SINGLE_SCATTER_ALBEDO) * L_e` — about
-/// `0.3 * L_e` — *independent of the flame's size*. At this anchor a flame
-/// core therefore lands near `3.6`, comfortably into the ACES highlight
-/// roll-off, which is where a real flame sits relative to the `4.0` daytime
-/// `SUN_INTENSITY_PEAK` the rest of the engine is calibrated against.
-///
-/// Wants a visual A/B against real content before it is treated as final.
-const FLAME_REFERENCE_RADIANCE: f32 = 12.0;
-
 /// Short-lived explosion cores are hotter and brighter than an open wood
 /// flame before expansion cools them into smoke in the GPU profile.
-const EXPLOSION_TEMPERATURE_K: f32 = 2800.0;
-const EXPLOSION_REFERENCE_RADIANCE: f32 = 24.0;
 const EXPLOSION_OPTICAL_DEPTH: f32 = 0.9;
 
 /// Build the shared-medium representation of an impulsive combustion event.
@@ -482,11 +437,8 @@ pub(crate) fn explosion_volume_from_particle(
     let representative_width_m = (2.0 * radius / WORLD_UNITS_PER_METER).max(0.01);
     let extinction_per_meter = (EXPLOSION_OPTICAL_DEPTH / representative_width_m)
         .clamp(MIN_SIGMA_PER_METER, MAX_SIGMA_PER_METER);
-    let emissive_radiance = byroredux_core::radiometry::blackbody_radiance_srgb(
-        EXPLOSION_TEMPERATURE_K,
-        FLAME_TEMPERATURE_K,
-        EXPLOSION_REFERENCE_RADIANCE,
-    )?;
+    let regime = CombustionRegime::EXPLOSION;
+    let emissive_radiance = regime.emissive_radiance()?;
 
     Some(FogVolume {
         bounds: Some(FogBounds {
@@ -496,11 +448,11 @@ pub(crate) fn explosion_volume_from_particle(
             shape: FogShape::Sphere,
         }),
         extinction_per_meter,
-        single_scatter_albedo: [0.12; 3],
+        single_scatter_albedo: regime.single_scatter_albedo(),
         edge_softness: 0.3,
         profile: FogProfile::Explosion,
         emissive_radiance,
-        emission_temperature_k: EXPLOSION_TEMPERATURE_K,
+        emission_temperature_k: regime.temperature_k(),
         source: FogSource::ParticleEmitter,
     })
 }
@@ -526,7 +478,7 @@ pub(crate) fn fire_volume_from_particle(
     if !fire_volumes_enabled() {
         return None;
     }
-    let temperature = fire_temperature(host_name, emitter.texture_path.as_deref())?;
+    let regime = fire_regime(host_name, emitter.texture_path.as_deref())?;
 
     let PlumeBounds {
         center,
@@ -540,11 +492,7 @@ pub(crate) fn fire_volume_from_particle(
     let extinction_per_meter = (FLAME_OPTICAL_DEPTH / representative_width_m)
         .clamp(MIN_SIGMA_PER_METER, MAX_SIGMA_PER_METER);
 
-    let emissive_radiance = byroredux_core::radiometry::blackbody_radiance_srgb(
-        temperature,
-        FLAME_TEMPERATURE_K,
-        FLAME_REFERENCE_RADIANCE,
-    )?;
+    let emissive_radiance = regime.emissive_radiance()?;
 
     Some(FogVolume {
         bounds: Some(FogBounds {
@@ -559,11 +507,11 @@ pub(crate) fn fire_volume_from_particle(
         // through `emissive_radiance`; tinting the scattering term with the
         // same hue would double-count it. What little light a flame scatters,
         // it scatters neutrally.
-        single_scatter_albedo: [FLAME_SINGLE_SCATTER_ALBEDO; 3],
+        single_scatter_albedo: regime.single_scatter_albedo(),
         edge_softness: LOCAL_VOLUME_EDGE_SOFTNESS,
         profile: FogProfile::Flame,
         emissive_radiance,
-        emission_temperature_k: temperature,
+        emission_temperature_k: regime.temperature_k(),
         source: FogSource::ParticleEmitter,
     })
 }
@@ -588,11 +536,11 @@ pub(crate) fn fire_volume_from_particle(
 /// the fog token describes what the emitter *emits* while a thermal token in
 /// the same string may only describe its parent.
 ///
-/// Ember-family names resolve to the cooler [`EMBER_TEMPERATURE_K`] and are
+/// Ember-family names resolve to the cooler [`CombustionRegime::EMBER`] and are
 /// checked first, because vanilla content frequently hosts embers under a
 /// parent whose name also contains "fire" — there the cooler, dimmer reading
 /// is the correct one.
-fn fire_temperature(host_name: &str, texture_path: Option<&str>) -> Option<f32> {
+fn fire_regime(host_name: &str, texture_path: Option<&str>) -> Option<CombustionRegime> {
     let texture_path = texture_path.unwrap_or("");
     if has_fog_token(host_name) || has_fog_token(texture_path) {
         return None;
@@ -601,10 +549,10 @@ fn fire_temperature(host_name: &str, texture_path: Option<&str>) -> Option<f32> 
         return None;
     }
     if has_ember_token(host_name) || has_ember_token(texture_path) {
-        return Some(EMBER_TEMPERATURE_K);
+        return Some(CombustionRegime::EMBER);
     }
     if has_flame_token(host_name) || has_flame_token(texture_path) {
-        return Some(FLAME_TEMPERATURE_K);
+        return Some(CombustionRegime::FLAME);
     }
     None
 }
@@ -784,7 +732,10 @@ mod tests {
             .expect("an additive flame emitter must become an emissive medium");
         assert!(volume.is_emissive(), "a flame must carry an emission term");
         assert!(volume.is_renderable());
-        assert_eq!(volume.emission_temperature_k, FLAME_TEMPERATURE_K);
+        assert_eq!(
+            volume.emission_temperature_k,
+            CombustionRegime::FLAME.temperature_k()
+        );
         // Blackbody hue at flame temperature: warm, red-dominant.
         let [r, g, b] = volume.emissive_radiance;
         assert!(
@@ -841,12 +792,12 @@ mod tests {
     #[test]
     fn ember_naming_takes_precedence_over_a_fire_host() {
         assert_eq!(
-            fire_temperature("FireEmberSpray", Some("textures\\effects\\embers_d.dds")),
-            Some(EMBER_TEMPERATURE_K)
+            fire_regime("FireEmberSpray", Some("textures\\effects\\embers_d.dds")),
+            Some(CombustionRegime::EMBER)
         );
         assert_eq!(
-            fire_temperature("CampfireFlame", Some("textures\\effects\\flame.dds")),
-            Some(FLAME_TEMPERATURE_K)
+            fire_regime("CampfireFlame", Some("textures\\effects\\flame.dds")),
+            Some(CombustionRegime::FLAME)
         );
     }
 
@@ -871,8 +822,8 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                fire_temperature(host, Some(texture)),
-                Some(FLAME_TEMPERATURE_K),
+                fire_regime(host, Some(texture)),
+                Some(CombustionRegime::FLAME),
                 "{host} / {texture} is a vanilla Skyrim flame emitter and must \
                  classify as fire regardless of its alpha-over blend mode"
             );
@@ -884,7 +835,7 @@ mod tests {
     fn vanilla_skyrim_smoke_emitters_stay_passive() {
         for host in ["smoke02-Emitter", "smoke-Emitter"] {
             assert_eq!(
-                fire_temperature(host, Some("textures\\effects\\smokeparticles01.dds")),
+                fire_regime(host, Some("textures\\effects\\smokeparticles01.dds")),
                 None,
                 "{host} emits smoke and must never be classified as fire"
             );
@@ -896,7 +847,7 @@ mod tests {
     #[test]
     fn magic_sparkles_stay_on_the_billboard_path() {
         assert_eq!(
-            fire_temperature(
+            fire_regime(
                 "MagicSparkleEmitter",
                 Some("textures\\effects\\glowsoft01.dds")
             ),
@@ -914,8 +865,8 @@ mod tests {
     /// the fog token describes what is actually emitted.
     #[test]
     fn a_fog_token_always_wins_over_a_thermal_one() {
-        assert_eq!(fire_temperature("CampfireSmoke", Some("smoke.dds")), None);
-        assert_eq!(fire_temperature("TorchSteamVent", Some("steam.dds")), None);
+        assert_eq!(fire_regime("CampfireSmoke", Some("smoke.dds")), None);
+        assert_eq!(fire_regime("TorchSteamVent", Some("steam.dds")), None);
         let mut alpha_over_smoke = ParticleEmitter::smoke();
         alpha_over_smoke.dst_blend = 7;
         assert!(fire_volume_from_particle("CampfireSmoke01", &alpha_over_smoke).is_none());
@@ -977,7 +928,10 @@ mod tests {
         assert_eq!(bounds.shape, FogShape::Sphere);
         assert_eq!(bounds.center, Vec3::ZERO);
         assert_eq!(bounds.half_extents, Vec3::splat(bounds.half_extents.x));
-        assert_eq!(volume.emission_temperature_k, EXPLOSION_TEMPERATURE_K);
+        assert_eq!(
+            volume.emission_temperature_k,
+            CombustionRegime::EXPLOSION.temperature_k()
+        );
         assert!(volume.is_emissive());
 
         let state = combustion_state_from_particle(volume, &emitter, 7.0)

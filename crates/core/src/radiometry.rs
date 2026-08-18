@@ -82,6 +82,84 @@ const SPECTRUM_STEP_NM: f64 = 1.0;
 /// this only rejects "unset"/garbage values, never a real cooling curve.
 pub const MIN_EMISSIVE_TEMPERATURE_K: f32 = 1.0;
 
+/// Equilibrium temperature approached by ordinary fuel combustion, kelvin.
+///
+/// This is a shared thermochemical contract, not a renderer look preset. The
+/// transported solver may heat a colder fuel/air mixture toward this limit,
+/// but an already-hot explosion must not receive another fixed temperature
+/// increment and run away toward the numerical safety ceiling.
+pub const ADIABATIC_FLAME_TEMPERATURE_K: f32 = 2350.0;
+
+/// Canonical thermal-emitter regime produced at content/runtime boundaries.
+///
+/// Source formats and test scenes choose one of these value objects once.
+/// Downstream fog, light, and volumetric code consumes its physical fields;
+/// none of those systems needs to know which game or authoring schema supplied
+/// the source. Keeping the radiance anchor beside temperature and soot albedo
+/// also prevents production importers and renderer probes from restating the
+/// same calibration literals.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CombustionRegime {
+    temperature_k: f32,
+    reference_temperature_k: f32,
+    reference_radiance: f32,
+    single_scatter_albedo: f32,
+}
+
+impl CombustionRegime {
+    /// Luminous soot in an open hydrocarbon diffusion flame.
+    ///
+    /// The radiance anchor is the one exposure choice in the fire path. With
+    /// the importer's 0.4 optical-depth contract and this absorbing albedo,
+    /// the initial 1850 K source integral lands near 3.6 linear HDR units;
+    /// subsequent heat and cooling remain the transported solver's concern.
+    pub const FLAME: Self = Self {
+        temperature_k: 1850.0,
+        reference_temperature_k: 1850.0,
+        reference_radiance: 12.0,
+        single_scatter_albedo: 0.25,
+    };
+
+    /// Cooled glowing charcoal after volatile flame combustion has ended.
+    pub const EMBER: Self = Self {
+        temperature_k: 1100.0,
+        ..Self::FLAME
+    };
+
+    /// Initial hot-soot state of a short-lived explosive impulse.
+    pub const EXPLOSION: Self = Self {
+        temperature_k: 2800.0,
+        reference_radiance: 24.0,
+        single_scatter_albedo: 0.12,
+        ..Self::FLAME
+    };
+
+    pub const fn temperature_k(self) -> f32 {
+        self.temperature_k
+    }
+
+    pub const fn reference_temperature_k(self) -> f32 {
+        self.reference_temperature_k
+    }
+
+    pub const fn reference_radiance(self) -> f32 {
+        self.reference_radiance
+    }
+
+    pub const fn single_scatter_albedo(self) -> [f32; 3] {
+        [self.single_scatter_albedo; 3]
+    }
+
+    /// Linear-sRGB emitted radiance for this complete canonical regime.
+    pub fn emissive_radiance(self) -> Option<[f32; 3]> {
+        blackbody_radiance_srgb(
+            self.temperature_k,
+            self.reference_temperature_k,
+            self.reference_radiance,
+        )
+    }
+}
+
 /// Spectral radiance of an ideal blackbody at wavelength `lambda_nm` and
 /// temperature `temperature_k`, per Planck's law.
 ///
@@ -533,6 +611,49 @@ mod tests {
                 "channel {channel} did not scale linearly: {unit:?} vs {scaled:?}"
             );
         }
+    }
+
+    #[test]
+    fn canonical_combustion_regimes_pin_one_shared_physical_contract() {
+        assert_eq!(CombustionRegime::EMBER.temperature_k(), 1100.0);
+        assert_eq!(CombustionRegime::FLAME.temperature_k(), 1850.0);
+        assert_eq!(CombustionRegime::EXPLOSION.temperature_k(), 2800.0);
+        assert_eq!(CombustionRegime::FLAME.reference_temperature_k(), 1850.0);
+        assert_eq!(CombustionRegime::FLAME.reference_radiance(), 12.0);
+        assert_eq!(CombustionRegime::EXPLOSION.reference_radiance(), 24.0);
+        assert_eq!(CombustionRegime::FLAME.single_scatter_albedo(), [0.25; 3]);
+        assert_eq!(
+            CombustionRegime::EXPLOSION.single_scatter_albedo(),
+            [0.12; 3]
+        );
+        assert_eq!(ADIABATIC_FLAME_TEMPERATURE_K, 2350.0);
+    }
+
+    #[test]
+    fn canonical_combustion_radiance_orders_cooling_and_impulse_states() {
+        let ember = CombustionRegime::EMBER
+            .emissive_radiance()
+            .expect("ember regime is finite");
+        let flame = CombustionRegime::FLAME
+            .emissive_radiance()
+            .expect("flame regime is finite");
+        let explosion = CombustionRegime::EXPLOSION
+            .emissive_radiance()
+            .expect("explosion regime is finite");
+        assert!(ember
+            .iter()
+            .chain(flame.iter())
+            .chain(explosion.iter())
+            .all(|v| v.is_finite()));
+
+        let ember_luma = linear_srgb_luminance(ember);
+        let flame_luma = linear_srgb_luminance(flame);
+        let explosion_luma = linear_srgb_luminance(explosion);
+        assert!(ember_luma < flame_luma * 0.25);
+        assert!(explosion_luma > flame_luma);
+
+        let green_over_red = |rgb: [f32; 3]| rgb[1] / rgb[0].max(1.0e-6);
+        assert!(green_over_red(ember) < green_over_red(flame));
     }
 
     /// Garbage in must not produce a black-body-coloured NaN in a GPU

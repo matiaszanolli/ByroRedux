@@ -2802,11 +2802,17 @@ mod unit_tests {
             "compactCore * impulseEnvelope",
             ": ignitionMask * 0.22;",
             "float reactionRate = 2.4 * chemistry.x * velocity.w * ignition;",
+            "ADIABATIC_FLAME_TEMPERATURE_K - chemistry.y",
+            "float reactionHeatFraction = 1.0 - exp(-4.0 * burnedFuel);",
+            "chemistry.y += temperatureDeficit * reactionHeatFraction;",
             "float richYield = mix(0.004, 0.018, 1.0 - velocity.w);",
             "chemistry.z *= exp(-0.045 * dt);",
             "blackbodyVisibleRadianceRatio(chemistry.y, 1850.0)",
             "float buoyantAcceleration = min(temperatureExcess, 7.0)",
             "LocalMedium combustionMedium(vec4 chemistry)",
+            "float flameSourceSampleRatio(vec3 fieldWorldPos, vec3 sampleWorldPos)",
+            "sampleDensitySum / centerDensitySum",
+            "transported_combustion.emission *= flame_source_sample_ratio;",
             "imageStore(combustionState, coord, chemistry);",
             "layout(std430, set = 0, binding = 18) buffer CombustionLightMomentBuffer",
             "void accumulateCombustionLightMoment(",
@@ -2825,6 +2831,10 @@ mod unit_tests {
         assert!(
             !shader.contains("bool blocked = carriesCombustion(probeChemistry)"),
             "solid crossing must be gated by advected source chemistry, not the destination cell"
+        );
+        assert!(
+            !shader.contains("chemistry.y + burnedFuel * 2350.0"),
+            "combustion heat must approach equilibrium rather than add a runaway fixed increment"
         );
         assert!(
             !shader.contains("GameKind")

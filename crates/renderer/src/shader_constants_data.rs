@@ -123,6 +123,8 @@ pub const ATTENUATION_MODEL_LEGACY_SOFT_RANGE: u32 =
 pub const ATTENUATION_MODEL_INVERSE_SQUARE: u32 =
     byroredux_core::lighting::AttenuationModel::InverseSquare as u32;
 pub const WORLD_UNITS_PER_METER: f32 = byroredux_core::lighting::BETHESDA_UNITS_PER_METER;
+pub const ADIABATIC_FLAME_TEMPERATURE_K: f32 =
+    byroredux_core::radiometry::ADIABATIC_FLAME_TEMPERATURE_K;
 
 // Transported-combustion -> surface-light reduction. The froxel injector
 // accumulates fixed-point radiant moments into this camera-centred grid; Rust

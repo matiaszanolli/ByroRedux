@@ -177,6 +177,11 @@ fn main() {
         "#define WORLD_UNITS_PER_METER {WORLD_UNITS_PER_METER:?}"
     )
     .unwrap();
+    writeln!(
+        out,
+        "#define ADIABATIC_FLAME_TEMPERATURE_K {ADIABATIC_FLAME_TEMPERATURE_K:?}"
+    )
+    .unwrap();
     writeln!(out).unwrap();
     writeln!(out, "// Transported-combustion light-moment reduction").unwrap();
     writeln!(

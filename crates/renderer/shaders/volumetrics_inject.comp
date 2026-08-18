@@ -633,6 +633,71 @@ LocalMedium sampleLocalMedium(vec3 worldPos) {
     return medium;
 }
 
+// The transported field is intentionally deterministic at each froxel centre,
+// but a persistent flame's source boundary is often only a few froxels wide.
+// Re-evaluate that canonical source profile at the jittered lighting sample and
+// use the centre/sample density ratio as an unbiased sub-froxel coverage hint.
+// This shapes only the planted flame boundary; advected chemistry outside it
+// remains entirely owned by transport and cannot snap back to the emitter.
+float flameSourceSampleRatio(vec3 fieldWorldPos, vec3 sampleWorldPos) {
+    FogClusterEntry cluster;
+    if (!localFogCluster(fieldWorldPos, cluster)) {
+        return 1.0;
+    }
+
+    float centerDensitySum = 0.0;
+    float sampleDensitySum = 0.0;
+    uint primitiveCount = min(cluster.count, MAX_FOG_VOLUMES_PER_CLUSTER);
+    for (uint i = 0u; i < primitiveCount; ++i) {
+        uint volumeIndex = fogClusterIndices[cluster.offset + i];
+        if (volumeIndex >= fogVolumeCount) {
+            continue;
+        }
+        GpuFogVolume volume = fogVolumes[volumeIndex];
+        float profileKind = clamp(
+            volume.profile_params.x,
+            FOG_VOLUME_PROFILE_HOMOGENEOUS,
+            FOG_VOLUME_PROFILE_EXPLOSION
+        );
+        if (!isLocalProfile(profileKind, FOG_VOLUME_PROFILE_FLAME)) {
+            continue;
+        }
+
+        vec3 normalizedOffset;
+        vec3 localOffset;
+        float evaluatedProfile;
+        float centerDensity;
+        vec2 localTurbulence;
+        if (!evaluateLocalFogVolume(
+                volume,
+                fieldWorldPos,
+                normalizedOffset,
+                localOffset,
+                evaluatedProfile,
+                centerDensity,
+                localTurbulence)) {
+            continue;
+        }
+        centerDensitySum += centerDensity;
+
+        float sampleDensity;
+        if (evaluateLocalFogVolume(
+                volume,
+                sampleWorldPos,
+                normalizedOffset,
+                localOffset,
+                evaluatedProfile,
+                sampleDensity,
+                localTurbulence)) {
+            sampleDensitySum += sampleDensity;
+        }
+    }
+    if (centerDensitySum <= 1.0e-6) {
+        return 1.0;
+    }
+    return clamp(sampleDensitySum / centerDensitySum, 0.0, 1.5);
+}
+
 // Return the [0,1] interval where a normalized line segment lies inside a
 // unit sphere. Sphere and ellipsoid FogBounds both become a unit sphere after
 // division by their authored half extents.
@@ -1552,10 +1617,16 @@ void transportCombustion(
         float burnedFuel = min(chemistry.x, reactionRate * dt);
         chemistry.x -= burnedFuel;
         velocity.w = max(velocity.w - burnedFuel * 0.78, 0.0);
-        chemistry.y = min(
-            chemistry.y + burnedFuel * 2350.0,
-            MAX_COMBUSTION_TEMPERATURE_K
+        // Reaction heat approaches the canonical adiabatic equilibrium; it
+        // is not a fixed kelvin increment. This makes the update independent
+        // of timestep partitioning and, crucially, does not keep reheating an
+        // explosion that entered the field hotter than an open flame.
+        float temperatureDeficit = max(
+            ADIABATIC_FLAME_TEMPERATURE_K - chemistry.y,
+            0.0
         );
+        float reactionHeatFraction = 1.0 - exp(-4.0 * burnedFuel);
+        chemistry.y += temperatureDeficit * reactionHeatFraction;
         // Soot yield falls when oxidizer is abundant and rises in a rich,
         // oxygen-starved flame. It is stored directly as optical extinction,
         // so the radiative-transfer path consumes the physically relevant
@@ -1839,6 +1910,13 @@ void main() {
         fieldBackT,
         transported_combustion
     );
+    float flame_source_sample_ratio = flameSourceSampleRatio(
+        field_world_pos,
+        world_pos
+    );
+    transported_combustion.extinction *= flame_source_sample_ratio;
+    transported_combustion.scattering *= flame_source_sample_ratio;
+    transported_combustion.emission *= flame_source_sample_ratio;
     local_medium.extinction += transported_combustion.extinction;
     local_medium.scattering += transported_combustion.scattering;
     local_medium.emission += transported_combustion.emission;
