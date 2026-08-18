@@ -2039,7 +2039,7 @@ impl VulkanContext {
                 physical_device,
                 device_caps.min_accel_struct_scratch_offset_alignment,
                 renderer_config.rt_test_blas_budget_bytes,
-            );
+            )?;
             // Build an empty TLAS per frame-in-flight slot via one-time command
             // buffers so all descriptor sets have a valid acceleration structure
             // from frame 0. Each build blocks until complete (fence wait inside
@@ -2177,11 +2177,17 @@ impl VulkanContext {
             Err(e) => {
                 log::warn!(
                     "GPU per-pass timer creation failed: {e} — PERF-DIM7 \
-                     instrumentation will read zeros"
+                     instrumentation is unavailable"
                 );
                 None
             }
         };
+        if gpu_timers.is_none() {
+            log::warn!(
+                "GPU timers unavailable; adaptive ray quality will run open-loop \
+                 and promote GI conservatively to its normal tier"
+            );
+        }
 
         // 14. Graphics pipeline (with depth test + descriptor set layouts for set 0 + set 1).
         // `fill_mode_non_solid_supported` gates the wireframe variant

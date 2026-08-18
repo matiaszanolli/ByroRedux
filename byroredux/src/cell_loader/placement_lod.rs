@@ -64,7 +64,9 @@ use crate::components::IsLodTerrain;
 
 use super::euler::euler_zup_to_quat_yup_refr;
 use super::exterior::ExteriorWorldContext;
-use super::lod_support::{sort_lod_coords_nearest, LodReconcileInput, LodWorkBudget};
+use super::lod_support::{
+    release_lod_gpu_resources, sort_lod_coords_nearest, LodReconcileInput, LodWorkBudget,
+};
 
 /// Object-LOD ring radius in **cells** (Chebyshev) for the placement
 /// scheme. Cells within this distance of the player — and entirely beyond
@@ -592,6 +594,7 @@ fn spawn_placement_lod_cell(
     }
 
     if entities.is_empty() {
+        release_lod_gpu_resources(ctx, &mesh_handles, &texture_handles);
         return None;
     }
     Some(PlacementLodBlock {
@@ -609,15 +612,7 @@ pub(crate) fn unload_placement_lod_block(
     ctx: &mut VulkanContext,
     block: &PlacementLodBlock,
 ) {
-    for &h in &block.mesh_handles {
-        if let Some(accel) = ctx.accel_manager.as_mut() {
-            accel.drop_blas(h);
-        }
-        ctx.mesh_registry.drop_mesh(h);
-    }
-    for &t in &block.texture_handles {
-        ctx.texture_registry.drop_texture(&ctx.device, t);
-    }
+    release_lod_gpu_resources(ctx, &block.mesh_handles, &block.texture_handles);
     for &e in &block.entities {
         world.despawn(e);
     }

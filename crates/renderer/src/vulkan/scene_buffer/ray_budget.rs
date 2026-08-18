@@ -148,8 +148,30 @@ impl AdaptiveRayBudget {
     const UPGRADE_STABILITY_FRAMES: u32 = 45;
     const COOLDOWN_FRAMES: u32 = 30;
 
+    fn spend_stable_headroom(&mut self, max_tier: u32) {
+        if self.cooldown_frames > 0 {
+            self.cooldown_frames -= 1;
+            return;
+        }
+        if self.tier >= max_tier {
+            self.under_budget_frames = 0;
+            return;
+        }
+        self.under_budget_frames += 1;
+        if self.under_budget_frames >= Self::UPGRADE_STABILITY_FRAMES {
+            self.tier += 1;
+            self.under_budget_frames = 0;
+            self.cooldown_frames = Self::COOLDOWN_FRAMES;
+        }
+    }
+
     pub fn observe(&mut self, measured_lighting_ms: Option<f32>) {
         let Some(sample) = measured_lighting_ms.filter(|ms| ms.is_finite() && *ms > 0.0) else {
+            // Timestamp queries are diagnostic, not a prerequisite for GI.
+            // Run open-loop to the normal tier-2 budget, retaining tier 3 as
+            // measured headroom only so unknown hardware never cold-starts at
+            // the maximum workload.
+            self.spend_stable_headroom(2);
             return;
         };
         let smoothed = self
@@ -157,23 +179,19 @@ impl AdaptiveRayBudget {
             .map_or(sample, |old| old + (sample - old) * 0.12);
         self.smoothed_lighting_ms = Some(smoothed);
 
-        if self.cooldown_frames > 0 {
-            self.cooldown_frames -= 1;
-            return;
-        }
         if smoothed > Self::DOWN_THRESHOLD_MS && self.tier > 0 {
+            if self.cooldown_frames > 0 {
+                self.cooldown_frames -= 1;
+                return;
+            }
             self.tier -= 1;
             self.under_budget_frames = 0;
             self.cooldown_frames = Self::COOLDOWN_FRAMES;
         } else if smoothed < Self::UP_THRESHOLD_MS && self.tier < 3 {
-            self.under_budget_frames += 1;
-            if self.under_budget_frames >= Self::UPGRADE_STABILITY_FRAMES {
-                self.tier += 1;
-                self.under_budget_frames = 0;
-                self.cooldown_frames = Self::COOLDOWN_FRAMES;
-            }
+            self.spend_stable_headroom(3);
         } else {
             self.under_budget_frames = 0;
+            self.cooldown_frames = self.cooldown_frames.saturating_sub(1);
         }
     }
 
@@ -229,6 +247,29 @@ mod tests {
             controller.observe(Some(1.0));
         }
         assert_eq!(controller.settings().quality_tier, 3);
+    }
+
+    #[test]
+    fn missing_timer_samples_promote_gi_to_the_normal_budget() {
+        let mut controller = AdaptiveRayBudget::default();
+        for _ in 0..200 {
+            controller.observe(None);
+        }
+        let budget = controller.settings();
+        assert_eq!(budget.quality_tier, 2);
+        assert!(
+            budget.max_path_segments > 0,
+            "open-loop mode must enable GI"
+        );
+
+        for _ in 0..200 {
+            controller.observe(None);
+        }
+        assert_eq!(
+            controller.settings().quality_tier,
+            2,
+            "maximum quality remains gated on measured GPU headroom"
+        );
     }
 
     #[test]

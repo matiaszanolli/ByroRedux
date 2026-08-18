@@ -2180,17 +2180,12 @@ mod blas_compaction_rollback_tests {
     }
 }
 
-/// #2928 / PERF-D3-04 — the BLAS budget must derive from the
-/// **smallest** DEVICE_LOCAL heap, not the sum of all of them.
-///
-/// `compute_blas_budget` itself needs a live `VkInstance` +
-/// `VkPhysicalDevice`, so it splits into a pure `blas_budget_for_heap`
-/// (tested directly) plus the heap query (pinned at the source level).
-/// The distinction is invisible on the single-heap dev card, which is
-/// exactly why it needs a test rather than an observation.
+/// #3043 — select the heap behind BLAS-compatible memory, not the smallest
+/// DEVICE_LOCAL heap (which is commonly an AMD BAR aperture).
 #[test]
-fn blas_budget_derives_from_the_smallest_heap_not_the_sum() {
+fn blas_budget_derives_from_the_compatible_allocation_heap() {
     use super::constants::MIN_BLAS_BUDGET_BYTES;
+    use crate::vulkan::device::device_local_heap_bytes_for_memory_type_bits;
 
     // 12 GB single-heap desktop part → 4 GB, the figure the
     // `blas_budget_bytes` field doc quotes.
@@ -2210,36 +2205,43 @@ fn blas_budget_derives_from_the_smallest_heap_not_the_sum() {
         MIN_BLAS_BUDGET_BYTES
     );
 
-    // The multi-heap case this fix is about: an 8 GB main VRAM heap
-    // alongside a 256 MB DEVICE_LOCAL|HOST_VISIBLE BAR window. Summing
-    // yields a budget ~85 MB above what the allocator can actually
-    // serve; the smallest heap is the honest ceiling.
+    // Multi-heap AMD-style layout: main VRAM plus a small host-visible BAR.
     let main = 8 * 1024 * 1024 * 1024u64;
     let bar = 256 * 1024 * 1024u64;
-    assert_ne!(
-        blas_budget_for_heap(main.min(bar)),
-        blas_budget_for_heap(main + bar),
-        "min-vs-sum must be distinguishable on a multi-heap layout"
-    );
+    let mut props = vk::PhysicalDeviceMemoryProperties::default();
+    props.memory_heap_count = 2;
+    props.memory_heaps[0] = vk::MemoryHeap {
+        size: main,
+        flags: vk::MemoryHeapFlags::DEVICE_LOCAL,
+    };
+    props.memory_heaps[1] = vk::MemoryHeap {
+        size: bar,
+        flags: vk::MemoryHeapFlags::DEVICE_LOCAL,
+    };
+    props.memory_type_count = 2;
+    props.memory_types[0] = vk::MemoryType {
+        property_flags: vk::MemoryPropertyFlags::DEVICE_LOCAL,
+        heap_index: 0,
+    };
+    props.memory_types[1] = vk::MemoryType {
+        property_flags: vk::MemoryPropertyFlags::DEVICE_LOCAL
+            | vk::MemoryPropertyFlags::HOST_VISIBLE,
+        heap_index: 1,
+    };
 
-    let src = include_str!("predicates.rs");
-    let body = src
-        .split("pub(super) fn compute_blas_budget")
-        .nth(1)
-        .and_then(|rest| rest.split("\n}").next())
-        .expect("compute_blas_budget must still exist");
-    assert!(
-        body.contains("smallest_device_local_heap_bytes"),
-        "compute_blas_budget must query the smallest DEVICE_LOCAL heap — \
-         `total_device_local_bytes` sums heaps that are not disjoint \
-         physical memory on AMD/hybrid layouts, over-stating VRAM and \
-         putting the eviction line above where allocation starts failing \
-         (#2928). `allocator.rs`'s pressure warning already uses the \
-         smallest heap (#1572); the two policies must agree."
+    assert_eq!(
+        device_local_heap_bytes_for_memory_type_bits(&props, 0b11),
+        Some(main),
+        "GpuOnly's first compatible type is backed by main VRAM"
     );
-    assert!(
-        !body.contains("total_device_local_bytes"),
-        "the summing query must not come back (#2928)"
+    assert_eq!(
+        device_local_heap_bytes_for_memory_type_bits(&props, 0b10),
+        Some(bar),
+        "requirements that only admit BAR memory must budget the BAR heap"
+    );
+    assert_eq!(
+        device_local_heap_bytes_for_memory_type_bits(&props, 0),
+        None
     );
 }
 

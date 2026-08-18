@@ -48,6 +48,7 @@ use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 use crate::deferred_destroy::DeferredDestroyQueue;
+use anyhow::Result;
 use ash::vk;
 use byroredux_core::ecs::storage::EntityId;
 use predicates::compute_blas_budget;
@@ -194,10 +195,11 @@ pub struct AccelerationManager {
     /// Derived at construction time from DEVICE_LOCAL heap size (VRAM / 3)
     /// with a 256 MB floor. On a 12 GB GPU this yields 4 GB (eviction
     /// virtually never fires); on a 6 GB GPU it yields 2 GB (eviction
-    /// fires before OOM). "Heap size" is the *smallest* DEVICE_LOCAL heap,
-    /// matching the allocator's pressure warning — see
-    /// [`compute_blas_budget`](super::predicates::compute_blas_budget) for
-    /// why summing heaps over-states VRAM on multi-heap parts (#2928).
+    /// fires before OOM). "Heap size" is the DEVICE_LOCAL heap selected by
+    /// the memory requirements of a BLAS result buffer, matching the real
+    /// `GpuOnly` allocation rather than a min/max heuristic — see
+    /// [`compute_blas_budget`](super::predicates::compute_blas_budget)
+    /// (#2928 / #3043).
     pub(super) blas_budget_bytes: vk::DeviceSize,
     /// Entries removed by [`blas_static::drop_blas`] still referenced by
     /// an in-flight TLAS build. Each entry carries a countdown measured
@@ -264,9 +266,9 @@ impl AccelerationManager {
         physical_device: vk::PhysicalDevice,
         scratch_align: u32,
         rt_test_blas_budget_bytes: Option<vk::DeviceSize>,
-    ) -> Self {
+    ) -> Result<Self> {
         let accel_loader = ash::khr::acceleration_structure::Device::new(instance, device);
-        let derived_budget_bytes = compute_blas_budget(instance, physical_device);
+        let derived_budget_bytes = compute_blas_budget(instance, device, physical_device)?;
         let blas_budget_bytes = match rt_test_blas_budget_bytes {
             Some(bytes) if bytes > 0 => {
                 log::warn!(
@@ -296,7 +298,7 @@ impl AccelerationManager {
             scratch_align > 0,
             "scratch_align must be >=1; caller clamps zero / non-RT to 1"
         );
-        Self {
+        Ok(Self {
             accel_loader,
             blas_entries: Vec::new(),
             tlas: [None, None],
@@ -317,7 +319,7 @@ impl AccelerationManager {
             blas_map_generation: 0,
             skinned_blas: std::collections::HashMap::new(),
             scratch_align,
-        }
+        })
     }
 
     /// Destroy all acceleration structures and buffers.

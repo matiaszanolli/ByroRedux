@@ -14,12 +14,30 @@ use std::time::Instant;
 use byroredux_core::math::Vec3;
 use byroredux_nif::import::ImportedMesh;
 use byroredux_plugin::esm::reader::GameKind;
-use byroredux_renderer::Vertex;
+use byroredux_renderer::{Vertex, VulkanContext};
 
 use crate::asset_provider::TextureProvider;
 use crate::env_translate::{terrain_lod_layout, TerrainLodLayout};
 
 use super::exterior::ExteriorWorldContext;
+
+/// Release GPU resources acquired by a distant-LOD spawn attempt or owned by
+/// a resident block. Rollback and normal unload therefore share one ownership
+/// contract instead of maintaining parallel drop sequences.
+pub(crate) fn release_lod_gpu_resources(
+    ctx: &mut VulkanContext,
+    mesh_handles: &[u32],
+    texture_handles: &[u32],
+) {
+    if let Some(accel) = ctx.accel_manager.as_mut() {
+        for &handle in mesh_handles {
+            accel.drop_blas(handle);
+        }
+    }
+    ctx.mesh_registry.drop_meshes(mesh_handles);
+    ctx.texture_registry
+        .drop_textures(&ctx.device, texture_handles);
+}
 
 /// Immutable inputs shared by terrain and both game-specific object LOD
 /// providers during one ring reconciliation.
@@ -540,5 +558,32 @@ mod tests {
         let context = exterior_context(index, "tamriel");
 
         assert_eq!(worldspace_lod_grid_origin(&context), (0, 0));
+    }
+
+    #[test]
+    fn empty_lod_spawns_release_acquired_gpu_resources_before_returning() {
+        for (name, src) in [
+            ("object_lod.rs", include_str!("object_lod.rs")),
+            ("placement_lod.rs", include_str!("placement_lod.rs")),
+        ] {
+            let empty_branch = src
+                .split("if entities.is_empty() {")
+                .nth(1)
+                .and_then(|rest| rest.split("return None;").next())
+                .unwrap_or_else(|| panic!("{name}: expected empty-entity rollback branch"));
+            assert!(
+                empty_branch.contains("release_lod_gpu_resources"),
+                "{name}: acquired mesh/texture handles must be released before an empty spawn returns"
+            );
+
+            let unload = src
+                .split("fn unload_")
+                .nth(1)
+                .unwrap_or_else(|| panic!("{name}: expected unload function"));
+            assert!(
+                unload.contains("release_lod_gpu_resources"),
+                "{name}: rollback and normal unload must retain the same release contract"
+            );
+        }
     }
 }

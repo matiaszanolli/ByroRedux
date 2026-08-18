@@ -43,7 +43,9 @@ use crate::components::IsLodTerrain;
 
 use super::exterior::ExteriorWorldContext;
 use super::lod_bands::{self, quad_min_chebyshev, LodBandLadder, LodBandSelection};
-use super::lod_support::{worldspace_cell_bounds, LodReconcileInput, LodWorkBudget};
+use super::lod_support::{
+    release_lod_gpu_resources, worldspace_cell_bounds, LodReconcileInput, LodWorkBudget,
+};
 
 /// One streamed object-LOD quad: the `.bto` macro-mesh imports to several
 /// sub-meshes, each spawned as its own [`IsLodTerrain`] entity. Tracked so a
@@ -331,6 +333,12 @@ fn spawn_object_lod_quad(
     }
 
     if entities.is_empty() {
+        let textures = if atlas == 0 {
+            &[][..]
+        } else {
+            std::slice::from_ref(&atlas)
+        };
+        release_lod_gpu_resources(ctx, &mesh_handles, textures);
         return None;
     }
     Some(ObjectLodBlock {
@@ -347,18 +355,12 @@ pub(crate) fn unload_object_lod_block(
     ctx: &mut VulkanContext,
     block: &ObjectLodBlock,
 ) {
-    for &h in &block.mesh_handles {
-        if let Some(accel) = ctx.accel_manager.as_mut() {
-            accel.drop_blas(h);
-        }
-        ctx.mesh_registry.drop_mesh(h);
-    }
-    // #1537 — release the shared atlas refcount once (acquired once per quad
-    // at spawn). Skip `0`/fallback. Mirrors the terrain-LOD reclaim.
-    if block.texture_handle != 0 {
-        ctx.texture_registry
-            .drop_texture(&ctx.device, block.texture_handle);
-    }
+    let textures = if block.texture_handle == 0 {
+        &[][..]
+    } else {
+        std::slice::from_ref(&block.texture_handle)
+    };
+    release_lod_gpu_resources(ctx, &block.mesh_handles, textures);
     for &e in &block.entities {
         world.despawn(e);
     }

@@ -275,7 +275,7 @@ command buffer still references.
 |---|---|---|
 | `MIN_TLAS_INSTANCE_RESERVE` | 8 192 instances | Never shrink the TLAS instance buffer below this |
 | `WORKING_SET_FLOOR` | 8 192 instances | Post-shrink TLAS capacity floor |
-| `MIN_BLAS_BUDGET_BYTES` | 256 MB | Minimum BLAS-budget floor (device_local_heap / 3, capped below) |
+| `MIN_BLAS_BUDGET_BYTES` | 256 MB | Minimum BLAS-budget floor (BLAS allocation heap / 3, capped below) |
 
 ### Build flags (split post #1196)
 

@@ -1702,6 +1702,34 @@ impl SvgfPipeline {
 mod tests {
     use super::*;
 
+    #[test]
+    fn temporal_and_spatial_passes_share_the_non_aliasing_mesh_id_contract() {
+        let contract = include_str!("../../shaders/include/mesh_id.glsl");
+        assert!(contract.contains("lhs == rhs"));
+        assert!(contract.contains("meshIdHasStableHistory(lhs)"));
+        assert!(contract.contains("meshIdHasStableHistory(rhs)"));
+
+        for (name, src) in [
+            (
+                "svgf_temporal.comp",
+                include_str!("../../shaders/svgf_temporal.comp"),
+            ),
+            (
+                "svgf_atrous.comp",
+                include_str!("../../shaders/svgf_atrous.comp"),
+            ),
+        ] {
+            assert!(
+                src.contains("#include \"include/mesh_id.glsl\""),
+                "{name} must consume the shared mesh-ID history contract"
+            );
+            assert!(
+                !src.contains("& 0x7FFFFFFFu"),
+                "{name} must not alias alpha draw IDs with opaque stable IDs"
+            );
+        }
+    }
+
     /// #2679 / PERF-D3-03 — pins the "SVGF (indirect-lighting denoiser)"
     /// table in `docs/engine/memory-budget.md`. The doc counted
     /// `indirect_history` + `moments_history` and stopped there, so the

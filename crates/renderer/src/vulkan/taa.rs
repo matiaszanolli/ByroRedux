@@ -1008,6 +1008,11 @@ mod tests {
     #[test]
     fn taa_comp_keeps_history_bounded_and_rejects_unstable_surfaces() {
         let src = include_str!("../../shaders/taa.comp");
+        assert!(src.contains("#include \"include/mesh_id.glsl\""));
+        assert!(
+            !src.contains("& 0x7FFFFFFFu"),
+            "TAA must not alias alpha draw IDs with opaque stable IDs"
+        );
         assert!(
             src.contains(
                 "offscreen || background || disocclusion || surfaceMismatch || alphaBlend"
@@ -1015,7 +1020,7 @@ mod tests {
             "TAA must reject background, surface-mismatched, and blended history"
         );
         assert!(
-            src.contains("candidateSurface != currSurface"),
+            src.contains("!stableMeshIdsMatch(candidateMeshId, currMid)"),
             "motion dilation must not borrow a different instance's vector"
         );
         assert!(
@@ -1045,14 +1050,12 @@ mod tests {
         // sibling test above) — this fix changes what `disocclusion` and
         // `surfaceMismatch` themselves evaluate to, not the list they feed.
         assert!(
-            src.contains(
-                "bool disocclusionFromSky = currSurface != 0u && (prevMid & 0x7FFFFFFFu) == 0u;"
-            ),
+            src.contains("bool disocclusionFromSky = currMid != 0u && prevMid == 0u;"),
             "must identify the geometry-reprojecting-from-sky case separately from an ordinary \
              surface-to-surface disocclusion"
         );
         assert!(
-            src.contains("bool disocclusion = !disocclusionFromSky && currSurface != (prevMid & 0x7FFFFFFFu);"),
+            src.contains("bool disocclusion = !disocclusionFromSky && !stableMeshIdsMatch(currMid, prevMid);"),
             "the sky-transition case must be excluded from the hard-reject disocclusion term"
         );
         assert!(

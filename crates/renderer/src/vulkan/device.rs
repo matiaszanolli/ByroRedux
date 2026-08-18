@@ -223,6 +223,31 @@ pub fn smallest_device_local_heap_bytes(
         .unwrap_or(0)
 }
 
+/// Size of the DEVICE_LOCAL heap selected for a buffer's Vulkan memory
+/// requirements. The first compatible memory type mirrors gpu-allocator's
+/// `MemoryLocation::GpuOnly` selection, so callers budget the heap that will
+/// actually back the allocation instead of guessing from unrelated heaps.
+pub fn device_local_heap_bytes_for_memory_type_bits(
+    mem_props: &vk::PhysicalDeviceMemoryProperties,
+    memory_type_bits: u32,
+) -> Option<vk::DeviceSize> {
+    mem_props.memory_types[..mem_props.memory_type_count as usize]
+        .iter()
+        .enumerate()
+        .find(|(index, memory_type)| {
+            memory_type_bits & (1u32 << index) != 0
+                && memory_type
+                    .property_flags
+                    .contains(vk::MemoryPropertyFlags::DEVICE_LOCAL)
+        })
+        .and_then(|(_, memory_type)| {
+            mem_props
+                .memory_heaps
+                .get(memory_type.heap_index as usize)
+                .map(|heap| heap.size)
+        })
+}
+
 /// Required device extensions (always needed).
 const REQUIRED_EXTENSIONS: &[&CStr] = &[ash::khr::swapchain::NAME];
 
