@@ -16,7 +16,7 @@ canonical character state the gameplay runtime reads identically for every game.
 verbs stay `translate` / `derive` / `canonical` / `resolve`; **CHARAL** names the
 layer as a whole.
 
-**Status**: PROPOSED (design, 2026-06-29). The Fallout numeric substrate
+**Status**: ACTIVE (implementation in progress, 2026-08-18). The Fallout numeric substrate
 (`ActorValues`, #1663) and the FNV/FO3 SPECIAL→skill auto-calc population (#1663,
 commit `fad3890b`) are the reference realisation — see §3. Rollout per §8,
 **starting with FO4**.
