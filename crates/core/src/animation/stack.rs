@@ -334,10 +334,12 @@ pub fn sample_blended_transform(
         let Some(channel) = clip.channels.get(&channel_name) else {
             continue;
         };
-        let t = sample_translation(channel, layer.local_time);
-        let r = sample_rotation(channel, layer.local_time);
-        let s = sample_scale(channel, layer.local_time);
-        if t.is_none() && r.is_none() && s.is_none() {
+        // Only inspect key presence here. Sampling is deferred to the blend
+        // pass below so interpolation happens once per channel (#3031).
+        if channel.translation_keys.is_empty()
+            && channel.rotation_keys.is_empty()
+            && channel.scale_keys.is_empty()
+        {
             continue;
         }
         match max_priority {
