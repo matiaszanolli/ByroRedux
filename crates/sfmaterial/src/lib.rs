@@ -57,5 +57,5 @@ mod value;
 
 pub use chunk::ChunkType;
 pub use error::{Error, Result};
-pub use reader::{CdbHeaderInfo, ComponentDatabaseFile};
+pub use reader::{CdbHeaderInfo, ComponentDatabaseFile, ParseLimits};
 pub use value::Value;

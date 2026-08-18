@@ -6,6 +6,19 @@ target is 6 GB. Constants are verified against source; byte math is shown.
 
 ---
 
+## Starfield Component Database (CPU-side)
+
+The Starfield `materialsbeta.cdb` is 105,037,616 B on disk. The production
+presence path uses `probe_header` and retains only a bounded, 128-entry cache
+of header results; it does not retain inflated CDB blobs. A full generic
+`ComponentDatabaseFile::parse` materialises 1,438,780 dynamic instances and
+measured **9,188,720 KB peak RSS** on the vanilla database (2026-08-18). Tools
+that need the full tree must call `parse_with_limits` with an explicit
+instance budget; the default `parse` remains the compatibility/unbounded path
+for offline tooling while Phase 2 develops an indexed material lookup.
+
+---
+
 ## Scene Buffers (per-frame SSBOs / UBOs)
 
 Resident for the lifetime of `VulkanContext`. Double-buffered

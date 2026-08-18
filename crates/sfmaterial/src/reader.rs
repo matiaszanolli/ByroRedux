@@ -28,9 +28,35 @@ pub struct ComponentDatabaseFile {
 
 impl ComponentDatabaseFile {
     pub fn parse(bytes: &[u8]) -> Result<Self> {
+        Self::parse_with_limits(bytes, ParseLimits::unlimited())
+    }
+
+    /// Parse with a caller-supplied ceiling on top-level object instances.
+    /// Vanilla Starfield contains ~1.44M instances and expands dramatically
+    /// when materialised as a generic `Value` tree; callers loading untrusted
+    /// or memory-constrained content should choose a finite limit. The
+    /// production presence path uses [`Self::probe_header`] and never needs
+    /// this tree at all. #3055.
+    pub fn parse_with_limits(bytes: &[u8], limits: ParseLimits) -> Result<Self> {
         let mut p = Parser::new(bytes);
         p.parse_header()?;
         let chunks = p.index_chunks()?;
+
+        let object_chunks = chunks
+            .iter()
+            .filter(|chunk| {
+                matches!(
+                    chunk.kind,
+                    ChunkType::Objt | ChunkType::User | ChunkType::Diff | ChunkType::Usrd
+                )
+            })
+            .count();
+        if object_chunks > limits.max_instances {
+            return Err(Error::ParseBudgetExceeded {
+                requested: object_chunks,
+                limit: limits.max_instances,
+            });
+        }
 
         let mut state = State {
             bytes,
@@ -120,6 +146,20 @@ impl ComponentDatabaseFile {
         Ok(CdbHeaderInfo {
             chunk_count: chunks.len(),
         })
+    }
+}
+
+/// Resource ceiling for the owned instance tree produced by the full parser.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParseLimits {
+    pub max_instances: usize,
+}
+
+impl ParseLimits {
+    pub const fn unlimited() -> Self {
+        Self {
+            max_instances: usize::MAX,
+        }
     }
 }
 
@@ -934,5 +974,32 @@ mod tests {
             Err(_) => {}
             Ok(_) => panic!("a hostile field_count with no backing field data must not parse Ok"),
         }
+    }
+
+    #[test]
+    fn parse_with_limits_rejects_object_tree_before_materialising_it() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&SIGNATURE_BETH.to_le_bytes());
+        bytes.extend_from_slice(&HEADER_SIZE.to_le_bytes());
+        bytes.extend_from_slice(&FILE_VERSION.to_le_bytes());
+        bytes.extend_from_slice(&4u32.to_le_bytes()); // BETH + STRT + TYPE + OBJT
+        bytes.extend_from_slice(&(ChunkType::Strt as u32).to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&(ChunkType::Type as u32).to_le_bytes());
+        bytes.extend_from_slice(&4u32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&(ChunkType::Objt as u32).to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+
+        let err =
+            ComponentDatabaseFile::parse_with_limits(&bytes, ParseLimits { max_instances: 0 })
+                .expect_err("the object chunk must be rejected before semantic decoding");
+        assert!(matches!(
+            err,
+            Error::ParseBudgetExceeded {
+                requested: 1,
+                limit: 0
+            }
+        ));
     }
 }

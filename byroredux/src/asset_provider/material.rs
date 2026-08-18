@@ -3,7 +3,7 @@ use super::*;
 use byroredux_bgsm::template::ResolvedMaterial;
 use byroredux_bgsm::{BgemFile, BgsmFile, TemplateCache, TemplateResolver};
 use byroredux_nif::import::ImportedMaterial;
-use byroredux_sfmaterial::ComponentDatabaseFile;
+use byroredux_sfmaterial::{CdbHeaderInfo, ComponentDatabaseFile};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -131,7 +131,7 @@ pub(crate) fn forward_bgsm_env_map_scale(
     }
 }
 
-/// Process-lifetime cache of extracted Starfield CDB bytes, keyed by
+/// Process-lifetime cache of Starfield CDB probe results, keyed by
 /// `"<archive source>|<in-archive path>"`. #2705 (SF-D3-01) —
 /// `build_material_provider` constructs a brand-new `MaterialProvider` (and
 /// therefore a brand-new, empty `csg_cache`-shaped per-instance cache) on
@@ -143,11 +143,25 @@ pub(crate) fn forward_bgsm_env_map_scale(
 /// 16-byte header and on-disk content never changes mid-session. Living at
 /// module scope (outside `MaterialProvider`) lets this survive across
 /// provider rebuilds instead of being discarded with the provider — the
-/// same shape #2359 Phase 2's full CDB parse will also want to reuse
-/// (`Arc<[u8]>` so a clone is a refcount bump, not a copy).
-pub(super) fn sf_cdb_cache() -> &'static Mutex<HashMap<String, Arc<[u8]>>> {
-    static CACHE: OnceLock<Mutex<HashMap<String, Arc<[u8]>>>> = OnceLock::new();
+/// Phase 1 only needs the header validity/count; retaining inflated bytes here
+/// held every discovered CDB (233 MB across a Creation-heavy install) for the
+/// process lifetime without a consumer. The cache stores that tiny result
+/// instead, preserving #2705's skip-reextract behavior without the resident
+/// blob. A cap keeps untrusted/modded archive sets from growing keys forever.
+pub(super) const SF_CDB_CACHE_MAX_ENTRIES: usize = 128;
+pub(super) fn sf_cdb_cache() -> &'static Mutex<HashMap<String, Option<CdbHeaderInfo>>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, Option<CdbHeaderInfo>>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub(super) fn sf_cdb_cache_insert(key: String, probe: Option<CdbHeaderInfo>) {
+    let mut cache = sf_cdb_cache().lock().unwrap_or_else(|e| e.into_inner());
+    if !cache.contains_key(&key) && cache.len() >= SF_CDB_CACHE_MAX_ENTRIES {
+        if let Some(evicted) = cache.keys().next().cloned() {
+            cache.remove(&evicted);
+        }
+    }
+    cache.insert(key, probe);
 }
 
 /// Scan one archive for Starfield component databases and load each into
@@ -174,15 +188,14 @@ pub(crate) fn discover_starfield_cdbs(
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(&cache_key)
-            .cloned();
-        let bytes: Arc<[u8]> = match cached {
-            Some(bytes) => {
+            .copied();
+        let probe = match cached {
+            Some(probe) => {
                 log::info!(
-                    "Discovered Starfield CDB '{path}' in '{source}' (cached, {} bytes, \
-                     skipped re-extract)",
-                    bytes.len()
+                    "Discovered Starfield CDB '{path}' in '{source}' (cached header probe, \
+                     skipped re-extract)"
                 );
-                bytes
+                probe
             }
             None => match archive.extract(&path) {
                 Ok(raw) => {
@@ -190,20 +203,19 @@ pub(crate) fn discover_starfield_cdbs(
                         "Discovered Starfield CDB '{path}' in '{source}' ({} bytes, extracted)",
                         raw.len()
                     );
-                    let bytes: Arc<[u8]> = Arc::from(raw);
-                    sf_cdb_cache()
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .insert(cache_key, Arc::clone(&bytes));
-                    bytes
+                    let probe = ComponentDatabaseFile::probe_header(&raw).ok();
+                    sf_cdb_cache_insert(cache_key, probe);
+                    probe
                 }
                 Err(e) => {
                     log::warn!("Failed to extract CDB '{path}' from '{source}': {e}");
-                    continue;
+                    None
                 }
             },
         };
-        provider.register_starfield_cdb(&bytes);
+        if let Some(info) = probe {
+            provider.register_starfield_cdb_probe(info);
+        }
     }
 }
 
@@ -523,6 +535,7 @@ impl MaterialProvider {
     /// does NOT walk or retain the ~1.44M-entry instance tree (see the
     /// `sf_cdb_count` field doc). A malformed payload is warned and
     /// dropped, leaving the count intact. #1289 / SF-D3-NEW-01.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn register_starfield_cdb(&mut self, bytes: &[u8]) {
         // Cheapest reject first: 4-byte magic. Skips the header/chunk-index
         // work for a mis-named non-CDB file. SF-D3-AUDIT-03 / #2102.
@@ -544,7 +557,7 @@ impl MaterialProvider {
                     info.chunk_count,
                     bytes.len(),
                 );
-                self.sf_cdb_count += 1;
+                self.register_starfield_cdb_probe(info);
             }
             Err(e) => {
                 log::warn!(
@@ -555,6 +568,10 @@ impl MaterialProvider {
                 );
             }
         }
+    }
+
+    fn register_starfield_cdb_probe(&mut self, _info: CdbHeaderInfo) {
+        self.sf_cdb_count += 1;
     }
 
     pub(crate) fn extract_from_archives(&self, path: &str) -> Option<Vec<u8>> {

@@ -77,6 +77,9 @@ pub enum Error {
     #[error("object/list/map chunk had {leftover} trailing bytes after read")]
     ObjectTrailingBytes { leftover: usize },
 
+    #[error("CDB parse budget exceeded: {requested} instances (limit {limit})")]
+    ParseBudgetExceeded { requested: usize, limit: usize },
+
     #[error("ran out of chunks while reading {context}")]
     ChunkQueueEmpty { context: &'static str },
 
