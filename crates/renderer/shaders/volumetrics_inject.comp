@@ -178,7 +178,8 @@ layout(set = 0, binding = 13) uniform sampler3D previousEmissionHistory;
 //
 // chemistry = (fuel mass fraction, temperature K, total extinction sigma_t/world-unit,
 //              visible-radiance calibration at 1850 K)
-// velocity  = (world-space velocity xyz in world-units/second, reserved zero)
+// dynamics  = (world-space velocity xyz in world-units/second,
+//              specific overpressure in m²/s²)
 // optical   = (spectral scattering sigma_s.rgb/world-unit, reserved zero)
 //
 // Current and previous slots are distinct frame-in-flight images, so this
@@ -186,8 +187,8 @@ layout(set = 0, binding = 13) uniform sampler3D previousEmissionHistory;
 // one without an intra-dispatch data hazard.
 layout(rgba16f, set = 0, binding = 14) uniform writeonly image3D combustionState;
 layout(set = 0, binding = 15) uniform sampler3D previousCombustionState;
-layout(rgba16f, set = 0, binding = 16) uniform writeonly image3D combustionVelocity;
-layout(set = 0, binding = 17) uniform sampler3D previousCombustionVelocity;
+layout(rgba16f, set = 0, binding = 16) uniform writeonly image3D combustionDynamics;
+layout(set = 0, binding = 17) uniform sampler3D previousCombustionDynamics;
 layout(rgba16f, set = 0, binding = 22) uniform writeonly image3D combustionOptical;
 layout(set = 0, binding = 23) uniform sampler3D previousCombustionOptical;
 
@@ -853,7 +854,7 @@ void applyCombustionSources(
     vec3 segmentStart,
     vec3 segmentEnd,
     inout vec4 chemistry,
-    inout vec4 velocity,
+    inout vec4 dynamics,
     inout vec4 optical,
     float dt
 ) {
@@ -912,8 +913,8 @@ void applyCombustionSources(
                 chemistry.y,
                 mix(AMBIENT_TEMPERATURE_K, 430.0, sourceStateMask)
             );
-            velocity.y = max(
-                velocity.y,
+            dynamics.y = max(
+                dynamics.y,
                 sourceStateMask * 0.42 * WORLD_UNITS_PER_METER
             );
             continue;
@@ -956,8 +957,8 @@ void applyCombustionSources(
                 chemistry.w,
                 reactionStateMask * sourceRadianceLuma / max(sourceVisibleRatio, 1.0e-4)
             );
-            velocity.y = max(
-                velocity.y,
+            dynamics.y = max(
+                dynamics.y,
                 reactionStateMask * mix(1.12, 1.48, turbulence.x)
                     * WORLD_UNITS_PER_METER
             );
@@ -969,7 +970,7 @@ void applyCombustionSources(
                     * reactionStateMask
                     * dt
             );
-            velocity.xz = mix(velocity.xz, lateralTarget, velocityResponse);
+            dynamics.xz = mix(dynamics.xz, lateralTarget, velocityResponse);
             continue;
         }
 
@@ -1056,8 +1057,14 @@ void applyCombustionSources(
         float radialImpulseMask = coldHistory
             ? stateProfile * ignitionEnvelope
             : stateProfile * compactCore * impulseEnvelope;
-        velocity.xyz += radialDirection * expansionSpeed
+        dynamics.xyz += radialDirection * expansionSpeed
             * radialImpulseMask * impulseScale;
+        float expansionSpeedMps = expansionSpeed / WORLD_UNITS_PER_METER;
+        float specificOverpressure = 0.5 * expansionSpeedMps * expansionSpeedMps;
+        dynamics.w = max(
+            dynamics.w,
+            specificOverpressure * radialImpulseMask
+        );
     }
 }
 
@@ -1321,17 +1328,21 @@ vec4 sanitizedChemistry(vec4 chemistry) {
     return chemistry;
 }
 
-vec4 sanitizedVelocity(vec4 velocity) {
-    if (any(isnan(velocity)) || any(isinf(velocity))) {
+vec4 sanitizedDynamics(vec4 dynamics) {
+    if (any(isnan(dynamics)) || any(isinf(dynamics))) {
         return vec4(0.0);
     }
     float maxSpeed = MAX_COMBUSTION_SPEED_MPS * WORLD_UNITS_PER_METER;
-    float speed = length(velocity.xyz);
+    float speed = length(dynamics.xyz);
     if (speed > maxSpeed) {
-        velocity.xyz *= maxSpeed / speed;
+        dynamics.xyz *= maxSpeed / speed;
     }
-    velocity.w = 0.0;
-    return velocity;
+    dynamics.w = clamp(
+        dynamics.w,
+        0.0,
+        0.5 * MAX_COMBUSTION_SPEED_MPS * MAX_COMBUSTION_SPEED_MPS
+    );
+    return dynamics;
 }
 
 vec4 sanitizedOptical(vec4 optical) {
@@ -1346,11 +1357,11 @@ vec4 sanitizedOptical(vec4 optical) {
 bool samplePreviousTransport(
     vec3 worldPos,
     out vec4 chemistry,
-    out vec4 velocity,
+    out vec4 dynamics,
     out vec4 optical
 ) {
     chemistry = vec4(0.0, AMBIENT_TEMPERATURE_K, 0.0, 0.0);
-    velocity = vec4(0.0);
+    dynamics = vec4(0.0);
     optical = vec4(0.0);
     if (params.prev_camera_pos.w <= 0.5) {
         return false;
@@ -1360,9 +1371,52 @@ bool samplePreviousTransport(
         return false;
     }
     chemistry = sanitizedChemistry(texture(previousCombustionState, previousUvw));
-    velocity = sanitizedVelocity(texture(previousCombustionVelocity, previousUvw));
+    dynamics = sanitizedDynamics(texture(previousCombustionDynamics, previousUvw));
     optical = sanitizedOptical(texture(previousCombustionOptical, previousUvw));
     return true;
+}
+
+float previousSpecificOverpressure(vec3 worldPosition) {
+    if (params.prev_camera_pos.w <= 0.5) {
+        return 0.0;
+    }
+    vec3 previousUvw;
+    if (!reprojectHistory(worldPosition, previousUvw)) {
+        return 0.0;
+    }
+    return sanitizedDynamics(
+        texture(previousCombustionDynamics, previousUvw)
+    ).w;
+}
+
+// Recover ∇q in absolute world coordinates from the frustum-aligned froxel
+// basis, where q is transported specific overpressure (m²/s²). A plain sum
+// of axis differences would treat the perspective grid as orthogonal and
+// turn camera orientation into explosion dynamics; solving Bᵀ∇q = Δq keeps
+// pressure expansion in world space.
+bool previousOverpressureGradient(
+    vec3 worldPosition,
+    vec3 stepX,
+    vec3 stepY,
+    vec3 stepZ,
+    out vec3 pressureGradient
+) {
+    pressureGradient = vec3(0.0);
+    mat3 basis = mat3(stepX, stepY, stepZ);
+    float basisDeterminant = determinant(basis);
+    if (abs(basisDeterminant) <= 1.0e-8) {
+        return false;
+    }
+    vec3 centralDifference = 0.5 * vec3(
+        previousSpecificOverpressure(worldPosition + stepX)
+            - previousSpecificOverpressure(worldPosition - stepX),
+        previousSpecificOverpressure(worldPosition + stepY)
+            - previousSpecificOverpressure(worldPosition - stepY),
+        previousSpecificOverpressure(worldPosition + stepZ)
+            - previousSpecificOverpressure(worldPosition - stepZ)
+    );
+    pressureGradient = inverse(transpose(basis)) * centralDifference;
+    return !any(isnan(pressureGradient)) && !any(isinf(pressureGradient));
 }
 
 bool carriesCombustion(vec4 chemistry, vec4 optical) {
@@ -1518,12 +1572,12 @@ bool combustionPathBlocked(
 // active cell whose flow points toward this destination. Chemistry still
 // arrives through the ordinary backtrace, preserving mass-like interpolation
 // and the solid-crossing rejection below.
-bool incomingVelocityFromNeighbors(
+bool incomingDynamicsFromNeighbors(
     vec3 worldPos,
     vec3 stepX,
     vec3 stepY,
     vec3 stepZ,
-    out vec4 incomingVelocity
+    out vec4 incomingDynamics
 ) {
     vec3 offsets[6] = vec3[6](
         stepX, -stepX,
@@ -1532,16 +1586,16 @@ bool incomingVelocityFromNeighbors(
     );
     bool found = false;
     float bestScore = 0.0;
-    incomingVelocity = vec4(0.0);
+    incomingDynamics = vec4(0.0);
     for (int neighborIndex = 0; neighborIndex < 6; ++neighborIndex) {
         vec3 candidatePosition = worldPos + offsets[neighborIndex];
         vec4 candidateChemistry;
-        vec4 candidateVelocity;
+        vec4 candidateDynamics;
         vec4 candidateOptical;
         if (!samplePreviousTransport(
                 candidatePosition,
                 candidateChemistry,
-                candidateVelocity,
+                candidateDynamics,
                 candidateOptical)
             || !carriesCombustion(candidateChemistry, candidateOptical)) {
             continue;
@@ -1553,7 +1607,7 @@ bool incomingVelocityFromNeighbors(
             continue;
         }
         float closingSpeed = dot(
-            candidateVelocity.xyz,
+            candidateDynamics.xyz,
             towardDestination / neighborDistance
         );
         if (closingSpeed <= 0.04) {
@@ -1572,7 +1626,7 @@ bool incomingVelocityFromNeighbors(
         if (!found || score > bestScore) {
             found = true;
             bestScore = score;
-            incomingVelocity = candidateVelocity;
+            incomingDynamics = candidateDynamics;
         }
     }
     return found;
@@ -1591,52 +1645,52 @@ void transportCombustion(
     vec3 neighborStepZ,
     float dt,
     out vec4 chemistry,
-    out vec4 velocity,
+    out vec4 dynamics,
     out vec4 optical
 ) {
     vec4 probeChemistry;
-    vec4 destinationVelocity;
+    vec4 destinationDynamics;
     vec4 probeOptical;
     bool hadHistory = samplePreviousTransport(
         worldPos,
         probeChemistry,
-        destinationVelocity,
+        destinationDynamics,
         probeOptical
     );
     if (hadHistory && dt > 0.0) {
-        bool destinationVelocityExtended = false;
+        bool destinationDynamicsExtended = false;
         if (combustionActivity(probeChemistry, probeOptical) < 0.08) {
-            vec4 incomingVelocity;
-            if (incomingVelocityFromNeighbors(
+            vec4 incomingDynamics;
+            if (incomingDynamicsFromNeighbors(
                     worldPos,
                     neighborStepX,
                     neighborStepY,
                     neighborStepZ,
-                    incomingVelocity)) {
-                destinationVelocity = incomingVelocity;
-                destinationVelocityExtended = true;
+                    incomingDynamics)) {
+                destinationDynamics = incomingDynamics;
+                destinationDynamicsExtended = true;
             }
         }
-        vec3 midpoint = worldPos - destinationVelocity.xyz * (0.5 * dt);
+        vec3 midpoint = worldPos - destinationDynamics.xyz * (0.5 * dt);
         vec4 midpointChemistry;
-        vec4 midpointVelocity;
+        vec4 midpointDynamics;
         vec4 midpointOptical;
-        if (destinationVelocityExtended
+        if (destinationDynamicsExtended
             || !samplePreviousTransport(
                 midpoint,
                 midpointChemistry,
-                midpointVelocity,
+                midpointDynamics,
                 midpointOptical)) {
-            midpointVelocity = destinationVelocity;
+            midpointDynamics = destinationDynamics;
         }
-        vec3 sourcePosition = worldPos - midpointVelocity.xyz * dt;
+        vec3 sourcePosition = worldPos - midpointDynamics.xyz * dt;
         vec4 sourceChemistry;
-        vec4 sourceVelocity;
+        vec4 sourceDynamics;
         vec4 sourceOptical;
         bool sourceInHistory = samplePreviousTransport(
             sourcePosition,
             sourceChemistry,
-            sourceVelocity,
+            sourceDynamics,
             sourceOptical
         );
         // Test the state being pulled into this destination, not the state
@@ -1650,23 +1704,23 @@ void transportCombustion(
             && combustionPathBlocked(sourcePosition, worldPos, crossingNormal);
         if (blocked) {
             chemistry = probeChemistry;
-            velocity = destinationVelocity;
+            dynamics = destinationDynamics;
             optical = probeOptical;
         } else if (sourceInHistory) {
             chemistry = sourceChemistry;
-            velocity = sourceVelocity;
+            dynamics = sourceDynamics;
             optical = sourceOptical;
         } else {
             chemistry = probeChemistry;
-            velocity = destinationVelocity;
+            dynamics = destinationDynamics;
             optical = probeOptical;
         }
     } else {
         chemistry = hadHistory
             ? probeChemistry
             : vec4(0.0, AMBIENT_TEMPERATURE_K, 0.0, 0.0);
-        velocity = hadHistory
-            ? destinationVelocity
+        dynamics = hadHistory
+            ? destinationDynamics
             : vec4(0.0);
         optical = hadHistory
             ? probeOptical
@@ -1674,14 +1728,14 @@ void transportCombustion(
     }
 
     chemistry = sanitizedChemistry(chemistry);
-    velocity = sanitizedVelocity(velocity);
+    dynamics = sanitizedDynamics(dynamics);
     optical = sanitizedOptical(optical);
     applyCombustionSources(
         worldPos,
         segmentStart,
         segmentEnd,
         chemistry,
-        velocity,
+        dynamics,
         optical,
         dt
     );
@@ -1729,13 +1783,44 @@ void transportCombustion(
         chemistry.y = AMBIENT_TEMPERATURE_K
             + (chemistry.y - AMBIENT_TEMPERATURE_K) * exp(-0.42 * dt);
 
+        // Specific overpressure q is transported beside velocity but remains
+        // source-agnostic after injection. Recover -grad(q) in world space so
+        // every pressure-producing source expands through the same dynamics
+        // contract, then let the short pressure phase decay before buoyancy
+        // owns the cooled plume. q is stored in m²/s² while the grid basis is
+        // expressed in world units, hence the squared world-unit conversion.
+        if (dynamics.w > 1.0e-5) {
+            vec3 pressureGradient;
+            if (previousOverpressureGradient(
+                    worldPos,
+                    neighborStepX,
+                    neighborStepY,
+                    neighborStepZ,
+                    pressureGradient)) {
+                vec3 pressureAcceleration = -pressureGradient
+                    * (WORLD_UNITS_PER_METER * WORLD_UNITS_PER_METER);
+                float pressureAccelerationLength = length(pressureAcceleration);
+                float maxPressureAcceleration =
+                    COMBUSTION_MAX_PRESSURE_ACCELERATION_MPS2
+                    * WORLD_UNITS_PER_METER;
+                if (pressureAccelerationLength > maxPressureAcceleration) {
+                    pressureAcceleration *= maxPressureAcceleration
+                        / pressureAccelerationLength;
+                }
+                dynamics.xyz += pressureAcceleration * dt;
+            }
+            dynamics.w *= exp(
+                -COMBUSTION_OVERPRESSURE_DISSIPATION_PER_SECOND * dt
+            );
+        }
+
         float temperatureExcess = max(
             (chemistry.y - AMBIENT_TEMPERATURE_K) / AMBIENT_TEMPERATURE_K,
             0.0
         );
         float buoyantAcceleration = min(temperatureExcess, 7.0)
             * 0.58 * WORLD_UNITS_PER_METER;
-        velocity.y += buoyantAcceleration * dt;
+        dynamics.y += buoyantAcceleration * dt;
 
         float activity = combustionActivity(chemistry, optical);
         vec3 metres = worldPos / WORLD_UNITS_PER_METER;
@@ -1743,30 +1828,30 @@ void transportCombustion(
             metres * 0.38
                 + vec3(0.0, -params.temporal_params.z * 0.23, 0.0)
         ) * (1.6 * WORLD_UNITS_PER_METER * activity);
-        velocity.xyz += turbulentAcceleration * dt;
-        velocity.xyz *= exp(-0.48 * dt);
+        dynamics.xyz += turbulentAcceleration * dt;
+        dynamics.xyz *= exp(-0.48 * dt);
 
         // Semi-Lagrangian no-through rejection above protects the empty side
         // of a wall. This forward probe handles the complementary source-side
         // boundary condition: remove only the inward normal component of the
         // updated flow and retain tangential slip with mild wall friction.
         if (carriesCombustion(chemistry, optical)
-            && dot(velocity.xyz, velocity.xyz) > 1.0e-8) {
+            && dot(dynamics.xyz, dynamics.xyz) > 1.0e-8) {
             vec3 boundaryNormal;
-            vec3 predictedPosition = worldPos + velocity.xyz * dt;
+            vec3 predictedPosition = worldPos + dynamics.xyz * dt;
             if (combustionPathBlocked(
                     worldPos,
                     predictedPosition,
                     boundaryNormal)) {
-                float inwardSpeed = min(dot(velocity.xyz, boundaryNormal), 0.0);
-                velocity.xyz -= boundaryNormal * inwardSpeed;
-                velocity.xyz *= exp(-COMBUSTION_WALL_FRICTION_PER_SECOND * dt);
+                float inwardSpeed = min(dot(dynamics.xyz, boundaryNormal), 0.0);
+                dynamics.xyz -= boundaryNormal * inwardSpeed;
+                dynamics.xyz *= exp(-COMBUSTION_WALL_FRICTION_PER_SECOND * dt);
             }
         }
     }
 
     chemistry = sanitizedChemistry(chemistry);
-    velocity = sanitizedVelocity(velocity);
+    dynamics = sanitizedDynamics(dynamics);
     optical = sanitizedOptical(optical);
 }
 
@@ -1995,7 +2080,7 @@ void main() {
     vec3 neighbor_step_z = field_segment_end - field_segment_start;
     float simulationDt = clamp(params.fog_reference.w, 0.0, 1.0 / 15.0);
     vec4 chemistry;
-    vec4 combustion_velocity;
+    vec4 combustion_dynamics;
     vec4 combustion_optical;
     transportCombustion(
         field_world_pos,
@@ -2006,14 +2091,14 @@ void main() {
         neighbor_step_z,
         simulationDt,
         chemistry,
-        combustion_velocity,
+        combustion_dynamics,
         combustion_optical
     );
     imageStore(combustionState, coord, chemistry);
     imageStore(
-        combustionVelocity,
+        combustionDynamics,
         coord,
-        combustion_velocity
+        combustion_dynamics
     );
     imageStore(combustionOptical, coord, combustion_optical);
 

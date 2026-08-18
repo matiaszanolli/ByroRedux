@@ -737,11 +737,12 @@ pub struct VolumetricsPipeline {
     /// visible-radiance calibration)` state, double-buffered by
     /// frame-in-flight slot.
     combustion_state_volumes: Vec<FroxelSlot>,
-    /// World-space combustion velocity in xyz (world units / second), with a
-    /// reserved zero w channel. Sampled linearly for RK2 backtracing.
-    combustion_velocity_volumes: Vec<FroxelSlot>,
+    /// Canonical combustion dynamics: world-space velocity in xyz (world
+    /// units / second) and transported specific overpressure in w (m²/s²).
+    /// Sampled linearly for RK2 backtracing and pressure-gradient forces.
+    combustion_dynamics_volumes: Vec<FroxelSlot>,
     /// Canonical transported spectral scattering coefficient `sigma_s.rgb`,
-    /// double-buffered independently from chemistry and velocity so optical
+    /// double-buffered independently from chemistry and dynamics so optical
     /// tint survives advection without overloading either concern.
     combustion_optical_volumes: Vec<FroxelSlot>,
     /// Per frame-in-flight host-mapped UBO carrying
@@ -853,7 +854,7 @@ impl VolumetricsPipeline {
             lighting_volumes: Vec::new(),
             emission_history_volumes: Vec::new(),
             combustion_state_volumes: Vec::new(),
-            combustion_velocity_volumes: Vec::new(),
+            combustion_dynamics_volumes: Vec::new(),
             combustion_optical_volumes: Vec::new(),
             param_buffers: Vec::new(),
             fog_volume_buffers: Vec::new(),
@@ -939,10 +940,10 @@ impl VolumetricsPipeline {
                     | vk::ImageUsageFlags::TRANSFER_DST,
             ));
             partial.combustion_state_volumes.push(combustion_state);
-            let combustion_velocity = try_or_cleanup!(Self::create_volume(
+            let combustion_dynamics = try_or_cleanup!(Self::create_volume(
                 device,
                 allocator,
-                &format!("volumetrics_combustion_velocity_{i}"),
+                &format!("volumetrics_combustion_dynamics_{i}"),
                 extent,
                 COMBUSTION_FIELD_FORMAT,
                 vk::ImageUsageFlags::STORAGE
@@ -950,8 +951,8 @@ impl VolumetricsPipeline {
                     | vk::ImageUsageFlags::TRANSFER_DST,
             ));
             partial
-                .combustion_velocity_volumes
-                .push(combustion_velocity);
+                .combustion_dynamics_volumes
+                .push(combustion_dynamics);
             let combustion_optical = try_or_cleanup!(Self::create_volume(
                 device,
                 allocator,
@@ -1219,7 +1220,8 @@ impl VolumetricsPipeline {
                 .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            // 16/17: current write + previous sampled world-space velocity.
+            // 16/17: current write + previous sampled canonical dynamics
+            // `(world-space velocity xyz, specific overpressure)`.
             vk::DescriptorSetLayoutBinding::default()
                 .binding(16)
                 .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
@@ -1362,12 +1364,12 @@ impl VolumetricsPipeline {
                 .sampler(partial.transport_sampler)
                 .image_view(partial.combustion_state_volumes[previous].view)
                 .image_layout(vk::ImageLayout::GENERAL)];
-            let combustion_velocity_write_info = [vk::DescriptorImageInfo::default()
-                .image_view(partial.combustion_velocity_volumes[f].view)
+            let combustion_dynamics_write_info = [vk::DescriptorImageInfo::default()
+                .image_view(partial.combustion_dynamics_volumes[f].view)
                 .image_layout(vk::ImageLayout::GENERAL)];
-            let previous_combustion_velocity_info = [vk::DescriptorImageInfo::default()
+            let previous_combustion_dynamics_info = [vk::DescriptorImageInfo::default()
                 .sampler(partial.transport_sampler)
-                .image_view(partial.combustion_velocity_volumes[previous].view)
+                .image_view(partial.combustion_dynamics_volumes[previous].view)
                 .image_layout(vk::ImageLayout::GENERAL)];
             let combustion_optical_write_info = [vk::DescriptorImageInfo::default()
                 .image_view(partial.combustion_optical_volumes[f].view)
@@ -1431,8 +1433,8 @@ impl VolumetricsPipeline {
                 write_combined_image_sampler(set, 13, &previous_emission_history_info),
                 write_storage_image(set, 14, &combustion_state_write_info),
                 write_combined_image_sampler(set, 15, &previous_combustion_state_info),
-                write_storage_image(set, 16, &combustion_velocity_write_info),
-                write_combined_image_sampler(set, 17, &previous_combustion_velocity_info),
+                write_storage_image(set, 16, &combustion_dynamics_write_info),
+                write_combined_image_sampler(set, 17, &previous_combustion_dynamics_info),
                 write_storage_buffer(set, 18, &combustion_light_moment_info),
                 write_storage_image(set, 22, &combustion_optical_write_info),
                 write_combined_image_sampler(set, 23, &previous_combustion_optical_info),
@@ -1773,7 +1775,7 @@ impl VolumetricsPipeline {
                 .chain(self.integrated_volumes.iter())
                 .chain(self.emission_history_volumes.iter())
                 .chain(self.combustion_state_volumes.iter())
-                .chain(self.combustion_velocity_volumes.iter())
+                .chain(self.combustion_dynamics_volumes.iter())
                 .chain(self.combustion_optical_volumes.iter())
             {
                 barriers.push(image_barrier_undef_to_general(slot.image).dst_access_mask(
@@ -1838,7 +1840,7 @@ impl VolumetricsPipeline {
                 .emission_history_volumes
                 .iter()
                 .chain(self.combustion_state_volumes.iter())
-                .chain(self.combustion_velocity_volumes.iter())
+                .chain(self.combustion_dynamics_volumes.iter())
                 .chain(self.combustion_optical_volumes.iter())
             {
                 // SAFETY: same ownership/layout/usage contract as the RGBA
@@ -2130,19 +2132,19 @@ impl VolumetricsPipeline {
             .new_layout(vk::ImageLayout::GENERAL)
             .image(self.combustion_state_volumes[previous].image)
             .subresource_range(subresource);
-        let pre_combustion_velocity_write = vk::ImageMemoryBarrier::default()
+        let pre_combustion_dynamics_write = vk::ImageMemoryBarrier::default()
             .src_access_mask(vk::AccessFlags::SHADER_READ)
             .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
             .old_layout(vk::ImageLayout::GENERAL)
             .new_layout(vk::ImageLayout::GENERAL)
-            .image(self.combustion_velocity_volumes[frame].image)
+            .image(self.combustion_dynamics_volumes[frame].image)
             .subresource_range(subresource);
-        let combustion_velocity_ready = vk::ImageMemoryBarrier::default()
+        let combustion_dynamics_ready = vk::ImageMemoryBarrier::default()
             .src_access_mask(vk::AccessFlags::SHADER_WRITE)
             .dst_access_mask(vk::AccessFlags::SHADER_READ)
             .old_layout(vk::ImageLayout::GENERAL)
             .new_layout(vk::ImageLayout::GENERAL)
-            .image(self.combustion_velocity_volumes[previous].image)
+            .image(self.combustion_dynamics_volumes[previous].image)
             .subresource_range(subresource);
         let pre_combustion_optical_write = vk::ImageMemoryBarrier::default()
             .src_access_mask(vk::AccessFlags::SHADER_READ)
@@ -2172,8 +2174,8 @@ impl VolumetricsPipeline {
                 emission_history_ready,
                 pre_combustion_state_write,
                 combustion_state_ready,
-                pre_combustion_velocity_write,
-                combustion_velocity_ready,
+                pre_combustion_dynamics_write,
+                combustion_dynamics_ready,
                 pre_combustion_optical_write,
                 combustion_optical_ready,
             ],
@@ -2657,7 +2659,7 @@ impl VolumetricsPipeline {
             .drain(..)
             .chain(self.emission_history_volumes.drain(..))
             .chain(self.combustion_state_volumes.drain(..))
-            .chain(self.combustion_velocity_volumes.drain(..))
+            .chain(self.combustion_dynamics_volumes.drain(..))
             .chain(self.combustion_optical_volumes.drain(..))
             .chain(self.integrated_volumes.drain(..))
             .chain(self.base_noise_volume.take())
@@ -2826,8 +2828,8 @@ mod unit_tests {
             "FOG_VOLUME_PROFILE_EXPLOSION",
             "layout(rgba16f, set = 0, binding = 14) uniform writeonly image3D combustionState;",
             "layout(set = 0, binding = 15) uniform sampler3D previousCombustionState;",
-            "layout(rgba16f, set = 0, binding = 16) uniform writeonly image3D combustionVelocity;",
-            "layout(set = 0, binding = 17) uniform sampler3D previousCombustionVelocity;",
+            "layout(rgba16f, set = 0, binding = 16) uniform writeonly image3D combustionDynamics;",
+            "layout(set = 0, binding = 17) uniform sampler3D previousCombustionDynamics;",
             "layout(rgba16f, set = 0, binding = 22) uniform writeonly image3D combustionOptical;",
             "layout(set = 0, binding = 23) uniform sampler3D previousCombustionOptical;",
             "vec3 blackbodyChromaticity(float kelvin)",
@@ -2844,16 +2846,16 @@ mod unit_tests {
             "FLAME_SOURCE_VELOCITY_RESPONSE_PER_SECOND",
             "chemistry.z = max(chemistry.z, sourceSigmaT);",
             "optical.rgb = max(optical.rgb, sourceSigmaT * sourceAlbedo);",
-            "velocity.xz = mix(velocity.xz, lateralTarget, velocityResponse);",
-            "vec3 sourcePosition = worldPos - midpointVelocity.xyz * dt;",
+            "dynamics.xz = mix(dynamics.xz, lateralTarget, velocityResponse);",
+            "vec3 sourcePosition = worldPos - midpointDynamics.xyz * dt;",
             "bool sourceInHistory = samplePreviousTransport(",
             "&& carriesCombustion(sourceChemistry, sourceOptical)",
-            "bool incomingVelocityFromNeighbors(",
+            "bool incomingDynamicsFromNeighbors(",
             "float closingSpeed = dot(",
             "combustionPathBlocked(\n                candidatePosition,",
             "float combustionActivity(vec4 chemistry, vec4 optical)",
-            "bool destinationVelocityExtended = false;",
-            "if (destinationVelocityExtended",
+            "bool destinationDynamicsExtended = false;",
+            "if (destinationDynamicsExtended",
             "vec3 neighbor_step_z = field_segment_end - field_segment_start;",
             "bool combustionPathBlocked(",
             "VISIBILITY_MASK_SOLID",
@@ -2862,9 +2864,9 @@ mod unit_tests {
             "layout(std430, set = 0, binding = 21) readonly buffer BoundaryIndexBuffer",
             "rayQueryGetIntersectionInstanceCustomIndexEXT(boundaryQuery, true)",
             "bool rigidBoundaryNormal(",
-            "float inwardSpeed = min(dot(velocity.xyz, boundaryNormal), 0.0);",
-            "velocity.xyz -= boundaryNormal * inwardSpeed;",
-            "vec3 predictedPosition = worldPos + velocity.xyz * dt;",
+            "float inwardSpeed = min(dot(dynamics.xyz, boundaryNormal), 0.0);",
+            "dynamics.xyz -= boundaryNormal * inwardSpeed;",
+            "vec3 predictedPosition = worldPos + dynamics.xyz * dt;",
             "float ageSeconds = age * lifetime;",
             "EXPLOSION_IMPULSE_DURATION_SECONDS * 0.35",
             "radius / EXPLOSION_EXPANSION_TIME_SECONDS",
@@ -2877,6 +2879,13 @@ mod unit_tests {
             "float richYield = mix(0.004, 0.018, 1.0 - oxidizer);",
             "chemistry.z *= exp(-COMBUSTION_AEROSOL_DISSIPATION_PER_SECOND * dt);",
             "optical.rgb *= exp(-COMBUSTION_AEROSOL_DISSIPATION_PER_SECOND * dt);",
+            "float specificOverpressure = 0.5 * expansionSpeedMps * expansionSpeedMps;",
+            "dynamics.w = max(",
+            "bool previousOverpressureGradient(",
+            "pressureGradient = inverse(transpose(basis)) * centralDifference;",
+            "vec3 pressureAcceleration = -pressureGradient",
+            "COMBUSTION_MAX_PRESSURE_ACCELERATION_MPS2",
+            "COMBUSTION_OVERPRESSURE_DISSIPATION_PER_SECOND",
             "blackbodyVisibleRadianceRatio(chemistry.y, 1850.0)",
             "float buoyantAcceleration = min(temperatureExcess, 7.0)",
             "LocalMedium combustionMedium(vec4 chemistry, vec4 optical)",
@@ -2927,11 +2936,9 @@ mod unit_tests {
             "transport must retain authored RGB aerosol albedo rather than collapse it to luminance"
         );
         assert!(
-            shader.contains("velocity.w = 0.0;")
-                && !shader.contains("velocity.w +=")
-                && !shader.contains("velocity.w *=")
-                && !shader.contains("float sigmaS = velocity.w"),
-            "kinematic state must not regain an optical side channel"
+            !shader.contains("float sigmaS = dynamics.w")
+                && !shader.contains("float sigmaT = dynamics.w"),
+            "canonical dynamics must not regain an optical side channel"
         );
         assert!(
             !shader.contains("GameKind")

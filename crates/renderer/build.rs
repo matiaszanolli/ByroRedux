@@ -194,6 +194,16 @@ fn main() {
     .unwrap();
     writeln!(
         out,
+        "#define COMBUSTION_OVERPRESSURE_DISSIPATION_PER_SECOND {COMBUSTION_OVERPRESSURE_DISSIPATION_PER_SECOND:?}"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define COMBUSTION_MAX_PRESSURE_ACCELERATION_MPS2 {COMBUSTION_MAX_PRESSURE_ACCELERATION_MPS2:?}"
+    )
+    .unwrap();
+    writeln!(
+        out,
         "#define COMBUSTION_AEROSOL_DISSIPATION_PER_SECOND {COMBUSTION_AEROSOL_DISSIPATION_PER_SECOND:?}"
     )
     .unwrap();

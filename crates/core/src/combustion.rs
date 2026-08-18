@@ -24,6 +24,21 @@ pub const EXPLOSION_EXPANSION_TIME_SECONDS: f32 = 0.35;
 /// Duration over which a one-shot source may add outward momentum.
 pub const EXPLOSION_IMPULSE_DURATION_SECONDS: f32 = 1.5;
 
+/// First-order decay rate for transported specific overpressure.
+///
+/// The pressure phase should survive long enough to expand a fireball beyond
+/// its source primitive, but be effectively gone before buoyancy owns the
+/// cooled plume. The solver consumes this canonical field without retaining
+/// explosion/source identity.
+pub const OVERPRESSURE_DISSIPATION_PER_SECOND: f32 = 2.8;
+
+/// Numerical safety ceiling for acceleration derived from an overpressure
+/// gradient, metres per second squared.
+///
+/// This bounds under-resolved gradients without replacing their direction or
+/// tying the dynamics to an authored effect lifetime.
+pub const MAX_PRESSURE_ACCELERATION_MPS2: f32 = 18.0;
+
 /// First-order removal rate for transported combustion aerosol.
 ///
 /// Absorption and scattering decay together so a plume keeps its canonical
@@ -147,6 +162,10 @@ mod tests {
         assert_eq!(ADIABATIC_FLAME_TEMPERATURE_K, 2350.0);
         assert!(EXPLOSION_EXPANSION_TIME_SECONDS > 0.0);
         assert!(EXPLOSION_IMPULSE_DURATION_SECONDS > EXPLOSION_EXPANSION_TIME_SECONDS);
+        assert!(MAX_PRESSURE_ACCELERATION_MPS2 > 0.0);
+        let pressure_remaining =
+            (-OVERPRESSURE_DISSIPATION_PER_SECOND * EXPLOSION_IMPULSE_DURATION_SECONDS).exp();
+        assert!(pressure_remaining < 0.02);
         let remaining = (-AEROSOL_DISSIPATION_PER_SECOND * AEROSOL_LINGER_SECONDS).exp();
         assert!(remaining <= AEROSOL_LINGER_CUTOFF_FRACTION);
         assert!(remaining > AEROSOL_LINGER_CUTOFF_FRACTION * 0.95);
