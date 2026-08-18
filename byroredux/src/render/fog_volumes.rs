@@ -1,5 +1,6 @@
 //! ECS local fog-volume collection and GPU translation.
 
+use byroredux_core::combustion::AEROSOL_LINGER_SECONDS;
 use byroredux_core::ecs::{
     CombustionState, FogProfile, FogShape, FogVolume, GlobalTransform, TotalTime, World,
 };
@@ -37,11 +38,28 @@ pub(super) fn collect_fog_volumes(
             .as_ref()
             .and_then(|query| query.get(entity))
             .copied();
+        let mut render_volume = *volume;
         let explosion_age = if volume.profile == FogProfile::Explosion {
             match combustion {
                 Some(state) => match state.normalized_age(now_seconds) {
                     Some(age) => Some((age, state.lifetime_seconds)),
-                    None => continue,
+                    None => {
+                        let elapsed = now_seconds - state.start_time_seconds;
+                        if !elapsed.is_finite()
+                            || elapsed >= state.lifetime_seconds + AEROSOL_LINGER_SECONDS
+                        {
+                            continue;
+                        }
+                        // The authored explosion has ended, but its soot
+                        // remains a passive source boundary long enough for
+                        // the canonical transported field to entrain and
+                        // disperse it. No emission or hot temperature leaks
+                        // into this phase.
+                        render_volume.profile = FogProfile::Smoke;
+                        render_volume.emissive_radiance = [0.0; 3];
+                        render_volume.emission_temperature_k = 0.0;
+                        None
+                    }
                 },
                 // An explicitly authored Explosion without a timeline still
                 // renders its initial state. All particle-conversion paths
@@ -52,7 +70,8 @@ pub(super) fn collect_fog_volumes(
         } else {
             None
         };
-        let Some(gpu) = gpu_volume_from_ecs_with_explosion_age(*volume, *transform, explosion_age)
+        let Some(gpu) =
+            gpu_volume_from_ecs_with_explosion_age(render_volume, *transform, explosion_age)
         else {
             continue;
         };
