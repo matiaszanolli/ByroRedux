@@ -1023,6 +1023,15 @@ impl ExteriorCellApplyJob {
         // cells from one `record_index`; build the lean `Globals` map only when
         // it isn't already present rather than rebuilding it each cell.
         super::load::ensure_globals_resource(world, &wctx.record_index.globals);
+        // Exterior streaming does not pass through the interior loader's
+        // population hook. Populate the QF_ table while it is still empty so
+        // outdoor launches receive quest-stage handlers as well (#3010).
+        if world
+            .resource::<byroredux_scripting::QuestStageFragments>()
+            .is_empty()
+        {
+            crate::asset_provider::populate_quest_fragments(world, &wctx.record_index);
+        }
 
         let index = &wctx.record_index.cells;
         let Some(cells_map) = index.exterior_cells.get(&wctx.worldspace_key) else {
