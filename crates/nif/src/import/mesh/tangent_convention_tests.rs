@@ -287,6 +287,53 @@ fn synthesize_tangents_yup_degenerate_fallback_normalizes_and_orthogonalizes_aga
     }
 }
 
+/// Z-up counterpart of the #2632 regression guard above. The legacy NIF
+/// producer must apply the same Gram-Schmidt projection after converting its
+/// permuted normal into renderer space.
+#[test]
+fn synthesize_tangents_zup_degenerate_fallback_normalizes_and_orthogonalizes_against_n() {
+    let vertices = vec![
+        NiPoint3 {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        },
+        NiPoint3 {
+            x: 1.0,
+            y: 0.0,
+            z: 0.0,
+        },
+        NiPoint3 {
+            x: 0.0,
+            y: 1.0,
+            z: 0.3,
+        },
+    ];
+    let raw_normal = NiPoint3 {
+        x: 0.0,
+        y: 0.8,
+        z: 0.6,
+    };
+    let normals = vec![raw_normal; 3];
+    let uvs = vec![[0.5, 0.5]; 3];
+    let triangles = vec![[0u16, 1u16, 2u16]];
+    let out = synthesize_tangents(&vertices, &normals, &uvs, &triangles);
+    assert_eq!(out.len(), 3);
+
+    // Z-up (x,y,z) maps to renderer Y-up (x,z,-y).
+    let n_unit = [0.0f32, 0.6, -0.8];
+    for (i, t) in out.iter().enumerate() {
+        let mag2 = t[0] * t[0] + t[1] * t[1] + t[2] * t[2];
+        assert!((mag2 - 1.0).abs() < 1e-5, "vertex {i} tangent not unit");
+        let dot_nt = n_unit[0] * t[0] + n_unit[1] * t[1] + n_unit[2] * t[2];
+        assert!(
+            dot_nt.abs() < 1e-5,
+            "vertex {i} tangent not orthogonal: {dot_nt}"
+        );
+        assert!((t[3].abs() - 1.0).abs() < 1e-5);
+    }
+}
+
 #[test]
 fn synthesize_tangents_yup_empty_inputs_return_empty() {
     let empty_positions: Vec<[f32; 3]> = Vec::new();

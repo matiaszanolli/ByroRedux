@@ -273,9 +273,19 @@ pub fn synthesize_tangents(
 
         let (tangent_yup, bitangent_yup) =
             if vec3_is_zero(&tangent_zup) || vec3_is_zero(&bitangent_zup) {
-                // Degenerate fallback (nifly: permute N components).
+                // Degenerate fallback (nifly: permute N components). Project
+                // and normalize the permutation before crossing, matching
+                // the Y-up producer's #2632 guard; a raw permutation is not
+                // generally orthogonal to N.
                 let t_z = [n_zup.y, n_zup.z, n_zup.x];
-                let t_y = byroredux_core::math::coord::zup_to_yup_pos(t_z); // #1617 — SoT (bit-identical)
+                let t_y_raw = byroredux_core::math::coord::zup_to_yup_pos(t_z); // #1617 — SoT (bit-identical)
+                let dot_nt = n_yup[0] * t_y_raw[0] + n_yup[1] * t_y_raw[1] + n_yup[2] * t_y_raw[2];
+                let mut t_y = [
+                    t_y_raw[0] - n_yup[0] * dot_nt,
+                    t_y_raw[1] - n_yup[1] * dot_nt,
+                    t_y_raw[2] - n_yup[2] * dot_nt,
+                ];
+                normalize_inplace(&mut t_y);
                 let b_y = [
                     n_yup[1] * t_y[2] - n_yup[2] * t_y[1],
                     n_yup[2] * t_y[0] - n_yup[0] * t_y[2],
