@@ -197,6 +197,31 @@ fn main() {
         "#define COMBUSTION_AEROSOL_DISSIPATION_PER_SECOND {COMBUSTION_AEROSOL_DISSIPATION_PER_SECOND:?}"
     )
     .unwrap();
+    writeln!(
+        out,
+        "#define FLAME_FUEL_BOUNDARY_HEIGHT_FRACTION {FLAME_FUEL_BOUNDARY_HEIGHT_FRACTION:?}"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define FLAME_REACTION_ZONE_HEIGHT_FRACTION {FLAME_REACTION_ZONE_HEIGHT_FRACTION:?}"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define FLAME_REACTION_ZONE_FADE_START_FRACTION {FLAME_REACTION_ZONE_FADE_START_FRACTION:?}"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define FLAME_SOURCE_LATERAL_SPEED_MPS {FLAME_SOURCE_LATERAL_SPEED_MPS:?}"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define FLAME_SOURCE_VELOCITY_RESPONSE_PER_SECOND {FLAME_SOURCE_VELOCITY_RESPONSE_PER_SECOND:?}"
+    )
+    .unwrap();
     writeln!(out).unwrap();
     writeln!(out, "// Transported-combustion light-moment reduction").unwrap();
     writeln!(

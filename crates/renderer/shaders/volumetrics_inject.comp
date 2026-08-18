@@ -876,7 +876,14 @@ void applyCombustionSources(
         }
 
         float radialSource = 1.0 - smoothstep(0.28, 0.92, length(normalizedOffset.xz));
-        float basalSource = 1.0 - smoothstep(-0.72, 0.10, normalizedOffset.y);
+        float normalizedHeight = normalizedOffset.y * 0.5 + 0.5;
+        float basalSource = isLocalProfile(profileKind, FOG_VOLUME_PROFILE_FLAME)
+            ? 1.0 - smoothstep(
+                0.0,
+                FLAME_FUEL_BOUNDARY_HEIGHT_FRACTION,
+                normalizedHeight
+            )
+            : 1.0 - smoothstep(-0.72, 0.10, normalizedOffset.y);
         float sourceMask = densityProfile * radialSource * basalSource;
         float sourceStateMask = stateProfile * radialSource * basalSource;
         float authoredSigmaT = max(volume.half_extents_extinction.w, 0.0);
@@ -905,9 +912,17 @@ void applyCombustionSources(
         }
 
         if (isLocalProfile(profileKind, FOG_VOLUME_PROFILE_FLAME)) {
-            // A flame is a replenished fuel/heat boundary. The transported
-            // solver, not this analytic profile, determines the plume above
-            // the source and the soot it leaves after combustion.
+            // A persistent flame has a compact replenished fuel inlet and a
+            // larger luminous reaction zone. The transported solver, not the
+            // authored bound, determines the tip, downstream plume, and soot
+            // left after combustion.
+            float reactionZone = 1.0 - smoothstep(
+                FLAME_REACTION_ZONE_FADE_START_FRACTION,
+                FLAME_REACTION_ZONE_HEIGHT_FRACTION,
+                normalizedHeight
+            );
+            float reactionMask = densityProfile * radialSource * reactionZone;
+            float reactionStateMask = stateProfile * radialSource * reactionZone;
             float sourceTemperature = clamp(
                 max(volume.emission_temperature.w, 1650.0),
                 IGNITION_TEMPERATURE_K,
@@ -916,9 +931,9 @@ void applyCombustionSources(
             chemistry.x = max(chemistry.x, sourceMask * 0.82);
             chemistry.y = max(
                 chemistry.y,
-                mix(AMBIENT_TEMPERATURE_K, sourceTemperature, sourceStateMask)
+                mix(AMBIENT_TEMPERATURE_K, sourceTemperature, reactionStateMask)
             );
-            float sourceSigmaT = authoredSigmaT * sourceMask * 0.16;
+            float sourceSigmaT = authoredSigmaT * reactionMask * 0.16;
             chemistry.z = max(chemistry.z, sourceSigmaT * (1.0 - sourceAlbedo));
             velocity.w = max(velocity.w, sourceSigmaT * sourceAlbedo);
             float sourceRadianceLuma = max(
@@ -931,12 +946,22 @@ void applyCombustionSources(
             );
             chemistry.w = max(
                 chemistry.w,
-                sourceStateMask * sourceRadianceLuma / max(sourceVisibleRatio, 1.0e-4)
+                reactionStateMask * sourceRadianceLuma / max(sourceVisibleRatio, 1.0e-4)
             );
             velocity.y = max(
                 velocity.y,
-                sourceStateMask * 1.35 * WORLD_UNITS_PER_METER
+                reactionStateMask * mix(1.12, 1.48, turbulence.x)
+                    * WORLD_UNITS_PER_METER
             );
+            vec2 lateralTarget = (turbulence * 2.0 - 1.0)
+                * FLAME_SOURCE_LATERAL_SPEED_MPS
+                * WORLD_UNITS_PER_METER;
+            float velocityResponse = 1.0 - exp(
+                -FLAME_SOURCE_VELOCITY_RESPONSE_PER_SECOND
+                    * reactionStateMask
+                    * dt
+            );
+            velocity.xz = mix(velocity.xz, lateralTarget, velocityResponse);
             continue;
         }
 

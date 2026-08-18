@@ -133,6 +133,16 @@ pub const COMBUSTION_AEROSOL_DISSIPATION_PER_SECOND: f32 =
     byroredux_core::combustion::AEROSOL_DISSIPATION_PER_SECOND;
 pub const COMBUSTION_AEROSOL_LINGER_SECONDS: f32 =
     byroredux_core::combustion::AEROSOL_LINGER_SECONDS;
+pub const FLAME_FUEL_BOUNDARY_HEIGHT_FRACTION: f32 =
+    byroredux_core::combustion::FLAME_FUEL_BOUNDARY_HEIGHT_FRACTION;
+pub const FLAME_REACTION_ZONE_HEIGHT_FRACTION: f32 =
+    byroredux_core::combustion::FLAME_REACTION_ZONE_HEIGHT_FRACTION;
+pub const FLAME_REACTION_ZONE_FADE_START_FRACTION: f32 =
+    byroredux_core::combustion::FLAME_REACTION_ZONE_FADE_START_FRACTION;
+pub const FLAME_SOURCE_LATERAL_SPEED_MPS: f32 =
+    byroredux_core::combustion::FLAME_SOURCE_LATERAL_SPEED_MPS;
+pub const FLAME_SOURCE_VELOCITY_RESPONSE_PER_SECOND: f32 =
+    byroredux_core::combustion::FLAME_SOURCE_VELOCITY_RESPONSE_PER_SECOND;
 
 // Transported-combustion -> surface-light reduction. The froxel injector
 // accumulates fixed-point radiant moments into this camera-centred grid; Rust

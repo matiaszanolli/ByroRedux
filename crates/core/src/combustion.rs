@@ -38,6 +38,26 @@ pub const AEROSOL_LINGER_CUTOFF_FRACTION: f32 = 0.03;
 /// canonical cutoff after the final emitter disappears.
 pub const AEROSOL_LINGER_SECONDS: f32 = 78.0;
 
+/// Fraction of a persistent flame primitive occupied by the replenished fuel
+/// boundary, measured upward from its base. The remaining authored extent is
+/// a transport bound: buoyancy/advection must create the visible flame there.
+pub const FLAME_FUEL_BOUNDARY_HEIGHT_FRACTION: f32 = 0.32;
+
+/// Fraction of the authored flame height occupied by the luminous reaction
+/// zone. It is deliberately larger than the fuel boundary but leaves the tip
+/// and downstream plume to transported flow.
+pub const FLAME_REACTION_ZONE_HEIGHT_FRACTION: f32 = 0.55;
+
+/// Fully luminous basal portion before the reaction zone begins tapering.
+pub const FLAME_REACTION_ZONE_FADE_START_FRACTION: f32 = 0.14;
+
+/// Maximum source-scale lateral velocity that breaks a diffusion flame's
+/// otherwise perfectly vertical inlet, metres per second.
+pub const FLAME_SOURCE_LATERAL_SPEED_MPS: f32 = 0.38;
+
+/// First-order response rate toward the turbulent inlet velocity.
+pub const FLAME_SOURCE_VELOCITY_RESPONSE_PER_SECOND: f32 = 6.0;
+
 /// Canonical thermal-emitter regime produced at content/runtime boundaries.
 ///
 /// Keeping the radiance anchor beside temperature and soot albedo prevents
@@ -130,6 +150,12 @@ mod tests {
         let remaining = (-AEROSOL_DISSIPATION_PER_SECOND * AEROSOL_LINGER_SECONDS).exp();
         assert!(remaining <= AEROSOL_LINGER_CUTOFF_FRACTION);
         assert!(remaining > AEROSOL_LINGER_CUTOFF_FRACTION * 0.95);
+        assert!(FLAME_FUEL_BOUNDARY_HEIGHT_FRACTION > 0.0);
+        assert!(FLAME_REACTION_ZONE_FADE_START_FRACTION < FLAME_FUEL_BOUNDARY_HEIGHT_FRACTION);
+        assert!(FLAME_FUEL_BOUNDARY_HEIGHT_FRACTION < FLAME_REACTION_ZONE_HEIGHT_FRACTION);
+        assert!(FLAME_REACTION_ZONE_HEIGHT_FRACTION < 1.0);
+        assert!(FLAME_SOURCE_LATERAL_SPEED_MPS > 0.0);
+        assert!(FLAME_SOURCE_VELOCITY_RESPONSE_PER_SECOND > 0.0);
     }
 
     #[test]
