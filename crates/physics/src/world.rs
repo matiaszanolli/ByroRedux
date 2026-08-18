@@ -217,7 +217,8 @@ impl PhysicsWorld {
     /// and stay in the broad-phase / query-pipeline BVH forever — an
     /// unbounded per-cell-crossing leak. See #1520.
     pub fn remove_body(&mut self, handle: RigidBodyHandle) -> bool {
-        self.bodies
+        let removed = self
+            .bodies
             .remove(
                 handle,
                 &mut self.islands,
@@ -226,7 +227,15 @@ impl PhysicsWorld {
                 &mut self.multibody_joints,
                 /* remove_attached_colliders = */ true,
             )
-            .is_some()
+            .is_some();
+        if removed {
+            // Rapier processes neighbour wake-ups from removed colliders during
+            // `pipeline.step()`. Re-arm the static-scene fast path so that
+            // deferred cleanup and those wake-ups are not stranded when the
+            // scene is otherwise asleep (#2863).
+            self.wake();
+        }
+        removed
     }
 
     /// `(awake dynamic, awake kinematic)` body counts from the last step's
