@@ -216,25 +216,7 @@ pub(crate) fn combat_damage_system(world: &World, _dt: f32) {
             if let Some(mut dead) = world.query_mut::<Dead>() {
                 dead.insert(target, Dead);
             }
-            disable_actor_ai(world, target);
-            if let Some(skeleton_root) = world
-                .get::<HavokAnimationTarget>(target)
-                .map(|target| target.skeleton_root)
-            {
-                if let Some(mut players) = world.query_mut::<AnimationPlayer>() {
-                    players.remove(skeleton_root);
-                }
-                match crate::ragdoll::activate_ragdoll(world, skeleton_root) {
-                    Ok(body_count) => {
-                        outcome.push_str(&format!("; ragdoll activated ({body_count} bodies)"));
-                    }
-                    Err(error) => {
-                        outcome.push_str(&format!("; ragdoll unavailable: {error}"));
-                    }
-                }
-            } else {
-                outcome.push_str("; no ragdoll target");
-            }
+            outcome.push_str(&reconcile_dead_actor(world, target));
         }
 
         if let Some(mut state) = world.try_resource_mut::<CombatState>() {
@@ -308,6 +290,40 @@ fn disable_actor_ai(world: &World, actor: EntityId) {
     remove_component::<GuardState>(world, actor);
     remove_component::<PatrolBehavior>(world, actor);
     remove_component::<PatrolState>(world, actor);
+}
+
+/// Rebuild the runtime consequences of the persisted [`Dead`] fact.
+///
+/// Live-load deltas are intentionally additive, so absence of AI and
+/// animation components is not serialized as a second, generic tombstone
+/// format. Both the combat transition and save-load drain call this one
+/// reconciler, keeping those derived removals consistent (#3022).
+fn reconcile_dead_actor(world: &World, actor: EntityId) -> String {
+    disable_actor_ai(world, actor);
+    let Some(skeleton_root) = world
+        .get::<HavokAnimationTarget>(actor)
+        .map(|target| target.skeleton_root)
+    else {
+        return "; no ragdoll target".to_owned();
+    };
+    remove_component::<AnimationPlayer>(world, skeleton_root);
+    match crate::ragdoll::activate_ragdoll(world, skeleton_root) {
+        Ok(body_count) => format!("; ragdoll activated ({body_count} bodies)"),
+        Err(error) => format!("; ragdoll unavailable: {error}"),
+    }
+}
+
+/// Reconcile every saved death marker after a freshly loaded cell has had its
+/// mutable deltas applied. Returns the number of dead actors processed.
+pub(crate) fn reconcile_dead_actor_runtime_state(world: &World) -> usize {
+    let actors: Vec<EntityId> = world
+        .query::<Dead>()
+        .map(|dead| dead.iter().map(|(entity, _)| entity).collect())
+        .unwrap_or_default();
+    for actor in actors.iter().copied() {
+        reconcile_dead_actor(world, actor);
+    }
+    actors.len()
 }
 
 fn record_miss(world: &World, outcome: &str) {
@@ -403,5 +419,33 @@ mod tests {
             world.get::<ActorValues>(target).unwrap().current(0x2D4),
             12.0
         );
+    }
+
+    #[test]
+    fn dead_state_reconciliation_removes_respawned_ai() {
+        let mut world = World::new();
+        world.register::<Dead>();
+        world.register::<FollowBehavior>();
+        world.register::<FollowState>();
+        let actor = world.spawn();
+        world.insert(actor, Dead);
+        world.insert(
+            actor,
+            FollowBehavior {
+                target_form_id: Some(0x14),
+                follow_distance: Some(64.0),
+            },
+        );
+        world.insert(
+            actor,
+            FollowState {
+                target_entity: Some(0),
+            },
+        );
+
+        assert_eq!(reconcile_dead_actor_runtime_state(&world), 1);
+        assert!(world.get::<FollowBehavior>(actor).is_none());
+        assert!(world.get::<FollowState>(actor).is_none());
+        assert!(world.get::<Dead>(actor).is_some());
     }
 }

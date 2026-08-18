@@ -90,6 +90,21 @@ pub fn list_slots(dir: &Path) -> Vec<u32> {
     slots
 }
 
+/// Most recently modified valid save slot, used by the player-facing
+/// quickload action. Invalid names and unreadable metadata are ignored.
+pub fn latest_slot(dir: &Path) -> Option<u32> {
+    fs::read_dir(dir)
+        .ok()?
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| {
+            let slot = parse_slot_filename(&entry.file_name().to_string_lossy())?;
+            let modified = entry.metadata().ok()?.modified().ok()?;
+            Some((slot, modified))
+        })
+        .max_by_key(|(_, modified)| *modified)
+        .map(|(slot, _)| slot)
+}
+
 /// Cursor for a resumed ring: one past the slot with the newest mtime, or
 /// `0` when no slots exist. Pure so the resume policy is unit-testable
 /// without touching the filesystem. SAVE-D3-02.
@@ -247,6 +262,7 @@ mod tests {
 
         write_slot(&dir, 0, payload).unwrap();
         assert_eq!(list_slots(&dir), vec![0, 2]);
+        assert_eq!(latest_slot(&dir), Some(0));
 
         let _ = fs::remove_dir_all(&dir);
     }

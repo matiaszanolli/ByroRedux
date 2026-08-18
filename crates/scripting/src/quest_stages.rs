@@ -102,10 +102,8 @@ pub struct QuestStageData {
     pub current_stage: u16,
     pub stages_done: HashSet<u16>,
     /// Running/stopped/completed state exposed by the Papyrus Quest API.
-    #[cfg_attr(feature = "save", serde(default))]
     pub status: QuestStatus,
     /// Whether the quest is selected in the player's active journal.
-    #[cfg_attr(feature = "save", serde(default))]
     pub active: bool,
 }
 

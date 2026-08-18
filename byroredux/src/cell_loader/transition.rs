@@ -328,7 +328,15 @@ pub fn unload_current_interior(
         log::info!("Transition: unloading prior interior cell (root {prev})");
         super::unload_cell(world, ctx, prev);
     }
+    clear_current_interior_identity(world);
+}
+
+/// Clear both pieces of interior identity as one state transition. Exterior
+/// streaming has no single-cell context, so retaining either resource would
+/// make a later save claim it belongs to the departed interior (#3021).
+fn clear_current_interior_identity(world: &mut byroredux_core::ecs::World) {
     world.insert_resource(CurrentCellRoot(None));
+    world.remove_resource::<CurrentCellContext>();
 }
 
 /// Reposition the [`ActiveCamera`] at a destination spawn point.
@@ -455,6 +463,22 @@ pub fn log_transition_header(transition: &PendingCellTransition) -> String {
 mod tests {
     use super::*;
     use byroredux_core::ecs::World;
+
+    #[test]
+    fn clearing_interior_identity_removes_saved_cell_context() {
+        let mut world = World::new();
+        world.insert_resource(CurrentCellRoot(Some(7)));
+        world.insert_resource(CurrentCellContext {
+            cell_editor_id: "Vault21".into(),
+            esm_path: "FalloutNV.esm".into(),
+            masters: Vec::new(),
+        });
+
+        clear_current_interior_identity(&mut world);
+
+        assert_eq!(world.resource::<CurrentCellRoot>().0, None);
+        assert!(world.try_resource::<CurrentCellContext>().is_none());
+    }
 
     /// Mirror of the Z-up → Y-up convention REFR placements use
     /// (`references.rs:198-202`): `(x, y, z)_zup → (x, z, -y)_yup`.

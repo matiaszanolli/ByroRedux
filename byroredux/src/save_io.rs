@@ -33,7 +33,8 @@ use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::World;
 use byroredux_core::math::Vec3;
 use byroredux_save::validate::{
-    log_validation_warnings, validate_world, ValidationError, ValidationKind,
+    log_validation_warnings, validate_entity_reference, validate_world, ValidationError,
+    ValidationKind,
 };
 use byroredux_save::{disk, encode, save_world, SaveRegistry, Snapshot};
 
@@ -582,32 +583,26 @@ fn validate_cinematic_entity_refs(world: &World) -> Vec<ValidationError> {
 
     if let Some(q) = world.query::<HorseTetherState>() {
         for (entity, tether) in q.iter() {
-            if tether.horse >= next_entity {
-                errors.push(ValidationError {
-                    entity,
-                    kind: ValidationKind::DanglingEntity,
-                    detail: format!(
-                        "HorseTetherState.horse {} was never spawned (next_entity={next_entity})",
-                        tether.horse
-                    ),
-                });
-            }
+            validate_entity_reference(
+                entity,
+                "HorseTetherState.horse",
+                tether.horse,
+                next_entity,
+                &mut errors,
+            );
         }
     }
 
     if let Some(q) = world.query::<ActorCinematicState>() {
         for (entity, state) in q.iter() {
             if let Some(vehicle) = state.vehicle {
-                if vehicle >= next_entity {
-                    errors.push(ValidationError {
-                        entity,
-                        kind: ValidationKind::DanglingEntity,
-                        detail: format!(
-                            "ActorCinematicState.vehicle {vehicle} was never spawned \
-                             (next_entity={next_entity})"
-                        ),
-                    });
-                }
+                validate_entity_reference(
+                    entity,
+                    "ActorCinematicState.vehicle",
+                    vehicle,
+                    next_entity,
+                    &mut errors,
+                );
             }
         }
     }
@@ -616,6 +611,13 @@ fn validate_cinematic_entity_refs(world: &World) -> Vec<ValidationError> {
 }
 
 pub struct SaveCommand;
+
+/// Player-facing quicksave entry point. This bypasses command lookup while
+/// deliberately sharing the exact validation and atomic-write implementation
+/// with the operator command.
+pub fn quicksave(world: &World) -> CommandOutput {
+    SaveCommand.execute(world, "")
+}
 
 impl ConsoleCommand for SaveCommand {
     fn name(&self) -> &str {
@@ -816,6 +818,22 @@ impl ConsoleCommand for SaveInfoCommand {
 /// apply between frames.
 pub struct LoadCommand;
 
+/// Queue a verified slot for the between-frame live-load drain.
+pub fn queue_load_slot(world: &World, slot: u32) -> CommandOutput {
+    LoadCommand.execute(world, &slot.to_string())
+}
+
+/// Queue the newest on-disk slot, matching conventional quickload behavior.
+pub fn quickload_latest(world: &World) -> CommandOutput {
+    let latest = world
+        .try_resource::<SaveState>()
+        .and_then(|state| disk::latest_slot(&state.dir));
+    match latest {
+        Some(slot) => queue_load_slot(world, slot),
+        None => CommandOutput::error("no save slots available"),
+    }
+}
+
 impl ConsoleCommand for LoadCommand {
     fn name(&self) -> &str {
         "load"
@@ -992,14 +1010,18 @@ pub fn execute_pending_save_loads(
     }
     let remap = byroredux_save::build_form_id_remap(world, &registry, &snapshot);
     match byroredux_save::apply_deltas(world, &registry, &snapshot, &remap, MUTABLE_DELTA_COLUMNS) {
-        Ok(applied) => log::info!(
-            "save load: cell '{}' reloaded ({} entities); applied {} saved deltas across {} \
-             form-id-matched entities",
-            cell_ctx.cell_editor_id,
-            entity_count,
-            applied,
-            remap.len()
-        ),
+        Ok(applied) => {
+            let dead = crate::combat::reconcile_dead_actor_runtime_state(world);
+            log::info!(
+                "save load: cell '{}' reloaded ({} entities); applied {} saved deltas across {} \
+                 form-id-matched entities; reconciled {} dead actors",
+                cell_ctx.cell_editor_id,
+                entity_count,
+                applied,
+                remap.len(),
+                dead
+            );
+        }
         Err(e) => log::error!("save load: delta apply failed: {e}"),
     }
 

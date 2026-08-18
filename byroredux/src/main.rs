@@ -374,6 +374,18 @@ impl App {
 
         boot::install_runtime_registries(&mut world, &scheduler);
 
+        // Queue startup restore after the save resources exist. The request
+        // drains after renderer and scene setup, sharing the F9/menu path.
+        if let Some(slot) = cli_args::parse_string_arg(args, "--load") {
+            match slot.parse::<u32>() {
+                Ok(slot) => {
+                    let output = save_io::queue_load_slot(&world, slot);
+                    log::info!("startup --load: {}", output.lines.join(" | "));
+                }
+                Err(_) => log::error!("--load requires a numeric save slot, got '{slot}'"),
+            }
+        }
+
         // Universal settings live in core and are presented by the on-screen
         // overlay. Subsystems can register additional entries here without
         // teaching the Settings tab about renderer/game-specific resources.
@@ -729,6 +741,14 @@ fn apply_debug_ui_outputs(
     let mut debug_ui = debug_ui;
     let resume_game = outputs.resume_game;
     let quit_game = outputs.quit_game;
+    if outputs.quicksave {
+        let output = save_io::quicksave(world);
+        log::info!("pause menu quicksave: {}", output.lines.join(" | "));
+    }
+    if outputs.quickload {
+        let output = save_io::quickload_latest(world);
+        log::info!("pause menu quickload: {}", output.lines.join(" | "));
+    }
     let mut settings_changed = false;
     for action in outputs.inventory_actions {
         if inventory::apply_action(world, action) == inventory::MutationResult::Unavailable {

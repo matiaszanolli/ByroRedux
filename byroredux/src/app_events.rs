@@ -282,6 +282,25 @@ impl ApplicationHandler for App {
             return;
         }
 
+        let save_action = pressed_key.and_then(|key| {
+            self.world
+                .try_resource::<crate::interaction::ActionBindings>()
+                .and_then(|bindings| bindings.action_for_key(key))
+        });
+        let save_output = match save_action {
+            Some(crate::interaction::InputAction::Quicksave) => {
+                Some(crate::save_io::quicksave(&self.world))
+            }
+            Some(crate::interaction::InputAction::Quickload) => {
+                Some(crate::save_io::quickload_latest(&self.world))
+            }
+            _ => None,
+        };
+        if let Some(output) = save_output {
+            log::info!("player save action: {}", output.lines.join(" | "));
+            return;
+        }
+
         match event {
             WindowEvent::CloseRequested => {
                 self.shutdown(event_loop);

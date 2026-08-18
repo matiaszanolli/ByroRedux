@@ -7,7 +7,7 @@ how it's written safely to disk, and — the part that makes this engine's
 save/load different from a typical "restart and reload a level" design —
 how a save gets applied to a *running* engine without a process restart.
 
-> **Currency note.** Verified against the tree as of 2026-07-15, all
+> **Currency note.** Verified against the tree as of 2026-08-18, all
 > citations checked against current source. One real contradiction found
 > in ROADMAP.md while writing this: its M45 milestone row (line 314)
 > says "M45.1 player-pose restore closed 2026-06-21" with full
@@ -20,8 +20,8 @@ how a save gets applied to a *running* engine without a process restart.
 
 ## 1. Save trigger
 
-Console command only — no keybind, no CLI flag. `SaveCommand`
-(`byroredux/src/save_io.rs:378`, name `"save"`) resolves the target slot
+`F5`, the pause-menu **Quicksave** button, and the `save` console command
+all call the same `save_io::quicksave`/`SaveCommand` implementation. It resolves the target slot
 (empty args → `SaveRing::advance()`; explicit `u32` → that slot), runs
 the validation gates (§3), then calls `save_world` → `encode` →
 `disk::write_slot`. It only needs `&World`, so it's a plain
@@ -95,16 +95,17 @@ quicksave can't clobber the most recent good save.
 
 ## 5. Load trigger
 
-There's no `--load` CLI flag and no separate "cold boot load" code
-path — the only load entry point is the `load <slot>` console command,
-`LoadCommand` (`byroredux/src/save_io.rs:533`). Being read-only against
+`F9` and the pause-menu **Quickload** button select the newest slot;
+`--load <slot>` queues a specific slot during startup; and the diagnostic
+console retains `load <slot>`. All three enter through
+`save_io::queue_load_slot`/`LoadCommand`. Being read-only against
 `&World`, it can only decode + verify the slot and check it carries a
 `CurrentCellContext` (a loose-NIF or exterior-only save has no cell to
 reload into — that's an error here); it then pushes the decoded
 `Snapshot` into a `PendingSaveLoadSlot` resource for the next frame to
 drain, because actually applying a load needs `&mut World` **and**
 `&mut VulkanContext`, which a console command can't hold. Every load in
-this engine — whether "at boot" conceptually or mid-session — goes
+this engine — whether queued at boot or mid-session — goes
 through the same live load-apply path in §6; there's nothing else to
 distinguish, since a fresh process simply has no world state to overlay
 onto yet.

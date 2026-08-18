@@ -59,6 +59,8 @@ pub(crate) enum InputAction {
     Attack,
     Block,
     Inventory,
+    Quicksave,
+    Quickload,
     #[expect(dead_code, reason = "no input source yet — see the enum docs (#2732)")]
     Pause,
 }
@@ -93,6 +95,7 @@ impl InputAction {
             Self::Attack => "controls.bind.attack",
             Self::Block => "controls.bind.block",
             Self::Inventory => "controls.bind.inventory",
+            Self::Quicksave | Self::Quickload => "",
             Self::Pause => "",
         }
     }
@@ -107,6 +110,8 @@ impl InputAction {
             Self::Sprint => "Sprint / boost",
             Self::Activate => "Activate",
             Self::Inventory => "Inventory",
+            Self::Quicksave => "Quicksave",
+            Self::Quickload => "Quickload",
             Self::Attack => "Attack",
             Self::Block => "Block",
             Self::Pause => "Pause",
@@ -140,6 +145,8 @@ impl Default for ActionBindings {
                 (KeyCode::KeyR, InputAction::Attack),
                 (KeyCode::KeyC, InputAction::Block),
                 (KeyCode::Tab, InputAction::Inventory),
+                (KeyCode::F5, InputAction::Quicksave),
+                (KeyCode::F9, InputAction::Quickload),
             ]),
             mouse: HashMap::from([
                 (MouseButton::Left, InputAction::Attack),
@@ -202,7 +209,7 @@ impl ActionBindings {
             .fold(keyboard, |mask, action| mask | action.bit())
     }
 
-    fn action_for_key(&self, key: KeyCode) -> Option<InputAction> {
+    pub(crate) fn action_for_key(&self, key: KeyCode) -> Option<InputAction> {
         self.keyboard.get(&key).copied()
     }
 }
@@ -1356,5 +1363,18 @@ mod tests {
             },
         );
         entity
+    }
+
+    #[test]
+    fn save_actions_have_conventional_default_bindings() {
+        let bindings = ActionBindings::default();
+        assert_eq!(
+            bindings.action_for_key(KeyCode::F5),
+            Some(InputAction::Quicksave)
+        );
+        assert_eq!(
+            bindings.action_for_key(KeyCode::F9),
+            Some(InputAction::Quickload)
+        );
     }
 }

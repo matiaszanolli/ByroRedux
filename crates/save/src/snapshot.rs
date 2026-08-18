@@ -52,7 +52,10 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// Version 2 invalidates version-1 snapshots that serialized Skyrim Health
 /// under engine-enum key `24`. ActorValues now use the authored/remapped
 /// `AVHealth` FormID in the same key space as CTDA `GetActorValue`.
-pub const FORMAT_MAJOR: u16 = 2;
+/// Version 3 makes quest lifecycle fields required. Version 2 briefly added
+/// them with `serde(default)`, which allowed older snapshots to load with
+/// silently invented state (#3020).
+pub const FORMAT_MAJOR: u16 = 3;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

@@ -263,16 +263,13 @@ pub fn build_form_id_remap(
 /// columns.
 ///
 /// This overlay is **additive-only** — it can update or insert a row via
-/// `ApplyFn`, never remove one. The reloaded cell respawns every REFR
-/// authored in the ESM regardless of what happened to it during the saved
-/// session. There is currently no enable/disable/delete persistence
-/// mechanism to overlay in the first place (no `Disabled`/`Deleted` marker
-/// component exists), so this is a latent gap, not an active bug: nothing
-/// regresses today. It becomes a real reference-break the moment such a
-/// component and its "which REFRs were disabled/deleted this session" set
-/// land — at that point the drain needs a companion despawn/hide pass run
-/// after this function, keyed the same way (`remap`), before it can be
-/// persisted. See #1847 / SAVE-04.
+/// `ApplyFn`, never remove one. Runtime removals that are consequences of a
+/// persisted fact must therefore be rebuilt by the binary after this call.
+/// Death uses that model: `Dead` is overlaid here, then the shared combat
+/// reconciler removes respawned AI/animation state and reactivates ragdoll
+/// (#3022). Future disable/delete persistence needs the same explicit
+/// marker-plus-reconciler contract rather than teaching this generic driver
+/// domain semantics. See #1847 / SAVE-04.
 pub fn apply_deltas(
     world: &mut World,
     registry: &SaveRegistry,

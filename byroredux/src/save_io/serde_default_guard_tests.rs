@@ -1,237 +1,187 @@
-//! Extracted from `save_io.rs`'s inline `mod tests` (#2407 / TD1-004).
-//! Production code there is ~1030 LOC; the test bulk alone pushed the
-//! file past 3000. Split by topic, contents unchanged.
+//! Save-schema source guard tests.
+//!
+//! The set of scanned files is derived from `build_save_registry` and the
+//! workspace's feature-gated save derives. This deliberately avoids another
+//! hand-maintained shadow registry: moving or registering a type changes the
+//! scan automatically.
 
-/// Source files that define the save-participating types registered in
-/// [`build_save_registry`] — top-level columns AND the types nested
-/// inside them (an `Inventory`'s `ItemStack`, an `AnimationStack`'s
-/// `AnimationLayer`, the `FormIdPair` behind the form-id key column, …).
-///
-/// KEEP IN LOCKSTEP with `build_save_registry`: registering a new saved
-/// type (or nesting a new type inside a saved column) means adding its
-/// defining file here so the SAVE-D2-01 guard below scans it.
-/// Paths are relative to `CARGO_MANIFEST_DIR` (the `byroredux/` crate).
-const SAVE_TYPE_SOURCES: &[&str] = &[
-    "../crates/core/src/ecs/packed.rs",                  // Transform
-    "../crates/core/src/ecs/components/name.rs",         // Name
-    "../crates/core/src/ecs/components/hierarchy.rs",    // Parent, Children
-    "../crates/core/src/ecs/components/inventory.rs", // Inventory, EquipmentSlots, ItemStack, InventoryIndex
-    "../crates/core/src/ecs/components/light.rs",     // LightSource, LightFlicker
-    "../crates/core/src/ecs/components/form_id.rs",   // FormIdComponent
-    "../crates/core/src/ecs/components/actor_values.rs", // ActorValues
-    "../crates/core/src/form_id.rs",                  // FormIdPair (the serialised key)
-    "../crates/core/src/animation/player.rs",         // AnimationPlayer
-    "../crates/core/src/animation/stack.rs",          // AnimationStack, AnimationLayer
-    "../crates/core/src/ecs/resources/mod.rs",        // ItemInstancePool, ItemInstance
-    "../crates/scripting/src/timer.rs",               // ScriptTimer
-    "../crates/scripting/src/vm_state.rs",            // TwoStateActivator, ScriptVariables
-    "../crates/plugin/src/esm/records/condition.rs",  // ConditionStringId nested in ScriptVariables
-    "../crates/scripting/src/quest_stages.rs", // QuestStageState, QuestObjectiveState + nested types
-    "../crates/scripting/src/scene.rs",        // QuestAliasInjectionState grant ledger
-    "src/cell_loader/transition.rs",           // CurrentCellContext
-    "src/save_io.rs",                          // PlayerPose
-    "src/components/game_time.rs",             // GameTimeRes
-    "../crates/core/src/ecs/components/wander.rs", // WanderState (+ WanderBehavior, WanderPhase)
-    "../crates/core/src/ecs/components/travel.rs", // TravelState, Traveled (+ TravelBehavior)
-    "../crates/core/src/ecs/components/follow.rs", // FollowState (+ FollowBehavior)
-    "../crates/core/src/ecs/components/escort.rs", // EscortState, Escorted (+ EscortBehavior)
-    "../crates/core/src/ecs/components/guard.rs", // GuardState (+ GuardBehavior)
-    "../crates/core/src/ecs/components/patrol.rs", // PatrolState (+ PatrolBehavior)
-    "../crates/core/src/ecs/components/sandbox.rs", // Seated (+ SandboxBehavior)
-    // #2537 / SAVE-D2-19 — six files carrying ~23 save-participating
-    // serde-derived types, wired into `build_save_registry` by the
-    // #2378/#2379/#2380/#2381/#2382/c5202627 commit sequence but never
-    // added here. Same failure class as #2015/SAVE-D2-03
-    // (actor_values.rs), now recurred once already — see this guard's
-    // own doc comment above for why a missing entry here is a silent
-    // blind spot, not a build error.
-    "../crates/core/src/ecs/components/material.rs", // Material, EffectFalloff, ShaderTypeFields, PbrMaterial, EmissiveSource
-    "../crates/core/src/ecs/components/collision.rs", // RigidBodyData (+ MotionType)
-    "../crates/scripting/src/papyrus_demo/mod.rs",   // RumbleOnActivate (+ RumbleState)
-    "../crates/scripting/src/cinematic.rs", // ActorCinematicState, HorseTetherState, CinematicPresentationState + nested types
-    "../crates/scripting/src/player_control.rs", // PlayerControlState, ActorControlState (+ PlayerControlSelection)
-    "../crates/scripting/src/fragment.rs",       // FragmentExecutionQueue (+ nested types)
-];
+use std::path::{Path, PathBuf};
 
-/// Does `line` carry a `#[serde(...)]` attribute that declares
-/// `default`, in any key position?
-///
-/// SAVE-D2-NEW-07 (#2181) — the guard below used to test
-/// `starts_with("#[serde(default")`, which catches `#[serde(default)]`
-/// and `#[serde(default, ...)]` but misses the semantically identical
-/// `#[serde(skip_serializing_if = "...", default)]`, a legal and
-/// idiomatic serde ordering. That ordering exists nowhere in
-/// [`SAVE_TYPE_SOURCES`] today, so this closes a blind spot rather than
-/// a live gap.
-///
-/// A bare `line.contains("default")` would close it too, but it
-/// false-positives on a *value* that merely spells the word — e.g.
-/// `#[serde(skip_serializing_if = "Option::is_default")]` or
-/// `#[serde(rename = "default")]`, neither of which default-fills
-/// anything. So this parses the attribute's key list instead: split the
-/// parenthesised body on top-level commas (commas inside string
-/// literals don't count), take each entry's key (the text before any
-/// `=`), and match `default` exactly.
-///
-/// Residual, deliberately: an attribute rustfmt has broken across lines
-/// is only seen one fragment at a time. `default` alone on its own line
-/// still matches (the continuation is scanned as its own line and the
-/// `#[serde(` fragment opens the body), but a key list wrapped so that
-/// `default` shares a line with neither is not reachable by a
-/// line-oriented scan. Same class of admitted residual as the
-/// new-`Option` half documented on the guard itself.
-fn serde_attr_declares_default(line: &str) -> bool {
+fn rust_sources_below(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            rust_sources_below(&path, out);
+        } else if path.extension().is_some_and(|ext| ext == "rs") {
+            out.push(path);
+        }
+    }
+}
+
+fn registered_type_names(registry_source: &str) -> Vec<&str> {
+    [
+        ".register_component::<",
+        ".register_resource::<",
+        ".register_form_id_component::<",
+    ]
+    .into_iter()
+    .flat_map(|prefix| {
+        registry_source
+            .match_indices(prefix)
+            .filter_map(move |(start, _)| {
+                let rest = &registry_source[start + prefix.len()..];
+                let end = rest.find('>')?;
+                rest[..end].rsplit("::").next()
+            })
+    })
+    .collect()
+}
+
+fn defines_type(source: &str, type_name: &str) -> bool {
+    ["struct ", "enum ", "type "]
+        .into_iter()
+        .any(|kind| source.contains(&format!("{kind}{type_name}")))
+}
+
+fn save_type_sources() -> Vec<PathBuf> {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let registry_source = include_str!("../save_io.rs");
+    let registered = registered_type_names(registry_source);
+    let mut candidates = Vec::new();
+    for root in [
+        manifest.join("src"),
+        manifest.join("../crates/core/src"),
+        manifest.join("../crates/plugin/src"),
+        manifest.join("../crates/scripting/src"),
+    ] {
+        rust_sources_below(&root, &mut candidates);
+    }
+
+    candidates.retain(|path| {
+        let Ok(source) = std::fs::read_to_string(path) else {
+            return false;
+        };
+        source.contains("cfg_attr(feature = \"save\"")
+            || registered.iter().any(|name| defines_type(&source, name))
+    });
+    candidates.sort();
+    candidates.dedup();
+    candidates
+}
+
+/// Return the body of the first serde attribute on this line, supporting
+/// both `#[serde(...)]` and `#[cfg_attr(..., serde(...))]`.
+fn serde_attribute_body(line: &str) -> Option<&str> {
     let trimmed = line.trim_start();
-    // Attribute form only, so a comment or string mention of the
-    // attribute (this file has several) doesn't self-trip the scan.
-    let Some(rest) = trimmed.strip_prefix("#[serde(") else {
+    if !trimmed.starts_with("#[") {
+        return None;
+    }
+    let serde = trimmed.find("serde(")? + "serde(".len();
+    let bytes = trimmed.as_bytes();
+    let mut depth = 1usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    for i in serde..bytes.len() {
+        let byte = bytes[i];
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match byte {
+            b'"' => in_string = true,
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&trimmed[serde..i]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn serde_attr_declares_unsafe_default(line: &str) -> bool {
+    let Some(body) = serde_attribute_body(line) else {
         return false;
     };
-    // Body is everything up to the closing `)]`; a wrapped attribute
-    // whose first line has no `)]` contributes what it does have.
-    let body = match rest.rfind(")]") {
-        Some(end) => &rest[..end],
-        None => rest,
-    };
     let mut in_string = false;
-    for key in body
+    let keys: Vec<&str> = body
         .split(|c| {
             if c == '"' {
                 in_string = !in_string;
             }
             c == ',' && !in_string
         })
-        // The key is the text left of `=`; a valueless key is the whole
-        // entry. `rename = "default"` yields `rename`, not `default`.
         .map(|entry| entry.split('=').next().unwrap_or("").trim())
-    {
-        if key == "default" {
-            return true;
-        }
-    }
-    false
+        .collect();
+    // `skip` fields do not exist in the on-disk shape. Serde requires a
+    // construction default for them, but that cannot mask schema drift.
+    keys.iter().any(|key| *key == "default") && !keys.iter().any(|key| *key == "skip")
 }
 
-/// SAVE-D2-01 (#1714) — a save-participating struct must not gain a
-/// `#[serde(default)]` field without a [`FORMAT_MAJOR`] bump.
-///
-/// `schema_fingerprint` hashes column *type keys*, not field layout, so
-/// an intra-type field change slips past it. serde's required-field
-/// backstop only rejects an old save when the new field is *required*; a
-/// `#[serde(default)]` field default-fills a missing column entry on an
-/// old save, loading it **silently downgraded**. Until a versioned
-/// migrator chain exists, the only safe shape change is a `FORMAT_MAJOR`
-/// bump (which `decode` rejects across).
-///
-/// This guard trips on the explicit-`#[serde(default)]` half of the
-/// footgun. The new-`Option` half can't be caught statically (legitimate
-/// `Option`s already exist in saved structs — e.g.
-/// `EquipmentSlots::occupants`, `AnimationStack::root_entity`); it rides
-/// the doc rule on [`byroredux_save::FORMAT_MAJOR`]. Static source scan,
-/// mirroring the `texture.rs` / `draw.rs` `include_str!` ordering checks.
 #[test]
 fn serde_default_on_saved_struct_requires_format_major_bump() {
-    let manifest = env!("CARGO_MANIFEST_DIR");
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut offenders = Vec::new();
-    for rel in SAVE_TYPE_SOURCES {
-        let path = std::path::Path::new(manifest).join(rel);
-        let src = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-            panic!(
-                "SAVE-D2-01 guard can't read {} ({e}); a save-participating \
-                 type's file moved — update SAVE_TYPE_SOURCES.",
-                path.display()
-            )
-        });
+    for path in save_type_sources() {
+        let src = std::fs::read_to_string(&path).unwrap();
         for (i, line) in src.lines().enumerate() {
-            // #2181 — key-position-independent; see the helper.
-            if serde_attr_declares_default(line) {
-                offenders.push(format!("{rel}:{}", i + 1));
+            if serde_attr_declares_unsafe_default(line) {
+                let relative = path.strip_prefix(manifest).unwrap_or(&path);
+                offenders.push(format!("{}:{}", relative.display(), i + 1));
             }
         }
     }
     assert!(
         offenders.is_empty(),
-        "SAVE-D2-01 (#1714): `#[serde(default)]` on a save-participating \
-         struct masks an intra-type change at load — schema_fingerprint is \
-         type-key-only, so an old save loads silently default-filled. Bump \
-         byroredux_save::FORMAT_MAJOR (+ add a migrator) or drop the \
-         default. Offenders: {offenders:?}",
+        "SAVE-D2-01 (#1714): serde(default) on serialized save data masks an \
+         intra-type change. Bump byroredux_save::FORMAT_MAJOR and remove the \
+         compatibility default. Offenders: {offenders:?}",
     );
 }
 
-/// SAVE-D2-NEW-07 (#2181) — the ordering the old line-prefix match
-/// missed. `default` as a non-first key is exactly as dangerous as
-/// `default` as the first one: both silently default-fill a missing
-/// column on an old save.
 #[test]
-fn serde_guard_catches_default_in_any_key_position() {
-    // The reported blind spot, verbatim from the issue.
-    assert!(serde_attr_declares_default(
-        r#"#[serde(skip_serializing_if = "Vec::is_empty", default)]"#
+fn source_discovery_follows_registry_and_nested_save_modules() {
+    let sources = save_type_sources();
+    assert!(sources.iter().any(|path| path.ends_with("save_io.rs")));
+    assert!(sources
+        .iter()
+        .any(|path| path.ends_with("scene/quest_alias.rs")));
+    assert!(!sources.iter().any(|path| path.ends_with("settings_io.rs")));
+}
+
+#[test]
+fn serde_guard_handles_bare_and_cfg_attr_forms() {
+    assert!(serde_attr_declares_unsafe_default("#[serde(default)]"));
+    assert!(serde_attr_declares_unsafe_default(
+        "#[cfg_attr(feature = \"save\", serde(default))]"
     ));
-    // …and with a value, still not first.
-    assert!(serde_attr_declares_default(
-        r#"    #[serde(rename = "n", default = "Vec::new")]"#
-    ));
-    // Third position, after two other keys.
-    assert!(serde_attr_declares_default(
-        r#"#[serde(rename = "n", skip_serializing_if = "Vec::is_empty", default)]"#
+    assert!(serde_attr_declares_unsafe_default(
+        r#"#[cfg_attr(feature = "save", serde(rename = "n", default = "Vec::new"))]"#
     ));
 }
 
-/// The forms the original prefix match already caught must keep
-/// tripping — broadening the check must not narrow it.
 #[test]
-fn serde_guard_still_catches_the_original_first_key_forms() {
-    assert!(serde_attr_declares_default("#[serde(default)]"));
-    assert!(serde_attr_declares_default(
-        r#"#[serde(default = "default_layers")]"#
+fn serde_guard_ignores_skipped_fields_and_non_keys() {
+    assert!(!serde_attr_declares_unsafe_default(
+        "#[cfg_attr(feature = \"save\", serde(skip, default))]"
     ));
-    assert!(serde_attr_declares_default(
-        r#"    #[serde(default, rename = "n")]"#
-    ));
-}
-
-/// The reason this parses keys instead of using `contains("default")`:
-/// a *value* that merely spells the word default-fills nothing, and a
-/// guard that trips on it would be noise the next maintainer silences.
-#[test]
-fn serde_guard_ignores_default_appearing_only_as_a_value() {
-    assert!(!serde_attr_declares_default(
-        r#"#[serde(skip_serializing_if = "Option::is_default")]"#
-    ));
-    assert!(!serde_attr_declares_default(
+    assert!(!serde_attr_declares_unsafe_default(
         r#"#[serde(rename = "default")]"#
     ));
-    assert!(!serde_attr_declares_default(
-        r#"#[serde(with = "crate::default_codec")]"#
+    assert!(!serde_attr_declares_unsafe_default(
+        r#"#[serde(skip_serializing_if = "Option::is_default")]"#
     ));
-}
-
-/// Attribute form only — prose and string mentions of the attribute
-/// (this file is full of them, including the assert message below)
-/// must not self-trip the scan.
-#[test]
-fn serde_guard_ignores_non_attribute_mentions() {
-    assert!(!serde_attr_declares_default(
-        "/// a `#[serde(default)]` field default-fills a missing column"
-    ));
-    assert!(!serde_attr_declares_default("// #[serde(default)]"));
-    assert!(!serde_attr_declares_default(
-        r##"    let s = "#[serde(default)]";"##
-    ));
-    // A different attribute that happens to name a `default` key.
-    assert!(!serde_attr_declares_default("#[builder(default)]"));
-}
-
-/// A comma inside a string literal is not a key separator — the split
-/// must not mistake the tail of a quoted path for a new key.
-#[test]
-fn serde_guard_does_not_split_on_commas_inside_string_literals() {
-    assert!(!serde_attr_declares_default(
-        r#"#[serde(rename = "a,default")]"#
-    ));
-    assert!(serde_attr_declares_default(
-        r#"#[serde(rename = "a,b", default)]"#
-    ));
+    assert!(!serde_attr_declares_unsafe_default("// #[serde(default)]"));
 }

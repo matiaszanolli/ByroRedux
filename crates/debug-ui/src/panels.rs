@@ -177,6 +177,10 @@ pub struct PanelOutputs {
     pub refresh_entities: bool,
     /// Close the native pause menu and return input to the world.
     pub resume_game: bool,
+    /// Save to the next ring slot through the binary's canonical save API.
+    pub quicksave: bool,
+    /// Load the most recently written slot through the canonical load queue.
+    pub quickload: bool,
     /// Perform the same orderly shutdown as the window close button.
     pub quit_game: bool,
 }
@@ -275,6 +279,14 @@ fn draw_pause_page(ui: &mut egui::Ui, state: &mut GameMenuState, outputs: &mut P
         ui.add_space(8.0);
         if wide_button(ui, "Inventory").clicked() {
             state.page = GameMenuPage::Inventory;
+        }
+        ui.add_space(8.0);
+        if wide_button(ui, "Quicksave").clicked() {
+            outputs.quicksave = true;
+        }
+        ui.add_space(8.0);
+        if wide_button(ui, "Quickload").clicked() {
+            outputs.quickload = true;
         }
         ui.add_space(8.0);
         if wide_button(ui, "Quit to desktop").clicked() {

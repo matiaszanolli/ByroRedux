@@ -13,7 +13,9 @@
 //! then layer game-specific checks on top.
 
 use byroredux_core::animation::{AnimationClipRegistry, AnimationPlayer};
-use byroredux_core::ecs::components::{Children, EquipmentSlots, Inventory, Parent};
+use byroredux_core::ecs::components::{
+    Children, EquipmentSlots, EquippedWeapon, EscortState, FollowState, Inventory, Parent, Seated,
+};
 use byroredux_core::ecs::resources::ItemInstancePool;
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::world::World;
@@ -63,6 +65,7 @@ pub fn validate_world(world: &World) -> Vec<ValidationError> {
 
     validate_hierarchy(world, next_entity, &mut errors);
     validate_equipment(world, &mut errors);
+    validate_saved_entity_references(world, next_entity, &mut errors);
     validate_animation(world, next_entity, &mut errors);
     validate_inventory_instances(world, &mut errors);
 
@@ -179,40 +182,137 @@ fn validate_hierarchy(world: &World, next_entity: EntityId, errors: &mut Vec<Val
     }
 }
 
-/// Every `EquipmentSlots` occupant must index a live row in the same
-/// entity's `Inventory`.
+/// Every saved inventory index must resolve to the same entity's Inventory.
 fn validate_equipment(world: &World, errors: &mut Vec<ValidationError>) {
-    let Some(q_equip) = world.query::<EquipmentSlots>() else {
-        return;
-    };
     let inv = world.query::<Inventory>();
 
-    for (entity, slots) in q_equip.iter() {
-        let item_count = inv.as_ref().and_then(|q| {
-            q.iter()
-                .find(|(e, _)| *e == entity)
-                .map(|(_, i)| i.items.len())
-        });
-        for occupant in slots.occupants.iter().flatten() {
-            match item_count {
-                None => errors.push(ValidationError {
-                    entity,
-                    kind: ValidationKind::Equipment,
-                    detail: format!(
-                        "equips inventory[{}] but entity has no Inventory",
-                        occupant.0
-                    ),
-                }),
-                Some(n) if (occupant.0 as usize) >= n => errors.push(ValidationError {
-                    entity,
-                    kind: ValidationKind::Equipment,
-                    detail: format!(
-                        "equips inventory[{}] but Inventory holds {n} items",
-                        occupant.0
-                    ),
-                }),
-                Some(_) => {}
+    if let Some(q_equip) = world.query::<EquipmentSlots>() {
+        for (entity, slots) in q_equip.iter() {
+            let item_count = inv
+                .as_ref()
+                .and_then(|q| q.get(entity))
+                .map(|i| i.items.len());
+            for occupant in slots.occupants.iter().flatten() {
+                validate_inventory_index(entity, "EquipmentSlots", occupant.0, item_count, errors);
             }
+        }
+    }
+
+    if let Some(q_weapons) = world.query::<EquippedWeapon>() {
+        for (entity, weapon) in q_weapons.iter() {
+            let inventory = inv.as_ref().and_then(|q| q.get(entity));
+            validate_inventory_index(
+                entity,
+                "EquippedWeapon",
+                weapon.inventory_index.0,
+                inventory.map(|i| i.items.len()),
+                errors,
+            );
+            if let Some(stack) =
+                inventory.and_then(|i| i.items.get(weapon.inventory_index.0 as usize))
+            {
+                if stack.base_form_id != weapon.base_form_id {
+                    errors.push(ValidationError {
+                        entity,
+                        kind: ValidationKind::Equipment,
+                        detail: format!(
+                            "EquippedWeapon base FormID {:08X} does not match inventory[{}] ({:08X})",
+                            weapon.base_form_id, weapon.inventory_index.0, stack.base_form_id
+                        ),
+                    });
+                }
+            }
+        }
+    }
+}
+
+fn validate_inventory_index(
+    entity: EntityId,
+    component: &str,
+    index: u32,
+    item_count: Option<usize>,
+    errors: &mut Vec<ValidationError>,
+) {
+    match item_count {
+        None => errors.push(ValidationError {
+            entity,
+            kind: ValidationKind::Equipment,
+            detail: format!(
+                "{component} references inventory[{index}] but entity has no Inventory"
+            ),
+        }),
+        Some(n) if index as usize >= n => errors.push(ValidationError {
+            entity,
+            kind: ValidationKind::Equipment,
+            detail: format!(
+                "{component} references inventory[{index}] but Inventory holds {n} items"
+            ),
+        }),
+        Some(_) => {}
+    }
+}
+
+/// Validate one session-local entity reference using the common save gate.
+/// Binary-owned component validators use this too, so the range contract and
+/// diagnostics cannot drift between crates.
+pub fn validate_entity_reference(
+    owner: EntityId,
+    component_field: &str,
+    target: EntityId,
+    next_entity: EntityId,
+    errors: &mut Vec<ValidationError>,
+) {
+    if target >= next_entity {
+        errors.push(ValidationError {
+            entity: owner,
+            kind: ValidationKind::DanglingEntity,
+            detail: format!(
+                "{component_field} references {target}, never spawned (next_entity={next_entity})"
+            ),
+        });
+    }
+}
+
+fn validate_saved_entity_references(
+    world: &World,
+    next_entity: EntityId,
+    errors: &mut Vec<ValidationError>,
+) {
+    if let Some(query) = world.query::<FollowState>() {
+        for (owner, state) in query.iter() {
+            if let Some(target) = state.target_entity {
+                validate_entity_reference(
+                    owner,
+                    "FollowState.target_entity",
+                    target,
+                    next_entity,
+                    errors,
+                );
+            }
+        }
+    }
+    if let Some(query) = world.query::<EscortState>() {
+        for (owner, state) in query.iter() {
+            if let Some(target) = state.target_entity {
+                validate_entity_reference(
+                    owner,
+                    "EscortState.target_entity",
+                    target,
+                    next_entity,
+                    errors,
+                );
+            }
+        }
+    }
+    if let Some(query) = world.query::<Seated>() {
+        for (owner, state) in query.iter() {
+            validate_entity_reference(
+                owner,
+                "Seated.furniture",
+                state.furniture,
+                next_entity,
+                errors,
+            );
         }
     }
 }
@@ -297,8 +397,9 @@ fn validate_inventory_instances(world: &World, errors: &mut Vec<ValidationError>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use byroredux_core::ecs::components::{ItemInstanceId, ItemStack};
+    use byroredux_core::ecs::components::{InventoryIndex, ItemInstanceId, ItemStack};
     use byroredux_core::ecs::resources::ItemInstance;
+    use byroredux_core::math::Vec3;
     use std::num::NonZeroU32;
 
     fn instance_id(slot: u32) -> ItemInstanceId {
@@ -376,5 +477,57 @@ mod tests {
         let errors = validate_world(&world);
         assert_eq!(errors.len(), 1, "{errors:?}");
         assert_eq!(errors[0].kind, ValidationKind::ItemInstance);
+    }
+
+    #[test]
+    fn equipped_weapon_must_resolve_to_matching_inventory_row() {
+        let mut world = World::new();
+        let actor = world.spawn();
+        let mut inventory = Inventory::new();
+        inventory.push(ItemStack::new(0x1234, 1));
+        world.insert(actor, inventory);
+        world.insert(
+            actor,
+            EquippedWeapon {
+                inventory_index: InventoryIndex(1),
+                base_form_id: 0x1234,
+                damage: 10.0,
+            },
+        );
+        let errors = validate_world(&world);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors[0].kind, ValidationKind::Equipment);
+    }
+
+    #[test]
+    fn saved_ai_and_seat_entity_references_share_the_dangling_gate() {
+        let mut world = World::new();
+        let actor = world.spawn();
+        let never_spawned = world.next_entity_id() + 10;
+        world.insert(
+            actor,
+            FollowState {
+                target_entity: Some(never_spawned),
+            },
+        );
+        world.insert(
+            actor,
+            EscortState {
+                target_entity: Some(never_spawned),
+                destination: Some(Vec3::ZERO),
+            },
+        );
+        world.insert(
+            actor,
+            Seated {
+                furniture: never_spawned,
+            },
+        );
+
+        let errors = validate_world(&world);
+        assert_eq!(errors.len(), 3, "{errors:?}");
+        assert!(errors
+            .iter()
+            .all(|error| error.kind == ValidationKind::DanglingEntity));
     }
 }
