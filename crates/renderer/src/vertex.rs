@@ -146,7 +146,8 @@ impl Vertex {
     /// as 0–255 unorm bytes). The renderer's `TERRAIN_SPLAT_FLAG` bit on
     /// `GpuInstance.flags` tells the fragment shader to consume them.
     ///
-    /// `tangent` is the world +X direction (`[1, 0, 0, 1]`), NOT zero
+    /// `tangent` is the world +X direction with a negative bitangent sign
+    /// (`[1, 0, 0, -1]`), NOT zero. LAND's V coordinate is row-flipped,
     /// (#2474 / REN-D19-03). LAND UVs are a regular axis-aligned grid, so
     /// world +X is always a valid (if not per-vertex-orthogonal) tangent
     /// direction; `perturbNormal`'s Gram-Schmidt step re-orthogonalizes it
@@ -173,7 +174,7 @@ impl Vertex {
             bone_weights: [0.0, 0.0, 0.0, 0.0],
             splat_weights_0: splat_0,
             splat_weights_1: splat_1,
-            tangent: [1.0, 0.0, 0.0, 1.0],
+            tangent: [1.0, 0.0, 0.0, -1.0],
         }
     }
 
@@ -397,9 +398,8 @@ mod tests {
         );
         assert_eq!(
             v.tangent,
-            [1.0, 0.0, 0.0, 1.0],
-            "world +X tangent, w=1 — perturbNormal Gram-Schmidt-corrects it \
-             against the per-fragment normal, same construction water.rs uses"
+            [1.0, 0.0, 0.0, -1.0],
+            "LAND's row-flipped V coordinate requires w=-1 to reconstruct the true bitangent"
         );
     }
 }

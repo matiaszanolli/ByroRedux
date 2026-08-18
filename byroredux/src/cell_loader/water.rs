@@ -115,9 +115,8 @@ pub(super) fn spawn_water_plane(
             bone_weights: [0.0, 0.0, 0.0, 0.0],
             splat_weights_0: [0, 0, 0, 0],
             splat_weights_1: [0, 0, 0, 0],
-            // World +X tangent — water.frag re-orthogonalises against
-            // the world normal, so any non-degenerate tangent works.
-            tangent: [1.0, 0.0, 0.0, 1.0],
+            // World +X tangent; mirrored V requires a negative bitangent sign.
+            tangent: [1.0, 0.0, 0.0, -1.0],
         },
         Vertex {
             position: [1.0, 0.0, -1.0],
@@ -128,7 +127,7 @@ pub(super) fn spawn_water_plane(
             bone_weights: [0.0, 0.0, 0.0, 0.0],
             splat_weights_0: [0, 0, 0, 0],
             splat_weights_1: [0, 0, 0, 0],
-            tangent: [1.0, 0.0, 0.0, 1.0],
+            tangent: [1.0, 0.0, 0.0, -1.0],
         },
         Vertex {
             position: [-1.0, 0.0, 1.0],
@@ -139,7 +138,7 @@ pub(super) fn spawn_water_plane(
             bone_weights: [0.0, 0.0, 0.0, 0.0],
             splat_weights_0: [0, 0, 0, 0],
             splat_weights_1: [0, 0, 0, 0],
-            tangent: [1.0, 0.0, 0.0, 1.0],
+            tangent: [1.0, 0.0, 0.0, -1.0],
         },
         Vertex {
             position: [1.0, 0.0, 1.0],
@@ -150,7 +149,7 @@ pub(super) fn spawn_water_plane(
             bone_weights: [0.0, 0.0, 0.0, 0.0],
             splat_weights_0: [0, 0, 0, 0],
             splat_weights_1: [0, 0, 0, 0],
-            tangent: [1.0, 0.0, 0.0, 1.0],
+            tangent: [1.0, 0.0, 0.0, -1.0],
         },
     ];
     // Two triangles, CCW after the engine's Z→Y up swizzle would
@@ -363,7 +362,7 @@ fn build_lod_water_frame(
                 splat_weights_1: [0, 0, 0, 0],
                 // Non-degenerate placeholder — water.frag re-orthogonalises
                 // against the world normal (matches `spawn_water_plane`).
-                tangent: [1.0, 0.0, 0.0, 1.0],
+                tangent: [1.0, 0.0, 0.0, -1.0],
             });
         }
     }
