@@ -1026,6 +1026,14 @@ void applyCombustionSources(
             chemistry.y,
             mix(AMBIENT_TEMPERATURE_K, sourceTemperature, ignitionStateMask)
         );
+        chemistry.y = max(
+            chemistry.y,
+            mix(
+                AMBIENT_TEMPERATURE_K,
+                COMBUSTION_COOLED_AEROSOL_SOURCE_TEMPERATURE_K,
+                smokeSeedMask
+            )
+        );
         float sourceSigmaT = authoredSigmaT
             * (ignitionMask * 0.10 + smokeSeedMask * 1.15);
         chemistry.z = max(chemistry.z, sourceSigmaT);

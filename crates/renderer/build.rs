@@ -289,6 +289,11 @@ fn main() {
     .unwrap();
     writeln!(
         out,
+        "#define COMBUSTION_COOLED_AEROSOL_SOURCE_TEMPERATURE_K {COMBUSTION_COOLED_AEROSOL_SOURCE_TEMPERATURE_K:?}"
+    )
+    .unwrap();
+    writeln!(
+        out,
         "#define COMBUSTION_FUEL_VAPOUR_REMOVAL_PER_SECOND {COMBUSTION_FUEL_VAPOUR_REMOVAL_PER_SECOND:?}"
     )
     .unwrap();

@@ -31,8 +31,11 @@ pub const LEAN_SOOT_YIELD: f32 = 0.004;
 /// oxygen-rich, per second.
 pub const SOOT_OXIDATION_RATE_PER_SECOND: f32 = 0.15;
 
-/// Single-scatter albedo of transported soot aerosol.
-pub const SOOT_SINGLE_SCATTER_ALBEDO: f32 = 0.08;
+/// Single-scatter albedo of transported soot aerosol. Soot remains strongly
+/// absorbing, but this non-zero scattering floor keeps a cooled plume visible
+/// against a neutral interior instead of collapsing into a featureless black
+/// hole.
+pub const SOOT_SINGLE_SCATTER_ALBEDO: f32 = 0.18;
 
 /// Temperature at which soot oxidation begins, kelvin.
 pub const SOOT_OXIDATION_START_TEMPERATURE_K: f32 = 1100.0;
@@ -124,6 +127,11 @@ pub const AEROSOL_LIFT_ACCELERATION_MPS2: f32 = 0.20;
 /// Extinction-to-lift scale, inverse metres. Dense transported aerosol gets
 /// the full residual lift while a thin trailing edge fades smoothly.
 pub const AEROSOL_LIFT_EXTINCTION_SCALE: f32 = 20.0;
+
+/// Residual temperature of the cooling aerosol shell at the source boundary,
+/// kelvin. It gives newly seeded smoke a short-lived buoyant impulse before
+/// thermal relaxation and transported dynamics take over.
+pub const COOLED_AEROSOL_SOURCE_TEMPERATURE_K: f32 = 620.0;
 
 /// First-order removal rate for unburned fuel vapour, per second.
 pub const FUEL_VAPOUR_REMOVAL_PER_SECOND: f32 = 0.025;
