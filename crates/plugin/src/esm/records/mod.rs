@@ -179,7 +179,11 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
     let file_header = reader
         .read_file_header()
         .context("Failed to read ESM file header")?;
-    let game = GameKind::from_header(reader.variant(), file_header.hedr_version);
+    let game = GameKind::from_header(
+        reader.variant(),
+        file_header.hedr_version,
+        file_header.record_version,
+    );
     // M41.0 Phase 1b — preserve game on the index so consumers
     // (NPC spawn dispatcher) can route per-version without
     // re-deriving from a HEDR they no longer have.

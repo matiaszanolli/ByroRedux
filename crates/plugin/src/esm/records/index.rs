@@ -21,9 +21,36 @@ use super::{
 };
 use std::collections::HashMap;
 
-/// One entry in the [`EsmIndex::categories`] table: a display label paired
-/// with a closure that returns the live count for that category.
-pub type CategoryEntry = (&'static str, fn(&EsmIndex) -> usize);
+/// One entry in the [`EsmIndex::categories`] table: a display label, count
+/// accessor, and merge operation. Keeping all three together makes the table
+/// the single source of truth for top-level record maps.
+pub type CategoryEntry = (
+    &'static str,
+    fn(&EsmIndex) -> usize,
+    fn(&mut EsmIndex, &mut EsmIndex),
+);
+
+macro_rules! map_category {
+    ($label:literal, $field:ident) => {
+        (
+            $label,
+            |index: &EsmIndex| index.$field.len(),
+            |target: &mut EsmIndex, source: &mut EsmIndex| {
+                target.$field.extend(std::mem::take(&mut source.$field));
+            },
+        )
+    };
+}
+
+macro_rules! cell_category {
+    ($label:literal, $field:ident) => {
+        (
+            $label,
+            |index: &EsmIndex| index.cells.$field.len(),
+            |_target: &mut EsmIndex, _source: &mut EsmIndex| {},
+        )
+    };
+}
 
 /// Aggregated index of every record category we currently parse.
 ///
@@ -32,7 +59,8 @@ pub type CategoryEntry = (&'static str, fn(&EsmIndex) -> usize);
 #[derive(Debug, Default)]
 pub struct EsmIndex {
     /// Game variant this index was parsed against, derived from the
-    /// TES4 HEDR `Version` f32 by [`GameKind::from_header`]. Carried
+    /// TES4 HEDR `Version` and record-header version by
+    /// [`GameKind::from_header`]. Carried
     /// forward through [`merge_from`] (last-write-wins — multi-plugin
     /// loads always share a single game variant in practice).
     /// Consumed by the cell loader's NPC dispatch (M41.0 Phase 1b)
@@ -439,122 +467,120 @@ impl EsmIndex {
     /// [`total`]: Self::total
     /// [`category_breakdown`]: Self::category_breakdown
     pub fn categories() -> &'static [CategoryEntry] {
-        // The closures below capture nothing and coerce to `fn(&EsmIndex)
-        // -> usize` — no boxing, zero runtime overhead vs the inline sum.
+        // The closures below capture nothing and coerce to function pointers:
+        // no boxing and no runtime overhead versus hand-written count/merge code.
         &[
-            ("cells", |s| s.cells.cells.len()),
-            ("statics", |s| s.cells.statics.len()),
-            ("items", |s| s.items.len()),
-            ("containers", |s| s.containers.len()),
-            ("LVLI", |s| s.leveled_items.len()),
-            ("LVLN", |s| s.leveled_npcs.len()),
-            ("LVLC", |s| s.leveled_creatures.len()),
-            ("NPCs", |s| s.npcs.len()),
-            ("creatures", |s| s.creatures.len()),
-            ("races", |s| s.races.len()),
-            ("classes", |s| s.classes.len()),
-            ("factions", |s| s.factions.len()),
-            ("globals", |s| s.globals.len()),
-            ("game_settings", |s| s.game_settings.len()),
-            ("weathers", |s| s.weathers.len()),
-            ("climates", |s| s.climates.len()),
-            ("scripts", |s| s.scripts.len()),
-            ("waters", |s| s.waters.len()),
-            ("navi", |s| s.navi_info.len()),
-            ("navmeshes", |s| s.navmeshes.len()),
-            ("regions", |s| s.regions.len()),
-            ("encounter_zones", |s| s.encounter_zones.len()),
-            ("lighting_templates", |s| s.lighting_templates.len()),
-            ("image_spaces", |s| s.image_spaces.len()),
-            ("head_parts", |s| s.head_parts.len()),
-            ("eyes", |s| s.eyes.len()),
-            ("hair", |s| s.hair.len()),
-            ("packages", |s| s.packages.len()),
-            ("quests", |s| s.quests.len()),
-            ("scenes", |s| s.scenes.len()),
-            ("dialogues", |s| s.dialogues.len()),
-            ("messages", |s| s.messages.len()),
-            ("perks", |s| s.perks.len()),
-            ("spells", |s| s.spells.len()),
-            ("enchantments", |s| s.enchantments.len()),
-            ("magic_effects", |s| s.magic_effects.len()),
+            cell_category!("cells", cells),
+            cell_category!("statics", statics),
+            map_category!("items", items),
+            map_category!("containers", containers),
+            map_category!("LVLI", leveled_items),
+            map_category!("LVLN", leveled_npcs),
+            map_category!("LVLC", leveled_creatures),
+            map_category!("NPCs", npcs),
+            map_category!("creatures", creatures),
+            map_category!("races", races),
+            map_category!("classes", classes),
+            map_category!("factions", factions),
+            map_category!("globals", globals),
+            map_category!("game_settings", game_settings),
+            map_category!("weathers", weathers),
+            map_category!("climates", climates),
+            map_category!("scripts", scripts),
+            map_category!("waters", waters),
+            map_category!("navi", navi_info),
+            map_category!("navmeshes", navmeshes),
+            map_category!("regions", regions),
+            map_category!("encounter_zones", encounter_zones),
+            map_category!("lighting_templates", lighting_templates),
+            map_category!("image_spaces", image_spaces),
+            map_category!("head_parts", head_parts),
+            map_category!("eyes", eyes),
+            map_category!("hair", hair),
+            map_category!("packages", packages),
+            map_category!("quests", quests),
+            map_category!("scenes", scenes),
+            map_category!("dialogues", dialogues),
+            map_category!("messages", messages),
+            map_category!("perks", perks),
+            map_category!("spells", spells),
+            map_category!("enchantments", enchantments),
+            map_category!("magic_effects", magic_effects),
             // #969 / OBL-D3-NEW-05 — Oblivion-only 4-char-code → MGEF
             // FormID secondary map. Empty on non-Oblivion games.
-            ("magic_effects_by_code", |s| s.magic_effects_by_code.len()),
-            ("actor_values", |s| s.actor_values.len()),
-            ("activators", |s| s.activators.len()),
-            ("terminals", |s| s.terminals.len()),
-            ("form_lists", |s| s.form_lists.len()),
+            map_category!("magic_effects_by_code", magic_effects_by_code),
+            map_category!("actor_values", actor_values),
+            map_category!("activators", activators),
+            map_category!("terminals", terminals),
+            map_category!("form_lists", form_lists),
             // #808 / FNV-D2-NEW-01 stubs.
-            ("projectiles", |s| s.projectiles.len()),
-            ("effect_shaders", |s| s.effect_shaders.len()),
-            ("item_mods", |s| s.item_mods.len()),
-            ("armor_addons", |s| s.armor_addons.len()),
-            ("outfits", |s| s.outfits.len()),
-            ("body_parts", |s| s.body_parts.len()),
+            map_category!("projectiles", projectiles),
+            map_category!("effect_shaders", effect_shaders),
+            map_category!("item_mods", item_mods),
+            map_category!("armor_addons", armor_addons),
+            map_category!("outfits", outfits),
+            map_category!("body_parts", body_parts),
             // #809 / FNV-D2-NEW-02 stubs.
-            ("reputations", |s| s.reputations.len()),
-            ("explosions", |s| s.explosions.len()),
-            ("combat_styles", |s| s.combat_styles.len()),
-            ("idle_animations", |s| s.idle_animations.len()),
-            ("impacts", |s| s.impacts.len()),
-            ("impact_data_sets", |s| s.impact_data_sets.len()),
-            ("recipes", |s| s.recipes.len()),
+            map_category!("reputations", reputations),
+            map_category!("explosions", explosions),
+            map_category!("combat_styles", combat_styles),
+            map_category!("idle_animations", idle_animations),
+            map_category!("impacts", impacts),
+            map_category!("impact_data_sets", impact_data_sets),
+            map_category!("recipes", recipes),
             // #810 / FNV-D2-NEW-03 — long-tail minimal stubs.
-            ("audio_locations", |s| s.audio_locations.len()),
-            ("animation_objects", |s| s.animation_objects.len()),
-            ("acoustic_spaces", |s| s.acoustic_spaces.len()),
-            ("camera_shots", |s| s.camera_shots.len()),
-            ("camera_paths", |s| s.camera_paths.len()),
-            ("default_objects", |s| s.default_objects.len()),
-            ("menu_icons", |s| s.menu_icons.len()),
-            ("media_sets", |s| s.media_sets.len()),
-            ("music_types", |s| s.music_types.len()),
-            ("sounds", |s| s.sounds.len()),
-            ("voice_types", |s| s.voice_types.len()),
-            ("ammo_effects", |s| s.ammo_effects.len()),
-            ("debris", |s| s.debris.len()),
-            ("grasses", |s| s.grasses.len()),
+            map_category!("audio_locations", audio_locations),
+            map_category!("animation_objects", animation_objects),
+            map_category!("acoustic_spaces", acoustic_spaces),
+            map_category!("camera_shots", camera_shots),
+            map_category!("camera_paths", camera_paths),
+            map_category!("default_objects", default_objects),
+            map_category!("menu_icons", menu_icons),
+            map_category!("media_sets", media_sets),
+            map_category!("music_types", music_types),
+            map_category!("sounds", sounds),
+            map_category!("voice_types", voice_types),
+            map_category!("ammo_effects", ammo_effects),
+            map_category!("debris", debris),
+            map_category!("grasses", grasses),
             // #1773 / FNV-D4-NEW-01 — TREE is dispatched into `index.trees`
             // (mod.rs `parse_tree`) but was the lone populated typed map
             // missing from this table, so it never counted toward `total()`
             // and a TREE category-wipe passed the parse-rate CI floor silently.
             // FNV ships 3; FO3/Oblivion ship many more (SpeedTree content).
-            ("trees", |s| s.trees.len()),
-            ("imagespace_modifiers", |s| s.imagespace_modifiers.len()),
-            ("load_screens", |s| s.load_screens.len()),
-            ("load_screen_types", |s| s.load_screen_types.len()),
-            ("placeable_waters", |s| s.placeable_waters.len()),
-            ("ragdolls", |s| s.ragdolls.len()),
-            ("dehydration_stages", |s| s.dehydration_stages.len()),
-            ("hunger_stages", |s| s.hunger_stages.len()),
-            ("radiation_stages", |s| s.radiation_stages.len()),
-            ("sleep_deprivation_stages", |s| {
-                s.sleep_deprivation_stages.len()
-            }),
-            ("caravan_cards", |s| s.caravan_cards.len()),
-            ("caravan_decks", |s| s.caravan_decks.len()),
-            ("challenges", |s| s.challenges.len()),
-            ("poker_chips", |s| s.poker_chips.len()),
-            ("caravan_money", |s| s.caravan_money.len()),
-            ("casinos", |s| s.casinos.len()),
-            ("recipe_categories", |s| s.recipe_categories.len()),
-            ("recipe_records", |s| s.recipe_records.len()),
+            map_category!("trees", trees),
+            map_category!("imagespace_modifiers", imagespace_modifiers),
+            map_category!("load_screens", load_screens),
+            map_category!("load_screen_types", load_screen_types),
+            map_category!("placeable_waters", placeable_waters),
+            map_category!("ragdolls", ragdolls),
+            map_category!("dehydration_stages", dehydration_stages),
+            map_category!("hunger_stages", hunger_stages),
+            map_category!("radiation_stages", radiation_stages),
+            map_category!("sleep_deprivation_stages", sleep_deprivation_stages),
+            map_category!("caravan_cards", caravan_cards),
+            map_category!("caravan_decks", caravan_decks),
+            map_category!("challenges", challenges),
+            map_category!("poker_chips", poker_chips),
+            map_category!("caravan_money", caravan_money),
+            map_category!("casinos", casinos),
+            map_category!("recipe_categories", recipe_categories),
+            map_category!("recipe_records", recipe_records),
             // #966 / OBL-D3-NEW-02 — Oblivion-unique base records.
-            ("birthsigns", |s| s.birthsigns.len()),
-            ("clothing", |s| s.clothing.len()),
-            ("apparatuses", |s| s.apparatuses.len()),
-            ("sigil_stones", |s| s.sigil_stones.len()),
-            ("soul_gems", |s| s.soul_gems.len()),
+            map_category!("birthsigns", birthsigns),
+            map_category!("clothing", clothing),
+            map_category!("apparatuses", apparatuses),
+            map_category!("sigil_stones", sigil_stones),
+            map_category!("soul_gems", soul_gems),
             // FO4-architecture maps (live on `EsmCellIndex`, not the top
             // level — same pattern as the `cells` and `statics` rows).
             // Without these rows a regression that empties any of the
             // five maps passes CI silently. See #817.
-            ("texture_sets", |s| s.cells.texture_sets.len()),
-            ("scols", |s| s.cells.scols.len()),
-            ("packins", |s| s.cells.packins.len()),
-            ("movables", |s| s.cells.movables.len()),
-            ("material_swaps", |s| s.cells.material_swaps.len()),
+            cell_category!("texture_sets", texture_sets),
+            cell_category!("scols", scols),
+            cell_category!("packins", packins),
+            cell_category!("movables", movables),
+            cell_category!("material_swaps", material_swaps),
         ]
     }
 
@@ -565,7 +591,10 @@ impl EsmIndex {
     ///
     /// [`categories`]: Self::categories
     pub fn total(&self) -> usize {
-        Self::categories().iter().map(|(_, f)| f(self)).sum()
+        Self::categories()
+            .iter()
+            .map(|(_, count, _)| count(self))
+            .sum()
     }
 
     /// Resolve an actor value's global FormID by its canonical EditorID
@@ -730,9 +759,9 @@ impl EsmIndex {
     pub fn category_breakdown(&self) -> String {
         let mut out = String::with_capacity(512);
         out.push_str("ESM parsed:");
-        for (i, (label, f)) in Self::categories().iter().enumerate() {
+        for (i, (label, count, _)) in Self::categories().iter().enumerate() {
             out.push_str(if i == 0 { " " } else { ", " });
-            out.push_str(&format!("{} {}", f(self), label));
+            out.push_str(&format!("{} {}", count(self), label));
         }
         out
     }
@@ -753,7 +782,7 @@ impl EsmIndex {
     /// just need to thread it through every map. The exterior-cells
     /// nested map merges per-worldspace so a DLC adding a new
     /// worldspace doesn't stomp the base game's entry. See M46.0 / #561.
-    pub fn merge_from(&mut self, other: EsmIndex) {
+    pub fn merge_from(&mut self, mut other: EsmIndex) {
         // M41.0 Phase 1b — preserve the latest plugin's game variant
         // on the merged index. Multi-plugin loads always share a
         // single game in practice (master + DLC of the same game), so
@@ -764,72 +793,20 @@ impl EsmIndex {
         self.character_rules = other.character_rules;
 
         // Nested cell index — needs per-worldspace handling.
-        self.cells.merge_from(other.cells);
+        self.cells.merge_from(std::mem::take(&mut other.cells));
 
-        // Top-level record maps — last-write-wins per HashMap::extend.
-        self.items.extend(other.items);
+        // This auxiliary map is deliberately absent from `categories()`:
+        // it supports inventory classification but is not a record category.
         self.object_mod_loose_items
-            .extend(other.object_mod_loose_items);
+            .extend(std::mem::take(&mut other.object_mod_loose_items));
+
+        // Every top-level record category is merged by the same table that
+        // drives `total()` and `category_breakdown()`. Adding a category can
+        // no longer silently omit it from load-order folding (#2907).
+        for (_, _, merge) in Self::categories() {
+            merge(self, &mut other);
+        }
         self.classify_fallout_inventory_kinds();
-        self.containers.extend(other.containers);
-        self.leveled_items.extend(other.leveled_items);
-        self.leveled_npcs.extend(other.leveled_npcs);
-        self.leveled_creatures.extend(other.leveled_creatures);
-        self.npcs.extend(other.npcs);
-        self.creatures.extend(other.creatures);
-        self.races.extend(other.races);
-        self.classes.extend(other.classes);
-        self.factions.extend(other.factions);
-        self.globals.extend(other.globals);
-        self.game_settings.extend(other.game_settings);
-        self.weathers.extend(other.weathers);
-        self.climates.extend(other.climates);
-        self.scripts.extend(other.scripts);
-        self.waters.extend(other.waters);
-        self.navi_info.extend(other.navi_info);
-        self.navmeshes.extend(other.navmeshes);
-        self.regions.extend(other.regions);
-        self.encounter_zones.extend(other.encounter_zones);
-        self.lighting_templates.extend(other.lighting_templates);
-        self.image_spaces.extend(other.image_spaces);
-        self.head_parts.extend(other.head_parts);
-        self.eyes.extend(other.eyes);
-        self.hair.extend(other.hair);
-        self.packages.extend(other.packages);
-        self.quests.extend(other.quests);
-        self.scenes.extend(other.scenes);
-        self.dialogues.extend(other.dialogues);
-        self.messages.extend(other.messages);
-        self.perks.extend(other.perks);
-        self.spells.extend(other.spells);
-        self.enchantments.extend(other.enchantments);
-        self.magic_effects.extend(other.magic_effects);
-        // #969 / OBL-D3-NEW-05 — Oblivion DLC may redefine an MGEF;
-        // last-write-wins matches `magic_effects` itself. The map is
-        // empty on non-Oblivion plugins so extending is a no-op there.
-        self.magic_effects_by_code
-            .extend(other.magic_effects_by_code);
-        self.actor_values.extend(other.actor_values);
-        self.activators.extend(other.activators);
-        self.terminals.extend(other.terminals);
-        self.form_lists.extend(other.form_lists);
-        self.trees.extend(other.trees);
-        self.imagespace_modifiers.extend(other.imagespace_modifiers);
-
-        // Skyrim+ equipment graph. These maps are not optional metadata:
-        // NPC.DOFT resolves through `outfits`, and both that outfit armor and
-        // RACE.WNAM's fallback skin resolve their gendered mesh through
-        // `armor_addons`. Dropping them while merging even a one-plugin load
-        // leaves only the pre-baked FaceGen head visible.
-        self.outfits.extend(other.outfits);
-        self.armor_addons.extend(other.armor_addons);
-
-        // #966 / OBL-D3-NEW-02 — Oblivion-unique base records.
-        self.birthsigns.extend(other.birthsigns);
-        self.clothing.extend(other.clothing);
-        self.apparatuses.extend(other.apparatuses);
-        self.sigil_stones.extend(other.sigil_stones);
-        self.soul_gems.extend(other.soul_gems);
 
         // #1568 — skip telemetry accumulates across the plugin stack so a
         // master + DLC that both ship PDCL each surface their skip.
@@ -921,6 +898,26 @@ mod tests {
             merged.armor_addons[&0x0011_53D8].female_biped_model,
             r"actors\character\characterassets\desdemona.nif"
         );
+    }
+
+    /// #2907 — categories introduced after the original hand-written merge
+    /// list must survive even a one-plugin load-order fold.
+    #[test]
+    fn merge_from_covers_every_category_table_entry() {
+        let mut plugin = EsmIndex::default();
+        plugin.idle_animations.insert(
+            0x0001_2345,
+            IdleRecord {
+                form_id: 0x0001_2345,
+                editor_id: "IdleSmoke".into(),
+                ..Default::default()
+            },
+        );
+
+        let mut merged = EsmIndex::default();
+        merged.merge_from(plugin);
+
+        assert_eq!(merged.idle_animations[&0x0001_2345].editor_id, "IdleSmoke");
     }
 
     #[test]

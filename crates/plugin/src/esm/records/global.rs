@@ -55,7 +55,7 @@ pub struct GameSetting {
 pub fn parse_glob(form_id: u32, subs: &[SubRecord]) -> GlobalRecord {
     let mut editor_id = String::new();
     let mut fnam_type = b'f';
-    let mut value = SettingValue::Float(0.0);
+    let mut raw_value = 0.0f32;
 
     for sub in subs {
         match &sub.sub_type {
@@ -63,23 +63,22 @@ pub fn parse_glob(form_id: u32, subs: &[SubRecord]) -> GlobalRecord {
             b"FNAM" if !sub.data.is_empty() => {
                 fnam_type = sub.data[0];
             }
-            // FLTV: the typed value as a 4-byte little-endian. Type is dictated
-            // by FNAM ('s' = short, 'l' = long, 'f' = float).
+            // FLTV is always an IEEE-754 f32 on disk. FNAM controls the
+            // editor/runtime presentation (short/long/float), not the wire
+            // representation — even integer-looking CK globals are stored
+            // as floats.
             b"FLTV" if sub.data.len() >= 4 => {
-                value = match fnam_type {
-                    b's' => SettingValue::Short(i16::from_le_bytes([sub.data[0], sub.data[1]])),
-                    b'l' => SettingValue::Int(i32::from_le_bytes([
-                        sub.data[0],
-                        sub.data[1],
-                        sub.data[2],
-                        sub.data[3],
-                    ])),
-                    _ => SettingValue::Float(SubReader::new(&sub.data).f32_or_default()),
-                };
+                raw_value = SubReader::new(&sub.data).f32_or_default();
             }
             _ => {}
         }
     }
+
+    let value = match fnam_type {
+        b's' => SettingValue::Short(raw_value as i16),
+        b'l' => SettingValue::Int(raw_value as i32),
+        _ => SettingValue::Float(raw_value),
+    };
 
     GlobalRecord {
         form_id,
@@ -153,11 +152,46 @@ mod tests {
         let subs = vec![
             sub(b"EDID", b"GameDay\0"),
             sub(b"FNAM", b"l"),
-            sub(b"FLTV", &7i32.to_le_bytes()),
+            sub(b"FLTV", &7.0f32.to_le_bytes()),
         ];
         let g = parse_glob(0x10, &subs);
         assert_eq!(g.editor_id, "GameDay");
         assert_eq!(g.value, SettingValue::Int(7));
+    }
+
+    #[test]
+    fn glob_integer_hints_narrow_an_on_disk_float() {
+        // Verbatim vanilla payloads from #2905:
+        // FalloutNV.esm KarmaGood: FNAM='l', FLTV=00 00 7a 43 (250.0).
+        let karma_good = parse_glob(
+            0x10,
+            &[
+                sub(b"EDID", b"KarmaGood\0"),
+                sub(b"FNAM", b"l"),
+                sub(b"FLTV", &[0x00, 0x00, 0x7a, 0x43]),
+            ],
+        );
+        assert_eq!(karma_good.value, SettingValue::Int(250));
+
+        // Oblivion.esm SEKnightSpawnTime: FNAM='s', FLTV=00 00 80 40 (4.0).
+        let spawn_time = parse_glob(
+            0x11,
+            &[
+                sub(b"EDID", b"SEKnightSpawnTime\0"),
+                sub(b"FNAM", b"s"),
+                sub(b"FLTV", &[0x00, 0x00, 0x80, 0x40]),
+            ],
+        );
+        assert_eq!(spawn_time.value, SettingValue::Short(4));
+    }
+
+    #[test]
+    fn glob_fnam_order_does_not_change_fltv_decode() {
+        let g = parse_glob(
+            0x12,
+            &[sub(b"FLTV", &250.0f32.to_le_bytes()), sub(b"FNAM", b"l")],
+        );
+        assert_eq!(g.value, SettingValue::Int(250));
     }
 
     #[test]

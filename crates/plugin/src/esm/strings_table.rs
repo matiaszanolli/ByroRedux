@@ -3,8 +3,9 @@
 //! Skyrim (and later games) separate localizable text from the ESM/ESP
 //! records. A localized plugin (`TES4.flags & 0x80`) stores FULL / DESC /
 //! etc. sub-records as 4-byte lstring-table indices rather than inline
-//! z-strings. The actual strings live in one of three sibling files under
-//! `<esm_dir>/Strings/<plugin_stem>_<lang>.<EXT>`:
+//! z-strings. The actual strings live in one of three files under
+//! `Strings/<plugin_stem>_<lang>.<EXT>`, either loose beside the plugin or
+//! packed in a game archive:
 //!
 //! | Extension    | Content                       | Notes                              |
 //! |--------------|-------------------------------|------------------------------------|
@@ -212,6 +213,19 @@ impl StringTableSet {
     /// still resolves FULL entries correctly. Parse errors are logged as
     /// warnings and that table is omitted.
     pub fn load(plugin_path: &Path, language: &str) -> Self {
+        Self::load_with_archive(plugin_path, language, |_| None)
+    }
+
+    /// Load companion tables with an archive fallback.
+    ///
+    /// `read_archive` receives a canonical, backslash-separated path such as
+    /// `strings\Skyrim_english.STRINGS`. A loose file always wins, matching
+    /// Bethesda's override order; the callback is consulted only when that
+    /// loose file is absent.
+    pub fn load_with_archive<F>(plugin_path: &Path, language: &str, mut read_archive: F) -> Self
+    where
+        F: FnMut(&str) -> Option<Vec<u8>>,
+    {
         let stem = plugin_path
             .file_stem()
             .unwrap_or_default()
@@ -221,17 +235,23 @@ impl StringTableSet {
             .unwrap_or(Path::new("."))
             .join("Strings");
 
-        let load_file = |ext: &str, has_prefix: bool| -> Option<StringsTable> {
+        let mut load_file = |ext: &str, has_prefix: bool| -> Option<StringsTable> {
             let name = format!("{stem}_{language}.{ext}");
             let path = strings_dir.join(&name);
-            let data = std::fs::read(&path).ok()?;
+            let (data, source) = match std::fs::read(&path) {
+                Ok(data) => (data, path.display().to_string()),
+                Err(_) => {
+                    let archive_path = format!(r"strings\{name}");
+                    (read_archive(&archive_path)?, archive_path)
+                }
+            };
             match StringsTable::parse(&data, has_prefix) {
                 Ok(t) => {
-                    log::debug!("loaded {} ({} entries)", path.display(), t.len());
+                    log::debug!("loaded {} ({} entries)", source, t.len());
                     Some(t)
                 }
                 Err(e) => {
-                    log::warn!("failed to parse {}: {e}", path.display());
+                    log::warn!("failed to parse {}: {e}", source);
                     None
                 }
             }
@@ -337,6 +357,44 @@ mod tests {
         assert_eq!(set.resolve(0x0001), Some("Iron Sword"));
         assert_eq!(set.resolve(0x0010), Some("A fine blade."));
         assert_eq!(set.resolve(0xDEAD), None);
+    }
+
+    #[test]
+    fn archive_fallback_uses_canonical_path() {
+        let plugin = Path::new("/definitely-not-a-real-data-dir/Skyrim.esm");
+        let data = build_strings_file(&[(0x0001, "Iron Sword")], false);
+        let mut requested = Vec::new();
+
+        let set = StringTableSet::load_with_archive(plugin, "english", |path| {
+            requested.push(path.to_owned());
+            (path == r"strings\Skyrim_english.STRINGS").then(|| data.clone())
+        });
+
+        assert_eq!(set.resolve(0x0001), Some("Iron Sword"));
+        assert!(requested.contains(&r"strings\Skyrim_english.STRINGS".to_owned()));
+    }
+
+    #[test]
+    fn loose_table_overrides_archive_fallback() {
+        let dir = std::env::temp_dir().join(format!(
+            "byroredux-plugin-loose-strings-{}",
+            std::process::id()
+        ));
+        let plugin = dir.join("Skyrim.esm");
+        let strings_dir = dir.join("Strings");
+        std::fs::create_dir_all(&strings_dir).unwrap();
+        std::fs::write(
+            strings_dir.join("Skyrim_english.STRINGS"),
+            build_strings_file(&[(0x0001, "Loose Sword")], false),
+        )
+        .unwrap();
+
+        let set = StringTableSet::load_with_archive(&plugin, "english", |_| {
+            Some(build_strings_file(&[(0x0001, "Packed Sword")], false))
+        });
+
+        assert_eq!(set.resolve(0x0001), Some("Loose Sword"));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

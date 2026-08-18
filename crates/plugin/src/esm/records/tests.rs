@@ -946,7 +946,10 @@ fn total_and_breakdown_drive_off_same_table() {
         },
     );
     // Sum the table by hand — must match `total()`.
-    let sum: usize = EsmIndex::categories().iter().map(|(_, f)| f(&idx)).sum();
+    let sum: usize = EsmIndex::categories()
+        .iter()
+        .map(|(_, count, _)| count(&idx))
+        .sum();
     assert_eq!(idx.total(), sum);
     assert_eq!(idx.total(), 3);
 
@@ -954,7 +957,7 @@ fn total_and_breakdown_drive_off_same_table() {
     // future struct-field addition that misses `categories()` is
     // caught here rather than discovered via a silent log drift.
     let line = idx.category_breakdown();
-    for (label, _) in EsmIndex::categories() {
+    for (label, _, _) in EsmIndex::categories() {
         assert!(
             line.contains(label),
             "breakdown line missing category '{label}': {line}"

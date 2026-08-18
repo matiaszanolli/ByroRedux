@@ -33,7 +33,7 @@ fn main() -> anyhow::Result<()> {
     let mut reader = EsmReader::new(&bytes);
     let variant = reader.variant();
     let header = reader.read_file_header()?;
-    let game = GameKind::from_header(variant, header.hedr_version);
+    let game = GameKind::from_header(variant, header.hedr_version, header.record_version);
     println!(
         "FILE\t{}\t{}\t{:?}\t{:?}\t{}\t{}\t{}\t{}",
         path,

@@ -140,11 +140,15 @@ fn main() -> anyhow::Result<()> {
 
     // Phase 0: header detection. EsmVariant::detect reads up to 24
     // bytes of header; GameKind::from_header derives the game from
-    // (variant, hedr_version).
+    // (variant, hedr_version, record_version).
     let variant = EsmVariant::detect(&bytes);
     let mut reader = EsmReader::with_variant(&bytes, variant);
     let file_header = reader.read_file_header()?;
-    let game_kind = GameKind::from_header(variant, file_header.hedr_version);
+    let game_kind = GameKind::from_header(
+        variant,
+        file_header.hedr_version,
+        file_header.record_version,
+    );
     let tes4_bytes = reader.position() as u64;
 
     eprintln!("[sf_smoke] {}", esm_path);

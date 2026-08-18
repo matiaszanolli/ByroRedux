@@ -28,7 +28,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 // `parse_esm` returns an `EsmIndex` that already carries the detected
-// `game: GameKind` (set from the TES4 HEDR `Version` f32 via
+// `game: GameKind` (set from the TES4 HEDR and record-header versions via
 // `GameKind::from_header`), so the smoke doesn't need to re-detect.
 
 /// Smoke-test a single cell in an ESM under the current `GameKind`

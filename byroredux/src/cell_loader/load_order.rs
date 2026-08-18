@@ -9,8 +9,10 @@
 //!
 //! See M46.0 / #561 / #445 for the multi-plugin landing.
 
+use crate::asset_provider::Archive;
 use byroredux_plugin::esm;
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 /// Lowercase basename of a plugin path. Used as the global load-order
 /// key (case-insensitive on Bethesda content).
@@ -100,16 +102,91 @@ pub(super) fn build_remap_for_plugin(
 /// `StringTableSet::load`. The guard MUST be held by the caller across the
 /// record walk so `resolve_lstring` sees the tables, then dropped before
 /// the next plugin.
-fn install_strings_guard(
+fn install_strings_guard<F>(
     localized: bool,
     plugin_path: &str,
     language: &str,
-) -> Option<esm::StringsTableGuard> {
+    read_archive: &mut F,
+) -> Option<esm::StringsTableGuard>
+where
+    F: FnMut(&Path, &str) -> Option<Vec<u8>>,
+{
     if !localized {
         return None;
     }
-    let tables = esm::StringTableSet::load(Path::new(plugin_path), language);
+    let plugin_path = Path::new(plugin_path);
+    let tables = esm::StringTableSet::load_with_archive(plugin_path, language, |relative_path| {
+        read_archive(plugin_path, relative_path)
+    });
     Some(esm::StringsTableGuard::new(tables))
+}
+
+/// Lazily opened archive set used only for localized companion strings.
+/// The plugin crate remains archive-agnostic; this engine boundary owns
+/// BSA/BA2 discovery and extraction.
+#[derive(Default)]
+struct ArchiveStringSource {
+    by_plugin: HashMap<PathBuf, Vec<Archive>>,
+}
+
+impl ArchiveStringSource {
+    fn read(&mut self, plugin_path: &Path, relative_path: &str) -> Option<Vec<u8>> {
+        let archives = self
+            .by_plugin
+            .entry(plugin_path.to_path_buf())
+            .or_insert_with(|| Self::discover(plugin_path));
+        archives
+            .iter()
+            .find_map(|archive| archive.extract(relative_path).ok())
+    }
+
+    fn discover(plugin_path: &Path) -> Vec<Archive> {
+        let directory = plugin_path.parent().unwrap_or(Path::new("."));
+        let plugin_stem = plugin_path
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_ascii_lowercase();
+        let mut candidates: Vec<(u8, PathBuf)> = std::fs::read_dir(directory)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|entry| {
+                let path = entry.path();
+                let extension = path.extension()?.to_string_lossy();
+                if !extension.eq_ignore_ascii_case("bsa") && !extension.eq_ignore_ascii_case("ba2")
+                {
+                    return None;
+                }
+                let stem = path.file_stem()?.to_string_lossy().to_ascii_lowercase();
+                let plugin_archive = stem == plugin_stem
+                    || stem.strip_prefix(&plugin_stem).is_some_and(|suffix| {
+                        suffix.starts_with(" - main")
+                            || suffix.starts_with(" - interface")
+                            || suffix.starts_with(" - localization")
+                            || suffix.starts_with(" - strings")
+                    });
+                let shared_archive = stem.ends_with(" - interface")
+                    || stem.ends_with(" - localization")
+                    || stem.ends_with(" - strings");
+                (plugin_archive || shared_archive)
+                    .then_some((if plugin_archive { 0 } else { 1 }, path))
+            })
+            .collect();
+        candidates.sort_by(|(priority_a, path_a), (priority_b, path_b)| {
+            priority_a.cmp(priority_b).then_with(|| path_a.cmp(path_b))
+        });
+        candidates
+            .into_iter()
+            .filter_map(|(_, path)| match Archive::open(&path.to_string_lossy()) {
+                Ok(archive) => Some(archive),
+                Err(error) => {
+                    log::warn!("failed to open localized-strings archive: {error}");
+                    None
+                }
+            })
+            .collect()
+    }
 }
 
 /// Parse a sequence of plugins in load order (masters first, main
@@ -129,6 +206,19 @@ fn install_strings_guard(
 pub(crate) fn parse_record_indexes_in_load_order(
     plugin_paths: &[&str],
 ) -> anyhow::Result<(esm::records::EsmIndex, Vec<String>)> {
+    let mut archive_source = ArchiveStringSource::default();
+    parse_record_indexes_in_load_order_with_archive(plugin_paths, |plugin_path, relative_path| {
+        archive_source.read(plugin_path, relative_path)
+    })
+}
+
+fn parse_record_indexes_in_load_order_with_archive<F>(
+    plugin_paths: &[&str],
+    mut read_archive: F,
+) -> anyhow::Result<(esm::records::EsmIndex, Vec<String>)>
+where
+    F: FnMut(&Path, &str) -> Option<Vec<u8>>,
+{
     let load_order: Vec<String> = plugin_paths.iter().map(|p| plugin_basename_lc(p)).collect();
     {
         let mut seen = std::collections::HashSet::with_capacity(load_order.len());
@@ -190,7 +280,8 @@ pub(crate) fn parse_record_indexes_in_load_order(
         // to authored names instead of `<lstring 0xNNNNNNNN>`. RAII guard:
         // alive across the parse, dropped before the next plugin so each
         // plugin sees only its own tables.
-        let _strings_guard = install_strings_guard(header.localized, path, &strings_language);
+        let _strings_guard =
+            install_strings_guard(header.localized, path, &strings_language, &mut read_archive);
         let plugin_records = esm::records::parse_esm_with_load_order(&bytes, Some(remap))
             .unwrap_or_else(|e| {
                 log::warn!("Record parse failed for '{}': {}", path, e);
@@ -403,6 +494,31 @@ mod tests {
         );
     }
 
+    /// #2912 — shipping installs keep localized tables in BSA/BA2 archives.
+    /// The load-order path must consult that source when no loose override is
+    /// present, without teaching the plugin parser about archive formats.
+    #[test]
+    fn localized_plugin_resolves_names_from_archive_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let stem = "PackedPlugin";
+        let esm_path = write_weap_plugin(dir.path(), stem, 0x80, 0xBEEF);
+        let packed = build_strings_file(&[(0x0001, "Packed Sword")]);
+        let mut requested = Vec::new();
+
+        let path_str = esm_path.to_str().unwrap();
+        let (index, _order) = parse_record_indexes_in_load_order_with_archive(
+            &[path_str],
+            |_plugin_path, relative_path| {
+                requested.push(relative_path.to_owned());
+                (relative_path == r"strings\PackedPlugin_english.STRINGS").then(|| packed.clone())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(index.items[&0xBEEF].common.full_name, "Packed Sword");
+        assert!(requested.contains(&r"strings\PackedPlugin_english.STRINGS".to_owned()));
+    }
+
     /// Control: the SAME Localized plugin WITHOUT the companion file keeps
     /// the placeholder — proving the resolution above came from the wired
     /// guard reading the on-disk table, not some other path.
@@ -415,6 +531,45 @@ mod tests {
         let (index, _order) = parse_record_indexes_in_load_order(&[path_str]).unwrap();
         let item = index.items.get(&0xBEEF).expect("WEAP indexed");
         assert_eq!(item.common.full_name, "<lstring 0x00000001>");
+    }
+
+    /// #2907 + #2912 — validate both load-order folding and archive-backed
+    /// localization against the shipped Skyrim master.
+    #[test]
+    #[ignore]
+    fn real_skyrim_load_order_preserves_categories_and_resolves_archive_strings() {
+        let data = std::env::var("BYROREDUX_SKYRIMSE_DATA")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| {
+                std::path::PathBuf::from(
+                    "/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data",
+                )
+            });
+        if !data.is_dir() {
+            eprintln!("[Skyrim load-order] skipping: game data unavailable");
+            return;
+        }
+        let master = data.join("Skyrim.esm");
+        let bytes = std::fs::read(&master).expect("read Skyrim.esm");
+        let direct = esm::records::parse_esm(&bytes).expect("parse Skyrim.esm directly");
+        let master_str = master.to_str().unwrap();
+        let (merged, _) = parse_record_indexes_in_load_order(&[master_str]).unwrap();
+
+        assert_eq!(merged.total(), direct.total());
+        assert_eq!(merged.idle_animations.len(), direct.idle_animations.len());
+        assert!(merged.idle_animations.len() > 3_000);
+
+        let names: Vec<_> = merged
+            .items
+            .values()
+            .map(|item| item.common.full_name.as_str())
+            .filter(|name| !name.is_empty())
+            .collect();
+        assert!(names.len() > 1_000, "too few resolved Skyrim item names");
+        assert!(
+            names.iter().all(|name| !name.starts_with("<lstring ")),
+            "archive-backed tables must resolve every non-empty item name"
+        );
     }
 
     /// #1554 / SK-D4-03 — end-to-end: an ESL-flagged (TES4 0x0200) plugin's

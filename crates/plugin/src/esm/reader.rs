@@ -109,12 +109,11 @@ pub enum GameKind {
 }
 
 impl GameKind {
-    /// Derive the game kind from the ESM variant plus the HEDR `Version`
-    /// f32 (sub-record offset 0 of the TES4 record's HEDR). Callers that
-    /// don't have a HEDR version should pass `0.0`, which falls back to
-    /// [`GameKind::Fallout3NV`] (the most common Tes5Plus case — keeps
-    /// existing synthetic test fixtures working).
-    pub fn from_header(variant: EsmVariant, hedr_version: f32) -> Self {
+    /// Derive the game kind from the ESM variant, HEDR `Version` f32, and
+    /// TES4 record-header version word. The latter disambiguates FO4 DLCs
+    /// whose HEDR 0.95 overlaps FO3's band. Callers without either value may
+    /// pass zero, which falls back to [`GameKind::Fallout3NV`].
+    pub fn from_header(variant: EsmVariant, hedr_version: f32, record_version: u16) -> Self {
         match variant {
             EsmVariant::Oblivion => Self::Oblivion,
             EsmVariant::Tes5Plus => {
@@ -143,6 +142,12 @@ impl GameKind {
                 } else if (1.6..=1.8).contains(&hedr_version) {
                     Self::Skyrim
                 } else if (0.98..=1.04).contains(&hedr_version) {
+                    Self::Fallout4
+                } else if (0.945..=0.955).contains(&hedr_version) && record_version >= 100 {
+                    // FO4's CK and five of the seven shipped DLC masters
+                    // stamp HEDR 0.95, which overlaps the old FO3 band.
+                    // Their TES4 record version is 131 (FO3/FNV use 2),
+                    // giving us an independent on-disk discriminator.
                     Self::Fallout4
                 } else if (0.955..=0.97).contains(&hedr_version) {
                     Self::Starfield
@@ -421,6 +426,10 @@ pub struct FileHeader {
     /// HEDR `Version` f32 (sub-record offset 0). 0.0 when absent (synthetic
     /// test fixtures often omit HEDR). Feed into [`GameKind::from_header`].
     pub hedr_version: f32,
+    /// TES4 record-header version word (24-byte headers, offsets 20..22).
+    /// FO4 masters/plugins use 131 while FO3/FNV use 2, which disambiguates
+    /// FO4's common HEDR 0.95 from FO3's nearby 0.94.
+    pub record_version: u16,
     /// TES4 record flag bit `0x80` (Localized). When set, Skyrim+
     /// plugins encode FULL / DESC / RNAM / etc. as a 4-byte u32
     /// reference into companion `Strings/*.{STRINGS,DLSTRINGS,ILSTRINGS}`
@@ -711,6 +720,7 @@ impl<'a> EsmReader<'a> {
 
     /// Parse the TES4 file header record.
     pub fn read_file_header(&mut self) -> Result<FileHeader> {
+        let header_start = self.position();
         let header = self.read_record_header()?;
         ensure!(
             &header.record_type == b"TES4",
@@ -729,6 +739,11 @@ impl<'a> EsmReader<'a> {
         // `FileHeader::light_master`. Captured here so the load-order
         // builder can place the plugin in the 0xFE light space (#1554).
         let light_master = header.flags & 0x0200 != 0;
+        let record_version = if self.variant == EsmVariant::Tes5Plus {
+            u16::from_le_bytes([self.data[header_start + 20], self.data[header_start + 21]])
+        } else {
+            0
+        };
 
         let subs = self.read_sub_records(&header)?;
         let mut masters = Vec::new();
@@ -756,6 +771,7 @@ impl<'a> EsmReader<'a> {
             master_files: masters,
             record_count,
             hedr_version,
+            record_version,
             localized,
             light_master,
         })
@@ -1059,44 +1075,51 @@ mod tests {
     fn game_kind_from_header_maps_real_master_hedr_values() {
         // FO3 GOTY — bytes d7 a3 70 3f → f32 0.94.
         assert_eq!(
-            GameKind::from_header(EsmVariant::Tes5Plus, 0.94),
+            GameKind::from_header(EsmVariant::Tes5Plus, 0.94, 2),
             GameKind::Fallout3NV,
             "FO3 GOTY (HEDR=0.94) must classify as Fallout3NV",
         );
         // FNV — bytes 1f 85 ab 3f → f32 ≈ 1.34.
         assert_eq!(
-            GameKind::from_header(EsmVariant::Tes5Plus, 1.34),
+            GameKind::from_header(EsmVariant::Tes5Plus, 1.34, 2),
             GameKind::Fallout3NV,
             "FNV (HEDR=1.34) must classify as Fallout3NV",
         );
         // FO4 — bytes 00 00 80 3f → f32 1.0.
         assert_eq!(
-            GameKind::from_header(EsmVariant::Tes5Plus, 1.0),
+            GameKind::from_header(EsmVariant::Tes5Plus, 1.0, 131),
             GameKind::Fallout4,
             "FO4 (HEDR=1.0) must classify as Fallout4",
         );
         // Skyrim SE — bytes 48 e1 da 3f → f32 ≈ 1.71.
         assert_eq!(
-            GameKind::from_header(EsmVariant::Tes5Plus, 1.71),
+            GameKind::from_header(EsmVariant::Tes5Plus, 1.71, 44),
             GameKind::Skyrim,
             "Skyrim SE (HEDR=1.71) must classify as Skyrim",
         );
         // Starfield — bytes 8f c2 75 3f → f32 ≈ 0.96.
         assert_eq!(
-            GameKind::from_header(EsmVariant::Tes5Plus, 0.96),
+            GameKind::from_header(EsmVariant::Tes5Plus, 0.96, 581),
             GameKind::Starfield,
             "Starfield (HEDR=0.96) must classify as Starfield",
         );
         // FO76 — HEDR=68.0 per UESP.
         assert_eq!(
-            GameKind::from_header(EsmVariant::Tes5Plus, 68.0),
+            GameKind::from_header(EsmVariant::Tes5Plus, 68.0, 155),
             GameKind::Fallout76,
             "FO76 (HEDR=68.0) must classify as Fallout76",
         );
         // Oblivion — variant-dispatched regardless of HEDR.
         assert_eq!(
-            GameKind::from_header(EsmVariant::Oblivion, 1.0),
+            GameKind::from_header(EsmVariant::Oblivion, 1.0, 0),
             GameKind::Oblivion,
+        );
+        // DLCCoast.esm ships these exact header discriminators:
+        // HEDR bytes 33 33 73 3f (0.95), TES4 version 0x0083 (131).
+        assert_eq!(
+            GameKind::from_header(EsmVariant::Tes5Plus, 0.95, 131),
+            GameKind::Fallout4,
+            "FO4 CK/DLC HEDR=0.95 must not fall into the FO3/FNV family",
         );
     }
 

@@ -61,6 +61,68 @@ const FO3_TOTAL_FLOOR: usize = 30_000;
 /// masking a category-wipe regression.
 const FO4_TOTAL_FLOOR: usize = 70_000;
 
+/// #2904 — Far Harbor ships HEDR 0.95 (overlapping the old FO3/FNV band)
+/// but uses FO4's TES5+ record-header version 131.
+#[test]
+#[ignore]
+fn dlccoast_header_classifies_as_fallout4() {
+    let Some(data) = data_dir(
+        "BYROREDUX_FO4_DATA",
+        "/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data",
+    ) else {
+        eprintln!("[FO4/DLCCoast] skipping: game data unavailable");
+        return;
+    };
+    let bytes = std::fs::read(data.join("DLCCoast.esm")).expect("read DLCCoast.esm");
+    let index = parse_esm(&bytes).expect("parse DLCCoast.esm");
+    assert_eq!(index.game, GameKind::Fallout4);
+    assert!(
+        !index.cells.packins.is_empty(),
+        "FO4-only PKIN records prove the DLC used the FO4 schema"
+    );
+}
+
+/// #2905 — FNAM is a display/coercion hint; FLTV is always an IEEE f32.
+#[test]
+#[ignore]
+fn fnv_karma_good_global_decodes_float_payload_before_narrowing() {
+    let Some(data) = data_dir(
+        "BYROREDUX_FNV_DATA",
+        "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data",
+    ) else {
+        eprintln!("[FNV/GLOB] skipping: game data unavailable");
+        return;
+    };
+    let bytes = std::fs::read(data.join("FalloutNV.esm")).expect("read FalloutNV.esm");
+    let index = parse_esm(&bytes).expect("parse FalloutNV.esm");
+    let karma = index
+        .globals
+        .values()
+        .find(|global| global.editor_id == "KarmaGood")
+        .expect("KarmaGood GLOB");
+    assert_eq!(karma.value.as_f32(), 250.0);
+}
+
+#[test]
+#[ignore]
+fn oblivion_spawn_time_global_decodes_float_payload_before_narrowing() {
+    let Some(data) = data_dir(
+        "BYROREDUX_OBL_DATA",
+        "/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data",
+    ) else {
+        eprintln!("[Oblivion/GLOB] skipping: game data unavailable");
+        return;
+    };
+    let bytes = std::fs::read(data.join("Oblivion.esm")).expect("read Oblivion.esm");
+    let index = parse_esm(&bytes).expect("parse Oblivion.esm");
+    let spawn_time = index
+        .globals
+        .values()
+        .find(|global| global.editor_id == "SEKnightSpawnTime")
+        .expect("SEKnightSpawnTime GLOB");
+    assert_eq!(spawn_time.value.as_f32(), 4.0);
+}
+
 #[test]
 #[ignore]
 fn fnv_actor_value_roster_and_health_resolve_on_shipped_master() {
