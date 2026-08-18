@@ -2871,7 +2871,7 @@ mod unit_tests {
             "EXPLOSION_IMPULSE_DURATION_SECONDS * 0.35",
             "radius / EXPLOSION_EXPANSION_TIME_SECONDS",
             "compactCore * impulseEnvelope",
-            ": ignitionMask * 0.22;",
+            ": densityProfile * smokeEnvelope * 0.38;",
             "float fuelFraction = clamp(chemistry.x, 0.0, 1.0);",
             "float oxidizer = 1.0 - fuelFraction;",
             "COMBUSTION_REACTION_RATE_PER_SECOND",

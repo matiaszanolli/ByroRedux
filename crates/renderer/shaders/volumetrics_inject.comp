@@ -1009,9 +1009,13 @@ void applyCombustionSources(
                 ? ignitionEnvelope
                 : compactCore * impulseEnvelope
         );
+        // Seed the finite event's cooling shell, not only its compact hot
+        // core. This is still a one-shot source term (the envelope closes
+        // before the emitter expires), but it gives the transported aerosol
+        // enough mass to survive the fireball and rise as visible smoke.
         float smokeSeedMask = coldHistory
             ? densityProfile * smokeEnvelope
-            : ignitionMask * 0.22;
+            : densityProfile * smokeEnvelope * 0.38;
         float sourceTemperature = clamp(
             max(volume.emission_temperature.w, 2300.0),
             IGNITION_TEMPERATURE_K,
