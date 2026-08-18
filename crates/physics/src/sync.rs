@@ -922,26 +922,29 @@ fn push_kinematic(world: &World) {
         return;
     };
 
-    let mut pw = world.resource_mut::<PhysicsWorld>();
-    let mut pushed = false;
+    // Snapshot ECS poses before taking the PhysicsWorld resource guard. The
+    // storage guards must not overlap the resource guard (#2404).
+    let mut targets = Vec::new();
     for (entity, handles) in handles_q.iter() {
         let Some(body_data) = body_q.get(entity) else {
             continue;
         };
-        // Only `Keyframed` bodies (doors, platforms, scripted props)
-        // track their ECS `GlobalTransform` automatically. Character
-        // kinematic bodies are driven explicitly by the character
-        // controller system via `set_kinematic_translation`; pushing
-        // the ECS Transform here would race with the controller's
-        // KCC-corrected pose write.
         if body_data.motion_type != MotionType::Keyframed {
             continue;
         }
         let Some(g) = global_q.get(entity) else {
             continue;
         };
-        if let Some(body) = pw.bodies.get_mut(handles.body) {
-            let target = iso_from_trs(g.translation, g.rotation);
+        targets.push((handles.body, iso_from_trs(g.translation, g.rotation)));
+    }
+    drop(handles_q);
+    drop(body_q);
+    drop(global_q);
+
+    let mut pw = world.resource_mut::<PhysicsWorld>();
+    let mut pushed = false;
+    for (body_handle, target) in targets {
+        if let Some(body) = pw.bodies.get_mut(body_handle) {
             let cur = *body.position();
             // Only re-target a keyframed body whose pose actually changed.
             // Re-pushing an idle body (a closed door) every frame gives it a
@@ -975,6 +978,38 @@ fn pull_dynamic(world: &World) {
         return;
     };
 
+    // Snapshot the storage-side identity first, then release those guards
+    // before touching PhysicsWorld (#2404).
+    let mut dynamic_handles = Vec::new();
+    for (entity, handles) in handles_q.iter() {
+        let Some(body_data) = body_q.get(entity) else {
+            continue;
+        };
+        if body_data.motion_type == MotionType::Dynamic {
+            dynamic_handles.push((entity, handles.body));
+        }
+    }
+    drop(handles_q);
+    drop(body_q);
+
+    // Read Rapier poses with no ECS storage guard alive.
+    let mut body_states = Vec::with_capacity(dynamic_handles.len());
+    {
+        let pw = world.resource::<PhysicsWorld>();
+        for (entity, handle) in dynamic_handles {
+            let Some(body) = pw.bodies.get(handle) else {
+                continue;
+            };
+            let iso = *body.position();
+            body_states.push((
+                entity,
+                vec3_from_translation(iso.translation),
+                quat_from_na(iso.rotation),
+                body.is_sleeping(),
+            ));
+        }
+    }
+
     // Build a list of (entity, new local translation, new local rotation)
     // before taking the Transform write lock.
     let mut updates: Vec<(EntityId, glam::Vec3, glam::Quat)> = Vec::new();
@@ -997,20 +1032,7 @@ fn pull_dynamic(world: &World) {
         let parent_q = world.query::<Parent>();
         let global_q = world.query::<GlobalTransform>();
         let transform_q = world.query::<Transform>();
-        let pw = world.resource::<PhysicsWorld>();
-        for (entity, handles) in handles_q.iter() {
-            let Some(body_data) = body_q.get(entity) else {
-                continue;
-            };
-            if body_data.motion_type != MotionType::Dynamic {
-                continue;
-            }
-            let Some(body) = pw.bodies.get(handles.body) else {
-                continue;
-            };
-            let iso = *body.position();
-            let translation = vec3_from_translation(iso.translation);
-            let rotation = quat_from_na(iso.rotation);
+        for (entity, translation, rotation, sleeping) in body_states {
             // A parent that has no `GlobalTransform` cannot be divided out;
             // propagation `continue`s on that same case, so the child's global
             // is never recomposed either and the world pose stays correct.
@@ -1028,7 +1050,7 @@ fn pull_dynamic(world: &World) {
             // asleep. Once ECS already matches Rapier, avoid handing out a
             // mutable Transform (and arming its dirty bit) every frame. Keep
             // the initial pull when registration seeded a different pose.
-            if body.is_sleeping()
+            if sleeping
                 && transform_q.as_ref().is_some_and(|tq| {
                     tq.get(entity).is_some_and(|t| {
                         (t.translation - translation).length_squared() <= 1e-8
@@ -1047,9 +1069,6 @@ fn pull_dynamic(world: &World) {
     // everything needed. `character_controller_system` acquires the
     // reverse pair (`Transform` read held across `RapierHandles`), so
     // overlapping the two orders would be an ABBA risk (#2135).
-    drop(handles_q);
-    drop(body_q);
-
     if updates.is_empty() {
         return;
     }
