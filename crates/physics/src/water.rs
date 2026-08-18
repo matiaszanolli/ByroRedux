@@ -430,17 +430,29 @@ pub(crate) fn apply_buoyancy(world: &World, had_newcomers: bool) {
                                 b.add_force(vector![f.x, f.y, f.z], false);
                             }
                         }
+                        writes.push((
+                            t.entity,
+                            WaterContact {
+                                depth: s.surface_y - center_y,
+                                submerged_fraction: frac,
+                                head_submerged: max_y <= s.surface_y,
+                                flow: s.flow,
+                                material: Some(s.material),
+                            },
+                        ));
+                    } else if t.prior_wet {
+                        // The hysteresis band keeps a body eligible for the
+                        // surface query a few units above the waterline, but
+                        // it is already dry there. Restore the authored state
+                        // at this boundary instead of clearing `prior_wet`
+                        // while leaving damping/forces latched (#2870).
+                        if let Some(b) = pw.bodies.get_mut(t.handles.body) {
+                            b.set_linear_damping(t.authored_lin);
+                            b.set_angular_damping(t.authored_ang);
+                            b.reset_forces(false);
+                        }
+                        writes.push((t.entity, WaterContact::default()));
                     }
-                    writes.push((
-                        t.entity,
-                        WaterContact {
-                            depth: s.surface_y - center_y,
-                            submerged_fraction: frac,
-                            head_submerged: max_y <= s.surface_y,
-                            flow: s.flow,
-                            material: Some(s.material),
-                        },
-                    ));
                 }
                 None => {
                     // Exited every volume. If it was wet, restore its authored
