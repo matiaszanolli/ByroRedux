@@ -129,6 +129,10 @@ pub const EXPLOSION_EXPANSION_TIME_SECONDS: f32 =
     byroredux_core::combustion::EXPLOSION_EXPANSION_TIME_SECONDS;
 pub const EXPLOSION_IMPULSE_DURATION_SECONDS: f32 =
     byroredux_core::combustion::EXPLOSION_IMPULSE_DURATION_SECONDS;
+pub const COMBUSTION_AEROSOL_DISSIPATION_PER_SECOND: f32 =
+    byroredux_core::combustion::AEROSOL_DISSIPATION_PER_SECOND;
+pub const COMBUSTION_AEROSOL_LINGER_SECONDS: f32 =
+    byroredux_core::combustion::AEROSOL_LINGER_SECONDS;
 
 // Transported-combustion -> surface-light reduction. The froxel injector
 // accumulates fixed-point radiant moments into this camera-centred grid; Rust

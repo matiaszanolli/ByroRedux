@@ -192,6 +192,11 @@ fn main() {
         "#define EXPLOSION_IMPULSE_DURATION_SECONDS {EXPLOSION_IMPULSE_DURATION_SECONDS:?}"
     )
     .unwrap();
+    writeln!(
+        out,
+        "#define COMBUSTION_AEROSOL_DISSIPATION_PER_SECOND {COMBUSTION_AEROSOL_DISSIPATION_PER_SECOND:?}"
+    )
+    .unwrap();
     writeln!(out).unwrap();
     writeln!(out, "// Transported-combustion light-moment reduction").unwrap();
     writeln!(

@@ -24,6 +24,20 @@ pub const EXPLOSION_EXPANSION_TIME_SECONDS: f32 = 0.35;
 /// Duration over which a one-shot source may add outward momentum.
 pub const EXPLOSION_IMPULSE_DURATION_SECONDS: f32 = 1.5;
 
+/// First-order removal rate for transported combustion aerosol.
+///
+/// Absorption and scattering decay together so a plume keeps its canonical
+/// single-scatter albedo as it disperses instead of changing material with
+/// age. This is a medium property, not an authored effect lifetime.
+pub const AEROSOL_DISSIPATION_PER_SECOND: f32 = 0.045;
+
+/// Remaining optical coefficient at which an emitter-less field may stop.
+pub const AEROSOL_LINGER_CUTOFF_FRACTION: f32 = 0.03;
+
+/// Renderer latch long enough for first-order aerosol decay to reach the
+/// canonical cutoff after the final emitter disappears.
+pub const AEROSOL_LINGER_SECONDS: f32 = 78.0;
+
 /// Canonical thermal-emitter regime produced at content/runtime boundaries.
 ///
 /// Keeping the radiance anchor beside temperature and soot albedo prevents
@@ -113,6 +127,9 @@ mod tests {
         assert_eq!(ADIABATIC_FLAME_TEMPERATURE_K, 2350.0);
         assert!(EXPLOSION_EXPANSION_TIME_SECONDS > 0.0);
         assert!(EXPLOSION_IMPULSE_DURATION_SECONDS > EXPLOSION_EXPANSION_TIME_SECONDS);
+        let remaining = (-AEROSOL_DISSIPATION_PER_SECOND * AEROSOL_LINGER_SECONDS).exp();
+        assert!(remaining <= AEROSOL_LINGER_CUTOFF_FRACTION);
+        assert!(remaining > AEROSOL_LINGER_CUTOFF_FRACTION * 0.95);
     }
 
     #[test]

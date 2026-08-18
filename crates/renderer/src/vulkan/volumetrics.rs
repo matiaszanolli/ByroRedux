@@ -31,11 +31,11 @@ use super::scene_buffer::GpuLight;
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::upscaling::VolumetricsConfig;
 use crate::shader_constants::{
-    ATTENUATION_MODEL_INVERSE_SQUARE, COMBUSTION_LIGHT_FIXED_SCALE,
-    COMBUSTION_LIGHT_GRID_COUNT as GLSL_COMBUSTION_LIGHT_GRID_COUNT, COMBUSTION_LIGHT_GRID_X,
-    COMBUSTION_LIGHT_GRID_Y, COMBUSTION_LIGHT_GRID_Z, COMBUSTION_LIGHT_HALF_EXTENT_XZ_METERS,
-    COMBUSTION_LIGHT_HALF_EXTENT_Y_METERS, COMBUSTION_LIGHT_VOLUME_FIXED_SCALE,
-    FOG_VOLUME_CLUSTER_DIM as GLSL_FOG_VOLUME_CLUSTER_DIM,
+    ATTENUATION_MODEL_INVERSE_SQUARE, COMBUSTION_AEROSOL_LINGER_SECONDS,
+    COMBUSTION_LIGHT_FIXED_SCALE, COMBUSTION_LIGHT_GRID_COUNT as GLSL_COMBUSTION_LIGHT_GRID_COUNT,
+    COMBUSTION_LIGHT_GRID_X, COMBUSTION_LIGHT_GRID_Y, COMBUSTION_LIGHT_GRID_Z,
+    COMBUSTION_LIGHT_HALF_EXTENT_XZ_METERS, COMBUSTION_LIGHT_HALF_EXTENT_Y_METERS,
+    COMBUSTION_LIGHT_VOLUME_FIXED_SCALE, FOG_VOLUME_CLUSTER_DIM as GLSL_FOG_VOLUME_CLUSTER_DIM,
     MAX_FOG_VOLUMES_PER_CLUSTER as GLSL_MAX_FOG_VOLUMES_PER_CLUSTER, MAX_LIGHTS,
     VISIBILITY_MASK_FULL, WORKGROUP_X, WORKGROUP_Y, WORKGROUP_Z,
 };
@@ -520,10 +520,10 @@ pub fn froxel_extent(render_extent: vk::Extent2D, config: VolumetricsConfig) -> 
 /// transmittance channel entirely.
 const FROXEL_FORMAT: vk::Format = vk::Format::R16G16B16A16_SFLOAT;
 /// Transported thermochemical and velocity fields share RGBA16F with the
-/// V-buffer. Chemistry stores `(fuel, temperature K, soot sigma_t,
+/// V-buffer. Chemistry stores `(fuel, temperature K, absorption sigma_a,
 /// visible-radiance calibration)`; velocity stores world-units/second in xyz
-/// plus oxidizer in w. Half precision covers the bounded canonical ranges
-/// while keeping the two history fields affordable.
+/// plus scattering sigma_s in w. Half precision covers the bounded canonical
+/// ranges while keeping the two history fields affordable.
 const COMBUSTION_FIELD_FORMAT: vk::Format = vk::Format::R16G16B16A16_SFLOAT;
 /// One scalar per froxel recording what fraction of the current source term
 /// came from deterministic thermal emission. R32 is a core storage-image
@@ -532,9 +532,9 @@ const COMBUSTION_FIELD_FORMAT: vk::Format = vk::Format::R16G16B16A16_SFLOAT;
 const EMISSION_HISTORY_FORMAT: vk::Format = vk::Format::R32_SFLOAT;
 const DENSITY_NOISE_FORMAT: vk::Format = vk::Format::R8_UNORM;
 /// Continue advancing transported smoke after the source entity disappears.
-/// With the shader's 0.18/s soot dissipation this leaves <3% after the latch
-/// expires, avoiding both an abrupt cut and an indefinitely hot idle dispatch.
-const COMBUSTION_HISTORY_LINGER_SECONDS: f32 = 20.0;
+/// Core owns the matching aerosol decay/cutoff contract, avoiding a visible
+/// tail cut when the renderer stops the otherwise-idle transport dispatch.
+const COMBUSTION_HISTORY_LINGER_SECONDS: f32 = COMBUSTION_AEROSOL_LINGER_SECONDS;
 const COMBUSTION_LIGHT_GRID_COUNT: usize = GLSL_COMBUSTION_LIGHT_GRID_COUNT as usize;
 const MAX_COMBUSTION_SURFACE_LIGHTS: usize = 64;
 const COMBUSTION_LIGHT_CUTOFF_IRRADIANCE: f32 = 1.0e-3;
@@ -733,12 +733,12 @@ pub struct VolumetricsPipeline {
     /// reprojects the previous slot to make fire/explosion history symmetric
     /// on leading and trailing edges.
     emission_history_volumes: Vec<FroxelSlot>,
-    /// Canonical transported `(fuel, temperature K, soot extinction,
+    /// Canonical transported `(fuel, temperature K, absorption sigma_a,
     /// visible-radiance calibration)` state, double-buffered by
     /// frame-in-flight slot.
     combustion_state_volumes: Vec<FroxelSlot>,
     /// World-space combustion velocity in xyz (world units / second) and
-    /// oxidizer fraction in w. Sampled linearly for RK2 backtracing.
+    /// scattering sigma_s in w. Sampled linearly for RK2 backtracing.
     combustion_velocity_volumes: Vec<FroxelSlot>,
     /// Per frame-in-flight host-mapped UBO carrying
     /// `VolumetricsParams`. Written each frame from `dispatch()`.
@@ -2780,11 +2780,11 @@ mod unit_tests {
             "sourceStateMask * sourceRadianceLuma",
             "vec3 sourcePosition = worldPos - midpointVelocity.xyz * dt;",
             "bool sourceInHistory = samplePreviousTransport(",
-            "&& carriesCombustion(sourceChemistry)",
+            "&& carriesCombustion(sourceChemistry, sourceVelocity)",
             "bool incomingVelocityFromNeighbors(",
             "float closingSpeed = dot(",
             "combustionPathBlocked(\n                candidatePosition,",
-            "float combustionActivity(vec4 chemistry)",
+            "float combustionActivity(vec4 chemistry, vec4 velocity)",
             "bool destinationVelocityExtended = false;",
             "if (destinationVelocityExtended",
             "vec3 neighbor_step_z = field_segment_end - field_segment_start;",
@@ -2803,15 +2803,19 @@ mod unit_tests {
             "radius / EXPLOSION_EXPANSION_TIME_SECONDS",
             "compactCore * impulseEnvelope",
             ": ignitionMask * 0.22;",
-            "float reactionRate = 2.4 * chemistry.x * velocity.w * ignition;",
+            "float reactionRate = 2.4 * chemistry.x * oxidizer * ignition;",
             "ADIABATIC_FLAME_TEMPERATURE_K - chemistry.y",
             "float reactionHeatFraction = 1.0 - exp(-4.0 * burnedFuel);",
             "chemistry.y += temperatureDeficit * reactionHeatFraction;",
-            "float richYield = mix(0.004, 0.018, 1.0 - velocity.w);",
-            "chemistry.z *= exp(-0.045 * dt);",
+            "float richYield = mix(0.004, 0.018, 1.0 - oxidizer);",
+            "chemistry.z *= exp(-COMBUSTION_AEROSOL_DISSIPATION_PER_SECOND * dt);",
+            "velocity.w *= exp(-COMBUSTION_AEROSOL_DISSIPATION_PER_SECOND * dt);",
             "blackbodyVisibleRadianceRatio(chemistry.y, 1850.0)",
             "float buoyantAcceleration = min(temperatureExcess, 7.0)",
-            "LocalMedium combustionMedium(vec4 chemistry)",
+            "LocalMedium combustionMedium(vec4 chemistry, vec4 velocity)",
+            "float sigmaA = chemistry.z",
+            "float sigmaS = velocity.w",
+            "medium.emission = sigmaA * thermalRadiance;",
             "float flameSourceSampleRatio(vec3 fieldWorldPos, vec3 sampleWorldPos)",
             "sampleDensitySum / centerDensitySum",
             "transported_combustion.emission *= flame_source_sample_ratio;",
@@ -2841,6 +2845,11 @@ mod unit_tests {
         assert!(
             !shader.contains("radius / lifetime"),
             "smoke lifetime must not slow the explosion's radial impulse"
+        );
+        assert!(
+            !shader.contains("cooledSmokeAlbedo")
+                && !shader.contains("oxidizer fraction"),
+            "transport must preserve canonical optical coefficients instead of inventing a cooled-smoke material"
         );
         assert!(
             !shader.contains("GameKind")

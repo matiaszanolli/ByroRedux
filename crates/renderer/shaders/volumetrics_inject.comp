@@ -176,10 +176,10 @@ layout(set = 0, binding = 13) uniform sampler3D previousEmissionHistory;
 // no source-game identity: per-game particle/material authoring has already
 // converged to GpuFogVolume::profile_params at the import boundary.
 //
-// chemistry = (fuel mass fraction, temperature K, soot sigma_t/world-unit,
+// chemistry = (fuel mass fraction, temperature K, absorption sigma_a/world-unit,
 //              visible-radiance calibration at 1850 K)
 // velocity  = (world-space velocity xyz in world-units/second,
-//              oxidizer fraction)
+//              scattering sigma_s/world-unit)
 //
 // Current and previous slots are distinct frame-in-flight images, so this
 // shader can semi-Lagrangian backtrace the old field while writing the new
@@ -880,12 +880,19 @@ void applyCombustionSources(
         float sourceMask = densityProfile * radialSource * basalSource;
         float sourceStateMask = stateProfile * radialSource * basalSource;
         float authoredSigmaT = max(volume.half_extents_extinction.w, 0.0);
+        float sourceAlbedo = clamp(
+            dot(clamp(volume.albedo_edge.rgb, vec3(0.0), vec3(1.0)), LUMA_REC709),
+            0.0,
+            1.0
+        );
 
         if (isLocalProfile(profileKind, FOG_VOLUME_PROFILE_SMOKE)) {
-            // Passive smoke supplies soot and a mild warm/upward exhaust, but
-            // no fuel. `max` models a continuously emitting boundary without
-            // making density depend on frame rate.
-            chemistry.z = max(chemistry.z, authoredSigmaT * sourceMask);
+            // Passive smoke supplies aerosol and a mild warm/upward exhaust,
+            // but no fuel. `max` models a continuously emitting boundary
+            // without making density depend on frame rate.
+            float sourceSigmaT = authoredSigmaT * sourceMask;
+            chemistry.z = max(chemistry.z, sourceSigmaT * (1.0 - sourceAlbedo));
+            velocity.w = max(velocity.w, sourceSigmaT * sourceAlbedo);
             chemistry.y = max(
                 chemistry.y,
                 mix(AMBIENT_TEMPERATURE_K, 430.0, sourceStateMask)
@@ -911,7 +918,9 @@ void applyCombustionSources(
                 chemistry.y,
                 mix(AMBIENT_TEMPERATURE_K, sourceTemperature, sourceStateMask)
             );
-            chemistry.z = max(chemistry.z, authoredSigmaT * sourceMask * 0.16);
+            float sourceSigmaT = authoredSigmaT * sourceMask * 0.16;
+            chemistry.z = max(chemistry.z, sourceSigmaT * (1.0 - sourceAlbedo));
+            velocity.w = max(velocity.w, sourceSigmaT * sourceAlbedo);
             float sourceRadianceLuma = max(
                 dot(volume.emission_temperature.rgb, LUMA_REC709),
                 0.0
@@ -924,7 +933,6 @@ void applyCombustionSources(
                 chemistry.w,
                 sourceStateMask * sourceRadianceLuma / max(sourceVisibleRatio, 1.0e-4)
             );
-            velocity.w = max(velocity.w, 0.90);
             velocity.y = max(
                 velocity.y,
                 sourceStateMask * 1.35 * WORLD_UNITS_PER_METER
@@ -980,10 +988,10 @@ void applyCombustionSources(
             chemistry.y,
             mix(AMBIENT_TEMPERATURE_K, sourceTemperature, ignitionStateMask)
         );
-        chemistry.z = max(
-            chemistry.z,
-            authoredSigmaT * (ignitionMask * 0.10 + smokeSeedMask * 1.15)
-        );
+        float sourceSigmaT = authoredSigmaT
+            * (ignitionMask * 0.10 + smokeSeedMask * 1.15);
+        chemistry.z = max(chemistry.z, sourceSigmaT * (1.0 - sourceAlbedo));
+        velocity.w = max(velocity.w, sourceSigmaT * sourceAlbedo);
         float sourceRadianceLuma = max(
             dot(volume.emission_temperature.rgb, LUMA_REC709),
             0.0
@@ -996,8 +1004,6 @@ void applyCombustionSources(
             chemistry.w,
             ignitionStateMask * sourceRadianceLuma / max(sourceVisibleRatio, 1.0e-4)
         );
-        velocity.w = max(velocity.w, 0.85);
-
         vec3 radialDirection = sourceWorldPos - volume.center_shape.xyz;
         float radialLength = length(radialDirection);
         radialDirection = radialLength > 1.0e-4
@@ -1277,21 +1283,21 @@ vec4 sanitizedChemistry(vec4 chemistry) {
     chemistry.y = chemistry.y > 1.0
         ? clamp(chemistry.y, AMBIENT_TEMPERATURE_K, MAX_COMBUSTION_TEMPERATURE_K)
         : AMBIENT_TEMPERATURE_K;
-    chemistry.z = clamp(chemistry.z, 0.0, 0.08);
+    chemistry.z = clamp(chemistry.z, 0.0, 0.20);
     chemistry.w = clamp(chemistry.w, 0.0, 64.0);
     return chemistry;
 }
 
 vec4 sanitizedVelocity(vec4 velocity) {
     if (any(isnan(velocity)) || any(isinf(velocity))) {
-        return vec4(0.0, 0.0, 0.0, 1.0);
+        return vec4(0.0);
     }
     float maxSpeed = MAX_COMBUSTION_SPEED_MPS * WORLD_UNITS_PER_METER;
     float speed = length(velocity.xyz);
     if (speed > maxSpeed) {
         velocity.xyz *= maxSpeed / speed;
     }
-    velocity.w = clamp(velocity.w, 0.0, 1.0);
+    velocity.w = clamp(velocity.w, 0.0, 0.20);
     return velocity;
 }
 
@@ -1301,7 +1307,7 @@ bool samplePreviousTransport(
     out vec4 velocity
 ) {
     chemistry = vec4(0.0, AMBIENT_TEMPERATURE_K, 0.0, 0.0);
-    velocity = vec4(0.0, 0.0, 0.0, 1.0);
+    velocity = vec4(0.0);
     if (params.prev_camera_pos.w <= 0.5) {
         return false;
     }
@@ -1314,20 +1320,22 @@ bool samplePreviousTransport(
     return true;
 }
 
-bool carriesCombustion(vec4 chemistry) {
+bool carriesCombustion(vec4 chemistry, vec4 velocity) {
     return chemistry.x > 1.0e-4
         || chemistry.z > 1.0e-6
+        || velocity.w > 1.0e-6
         || chemistry.w > 1.0e-4
         || chemistry.y > AMBIENT_TEMPERATURE_K + 2.0;
 }
 
-float combustionActivity(vec4 chemistry) {
+float combustionActivity(vec4 chemistry, vec4 velocity) {
     float temperatureExcess = max(
         (chemistry.y - AMBIENT_TEMPERATURE_K) / AMBIENT_TEMPERATURE_K,
         0.0
     );
     return clamp(
-        chemistry.x + chemistry.z * 80.0 + temperatureExcess * 0.12,
+        chemistry.x + (chemistry.z + velocity.w) * 80.0
+            + temperatureExcess * 0.12,
         0.0,
         1.0
     );
@@ -1478,7 +1486,7 @@ bool incomingVelocityFromNeighbors(
     );
     bool found = false;
     float bestScore = 0.0;
-    incomingVelocity = vec4(0.0, 0.0, 0.0, 1.0);
+    incomingVelocity = vec4(0.0);
     for (int neighborIndex = 0; neighborIndex < 6; ++neighborIndex) {
         vec3 candidatePosition = worldPos + offsets[neighborIndex];
         vec4 candidateChemistry;
@@ -1487,7 +1495,7 @@ bool incomingVelocityFromNeighbors(
                 candidatePosition,
                 candidateChemistry,
                 candidateVelocity)
-            || !carriesCombustion(candidateChemistry)) {
+            || !carriesCombustion(candidateChemistry, candidateVelocity)) {
             continue;
         }
 
@@ -1511,7 +1519,7 @@ bool incomingVelocityFromNeighbors(
             continue;
         }
 
-        float activity = combustionActivity(candidateChemistry);
+        float activity = combustionActivity(candidateChemistry, candidateVelocity);
         float score = closingSpeed * (0.25 + activity);
         if (!found || score > bestScore) {
             found = true;
@@ -1546,7 +1554,7 @@ void transportCombustion(
     );
     if (hadHistory && dt > 0.0) {
         bool destinationVelocityExtended = false;
-        if (combustionActivity(probeChemistry) < 0.08) {
+        if (combustionActivity(probeChemistry, destinationVelocity) < 0.08) {
             vec4 incomingVelocity;
             if (incomingVelocityFromNeighbors(
                     worldPos,
@@ -1580,7 +1588,7 @@ void transportCombustion(
         // without ever issuing the TLAS query.
         vec3 crossingNormal;
         bool blocked = sourceInHistory
-            && carriesCombustion(sourceChemistry)
+            && carriesCombustion(sourceChemistry, sourceVelocity)
             && combustionPathBlocked(sourcePosition, worldPos, crossingNormal);
         if (blocked) {
             chemistry = probeChemistry;
@@ -1598,7 +1606,7 @@ void transportCombustion(
             : vec4(0.0, AMBIENT_TEMPERATURE_K, 0.0, 0.0);
         velocity = hadHistory
             ? destinationVelocity
-            : vec4(0.0, 0.0, 0.0, 1.0);
+            : vec4(0.0);
     }
 
     chemistry = sanitizedChemistry(chemistry);
@@ -1618,10 +1626,13 @@ void transportCombustion(
             IGNITION_TEMPERATURE_K + 180.0,
             chemistry.y
         );
-        float reactionRate = 2.4 * chemistry.x * velocity.w * ignition;
+        // The transported optical state uses velocity.w for scattering. A
+        // compact mixture fraction supplies the former oxidizer proxy: fresh
+        // air dominates dilute cells, while fuel-rich cores burn sootier.
+        float oxidizer = clamp(1.0 - chemistry.x * 0.18, 0.0, 1.0);
+        float reactionRate = 2.4 * chemistry.x * oxidizer * ignition;
         float burnedFuel = min(chemistry.x, reactionRate * dt);
         chemistry.x -= burnedFuel;
-        velocity.w = max(velocity.w - burnedFuel * 0.78, 0.0);
         // Reaction heat approaches the canonical adiabatic equilibrium; it
         // is not a fixed kelvin increment. This makes the update independent
         // of timestep partitioning and, crucially, does not keep reheating an
@@ -1633,20 +1644,22 @@ void transportCombustion(
         float reactionHeatFraction = 1.0 - exp(-4.0 * burnedFuel);
         chemistry.y += temperatureDeficit * reactionHeatFraction;
         // Soot yield falls when oxidizer is abundant and rises in a rich,
-        // oxygen-starved flame. It is stored directly as optical extinction,
-        // so the radiative-transfer path consumes the physically relevant
-        // quantity without a second arbitrary density conversion.
-        float richYield = mix(0.004, 0.018, 1.0 - velocity.w);
-        chemistry.z += burnedFuel * richYield;
+        // oxygen-starved flame. Split the produced extinction into absorption
+        // and scattering immediately so the radiative-transfer path consumes
+        // optical coefficients without a later age/material conversion.
+        float richYield = mix(0.004, 0.018, 1.0 - oxidizer);
+        float sootSigmaT = burnedFuel * richYield;
+        const float sootSingleScatterAlbedo = 0.08;
+        chemistry.z += sootSigmaT * (1.0 - sootSingleScatterAlbedo);
+        velocity.w += sootSigmaT * sootSingleScatterAlbedo;
 
-        float entrainment = 1.0 - exp(-0.34 * dt);
-        velocity.w = mix(velocity.w, 1.0, entrainment);
         chemistry.x *= exp(-0.025 * dt);
         // Soot is transported matter, not another emissive time envelope.
         // Let advection and mixing disperse it; this mild settling/removal term
         // gives a ~15 s half-life instead of erasing an explosion cloud in the
         // first few seconds after its heat has cooled.
-        chemistry.z *= exp(-0.045 * dt);
+        chemistry.z *= exp(-COMBUSTION_AEROSOL_DISSIPATION_PER_SECOND * dt);
+        velocity.w *= exp(-COMBUSTION_AEROSOL_DISSIPATION_PER_SECOND * dt);
         chemistry.w *= exp(-0.08 * dt);
         chemistry.y = AMBIENT_TEMPERATURE_K
             + (chemistry.y - AMBIENT_TEMPERATURE_K) * exp(-0.42 * dt);
@@ -1659,7 +1672,7 @@ void transportCombustion(
             * 0.58 * WORLD_UNITS_PER_METER;
         velocity.y += buoyantAcceleration * dt;
 
-        float activity = combustionActivity(chemistry);
+        float activity = combustionActivity(chemistry, velocity);
         vec3 metres = worldPos / WORLD_UNITS_PER_METER;
         vec3 turbulentAcceleration = curlField(
             metres * 0.38
@@ -1672,7 +1685,7 @@ void transportCombustion(
         // of a wall. This forward probe handles the complementary source-side
         // boundary condition: remove only the inward normal component of the
         // updated flow and retain tangential slip with mild wall friction.
-        if (carriesCombustion(chemistry)
+        if (carriesCombustion(chemistry, velocity)
             && dot(velocity.xyz, velocity.xyz) > 1.0e-8) {
             vec3 boundaryNormal;
             vec3 predictedPosition = worldPos + velocity.xyz * dt;
@@ -1691,26 +1704,28 @@ void transportCombustion(
     velocity = sanitizedVelocity(velocity);
 }
 
-LocalMedium combustionMedium(vec4 chemistry) {
+LocalMedium combustionMedium(vec4 chemistry, vec4 velocity) {
     LocalMedium medium = emptyLocalMedium();
     chemistry = sanitizedChemistry(chemistry);
-    float fuelVapourExtinction = chemistry.x * 0.0035;
-    float sigmaT = chemistry.z + fuelVapourExtinction;
+    velocity = sanitizedVelocity(velocity);
+    float fuelVapourSigmaT = chemistry.x * 0.0035;
+    const float fuelVapourSingleScatterAlbedo = 0.10;
+    float sigmaA = chemistry.z
+        + fuelVapourSigmaT * (1.0 - fuelVapourSingleScatterAlbedo);
+    float sigmaS = velocity.w
+        + fuelVapourSigmaT * fuelVapourSingleScatterAlbedo;
+    float sigmaT = sigmaA + sigmaS;
     if (sigmaT <= 1.0e-7) {
         return medium;
     }
 
-    float hot = smoothstep(650.0, 1750.0, chemistry.y);
-    vec3 cooledSmokeAlbedo = vec3(0.78, 0.72, 0.66);
-    vec3 hotSootAlbedo = vec3(0.10, 0.075, 0.055);
-    vec3 albedo = mix(cooledSmokeAlbedo, hotSootAlbedo, hot);
     medium.extinction = sigmaT;
-    medium.scattering = sigmaT * albedo;
+    medium.scattering = vec3(sigmaS);
 
     float thermalLuma = chemistry.w
         * blackbodyVisibleRadianceRatio(chemistry.y, 1850.0);
     vec3 thermalRadiance = blackbodyChromaticity(chemistry.y) * thermalLuma;
-    medium.emission = sigmaT * (vec3(1.0) - albedo) * thermalRadiance;
+    medium.emission = sigmaA * thermalRadiance;
     return medium;
 }
 
@@ -1906,7 +1921,10 @@ void main() {
     float density_scale = proceduralDensityScale(world_pos, params.fog_reference.x);
     float global_extinction = params.camera_pos.w * density_scale;
     LocalMedium local_medium = sampleLocalMedium(field_world_pos);
-    LocalMedium transported_combustion = combustionMedium(chemistry);
+    LocalMedium transported_combustion = combustionMedium(
+        chemistry,
+        combustion_velocity
+    );
     accumulateCombustionLightMoment(
         coord,
         size,
