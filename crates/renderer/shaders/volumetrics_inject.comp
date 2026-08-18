@@ -1034,6 +1034,12 @@ void applyCombustionSources(
                 smokeSeedMask
             )
         );
+        dynamics.y = max(
+            dynamics.y,
+            smokeSeedMask
+                * COMBUSTION_TURBULENCE_COARSE_RISE_SPEED_MPS
+                * WORLD_UNITS_PER_METER
+        );
         float sourceSigmaT = authoredSigmaT
             * (ignitionMask * 0.10 + smokeSeedMask * 1.15);
         chemistry.z = max(chemistry.z, sourceSigmaT);
@@ -1774,7 +1780,8 @@ void transportCombustion(
             chemistry = probeChemistry;
             dynamics = destinationDynamics;
             optical = probeOptical;
-        } else if (sourceInHistory) {
+        } else if (sourceInHistory
+            && carriesCombustion(sourceChemistry, sourceOptical)) {
             chemistry = sourceChemistry;
             dynamics = sourceDynamics;
             optical = sourceOptical;
