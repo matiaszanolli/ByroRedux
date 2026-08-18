@@ -983,11 +983,13 @@ pub(crate) fn merge_external_material(
     // stay at the NIF-derived values — better than Lambert but still
     // approximate; Phase 2 will walk the CDB to extract authored values.
     //
-    // The CDB-presence gate (`has_starfield_cdb`) prevents accidental
-    // PBR routing for modded `.mat` paths against a non-Starfield
-    // archive set (FO4 / FNV cells with a stray mod-authored `.mat`
-    // shouldn't get Disney BSDF).
-    if path.ends_with(".mat") && provider.has_starfield_cdb() {
+    // The CDB-presence gate prevents accidental PBR routing for modded
+    // sidecars against non-Starfield archives. Starfield's shipped NIFs use
+    // `.bgsm`/`.bgem`-named references even though no such files exist in its
+    // archives (#3053), so route those names through the same capability gate.
+    let starfield_named_material =
+        path.ends_with(".mat") || path.ends_with(".bgsm") || path.ends_with(".bgem");
+    if starfield_named_material && provider.has_starfield_cdb() {
         material.is_pbr = true;
         // `from_bgsm` deliberately NOT set — that flag gates BGSM
         // spec-glossiness translation (FO4-specific format convention).
@@ -1023,6 +1025,22 @@ pub(crate) fn merge_external_material(
         // #2709 (SF-D9-03) — `PresenceOnly`, not `Merged`: this arm sets
         // exactly one routing flag and forwards no authored field. Phase 2
         // should return `Merged` once a CDB lookup actually supplies data.
+        if !path.ends_with(".mat") {
+            static WARNED: std::sync::OnceLock<
+                std::sync::Mutex<std::collections::HashSet<String>>,
+            > = std::sync::OnceLock::new();
+            let mut warned = WARNED
+                .get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if warned.insert(path.clone()) {
+                log::warn!(
+                    "Starfield shader material '{}' has no external BGSM/BGEM payload; \
+                     using CDB-gated PBR fallback",
+                    path
+                );
+            }
+        }
         return MergeOutcome::PresenceOnly;
     }
 

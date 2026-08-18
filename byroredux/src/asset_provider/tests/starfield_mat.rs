@@ -262,9 +262,8 @@ fn sf_cdb_cache_returns_the_same_probe_and_stays_bounded() {
     assert!(cache.len() <= SF_CDB_CACHE_MAX_ENTRIES);
 }
 
-/// A `.bgsm` path must NOT enter the Starfield arm even when the
-/// CDB is loaded — the FO4 BGSM dispatch wins, preserving
-/// spec-glossiness translation.
+/// A Starfield `.bgsm` reference has no external payload; with a CDB loaded it
+/// must enter the Starfield capability arm and preserve PBR routing.
 #[test]
 fn mat_arm_does_not_steal_bgsm_dispatch() {
     let mut pool = byroredux_core::string::StringPool::new();
@@ -275,12 +274,19 @@ fn mat_arm_does_not_steal_bgsm_dispatch() {
         imported_mesh_with_material_path(&mut pool, "materials/setdressing/metallocker01.bgsm");
     let _ = merge_external_material(&mut mesh.material, &mut provider, &mut pool);
 
-    // The .bgsm path falls past the .mat arm into BGSM dispatch,
-    // which fails on the missing archive (no .bgsm to extract).
-    // `is_pbr` stays at its default — BGSM dispatch doesn't flip
-    // it without a successful resolve.
-    assert!(
-        !mesh.material.is_pbr,
-        ".bgsm path must not be hijacked by the Starfield arm"
-    );
+    // Starfield NIFs use `.bgsm` names without shipping BGSM payloads. The
+    // CDB capability gate routes them through Disney PBR instead of silently
+    // falling into an unresolved external-file arm.
+    assert!(mesh.material.is_pbr);
+}
+
+#[test]
+fn starfield_bgem_named_reference_gets_pbr_fallback() {
+    let mut pool = byroredux_core::string::StringPool::new();
+    let mut provider = MaterialProvider::new();
+    provider.register_starfield_cdb(&minimal_cdb_bytes());
+    let mut mesh = imported_mesh_with_material_path(&mut pool, "materials/common/glowwhite.bgem");
+    let outcome = merge_external_material(&mut mesh.material, &mut provider, &mut pool);
+    assert_eq!(outcome, MergeOutcome::PresenceOnly);
+    assert!(mesh.material.is_pbr);
 }
