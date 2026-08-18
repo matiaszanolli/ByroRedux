@@ -125,6 +125,26 @@ pub const AEROSOL_LIFT_ACCELERATION_MPS2: f32 = 0.20;
 /// the full residual lift while a thin trailing edge fades smoothly.
 pub const AEROSOL_LIFT_EXTINCTION_SCALE: f32 = 20.0;
 
+/// First-order removal rate for unburned fuel vapour, per second.
+pub const FUEL_VAPOUR_REMOVAL_PER_SECOND: f32 = 0.025;
+
+/// First-order removal rate for transported visible-radiance calibration, per
+/// second.
+pub const RADIANCE_REMOVAL_PER_SECOND: f32 = 0.08;
+
+/// First-order thermal relaxation rate toward ambient temperature, per second.
+pub const THERMAL_COOLING_PER_SECOND: f32 = 0.42;
+
+/// Thermal buoyancy acceleration per unit normalized temperature excess,
+/// metres per second squared.
+pub const THERMAL_BUOYANCY_ACCELERATION_MPS2: f32 = 0.58;
+
+/// First-order damping rate for transported velocity, per second.
+pub const VELOCITY_DAMPING_PER_SECOND: f32 = 0.48;
+
+/// Reaction heat response factor per unit burned normalized fuel.
+pub const REACTION_HEAT_RESPONSE: f32 = 4.0;
+
 /// Fraction of a persistent flame primitive occupied by the replenished fuel
 /// boundary, measured upward from its base. The remaining authored extent is
 /// a transport bound: buoyancy/advection must create the visible flame there.
@@ -255,6 +275,12 @@ mod tests {
         assert!(remaining > AEROSOL_LINGER_CUTOFF_FRACTION * 0.95);
         assert!(AEROSOL_LIFT_ACCELERATION_MPS2 > 0.0);
         assert!(AEROSOL_LIFT_EXTINCTION_SCALE > 0.0);
+        assert!(FUEL_VAPOUR_REMOVAL_PER_SECOND > 0.0);
+        assert!(RADIANCE_REMOVAL_PER_SECOND > 0.0);
+        assert!(THERMAL_COOLING_PER_SECOND > 0.0);
+        assert!(THERMAL_BUOYANCY_ACCELERATION_MPS2 > 0.0);
+        assert!(VELOCITY_DAMPING_PER_SECOND > 0.0);
+        assert!(REACTION_HEAT_RESPONSE > 0.0);
         assert!(FLAME_FUEL_BOUNDARY_HEIGHT_FRACTION > 0.0);
         assert!(FLAME_REACTION_ZONE_FADE_START_FRACTION < FLAME_FUEL_BOUNDARY_HEIGHT_FRACTION);
         assert!(FLAME_FUEL_BOUNDARY_HEIGHT_FRACTION < FLAME_REACTION_ZONE_HEIGHT_FRACTION);

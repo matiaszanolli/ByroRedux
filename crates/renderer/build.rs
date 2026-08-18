@@ -289,6 +289,36 @@ fn main() {
     .unwrap();
     writeln!(
         out,
+        "#define COMBUSTION_FUEL_VAPOUR_REMOVAL_PER_SECOND {COMBUSTION_FUEL_VAPOUR_REMOVAL_PER_SECOND:?}"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define COMBUSTION_RADIANCE_REMOVAL_PER_SECOND {COMBUSTION_RADIANCE_REMOVAL_PER_SECOND:?}"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define COMBUSTION_THERMAL_COOLING_PER_SECOND {COMBUSTION_THERMAL_COOLING_PER_SECOND:?}"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define COMBUSTION_THERMAL_BUOYANCY_ACCELERATION_MPS2 {COMBUSTION_THERMAL_BUOYANCY_ACCELERATION_MPS2:?}"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define COMBUSTION_VELOCITY_DAMPING_PER_SECOND {COMBUSTION_VELOCITY_DAMPING_PER_SECOND:?}"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define COMBUSTION_REACTION_HEAT_RESPONSE {COMBUSTION_REACTION_HEAT_RESPONSE:?}"
+    )
+    .unwrap();
+    writeln!(
+        out,
         "#define FLAME_FUEL_BOUNDARY_HEIGHT_FRACTION {FLAME_FUEL_BOUNDARY_HEIGHT_FRACTION:?}"
     )
     .unwrap();
