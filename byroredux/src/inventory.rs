@@ -16,6 +16,11 @@ use rustc_hash::FxHashMap;
 use crate::systems::PlayerEntity;
 
 const PLAYER_NPC_FORM_ID: u32 = 0x0000_0007;
+/// Dedicated equipment bit for the currently wielded weapon. Biped slot
+/// masks occupy the lower 32-bit contract in legacy records; keeping this
+/// bit separate prevents a weapon toggle from displacing body armor.
+const WEAPON_EQUIP_SLOT: usize = 31;
+const WEAPON_EQUIP_SLOT_MASK: u32 = 1 << WEAPON_EQUIP_SLOT;
 
 /// Resolve the base `NPC_` record for the player, never the placed player
 /// reference (`0x00000014`). Every currently supported master preserves the
@@ -41,6 +46,7 @@ pub(crate) struct InventoryItemDefinition {
     pub(crate) weight: f32,
     pub(crate) details: String,
     pub(crate) equip_slot_mask: Option<u32>,
+    pub(crate) weapon_damage: Option<f32>,
 }
 
 /// Process-local item lookup rebuilt whenever the plugin index is installed.
@@ -80,6 +86,10 @@ pub(crate) fn install_catalog(world: &mut World, index: &EsmIndex) {
                 format!("Item {form_id:08X}")
             };
             let (category, details, equip_slot_mask) = describe_kind(&item.kind);
+            let weapon_damage = match &item.kind {
+                ItemKind::Weapon { damage, .. } => Some(*damage as f32),
+                _ => None,
+            };
             (
                 form_id,
                 InventoryItemDefinition {
@@ -89,6 +99,7 @@ pub(crate) fn install_catalog(world: &mut World, index: &EsmIndex) {
                     weight: item.common.weight.max(0.0),
                     details,
                     equip_slot_mask,
+                    weapon_damage,
                 },
             )
         })
@@ -119,7 +130,11 @@ fn describe_kind(kind: &ItemKind) -> (&'static str, String, Option<u32>) {
                 (*biped_flags != 0).then_some(*biped_flags),
             )
         }
-        ItemKind::Weapon { damage, .. } => ("Weapon", format!("Damage {damage}"), None),
+        ItemKind::Weapon { damage, .. } => (
+            "Weapon",
+            format!("Damage {damage}"),
+            Some(WEAPON_EQUIP_SLOT_MASK),
+        ),
         ItemKind::Ammo { damage, .. } => ("Ammo", format!("Damage {damage:.1}"), None),
         ItemKind::Aid { .. } => ("Aid", "Consumable".to_owned(), None),
         ItemKind::Ingredient { .. } => ("Ingredient", "Ingredient".to_owned(), None),
@@ -342,7 +357,7 @@ pub(crate) enum MutationResult {
 
 /// Apply a native-menu equipment action to the canonical player components.
 pub(crate) fn apply_action(
-    world: &World,
+    world: &mut World,
     action: byroredux_debug_ui::InventoryAction,
 ) -> MutationResult {
     let byroredux_debug_ui::InventoryAction::ToggleEquip { index } = action;
@@ -379,7 +394,7 @@ pub(crate) fn apply_action(
         return MutationResult::Unavailable;
     };
 
-    if equipment.occupants.contains(&Some(inventory_index)) {
+    let mutation = if equipment.occupants.contains(&Some(inventory_index)) {
         for occupant in &mut equipment.occupants {
             if *occupant == Some(inventory_index) {
                 *occupant = None;
@@ -391,6 +406,42 @@ pub(crate) fn apply_action(
         equipment.equip(slot_mask, inventory_index);
         log::info!("inventory: player equipped {form_id:08X}");
         MutationResult::Equipped
+    };
+    let equipped_weapon = equipment.occupants[WEAPON_EQUIP_SLOT];
+    drop(equipment_query);
+    reconcile_equipped_weapon(world, player, equipped_weapon);
+    mutation
+}
+
+fn reconcile_equipped_weapon(
+    world: &mut World,
+    player: byroredux_core::ecs::EntityId,
+    inventory_index: Option<InventoryIndex>,
+) {
+    let candidate = inventory_index.and_then(|inventory_index| {
+        let form_id = world
+            .get::<Inventory>(player)
+            .and_then(|inventory| inventory.get(inventory_index).copied())
+            .filter(|stack| stack.count > 0)
+            .map(|stack| stack.base_form_id)?;
+        let damage = world
+            .try_resource::<InventoryCatalog>()
+            .and_then(|catalog| {
+                catalog
+                    .entries
+                    .get(&form_id)
+                    .and_then(|item| item.weapon_damage)
+            })?;
+        Some(EquippedWeapon {
+            inventory_index,
+            base_form_id: form_id,
+            damage,
+        })
+    });
+    if let Some(weapon) = candidate {
+        world.insert(player, weapon);
+    } else {
+        let _ = world.remove::<EquippedWeapon>(player);
     }
 }
 
@@ -402,10 +453,12 @@ mod tests {
         let mut world = World::new();
         world.register::<Inventory>();
         world.register::<EquipmentSlots>();
+        world.register::<EquippedWeapon>();
         let player = world.spawn();
         let mut inventory = Inventory::new();
         inventory.push(ItemStack::new(0x1234, 1));
         inventory.push(ItemStack::new(0x5678, 12));
+        inventory.push(ItemStack::new(0x9ABC, 1));
         world.insert(player, inventory);
         world.insert(player, EquipmentSlots::new());
         world.insert_resource(PlayerEntity(Some(player)));
@@ -420,6 +473,7 @@ mod tests {
                         weight: 30.0,
                         details: "Armor rating 25.0".to_owned(),
                         equip_slot_mask: Some(1 << 12),
+                        weapon_damage: None,
                     },
                 ),
                 (
@@ -431,6 +485,19 @@ mod tests {
                         weight: 0.0,
                         details: "Damage 8.0".to_owned(),
                         equip_slot_mask: None,
+                        weapon_damage: None,
+                    },
+                ),
+                (
+                    0x9ABC,
+                    InventoryItemDefinition {
+                        name: "Iron Sword".to_owned(),
+                        category: "Weapon",
+                        value: 100,
+                        weight: 8.0,
+                        details: "Damage 12".to_owned(),
+                        equip_slot_mask: Some(WEAPON_EQUIP_SLOT_MASK),
+                        weapon_damage: Some(12.0),
                     },
                 ),
             ]),
@@ -447,7 +514,7 @@ mod tests {
             .equip(1 << 12, InventoryIndex(0));
 
         let snapshot = snapshot(&world).unwrap();
-        assert_eq!(snapshot.items.len(), 2);
+        assert_eq!(snapshot.items.len(), 3);
         let armor = snapshot
             .items
             .iter()
@@ -456,15 +523,15 @@ mod tests {
         assert_eq!(armor.name, "Iron Armor");
         assert!(armor.equipped);
         assert!(armor.equippable);
-        assert_eq!(snapshot.total_weight, 30.0);
+        assert_eq!(snapshot.total_weight, 38.0);
     }
 
     #[test]
     fn toggle_equip_mutates_only_supported_items() {
-        let (world, player) = fixture();
+        let (mut world, player) = fixture();
         assert_eq!(
             apply_action(
-                &world,
+                &mut world,
                 byroredux_debug_ui::InventoryAction::ToggleEquip { index: 0 }
             ),
             MutationResult::Equipped
@@ -475,19 +542,47 @@ mod tests {
         );
         assert_eq!(
             apply_action(
-                &world,
+                &mut world,
                 byroredux_debug_ui::InventoryAction::ToggleEquip { index: 0 }
             ),
             MutationResult::Unequipped
         );
         assert_eq!(world.get::<EquipmentSlots>(player).unwrap().at(12), None);
+        assert!(world.get::<EquippedWeapon>(player).is_none());
         assert_eq!(
             apply_action(
-                &world,
+                &mut world,
                 byroredux_debug_ui::InventoryAction::ToggleEquip { index: 1 }
             ),
             MutationResult::Unavailable
         );
+        assert_eq!(
+            apply_action(
+                &mut world,
+                byroredux_debug_ui::InventoryAction::ToggleEquip { index: 2 }
+            ),
+            MutationResult::Equipped
+        );
+        let weapon = world.get::<EquippedWeapon>(player).unwrap();
+        assert_eq!(weapon.inventory_index, InventoryIndex(2));
+        assert_eq!(weapon.base_form_id, 0x9ABC);
+        assert_eq!(weapon.damage, 12.0);
+        drop(weapon);
+        assert_eq!(
+            world
+                .get::<EquipmentSlots>(player)
+                .unwrap()
+                .at(WEAPON_EQUIP_SLOT as u8),
+            Some(InventoryIndex(2))
+        );
+        assert_eq!(
+            apply_action(
+                &mut world,
+                byroredux_debug_ui::InventoryAction::ToggleEquip { index: 2 }
+            ),
+            MutationResult::Unequipped
+        );
+        assert!(world.get::<EquippedWeapon>(player).is_none());
     }
 
     #[test]
