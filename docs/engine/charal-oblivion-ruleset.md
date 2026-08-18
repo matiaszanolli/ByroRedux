@@ -781,3 +781,11 @@ functions summed into one AV, closer in spirit to the Fatigue/Health
 mind as a structurally distinct 6th reputation-family member, not force-fit
 into the existing classifier shape. Not built — no per-NPC Disposition
 storage or any of these contributor formulas exist in the engine yet.
+## Leveling — LOCKED
+
+Oblivion uses skill-use leveling rather than character XP: a level becomes
+available after 10 increases in major skills. At level-up, each selected
+attribute receives a +1 to +5 bonus based on governed major-skill increases
+(0, 1–4, 5–7, 8–9, and 10+). The engine's `fSkillUseCurve` is 1.95 for the
+skill-use progression curve. Source: [UESP Oblivion:
+Leveling](https://en.uesp.net/wiki/Oblivion:Leveling).
