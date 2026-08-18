@@ -2942,6 +2942,44 @@ mod unit_tests {
     }
 
     #[test]
+    fn transported_combustion_attenuates_directional_and_local_light_paths() {
+        let shader = include_str!("../../shaders/volumetrics_inject.comp");
+        for contract in [
+            "const float COMBUSTION_FUEL_VAPOUR_SIGMA_T = 0.0035;",
+            "const int COMBUSTION_LIGHT_TRANSMITTANCE_STEPS = 8;",
+            "const float COMBUSTION_LIGHT_TRANSMITTANCE_REACH_METERS = 2.0;",
+            "float transportedCombustionTransmittance(",
+            "texture(previousCombustionState, previousUvw)",
+            "opticalDepth += sigmaT * (distanceEnd - distanceStart);",
+            "return exp(-clamp(opticalDepth, 0.0, 20.0));",
+            "bool transportedMediumActive = transported_combustion.extinction > 1.0e-7;",
+            "visibility *= transportedCombustionTransmittance(",
+            "localVisibility *= transportedCombustionTransmittance(",
+        ] {
+            assert!(
+                shader.contains(contract),
+                "transported combustion lost light-space attenuation: {contract}"
+            );
+        }
+        assert_eq!(
+            shader.matches("0.0035").count(),
+            1,
+            "camera- and light-space transport must share one fuel-vapour extinction constant"
+        );
+        let transmittance_body = shader
+            .split_once("float transportedCombustionTransmittance(")
+            .and_then(|(_, tail)| tail.split_once("\n}\n\nuint quantizeCombustionMoment"))
+            .map(|(body, _)| body)
+            .expect("transmittance function must remain independently inspectable");
+        for forbidden in ["profileKind", "FogVolume", "GameKind", "Fallout", "Skyrim"] {
+            assert!(
+                !transmittance_body.contains(forbidden),
+                "light transmittance must consume canonical state, not {forbidden}"
+            );
+        }
+    }
+
+    #[test]
     fn combustion_light_moment_abi_is_eight_std430_words() {
         assert_eq!(std::mem::size_of::<GpuCombustionLightMoment>(), 32);
         assert_eq!(std::mem::align_of::<GpuCombustionLightMoment>(), 4);

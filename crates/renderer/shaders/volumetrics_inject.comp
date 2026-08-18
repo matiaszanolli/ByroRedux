@@ -280,6 +280,15 @@ struct LocalMedium {
     vec3 emission;     // sigma_a * L_e, radiance per world unit
 };
 
+// Canonical renderer-side combustion-medium constants. Keeping the fuel
+// vapour coefficients here gives both camera-space integration and
+// light-space transmittance the same material instead of restating it in two
+// solver functions.
+const float COMBUSTION_FUEL_VAPOUR_SIGMA_T = 0.0035;
+const float COMBUSTION_FUEL_VAPOUR_SINGLE_SCATTER_ALBEDO = 0.10;
+const int COMBUSTION_LIGHT_TRANSMITTANCE_STEPS = 8;
+const float COMBUSTION_LIGHT_TRANSMITTANCE_REACH_METERS = 2.0;
+
 LocalMedium emptyLocalMedium() {
     return LocalMedium(vec3(0.0), 0.0, vec3(0.0));
 }
@@ -1765,15 +1774,14 @@ LocalMedium combustionMedium(vec4 chemistry, vec4 optical) {
     LocalMedium medium = emptyLocalMedium();
     chemistry = sanitizedChemistry(chemistry);
     optical = sanitizedOptical(optical);
-    float fuelVapourSigmaT = chemistry.x * 0.0035;
-    const float fuelVapourSingleScatterAlbedo = 0.10;
+    float fuelVapourSigmaT = chemistry.x * COMBUSTION_FUEL_VAPOUR_SIGMA_T;
     float sigmaT = chemistry.z + fuelVapourSigmaT;
     if (sigmaT <= 1.0e-7) {
         return medium;
     }
 
     vec3 sigmaS = optical.rgb
-        + fuelVapourSigmaT * vec3(fuelVapourSingleScatterAlbedo);
+        + fuelVapourSigmaT * vec3(COMBUSTION_FUEL_VAPOUR_SINGLE_SCATTER_ALBEDO);
     sigmaS = clamp(sigmaS, vec3(0.0), vec3(sigmaT));
     vec3 sigmaA = vec3(sigmaT) - sigmaS;
     medium.extinction = sigmaT;
@@ -1784,6 +1792,59 @@ LocalMedium combustionMedium(vec4 chemistry, vec4 optical) {
     vec3 thermalRadiance = blackbodyChromaticity(chemistry.y) * thermalLuma;
     medium.emission = sigmaA * thermalRadiance;
     return medium;
+}
+
+// Beer-Lambert attenuation along the light path through the previous
+// canonical combustion field. The current field is being written by this
+// dispatch, so sampling the previous frame is both race-free and temporally
+// consistent with semi-Lagrangian advection. Quadratically partitioned
+// intervals concentrate samples near the receiver, where narrow flame and
+// smoke columns would be missed by uniform samples across a long sun ray.
+float transportedCombustionTransmittance(
+    vec3 worldPosition,
+    vec3 directionTowardLight,
+    float maxDistance,
+    float samplePhase
+) {
+    if (params.prev_camera_pos.w <= 0.5 || maxDistance <= 0.05) {
+        return 1.0;
+    }
+    float directionLength = length(directionTowardLight);
+    if (directionLength <= 1.0e-6) {
+        return 1.0;
+    }
+
+    vec3 rayDirection = directionTowardLight / directionLength;
+    float traceDistance = min(
+        maxDistance,
+        COMBUSTION_LIGHT_TRANSMITTANCE_REACH_METERS * WORLD_UNITS_PER_METER
+    );
+    float phase = clamp(samplePhase, 0.0, 1.0);
+    float opticalDepth = 0.0;
+    for (int stepIndex = 0;
+        stepIndex < COMBUSTION_LIGHT_TRANSMITTANCE_STEPS;
+        ++stepIndex) {
+        float intervalStart = float(stepIndex)
+            / float(COMBUSTION_LIGHT_TRANSMITTANCE_STEPS);
+        float intervalEnd = float(stepIndex + 1)
+            / float(COMBUSTION_LIGHT_TRANSMITTANCE_STEPS);
+        float distanceStart = intervalStart * intervalStart * traceDistance;
+        float distanceEnd = intervalEnd * intervalEnd * traceDistance;
+        float sampleDistance = mix(distanceStart, distanceEnd, phase);
+        vec3 previousUvw;
+        if (!reprojectHistory(
+                worldPosition + rayDirection * sampleDistance,
+                previousUvw)) {
+            continue;
+        }
+        vec4 chemistry = sanitizedChemistry(
+            texture(previousCombustionState, previousUvw)
+        );
+        float sigmaT = chemistry.z
+            + chemistry.x * COMBUSTION_FUEL_VAPOUR_SIGMA_T;
+        opticalDepth += sigmaT * (distanceEnd - distanceStart);
+    }
+    return exp(-clamp(opticalDepth, 0.0, 20.0));
 }
 
 uint quantizeCombustionMoment(float value, float scale) {
@@ -1985,6 +2046,7 @@ void main() {
         chemistry,
         combustion_optical
     );
+    bool transportedMediumActive = transported_combustion.extinction > 1.0e-7;
     accumulateCombustionLightMoment(
         coord,
         size,
@@ -2069,6 +2131,14 @@ void main() {
         );
         visibility = sawGlass ? 1.0 : 0.0;
     }
+    if (transportedMediumActive && visibility > 1.0e-4) {
+        visibility *= transportedCombustionTransmittance(
+            world_pos,
+            ray_dir,
+            DIRECTIONAL_SHADOW_TRACE_DISTANCE,
+            jitter.z
+        );
+    }
 
     // In-scattered radiance from the sun at this voxel, gated on
     // shadow visibility. HG normalisation already includes 1/4π.
@@ -2123,6 +2193,7 @@ void main() {
             }
             vec3 toLight = lights[li].position_radius.xyz - world_pos;
             float dist = length(toLight);
+            vec3 toLightDir = toLight / max(dist, 0.001);
             float shape = lights[li].params.x;
             float atten = froxelLightAtten(
                 dist,
@@ -2135,8 +2206,7 @@ void main() {
                 // Spot — same cone factor as the fragment-shader loop.
                 vec3 spotDir = normalize(lights[li].direction_angle.xyz);
                 float spotAngle = lights[li].direction_angle.w;
-                vec3 Ldir = toLight / max(dist, 0.001);
-                float spotFactor = dot(-Ldir, spotDir);
+                float spotFactor = dot(-toLightDir, spotDir);
                 // #2205 — guard against a degenerate near-zero authored
                 // outer angle (cos ≈ 1.0), matching giLightSample's
                 // guard (lighting.glsl) now that spot lights are
@@ -2145,13 +2215,12 @@ void main() {
                 atten *= clamp((spotFactor - spotAngle) / max(1.0 - spotAngle, 1e-4), 0.0, 1.0);
             }
             float localVisibility = 1.0;
+            float shadowDist = max(dist - lights[li].params.y, 0.05);
             bool needsVisibility = visibilityMaskNeedsTrace(lights[li].params.z);
             if (needsVisibility && atten > 1.0e-4) {
-                vec3 toLightDir = toLight / max(dist, 0.001);
                 // Stop at the finite luminous shell (`params.y`) instead of
                 // tracing into the middle of a bulb/flame and letting the
                 // fixture nullify its own volumetric glow.
-                float shadowDist = max(dist - lights[li].params.y, 0.05);
                 uint opaqueMask = visibilityOpaqueMask(lights[li].params.z);
                 if (traceShadowBinary(
                         world_pos, toLightDir, 0.05, shadowDist, opaqueMask)) {
@@ -2165,6 +2234,16 @@ void main() {
                     // Surface lighting performs full RGB glass transport.
                     localVisibility = 0.75;
                 }
+            }
+            if (transportedMediumActive
+                && localVisibility > 1.0e-4
+                && atten > 1.0e-4) {
+                localVisibility *= transportedCombustionTransmittance(
+                    world_pos,
+                    toLightDir,
+                    shadowDist,
+                    fract(jitter.z + float(ci) * 0.61803398875)
+                );
             }
             inscatter += scattering_coef * ISOTROPIC_PHASE
                 * lights[li].color_type.rgb * atten * localVisibility;
