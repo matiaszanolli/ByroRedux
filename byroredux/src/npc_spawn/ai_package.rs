@@ -9,9 +9,9 @@
 use super::{EsmIndex, NpcRecord};
 use crate::components::{AmbientPackageRuntime, GameTimeRes, SeatReservations};
 use byroredux_core::ecs::components::{
-    EscortBehavior, EscortState, Escorted, FollowBehavior, FollowState, GuardBehavior, GuardState,
-    PatrolBehavior, PatrolState, SandboxBehavior, Seated, TravelBehavior, TravelState, Traveled,
-    WanderBehavior, WanderState,
+    Dead, EscortBehavior, EscortState, Escorted, FollowBehavior, FollowState, GuardBehavior,
+    GuardState, PatrolBehavior, PatrolState, SandboxBehavior, Seated, TravelBehavior, TravelState,
+    Traveled, WanderBehavior, WanderState,
 };
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{Component, World};
@@ -386,7 +386,7 @@ pub(super) fn apply_ai_package_behavior(
     npc: &NpcRecord,
     index: &EsmIndex,
 ) {
-    if npc.ai_packages.is_empty() {
+    if npc.ai_packages.is_empty() || world.get::<Dead>(placement_root).is_some() {
         return;
     }
 
@@ -451,6 +451,9 @@ pub(crate) fn ambient_ai_package_system(world: &World, _dt: f32) {
     };
     let mut updates = Vec::new();
     for (actor, runtime) in runtimes {
+        if world.get::<Dead>(actor).is_some() {
+            continue;
+        }
         let explicitly_requested = world.has::<EvaluatePackageRequest>(actor);
         if !explicitly_requested && runtime.last_evaluated_game_minute == Some(minute) {
             continue;
@@ -520,6 +523,7 @@ mod tests {
     fn register_runtime(world: &mut World, hour: f32) {
         byroredux_scripting::register(world);
         world.register::<AmbientPackageRuntime>();
+        world.register::<Dead>();
         world.register::<SandboxBehavior>();
         world.register::<Seated>();
         world.register::<WanderBehavior>();
@@ -672,6 +676,23 @@ mod tests {
         ambient_ai_package_system(&world, 0.0);
 
         assert_eq!(*world.get::<WanderState>(actor).unwrap(), state);
+    }
+
+    #[test]
+    fn dead_actor_never_reinstalls_ambient_behavior() {
+        let (mut world, actor) = setup_actor(10.0, vec![pack(0x100, PROCEDURE_WANDER, None)]);
+        clear_ambient_behavior(&world, actor);
+        world.insert(actor, Dead);
+        world
+            .query_mut::<AmbientPackageRuntime>()
+            .unwrap()
+            .get_mut(actor)
+            .unwrap()
+            .active_package_form_id = None;
+
+        ambient_ai_package_system(&world, 0.0);
+
+        assert!(!world.has::<WanderBehavior>(actor));
     }
 
     #[test]
