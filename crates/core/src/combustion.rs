@@ -31,6 +31,16 @@ pub const LEAN_SOOT_YIELD: f32 = 0.004;
 /// oxygen-rich, per second.
 pub const SOOT_OXIDATION_RATE_PER_SECOND: f32 = 0.15;
 
+/// Single-scatter albedo of transported soot aerosol.
+pub const SOOT_SINGLE_SCATTER_ALBEDO: f32 = 0.08;
+
+/// Temperature at which soot oxidation begins, kelvin.
+pub const SOOT_OXIDATION_START_TEMPERATURE_K: f32 = 1100.0;
+
+/// Temperature at which soot oxidation reaches its full hot-cell weight,
+/// kelvin.
+pub const SOOT_OXIDATION_FULL_TEMPERATURE_K: f32 = 1800.0;
+
 /// Time for the initial fireball to traverse its canonical source radius.
 ///
 /// This is deliberately independent of the effect lifetime: lifetime governs
@@ -213,6 +223,8 @@ mod tests {
         assert!(RICH_SOOT_YIELD > LEAN_SOOT_YIELD);
         assert!(LEAN_SOOT_YIELD > 0.0);
         assert!(SOOT_OXIDATION_RATE_PER_SECOND > 0.0);
+        assert!(SOOT_SINGLE_SCATTER_ALBEDO > 0.0 && SOOT_SINGLE_SCATTER_ALBEDO < 1.0);
+        assert!(SOOT_OXIDATION_FULL_TEMPERATURE_K > SOOT_OXIDATION_START_TEMPERATURE_K);
         assert!(EXPLOSION_EXPANSION_TIME_SECONDS > 0.0);
         assert!(EXPLOSION_IMPULSE_DURATION_SECONDS > EXPLOSION_EXPANSION_TIME_SECONDS);
         assert!(MAX_PRESSURE_ACCELERATION_MPS2 > 0.0);

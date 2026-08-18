@@ -1827,10 +1827,14 @@ void transportCombustion(
             oxidizer
         );
         float sootSigmaT = burnedFuel * sootYield;
-        const float sootSingleScatterAlbedo = 0.08;
         chemistry.z += sootSigmaT;
-        optical.rgb += sootSigmaT * vec3(sootSingleScatterAlbedo);
-        float hotSootOxidation = smoothstep(1100.0, 1800.0, chemistry.y)
+        optical.rgb += sootSigmaT
+            * vec3(COMBUSTION_SOOT_SINGLE_SCATTER_ALBEDO);
+        float hotSootOxidation = smoothstep(
+                COMBUSTION_SOOT_OXIDATION_START_TEMPERATURE_K,
+                COMBUSTION_SOOT_OXIDATION_FULL_TEMPERATURE_K,
+                chemistry.y
+            )
             * oxidizer;
         float sootRetention = exp(
             -COMBUSTION_SOOT_OXIDATION_RATE_PER_SECOND

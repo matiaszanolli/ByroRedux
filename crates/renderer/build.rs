@@ -204,6 +204,21 @@ fn main() {
     .unwrap();
     writeln!(
         out,
+        "#define COMBUSTION_SOOT_SINGLE_SCATTER_ALBEDO {COMBUSTION_SOOT_SINGLE_SCATTER_ALBEDO:?}"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define COMBUSTION_SOOT_OXIDATION_START_TEMPERATURE_K {COMBUSTION_SOOT_OXIDATION_START_TEMPERATURE_K:?}"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define COMBUSTION_SOOT_OXIDATION_FULL_TEMPERATURE_K {COMBUSTION_SOOT_OXIDATION_FULL_TEMPERATURE_K:?}"
+    )
+    .unwrap();
+    writeln!(
+        out,
         "#define EXPLOSION_EXPANSION_TIME_SECONDS {EXPLOSION_EXPANSION_TIME_SECONDS:?}"
     )
     .unwrap();
