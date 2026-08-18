@@ -23,7 +23,7 @@ use byroredux_renderer::VulkanContext;
 
 /// AI-package behavior tagging — split out under #2198. See the module's own
 /// docs for why it lives beside this file rather than in it.
-mod ai_package;
+pub(crate) mod ai_package;
 pub(crate) use ai_package::ambient_ai_package_system;
 use ai_package::apply_ai_package_behavior;
 mod resumable;

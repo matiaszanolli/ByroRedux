@@ -7,11 +7,7 @@
 //! transition. Transient HitEvent cleanup remains in the scripting Late stage.
 
 use byroredux_core::animation::AnimationPlayer;
-use byroredux_core::ecs::components::{
-    ActorValues, ActorVitals, Dead, EquippedWeapon, EscortBehavior, EscortState, Escorted,
-    FollowBehavior, FollowState, GuardBehavior, GuardState, PatrolBehavior, PatrolState,
-    SandboxBehavior, Seated, TravelBehavior, TravelState, Traveled, WanderBehavior, WanderState,
-};
+use byroredux_core::ecs::components::{ActorValues, ActorVitals, Dead, EquippedWeapon};
 use byroredux_core::ecs::storage::{Component, EntityId};
 use byroredux_core::ecs::{Resource, World};
 
@@ -274,22 +270,7 @@ fn remove_component<T: Component>(world: &World, entity: EntityId) {
 }
 
 fn disable_actor_ai(world: &World, actor: EntityId) {
-    remove_component::<SandboxBehavior>(world, actor);
-    remove_component::<Seated>(world, actor);
-    remove_component::<WanderBehavior>(world, actor);
-    remove_component::<WanderState>(world, actor);
-    remove_component::<FollowBehavior>(world, actor);
-    remove_component::<FollowState>(world, actor);
-    remove_component::<TravelBehavior>(world, actor);
-    remove_component::<TravelState>(world, actor);
-    remove_component::<Traveled>(world, actor);
-    remove_component::<EscortBehavior>(world, actor);
-    remove_component::<EscortState>(world, actor);
-    remove_component::<Escorted>(world, actor);
-    remove_component::<GuardBehavior>(world, actor);
-    remove_component::<GuardState>(world, actor);
-    remove_component::<PatrolBehavior>(world, actor);
-    remove_component::<PatrolState>(world, actor);
+    crate::npc_spawn::ai_package::clear_ambient_behavior(world, actor);
 }
 
 /// Rebuild the runtime consequences of the persisted [`Dead`] fact.
@@ -343,6 +324,7 @@ fn record_miss(world: &World, outcome: &str) {
 mod tests {
     use super::*;
     use byroredux_core::ecs::components::InventoryIndex;
+    use byroredux_core::ecs::components::{FollowBehavior, FollowState};
 
     fn damage_fixture(health: f32, weapon_damage: Option<f32>) -> (World, EntityId, EntityId) {
         let mut world = World::new();

@@ -330,7 +330,7 @@ fn remove_component<T: Component>(world: &World, actor: EntityId) {
     }
 }
 
-fn clear_ambient_behavior(world: &World, actor: EntityId) {
+pub(crate) fn clear_ambient_behavior(world: &World, actor: EntityId) {
     if let Some(mut reservations) = world.try_resource_mut::<SeatReservations>() {
         reservations.0.retain(|_, claimant| *claimant != actor);
     }
