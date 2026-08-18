@@ -137,10 +137,10 @@ pub enum ConditionFunction {
     /// gate for "is this specific REFR?" checks. FO3 / FNV / Skyrim
     /// index **72**.
     GetIsID,
-    /// `HasPerk(perk_form_id) → f32`. Reads the Run-On actor's `PerkList`:
-    /// 1.0 when it contains `param_1`, 0.0 otherwise (also 0.0 when the
-    /// actor carries no `PerkList`). Index **449** (FO3 / FNV), **448**
-    /// (Skyrim) — both map here.
+    /// `HasPerk(perk_form_id) → f32`. Reads the Run-On actor's ranked `Perks`
+    /// component: 1.0 when `param_1` has a positive rank, 0.0 otherwise
+    /// (also 0.0 when the actor carries no `Perks`). Index **449** (FO3 / FNV),
+    /// **448** (Skyrim) — both map here.
     HasPerk,
     /// `GetReputation(reputation_form_id, axis) → f32`. The Run-On actor's
     /// raw Fame/Infamy with `param_1` (a FNV `REPU` FormID) from its
@@ -690,22 +690,14 @@ pub fn evaluate_function(
             }
         }
         ConditionFunction::HasPerk => {
-            // 1.0 iff the Run-On actor's `PerkList` holds `param_1`. Same
-            // remap contract as GetIsID: `param_1` is global, and each perk
-            // FormId resolves through `FormIdPool` to its global FormIdPair.
-            use byroredux_core::ecs::components::PerkList;
-            use byroredux_core::form_id::FormIdPool;
-            let Some(perks) = world.get::<PerkList>(entity) else {
+            // 1.0 iff the Run-On actor's canonical ranked `Perks` component
+            // owns `param_1`. Spawned NPCs carry this component; the legacy
+            // `PerkList` projection is not populated by production code.
+            use byroredux_core::character::Perks;
+            let Some(perks) = world.get::<Perks>(entity) else {
                 return 0.0;
             };
-            let Some(pool) = world.try_resource::<FormIdPool>() else {
-                return 0.0;
-            };
-            let held = perks.0.iter().any(|&perk| {
-                pool.resolve(perk)
-                    .is_some_and(|pair| pair.local.0 == condition.param_1)
-            });
-            if held {
+            if perks.rank(condition.param_1) > 0 {
                 1.0
             } else {
                 0.0
@@ -1130,19 +1122,14 @@ mod tests {
     // ── HasPerk (#1667) ─────────────────────────────────────────────────
 
     #[test]
-    fn has_perk_checks_actor_perk_list() {
-        use byroredux_core::ecs::components::PerkList;
-        use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
+    fn has_perk_checks_actor_perks() {
+        use byroredux_core::character::Perks;
 
         let mut world = World::new();
-        let mut pool = FormIdPool::new();
-        let held = pool.intern(FormIdPair {
-            plugin: PluginId::from_filename("Skyrim.esm"),
-            local: LocalFormId(0x0005_8F80),
-        });
-        world.insert_resource(pool);
         let actor = world.spawn();
-        world.insert(actor, PerkList::from_perks([held]));
+        let mut perks = Perks::default();
+        perks.set_rank(0x0005_8F80, 1);
+        world.insert(actor, perks);
 
         // HasPerk(0x00058F80) == 1 — the actor holds it.
         let list = vec![cond(449, ComparisonOp::Eq, 1.0, false).with_param_1(0x0005_8F80)];
@@ -1154,8 +1141,8 @@ mod tests {
     }
 
     #[test]
-    fn has_perk_zero_without_perk_list() {
-        // No PerkList component → HasPerk returns 0.0.
+    fn has_perk_zero_without_perks() {
+        // No Perks component → HasPerk returns 0.0.
         let world = World::new();
         let actor: EntityId = 3;
         let list = vec![cond(449, ComparisonOp::Eq, 0.0, false).with_param_1(0x0005_8F80)];
