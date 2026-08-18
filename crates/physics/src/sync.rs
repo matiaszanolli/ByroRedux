@@ -1000,6 +1000,7 @@ fn pull_dynamic(world: &World) {
         // holding these across the write lock would be the reverse edge (#2135).
         let parent_q = world.query::<Parent>();
         let global_q = world.query::<GlobalTransform>();
+        let transform_q = world.query::<Transform>();
         let pw = world.resource::<PhysicsWorld>();
         for (entity, handles) in handles_q.iter() {
             let Some(body_data) = body_q.get(entity) else {
@@ -1027,6 +1028,20 @@ fn pull_dynamic(world: &World) {
                 }
                 None => (translation, rotation),
             };
+            // Dynamic newcomers and settled clutter are intentionally spawned
+            // asleep. Once ECS already matches Rapier, avoid handing out a
+            // mutable Transform (and arming its dirty bit) every frame. Keep
+            // the initial pull when registration seeded a different pose.
+            if body.is_sleeping()
+                && transform_q.as_ref().is_some_and(|tq| {
+                    tq.get(entity).is_some_and(|t| {
+                        (t.translation - translation).length_squared() <= 1e-8
+                            && t.rotation.dot(rotation).abs() >= 1.0 - 1e-6
+                    })
+                })
+            {
+                continue;
+            }
             updates.push((entity, translation, rotation));
         }
     }
