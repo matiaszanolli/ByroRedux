@@ -101,6 +101,10 @@ struct WaterParams {
     uvec4 noise_indices;
     // x = authored NAM4 UV scale; yzw = authored NAM2/3/4 amplitude scales.
     vec4 detail;
+    // x/y/z/w = reflection/refraction/normal/specular depth weights.
+    vec4 depth;
+    // x/y/z/w = refraction/local-specular/reflection/sun-specular controls.
+    vec4 effects;
 };
 layout(std140, set = 2, binding = 1) uniform WaterParamsBlock {
     WaterParams params[256];

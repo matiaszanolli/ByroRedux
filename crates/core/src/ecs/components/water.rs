@@ -92,6 +92,9 @@ pub struct WaterMaterial {
     /// Colour seen looking down through deep water (refraction ray
     /// distance ≥ [`Self::fog_far`]).
     pub deep_color: [f32; 3],
+    /// Authored underwater post-process tint. Older games do not expose a
+    /// separate tint and retain the deep-water colour here.
+    pub underwater_color: [f32; 3],
     /// NEAR PLANE of the underwater fog ramp (world units): the water
     /// column is clear out to this distance, and absorption starts here.
     ///
@@ -153,6 +156,15 @@ pub struct WaterMaterial {
     /// Authored normal-amplitude multipliers for NAM2/NAM3/NAM4. A value of
     /// one is the neutral legacy fallback.
     pub noise_amplitude_scales: [f32; 3],
+    /// Depth-response multipliers for reflections, refraction, normals, and
+    /// specular lighting. Legacy records use neutral ones.
+    pub depth_weights: [f32; 4],
+    /// Authored effect controls: refraction magnitude, local specular power,
+    /// reflection magnitude, and sun-specular magnitude.
+    pub effect_controls: [f32; 4],
+    /// Authored flow-map tile scale. One is neutral; zero means legacy
+    /// records without a dedicated flow-map field.
+    pub flowmap_scale: f32,
     /// Foam intensity multiplier. 0 = no foam anywhere; 1 = full
     /// rapids / waterfall whitewater. Cell loader sets from
     /// [`WaterKind`].
@@ -192,6 +204,7 @@ impl Default for WaterMaterial {
         Self {
             shallow_color: [0.10, 0.32, 0.38],
             deep_color: [0.02, 0.06, 0.10],
+            underwater_color: [0.02, 0.06, 0.10],
             fog_near: 80.0,
             fog_far: 600.0,
             underwater_fog_near: 0.0,
@@ -206,6 +219,9 @@ impl Default for WaterMaterial {
             uv_scale_b: 1.0 / 700.0,
             uv_scale_c: 1.0 / 512.0,
             noise_amplitude_scales: [1.0; 3],
+            depth_weights: [1.0; 4],
+            effect_controls: [0.0, 0.0, 1.0, 1.0],
+            flowmap_scale: 1.0,
             foam_strength: 0.0,
             shoreline_width: 32.0,
             ior: 1.33,

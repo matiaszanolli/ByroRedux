@@ -126,6 +126,8 @@ pub(super) fn reemit_water_planes(
                 mat.noise_amplitude_scales[1],
                 mat.noise_amplitude_scales[2],
             ],
+            depth: mat.depth_weights,
+            effects: mat.effect_controls,
         };
         water_commands.push(WaterDrawCommand {
             mesh_handle: draw_commands[idx].mesh_handle,

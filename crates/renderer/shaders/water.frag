@@ -89,6 +89,11 @@ struct WaterParams {
     uvec4 noise_indices;
     // x = authored NAM4 UV scale; yzw = authored NAM2/3/4 amplitude scales.
     vec4 detail;
+    // x/y/z/w = reflection/refraction/normal/specular depth weights.
+    vec4 depth;
+    // x/y/z/w = refraction magnitude, local specular power, reflection
+    // magnitude, and sun-specular magnitude.
+    vec4 effects;
 };
 
 layout(std140, set = 2, binding = 1) uniform WaterParamsBlock {
@@ -415,7 +420,7 @@ vec3 absorbWaterColumn(vec3 refractedRadiance, float hitDist) {
     // is positive; `max` covers a hand-built push block.
     float span = max(fogFar - fogNear, 1.0);
     float t = clamp((hitDist - fogNear) / span, 0.0, 1.0);
-    float absorption = exp(-t * 2.0); // empirical multiplier — tunable
+    float absorption = exp(-t * 2.0 * max(push.depth.y, 0.0));
     return mix(push.deep.rgb, refractedRadiance * push.shallow.rgb, absorption);
 }
 
@@ -549,8 +554,8 @@ void main() {
     // case). For River/Rapids/Waterfall, layer A's scroll vector is
     // baked from `flow` on the CPU side, so we don't have to branch
     // here. Push constants carry the final scroll vectors.
-    vec3 nA = sampleScrollingNormal(noiseMapA, uvWorld, uvOrigin, push.scroll.xy, push.tune.x, time, ampScale * max(push.detail.y, 0.05), freqScale);
-    vec3 nB = sampleScrollingNormal(noiseMapB, uvWorld, uvOrigin, push.scroll.zw, push.tune.y, time, ampScale * max(push.detail.z, 0.05), freqScale);
+    vec3 nA = sampleScrollingNormal(noiseMapA, uvWorld, uvOrigin, push.scroll.xy, push.tune.x, time, ampScale * max(push.detail.y, 0.05) * max(push.depth.z, 0.0), freqScale);
+    vec3 nB = sampleScrollingNormal(noiseMapB, uvWorld, uvOrigin, push.scroll.zw, push.tune.y, time, ampScale * max(push.detail.z, 0.05) * max(push.depth.z, 0.0), freqScale);
 
     // Rapids adds a third high-frequency layer scrolled by the flow
     // — gives that chaotic whitewater chop pattern.
@@ -563,7 +568,7 @@ void main() {
             push.flow.xy * push.flow.w * 2.0,
             push.detail.x,
             time,
-            ampScale * max(push.detail.w, 0.05),
+            ampScale * max(push.detail.w, 0.05) * max(push.depth.z, 0.0),
             freqScale
         );
         nMix = normalize(nA + nB + nC * 0.7);
@@ -658,7 +663,9 @@ void main() {
     // WATR DATA reflection_color is a filter on reflected radiance. It must
     // not be mixed into the shared ray terminus, because that contaminates
     // the refraction branch with a reflection-only material parameter.
-    reflColor *= push.tint_reflect.rgb;
+    reflColor *= push.tint_reflect.rgb
+        * max(push.depth.x, 0.0)
+        * max(push.effects.z, 0.0);
 
     // ── Refraction ray (skipped for waterfalls) ──
     vec3 refrColor;
@@ -667,7 +674,14 @@ void main() {
         float eta = viewFromPositiveSide
             ? (1.0 / max(ior, 1.0))
             : max(ior, 1.0);
-        vec3 Tdir = refract(-V, Nperturbed, eta);
+        // Skyrim's Refraction Magnitude is a bounded normal-distortion
+        // weight (the vanilla default is 9). Legacy materials leave it at
+        // zero and retain the fully perturbed normal path.
+        float refractionNormalWeight = push.effects.x > 0.0
+            ? clamp(push.effects.x / 10.0, 0.15, 1.0)
+            : 1.0;
+        vec3 refractionNormal = normalize(mix(N, Nperturbed, refractionNormalWeight));
+        vec3 Tdir = refract(-V, refractionNormal, eta);
         bool refrHit;
         // If TIR (total internal reflection) — possible only while viewing
         // from the water side — refract returns zero and all energy goes to
@@ -748,8 +762,10 @@ void main() {
         : 0.0;
     float sunSpecular = pow(
         NdotSunHalf,
-        clamp(push.misc.w, 1.0, 2048.0)
-    ) * sunDirection.w * sunVisibility;
+        clamp(push.effects.y > 0.0 ? push.effects.y : push.misc.w, 1.0, 2048.0)
+    ) * sunDirection.w * sunVisibility
+        * max(push.depth.w, 0.0)
+        * max(push.effects.w, 0.0);
 
     // Forward sunlight scattering through the water column. This is the
     // low-frequency companion to the authored sun glint above: it makes

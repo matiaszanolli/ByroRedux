@@ -12,6 +12,8 @@ fn world_with_water_plane(
     sun_specular_power: f32,
     uv_scale_c: f32,
     noise_amplitude_scales: [f32; 3],
+    depth_weights: [f32; 4],
+    effect_controls: [f32; 4],
 ) -> World {
     let mut world = World::new();
 
@@ -35,6 +37,8 @@ fn world_with_water_plane(
                 sun_specular_power,
                 uv_scale_c,
                 noise_amplitude_scales,
+                depth_weights,
+                effect_controls,
                 ..WaterMaterial::default()
             },
         },
@@ -72,7 +76,15 @@ fn run_build(world: &World) -> Vec<byroredux_renderer::vulkan::water::WaterDrawC
 
 #[test]
 fn authored_wave_and_sun_params_reach_the_water_gpu_record() {
-    let world = world_with_water_plane(1.5, 2.0, 73.0, 1.0 / 488.0, [0.7, 0.6, 0.5]);
+    let world = world_with_water_plane(
+        1.5,
+        2.0,
+        73.0,
+        1.0 / 488.0,
+        [0.7, 0.6, 0.5],
+        [0.9, 0.5, 0.1, 0.2],
+        [9.0, 500.0, 0.34, 3.2],
+    );
     let water_commands = run_build(&world);
 
     assert_eq!(water_commands.len(), 1, "expected exactly one water draw");
@@ -95,6 +107,8 @@ fn authored_wave_and_sun_params_reach_the_water_gpu_record() {
         "WaterMaterial::uv_scale_c must reach the authored NAM4 GPU slot"
     );
     assert_eq!(params.detail[1..4], [0.7, 0.6, 0.5]);
+    assert_eq!(params.depth, [0.9, 0.5, 0.1, 0.2]);
+    assert_eq!(params.effects, [9.0, 500.0, 0.34, 3.2]);
 }
 
 #[test]
@@ -102,7 +116,15 @@ fn default_wave_params_are_the_sentinel_the_shader_normalises_against() {
     // `WaterMaterial::default()` (no XCWT / no WATR) must keep resolving
     // to the sentinel `water.frag` treats as "no chop change" — see
     // `sampleScrollingNormal`'s doc comment (0.05 / 0.6).
-    let world = world_with_water_plane(0.05, 0.6, 50.0, 1.0 / 512.0, [1.0; 3]);
+    let world = world_with_water_plane(
+        0.05,
+        0.6,
+        50.0,
+        1.0 / 512.0,
+        [1.0; 3],
+        [1.0; 4],
+        [0.0, 0.0, 1.0, 1.0],
+    );
     let water_commands = run_build(&world);
 
     let params = &water_commands[0].params;

@@ -206,6 +206,11 @@ fn skyrim_default_water_promotes_underwater_tail() {
     let index = parse_esm(&bytes).expect("parse Skyrim.esm");
     let water = index.waters.get(&0x0000_0018).expect("Skyrim default WATR");
     assert!(matches!(water.raw_dnam.len(), 228 | 232));
+    if water.raw_dnam.len() >= 232 {
+        assert!((water.params.flowmap_scale - 1.0).abs() < 1e-6);
+    } else {
+        assert_eq!(water.params.flowmap_scale, 0.0);
+    }
     assert!(water.params.underwater_fog_far > water.params.underwater_fog_near);
     assert!(water.params.underwater_fog_far >= 900.0);
     assert!((water.params.wave_amplitude - 0.1).abs() < 1e-6);
@@ -217,6 +222,22 @@ fn skyrim_default_water_promotes_underwater_tail() {
         .noise_amplitude_scales
         .into_iter()
         .zip([0.6957, 0.6304, 0.4746])
+    {
+        assert!((actual - expected).abs() < 1e-5);
+    }
+    for (actual, expected) in water
+        .params
+        .depth_weights
+        .into_iter()
+        .zip([0.9, 0.5, 0.1, 0.2])
+    {
+        assert!((actual - expected).abs() < 1e-5);
+    }
+    for (actual, expected) in water
+        .params
+        .effect_controls
+        .into_iter()
+        .zip([9.0, 500.0, 0.34, 3.2])
     {
         assert!((actual - expected).abs() < 1e-5);
     }
@@ -286,14 +307,18 @@ fn installed_masters_water_fields_are_finite_and_ordered() {
                 p.noise_uv_scale_a,
                 p.noise_uv_scale_b,
                 p.noise_uv_scale_c,
+                p.flowmap_scale,
             ];
             assert!(
                 p.shallow_color
                     .iter()
                     .chain(p.deep_color.iter())
+                    .chain(p.underwater_color.iter())
                     .chain(p.reflection_color.iter())
                     .chain(scalars.iter())
                     .chain(p.noise_amplitude_scales.iter())
+                    .chain(p.depth_weights.iter())
+                    .chain(p.effect_controls.iter())
                     .all(|value| value.is_finite()),
                 "{label} WATR {} has non-finite translated fields",
                 water.editor_id
@@ -1295,6 +1320,10 @@ fn parse_rate_fo4_esm() {
     assert_eq!(default_water.raw_dnam.len(), 201);
     assert!((default_water.params.shallow_color[0] - 45.0 / 255.0).abs() < 1e-6);
     assert!((default_water.params.deep_color[2] - 57.0 / 255.0).abs() < 1e-6);
+    assert!((default_water.params.underwater_color[0] - 80.0 / 255.0).abs() < 1e-6);
+    assert!((default_water.params.wave_amplitude - 0.1).abs() < 1e-6);
+    assert!((default_water.params.wave_frequency - 0.85).abs() < 1e-6);
+    assert!((default_water.params.noise_uv_scale_a - 0.0001).abs() < 1e-7);
     assert!((default_water.params.reflectivity - 0.2935).abs() < 1e-6);
     assert!((default_water.params.fresnel - 0.058).abs() < 1e-6);
     assert_eq!(default_water.params.fog_near, 0.0);

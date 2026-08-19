@@ -84,6 +84,9 @@ pub struct WaterParams {
     pub shallow_color: [f32; 3],
     /// Linear RGB of the deep-water tint.
     pub deep_color: [f32; 3],
+    /// Linear RGB of the authored underwater post-process tint. Legacy
+    /// records use the deep-water tint as their canonical fallback.
+    pub underwater_color: [f32; 3],
     /// Linear RGB of the reflection tint — multiplied into the RT
     /// reflection ray hit colour by the water shader.
     pub reflection_color: [f32; 3],
@@ -136,6 +139,15 @@ pub struct WaterParams {
     /// Skyrim+/FO4 noise-layer amplitude multipliers (NAM2/NAM3/NAM4
     /// companion tail). Zero means the record did not carry the fields.
     pub noise_amplitude_scales: [f32; 3],
+    /// Skyrim DNAM depth-response multipliers: reflections, refraction,
+    /// normals, and specular lighting (offsets 208..224).
+    pub depth_weights: [f32; 4],
+    /// Skyrim water effect controls: refraction magnitude, local specular
+    /// power, reflection magnitude, and sun-specular magnitude.
+    pub effect_controls: [f32; 4],
+    /// Skyrim SE-only flow-map tile scale at DNAM offset 228. A zero
+    /// sentinel means the record uses the canonical engine scale.
+    pub flowmap_scale: f32,
 }
 
 impl Default for WaterParams {
@@ -143,6 +155,7 @@ impl Default for WaterParams {
         Self {
             shallow_color: [0.10, 0.32, 0.38],
             deep_color: [0.02, 0.06, 0.10],
+            underwater_color: [0.02, 0.06, 0.10],
             reflection_color: [0.85, 0.88, 0.92],
             fog_near: 80.0,
             fog_far: 600.0,
@@ -159,6 +172,9 @@ impl Default for WaterParams {
             noise_uv_scale_b: 0.0,
             noise_uv_scale_c: 0.0,
             noise_amplitude_scales: [0.0; 3],
+            depth_weights: [0.0; 4],
+            effect_controls: [0.0; 4],
+            flowmap_scale: 0.0,
         }
     }
 }
@@ -269,6 +285,16 @@ fn decode_data(data: &[u8]) -> WaterParams {
         p.noise_uv_scale_c = normalize_noise_uv_scale(v);
     }
     for (slot, offset) in p.noise_amplitude_scales.iter_mut().zip([184, 188, 192]) {
+        if let Some(v) = read_f32_at(data, offset) {
+            *slot = v.max(0.0);
+        }
+    }
+    for (slot, offset) in p.depth_weights.iter_mut().zip([208, 212, 216, 220]) {
+        if let Some(v) = read_f32_at(data, offset) {
+            *slot = v.max(0.0);
+        }
+    }
+    for (slot, offset) in p.effect_controls.iter_mut().zip([152, 156, 196, 204]) {
         if let Some(v) = read_f32_at(data, offset) {
             *slot = v.max(0.0);
         }
@@ -404,6 +430,21 @@ fn apply_skyrim_dnam_tail(p: &mut WaterParams, data: &[u8]) {
             *slot = v.max(0.0);
         }
     }
+    for (slot, offset) in p.depth_weights.iter_mut().zip([208, 212, 216, 220]) {
+        if let Some(v) = read_f32_at(data, offset) {
+            *slot = v.max(0.0);
+        }
+    }
+    for (slot, offset) in p.effect_controls.iter_mut().zip([152, 156, 196, 204]) {
+        if let Some(v) = read_f32_at(data, offset) {
+            *slot = v.max(0.0);
+        }
+    }
+    // Skyrim SE 232-byte records append the flow-map tile scale after the
+    // common 228-byte DNAM payload. Older records retain the zero sentinel.
+    if let Some(v) = read_f32_at(data, 228) {
+        p.flowmap_scale = v.max(0.0);
+    }
 }
 
 #[inline]
@@ -440,6 +481,9 @@ fn decode_dnam_fo4(data: &[u8]) -> WaterParams {
     if let Some(color) = read_rgb_at(data, 8) {
         p.deep_color = color;
     }
+    if let Some(color) = read_rgb_at(data, 36) {
+        p.underwater_color = color;
+    }
     if let Some(near) = read_f32_at(data, 44) {
         p.fog_near = near.max(0.0);
         p.underwater_fog_near = near.max(0.0);
@@ -463,6 +507,16 @@ fn decode_dnam_fo4(data: &[u8]) -> WaterParams {
         p.sun_specular_power = power.clamp(1.0, 2048.0);
     }
 
+    // FO4's physical section carries the authored displacement force and
+    // velocity. Promote those into the canonical animated wave controls;
+    // unlike the legacy Skyrim prefix these are live visual parameters.
+    if let Some(force) = read_f32_at(data, 76) {
+        p.wave_amplitude = force.max(0.0);
+    }
+    if let Some(velocity) = read_f32_at(data, 80) {
+        p.wave_frequency = velocity.max(0.0);
+    }
+
     // FO4 stores three noise-layer directions in degrees at 128..140 and
     // three layer speeds at 140..152. The canonical view currently carries
     // one layer, so retain layer 1 and convert the angle to radians.
@@ -473,9 +527,31 @@ fn decode_dnam_fo4(data: &[u8]) -> WaterParams {
         p.wind_speed = speed.max(0.0);
     }
 
-    // FO4's layer amplitude/UV scale are unitless noise controls, not the
-    // legacy world-space wave amplitude/frequency represented by WaterParams.
-    // Keep the canonical sentinels until that projection is calibrated.
+    // FO4's three noise amplitudes and tile lengths map directly to the
+    // canonical multi-layer normal path. xEdit stores UV scales as authored
+    // tile lengths (normally around 100), while the renderer consumes their
+    // inverse world-space frequency.
+    for (slot, offset) in p
+        .noise_amplitude_scales
+        .iter_mut()
+        .zip([152, 156, 160])
+    {
+        if let Some(value) = read_f32_at(data, offset) {
+            *slot = value.max(0.0);
+        }
+    }
+    for (slot, offset) in [
+        &mut p.noise_uv_scale_a,
+        &mut p.noise_uv_scale_b,
+        &mut p.noise_uv_scale_c,
+    ]
+    .into_iter()
+    .zip([164, 168, 172])
+    {
+        if let Some(value) = read_f32_at(data, offset) {
+            *slot = normalize_noise_uv_scale(value);
+        }
+    }
     p
 }
 
@@ -701,12 +777,25 @@ mod tests {
         data[184..188].copy_from_slice(&0.7f32.to_le_bytes());
         data[188..192].copy_from_slice(&0.6f32.to_le_bytes());
         data[192..196].copy_from_slice(&0.5f32.to_le_bytes());
+        data[208..212].copy_from_slice(&0.9f32.to_le_bytes());
+        data[212..216].copy_from_slice(&0.5f32.to_le_bytes());
+        data[216..220].copy_from_slice(&0.1f32.to_le_bytes());
+        data[220..224].copy_from_slice(&0.2f32.to_le_bytes());
+        data[152..156].copy_from_slice(&9.0f32.to_le_bytes());
+        data[156..160].copy_from_slice(&500.0f32.to_le_bytes());
+        data[196..200].copy_from_slice(&0.34f32.to_le_bytes());
+        data[204..208].copy_from_slice(&3.2f32.to_le_bytes());
+        data.resize(232, 0);
+        data[228..232].copy_from_slice(&1.75f32.to_le_bytes());
         let w = parse_watr(0xCCCC, &[sub(b"DNAM", &data)], GameKind::Skyrim);
         assert_eq!(w.params.underwater_fog_near, 0.0);
         assert!((w.params.underwater_fog_far - 1000.0).abs() < 1e-3);
         assert_eq!(w.params.wave_amplitude, 0.4);
         assert!((w.params.noise_uv_scale_a - 1.0 / 1920.0).abs() < 1e-6);
         assert_eq!(w.params.noise_amplitude_scales, [0.7, 0.6, 0.5]);
+        assert_eq!(w.params.depth_weights, [0.9, 0.5, 0.1, 0.2]);
+        assert_eq!(w.params.effect_controls, [9.0, 500.0, 0.34, 3.2]);
+        assert_eq!(w.params.flowmap_scale, 1.75);
     }
 
     #[test]
@@ -718,19 +807,29 @@ mod tests {
         data[0..4].copy_from_slice(&3007.0f32.to_le_bytes()); // depth amount
         data[4..8].copy_from_slice(&[45, 62, 62, 0]); // shallow colour
         data[8..12].copy_from_slice(&[46, 61, 57, 0]); // deep colour
+        data[36..40].copy_from_slice(&[18, 27, 36, 0]); // underwater colour
         data[44..48].copy_from_slice(&(-6400.0f32).to_le_bytes()); // underwater near
         data[48..52].copy_from_slice(&1700.0f32.to_le_bytes()); // underwater far
         data[64..68].copy_from_slice(&0.2935f32.to_le_bytes()); // reflectivity
         data[68..72].copy_from_slice(&0.058f32.to_le_bytes()); // Fresnel
         data[96..100].copy_from_slice(&[51, 68, 70, 0]); // reflection colour
         data[100..104].copy_from_slice(&83.0f32.to_le_bytes()); // sun specular power
+        data[76..80].copy_from_slice(&0.4f32.to_le_bytes()); // displacement force
+        data[80..84].copy_from_slice(&0.6f32.to_le_bytes()); // displacement velocity
         data[128..132].copy_from_slice(&67.824f32.to_le_bytes()); // layer 1 direction (deg)
         data[140..144].copy_from_slice(&0.0109f32.to_le_bytes()); // layer 1 speed
+        data[152..156].copy_from_slice(&0.8f32.to_le_bytes()); // layer 1 amplitude
+        data[156..160].copy_from_slice(&0.6f32.to_le_bytes()); // layer 2 amplitude
+        data[160..164].copy_from_slice(&0.4f32.to_le_bytes()); // layer 3 amplitude
+        data[164..168].copy_from_slice(&200.0f32.to_le_bytes()); // layer 1 UV
+        data[168..172].copy_from_slice(&400.0f32.to_le_bytes()); // layer 2 UV
+        data[172..176].copy_from_slice(&800.0f32.to_le_bytes()); // layer 3 UV
 
         let w = parse_watr(0x18, &[sub(b"DNAM", &data)], GameKind::Fallout4);
         assert_eq!(w.raw_dnam.len(), 201);
         assert!((w.params.shallow_color[0] - 45.0 / 255.0).abs() < 1e-6);
         assert!((w.params.deep_color[2] - 57.0 / 255.0).abs() < 1e-6);
+        assert!((w.params.underwater_color[1] - 27.0 / 255.0).abs() < 1e-6);
         assert!((w.params.reflection_color[1] - 68.0 / 255.0).abs() < 1e-6);
         assert_eq!(w.params.fog_near, 0.0);
         assert_eq!(w.params.fog_far, 1700.0);
@@ -741,14 +840,12 @@ mod tests {
         assert!((w.params.sun_specular_power - 83.0).abs() < 1e-6);
         assert!((w.params.wind_direction - 67.824f32.to_radians()).abs() < 1e-6);
         assert!((w.params.wind_speed - 0.0109).abs() < 1e-6);
-        assert_eq!(
-            w.params.wave_amplitude,
-            WaterParams::default().wave_amplitude
-        );
-        assert_eq!(
-            w.params.wave_frequency,
-            WaterParams::default().wave_frequency
-        );
+        assert_eq!(w.params.wave_amplitude, 0.4);
+        assert_eq!(w.params.wave_frequency, 0.6);
+        assert_eq!(w.params.noise_amplitude_scales, [0.8, 0.6, 0.4]);
+        assert_eq!(w.params.noise_uv_scale_a, 1.0 / 200.0);
+        assert_eq!(w.params.noise_uv_scale_b, 1.0 / 400.0);
+        assert_eq!(w.params.noise_uv_scale_c, 1.0 / 800.0);
     }
 
     #[test]

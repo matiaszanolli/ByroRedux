@@ -552,6 +552,7 @@ pub(crate) fn resolve_water_material(
         if let Some(rec) = waters.get(&form) {
             mat.shallow_color = rec.params.shallow_color;
             mat.deep_color = rec.params.deep_color;
+            mat.underwater_color = rec.params.underwater_color;
             mat.fog_near = rec.params.fog_near;
             mat.fog_far = rec.params.fog_far;
             mat.underwater_fog_near = rec.params.underwater_fog_near;
@@ -588,6 +589,28 @@ pub(crate) fn resolve_water_material(
                 if src.is_finite() && src > 0.0 {
                     *dst = src.clamp(0.05, 4.0);
                 }
+            }
+            for (dst, src) in mat.depth_weights.iter_mut().zip(rec.params.depth_weights) {
+                if src.is_finite() && src > 0.0 {
+                    *dst = src.clamp(0.0, 4.0);
+                }
+            }
+            for (index, (dst, src)) in mat
+                .effect_controls
+                .iter_mut()
+                .zip(rec.params.effect_controls)
+                .enumerate()
+            {
+                if src.is_finite() && src > 0.0 {
+                    *dst = if index == 1 {
+                        src.clamp(1.0, 2048.0)
+                    } else {
+                        src.clamp(0.0, 8.0)
+                    };
+                }
+            }
+            if rec.params.flowmap_scale.is_finite() && rec.params.flowmap_scale > 0.0 {
+                mat.flowmap_scale = rec.params.flowmap_scale.clamp(0.05, 8.0);
             }
             mat.source_form = rec.form_id;
 
@@ -651,9 +674,13 @@ pub(crate) fn resolve_water_material(
                 // Compute once — cos/sin were duplicated pre-#1068 (F-WAT-06).
                 let (sin_theta, cos_theta) = theta.sin_cos();
                 let canonical = WaterFlow::for_kind(kind, [cos_theta, 0.0, sin_theta]);
+                // Skyrim SE's 232-byte DNAM tail carries an authored
+                // flow-map tile scale. Keep the canonical physics band,
+                // but let the visual scroll rate follow that scale.
+                let flowmap_scale = mat.flowmap_scale.clamp(0.05, 8.0);
                 // Rebuild scroll vectors to bias along the flow axis,
                 // converting out of BU/s at the documented rate.
-                let scroll = canonical.speed * WATER_SCROLL_UV_PER_BU_PER_S;
+                let scroll = canonical.speed * flowmap_scale * WATER_SCROLL_UV_PER_BU_PER_S;
                 mat.scroll_a = [cos_theta * scroll, sin_theta * scroll];
                 // Perpendicular shear at half rate for the second layer.
                 mat.scroll_b = [-sin_theta * scroll * 0.5, cos_theta * scroll * 0.5];
@@ -1763,6 +1790,7 @@ mod tests {
             params: WaterParams {
                 shallow_color: [1.0, 0.4, 0.1],
                 deep_color: [0.6, 0.1, 0.0],
+                underwater_color: [0.6, 0.1, 0.0],
                 reflection_color: lava_tint,
                 fog_near: 20.0,
                 fog_far: 80.0,
@@ -1779,6 +1807,9 @@ mod tests {
                 noise_uv_scale_b: 0.0,
                 noise_uv_scale_c: 0.0,
                 noise_amplitude_scales: [0.0; 3],
+                depth_weights: [0.0; 4],
+                effect_controls: [0.0; 4],
+                flowmap_scale: 0.0,
             },
             raw_dnam: Vec::new(),
             raw_data: Vec::new(),

@@ -237,8 +237,12 @@ Wave amplitude/frequency, reflection tint, and the per-game sun-specular exponen
 now cross the boundary. NAM2/NAM3/NAM4 noise layers and the FO3/FNV long-tail
 noise UV scales now resolve through the bindless water-material contract; FO3/FNV
 and FO4 below-water fog ranges now cross the canonical boundary, and Skyrim's
-underwater fog, displacement force, and three noise UV scales are verified
-against the installed master. The remaining Skyrim tail fields stay raw. The
+underwater fog, displacement force, three noise UV scales, three noise
+amplitude scales, and depth weights are verified against the installed master.
+FO4 displacement force/velocity and all three authored noise amplitudes and UV
+scales now cross the same canonical boundary; FO4's separate underwater tint
+also drives the underwater composite, while older games fall back to deep tint.
+The remaining Skyrim tail fields stay raw. The
 `WaterKind` classification is a fragile EDID-substring heuristic
 (`rapid`/`waterfall`/`falls`/`river`/`stream`), English-only, with `waterfall`
 deliberately demoted to `River` for cell planes.
@@ -335,6 +339,8 @@ Everything else is a SENTINEL the older game leaves unset, identical across game
 | noise layers (`NAM2`/`NAM3`/`NAM4`) | **SENTINEL** `[u32::MAX;3]` | **SENTINEL** | AUTHORED (3 paths) | NAM2-4 |
 | below-water fog split | **SENTINEL** (reuse above) | **SENTINEL** | AUTHORED (DNAM tail) | DNAM[144..152] |
 | `wave_amplitude/frequency` | AUTHORED | AUTHORED | AUTHORED (displacement force overrides amplitude) | DATA[8..16], DNAM[76..80] |
+| depth response weights | SENTINEL | SENTINEL | AUTHORED | DNAM[208..224] |
+| reflection/specular controls | SENTINEL | SENTINEL | AUTHORED | DNAM[152..156,196..204] |
 | `sun_power` | AUTHORED (was skipped) | AUTHORED | AUTHORED | DATA[16] |
 | `WaterFlow` | SYNTHESIZED from wind | SYNTHESIZED from wind | AUTHORED flow | wind / DNAM flow |
 | `ior` 1.33, `shoreline_width` 32, foam-by-kind | SENTINEL | SENTINEL | SENTINEL | engine-invariant |
@@ -360,6 +366,7 @@ existing components. Four genuinely new types fill gaps where no ECS role exists
 `scatter_color`/`scatter_amount`/`scatter_extinction` (A8 sunlight sub-surface
 glow) · `wave_amplitude`/`wave_frequency` (A11, including Skyrim's displacement
 force override) · authored three-layer noise UV and amplitude scales ·
+authored reflection/specular/refraction controls ·
 `normal_octaves: u8`
 (A1, allow ≥4-6 to match Skyrim chop; sentinel 2 = today's `scroll_a/b`) ·
 `noise_layers: [u32;3]` (resolved Skyrim NAM2-4 handles; sentinel `[u32::MAX;3]`) ·
@@ -529,11 +536,16 @@ fallback for textureless legacy water plus authored texture layers where present
 ### Q5 — Open item: exact byte offsets of the remaining Skyrim tail. → **MEDIUM confidence; verify before relying.**
 
 The verified Skyrim underwater fog pair at DNAM offsets 144/148, displacement
-force at 76, and all three noise UV scales at 172/176/180 now feed the
-canonical presentation path; remaining authored tail fields remain `raw_dnam`
+force at 76, all three noise UV scales at 172/176/180, three noise amplitude
+scales at 184/188/192, and depth weights at 208/212/216/220 now feed the
+canonical presentation path, with reflection/specular controls at 152/156/196/204;
+the Skyrim SE-only 232-byte extension's flow-map tile scale at 228 now scales
+the visual scroll rate while leaving the canonical physics current bounded;
+remaining authored tail fields remain `raw_dnam`
 and **best-effort** across Skyrim 1.5/1.6. FO3/FNV DATA offsets 144/148 (underwater
 fog) and 172/176 (noise UV scales), plus FO4 DNAM offsets
-44/48, now feed canonical water fields;
+44/48 (underwater fog), 76/80 (displacement), 152/156/160 (noise amplitudes),
+and 164/168/172 (noise UV scales), now feed canonical water fields;
 the remaining Skyrim fields should be byte-decoded via the extract→trace method
 ([[nif_v10x_stride_drift_resolved]]). Until then they stay SENTINEL — correctness
 is not blocked, only fidelity.
