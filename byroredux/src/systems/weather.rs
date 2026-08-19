@@ -1489,3 +1489,104 @@ mod no_wthr_fallback_tests {
         assert_eq!(cell_lit.fog_color, [0.0, 0.0, 0.0]);
     }
 }
+
+/// Regression tests for #2827 / REN-D18-01 — a mid-session worldspace
+/// transition used to seed `SkyParamsRes` with the correct live-hour sun
+/// *direction* (`7a851ab9`) but a fixed TOD_DAY palette and the constant
+/// `SUN_INTENSITY` peak, because `world_setup.rs::apply_environment`'s
+/// `translate_sky`/`translate_exterior_cell_lighting` seed always samples
+/// the TOD_DAY slot. At boot the scheduler's own `weather_system` call
+/// corrected this before the first render; a mid-session transition
+/// rendered one frame with that mismatch. The fix appends a
+/// `weather_system(world, 0.0)` resample to the end of `apply_environment`
+/// — `apply_environment` itself needs a live `VulkanContext` and is out of
+/// unit-test reach, so this pins the mechanism it now relies on directly:
+/// starting from exactly the seeded-at-noon, live-hour-is-night state the
+/// bug describes, a `dt = 0.0` resample must fully replace both the
+/// palette AND the intensity with the correct night sample — not just
+/// leave the (already-correct) direction alone.
+#[cfg(test)]
+mod seeded_at_wrong_tod_resample_tests {
+    use super::*;
+    use byroredux_core::ecs::World;
+
+    /// Reproduces the exact mismatched seed: `sun_direction` already the
+    /// correct night sentinel (the half `7a851ab9` fixed), but
+    /// `zenith_color`/`sun_intensity` still the constants a TOD_DAY-only
+    /// seed would have installed (matching `env_translate::translate_sky`'s
+    /// hardcoded `TOD_DAY` read and `SUN_INTENSITY = 4.0`).
+    #[test]
+    fn resample_replaces_a_noon_seeded_sky_with_the_live_night_sample() {
+        let mut world = World::new();
+
+        const NOON_ZENITH: [f32; 3] = [0.3, 0.5, 0.9];
+        const NIGHT_ZENITH: [f32; 3] = [0.0, 0.0, 0.0];
+        const SUN_INTENSITY_PEAK_CONSTANT: f32 = 4.0;
+
+        // Game clock at 01:00 — well inside the night window for the
+        // tod_hours below (sunrise 6h, sunset 22h). Frozen so `dt = 0.0`
+        // isn't the only thing keeping the hour from advancing.
+        world.insert_resource(GameTimeRes::frozen_at(1.0));
+
+        let mut sky_colors = [[[0.0_f32; 3]; 6]; 10];
+        use byroredux_plugin::esm::records::weather::{SKY_UPPER, TOD_DAY, TOD_MIDNIGHT};
+        sky_colors[SKY_UPPER][TOD_DAY] = NOON_ZENITH;
+        sky_colors[SKY_UPPER][TOD_MIDNIGHT] = NIGHT_ZENITH;
+        world.insert_resource(WeatherDataRes {
+            sky_colors,
+            fog: [100.0, 60000.0, 200.0, 30000.0],
+            fog_media: [
+                crate::fog::FogMedium::from_legacy_ramp(100.0, 60000.0, None),
+                crate::fog::FogMedium::from_legacy_ramp(200.0, 30000.0, None),
+            ],
+            tod_hours: [6.0, 10.0, 18.0, 22.0],
+            skyrim_dalc_per_tod: None,
+            wind_speed: 0,
+        });
+
+        // The buggy seed: direction already correct (below-horizon
+        // sentinel, what `compute_sun_arc(1.0, …)` itself returns), but
+        // palette/intensity still at the TOD_DAY constants.
+        world.insert_resource(SkyParamsRes {
+            zenith_color: NOON_ZENITH,
+            horizon_color: [0.0; 3],
+            lower_color: [0.0; 3],
+            sun_direction: [0.0, -1.0, 0.0],
+            sun_color: [0.0; 3],
+            sun_size: 1.0,
+            sun_intensity: SUN_INTENSITY_PEAK_CONSTANT,
+            sun_angular_radius: 0.020,
+            is_exterior: true,
+            cloud_tile_scale: 0.0,
+            cloud_texture_index: 0,
+            sun_texture_index: 0,
+            cloud_tile_scale_1: 0.0,
+            cloud_texture_index_1: 0,
+            cloud_tile_scale_2: 0.0,
+            cloud_texture_index_2: 0,
+            cloud_tile_scale_3: 0.0,
+            cloud_texture_index_3: 0,
+            current_dalc_cube: None,
+        });
+
+        weather_system(&world, 0.0);
+
+        let sky = world.try_resource::<SkyParamsRes>().unwrap();
+        assert_eq!(
+            sky.zenith_color, NIGHT_ZENITH,
+            "a dt=0.0 resample must replace the seeded TOD_DAY zenith \
+             colour with the live-hour (night) sample, not leave it at noon"
+        );
+        assert_eq!(
+            sky.sun_intensity, 0.0,
+            "a dt=0.0 resample must replace the seeded SUN_INTENSITY peak \
+             constant with the live-hour intensity — 0.0 at 01:00, matching \
+             the below-horizon direction the seed already had correct"
+        );
+        assert_eq!(
+            sky.sun_direction, [0.0, -1.0, 0.0],
+            "the direction half of the seed was already correct \
+             (7a851ab9) and must still match after resample"
+        );
+    }
+}

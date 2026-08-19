@@ -388,6 +388,26 @@ fn apply_environment(
             ctx.texture_registry.drop_texture(&ctx.device, handle);
         }
     }
+
+    // #2827 / REN-D18-01 — both branches above seed the sky palette /
+    // fog / `sun_intensity` at a fixed TOD_DAY-equivalent slot (only the
+    // sun *direction* honours `bootstrap_hour`, #7a851ab9); `weather_system`
+    // corrects the mismatch, but only on the NEXT scheduler tick. At boot
+    // (`setup_scene` → `scheduler.run` before the first render) that's
+    // invisible. On a mid-session call — `step_cell_transition` /
+    // `step_streaming`'s XCCM override / `debug_load.rs` — the scheduler
+    // already ran for this frame; without a resample here, the seeded
+    // values are exactly what that frame renders: a full-intensity
+    // noon-palette sky with whatever sun direction the live hour actually
+    // computed (including the below-horizon night sentinel). A `dt = 0.0`
+    // tick advances no clock and no in-flight crossfade (`elapsed_secs +=
+    // 0.0`), so this renders the correct live-hour TOD sample of exactly
+    // the weather that was just installed (or the crossfade's own t = 0
+    // starting sample) — the same idiom `commands::time::resample_lighting`
+    // already uses for the console clock commands. Harmless at boot: the
+    // scheduler's own `weather_system(world, dt)` runs moments later and
+    // simply resamples again from the (by-then-ticked) clock.
+    crate::systems::weather_system(world, 0.0);
 }
 
 /// Re-resolve the climate in effect for the cell the player just entered,
