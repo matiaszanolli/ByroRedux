@@ -305,7 +305,15 @@ fn select_package(
     })
 }
 
-fn procedure_inputs<'a>(
+/// Resolve one procedure leaf's `data_input_indexes` against a package's
+/// concrete `data_inputs`. `procedure` is expected from the **template**
+/// record (`package_template_form_id`-chased, or the package itself when
+/// there's no template) — the tree structure; `package` supplies the
+/// concrete values a template instance fills each slot with. Public so
+/// PACKAL's ambient driver (`byroredux::npc_spawn::ai_package`) can reuse
+/// this exact resolution instead of duplicating it — see `docs/engine/
+/// packal.md`.
+pub fn procedure_inputs<'a>(
     procedure: &PackProcedure,
     package: &'a PackRecord,
 ) -> Vec<&'a PackDataInput> {

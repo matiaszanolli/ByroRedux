@@ -15,7 +15,9 @@ use byroredux_core::ecs::components::{
 };
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{Component, World};
-use byroredux_plugin::esm::records::{PackLocationTarget, PackRecord, PackTargetKind};
+use byroredux_plugin::esm::records::{
+    PackDataValue, PackLocationTarget, PackRecord, PackTargetKind,
+};
 use byroredux_scripting::condition::ConditionContext;
 use byroredux_scripting::{EvaluatePackageRequest, PackageRegistry};
 
@@ -83,7 +85,14 @@ enum AmbientBehavior {
 }
 
 impl AmbientBehavior {
-    fn from_package(package: &PackRecord, actor_form_id: u32) -> Option<Self> {
+    /// `template` is `package.package_template_form_id` chased through the
+    /// packages catalog, falling back to `package` itself when there's no
+    /// template ref — the exact convention `crates/scripting::package`'s
+    /// Scene driver already uses (`resolve_command`'s `template` argument).
+    /// FO3/FNV flat packages never set `package_template_form_id`, so for
+    /// them `template` and `package` are always the same record and every
+    /// existing branch below is unaffected. See `docs/engine/packal.md`.
+    fn from_package(package: &PackRecord, template: &PackRecord, actor_form_id: u32) -> Option<Self> {
         let location_radius = package
             .location
             .map(|location| location.radius as f32)
@@ -142,8 +151,35 @@ impl AmbientBehavior {
                 actor_form_id,
             })
         } else {
-            None
+            Self::from_skyrim_procedure_tree(package, template)
         }
+    }
+
+    /// PACKAL first slice (`docs/engine/packal.md` §4) — Skyrim+
+    /// tree/template-shaped packages fall through every `is_*` check above
+    /// (those all read the FO3/FNV flat `procedure_type` byte, which
+    /// Skyrim+ packages don't populate meaningfully). Sandbox only for
+    /// now: it's the highest-value ambient leaf type on real Skyrim data
+    /// (`DefaultSandboxEditorLocation512` alone covers 307 vanilla NPCs —
+    /// verified via `pack_ambient_shape_survey`), and the only one whose
+    /// resolution (a search radius, same shape as the FO3/FNV branch
+    /// above) needs no `world`/`actor` context — no live-target or
+    /// alias resolution, so no dependency on `SceneActorBindings` (the one
+    /// piece of `crates/scripting::package`'s executor this driver
+    /// deliberately doesn't reuse).
+    fn from_skyrim_procedure_tree(package: &PackRecord, template: &PackRecord) -> Option<Self> {
+        let leaf = template
+            .procedures
+            .iter()
+            .find(|procedure| procedure.procedure_type == "Sandbox")?;
+        let search_radius = byroredux_scripting::package::procedure_inputs(leaf, package)
+            .into_iter()
+            .find_map(|input| match input.value {
+                PackDataValue::Location(location) => Some(location.radius as f32),
+                _ => None,
+            })
+            .filter(|radius| *radius > 0.0);
+        Some(Self::Sandbox { search_radius })
     }
 
     fn insert_at_spawn(self, world: &mut World, actor: EntityId) {
@@ -403,7 +439,13 @@ pub(super) fn apply_ai_package_behavior(
             .filter_map(|form_id| index.packages.get(form_id)),
     );
     let active_package_form_id = active.map(|package| package.form_id);
-    let behavior = active.and_then(|package| AmbientBehavior::from_package(package, npc.form_id));
+    let behavior = active.and_then(|package| {
+        let template = package
+            .package_template_form_id
+            .and_then(|form_id| index.packages.get(&form_id))
+            .unwrap_or(package);
+        AmbientBehavior::from_package(package, template, npc.form_id)
+    });
 
     world.insert(
         placement_root,
@@ -471,8 +513,13 @@ pub(crate) fn ambient_ai_package_system(world: &World, _dt: f32) {
         }
         let active = select_active_package(world, actor, game_hour, packages.iter().copied());
         let active_package_form_id = active.map(|package| package.form_id);
-        let behavior = active
-            .and_then(|package| AmbientBehavior::from_package(package, runtime.actor_form_id));
+        let behavior = active.and_then(|package| {
+            let template = package
+                .package_template_form_id
+                .and_then(|form_id| registry.package(form_id))
+                .unwrap_or(package);
+            AmbientBehavior::from_package(package, template, runtime.actor_form_id)
+        });
         updates.push((
             actor,
             active_package_form_id,
@@ -511,7 +558,8 @@ mod tests {
         ComparisonOp, Condition, ConditionValue, RunOn,
     };
     use byroredux_plugin::esm::records::misc::pack::{
-        PackSchedule, PROCEDURE_GUARD, PROCEDURE_SANDBOX, PROCEDURE_TRAVEL, PROCEDURE_WANDER,
+        PackDataInput, PackLocation, PackProcedure, PackSchedule, PROCEDURE_GUARD,
+        PROCEDURE_SANDBOX, PROCEDURE_TRAVEL, PROCEDURE_WANDER,
     };
     use byroredux_plugin::esm::records::SceneActionType;
     use byroredux_scripting::quest_stages::QuestStageState;
@@ -554,22 +602,82 @@ mod tests {
         }
     }
 
+    /// Real-data-shaped Skyrim+ type-19 template: a `Travel`-then-`Sandbox`
+    /// tree, mirroring `Skyrim.esm`'s own `Sandbox` template (verified
+    /// before this test was written; see `docs/engine/packal.md` §3). The
+    /// `Sandbox` leaf's `data_input_indexes` name slot 0 (the shared
+    /// Location every leaf in the tree travels to / sandboxes around).
+    fn skyrim_sandbox_template(form_id: u32) -> PackRecord {
+        PackRecord {
+            form_id,
+            procedures: vec![
+                PackProcedure {
+                    procedure_type: "Travel".to_owned(),
+                    data_input_indexes: vec![0],
+                    ..Default::default()
+                },
+                PackProcedure {
+                    procedure_type: "Sandbox".to_owned(),
+                    data_input_indexes: vec![0],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }
+    }
+
+    /// A template *instance* — what an NPC's PKID list actually names.
+    /// Carries no procedures of its own, just the template ref + concrete
+    /// data-input values (slot 0 = the Location the template's leaves
+    /// reference), mirroring `DefaultSandboxEditorLocation512`.
+    fn skyrim_sandbox_instance(form_id: u32, template_form_id: u32, radius: i32) -> PackRecord {
+        PackRecord {
+            form_id,
+            package_template_form_id: Some(template_form_id),
+            data_inputs: vec![PackDataInput {
+                index: 0,
+                value_type: "Location".to_owned(),
+                value: PackDataValue::Location(PackLocation {
+                    location_type: 3,
+                    target: PackLocationTarget::Other(0),
+                    radius,
+                }),
+            }],
+            ..Default::default()
+        }
+    }
+
     fn setup_actor(hour: f32, packages: Vec<PackRecord>) -> (World, EntityId) {
+        setup_actor_with_catalog(hour, packages, Vec::new())
+    }
+
+    /// Like [`setup_actor`], but `catalog_only` packages land in the package
+    /// catalog (so `package_template_form_id` chasing can find them) without
+    /// being listed on the actor's own PKID candidates — mirroring how a
+    /// real Skyrim+ NPC's PKID list names a concrete template *instance* but
+    /// never the type-19 template its procedure tree actually lives on.
+    fn setup_actor_with_catalog(
+        hour: f32,
+        ai_packages: Vec<PackRecord>,
+        catalog_only: Vec<PackRecord>,
+    ) -> (World, EntityId) {
         let mut world = World::new();
         register_runtime(&mut world, hour);
         let actor = world.spawn();
-        let candidates: Vec<u32> = packages.iter().map(|package| package.form_id).collect();
+        let candidates: Vec<u32> = ai_packages.iter().map(|package| package.form_id).collect();
         let npc = NpcRecord {
             form_id: 0xAA,
             ai_packages: candidates,
             ..Default::default()
         };
+        let mut all_packages = ai_packages;
+        all_packages.extend(catalog_only);
         let mut index = EsmIndex::default();
-        for package in packages.iter().cloned() {
+        for package in all_packages.iter().cloned() {
             index.packages.insert(package.form_id, package);
         }
         apply_ai_package_behavior(&mut world, actor, &npc, &index);
-        install_package_records(&mut world, packages);
+        install_package_records(&mut world, all_packages);
         ambient_ai_package_system(&world, 0.0);
         (world, actor)
     }
@@ -769,5 +877,176 @@ mod tests {
                     )
                 })
             }));
+    }
+
+    /// PACKAL first slice (`docs/engine/packal.md` §4). The actor's PKID
+    /// list names only the concrete instance — real Skyrim data never puts
+    /// a template FormID on an NPC's own package list.
+    #[test]
+    fn skyrim_shaped_sandbox_resolves_search_radius_via_template() {
+        let template = skyrim_sandbox_template(0x300);
+        let instance = skyrim_sandbox_instance(0x301, 0x300, 512);
+        let (world, actor) = setup_actor_with_catalog(10.0, vec![instance], vec![template]);
+
+        assert!(world.has::<SandboxBehavior>(actor));
+        assert_eq!(
+            world.get::<SandboxBehavior>(actor).unwrap().search_radius,
+            Some(512.0)
+        );
+    }
+
+    /// A Skyrim+ package whose template has no recognized leaf type (only
+    /// procedures this driver doesn't dispatch yet) installs no ambient
+    /// behavior at all — silent no-op, not a wrong guess. Mirrors the
+    /// FO3/FNV branch's existing behavior for procedure types this driver
+    /// doesn't handle (Find/Eat/Sleep/…).
+    #[test]
+    fn skyrim_shaped_package_with_no_recognized_leaf_installs_nothing() {
+        let template = PackRecord {
+            form_id: 0x300,
+            procedures: vec![PackProcedure {
+                procedure_type: "UnlockDoors".to_owned(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let instance = PackRecord {
+            form_id: 0x301,
+            package_template_form_id: Some(0x300),
+            ..Default::default()
+        };
+        let (world, actor) = setup_actor_with_catalog(10.0, vec![instance], vec![template]);
+
+        assert!(!world.has::<SandboxBehavior>(actor));
+    }
+
+    /// A Skyrim+ Sandbox leaf whose referenced data-input slot resolves to
+    /// nothing `Location`-typed (or the template ref is absent entirely —
+    /// covered by the flat-shape tests already) still installs
+    /// `SandboxBehavior`; `search_radius: None` is a legitimate value that
+    /// `sandbox_seat_system` already treats as "use the default radius",
+    /// same as the FO3/FNV no-PLDT case.
+    #[test]
+    fn skyrim_shaped_sandbox_with_no_location_input_installs_default_radius() {
+        let template = skyrim_sandbox_template(0x300);
+        let instance = PackRecord {
+            form_id: 0x301,
+            package_template_form_id: Some(0x300),
+            ..Default::default()
+        };
+        let (world, actor) = setup_actor_with_catalog(10.0, vec![instance], vec![template]);
+
+        assert!(world.has::<SandboxBehavior>(actor));
+        assert_eq!(
+            world.get::<SandboxBehavior>(actor).unwrap().search_radius,
+            None
+        );
+    }
+
+    /// A package with no `package_template_form_id` at all (neither
+    /// FO3/FNV-flat nor Skyrim+-templated — an unusual but possible
+    /// one-off custom procedure tree per `ai_packages_procedures.md`)
+    /// still resolves through its own `procedures`, matching
+    /// `resolve_command`'s identical `template = package_template_form_id
+    /// .and_then(...).unwrap_or(package)` fallback in the Scene driver.
+    #[test]
+    fn skyrim_shaped_one_off_package_with_no_template_ref_resolves_its_own_procedures() {
+        let one_off = PackRecord {
+            form_id: 0x301,
+            procedures: vec![PackProcedure {
+                procedure_type: "Sandbox".to_owned(),
+                data_input_indexes: vec![0],
+                ..Default::default()
+            }],
+            data_inputs: vec![PackDataInput {
+                index: 0,
+                value_type: "Location".to_owned(),
+                value: PackDataValue::Location(PackLocation {
+                    location_type: 3,
+                    target: PackLocationTarget::Other(0),
+                    radius: 256,
+                }),
+            }],
+            ..Default::default()
+        };
+        let (world, actor) = setup_actor(10.0, vec![one_off]);
+
+        assert!(world.has::<SandboxBehavior>(actor));
+        assert_eq!(
+            world.get::<SandboxBehavior>(actor).unwrap().search_radius,
+            Some(256.0)
+        );
+    }
+
+    /// PACKAL first slice (`docs/engine/packal.md`), verified against the
+    /// actual production code path (`apply_ai_package_behavior`), not a
+    /// re-implementation. Opt-in — needs a real Skyrim SE install — mirrors
+    /// `cell_loader::load_order`'s `real_skyrim_load_order_...` test's
+    /// skip-if-unavailable convention. Run with `cargo test -- --ignored`.
+    #[test]
+    #[ignore]
+    fn real_skyrim_esm_ambient_packages_now_resolve_for_previously_blind_npcs() {
+        let data = std::env::var("BYROREDUX_SKYRIM_DATA")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| {
+                std::path::PathBuf::from(
+                    "/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data",
+                )
+            });
+        if !data.is_dir() {
+            eprintln!("[PACKAL Skyrim ambient] skipping: game data unavailable");
+            return;
+        }
+        let master = data.join("Skyrim.esm");
+        let bytes = std::fs::read(&master).expect("read Skyrim.esm");
+        let index = byroredux_plugin::esm::parse_esm(&bytes).expect("parse Skyrim.esm");
+
+        let mut world = World::new();
+        register_runtime(&mut world, 10.0);
+
+        let mut with_packages = 0usize;
+        let mut resolved_any_behavior = 0usize;
+        let mut resolved_sandbox_with_radius = 0usize;
+        for npc in index.npcs.values() {
+            if npc.ai_packages.is_empty() {
+                continue;
+            }
+            with_packages += 1;
+            let actor = world.spawn();
+            apply_ai_package_behavior(&mut world, actor, npc, &index);
+            if world.has::<SandboxBehavior>(actor) {
+                resolved_any_behavior += 1;
+                if world
+                    .get::<SandboxBehavior>(actor)
+                    .is_some_and(|behavior| behavior.search_radius.is_some())
+                {
+                    resolved_sandbox_with_radius += 1;
+                }
+            } else if world.has::<WanderBehavior>(actor)
+                || world.has::<TravelBehavior>(actor)
+                || world.has::<FollowBehavior>(actor)
+                || world.has::<EscortBehavior>(actor)
+                || world.has::<GuardBehavior>(actor)
+                || world.has::<PatrolBehavior>(actor)
+            {
+                resolved_any_behavior += 1;
+            }
+        }
+
+        println!(
+            "[PACKAL Skyrim ambient] {with_packages} NPCs carry a PKID list; \
+             {resolved_any_behavior} now resolve some ambient behavior \
+             ({resolved_sandbox_with_radius} of those a Sandbox with a real radius)"
+        );
+        // `pack_ambient_shape_survey` measured ~2052 package-carrying NPCs
+        // and Sandbox-family templates alone covering 300+ each on real
+        // Skyrim.esm (§3, docs/engine/packal.md) — 500 is a safe floor well
+        // below the measured population, not a tight bound on it.
+        assert!(
+            resolved_sandbox_with_radius > 500,
+            "expected the large majority of real Skyrim.esm's package-carrying \
+             NPCs to resolve a Skyrim+ Sandbox leaf with a real radius — got \
+             {resolved_sandbox_with_radius} of {with_packages}"
+        );
     }
 }

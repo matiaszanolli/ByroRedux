@@ -53,6 +53,19 @@ what's planned.
 > patrol-route data is decoded anywhere in this codebase, so v0 Patrol
 > calls `wander_system`'s shared oscillating-walk core directly rather
 > than duplicating it under a new name.
+>
+> **Scope note added 2026-08-19 — this whole doc is FO3/FNV-only.** Every
+> section below reads `PackRecord`'s flat `procedure_type`/`schedule`/
+> `location`/`target` fields — the shape FO3/FNV/Oblivion(-probably, see
+> [PACKAL](packal.md) §3) packages use. Skyrim+ packages are
+> tree/template-shaped (`procedures`/`package_template_form_id`/
+> `data_inputs`) and were **entirely invisible** to `AmbientBehavior::
+> from_package` until [PACKAL](packal.md)'s first slice (2026-08-19) added
+> a shape-fallback branch for Sandbox specifically — real data: 722 of
+> 2,052 `Skyrim.esm` NPCs now resolve a Sandbox radius, 0 before. The
+> `active_package_is_*`/`PROCEDURE_*` machinery this doc describes is
+> unchanged and still FO3/FNV-only; PACKAL is a separate fallback path in
+> the same function, not a rewrite of anything here.
 
 ## 1. Spawn trigger: NPC_ vs. static
 

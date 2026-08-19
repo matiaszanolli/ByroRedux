@@ -1,6 +1,6 @@
-# PACKAL — Package Abstraction Layer (PROPOSED)
+# PACKAL — Package Abstraction Layer
 
-**PACKAL** (Package Abstraction Layer; pronounced "PACK-al") is the proposed
+**PACKAL** (Package Abstraction Layer; pronounced "PACK-al") is the
 execution layer for **ambient NPC AI** — the background behavior a placed
 actor runs from its own `PACK` package list, independent of any quest. It is
 named after NIFAL/EXAL/PHYSAL/WATAL/CHARAL but its fork sits in a different
@@ -21,11 +21,9 @@ into a resolved command; two call sites that decide *when* to run it and
 *how its lifetime is tracked*) rather than `translate()`'s per-game
 `Imported* → Canonical` boundary.
 
-**Status**: PROPOSED (opened 2026-08-19, from a real-data investigation — see
-§3). No production code has moved yet;
-`crates/plugin/examples/pack_ambient_shape_survey.rs` is the one artifact
-this investigation left behind, and it's analysis tooling, not part of the
-layer itself.
+**Status**: ACTIVE (opened 2026-08-19, from a real-data investigation — see
+§3). The first slice (§4, Skyrim+ ambient Sandbox) shipped the same day —
+see §6 for what landed and the real numbers.
 
 **Goal**: an NPC's ambient package stack resolves and executes the same way
 regardless of which era authored it — FO3/FNV's flat `PROCEDURE_*` packages
@@ -45,7 +43,7 @@ tracked) differing between "this actor's own spawn-time package stack" and
 | ESM parse (`PACK` → `PackRecord`) | **Unified.** One struct, both shapes, since before this doc. No PACKAL work needed here. |
 | Package selection (condition-gated, first-eligible-wins) | **Duplicated, not unified.** `crates/plugin/src/esm/records/misc/pack.rs::active_package` (ambient, FO3/FNV-only) and `crates/scripting/src/package.rs::select_package` (Scene, shape-agnostic) are two independent implementations of the same idea. |
 | Data-input / target / template resolution | **Exists once, reachable from one driver only.** `procedure_inputs`, `input_destination`, `input_target_entity`, `alias_position` (`package.rs`) already do this generically — but only `scene_package_system` calls them. |
-| Leaf-type coverage (which procedure names actually *do* something) | **Split down the middle, for different reasons.** Ambient (`npc_spawn.rs`) covers Sandbox/Wander/Travel/Follow/Escort/Guard/Patrol (indefinite or slow-completing, fits a continuously-running actor). Scene (`package.rs::resolve_command`) covers Travel/Patrol/Escort/FollowTo (move-to) and Activate/Acquire/Shout/Sit/UseIdleMarker/UseWeapon (interaction) — finite, completable actions, because a Scene phase has to *end*. **Neither covers the other's list**, and Sandbox/Sleep/Eat — the dominant ambient behaviors on real Skyrim data (§3) — are in neither Skyrim+ dispatcher. |
+| Leaf-type coverage (which procedure names actually *do* something) | **Split down the middle, for different reasons — plus one Skyrim+ leaf now covered (§4).** Ambient (`npc_spawn/ai_package.rs`) covers FO3/FNV Sandbox/Wander/Travel/Follow/Escort/Guard/Patrol (indefinite or slow-completing, fits a continuously-running actor) **and**, as of the §4 slice, Skyrim+ `"Sandbox"` leaves. Scene (`package.rs::resolve_command`) covers Travel/Patrol/Escort/FollowTo (move-to) and Activate/Acquire/Shout/Sit/UseIdleMarker/UseWeapon (interaction) — finite, completable actions, because a Scene phase has to *end*; it has no Sandbox/Sleep/Eat handling at all (Scenes don't run indefinite actions). Skyrim+ Sleep/Eat and every other leaf type remain uncovered by both drivers. |
 | Runtime behavior systems (`sandbox_seat_system`, `wander_system`, …) | **Already shape-agnostic.** They read `SandboxBehavior`/`WanderBehavior`/etc., not `PackRecord` — whichever driver populates those components, the systems don't care. No PACKAL work needed here either. |
 
 The gap is narrow but total: nothing anywhere calls the ambient
@@ -54,7 +52,7 @@ the other end.
 
 ---
 
-## 2. Two drivers, one core (proposed shape)
+## 2. Two drivers, one core
 
 ```
                     resolve (shared)                          drive (per-context)
@@ -65,22 +63,30 @@ the other end.
                       + data-input resolve
 ```
 
-- **Shared core** (mostly exists — `crates/scripting/src/package.rs`'s
+- **Shared core** (exists — `crates/scripting/src/package.rs`'s
   `select_package`/`procedure_inputs`/`input_destination`/
-  `input_target_entity`/`resolve_command`, minus their `SceneActorBindings`
-  dependency for alias targets): turns `(package_ids, actor, world)` into a
-  resolved leaf + its inputs. Shape-agnostic already — it reads
-  `PackRecord.procedures`/`data_inputs`/`package_template_form_id` and would
-  work unchanged for an ambient caller.
+  `input_target_entity`/`resolve_command`): turns `(package_ids, actor,
+  world)` into a resolved leaf + its inputs. Shape-agnostic already — it
+  reads `PackRecord.procedures`/`data_inputs`/`package_template_form_id`.
+  In practice the ambient driver's first slice (§4) needed only
+  `procedure_inputs` made `pub` — Sandbox resolves a scalar radius with no
+  `world`/`actor`/`SceneActorBindings` dependency at all; a future leaf type
+  that needs a resolved *destination* (not just a radius) will need
+  `input_destination` exposed too, at which point its `SceneActorBindings`
+  dependency (alias targets only) becomes a real question to answer, not a
+  hypothetical one.
 - **Scene driver** (exists — `scene_package_system`): discovers work from
   `SceneEvent::ActionStarted`, tracks state in `ActiveScenePackageAction`
   (hard-required `scene_form_id`), reports completion through
   `SceneActionCompletionBatch`. Built for finite, choreographed actions.
-- **Ambient driver** (doesn't exist for the Skyrim+ shape): would discover
-  work from an actor's own `NpcRecord.ai_packages` at spawn (mirroring
-  today's FO3/FNV `active_package_is_sandbox`-style checks in `npc_spawn.rs`),
-  track state per-actor (no scene to key off), and never "complete" for
-  indefinite procedures the same way Sandbox/Wander don't today.
+- **Ambient driver** (exists for FO3/FNV since M42; extended to one
+  Skyrim+ leaf type by §4): discovers work from an actor's own
+  `NpcRecord.ai_packages` at spawn and at bounded re-evaluation points
+  (`AmbientPackageRuntime`/`ambient_ai_package_system`, M42.9), tracks state
+  per-actor (no scene to key off), and never "completes" for indefinite
+  procedures the same way Sandbox/Wander don't today. §4's fallback branch
+  is the first crack in "FO3/FNV shape only" — the driver itself didn't
+  need to change, only what it recognizes as a valid package.
 
 The two drivers stay separate — forcing ambient evaluation through
 `scene_package_system`'s Scene-shaped event/state model would be a worse fit
@@ -127,37 +133,62 @@ against real `Oblivion.esm` — don't assume the FO3/FNV path covers it.
 
 ---
 
-## 4. Proposed first slice: Skyrim+ ambient Sandbox
+## 4. First slice: Skyrim+ ambient Sandbox (shipped 2026-08-19)
 
-Scoped the same way as M42.3 (Wander) — one procedure, one opt-in flag, real
-data behind the choice:
+Scoped the same way as M42.3 (Wander) — one procedure, real data behind the
+choice. Turned out smaller than planned once the real code was in front of
+me rather than sketched from the investigation alone — two corrections
+worth recording:
 
-1. Extract `select_package` + the data-input resolvers out of
-   `crates/scripting/src/package.rs` into a form callable without
-   `SceneActorBindings` (the one real Scene dependency, used only for
-   quest-alias targets — punt alias resolution for ambient callers in this
-   slice, same v0-scoping call M42 already makes elsewhere).
-2. At `npc_spawn.rs`, alongside the existing `active_package_is_sandbox`
-   (FO3/FNV) check: for `bsver >= SKYRIM_SE` (or wherever the real gate
-   turns out to belong — Skyrim LE's bsver needs checking), walk the actor's
-   `ai_packages` through the extracted core, chase `package_template_form_id`
-   to find a `Sandbox`-leaf (`PackProcedure.procedure_type == "Sandbox"`,
-   pending confirmation that's the literal authored string — verify against
-   a real decoded tree before trusting it), and resolve its `Location`-typed
-   `PackDataInput` the same way `sandbox_seat_system` already wants one.
-3. Feed the result into the *existing* `SandboxBehavior` component — no
-   change to `sandbox_seat_system` itself, since it's already shape-agnostic
-   (§1).
-4. Gate behind a new flag (`BYRO_SKYRIM_SANDBOX` or folded into the existing
-   `BYRO_SANDBOX_SIT`, decide at implementation time), mirroring every other
-   M42 opt-in.
-5. Verify against real `Skyrim.esm` load: NPCs that previously got no
-   `SandboxBehavior` at all (any of the 307 `DefaultSandboxEditorLocation512`
-   holders) now do.
+- **No `bsver` gate needed.** `AmbientBehavior::from_package`
+  (`byroredux/src/npc_spawn/ai_package.rs`) was already 100% shape-driven,
+  not game-driven — its seven existing branches (`is_sandbox()`/etc.) all
+  read the FO3/FNV flat `procedure_type` byte, and FO3/FNV packages never
+  set `package_template_form_id`. So a single `else` fallback — "none of
+  the flat checks matched, try the Skyrim+ tree shape" — is both correct
+  and simpler than threading a version check through. FO3/FNV packages are
+  provably unaffected: for them `template` always equals `package` (no
+  template ref to chase), so the fallback's `template.procedures` is always
+  empty and it always returns `None`, same as before this change.
+- **No `SceneActorBindings` dependency to route around.** The concern was
+  real for the executor's *destination*-resolving paths
+  (`input_destination`/`input_target_entity`), but Sandbox only needs a
+  search *radius* — a scalar sitting directly on a `PackDataValue::Location`
+  input, resolvable with zero `world`/`actor` context. Only
+  `procedure_inputs` (`crates/scripting::package`, index-matching a leaf's
+  `data_input_indexes` against a package's `data_inputs`) needed to move
+  from private to `pub` — a one-line visibility change, same precedent as
+  `resolve_entity_by_global_form_id`.
+- **No new flag needed either.** Every `AmbientBehavior` variant already
+  attaches unconditionally at spawn; only the *consuming* system
+  (`sandbox_seat_system`) is opt-in, gated by the pre-existing
+  `BYRO_SANDBOX_SIT` in `boot.rs`. Attaching `SandboxBehavior` to more
+  actors doesn't need a new gate — the existing one already controls
+  whether anything acts on it.
+
+What shipped: `AmbientBehavior::from_package` gained a `template: &PackRecord`
+parameter (both call sites already had a packages catalog in scope to chase
+`package_template_form_id` against — `EsmIndex.packages` at spawn,
+`PackageRegistry` in the M42.9 reevaluation system) and a
+`from_skyrim_procedure_tree` fallback: find a `template.procedures` leaf
+with `procedure_type == "Sandbox"` (confirmed the literal authored string
+against real `Skyrim.esm` before writing any dispatch code — see the
+resolved-radius trace in §3), resolve its inputs against the *instance's*
+`data_inputs` via the newly-`pub` `procedure_inputs`, and pull a radius out
+of the first `PackDataValue::Location` found. Feeds the *existing*
+`SandboxBehavior` component unchanged — `sandbox_seat_system` doesn't know
+or care which shape produced its radius.
+
+Real-data verification (`real_skyrim_esm_ambient_packages_now_resolve_for_
+previously_blind_npcs`, `#[ignore]`d, run against real `Skyrim.esm`): of
+2,052 package-carrying NPCs, **855 now resolve some ambient behavior, 722 of
+those a Sandbox with a real radius** — all zero before this change.
 
 Explicitly **not** in this slice: Sleep/Eat leaves (same shape of work,
-follow-on), any other Skyrim+ procedure type, per-frame re-evaluation
-(ambient FO3/FNV packages don't have it either — not a new gap), and
+follow-on — the 855-vs-2,052 gap is largely these), any other Skyrim+
+procedure type, per-frame re-evaluation of the Skyrim+ shape specifically
+(the M42.9 `ambient_ai_package_system` reevaluation path already covers it
+for free, since it calls the same `AmbientBehavior::from_package`), and
 quest-alias-sourced ambient packages (Radiant Story injection onto arbitrary
 actors — a real Bethesda mechanic, `ai_packages_procedures.md` §Packages, but
 a separate resolution path from PKID-authored ones).
@@ -183,15 +214,18 @@ a separate resolution path from PKID-authored ones).
 
 ## 6. Rollout order
 
-1. Core extraction (§4, step 1) — mechanical, behavior-preserving; Scene path
-   keeps passing its existing tests untouched.
-2. Skyrim+ ambient Sandbox (§4, steps 2–5) — the reference slice.
-3. Skyrim+ ambient Sleep + Eat — same shape of work as step 2, once the
-   pattern is proven.
-4. Skyrim+ ambient Wander/Travel/Follow/Escort/Guard/Patrol equivalents, as
+1. ~~Skyrim+ ambient Sandbox~~ — **done (2026-08-19).** §4. `procedure_inputs`
+   made `pub`; `AmbientBehavior::from_package` gained the shape-fallback
+   branch. 4 unit tests (real-data-shaped fixtures) + 1 `#[ignore]`d
+   real-`Skyrim.esm` integration test, all green. Zero changes to
+   `sandbox_seat_system`, `crates/scripting::package`'s Scene driver, or any
+   FO3/FNV branch.
+2. Skyrim+ ambient Sleep + Eat — same shape of work as step 1, once demand
+   justifies it (855-vs-2,052 in §4's real-data check is largely this gap).
+3. Skyrim+ ambient Wander/Travel/Follow/Escort/Guard/Patrol equivalents, as
    real-data demand justifies each (mirroring how M42.3–M42.8 shipped one at
    a time against evidence, not speculatively).
-5. Oblivion `PACK` shape verification — settles §3's open question one way
+4. Oblivion `PACK` shape verification — settles §3's open question one way
    or the other before any Oblivion-specific ambient work is scoped.
 
 Each step ships independently behind `cargo test`; nothing here touches the
@@ -204,6 +238,10 @@ Vulkan render-pass / pipeline.
 - `crates/plugin/examples/pack_ambient_shape_survey.rs` — cross-references
   PKID/SCEN package references against `PackRecord` shape; rerun against
   Update.esm/Dawnguard.esm/other titles to extend §3's coverage.
+- `byroredux::npc_spawn::ai_package::tests::
+  real_skyrim_esm_ambient_packages_now_resolve_for_previously_blind_npcs`
+  (`#[ignore]`d — `cargo test -p byroredux -- --ignored`) — real-`Skyrim.esm`
+  regression guard on the §4 slice, prints the live resolved/total counts.
 - A `pack.ambient` byro-dbg command (proposed, not built) — dump a live
   actor's resolved ambient package + leaf, the runtime analogue of `ragdoll
   <id>` / `env.dump` in the sibling layers.
