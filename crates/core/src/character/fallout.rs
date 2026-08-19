@@ -32,6 +32,7 @@ use super::leveling::LevelingModel;
 use super::resistance::Affliction;
 use super::ruleset::CharacterRuleset;
 use super::skill::SkillSet;
+use crate::ecs::resource::Resource;
 
 #[inline]
 fn av(form_id: u32) -> DerivedInput {
@@ -81,6 +82,41 @@ fn add_fnv_fo3_shared<F: Fn(&str) -> Option<u32>>(rs: &mut CharacterRuleset, res
             rs.push_derived(out, aff.fo3_fnv_resistance_formula(gov));
         }
     }
+}
+
+/// Per-game resolved AVIF id for the AVIF-backed additive Melee Damage row
+/// (`STR × 0.5` on FO3/FNV) — a `Resource`, mirroring
+/// [`super::regen::PoolRegenConfig`]'s "pre-resolve once at load, consume by
+/// id at use-time" shape. `CharacterRuleset` only stores `(output_avif,
+/// formula)` pairs post-construction (editor-id strings are deliberately
+/// discarded — Dimension 1's "output keys are AVIF FormIDs in global space"
+/// invariant), so a combat-time consumer needs its own copy of the id to
+/// look the row back up with [`CharacterRuleset::derived_value`].
+///
+/// #3092 — the combat consumer of this (`byroredux/src/combat.rs`'s
+/// `attack_damage`) adds the resolved value as a bonus on top of weapon/
+/// unarmed damage, matching the capture document's "additive bonus to Melee
+/// Weapon damage" wording — it does not replace the flat baseline the way a
+/// literal reading of "route through CharacterRuleset, falling back to
+/// UNARMED_DAMAGE" might suggest; the source is explicit that this is an
+/// addition, not a substitution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MeleeDamageConfig {
+    pub melee_damage_avif: u32,
+}
+
+impl Resource for MeleeDamageConfig {}
+
+/// Resolve [`MeleeDamageConfig`] — `None` is not an error, just "this game
+/// authors no `MeleeDamage` AVIF" (FO4, TES; see [`fallout4_ruleset`]'s
+/// docstring for why FO4 has none), the same resolve-or-skip contract every
+/// `push_derived` call in this module already uses. Deliberately has no
+/// per-game branch: whether this resolves is entirely a function of what the
+/// loaded master authors, not of which game it is (CHARAL doctrine — the
+/// per-game seam is data, not a branch in a consumer).
+#[must_use]
+pub fn melee_damage_config<F: Fn(&str) -> Option<u32>>(resolve: F) -> Option<MeleeDamageConfig> {
+    resolve("MeleeDamage").map(|melee_damage_avif| MeleeDamageConfig { melee_damage_avif })
 }
 
 /// FO4 — SPECIAL-only (no skills). Health/AP player-only (NPCs ship baked
@@ -209,6 +245,26 @@ mod tests {
     /// FO4's authored AVIF set is the shared fixture minus `MeleeDamage`.
     fn fo4_full(id: &str) -> Option<u32> {
         (id != "MeleeDamage").then(|| full(id)).flatten()
+    }
+
+    /// Regression for #3092. `MeleeDamageConfig` must resolve on FO3/FNV's
+    /// AVIF set (they author `MeleeDamage`) and must NOT resolve on FO4's
+    /// (it doesn't) — deliberately checked via the same `resolve` closures
+    /// the rulesets themselves use, with no game-identity branch in
+    /// `melee_damage_config` itself.
+    #[test]
+    fn melee_damage_config_resolves_only_where_the_avif_is_authored() {
+        assert_eq!(
+            melee_damage_config(full),
+            Some(MeleeDamageConfig {
+                melee_damage_avif: 0x2D2
+            })
+        );
+        assert_eq!(
+            melee_damage_config(fo4_full),
+            None,
+            "vanilla FO4 authors no MeleeDamage AVIF (#3093)"
+        );
     }
 
     #[test]

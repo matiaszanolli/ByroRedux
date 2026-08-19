@@ -215,6 +215,19 @@ pub fn build_character_ruleset(
     index.character_rules.build_ruleset(resolve, gmst)
 }
 
+/// Build the per-game [`MeleeDamageConfig`](byroredux_core::character::MeleeDamageConfig)
+/// resource — the resolved AVIF id for the AVIF-backed additive Melee Damage
+/// row (`STR × 0.5` on FO3/FNV, #3092). `None` means this game authors no
+/// `MeleeDamage` AVIF (FO4, TES) — the combat consumer treats that exactly
+/// like a missing [`CharacterRuleset`](byroredux_core::character::CharacterRuleset)
+/// row: fall back to the flat weapon/unarmed baseline.
+pub fn build_melee_damage_config(
+    index: &EsmIndex,
+) -> Option<byroredux_core::character::MeleeDamageConfig> {
+    let resolve = |editor_id: &str| index.actor_value_form_id(editor_id);
+    byroredux_core::character::melee_damage_config(resolve)
+}
+
 /// #1698 — keyframe a live NPC's ragdoll bones.
 ///
 /// Skyrim (and FO3/FNV/Oblivion) author each skeleton ragdoll bone's bhk body

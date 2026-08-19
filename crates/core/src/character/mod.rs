@@ -67,7 +67,9 @@ pub use components::{
     Background, CharacterLevel, FactionReputation, FactionStanding, PerkRank, Perks,
 };
 pub use derived::{DerivedInput, DerivedOutput, DerivedScope, DerivedStatFormula, RoundMode};
-pub use fallout::{fallout3_ruleset, fallout4_ruleset, falloutnv_ruleset};
+pub use fallout::{
+    fallout3_ruleset, fallout4_ruleset, falloutnv_ruleset, melee_damage_config, MeleeDamageConfig,
+};
 pub use leveling::{LevelReward, LevelingModel};
 pub use profile::{CharacterRulesProfile, NpcHealthCurve, NpcStatModel};
 pub use regen::{

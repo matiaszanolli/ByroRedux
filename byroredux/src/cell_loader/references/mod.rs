@@ -276,6 +276,20 @@ pub(super) fn load_references_budgeted(
                 world.insert_resource(rs);
             }
         }
+        // #3092 — same idempotent-once construction for the Melee Damage
+        // AVIF id `byroredux/src/combat.rs`'s `attack_damage` needs to look
+        // the CharacterRuleset row above back up at combat time. Absent on
+        // any game that authors no `MeleeDamage` AVIF (FO4, TES) — combat
+        // just sees no config and swings at the flat baseline, same as
+        // before this fix.
+        if world
+            .try_resource::<byroredux_core::character::MeleeDamageConfig>()
+            .is_none()
+        {
+            if let Some(config) = crate::npc_spawn::build_melee_damage_config(record_index) {
+                world.insert_resource(config);
+            }
+        }
         // Process-lifetime cache of parsed-and-imported NIF scene data
         // (`NifImportRegistry`, #381). Each unique mesh is parsed exactly
         // once across the entire process — subsequent placements of the

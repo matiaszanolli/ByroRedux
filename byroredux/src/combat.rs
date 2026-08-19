@@ -7,6 +7,7 @@
 //! transition. Transient HitEvent cleanup remains in the scripting Late stage.
 
 use byroredux_core::animation::AnimationPlayer;
+use byroredux_core::character::{CharacterLevel, CharacterRuleset, MeleeDamageConfig};
 use byroredux_core::ecs::components::{ActorValues, ActorVitals, Dead, EquippedWeapon};
 use byroredux_core::ecs::storage::{Component, EntityId};
 use byroredux_core::ecs::{Resource, World};
@@ -272,9 +273,52 @@ fn resolve_actor_root(world: &World, collider_entity: EntityId) -> Option<Entity
 }
 
 fn attack_damage(world: &World, aggressor: EntityId) -> f32 {
-    world
-        .get::<EquippedWeapon>(aggressor)
-        .map_or(UNARMED_DAMAGE, |weapon| weapon.damage.max(0.0))
+    match world.get::<EquippedWeapon>(aggressor) {
+        // The capture document is explicit that Melee Damage is "an
+        // additive bonus to Melee Weapon damage" and that "Unarmed has its
+        // own stat" (Unarmed Damage, a different AVIF-governed formula) —
+        // the two are gated on whether a weapon is actually equipped, not
+        // both stacked onto every swing regardless. Wiring Unarmed Damage
+        // itself is a separate, deferred gap (#3092's own suggested fix only
+        // names Melee Damage); UNARMED_DAMAGE stays the flat engine baseline
+        // it always was for the no-weapon case.
+        Some(weapon) => weapon.damage.max(0.0) + melee_damage_charal_bonus(world, aggressor),
+        None => UNARMED_DAMAGE,
+    }
+}
+
+/// CHARAL-derived additive Melee Damage bonus on top of a weapon's own
+/// authored damage (#3092) — FO3/FNV `STR × 0.5`, per
+/// `docs/engine/charal-fnv-fo3-ruleset.md`'s "an **additive** bonus to Melee
+/// Weapon damage" (matching how `resolve_inherited_stats`/similar CHARAL
+/// consumers degrade: a missing piece means zero contribution, never a
+/// panic). `0.0` — not an error — whenever any link in the chain is
+/// unavailable: no [`MeleeDamageConfig`] (the loaded game authors no
+/// `MeleeDamage` AVIF at all — FO4, TES), no live [`CharacterRuleset`], no
+/// `ActorValues` on the aggressor (a non-actor swinging, or a test fixture
+/// that doesn't need this), or the row simply doesn't resolve for this
+/// actor. `DerivedOutput::Multiplier` (FO4's `×(1 + STR/10)`) still has no
+/// reader — vanilla FO4 authors no AVIF to key a derived row on at all (see
+/// `fallout4_ruleset`'s docstring, #3093), so there is nothing here to route
+/// it through yet; that gap stays open and undocumented-as-solved rather
+/// than papered over with an invented lookup.
+fn melee_damage_charal_bonus(world: &World, aggressor: EntityId) -> f32 {
+    let Some(config) = world.try_resource::<MeleeDamageConfig>() else {
+        return 0.0;
+    };
+    let config = *config;
+    let Some(ruleset) = world.try_resource::<CharacterRuleset>() else {
+        return 0.0;
+    };
+    let Some(avs) = world.get::<ActorValues>(aggressor) else {
+        return 0.0;
+    };
+    let level = world
+        .get::<CharacterLevel>(aggressor)
+        .map_or(1, |level| level.level);
+    ruleset
+        .derived_value(config.melee_damage_avif, &avs, level)
+        .unwrap_or(0.0)
 }
 
 /// Weapon-scaled melee reach. `EquippedWeapon::reach` is a multiplier on
@@ -457,6 +501,114 @@ mod tests {
         assert_eq!(
             world.get::<ActorValues>(target).unwrap().current(0x2D4),
             12.0
+        );
+    }
+
+    /// Regression for #3092. `attack_damage` bypassed CHARAL entirely —
+    /// Strength contributed nothing to melee damage on any game. Wire a
+    /// minimal FO3/FNV-shaped ruleset (`MeleeDamage = STR × 0.5`) and confirm
+    /// it lands as a bonus ON TOP of the flat weapon/unarmed baseline, per
+    /// the capture document's "additive bonus" wording — not a replacement.
+    #[test]
+    fn attack_damage_adds_the_charal_melee_damage_bonus() {
+        use byroredux_core::character::{
+            CharacterRuleset, DerivedInput, DerivedStatFormula, LevelingModel,
+        };
+
+        const STRENGTH: u32 = 0x05;
+        const MELEE_DAMAGE: u32 = 0x2D2;
+
+        let mut world = World::new();
+        world.register::<ActorValues>();
+        world.register::<EquippedWeapon>();
+
+        let mut rs = CharacterRuleset::new(LevelingModel::FNV);
+        rs.push_derived(
+            MELEE_DAMAGE,
+            DerivedStatFormula::affine(DerivedInput::actor_value(STRENGTH), 0.5, 0.0),
+        );
+        world.insert_resource(rs);
+        world.insert_resource(MeleeDamageConfig {
+            melee_damage_avif: MELEE_DAMAGE,
+        });
+
+        let aggressor = world.spawn();
+        world.insert(
+            aggressor,
+            EquippedWeapon {
+                inventory_index: byroredux_core::ecs::components::InventoryIndex(0),
+                base_form_id: 0x1CB64,
+                damage: 18.0,
+                reach: 0.0,
+                speed: 0.0,
+            },
+        );
+        world.insert(aggressor, ActorValues::from_pairs([(STRENGTH, 10.0)]));
+
+        // 18.0 weapon damage + (10.0 STR × 0.5) = 23.0, not 18.0.
+        assert_eq!(attack_damage(&world, aggressor), 23.0);
+    }
+
+    /// Companion to the above: no `MeleeDamageConfig` resource at all (FO4,
+    /// TES, or simply not yet loaded) must fall back to the exact pre-#3092
+    /// flat baseline, not panic or silently zero the weapon's own damage.
+    #[test]
+    fn attack_damage_falls_back_to_flat_baseline_without_a_melee_damage_config() {
+        let mut world = World::new();
+        world.register::<ActorValues>();
+        world.register::<EquippedWeapon>();
+        let aggressor = world.spawn();
+        world.insert(
+            aggressor,
+            EquippedWeapon {
+                inventory_index: byroredux_core::ecs::components::InventoryIndex(0),
+                base_form_id: 0x1CB64,
+                damage: 18.0,
+                reach: 0.0,
+                speed: 0.0,
+            },
+        );
+        assert_eq!(attack_damage(&world, aggressor), 18.0);
+
+        let unarmed = world.spawn();
+        assert_eq!(attack_damage(&world, unarmed), UNARMED_DAMAGE);
+    }
+
+    /// Regression for #3092's gating. The capture document is explicit that
+    /// Melee Damage is a bonus to *Melee Weapon* damage and that "Unarmed
+    /// has its own stat" — a fully-wired CHARAL bonus must still NOT apply
+    /// to a swing with no equipped weapon, even when the aggressor's own
+    /// Strength would make it nonzero if it did.
+    #[test]
+    fn attack_damage_does_not_apply_the_melee_bonus_to_unarmed_swings() {
+        use byroredux_core::character::{
+            CharacterRuleset, DerivedInput, DerivedStatFormula, LevelingModel,
+        };
+
+        const STRENGTH: u32 = 0x05;
+        const MELEE_DAMAGE: u32 = 0x2D2;
+
+        let mut world = World::new();
+        world.register::<ActorValues>();
+        world.register::<EquippedWeapon>();
+
+        let mut rs = CharacterRuleset::new(LevelingModel::FNV);
+        rs.push_derived(
+            MELEE_DAMAGE,
+            DerivedStatFormula::affine(DerivedInput::actor_value(STRENGTH), 0.5, 0.0),
+        );
+        world.insert_resource(rs);
+        world.insert_resource(MeleeDamageConfig {
+            melee_damage_avif: MELEE_DAMAGE,
+        });
+
+        let unarmed = world.spawn();
+        world.insert(unarmed, ActorValues::from_pairs([(STRENGTH, 10.0)]));
+
+        assert_eq!(
+            attack_damage(&world, unarmed),
+            UNARMED_DAMAGE,
+            "no equipped weapon means no Melee Damage bonus, regardless of Strength"
         );
     }
 
