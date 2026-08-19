@@ -286,11 +286,14 @@ pub(crate) fn translate_texture_only_material(texture_path: Option<String>) -> M
         // clamping the `Material::default()` values through unchanged.
         metalness: f32::NAN,
         roughness: f32::NAN,
-        // `Material::default()` is 1.0 here, which is right for its own
-        // purpose — it mirrors the neutral value `BSShaderPPLighting`
-        // authors on nearly every FNV surface. These populations have no
-        // shader property at all, so nothing authored environment mapping
-        // for them and 0.0 is the honest input.
+        // `Material::default()`'s `env_map_scale` is 1.0 — the raw
+        // on-disk `BSShaderPPLighting` field value before #2315 gated its
+        // forwarding on an authored environment-mapping flag (see
+        // `classify_pbr_keyword`'s env-map arm, #2555, for the current
+        // reachability). That default doesn't apply here regardless:
+        // these populations have no shader property at all, so nothing
+        // authored environment mapping for them and 0.0 is the honest
+        // input.
         //
         // Load-bearing twice over. It steers the classifier: a non-zero
         // scale takes `classify_pbr_keyword`'s env_map_scale arm (roughness

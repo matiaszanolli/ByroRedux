@@ -754,9 +754,18 @@ pub fn classify_pbr_keyword(inputs: PbrClassifierInputs<'_>) -> PbrMaterial {
     }
 
     // env_map_scale arm — base roughness for non-keyword surfaces.
-    // `BSShaderPPLighting` authors `env_map_scale = 1.0` as the neutral
-    // default on nearly every FNV surface, so this arm catches the vast
-    // majority of interior content.
+    // Pre-#2315, `BSShaderPPLighting`'s on-disk `env_map_scale = 1.0`
+    // reached this arm unconditionally, making it FNV's majority path.
+    // #2315 gated the FO3/FNV legacy import at the authored
+    // Environment_Mapping/Eye_Environment_Mapping/Window_Environment_Mapping
+    // shader-flag bits (`legacy_env_map_scale`,
+    // `crates/nif/src/import/material/legacy_properties.rs`) — most
+    // surfaces don't author those, so this arm is now a **minority** path
+    // on FO3/FNV content (measured: `env_map_scale = 0.00` on 15 of 18
+    // sampled FNV meshes, #2555). Kept here rather than removed: it's
+    // still the correct classification for the surfaces that DO author
+    // real environment mapping (glass, eyes, windows), and other games'
+    // paths may reach it with different reachability than FO3/FNV's.
     //
     // METALNESS from specular luminance: `NiMaterialProperty.specular`
     // encodes the surface's Phong specular tint. White/grey (lum > 0.6)
@@ -1208,9 +1217,15 @@ mod tests {
     }
 
     /// Canonical-material-pass guard (2026-05-27, post-"chrome thugs"
-    /// revert). `env_map_scale = 1.0` is the neutral `BSShaderPPLighting`
-    /// default on nearly every FNV surface and MUST clamp to the matte
-    /// 0.8 ceiling — NOT fall through to the glossiness arm. A brief
+    /// revert). At the time this landed, `env_map_scale = 1.0` was the
+    /// `BSShaderPPLighting` on-disk default reaching nearly every FNV
+    /// surface unconditionally; #2315 later gated that forwarding on an
+    /// authored environment-mapping flag, making this input shape a
+    /// minority case today (see #2555) — but the invariant this test
+    /// pins is still correct and still needed for whichever surfaces
+    /// (real env-mapped or otherwise) DO carry this value: it MUST clamp
+    /// to the matte 0.8 ceiling — NOT fall through to the glossiness arm.
+    /// A brief
     /// experiment gated this at `> 1.0` to "restore the glossiness
     /// gradient"; that mapped gloss-60 cloth to roughness 0.30, which
     /// engages the RT reflection path (`< 0.6`) and rendered Chairman
