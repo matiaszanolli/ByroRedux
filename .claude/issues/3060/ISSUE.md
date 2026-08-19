@@ -1,4 +1,12 @@
-# PERF-D1-03: refresh_action_state clones two HashSets per frame to work around a resource-guard overlap
+# PERF-D1-03: refresh_action_state clones two HashSets per frame
+
+**Issue**: #3060
+**Severity**: LOW
+**Labels**: `low,performance,bug`
+**Source report**: `docs/audits/AUDIT_PERFORMANCE_2026-08-16.md`
+**Filed**: 2026-08-17 via `/audit-publish`
+
+---
 
 Filed from `docs/audits/AUDIT_PERFORMANCE_2026-08-16.md` (Dimension 1 — CPU hot paths).
 
@@ -36,3 +44,6 @@ Scope the two guards so they do not overlap — read what is needed into locals 
 - [ ] **SIBLING**: Fixed with #3058/#3059 as one `interaction.rs` pass
 - [ ] **TESTS**: Existing interaction tests pass; a bench confirms the clones are gone
 
+---
+
+*Immutable snapshot of the issue as filed. GitHub is authoritative for current state — query `gh issue view 3060 --json state` when live state is needed.*

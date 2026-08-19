@@ -1,5 +1,9 @@
 # REN-D16-04: sampleLocalMedium's cluster lookup has only a single shader early-out protecting against a stale cell's smoke replaying
 
+Severity: medium
+Source audit: docs/audits/AUDIT_RENDERER_2026-08-02.md
+GitHub: https://github.com/matiaszanolli/ByroRedux/issues/2242
+
 **Dimension**: 16 (Volumetrics)
 **Location**: `crates/renderer/shaders/volumetrics_inject.comp` (`sampleLocalMedium`, line 165)
 **Status**: NEW
@@ -13,4 +17,3 @@
 ## Completeness Checks
 - [ ] **SIBLING**: Same pattern checked in related files (other shader types, other block parsers)
 - [ ] **TESTS**: A regression test pins this specific fix
-

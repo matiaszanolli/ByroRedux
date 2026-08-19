@@ -1,4 +1,12 @@
-# PERF-D1-01: target_has_line_of_sight rebuilds an O(all-rigid-bodies) Vec and linear-scans it, every frame the crosshair is on an activator
+# PERF-D1-01: target_has_line_of_sight rebuilds an O(all-rigid-bodies) Vec every frame
+
+**Issue**: #3058
+**Severity**: MEDIUM
+**Labels**: `medium,performance,bug`
+**Source report**: `docs/audits/AUDIT_PERFORMANCE_2026-08-16.md`
+**Filed**: 2026-08-17 via `/audit-publish`
+
+---
 
 Filed from `docs/audits/AUDIT_PERFORMANCE_2026-08-16.md` (Dimension 1 — CPU hot paths).
 
@@ -42,3 +50,6 @@ Measure first: this is a hot-path claim, and the fix is only worth landing if th
 - [ ] **CORRECTNESS**: LOS results are identical before and after
 - [ ] **TESTS**: A regression test pins LOS behaviour; a bench pins the allocation count
 
+---
+
+*Immutable snapshot of the issue as filed. GitHub is authoritative for current state — query `gh issue view 3058 --json state` when live state is needed.*
