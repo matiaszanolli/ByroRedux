@@ -340,7 +340,26 @@ fn extract_from_classic(
     ) * scale;
     let body_rotation = havok_quat_to_engine(body.rotation);
 
+    // #2862 SIBLING — same pattern as the `BhkTransformShape` resolve arm:
+    // `body.translation`/`body.rotation` are raw untrusted archive fields
+    // with no parse-time validation, and `havok_quat_to_engine` only
+    // `.normalize()`s (propagates NaN, doesn't reject it). A non-finite
+    // CInfo offset must not reach a `CollisionShape::Compound` child
+    // transform. `extract_ragdoll` (ragdoll.rs) already guards this exact
+    // shape and drops the whole body on failure (#1534); here the CInfo
+    // offset is an optional correction on top of an otherwise-valid
+    // `shape`, so dropping just the offset (keep the unwrapped shape) is
+    // the proportionate response rather than discarding a good collider.
+    let offset_is_finite = body_translation.is_finite() && body_rotation.is_finite();
+    if !offset_is_finite {
+        log::warn!(
+            "extract_from_classic: body {body_idx}'s bhkRigidBodyT CInfo offset is \
+             non-finite (translation={body_translation:?} rotation={body_rotation:?}) — \
+             dropping the offset, keeping the base shape",
+        );
+    }
     let has_offset = body.is_t
+        && offset_is_finite
         && (body_translation.length_squared() > 1e-6
             || (body_rotation - Quat::IDENTITY).length_squared() > 1e-6);
     if has_offset {
@@ -721,8 +740,8 @@ mod dispatch_tests {
     //! trimesh fallback.
     use super::*;
     use crate::blocks::collision::{
-        BhkCollisionObject, BhkNPCollisionObject, BhkPCollisionObject, BhkSphereShape,
-        BhkSystemBinary,
+        BhkCollisionObject, BhkNPCollisionObject, BhkPCollisionObject, BhkRigidBody,
+        BhkSphereShape, BhkSystemBinary,
     };
     use crate::blocks::NiObject;
     use crate::types::BlockRef;
@@ -915,6 +934,123 @@ mod dispatch_tests {
         assert_eq!(
             examine_collision_kind(&scene, BlockRef(0u32)),
             CollisionAuthoring::Unrecognised,
+        );
+    }
+
+    // ── #2862 SIBLING — extract_from_classic's CInfo offset guard ──
+
+    fn rigid_body_at(
+        shape_ref: u32,
+        translation: [f32; 4],
+        rotation: [f32; 4],
+        is_t: bool,
+    ) -> Box<dyn NiObject> {
+        Box::new(BhkRigidBody {
+            shape_ref: BlockRef(shape_ref),
+            havok_filter: 0,
+            is_t,
+            translation,
+            rotation,
+            linear_velocity: [0.0; 4],
+            angular_velocity: [0.0; 4],
+            inertia_tensor: [0.0; 12],
+            center_of_mass: [0.0; 4],
+            mass: 5.0,
+            linear_damping: 0.1,
+            angular_damping: 0.05,
+            friction: 0.3,
+            restitution: 0.4,
+            max_linear_velocity: 0.0,
+            max_angular_velocity: 0.0,
+            penetration_depth: 0.0,
+            motion_type: 1,
+            deactivator_type: 0,
+            solver_deactivation: 0,
+            quality_type: 0,
+            constraint_refs: Vec::new(),
+            body_flags: 0,
+        })
+    }
+
+    /// A `bhkRigidBodyT` with a non-finite CInfo translation must not
+    /// wrap the shape in a `Compound` carrying a NaN child transform —
+    /// same producer-side gap the `BhkTransformShape` resolve arm had
+    /// (#2862). The base shape (independently valid) must still come
+    /// back, just without the corrupt offset applied.
+    #[test]
+    fn non_finite_cinfo_translation_drops_the_offset_not_the_shape() {
+        let mut scene = empty_scene();
+        scene.blocks.push(classic_collision(BlockRef(1u32))); // [0]
+        scene.blocks.push(rigid_body_at(
+            2,
+            [f32::NAN, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+            true, // is_t — CInfo offset would normally activate
+        )); // [1]
+        scene.blocks.push(Box::new(BhkSphereShape {
+            material: 0,
+            radius: 1.0,
+        })); // [2]
+
+        let (shape, _body) =
+            extract_collision(&scene, BlockRef(0u32)).expect("base shape must still resolve");
+        assert!(
+            !matches!(shape, CollisionShape::Compound { .. }),
+            "a non-finite CInfo offset must be dropped, not wrapped into a Compound: {shape:?}"
+        );
+        assert!(
+            matches!(shape, CollisionShape::Ball { .. }),
+            "the underlying sphere shape must come through unwrapped: {shape:?}"
+        );
+    }
+
+    /// A non-finite CInfo *rotation* must be caught the same way as a
+    /// non-finite translation above.
+    #[test]
+    fn non_finite_cinfo_rotation_drops_the_offset_not_the_shape() {
+        let mut scene = empty_scene();
+        scene.blocks.push(classic_collision(BlockRef(1u32))); // [0]
+        scene.blocks.push(rigid_body_at(
+            2,
+            [5.0, 0.0, 0.0, 0.0],
+            [f32::INFINITY, 0.0, 0.0, 1.0],
+            true,
+        )); // [1]
+        scene.blocks.push(Box::new(BhkSphereShape {
+            material: 0,
+            radius: 1.0,
+        })); // [2]
+
+        let (shape, _body) =
+            extract_collision(&scene, BlockRef(0u32)).expect("base shape must still resolve");
+        assert!(
+            !matches!(shape, CollisionShape::Compound { .. }),
+            "a non-finite CInfo rotation must be dropped, not wrapped into a Compound: {shape:?}"
+        );
+    }
+
+    /// Sanity check alongside the two guards above: a genuinely
+    /// finite, non-trivial CInfo offset on a `bhkRigidBodyT` must still
+    /// wrap the shape in a `Compound` exactly as before.
+    #[test]
+    fn finite_cinfo_offset_still_wraps_in_compound() {
+        let mut scene = empty_scene();
+        scene.blocks.push(classic_collision(BlockRef(1u32))); // [0]
+        scene.blocks.push(rigid_body_at(
+            2,
+            [5.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+            true,
+        )); // [1]
+        scene.blocks.push(Box::new(BhkSphereShape {
+            material: 0,
+            radius: 1.0,
+        })); // [2]
+
+        let (shape, _body) = extract_collision(&scene, BlockRef(0u32)).expect("shape must resolve");
+        assert!(
+            matches!(shape, CollisionShape::Compound { .. }),
+            "a finite non-trivial CInfo offset must still produce a Compound: {shape:?}"
         );
     }
 }

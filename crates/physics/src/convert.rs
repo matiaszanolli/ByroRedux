@@ -172,7 +172,27 @@ fn flatten_to_parts(
     match shape {
         CollisionShape::Compound { children } => {
             for (t, r, child) in children {
-                let composed = parent_iso * iso_from_trs(*t * scale, *r);
+                debug_assert!(
+                    t.is_finite() && r.is_finite(),
+                    "canonical Compound child transform must be finite, got t={t:?} r={r:?}"
+                );
+                // #2862 — release-profile backstop: the debug_assert!
+                // above is compiled out of release builds, so it can't
+                // be the only guard. Every current producer of a
+                // Compound child transform already rejects a non-finite
+                // (t, r) at its own construction site (BhkTransformShape
+                // — #2862), but this is the single choke point every
+                // producer's output passes through before reaching
+                // Rapier, so it holds even for a future producer that
+                // forgets to. NaN/±Inf here would poison the composed
+                // isometry and give Rapier's broadphase a NaN AABB for
+                // the whole island. Neutralize to identity rather than
+                // drop the child outright — same "clamp to a safe value,
+                // don't discard the shape" posture as the Cuboid extent
+                // clamp above (#2543).
+                let safe_t = if t.is_finite() { *t } else { Vec3::ZERO };
+                let safe_r = if r.is_finite() { *r } else { Quat::IDENTITY };
+                let composed = parent_iso * iso_from_trs(safe_t * scale, safe_r);
                 flatten_to_parts(child, composed, scale, cfg, out);
             }
         }
@@ -416,6 +436,60 @@ mod tests {
         let c = parts[0].1.as_capsule().unwrap();
         assert_eq!(c.radius, 1.5);
         assert_eq!(c.half_height(), 5.0);
+    }
+
+    /// Regression for #2862: `flatten_to_parts`'s `Compound` arm is the
+    /// single choke point every collision producer's child transform
+    /// passes through before reaching Rapier. In debug builds a
+    /// non-finite (t, r) must trip the canonical-boundary assertion —
+    /// same posture as the Cuboid extent guard above.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "canonical Compound child transform")]
+    fn non_finite_compound_child_transform_trips_canonical_boundary_assertion() {
+        let shape = CollisionShape::Compound {
+            children: vec![(
+                Vec3::new(f32::NAN, 0.0, 0.0),
+                Quat::IDENTITY,
+                Box::new(CollisionShape::Ball { radius: 0.5 }),
+            )],
+        };
+        let _ = parts(&shape);
+    }
+
+    /// Regression for #2862: the release-build backstop. With
+    /// `debug_assert!` compiled out, a non-finite Compound child
+    /// translation/rotation (e.g. from `BhkTransformShape`'s corrupt-4x4
+    /// case, or any future Compound producer) must be neutralized to
+    /// identity rather than reaching Rapier's isometry composition —
+    /// the exact scenario the bare `debug_assert!` alone couldn't guard
+    /// in release. The child shape itself must still come through
+    /// (neutralize the offset, don't drop the shape).
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn non_finite_compound_child_transform_neutralizes_instead_of_reaching_rapier() {
+        let shape = CollisionShape::Compound {
+            children: vec![(
+                Vec3::new(f32::NAN, f32::INFINITY, 0.0),
+                Quat::from_xyzw(f32::NAN, 0.0, 0.0, f32::NAN),
+                Box::new(CollisionShape::Ball { radius: 0.5 }),
+            )],
+        };
+        let parts = parts(&shape);
+        assert_eq!(parts.len(), 1, "the child ball must still come through");
+        let iso = parts[0].0;
+        assert!(
+            iso.translation.vector.x.is_finite()
+                && iso.translation.vector.y.is_finite()
+                && iso.translation.vector.z.is_finite(),
+            "non-finite compound child translation must not reach Rapier: {:?}",
+            iso.translation
+        );
+        assert!(
+            iso.rotation.into_inner().coords.iter().all(|c| c.is_finite()),
+            "non-finite compound child rotation must not reach Rapier: {:?}",
+            iso.rotation
+        );
     }
 
     #[test]

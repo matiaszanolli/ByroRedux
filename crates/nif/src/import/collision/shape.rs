@@ -253,6 +253,18 @@ fn resolve_shape_inner(
     if let Some(s) = block.as_any().downcast_ref::<BhkTransformShape>() {
         let child = resolve_shape(scene, s.shape_ref, visited)?;
         let (translation, rotation) = decompose_havok_matrix(&s.transform, scale);
+        // #2862 (PHYS-D1-03) — every other resolve arm funnels its output
+        // through `finite()`/`finite_vec()` before it reaches a
+        // `CollisionShape` field; this was the one that didn't.
+        // `BhkTransformShape::parse` reads all 16 matrix words with no
+        // validation, and `decompose_havok_matrix` only `.normalize()`s
+        // (which propagates NaN rather than rejecting it), so a NaN/±Inf
+        // in the authored 4x4 reaches here unguarded. Drop to the
+        // trimesh fallback rather than hand Rapier a NaN compound-child
+        // isometry — same posture as the `ConvexHull` vertex guard above.
+        if !translation.is_finite() || !rotation.is_finite() {
+            return None;
+        }
         return Some(CollisionShape::Compound {
             children: vec![(translation, rotation, Box::new(child))],
         });
@@ -728,8 +740,8 @@ mod cycle_tests {
     use crate::blocks::collision::{
         BhkAabbPhantom, BhkBoxShape, BhkCompressedMeshShapeData, BhkConvexListShape,
         BhkConvexSweepShape, BhkListShape, BhkMeshShape, BhkMultiSphereShape, BhkNiTriStripsShape,
-        BhkPackedNiTriStripsShape, BhkSimpleShapePhantom, BhkSphereShape, CmsChunk,
-        HkPackedNiTriStripsData, PackedTriangle,
+        BhkPackedNiTriStripsShape, BhkSimpleShapePhantom, BhkSphereShape, BhkTransformShape,
+        CmsChunk, HkPackedNiTriStripsData, PackedTriangle,
     };
     use crate::blocks::tri_shape::NiTriStripsData;
     use crate::blocks::NiObject;
@@ -1935,6 +1947,98 @@ mod cycle_tests {
         assert!(
             resolve_shape(&scene, BlockRef(1u32), &mut visited).is_none(),
             "bhkAabbPhantom must drop (trigger volume, not a solid collider)"
+        );
+    }
+
+    // ── #2862 (PHYS-D1-03) — BhkTransformShape finite guard ────────
+
+    #[test]
+    fn bhk_transform_shape_with_nan_matrix_returns_none() {
+        // Scene:
+        //   [0] BhkTransformShape { shape_ref=1, transform = identity
+        //       with a NaN translation X }
+        //   [1] BhkSphereShape (otherwise-valid child)
+        // Every other resolve arm funnels its output through a finite
+        // guard before it reaches a CollisionShape field; this pins the
+        // one that pre-fix didn't. A NaN in the authored 4x4 must drop
+        // to None (trimesh fallback upstream) rather than reach a
+        // Compound child transform.
+        let mut scene = NifScene::default();
+        scene.havok_scale = 1.0;
+        let mut transform = [[0.0f32; 4]; 4];
+        transform[0][0] = 1.0;
+        transform[1][1] = 1.0;
+        transform[2][2] = 1.0;
+        transform[3][3] = 1.0;
+        transform[3][0] = f32::NAN; // corrupt translation X
+        scene.blocks.push(Box::new(BhkTransformShape {
+            shape_ref: BlockRef(1u32),
+            material: 0,
+            radius: 0.0,
+            transform,
+        })); // [0]
+        scene.blocks.push(sphere_shape(1.0)); // [1]
+
+        let mut visited = HashSet::new();
+        assert!(
+            resolve_shape(&scene, BlockRef(0u32), &mut visited).is_none(),
+            "NaN in the authored 4x4 must drop to None, not reach a Compound child"
+        );
+    }
+
+    #[test]
+    fn bhk_transform_shape_with_infinite_rotation_returns_none() {
+        // Same shape as above, but the corruption is in the rotation
+        // block (upper 3x3) rather than the translation column —
+        // proving the guard covers both halves of decompose_havok_matrix's
+        // output, not just translation.
+        let mut scene = NifScene::default();
+        scene.havok_scale = 1.0;
+        let mut transform = [[0.0f32; 4]; 4];
+        transform[0][0] = f32::INFINITY;
+        transform[1][1] = 1.0;
+        transform[2][2] = 1.0;
+        transform[3][3] = 1.0;
+        scene.blocks.push(Box::new(BhkTransformShape {
+            shape_ref: BlockRef(1u32),
+            material: 0,
+            radius: 0.0,
+            transform,
+        }));
+        scene.blocks.push(sphere_shape(1.0));
+
+        let mut visited = HashSet::new();
+        assert!(
+            resolve_shape(&scene, BlockRef(0u32), &mut visited).is_none(),
+            "±Inf in the rotation block must also drop to None"
+        );
+    }
+
+    #[test]
+    fn bhk_transform_shape_with_finite_matrix_still_resolves() {
+        // Sanity check alongside the NaN/Inf tests above: an ordinary,
+        // fully-finite transform must be unaffected by the new guard.
+        let mut scene = NifScene::default();
+        scene.havok_scale = 1.0;
+        let mut transform = [[0.0f32; 4]; 4];
+        transform[0][0] = 1.0;
+        transform[1][1] = 1.0;
+        transform[2][2] = 1.0;
+        transform[3][3] = 1.0;
+        transform[3][0] = 5.0;
+        scene.blocks.push(Box::new(BhkTransformShape {
+            shape_ref: BlockRef(1u32),
+            material: 0,
+            radius: 0.0,
+            transform,
+        }));
+        scene.blocks.push(sphere_shape(1.0));
+
+        let mut visited = HashSet::new();
+        let result = resolve_shape(&scene, BlockRef(0u32), &mut visited);
+        assert!(
+            matches!(result, Some(CollisionShape::Compound { .. })),
+            "a fully-finite transform must still resolve to a Compound, got {result:?}"
         );
     }
 }
