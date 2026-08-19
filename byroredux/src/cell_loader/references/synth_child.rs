@@ -153,22 +153,28 @@ pub(super) fn spawn_synth_child(
                 // #2026 — gated on `refr_script_instance`, not the raw
                 // `placed_ref.script_instance`, so only the first
                 // synthetic child of a SCOL/PKIN expansion qualifies on
-                // this basis; the base-record checks above still apply
-                // to every child (they're keyed by `child_form_id`).
+                // this basis.
                 || refr_script_instance.is_some();
-    if !has_mesh && has_script {
+    // #3015 — the whole branch is gated on `is_primary_synth`, not just
+    // `stamp_quest_reference` below. `placed_ref.primitive` (the `XPRM`
+    // this volume is built from) is a field on the outer REFR itself —
+    // authored once, like `teleport`/`lock` (#3098) — not per synthetic
+    // child. Composing it with a non-primary child's own transform would
+    // manufacture a trigger volume that was never authored, at a
+    // position nothing placed it at, and inflate `accum.trigger_volumes`
+    // once per child instead of once per REFR. A non-primary child whose
+    // own base record independently carries a script still gets it
+    // attached — just through whichever ordinary per-child branch below
+    // actually matches its own record kind (LIGH / static mesh / etc.,
+    // #3016), not through this REFR-level trigger path.
+    if trigger_volume_should_spawn_for_synth_child(is_primary_synth, has_mesh, has_script) {
         if let Some(prim) = placed_ref.primitive.as_ref() {
             if let Some(volume) = trigger_volume_from_primitive(prim, ref_pos, ref_rot, ref_scale) {
                 let entity = world.spawn();
                 world.insert(entity, Transform::new(ref_pos, ref_rot, ref_scale));
                 world.insert(entity, GlobalTransform::new(ref_pos, ref_rot, ref_scale));
                 world.insert(entity, volume);
-                if is_primary_synth {
-                    stamp_quest_reference(world, entity, placed_ref, load_order);
-                }
-                // #3016 — ungated: see `attach_quest_reference_script`'s doc
-                // comment for the policy this and every other spawn branch
-                // in this file now shares.
+                stamp_quest_reference(world, entity, placed_ref, load_order);
                 if attach_script_for_refr(
                     world,
                     entity,
@@ -651,6 +657,26 @@ pub(super) fn spawn_synth_child(
     ) {
         accum.scripts_recognized += 1;
     }
+}
+
+/// #3015 — whether `spawn_synth_child`'s invisible-trigger branch should
+/// spawn a `TriggerVolume` for this synthetic child. Extracted so the
+/// gating decision is unit-testable without the full Vulkan spawn path
+/// (mirrors [`stamp_visible_when_distant`] just below).
+///
+/// `is_primary_synth` gates the whole branch, not just the identity stamp
+/// it contains: the volume is built from `placed_ref.primitive` (the
+/// outer REFR's own `XPRM`), authored once per REFR like `teleport`/
+/// `lock` (#3098), never per synthetic child. A non-primary child can
+/// still independently satisfy `has_mesh`/`has_script` from its OWN base
+/// record, but that must not manufacture a second, differently-placed
+/// copy of a trigger volume that was authored exactly once.
+pub(super) fn trigger_volume_should_spawn_for_synth_child(
+    is_primary_synth: bool,
+    has_mesh: bool,
+    has_script: bool,
+) -> bool {
+    is_primary_synth && !has_mesh && has_script
 }
 
 /// #1889 / EXAL §5.2 — materialise the base record's Visible-When-Distant flag

@@ -71,6 +71,43 @@ fn refr_script_instance_attaches_to_first_synth_child_only() {
     assert_eq!(refr_script_instance_for_synth_child(0, None), None);
 }
 
+/// #3015 — `placed_ref.primitive` (the outer REFR's own `XPRM`) is
+/// REFR-level data, authored exactly once, so the trigger-volume branch
+/// must spawn for the first synthetic child only, regardless of whether
+/// a later child's own base record independently has a mesh or a
+/// script. Pre-fix, only `stamp_quest_reference` inside the branch was
+/// gated on `is_primary_synth` — the branch itself, and therefore the
+/// entity + `TriggerVolume` + `accum.trigger_volumes` count, was not,
+/// so a scripted mesh-less SCOL/PKIN expansion spawned one
+/// differently-placed volume per child from a single authored XPRM.
+#[test]
+fn trigger_volume_spawns_for_the_first_synth_child_only() {
+    use super::synth_child::trigger_volume_should_spawn_for_synth_child as should_spawn;
+
+    // The exact reachable shape the branch guards against: a later
+    // child with no mesh of its own and a script from its OWN base
+    // record (or the outer REFR's pre-gated VMAD) must still decline —
+    // there is no per-child XPRM to build a volume from.
+    assert!(
+        !should_spawn(false, false, true),
+        "a non-primary, mesh-less, scripted child must NOT spawn a \
+         second trigger volume from the outer REFR's one XPRM",
+    );
+    // The first child, mesh-less and scripted: this is the one and only
+    // case that should ever build a volume from `placed_ref.primitive`.
+    assert!(
+        should_spawn(true, false, true),
+        "the first synthetic child of a scripted, mesh-less REFR must \
+         spawn the authored trigger volume",
+    );
+    // Orthogonal gates unaffected by #3015: a visible scripted activator
+    // (has a mesh) never takes this branch even as the first child —
+    // #1737's whole point is that only genuinely invisible triggers do.
+    assert!(!should_spawn(true, true, true));
+    // No script at all: nothing to trigger on, regardless of primacy.
+    assert!(!should_spawn(true, false, false));
+}
+
 /// #3016 — a synthetic child's own base-record script must attach
 /// regardless of whether it's the first child (`synth_idx == 0`) or a
 /// later one, because `attach_quest_reference_script` is keyed by

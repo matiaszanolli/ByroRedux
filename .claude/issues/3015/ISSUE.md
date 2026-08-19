@@ -1,13 +1,4 @@
-# SCR-D7-02: trigger-volume spawn branch runs for non-primary synthetic children
-
-**Issue**: #3015
-**Severity**: MEDIUM
-**Dimension**: 7 — Engine Attach & Trigger Wiring
-**Labels**: `medium,scripting,bug`
-**Source report**: `docs/audits/AUDIT_SCRIPTING_2026-08-16.md`
-**Filed**: 2026-08-17 via `/audit-publish`
-
----
+# SCR-D7-2026-08-16-02: the trigger-volume spawn branch runs for non-primary synthetic children and builds each volume from the outer REFR's XPRM at the child's transform
 
 Filed from `docs/audits/AUDIT_SCRIPTING_2026-08-16.md` (Dimension 7 — Engine Attach & Trigger Wiring).
 
@@ -52,7 +43,3 @@ Decide the intended policy and apply it consistently — most likely gating the 
 - [ ] **COUNTER**: `accum.trigger_volumes` reflects authored volumes after the fix
 - [ ] **TRANSFORM**: Volume extent and transform come from the same REFR, not two different ones
 - [ ] **TESTS**: A regression test spawns a multi-child scripted mesh-less REFR and asserts the volume count
-
----
-
-*Immutable snapshot of the issue as filed. GitHub is authoritative for current state — query `gh issue view 3015 --json state` when live state is needed.*
