@@ -1204,6 +1204,9 @@ pub(crate) fn build_scheduler() -> Scheduler {
             .reads::<byroredux_core::ecs::components::WaterPlane>()
             .reads::<byroredux_core::ecs::components::WaterVolume>()
             .reads::<byroredux_core::ecs::GlobalTransform>()
+            .writes::<byroredux_core::ecs::components::ParticleEmitter>()
+            .writes::<byroredux_scripting::RippleEvent>()
+            .writes::<byroredux_scripting::SplashEvent>()
             .writes::<byroredux_core::ecs::components::SubmersionState>(),
     );
     scheduler.add_to_with_access(

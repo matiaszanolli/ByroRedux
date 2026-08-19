@@ -41,6 +41,34 @@ impl Component for HitEvent {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// Fired when an actor enters or re-enters a water surface. The event lands
+/// on the water-plane entity so audio, gameplay and presentation systems can
+/// consume the same source interaction without inventing a second queue.
+#[derive(Debug, Clone, Copy)]
+pub struct SplashEvent {
+    pub actor: EntityId,
+    pub intensity: f32,
+    pub position: [f32; 3],
+}
+
+impl Component for SplashEvent {
+    type Storage = SparseSetStorage<Self>;
+}
+
+/// One-frame surface disturbance marker while an actor is interacting with a
+/// water plane. Unlike [`SplashEvent`], this may recur while the actor remains
+/// near the surface and is suitable for ripples or looping surface audio.
+#[derive(Debug, Clone, Copy)]
+pub struct RippleEvent {
+    pub actor: EntityId,
+    pub intensity: f32,
+    pub position: [f32; 3],
+}
+
+impl Component for RippleEvent {
+    type Storage = SparseSetStorage<Self>;
+}
+
 /// Fired when a timer expires. Added by the timer tick system.
 /// Replaces Papyrus `OnTimer`.
 #[derive(Debug, Clone, Copy)]

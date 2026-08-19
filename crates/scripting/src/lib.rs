@@ -48,7 +48,7 @@ pub use dialogue::{
 pub use equipment::{install_equip_item_catalog, EquipItemCatalog};
 pub use events::{
     ActivateEvent, AnimationTextKeyEvent, AnimationTextKeyEvents, HitEvent, OnCellLoadEvent,
-    OnEquipEvent, OnTriggerEnterEvent, TimerExpired,
+    OnEquipEvent, OnTriggerEnterEvent, RippleEvent, SplashEvent, TimerExpired,
 };
 pub use fragment::{
     apply_effects, fragment_activation_flush_system, fragment_continuation_system,
@@ -99,6 +99,8 @@ use byroredux_core::ecs::world::World;
 pub fn register(world: &mut World) {
     world.register::<ActivateEvent>();
     world.register::<HitEvent>();
+    world.register::<SplashEvent>();
+    world.register::<RippleEvent>();
     world.register::<TimerExpired>();
     world.register::<AnimationTextKeyEvents>();
     world.register::<ScriptTimer>();

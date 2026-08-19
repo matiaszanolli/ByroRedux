@@ -28,6 +28,7 @@
 //! Returns the number of water-plane entities spawned (0 or 1 today).
 
 use byroredux_core::ecs::components::water::{WaterPlane, WaterVolume};
+use byroredux_core::ecs::components::ParticleEmitter;
 use byroredux_core::ecs::components::RenderLayer;
 use byroredux_core::ecs::{GlobalTransform, MeshHandle, Transform, World};
 use byroredux_core::math::{Quat, Vec3};
@@ -236,6 +237,11 @@ pub(super) fn spawn_water_plane(
     );
     world.insert(entity, MeshHandle(mesh_handle));
     world.insert(entity, WaterPlane { kind, material });
+    // Keep a dormant, textureless spray emitter resident on the plane. The
+    // water interaction system only raises its rate while the active camera
+    // is near the surface, so this produces localized ripples without
+    // structural ECS mutation during the frame.
+    world.insert(entity, ParticleEmitter::water_splash());
     // #1338 — pair the normal-map `resolve_texture` refcount bump above
     // with a handle component the cell-unload victim walk can reach.
     // The water plane is drawn by the water pipeline from
@@ -485,6 +491,7 @@ pub(crate) fn spawn_lod_water_plane(
     world.insert(entity, GlobalTransform::IDENTITY);
     world.insert(entity, MeshHandle(mesh_handle));
     world.insert(entity, WaterPlane { kind, material });
+    world.insert(entity, ParticleEmitter::water_splash());
     if resolved_normal_idx != 0 {
         world.insert(entity, NormalMapHandle(resolved_normal_idx));
     }

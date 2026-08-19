@@ -313,6 +313,36 @@ impl Default for ParticleEmitter {
 }
 
 impl ParticleEmitter {
+    /// A compact, textureless spray preset used for water-surface
+    /// disturbances.  The emitter's rate is driven by the water interaction
+    /// system; keeping the preset resident on the plane avoids structural ECS
+    /// inserts from a per-frame system.
+    pub fn water_splash() -> Self {
+        Self {
+            shape: EmitterShape::Sphere { radius: 1.5 },
+            rate: 0.0,
+            max_particles: 48,
+            life: 0.55,
+            life_variation: 0.2,
+            speed: 3.0,
+            speed_variation: 1.5,
+            declination: 0.65,
+            declination_variation: 0.35,
+            gravity: [0.0, -9.0, 0.0],
+            start_color: [0.55, 0.82, 1.0, 0.48],
+            end_color: [0.2, 0.55, 0.95, 0.0],
+            start_size: 1.8,
+            end_size: 0.4,
+            texture_path: None,
+            src_blend: 6,
+            dst_blend: 0,
+            spawn_accumulator: 0.0,
+            force_fields: Vec::new(),
+            start_size_variation: 0.6,
+            particles: ParticleSoA::default(),
+        }
+    }
+
     /// Heuristic preset for a small flickering torch flame. Used by the
     /// NIF importer when a `NiParticleSystem` is attached to a node
     /// whose name contains `torch`/`fire`/`flame`. The preset still

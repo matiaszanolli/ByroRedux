@@ -335,6 +335,24 @@ fn decode_dnam_pre_fo4(data: &[u8]) -> WaterParams {
     p
 }
 
+/// Promote the verified Skyrim DNAM underwater fog pair from the extended
+/// tail. Skyrim's vanilla 228-byte records carry the under-water near/far
+/// values at byte offsets 144/148; the short 52-byte prefix used by older
+/// fixtures simply leaves the canonical sentinel untouched.
+fn apply_skyrim_dnam_tail(p: &mut WaterParams, data: &[u8]) {
+    if data.len() < 228 {
+        return;
+    }
+    let Some(near) = read_f32_at(data, 144) else {
+        return;
+    };
+    let Some(far) = read_f32_at(data, 148) else {
+        return;
+    };
+    p.underwater_fog_near = near.max(0.0);
+    p.underwater_fog_far = far.max(p.underwater_fog_near + 1.0);
+}
+
 #[inline]
 fn read_f32_at(data: &[u8], offset: usize) -> Option<f32> {
     let bytes: [u8; 4] = data.get(offset..offset + 4)?.try_into().ok()?;
@@ -439,6 +457,11 @@ pub fn parse_watr(form_id: u32, subs: &[SubRecord], game: GameKind) -> WatrRecor
                     // FO3/FNV and Skyrim share this prefix. FO76 and
                     // Starfield keep the same best-effort fallback until
                     // their divergent tails receive explicit projections.
+                    GameKind::Skyrim => {
+                        let mut p = decode_dnam_pre_fo4(&sub.data);
+                        apply_skyrim_dnam_tail(&mut p, &sub.data);
+                        p
+                    }
                     _ => decode_dnam_pre_fo4(&sub.data),
                 };
                 out.raw_dnam = sub.data.clone();
@@ -585,7 +608,7 @@ mod tests {
     fn parse_watr_decodes_dnam_skyrim_prefix() {
         // Skyrim DNAM with the exact xEdit TES5 52-byte prefix (the
         // shortest that fills every decoded field).
-        let mut data = Vec::with_capacity(52);
+        let mut data = Vec::with_capacity(152);
         data.extend_from_slice(&2.0f32.to_le_bytes()); // wind_speed @ 0
         data.extend_from_slice(&1.2f32.to_le_bytes()); // wind_direction @ 4
         data.extend_from_slice(&0.20f32.to_le_bytes()); // wave_amplitude @ 8
@@ -611,6 +634,14 @@ mod tests {
         assert!((w.params.fog_far - 500.0).abs() < 1e-3);
         assert_eq!(w.raw_dnam.len(), 52);
         assert!(w.raw_data.is_empty());
+
+        // The extended Skyrim tail promotes the underwater fog pair.
+        data.resize(228, 0);
+        data[144..148].copy_from_slice(&(-1000.0f32).to_le_bytes());
+        data[148..152].copy_from_slice(&1000.0f32.to_le_bytes());
+        let w = parse_watr(0xCCCC, &[sub(b"DNAM", &data)], GameKind::Skyrim);
+        assert_eq!(w.params.underwater_fog_near, 0.0);
+        assert!((w.params.underwater_fog_far - 1000.0).abs() < 1e-3);
     }
 
     #[test]

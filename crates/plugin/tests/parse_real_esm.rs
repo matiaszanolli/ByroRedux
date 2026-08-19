@@ -198,6 +198,24 @@ fn skyrim_health_resolves_to_authored_avif_form_id() {
 
 #[test]
 #[ignore]
+fn skyrim_default_water_promotes_underwater_tail() {
+    let Some(data) = data_dir(
+        "BYROREDUX_SKYRIMSE_DATA",
+        "/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data",
+    ) else {
+        eprintln!("[Skyrim WATR] skipping: game data unavailable");
+        return;
+    };
+    let bytes = std::fs::read(data.join("Skyrim.esm")).expect("read Skyrim.esm");
+    let index = parse_esm(&bytes).expect("parse Skyrim.esm");
+    let water = index.waters.get(&0x0000_0018).expect("Skyrim default WATR");
+    assert!(matches!(water.raw_dnam.len(), 228 | 232));
+    assert!(water.params.underwater_fog_far > water.params.underwater_fog_near);
+    assert!(water.params.underwater_fog_far >= 900.0);
+}
+
+#[test]
+#[ignore]
 fn fo4_ruleset_uses_only_authored_avif_outputs() {
     let Some(data) = data_dir(
         "BYROREDUX_FO4_DATA",

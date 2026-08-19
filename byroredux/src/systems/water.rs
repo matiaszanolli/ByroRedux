@@ -3,7 +3,9 @@
 use byroredux_core::ecs::components::water::{
     SubmersionState, WaterMaterial, WaterPlane, WaterVolume,
 };
+use byroredux_core::ecs::components::ParticleEmitter;
 use byroredux_core::ecs::{ActiveCamera, GlobalTransform, World};
+use byroredux_scripting::{RippleEvent, SplashEvent};
 
 /// Hysteresis band half-width for the `head_submerged` boolean, in
 /// Bethesda world units (~1.43 cm/unit — same scale as `WaterVolume`
@@ -13,6 +15,25 @@ use byroredux_core::ecs::{ActiveCamera, GlobalTransform, World};
 /// vertical AABB acceptance below is extended by the *same* constant so
 /// the exit transition fires precisely at the band edge (#1450 / WAT-01).
 const WATERLINE_HYSTERESIS: f32 = 4.0;
+const DISTURBANCE_BAND: f32 = 24.0;
+const DISTURBANCE_RADIUS: f32 = 18.0;
+
+fn disturbance_rate(cam_pos: byroredux_core::math::Vec3, volume: &WaterVolume) -> f32 {
+    let surface_y = volume.max[1];
+    let vertical = (surface_y - cam_pos.y).abs();
+    if vertical > DISTURBANCE_BAND {
+        return 0.0;
+    }
+    let clamped_x = cam_pos.x.clamp(volume.min[0], volume.max[0]);
+    let clamped_z = cam_pos.z.clamp(volume.min[2], volume.max[2]);
+    let dx = cam_pos.x - clamped_x;
+    let dz = cam_pos.z - clamped_z;
+    if dx * dx + dz * dz > DISTURBANCE_RADIUS * DISTURBANCE_RADIUS {
+        0.0
+    } else {
+        14.0 * (1.0 - vertical / DISTURBANCE_BAND)
+    }
+}
 
 /// Resolve the sticky `head_submerged` flag with a hysteresis band.
 ///
@@ -145,6 +166,60 @@ pub(crate) fn submersion_system(world: &World, _dt: f32) {
     drop(wq);
     drop(vq);
 
+    // Drive the resident water-spray emitters from the camera footprint.
+    // Water planes are spawned with a dormant emitter, so this remains a
+    // component-only mutation and cannot invalidate the plane query above.
+    let mut disturbance_events = Vec::new();
+    if let Some((volume_q, mut emitter_q)) = world.query_2_mut::<WaterVolume, ParticleEmitter>() {
+        for (entity, volume) in volume_q.iter() {
+            if let Some(emitter) = emitter_q.get_mut(entity) {
+                let previous = emitter.rate;
+                let rate = disturbance_rate(cam_pos, volume);
+                emitter.rate = rate;
+                if rate > 0.0 {
+                    disturbance_events.push((
+                        entity,
+                        previous <= 0.0,
+                        (rate / 14.0).clamp(0.0, 1.0),
+                        [cam_pos.x, volume.max[1], cam_pos.z],
+                    ));
+                }
+            }
+        }
+    }
+    // Publish the same interaction to gameplay/audio consumers as transient
+    // ECS markers. The particle emitter remains the presentation path; these
+    // markers make the disturbance useful to systems that should not inspect
+    // renderer state directly.
+    if !disturbance_events.is_empty() {
+        if let Some(mut q) = world.query_mut::<RippleEvent>() {
+            for &(entity, _, intensity, position) in &disturbance_events {
+                q.insert(
+                    entity,
+                    RippleEvent {
+                        actor: cam_entity,
+                        intensity,
+                        position,
+                    },
+                );
+            }
+        }
+        if let Some(mut q) = world.query_mut::<SplashEvent>() {
+            for &(entity, entering, intensity, position) in &disturbance_events {
+                if entering {
+                    q.insert(
+                        entity,
+                        SplashEvent {
+                            actor: cam_entity,
+                            intensity,
+                            position,
+                        },
+                    );
+                }
+            }
+        }
+    }
+
     let best_depth = best.as_ref().map(|(d, _)| *d);
     let Some(mut sq) = world.query_mut::<SubmersionState>() else {
         return;
@@ -246,12 +321,16 @@ fn underwater_extinction(depth: f32, fog_near: f32, fog_far: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        resolve_head_submerged, submersion_system, underwater_extinction, WATERLINE_HYSTERESIS,
+        disturbance_rate, resolve_head_submerged, submersion_system, underwater_extinction,
+        DISTURBANCE_BAND, DISTURBANCE_RADIUS, WATERLINE_HYSTERESIS,
     };
     use byroredux_core::ecs::components::water::{
-        SubmersionState, WaterKind, WaterMaterial, WaterPlane,
+        SubmersionState, WaterKind, WaterMaterial, WaterPlane, WaterVolume,
     };
+    use byroredux_core::ecs::components::ParticleEmitter;
     use byroredux_core::ecs::{ActiveCamera, GlobalTransform, World};
+    use byroredux_core::math::Vec3;
+    use byroredux_scripting::{RippleEvent, SplashEvent};
 
     const EPS: f32 = WATERLINE_HYSTERESIS;
 
@@ -305,6 +384,67 @@ mod tests {
         assert!(!resolve_head_submerged(false, Some(mid))); // dry stays dry
         assert!(resolve_head_submerged(true, Some(mid))); // wet stays wet
         assert!(std::hint::black_box(EPS) > 0.0);
+    }
+
+    #[test]
+    fn disturbance_rate_is_localized_to_surface_footprint() {
+        let volume = WaterVolume {
+            min: [-100.0, -200.0, -100.0],
+            max: [100.0, 0.0, 100.0],
+        };
+        assert!(disturbance_rate(Vec3::new(0.0, 0.0, 0.0), &volume) > 0.0);
+        assert_eq!(
+            disturbance_rate(Vec3::new(0.0, DISTURBANCE_BAND + 1.0, 0.0), &volume),
+            0.0
+        );
+        assert_eq!(
+            disturbance_rate(
+                Vec3::new(volume.max[0] + DISTURBANCE_RADIUS + 1.0, 0.0, 0.0),
+                &volume
+            ),
+            0.0
+        );
+    }
+
+    #[test]
+    fn surface_interaction_emits_transient_splash_and_ripple_markers() {
+        let mut world = World::new();
+        byroredux_scripting::register(&mut world);
+        let camera = world.spawn();
+        world.insert_resource(ActiveCamera(camera));
+        world.insert(
+            camera,
+            GlobalTransform::new(
+                Vec3::new(0.0, 0.0, 0.0),
+                byroredux_core::math::Quat::IDENTITY,
+                1.0,
+            ),
+        );
+        world.insert(camera, SubmersionState::default());
+        let water = world.spawn();
+        world.insert(
+            water,
+            WaterPlane {
+                kind: WaterKind::Calm,
+                material: WaterMaterial::default(),
+            },
+        );
+        world.insert(
+            water,
+            WaterVolume {
+                min: [-50.0, -100.0, -50.0],
+                max: [50.0, 0.0, 50.0],
+            },
+        );
+        world.insert(water, GlobalTransform::IDENTITY);
+        world.insert(water, ParticleEmitter::water_splash());
+
+        submersion_system(&world, 0.016);
+
+        let ripples = world.query::<RippleEvent>().expect("ripple storage");
+        let splashes = world.query::<SplashEvent>().expect("splash storage");
+        assert!(ripples.get(water).is_some());
+        assert!(splashes.get(water).is_some());
     }
 
     /// Regression for #2792 (REN-D15-09): a `WaterPlane` entity with no
