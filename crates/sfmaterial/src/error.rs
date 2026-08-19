@@ -77,6 +77,9 @@ pub enum Error {
     #[error("object/list/map chunk had {leftover} trailing bytes after read")]
     ObjectTrailingBytes { leftover: usize },
 
+    #[error("{what} count {raw} is negative — corrupt or adversarial CDB data")]
+    NegativeCount { what: &'static str, raw: i32 },
+
     #[error("CDB parse budget exceeded: {requested} instances (limit {limit})")]
     ParseBudgetExceeded { requested: usize, limit: usize },
 

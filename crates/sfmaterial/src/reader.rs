@@ -425,13 +425,34 @@ fn consume_list(state: &mut State, is_diff: bool) -> Result<Value> {
     let payload = state.consume_chunk(ChunkType::List)?;
     let mut cur = Cursor::new(payload);
     let elem_ref = TypeReference::new(cur.read_i32()?);
-    let count = cur.read_i32()? as usize;
-    // #2614 / SF-D3-01 sibling — `count` is unvalidated on-disk data and
-    // element size varies by `elem_ref`'s type, so (unlike the fixed-size
-    // chunk/field cases above) there's no cheap universal per-element
-    // minimum to bound against. Drop the pre-reserve entirely — matches
-    // Gibbed's reference, which has none — so a hostile count degrades to
-    // incremental `Vec` growth instead of an upfront over-allocation.
+    let raw_count = cur.read_i32()?;
+    // #2623 / SF-D3-02 — `raw_count` is unvalidated on-disk data. Pre-fix
+    // this sign-extended a negative value through `as usize` into
+    // ~1.8e19; #2614 already dropped the `with_capacity` panic that used
+    // to follow, but the raw (possibly astronomical) count still drove
+    // `for _ in 0..count` directly. That's not purely theoretical even
+    // post-#2614: a user-class element type with no non-chunk fields is a
+    // structurally valid class shape whose `read_value` returns `Ok`
+    // while consuming ZERO bytes from `cur` — so a huge count paired with
+    // that element type wouldn't error out on the first iteration, it
+    // would loop until the process exhausts memory accumulating `items`.
+    // Reject a negative count outright (a clean, attributable error beats
+    // a confusing downstream one), then clamp to `payload.len()` — no
+    // chunk can contain more elements than it has bytes for the common
+    // (non-zero-byte-element) case, matching the issue's own suggested
+    // fix. Caveat, left as a documented edge case rather than solved
+    // here: a list whose element type is a genuinely zero-field class
+    // could in principle legitimately encode more elements than
+    // `payload.len()`; this clamp would truncate that (extremely
+    // unusual, unobserved in real content) shape rather than reject it
+    // outright. Closing that fully needs a stuck-cursor progress check
+    // instead of a count clamp, which is a larger change than this fix.
+    let count = usize::try_from(raw_count)
+        .map_err(|_| Error::NegativeCount {
+            what: "LIST element",
+            raw: raw_count,
+        })?
+        .min(payload.len());
     let mut items = Vec::new();
     for _ in 0..count {
         items.push(read_value(state, elem_ref, &mut cur, is_diff)?);
@@ -448,9 +469,14 @@ fn consume_map(state: &mut State, is_diff: bool) -> Result<Value> {
     let mut cur = Cursor::new(payload);
     let key_ref = TypeReference::new(cur.read_i32()?);
     let val_ref = TypeReference::new(cur.read_i32()?);
-    let count = cur.read_i32()? as usize;
-    // #2614 / SF-D3-01 sibling — same rationale as `consume_list`: no
-    // cheap universal per-pair minimum size, drop the pre-reserve.
+    let raw_count = cur.read_i32()?;
+    // #2623 / SF-D3-02 — same rationale and caveat as `consume_list`.
+    let count = usize::try_from(raw_count)
+        .map_err(|_| Error::NegativeCount {
+            what: "MAPC pair",
+            raw: raw_count,
+        })?
+        .min(payload.len());
     let mut pairs = Vec::new();
     for _ in 0..count {
         let k = read_value(state, key_ref, &mut cur, is_diff)?;
@@ -1001,5 +1027,115 @@ mod tests {
                 limit: 0
             }
         ));
+    }
+
+    // ── #2623 (SF-D3-02) — LIST/MAPC negative/oversized count ───────
+    //
+    // `consume_list`/`consume_map` are exercised directly against a
+    // hand-built `State` rather than a full top-level CDB file: they're
+    // the smallest unit that reproduces the bug (a LIST/MAPC chunk's own
+    // payload bytes), and a full file needs a STRT/TYPE/OBJT chunk
+    // scaffold just to reach the same code path the other tests in this
+    // file already cover that scaffold for.
+
+    fn state_with_single_chunk(payload: &[u8], kind: ChunkType) -> State<'_> {
+        State {
+            bytes: payload,
+            chunks: VecDeque::from([Chunk {
+                kind,
+                start: 0,
+                size: payload.len(),
+            }]),
+            classes: Vec::new(),
+            class_by_name_offset: HashMap::new(),
+            strings: StringTable::new(Vec::new()),
+        }
+    }
+
+    /// The issue's headline case: a negative on-disk LIST count must be
+    /// rejected explicitly, not sign-extend through `as usize` into
+    /// ~1.8e19. Pre-#2614 this reached `Vec::with_capacity` and panicked;
+    /// post-#2614 (pre-this-fix) it no longer panicked but still drove
+    /// `for _ in 0..count` with the huge value directly.
+    #[test]
+    fn negative_list_count_is_rejected() {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&(0xFFFFFF10u32 as i32).to_le_bytes()); // elem_ref: Bool
+        payload.extend_from_slice(&(-1i32).to_le_bytes()); // count: negative
+        let mut state = state_with_single_chunk(&payload, ChunkType::List);
+        let err = consume_list(&mut state, false).expect_err("negative count must be rejected");
+        assert!(matches!(err, Error::NegativeCount { raw: -1, .. }));
+    }
+
+    /// Same case for MAPC's count.
+    #[test]
+    fn negative_map_count_is_rejected() {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&(0xFFFFFF10u32 as i32).to_le_bytes()); // key_ref: Bool
+        payload.extend_from_slice(&(0xFFFFFF10u32 as i32).to_le_bytes()); // val_ref: Bool
+        payload.extend_from_slice(&i32::MIN.to_le_bytes()); // count: most-negative
+        let mut state = state_with_single_chunk(&payload, ChunkType::Mapc);
+        let err = consume_map(&mut state, false).expect_err("negative count must be rejected");
+        assert!(matches!(err, Error::NegativeCount { raw: i32::MIN, .. }));
+    }
+
+    /// The issue's second required case: an oversized but non-negative
+    /// count (no sign-extension involved) must also fail cleanly rather
+    /// than allocate/loop far past what the payload actually contains.
+    /// The payload after the 8-byte header has room for exactly 3 Bool
+    /// elements (1 byte each); a count of 1000 must error once those 3
+    /// bytes are exhausted, not succeed or hang.
+    #[test]
+    fn oversized_positive_list_count_errors_on_exhaustion() {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&(0xFFFFFF10u32 as i32).to_le_bytes()); // elem_ref: Bool
+        payload.extend_from_slice(&1000i32.to_le_bytes()); // count: oversized
+        payload.extend_from_slice(&[1u8, 0u8, 1u8]); // only 3 elements' worth of data
+        let mut state = state_with_single_chunk(&payload, ChunkType::List);
+        assert!(
+            consume_list(&mut state, false).is_err(),
+            "an oversized count must error once the backing payload is exhausted, not hang"
+        );
+    }
+
+    /// A count that's oversized but still `<= payload.len()` (so the
+    /// `.min(payload.len())` clamp doesn't reject it outright) must
+    /// still terminate with an `Err` once the real data runs out, not
+    /// read past the payload or panic.
+    #[test]
+    fn count_within_clamp_but_past_real_data_errors_cleanly() {
+        // count=5 survives the `.min(payload.len())` clamp (the clamp
+        // only bounds against the WHOLE payload, header included) but
+        // still overruns the single real element that follows.
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&(0xFFFFFF10u32 as i32).to_le_bytes()); // elem_ref: Bool
+        payload.extend_from_slice(&5i32.to_le_bytes()); // count: 5
+        payload.push(1u8); // one real element
+        let mut state = state_with_single_chunk(&payload, ChunkType::List);
+        assert!(
+            consume_list(&mut state, false).is_err(),
+            "reading past the last real element must error, not panic"
+        );
+    }
+
+    /// Sanity check alongside the rejection tests above: a genuinely
+    /// well-formed count must still parse normally — the new guards
+    /// reject only corrupt/adversarial data.
+    #[test]
+    fn well_formed_list_count_still_parses() {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&(0xFFFFFF10u32 as i32).to_le_bytes()); // elem_ref: Bool
+        payload.extend_from_slice(&2i32.to_le_bytes()); // count: 2, matches the data below
+        payload.extend_from_slice(&[1u8, 0u8]);
+        let mut state = state_with_single_chunk(&payload, ChunkType::List);
+        let value = consume_list(&mut state, false).expect("well-formed LIST must parse");
+        match value {
+            Value::List(items) => {
+                assert_eq!(items.len(), 2);
+                assert!(matches!(items[0], Value::Bool(true)));
+                assert!(matches!(items[1], Value::Bool(false)));
+            }
+            other => panic!("expected Value::List, got {other:?}"),
+        }
     }
 }
