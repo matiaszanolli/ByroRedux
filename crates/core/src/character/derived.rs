@@ -20,9 +20,9 @@
 //!
 //! ## Efficiency
 //!
-//! [`DerivedStatFormula`] is `Copy` and 32 bytes (half a cache line); a
-//! per-game [`super::CharacterRuleset`] holds a flat `Vec` of them. [`eval`]
-//! is ~5 FMAs + one branch + one `min` — no allocation, no virtual dispatch.
+//! [`DerivedStatFormula`] is `Copy` and 36 bytes; a per-game
+//! [`super::CharacterRuleset`] holds a flat `Vec` of them. [`eval`] is ~5
+//! FMAs + one branch + one `clamp` — no allocation, no virtual dispatch.
 //!
 //! ## Chaining
 //!
@@ -113,7 +113,7 @@ pub enum DerivedOutput {
 /// path, so the player formula must **not** be applied to them. A consumer
 /// that computes a derived stat for an arbitrary entity checks this before
 /// trusting the result. (Fits in `DerivedStatFormula`'s existing padding —
-/// the struct stays 32 bytes.)
+/// costs nothing extra.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(u8)]
 pub enum DerivedScope {
@@ -125,7 +125,8 @@ pub enum DerivedScope {
 }
 
 /// A per-game derived-stat formula: `round(bias + cₐ·A + c_b·B + cross·A·B)`
-/// clamped to `cap`. Fixed 32-byte `Copy` layout — see the module docs.
+/// clamped to `[floor, cap]`. Fixed 36-byte `Copy` layout — see the module
+/// docs.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DerivedStatFormula {
     /// Constant term.
@@ -139,10 +140,18 @@ pub struct DerivedStatFormula {
     /// Coefficient of the `A·B` cross term (`0.0` when absent). Only
     /// FO4 Health uses it (`0.5·L·END`).
     pub cross: f32,
+    /// Lower clamp (`f32::NEG_INFINITY` = unfloored). #2939 — every shipped
+    /// formula but the FO3/FNV negative-bias resistances (`(gov − 1)·k`,
+    /// [`super::resistance::Affliction::fo3_fnv_resistance_formula`]) has a
+    /// non-negative bias and reads `0.0` for an absent input by design, so
+    /// this only ever engages for those two rows: a governing AV that is
+    /// absent or genuinely `0` would otherwise evaluate outside the sourced
+    /// attribute domain (a negative resistance percentage).
+    pub floor: f32,
     /// Upper clamp (`f32::INFINITY` = uncapped). FO3 AP 85, FNV AP 95,
     /// Critical Chance 0.10, FO4 VATS 0.95.
     pub cap: f32,
-    /// Rounding before the cap.
+    /// Rounding before the clamp.
     pub round: RoundMode,
     /// Absolute value vs multiplier.
     pub kind: DerivedOutput,
@@ -151,8 +160,7 @@ pub struct DerivedStatFormula {
     pub scope: DerivedScope,
     /// Bit 0 / bit 1: read input `a` / `b` from its AV's `base` layer
     /// instead of `current()` (see [`Self::a_from_base`]). The struct's last
-    /// spare padding byte — adding this kept the size at 32 bytes exactly
-    /// (see `formula_is_thirty_two_bytes_and_copy`).
+    /// spare padding byte (see `formula_is_thirty_six_bytes_and_copy`).
     base_reads: u8,
 }
 
@@ -170,6 +178,7 @@ impl DerivedStatFormula {
             b: DerivedInput::UNUSED,
             coeff_b: 0.0,
             cross: 0.0,
+            floor: f32::NEG_INFINITY,
             cap: f32::INFINITY,
             round: RoundMode::None,
             kind: DerivedOutput::Absolute,
@@ -195,6 +204,7 @@ impl DerivedStatFormula {
             b,
             coeff_b,
             cross,
+            floor: f32::NEG_INFINITY,
             cap: f32::INFINITY,
             round: RoundMode::None,
             kind: DerivedOutput::Absolute,
@@ -206,6 +216,15 @@ impl DerivedStatFormula {
     /// Set the upper clamp (chainable).
     pub const fn capped(mut self, cap: f32) -> Self {
         self.cap = cap;
+        self
+    }
+
+    /// Set the lower clamp (chainable) — #2939, the FO3/FNV negative-bias
+    /// resistances. Named apart from [`Self::floored`] (which is a
+    /// *rounding* mode, not a clamp) to keep the two unmistakably different
+    /// operations from reading like the same word.
+    pub const fn clamped_below(mut self, floor: f32) -> Self {
+        self.floor = floor;
         self
     }
 
@@ -258,9 +277,9 @@ impl DerivedStatFormula {
 
     /// Evaluate against an actor's [`ActorValues`] + level. Reads each input
     /// (AV by FormID, or the level), folds the bilinear expression, rounds,
-    /// then clamps to `cap`. Inputs absent from `avs` read `0.0` (the
-    /// Bethesda absent-AV default), so a partially-populated actor degrades
-    /// gracefully rather than panicking.
+    /// then clamps to `[floor, cap]`. Inputs absent from `avs` read `0.0`
+    /// (the Bethesda absent-AV default), so a partially-populated actor
+    /// degrades gracefully rather than panicking.
     #[inline]
     pub fn eval(&self, avs: &ActorValues, level: u16) -> f32 {
         let a = self
@@ -275,7 +294,7 @@ impl DerivedStatFormula {
             RoundMode::Floor => raw.floor(),
             RoundMode::Ceil => raw.ceil(),
         };
-        rounded.min(self.cap)
+        rounded.max(self.floor).min(self.cap)
     }
 }
 
@@ -302,11 +321,12 @@ mod tests {
     }
 
     #[test]
-    fn formula_is_thirty_two_bytes_and_copy() {
-        // Efficiency guard: fixed layout, half a cache line, no heap — the
-        // round/kind/scope u8 flags ride the alignment padding, so adding
-        // `scope` kept it at 32 bytes.
-        assert_eq!(std::mem::size_of::<DerivedStatFormula>(), 32);
+    fn formula_is_thirty_six_bytes_and_copy() {
+        // Efficiency guard: fixed layout, no heap — the round/kind/scope/
+        // base_reads u8 flags pack into 4 bytes with zero padding (7 f32/
+        // u32-sized fields × 4 bytes + 4 packed u8 flags = 32; #2939 added
+        // `floor`, one more f32, for 36).
+        assert_eq!(std::mem::size_of::<DerivedStatFormula>(), 36);
         fn assert_copy<T: Copy>() {}
         assert_copy::<DerivedStatFormula>();
         // Scope defaults to actor-general; `player_only` flips it.
@@ -419,5 +439,39 @@ mod tests {
         // An actor missing the input AV degrades to the bias, not a panic.
         let f = DerivedStatFormula::affine(av(STR), 10.0, 200.0);
         assert_eq!(f.eval(&ActorValues::new(), 1), 200.0);
+    }
+
+    /// #2939 — `clamped_below` is the generic mechanism the FO3/FNV
+    /// negative-bias resistances (`super::resistance::Affliction::
+    /// fo3_fnv_resistance_formula`) build on; pin it directly, independent
+    /// of that call site. Defaults to unfloored (`f32::NEG_INFINITY`) so
+    /// every formula built before this fix is unaffected.
+    #[test]
+    fn clamped_below_floors_without_disturbing_the_cap() {
+        let unfloored = DerivedStatFormula::affine(av(STR), -1.0, -1.0);
+        assert_eq!(
+            unfloored.eval(&avs(&[(STR, 5.0)]), 1),
+            -6.0,
+            "no floor by default"
+        );
+
+        let floored = unfloored.clamped_below(0.0);
+        assert_eq!(
+            floored.eval(&avs(&[(STR, 5.0)]), 1),
+            0.0,
+            "clamps below zero"
+        );
+        assert_eq!(
+            floored.eval(&avs(&[(STR, 0.0)]), 1),
+            0.0,
+            "input at the exact floor stays at the floor, not below it"
+        );
+
+        // Floor and cap compose — a value the floor doesn't reach still
+        // respects the upper clamp.
+        let floored_and_capped = DerivedStatFormula::affine(av(STR), 1.0, 0.0)
+            .clamped_below(0.0)
+            .capped(10.0);
+        assert_eq!(floored_and_capped.eval(&avs(&[(STR, 50.0)]), 1), 10.0);
     }
 }

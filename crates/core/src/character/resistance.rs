@@ -93,14 +93,23 @@ impl Affliction {
     pub const ALL: [Affliction; 2] = [Self::RADIATION, Self::POISON];
 
     /// The FO3/FNV derived-percentage formula `(governing − 1)·k = k·gov − k`,
-    /// clamped to the cap. `governing_av` is the resolved governing AVIF
+    /// clamped to `[0, cap]`. `governing_av` is the resolved governing AVIF
     /// FormID. This is the *only* place the `(gov − 1)·k` shape is encoded.
+    ///
+    /// #2939 — this is the only shipped formula shape with a negative bias
+    /// (`-k`), so it's the only one that can evaluate below zero: a governing
+    /// AV that's absent (reads `0.0` by design) or genuinely `0` gives
+    /// `(0−1)·k = -k`, outside the sourced attribute domain (SPECIAL is
+    /// 1–10). `clamped_below(0.0)` is a defensive domain floor, not a sourced
+    /// balance number — the capture document's cap is the only cited
+    /// constant here.
     pub fn fo3_fnv_resistance_formula(&self, governing_av: u32) -> DerivedStatFormula {
         DerivedStatFormula::affine(
             DerivedInput::actor_value(governing_av),
             self.derive_coeff,
             -self.derive_coeff,
         )
+        .clamped_below(0.0)
         .capped(self.resist_cap)
     }
 }
@@ -145,6 +154,30 @@ mod tests {
         assert_eq!(f.eval(&avs(5.0), 1), 20.0);
         // Uncapped — keeps scaling: (50 − 1)·5 = 245.
         assert_eq!(f.eval(&avs(50.0), 1), 245.0);
+    }
+
+    /// #2939 — `(gov − 1)·k` is negative for `gov` absent (reads `0.0` by
+    /// design) or genuinely `0`, outside the sourced 1–10 attribute domain.
+    /// Pre-fix this read as `-2.0` (Radiation) / `-5.0` (Poison) — a
+    /// `GetActorValue` on a partially-populated actor took that at face
+    /// value, even though the dedicated combat consumer
+    /// (`damage_multiplier`) already re-clamps and was never exposed to it.
+    #[test]
+    fn resistance_formulas_floor_at_zero_for_an_absent_or_zero_governing_av() {
+        let rad = Affliction::RADIATION.fo3_fnv_resistance_formula(END);
+        let poison = Affliction::POISON.fo3_fnv_resistance_formula(END);
+
+        // Absent governing AV — the documented "reads 0.0" default.
+        assert_eq!(rad.eval(&ActorValues::new(), 1), 0.0);
+        assert_eq!(poison.eval(&ActorValues::new(), 1), 0.0);
+
+        // Genuinely-zero Endurance hits the same floor, not a negative.
+        assert_eq!(rad.eval(&avs(0.0), 1), 0.0);
+        assert_eq!(poison.eval(&avs(0.0), 1), 0.0);
+
+        // END 1 is the other true zero-crossing (gov − 1 = 0) — still 0, not
+        // a sign flip either side of it.
+        assert_eq!(rad.eval(&avs(1.0), 1), 0.0);
     }
 
     #[test]
