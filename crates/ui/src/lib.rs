@@ -21,7 +21,8 @@ pub use catalog::{
     ScaleformHostCatalog, ScaleformHostMethod, ScaleformHostMethodKind, ScaleformHostObject,
 };
 pub use host::{
-    ScaleformHostBridge, ScaleformHostCall, ScaleformHostDispatch, ScaleformValue, MAX_QUEUED_CALLS,
+    ScaleformHostBridge, ScaleformHostCall, ScaleformHostDispatch, ScaleformValue,
+    MAX_DISTINCT_HOST_METHOD_NAMES, MAX_QUEUED_CALLS,
 };
 pub use input::{
     UiImeEvent, UiInputEvent, UiKeyDescriptor, UiKeyLocation, UiLogicalKey, UiMouseButton,

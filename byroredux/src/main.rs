@@ -115,8 +115,14 @@ struct App {
     ui_texture_handle: Option<u32>,
     /// Host methods already reported by the per-frame Scaleform drain, so a
     /// menu that calls an unimplemented method every frame reports it once
-    /// rather than once per frame (#2714).
+    /// rather than once per frame (#2714). Bounded by
+    /// `byroredux_ui::MAX_DISTINCT_HOST_METHOD_NAMES` (#2964) — this mirrors
+    /// the bridge's own movie-keyed diagnostic sets, so it needs the same
+    /// cap for the same reason: an unbounded-by-construction set keyed by a
+    /// string untrusted ActionScript content chooses.
     ui_reported_host_methods: std::collections::HashSet<String>,
+    /// One-shot latch for the `ui_reported_host_methods` cap warning.
+    ui_reported_host_methods_capped: bool,
     /// Reusable per-frame draw command buffer (cleared each frame, allocation retained).
     draw_commands: Vec<DrawCommand>,
     /// Reusable per-frame water draw command buffer. Built alongside
@@ -436,6 +442,7 @@ impl App {
             ui_input_state: ui_input::UiInputState::default(),
             ui_texture_handle: None,
             ui_reported_host_methods: std::collections::HashSet::new(),
+            ui_reported_host_methods_capped: false,
             draw_commands: Vec::new(),
             water_commands: Vec::new(),
             gpu_lights: Vec::new(),

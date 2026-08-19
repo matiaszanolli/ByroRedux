@@ -34,6 +34,23 @@ type ResponseHandler = dyn Fn(&[ScaleformValue]) -> Vec<ScaleformValue>;
 /// `ExternalInterface.call` has already happened by the time we get here.
 pub const MAX_QUEUED_CALLS: usize = 1024;
 
+/// Backstop on how many distinct names the bridge's diagnostic sets
+/// (`callbacks`, `known_methods`, `unknown_methods`, `unanswered_methods`)
+/// retain for the life of the bridge (#2964).
+///
+/// Untrusted movie content chooses three of those four keys — the name
+/// passed to `ExternalInterface.addCallback`, and the called method name that
+/// lands in `unknown_methods`/`unanswered_methods` — so a movie running
+/// `addCallback("cb" + i++, f)` or `ExternalInterface.call("m" + i++)` inside
+/// `onEnterFrame` would otherwise grow engine-resident heap every frame with
+/// no ceiling, the same shape [`MAX_QUEUED_CALLS`] exists for on `calls`.
+/// `known_methods` is populated only by trusted engine registration calls
+/// today (`register_method`, `set_response*`), never movie content directly,
+/// but is capped for the same reason `resource_errors` (#2720) caps a channel
+/// nothing currently drives hard: a cap that never engages costs nothing, and
+/// one that's needed and missing is a slow OOM.
+pub const MAX_DISTINCT_HOST_METHOD_NAMES: usize = 1024;
+
 /// Value type shared between the engine and ActionScript.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ScaleformValue {
@@ -159,11 +176,45 @@ struct BridgeState {
     /// bridge doesn't also flood the log.
     overflow_warned: bool,
     callbacks: BTreeSet<String>,
+    /// One-shot latch for [`MAX_DISTINCT_HOST_METHOD_NAMES`] on `callbacks`.
+    callbacks_capped: bool,
     known_methods: BTreeSet<String>,
+    /// One-shot latch for [`MAX_DISTINCT_HOST_METHOD_NAMES`] on `known_methods`.
+    known_methods_capped: bool,
     unknown_methods: BTreeSet<String>,
+    /// One-shot latch for [`MAX_DISTINCT_HOST_METHOD_NAMES`] on `unknown_methods`.
+    unknown_methods_capped: bool,
     unanswered_methods: BTreeSet<String>,
+    /// One-shot latch for [`MAX_DISTINCT_HOST_METHOD_NAMES`] on `unanswered_methods`.
+    unanswered_methods_capped: bool,
     responses: BTreeMap<String, Vec<ScaleformValue>>,
     response_handlers: BTreeMap<String, Rc<ResponseHandler>>,
+}
+
+impl BridgeState {
+    /// Insert `value` into `set`, bounded by [`MAX_DISTINCT_HOST_METHOD_NAMES`]
+    /// (#2964). Mirrors `SwfPlayer::record_resource_errors`'s dedup-then-cap
+    /// shape (#2720): a name already present is a no-op (so re-observing a
+    /// known name never gets blocked once the set is full), and the first
+    /// insert that would cross the cap logs once via `capped` and is dropped
+    /// rather than growing the set further.
+    fn insert_bounded(set: &mut BTreeSet<String>, capped: &mut bool, label: &str, value: String) {
+        if set.contains(&value) {
+            return;
+        }
+        if set.len() >= MAX_DISTINCT_HOST_METHOD_NAMES {
+            if !*capped {
+                *capped = true;
+                log::error!(
+                    "Scaleform host bridge's {label} set hit the \
+                     {MAX_DISTINCT_HOST_METHOD_NAMES}-entry cap; further distinct names are \
+                     neither recorded nor diagnosable"
+                );
+            }
+            return;
+        }
+        set.insert(value);
+    }
 }
 
 /// Engine-side handle for a Ruffle ExternalInterface provider.
@@ -198,8 +249,14 @@ impl ScaleformHostBridge {
     pub fn register_method(&self, method: impl Into<String>) {
         let method = method.into();
         let mut state = self.state.borrow_mut();
+        let state = &mut *state;
         state.unknown_methods.remove(&method);
-        state.known_methods.insert(method);
+        BridgeState::insert_bounded(
+            &mut state.known_methods,
+            &mut state.known_methods_capped,
+            "known_methods",
+            method,
+        );
     }
 
     /// Configure a constant synchronous response for a host method.
@@ -218,9 +275,15 @@ impl ScaleformHostBridge {
     ) {
         let method = method.into();
         let mut state = self.state.borrow_mut();
+        let state = &mut *state;
         state.unknown_methods.remove(&method);
         state.unanswered_methods.remove(&method);
-        state.known_methods.insert(method.clone());
+        BridgeState::insert_bounded(
+            &mut state.known_methods,
+            &mut state.known_methods_capped,
+            "known_methods",
+            method.clone(),
+        );
         state.response_handlers.remove(&method);
         state
             .responses
@@ -239,9 +302,15 @@ impl ScaleformHostBridge {
     ) {
         let method = method.into();
         let mut state = self.state.borrow_mut();
+        let state = &mut *state;
         state.unknown_methods.remove(&method);
         state.unanswered_methods.remove(&method);
-        state.known_methods.insert(method.clone());
+        BridgeState::insert_bounded(
+            &mut state.known_methods,
+            &mut state.known_methods_capped,
+            "known_methods",
+            method.clone(),
+        );
         state.responses.remove(&method);
         state.response_handlers.insert(method, Rc::new(handler));
     }
@@ -333,6 +402,7 @@ impl ScaleformHostBridge {
         let dynamic_response = response_handler.map(|handler| handler(&normalized.arguments));
 
         let mut state = self.state.borrow_mut();
+        let state = &mut *state;
         let sequence = state.next_sequence;
         state.next_sequence += 1;
 
@@ -349,12 +419,22 @@ impl ScaleformHostBridge {
         } else if catalog_method
             .is_some_and(|method| method.kind == ScaleformHostMethodKind::Request)
         {
-            state.unanswered_methods.insert(normalized.method.clone());
+            BridgeState::insert_bounded(
+                &mut state.unanswered_methods,
+                &mut state.unanswered_methods_capped,
+                "unanswered_methods",
+                normalized.method.clone(),
+            );
             ScaleformHostDispatch::MissingResponse
         } else if is_known {
             ScaleformHostDispatch::Queued
         } else {
-            state.unknown_methods.insert(normalized.method.clone());
+            BridgeState::insert_bounded(
+                &mut state.unknown_methods,
+                &mut state.unknown_methods_capped,
+                "unknown_methods",
+                normalized.method.clone(),
+            );
             ScaleformHostDispatch::Unknown
         };
 
@@ -496,11 +576,14 @@ impl ExternalInterfaceProvider for BridgeProvider {
     }
 
     fn on_callback_available(&self, name: &str) {
-        self.bridge
-            .state
-            .borrow_mut()
-            .callbacks
-            .insert(name.to_string());
+        let mut state = self.bridge.state.borrow_mut();
+        let state = &mut *state;
+        BridgeState::insert_bounded(
+            &mut state.callbacks,
+            &mut state.callbacks_capped,
+            "callbacks",
+            name.to_string(),
+        );
     }
 
     fn get_id(&self) -> Option<String> {

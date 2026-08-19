@@ -17,7 +17,7 @@ use byroredux_core::ecs::{DebugStats, DeltaTime, ScratchTelemetry};
 use byroredux_renderer::vulkan::context::FrameInputs;
 use byroredux_renderer::vulkan::GpuUploadCtx;
 use byroredux_renderer::ImageSpaceModifierView;
-use byroredux_ui::ScaleformHostDispatch;
+use byroredux_ui::{ScaleformHostDispatch, MAX_DISTINCT_HOST_METHOD_NAMES};
 use std::time::Instant;
 use winit::event_loop::ActiveEventLoop;
 
@@ -237,18 +237,37 @@ impl App {
                         call.dispatch,
                         call.arguments.len(),
                     );
+                    // #2964 — bounded the same way the bridge's own
+                    // movie-keyed diagnostic sets are: `call.method` is
+                    // chosen by untrusted ActionScript content, so this set
+                    // needs the same cap `host.rs::MAX_DISTINCT_HOST_METHOD_NAMES`
+                    // gives `unknown_methods`/`unanswered_methods` upstream,
+                    // or a menu calling a distinct unimplemented name every
+                    // frame would grow this HashSet without limit.
                     if matches!(
                         call.dispatch,
                         ScaleformHostDispatch::Unknown | ScaleformHostDispatch::MissingResponse
-                    ) && self.ui_reported_host_methods.insert(call.method.clone())
+                    ) && !self.ui_reported_host_methods.contains(&call.method)
                     {
-                        log::warn!(
-                            "Scaleform menu '{}' called host method '{}' ({:?}) — \
-                             no engine handler is registered, so the menu received Null",
-                            ui.menu_name,
-                            call.method,
-                            call.dispatch,
-                        );
+                        if self.ui_reported_host_methods.len() >= MAX_DISTINCT_HOST_METHOD_NAMES {
+                            if !self.ui_reported_host_methods_capped {
+                                self.ui_reported_host_methods_capped = true;
+                                log::error!(
+                                    "Scaleform unimplemented-host-method diagnostic hit the \
+                                     {MAX_DISTINCT_HOST_METHOD_NAMES}-entry cap; further \
+                                     distinct methods are neither recorded nor logged"
+                                );
+                            }
+                        } else {
+                            self.ui_reported_host_methods.insert(call.method.clone());
+                            log::warn!(
+                                "Scaleform menu '{}' called host method '{}' ({:?}) — \
+                                 no engine handler is registered, so the menu received Null",
+                                ui.menu_name,
+                                call.method,
+                                call.dispatch,
+                            );
+                        }
                     }
                 }
 

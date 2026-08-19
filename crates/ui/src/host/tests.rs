@@ -404,6 +404,86 @@ fn call_queue_overflow_evicts_the_oldest_entries() {
     );
 }
 
+/// #2964 — `unknown_methods` is keyed by whatever method name untrusted
+/// ActionScript content calls, unlike `calls` (bounded by #2714/#2714's
+/// `MAX_QUEUED_CALLS`, a *count*). A movie running
+/// `ExternalInterface.call("m" + i++)` inside `onEnterFrame` chooses a fresh
+/// key every frame, so pushing past the cap must hold at the cap rather than
+/// grow the set forever.
+#[test]
+fn unknown_methods_set_stops_growing_at_the_cap() {
+    let bridge = ScaleformHostBridge::new(ScaleformProfile::Fallout4Avm2);
+    let overflow = 50usize;
+    for i in 0..crate::MAX_DISTINCT_HOST_METHOD_NAMES + overflow {
+        bridge.record_call(&format!("BGSCodeObj.NotARealMethod{i}"), &[]);
+    }
+
+    assert_eq!(
+        bridge.unknown_methods().len(),
+        crate::MAX_DISTINCT_HOST_METHOD_NAMES
+    );
+}
+
+/// #2964 — `known_methods` is populated only by trusted `register_method`
+/// callers today, not movie content, but is capped for the same
+/// defense-in-depth reason `resource_errors` (#2720) caps a channel nothing
+/// currently drives hard. A registration past the cap is silently dropped
+/// (same shape as the other three sets): the name behaves exactly like one
+/// that was never registered, which this proves by observing `record_call`
+/// classify a late registration as `Unknown` rather than `Queued`.
+#[test]
+fn known_methods_cap_makes_a_late_registration_behave_unregistered() {
+    let bridge = ScaleformHostBridge::new(ScaleformProfile::Fallout4Avm2);
+    let overflow = 5usize;
+    for i in 0..crate::MAX_DISTINCT_HOST_METHOD_NAMES + overflow {
+        bridge.register_method(format!("CustomMethod{i}"));
+    }
+
+    // Registered well within the cap: genuinely known.
+    bridge.record_call("BGSCodeObj.CustomMethod0", &[]);
+    assert_eq!(
+        bridge.drain_calls().pop().unwrap().dispatch,
+        ScaleformHostDispatch::Queued
+    );
+
+    // Registered past the cap: the insert was dropped, so this name falls
+    // through to `Unknown` exactly like an unregistered name would.
+    let late_index = crate::MAX_DISTINCT_HOST_METHOD_NAMES + overflow - 1;
+    bridge.record_call(&format!("BGSCodeObj.CustomMethod{late_index}"), &[]);
+    assert_eq!(
+        bridge.drain_calls().pop().unwrap().dispatch,
+        ScaleformHostDispatch::Unknown
+    );
+}
+
+/// #2964 — direct coverage of the shared bound `BridgeState::insert_bounded`
+/// gives all four sets (`callbacks` and `unanswered_methods` can't
+/// practically be driven past 1024 distinct *real* entries through the
+/// public API — a Ruffle fixture would need 1024 distinct `addCallback`
+/// names, and `unanswered_methods` only ever admits cataloged `Request`
+/// methods, of which there are a few dozen). Exercising the mechanism
+/// directly proves the same guarantee without a synthetic corpus.
+#[test]
+fn insert_bounded_caps_and_logs_once() {
+    let mut set = std::collections::BTreeSet::new();
+    let mut capped = false;
+
+    for i in 0..crate::MAX_DISTINCT_HOST_METHOD_NAMES + 10 {
+        super::BridgeState::insert_bounded(&mut set, &mut capped, "test_set", format!("n{i}"));
+    }
+
+    assert_eq!(set.len(), crate::MAX_DISTINCT_HOST_METHOD_NAMES);
+    assert!(capped);
+    assert!(set.contains("n0"));
+    assert!(!set.contains(&format!("n{}", crate::MAX_DISTINCT_HOST_METHOD_NAMES)));
+
+    // A name already present is still a no-op success, not a second drop —
+    // re-observing a known name must never itself be blocked by the cap.
+    let len_before = set.len();
+    super::BridgeState::insert_bounded(&mut set, &mut capped, "test_set", "n0".to_string());
+    assert_eq!(set.len(), len_before);
+}
+
 /// The drop counter is evidence that a gap happened, so it must survive the
 /// drain that clears the backlog.
 #[test]
