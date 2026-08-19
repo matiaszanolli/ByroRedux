@@ -63,6 +63,9 @@ pub enum TextureRole {
     InnerLayer,
     /// Standalone specular intensity/colour, on model-space-normal materials.
     Specular,
+    /// FO4 wrinkle/expression-crease normal map, tint-family shader types
+    /// only. See #2999.
+    Wrinkle,
 }
 
 /// `BSLightingShaderType` values this table branches on. Named so the arms
@@ -268,11 +271,41 @@ pub fn slot_to_role(context: TextureSlotContext, slot: u32) -> Option<TextureRol
             Some(TextureRole::GreyscaleLut)
         }
 
-        // #1350 — types 5/6 declare no TS slot 4/5; skip explicitly so a stray
-        // authored string cannot bind an env cube. FaceTint's slots 4/5 are
-        // absent on 100% of vanilla properties.
-        (_, 4) => (!tint_family).then_some(TextureRole::Environment),
-        (_, 5) => (!tint_family).then_some(TextureRole::EnvironmentMask),
+        // #1350 — types 4/5/6 declare no TS slot 4/5 on Skyrim; skip
+        // explicitly so a stray authored string cannot bind an env cube.
+        // FaceTint's slots 4/5 are absent on 100% of vanilla Skyrim
+        // properties. **This occupancy claim is Skyrim-only — see the FO4
+        // arm below, #2999.**
+        (
+            TextureSlotLayout::Skyrim | TextureSlotLayout::Starfield | TextureSlotLayout::Fallout76,
+            4,
+        ) => (!tint_family).then_some(TextureRole::Environment),
+        (
+            TextureSlotLayout::Skyrim | TextureSlotLayout::Starfield | TextureSlotLayout::Fallout76,
+            5,
+        ) => (!tint_family).then_some(TextureRole::EnvironmentMask),
+
+        // #2999 — FO4 slots 4/5 ARE routinely authored on FaceTint/SkinTint/
+        // HairTint heads, unlike Skyrim. Measured on `Fallout4 - Meshes.ba2`
+        // type-4 FaceTint properties (n=1,229): slot 4 50.7% non-empty, all
+        // genuine environment cubemaps
+        // (`Shared/Cubemaps/mipblur_DefaultOutside1_dielectric.dds`); slot 5
+        // 79.8% non-empty, all `_n` wrinkle/crease normals
+        // (`BaseFemaleHeadWrinkles_n.DDS`, `HeadWrinkles_n.dds`,
+        // `Gen2SkinHeadCrease_n.dds`, `SupermutantHeadCrease_n.dds`).
+        // `MeshesExtra` reproduces both. Slot 4 is unconditionally
+        // Environment regardless of shader type — non-tint FO4 types carry
+        // it too, same as Skyrim's non-tint case. Slot 5 is Wrinkle only on
+        // the tint family; non-tint FO4 types (e.g. type 1) measured `_m`
+        // mask entries there, matching the ordinary EnvironmentMask role.
+        (TextureSlotLayout::Fallout4, 4) => Some(TextureRole::Environment),
+        (TextureSlotLayout::Fallout4, 5) => {
+            if tint_family {
+                Some(TextureRole::Wrinkle)
+            } else {
+                Some(TextureRole::EnvironmentMask)
+            }
+        }
 
         // #2693 — the inner layer is slot **6**, not 7. nif.xml contradicts
         // itself (its enum prose says "Layer(TS7)", its field table says slot 6
@@ -433,6 +466,75 @@ mod tests {
             Some(TextureRole::Specular)
         );
         assert_eq!(slot_to_role(skyrim(0, false, false), 7), None);
+    }
+
+    /// #2999 — FO4 FaceTint/SkinTint/HairTint slots 4/5 must land in
+    /// Environment / Wrinkle, not skip (the Skyrim-measured #1350
+    /// occupancy claim does not hold on FO4). Non-tint FO4 shader types
+    /// keep the ordinary Environment/EnvironmentMask reading at 4/5,
+    /// matching the measured type-1 `_m` mask entries at slot 5.
+    #[test]
+    fn fo4_tint_family_routes_slots_four_and_five_to_cubemap_and_wrinkle() {
+        for ty in [
+            bs_lighting::FACE_TINT,
+            bs_lighting::SKIN_TINT,
+            bs_lighting::HAIR_TINT,
+        ] {
+            let context = TextureSlotContext {
+                layout: TextureSlotLayout::Fallout4,
+                shader_type: ty,
+                glow_map: false,
+                model_space_normals: false,
+            };
+            assert_eq!(
+                slot_to_role(context, 4),
+                Some(TextureRole::Environment),
+                "FO4 shader_type {ty} slot 4 must be the environment cubemap (#2999)"
+            );
+            assert_eq!(
+                slot_to_role(context, 5),
+                Some(TextureRole::Wrinkle),
+                "FO4 shader_type {ty} slot 5 must be the wrinkle/crease normal (#2999)"
+            );
+        }
+        // Non-tint FO4 shader type keeps the ordinary reading.
+        let non_tint = TextureSlotContext {
+            layout: TextureSlotLayout::Fallout4,
+            shader_type: 0,
+            glow_map: false,
+            model_space_normals: false,
+        };
+        assert_eq!(slot_to_role(non_tint, 4), Some(TextureRole::Environment));
+        assert_eq!(
+            slot_to_role(non_tint, 5),
+            Some(TextureRole::EnvironmentMask),
+            "non-tint FO4 slot 5 stays EnvironmentMask, matching the measured \
+             type-1 `_m` entries — Wrinkle is tint-family only"
+        );
+        // Skyrim/Starfield/FO76 keep the pre-#2999 skip on the tint family —
+        // this occupancy claim IS accurate there (#1350).
+        for layout in [
+            TextureSlotLayout::Skyrim,
+            TextureSlotLayout::Starfield,
+            TextureSlotLayout::Fallout76,
+        ] {
+            let context = TextureSlotContext {
+                layout,
+                shader_type: bs_lighting::FACE_TINT,
+                glow_map: false,
+                model_space_normals: false,
+            };
+            assert_eq!(
+                slot_to_role(context, 4),
+                None,
+                "{layout:?} FaceTint slot 4 must still skip — the #1350 claim holds here"
+            );
+            assert_eq!(
+                slot_to_role(context, 5),
+                None,
+                "{layout:?} FaceTint slot 5 must still skip — the #1350 claim holds here"
+            );
+        }
     }
 
     #[test]

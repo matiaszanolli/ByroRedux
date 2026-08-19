@@ -191,6 +191,7 @@ fn apply_bs_lighting_shader(
                         TextureRole::EnvironmentMask => &mut info.env_mask,
                         TextureRole::InnerLayer => &mut info.inner_layer_map,
                         TextureRole::Specular => &mut info.specular_map,
+                        TextureRole::Wrinkle => &mut info.wrinkle_map,
                     };
                     if dest.is_none() {
                         *dest = intern_texture_path(pool, raw);

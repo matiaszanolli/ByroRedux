@@ -472,6 +472,20 @@ pub(super) struct MaterialInfo {
     /// `BSLightingShaderType::MultiLayerParallax` ("Enables …
     /// Layer(TS7)") and #563.
     pub inner_layer_map: Option<FixedString>,
+    /// FO4 `BSShaderTextureSet` slot 5, tint-family shader types only
+    /// (FaceTint/SkinTint/HairTint) — the wrinkle/expression-crease
+    /// normal map (`*_n.dds`: `BaseFemaleHeadWrinkles_n.DDS`,
+    /// `HeadWrinkles_n.dds`, `Gen2SkinHeadCrease_n.dds`,
+    /// `SupermutantHeadCrease_n.dds`). Measured on `Fallout4 -
+    /// Meshes.ba2` type-4 FaceTint properties: 79.8% non-empty
+    /// (981/1,229), all `_n` normals. Pre-#2999 `slot_to_role` skipped
+    /// slots 4/5 on the tint family for every game — a Skyrim
+    /// occupancy measurement (#1350) generalised to FO4, where it's
+    /// false. Routes to `MaterialTextureSet::wrinkle`, the same
+    /// canonical field the TXST decode path already populates
+    /// (`crates/plugin/src/esm/cell/support.rs`) — this closes the
+    /// NIF-import side of that same destination.
+    pub wrinkle_map: Option<FixedString>,
     /// How vertex colors should participate in shading. See #214 /
     /// `VertexColorMode`. Defaults to `AmbientDiffuse` — the value
     /// Gamebryo uses when the NIF has no `NiVertexColorProperty`.
@@ -1054,6 +1068,7 @@ impl Default for MaterialInfo {
             slot2_glow_enabled: false,
             tint_map: None,
             inner_layer_map: None,
+            wrinkle_map: None,
             vertex_color_mode: VertexColorMode::AmbientDiffuse,
             alpha_blend: false,
             alpha_blend_authored: false,
@@ -1183,7 +1198,12 @@ impl MaterialInfo {
                 effect.and_then(|data| data.lighting_texture.as_deref()),
             ),
             flow: None,
-            wrinkle: None,
+            // #2999 — was hardcoded `None`: the TXST decode path
+            // (`crates/plugin/src/esm/cell/support.rs`) already
+            // populates `MaterialTextureSet::wrinkle`, but nothing on
+            // the NIF-import side ever read into it, even though
+            // `slot_to_role` now routes FO4 slot 5 (tint family) here.
+            wrinkle: self.wrinkle_map,
             greyscale_lut: self.greyscale_lut_map.or_else(|| {
                 intern_effect_path(
                     pool,

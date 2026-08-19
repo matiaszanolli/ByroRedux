@@ -1297,6 +1297,64 @@ fn fo4_slot_3_is_greyscale_lut_and_slot_7_is_specular_without_msn() {
     );
 }
 
+/// #2999 — FO4 FaceTint/SkinTint/HairTint heads DO author slots 4/5,
+/// unlike Skyrim (`face_tint_routes_authored_slots_and_leaves_the_empty_ones_alone`
+/// above pins that Skyrim reading, which must stay unchanged). Slot 4 is
+/// the environment cubemap; slot 5 is the wrinkle/expression-crease
+/// normal — a role with no destination before this fix
+/// (`MaterialTextureSet::wrinkle` was hardcoded `None` on the NIF-import
+/// side even though the TXST decode path already populated it).
+#[test]
+fn fo4_tint_family_routes_slots_four_and_five_to_env_and_wrinkle() {
+    for shader_type in [4u32, 5, 6] {
+        let blocks: Vec<Box<dyn NiObject>> = vec![
+            Box::new(lighting_shader_with_type_and_texset(shader_type, 1)),
+            Box::new(full_8_slot_tex_set("head")),
+        ];
+        let scene = NifScene {
+            blocks,
+            bsver: crate::version::bsver::FALLOUT4,
+            ..NifScene::default()
+        };
+        let mut shape = make_tri_shape_with_props(Vec::new());
+        shape.shader_property_ref = BlockRef(0);
+        let (info, pool) = extract_with_pool(&scene, &shape, &[]);
+
+        assert_path(&pool, info.env_map, "head_4.dds");
+        assert_path(&pool, info.wrinkle_map, "head_5.dds");
+        assert!(
+            info.env_mask.is_none(),
+            "shader_type {shader_type}: FO4 tint-family slot 5 is Wrinkle, \
+             not EnvironmentMask — it must not also land there"
+        );
+    }
+}
+
+/// Non-tint FO4 shader types keep the ordinary slot-5 reading
+/// (EnvironmentMask), matching the measured type-1 `_m` mask entries —
+/// Wrinkle is tint-family only.
+#[test]
+fn fo4_non_tint_slot_five_stays_environment_mask() {
+    let blocks: Vec<Box<dyn NiObject>> = vec![
+        Box::new(lighting_shader_with_type_and_texset(0, 1)),
+        Box::new(full_8_slot_tex_set("wall")),
+    ];
+    let scene = NifScene {
+        blocks,
+        bsver: crate::version::bsver::FALLOUT4,
+        ..NifScene::default()
+    };
+    let mut shape = make_tri_shape_with_props(Vec::new());
+    shape.shader_property_ref = BlockRef(0);
+    let (info, pool) = extract_with_pool(&scene, &shape, &[]);
+
+    assert_path(&pool, info.env_mask, "wall_5.dds");
+    assert!(
+        info.wrinkle_map.is_none(),
+        "non-tint FO4 shader types must not route slot 5 to Wrinkle (#2999)"
+    );
+}
+
 #[test]
 fn fo76_slot_6_reaches_specular_and_hair_kind_is_canonical() {
     let mut shader = lighting_shader_with_type_and_texset(5, 1);
