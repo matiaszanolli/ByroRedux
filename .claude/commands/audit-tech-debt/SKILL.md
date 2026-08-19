@@ -62,27 +62,93 @@ Tech-debt findings default to **LOW** (see `_audit-severity.md`). Promote only o
    gh issue list --repo matiaszanolli/ByroRedux --limit 500 --state all --label tech-debt --json number,title,state > /tmp/audit/tech-debt/issues_all.json
    ```
 4. Scan `docs/audits/` for prior `AUDIT_TECH_DEBT_*.md` (diff direction, not re-litigation).
-5. Snapshot totals so the next audit can diff:
+5. **Production-LOC helper** (#3081 / TD4-2026-08-16-01 — Dim 1's actual
+   subject is production complexity, not file length; a file that is long
+   because of bulk inline tests is not the debt this dimension hunts).
+   Define once, reuse for both the snapshot below and Dim 1's own discovery:
+   ```bash
+   # Production LOC estimate for one .rs file.
+   #
+   # Pure-test files by this codebase's own naming convention (`tests.rs` /
+   # `*_tests.rs`, or anything under a `tests/` dir — e.g.
+   # `acceleration/tests.rs`, `scene_buffer/gpu_instance_layout_tests.rs`)
+   # report 0: their `#[cfg(test)] #[path = "..."] mod <name>;` gate lives in
+   # the PARENT file that declares them, so no in-file marker exists to
+   # detect it from the file's own content.
+   #
+   # Everything else: total LOC minus every line inside a #[cfg(test)]-gated
+   # BRACE-DELIMITED item, tracked by brace depth so multiple scattered test
+   # blocks in one file are all excluded (a first-#[cfg(test)]-occurrence
+   # cutoff badly undercounts a file like draw.rs, whose first #[cfg(test)]
+   # sits ~200 lines into a 4700-line file, well before the bulk of its
+   # production code). A #[cfg(test)] attribute on a `;`-terminated item
+   # (an external `mod tests;` declaration, a `#[path]` attribute line, or a
+   # test-only `use`) has no block to track — only that one line is excluded.
+   prod_loc() {
+       case "$1" in
+           */tests/*|*tests.rs) echo 0; return ;;
+       esac
+       awk '
+           pending && /;/ && !/\{/ { pending = 0; next }
+           /^#\[cfg\(test\)\]/ { pending = 1; next }
+           pending && /\{/ {
+               in_test = 1; depth = 0
+               n = gsub(/\{/, "{"); depth += n
+               n = gsub(/\}/, "}"); depth -= n
+               pending = 0
+               if (depth == 0) in_test = 0
+               next
+           }
+           in_test {
+               n = gsub(/\{/, "{"); depth += n
+               n = gsub(/\}/, "}"); depth -= n
+               if (depth <= 0) in_test = 0
+               next
+           }
+           { prod++ }
+           END { print prod + 0 }
+       ' "$1"
+   }
+   ```
+6. Snapshot totals so the next audit can diff:
    ```bash
    {
      echo "TODO/FIXME/HACK/XXX:   $(grep -RInE '(TODO|FIXME|HACK|XXX)\b' crates byroredux | wc -l)"
      echo "allow(dead_code):      $(grep -RInE 'allow\(dead_code\)' crates byroredux | wc -l)"
      echo "unimplemented!/todo!(): $(grep -RInE 'unimplemented!|todo!\(\)' crates byroredux | wc -l)"
      echo "#[ignore] tests:        $(grep -RIn '#\[ignore\]' . | wc -l)"
-     echo "files >2000 LOC:        $(find crates byroredux -name '*.rs' -exec wc -l {} + | awk '$1>2000 && $2!="total"' | wc -l)"
+     echo "files >2000 production LOC: $(for f in $(find crates byroredux -name '*.rs'); do echo "$(prod_loc "$f")"; done | awk '$1>2000' | wc -l)"
+     echo "test files >2000 total LOC (lower priority, separate bucket): $(find crates byroredux -name '*.rs' -exec wc -l {} + | awk '$1>2000 && $2!="total"' | wc -l | xargs -I{} echo {})"
    } > /tmp/audit/tech-debt/baseline.txt
    ```
    Orientation only (will drift — re-run, never quote): the marker total runs ~20,
    `unimplemented!/todo!()` is currently **0** (the engine prefers explicit
    fallbacks over panics — a fresh `todo!()` is therefore notable), `#[ignore]`
-   runs in the mid-hundreds (mostly Vulkan/smoke gating, not debt), and the
-   >2000-LOC set is currently 6 files (Dim 1) — `context/draw.rs`,
-   `context/mod.rs`, `byroredux/src/save_io.rs`, `volumetrics.rs`,
-   `vulkan/material.rs`, `byroredux/src/asset_provider/tests/`. #2311
-   (2026-08-06) split the old monolithic NIF import test file into
-   `crates/nif/src/import/tests/` per-topic siblings, dropping it out of
-   this set; `save_io.rs` and `asset_provider/tests/` crossed in
-   independently (the M45 save/load registry sweep). Note #2258/#2259 (2026-08-03, `record_post_passes` /
+   runs in the mid-hundreds (mostly Vulkan/smoke gating, not debt).
+   The **production**->2000-LOC set (Dim 1's actual subject, re-verified
+   2026-08-19 with `prod_loc`) is currently 4 files: `context/mod.rs`
+   (~4060), `context/draw.rs` (~3490 — most of its file-total length, not
+   merely its production share: only a few small scattered `#[cfg(test)]`
+   blocks sit inside an otherwise huge production body), `volumetrics.rs`
+   (~2770), and `texture_registry.rs` (~2010). That last one is a real
+   disagreement with this issue's own filed evidence table (which reported
+   `texture_registry.rs` production at 838 — majority-test): re-checking the
+   file directly finds only 3 `#[cfg(test)]` markers total, all within the
+   last ~100 lines, two of which are `#[path = "..."] mod tests;`
+   declarations pointing at separate files — the file's own content is
+   genuinely ~2010 lines of production texture-registry logic (samplers,
+   path normalisation, bindless acquire/release). Filed as a real Dim 1
+   finding here rather than silently adopting a figure this check disproves.
+   `material.rs` (#2257, ~1330 production) and `gpu_instance_layout_tests.rs`
+   (0 production — reached only via an external `#[cfg(test)] mod`
+   declaration in its parent) both confirm as false positives under the OLD
+   total-LOC recipe. The separate total-LOC->2000 bucket (test-heavy files,
+   lower priority — report but do not auto-file as Dim 1) currently also
+   includes `acceleration/tests.rs`, `svgf.rs`, `misc/world.rs`,
+   `crates/physics/src/world.rs`, `env_translate.rs`, `cornell.rs`, `mesh.rs`,
+   `import/collision/shape.rs`, and `plugin/tests/parse_real_esm.rs` — check
+   each with `prod_loc` before filing; only a production count over 2000
+   belongs in Dim 1. Note #2258/#2259 (2026-08-03, `record_post_passes` /
    `build_tlas` decomposition) extracted helpers *within* `post_passes.rs` /
    `tlas.rs`, which stayed well under 2000 LOC before and after — file-level
    crossings and function-level splits are independent signals; don't assume
@@ -97,8 +163,21 @@ cheap. Each agent writes `/tmp/audit/tech-debt/dim_<N>.md`.
 ### Dimension 1: File / Function / Module Complexity
 The highest-leverage debt: an oversized file taxes every edit, review, and merge.
 
-**Discovery**:
+**Discovery**: two buckets, not one (#3081 / TD4-2026-08-16-01 — total LOC is a
+proxy for the property this dimension actually hunts, production complexity,
+and the two had decoupled: 7 of 11 files the old single-bucket recipe reported
+were majority-test, 2 were pure-test files with zero production code). Use the
+`prod_loc` helper defined in Phase 1, step 5:
 ```bash
+# Primary bucket — the dimension's actual subject. File real findings from this.
+for f in $(find crates byroredux -name '*.rs'); do
+    p=$(prod_loc "$f")
+    [ "$p" -gt 2000 ] && echo -e "$p\t$f"
+done | sort -rn
+
+# Secondary bucket — test-heavy files, lower priority. Report but do not
+# auto-file: only escalate one of these into a Dim 1 finding if its OWN
+# `prod_loc` figure (above) also crosses 2000.
 find crates byroredux -name '*.rs' -exec wc -l {} + | awk '$1>2000 && $2!="total"' | sort -rn
 ```
 Session 34/35/36 (2026-05) split the original oversized set (acceleration.rs,
@@ -106,10 +185,12 @@ dispatch_tests.rs, cell/tests.rs, draw.rs, scene_buffer.rs, context/mod.rs,
 import/mesh.rs, blocks/collision.rs, nif/anim.rs) into submodules — **all of
 those are closed; do not re-file them.** Membership has since turned over: the
 two big Vulkan-context files *grew* after re-split, and several `byroredux/`
-files crossed 2000. Re-run the command; the threshold is **2000 LOC** (the
-Session-34 split target). Whatever it lists today is the live set — including any
-file the skill once cited as a *success* (a previously-split module can grow back
-over threshold).
+files crossed 2000 (mostly on the test-only bucket now — see Phase 1 step 6's
+orientation note for the live production-bucket membership). Re-run both
+commands; the threshold is **2000 LOC** (the Session-34 split target) measured
+against **production** LOC for the primary bucket. Whatever it lists today is
+the live set — including any file the skill once cited as a *success* (a
+previously-split module can grow back over threshold).
 
 **Per oversized file, propose a split AXIS by responsibility** (not by line count):
 - A Vulkan `context/` file → per-pass recording groups (geometry / RT / denoise /
