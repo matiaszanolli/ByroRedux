@@ -318,6 +318,60 @@ fn sample_wthr_colors(
     )
 }
 
+/// #993 — Skyrim DALC ambient cube TOD interpolation. The DALC array has
+/// 4 TOD slots (sunrise / day / sunset / night) while `sky_colors` has 6
+/// (4 + high_noon + midnight); fold high_noon→day and midnight→night per
+/// the WTHR parser's on-disk padding rule
+/// (`crates/plugin/src/esm/records/weather.rs:312-314`) so the same
+/// `(slot_a, slot_b, t)` the colour interpolator picked applies cleanly.
+/// `None` when the snapshot carries no DALC bytes (FNV / FO3 / Oblivion,
+/// always).
+///
+/// Pulled out so #2816's cross-fade fix can sample the source and target
+/// snapshots identically — mirrors why [`sample_wthr_colors`] exists.
+fn sample_dalc_cube(
+    cubes: Option<&[crate::components::DalcCubeYup; 4]>,
+    slot_a: usize,
+    slot_b: usize,
+    t: f32,
+) -> Option<crate::components::DalcCubeYup> {
+    use byroredux_plugin::esm::records::weather::*;
+    let cubes = cubes?;
+    let fold = |slot: usize| match slot {
+        TOD_HIGH_NOON => TOD_DAY,
+        TOD_MIDNIGHT => TOD_NIGHT,
+        s => s,
+    };
+    Some(crate::components::DalcCubeYup::lerp(
+        &cubes[fold(slot_a)],
+        &cubes[fold(slot_b)],
+        t,
+    ))
+}
+
+/// #2816 — a flat, isotropic stand-in cube for the side of a WTHR
+/// cross-fade that authored no DALC bytes at all. Every face equals the
+/// same TOD-sampled `ambient` scalar that side's own (non-DALC) sky
+/// palette already contributes — the six-axis directional variation the
+/// other side's real cube carries is exactly what's absent, not an
+/// invented color — `specular` off and `fresnel_power` at the documented
+/// vanilla-Skyrim default (see [`DalcCubeYup::fresnel_power`]). Lets a
+/// source-with-DALC → target-without-DALC (or the reverse) transition
+/// ease the directional cube out toward plain isotropic ambient instead
+/// of holding it at full weight until it snaps to `None` on completion.
+fn flat_dalc_cube(ambient: [f32; 3]) -> crate::components::DalcCubeYup {
+    crate::components::DalcCubeYup {
+        pos_x: ambient,
+        neg_x: ambient,
+        pos_y: ambient,
+        neg_y: ambient,
+        pos_z: ambient,
+        neg_z: ambient,
+        specular: [0.0; 3],
+        fresnel_power: 1.0,
+    }
+}
+
 /// Weather & time-of-day system: advances game clock, interpolates WTHR
 /// NAM0 sky colors, computes sun arc, and updates SkyParamsRes + CellLightingRes.
 ///
@@ -402,6 +456,11 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
 
     let (zenith, horizon, lower, sun_col, ambient, sunlight, fog_col) =
         sample_wthr_colors(&wd.sky_colors, slot_a, slot_b, t);
+    // #2816 — sampled here, while `wd` is still borrowed, so the
+    // cross-fade block below can blend it against the target's own
+    // sample instead of re-reading the (by-then-replaced) live
+    // `WeatherDataRes` after the fact.
+    let dalc_source = sample_dalc_cube(wd.skyrim_dalc_per_tod.as_ref(), slot_a, slot_b, t);
 
     // Fog distance: lerp between day and night fog based on the same
     // TOD slot pair the colour interpolator just walked. Pre-#897 this
@@ -435,6 +494,7 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
         fog_near,
         fog_far,
         fog_medium,
+        dalc_cube,
     ) = if transition_t > 0.0 {
         let tr = world
             .try_resource::<WeatherTransitionRes>()
@@ -468,6 +528,31 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
         let target_fog_near = target.fog[0] + (target.fog[2] - target.fog[0]) * target_night_factor;
         let target_fog_far = target.fog[1] + (target.fog[3] - target.fog[1]) * target_night_factor;
         let target_fog_medium = target.fog_media[0].lerp(target.fog_media[1], target_night_factor);
+        // #2816 / REN-D18-02 — the DALC cube is the eleventh per-weather
+        // quantity this block blends; it used to be computed entirely
+        // outside this branch from the source only, so the target's cube
+        // arrived as a single-frame snap on completion instead of
+        // easing in. Sampled at the target's own TOD pair, same as
+        // every other target_* quantity above. When one side authored
+        // no DALC bytes at all (FNV/FO3/Oblivion, or a Skyrim WTHR that
+        // simply has none), `flat_dalc_cube` stands in with that side's
+        // own isotropic ambient instead of holding the real cube at full
+        // weight until it snaps to/from `None`.
+        let target_dalc = sample_dalc_cube(target.skyrim_dalc_per_tod.as_ref(), b_a, b_b, b_t);
+        let dalc_cube = match (dalc_source, target_dalc) {
+            (Some(a), Some(b)) => Some(crate::components::DalcCubeYup::lerp(&a, &b, transition_t)),
+            (Some(a), None) => Some(crate::components::DalcCubeYup::lerp(
+                &a,
+                &flat_dalc_cube(target_ambient),
+                transition_t,
+            )),
+            (None, Some(b)) => Some(crate::components::DalcCubeYup::lerp(
+                &flat_dalc_cube(ambient),
+                &b,
+                transition_t,
+            )),
+            (None, None) => None,
+        };
 
         (
             lerp3(zenith, target_zenith, transition_t),
@@ -480,11 +565,21 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
             lerp1(fog_near, target_fog_near, transition_t),
             lerp1(fog_far, target_fog_far, transition_t),
             fog_medium.lerp(target_fog_medium, transition_t),
+            dalc_cube,
         )
     } else {
         (
-            zenith, horizon, lower, sun_col, ambient, sunlight, fog_col, fog_near, fog_far,
+            zenith,
+            horizon,
+            lower,
+            sun_col,
+            ambient,
+            sunlight,
+            fog_col,
+            fog_near,
+            fog_far,
             fog_medium,
+            dalc_source,
         )
     };
 
@@ -522,27 +617,6 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
     let cloud_scroll_rate = cloud_scroll_rate_from_wind(wd.wind_speed);
 
     drop(wd);
-
-    // #993 — Skyrim DALC ambient cube interpolation. The DALC array
-    // has 4 TOD slots (sunrise / day / sunset / night) while
-    // `sky_colors` has 6 (4 + high_noon + midnight). Fold high_noon→day
-    // and midnight→night per the WTHR parser's on-disk padding rule
-    // (`crates/plugin/src/esm/records/weather.rs:312-314`) so the same
-    // `(slot_a, slot_b, t)` the colour interpolator picked applies
-    // cleanly. Only computed when the WTHR record carried DALC bytes
-    // — FNV / FO3 / Oblivion stay `None`.
-    let dalc_cube = world
-        .try_resource::<WeatherDataRes>()
-        .and_then(|wd| wd.skyrim_dalc_per_tod)
-        .map(|cubes| {
-            use byroredux_plugin::esm::records::weather::*;
-            let fold = |slot: usize| match slot {
-                TOD_HIGH_NOON => TOD_DAY,
-                TOD_MIDNIGHT => TOD_NIGHT,
-                s => s,
-            };
-            crate::components::DalcCubeYup::lerp(&cubes[fold(slot_a)], &cubes[fold(slot_b)], t)
-        });
 
     // Update SkyParamsRes.
     if let Some(mut sky) = world.try_resource_mut::<SkyParamsRes>() {
@@ -1584,9 +1658,164 @@ mod seeded_at_wrong_tod_resample_tests {
              the below-horizon direction the seed already had correct"
         );
         assert_eq!(
-            sky.sun_direction, [0.0, -1.0, 0.0],
+            sky.sun_direction,
+            [0.0, -1.0, 0.0],
             "the direction half of the seed was already correct \
              (7a851ab9) and must still match after resample"
+        );
+    }
+}
+
+/// Regression tests for #2816 / REN-D18-02 — the Skyrim DALC ambient cube
+/// used to be sampled from the SOURCE `WeatherDataRes` only, entirely
+/// outside the `if transition_t > 0.0` cross-fade block every other
+/// per-weather quantity blends through. A WTHR transition between two
+/// Skyrim weathers with differing DALC cubes therefore held the source
+/// cube for the whole 8-second fade and popped to the target's on the
+/// completion frame, instead of easing like zenith/horizon/ambient/etc.
+#[cfg(test)]
+mod dalc_cube_crossfade_tests {
+    use super::*;
+    use byroredux_core::ecs::World;
+    use byroredux_plugin::esm::records::weather::SKY_AMBIENT;
+
+    const RED: [f32; 3] = [1.0, 0.0, 0.0];
+    const BLUE: [f32; 3] = [0.0, 0.0, 1.0];
+    const NEUTRAL_AMBIENT: [f32; 3] = [0.2, 0.2, 0.2];
+
+    fn dalc_cube(pos_y: [f32; 3]) -> crate::components::DalcCubeYup {
+        crate::components::DalcCubeYup {
+            pos_x: [0.0; 3],
+            neg_x: [0.0; 3],
+            pos_y,
+            neg_y: [0.0; 3],
+            pos_z: [0.0; 3],
+            neg_z: [0.0; 3],
+            specular: [0.0; 3],
+            fresnel_power: 1.0,
+        }
+    }
+
+    /// Midday with symmetric `tod_hours` on both sides folds
+    /// `(slot_a, slot_b, t)` and `(b_a, b_b, b_t)` to a pure `TOD_DAY`
+    /// sample on each side (`TOD_HIGH_NOON` folds to `TOD_DAY` for DALC,
+    /// and the two DAY-side keys bracketing hour 12 are DAY/HIGH_NOON),
+    /// so each side's DALC cube is unambiguously `cubes[TOD_DAY]`
+    /// regardless of the TOD blend weight — isolates the assertions to
+    /// the crossfade weight alone.
+    fn weather(dalc: Option<[crate::components::DalcCubeYup; 4]>) -> WeatherDataRes {
+        let mut sky_colors = [[[0.0_f32; 3]; 6]; 10];
+        sky_colors[SKY_AMBIENT].fill(NEUTRAL_AMBIENT);
+        WeatherDataRes {
+            sky_colors,
+            fog: [100.0, 60000.0, 200.0, 30000.0],
+            fog_media: [
+                crate::fog::FogMedium::from_legacy_ramp(100.0, 60000.0, None),
+                crate::fog::FogMedium::from_legacy_ramp(200.0, 30000.0, None),
+            ],
+            tod_hours: [6.0, 10.0, 18.0, 22.0],
+            skyrim_dalc_per_tod: dalc,
+            wind_speed: 0,
+        }
+    }
+
+    fn build_world(
+        source_dalc: Option<[crate::components::DalcCubeYup; 4]>,
+        target_dalc: Option<[crate::components::DalcCubeYup; 4]>,
+    ) -> World {
+        let mut world = World::new();
+        world.insert_resource(GameTimeRes::frozen_at(12.0));
+        world.insert_resource(weather(source_dalc));
+        world.insert_resource(WeatherTransitionRes {
+            target: weather(target_dalc),
+            elapsed_secs: 4.0,
+            duration_secs: 8.0,
+            done: false,
+        });
+        world.insert_resource(SkyParamsRes {
+            zenith_color: [0.0; 3],
+            horizon_color: [0.0; 3],
+            lower_color: [0.0; 3],
+            sun_direction: [0.0; 3],
+            sun_color: [0.0; 3],
+            sun_size: 1.0,
+            sun_intensity: 0.0,
+            sun_angular_radius: 0.020,
+            is_exterior: true,
+            cloud_tile_scale: 0.0,
+            cloud_texture_index: 0,
+            sun_texture_index: 0,
+            cloud_tile_scale_1: 0.0,
+            cloud_texture_index_1: 0,
+            cloud_tile_scale_2: 0.0,
+            cloud_texture_index_2: 0,
+            cloud_tile_scale_3: 0.0,
+            cloud_texture_index_3: 0,
+            current_dalc_cube: None,
+        });
+        world
+    }
+
+    /// Both sides carry DALC data — the core fix. Halfway through the
+    /// fade (`elapsed=4.0 / duration=8.0` → `t=0.5`) the cube must be the
+    /// halfway blend of source and target, not the source cube held at
+    /// full weight.
+    #[test]
+    fn both_sides_with_dalc_ease_between_the_two_cubes() {
+        let source = [dalc_cube(RED); 4];
+        let target = [dalc_cube(BLUE); 4];
+        let world = build_world(Some(source), Some(target));
+
+        weather_system(&world, 0.0);
+
+        let sky = world.try_resource::<SkyParamsRes>().unwrap();
+        let cube = sky
+            .current_dalc_cube
+            .expect("both sides carry DALC data — the blend must be Some");
+        assert!(
+            (cube.pos_y[0] - 0.5).abs() < 1e-4 && (cube.pos_y[2] - 0.5).abs() < 1e-4,
+            "halfway through an 8s fade the DALC cube must be the halfway \
+             blend of source (red) and target (blue), got {:?} — pre-fix \
+             this held the source cube unblended for the whole fade",
+            cube.pos_y
+        );
+    }
+
+    /// Source has DALC, target doesn't (a Skyrim → non-Skyrim-flavoured
+    /// WTHR, or simply a target with no authored DALC bytes). The
+    /// directional cube must ease OUT toward the target's own isotropic
+    /// ambient, not hold at full weight until it snaps to `None`.
+    #[test]
+    fn source_with_dalc_eases_out_when_target_has_none() {
+        let source = [dalc_cube(RED); 4];
+        let world = build_world(Some(source), None);
+
+        weather_system(&world, 0.0);
+
+        let sky = world.try_resource::<SkyParamsRes>().unwrap();
+        let cube = sky
+            .current_dalc_cube
+            .expect("source's DALC data must still contribute mid-fade, not vanish");
+        let expected = 1.0 * 0.5 + NEUTRAL_AMBIENT[0] * 0.5;
+        assert!(
+            (cube.pos_y[0] - expected).abs() < 1e-4,
+            "expected the red source cube eased halfway toward the \
+             target's flat ambient ({NEUTRAL_AMBIENT:?}), got {:?}",
+            cube.pos_y
+        );
+    }
+
+    /// Neither side carries DALC data — the overwhelming common case
+    /// (every non-Skyrim game, and most Skyrim WTHRs too). Must stay
+    /// `None`, not manufacture a cube out of nothing.
+    #[test]
+    fn neither_side_with_dalc_stays_none() {
+        let world = build_world(None, None);
+        weather_system(&world, 0.0);
+        let sky = world.try_resource::<SkyParamsRes>().unwrap();
+        assert!(
+            sky.current_dalc_cube.is_none(),
+            "no DALC data on either side of the fade must not manufacture a cube"
         );
     }
 }
