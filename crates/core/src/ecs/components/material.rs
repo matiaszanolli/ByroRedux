@@ -419,7 +419,17 @@ impl Default for Material {
     fn default() -> Self {
         Self {
             emissive_color: [0.0, 0.0, 0.0],
-            emissive_mult: 1.0,
+            // 0.0, not a "neutral" 1.0 — matches `EmissiveSource::None`'s own
+            // doc ("no emissive authoring; `emissive_mult` defaulted to
+            // 0.0") and `ImportedMaterial::default()`'s already-0.0 value
+            // (crates/nif/src/import/types.rs), which this struct's default
+            // otherwise silently contradicted (#2556). No call site sets
+            // `emissive_color` non-zero via `..Material::default()` without
+            // also setting `emissive_mult` explicitly (verified: every such
+            // site sets both together), so this has no behavioral effect —
+            // paired with the zero `emissive_color` above either value
+            // renders identically; this just makes the pairing honest.
+            emissive_mult: 0.0,
             emissive_source: EmissiveSource::None,
             specular_color: [1.0, 1.0, 1.0],
             specular_strength: 1.0,
