@@ -366,6 +366,17 @@ pub fn hybrid_slice_coordinate(
     }
 }
 
+/// #2242 (REN-D16-04) — every call fully `fill()`s BOTH fixed-size output
+/// arrays with defaults before repopulating them from `volumes`. There is
+/// no incremental/partial update: a cell transition that changes the fog-
+/// volume list (or shifts the camera-centred grid origin under it) can
+/// never leave a stale entry from a previous frame's call sitting in a
+/// cluster cell this frame's rebuild didn't happen to touch. Combined with
+/// `fogVolumeCount` (`upload.count`) being unconditionally rewritten every
+/// frame in `dispatch` below — including the branch that skips calling
+/// this function entirely — this is why `volumetrics_inject.comp`'s
+/// `localFogCluster` early-out is a complete guard, not a fragile lone
+/// line of defense against replaying a previous cell's local fog.
 fn build_fog_volume_clusters(
     volumes: &[GpuFogVolume],
     camera_pos: [f32; 3],
@@ -2032,6 +2043,15 @@ impl VolumetricsPipeline {
         self.combustion_light_grid_centers[frame] = camera_position;
         self.combustion_light_grid_valid[frame] = true;
         let fog_far = self.far_distance_world().max(1.0);
+        // #2242 (REN-D16-04) — `fog_volume_upload.count` (the shader's
+        // `fogVolumeCount`) is rewritten unconditionally in BOTH branches
+        // below, even though the cluster/index GPU buffer writes further
+        // down are skipped in this empty branch as a pure optimisation
+        // (nothing to cluster). That's what makes it safe to skip them:
+        // `localFogCluster`'s `fogVolumeCount == 0u` early-out always
+        // gates the exact case where the cluster/index buffers weren't
+        // touched this frame, so their contents (which could be a
+        // previous frame's, or a previous cell's) are never read.
         frame_params.local_volume_grid = if fog_volumes.is_empty() {
             self.fog_volume_upload.count = [0; 4];
             let cell_size = (2.0 * fog_far) / FOG_VOLUME_CLUSTER_DIM as f32;
