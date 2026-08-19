@@ -448,12 +448,22 @@ fn build_starfield_bs_lighting_minimal() -> Vec<u8> {
     data.extend_from_slice(&1.25f32.to_le_bytes()); // specular_strength
     data.extend_from_slice(&0.4f32.to_le_bytes()); // grayscale_to_palette (>= 130)
     data.extend_from_slice(&4.2f32.to_le_bytes()); // fresnel_power (>= 130)
-                                                   // wetness: spec_scale, spec_power, min_var, fresnel, metalness,
-                                                   // unknown_1 — NO env_map_scale (== 130), NO unknown_2 (== 155).
-    for v in [0.11f32, 0.22, 0.33, 0.44, 0.55, 0.66] {
+                                                   // wetness: spec_scale, spec_power, min_var, fresnel_power only on
+                                                   // Starfield — NO env_map_scale (== 130), NO metalness/unknown_1
+                                                   // (#2622 / SF-D6-02: those wire bytes are BSSPLuminanceParams, not
+                                                   // wetness, on Starfield), NO unknown_2 (== 155).
+    for v in [0.11f32, 0.22, 0.33, 0.44] {
         data.extend_from_slice(&v.to_le_bytes());
     }
-    // NO luminance / translucency / texture-array tail (FO76 == 155 only).
+    // #2622 / SF-D6-02 — BSSPLuminanceParams IS present on Starfield,
+    // immediately after wetness. Real-corpus-verified constant defaults
+    // (4,417 blocks, `Starfield - Meshes01.ba2`): (100.0, 13.5, 2.0, 3.0).
+    // Same quad `build_starfield_bs_effect_minimal` below already uses
+    // for BSEffectShaderProperty's independently-confirmed luminance tail.
+    for v in [100.0f32, 13.5, 2.0, 3.0] {
+        data.extend_from_slice(&v.to_le_bytes());
+    }
+    // NO translucency / texture-array tail (FO76 == 155 only).
     // shader_type 0 → ShaderTypeData::None (no trailing fields).
     data
 }

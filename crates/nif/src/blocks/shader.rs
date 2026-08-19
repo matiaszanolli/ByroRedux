@@ -641,11 +641,19 @@ pub struct WetnessParams {
     /// Only present for BSVER == 130 (not FO76+).
     pub env_map_scale: f32,
     pub fresnel_power: f32,
+    /// Present for BSVER 130..STARFIELD (FO4 + DLC + FO76). Absent on
+    /// Starfield — see `unknown_1` and #2622 / SF-D6-02.
     pub metalness: f32,
-    /// Present for BSVER >= 130 (FO4 + DLC + FO76 + Starfield). See
-    /// #403 / FO4-D1-C1 — nif.xml gates on `#BS_GT_130#` but the vanilla
-    /// FO4 ship stream (226k NIFs audited) carries the field from 130
-    /// onward; widening to `>= 130` aligns every game.
+    /// Present for BSVER 130..STARFIELD (FO4 + DLC + FO76). See #403 /
+    /// FO4-D1-C1 — nif.xml gates on `#BS_GT_130#` but the vanilla FO4
+    /// ship stream (226k NIFs audited) carries the field from 130
+    /// onward, so the FO4/FO76 gate widened to `>= 130`. #2622 /
+    /// SF-D6-02 corpus-verified that widening doesn't reach Starfield
+    /// too: on Starfield, `metalness`/`unknown_1`'s wire position holds
+    /// `BSSPLuminanceParams.lum_emittance`/`exposure_offset` instead
+    /// (100.0/13.5 on 100% of a 4,417-block real corpus) — Starfield's
+    /// wetness block genuinely ends at `fresnel_power`, and the full
+    /// luminance quad follows immediately (`parse_fo76_plus`).
     pub unknown_1: f32,
     /// Present for BSVER == 155 (FO76).
     pub unknown_2: f32,
@@ -1210,24 +1218,29 @@ impl BSLightingShaderProperty {
         let fresnel_power = stream.read_f32_le()?;
         let wetness = Some(Self::read_wetness_block(stream, bsver)?);
 
-        // #1510 — the luminance / translucency / texture-array tail is
-        // FO76-only (a9c7bc9e baseline gated it on `bsver == 155`).
-        // Starfield (bsver >= 172) ends after the wetness block, so
-        // reading these here over-ran the block into the NIF footer
-        // (EOF → "failed to fill whole buffer") on every Starfield
+        // #1510 — the translucency / texture-array tail is FO76-only
+        // (a9c7bc9e baseline gated it on `bsver == 155`). Starfield
+        // (bsver >= 172) ends after the luminance quad below, so
+        // reading these over-ran the block into the NIF footer (EOF →
+        // "failed to fill whole buffer") on every Starfield
         // BSLightingShaderProperty. Gate on the FO76 era.
-        let mut luminance = None;
+        //
+        // #2622 / SF-D6-02 — the `BSSPLuminanceParams` quad itself IS
+        // present on Starfield too (it isn't FO76-only), immediately
+        // after wetness — `read_wetness_block` above stops 8 bytes
+        // earlier on Starfield for exactly this reason. Corpus-verified
+        // against 4,417 real `Starfield - Meshes01.ba2` blocks: 100%
+        // read the documented defaults `(100.0, 13.5, 2.0, 3.0)`.
+        let luminance = Some(LuminanceParams {
+            lum_emittance: stream.read_f32_le()?,
+            exposure_offset: stream.read_f32_le()?,
+            final_exposure_min: stream.read_f32_le()?,
+            final_exposure_max: stream.read_f32_le()?,
+        });
         let mut do_translucency = false;
         let mut translucency = None;
         let mut texture_arrays: Vec<BSTextureArray> = Vec::new();
         if bsver < crate::version::bsver::STARFIELD {
-            luminance = Some(LuminanceParams {
-                lum_emittance: stream.read_f32_le()?,
-                exposure_offset: stream.read_f32_le()?,
-                final_exposure_min: stream.read_f32_le()?,
-                final_exposure_max: stream.read_f32_le()?,
-            });
-
             do_translucency = stream.read_byte_bool()?;
             translucency = if do_translucency {
                 Some(TranslucencyParams {
@@ -1301,22 +1314,38 @@ impl BSLightingShaderProperty {
 
     /// Shared wetness-block reader used by `parse_fo4` and
     /// `parse_fo76_plus`. The block shape is identical except for
-    /// `unknown_2` (FO76+ only). `env_map_scale` is deliberately 0.0
-    /// for both — per #1223, the wire field actually lives in
+    /// `unknown_2` (FO76+ only) and `metalness`/`unknown_1` (absent on
+    /// Starfield — see below). `env_map_scale` is deliberately 0.0 for
+    /// both — per #1223, the wire field actually lives in
     /// `parse_shader_type_data_fo4`'s shader_type=1 trailing block,
     /// NOT in the wetness block; pre-#1223 reading it here caused a
     /// 4-byte over-read on every vanilla FO4 BSLSP at size=140.
+    ///
     /// `unknown_1` is widened to `>= FALLOUT4` per #403 / FO4-D1-C1
-    /// (2026-04-17 FO4 audit found 1.9M under-reads at BSVER=130
-    /// from the original `>` gate).
+    /// (2026-04-17 FO4 audit found 1.9M under-reads at BSVER=130 from
+    /// the original `>` gate) — but #2622 / SF-D6-02 corpus-verified
+    /// (4,417 real Starfield BSLightingShaderProperty blocks,
+    /// `Starfield - Meshes01.ba2`) that widening was one game too far:
+    /// on Starfield, the two floats that landed in `metalness`/
+    /// `unknown_1` read `100.0`/`13.5` on 100% of samples — nif.xml's
+    /// documented `BSSPLuminanceParams.lum_emittance`/`exposure_offset`
+    /// defaults, not wetness fields at all. Starfield's wetness block
+    /// is 4 fields (`spec_scale`/`spec_power`/`min_var`/
+    /// `fresnel_power`); what follows immediately is the FULL
+    /// `BSSPLuminanceParams` quad (`parse_fo76_plus` reads it below),
+    /// not an 8-byte-later opaque tail. Gated off the same way
+    /// `env_map_scale`/`unknown_2` already are for their absent cases.
     fn read_wetness_block(stream: &mut NifStream, bsver: u32) -> io::Result<WetnessParams> {
         let spec_scale = stream.read_f32_le()?;
         let spec_power = stream.read_f32_le()?;
         let min_var = stream.read_f32_le()?;
         let env_map_scale = 0.0f32;
         let fresnel_power = stream.read_f32_le()?;
-        let metalness = stream.read_f32_le()?;
-        let unknown_1 = stream.read_f32_le()?;
+        let (metalness, unknown_1) = if bsver >= crate::version::bsver::STARFIELD {
+            (0.0, 0.0)
+        } else {
+            (stream.read_f32_le()?, stream.read_f32_le()?)
+        };
         // #1510 — `unknown_2` is FO76-only (a9c7bc9e baseline gated it
         // `bsver == 155`); Starfield (bsver >= 172) omits it. The old
         // `>= FO76` gate over-read 4 B on every Starfield BSLSP.

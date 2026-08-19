@@ -106,13 +106,17 @@ fn parse_bs_lighting_real_starfield_block_is_semantically_valid() {
 
 /// #1510 / NIF-NEW-05 — nif.xml `#BS_F76# = (BSVER == 155)` ("Fallout 76
 /// stream 155 only"): the `BSShaderType155` field, WetnessParams
-/// `unknown_2`, and the Luminance / Translucency / texture-array tail are
-/// FO76-ONLY. Starfield (BSVER 172) omits them. The #746/#747 `>= 155`
-/// gates (via the #1279 `parse_fo76_plus` split) made Starfield read
-/// them, over-reading every full-body `BSLightingShaderProperty` past
-/// its block_size into the NIF footer — 1036 NiUnknown on the Starfield
+/// `unknown_2`, and the Translucency / texture-array tail are FO76-ONLY.
+/// Starfield (BSVER 172) omits them. The #746/#747 `>= 155` gates (via
+/// the #1279 `parse_fo76_plus` split) made Starfield read them,
+/// over-reading every full-body `BSLightingShaderProperty` past its
+/// block_size into the NIF footer — 1036 NiUnknown on the Starfield
 /// corpus (0 → 1036 regression vs the a9c7bc9e baseline). This pins the
 /// corrected Starfield body shape: the FO76-only fields stay at default.
+///
+/// #2622 / SF-D6-02 corrected this test's own premise: `BSSPLuminanceParams`
+/// is NOT FO76-only — it's present on Starfield too, immediately after a
+/// 4-field (not 6-field) wetness block. See `read_wetness_block`'s doc.
 #[test]
 fn parse_bs_lighting_starfield_minimal_omits_fo76_only_tail() {
     let header = make_starfield_header(""); // empty name → full-body path
@@ -134,7 +138,26 @@ fn parse_bs_lighting_starfield_minimal_omits_fo76_only_tail() {
         w.unknown_2, 0.0,
         "unknown_2 is FO76-only (== 155); absent on Starfield",
     );
-    assert!(prop.luminance.is_none(), "luminance is FO76-only");
+    assert_eq!(
+        (w.metalness, w.unknown_1),
+        (0.0, 0.0),
+        "metalness/unknown_1 are FO76-only (== 155); their wire position \
+         on Starfield is BSSPLuminanceParams instead, not wetness",
+    );
+    let lum = prop
+        .luminance
+        .as_ref()
+        .expect("BSSPLuminanceParams IS present on Starfield (#2622 / SF-D6-02)");
+    assert_eq!(
+        (
+            lum.lum_emittance,
+            lum.exposure_offset,
+            lum.final_exposure_min,
+            lum.final_exposure_max
+        ),
+        (100.0, 13.5, 2.0, 3.0),
+        "corpus-verified documented BSSPLuminanceParams defaults",
+    );
     assert!(!prop.do_translucency);
     assert!(prop.translucency.is_none());
     assert!(prop.texture_arrays.is_empty());
@@ -142,17 +165,26 @@ fn parse_bs_lighting_starfield_minimal_omits_fo76_only_tail() {
 }
 
 /// #1606 — Starfield full-body `BSLightingShaderProperty` carries a
-/// trailing block (byte-audited as 38 B = 9× f32 + 2 B, constant across
-/// the 26 LODMeshes instances) that the FO76+ parser doesn't decode and
+/// trailing block (originally byte-audited as 38 B, constant across the
+/// 26 LODMeshes instances) that the FO76+ parser doesn't decode and
 /// nif.xml doesn't document. `parse_with_size` captures it opaquely up to
-/// `block_size` so the stream is self-consistent (no +38 drift) and the
-/// bytes survive for a future decoder.
+/// `block_size` so the stream is self-consistent (no drift) and the bytes
+/// survive for a future decoder.
+///
+/// #2622 / SF-D6-02 reclaimed 16 of those 38 bytes as `BSSPLuminanceParams`
+/// (see `parse_fo76_plus` / `read_wetness_block`); the real remaining
+/// opaque tail is corpus-verified at 30 B today (4,417 real
+/// `Starfield - Meshes01.ba2` blocks, all constant). This test still pins
+/// an arbitrary-but-distinct 38 B tail — it asserts the CAPTURE MECHANISM
+/// (whatever trailing bytes exist up to `block_size` are preserved
+/// opaquely), not the real-world tail's exact current size.
 #[test]
 fn parse_bs_lighting_starfield_captures_trailing_tail() {
     let header = make_starfield_header(""); // empty name → full-body path
     let body = build_starfield_bs_lighting_minimal();
-    // Real layout is 9 f32 + 2 B; pin an arbitrary-but-distinct 38 B so we
-    // assert capture without asserting (unknown) semantics.
+    // Arbitrary-but-distinct 38 B (not the real tail's current size — see
+    // the fn doc above) so we assert capture without asserting (unknown)
+    // semantics.
     let tail: Vec<u8> = (0u8..38).collect();
     let mut data = body.clone();
     data.extend_from_slice(&tail);
