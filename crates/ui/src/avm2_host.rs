@@ -67,6 +67,16 @@ pub(crate) fn inject_host_object_adapter(
         .expect("contract scan requires a host-object profile");
     let mut root_abc_index = None;
     let mut root_class = None;
+    // #2963 — only `property` + `on_create` are required to identify the
+    // lifecycle class. `on_destroy` (`onCodeObjDestruction`) is real, shipped
+    // ABC's own choice to omit: DialogueMenu, MultiActivateMenu, SPECIALMenu
+    // and Terminal all declare `BGSCodeObj` + `onCodeObjCreate` but never
+    // their own `onCodeObjDestruction` trait. Requiring it here used to make
+    // the whole menu fail to load (`Err` propagates through `SwfPlayer::new`)
+    // over a hook nothing but the adapter's own optional destroy callback
+    // ever calls. `has_destroy_trait` records whether this movie's class
+    // carries the hook, so `build_adapter_abc` can wire (or skip) it.
+    let mut has_destroy_trait = false;
     for (index, tag) in movie.tags.iter().enumerate() {
         let Some(data) = abc_payload(tag) else {
             continue;
@@ -75,7 +85,7 @@ pub(crate) fn inject_host_object_adapter(
             .read()
             .map_err(|error| format!("parsing root ABC candidate: {error}"))?;
         let contract_class = abc.instances.iter().find(|instance| {
-            [object.property, object.on_create, object.on_destroy]
+            [object.property, object.on_create]
                 .into_iter()
                 .all(|required| {
                     instance.traits.iter().any(|trait_| {
@@ -87,6 +97,10 @@ pub(crate) fn inject_host_object_adapter(
         if let Some(contract_class) = contract_class {
             root_abc_index = Some(index);
             root_class = qualified_name(&abc, contract_class.name);
+            has_destroy_trait = contract_class.traits.iter().any(|trait_| {
+                multiname_local_name(&abc, trait_.name).as_deref()
+                    == Some(object.on_destroy.as_bytes())
+            });
             break;
         }
     }
@@ -137,7 +151,7 @@ pub(crate) fn inject_host_object_adapter(
         );
     }
 
-    let adapter = build_adapter_abc(catalog, &uncataloged)
+    let adapter = build_adapter_abc(catalog, &uncataloged, has_destroy_trait)
         .map_err(|error| format!("building Fallout 4 AVM2 adapter: {error}"))?;
     let replacement = match &movie.tags[root_abc_index] {
         Tag::DoAbc(_) => Tag::DoAbc(&patched_root_abc),
@@ -622,6 +636,7 @@ where
 fn build_adapter_abc(
     catalog: ScaleformHostCatalog,
     uncataloged: &[String],
+    has_destroy_trait: bool,
 ) -> std::io::Result<Vec<u8>> {
     let object = catalog
         .host_object()
@@ -647,10 +662,19 @@ fn build_adapter_abc(
     let ready_helper_string = add_string(&mut strings, READY_HELPER.as_bytes().to_vec());
     let ready_callback_string = add_string(&mut strings, READY_CALLBACK.as_bytes().to_vec());
     let loaded_callback_string = add_string(&mut strings, LOADED_CALLBACK.as_bytes().to_vec());
-    let on_destroy_string = add_string(&mut strings, object.on_destroy.as_bytes().to_vec());
-    let destroy_helper_string = add_string(&mut strings, DESTROY_HELPER.as_bytes().to_vec());
-    let destroy_callback_string = add_string(&mut strings, DESTROY_CALLBACK.as_bytes().to_vec());
-    let destroyed_event_string = add_string(&mut strings, DESTROYED_EVENT.as_bytes().to_vec());
+    // #2963 — these four only feed the destroy helper below. A movie whose
+    // lifecycle class never declared `onCodeObjDestruction` gets no destroy
+    // machinery at all: emitting a `CallPropVoid` against a property the
+    // class doesn't have would just move the old "menu fails to load"
+    // failure into a runtime AVM2 error on close instead of fixing it.
+    let destroy_strings = has_destroy_trait.then(|| {
+        (
+            add_string(&mut strings, object.on_destroy.as_bytes().to_vec()),
+            add_string(&mut strings, DESTROY_HELPER.as_bytes().to_vec()),
+            add_string(&mut strings, DESTROY_CALLBACK.as_bytes().to_vec()),
+            add_string(&mut strings, DESTROYED_EVENT.as_bytes().to_vec()),
+        )
+    });
     let root_slot_string = add_string(&mut strings, b"__byro_fallout4_root".to_vec());
 
     // Only two namespaces survive: the public (empty-name) package every helper
@@ -685,10 +709,30 @@ fn build_adapter_abc(
         &mut multinames,
         qname(public_namespace, ready_helper_string),
     );
-    let on_destroy = add_multiname(&mut multinames, qname(public_namespace, on_destroy_string));
-    let destroy_helper = add_multiname(
-        &mut multinames,
-        qname(public_namespace, destroy_helper_string),
+    // (on_destroy multiname, destroy_helper multiname, destroy_helper name
+    // string, destroy_callback string, destroyed_event string) — `None` when
+    // this movie's lifecycle class has no `onCodeObjDestruction` trait.
+    let destroy_names = destroy_strings.map(
+        |(
+            on_destroy_string,
+            destroy_helper_string,
+            destroy_callback_string,
+            destroyed_event_string,
+        )| {
+            let on_destroy =
+                add_multiname(&mut multinames, qname(public_namespace, on_destroy_string));
+            let destroy_helper = add_multiname(
+                &mut multinames,
+                qname(public_namespace, destroy_helper_string),
+            );
+            (
+                on_destroy,
+                destroy_helper,
+                destroy_helper_string,
+                destroy_callback_string,
+                destroyed_event_string,
+            )
+        },
     );
     let root_slot = add_multiname(&mut multinames, qname(public_namespace, root_slot_string));
 
@@ -796,55 +840,67 @@ fn build_adapter_abc(
         exceptions: Vec::new(),
         traits: Vec::new(),
     });
-    traits.push(method_trait(
-        ready_helper,
-        ready_method,
-        installed.len() as u32 + 1,
-    ));
+    let mut next_disp_id = installed.len() as u32 + 1;
+    traits.push(method_trait(ready_helper, ready_method, next_disp_id));
+    next_disp_id += 1;
 
-    let destroy_method = Index::new(methods.len() as u32);
-    let destroy_body = Index::new(method_bodies.len() as u32);
-    methods.push(Method {
-        name: destroy_helper_string,
-        params: Vec::new(),
-        return_type: Index::new(0),
-        flags: MethodFlags::empty(),
-        body: Some(destroy_body),
-    });
-    method_bodies.push(MethodBody {
-        method: destroy_method,
-        max_stack: 2,
-        num_locals: 1,
-        init_scope_depth: 1,
-        max_scope_depth: 2,
-        code: write_ops(&[
-            Op::GetLocal { index: 0 },
-            Op::PushScope,
-            Op::GetLex { index: root_slot },
-            Op::CallPropVoid {
-                index: on_destroy,
-                num_args: 0,
-            },
-            Op::GetLex {
-                index: external_interface,
-            },
-            Op::PushString {
-                value: destroyed_event_string,
-            },
-            Op::CallPropVoid {
-                index: call,
-                num_args: 1,
-            },
-            Op::ReturnVoid,
-        ])?,
-        exceptions: Vec::new(),
-        traits: Vec::new(),
-    });
-    traits.push(method_trait(
+    // #2963 — only wire the destroy helper (and its `addCallback`
+    // registration below) when the movie's lifecycle class actually declared
+    // `onCodeObjDestruction`. Omitting it entirely leaves `DESTROY_CALLBACK`
+    // unregistered, which `SwfPlayer`'s close path already treats as
+    // optional (`has_callback(DESTROY_CALLBACK)`, `player.rs`) rather than
+    // an error.
+    let mut destroy_registration = None;
+    if let Some((
+        on_destroy,
         destroy_helper,
-        destroy_method,
-        installed.len() as u32 + 2,
-    ));
+        destroy_helper_string,
+        destroy_callback_string,
+        destroyed_event_string,
+    )) = destroy_names
+    {
+        let destroy_method = Index::new(methods.len() as u32);
+        let destroy_body = Index::new(method_bodies.len() as u32);
+        methods.push(Method {
+            name: destroy_helper_string,
+            params: Vec::new(),
+            return_type: Index::new(0),
+            flags: MethodFlags::empty(),
+            body: Some(destroy_body),
+        });
+        method_bodies.push(MethodBody {
+            method: destroy_method,
+            max_stack: 2,
+            num_locals: 1,
+            init_scope_depth: 1,
+            max_scope_depth: 2,
+            code: write_ops(&[
+                Op::GetLocal { index: 0 },
+                Op::PushScope,
+                Op::GetLex { index: root_slot },
+                Op::CallPropVoid {
+                    index: on_destroy,
+                    num_args: 0,
+                },
+                Op::GetLex {
+                    index: external_interface,
+                },
+                Op::PushString {
+                    value: destroyed_event_string,
+                },
+                Op::CallPropVoid {
+                    index: call,
+                    num_args: 1,
+                },
+                Op::ReturnVoid,
+            ])?,
+            exceptions: Vec::new(),
+            traits: Vec::new(),
+        });
+        traits.push(method_trait(destroy_helper, destroy_method, next_disp_id));
+        next_disp_id += 1;
+        destroy_registration = Some((destroy_helper, destroy_callback_string));
+    }
 
     let installer_method = Index::new(methods.len() as u32);
     let installer_body = Index::new(method_bodies.len() as u32);
@@ -895,21 +951,27 @@ fn build_adapter_abc(
             index: add_callback,
             num_args: 2,
         },
-        Op::GetLex {
-            index: external_interface,
-        },
-        Op::PushString {
-            value: destroy_callback_string,
-        },
-        Op::GetLex {
-            index: destroy_helper,
-        },
-        Op::CallPropVoid {
-            index: add_callback,
-            num_args: 2,
-        },
-        Op::ReturnVoid,
     ]);
+    // #2963 — only register the destroy callback when this movie's lifecycle
+    // class carries the trait the helper above was built to call.
+    if let Some((destroy_helper, destroy_callback_string)) = destroy_registration {
+        install_ops.extend([
+            Op::GetLex {
+                index: external_interface,
+            },
+            Op::PushString {
+                value: destroy_callback_string,
+            },
+            Op::GetLex {
+                index: destroy_helper,
+            },
+            Op::CallPropVoid {
+                index: add_callback,
+                num_args: 2,
+            },
+        ]);
+    }
+    install_ops.push(Op::ReturnVoid);
     method_bodies.push(MethodBody {
         method: installer_method,
         max_stack: 3,
@@ -920,11 +982,7 @@ fn build_adapter_abc(
         exceptions: Vec::new(),
         traits: Vec::new(),
     });
-    traits.push(method_trait(
-        install_helper,
-        installer_method,
-        installed.len() as u32 + 3,
-    ));
+    traits.push(method_trait(install_helper, installer_method, next_disp_id));
 
     let init_method = Index::new(methods.len() as u32);
     let init_body = Index::new(method_bodies.len() as u32);
@@ -1041,7 +1099,7 @@ mod tests {
     use super::{
         build_adapter_abc, inject_host_object_adapter, max_stack_with_injected_bootstrap_headroom,
         referenced_host_methods, uncataloged_host_methods, write_ops, DESTROYED_EVENT,
-        LOADED_CALLBACK,
+        DESTROY_CALLBACK, LOADED_CALLBACK,
     };
     use crate::{ScaleformHostCatalog, ScaleformProfile};
 
@@ -1084,7 +1142,7 @@ mod tests {
     #[test]
     fn generated_adapter_is_valid_abc_with_one_helper_per_method() {
         let catalog = ScaleformHostCatalog::for_profile(ScaleformProfile::Fallout4Avm2);
-        let bytes = build_adapter_abc(catalog, &[]).unwrap();
+        let bytes = build_adapter_abc(catalog, &[], true).unwrap();
         let abc = Reader::new(&bytes).read().unwrap();
 
         assert_eq!(abc.scripts.len(), 1);
@@ -1141,6 +1199,56 @@ mod tests {
         assert_eq!(pushed.as_slice(), LOADED_CALLBACK.as_bytes());
     }
 
+    /// #2963 — DialogueMenu / MultiActivateMenu / SPECIALMenu / Terminal all
+    /// declare `BGSCodeObj` + `onCodeObjCreate` but never their own
+    /// `onCodeObjDestruction` trait. `inject_host_object_adapter` now injects
+    /// for these movies anyway (`has_destroy_trait: false`); this pins that
+    /// `build_adapter_abc` responds by dropping the whole destroy helper —
+    /// one fewer method/trait than the `true` case above, no reference to
+    /// `DESTROYED_EVENT`/`DESTROY_CALLBACK` anywhere in the pool, and no
+    /// `addCallback` registration for it in the installer — rather than
+    /// emitting a `CallPropVoid` against a property this movie's class
+    /// doesn't have.
+    #[test]
+    fn generated_adapter_omits_destroy_helper_when_class_lacks_the_trait() {
+        let catalog = ScaleformHostCatalog::for_profile(ScaleformProfile::Fallout4Avm2);
+        let bytes = build_adapter_abc(catalog, &[], false).unwrap();
+        let abc = Reader::new(&bytes).read().unwrap();
+
+        // One fewer method/body/trait than the has-destroy-trait case: no
+        // destroy helper.
+        assert_eq!(abc.scripts[0].traits.len(), catalog.len() + 3);
+        assert_eq!(abc.methods.len(), catalog.len() + 3);
+        assert_eq!(abc.method_bodies.len(), catalog.len() + 3);
+
+        for absent in [DESTROYED_EVENT, DESTROY_CALLBACK] {
+            assert!(
+                !abc.constant_pool
+                    .strings
+                    .iter()
+                    .any(|string| string.as_slice() == absent.as_bytes()),
+                "adapter pool still carries {absent:?} with no destroy trait to call"
+            );
+        }
+
+        // The installer (now at `catalog.len() + 1`, since the destroy
+        // helper that used to sit before it is gone) registers exactly one
+        // callback — `READY_CALLBACK` — not two.
+        let installer = &abc.method_bodies[catalog.len() + 1];
+        let mut reader = Reader::new(&installer.code);
+        let mut add_callback_calls = 0;
+        while !reader.as_slice().is_empty() {
+            if matches!(
+                reader.read_op().unwrap(),
+                swf::avm2::types::Op::CallPropVoid { .. }
+            ) {
+                add_callback_calls += 1;
+            }
+        }
+        // on_create + addCallback(ready) — no addCallback(destroy).
+        assert_eq!(add_callback_calls, 2);
+    }
+
     /// Regression for #2725: the adapter's constant pool once carried the
     /// vocabulary of a superseded install strategy — a `LoaderInfo` /
     /// `getLoaderInfoByDefinition` / `addEventListener` / `complete` root
@@ -1152,7 +1260,7 @@ mod tests {
     #[test]
     fn generated_adapter_pool_carries_no_abandoned_loader_strategy() {
         let catalog = ScaleformHostCatalog::for_profile(ScaleformProfile::Fallout4Avm2);
-        let bytes = build_adapter_abc(catalog, &[]).unwrap();
+        let bytes = build_adapter_abc(catalog, &[], true).unwrap();
         let abc = Reader::new(&bytes).read().unwrap();
 
         for abandoned in [
@@ -1302,7 +1410,7 @@ mod tests {
     fn an_uncataloged_method_gets_its_own_installed_forwarder() {
         let catalog = ScaleformHostCatalog::for_profile(ScaleformProfile::Fallout4Avm2);
         let extra = vec!["SomeUnknownFO4Method".to_string()];
-        let bytes = build_adapter_abc(catalog, &extra).unwrap();
+        let bytes = build_adapter_abc(catalog, &extra, true).unwrap();
         let abc = Reader::new(&bytes).read().unwrap();
         let installed = catalog.len() + extra.len();
 
@@ -1349,35 +1457,21 @@ mod tests {
     /// isn't available, since the corpus is multi-gigabyte game data that
     /// can't ship with the repo.
     ///
-    /// Four menus (`KNOWN_MISSING_ON_DESTROY_TRAIT` below) are excluded
-    /// from the "must succeed" assertion: they were discovered by an
-    /// earlier run of *this* test to fail the *unrelated*, pre-existing
-    /// lifecycle-class search — a separate bug from what #2717 is about.
-    /// `Shared.ScaleformHostCatalog`'s Fallout 4 profile requires a class
-    /// whose OWN traits include the host-object property AND both the
-    /// on-create AND on-destroy hooks; these four menus' lifecycle class
-    /// (`DialogueMenu`, `MultiActivateMenu`, `SPECIALMenu`, `Terminal`)
-    /// declares the property and on-create hook but never an
-    /// `onCodeObjDestruction` trait of its own — legal, real, shipped ABC.
-    /// The lookup falls through to "lifecycle class not found",
-    /// `inject_host_object_adapter` returns `Err`, and every caller
-    /// propagates that `Err` (`SwfPlayer::new` / `new_with_profile` /
-    /// `from_resource_provider`, `player.rs`) — so today these 4 real
-    /// Fallout 4 menus fail to load entirely. That is a real, separate
-    /// defect worth its own issue (loosen the on-destroy requirement, or
-    /// search inherited traits) — NOT something #2717's round-trip
-    /// serialization safety fix should touch, and not something this test
-    /// should silently paper over either, hence naming it explicitly
-    /// instead of a bare allow-list.
+    /// #2963 — `DialogueMenu`, `MultiActivateMenu`, `SPECIALMenu` and
+    /// `Terminal` used to be excluded here (`KNOWN_MISSING_ON_DESTROY_TRAIT`):
+    /// their lifecycle class declares `BGSCodeObj` + `onCodeObjCreate` but no
+    /// `onCodeObjDestruction` trait of its own — legal, real, shipped ABC —
+    /// and the old three-trait class predicate made that a hard `Err` that
+    /// every caller (`SwfPlayer::new` / `new_with_profile` /
+    /// `from_resource_provider`) propagated, so these 4 real Fallout 4 menus
+    /// failed to load entirely. `inject_host_object_adapter` now only
+    /// requires `BGSCodeObj` + `onCodeObjCreate` to find the lifecycle class,
+    /// and skips wiring the destroy helper when the class lacks the trait —
+    /// so all four now inject with no exclusion needed. If this assertion
+    /// starts failing on a real corpus, that is a new, real regression, not
+    /// a resurfaced on-destroy gap.
     #[test]
     fn all_installed_fallout4_swfs_round_trip_through_injection() {
-        const KNOWN_MISSING_ON_DESTROY_TRAIT: &[&str] = &[
-            "interface\\dialoguemenu.swf",
-            "interface\\multiactivatemenu.swf",
-            "interface\\specialmenu.swf",
-            "interface\\terminalmenu.swf",
-        ];
-
         let Some(archive) =
             fallout4_interface_archive("all_installed_fallout4_swfs_round_trip_through_injection")
         else {
@@ -1388,7 +1482,6 @@ mod tests {
 
         let mut injected_count = 0usize;
         let mut failures = Vec::new();
-        let mut still_missing_on_destroy = Vec::new();
         for movie_path in &swf_paths {
             let swf = match archive.extract(movie_path) {
                 Ok(data) => data,
@@ -1424,13 +1517,7 @@ mod tests {
                     }
                 }
                 Err(error) => {
-                    if KNOWN_MISSING_ON_DESTROY_TRAIT.contains(&movie_path.as_str())
-                        && error.contains("lifecycle class was not found")
-                    {
-                        still_missing_on_destroy.push(movie_path.clone());
-                    } else {
-                        failures.push(format!("{movie_path}: injection failed: {error}"));
-                    }
+                    failures.push(format!("{movie_path}: injection failed: {error}"));
                 }
             }
         }
@@ -1438,22 +1525,10 @@ mod tests {
         assert!(
             failures.is_empty(),
             "{} of {} FO4 SWFs failed the injection round-trip ({injected_count} actually \
-             went through AVM2 adapter injection; {} excluded as the known, unrelated \
-             on-destroy-trait gap):\n{}",
+             went through AVM2 adapter injection):\n{}",
             failures.len(),
             swf_paths.len(),
-            still_missing_on_destroy.len(),
             failures.join("\n"),
-        );
-        // If this list has shrunk, the on-destroy gap got fixed (or the
-        // menu changed) — update KNOWN_MISSING_ON_DESTROY_TRAIT and the
-        // doc comment above rather than leaving a stale exclusion. If it
-        // has GROWN, a new menu just started hitting the same gap.
-        assert_eq!(
-            still_missing_on_destroy, KNOWN_MISSING_ON_DESTROY_TRAIT,
-            "the set of menus hitting the known on-destroy-trait gap changed — \
-             update KNOWN_MISSING_ON_DESTROY_TRAIT (and file/link the follow-up \
-             issue this comment references) rather than leaving this stale"
         );
     }
 
