@@ -37,7 +37,7 @@ use byroredux_renderer::{Vertex, VulkanContext};
 use std::collections::HashMap;
 
 use crate::asset_provider::{resolve_texture, TextureProvider};
-use crate::components::NormalMapHandle;
+use crate::components::{NormalMapHandle, WaterNoiseMapHandles};
 use crate::streaming::LodWaterPlane;
 use byroredux_core::math::coord::{zup_to_yup_pos, EXTERIOR_CELL_UNITS};
 
@@ -88,7 +88,7 @@ pub(super) fn spawn_water_plane(
     blas_specs: &mut Vec<(u32, u32, u32)>,
 ) -> Option<usize> {
     // ── Resolve WATR → engine WaterMaterial (EXAL boundary) ──
-    let (material, kind, flow, normal_texture_path) =
+    let (material, kind, flow, normal_texture_path, noise_texture_paths) =
         crate::env_translate::resolve_water_material(waters, xcwt_form);
 
     let allocator = ctx.allocator.as_ref()?;
@@ -197,10 +197,20 @@ pub(super) fn spawn_water_plane(
         0
     };
 
+    let mut resolved_noise = [0u32; 3];
+    for (idx, path) in noise_texture_paths.into_iter().enumerate() {
+        if let Some(path) = path {
+            resolved_noise[idx] = resolve_texture(ctx, tex_provider, Some(path.as_str()));
+        }
+    }
+
     let mut material = material;
     if resolved_normal_idx != 0 {
         material.normal_map_index = resolved_normal_idx;
     } // else material.normal_map_index stays at u32::MAX (default — triggers shader procedural)
+    material.noise_map_indices = resolved_noise.map(|idx| {
+        if idx != 0 { idx } else { material.normal_map_index }
+    });
 
     // ── Spawn the entity ──
     let position = Vec3::new(
@@ -233,6 +243,9 @@ pub(super) fn spawn_water_plane(
     // (the procedural-fallback path leaves `resolved_normal_idx == 0`).
     if resolved_normal_idx != 0 {
         world.insert(entity, NormalMapHandle(resolved_normal_idx));
+    }
+    if resolved_noise.iter().any(|&idx| idx != 0) {
+        world.insert(entity, WaterNoiseMapHandles(resolved_noise));
     }
     if let Some(flow) = flow {
         world.insert(entity, flow);
@@ -399,7 +412,7 @@ pub(crate) fn spawn_lod_water_plane(
     radius_unload: i32,
     game: esm::reader::GameKind,
 ) -> Option<LodWaterPlane> {
-    let (material, kind, flow, normal_texture_path) =
+    let (material, kind, flow, normal_texture_path, noise_texture_paths) =
         crate::env_translate::resolve_water_material(waters, lod_water_form);
 
     let allocator = ctx.allocator.as_ref()?;
@@ -445,10 +458,19 @@ pub(crate) fn spawn_lod_water_plane(
     } else {
         0
     };
+    let mut resolved_noise = [0u32; 3];
+    for (idx, path) in noise_texture_paths.into_iter().enumerate() {
+        if let Some(path) = path {
+            resolved_noise[idx] = resolve_texture(ctx, tex_provider, Some(path.as_str()));
+        }
+    }
     let mut material = material;
     if resolved_normal_idx != 0 {
         material.normal_map_index = resolved_normal_idx;
     }
+    material.noise_map_indices = resolved_noise.map(|idx| {
+        if idx != 0 { idx } else { material.normal_map_index }
+    });
 
     let entity = world.spawn();
     world.insert(entity, Transform::IDENTITY);
@@ -457,6 +479,9 @@ pub(crate) fn spawn_lod_water_plane(
     world.insert(entity, WaterPlane { kind, material });
     if resolved_normal_idx != 0 {
         world.insert(entity, NormalMapHandle(resolved_normal_idx));
+    }
+    if resolved_noise.iter().any(|&idx| idx != 0) {
+        world.insert(entity, WaterNoiseMapHandles(resolved_noise));
     }
     if let Some(flow) = flow {
         world.insert(entity, flow);

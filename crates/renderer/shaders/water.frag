@@ -23,7 +23,7 @@ layout(early_fragment_tests) in;
 // ── Water surface fragment shader ─────────────────────────────────────
 //
 // Renders a transparent water surface for one of four
-// `WaterKind` modes selected by `push.meta.x`:
+// `WaterKind` modes selected by `push.timing.y`:
 //
 //   0 — Calm:     two unbiased scrolling normal maps, fresnel-mixed
 //                 RT reflection + RT refraction, mild shoreline foam.
@@ -56,10 +56,10 @@ layout(early_fragment_tests) in;
 //   thanks to the perturbed-normal averaging across the surface. The
 //   composite-pass tone-mapper + TAA handles the residual jitter.
 //
-// Push constants (128 bytes, exactly the Vulkan 1.1 minimum
-// `maxPushConstantsSize ≥ 128` — no headroom remains):
-
-layout(push_constant) uniform WaterPush {
+// Per-water material data lives in a compact per-frame UBO. Keeping the
+// 144-byte record here, rather than in push constants, leaves room to grow
+// the canonical cross-game material without raising device requirements.
+struct WaterParams {
     // x = time (engine uptime in seconds — `TotalTime`, accumulated
     //     since engine start and never reset on cell load; f32, so wave
     //     animation quality degrades after many hours of uptime),
@@ -78,13 +78,29 @@ layout(push_constant) uniform WaterPush {
     // w = wave_amplitude (WATR DATA wave_amplitude — #2240)
     vec4 tune;
     // x = fresnel_f0, y = wave_frequency (WATR DATA wave_frequency, Hz — #2240),
-    // z = normal_map_index (uintBitsToFloat — sample with floatBitsToUint), w = (reserved)
+    // z = normal_map_index (uintBitsToFloat — sample with floatBitsToUint),
+    // w = WATR Sun Specular Power (Blinn-Phong exponent)
     vec4 misc;
     // rgb = reflection_tint (WATR DATA reflection_color — tints geometry-hit
     // colour in traceWaterRay; #1069 / F-WAT-09). a = reflectivity (0..1,
     // moved from tune.w).
     vec4 tint_reflect;
-} push;
+    // Bindless indices for authored NAM2/NAM3/NAM4 noise layers.
+    uvec4 noise_indices;
+};
+
+layout(std140, set = 2, binding = 1) uniform WaterParamsBlock {
+    WaterParams params[256];
+} waterParams;
+
+layout(push_constant) uniform WaterDrawPush {
+    uint waterIndex;
+    uvec3 _reserved;
+} drawPush;
+
+// Preserve the established `push.field` spelling throughout the shader;
+// every reference now resolves through the selected UBO record.
+#define push waterParams.params[drawPush.waterIndex]
 
 // WATER_CALM / WATER_RIVER / WATER_RAPIDS / WATER_WATERFALL now come
 // from `include/shader_constants.glsl` (generated from Rust). The
@@ -100,7 +116,7 @@ layout(location = 3) in float vWorldBitangentSign;
 // were declared as orphan inputs (vertex shader wrote them, this
 // fragment shader never read them). Both removed in lockstep with
 // `water.vert`. UVs are computed below from world XZ / T-B
-// projection; the push-constant block (`WaterPush`) carries every
+// projection; the selected `WaterParams` UBO record carries every
 // per-plane parameter the fragment shader needs, so there's no
 // `gl_InstanceIndex`-driven instance lookup on this path.
 
@@ -134,7 +150,8 @@ layout(location = 7) out float outFsrTransparency;
 // written here via `imageAtomicAdd` (single eta + single bounce per
 // REN-D13-NEW-04), sampled by composite (#1257, Phase E) alongside
 // the existing causticTex. Bound at set 2 binding 0 per the
-// WaterPipeline pipeline-layout shape declared in #1255.
+// WaterPipeline pipeline-layout shape declared in #1255. Binding 1 is the
+// material UBO above.
 layout(set = 2, binding = 0, r32ui) uniform uimage2D waterCausticAccum;
 
 const float REFLECTION_MAX_DIST = 5000.0;
@@ -184,9 +201,11 @@ float valueNoise(vec2 p) {
 // the perturbation strength / chop density proportionally.
 vec3 sampleScrollingNormal(uint normalMapIndex, vec2 uvBase, vec2 originOffset, vec2 scroll, float scale, float time, float ampScale, float freqScale) {
     if (normalMapIndex == 0xFFFFFFFFu) {
-        // Procedural fallback — animated 2-octave value noise gradient.
-        // Cheap, doesn't pretend to be real waves but reads as moving
-        // water.
+        // Procedural fallback — animated four-octave value-noise gradient.
+        // The broad first octave carries the swell while the lighter higher
+        // octaves restore the small-scale chop that legacy records lack in
+        // their texture slots. This keeps Oblivion/FO3/FNV water from reading
+        // as a single smooth undulating sheet.
         //
         // PRECISION BOUND (#1502, rebased #1997): `uvBase` is absolute
         // world XZ (`vWorldPos.xz`, the flat-water branch at the call
@@ -218,12 +237,18 @@ vec3 sampleScrollingNormal(uint normalMapIndex, vec2 uvBase, vec2 originOffset, 
         vec2 uv = (uvBase - originOffset) * scale + scroll * time;
         float h0 = valueNoise(uv * 4.0 * freqScale);
         float h1 = valueNoise(uv * 9.0 * freqScale + 17.0);
-        float h  = h0 * 0.65 + h1 * 0.35;
+        float h2 = valueNoise(uv * 16.0 * freqScale + 41.0);
+        float h3 = valueNoise(uv * 31.0 * freqScale + 73.0);
+        float h  = h0 * 0.45 + h1 * 0.30 + h2 * 0.15 + h3 * 0.10;
         const float eps = 1.0;
-        float hx = valueNoise(uv * 4.0 * freqScale + vec2(eps, 0.0)) * 0.65
-                 + valueNoise(uv * 9.0 * freqScale + vec2(eps, 0.0) + 17.0) * 0.35;
-        float hy = valueNoise(uv * 4.0 * freqScale + vec2(0.0, eps)) * 0.65
-                 + valueNoise(uv * 9.0 * freqScale + vec2(0.0, eps) + 17.0) * 0.35;
+        float hx = valueNoise(uv * 4.0 * freqScale + vec2(eps, 0.0)) * 0.45
+                 + valueNoise(uv * 9.0 * freqScale + vec2(eps, 0.0) + 17.0) * 0.30
+                 + valueNoise(uv * 16.0 * freqScale + vec2(eps, 0.0) + 41.0) * 0.15
+                 + valueNoise(uv * 31.0 * freqScale + vec2(eps, 0.0) + 73.0) * 0.10;
+        float hy = valueNoise(uv * 4.0 * freqScale + vec2(0.0, eps)) * 0.45
+                 + valueNoise(uv * 9.0 * freqScale + vec2(0.0, eps) + 17.0) * 0.30
+                 + valueNoise(uv * 16.0 * freqScale + vec2(0.0, eps) + 41.0) * 0.15
+                 + valueNoise(uv * 31.0 * freqScale + vec2(0.0, eps) + 73.0) * 0.10;
         return normalize(vec3((h - hx) * 0.12 * ampScale, (h - hy) * 0.12 * ampScale, 1.0));
     }
     // PRECISION BOUND (#2496, following #2240): this branch stays
@@ -474,6 +499,9 @@ void main() {
     float foamStrength = push.timing.z;
     float ior  = push.timing.w;
     uint  normalMapIndex = floatBitsToUint(push.misc.z);
+    uint  noiseMapA = push.noise_indices.x;
+    uint  noiseMapB = push.noise_indices.y;
+    uint  noiseMapC = push.noise_indices.z;
     // #2240 — WATR-authored wave_amplitude/wave_frequency, normalised
     // against the WaterMaterial sentinel default (see
     // `sampleScrollingNormal`'s doc comment above).
@@ -519,15 +547,15 @@ void main() {
     // case). For River/Rapids/Waterfall, layer A's scroll vector is
     // baked from `flow` on the CPU side, so we don't have to branch
     // here. Push constants carry the final scroll vectors.
-    vec3 nA = sampleScrollingNormal(normalMapIndex, uvWorld, uvOrigin, push.scroll.xy, push.tune.x, time, ampScale, freqScale);
-    vec3 nB = sampleScrollingNormal(normalMapIndex, uvWorld, uvOrigin, push.scroll.zw, push.tune.y, time, ampScale, freqScale);
+    vec3 nA = sampleScrollingNormal(noiseMapA, uvWorld, uvOrigin, push.scroll.xy, push.tune.x, time, ampScale, freqScale);
+    vec3 nB = sampleScrollingNormal(noiseMapB, uvWorld, uvOrigin, push.scroll.zw, push.tune.y, time, ampScale, freqScale);
 
     // Rapids adds a third high-frequency layer scrolled by the flow
     // — gives that chaotic whitewater chop pattern.
     vec3 nMix;
     if (kind == WATER_RAPIDS) {
         vec3 nC = sampleScrollingNormal(
-            normalMapIndex,
+            noiseMapC,
             uvWorld,
             uvOrigin,
             push.flow.xy * push.flow.w * 2.0,
@@ -688,8 +716,66 @@ void main() {
     }
     foamMask = clamp(foamMask * foamStrength, 0.0, 1.0);
 
+    // ── Direct-sun glint ──
+    // `sunDirection.xyz` points from the surface toward the sun. WATR's
+    // Sun Specular Power is an exponent (not a brightness): high values
+    // make calm water sparkle in a tight moving lobe while low values
+    // spread the highlight over rough/choppy water. `sunDirection.w`
+    // carries the active sun intensity and is zero for interiors/night.
+    float sunVisibility = 0.0;
+    vec3 sunDir = vec3(0.0, 1.0, 0.0);
+    if (sunDirection.w > 0.0) {
+        sunDir = normalize(sunDirection.xyz);
+        sunVisibility = 1.0;
+        if (sceneFlags.x >= 0.5) {
+            vec3 sunTransmission = traceShadowTransmittance(
+                offsetRayOrigin(vWorldPos, Nsurface),
+                sunDir,
+                DIRECTIONAL_SHADOW_TRACE_DISTANCE,
+                0.0,
+                VISIBILITY_MASK_FULL
+            );
+            sunVisibility = dot(
+                sunTransmission, vec3(0.2126, 0.7152, 0.0722));
+        }
+    }
+    vec3 sunHalfVector = V + sunDir;
+    float sunHalfLength = length(sunHalfVector);
+    float NdotSunHalf = sunHalfLength > 1e-5
+        ? max(dot(Nperturbed, sunHalfVector / sunHalfLength), 0.0)
+        : 0.0;
+    float sunSpecular = pow(
+        NdotSunHalf,
+        clamp(push.misc.w, 1.0, 2048.0)
+    ) * sunDirection.w * sunVisibility;
+
+    // Forward sunlight scattering through the water column. This is the
+    // low-frequency companion to the authored sun glint above: it makes
+    // shallow/clear water glow toward the sun instead of reading as a flat
+    // refraction tint. The term is deliberately bounded and reuses the
+    // already shadowed sunVisibility, so it costs no additional ray query.
+    // `sunDirection` points from the surface toward the sun; the incident
+    // light direction is therefore `-sunDir` for the reflected phase.
+    float sunHeight = max(sunDir.y, 0.0);
+    vec3 scatterBase = mix(push.deep.rgb, push.shallow.rgb, 0.35);
+    vec3 scatterColour = mix(
+        scatterBase * vec3(1.0, 0.45, 0.20),
+        scatterBase,
+        clamp(1.0 - exp(-sunHeight * 4.0), 0.0, 1.0)
+    );
+    float scatterLambert = max(dot(sunDir, Nperturbed) * 0.7 + 0.3, 0.0);
+    float scatterReflectAngle = max(
+        dot(reflect(-sunDir, Nperturbed), V) * 2.0 - 1.2,
+        0.0
+    );
+    float lightScatter = scatterLambert * scatterReflectAngle
+        * 0.30 * sunDirection.w * sunVisibility
+        * max(1.0 - exp(-sunHeight), 0.0);
+    refrColor = mix(refrColor, scatterColour, clamp(lightScatter, 0.0, 1.0));
+
     // ── Surface colour ──
     vec3 surfaceColor = mix(refrColor, reflColor * push.tint_reflect.w, fresnel);
+    surfaceColor += vec3(sunSpecular);
 
     // Foam is bright white-ish with a faint tint from the shallow
     // colour — looks more natural than pure white.
@@ -741,18 +827,9 @@ void main() {
         // therefore `-sunDir`. Flipping this sign suppresses caustics for an
         // overhead sun (the #1459 bug) — keep it consistent with
         // caustic_splat.comp.
-        vec3 sunDir = normalize(sunDirection.xyz);       // direction TO the sun
-        // 1. Use the same material-aware full policy as surface lighting:
-        // opaque structure/props block, while glass transmits tinted energy.
-        vec3 sunTransmission = traceShadowTransmittance(
-            offsetRayOrigin(vWorldPos, Nsurface),
-            sunDir,
-            DIRECTIONAL_SHADOW_TRACE_DISTANCE,
-            0.0,
-            VISIBILITY_MASK_FULL
-        );
-        float sunVisibility = dot(
-            sunTransmission, vec3(0.2126, 0.7152, 0.0722));
+        // The surface-glint block above already evaluated the shared,
+        // material-aware sun visibility, so caustics reuse it without a
+        // second shadow query per water fragment.
         bool sunVisible = sunVisibility > 0.001;
         if (sunVisible) {
             // 2. Snell refraction. refract() takes the incident *propagation*

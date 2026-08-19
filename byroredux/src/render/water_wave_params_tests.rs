@@ -1,14 +1,16 @@
-//! Regression for #2240 (REN-D15-02): authored WATR `wave_amplitude` /
-//! `wave_frequency` were parsed and round-tripped into the canonical
-//! `WaterMaterial` but never reached the GPU — `reemit_water_planes`
-//! zeroed the two push-constant slots that now carry them
-//! (`WaterPush::tune.w` / `WaterPush::misc.y`).
+//! Water-material GPU handoff regressions. Authored WATR wave parameters
+//! and sun-specular power must survive canonical translation and reach the
+//! exact `GpuWaterParams` slots consumed by `water.frag`.
 
 use super::*;
 use byroredux_core::ecs::components::water::{WaterKind, WaterMaterial, WaterPlane};
 use byroredux_core::ecs::{ActiveCamera, Camera, GlobalTransform, MeshHandle, World};
 
-fn world_with_water_plane(wave_amplitude: f32, wave_frequency: f32) -> World {
+fn world_with_water_plane(
+    wave_amplitude: f32,
+    wave_frequency: f32,
+    sun_specular_power: f32,
+) -> World {
     let mut world = World::new();
 
     let cam = world.spawn();
@@ -28,6 +30,7 @@ fn world_with_water_plane(wave_amplitude: f32, wave_frequency: f32) -> World {
             material: WaterMaterial {
                 wave_amplitude,
                 wave_frequency,
+                sun_specular_power,
                 ..WaterMaterial::default()
             },
         },
@@ -64,19 +67,23 @@ fn run_build(world: &World) -> Vec<byroredux_renderer::vulkan::water::WaterDrawC
 }
 
 #[test]
-fn wave_amplitude_and_frequency_reach_the_water_push_constants() {
-    let world = world_with_water_plane(1.5, 2.0);
+fn authored_wave_and_sun_params_reach_the_water_gpu_record() {
+    let world = world_with_water_plane(1.5, 2.0, 73.0);
     let water_commands = run_build(&world);
 
     assert_eq!(water_commands.len(), 1, "expected exactly one water draw");
-    let push = &water_commands[0].push;
+    let params = &water_commands[0].params;
     assert_eq!(
-        push.tune[3], 1.5,
-        "WaterMaterial::wave_amplitude must reach WaterPush::tune.w"
+        params.tune[3], 1.5,
+        "WaterMaterial::wave_amplitude must reach GpuWaterParams::tune.w"
     );
     assert_eq!(
-        push.misc[1], 2.0,
-        "WaterMaterial::wave_frequency must reach WaterPush::misc.y"
+        params.misc[1], 2.0,
+        "WaterMaterial::wave_frequency must reach GpuWaterParams::misc.y"
+    );
+    assert_eq!(
+        params.misc[3], 73.0,
+        "WaterMaterial::sun_specular_power must reach GpuWaterParams::misc.w"
     );
 }
 
@@ -85,10 +92,11 @@ fn default_wave_params_are_the_sentinel_the_shader_normalises_against() {
     // `WaterMaterial::default()` (no XCWT / no WATR) must keep resolving
     // to the sentinel `water.frag` treats as "no chop change" — see
     // `sampleScrollingNormal`'s doc comment (0.05 / 0.6).
-    let world = world_with_water_plane(0.05, 0.6);
+    let world = world_with_water_plane(0.05, 0.6, 50.0);
     let water_commands = run_build(&world);
 
-    let push = &water_commands[0].push;
-    assert_eq!(push.tune[3], 0.05);
-    assert_eq!(push.misc[1], 0.6);
+    let params = &water_commands[0].params;
+    assert_eq!(params.tune[3], 0.05);
+    assert_eq!(params.misc[1], 0.6);
+    assert_eq!(params.misc[3], 50.0);
 }

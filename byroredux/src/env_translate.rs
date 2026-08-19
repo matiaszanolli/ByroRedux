@@ -535,11 +535,18 @@ const WATER_SCROLL_UV_PER_BU_PER_S: f32 = 0.045_651;
 pub(crate) fn resolve_water_material(
     waters: &HashMap<u32, esm::records::misc::WatrRecord>,
     xcwt_form: Option<u32>,
-) -> (WaterMaterial, WaterKind, Option<WaterFlow>, Option<String>) {
+) -> (
+    WaterMaterial,
+    WaterKind,
+    Option<WaterFlow>,
+    Option<String>,
+    [Option<String>; 3],
+) {
     let mut mat = WaterMaterial::default();
     let mut kind = WaterKind::Calm;
     let mut flow: Option<WaterFlow> = None;
     let mut normal_path: Option<String> = None;
+    let mut noise_paths: [Option<String>; 3] = [None, None, None];
 
     if let Some(form) = xcwt_form {
         if let Some(rec) = waters.get(&form) {
@@ -556,6 +563,7 @@ pub(crate) fn resolve_water_material(
             // see docs/engine/watal.md §4.
             mat.wave_amplitude = rec.params.wave_amplitude;
             mat.wave_frequency = rec.params.wave_frequency;
+            mat.sun_specular_power = rec.params.sun_specular_power;
             mat.source_form = rec.form_id;
 
             // ── WaterKind heuristic from EDID naming convention ──
@@ -632,6 +640,11 @@ pub(crate) fn resolve_water_material(
             if !rec.texture_path.is_empty() {
                 normal_path = Some(rec.texture_path.clone());
             }
+            for (dst, path) in noise_paths.iter_mut().zip(&rec.noise_texture_paths) {
+                if !path.is_empty() {
+                    *dst = Some(path.clone());
+                }
+            }
         }
     }
 
@@ -640,7 +653,7 @@ pub(crate) fn resolve_water_material(
     // see "water without a parsed XCWT" cells.
     let _ = SubmersionState::default();
 
-    (mat, kind, flow, normal_path)
+    (mat, kind, flow, normal_path, noise_paths)
 }
 
 // ───────────────────────────────────────────────────────────────────────
@@ -1720,7 +1733,8 @@ mod tests {
             editor_id: "LavaPool01".to_string(),
             full_name: "Lava Pool".to_string(),
             texture_path: String::new(),
-            noise_textures: [u32::MAX; 3],
+            noise_texture_paths: Default::default(),
+            related_waters: [0; 3],
             params: WaterParams {
                 shallow_color: [1.0, 0.4, 0.1],
                 deep_color: [0.6, 0.1, 0.0],
@@ -1733,6 +1747,7 @@ mod tests {
                 wind_direction: 0.0,
                 wave_amplitude: 0.0,
                 wave_frequency: 0.0,
+                sun_specular_power: 90.0,
             },
             raw_dnam: Vec::new(),
             raw_data: Vec::new(),
@@ -1741,19 +1756,20 @@ mod tests {
         let mut waters = HashMap::new();
         waters.insert(rec.form_id, rec);
 
-        let (mat, _kind, _flow, _normal) = resolve_water_material(&waters, Some(0x000A_BCDE));
+        let (mat, _kind, _flow, _normal, _noise) = resolve_water_material(&waters, Some(0x000A_BCDE));
 
         assert_eq!(
             mat.reflection_tint, lava_tint,
             "reflection_tint must round-trip from WATR DATA reflection_color"
         );
+        assert_eq!(mat.sun_specular_power, 90.0);
     }
 
     /// Default WaterMaterial (no XCWT / no WATR record) uses the neutral
     /// grey that matches the pre-#1069 hard-coded shader value.
     #[test]
     fn default_water_material_has_neutral_reflection_tint() {
-        let (mat, _, _, _) = resolve_water_material(&HashMap::new(), None);
+        let (mat, _, _, _, _) = resolve_water_material(&HashMap::new(), None);
         assert_eq!(
             mat.reflection_tint,
             [0.65, 0.70, 0.75],
@@ -1770,7 +1786,8 @@ mod tests {
             editor_id: edid.to_string(),
             full_name: String::new(),
             texture_path: String::new(),
-            noise_textures: [u32::MAX; 3],
+            noise_texture_paths: Default::default(),
+            related_waters: [0; 3],
             params,
             raw_dnam: Vec::new(),
             raw_data: Vec::new(),
@@ -1794,7 +1811,7 @@ mod tests {
         let mut waters = HashMap::new();
         waters.insert(rec.form_id, rec);
 
-        let (mat, kind, _flow, _normal) = resolve_water_material(&waters, Some(0x000A_0001));
+        let (mat, kind, _flow, _normal, _noise) = resolve_water_material(&waters, Some(0x000A_0001));
         assert_eq!(
             mat.wave_amplitude, 1.5,
             "wave_amplitude must round-trip from WATR"
@@ -1804,6 +1821,22 @@ mod tests {
             "wave_frequency must round-trip from WATR"
         );
         assert!(matches!(kind, WaterKind::Calm));
+    }
+
+    #[test]
+    fn resolve_water_material_carries_authored_noise_paths() {
+        let mut rec = calm_watr(0x000A_0002, "DefaultWater", WaterParams::default());
+        rec.noise_texture_paths = [
+            "textures/water/noise_a.dds".into(),
+            String::new(),
+            "textures/water/noise_c.dds".into(),
+        ];
+        let mut waters = HashMap::new();
+        waters.insert(rec.form_id, rec);
+        let (_, _, _, _, noise) = resolve_water_material(&waters, Some(0x000A_0002));
+        assert_eq!(noise[0].as_deref(), Some("textures/water/noise_a.dds"));
+        assert!(noise[1].is_none());
+        assert_eq!(noise[2].as_deref(), Some("textures/water/noise_c.dds"));
     }
 
     // ── #2872 — WaterFlow.speed unit ──────────────────────────────
@@ -1834,7 +1867,7 @@ mod tests {
             let mut waters = HashMap::new();
             waters.insert(rec.form_id, rec);
 
-            let (mat, kind, flow, _) = resolve_water_material(&waters, Some(0x000B_0001));
+            let (mat, kind, flow, _, _) = resolve_water_material(&waters, Some(0x000B_0001));
             let flow = flow.expect("a river EDID must synthesize a flow");
             assert!(matches!(kind, WaterKind::River));
             assert_eq!(
@@ -1867,8 +1900,8 @@ mod tests {
         for (form, edid) in [(0x000C_0001, "WhiteRapidsFast"), (0x000C_0002, "RiverSlow")] {
             waters.insert(form, calm_watr(form, edid, WaterParams::default()));
         }
-        let (_, rapids_kind, rapids, _) = resolve_water_material(&waters, Some(0x000C_0001));
-        let (_, river_kind, river, _) = resolve_water_material(&waters, Some(0x000C_0002));
+        let (_, rapids_kind, rapids, _, _) = resolve_water_material(&waters, Some(0x000C_0001));
+        let (_, river_kind, river, _, _) = resolve_water_material(&waters, Some(0x000C_0002));
         assert!(matches!(rapids_kind, WaterKind::Rapids));
         assert!(matches!(river_kind, WaterKind::River));
 
@@ -1893,7 +1926,7 @@ mod tests {
         let mut waters = HashMap::new();
         waters.insert(rec.form_id, rec);
 
-        let (mat, kind, flow, _) = resolve_water_material(&waters, Some(0x000D_0001));
+        let (mat, kind, flow, _, _) = resolve_water_material(&waters, Some(0x000D_0001));
         assert!(matches!(kind, WaterKind::Calm));
         assert!(flow.is_none());
         assert_eq!(mat.scroll_a, WaterMaterial::default().scroll_a);
@@ -1938,8 +1971,8 @@ mod tests {
         waters.insert(oblivion.form_id, oblivion);
         waters.insert(skyrim.form_id, skyrim);
 
-        let (ob, ob_kind, ob_flow, _) = resolve_water_material(&waters, Some(0x0001_0000));
-        let (sk, _, _, _) = resolve_water_material(&waters, Some(0x0002_0000));
+        let (ob, ob_kind, ob_flow, _, _) = resolve_water_material(&waters, Some(0x0001_0000));
+        let (sk, _, _, _, _) = resolve_water_material(&waters, Some(0x0002_0000));
         let def = WaterMaterial::default();
 
         // AUTHORED fields differ (proves the two records are distinct).
@@ -2003,14 +2036,14 @@ mod tests {
     #[test]
     fn resolve_water_material_procedural_default_classification() {
         // Case 1: no XCWT at all.
-        let (_, _, _, normal_none) = resolve_water_material(&HashMap::new(), None);
+        let (_, _, _, normal_none, _) = resolve_water_material(&HashMap::new(), None);
         assert!(
             normal_none.is_none(),
             "no XCWT must classify as procedural default"
         );
 
         // Case 2: XCWT present but unresolvable form.
-        let (_, _, _, normal_unresolved) =
+        let (_, _, _, normal_unresolved, _) =
             resolve_water_material(&HashMap::new(), Some(0x00DE_AD00));
         assert!(
             normal_unresolved.is_none(),
@@ -2021,7 +2054,7 @@ mod tests {
         let no_tex = calm_watr(0x000B_0001, "LavaPool01", WaterParams::default());
         let mut waters = HashMap::new();
         waters.insert(no_tex.form_id, no_tex);
-        let (_, _, _, normal_empty_tex) = resolve_water_material(&waters, Some(0x000B_0001));
+        let (_, _, _, normal_empty_tex, _) = resolve_water_material(&waters, Some(0x000B_0001));
         assert!(
             normal_empty_tex.is_none(),
             "WATR with empty texture_path must classify as procedural default"
@@ -2032,7 +2065,7 @@ mod tests {
         with_tex.texture_path = "textures\\water\\defaultwater.dds".to_string();
         let mut waters2 = HashMap::new();
         waters2.insert(with_tex.form_id, with_tex);
-        let (_, _, _, normal_with_tex) = resolve_water_material(&waters2, Some(0x000B_0002));
+        let (_, _, _, normal_with_tex, _) = resolve_water_material(&waters2, Some(0x000B_0002));
         assert_eq!(
             normal_with_tex,
             Some("textures\\water\\defaultwater.dds".to_string()),

@@ -2233,6 +2233,7 @@ impl VulkanContext {
         let water = if device_caps.ray_query_supported {
             match WaterPipeline::new(
                 &device,
+                &gpu_allocator,
                 render_pass,
                 pipeline_cache,
                 texture_registry.descriptor_set_layout,

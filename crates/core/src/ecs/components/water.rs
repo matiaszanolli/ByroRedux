@@ -126,6 +126,10 @@ pub struct WaterMaterial {
     /// layers sample this; the shader applies a different scale +
     /// scroll vector to each. `u32::MAX` = solid-colour water.
     pub normal_map_index: u32,
+    /// Bindless indices for Skyrim+/FO4 authored noise layers NAM2–4.
+    /// `u32::MAX` means procedural fallback; the loader fills missing
+    /// layers from `normal_map_index` when a legacy record has no NAM paths.
+    pub noise_map_indices: [u32; 3],
     /// World-space scroll vectors for the two wave layers (xy = m/s).
     /// For `Calm`, the cell loader picks two non-parallel arbitrary
     /// vectors. For `River` / `Rapids` / `Waterfall`, vector 0 is
@@ -158,6 +162,10 @@ pub struct WaterMaterial {
     pub wave_amplitude: f32,
     /// Wave frequency (Hz) — companion to [`Self::wave_amplitude`].
     pub wave_frequency: f32,
+    /// Direct-sun glint exponent from WATR `Sun Specular Power`.
+    /// Larger values produce a smaller, tighter highlight. This is an
+    /// exponent, not an intensity multiplier.
+    pub sun_specular_power: f32,
     /// Source WATR FormID for debug overlays / save-game roundtrip.
     /// `0` when the plane was spawned without an XCWT reference
     /// (default water material).
@@ -178,6 +186,7 @@ impl Default for WaterMaterial {
             fresnel_f0: 0.02,
             reflectivity: 0.85,
             normal_map_index: u32::MAX,
+            noise_map_indices: [u32::MAX; 3],
             scroll_a: [0.020, 0.011],
             scroll_b: [-0.014, 0.025],
             uv_scale_a: 1.0 / 256.0,
@@ -190,6 +199,7 @@ impl Default for WaterMaterial {
             // all games.
             wave_amplitude: 0.05,
             wave_frequency: 0.6,
+            sun_specular_power: 50.0,
             source_form: 0,
             reflection_tint: [0.65, 0.70, 0.75],
         }

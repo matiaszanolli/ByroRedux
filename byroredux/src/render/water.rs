@@ -24,7 +24,7 @@
 use byroredux_core::ecs::components::water::{WaterFlow, WaterKind, WaterPlane};
 use byroredux_core::ecs::{TotalTime, World};
 use byroredux_renderer::vulkan::context::DrawCommand;
-use byroredux_renderer::vulkan::water::{WaterDrawCommand, WaterPush};
+use byroredux_renderer::vulkan::water::{GpuWaterParams, WaterDrawCommand};
 
 /// Re-emit water planes: flip the `is_water` flag on each plane's
 /// already-emitted draw command and produce a matching
@@ -65,12 +65,12 @@ pub(super) fn reemit_water_planes(
             None => ([1.0, 0.0, 0.0], 0.0),
         };
 
-        // ABI: matches `WaterPush` in `shaders/water.frag`.
-        // Each vec4 maps to one std430-scalar slot — see
-        // `crates/renderer/src/vulkan/water.rs::WaterPush` for
+        // ABI: matches `WaterParams` in `shaders/water.frag`.
+        // Each vec4 maps to one std140 slot — see
+        // `crates/renderer/src/vulkan/water.rs::GpuWaterParams` for
         // the layout contract.
         let mat = &plane.material;
-        let push = WaterPush {
+        let params = GpuWaterParams {
             timing: [
                 time_secs,
                 plane.kind as u8 as f32,
@@ -105,8 +105,8 @@ pub(super) fn reemit_water_planes(
             misc: [
                 mat.fresnel_f0,
                 mat.wave_frequency, // #2240 — WATR-authored, consumed by water.frag
-                WaterPush::pack_normal_index(mat.normal_map_index),
-                0.0,
+                GpuWaterParams::pack_normal_index(mat.normal_map_index),
+                mat.sun_specular_power,
             ],
             tint_reflect: [
                 mat.reflection_tint[0],
@@ -114,11 +114,17 @@ pub(super) fn reemit_water_planes(
                 mat.reflection_tint[2],
                 mat.reflectivity,
             ],
+            noise_indices: [
+                mat.noise_map_indices[0],
+                mat.noise_map_indices[1],
+                mat.noise_map_indices[2],
+                u32::MAX,
+            ],
         };
         water_commands.push(WaterDrawCommand {
             mesh_handle: draw_commands[idx].mesh_handle,
             instance_index: idx as u32,
-            push,
+            params,
         });
         // Silence WaterKind-unused warning on builds where the
         // enum is only consumed by the f32 cast above.

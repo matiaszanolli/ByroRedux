@@ -5,7 +5,7 @@
 //! unchanged from the pre-split `draw_frame`.
 
 use super::super::pipeline::{gamebryo_to_vk_compare_op, PipelineKey};
-use super::super::water::WaterDrawCommand;
+use super::super::water::{WaterDrawCommand, MAX_WATER_DRAWS};
 use super::draw::{group_state, needs_two_sided_blend_split, should_use_indirect_draws, DrawBatch};
 use super::{DrawCommand, VulkanContext};
 use ash::vk;
@@ -519,65 +519,69 @@ impl VulkanContext {
                      was draw_commands re-sorted after the water emit? See #1026 / F-WAT-05.",
                 );
                 if let Some(ref water) = self.water {
-                    self.device.cmd_set_depth_test_enable(cmd, true);
-                    self.device.cmd_set_depth_write_enable(cmd, false);
-                    self.device
-                        .cmd_set_depth_compare_op(cmd, vk::CompareOp::LESS_OR_EQUAL);
-                    // #1071 / F-WAT-11 — water pipeline declares CULL_MODE dynamic.
-                    // Emit the runtime override here so the draw uses NONE (water
-                    // surfaces are visible from above and below the camera plane).
-                    self.device.cmd_set_cull_mode(cmd, vk::CullModeFlags::NONE);
-                    // #2175 / D2-04 — pipeline + all three descriptor sets
-                    // are identical for every plane in the pass, so bind
-                    // them once here rather than once per plane. The only
-                    // per-plane state left in the loop is the mesh's
-                    // vertex/index buffers and the push constants, neither
-                    // of which disturbs pipeline or descriptor bindings.
-                    water.bind_pass(
-                        &self.device,
-                        cmd,
-                        frame, // #1255 — selects set 2 per-FIF water-caustic descriptor
-                        self.texture_registry.descriptor_set(frame), // #1258 — set 0
-                        self.scene_buffers.descriptor_set(frame), // #1258 — set 1
-                    );
-                    for wc in water_commands {
-                        if let Some(mesh) = self.mesh_registry.get(wc.mesh_handle) {
-                            // #2505 / D12-2026-08-07-03 — no live path
-                            // registers a water plane global-only today
-                            // (mirrors the `dispatch_direct` closure above,
-                            // #956 / REN-D5-NEW-05), but the precondition
-                            // is a call-site convention, not a type-level
-                            // guarantee. A future WATAL water-LOD tier that
-                            // did would otherwise panic mid-render-pass
-                            // with `cmd` still open — skip gracefully
-                            // instead.
-                            let (Some(vb), Some(ib)) =
-                                (mesh.vertex_buffer.as_ref(), mesh.index_buffer.as_ref())
-                            else {
-                                static ONCE: std::sync::Once = std::sync::Once::new();
-                                ONCE.call_once(|| {
-                                    log::warn!(
-                                        "Water mesh has no per-mesh vertex/index buffer \
+                    if water.params_ready(frame) {
+                        self.device.cmd_set_depth_test_enable(cmd, true);
+                        self.device.cmd_set_depth_write_enable(cmd, false);
+                        self.device
+                            .cmd_set_depth_compare_op(cmd, vk::CompareOp::LESS_OR_EQUAL);
+                        // #1071 / F-WAT-11 — water pipeline declares CULL_MODE dynamic.
+                        // Emit the runtime override here so the draw uses NONE (water
+                        // surfaces are visible from above and below the camera plane).
+                        self.device.cmd_set_cull_mode(cmd, vk::CullModeFlags::NONE);
+                        // #2175 / D2-04 — pipeline + all three descriptor sets
+                        // are identical for every plane in the pass, so bind
+                        // them once here rather than once per plane. The only
+                        // per-plane state left in the loop is the mesh's
+                        // vertex/index buffers and the push constants, neither
+                        // of which disturbs pipeline or descriptor bindings.
+                        water.bind_pass(
+                            &self.device,
+                            cmd,
+                            frame, // #1255 — selects set 2 per-FIF water-caustic descriptor
+                            self.texture_registry.descriptor_set(frame), // #1258 — set 0
+                            self.scene_buffers.descriptor_set(frame), // #1258 — set 1
+                        );
+                        for (water_index, wc) in
+                            water_commands.iter().take(MAX_WATER_DRAWS).enumerate()
+                        {
+                            if let Some(mesh) = self.mesh_registry.get(wc.mesh_handle) {
+                                // #2505 / D12-2026-08-07-03 — no live path
+                                // registers a water plane global-only today
+                                // (mirrors the `dispatch_direct` closure above,
+                                // #956 / REN-D5-NEW-05), but the precondition
+                                // is a call-site convention, not a type-level
+                                // guarantee. A future WATAL water-LOD tier that
+                                // did would otherwise panic mid-render-pass
+                                // with `cmd` still open — skip gracefully
+                                // instead.
+                                let (Some(vb), Some(ib)) =
+                                    (mesh.vertex_buffer.as_ref(), mesh.index_buffer.as_ref())
+                                else {
+                                    static ONCE: std::sync::Once = std::sync::Once::new();
+                                    ONCE.call_once(|| {
+                                        log::warn!(
+                                            "Water mesh has no per-mesh vertex/index buffer \
                                          (global-only) — skipping water draw. #2505"
-                                    );
-                                });
-                                continue;
-                            };
-                            self.device
-                                .cmd_bind_vertex_buffers(cmd, 0, &[vb.buffer], &[0]);
-                            self.device.cmd_bind_index_buffer(
-                                cmd,
-                                ib.buffer,
-                                0,
-                                vk::IndexType::UINT32,
-                            );
-                            water.record_draw(
-                                &self.device,
-                                cmd,
-                                &wc.push,
-                                mesh.index_count,
-                                wc.instance_index,
-                            );
+                                        );
+                                    });
+                                    continue;
+                                };
+                                self.device
+                                    .cmd_bind_vertex_buffers(cmd, 0, &[vb.buffer], &[0]);
+                                self.device.cmd_bind_index_buffer(
+                                    cmd,
+                                    ib.buffer,
+                                    0,
+                                    vk::IndexType::UINT32,
+                                );
+                                water.record_draw(
+                                    &self.device,
+                                    cmd,
+                                    water_index as u32,
+                                    mesh.index_count,
+                                    wc.instance_index,
+                                );
+                            }
                         }
                     }
                 }

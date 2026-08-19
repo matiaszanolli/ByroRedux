@@ -8,7 +8,7 @@ use byroredux_renderer::VulkanContext;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
-use crate::components::{CellRootIndex, MaterialTextureHandles, NormalMapHandle, TerrainTileSlot};
+use crate::components::{CellRootIndex, MaterialTextureHandles, NormalMapHandle, TerrainTileSlot, WaterNoiseMapHandles};
 
 /// Bounded phase timings for one logical cell-unload batch.
 ///
@@ -338,6 +338,7 @@ pub(crate) fn collect_victim_gpu_handles(
     let mq = world.query::<MeshHandle>();
     let tq = world.query::<TextureHandle>();
     let nq = world.query::<NormalMapHandle>();
+    let wnq = world.query::<WaterNoiseMapHandles>();
     let mtq = world.query::<MaterialTextureHandles>();
     let ttq = world.query::<TerrainTileSlot>();
     for &eid in victims {
@@ -354,6 +355,13 @@ pub(crate) fn collect_victim_gpu_handles(
         if let Some(nq) = &nq {
             if let Some(nh) = nq.get(eid) {
                 push_tex_drop(nh.0, &mut texture_drops);
+            }
+        }
+        if let Some(wnq) = &wnq {
+            if let Some(handles) = wnq.get(eid) {
+                for &handle in &handles.0 {
+                    push_tex_drop(handle, &mut texture_drops);
+                }
             }
         }
         if let Some(mtq) = &mtq {

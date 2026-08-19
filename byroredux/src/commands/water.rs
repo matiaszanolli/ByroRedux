@@ -127,7 +127,7 @@ impl ConsoleCommand for WaterDumpCommand {
                 format_flow(flow),
             ));
             lines.push(format!(
-                "    shallow=[{:.3},{:.3},{:.3}] deep=[{:.3},{:.3},{:.3}] fog={:.1}..{:.1} fresnel={:.4} reflect={:.3} normal={} wave={:.4}@{:.4}",
+                "    shallow=[{:.3},{:.3},{:.3}] deep=[{:.3},{:.3},{:.3}] fog={:.1}..{:.1} fresnel={:.4} reflect={:.3} normal={} wave={:.4}@{:.4} sun_spec_power={:.2}",
                 material.shallow_color[0],
                 material.shallow_color[1],
                 material.shallow_color[2],
@@ -145,6 +145,7 @@ impl ConsoleCommand for WaterDumpCommand {
                 },
                 material.wave_amplitude,
                 material.wave_frequency,
+                material.sun_specular_power,
             ));
         }
 

@@ -3365,6 +3365,15 @@ impl VulkanContext {
             }
         }
 
+        // Water material UBO — upload before the shared HOST→FRAGMENT
+        // barrier below. The per-draw push constant now carries only the
+        // compact array index, so this is the sole material-data upload.
+        if let Some(ref mut water) = self.water {
+            if let Err(error) = water.upload_params(&self.device, frame, water_commands) {
+                log::warn!("water parameter upload failed: {error}; skipping water this frame");
+            }
+        }
+
         // Bloom UBOs — #2037 / GPU-D5-01: every down/upsample param UBO
         // is a pure function of the (construction-time-fixed) mip
         // extents, so `BloomPipeline::new` writes them once and a

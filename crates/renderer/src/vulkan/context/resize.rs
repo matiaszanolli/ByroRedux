@@ -348,6 +348,9 @@ impl VulkanContext {
             }
             self.water = match super::super::water::WaterPipeline::new(
                 &self.device,
+                self.allocator
+                    .as_ref()
+                    .expect("allocator missing during water pipeline recreate"),
                 self.render_pass,
                 self.pipeline_cache,
                 self.texture_registry.descriptor_set_layout,

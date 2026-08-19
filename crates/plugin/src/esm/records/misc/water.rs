@@ -48,12 +48,13 @@ pub struct WatrRecord {
     /// per-spec defaults when the source record omits a sub-record or
     /// when the byte layout doesn't match the parser's expectations.
     pub params: WaterParams,
-    /// GNAM-resolved noise-texture form IDs (Skyrim+ — 3 slots,
-    /// `[0; 3]` when the record omits GNAM or only fills a prefix).
-    /// References to `NOIS`-style records that the shader samples
-    /// for displacement layers when the bindless `TNAM` texture is
-    /// unavailable.
-    pub noise_textures: [u32; 3],
+    /// Skyrim+ authored noise-layer texture paths from NAM2/NAM3/NAM4.
+    /// Empty strings denote omitted layers.
+    pub noise_texture_paths: [String; 3],
+    /// GNAM's three related-water FormIDs (daytime, nighttime,
+    /// underwater). xEdit marks these links unused; they are preserved
+    /// accurately rather than misclassified as texture references.
+    pub related_waters: [u32; 3],
     /// Raw DNAM bytes — preserved so a future per-game-precise
     /// decoder can re-parse without re-walking the ESM. ~252+ bytes
     /// on Skyrim, ~196 on FNV/FO3, ~102 on Oblivion. Empty when the
@@ -116,6 +117,10 @@ pub struct WaterParams {
     pub wave_amplitude: f32,
     /// Wave frequency, Hz.
     pub wave_frequency: f32,
+    /// Blinn-Phong exponent for the direct-sun glint. Bethesda names this
+    /// `Sun Specular Power`; larger values produce a tighter highlight.
+    /// Authored by every supported WATR visual-data generation.
+    pub sun_specular_power: f32,
 }
 
 impl Default for WaterParams {
@@ -132,6 +137,7 @@ impl Default for WaterParams {
             wind_direction: 0.0,
             wave_amplitude: 0.05,
             wave_frequency: 0.6,
+            sun_specular_power: 50.0,
         }
     }
 }
@@ -158,7 +164,7 @@ fn u8_to_linear(byte: u8) -> f32 {
 ///  4      4     wind_direction     (f32)
 ///  8      4     wave_amplitude     (f32)
 /// 12      4     wave_frequency     (f32)
-/// 16      4     sun_power          (f32) — unused
+/// 16      4     sun_specular_power (f32)
 /// 20      4     reflectivity_amt   (f32)
 /// 24      4     fresnel_amount     (f32)
 /// 28      4     fog_distance_near  (f32) — FNV/FO3
@@ -190,8 +196,9 @@ fn decode_data(data: &[u8]) -> WaterParams {
     if let Ok(v) = r.f32() {
         p.wave_frequency = v;
     }
-    // skip sun_power at 16..20 — unused by the flat-mesh shader.
-    r.skip_or_eof(4);
+    if let Ok(v) = r.f32() {
+        p.sun_specular_power = v.clamp(1.0, 2048.0);
+    }
     if let Ok(v) = r.f32() {
         p.reflectivity = v.clamp(0.0, 1.0);
     }
@@ -232,21 +239,19 @@ fn decode_data(data: &[u8]) -> WaterParams {
     p
 }
 
-/// Best-effort Skyrim+ DNAM decode. The 1.5 / 1.6 layouts differ in
-/// the trailing fields but the leading prefix that we consume is
-/// stable. When the buffer is shorter than expected, each field
-/// falls back to its default rather than emitting partial reads.
-fn decode_dnam_skyrim(data: &[u8]) -> WaterParams {
+/// Decode the pre-FO4 DNAM visual prefix shared by FO3/FNV and TES5.
+/// Skyrim 1.5 / 1.6 differ in trailing fields, but xEdit's definitions
+/// agree on the 52-byte prefix consumed here. When the buffer is shorter,
+/// every field falls back to its canonical default.
+fn decode_dnam_pre_fo4(data: &[u8]) -> WaterParams {
     let mut p = WaterParams::default();
-    // Skyrim DNAM starts with a 4-byte unknown / version tag at
-    // offset 0; the wind/wave/fog prefix matches the FNV layout
-    // starting at offset 4.
+    // xEdit's TES5 definition starts the shared wind/wave prefix at byte 0.
+    // An unnamed float at byte 28 (between Fresnel and fog-near), not a
+    // leading version word, is what shifts the colour block to byte 40.
     if data.len() < 52 {
         return p;
     }
     let mut r = SubReader::new(data);
-    // 4-byte unknown / version tag at offset 0; FNV-shaped prefix starts at 4.
-    r.skip_or_eof(4);
     if let Ok(v) = r.f32() {
         p.wind_speed = v;
     }
@@ -259,14 +264,17 @@ fn decode_dnam_skyrim(data: &[u8]) -> WaterParams {
     if let Ok(v) = r.f32() {
         p.wave_frequency = v;
     }
-    // skip sun_power at 20..24 — unused by the flat-mesh shader.
-    r.skip_or_eof(4);
+    if let Ok(v) = r.f32() {
+        p.sun_specular_power = v.clamp(1.0, 2048.0);
+    }
     if let Ok(v) = r.f32() {
         p.reflectivity = v.clamp(0.0, 1.0);
     }
     if let Ok(v) = r.f32() {
         p.fresnel = v.clamp(0.0, 1.0);
     }
+    // Unnamed/unused float at 28..32 in the TES5 record definition.
+    r.skip_or_eof(4);
     if let Ok(v) = r.f32() {
         p.fog_near = v.max(0.0);
     }
@@ -348,6 +356,9 @@ fn decode_dnam_fo4(data: &[u8]) -> WaterParams {
     if let Some(color) = read_rgb_at(data, 96) {
         p.reflection_color = color;
     }
+    if let Some(power) = read_f32_at(data, 100) {
+        p.sun_specular_power = power.clamp(1.0, 2048.0);
+    }
 
     // FO4 stores three noise-layer directions in degrees at 128..140 and
     // three layer speeds at 140..152. The canonical view currently carries
@@ -381,6 +392,9 @@ pub fn parse_watr(form_id: u32, subs: &[SubRecord], game: GameKind) -> WatrRecor
         match &sub.sub_type {
             b"TNAM" => out.texture_path = read_zstring(&sub.data),
             b"NNAM" => out.texture_path = read_zstring(&sub.data),
+            b"NAM2" => out.noise_texture_paths[0] = read_zstring(&sub.data),
+            b"NAM3" => out.noise_texture_paths[1] = read_zstring(&sub.data),
+            b"NAM4" => out.noise_texture_paths[2] = read_zstring(&sub.data),
             b"DATA" => {
                 // Oblivion / FO3 / FNV path. The two byte layouts
                 // are compatible on the 60-byte prefix we consume.
@@ -390,20 +404,20 @@ pub fn parse_watr(form_id: u32, subs: &[SubRecord], game: GameKind) -> WatrRecor
             b"DNAM" => {
                 out.params = match game {
                     GameKind::Fallout4 => decode_dnam_fo4(&sub.data),
-                    // Skyrim remains best-effort. FO76 and Starfield keep
-                    // their pre-existing fallback until their divergent
-                    // DNAM layouts receive explicit projections.
-                    _ => decode_dnam_skyrim(&sub.data),
+                    // FO3/FNV and Skyrim share this prefix. FO76 and
+                    // Starfield keep the same best-effort fallback until
+                    // their divergent tails receive explicit projections.
+                    _ => decode_dnam_pre_fo4(&sub.data),
                 };
                 out.raw_dnam = sub.data.clone();
             }
             b"GNAM" => {
-                // 12 bytes = three u32 FormIDs (noise layer 0/1/2).
+                // 12 bytes = daytime/nighttime/underwater related waters.
                 // Fewer bytes → unfilled slots stay at zero.
                 let mut r = SubReader::new(&sub.data);
                 for i in 0..3 {
                     if let Ok(fid) = r.u32() {
-                        out.noise_textures[i] = fid;
+                        out.related_waters[i] = fid;
                     }
                 }
             }
@@ -454,7 +468,7 @@ mod tests {
         data.extend_from_slice(&0.25f32.to_le_bytes()); // wind_direction
         data.extend_from_slice(&0.10f32.to_le_bytes()); // wave_amplitude
         data.extend_from_slice(&0.80f32.to_le_bytes()); // wave_frequency
-        data.extend_from_slice(&0.00f32.to_le_bytes()); // sun_power (unused)
+        data.extend_from_slice(&37.0f32.to_le_bytes()); // sun_specular_power
         data.extend_from_slice(&0.65f32.to_le_bytes()); // reflectivity
         data.extend_from_slice(&0.04f32.to_le_bytes()); // fresnel
         data.extend_from_slice(&50.0f32.to_le_bytes()); // fog_near
@@ -467,6 +481,7 @@ mod tests {
         let w = parse_watr(0xAAAA, &subs, GameKind::Fallout3NV);
         assert!((w.params.wind_speed - 1.5).abs() < 1e-6);
         assert!((w.params.wave_frequency - 0.80).abs() < 1e-6);
+        assert!((w.params.sun_specular_power - 37.0).abs() < 1e-6);
         assert!((w.params.reflectivity - 0.65).abs() < 1e-6);
         assert!((w.params.fresnel - 0.04).abs() < 1e-6);
         assert!((w.params.fog_near - 50.0).abs() < 1e-3);
@@ -528,18 +543,17 @@ mod tests {
 
     #[test]
     fn parse_watr_decodes_dnam_skyrim_prefix() {
-        // Skyrim DNAM with 52-byte prefix (the shortest that fills
-        // every decoded field). Leading 4 bytes are the unknown /
-        // version tag.
+        // Skyrim DNAM with the exact xEdit TES5 52-byte prefix (the
+        // shortest that fills every decoded field).
         let mut data = Vec::with_capacity(52);
-        data.extend_from_slice(&0u32.to_le_bytes()); // unknown
-        data.extend_from_slice(&2.0f32.to_le_bytes()); // wind_speed @ offset 4
-        data.extend_from_slice(&1.2f32.to_le_bytes()); // wind_direction
-        data.extend_from_slice(&0.20f32.to_le_bytes()); // wave_amplitude
-        data.extend_from_slice(&0.55f32.to_le_bytes()); // wave_frequency
-        data.extend_from_slice(&1.0f32.to_le_bytes()); // sun_power (offset 20, unused)
-        data.extend_from_slice(&0.75f32.to_le_bytes()); // reflectivity @ 24
+        data.extend_from_slice(&2.0f32.to_le_bytes()); // wind_speed @ 0
+        data.extend_from_slice(&1.2f32.to_le_bytes()); // wind_direction @ 4
+        data.extend_from_slice(&0.20f32.to_le_bytes()); // wave_amplitude @ 8
+        data.extend_from_slice(&0.55f32.to_le_bytes()); // wave_frequency @ 12
+        data.extend_from_slice(&61.0f32.to_le_bytes()); // sun specular power @ 16
+        data.extend_from_slice(&0.75f32.to_le_bytes()); // reflectivity @ 20
         data.extend_from_slice(&0.03f32.to_le_bytes()); // fresnel
+        data.extend_from_slice(&0.0f32.to_le_bytes()); // unnamed @ 28
         data.extend_from_slice(&60.0f32.to_le_bytes()); // fog_near
         data.extend_from_slice(&500.0f32.to_le_bytes()); // fog_far
         data.extend_from_slice(&[0x10, 0x40, 0x70, 0xFF]); // shallow
@@ -549,6 +563,10 @@ mod tests {
         let subs = vec![sub(b"DNAM", &data)];
         let w = parse_watr(0xCCCC, &subs, GameKind::Skyrim);
         assert!((w.params.wind_speed - 2.0).abs() < 1e-6);
+        assert!((w.params.wind_direction - 1.2).abs() < 1e-6);
+        assert!((w.params.wave_amplitude - 0.20).abs() < 1e-6);
+        assert!((w.params.wave_frequency - 0.55).abs() < 1e-6);
+        assert!((w.params.sun_specular_power - 61.0).abs() < 1e-6);
         assert!((w.params.reflectivity - 0.75).abs() < 1e-6);
         assert!((w.params.fog_far - 500.0).abs() < 1e-3);
         assert_eq!(w.raw_dnam.len(), 52);
@@ -569,6 +587,7 @@ mod tests {
         data[64..68].copy_from_slice(&0.2935f32.to_le_bytes()); // reflectivity
         data[68..72].copy_from_slice(&0.058f32.to_le_bytes()); // Fresnel
         data[96..100].copy_from_slice(&[51, 68, 70, 0]); // reflection colour
+        data[100..104].copy_from_slice(&83.0f32.to_le_bytes()); // sun specular power
         data[128..132].copy_from_slice(&67.824f32.to_le_bytes()); // layer 1 direction (deg)
         data[140..144].copy_from_slice(&0.0109f32.to_le_bytes()); // layer 1 speed
 
@@ -581,6 +600,7 @@ mod tests {
         assert_eq!(w.params.fog_far, 1700.0);
         assert!((w.params.reflectivity - 0.2935).abs() < 1e-6);
         assert!((w.params.fresnel - 0.058).abs() < 1e-6);
+        assert!((w.params.sun_specular_power - 83.0).abs() < 1e-6);
         assert!((w.params.wind_direction - 67.824f32.to_radians()).abs() < 1e-6);
         assert!((w.params.wind_speed - 0.0109).abs() < 1e-6);
         assert_eq!(
@@ -615,13 +635,26 @@ mod tests {
     }
 
     #[test]
-    fn parse_watr_decodes_gnam_noise_textures() {
+    fn parse_watr_decodes_named_noise_paths_and_gnam_related_waters() {
         let mut gnam = Vec::with_capacity(12);
         gnam.extend_from_slice(&0x11111111u32.to_le_bytes());
         gnam.extend_from_slice(&0x22222222u32.to_le_bytes());
         gnam.extend_from_slice(&0x33333333u32.to_le_bytes());
-        let subs = vec![sub(b"GNAM", &gnam)];
+        let subs = vec![
+            sub(b"NAM2", b"textures\\water\\noise01.dds\0"),
+            sub(b"NAM3", b"textures\\water\\noise02.dds\0"),
+            sub(b"NAM4", b"textures\\water\\noise03.dds\0"),
+            sub(b"GNAM", &gnam),
+        ];
         let w = parse_watr(0xDDDD, &subs, GameKind::Skyrim);
-        assert_eq!(w.noise_textures, [0x11111111, 0x22222222, 0x33333333]);
+        assert_eq!(
+            w.noise_texture_paths,
+            [
+                "textures\\water\\noise01.dds",
+                "textures\\water\\noise02.dds",
+                "textures\\water\\noise03.dds",
+            ]
+        );
+        assert_eq!(w.related_waters, [0x11111111, 0x22222222, 0x33333333]);
     }
 }

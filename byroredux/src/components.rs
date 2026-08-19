@@ -240,6 +240,13 @@ impl Component for NormalMapHandle {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// Bindless handles acquired for the three authored WATR noise layers.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct WaterNoiseMapHandles(pub(crate) [u32; 3]);
+impl Component for WaterNoiseMapHandles {
+    type Storage = SparseSetStorage<Self>;
+}
+
 /// Resolved bindless indices for the common NIF material texture contract.
 ///
 /// Every static material carries the same semantic role set regardless of

@@ -15,8 +15,8 @@
 //! Unique to this pipeline:
 //!
 //! - `water.vert` + `water.frag` shaders;
-//! - a 128-byte push-constant block ([`WaterPush`]) carrying
-//!   time + flow + per-plane material params;
+//! - a per-frame [`GpuWaterParams`] UBO carrying the full authored material
+//!   payload, selected by a compact 16-byte [`WaterPush`] draw index;
 //! - SRC_ALPHA / ONE_MINUS_SRC_ALPHA blend on HDR attachment 0;
 //!   attachments 1..6 (normal, motion, mesh_id, raw_indirect, albedo,
 //!   reservoir) are masked off (`color_write_mask = 0`) so water never pollutes
@@ -32,7 +32,7 @@
 //!    [`WaterPipeline::bind_pass`] **once**. That binds the pipeline and
 //!    all three descriptor sets for the whole pass (#2175).
 //! 2. Descriptor state does *not* survive the pipeline bind: this
-//!    pipeline's 128-byte push-constant range makes its layout
+//!    pipeline's fragment push-constant range makes its layout
 //!    incompatible with the triangle pipeline's for every set, so
 //!    `bind_pass` rebinds sets 0 and 1 explicitly rather than inheriting
 //!    them (#1258 — see its doc comment). Dynamic state does survive, per
@@ -44,7 +44,9 @@
 //!      they reuse the same per-instance model matrix the rest of the scene
 //!      uses). Neither step disturbs the bindings from step 1.
 
-use super::descriptors::{write_storage_image, DescriptorPoolBuilder};
+use super::allocator::SharedAllocator;
+use super::buffer::GpuBuffer;
+use super::descriptors::{write_storage_image, write_uniform_buffer, DescriptorPoolBuilder};
 use super::pipeline::load_shader_module;
 use crate::vertex::Vertex;
 use anyhow::{Context, Result};
@@ -56,16 +58,11 @@ use ash::vk;
 pub(crate) const WATER_VERT_SPV: &[u8] = include_bytes!("../../shaders/water.vert.spv");
 pub(crate) const WATER_FRAG_SPV: &[u8] = include_bytes!("../../shaders/water.frag.spv");
 
-/// Push-constant block for one water draw. Layout matches the
-/// `WaterPush` block in `shaders/water.frag` exactly — std430
-/// scalar layout (push constants are always scalar, never std140).
-///
-/// 128 bytes total (8 × 16) — exactly the Vulkan 1.1 spec minimum
-/// `maxPushConstantsSize >= 128`. No further growth is possible
-/// without raising a device capability check.
+/// Canonical GPU material payload for one water draw. Layout matches
+/// `WaterParams` in `shaders/water.frag` exactly (9 std140 vec4 slots).
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
-pub struct WaterPush {
+pub struct GpuWaterParams {
     /// x = time (seconds since cell load), y = `WaterKind` as f32,
     /// z = foam_strength (0..1), w = ior.
     pub timing: [f32; 4],
@@ -75,9 +72,9 @@ pub struct WaterPush {
     /// absorption ramp. Consumed by `absorbWaterColumn` since #2785; it
     /// travelled the whole EXAL water arm unread before that, so every
     /// water body in every game shared one hard-coded curve. Wiring it up
-    /// cost no push-constant space (the value was already uploaded here),
-    /// so the 128-byte ceiling below is unchanged and `misc.w` remains the
-    /// only free slot.
+    /// cost no payload space (the value was already uploaded here).
+    /// `misc.w` is consumed by authored sun-specular power; new material
+    /// fields should extend this UBO record rather than the draw selector.
     pub shallow: [f32; 4],
     /// rgb = deep_color (linear), a = fog_far — the far plane of that same
     /// ramp.
@@ -90,15 +87,18 @@ pub struct WaterPush {
     pub tune: [f32; 4],
     /// x = fresnel_f0, y = wave_frequency (WATR `DATA` wave_frequency,
     /// Hz, `#2240` — was reserved), z = normal_map_index bit-cast to
-    /// f32 (shader does `floatBitsToUint`), w = reserved.
+    /// f32 (shader does `floatBitsToUint`), w = WATR `Sun Specular Power`
+    /// (Blinn-Phong exponent for the direct-sun glint).
     pub misc: [f32; 4],
     /// xyz = reflection_tint (WATR `reflection_color`; tints the
     /// geometry-hit colour in `traceWaterRay`). w = reflectivity
     /// (0..1 — fresnel multiplier; moved here from `tune.w` in #1069).
     pub tint_reflect: [f32; 4],
+    /// Bindless indices for authored NAM2/NAM3/NAM4 noise layers.
+    pub noise_indices: [u32; 4],
 }
 
-impl WaterPush {
+impl GpuWaterParams {
     /// Pack `normal_map_index` as a float bit-pattern. The shader
     /// recovers the integer via `floatBitsToUint(push.misc.z)`.
     /// `u32::MAX` denotes "no normal map — use procedural noise."
@@ -109,17 +109,34 @@ impl WaterPush {
 }
 
 const _: () = assert!(
-    std::mem::size_of::<WaterPush>() == 128,
-    "WaterPush must be exactly 128 bytes (Vulkan 1.1 minimum maxPushConstantsSize; \
-     no headroom remains — adding fields requires a device-capability check)"
+    std::mem::size_of::<GpuWaterParams>() == 144,
+    "GpuWaterParams must remain 9 std140 vec4 slots"
 );
+
+/// Per-draw selector for the material array uploaded once per frame.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct WaterPush {
+    pub water_index: u32,
+    pub _reserved: [u32; 3],
+}
+
+const _: () = assert!(
+    std::mem::size_of::<WaterPush>() == 16,
+    "WaterPush must match the shader's 16-byte push block"
+);
+
+/// Fixed UBO capacity: 256 × 144 B = 36 KiB, below Vulkan's portable
+/// 64 KiB `maxUniformBufferRange` floor while leaving ample room for the
+/// handful of water bodies normally visible in one cell.
+pub const MAX_WATER_DRAWS: usize = 256;
 
 /// One water surface to draw in the current frame.
 ///
 /// Built by the app's per-frame render code from `WaterPlane` ECS
 /// entities and passed alongside [`DrawCommand`] to
-/// [`VulkanContext::draw_frame`]. Kept separate from `DrawCommand` so
-/// the 128-byte push-constant block doesn't bloat every regular draw.
+/// [`VulkanContext::draw_frame`]. Kept separate from `DrawCommand` so the
+/// water-only material payload doesn't bloat every regular draw.
 ///
 /// The water entity must also appear as a regular `DrawCommand` so its
 /// `GpuInstance` slot (`instance_index`) is uploaded with the correct
@@ -137,10 +154,8 @@ pub struct WaterDrawCommand {
     /// Instance buffer slot — must match the `gl_InstanceIndex`
     /// emitted for this water entity's regular draw command.
     pub instance_index: u32,
-    /// Push-constant block uploaded for this draw. Built from the
-    /// entity's `WaterPlane` + `WaterFlow` components + the frame's
-    /// `TotalTime`.
-    pub push: WaterPush,
+    /// Material payload uploaded into this frame's compact water UBO.
+    pub params: GpuWaterParams,
 }
 
 /// Contract check (#1026 / F-WAT-05): every entry in `water_commands`
@@ -184,8 +199,8 @@ pub fn water_commands_match_draw_slots(
 pub struct WaterPipeline {
     pub pipeline: vk::Pipeline,
     pub pipeline_layout: vk::PipelineLayout,
-    /// Set 2 descriptor layout — single STORAGE_IMAGE binding for the
-    /// water-caustic accumulator (#1255 / Phase C of #1210). Bound at
+    /// Set 2 descriptor layout — water-caustic STORAGE_IMAGE plus the
+    /// per-frame water-parameter UBO. Bound at
     /// `record_draw` time from the per-FIF `descriptor_sets[frame]`.
     pub(super) water_caustic_set_layout: vk::DescriptorSetLayout,
     /// Pool that allocates the per-FIF descriptor sets above.
@@ -195,6 +210,15 @@ pub struct WaterPipeline {
     /// at swapchain init / recreate time so the per-frame draw can bind
     /// them directly without re-writing.
     pub(super) water_caustic_descriptor_sets: Vec<vk::DescriptorSet>,
+    /// One host-visible 36 KiB UBO per frame-in-flight.
+    param_buffers: Vec<GpuBuffer>,
+    /// Tracks whether the current slot received a successful upload.
+    params_ready: Vec<bool>,
+    /// Reused packing storage so the per-frame upload does not allocate.
+    param_scratch: Vec<GpuWaterParams>,
+    /// Retained so the allocator-independent context teardown can still
+    /// release these buffers before the allocator is unwrapped.
+    allocator: Option<SharedAllocator>,
 }
 
 /// Dynamic states declared on the water graphics pipeline. Extracted
@@ -232,12 +256,13 @@ impl WaterPipeline {
     /// full layout).
     pub fn new(
         device: &ash::Device,
+        allocator: &SharedAllocator,
         render_pass: vk::RenderPass,
         pipeline_cache: vk::PipelineCache,
         descriptor_set_layout: vk::DescriptorSetLayout,
         scene_set_layout: vk::DescriptorSetLayout,
     ) -> Result<Self> {
-        // ── Set 2 layout: single STORAGE_IMAGE for the water-caustic
+        // ── Set 2 layout: water-caustic STORAGE_IMAGE + water params UBO
         // accumulator (#1255 / Phase C of #1210). water.frag binding
         // matches: `layout(set = 2, binding = 0, r32ui)
         //          uniform uimage2D waterCausticAccum;`. water.frag
@@ -247,9 +272,15 @@ impl WaterPipeline {
             .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
             .descriptor_count(1)
             .stage_flags(vk::ShaderStageFlags::FRAGMENT);
-        let water_caustic_bindings = [water_caustic_binding];
+        let water_params_binding = vk::DescriptorSetLayoutBinding::default()
+            .binding(1)
+            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT);
+        let water_caustic_bindings = [water_caustic_binding, water_params_binding];
         let water_caustic_set_layout = unsafe {
-            // SAFETY: `device` is the live logical device; `water_caustic_bindings` (one FRAGMENT STORAGE_IMAGE) is a stack slice valid for the call; the returned layout is owned by `WaterPipeline` and freed in `destroy()`.
+            // SAFETY: `device` is live; both bindings are a stack slice valid
+            // for this call; the returned layout is owned by `WaterPipeline`.
             device
                 .create_descriptor_set_layout(
                     &vk::DescriptorSetLayoutCreateInfo::default().bindings(&water_caustic_bindings),
@@ -258,13 +289,17 @@ impl WaterPipeline {
                 .context("water-caustic set layout")?
         };
 
-        // Descriptor pool — one STORAGE_IMAGE per FIF slot. Built through
+        // Descriptor pool — one STORAGE_IMAGE + one UBO per FIF slot. Built through
         // the shared DescriptorPoolBuilder for consistency with every other
         // render pass (#1318 / TD3-NEW-C); equivalent to the prior raw
         // create_descriptor_pool (same sizes / max_sets / empty flags).
         let water_caustic_descriptor_pool = match DescriptorPoolBuilder::new()
             .pool(
                 vk::DescriptorType::STORAGE_IMAGE,
+                super::sync::MAX_FRAMES_IN_FLIGHT as u32,
+            )
+            .pool(
+                vk::DescriptorType::UNIFORM_BUFFER,
                 super::sync::MAX_FRAMES_IN_FLIGHT as u32,
             )
             .max_sets(super::sync::MAX_FRAMES_IN_FLIGHT as u32)
@@ -314,7 +349,7 @@ impl WaterPipeline {
             water_caustic_set_layout,
         ];
         let push_range = vk::PushConstantRange::default()
-            .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT)
             .offset(0)
             .size(std::mem::size_of::<WaterPush>() as u32);
         let push_ranges = [push_range];
@@ -355,7 +390,43 @@ impl WaterPipeline {
             }
         };
 
-        log::info!("Water pipeline created (water.vert + water.frag, SRC_ALPHA blend on HDR, cull NONE, depth-write off, 128B push constants, set 2 = water-caustic STORAGE_IMAGE)");
+        let param_buffer_size =
+            (MAX_WATER_DRAWS * std::mem::size_of::<GpuWaterParams>()) as vk::DeviceSize;
+        let mut param_buffers = Vec::with_capacity(super::sync::MAX_FRAMES_IN_FLIGHT);
+        for _ in 0..super::sync::MAX_FRAMES_IN_FLIGHT {
+            match GpuBuffer::create_host_visible(
+                device,
+                allocator,
+                param_buffer_size,
+                vk::BufferUsageFlags::UNIFORM_BUFFER,
+            ) {
+                Ok(buffer) => param_buffers.push(buffer),
+                Err(error) => {
+                    for buffer in &mut param_buffers {
+                        buffer.destroy(device, allocator);
+                    }
+                    unsafe {
+                        device.destroy_pipeline(pipeline, None);
+                        device.destroy_pipeline_layout(pipeline_layout, None);
+                        device.destroy_descriptor_pool(water_caustic_descriptor_pool, None);
+                        device.destroy_descriptor_set_layout(water_caustic_set_layout, None);
+                    }
+                    return Err(error.context("water parameter UBOs"));
+                }
+            }
+        }
+
+        for (frame, buffer) in param_buffers.iter().enumerate() {
+            let info = [vk::DescriptorBufferInfo {
+                buffer: buffer.buffer,
+                offset: 0,
+                range: param_buffer_size,
+            }];
+            let write = write_uniform_buffer(water_caustic_descriptor_sets[frame], 1, &info);
+            unsafe { device.update_descriptor_sets(&[write], &[]) };
+        }
+
+        log::info!("Water pipeline created (water.vert + water.frag, SRC_ALPHA blend on HDR, cull NONE, depth-write off, 16B push selector, set 2 = caustic image + water params UBO)");
 
         Ok(Self {
             pipeline,
@@ -363,6 +434,10 @@ impl WaterPipeline {
             water_caustic_set_layout,
             water_caustic_descriptor_pool,
             water_caustic_descriptor_sets,
+            param_buffers,
+            params_ready: vec![false; super::sync::MAX_FRAMES_IN_FLIGHT],
+            param_scratch: Vec::with_capacity(8),
+            allocator: Some(allocator.clone()),
         })
     }
 
@@ -397,6 +472,46 @@ impl WaterPipeline {
         }
     }
 
+    /// Upload all per-water material records before the frame's bulk
+    /// HOST→FRAGMENT barrier. Draws beyond [`MAX_WATER_DRAWS`] are omitted
+    /// by the geometry pass so no shader index can escape this UBO.
+    pub fn upload_params(
+        &mut self,
+        device: &ash::Device,
+        frame: usize,
+        commands: &[WaterDrawCommand],
+    ) -> Result<()> {
+        self.params_ready[frame] = false;
+        if commands.is_empty() {
+            return Ok(());
+        }
+        if commands.len() > MAX_WATER_DRAWS {
+            static ONCE: std::sync::Once = std::sync::Once::new();
+            ONCE.call_once(|| {
+                log::warn!(
+                    "Visible water draw count {} exceeds MAX_WATER_DRAWS ({}); truncating",
+                    commands.len(),
+                    MAX_WATER_DRAWS,
+                );
+            });
+        }
+        self.param_scratch.clear();
+        self.param_scratch.extend(
+            commands
+                .iter()
+                .take(MAX_WATER_DRAWS)
+                .map(|command| command.params),
+        );
+        self.param_buffers[frame].write_mapped(device, &self.param_scratch)?;
+        self.params_ready[frame] = true;
+        Ok(())
+    }
+
+    #[inline]
+    pub fn params_ready(&self, frame: usize) -> bool {
+        self.params_ready[frame]
+    }
+
     /// Bind the water pipeline and all three descriptor sets — **once per
     /// pass**, before the first [`record_draw`](Self::record_draw).
     ///
@@ -405,7 +520,7 @@ impl WaterPipeline {
     /// binds for state that is identical across every plane. All three
     /// sets are per-frame, not per-plane: sets 0 and 1 are the caller's
     /// bindless-texture and scene sets, and set 2 is indexed by `frame`
-    /// alone. Only the push constants, index count, and instance index
+    /// alone. Only the push selector, index count, and instance index
     /// vary per plane, and the per-mesh vertex/index binds the caller
     /// interleaves between draws do not disturb pipeline or descriptor
     /// state.
@@ -416,8 +531,8 @@ impl WaterPipeline {
     /// `cmd_bind_pipeline`. That holds only when both pipelines' layouts
     /// are "compatible for set N" per the Vulkan spec, which requires
     /// identical push-constant ranges as well as identical set-layout
-    /// handles. Triangle has no push constants; water has 128 B (`WaterPush`
-    /// at VERTEX + FRAGMENT). The push-range mismatch un-binds *all*
+    /// handles. Triangle has no push constants; water has a 16 B `WaterPush`
+    /// at FRAGMENT. The push-range mismatch un-binds *all*
     /// descriptor sets when `cmd_bind_pipeline(WaterPipeline)` runs, so
     /// every water draw fired without sets 0 + 1 — spammy
     /// `VUID-vkCmdDrawIndexed-None-08600` on Riverwood, the first cell with
@@ -503,22 +618,23 @@ impl WaterPipeline {
         &self,
         device: &ash::Device,
         cmd: vk::CommandBuffer,
-        push: &WaterPush,
+        water_index: u32,
         index_count: u32,
         instance_index: u32,
     ) {
-        // SAFETY: WaterPush is #[repr(C)] + Copy with only [f32; 4] fields —
-        // no padding bytes, no invalid byte patterns, trivially initialised.
-        // `push` is a valid shared reference, so the pointer is aligned and
-        // non-null; the byte slice is bounded exactly by size_of::<WaterPush>().
+        let push = WaterPush {
+            water_index,
+            _reserved: [0; 3],
+        };
+        // SAFETY: WaterPush is #[repr(C)] + Copy and contains only u32 values.
         let bytes = std::slice::from_raw_parts(
-            (push as *const WaterPush) as *const u8,
+            (&push as *const WaterPush) as *const u8,
             std::mem::size_of::<WaterPush>(),
         );
         device.cmd_push_constants(
             cmd,
             self.pipeline_layout,
-            vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+            vk::ShaderStageFlags::FRAGMENT,
             0,
             bytes,
         );
@@ -560,6 +676,15 @@ impl WaterPipeline {
             device.destroy_descriptor_set_layout(self.water_caustic_set_layout, None);
             self.water_caustic_set_layout = vk::DescriptorSetLayout::null();
         }
+        if let Some(allocator) = self.allocator.as_ref() {
+            for buffer in &mut self.param_buffers {
+                buffer.destroy(device, allocator);
+            }
+        }
+        self.param_buffers.clear();
+        self.params_ready.clear();
+        self.param_scratch.clear();
+        self.allocator = None;
     }
 }
 
@@ -739,9 +864,15 @@ mod tests {
     use crate::vulkan::context::DrawCommand;
 
     #[test]
-    fn water_push_layout_is_128_bytes() {
-        assert_eq!(std::mem::size_of::<WaterPush>(), 128);
+    fn water_gpu_contract_layouts_are_stable() {
+        assert_eq!(std::mem::size_of::<GpuWaterParams>(), 144);
+        assert_eq!(std::mem::align_of::<GpuWaterParams>(), 4);
+        assert_eq!(std::mem::size_of::<WaterPush>(), 16);
         assert_eq!(std::mem::align_of::<WaterPush>(), 4);
+        assert!(
+            MAX_WATER_DRAWS * std::mem::size_of::<GpuWaterParams>() <= 64 * 1024,
+            "water UBO must fit Vulkan's portable maxUniformBufferRange floor"
+        );
     }
 
     /// #1129 — forward-compat trap. Every "no-op baseline" the water
@@ -775,7 +906,7 @@ mod tests {
     #[test]
     fn pack_normal_index_roundtrips() {
         for v in [0u32, 1, 42, 0xDEADBEEF, u32::MAX] {
-            let packed = WaterPush::pack_normal_index(v);
+            let packed = GpuWaterParams::pack_normal_index(v);
             assert_eq!(packed.to_bits(), v);
         }
     }
@@ -864,7 +995,7 @@ mod tests {
         WaterDrawCommand {
             mesh_handle,
             instance_index,
-            push: WaterPush {
+            params: GpuWaterParams {
                 timing: [0.0; 4],
                 flow: [0.0; 4],
                 shallow: [0.0; 4],
@@ -873,6 +1004,7 @@ mod tests {
                 tune: [0.0; 4],
                 misc: [0.0; 4],
                 tint_reflect: [0.0; 4],
+                noise_indices: [u32::MAX; 4],
             },
         }
     }
@@ -1057,7 +1189,7 @@ mod pass_bind_hoist_tests {
             .find("water.bind_pass(")
             .expect("geometry_pass no longer calls bind_pass");
         let loop_head = GEOMETRY_PASS_RS
-            .find("for wc in water_commands {")
+            .find("water_commands.iter().take(MAX_WATER_DRAWS)")
             .expect("the per-plane water loop changed shape");
         assert!(
             bind < loop_head,
@@ -1165,6 +1297,22 @@ mod absorption_ramp_tests {
              #2785 defect"
         );
 
+        // WATAL Phase 1 — the last push-constant slot carries Bethesda's
+        // authored sun-glint exponent and visibly contributes to the HDR
+        // surface. The shadow result is shared with the caustic path so the
+        // new highlight does not double water's per-fragment shadow query.
+        assert!(
+            src.contains("clamp(push.misc.w, 1.0, 2048.0)")
+                && src.contains("surfaceColor += vec3(sunSpecular);"),
+            "water.frag must consume authored Sun Specular Power in the surface glint"
+        );
+        assert_eq!(
+            src.matches("vec3 sunTransmission = traceShadowTransmittance(")
+                .count(),
+            1,
+            "surface glint and caustics must share one sun-visibility query"
+        );
+
         // #2784 — the caustic splat bound.
         assert!(
             src.contains("&& all(lessThan(pixel, causticSize))"),
@@ -1182,7 +1330,7 @@ mod absorption_ramp_tests {
     }
 
     /// Degenerate spans cannot divide by zero or invert. The ESM parser
-    /// clamps `fog_far >= fog_near + 1`, but a hand-built `WaterPush` (the
+    /// clamps `fog_far >= fog_near + 1`, but a hand-built `GpuWaterParams` (the
     /// Cornell harness, a test fixture) is not bound by that.
     #[test]
     fn a_degenerate_span_stays_finite_and_clamped() {

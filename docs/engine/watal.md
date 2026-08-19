@@ -166,8 +166,8 @@ near the ~2 s watchdog; a separate perf item, not a fault.
 ```
                  parse                    translate()                consume
   ESM/NIF  ───────────────▶  Imported*  ────────────────▶  Canonical  ──────┬───▶  renderer
-  (WATR DATA/DNAM/GNAM/      (raw, per-game     (one site:      (resolved,    │     (water.frag:
-   NAM2/XCLW/XCWT,            WatrRecord,       resolve_water_  game-agnostic │      reflect / refract /
+  (WATR DATA/DNAM/NAM2-4/    (raw, per-game     (one site:      (resolved,    │     (water.frag:
+   GNAM/XCLW/XCWT,            WatrRecord,       resolve_water_  game-agnostic │      reflect / refract /
    BSWaterShaderProperty)     WorldspaceRecord) material folds  components +  │      foam / caustics)
                                               in every quirk)   a Resource)   │
                                                                               └───▶  physics solver
@@ -214,19 +214,24 @@ How close each water concern is to the canonical contract today.
 Oblivion/FO3/FNV already* on the render side — exactly the "Skyrim as canonical
 base" target. `WaterMaterial` carries 24+ shading fields; `WaterFlow`,
 `WaterVolume`, `SubmersionState`, `WaterContact`, and `PhysicsWaterConstants` are
-live canonical inputs/state. Wave amplitude/frequency and worldspace LOD water
-have reached the canonical tier. **Missing:** promoted sun/scatter/GNAM noise and
-below-water-tail fields, plus character swim/drown state and disturbance events.
+live canonical inputs/state. Wave amplitude/frequency, authored sun-specular
+power, worldspace LOD water, authored NAM2–4 noise, and bounded scatter have
+reached the canonical tier. **Missing:** below-water-tail fields, plus character
+swim/drown state and disturbance events. Authored NAM2–4 noise indices are now
+part of the canonical GPU material contract.
 
 ### Decode + translate — **good (render), drops Skyrim-only fields**
 
 `water.rs` decodes the shared 60-byte DATA prefix (Oblivion/FO3/FNV) and a
-best-effort Skyrim DNAM prefix; `NNAM`/`TNAM` texture and `GNAM` noise FormIDs are
-parsed; `raw_data`/`raw_dnam` tails preserved. `resolve_water_material`
+best-effort Skyrim DNAM prefix; `NNAM`/`TNAM` texture and Skyrim+ NAM2/NAM3/NAM4
+noise paths are parsed, while GNAM's unused daytime/nighttime/underwater water
+links are preserved separately; `raw_data`/`raw_dnam` tails remain available.
+`resolve_water_material`
 (`env_translate.rs:89-176`) captures colors/fog/fresnel/reflectivity/flow.
-Wave amplitude/frequency and reflection tint now cross the boundary. **Still
-dropped:** `GNAM` noise refs and `sun_power`; exact below-water tail decode remains
-unverified. The
+Wave amplitude/frequency, reflection tint, and the per-game sun-specular exponent
+now cross the boundary. NAM2/NAM3/NAM4 noise layers now resolve through the bindless
+water-material contract; exact below-water
+tail decode remains unverified. The
 `WaterKind` classification is a fragile EDID-substring heuristic
 (`rapid`/`waterfall`/`falls`/`river`/`stream`), English-only, with `waterfall`
 deliberately demoted to `River` for cell planes.
@@ -245,9 +250,10 @@ shoreline-fit volume or character-controller water-contact path.
 RT reflection/refraction (Schlick Fresnel, Snell, Beer-Lambert, TIR guard),
 shoreline + flow-aligned foam, dual scrolling normal layers, procedural normal
 fallback, underwater fog, water-side caustic splat. Battle-tested across many
-closed bug IDs, correctly RT-gated. **Fragilities (all in-code):** `WaterPush` is
-at the exact 128-byte Vulkan 1.1 max (no headroom — adding canonical fields forces
-a UBO move); procedural-noise hash bands past ~176k world units (#1502, visual
+closed bug IDs, correctly RT-gated. The former 128-byte `WaterPush` ceiling is
+removed: authored material records now live in a per-frame, indexed 36 KiB UBO
+(256 records), while a 16-byte push selector chooses the draw's record. Remaining
+fragilities: procedural-noise hash bands past ~176k world units (#1502, visual
 only); waves are normal-perturbation only (no displacement). Reflection rays now
 shade their material-aware hit and apply the per-WATR tint.
 
@@ -315,7 +321,7 @@ Everything else is a SENTINEL the older game leaves unset, identical across game
 | shallow/deep color, reflectivity, fresnel | AUTHORED | AUTHORED | AUTHORED | DATA/DNAM RGBA |
 | `fog_near`/`fog_far` | **SENTINEL** 80/600 (DATA omits 28..36) | AUTHORED | AUTHORED | DATA[28..36] |
 | diffuse/normal texture | **SENTINEL** `u32::MAX` → procedural | AUTHORED (`NNAM`) | AUTHORED (`TNAM`) | NNAM/TNAM |
-| noise layers (`GNAM`) | **SENTINEL** `[u32::MAX;3]` | **SENTINEL** | AUTHORED (3 slots) | GNAM |
+| noise layers (`NAM2`/`NAM3`/`NAM4`) | **SENTINEL** `[u32::MAX;3]` | **SENTINEL** | AUTHORED (3 paths) | NAM2-4 |
 | below-water fog split | **SENTINEL** (reuse above) | **SENTINEL** | AUTHORED (DNAM tail) | DNAM tail (undecoded) |
 | `wave_amplitude/frequency` | AUTHORED | AUTHORED | AUTHORED | DATA[8..16] |
 | `sun_power` | AUTHORED (was skipped) | AUTHORED | AUTHORED | DATA[16] |
@@ -344,7 +350,7 @@ existing components. Four genuinely new types fill gaps where no ECS role exists
 glow) · `wave_amplitude`/`wave_frequency` (A11, parsed but dropped — drive
 normal-only perturbation now, optional displacement later) · `normal_octaves: u8`
 (A1, allow ≥4-6 to match Skyrim chop; sentinel 2 = today's `scroll_a/b`) ·
-`noise_layers: [u32;3]` (Skyrim GNAM; sentinel `[u32::MAX;3]`) ·
+`noise_layers: [u32;3]` (resolved Skyrim NAM2-4 handles; sentinel `[u32::MAX;3]`) ·
 `caustic_intensity`/`caustic_scale` (B4) · `reflection_source: { Rt, Cubemap,
 Procedural }` (A13) · `below_water_fog: { near, far, color }` (Skyrim DNAM split;
 sentinel = reuse above-water fog).
@@ -391,8 +397,9 @@ crossing / submerged movement, feeding *both* the render ripple-normal injection
 - **Shader passes.** Like NIFAL/EXAL, no WATAL slice rewrites the Vulkan
   render-pass / pipeline. `water.frag` already consumes canonical inputs; WATAL
   changes only what *produces* them (and the §0 crash-fix bounds RT *cost*, not
-  water sync). The one render plumbing change is moving water params off the full
-  128-byte `WaterPush` to a UBO so the richer canonical material fits.
+  water sync). The one render plumbing change—moving water params off the full
+  128-byte `WaterPush` to an indexed per-frame UBO—is complete, so the richer
+  canonical material can grow without another pipeline-layout migration.
 - **OpenMW-style RTT planar reflection cameras.** The flat-mesh + RT-ray
   substitution is the canonical realisation of reflection/refraction; keep it. The
   canonical *type* still carries DISPLACEMENT/LOD/DEPTH/REFLECTIONS/REFRACTIONS
@@ -416,11 +423,11 @@ tests); the render/physics-device parts are validated by the smoke-test pattern
    the water-adjacent grid `(2,-10)` under the watchdog.
 
 2. **Phase 1 — CANONICAL TYPE + TRANSLATE — PARTIAL.** Wave amplitude/frequency,
-   reflection tint, per-game default-water height, and authored worldspace LOD
-   water are live. Remaining work is exact FO3/FNV DATA-tail + Skyrim DNAM-tail
-   decode, GNAM noise layers, sun/scatter/below-water fog promotion, and a
-   cross-game fixture asserting that canonical sentinels stay identical while
-   only authored fields differ.
+reflection tint, authored direct-sun glint, per-game default-water height,
+authored worldspace LOD water, NAM2–4 noise layers, and bounded sunlight
+scattering are live. Remaining work is exact FO3/FNV DATA-tail + Skyrim DNAM-tail
+decode, below-water fog promotion, and a cross-game fixture asserting that canonical sentinels stay
+   identical while only authored fields differ.
 
 3. **Phase 2 — PHYSICS FORCE API + BUOYANCY / FLOW — BODY CORE LIVE
    2026-08-10.** Force/reset APIs, pre-step application, `WaterContact`, buoyancy,
@@ -434,9 +441,9 @@ tests); the render/physics-device parts are validated by the smoke-test pattern
    world awake. Test gate for body physics is closed (rise, settle, downstream
    drift, calm-water quiescence); player traversal and real-data gates are open.
 
-4. **Phase 3 — RENDER-FIDELITY + GAMEPLAY POLISH — OPEN.** Move water params to a UBO
-   (prerequisite for the richer material on GPU; keep the shader-struct lockstep
-   per `feedback_shader_struct_sync`); wire swimming into `CharacterController`
+4. **Phase 3 — RENDER-FIDELITY + GAMEPLAY POLISH — OPEN.** The indexed per-frame
+   water UBO, authored noise layers, and bounded sunlight scattering are live;
+   wire swimming into `CharacterController`
    (OpenMW swimlevel model — gravity off below swimlevel, clamp to waterline,
    swim-up, inert float-to-surface); `SplashEvent`/`RippleEvent` → particle +
    audio + ripple normal injection (A10); underwater god-rays via the M55
@@ -471,7 +478,7 @@ Sources: OpenMW (`/mnt/data/src/reference/openmw/`), nif.xml
 
 Oblivion DATA (~102 B) ⊂ FO3/FNV DATA (196 B) ⊂ Skyrim DNAM (252 B+) share a
 60-byte wind/wave/reflect/fresnel/fog/color prefix (`water.rs:135-209`). Skyrim
-only *adds* fields (GNAM noise refs, NAM3/NAM4 LOD colors, displacement/LOD/depth
+only *adds* fields (NAM2-4 noise paths, GNAM related-water links, displacement/LOD/depth
 flags, linear-velocity flow). Skyrim is the natural canonical schema; older games
 leave Skyrim-only fields at sentinel exactly as `decode_data` already does.
 nif.xml gates `WaterShaderProperty` as `#FO3_AND_LATER#` (`:6322`) and
@@ -503,14 +510,15 @@ emitters on movement > 10 u (`ripplesimulation.cpp:148-195`).
 `WAVE_SCALE=75`), Fresnel reflection mix (`:144`), depth-aware refraction with
 shore suppression + Beer-Lambert tint (`:147-202`), sun specular (`:160-176`),
 sunlight scattering (`:202-212`), wobbly-shore + foam (`:217-233`), rain/disturbance
-ripple injection (`:82-133`). The engine's current 2-layer scroll is the floor;
+ripple injection (`:82-133`). The engine now uses a four-octave procedural
+fallback for textureless legacy water plus authored texture layers where present;
 `normal_octaves` (§5.1) lets the canonical reach Skyrim chop.
 
 ### Q5 — Open item: exact byte offsets of the undecoded tails. → **MEDIUM confidence; verify before relying.**
 
 The FO3/FNV DATA 136-byte tail and the Skyrim DNAM tail (`below_water_fog`,
 displacement layers) are currently `raw_data`/`raw_dnam` and **best-effort**
-across Skyrim 1.5/1.6. Before Phase 1 carries `below_water_fog`/noise offsets,
+across Skyrim 1.5/1.6. Before Phase 1 carries `below_water_fog`/noise controls,
 byte-decode a vanilla record via the extract→trace method
 ([[nif_v10x_stride_drift_resolved]]). Until then they stay SENTINEL — correctness
 is not blocked, only fidelity.

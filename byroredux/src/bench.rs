@@ -306,14 +306,17 @@ pub(crate) fn capture_scene_state(
     for water in water_commands {
         hash.u32(water.mesh_handle);
         hash.u32(water.instance_index);
-        hash.f32_array(water.push.timing);
-        hash.f32_array(water.push.flow);
-        hash.f32_array(water.push.shallow);
-        hash.f32_array(water.push.deep);
-        hash.f32_array(water.push.scroll);
-        hash.f32_array(water.push.tune);
-        hash.f32_array(water.push.misc);
-        hash.f32_array(water.push.tint_reflect);
+        hash.f32_array(water.params.timing);
+        hash.f32_array(water.params.flow);
+        hash.f32_array(water.params.shallow);
+        hash.f32_array(water.params.deep);
+        hash.f32_array(water.params.scroll);
+        hash.f32_array(water.params.tune);
+        hash.f32_array(water.params.misc);
+        hash.f32_array(water.params.tint_reflect);
+        for &idx in &water.params.noise_indices {
+            hash.u32(idx);
+        }
     }
     for light in gpu_lights {
         hash.f32_array(light.position_radius);
