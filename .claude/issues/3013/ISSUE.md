@@ -1,13 +1,4 @@
-# SCR-D8-02: out-of-range track_to_bone entry silently drops a whole animation track
-
-**Issue**: #3013
-**Severity**: MEDIUM
-**Dimension**: 8 — Havok packfile reader
-**Labels**: `medium,animation,bug`
-**Source report**: `docs/audits/AUDIT_SCRIPTING_2026-08-16.md`
-**Filed**: 2026-08-17 via `/audit-publish`
-
----
+# SCR-D8-2026-08-16-02: an out-of-range track_to_bone entry silently drops a whole animation track — nothing validates the Havok binding against the skeleton
 
 Filed from `docs/audits/AUDIT_SCRIPTING_2026-08-16.md` (Dimension 8 — Havok packfile reader).
 
@@ -46,7 +37,3 @@ Validate each `track_to_bone` entry against the decoded skeleton's bone count at
 - [ ] **NOT-SILENT**: A dropped track logs or errors — never disappears quietly
 - [ ] **SKELETON-AWARE**: The validation consults the actual decoded skeleton, not a constant
 - [ ] **TESTS**: A negative-input test binds an out-of-range bone index and asserts the chosen behaviour
-
----
-
-*Immutable snapshot of the issue as filed. GitHub is authoritative for current state — query `gh issue view 3013 --json state` when live state is needed.*
