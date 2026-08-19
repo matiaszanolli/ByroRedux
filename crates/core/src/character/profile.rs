@@ -168,6 +168,7 @@ impl Default for CharacterRulesProfile {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::character::LevelingModel;
 
     #[test]
     fn fallout_profiles_keep_roster_health_and_ruleset_in_lockstep() {
@@ -192,5 +193,48 @@ mod tests {
             CharacterRulesProfile::STARFIELD.npc_stat_model(),
             NpcStatModel::Stored
         );
+    }
+
+    /// #2941 — `esm_header_selects_one_canonical_character_profile`
+    /// (`crates/plugin/src/esm/records/tests.rs`) already pins that a real
+    /// FO3 HEDR resolves to `FALLOUT3`, not `FALLOUT_NEW_VEGAS`; this pins
+    /// the other half — that the profile's `build_ruleset` actually routes
+    /// to `fallout3_ruleset` (not `falloutnv_ruleset`) and so carries FO3's
+    /// own `LevelingModel`, not FNV's. `fallout3_ruleset`/`LevelingModel::FO3`
+    /// had no production call site before the profile-centralization
+    /// refactor that fixed this (`b434e4c0`); this is the regression test
+    /// the finding asked for so a future edit can't quietly re-collapse the
+    /// two onto one leveling model without a test noticing.
+    #[test]
+    fn fo3_and_fnv_profiles_build_their_own_distinct_leveling_model() {
+        let no_resolve = |_: &str| None;
+        let no_gmst = |_: &str| None;
+
+        let fo3 = CharacterRulesProfile::FALLOUT3
+            .build_ruleset(no_resolve, no_gmst)
+            .expect("FO3 has a ruleset builder");
+        let fnv = CharacterRulesProfile::FALLOUT_NEW_VEGAS
+            .build_ruleset(no_resolve, no_gmst)
+            .expect("FNV has a ruleset builder");
+
+        assert_eq!(
+            fo3.leveling,
+            LevelingModel::FO3,
+            "FO3 must build fallout3_ruleset's LevelingModel::FO3, not FNV's"
+        );
+        assert_eq!(fnv.leveling, LevelingModel::FNV);
+        assert_ne!(
+            fo3.leveling, fnv.leveling,
+            "the two capture-documented leveling models (level_cap 20/1.0/1 \
+             vs 30/0.5/2) must not collapse onto one"
+        );
+
+        // The specific divergent constants the capture document locks:
+        // level cap (20 vs 30) and perk cadence (every level vs every other).
+        assert_eq!(fo3.leveling.level_cap(), 20);
+        assert_eq!(fnv.leveling.level_cap(), 30);
+        assert!(fo3.leveling.grants_perk_at(3), "FO3: every level");
+        assert!(!fnv.leveling.grants_perk_at(3), "FNV: every other level");
+        assert!(fnv.leveling.grants_perk_at(2));
     }
 }
