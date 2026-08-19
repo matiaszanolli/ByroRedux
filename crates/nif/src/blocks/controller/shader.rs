@@ -50,6 +50,10 @@ pub struct NiLightColorController {
     /// 1 = Ambient. Selects which NiLight color slot the controller
     /// drives.
     pub target_color: u16,
+    /// `Data` ref (`NiPosData`, `until="10.1.0.103"`) — the pre-split
+    /// complement to `interpolator_ref`. NULL on every supported
+    /// Bethesda NIF. #2563.
+    pub data_ref: BlockRef,
 }
 
 impl NiLightColorController {
@@ -71,10 +75,17 @@ impl NiLightColorController {
         } else {
             0
         };
+        // #2563 — trailing `Data` ref, until 10.1.0.103.
+        let data_ref = if stream.version().has_keyframe_controller_data() {
+            stream.read_block_ref()?
+        } else {
+            BlockRef::NULL
+        };
         Ok(Self {
             base,
             interpolator_ref,
             target_color,
+            data_ref,
         })
     }
 }
@@ -174,6 +185,10 @@ pub struct NiMaterialColorController {
     pub base: NiTimeControllerBase,
     pub interpolator_ref: BlockRef,
     pub target_color: u16,
+    /// `Data` ref (`NiPosData`, `until="10.1.0.103"`) — the pre-split
+    /// complement to `interpolator_ref`. NULL on every supported
+    /// Bethesda NIF. #2563.
+    pub data_ref: BlockRef,
 }
 
 impl NiMaterialColorController {
@@ -191,10 +206,17 @@ impl NiMaterialColorController {
         } else {
             0
         };
+        // #2563 — trailing `Data` ref, until 10.1.0.103.
+        let data_ref = if stream.version().has_keyframe_controller_data() {
+            stream.read_block_ref()?
+        } else {
+            BlockRef::NULL
+        };
         Ok(Self {
             base,
             interpolator_ref,
             target_color,
+            data_ref,
         })
     }
 }
@@ -206,6 +228,10 @@ pub struct NiTextureTransformController {
     pub shader_map: bool,
     pub texture_slot: u32,
     pub operation: u32,
+    /// `Data` ref (`NiFloatData`, `until="10.1.0.103"`) — the pre-split
+    /// complement to `interpolator_ref`. NULL on every supported
+    /// Bethesda NIF. #2563.
+    pub data_ref: BlockRef,
 }
 
 impl NiTextureTransformController {
@@ -218,12 +244,19 @@ impl NiTextureTransformController {
         let shader_map = stream.read_byte_bool()?;
         let texture_slot = stream.read_u32_le()?;
         let operation = stream.read_u32_le()?;
+        // #2563 — trailing `Data` ref, until 10.1.0.103.
+        let data_ref = if stream.version().has_keyframe_controller_data() {
+            stream.read_block_ref()?
+        } else {
+            BlockRef::NULL
+        };
         Ok(Self {
             base,
             interpolator_ref,
             shader_map,
             texture_slot,
             operation,
+            data_ref,
         })
     }
 }

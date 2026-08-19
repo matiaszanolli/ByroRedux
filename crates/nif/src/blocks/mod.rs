@@ -761,17 +761,31 @@ fn parse_block_inner(
             controller::NiTextureTransformController::parse(stream)?,
         )),
         // NiKeyframeController is the pre-Skyrim per-bone animation driver
-        // (Oblivion / Morrowind / FO3 / FNV KF files). It inherits from
-        // NiSingleInterpController with no extra fields at Oblivion-era
-        // versions, so it parses identically — see issue #144.
-        "NiTransformController"
-        | "NiKeyframeController"
-        | "NiVisController"
-        | "NiAlphaController"
+        // (Oblivion / Morrowind / FO3 / FNV KF files). NiTransformController
+        // is nif.xml's bare rename of it (zero own fields — see issue #144).
+        // Both, plus NiVisController and NiAlphaController, declare one
+        // additional `Data` ref (`until="10.1.0.103"`) beyond
+        // NiSingleInterpController that the shared bare-struct parse never
+        // read — #2562 / #2563. `NiPreSplitDataController` reads it, gated
+        // by the existing `has_keyframe_controller_data()` helper.
+        "NiTransformController" | "NiKeyframeController" | "NiVisController"
+        | "NiAlphaController" => {
+            let type_name_static: &'static str = match type_name {
+                "NiTransformController" => "NiTransformController",
+                "NiKeyframeController" => "NiKeyframeController",
+                "NiVisController" => "NiVisController",
+                "NiAlphaController" => "NiAlphaController",
+                _ => unreachable!(),
+            };
+            Ok(Box::new(controller::NiPreSplitDataController::parse(
+                stream,
+                type_name_static,
+            )?))
+        }
         // Pure NiFloatInterpController subclasses (no extra fields beyond
         // NiSingleInterpController). FO3+ era — block_size recovery catches
         // any stream drift. See issue #235.
-        | "BSMaterialEmittanceMultController"
+        "BSMaterialEmittanceMultController"
         | "BSRefractionStrengthController"
         | "BSFrustumFOVController" => {
             Ok(Box::new(NiSingleInterpController::parse(stream)?))

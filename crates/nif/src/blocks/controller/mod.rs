@@ -267,6 +267,71 @@ impl NiSingleInterpController {
     }
 }
 
+// ── NiKeyframeController / NiTransformController / NiVisController /
+//    NiAlphaController ────────────────────────────────────────────────
+//
+// Each declares exactly one additional field beyond
+// NiSingleInterpController: `Data` (a Ref, `until="10.1.0.103"`) — the
+// pre-Gamebryo-10.1.0.104 complement to the `since="10.1.0.104"`
+// interpolator ref NiSingleInterpController::parse already gates
+// correctly. NiTransformController is a bare nif.xml rename of
+// NiKeyframeController with zero fields of its own, so it carries the
+// same Data ref. Mirrors BsKeyframeController's existing `data_ref`
+// field (#1337).
+//
+// Pre-#2562/#2563 all four parsed as a bare NiSingleInterpController —
+// the Data ref simply never read, dropping the stream 4 bytes short of
+// the block boundary on any file below v10.1.0.104. This was the last
+// remaining Oblivion NIF truncation: `marker_map.nif` (v4.2.1.0) dropped
+// 8 of its 13 blocks, including both NiTriShape subtrees, because the
+// desync cascaded through every block after the NiKeyframeController.
+//
+// Giving these a dedicated type (rather than leaving them as a bare
+// NiSingleInterpController) also restores their real block-type-name
+// RTTI, which `anim/entry.rs`'s embedded-controller extraction already
+// dispatches on by string — seeing "NiSingleInterpController" instead
+// of e.g. "NiAlphaController" for a bare-typed block, per that RTTI
+// erasure, made those match arms unreachable. See the matching
+// `downcast_ref::<NiPreSplitDataController>()` updates there.
+
+/// `NiKeyframeController` / `NiTransformController` / `NiVisController` /
+/// `NiAlphaController` — see the module comment above.
+#[derive(Debug)]
+pub struct NiPreSplitDataController {
+    /// Original block type name, so `block_type_name()` reports the
+    /// real RTTI instead of a shared "generic controller" label.
+    pub type_name: &'static str,
+    pub base: NiSingleInterpController,
+    /// `Data` ref — only present `until="10.1.0.103"`; NULL afterwards,
+    /// where the interpolator carries the equivalent data.
+    pub data_ref: BlockRef,
+}
+
+impl NiObject for NiPreSplitDataController {
+    fn block_type_name(&self) -> &'static str {
+        self.type_name
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl NiPreSplitDataController {
+    pub fn parse(stream: &mut NifStream, type_name: &'static str) -> io::Result<Self> {
+        let base = NiSingleInterpController::parse(stream)?;
+        let data_ref = if stream.version().has_keyframe_controller_data() {
+            stream.read_block_ref()?
+        } else {
+            BlockRef::NULL
+        };
+        Ok(Self {
+            type_name,
+            base,
+            data_ref,
+        })
+    }
+}
+
 // ── BSKeyframeController ────────────────────────────────────────────────
 //
 // nif.xml hierarchy: NiTimeController → NiInterpController →
@@ -334,6 +399,16 @@ impl BsKeyframeController {
 #[derive(Debug)]
 pub struct NiFlipController {
     pub base: NiSingleInterpController,
+    /// `Accum Time` (`since="3.3.0.13" until="10.1.0.103"`) — only
+    /// present on old-Gamebryo content below the lowest version this
+    /// engine's `NifVersion` enum represents (`V4_0_0_0`), so the
+    /// `since` bound is always trivially satisfied whenever the
+    /// `until` gate passes. `0.0` (unauthored) on every supported
+    /// Bethesda NIF. #2563.
+    pub accum_time: f32,
+    /// `Delta` — time between two flips, `until="10.1.0.103"`. Same
+    /// gate as `accum_time`. #2563.
+    pub delta: f32,
     /// `TexType` enum — 0=BASE_MAP, 4=GLOW_MAP, etc. Kept as u32 so
     /// the consumer can route to the right texture slot.
     pub texture_slot: u32,
@@ -345,11 +420,21 @@ pub struct NiFlipController {
 impl NiFlipController {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let base = NiSingleInterpController::parse(stream)?;
-        // `Accum Time` (f32 since 3.3.0.13 until 10.1.0.103) and
-        // `Delta` (f32 until 10.1.0.103) are version-gated off on
-        // every supported Bethesda NIF (Oblivion / FO3 / FNV /
-        // Skyrim / FO4 / FO76 / Starfield are all >= 10.1.0.104).
-        // Nothing to read here.
+        // #2563 — `Accum Time` (f32, until 10.1.0.103) and `Delta` (f32,
+        // until 10.1.0.103) are version-gated off on every supported
+        // Bethesda NIF (Oblivion / FO3 / FNV / Skyrim / FO4 / FO76 /
+        // Starfield are all >= 10.1.0.104), so this is a no-op on real
+        // content today — but pre-fix the read was skipped
+        // unconditionally rather than gated, silently mis-parsing any
+        // old-Gamebryo / mod NetImmerse file below that version. Shares
+        // `has_keyframe_controller_data()`'s gate — same `until=
+        // "10.1.0.103"` boundary as NiSingleInterpController's sibling
+        // Data-ref fields, just two plain floats here instead of a Ref.
+        let (accum_time, delta) = if stream.version().has_keyframe_controller_data() {
+            (stream.read_f32_le()?, stream.read_f32_le()?)
+        } else {
+            (0.0, 0.0)
+        };
         let texture_slot = stream.read_u32_le()?;
         let num_sources = stream.read_u32_le()?;
         // #2523 — BlockRef is a plain u32 newtype, size_of-aware bound applies.
@@ -359,6 +444,8 @@ impl NiFlipController {
         }
         Ok(Self {
             base,
+            accum_time,
+            delta,
             texture_slot,
             sources,
         })
@@ -597,6 +684,17 @@ pub struct NiFloatExtraDataController {
     /// Name of the NiFloatExtraData tag this controller animates.
     /// Resolved against the header string table at 20.1+.
     pub extra_data_name: Option<Arc<str>>,
+    /// `Data` ref (`NiFloatData`, `until="10.1.0.103"`) — same trailing
+    /// field every `NiSingleInterpController` sibling in this family
+    /// declares (#2562 / #2563); NULL on every supported Bethesda NIF.
+    /// The older `Num Extra Bytes` / `Unknown Bytes` / `Unknown Extra
+    /// Bytes` fields (`until="10.1.0.0"`, an even earlier boundary) are
+    /// deliberately out of scope here — #2563 only asks for the `Data`
+    /// ref, and that older band is unreachable by any version this
+    /// engine's `NifVersion` enum can even represent below it in a way
+    /// that would also satisfy `until="10.1.0.103"` in a genuinely
+    /// distinct band worth the extra parsing.
+    pub data_ref: BlockRef,
 }
 
 impl NiFloatExtraDataController {
@@ -617,10 +715,20 @@ impl NiFloatExtraDataController {
         } else {
             None
         };
+        // #2563 — trailing Data ref, until 10.1.0.103. Note this and
+        // `extra_data_name` above are mutually exclusive in practice
+        // (10.2.0.0 vs 10.1.0.103), but both gates are independently
+        // correct per nif.xml's declared field order regardless.
+        let data_ref = if stream.version().has_keyframe_controller_data() {
+            stream.read_block_ref()?
+        } else {
+            BlockRef::NULL
+        };
         Ok(Self {
             base,
             interpolator_ref,
             extra_data_name,
+            data_ref,
         })
     }
 }

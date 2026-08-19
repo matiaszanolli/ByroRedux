@@ -244,10 +244,21 @@ impl NifVersion {
         self >= Self::V4_2_1_0
     }
 
-    /// `NiKeyframeController.Data` ref (a `NiKeyframeData`) is
-    /// `until="10.1.0.103"` — old-Oblivion keyframe controllers store
-    /// the data ref directly; `since="10.1.0.104"` it is replaced by the
-    /// `NiSingleInterpController.Interpolator` ref. (#1337)
+    /// The pre-Gamebryo-10.1.0.104 `Data` ref boundary. nif.xml declares
+    /// this same `until="10.1.0.103"` complement to
+    /// `NiSingleInterpController.Interpolator` (`since="10.1.0.104"`) on
+    /// several sibling subclasses, all named `Data` in the schema, always
+    /// a single `Ref` pointing at their own data-object type:
+    /// `NiKeyframeController.Data` (`NiKeyframeData`, #1337) —
+    /// `NiTransformController` inherits it unchanged (nif.xml: "replaces
+    /// NiKeyframeController", zero own fields) — `NiVisController.Data`
+    /// (`NiVisData`), `NiAlphaController.Data` (`NiFloatData`),
+    /// `NiTextureTransformController.Data` (`NiFloatData`),
+    /// `NiMaterialColorController.Data` / `NiLightColorController.Data`
+    /// (`NiPosData`), `NiFloatExtraDataController.Data` (`NiFloatData`).
+    /// Old-Oblivion-and-earlier content stores the data ref directly;
+    /// `since="10.1.0.104"` it is replaced by the interpolator ref.
+    /// (#1337 / #2562 / #2563)
     pub fn has_keyframe_controller_data(self) -> bool {
         self <= Self::V10_1_0_103
     }

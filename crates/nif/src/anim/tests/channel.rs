@@ -64,6 +64,7 @@ fn import_embedded_animations_captures_texture_transform_controller() {
         shader_map: false,
         texture_slot: 0,
         operation: 0, // UvOffsetU
+        data_ref: BlockRef::NULL,
     };
     let node = NiNode {
         av: NiAVObjectData {
@@ -158,6 +159,7 @@ fn import_embedded_animations_carries_authored_timing_envelope() {
         shader_map: false,
         texture_slot: 0,
         operation: 0,
+        data_ref: BlockRef::NULL,
     };
     let node = NiNode {
         av: NiAVObjectData {
@@ -281,6 +283,8 @@ fn import_embedded_animations_captures_flip_controller() {
             },
             interpolator_ref: BlockRef(1),
         },
+        accum_time: 0.0,
+        delta: 0.0,
         texture_slot: 0,
         sources: vec![BlockRef(2), BlockRef(3)],
     };
@@ -636,6 +640,7 @@ fn import_embedded_animations_captures_nilight_controllers() {
         base: tc_base(BlockRef::NULL), // tail of chain
         interpolator_ref: BlockRef(7),
         target_color: 0, // Diffuse
+        data_ref: BlockRef::NULL,
     };
     let radius_ctrl = NiLightFloatController {
         type_name: "NiLightRadiusController",

@@ -194,8 +194,11 @@ fn ni_bs_bone_lod_controller_skips_shape_groups_on_bethesda() {
 /// must dispatch through the right parsers.
 #[test]
 fn oblivion_kf_animation_blocks_route_correctly() {
-    // NiKeyframeController: parses as NiSingleInterpController
-    // (26-byte NiTimeControllerBase + 4-byte interpolator ref).
+    // NiKeyframeController: parses as NiPreSplitDataController (#2562) —
+    // 26-byte NiTimeControllerBase + 4-byte interpolator ref (Oblivion
+    // retail v20.0.0.5 is far above the 10.1.0.104 gate, so the
+    // interpolator ref IS read) + no Data ref (that field is `until
+    // 10.1.0.103`, also gated off at this version — NULL).
     let header = oblivion_header();
     let mut kf_bytes = Vec::new();
     // NiTimeControllerBase: next_controller, flags, frequency, phase,
@@ -214,12 +217,22 @@ fn oblivion_kf_animation_blocks_route_correctly() {
         &mut stream,
         Some(kf_bytes.len() as u32),
     )
-    .expect("NiKeyframeController should dispatch through NiSingleInterpController");
+    .expect("NiKeyframeController should dispatch through NiPreSplitDataController");
     let ctrl = block
         .as_any()
-        .downcast_ref::<crate::blocks::controller::NiSingleInterpController>()
-        .expect("NiKeyframeController did not downcast to NiSingleInterpController");
-    assert_eq!(ctrl.interpolator_ref.index(), Some(7));
+        .downcast_ref::<crate::blocks::controller::NiPreSplitDataController>()
+        .expect("NiKeyframeController did not downcast to NiPreSplitDataController");
+    assert_eq!(ctrl.base.interpolator_ref.index(), Some(7));
+    assert!(
+        ctrl.data_ref.is_null(),
+        "Data ref is `until 10.1.0.103` — must be NULL on Oblivion retail (v20.0.0.5)"
+    );
+    assert_eq!(
+        block.block_type_name(),
+        "NiKeyframeController",
+        "#2562 — the real RTTI must survive, not erase to \"NiSingleInterpController\""
+    );
+    assert_eq!(stream.position(), kf_bytes.len() as u64);
 
     // NiSequenceStreamHelper: NiObjectNET with no extra fields.
     // name (string table index 0) + extra_data count (0) + controller ref (-1)
@@ -238,6 +251,218 @@ fn oblivion_kf_animation_blocks_route_correctly() {
         .as_any()
         .downcast_ref::<crate::blocks::controller::NiSequenceStreamHelper>()
         .is_some());
+}
+
+/// Header at an exact version — for the `#2562` / `#2563` pre-split
+/// (`until="10.1.0.103"`) boundary tests below, where `oblivion_header`
+/// (v20.0.0.5, far above the gate) can't exercise the Data-ref read at
+/// all. No supported game ships content this old (Oblivion retail is
+/// the floor), so these are synthetic byte-stream fixtures at exactly
+/// the version nif.xml declares — same convention as
+/// `legacy_particle.rs`'s `header_at`.
+fn header_at(version: NifVersion) -> NifHeader {
+    NifHeader {
+        version,
+        little_endian: true,
+        user_version: 0,
+        user_version_2: 0,
+        num_blocks: 0,
+        block_types: Vec::new(),
+        block_type_indices: Vec::new(),
+        block_sizes: Vec::new(),
+        strings: Vec::new(),
+        max_string_length: 0,
+        num_groups: 0,
+    }
+}
+
+/// #2562 — at `v10.1.0.103` (the last version the `Data` ref is
+/// present), `NiKeyframeController` must read it instead of the
+/// (not-yet-present, `since="10.1.0.104"`) interpolator ref. Pre-fix,
+/// `NiKeyframeController` parsed as a bare `NiSingleInterpController`,
+/// which unconditionally read the interpolator ref at every version and
+/// never read `Data` at all — at this exact version that reads 4 bytes
+/// belonging to the NEXT block as a bogus interpolator ref, then leaves
+/// the real `Data` ref unconsumed, desyncing the stream by 4 bytes for
+/// every block that follows (marker_map.nif's 8-of-13-blocks drop).
+#[test]
+fn ni_keyframe_controller_reads_data_ref_below_10_1_0_104() {
+    let header = header_at(NifVersion::V10_1_0_103);
+    let mut bytes = Vec::new();
+    // `has_object_group_id()` — [10.0.0.0, 10.1.0.114) prefixes every
+    // non-Havok-serializable NiObject with a 4-byte groupID (#1337).
+    bytes.extend_from_slice(&0u32.to_le_bytes());
+    // NiTimeControllerBase (26 B).
+    bytes.extend_from_slice(&(-1i32).to_le_bytes());
+    bytes.extend_from_slice(&0u16.to_le_bytes());
+    bytes.extend_from_slice(&1.0f32.to_le_bytes());
+    bytes.extend_from_slice(&0.0f32.to_le_bytes());
+    bytes.extend_from_slice(&0.0f32.to_le_bytes());
+    bytes.extend_from_slice(&1.0f32.to_le_bytes());
+    bytes.extend_from_slice(&(-1i32).to_le_bytes());
+    // No interpolator ref at this version (since=10.1.0.104). Data ref
+    // (until=10.1.0.103) instead.
+    bytes.extend_from_slice(&42i32.to_le_bytes()); // Data ref
+    assert_eq!(bytes.len(), 4 + 26 + 4);
+    let mut stream = NifStream::new(&bytes, &header);
+    let block = parse_block("NiKeyframeController", &mut stream, Some(bytes.len() as u32))
+        .expect("NiKeyframeController must parse below v10.1.0.104");
+    let ctrl = block
+        .as_any()
+        .downcast_ref::<crate::blocks::controller::NiPreSplitDataController>()
+        .expect("downcast NiPreSplitDataController");
+    assert!(
+        ctrl.base.interpolator_ref.is_null(),
+        "interpolator_ref is since=10.1.0.104 — must not be read below it"
+    );
+    assert_eq!(
+        ctrl.data_ref.index(),
+        Some(42),
+        "Data ref (until=10.1.0.103) must be read at this exact version"
+    );
+    assert_eq!(stream.position() as usize, bytes.len());
+}
+
+/// #2562 — `NiTransformController` is nif.xml's bare rename of
+/// `NiKeyframeController` (zero fields of its own), so it must parse
+/// identically, including the `Data` ref, and report its own real RTTI.
+#[test]
+fn ni_transform_controller_is_the_keyframe_controller_alias() {
+    let header = header_at(NifVersion::V10_1_0_103);
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // groupID
+    bytes.extend_from_slice(&(-1i32).to_le_bytes());
+    bytes.extend_from_slice(&0u16.to_le_bytes());
+    bytes.extend_from_slice(&1.0f32.to_le_bytes());
+    bytes.extend_from_slice(&0.0f32.to_le_bytes());
+    bytes.extend_from_slice(&0.0f32.to_le_bytes());
+    bytes.extend_from_slice(&1.0f32.to_le_bytes());
+    bytes.extend_from_slice(&(-1i32).to_le_bytes());
+    bytes.extend_from_slice(&7i32.to_le_bytes()); // Data ref
+    let mut stream = NifStream::new(&bytes, &header);
+    let block = parse_block(
+        "NiTransformController",
+        &mut stream,
+        Some(bytes.len() as u32),
+    )
+    .expect("NiTransformController must parse below v10.1.0.104");
+    let ctrl = block
+        .as_any()
+        .downcast_ref::<crate::blocks::controller::NiPreSplitDataController>()
+        .expect("downcast NiPreSplitDataController");
+    assert_eq!(ctrl.data_ref.index(), Some(7));
+    assert_eq!(block.block_type_name(), "NiTransformController");
+    assert_eq!(stream.position() as usize, bytes.len());
+}
+
+/// #2562 — `NiVisController` / `NiAlphaController` siblings, same shape.
+#[test]
+fn ni_vis_and_alpha_controllers_read_data_ref_below_10_1_0_104() {
+    for type_name in ["NiVisController", "NiAlphaController"] {
+        let header = header_at(NifVersion::V10_1_0_103);
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // groupID
+        bytes.extend_from_slice(&(-1i32).to_le_bytes());
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        bytes.extend_from_slice(&1.0f32.to_le_bytes());
+        bytes.extend_from_slice(&0.0f32.to_le_bytes());
+        bytes.extend_from_slice(&0.0f32.to_le_bytes());
+        bytes.extend_from_slice(&1.0f32.to_le_bytes());
+        bytes.extend_from_slice(&(-1i32).to_le_bytes());
+        bytes.extend_from_slice(&99i32.to_le_bytes()); // Data ref
+        let mut stream = NifStream::new(&bytes, &header);
+        let block = parse_block(type_name, &mut stream, Some(bytes.len() as u32))
+            .unwrap_or_else(|e| panic!("{type_name} must parse below v10.1.0.104: {e}"));
+        let ctrl = block
+            .as_any()
+            .downcast_ref::<crate::blocks::controller::NiPreSplitDataController>()
+            .unwrap_or_else(|| panic!("{type_name} did not downcast to NiPreSplitDataController"));
+        assert_eq!(ctrl.data_ref.index(), Some(99), "{type_name}");
+        assert_eq!(block.block_type_name(), type_name);
+        assert_eq!(stream.position() as usize, bytes.len(), "{type_name}");
+    }
+}
+
+/// #2563 — `NiFlipController`'s `Accum Time` / `Delta` floats,
+/// representative sibling of the same `until="10.1.0.103"` shape as the
+/// `Data`-ref siblings above (two plain floats here instead of a Ref).
+/// The pre-fix code comment asserted "nothing to read here" for every
+/// supported Bethesda NIF — true for retail content, but wrong for this
+/// exact band, which the comment then failed to gate at all.
+#[test]
+fn ni_flip_controller_reads_accum_time_and_delta_below_10_1_0_104() {
+    let header = header_at(NifVersion::V10_1_0_103);
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // groupID
+    bytes.extend_from_slice(&(-1i32).to_le_bytes());
+    bytes.extend_from_slice(&0u16.to_le_bytes());
+    bytes.extend_from_slice(&1.0f32.to_le_bytes());
+    bytes.extend_from_slice(&0.0f32.to_le_bytes());
+    bytes.extend_from_slice(&0.0f32.to_le_bytes());
+    bytes.extend_from_slice(&1.0f32.to_le_bytes());
+    bytes.extend_from_slice(&(-1i32).to_le_bytes());
+    // No interpolator ref at this version. Accum Time + Delta instead.
+    bytes.extend_from_slice(&2.5f32.to_le_bytes()); // Accum Time
+    bytes.extend_from_slice(&0.125f32.to_le_bytes()); // Delta
+    bytes.extend_from_slice(&4u32.to_le_bytes()); // texture_slot
+    bytes.extend_from_slice(&1u32.to_le_bytes()); // num_sources
+    bytes.extend_from_slice(&11i32.to_le_bytes());
+    let mut stream = NifStream::new(&bytes, &header);
+    let block = parse_block("NiFlipController", &mut stream, Some(bytes.len() as u32))
+        .expect("NiFlipController must parse below v10.1.0.104");
+    let ctrl = block
+        .as_any()
+        .downcast_ref::<crate::blocks::controller::NiFlipController>()
+        .expect("downcast NiFlipController");
+    assert!(ctrl.base.interpolator_ref.is_null());
+    assert!((ctrl.accum_time - 2.5).abs() < 1e-6);
+    assert!((ctrl.delta - 0.125).abs() < 1e-6);
+    assert_eq!(ctrl.texture_slot, 4);
+    assert_eq!(ctrl.sources.len(), 1);
+    assert_eq!(stream.position() as usize, bytes.len());
+}
+
+/// #2563 — `NiTextureTransformController`'s `Data` ref, the shader.rs
+/// sibling family (field order differs from the mod.rs siblings above:
+/// `Data` trails `shader_map`/`texture_slot`/`operation` instead of
+/// immediately following the interpolator-ref prologue).
+#[test]
+fn ni_texture_transform_controller_reads_data_ref_below_10_1_0_104() {
+    let header = header_at(NifVersion::V10_1_0_103);
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // groupID
+    bytes.extend_from_slice(&(-1i32).to_le_bytes());
+    bytes.extend_from_slice(&0u16.to_le_bytes());
+    bytes.extend_from_slice(&1.0f32.to_le_bytes());
+    bytes.extend_from_slice(&0.0f32.to_le_bytes());
+    bytes.extend_from_slice(&0.0f32.to_le_bytes());
+    bytes.extend_from_slice(&1.0f32.to_le_bytes());
+    bytes.extend_from_slice(&(-1i32).to_le_bytes());
+    // No interpolator ref at this version.
+    bytes.push(1); // shader_map = true
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // texture_slot
+    bytes.extend_from_slice(&2u32.to_le_bytes()); // operation
+    bytes.extend_from_slice(&55i32.to_le_bytes()); // Data ref
+    let mut stream = NifStream::new(&bytes, &header);
+    let block = parse_block(
+        "NiTextureTransformController",
+        &mut stream,
+        Some(bytes.len() as u32),
+    )
+    .expect("NiTextureTransformController must parse below v10.1.0.104");
+    let ctrl = block
+        .as_any()
+        .downcast_ref::<crate::blocks::controller::NiTextureTransformController>()
+        .expect("downcast NiTextureTransformController");
+    assert!(ctrl.interpolator_ref.is_null());
+    assert!(ctrl.shader_map);
+    assert_eq!(ctrl.operation, 2);
+    assert_eq!(
+        ctrl.data_ref.index(),
+        Some(55),
+        "Data ref (until=10.1.0.103) must be read at this exact version"
+    );
+    assert_eq!(stream.position() as usize, bytes.len());
 }
 
 /// Regression test for issue #154: NiUVController + NiUVData.

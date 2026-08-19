@@ -6,7 +6,7 @@
 
 use super::*;
 use crate::blocks::controller::{
-    NiControllerManager, NiControllerSequence, NiGeomMorpherController,
+    NiControllerManager, NiControllerSequence, NiGeomMorpherController, NiPreSplitDataController,
 };
 use crate::scene::NifScene;
 use std::collections::HashMap;
@@ -161,11 +161,20 @@ fn time_controller_base_of(
 ) -> Option<&crate::blocks::controller::NiTimeControllerBase> {
     use crate::blocks::controller::{
         BsShaderController, NiFlipController, NiLightColorController, NiLightFloatController,
-        NiMaterialColorController, NiSingleInterpController, NiTextureTransformController,
+        NiMaterialColorController, NiPreSplitDataController, NiSingleInterpController,
+        NiTextureTransformController,
     };
     let any = block.as_any();
     if let Some(c) = any.downcast_ref::<NiSingleInterpController>() {
         Some(&c.base)
+    } else if let Some(c) = any.downcast_ref::<NiPreSplitDataController>() {
+        // #2562 / #2563 — NiKeyframeController / NiTransformController /
+        // NiVisController / NiAlphaController used to parse as a bare
+        // NiSingleInterpController (caught by the arm above); they now
+        // have their own type so their real block_type_name() reaches
+        // the embedded-controller dispatch below instead of being erased
+        // to "NiSingleInterpController".
+        Some(&c.base.base)
     } else if let Some(c) = any.downcast_ref::<NiTextureTransformController>() {
         Some(&c.base)
     } else if let Some(c) = any.downcast_ref::<NiFlipController>() {
@@ -337,10 +346,17 @@ pub fn import_embedded_animations(scene: &NifScene) -> Option<AnimationClip> {
             // For each controller, dispatch on type and use the
             // ControlledBlock-free extract_*_at helpers.
             match ctrl_type {
+                // #2562 / #2563 — NiAlphaController / NiVisController now
+                // parse into their own `NiPreSplitDataController` type
+                // (previously a bare `NiSingleInterpController`, which
+                // erased the RTTI `block_type_name()` reports — these two
+                // match arms existed but were unreachable dead code before
+                // that fix, since `ctrl_type` could never actually equal
+                // these strings).
                 "NiAlphaController" => {
                     let interp_idx = any
-                        .downcast_ref::<NiSingleInterpController>()
-                        .and_then(|c| c.interpolator_ref.index());
+                        .downcast_ref::<NiPreSplitDataController>()
+                        .and_then(|c| c.base.interpolator_ref.index());
                     if let Some(idx) = interp_idx {
                         if let Some(ch) = extract_float_channel_at(scene, idx, FloatTarget::Alpha) {
                             clip.float_channels.push((Arc::clone(&node_name), ch));
@@ -349,8 +365,8 @@ pub fn import_embedded_animations(scene: &NifScene) -> Option<AnimationClip> {
                 }
                 "NiVisController" => {
                     let interp_idx = any
-                        .downcast_ref::<NiSingleInterpController>()
-                        .and_then(|c| c.interpolator_ref.index());
+                        .downcast_ref::<NiPreSplitDataController>()
+                        .and_then(|c| c.base.interpolator_ref.index());
                     if let Some(idx) = interp_idx {
                         if let Some(ch) = extract_bool_channel_at(scene, idx) {
                             clip.bool_channels.push((Arc::clone(&node_name), ch));
@@ -361,39 +377,41 @@ pub fn import_embedded_animations(scene: &NifScene) -> Option<AnimationClip> {
                 // directly off a node (animated scenery: fans, doors, lifts,
                 // swinging signs in loose Oblivion/FO3/FNV .nifs) carries no
                 // NiControllerSequence, so the KF-sequence dispatch never sees
-                // it and the mesh rendered static. Both `NiTransformController`
-                // and the pre-Skyrim `NiKeyframeController` alias parse into a
-                // bare `NiSingleInterpController` whose `block_type_name()`
-                // erases the original RTTI to "NiSingleInterpController"
-                // (controller/mod.rs:688 implicit-name form), so we cannot
-                // dispatch on the class string here. Instead discriminate on
-                // the interpolator type: `extract_transform_channel_at` only
-                // yields `Some` for a transform/B-spline/look-at/path
-                // interpolator, returning `None` for the float/bool
-                // interpolators behind alpha/vis/float controllers — which
-                // also land here under the same erased name. So attempting
-                // the extraction is safe and self-selecting.
-                "NiSingleInterpController" | "NiTransformController" | "NiKeyframeController" => {
+                // it and the mesh rendered static.
+                //
+                // #2562 / #2563 — `NiTransformController` and the pre-Skyrim
+                // `NiKeyframeController` alias now parse into
+                // `NiPreSplitDataController` with their real RTTI preserved
+                // (previously a bare `NiSingleInterpController`, erased to
+                // that name — see the comment on the arm below for what
+                // still reaches it under the erased name today).
+                "NiTransformController" | "NiKeyframeController" => {
+                    let interp_idx = any
+                        .downcast_ref::<NiPreSplitDataController>()
+                        .and_then(|c| c.base.interpolator_ref.index());
+                    if let Some(channel) =
+                        interp_idx.and_then(|idx| extract_transform_channel_at(scene, idx))
+                    {
+                        clip.channels.insert(Arc::clone(&node_name), channel);
+                    }
+                }
+                // Only the three Bethesda-extension float controllers with
+                // no fields beyond `NiSingleInterpController`
+                // (BSMaterialEmittanceMultController, BSRefractionStrengthController,
+                // BSFrustumFOVController — `blocks/mod.rs`) still parse as a
+                // bare `NiSingleInterpController` and reach this arm under
+                // that literal name. None of them drive a transform, so
+                // `extract_transform_channel_at` self-selects to `None`
+                // here — kept as a harmless, self-selecting attempt rather
+                // than special-cased per type.
+                "NiSingleInterpController" => {
                     let interp_idx = any
                         .downcast_ref::<NiSingleInterpController>()
                         .and_then(|c| c.interpolator_ref.index());
-                    match interp_idx.and_then(|idx| extract_transform_channel_at(scene, idx)) {
-                        Some(channel) => {
-                            clip.channels.insert(Arc::clone(&node_name), channel);
-                        }
-                        None => {
-                            // A non-transform NiSingleInterpController subclass
-                            // (alpha / vis / float) under the erased RTTI name.
-                            // Those embedded arms are a separate gap (the same
-                            // RTTI erasure makes their class-string dispatch
-                            // unreachable too) — log so it stays visible.
-                            log::debug!(
-                                "Embedded NiSingleInterpController on '{}' has no transform \
-                                 interpolator; non-transform embedded controllers under the \
-                                 erased RTTI name are not yet supported",
-                                node_name
-                            );
-                        }
+                    if let Some(channel) =
+                        interp_idx.and_then(|idx| extract_transform_channel_at(scene, idx))
+                    {
+                        clip.channels.insert(Arc::clone(&node_name), channel);
                     }
                 }
                 "NiTextureTransformController" => {
