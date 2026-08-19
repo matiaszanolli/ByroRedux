@@ -21,7 +21,7 @@ use crate::npc_spawn::{NpcSpawnJob, NpcSpawnProgress};
 
 use super::euler::euler_zup_to_quat_yup_refr;
 use super::load_order::{self, plugin_for_form_id};
-use super::nif_import_registry::{CachedNifImport, NifImportRegistry};
+use super::nif_import_registry::{canonical_model_path_key, CachedNifImport, NifImportRegistry};
 use super::refr::{
     build_refr_texture_overlay, expand_pkin_placements, expand_scol_placements, RefrTextureOverlay,
 };

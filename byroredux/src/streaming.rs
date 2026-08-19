@@ -32,7 +32,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crate::asset_provider::{MaterialProvider, TextureProvider};
-use crate::cell_loader::{ExteriorWorldContext, UnloadPhaseTimings};
+use crate::cell_loader::{canonical_model_path_key, ExteriorWorldContext, UnloadPhaseTimings};
 
 /// One loaded cell tracked by [`WorldStreamingState`]. The
 /// `cell_root` is the `EntityId` returned by
@@ -1190,7 +1190,12 @@ fn pre_parse_cell(
         else {
             continue;
         };
-        let key = model_path.to_ascii_lowercase();
+        // #3038 — must match the sync REFR loader's key exactly
+        // (`references/synth_child.rs`), or the same asset ends up
+        // cached under two different `NifImportRegistry` keys and gets
+        // parsed + imported twice. Both loaders now route through the
+        // one shared normaliser.
+        let key = canonical_model_path_key(model_path);
         if cached_keys.contains(&key) {
             skipped_cached += 1;
             continue;

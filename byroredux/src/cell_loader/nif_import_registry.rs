@@ -30,6 +30,88 @@ use byroredux_core::ecs::{BillboardMode, Resource};
 
 use crate::parsed_nif_cache::ParsedNifCache;
 
+/// Canonical [`NifImportRegistry`] cache key for a raw (authored)
+/// `model_path`. Lowercases and prefixes `meshes\` when the path is
+/// stored folder-relative — the archive-path form `extract_mesh`
+/// expects, and the form the majority of `StaticRecord::model_path`
+/// values already carry.
+///
+/// #3038 / FNV-2026-08-16-D1-02 — every producer of a registry key MUST
+/// route through this one function rather than building the key
+/// inline. Before the fix, the synchronous REFR loader
+/// (`references/synth_child.rs`) prefixed `meshes\` before lowercasing
+/// while the exterior-streaming loader (`streaming.rs`) only
+/// lowercased — so the same asset landed under two different keys,
+/// was parsed and imported twice, and cache-hit telemetry undercounted
+/// reuse. Idempotent: re-applying it to an already-canonical key (e.g.
+/// one already threaded through from the streaming payload) is a
+/// no-op.
+pub(crate) fn canonical_model_path_key(model_path: &str) -> String {
+    let lower = model_path.to_ascii_lowercase();
+    if lower.starts_with("meshes\\") || lower.starts_with("meshes/") {
+        lower
+    } else {
+        format!("meshes\\{lower}")
+    }
+}
+
+#[cfg(test)]
+mod canonical_key_tests {
+    use super::canonical_model_path_key;
+
+    /// The dominant authored form — folder-relative, no `meshes\`
+    /// prefix — gets the prefix added and is lowercased.
+    #[test]
+    fn prefixes_and_lowercases_folder_relative_path() {
+        assert_eq!(
+            canonical_model_path_key("Clutter\\Barrel02FireLight.nif"),
+            "meshes\\clutter\\barrel02firelight.nif"
+        );
+    }
+
+    /// An already-prefixed path (backslash form) is lowercased only —
+    /// no double prefix.
+    #[test]
+    fn does_not_double_prefix_backslash_form() {
+        assert_eq!(
+            canonical_model_path_key("Meshes\\Clutter\\Barrel02FireLight.nif"),
+            "meshes\\clutter\\barrel02firelight.nif"
+        );
+    }
+
+    /// The forward-slash prefix form (seen in some archive listings)
+    /// is also recognised — no double prefix, forward slashes untouched.
+    #[test]
+    fn does_not_double_prefix_forward_slash_form() {
+        assert_eq!(
+            canonical_model_path_key("meshes/clutter/barrel02firelight.nif"),
+            "meshes/clutter/barrel02firelight.nif"
+        );
+    }
+
+    /// #3038's regression case: this is the exact pair the live
+    /// `mesh.cache failed` probe on WastelandNV surfaced as two
+    /// entries for one asset. Both the sync-loader form (already
+    /// `meshes\`-prefixed) and the streaming-loader form (bare) must
+    /// canonicalise to the same key.
+    #[test]
+    fn sync_and_streaming_forms_converge_on_one_key() {
+        let sync_form = canonical_model_path_key("meshes\\clutter\\barrel02firelight.nif");
+        let streaming_form = canonical_model_path_key("clutter\\barrel02firelight.nif");
+        assert_eq!(sync_form, streaming_form);
+    }
+
+    /// Applying the function twice (e.g. once at the streaming
+    /// producer, once more at a downstream consumer that
+    /// unconditionally re-normalises) must not change the key.
+    #[test]
+    fn is_idempotent() {
+        let once = canonical_model_path_key("Clutter\\Barrel02FireLight.nif");
+        let twice = canonical_model_path_key(&once);
+        assert_eq!(once, twice);
+    }
+}
+
 /// Parsed + imported NIF scene data cached per unique model path.
 pub(crate) struct CachedNifImport {
     pub(super) meshes: Vec<byroredux_nif::import::ImportedMesh>,

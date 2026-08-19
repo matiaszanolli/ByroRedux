@@ -378,7 +378,15 @@ pub(super) fn spawn_synth_child(
     // Previously this block took `resource_mut` (write lock)
     // on every iteration even on the hit path; see #523 / #381
     // for the wider cache history.
-    let cache_key = model_path.to_ascii_lowercase();
+    //
+    // #3038 — the registry key MUST come from `canonical_model_path_key`,
+    // not a bare `.to_ascii_lowercase()` of the (already meshes\-prefixed)
+    // `model_path` above. The exterior-streaming loader (`streaming.rs`)
+    // builds the same key from the same `canonical_model_path_key` call
+    // against the raw `stat.model_path`; two independent inline
+    // normalisations (this one used to prefix before lowercasing, the
+    // streaming one didn't) produced two keys for one asset.
+    let cache_key = canonical_model_path_key(&stat.model_path);
     let cached = if let Some(entry) = accum.pending_new.get(&cache_key).cloned() {
         accum.this_call_hits += 1;
         entry
