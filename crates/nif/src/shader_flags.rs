@@ -38,10 +38,12 @@ pub mod fo3nv_f1 {
     pub const EYE_ENVIRONMENT_MAPPING: u32 = 0x0002_0000;
     /// Bit 21 — `Window_Environment_Mapping`.
     pub const WINDOW_ENVIRONMENT_MAPPING: u32 = 0x0020_0000;
-    /// Bit 22 — `Own_Emit`. Surface provides its own emittance; renders
-    /// additively (ONE/ONE blend) rather than alpha-over. Same bit as
-    /// `skyrim_slsf1` and `fo4_slsf1` — cross-game constant.
-    pub const OWN_EMIT: u32 = 0x0040_0000;
+    /// Bit 22 — `Tree_Billboard` per nif.xml `BSShaderFlags`. FO3/FNV has
+    /// no `Own_Emit` bit at all; `skyrim_slsf1::OWN_EMIT` /
+    /// `fo4_slsf1::OWN_EMIT` happen to sit at this same bit position
+    /// (0x0040_0000) on their own, unrelated per-game enums — do NOT
+    /// reuse this constant expecting `Own_Emit` semantics. #2319.
+    pub const TREE_BILLBOARD: u32 = 0x0040_0000;
     /// Bit 15 — `Refraction`. Same bit + semantic as `skyrim_slsf1::REFRACTION`
     /// per nif.xml `BSShaderFlags` (bit 15, "switches on refraction power").
     /// See #2321.
@@ -92,8 +94,11 @@ pub mod skyrim_slsf1 {
     /// indexed by the source-texture luminance. nif.xml: "in
     /// EffectShaderProperty". See #890 / SK-D4-NEW-04.
     pub const GREYSCALE_TO_PALETTE_COLOR: u32 = 0x0000_0010;
-    /// Bit 22 — `Own_Emit`. Same position + semantic as `fo3nv_f1::OWN_EMIT`
-    /// and `fo4_slsf1::OWN_EMIT` — self-illuminating surface, additive blend.
+    /// Bit 22 — `Own_Emit`. Same position + semantic as `fo4_slsf1::OWN_EMIT`
+    /// — self-illuminating surface, additive blend. FO3/FNV has no
+    /// `Own_Emit` bit at all: `fo3nv_f1` bit 22 is `Tree_Billboard`, an
+    /// unrelated flag that only coincidentally shares this numeric value.
+    /// #2319.
     pub const OWN_EMIT: u32 = 0x0040_0000;
     /// Bit 5 — `Greyscale_To_PaletteAlpha`. Sample the
     /// `BSEffectShaderProperty.greyscale_texture` as an alpha palette LUT.
@@ -365,13 +370,29 @@ mod tests {
     }
 
     #[test]
-    fn own_emit_bit_is_cross_game_constant() {
-        // OWN_EMIT is bit 22 (0x0040_0000) in ALL game variants per nif.xml.
-        // The additive-blend gate in material/walker.rs uses fo3nv_f1::OWN_EMIT
-        // as the canonical constant; this pin ensures FO4 doesn't drift.
-        assert_eq!(fo3nv_f1::OWN_EMIT, skyrim_slsf1::OWN_EMIT);
-        assert_eq!(fo3nv_f1::OWN_EMIT, fo4_slsf1::OWN_EMIT);
-        assert_eq!(fo3nv_f1::OWN_EMIT, 0x0040_0000);
+    fn own_emit_bit_is_shared_between_skyrim_and_fo4_only() {
+        // #2319 — OWN_EMIT (bit 22, 0x0040_0000) is a genuine cross-game
+        // constant between Skyrim and FO4 per nif.xml's
+        // SkyrimShaderPropertyFlags1 / Fallout4ShaderPropertyFlags1, but
+        // FO3/FNV's BSShaderFlags has NO Own_Emit bit at all — its bit 22
+        // is Tree_Billboard, an unrelated flag. The additive-blend gate
+        // in `import/material/dedicated_shader.rs` reads
+        // `skyrim_slsf1::OWN_EMIT` directly (it only ever sees
+        // `BSEffectShaderProperty`, which is Skyrim+-only) — this pin
+        // covers the two constants that genuinely share the semantic.
+        assert_eq!(skyrim_slsf1::OWN_EMIT, fo4_slsf1::OWN_EMIT);
+        assert_eq!(skyrim_slsf1::OWN_EMIT, 0x0040_0000);
+    }
+
+    #[test]
+    fn fo3nv_bit_22_is_tree_billboard_not_own_emit() {
+        // The two flags only coincidentally share a bit position — they
+        // are unrelated per-game semantics, not one constant. Asserting
+        // the numeric equality alongside the distinct name is the whole
+        // point: it documents "same bit, different meaning" instead of
+        // implying they're interchangeable.
+        assert_eq!(fo3nv_f1::TREE_BILLBOARD, 0x0040_0000);
+        assert_eq!(fo3nv_f1::TREE_BILLBOARD, skyrim_slsf1::OWN_EMIT);
     }
 
     #[test]

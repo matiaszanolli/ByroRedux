@@ -560,10 +560,14 @@ fn apply_bs_effect_shader(
             // INV_SRC_ALPHA would clip high-emissive values to white
             // instead of blooming them correctly (see: nuclear warhead
             // glows in Lonesome Road, power-armor auras).
-            // OWN_EMIT is bit 22 (0x0040_0000) across all game variants
-            // (fo3nv_f1 / skyrim_slsf1 / fo4_slsf1 — same value, confirmed
-            // by nif.xml). Use the fo3nv constant as the canonical name.
-            if shader.shader_flags_1 & crate::shader_flags::fo3nv_f1::OWN_EMIT != 0 {
+            // `BSEffectShaderProperty` is Skyrim+ only (FO3/FNV has no
+            // such block), so `shader.shader_flags_1` is always SLSF1 —
+            // read the Skyrim constant directly. #2319: this used to read
+            // `fo3nv_f1::OWN_EMIT`, which shares OWN_EMIT's numeric value
+            // (0x0040_0000) purely by coincidence — FO3's BSShaderFlags
+            // bit 22 is actually `Tree_Billboard`, an unrelated flag with
+            // no `Own_Emit` counterpart at all on that enum.
+            if shader.shader_flags_1 & crate::shader_flags::skyrim_slsf1::OWN_EMIT != 0 {
                 info.src_blend_mode = 0; // ONE
                 info.dst_blend_mode = 0; // ONE
             }
