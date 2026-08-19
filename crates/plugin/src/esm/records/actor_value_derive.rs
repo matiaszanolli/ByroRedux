@@ -112,7 +112,11 @@ fn base_skill(governing: u8, luck: u8) -> f32 {
 /// - **FNV / FO3**: actor values are *auto-calculated* from the NPC's class
 ///   base SPECIAL (the documented GECK model) — the 7 SPECIAL, the profile's
 ///   exact skill roster, and its sourced Health curve. See
-///   [`derive_autocalc_actor_values`].
+///   [`derive_autocalc_actor_values`]. `TPLT`/`Use Stats` template
+///   inheritance is resolved first (#2956,
+///   [`crate::equip::resolve_inherited_stats`]) — a templated `Lvl*` shell's
+///   own `class_form_id`/level are frequently not what the engine actually
+///   uses.
 ///
 /// Empty for every other game (Oblivion), a Skyrim NPC whose race or Health
 /// AVIF is missing, an FO4 NPC with no `PRPS`, or an FNV NPC whose class
@@ -124,7 +128,9 @@ pub fn derive_npc_actor_values(npc: &NpcRecord, index: &EsmIndex) -> Vec<(u32, f
         NpcStatModel::Stored => derive_stored_actor_values(npc, index),
         NpcStatModel::RaceBaseOffsets => derive_skyrim_actor_values(npc, index),
         NpcStatModel::ClassAutoCalc { health } => {
-            derive_autocalc_actor_values(npc, index, index.character_rules, health)
+            let stats_npc =
+                crate::equip::resolve_inherited_stats(npc, effective_npc_level(npc) as i16, index);
+            derive_autocalc_actor_values(stats_npc, index, index.character_rules, health)
         }
         NpcStatModel::None => Vec::new(),
     }
@@ -373,6 +379,50 @@ mod tests {
 
         // 7 SPECIAL + 13 FNV skills + Health.
         assert_eq!(pairs.len(), 21);
+    }
+
+    /// #2956 — a templated `Lvl*` shell's own `class_form_id` must be
+    /// IGNORED once `Use Stats` is set; the template's class (and level)
+    /// govern the whole SPECIAL + skill derivation instead. Give the
+    /// shell a class_form_id that doesn't even resolve in the index, so a
+    /// pass-through bug would degrade to `empty_without_class_or_
+    /// unsupported_game`'s empty-result path rather than silently
+    /// producing plausible-looking wrong numbers — either way, a
+    /// regression here is loud, not silent.
+    #[test]
+    fn derive_npc_actor_values_follows_use_stats_template_to_the_correct_class() {
+        let template_base = [8, 6, 9, 4, 7, 5, 3]; // the class the engine actually uses
+        let mut index = fnv_index_with_class(0x2000, template_base);
+
+        let mut template_npc = npc_with_class(0x2000);
+        template_npc.form_id = 0x0010_0001;
+        template_npc.level = 20;
+        index.npcs.insert(template_npc.form_id, template_npc);
+
+        let mut shell = npc_with_class(0x9999); // unresolvable — proves it's never read
+        shell.form_id = 0x0010_0000;
+        shell.level = 1;
+        shell.template_form_id = 0x0010_0001;
+        shell.template_flags = crate::equip::TEMPLATE_FLAG_USE_STATS;
+
+        let pairs = derive_npc_actor_values(&shell, &index);
+        assert!(
+            !pairs.is_empty(),
+            "must resolve through the template, not empty out on the shell's own \
+             unresolvable class"
+        );
+
+        let val = |name: &str| -> f32 {
+            let fid = index.actor_value_form_id(name).unwrap();
+            pairs.iter().find(|(f, _)| *f == fid).unwrap().1
+        };
+        assert_eq!(val("Strength"), 8.0, "template's SPECIAL, not the shell's");
+        assert_eq!(val("Endurance"), 9.0);
+        assert_eq!(
+            val("Health"),
+            95.0 + 20.0 * 9.0 + 5.0 * 20.0,
+            "template's level (20) feeds the Health curve, not the shell's (1)"
+        );
     }
 
     #[test]

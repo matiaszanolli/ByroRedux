@@ -575,6 +575,97 @@ fn prebaked_equip_state_uses_own_inventory_without_template() {
     );
 }
 
+/// #2956 — `stamp_character_components` end-to-end: a templated shell with
+/// `Use Stats` set must land `CharacterLevel`/`Background.class_form_id`
+/// from the template, and (independently, via `Use Traits`)
+/// `Background.race_form_id` from the template too — not the shell's own
+/// (deliberately wrong / unresolvable) values.
+#[test]
+fn stamp_character_components_follows_use_stats_and_use_traits_templates() {
+    use byroredux_core::character::{Background, CharacterLevel};
+    use byroredux_plugin::equip::{TEMPLATE_FLAG_USE_STATS, TEMPLATE_FLAG_USE_TRAITS};
+
+    const SHELL: u32 = 0x0100_0010;
+    const TEMPLATE: u32 = 0x0100_0011;
+    const TEMPLATE_CLASS: u32 = 0x0000_C1A5;
+    const TEMPLATE_RACE: u32 = 0x0000_2ACE;
+    const SHELL_CLASS: u32 = 0xBAD_C1A55; // unresolvable — proves it's ignored
+    const SHELL_RACE: u32 = 0xBAD_2ACE; // unresolvable — proves it's ignored
+
+    let mut template = test_npc(TEMPLATE, "BaseTemplatedNpc");
+    template.class_form_id = TEMPLATE_CLASS;
+    template.race_form_id = TEMPLATE_RACE;
+    template.level = 20;
+
+    let mut shell = test_npc(SHELL, "LvlTemplatedNpc");
+    shell.class_form_id = SHELL_CLASS;
+    shell.race_form_id = SHELL_RACE;
+    shell.level = 1;
+    shell.template_form_id = TEMPLATE;
+    shell.template_flags = TEMPLATE_FLAG_USE_STATS | TEMPLATE_FLAG_USE_TRAITS;
+
+    let mut index = EsmIndex::default();
+    index.npcs.insert(TEMPLATE, template);
+
+    let mut world = World::new();
+    world.register::<CharacterLevel>();
+    world.register::<Background>();
+    let target = world.spawn();
+    stamp_character_components(&mut world, target, &shell, &index);
+
+    assert_eq!(
+        world.get::<CharacterLevel>(target).unwrap().level,
+        20,
+        "CharacterLevel must come from the Use-Stats template, not the shell"
+    );
+    let background = world.get::<Background>(target).unwrap();
+    assert_eq!(
+        background.class_form_id, TEMPLATE_CLASS,
+        "Background.class_form_id must come from the Use-Stats template"
+    );
+    assert_eq!(
+        background.race_form_id, TEMPLATE_RACE,
+        "Background.race_form_id must come from the Use-Traits template"
+    );
+}
+
+/// Control: no `template_flags` set → both `CharacterLevel` and
+/// `Background` keep the NPC's own values, matching pre-#2956 behavior for
+/// the common (untemplated, unique-named) NPC.
+#[test]
+fn stamp_character_components_uses_own_values_without_template_flags() {
+    use byroredux_core::character::{Background, CharacterLevel};
+
+    const NPC: u32 = 0x0100_0012;
+    const TEMPLATE: u32 = 0x0100_0013;
+
+    let mut template = test_npc(TEMPLATE, "IgnoredTemplate");
+    template.class_form_id = 0xBAD_C1A55;
+    template.race_form_id = 0xBAD_2ACE;
+    template.level = 99;
+
+    let mut npc = test_npc(NPC, "UniqueNpc");
+    npc.class_form_id = 0x0000_C1A5;
+    npc.race_form_id = 0x0000_2ACE;
+    npc.level = 7;
+    npc.template_form_id = TEMPLATE; // present, but no flags gate it
+    npc.template_flags = 0;
+
+    let mut index = EsmIndex::default();
+    index.npcs.insert(TEMPLATE, template);
+
+    let mut world = World::new();
+    world.register::<CharacterLevel>();
+    world.register::<Background>();
+    let target = world.spawn();
+    stamp_character_components(&mut world, target, &npc, &index);
+
+    assert_eq!(world.get::<CharacterLevel>(target).unwrap().level, 7);
+    let background = world.get::<Background>(target).unwrap();
+    assert_eq!(background.class_form_id, 0x0000_C1A5);
+    assert_eq!(background.race_form_id, 0x0000_2ACE);
+}
+
 // ── #2093 (SKY-D3-NEW-01) / #2094 (SKY-D3-NEW-02) — RACE.WNAM skin
 //    fallback + displaced-mesh exclusion on the prebaked path. ──────
 

@@ -140,9 +140,32 @@ fn effective_actor_level(npc: &byroredux_plugin::esm::records::NpcRecord) -> i16
 /// race/class come from every game's `NPC_`; perks from FO4+ `PRKR`.
 /// Complements [`stamp_actor_values`] (the numeric substrate): together they
 /// land the full canonical character state an actor carries at spawn.
-fn stamp_character_components(world: &mut World, placement_root: EntityId, npc: &NpcRecord) {
+///
+/// #2956 — `Use Stats`/`Use Traits` `TPLT` template inheritance is resolved
+/// first, the same way [`resolve_inherited_inventory`] already resolves
+/// `Use Inventory`: a `Lvl*` shell NPC's own level/class/race are frequently
+/// not what the engine actually uses once its `template_flags` says to
+/// inherit them.
+///
+/// [`resolve_inherited_inventory`]: byroredux_plugin::equip::resolve_inherited_inventory
+fn stamp_character_components(
+    world: &mut World,
+    placement_root: EntityId,
+    npc: &NpcRecord,
+    index: &EsmIndex,
+) {
     use byroredux_core::character::{Background, CharacterLevel, PerkRank, Perks};
-    // Level: the NPC's base level. NPCs carry no XP.
+    use byroredux_plugin::equip::{resolve_inherited_stats, resolve_inherited_traits};
+
+    // The shell's own level gates which `LVLN` tier a chained template
+    // resolves to — same contract `resolve_inherited_inventory` already
+    // uses at its own call site below.
+    let shell_level = effective_actor_level(npc);
+    let stats_npc = resolve_inherited_stats(npc, shell_level, index);
+    let traits_npc = resolve_inherited_traits(npc, shell_level, index);
+
+    // Level: the resolved stats source's level (its own when `Use Stats`
+    // isn't set or doesn't resolve). NPCs carry no XP.
     //
     // #2955 — routed through `effective_actor_level` so a PC-level-multiplier
     // record contributes its ACBS `calcMin`, not the raw multiplier. Writing
@@ -152,16 +175,17 @@ fn stamp_character_components(world: &mut World, placement_root: EntityId, npc: 
     world.insert(
         placement_root,
         CharacterLevel {
-            level: effective_actor_level(npc).max(0) as u16,
+            level: effective_actor_level(stats_npc).max(0) as u16,
             xp: 0,
         },
     );
-    // Provenance: race + class (0 = none), reused by runtime leveling.
+    // Provenance: race (from the Use-Traits source) + class (from the
+    // Use-Stats source; 0 = none), reused by runtime leveling.
     world.insert(
         placement_root,
         Background {
-            race_form_id: npc.race_form_id,
-            class_form_id: npc.class_form_id,
+            race_form_id: traits_npc.race_form_id,
+            class_form_id: stats_npc.class_form_id,
         },
     );
     // Perks (FO4+ `PRKR`) — skip the component entirely when the NPC has none.

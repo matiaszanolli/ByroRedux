@@ -191,17 +191,23 @@ pub fn resolve_armor_mesh<'a>(
 /// returns whatever was collected up to that point.
 pub const LVLI_MAX_DEPTH: u32 = 8;
 
-/// FNV / FO3 `NpcRecord::template_flags` bit: "Use Inventory" —
-/// inherit CNTO from the TPLT-referenced base. Sourced from xEdit
-/// `wbDefinitionsFNV.pas` (commit `dev-4.1.6`), the same authority
-/// the surrounding biped-slot helpers use.
+/// FNV / FO3 `NpcRecord::template_flags` bits. Sourced from xEdit
+/// `wbDefinitionsFNV.pas` (commit `dev-4.1.6`), the same authority the
+/// surrounding biped-slot helpers use. `NpcRecord::template_flags`'s own doc
+/// comment enumerates all twelve; these three are the ones this crate
+/// currently resolves against real data (#2956) — the rest are parsed and
+/// stored for the dispatcher but have no consumer yet.
+pub const TEMPLATE_FLAG_USE_TRAITS: u16 = 0x0001;
+pub const TEMPLATE_FLAG_USE_STATS: u16 = 0x0002;
 pub const TEMPLATE_FLAG_USE_INVENTORY: u16 = 0x0100;
 
-/// Maximum TPLT recursion depth for
-/// [`resolve_inherited_inventory`]. Vanilla template chains are flat
-/// (Lvl* template → base NPC, one hop) but mod content occasionally
-/// chains a per-faction wrapper on top; 6 is conservative headroom
-/// and breaks any cycle. Same justification as [`LVLI_MAX_DEPTH`].
+/// Maximum TPLT recursion depth for [`resolve_inherited_record`] and its
+/// public wrappers ([`resolve_inherited_inventory`],
+/// [`resolve_inherited_stats`], [`resolve_inherited_traits`]). Vanilla
+/// template chains are flat (Lvl* template → base NPC, one hop) but mod
+/// content occasionally chains a per-faction wrapper on top; 6 is
+/// conservative headroom and breaks any cycle. Same justification as
+/// [`LVLI_MAX_DEPTH`].
 pub const TPLT_MAX_DEPTH: u32 = 6;
 
 /// Resolve the effective inventory list for an NPC, honouring
@@ -226,32 +232,83 @@ pub fn resolve_inherited_inventory<'a>(
     actor_level: i16,
     index: &'a EsmIndex,
 ) -> &'a [crate::esm::records::actor::NpcInventoryEntry] {
-    resolve_inherited_inventory_inner(npc, actor_level, index, 0)
+    &resolve_inherited_record(npc, actor_level, index, TEMPLATE_FLAG_USE_INVENTORY, 0).inventory
 }
 
-fn resolve_inherited_inventory_inner<'a>(
+/// Resolve the NPC record that should supply SPECIAL / class / level for
+/// this actor, honouring FNV / FO3 `TPLT` template inheritance the same way
+/// [`resolve_inherited_inventory`] does for CNTO (#2956).
+///
+/// `docs/engine/charal-fo4-ruleset.md`'s inheritance-chain section: *"`TPLT`
+/// + ACBS Template Flags — if 'Use Stats' is set, inherit SPECIAL / level /
+/// etc. from the template `NPC_`/`LVLN`"*. Before this existed, CHARAL
+/// population read the NPC's own `class_form_id` and level unconditionally —
+/// measured against vanilla FNV/FO3, 55.0% / 53.4% of templated NPCs carry
+/// `Use Stats`, and among those resolving to a direct `NPC_`, 117/1510 (FNV)
+/// and 105/720 (FO3) have an own class that disagrees with the template's,
+/// silently mis-deriving a full SPECIAL + 15-skill set (each wrong class
+/// mis-states 22 actor values, since skills derive from SPECIAL via
+/// `base_skill`). The 587 FNV / 159 FO3 `LVLN`-targeted cases were never
+/// resolved at all.
+///
+/// Returns the input NPC unchanged when `Use Stats` isn't set, `template_form_id`
+/// is `0`, or the template can't be resolved — the same resolve-or-fall-back
+/// contract as the inventory resolver.
+pub fn resolve_inherited_stats<'a>(
     npc: &'a crate::esm::records::actor::NpcRecord,
     actor_level: i16,
     index: &'a EsmIndex,
+) -> &'a crate::esm::records::actor::NpcRecord {
+    resolve_inherited_record(npc, actor_level, index, TEMPLATE_FLAG_USE_STATS, 0)
+}
+
+/// Resolve the NPC record that should supply race (and other "traits"
+/// fields) for this actor, honouring the same `TPLT` inheritance as
+/// [`resolve_inherited_stats`] but gated on [`TEMPLATE_FLAG_USE_TRAITS`]
+/// ("Use Traits") instead of "Use Stats" — a separate, independently-set
+/// bit (#2956). Measured against vanilla FNV/FO3: of NPCs with `Use
+/// Traits` set and a resolvable direct-`NPC_` template, 2/744 (FNV) and
+/// 19/337 (FO3) have an own race that disagrees with the template's.
+pub fn resolve_inherited_traits<'a>(
+    npc: &'a crate::esm::records::actor::NpcRecord,
+    actor_level: i16,
+    index: &'a EsmIndex,
+) -> &'a crate::esm::records::actor::NpcRecord {
+    resolve_inherited_record(npc, actor_level, index, TEMPLATE_FLAG_USE_TRAITS, 0)
+}
+
+/// Shared `TPLT` walker behind [`resolve_inherited_inventory`],
+/// [`resolve_inherited_stats`] and [`resolve_inherited_traits`]: follow the
+/// template chain only while `npc.template_flags & flag` is set, the same
+/// depth cap and `LVLN` highest-eligible-tier pick regardless of which
+/// category is being resolved (`flag` only gates *whether* to keep
+/// following the chain, not how — a chain can legitimately have `Use
+/// Stats` set at one level and not the next).
+fn resolve_inherited_record<'a>(
+    npc: &'a crate::esm::records::actor::NpcRecord,
+    actor_level: i16,
+    index: &'a EsmIndex,
+    flag: u16,
     depth: u32,
-) -> &'a [crate::esm::records::actor::NpcInventoryEntry] {
+) -> &'a crate::esm::records::actor::NpcRecord {
     if depth >= TPLT_MAX_DEPTH {
         log::debug!(
-            "resolve_inherited_inventory: TPLT recursion cap ({}) hit at NPC \
-             {:08X} ({}) — leaving subtree unresolved",
+            "resolve_inherited_record: TPLT recursion cap ({}) hit at NPC \
+             {:08X} ({}) resolving flag {:#06x} — leaving subtree unresolved",
             TPLT_MAX_DEPTH,
             npc.form_id,
             npc.editor_id,
+            flag,
         );
-        return &npc.inventory;
+        return npc;
     }
-    if npc.template_flags & TEMPLATE_FLAG_USE_INVENTORY == 0 || npc.template_form_id == 0 {
-        return &npc.inventory;
+    if npc.template_flags & flag == 0 || npc.template_form_id == 0 {
+        return npc;
     }
     // Direct NPC_ template — recurse so a Lvl* → Lvl* → leaf chain
     // resolves at the bottom.
     if let Some(base) = index.npcs.get(&npc.template_form_id) {
-        return resolve_inherited_inventory_inner(base, actor_level, index, depth + 1);
+        return resolve_inherited_record(base, actor_level, index, flag, depth + 1);
     }
     // LVLN template — pick the highest-level eligible variant whose
     // form ID resolves to an NPC_, then recurse into IT. Vanilla
@@ -270,14 +327,14 @@ fn resolve_inherited_inventory_inner<'a>(
         eligible.sort_by_key(|e| e.level);
         if let Some(pick) = eligible.last() {
             if let Some(base) = index.npcs.get(&pick.form_id) {
-                return resolve_inherited_inventory_inner(base, actor_level, index, depth + 1);
+                return resolve_inherited_record(base, actor_level, index, flag, depth + 1);
             }
         }
     }
     // TPLT pointed at something neither indexed nor an LVLN —
     // ambiguous mod content or missing master. Fall back to the
-    // NPC's own (empty) inventory rather than crashing.
-    &npc.inventory
+    // NPC's own record rather than crashing.
+    npc
 }
 
 /// Expand a single form ID — which may be either a base item (ARMO /
@@ -939,5 +996,80 @@ mod tests {
         // the cap-depth parity (odd → A's empty, even → B's one
         // item); both are acceptable cycle-broken outcomes. Success
         // here is "returned without recursion overrun".
+    }
+
+    // ── TPLT stats/traits inheritance (#2956) ──────────────────────────
+    //
+    // `resolve_inherited_stats`/`resolve_inherited_traits` share
+    // `resolve_inherited_record` with `resolve_inherited_inventory` above,
+    // so the LVLN-tier-pick and cycle/depth-cap behavior already covered
+    // for inventory applies identically here — these tests focus on what's
+    // actually new: per-flag gating (`Use Stats` and `Use Traits` are
+    // independent bits from `Use Inventory` and from each other).
+
+    #[test]
+    fn use_stats_bit_pulls_class_and_level_from_the_template() {
+        // The canonical case the issue measures: a Lvl* shell whose own
+        // class/level the engine ignores once `Use Stats` is set.
+        let mut npc = npc_with(0x0010_0040, "LvlNCRTrooper");
+        npc.class_form_id = 0xBAD_C1A55; // shell's own — must be ignored
+        npc.level = 1;
+        npc.template_form_id = 0x0010_0041;
+        npc.template_flags = TEMPLATE_FLAG_USE_STATS;
+        let mut base = npc_with(0x0010_0041, "BaseNCRTrooper");
+        base.class_form_id = 0x000C_1A55;
+        base.level = 12;
+        let mut idx = empty_index();
+        idx.npcs.insert(base.form_id, base);
+
+        let resolved = resolve_inherited_stats(&npc, 1, &idx);
+        assert_eq!(resolved.class_form_id, 0x000C_1A55);
+        assert_eq!(resolved.level, 12);
+    }
+
+    #[test]
+    fn use_stats_bit_clear_keeps_the_npcs_own_class() {
+        let mut npc = npc_with(0x0010_0050, "Unique");
+        npc.class_form_id = 0x0000_C1A5;
+        npc.template_form_id = 0x0010_0051;
+        npc.template_flags = 0; // Use Stats NOT set
+        let mut base = npc_with(0x0010_0051, "Base");
+        base.class_form_id = 0xBAD_C1A55;
+        let mut idx = empty_index();
+        idx.npcs.insert(base.form_id, base);
+
+        let resolved = resolve_inherited_stats(&npc, 1, &idx);
+        assert_eq!(
+            resolved.class_form_id, 0x0000_C1A5,
+            "no Use-Stats bit → keep own class"
+        );
+    }
+
+    #[test]
+    fn use_traits_bit_pulls_race_from_the_template_independent_of_stats() {
+        // #2956's other named flag: Use Traits (race) is set/cleared
+        // independently of Use Stats (class/level) on the same NPC.
+        let mut npc = npc_with(0x0010_0060, "LvlRaider");
+        npc.race_form_id = 0xBAD_2ACE;
+        npc.class_form_id = 0x0000_C1A5; // own class, kept: Use Stats not set
+        npc.template_form_id = 0x0010_0061;
+        npc.template_flags = TEMPLATE_FLAG_USE_TRAITS; // Use Stats NOT set
+        let mut base = npc_with(0x0010_0061, "BaseRaider");
+        base.race_form_id = 0x0000_2ACE;
+        base.class_form_id = 0xBAD_C1A55;
+        let mut idx = empty_index();
+        idx.npcs.insert(base.form_id, base);
+
+        let traits = resolve_inherited_traits(&npc, 1, &idx);
+        assert_eq!(
+            traits.race_form_id, 0x0000_2ACE,
+            "Use Traits → template race"
+        );
+
+        let stats = resolve_inherited_stats(&npc, 1, &idx);
+        assert_eq!(
+            stats.class_form_id, 0x0000_C1A5,
+            "Use Stats not set on this NPC → own class, unaffected by Use Traits"
+        );
     }
 }

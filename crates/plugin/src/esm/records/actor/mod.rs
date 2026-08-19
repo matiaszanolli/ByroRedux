@@ -319,11 +319,17 @@ pub struct NpcRecord {
     ///     template host; pulled from `TPLT` at spawn time. Without
     ///     this resolution every Lvl* NPC spawns with no armor /
     ///     weapon / aid items.
-    ///   * `0x0001` Use Traits, `0x0002` Use Stats, `0x0004` Factions,
-    ///     `0x0008` Actor Effects, `0x0010` AI Data, `0x0020` AI
-    ///     Packages, `0x0040` Model/Animation, `0x0080` Base Data,
-    ///     `0x0200` Script, `0x0400` Def Pack List — parsed and
-    ///     stored for the dispatcher; inventory is the first consumer.
+    ///   * `0x0002` — **Use Stats** (SPECIAL / class / level). Consumed by
+    ///     `equip::resolve_inherited_stats` (#2956) — without it, CHARAL
+    ///     population read a templated shell's own (frequently wrong)
+    ///     class/level and silently mis-derived a full SPECIAL + 15-skill
+    ///     set.
+    ///   * `0x0001` — **Use Traits** (race). Consumed by
+    ///     `equip::resolve_inherited_traits` (#2956).
+    ///   * `0x0004` Factions, `0x0008` Actor Effects, `0x0010` AI Data,
+    ///     `0x0020` AI Packages, `0x0040` Model/Animation, `0x0080` Base
+    ///     Data, `0x0200` Script, `0x0400` Def Pack List — parsed and
+    ///     stored for the dispatcher; no consumer yet.
     pub template_flags: u16,
     /// FO4+ `PRPS` "Properties" — the actor's actor values stored as
     /// `(AVIF FormID, value)` pairs (8 bytes each on the wire; xEdit
