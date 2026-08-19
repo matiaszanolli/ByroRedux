@@ -95,7 +95,9 @@ swap animation clips for locomotion (straight-line walk, ground-snapped,
 no NAVM pathing). The remaining 10 procedures (Find/Eat/Sleep/Accompany/
 UseItemAt/Ambush/FleeNotCombat/CastMagic/Dialogue/UseWeapon) are parse-only —
 each blocked on a subsystem (item/furniture-use beyond Sandbox's seat-snap,
-combat, magic, dialogue) that doesn't exist in the engine yet. See
+magic, dialogue) that doesn't exist in the engine yet, or (UseWeapon) on
+`PACK` not yet driving the player-only P2 melee vertical slice (see
+Gameplay/Combat below). See
 [docs/engine/npc-spawn-ai-packages.md](engine/npc-spawn-ai-packages.md) for
 the full trace.
 
@@ -159,12 +161,12 @@ layouts); see the gaps table below.
 
 | Feature | Status |
 |---|---|
-| ESM SCPT record parse (FO3/FNV, 1 257 records) | ✓ |
+| ESM SCPT record parse (FO3, 1 257 records; FNV, 2 576 records) | ✓ |
 | Papyrus `.psc` → full AST (M30.2) | ✓ |
 | ECS-native event hooks (M47.0) — `OnCellLoad`, `OnActivate`, `OnHit` | ✓ |
 | CTDA condition evaluation with OR-precedence (M47.1) | ✓ 13 functions |
 | `script.activate` console command wired | ✓ |
-| Full Papyrus transpiler (M47.2) | ✓ `.pex` recognizer slice (CFG→lift→control-flow→lower→short-circuit); full transpiler deferred |
+| Full Papyrus transpiler (M47.2) | ✓ `.pex` recognizer slice (CFG→lift→short-circuit→control-flow→lower); full transpiler deferred |
 
 ---
 
@@ -195,6 +197,26 @@ Skyrim data.
 
 ---
 
+## Gameplay / Combat (Playable Vertical Slice — P0-P2)
+
+Execution plan: [`docs/engine/playable-vertical-slice.md`](engine/playable-vertical-slice.md).
+Phases run P0 input/interaction → P1 reliable traversal → P2 combat → P3 game
+UI/inventory → P4 authored objective/dialogue → P5 persistence/soak;
+capability on this route takes precedence over renderer polish.
+
+| Feature | Status | Notes |
+|---|---|---|
+| P0 — door / `[E]` interaction | ✓ Closed 2026-08-10 | Camera-forward XTEL target → native `[E] Open` prompt → one bound E-key edge → canonical `ActivateEvent` → deferred cell-transition arrival. Smoke: [`p0-door-interaction.sh`](smoke-tests/p0-door-interaction.sh) |
+| P1 — reliable character control | ~ Core traversal gate passes; not closed | Movement/jump/sprint consumers share one once-per-frame `ActionState` snapshot; native Escape menu owns pause/focus/cursor transfer; settings-backed key rebinding. Gamepad physical sources remain open. Smoke: [`p1-character-traversal.sh`](smoke-tests/p1-character-traversal.sh) |
+| P2 — melee combat core | ✓ Landed 2026-08-16 | Skyrim race Health + signed ACBS offset → actor-owned bone ray hit → bound Attack edge → canonical `HitEvent` → layered Health damage → one `Dead`/AI-disable transition → the existing 18-body ragdoll. Deterministic weapon selection (highest authored damage, FormID tie-break); explicit 8-damage unarmed fallback. Core checkpoint, not P2 closure. Smoke: [`p2-melee-core.sh`](smoke-tests/p2-melee-core.sh) |
+| Authored attack/hit/death animation + sound | ✗ | P2 remainder |
+| Corpse interaction / loot transfer | ✗ | P2 remainder |
+| Save → exit → reload continuity | ✗ | P5, not started |
+
+Implementation: `byroredux/src/combat.rs` (melee vertical slice), `byroredux/src/interaction.rs` (Activate/E-key), `byroredux/src/systems.rs` + action-state consumers (movement).
+
+---
+
 ## UI
 
 | Feature | Status |
@@ -203,8 +225,52 @@ Skyrim data.
 | Ruffle ExternalInterface host bridge (Skyrim AVM1 + Fallout 4 AVM2) | ✓ R4 |
 | Skyrim GFx host methods (`GameDelegate`, `_global.gfx`, text replacement, Papyrus callbacks) | ◐ 74-method catalog + request routing shipped; method behavior pending M48 |
 | Fallout 4 Scaleform host objects | ◐ `BGSCodeObj` lifecycle + 138-method installed-corpus catalog + injected ABC dispatch + BA2-backed `ImportAssets` shipped; HUD/Pip-Boy readiness and destruction plus Atomic Command inventory asserted, method behavior pending M48 |
+| Scaleform menu input routing + modal focus | ✓ M48 (`3ea5e275`) — winit → `UiInputEvent` translation (`crates/ui/src/input.rs`, `byroredux/src/ui_input.rs`), cursor position + modifier state, focus transfer and modal capture ahead of world controls, window→movie coordinate scaling |
 | `byroredux-debug-ui` egui overlay (F-key toggle) | ✓ |
-| Native menu reimplementation | Not planned; preserve SWF compatibility through Ruffle profiles |
+| Native game menu (Pause / Settings / Inventory) | ✓ Shipped 2026-08-15/16 — `byroredux-debug-ui`'s egui `GameMenuPage::{Pause,Settings,Inventory}` (`crates/debug-ui/src/panels.rs`); native `InventorySnapshot`/`InventoryAction` bridge over the canonical `Inventory`/`EquipmentSlots` components (`byroredux/src/inventory.rs`); validated TOML-persisted settings with stale-entry recovery (`byroredux/src/settings_io.rs`). Runs alongside Scaleform, not a replacement — Ruffle remains the compatibility target for authored Bethesda menus. Container/corpse transfer, weapon equip, visible player-mesh attachment, HUD bars/notifications/objective text remain open (P3 remainder, see Gameplay/Combat section) |
+
+---
+
+## Character / Progression (CHARAL)
+
+Per-game ruleset → canonical `ActorValues`/`CharacterLevel`/`Perks`/`Background`
+translation layer. Design: [`docs/engine/charal.md`](engine/charal.md) §8
+(rollout order); per-game data captures: `docs/engine/charal-*-ruleset.md`.
+"Wired" below means reachable from the live spawn/tick path
+(`CharacterRulesProfile::build_ruleset` / `derive_npc_actor_values` /
+scheduler registration), not just present as a buildable function.
+
+| Feature | Oblivion | FO3 | FNV | Skyrim SE | FO4 | FO76 | Starfield |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| Ruleset wired (`CharacterRuleset`: derived-stat formulas + leveling model) | ~ built, unwired | ✓ | ✓ | ~ built, unwired | ✓ | ✗ | ✗ |
+| NPC actor-value population at spawn | ✗ | ✓ class auto-calc | ✓ class auto-calc | ~ Health only | ✓ stored `PRPS`+`DNAM` | ~ stored, unverified | ~ stored, unverified |
+| Runtime leveling (XP grant / level-up) | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
+| Pool regen tick (Health/Magicka/Stamina) | ✗ inert | ✗ inert | ✗ inert | ✗ inert | ✗ inert | ✗ inert | ✗ inert |
+| Affliction tick (radiation/disease/addiction) | ✗ inert | ✗ inert | ✗ inert | ✗ inert | ✗ inert | ✗ inert | ✗ inert |
+
+`oblivion_ruleset()` (`crates/core/src/character/tes.rs`) and `skyrim_ruleset()`
+(`crates/core/src/character/skyrim.rs`) both build a real `CharacterRuleset`,
+but `CharacterRulesProfile::build_ruleset`'s `RulesetBuilder` enum has no
+Oblivion/Skyrim arm — both profiles map to `RulesetBuilder::None`, so neither
+ever reaches a live actor. FO76/Starfield have data captures
+(`charal-fo76-ruleset.md`, `charal-starfield-ruleset.md`) but no ruleset
+builder at all; Starfield's is additionally blocked on its XP/level curve and
+category-spend thresholds being unpublished research (charal.md §9).
+
+Skyrim's NPC population derives Health only (`race.starting_health +
+NPC_.ACBS.health_offset`) — no skills or other actor values. FO4/FO76/
+Starfield share one "stored" mechanism (`NPC_` `PRPS` property pairs
+pass through verbatim, plus baked `DNAM` Health/Action Points); FO4 is
+exercised against real content, FO76/Starfield inherit the same decoder "by
+lineage" with the `DNAM` tail explicitly flagged unconfirmed
+(`crates/plugin/src/esm/reader.rs`).
+
+Leveling, pool regen, and affliction are uniformly `✗` across every game:
+`CharacterLevel.xp` is stamped `0` at spawn and nothing increments it;
+`pool_regen_tick_system` is registered in `Stage::Update` every frame but
+early-returns forever because its required `PoolRegenConfig` resource is
+inserted only inside unit tests, never in `boot.rs`; `affliction_tick_system`
+is not registered in the scheduler at all.
 
 ---
 
@@ -221,7 +287,7 @@ Skyrim data.
 
 ---
 
-## What Doesn't Work Yet (live gaps as of 2026-08-12)
+## What Doesn't Work Yet (live gaps as of 2026-08-19)
 
 <!-- TD3-002: Save/load (M45/M45.1) removed — shipped 2026-06-21. The M47.2
      row below is the *full* transpiler, which is genuinely still deferred;
@@ -236,6 +302,7 @@ Skyrim data.
 | Terrain LOD multi-band selection | distance-based 8/16/32 LOD-band selection + `.btr` normal maps (the `.btr`/`.bto`/`_far.nif` parsers ship) | M35 |
 | Remaining `PACK` procedures (Find/Eat/Sleep/Accompany/UseItemAt/Ambush/FleeNotCombat/CastMagic/Dialogue/UseWeapon) + per-frame package re-evaluation | NPCs perform item-use/combat/magic/dialogue behaviors; packages react to game-time changes | M42 (Tier 7) |
 | Full Papyrus transpiler (M47.2) | Arbitrary script execution on real content (`.pex` recognizer slice shipped Session 51) | M47.2 (Tier 3) |
-| Full Scaleform menus | In-game UI | M48 / R4 decision |
+| Full Scaleform menus | In-game UI (method behavior / `_global.gfx`; native menu covers Pause/Settings/Inventory in parallel) | M48 / R4 decision |
 | UV scroll animated materials | Animated terminals / displays | audited, not prioritised |
 | Per-material footsteps (FOOT) | Correct surface audio | M44 follow-up |
+| CHARAL: Oblivion/Skyrim rulesets built but unwired; regen + affliction ticks inert everywhere | Derived Health/AP/leveling formulas on Oblivion + Skyrim; passive Health/Magicka/Stamina regen and radiation/disease/addiction on all seven games | CHARAL (charal.md §8) |
