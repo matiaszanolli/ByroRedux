@@ -1277,6 +1277,83 @@ fn bs_tri_shape_data_size_mismatch_uses_derived_stride() {
     );
 }
 
+/// #2598 regression: a `data_size` mismatch whose derived stride is
+/// evenly divisible by `num_vertices` but UNDERSTATES what the
+/// per-vertex fields actually need. VF_VERTEX + full-precision (SSE)
+/// needs 16 bytes/vertex; `data_size` here implies only 12. Pre-#2598
+/// the override applied unconditionally whenever the division was
+/// exact, so this pushed the per-vertex loop's `consumed` (16) past
+/// the overridden `vertex_size_bytes` (12) and hard-failed the whole
+/// shape via the `consumed > vertex_size_bytes` guard — even though
+/// the DECLARED stride (20, from `vertex_size_quads = 5`) is more
+/// than enough and would have parsed fine with 4 bytes of trailing
+/// padding skipped per vertex, the normal and recoverable case.
+/// Post-fix the override is rejected (12 < the 16-byte structural
+/// minimum) and the declared stride is used instead.
+#[test]
+fn bs_tri_shape_data_size_understated_derived_stride_falls_back_to_declared() {
+    let header = test_header();
+    let mut bytes = minimal_bs_tri_shape_bytes();
+
+    // vertex_size_quads = 5 (20 bytes/vertex declared — 4 bytes more
+    // than VF_VERTEX/full-precision's 16-byte structural minimum, so
+    // recoverable via a 4-byte trailing skip).
+    let vertex_desc: u64 = 5 | ((/* VF_VERTEX = */ 0x001u64) << 44);
+    let vd_offset = 100;
+    bytes[vd_offset..vd_offset + 8].copy_from_slice(&vertex_desc.to_le_bytes());
+
+    // num_vertices = 2.
+    let nv_offset = 110;
+    bytes[nv_offset..nv_offset + 2].copy_from_slice(&2u16.to_le_bytes());
+
+    // data_size = 24 → derived stride = 24 / 2 = 12 (evenly divisible,
+    // so pre-#2598 this was trusted outright despite being below the
+    // 16-byte minimum). Declared expected = 20 * 2 + 0 = 40, so the
+    // mismatch fires.
+    let ds_offset = 112;
+    bytes[ds_offset..ds_offset + 4].copy_from_slice(&24u32.to_le_bytes());
+
+    // Actual on-disk layout matches what the FALLBACK (declared,
+    // 20-byte) stride reads: 16 bytes of VF_VERTEX position data +
+    // 4 bytes of trailing padding, per vertex — 2 × 20 = 40 bytes.
+    let particle_size_offset = 116;
+    let mut vertex_payload = Vec::with_capacity(40);
+    for v in [[10.0f32, 20.0, 30.0, 0.0], [-1.5f32, -2.5, -3.5, 0.0]] {
+        for f in v {
+            vertex_payload.extend_from_slice(&f.to_le_bytes());
+        }
+        vertex_payload.extend_from_slice(&[0u8; 4]); // trailing padding
+    }
+    assert_eq!(vertex_payload.len(), 40);
+    bytes.splice(particle_size_offset..particle_size_offset, vertex_payload);
+    assert_eq!(bytes.len(), 160); // 120 (helper) + 40 (vertex payload)
+
+    let mut stream = crate::stream::NifStream::new(&bytes, &header);
+    let block = parse_block("BSTriShape", &mut stream, Some(bytes.len() as u32)).expect(
+        "an understated-but-divisible data_size must fall back to the declared \
+         stride, not turn a recoverable mismatch into a hard parse failure",
+    );
+    let shape = block
+        .as_any()
+        .downcast_ref::<BsTriShape>()
+        .expect("BSTriShape did not downcast");
+
+    assert_eq!(
+        shape.vertices.len(),
+        2,
+        "both vertices must be read via the fallback declared stride"
+    );
+    assert!((shape.vertices[0].x - 10.0).abs() < 1e-6);
+    assert!((shape.vertices[1].x + 1.5).abs() < 1e-6);
+    assert!((shape.vertices[1].z + 3.5).abs() < 1e-6);
+    assert_eq!(
+        stream.position() as usize,
+        bytes.len(),
+        "block must consume exactly — the fallback declared stride must align \
+         the per-vertex loop with the actual payload"
+    );
+}
+
 /// Regression: #887 / SK-D1-NN-01 — when `VF_TANGENTS` is clear, the
 /// 4-byte trailing slot after the position triplet is `Unused W` per
 /// nif.xml `BSVertexData`, NOT `Bitangent X`. Pre-fix the parser

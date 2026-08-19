@@ -251,6 +251,54 @@ const VF_INSTANCE: u16 = 0x200;
 /// FO4+: full-precision vertex positions (bit 10). When clear, positions are half-float.
 const VF_FULL_PRECISION: u16 = 0x400;
 
+/// Structural minimum byte count [`decode_bs_vertex_stream`]'s per-vertex
+/// loop will read for one vertex, given `vertex_attrs` + `full_precision` +
+/// `is_skinned`. Every field that loop reads is driven unconditionally by
+/// these three inputs — no per-vertex-VALUE branching changes the byte
+/// count — so this mirrors its read sequence exactly (position, UV,
+/// normal + tangent, vertex color, skin data, eye data; `VF_UVS_2` /
+/// `VF_LAND_DATA` / `VF_INSTANCE` are NOT counted because that loop
+/// doesn't read them either — their bytes are absorbed by the trailing
+/// `consumed < vertex_size_bytes` skip, not by an explicit read here).
+///
+/// #2598 — used ONLY to sanity-check a `data_size`-derived stride
+/// override before applying it in [`BsTriShape::parse`]: an override
+/// that understates the stride below this minimum is guaranteed to make
+/// `decode_bs_vertex_stream`'s `consumed > vertex_size_bytes` guard fail
+/// the whole shape, even when the pre-override descriptor stride would
+/// have parsed fine (just with some trailing bytes skipped as unknown
+/// padding, the normal and recoverable case). `decode_bs_vertex_stream`
+/// itself still computes the real `consumed` from stream position and
+/// remains the sole authority once decoding actually starts — this is a
+/// cheap upfront check, not a replacement for it.
+fn min_vertex_bytes(vertex_attrs: u16, full_precision: bool, is_skinned: bool) -> usize {
+    let mut n = 0usize;
+    if vertex_attrs & VF_VERTEX != 0 {
+        // Position (12B full / 6B half) + trailing bitangent-X-or-unused
+        // slot, same width as the position component (4B full / 2B half).
+        n += if full_precision { 16 } else { 8 };
+    }
+    if vertex_attrs & VF_UVS != 0 {
+        n += 4;
+    }
+    if vertex_attrs & VF_NORMALS != 0 {
+        n += 4; // 3×u8 normal + bitangent-Y normbyte
+        if vertex_attrs & VF_TANGENTS != 0 {
+            n += 4; // 3×u8 tangent + bitangent-Z normbyte
+        }
+    }
+    if vertex_attrs & VF_VERTEX_COLORS != 0 {
+        n += 4;
+    }
+    if is_skinned {
+        n += 12; // 4×half weight + 4×u8 index
+    }
+    if vertex_attrs & VF_EYE_DATA != 0 {
+        n += 4;
+    }
+    n
+}
+
 impl BsTriShape {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let av = NiAVObjectData::parse_no_properties(stream)?;
@@ -321,6 +369,15 @@ impl BsTriShape {
         // mentioned above is exactly the case where data_size > expected
         // — and routing through the derived stride aligns the loop
         // correctly across all such content.
+        //
+        // Hoisted here (both are pure computations over `vertex_attrs` /
+        // `stream.bsver()` with no stream side effects) so the override
+        // safety check below (#2598) can pass them to `min_vertex_bytes`.
+        // Reused at their original use sites further down instead of
+        // being recomputed.
+        let is_skinned = vertex_attrs & VF_SKINNED != 0;
+        let full_precision = stream.bsver() < crate::version::bsver::FALLOUT4
+            || vertex_attrs & VF_FULL_PRECISION != 0;
         let mut vertex_size_bytes = vertex_size_quads * 4;
         // #836 / SK-D5-NEW-02: gate the warning on `num_vertices != 0`
         // too. SSE skinned bodies legitimately ship `num_vertices == 0`
@@ -347,27 +404,45 @@ impl BsTriShape {
                 } else {
                     None
                 };
+                // #2598 — a derived_stride that understates what the
+                // per-vertex fields actually need turns a recoverable
+                // mismatch (declared stride parses fine, just skips some
+                // trailing bytes as unknown padding) into a hard whole-
+                // shape parse failure: `decode_bs_vertex_stream`'s
+                // `consumed > vertex_size_bytes` guard trips instead.
+                // Only apply the override when it's at least as large as
+                // the structural minimum the actual fields require;
+                // otherwise keep the declared (pre-override) stride and
+                // let the normal trailing-skip / guard machinery handle
+                // it exactly as it would have without this whole block.
+                let min_needed = min_vertex_bytes(vertex_attrs, full_precision, is_skinned);
+                let safe_stride = derived_stride.filter(|&s| s >= min_needed);
                 log::warn!(
                     "BSTriShape data_size mismatch: stored {} vs derived {} \
-                     (vertex_size_quads={}, num_vertices={}, num_triangles={}) — \
-                     trusting data_size-derived stride{}",
+                     (vertex_size_quads={}, num_vertices={}, num_triangles={}) — {}",
                     data_size,
                     expected_data_size,
                     vertex_size_quads,
                     num_vertices,
                     num_triangles,
-                    match derived_stride {
-                        Some(s) => format!(" ({s} bytes/vertex)"),
-                        None => " (irrational; falling back to descriptor stride)".into(),
+                    match (derived_stride, safe_stride) {
+                        (_, Some(s)) => format!("trusting data_size-derived stride ({s} bytes/vertex)"),
+                        (Some(s), None) => format!(
+                            "data_size-derived stride ({s} bytes/vertex) is below the {min_needed}-byte \
+                             structural minimum for this vertex_attrs — falling back to descriptor stride \
+                             to avoid turning a recoverable mismatch into a hard parse failure"
+                        ),
+                        (None, None) => "irrational; falling back to descriptor stride".to_string(),
                     },
                 );
-                if let Some(s) = derived_stride {
+                if let Some(s) = safe_stride {
                     vertex_size_bytes = s;
                 }
             }
         }
 
-        let is_skinned = vertex_attrs & VF_SKINNED != 0;
+        // #2598 — `is_skinned` is computed above (hoisted for the
+        // override safety check) and reused here.
         // #1216 / D2 FIND-2 — surface "no inline geometry + not a known
         // sister-block carrier" cases at debug level. The parser can't
         // see the walker-time context (was this shape under a
@@ -421,13 +496,15 @@ impl BsTriShape {
             // empty-payload LOD blocks aren't measured against impossible
             // capacity targets.
             // FO4 BSVertexData / SSE BSVertexDataSSE packed stream.
-            // `full_precision` is computed here (not per-vertex inside the
-            // loop) so the FO4 precombined CSG path can override it — on
-            // disk a precombine stores half positions even when the
-            // descriptor sets VF_FULL_PRECISION (M49). Shared decode lives
-            // in `decode_bs_vertex_stream`.
-            let full_precision = stream.bsver() < crate::version::bsver::FALLOUT4
-                || vertex_attrs & VF_FULL_PRECISION != 0;
+            // `full_precision` is computed once, above (hoisted for the
+            // #2598 override safety check) — not per-vertex inside the
+            // loop, and not per-`parse()`-call recomputed here either
+            // anymore. The FO4 precombined CSG path overrides its own
+            // copy at its own call site (`crate::import::precombine`) —
+            // on disk a precombine stores half positions even when the
+            // descriptor sets VF_FULL_PRECISION (M49) — this `parse()`
+            // path is unaffected. Shared decode lives in
+            // `decode_bs_vertex_stream`.
             let decoded = decode_bs_vertex_stream(
                 stream,
                 num_vertices as usize,
