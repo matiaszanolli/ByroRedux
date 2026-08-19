@@ -340,7 +340,7 @@ game, translate at the parser→`Material` boundary instead.
 | BA2 BTDX v2 GNRL+DX10 (Starfield, FO4 patches) | DONE — M26 |
 | BA2 BTDX v3 DX10 (Starfield textures, zlib / LZ4 block) | DONE — Session 7 |
 | BA2 BTDX v7 DX10 (FO4 Next Gen textures) | DONE — M26 |
-| BA2 BTDX v8 GNRL (FO4 Next Gen meshes) | DONE — M26 |
+| BA2 BTDX v8 GNRL+DX10 (FO4 Next Gen Update; `TexturesPatch.ba2` is a real vanilla v8 DX10 archive, not mesh-only) | DONE — M26 |
 | Starfield CDB (`materialsbeta.cdb`) | DONE — `byroredux-sfmaterial` (#762) |
 | BGSM / BGEM (FO4 / FO76 / Skyrim material files) | DONE — `byroredux-bgsm` (base + effect + template resolver, #1148) |
 

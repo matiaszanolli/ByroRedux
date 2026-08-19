@@ -145,7 +145,9 @@ The version numbering is **non-monotonic** across games:
 - v2 = Starfield meshes (32-byte header = base + 8, zlib)
 - v3 = Starfield textures (36-byte header = base + 12, zlib or LZ4 block)
 - v7 = FO4 Next Gen textures (back to 24-byte header, zlib)
-- v8 = FO4 Next Gen meshes (24-byte header, zlib)
+- v8 = FO4 Next Gen Update (24-byte header, zlib) — not mesh-only despite
+  the name: `Fallout4 - TexturesPatch.ba2` is a real vanilla v8 DX10
+  texture archive (#2596)
 
 This bit me during M26: gating the 8-byte extension on `version >= 2`
 broke FO4 v8. The check is now `version == 2 || version == 3` exactly.

@@ -22,8 +22,8 @@
 //! | 1            | FO4 (original), FO76               | 24-byte header, zlib only                           |
 //! | 2            | FO4 (patches), Starfield GNRL+DX10 | 32-byte header (base + 8); v2 DX10 exists in vanilla |
 //! | 3            | Starfield DX10                     | 36-byte header (base + 12, +compression_method); 0=zlib, 3=LZ4 block |
-//! | 7            | FO4 Next Gen textures              | 24-byte header, zlib only                           |
-//! | 8            | FO4 Next Gen meshes                | 24-byte header, zlib only                           |
+//! | 7            | FO4 Next Gen textures               | 24-byte header, zlib only                           |
+//! | 8            | FO4 Next Gen Update                 | 24-byte header, zlib only; GNRL **and** DX10 both ship (`Fallout4 - TexturesPatch.ba2` is a real vanilla v8 DX10 archive, not mesh-only) |
 //!
 //! # Compression model
 //!
@@ -85,8 +85,13 @@ const BA2_V_STARFIELD_V3: u32 = 3;
 /// BTDX version for FO4 Next Gen Update texture archives.
 /// 24-byte header, zlib compression only.
 const BA2_V_FO4_NEXT_GEN_TEX: u32 = 7;
-/// BTDX version for FO4 Next Gen Update mesh archives.
-/// 24-byte header, zlib compression only.
+/// BTDX version for FO4 Next Gen Update archives. Despite the constant's
+/// name (kept for historical continuity with the pre-#2596 doc), v8 is not
+/// mesh-only in vanilla content — `Fallout4 - TexturesPatch.ba2` is a real
+/// v8 **DX10** texture archive (verified against on-disk header bytes,
+/// AUDIT_FO4_2026-07-16). 24-byte header, zlib compression only. Variant
+/// dispatch (GNRL vs. DX10) is by the archive's own type tag, independent
+/// of this version number, so the naming mismatch has no functional effect.
 const BA2_V_FO4_NEXT_GEN_MESH: u32 = 8;
 
 /// Which file layout the archive uses.
