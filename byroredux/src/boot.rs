@@ -15,7 +15,10 @@ use winit::event_loop::{ControlFlow, EventLoop};
 
 use crate::cli_args::{parse_renderer_config, parse_string_arg, parse_vec3_arg};
 use crate::commands::build_command_registry;
-use crate::components::{CellRootIndex, FootstepConfig, InputState, NameIndex, SubtreeCache};
+use crate::components::{
+    CellRootIndex, FootstepConfig, InputState, NameIndex, SubtreeCache, WaterAudioConfig,
+    WaterAudioState,
+};
 use crate::interaction::{
     ActionBindings, ActionState, InjectedKeyHold, InjectedKeyPulse, InteractionCandidateScratch,
     InteractionState, InteractionTrace,
@@ -502,6 +505,8 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // hook) decodes a BSA-archived sound and stores it here.
     // Defaults are safe: `None` makes `footstep_system` no-op.
     world.insert_resource(FootstepConfig::default());
+    world.insert_resource(WaterAudioConfig::default());
+    world.insert_resource(WaterAudioState::default());
     // M44 Phase 3.5 / #932 — `footstep_system` reuses this Vec<Vec3>
     // scratch across frames instead of allocating a fresh one each
     // tick. Preallocated to capacity 32 to cover typical 5-10 NPC
@@ -513,6 +518,7 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // `FootstepConfig.default_sound`. Silently no-op when the
     // flag is absent or the archive isn't openable.
     crate::asset_provider::try_load_default_footstep(&mut world, args);
+    crate::asset_provider::try_load_default_water_splash(&mut world, args);
     // Process-lifetime cache of parsed-and-imported NIF scenes.
     // Persists across cell transitions so repeat visits don't re-
     // parse every clutter mesh. See #381.
@@ -1304,6 +1310,16 @@ pub(crate) fn build_scheduler() -> Scheduler {
         crate::systems::reverb_zone_system,
         Access::new()
             .reads_resource::<crate::components::CellLightingRes>()
+            .writes_resource::<byroredux_audio::AudioWorld>(),
+    );
+    scheduler.add_exclusive_with_access(
+        Stage::Late,
+        crate::systems::water_audio_system,
+        Access::new()
+            .reads_resource::<crate::components::WaterAudioConfig>()
+            .writes_resource::<crate::components::WaterAudioState>()
+            .reads::<byroredux_scripting::SplashEvent>()
+            .reads::<byroredux_scripting::RippleEvent>()
             .writes_resource::<byroredux_audio::AudioWorld>(),
     );
     // M44 Phase 1 — audio update runs in Stage::Late so it sees

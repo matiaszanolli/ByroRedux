@@ -34,11 +34,7 @@ fn data_dir(env_var: &str, fallback: &str) -> Option<PathBuf> {
         eprintln!("{env_var} points to {v:?} which is not a directory; falling back to default");
     }
     let p = PathBuf::from(fallback);
-    if p.is_dir() {
-        Some(p)
-    } else {
-        None
-    }
+    if p.is_dir() { Some(p) } else { None }
 }
 
 /// FNV: 60,000 records floor — covers the 13,684 M24 Phase 1 baseline
@@ -212,6 +208,108 @@ fn skyrim_default_water_promotes_underwater_tail() {
     assert!(matches!(water.raw_dnam.len(), 228 | 232));
     assert!(water.params.underwater_fog_far > water.params.underwater_fog_near);
     assert!(water.params.underwater_fog_far >= 900.0);
+    assert!((water.params.wave_amplitude - 0.1).abs() < 1e-6);
+    assert!((water.params.noise_uv_scale_a - 1.0 / 1920.0).abs() < 1e-6);
+    assert!((water.params.noise_uv_scale_b - 1.0 / 6703.0).abs() < 1e-6);
+    assert!((water.params.noise_uv_scale_c - 1.0 / 488.0).abs() < 1e-6);
+    for (actual, expected) in water
+        .params
+        .noise_amplitude_scales
+        .into_iter()
+        .zip([0.6957, 0.6304, 0.4746])
+    {
+        assert!((actual - expected).abs() < 1e-5);
+    }
+}
+
+#[test]
+#[ignore]
+fn installed_masters_water_fields_are_finite_and_ordered() {
+    // Keep this as a cross-generation invariant rather than asserting one
+    // byte layout: WATR DATA/DNAM tails differ between Oblivion, FO3/FNV,
+    // Skyrim SE, and FO4, but the translated render contract must remain
+    // finite and usable for every shipped record.
+    let masters = [
+        (
+            "BYROREDUX_OBL_DATA",
+            "/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data",
+            "Oblivion.esm",
+            "Oblivion",
+        ),
+        (
+            "BYROREDUX_FNV_DATA",
+            "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data",
+            "FalloutNV.esm",
+            "FNV",
+        ),
+        (
+            "BYROREDUX_SKYRIMSE_DATA",
+            "/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data",
+            "Skyrim.esm",
+            "Skyrim SE",
+        ),
+        (
+            "BYROREDUX_FO4_DATA",
+            "/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data",
+            "Fallout4.esm",
+            "FO4",
+        ),
+    ];
+
+    let mut checked_games = 0;
+    for (env_var, fallback, filename, label) in masters {
+        let Some(data) = data_dir(env_var, fallback) else {
+            eprintln!("[{label} WATR] skipping: game data unavailable");
+            continue;
+        };
+        let bytes = std::fs::read(data.join(filename)).expect("read installed master");
+        let index = parse_esm(&bytes).expect("parse installed master");
+        assert!(
+            !index.waters.is_empty(),
+            "{label} master must contain WATR records"
+        );
+
+        for water in index.waters.values() {
+            let p = water.params;
+            let scalars = [
+                p.fog_near,
+                p.fog_far,
+                p.underwater_fog_near,
+                p.underwater_fog_far,
+                p.reflectivity,
+                p.fresnel,
+                p.wind_speed,
+                p.wind_direction,
+                p.wave_amplitude,
+                p.wave_frequency,
+                p.sun_specular_power,
+                p.noise_uv_scale_a,
+                p.noise_uv_scale_b,
+                p.noise_uv_scale_c,
+            ];
+            assert!(
+                p.shallow_color
+                    .iter()
+                    .chain(p.deep_color.iter())
+                    .chain(p.reflection_color.iter())
+                    .chain(scalars.iter())
+                    .chain(p.noise_amplitude_scales.iter())
+                    .all(|value| value.is_finite()),
+                "{label} WATR {} has non-finite translated fields",
+                water.editor_id
+            );
+            assert!(p.fog_far >= p.fog_near, "{label} WATR fog ramp is inverted");
+            assert!(
+                p.underwater_fog_far == 0.0 || p.underwater_fog_far >= p.underwater_fog_near,
+                "{label} WATR underwater fog ramp is inverted"
+            );
+        }
+        checked_games += 1;
+    }
+    assert!(
+        checked_games > 0,
+        "at least one installed master is required"
+    );
 }
 
 #[test]

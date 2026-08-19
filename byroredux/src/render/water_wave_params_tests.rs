@@ -10,6 +10,8 @@ fn world_with_water_plane(
     wave_amplitude: f32,
     wave_frequency: f32,
     sun_specular_power: f32,
+    uv_scale_c: f32,
+    noise_amplitude_scales: [f32; 3],
 ) -> World {
     let mut world = World::new();
 
@@ -31,6 +33,8 @@ fn world_with_water_plane(
                 wave_amplitude,
                 wave_frequency,
                 sun_specular_power,
+                uv_scale_c,
+                noise_amplitude_scales,
                 ..WaterMaterial::default()
             },
         },
@@ -68,7 +72,7 @@ fn run_build(world: &World) -> Vec<byroredux_renderer::vulkan::water::WaterDrawC
 
 #[test]
 fn authored_wave_and_sun_params_reach_the_water_gpu_record() {
-    let world = world_with_water_plane(1.5, 2.0, 73.0);
+    let world = world_with_water_plane(1.5, 2.0, 73.0, 1.0 / 488.0, [0.7, 0.6, 0.5]);
     let water_commands = run_build(&world);
 
     assert_eq!(water_commands.len(), 1, "expected exactly one water draw");
@@ -85,6 +89,12 @@ fn authored_wave_and_sun_params_reach_the_water_gpu_record() {
         params.misc[3], 73.0,
         "WaterMaterial::sun_specular_power must reach GpuWaterParams::misc.w"
     );
+    assert_eq!(
+        params.detail[0],
+        1.0 / 488.0,
+        "WaterMaterial::uv_scale_c must reach the authored NAM4 GPU slot"
+    );
+    assert_eq!(params.detail[1..4], [0.7, 0.6, 0.5]);
 }
 
 #[test]
@@ -92,7 +102,7 @@ fn default_wave_params_are_the_sentinel_the_shader_normalises_against() {
     // `WaterMaterial::default()` (no XCWT / no WATR) must keep resolving
     // to the sentinel `water.frag` treats as "no chop change" — see
     // `sampleScrollingNormal`'s doc comment (0.05 / 0.6).
-    let world = world_with_water_plane(0.05, 0.6, 50.0);
+    let world = world_with_water_plane(0.05, 0.6, 50.0, 1.0 / 512.0, [1.0; 3]);
     let water_commands = run_build(&world);
 
     let params = &water_commands[0].params;

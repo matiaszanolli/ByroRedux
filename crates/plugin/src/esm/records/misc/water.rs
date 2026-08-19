@@ -130,6 +130,12 @@ pub struct WaterParams {
     /// FO3/FNV long DATA tail: authored UV scale for noise layer two.
     /// Zero means the record did not carry the long-tail field.
     pub noise_uv_scale_b: f32,
+    /// Skyrim+/FO4 long DNAM tail: authored UV scale for noise layer three.
+    /// Stored in canonical inverse-world-units.
+    pub noise_uv_scale_c: f32,
+    /// Skyrim+/FO4 noise-layer amplitude multipliers (NAM2/NAM3/NAM4
+    /// companion tail). Zero means the record did not carry the fields.
+    pub noise_amplitude_scales: [f32; 3],
 }
 
 impl Default for WaterParams {
@@ -151,6 +157,8 @@ impl Default for WaterParams {
             sun_specular_power: 50.0,
             noise_uv_scale_a: 0.0,
             noise_uv_scale_b: 0.0,
+            noise_uv_scale_c: 0.0,
+            noise_amplitude_scales: [0.0; 3],
         }
     }
 }
@@ -163,6 +171,22 @@ impl Default for WaterParams {
 #[inline]
 fn u8_to_linear(byte: u8) -> f32 {
     byte as f32 / 255.0
+}
+
+/// xEdit exposes water noise UV scales as large authored tile lengths (for
+/// example Skyrim's default water stores 1920/6703/488). The renderer's
+/// canonical material is expressed as inverse world-space frequency. Older
+/// fixtures already provide the normalized inverse form, so preserve values
+/// in `(0, 1]` and invert only the legacy length representation.
+#[inline]
+fn normalize_noise_uv_scale(value: f32) -> f32 {
+    if !value.is_finite() || value <= 0.0 {
+        0.0
+    } else if value > 1.0 {
+        1.0 / value
+    } else {
+        value
+    }
 }
 
 /// Parse Oblivion / FO3 / FNV WATR.DATA. The leading wind / wave /
@@ -236,10 +260,18 @@ fn decode_data(data: &[u8]) -> WaterParams {
     // FO3/FNV long DATA tail: Noise Layer 1/2 UV scales. These are
     // independent authored tiling controls, not the wind/wave prefix.
     if let Some(v) = read_f32_at(data, 172) {
-        p.noise_uv_scale_a = v.max(0.0);
+        p.noise_uv_scale_a = normalize_noise_uv_scale(v);
     }
     if let Some(v) = read_f32_at(data, 176) {
-        p.noise_uv_scale_b = v.max(0.0);
+        p.noise_uv_scale_b = normalize_noise_uv_scale(v);
+    }
+    if let Some(v) = read_f32_at(data, 180) {
+        p.noise_uv_scale_c = normalize_noise_uv_scale(v);
+    }
+    for (slot, offset) in p.noise_amplitude_scales.iter_mut().zip([184, 188, 192]) {
+        if let Some(v) = read_f32_at(data, offset) {
+            *slot = v.max(0.0);
+        }
     }
     // The 186-byte FO3/FNV record has an extra fog-distance f32 at
     // offset 36 that shifts the colour block 4 bytes forward (#1778);
@@ -351,6 +383,27 @@ fn apply_skyrim_dnam_tail(p: &mut WaterParams, data: &[u8]) {
     };
     p.underwater_fog_near = near.max(0.0);
     p.underwater_fog_far = far.max(p.underwater_fog_near + 1.0);
+    // Skyrim's visible chop is authored by the displacement simulator, not
+    // the legacy four-byte "Wave Amplitude" prefix (which xEdit marks
+    // unused). Feed its force into the canonical vertex displacement slot;
+    // retain the prefix value only when the extended field is absent.
+    if let Some(force) = read_f32_at(data, 76) {
+        p.wave_amplitude = force.clamp(0.0, 2.0);
+    }
+    if let Some(v) = read_f32_at(data, 172) {
+        p.noise_uv_scale_a = normalize_noise_uv_scale(v);
+    }
+    if let Some(v) = read_f32_at(data, 176) {
+        p.noise_uv_scale_b = normalize_noise_uv_scale(v);
+    }
+    if let Some(v) = read_f32_at(data, 180) {
+        p.noise_uv_scale_c = normalize_noise_uv_scale(v);
+    }
+    for (slot, offset) in p.noise_amplitude_scales.iter_mut().zip([184, 188, 192]) {
+        if let Some(v) = read_f32_at(data, offset) {
+            *slot = v.max(0.0);
+        }
+    }
 }
 
 #[inline]
@@ -566,6 +619,7 @@ mod tests {
         data[148..152].copy_from_slice(&240.0f32.to_le_bytes()); // underwater far
         data[172..176].copy_from_slice(&(1.0 / 320.0f32).to_le_bytes()); // noise UV 1
         data[176..180].copy_from_slice(&(1.0 / 760.0f32).to_le_bytes()); // noise UV 2
+        data[180..184].copy_from_slice(&488.0f32.to_le_bytes()); // noise UV 3 (legacy length)
 
         let w = parse_watr(0x00100000, &[sub(b"DATA", &data)], GameKind::Fallout3NV);
         assert!((w.params.shallow_color[0] - 36.0 / 255.0).abs() < 1e-6);
@@ -577,6 +631,7 @@ mod tests {
         assert_eq!(w.params.underwater_fog_far, 240.0);
         assert!((w.params.noise_uv_scale_a - 1.0 / 320.0).abs() < 1e-6);
         assert!((w.params.noise_uv_scale_b - 1.0 / 760.0).abs() < 1e-6);
+        assert!((w.params.noise_uv_scale_c - 1.0 / 488.0).abs() < 1e-6);
         // Guard against the off-by-4 regression: reading shallow @36 would
         // pick up the fog float's bytes (0x00,0x00,0xda → [0,0,218]), so a
         // blue-channel of 218/255 here means the offset shift was lost.
@@ -637,11 +692,21 @@ mod tests {
 
         // The extended Skyrim tail promotes the underwater fog pair.
         data.resize(228, 0);
+        data[76..80].copy_from_slice(&0.4f32.to_le_bytes());
         data[144..148].copy_from_slice(&(-1000.0f32).to_le_bytes());
         data[148..152].copy_from_slice(&1000.0f32.to_le_bytes());
+        data[172..176].copy_from_slice(&1920.0f32.to_le_bytes());
+        data[176..180].copy_from_slice(&6703.0f32.to_le_bytes());
+        data[180..184].copy_from_slice(&488.0f32.to_le_bytes());
+        data[184..188].copy_from_slice(&0.7f32.to_le_bytes());
+        data[188..192].copy_from_slice(&0.6f32.to_le_bytes());
+        data[192..196].copy_from_slice(&0.5f32.to_le_bytes());
         let w = parse_watr(0xCCCC, &[sub(b"DNAM", &data)], GameKind::Skyrim);
         assert_eq!(w.params.underwater_fog_near, 0.0);
         assert!((w.params.underwater_fog_far - 1000.0).abs() < 1e-3);
+        assert_eq!(w.params.wave_amplitude, 0.4);
+        assert!((w.params.noise_uv_scale_a - 1.0 / 1920.0).abs() < 1e-6);
+        assert_eq!(w.params.noise_amplitude_scales, [0.7, 0.6, 0.5]);
     }
 
     #[test]

@@ -57,7 +57,7 @@ layout(early_fragment_tests) in;
 //   composite-pass tone-mapper + TAA handles the residual jitter.
 //
 // Per-water material data lives in a compact per-frame UBO. Keeping the
-// 144-byte record here, rather than in push constants, leaves room to grow
+// 160-byte record here, rather than in push constants, leaves room to grow
 // the canonical cross-game material without raising device requirements.
 struct WaterParams {
     // x = time (engine uptime in seconds — `TotalTime`, accumulated
@@ -87,6 +87,8 @@ struct WaterParams {
     vec4 tint_reflect;
     // Bindless indices for authored NAM2/NAM3/NAM4 noise layers.
     uvec4 noise_indices;
+    // x = authored NAM4 UV scale; yzw = authored NAM2/3/4 amplitude scales.
+    vec4 detail;
 };
 
 layout(std140, set = 2, binding = 1) uniform WaterParamsBlock {
@@ -547,8 +549,8 @@ void main() {
     // case). For River/Rapids/Waterfall, layer A's scroll vector is
     // baked from `flow` on the CPU side, so we don't have to branch
     // here. Push constants carry the final scroll vectors.
-    vec3 nA = sampleScrollingNormal(noiseMapA, uvWorld, uvOrigin, push.scroll.xy, push.tune.x, time, ampScale, freqScale);
-    vec3 nB = sampleScrollingNormal(noiseMapB, uvWorld, uvOrigin, push.scroll.zw, push.tune.y, time, ampScale, freqScale);
+    vec3 nA = sampleScrollingNormal(noiseMapA, uvWorld, uvOrigin, push.scroll.xy, push.tune.x, time, ampScale * max(push.detail.y, 0.05), freqScale);
+    vec3 nB = sampleScrollingNormal(noiseMapB, uvWorld, uvOrigin, push.scroll.zw, push.tune.y, time, ampScale * max(push.detail.z, 0.05), freqScale);
 
     // Rapids adds a third high-frequency layer scrolled by the flow
     // — gives that chaotic whitewater chop pattern.
@@ -559,9 +561,9 @@ void main() {
             uvWorld,
             uvOrigin,
             push.flow.xy * push.flow.w * 2.0,
-            push.tune.x * 2.5,
+            push.detail.x,
             time,
-            ampScale,
+            ampScale * max(push.detail.w, 0.05),
             freqScale
         );
         nMix = normalize(nA + nB + nC * 0.7);

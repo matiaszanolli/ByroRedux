@@ -131,6 +131,54 @@ pub(crate) fn try_load_default_footstep(world: &mut byroredux_core::ecs::World, 
     log::info!("M44 Phase 3.5: footstep sound loaded from '{path}' ({CANONICAL})");
 }
 
+/// M44 water acoustics — load a physical splash one-shot when a sound BSA is
+/// supplied. Candidate paths cover the Skyrim and Fallout naming variants;
+/// the first archive hit wins, while missing audio remains a silent no-op.
+pub(crate) fn try_load_default_water_splash(
+    world: &mut byroredux_core::ecs::World,
+    args: &[String],
+) {
+    let Some(path) = args
+        .windows(2)
+        .find(|pair| pair[0] == "--sounds-bsa")
+        .map(|pair| pair[1].as_str())
+    else {
+        return;
+    };
+    let archive = match Archive::open(path) {
+        Ok(a) => a,
+        Err(e) => {
+            log::warn!("water acoustics: open --sounds-bsa '{path}': {e}");
+            return;
+        }
+    };
+    const CANDIDATES: &[&str] = &[
+        r"sound\fx\phy\water\phy_water_m_01.wav",
+        r"sound\fx\phy\phy_water_m_01.wav",
+        r"sound\fx\fst\water\walk\l\fst_water_walk_03.wav",
+    ];
+    let Some((chosen, bytes)) = CANDIDATES.iter().find_map(|candidate| {
+        archive
+            .extract(candidate)
+            .ok()
+            .map(|bytes| (*candidate, bytes))
+    }) else {
+        log::warn!("water acoustics: no splash candidate found in '{path}'");
+        return;
+    };
+    let sound = match byroredux_audio::load_sound_from_bytes(bytes) {
+        Ok(s) => s,
+        Err(e) => {
+            log::warn!("water acoustics: decode '{chosen}': {e}");
+            return;
+        }
+    };
+    world
+        .resource_mut::<crate::components::WaterAudioConfig>()
+        .splash_sound = Some(std::sync::Arc::new(sound));
+    log::info!("water acoustics: loaded '{chosen}' from '{path}'");
+}
+
 /// #1776 — the aggregate "requested but zero opened" check, pulled out pure so
 /// the guard is unit-testable. Returns one error line per archive kind that was
 /// requested on the CLI yet resolved to zero opened archives — the wrong-CWD /

@@ -1244,6 +1244,42 @@ impl Default for FootstepConfig {
     }
 }
 
+/// Resource — one-shot sound used for actor/water-surface interaction.
+/// `None` is a valid headless/no-archive state and keeps water gameplay
+/// independent from audio-device availability.
+pub(crate) struct WaterAudioConfig {
+    pub(crate) splash_sound: Option<Arc<Sound>>,
+    pub(crate) volume: f32,
+}
+
+impl Resource for WaterAudioConfig {}
+
+impl Default for WaterAudioConfig {
+    fn default() -> Self {
+        Self {
+            splash_sound: None,
+            volume: 0.7,
+        }
+    }
+}
+
+/// Reusable cadence state for recurring near-surface ripple sounds. Splash
+/// edges are never delayed; this cooldown only prevents a stationary actor
+/// from producing a one-shot every frame while `RippleEvent` is present.
+pub(crate) struct WaterAudioState {
+    pub(crate) ripple_cooldown: f32,
+}
+
+impl Resource for WaterAudioState {}
+
+impl Default for WaterAudioState {
+    fn default() -> Self {
+        Self {
+            ripple_cooldown: 0.0,
+        }
+    }
+}
+
 /// Per-frame scratch buffer for `footstep_system`'s two-phase pattern
 /// (collect trigger positions while walking emitters, then drain to
 /// `AudioWorld::play_oneshot`). Pre-#932 the system allocated a fresh

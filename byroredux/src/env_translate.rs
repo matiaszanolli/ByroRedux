@@ -577,6 +577,18 @@ pub(crate) fn resolve_water_material(
             if rec.params.noise_uv_scale_b.is_finite() && rec.params.noise_uv_scale_b > 0.0 {
                 mat.uv_scale_b = rec.params.noise_uv_scale_b.clamp(1.0 / 4096.0, 1.0 / 8.0);
             }
+            if rec.params.noise_uv_scale_c.is_finite() && rec.params.noise_uv_scale_c > 0.0 {
+                mat.uv_scale_c = rec.params.noise_uv_scale_c.clamp(1.0 / 4096.0, 1.0 / 8.0);
+            }
+            for (dst, src) in mat
+                .noise_amplitude_scales
+                .iter_mut()
+                .zip(rec.params.noise_amplitude_scales)
+            {
+                if src.is_finite() && src > 0.0 {
+                    *dst = src.clamp(0.05, 4.0);
+                }
+            }
             mat.source_form = rec.form_id;
 
             // ── WaterKind heuristic from EDID naming convention ──
@@ -1765,6 +1777,8 @@ mod tests {
                 sun_specular_power: 90.0,
                 noise_uv_scale_a: 0.0,
                 noise_uv_scale_b: 0.0,
+                noise_uv_scale_c: 0.0,
+                noise_amplitude_scales: [0.0; 3],
             },
             raw_dnam: Vec::new(),
             raw_data: Vec::new(),

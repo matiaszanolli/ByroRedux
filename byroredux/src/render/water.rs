@@ -120,6 +120,12 @@ pub(super) fn reemit_water_planes(
                 mat.noise_map_indices[2],
                 u32::MAX,
             ],
+            detail: [
+                mat.uv_scale_c,
+                mat.noise_amplitude_scales[0],
+                mat.noise_amplitude_scales[1],
+                mat.noise_amplitude_scales[2],
+            ],
         };
         water_commands.push(WaterDrawCommand {
             mesh_handle: draw_commands[idx].mesh_handle,

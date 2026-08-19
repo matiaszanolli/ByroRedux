@@ -99,6 +99,8 @@ struct WaterParams {
     vec4 misc;
     vec4 tint_reflect;
     uvec4 noise_indices;
+    // x = authored NAM4 UV scale; yzw = authored NAM2/3/4 amplitude scales.
+    vec4 detail;
 };
 layout(std140, set = 2, binding = 1) uniform WaterParamsBlock {
     WaterParams params[256];

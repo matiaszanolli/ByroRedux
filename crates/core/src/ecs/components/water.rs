@@ -147,6 +147,12 @@ pub struct WaterMaterial {
     /// slow swells.
     pub uv_scale_a: f32,
     pub uv_scale_b: f32,
+    /// UV scale for the authored third noise layer (NAM4). Legacy records
+    /// use the canonical sentinel and the shader falls back to layer A.
+    pub uv_scale_c: f32,
+    /// Authored normal-amplitude multipliers for NAM2/NAM3/NAM4. A value of
+    /// one is the neutral legacy fallback.
+    pub noise_amplitude_scales: [f32; 3],
     /// Foam intensity multiplier. 0 = no foam anywhere; 1 = full
     /// rapids / waterfall whitewater. Cell loader sets from
     /// [`WaterKind`].
@@ -198,6 +204,8 @@ impl Default for WaterMaterial {
             scroll_b: [-0.014, 0.025],
             uv_scale_a: 1.0 / 256.0,
             uv_scale_b: 1.0 / 700.0,
+            uv_scale_c: 1.0 / 512.0,
+            noise_amplitude_scales: [1.0; 3],
             foam_strength: 0.0,
             shoreline_width: 32.0,
             ior: 1.33,

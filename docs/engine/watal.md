@@ -20,10 +20,10 @@ The layer is now double-ended in production: canonical WATR/XCLW/XCWT state feed
 the renderer, while dynamic Rapier bodies receive `WaterContact`, buoyancy,
 submerged damping, and bounded current drag from the same `WaterFlow`. Phase 0 is
 closed; Phase 1 and Phase 2 are partial. Character swimming and bounded drowning
-damage are live; exact tail decode, disturbance events, and the cross-game visual
-smoke matrix remain open. The verified Skyrim underwater fog tail is now promoted;
+damage are live; the remaining Skyrim tail and cross-game visual smoke matrix
+remain open. The verified Skyrim underwater fog tail is now promoted;
 localized surface disturbance emitters and transient
-`SplashEvent`/`RippleEvent` markers are now live; concrete audio consumers remain open.
+`SplashEvent`/`RippleEvent` markers plus concrete spatial audio are now live.
 The CELL boundary now preserves XCLW as a tri-state: absent means inherit the
 WRLD default, a finite authored height overrides it, and either Bethesda no-water
 sentinel (`#INT_MIN#` or Skyrim's FLT_MAX) explicitly suppresses a plane.
@@ -220,7 +220,7 @@ base" target. `WaterMaterial` carries 24+ shading fields; `WaterFlow`,
 live canonical inputs/state. Wave amplitude/frequency, authored sun-specular
 power, worldspace LOD water, authored NAM2–4 noise, and bounded scatter have
 reached the canonical tier. **Missing:** remaining Skyrim DNAM-tail fields
-and concrete audio consumers for disturbance events. Character swim/drown state,
+and cross-game visual smoke coverage. Character swim/drown state,
 localized surface spray emitters, and transient `SplashEvent`/`RippleEvent`
 markers are now live. Authored NAM2–4 noise indices are now
 part of the canonical GPU material contract.
@@ -235,8 +235,10 @@ links are preserved separately; `raw_data`/`raw_dnam` tails remain available.
 (`env_translate.rs:89-176`) captures colors/fog/fresnel/reflectivity/flow.
 Wave amplitude/frequency, reflection tint, and the per-game sun-specular exponent
 now cross the boundary. NAM2/NAM3/NAM4 noise layers and the FO3/FNV long-tail
-noise UV scales now resolve through the bindless water-material contract; FO3/FNV and FO4 below-water fog ranges now cross the
-canonical boundary, while Skyrim-tail fields remain unverified. The
+noise UV scales now resolve through the bindless water-material contract; FO3/FNV
+and FO4 below-water fog ranges now cross the canonical boundary, and Skyrim's
+underwater fog, displacement force, and three noise UV scales are verified
+against the installed master. The remaining Skyrim tail fields stay raw. The
 `WaterKind` classification is a fragile EDID-substring heuristic
 (`rapid`/`waterfall`/`falls`/`river`/`stream`), English-only, with `waterfall`
 deliberately demoted to `River` for cell planes.
@@ -331,8 +333,8 @@ Everything else is a SENTINEL the older game leaves unset, identical across game
 | `fog_near`/`fog_far` | **SENTINEL** 80/600 (DATA omits 28..36) | AUTHORED | AUTHORED | DATA[28..36] |
 | diffuse/normal texture | **SENTINEL** `u32::MAX` → procedural | AUTHORED (`NNAM`) | AUTHORED (`TNAM`) | NNAM/TNAM |
 | noise layers (`NAM2`/`NAM3`/`NAM4`) | **SENTINEL** `[u32::MAX;3]` | **SENTINEL** | AUTHORED (3 paths) | NAM2-4 |
-| below-water fog split | **SENTINEL** (reuse above) | **SENTINEL** | AUTHORED (DNAM tail) | DNAM tail (undecoded) |
-| `wave_amplitude/frequency` | AUTHORED | AUTHORED | AUTHORED | DATA[8..16] |
+| below-water fog split | **SENTINEL** (reuse above) | **SENTINEL** | AUTHORED (DNAM tail) | DNAM[144..152] |
+| `wave_amplitude/frequency` | AUTHORED | AUTHORED | AUTHORED (displacement force overrides amplitude) | DATA[8..16], DNAM[76..80] |
 | `sun_power` | AUTHORED (was skipped) | AUTHORED | AUTHORED | DATA[16] |
 | `WaterFlow` | SYNTHESIZED from wind | SYNTHESIZED from wind | AUTHORED flow | wind / DNAM flow |
 | `ior` 1.33, `shoreline_width` 32, foam-by-kind | SENTINEL | SENTINEL | SENTINEL | engine-invariant |
@@ -356,8 +358,9 @@ existing components. Four genuinely new types fill gaps where no ECS role exists
 
 `sun_power` + `spec_hardness`/`spec_brightness` (A7, currently skipped) ·
 `scatter_color`/`scatter_amount`/`scatter_extinction` (A8 sunlight sub-surface
-glow) · `wave_amplitude`/`wave_frequency` (A11, parsed but dropped — drive
-normal-only perturbation now, optional displacement later) · `normal_octaves: u8`
+glow) · `wave_amplitude`/`wave_frequency` (A11, including Skyrim's displacement
+force override) · authored three-layer noise UV and amplitude scales ·
+`normal_octaves: u8`
 (A1, allow ≥4-6 to match Skyrim chop; sentinel 2 = today's `scroll_a/b`) ·
 `noise_layers: [u32;3]` (resolved Skyrim NAM2-4 handles; sentinel `[u32::MAX;3]`) ·
 `caustic_intensity`/`caustic_scale` (B4) · `reflection_source: { Rt, Cubemap,
@@ -433,10 +436,11 @@ tests); the render/physics-device parts are validated by the smoke-test pattern
 2. **Phase 1 — CANONICAL TYPE + TRANSLATE — PARTIAL.** Wave amplitude/frequency,
 reflection tint, authored direct-sun glint, per-game default-water height,
 authored worldspace LOD water, NAM2–4 noise layers, and bounded sunlight
-   scattering, localized surface disturbance emitters, and transient disturbance
-   markers are live. Remaining work is the rest of the Skyrim DNAM-tail decode,
-   concrete audio consumption, and a cross-game fixture asserting that canonical sentinels stay
-   identical while only authored fields differ.
+   scattering, localized surface disturbance emitters, transient disturbance
+   markers, and concrete spatial audio for splash/ripple interaction are live.
+   An ignored real-master fixture now asserts finite, ordered canonical fields
+   across installed Oblivion, FNV, Skyrim SE, and FO4 masters. Remaining work is
+   the rest of the Skyrim DNAM-tail decode and cross-game visual smoke coverage.
 
 3. **Phase 2 — PHYSICS FORCE API + BUOYANCY / FLOW — BODY CORE LIVE
    2026-08-10.** Force/reset APIs, pre-step application, `WaterContact`, buoyancy,
@@ -470,7 +474,7 @@ authored worldspace LOD water, NAM2–4 noise layers, and bounded sunlight
   source material). `m-exteriors.sh` captures both commands in its retained
   per-game debug artifact.
 - Still open: include the worldspace-level `WaterLod` translation explicitly in
-  `water.dump`, connect splash/ripple markers to audio, and add a real-data GPU smoke.
+  `water.dump`, and add a real-data GPU smoke.
 - A per-game translate-up unit harness (Phase 1) asserting SENTINEL-identity across
   Oblivion / FNV / Skyrim WATR inputs.
 
@@ -524,9 +528,11 @@ fallback for textureless legacy water plus authored texture layers where present
 
 ### Q5 — Open item: exact byte offsets of the remaining Skyrim tail. → **MEDIUM confidence; verify before relying.**
 
-The Skyrim DNAM tail (`below_water_fog`, displacement layers) remains
-`raw_dnam` and **best-effort** across Skyrim 1.5/1.6. FO3/FNV DATA offsets
-144/148 (underwater fog) and 172/176 (noise UV scales), plus FO4 DNAM offsets
+The verified Skyrim underwater fog pair at DNAM offsets 144/148, displacement
+force at 76, and all three noise UV scales at 172/176/180 now feed the
+canonical presentation path; remaining authored tail fields remain `raw_dnam`
+and **best-effort** across Skyrim 1.5/1.6. FO3/FNV DATA offsets 144/148 (underwater
+fog) and 172/176 (noise UV scales), plus FO4 DNAM offsets
 44/48, now feed canonical water fields;
 the remaining Skyrim fields should be byte-decoded via the extract→trace method
 ([[nif_v10x_stride_drift_resolved]]). Until then they stay SENTINEL — correctness

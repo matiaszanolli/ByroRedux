@@ -59,7 +59,7 @@ pub(crate) const WATER_VERT_SPV: &[u8] = include_bytes!("../../shaders/water.ver
 pub(crate) const WATER_FRAG_SPV: &[u8] = include_bytes!("../../shaders/water.frag.spv");
 
 /// Canonical GPU material payload for one water draw. Layout matches
-/// `WaterParams` in `shaders/water.frag` exactly (9 std140 vec4 slots).
+/// `WaterParams` in `shaders/water.frag` exactly (10 std140 vec4 slots).
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct GpuWaterParams {
@@ -96,6 +96,9 @@ pub struct GpuWaterParams {
     pub tint_reflect: [f32; 4],
     /// Bindless indices for authored NAM2/NAM3/NAM4 noise layers.
     pub noise_indices: [u32; 4],
+    /// x = authored NAM4 UV scale; yzw = authored NAM2/3/4 amplitude
+    /// scales, keeping this extension std140-aligned.
+    pub detail: [f32; 4],
 }
 
 impl GpuWaterParams {
@@ -109,8 +112,8 @@ impl GpuWaterParams {
 }
 
 const _: () = assert!(
-    std::mem::size_of::<GpuWaterParams>() == 144,
-    "GpuWaterParams must remain 9 std140 vec4 slots"
+    std::mem::size_of::<GpuWaterParams>() == 160,
+    "GpuWaterParams must remain 10 std140 vec4 slots"
 );
 
 /// Per-draw selector for the material array uploaded once per frame.
@@ -126,7 +129,7 @@ const _: () = assert!(
     "WaterPush must match the shader's 16-byte push block"
 );
 
-/// Fixed UBO capacity: 256 × 144 B = 36 KiB, below Vulkan's portable
+/// Fixed UBO capacity: 256 × 160 B = 40 KiB, below Vulkan's portable
 /// 64 KiB `maxUniformBufferRange` floor while leaving ample room for the
 /// handful of water bodies normally visible in one cell.
 pub const MAX_WATER_DRAWS: usize = 256;
@@ -865,7 +868,7 @@ mod tests {
 
     #[test]
     fn water_gpu_contract_layouts_are_stable() {
-        assert_eq!(std::mem::size_of::<GpuWaterParams>(), 144);
+        assert_eq!(std::mem::size_of::<GpuWaterParams>(), 160);
         assert_eq!(std::mem::align_of::<GpuWaterParams>(), 4);
         assert_eq!(std::mem::size_of::<WaterPush>(), 16);
         assert_eq!(std::mem::align_of::<WaterPush>(), 4);
@@ -1005,6 +1008,7 @@ mod tests {
                 misc: [0.0; 4],
                 tint_reflect: [0.0; 4],
                 noise_indices: [u32::MAX; 4],
+                detail: [0.0; 4],
             },
         }
     }

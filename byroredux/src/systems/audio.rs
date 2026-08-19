@@ -1,6 +1,8 @@
 //! Audio routing systems — reverb zones, footstep emitters.
 
 use byroredux_core::ecs::{GlobalTransform, World};
+use byroredux_core::math::Vec3;
+use byroredux_scripting::{RippleEvent, SplashEvent};
 
 use crate::components::CellLightingRes;
 
@@ -199,6 +201,90 @@ pub(crate) fn footstep_system(world: &World, _dt: f32) {
     }
 }
 
+/// Dispatch one-shot water-entry sounds emitted by the water interaction
+/// system. Ripple markers intentionally remain presentation/gameplay data;
+/// only the edge-triggered splash is audible, preventing a looping sound on
+/// every frame an actor remains near the surface.
+pub(crate) fn water_audio_system(world: &World, dt: f32) {
+    let Some(config) = world.try_resource::<crate::components::WaterAudioConfig>() else {
+        return;
+    };
+    let Some(sound) = config.splash_sound.clone() else {
+        return;
+    };
+    let volume = config.volume;
+    drop(config);
+
+    let ripple_ready = {
+        let Some(mut state) = world.try_resource_mut::<crate::components::WaterAudioState>() else {
+            return;
+        };
+        state.ripple_cooldown = (state.ripple_cooldown - dt.max(0.0)).max(0.0);
+        state.ripple_cooldown <= 0.0
+    };
+
+    let Some(events) = world.query::<SplashEvent>() else {
+        return;
+    };
+    let splashes: Vec<(Vec3, f32)> = events
+        .iter()
+        .map(|(_, event)| {
+            (
+                Vec3::new(event.position[0], event.position[1], event.position[2]),
+                event.intensity,
+            )
+        })
+        .collect();
+    drop(events);
+    let ripple = world.query::<RippleEvent>().and_then(|events| {
+        events.iter().next().map(|(_, event)| {
+            (
+                Vec3::new(event.position[0], event.position[1], event.position[2]),
+                events
+                    .iter()
+                    .map(|(_, candidate)| candidate.intensity)
+                    .fold(0.0f32, f32::max),
+            )
+        })
+    });
+    if splashes.is_empty() && (!ripple_ready || ripple.is_none()) {
+        return;
+    }
+    let had_splash = !splashes.is_empty();
+
+    let Some(mut audio_world) = world.try_resource_mut::<byroredux_audio::AudioWorld>() else {
+        return;
+    };
+    for (position, intensity) in splashes {
+        audio_world.play_oneshot(
+            std::sync::Arc::clone(&sound),
+            position,
+            byroredux_audio::Attenuation {
+                min_distance: 1.0,
+                max_distance: 24.0,
+            },
+            (volume * intensity).clamp(0.0, 1.0),
+        );
+    }
+    if !had_splash && ripple_ready {
+        if let Some((position, intensity)) = ripple {
+            audio_world.play_oneshot(
+                std::sync::Arc::clone(&sound),
+                position,
+                byroredux_audio::Attenuation {
+                    min_distance: 1.0,
+                    max_distance: 24.0,
+                },
+                (volume * intensity * 0.45).clamp(0.0, 1.0),
+            );
+        }
+        drop(audio_world);
+        if let Some(mut state) = world.try_resource_mut::<crate::components::WaterAudioState>() {
+            state.ripple_cooldown = 0.18;
+        }
+    }
+}
+
 // ── M44 Phase 3.5 — footstep_system regression tests ──────────────
 //
 // Synthetic-only: walk an emitter through a known-distance path,
@@ -209,10 +295,13 @@ pub(crate) fn footstep_system(world: &World, _dt: f32) {
 #[cfg(test)]
 mod footstep_tests {
     use super::*;
-    use crate::components::{FootstepConfig, FootstepEmitter, FootstepScratch};
+    use crate::components::{
+        FootstepConfig, FootstepEmitter, FootstepScratch, WaterAudioConfig, WaterAudioState,
+    };
     use byroredux_audio::{Frame, Sound, SoundSettings};
     use byroredux_core::ecs::{Transform, World};
     use byroredux_core::math::{Quat, Vec3};
+    use byroredux_scripting::SplashEvent;
     use std::sync::Arc;
 
     fn synth_world(volume: f32) -> (World, Arc<Sound>) {
@@ -411,6 +500,49 @@ mod footstep_tests {
 
         let aw = world.resource::<byroredux_audio::AudioWorld>();
         assert_eq!(aw.pending_oneshot_count(), 0);
+    }
+
+    #[test]
+    fn water_splash_event_reaches_audio_dispatcher() {
+        let (mut world, sound) = synth_world(0.5);
+        world.insert_resource(WaterAudioConfig {
+            splash_sound: Some(sound),
+            volume: 0.7,
+        });
+        world.insert_resource(WaterAudioState::default());
+        let water = world.spawn();
+        world.insert(
+            water,
+            SplashEvent {
+                actor: 1,
+                intensity: 0.8,
+                position: [2.0, 3.0, 4.0],
+            },
+        );
+
+        water_audio_system(&world, 0.016);
+
+        // Headless AudioWorlds drop immediately; device-backed worlds retain
+        // the pending one-shot. Both paths are valid, but neither may panic.
+        assert!(
+            world
+                .resource::<byroredux_audio::AudioWorld>()
+                .pending_oneshot_count()
+                <= 1
+        );
+
+        // A recurring ripple is throttled rather than dispatched every tick.
+        world.remove::<SplashEvent>(water);
+        world.insert(
+            water,
+            RippleEvent {
+                actor: 1,
+                intensity: 0.8,
+                position: [2.0, 3.0, 4.0],
+            },
+        );
+        water_audio_system(&world, 0.016);
+        assert!(world.resource::<WaterAudioState>().ripple_cooldown > 0.0);
     }
 }
 
