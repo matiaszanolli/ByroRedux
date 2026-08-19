@@ -185,6 +185,18 @@ fn fnv_imports_skinned_mesh_with_resolved_bones() {
 }
 
 /// Helper for the invariant test — runs against arbitrary NIF bytes.
+/// #3083 (REG-2026-08-16-D5-02) — the bind-pose invariant this function
+/// checks (`global_to_skin × bone_world × skin_to_bone ≈ identity`, per
+/// `fnv_skinning_invariant_check`'s doc comment above) is a hard, parser-
+/// independent assertion — measured `max_diff_from_I` on real Oblivion
+/// and FNV `upperbody.nif`/`lowerbody.nif` data sits at 1.9e-6..7.6e-6
+/// (single-precision matrix-composition noise for translations in the
+/// tens-of-units range), so this threshold sits two-plus orders of
+/// magnitude above the observed noise floor while staying far below what
+/// a real dropped/misordered factor would produce (a missing translation
+/// term is tens of units, not fractions).
+const SKINNING_BIND_POSE_EPSILON: f32 = 1e-3;
+
 fn run_skinning_invariant(label: &str, bytes: &[u8]) {
     use byroredux_core::math::Mat4;
     use byroredux_nif::blocks::node::NiNode;
@@ -249,6 +261,11 @@ fn run_skinning_invariant(label: &str, bytes: &[u8]) {
     }
 
     eprintln!("\n========== {} ==========", label);
+    // #3083 — counts bones actually checked below, so a NIF whose shapes
+    // never resolve (a corpus/fixture regression rather than a skinning
+    // one) can't pass this function vacuously — the header-only print a
+    // reader could otherwise mistake for "checked, all good".
+    let mut checked_count: usize = 0;
     for shape_block_idx in 0..scene.blocks.len() {
         let Some(shape) = scene.get_as::<NiTriShape>(shape_block_idx) else {
             continue;
@@ -323,8 +340,25 @@ fn run_skinning_invariant(label: &str, bytes: &[u8]) {
                 composed_t[0], composed_t[1], composed_t[2],
                 max_diff,
             );
+            // #3083 — the actual guard. Pre-fix this function only ever
+            // printed max_diff; a broken skinning composition (a dropped
+            // or misordered global_to_skin/skin_to_bone factor) passed
+            // silently. See fnv_skinning_invariant_check's doc comment for
+            // the derivation of why identity is the correct expectation.
+            assert!(
+                max_diff < SKINNING_BIND_POSE_EPSILON,
+                "{label}: shape '{shape_name}' bone '{bone_name}' breaks the bind-pose \
+                 skinning invariant — global_to_skin × bone_world × skin_to_bone should be \
+                 ~identity, got max_diff_from_I={max_diff} (threshold {SKINNING_BIND_POSE_EPSILON})"
+            );
+            checked_count += 1;
         }
     }
+    assert!(
+        checked_count > 0,
+        "{label}: no skinned bone was checked — the invariant assertion above never ran, \
+         which would make this test vacuously green"
+    );
 }
 
 const OBLIVION_DEFAULT_DATA: &str = "/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data";
@@ -341,6 +375,17 @@ const OBLIVION_MESH_BSA: &str = "Oblivion - Meshes.bsa";
 /// bone, the result should land at the bone's bind-pose world position
 /// plus the vertex's offset in NIF mesh-local space — matching what a
 /// human would expect for a standing biped at origin.
+///
+/// **DIAGNOSTIC ONLY — not a regression guard (#3083 / REG-2026-08-16-
+/// D5-02).** Unlike [`oblivion_skinning_invariant_check`] and
+/// [`fnv_skinning_invariant_check`] (which assert a derived, confirmed
+/// bind-pose identity), the formula this function evaluates is
+/// explicitly unresolved — see the "Order tested empirically" comment
+/// inline below, where neither composition order lands at identity for
+/// real Oblivion body NIFs. Asserting against an unverified expected
+/// value would be worse than asserting nothing: a future correct fix to
+/// the *real* formula would fail this test for being right. Kept as
+/// `eprintln!`-only until the formula itself is solved.
 #[test]
 #[ignore = "requires Oblivion BSA — opt in with --ignored"]
 fn oblivion_vertex_world_check() {
@@ -697,6 +742,7 @@ fn fnv_skinning_invariant_check() {
         None
     }
 
+    let mut checked_count: usize = 0;
     for shape_block_idx in 0..scene.blocks.len() {
         let Some(shape) = scene.get_as::<NiTriShape>(shape_block_idx) else {
             continue;
@@ -741,6 +787,9 @@ fn fnv_skinning_invariant_check() {
 
         // For first 3 bones, compute and check the invariant:
         //   global_to_skin × bone_world_at_bind × skin_to_bone[i] ≈ identity
+        //
+        // #3083 — counts bones actually checked below, so a NIF whose
+        // shapes never resolve can't pass this function vacuously.
         for (i, bone_ref) in bone_refs.iter().enumerate().take(3) {
             let Some(bone_idx) = bone_ref.index() else {
                 continue;
@@ -782,8 +831,24 @@ fn fnv_skinning_invariant_check() {
                 composed_t[0], composed_t[1], composed_t[2],
                 max_diff,
             );
+            // #3083 — the actual guard this doc comment (above, at the
+            // top of this test) already claimed to be "a hard, parser-
+            // independent assertion" without ever making one.
+            assert!(
+                max_diff < SKINNING_BIND_POSE_EPSILON,
+                "{FNV_FIXTURE_NIF}: shape '{shape_name}' bone '{bone_name}' breaks the \
+                 bind-pose skinning invariant — global_to_skin × bone_world × skin_to_bone \
+                 should be ~identity, got max_diff_from_I={max_diff} \
+                 (threshold {SKINNING_BIND_POSE_EPSILON})"
+            );
+            checked_count += 1;
         }
     }
+    assert!(
+        checked_count > 0,
+        "{FNV_FIXTURE_NIF}: no skinned bone was checked — the invariant assertion above \
+         never ran, which would make this test vacuously green"
+    );
 }
 
 #[test]
