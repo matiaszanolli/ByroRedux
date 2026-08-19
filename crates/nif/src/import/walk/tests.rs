@@ -868,6 +868,133 @@ mod emitter_rate_tests {
             "a 0.0 first-key/constant rate must fall back to the preset, not zero the emitter",
         );
     }
+
+    // ── #2548 — NiBlendFloatInterpolator wrapper ────────────────────
+    //
+    // 78% of real FO3 NiPSysEmitterCtlr.interpolator_ref targets are this
+    // weighted-array wrapper, not a bare NiFloatInterpolator — the Modern
+    // branch never followed it at all, silently falling through to the
+    // Legacy branch / heuristic preset for most of FO3's fire/explosion/
+    // dust/blood/gore VFX library.
+
+    use crate::blocks::interpolator::{FloatKey, InterpBlendItem, KeyGroup, KeyType};
+    use crate::blocks::interpolator::{NiBlendFloatInterpolator, NiBlendInterpolator, NiFloatData};
+
+    fn blend_item(interpolator_index: u32, normalized_weight: f32) -> InterpBlendItem {
+        InterpBlendItem {
+            interpolator_ref: BlockRef(interpolator_index),
+            weight: normalized_weight,
+            normalized_weight,
+            priority: 0,
+            ease_spinner: 0.0,
+        }
+    }
+
+    /// The blend wrapper itself must be followed to its dominant
+    /// (highest-`normalized_weight`) item's sub-interpolator — not
+    /// treated as an opaque, unrecognised interpolator type.
+    #[test]
+    fn resolves_the_highest_weight_sub_interpolators_constant_value() {
+        let mut scene = NifScene::default();
+        scene.blocks.push(Box::new(NiFloatInterpolator {
+            value: 1.0, // [0] low-weight — must lose
+            data_ref: BlockRef::NULL,
+        }));
+        scene.blocks.push(Box::new(NiFloatInterpolator {
+            value: 7.0, // [1] high-weight — must win
+            data_ref: BlockRef::NULL,
+        }));
+        scene.blocks.push(Box::new(NiBlendFloatInterpolator {
+            base: NiBlendInterpolator {
+                flags: 0,
+                array_size: 2,
+                weight_threshold: 0.0,
+                manager_controlled: false,
+                interp_count: 2,
+                single_index: 0,
+                items: vec![blend_item(0, 0.25), blend_item(1, 0.75)],
+            },
+            value: 0.0,
+        })); // [2]
+        scene.blocks.push(Box::new(NiPSysEmitterCtlr {
+            interpolator_ref: BlockRef(2u32),
+        })); // [3]
+
+        assert_eq!(
+            extract_emitter_rate(&scene),
+            Some(7.0),
+            "must follow the highest-normalized_weight item's sub-interpolator"
+        );
+    }
+
+    /// The sub-interpolator resolved through the blend wrapper runs the
+    /// same keyed-data-first chain as the direct case — its keyed first
+    /// value wins over its own constant `value`.
+    #[test]
+    fn resolved_sub_interpolators_keyed_data_wins_over_its_constant() {
+        let mut scene = NifScene::default();
+        scene.blocks.push(Box::new(NiFloatData {
+            keys: KeyGroup {
+                key_type: KeyType::Linear,
+                keys: vec![FloatKey {
+                    time: 0.0,
+                    value: 12.0,
+                    tangent_forward: 0.0,
+                    tangent_backward: 0.0,
+                    tbc: None,
+                }],
+            },
+        })); // [0]
+        scene.blocks.push(Box::new(NiFloatInterpolator {
+            value: 999.0, // must lose to the keyed first value
+            data_ref: BlockRef(0u32),
+        })); // [1]
+        scene.blocks.push(Box::new(NiBlendFloatInterpolator {
+            base: NiBlendInterpolator {
+                flags: 0,
+                array_size: 1,
+                weight_threshold: 0.0,
+                manager_controlled: false,
+                interp_count: 1,
+                single_index: 0,
+                items: vec![blend_item(1, 1.0)],
+            },
+            value: 0.0,
+        })); // [2]
+        scene.blocks.push(Box::new(NiPSysEmitterCtlr {
+            interpolator_ref: BlockRef(2u32),
+        })); // [3]
+
+        assert_eq!(extract_emitter_rate(&scene), Some(12.0));
+    }
+
+    /// The manager-controlled case carries an empty `items` array (the
+    /// sub-interpolator is supplied externally by the controller
+    /// manager, not reachable from the blend block itself) —
+    /// `resolve_blend_interpolator_target` returns `None` for it, and
+    /// `extract_emitter_rate` must fall back to the blend interpolator's
+    /// own constant `value` rather than failing outright.
+    #[test]
+    fn manager_controlled_blend_falls_back_to_its_own_constant_value() {
+        let mut scene = NifScene::default();
+        scene.blocks.push(Box::new(NiBlendFloatInterpolator {
+            base: NiBlendInterpolator {
+                flags: 1, // Manager Controlled bit set
+                array_size: 0,
+                weight_threshold: 0.0,
+                manager_controlled: true,
+                interp_count: 0,
+                single_index: 0,
+                items: Vec::new(),
+            },
+            value: 4.5,
+        })); // [0]
+        scene.blocks.push(Box::new(NiPSysEmitterCtlr {
+            interpolator_ref: BlockRef(0u32),
+        })); // [1]
+
+        assert_eq!(extract_emitter_rate(&scene), Some(4.5));
+    }
 }
 
 #[cfg(test)]

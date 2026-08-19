@@ -863,7 +863,8 @@ pub(super) fn extract_emitter_params(
 /// share the first emitter's rate; deferred until a regression surfaces (#1402).
 /// See `docs/engine/nifal.md` — particles spawn-rate follow-up.
 pub(super) fn extract_emitter_rate(scene: &NifScene) -> Option<f32> {
-    use crate::blocks::interpolator::{NiFloatData, NiFloatInterpolator};
+    use crate::anim::resolve_blend_interpolator_target;
+    use crate::blocks::interpolator::{NiBlendFloatInterpolator, NiFloatData, NiFloatInterpolator};
     use crate::blocks::particle::{NiPSysEmitterCtlr, NiPSysEmitterCtlrData};
 
     fn sane(r: f32) -> Option<f32> {
@@ -878,25 +879,53 @@ pub(super) fn extract_emitter_rate(scene: &NifScene) -> Option<f32> {
         (r.is_finite() && 0.0 < r && r < 3.0e38).then_some(r)
     }
 
-    // Modern: controller → NiFloatInterpolator → (keyed data | constant).
+    // NiFloatInterpolator → (keyed data | constant). Shared by the direct
+    // case below and the NiBlendFloatInterpolator sub-interpolator case
+    // (#2548), so the two chains can't silently diverge.
+    fn float_interpolator_rate(scene: &NifScene, interp_idx: usize) -> Option<f32> {
+        let interp = scene.get_as::<NiFloatInterpolator>(interp_idx)?;
+        if let Some(data_idx) = interp.data_ref.index() {
+            if let Some(first) = scene
+                .get_as::<NiFloatData>(data_idx)
+                .and_then(|d| d.keys.keys.first())
+            {
+                if let Some(r) = sane(first.value) {
+                    return Some(r);
+                }
+            }
+        }
+        sane(interp.value)
+    }
+
+    // Modern: controller → interpolator → (keyed data | constant).
     if let Some(ctlr) = scene
         .blocks
         .iter()
         .find_map(|b| b.as_any().downcast_ref::<NiPSysEmitterCtlr>())
     {
         if let Some(interp_idx) = ctlr.interpolator_ref.index() {
-            if let Some(interp) = scene.get_as::<NiFloatInterpolator>(interp_idx) {
-                if let Some(data_idx) = interp.data_ref.index() {
-                    if let Some(first) = scene
-                        .get_as::<NiFloatData>(data_idx)
-                        .and_then(|d| d.keys.keys.first())
-                    {
-                        if let Some(r) = sane(first.value) {
-                            return Some(r);
-                        }
-                    }
+            if let Some(r) = float_interpolator_rate(scene, interp_idx) {
+                return Some(r);
+            }
+            // #2548 — 78% of real FO3 NiPSysEmitterCtlr.interpolator_ref
+            // targets are NiBlendFloatInterpolator (most of FO3's fire/
+            // explosion/dust/blood/gore VFX library), a weighted-array
+            // wrapper this branch never followed at all — only the bare
+            // NiFloatInterpolator case above, on 22% of real targets.
+            // `resolve_blend_interpolator_target` (#334 / AR-08, already
+            // used by the KF channel-extraction path) picks the highest-
+            // `normalized_weight` sub-interpolator; `None` for the
+            // manager-controlled case (no items to pick from — those are
+            // driven externally and don't apply to a particle emitter
+            // rate anyway). Fall back to the blend interpolator's own
+            // constant `value` if no item resolves.
+            if let Some(sub_idx) = resolve_blend_interpolator_target(scene, interp_idx) {
+                if let Some(r) = float_interpolator_rate(scene, sub_idx) {
+                    return Some(r);
                 }
-                if let Some(r) = sane(interp.value) {
+            }
+            if let Some(blend) = scene.get_as::<NiBlendFloatInterpolator>(interp_idx) {
+                if let Some(r) = sane(blend.value) {
                     return Some(r);
                 }
             }
