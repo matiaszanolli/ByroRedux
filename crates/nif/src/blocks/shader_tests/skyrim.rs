@@ -86,6 +86,52 @@ fn parse_bs_lighting_skin_tint_trailing() {
     assert_eq!(stream.position(), data.len() as u64);
 }
 
+/// Wire-level coverage for shader_type=6 (HairTint) — the second-most-common
+/// non-default Skyrim shader type (10,817 vanilla instances) had no
+/// byte-layout test; only `apply_shader_type_data` constructed the enum
+/// directly, never exercising `parse_shader_type_data`'s byte reader. #2581.
+#[test]
+fn parse_bs_lighting_hair_tint_trailing() {
+    let header = make_skyrim_header();
+    let mut data = build_bs_lighting_common(6); // shader_type=6 (HairTint)
+    data.extend_from_slice(&0.4f32.to_le_bytes());
+    data.extend_from_slice(&0.25f32.to_le_bytes());
+    data.extend_from_slice(&0.1f32.to_le_bytes());
+    let mut stream = NifStream::new(&data, &header);
+
+    let prop = BSLightingShaderProperty::parse(&mut stream).unwrap();
+    match prop.shader_type_data {
+        ShaderTypeData::HairTint { hair_tint_color } => {
+            assert!((hair_tint_color[0] - 0.4).abs() < 1e-6);
+            assert!((hair_tint_color[1] - 0.25).abs() < 1e-6);
+            assert!((hair_tint_color[2] - 0.1).abs() < 1e-6);
+        }
+        _ => panic!("expected HairTint"),
+    }
+    assert_eq!(stream.position(), data.len() as u64);
+}
+
+/// Wire-level coverage for shader_type=7 (ParallaxOcc) — 0 vanilla instances
+/// but mod-reachable; same untested-byte-reader gap as HairTint above. #2581.
+#[test]
+fn parse_bs_lighting_parallax_occ_trailing() {
+    let header = make_skyrim_header();
+    let mut data = build_bs_lighting_common(7); // shader_type=7 (ParallaxOcc)
+    data.extend_from_slice(&4.0f32.to_le_bytes()); // max_passes
+    data.extend_from_slice(&0.03f32.to_le_bytes()); // scale
+    let mut stream = NifStream::new(&data, &header);
+
+    let prop = BSLightingShaderProperty::parse(&mut stream).unwrap();
+    match prop.shader_type_data {
+        ShaderTypeData::ParallaxOcc { max_passes, scale } => {
+            assert!((max_passes - 4.0).abs() < 1e-6);
+            assert!((scale - 0.03).abs() < 1e-6);
+        }
+        _ => panic!("expected ParallaxOcc"),
+    }
+    assert_eq!(stream.position(), data.len() as u64);
+}
+
 #[test]
 fn parse_bs_lighting_eye_envmap_trailing() {
     let header = make_skyrim_header();
@@ -140,6 +186,31 @@ fn parse_bs_lighting_multilayer_parallax_trailing() {
             assert!((envmap_strength - 0.8).abs() < 1e-6);
         }
         _ => panic!("expected MultiLayerParallax"),
+    }
+    assert_eq!(stream.position(), data.len() as u64);
+}
+
+/// Wire-level coverage for shader_type=14 (SparkleSnow, 19 vanilla
+/// instances) — same untested-byte-reader gap as HairTint above. #2581.
+#[test]
+fn parse_bs_lighting_sparkle_snow_trailing() {
+    let header = make_skyrim_header();
+    let mut data = build_bs_lighting_common(14); // shader_type=14 (SparkleSnow)
+    data.extend_from_slice(&0.1f32.to_le_bytes());
+    data.extend_from_slice(&0.2f32.to_le_bytes());
+    data.extend_from_slice(&0.3f32.to_le_bytes());
+    data.extend_from_slice(&0.4f32.to_le_bytes());
+    let mut stream = NifStream::new(&data, &header);
+
+    let prop = BSLightingShaderProperty::parse(&mut stream).unwrap();
+    match prop.shader_type_data {
+        ShaderTypeData::SparkleSnow { sparkle_parameters } => {
+            assert!((sparkle_parameters[0] - 0.1).abs() < 1e-6);
+            assert!((sparkle_parameters[1] - 0.2).abs() < 1e-6);
+            assert!((sparkle_parameters[2] - 0.3).abs() < 1e-6);
+            assert!((sparkle_parameters[3] - 0.4).abs() < 1e-6);
+        }
+        _ => panic!("expected SparkleSnow"),
     }
     assert_eq!(stream.position(), data.len() as u64);
 }
