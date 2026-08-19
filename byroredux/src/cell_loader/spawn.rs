@@ -1089,22 +1089,16 @@ fn spawn_collision_shapes(
             ref_pos, ref_rot, ref_scale, nif_pos, nif_quat, coll.scale,
         );
 
-        // parry3d panics on nested Compound shapes. Clone inside
-        // catch_unwind so a bad shape doesn't kill the entire load.
-        let shape_result =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| coll.shape.clone()));
-        let shape = match shape_result {
-            Ok(s) => s,
-            Err(_) => {
-                log::warn!(
-                    "Skipping collision shape (nested composite) at ({:.0},{:.0},{:.0})",
-                    final_pos.x,
-                    final_pos.y,
-                    final_pos.z
-                );
-                continue;
-            }
-        };
+        // `coll.shape` is the canonical `CollisionShape` enum — a plain
+        // data structure (#[derive(Clone)] on Vec/Box/glam types) — so
+        // cloning it here cannot panic regardless of nesting depth. The
+        // nested-Compound parry3d panic this used to guard against was
+        // fixed structurally by #373, which made the Rapier conversion
+        // (`crates/physics/src/convert.rs`) flatten any Compound-of-
+        // Compound into a `Vec<(Isometry3, SharedShape)>` before it ever
+        // reaches parry3d — a step that happens downstream of this spawn
+        // site, not here.
+        let shape = coll.shape.clone();
 
         let entity = world.spawn();
         world.insert(entity, Transform::new(final_pos, final_rot, final_scale));
