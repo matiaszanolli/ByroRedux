@@ -6,11 +6,16 @@ use super::super::*;
 use crate::blocks::interpolator::{FloatKey, KeyGroup, KeyType, NiTransformData};
 use crate::scene::NifScene;
 
+/// #3097 — pinned against nif.xml's `CycleType` enum ordinals
+/// (`CYCLE_LOOP` = 0, `CYCLE_REVERSE` = 1, `CYCLE_CLAMP` = 2), not
+/// against whatever `from_u32` happens to return — the pre-fix version
+/// of this test asserted the implementation's own (wrong) output and
+/// so could never have caught the ordinal rotation it shipped with.
 #[test]
 fn cycle_type_from_u32() {
-    assert_eq!(CycleType::from_u32(0), CycleType::Clamp);
-    assert_eq!(CycleType::from_u32(1), CycleType::Loop);
-    assert_eq!(CycleType::from_u32(2), CycleType::Reverse);
+    assert_eq!(CycleType::from_u32(0), CycleType::Loop);
+    assert_eq!(CycleType::from_u32(1), CycleType::Reverse);
+    assert_eq!(CycleType::from_u32(2), CycleType::Clamp);
     assert_eq!(CycleType::from_u32(99), CycleType::Clamp);
 }
 

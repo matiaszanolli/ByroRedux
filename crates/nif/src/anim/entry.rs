@@ -149,19 +149,58 @@ fn net_of(block: &dyn crate::NiObject) -> Option<&crate::blocks::base::NiObjectN
     None
 }
 
-// Follow the `next_controller_ref` chain from `controller_ref` head,
-// invoking `visit` once per controller block. Returns on chain
-// termination (BlockRef::NULL) or on the first missing block.
-// Free helper for `import_embedded_animations` (#1673).
-fn walk_controller_chain(
-    scene: &NifScene,
-    head: crate::types::BlockRef,
-    mut visit: impl FnMut(usize, &dyn crate::NiObject),
-) {
+// Resolve the `NiTimeControllerBase` envelope for a controller block,
+// dispatching per known type at the same `.base` depth used by
+// `walk_controller_chain`'s `next_controller_ref` advance below — the
+// two must stay in lockstep since they downcast the same type set.
+// #3097 — previously this same ladder existed ONLY to find
+// `next_controller_ref`; the base's `flags`/`frequency`/`phase`/
+// `start_time`/`stop_time` were reachable but never read.
+fn time_controller_base_of(
+    block: &dyn crate::NiObject,
+) -> Option<&crate::blocks::controller::NiTimeControllerBase> {
     use crate::blocks::controller::{
         BsShaderController, NiFlipController, NiLightColorController, NiLightFloatController,
         NiMaterialColorController, NiSingleInterpController, NiTextureTransformController,
     };
+    let any = block.as_any();
+    if let Some(c) = any.downcast_ref::<NiSingleInterpController>() {
+        Some(&c.base)
+    } else if let Some(c) = any.downcast_ref::<NiTextureTransformController>() {
+        Some(&c.base)
+    } else if let Some(c) = any.downcast_ref::<NiFlipController>() {
+        Some(&c.base.base)
+    } else if let Some(c) = any.downcast_ref::<BsShaderController>() {
+        Some(&c.base.base)
+    } else if let Some(c) = any.downcast_ref::<NiMaterialColorController>() {
+        Some(&c.base)
+    } else if let Some(c) = any.downcast_ref::<crate::blocks::controller::NiUVController>() {
+        Some(&c.base)
+    } else if let Some(c) = any.downcast_ref::<NiGeomMorpherController>() {
+        Some(&c.base)
+    } else if let Some(c) = any.downcast_ref::<NiLightColorController>() {
+        Some(&c.base)
+    } else if let Some(c) = any.downcast_ref::<NiLightFloatController>() {
+        Some(&c.base.base)
+    } else {
+        None
+    }
+}
+
+// Follow the `next_controller_ref` chain from `controller_ref` head,
+// invoking `visit` once per controller block with its resolved
+// `NiTimeControllerBase` envelope (`None` for an unrecognized type).
+// Returns on chain termination (BlockRef::NULL) or on the first
+// missing block. Free helper for `import_embedded_animations` (#1673).
+fn walk_controller_chain(
+    scene: &NifScene,
+    head: crate::types::BlockRef,
+    mut visit: impl FnMut(
+        usize,
+        &dyn crate::NiObject,
+        Option<&crate::blocks::controller::NiTimeControllerBase>,
+    ),
+) {
     use crate::types::BlockRef;
     let mut cur = head;
     let mut hops = 0u32;
@@ -169,46 +208,12 @@ fn walk_controller_chain(
         let Some(block) = scene.blocks.get(idx) else {
             break;
         };
-        visit(idx, block.as_ref());
+        let base = time_controller_base_of(block.as_ref());
+        visit(idx, block.as_ref(), base);
 
-        // Advance via NiTimeControllerBase.next_controller_ref. Every
-        // NIF controller inherits NiTimeControllerBase, but the field
-        // lives at block-specific offsets — dispatch per known type.
-        let any = block.as_any();
-        cur = if let Some(c) = any.downcast_ref::<NiSingleInterpController>() {
-            c.base.next_controller_ref
-        } else if let Some(c) = any.downcast_ref::<NiTextureTransformController>() {
-            c.base.next_controller_ref
-        } else if let Some(c) = any.downcast_ref::<NiFlipController>() {
-            // NiFlipController : NiFloatInterpController : NiSingleInterpController.
-            // Two `.base` hops to reach NiTimeControllerBase.
-            c.base.base.next_controller_ref
-        } else if let Some(c) = any.downcast_ref::<BsShaderController>() {
-            c.base.base.next_controller_ref
-        } else if let Some(c) = any.downcast_ref::<NiMaterialColorController>() {
-            c.base.next_controller_ref
-        } else if let Some(c) = any.downcast_ref::<crate::blocks::controller::NiUVController>() {
-            c.base.next_controller_ref
-        } else if let Some(c) = any.downcast_ref::<NiGeomMorpherController>() {
-            c.base.next_controller_ref
-        } else if let Some(c) = any.downcast_ref::<NiLightColorController>() {
-            // #983 — NiLightColorController inherits
-            // NiPoint3InterpController which is a
-            // NiSingleInterpController pass-through. The
-            // next_controller_ref sits on its
-            // NiTimeControllerBase (one `.base` hop).
-            c.base.next_controller_ref
-        } else if let Some(c) = any.downcast_ref::<NiLightFloatController>() {
-            // #983 — NiLightFloatController is the typed alias
-            // covering Dimmer / Intensity / Radius. It's a
-            // NiSingleInterpController + type_name tag; the
-            // chain advance is two hops (`.base.base`) to
-            // reach NiTimeControllerBase.
-            c.base.base.next_controller_ref
-        } else {
-            // Unknown chain node — stop rather than infinite-loop.
-            BlockRef::NULL
-        };
+        // Advance via NiTimeControllerBase.next_controller_ref — same
+        // envelope just resolved above for `visit`.
+        cur = base.map_or(BlockRef::NULL, |b| b.next_controller_ref);
         // Cycle guard: Bethesda controllers don't normally form cycles,
         // but malformed files could. Bound the walk at 64 hops.
         hops += 1;
@@ -236,8 +241,24 @@ fn walk_controller_chain(
 /// collects.
 ///
 /// Returns `None` when no supported embedded controllers are found.
-/// The clip's `cycle_type` is `Loop` and `frequency` is `1.0` so the
-/// runtime plays it continuously — cell-load-time start, no end.
+///
+/// #3097 — the clip's `cycle_type` / `frequency` / `phase` are taken
+/// from the FIRST controller's `NiTimeControllerBase` envelope
+/// encountered during the walk below (mixed-envelope controllers
+/// chained onto the same mesh are rare in vanilla content and, when
+/// they occur, are authored as one coordinated effect — a single
+/// representative envelope is the honest first step, not a
+/// per-channel timing model). A mesh with no recognized controller at
+/// all falls back to `Loop` @ `1.0`/phase `0.0` — that fallback used
+/// to be unconditional; now it only applies when the walk finds
+/// nothing to read an envelope from.
+///
+/// `duration` is NOT taken from the envelope — it's derived from the
+/// actual maximum key time across every extracted channel (see the
+/// computation at the end of this function, which predates #3097).
+/// That was already correct: the authored `stop_time`/`start_time`
+/// can undershoot the real longest channel, and the sampler needs the
+/// true extent to avoid clipping playback.
 ///
 /// Supported controller types match the KF importer's dispatch
 /// (`NiTransformController` / `NiKeyframeController`, `NiAlphaController`,
@@ -256,6 +277,7 @@ pub fn import_embedded_animations(scene: &NifScene) -> Option<AnimationClip> {
         duration: 0.0,
         cycle_type: CycleType::Loop,
         frequency: 1.0,
+        phase: 0.0,
         weight: 1.0,
         accum_root_name: None,
         channels: HashMap::new(),
@@ -265,6 +287,10 @@ pub fn import_embedded_animations(scene: &NifScene) -> Option<AnimationClip> {
         texture_flip_channels: Vec::new(),
         text_keys: Vec::new(),
     };
+    // Set from the first `Some` envelope `walk_controller_chain` hands
+    // us below; every controller after that keeps contributing
+    // channels but no longer touches the clip-level envelope.
+    let mut envelope_taken = false;
 
     // Track seen controllers so a controller linked into multiple
     // chains (rare but legal — shared via NiControllerManager) doesn't
@@ -284,9 +310,26 @@ pub fn import_embedded_animations(scene: &NifScene) -> Option<AnimationClip> {
             continue;
         };
 
-        walk_controller_chain(scene, net.controller_ref, |ctrl_idx, ctrl_block| {
+        walk_controller_chain(scene, net.controller_ref, |ctrl_idx, ctrl_block, base| {
             if !seen_controllers.insert(ctrl_idx) {
                 return;
+            }
+            if !envelope_taken {
+                if let Some(b) = base {
+                    // Cycle Type: bits 1-2 of `flags` (nif.xml
+                    // `NiTimeController::flags`, mask 0x0006).
+                    // `duration` is deliberately NOT taken from
+                    // `stop_time`/`start_time` here — see the max-key-time
+                    // computation at the end of this function, which
+                    // predates this fix and is the more accurate source
+                    // (the authored envelope can undershoot the actual
+                    // longest channel; the sampler needs the real extent).
+                    let raw_cycle = (b.flags >> 1) & 0x3;
+                    clip.cycle_type = CycleType::from_u32(raw_cycle as u32);
+                    clip.frequency = b.frequency;
+                    clip.phase = b.phase;
+                    envelope_taken = true;
+                }
             }
             let ctrl_type = ctrl_block.block_type_name();
             let any = ctrl_block.as_any();

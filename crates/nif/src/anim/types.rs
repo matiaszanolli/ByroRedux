@@ -23,11 +23,20 @@ pub enum CycleType {
 }
 
 impl CycleType {
+    /// Decode nif.xml's `CycleType` enum (`CYCLE_LOOP` = 0, `CYCLE_REVERSE`
+    /// = 1, `CYCLE_CLAMP` = 2 — both the raw `NiControllerSequence.Cycle
+    /// Type` field and the 2-bit `Cycle Type` member of `NiTimeController`'s
+    /// `flags` bitfield share this ordinal). #3097 SIBLING check: this
+    /// previously mapped 0→Clamp/1→Loop/2→Reverse, a one-position rotation
+    /// off nif.xml's actual ordinals with no cross-check on record —
+    /// every non-default `.kf` cycle type imported since M21 read as the
+    /// wrong variant. Unknown values fall back to `Clamp` (nif.xml's own
+    /// documented default for the bitfield member).
     pub fn from_u32(v: u32) -> Self {
         match v {
-            0 => Self::Clamp,
-            1 => Self::Loop,
-            2 => Self::Reverse,
+            0 => Self::Loop,
+            1 => Self::Reverse,
+            2 => Self::Clamp,
             _ => Self::Clamp,
         }
     }
@@ -185,6 +194,16 @@ pub struct AnimationClip {
     pub duration: f32,
     pub cycle_type: CycleType,
     pub frequency: f32,
+    /// Phase offset within the cycle, as authored on
+    /// `NiControllerSequence.Phase` (.kf clips) or the 2-bit-adjacent
+    /// `NiTimeControllerBase.phase` field (embedded controllers). #3097
+    /// — parsed and stored here; NOT yet consumed downstream. Wiring it
+    /// into playback (staggering same-mesh instances that should not
+    /// animate in lockstep) needs `AnimationPlayer` to seed its initial
+    /// elapsed time from this value, which is deferred follow-up: no
+    /// field for it exists yet on `byroredux_core`'s `AnimationClip` or
+    /// on `AnimationPlayer` itself.
+    pub phase: f32,
     /// Default weight from NiControllerSequence (0.0–1.0).
     pub weight: f32,
     /// Accumulation root node name — horizontal translation on this node

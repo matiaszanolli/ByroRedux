@@ -134,3 +134,35 @@ fn import_sequence_dispatches_keyframe_controller_alias() {
         "NiKeyframeController alias must dispatch to transform extraction (#1442)"
     );
 }
+
+/// #3097 SIBLING gap — `NiControllerSequence.Phase` was parsed since
+/// M21 but `import_sequence` never carried it onto the resulting
+/// `AnimationClip`. Not the primary bug in #3097 (that's the
+/// embedded-controller path hardcoding `Loop`/`1.0`/`duration 0.0`),
+/// but the same "parsed and discarded" shape in the sibling import
+/// path the issue asked to check.
+#[test]
+fn import_sequence_carries_authored_phase() {
+    use crate::blocks::controller::NiControllerSequence;
+    use crate::types::BlockRef;
+
+    let scene = NifScene::default();
+    let seq = NiControllerSequence {
+        name: Some(Arc::from("seq")),
+        controlled_blocks: Vec::new(),
+        array_grow_by: 0,
+        weight: 1.0,
+        text_keys_ref: BlockRef::NULL,
+        cycle_type: 0,
+        frequency: 1.0,
+        phase: 0.6,
+        start_time: 0.0,
+        stop_time: 1.0,
+        manager_ref: BlockRef::NULL,
+        accum_root_name: None,
+        anim_note_refs: Vec::new(),
+    };
+
+    let clip = import_sequence(&scene, &seq);
+    assert!((clip.phase - 0.6).abs() < 1e-6);
+}

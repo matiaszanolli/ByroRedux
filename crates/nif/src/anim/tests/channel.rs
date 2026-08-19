@@ -110,6 +110,95 @@ fn import_embedded_animations_captures_texture_transform_controller() {
     assert!((ch.keys[1].value - 0.5).abs() < 1e-6);
 }
 
+/// Regression: #3097. An authored `NiTimeControllerBase` envelope
+/// (non-default cycle type, frequency, phase, timing) must reach the
+/// merged embedded clip instead of the old hardcoded
+/// `Loop` / `1.0` / `duration 0.0`. Same scene shape as the test
+/// above, but `flags` encodes `CYCLE_REVERSE` (nif.xml raw value 1,
+/// bits 1-2 of the bitfield) alongside unrelated bits 0 and 3 set —
+/// proving the decode masks precisely, not by accident of a
+/// convenient flags value.
+#[test]
+fn import_embedded_animations_carries_authored_timing_envelope() {
+    use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
+    use crate::blocks::controller::{NiTextureTransformController, NiTimeControllerBase};
+    use crate::blocks::interpolator::{FloatKey, KeyGroup, KeyType};
+    use crate::blocks::node::NiNode;
+    use crate::types::{BlockRef, NiTransform};
+    use std::sync::Arc;
+
+    let data = NiFloatData {
+        keys: KeyGroup {
+            key_type: KeyType::Linear,
+            keys: vec![FloatKey {
+                time: 0.0,
+                value: 0.0,
+                tangent_forward: 0.0,
+                tangent_backward: 0.0,
+                tbc: None,
+            }],
+        },
+    };
+    let interp = NiFloatInterpolator {
+        value: 0.0,
+        data_ref: BlockRef(0),
+    };
+    let ctrl = NiTextureTransformController {
+        base: NiTimeControllerBase {
+            next_controller_ref: BlockRef::NULL,
+            // bits: 0=AnimType(1), 1-2=CycleType(0b01=CYCLE_REVERSE), 3=Active(1)
+            flags: 0b0000_1011,
+            frequency: 2.5,
+            phase: 0.75,
+            start_time: 1.0,
+            stop_time: 3.0,
+            target_ref: BlockRef::NULL,
+        },
+        interpolator_ref: BlockRef(1),
+        shader_map: false,
+        texture_slot: 0,
+        operation: 0,
+    };
+    let node = NiNode {
+        av: NiAVObjectData {
+            net: NiObjectNETData {
+                name: Some(Arc::from("LavaFlow")),
+                extra_data_refs: Vec::new(),
+                controller_ref: BlockRef(2),
+            },
+            flags: 0,
+            transform: NiTransform::default(),
+            properties: Vec::new(),
+            collision_ref: BlockRef::NULL,
+        },
+        children: Vec::new(),
+        effects: Vec::new(),
+    };
+    let scene = NifScene {
+        blocks: vec![
+            Box::new(data),
+            Box::new(interp),
+            Box::new(ctrl),
+            Box::new(node),
+        ],
+        ..NifScene::default()
+    };
+
+    let clip = import_embedded_animations(&scene).expect("expected embedded clip");
+    assert_eq!(clip.cycle_type, CycleType::Reverse);
+    assert!((clip.frequency - 2.5).abs() < 1e-6);
+    assert!((clip.phase - 0.75).abs() < 1e-6);
+    // `duration` deliberately does NOT come from the envelope's
+    // stop_time(3.0) - start_time(1.0) — it's the real max key time
+    // across channels, which stays the existing constant-key fallback
+    // (1.0) here since this fixture's lone key sits at time 0.0.
+    assert!(
+        (clip.duration - 1.0).abs() < 1e-6,
+        "duration must stay derived from channel key times, not the envelope; got {}",
+        clip.duration
+    );
+}
+
 /// Regression: #545. A NiTriShape with a `NiFlipController` on
 /// `controller_ref` must surface as a looping `AnimationClip`
 /// carrying a `texture_flip_channels` entry whose `source_paths`

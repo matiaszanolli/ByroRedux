@@ -183,6 +183,9 @@ pub fn import_sequence(scene: &NifScene, seq: &NiControllerSequence) -> Animatio
         duration,
         cycle_type,
         frequency,
+        // #3097 SIBLING gap — Phase was parsed onto NiControllerSequence
+        // since M21 but never carried past this function.
+        phase: seq.phase,
         weight,
         accum_root_name,
         channels,
