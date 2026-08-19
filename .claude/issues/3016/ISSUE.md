@@ -1,13 +1,4 @@
-# SCR-D7-03: base-record script attach gated in two branches and ungated in three
-
-**Issue**: #3016
-**Severity**: MEDIUM
-**Dimension**: 7 — Engine Attach & Trigger Wiring
-**Labels**: `medium,scripting,bug`
-**Source report**: `docs/audits/AUDIT_SCRIPTING_2026-08-16.md`
-**Filed**: 2026-08-17 via `/audit-publish`
-
----
+# SCR-D7-2026-08-16-03: base-record script attach is gated on is_primary_synth in two spawn branches and ungated in three, with nothing recording which policy is intended
 
 Filed from `docs/audits/AUDIT_SCRIPTING_2026-08-16.md` (Dimension 7 — Engine Attach & Trigger Wiring).
 
@@ -41,7 +32,3 @@ Decide the policy, apply it to all five branches, and **record the rationale in 
 - [ ] **RATIONALE**: The chosen policy is documented so it cannot drift apart again
 - [ ] **ORTHOGONAL**: The #2026 outer-REFR rule is preserved and not conflated with the base-record rule
 - [ ] **TESTS**: A regression test covers a multi-child REFR in both a gated and an ungated branch
-
----
-
-*Immutable snapshot of the issue as filed. GitHub is authoritative for current state — query `gh issue view 3016 --json state` when live state is needed.*

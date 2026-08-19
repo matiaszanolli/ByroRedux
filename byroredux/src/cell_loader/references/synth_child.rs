@@ -68,6 +68,20 @@ pub(crate) fn spawn_logical_quest_reference(
     entity
 }
 
+/// #3016 — policy for every spawn branch that calls this: **always call it,
+/// never gate the call itself on `is_primary_synth`.** `base_form_id` (i.e.
+/// `child_form_id`) is the leaf base record for *this* synthetic child, so
+/// its own SCRI/VMAD belongs to this child, not to the SCOL/PKIN's first
+/// child alone — it must attach once per spawned entity, mirroring the fact
+/// that each of these branches spawns a real, independent entity per child.
+///
+/// This is orthogonal to `refr_script_instance`: the *outer REFR's own*
+/// VMAD (passed in here as `refr_script_instance`) is a property of the one
+/// REFR being expanded, not of each child, so callers pre-gate it to `None`
+/// past the first child via `refr_script_instance_for_synth_child` (#2026)
+/// before it ever reaches this function — gating the call itself would
+/// double-gate the outer-REFR half and additionally, wrongly, drop the
+/// per-child base-record half.
 pub(super) fn attach_quest_reference_script(
     world: &mut World,
     entity: EntityId,
@@ -152,6 +166,9 @@ pub(super) fn spawn_synth_child(
                 if is_primary_synth {
                     stamp_quest_reference(world, entity, placed_ref, load_order);
                 }
+                // #3016 — ungated: see `attach_quest_reference_script`'s doc
+                // comment for the policy this and every other spawn branch
+                // in this file now shares.
                 if attach_script_for_refr(
                     world,
                     entity,
@@ -235,17 +252,28 @@ pub(super) fn spawn_synth_child(
             );
             let animation_flags = crate::systems::canonical_light_animation_flags(game, ld.flags);
             attach_light_flicker_if_needed(world, entity, ld, ref_pos, animation_flags);
+            // #3016 — `stamp_quest_reference` (outer-REFR identity, #2026)
+            // stays gated to the first synthetic child, but the script
+            // attach below is NOT: `child_form_id`'s own base-record
+            // SCRI/VMAD belongs to *this* child's base record, and this
+            // branch spawns a real entity for every synthetic child, not
+            // just the first. `refr_script_instance` is already pre-gated
+            // to `None` past the first child by `refr_script_instance_for_
+            // synth_child`, so the outer-REFR-VMAD half of #2026 still only
+            // binds once — only the base-record half now runs per child,
+            // matching the trigger-volume / main-static-mesh / actor
+            // branches below and in `mod.rs`.
             if is_primary_synth {
                 stamp_quest_reference(world, entity, placed_ref, load_order);
-                attach_quest_reference_script(
-                    world,
-                    entity,
-                    child_form_id,
-                    record_index,
-                    refr_script_instance,
-                    accum,
-                );
             }
+            attach_quest_reference_script(
+                world,
+                entity,
+                child_form_id,
+                record_index,
+                refr_script_instance,
+                accum,
+            );
             accum.entity_count += 1;
         } else if is_primary_synth {
             let entity = spawn_logical_quest_reference(
@@ -330,17 +358,20 @@ pub(super) fn spawn_synth_child(
             );
             let animation_flags = crate::systems::canonical_light_animation_flags(game, ld.flags);
             attach_light_flicker_if_needed(world, entity, ld, ref_pos, animation_flags);
+            // #3016 — same split as the LIGH-only branch above: outer-REFR
+            // identity stays gated to the first synthetic child, the
+            // per-child base-record script attach does not.
             if is_primary_synth {
                 stamp_quest_reference(world, entity, placed_ref, load_order);
-                attach_quest_reference_script(
-                    world,
-                    entity,
-                    child_form_id,
-                    record_index,
-                    refr_script_instance,
-                    accum,
-                );
             }
+            attach_quest_reference_script(
+                world,
+                entity,
+                child_form_id,
+                record_index,
+                refr_script_instance,
+                accum,
+            );
             accum.entity_count += 1;
         } else if is_primary_synth {
             let entity = spawn_logical_quest_reference(
@@ -608,6 +639,9 @@ pub(super) fn spawn_synth_child(
     // #2026 — `refr_script_instance` (the outer REFR's own VMAD,
     // gated to the first synthetic child only) replaces the raw
     // `placed_ref.script_instance` here.
+    // #3016 — the call itself is deliberately NOT gated on
+    // `is_primary_synth`: see `attach_quest_reference_script`'s doc
+    // comment for the shared policy.
     if attach_script_for_refr(
         world,
         placement_root,

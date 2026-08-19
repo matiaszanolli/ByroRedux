@@ -621,6 +621,9 @@ pub(super) fn load_references_budgeted(
                             // same per-synth-child gate the static path uses,
                             // so the REFR-own VMAD binds to child 0 only and
                             // the additive REFR-then-base merge is identical.
+                            // #3016 — the call itself stays ungated: this
+                            // already matched the shared policy documented
+                            // on `attach_quest_reference_script`.
                             attach_quest_reference_script(
                                 world,
                                 root,

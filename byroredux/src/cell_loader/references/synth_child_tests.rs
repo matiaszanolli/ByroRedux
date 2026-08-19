@@ -70,3 +70,109 @@ fn refr_script_instance_attaches_to_first_synth_child_only() {
     // correctly gets `None` — nothing to propagate in the first place.
     assert_eq!(refr_script_instance_for_synth_child(0, None), None);
 }
+
+/// #3016 — a synthetic child's own base-record script must attach
+/// regardless of whether it's the first child (`synth_idx == 0`) or a
+/// later one, because `attach_quest_reference_script` is keyed by
+/// `child_form_id`, not by the outer REFR. Two of `spawn_synth_child`'s
+/// five branches (LIGH light-only, fxlight) used to wrap this call in
+/// `if is_primary_synth { .. }`, which dropped it — along with the
+/// unrelated `stamp_quest_reference` call it was bundled with — for
+/// every child past the first.
+///
+/// Pins the fix by simulating exactly the two children's call shape:
+/// `refr_script_instance: None` for both (correct for a REFR with no
+/// VMAD of its own, and the pre-gated value `refr_script_instance_for_
+/// synth_child` always produces past child 0), but each child's own
+/// `child_form_id` carrying a distinct base-record `SCRI` → SCPT
+/// (Obscript, the M47.0 registry path — lighter to construct than the
+/// VMAD/`.pex` path, which needs a real script archive). Both must
+/// attach — a regression that re-gates the call would silently drop the
+/// second.
+#[test]
+fn base_record_script_attaches_for_every_synth_child_not_just_the_first() {
+    use byroredux_core::ecs::world::World;
+    use esm::records::{ActiRecord, ScriptRecord};
+
+    const CHILD_0: u32 = 0x00AA_0001;
+    const CHILD_1: u32 = 0x00AA_0002;
+    const SCRI_0: u32 = 0x00BB_0001;
+    const SCRI_1: u32 = 0x00BB_0002;
+
+    fn spawn_marker(world: &mut World, entity: byroredux_core::ecs::EntityId) {
+        use byroredux_scripting::papyrus_demo::RumbleOnActivate;
+        let Some(mut q) = world.query_mut::<RumbleOnActivate>() else {
+            return;
+        };
+        q.insert(entity, RumbleOnActivate::default());
+    }
+
+    let mut world = World::new();
+    byroredux_scripting::register(&mut world);
+    let mut registry = byroredux_scripting::ScriptRegistry::new();
+    registry.register("FirstChildScript", spawn_marker);
+    registry.register("SecondChildScript", spawn_marker);
+    world.insert_resource(registry);
+
+    let mut index = esm::records::EsmIndex::default();
+    index.activators.insert(
+        CHILD_0,
+        ActiRecord {
+            form_id: CHILD_0,
+            editor_id: "Light0".to_string(),
+            script_form_id: SCRI_0,
+            ..Default::default()
+        },
+    );
+    index.activators.insert(
+        CHILD_1,
+        ActiRecord {
+            form_id: CHILD_1,
+            editor_id: "Light1".to_string(),
+            script_form_id: SCRI_1,
+            ..Default::default()
+        },
+    );
+    index.scripts.insert(
+        SCRI_0,
+        ScriptRecord {
+            form_id: SCRI_0,
+            editor_id: "FirstChildScript".to_string(),
+            ..Default::default()
+        },
+    );
+    index.scripts.insert(
+        SCRI_1,
+        ScriptRecord {
+            form_id: SCRI_1,
+            editor_id: "SecondChildScript".to_string(),
+            ..Default::default()
+        },
+    );
+
+    let mut accum = RefLoadAccum::new();
+    let entity0 = world.spawn();
+    let entity1 = world.spawn();
+
+    // Both calls use `refr_script_instance: None` — the value every
+    // caller already passes for a REFR with no VMAD of its own, and
+    // exactly what `refr_script_instance_for_synth_child` returns for
+    // every non-first child regardless. Only `child_form_id` differs.
+    attach_quest_reference_script(&mut world, entity0, CHILD_0, &index, None, &mut accum);
+    attach_quest_reference_script(&mut world, entity1, CHILD_1, &index, None, &mut accum);
+
+    assert!(
+        world.has::<byroredux_scripting::papyrus_demo::RumbleOnActivate>(entity0),
+        "the first child's own base-record SCRI/SCPT must attach",
+    );
+    assert!(
+        world.has::<byroredux_scripting::papyrus_demo::RumbleOnActivate>(entity1),
+        "a LATER child's own base-record SCRI/SCPT must attach too — it \
+         is not the outer REFR's VMAD and must not share its \
+         child-0-only gate",
+    );
+    assert_eq!(
+        accum.scripts_recognized, 2,
+        "both children's base-record scripts count toward the summary",
+    );
+}
