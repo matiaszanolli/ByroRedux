@@ -326,6 +326,24 @@ pub(crate) fn bgem_uses_thin_glass_behavior(bgem: &BgemFile) -> bool {
     bgem.base.non_occluder && bgem_uses_glass_behavior(bgem)
 }
 
+/// Every archive path the `--bsa` CDB-discovery arm of
+/// [`build_material_provider`] should scan for a given explicitly-named
+/// archive: the primary path plus any numeric-suffixed sibling that
+/// actually exists. `exists` is injected (rather than calling
+/// `std::path::Path::is_file` directly) so this stays unit-testable
+/// without touching the real filesystem or fabricating a real BA2 file —
+/// same reasoning as `sniff_magic_from`'s injected `Read` (#2615). #2621
+/// / SF-D3-04.
+pub(crate) fn cdb_scan_candidates(primary: &str, exists: impl Fn(&str) -> bool) -> Vec<String> {
+    let mut paths = vec![primary.to_string()];
+    paths.extend(
+        numeric_sibling_paths(primary)
+            .into_iter()
+            .filter(|p| exists(p)),
+    );
+    paths
+}
+
 /// Build a MaterialProvider from CLI arguments. Accepts repeated
 /// `--materials-ba2 <path>` flags so a user can layer modded materials
 /// on top of the vanilla `Fallout4 - Materials.ba2`. Silently returns
@@ -363,15 +381,41 @@ pub(crate) fn build_material_provider(args: &[String]) -> MaterialProvider {
             // `materials\creations\<plugin>\materialsbeta.cdb` — never the
             // base path and never `--materials-ba2`. Scan those for CDBs
             // too, but do NOT push them as material archives: they're mesh
-            // archives owned by the TextureProvider. The archive is
+            // archives owned by the TextureProvider. Each archive is
             // re-opened here purely to read its file table (the entry data
             // isn't touched) and dropped after the scan.
+            //
+            // #2621 / SF-D3-04 — the texture provider covers Starfield's
+            // zero-padded numeric-sibling series (`Meshes01.ba2` →
+            // `Meshes02..09.ba2`, via `open_with_numeric_siblings`); this
+            // arm didn't, so a DLC/Creation CDB shipped in a sibling
+            // archive (rather than the one explicitly named on the command
+            // line) was never scanned — #1571's original failure mode
+            // reappearing one level up, at archive selection instead of
+            // path selection. `cdb_scan_candidates` reuses
+            // `numeric_sibling_paths` (the same pure candidate-list logic
+            // `open_with_numeric_siblings` is built on) rather than that
+            // helper itself, since each sibling's own path — not the
+            // primary's — needs to reach `discover_starfield_cdbs` as
+            // `source`, for correct per-archive cache-key and log
+            // attribution.
+            //
+            // Not fixed here (documented, LOW, same site per the issue): a
+            // loose `Data\materials\materialsbeta.cdb` — the natural
+            // mod-override shape — is never discovered by any path in this
+            // function; every source scanned here is an archive.
             "--bsa" => {
                 if let Some(path) = args.get(i + 1) {
-                    match Archive::open(path) {
-                        Ok(a) => discover_starfield_cdbs(&a, path, &mut provider),
-                        Err(e) => {
-                            log::warn!("Failed to open '{}' for CDB discovery: {}", path, e)
+                    for candidate in
+                        cdb_scan_candidates(path, |p| std::path::Path::new(p).is_file())
+                    {
+                        match Archive::open(&candidate) {
+                            Ok(a) => discover_starfield_cdbs(&a, &candidate, &mut provider),
+                            Err(e) => log::warn!(
+                                "Failed to open '{}' for CDB discovery: {}",
+                                candidate,
+                                e
+                            ),
                         }
                     }
                     i += 2;

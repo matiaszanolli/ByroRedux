@@ -77,3 +77,51 @@ fn siblings_starfield_two_digit_zero_start_offers_02_through_09() {
 fn siblings_three_digit_101_suffix_is_not_a_two_digit_series_start() {
     assert!(numeric_sibling_paths("Mod - Meshes101.bsa").is_empty());
 }
+
+// ── #2621 / SF-D3-04 — `--bsa` CDB-discovery arm sibling coverage ──
+//
+// `cdb_scan_candidates` is `build_material_provider`'s `--bsa` arm
+// factored into a pure, testable core: the primary path plus whichever
+// numeric siblings the injected `exists` predicate reports as present.
+// A real `Archive::open`/CDB round-trip needs a genuine on-disk BA2 —
+// this proves the CANDIDATE LIST is right instead, the part that was
+// actually broken pre-fix (the archive-opening/CDB-scan loop around it
+// is unchanged, already-exercised code).
+
+/// The issue's own fixture shape: `Meshes01.ba2` on the command line,
+/// `Meshes02.ba2` (the one "carrying the CDB") present on disk. The
+/// sibling must be in the scan list.
+#[test]
+fn cdb_scan_candidates_includes_existing_starfield_sibling() {
+    let candidates = cdb_scan_candidates("Starfield - Meshes01.ba2", |p| {
+        p == "Starfield - Meshes01.ba2" || p == "Starfield - Meshes02.ba2"
+    });
+    assert!(candidates.contains(&"Starfield - Meshes01.ba2".to_string()));
+    assert!(
+        candidates.contains(&"Starfield - Meshes02.ba2".to_string()),
+        "a sibling the CDB actually ships in must be scanned, not just the primary: {candidates:?}"
+    );
+}
+
+/// A sibling that doesn't exist on disk must not appear in the scan
+/// list — `exists` is the only source of truth, not the raw candidate
+/// path list `numeric_sibling_paths` returns.
+#[test]
+fn cdb_scan_candidates_excludes_missing_siblings() {
+    let candidates = cdb_scan_candidates("Starfield - Meshes01.ba2", |_| false);
+    assert_eq!(
+        candidates,
+        vec!["Starfield - Meshes01.ba2".to_string()],
+        "with no sibling present, only the primary path is scanned"
+    );
+}
+
+/// The primary path is always scanned regardless of what `exists`
+/// reports for it — `build_material_provider`'s pre-fix single-archive
+/// behavior (try to open the explicitly-named path, warn on failure)
+/// must survive unchanged for the non-sibling case.
+#[test]
+fn cdb_scan_candidates_always_includes_the_primary() {
+    let candidates = cdb_scan_candidates("Fallout4 - Materials.ba2", |_| false);
+    assert_eq!(candidates, vec!["Fallout4 - Materials.ba2".to_string()]);
+}
