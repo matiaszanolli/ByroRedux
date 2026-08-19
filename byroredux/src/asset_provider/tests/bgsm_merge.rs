@@ -1412,6 +1412,73 @@ fn failed_path_set_dedups_warnings() {
     assert_eq!(after, before + 1);
 }
 
+/// Regression for #2601 — a BGSM resolve failure reached through the
+/// real `merge_external_material` path (not `resolve_bgsm` called
+/// directly, as the sibling test above does) must be diagnosably
+/// distinct from "material is authored non-PBR": both silently return
+/// `MergeOutcome::Unresolved` and leave the mesh at its NIF-native
+/// keyword-classified fallback, but only a genuine resolve failure
+/// should populate `MaterialProvider::failed_paths` — the queryable,
+/// deduplicated record a developer can inspect (via a future debug
+/// surface, or directly in-process) to confirm "this mesh's chrome
+/// look is a broken BGSM reference, not intentional legacy authoring".
+#[test]
+fn merge_external_material_records_bgsm_resolve_failure() {
+    let mut pool = byroredux_core::string::StringPool::new();
+    // No archives registered on this provider — the path is dispatched
+    // as BGSM (by extension) but can never resolve.
+    let path = "materials/tests/broken.bgsm";
+    let mut provider = MaterialProvider::new();
+    let mut mesh = imported_mesh_with_material_path(&mut pool, path);
+
+    assert!(provider.failed_paths.is_empty());
+    let outcome = merge_external_material(&mut mesh.material, &mut provider, &mut pool);
+    assert_eq!(outcome, MergeOutcome::Unresolved);
+    assert!(
+        !provider.failed_paths.is_empty(),
+        "a genuine BGSM resolve failure through the real merge path must be \
+         recorded in failed_paths — the diagnostic signal distinguishing it \
+         from a mesh that legitimately has no material_path at all"
+    );
+}
+
+/// BGEM sibling of the above — same silent-Unresolved shape, same fix.
+#[test]
+fn merge_external_material_records_bgem_resolve_failure() {
+    let mut pool = byroredux_core::string::StringPool::new();
+    let path = "materials/tests/broken.bgem";
+    let mut provider = MaterialProvider::new();
+    let mut mesh = imported_mesh_with_material_path(&mut pool, path);
+
+    assert!(provider.failed_paths.is_empty());
+    let outcome = merge_external_material(&mut mesh.material, &mut provider, &mut pool);
+    assert_eq!(outcome, MergeOutcome::Unresolved);
+    assert!(
+        !provider.failed_paths.is_empty(),
+        "a genuine BGEM resolve failure through the real merge path must be \
+         recorded in failed_paths, same as the BGSM arm"
+    );
+}
+
+/// A mesh with NO `material_path` at all is the legitimate case this
+/// diagnostic must NOT fire for — it is not a failure, it's a mesh
+/// that was never routed through BGSM/BGEM in the first place.
+#[test]
+fn merge_external_material_no_material_path_does_not_record_a_failure() {
+    let mut pool = byroredux_core::string::StringPool::new();
+    let mut provider = MaterialProvider::new();
+    let mut material = ImportedMaterial::default();
+    assert!(material.material_path.is_none());
+
+    let outcome = merge_external_material(&mut material, &mut provider, &mut pool);
+    assert_eq!(outcome, MergeOutcome::Unresolved);
+    assert!(
+        provider.failed_paths.is_empty(),
+        "no material_path is not a resolve failure — must not be conflated \
+         with a broken BGSM/BGEM reference"
+    );
+}
+
 /// `build_material_provider` on CLI args without `--materials-ba2`
 /// returns an empty provider — the merge helper short-circuits
 /// when the archive lookup fails, so pre-FO4 content pays zero cost.

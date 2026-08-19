@@ -806,7 +806,30 @@ impl MaterialProvider {
         if let Some(hit) = self.bgem_cache.get(&key) {
             return Some(Arc::clone(hit));
         }
-        let bytes = self.extract_from_archives(&key)?;
+        // #2601 — was `self.extract_from_archives(&key)?`, a silent early
+        // return that never touched `failed_paths` and never logged.
+        // Unlike `resolve_bgsm` (whose `bgsm_cache.resolve` wraps EVERY
+        // failure mode, including "not in any archive", in one `Err` arm
+        // that already records + logs), this "not found" case bypassed
+        // the parse-failure arm below entirely, so a missing BGEM file
+        // left no diagnostic trail at all — not even the low-level one
+        // the BGSM sibling already had. Explicit match instead of `?` so
+        // "not found" gets the same bookkeeping as "found but failed to
+        // parse".
+        let Some(bytes) = self.extract_from_archives(&key) else {
+            if self.failed_paths.len() >= MAX_FAILED_PATHS {
+                for _ in 0..MAX_FAILED_PATHS / 2 {
+                    if let Some(old) = self.failed_paths_order.pop_front() {
+                        self.failed_paths.remove(&old);
+                    }
+                }
+            }
+            if self.failed_paths.insert(key.clone()) {
+                self.failed_paths_order.push_back(key);
+                log::warn!("BGEM not found in any loaded archive: '{}'", path);
+            }
+            return None;
+        };
         match byroredux_bgsm::parse_bgem(&bytes) {
             Ok(parsed) => {
                 let arc = Arc::new(parsed);
@@ -1154,6 +1177,29 @@ pub(crate) fn merge_external_material(
 
     if dispatch_kind == Some(MaterialKind::Bgsm) {
         let Some(resolved) = provider.resolve_bgsm(&path) else {
+            // #2601 — `resolve_bgsm` already logged WHY the resolve failed
+            // (missing archive entry, parse error, template-cycle recovery
+            // failure — see its own `log::warn!` sites) and recorded `path`
+            // into `failed_paths` so repeat failures don't re-spam the log.
+            // What neither of those says is the CONSEQUENCE decided right
+            // here: this mesh keeps whatever `into_imported_material`
+            // (crates/nif) already guessed from the NIF-native keyword
+            // classifier — visually indistinguishable from a material that
+            // was deliberately authored non-PBR. That's the documented root
+            // cause of the recurring "chrome/posterized FO4 surface" class
+            // (see feedback_chrome_means_missing_textures) — a broken BGSM
+            // reference silently looks identical to intentional legacy
+            // authoring. Logging the causal link at the point it's decided
+            // means grepping for "keeps its keyword-classified fallback"
+            // finds every mesh affected in one search, instead of having to
+            // correlate `resolve_bgsm`'s low-level reason against which
+            // REFRs actually dispatched as BGSM.
+            log::warn!(
+                "material '{}': BGSM resolve failed — mesh keeps its NIF-native \
+                 keyword-classified material (legacy Lambert guess) instead of \
+                 the authoritative BGSM PBR data",
+                path
+            );
             return MergeOutcome::Unresolved;
         };
         // BGSM resolution succeeded — telemetry-only flag (no renderer
@@ -1545,6 +1591,15 @@ pub(crate) fn merge_external_material(
         }
     } else if dispatch_kind == Some(MaterialKind::Bgem) {
         let Some(bgem) = provider.resolve_bgem(&path) else {
+            // #2601 — sibling of the BGSM arm's diagnostic above. Same
+            // consequence: this mesh keeps the NIF-native keyword-
+            // classified fallback instead of authoritative BGEM data.
+            log::warn!(
+                "material '{}': BGEM resolve failed — mesh keeps its NIF-native \
+                 keyword-classified material (legacy Lambert guess) instead of \
+                 the authoritative BGEM data",
+                path
+            );
             return MergeOutcome::Unresolved;
         };
         // BGEM (effect material) has no smoothness/specular authoring —
