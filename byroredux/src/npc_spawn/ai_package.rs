@@ -92,7 +92,11 @@ impl AmbientBehavior {
     /// FO3/FNV flat packages never set `package_template_form_id`, so for
     /// them `template` and `package` are always the same record and every
     /// existing branch below is unaffected. See `docs/engine/packal.md`.
-    fn from_package(package: &PackRecord, template: &PackRecord, actor_form_id: u32) -> Option<Self> {
+    fn from_package(
+        package: &PackRecord,
+        template: &PackRecord,
+        actor_form_id: u32,
+    ) -> Option<Self> {
         let location_radius = package
             .location
             .map(|location| location.radius as f32)
@@ -151,35 +155,78 @@ impl AmbientBehavior {
                 actor_form_id,
             })
         } else {
-            Self::from_skyrim_procedure_tree(package, template)
+            Self::from_skyrim_procedure_tree(package, template, actor_form_id)
         }
     }
 
-    /// PACKAL first slice (`docs/engine/packal.md` §4) — Skyrim+
-    /// tree/template-shaped packages fall through every `is_*` check above
-    /// (those all read the FO3/FNV flat `procedure_type` byte, which
-    /// Skyrim+ packages don't populate meaningfully). Sandbox only for
-    /// now: it's the highest-value ambient leaf type on real Skyrim data
-    /// (`DefaultSandboxEditorLocation512` alone covers 307 vanilla NPCs —
-    /// verified via `pack_ambient_shape_survey`), and the only one whose
-    /// resolution (a search radius, same shape as the FO3/FNV branch
-    /// above) needs no `world`/`actor` context — no live-target or
-    /// alias resolution, so no dependency on `SceneActorBindings` (the one
-    /// piece of `crates/scripting::package`'s executor this driver
-    /// deliberately doesn't reuse).
-    fn from_skyrim_procedure_tree(package: &PackRecord, template: &PackRecord) -> Option<Self> {
-        let leaf = template
+    /// PACKAL Skyrim+ tree/template fallback (`docs/engine/packal.md` §4,
+    /// §5) — packages that fall through every `is_*` check above (those
+    /// all read the FO3/FNV flat `procedure_type` byte, which Skyrim+
+    /// packages don't populate meaningfully). Tries each leaf type PACKAL
+    /// has verified safe against real `Skyrim.esm`, in priority order:
+    ///
+    /// - `"Sandbox"` (§4, shipped first) — a search radius from the first
+    ///   `PackDataValue::Location` input. Highest-value leaf on real data
+    ///   (`DefaultSandboxEditorLocation512` alone covers 307 vanilla NPCs).
+    /// - `"Patrol"` (§5) — a patrol radius from the first
+    ///   `PackDataValue::Float` input. Verified against the real `Patrol`
+    ///   master template (form 0x017723, 701 ambient PKID edges) and 12
+    ///   real per-NPC instances: the radius is consistently the *only*
+    ///   resolved `Float`, never wrapped in a `Location` the way Sandbox's
+    ///   is. `"Wander"` was investigated first and rejected — see §5 for
+    ///   why every real `Wander`-named package either resolves to this
+    ///   same `Sandbox` leaf via a shared `Travel → UnlockDoors → Sandbox`
+    ///   template, or nests `"Wander"` as a narrow non-ambient fallback
+    ///   inside an unrelated template (`UseWeapon`/`Sit`/…) that would be
+    ///   wrong to surface as this actor's ambient behavior.
+    ///
+    /// Both branches share the same known v0 approximation: `.find()`
+    /// picks the first matching leaf without evaluating per-procedure
+    /// `conditions`, so a template with more than one occurrence of the
+    /// same leaf name (real example: `DefaultMasterPackageAllowWander`,
+    /// 2× `Sandbox` + 4× `Patrol` in one 10-entry tree) can pick a
+    /// radius belonging to the wrong branch. Neither leaf needs
+    /// `world`/`actor` context (no live-target or alias resolution), so
+    /// neither needs `SceneActorBindings` (the one piece of
+    /// `crates/scripting::package`'s executor this driver deliberately
+    /// doesn't reuse).
+    fn from_skyrim_procedure_tree(
+        package: &PackRecord,
+        template: &PackRecord,
+        actor_form_id: u32,
+    ) -> Option<Self> {
+        if let Some(leaf) = template
             .procedures
             .iter()
-            .find(|procedure| procedure.procedure_type == "Sandbox")?;
-        let search_radius = byroredux_scripting::package::procedure_inputs(leaf, package)
-            .into_iter()
-            .find_map(|input| match input.value {
-                PackDataValue::Location(location) => Some(location.radius as f32),
-                _ => None,
-            })
-            .filter(|radius| *radius > 0.0);
-        Some(Self::Sandbox { search_radius })
+            .find(|procedure| procedure.procedure_type == "Sandbox")
+        {
+            let search_radius = byroredux_scripting::package::procedure_inputs(leaf, package)
+                .into_iter()
+                .find_map(|input| match input.value {
+                    PackDataValue::Location(location) => Some(location.radius as f32),
+                    _ => None,
+                })
+                .filter(|radius| *radius > 0.0);
+            return Some(Self::Sandbox { search_radius });
+        }
+        if let Some(leaf) = template
+            .procedures
+            .iter()
+            .find(|procedure| procedure.procedure_type == "Patrol")
+        {
+            let patrol_radius = byroredux_scripting::package::procedure_inputs(leaf, package)
+                .into_iter()
+                .find_map(|input| match input.value {
+                    PackDataValue::Float(radius) => Some(radius),
+                    _ => None,
+                })
+                .filter(|radius| *radius > 0.0);
+            return Some(Self::Patrol {
+                patrol_radius,
+                actor_form_id,
+            });
+        }
+        None
     }
 
     fn insert_at_spawn(self, world: &mut World, actor: EntityId) {
@@ -647,6 +694,39 @@ mod tests {
         }
     }
 
+    /// A single-leaf Skyrim+ Patrol template, mirroring the real master
+    /// `Patrol` template (form 0x017723): one `"Patrol"` procedure with a
+    /// `SingleRef` target input at slot 0 and a `Float` radius at slot 1
+    /// (real per-NPC instances resolve slot 1 to 50.0–150.0; slot 0 is a
+    /// route-anchor reference this v0 driver doesn't resolve).
+    fn skyrim_patrol_template(form_id: u32) -> PackRecord {
+        PackRecord {
+            form_id,
+            procedures: vec![PackProcedure {
+                procedure_type: "Patrol".to_owned(),
+                data_input_indexes: vec![1],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    /// A template *instance* — what an NPC's PKID list actually names.
+    /// Slot 1 = the `Float` radius the template's `"Patrol"` leaf
+    /// references, mirroring a real per-NPC Patrol package.
+    fn skyrim_patrol_instance(form_id: u32, template_form_id: u32, radius: f32) -> PackRecord {
+        PackRecord {
+            form_id,
+            package_template_form_id: Some(template_form_id),
+            data_inputs: vec![PackDataInput {
+                index: 1,
+                value_type: "Float".to_owned(),
+                value: PackDataValue::Float(radius),
+            }],
+            ..Default::default()
+        }
+    }
+
     fn setup_actor(hour: f32, packages: Vec<PackRecord>) -> (World, EntityId) {
         setup_actor_with_catalog(hour, packages, Vec::new())
     }
@@ -978,6 +1058,100 @@ mod tests {
         );
     }
 
+    /// PACKAL second slice (`docs/engine/packal.md` §5) — a Skyrim+
+    /// Patrol leaf resolves its radius from the first `Float` input,
+    /// unlike Sandbox's `Location`-wrapped radius.
+    #[test]
+    fn skyrim_shaped_patrol_resolves_radius_via_template() {
+        let template = skyrim_patrol_template(0x400);
+        let instance = skyrim_patrol_instance(0x401, 0x400, 150.0);
+        let (world, actor) = setup_actor_with_catalog(10.0, vec![instance], vec![template]);
+
+        assert!(world.has::<PatrolBehavior>(actor));
+        assert_eq!(
+            world.get::<PatrolBehavior>(actor).unwrap().patrol_radius,
+            Some(150.0)
+        );
+        assert_eq!(world.get::<PatrolBehavior>(actor).unwrap().form_id, 0xAA);
+    }
+
+    /// A Skyrim+ Patrol leaf with no resolvable `Float` input still
+    /// installs `PatrolBehavior`; `patrol_radius: None` is a legitimate
+    /// value `patrol_system` already treats as "use the default radius",
+    /// same as Sandbox's no-Location case.
+    #[test]
+    fn skyrim_shaped_patrol_with_no_float_input_installs_default_radius() {
+        let template = skyrim_patrol_template(0x400);
+        let instance = PackRecord {
+            form_id: 0x401,
+            package_template_form_id: Some(0x400),
+            ..Default::default()
+        };
+        let (world, actor) = setup_actor_with_catalog(10.0, vec![instance], vec![template]);
+
+        assert!(world.has::<PatrolBehavior>(actor));
+        assert_eq!(
+            world.get::<PatrolBehavior>(actor).unwrap().patrol_radius,
+            None
+        );
+    }
+
+    /// Known limitation, pinned deliberately (`packal.md` §5): a template
+    /// whose tree contains *both* a `"Sandbox"` and a `"Patrol"` leaf (a
+    /// real shape — `DefaultMasterPackageAllowWander` has 2×Sandbox +
+    /// 4×Patrol in one 10-entry tree) resolves Sandbox, matching the
+    /// priority order `from_package`'s FO3/FNV `is_*` chain already uses.
+    /// Neither leaf's `conditions` are evaluated — this is a `.find()`,
+    /// not a condition-gated tree walk.
+    #[test]
+    fn skyrim_shaped_template_with_both_sandbox_and_patrol_prefers_sandbox() {
+        let template = PackRecord {
+            form_id: 0x400,
+            procedures: vec![
+                PackProcedure {
+                    procedure_type: "Patrol".to_owned(),
+                    data_input_indexes: vec![1],
+                    ..Default::default()
+                },
+                PackProcedure {
+                    procedure_type: "Sandbox".to_owned(),
+                    data_input_indexes: vec![0],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let instance = PackRecord {
+            form_id: 0x401,
+            package_template_form_id: Some(0x400),
+            data_inputs: vec![
+                PackDataInput {
+                    index: 0,
+                    value_type: "Location".to_owned(),
+                    value: PackDataValue::Location(PackLocation {
+                        location_type: 3,
+                        target: PackLocationTarget::Other(0),
+                        radius: 200,
+                    }),
+                },
+                PackDataInput {
+                    index: 1,
+                    value_type: "Float".to_owned(),
+                    value: PackDataValue::Float(150.0),
+                },
+            ],
+            ..Default::default()
+        };
+        let (world, actor) = setup_actor_with_catalog(10.0, vec![instance], vec![template]);
+
+        assert!(world.has::<SandboxBehavior>(actor));
+        assert!(!world.has::<PatrolBehavior>(actor));
+        assert_eq!(
+            world.get::<SandboxBehavior>(actor).unwrap().search_radius,
+            Some(200.0)
+        );
+    }
+
     /// PACKAL first slice (`docs/engine/packal.md`), verified against the
     /// actual production code path (`apply_ai_package_behavior`), not a
     /// re-implementation. Opt-in — needs a real Skyrim SE install — mirrors
@@ -1007,6 +1181,7 @@ mod tests {
         let mut with_packages = 0usize;
         let mut resolved_any_behavior = 0usize;
         let mut resolved_sandbox_with_radius = 0usize;
+        let mut resolved_patrol_with_radius = 0usize;
         for npc in index.npcs.values() {
             if npc.ai_packages.is_empty() {
                 continue;
@@ -1022,12 +1197,19 @@ mod tests {
                 {
                     resolved_sandbox_with_radius += 1;
                 }
+            } else if world.has::<PatrolBehavior>(actor) {
+                resolved_any_behavior += 1;
+                if world
+                    .get::<PatrolBehavior>(actor)
+                    .is_some_and(|behavior| behavior.patrol_radius.is_some())
+                {
+                    resolved_patrol_with_radius += 1;
+                }
             } else if world.has::<WanderBehavior>(actor)
                 || world.has::<TravelBehavior>(actor)
                 || world.has::<FollowBehavior>(actor)
                 || world.has::<EscortBehavior>(actor)
                 || world.has::<GuardBehavior>(actor)
-                || world.has::<PatrolBehavior>(actor)
             {
                 resolved_any_behavior += 1;
             }
@@ -1036,7 +1218,8 @@ mod tests {
         println!(
             "[PACKAL Skyrim ambient] {with_packages} NPCs carry a PKID list; \
              {resolved_any_behavior} now resolve some ambient behavior \
-             ({resolved_sandbox_with_radius} of those a Sandbox with a real radius)"
+             ({resolved_sandbox_with_radius} a Sandbox with a real radius, \
+             {resolved_patrol_with_radius} a Patrol with a real radius)"
         );
         // `pack_ambient_shape_survey` measured ~2052 package-carrying NPCs
         // and Sandbox-family templates alone covering 300+ each on real
@@ -1047,6 +1230,16 @@ mod tests {
             "expected the large majority of real Skyrim.esm's package-carrying \
              NPCs to resolve a Skyrim+ Sandbox leaf with a real radius — got \
              {resolved_sandbox_with_radius} of {with_packages}"
+        );
+        // The real `Patrol` master template (form 0x017723) alone covers
+        // 701 ambient PKID edges (§5, docs/engine/packal.md) — floor sits
+        // well below that to absorb NPCs whose Patrol package resolves no
+        // Float input, not a tight bound.
+        assert!(
+            resolved_patrol_with_radius > 200,
+            "expected a real chunk of Skyrim.esm's package-carrying NPCs to \
+             resolve a Skyrim+ Patrol leaf with a real radius — got {resolved_patrol_with_radius} \
+             of {with_packages}"
         );
     }
 }

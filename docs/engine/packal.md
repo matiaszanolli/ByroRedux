@@ -22,8 +22,9 @@ into a resolved command; two call sites that decide *when* to run it and
 `Imported* → Canonical` boundary.
 
 **Status**: ACTIVE (opened 2026-08-19, from a real-data investigation — see
-§3). The first slice (§4, Skyrim+ ambient Sandbox) shipped the same day —
-see §6 for what landed and the real numbers.
+§3). The first slice (§4, Skyrim+ ambient Sandbox) and second slice (§5,
+Skyrim+ ambient Patrol) both shipped the same day — see §7 for what landed
+and the real numbers.
 
 **Goal**: an NPC's ambient package stack resolves and executes the same way
 regardless of which era authored it — FO3/FNV's flat `PROCEDURE_*` packages
@@ -43,7 +44,7 @@ tracked) differing between "this actor's own spawn-time package stack" and
 | ESM parse (`PACK` → `PackRecord`) | **Unified.** One struct, both shapes, since before this doc. No PACKAL work needed here. |
 | Package selection (condition-gated, first-eligible-wins) | **Duplicated, not unified.** `crates/plugin/src/esm/records/misc/pack.rs::active_package` (ambient, FO3/FNV-only) and `crates/scripting/src/package.rs::select_package` (Scene, shape-agnostic) are two independent implementations of the same idea. |
 | Data-input / target / template resolution | **Exists once, reachable from one driver only.** `procedure_inputs`, `input_destination`, `input_target_entity`, `alias_position` (`package.rs`) already do this generically — but only `scene_package_system` calls them. |
-| Leaf-type coverage (which procedure names actually *do* something) | **Split down the middle, for different reasons — plus one Skyrim+ leaf now covered (§4).** Ambient (`npc_spawn/ai_package.rs`) covers FO3/FNV Sandbox/Wander/Travel/Follow/Escort/Guard/Patrol (indefinite or slow-completing, fits a continuously-running actor) **and**, as of the §4 slice, Skyrim+ `"Sandbox"` leaves. Scene (`package.rs::resolve_command`) covers Travel/Patrol/Escort/FollowTo (move-to) and Activate/Acquire/Shout/Sit/UseIdleMarker/UseWeapon (interaction) — finite, completable actions, because a Scene phase has to *end*; it has no Sandbox/Sleep/Eat handling at all (Scenes don't run indefinite actions). Skyrim+ Sleep/Eat and every other leaf type remain uncovered by both drivers. |
+| Leaf-type coverage (which procedure names actually *do* something) | **Split down the middle, for different reasons — plus two Skyrim+ leaves now covered (§4, §5).** Ambient (`npc_spawn/ai_package.rs`) covers FO3/FNV Sandbox/Wander/Travel/Follow/Escort/Guard/Patrol (indefinite or slow-completing, fits a continuously-running actor) **and**, as of §4/§5, Skyrim+ `"Sandbox"` and `"Patrol"` leaves. Scene (`package.rs::resolve_command`) covers Travel/Patrol/Escort/FollowTo (move-to) and Activate/Acquire/Shout/Sit/UseIdleMarker/UseWeapon (interaction) — finite, completable actions, because a Scene phase has to *end*; it has no Sandbox/Sleep/Eat handling at all (Scenes don't run indefinite actions). Skyrim+ Sleep/Eat and every other leaf type remain uncovered by both drivers — and, per §5, "Wander" is **not** among them: real content has no standalone Wander leaf to cover. |
 | Runtime behavior systems (`sandbox_seat_system`, `wander_system`, …) | **Already shape-agnostic.** They read `SandboxBehavior`/`WanderBehavior`/etc., not `PackRecord` — whichever driver populates those components, the systems don't care. No PACKAL work needed here either. |
 
 The gap is narrow but total: nothing anywhere calls the ambient
@@ -195,7 +196,86 @@ a separate resolution path from PKID-authored ones).
 
 ---
 
-## 5. What stays out of scope
+## 5. Second slice: Skyrim+ ambient Patrol (shipped 2026-08-19)
+
+§7 (rollout order, as originally written) named Sleep/Eat as the next step,
+"same shape of work as step 1." Investigating that claim against the actual
+`sandbox_seat_system` code (not just the survey numbers) found it false —
+see the corrected rollout below — and led here instead, via a real-data
+detour worth recording because it overturned the working assumption this
+step started from.
+
+**"Wander" was the first candidate tried, and rejected.** `wander_system`
+has zero content/animation dependency (unlike Sandbox's seat system), so
+it looked like the safe "resolve a scalar, feed the existing system"
+repeat of §4. Checking `template.procedures` — a flat `Vec<PackProcedure>`
+with **no parent/child/branch field**, just conditions per-entry — against
+real `Skyrim.esm` found:
+
+- Every editor-authored package with "Wander" in its `editor_id` (30+ of
+  them, e.g. `SusannaWanderTheCityAtNight0x3`) resolves, through its
+  template, to the **same** `["Travel", "UnlockDoors", "Sandbox"]` tree
+  §4 already handles (template form 0x1C254, editor_id literally
+  `"Sandbox"`) — the human-authored name describes what the NPC looks
+  like doing (wandering a city block), not a distinct procedure. No new
+  code needed; §4 already covers these.
+- Every *literal* `"Wander"` leaf that does exist in the corpus (5 found)
+  is nested **inside** an unrelated template — `UseWeapon`,
+  `UseWeaponMultiTarget`, `Sit`, `ActivateAfterFinding` — as a narrow
+  fallback (e.g. "if this target dummy has no valid target, wander in
+  place"). Zero of the 5 have Wander at the tree's root. Surfacing any of
+  these as "this actor's ambient behavior is Wander" would misrepresent a
+  combat-training or scene package as generic idling — wrong, not just
+  incomplete.
+- Checked whether "root of the list" was a usable proxy for "the tree's
+  real entry point" (in case a positional rule could stand in for real
+  condition evaluation): for the 32 templates containing a `"Sandbox"`
+  leaf, only **1** has it at index 0; the other 31 have it later in the
+  list. Position in the flat list carries no structural meaning on its
+  own — ruling out "index 0" as a substitute for evaluating `conditions`.
+
+**"Patrol" was checked the same way and held up.** Template form
+`0x017723` (editor_id literally `"Patrol"`) has exactly one procedure —
+`["Patrol"]`, alone, at the root, no ambiguity — and 701 ambient PKID
+edges reference it in real `Skyrim.esm`. `patrol_system`
+(`byroredux/src/systems/patrol.rs`, M42.8, `BYRO_PATROL`) already exists,
+already has zero content/animation dependency (confirmed by reading it,
+not assumed from the Sandbox precedent this time), and already reuses
+`wander_system`'s locomotion core — exactly Sandbox's "resolve a scalar,
+feed a system that's already built" shape, just verified this time before
+committing to it instead of after.
+
+One real difference from Sandbox's resolution: Patrol's radius is **not**
+wrapped in a `PackDataValue::Location` — it's a bare `PackDataValue::Float`
+(confirmed against the template's own leaf and 12 real per-NPC instances:
+index 1 is consistently the only resolved `Float`, values 50.0–150.0,
+never conflated with the `SingleRef` route-anchor at index 0 or the four
+`Bool` flags at indices 2/4/6/8). `from_skyrim_procedure_tree` now tries
+`"Sandbox"` first, then `"Patrol"`, each reading its own value type.
+
+**Known limitation, carried over from §4 and now confirmed to matter
+concretely, not just in theory:** `.find()` picks the first matching leaf
+name without evaluating `conditions`. Most real templates contain
+a given leaf name at most once (of the 32 templates with a `"Sandbox"`
+leaf at all, 22 have exactly one; 10 have more than one), so this is
+usually a non-issue, but
+`DefaultMasterPackageAllowWander` (a real, broadly-referenced default
+package) has 2× `Sandbox` and 4× `Patrol` in one 10-entry conditional
+tree — for that template, both §4 and §5's resolution can pick a radius
+that isn't the one whichever condition state is actually active would
+select. Same class of approximation as `sandbox_seat_system`'s "nearest
+seat, no scoring" — documented, not silently accepted; full correctness
+needs the same condition-gated tree walk `crates/scripting::package`'s
+Scene executor does, which stays out of the ambient driver's scope (§2).
+
+Real-data verification (same `#[ignore]`d test extended, not a new one):
+of 2,052 package-carrying NPCs, ambient-resolving NPCs rose from **855 to
+1,369** — **514 now resolve a Patrol with a real radius**, on top of the
+unchanged 722 Sandbox resolutions (confirms zero regression on §4).
+
+---
+
+## 6. What stays out of scope
 
 - **The Scene driver.** `package.rs`/`scene_package_system` don't change
   shape — PACKAL's ambient driver is a second consumer of the shared core,
@@ -212,7 +292,13 @@ a separate resolution path from PKID-authored ones).
 
 ---
 
-## 6. Rollout order
+## 7. Rollout order
+
+Originally written as a 4-step list before any of it had been checked
+against `sandbox_seat_system`'s code or real leaf-name data; step 2 turned
+out wrong (§5) once actually investigated. Left in place with corrections
+noted rather than silently rewritten — the wrong turn is part of the
+record.
 
 1. ~~Skyrim+ ambient Sandbox~~ — **done (2026-08-19).** §4. `procedure_inputs`
    made `pub`; `AmbientBehavior::from_package` gained the shape-fallback
@@ -220,12 +306,28 @@ a separate resolution path from PKID-authored ones).
    real-`Skyrim.esm` integration test, all green. Zero changes to
    `sandbox_seat_system`, `crates/scripting::package`'s Scene driver, or any
    FO3/FNV branch.
-2. Skyrim+ ambient Sleep + Eat — same shape of work as step 1, once demand
-   justifies it (855-vs-2,052 in §4's real-data check is largely this gap).
-3. Skyrim+ ambient Wander/Travel/Follow/Escort/Guard/Patrol equivalents, as
-   real-data demand justifies each (mirroring how M42.3–M42.8 shipped one at
-   a time against evidence, not speculatively).
-4. Oblivion `PACK` shape verification — settles §3's open question one way
+2. ~~Skyrim+ ambient Sleep + Eat — "same shape of work as step 1."~~
+   **Corrected, then done differently (2026-08-19).** §5. This claim didn't
+   survive contact with the real `sandbox_seat_system` code: Sleep/Eat have
+   no existing runtime anywhere (FO3/FNV never built one either), and
+   Sleep specifically needs a bed-enter/sleep-loop animation clip nobody's
+   identified yet, plus generalizing the seat system's clip/marker-kind
+   filtering — a fresh mini-milestone, not a data-plumbing slice. "Wander"
+   was checked as an alternative same-shape candidate and also rejected —
+   real content has no standalone Wander leaf (see §5's full account).
+   "Patrol" checked out clean (existing zero-content-dependency runtime,
+   single unambiguous root leaf, 701 real ambient edges) and shipped
+   instead. Sleep/Eat remain undone; §5's clip-investigation blocker still
+   applies whenever they're picked up.
+3. Skyrim+ ambient Travel/Follow/Escort/Guard equivalents, as real-data
+   demand justifies each (mirroring how M42.4–M42.7 shipped one at a time
+   against evidence, not speculatively). A clean single-leaf `"Travel"`
+   master template (form 0x016FAA, 457 ambient edges) is already confirmed
+   to exist per §5's survey — likely the next cheap one, unverified beyond
+   that edge count.
+4. Skyrim+ ambient Sleep + Eat, once someone's willing to do the real
+   animation-clip investigation §5 found this actually requires.
+5. Oblivion `PACK` shape verification — settles §3's open question one way
    or the other before any Oblivion-specific ambient work is scoped.
 
 Each step ships independently behind `cargo test`; nothing here touches the
@@ -233,7 +335,7 @@ Vulkan render-pass / pipeline.
 
 ---
 
-## 7. Tooling
+## 8. Tooling
 
 - `crates/plugin/examples/pack_ambient_shape_survey.rs` — cross-references
   PKID/SCEN package references against `PackRecord` shape; rerun against
@@ -241,7 +343,8 @@ Vulkan render-pass / pipeline.
 - `byroredux::npc_spawn::ai_package::tests::
   real_skyrim_esm_ambient_packages_now_resolve_for_previously_blind_npcs`
   (`#[ignore]`d — `cargo test -p byroredux -- --ignored`) — real-`Skyrim.esm`
-  regression guard on the §4 slice, prints the live resolved/total counts.
+  regression guard on the §4 and §5 slices, prints the live resolved/total
+  counts for both Sandbox and Patrol.
 - A `pack.ambient` byro-dbg command (proposed, not built) — dump a live
   actor's resolved ambient package + leaf, the runtime analogue of `ragdoll
   <id>` / `env.dump` in the sibling layers.
