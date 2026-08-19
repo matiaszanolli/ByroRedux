@@ -153,6 +153,16 @@ pub fn pool_regen_tick_system(world: &World, frame_dt: f32) {
     let Some(config) = world.try_resource::<PoolRegenConfig>() else {
         return;
     };
+    // Copy out and drop the guard immediately (#2153) — `PoolRegenConfig` is
+    // `Copy`, so nothing downstream needs the resource lock itself, only its
+    // three AVIF ids. Holding it across the `CharacterRuleset` acquire below
+    // built a 3-deep stack (`PoolRegenConfig` -> `CharacterRuleset` ->
+    // `ActorValues`) whose only correctness argument was "this system is
+    // registered exclusive" — true today, but unstated here and not enforced
+    // by the lock order itself. Dropping it here reduces the hold-stack to 2
+    // for the rest of the function, matching how `accumulator` is already
+    // dropped before `elapsed` is used.
+    let config = *config;
     let Some(mut accumulator) = world.try_resource_mut::<PoolRegenAccumulator>() else {
         return;
     };
@@ -297,6 +307,30 @@ mod tests {
     }
 
     use super::*;
+
+    /// Regression for #2153. The hold-stack at the `ActorValues` acquire was
+    /// `{PoolRegenConfig, CharacterRuleset, ActorValues}` — 3 deep, correct
+    /// only because the system happens to be registered exclusive. Copying
+    /// `PoolRegenConfig`'s fields out and dropping its guard before the
+    /// `CharacterRuleset` acquire brings it down to 2. Source-order check
+    /// (mirrors `substep_cap_does_not_claim_to_mirror_physics` above) so a
+    /// future edit can't silently re-widen the stack back to 3.
+    #[test]
+    fn config_guard_is_dropped_before_the_ruleset_acquire() {
+        let src = include_str!("regen.rs");
+        let config_copy = src
+            .find("let config = *config;")
+            .expect("PoolRegenConfig must be copied out of its guard (#2153)");
+        let ruleset_acquire = src
+            .find("try_resource::<CharacterRuleset>")
+            .expect("the CharacterRuleset acquire must still exist");
+        assert!(
+            config_copy < ruleset_acquire,
+            "PoolRegenConfig's guard must be dropped (via copy-out) before \
+             the CharacterRuleset acquire, keeping the hold-stack at 2 \
+             instead of 3 (#2153)"
+        );
+    }
 
     #[test]
     fn magicka_regen_matches_formula_and_gates_on_stunted() {
