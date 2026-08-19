@@ -56,7 +56,18 @@ impl Perks {
 
     /// Grant `perk_form_id` at `rank`, or raise an existing entry to it.
     /// Idempotent — sets the rank, never stacks duplicates.
+    ///
+    /// #2944 — `rank == 0` is a documented no-op, not a stored ghost entry:
+    /// `rank()` already returns `0` for both "not owned" and "owned at rank
+    /// 0", so inserting a zero-rank entry would be indistinguishable from
+    /// not owning the perk while still costing a `Vec` slot. This method
+    /// takes no `num_ranks` bound — callers that have the perk's declared
+    /// max (from `PerkRecord::num_ranks`) should use [`Self::try_set_rank`]
+    /// instead, which also rejects a rank past it.
     pub fn set_rank(&mut self, perk_form_id: u32, rank: u8) {
+        if rank == 0 {
+            return;
+        }
         if let Some(p) = self
             .entries
             .iter_mut()
@@ -65,6 +76,43 @@ impl Perks {
             p.rank = rank;
         } else {
             self.entries.push(PerkRank { perk_form_id, rank });
+        }
+    }
+
+    /// [`Self::set_rank`], rejecting a rank the perk doesn't have (#2944).
+    ///
+    /// `num_ranks` is the perk's own declared maximum
+    /// (`PerkRecord::num_ranks`, parsed from `PERK`'s `DATA` sub-record).
+    /// Rejects `rank == 0` (see [`Self::set_rank`]'s doc) and
+    /// `rank > num_ranks` — a rank beyond the perk's ranks is a bug at the
+    /// call site (a level-up path granting a rank the `PERK` record never
+    /// defined), not something to silently clamp into range, per the
+    /// gating checklist `docs/engine/charal-fo4-ruleset.md` § *Perk
+    /// chart* asks `Perks` to validate against. Returns whether the rank
+    /// was accepted.
+    #[must_use]
+    pub fn try_set_rank(&mut self, perk_form_id: u32, rank: u8, num_ranks: u8) -> bool {
+        if rank == 0 || rank > num_ranks {
+            return false;
+        }
+        self.set_rank(perk_form_id, rank);
+        true
+    }
+
+    /// Revoke a perk if held. Returns `true` when removed. Mirrors
+    /// [`crate::ecs::components::PerkList::remove`] (#2944) — the
+    /// ECS-level "does this actor hold perk X" list has one; this
+    /// rank-tracking component didn't.
+    pub fn remove(&mut self, perk_form_id: u32) -> bool {
+        if let Some(i) = self
+            .entries
+            .iter()
+            .position(|p| p.perk_form_id == perk_form_id)
+        {
+            self.entries.remove(i);
+            true
+        } else {
+            false
         }
     }
 
@@ -222,6 +270,65 @@ mod tests {
         p.set_rank(0x100, 4);
         assert_eq!(p.rank(0x100), 4);
         assert_eq!(p.len(), 2);
+    }
+
+    /// #2944 — `set_rank(id, 0)` must be a true no-op: no ghost entry for an
+    /// unowned perk, and no silent revocation of an already-owned one either
+    /// (that's what the new `remove` is for).
+    #[test]
+    fn set_rank_zero_is_a_no_op() {
+        let mut p = Perks::default();
+        p.set_rank(0x100, 0);
+        assert!(
+            p.is_empty(),
+            "rank 0 on an unowned perk must not insert a ghost entry"
+        );
+
+        p.set_rank(0x200, 5);
+        p.set_rank(0x200, 0);
+        assert_eq!(
+            p.rank(0x200),
+            5,
+            "rank 0 on an owned perk must not change its rank"
+        );
+        assert_eq!(p.len(), 1);
+    }
+
+    /// #2944 — the checked sibling enforces the perk's own declared max
+    /// (`PerkRecord::num_ranks`) rather than accepting any `u8`.
+    #[test]
+    fn try_set_rank_rejects_zero_and_out_of_range() {
+        let mut p = Perks::default();
+
+        assert!(p.try_set_rank(0x100, 3, 5), "in range, accepted");
+        assert_eq!(p.rank(0x100), 3);
+
+        assert!(!p.try_set_rank(0x100, 6, 5), "past num_ranks, rejected");
+        assert_eq!(p.rank(0x100), 3, "rejected write must not change state");
+
+        assert!(!p.try_set_rank(0x100, 0, 5), "rank 0, rejected");
+        assert_eq!(p.rank(0x100), 3);
+
+        assert!(p.try_set_rank(0x100, 5, 5), "exactly num_ranks, accepted");
+        assert_eq!(p.rank(0x100), 5);
+    }
+
+    /// #2944 — mirrors `PerkList::remove`'s shape: `true` iff something was
+    /// actually removed.
+    #[test]
+    fn remove_reports_whether_held() {
+        let mut p = Perks::default();
+        assert!(!p.remove(0x100), "not owned, nothing to remove");
+
+        p.set_rank(0x100, 2);
+        assert!(p.remove(0x100));
+        assert_eq!(p.rank(0x100), 0, "removed perk reads as unowned");
+        assert!(p.is_empty());
+
+        assert!(
+            !p.remove(0x100),
+            "removing twice reports no-op the second time"
+        );
     }
 
     #[test]
