@@ -15,6 +15,7 @@ use byroredux_core::math::Vec3;
 use byroredux_core::settings::{
     SettingChange, SettingChoice, SettingEntry, SettingValue, SettingsError, SettingsRegistry,
 };
+use rustc_hash::FxHashMap;
 use winit::event::MouseButton;
 use winit::keyboard::KeyCode;
 
@@ -642,6 +643,27 @@ impl InteractionState {
     }
 }
 
+/// #3059 (PERF-D1-02) — reusable buffer for [`collect_candidates`],
+/// mirroring `FootstepScratch`'s per-frame Vec reuse (`components.rs`):
+/// `collect_candidates` clears and refills this map instead of
+/// allocating a fresh `std::collections::HashMap` (SipHash) every frame
+/// the crosshair path runs. `select_interaction_target` moves the map
+/// out via `std::mem::take` for the duration of its own use and hands it
+/// back afterward so the allocated capacity survives to next frame.
+pub(crate) struct InteractionCandidateScratch {
+    pub(crate) candidates: FxHashMap<EntityId, InteractionKind>,
+}
+
+impl Resource for InteractionCandidateScratch {}
+
+impl Default for InteractionCandidateScratch {
+    fn default() -> Self {
+        Self {
+            candidates: FxHashMap::default(),
+        }
+    }
+}
+
 /// Last canonical activation retained past transient-event cleanup.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct InteractionTraceEntry {
@@ -692,9 +714,15 @@ pub(crate) fn refresh_action_state(world: &World) {
     let Some(input) = world.try_resource::<InputState>() else {
         return;
     };
-    let keys_held = input.keys_held.clone();
-    let mouse_buttons_held = input.mouse_buttons_held.clone();
-    drop(input);
+    // #3060 — the two `HashSet` clones this used to make existed purely
+    // to release `input`'s guard before acquiring `InjectedKeyPulse` /
+    // `InjectedKeyHold` (both `_mut`) and `ActionBindings`. Since those
+    // are three independent resource types with their own locks, holding
+    // `input`'s READ guard alongside them costs nothing — RwLock readers
+    // never conflict with a different type's guard, and nothing here
+    // re-enters `InputState` itself. Keeping `input` alive through
+    // `held_mask` below reads its two sets directly instead of cloning
+    // them, then drops it in the same place the clones used to.
     let injected_key = world
         .try_resource_mut::<InjectedKeyPulse>()
         .and_then(|mut pulse| pulse.key.take());
@@ -704,7 +732,8 @@ pub(crate) fn refresh_action_state(world: &World) {
     let Some(bindings) = world.try_resource::<ActionBindings>() else {
         return;
     };
-    let mut next_held = bindings.held_mask(&keys_held, &mouse_buttons_held);
+    let mut next_held = bindings.held_mask(&input.keys_held, &input.mouse_buttons_held);
+    drop(input);
     if let Some(action) = injected_key.and_then(|key| bindings.action_for_key(key)) {
         next_held |= action.bit();
     }
@@ -724,18 +753,23 @@ fn select_interaction_target(world: &World) -> Option<InteractionTarget> {
     let candidates = collect_candidates(world);
 
     let mut targets: Vec<_> = candidates
-        .into_iter()
-        .filter(|(entity, _)| !activation_is_blocked(world, *entity))
+        .iter()
+        .filter(|(entity, _)| !activation_is_blocked(world, **entity))
         .filter_map(|(entity, kind)| {
-            let bound = interaction_bound(world, entity)?;
+            let bound = interaction_bound(world, *entity)?;
             let distance = ray_sphere_distance(origin, direction, bound)?;
             (distance <= INTERACTION_REACH_BU).then_some(InteractionTarget {
-                entity,
-                kind,
+                entity: *entity,
+                kind: *kind,
                 distance,
             })
         })
         .collect();
+    // #3059 — hand the map's allocated capacity back to the scratch
+    // resource for next frame instead of letting it drop here.
+    if let Some(mut scratch) = world.try_resource_mut::<InteractionCandidateScratch>() {
+        scratch.candidates = candidates;
+    }
     targets.sort_by(|a, b| a.distance.total_cmp(&b.distance));
     targets
         .into_iter()
@@ -752,22 +786,21 @@ fn target_has_line_of_sight(
         return true;
     };
 
-    // Resolve the player exclusion and body→ECS ownership before acquiring
-    // PhysicsWorld, keeping the resource/component lock order non-overlapping.
+    // #3058 — resolve only the player's own excluded body before
+    // acquiring PhysicsWorld (a single targeted `get`, not a full
+    // entity->body `Vec` collected up front for every rigid body in the
+    // world). Keeps the resource/component lock order non-overlapping,
+    // same as before. The reverse lookup (hit body -> owning entity)
+    // below re-acquires the same query AFTER the raycast completes and
+    // scans it directly — no intermediate `Vec` is ever materialised.
     let player = world
         .try_resource::<byroredux_scripting::papyrus_demo::PlayerEntity>()
         .map(|player| player.0);
-    let (excluded_body, owners) = match world.query::<byroredux_physics::RapierHandles>() {
-        Some(handles) => {
-            let excluded = player.and_then(|entity| handles.get(entity).map(|h| h.body));
-            let owners = handles
-                .iter()
-                .map(|(entity, handles)| (entity, handles.body))
-                .collect::<Vec<_>>();
-            (excluded, owners)
-        }
-        None => (None, Vec::new()),
-    };
+    let excluded_body = player.and_then(|entity| {
+        world
+            .query::<byroredux_physics::RapierHandles>()
+            .and_then(|handles| handles.get(entity).map(|h| h.body))
+    });
 
     let hit = {
         let physics = world.resource::<byroredux_physics::PhysicsWorld>();
@@ -784,9 +817,13 @@ fn target_has_line_of_sight(
     let Some(hit_body) = hit.body else {
         return false;
     };
-    let Some(hit_owner) = owners
-        .iter()
-        .find_map(|(entity, body)| (*body == hit_body).then_some(*entity))
+    let Some(hit_owner) = world
+        .query::<byroredux_physics::RapierHandles>()
+        .and_then(|handles| {
+            handles
+                .iter()
+                .find_map(|(entity, handles)| (handles.body == hit_body).then_some(entity))
+        })
     else {
         return false;
     };
@@ -824,9 +861,26 @@ pub(crate) fn camera_ray(world: &World) -> Option<(Vec3, Vec3)> {
     (direction.length_squared() > 0.0).then_some((pose.0, direction))
 }
 
-fn collect_candidates(world: &World) -> Vec<(EntityId, InteractionKind)> {
-    let mut candidates = HashMap::<EntityId, InteractionKind>::new();
+/// #3059 (PERF-D1-02) — reuses [`InteractionCandidateScratch`] when
+/// registered (the live engine, via `boot.rs`), falling back to a fresh
+/// map otherwise (bare test worlds) so correctness never depends on the
+/// scratch resource being present. Either way the map is `FxHashMap`
+/// (SipHash → FxHash over an `EntityId` keyspace, per the project's
+/// hot-path hashing rule, #2923/#1368/#2174) and there is no trailing
+/// `Vec` conversion — callers iterate the map directly.
+fn collect_candidates(world: &World) -> FxHashMap<EntityId, InteractionKind> {
+    if let Some(mut scratch) = world.try_resource_mut::<InteractionCandidateScratch>() {
+        scratch.candidates.clear();
+        populate_candidates(world, &mut scratch.candidates);
+        std::mem::take(&mut scratch.candidates)
+    } else {
+        let mut candidates = FxHashMap::default();
+        populate_candidates(world, &mut candidates);
+        candidates
+    }
+}
 
+fn populate_candidates(world: &World, candidates: &mut FxHashMap<EntityId, InteractionKind>) {
     if let Some(query) = world.query::<DoorTeleport>() {
         candidates.extend(
             query
@@ -875,8 +929,6 @@ fn collect_candidates(world: &World) -> Vec<(EntityId, InteractionKind)> {
             }
         }
     }
-
-    candidates.into_iter().collect()
 }
 
 fn activation_is_blocked(world: &World, entity: EntityId) -> bool {
@@ -1320,6 +1372,66 @@ mod tests {
         byroredux_physics::physics_sync_system(&world, 0.0);
 
         assert_eq!(select_interaction_target(&world).unwrap().entity, door);
+    }
+
+    /// #3059 — `select_interaction_target` must still find the same target
+    /// when `InteractionCandidateScratch` is registered (the live-engine
+    /// path via `boot.rs`) as when it isn't (every other test in this
+    /// module, via `input_fixture`/`physics_fixture`) — the scratch is a
+    /// reuse optimisation, not a behaviour change.
+    #[test]
+    fn selection_is_unaffected_by_the_candidate_scratch_resource() {
+        let mut world = physics_fixture();
+        world.insert_resource(InteractionCandidateScratch::default());
+        spawn_camera(&mut world);
+        let door = spawn_test_door(&mut world, Vec3::new(0.0, 0.0, -100.0));
+        byroredux_physics::physics_sync_system(&world, 0.0);
+
+        assert_eq!(select_interaction_target(&world).unwrap().entity, door);
+    }
+
+    /// #3059 — the whole point of moving the map in and out of
+    /// `InteractionCandidateScratch` via `mem::take`/restore is that its
+    /// allocated capacity survives across frames instead of being
+    /// reallocated from empty every call. Two candidates in, drop one,
+    /// call again: capacity must not have reset to whatever a fresh
+    /// `FxHashMap::default()` would start at.
+    #[test]
+    fn candidate_scratch_capacity_survives_across_calls() {
+        let mut world = physics_fixture();
+        world.insert_resource(InteractionCandidateScratch::default());
+        spawn_camera(&mut world);
+        let door_a = spawn_test_door(&mut world, Vec3::new(0.0, 0.0, -100.0));
+        let door_b = spawn_test_door(&mut world, Vec3::new(50.0, 0.0, -100.0));
+        byroredux_physics::physics_sync_system(&world, 0.0);
+
+        select_interaction_target(&world);
+        let capacity_after_first = world
+            .resource::<InteractionCandidateScratch>()
+            .candidates
+            .capacity();
+        assert!(
+            capacity_after_first >= 2,
+            "scratch must hold at least the two candidates just collected, \
+             got capacity {capacity_after_first}"
+        );
+
+        // Despawn one candidate and call again — capacity must not shrink
+        // back to a fresh-allocation baseline; `clear()` (used by
+        // `collect_candidates`) never releases capacity, unlike
+        // rebuilding a new map from scratch every call would.
+        world.despawn(door_b);
+        select_interaction_target(&world);
+        let capacity_after_second = world
+            .resource::<InteractionCandidateScratch>()
+            .candidates
+            .capacity();
+        assert!(
+            capacity_after_second >= capacity_after_first,
+            "reused scratch capacity must not shrink between calls: \
+             {capacity_after_first} -> {capacity_after_second}"
+        );
+        let _ = door_a;
     }
 
     fn physics_fixture() -> World {

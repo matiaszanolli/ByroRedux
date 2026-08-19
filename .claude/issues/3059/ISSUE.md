@@ -1,13 +1,5 @@
 # PERF-D1-02: collect_candidates allocates a fresh SipHash HashMap plus a Vec every frame
 
-**Issue**: #3059
-**Severity**: LOW
-**Labels**: `low,performance,bug`
-**Source report**: `docs/audits/AUDIT_PERFORMANCE_2026-08-16.md`
-**Filed**: 2026-08-17 via `/audit-publish`
-
----
-
 Filed from `docs/audits/AUDIT_PERFORMANCE_2026-08-16.md` (Dimension 1 — CPU hot paths).
 
 **Location**: `byroredux/src/interaction.rs`:817-869 (`collect_candidates`)
@@ -47,6 +39,3 @@ Use `FxHashMap` and reuse both collections from per-frame scratch rather than re
 - [ ] **SIBLING**: Fixed with #3058 and #3060 as one pass over `interaction.rs`
 - [ ] **TESTS**: A bench pins the per-frame allocation count
 
----
-
-*Immutable snapshot of the issue as filed. GitHub is authoritative for current state — query `gh issue view 3059 --json state` when live state is needed.*

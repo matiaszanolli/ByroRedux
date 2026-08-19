@@ -17,8 +17,8 @@ use crate::cli_args::{parse_renderer_config, parse_string_arg, parse_vec3_arg};
 use crate::commands::build_command_registry;
 use crate::components::{CellRootIndex, FootstepConfig, InputState, NameIndex, SubtreeCache};
 use crate::interaction::{
-    ActionBindings, ActionState, InjectedKeyHold, InjectedKeyPulse, InteractionState,
-    InteractionTrace,
+    ActionBindings, ActionState, InjectedKeyHold, InjectedKeyPulse, InteractionCandidateScratch,
+    InteractionState, InteractionTrace,
 };
 use crate::systems::{
     animate_lights_system, footstep_system, log_stats_system, make_animation_system,
@@ -460,6 +460,11 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.insert_resource(InjectedKeyHold::default());
     world.insert_resource(InteractionState::default());
     world.insert_resource(InteractionTrace::default());
+    // #3059 — reused per-frame scratch for `collect_candidates`'s
+    // FxHashMap instead of reallocating one every frame the crosshair
+    // path runs. `collect_candidates` also has a fresh-map fallback for
+    // any world that skips this registration (bare test worlds).
+    world.insert_resource(InteractionCandidateScratch::default());
     world.insert_resource(crate::combat::CombatState::default());
     world.insert_resource(StringPool::new());
     // #1212 / D1-NEW-01 — FormIdPool is the intern table backing

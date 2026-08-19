@@ -250,6 +250,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("InjectedKeyHold", "bounded debug/smoke input ingress drained by refresh_action_state; never canonical gameplay state"),
         ("InputState", "live keyboard/mouse state for the fly camera, inherently process-session-local"),
         ("InventoryCatalog", "read-only item presentation metadata rebuilt from the resolved plugin index on every content load"),
+        ("InteractionCandidateScratch", "per-frame scratch buffer for collect_candidates's take/restore reuse pattern (#3059) — capacity-only persistence, no gameplay state"),
         ("InteractionState", "camera-forward target derived from live transforms and interactable components every frame"),
         ("InteractionTrace", "session-local interaction diagnostics retained across a cell transition for smoke observability, not gameplay state"),
         ("IsDecalMesh", "spawn-time classification per FO4 BGSM decal semantics, rederived identically every load"),
