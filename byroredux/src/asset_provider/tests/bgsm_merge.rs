@@ -1142,6 +1142,33 @@ fn legacy_bgem_effect_cards_do_not_become_glass() {
     assert!(!bgem_uses_glass_behavior(&fire));
 }
 
+/// Regression for #2626 (SF-D9-2026-08-07-01) — `base.refraction` is a
+/// shared `BaseMaterial` screen-distortion bit (heat shimmer, cloaking
+/// shells, force-field ripple, fire/plasma distortion), not a glass
+/// signal, and it isn't version-gated the way `glass_enabled` is.
+/// Pre-fix `refraction=true` alone short-circuited straight to glass
+/// regardless of everything else — the issue's own fixture shape: no
+/// `glass_enabled`, no lit-fresnel-falloff signal, no envmap stack.
+#[test]
+fn refraction_alone_does_not_select_glass_behavior() {
+    use byroredux_bgsm::BaseMaterial;
+
+    let distortion_card = BgemFile {
+        base: BaseMaterial {
+            refraction: true,
+            ..Default::default()
+        },
+        effect_lighting_enabled: false,
+        ..Default::default()
+    };
+
+    assert!(
+        !bgem_uses_glass_behavior(&distortion_card),
+        "a bare refraction bit (heat shimmer / cloaking / fire distortion) \
+         must not classify as glass"
+    );
+}
+
 /// Regression for #1358 — BGEM `base_color` / `base_color_scale` must
 /// forward to `mesh.material.emissive_color` / `mesh.material.emissive_mult` with
 /// `emissive_source = EmissiveSource::Effect`. Pre-fix the BGEM merge

@@ -283,7 +283,16 @@ pub(crate) fn bgsm_metalness(spec: [f32; 3], pbr: bool) -> f32 {
 /// spelling of the same shared glass behavior; the individual maps remain
 /// material overlays after classification.
 pub(crate) fn bgem_uses_glass_behavior(bgem: &BgemFile) -> bool {
-    if bgem.glass_enabled || bgem.base.refraction {
+    // #2626 / SF-D9-2026-08-07-01 — `base.refraction` used to short-circuit
+    // this too. It's a shared BaseMaterial screen-distortion bit authored
+    // on heat shimmer, cloaking shells, force-field ripple, and fire/plasma
+    // distortion — none of which are glass — and unlike `glass_enabled`
+    // (a v21+ field authored specifically to mean glass) it's neither
+    // version-gated nor bundled with any of the other glass-shaped
+    // conjuncts below. Checking it unconditionally fired on v2 through v22
+    // alike, demoting correctly-classified effect-shader content (the
+    // #2297 fire-refraction corpus) to MATERIAL_KIND_GLASS.
+    if bgem.glass_enabled {
         return true;
     }
 
