@@ -13,6 +13,7 @@
 //! then layer game-specific checks on top.
 
 use byroredux_core::animation::{AnimationClipRegistry, AnimationPlayer};
+use byroredux_core::character::CharacterLevel;
 use byroredux_core::ecs::components::{
     Children, EquipmentSlots, EquippedWeapon, EscortState, FollowState, Inventory, Parent, Seated,
 };
@@ -52,6 +53,10 @@ pub enum ValidationKind {
     FormId,
     /// An entity reference points past `next_entity` (never spawned).
     DanglingEntity,
+    /// A component the save registry deliberately excludes as
+    /// "re-derived from static ESM data, write-once" now holds state that
+    /// isn't actually re-derivable — see [`validate_progression_state`].
+    UnsavedProgression,
 }
 
 /// Walk the world and collect every referential-integrity violation.
@@ -68,6 +73,7 @@ pub fn validate_world(world: &World) -> Vec<ValidationError> {
     validate_saved_entity_references(world, next_entity, &mut errors);
     validate_animation(world, next_entity, &mut errors);
     validate_inventory_instances(world, &mut errors);
+    validate_progression_state(world, &mut errors);
 
     errors
 }
@@ -394,6 +400,39 @@ fn validate_inventory_instances(world: &World, errors: &mut Vec<ValidationError>
     }
 }
 
+/// `CharacterLevel` is deliberately excluded from the save registry — see
+/// `REDERIVED_NOT_SAVED`, `byroredux/src/save_io/round_trip_tests.rs` —
+/// classified as "re-derived from static ESM `NPC_` data, write-once". That
+/// premise holds only because no leveling runtime exists yet: NPC spawn
+/// always stamps `xp: 0` (`byroredux/src/npc_spawn.rs`), and `CharacterLevel`
+/// itself defines `xp` as runtime progress toward the next level — state a
+/// static ESM record cannot supply by construction. The day XP starts
+/// accumulating, the exemption is false and every save would silently
+/// discard it (#2947). Abort loudly instead of letting that happen quietly:
+/// a non-zero `xp` at snapshot time means either a leveling runtime landed
+/// without registering `CharacterLevel` in `build_save_registry` (do that,
+/// dropping it from `REDERIVED_NOT_SAVED` in the same commit, per #1835's
+/// established pattern), or this check needs to move with it.
+fn validate_progression_state(world: &World, errors: &mut Vec<ValidationError>) {
+    let Some(q_level) = world.query::<CharacterLevel>() else {
+        return;
+    };
+    for (entity, level) in q_level.iter() {
+        if level.xp != 0 {
+            errors.push(ValidationError {
+                entity,
+                kind: ValidationKind::UnsavedProgression,
+                detail: format!(
+                    "CharacterLevel.xp = {} is unsaved runtime progress, but CharacterLevel \
+                     is excluded from the save registry as write-once/re-derivable-from-ESM \
+                     (#2947) — register it in build_save_registry before this can be true",
+                    level.xp
+                ),
+            });
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -531,5 +570,34 @@ mod tests {
         assert!(errors
             .iter()
             .all(|error| error.kind == ValidationKind::DanglingEntity));
+    }
+
+    /// #2947 — the exemption `REDERIVED_NOT_SAVED` documents
+    /// (`byroredux/src/save_io/round_trip_tests.rs`) holds only because NPC
+    /// spawn always stamps `xp: 0`; a freshly spawned actor must pass clean.
+    #[test]
+    fn character_level_with_no_progress_is_clean() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, CharacterLevel { level: 5, xp: 0 });
+        assert!(validate_world(&world).is_empty());
+    }
+
+    /// #2947 — the moment `xp` accumulates, `CharacterLevel` is no longer
+    /// re-derivable from static ESM data (it's runtime progress, by
+    /// CHARAL's own definition), so the save-exemption premise is false.
+    /// This must abort the save loudly rather than silently discard the
+    /// progress, exactly like every other referential-integrity gate here.
+    #[test]
+    fn character_level_with_progress_trips_the_unsaved_progression_gate() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, CharacterLevel { level: 5, xp: 42 });
+
+        let errors = validate_world(&world);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors[0].entity, e);
+        assert_eq!(errors[0].kind, ValidationKind::UnsavedProgression);
+        assert!(errors[0].detail.contains("42"));
     }
 }

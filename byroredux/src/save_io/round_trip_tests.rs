@@ -750,6 +750,19 @@ fn npc_spawn_stamped_components_are_saved_or_intentionally_rederived() {
     // AmbientPackageRuntime is the deliberate exception: its first
     // post-load tick recomputes the winner from PKID plus restored
     // clock/CTDA state, so persisting its cached winner is unnecessary.
+    //
+    // #2947 — CharacterLevel and Perks specifically hold only *while no
+    // leveling runtime exists*: `npc_spawn.rs` always stamps
+    // `CharacterLevel { xp: 0, .. }` and `Perks` verbatim from `PRKR`, so
+    // there is nothing accumulated to lose today. CharacterLevel.xp is
+    // CHARAL-defined runtime progress toward the next level — not
+    // re-derivable from a static ESM record by construction — so the exempt
+    // premise breaks the moment XP starts accumulating. That is not left to
+    // this allow-list to notice on its own:
+    // `crates/save/src/validate.rs::validate_progression_state` aborts any
+    // save where a `CharacterLevel.xp != 0` slips through with these two
+    // still unregistered, so the exemption fails loudly rather than
+    // silently discarding progress.
     const REDERIVED_NOT_SAVED: &[&str] = &[
         "FactionRanks",
         "CharacterLevel",
