@@ -1,7 +1,2 @@
-# Oblivion sizeless-truncation baseline	truncating=6	parsed=8032
-meshes\marker_arrow.nif	5
-meshes\marker_divine.nif	9
-meshes\marker_map.nif	8
-meshes\marker_radius.nif	2
-meshes\marker_temple.nif	9
-meshes\marker_travel.nif	5
+# Oblivion sizeless-truncation baseline	truncating=0	parsed=8032
+parsed	8032

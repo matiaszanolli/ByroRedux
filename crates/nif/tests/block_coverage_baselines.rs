@@ -121,10 +121,16 @@ fn oblivion_block_count_parity() {
     let path = baseline_path("oblivion_truncations");
     if regen_mode() {
         std::fs::create_dir_all(path.parent().unwrap()).expect("create baselines dir");
+        // #3082 — `parsed` gets its own plain `key\tvalue` line (matching
+        // `unknown_blocks\t{}` in the sized-game baselines below) so it
+        // survives the `#`-comment filter on read-back below, instead of
+        // living only in the human-readable header comment where the
+        // parser could never see it.
         let mut body = format!(
-            "# Oblivion sizeless-truncation baseline\ttruncating={}\tparsed={}\n",
+            "# Oblivion sizeless-truncation baseline\ttruncating={}\tparsed={}\n\
+             parsed\t{parsed}\n",
             truncating.len(),
-            parsed
+            parsed,
         );
         for (p, dropped) in &truncating {
             body.push_str(&format!("{p}\t{dropped}\n"));
@@ -144,9 +150,27 @@ fn oblivion_block_count_parity() {
             e
         ),
     };
+    // #3082 — `parsed=` used to be written into the baseline's `#`-comment
+    // header and never read back at all: the gate only ever compared the
+    // *set* of truncating files, so a regression that made MORE Oblivion
+    // NIFs hard-fail to parse (`byroredux_nif::parse_nif` returning `Err`,
+    // line ~105 above) — while leaving the truncating-file set unchanged
+    // or even shrinking it — passed silently. `parsed` is now asserted
+    // against its own baseline line, not merely written.
+    let baseline_parsed: usize = text
+        .lines()
+        .find_map(|l| l.strip_prefix("parsed\t"))
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or_else(|| {
+            panic!(
+                "[Oblivion] baseline at {} has no `parsed` line; regenerate with \
+                 `BYROREDUX_REGEN_BASELINES=1`",
+                path.display()
+            )
+        });
     let baseline: BTreeSet<String> = text
         .lines()
-        .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+        .filter(|l| !l.trim().is_empty() && !l.starts_with('#') && !l.starts_with("parsed\t"))
         .filter_map(|l| l.split('\t').next().map(str::to_string))
         .collect();
 
@@ -167,9 +191,28 @@ fn oblivion_block_count_parity() {
             new_truncations.len()
         );
     }
+    // #3082 — the other direction: a hard-parse-failure regression that
+    // doesn't touch the truncating set at all. `parsed` counts every NIF
+    // `parse_nif` didn't hard-error on (line ~105), truncated or not, so
+    // a decrease here means files that used to parse (even truncated) now
+    // fail outright — a distinct, previously-invisible failure mode from
+    // "newly truncating". An increase (previously-failing files now
+    // parsing) is a silent improvement, same policy as every other gate
+    // in this file.
+    assert!(
+        parsed >= baseline_parsed,
+        "[Oblivion] parsed NIF count dropped {} -> {} — {} file(s) that used to parse \
+         (truncated or not) now hard-fail. If intentional, regenerate with \
+         `BYROREDUX_REGEN_BASELINES=1`.",
+        baseline_parsed,
+        parsed,
+        baseline_parsed.saturating_sub(parsed),
+    );
     eprintln!(
-        "[Oblivion] no new truncation ({} known, all in baseline)",
-        truncating.len()
+        "[Oblivion] no new truncation ({} known, all in baseline); parsed {} >= baseline {}",
+        truncating.len(),
+        parsed,
+        baseline_parsed,
     );
 }
 
