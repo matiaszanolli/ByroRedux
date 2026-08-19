@@ -52,8 +52,8 @@ layout(set = 0, binding = 3) uniform CompositeParams {
     vec4 cloud_params_3; // cloud layer 3 (WTHR BNAM) — same packing (M33.1)
     vec4 camera_pos;     // xyz = camera position in render-origin-RELATIVE space (matches inv_view_proj; the CPU subtracts render_origin at upload). Fog distance origin (#428) + ray origin for screen_to_world_dir (#1490). w = height-fog reference altitude (REN-D16-01 / #2225), same relative space as xyz — ground height near the camera, or camera Y as a fallback.
     mat4 inv_view_proj;  // inverse view-projection for ray reconstruction
-    // xyz = water deep-color tint (linear RGB), w = camera depth below
-    // water surface (world units, >0 = under). Vestigial here — kept for
+    // xyz = water deep-color tint (linear RGB), w = authored Beer-Lambert
+    // extinction (0..1). Vestigial here — kept for
     // UBO layout parity but never read below. The underwater post-FX
     // (mix toward `underwater.xyz` by a depth-driven extinction when
     // `underwater.w > 0`) lives in presentation.frag now.

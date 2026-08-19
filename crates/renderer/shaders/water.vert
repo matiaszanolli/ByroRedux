@@ -1,10 +1,13 @@
 #version 460
+#extension GL_GOOGLE_include_directive : require
 #extension GL_EXT_nonuniform_qualifier : require
 // REN-2026-07-28-02 / #2219 — GpuInstance grew a uint64_t member; this
 // mirror never dereferences it, but the type must be recognized to keep
 // the struct byte-for-byte identical to the other 4 declaration sites.
 #extension GL_EXT_buffer_reference : require
 #extension GL_ARB_gpu_shader_int64 : require
+
+#include "include/shader_constants.glsl"
 
 // ── Water surface vertex shader ───────────────────────────────────────
 //
@@ -14,11 +17,10 @@
 //   • Rapids / whitewater            (`WaterKind::Rapids`)
 //   • Waterfall sheets               (`WaterKind::Waterfall`)
 //
-// The water mesh is *always* a flat quad in mesh-local space (no
-// per-frame BLAS rebuild — see the CP2077 / Cyberpunk 2077 design
-// note in `crates/core/src/ecs/components/water.rs`). Wave detail
-// is added in the fragment shader as a perturbation of the shading
-// normal; the BLAS sees a flat plate.
+// The water mesh is authored as a flat quad in mesh-local space. The
+// raster path applies a bounded two-wave vertical displacement below;
+// water remains excluded from the TLAS, so no per-frame BLAS rebuild is
+// required. The fragment path adds higher-frequency normal detail.
 //
 // Inputs reuse the engine `Vertex` layout exactly so the renderer
 // can share its global vertex SSBO + index buffer with the rest of
@@ -84,6 +86,29 @@ layout(set = 1, binding = 1) uniform CameraUBO {
     uvec4 renderDebug;   // x = structured RENDER_DEBUG_* mode; yzw reserved.
 };
 
+// Set 2 binding 1 is shared with water.frag. Vertex visibility is enabled
+// so authored amplitude/frequency can affect the silhouette as well as the
+// fragment normal, while the indexed record keeps the push block compact.
+struct WaterParams {
+    vec4 timing;
+    vec4 flow;
+    vec4 shallow;
+    vec4 deep;
+    vec4 scroll;
+    vec4 tune;
+    vec4 misc;
+    vec4 tint_reflect;
+    uvec4 noise_indices;
+};
+layout(std140, set = 2, binding = 1) uniform WaterParamsBlock {
+    WaterParams params[256];
+} waterParams;
+
+layout(push_constant) uniform WaterDrawPush {
+    uint waterIndex;
+    uvec3 _reserved;
+} drawPush;
+
 layout(location = 0) out vec3 vWorldPos;
 layout(location = 1) out vec3 vWorldNormal;
 layout(location = 2) out vec3 vWorldTangent;
@@ -100,6 +125,30 @@ void main() {
     GpuInstance inst = instances[gl_InstanceIndex];
 
     vec4 worldPos = inst.model * vec4(inPosition, 1.0);
+    WaterParams water = waterParams.params[drawPush.waterIndex];
+    uint kind = uint(water.timing.y + 0.5);
+    // Flat cell planes use the authored wave pair. Waterfall meshes are
+    // already artist-oriented sheets and keep their authored geometry.
+    if (kind != WATER_WATERFALL) {
+        vec3 absolutePos = worldPos.xyz + renderOrigin.xyz;
+        vec2 dirA = water.scroll.xy;
+        vec2 dirB = water.scroll.zw;
+        if (length(dirA) < 1e-5) dirA = vec2(1.0, 0.35);
+        if (length(dirB) < 1e-5) dirB = vec2(-0.4, 1.0);
+        dirA = normalize(dirA);
+        dirB = normalize(dirB);
+        float spatialA = max(abs(water.tune.x), 1.0 / 2048.0);
+        float spatialB = max(abs(water.tune.y), 1.0 / 4096.0);
+        float frequency = max(abs(water.misc.y), 0.0);
+        float phaseA = dot(absolutePos.xz, dirA) * spatialA * 6.2831853
+                     + water.timing.x * frequency * 6.2831853;
+        float phaseB = dot(absolutePos.xz, dirB) * spatialB * 6.2831853
+                     - water.timing.x * frequency * 4.7123890;
+        // Author data can contain corrupt/extreme values; keep displacement
+        // finite and below a conservative shoreline-safe bound.
+        float amplitude = clamp(water.tune.w, 0.0, 32.0);
+        worldPos.y += amplitude * (sin(phaseA) * 0.60 + sin(phaseB) * 0.40);
+    }
     // #markarth-precision — `inst.model` is rebased by the render origin (the
     // water plane reuses the same instance buffer as opaques), so `worldPos`
     // is relative; clip is computed from the relative viewProj below. Output

@@ -24,7 +24,8 @@
 //! - Water as ECS, not scene graph. A river is one entity per
 //!   contiguous flow region; a lake is one entity per cell. The cell
 //!   loader spawns these from XCLW (water height) + XCWT (WATR form).
-//! - Flat plane only. We do **not** displace BLAS geometry per frame.
+//! - Flat authored mesh with bounded raster-side displacement. Water is not
+//!   part of the TLAS, so displacement never triggers per-frame BLAS rebuilds.
 //!   Wave detail is normal-map perturbation in the fragment shader.
 //!   Reflections through the perturbed normal are RT-traced; refraction
 //!   is RT-traced through the inverted normal. See `shaders/water.frag`.
@@ -108,6 +109,10 @@ pub struct WaterMaterial {
     /// `deep_color`). Always `> fog_near` — the ESM parser clamps it to
     /// `fog_near + 1` at minimum.
     pub fog_far: f32,
+    /// Underwater fog near/far ramp. A zero far value means reuse the
+    /// above-water ramp (legacy records without an underwater tail).
+    pub underwater_fog_near: f32,
+    pub underwater_fog_far: f32,
     /// Schlick F0 at normal incidence. ~0.02 for clean water; ~0.04
     /// for muddy / chemical / Hubris Comics water. Drives fresnel.
     pub fresnel_f0: f32,
@@ -154,9 +159,9 @@ pub struct WaterMaterial {
     /// stylised reads or thick visc fluid. Glass at 1.5.
     pub ior: f32,
     /// Vertex-displacement magnitude (world units) authored in WATR
-    /// `DATA`/`DNAM`. The flat-mesh RT path does **not** displace the
-    /// BLAS per frame (see `docs/engine/watal.md` §6) — this drives
-    /// normal-only chop today and an optional displacement pass later.
+    /// `DATA`/`DNAM`. The raster water vertex path applies a bounded
+    /// two-wave displacement; the water surface remains excluded from the
+    /// TLAS, so this does not require per-frame BLAS updates.
     /// Promoted onto the canonical material in WATAL Phase 1 so the
     /// field stops being dropped at the translate boundary.
     pub wave_amplitude: f32,
@@ -183,6 +188,8 @@ impl Default for WaterMaterial {
             deep_color: [0.02, 0.06, 0.10],
             fog_near: 80.0,
             fog_far: 600.0,
+            underwater_fog_near: 0.0,
+            underwater_fog_far: 0.0,
             fresnel_f0: 0.02,
             reflectivity: 0.85,
             normal_map_index: u32::MAX,

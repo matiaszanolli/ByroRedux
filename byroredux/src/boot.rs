@@ -702,6 +702,9 @@ pub(crate) fn build_scheduler() -> Scheduler {
             .writes::<byroredux_physics::CharacterController>()
             .reads::<byroredux_physics::RapierHandles>()
             .reads::<byroredux_scripting::ActorControlState>()
+            .reads::<byroredux_core::ecs::components::ActorVitals>()
+            .writes::<byroredux_core::ecs::components::ActorValues>()
+            .writes::<byroredux_core::ecs::components::Dead>()
             .reads::<Transform>()
             .writes::<Transform>(),
     );

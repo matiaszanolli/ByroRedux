@@ -19,6 +19,9 @@
 //! booted in fly-cam mode or pre-character-spawn), so registration is
 //! safe even in modes that don't use the character rig.
 
+use byroredux_core::ecs::components::actor_state::Dead;
+use byroredux_core::ecs::components::actor_values::{ActorValues, ActorVitals};
+use byroredux_core::ecs::components::water::{WaterFlow, WaterPlane, WaterVolume};
 use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{ActiveCamera, GlobalTransform, Transform, World};
@@ -151,6 +154,9 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
         return;
     };
     drop(player_res);
+    if world.get::<Dead>(player_entity).is_some() {
+        return;
+    }
 
     // Papyrus startup fragments can independently disable movement, hand the
     // player to AI, or restrain the actor. Keep gravity/collision ticking in
@@ -210,25 +216,67 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
         (c, pos, col, body)
     };
 
+    // Kinematic actors do not participate in the dynamic-body buoyancy pass.
+    // Sample the same authored AABB here so the player gets a stable swim
+    // state instead of continuing terrestrial gravity through a lake or river.
+    // The snapshot is completed before borrowing PhysicsWorld below, keeping
+    // ECS query guards out of the physics lock interval.
+    let swim = player_water_state(
+        world,
+        current_pos,
+        controller.half_height + controller.radius,
+    );
+    let head_submerged = swim
+        .map(|(surface_y, _, _)| current_pos.y + controller.eye_height <= surface_y)
+        .unwrap_or(false);
+    let (breath_remaining, drowning_damage) = advance_breath(
+        controller.breath_remaining,
+        controller.drowning_damage_accumulator,
+        head_submerged,
+        dt,
+    );
+
     // Compute the desired horizontal motion in world-space, yaw-aligned.
     // The helper normalises the WASD vector before scaling so diagonal
     // strafe doesn't go √2× faster than pure forward.
     let speed_mul = if want_sprint { 2.0 } else { 1.0 };
-    let horizontal_translation =
+    let mut horizontal_translation =
         horizontal_motion(yaw, move_dir, controller.move_speed * speed_mul, dt);
+    if let Some((_, fraction, Some(flow))) = swim {
+        // Currents push a swimmer, but are deliberately bounded below the
+        // authored flow speed so a river cannot turn the controller into an
+        // uncontrollable projectile. Waterfalls keep their vertical flow in
+        // the buoyancy path and contribute no horizontal drift.
+        let current = Vec3::new(flow.direction[0], 0.0, flow.direction[2])
+            * (flow.speed * 0.35 * fraction.clamp(0.0, 1.0) * dt);
+        horizontal_translation += current;
+    }
 
     // Integrate gravity into a fresh local vertical_velocity. Then
     // apply the jump impulse if requested + allowed (grounded +
     // not-already-pressed — see `wants_jump` latch on the controller).
-    let jump_fired = want_jump_now && controller.is_grounded && !controller.wants_jump;
-    let vertical_velocity = integrate_vertical(
-        controller.vertical_velocity,
-        controller.gravity,
-        controller.terminal_velocity,
-        dt,
-        controller.jump_velocity,
-        jump_fired,
-    );
+    let jump_fired =
+        want_jump_now && (controller.is_grounded || swim.is_some()) && !controller.wants_jump;
+    let vertical_velocity = match swim {
+        Some((surface_y, fraction, _)) => swim_vertical_velocity(
+            controller.vertical_velocity,
+            current_pos.y,
+            surface_y,
+            controller.half_height + controller.radius,
+            fraction,
+            dt,
+            controller.jump_velocity,
+            jump_fired,
+        ),
+        None => integrate_vertical(
+            controller.vertical_velocity,
+            controller.gravity,
+            controller.terminal_velocity,
+            dt,
+            controller.jump_velocity,
+            jump_fired,
+        ),
+    };
 
     // M28.5 follow-up — when grounded and not jumping, send a small
     // *fixed* downward probe instead of the gravity-integrated motion.
@@ -272,7 +320,7 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
         .map(|r| r.kcc_offset_bu)
         .unwrap_or(byroredux_physics::ContactConfig::DEFAULT.kcc_offset_bu);
     let pw = world.resource::<byroredux_physics::PhysicsWorld>();
-    let desired_vertical = if controller.is_grounded && !jump_fired {
+    let desired_vertical = if swim.is_none() && controller.is_grounded && !jump_fired {
         // Probe down for the surface the capsule is standing on. The player's
         // own body must be excluded or the sweep instantly self-hits (#2859).
         let support_y = pw.cast_capsule_down(
@@ -415,7 +463,12 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
             // true so a single keypress doesn't fire repeatedly; release
             // clears it.
             c.wants_jump = want_jump_now;
+            c.breath_remaining = breath_remaining;
+            c.drowning_damage_accumulator = drowning_damage.remainder;
         }
+    }
+    if drowning_damage.whole > 0.0 {
+        apply_player_drowning_damage(world, player_entity, drowning_damage.whole);
     }
     // Push the new pose into Rapier so other bodies' queries see the
     // player at the right spot. KinematicPositionBased bodies apply
@@ -814,6 +867,137 @@ pub(crate) fn horizontal_motion(yaw: f32, move_dir: Vec3, speed: f32, dt: f32) -
     (forward * dir.z + right * dir.x) * speed * dt
 }
 
+/// Return the nearest water column intersecting a capsule centred at `pos`.
+/// The fraction is the capsule's vertical span below the authored surface.
+/// This mirrors the dynamic-body `WaterContact` calculation without creating
+/// a transient component for the kinematic player.
+fn player_water_state(
+    world: &World,
+    pos: Vec3,
+    half_span: f32,
+) -> Option<(f32, f32, Option<WaterFlow>)> {
+    let (Some(wq), Some(vq)) = (world.query::<WaterPlane>(), world.query::<WaterVolume>()) else {
+        return None;
+    };
+    let flow_q = world.query::<WaterFlow>();
+    let bottom = pos.y - half_span;
+    let top = pos.y + half_span;
+    let mut best: Option<(f32, f32, Option<WaterFlow>, f32)> = None;
+    for (entity, _) in wq.iter() {
+        let Some(volume) = vq.get(entity) else {
+            continue;
+        };
+        if pos.x < volume.min[0]
+            || pos.x > volume.max[0]
+            || pos.z < volume.min[2]
+            || pos.z > volume.max[2]
+        {
+            continue;
+        }
+        let surface_y = volume.max[1];
+        if top < volume.min[1] || bottom > surface_y {
+            continue;
+        }
+        let fraction = ((surface_y - bottom) / (top - bottom).max(f32::EPSILON)).clamp(0.0, 1.0);
+        if fraction <= 0.0 {
+            continue;
+        }
+        let distance = (surface_y - pos.y).abs();
+        let flow = flow_q.as_ref().and_then(|q| q.get(entity).copied());
+        if best.as_ref().is_none_or(|candidate| distance < candidate.3) {
+            best = Some((surface_y, fraction, flow, distance));
+        }
+    }
+    best.map(|(surface_y, fraction, flow, _)| (surface_y, fraction, flow))
+}
+
+/// Integrate a swimmer toward a neutral buoyancy point near the waterline.
+/// Gravity is replaced by a critically-damped buoyancy spring; jump remains a
+/// bounded upward stroke while submerged. This keeps entry/exit continuous and
+/// prevents a falling player from tunnelling through a shallow water volume.
+pub(crate) fn swim_vertical_velocity(
+    prev_velocity: f32,
+    center_y: f32,
+    surface_y: f32,
+    half_span: f32,
+    fraction: f32,
+    dt: f32,
+    jump_velocity: f32,
+    jump_fired: bool,
+) -> f32 {
+    if jump_fired {
+        return jump_velocity
+            .mul_add(0.55, prev_velocity * 0.15)
+            .clamp(-120.0, 220.0);
+    }
+    let target_y = surface_y - half_span * 0.35;
+    let spring = (target_y - center_y) * (5.0 + 7.0 * fraction.clamp(0.0, 1.0));
+    (prev_velocity * 0.72 + spring * dt).clamp(-120.0, 160.0)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct DrowningDamage {
+    whole: f32,
+    remainder: f32,
+}
+
+/// Advance the game-invariant breath reserve. Bethesda records do not author
+/// a breath duration; the 15-second reserve and 12 HP/s damage rate are
+/// engine constants shared by the supported families. Fractional damage is
+/// retained so a variable render frame cannot lose health over time.
+fn advance_breath(
+    previous_breath: f32,
+    previous_damage_remainder: f32,
+    head_submerged: bool,
+    dt: f32,
+) -> (f32, DrowningDamage) {
+    const MAX_BREATH: f32 = 15.0;
+    const DROWNING_DAMAGE_PER_SECOND: f32 = 12.0;
+    if !head_submerged || dt <= 0.0 {
+        return (
+            MAX_BREATH,
+            DrowningDamage {
+                whole: 0.0,
+                remainder: 0.0,
+            },
+        );
+    }
+    let previous = previous_breath.clamp(0.0, MAX_BREATH);
+    let breath = (previous - dt).max(0.0);
+    let exhausted_seconds = (dt - previous).max(0.0);
+    let damage = previous_damage_remainder
+        .max(0.0)
+        .mul_add(1.0, exhausted_seconds * DROWNING_DAMAGE_PER_SECOND);
+    let whole = damage.floor();
+    (
+        breath,
+        DrowningDamage {
+            whole,
+            remainder: damage - whole,
+        },
+    )
+}
+
+fn apply_player_drowning_damage(world: &World, player: EntityId, damage: f32) {
+    let Some(vitals) = world.get::<ActorVitals>(player).map(|v| *v) else {
+        return;
+    };
+    let Some(mut values) = world.query_mut::<ActorValues>() else {
+        return;
+    };
+    let Some(actor_values) = values.get_mut(player) else {
+        return;
+    };
+    actor_values.apply_damage(vitals.health, damage);
+    let dead = actor_values.current(vitals.health) <= 0.0;
+    drop(values);
+    if dead {
+        if let Some(mut dead_q) = world.query_mut::<Dead>() {
+            dead_q.insert(player, Dead);
+        }
+    }
+}
+
 /// Compute the next-frame vertical velocity given current state, the
 /// jump trigger, and dt. Pure function — pulled out for test
 /// pinning. Mirrors the inline math in
@@ -1120,5 +1304,62 @@ mod tests {
             "diagonal length must match forward-only length (input is normalised); \
              forward={forward_len}, diag={diag_len}"
         );
+    }
+
+    #[test]
+    fn swimming_replaces_gravity_with_bounded_buoyancy() {
+        let v = swim_vertical_velocity(0.0, 0.0, 100.0, 50.0, 1.0, 1.0 / 60.0, 380.0, false);
+        assert!(v > 0.0, "a submerged swimmer below the neutral point rises");
+        assert!(v < 160.0, "buoyancy must remain bounded");
+
+        let jump = swim_vertical_velocity(-80.0, 80.0, 100.0, 50.0, 0.5, 1.0 / 60.0, 380.0, true);
+        assert!(
+            jump > 0.0 && jump <= 220.0,
+            "swim stroke is a bounded upward impulse"
+        );
+    }
+
+    #[test]
+    fn swimming_damps_downward_velocity_near_surface() {
+        let v = swim_vertical_velocity(-120.0, 82.5, 100.0, 50.0, 0.8, 1.0 / 60.0, 380.0, false);
+        assert!(v > -120.0, "water drag must reduce a falling speed");
+    }
+
+    #[test]
+    fn breath_replenishes_at_surface_and_drowns_after_reserve() {
+        let (breath, damage) = advance_breath(2.0, 0.25, false, 1.0);
+        assert_eq!(breath, 15.0);
+        assert_eq!(damage.whole, 0.0);
+        assert_eq!(damage.remainder, 0.0);
+
+        let (breath, damage) = advance_breath(0.0, 0.25, true, 0.25);
+        assert_eq!(breath, 0.0);
+        assert_eq!(damage.whole, 3.0);
+        assert!((damage.remainder - 0.25).abs() < 1e-6);
+    }
+
+    #[test]
+    fn breath_preserves_fractional_damage_between_ticks() {
+        let (_, first) = advance_breath(0.0, 0.0, true, 1.0 / 60.0);
+        assert_eq!(first.whole, 0.0);
+        let (_, second) = advance_breath(0.0, first.remainder, true, 1.0 / 60.0);
+        assert!(second.whole >= 0.0);
+        assert!(second.remainder < 1.0);
+    }
+
+    #[test]
+    fn drowning_damage_uses_actor_vitals_and_marks_death() {
+        let mut world = World::new();
+        world.register::<ActorValues>();
+        world.register::<ActorVitals>();
+        world.register::<Dead>();
+        let player = world.spawn();
+        world.insert(player, ActorVitals { health: 7 });
+        world.insert(player, ActorValues::from_pairs([(7, 5.0)]));
+
+        apply_player_drowning_damage(&world, player, 5.0);
+
+        assert_eq!(world.get::<ActorValues>(player).unwrap().current(7), 0.0);
+        assert!(world.get::<Dead>(player).is_some());
     }
 }

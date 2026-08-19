@@ -143,6 +143,13 @@ pub struct CharacterController {
     /// (cleared) by `character_controller_system` after applying.
     /// Avoids double-jumps from repeat-key autorepeat.
     pub wants_jump: bool,
+    /// Remaining breath while the player's head is submerged. Seconds.
+    /// The character system replenishes this at the surface and applies
+    /// drowning damage only after it reaches zero.
+    pub breath_remaining: f32,
+    /// Accumulated drowning damage is kept on the controller so save/load and
+    /// fixed-step updates do not lose fractional damage between ticks.
+    pub drowning_damage_accumulator: f32,
 }
 
 impl CharacterController {
@@ -175,6 +182,8 @@ impl CharacterController {
         vertical_velocity: 0.0,
         is_grounded: false,
         wants_jump: false,
+        breath_remaining: 15.0,
+        drowning_damage_accumulator: 0.0,
     };
 }
 

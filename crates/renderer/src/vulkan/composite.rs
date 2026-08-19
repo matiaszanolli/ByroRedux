@@ -118,10 +118,9 @@ pub struct CompositeParams {
     /// (and, with `camera_pos`, world-space fragment positions for fog) from
     /// screen UV in the composite shader.
     pub inv_view_proj: [[f32; 4]; 4],
-    /// Underwater tint + depth. `xyz` = the water material's
+    /// Underwater tint + authored extinction. `xyz` = the water material's
     /// `deep_color` (linear RGB) the scene should blend toward when
-    /// the camera is submerged; `w` = camera depth below the water
-    /// surface in world units (>0 = underwater, 0 = above water).
+    /// the camera is submerged; `w` = Beer-Lambert extinction (0..1).
     ///
     /// Vestigial here — `composite.frag` declares this field for UBO
     /// layout parity but never reads it. The underwater post-FX moved

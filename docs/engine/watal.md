@@ -19,8 +19,9 @@ the renderer *and* the physics solver consume identically for every game.
 The layer is now double-ended in production: canonical WATR/XCLW/XCWT state feeds
 the renderer, while dynamic Rapier bodies receive `WaterContact`, buoyancy,
 submerged damping, and bounded current drag from the same `WaterFlow`. Phase 0 is
-closed; Phase 1 and Phase 2 are partial. Character swimming/drowning, exact tail
-decode, disturbance events, and the cross-game visual smoke matrix remain open.
+closed; Phase 1 and Phase 2 are partial. Character swimming and bounded drowning
+damage are live; exact tail decode, disturbance events, and the cross-game visual
+smoke matrix remain open.
 The CELL boundary now preserves XCLW as a tri-state: absent means inherit the
 WRLD default, a finite authored height overrides it, and either Bethesda no-water
 sentinel (`#INT_MIN#` or Skyrim's FLT_MAX) explicitly suppresses a plane.
@@ -216,11 +217,11 @@ base" target. `WaterMaterial` carries 24+ shading fields; `WaterFlow`,
 `WaterVolume`, `SubmersionState`, `WaterContact`, and `PhysicsWaterConstants` are
 live canonical inputs/state. Wave amplitude/frequency, authored sun-specular
 power, worldspace LOD water, authored NAM2–4 noise, and bounded scatter have
-reached the canonical tier. **Missing:** below-water-tail fields, plus character
-swim/drown state and disturbance events. Authored NAM2–4 noise indices are now
+reached the canonical tier. **Missing:** verified Skyrim below-water-tail fields
+and disturbance events. Character swim/drown state is now live. Authored NAM2–4 noise indices are now
 part of the canonical GPU material contract.
 
-### Decode + translate — **good (render), drops Skyrim-only fields**
+### Decode + translate — **good (render), Skyrim tail still partial**
 
 `water.rs` decodes the shared 60-byte DATA prefix (Oblivion/FO3/FNV) and a
 best-effort Skyrim DNAM prefix; `NNAM`/`TNAM` texture and Skyrim+ NAM2/NAM3/NAM4
@@ -229,9 +230,9 @@ links are preserved separately; `raw_data`/`raw_dnam` tails remain available.
 `resolve_water_material`
 (`env_translate.rs:89-176`) captures colors/fog/fresnel/reflectivity/flow.
 Wave amplitude/frequency, reflection tint, and the per-game sun-specular exponent
-now cross the boundary. NAM2/NAM3/NAM4 noise layers now resolve through the bindless
-water-material contract; exact below-water
-tail decode remains unverified. The
+now cross the boundary. NAM2/NAM3/NAM4 noise layers and the FO3/FNV long-tail
+noise UV scales now resolve through the bindless water-material contract; FO3/FNV and FO4 below-water fog ranges now cross the
+canonical boundary, while Skyrim-tail fields remain unverified. The
 `WaterKind` classification is a fragile EDID-substring heuristic
 (`rapid`/`waterfall`/`falls`/`river`/`stream`), English-only, with `waterfall`
 deliberately demoted to `River` for cell planes.
@@ -254,10 +255,11 @@ closed bug IDs, correctly RT-gated. The former 128-byte `WaterPush` ceiling is
 removed: authored material records now live in a per-frame, indexed 36 KiB UBO
 (256 records), while a 16-byte push selector chooses the draw's record. Remaining
 fragilities: procedural-noise hash bands past ~176k world units (#1502, visual
-only); waves are normal-perturbation only (no displacement). Reflection rays now
+only); waves combine bounded raster-side vertex displacement with fragment normal
+perturbation. Reflection rays now
 shade their material-aware hit and apply the per-WATR tint.
 
-### Physics / gameplay — **dynamic bodies live; character gameplay open**
+### Physics / gameplay — **dynamic bodies live; character swim core live**
 
 `systems/water.rs` writes camera `SubmersionState` with waterline hysteresis and
 drives underwater presentation. `crates/physics/src/water.rs` runs before the
@@ -265,9 +267,11 @@ Rapier step: dynamic bodies overlapping a `WaterVolume` receive `WaterContact`,
 Archimedes lift, submerged damping, and a mass-correct velocity-matching force
 toward `WaterFlow`. Dry→wet wake and settled-body sleep are regression-tested so
 water does not reintroduce the exterior physics freeze. The kinematic
-`CharacterController` still has no swim mode, so player movement ignores water;
-drowning, splash/ripple events, water-walking, freezing, and underwater audio
-remain open.
+`CharacterController` now samples the same authored water AABBs: gravity is
+replaced by bounded buoyancy while the capsule overlaps a volume, the jump
+action becomes a capped swim stroke, and horizontal flow contributes a
+fractional current drift. Drowning, splash/ripple events, water-walking,
+freezing, and underwater audio remain open.
 
 ---
 
@@ -405,10 +409,9 @@ crossing / submerged movement, feeding *both* the render ripple-normal injection
   canonical *type* still carries DISPLACEMENT/LOD/DEPTH/REFLECTIONS/REFRACTIONS
   flags so the per-game translate can disable rays for opaque waterfalls
   (`WaterKind::refracts`) without a shader per-game branch.
-- **Per-frame BLAS water displacement.** Waves stay normal-only
-  (`water.rs:27` "do not displace BLAS per frame") — important given the crash was
-  RT-cost-driven. Amplitude/frequency are *represented* canonically for a future
-  optional displacement path.
+- **Per-frame BLAS water displacement.** Water receives raster-side displacement
+  only; it remains outside the TLAS, so amplitude/frequency do not cause per-frame
+  acceleration-structure rebuilds.
 
 ---
 
@@ -425,8 +428,8 @@ tests); the render/physics-device parts are validated by the smoke-test pattern
 2. **Phase 1 — CANONICAL TYPE + TRANSLATE — PARTIAL.** Wave amplitude/frequency,
 reflection tint, authored direct-sun glint, per-game default-water height,
 authored worldspace LOD water, NAM2–4 noise layers, and bounded sunlight
-scattering are live. Remaining work is exact FO3/FNV DATA-tail + Skyrim DNAM-tail
-decode, below-water fog promotion, and a cross-game fixture asserting that canonical sentinels stay
+   scattering are live. Remaining work is the verified Skyrim DNAM-tail decode,
+   disturbance events, and a cross-game fixture asserting that canonical sentinels stay
    identical while only authored fields differ.
 
 3. **Phase 2 — PHYSICS FORCE API + BUOYANCY / FLOW — BODY CORE LIVE
@@ -435,17 +438,16 @@ decode, below-water fog promotion, and a cross-game fixture asserting that canon
    Current force matches velocity along the canonical flow axis instead of adding
    an unbounded constant acceleration. Water remains a trigger volume, not a
    solid Rapier plane, so entering it cannot block bodies or the character.
-   Remaining Phase 2 scope is kinematic-character swim contact, drowning, and a
-   real-data GPU smoke. The existing dry→wet one-shot wake and settled-float sleep
+   Remaining Phase 2 scope is a real-data GPU smoke. The existing
+   dry→wet one-shot wake and settled-float sleep
    discipline remains load-bearing: water must never pin the exterior physics
    world awake. Test gate for body physics is closed (rise, settle, downstream
    drift, calm-water quiescence); player traversal and real-data gates are open.
 
 4. **Phase 3 — RENDER-FIDELITY + GAMEPLAY POLISH — OPEN.** The indexed per-frame
-   water UBO, authored noise layers, and bounded sunlight scattering are live;
-   wire swimming into `CharacterController`
-   (OpenMW swimlevel model — gravity off below swimlevel, clamp to waterline,
-   swim-up, inert float-to-surface); `SplashEvent`/`RippleEvent` → particle +
+   water UBO, authored noise layers, bounded sunlight scattering, and the
+   kinematic swim core and bounded breath/drowning damage are live; refine the
+   OpenMW-style swimlevel model; `SplashEvent`/`RippleEvent` → particle +
    audio + ripple normal injection (A10); underwater god-rays via the M55
    volumetrics gated on `WaterContact`; replace the EDID `WaterKind` heuristic with
    data-driven classification. Each sub-item independently shippable.
@@ -462,7 +464,7 @@ decode, below-water fog promotion, and a cross-game fixture asserting that canon
   source material). `m-exteriors.sh` captures both commands in its retained
   per-game debug artifact.
 - Still open: include the worldspace-level `WaterLod` translation explicitly in
-  `water.dump`, and add swim/drown state once those components exist.
+  `water.dump`, and add splash/ripple events plus a real-data GPU smoke.
 - A per-game translate-up unit harness (Phase 1) asserting SENTINEL-identity across
   Oblivion / FNV / Skyrim WATR inputs.
 
@@ -514,11 +516,12 @@ ripple injection (`:82-133`). The engine now uses a four-octave procedural
 fallback for textureless legacy water plus authored texture layers where present;
 `normal_octaves` (§5.1) lets the canonical reach Skyrim chop.
 
-### Q5 — Open item: exact byte offsets of the undecoded tails. → **MEDIUM confidence; verify before relying.**
+### Q5 — Open item: exact byte offsets of the remaining Skyrim tail. → **MEDIUM confidence; verify before relying.**
 
-The FO3/FNV DATA 136-byte tail and the Skyrim DNAM tail (`below_water_fog`,
-displacement layers) are currently `raw_data`/`raw_dnam` and **best-effort**
-across Skyrim 1.5/1.6. Before Phase 1 carries `below_water_fog`/noise controls,
-byte-decode a vanilla record via the extract→trace method
+The Skyrim DNAM tail (`below_water_fog`, displacement layers) remains
+`raw_dnam` and **best-effort** across Skyrim 1.5/1.6. FO3/FNV DATA offsets
+144/148 (underwater fog) and 172/176 (noise UV scales), plus FO4 DNAM offsets
+44/48, now feed canonical water fields;
+the remaining Skyrim fields should be byte-decoded via the extract→trace method
 ([[nif_v10x_stride_drift_resolved]]). Until then they stay SENTINEL — correctness
 is not blocked, only fidelity.

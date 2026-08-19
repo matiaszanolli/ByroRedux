@@ -158,11 +158,10 @@ void main() {
     vec3 presented = aces(graded * params.exposure);
 
     if (params.underwater.w > 0.0) {
-        float extinction = clamp(
-            1.0 - exp(-params.underwater.w / 120.0),
-            0.0,
-            0.85
-        );
+        // The app packs the authored WATR fog ramp into this channel as a
+        // Beer–Lambert extinction value. Do not apply a second fixed-distance
+        // curve here: that erased per-water fog_near/fog_far differences.
+        float extinction = clamp(params.underwater.w, 0.0, 0.85);
         vec3 underwaterTone = aces(params.underwater.xyz * params.exposure);
         presented = mix(presented, underwaterTone, extinction);
     }

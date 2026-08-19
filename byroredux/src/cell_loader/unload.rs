@@ -8,7 +8,9 @@ use byroredux_renderer::VulkanContext;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
-use crate::components::{CellRootIndex, MaterialTextureHandles, NormalMapHandle, TerrainTileSlot, WaterNoiseMapHandles};
+use crate::components::{
+    CellRootIndex, MaterialTextureHandles, NormalMapHandle, TerrainTileSlot, WaterNoiseMapHandles,
+};
 
 /// Bounded phase timings for one logical cell-unload batch.
 ///

@@ -276,7 +276,7 @@ impl WaterPipeline {
             .binding(1)
             .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
             .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::FRAGMENT);
+            .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT);
         let water_caustic_bindings = [water_caustic_binding, water_params_binding];
         let water_caustic_set_layout = unsafe {
             // SAFETY: `device` is live; both bindings are a stack slice valid
@@ -349,7 +349,7 @@ impl WaterPipeline {
             water_caustic_set_layout,
         ];
         let push_range = vk::PushConstantRange::default()
-            .stage_flags(vk::ShaderStageFlags::FRAGMENT)
+            .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
             .offset(0)
             .size(std::mem::size_of::<WaterPush>() as u32);
         let push_ranges = [push_range];
@@ -634,7 +634,7 @@ impl WaterPipeline {
         device.cmd_push_constants(
             cmd,
             self.pipeline_layout,
-            vk::ShaderStageFlags::FRAGMENT,
+            vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
             0,
             bytes,
         );

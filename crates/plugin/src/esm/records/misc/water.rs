@@ -102,6 +102,9 @@ pub struct WaterParams {
     /// takes over. Default `600.0`. Clamped to at least `fog_near + 1`
     /// on parse so the ramp span is never zero.
     pub fog_far: f32,
+    /// Underwater fog ramp. Zero/invalid means reuse the above-water ramp.
+    pub underwater_fog_near: f32,
+    pub underwater_fog_far: f32,
     /// 0..1 reflectivity multiplier (`reflectivity_amount`).
     pub reflectivity: f32,
     /// 0..1 Fresnel amount — drives the surface's edge fresnel
@@ -121,6 +124,12 @@ pub struct WaterParams {
     /// `Sun Specular Power`; larger values produce a tighter highlight.
     /// Authored by every supported WATR visual-data generation.
     pub sun_specular_power: f32,
+    /// FO3/FNV long DATA tail: authored UV scale for noise layer one.
+    /// Zero means the record did not carry the long-tail field.
+    pub noise_uv_scale_a: f32,
+    /// FO3/FNV long DATA tail: authored UV scale for noise layer two.
+    /// Zero means the record did not carry the long-tail field.
+    pub noise_uv_scale_b: f32,
 }
 
 impl Default for WaterParams {
@@ -131,6 +140,8 @@ impl Default for WaterParams {
             reflection_color: [0.85, 0.88, 0.92],
             fog_near: 80.0,
             fog_far: 600.0,
+            underwater_fog_near: 0.0,
+            underwater_fog_far: 0.0,
             reflectivity: 0.85,
             fresnel: 0.02,
             wind_speed: 1.0,
@@ -138,6 +149,8 @@ impl Default for WaterParams {
             wave_amplitude: 0.05,
             wave_frequency: 0.6,
             sun_specular_power: 50.0,
+            noise_uv_scale_a: 0.0,
+            noise_uv_scale_b: 0.0,
         }
     }
 }
@@ -210,6 +223,23 @@ fn decode_data(data: &[u8]) -> WaterParams {
     }
     if let Ok(v) = r.f32() {
         p.fog_far = v.max(p.fog_near + 1.0);
+    }
+    // FO3/FNV DNAM/DATA tail: Under Water fog near/far at 144/148.
+    // Short Oblivion-style records do not carry this tail and retain the
+    // zero sentinel, which makes the renderer reuse the above-water ramp.
+    if let Some(v) = read_f32_at(data, 144) {
+        p.underwater_fog_near = v.max(0.0);
+    }
+    if let Some(v) = read_f32_at(data, 148) {
+        p.underwater_fog_far = v.max(p.underwater_fog_near + 1.0);
+    }
+    // FO3/FNV long DATA tail: Noise Layer 1/2 UV scales. These are
+    // independent authored tiling controls, not the wind/wave prefix.
+    if let Some(v) = read_f32_at(data, 172) {
+        p.noise_uv_scale_a = v.max(0.0);
+    }
+    if let Some(v) = read_f32_at(data, 176) {
+        p.noise_uv_scale_b = v.max(0.0);
     }
     // The 186-byte FO3/FNV record has an extra fog-distance f32 at
     // offset 36 that shifts the colour block 4 bytes forward (#1778);
@@ -341,9 +371,11 @@ fn decode_dnam_fo4(data: &[u8]) -> WaterParams {
     }
     if let Some(near) = read_f32_at(data, 44) {
         p.fog_near = near.max(0.0);
+        p.underwater_fog_near = near.max(0.0);
     }
     if let Some(far) = read_f32_at(data, 48) {
         p.fog_far = far.max(p.fog_near + 1.0);
+        p.underwater_fog_far = far.max(p.underwater_fog_near + 1.0);
     } else {
         p.fog_far = p.fog_far.max(p.fog_near + 1.0);
     }
@@ -507,6 +539,10 @@ mod tests {
         data[40..44].copy_from_slice(&[36, 47, 36, 0]); // shallow
         data[44..48].copy_from_slice(&[13, 13, 11, 0]); // deep
         data[48..52].copy_from_slice(&[41, 48, 46, 0]); // reflection
+        data[144..148].copy_from_slice(&18.0f32.to_le_bytes()); // underwater near
+        data[148..152].copy_from_slice(&240.0f32.to_le_bytes()); // underwater far
+        data[172..176].copy_from_slice(&(1.0 / 320.0f32).to_le_bytes()); // noise UV 1
+        data[176..180].copy_from_slice(&(1.0 / 760.0f32).to_le_bytes()); // noise UV 2
 
         let w = parse_watr(0x00100000, &[sub(b"DATA", &data)], GameKind::Fallout3NV);
         assert!((w.params.shallow_color[0] - 36.0 / 255.0).abs() < 1e-6);
@@ -514,6 +550,10 @@ mod tests {
         assert!((w.params.deep_color[2] - 11.0 / 255.0).abs() < 1e-6);
         assert!((w.params.reflection_color[0] - 41.0 / 255.0).abs() < 1e-6);
         assert!((w.params.reflection_color[2] - 46.0 / 255.0).abs() < 1e-6);
+        assert_eq!(w.params.underwater_fog_near, 18.0);
+        assert_eq!(w.params.underwater_fog_far, 240.0);
+        assert!((w.params.noise_uv_scale_a - 1.0 / 320.0).abs() < 1e-6);
+        assert!((w.params.noise_uv_scale_b - 1.0 / 760.0).abs() < 1e-6);
         // Guard against the off-by-4 regression: reading shallow @36 would
         // pick up the fog float's bytes (0x00,0x00,0xda → [0,0,218]), so a
         // blue-channel of 218/255 here means the offset shift was lost.
@@ -598,6 +638,8 @@ mod tests {
         assert!((w.params.reflection_color[1] - 68.0 / 255.0).abs() < 1e-6);
         assert_eq!(w.params.fog_near, 0.0);
         assert_eq!(w.params.fog_far, 1700.0);
+        assert_eq!(w.params.underwater_fog_near, 0.0);
+        assert_eq!(w.params.underwater_fog_far, 1700.0);
         assert!((w.params.reflectivity - 0.2935).abs() < 1e-6);
         assert!((w.params.fresnel - 0.058).abs() < 1e-6);
         assert!((w.params.sun_specular_power - 83.0).abs() < 1e-6);

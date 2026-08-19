@@ -554,6 +554,8 @@ pub(crate) fn resolve_water_material(
             mat.deep_color = rec.params.deep_color;
             mat.fog_near = rec.params.fog_near;
             mat.fog_far = rec.params.fog_far;
+            mat.underwater_fog_near = rec.params.underwater_fog_near;
+            mat.underwater_fog_far = rec.params.underwater_fog_far;
             mat.fresnel_f0 = rec.params.fresnel.clamp(0.001, 0.20);
             mat.reflectivity = rec.params.reflectivity;
             mat.reflection_tint = rec.params.reflection_color;
@@ -564,6 +566,17 @@ pub(crate) fn resolve_water_material(
             mat.wave_amplitude = rec.params.wave_amplitude;
             mat.wave_frequency = rec.params.wave_frequency;
             mat.sun_specular_power = rec.params.sun_specular_power;
+            // FO3/FNV long DATA records carry independent authored tiling
+            // controls for the first two noise layers. Keep the canonical
+            // defaults for short/Oblivion records, and clamp only finite
+            // positive values so malformed tails cannot create shimmering
+            // sub-texel bands or near-uniform surfaces.
+            if rec.params.noise_uv_scale_a.is_finite() && rec.params.noise_uv_scale_a > 0.0 {
+                mat.uv_scale_a = rec.params.noise_uv_scale_a.clamp(1.0 / 4096.0, 1.0 / 8.0);
+            }
+            if rec.params.noise_uv_scale_b.is_finite() && rec.params.noise_uv_scale_b > 0.0 {
+                mat.uv_scale_b = rec.params.noise_uv_scale_b.clamp(1.0 / 4096.0, 1.0 / 8.0);
+            }
             mat.source_form = rec.form_id;
 
             // ── WaterKind heuristic from EDID naming convention ──
@@ -1741,6 +1754,8 @@ mod tests {
                 reflection_color: lava_tint,
                 fog_near: 20.0,
                 fog_far: 80.0,
+                underwater_fog_near: 0.0,
+                underwater_fog_far: 0.0,
                 reflectivity: 0.40,
                 fresnel: 0.04,
                 wind_speed: 0.0,
@@ -1748,6 +1763,8 @@ mod tests {
                 wave_amplitude: 0.0,
                 wave_frequency: 0.0,
                 sun_specular_power: 90.0,
+                noise_uv_scale_a: 0.0,
+                noise_uv_scale_b: 0.0,
             },
             raw_dnam: Vec::new(),
             raw_data: Vec::new(),
@@ -1756,7 +1773,8 @@ mod tests {
         let mut waters = HashMap::new();
         waters.insert(rec.form_id, rec);
 
-        let (mat, _kind, _flow, _normal, _noise) = resolve_water_material(&waters, Some(0x000A_BCDE));
+        let (mat, _kind, _flow, _normal, _noise) =
+            resolve_water_material(&waters, Some(0x000A_BCDE));
 
         assert_eq!(
             mat.reflection_tint, lava_tint,
@@ -1811,7 +1829,8 @@ mod tests {
         let mut waters = HashMap::new();
         waters.insert(rec.form_id, rec);
 
-        let (mat, kind, _flow, _normal, _noise) = resolve_water_material(&waters, Some(0x000A_0001));
+        let (mat, kind, _flow, _normal, _noise) =
+            resolve_water_material(&waters, Some(0x000A_0001));
         assert_eq!(
             mat.wave_amplitude, 1.5,
             "wave_amplitude must round-trip from WATR"
@@ -1821,6 +1840,25 @@ mod tests {
             "wave_frequency must round-trip from WATR"
         );
         assert!(matches!(kind, WaterKind::Calm));
+    }
+
+    #[test]
+    fn resolve_water_material_carries_authored_noise_uv_scales() {
+        let rec = calm_watr(
+            0x000A_0003,
+            "DefaultWater",
+            WaterParams {
+                noise_uv_scale_a: 1.0 / 320.0,
+                noise_uv_scale_b: 1.0 / 760.0,
+                ..WaterParams::default()
+            },
+        );
+        let mut waters = HashMap::new();
+        waters.insert(rec.form_id, rec);
+
+        let (mat, _, _, _, _) = resolve_water_material(&waters, Some(0x000A_0003));
+        assert!((mat.uv_scale_a - 1.0 / 320.0).abs() < 1e-6);
+        assert!((mat.uv_scale_b - 1.0 / 760.0).abs() < 1e-6);
     }
 
     #[test]

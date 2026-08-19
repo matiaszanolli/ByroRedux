@@ -198,8 +198,10 @@ pub(crate) fn submersion_system(world: &World, _dt: f32) {
 }
 
 /// Pack the active camera's submersion state into the
-/// `[deep_color.rgb, depth]` vec4 the renderer consumes as
-/// underwater fog parameters. Returns `[0; 4]` when the camera is
+/// `[deep_color.rgb, extinction]` vec4 the renderer consumes as
+/// underwater fog parameters. Extinction is evaluated from the authored
+/// water fog range, so each game's WATR material controls its underwater
+/// transition rather than a presentation-time fixed distance. Returns `[0; 4]` when the camera is
 /// out of water (or no active camera). Moved out of `main.rs`
 /// under TD9-NEW-01 / #1267 to keep the binary entry file below
 /// the 2000-LOC ceiling.
@@ -220,23 +222,50 @@ pub fn compute_underwater_params(world: &World) -> [f32; 4] {
     let Some(mat) = state.material.as_ref() else {
         return [0.0; 4];
     };
+    let (fog_near, fog_far) = if mat.underwater_fog_far > mat.underwater_fog_near {
+        (mat.underwater_fog_near, mat.underwater_fog_far)
+    } else {
+        (mat.fog_near, mat.fog_far)
+    };
+    let extinction = underwater_extinction(state.depth, fog_near, fog_far);
     [
         mat.deep_color[0],
         mat.deep_color[1],
         mat.deep_color[2],
-        state.depth,
+        extinction,
     ]
+}
+
+#[inline]
+fn underwater_extinction(depth: f32, fog_near: f32, fog_far: f32) -> f32 {
+    let span = (fog_far - fog_near).max(1.0);
+    let ramp = ((depth - fog_near) / span).clamp(0.0, 1.0);
+    1.0 - (-ramp * 2.0).exp()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_head_submerged, submersion_system, WATERLINE_HYSTERESIS};
+    use super::{
+        resolve_head_submerged, submersion_system, underwater_extinction, WATERLINE_HYSTERESIS,
+    };
     use byroredux_core::ecs::components::water::{
         SubmersionState, WaterKind, WaterMaterial, WaterPlane,
     };
     use byroredux_core::ecs::{ActiveCamera, GlobalTransform, World};
 
     const EPS: f32 = WATERLINE_HYSTERESIS;
+
+    #[test]
+    fn underwater_extinction_respects_authored_fog_range() {
+        assert_eq!(underwater_extinction(20.0, 80.0, 600.0), 0.0);
+        let near = underwater_extinction(180.0, 80.0, 600.0);
+        let wide = underwater_extinction(180.0, 0.0, 1200.0);
+        assert!(
+            near > wide,
+            "shorter authored fog range should absorb faster"
+        );
+        assert!(underwater_extinction(600.0, 80.0, 600.0) > 0.8);
+    }
 
     #[test]
     fn outside_any_volume_is_always_dry() {

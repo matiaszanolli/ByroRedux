@@ -209,7 +209,11 @@ pub(super) fn spawn_water_plane(
         material.normal_map_index = resolved_normal_idx;
     } // else material.normal_map_index stays at u32::MAX (default — triggers shader procedural)
     material.noise_map_indices = resolved_noise.map(|idx| {
-        if idx != 0 { idx } else { material.normal_map_index }
+        if idx != 0 {
+            idx
+        } else {
+            material.normal_map_index
+        }
     });
 
     // ── Spawn the entity ──
@@ -469,7 +473,11 @@ pub(crate) fn spawn_lod_water_plane(
         material.normal_map_index = resolved_normal_idx;
     }
     material.noise_map_indices = resolved_noise.map(|idx| {
-        if idx != 0 { idx } else { material.normal_map_index }
+        if idx != 0 {
+            idx
+        } else {
+            material.normal_map_index
+        }
     });
 
     let entity = world.spawn();
