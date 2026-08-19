@@ -38,6 +38,152 @@ fn esm_header_selects_one_canonical_character_profile() {
     );
 }
 
+/// #3095 — every CHARAL builder test elsewhere (`byroredux-core::character`'s
+/// own test modules) constructs its resolver FROM the same roster it's
+/// testing, so a wrong EditorID in the roster resolves by construction and
+/// no synthetic test can catch it. #2986 (AV-prefixed EditorIDs resolving
+/// nothing), #3093 (a `MeleeDamage` row keyed on an AVIF vanilla FO4 never
+/// authors) and #3094 (an FNV skill spelled by display name, not EditorID)
+/// were three independent defects exactly that test shape could not detect.
+///
+/// These `#[ignore]`'d tests resolve each per-game builder against a real
+/// shipped master's actual `AVIF` table (`crate::esm::test_paths`, the
+/// house pattern for data-dependent tests — see
+/// `esm::cell::tests::integration`) instead of a synthetic fixture, so a
+/// roster entry that doesn't correspond to any real authored AVIF fails
+/// loudly. Run with `cargo test -p byroredux-plugin -- --ignored
+/// real_ruleset_falsifiability`.
+mod real_ruleset_falsifiability {
+    use super::*;
+    use byroredux_core::character::{
+        fallout3_ruleset, fallout4_ruleset, falloutnv_ruleset, oblivion_ruleset, skyrim_ruleset,
+    };
+
+    /// Parse a real master, skipping (not failing) when the on-disk data
+    /// isn't present — the established shape for every `#[ignore]`'d
+    /// integration test in this crate.
+    fn load(test_name: &str, path: std::path::PathBuf) -> Option<EsmIndex> {
+        if !path.exists() {
+            eprintln!("Skipping {test_name}: {} not found", path.display());
+            return None;
+        }
+        let data = std::fs::read(&path).unwrap();
+        Some(parse_esm(&data).unwrap())
+    }
+
+    #[test]
+    #[ignore]
+    fn fallout3_ruleset_resolves_against_the_real_master() {
+        let Some(index) = load(
+            "fallout3_ruleset_resolves_against_the_real_master",
+            crate::esm::test_paths::fo3_esm(),
+        ) else {
+            return;
+        };
+        let rs = fallout3_ruleset(|id| index.actor_value_form_id(id));
+        // Health + AP + the 6 add_fnv_fo3_shared rows (Carry Weight, Melee
+        // Damage, Critical Chance, Unarmed Damage, Radiation + Poison
+        // Resistance) — matches the synthetic fixture's expected count in
+        // byroredux-core's own `fnv_and_fo3_share_skill_stats_but_differ_on_health_ap`.
+        // A roster EditorID that doesn't resolve against the real AVIF
+        // table silently drops a row and this count falls below 8.
+        assert_eq!(
+            rs.derived_row_len(),
+            8,
+            "one or more Fallout3.esm AVIF EditorIDs failed to resolve"
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn falloutnv_ruleset_resolves_against_the_real_master() {
+        let Some(index) = load(
+            "falloutnv_ruleset_resolves_against_the_real_master",
+            crate::esm::test_paths::fnv_esm(),
+        ) else {
+            return;
+        };
+        let rs = falloutnv_ruleset(|id| index.actor_value_form_id(id));
+        assert_eq!(
+            rs.derived_row_len(),
+            8,
+            "one or more FalloutNV.esm AVIF EditorIDs failed to resolve"
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn fallout4_ruleset_resolves_against_the_real_master() {
+        let Some(index) = load(
+            "fallout4_ruleset_resolves_against_the_real_master",
+            crate::esm::test_paths::fo4_esm(),
+        ) else {
+            return;
+        };
+        let rs = fallout4_ruleset(|id| index.actor_value_form_id(id));
+        // Health + AP + Carry Weight. #3093 — vanilla Fallout4.esm authors
+        // no `MeleeDamage` AVIF, so a resolver-built-from-roster test could
+        // never have caught that row being keyed on a non-existent AVIF;
+        // this one would have, since the real table simply doesn't have it.
+        assert_eq!(
+            rs.derived_row_len(),
+            3,
+            "one or more Fallout4.esm AVIF EditorIDs failed to resolve"
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn skyrim_ruleset_resolves_against_the_real_master() {
+        let Some(index) = load(
+            "skyrim_ruleset_resolves_against_the_real_master",
+            crate::esm::test_paths::skyrim_se_esm(),
+        ) else {
+            return;
+        };
+        let rs = skyrim_ruleset(|id| index.actor_value_form_id(id));
+        // Light Armor Rating + Carry Weight — matches
+        // byroredux-core::character::skyrim's own full-resolver synthetic
+        // test. #2986 — Skyrim's AVIF EditorIDs are `AV`-prefixed on the
+        // wire (`AVLightArmor`); this exercises the real prefix, not a
+        // fixture that already knows to add it.
+        assert_eq!(
+            rs.derived_row_len(),
+            2,
+            "one or more Skyrim.esm AVIF EditorIDs failed to resolve"
+        );
+    }
+
+    /// Oblivion predates the `AVIF` record type entirely — there is no
+    /// production resolver wiring `oblivion_ruleset` to real data yet
+    /// (`CharacterRulesProfile::OBLIVION` carries `RulesetBuilder::None`,
+    /// confirmed unreachable in production, a distinct gap from this
+    /// issue). `EsmIndex::actor_value_form_id` genuinely resolves nothing
+    /// against a real Oblivion.esm, so this pins that known-empty state
+    /// with real evidence instead of the doc's aspirational "a resolver
+    /// mapping these EditorIDs to its legacy engine actor-value indices at
+    /// the parser boundary" — which does not exist in the parser yet.
+    #[test]
+    #[ignore]
+    fn oblivion_ruleset_resolves_nothing_against_avif_pending_a_legacy_resolver() {
+        let Some(index) = load(
+            "oblivion_ruleset_resolves_nothing_against_avif_pending_a_legacy_resolver",
+            crate::esm::test_paths::oblivion_esm(),
+        ) else {
+            return;
+        };
+        let rs = oblivion_ruleset(|id| index.actor_value_form_id(id));
+        assert_eq!(
+            rs.derived_row_len(),
+            0,
+            "Oblivion.esm has no AVIF records, so every EditorID must fail \
+             to resolve — a non-zero count here means either AVIF started \
+             appearing (surprising) or actor_value_form_id started matching \
+             something it shouldn't"
+        );
+    }
+}
+
 /// Build a single STAT-style record bytes for the given type code, form ID,
 /// and sub-record list.
 fn build_record(typ: &[u8; 4], form_id: u32, subs: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {
