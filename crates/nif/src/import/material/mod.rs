@@ -976,6 +976,18 @@ pub struct BsEffectShaderData {
     /// normalisation; the shader path can divide by 255 when sampling.
     pub lighting_influence: u8,
     /// Environment-map minimum mip-level clamp (raw u8).
+    ///
+    /// **No consumer past this struct, deliberately.** Unlike its
+    /// packed-field siblings [`texture_clamp_mode`] (reaches sampler
+    /// selection) and [`lighting_influence`] (reaches `material_flags`),
+    /// this value stops here — no `Material` field, no GPU uniform. All
+    /// 8,116 vanilla Skyrim `BSEffectShaderProperty` blocks author `0`,
+    /// so nothing is lost today; an FO4+ effect material
+    /// that clamps the env-map mip chain would have its authored floor
+    /// silently ignored. Plumb it into `GpuMaterial` alongside
+    /// `soft_falloff_depth` when a real consumer materializes — until then
+    /// this is a capture-with-no-consumer gap, not a `translate_material`
+    /// divergence. See #2582 / SKY-D2-04.
     pub env_map_min_lod: u8,
     /// Texture clamp mode: `0=Clamp_S_Clamp_T`, `1=Clamp_S_Wrap_T`,
     /// `2=Wrap_S_Clamp_T`, `3=Wrap_S_Wrap_T` (the Skyrim default).
