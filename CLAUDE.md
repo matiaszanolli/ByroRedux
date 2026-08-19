@@ -314,7 +314,7 @@ cargo run -- path/to/mesh.nif                       # render a loose NIF
 cargo run -- mesh.nif --kf anim.kf                  # mesh + animation
 cargo run -- --esm FalloutNV.esm --cell <id> --bsa "Fallout - Meshes.bsa" --textures-bsa "Fallout - Textures.bsa"   # interior cell (vanilla FNV archive names; `--bsa` opens the literal path — there is no bare Meshes.bsa)
 cargo run -- --esm FalloutNV.esm --grid 0,0 --radius 3 --bsa …                              # exterior grid (1..=7)
-cargo run -- --master Skyrim.esm --esm Dawnguard.esm --cell <id> --bsa …                    # DLC interior (repeatable --master)
+cargo run -- --master Skyrim.esm --master Update.esm --esm Dawnguard.esm --cell Forelhost01 --bsa …   # DLC interior (repeatable --master; Dawnguard.esm's real MAST list is 2 entries — Skyrim.esm + Update.esm)
 cargo run --release -- … --bench-frames 300 --bench-hold                                    # bench, then HOLD open for byro-dbg
 ```
 Operational gotchas worth knowing up front:
