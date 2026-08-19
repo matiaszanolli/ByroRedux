@@ -201,11 +201,14 @@ pub(crate) fn apply_color_channels(
     apply_target!(AnimatedAmbientColor, ColorTarget::Ambient, |c, value| c.0 =
         value);
     apply_target!(AnimatedSpecularColor, ColorTarget::Specular, |c, value| c
-        .0 = value);
+        .0 =
+        value);
     apply_target!(AnimatedEmissiveColor, ColorTarget::Emissive, |c, value| c
-        .0 = value);
-    apply_target!(AnimatedShaderColor, ColorTarget::ShaderColor, |c, value| c
-        .0 = value);
+        .0 =
+        value);
+    apply_target!(AnimatedShaderColor, ColorTarget::ShaderColor, |c, value| {
+        c.0 = value
+    });
     // #983 — NiLightColorController sink. The animated colour writes
     // straight into `LightSource.emitter.radiant_intensity`; the
     // light-buffer build then multiplies by `dimmer * intensity` to
@@ -215,9 +218,7 @@ pub(crate) fn apply_color_channels(
         ColorTarget::LightDiffuse,
         |ls, value| {
             ls.emitter.radiant_intensity =
-                byroredux_core::lighting::RadiantIntensityRgb::new([
-                    value.x, value.y, value.z,
-                ]);
+                byroredux_core::lighting::RadiantIntensityRgb::new([value.x, value.y, value.z]);
         }
     );
     // ColorTarget::LightAmbient — #983: captured but not consumed by the

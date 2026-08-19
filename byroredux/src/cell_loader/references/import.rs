@@ -324,11 +324,24 @@ pub(super) fn parse_and_import_spt(
         (min, max)
     });
 
-    // Wind sensitivity / strength would come from CNAM, not BNAM
-    // (BNAM is billboard-card width/height per UESP). CNAM semantics
-    // aren't pinned down yet — Phase 2 wires it. Leave None so the
-    // placeholder doesn't pretend to know the wind response.
-    let wind = None;
+    // Wind sensitivity / strength comes from CNAM, not BNAM (BNAM is
+    // billboard-card width/height). Keep the first two authored response
+    // values on the import record so the eventual SpeedTree sway path can
+    // combine them with the shared weather WindField. Do not substitute the
+    // WATR normal-scroll vectors here: those are local to the water surface.
+    // CNAM layouts differ (Oblivion 5 floats, FO3/FNV 8), so preserve only
+    // finite positive values and leave malformed/stub records neutral.
+    let wind = tree_record.and_then(|t| {
+        let mut values = t
+            .canopy_params
+            .iter()
+            .copied()
+            .filter(|value| value.is_finite())
+            .take(2);
+        let response = values.next()?.max(0.0);
+        let stiffness = values.next()?.clamp(0.0, 1.0);
+        (response.is_finite() && stiffness.is_finite()).then_some((response, stiffness))
+    });
 
     let form_id = tree_record.map(|t| t.form_id);
 

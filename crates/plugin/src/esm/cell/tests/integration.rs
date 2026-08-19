@@ -638,13 +638,17 @@ fn fnv_xloc_locks_are_parsed_from_real_data() {
     let data = std::fs::read(&path).unwrap();
     let index = parse_esm_cells(&data).unwrap();
 
-    let all_refs = index.cells.values().flat_map(|c| c.references.iter()).chain(
-        index
-            .exterior_cells
-            .values()
-            .flat_map(|grid| grid.values())
-            .flat_map(|c| c.references.iter()),
-    );
+    let all_refs = index
+        .cells
+        .values()
+        .flat_map(|c| c.references.iter())
+        .chain(
+            index
+                .exterior_cells
+                .values()
+                .flat_map(|grid| grid.values())
+                .flat_map(|c| c.references.iter()),
+        );
 
     let mut locked_count = 0usize;
     let mut keyed_count = 0usize;

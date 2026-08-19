@@ -127,15 +127,19 @@ impl ConsoleCommand for WaterDumpCommand {
                 format_flow(flow),
             ));
             lines.push(format!(
-                "    shallow=[{:.3},{:.3},{:.3}] deep=[{:.3},{:.3},{:.3}] fog={:.1}..{:.1} fresnel={:.4} reflect={:.3} normal={} wave={:.4}@{:.4} sun_spec_power={:.2}",
+                "    shallow=[{:.3},{:.3},{:.3}] deep=[{:.3},{:.3},{:.3}] underwater=[{:.3},{:.3},{:.3}] fog={:.1}..{:.1} underwater_amt={:.3} fresnel={:.4} reflect={:.3} normal={} uv=[{:.5},{:.5},{:.5}] amp=[{:.3},{:.3},{:.3}] wave={:.4}@{:.4} sun_spec_power={:.2} spec_mag={:.3}",
                 material.shallow_color[0],
                 material.shallow_color[1],
                 material.shallow_color[2],
                 material.deep_color[0],
                 material.deep_color[1],
                 material.deep_color[2],
+                material.underwater_color[0],
+                material.underwater_color[1],
+                material.underwater_color[2],
                 material.fog_near,
                 material.fog_far,
+                material.underwater_fog_amount,
                 material.fresnel_f0,
                 material.reflectivity,
                 if material.normal_map_index == u32::MAX {
@@ -143,9 +147,16 @@ impl ConsoleCommand for WaterDumpCommand {
                 } else {
                     material.normal_map_index.to_string()
                 },
+                material.uv_scale_a,
+                material.uv_scale_b,
+                material.uv_scale_c,
+                material.noise_amplitude_scales[0],
+                material.noise_amplitude_scales[1],
+                material.noise_amplitude_scales[2],
                 material.wave_amplitude,
                 material.wave_frequency,
                 material.sun_specular_power,
+                material.specular_magnitude,
             ));
         }
 
@@ -224,6 +235,13 @@ mod tests {
         );
         let material = WaterMaterial {
             source_form: 0x1234,
+            underwater_color: [0.11, 0.22, 0.33],
+            underwater_fog_amount: 0.75,
+            uv_scale_a: 1.0 / 200.0,
+            uv_scale_b: 1.0 / 400.0,
+            uv_scale_c: 1.0 / 800.0,
+            noise_amplitude_scales: [0.8, 0.6, 0.4],
+            specular_magnitude: 1.5,
             ..WaterMaterial::default()
         };
         world.insert(
@@ -272,6 +290,14 @@ mod tests {
             output.contains("flow=[1.000,0.000,0.000]@8.000"),
             "{output}"
         );
+        assert!(
+            output.contains("underwater=[0.110,0.220,0.330]"),
+            "{output}"
+        );
+        assert!(output.contains("underwater_amt=0.750"), "{output}");
+        assert!(output.contains("uv=[0.00500,0.00250,0.00125]"), "{output}");
+        assert!(output.contains("amp=[0.800,0.600,0.400]"), "{output}");
+        assert!(output.contains("spec_mag=1.500"), "{output}");
     }
 
     #[test]

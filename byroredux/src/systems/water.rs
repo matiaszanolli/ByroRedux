@@ -302,7 +302,8 @@ pub fn compute_underwater_params(world: &World) -> [f32; 4] {
     } else {
         (mat.fog_near, mat.fog_far)
     };
-    let extinction = underwater_extinction(state.depth, fog_near, fog_far);
+    let extinction = underwater_extinction(state.depth, fog_near, fog_far)
+        * mat.underwater_fog_amount.clamp(0.0, 8.0);
     [
         mat.underwater_color[0],
         mat.underwater_color[1],

@@ -116,6 +116,12 @@ pub struct WaterMaterial {
     /// above-water ramp (legacy records without an underwater tail).
     pub underwater_fog_near: f32,
     pub underwater_fog_far: f32,
+    /// Authored underwater fog strength. One is neutral; zero disables the
+    /// underwater colour transition while preserving the submersion state.
+    pub underwater_fog_amount: f32,
+    /// Authored surface opacity from WATR.ANAM. The procedural fallback uses
+    /// 0.88 when no WATR record supplies a value.
+    pub opacity: f32,
     /// Schlick F0 at normal incidence. ~0.02 for clean water; ~0.04
     /// for muddy / chemical / Hubris Comics water. Drives fresnel.
     pub fresnel_f0: f32,
@@ -156,12 +162,21 @@ pub struct WaterMaterial {
     /// Authored normal-amplitude multipliers for NAM2/NAM3/NAM4. A value of
     /// one is the neutral legacy fallback.
     pub noise_amplitude_scales: [f32; 3],
+    /// Authored physical normal magnitude. Applied to the noise amplitudes
+    /// before the compact GPU material is uploaded; one is neutral.
+    pub normal_magnitude: f32,
+    /// Authored above-water fog amount. Applied to the refraction absorption
+    /// weight before the compact GPU material is uploaded; one is neutral.
+    pub above_water_fog_amount: f32,
     /// Depth-response multipliers for reflections, refraction, normals, and
     /// specular lighting. Legacy records use neutral ones.
     pub depth_weights: [f32; 4],
     /// Authored effect controls: refraction magnitude, local specular power,
     /// reflection magnitude, and sun-specular magnitude.
     pub effect_controls: [f32; 4],
+    /// Authored specular magnitude. One is neutral; zero means legacy
+    /// records without a separate magnitude field.
+    pub specular_magnitude: f32,
     /// Authored flow-map tile scale. One is neutral; zero means legacy
     /// records without a dedicated flow-map field.
     pub flowmap_scale: f32,
@@ -209,6 +224,8 @@ impl Default for WaterMaterial {
             fog_far: 600.0,
             underwater_fog_near: 0.0,
             underwater_fog_far: 0.0,
+            underwater_fog_amount: 1.0,
+            opacity: 0.88,
             fresnel_f0: 0.02,
             reflectivity: 0.85,
             normal_map_index: u32::MAX,
@@ -219,8 +236,11 @@ impl Default for WaterMaterial {
             uv_scale_b: 1.0 / 700.0,
             uv_scale_c: 1.0 / 512.0,
             noise_amplitude_scales: [1.0; 3],
+            normal_magnitude: 1.0,
+            above_water_fog_amount: 1.0,
             depth_weights: [1.0; 4],
             effect_controls: [0.0, 0.0, 1.0, 1.0],
+            specular_magnitude: 1.0,
             flowmap_scale: 1.0,
             foam_strength: 0.0,
             shoreline_width: 32.0,

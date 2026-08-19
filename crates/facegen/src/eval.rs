@@ -299,6 +299,10 @@ mod tests {
         let morphs = vec![morph(1.0, vec![[f32::MAX, 0.0, 0.0], [1.0, 0.0, 0.0]])];
         let out = apply_morphs(&base, &morphs, &[2.0]);
         assert_eq!(out[0], base[0], "overflowing vertex falls back to base");
-        assert_eq!(out[1], [2.0, 0.0, 0.0], "sibling vertex still deforms normally");
+        assert_eq!(
+            out[1],
+            [2.0, 0.0, 0.0],
+            "sibling vertex still deforms normally"
+        );
     }
 }

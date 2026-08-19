@@ -305,8 +305,12 @@ fn ni_keyframe_controller_reads_data_ref_below_10_1_0_104() {
     bytes.extend_from_slice(&42i32.to_le_bytes()); // Data ref
     assert_eq!(bytes.len(), 4 + 26 + 4);
     let mut stream = NifStream::new(&bytes, &header);
-    let block = parse_block("NiKeyframeController", &mut stream, Some(bytes.len() as u32))
-        .expect("NiKeyframeController must parse below v10.1.0.104");
+    let block = parse_block(
+        "NiKeyframeController",
+        &mut stream,
+        Some(bytes.len() as u32),
+    )
+    .expect("NiKeyframeController must parse below v10.1.0.104");
     let ctrl = block
         .as_any()
         .downcast_ref::<crate::blocks::controller::NiPreSplitDataController>()

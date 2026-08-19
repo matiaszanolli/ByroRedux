@@ -148,6 +148,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("WaterFlow", "static per-cell flow vector set once from WATR wind_direction at cell load, no runtime mutator"),
         ("WaterPlane", "static per-cell water geometry+material set once from XCWT/WATR at cell load, no runtime mutator"),
         ("WaterVolume", "static per-cell AABB set once from XCLW/cell floor data at cell load, no runtime mutator"),
+        ("WaterNoiseMapHandles", "GPU bindless noise-texture handles rebuilt from WATR NAM2/NAM3/NAM4 paths at cell load; released on unload and never save-relevant"),
         ("WindField", "EXAL-derived (#2369): re-translated from the live WeatherDataRes wind byte at every worldspace entry; the saved WTHR state it derives from is what carries forward"),
         ("WorldBound", "per-frame bound recomputed from saved LocalBound + GlobalTransform, same exclusion class as GlobalTransform"),
         // ── crates/scripting/src/ ────────────────────────────────────
@@ -171,6 +172,8 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         // SAVE-D1-16), no longer allowlisted here.
         ("Globals", "the runtime mutator (Globals::set) is explicitly documented as dormant — no production SetGlobalValue writer exists yet; re-evaluate when it lands"),
         ("HitEvent", "one-shot event marker drained every frame by event_cleanup_system"),
+        ("SplashEvent", "one-shot water-surface event marker drained every frame by event_cleanup_system"),
+        ("RippleEvent", "one-frame water-surface event marker drained every frame by event_cleanup_system"),
         // HorseTetherState: FIXED — registered (#2380 / SAVE-D1-15), no
         // longer allowlisted here.
         ("KeystoneInventory", "forward-latent — its only mutator only fires for MG07LabyrinthianDoor entities, which have no live production spawn site"),
@@ -242,6 +245,8 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("DebugLoadArchiveSet", "debug cell.load console-command bookkeeping (#2078), outside the normal single-launch CLI path"),
         ("DoorTeleport", "XTEL destination data, rederived identically from the plugin's parsed REFR every cell load"),
         ("FootstepConfig", "engine-wide footstep sound configuration loaded once at startup from a vanilla BSA"),
+        ("WaterAudioConfig", "engine-wide water sound configuration loaded from the archive at startup; audio assets are re-resolved, not gameplay save state"),
+        ("WaterAudioState", "per-frame ripple-audio cooldown derived from transient SplashEvent/RippleEvent markers"),
         ("FootstepEmitter", "per-frame position/stride accumulator mutated by footstep_system every tick — ephemeral audio-cue bookkeeping, not gameplay state"),
         ("FootstepScratch", "per-frame scratch buffer for footstep_system's two-phase collect/drain pattern (#932) — capacity-only persistence, no gameplay state"),
         ("HavokAnimationTarget", "skeleton_root + consumed_idle_serial are both spawn-time-resolved (serial always starts at 0), rederived identically every load"),

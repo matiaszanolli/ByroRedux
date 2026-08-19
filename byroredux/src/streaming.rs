@@ -448,6 +448,9 @@ pub struct LodWaterPlane {
     /// (#1338). `None` when the procedural-fallback normal is used (no
     /// texture acquired, nothing to release).
     pub normal_map_handle: Option<u32>,
+    /// NAM2–4 noise-map handles acquired for the LOD material. Zero entries
+    /// are the shared fallback and are not refcounted.
+    pub noise_map_handles: [u32; 3],
 }
 
 /// Worker request — main thread asks the worker to pre-parse a cell.

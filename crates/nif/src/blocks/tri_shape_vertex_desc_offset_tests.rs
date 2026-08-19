@@ -34,36 +34,43 @@ fn agreeing_offsets_report_no_mismatch_unskinned_full_precision() {
         attrs,
         8, // 32 bytes / 4
         &[
-            (8, 4),   // UV1 Offset = 16/4
-            (16, 5),  // Normal Offset = 20/4
-            (20, 6),  // Tangent Offset = 24/4
-            (24, 7),  // Color Offset = 28/4
+            (8, 4),  // UV1 Offset = 16/4
+            (16, 5), // Normal Offset = 20/4
+            (20, 6), // Tangent Offset = 24/4
+            (24, 7), // Color Offset = 28/4
         ],
     );
-    let mismatches = vertex_desc_offset_mismatches(vertex_desc, attrs, /* full_precision */ true, false);
-    assert!(mismatches.is_empty(), "unexpected mismatches: {mismatches:?}");
+    let mismatches =
+        vertex_desc_offset_mismatches(vertex_desc, attrs, /* full_precision */ true, false);
+    assert!(
+        mismatches.is_empty(),
+        "unexpected mismatches: {mismatches:?}"
+    );
 }
 
 /// A skinned SSE NPC body (always full-precision): Vertex → UV1 → Normal
 /// → Tangent → Color → Skinning Data. No mismatch should surface.
 #[test]
 fn agreeing_offsets_report_no_mismatch_skinned() {
-    let attrs =
-        VF_VERTEX | VF_UVS | VF_NORMALS | VF_TANGENTS | VF_VERTEX_COLORS | VF_SKINNED;
+    let attrs = VF_VERTEX | VF_UVS | VF_NORMALS | VF_TANGENTS | VF_VERTEX_COLORS | VF_SKINNED;
     // Byte cursor: 16 → 20 (uv) → 24 (normal) → 28 (tangent) → 32 (color) → 44 (skin, +12).
     let vertex_desc = build_vertex_desc(
         attrs,
         11, // 44 bytes / 4
         &[
-            (8, 4),   // UV1 Offset = 16/4
-            (16, 5),  // Normal Offset = 20/4
-            (20, 6),  // Tangent Offset = 24/4
-            (24, 7),  // Color Offset = 28/4
-            (28, 8),  // Skinning Data Offset = 32/4
+            (8, 4),  // UV1 Offset = 16/4
+            (16, 5), // Normal Offset = 20/4
+            (20, 6), // Tangent Offset = 24/4
+            (24, 7), // Color Offset = 28/4
+            (28, 8), // Skinning Data Offset = 32/4
         ],
     );
-    let mismatches = vertex_desc_offset_mismatches(vertex_desc, attrs, /* full_precision */ true, true);
-    assert!(mismatches.is_empty(), "unexpected mismatches: {mismatches:?}");
+    let mismatches =
+        vertex_desc_offset_mismatches(vertex_desc, attrs, /* full_precision */ true, true);
+    assert!(
+        mismatches.is_empty(),
+        "unexpected mismatches: {mismatches:?}"
+    );
 }
 
 /// FO4+ half-precision, no tangents: Vertex(8B) → UV1 → Normal → Color.
@@ -83,7 +90,10 @@ fn agreeing_offsets_report_no_mismatch_half_precision_no_tangents() {
     );
     let mismatches =
         vertex_desc_offset_mismatches(vertex_desc, attrs, /* full_precision */ false, false);
-    assert!(mismatches.is_empty(), "unexpected mismatches: {mismatches:?}");
+    assert!(
+        mismatches.is_empty(),
+        "unexpected mismatches: {mismatches:?}"
+    );
 }
 
 /// Isolated single-field drift: `Normal Offset` declares one quad later
@@ -102,7 +112,8 @@ fn single_field_drift_is_reported() {
             (24, 6), // Color Offset = 24/4 — walk assumes 24/4 (Normal not advanced in the walk's own bookkeeping) — agrees
         ],
     );
-    let mismatches = vertex_desc_offset_mismatches(vertex_desc, attrs, /* full_precision */ true, false);
+    let mismatches =
+        vertex_desc_offset_mismatches(vertex_desc, attrs, /* full_precision */ true, false);
     assert_eq!(mismatches, vec![("Normal", 24, 20)]);
 }
 
@@ -136,6 +147,7 @@ fn vf_uvs_2_mid_vertex_placement_drifts_every_later_field() {
             (24, 7), // Color Offset = 28/4 — walk assumes byte 24: +4 drift
         ],
     );
-    let mismatches = vertex_desc_offset_mismatches(vertex_desc, attrs, /* full_precision */ true, false);
+    let mismatches =
+        vertex_desc_offset_mismatches(vertex_desc, attrs, /* full_precision */ true, false);
     assert_eq!(mismatches, vec![("Normal", 24, 20), ("Color", 28, 24)]);
 }

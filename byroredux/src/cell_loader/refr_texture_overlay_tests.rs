@@ -507,9 +507,7 @@ fn mnam_only_txst(material_path: &str) -> TextureSet {
 fn fill_from_bgsm_forwards_every_bgsm_texture_role() {
     let mut index = EsmCellIndex::default();
     let path = "materials/tests/full_role_set.bgsm";
-    index
-        .texture_sets
-        .insert(0x0020_0001, mnam_only_txst(path));
+    index.texture_sets.insert(0x0020_0001, mnam_only_txst(path));
     let mut placed = empty_placed_ref(0x0100_0001);
     placed.alt_texture_ref = Some(0x0020_0001);
 
@@ -554,7 +552,10 @@ fn fill_from_bgsm_forwards_every_bgsm_texture_role() {
         Some(r"textures\a\inner.dds"),
         "inner_layer_texture must route through the shared wire-slot-6 field"
     );
-    assert_eq!(resolved(&pool, ov.lighting), Some(r"textures\a\lighting.dds"));
+    assert_eq!(
+        resolved(&pool, ov.lighting),
+        Some(r"textures\a\lighting.dds")
+    );
     assert_eq!(resolved(&pool, ov.flow), Some(r"textures\a\flow.dds"));
 }
 
@@ -565,9 +566,7 @@ fn fill_from_bgsm_forwards_every_bgsm_texture_role() {
 fn fill_from_bgsm_forwards_greyscale_texture_when_no_displacement() {
     let mut index = EsmCellIndex::default();
     let path = "materials/tests/greyscale_only.bgsm";
-    index
-        .texture_sets
-        .insert(0x0020_0001, mnam_only_txst(path));
+    index.texture_sets.insert(0x0020_0001, mnam_only_txst(path));
     let mut placed = empty_placed_ref(0x0100_0001);
     placed.alt_texture_ref = Some(0x0020_0001);
 
@@ -596,9 +595,7 @@ fn fill_from_bgsm_forwards_greyscale_texture_when_no_displacement() {
 fn fill_from_bgsm_new_roles_honor_child_first_chain() {
     let mut index = EsmCellIndex::default();
     let path = "materials/tests/chained.bgsm";
-    index
-        .texture_sets
-        .insert(0x0020_0001, mnam_only_txst(path));
+    index.texture_sets.insert(0x0020_0001, mnam_only_txst(path));
     let mut placed = empty_placed_ref(0x0100_0001);
     placed.alt_texture_ref = Some(0x0020_0001);
 
@@ -627,16 +624,17 @@ fn fill_from_bgsm_new_roles_honor_child_first_chain() {
         Some(r"textures\parent\lighting.dds")
     );
     assert_eq!(resolved(&pool, ov.flow), Some(r"textures\parent\flow.dds"));
-    assert_eq!(resolved(&pool, ov.inner), Some(r"textures\parent\inner.dds"));
+    assert_eq!(
+        resolved(&pool, ov.inner),
+        Some(r"textures\parent\inner.dds")
+    );
 }
 
 #[test]
 fn fill_from_bgsm_forwards_every_bgem_texture_role() {
     let mut index = EsmCellIndex::default();
     let path = "materials/tests/full_role_set.bgem";
-    index
-        .texture_sets
-        .insert(0x0020_0001, mnam_only_txst(path));
+    index.texture_sets.insert(0x0020_0001, mnam_only_txst(path));
     let mut placed = empty_placed_ref(0x0100_0001);
     placed.alt_texture_ref = Some(0x0020_0001);
 

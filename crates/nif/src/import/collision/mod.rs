@@ -1081,9 +1081,13 @@ mod dispatch_tests {
         assert_eq!(filter & 0xFF, 1, "sanity: constructed Layer byte is 1");
         let mut scene = empty_scene();
         scene.blocks.push(classic_collision(BlockRef(1u32))); // [0]
-        scene
-            .blocks
-            .push(rigid_body_with_filter(2, [0.0; 4], [0.0, 0.0, 0.0, 1.0], false, filter)); // [1]
+        scene.blocks.push(rigid_body_with_filter(
+            2,
+            [0.0; 4],
+            [0.0, 0.0, 0.0, 1.0],
+            false,
+            filter,
+        )); // [1]
         scene.blocks.push(Box::new(BhkSphereShape {
             material: 0,
             radius: 1.0,

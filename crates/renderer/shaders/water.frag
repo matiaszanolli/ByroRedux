@@ -92,7 +92,8 @@ struct WaterParams {
     // x/y/z/w = reflection/refraction/normal/specular depth weights.
     vec4 depth;
     // x/y/z/w = refraction magnitude, local specular power, reflection
-    // magnitude, and sun-specular magnitude.
+    // magnitude, and sun-specular magnitude (including the authored
+    // Skyrim specular-properties magnitude multiplier).
     vec4 effects;
 };
 
@@ -509,6 +510,9 @@ void main() {
     uint  noiseMapA = push.noise_indices.x;
     uint  noiseMapB = push.noise_indices.y;
     uint  noiseMapC = push.noise_indices.z;
+    // WATR.ANAM is packed into the otherwise-unused fourth noise-index slot
+    // so the compact 12-vec4 UBO ABI remains stable.
+    float authoredOpacity = clamp(uintBitsToFloat(push.noise_indices.w), 0.05, 1.0);
     // #2240 — WATR-authored wave_amplitude/wave_frequency, normalised
     // against the WaterMaterial sentinel default (see
     // `sampleScrollingNormal`'s doc comment above).
@@ -807,7 +811,7 @@ void main() {
     // grazing-angle alpha boost so the water plane edges remain
     // visible at low view angles (avoids the classic "water vanishes
     // at the shoreline" artefact).
-    float baseAlpha = (kind == WATER_WATERFALL) ? 0.95 : 0.88;
+    float baseAlpha = authoredOpacity;
     float grazingBoost = pow(1.0 - NdotV, 2.0) * 0.1;
     float alpha = clamp(baseAlpha + grazingBoost + foamMask * 0.1, 0.0, 1.0);
 

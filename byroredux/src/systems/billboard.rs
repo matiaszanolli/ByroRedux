@@ -1,5 +1,6 @@
 //! Billboard orientation — face-camera mode for sprite-like nodes.
 
+use byroredux_core::ecs::components::groundcover::WindField;
 use byroredux_core::ecs::{ActiveCamera, Billboard, BillboardMode, GlobalTransform, World};
 use byroredux_core::math::{Quat, Vec3};
 
@@ -21,8 +22,15 @@ use byroredux_core::math::{Quat, Vec3};
 pub(crate) fn make_billboard_system() -> impl FnMut(&World, f32) + Send + Sync {
     // Sentinel: `None` on first frame so the loop always runs once.
     let mut last_cam: Option<(Vec3, Vec3)> = None;
+    let mut elapsed = 0.0_f32;
 
-    move |world: &World, _dt: f32| {
+    move |world: &World, dt: f32| {
+        elapsed = (elapsed + dt.max(0.0)).max(0.0);
+        let wind = world
+            .try_resource::<WindField>()
+            .map(|w| *w)
+            .unwrap_or_default();
+        let wind_active = wind.speed > 1.0e-4 || wind.gust_amplitude > 1.0e-4;
         // Active camera lookup (position + forward).
         let Some(active) = world.try_resource::<ActiveCamera>() else {
             return;
@@ -53,7 +61,7 @@ pub(crate) fn make_billboard_system() -> impl FnMut(&World, f32) + Send + Sync {
         // Exact equality is appropriate here: the camera transform is
         // written by camera_follow_system / fly_camera_system with no
         // floating-point accumulation.
-        if last_cam == Some((cam_pos, cam_forward)) {
+        if last_cam == Some((cam_pos, cam_forward)) && !wind_active {
             return;
         }
         last_cam = Some((cam_pos, cam_forward));
@@ -67,12 +75,32 @@ pub(crate) fn make_billboard_system() -> impl FnMut(&World, f32) + Send + Sync {
                 continue;
             };
 
-            let new_rot = compute_billboard_rotation(
+            let mut new_rot = compute_billboard_rotation(
                 billboard.mode,
                 global.translation,
                 cam_pos,
                 cam_forward,
             );
+            // SpeedTree placeholders use the dedicated BsRotateAboutUp mode.
+            // Apply a small coherent canopy bend after camera-facing rotation
+            // so the shared weather wind animates trees without confusing it
+            // with WATR's local normal-map motion. Phase is world-position
+            // seeded, keeping nearby trees in sync while avoiding lockstep.
+            if wind_active && matches!(billboard.mode, BillboardMode::BsRotateAboutUp) {
+                let gust = wind.speed
+                    + wind.gust_amplitude
+                        * (elapsed * wind.gust_frequency * std::f32::consts::TAU).sin();
+                let strength = (gust
+                    / byroredux_core::ecs::components::groundcover::MAX_WIND_SPEED)
+                    .clamp(0.0, 1.0);
+                let phase = global.translation.x * 0.017 + global.translation.z * 0.013;
+                let wave = (elapsed * (0.35 + strength * 0.85) + phase).sin();
+                let cross = (elapsed * (0.47 + strength * 0.65) + phase * 1.7).cos();
+                let bend = strength * 0.16;
+                new_rot = new_rot
+                    * Quat::from_rotation_z(wave * bend)
+                    * Quat::from_rotation_x(cross * bend * 0.65);
+            }
             global.rotation = new_rot;
         }
     }

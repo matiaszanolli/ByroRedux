@@ -125,7 +125,12 @@ pub fn decode_shared_geom_object(
     // Matches the `full_precision = false` / `is_skinned = false` forced
     // below: CSG positions are always half4 on disk (see `psg_vertex_stride`)
     // and precombines are never skinned.
-    check_vertex_desc_offsets(vertex_desc, attrs, /* full_precision = */ false, /* is_skinned = */ false);
+    check_vertex_desc_offsets(
+        vertex_desc,
+        attrs,
+        /* full_precision = */ false,
+        /* is_skinned = */ false,
+    );
 
     // Detached FO4 version context — only satisfies NifStream's
     // constructor. The decode never consults bsver here: full_precision

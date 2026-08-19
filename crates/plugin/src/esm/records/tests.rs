@@ -494,11 +494,7 @@ fn qust_group_walks_nested_dial_info_scen() {
     let qust = build_record(b"QUST", fid(0x100), &[(b"EDID", b"MQ01\0".to_vec())]);
     let dial = build_record(b"DIAL", fid(0x200), &[(b"EDID", b"MQ01Topic\0".to_vec())]);
     let info = build_record(b"INFO", fid(0x300), &[(b"NAM1", b"Hello\0".to_vec())]);
-    let scen = build_record(
-        b"SCEN",
-        fid(0x400),
-        &[(b"EDID", b"MQ01Scene1\0".to_vec())],
-    );
+    let scen = build_record(b"SCEN", fid(0x400), &[(b"EDID", b"MQ01Scene1\0".to_vec())]);
 
     let innermost = wrap_sub_group(*b"\xff\xff\x00\x00", 999, &info);
     let mut dial_children = Vec::new();

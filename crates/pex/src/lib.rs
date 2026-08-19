@@ -338,7 +338,10 @@ mod tests {
 
         // The auto property survives untouched — no bytecode to get wrong.
         let ScriptItem::Property(prop) = &script.body[0].node else {
-            panic!("body[0] must be the MyProp property, got {:?}", script.body[0].node);
+            panic!(
+                "body[0] must be the MyProp property, got {:?}",
+                script.body[0].node
+            );
         };
         assert_eq!(prop.name.node.0, "MyProp");
         assert!(matches!(prop.ty.node, PapyrusType::Int));
@@ -346,7 +349,10 @@ mod tests {
         // The OnActivate event is where the two-instruction bytecode
         // stream (iadd + callmethod-with-vararg) must lower correctly.
         let ScriptItem::Event(ev) = &script.body[1].node else {
-            panic!("body[1] must be the OnActivate event, got {:?}", script.body[1].node);
+            panic!(
+                "body[1] must be the OnActivate event, got {:?}",
+                script.body[1].node
+            );
         };
         assert_eq!(ev.name.node.0, "OnActivate");
         assert_eq!(ev.params.len(), 1);
@@ -381,7 +387,10 @@ mod tests {
             panic!("callmethod must lower to a Call, got {:?}", e.node);
         };
         let Expr::MemberAccess { object, member } = &callee.node else {
-            panic!("callee must be a MemberAccess (Self.Bar), got {:?}", callee.node);
+            panic!(
+                "callee must be a MemberAccess (Self.Bar), got {:?}",
+                callee.node
+            );
         };
         assert!(matches!(&object.node, Expr::Ident(id) if id.0 == "Self"));
         assert_eq!(member.node.0, "Bar");

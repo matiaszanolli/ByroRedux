@@ -18,9 +18,7 @@ use std::collections::{HashMap, HashSet};
 
 fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
-    let esm_path = args
-        .next()
-        .expect("usage: pack_ambient_shape_survey <ESM>");
+    let esm_path = args.next().expect("usage: pack_ambient_shape_survey <ESM>");
     let bytes = std::fs::read(&esm_path)?;
     let index = byroredux_plugin::esm::parse_esm(&bytes).map_err(|e| anyhow::anyhow!(e))?;
 
@@ -54,8 +52,14 @@ fn main() -> anyhow::Result<()> {
 
     println!();
     println!("NPCs carrying >=1 PKID entry: {npcs_with_packages}");
-    println!("distinct packages referenced by some NPC's PKID list: {}", ambient_refs.len());
-    println!("distinct packages referenced by some SCEN action: {}", scene_owned.len());
+    println!(
+        "distinct packages referenced by some NPC's PKID list: {}",
+        ambient_refs.len()
+    );
+    println!(
+        "distinct packages referenced by some SCEN action: {}",
+        scene_owned.len()
+    );
 
     let ambient_only: Vec<u32> = ambient_refs
         .keys()
@@ -123,7 +127,10 @@ fn main() -> anyhow::Result<()> {
     }
 
     println!();
-    println!("=== shape of ambient-only packages (n={}) ===", ambient_only.len());
+    println!(
+        "=== shape of ambient-only packages (n={}) ===",
+        ambient_only.len()
+    );
     println!("{ambient_only_counts:#?}");
     println!();
     println!(

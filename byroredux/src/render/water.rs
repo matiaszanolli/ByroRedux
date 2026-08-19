@@ -21,6 +21,7 @@
 //! This function must run AFTER the draw_commands sort and BEFORE
 //! the renderer consumes them.
 
+use byroredux_core::ecs::components::groundcover::WindField;
 use byroredux_core::ecs::components::water::{WaterFlow, WaterKind, WaterPlane};
 use byroredux_core::ecs::{TotalTime, World};
 use byroredux_renderer::vulkan::context::DrawCommand;
@@ -44,6 +45,21 @@ pub(super) fn reemit_water_planes(
         .try_resource::<TotalTime>()
         .map(|t| t.0)
         .unwrap_or(0.0);
+    // The same weather wind that drives SpeedTree canopy sway also perturbs
+    // water's surface normals. WATR wind remains water-local authored motion;
+    // this resource is the live atmosphere shared by both surfaces.
+    let weather_wind = world
+        .try_resource::<WindField>()
+        .map(|w| *w)
+        .unwrap_or_default();
+    let gust = weather_wind.speed
+        + weather_wind.gust_amplitude
+            * (time_secs * weather_wind.gust_frequency * std::f32::consts::TAU).sin();
+    const WEATHER_WATER_SCROLL_PER_BU_PER_S: f32 = 0.0015;
+    let weather_scroll = [
+        weather_wind.direction[0] * gust * WEATHER_WATER_SCROLL_PER_BU_PER_S,
+        weather_wind.direction[1] * gust * WEATHER_WATER_SCROLL_PER_BU_PER_S,
+    ];
     let Some(wq) = world.query::<WaterPlane>() else {
         return;
     };
@@ -91,10 +107,10 @@ pub(super) fn reemit_water_planes(
                 mat.fog_far,
             ],
             scroll: [
-                mat.scroll_a[0],
-                mat.scroll_a[1],
-                mat.scroll_b[0],
-                mat.scroll_b[1],
+                mat.scroll_a[0] + weather_scroll[0],
+                mat.scroll_a[1] + weather_scroll[1],
+                mat.scroll_b[0] + weather_scroll[0] * 0.65,
+                mat.scroll_b[1] + weather_scroll[1] * 0.65,
             ],
             tune: [
                 mat.uv_scale_a,
@@ -118,7 +134,7 @@ pub(super) fn reemit_water_planes(
                 mat.noise_map_indices[0],
                 mat.noise_map_indices[1],
                 mat.noise_map_indices[2],
-                u32::MAX,
+                mat.opacity.to_bits(),
             ],
             detail: [
                 mat.uv_scale_c,
@@ -127,7 +143,12 @@ pub(super) fn reemit_water_planes(
                 mat.noise_amplitude_scales[2],
             ],
             depth: mat.depth_weights,
-            effects: mat.effect_controls,
+            effects: [
+                mat.effect_controls[0],
+                mat.effect_controls[1],
+                mat.effect_controls[2],
+                mat.effect_controls[3] * mat.specular_magnitude,
+            ],
         };
         water_commands.push(WaterDrawCommand {
             mesh_handle: draw_commands[idx].mesh_handle,

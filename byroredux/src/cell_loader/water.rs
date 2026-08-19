@@ -512,6 +512,7 @@ pub(crate) fn spawn_lod_water_plane(
         entity,
         mesh_handle,
         normal_map_handle: (resolved_normal_idx != 0).then_some(resolved_normal_idx),
+        noise_map_handles: resolved_noise,
     })
 }
 
@@ -527,6 +528,11 @@ pub(crate) fn unload_lod_water_plane(
 ) {
     if let Some(normal_idx) = plane.normal_map_handle {
         ctx.texture_registry.drop_texture(&ctx.device, normal_idx);
+    }
+    for &noise_idx in &plane.noise_map_handles {
+        if noise_idx != 0 {
+            ctx.texture_registry.drop_texture(&ctx.device, noise_idx);
+        }
     }
     ctx.mesh_registry.drop_mesh(plane.mesh_handle);
     world.despawn(plane.entity);

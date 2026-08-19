@@ -70,7 +70,10 @@ pub struct SptImportParams<'a> {
     /// Wind sensitivity / strength from the TREE record's `CNAM`
     /// (Oblivion ships 5 × f32; FO3/FNV ship 8 × f32 — exact field
     /// semantics not pinned). Captured for SpeedTree Phase 2 wind
-    /// animation; not consumed today. **Not** sourced from `BNAM` —
+    /// animation; not consumed today. The eventual consumer must combine
+    /// this per-tree response with the shared weather wind (the same
+    /// `WeatherDataRes::wind_speed` used by vegetation), never with a
+    /// water record's local normal-scroll vectors. **Not** sourced from `BNAM` —
     /// per UESP + the TREE parser, BNAM is FO3/FNV billboard
     /// width/height, which flows into `bounds` instead (see #1002).
     pub wind: Option<(f32, f32)>,

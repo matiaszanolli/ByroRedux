@@ -288,14 +288,26 @@ impl RefrTextureOverlay {
             // authors no `flow_texture` / `wrinkles_texture` per
             // `crates/bgsm/src/bgem.rs`, so those stay unfilled here —
             // matching `merge_external_material`'s BGEM arm exactly.
-            Self::fill(&mut self.specular, Some(bgem.specular_texture.as_str()), pool);
-            Self::fill(&mut self.lighting, Some(bgem.lighting_texture.as_str()), pool);
+            Self::fill(
+                &mut self.specular,
+                Some(bgem.specular_texture.as_str()),
+                pool,
+            );
+            Self::fill(
+                &mut self.lighting,
+                Some(bgem.lighting_texture.as_str()),
+                pool,
+            );
             // `grayscale_texture` is BGEM's palette/gradient LUT (fire-
             // gradient, electricity-gradient, magic VFX) — same
             // wire-slot-3 sharing with `height` as the BGSM arm above
             // (BGEM has no `displacement_texture` field, so there's
             // nothing here for it to lose a first-wins race against).
-            Self::fill(&mut self.height, Some(bgem.grayscale_texture.as_str()), pool);
+            Self::fill(
+                &mut self.height,
+                Some(bgem.grayscale_texture.as_str()),
+                pool,
+            );
         }
     }
 }

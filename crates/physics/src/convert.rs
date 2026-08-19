@@ -486,7 +486,11 @@ mod tests {
             iso.translation
         );
         assert!(
-            iso.rotation.into_inner().coords.iter().all(|c| c.is_finite()),
+            iso.rotation
+                .into_inner()
+                .coords
+                .iter()
+                .all(|c| c.is_finite()),
             "non-finite compound child rotation must not reach Rapier: {:?}",
             iso.rotation
         );

@@ -1122,7 +1122,10 @@ mod phase_sync_tests {
         let mut world = physics_world();
         let entity = world.spawn();
         world.insert(entity, Transform::IDENTITY);
-        world.insert(entity, GlobalTransform::new(Vec3::ZERO, Quat::IDENTITY, 1.0));
+        world.insert(
+            entity,
+            GlobalTransform::new(Vec3::ZERO, Quat::IDENTITY, 1.0),
+        );
         world.insert(entity, unit_box());
         world.insert(
             entity,
@@ -1155,7 +1158,10 @@ mod phase_sync_tests {
         let mut world = physics_world();
         let entity = world.spawn();
         world.insert(entity, Transform::IDENTITY);
-        world.insert(entity, GlobalTransform::new(Vec3::ZERO, Quat::IDENTITY, 1.0));
+        world.insert(
+            entity,
+            GlobalTransform::new(Vec3::ZERO, Quat::IDENTITY, 1.0),
+        );
         world.insert(entity, unit_box());
         world.insert(entity, RigidBodyData::STATIC);
 

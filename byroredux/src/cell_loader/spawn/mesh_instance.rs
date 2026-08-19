@@ -176,10 +176,8 @@ pub(super) fn resolve_mesh_paths(
             // `wrinkle` above): a raw TXST/XTXR override can never
             // supply them, only a `.bgsm`/`.bgem` `material_path`
             // override via `fill_from_bgsm` can.
-            (textures.lighting, sources.lighting) = resolve_effective(
-                ov.and_then(|o| o.lighting),
-                mesh.material.textures.lighting,
-            );
+            (textures.lighting, sources.lighting) =
+                resolve_effective(ov.and_then(|o| o.lighting), mesh.material.textures.lighting);
             (textures.flow, sources.flow) =
                 resolve_effective(ov.and_then(|o| o.flow), mesh.material.textures.flow);
             let material_path = resolve_to_owned(
@@ -1114,7 +1112,10 @@ mod tests {
             resolved[0].textures.lighting.as_deref(),
             Some(r"textures\mesh\lighting.dds")
         );
-        assert_eq!(resolved[0].sources.lighting, MaterialTextureSource::MeshMaterial);
+        assert_eq!(
+            resolved[0].sources.lighting,
+            MaterialTextureSource::MeshMaterial
+        );
         assert!(resolved[0].textures.flow.is_none());
     }
 }

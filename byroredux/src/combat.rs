@@ -91,10 +91,9 @@ pub(crate) fn combat_input_system(world: &World, dt: f32) {
         state.blocking = block_held;
         state.cooldown_remaining = (state.cooldown_remaining - dt.max(0.0)).max(0.0);
         if attack_pressed && state.cooldown_remaining <= 0.0 {
-            state.cooldown_remaining =
-                aggressor.map_or(MELEE_COOLDOWN_SECONDS, |aggressor| {
-                    attack_cooldown_seconds(world, aggressor)
-                });
+            state.cooldown_remaining = aggressor.map_or(MELEE_COOLDOWN_SECONDS, |aggressor| {
+                attack_cooldown_seconds(world, aggressor)
+            });
             state.attacks_started = state.attacks_started.saturating_add(1);
             true
         } else {
@@ -642,7 +641,10 @@ mod tests {
         world.register::<EquippedWeapon>();
         let unarmed = world.spawn();
         assert_eq!(attack_reach_bu(&world, unarmed), MELEE_REACH_BU);
-        assert_eq!(attack_cooldown_seconds(&world, unarmed), MELEE_COOLDOWN_SECONDS);
+        assert_eq!(
+            attack_cooldown_seconds(&world, unarmed),
+            MELEE_COOLDOWN_SECONDS
+        );
 
         // A weapon whose game's DNAM layout isn't decoded yet (reach/speed
         // still 0.0 — e.g. Skyrim) gets the same unarmed-style fallback,
@@ -659,7 +661,10 @@ mod tests {
             },
         );
         assert_eq!(attack_reach_bu(&world, undecoded), MELEE_REACH_BU);
-        assert_eq!(attack_cooldown_seconds(&world, undecoded), MELEE_COOLDOWN_SECONDS);
+        assert_eq!(
+            attack_cooldown_seconds(&world, undecoded),
+            MELEE_COOLDOWN_SECONDS
+        );
     }
 
     #[test]

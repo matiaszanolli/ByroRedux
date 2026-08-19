@@ -93,9 +93,12 @@ pub(crate) fn install_catalog(world: &mut World, index: &EsmIndex) {
             };
             let (category, details, equip_slot_mask) = describe_kind(&item.kind);
             let (weapon_damage, weapon_reach, weapon_speed) = match &item.kind {
-                ItemKind::Weapon { damage, reach, speed, .. } => {
-                    (Some(*damage as f32), *reach, *speed)
-                }
+                ItemKind::Weapon {
+                    damage,
+                    reach,
+                    speed,
+                    ..
+                } => (Some(*damage as f32), *reach, *speed),
                 _ => (None, 0.0, 0.0),
             };
             (
@@ -263,8 +266,12 @@ fn prefer_weapon(
     inventory_index: InventoryIndex,
     equipped: &mut Option<EquippedWeapon>,
 ) {
-    let Some(ItemKind::Weapon { damage, reach, speed, .. }) =
-        index.items.get(&form_id).map(|item| &item.kind)
+    let Some(ItemKind::Weapon {
+        damage,
+        reach,
+        speed,
+        ..
+    }) = index.items.get(&form_id).map(|item| &item.kind)
     else {
         return;
     };
@@ -429,10 +436,13 @@ fn reconcile_equipped_weapon(
             .and_then(|inventory| inventory.get(inventory_index).copied())
             .filter(|stack| stack.count > 0)
             .map(|stack| stack.base_form_id)?;
-        let (damage, reach, speed) = world.try_resource::<InventoryCatalog>().and_then(|catalog| {
-            let item = catalog.entries.get(&form_id)?;
-            Some((item.weapon_damage?, item.weapon_reach, item.weapon_speed))
-        })?;
+        let (damage, reach, speed) =
+            world
+                .try_resource::<InventoryCatalog>()
+                .and_then(|catalog| {
+                    let item = catalog.entries.get(&form_id)?;
+                    Some((item.weapon_damage?, item.weapon_reach, item.weapon_speed))
+                })?;
         Some(EquippedWeapon {
             inventory_index,
             base_form_id: form_id,

@@ -97,7 +97,9 @@ pub use transition::{
 // only show up in external crates (tests, other workspace members)
 // or as the public API surface.
 #[allow(unused_imports)]
-pub(crate) use nif_import_registry::{canonical_model_path_key, CachedNifImport, NifImportRegistry};
+pub(crate) use nif_import_registry::{
+    canonical_model_path_key, CachedNifImport, NifImportRegistry,
+};
 #[allow(unused_imports)]
 pub(crate) use refr::{
     build_refr_texture_overlay, expand_pkin_placements, expand_scol_placements, RefrTextureOverlay,

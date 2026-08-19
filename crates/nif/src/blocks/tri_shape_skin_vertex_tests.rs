@@ -1298,7 +1298,7 @@ fn bs_tri_shape_data_size_understated_derived_stride_falls_back_to_declared() {
     // vertex_size_quads = 5 (20 bytes/vertex declared — 4 bytes more
     // than VF_VERTEX/full-precision's 16-byte structural minimum, so
     // recoverable via a 4-byte trailing skip).
-    let vertex_desc: u64 = 5 | ((/* VF_VERTEX = */ 0x001u64) << 44);
+    let vertex_desc: u64 = 5 | ((/* VF_VERTEX = */0x001u64) << 44);
     let vd_offset = 100;
     bytes[vd_offset..vd_offset + 8].copy_from_slice(&vertex_desc.to_le_bytes());
 

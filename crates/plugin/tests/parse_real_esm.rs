@@ -34,7 +34,11 @@ fn data_dir(env_var: &str, fallback: &str) -> Option<PathBuf> {
         eprintln!("{env_var} points to {v:?} which is not a directory; falling back to default");
     }
     let p = PathBuf::from(fallback);
-    if p.is_dir() { Some(p) } else { None }
+    if p.is_dir() {
+        Some(p)
+    } else {
+        None
+    }
 }
 
 /// FNV: 60,000 records floor — covers the 13,684 M24 Phase 1 baseline
@@ -319,6 +323,8 @@ fn installed_masters_water_fields_are_finite_and_ordered() {
                     .chain(p.noise_amplitude_scales.iter())
                     .chain(p.depth_weights.iter())
                     .chain(p.effect_controls.iter())
+                    .chain(std::iter::once(&p.specular_magnitude))
+                    .chain(std::iter::once(&p.underwater_fog_amount))
                     .all(|value| value.is_finite()),
                 "{label} WATR {} has non-finite translated fields",
                 water.editor_id
@@ -1327,7 +1333,7 @@ fn parse_rate_fo4_esm() {
     assert!((default_water.params.reflectivity - 0.2935).abs() < 1e-6);
     assert!((default_water.params.fresnel - 0.058).abs() < 1e-6);
     assert_eq!(default_water.params.fog_near, 0.0);
-    assert_eq!(default_water.params.fog_far, 1700.0);
+    assert!((default_water.params.fog_far - 3007.0).abs() < 1e-3);
 
     let scol_placements: usize = index
         .cells

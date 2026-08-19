@@ -596,7 +596,8 @@ fn stream_parse_pool_runs_tasks_on_its_own_dedicated_threads() {
     // have no name, or a differently-prefixed one).
     let name = pool.install(|| std::thread::current().name().map(str::to_string));
     assert!(
-        name.as_deref().is_some_and(|n| n.starts_with("byro-stream-parse-")),
+        name.as_deref()
+            .is_some_and(|n| n.starts_with("byro-stream-parse-")),
         "cell-stream Phase 2 task ran on an unexpected thread ({name:?}) — it must stay on the \
          dedicated pool, never rayon's global pool, or #3089's contention returns"
     );

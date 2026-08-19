@@ -227,9 +227,11 @@ part of the canonical GPU material contract.
 
 ### Decode + translate — **good (render), Skyrim tail partially promoted**
 
-`water.rs` decodes the shared 60-byte DATA prefix (Oblivion/FO3/FNV) and a
-best-effort Skyrim DNAM prefix; `NNAM`/`TNAM` texture and Skyrim+ NAM2/NAM3/NAM4
-noise paths are parsed, while GNAM's unused daytime/nighttime/underwater water
+`water.rs` decodes the shared 60-byte DATA prefix (Oblivion/FO3/FNV), Skyrim's
+extended DNAM, the FO4/FO76 visual-data layout, and Starfield's absorption-based
+DNAM layout; `NNAM`/`TNAM` texture and Skyrim+ NAM2/NAM3/NAM4
+noise paths are parsed, with Skyrim SE NAM5 promoted to the third layer for
+flowing water, while GNAM's unused daytime/nighttime/underwater water
 links are preserved separately; `raw_data`/`raw_dnam` tails remain available.
 `resolve_water_material`
 (`env_translate.rs:89-176`) captures colors/fog/fresnel/reflectivity/flow.
@@ -239,9 +241,22 @@ noise UV scales now resolve through the bindless water-material contract; FO3/FN
 and FO4 below-water fog ranges now cross the canonical boundary, and Skyrim's
 underwater fog, displacement force, three noise UV scales, three noise
 amplitude scales, and depth weights are verified against the installed master.
-FO4 displacement force/velocity and all three authored noise amplitudes and UV
-scales now cross the same canonical boundary; FO4's separate underwater tint
-also drives the underwater composite, while older games fall back to deep tint.
+FO4 displacement force/velocity, all three authored normal-layer wind vectors,
+and all three authored noise amplitudes and UV scales now cross the same
+canonical boundary; FO4's separate underwater tint also drives the underwater
+composite and underwater fog amount now scales the underwater extinction,
+while older games fall back to deep tint. Skyrim/FO4 physical normal magnitude
+also scales the canonical noise amplitudes (Skyrim DNAM[92], FO4 DNAM[52]).
+Skyrim's above-water fog amount (DNAM[132]) scales the canonical refraction
+absorption weight while preserving the authored near/far distance ramp.
+WATR.ANAM surface opacity now reaches the water fragment path; records without
+ANAM retain the procedural 0.88 fallback.
+These WATR wind vectors
+are water-local normal motion; shared weather wind for SpeedTree/vegetation
+continues to come from `WeatherDataRes::wind_speed` plus each tree's authored
+response.
+WATR `NAM0` linear velocity is projected from Gamebryo Z-up into renderer X/Z
+ coordinates for authored water motion and flow direction.
 The remaining Skyrim tail fields stay raw. The
 `WaterKind` classification is a fragile EDID-substring heuristic
 (`rapid`/`waterfall`/`falls`/`river`/`stream`), English-only, with `waterfall`
@@ -332,15 +347,22 @@ Everything else is a SENTINEL the older game leaves unset, identical across game
 
 | Concern | Oblivion | FO3 / FNV | Skyrim (canonical) | Source field |
 |---|---|---|---|---|
-| WATR appearance payload | DATA ~102 B | DATA 196 B (60 B shared prefix) | DNAM 252 B+ | `water.rs:30-61` |
+| WATR appearance payload | DATA ~102 B | DATA 196 B (60 B shared prefix) | DNAM 252 B+; FO4/FO76 201 B; Starfield 152 B+ | `water.rs:30-61` |
 | shallow/deep color, reflectivity, fresnel | AUTHORED | AUTHORED | AUTHORED | DATA/DNAM RGBA |
+| surface opacity | AUTHORED (`ANAM`) | AUTHORED (`ANAM`) | AUTHORED (`ANAM`) | ANAM (u8 / 255) |
 | `fog_near`/`fog_far` | **SENTINEL** 80/600 (DATA omits 28..36) | AUTHORED | AUTHORED | DATA[28..36] |
+| FO4 surface depth ramp | SENTINEL | SENTINEL | AUTHORED | DNAM[0] (`Depth Amount`) |
+| FO4 underwater fog amount | SENTINEL | SENTINEL | AUTHORED | DNAM[40] |
 | diffuse/normal texture | **SENTINEL** `u32::MAX` → procedural | AUTHORED (`NNAM`) | AUTHORED (`TNAM`) | NNAM/TNAM |
-| noise layers (`NAM2`/`NAM3`/`NAM4`) | **SENTINEL** `[u32::MAX;3]` | **SENTINEL** | AUTHORED (3 paths) | NAM2-4 |
+| noise layers (`NAM2`/`NAM3`/`NAM4`, flowing `NAM5`) | **SENTINEL** `[u32::MAX;3]` | **SENTINEL** | AUTHORED (NAM5 replaces layer 3 for flow) | NAM2-5 |
 | below-water fog split | **SENTINEL** (reuse above) | **SENTINEL** | AUTHORED (DNAM tail) | DNAM[144..152] |
 | `wave_amplitude/frequency` | AUTHORED | AUTHORED | AUTHORED (displacement force overrides amplitude) | DATA[8..16], DNAM[76..80] |
+| physical normal magnitude | SENTINEL | SENTINEL | AUTHORED (scales noise amplitudes) | Skyrim DNAM[92]; FO4 DNAM[52] |
+| above-water fog amount | SENTINEL | SENTINEL | AUTHORED (scales refraction absorption) | Skyrim DNAM[132] |
 | depth response weights | SENTINEL | SENTINEL | AUTHORED | DNAM[208..224] |
 | reflection/specular controls | SENTINEL | SENTINEL | AUTHORED | DNAM[152..156,196..204] |
+| authored normal-layer wind (direction / UV speed) | SENTINEL | SENTINEL | AUTHORED (3 layers) | Skyrim DNAM[100..120]; FO4 DNAM[128..148] |
+| authored linear water velocity | SENTINEL | SENTINEL | AUTHORED | NAM0 (`vec3`, X/Y → renderer X/−Z) |
 | `sun_power` | AUTHORED (was skipped) | AUTHORED | AUTHORED | DATA[16] |
 | `WaterFlow` | SYNTHESIZED from wind | SYNTHESIZED from wind | AUTHORED flow | wind / DNAM flow |
 | `ior` 1.33, `shoreline_width` 32, foam-by-kind | SENTINEL | SENTINEL | SENTINEL | engine-invariant |
@@ -535,10 +557,12 @@ fallback for textureless legacy water plus authored texture layers where present
 
 ### Q5 — Open item: exact byte offsets of the remaining Skyrim tail. → **MEDIUM confidence; verify before relying.**
 
-The verified Skyrim underwater fog pair at DNAM offsets 144/148, displacement
+The verified Skyrim underwater fog pair at DNAM offsets 144/148, physical normal
+magnitude at 92, displacement
 force at 76, all three noise UV scales at 172/176/180, three noise amplitude
 scales at 184/188/192, and depth weights at 208/212/216/220 now feed the
 canonical presentation path, with reflection/specular controls at 152/156/196/204;
+the separate specular magnitude at 160 now scales the sun-glint intensity;
 the Skyrim SE-only 232-byte extension's flow-map tile scale at 228 now scales
 the visual scroll rate while leaving the canonical physics current bounded;
 remaining authored tail fields remain `raw_dnam`

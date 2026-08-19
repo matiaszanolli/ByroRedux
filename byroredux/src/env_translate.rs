@@ -557,6 +557,10 @@ pub(crate) fn resolve_water_material(
             mat.fog_far = rec.params.fog_far;
             mat.underwater_fog_near = rec.params.underwater_fog_near;
             mat.underwater_fog_far = rec.params.underwater_fog_far;
+            mat.underwater_fog_amount = rec.params.underwater_fog_amount.clamp(0.0, 8.0);
+            if rec.opacity.is_finite() && rec.opacity > 0.0 {
+                mat.opacity = rec.opacity.clamp(0.05, 1.0);
+            }
             mat.fresnel_f0 = rec.params.fresnel.clamp(0.001, 0.20);
             mat.reflectivity = rec.params.reflectivity;
             mat.reflection_tint = rec.params.reflection_color;
@@ -590,11 +594,34 @@ pub(crate) fn resolve_water_material(
                     *dst = src.clamp(0.05, 4.0);
                 }
             }
+            // Skyrim/FO4 author an additional physical normal magnitude
+            // alongside the per-layer amplitudes. Fold it into the
+            // canonical amplitudes so the compact GPU ABI stays unchanged.
+            // A zero/invalid value is treated as the neutral legacy fallback.
+            let normal_magnitude =
+                if rec.params.normal_magnitude.is_finite() && rec.params.normal_magnitude > 0.0 {
+                    rec.params.normal_magnitude.clamp(0.01, 8.0)
+                } else {
+                    1.0
+                };
+            for amplitude in &mut mat.noise_amplitude_scales {
+                *amplitude = (*amplitude * normal_magnitude).clamp(0.0, 8.0);
+            }
+            mat.above_water_fog_amount = if rec.params.above_water_fog_amount.is_finite() {
+                rec.params.above_water_fog_amount.clamp(0.0, 8.0)
+            } else {
+                1.0
+            };
             for (dst, src) in mat.depth_weights.iter_mut().zip(rec.params.depth_weights) {
                 if src.is_finite() && src > 0.0 {
                     *dst = src.clamp(0.0, 4.0);
                 }
             }
+            // The compact shader already uses depth.y as the Beer-Lambert
+            // refraction weight. Fold Skyrim's separate above-water fog
+            // amount into that slot instead of growing the UBO ABI.
+            mat.depth_weights[1] =
+                (mat.depth_weights[1] * mat.above_water_fog_amount).clamp(0.0, 8.0);
             for (index, (dst, src)) in mat
                 .effect_controls
                 .iter_mut()
@@ -612,6 +639,11 @@ pub(crate) fn resolve_water_material(
             if rec.params.flowmap_scale.is_finite() && rec.params.flowmap_scale > 0.0 {
                 mat.flowmap_scale = rec.params.flowmap_scale.clamp(0.05, 8.0);
             }
+            if rec.params.specular_magnitude.is_finite() && rec.params.specular_magnitude > 0.0 {
+                mat.specular_magnitude = rec.params.specular_magnitude.clamp(0.0, 8.0);
+            }
+            let authored_wind = rec.params.noise_wind_speeds;
+            let authored_dirs = rec.params.noise_wind_directions;
             mat.source_form = rec.form_id;
 
             // ── WaterKind heuristic from EDID naming convention ──
@@ -686,6 +718,20 @@ pub(crate) fn resolve_water_material(
                 mat.scroll_b = [-sin_theta * scroll * 0.5, cos_theta * scroll * 0.5];
                 flow = Some(canonical);
             }
+            // Calm bodies have no canonical current. Preserve authored
+            // per-layer normal motion (Skyrim/FO4) when present; this is a
+            // visual UV velocity only and must not replace the shared
+            // weather wind later used by SpeedTree vegetation.
+            if matches!(kind, WaterKind::Calm) {
+                if authored_wind[0] > 0.0 {
+                    let (sin_theta, cos_theta) = authored_dirs[0].sin_cos();
+                    mat.scroll_a = [cos_theta * authored_wind[0], sin_theta * authored_wind[0]];
+                }
+                if authored_wind[1] > 0.0 {
+                    let (sin_theta, cos_theta) = authored_dirs[1].sin_cos();
+                    mat.scroll_b = [cos_theta * authored_wind[1], sin_theta * authored_wind[1]];
+                }
+            }
             // TNAM is the diffuse / noise texture — used as the
             // bindless normal map for the shader. Empty path =
             // procedural fallback.
@@ -696,6 +742,12 @@ pub(crate) fn resolve_water_material(
                 if !path.is_empty() {
                     *dst = Some(path.clone());
                 }
+            }
+            // Skyrim SE's NAM5 is a flow-normal texture. Preserve the
+            // compact three-layer GPU ABI by promoting it over NAM4 only
+            // for flowing bodies; calm water keeps its authored NAM4 layer.
+            if !matches!(kind, WaterKind::Calm) && !rec.flow_noise_texture_path.is_empty() {
+                noise_paths[2] = Some(rec.flow_noise_texture_path.clone());
             }
         }
     }
@@ -1784,8 +1836,10 @@ mod tests {
             form_id: 0x000A_BCDE,
             editor_id: "LavaPool01".to_string(),
             full_name: "Lava Pool".to_string(),
+            opacity: 0.75,
             texture_path: String::new(),
             noise_texture_paths: Default::default(),
+            flow_noise_texture_path: String::new(),
             related_waters: [0; 3],
             params: WaterParams {
                 shallow_color: [1.0, 0.4, 0.1],
@@ -1796,6 +1850,7 @@ mod tests {
                 fog_far: 80.0,
                 underwater_fog_near: 0.0,
                 underwater_fog_far: 0.0,
+                underwater_fog_amount: 1.0,
                 reflectivity: 0.40,
                 fresnel: 0.04,
                 wind_speed: 0.0,
@@ -1807,9 +1862,14 @@ mod tests {
                 noise_uv_scale_b: 0.0,
                 noise_uv_scale_c: 0.0,
                 noise_amplitude_scales: [0.0; 3],
+                normal_magnitude: 1.0,
+                above_water_fog_amount: 1.0,
                 depth_weights: [0.0; 4],
                 effect_controls: [0.0; 4],
                 flowmap_scale: 0.0,
+                specular_magnitude: 0.0,
+                noise_wind_directions: [0.0; 3],
+                noise_wind_speeds: [0.0; 3],
             },
             raw_dnam: Vec::new(),
             raw_data: Vec::new(),
@@ -1848,8 +1908,10 @@ mod tests {
             form_id: form,
             editor_id: edid.to_string(),
             full_name: String::new(),
+            opacity: 0.75,
             texture_path: String::new(),
             noise_texture_paths: Default::default(),
+            flow_noise_texture_path: String::new(),
             related_waters: [0; 3],
             params,
             raw_dnam: Vec::new(),
@@ -1907,6 +1969,37 @@ mod tests {
     }
 
     #[test]
+    fn resolve_water_material_applies_authored_normal_magnitude() {
+        let rec = calm_watr(
+            0x000A_0004,
+            "SkyrimWater",
+            WaterParams {
+                normal_magnitude: 0.5,
+                above_water_fog_amount: 0.5,
+                noise_amplitude_scales: [0.8, 0.6, 0.4],
+                depth_weights: [1.0, 1.0, 1.0, 1.0],
+                ..WaterParams::default()
+            },
+        );
+        let mut waters = HashMap::new();
+        waters.insert(rec.form_id, rec);
+
+        let (mat, _, _, _, _) = resolve_water_material(&waters, Some(0x000A_0004));
+        assert_eq!(mat.noise_amplitude_scales, [0.4, 0.3, 0.2]);
+        assert_eq!(mat.depth_weights[1], 0.5);
+    }
+
+    #[test]
+    fn resolve_water_material_carries_authored_opacity() {
+        let mut rec = calm_watr(0x000A_0005, "OpaqueWater", WaterParams::default());
+        rec.opacity = 0.62;
+        let mut waters = HashMap::new();
+        waters.insert(rec.form_id, rec);
+        let (mat, _, _, _, _) = resolve_water_material(&waters, Some(0x000A_0005));
+        assert!((mat.opacity - 0.62).abs() < 1e-6);
+    }
+
+    #[test]
     fn resolve_water_material_carries_authored_noise_paths() {
         let mut rec = calm_watr(0x000A_0002, "DefaultWater", WaterParams::default());
         rec.noise_texture_paths = [
@@ -1920,6 +2013,46 @@ mod tests {
         assert_eq!(noise[0].as_deref(), Some("textures/water/noise_a.dds"));
         assert!(noise[1].is_none());
         assert_eq!(noise[2].as_deref(), Some("textures/water/noise_c.dds"));
+    }
+
+    #[test]
+    fn flowing_water_promotes_skyrim_flow_normal_over_nam4() {
+        let mut rec = calm_watr(0x000A_0006, "RiverWater", WaterParams::default());
+        rec.noise_texture_paths[2] = "textures/water/noise_c.dds".into();
+        rec.flow_noise_texture_path = "textures/water/flow.dds".into();
+        let mut waters = HashMap::new();
+        waters.insert(rec.form_id, rec);
+        let (_, kind, _, _, noise) = resolve_water_material(&waters, Some(0x000A_0006));
+        assert!(matches!(kind, WaterKind::River));
+        assert_eq!(noise[2].as_deref(), Some("textures/water/flow.dds"));
+    }
+
+    #[test]
+    fn calm_water_retains_nam4_when_flow_normal_is_authored() {
+        let mut rec = calm_watr(0x000A_0007, "DefaultWater", WaterParams::default());
+        rec.noise_texture_paths[2] = "textures/water/noise_c.dds".into();
+        rec.flow_noise_texture_path = "textures/water/flow.dds".into();
+        let mut waters = HashMap::new();
+        waters.insert(rec.form_id, rec);
+        let (_, kind, _, _, noise) = resolve_water_material(&waters, Some(0x000A_0007));
+        assert!(matches!(kind, WaterKind::Calm));
+        assert_eq!(noise[2].as_deref(), Some("textures/water/noise_c.dds"));
+    }
+
+    #[test]
+    fn calm_water_uses_authored_normal_layer_wind_without_touching_flow() {
+        let mut params = WaterParams::default();
+        params.noise_wind_directions = [std::f32::consts::FRAC_PI_2, 0.0, 0.0];
+        params.noise_wind_speeds = [0.03, 0.02, 0.0];
+        let rec = calm_watr(0x000A_0003, "DefaultWater", params);
+        let mut waters = HashMap::new();
+        waters.insert(rec.form_id, rec);
+        let (mat, kind, flow, _, _) = resolve_water_material(&waters, Some(0x000A_0003));
+        assert!(matches!(kind, WaterKind::Calm));
+        assert!(flow.is_none());
+        assert!(mat.scroll_a[0].abs() < 1e-6);
+        assert!((mat.scroll_a[1] - 0.03).abs() < 1e-6);
+        assert!((mat.scroll_b[0] - 0.02).abs() < 1e-6);
     }
 
     // ── #2872 — WaterFlow.speed unit ──────────────────────────────

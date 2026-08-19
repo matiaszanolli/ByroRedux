@@ -1173,6 +1173,7 @@ pub(crate) fn build_scheduler() -> Scheduler {
         make_billboard_system(),
         Access::new()
             .reads_resource::<ActiveCamera>()
+            .reads_resource::<byroredux_core::ecs::components::groundcover::WindField>()
             .reads::<byroredux_core::ecs::Billboard>()
             .writes::<byroredux_core::ecs::GlobalTransform>(),
     );

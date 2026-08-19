@@ -94,7 +94,8 @@ pub struct GpuWaterParams {
     /// geometry-hit colour in `traceWaterRay`). w = reflectivity
     /// (0..1 — fresnel multiplier; moved here from `tune.w` in #1069).
     pub tint_reflect: [f32; 4],
-    /// Bindless indices for authored NAM2/NAM3/NAM4 noise layers.
+    /// xyz = bindless indices for authored NAM2/NAM3/NAM4 noise layers;
+    /// w = WATR.ANAM opacity packed as f32 bits.
     pub noise_indices: [u32; 4],
     /// x = authored NAM4 UV scale; yzw = authored NAM2/3/4 amplitude
     /// scales, keeping this extension std140-aligned.
@@ -1320,8 +1321,7 @@ mod absorption_ramp_tests {
             "water.frag must consume authored local and sun specular controls"
         );
         assert!(
-            src.contains("push.effects.x / 10.0")
-                && src.contains("refractionNormalWeight"),
+            src.contains("push.effects.x / 10.0") && src.contains("refractionNormalWeight"),
             "water.frag must apply the authored refraction magnitude to the ray normal"
         );
         assert_eq!(
