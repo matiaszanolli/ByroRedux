@@ -495,13 +495,16 @@ pub(crate) fn parse_wrld_children(
                     // refs on exterior cells. The cell loader's
                     // conditional-absorption gate ties XPRI
                     // honour-vs-ignore to the precombined-spawn
-                    // count; exterior call-site wiring lands
-                    // separately under #1221. Until then these
-                    // fields are populated but the exterior
-                    // loader doesn't yet invoke the
-                    // precombined-spawn pass, so the absorbed
-                    // set is effectively dormant (REFRs render
-                    // as before).
+                    // count; exterior call-site wiring landed
+                    // under #1221/#1222 ("third leg") and the gate
+                    // was later shared between the interior and
+                    // exterior loaders under #2063 (see
+                    // `byroredux::cell_loader::precombined::
+                    // absorbed_refs_or_empty`). Live today: when
+                    // the precombine spawns, these fields suppress
+                    // per-REFR rendering of the baked REFRs on
+                    // exterior cells the same way they already did
+                    // on interior ones.
                     precombined_mesh_hashes,
                     absorbed_refs,
                     navmeshes: Vec::new(),
