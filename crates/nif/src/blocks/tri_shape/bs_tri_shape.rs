@@ -205,18 +205,30 @@ const VF_UVS: u16 = 0x002;
 /// Bit 2 — second UV set. Authored by meshes that carry two UV
 /// channels (detail maps, lightmaps). The BSVertexDesc `UV2 Offset`
 /// nibble (bits 12..16) tells the runtime where inside each vertex
-/// the second UV starts. Neither nif.xml's `BSVertexData` struct
-/// (line 2107) nor nifly's authoritative C++ parser lists a named
-/// field for this — community decoders typically treat the extra
-/// 4 bytes as opaque and rely on the UV2 offset at sample time.
-/// The sequential parser here does the same: the trailing skip at
-/// the end of the per-vertex loop absorbs the 4 bytes (2 × f16)
-/// reserved by this flag, so no downstream corruption.
+/// the second UV starts — and per nif.xml's bitfield layout that
+/// nibble sits *between* `UV1 Offset` and `Normal Offset`, which
+/// reads as UV2 being positioned mid-vertex, right after UV1. Neither
+/// nif.xml's `BSVertexData` struct (line 2107) nor nifly's
+/// authoritative C++ parser lists a named field for this — community
+/// decoders typically treat the extra 4 bytes as opaque and rely on
+/// the UV2 offset at sample time.
+///
+/// The sequential parser here ASSUMES the opposite: that the 4 bytes
+/// (2 × f16) this flag reserves are trailing, absorbed by the skip at
+/// the end of the per-vertex loop, so every attribute decoded after
+/// UV1 (Normal, Tangent, …) still lands where the fixed field order
+/// expects. That assumption is unverified — no sample seen so far sets
+/// this bit — and if the mid-vertex reading is the correct one, every
+/// attribute after UV1 would silently misalign. [`check_vertex_desc_offsets`]
+/// cross-checks the walk's assumed offsets against `BSVertexDesc`'s own
+/// nibbles on every parse and `log::warn!`s on drift, so a mesh that
+/// actually exercises this bit won't fail silently even though
+/// field-level UV2 extraction itself remains deferred.
 ///
 /// Field-level extraction is deferred until a consumer (detail-map
 /// shader, lightmap renderer) materializes to validate the wire
 /// layout against real geometry — per the no-guessing policy on
-/// schema-ambiguous fields. See audit N2-01 / #336.
+/// schema-ambiguous fields. See audit N2-01 / #336 / #2578.
 #[allow(dead_code)]
 const VF_UVS_2: u16 = 0x004;
 const VF_NORMALS: u16 = 0x008;
@@ -227,12 +239,15 @@ const VF_SKINNED: u16 = 0x040;
 /// meshes). `Landscape Data Offset` in BSVertexDesc (bits 32..36)
 /// locates the field inside each vertex. Same story as `VF_UVS_2`:
 /// nif.xml's `BSVertexData` struct does not enumerate a landscape
-/// field, so community tooling treats the bytes as opaque.
-/// Consumer-side decoding lives with the FO4 terrain wiring (ROADMAP
-/// M40 worldspace streaming / FO4 cell loader); until then the
+/// field, so community tooling treats the bytes as opaque, and this
+/// parser ASSUMES (unverified — see `VF_UVS_2` above) that the
 /// trailing skip at the end of the per-vertex loop absorbs the
-/// reserved bytes and no parse corruption occurs. See audit N2-01 /
-/// #336.
+/// reserved bytes rather than them sitting mid-vertex. Consumer-side
+/// decoding lives with the FO4 terrain wiring (ROADMAP M40 worldspace
+/// streaming / FO4 cell loader); [`check_vertex_desc_offsets`] covers
+/// this bit too, so a disagreement between the walk and
+/// `BSVertexDesc`'s own offsets surfaces as a `log::warn!` instead of
+/// silent misalignment. See audit N2-01 / #336 / #2578.
 #[allow(dead_code)]
 const VF_LAND_DATA: u16 = 0x080;
 const VF_EYE_DATA: u16 = 0x100;
@@ -297,6 +312,95 @@ fn min_vertex_bytes(vertex_attrs: u16, full_precision: bool, is_skinned: bool) -
         n += 4;
     }
     n
+}
+
+/// Pure half of [`check_vertex_desc_offsets`]: computes the byte offsets
+/// [`decode_bs_vertex_stream`]'s fixed field-order walk assumes for each
+/// decoded attribute and compares them against the offset nibbles
+/// `BSVertexDesc` itself publishes (nif.xml `BSVertexDesc`: `UV1 Offset`
+/// pos 8, `Normal Offset` pos 16, `Tangent Offset` pos 20, `Color
+/// Offset` pos 24, `Skinning Data Offset` pos 28, `Eye Data Offset` pos
+/// 36 — each a byte offset in 4-byte units, the same convention
+/// `vertex_size_quads` already trusts for the pos-0 `Vertex Data Size`
+/// nibble in the same bitfield). Returns `(field name, declared byte
+/// offset, assumed byte offset)` for every disagreement; empty when the
+/// walk's assumption and the descriptor's own table agree.
+///
+/// The walk never reads `UV2 Offset` (pos 12) or `Landscape Data
+/// Offset` (pos 32) — see the `VF_UVS_2` / `VF_LAND_DATA` doc comments
+/// above — so every attribute decoded after one of those bits is set
+/// only lands where this function expects if the undecoded bytes are
+/// trailing rather than mid-vertex. Split from the `log::warn!`-firing
+/// wrapper so the arithmetic is unit-testable without a logger harness.
+/// See #2578 / SK-D1-03.
+fn vertex_desc_offset_mismatches(
+    vertex_desc: u64,
+    vertex_attrs: u16,
+    full_precision: bool,
+    is_skinned: bool,
+) -> Vec<(&'static str, usize, usize)> {
+    let declared_offset = |pos: u32| ((vertex_desc >> pos) & 0xF) as usize * 4;
+    let mut mismatches = Vec::new();
+    let mut check = |name: &'static str, pos: u32, assumed: usize| {
+        let declared = declared_offset(pos);
+        if declared != assumed {
+            mismatches.push((name, declared, assumed));
+        }
+    };
+
+    let mut cursor = 0usize;
+    if vertex_attrs & VF_VERTEX != 0 {
+        cursor += if full_precision { 16 } else { 8 };
+    }
+    if vertex_attrs & VF_UVS != 0 {
+        check("UV1", 8, cursor);
+        cursor += 4;
+    }
+    if vertex_attrs & VF_NORMALS != 0 {
+        check("Normal", 16, cursor);
+        cursor += 4;
+    }
+    if vertex_attrs & VF_TANGENTS != 0 && vertex_attrs & VF_NORMALS != 0 {
+        check("Tangent", 20, cursor);
+        cursor += 4;
+    }
+    if vertex_attrs & VF_VERTEX_COLORS != 0 {
+        check("Color", 24, cursor);
+        cursor += 4;
+    }
+    if is_skinned {
+        check("Skinning Data", 28, cursor);
+        cursor += 12;
+    }
+    if vertex_attrs & VF_EYE_DATA != 0 {
+        check("Eye Data", 36, cursor);
+    }
+    mismatches
+}
+
+/// Cross-checks [`decode_bs_vertex_stream`]'s fixed field-order walk
+/// against `BSVertexDesc`'s own offset nibbles via
+/// [`vertex_desc_offset_mismatches`] and `log::warn!`s on every
+/// disagreement. This is diagnostic only — it changes no parse
+/// behavior, just makes a disagreement visible instead of silent.
+/// Called once per shape (not per vertex), so the cost is negligible.
+/// See #2578 / SK-D1-03.
+pub(crate) fn check_vertex_desc_offsets(
+    vertex_desc: u64,
+    vertex_attrs: u16,
+    full_precision: bool,
+    is_skinned: bool,
+) {
+    for (name, declared, assumed) in
+        vertex_desc_offset_mismatches(vertex_desc, vertex_attrs, full_precision, is_skinned)
+    {
+        log::warn!(
+            "BSTriShape vertex_desc offset drift: {name} Offset nibble declares byte {declared} \
+             but the fixed field-order walk assumes byte {assumed} (vertex_attrs={vertex_attrs:#05x}) \
+             — an undecoded attribute (VF_UVS_2 / VF_LAND_DATA) may sit earlier in the vertex than \
+             assumed. See #2578.",
+        );
+    }
 }
 
 impl BsTriShape {
@@ -378,6 +482,8 @@ impl BsTriShape {
         let is_skinned = vertex_attrs & VF_SKINNED != 0;
         let full_precision = stream.bsver() < crate::version::bsver::FALLOUT4
             || vertex_attrs & VF_FULL_PRECISION != 0;
+        // #2578 — diagnostic-only; see `check_vertex_desc_offsets` doc comment.
+        check_vertex_desc_offsets(vertex_desc, vertex_attrs, full_precision, is_skinned);
         let mut vertex_size_bytes = vertex_size_quads * 4;
         // #836 / SK-D5-NEW-02: gate the warning on `num_vertices != 0`
         // too. SSE skinned bodies legitimately ship `num_vertices == 0`
@@ -1218,3 +1324,7 @@ mod skin_vertex_tests;
 #[cfg(test)]
 #[path = "../tri_shape_bsvertex_flag_constant_tests.rs"]
 mod bsvertex_flag_constant_tests;
+
+#[cfg(test)]
+#[path = "../tri_shape_vertex_desc_offset_tests.rs"]
+mod vertex_desc_offset_tests;

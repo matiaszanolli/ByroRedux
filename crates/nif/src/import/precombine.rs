@@ -17,7 +17,7 @@
 
 use crate::blocks::extra_data::{BsPackedCombinedGeomDataExtra, BsPackedCombinedPayload};
 use crate::blocks::traits::HasObjectNET;
-use crate::blocks::tri_shape::{decode_bs_vertex_stream, BsTriShape};
+use crate::blocks::tri_shape::{check_vertex_desc_offsets, decode_bs_vertex_stream, BsTriShape};
 use crate::header::NifHeader;
 use crate::import::{ImportedMaterial, ImportedMesh};
 use crate::scene::NifScene;
@@ -121,6 +121,11 @@ pub fn decode_shared_geom_object(
 ) -> io::Result<PrecombineGeometry> {
     let attrs = ((vertex_desc >> 44) & 0xFFF) as u16;
     let stride = psg_vertex_stride(vertex_desc);
+    // #2578 — diagnostic-only; see `check_vertex_desc_offsets` doc comment.
+    // Matches the `full_precision = false` / `is_skinned = false` forced
+    // below: CSG positions are always half4 on disk (see `psg_vertex_stride`)
+    // and precombines are never skinned.
+    check_vertex_desc_offsets(vertex_desc, attrs, /* full_precision = */ false, /* is_skinned = */ false);
 
     // Detached FO4 version context — only satisfies NifStream's
     // constructor. The decode never consults bsver here: full_precision

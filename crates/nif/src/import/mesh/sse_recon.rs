@@ -6,7 +6,7 @@
 use crate::blocks::skin::{
     BsDismemberSkinInstance, NiSkinInstance, NiSkinPartition, SseSkinGlobalBuffer,
 };
-use crate::blocks::tri_shape::{BsTriShape, BsTriShapeKind};
+use crate::blocks::tri_shape::{check_vertex_desc_offsets, BsTriShape, BsTriShapeKind};
 use crate::scene::NifScene;
 use crate::types::NiPoint3;
 
@@ -264,6 +264,14 @@ fn decode_sse_packed_buffer_with_external_positions(
     if !has_packed_positions && external_positions.is_none() {
         return None;
     }
+    // #2578 — diagnostic-only; see `check_vertex_desc_offsets` doc comment.
+    // This path is SSE-only (pre-FO4), which is always full-precision.
+    check_vertex_desc_offsets(
+        buffer.vertex_desc,
+        vertex_attrs,
+        /* full_precision = */ true,
+        vertex_attrs & VF_SKINNED != 0,
+    );
     if external_positions.is_some_and(|positions| positions.len() != num_vertices)
         || external_bitangent_x.is_some_and(|values| values.len() != num_vertices)
     {

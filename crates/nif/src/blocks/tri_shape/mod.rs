@@ -56,6 +56,13 @@ pub(crate) use ni_tri_shape::{parse_geometry_data_base, parse_psys_geometry_data
 // only the function needs naming here.
 pub(crate) use bs_tri_shape::decode_bs_vertex_stream;
 
+// Diagnostic-only `BSVertexDesc` offset-nibble cross-check (#2578),
+// reused by the same two sequential-walk sites as the decoder above
+// plus the SSE skinned-reconstruction path (`crate::import::mesh::sse_recon`),
+// which duplicates the walk inline rather than calling
+// `decode_bs_vertex_stream`.
+pub(crate) use bs_tri_shape::check_vertex_desc_offsets;
+
 // --- Shared low-level helpers ---
 
 /// Renormalize a 4-influence weight tuple to unit sum so half-float
