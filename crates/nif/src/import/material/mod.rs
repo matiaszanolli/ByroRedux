@@ -429,10 +429,14 @@ pub(super) struct MaterialInfo {
     pub decal_maps: [Option<FixedString>; 4],
     /// Parallax / height texture (`BSShaderTextureSet` slot 3). FO3/FNV
     /// architecture relies on this for brick-wall / concrete
-    /// parallax-occlusion mapping on `shader_type = 3` (Parallax_Shader_Index_15)
-    /// and `shader_type = 7` (Parallax_Occlusion) PPLighting materials.
-    /// Pre-#452 the importer stopped reading at slot 2, so every Pitt /
-    /// Point Lookout / Hoover Dam parallax wall landed flat. See #452.
+    /// parallax-occlusion mapping, gated on `BSShaderFlags` bit 11
+    /// (`Parallax_Shader_Index_15`) or bit 28 (`Parallax_Occulsion`) —
+    /// see [`Self::legacy_shader_type`] for the *separate* FO3
+    /// `BSShaderType` enum this doc previously conflated these flag
+    /// bits with (#2320: the numbers "3"/"7" here were never a real
+    /// `shader_type` value on either enum). Pre-#452 the importer
+    /// stopped reading at slot 2, so every Pitt / Point Lookout / Hoover
+    /// Dam parallax wall landed flat. See #452 / #2317.
     pub parallax_map: Option<FixedString>,
     /// Environment cubemap (`BSShaderTextureSet` slot 4). Drives the
     /// glass bottle / power-armor / smooth-metal reflection branch.
@@ -455,6 +459,22 @@ pub(super) struct MaterialInfo {
     /// resolve an `XTXR` slot the same way the mesh's own texture set was.
     /// `0` (Default) when no dedicated BSLightingShaderProperty was seen.
     pub shader_type: u32,
+    /// FO3/FNV `BSShaderProperty.shader_type` — nif.xml's `BSShaderType`
+    /// enum (`SHADER_TALL_GRASS`=0, `SHADER_DEFAULT`=1, `SHADER_SKY`=10,
+    /// `SHADER_SKIN`=14, `SHADER_UNKNOWN`=15, `SHADER_WATER`=17,
+    /// `SHADER_LIGHTING30`=29, `SHADER_TILE`=32, `SHADER_NOLIGHTING`=33).
+    /// A DIFFERENT enum from [`Self::shader_type`] above — Skyrim's
+    /// `BSLightingShaderType` — despite several numeric values
+    /// overlapping (FO3's `SHADER_SKIN`=14 vs Skyrim's own type 14, for
+    /// instance); the two must never be aliased onto one field. `None`
+    /// when no `BSShaderPPLightingProperty` / `BSShaderNoLightingProperty`
+    /// was seen (Skyrim+ content, or a mesh with no legacy shader
+    /// property at all) — distinct from `Some(0)`
+    /// (`SHADER_TALL_GRASS`, a real authored value). Captured but not
+    /// yet consumed by any renderer dispatch; #2320 closes the parser-
+    /// side drop, a future skin-SSS/sky-fullbright/water-dispatch branch
+    /// is the consumer.
+    pub legacy_shader_type: Option<u32>,
     /// Game-specific texture-slot vocabulary used for this material.
     pub texture_slot_layout: TextureSlotLayout,
     /// Whether slot 2 is explicitly enabled as a glow map. Skyrim multiplexes
@@ -1064,6 +1084,7 @@ impl Default for MaterialInfo {
             env_mask: None,
             greyscale_lut_map: None,
             shader_type: 0,
+            legacy_shader_type: None,
             texture_slot_layout: TextureSlotLayout::default(),
             slot2_glow_enabled: false,
             tint_map: None,

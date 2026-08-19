@@ -299,6 +299,11 @@ fn apply_pp_lighting_property(
         // the specular-authorship post-pass can tell a vestigial black
         // `NiMaterialProperty.specular` from an authored one.
         info.has_legacy_bs_shader = true;
+        // #2320 — the FO3 BSShaderType enum (SHADER_SKIN/WATER/SKY/etc.),
+        // parsed off the wire since `blocks/base.rs` but never read by any
+        // importer arm before this. See `MaterialInfo::legacy_shader_type`
+        // for why this is its own field, not `Self::shader_type`.
+        info.legacy_shader_type = Some(shader.shader.shader_type);
         // FO3-D1-02 / #2317 — computed once, shared by the slot-3 texture
         // bind below and the scalar-write gate further down.
         let parallax_authored = fo3_parallax_authored(shader.shader_flags_1());
@@ -472,6 +477,10 @@ fn apply_no_lighting_property(
     if let Some(shader) = scene.get_as::<BSShaderNoLightingProperty>(idx) {
         // #2553 — see the sibling assignment in `apply_pp_lighting_property`.
         info.has_legacy_bs_shader = true;
+        // #2320 — see the sibling assignment in `apply_pp_lighting_property`.
+        // Typically SHADER_NOLIGHTING (33) here, but capture whatever was
+        // actually authored rather than assuming it.
+        info.legacy_shader_type = Some(shader.shader.shader_type);
         if info.texture_path.is_none() {
             info.texture_path = intern_texture_path(pool, &shader.file_name);
         }

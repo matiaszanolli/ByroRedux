@@ -247,6 +247,70 @@ fn pp_lighting_without_environment_mapping_flag_ignores_default_scale() {
     );
 }
 
+/// #2320 — `BSShaderPPLightingProperty.shader.shader_type` (nif.xml's FO3
+/// `BSShaderType` enum) must be captured into `MaterialInfo::legacy_shader_type`,
+/// a field distinct from `MaterialInfo::shader_type` (Skyrim's
+/// `BSLightingShaderType`). Pre-fix no importer arm read this field at
+/// all, so every FO3 SHADER_SKIN/SHADER_WATER/SHADER_SKY material was
+/// indistinguishable from generic lit Default.
+#[test]
+fn pp_lighting_captures_fo3_shader_type_into_the_legacy_field_not_material_kind() {
+    use crate::blocks::base::BSShaderPropertyData;
+
+    // SHADER_SKIN = 14 per nif.xml BSShaderType — deliberately the SAME
+    // numeric value Skyrim's BSLightingShaderType also happens to use for
+    // a different shader kind, to prove the two fields don't collide.
+    let shader = BSShaderPPLightingProperty {
+        net: empty_net(),
+        shader: BSShaderPropertyData {
+            shade_flags: 0,
+            shader_type: 14, // SHADER_SKIN
+            shader_flags_1: 0,
+            shader_flags_2: 0,
+            env_map_scale: 1.0,
+        },
+        texture_clamp_mode: 0,
+        texture_set_ref: BlockRef::NULL,
+        refraction_strength: 0.0,
+        refraction_fire_period: 0,
+        parallax_max_passes: 4.0,
+        parallax_scale: 1.0,
+        emissive_color: [0.0, 0.0, 0.0, 1.0],
+    };
+    let blocks: Vec<Box<dyn NiObject>> = vec![Box::new(shader)];
+    let scene = NifScene {
+        blocks,
+        ..NifScene::default()
+    };
+    let shape = make_tri_shape_with_props(vec![BlockRef(0)]);
+    let (info, _pool) = extract_with_pool(&scene, &shape, &[]);
+
+    assert_eq!(
+        info.legacy_shader_type,
+        Some(14),
+        "FO3 SHADER_SKIN must reach legacy_shader_type"
+    );
+    assert_eq!(
+        info.shader_type, 0,
+        "the FO3 legacy shader_type must NOT be aliased onto material_kind's \
+         Skyrim-enum-range field — this must stay the unset default"
+    );
+}
+
+/// A mesh with no legacy shader property at all (Skyrim+ content, or a
+/// bare NiTriShape) must leave `legacy_shader_type` at `None` — distinct
+/// from `Some(0)` (`SHADER_TALL_GRASS`, a real authored value).
+#[test]
+fn legacy_shader_type_is_none_without_a_legacy_shader_property() {
+    let scene = NifScene {
+        blocks: Vec::new(),
+        ..NifScene::default()
+    };
+    let shape = make_tri_shape_with_props(Vec::new());
+    let (info, _pool) = extract_with_pool(&scene, &shape, &[]);
+    assert_eq!(info.legacy_shader_type, None);
+}
+
 #[test]
 fn pp_lighting_with_only_3_slots_leaves_parallax_and_env_none() {
     // Old-style texture set with just base/normal/glow — parallax
