@@ -64,6 +64,41 @@ struct Stats {
     decompiled_err: usize,
     decompiled_panic: usize,
     decompile_failures: Vec<(String, String)>,
+    // #3017 — a decompile that returns `Ok` with a wrong-shaped tree
+    // previously scored identically to a correct one (`decompiled_ok`
+    // just counts `Ok(Ok(_))`, throwing the `Script` away unread). This
+    // tracks decompiles whose top-level item count doesn't match what
+    // `decompile_script`'s own documented item-production rule predicts
+    // from the source `Pex` object — a real, if coarse, shape check.
+    decompiled_shape_mismatch: usize,
+    shape_mismatch_examples: Vec<(String, String)>,
+}
+
+/// The exact number of top-level [`byroredux_papyrus::ast::ScriptItem`]s
+/// `decompile_script` produces for `object`, derived from its own
+/// documented rule (`decompile/lower.rs::decompile_script`): one item per
+/// non-synthetic (`::`-prefixed are dropped) variable, one per property,
+/// one per function in the auto/default state, and one per NAMED state
+/// (bundling that whole state's functions into a single `State` item,
+/// however many functions it holds). A `Script.body.len()` that disagrees
+/// with this count — while `decompile_script` still returned `Ok` — means
+/// the tree shape drifted from what the source actually authored, exactly
+/// the "wrong AST scores as a success" gap #3017 filed.
+fn expected_top_level_item_count(object: &byroredux_pex::Object) -> usize {
+    let non_synthetic_vars = object
+        .variables
+        .iter()
+        .filter(|v| !v.name.starts_with("::"))
+        .count();
+    let mut items = non_synthetic_vars + object.properties.len();
+    for state in &object.states {
+        if state.name == object.auto_state_name {
+            items += state.functions.len();
+        } else {
+            items += 1;
+        }
+    }
+    items
 }
 
 fn type_name(t: ScriptType) -> &'static str {
@@ -142,7 +177,30 @@ fn main() {
                     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         decompile_script(&pex)
                     })) {
-                        Ok(Ok(_)) => stats.decompiled_ok += 1,
+                        Ok(Ok(script)) => {
+                            stats.decompiled_ok += 1;
+                            // #3017 — inspect the returned Script instead
+                            // of discarding it: a decompile that "succeeds"
+                            // but produces the wrong number of top-level
+                            // items (a dropped function, a state collapsed
+                            // into nothing, …) must not score identically
+                            // to a correct one.
+                            if let Some(object) = pex.main_object() {
+                                let expected = expected_top_level_item_count(object);
+                                if script.body.len() != expected {
+                                    stats.decompiled_shape_mismatch += 1;
+                                    if stats.shape_mismatch_examples.len() < 25 {
+                                        stats.shape_mismatch_examples.push((
+                                            f.clone(),
+                                            format!(
+                                                "expected {expected} top-level items, got {}",
+                                                script.body.len()
+                                            ),
+                                        ));
+                                    }
+                                }
+                            }
+                        }
                         Ok(Err(e)) => {
                             stats.decompiled_err += 1;
                             if stats.decompile_failures.len() < 25 {
@@ -219,6 +277,15 @@ fn main() {
             );
             for (name, err) in &stats.decompile_failures {
                 println!("  {name}: {err}");
+            }
+        }
+        if stats.decompiled_shape_mismatch > 0 {
+            println!(
+                "\ndecompile shape mismatches (Ok but wrong top-level item count): {}",
+                stats.decompiled_shape_mismatch
+            );
+            for (name, detail) in &stats.shape_mismatch_examples {
+                println!("  {name}: {detail}");
             }
         }
     }

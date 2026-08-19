@@ -307,6 +307,90 @@ mod tests {
         assert_eq!(call.var_args, vec![Value::Bool(true)]);
     }
 
+    /// #3017 — the default `cargo test` run had ZERO coverage of the
+    /// decompiler producing the right tree: the one non-`#[ignore]`d
+    /// fidelity test (`r5_fidelity.rs`'s `recognizes_da10_and_
+    /// reproduces_hand_builder`) never calls `decompile_script` at all,
+    /// and every test that does is `#[ignore]`d on the Skyrim SE game
+    /// archive. This is that checked-in fixture: it reuses
+    /// `build_sample()` (already a working, hand-built `.pex` with real
+    /// bytecode — an `iadd` producing a dead temp, then a `callmethod`
+    /// with one vararg whose own result is equally dead) and decompiles
+    /// it end to end, asserting the exact `Script` AST shape by pattern
+    /// match — a wrong tree from a broken lowering pass fails this, not
+    /// just a `parse()` that merely succeeds.
+    #[test]
+    fn decompiles_the_handbuilt_fo4_pex_to_the_expected_ast() {
+        use byroredux_papyrus::ast::{
+            BinaryOp, CallArg, Expr, ScriptItem, Stmt, Type as PapyrusType,
+        };
+
+        let bytes = build_sample();
+        let pex = parse(&bytes).expect("sample .pex parses");
+        let script = decompile::decompile_script(&pex).expect("decompiles");
+
+        assert_eq!(script.name.node.0, "Foo");
+        assert_eq!(
+            script.parent.as_ref().map(|p| p.node.0.as_str()),
+            Some("ObjectReference")
+        );
+        assert_eq!(script.body.len(), 2, "one property item + one event item");
+
+        // The auto property survives untouched — no bytecode to get wrong.
+        let ScriptItem::Property(prop) = &script.body[0].node else {
+            panic!("body[0] must be the MyProp property, got {:?}", script.body[0].node);
+        };
+        assert_eq!(prop.name.node.0, "MyProp");
+        assert!(matches!(prop.ty.node, PapyrusType::Int));
+
+        // The OnActivate event is where the two-instruction bytecode
+        // stream (iadd + callmethod-with-vararg) must lower correctly.
+        let ScriptItem::Event(ev) = &script.body[1].node else {
+            panic!("body[1] must be the OnActivate event, got {:?}", script.body[1].node);
+        };
+        assert_eq!(ev.name.node.0, "OnActivate");
+        assert_eq!(ev.params.len(), 1);
+        assert_eq!(ev.params[0].name.node.0, "akActivator");
+        assert_eq!(
+            ev.body.len(),
+            2,
+            "the ::temp0 destination is a synthetic dead temp on both \
+             instructions — dropped, not lowered into two assignment \
+             statements plus a third dead-var declaration"
+        );
+
+        // (1) `iadd ::temp0, 1, 2` — the dead ::temp0 destination is
+        // dropped; what survives is the bare `1 + 2` expression.
+        let Stmt::ExprStmt(e) = &ev.body[0].node else {
+            panic!("ev.body[0] must be an ExprStmt, got {:?}", ev.body[0].node);
+        };
+        let Expr::BinaryOp { left, op, right } = &e.node else {
+            panic!("iadd must lower to a BinaryOp, got {:?}", e.node);
+        };
+        assert!(matches!(left.node, Expr::IntLit(1)));
+        assert_eq!(*op, BinaryOp::Add);
+        assert!(matches!(right.node, Expr::IntLit(2)));
+
+        // (2) `callmethod Bar, Self, ::temp0, [true]` — the dead
+        // ::temp0 result destination is dropped; what survives is the
+        // call itself as an expression statement, `Self.Bar(true)`.
+        let Stmt::ExprStmt(e) = &ev.body[1].node else {
+            panic!("ev.body[1] must be an ExprStmt, got {:?}", ev.body[1].node);
+        };
+        let Expr::Call { callee, args } = &e.node else {
+            panic!("callmethod must lower to a Call, got {:?}", e.node);
+        };
+        let Expr::MemberAccess { object, member } = &callee.node else {
+            panic!("callee must be a MemberAccess (Self.Bar), got {:?}", callee.node);
+        };
+        assert!(matches!(&object.node, Expr::Ident(id) if id.0 == "Self"));
+        assert_eq!(member.node.0, "Bar");
+        assert_eq!(args.len(), 1);
+        let CallArg { name, value } = &args[0];
+        assert!(name.is_none(), "the vararg has no named-argument label");
+        assert!(matches!(value.node, Expr::BoolLit(true)));
+    }
+
     /// #1728 / SCR-D1-02 — build a one-object Skyrim `.pex`: big-endian
     /// magic + all multi-byte fields BE, and the original-Skyrim object
     /// layout (no const-flag byte, no struct infos, no guards — those are
