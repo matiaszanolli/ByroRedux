@@ -91,7 +91,7 @@ base + tag it's the **complete player skill model** for FO3/FNV.
 | Stat | Gov | FO3 formula | FNV formula | Status |
 |---|---|---|---|---|
 | Health | END + level | `90 + END·20 + Level·10` | `100 + END·20 + (Level−1)·5` | **BUILT** (player ruleset + NPC auto-calc seed) |
-| Action Points | AGI | `65 + 2·AGI` (cap 85) | `65 + 3·AGI` (cap 95) | **LOCKED** |
+| Action Points | AGI | `65 + 2·AGI` (cap 85) | `65 + 3·AGI` (cap 95) | **LOCKED** (formula only — NPC scope unsourced, #2937; code conservatively treats it player-only) |
 | Carry Weight | STR | `150 + 10·STR` | `150 + 10·STR` | **LOCKED** (actor-general) |
 | Critical Chance | Luck | `Luck × 1%` (cap 10%) | `Luck × 1%` (Luck>10 inert) | **LOCKED** (`critchance` AV) |
 | Melee Damage | STR | `STR × 0.5` | `STR × 0.5` | **LOCKED** (additive bonus) |
@@ -299,6 +299,17 @@ Action Points: `65 + 2·AGI` (FO3, cap 85) / `65 + 3·AGI` (FNV, cap 95) — sam
 `fAVDActionPoints{Base,Mult}` GMST family as FO4 (`60 + 10·AGI`) and FO76
 (`105 + 10·AGI`); base 65, AGI mult 2→3→10 across the line. Source: fandom *Action
 Points*.
+>
+> **#2937 — NPC scope not sourced here.** This page confirms the FO3/FNV *formula*
+> only. Unlike Carry Weight above ("actor-general (NPCs/companions too)"), nothing
+> cited for Action Points states whether FO3/FNV NPCs derive AP the same way the
+> player does, derive it differently, or ship a baked value (the way FO4 NPCs read
+> `DNAM`, which *is* sourced — but that evidence is FO4-specific). `fallout.rs`
+> currently flags FO3/FNV AP `player_only` as the conservative choice (an absent AV
+> reads `0.0`, never an over-computed NPC stat), not as a captured fact. Resolve by
+> finding a citation either way, or by re-deriving the `fAVD`-prefix-means-any-actor
+> argument from Carry Weight's own citation with actual NPC AP evidence, then update
+> both this row and the code together.
 
 ✅ **The FNV / FO3 derived table is complete** — all six stats locked (Health, Action
 Points, Carry Weight, Critical Chance, Melee Damage, Unarmed Damage). Together with the

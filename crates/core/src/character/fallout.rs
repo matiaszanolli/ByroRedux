@@ -12,7 +12,13 @@
 //! (resolved per load). Health / Action Points are flagged
 //! [`player_only`](DerivedStatFormula::player_only) — NPCs ship baked values
 //! or derive them differently; Carry Weight / Melee Damage / Critical Chance
-//! / Unarmed Damage are actor-general.
+//! / Unarmed Damage are actor-general. That justification is sourced for
+//! Health (every game) and for FO4/FO76 Action Points (NPCs there read a
+//! baked `DNAM` value) — but **not** for FO3/FNV Action Points, which is
+//! `player_only` as a conservative, unsourced choice (#2937): the capture
+//! document locks the FO3/FNV AP *formula* but never states its scope, and
+//! FO4's "NPCs ship baked values" evidence is FO4-specific. See
+//! [`fallout3_ruleset`]'s AP row for the reasoning.
 //!
 //! FO3/FNV attach both the [`AttributeSet::FALLOUT`] SPECIAL roster and their
 //! distinct [`SkillSet::FALLOUT3`] / [`SkillSet::FALLOUT_NV`] skill roster +
@@ -107,8 +113,9 @@ pub fn fallout4_ruleset<F: Fn(&str) -> Option<u32>>(resolve: F) -> CharacterRule
     rs
 }
 
-/// FO3 — Health `90 + 20·END + 10·L` (player), AP `65 + 2·AGI` cap 85
-/// (player), + the shared skill-based stats.
+/// FO3 — Health `90 + 20·END + 10·L` (player, sourced), AP `65 + 2·AGI` cap
+/// 85 (player — **scope unsourced**, see the `player_only()` call site),
+/// + the shared skill-based stats.
 pub fn fallout3_ruleset<F: Fn(&str) -> Option<u32>>(resolve: F) -> CharacterRuleset {
     let mut rs = CharacterRuleset::new(LevelingModel::FO3)
         .with_attributes(AttributeSet::FALLOUT)
@@ -124,6 +131,20 @@ pub fn fallout3_ruleset<F: Fn(&str) -> Option<u32>>(resolve: F) -> CharacterRule
             out,
             DerivedStatFormula::affine(av(a), 2.0, 65.0)
                 .capped(85.0)
+                // #2937 — `player_only()` here is UNSOURCED, unlike Health's
+                // above. `charal-fnv-fo3-ruleset.md`'s derived-stat table
+                // annotates scope on every other locked row (Health
+                // "(player)", Carry Weight "(actor-general)") but gives
+                // Action Points none; its prose only ties the formula to the
+                // `fAVDActionPoints{Base,Mult}` GMST family FO3/FNV share
+                // with FO4/FO76, never states NPC scope. FO4's own
+                // `player_only()` above IS sourced (NPCs there read a baked
+                // `DNAM` AP value) — that evidence is FO4-specific and does
+                // not carry over. Kept player_only as the conservative
+                // choice (an absent AV reads 0.0, so this never
+                // over-computes an NPC's AP) rather than guessing
+                // ActorGeneral off the `fAVD`-prefix heuristic with no
+                // citation backing it for these two games specifically.
                 .player_only(),
         );
     }
@@ -131,8 +152,9 @@ pub fn fallout3_ruleset<F: Fn(&str) -> Option<u32>>(resolve: F) -> CharacterRule
     rs
 }
 
-/// FNV — Health `95 + 20·END + 5·L` (player), AP `65 + 3·AGI` cap 95
-/// (player), + the shared skill-based stats.
+/// FNV — Health `95 + 20·END + 5·L` (player, sourced), AP `65 + 3·AGI` cap
+/// 95 (player — **scope unsourced**, see [`fallout3_ruleset`]'s AP row for
+/// why), + the shared skill-based stats.
 pub fn falloutnv_ruleset<F: Fn(&str) -> Option<u32>>(resolve: F) -> CharacterRuleset {
     let mut rs = CharacterRuleset::new(LevelingModel::FNV)
         .with_attributes(AttributeSet::FALLOUT)
@@ -148,6 +170,8 @@ pub fn falloutnv_ruleset<F: Fn(&str) -> Option<u32>>(resolve: F) -> CharacterRul
             out,
             DerivedStatFormula::affine(av(a), 3.0, 65.0)
                 .capped(95.0)
+                // #2937 — see fallout3_ruleset's AP row: scope unsourced,
+                // chosen conservatively.
                 .player_only(),
         );
     }
@@ -207,6 +231,26 @@ mod tests {
         assert_eq!(
             rs.derived_formula(0x2D1).unwrap().scope,
             DerivedScope::ActorGeneral
+        );
+    }
+
+    /// #2937 — FO3/FNV Action Points is `player_only` as a deliberate but
+    /// UNsourced conservative choice (see `fallout3_ruleset`'s AP row and
+    /// the module docs), unlike Health's player-only scope, which the
+    /// capture document does state. Pin the current, chosen behavior so a
+    /// future edit that silently flips it to `ActorGeneral` (or the reverse
+    /// on FO4/FO76) is a deliberate, reviewed change, not an accident.
+    #[test]
+    fn fo3_fnv_action_points_scope_is_player_only_pending_a_source() {
+        let fo3 = fallout3_ruleset(full);
+        let fnv = falloutnv_ruleset(full);
+        assert_eq!(
+            fo3.derived_formula(0x2D0).unwrap().scope,
+            DerivedScope::PlayerOnly
+        );
+        assert_eq!(
+            fnv.derived_formula(0x2D0).unwrap().scope,
+            DerivedScope::PlayerOnly
         );
     }
 
