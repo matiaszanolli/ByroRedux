@@ -214,7 +214,10 @@ pub mod fo4_slsf1 {
 ///   FO3/FNV F2: `Alpha_Decal` — **three different semantics on the
 ///   same bit across games**)
 /// - Bit 24 is `Multi_Layer_Parallax` on FO4
-/// - Bit 25 is `Alpha_Test` on FO4 (Skyrim has Alpha_Test on SLSF1!)
+/// - Bit 25 is `Alpha_Test` on FO4. Skyrim has no `Alpha_Test` bit on
+///   either SLSF1 (bit 25 there is `Remappable_Textures`) or SLSF2 (bit 25
+///   there is `Soft_Lighting`) — it routes alpha-test via `NiAlphaProperty`
+///   on a sibling block instead, per `fo4_slsf2::ALPHA_TEST`'s doc below.
 ///
 /// Sourced from nif.xml `Fallout4ShaderPropertyFlags2`
 /// (lines 6479-6513). See #414 / FO4-D3-M1.
