@@ -36,6 +36,12 @@
 //! Per-game **population** lives at the parser boundary (FO4 `PRPS`/`DNAM`,
 //! FNV/FO3 class auto-calc) in `byroredux_plugin`; this crate holds the
 //! game-agnostic canonical types those boundaries feed.
+//!
+//! See also [`crate::combat`] and [`crate::stealth`] — CHARAL-*adjacent*
+//! siblings (not submodules of this module) that read `ActorValues` as
+//! inputs but evaluate at combat/stealth-resolution time against transient
+//! per-hit state that never lives in `ActorValues`. `/audit-character`
+//! covers their constants under Dimension 2 (CHAR-D6-05, #2962).
 
 pub mod affliction;
 pub mod attribute;
@@ -86,3 +92,24 @@ pub use tes::{
     oblivion_health_gain_per_level, oblivion_magicka_formula, oblivion_pool_regen_config,
     oblivion_ruleset,
 };
+
+#[cfg(test)]
+mod tests {
+    /// Regression for CHAR-D6-05 / #2962. `combat.rs` and `stealth.rs` held
+    /// CHARAL-sourced constants outside every audit skill's declared scope —
+    /// this docstring's "see also" pointer is one of the fixes that closed
+    /// that blind spot. Source-inspection check (same pattern as
+    /// `character::regen`'s doc-drift regressions) so a future edit can't
+    /// silently drop the pointer.
+    #[test]
+    fn mod_docstring_points_at_the_charal_adjacent_siblings() {
+        let src = include_str!("mod.rs");
+        assert!(
+            src.contains("crate::combat") && src.contains("crate::stealth"),
+            "character::mod's docstring must keep pointing at crate::combat \
+             and crate::stealth as CHARAL-adjacent siblings (#2962) — without \
+             it neither module is discoverable from the layer's own entry \
+             point"
+        );
+    }
+}

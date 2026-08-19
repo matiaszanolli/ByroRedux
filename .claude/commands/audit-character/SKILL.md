@@ -51,6 +51,18 @@ those here.
   `crates/core/src/ecs/components/perk_list.rs`,
   `crates/core/src/ecs/components/faction_ranks.rs`.
 
+**CHARAL-adjacent siblings** (in scope, but NOT submodules of
+`crates/core/src/character/` — CHAR-D6-05 / #2962): `crates/core/src/combat.rs`
+(classic Oblivion combat-damage math — `modified_skill`,
+`oblivion_weapon_damage_multiplier`, `oblivion_hand_to_hand_damage`) and
+`crates/core/src/stealth.rs` (FO3/FNV sneak-detection — `detection_score`,
+`classify`). Both read `ActorValues` as inputs but evaluate at
+combat/stealth-resolution time against transient per-hit state that never
+lives in `ActorValues` — each module's own docstring explains the boundary
+and cites `charal.md` §7. They previously sat outside every audit skill's
+declared scope entirely; Dimension 2 now covers their constants explicitly
+(see below).
+
 **Population boundary** (Dimension 5 — outside the crate):
 `byroredux/src/npc_spawn.rs` (`build_character_ruleset` — the ONLY construction
 site) and the parse-side feed `crates/plugin/src/esm/records/actor_value_derive.rs`
@@ -168,6 +180,18 @@ site) and the parse-side feed `crates/plugin/src/esm/records/actor_value_derive.
   tagging is correct so the deferral stays contained to player stats.
 - `eval` is documented as allocation-free and ~5 FMAs. Verify no branch on game
   identity crept in, and that `DerivedStatFormula` is still `Copy` + 32 B.
+- **CHARAL-adjacent siblings** (CHAR-D6-05 / #2962): verify
+  `crates/core/src/combat.rs`'s `modified_skill` (the `0.4` Luck coefficient),
+  `oblivion_weapon_damage_multiplier` (four coefficients), and
+  `oblivion_hand_to_hand_damage` (the Strength×Skill cross-term) against
+  `docs/engine/charal-oblivion-ruleset.md`'s "The Complete Damage Formula" /
+  "Melee weapon damage" sections, same discipline as any table in `fallout.rs`
+  / `tes.rs` / `skyrim.rs`. Verify `crates/core/src/stealth.rs`'s
+  `detection_score` / `classify` against `charal-fnv-fo3-ruleset.md`'s
+  "Sneak Detection (FNV)" section. These are consumer-less today (no combat/
+  stealth-resolution system reads them yet) — report drift as a normal
+  finding regardless; deferred consumption is not a reason to skip
+  verification.
 **Output**: `/tmp/audit/character/dim_2.md`
 
 ### Dimension 3: Leveling & Progression Models

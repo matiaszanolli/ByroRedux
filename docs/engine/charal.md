@@ -350,7 +350,13 @@ user-provided tables or cited research (§9).
 - **No new gameplay systems.** CHARAL produces canonical character *state*; it does
   not implement combat, dialogue, or the perk *effects* — those consume the state.
   ([[perk_entry_points]] is the perk-effect design; CHARAL just owns the `Perks`
-  component it reads.)
+  component it reads.) Two modules already exist ahead of that consumer as
+  reusable, tested pieces: `crates/core/src/combat.rs` (classic Oblivion
+  combat-damage math) and `crates/core/src/stealth.rs` (FO3/FNV sneak
+  detection). Both are **siblings of** `crates/core/src/character/`, not
+  submodules of it — they read `ActorValues` as inputs but evaluate against
+  transient per-hit state that never lives there — and both are in scope for
+  `/audit-character` Dimension 2 (CHAR-D6-05, #2962), not exempt from it.
 - **No player chargen yet.** There is still no stat-bearing player-actor entity
   (`scene.rs`'s `player_entity` is an `AnimationPlayer`) — see
   [[actor_value_population]]. CHARAL designs *where* player stats land (the same
