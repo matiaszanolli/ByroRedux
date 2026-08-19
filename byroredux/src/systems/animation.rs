@@ -151,92 +151,79 @@ pub(crate) fn apply_color_channels(
     time: f32,
     resolve_entity: &dyn Fn(&FixedString) -> Option<EntityId>,
 ) {
-    // Lazy-acquire each target's write guard on first use. Most clips
-    // carry only one or two color targets (an emissive pulse, maybe a
-    // diffuse tint) so we avoid locking all five sparse storages
-    // unconditionally.
-    let mut diffuse_q = None;
-    let mut ambient_q = None;
-    let mut specular_q = None;
-    let mut emissive_q = None;
-    let mut shader_q = None;
-    // #983 — NiLightColorController sink. The animated colour writes
-    // straight into `LightSource.emitter.radiant_intensity`; the light-buffer
-    // build then multiplies by `dimmer * intensity` to produce the
-    // final per-light radiance.
-    let mut light_q = None;
-
-    // Macro collapses the 5 near-identical match arms (lazy-init,
-    // get_mut, assign `.0`) into one line per target. `world`,
-    // `target`, and `value` are threaded through explicitly so the
-    // expansion is hygienic.
-    macro_rules! write_lazy {
-        ($cache:ident, $Comp:ty, $world:expr, $entity:expr, $value:expr) => {{
-            let q = $cache.get_or_insert_with(|| $world.query_mut::<$Comp>());
-            if let Some(q) = q.as_mut() {
-                if let Some(c) = q.get_mut($entity) {
-                    c.0 = $value;
+    // #2399 — CONC-D3-2026-08-07-01. The pre-fix version lazily acquired
+    // each target's write guard on *first encounter* while scanning
+    // `color_channels` in the order the NIF/KF clip authored them, and
+    // held every guard acquired so far until the whole loop finished.
+    // That makes the pairwise acquisition order across the five color
+    // sinks (+ `LightSource`) content-determined: a clip ordered
+    // `[Diffuse, Emissive]` acquires Diffuse-before-Emissive, a sibling
+    // clip ordered `[Emissive, Diffuse]` acquires the reverse — exactly
+    // the "authored order decides lock order" shape invariant #4 (see
+    // `animation_system_inner`'s NameIndex/Name comment) exists to rule
+    // out.
+    //
+    // Fixed instead: one pass per target, in a fixed declared order
+    // (matching the `Stage::Update` access-declaration order in
+    // `boot.rs`), each pass acquiring its guard, applying every channel
+    // that targets it, and dropping the guard before the next target's
+    // pass begins. No two guards are ever held at once, so the
+    // acquisition order the lock tracker observes is fixed at compile
+    // time regardless of clip content. The extra per-target scan over
+    // `color_channels` is negligible — clips carry one or two color
+    // targets in practice (an emissive pulse, maybe a diffuse tint).
+    macro_rules! apply_target {
+        ($Comp:ty, $target:pat, |$slot:ident, $value:ident| $write:expr) => {{
+            if color_channels
+                .iter()
+                .any(|(_, c)| matches!(c.target, $target))
+            {
+                if let Some(mut q) = world.query_mut::<$Comp>() {
+                    for (channel_name, channel) in color_channels {
+                        if !matches!(channel.target, $target) {
+                            continue;
+                        }
+                        let Some(target_entity) = resolve_entity(channel_name) else {
+                            continue;
+                        };
+                        let $value = sample_color_channel(channel, time);
+                        if let Some($slot) = q.get_mut(target_entity) {
+                            $write
+                        }
+                    }
                 }
             }
         }};
     }
 
-    for (channel_name, channel) in color_channels {
-        let Some(target_entity) = resolve_entity(channel_name) else {
-            continue;
-        };
-        let value = sample_color_channel(channel, time);
-        match channel.target {
-            ColorTarget::Diffuse => {
-                write_lazy!(diffuse_q, AnimatedDiffuseColor, world, target_entity, value)
-            }
-            ColorTarget::Ambient => {
-                write_lazy!(ambient_q, AnimatedAmbientColor, world, target_entity, value)
-            }
-            ColorTarget::Specular => write_lazy!(
-                specular_q,
-                AnimatedSpecularColor,
-                world,
-                target_entity,
-                value
-            ),
-            ColorTarget::Emissive => write_lazy!(
-                emissive_q,
-                AnimatedEmissiveColor,
-                world,
-                target_entity,
-                value
-            ),
-            ColorTarget::ShaderColor => {
-                write_lazy!(shader_q, AnimatedShaderColor, world, target_entity, value)
-            }
-            ColorTarget::LightDiffuse => {
-                let q = light_q
-                    .get_or_insert_with(|| world.query_mut::<byroredux_core::ecs::LightSource>());
-                if let Some(q) = q.as_mut() {
-                    if let Some(ls) = q.get_mut(target_entity) {
-                        ls.emitter.radiant_intensity =
-                            byroredux_core::lighting::RadiantIntensityRgb::new([
-                                value.x, value.y, value.z,
-                            ]);
-                    }
-                }
-            }
-            ColorTarget::LightAmbient => {
-                // #983 — captured but not consumed by the current
-                // renderer (cell ambient drives the unlit fallback,
-                // no per-light ambient slot in the light buffer).
-                // Drop on the floor with a single trace! so future
-                // light-ambient work finds the channel without code
-                // changes. Same shape as the existing
-                // `ColorTarget::Specular` consumer below in spirit
-                // (the renderer doesn't pick up specular per-light
-                // yet either).
-                let _ = target_entity;
-                let _ = value;
-            }
+    apply_target!(AnimatedDiffuseColor, ColorTarget::Diffuse, |c, value| c.0 =
+        value);
+    apply_target!(AnimatedAmbientColor, ColorTarget::Ambient, |c, value| c.0 =
+        value);
+    apply_target!(AnimatedSpecularColor, ColorTarget::Specular, |c, value| c
+        .0 = value);
+    apply_target!(AnimatedEmissiveColor, ColorTarget::Emissive, |c, value| c
+        .0 = value);
+    apply_target!(AnimatedShaderColor, ColorTarget::ShaderColor, |c, value| c
+        .0 = value);
+    // #983 — NiLightColorController sink. The animated colour writes
+    // straight into `LightSource.emitter.radiant_intensity`; the
+    // light-buffer build then multiplies by `dimmer * intensity` to
+    // produce the final per-light radiance.
+    apply_target!(
+        byroredux_core::ecs::LightSource,
+        ColorTarget::LightDiffuse,
+        |ls, value| {
+            ls.emitter.radiant_intensity =
+                byroredux_core::lighting::RadiantIntensityRgb::new([
+                    value.x, value.y, value.z,
+                ]);
         }
-    }
+    );
+    // ColorTarget::LightAmbient — #983: captured but not consumed by the
+    // current renderer (cell ambient drives the unlit fallback, no
+    // per-light ambient slot in the light buffer). No storage to lock,
+    // so no acquisition-order concern; left as a documented no-op.
 }
 
 /// Apply float channels to per-target sinks. Pre-#525 the only sink
@@ -262,79 +249,145 @@ pub(crate) fn apply_float_channels(
     time: f32,
     resolve_entity: &dyn Fn(&FixedString) -> Option<EntityId>,
 ) {
-    let mut alpha_q = None;
-    let mut uv_q = None;
-    let mut shader_q = None;
-    let mut morph_q = None;
-    // #983 — NiLight float controllers (Dimmer, Intensity, Radius) all
-    // mutate `LightSource` on the target entity. Lazy-acquired so a
-    // clip with only NiAlphaController doesn't lock LightSource's
-    // sparse storage unnecessarily.
-    let mut light_q = None;
+    // #2399 — same fix as `apply_color_channels`: one pass per target
+    // group, in a fixed declared order (Alpha → UV → ShaderFloat →
+    // MorphWeights → LightSource, matching `boot.rs`'s access
+    // declarations), each pass acquiring its guard, applying every
+    // channel that targets it, and dropping the guard before the next
+    // group's pass begins. See that function's comment for the full
+    // rationale — the pre-fix lazy-acquire-in-channel-order shape was
+    // the same here, five UV sub-targets and three light sub-targets
+    // each sharing one storage (`AnimatedUvTransform` /
+    // `LightSource`) and therefore one pass.
 
-    for (channel_name, channel) in float_channels {
-        let Some(target_entity) = resolve_entity(channel_name) else {
-            continue;
-        };
-        let value = sample_float_channel(channel, time);
-        match channel.target {
-            FloatTarget::Alpha => {
-                let q = alpha_q.get_or_insert_with(|| world.query_mut::<AnimatedAlpha>());
-                if let Some(q) = q.as_mut() {
-                    if let Some(a) = q.get_mut(target_entity) {
-                        a.0 = value;
-                    }
+    // Alpha.
+    if float_channels
+        .iter()
+        .any(|(_, c)| matches!(c.target, FloatTarget::Alpha))
+    {
+        if let Some(mut q) = world.query_mut::<AnimatedAlpha>() {
+            for (channel_name, channel) in float_channels {
+                if !matches!(channel.target, FloatTarget::Alpha) {
+                    continue;
+                }
+                let Some(target_entity) = resolve_entity(channel_name) else {
+                    continue;
+                };
+                let value = sample_float_channel(channel, time);
+                if let Some(a) = q.get_mut(target_entity) {
+                    a.0 = value;
                 }
             }
+        }
+    }
+
+    // UV offset/scale/rotation — five sub-targets, one shared component.
+    let is_uv_target = |target: FloatTarget| {
+        matches!(
+            target,
             FloatTarget::UvOffsetU
-            | FloatTarget::UvOffsetV
-            | FloatTarget::UvScaleU
-            | FloatTarget::UvScaleV
-            | FloatTarget::UvRotation => {
-                let q = uv_q.get_or_insert_with(|| world.query_mut::<AnimatedUvTransform>());
-                if let Some(q) = q.as_mut() {
-                    if let Some(t) = q.get_mut(target_entity) {
-                        match channel.target {
-                            FloatTarget::UvOffsetU => t.offset.x = value,
-                            FloatTarget::UvOffsetV => t.offset.y = value,
-                            FloatTarget::UvScaleU => t.scale.x = value,
-                            FloatTarget::UvScaleV => t.scale.y = value,
-                            FloatTarget::UvRotation => t.rotation = value,
-                            _ => unreachable!(),
+                | FloatTarget::UvOffsetV
+                | FloatTarget::UvScaleU
+                | FloatTarget::UvScaleV
+                | FloatTarget::UvRotation
+        )
+    };
+    if float_channels.iter().any(|(_, c)| is_uv_target(c.target)) {
+        if let Some(mut q) = world.query_mut::<AnimatedUvTransform>() {
+            for (channel_name, channel) in float_channels {
+                if !is_uv_target(channel.target) {
+                    continue;
+                }
+                let Some(target_entity) = resolve_entity(channel_name) else {
+                    continue;
+                };
+                let value = sample_float_channel(channel, time);
+                if let Some(t) = q.get_mut(target_entity) {
+                    match channel.target {
+                        FloatTarget::UvOffsetU => t.offset.x = value,
+                        FloatTarget::UvOffsetV => t.offset.y = value,
+                        FloatTarget::UvScaleU => t.scale.x = value,
+                        FloatTarget::UvScaleV => t.scale.y = value,
+                        FloatTarget::UvRotation => t.rotation = value,
+                        _ => unreachable!(),
+                    }
+                }
+            }
+        }
+    }
+
+    // ShaderFloat.
+    if float_channels
+        .iter()
+        .any(|(_, c)| matches!(c.target, FloatTarget::ShaderFloat))
+    {
+        if let Some(mut q) = world.query_mut::<AnimatedShaderFloat>() {
+            for (channel_name, channel) in float_channels {
+                if !matches!(channel.target, FloatTarget::ShaderFloat) {
+                    continue;
+                }
+                let Some(target_entity) = resolve_entity(channel_name) else {
+                    continue;
+                };
+                let value = sample_float_channel(channel, time);
+                if let Some(s) = q.get_mut(target_entity) {
+                    s.0 = value;
+                }
+            }
+        }
+    }
+
+    // MorphWeight(idx).
+    if float_channels
+        .iter()
+        .any(|(_, c)| matches!(c.target, FloatTarget::MorphWeight(_)))
+    {
+        if let Some(mut q) = world.query_mut::<AnimatedMorphWeights>() {
+            for (channel_name, channel) in float_channels {
+                let FloatTarget::MorphWeight(idx) = channel.target else {
+                    continue;
+                };
+                let Some(target_entity) = resolve_entity(channel_name) else {
+                    continue;
+                };
+                let value = sample_float_channel(channel, time);
+                if let Some(m) = q.get_mut(target_entity) {
+                    m.set(idx as usize, value);
+                }
+            }
+        }
+    }
+
+    // #983 — NiLight float controllers (Dimmer, Intensity, Radius) all
+    // mutate `LightSource` on the target entity.
+    let is_light_target = |target: FloatTarget| {
+        matches!(
+            target,
+            FloatTarget::LightDimmer | FloatTarget::LightIntensity | FloatTarget::LightRadius
+        )
+    };
+    if float_channels
+        .iter()
+        .any(|(_, c)| is_light_target(c.target))
+    {
+        if let Some(mut q) = world.query_mut::<byroredux_core::ecs::LightSource>() {
+            for (channel_name, channel) in float_channels {
+                if !is_light_target(channel.target) {
+                    continue;
+                }
+                let Some(target_entity) = resolve_entity(channel_name) else {
+                    continue;
+                };
+                let value = sample_float_channel(channel, time);
+                if let Some(ls) = q.get_mut(target_entity) {
+                    match channel.target {
+                        FloatTarget::LightDimmer => ls.dimmer = value,
+                        FloatTarget::LightIntensity => ls.intensity = value,
+                        FloatTarget::LightRadius => {
+                            ls.emitter.range =
+                                byroredux_core::lighting::Meters::from_bethesda_units(value)
                         }
-                    }
-                }
-            }
-            FloatTarget::ShaderFloat => {
-                let q = shader_q.get_or_insert_with(|| world.query_mut::<AnimatedShaderFloat>());
-                if let Some(q) = q.as_mut() {
-                    if let Some(s) = q.get_mut(target_entity) {
-                        s.0 = value;
-                    }
-                }
-            }
-            FloatTarget::MorphWeight(idx) => {
-                let q = morph_q.get_or_insert_with(|| world.query_mut::<AnimatedMorphWeights>());
-                if let Some(q) = q.as_mut() {
-                    if let Some(m) = q.get_mut(target_entity) {
-                        m.set(idx as usize, value);
-                    }
-                }
-            }
-            FloatTarget::LightDimmer | FloatTarget::LightIntensity | FloatTarget::LightRadius => {
-                let q = light_q
-                    .get_or_insert_with(|| world.query_mut::<byroredux_core::ecs::LightSource>());
-                if let Some(q) = q.as_mut() {
-                    if let Some(ls) = q.get_mut(target_entity) {
-                        match channel.target {
-                            FloatTarget::LightDimmer => ls.dimmer = value,
-                            FloatTarget::LightIntensity => ls.intensity = value,
-                            FloatTarget::LightRadius => {
-                                ls.emitter.range =
-                                    byroredux_core::lighting::Meters::from_bethesda_units(value)
-                            }
-                            _ => unreachable!(),
-                        }
+                        _ => unreachable!(),
                     }
                 }
             }
@@ -959,6 +1012,52 @@ mod color_routing_tests {
         assert_eq!(eq.get(e).unwrap().0, Vec3::new(0.9, 0.8, 0.7));
     }
 
+    /// #2399 — same entity, same two targets as
+    /// `diffuse_and_emissive_coexist_on_same_entity`, but with the
+    /// channel list in the *opposite* authored order (`[Emissive,
+    /// Diffuse]`). Pre-fix, `apply_color_channels` lazily acquired each
+    /// target's write guard on first encounter while scanning in list
+    /// order, so this ordering acquired `AnimatedEmissiveColor` before
+    /// `AnimatedDiffuseColor` — the reverse of the other test — making
+    /// the pairwise lock order content-determined instead of fixed by
+    /// code. The fixed version applies each target in one declared-order
+    /// pass regardless of list order, so this test's outcome must be
+    /// identical to the forward-order test: both values land, in either
+    /// list order. (The acquisition-order fix itself is a structural
+    /// property of the rewritten function — verified by inspection, not
+    /// re-testable here, since the process-global lock-order graph the
+    /// CONC-D3 detector uses lives in `byroredux-core`'s
+    /// `lock_tracker::global_order` module and its test-enable hooks are
+    /// `pub(super)`-scoped to that crate's own `ecs` module tests, not
+    /// reachable from this crate.)
+    #[test]
+    fn diffuse_and_emissive_coexist_regardless_of_authored_order() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, AnimatedDiffuseColor(Vec3::ZERO));
+        world.insert(e, AnimatedEmissiveColor(Vec3::ZERO));
+
+        let mut pool = StringPool::new();
+        let name = pool.intern("NeonSign");
+        let channels = vec![
+            (
+                name,
+                single_key_channel(ColorTarget::Emissive, Vec3::new(0.9, 0.8, 0.7)),
+            ),
+            (
+                name,
+                single_key_channel(ColorTarget::Diffuse, Vec3::new(0.1, 0.2, 0.3)),
+            ),
+        ];
+        let resolve = |s: &FixedString| if s == &name { Some(e) } else { None };
+        apply_color_channels(&world, &channels, 0.0, &resolve);
+
+        let dq = world.query::<AnimatedDiffuseColor>().unwrap();
+        let eq = world.query::<AnimatedEmissiveColor>().unwrap();
+        assert_eq!(dq.get(e).unwrap().0, Vec3::new(0.1, 0.2, 0.3));
+        assert_eq!(eq.get(e).unwrap().0, Vec3::new(0.9, 0.8, 0.7));
+    }
+
     /// Shader-color target writes to `AnimatedShaderColor`, not to any of
     /// the NiMaterial slots. Covers the
     /// `BSEffectShaderPropertyColorController` path enabled by #431.
@@ -1047,6 +1146,29 @@ mod float_channel_dispatch_tests {
         apply_float_channels(&world, &channels, 0.0, &resolve_to(entity));
         let q = world.query::<AnimatedAlpha>().unwrap();
         assert_eq!(q.get(entity).unwrap().0, 0.5);
+    }
+
+    /// #2399 — mirrors the `apply_color_channels` reversed-order test.
+    /// Pre-fix, `apply_float_channels` lazily acquired `AnimatedAlpha` /
+    /// `AnimatedUvTransform` in whichever order the channel list listed
+    /// them, making the pairwise acquisition order between the two
+    /// storages content-determined. A clip with `[UvOffsetU, Alpha]`
+    /// (this test) acquired the opposite order from one listing
+    /// `[Alpha, UvOffsetU]`. The fixed version applies Alpha then UV in
+    /// one declared-order pass each regardless of list order, so both
+    /// orderings must produce the same result.
+    #[test]
+    fn alpha_and_uv_write_correctly_regardless_of_authored_order() {
+        let (world, entity, name) = world_with_sinks();
+        let channels = vec![
+            (name, const_channel(FloatTarget::UvOffsetU, 0.25)),
+            (name, const_channel(FloatTarget::Alpha, 0.5)),
+        ];
+        apply_float_channels(&world, &channels, 0.0, &resolve_to(entity));
+        let aq = world.query::<AnimatedAlpha>().unwrap();
+        let uq = world.query::<AnimatedUvTransform>().unwrap();
+        assert_eq!(aq.get(entity).unwrap().0, 0.5);
+        assert_eq!(uq.get(entity).unwrap().offset.x, 0.25);
     }
 
     /// `FloatTarget::UvOffsetU` writes `AnimatedUvTransform.offset.x`
