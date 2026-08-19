@@ -35,7 +35,23 @@ pub(crate) fn build_tod_keys(tod_hours: [f32; 4]) -> [(f32, usize); 7] {
     use byroredux_plugin::esm::records::weather::*;
     let [sunrise_begin, sunrise_end, sunset_begin, sunset_end] = tod_hours;
     let afternoon_peak = (sunrise_end + sunset_begin) * 0.5;
-    let afternoon_cool = (sunset_begin - 2.0).max(sunrise_end + 0.1);
+    // #2473 (REN-D18-NEW-01) — clamp against the true predecessor key
+    // (`afternoon_peak`), not `sunrise_end` (which is two keys back, key
+    // 2, not key 3). The old clamp let `afternoon_cool` land BEFORE
+    // `afternoon_peak` on any climate with `sunset_begin - sunrise_end <
+    // 4h` — solving `afternoon_cool < afternoon_peak` under the old
+    // clamp gives exactly that trigger range. `pick_tod_pair`'s `h >=
+    // h0 && h < h1` scan can never satisfy a decreasing `(h0, h1)` pair,
+    // so the HIGH_NOON→DAY ease-out segment went unreachable and hour
+    // `afternoon_peak` snapped straight into the next segment — a
+    // single-frame discontinuous jump in every WTHR-driven colour and
+    // fog distance, once per in-game day, on any such climate.
+    // `sunset_begin - 1e-3` keeps `afternoon_cool` from ever reaching
+    // (or passing) key 5 (`sunset_begin`) itself when the two clamp
+    // floors above already pin it there.
+    let afternoon_cool = (sunset_begin - 2.0)
+        .max(afternoon_peak + 0.1)
+        .min(sunset_begin - 1e-3);
     let midnight = 1.0f32;
     // #2820 (REN-D18-03) — clamp against the true predecessor key
     // (`sunset_begin`), not an absolute `23.0`. The old absolute clamp
@@ -906,6 +922,13 @@ mod tod_keys_tests {
             // clamped to an absolute `23.0` regardless of `sunset_begin`,
             // producing `keys[5] = 23.5 > keys[6] = 23.0` — non-monotonic.
             [6.0, 10.0, 23.5, 24.0],
+            // #2473 — short clear-day climate (`sunset_begin -
+            // sunrise_end = 1h < 4h`). Pre-fix, `afternoon_cool` clamped
+            // against `sunrise_end` instead of `afternoon_peak`, landing
+            // BEFORE it (10.1 < afternoon_peak=10.5) — this was the
+            // exact input the (then too-weak) dedicated regression test
+            // used without catching it.
+            [5.0, 10.0, 11.0, 20.0],
         ] {
             let keys = build_tod_keys(tod_hours);
             for w in keys.windows(2) {
@@ -958,20 +981,42 @@ mod tod_keys_tests {
         }
     }
 
-    /// Afternoon_cool clamp — when `sunset_begin <= sunrise_end + 2`
-    /// (very compressed day), the `sunset_begin - 2h` re-anchor would
-    /// be at or before `sunrise_end`, breaking monotonicity. The
-    /// `.max(sunrise_end + 0.1)` clamp guards against that.
+    /// #2473 (REN-D18-NEW-01) — afternoon_cool clamp, re-tightened
+    /// against its TRUE predecessor. Pre-fix the clamp anchored
+    /// `afternoon_cool` (key 4) against `sunrise_end` (key 2) instead of
+    /// `afternoon_peak` (key 3), so this exact test's own input —
+    /// `sunrise_end=10, sunset_begin=11` — produced
+    /// `afternoon_peak=10.5, afternoon_cool=max(9.0,10.1)=10.1`: strictly
+    /// after key 2 (10 > passes the old, too-weak assertion) but
+    /// strictly BEFORE key 3 (10.1 < 10.5), non-monotonic. The old
+    /// assertion (`afternoon_cool > keys[2].0`) passed on that broken
+    /// table — this is the exact false-assurance gap the issue reports.
+    /// Re-tightened to the real invariant: every key must be
+    /// non-decreasing relative to its immediate predecessor, walked via
+    /// `windows(2)` like `tod_keys_are_monotonic_on_realistic_climates`.
     #[test]
     fn tod_keys_clamp_afternoon_cool_on_compressed_days() {
         // sunrise_end=10, sunset_begin=11 — only 1h of clear "day".
         let keys = build_tod_keys([5.0, 10.0, 11.0, 20.0]);
-        let day_anchor = keys[2].0; // TOD_DAY at sunrise_end
-        let afternoon_cool = keys[4].0; // TOD_DAY re-anchor
+        for w in keys.windows(2) {
+            assert!(
+                w[0].0 <= w[1].0 + 1e-5,
+                "TOD keys must be monotonic on a compressed-day climate: \
+                 {:?} → {:?} (full table {:?})",
+                w[0],
+                w[1],
+                keys,
+            );
+        }
+        // The specific relation the pre-fix clamp got wrong: key 4 must
+        // stay at/after key 3 (afternoon_peak), not merely after key 2.
+        let afternoon_peak = keys[3].0;
+        let afternoon_cool = keys[4].0;
         assert!(
-            afternoon_cool > day_anchor,
-            "afternoon_cool ({afternoon_cool:.2}) must be strictly after \
-             sunrise_end ({day_anchor:.2}) to keep keys monotonic"
+            afternoon_cool >= afternoon_peak,
+            "afternoon_cool ({afternoon_cool:.2}) must be at/after \
+             afternoon_peak ({afternoon_peak:.2}), its true predecessor \
+             key — not merely after sunrise_end"
         );
     }
 

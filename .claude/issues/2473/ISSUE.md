@@ -1,8 +1,5 @@
 # REN-D18-NEW-01: build_tod_keys afternoon re-anchor clamps against the wrong neighbour -- TOD key table goes non-monotonic on short-day climates
 
-**GitHub**: https://github.com/matiaszanolli/ByroRedux/issues/2473
-**Finding ID**: REN-D18-NEW-01 (source: `docs/audits/AUDIT_RENDERER_2026-08-07.md`)
-
 **Severity**: MEDIUM
 **Dimension**: 18 — Sky/Weather
 **Location**: `byroredux/src/systems/weather.rs::build_tod_keys` (line ~37), test `tod_keys_clamp_afternoon_cool_on_compressed_days` (line ~823)
@@ -29,3 +26,4 @@ Clamp against the true predecessor: `let afternoon_cool = (sunset_begin - 2.0).m
 
 ## Completeness Checks
 - [ ] **TESTS**: `tod_keys_clamp_afternoon_cool_on_compressed_days` re-tightened to assert full monotonicity; `[5.0, 10.0, 11.0, 20.0]` added to the monotonicity corpus
+
