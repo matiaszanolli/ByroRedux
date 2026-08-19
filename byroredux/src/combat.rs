@@ -175,7 +175,20 @@ pub(crate) fn combat_input_system(world: &World, dt: f32) {
             power_attack: false,
             sneak_attack: false,
             bash_attack: false,
-            blocked: false,
+            // `block_held` is the *aggressor's* own Block state, snapshotted
+            // above (#2976). Canonically `HitEvent::blocked` describes the
+            // target's defense, but this slice has exactly one HitEvent
+            // producer and it is always player-initiated — no hostile/NPC
+            // attack path exists to give a target its own blocking signal
+            // yet. Wiring the aggressor's own hold here at least makes the
+            // field live and testable rather than a permanently-false
+            // constant: swinging while holding Block now deals no damage
+            // instead of costing the player nothing. `projectile`,
+            // `power_attack`, `sneak_attack`, `bash_attack` stay `false` —
+            // unlike Block, none of them has an input action driving them at
+            // all (no power-attack charge, sneak-attack, or bash input
+            // exists), so there is nothing to wire them to yet.
+            blocked: block_held,
         },
     );
     drop(events);
@@ -364,7 +377,11 @@ mod tests {
     use byroredux_core::ecs::components::InventoryIndex;
     use byroredux_core::ecs::components::{FollowBehavior, FollowState};
 
-    fn damage_fixture(health: f32, weapon_damage: Option<f32>) -> (World, EntityId, EntityId) {
+    fn damage_fixture(
+        health: f32,
+        weapon_damage: Option<f32>,
+        blocked: bool,
+    ) -> (World, EntityId, EntityId) {
         let mut world = World::new();
         byroredux_scripting::register(&mut world);
         world.register::<ActorValues>();
@@ -398,7 +415,7 @@ mod tests {
                 power_attack: false,
                 sneak_attack: false,
                 bash_attack: false,
-                blocked: false,
+                blocked,
             },
         );
         (world, aggressor, target)
@@ -406,7 +423,7 @@ mod tests {
 
     #[test]
     fn equipped_weapon_hit_applies_authored_damage() {
-        let (world, _aggressor, target) = damage_fixture(50.0, Some(18.0));
+        let (world, _aggressor, target) = damage_fixture(50.0, Some(18.0), false);
         combat_damage_system(&world, 0.0);
 
         assert_eq!(
@@ -421,7 +438,7 @@ mod tests {
 
     #[test]
     fn lethal_hit_marks_dead_and_persists_trace() {
-        let (world, _aggressor, target) = damage_fixture(10.0, Some(18.0));
+        let (world, _aggressor, target) = damage_fixture(10.0, Some(18.0), false);
         combat_damage_system(&world, 0.0);
 
         assert!(world.get::<Dead>(target).is_some());
@@ -435,12 +452,36 @@ mod tests {
 
     #[test]
     fn unarmed_hit_uses_explicit_fallback_damage() {
-        let (world, _aggressor, target) = damage_fixture(20.0, None);
+        let (world, _aggressor, target) = damage_fixture(20.0, None, false);
         combat_damage_system(&world, 0.0);
         assert_eq!(
             world.get::<ActorValues>(target).unwrap().current(0x2D4),
             12.0
         );
+    }
+
+    /// Regression for #2976. `HitEvent::blocked` was hardcoded `false` at the
+    /// sole producer, so this arm of `combat_damage_system` was unreachable
+    /// from any live path. A blocked hit must apply zero damage while still
+    /// landing (counted, traced, no death check skipped).
+    #[test]
+    fn blocked_hit_applies_zero_damage_but_still_lands() {
+        let (world, _aggressor, target) = damage_fixture(50.0, Some(18.0), true);
+        combat_damage_system(&world, 0.0);
+
+        assert_eq!(
+            world.get::<ActorValues>(target).unwrap().current(0x2D4),
+            50.0,
+            "a blocked hit must not reduce Health"
+        );
+        assert!(world.get::<Dead>(target).is_none());
+        let state = world.resource::<CombatState>();
+        assert_eq!(state.hits_landed, 1, "a blocked hit still counts as a hit");
+        assert_eq!(state.kills, 0);
+        let last = state.last.as_ref().unwrap();
+        assert_eq!(last.damage, 0.0);
+        assert_eq!(last.health_before, Some(50.0));
+        assert_eq!(last.health_after, Some(50.0));
     }
 
     #[test]

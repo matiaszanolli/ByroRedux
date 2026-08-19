@@ -155,6 +155,39 @@ echo "smoke[p2-melee-core]: PASS -- frozen reference 000383F7 resolved to entity
 wait_for_pattern "player.status" "mode=Character" "$command_log" "Character mode is active"
 wait_for_pattern "combat.status" "attacks=0 hits=0 kills=0" "$status_log" "combat state starts clean"
 
+# #2976 — a swing thrown while holding Block must land (counted, traced) but
+# deal zero damage; the pre-fix HitEvent producer hardcoded blocked=false,
+# making combat_damage_system's zero-damage arm unreachable from any live
+# path. This runs before the real kill sequence below specifically because it
+# must NOT change the frozen Draugr's Health — the loop after it still starts
+# its expected_hits math from a clean 50.0.
+#
+# The hold, approach, and swing are queued in one `byro-dbg` connection (a
+# frame budget just past what one such batch needs, not a second round-trip)
+# so the hold can't lapse between commands while a new debug process spins
+# up.
+debug_commands "input.hold block 40
+combat.approach $target
+input.press attack" "$command_log" || fail "could not queue the blocked swing"
+grep -Fq "input.hold: queued Block through the C binding for 40 frames" "$command_log" \
+    || fail "Block hold did not enter through the normal Block binding"
+grep -Fq "input.press: queued action=Attack binding=R" "$command_log" \
+    || fail "blocked swing did not enter through the normal Attack binding"
+wait_for_pattern "combat.status" "blocking=true attacks=1 hits=1 kills=0" "$status_log" \
+    "swing thrown while blocking still lands as a hit"
+grep -Fq "damage=0.0" "$status_log" \
+    || fail "a blocked hit must deal zero damage"
+grep -Fq "health_before=50.0 health_after=50.0" "$status_log" \
+    || fail "a blocked hit must not change the target's Health"
+wait_for_pattern "combat.status" "cooldown=0.000" "$status_log" "blocked swing cooldown elapsed"
+# There is no console command to release a hold early — wait for the 40-frame
+# budget to lapse on its own so the real damage sequence below swings
+# unblocked. Without this, a still-active hold silently blocks swing 1 too
+# (exactly the failure mode this section exists to catch, just relocated).
+wait_for_pattern "combat.status" "blocking=false" "$status_log" \
+    "Block hold expired before the real damage sequence"
+echo "smoke[p2-melee-core]: PASS -- swing thrown while holding Block landed for zero damage"
+
 debug_commands "inventory.status" "$inventory_status_log" \
     || fail "could not inspect the player's combat loadout"
 grep -Fq "Inventory status:" "$inventory_status_log" \
@@ -182,6 +215,11 @@ echo "smoke[p2-melee-core]: PASS -- persistent settings registry is observable"
 expected_hits="$(awk -v health=50.0 -v damage="$loadout_damage" \
     'BEGIN { print int((health + damage - 0.0001) / damage) }')"
 previous_health="50.0"
+# The #2976 blocked swing above already landed one hit (zero damage) before
+# this loop starts, so CombatState's cumulative attacks/hits counters are
+# offset by one from here on. Health is unaffected, so previous_health still
+# correctly starts clean at 50.0.
+blocked_swing_count=1
 for hit in $(seq 1 "$expected_hits"); do
     debug_commands "combat.approach $target
 input.press attack" "$command_log" || fail "could not queue swing $hit"
@@ -196,7 +234,7 @@ input.press attack" "$command_log" || fail "could not queue swing $hit"
         "swing $hit retained authored floor support"
     wait_for_pattern \
         "combat.status" \
-        "hits=$hit" \
+        "hits=$((hit + blocked_swing_count))" \
         "$status_log" \
         "swing $hit emitted one HitEvent and applied damage"
     grep -Fq "damage=$loadout_damage" "$status_log" \
@@ -211,8 +249,9 @@ input.press attack" "$command_log" || fail "could not queue swing $hit"
     wait_for_pattern "combat.status" "cooldown=0.000" "$status_log" "swing $hit cooldown elapsed"
 done
 
-grep -Fq "attacks=$expected_hits hits=$expected_hits kills=1" "$status_log" \
-    || fail "final counters are not exactly $expected_hits attacks / $expected_hits hits / 1 kill"
+total_hits=$((expected_hits + blocked_swing_count))
+grep -Fq "attacks=$total_hits hits=$total_hits kills=1" "$status_log" \
+    || fail "final counters are not exactly $total_hits attacks / $total_hits hits / 1 kill"
 grep -Fq "killed=true" "$status_log" || fail "zero Health did not mark the kill"
 grep -Fq "ragdoll activated (18 bodies)" "$status_log" \
     || fail "death did not activate the frozen Draugr's ragdoll"
