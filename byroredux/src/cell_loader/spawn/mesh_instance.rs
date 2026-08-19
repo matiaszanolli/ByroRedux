@@ -171,6 +171,17 @@ pub(super) fn resolve_mesh_paths(
             // index, so it does not go through the slot table.
             (textures.wrinkle, sources.wrinkle) =
                 resolve_effective(ov.and_then(|o| o.wrinkle), mesh.material.textures.wrinkle);
+            // #2594 — `lighting` / `flow` are BGSM-only roles with no
+            // BSShaderTextureSet wire-slot analog either (same shape as
+            // `wrinkle` above): a raw TXST/XTXR override can never
+            // supply them, only a `.bgsm`/`.bgem` `material_path`
+            // override via `fill_from_bgsm` can.
+            (textures.lighting, sources.lighting) = resolve_effective(
+                ov.and_then(|o| o.lighting),
+                mesh.material.textures.lighting,
+            );
+            (textures.flow, sources.flow) =
+                resolve_effective(ov.and_then(|o| o.flow), mesh.material.textures.flow);
             let material_path = resolve_to_owned(
                 &pool,
                 ov.and_then(|o| o.material_path)
@@ -1041,5 +1052,69 @@ mod tests {
             resolved[0].textures.inner_layer.is_none(),
             "FO76 slot 6 is measured specular, not Skyrim inner-layer (#3085)"
         );
+    }
+
+    /// #2594 — `lighting` / `flow` have no `BSShaderTextureSet` wire-slot
+    /// analog (unlike every other case in this module), so they don't go
+    /// through `slot_to_role` — a direct override, same shape as `wrinkle`.
+    /// Pins that the overlay fields `fill_from_bgsm` populates actually
+    /// reach `ImportedMesh`'s resolved texture set.
+    #[test]
+    fn overlay_lighting_and_flow_reach_the_resolved_mesh() {
+        let mut pool = StringPool::new();
+        let lighting = pool.intern(r"textures\fo4\surface_lighting.dds");
+        let flow = pool.intern(r"textures\fo4\surface_flow.dds");
+        let mut world = World::new();
+        world.insert_resource(pool);
+
+        let mesh = empty_mesh();
+        let overlay = RefrTextureOverlay {
+            lighting: Some(lighting),
+            flow: Some(flow),
+            ..Default::default()
+        };
+
+        let resolved = resolve_mesh_paths(&mut world, &[mesh], Some(&overlay));
+        assert_eq!(
+            resolved[0].textures.lighting.as_deref(),
+            Some(r"textures\fo4\surface_lighting.dds")
+        );
+        assert_eq!(
+            resolved[0].sources.lighting,
+            MaterialTextureSource::TxstOverride
+        );
+        assert_eq!(
+            resolved[0].textures.flow.as_deref(),
+            Some(r"textures\fo4\surface_flow.dds")
+        );
+        assert_eq!(
+            resolved[0].sources.flow,
+            MaterialTextureSource::TxstOverride
+        );
+    }
+
+    /// When the overlay leaves `lighting`/`flow` empty, the mesh's own
+    /// authored values must ride through unchanged (same as every other
+    /// role) — this was already true pre-#2594 by construction (the
+    /// initial `map_ref` copies every `MaterialTextureSet` field
+    /// verbatim), but pinning it here documents the contract now that
+    /// these two roles have a real overlay-side producer to fall through.
+    #[test]
+    fn mesh_lighting_and_flow_survive_when_overlay_has_none() {
+        let mut pool = StringPool::new();
+        let lighting = pool.intern(r"textures\mesh\lighting.dds");
+        let mut world = World::new();
+        world.insert_resource(pool);
+
+        let mut mesh = empty_mesh();
+        mesh.material.textures.lighting = Some(lighting);
+
+        let resolved = resolve_mesh_paths(&mut world, &[mesh], None);
+        assert_eq!(
+            resolved[0].textures.lighting.as_deref(),
+            Some(r"textures\mesh\lighting.dds")
+        );
+        assert_eq!(resolved[0].sources.lighting, MaterialTextureSource::MeshMaterial);
+        assert!(resolved[0].textures.flow.is_none());
     }
 }

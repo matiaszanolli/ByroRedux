@@ -68,6 +68,14 @@ pub(crate) struct RefrTextureOverlay {
     /// aliasing it to `env_mask` is the TXST/NIF ordering regression this
     /// overlay boundary is responsible for preventing.
     pub(crate) wrinkle: Option<FixedString>,
+    /// BGSM v>2 / BGEM `lighting_texture`. Like `wrinkle`, this has no
+    /// `BSShaderTextureSet` wire-slot analog (a raw TXST/XTXR override
+    /// can never carry it) — the only producer is `fill_from_bgsm`, on
+    /// a `.bgsm`/`.bgem` `material_path` override. See #2594.
+    pub(crate) lighting: Option<FixedString>,
+    /// BGSM v>2 `flow_texture` (BGEM does not author this field). Same
+    /// no-wire-slot shape as `lighting` above. See #2594.
+    pub(crate) flow: Option<FixedString>,
     pub(crate) material_path: Option<FixedString>,
     /// Resolved MSWP entries from the REFR's `XMSP` sub-record (#971).
     /// Each pair substitutes a BGSM/BGEM material path on the base
@@ -238,6 +246,34 @@ impl RefrTextureOverlay {
                     Some(f.displacement_texture.as_str()),
                     pool,
                 );
+                // #2594 — the remaining BGSM texture roles
+                // `merge_external_material` covers, previously dropped
+                // here entirely.
+                //
+                // `inner_layer_texture` routes into `self.inner`, the
+                // SAME raw wire-slot-6 field a TXST/XTXR override would
+                // use — slot 6 already means "MultiLayerParallax inner
+                // layer" per the shared game-aware table
+                // (`mesh_instance.rs`'s `pick(6, o.inner,
+                // TextureRole::InnerLayer)`), so no new field or spawn-
+                // side wiring is needed.
+                Self::fill(&mut self.inner, Some(f.inner_layer_texture.as_str()), pool);
+                // `greyscale_texture` shares wire-slot 3 with
+                // `displacement_texture` above — same as the NIF-native
+                // side, where a shader type reads slot 3 as EITHER
+                // Height OR GreyscaleLut, never both (mutually exclusive
+                // by `BSLightingShaderType`, not a per-material choice).
+                // `fill`'s first-non-empty-wins policy means this is a
+                // no-op whenever `displacement_texture` already won the
+                // slot, matching that exclusivity — the two BGSM fields
+                // are never simultaneously meaningful on real content.
+                Self::fill(&mut self.height, Some(f.greyscale_texture.as_str()), pool);
+                // `lighting_texture` / `flow_texture` have no wire-slot
+                // analog at all (BGSM-only fields beyond the classic
+                // 8-slot `BSShaderTextureSet`) — dedicated overlay
+                // fields, wired through at `mesh_instance.rs`.
+                Self::fill(&mut self.lighting, Some(f.lighting_texture.as_str()), pool);
+                Self::fill(&mut self.flow, Some(f.flow_texture.as_str()), pool);
             }
         } else if path.ends_with(".bgem") {
             let Some(bgem) = provider.resolve_bgem(&path) else {
@@ -246,6 +282,20 @@ impl RefrTextureOverlay {
             Self::fill(&mut self.normal, Some(bgem.normal_texture.as_str()), pool);
             Self::fill(&mut self.glow, Some(bgem.glow_texture.as_str()), pool);
             Self::fill(&mut self.env, Some(bgem.envmap_texture.as_str()), pool);
+            // #2594 — BGEM sibling of the BGSM roles above.
+            // `specular_texture` / `lighting_texture` are the two BGSM
+            // v>2 slots BGEM also exposes (#1076 / FO4-D6-002); BGEM
+            // authors no `flow_texture` / `wrinkles_texture` per
+            // `crates/bgsm/src/bgem.rs`, so those stay unfilled here —
+            // matching `merge_external_material`'s BGEM arm exactly.
+            Self::fill(&mut self.specular, Some(bgem.specular_texture.as_str()), pool);
+            Self::fill(&mut self.lighting, Some(bgem.lighting_texture.as_str()), pool);
+            // `grayscale_texture` is BGEM's palette/gradient LUT (fire-
+            // gradient, electricity-gradient, magic VFX) — same
+            // wire-slot-3 sharing with `height` as the BGSM arm above
+            // (BGEM has no `displacement_texture` field, so there's
+            // nothing here for it to lose a first-wins race against).
+            Self::fill(&mut self.height, Some(bgem.grayscale_texture.as_str()), pool);
         }
     }
 }

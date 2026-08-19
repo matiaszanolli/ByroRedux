@@ -479,6 +479,208 @@ fn build_overlay_xtxr_slot_1_adopts_model_space_normals_flag() {
     );
 }
 
+// ── #2594 / #2595 — fill_from_bgsm role coverage ─────────────────────────
+//
+// `fill_from_bgsm` previously forwarded only 6 of the 11 BGSM texture
+// roles `merge_external_material` covers (and 3 of 6 for BGEM), and had
+// zero test coverage exercising it through a real `MaterialProvider`
+// (every existing overlay test above passes `mat_provider = None`,
+// leaving the chain-resolve stage entirely untested). These build a real
+// `MaterialProvider`, seed it via `insert_bgsm_for_test`/
+// `insert_bgem_for_test` (the same fixture helpers `asset_provider`'s own
+// BGSM/BGEM merge tests use), and drive the real `build_refr_texture_overlay`
+// → `fill_from_bgsm` path end to end.
+
+use crate::asset_provider::MaterialProvider;
+use byroredux_bgsm::template::ResolvedMaterial;
+use byroredux_bgsm::{BgemFile, BgsmFile};
+use std::sync::Arc;
+
+fn mnam_only_txst(material_path: &str) -> TextureSet {
+    TextureSet {
+        material_path: Some(material_path.to_string()),
+        ..TextureSet::default()
+    }
+}
+
+#[test]
+fn fill_from_bgsm_forwards_every_bgsm_texture_role() {
+    let mut index = EsmCellIndex::default();
+    let path = "materials/tests/full_role_set.bgsm";
+    index
+        .texture_sets
+        .insert(0x0020_0001, mnam_only_txst(path));
+    let mut placed = empty_placed_ref(0x0100_0001);
+    placed.alt_texture_ref = Some(0x0020_0001);
+
+    let mut provider = MaterialProvider::new();
+    provider.insert_bgsm_for_test(
+        path,
+        ResolvedMaterial {
+            file: BgsmFile {
+                diffuse_texture: r"textures\a\diff.dds".into(),
+                normal_texture: r"textures\a\nrm.dds".into(),
+                glow_texture: r"textures\a\glow.dds".into(),
+                smooth_spec_texture: r"textures\a\spec.dds".into(),
+                envmap_texture: r"textures\a\env.dds".into(),
+                wrinkles_texture: r"textures\a\wrinkle.dds".into(),
+                displacement_texture: r"textures\a\height.dds".into(),
+                inner_layer_texture: r"textures\a\inner.dds".into(),
+                lighting_texture: r"textures\a\lighting.dds".into(),
+                flow_texture: r"textures\a\flow.dds".into(),
+                ..Default::default()
+            },
+            parent: None,
+        },
+    );
+
+    let mut pool = StringPool::new();
+    let ov = build_refr_texture_overlay(&placed, &index, Some(&mut provider), &mut pool)
+        .expect("MNAM-only TXST + resolvable BGSM must produce an overlay");
+
+    // The 6 roles that were already forwarded pre-#2594.
+    assert_eq!(resolved(&pool, ov.diffuse), Some(r"textures\a\diff.dds"));
+    assert_eq!(resolved(&pool, ov.normal), Some(r"textures\a\nrm.dds"));
+    assert_eq!(resolved(&pool, ov.glow), Some(r"textures\a\glow.dds"));
+    assert_eq!(resolved(&pool, ov.specular), Some(r"textures\a\spec.dds"));
+    assert_eq!(resolved(&pool, ov.env), Some(r"textures\a\env.dds"));
+    assert_eq!(resolved(&pool, ov.wrinkle), Some(r"textures\a\wrinkle.dds"));
+    // `height` — `displacement_texture` wins the wire-slot-3 race over
+    // `greyscale_texture` (empty on this fixture) via first-wins `fill`.
+    assert_eq!(resolved(&pool, ov.height), Some(r"textures\a\height.dds"));
+    // The roles #2594 added.
+    assert_eq!(
+        resolved(&pool, ov.inner),
+        Some(r"textures\a\inner.dds"),
+        "inner_layer_texture must route through the shared wire-slot-6 field"
+    );
+    assert_eq!(resolved(&pool, ov.lighting), Some(r"textures\a\lighting.dds"));
+    assert_eq!(resolved(&pool, ov.flow), Some(r"textures\a\flow.dds"));
+}
+
+/// `greyscale_texture` must reach the overlay (via the shared `height`
+/// field) when `displacement_texture` is absent — the two only race for
+/// the same slot when a BGSM authors both, which real content doesn't do.
+#[test]
+fn fill_from_bgsm_forwards_greyscale_texture_when_no_displacement() {
+    let mut index = EsmCellIndex::default();
+    let path = "materials/tests/greyscale_only.bgsm";
+    index
+        .texture_sets
+        .insert(0x0020_0001, mnam_only_txst(path));
+    let mut placed = empty_placed_ref(0x0100_0001);
+    placed.alt_texture_ref = Some(0x0020_0001);
+
+    let mut provider = MaterialProvider::new();
+    provider.insert_bgsm_for_test(
+        path,
+        ResolvedMaterial {
+            file: BgsmFile {
+                greyscale_texture: r"textures\a\gradient.dds".into(),
+                ..Default::default()
+            },
+            parent: None,
+        },
+    );
+
+    let mut pool = StringPool::new();
+    let ov = build_refr_texture_overlay(&placed, &index, Some(&mut provider), &mut pool)
+        .expect("overlay");
+    assert_eq!(resolved(&pool, ov.height), Some(r"textures\a\gradient.dds"));
+}
+
+/// BGSM template-chain child-first precedence extends to every #2594
+/// role, not just the pre-existing 6 — a parent-only role must still
+/// flow down to the overlay when the child leaves it empty.
+#[test]
+fn fill_from_bgsm_new_roles_honor_child_first_chain() {
+    let mut index = EsmCellIndex::default();
+    let path = "materials/tests/chained.bgsm";
+    index
+        .texture_sets
+        .insert(0x0020_0001, mnam_only_txst(path));
+    let mut placed = empty_placed_ref(0x0100_0001);
+    placed.alt_texture_ref = Some(0x0020_0001);
+
+    let mut provider = MaterialProvider::new();
+    provider.insert_bgsm_for_test(
+        path,
+        ResolvedMaterial {
+            file: BgsmFile::default(), // child authors nothing
+            parent: Some(Arc::new(ResolvedMaterial {
+                file: BgsmFile {
+                    lighting_texture: r"textures\parent\lighting.dds".into(),
+                    flow_texture: r"textures\parent\flow.dds".into(),
+                    inner_layer_texture: r"textures\parent\inner.dds".into(),
+                    ..Default::default()
+                },
+                parent: None,
+            })),
+        },
+    );
+
+    let mut pool = StringPool::new();
+    let ov = build_refr_texture_overlay(&placed, &index, Some(&mut provider), &mut pool)
+        .expect("overlay");
+    assert_eq!(
+        resolved(&pool, ov.lighting),
+        Some(r"textures\parent\lighting.dds")
+    );
+    assert_eq!(resolved(&pool, ov.flow), Some(r"textures\parent\flow.dds"));
+    assert_eq!(resolved(&pool, ov.inner), Some(r"textures\parent\inner.dds"));
+}
+
+#[test]
+fn fill_from_bgsm_forwards_every_bgem_texture_role() {
+    let mut index = EsmCellIndex::default();
+    let path = "materials/tests/full_role_set.bgem";
+    index
+        .texture_sets
+        .insert(0x0020_0001, mnam_only_txst(path));
+    let mut placed = empty_placed_ref(0x0100_0001);
+    placed.alt_texture_ref = Some(0x0020_0001);
+
+    let mut provider = MaterialProvider::new();
+    provider.insert_bgem_for_test(
+        path,
+        BgemFile {
+            normal_texture: r"textures\b\nrm.dds".into(),
+            glow_texture: r"textures\b\glow.dds".into(),
+            envmap_texture: r"textures\b\env.dds".into(),
+            specular_texture: r"textures\b\spec.dds".into(),
+            lighting_texture: r"textures\b\lighting.dds".into(),
+            grayscale_texture: r"textures\b\gradient.dds".into(),
+            ..Default::default()
+        },
+    );
+
+    let mut pool = StringPool::new();
+    let ov = build_refr_texture_overlay(&placed, &index, Some(&mut provider), &mut pool)
+        .expect("MNAM-only TXST + resolvable BGEM must produce an overlay");
+
+    // Pre-#2594 roles.
+    assert_eq!(resolved(&pool, ov.normal), Some(r"textures\b\nrm.dds"));
+    assert_eq!(resolved(&pool, ov.glow), Some(r"textures\b\glow.dds"));
+    assert_eq!(resolved(&pool, ov.env), Some(r"textures\b\env.dds"));
+    // #2594-added roles.
+    assert_eq!(
+        resolved(&pool, ov.specular),
+        Some(r"textures\b\spec.dds"),
+        "BGEM specular_texture must reach the overlay"
+    );
+    assert_eq!(
+        resolved(&pool, ov.lighting),
+        Some(r"textures\b\lighting.dds"),
+        "BGEM lighting_texture must reach the overlay"
+    );
+    assert_eq!(
+        resolved(&pool, ov.height),
+        Some(r"textures\b\gradient.dds"),
+        "BGEM grayscale_texture must reach the overlay as the greyscale-LUT role, \
+         via the same shared wire-slot-3 field as BGSM"
+    );
+}
+
 // ── #2695 — one slot→role table for both sites ──────────────────────────
 
 /// The defect: the REFR overlay resolved `BSShaderTextureSet` slot indices
