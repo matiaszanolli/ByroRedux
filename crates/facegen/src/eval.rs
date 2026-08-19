@@ -80,6 +80,17 @@ pub fn apply_morphs(
             continue;
         }
         let coeff = w * scale;
+        if !coeff.is_finite() {
+            // #3048 — `finite × finite` can still overflow to ±inf
+            // (huge slider weight × huge morph scale). Catching it
+            // here is a cheap per-morph skip, not the safety net —
+            // the mandatory per-vertex finiteness check after the
+            // loop below is what actually guarantees no non-finite
+            // vertex escapes this function, since `coeff * d[k]` or
+            // the running accumulation could still overflow even
+            // when `coeff` itself is finite.
+            continue;
+        }
         let m = &morphs[j].deltas;
         // Defensive bound: applying past `out.len()` would index
         // out of range. Caller should pass matching base + morph
@@ -96,6 +107,30 @@ pub fn apply_morphs(
             out[i][0] += coeff * d[0];
             out[i][1] += coeff * d[1];
             out[i][2] += coeff * d[2];
+        }
+    }
+    // #3048 (SAFE-2026-08-16-01) — guard the OUTPUT, not only the
+    // inputs. Every guard above checks an input (`w`, `scale`,
+    // `coeff`, `d`); none of them can prove the accumulated sum
+    // stays finite, since `coeff * d[k]` or the running per-component
+    // total across many morphs can overflow even when every guarded
+    // term along the way was individually finite. This single
+    // O(vertices) pass is the actual safety net: it's the last stop
+    // before `out` reaches the vertex SSBO and `build_blas_for_mesh`,
+    // and the Vulkan spec requires finite BLAS vertex data — feeding
+    // it ±inf/NaN is driver-dependent undefined behaviour, not a
+    // clean error.
+    //
+    // Reject-per-vertex, not clamp: a non-finite result means at
+    // least one contributing morph was corrupt or malicious, and we
+    // have no principled bound to clamp to. Falling back to the
+    // undeformed base position is the same "treat corruption
+    // conservatively" posture the weight/scale/delta guards above
+    // already use — this NPC's face just doesn't apply that vertex's
+    // deformation, instead of crashing the driver.
+    for (out_vertex, base_vertex) in out.iter_mut().zip(base_positions.iter()) {
+        if !out_vertex[0].is_finite() || !out_vertex[1].is_finite() || !out_vertex[2].is_finite() {
+            *out_vertex = *base_vertex;
         }
     }
     out
@@ -187,5 +222,83 @@ mod tests {
         assert_eq!(out[2], [1.0, 0.0, 0.0]);
         assert_eq!(out[3], [0.0, 0.0, 0.0]);
         assert_eq!(out[4], [0.0, 0.0, 0.0]);
+    }
+
+    // ── #3048 (SAFE-2026-08-16-01) — output-finiteness regression ──
+
+    #[test]
+    fn overflowing_coeff_is_rejected_before_the_vertex_loop() {
+        // weight * scale overflows to +inf even though both inputs
+        // individually pass the existing is_finite() input guards.
+        // Caught by the cheap per-morph coeff check, not the output
+        // safety net — this pins that early-out specifically.
+        let base = vec![[5.0, 5.0, 5.0]];
+        let morphs = vec![morph(f32::MAX, vec![[1.0, 1.0, 1.0]])];
+        let out = apply_morphs(&base, &morphs, &[f32::MAX]);
+        assert_eq!(out, base, "overflowing coeff must not deform the vertex");
+    }
+
+    #[test]
+    fn overflow_from_coeff_times_finite_delta_falls_back_to_base() {
+        // `coeff` alone is finite (1.0) and `d` alone is finite
+        // (f32::MAX) — every existing INPUT guard passes. The product
+        // `coeff * d[k]` is what overflows, which only the mandatory
+        // post-loop output check catches. This is the exact gap the
+        // issue describes: input-only guarding lets this through.
+        let base = vec![[0.0, 0.0, 0.0]];
+        let morphs = vec![morph(1.0, vec![[f32::MAX, 0.0, 0.0]])];
+        let out = apply_morphs(&base, &morphs, &[2.0]);
+        assert_eq!(
+            out, base,
+            "coeff*delta overflow must fall back to the base position, \
+             not leak ±inf into the returned vertex array"
+        );
+    }
+
+    #[test]
+    fn accumulation_overflow_across_many_finite_terms_falls_back_to_base() {
+        // Every individual morph's contribution is finite and
+        // in-range on its own; only the RUNNING SUM across many
+        // morphs overflows. Neither the input guards nor the
+        // per-morph coeff check can see this — only the accumulated
+        // per-vertex output check does.
+        let base = vec![[0.0, 0.0, 0.0]];
+        let big = f32::MAX / 2.0;
+        let morphs = vec![
+            morph(1.0, vec![[big, 0.0, 0.0]]),
+            morph(1.0, vec![[big, 0.0, 0.0]]),
+            morph(1.0, vec![[big, 0.0, 0.0]]),
+        ];
+        let out = apply_morphs(&base, &morphs, &[1.0, 1.0, 1.0]);
+        assert_eq!(
+            out, base,
+            "accumulated overflow across finite-only terms must still \
+             fall back to the base position"
+        );
+    }
+
+    #[test]
+    fn finite_result_is_returned_unchanged() {
+        // Sanity check alongside the overflow tests above: a normal,
+        // fully-finite deformation must NOT be touched by the new
+        // output-finiteness pass.
+        let base = vec![[1.0, 2.0, 3.0]];
+        let morphs = vec![morph(2.0, vec![[0.5, -0.25, 0.1]])];
+        let out = apply_morphs(&base, &morphs, &[3.0]);
+        assert!((out[0][0] - 4.0).abs() < 1e-4);
+        assert!((out[0][1] - 0.5).abs() < 1e-4);
+        assert!((out[0][2] - 3.6).abs() < 1e-4);
+    }
+
+    #[test]
+    fn overflow_in_one_vertex_does_not_affect_siblings() {
+        // Only vertex 0's delta overflows; vertex 1's deformation
+        // must still land normally — the fallback is per-vertex, not
+        // "reject the whole morph".
+        let base = vec![[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]];
+        let morphs = vec![morph(1.0, vec![[f32::MAX, 0.0, 0.0], [1.0, 0.0, 0.0]])];
+        let out = apply_morphs(&base, &morphs, &[2.0]);
+        assert_eq!(out[0], base[0], "overflowing vertex falls back to base");
+        assert_eq!(out[1], [2.0, 0.0, 0.0], "sibling vertex still deforms normally");
     }
 }
