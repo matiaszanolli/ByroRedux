@@ -67,6 +67,13 @@ pub(crate) fn fo4_data_dir() -> PathBuf {
     )
 }
 
+pub(crate) fn starfield_data_dir() -> PathBuf {
+    data_dir(
+        "BYROREDUX_STARFIELD_DATA",
+        "/mnt/data/SteamLibrary/steamapps/common/Starfield/Data",
+    )
+}
+
 // ── ESM convenience accessors (the actual hot-path callers) ──────────
 
 pub(crate) fn oblivion_esm() -> PathBuf {
@@ -87,4 +94,8 @@ pub(crate) fn skyrim_se_esm() -> PathBuf {
 
 pub(crate) fn fo4_esm() -> PathBuf {
     fo4_data_dir().join("Fallout4.esm")
+}
+
+pub(crate) fn starfield_esm() -> PathBuf {
+    starfield_data_dir().join("Starfield.esm")
 }

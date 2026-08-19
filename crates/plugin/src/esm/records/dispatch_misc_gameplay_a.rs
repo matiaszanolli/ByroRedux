@@ -96,15 +96,25 @@ pub(super) fn dispatch_misc_gameplay_a_group(
                     .insert(fid, parse_pack(fid, subs, &pack_remap, game));
             })?;
         }
-        b"QUST" => {
-            // Stage CTDA params live in plugin-local FormID space; remap
-            // them to global here (#1666) so the condition evaluator can
-            // compare against entities' global FormIdComponents.
-            let qust_remap = reader.get_form_id_remap();
-            extract_records(reader, end, b"QUST", &mut |fid, subs| {
-                index.quests.insert(fid, parse_qust(fid, subs, &qust_remap));
-            })?;
-        }
+        // #2908 / ESM-D4-02 — FO4 nests its entire dialogue/scene tree
+        // (DIAL/INFO/SCEN, 117,230 records on FO4 alone) as children of
+        // this GRUP instead of shipping separate top-level DIAL/SCEN
+        // groups (Starfield ships the top-level DIAL/SCEN labels but
+        // empty — its real content is under QUST too). The generic
+        // single-type `extract_records` walker used here pre-fix
+        // silently `skip_record`d every non-QUST record it found.
+        // `extract_quest_dialogue_scene_tree` routes QUST/DIAL/INFO/SCEN
+        // by record type regardless of nesting depth; stage CTDA params
+        // and every other FormID field these parsers touch already go
+        // through the plugin-local → global remap internally (#1666),
+        // same as before.
+        b"QUST" => extract_quest_dialogue_scene_tree(
+            reader,
+            end,
+            &mut index.quests,
+            &mut index.dialogues,
+            &mut index.scenes,
+        )?,
         b"SCEN" => {
             // Scene package/topic/quest references and CTDA parameters are
             // plugin-local. Normalize them at ingestion so the runtime scene

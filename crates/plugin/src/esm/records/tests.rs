@@ -70,6 +70,22 @@ fn wrap_group(label: &[u8; 4], record: &[u8]) -> Vec<u8> {
     buf
 }
 
+/// Wrap `content` (already-serialized records/sub-groups) in a NESTED
+/// (non-top) group with an explicit `group_type` and `label` — for
+/// building the FO4/Starfield-shaped QUST→DIAL→INFO nesting `wrap_group`
+/// (hardcoded to group_type = top) can't express. #2908.
+fn wrap_sub_group(label: [u8; 4], group_type: u32, content: &[u8]) -> Vec<u8> {
+    let total = 24 + content.len();
+    let mut buf = Vec::new();
+    buf.extend_from_slice(b"GRUP");
+    buf.extend_from_slice(&(total as u32).to_le_bytes());
+    buf.extend_from_slice(&label);
+    buf.extend_from_slice(&group_type.to_le_bytes());
+    buf.extend_from_slice(&[0u8; 8]);
+    buf.extend_from_slice(content);
+    buf
+}
+
 #[test]
 fn extract_records_walks_one_group() {
     let mut subs: Vec<(&[u8; 4], Vec<u8>)> = Vec::new();
@@ -296,6 +312,156 @@ fn parse_real_fnv_dial_infos_populated() {
     assert!(
         total_infos > 0,
         "FNV must surface at least one INFO across all DIALs (#631)"
+    );
+}
+
+/// Regression: #2908 / ESM-D4-02. FO4/Starfield nest the whole
+/// dialogue/scene tree as children of the top-level `QUST` GRUP
+/// instead of shipping separate top-level `DIAL`/`SCEN` groups.
+/// Pre-fix, the generic single-type `extract_records` walker used
+/// for the `QUST` label silently `skip_record`d every nested DIAL /
+/// INFO / SCEN it found.
+///
+/// Fixture builds (group_type deliberately arbitrary/non-7 —
+/// `extract_quest_dialogue_scene_tree` must not depend on a specific
+/// `group_type` value, since the exact FO4/Starfield nesting shape
+/// isn't independently confirmed against a spec):
+/// ```text
+/// GRUP type=0 label="QUST"
+///   QUST record (form 0x100, EDID="MQ01")
+///   GRUP type=999 label=0xFFFF (arbitrary)
+///     DIAL record (form 0x200, EDID="MQ01Topic")
+///     GRUP type=999 label=0xFFFF (arbitrary, nested one level deeper)
+///       INFO record (form 0x300, NAM1="Hello")
+///   SCEN record (form 0x400, EDID="MQ01Scene1")
+/// ```
+///
+/// Parsed through `parse_esm_with_load_order` with a non-identity
+/// remap (plugin loaded at global slot 2) so every FormID asserted
+/// below also pins the plugin-local → global crossing (#1666-style
+/// REMAP coverage), not just record routing.
+#[test]
+fn qust_group_walks_nested_dial_info_scen() {
+    let fid = |local: u32| 0x0100_0000 | local;
+    let global = |local: u32| 0x0200_0000 | local;
+
+    let qust = build_record(b"QUST", fid(0x100), &[(b"EDID", b"MQ01\0".to_vec())]);
+    let dial = build_record(b"DIAL", fid(0x200), &[(b"EDID", b"MQ01Topic\0".to_vec())]);
+    let info = build_record(b"INFO", fid(0x300), &[(b"NAM1", b"Hello\0".to_vec())]);
+    let scen = build_record(
+        b"SCEN",
+        fid(0x400),
+        &[(b"EDID", b"MQ01Scene1\0".to_vec())],
+    );
+
+    let innermost = wrap_sub_group(*b"\xff\xff\x00\x00", 999, &info);
+    let mut dial_children = Vec::new();
+    dial_children.extend_from_slice(&dial);
+    dial_children.extend_from_slice(&innermost);
+    let quest_children = wrap_sub_group(*b"\xff\xff\x00\x00", 999, &dial_children);
+
+    // `wrap_group` just wraps whatever bytes it's given in a top-level
+    // GRUP — it isn't limited to a single record, so the concatenated
+    // QUST + nested-tree + SCEN payload passes straight through.
+    let mut top_content = Vec::new();
+    top_content.extend_from_slice(&qust);
+    top_content.extend_from_slice(&quest_children);
+    top_content.extend_from_slice(&scen);
+    let top_grup = wrap_group(b"QUST", &top_content);
+
+    let mut esm = build_record(b"TES4", 0, &[]);
+    esm.extend_from_slice(&top_grup);
+
+    let index = parse_esm_with_load_order(&esm, Some(FormIdRemap::regular(2, vec![0])))
+        .expect("parse synthetic QUST tree");
+
+    assert_eq!(index.quests.len(), 1, "QUST must still be indexed");
+    assert!(
+        index.quests.contains_key(&global(0x100)),
+        "QUST FormID must cross the plugin-local -> global remap"
+    );
+
+    let dial = index
+        .dialogues
+        .get(&global(0x200))
+        .expect("nested DIAL must be indexed, not skip_record'd (#2908)");
+    assert_eq!(dial.editor_id, "MQ01Topic");
+    assert_eq!(
+        dial.infos.len(),
+        1,
+        "nested INFO must attach to its parent DIAL regardless of group_type/depth"
+    );
+    assert_eq!(dial.infos[0].form_id, global(0x300));
+
+    let scene = index
+        .scenes
+        .get(&global(0x400))
+        .expect("SCEN sibling to the nested DIAL tree must still be indexed");
+    assert_eq!(scene.editor_id, "MQ01Scene1");
+}
+
+/// Real-data oracle for #2908: the vanilla FO4 master must surface
+/// dialogues/scenes through the QUST-nested tree. Pre-fix,
+/// `index.dialogues` and `index.scenes` were both empty on FO4 (the
+/// audit's own measured evidence: 117,230 records dropped).
+#[test]
+#[ignore]
+fn parse_real_fo4_dialogues_and_scenes_populated() {
+    let path = crate::esm::test_paths::fo4_esm();
+    if !path.exists() {
+        eprintln!("Skipping: Fallout4.esm not found at {}", path.display());
+        return;
+    }
+    let data = std::fs::read(&path).unwrap();
+    let index = parse_esm(&data).expect("parse_esm");
+
+    eprintln!(
+        "FO4: {} quests, {} dialogues, {} scenes",
+        index.quests.len(),
+        index.dialogues.len(),
+        index.scenes.len(),
+    );
+    assert!(
+        !index.quests.is_empty(),
+        "FO4 must ship at least one QUST — this arm already worked pre-fix"
+    );
+    assert!(
+        !index.dialogues.is_empty(),
+        "FO4 QUST-nested DIAL tree must be reachable (#2908)"
+    );
+    assert!(
+        !index.scenes.is_empty(),
+        "FO4 QUST-nested SCEN tree must be reachable (#2908)"
+    );
+}
+
+/// Real-data oracle for #2908 on Starfield — same shape as the FO4
+/// oracle above. Starfield ships top-level DIAL/SCEN GRUP labels but
+/// empty; the real content is under QUST here too.
+#[test]
+#[ignore]
+fn parse_real_starfield_dialogues_and_scenes_populated() {
+    let path = crate::esm::test_paths::starfield_esm();
+    if !path.exists() {
+        eprintln!("Skipping: Starfield.esm not found at {}", path.display());
+        return;
+    }
+    let data = std::fs::read(&path).unwrap();
+    let index = parse_esm(&data).expect("parse_esm");
+
+    eprintln!(
+        "Starfield: {} quests, {} dialogues, {} scenes",
+        index.quests.len(),
+        index.dialogues.len(),
+        index.scenes.len(),
+    );
+    assert!(
+        !index.dialogues.is_empty(),
+        "Starfield QUST-nested DIAL tree must be reachable (#2908)"
+    );
+    assert!(
+        !index.scenes.is_empty(),
+        "Starfield QUST-nested SCEN tree must be reachable (#2908)"
     );
 }
 

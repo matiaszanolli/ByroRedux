@@ -104,7 +104,10 @@ mod index;
 
 pub use index::EsmIndex;
 
-use grup_walker::{extract_dial_with_info, extract_records, extract_records_with_modl};
+use grup_walker::{
+    extract_dial_with_info, extract_quest_dialogue_scene_tree, extract_records,
+    extract_records_with_modl,
+};
 
 // ── #2060 split — `parse_esm_with_load_order`'s per-domain dispatch
 // tables. The cell-only group (CELL/WRLD/LTEX/TXST/SCOL/PKIN/MOVS/MSWP/

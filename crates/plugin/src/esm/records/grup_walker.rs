@@ -9,8 +9,8 @@
 
 use super::super::cell::{build_static_object_from_subs, StaticObject};
 use super::super::reader::{EsmReader, SubRecord};
-use super::misc::{parse_dial, parse_info};
-use super::DialRecord;
+use super::misc::{parse_dial, parse_info, parse_qust, parse_scen};
+use super::{DialRecord, QustRecord, ScenRecord};
 use anyhow::Result;
 use std::collections::HashMap;
 
@@ -199,6 +199,113 @@ fn walk_info_records(
             }
         } else {
             reader.skip_record(&header);
+        }
+    }
+    Ok(())
+}
+
+/// Walk the top-level `QUST` group, routing `QUST` / `DIAL` / `INFO` /
+/// `SCEN` records into their typed maps regardless of nesting depth.
+///
+/// #2908 / ESM-D4-02 — Oblivion→Skyrim ship `DIAL` and `SCEN` as their
+/// OWN top-level GRUPs, so the generic single-type [`extract_records`]
+/// worked for them. FO4 nests the entire dialogue/scene tree as
+/// children of the `QUST` GRUP instead (FO4 ships no top-level
+/// `DIAL`/`SCEN` label at all; Starfield ships both, but empty — the
+/// real content is under `QUST` there too), and `extract_records`
+/// filtering on a single `expected_type` silently `skip_record`s
+/// every non-`QUST` record it finds — 117,230 / 202,193 records on
+/// FO4 / Starfield respectively.
+///
+/// The exact nesting shape under `QUST` (which `group_type` wraps a
+/// quest's `DIAL`/`SCEN` children, and how deep `INFO` sits under its
+/// parent `DIAL`) isn't independently confirmed against a spec here,
+/// so — like [`extract_dial_with_info`] already does for its own
+/// group_type-drift case — this walker doesn't gate on a specific
+/// `group_type` at all: it recurses into every nested group
+/// unconditionally (same posture as [`extract_records`]) and tracks
+/// "the most recently parsed `DIAL`" as plain walk-order state,
+/// threaded through the recursion via `last_dial_form_id` so an
+/// `INFO` attaches correctly no matter how many group levels separate
+/// it from its parent `DIAL`.
+///
+/// `DLBR` (Dialog Branch — also present in the audit's evidence table)
+/// is deliberately NOT parsed here: no byte layout for it exists
+/// anywhere in this tree or the project's reference sources, and
+/// guessing one would violate the project's no-guessing policy. It
+/// falls through to the same `skip_record` every other unhandled type
+/// at this tier already gets — a stated gap, not a silent one.
+pub(super) fn extract_quest_dialogue_scene_tree(
+    reader: &mut EsmReader,
+    end: usize,
+    quests: &mut HashMap<u32, QustRecord>,
+    dialogues: &mut HashMap<u32, DialRecord>,
+    scenes: &mut HashMap<u32, ScenRecord>,
+) -> Result<()> {
+    let remap = reader.get_form_id_remap();
+    let mut last_dial_form_id: Option<u32> = None;
+    extract_quest_dialogue_scene_tree_inner(
+        reader,
+        end,
+        quests,
+        dialogues,
+        scenes,
+        &remap,
+        &mut last_dial_form_id,
+    )
+}
+
+fn extract_quest_dialogue_scene_tree_inner(
+    reader: &mut EsmReader,
+    end: usize,
+    quests: &mut HashMap<u32, QustRecord>,
+    dialogues: &mut HashMap<u32, DialRecord>,
+    scenes: &mut HashMap<u32, ScenRecord>,
+    remap: &Option<crate::esm::reader::FormIdRemap>,
+    last_dial_form_id: &mut Option<u32>,
+) -> Result<()> {
+    while reader.position() < end && reader.remaining() > 0 {
+        if reader.is_group() {
+            let sub_group = reader.read_group_header()?;
+            let sub_end = reader.group_content_end(&sub_group);
+            extract_quest_dialogue_scene_tree_inner(
+                reader,
+                sub_end,
+                quests,
+                dialogues,
+                scenes,
+                remap,
+                last_dial_form_id,
+            )?;
+            continue;
+        }
+        let header = reader.read_record_header()?;
+        match &header.record_type {
+            b"QUST" => {
+                let subs = reader.read_sub_records(&header)?;
+                quests.insert(header.form_id, parse_qust(header.form_id, &subs, remap));
+            }
+            b"DIAL" => {
+                let subs = reader.read_sub_records(&header)?;
+                dialogues.insert(header.form_id, parse_dial(header.form_id, &subs, remap));
+                *last_dial_form_id = Some(header.form_id);
+            }
+            b"INFO" => {
+                let subs = reader.read_sub_records(&header)?;
+                let info = parse_info(header.form_id, &subs, remap);
+                if let Some(parent) = last_dial_form_id.and_then(|fid| dialogues.get_mut(&fid)) {
+                    parent.infos.push(info);
+                }
+                // No `last_dial_form_id` yet (malformed/reordered
+                // content) — the INFO has nowhere to attach. Same
+                // silent-drop posture `walk_info_records` already has
+                // for its unresolvable-parent case.
+            }
+            b"SCEN" => {
+                let subs = reader.read_sub_records(&header)?;
+                scenes.insert(header.form_id, parse_scen(header.form_id, &subs, remap));
+            }
+            _ => reader.skip_record(&header),
         }
     }
     Ok(())
