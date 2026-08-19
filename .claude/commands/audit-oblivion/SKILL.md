@@ -1,5 +1,5 @@
 ---
-description: "Per-game audit of Oblivion (TES4) compatibility — NIF v20.0.0.5 + the v10.x NetImmerse family, BSA v103, live ESM path"
+description: "Per-game audit of Oblivion (TES4) compatibility — NIF v20.0.0.4 + the v10.x NetImmerse family, BSA v103, live ESM path"
 argument-hint: "--focus <dimensions>"
 ---
 
@@ -19,9 +19,14 @@ for the severity scale. Do not restate any of it here.
 Oblivion is the **oldest** title in the lineage and exercises code paths no
 other game reaches. Two NIF eras coexist in vanilla `Oblivion - Meshes.bsa`:
 
-1. **The retail body** — NIF **v20.0.0.5** (`bsver=11`): inline strings, u16
-   flags, **no per-block size table**. This is what most clutter / architecture
-   / creature meshes are.
+1. **The retail body** — NIF **v20.0.0.4** (`bsver=11`), with a v20.0.0.5
+   minority alongside it: inline strings, u16 flags, **no per-block size
+   table**. v20.0.0.4 is what most clutter / architecture / creature meshes
+   are — `version.rs` documents it as "the most common Oblivion version,"
+   and a live census confirms it (OBL-D1-05 / #2566): 7,282 v20.0.0.4 files
+   vs. a v20.0.0.5 minority. Every version gate in this codebase is already
+   written as `<= V20_0_0_5` or `>= V20_0_0_4`, so this correction changes
+   no conclusion — only this file's own framing was stale.
 2. **The NetImmerse tail** — a long tail of **v10.x** sub-versions (down to
    pre-Gamebryo v3.3.0.13) authored years earlier. These have subtly different
    field layouts gated by tight version bands in nif.xml, and — like v20.0.0.5 —
@@ -39,7 +44,7 @@ as of 2026-06-13; Oblivion-Meshes went from 56 truncated → 6 (further reduced 
 
 | Aspect            | Current state (verify, don't trust this table blindly)              |
 |-------------------|--------------------------------------------------------------------|
-| NIF format        | v20.0.0.5 retail + v10.x NetImmerse tail (both sizeless)            |
+| NIF format        | v20.0.0.4 retail (v20.0.0.5 minority) + v10.x NetImmerse tail (both sizeless) |
 | BSA format        | v103 — opens AND extracts cleanly across all vanilla archives (regression guard, #699) |
 | ESM parser        | **Live** — `crates/plugin/src/esm/` with `parse_esm_cells` walker + ~25 record types, several with Oblivion-specific decode branches. NOT a stub (the per-game *legacy/tes4.rs* stub was removed under #390). |
 | Parse rate        | See ROADMAP.md Oblivion compat-matrix row (drifts after each sweep; do NOT hardcode a number here). Post-v10.x-family + `#1543`/`#1544`: 6 residual NetImmerse truncations (checked-in `oblivion_truncations.tsv` baseline, `#1611`) and **0 hard failures** — the corrupt-by-design `marker_radius.nif` now truncates instead of hard-Err'ing and is one of those 6 (`#698` closed). |
@@ -65,9 +70,14 @@ as of 2026-06-13; Oblivion-Meshes went from 56 truncated → 6 (further reduced 
   every subsequent block — there is no `block_size`-advance recovery path
   (unlike 20.2.0.7+). This is why every v10.x stride-drift bug truncated whole
   subtrees rather than one field.
-- **Pre-Gamebryo v3.3.0.13 files** (e.g. `meshes/marker_*.nif`) inline type
-  names as sized strings instead of a global type table. Parser returns an
-  empty `NifScene` with a debug log rather than failing.
+- **Pre-Gamebryo files (v < 5.0.0.1)** (e.g. `meshes/marker_*.nif`) inline
+  type names as sized strings instead of using the global block-type table
+  (nif.xml's table was introduced at 5.0.0.1, not 3.3.0.13 — that's an
+  unrelated field-presence gate on different fields; `header.rs:163-164`,
+  `#171`). The parser reads inline names in-loop and parses normally —
+  it does NOT return an empty `NifScene`. It only truncates (keeping
+  blocks parsed so far, `log::warn!`) if a mid-file inline-name read
+  itself fails, e.g. the corrupt-by-design `marker_radius.nif` (`#698`).
 - **NetImmerse v10.x leading group_id.** For versions in [10.0.0.0,
   10.1.0.114), each block is preceded by a 4-byte group_id (`00 00 00 00`);
   block content starts AFTER it. Mixing stream-relative vs file offsets is the
@@ -95,7 +105,7 @@ as of 2026-06-13; Oblivion-Meshes went from 56 truncated → 6 (further reduced 
 Dimensions are ordered by Oblivion-specific risk: NIF version handling first
 (the v10.x tail is the unique surface), then archive, ESM, render, real-data.
 
-### Dimension 1: NIF Version Handling — v20.0.0.5 + the v10.x NetImmerse Tail
+### Dimension 1: NIF Version Handling — v20.0.0.4 + the v10.x NetImmerse Tail
 **Subagent**: `legacy-specialist`
 **Entry points**: `crates/nif/src/header.rs`, `crates/nif/src/version.rs`, `crates/nif/src/stream.rs`, `crates/nif/src/blocks/`, `docs/legacy/`
 **Checklist**:
@@ -120,7 +130,7 @@ Dimensions are ordered by Oblivion-specific risk: NIF version handling first
   block boundary in the v10.x bands. Any new truncation growth on Oblivion-Meshes
   is a regression of this family — escalate, don't re-derive.
 - `NiTexturingProperty` reads u32 count raw, no bool gate (regression guard).
-- Inline-string block-type handling for pre-v3.3.0.13.
+- Inline-string block-type handling for pre-5.0.0.1 (see Known Quirks).
 - u16 vs u32 flag width per block in the v20.0.0.5 vs v10.x layouts.
 - Oblivion-only / legacy block types dispatched in `crates/nif/src/blocks/mod.rs`:
   NiKeyframeController, NiSequenceStreamHelper, NiBillboardNode + NiNode
@@ -292,8 +302,11 @@ Oblivion-specific slice.
   exterior REFRs?
 - Animation blocks that parse but can't play because scene-graph name resolution
   is missing?
-- Does the pre-v3.3.0.13 fallback log at `warn` or `debug` (spam risk on
-  full-archive sweeps)?
+- The pre-5.0.0.1 inline-name path itself logs at `debug` (one line per
+  file, `lib.rs:380-384`) and only escalates to `warn` on the rare
+  mid-file read failure (`lib.rs:404-407`, keyed per truncated block, not
+  per file) — confirm this hasn't drifted to a per-block `warn` on the
+  common case (spam risk on full-archive sweeps).
 - Any 100%-parse NIFs that would still render wrong (legacy particle emitters
   that parse but don't route to the renderer — cross-check Dim 4)?
 - `_far.nif` distant-object LOD (#1726/#1745, Session 52) — verify the
