@@ -197,6 +197,40 @@ fn bgsm_merge_forwards_v2_plus_standalone_slots() {
     assert_eq!(wrinkle_map.as_deref(), Some("ncr_wrinkles.dds"));
 }
 
+/// Regression for #2627 (SF-D9-2026-08-07-02) — the BGSM v<=2 legacy
+/// texture list (envmap, glow, inner_layer, wrinkles, displacement) had
+/// one slot the merge never forwarded, even though the sink
+/// (`MaterialTextureSet::inner_layer`) is a live, populated role via
+/// the NIF `BSLightingShaderProperty` multi-layer-parallax path. A BGSM
+/// authoring its inner layer externally (Skyrim SE ice/glass, FO4
+/// layered panes) rendered with the layer silently absent. Exercises
+/// the real `merge_external_material` path, not a mirror of its loop.
+#[test]
+fn bgsm_merge_forwards_inner_layer_texture() {
+    let mut pool = byroredux_core::string::StringPool::new();
+    let path = "materials/tests/inner_layer.bgsm";
+    let mut provider = MaterialProvider::new();
+    provider.insert_bgsm_for_test(
+        path,
+        ResolvedMaterial {
+            file: BgsmFile {
+                inner_layer_texture: "effects/glass/icelayer.dds".into(),
+                ..Default::default()
+            },
+            parent: None,
+        },
+    );
+    let mut mesh = imported_mesh_with_material_path(&mut pool, path);
+
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool,).merged());
+    let handle = mesh
+        .material
+        .textures
+        .inner_layer
+        .expect("inner_layer_texture must reach MaterialTextureSet::inner_layer");
+    assert_eq!(pool.resolve(handle), Some("effects/glass/icelayer.dds"));
+}
+
 /// Regression for #1077 / FO4-D6-003 Phase 1 — BGSM-only shader
 /// flags (`pbr`, `translucency`, `model_space_normals`) must
 /// forward to `ImportedMesh`'s `is_pbr` / `has_translucency` /

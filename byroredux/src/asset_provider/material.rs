@@ -1320,6 +1320,22 @@ pub(crate) fn merge_external_material(
                 &mut touched,
                 pool,
             );
+            // #2627 / SF-D9-2026-08-07-02 — the v<=2 legacy texture list
+            // reads envmap, glow, inner_layer, wrinkles, displacement (see
+            // `bgsm.rs`'s parser comment); this was the one slot in that
+            // set the merge never forwarded, even though the sink is a
+            // live, populated role — the NIF `BSLightingShaderProperty`
+            // multi-layer-parallax path already resolves
+            // `MaterialTextureSet::inner_layer` to a real texture handle.
+            // A BGSM authoring its inner layer externally (Skyrim SE
+            // ice/glass, FO4 layered panes) rendered with the layer
+            // silently absent.
+            fill(
+                &mut material.textures.inner_layer,
+                &bgsm.inner_layer_texture,
+                &mut touched,
+                pool,
+            );
             // #1076 / FO4-D6-002 — BGSM v>2 standalone slots that
             // pre-fix were parsed but dropped on the floor. Each is
             // empty on the v<=2 path (the parser leaves the String
