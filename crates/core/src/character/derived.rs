@@ -33,6 +33,22 @@
 //! derived formulas that depend on them; chaining is resolved by that
 //! ordering, not by the formula type.
 //!
+//! ## Percentage convention
+//!
+//! A percentage-valued output (Critical Chance, the FO3/FNV
+//! [`Affliction`](super::resistance::Affliction) resistances) is always
+//! **0–100**, never 0.0–1.0. `damage_multiplier`
+//! ([`super::resistance`]) fixes this as the one convention by dividing by
+//! `100.0`, so every percentage row must be written in the coefficients
+//! that land there — `Luck·1` capped `10`, not `Luck·0.01` capped `0.10`
+//! (#2936: Critical Chance shipped as the latter for a while, silently a
+//! hundredfold off the resistances it shares a table with, because nothing
+//! records which convention a source document's "×1%" phrasing became in
+//! code). There is no type-level enforcement of this — a formula whose
+//! output is conceptually a percentage looks identical to one that
+//! isn't — so a new percentage-valued row must be written on the 0–100
+//! scale by hand, and cite this paragraph in its comment.
+//!
 //! [`eval`]: DerivedStatFormula::eval
 
 use crate::ecs::components::ActorValues;
@@ -393,11 +409,13 @@ mod tests {
 
     #[test]
     fn critical_chance_capped_and_xp_multiplier() {
-        // FO3/FNV Critical Chance: 0.01·Luck, cap 0.10. Luck 5 → 0.05; 15 → 0.10.
-        let crit = DerivedStatFormula::affine(av(LUCK), 0.01, 0.0).capped(0.10);
-        assert!((crit.eval(&avs(&[(LUCK, 5.0)]), 1) - 0.05).abs() < 1e-6);
+        // FO3/FNV Critical Chance: Luck·1 (0–100 percentage scale, #2936 —
+        // matches Affliction resistance's convention, not a 0.0–1.0
+        // fraction), cap 10. Luck 5 → 5; 15 → 10 (capped).
+        let crit = DerivedStatFormula::affine(av(LUCK), 1.0, 0.0).capped(10.0);
+        assert!((crit.eval(&avs(&[(LUCK, 5.0)]), 1) - 5.0).abs() < 1e-6);
         assert!(
-            (crit.eval(&avs(&[(LUCK, 15.0)]), 1) - 0.10).abs() < 1e-6,
+            (crit.eval(&avs(&[(LUCK, 15.0)]), 1) - 10.0).abs() < 1e-6,
             "cap"
         );
         // FO4 XP multiplier: ×(1 + 0.03·INT). INT 10 → 1.30×.

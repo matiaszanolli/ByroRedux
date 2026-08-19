@@ -45,11 +45,18 @@ fn add_fnv_fo3_shared<F: Fn(&str) -> Option<u32>>(rs: &mut CharacterRuleset, res
     if let (Some(out), Some(s)) = (resolve("MeleeDamage"), strength) {
         rs.push_derived(out, DerivedStatFormula::affine(av(s), 0.5, 0.0));
     }
-    // Critical Chance = 0.01·Luck, capped at 0.10.
+    // Critical Chance = Luck·1 %, capped at 10 %. #2936 — on the 0–100
+    // percentage scale, not the 0.0–1.0 fraction the source's "×1%" phrasing
+    // could also read as. The Affliction resistances below use the same
+    // 0–100 scale (`damage_multiplier`'s `/100.0` fixes it as CHARAL's one
+    // percentage convention, see `derived.rs`'s module docs) — Critical
+    // Chance used to be the one row transcribed as a fraction instead
+    // (`0.01·Luck` capped `0.10`), silently 100x off any percentage-scale
+    // reader with no way to tell from the table which convention applied.
     if let (Some(out), Some(l)) = (resolve("CritChance"), resolve("Luck")) {
         rs.push_derived(
             out,
-            DerivedStatFormula::affine(av(l), 0.01, 0.0).capped(0.10),
+            DerivedStatFormula::affine(av(l), 1.0, 0.0).capped(10.0),
         );
     }
     // Unarmed Damage = ceil((10 + Unarmed)/20) = ceil(0.5 + 0.05·Unarmed).
@@ -232,10 +239,36 @@ mod tests {
         // AP differs: FO3 65+2·5 = 75; FNV 65+3·5 = 80.
         assert_eq!(fo3.derived_value(0x2D0, &avs, 1), Some(75.0));
         assert_eq!(fnv.derived_value(0x2D0, &avs, 1), Some(80.0));
-        // Shared stats identical: Unarmed Damage ceil(0.5+4.5)=5; Crit 0.05.
+        // Shared stats identical: Unarmed Damage ceil(0.5+4.5)=5; Crit 5%
+        // (#2936 — 0–100 scale, matching RadResist/PoisonResist above, not
+        // the 0.0–1.0 fraction this used to evaluate to).
         assert_eq!(fnv.derived_value(0x2D4, &avs, 1), Some(5.0));
         assert_eq!(fo3.derived_value(0x2D4, &avs, 1), Some(5.0));
-        assert!((fo3.derived_value(0x2D3, &avs, 1).unwrap() - 0.05).abs() < 1e-6);
+        assert!((fo3.derived_value(0x2D3, &avs, 1).unwrap() - 5.0).abs() < 1e-6);
+        assert!((fnv.derived_value(0x2D3, &avs, 1).unwrap() - 5.0).abs() < 1e-6);
+        // The 10% cap, on the same scale as RadResist's 85% cap above.
+        let high_luck = ActorValues::from_pairs([(0x0B, 50.0)]);
+        assert!((fo3.derived_value(0x2D3, &high_luck, 1).unwrap() - 10.0).abs() < 1e-6);
+    }
+
+    /// #2936 — Critical Chance and the Affliction resistances (both
+    /// percentage-valued stats in the same ruleset) must land on the same
+    /// 0–100 scale, not silently disagree by a factor of 100. Regression:
+    /// before this fix, Critical Chance evaluated to `0.05` (a fraction)
+    /// at Luck 5, a hundredfold off Radiation Resistance's `8.0` (a 0–100
+    /// percentage) at a comparable END 5 — with nothing in the table able
+    /// to tell a reader which convention applied to which output id.
+    #[test]
+    fn critical_chance_and_resistances_share_the_same_percentage_scale() {
+        let fo3 = fallout3_ruleset(full);
+        let avs = ActorValues::from_pairs([(0x0B, 5.0), (0x07, 5.0)]); // Luck 5, END 5
+        let crit = fo3.derived_value(0x2D3, &avs, 1).unwrap(); // CritChance
+        let rad = fo3.derived_value(0x2D5, &avs, 1).unwrap(); // RadResist
+
+        // Both single-digit percentages on the same 0–100 scale, not
+        // `0.05` vs `8.0` two orders of magnitude apart.
+        assert_eq!(crit, 5.0);
+        assert_eq!(rad, 8.0);
     }
 
     #[test]
