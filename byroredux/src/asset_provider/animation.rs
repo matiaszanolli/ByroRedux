@@ -172,9 +172,30 @@ fn convert_hkx_clip(
     let mut channels = HashMap::with_capacity(animation.tracks.len());
     for (track_index, samples) in animation.tracks.iter().enumerate() {
         let Some(&bone_index) = animation.track_to_bone.get(track_index) else {
+            // `decode_spline_animation` always produces `track_to_bone.len()
+            // == tracks.len()`; this is defensive, not a reachable vanilla
+            // path. Logged at debug rather than warn for that reason.
+            log::debug!(
+                "HKX '{path}' (event '{idle_event}'): track {track_index} has no \
+                 track_to_bone entry — dropped",
+            );
             continue;
         };
+        // #3013 — an out-of-range `track_to_bone` entry (a bone index the
+        // decoded skeleton doesn't have) used to `continue` silently here,
+        // dropping the whole track with no diagnostic. This is where
+        // animation and skeleton are actually bound together — the `hkx`
+        // crate decodes each packfile independently and never sees the
+        // other, so it has no skeleton to validate against; here both are
+        // in hand, so a mismatch is loud instead of a bone that quietly
+        // never animates.
         let Some(bone) = skeleton.bones.get(bone_index as usize) else {
+            log::warn!(
+                "HKX '{path}' (event '{idle_event}'): track {track_index} binds bone \
+                 index {bone_index}, but skeleton '{}' only has {} bones — track dropped",
+                skeleton.name,
+                skeleton.bones.len(),
+            );
             continue;
         };
         let mut translation_keys = Vec::with_capacity(samples.len());
@@ -320,6 +341,49 @@ mod tests {
             &["ExitCartEnd", "IdleFurnitureExit"]
         );
         assert!(behavior_completion_events("IdleCartPrisonerASway").is_empty());
+    }
+
+    /// #3013 — a `track_to_bone` entry naming a bone index the decoded
+    /// skeleton doesn't have must drop only that track, not panic and not
+    /// silently disappear (the drop itself is still asserted here; the
+    /// accompanying `log::warn!` is a diagnostic, not a return value, so
+    /// it isn't captured by this test). A sibling in-range track on the
+    /// same clip must still convert normally, proving the out-of-range
+    /// entry doesn't poison the whole clip.
+    #[test]
+    fn convert_hkx_clip_drops_only_the_out_of_range_bound_track() {
+        use byroredux_hkx::{HkxAnnotation, HkxBone, HkxTransform};
+
+        let skeleton = HkxSkeleton {
+            name: "TestSkeleton".to_string(),
+            bones: vec![HkxBone {
+                name: "NPC Root [Root]".to_string(),
+                parent_index: -1,
+                reference_pose: HkxTransform::IDENTITY,
+            }],
+        };
+        let sample = vec![HkxTransform::IDENTITY];
+        let animation = HkxAnimation {
+            duration: 1.0,
+            num_frames: 1,
+            frame_duration: 1.0,
+            // Track 0 binds bone 0 (valid); track 1 binds bone 5, but the
+            // skeleton above has only one bone (index 0) — out of range.
+            tracks: vec![sample.clone(), sample],
+            track_to_bone: vec![0, 5],
+            annotations: Vec::<HkxAnnotation>::new(),
+        };
+
+        let mut pool = StringPool::new();
+        let clip = convert_hkx_clip("test.hkx", "IdleTest", &skeleton, &animation, &mut pool);
+
+        assert_eq!(
+            clip.channels.len(),
+            1,
+            "only the in-range track (bone 0) should convert; the \
+             out-of-range track (bone 5) must be dropped, not panic and \
+             not silently produce a channel for a bone that doesn't exist",
+        );
     }
 
     #[test]
