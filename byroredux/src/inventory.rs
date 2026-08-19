@@ -10,9 +10,10 @@ use byroredux_core::ecs::components::{
 };
 use byroredux_core::ecs::{Resource, World};
 use byroredux_plugin::esm::reader::GameKind;
-use byroredux_plugin::esm::records::{EsmIndex, ItemKind, NpcRecord, ACBS_PC_LEVEL_MULT};
+use byroredux_plugin::esm::records::{EsmIndex, ItemKind};
 use rustc_hash::FxHashMap;
 
+use crate::npc_spawn::effective_actor_level;
 use crate::systems::PlayerEntity;
 
 const PLAYER_NPC_FORM_ID: u32 = 0x0000_0007;
@@ -222,14 +223,6 @@ fn build_player_template_for(index: &EsmIndex, player_form_id: u32) -> PlayerInv
         inventory,
         equipment,
         equipped_weapon,
-    }
-}
-
-fn effective_actor_level(actor: &NpcRecord) -> i16 {
-    if actor.acbs_flags & ACBS_PC_LEVEL_MULT != 0 {
-        actor.calc_min.max(1) as i16
-    } else {
-        actor.level.max(1)
     }
 }
 
@@ -613,7 +606,7 @@ mod tests {
     #[test]
     fn player_template_uses_authored_inventory_and_equipment_slots() {
         use byroredux_plugin::esm::records::common::CommonItemFields;
-        use byroredux_plugin::esm::records::{ItemRecord, NpcInventoryEntry};
+        use byroredux_plugin::esm::records::{ItemRecord, NpcInventoryEntry, NpcRecord};
 
         let armor_form = 0x0001_2345;
         let ammo_form = 0x0001_2346;

@@ -127,7 +127,20 @@ fn stamp_actor_values(
 /// rather than a derived guess. `calcMin` is `0` on records that carry none, so
 /// the result is floored at 1: level 0 would make a leveled list resolve to
 /// nothing at all, which trades over-levelled gear for no gear.
-fn effective_actor_level(npc: &byroredux_plugin::esm::records::NpcRecord) -> i16 {
+///
+/// The non-multiplier branch does NOT get that same floor: `0` is clamped
+/// only up from negative (malformed/corrupt data), not up to `1`. Unlike
+/// `calcMin`, a plain `level` of `0` is not a documented "record carries
+/// none" sentinel — nothing distinguishes it from an authored `0`, so
+/// forcing it to `1` would be inventing data the record never claimed to
+/// have. See `pc_level_mult_actors_resolve_to_calc_min_not_the_raw_
+/// multiplier`'s `negative` case for the pin.
+///
+/// #3081 (REG-2026-08-16-D1-01) — the single source of truth. A second
+/// copy briefly existed in `inventory.rs` (`09682c71`, one day after
+/// #2955 closed) and had already drifted to `.max(1)` on this branch
+/// before anyone noticed; deleted in favor of importing this one.
+pub(crate) fn effective_actor_level(npc: &byroredux_plugin::esm::records::NpcRecord) -> i16 {
     if npc.acbs_flags & byroredux_plugin::esm::records::ACBS_PC_LEVEL_MULT != 0 {
         npc.calc_min.max(1) as i16
     } else {
