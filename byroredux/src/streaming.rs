@@ -959,6 +959,27 @@ pub fn join_with_timeout(
     }
 }
 
+/// Build the dedicated rayon pool the cell-stream worker uses for its
+/// Phase 2 parallel parse (#3089). Sized to leave headroom for the
+/// frame's own parallel work rather than doubling the total thread
+/// count: half the logical cores, floored at 1 so single-core CI
+/// runners still get a working (if serial-equivalent) pool. The ECS
+/// scheduler's `Stage::Update` batch uses rayon's global pool, sized by
+/// rayon to `available_parallelism` by default — reserving half here
+/// means a large fresh-parse burst can never claim more workers than
+/// the frame's parallel stages have left to run on.
+fn build_stream_parse_pool() -> rayon::ThreadPool {
+    let total = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    let worker_threads = (total / 2).max(1);
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(worker_threads)
+        .thread_name(|i| format!("byro-stream-parse-{i}"))
+        .build()
+        .expect("failed to build dedicated cell-stream rayon pool")
+}
+
 /// Cell pre-parse worker loop. Pulls requests off the channel, does
 /// the off-thread work for every NIF the cell references, and emits a
 /// single `LoadCellPayload` per request.
@@ -974,6 +995,15 @@ fn cell_pre_parse_worker(
     payload_tx: mpsc::Sender<LoadCellPayload>,
 ) {
     log::info!("cell-stream worker thread started");
+    // #3089 — CONC-2026-08-16-01. Built once for the life of this thread,
+    // not per request: `pre_parse_cell`'s Phase 2 fan-out runs inside
+    // `stream_pool.install(..)` instead of going to rayon's *global*
+    // pool, which the ECS scheduler's `Stage::Update` parallel batch
+    // (`scheduler.rs`) also dispatches into. Without a dedicated pool the
+    // two competed for the same workers the moment a cell crossed
+    // `PRE_PARSE_RAYON_MIN` fresh NIFs, defeating the whole point of
+    // running cell parsing on its own thread in the first place.
+    let stream_pool = build_stream_parse_pool();
     while let Ok(req) = request_rx.recv() {
         let LoadCellRequest {
             gx,
@@ -986,7 +1016,15 @@ fn cell_pre_parse_worker(
         } = req;
         let worker_started = Instant::now();
         let mut payload = pre_parse_cell_panic_safe(gx, gy, generation, || {
-            pre_parse_cell(gx, gy, generation, &wctx, &tex_provider, &cached_keys)
+            pre_parse_cell(
+                gx,
+                gy,
+                generation,
+                &wctx,
+                &tex_provider,
+                &cached_keys,
+                &stream_pool,
+            )
         });
         payload.timings = StreamingWorkerTimings {
             queue_wait: worker_started.saturating_duration_since(queued_at),
@@ -1101,6 +1139,7 @@ fn pre_parse_cell(
     wctx: &ExteriorWorldContext,
     tex_provider: &TextureProvider,
     cached_keys: &HashSet<String>,
+    stream_pool: &rayon::ThreadPool,
 ) -> LoadCellPayload {
     let mut parsed: HashMap<String, Option<PartialNifImport>> = HashMap::new();
     let cells_map = match wctx
@@ -1221,7 +1260,12 @@ fn pre_parse_cell(
     {
         extracted.into_iter().map(parse_one_nif).collect()
     } else {
-        extracted.into_par_iter().map(parse_one_nif).collect()
+        // #3089 — dispatch into the worker's own dedicated pool, not
+        // rayon's global one. `install` runs the closure (and therefore
+        // every task `into_par_iter()` spawns) on `stream_pool`'s
+        // workers exclusively, so this fan-out can never contend with
+        // the ECS scheduler's parallel stages for the same threads.
+        stream_pool.install(|| extracted.into_par_iter().map(parse_one_nif).collect())
     };
     parsed.extend(results);
 

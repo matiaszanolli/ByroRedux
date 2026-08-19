@@ -7,10 +7,10 @@
 //! silently miscompute the load / unload set.
 
 use super::{
-    classify_payload, compute_streaming_deltas, join_with_timeout, pre_parse_cell_panic_safe,
-    stale_pending_coords, world_pos_to_grid, JoinTimeout, LoadCellPayload, LoadedCell,
-    PayloadDecision, StreamingDeltas, StreamingLatencySummary, StreamingTelemetry,
-    StreamingWorkerTimings,
+    build_stream_parse_pool, classify_payload, compute_streaming_deltas, join_with_timeout,
+    pre_parse_cell_panic_safe, stale_pending_coords, world_pos_to_grid, JoinTimeout,
+    LoadCellPayload, LoadedCell, PayloadDecision, StreamingDeltas, StreamingLatencySummary,
+    StreamingTelemetry, StreamingWorkerTimings,
 };
 use crate::cell_loader::UnloadPhaseTimings;
 use byroredux_core::ecs::storage::EntityId;
@@ -552,4 +552,52 @@ fn join_with_timeout_passes_through_a_panicking_thread_as_ok() {
     // spurious `JoinTimeout`. See #1169 for the helper's contract.
     let res = join_with_timeout(handle, std::time::Duration::from_secs(30));
     assert_eq!(res, Ok(()));
+}
+
+// ── #3089 / CONC-2026-08-16-01 — dedicated stream-parse pool ──────────
+//
+// The cell-stream worker's Phase 2 fan-out must run on its own rayon
+// pool, not the global one the ECS scheduler's `Stage::Update` parallel
+// batch also dispatches into — otherwise a large fresh-parse burst
+// contends with the frame's own parallel work for the same threads.
+// These pin the two properties that make the fix real: the pool leaves
+// headroom (doesn't claim every logical core), and tasks run on it
+// actually execute on its dedicated, distinctly-named threads rather
+// than silently falling back to the global pool.
+
+#[test]
+fn stream_parse_pool_leaves_headroom_for_the_frame_pool() {
+    let pool = build_stream_parse_pool();
+    let total = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    let expected = (total / 2).max(1);
+    assert_eq!(
+        pool.current_num_threads(),
+        expected,
+        "dedicated stream-parse pool must be sized to half the logical cores (floored at 1), \
+         not the full machine — the ECS scheduler's global pool needs the other half"
+    );
+    if total > 1 {
+        assert!(
+            pool.current_num_threads() < total,
+            "a dedicated pool sized to the whole machine gives back none of the isolation #3089 asks for"
+        );
+    }
+}
+
+#[test]
+fn stream_parse_pool_runs_tasks_on_its_own_dedicated_threads() {
+    let pool = build_stream_parse_pool();
+    // `install` runs the closure (and anything it spawns via
+    // `into_par_iter`) on `pool`'s own workers — this reads back the
+    // current thread's name from inside that closure to confirm Phase
+    // 2's fan-out doesn't land on a rayon-global worker (which would
+    // have no name, or a differently-prefixed one).
+    let name = pool.install(|| std::thread::current().name().map(str::to_string));
+    assert!(
+        name.as_deref().is_some_and(|n| n.starts_with("byro-stream-parse-")),
+        "cell-stream Phase 2 task ran on an unexpected thread ({name:?}) — it must stay on the \
+         dedicated pool, never rayon's global pool, or #3089's contention returns"
+    );
 }
