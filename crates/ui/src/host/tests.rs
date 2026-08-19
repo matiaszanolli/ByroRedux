@@ -264,7 +264,9 @@ fn skyrim_catalog_is_pinned_sorted_and_profile_specific() {
         .all(|methods| methods[0].name < methods[1].name));
 
     let fallout = ScaleformHostCatalog::for_profile(ScaleformProfile::Fallout4Avm2);
-    assert_eq!(fallout.len(), 138);
+    // #2966 — regenerated from the corpus sweep: 138 original F4CF-sourced
+    // entries + 131 real call sites the sweep found outside them.
+    assert_eq!(fallout.len(), 269);
     assert!(fallout.contains("PlaySound"));
     assert!(!fallout.contains("RequestPlayerInfo"));
     assert!(fallout
@@ -304,13 +306,30 @@ fn catalog_names_are_well_formed_actionscript_identifiers() {
                         .all(|character| character.is_ascii_alphanumeric()),
                 "{profile:?} catalog entry {name:?} is not a plain ActionScript identifier"
             );
+            // #2966 — bare `.contains(keyword)` also flagged `ReturnFromDLC`
+            // (a real, measured method name), because "return" is a
+            // legitimate camelCase word there, not a collapsed space. The
+            // artifact this test actually guards against — `function` +
+            // `on...` glued together with no case transition — only shows up
+            // when the keyword match ISN'T its own camelCase word: bounded on
+            // both sides by the string's edges or an uppercase letter. A
+            // match with a lowercase neighbor on either side is the collapse
+            // signature; a match sitting cleanly between two camelCase word
+            // boundaries (or the identifier's ends) is just an English word.
             let lowercased = name.to_ascii_lowercase();
+            let chars: Vec<char> = name.chars().collect();
             for keyword in ["function", "var", "return", "const", "class"] {
-                assert!(
-                    !lowercased.contains(keyword),
-                    "{profile:?} catalog entry {name:?} embeds the ActionScript keyword \
-                     {keyword:?} — likely a whitespace-collapse scraping artifact"
-                );
+                for (start, _) in lowercased.match_indices(keyword) {
+                    let end = start + keyword.len();
+                    let boundary_before = start == 0 || chars[start - 1].is_ascii_uppercase();
+                    let boundary_after = end == chars.len() || chars[end].is_ascii_uppercase();
+                    assert!(
+                        boundary_before && boundary_after,
+                        "{profile:?} catalog entry {name:?} embeds the ActionScript keyword \
+                         {keyword:?} without a camelCase word boundary around it — likely a \
+                         whitespace-collapse scraping artifact"
+                    );
+                }
             }
         }
     }

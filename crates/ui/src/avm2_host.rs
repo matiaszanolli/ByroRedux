@@ -1349,37 +1349,47 @@ mod tests {
             failures.join("\n"),
         );
 
-        if !uncataloged.is_empty() {
-            eprintln!(
-                "note: {} BGSCodeObj method(s) called by the {scanned}-movie corpus are \
-                 outside the {}-entry catalog. These are forwarded (and land as \
-                 `ScaleformHostDispatch::Unknown`) since #2718, but carry no catalog \
-                 `kind`: {uncataloged:?}",
-                uncataloged.len(),
-                catalog.len(),
-            );
-        }
+        // #2966 — was a `note:`-only warning list; the catalog is now
+        // regenerated FROM this sweep's own inventory (269 entries: the
+        // original 138 F4CF-sourced ones plus every one of the 131 real call
+        // sites this measurement found outside them), so a non-empty
+        // `uncataloged` here is a real regression — the catalog falling
+        // behind the corpus again — not an expected steady state.
+        assert!(
+            uncataloged.is_empty(),
+            "{} BGSCodeObj method(s) called by the {scanned}-movie corpus are outside the \
+             {}-entry catalog (forwarded, but land as `ScaleformHostDispatch::Unknown` with \
+             no catalog `kind`) — add them to FALLOUT4_BGS_CODE_OBJECT_METHODS: {uncataloged:?}",
+            uncataloged.len(),
+            catalog.len(),
+        );
 
         // #2727 — the reverse direction. `referenced ⊆ catalog` alone can never
         // fail on a *bogus* catalog entry, which is how the mangled
         // `functiononGPSModeButtonClicked` (#2726) survived into a checked-in
-        // 138-method catalog. Still a warning list rather than an assertion:
-        // menus outside this archive (and dynamically-dispatched call sites the
-        // scanner cannot see) legitimately leave entries unreferenced.
+        // 138-method catalog.
         let unreferenced = catalog
             .methods()
             .iter()
             .map(|method| method.name)
             .filter(|name| !referenced.contains(*name))
             .collect::<Vec<_>>();
-        if !unreferenced.is_empty() {
-            eprintln!(
-                "note: {} of {} catalog entries are unreferenced by the whole {scanned}-movie \
-                 corpus (scan for malformed names): {unreferenced:?}",
-                unreferenced.len(),
-                catalog.len()
-            );
-        }
+        // #2966 — an upper bound, not an exact pin: menus outside this one
+        // archive (DLC/Creation Club content this repo has no on-disk archive
+        // to sweep, per FALLOUT4_BGS_CODE_OBJECT_METHODS's doc comment) can
+        // legitimately reference an entry this corpus alone never calls, so
+        // the count can drop. It must not grow past the 45 measured on
+        // 2026-08-19 without a human deciding whether the new entry is
+        // DLC/mod surface (keep) or another scraping artifact (fix).
+        assert!(
+            unreferenced.len() <= 45,
+            "{} of {} catalog entries are unreferenced by the whole {scanned}-movie corpus, \
+             more than the 45 measured on 2026-08-19 — a new entry here is either real DLC/mod \
+             surface (update this bound) or a scraping artifact (fix the catalog): \
+             {unreferenced:?}",
+            unreferenced.len(),
+            catalog.len()
+        );
     }
 
     /// #2718 — the union rule itself. A method the movie calls but the catalog

@@ -384,9 +384,16 @@ ExternalInterface transport. The reconstructed
 as intended to track vanilla closely and yields 129 distinct calls through
 that object. Installed-ABC inventory adds nine methods used by the shipped
 Atomic Command holotape (`closeHolotape`, high-score get/set, action animation,
-and registered-sound controls), for 138 total. The catalog preserves case
-because FO4 contains forms such as `CloseMenu`, `closeMenu`, `PlaySound`, and
-`playSound`.
+and registered-sound controls), for 138 total. A full 311-movie sweep of
+`Fallout4 - Interface.ba2` (#2966, 2026-08-19) measured 131 more distinct
+`BGSCodeObj` methods actually called by shipped menus but missing from those
+138; the catalog was regenerated to the union, 269 entries, with `kind`
+(`Command`/`Request`) inferred from name prefix (`Get*`/`Is*`/`Should*`/
+`Can*`/`get*`). 45 of the 269 are unreferenced by that one archive — kept,
+since Far Harbor/Nuka-World/Vault-Tec Workshop/Automatron/Creation Club
+content lives in separate archives this measurement didn't have on disk to
+sweep. The catalog preserves case because FO4 contains forms such as
+`CloseMenu`, `closeMenu`, `PlaySound`, and `playSound`.
 
 Ruffle deliberately keeps its AVM2 object model private. Rather than fork the
 VM, `avm2_host.rs` locates the class that declares `BGSCodeObj`,
@@ -417,14 +424,14 @@ callback and acknowledge destruction after drop; Atomic Command is correctly
 classified as a child program with no standalone lifecycle. A bytecode
 inventory test follows both direct `BGSCodeObj.method(...)` calls and
 `BGSExternalInterface.call(BGSCodeObj, "method", ...)`, proving all three
-representatives are covered by the 138-method catalog. Future DLC/mod menus
+representatives are covered by the 269-method catalog. Future DLC/mod menus
 can still surface additions through the same inventory and unknown-method
 diagnostics.
 
 | Profile | What exists now | What must be created |
 |---|---|---|
 | Skyrim AVM1 | `GameDelegate` transport, 74 recognized methods, 12 request contracts, response re-entry | Per-method engine behavior and remaining `_global.gfx` compatibility |
-| Fallout 4 AVM2 | `BGSCodeObj` lifecycle, 138 installed-corpus methods, generated forwarding ABC, object-aware dispatch, BA2-backed imports, HUD/Pip-Boy/Atomic Command lifecycle and inventory checks | Per-method engine behavior and remaining GFx compatibility |
+| Fallout 4 AVM2 | `BGSCodeObj` lifecycle, 269 installed-corpus methods, generated forwarding ABC, object-aware dispatch, BA2-backed imports, HUD/Pip-Boy/Atomic Command lifecycle and inventory checks | Per-method engine behavior and remaining GFx compatibility |
 | FO3/FNV | XML corpus confirmed; no SWF profile | Separate legacy XML UI runtime or translation path |
 
 ### Papyrus ↔ UI bridge
