@@ -65,6 +65,10 @@ impl ScaleformResourceProvider for BsaArchive {
 }
 
 /// One successful dependency load performed for a Scaleform movie.
+///
+/// One raw event per fetch — the navigator layer does not deduplicate;
+/// [`crate::SwfPlayer::resource_loads`] is the deduplicated, capped,
+/// hit-counted view (#2967).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ScaleformResourceLoad {
     pub request_url: String,
@@ -74,6 +78,11 @@ pub struct ScaleformResourceLoad {
     /// This is true when a leading frame boundary was synthesized to keep
     /// AVM2 bytecode and symbol tags associated with their intended frame.
     pub import_preload_rewritten: bool,
+    /// Number of times this `archive_path` has been fetched, as counted by
+    /// [`crate::SwfPlayer::resource_loads`]'s dedup (#2967). Always `1` on a
+    /// raw event straight from the navigator — a repeat fetch is a distinct
+    /// event here, and only becomes a bumped counter once merged.
+    pub hit_count: u64,
 }
 
 #[derive(Default)]
@@ -114,8 +123,17 @@ impl ScaleformNavigatorRuntime {
         self.executor.run();
     }
 
-    pub(crate) fn loads(&self) -> Vec<ScaleformResourceLoad> {
-        self.state.borrow().loads.clone()
+    /// Remove and return the resource loads recorded since the previous call.
+    ///
+    /// #2967 — this used to be `loads()`, a *clone* of a list nothing ever
+    /// cleared: `NavigatorState.loads` grew for the whole life of the player,
+    /// keyed by paths untrusted movie content chooses, and got more expensive
+    /// to read (a full clone) the longer the menu stayed open. Draining here
+    /// makes each raw fetch event a one-time observation the owner
+    /// (`SwfPlayer::tick`) folds into its own deduplicated, capped view —
+    /// the same split `take_errors`/`resource_errors` already has.
+    pub(crate) fn take_loads(&mut self) -> Vec<ScaleformResourceLoad> {
+        std::mem::take(&mut self.state.borrow_mut().loads)
     }
 
     /// Remove and return the fetch failures recorded since the previous call.
@@ -247,6 +265,7 @@ fn load_archive_resource(
         archive_path,
         byte_len: body.len(),
         import_preload_rewritten,
+        hit_count: 1,
     });
     Box::new(MemoryResponse {
         url: resolved.to_string(),
@@ -629,7 +648,7 @@ mod tests {
             )])),
             loads: std::sync::atomic::AtomicUsize::new(0),
         });
-        let (navigator, runtime, _) = ScaleformNavigatorRuntime::create(
+        let (navigator, mut runtime, _) = ScaleformNavigatorRuntime::create(
             "interface\\hudmenu.swf",
             b"",
             provider.clone() as Arc<dyn ScaleformResourceProvider>,
@@ -644,7 +663,7 @@ mod tests {
              is the entire point of returning a future"
         );
         assert!(
-            runtime.loads().is_empty(),
+            runtime.take_loads().is_empty(),
             "no load may be recorded before the future runs"
         );
 
@@ -654,7 +673,10 @@ mod tests {
         };
         assert_eq!(provider.count(), 1, "polling must perform exactly one load");
         assert_eq!(block_on(response.body()).unwrap(), b"font movie");
-        assert_eq!(runtime.loads()[0].archive_path, "interface\\fonts_en.swf");
+        assert_eq!(
+            runtime.take_loads()[0].archive_path,
+            "interface\\fonts_en.swf"
+        );
     }
 
     /// The cheap half stays eager on purpose: a malformed URL is pure string
@@ -707,7 +729,7 @@ mod tests {
             "interface\\fonts_en.swf".to_string(),
             b"font movie".to_vec(),
         )])));
-        let (navigator, runtime, movie_url) =
+        let (navigator, mut runtime, movie_url) =
             ScaleformNavigatorRuntime::create("interface\\hudmenu.swf", b"", provider).unwrap();
 
         assert_eq!(movie_url, "file:///interface/hudmenu.swf");
@@ -716,7 +738,10 @@ mod tests {
             Err(error) => panic!("archive fetch failed: {}", error.error),
         };
         assert_eq!(block_on(response.body()).unwrap(), b"font movie");
-        assert_eq!(runtime.loads()[0].archive_path, "interface\\fonts_en.swf");
+        assert_eq!(
+            runtime.take_loads()[0].archive_path,
+            "interface\\fonts_en.swf"
+        );
     }
 
     #[test]

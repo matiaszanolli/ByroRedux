@@ -57,6 +57,15 @@ fn preload_stall_grace_expired(consecutive_stall_frames: u32) -> bool {
 /// capacity estimate — a real menu records zero or one.
 const MAX_RECORDED_RESOURCE_ERRORS: usize = 64;
 
+/// Distinct archive paths a player retains fetch records for (#2967).
+///
+/// Deduplicated by `archive_path` with a hit counter (see
+/// [`SwfPlayer::record_resource_loads`]), so this only binds a menu that
+/// fetches endlessly many *different* paths — a menu polling the same
+/// resource every frame, the realistic shape `fetch` sees, costs one entry
+/// no matter how many times it repeats.
+const MAX_RECORDED_RESOURCE_LOADS: usize = 64;
+
 /// Process-wide Ruffle GPU bundle, created on first menu load (#2733).
 ///
 /// Pre-fix every [`SwfPlayer`] built its own wgpu instance, adapter, device
@@ -141,6 +150,12 @@ pub struct SwfPlayer {
     resource_errors: Vec<String>,
     /// One-shot latch for the [`MAX_RECORDED_RESOURCE_ERRORS`] cap warning.
     resource_errors_capped: bool,
+    /// Distinct archive resources fetched so far, deduplicated by
+    /// `archive_path` with a hit counter (#2967). Recorded and reported,
+    /// never cleared except by menu replacement — see [`Self::tick`].
+    resource_loads: Vec<ScaleformResourceLoad>,
+    /// One-shot latch for the [`MAX_RECORDED_RESOURCE_LOADS`] cap warning.
+    resource_loads_capped: bool,
     /// Consecutive frames the archive preload has failed to settle (#2720).
     preload_stall_frames: u32,
     /// Whether the stall grace period has been exhausted and the movie is
@@ -312,6 +327,8 @@ impl SwfPlayer {
             navigator_runtime,
             resource_errors: Vec::new(),
             resource_errors_capped: false,
+            resource_loads: Vec::new(),
+            resource_loads_capped: false,
             preload_stall_frames: 0,
             preload_stalled: false,
         })
@@ -360,7 +377,9 @@ impl SwfPlayer {
         if let Some(runtime) = &mut self.navigator_runtime {
             runtime.run_until_stalled();
             let errors = runtime.take_errors();
+            let loads = runtime.take_loads();
             self.record_resource_errors(errors);
+            self.record_resource_loads(loads);
         }
         // #2719 — only mark dirty when Ruffle says the stage actually changed.
         // An unconditional `self.dirty = true` here made `render`'s early exit
@@ -472,12 +491,18 @@ impl SwfPlayer {
         self.player.lock().unwrap().current_frame()
     }
 
-    /// Successful relative resources loaded through the archive navigator.
-    pub fn resource_loads(&self) -> Vec<ScaleformResourceLoad> {
-        self.navigator_runtime
-            .as_ref()
-            .map(ScaleformNavigatorRuntime::loads)
-            .unwrap_or_default()
+    /// Successful relative resources loaded through the archive navigator,
+    /// deduplicated by `archive_path` with a hit counter and bounded by
+    /// [`MAX_RECORDED_RESOURCE_LOADS`] (#2967).
+    ///
+    /// This used to clone the navigator's raw, unbounded, un-deduped fetch
+    /// log on every call. `tick`/`drive_archive_preload` now drain that log
+    /// each pass into this player-side accumulator, so reading it is a plain
+    /// borrow — cheap regardless of how long the menu has been open — and a
+    /// menu that refetches the same path every frame (the expected shape)
+    /// costs one entry with a growing `hit_count`, not one entry per fetch.
+    pub fn resource_loads(&self) -> &[ScaleformResourceLoad] {
+        &self.resource_loads
     }
 
     /// First archive loading failure encountered after construction.
@@ -525,6 +550,40 @@ impl SwfPlayer {
         }
     }
 
+    /// Record resource loads, deduplicated by `archive_path` with a hit
+    /// counter, and bounded (#2967).
+    ///
+    /// Mirrors [`Self::record_resource_errors`]'s dedup-then-cap shape for
+    /// the sibling channel that was missing it: a menu that keeps re-fetching
+    /// the same path (`fetch`'s expected shape — a timer, a per-frame poll)
+    /// bumps that one entry's `hit_count` instead of growing the list, and
+    /// the hard cap covers the pathological case of endlessly *distinct*
+    /// archive paths.
+    fn record_resource_loads(&mut self, loads: Vec<ScaleformResourceLoad>) {
+        for load in loads {
+            if let Some(existing) = self
+                .resource_loads
+                .iter_mut()
+                .find(|existing| existing.archive_path == load.archive_path)
+            {
+                existing.hit_count += 1;
+                continue;
+            }
+            if self.resource_loads.len() >= MAX_RECORDED_RESOURCE_LOADS {
+                if !self.resource_loads_capped {
+                    self.resource_loads_capped = true;
+                    log::error!(
+                        "Scaleform resource loads hit the {MAX_RECORDED_RESOURCE_LOADS}-entry \
+                         cap; further distinct archive paths are neither recorded nor \
+                         diagnosable"
+                    );
+                }
+                continue;
+            }
+            self.resource_loads.push(load);
+        }
+    }
+
     /// Invoke a callback registered through `ExternalInterface.addCallback`.
     ///
     /// `None` distinguishes an unknown callback from a registered callback
@@ -563,15 +622,16 @@ impl SwfPlayer {
                 let mut execution_limit = ExecutionLimit::none();
                 self.player.lock().unwrap().preload(&mut execution_limit)
             };
-            let errors = self
+            let (errors, loads) = self
                 .navigator_runtime
                 .as_mut()
                 .map(|runtime| {
                     runtime.run_until_stalled();
-                    runtime.take_errors()
+                    (runtime.take_errors(), runtime.take_loads())
                 })
                 .expect("archive preload requires a navigator runtime");
             self.record_resource_errors(errors);
+            self.record_resource_loads(loads);
             if finished {
                 return true;
             }
@@ -667,5 +727,65 @@ mod shared_descriptor_tests {
         let recovered = get_or_try_init(&SLOT, &mut make).expect("retry succeeds");
         assert_eq!(*recovered, 42);
         assert_eq!(attempts.load(Ordering::Relaxed), 2, "the retry really ran");
+    }
+}
+
+#[cfg(test)]
+mod resource_loads_tests {
+    use super::{ScaleformResourceLoad, SwfPlayer, MAX_RECORDED_RESOURCE_LOADS};
+
+    /// A minimal, valid, single-frame AVM1 SWF — enough for `SwfPlayer::new`
+    /// (which doesn't need a navigator/archive at all) so these tests can
+    /// exercise `record_resource_loads` directly without one.
+    fn minimal_swf() -> Vec<u8> {
+        let mut header = swf::Header::default_with_swf_version(6);
+        header.num_frames = 1;
+        let mut bytes = Vec::new();
+        swf::write_swf(&header, &[swf::Tag::ShowFrame], &mut bytes)
+            .expect("writing a fixed, minimal in-memory SWF cannot fail");
+        bytes
+    }
+
+    fn load(archive_path: &str) -> ScaleformResourceLoad {
+        ScaleformResourceLoad {
+            request_url: archive_path.to_string(),
+            archive_path: archive_path.to_string(),
+            byte_len: 0,
+            import_preload_rewritten: false,
+            hit_count: 1,
+        }
+    }
+
+    /// #2967 — `fetch`'s realistic repeat shape (a menu polling the same
+    /// resource on a timer) must cost one entry with a growing counter, not
+    /// one entry per fetch. Three raw drained events for the same
+    /// `archive_path` — exactly what three separate `tick()` passes would
+    /// hand `record_resource_loads` — must merge into one.
+    #[test]
+    fn repeated_fetches_of_the_same_path_bump_a_hit_counter_not_the_list() {
+        let mut player = SwfPlayer::new(&minimal_swf(), 4, 4).unwrap();
+
+        player.record_resource_loads(vec![load("interface\\fonts_en.swf")]);
+        player.record_resource_loads(vec![load("interface\\fonts_en.swf")]);
+        player.record_resource_loads(vec![load("interface\\fonts_en.swf")]);
+
+        assert_eq!(player.resource_loads().len(), 1);
+        assert_eq!(player.resource_loads()[0].hit_count, 3);
+    }
+
+    /// The pathological case #2967 filed for: a movie fetching endlessly many
+    /// *distinct* paths (`ExternalInterface.call`'s cousin for this channel)
+    /// must hold at the cap rather than grow the list forever.
+    #[test]
+    fn distinct_paths_stop_growing_at_the_cap() {
+        let mut player = SwfPlayer::new(&minimal_swf(), 4, 4).unwrap();
+
+        let overflow = 10usize;
+        let loads = (0..MAX_RECORDED_RESOURCE_LOADS + overflow)
+            .map(|i| load(&format!("interface\\asset{i}.swf")))
+            .collect();
+        player.record_resource_loads(loads);
+
+        assert_eq!(player.resource_loads().len(), MAX_RECORDED_RESOURCE_LOADS);
     }
 }
