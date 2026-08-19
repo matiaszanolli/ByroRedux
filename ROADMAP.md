@@ -1253,6 +1253,22 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
   material-slot-aware discovery. PNG intermediates are intentional until
   those policies exist.
 - [ ] `parry3d` panics on nested compound collision shapes (catch_unwind guard in place)
+- [ ] **Starfield CDB Phase 2 — per-field `.mat` material extraction, single highest-value remaining Starfield fidelity item, currently untracked outside this row.** [#2359](https://github.com/matiaszanolli/ByroRedux/issues/2359).
+  `crates/sfmaterial` parses the Component Database end-to-end (97 classes /
+  1.44M instances) and `register_starfield_cdb` confirms presence via
+  `ComponentDatabaseFile::probe_header`, but nothing walks the tree for
+  per-field data — `merge_external_material`'s `.mat` arm (#1289, shipped)
+  is a two-statement stub: flips `is_pbr = true`, forwards no texture role,
+  metalness/roughness, alpha/blend, or two-sided/decal state, and correctly
+  self-reports `MergeOutcome::PresenceOnly` (#2709) rather than claiming
+  `Merged`. Every Starfield surface therefore renders on NIF-derived,
+  keyword-classified PBR values under the Disney BSDF lobe — compounds
+  with #2353 (~189,801 / 190,549 surfaces reach the lobe untextured,
+  matte, fully-dielectric white). Phase 2 must land as CDB-authored values
+  flowing into `ImportedMaterial` through this same `merge_external_material`
+  boundary (never a render-time fallback — see `/audit-nifal`); the
+  `.mat` arm returning `Merged` once a real CDB lookup supplies data is the
+  observable signal Phase 2 shipped.
 - [x] ~~**Exterior surface shading emits Inf/NaN → white-out**~~ — **historical Session 60 symptom, not reproducible at current HEAD (2026-08-04).** FO3 `MegatonWorld (-1,-7)` radius 1 rendered 3,201 entities / 1,093 draws with finite lighting/sky telemetry, zero missing textures, and a healthy deterministic PNG (mean 0.2725, standard deviation 0.0547); no speculative shader edit was made. The old capture remains evidence of a possible regression class, while the executable image-health and planned pre-tonemap non-finite gates are tracked by [#2368](https://github.com/matiaszanolli/ByroRedux/issues/2368).
 - [x] ~~`--esm` accepts only one plugin~~ — **closed via #561 / M46.0** (repeatable `--master <path>` CLI arg + multi-plugin merge through `EsmIndex::merge_from`).
 - [x] ~~`BSBoneLODExtraData` has no parser — surfaced by R3 baselines: 0/34 on FO4, 0/52 on Skyrim SE, 0/56 on FO76 (no instances on the other four games). Single-fix candidate matching the Session 18 R3-driven pattern.~~ — **closed via #614** (commit `782b7238`, 2026-04-25). Parser landed in `crates/nif/src/blocks/extra_data.rs` (`"BSBoneLODExtraData"` arm). The 0/N counts were zero *instances* in vanilla content, not parse failures — restored Skyrim Meshes0 to 100% clean (D5-01 / #1356).

@@ -145,6 +145,49 @@ fn merge_sets_is_pbr_on_mat_path_when_cdb_loaded() {
     );
 }
 
+/// Regression / checklist-invariant pin for #2359 (SF-D9-2026-08-03-03).
+///
+/// The `.mat` arm is a documented Phase 1 stub — `register_starfield_cdb`
+/// only probes the header (`ComponentDatabaseFile::probe_header`), the
+/// ~1.44M-instance class/object tree is never walked, and there is
+/// currently NO code path from CDB contents to `ImportedMaterial`. This
+/// test pins that today's `.mat` merge forwards ZERO authored texture
+/// data — not one `MaterialTextureSet` role changes — so the checklist
+/// invariant ("`.mat` paths land in named `MaterialTextureSet` roles,
+/// never a CDB slot index") is enforced from before Phase 2 extraction
+/// code exists, per the issue's own suggested fix.
+///
+/// This test is EXPECTED to need updating once Phase 2 lands: a real
+/// CDB lookup should start populating specific `MaterialTextureSet`
+/// roles (through this exact `merge_external_material` boundary, per
+/// the issue's CANONICAL-BOUNDARY completeness check — never a
+/// render-time fallback) and returning `MergeOutcome::Merged`. Until
+/// then, both must stay exactly as asserted here.
+#[test]
+fn mat_path_forwards_no_texture_roles_until_cdb_phase_2_lands() {
+    let mut pool = byroredux_core::string::StringPool::new();
+    let mut provider = MaterialProvider::new();
+    provider.register_starfield_cdb(&minimal_cdb_bytes());
+    assert!(provider.has_starfield_cdb());
+
+    let mut mesh =
+        imported_mesh_with_material_path(&mut pool, "materials/setpieces/reactor_core.mat");
+    let outcome = merge_external_material(&mut mesh.material, &mut provider, &mut pool);
+
+    assert_eq!(
+        outcome,
+        MergeOutcome::PresenceOnly,
+        "#2359: the .mat arm resolves the sidecar but must not claim Merged \
+         until it actually forwards CDB-authored data"
+    );
+    assert_eq!(
+        mesh.material.textures,
+        byroredux_nif::import::MaterialTextureSet::default(),
+        "#2359: every MaterialTextureSet role must stay at its default — \
+         Phase 1 forwards zero authored texture data from the CDB"
+    );
+}
+
 /// CDB-presence gate: a `.mat` path against a non-Starfield archive
 /// set (no CDB loaded) must NOT flip `is_pbr`. Modded `.mat` paths
 /// on FO4 / FNV / Skyrim cells shouldn't accidentally route to
