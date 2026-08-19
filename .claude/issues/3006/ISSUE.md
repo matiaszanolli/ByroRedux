@@ -1,4 +1,13 @@
-# RT-2026-08-16-07: fo4 InstituteBioScience grew +18.0% entities and +14.9% DrawCommands — the entity rise is rendering, not bookkeeping
+# RT-2026-08-16-07: fo4 InstituteBioScience grew +18.0% entities and +14.9% DrawCommands
+
+**Issue**: #3006
+**Severity**: MEDIUM
+**Dimension**: Telemetry baseline
+**Labels**: `medium,performance,bug`
+**Source report**: `docs/audits/AUDIT_RUNTIME_2026-08-16.md`
+**Filed**: 2026-08-17 via `/audit-publish`
+
+---
 
 Filed from `docs/audits/AUDIT_RUNTIME_2026-08-16.md` (runtime telemetry baseline diff).
 
@@ -38,3 +47,6 @@ Identify what began spawning or rendering additional entities in this cell. The 
 - [ ] **SIBLING**: Other FO4 scenes checked for the same rise
 - [ ] **TESTS**: The telemetry gate fails on this metric until resolved
 
+---
+
+*Immutable snapshot of the issue as filed. GitHub is authoritative for current state — query `gh issue view 3006 --json state` when live state is needed.*
