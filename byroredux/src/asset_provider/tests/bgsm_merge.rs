@@ -232,40 +232,31 @@ fn bgsm_merge_forwards_inner_layer_texture() {
 }
 
 /// Regression for #1077 / FO4-D6-003 Phase 1 — BGSM-only shader
-/// flags (`pbr`, `translucency`, `model_space_normals`) must
-/// forward to `ImportedMesh`'s `is_pbr` / `has_translucency` /
-/// `model_space_normals`. Pre-fix the parser decoded all three
-/// and the merge dropped them on the floor — FO4 materials
-/// authored with `pbr=true` rendered on the Gamebryo-legacy
-/// specular path (the renderer didn't even know to dispatch
-/// PBR-vs-legacy). Phase 2 (the `triangle.frag` gating) is
-/// deferred; this test pins the data-propagation contract.
+/// flags (`translucency`, `model_space_normals`) must forward to
+/// `ImportedMesh`'s matching sinks. Pre-fix the parser decoded both
+/// and the merge dropped them on the floor.
 ///
-/// #2702 (FO4-D2-03) — calls the real production functions
-/// (`forward_bgsm_phase1_flags`, `bgsm_uses_pbr_bsdf`) instead of a
-/// hand-copied mirror of their gates, so this test can actually fail
-/// when `merge_external_material` diverges from it.
+/// `is_pbr` is deliberately NOT asserted here — it isn't driven by
+/// `forward_bgsm_phase1_flags` at all (see `merge_external_material`'s
+/// BGSM arm, and `vanilla_bgsm_resolve_promotes_imported_material_to_pbr`
+/// for its dedicated coverage after #2700).
+///
+/// #2702 (FO4-D2-03) — calls the real production function
+/// (`forward_bgsm_phase1_flags`) instead of a hand-copied mirror of
+/// its gate, so this test can actually fail when `merge_external_material`
+/// diverges from it.
 #[test]
 fn bgsm_merge_forwards_phase1_shader_flags() {
     let bgsm = BgsmFile {
-        pbr: true,
         translucency: true,
         model_space_normals: true,
         ..Default::default()
-    };
-    let resolved = ResolvedMaterial {
-        file: bgsm.clone(),
-        parent: None,
     };
 
     let mut material = ImportedMaterial::default();
     let mut touched = false;
     forward_bgsm_phase1_flags(&mut material, &bgsm, &mut touched);
 
-    assert!(
-        bgsm_uses_pbr_bsdf(&resolved),
-        "BGSM.pbr=true must propagate to ImportedMaterial.is_pbr"
-    );
     assert!(material.has_translucency);
     assert!(material.model_space_normals);
     assert!(touched);
@@ -443,39 +434,28 @@ fn bgsm_merge_does_not_forward_synthetic_v10_env_map_scale() {
     assert!(!touched);
 }
 
-/// Companion: with all three flags `false` on the BGSM, the
-/// translucency / model-space-normal mesh fields must stay at their
-/// defaults (a `false` author doesn't override). `is_pbr` is the
-/// exception post-#1352: it is now driven by `from_bgsm` (any
-/// successful BGSM resolve), NOT by `bgsm.pbr`, so it is `true` even
-/// here — every vanilla FO4 BGSM (which never sets `pbr`) routes
-/// through the Disney lobe. `bgsm_uses_pbr_bsdf` itself only reflects
-/// `bgsm.pbr`, so that half of the contract (the `from_bgsm` OR) is
-/// pinned directly against `merge_external_material`'s own assignment
-/// `material.is_pbr |= bgsm_uses_pbr_bsdf(&resolved)` — i.e. `from_bgsm`
-/// is set unconditionally by the real merge's `material.from_bgsm =
-/// true`, one line above that OR, not re-derived here.
+/// Companion: with both flags `false` on the BGSM, the translucency /
+/// model-space-normal mesh fields must stay at their defaults (a
+/// `false` author doesn't override).
+///
+/// `is_pbr` is out of scope here — since #2700 it is unconditional on
+/// any successful BGSM resolve (`merge_external_material`'s
+/// `material.is_pbr = true`, not gated on any per-file bit), so a
+/// `bgsm.pbr` value has no bearing on this test's fixture at all. See
+/// `vanilla_bgsm_resolve_promotes_imported_material_to_pbr` for its
+/// dedicated coverage.
 #[test]
 fn bgsm_merge_does_not_set_phase1_flags_from_false() {
     let bgsm = BgsmFile {
-        pbr: false,
         translucency: false,
         model_space_normals: false,
         ..Default::default()
-    };
-    let resolved = ResolvedMaterial {
-        file: bgsm.clone(),
-        parent: None,
     };
 
     let mut material = ImportedMaterial::default();
     let mut touched = false;
     forward_bgsm_phase1_flags(&mut material, &bgsm, &mut touched);
 
-    assert!(
-        !bgsm_uses_pbr_bsdf(&resolved),
-        "bgsm.pbr=false alone must not select the Disney BSDF opt-in"
-    );
     assert!(!material.has_translucency);
     assert!(!material.model_space_normals);
     assert!(
@@ -484,19 +464,26 @@ fn bgsm_merge_does_not_set_phase1_flags_from_false() {
     );
 }
 
-/// Child-first precedence for the new flags — first authored
-/// `true` in the BGSM template chain wins, mirroring the
-/// texture-slot precedence (which the parser walks child-first).
-/// A `false` child followed by a `true` parent must flip the
-/// flag. Calls the real `bgsm_uses_pbr_bsdf` (#2702 / FO4-D2-03).
+/// Child-first precedence for `forward_bgsm_phase1_flags` — first
+/// authored `true` in the BGSM template chain wins, mirroring the
+/// texture-slot precedence (which the parser walks child-first). A
+/// `false` (unauthored) child followed by a `true` parent template
+/// must still flip the flag; the child authoring `false` must not
+/// permanently lock the flag off for the rest of the chain walk.
+///
+/// (Previously this test exercised `pbr`'s chain-walk precedence
+/// instead — moot since #2700 made `is_pbr` unconditional on any
+/// BGSM resolve, not walked per-field. Repurposed onto `translucency`,
+/// which is still genuinely gated per-field and had no dedicated
+/// precedence coverage of its own.)
 #[test]
 fn bgsm_merge_phase1_flags_honor_child_first_chain() {
     let child = BgsmFile {
-        pbr: false, // child doesn't author PBR
+        translucency: false, // child doesn't author it
         ..Default::default()
     };
     let parent = BgsmFile {
-        pbr: true, // parent template enables PBR
+        translucency: true, // parent template enables it
         ..Default::default()
     };
     let resolved = ResolvedMaterial {
@@ -507,22 +494,16 @@ fn bgsm_merge_phase1_flags_honor_child_first_chain() {
         })),
     };
 
-    assert!(
-        bgsm_uses_pbr_bsdf(&resolved),
-        "parent's pbr=true must flow down to the merged result"
-    );
-
-    // Same child-first precedence for `forward_bgsm_phase1_flags`,
-    // walked exactly as `merge_external_material` walks it.
     let mut material = ImportedMaterial::default();
     let mut touched = false;
     for step in resolved.walk() {
         forward_bgsm_phase1_flags(&mut material, &step.file, &mut touched);
     }
     assert!(
-        !material.has_translucency && !material.model_space_normals,
-        "neither child nor parent authored translucency/model_space_normals here"
+        material.has_translucency,
+        "parent's translucency=true must flow down when the child doesn't author it"
     );
+    assert!(!material.model_space_normals);
 }
 
 /// Regression for FO4 BGSM glass / alpha-blended decals. FO4
@@ -760,44 +741,47 @@ fn v20_bgem_transmissive_bundle_reads_subclass_environment_mapping() {
     assert!(bgem_uses_thin_glass_behavior(&bgem));
 }
 
+/// Regression for #2700 (FO4-D2-01) — any successful BGSM resolve must
+/// promote `ImportedMaterial.is_pbr`, matching #1352's original,
+/// still-documented contract. `a0f75fc5` narrowed this to an explicit
+/// `pbr` bit walked across the resolved template chain — measured live
+/// at 0 of 6,616 vanilla FO4 BGSMs, so every vanilla surface silently
+/// reverted to the legacy Lambert diffuse lobe with a green test suite
+/// (the two prior tests this replaced) pinning exactly that regressed
+/// behaviour as correct. Exercises the real `merge_external_material`
+/// path against a plain vanilla-shaped BGSM fixture — neither the leaf
+/// nor its template parent sets `pbr` — not a mirror of the gate.
 #[test]
-fn vanilla_bgsm_chain_keeps_legacy_bsdf() {
-    use byroredux_bgsm::template::ResolvedMaterial;
-    use byroredux_bgsm::BgsmFile;
-
-    let resolved = ResolvedMaterial {
-        file: BgsmFile {
-            pbr: false,
-            ..Default::default()
-        },
-        parent: Some(Arc::new(ResolvedMaterial {
+fn vanilla_bgsm_resolve_promotes_imported_material_to_pbr() {
+    let mut pool = byroredux_core::string::StringPool::new();
+    let path = "materials/tests/vanilla.bgsm";
+    let mut provider = MaterialProvider::new();
+    provider.insert_bgsm_for_test(
+        path,
+        ResolvedMaterial {
             file: BgsmFile {
-                pbr: false,
+                pbr: false, // vanilla FO4 content never sets this
                 ..Default::default()
             },
-            parent: None,
-        })),
-    };
-    assert!(
-        !bgsm_uses_pbr_bsdf(&resolved),
-        "BGSM provenance alone must not route vanilla FO4 spec-gloss content \
-         through the Disney/PBR lobe"
-    );
-}
-
-#[test]
-fn explicit_bgsm_pbr_opt_in_selects_disney_bsdf() {
-    use byroredux_bgsm::template::ResolvedMaterial;
-    use byroredux_bgsm::BgsmFile;
-
-    let resolved = ResolvedMaterial {
-        file: BgsmFile {
-            pbr: true,
-            ..Default::default()
+            parent: Some(Arc::new(ResolvedMaterial {
+                file: BgsmFile {
+                    pbr: false,
+                    ..Default::default()
+                },
+                parent: None,
+            })),
         },
-        parent: None,
-    };
-    assert!(bgsm_uses_pbr_bsdf(&resolved));
+    );
+    let mut mesh = imported_mesh_with_material_path(&mut pool, path);
+    assert!(!mesh.material.is_pbr);
+
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool).merged());
+    assert!(
+        mesh.material.is_pbr,
+        "any successful BGSM resolve must promote is_pbr regardless of the bgsm.pbr bit \
+         (#1352 / #2700) — vanilla FO4 content never sets that bit, so gating on it left \
+         is_pbr false on 100% of vanilla surfaces"
+    );
 }
 
 /// Regression for #2366: the parsed v20+ BGEM PBR opt-in must reach the

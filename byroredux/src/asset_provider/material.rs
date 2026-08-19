@@ -15,14 +15,6 @@ pub(crate) fn is_materialsbeta_cdb_path(path: &str) -> bool {
     p.starts_with("materials\\") && p.ends_with("materialsbeta.cdb")
 }
 
-/// Select the Disney/PBR BSDF only when the resolved BGSM chain explicitly
-/// opts into Bethesda's PBR workflow. Vanilla FO4 BGSMs overwhelmingly use
-/// the legacy specular-glossiness contract; the file format alone is not a
-/// PBR provenance signal.
-pub(crate) fn bgsm_uses_pbr_bsdf(resolved: &ResolvedMaterial) -> bool {
-    resolved.walk().any(|step| step.file.pbr)
-}
-
 /// #1077 / FO4-D6-003 (Phase 1: data propagation) — forwards one BGSM
 /// chain step's `translucency` / `model_space_normals` shader-flag bits
 /// into `ImportedMaterial`. Same child-first precedence as every texture
@@ -36,7 +28,10 @@ pub(crate) fn bgsm_uses_pbr_bsdf(resolved: &ResolvedMaterial) -> bool {
 /// hand-copied mirror — the mirror was proven able to diverge silently
 /// from `merge_external_material` (the FO4-D2-01 `is_pbr` contract flip
 /// landed with a green mirror suite while its own comment kept stating
-/// the pre-flip behaviour).
+/// the pre-flip behaviour). #2700 restored the pre-flip contract itself
+/// (see [`merge_external_material`]'s BGSM arm) — `is_pbr` is unconditional
+/// on any successful BGSM resolve again, not gated on a `bgsm.pbr` bit
+/// vanilla content essentially never sets.
 pub(crate) fn forward_bgsm_phase1_flags(
     material: &mut ImportedMaterial,
     bgsm: &BgsmFile,
@@ -1166,11 +1161,27 @@ pub(crate) fn merge_external_material(
         // → metallic-roughness translation below.
         material.from_bgsm = true;
         touched = true;
-        // BGSM is a container, not a BRDF declaration. Vanilla FO4 content
-        // authors the legacy modified-Blinn/Phong specular-glossiness model;
-        // only an explicit PBR bit anywhere in the resolved template chain
-        // promotes the material to the Disney lobe.
-        material.is_pbr |= bgsm_uses_pbr_bsdf(&resolved);
+        // #1352 — any successful BGSM resolve routes the material through
+        // the Disney/PBR diffuse lobe, unconditionally. #2700 (FO4-D2-01):
+        // `a0f75fc5` narrowed this to `resolved.walk().any(|s| s.file.pbr)`
+        // — "BGSM is a container, not a BRDF declaration" — measured at 0
+        // of 6,616 vanilla FO4 BGSMs, so the narrower gate silently
+        // reverted #1352 across every vanilla FO4 surface with a green
+        // test suite covering the divergence. It also went unnoticed that
+        // this makes `forward_bgsm_rim_subsurface`'s rim/backlight/
+        // subsurface scalars (#2607) dead weight for the same 100% of
+        // content: that lobe is the only consumer of those fields, and it
+        // was never selected. The metalness/roughness/F0 derivation just
+        // below already treats every BGSM material as physically based
+        // regardless of the `pbr` bit — that bit only changes HOW
+        // metalness is derived (spec-color-as-F0 vs spec-color
+        // chromaticity), never WHETHER the material is PBR — so gating
+        // only the diffuse lobe on a bit real content essentially never
+        // sets was an internally inconsistent narrower contract, not a
+        // deliberate one (the `a0f75fc5` commit message never mentions
+        // PBR routing). Restored to #1352's original, still-documented
+        // intent (see the sibling tests in `tests/bgsm_merge.rs`).
+        material.is_pbr = true;
 
         // ── Translation layer (BGSM spec-glossiness → standard PBR) ──
         //
