@@ -1197,6 +1197,7 @@ pub(crate) fn setup_scene(
                 restitution: 0.0,
                 linear_damping: 0.0,
                 angular_damping: 0.0,
+                collidable: true,
             },
         );
         // #1846 / SAVE-03 — attach a FormIdComponent built from the

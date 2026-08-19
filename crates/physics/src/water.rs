@@ -755,6 +755,7 @@ mod tests {
                 restitution: 0.0,
                 linear_damping: 0.0,
                 angular_damping: 0.0,
+                collidable: true,
             },
         );
         world.insert(
@@ -870,6 +871,7 @@ mod tests {
                 restitution: 0.0,
                 linear_damping: 0.0,
                 angular_damping: 0.0,
+                collidable: true,
             },
         );
         world.insert(

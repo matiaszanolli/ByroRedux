@@ -230,6 +230,23 @@ fn havok_motion_type(raw: u8) -> MotionType {
     }
 }
 
+/// Value 15 in every per-game `HavokFilter.Layer` enum nif.xml declares —
+/// `OL_NONCOLLIDABLE` (Oblivion), `FOL_NONCOLLIDABLE` (FO3/FNV),
+/// `SKYL_NONCOLLIDABLE` (Skyrim SE) all share this numeric assignment,
+/// so a single wire-level check covers every game this extractor sees
+/// without needing a per-game branch — `HavokFilter`'s layout (`Layer:
+/// byte, Flags: byte, Group: ushort`) doesn't change across those enums
+/// either, only which named constants apply to the value. #2549.
+const HAVOK_LAYER_NONCOLLIDABLE: u8 = 15;
+
+/// `body.havok_filter`'s Layer field is the lowest byte of the packed
+/// `HavokFilter` u32 (`Layer: byte` is the struct's first field). This
+/// is the single extract→translate boundary [`RigidBodyData::collidable`]
+/// flows through — no consumer re-derives it from the raw filter.
+fn havok_filter_is_collidable(havok_filter: u32) -> bool {
+    (havok_filter & 0xFF) as u8 != HAVOK_LAYER_NONCOLLIDABLE
+}
+
 /// Classic `BhkCollisionObject` → `BhkRigidBody` → shape-tree extractor.
 /// This is the dominant path for Oblivion / FO3 / FNV / Skyrim LE / SSE and
 /// still covers most FO4+ rigid bodies that author the legacy chain. Body of
@@ -397,6 +414,16 @@ fn extract_from_classic(
         motion_type = MotionType::Static;
     }
 
+    let collidable = havok_filter_is_collidable(body.havok_filter);
+    if !collidable {
+        log::debug!(
+            "extract_from_classic: body {body_idx} authored on the non-collidable Havok layer \
+             (havok_filter={:#x}) — spawning as a non-solid (sensor) collider, shape={shape_desc}",
+            body.havok_filter,
+            shape_desc = shape_size_descriptor(&shape),
+        );
+    }
+
     let body_data = RigidBodyData {
         motion_type,
         mass: body.mass,
@@ -404,6 +431,7 @@ fn extract_from_classic(
         restitution: body.restitution,
         linear_damping: body.linear_damping,
         angular_damping: body.angular_damping,
+        collidable,
     };
 
     Some((shape, body_data))
@@ -945,9 +973,21 @@ mod dispatch_tests {
         rotation: [f32; 4],
         is_t: bool,
     ) -> Box<dyn NiObject> {
+        rigid_body_with_filter(shape_ref, translation, rotation, is_t, 0)
+    }
+
+    /// #2549 — sibling of `rigid_body_at` with a settable `havok_filter`,
+    /// for tests that need a specific Havok layer byte.
+    fn rigid_body_with_filter(
+        shape_ref: u32,
+        translation: [f32; 4],
+        rotation: [f32; 4],
+        is_t: bool,
+        havok_filter: u32,
+    ) -> Box<dyn NiObject> {
         Box::new(BhkRigidBody {
             shape_ref: BlockRef(shape_ref),
-            havok_filter: 0,
+            havok_filter,
             is_t,
             translation,
             rotation,
@@ -970,6 +1010,91 @@ mod dispatch_tests {
             constraint_refs: Vec::new(),
             body_flags: 0,
         })
+    }
+
+    // ── #2549 — havok_filter's non-collidable layer ──────────────────
+
+    /// A body authored on Havok's non-collidable layer (`OL_NONCOLLIDABLE`
+    /// / `FOL_NONCOLLIDABLE` / `SKYL_NONCOLLIDABLE` — value 15, the layer
+    /// byte is the low byte of the packed `havok_filter` u32) must reach
+    /// `RigidBodyData::collidable = false`. Pre-fix `havok_filter` was
+    /// parsed off the wire and simply never read again — the body always
+    /// spawned as a solid collider regardless of its authored layer.
+    #[test]
+    fn noncollidable_layer_sets_collidable_false() {
+        let mut scene = empty_scene();
+        scene.blocks.push(classic_collision(BlockRef(1u32))); // [0]
+        scene.blocks.push(rigid_body_with_filter(
+            2,
+            [0.0; 4],
+            [0.0, 0.0, 0.0, 1.0],
+            false,
+            15, // Layer = FOL_NONCOLLIDABLE / OL_NONCOLLIDABLE / SKYL_NONCOLLIDABLE
+        )); // [1]
+        scene.blocks.push(Box::new(BhkSphereShape {
+            material: 0,
+            radius: 1.0,
+        })); // [2]
+
+        let (_shape, body) =
+            extract_collision(&scene, BlockRef(0u32)).expect("shape must still resolve");
+        assert!(
+            !body.collidable,
+            "havok_filter's Layer=15 (non-collidable) must set collidable=false"
+        );
+    }
+
+    /// Companion negative guard — an ordinary collidable layer (Static,
+    /// value 1) must leave `collidable = true`, the default every other
+    /// existing fixture in this file implicitly relies on.
+    #[test]
+    fn ordinary_layer_leaves_collidable_true() {
+        let mut scene = empty_scene();
+        scene.blocks.push(classic_collision(BlockRef(1u32))); // [0]
+        scene.blocks.push(rigid_body_with_filter(
+            2,
+            [0.0; 4],
+            [0.0, 0.0, 0.0, 1.0],
+            false,
+            1, // Layer = OL_STATIC / FOL_STATIC
+        )); // [1]
+        scene.blocks.push(Box::new(BhkSphereShape {
+            material: 0,
+            radius: 1.0,
+        })); // [2]
+
+        let (_shape, body) =
+            extract_collision(&scene, BlockRef(0u32)).expect("shape must still resolve");
+        assert!(body.collidable, "an ordinary layer must remain collidable");
+    }
+
+    /// The layer byte lives in the low byte of the packed `havok_filter`
+    /// u32 — the Flags (byte 1) and Group (bytes 2-3) fields must not be
+    /// mistaken for it. A filter with Layer=1 (collidable) but non-zero
+    /// Flags/Group bytes set must still read as collidable.
+    #[test]
+    fn non_layer_bytes_of_havok_filter_do_not_affect_collidable() {
+        // Layer=15 (byte 0) would be non-collidable; Layer=1 (byte 0)
+        // with Group=0xBEEF (bytes 2-3) and Flags=0xAB (byte 1) must
+        // still read as collidable — only byte 0 matters.
+        let filter = 0x_BEEF_AB_01_u32;
+        assert_eq!(filter & 0xFF, 1, "sanity: constructed Layer byte is 1");
+        let mut scene = empty_scene();
+        scene.blocks.push(classic_collision(BlockRef(1u32))); // [0]
+        scene
+            .blocks
+            .push(rigid_body_with_filter(2, [0.0; 4], [0.0, 0.0, 0.0, 1.0], false, filter)); // [1]
+        scene.blocks.push(Box::new(BhkSphereShape {
+            material: 0,
+            radius: 1.0,
+        })); // [2]
+
+        let (_shape, body) =
+            extract_collision(&scene, BlockRef(0u32)).expect("shape must still resolve");
+        assert!(
+            body.collidable,
+            "only havok_filter's low byte (Layer) may affect collidable"
+        );
     }
 
     /// A `bhkRigidBodyT` with a non-finite CInfo translation must not

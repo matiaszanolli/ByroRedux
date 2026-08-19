@@ -168,6 +168,15 @@ pub struct RigidBodyData {
     pub restitution: f32,
     pub linear_damping: f32,
     pub angular_damping: f32,
+    /// `false` when the source content authored this body on Havok's
+    /// non-collidable layer (`OL_NONCOLLIDABLE` / `FOL_NONCOLLIDABLE` /
+    /// `SKYL_NONCOLLIDABLE` — value 15 in every per-game
+    /// `HavokFilter.Layer` enum nif.xml declares, confirmed for
+    /// Oblivion/FO3+FNV/Skyrim). `true` (collidable) for every other
+    /// layer and for every non-NIF-derived body (synthesized colliders,
+    /// water planes, the player's own kinematic capsule, …), none of
+    /// which carry Havok layer authoring at all. #2549.
+    pub collidable: bool,
 }
 
 impl RigidBodyData {
@@ -179,6 +188,7 @@ impl RigidBodyData {
         restitution: 0.3,
         linear_damping: 0.0,
         angular_damping: 0.0,
+        collidable: true,
     };
 }
 

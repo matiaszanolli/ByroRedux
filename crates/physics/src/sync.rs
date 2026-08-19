@@ -849,6 +849,15 @@ fn register_newcomers(world: &World, newcomers: Vec<Newcomer>) {
                 .mass(part_mass)
                 .contact_skin(contact_skin)
                 .collision_groups(groups)
+                // #2549 — a body authored on Havok's non-collidable layer
+                // (RigidBodyData::collidable = false) still gets a real
+                // collider (queryable, e.g. for a future trigger-volume
+                // consumer) but must not physically block the player/NPCs
+                // or intercept gameplay rays — a sensor gives exactly that:
+                // present in the solver, no contact response, and (per
+                // `gameplay_ray_ignores_trigger_sensors` in world.rs)
+                // already excluded from ray queries elsewhere in this crate.
+                .sensor(!n.body_data.collidable)
                 .build();
             let handle = colliders.insert_with_parent(collider, body_handle, bodies);
             if first_collider_handle.is_none() {
@@ -1099,6 +1108,64 @@ mod phase_sync_tests {
             motion_type: MotionType::Dynamic,
             ..Default::default()
         }
+    }
+
+    /// #2549 — a body authored on Havok's non-collidable layer
+    /// (`RigidBodyData::collidable = false`) must register as a Rapier
+    /// sensor: present in the solver (queryable), but no contact
+    /// response — a real collider that no longer physically blocks
+    /// movement, closing the gap `havok_filter` being parsed and never
+    /// consumed left open (the body used to spawn as an ordinary solid
+    /// collider regardless of its authored layer).
+    #[test]
+    fn noncollidable_body_registers_as_a_sensor() {
+        let mut world = physics_world();
+        let entity = world.spawn();
+        world.insert(entity, Transform::IDENTITY);
+        world.insert(entity, GlobalTransform::new(Vec3::ZERO, Quat::IDENTITY, 1.0));
+        world.insert(entity, unit_box());
+        world.insert(
+            entity,
+            RigidBodyData {
+                collidable: false,
+                ..RigidBodyData::STATIC
+            },
+        );
+
+        physics_sync_system(&world, 0.0);
+
+        let handles = world.query::<RapierHandles>().unwrap();
+        let h = handles.get(entity).copied().expect("body must register");
+        let pw = world.resource::<PhysicsWorld>();
+        let collider = pw
+            .colliders
+            .get(h.collider)
+            .expect("collider must exist in the solver");
+        assert!(
+            collider.is_sensor(),
+            "collidable=false must produce a sensor collider, not a solid one"
+        );
+    }
+
+    /// Companion negative guard — the ordinary (collidable) case must
+    /// NOT be a sensor, the ubiquitous default every other test in this
+    /// module implicitly relies on.
+    #[test]
+    fn collidable_body_does_not_register_as_a_sensor() {
+        let mut world = physics_world();
+        let entity = world.spawn();
+        world.insert(entity, Transform::IDENTITY);
+        world.insert(entity, GlobalTransform::new(Vec3::ZERO, Quat::IDENTITY, 1.0));
+        world.insert(entity, unit_box());
+        world.insert(entity, RigidBodyData::STATIC);
+
+        physics_sync_system(&world, 0.0);
+
+        let handles = world.query::<RapierHandles>().unwrap();
+        let h = handles.get(entity).copied().expect("body must register");
+        let pw = world.resource::<PhysicsWorld>();
+        let collider = pw.colliders.get(h.collider).expect("collider must exist");
+        assert!(!collider.is_sensor());
     }
 
     fn unit_box() -> CollisionShape {
