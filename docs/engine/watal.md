@@ -266,6 +266,8 @@ records without those fields retain the shared ripple profile.
 FO4/FO76 physical normal falloff multipliers (DNAM[56,60,72]) and Starfield's
 equivalent trio (DNAM[52,56,60]) now scale the shallow, deep, and surface-effect
 normal contributions; an all-zero triplet preserves the legacy response.
+FO3/FNV's long-tail Light Radius and Light Brightness (DATA[164,168]) now
+feed the shared reflection-width and specular-intensity controls.
 Skyrim's Sun Sparkle Magnitude (DNAM[200]) now folds into the canonical
 direct-sun glint multiplier alongside the existing specular magnitude;
 Specular Brightness (DNAM[168]) contributes to that same intensity.

@@ -548,6 +548,15 @@ fn decode_data_fo3nv(data: &[u8]) -> WaterParams {
     if let Some(value) = read_f32_at(data, 96) {
         p.normal_magnitude = value.max(0.0);
     }
+    // FO3/FNV's long tail names these two controls Light Radius and Light
+    // Brightness. Preserve them in the canonical specular controls used by
+    // the shared water shader; zero remains the absent-tail sentinel.
+    if let Some(value) = read_f32_at(data, 164) {
+        p.specular_radius = value.max(0.0);
+    }
+    if let Some(value) = read_f32_at(data, 168) {
+        p.specular_magnitude = value.max(0.0);
+    }
     for (slot, offset) in p.noise_wind_directions.iter_mut().zip([100, 104, 108]) {
         if let Some(value) = read_f32_at(data, offset) {
             *slot = value.to_radians();
@@ -1475,6 +1484,8 @@ mod tests {
         data[144..148].copy_from_slice(&0.5f32.to_le_bytes()); // underwater amount
         data[148..152].copy_from_slice(&18.0f32.to_le_bytes()); // underwater near
         data[152..156].copy_from_slice(&240.0f32.to_le_bytes()); // underwater far
+        data[164..168].copy_from_slice(&180.0f32.to_le_bytes()); // specular radius
+        data[168..172].copy_from_slice(&1.4f32.to_le_bytes()); // specular brightness
         data[100..104].copy_from_slice(&90.0f32.to_le_bytes()); // layer 1 direction
         data[112..116].copy_from_slice(&0.25f32.to_le_bytes()); // layer 1 speed
         data[176..180].copy_from_slice(&(1.0 / 320.0f32).to_le_bytes()); // noise UV 1
@@ -1487,6 +1498,8 @@ mod tests {
         assert!((w.params.reflection_color[0] - 41.0 / 255.0).abs() < 1e-6);
         assert!((w.params.reflection_color[2] - 46.0 / 255.0).abs() < 1e-6);
         assert_eq!(w.params.sun_specular_power, 61.0);
+        assert_eq!(w.params.specular_radius, 180.0);
+        assert_eq!(w.params.specular_magnitude, 1.4);
         assert_eq!(w.params.reflectivity, 0.65);
         assert_eq!(w.params.fresnel, 0.04);
         assert_eq!(w.params.fog_near, 7.0);
