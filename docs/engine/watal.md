@@ -338,14 +338,18 @@ would compile clean and pass every existing test.
 drives underwater presentation. `crates/physics/src/water.rs` runs before the
 Rapier step: dynamic bodies overlapping a `WaterVolume` receive `WaterContact`,
 Archimedes lift, submerged damping, and a mass-correct velocity-matching force
-toward `WaterFlow`. Dry→wet wake and settled-body sleep are regression-tested so
+toward `WaterFlow`; authored wave displacement is sampled on the same contact
+surface so dynamic bodies follow the rendered wave crest. Dry→wet wake and
+settled-body sleep are regression-tested so
 water does not reintroduce the exterior physics freeze. The kinematic
 `CharacterController` now samples the same authored water AABBs: gravity is
 replaced by bounded buoyancy while the capsule overlaps a volume, the jump
 action becomes a capped swim stroke, and horizontal flow contributes a
 fractional current drift. Drowning, localized surface spray, transient
 splash/ripple markers, and listener-scoped underwater low-pass audio are live;
-water-walking and freezing remain open.
+water-walking and freezing remain open. SpeedTree billboard placements also
+consume the shared weather `WindField`, including direction changes while the
+camera is stationary.
 
 ---
 

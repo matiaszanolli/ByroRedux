@@ -21,6 +21,7 @@ use byroredux_core::ecs::components::water::{
     WaterContact, WaterFlow, WaterMaterial, WaterPlane, WaterVolume,
 };
 use byroredux_core::ecs::resource::Resource;
+use byroredux_core::ecs::resources::TotalTime;
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::world::World;
 use byroredux_core::math::Vec3;
@@ -198,6 +199,50 @@ fn nearest_surface_distance(surface_y: f32, reference_y: f32) -> f32 {
     (surface_y - reference_y).abs()
 }
 
+/// CPU counterpart of the bounded low-frequency displacement in
+/// `renderer/shaders/water.vert`. Dynamic bodies use this only for their
+/// contact fraction; the authored volume remains the broadphase column.
+fn authored_wave_height(material: &WaterMaterial, position: Vec3, time_secs: f32) -> f32 {
+    let amplitude = material.wave_amplitude.clamp(0.0, 32.0);
+    let frequency = material.wave_frequency.max(0.0);
+    if !amplitude.is_finite() || !frequency.is_finite() || !time_secs.is_finite() {
+        return 0.0;
+    }
+    let direction = |scroll: [f32; 2], fallback: [f32; 2]| {
+        let len_sq = scroll[0] * scroll[0] + scroll[1] * scroll[1];
+        if len_sq.is_finite() && len_sq > 1.0e-10 {
+            let inv = len_sq.sqrt().recip();
+            [scroll[0] * inv, scroll[1] * inv]
+        } else {
+            fallback
+        }
+    };
+    let dir_a = direction(material.scroll_a, [1.0, 0.35]);
+    let dir_b = direction(material.scroll_b, [-0.4, 1.0]);
+    let spatial_a = material.uv_scale_a.abs().max(1.0 / 2048.0);
+    let spatial_b = material.uv_scale_b.abs().max(1.0 / 4096.0);
+    let flowmap_scale = if material.flowmap_scale.is_finite() && material.flowmap_scale > 0.0 {
+        material.flowmap_scale.clamp(0.05, 8.0)
+    } else {
+        1.0
+    };
+    let scroll_a = [material.scroll_a[0] * flowmap_scale, material.scroll_a[1] * flowmap_scale];
+    let scroll_b = [material.scroll_b[0] * flowmap_scale, material.scroll_b[1] * flowmap_scale];
+    let rate_a = ((scroll_a[0] * scroll_a[0] + scroll_a[1] * scroll_a[1]).sqrt() / 0.0228254)
+        .clamp(0.25, 4.0);
+    let rate_b = ((scroll_b[0] * scroll_b[0] + scroll_b[1] * scroll_b[1]).sqrt() / 0.0286531)
+        .clamp(0.25, 4.0);
+    let phase_a = (position.x * dir_a[0] + position.z * dir_a[1])
+        * spatial_a
+        * std::f32::consts::TAU
+        + time_secs * frequency * rate_a * std::f32::consts::TAU;
+    let phase_b = (position.x * dir_b[0] + position.z * dir_b[1])
+        * spatial_b
+        * std::f32::consts::TAU
+        - time_secs * frequency * rate_b * (std::f32::consts::TAU * 0.75);
+    amplitude * (phase_a.sin() * 0.60 + phase_b.sin() * 0.40)
+}
+
 /// Collect every active water plane's volume + surface height + material
 /// (+ optional flow). Linear scan — cells carry 1–3 planes; a broadphase
 /// would only matter at dozens (mirrors `submersion_system`).
@@ -319,6 +364,11 @@ pub(crate) fn apply_buoyancy(world: &World, had_newcomers: bool) {
         .unwrap_or_default();
 
     let surfaces = collect_water_surfaces(world);
+    let time_secs = world.try_resource::<TotalTime>().map(|time| time.0);
+    let waves_active = time_secs.is_some()
+        && surfaces
+            .iter()
+            .any(|surface| surface.material.wave_amplitude.abs() > 1.0e-4);
     // Fast path: no water anywhere → no body can be buoyant, so skip the
     // whole per-body scan. Keeps interior / no-water / loose-NIF frames free
     // (the common case). A body that was wet last frame is co-unloaded with
@@ -340,7 +390,7 @@ pub(crate) fn apply_buoyancy(world: &World, had_newcomers: bool) {
     // first-frame dry→wet float-up would be skipped here.
     {
         let pw = world.resource::<PhysicsWorld>();
-        if pw.awake_counts().0 == 0 && !pw.pending_wake() && !had_newcomers {
+        if pw.awake_counts().0 == 0 && !pw.pending_wake() && !had_newcomers && !waves_active {
             return;
         }
     }
@@ -374,6 +424,7 @@ pub(crate) fn apply_buoyancy(world: &World, had_newcomers: bool) {
         authored_lin: f32,
         authored_ang: f32,
         prior_wet: bool,
+        prior_depth: f32,
     }
     let mut targets: Vec<Target> = Vec::new();
     for (entity, handles) in handles_q.iter() {
@@ -383,17 +434,19 @@ pub(crate) fn apply_buoyancy(world: &World, had_newcomers: bool) {
         if bd.motion_type != MotionType::Dynamic {
             continue;
         }
-        let prior_wet = contact_q
+        let prior_contact = contact_q
             .as_ref()
             .and_then(|cq| cq.get(entity))
-            .map(|c| c.submerged_fraction > 0.0)
-            .unwrap_or(false);
+            .copied();
         targets.push(Target {
             entity,
             handles: *handles,
             authored_lin: bd.linear_damping,
             authored_ang: bd.angular_damping,
-            prior_wet,
+            prior_wet: prior_contact
+                .map(|contact| contact.submerged_fraction > 0.0)
+                .unwrap_or(false),
+            prior_depth: prior_contact.map(|contact| contact.depth).unwrap_or(0.0),
         });
     }
     drop(handles_q);
@@ -444,25 +497,38 @@ pub(crate) fn apply_buoyancy(world: &World, had_newcomers: bool) {
                 let (min_y, max_y) = (aabb.mins.y, aabb.maxs.y);
                 surfaces
                     .iter()
-                    .filter(|s| {
+                    .filter_map(|s| {
                         let v = &s.volume;
-                        pos.x >= v.min[0]
+                        if !(pos.x >= v.min[0]
                             && pos.x <= v.max[0]
                             && pos.z >= v.min[2]
                             && pos.z <= v.max[2]
-                            && min_y <= s.surface_y + WATERLINE_HYSTERESIS
-                            && max_y >= v.min[1]
+                            && max_y >= v.min[1])
+                        {
+                            return None;
+                        }
+                        let surface_y = time_secs
+                            .map(|time| {
+                                authored_wave_height(
+                                    &s.material,
+                                    Vec3::new(pos.x, pos.y, pos.z),
+                                    time,
+                                )
+                            })
+                            .unwrap_or(0.0)
+                            + s.surface_y;
+                        (min_y <= surface_y + WATERLINE_HYSTERESIS).then_some((s, surface_y))
                     })
                     .min_by(|a, b| {
-                        nearest_surface_distance(a.surface_y, center_y)
-                            .total_cmp(&nearest_surface_distance(b.surface_y, center_y))
+                        nearest_surface_distance(a.1, center_y)
+                            .total_cmp(&nearest_surface_distance(b.1, center_y))
                     })
-                    .map(|s| (s, min_y, max_y))
+                    .map(|(s, surface_y)| (s, min_y, max_y, surface_y))
             };
 
             match surface {
-                Some((s, min_y, max_y)) => {
-                    let frac = submerged_fraction(min_y, max_y, s.surface_y);
+                Some((s, min_y, max_y, surface_y)) => {
+                    let frac = submerged_fraction(min_y, max_y, surface_y);
                     if frac > 0.0 {
                         if let Some(b) = pw.bodies.get_mut(t.handles.body) {
                             // Submerged viscous damping so the float settles
@@ -471,7 +537,10 @@ pub(crate) fn apply_buoyancy(world: &World, had_newcomers: bool) {
                             b.set_angular_damping(consts.angular_damping_in);
                             // Wake ONCE on entry so a body that streamed in
                             // already submerged (spawned asleep) floats up.
-                            if !t.prior_wet {
+                            if !t.prior_wet
+                                || (b.is_sleeping()
+                                    && (surface_y - center_y - t.prior_depth).abs() > 0.1)
+                            {
                                 b.wake_up(true);
                                 woke_any = true;
                             }
@@ -507,9 +576,9 @@ pub(crate) fn apply_buoyancy(world: &World, had_newcomers: bool) {
                             t.entity,
                             WaterContact {
                                 surface_entity: Some(s.entity),
-                                depth: s.surface_y - center_y,
+                                depth: surface_y - center_y,
                                 submerged_fraction: frac,
-                                head_submerged: max_y <= s.surface_y,
+                                head_submerged: max_y <= surface_y,
                                 flow: s.flow,
                                 damage_per_second: s.damage_per_second,
                                 material: Some(s.material),
@@ -641,6 +710,23 @@ mod tests {
             buoyancy_force(10.0, 1.5, G_Y, 2.0).y,
             buoyancy_force(10.0, 1.0, G_Y, 2.0).y
         );
+    }
+
+    #[test]
+    fn authored_wave_height_is_finite_bounded_and_time_varying() {
+        let material = WaterMaterial {
+            wave_amplitude: 4.0,
+            wave_frequency: 1.0,
+            scroll_a: [0.0228254, 0.0],
+            scroll_b: [0.0, 0.0286531],
+            ..WaterMaterial::default()
+        };
+        let position = Vec3::new(113.0, 0.0, -47.0);
+        let start = authored_wave_height(&material, position, 0.0);
+        let later = authored_wave_height(&material, position, 0.37);
+        assert!(start.is_finite() && later.is_finite());
+        assert!(start.abs() <= 4.0 && later.abs() <= 4.0);
+        assert!((start - later).abs() > 1.0e-4);
     }
 
     #[test]
