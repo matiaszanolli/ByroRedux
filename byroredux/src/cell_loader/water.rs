@@ -590,6 +590,7 @@ pub(crate) fn spawn_lod_water_plane(
         mesh_handle,
         normal_map_handle: (resolved_normal_idx != 0).then_some(resolved_normal_idx),
         noise_map_handles: resolved_noise,
+        center_grid: player_grid,
     })
 }
 

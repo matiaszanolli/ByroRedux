@@ -22,6 +22,8 @@
 
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::World;
+use byroredux_core::ecs::components::Transform;
+use byroredux_core::math::Vec3;
 use byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
 use byroredux_renderer::VulkanContext;
 use rayon::prelude::*;
@@ -426,19 +428,12 @@ pub struct LodBlock {
 /// worldspace exit (`streaming_helpers::drain_streaming_state`).
 ///
 /// Its hole (cut out around the full-detail streamed area, so it doesn't
-/// double-blend against the near per-cell water) is a snapshot centered on
-/// the player's worldspace-entry grid position — it does NOT re-center
-/// continuously as the player walks, the way [`LodBlock`]'s hole mask
-/// tracks the moving full-detail boundary every reconcile. Continuous
-/// per-block water LOD (mirroring `LodBlock` exactly) was assessed
-/// too high-risk for this pass: `LodBlock`'s global-pool-only mesh upload
-/// makes it a candidate for the renderer's pre-TLAS static-BLAS recovery path
-/// (`restore_missing_static_blas_for_draws`). That path shares the TLAS
-/// eligibility predicate and therefore excludes water, but this entity also
-/// uses the SAME safe per-mesh-buffer upload path
-/// (`rt_enabled: false`) every full-detail `WaterPlane` already uses, which
-/// is proven never to reach the TLAS regardless of `in_tlas`'s computed
-/// value (see `cell_loader::water`'s module doc).
+/// double-blend against the near per-cell water) follows the player across
+/// grid boundaries by translating this entity. The mesh and GPU allocations
+/// remain stable; only the transform changes, matching the moving boundary
+/// without the cost and lifetime hazards of per-block water uploads. Like
+/// full-detail water, this render-only entity uses the safe per-mesh-buffer
+/// upload path (`rt_enabled: false`) and never enters the TLAS.
 #[derive(Debug, Clone, Copy)]
 pub struct LodWaterPlane {
     pub entity: EntityId,
@@ -451,6 +446,24 @@ pub struct LodWaterPlane {
     /// NAM2–4 noise-map handles acquired for the LOD material. Zero entries
     /// are the shared fallback and are not refcounted.
     pub noise_map_handles: [u32; 3],
+    /// Grid used to author the annulus vertices. The mesh is translated by
+    /// the grid delta as the player crosses cells so its hole stays aligned
+    /// with the full-detail streaming radius without rebuilding GPU buffers.
+    pub center_grid: (i32, i32),
+}
+
+/// Translation in renderer Y-up coordinates for a world-grid movement.
+/// Gamebryo's second grid axis maps to renderer -Z.
+#[inline]
+pub(crate) fn lod_water_recenter_delta(
+    old_grid: (i32, i32),
+    new_grid: (i32, i32),
+) -> Vec3 {
+    Vec3::new(
+        (new_grid.0 - old_grid.0) as f32 * EXTERIOR_CELL_UNITS,
+        0.0,
+        -(new_grid.1 - old_grid.1) as f32 * EXTERIOR_CELL_UNITS,
+    )
 }
 
 /// Worker request — main thread asks the worker to pre-parse a cell.
@@ -797,6 +810,26 @@ impl WorldStreamingState {
             self.radius_unload,
             self.wctx.record_index.game,
         );
+    }
+
+    /// Keep the distant-water annulus centered on the current full-detail
+    /// streaming hole. The mesh remains world-authored at its spawn center;
+    /// only the entity transform moves, so no Vulkan upload or texture churn
+    /// occurs when crossing a cell boundary.
+    pub fn recenter_lod_water(&mut self, world: &mut World, player_grid: (i32, i32)) {
+        let Some(plane) = self.lod_water.as_mut() else {
+            return;
+        };
+        if plane.center_grid == player_grid {
+            return;
+        }
+        let delta = lod_water_recenter_delta(plane.center_grid, player_grid);
+        if let Some(mut transforms) = world.query_mut::<Transform>() {
+            if let Some(transform) = transforms.get_mut(plane.entity) {
+                transform.translation += delta;
+            }
+        }
+        plane.center_grid = player_grid;
     }
 
     /// Send a load request to the worker. Returns `Err` if the worker

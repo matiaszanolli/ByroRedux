@@ -83,6 +83,7 @@ impl App {
         if grid_changed {
             let dispatch_started = Instant::now();
             state.last_player_grid = Some(player_grid);
+            state.recenter_lod_water(&mut self.world, player_grid);
             state.lod_reconcile_pending = true;
             state
                 .telemetry
