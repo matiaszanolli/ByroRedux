@@ -88,7 +88,13 @@ pub(crate) struct ResolvedPaths {
 /// response through the shared material property chain.
 pub(crate) fn water_material_from_mesh(material: &Material, normal_map_index: u32) -> WaterMaterial {
     let mut water = WaterMaterial::default();
-    water.normal_map_index = normal_map_index;
+    // Texture handle 0 is the registry's diagnostic placeholder; the water
+    // shader reserves `u32::MAX` for its procedural normal fallback.
+    water.normal_map_index = if normal_map_index == 0 {
+        u32::MAX
+    } else {
+        normal_map_index
+    };
     if material.env_map_scale.is_finite() {
         water.reflectivity = material.env_map_scale.clamp(0.0, 1.0);
     }
@@ -571,6 +577,24 @@ pub(crate) fn resolve_msn_z_source(world: &mut World, entity: EntityId) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mesh_water_zero_normal_handle_uses_procedural_sentinel() {
+        let material = Material::default();
+        let water = water_material_from_mesh(&material, 0);
+        assert_eq!(water.normal_map_index, u32::MAX);
+    }
+
+    #[test]
+    fn mesh_water_preserves_real_normal_handle_and_optical_scalars() {
+        let mut material = Material::default();
+        material.env_map_scale = 0.42;
+        material.alpha = 0.73;
+        let water = water_material_from_mesh(&material, 17);
+        assert_eq!(water.normal_map_index, 17);
+        assert!((water.reflectivity - 0.42).abs() < f32::EPSILON);
+        assert!((water.opacity - 0.73).abs() < f32::EPSILON);
+    }
 
     // Inputs that pass the gate (lit Skyrim-era matte surface w/ normal map,
     // no gloss map): material_kind 0, metalness 0, env_map_scale 0,
