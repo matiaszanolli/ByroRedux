@@ -292,7 +292,11 @@ pub fn weather_wave_adjustment(world: &World, time_secs: f32) -> ([f32; 2], f32)
     let gust = wind.speed
         + wind.gust_amplitude
             * (time_secs * wind.gust_frequency * std::f32::consts::TAU).sin();
-    let gust = if gust.is_finite() { gust } else { 0.0 };
+    // Match the renderer and SpeedTree wind contract: a negative
+    // instantaneous gust is a calm trough, not a reversed current. Keeping
+    // the CPU scroll one-sided prevents buoyancy/submersion sampling from
+    // tracking a crest that the visible water and vegetation do not show.
+    let gust = if gust.is_finite() { gust.max(0.0) } else { 0.0 };
     let len_sq = wind.direction[0] * wind.direction[0] + wind.direction[1] * wind.direction[1];
     let direction = if len_sq.is_finite() && len_sq > 1.0e-6 {
         let inv_len = len_sq.sqrt().recip();
@@ -304,10 +308,7 @@ pub fn weather_wave_adjustment(world: &World, time_secs: f32) -> ([f32; 2], f32)
         direction[0] * gust * WEATHER_WATER_SCROLL_PER_BU_PER_S,
         direction[1] * gust * WEATHER_WATER_SCROLL_PER_BU_PER_S,
     ];
-    let scale = 1.0
-        + (gust.max(0.0) / MAX_WEATHER_WIND_SPEED)
-            .clamp(0.0, 1.0)
-            * 0.5;
+    let scale = 1.0 + (gust / MAX_WEATHER_WIND_SPEED).clamp(0.0, 1.0) * 0.5;
     (scroll, scale)
 }
 
@@ -818,6 +819,21 @@ mod tests {
             authored_wave_height_with_weather(&material, position, 2.3, [0.0, 0.0], 1.5);
         assert!((calm - wind_x).abs() > 1.0e-4);
         assert!((amplified - calm * 1.5).abs() < 1.0e-5);
+    }
+
+    #[test]
+    fn negative_weather_gust_keeps_cpu_water_surface_calm() {
+        let mut world = World::new();
+        world.insert_resource(WindField {
+            direction: [1.0, 0.0],
+            speed: 0.0,
+            gust_amplitude: -100.0,
+            gust_frequency: 0.25,
+        });
+
+        let (scroll, scale) = weather_wave_adjustment(&world, 1.0);
+        assert_eq!(scroll, [0.0, 0.0]);
+        assert_eq!(scale, 1.0);
     }
 
     #[test]
