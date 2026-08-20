@@ -230,7 +230,7 @@ part of the canonical GPU material contract.
 `water.rs` decodes Oblivion's authoritative TES4 DATA shape (including its
 separate scroll-speed, fog/color, rain-simulator, and displacement-simulator offsets), the
 authoritative FO3/FNV 186/196-byte visual layout, Skyrim's extended DNAM, the
-FO4/FO76 visual-data layout, and Starfield's absorption-based
+distinct FO4 and FO76 visual-data layouts, and Starfield's absorption-based
 DNAM layout; `NNAM`/`TNAM` texture and Skyrim+ NAM2/NAM3/NAM4
 noise paths are parsed, with Skyrim SE NAM5 promoted to the third layer for
 flowing water. GNAM daytime/nighttime/underwater links are preserved and the

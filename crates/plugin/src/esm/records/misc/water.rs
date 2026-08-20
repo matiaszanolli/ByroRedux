@@ -857,20 +857,80 @@ fn decode_dnam_fo4(data: &[u8]) -> WaterParams {
     p
 }
 
-/// Decode Fallout 76's WATR visual data. Its fog/physical/specular prefix is
-/// shared with FO4, but the 128..148 tail is five unnamed floats rather than
-/// FO4 noise directions, speeds, amplitudes, and UV scales. Motion is carried
-/// separately by the record's `NAM0` linear-velocity vector.
+/// Decode Fallout 76's WATR visual data. FO76 has a compact, explicit
+/// fog/physical/specular layout; it is not the FO4 noise-tail layout. Motion
+/// is carried separately by the record's `NAM0` linear-velocity vector.
 fn decode_dnam_fo76(data: &[u8]) -> WaterParams {
-    let mut p = decode_dnam_fo4(data);
-    p.noise_wind_directions = [0.0; 3];
-    p.noise_wind_speeds = [0.0; 3];
-    p.noise_uv_scale_a = 0.0;
-    p.noise_uv_scale_b = 0.0;
-    p.noise_uv_scale_c = 0.0;
-    p.noise_amplitude_scales = [0.0; 3];
-    p.wind_direction = 0.0;
-    p.wind_speed = 0.0;
+    let mut p = WaterParams::default();
+    // Fog Properties: depth amount, shallow/deep colors and authored ranges.
+    if let Some(depth) = read_f32_at(data, 0) {
+        p.fog_near = 0.0;
+        p.fog_far = depth.max(1.0);
+    }
+    if let Some(color) = read_rgb_at(data, 4) {
+        p.shallow_color = color;
+    }
+    if let Some(color) = read_rgb_at(data, 8) {
+        p.deep_color = color;
+    }
+    if let Some(near) = read_f32_at(data, 12) {
+        p.fog_near = near.max(0.0);
+    }
+    if let Some(far) = read_f32_at(data, 16) {
+        p.fog_far = far.max(p.fog_near + 1.0);
+    }
+    if let Some(color) = read_rgb_at(data, 36) {
+        p.underwater_color = color;
+    }
+    if let Some(amount) = read_f32_at(data, 40) {
+        p.underwater_fog_amount = amount.clamp(0.0, 8.0);
+    }
+    if let Some(near) = read_f32_at(data, 44) {
+        p.underwater_fog_near = near.max(0.0);
+    }
+    if let Some(far) = read_f32_at(data, 48) {
+        p.underwater_fog_far = far.max(p.underwater_fog_near + 1.0);
+    }
+
+    // Physical Properties: normal magnitude, reflectivity, Fresnel, and
+    // displacement simulator. Falloff/dampener remain raw until the
+    // canonical shader has an equivalent bounded control.
+    if let Some(normal) = read_f32_at(data, 52) {
+        p.normal_magnitude = normal.max(0.0);
+    }
+    if let Some(reflectivity) = read_f32_at(data, 64) {
+        p.reflectivity = reflectivity.clamp(0.0, 1.0);
+    }
+    if let Some(fresnel) = read_f32_at(data, 68) {
+        p.fresnel = fresnel.clamp(0.0, 1.0);
+    }
+    if let Some(force) = read_f32_at(data, 76) {
+        p.wave_amplitude = force.max(0.0);
+    }
+    if let Some(velocity) = read_f32_at(data, 80) {
+        p.wave_frequency = velocity.max(0.0);
+    }
+    if let Some(color) = read_rgb_at(data, 96) {
+        p.reflection_color = color;
+    }
+
+    // FO76's sun/specular block is distinct from the FO4 noise tail.
+    if let Some(power) = read_f32_at(data, 100) {
+        p.sun_specular_power = power.clamp(1.0, 2048.0);
+    }
+    if let Some(magnitude) = read_f32_at(data, 104) {
+        p.specular_magnitude = magnitude.max(0.0);
+    }
+    if let Some(power) = read_f32_at(data, 108) {
+        if power.is_finite() && power > 0.0 {
+            p.sun_specular_power = (p.sun_specular_power * power).clamp(1.0, 2048.0);
+        }
+    }
+    if let Some(magnitude) = read_f32_at(data, 112) {
+        if magnitude.is_finite() && magnitude > 0.0 {
+            p.specular_magnitude = (p.specular_magnitude * magnitude).clamp(0.0, 8.0);
+        }
+    }
     p
 }
 
@@ -1520,12 +1580,27 @@ mod tests {
     }
 
     #[test]
-    fn parse_watr_routes_fo76_to_fo4_layout() {
-        let mut data = vec![0u8; 201];
+    fn parse_watr_decodes_fo76_visual_layout() {
+        let mut data = vec![0u8; 148];
         data[0..4].copy_from_slice(&900.0f32.to_le_bytes());
         data[4..8].copy_from_slice(&[10, 20, 30, 0]);
+        data[8..12].copy_from_slice(&[40, 50, 60, 0]);
+        data[12..16].copy_from_slice(&25.0f32.to_le_bytes());
+        data[16..20].copy_from_slice(&450.0f32.to_le_bytes());
+        data[36..40].copy_from_slice(&[70, 80, 90, 0]);
+        data[40..44].copy_from_slice(&0.65f32.to_le_bytes());
+        data[44..48].copy_from_slice(&4.0f32.to_le_bytes());
+        data[48..52].copy_from_slice(&900.0f32.to_le_bytes());
         data[52..56].copy_from_slice(&0.6f32.to_le_bytes());
-        data[128..132].copy_from_slice(&999.0f32.to_le_bytes()); // FO76 unknown, not a direction
+        data[64..68].copy_from_slice(&0.35f32.to_le_bytes());
+        data[68..72].copy_from_slice(&0.04f32.to_le_bytes());
+        data[76..80].copy_from_slice(&0.8f32.to_le_bytes());
+        data[80..84].copy_from_slice(&1.2f32.to_le_bytes());
+        data[96..100].copy_from_slice(&[100, 110, 120, 0]);
+        data[100..104].copy_from_slice(&80.0f32.to_le_bytes());
+        data[104..108].copy_from_slice(&0.75f32.to_le_bytes());
+        data[108..112].copy_from_slice(&1.5f32.to_le_bytes());
+        data[112..116].copy_from_slice(&1.25f32.to_le_bytes());
         let mut velocity = Vec::new();
         velocity.extend_from_slice(&3.0f32.to_le_bytes());
         velocity.extend_from_slice(&4.0f32.to_le_bytes());
@@ -1535,9 +1610,16 @@ mod tests {
             &[sub(b"DNAM", &data), sub(b"NAM0", &velocity)],
             GameKind::Fallout76,
         );
-        assert_eq!(w.params.fog_far, 900.0);
+        assert_eq!(w.params.fog_near, 25.0);
+        assert_eq!(w.params.fog_far, 450.0);
         assert_eq!(w.params.normal_magnitude, 0.6);
         assert!((w.params.shallow_color[2] - 30.0 / 255.0).abs() < 1e-6);
+        assert!((w.params.deep_color[0] - 40.0 / 255.0).abs() < 1e-6);
+        assert!((w.params.underwater_color[2] - 90.0 / 255.0).abs() < 1e-6);
+        assert_eq!(w.params.wave_amplitude, 0.8);
+        assert_eq!(w.params.wave_frequency, 1.2);
+        assert_eq!(w.params.sun_specular_power, 120.0);
+        assert_eq!(w.params.specular_magnitude, 0.9375);
         assert_eq!(w.params.wind_speed, 5.0);
         assert!((w.params.wind_direction - (-4.0f32).atan2(3.0)).abs() < 1e-6);
         assert_eq!(w.params.noise_wind_speeds, [5.0, 5.0, 5.0]);
