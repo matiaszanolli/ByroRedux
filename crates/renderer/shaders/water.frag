@@ -580,10 +580,11 @@ void main() {
     mat3 TBN = mat3(T, B, Nsurface);
 
     vec3 V = normalize(cameraPos.xyz - vWorldPos);
-    // Flat water planes use +Y as their surface normal. Mesh waterfalls are
-    // vertical sheets and must retain the ordinary two-sided tint path.
+    // Determine the camera side from the authored geometric normal rather
+    // than assuming +Y. This keeps rotated legacy mesh-water planes correct;
+    // explicit waterfall sheets still use their ordinary two-sided tint path.
     bool cameraUnderwater = kind != WATER_WATERFALL
-        && cameraPos.y < vWorldPos.y;
+        && dot(cameraPos.xyz - vWorldPos, Nsurface) < 0.0;
 
     // ── Wave UVs ──
     // For flat surfaces (Calm/River/Rapids), drive the UV from world

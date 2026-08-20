@@ -928,6 +928,7 @@ mod tests {
         let src = include_str!("../../shaders/water.frag");
         assert!(src.contains("vec4 underwater;"));
         assert!(src.contains("cameraUnderwater"));
+        assert!(src.contains("dot(cameraPos.xyz - vWorldPos, Nsurface) < 0.0"));
         assert!(src.contains("push.scroll_c.z"));
         assert!(src.contains("push.underwater.rgb"));
     }
