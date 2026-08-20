@@ -268,6 +268,8 @@ equivalent trio (DNAM[52,56,60]) now scale the shallow, deep, and surface-effect
 normal contributions; an all-zero triplet preserves the legacy response.
 FO3/FNV's long-tail Light Radius and Light Brightness (DATA[164,168]) now
 feed the shared reflection-width and specular-intensity controls.
+Their Distortion Amount and Shininess (DATA[152,156]) now feed the shared
+refraction magnitude and local highlight-power lanes.
 Its Reflection HDR Multiplier (DATA[160]) now scales the resolved reflection
 tint before upload, preserving bright authored reflections without changing
 the fixed GPU ABI.
