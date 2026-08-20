@@ -934,6 +934,15 @@ mod tests {
     }
 
     #[test]
+    fn water_fragment_shader_preserves_zero_authored_opacity() {
+        let src = include_str!("../../shaders/water.frag");
+        assert!(
+            src.contains("float authoredOpacity = clamp(uintBitsToFloat(push.noise_indices.w), 0.0, 1.0)"),
+            "ANAM=0 must remain a valid transparent-water value"
+        );
+    }
+
+    #[test]
     fn water_rapids_third_layer_uses_world_xz_flow() {
         let src = include_str!("../../shaders/water.frag");
         assert!(

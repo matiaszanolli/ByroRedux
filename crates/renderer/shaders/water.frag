@@ -564,7 +564,7 @@ void main() {
     uint  noiseMapC = push.noise_indices.z;
     // WATR.ANAM is packed into the otherwise-unused fourth noise-index slot
     // so the compact 12-vec4 UBO ABI remains stable.
-    float authoredOpacity = clamp(uintBitsToFloat(push.noise_indices.w), 0.05, 1.0);
+    float authoredOpacity = clamp(uintBitsToFloat(push.noise_indices.w), 0.0, 1.0);
     // #2240 — WATR-authored wave_amplitude/wave_frequency, normalised
     // against the WaterMaterial sentinel default (see
     // `sampleScrollingNormal`'s doc comment above).

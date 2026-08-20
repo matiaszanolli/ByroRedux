@@ -37,8 +37,12 @@ pub struct WatrRecord {
     pub editor_id: String,
     pub full_name: String,
     /// Authored surface opacity from WATR.ANAM (0..255 normalized). Zero
-    /// means the record omitted the field and the canonical fallback applies.
+    /// is a valid authored value when [`Self::opacity_authored`] is true.
     pub opacity: f32,
+    /// Whether WATR.ANAM was present. This distinguishes an authored fully
+    /// transparent surface from a record that omits ANAM and uses the engine
+    /// fallback opacity.
+    pub opacity_authored: bool,
     /// FO3/FNV `FNAM` water flags. Bit 0x01 causes actor damage and bit
     /// 0x02 marks the surface as reflective. Other game generations use
     /// different record layouts, so this is only populated for the legacy
@@ -865,6 +869,7 @@ pub fn parse_watr(form_id: u32, subs: &[SubRecord], game: GameKind) -> WatrRecor
             b"ANAM" => {
                 if let Some(&opacity) = sub.data.first() {
                     out.opacity = opacity as f32 / 255.0;
+                    out.opacity_authored = true;
                 }
             }
             // Fallout 3/New Vegas define FNAM as a one-byte water flag
@@ -979,6 +984,14 @@ mod tests {
         assert_eq!(w.full_name, "Fresh Water");
         assert_eq!(w.texture_path, "textures\\water\\fresh.dds");
         assert!((w.opacity - 192.0 / 255.0).abs() < 1e-6);
+        assert!(w.opacity_authored);
+    }
+
+    #[test]
+    fn parse_watr_preserves_authored_zero_opacity() {
+        let w = parse_watr(0x1235, &[sub(b"ANAM", &[0])], GameKind::Skyrim);
+        assert_eq!(w.opacity, 0.0);
+        assert!(w.opacity_authored);
     }
 
     #[test]

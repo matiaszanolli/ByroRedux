@@ -687,6 +687,8 @@ pub(crate) fn resolve_water_material(
             }
             if rec.opacity.is_finite() && rec.opacity > 0.0 {
                 mat.opacity = rec.opacity.clamp(0.05, 1.0);
+            } else if rec.opacity_authored && rec.opacity.is_finite() {
+                mat.opacity = rec.opacity.clamp(0.0, 1.0);
             }
             mat.fresnel_f0 = rec.params.fresnel.clamp(0.001, 0.20);
             mat.reflectivity = rec.params.reflectivity;
@@ -2058,6 +2060,7 @@ mod tests {
             editor_id: "LavaPool01".to_string(),
             full_name: "Lava Pool".to_string(),
             opacity: 0.75,
+            opacity_authored: false,
             legacy_flags: None,
             texture_path: String::new(),
             noise_texture_paths: Default::default(),
@@ -2228,6 +2231,7 @@ mod tests {
             editor_id: edid.to_string(),
             full_name: String::new(),
             opacity: 0.75,
+            opacity_authored: false,
             legacy_flags: None,
             texture_path: String::new(),
             noise_texture_paths: Default::default(),
@@ -2422,6 +2426,17 @@ mod tests {
         waters.insert(rec.form_id, rec);
         let (mat, _, _, _, _) = resolve_water_material(&waters, Some(0x000A_0005));
         assert!((mat.opacity - 0.62).abs() < 1e-6);
+    }
+
+    #[test]
+    fn resolve_water_material_honors_authored_zero_opacity() {
+        let mut rec = calm_watr(0x000A_0006, "InvisibleWater", WaterParams::default());
+        rec.opacity = 0.0;
+        rec.opacity_authored = true;
+        let mut waters = HashMap::new();
+        waters.insert(rec.form_id, rec);
+        let (mat, _, _, _, _) = resolve_water_material(&waters, Some(0x000A_0006));
+        assert_eq!(mat.opacity, 0.0);
     }
 
     #[test]
