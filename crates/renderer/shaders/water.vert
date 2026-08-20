@@ -154,10 +154,21 @@ void main() {
         float spatialA = max(abs(water.tune.x), 1.0 / 2048.0);
         float spatialB = max(abs(water.tune.y), 1.0 / 4096.0);
         float frequency = max(abs(water.misc.y), 0.0);
+        // The CPU adds the live Weather/WindField velocity to both scroll
+        // vectors (the same field that bends SpeedTree objects). Feed that
+        // velocity into the low-frequency displacement too, otherwise wind
+        // only moves the fragment normal map while the silhouette keeps a
+        // fixed-time rhythm. The sentinel defaults reproduce a rate of one;
+        // clamp the response so malformed or storm-strength records cannot
+        // turn a surface into a numerically unstable choppy sheet.
+        const float DEFAULT_SCROLL_A = 0.0228254;
+        const float DEFAULT_SCROLL_B = 0.0286531;
+        float waveRateA = clamp(length(water.scroll.xy) / DEFAULT_SCROLL_A, 0.25, 4.0);
+        float waveRateB = clamp(length(water.scroll.zw) / DEFAULT_SCROLL_B, 0.25, 4.0);
         float phaseA = dot(absolutePos.xz, dirA) * spatialA * 6.2831853
-                     + water.timing.x * frequency * 6.2831853;
+                     + water.timing.x * frequency * waveRateA * 6.2831853;
         float phaseB = dot(absolutePos.xz, dirB) * spatialB * 6.2831853
-                     - water.timing.x * frequency * 4.7123890;
+                     - water.timing.x * frequency * waveRateB * 4.7123890;
         // Author data can contain corrupt/extreme values; keep displacement
         // finite and below a conservative shoreline-safe bound.
         float amplitude = clamp(water.tune.w, 0.0, 32.0);

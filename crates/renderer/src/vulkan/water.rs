@@ -906,6 +906,14 @@ mod tests {
                 && src.contains("localNormal = normalize(vec3(-dHeightDx"),
             "water.vert must derive normals from the authored vertex-wave slope"
         );
+        assert!(
+            src.contains("float waveRateA = clamp(length(water.scroll.xy)")
+                && src.contains("float waveRateB = clamp(length(water.scroll.zw)")
+                && src.contains("frequency * waveRateA")
+                && src.contains("frequency * waveRateB"),
+            "water.vert must let the shared weather/water scroll velocity drive
+             the geometric wave rate as well as fragment normal motion"
+        );
     }
 
     /// #1129 — forward-compat trap. Every "no-op baseline" the water
