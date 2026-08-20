@@ -89,6 +89,7 @@ fn water_shader_property_routes_env_map_scale_to_material_info() {
          cleanly but the importer had no consumer — every mesh-driven \
          FO3/FNV water plane lost its authored env reflection contribution"
     );
+    assert!(info.is_water_shader);
 }
 
 /// `BSShaderPropertyBaseOnly` covers four legacy non-BS subclasses

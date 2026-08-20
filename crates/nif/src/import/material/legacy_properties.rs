@@ -636,6 +636,7 @@ fn apply_misc_shader_properties(
     // forwarding this block's base `shader_flags_1/2` into it would mix
     // `BSShaderFlags` with `WaterShaderPropertyFlags`.
     if let Some(shader) = scene.get_as::<WaterShaderProperty>(idx) {
+        info.is_water_shader = true;
         if !info.env_map_scale_consumed {
             info.env_map_scale =
                 legacy_env_map_scale(shader.shader.shader_flags_1, shader.shader.env_map_scale);

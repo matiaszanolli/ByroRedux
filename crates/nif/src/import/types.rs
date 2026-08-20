@@ -447,6 +447,8 @@ mod material_texture_set_tests {
 pub struct ImportedMaterial {
     /// Skyrim+ `BSWaterShaderProperty` authored water feature flags.
     pub water_shader_flags: u32,
+    /// Whether the source shader is a dedicated mesh-water shader.
+    pub is_water_shader: bool,
     pub textures: MaterialTextureSet<Option<FixedString>>,
     pub material_path: Option<FixedString>,
     pub has_alpha: bool,
@@ -567,6 +569,7 @@ impl Default for ImportedMaterial {
     fn default() -> Self {
         Self {
             water_shader_flags: 0,
+            is_water_shader: false,
             textures: MaterialTextureSet::default(),
             material_path: None,
             has_alpha: false,

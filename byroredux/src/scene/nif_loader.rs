@@ -992,7 +992,7 @@ pub(crate) fn load_nif_bytes_with_skeleton(
             0,
         );
         let material_kind = material.material_kind;
-        let mesh_water = material.water_shader_flags != 0;
+        let mesh_water = material.is_water_shader;
         world.insert(entity, material);
         // PERF-D3-NEW-02 / #1136 — mirror of the cell_loader::spawn path.
         if let Some(ref tp) = owned_textures.base_color {

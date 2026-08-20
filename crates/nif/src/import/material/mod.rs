@@ -872,6 +872,10 @@ pub(super) struct MaterialInfo {
     /// dedicated water pipeline at spawn time. Pinned by
     /// `water_shader_legacy_tests`. #1856.
     pub water_shader_flags: u32,
+    /// True for both legacy FO3/FNV `WaterShaderProperty` and Skyrim+
+    /// `BSWaterShaderProperty`. The older block has no dedicated flag word,
+    /// but it still must use the water renderer.
+    pub is_water_shader: bool,
 }
 
 /// Stencil-test state captured from `NiStencilProperty`. Mirrors the
@@ -1186,6 +1190,7 @@ impl Default for MaterialInfo {
             is_sky_object: false,
             sky_object_type: 0,
             water_shader_flags: 0,
+            is_water_shader: false,
         }
     }
 }
@@ -1385,6 +1390,7 @@ impl MaterialInfo {
         super::types::ImportedMaterial {
             textures,
             water_shader_flags: self.water_shader_flags,
+            is_water_shader: self.is_water_shader,
             material_path: self.material_path,
             has_alpha,
             src_blend_mode: self.src_blend_mode,

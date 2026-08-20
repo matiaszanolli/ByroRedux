@@ -609,6 +609,7 @@ fn apply_bs_sky_shader(
 /// `WaterPipeline` separately; this only covers legacy mesh-bound water.
 fn apply_bs_water_shader(scene: &NifScene, idx: usize, info: &mut MaterialInfo) {
     if let Some(shader) = scene.get_as::<BSWaterShaderProperty>(idx) {
+        info.is_water_shader = true;
         if !info.has_material_data {
             info.uv_offset = shader.uv_offset;
             info.uv_scale = shader.uv_scale;

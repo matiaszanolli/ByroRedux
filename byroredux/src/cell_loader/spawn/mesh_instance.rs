@@ -680,7 +680,7 @@ pub(super) fn spawn_mesh_instance(
         extra_material_flags,
     );
     let material_kind = material.material_kind;
-    let mesh_water = material.water_shader_flags != 0;
+    let mesh_water = material.is_water_shader;
     world.insert(entity, material);
     // PERF-D3-NEW-02 / #1136 — classify FX-decoration meshes at spawn
     // time so build_render_data can skip them via a component query

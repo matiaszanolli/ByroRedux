@@ -177,6 +177,7 @@ fn bs_water_shader_property_routes_uv_and_flags_to_material_info() {
         info.water_shader_flags, 0xC4,
         "Reflections | Refractions | Cubemap — nif.xml's documented default"
     );
+    assert!(info.is_water_shader);
     assert!(info.has_material_data);
     // Water is NOT a sky surface.
     assert!(!info.is_sky_object);
