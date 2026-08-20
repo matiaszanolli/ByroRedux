@@ -1866,7 +1866,7 @@ mod tests {
     /// disocclusion edges. Source assertion because the ordering lives
     /// entirely in the compiled `.spv` — moving the clamp compiles clean and
     /// passes every other test. Sibling of
-    /// `taa.rs::taa_comp_floors_alpha_for_moving_pixels_under_parked_camera`.
+    /// `taa.rs::taa_comp_keeps_history_bounded_and_rejects_unstable_surfaces`.
     #[test]
     fn svgf_temporal_clamps_fireflies_before_history_branch() {
         let src = include_str!("../../shaders/svgf_temporal.comp");
