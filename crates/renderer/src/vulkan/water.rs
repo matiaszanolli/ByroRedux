@@ -891,6 +891,17 @@ mod tests {
         );
     }
 
+    #[test]
+    fn water_vertex_shader_keeps_the_full_material_array_stride() {
+        let src = include_str!("../../shaders/water.vert");
+        assert!(
+            src.contains("vec4 absorption;") && src.contains("vec4 ripple;"),
+            "water.vert must declare the trailing material slots so indexed\n\
+             WaterParams elements retain the 224-byte std140 stride used by\n\
+             Rust and water.frag"
+        );
+    }
+
     /// #1129 — forward-compat trap. Every "no-op baseline" the water
     /// rasterizer / depth-stencil sets statically MUST also appear in
     /// `WATER_PIPELINE_DYNAMIC_STATES` — otherwise the static value
