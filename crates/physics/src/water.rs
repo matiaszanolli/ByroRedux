@@ -222,6 +222,65 @@ fn collect_water_surfaces(world: &World) -> Vec<WaterSurface> {
     out
 }
 
+/// Restore dynamic bodies whose source water plane streamed out before the
+/// body did. The normal buoyancy loop handles this transition when another
+/// surface remains resident; this helper covers the all-surfaces-empty fast
+/// path without leaving submerged damping, forces, or `WaterContact` latched.
+fn clear_stale_water_contacts(world: &World) {
+    let Some(handles_q) = world.query::<RapierHandles>() else {
+        return;
+    };
+    let Some(body_q) = world.query::<RigidBodyData>() else {
+        return;
+    };
+    let Some(contact_q) = world.query::<WaterContact>() else {
+        return;
+    };
+
+    let mut restore = Vec::new();
+    for (entity, contact) in contact_q.iter() {
+        if contact.submerged_fraction <= 0.0 {
+            continue;
+        }
+        let Some(handles) = handles_q.get(entity).copied() else {
+            continue;
+        };
+        let Some(body) = body_q.get(entity) else {
+            continue;
+        };
+        if body.motion_type == MotionType::Dynamic {
+            restore.push((
+                entity,
+                handles,
+                body.linear_damping,
+                body.angular_damping,
+            ));
+        }
+    }
+    drop(contact_q);
+    drop(body_q);
+    drop(handles_q);
+
+    if restore.is_empty() {
+        return;
+    }
+    {
+        let mut pw = world.resource_mut::<PhysicsWorld>();
+        for (_, handles, linear_damping, angular_damping) in &restore {
+            if let Some(body) = pw.bodies.get_mut(handles.body) {
+                body.set_linear_damping(*linear_damping);
+                body.set_angular_damping(*angular_damping);
+                body.reset_forces(false);
+            }
+        }
+    }
+    if let Some(mut q) = world.query_mut::<WaterContact>() {
+        for (entity, _, _, _) in restore {
+            q.insert(entity, WaterContact::default());
+        }
+    }
+}
+
 /// WATAL Phase 2 — the buoyancy phase of [`physics_sync_system`]
 /// (`crate::sync`). Runs BEFORE the Rapier step so the lift it adds
 /// integrates this tick.
@@ -263,6 +322,7 @@ pub(crate) fn apply_buoyancy(world: &World, had_newcomers: bool) {
     // (the common case). A body that was wet last frame is co-unloaded with
     // its cell's water plane, so there is nothing left to restore here.
     if surfaces.is_empty() {
+        clear_stale_water_contacts(world);
         return;
     }
 
@@ -825,6 +885,20 @@ mod tests {
             Some([1.0, 0.0, 0.0]),
             "contact carries the same current consumed by the solver"
         );
+        drop(contact);
+
+        // Streaming can remove the water plane before the dynamic body is
+        // reclaimed. The empty-surface fast path must still clear the
+        // canonical contact instead of leaving a phantom wet body behind.
+        world.remove::<WaterPlane>(water);
+        world.remove::<WaterVolume>(water);
+        world.remove::<WaterFlow>(water);
+        physics_sync_system(&world, PHYSICS_DT);
+        let cleared = world
+            .get::<WaterContact>(body)
+            .expect("dry transition keeps a contact breadcrumb");
+        assert_eq!(cleared.submerged_fraction, 0.0);
+        assert!(cleared.surface_entity.is_none());
     }
 
     /// A buoyant body settling at equilibrium must fall asleep, and once
