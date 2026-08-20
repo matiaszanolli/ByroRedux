@@ -3,7 +3,7 @@
 //! Position / scale, XESP enable-parent (inverted + null-parent), XTEL
 //! teleport, XLKR linked refs, XPRM primitives, XRDS radius, XMSP material
 //! swap, XRMR rooms, XPOD portal pairs, FO4 texture overrides, ACRE
-//! placement, ownership tuple.
+//! placement, ownership tuple, and XWCU water currents.
 
 use super::super::super::reader::EsmReader;
 use super::super::walkers::parse_refr_group;
@@ -86,6 +86,21 @@ fn parse_one_refr_with_remap(record: &[u8], remap: crate::esm::reader::FormIdRem
     parse_refr_group(&mut reader, end, &mut refs, &mut land, &mut navmeshes).unwrap();
     assert_eq!(refs.len(), 1, "exactly one REFR expected");
     refs.remove(0)
+}
+
+#[test]
+fn refr_xwcu_preserves_finite_water_velocity() {
+    let mut payload = Vec::new();
+    for value in [3.0f32, 4.0, 9.0] {
+        payload.extend_from_slice(&value.to_le_bytes());
+    }
+    // Skyrim-family records append four flags bytes after the velocity.
+    payload.extend_from_slice(&[0xAA, 0xBB, 0xCC, 0xDD]);
+    let refr = parse_one_refr(&build_refr_with_subs(
+        0x1234,
+        &[(b"XWCU", payload.as_slice())],
+    ));
+    assert_eq!(refr.water_velocity, Some([3.0, 4.0, 9.0]));
 }
 
 /// #2906 / ESM-D3-01 — every FormID-bearing REFR field must cross the

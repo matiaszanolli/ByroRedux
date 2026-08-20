@@ -476,6 +476,11 @@ pub struct PlacedRef {
     /// presence). Applies to both doors and containers; `None` means
     /// unlocked / not applicable. See #3098.
     pub lock: Option<LockData>,
+    /// Authored local water-current velocity from the REFR `XWCU`
+    /// sub-record, in Gamebryo Z-up coordinates. Water-current marker
+    /// references use this alongside their placement bounds; `None` means
+    /// the reference does not author a local current.
+    pub water_velocity: Option<[f32; 3]>,
 }
 
 /// Lock state decoded from a REFR's `XLOC` sub-record.

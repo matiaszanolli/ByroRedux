@@ -679,6 +679,7 @@ pub(crate) fn parse_refr_group(
             // an `XLOC` sub-record (the CK/GECK only writes it when
             // "Locked" is checked), so presence alone is the lock gate.
             let mut lock: Option<LockData> = None;
+            let mut water_velocity: Option<[f32; 3]> = None;
             // SCR-D7-01 / #1737 — the REFR's own `VMAD` (Skyrim+
             // objectReference override scripts), decoded so the cell loader
             // can attach them additively with the base record's scripts.
@@ -900,6 +901,16 @@ pub(crate) fn parse_refr_group(
                             flags,
                         });
                     }
+                    // XWCU — water-current velocity on a placed current
+                    // marker. The first three floats are the documented
+                    // Gamebryo X/Y/Z velocity; tolerate the trailing flags
+                    // bytes used by Skyrim-family records.
+                    b"XWCU" if sub.data.len() >= 12 => {
+                        let velocity = r.f32_array::<3>().unwrap_or([0.0; 3]);
+                        if velocity.iter().all(|value| value.is_finite()) {
+                            water_velocity = Some(velocity);
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -936,6 +947,7 @@ pub(crate) fn parse_refr_group(
                     ownership,
                     script_instance: ref_script_instance,
                     lock,
+                    water_velocity,
                 });
             }
         } else if &header.record_type == b"LAND" {

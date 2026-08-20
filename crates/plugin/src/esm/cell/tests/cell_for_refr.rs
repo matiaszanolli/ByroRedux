@@ -37,6 +37,7 @@ fn placed_ref(form_id: u32) -> PlacedRef {
         ownership: None,
         script_instance: None,
         lock: None,
+        water_velocity: None,
     }
 }
 
