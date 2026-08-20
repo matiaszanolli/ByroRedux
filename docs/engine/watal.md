@@ -272,8 +272,9 @@ deliberately demoted to `River` for cell planes.
 
 ### Spawn — **functional, coarse**
 
-`cell_loader/water.rs` spawns one flat quad per cell (interior: centred,
-`HALF_EXTENT = 256`; exterior: full 4096-unit tile). Per-game default height via
+`cell_loader/water.rs` spawns one tessellated plane per cell (interior: a
+bounded reference-derived center and horizontal extent with a 256-unit minimum;
+exterior: full 4096-unit tile). Per-game default height via
 `default_water_for_worldspace`. **Gaps:** no shoreline-fit mesh, one plane per
 cell (can't represent multiple bodies at different heights, or rivers spanning
 cells). The `WaterVolume` AABB now feeds body physics directly; there is still no
