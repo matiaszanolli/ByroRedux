@@ -1509,8 +1509,10 @@ mod absorption_ramp_tests {
         assert!(
             src.contains("vec3 authoredRanges = max(push.absorption.rgb, vec3(0.0));")
                 && src.contains("float concentrationDensity = clamp(")
+                && src.contains("max(push.concentration.a, 0.0) * 0.25")
+                && src.contains("float oceanScatter = 1.0 + clamp(push.concentration.a")
                 && src.contains("channelTransmission = exp("),
-            "Starfield color-absorption ranges must feed the per-channel Beer-Lambert path"
+            "Starfield absorption ranges and oceanness must feed the Beer-Lambert and scattering paths"
         );
         assert!(
             src.contains("float h4 = valueNoise")

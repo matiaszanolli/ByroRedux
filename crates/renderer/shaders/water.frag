@@ -462,7 +462,13 @@ vec3 absorbWaterColumn(vec3 refractedRadiance, float hitDist, bool cameraUnderwa
     // the corresponding water column without replacing its RGB palette.
     // This preserves the zero sentinel and keeps legacy records unchanged.
     float concentrationDensity = clamp(
-        dot(max(push.concentration.rgb, vec3(0.0)), vec3(0.25, 0.50, 0.25)),
+        dot(max(push.concentration.rgb, vec3(0.0)), vec3(0.25, 0.50, 0.25))
+            // Starfield's fourth concentration is "oceanness": unlike
+            // phytoplankton/sediment/yellow matter it is not a pigment, but
+            // controls the authored ocean absorption curve. Keep it as a
+            // bounded density contribution and leave the zero sentinel
+            // exactly legacy-compatible.
+            + max(push.concentration.a, 0.0) * 0.25,
         0.0,
         1.0
     );
@@ -986,8 +992,14 @@ void main() {
         dot(reflect(-sunDir, Nperturbed), V) * 2.0 - 1.2,
         0.0
     );
+    // The same Starfield oceanness control also raises the authored
+    // forward-scattering curve. This is deliberately bounded: it can make
+    // open-ocean water read brighter toward the sun without turning a
+    // concentrated coastal water type into an emissive surface.
+    float oceanScatter = 1.0 + clamp(push.concentration.a, 0.0, 1.0) * 0.5;
     float lightScatter = scatterLambert * scatterReflectAngle
         * 0.30 * sunDirection.w * sunVisibility
+        * oceanScatter
         * max(1.0 - exp(-sunHeight), 0.0);
     refrColor = mix(refrColor, scatterColour, clamp(lightScatter, 0.0, 1.0));
 

@@ -339,6 +339,32 @@ fn starfield_absorption_ranges_reach_water_gpu_params() {
 }
 
 #[test]
+fn starfield_oceanness_reaches_water_gpu_params() {
+    let world = world_with_water_plane(
+        0.05,
+        0.6,
+        50.0,
+        1.0 / 512.0,
+        [1.0; 3],
+        [1.0; 4],
+        [0.0, 0.0, 1.0, 1.0],
+    );
+    let water = world
+        .query::<WaterPlane>()
+        .unwrap()
+        .iter()
+        .next()
+        .map(|(entity, _)| entity)
+        .expect("water plane");
+    {
+        let mut query = world.query_mut::<WaterPlane>().unwrap();
+        query.get_mut(water).unwrap().material.concentration = [0.2, 0.4, 0.6, 0.8];
+    }
+    let draws = run_build(&world);
+    assert_eq!(draws[0].params.concentration, [0.2, 0.4, 0.6, 0.8]);
+}
+
+#[test]
 fn ripple_event_reaches_water_gpu_params() {
     let mut world = world_with_water_plane(
         0.05,
