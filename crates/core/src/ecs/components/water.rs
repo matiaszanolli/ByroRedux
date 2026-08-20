@@ -323,8 +323,9 @@ impl Component for WaterPlane {
 pub struct WaterFlow {
     /// Unit vector in **world Y-up space**. Y component is typically
     /// `-1.0` for waterfalls (falls are downward in Y-up); horizontal
-    /// currents (rivers) keep Y=0. Set from the WATR `wind_direction`
-    /// angle after the Z→Y swizzle in `cell_loader/water.rs`.
+    /// currents (rivers) keep Y=0. Synthesized flows use the WATR
+    /// `wind_direction` angle after the Z→Y swizzle; records with an
+    /// authored NAM0 linear velocity retain that vector's direction instead.
     pub direction: [f32; 3],
     /// World units per second, always inside
     /// [`WaterFlow::SPEED_MIN`]`..=`[`WaterFlow::SPEED_MAX`] when built
