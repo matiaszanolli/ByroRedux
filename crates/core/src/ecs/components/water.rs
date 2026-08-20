@@ -184,9 +184,9 @@ pub struct WaterMaterial {
     /// triplet is the canonical sentinel for pre-Starfield records and keeps
     /// their legacy scalar fog response unchanged.
     pub absorption_ranges: [f32; 3],
-    /// Foam intensity multiplier. 0 = no foam anywhere; 1 = full
-    /// rapids / waterfall whitewater. Cell loader sets from
-    /// [`WaterKind`].
+    /// Foam intensity multiplier. Calm water uses a moderate shoreline
+    /// baseline; the cell loader raises it for river/rapids whitewater.
+    /// `1` is full rapids / waterfall foam.
     pub foam_strength: f32,
     /// Shoreline foam falloff distance (world units). Foam at scene
     /// geometry within this distance below the water surface; fades
@@ -247,7 +247,11 @@ impl Default for WaterMaterial {
             specular_magnitude: 1.0,
             flowmap_scale: 1.0,
             absorption_ranges: [0.0; 3],
-            foam_strength: 0.0,
+            // Shoreline foam is authored by the shader's contact ray for
+            // every non-waterfall surface. Keep a visible but restrained
+            // baseline for calm lakes/oceans; flow kinds override this with
+            // their stronger/slower whitewater profiles in EXAL.
+            foam_strength: 0.65,
             shoreline_width: 32.0,
             ior: 1.33,
             // SENTINEL (WATAL §4): matches `WaterParams::default` so a

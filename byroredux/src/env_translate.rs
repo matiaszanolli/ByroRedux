@@ -2330,6 +2330,10 @@ mod tests {
             u32::MAX,
             "no texture authored → procedural sentinel"
         );
+        assert!(
+            (def.foam_strength - 0.65).abs() < f32::EPSILON,
+            "calm-water sentinel must retain shoreline foam"
+        );
         assert_eq!(
             sk.normal_map_index,
             u32::MAX,
