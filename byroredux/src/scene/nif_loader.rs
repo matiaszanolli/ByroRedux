@@ -1026,7 +1026,9 @@ pub(crate) fn load_nif_bytes_with_skeleton(
         );
         if mesh_water {
             let water_material = crate::material_translate::water_material_from_mesh(
-                &world.get::<byroredux_core::ecs::components::Material>(entity).unwrap(),
+                &world
+                    .get::<byroredux_core::ecs::components::Material>(entity)
+                    .unwrap(),
                 texture_handles.normal,
             );
             world.insert(
@@ -1034,6 +1036,28 @@ pub(crate) fn load_nif_bytes_with_skeleton(
                 byroredux_core::ecs::components::WaterPlane {
                     kind: byroredux_core::ecs::components::WaterKind::Calm,
                     material: water_material,
+                },
+            );
+            let bound_center = Vec3::new(
+                mesh.local_bound_center[0],
+                mesh.local_bound_center[1],
+                mesh.local_bound_center[2],
+            );
+            let center_world = translation + quat * (bound_center * mesh.scale);
+            let radius = (mesh.local_bound_radius * mesh.scale.abs()).max(1.0);
+            world.insert(
+                entity,
+                byroredux_core::ecs::components::WaterVolume {
+                    min: [
+                        center_world.x - radius,
+                        center_world.y - radius * 4.0,
+                        center_world.z - radius,
+                    ],
+                    max: [
+                        center_world.x + radius,
+                        center_world.y,
+                        center_world.z + radius,
+                    ],
                 },
             );
         }

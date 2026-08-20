@@ -721,7 +721,9 @@ pub(super) fn spawn_mesh_instance(
         // authored normal map when one exists; the water shader treats the
         // sentinel as a procedural fallback.
         let water_material = crate::material_translate::water_material_from_mesh(
-            &world.get::<byroredux_core::ecs::components::Material>(entity).unwrap(),
+            &world
+                .get::<byroredux_core::ecs::components::Material>(entity)
+                .unwrap(),
             texture_handles.normal,
         );
         world.insert(
@@ -729,6 +731,31 @@ pub(super) fn spawn_mesh_instance(
             byroredux_core::ecs::components::WaterPlane {
                 kind: byroredux_core::ecs::components::WaterKind::Calm,
                 material: water_material,
+            },
+        );
+        // Mesh-bound water has no CELL/XCLW record to create a volume from.
+        // Derive a conservative world-space volume from the imported bounds
+        // so swimming and buoyancy consume the same surface as rendering.
+        let bound_center = Vec3::new(
+            mesh.local_bound_center[0],
+            mesh.local_bound_center[1],
+            mesh.local_bound_center[2],
+        );
+        let center_world = final_pos + final_rot * (bound_center * final_scale);
+        let radius = (mesh.local_bound_radius * final_scale.abs()).max(1.0);
+        world.insert(
+            entity,
+            byroredux_core::ecs::components::WaterVolume {
+                min: [
+                    center_world.x - radius,
+                    center_world.y - radius * 4.0,
+                    center_world.z - radius,
+                ],
+                max: [
+                    center_world.x + radius,
+                    center_world.y,
+                    center_world.z + radius,
+                ],
             },
         );
     }
