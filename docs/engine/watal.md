@@ -227,8 +227,10 @@ part of the canonical GPU material contract.
 
 ### Decode + translate — **good (render), Skyrim tail partially promoted**
 
-`water.rs` decodes Oblivion's short compatibility DATA shape, the authoritative
-FO3/FNV 186/196-byte visual layout, Skyrim's extended DNAM, the FO4/FO76 visual-data layout, and Starfield's absorption-based
+`water.rs` decodes Oblivion's authoritative TES4 DATA shape (including its
+separate scroll-speed, fog/color, and displacement-simulator offsets), the
+authoritative FO3/FNV 186/196-byte visual layout, Skyrim's extended DNAM, the
+FO4/FO76 visual-data layout, and Starfield's absorption-based
 DNAM layout; `NNAM`/`TNAM` texture and Skyrim+ NAM2/NAM3/NAM4
 noise paths are parsed, with Skyrim SE NAM5 promoted to the third layer for
 flowing water. GNAM daytime/nighttime/underwater links are preserved and the
@@ -296,6 +298,9 @@ legacy water meshes therefore participate in swimming, buoyancy, and current
 queries through the same canonical component as CELL water. The installed
 Oblivion, FNV, Skyrim SE, and FO4 parse-rate gates plus the Skyrim default-WATR
 tail and cross-master water-field matrix pass when run with local game data.
+The bounded Vulkan exterior smoke also passes for all four installed profiles;
+the wider FO3/FO76/Starfield visual matrix still depends on those game data
+sets being available.
 
 ### Spawn — **functional, coarse**
 

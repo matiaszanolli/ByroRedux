@@ -385,6 +385,71 @@ fn decode_data(data: &[u8]) -> WaterParams {
     p
 }
 
+/// Decode Oblivion's TES4 `WATR.DATA` layout.
+///
+/// TES4 keeps the first seven floats compatible with the later records, but
+/// inserts two scroll-speed floats before the fog pair and starts the three
+/// byte-colour blocks at offsets 44/48/52.  Treating it as the short FO3
+/// compatibility shape reads the low bytes of the fog float as colour, which
+/// turns vanilla Oblivion water nearly black.  The optional tails are the rain
+/// simulator (60..) and displacement simulator (80..); use the latter for
+/// canonical wave motion when present.
+fn decode_data_oblivion(data: &[u8]) -> WaterParams {
+    let mut p = WaterParams::default();
+    for (dst, offset) in [
+        (&mut p.wind_speed, 0usize),
+        (&mut p.wind_direction, 4usize),
+        (&mut p.wave_amplitude, 8usize),
+        (&mut p.wave_frequency, 12usize),
+    ] {
+        if let Some(value) = read_f32_at(data, offset) {
+            *dst = value;
+        }
+    }
+    if let Some(value) = read_f32_at(data, 16) {
+        p.sun_specular_power = value.clamp(1.0, 2048.0);
+    }
+    if let Some(value) = read_f32_at(data, 20) {
+        p.reflectivity = value.clamp(0.0, 1.0);
+    }
+    if let Some(value) = read_f32_at(data, 24) {
+        p.fresnel = value.clamp(0.0, 1.0);
+    }
+    // TES4 stores the editor's scroll speeds independently of the wind
+    // direction. Preserve them as the first two visual normal-layer vectors.
+    if let (Some(x), Some(y)) = (read_f32_at(data, 28), read_f32_at(data, 32)) {
+        if x.is_finite() && y.is_finite() {
+            p.noise_wind_speeds[0] = (x * x + y * y).sqrt();
+            p.noise_wind_directions[0] = y.atan2(x);
+        }
+    }
+    if let Some(value) = read_f32_at(data, 36) {
+        p.fog_near = value.max(0.0);
+    }
+    if let Some(value) = read_f32_at(data, 40) {
+        p.fog_far = value.max(p.fog_near + 1.0);
+    }
+    for (dst, offset) in [
+        (&mut p.shallow_color, 44usize),
+        (&mut p.deep_color, 48usize),
+        (&mut p.reflection_color, 52usize),
+    ] {
+        if let Some(color) = read_rgb_at(data, offset) {
+            *dst = color;
+        }
+    }
+    // Displacement Simulator: force + velocity. These are the authored
+    // near-field chop controls; leave the prefix wave pair intact when the
+    // optional tail is absent on short 42/62-byte records.
+    if let Some(force) = read_f32_at(data, 80) {
+        p.wave_amplitude = force.max(0.0);
+    }
+    if let Some(velocity) = read_f32_at(data, 84) {
+        p.wave_frequency = velocity.max(0.0);
+    }
+    p
+}
+
 /// Decode the authoritative full FO3/FNV visual-data layout. The first
 /// sixteen bytes are opaque in xEdit's definition; they are not wind or wave
 /// controls. Visual fields begin at byte 16, and the second fog float at byte
@@ -898,9 +963,14 @@ pub fn parse_watr(form_id: u32, subs: &[SubRecord], game: GameKind) -> WatrRecor
                 if matches!(game, GameKind::Fallout3NV) && sub.data.len() == 2 {
                     out.legacy_damage = Some(u16::from_le_bytes([sub.data[0], sub.data[1]]));
                 } else {
-                    // Oblivion / FO3 / FNV visual-data path. The two byte
-                    // layouts are compatible on the prefix we consume.
-                    out.params = decode_data(&sub.data);
+                    // Oblivion inserts scroll speeds before its fog/color
+                    // block; FO3/FNV use the short compatibility prefix or
+                    // their authoritative long layout.
+                    out.params = if matches!(game, GameKind::Oblivion) {
+                        decode_data_oblivion(&sub.data)
+                    } else {
+                        decode_data(&sub.data)
+                    };
                     out.raw_data = sub.data.clone();
                 }
             }
@@ -1073,6 +1143,40 @@ mod tests {
         assert!((w.params.deep_color[2] - (0x18 as f32 / 255.0)).abs() < 1e-6);
         assert_eq!(w.raw_data.len(), 48);
         assert!(w.raw_dnam.is_empty());
+    }
+
+    #[test]
+    fn parse_oblivion_watr_uses_tes4_fog_and_colour_offsets() {
+        let mut data = vec![0u8; 102];
+        for (offset, value) in [
+            (0usize, 0.1f32),
+            (4, 90.0),
+            (8, 0.5),
+            (12, 1.0),
+            (16, 50.0),
+            (20, 0.5),
+            (24, 0.025),
+            (28, 0.02),
+            (32, 0.01),
+            (36, 12.0),
+            (40, 640.0),
+        ] {
+            data[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        data[44..48].copy_from_slice(&[0x20, 0x60, 0x80, 0xFF]);
+        data[48..52].copy_from_slice(&[0x05, 0x0F, 0x18, 0xFF]);
+        data[52..56].copy_from_slice(&[0xC0, 0xD0, 0xE0, 0xFF]);
+        data[80..84].copy_from_slice(&0.4f32.to_le_bytes());
+        data[84..88].copy_from_slice(&0.6f32.to_le_bytes());
+
+        let w = parse_watr(0xBEEF, &[sub(b"DATA", &data)], GameKind::Oblivion);
+        assert_eq!(w.params.fog_near, 12.0);
+        assert_eq!(w.params.fog_far, 640.0);
+        assert!((w.params.shallow_color[0] - 0x20 as f32 / 255.0).abs() < 1e-6);
+        assert!((w.params.deep_color[2] - 0x18 as f32 / 255.0).abs() < 1e-6);
+        assert!((w.params.reflection_color[1] - 0xD0 as f32 / 255.0).abs() < 1e-6);
+        assert_eq!(w.params.wave_amplitude, 0.4);
+        assert_eq!(w.params.wave_frequency, 0.6);
     }
 
     #[test]
