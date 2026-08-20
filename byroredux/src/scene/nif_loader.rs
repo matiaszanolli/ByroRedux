@@ -1043,19 +1043,15 @@ pub(crate) fn load_nif_bytes_with_skeleton(
                 mesh.local_bound_center[1],
                 mesh.local_bound_center[2],
             );
-            let center_world = translation + quat * (bound_center * mesh.scale);
-            let radius = (mesh.local_bound_radius * mesh.scale.abs()).max(1.0);
-            let surface_y = translation.y;
             world.insert(
                 entity,
-                byroredux_core::ecs::components::WaterVolume {
-                    min: [
-                        center_world.x - radius,
-                        surface_y - radius * 4.0,
-                        center_world.z - radius,
-                    ],
-                    max: [center_world.x + radius, surface_y, center_world.z + radius],
-                },
+                crate::material_translate::water_volume_from_mesh(
+                    translation,
+                    quat,
+                    mesh.scale,
+                    bound_center,
+                    mesh.local_bound_radius,
+                ),
             );
         }
         world.insert(

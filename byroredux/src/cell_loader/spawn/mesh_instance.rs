@@ -741,19 +741,15 @@ pub(super) fn spawn_mesh_instance(
             mesh.local_bound_center[1],
             mesh.local_bound_center[2],
         );
-        let center_world = final_pos + final_rot * (bound_center * final_scale);
-        let radius = (mesh.local_bound_radius * final_scale.abs()).max(1.0);
-        let surface_y = final_pos.y;
         world.insert(
             entity,
-            byroredux_core::ecs::components::WaterVolume {
-                min: [
-                    center_world.x - radius,
-                    surface_y - radius * 4.0,
-                    center_world.z - radius,
-                ],
-                max: [center_world.x + radius, surface_y, center_world.z + radius],
-            },
+            crate::material_translate::water_volume_from_mesh(
+                final_pos,
+                final_rot,
+                final_scale,
+                bound_center,
+                mesh.local_bound_radius,
+            ),
         );
     }
     world.insert(

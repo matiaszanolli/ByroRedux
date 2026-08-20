@@ -24,7 +24,9 @@
 use crate::components::MaterialTextureHandles;
 use byroredux_core::ecs::components::material::{EffectFalloff, Material};
 use byroredux_core::ecs::components::water::WaterMaterial;
+use byroredux_core::ecs::components::water::WaterVolume;
 use byroredux_core::ecs::{EntityId, World};
+use byroredux_core::math::{Quat, Vec3};
 use byroredux_nif::import::{ImportedMaterial, MaterialTextureSet};
 
 /// `GpuMaterial.ior` is a discriminated optical scalar. For ordinary
@@ -86,7 +88,10 @@ pub(crate) struct ResolvedPaths {
 /// NIF water properties do not carry a WATR record, so they cannot use the
 /// cell-loader's full per-record translation; they still author optical
 /// response through the shared material property chain.
-pub(crate) fn water_material_from_mesh(material: &Material, normal_map_index: u32) -> WaterMaterial {
+pub(crate) fn water_material_from_mesh(
+    material: &Material,
+    normal_map_index: u32,
+) -> WaterMaterial {
     let mut water = WaterMaterial::default();
     // Texture handle 0 is the registry's diagnostic placeholder; the water
     // shader reserves `u32::MAX` for its procedural normal fallback.
@@ -102,6 +107,28 @@ pub(crate) fn water_material_from_mesh(material: &Material, normal_map_index: u3
         water.opacity = material.alpha.clamp(0.0, 1.0);
     }
     water
+}
+
+/// Derive a conservative physics volume for a mesh-bound water surface. NIF
+/// water blocks do not author a volume or current; the rendered surface is the
+/// entity's transformed Y plane, while imported bounds provide coverage/depth.
+pub(crate) fn water_volume_from_mesh(
+    position: Vec3,
+    rotation: Quat,
+    scale: f32,
+    local_center: Vec3,
+    local_radius: f32,
+) -> WaterVolume {
+    let center = position + rotation * (local_center * scale);
+    let radius = (local_radius * scale.abs()).max(1.0);
+    WaterVolume {
+        min: [
+            center.x - radius,
+            position.y - radius * 4.0,
+            center.z - radius,
+        ],
+        max: [center.x + radius, position.y, center.z + radius],
+    }
 }
 
 /// Translate a source-normalized [`ImportedMaterial`] + caller-resolved
@@ -594,6 +621,21 @@ mod tests {
         assert_eq!(water.normal_map_index, 17);
         assert!((water.reflectivity - 0.42).abs() < f32::EPSILON);
         assert!((water.opacity - 0.73).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn mesh_water_volume_top_matches_rendered_surface() {
+        let volume = water_volume_from_mesh(
+            Vec3::new(10.0, 25.0, -4.0),
+            Quat::IDENTITY,
+            2.0,
+            Vec3::new(1.0, 7.0, -2.0),
+            3.0,
+        );
+        assert_eq!(volume.max[1], 25.0);
+        assert_eq!(volume.min[1], 1.0);
+        assert_eq!(volume.min[0], 6.0);
+        assert_eq!(volume.max[2], -2.0);
     }
 
     // Inputs that pass the gate (lit Skyrim-era matte surface w/ normal map,
