@@ -330,10 +330,11 @@ sets being available.
 bounded reference-derived center and horizontal extent with a 256-unit minimum;
 exterior: LAND-height-masked 4096-unit tile). Per-game default height via
 `default_water_for_worldspace`. Exterior LAND samples now suppress fully dry
-triangles and bound the matching `WaterVolume`, giving coarse shoreline
-coverage without inventing a polygon absent from the cell format. **Gaps:**
-one plane per cell still cannot represent multiple independent bodies at
-different heights, and rivers spanning cells still need authored continuity.
+triangles, split disconnected wet regions into matching physics volumes, and
+give coarse shoreline coverage without inventing a polygon absent from the
+cell format. **Gaps:** one render plane per cell still cannot represent
+multiple independent bodies at different heights, and rivers spanning cells
+still need authored continuity.
 
 ### Render — **mature, with documented fragilities**
 

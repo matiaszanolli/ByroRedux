@@ -196,36 +196,82 @@ fn build_full_detail_water_grid(
     (vertices, indices)
 }
 
-/// Return the normalized X/Z footprint of LAND vertices at or below XCLW.
-/// The footprint feeds the gameplay `WaterVolume` as well as the render mask,
-/// preventing an inherited worldspace sea level from making an entire dry
-/// terrain tile buoyant. `None` means the tile has no below-surface samples.
-fn terrain_water_coverage(
+/// Return connected normalized X/Z footprints of LAND cells intersecting XCLW.
+/// The components feed gameplay `WaterVolume`s as well as the render mask,
+/// preventing an inherited worldspace sea level from making dry terrain
+/// between disconnected ponds buoyant. `None` means no below-surface cells.
+fn terrain_water_components(
     land: &esm::cell::LandscapeData,
     water_height_zup: f32,
-) -> Option<(f32, f32, f32, f32)> {
+) -> Option<Vec<(f32, f32, f32, f32)>> {
+    const WATER_SEGMENTS: usize = FULL_DETAIL_WATER_GRID_SEGMENTS;
     const LAND_SEGMENTS: usize = 32;
-    let mut min_x = f32::INFINITY;
-    let mut max_x = f32::NEG_INFINITY;
-    let mut min_z = f32::INFINITY;
-    let mut max_z = f32::NEG_INFINITY;
-    for row in 0..=LAND_SEGMENTS {
-        for col in 0..=LAND_SEGMENTS {
-            let Some(&height) = land.heights.get(row * (LAND_SEGMENTS + 1) + col) else {
-                continue;
-            };
-            if height > water_height_zup {
-                continue;
-            }
-            let x = col as f32 / LAND_SEGMENTS as f32 * 2.0 - 1.0;
-            let z = row as f32 / LAND_SEGMENTS as f32 * 2.0 - 1.0;
-            min_x = min_x.min(x);
-            max_x = max_x.max(x);
-            min_z = min_z.min(z);
-            max_z = max_z.max(z);
+    let sample = |r: usize, c: usize| {
+        land.heights
+            .get((r * LAND_SEGMENTS / WATER_SEGMENTS) * (LAND_SEGMENTS + 1)
+                + c * LAND_SEGMENTS / WATER_SEGMENTS)
+            .copied()
+    };
+    let mut wet = vec![false; WATER_SEGMENTS * WATER_SEGMENTS];
+    for row in 0..WATER_SEGMENTS {
+        for col in 0..WATER_SEGMENTS {
+            wet[row * WATER_SEGMENTS + col] = [
+                sample(row, col),
+                sample(row, col + 1),
+                sample(row + 1, col),
+                sample(row + 1, col + 1),
+            ]
+            .into_iter()
+            .flatten()
+            .any(|height| height <= water_height_zup);
         }
     }
-    min_x.is_finite().then_some((min_x, max_x, min_z, max_z))
+    if !wet.iter().any(|is_wet| *is_wet) {
+        return None;
+    }
+
+    let mut components = Vec::new();
+    for seed in 0..wet.len() {
+        if !wet[seed] {
+            continue;
+        }
+        wet[seed] = false;
+        let mut stack = vec![seed];
+        let mut min_col = seed % WATER_SEGMENTS;
+        let mut max_col = min_col;
+        let mut min_row = seed / WATER_SEGMENTS;
+        let mut max_row = min_row;
+        while let Some(index) = stack.pop() {
+            let row = index / WATER_SEGMENTS;
+            let col = index % WATER_SEGMENTS;
+            min_col = min_col.min(col);
+            max_col = max_col.max(col);
+            min_row = min_row.min(row);
+            max_row = max_row.max(row);
+            for (next_row, next_col) in [
+                (row.wrapping_sub(1), col),
+                (row + 1, col),
+                (row, col.wrapping_sub(1)),
+                (row, col + 1),
+            ] {
+                if next_row >= WATER_SEGMENTS || next_col >= WATER_SEGMENTS {
+                    continue;
+                }
+                let next = next_row * WATER_SEGMENTS + next_col;
+                if wet[next] {
+                    wet[next] = false;
+                    stack.push(next);
+                }
+            }
+        }
+        components.push((
+            min_col as f32 / WATER_SEGMENTS as f32 * 2.0 - 1.0,
+            (max_col + 1) as f32 / WATER_SEGMENTS as f32 * 2.0 - 1.0,
+            min_row as f32 / WATER_SEGMENTS as f32 * 2.0 - 1.0,
+            (max_row + 1) as f32 / WATER_SEGMENTS as f32 * 2.0 - 1.0,
+        ));
+    }
+    Some(components)
 }
 
 /// Spawn one water-plane entity for the given cell.
@@ -398,9 +444,10 @@ pub(super) fn spawn_water_plane(
         DEFAULT_INTERIOR_VOLUME_DEPTH
     };
     let volume_floor_y = xclw_height - volume_depth;
-    let (coverage_min_x, coverage_max_x, coverage_min_z, coverage_max_z) = terrain
-        .and_then(|land| terrain_water_coverage(land, xclw_height))
-        .unwrap_or((-1.0, 1.0, -1.0, 1.0));
+    let water_components = terrain
+        .and_then(|land| terrain_water_components(land, xclw_height))
+        .unwrap_or_else(|| vec![(-1.0, 1.0, -1.0, 1.0)]);
+    let (coverage_min_x, coverage_max_x, coverage_min_z, coverage_max_z) = water_components[0];
     world.insert(
         entity,
         WaterVolume {
@@ -416,6 +463,40 @@ pub(super) fn spawn_water_plane(
             ],
         },
     );
+    // A single render mesh can contain several disconnected ponds, but one
+    // AABB cannot represent their dry gap. Keep the primary plane as the
+    // first component and attach the remaining components to volume-only
+    // entities. They carry the same material/flow for physics and gameplay,
+    // but no MeshHandle, so the water renderer naturally skips them.
+    for &(min_x, max_x, min_z, max_z) in water_components.iter().skip(1) {
+        let component_entity = world.spawn();
+        world.insert(
+            component_entity,
+            WaterPlane {
+                kind,
+                material,
+                damage_per_second,
+            },
+        );
+        if let Some(flow) = flow {
+            world.insert(component_entity, flow);
+        }
+        world.insert(
+            component_entity,
+            WaterVolume {
+                min: [
+                    position.x + min_x * half_extent,
+                    volume_floor_y,
+                    position.z + min_z * half_extent,
+                ],
+                max: [
+                    position.x + max_x * half_extent,
+                    xclw_height,
+                    position.z + max_z * half_extent,
+                ],
+            },
+        );
+    }
 
     // RenderLayer::Decal here is purely a draw-order placement — it
     // sorts water late, after opaque architectural geometry (lake floor
@@ -838,7 +919,7 @@ mod tests {
     }
 
     #[test]
-    fn terrain_water_coverage_bounds_the_physics_footprint() {
+    fn terrain_water_components_bound_the_physics_footprint() {
         let mut land = esm::cell::LandscapeData {
             heights: vec![100.0; 33 * 33],
             normals: None,
@@ -848,9 +929,23 @@ mod tests {
         land.heights[0] = -10.0;
         land.heights[32 * 33 + 32] = -20.0;
         assert_eq!(
-            terrain_water_coverage(&land, 0.0),
-            Some((-1.0, 1.0, -1.0, 1.0))
+            terrain_water_components(&land, 0.0),
+            Some(vec![(-1.0, -0.875, -1.0, -0.875), (0.875, 1.0, 0.875, 1.0)])
         );
+    }
+
+    #[test]
+    fn terrain_water_components_keep_disconnected_ponds_separate() {
+        let mut land = esm::cell::LandscapeData {
+            heights: vec![100.0; 33 * 33],
+            normals: None,
+            vertex_colors: None,
+            quadrants: Default::default(),
+        };
+        land.heights[2] = -10.0;
+        land.heights[32 * 33 + 32] = -10.0;
+        let components = terrain_water_components(&land, 0.0).expect("two wet cells");
+        assert_eq!(components.len(), 2);
     }
 
     // ── build_lod_water_frame (#2449 / EXAL-01) ─────────────────────
