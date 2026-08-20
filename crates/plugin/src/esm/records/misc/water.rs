@@ -589,6 +589,12 @@ fn decode_data_fo3nv(data: &[u8]) -> WaterParams {
             *slot = value.max(0.0);
         }
     }
+    // FO3/FNV's rain-simulator force is the authored precipitation response
+    // (the same 0.1 neutral anchor used by the TES4 layout). Preserve it so
+    // Fallout water does not silently fall back to the generic response.
+    if let Some(force) = read_f32_at(data, 56) {
+        p.rain_response = (force / 0.1).clamp(0.0, 4.0);
+    }
     if let Some(value) = read_f32_at(data, 92) {
         p.rain_start_size = value.max(0.0);
     }
@@ -1566,6 +1572,7 @@ mod tests {
         data[84..88].copy_from_slice(&0.8f32.to_le_bytes()); // displacement falloff
         data[88..92].copy_from_slice(&4.0f32.to_le_bytes()); // displacement dampener
         data[92..96].copy_from_slice(&1.75f32.to_le_bytes()); // rain start
+        data[56..60].copy_from_slice(&0.2f32.to_le_bytes()); // rain force
         data[60..64].copy_from_slice(&2.25f32.to_le_bytes()); // rain velocity
         data[64..68].copy_from_slice(&0.5f32.to_le_bytes()); // rain falloff
         data[68..72].copy_from_slice(&1.25f32.to_le_bytes()); // rain dampener
@@ -1586,6 +1593,7 @@ mod tests {
         assert_eq!(w.params.sun_specular_power, 61.0);
         assert_eq!(w.params.displacement, [0.06, 0.8, 4.0]);
         assert_eq!(w.params.rain_start_size, 1.75);
+        assert_eq!(w.params.rain_response, 2.0);
         assert_eq!(w.params.rain_velocity, 2.25);
         assert_eq!(w.params.rain_falloff, 0.5);
         assert_eq!(w.params.rain_dampener, 1.25);
