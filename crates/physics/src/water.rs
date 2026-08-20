@@ -57,6 +57,10 @@ pub struct PhysicsWaterConstants {
     /// A response force (instead of a constant acceleration) converges on a
     /// bounded terminal speed and cannot accelerate clutter without limit.
     pub current_drag: f32,
+    /// First-order response rate for atmospheric wind acting on the exposed
+    /// portion of a body at the water surface. Wind is weaker than authored
+    /// current drag and vanishes when the body is fully submerged.
+    pub wind_drag: f32,
 }
 
 impl Default for PhysicsWaterConstants {
@@ -66,6 +70,7 @@ impl Default for PhysicsWaterConstants {
             linear_damping_in: 1.5,
             angular_damping_in: 1.5,
             current_drag: 4.0,
+            wind_drag: 0.35,
         }
     }
 }
@@ -149,6 +154,37 @@ pub fn current_force(
     let target_speed = flow.speed.max(0.0);
     let speed_error = target_speed - body_velocity.dot(direction);
     direction * (speed_error * mass.max(0.0) * response * fraction)
+}
+
+/// Force from the live atmospheric field on the portion of a floating body
+/// above the waterline. WindField's X/Z direction is the shared renderer and
+/// SpeedTree convention. Reusing [`current_force`] keeps the response
+/// mass-correct and bounded at a terminal air velocity.
+#[inline]
+pub fn wind_force(
+    wind: WindField,
+    time_secs: f32,
+    body_velocity: Vec3,
+    mass: f32,
+    exposed_fraction: f32,
+    wind_drag: f32,
+) -> Vec3 {
+    let gust = wind.speed
+        + wind.gust_amplitude * (time_secs * wind.gust_frequency * std::f32::consts::TAU).sin();
+    let gust = if gust.is_finite() { gust.max(0.0) } else { 0.0 };
+    if gust <= 0.0 || !wind.direction.iter().all(|value| value.is_finite()) {
+        return Vec3::ZERO;
+    }
+    current_force(
+        WaterFlow {
+            direction: [wind.direction[0], 0.0, wind.direction[1]],
+            speed: gust,
+        },
+        body_velocity,
+        mass,
+        exposed_fraction,
+        wind_drag,
+    )
 }
 
 /// Fraction (0..1) of a body's vertical span below the water surface,
@@ -268,14 +304,12 @@ pub fn authored_wave_height_with_weather(
         .clamp(0.25, 4.0);
     let rate_b = ((scroll_b[0] * scroll_b[0] + scroll_b[1] * scroll_b[1]).sqrt() / 0.0286531)
         .clamp(0.25, 4.0);
-    let phase_a = (position.x * dir_a[0] + position.z * dir_a[1])
-        * spatial_a
-        * std::f32::consts::TAU
-        + time_secs * frequency * rate_a * std::f32::consts::TAU;
-    let phase_b = (position.x * dir_b[0] + position.z * dir_b[1])
-        * spatial_b
-        * std::f32::consts::TAU
-        - time_secs * frequency * rate_b * (std::f32::consts::TAU * 0.75);
+    let phase_a =
+        (position.x * dir_a[0] + position.z * dir_a[1]) * spatial_a * std::f32::consts::TAU
+            + time_secs * frequency * rate_a * std::f32::consts::TAU;
+    let phase_b =
+        (position.x * dir_b[0] + position.z * dir_b[1]) * spatial_b * std::f32::consts::TAU
+            - time_secs * frequency * rate_b * (std::f32::consts::TAU * 0.75);
     amplitude * (phase_a.sin() * 0.60 + phase_b.sin() * 0.40)
 }
 
@@ -288,8 +322,7 @@ pub fn weather_wave_adjustment(world: &World, time_secs: f32) -> ([f32; 2], f32)
         .map(|field| *field)
         .unwrap_or_default();
     let gust = wind.speed
-        + wind.gust_amplitude
-            * (time_secs * wind.gust_frequency * std::f32::consts::TAU).sin();
+        + wind.gust_amplitude * (time_secs * wind.gust_frequency * std::f32::consts::TAU).sin();
     // Match the renderer and SpeedTree wind contract: a negative
     // instantaneous gust is a calm trough, not a reversed current. Keeping
     // the CPU scroll one-sided prevents buoyancy/submersion sampling from
@@ -307,8 +340,7 @@ pub fn weather_wave_adjustment(world: &World, time_secs: f32) -> ([f32; 2], f32)
         direction[1] * gust * byroredux_core::ecs::components::water::WEATHER_SCROLL_PER_BU_PER_S,
     ];
     let scale = 1.0
-        + (gust / byroredux_core::ecs::components::groundcover::MAX_WIND_SPEED)
-            .clamp(0.0, 1.0)
+        + (gust / byroredux_core::ecs::components::groundcover::MAX_WIND_SPEED).clamp(0.0, 1.0)
             * 0.5;
     (scroll, scale)
 }
@@ -373,12 +405,7 @@ fn clear_stale_water_contacts(world: &World) {
             continue;
         };
         if body.motion_type == MotionType::Dynamic {
-            restore.push((
-                entity,
-                handles,
-                body.linear_damping,
-                body.angular_damping,
-            ));
+            restore.push((entity, handles, body.linear_damping, body.angular_damping));
         }
     }
     drop(contact_q);
@@ -443,6 +470,10 @@ pub(crate) fn apply_buoyancy(world: &World, had_newcomers: bool) {
     let surfaces = collect_water_surfaces(world);
     let current_volumes = collect_water_current_volumes(world);
     let time_secs = world.try_resource::<TotalTime>().map(|time| time.0);
+    let atmospheric_wind = world
+        .try_resource::<WindField>()
+        .map(|wind| *wind)
+        .unwrap_or_default();
     let (weather_scroll, wind_wave_scale) = time_secs
         .map(|time| weather_wave_adjustment(world, time))
         .unwrap_or(([0.0; 2], 1.0));
@@ -521,10 +552,7 @@ pub(crate) fn apply_buoyancy(world: &World, had_newcomers: bool) {
         if bd.motion_type != MotionType::Dynamic {
             continue;
         }
-        let prior_contact = contact_q
-            .as_ref()
-            .and_then(|cq| cq.get(entity))
-            .copied();
+        let prior_contact = contact_q.as_ref().and_then(|cq| cq.get(entity)).copied();
         targets.push(Target {
             entity,
             handles: *handles,
@@ -674,6 +702,15 @@ pub(crate) fn apply_buoyancy(world: &World, had_newcomers: bool) {
                                         consts.current_drag,
                                     );
                                 }
+                                let velocity = b.linvel();
+                                f += wind_force(
+                                    atmospheric_wind,
+                                    time_secs.unwrap_or(0.0),
+                                    Vec3::new(velocity.x, velocity.y, velocity.z),
+                                    mass,
+                                    1.0 - frac,
+                                    consts.wind_drag,
+                                );
                                 b.reset_forces(false);
                                 b.add_force(vector![f.x, f.y, f.z], false);
                             }
@@ -979,6 +1016,40 @@ mod tests {
                 1.0,
                 4.0,
             ),
+            Vec3::ZERO
+        );
+    }
+
+    #[test]
+    fn wind_force_targets_exposed_fraction_in_shared_xz_direction() {
+        let wind = WindField {
+            direction: [0.0, 1.0],
+            speed: 10.0,
+            gust_amplitude: 0.0,
+            gust_frequency: 0.0,
+        };
+        let force = wind_force(wind, 0.0, Vec3::ZERO, 10.0, 0.5, 0.35);
+        assert_eq!(force, Vec3::new(0.0, 0.0, 17.5));
+        assert_eq!(
+            wind_force(wind, 0.0, Vec3::new(0.0, 0.0, 10.0), 10.0, 1.0, 0.35),
+            Vec3::ZERO
+        );
+        assert_eq!(
+            wind_force(wind, 0.0, Vec3::ZERO, 10.0, 0.0, 0.35),
+            Vec3::ZERO
+        );
+    }
+
+    #[test]
+    fn wind_force_clamps_negative_gust_like_water_and_speedtree() {
+        let wind = WindField {
+            direction: [1.0, 0.0],
+            speed: 0.0,
+            gust_amplitude: -100.0,
+            gust_frequency: 0.25,
+        };
+        assert_eq!(
+            wind_force(wind, 1.0, Vec3::ZERO, 10.0, 1.0, 0.35),
             Vec3::ZERO
         );
     }
