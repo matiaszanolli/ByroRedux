@@ -539,21 +539,12 @@ pub(crate) fn spawn_lod_water_plane(
     if let Some(flow) = flow {
         world.insert(entity, flow);
     }
-    // Keep distant water in the same canonical physics space as full-detail
-    // planes. The annulus has a central hole, but its AABB is intentionally
-    // conservative; full-detail cell volumes cover that hole whenever the
-    // streamed surface exists.
-    world.insert(
-        entity,
-        WaterVolume {
-            min: [
-                center_x_zup - outer,
-                lod_height - EXTERIOR_CELL_UNITS,
-                -center_y_zup - outer,
-            ],
-            max: [center_x_zup + outer, lod_height, -center_y_zup + outer],
-        },
-    );
+    // Distant water is a render-only annulus. It has no shoreline geometry,
+    // so a matching AABB `WaterVolume` would falsely submerge actors/cameras
+    // on dry land anywhere inside the square (the annulus itself cannot be
+    // represented by the canonical AABB). Near, streamed cell planes remain
+    // the authoritative source for swimming, buoyancy, currents, and splash
+    // interaction.
     world.insert(entity, RenderLayer::Decal);
 
     log::info!(
@@ -654,6 +645,22 @@ mod tests {
             Some(resolved_normal_idx),
             "water entity's normal-map handle must be reachable by the unload \
              walk's NormalMapHandle query so the texture refcount is released"
+        );
+    }
+
+    #[test]
+    fn lod_water_is_render_only_and_cannot_create_false_submersion() {
+        let src = include_str!("water.rs");
+        let start = src
+            .find("pub(crate) fn spawn_lod_water_plane")
+            .expect("LOD-water spawn function");
+        let end = src
+            .find("pub(crate) fn unload_lod_water_plane")
+            .expect("LOD-water unload function");
+        let lod_body = &src[start..end];
+        assert!(
+            !lod_body.contains("world.insert(\n        entity,\n        WaterVolume"),
+            "distant LOD water has no shoreline geometry and must not drive physics/submersion"
         );
     }
 
