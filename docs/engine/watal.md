@@ -249,7 +249,9 @@ all three authored normal-layer wind vectors,
 and all three authored noise amplitudes and UV scales now cross the same
 canonical boundary; FO4's separate underwater tint also drives the underwater
 composite and underwater fog amount now scales the underwater extinction,
-while older games fall back to deep tint. FO4's three authored noise-falloff
+while older games fall back to deep tint. Skyrim's authored underwater fog
+amount (DNAM[140]) now crosses the canonical boundary alongside its near/far
+tail. FO4's three authored noise-falloff
 values now use the layer-one value for the shared distance fade. Skyrim/FO4 physical normal magnitude
 also scales the canonical noise amplitudes (Skyrim DNAM[92], FO4 DNAM[52]).
 FO76 deep-fog range zeroes retain the authored depth-amount fallback instead
@@ -653,7 +655,7 @@ fallback for textureless legacy water plus authored texture layers where present
 
 ### Q5 — Open item: exact byte offsets of the remaining Skyrim tail. → **MEDIUM confidence; verify before relying.**
 
-The verified Skyrim underwater fog pair at DNAM offsets 144/148, physical normal
+The verified Skyrim underwater fog amount/pair at DNAM offsets 140/144/148, physical normal
 magnitude at 92, displacement
 force at 76, all three noise UV scales at 172/176/180, three noise amplitude
 scales at 184/188/192, and depth weights at 208/212/216/220 now feed the

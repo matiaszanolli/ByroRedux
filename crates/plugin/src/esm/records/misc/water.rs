@@ -724,6 +724,9 @@ fn apply_skyrim_dnam_tail(p: &mut WaterParams, data: &[u8]) {
     if let Some(v) = read_f32_at(data, 132) {
         p.above_water_fog_amount = v.clamp(0.0, 8.0);
     }
+    if let Some(v) = read_f32_at(data, 140) {
+        p.underwater_fog_amount = v.clamp(0.0, 8.0);
+    }
     for (slot, offset) in p.depth_weights.iter_mut().zip([208, 212, 216, 220]) {
         if let Some(v) = read_f32_at(data, offset) {
             *slot = v.max(0.0);
@@ -1555,6 +1558,7 @@ mod tests {
         data[92..96].copy_from_slice(&0.05f32.to_le_bytes());
         data[96..100].copy_from_slice(&300.0f32.to_le_bytes());
         data[132..136].copy_from_slice(&0.75f32.to_le_bytes());
+        data[140..144].copy_from_slice(&0.65f32.to_le_bytes());
         data[144..148].copy_from_slice(&(-1000.0f32).to_le_bytes());
         data[148..152].copy_from_slice(&1000.0f32.to_le_bytes());
         data[172..176].copy_from_slice(&1920.0f32.to_le_bytes());
@@ -1597,6 +1601,7 @@ mod tests {
         assert_eq!(w.params.normal_magnitude, 0.05);
         assert_eq!(w.params.noise_falloff, 300.0);
         assert_eq!(w.params.above_water_fog_amount, 0.75);
+        assert_eq!(w.params.underwater_fog_amount, 0.65);
         assert_eq!(w.params.noise_wind_directions[0], 270.0f32.to_radians());
         assert_eq!(w.params.noise_wind_directions[1], 210.0f32.to_radians());
         assert_eq!(w.params.noise_wind_speeds, [0.019, 0.013, 0.096]);
