@@ -48,6 +48,10 @@ pub struct WatrRecord {
     /// different record layouts, so this is only populated for the legacy
     /// DATA path.
     pub legacy_flags: Option<u8>,
+    /// FO3/FNV `DATA` damage amount. Bethesda stores this as a separate
+    /// two-byte `DATA` subrecord alongside the visual-data `DATA`/`DNAM`;
+    /// preserve it even when the renderer does not yet apply actor damage.
+    pub legacy_damage: Option<u16>,
     /// Diffuse / noise texture path. FO3 / FNV ship this in `NNAM`
     /// (e.g. `Data\Textures\Water\WastelandWaterPotomac.dds` on every
     /// vanilla FO3 WATR); Skyrim+ ships it in `TNAM`. Both arms write
@@ -887,10 +891,17 @@ pub fn parse_watr(form_id: u32, subs: &[SubRecord], game: GameKind) -> WatrRecor
             b"NAM4" => out.noise_texture_paths[2] = read_zstring(&sub.data),
             b"NAM5" => out.flow_noise_texture_path = read_zstring(&sub.data),
             b"DATA" => {
-                // Oblivion / FO3 / FNV path. The two byte layouts
-                // are compatible on the 60-byte prefix we consume.
-                out.params = decode_data(&sub.data);
-                out.raw_data = sub.data.clone();
+                // FO3/FNV use a second DATA subrecord for the authored
+                // damage amount (uint16). Do not let that short record
+                // overwrite the visual payload when both are present.
+                if matches!(game, GameKind::Fallout3NV) && sub.data.len() == 2 {
+                    out.legacy_damage = Some(u16::from_le_bytes([sub.data[0], sub.data[1]]));
+                } else {
+                    // Oblivion / FO3 / FNV visual-data path. The two byte
+                    // layouts are compatible on the prefix we consume.
+                    out.params = decode_data(&sub.data);
+                    out.raw_data = sub.data.clone();
+                }
             }
             b"DNAM" => {
                 out.params = match game {
@@ -1007,6 +1018,21 @@ mod tests {
 
         let skyrim = parse_watr(2, &[sub(b"FNAM", &[0x02])], GameKind::Skyrim);
         assert_eq!(skyrim.legacy_flags, None);
+    }
+
+    #[test]
+    fn parse_watr_preserves_fo3_damage_data_without_overwriting_visuals() {
+        let mut visual = vec![0u8; 186];
+        visual[16..20].copy_from_slice(&61.0f32.to_le_bytes());
+        visual[40..44].copy_from_slice(&[36, 47, 36, 0]);
+        let w = parse_watr(
+            3,
+            &[sub(b"DATA", &visual), sub(b"DATA", &42u16.to_le_bytes())],
+            GameKind::Fallout3NV,
+        );
+        assert_eq!(w.legacy_damage, Some(42));
+        assert_eq!(w.params.sun_specular_power, 61.0);
+        assert_eq!(w.raw_data, visual);
     }
 
     #[test]
