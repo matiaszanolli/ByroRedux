@@ -171,6 +171,31 @@ fn weather_wind_reaches_water_scroll_alongside_speedtree_wind_field() {
 }
 
 #[test]
+fn non_unit_weather_direction_is_normalized_for_water_scroll() {
+    let mut world = world_with_water_plane(
+        0.05,
+        0.6,
+        50.0,
+        1.0 / 512.0,
+        [1.0; 3],
+        [1.0; 4],
+        [0.0, 0.0, 1.0, 1.0],
+    );
+    let calm = run_build(&world);
+    world.insert_resource(WindField {
+        direction: [3.0, 4.0],
+        speed: 100.0,
+        gust_amplitude: 0.0,
+        gust_frequency: 0.0,
+    });
+
+    let params = &run_build(&world)[0].params;
+    let expected = 100.0 * 0.0015;
+    assert!((params.scroll[0] - calm[0].params.scroll[0] - expected * 0.6).abs() < 1e-6);
+    assert!((params.scroll[1] - calm[0].params.scroll[1] - expected * 0.8).abs() < 1e-6);
+}
+
+#[test]
 fn authored_flow_direction_reaches_gpu_flow_and_scroll_payload() {
     let mut world = world_with_water_plane(
         0.05,

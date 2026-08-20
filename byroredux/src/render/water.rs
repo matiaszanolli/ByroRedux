@@ -81,6 +81,26 @@ pub(super) fn reemit_water_planes(
     let gust = weather_wind.speed
         + weather_wind.gust_amplitude
             * (time_secs * weather_wind.gust_frequency * std::f32::consts::TAU).sin();
+    let gust = if gust.is_finite() { gust } else { 0.0 };
+    // SpeedTree sway treats the field as a direction, not a magnitude. Keep
+    // water's weather scroll on that same contract so a hand-authored or
+    // malformed resource cannot make water travel faster than the foliage it
+    // is meant to share wind with.
+    let wind_direction = {
+        let len_sq = weather_wind.direction[0] * weather_wind.direction[0]
+            + weather_wind.direction[1] * weather_wind.direction[1];
+        if len_sq.is_finite() && len_sq > 1.0e-6 {
+            let inv_len = len_sq.sqrt().recip();
+            [
+                weather_wind.direction[0] * inv_len,
+                weather_wind.direction[1] * inv_len,
+            ]
+        } else {
+            // Match the billboard path's deterministic fallback for a zero
+            // or non-finite direction.
+            [1.0, 0.0]
+        }
+    };
     // Use the same instantaneous gust magnitude that drives SpeedTree sway.
     // Keep authored WATR amplitude as the baseline, then add at most 50% in
     // the strongest weather so calm water remains calm and storm water gains
@@ -89,8 +109,8 @@ pub(super) fn reemit_water_planes(
     let wind_wave_scale = 1.0 + (gust.max(0.0) / MAX_WEATHER_WIND_SPEED).clamp(0.0, 1.0) * 0.5;
     const WEATHER_WATER_SCROLL_PER_BU_PER_S: f32 = 0.0015;
     let weather_scroll = [
-        weather_wind.direction[0] * gust * WEATHER_WATER_SCROLL_PER_BU_PER_S,
-        weather_wind.direction[1] * gust * WEATHER_WATER_SCROLL_PER_BU_PER_S,
+        wind_direction[0] * gust * WEATHER_WATER_SCROLL_PER_BU_PER_S,
+        wind_direction[1] * gust * WEATHER_WATER_SCROLL_PER_BU_PER_S,
     ];
     let Some(wq) = world.query::<WaterPlane>() else {
         return;
