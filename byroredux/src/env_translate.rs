@@ -825,7 +825,14 @@ pub(crate) fn resolve_water_material(
             // change.
             let lowered = rec.editor_id.to_ascii_lowercase();
             let has_authored_linear_flow = rec.linear_velocity.is_some();
-            if lowered.contains("rapid") {
+            let authored_flow_speed = rec
+                .linear_velocity
+                .map(|velocity| velocity[0].hypot(velocity[1]))
+                .unwrap_or(0.0);
+            if lowered.contains("rapid")
+                || (has_authored_linear_flow
+                    && authored_flow_speed >= WaterFlow::SPEED_RAPIDS)
+            {
                 kind = WaterKind::Rapids;
                 mat.foam_strength = 0.85;
             } else if lowered.contains("waterfall")
@@ -2418,6 +2425,19 @@ mod tests {
         let flow = flow.expect("NAM0 velocity must produce a canonical current");
         assert!(flow.direction[2] > 0.99);
         assert!((flow.speed - 3.0).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn authored_nam0_rapid_velocity_selects_rapids_profile() {
+        let mut rec = calm_watr(0x000A_0009, "AguaRapida", WaterParams::default());
+        rec.linear_velocity = Some([0.0, 12.0]);
+        rec.params.wind_direction = std::f32::consts::FRAC_PI_2;
+        let mut waters = HashMap::new();
+        waters.insert(rec.form_id, rec);
+        let (mat, kind, flow, _, _) = resolve_water_material(&waters, Some(0x000A_0009));
+        assert!(matches!(kind, WaterKind::Rapids));
+        assert_eq!(mat.foam_strength, 0.85);
+        assert!((flow.expect("rapid NAM0 flow").speed - 12.0).abs() < 1.0e-6);
     }
 
     #[test]

@@ -262,7 +262,9 @@ coordinates for authored water motion and flow direction.
 That explicit velocity is also retained as provenance and promotes a neutral
 or localized WATR editor ID to `River`, so FO76/Starfield-style authored flow
 cannot silently fall back to calm-water physics just because its name is not
-an English `river`/`stream` token.
+an English `river`/`stream` token. Its bounded magnitude drives the canonical
+current speed as well; velocities at the documented rapids threshold select
+the stronger `Rapids` foam/normal profile.
 Starfield's DNAM color-absorption ranges now survive translation as
 per-channel Beer–Lambert distances; older games retain the zero sentinel and
 the established scalar fog response. Its concentration block no longer leaks
