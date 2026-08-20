@@ -87,12 +87,16 @@ pub(crate) fn make_billboard_system() -> impl FnMut(&World, f32) + Send + Sync {
                 cam_pos,
                 cam_forward,
             );
-            // SpeedTree placeholders use the dedicated BsRotateAboutUp mode.
-            // Apply a small coherent canopy bend after camera-facing rotation
-            // so the shared weather wind animates trees without confusing it
-            // with WATR's local normal-map motion. Phase is world-position
-            // seeded, keeping nearby trees in sync while avoiding lockstep.
-            if wind_active && matches!(billboard.mode, BillboardMode::BsRotateAboutUp) {
+            // SpeedTree placements carry the authoritative `SpeedTreeWind`
+            // marker, but their source NIFs are not uniform about which
+            // billboard enum they use (some author `RotateAboutUp`, others
+            // Bethesda's `BsRotateAboutUp`). Key the canopy response off the
+            // marker rather than one enum value so every imported tree gets
+            // the shared weather wind while ordinary billboards remain
+            // unaffected. Phase is world-position seeded, keeping nearby
+            // trees in sync while avoiding lockstep.
+            let tree_wind = swq.as_ref().and_then(|q| q.get(entity).copied());
+            if wind_active && tree_wind.is_some() {
                 let gust = wind.speed
                     + wind.gust_amplitude
                         * (elapsed * wind.gust_frequency * std::f32::consts::TAU).sin();
@@ -114,9 +118,7 @@ pub(crate) fn make_billboard_system() -> impl FnMut(&World, f32) + Send + Sync {
                 let phase = along_wind * 0.017;
                 let wave = (elapsed * (0.35 + strength * 0.85) + phase).sin();
                 let cross = (elapsed * (0.47 + strength * 0.65) + phase * 1.7).cos();
-                let (response, stiffness) = swq
-                    .as_ref()
-                    .and_then(|q| q.get(entity).copied())
+                let (response, stiffness) = tree_wind
                     .map(|wind| {
                         (
                             wind.response.clamp(0.0, 4.0),
@@ -214,7 +216,11 @@ mod tests {
 
     #[test]
     fn speedtree_billboard_bends_with_shared_weather_wind() {
-        fn rotation_after_wind(direction: [f32; 2], speed: f32) -> Quat {
+        fn rotation_after_wind(
+            mode: BillboardMode,
+            direction: [f32; 2],
+            speed: f32,
+        ) -> Quat {
             let mut world = World::new();
             let camera = world.spawn();
             world.insert(camera, Transform::IDENTITY);
@@ -227,7 +233,8 @@ mod tests {
                 tree,
                 GlobalTransform::new(Vec3::new(12.0, 0.0, 8.0), Quat::IDENTITY, 1.0),
             );
-            world.insert(tree, Billboard::new(BillboardMode::BsRotateAboutUp));
+            world.insert(tree, Billboard::new(mode));
+            world.insert(tree, SpeedTreeWind::new(1.0, 0.0));
             world.insert_resource(WindField {
                 direction,
                 speed,
@@ -247,9 +254,9 @@ mod tests {
             rotation
         }
 
-        let calm = rotation_after_wind([1.0, 0.0], 0.0);
-        let first = rotation_after_wind([1.0, 0.0], 220.0);
-        let second = rotation_after_wind([0.0, 1.0], 220.0);
+        let calm = rotation_after_wind(BillboardMode::BsRotateAboutUp, [1.0, 0.0], 0.0);
+        let first = rotation_after_wind(BillboardMode::BsRotateAboutUp, [1.0, 0.0], 220.0);
+        let second = rotation_after_wind(BillboardMode::BsRotateAboutUp, [0.0, 1.0], 220.0);
         assert_ne!(
             calm, first,
             "SpeedTree billboard must respond to weather wind"
@@ -257,6 +264,13 @@ mod tests {
         assert_ne!(
             first, second,
             "SpeedTree sway must follow the atmospheric wind direction"
+        );
+
+        let rotate_about_up =
+            rotation_after_wind(BillboardMode::RotateAboutUp, [1.0, 0.0], 220.0);
+        assert_ne!(
+            calm, rotate_about_up,
+            "SpeedTreeWind marker must drive trees using the legacy RotateAboutUp mode"
         );
     }
 }
