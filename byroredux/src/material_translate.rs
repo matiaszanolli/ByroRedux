@@ -109,15 +109,27 @@ pub(crate) fn water_material_from_mesh(
     // Skyrim's `WaterShaderPropertyFlags` explicitly gates the two optical
     // lobes. Preserve the renderer's compatibility defaults for zero (the
     // FO3/FNV/Oblivion property has no dedicated word), but honor a nonzero
-    // authored word without growing the fixed 240-byte GPU water ABI.
+    // authored word without growing the fixed 240-byte GPU water ABI. The
+    // specular and fog bits use the same compact controls: disabling
+    // specular clears both local and sun glints, while disabling fog clears
+    // the Beer–Lambert depth weight used by the refraction path.
     if water.shader_flags != 0 {
+        const SPECULAR: u32 = 1 << 0;
         const REFLECTIONS: u32 = (1 << 1) | (1 << 6);
         const REFRACTIONS: u32 = (1 << 2) | (1 << 7);
+        const FOG: u32 = 1 << 11;
+        if water.shader_flags & SPECULAR == 0 {
+            water.effect_controls[1] = 0.0;
+            water.effect_controls[3] = 0.0;
+        }
         if water.shader_flags & REFRACTIONS == 0 {
             water.effect_controls[0] = 0.0;
         }
         if water.shader_flags & REFLECTIONS == 0 {
             water.effect_controls[2] = 0.0;
+        }
+        if water.shader_flags & FOG == 0 {
+            water.depth_weights[1] = 0.0;
         }
     }
     water
@@ -685,6 +697,24 @@ mod tests {
             legacy.effect_controls,
             WaterMaterial::default().effect_controls
         );
+    }
+
+    #[test]
+    fn mesh_water_honors_authored_specular_and_fog_flag_gates() {
+        let mut material = Material::default();
+        // Skyrim WaterShaderPropertyFlags: reflection + refraction only.
+        // Specular (bit 0) and Fog (bit 11) are intentionally absent.
+        material.water_shader_flags = (1 << 1) | (1 << 2);
+        let water = water_material_from_mesh(&material, 9);
+        assert_eq!(water.effect_controls[1], 0.0);
+        assert_eq!(water.effect_controls[3], 0.0);
+        assert_eq!(water.depth_weights[1], 0.0);
+
+        // A fully authored optical word keeps all three responses enabled.
+        material.water_shader_flags = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 11);
+        let authored = water_material_from_mesh(&material, 9);
+        assert!(authored.effect_controls[3] > 0.0);
+        assert!(authored.depth_weights[1] > 0.0);
     }
 
     #[test]
