@@ -126,7 +126,7 @@ Tech-debt findings default to **LOW** (see `_audit-severity.md`). Promote only o
    fallbacks over panics — a fresh `todo!()` is therefore notable), `#[ignore]`
    runs in the mid-hundreds (mostly Vulkan/smoke gating, not debt).
    The **production**->2000-LOC set (Dim 1's actual subject, re-verified
-   2026-08-19 with `prod_loc`) is currently 4 files: `context/mod.rs`
+   2026-08-19 with *prod_loc*) is currently 4 files: `context/mod.rs`
    (~4060), `context/draw.rs` (~3490 — most of its file-total length, not
    merely its production share: only a few small scattered `#[cfg(test)]`
    blocks sit inside an otherwise huge production body), `volumetrics.rs`
@@ -147,7 +147,7 @@ Tech-debt findings default to **LOW** (see `_audit-severity.md`). Promote only o
    includes `acceleration/tests.rs`, `svgf.rs`, `misc/world.rs`,
    `crates/physics/src/world.rs`, `env_translate.rs`, `cornell.rs`, `mesh.rs`,
    `import/collision/shape.rs`, and `plugin/tests/parse_real_esm.rs` — check
-   each with `prod_loc` before filing; only a production count over 2000
+   each with *prod_loc* before filing; only a production count over 2000
    belongs in Dim 1. Note #2258/#2259 (2026-08-03, `record_post_passes` /
    `build_tlas` decomposition) extracted helpers *within* `post_passes.rs` /
    `tlas.rs`, which stayed well under 2000 LOC before and after — file-level
@@ -167,7 +167,7 @@ The highest-leverage debt: an oversized file taxes every edit, review, and merge
 proxy for the property this dimension actually hunts, production complexity,
 and the two had decoupled: 7 of 11 files the old single-bucket recipe reported
 were majority-test, 2 were pure-test files with zero production code). Use the
-`prod_loc` helper defined in Phase 1, step 5:
+*prod_loc* helper defined in Phase 1, step 5:
 ```bash
 # Primary bucket — the dimension's actual subject. File real findings from this.
 for f in $(find crates byroredux -name '*.rs'); do
@@ -177,7 +177,7 @@ done | sort -rn
 
 # Secondary bucket — test-heavy files, lower priority. Report but do not
 # auto-file: only escalate one of these into a Dim 1 finding if its OWN
-# `prod_loc` figure (above) also crosses 2000.
+# prod_loc figure (above) also crosses 2000.
 find crates byroredux -name '*.rs' -exec wc -l {} + | awk '$1>2000 && $2!="total"' | sort -rn
 ```
 Session 34/35/36 (2026-05) split the original oversized set (acceleration.rs,

@@ -314,7 +314,7 @@ apply labels from this set — `gh issue create` rejects unknown labels.
 
 Severity: `critical`, `high`, `medium`, `low`
 Domain: `ecs`, `renderer`, `vulkan`, `pipeline`, `memory`, `sync`, `cxx`, `nif-parser`, `nif`, `import-pipeline`, `animation`, `legacy-compat`, `performance`, `safety`, `tech-debt`
-Type: `bug`, `enhancement`, `documentation`
+Type: `bug`, *enhancement*, `documentation`
 
 Subsystems without their own label map to the closest existing domain:
 BSA/BA2/CSG and ESM/cell loading → `import-pipeline`; audio / platform /

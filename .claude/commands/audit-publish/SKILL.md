@@ -99,7 +99,7 @@ have no label in this repo.
 `nif-parser` · `import-pipeline` · `animation` · `legacy-compat` · `performance` ·
 `safety` · `tech-debt` · `info`.
 
-**Type** (one): `bug` · `enhancement` · `documentation`. There is **no** `maintenance`
+**Type** (one): `bug` · *enhancement* · `documentation`. There is **no** `maintenance`
 label — tech-debt findings use the `tech-debt` domain label plus `bug` (or `documentation`
 for doc-rot), never `maintenance`.
 
