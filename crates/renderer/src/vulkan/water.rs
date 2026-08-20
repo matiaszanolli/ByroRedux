@@ -934,6 +934,19 @@ mod tests {
     }
 
     #[test]
+    fn water_rapids_third_layer_uses_world_xz_flow() {
+        let src = include_str!("../../shaders/water.frag");
+        assert!(
+            src.contains("vec2(push.flow.x, push.flow.z) * push.flow.w * 2.0"),
+            "rapids' third normal layer must project the Y-up flow vector onto XZ"
+        );
+        assert!(
+            !src.contains("push.flow.xy * push.flow.w * 2.0"),
+            "rapids must not use world XY, whose Y component is zero for horizontal water"
+        );
+    }
+
+    #[test]
     fn water_caustics_keep_the_top_side_wave_normal_below_the_surface() {
         let src = include_str!("../../shaders/water.frag");
         let normal_decl = src

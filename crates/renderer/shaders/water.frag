@@ -626,7 +626,7 @@ void main() {
     bool hasAuthoredThirdLayer = noiseMapC != noiseMapA && noiseMapC != noiseMapB;
     if (kind == WATER_RAPIDS || hasAuthoredThirdLayer) {
         vec2 thirdScroll = kind == WATER_RAPIDS
-            ? push.flow.xy * push.flow.w * 2.0
+            ? vec2(push.flow.x, push.flow.z) * push.flow.w * 2.0
             : push.scroll_c.xy;
         float thirdWeight = kind == WATER_RAPIDS ? 0.7 : 0.35;
         vec3 nC = sampleScrollingNormal(
