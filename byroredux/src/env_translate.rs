@@ -899,6 +899,10 @@ pub(crate) fn resolve_water_material(
                 let (sin_theta, cos_theta) = theta.sin_cos();
                 let canonical = rec
                     .linear_velocity
+                    .filter(|velocity| {
+                        let magnitude = velocity[0].hypot(velocity[1]);
+                        magnitude.is_finite() && magnitude > 1.0e-5
+                    })
                     .map(|velocity| {
                         let magnitude = velocity[0].hypot(velocity[1]);
                         let direction = if magnitude.is_finite() && magnitude > 1.0e-5 {
@@ -2558,6 +2562,22 @@ mod tests {
         assert!(matches!(kind, WaterKind::Calm));
         assert!(flow.is_none());
         assert_eq!(material.foam_strength, WaterMaterial::default().foam_strength);
+    }
+
+    #[test]
+    fn zero_nam0_velocity_on_named_river_uses_kind_current() {
+        let mut rec = calm_watr(0x000A_000B, "RiverWater", WaterParams::default());
+        // A zero NAM0 is an explicit sentinel on newer records; the EDID
+        // still identifies this surface as a flowing body.
+        rec.linear_velocity = Some([0.0, 0.0]);
+        let mut waters = HashMap::new();
+        waters.insert(rec.form_id, rec);
+
+        let (material, kind, flow, _, _) = resolve_water_material(&waters, Some(0x000A_000B));
+        assert!(matches!(kind, WaterKind::River));
+        let flow = flow.expect("named river must retain its fallback current");
+        assert!(flow.speed > 0.0);
+        assert!(material.scroll_a[0].hypot(material.scroll_a[1]) > 0.0);
     }
 
     #[test]
