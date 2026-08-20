@@ -709,11 +709,15 @@ pub(crate) fn build_scheduler() -> Scheduler {
             // (systems/character.rs); read-only, declared for the same
             // reason as the `physics_sync_system` sibling gap.
             .reads_resource::<byroredux_physics::ContactConfig>()
+            .reads_resource::<TotalTime>()
             .reads::<byroredux_physics::CharacterController>()
             .writes::<byroredux_physics::CharacterController>()
             .reads::<byroredux_physics::RapierHandles>()
             .reads::<byroredux_scripting::ActorControlState>()
             .reads::<byroredux_core::ecs::components::ActorVitals>()
+            .reads::<byroredux_core::ecs::components::water::WaterPlane>()
+            .reads::<byroredux_core::ecs::components::water::WaterVolume>()
+            .reads::<byroredux_core::ecs::components::water::WaterFlow>()
             .writes::<byroredux_core::ecs::components::ActorValues>()
             .writes::<byroredux_core::ecs::components::Dead>()
             .reads::<Transform>()
