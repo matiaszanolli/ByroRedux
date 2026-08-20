@@ -140,8 +140,8 @@ pub(super) fn reemit_water_planes(
             scroll_c: [
                 mat.scroll_c[0] + weather_scroll[0] * 0.45,
                 mat.scroll_c[1] + weather_scroll[1] * 0.45,
-                0.0,
-                0.0,
+                mat.underwater_fog_near,
+                mat.underwater_fog_far,
             ],
             tune: [
                 mat.uv_scale_a,
@@ -187,6 +187,12 @@ pub(super) fn reemit_water_planes(
                 precipitation,
             ],
             ripple,
+            underwater: [
+                mat.underwater_color[0],
+                mat.underwater_color[1],
+                mat.underwater_color[2],
+                mat.underwater_fog_amount,
+            ],
         };
         water_commands.push(WaterDrawCommand {
             mesh_handle: draw_commands[idx].mesh_handle,

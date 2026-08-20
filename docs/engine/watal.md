@@ -608,3 +608,8 @@ and 164/168/172 (noise UV scales), now feed canonical water fields;
 the remaining Skyrim fields should be byte-decoded via the extract→trace method
 ([[nif_v10x_stride_drift_resolved]]). Until then they stay SENTINEL — correctness
 is not blocked, only fidelity.
+
+The authored underwater tint and near/far fog pair are now part of the runtime
+water UBO. When the camera is below a horizontal surface, the fragment pass
+uses that response; records without a valid underwater tail retain the shared
+above-water ramp and legacy tint behavior.

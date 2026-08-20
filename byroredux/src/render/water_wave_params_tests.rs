@@ -41,6 +41,10 @@ fn world_with_water_plane(
                 noise_amplitude_scales,
                 depth_weights,
                 effect_controls,
+                underwater_color: [0.12, 0.24, 0.36],
+                underwater_fog_near: 14.0,
+                underwater_fog_far: 260.0,
+                underwater_fog_amount: 0.8,
                 ..WaterMaterial::default()
             },
         },
@@ -111,6 +115,8 @@ fn authored_wave_and_sun_params_reach_the_water_gpu_record() {
     assert_eq!(params.detail[1..4], [0.7, 0.6, 0.5]);
     assert_eq!(params.depth, [0.9, 0.5, 0.1, 0.2]);
     assert_eq!(params.effects, [9.0, 500.0, 0.34, 3.2]);
+    assert_eq!([params.scroll_c[2], params.scroll_c[3]], [14.0, 260.0]);
+    assert_eq!(params.underwater, [0.12, 0.24, 0.36, 0.8]);
 }
 
 #[test]

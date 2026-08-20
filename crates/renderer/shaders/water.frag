@@ -57,7 +57,7 @@ layout(early_fragment_tests) in;
 //   composite-pass tone-mapper + TAA handles the residual jitter.
 //
 // Per-water material data lives in a compact per-frame UBO. Keeping the
-// 160-byte record here, rather than in push constants, leaves room to grow
+// 256-byte record here, rather than in push constants, leaves room to grow
 // the canonical cross-game material without raising device requirements.
 struct WaterParams {
     // x = time (engine uptime in seconds — `TotalTime`, accumulated
@@ -74,7 +74,8 @@ struct WaterParams {
     vec4 deep;
     // xy = scroll_a (world units/s), zw = scroll_b
     vec4 scroll;
-    // xy = scroll_c for the authored third normal layer; zw reserved.
+    // xy = scroll_c for the authored third normal layer; zw = underwater
+    // fog near/far for the camera-below-surface presentation.
     vec4 scroll_c;
     // x = uv_scale_a, y = uv_scale_b, z = shoreline_width,
     // w = wave_amplitude (WATR DATA wave_amplitude — #2240)
@@ -102,6 +103,10 @@ struct WaterParams {
     vec4 absorption;
     // xy = transient ripple center in world XZ, z = intensity, w = radius.
     vec4 ripple;
+    // rgb = authored underwater tint, a = underwater fog amount. The
+    // underwater near/far ramp lives in `scroll_c.zw` to reuse its reserved
+    // legacy slots without changing the wave upload shape.
+    vec4 underwater;
 };
 
 layout(std140, set = 2, binding = 1) uniform WaterParamsBlock {
@@ -428,14 +433,22 @@ vec3 traceWaterRay(
 // already uses (`components.rs`: "evaluating `fog_near..fog_far`").
 //
 // The `exp(-2t)` shape itself is unchanged and still empirical.
-vec3 absorbWaterColumn(vec3 refractedRadiance, float hitDist) {
-    float fogNear = push.shallow.a;
-    float fogFar = push.deep.a;
+vec3 absorbWaterColumn(vec3 refractedRadiance, float hitDist, bool cameraUnderwater) {
+    bool hasUnderwaterRamp = push.scroll_c.w > push.scroll_c.z + 0.001;
+    float fogNear = cameraUnderwater && hasUnderwaterRamp
+        ? push.scroll_c.z
+        : push.shallow.a;
+    float fogFar = cameraUnderwater && hasUnderwaterRamp
+        ? push.scroll_c.w
+        : push.deep.a;
     // The ESM parser already clamps `fog_far >= fog_near + 1`, so the span
     // is positive; `max` covers a hand-built push block.
     float span = max(fogFar - fogNear, 1.0);
     float t = clamp((hitDist - fogNear) / span, 0.0, 1.0);
-    float absorption = exp(-t * 2.0 * max(push.depth.y, 0.0));
+    float fogAmount = cameraUnderwater
+        ? clamp(push.underwater.a, 0.0, 8.0)
+        : 1.0;
+    float absorption = exp(-t * 2.0 * max(push.depth.y * fogAmount, 0.0));
     vec3 authoredRanges = max(push.absorption.rgb, vec3(0.0));
     // Starfield authors independent red/green/blue absorption distances.
     // Preserve the legacy scalar path when the triplet is zero, otherwise
@@ -447,7 +460,13 @@ vec3 absorbWaterColumn(vec3 refractedRadiance, float hitDist) {
         channelTransmission = exp(-hitDist / max(authoredRanges, vec3(0.01)));
     }
     vec3 transmission = clamp(channelTransmission * absorption, 0.0, 1.0);
-    return mix(push.deep.rgb, refractedRadiance * push.shallow.rgb, transmission);
+    vec3 shallowTint = cameraUnderwater
+        ? mix(push.shallow.rgb, push.underwater.rgb, clamp(push.underwater.a, 0.0, 1.0))
+        : push.shallow.rgb;
+    vec3 deepTint = cameraUnderwater
+        ? mix(push.deep.rgb, push.underwater.rgb, clamp(push.underwater.a, 0.0, 1.0))
+        : push.deep.rgb;
+    return mix(deepTint, refractedRadiance * shallowTint, transmission);
 }
 
 // ── Foam ──────────────────────────────────────────────────────────────
@@ -561,6 +580,10 @@ void main() {
     mat3 TBN = mat3(T, B, Nsurface);
 
     vec3 V = normalize(cameraPos.xyz - vWorldPos);
+    // Flat water planes use +Y as their surface normal. Mesh waterfalls are
+    // vertical sheets and must retain the ordinary two-sided tint path.
+    bool cameraUnderwater = kind != WATER_WATERFALL
+        && cameraPos.y < vWorldPos.y;
 
     // ── Wave UVs ──
     // For flat surfaces (Calm/River/Rapids), drive the UV from world
@@ -768,7 +791,11 @@ void main() {
                 refrDist,
                 refrHit
             );
-            refrColor = absorbWaterColumn(hitColor, refrHit ? refrDist : push.deep.a);
+            refrColor = absorbWaterColumn(
+                hitColor,
+                refrHit ? refrDist : push.deep.a,
+                cameraUnderwater
+            );
         } else {
             refrColor = reflColor;
             fresnel = 1.0;

@@ -59,7 +59,7 @@ pub(crate) const WATER_VERT_SPV: &[u8] = include_bytes!("../../shaders/water.ver
 pub(crate) const WATER_FRAG_SPV: &[u8] = include_bytes!("../../shaders/water.frag.spv");
 
 /// Canonical GPU material payload for one water draw. Layout matches
-/// `WaterParams` in `shaders/water.frag` exactly (15 std140 vec4 slots).
+/// `WaterParams` in `shaders/water.frag` exactly (16 std140 vec4 slots).
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct GpuWaterParams {
@@ -81,7 +81,7 @@ pub struct GpuWaterParams {
     pub deep: [f32; 4],
     /// xy = scroll_a, zw = scroll_b (wu/s).
     pub scroll: [f32; 4],
-    /// xy = scroll_c (wu/s), zw reserved for future layers.
+    /// xy = scroll_c (wu/s), zw = underwater fog near/far.
     pub scroll_c: [f32; 4],
     /// x = uv_scale_a, y = uv_scale_b, z = shoreline_width,
     /// w = wave_amplitude (WATR `DATA` wave_amplitude, `#2240` — was
@@ -114,6 +114,9 @@ pub struct GpuWaterParams {
     /// xy = transient ripple center in world XZ, z = intensity, w = radius.
     /// A zero intensity disables the event-driven normal disturbance.
     pub ripple: [f32; 4],
+    /// rgb = underwater post-process tint, a = authored underwater fog
+    /// amount. The near/far ramp is packed in `scroll_c.zw`.
+    pub underwater: [f32; 4],
 }
 
 impl GpuWaterParams {
@@ -127,8 +130,8 @@ impl GpuWaterParams {
 }
 
 const _: () = assert!(
-    std::mem::size_of::<GpuWaterParams>() == 240,
-    "GpuWaterParams must remain 15 std140 vec4 slots"
+    std::mem::size_of::<GpuWaterParams>() == 256,
+    "GpuWaterParams must remain 16 std140 vec4 slots"
 );
 
 /// Per-draw selector for the material array uploaded once per frame.
@@ -144,8 +147,8 @@ const _: () = assert!(
     "WaterPush must match the shader's 16-byte push block"
 );
 
-/// Fixed UBO capacity: 256 × 240 B = 60 KiB, below Vulkan's portable
-/// 64 KiB `maxUniformBufferRange` floor while leaving ample room for the
+/// Fixed UBO capacity: 256 × 256 B = 64 KiB, exactly at Vulkan's portable
+/// `maxUniformBufferRange` floor while leaving room for the
 /// handful of water bodies normally visible in one cell.
 pub const MAX_WATER_DRAWS: usize = 256;
 
@@ -883,7 +886,7 @@ mod tests {
 
     #[test]
     fn water_gpu_contract_layouts_are_stable() {
-        assert_eq!(std::mem::size_of::<GpuWaterParams>(), 240);
+        assert_eq!(std::mem::size_of::<GpuWaterParams>(), 256);
         assert_eq!(std::mem::align_of::<GpuWaterParams>(), 4);
         assert_eq!(std::mem::size_of::<WaterPush>(), 16);
         assert_eq!(std::mem::align_of::<WaterPush>(), 4);
@@ -899,7 +902,7 @@ mod tests {
         assert!(
             src.contains("vec4 absorption;") && src.contains("vec4 ripple;"),
             "water.vert must declare the trailing material slots so indexed\n\
-             WaterParams elements retain the 240-byte std140 stride used by\n\
+             WaterParams elements retain the 256-byte std140 stride used by\n\
              Rust and water.frag"
         );
         assert!(
@@ -916,6 +919,15 @@ mod tests {
             "water.vert must let the shared weather/water scroll velocity drive
              the geometric wave rate as well as fragment normal motion"
         );
+    }
+
+    #[test]
+    fn water_fragment_shader_uses_authored_underwater_response() {
+        let src = include_str!("../../shaders/water.frag");
+        assert!(src.contains("vec4 underwater;"));
+        assert!(src.contains("cameraUnderwater"));
+        assert!(src.contains("push.scroll_c.z"));
+        assert!(src.contains("push.underwater.rgb"));
     }
 
     /// #1129 — forward-compat trap. Every "no-op baseline" the water
@@ -1054,6 +1066,7 @@ mod tests {
                 effects: [0.0, 0.0, 1.0, 1.0],
                 absorption: [0.0; 4],
                 ripple: [0.0; 4],
+                underwater: [0.0; 4],
             },
         }
     }
