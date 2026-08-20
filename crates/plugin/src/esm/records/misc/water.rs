@@ -40,6 +40,11 @@ pub struct WatrRecord {
     /// Authored surface opacity from WATR.ANAM (0..255 normalized). Zero
     /// means the record omitted the field and the canonical fallback applies.
     pub opacity: f32,
+    /// FO3/FNV `FNAM` water flags. Bit 0x01 causes actor damage and bit
+    /// 0x02 marks the surface as reflective. Other game generations use
+    /// different record layouts, so this is only populated for the legacy
+    /// DATA path.
+    pub legacy_flags: Option<u8>,
     /// Diffuse / noise texture path. FO3 / FNV ship this in `NNAM`
     /// (e.g. `Data\Textures\Water\WastelandWaterPotomac.dds` on every
     /// vanilla FO3 WATR); Skyrim+ ships it in `TNAM`. Both arms write
@@ -777,6 +782,14 @@ pub fn parse_watr(form_id: u32, subs: &[SubRecord], game: GameKind) -> WatrRecor
                     out.opacity = opacity as f32 / 255.0;
                 }
             }
+            // Fallout 3/New Vegas define FNAM as a one-byte water flag
+            // field (0x01 damage, 0x02 reflective). Skyrim+ reuses the
+            // subrecord name in later layouts, so keep this arm scoped to
+            // the legacy DATA games rather than applying an unverified
+            // meaning cross-generation.
+            b"FNAM" if matches!(game, GameKind::Fallout3NV) && !sub.data.is_empty() => {
+                out.legacy_flags = Some(sub.data[0]);
+            }
             b"TNAM" => out.texture_path = read_zstring(&sub.data),
             b"NNAM" => out.texture_path = read_zstring(&sub.data),
             b"NAM2" => out.noise_texture_paths[0] = read_zstring(&sub.data),
@@ -881,6 +894,15 @@ mod tests {
         assert_eq!(w.full_name, "Fresh Water");
         assert_eq!(w.texture_path, "textures\\water\\fresh.dds");
         assert!((w.opacity - 192.0 / 255.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn parse_watr_captures_legacy_fnam_flags_only_for_fonv_layout() {
+        let reflective = parse_watr(1, &[sub(b"FNAM", &[0x02])], GameKind::Fallout3NV);
+        assert_eq!(reflective.legacy_flags, Some(0x02));
+
+        let skyrim = parse_watr(2, &[sub(b"FNAM", &[0x02])], GameKind::Skyrim);
+        assert_eq!(skyrim.legacy_flags, None);
     }
 
     #[test]

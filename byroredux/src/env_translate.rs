@@ -690,6 +690,15 @@ pub(crate) fn resolve_water_material(
             }
             mat.fresnel_f0 = rec.params.fresnel.clamp(0.001, 0.20);
             mat.reflectivity = rec.params.reflectivity;
+            // FO3/FNV's legacy FNAM bit 0x02 is an explicit reflective
+            // surface gate. Preserve authored reflectivity when the flag is
+            // present; when it is explicitly absent, suppress the RT
+            // reflection contribution instead of making non-reflective
+            // sludge/puddle records mirror-bright. Records from newer games
+            // leave `legacy_flags` unset and retain their authored scalar.
+            if rec.legacy_flags.is_some_and(|flags| flags & 0x02 == 0) {
+                mat.reflectivity = 0.0;
+            }
             mat.reflection_tint = rec.params.reflection_color;
             // WATAL Phase 1: carry the wave fields that were previously
             // parsed into WaterParams but dropped here. AUTHORED for all
@@ -2049,6 +2058,7 @@ mod tests {
             editor_id: "LavaPool01".to_string(),
             full_name: "Lava Pool".to_string(),
             opacity: 0.75,
+            legacy_flags: None,
             texture_path: String::new(),
             noise_texture_paths: Default::default(),
             flow_noise_texture_path: String::new(),
@@ -2104,6 +2114,24 @@ mod tests {
             "reflection_tint must round-trip from WATR DATA reflection_color"
         );
         assert_eq!(mat.sun_specular_power, 90.0);
+    }
+
+    #[test]
+    fn resolve_water_material_honors_legacy_non_reflective_flag() {
+        let mut rec = calm_watr(
+            0x000A_BEEF,
+            "NVCleanWater",
+            WaterParams {
+                reflectivity: 0.8,
+                ..WaterParams::default()
+            },
+        );
+        rec.legacy_flags = Some(0x01); // damage only; FNAM 0x02 is absent
+        let mut waters = HashMap::new();
+        waters.insert(rec.form_id, rec);
+
+        let (mat, _, _, _, _) = resolve_water_material(&waters, Some(0x000A_BEEF));
+        assert_eq!(mat.reflectivity, 0.0);
     }
 
     #[test]
@@ -2200,6 +2228,7 @@ mod tests {
             editor_id: edid.to_string(),
             full_name: String::new(),
             opacity: 0.75,
+            legacy_flags: None,
             texture_path: String::new(),
             noise_texture_paths: Default::default(),
             flow_noise_texture_path: String::new(),
