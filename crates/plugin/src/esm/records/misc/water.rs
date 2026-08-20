@@ -930,10 +930,16 @@ pub fn parse_watr(form_id: u32, subs: &[SubRecord], game: GameKind) -> WatrRecor
     if let Some(sub) = subs.iter().find(|sub| sub.sub_type == *b"NAM0") {
         if let (Some(x), Some(y)) = (read_f32_at(&sub.data, 0), read_f32_at(&sub.data, 4)) {
             let speed = x.hypot(y);
+            if speed.is_finite() {
+                // Preserve an authored all-zero NAM0 as an explicit
+                // sentinel. The translation boundary distinguishes that
+                // from a nonzero current, while retaining provenance for
+                // diagnostics and future per-game consumers.
+                out.linear_velocity = Some([x, -y]);
+            }
             if speed.is_finite() && speed > 1.0e-5 {
                 out.params.wind_speed = speed;
                 out.params.wind_direction = (-y).atan2(x);
-                out.linear_velocity = Some([x, -y]);
                 // FO76 (and other records that use NAM0) carries one
                 // record-level linear velocity instead of the three
                 // per-layer DNAM vectors. Populate every missing layer so
@@ -1202,6 +1208,21 @@ mod tests {
         assert!((w.params.wind_direction - (-4.0f32).atan2(3.0)).abs() < 1e-6);
         assert_eq!(w.params.noise_wind_speeds[0], 5.0);
         assert_eq!(w.linear_velocity, Some([3.0, -4.0]));
+    }
+
+    #[test]
+    fn parse_watr_preserves_zero_nam0_as_explicit_sentinel() {
+        let mut velocity = Vec::new();
+        velocity.extend_from_slice(&0.0f32.to_le_bytes());
+        velocity.extend_from_slice(&0.0f32.to_le_bytes());
+        velocity.extend_from_slice(&0.0f32.to_le_bytes());
+        let w = parse_watr(
+            0xCAFE,
+            &[sub(b"DNAM", &[0; 228]), sub(b"NAM0", &velocity)],
+            GameKind::Skyrim,
+        );
+        assert_eq!(w.linear_velocity, Some([0.0, -0.0]));
+        assert_eq!(w.params.wind_speed, 0.0);
     }
 
     #[test]
