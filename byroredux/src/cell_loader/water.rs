@@ -539,6 +539,21 @@ pub(crate) fn spawn_lod_water_plane(
     if let Some(flow) = flow {
         world.insert(entity, flow);
     }
+    // Keep distant water in the same canonical physics space as full-detail
+    // planes. The annulus has a central hole, but its AABB is intentionally
+    // conservative; full-detail cell volumes cover that hole whenever the
+    // streamed surface exists.
+    world.insert(
+        entity,
+        WaterVolume {
+            min: [
+                center_x_zup - outer,
+                lod_height - EXTERIOR_CELL_UNITS,
+                -center_y_zup - outer,
+            ],
+            max: [center_x_zup + outer, lod_height, -center_y_zup + outer],
+        },
+    );
     world.insert(entity, RenderLayer::Decal);
 
     log::info!(
@@ -646,10 +661,7 @@ mod tests {
     fn interior_water_placement_converts_horizontal_axes_and_adds_margin() {
         // Bethesda Z-up: source X is renderer X and source Y becomes
         // renderer -Z. The vertical source Z must not affect the footprint.
-        let positions = [
-            [0.0, 300.0, -500.0],
-            [600.0, -300.0, 900.0],
-        ];
+        let positions = [[0.0, 300.0, -500.0], [600.0, -300.0, 900.0]];
         let (center, half_extent) = interior_water_placement(positions.iter().copied());
         assert_eq!(center, (300.0, 0.0));
         assert_eq!(half_extent, 332.0); // max span 600 / 2 + 32
