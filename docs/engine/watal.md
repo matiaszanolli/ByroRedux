@@ -270,6 +270,9 @@ Dedicated NIF mesh-water shaders now also cross NIFAL: Oblivion/FO3/FNV
 `WaterShaderProperty` and Skyrim+ `BSWaterShaderProperty` set a canonical
 mesh-water marker, and both cell and loose-NIF spawn paths route those meshes
 through the same water pipeline (including authored normal-map handles). The
+Skyrim+ authored water-flag word is retained on the canonical mesh material;
+nonzero records now gate the dedicated pass's reflection/refraction lobes,
+while the zero-word legacy sentinel preserves FO3/FNV/Oblivion compatibility.
 `WaterKind` classification is a fragile EDID-substring heuristic
 (`rapid`/`waterfall`/`falls`/`river`/`stream`), English-only, with `waterfall`
 deliberately demoted to `River` for cell planes.

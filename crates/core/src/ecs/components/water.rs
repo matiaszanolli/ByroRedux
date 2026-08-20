@@ -86,6 +86,10 @@ impl WaterKind {
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct WaterMaterial {
+    /// Authored `BSWaterShaderProperty.water_shader_flags` for mesh-bound
+    /// water. Zero means the legacy property had no dedicated flag word and
+    /// keeps the renderer's compatibility defaults.
+    pub shader_flags: u32,
     /// Colour seen looking down through shallow water — blended with
     /// the refraction-ray hit colour via depth-through-water.
     pub shallow_color: [f32; 3],
@@ -222,6 +226,7 @@ impl Default for WaterMaterial {
         // and CDPR's `ww_lake_clean` material as documented in the
         // Ultra Plus mod cvar dump.
         Self {
+            shader_flags: 0,
             shallow_color: [0.10, 0.32, 0.38],
             deep_color: [0.02, 0.06, 0.10],
             underwater_color: [0.02, 0.06, 0.10],

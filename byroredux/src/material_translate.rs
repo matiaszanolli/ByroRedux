@@ -93,6 +93,7 @@ pub(crate) fn water_material_from_mesh(
     normal_map_index: u32,
 ) -> WaterMaterial {
     let mut water = WaterMaterial::default();
+    water.shader_flags = material.water_shader_flags;
     // Texture handle 0 is the registry's diagnostic placeholder; the water
     // shader reserves `u32::MAX` for its procedural normal fallback.
     water.normal_map_index = if normal_map_index == 0 {
@@ -105,6 +106,20 @@ pub(crate) fn water_material_from_mesh(
     }
     if material.alpha.is_finite() {
         water.opacity = material.alpha.clamp(0.0, 1.0);
+    }
+    // Skyrim's `WaterShaderPropertyFlags` explicitly gates the two optical
+    // lobes. Preserve the renderer's compatibility defaults for zero (the
+    // FO3/FNV/Oblivion property has no dedicated word), but honor a nonzero
+    // authored word without growing the fixed 240-byte GPU water ABI.
+    if water.shader_flags != 0 {
+        const REFLECTIONS: u32 = (1 << 1) | (1 << 6);
+        const REFRACTIONS: u32 = (1 << 2) | (1 << 7);
+        if water.shader_flags & REFRACTIONS == 0 {
+            water.effect_controls[0] = 0.0;
+        }
+        if water.shader_flags & REFLECTIONS == 0 {
+            water.effect_controls[2] = 0.0;
+        }
     }
     water
 }
@@ -621,6 +636,28 @@ mod tests {
         assert_eq!(water.normal_map_index, 17);
         assert!((water.reflectivity - 0.42).abs() < f32::EPSILON);
         assert!((water.opacity - 0.73).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn mesh_water_honors_authored_optical_flag_gates() {
+        let mut material = Material::default();
+        // Skyrim WaterShaderPropertyFlags: refraction only, no reflection.
+        material.water_shader_flags = 1 << 2;
+        let water = water_material_from_mesh(&material, 9);
+        assert_eq!(water.shader_flags, 1 << 2);
+        assert_eq!(
+            water.effect_controls[0],
+            WaterMaterial::default().effect_controls[0]
+        );
+        assert_eq!(water.effect_controls[2], 0.0);
+
+        // A zero word is the compatibility sentinel for pre-Skyrim water.
+        material.water_shader_flags = 0;
+        let legacy = water_material_from_mesh(&material, 9);
+        assert_eq!(
+            legacy.effect_controls,
+            WaterMaterial::default().effect_controls
+        );
     }
 
     #[test]
