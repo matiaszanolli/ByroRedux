@@ -521,7 +521,12 @@ float foamFlowStreaks(vec3 worldPos, vec3 originOffset, float time) {
     vec3 flowDir = push.flow.xyz;
     float speed  = push.flow.w;
     // Build a perpendicular in the surface tangent plane.
-    vec3 perp = normalize(cross(vWorldNormal, flowDir));
+    vec3 perpRaw = cross(vWorldNormal, flowDir);
+    vec3 perp = length(perpRaw) > 1.0e-5
+        ? perpRaw / length(perpRaw)
+        : (abs(vWorldNormal.y) < 0.9
+            ? normalize(cross(vWorldNormal, vec3(0.0, 1.0, 0.0)))
+            : vec3(1.0, 0.0, 0.0));
     vec3 relPos = worldPos - originOffset;
     float u = dot(relPos, flowDir) - speed * time;
     float v = dot(relPos, perp);

@@ -960,6 +960,16 @@ mod tests {
     }
 
     #[test]
+    fn water_foam_flow_has_a_degenerate_tangent_fallback() {
+        let src = include_str!("../../shaders/water.frag");
+        assert!(
+            src.contains("vec3 perpRaw = cross(vWorldNormal, flowDir)")
+                && src.contains("length(perpRaw) > 1.0e-5"),
+            "parallel flow and surface vectors must not normalize a zero tangent"
+        );
+    }
+
+    #[test]
     fn water_caustics_keep_the_top_side_wave_normal_below_the_surface() {
         let src = include_str!("../../shaders/water.frag");
         let normal_decl = src
