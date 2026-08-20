@@ -778,6 +778,7 @@ pub(crate) fn promote_weather_transition_target(world: &World) {
     let new_fog_media = tr.target.fog_media;
     let new_tod = tr.target.tod_hours;
     let tr_target_wind = tr.target.wind_speed;
+    let tr_target_precipitation = tr.target.precipitation;
     let tr_target_dalc = tr.target.skyrim_dalc_per_tod;
     drop(tr);
     if let Some(mut wd) = world.try_resource_mut::<WeatherDataRes>() {
@@ -789,6 +790,7 @@ pub(crate) fn promote_weather_transition_target(world: &World) {
         // the target weather after cross-fade completion. Without this
         // the source weather's wind speed persists.
         wd.wind_speed = tr_target_wind;
+        wd.precipitation = tr_target_precipitation;
         // #1102 / REN-D15-002 — promote DALC ambient cube so the Skyrim
         // 6-axis directional ambient uses the target weather.
         wd.skyrim_dalc_per_tod = tr_target_dalc;

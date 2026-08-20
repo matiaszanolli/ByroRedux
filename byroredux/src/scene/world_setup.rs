@@ -1004,8 +1004,10 @@ mod tests {
     fn collapse_weather_transition_promotes_in_flight_target_and_removes_resource() {
         let mut world = World::new();
         world.insert_resource(mk_weather(60000.0, 0));
+        let mut target = mk_weather(12345.0, 7);
+        target.precipitation = 0.75;
         world.insert_resource(WeatherTransitionRes {
-            target: mk_weather(12345.0, 7),
+            target,
             elapsed_secs: 4.0, // mid-fade, well short of duration_secs
             duration_secs: 8.0,
             done: false,
@@ -1021,6 +1023,7 @@ mod tests {
             "in-flight target must be promoted into WeatherDataRes, not left at the stale source"
         );
         assert_eq!(wd.wind_speed, 7, "wind_speed must promote alongside fog");
+        assert_eq!(wd.precipitation, 0.75, "precipitation must promote with the target weather");
         assert!(
             world.try_resource::<WeatherTransitionRes>().is_none(),
             "an in-flight transition must be fully removed, not left resident as a dormant \
