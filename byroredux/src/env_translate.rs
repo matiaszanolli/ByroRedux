@@ -835,11 +835,21 @@ pub(crate) fn resolve_water_material(
             // smoke-test screenshot reported alongside this
             // change.
             let lowered = rec.editor_id.to_ascii_lowercase();
-            let has_authored_linear_flow = rec.linear_velocity.is_some();
             let authored_flow_speed = rec
                 .linear_velocity
                 .map(|velocity| velocity[0].hypot(velocity[1]))
                 .unwrap_or(0.0);
+            // NAM0 is present on some FO76/Starfield records even when the
+            // authored velocity is the all-zero sentinel. Presence alone is
+            // not evidence of a current: promoting that sentinel to River
+            // adds foam and a zero-speed WaterFlow to calm ponds. Treat only
+            // a finite, non-trivial vector as an authored flow signal; the
+            // explicit flow-normal texture and naming fallbacks below still
+            // cover records whose flow is authored through those channels.
+            let has_authored_linear_flow = rec.linear_velocity.is_some_and(|velocity| {
+                velocity.iter().all(|component| component.is_finite())
+                    && authored_flow_speed > 1.0e-5
+            });
             if lowered.contains("rapid")
                 || (has_authored_linear_flow
                     && authored_flow_speed >= WaterFlow::SPEED_RAPIDS)
@@ -2509,6 +2519,22 @@ mod tests {
         assert!(material.scroll_a[1].abs() < 1.0e-6);
         assert!(material.scroll_b[0].abs() < 1.0e-6);
         assert!(material.scroll_b[1] > 0.0);
+    }
+
+    #[test]
+    fn zero_nam0_velocity_keeps_neutral_water_calm() {
+        let mut rec = calm_watr(0x000A_000A, "DefaultWater", WaterParams::default());
+        // FO76/Starfield can serialize NAM0 as an explicit all-zero
+        // sentinel. It must not manufacture a river profile or a zero-speed
+        // current merely because the subrecord exists.
+        rec.linear_velocity = Some([0.0, 0.0]);
+        let mut waters = HashMap::new();
+        waters.insert(rec.form_id, rec);
+
+        let (material, kind, flow, _, _) = resolve_water_material(&waters, Some(0x000A_000A));
+        assert!(matches!(kind, WaterKind::Calm));
+        assert!(flow.is_none());
+        assert_eq!(material.foam_strength, WaterMaterial::default().foam_strength);
     }
 
     #[test]
