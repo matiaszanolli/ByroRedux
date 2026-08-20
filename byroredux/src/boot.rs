@@ -1326,6 +1326,16 @@ pub(crate) fn build_scheduler() -> Scheduler {
     // scripting/presentation dependencies; this is the canonical adapter.
     scheduler.add_exclusive_with_access(
         Stage::Late,
+        crate::systems::water_damage_system,
+        Access::new()
+            .reads::<byroredux_core::ecs::components::water::WaterContact>()
+            .reads::<byroredux_core::ecs::components::ActorVitals>()
+            .reads::<byroredux_core::ecs::components::Dead>()
+            .writes::<byroredux_core::ecs::components::ActorValues>()
+            .writes::<byroredux_core::ecs::components::Dead>(),
+    );
+    scheduler.add_exclusive_with_access(
+        Stage::Late,
         crate::systems::make_water_interaction_system(),
         Access::new()
             .reads::<byroredux_core::ecs::components::water::WaterContact>()

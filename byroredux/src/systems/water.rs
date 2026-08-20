@@ -3,7 +3,7 @@
 use byroredux_core::ecs::components::water::{
     SubmersionState, WaterContact, WaterMaterial, WaterPlane, WaterVolume,
 };
-use byroredux_core::ecs::components::ParticleEmitter;
+use byroredux_core::ecs::components::{ActorValues, ActorVitals, Dead, ParticleEmitter};
 use byroredux_core::ecs::{ActiveCamera, EntityId, GlobalTransform, World};
 use byroredux_core::math::Vec3;
 use byroredux_scripting::{RippleEvent, SplashEvent};
@@ -19,6 +19,55 @@ use std::collections::{HashMap, HashSet};
 const WATERLINE_HYSTERESIS: f32 = 4.0;
 const DISTURBANCE_BAND: f32 = 24.0;
 const DISTURBANCE_RADIUS: f32 = 18.0;
+
+/// Apply authored FO3/FNV harmful-water damage to actor bodies after the
+/// physics phase has refreshed their [`WaterContact`]. The kinematic player
+/// has its own controller path; this covers dynamic NPC/creature bodies
+/// without coupling the physics crate to actor gameplay components.
+pub(crate) fn water_damage_system(world: &World, dt: f32) {
+    if dt <= 0.0 {
+        return;
+    }
+    let Some(contact_q) = world.query::<WaterContact>() else {
+        return;
+    };
+    let Some(vitals_q) = world.query::<ActorVitals>() else {
+        return;
+    };
+    let dead_q = world.query::<Dead>();
+    let targets: Vec<(EntityId, u32, f32)> = contact_q
+        .iter()
+        .filter_map(|(entity, contact)| {
+            let damage = contact.damage_per_second.max(0.0)
+                * contact.submerged_fraction.clamp(0.0, 1.0)
+                * dt;
+            if damage <= 0.0 || dead_q.as_ref().is_some_and(|q| q.get(entity).is_some()) {
+                return None;
+            }
+            Some((entity, vitals_q.get(entity)?.health, damage))
+        })
+        .collect();
+    drop(contact_q);
+    drop(vitals_q);
+    drop(dead_q);
+
+    for (entity, health, damage) in targets {
+        let Some(mut values_q) = world.query_mut::<ActorValues>() else {
+            continue;
+        };
+        let Some(values) = values_q.get_mut(entity) else {
+            continue;
+        };
+        values.apply_damage(health, damage);
+        let killed = values.current(health) <= 0.0;
+        drop(values_q);
+        if killed {
+            if let Some(mut dead_q) = world.query_mut::<Dead>() {
+                dead_q.insert(entity, Dead);
+            }
+        }
+    }
+}
 
 fn disturbance_rate(cam_pos: byroredux_core::math::Vec3, volume: &WaterVolume) -> f32 {
     let surface_y = volume.max[1];
@@ -458,6 +507,7 @@ fn underwater_extinction(depth: f32, fog_near: f32, fog_far: f32) -> f32 {
 mod tests {
     use super::{
         disturbance_rate, make_water_interaction_system, resolve_head_submerged, submersion_system,
+        water_damage_system,
         underwater_color_at_depth, underwater_extinction, DISTURBANCE_BAND, DISTURBANCE_RADIUS,
         WATERLINE_HYSTERESIS,
     };
@@ -465,6 +515,7 @@ mod tests {
         SubmersionState, WaterContact, WaterKind, WaterMaterial, WaterPlane, WaterVolume,
     };
     use byroredux_core::ecs::components::ParticleEmitter;
+    use byroredux_core::ecs::components::{ActorValues, ActorVitals, Dead};
     use byroredux_core::ecs::{ActiveCamera, GlobalTransform, World};
     use byroredux_core::math::Vec3;
     use byroredux_scripting::{RippleEvent, SplashEvent};
@@ -658,6 +709,31 @@ mod tests {
             ripples.get(surface).is_none(),
             "fully submerged bodies must not emit surface ripples"
         );
+    }
+
+    #[test]
+    fn water_damage_system_applies_contact_hazard_and_marks_death() {
+        let mut world = World::new();
+        world.register::<ActorValues>();
+        world.register::<ActorVitals>();
+        world.register::<Dead>();
+        world.register::<WaterContact>();
+        let actor = world.spawn();
+        world.insert(actor, ActorVitals { health: 7 });
+        world.insert(actor, ActorValues::from_pairs([(7, 5.0)]));
+        world.insert(
+            actor,
+            WaterContact {
+                submerged_fraction: 1.0,
+                damage_per_second: 20.0,
+                ..WaterContact::default()
+            },
+        );
+
+        water_damage_system(&world, 0.25);
+
+        assert_eq!(world.get::<ActorValues>(actor).unwrap().current(7), 0.0);
+        assert!(world.get::<Dead>(actor).is_some());
     }
 
     /// Regression for #2792 (REN-D15-09): a `WaterPlane` entity with no
