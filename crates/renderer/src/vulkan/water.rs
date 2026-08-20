@@ -960,6 +960,8 @@ mod tests {
         assert!(src.contains("surfaceNormalScale"));
         assert!(src.contains("float authoredStart = max(push.displacement.x, 0.0)"));
         assert!(src.contains("exp(-distanceToCenter / authoredDampener)"));
+        assert!(src.contains("float rainScale = 1.7"));
+        assert!(src.contains("1.7 / max(push.displacement.w, 0.25)"));
     }
 
     #[test]
