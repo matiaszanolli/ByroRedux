@@ -2338,6 +2338,7 @@ mod tests {
             WaterParams {
                 wave_amplitude: 1.5,
                 wave_frequency: 2.0,
+                effect_controls: [7.5, 500.0, 0.0, 0.0],
                 ..WaterParams::default()
             },
         );
@@ -2354,6 +2355,7 @@ mod tests {
             mat.wave_frequency, 2.0,
             "wave_frequency must round-trip from WATR"
         );
+        assert_eq!(mat.effect_controls[..2], [7.5, 500.0]);
         assert!(matches!(kind, WaterKind::Calm));
     }
 
