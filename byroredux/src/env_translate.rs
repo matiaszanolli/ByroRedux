@@ -885,16 +885,16 @@ pub(crate) fn resolve_water_material(
                         )
                     })
                     .unwrap_or_else(|| WaterFlow::for_kind(kind, [cos_theta, 0.0, sin_theta]));
-                // Skyrim SE's 232-byte DNAM tail carries an authored
-                // flow-map tile scale. Keep the canonical physics band,
-                // but let the visual scroll rate follow that scale.
-                let flowmap_scale = mat.flowmap_scale.clamp(0.05, 8.0);
                 // Rebuild scroll vectors to bias along the flow axis,
-                // converting out of BU/s at the documented rate. Preserve
-                // authored per-layer motion as an additional component;
-                // otherwise Skyrim/FO4 velocity tails silently disappear
-                // whenever a water record is classified as flowing.
-                let scroll = canonical.speed * flowmap_scale * WATER_SCROLL_UV_PER_BU_PER_S;
+                // converting out of BU/s at the documented rate. The
+                // authored flow-map scale is intentionally applied once at
+                // the render upload boundary; keeping it out of this
+                // canonical material vector prevents a double scale on every
+                // flowing surface. Preserve authored per-layer motion as an
+                // additional component; otherwise Skyrim/FO4 velocity tails
+                // silently disappear whenever a water record is classified
+                // as flowing.
+                let scroll = canonical.speed * WATER_SCROLL_UV_PER_BU_PER_S;
                 let authored_a = authored_layer_scroll(0);
                 let authored_b = authored_layer_scroll(1);
                 let authored_c = authored_layer_scroll(2);
@@ -2287,6 +2287,28 @@ mod tests {
         assert!(mat.scroll_b[1] > 0.20);
         assert!((mat.scroll_c[0] - 0.30 * 0.25_f32.cos()).abs() < 1e-6);
         assert!((mat.scroll_c[1] - 0.30 * 0.25_f32.sin()).abs() < 1e-6);
+    }
+
+    #[test]
+    fn flowmap_scale_is_not_baked_into_canonical_flow_scroll() {
+        let mut rec = calm_watr(
+            0x000A_0004,
+            "LocalizedRiver",
+            WaterParams {
+                flowmap_scale: 3.0,
+                wind_direction: 0.0,
+                ..WaterParams::default()
+            },
+        );
+        rec.flow_noise_texture_path = "textures\\water\\flow.dds".to_string();
+        let mut waters = HashMap::new();
+        waters.insert(rec.form_id, rec);
+
+        let (mat, kind, flow, _, _) = resolve_water_material(&waters, Some(0x000A_0004));
+        let speed = flow.expect("flowing water must have a canonical current").speed;
+        assert!(matches!(kind, WaterKind::River));
+        assert_eq!(mat.flowmap_scale, 3.0);
+        assert!((mat.scroll_a[0] - speed * WATER_SCROLL_UV_PER_BU_PER_S).abs() < 1.0e-6);
     }
 
     #[test]
