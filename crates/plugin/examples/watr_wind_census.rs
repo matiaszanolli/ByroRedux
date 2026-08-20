@@ -6,14 +6,6 @@
 //! the authored motion fields in its documented tail, while only record-level
 //! `NAM0` supplies an explicit linear current.
 //!
-//! ```text
-//! FalloutNV.esm  len=186 n=8   field0=["0.100"]  field1=["90.000"]
-//! FalloutNV.esm  len=196 n=69  field0=["90.000"] field1=["0.200","0.500"]
-//! Skyrim.esm     len=228 n=31  field0=["90.000"] field1=["0.500"]
-//! Oblivion.esm   len=102 n=17  field0=["0.100","5.000","9.000","15.000"]
-//!                              field1=["35.000","62.000","90.000","100.000"]
-//! ```
-//!
 //! The old offset-0/4 interpretation was incorrect for full FO3/FNV records;
 //! the parser now ignores that opaque prefix and reads the actual per-layer
 //! motion fields. `WaterFlow::speed` remains separate: a WATR normal-layer

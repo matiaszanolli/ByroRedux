@@ -865,21 +865,13 @@ pub(crate) fn resolve_water_material(
             // implies flow. Bethesda's wind_direction is in radians from
             // north (UESP).
             //
-            // #2872 — the *speed* deliberately does NOT come from
-            // `rec.params.wind_speed`. That field is `90.0` on every
-            // 196-byte (FO3/FNV) and 228-byte (Skyrim) vanilla WATR — a
-            // constant carrying no per-water information, three and a half
-            // times the top of `WaterFlow`'s documented BU/s band, and the
-            // same value the shorter legacy layouts carry in the direction
-            // slot. Feeding it straight through made one scalar serve as
-            // both a ~0.02-magnitude UV scroll rate and an unbounded
-            // physics velocity target, which cannot be dimensionally
-            // correct in both. `WaterFlow::for_kind` supplies the physics
-            // current from the band `WaterFlow::speed` already documents,
-            // and the shader scroll below is now *derived from* that
-            // canonical flow instead of sharing its raw source field — one
-            // scalar, one meaning. Re-deriving the true wind-velocity
-            // offset in the newer DATA/DNAM layouts is a decode-side fix.
+            // #2872 — a WATR normal-layer speed is visual UV motion, not a
+            // physics current. `WaterFlow::for_kind` supplies a bounded
+            // gameplay current for named/flagged flowing bodies, while an
+            // explicit NAM0 linear velocity remains authoritative when the
+            // record provides one. The shader scroll below is derived from
+            // that canonical flow and then adds authored normal-layer motion;
+            // one scalar never serves two incompatible unit systems.
             if !matches!(kind, WaterKind::Calm) {
                 let theta = rec.params.wind_direction;
                 // Compute once — cos/sin were duplicated pre-#1068 (F-WAT-06).
