@@ -292,14 +292,27 @@ pub const WORKGROUP_Z: u32 = 8;
 // (GLSL allows int literals but not `uint` literals there).
 pub const THREADS_PER_CLUSTER: u32 = 32;
 
-// M58 — bloom contribution coefficient. 0.15 (≈4× the Frostbite
-// SIGGRAPH 2015 default of 0.04) compensates for Bethesda content
-// being LDR-authored: emissive surfaces sit in the 0–1 monitor-space
-// range rather than HDR cd/m², so a Frostbite-default intensity reads
-// as essentially-invisible. Hand-tuned downward from 0.20 on
-// Prospector saloon (sun-lit windows + chandelier globes were
-// producing halos that bled too far across walls); 0.15 keeps
-// emissives obviously bloomed without flooding dim surfaces.
+// M58 — bloom contribution coefficient. 0.15 is a hand-tuned perceptual
+// constant (tuned down from 0.20 on Prospector saloon: sun-lit windows +
+// chandelier globes were producing halos that bled too far across
+// walls), chosen so Bethesda's LDR-authored emissives (0–1 monitor-space
+// range, not HDR cd/m²) read as obviously bloomed without flooding dim
+// surfaces.
+//
+// It is NOT tuned to cancel the upsample pyramid's own DC gain (see
+// `bloom_upsample.comp`'s #1275 note) — that additive, non-renormalised
+// up-chain carries an inherent ~5× DC gain at mip 0 for a
+// spatially-uniform bright source. The two effects compose rather than
+// cancel: effective contribution to `composite.frag`'s `combined` = 5×
+// (pyramid) × 0.15 (this constant) = 0.75× the local blurred average per
+// pixel — about 19× Frostbite SIGGRAPH 2015's own 0.04 reference, which
+// assumes a renormalised (unit-gain) pyramid this one isn't. Absorbing
+// the 5× gain down to Frostbite's reference would take ≈0.008, not 0.15
+// — this constant is doing LDR-authoring compensation, not gain
+// cancellation. `bloom_downsample.comp`'s `DownsampleParams` carries no
+// bright-pass threshold or Karis average, so this is a broadband lift on
+// the local average, not a highlight-only glow.
+//
 // Consumed by `composite.frag` via the `#include`d `#define`; mirrored
 // here so Rust-side `bloom::DEFAULT_BLOOM_INTENSITY` stays in lockstep.
 // See `feedback_color_space.md` for why we don't HDR-boost emissives
