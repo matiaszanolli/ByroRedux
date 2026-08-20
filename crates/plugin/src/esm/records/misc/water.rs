@@ -652,6 +652,14 @@ fn decode_data_fo3nv(data: &[u8]) -> WaterParams {
     if let Some(value) = read_f32_at(data, 148) {
         p.underwater_fog_far = value.max(p.underwater_fog_near + 1.0);
     }
+    // Fallout's distortion amount and shininess occupy the first two
+    // canonical effect-control lanes; preserving them keeps refraction and
+    // the local highlight water-specific instead of using renderer defaults.
+    for (slot, offset) in p.effect_controls.iter_mut().zip([152, 156]) {
+        if let Some(value) = read_f32_at(data, offset) {
+            *slot = value.max(0.0);
+        }
+    }
     // The general normal UV scale at 136 is retained as a fallback; the
     // three layer-specific scales at 172/176/180 take precedence when
     // present.
@@ -1573,6 +1581,8 @@ mod tests {
         data[140..144].copy_from_slice(&0.5f32.to_le_bytes()); // underwater amount
         data[144..148].copy_from_slice(&18.0f32.to_le_bytes()); // underwater near
         data[148..152].copy_from_slice(&240.0f32.to_le_bytes()); // underwater far
+        data[152..156].copy_from_slice(&9.0f32.to_le_bytes()); // distortion amount
+        data[156..160].copy_from_slice(&500.0f32.to_le_bytes()); // shininess
         data[72..76].copy_from_slice(&0.06f32.to_le_bytes()); // displacement start
         data[84..88].copy_from_slice(&0.8f32.to_le_bytes()); // displacement falloff
         data[88..92].copy_from_slice(&4.0f32.to_le_bytes()); // displacement dampener
@@ -1615,6 +1625,8 @@ mod tests {
         assert_eq!(w.params.underwater_fog_amount, 0.5);
         assert_eq!(w.params.underwater_fog_near, 18.0);
         assert_eq!(w.params.underwater_fog_far, 240.0);
+        assert_eq!(w.params.effect_controls[0], 9.0);
+        assert_eq!(w.params.effect_controls[1], 500.0);
         assert!((w.params.noise_uv_scale_a - 1.0 / 320.0).abs() < 1e-6);
         assert!((w.params.noise_uv_scale_b - 1.0 / 760.0).abs() < 1e-6);
         assert_eq!(w.params.noise_uv_scale_c, 0.0);
