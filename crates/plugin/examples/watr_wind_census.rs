@@ -1,11 +1,10 @@
-//! Census the leading wind floats of every `WATR` record in an ESM.
+//! Census the leading motion floats of every `WATR` record in an ESM.
 //!
-//! Evidence harness for #2872. `WATR.DATA` (Oblivion / FO3 / FNV) and
-//! `WATR.DNAM` (Skyrim+, after a 4-byte tag) both open with a wind
-//! velocity / wind direction pair, and
-//! `esm::records::misc::water::decode_data` reads them at offsets 0 and 4
-//! for every layout. Running this over vanilla masters shows that is not
-//! true of the newer layouts:
+//! Evidence harness for the legacy water-layout split. Full FO3/FNV
+//! `WATR.DATA` records have an opaque 16-byte prefix; their normal-layer
+//! directions/speeds begin at offsets 100/112. Skyrim+ `WATR.DNAM` carries
+//! the authored motion fields in its documented tail, while only record-level
+//! `NAM0` supplies an explicit linear current.
 //!
 //! ```text
 //! FalloutNV.esm  len=186 n=8   field0=["0.100"]  field1=["90.000"]
@@ -15,11 +14,10 @@
 //!                              field1=["35.000","62.000","90.000","100.000"]
 //! ```
 //!
-//! The 196/228-byte layouts hold `90.0` — a constant, and exactly the value
-//! the shorter layouts carry in the *direction* slot — in the float the
-//! parser treats as the wind velocity. That is what disqualified the field
-//! as a source for `WaterFlow::speed`; resolving which offset really holds
-//! the velocity in those layouts is the open decode-side half.
+//! The old offset-0/4 interpretation was incorrect for full FO3/FNV records;
+//! the parser now ignores that opaque prefix and reads the actual per-layer
+//! motion fields. `WaterFlow::speed` remains separate: a WATR normal-layer
+//! speed is visual scroll, not a physics current.
 //!
 //! Usage:
 //!   cargo run -p byroredux-plugin --example watr_wind_census -- <file.esm> [...]
@@ -87,12 +85,15 @@ fn walk_groups(
             .find(|sub| sub.sub_type == *b"EDID")
             .map(|sub| zstring(&sub.data))
             .unwrap_or_default();
-        // Oblivion / FO3 / FNV carry the prefix in DATA at offset 0;
-        // Skyrim+ carries it in DNAM after a 4-byte tag.
-        let (payload, base) = match subs.iter().find(|sub| sub.sub_type == *b"DATA") {
-            Some(sub) if sub.data.len() >= 8 => (&sub.data, 0usize),
+        // Legacy records carry visual data in DATA; Skyrim+ carries it in DNAM.
+        let (payload, direction_offset, speed_offset) = match subs
+            .iter()
+            .find(|sub| sub.sub_type == *b"DATA")
+        {
+            Some(sub) if sub.data.len() >= 186 => (&sub.data, 100usize, 112usize),
+            Some(sub) if sub.data.len() >= 8 => (&sub.data, 4usize, 0usize),
             _ => match subs.iter().find(|sub| sub.sub_type == *b"DNAM") {
-                Some(sub) if sub.data.len() >= 12 => (&sub.data, 4usize),
+                Some(sub) if sub.data.len() >= 124 => (&sub.data, 100usize, 112usize),
                 _ => continue,
             },
         };
@@ -104,7 +105,7 @@ fn walk_groups(
                 payload[off + 3],
             ])
         };
-        rows.push((editor_id, payload.len(), read(base), read(base + 4)));
+        rows.push((editor_id, payload.len(), read(speed_offset), read(direction_offset)));
     }
     Ok(())
 }

@@ -15,16 +15,15 @@ use crate::esm::sub_reader::SubReader;
 /// precise per-game parser can keep the storage shape stable while
 /// improving accuracy.
 ///
-/// **Confident decode** (cross-checked against UESP CSWiki for
-/// Oblivion + FO3 + FNV WATR.DATA, plus the Gamebryo 2.3 water
-/// material header):
+/// **Confident decode** (cross-checked against xEdit's FO3/FNV WATR
+/// definition and the Gamebryo-era water material header):
 ///
-/// - Oblivion DATA: 102 bytes, layout starting with 11 × f32 +
-///   3 × u32-packed RGBA8.
-/// - FO3 / FNV DATA: 196-byte extension of the Oblivion layout —
-///   first 60 bytes preserve the FNV/FO3-compatible prefix.
+/// - Oblivion DATA: short legacy payloads retain the compatibility decoder.
+/// - FO3 / FNV DATA: full 186/196-byte payloads have an opaque 16-byte
+///   prefix, then the documented visual fields; the parser uses the exact
+///   offsets and leaves damage-only 2-byte stubs at defaults.
 ///
-/// **Best-effort decode** for Skyrim DNAM (252+ bytes) — the field
+/// **Best-effort decode** for Skyrim DNAM (228/232 bytes) — the field
 /// names are documented but the offsets vary between 1.5 / 1.6
 /// patches; we read what we can and leave the rest at default.
 ///
@@ -260,10 +259,9 @@ fn normalize_noise_uv_scale(value: f32) -> f32 {
     }
 }
 
-/// Parse Oblivion / FO3 / FNV WATR.DATA. The leading wind / wave /
-/// fog / reflectivity / fresnel prefix (offsets 0..36) is shared, but
-/// the RGBA colour block that follows is **not** at a fixed offset
-/// across games:
+/// Parse the short Oblivion/synthetic WATR.DATA shape. Full FO3/FNV records
+/// are dispatched to [`decode_data_fo3nv`] because their first 16 bytes are
+/// opaque and their visual fields use a different offset map:
 ///
 /// ```text
 /// offset  size  field
@@ -280,16 +278,12 @@ fn normalize_noise_uv_scale(value: f32) -> f32 {
 /// 36      …     colour block — offset is game-dependent (see below)
 /// ```
 ///
-/// FO3/FNV ship WATR.DATA as either a 2-byte "Damage-only" stub or a
-/// full **186-byte** record. The 186-byte variant carries an extra
-/// fog-distance `f32` at offset 36, which pushes the RGBA colour block
-/// to **40 / 44 / 48** (verified against the real `PPurityWater01Murky`
-/// and `DupontFontWaterType` records, #1778). Oblivion's shorter DATA
-/// (and any record below 186 bytes) keeps the legacy **36 / 40 / 44**
-/// colour offsets. `decode_data` falls back to defaults for any field
-/// whose source offset is past the buffer end, so the 2-byte stub keeps
-/// all default colours.
+/// The compatibility path remains bounds-checked, so damage-only stubs and
+/// short records retain canonical defaults.
 fn decode_data(data: &[u8]) -> WaterParams {
+    if data.len() >= 186 {
+        return decode_data_fo3nv(data);
+    }
     let mut p = WaterParams::default();
     let mut r = SubReader::new(data);
     if let Ok(v) = r.f32() {
@@ -378,6 +372,97 @@ fn decode_data(data: &[u8]) -> WaterParams {
             u8_to_linear(data[color_base + 9]),
             u8_to_linear(data[color_base + 10]),
         ];
+    }
+    p
+}
+
+/// Decode the authoritative full FO3/FNV visual-data layout. The first
+/// sixteen bytes are opaque in xEdit's definition; they are not wind or wave
+/// controls. Visual fields begin at byte 16, and the second fog float at byte
+/// 36 shifts the RGBA colours to 40/44/48. Longer variants expose additional
+/// tail entries when those bytes are present.
+fn decode_data_fo3nv(data: &[u8]) -> WaterParams {
+    let mut p = WaterParams::default();
+    if let Some(value) = read_f32_at(data, 16) {
+        p.sun_specular_power = value.clamp(1.0, 2048.0);
+    }
+    if let Some(value) = read_f32_at(data, 20) {
+        p.reflectivity = value.clamp(0.0, 1.0);
+    }
+    if let Some(value) = read_f32_at(data, 24) {
+        p.fresnel = value.clamp(0.0, 1.0);
+    }
+    if let Some(value) = read_f32_at(data, 32) {
+        p.fog_near = value.max(0.0);
+    }
+    if let Some(value) = read_f32_at(data, 36) {
+        p.fog_far = value.max(p.fog_near + 1.0);
+    }
+    for (dst, offset) in [
+        (&mut p.shallow_color, 40usize),
+        (&mut p.deep_color, 44usize),
+        (&mut p.reflection_color, 48usize),
+    ] {
+        if let Some(color) = read_rgb_at(data, offset) {
+            *dst = color;
+        }
+    }
+    // Displacement force/velocity are the closest legacy equivalents of the
+    // canonical wave amplitude/frequency controls.
+    if let Some(value) = read_f32_at(data, 76) {
+        p.wave_amplitude = value.max(0.0);
+    }
+    if let Some(value) = read_f32_at(data, 80) {
+        p.wave_frequency = value.max(0.0);
+    }
+    if let Some(value) = read_f32_at(data, 96) {
+        p.normal_magnitude = value.max(0.0);
+    }
+    for (slot, offset) in p.noise_wind_directions.iter_mut().zip([100, 104, 108]) {
+        if let Some(value) = read_f32_at(data, offset) {
+            *slot = value.to_radians();
+        }
+    }
+    for (slot, offset) in p.noise_wind_speeds.iter_mut().zip([112, 116, 120]) {
+        if let Some(value) = read_f32_at(data, offset) {
+            *slot = value.max(0.0);
+        }
+    }
+    p.wind_direction = p.noise_wind_directions[0];
+    p.wind_speed = p.noise_wind_speeds[0];
+    if let Some(value) = read_f32_at(data, 136) {
+        p.above_water_fog_amount = value.max(0.0);
+    }
+    if let Some(value) = read_f32_at(data, 140) {
+        p.noise_uv_scale_a = normalize_noise_uv_scale(value);
+    }
+    if let Some(value) = read_f32_at(data, 144) {
+        p.underwater_fog_amount = value.max(0.0);
+    }
+    if let Some(value) = read_f32_at(data, 148) {
+        p.underwater_fog_near = value.max(0.0);
+    }
+    if let Some(value) = read_f32_at(data, 152) {
+        p.underwater_fog_far = value.max(p.underwater_fog_near + 1.0);
+    }
+    // The general normal UV scale at 140 is retained as a fallback; the
+    // three layer-specific scales at 176/180/184 take precedence when
+    // present.
+    if let Some(value) = read_f32_at(data, 176) {
+        p.noise_uv_scale_a = normalize_noise_uv_scale(value);
+    }
+    for (dst, offset) in [
+        (&mut p.noise_uv_scale_b, 180usize),
+        (&mut p.noise_uv_scale_c, 184usize),
+    ] {
+        if let Some(value) = read_f32_at(data, offset) {
+            *dst = normalize_noise_uv_scale(value);
+        }
+    }
+    for (slot, offset) in p.noise_amplitude_scales.iter_mut().zip([188, 192, 196]) {
+        if let Some(value) = read_f32_at(data, offset) {
+            *slot = value.max(0.0);
+        }
     }
     p
 }
@@ -946,6 +1031,10 @@ mod tests {
         // colour block sits at 40/44/48, NOT 36/40/44. Bytes mirror the
         // real `PPurityWater01Murky` (Fallout3.esm) record.
         let mut data = vec![0u8; 186];
+        data[16..20].copy_from_slice(&61.0f32.to_le_bytes()); // sun power
+        data[20..24].copy_from_slice(&0.65f32.to_le_bytes()); // reflectivity
+        data[24..28].copy_from_slice(&0.04f32.to_le_bytes()); // fresnel
+        data[32..36].copy_from_slice(&7.0f32.to_le_bytes()); // fog near
         // offset 36-39: the extra fog f32 (109.0) the legacy code mistook
         // for the shallow colour — its low bytes are obvious garbage as RGB.
         data[36..40].copy_from_slice(&109.0f32.to_le_bytes());
@@ -953,11 +1042,13 @@ mod tests {
         data[40..44].copy_from_slice(&[36, 47, 36, 0]); // shallow
         data[44..48].copy_from_slice(&[13, 13, 11, 0]); // deep
         data[48..52].copy_from_slice(&[41, 48, 46, 0]); // reflection
-        data[144..148].copy_from_slice(&18.0f32.to_le_bytes()); // underwater near
-        data[148..152].copy_from_slice(&240.0f32.to_le_bytes()); // underwater far
-        data[172..176].copy_from_slice(&(1.0 / 320.0f32).to_le_bytes()); // noise UV 1
-        data[176..180].copy_from_slice(&(1.0 / 760.0f32).to_le_bytes()); // noise UV 2
-        data[180..184].copy_from_slice(&488.0f32.to_le_bytes()); // noise UV 3 (legacy length)
+        data[144..148].copy_from_slice(&0.5f32.to_le_bytes()); // underwater amount
+        data[148..152].copy_from_slice(&18.0f32.to_le_bytes()); // underwater near
+        data[152..156].copy_from_slice(&240.0f32.to_le_bytes()); // underwater far
+        data[100..104].copy_from_slice(&90.0f32.to_le_bytes()); // layer 1 direction
+        data[112..116].copy_from_slice(&0.25f32.to_le_bytes()); // layer 1 speed
+        data[176..180].copy_from_slice(&(1.0 / 320.0f32).to_le_bytes()); // noise UV 1
+        data[180..184].copy_from_slice(&(1.0 / 760.0f32).to_le_bytes()); // noise UV 2
 
         let w = parse_watr(0x00100000, &[sub(b"DATA", &data)], GameKind::Fallout3NV);
         assert!((w.params.shallow_color[0] - 36.0 / 255.0).abs() < 1e-6);
@@ -965,11 +1056,19 @@ mod tests {
         assert!((w.params.deep_color[2] - 11.0 / 255.0).abs() < 1e-6);
         assert!((w.params.reflection_color[0] - 41.0 / 255.0).abs() < 1e-6);
         assert!((w.params.reflection_color[2] - 46.0 / 255.0).abs() < 1e-6);
+        assert_eq!(w.params.sun_specular_power, 61.0);
+        assert_eq!(w.params.reflectivity, 0.65);
+        assert_eq!(w.params.fresnel, 0.04);
+        assert_eq!(w.params.fog_near, 7.0);
+        assert_eq!(w.params.fog_far, 109.0);
+        assert_eq!(w.params.wind_speed, 0.25);
+        assert_eq!(w.params.noise_wind_directions[0], 90.0f32.to_radians());
+        assert_eq!(w.params.underwater_fog_amount, 0.5);
         assert_eq!(w.params.underwater_fog_near, 18.0);
         assert_eq!(w.params.underwater_fog_far, 240.0);
         assert!((w.params.noise_uv_scale_a - 1.0 / 320.0).abs() < 1e-6);
         assert!((w.params.noise_uv_scale_b - 1.0 / 760.0).abs() < 1e-6);
-        assert!((w.params.noise_uv_scale_c - 1.0 / 488.0).abs() < 1e-6);
+        assert_eq!(w.params.noise_uv_scale_c, 0.0);
         // Guard against the off-by-4 regression: reading shallow @36 would
         // pick up the fog float's bytes (0x00,0x00,0xda → [0,0,218]), so a
         // blue-channel of 218/255 here means the offset shift was lost.
