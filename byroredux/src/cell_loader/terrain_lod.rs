@@ -204,9 +204,11 @@ fn block_hole_mask(
     by0: i32,
     player_grid: (i32, i32),
     max_full_cell_radius: i32,
+    resident_full_cells: &[(i32, i32)],
 ) -> u16 {
     assemble_hole_mask(bx0, by0, |gx, gy| {
         cell_is_full_detail(gx, gy, player_grid, max_full_cell_radius)
+            || resident_full_cells.contains(&(gx, gy))
             || cells_map
                 .get(&(gx, gy))
                 .and_then(|cell| cell.landscape.as_ref())
@@ -414,7 +416,14 @@ pub(crate) fn stream_lod_blocks(
         // Only the finest band can touch the full-detail region or need
         // per-cell holes; coarse bands are baked meshes far outside it.
         let mask = if level == k {
-            block_hole_mask(cells_map, qx, qy, player_grid, max_full_cell_radius)
+            block_hole_mask(
+                cells_map,
+                qx,
+                qy,
+                player_grid,
+                max_full_cell_radius,
+                input.resident_full_cells,
+            )
         } else {
             0
         };
@@ -514,6 +523,7 @@ pub(crate) fn stream_lod_blocks(
                 qy,
                 player_grid,
                 max_full_cell_radius,
+                input.resident_full_cells,
                 game,
                 worldspace_key,
                 world_form_id,
@@ -600,6 +610,7 @@ fn spawn_lod_block(
     by0: i32,
     player_grid: (i32, i32),
     max_full_cell_radius: i32,
+    resident_full_cells: &[(i32, i32)],
     game: GameKind,
     worldspace_key: &str,
     world_form_id: u32,
@@ -871,7 +882,14 @@ fn spawn_lod_block(
     // and is skipped by any TLAS-membership logic.
     world.insert(entity, IsLodTerrain);
 
-    let hole_mask = block_hole_mask(cells_map, bx0, by0, player_grid, max_full_cell_radius);
+    let hole_mask = block_hole_mask(
+        cells_map,
+        bx0,
+        by0,
+        player_grid,
+        max_full_cell_radius,
+        resident_full_cells,
+    );
     Some(LodBlock {
         entity,
         mesh_handle,
