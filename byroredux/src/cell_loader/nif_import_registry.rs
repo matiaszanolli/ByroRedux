@@ -149,6 +149,9 @@ pub(crate) struct CachedNifImport {
     /// currently leaves this `None` (see #994 — NIF cell-loader has
     /// the same gap, deferred).
     pub(super) placement_root_billboard: Option<BillboardMode>,
+    /// TREE.CNAM response/stiffness for SpeedTree sway. `None` for NIF and
+    /// generated imports, which use the shared weather response fallback.
+    pub(super) speedtree_wind: Option<(f32, f32)>,
     /// `BSXFlags` bits authored on the NIF root (havok-managed,
     /// ragdoll, editor-marker, articulated, etc.). Captured at parse
     /// time so the spawn site can attach a `BSXFlags` ECS row on the

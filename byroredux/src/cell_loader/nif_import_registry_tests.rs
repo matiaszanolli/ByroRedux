@@ -25,6 +25,7 @@ fn dummy_cached() -> Arc<CachedNifImport> {
         particle_emitters: Vec::new(),
         embedded_clip: None,
         placement_root_billboard: None,
+        speedtree_wind: None,
         bsx_flags: 0,
         root_flags: 0,
         flame_attach_offset: None,

@@ -71,6 +71,19 @@ fn parse_and_import_spt_surfaces_billboard_mode_on_mesh() {
 }
 
 #[test]
+fn parse_and_import_spt_preserves_tree_cnam_wind_response() {
+    let bytes = minimal_spt_bytes();
+    let tree = byroredux_plugin::esm::records::TreeRecord {
+        canopy_params: vec![2.0, 0.25],
+        ..Default::default()
+    };
+    let mut pool = StringPool::new();
+    let cached = parse_and_import_spt(&bytes, "trees\\windy.spt", Some(&tree), &mut pool)
+        .expect("minimal spt parses through the importer");
+    assert_eq!(cached.speedtree_wind, Some((2.0, 0.25)));
+}
+
+#[test]
 fn malformed_spt_still_produces_placeholder() {
     let mut pool = StringPool::new();
     let cached = parse_and_import_spt(b"not an spt", "trees\\broken.spt", None, &mut pool)

@@ -90,6 +90,32 @@ impl Component for Billboard {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// Authored SpeedTree canopy response carried by a TREE record's CNAM.
+///
+/// `response` scales the shared weather-wind bend and `stiffness` attenuates
+/// it (`0` = fully responsive, `1` = rigid).  The atmospheric direction,
+/// gust phase, and base speed still come exclusively from [`WindField`], so
+/// water and vegetation remain driven by the same weather state.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
+pub struct SpeedTreeWind {
+    pub response: f32,
+    pub stiffness: f32,
+}
+
+impl SpeedTreeWind {
+    pub const fn new(response: f32, stiffness: f32) -> Self {
+        Self {
+            response,
+            stiffness,
+        }
+    }
+}
+
+impl Component for SpeedTreeWind {
+    type Storage = SparseSetStorage<Self>;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

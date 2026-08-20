@@ -48,7 +48,7 @@ pub use animated::{
     AnimatedUvTransform, AnimatedVisibility,
 };
 pub use attach_points::{AttachPoint, AttachPoints, ChildAttachConnections};
-pub use billboard::{Billboard, BillboardMode};
+pub use billboard::{Billboard, BillboardMode, SpeedTreeWind};
 pub use bsx::{BSBound, BSXFlags};
 pub use camera::{ActiveCamera, Camera, DEFAULT_RENDER_DISTANCE};
 pub use cell_root::{CellFormId, CellRoot};

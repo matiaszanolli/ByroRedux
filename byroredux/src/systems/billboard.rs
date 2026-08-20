@@ -1,7 +1,9 @@
 //! Billboard orientation — face-camera mode for sprite-like nodes.
 
 use byroredux_core::ecs::components::groundcover::WindField;
-use byroredux_core::ecs::{ActiveCamera, Billboard, BillboardMode, GlobalTransform, World};
+use byroredux_core::ecs::{
+    ActiveCamera, Billboard, BillboardMode, GlobalTransform, SpeedTreeWind, World,
+};
 use byroredux_core::math::{Quat, Vec3};
 
 /// Billboard system factory — returns a closure with a cached camera pose.
@@ -72,6 +74,7 @@ pub(crate) fn make_billboard_system() -> impl FnMut(&World, f32) + Send + Sync {
         let Some(bq) = world.query::<Billboard>() else {
             return;
         };
+        let swq = world.query::<SpeedTreeWind>();
 
         for (entity, billboard) in bq.iter() {
             let Some(global) = gq.get_mut(entity) else {
@@ -99,7 +102,17 @@ pub(crate) fn make_billboard_system() -> impl FnMut(&World, f32) + Send + Sync {
                 let phase = global.translation.x * 0.017 + global.translation.z * 0.013;
                 let wave = (elapsed * (0.35 + strength * 0.85) + phase).sin();
                 let cross = (elapsed * (0.47 + strength * 0.65) + phase * 1.7).cos();
-                let bend = strength * 0.16;
+                let (response, stiffness) = swq
+                    .as_ref()
+                    .and_then(|q| q.get(entity).copied())
+                    .map(|wind| {
+                        (
+                            wind.response.clamp(0.0, 4.0),
+                            wind.stiffness.clamp(0.0, 1.0),
+                        )
+                    })
+                    .unwrap_or((1.0, 0.0));
+                let bend = strength * 0.16 * response * (1.0 - stiffness);
                 new_rot = new_rot
                     * Quat::from_rotation_z(wave * bend)
                     * Quat::from_rotation_x(cross * bend * 0.65);

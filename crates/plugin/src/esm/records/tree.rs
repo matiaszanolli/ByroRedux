@@ -92,11 +92,9 @@ pub struct TreeRecord {
     pub leaf_indices: Vec<u32>,
     /// CNAM — canopy / wind parameters as raw f32. Field count varies
     /// across games (5 on Oblivion, 8 on FO3/FNV); semantics aren't
-    /// pinned down here. Phases 2/4 of the SpeedTree plan consume this
-    /// once `WindField` is wired.
-    ///
-    /// **Parse-but-don't-consume gate (TD5-011):** same milestone as
-    /// `leaf_indices` above — SpeedTree Phase 2.
+    /// pinned down here. The first two finite values are consumed by the
+    /// cell-loader SpeedTree billboard's shared-weather sway response; the
+    /// remaining values stay raw until real branch/leaf animation lands.
     pub canopy_params: Vec<f32>,
     /// BNAM — billboard width / height on FO3/FNV. `None` on Oblivion
     /// (BNAM absent there) and Skyrim+ (TREE records dropped the field).

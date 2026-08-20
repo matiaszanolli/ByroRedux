@@ -112,6 +112,7 @@ pub(crate) fn finish_partial_import(
         // Partial NIFs are decoded from streamed bytes — no SpeedTree
         // placeholder path runs through here, so no billboard mode.
         placement_root_billboard: None,
+        speedtree_wind: None,
         // #1214 / #3036 — BSXFlags surfaced from the streaming partial.
         // Bit 5 means marker children are present on classic content (and
         // MultiBound metadata on later content), never that the whole NIF

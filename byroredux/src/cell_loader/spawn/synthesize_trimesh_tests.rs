@@ -431,6 +431,7 @@ fn packed_proxy_is_keyframed_and_parented_to_visual_placement() {
         particle_emitters: Vec::new(),
         embedded_clip: None,
         placement_root_billboard: None,
+        speedtree_wind: None,
         bsx_flags: 0,
         root_flags: 0,
         flame_attach_offset: None,

@@ -182,6 +182,7 @@ pub(super) fn parse_and_import_nif(
         // placement root, so we'd need a "which node corresponds to the
         // REFR placement" heuristic. Tracked alongside #994.
         placement_root_billboard: None,
+        speedtree_wind: None,
         // #1214 / D1-NEW-03 — surface the BSXFlags bits on the cache
         // entry so the spawn site can attach a `BSXFlags` ECS row on
         // the placement root. Bit 5 rides through as marker-presence /
@@ -391,6 +392,7 @@ pub(super) fn parse_and_import_spt(
         particle_emitters: Vec::new(),
         embedded_clip: None,
         placement_root_billboard,
+        speedtree_wind: wind,
         // SpeedTree `.spt` files carry no BSXFlags — they're a
         // separate format outside the NIF block hierarchy. #1214.
         bsx_flags: 0,
