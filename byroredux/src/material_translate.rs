@@ -163,6 +163,48 @@ pub(crate) fn water_kind_from_mesh_name(name: Option<&str>) -> (WaterKind, Optio
     (kind, flow)
 }
 
+/// Classify mesh water with a geometry fallback for localized/unnamed assets.
+///
+/// The legacy name heuristic remains authoritative when it identifies a kind.
+/// Otherwise, a tall, narrow finite mesh is the characteristic shape of a
+/// waterfall sheet (horizontal rivers/lakes have their largest span in X/Z).
+/// This keeps non-English water assets from falling into the calm-water path
+/// without changing ordinary flat water or malformed geometry.
+pub(crate) fn water_kind_from_mesh_geometry(
+    name: Option<&str>,
+    positions: &[[f32; 3]],
+) -> (WaterKind, Option<WaterFlow>) {
+    let named = water_kind_from_mesh_name(name);
+    if !matches!(named.0, WaterKind::Calm) || positions.len() < 3 {
+        return named;
+    }
+
+    let mut min = [f32::INFINITY; 3];
+    let mut max = [f32::NEG_INFINITY; 3];
+    for position in positions {
+        if !position.iter().all(|value| value.is_finite()) {
+            continue;
+        }
+        for axis in 0..3 {
+            min[axis] = min[axis].min(position[axis]);
+            max[axis] = max[axis].max(position[axis]);
+        }
+    }
+    if !min.iter().all(|value| value.is_finite()) {
+        return named;
+    }
+    let spans = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
+    let horizontal = spans[0].max(spans[2]).max(1.0);
+    if spans[1] > 16.0 && spans[1] > horizontal * 1.5 {
+        (
+            WaterKind::Waterfall,
+            Some(WaterFlow::for_kind(WaterKind::Waterfall, [0.0, -1.0, 0.0])),
+        )
+    } else {
+        named
+    }
+}
+
 /// Derive a conservative physics volume for a mesh-bound water surface. NIF
 /// water blocks do not author a volume or current; the rendered surface is the
 /// entity's transformed Y plane, while imported bounds provide coverage/depth.
@@ -744,6 +786,34 @@ mod tests {
         ));
         assert!(matches!(
             water_kind_from_mesh_name(Some("LakeWater01")),
+            (WaterKind::Calm, None)
+        ));
+    }
+
+    #[test]
+    fn mesh_water_geometry_classifier_recognizes_localized_waterfall_sheet() {
+        let vertical_sheet = [
+            [-1.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [-1.0, 96.0, 0.0],
+            [1.0, 96.0, 0.0],
+        ];
+        assert!(matches!(
+            water_kind_from_mesh_geometry(Some("Agua_01"), &vertical_sheet),
+            (WaterKind::Waterfall, Some(_))
+        ));
+    }
+
+    #[test]
+    fn mesh_water_geometry_classifier_keeps_flat_unnamed_water_calm() {
+        let flat_surface = [
+            [-96.0, 0.0, -48.0],
+            [96.0, 0.0, -48.0],
+            [-96.0, 0.5, 48.0],
+            [96.0, 0.5, 48.0],
+        ];
+        assert!(matches!(
+            water_kind_from_mesh_geometry(None, &flat_surface),
             (WaterKind::Calm, None)
         ));
     }

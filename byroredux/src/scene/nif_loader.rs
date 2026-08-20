@@ -1031,8 +1031,10 @@ pub(crate) fn load_nif_bytes_with_skeleton(
                     .unwrap(),
                 texture_handles.normal,
             );
-            let (water_kind, water_flow) =
-                crate::material_translate::water_kind_from_mesh_name(mesh.name.as_deref());
+            let (water_kind, water_flow) = crate::material_translate::water_kind_from_mesh_geometry(
+                mesh.name.as_deref(),
+                &mesh.positions,
+            );
             world.insert(
                 entity,
                 byroredux_core::ecs::components::WaterPlane {
