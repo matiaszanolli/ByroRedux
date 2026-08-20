@@ -127,10 +127,13 @@ pub(super) fn reemit_water_planes(
         + (gust / byroredux_core::ecs::components::groundcover::MAX_WIND_SPEED)
             .clamp(0.0, 1.0)
             * 0.5;
-    const WEATHER_WATER_SCROLL_PER_BU_PER_S: f32 = 0.0015;
     let weather_scroll = [
-        wind_direction[0] * gust * WEATHER_WATER_SCROLL_PER_BU_PER_S,
-        wind_direction[1] * gust * WEATHER_WATER_SCROLL_PER_BU_PER_S,
+        wind_direction[0]
+            * gust
+            * byroredux_core::ecs::components::water::WEATHER_SCROLL_PER_BU_PER_S,
+        wind_direction[1]
+            * gust
+            * byroredux_core::ecs::components::water::WEATHER_SCROLL_PER_BU_PER_S,
     ];
     let Some(wq) = world.query::<WaterPlane>() else {
         return;

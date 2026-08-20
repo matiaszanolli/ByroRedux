@@ -391,6 +391,12 @@ pub struct WaterFlow {
     pub speed: f32,
 }
 
+/// Conversion from the shared atmospheric wind magnitude (BU/s) to the
+/// water normal-layer UV scroll rate. Renderer upload and CPU crest/contact
+/// sampling both use this value so visible water and gameplay stay phase
+/// coherent.
+pub const WEATHER_SCROLL_PER_BU_PER_S: f32 = 0.0015;
+
 impl WaterFlow {
     /// Slowest current the physics sink will simulate — the "calm river"
     /// anchor of [`Self::speed`]'s documented band. BU/s.

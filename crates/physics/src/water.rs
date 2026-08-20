@@ -283,7 +283,6 @@ pub fn authored_wave_height_with_weather(
 /// directional scroll in world units per second and a bounded amplitude
 /// multiplier. A missing `WindField` is the calm-water sentinel.
 pub fn weather_wave_adjustment(world: &World, time_secs: f32) -> ([f32; 2], f32) {
-    const WEATHER_WATER_SCROLL_PER_BU_PER_S: f32 = 0.0015;
     let wind = world
         .try_resource::<WindField>()
         .map(|field| *field)
@@ -304,8 +303,8 @@ pub fn weather_wave_adjustment(world: &World, time_secs: f32) -> ([f32; 2], f32)
         [1.0, 0.0]
     };
     let scroll = [
-        direction[0] * gust * WEATHER_WATER_SCROLL_PER_BU_PER_S,
-        direction[1] * gust * WEATHER_WATER_SCROLL_PER_BU_PER_S,
+        direction[0] * gust * byroredux_core::ecs::components::water::WEATHER_SCROLL_PER_BU_PER_S,
+        direction[1] * gust * byroredux_core::ecs::components::water::WEATHER_SCROLL_PER_BU_PER_S,
     ];
     let scale = 1.0
         + (gust / byroredux_core::ecs::components::groundcover::MAX_WIND_SPEED)
