@@ -5,8 +5,9 @@ use byroredux_core::ecs::components::water::{
 };
 use byroredux_core::ecs::components::ParticleEmitter;
 use byroredux_core::ecs::{ActiveCamera, EntityId, GlobalTransform, World};
+use byroredux_core::math::Vec3;
 use byroredux_scripting::{RippleEvent, SplashEvent};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// Hysteresis band half-width for the `head_submerged` boolean, in
 /// Bethesda world units (~1.43 cm/unit — same scale as `WaterVolume`
@@ -296,6 +297,7 @@ pub(crate) fn make_water_interaction_system() -> impl FnMut(&World, f32) + Send 
 
         let mut wet_now = HashSet::new();
         let mut entries = Vec::new();
+        let mut ripple_by_surface = HashMap::<EntityId, (EntityId, Vec3, f32)>::new();
         for (entity, contact) in contact_q.iter() {
             if contact.submerged_fraction <= 0.0 {
                 continue;
@@ -320,6 +322,16 @@ pub(crate) fn make_water_interaction_system() -> impl FnMut(&World, f32) + Send 
                 !wet_last_frame.contains(&entity),
                 contact.submerged_fraction < 0.98,
             ));
+            if contact.submerged_fraction < 0.98 {
+                ripple_by_surface
+                    .entry(surface_entity)
+                    .and_modify(|current| {
+                        if intensity > current.2 {
+                            *current = (entity, position, intensity);
+                        }
+                    })
+                    .or_insert((entity, position, intensity));
+            }
             wet_now.insert(entity);
         }
         drop(global_q);
@@ -327,10 +339,7 @@ pub(crate) fn make_water_interaction_system() -> impl FnMut(&World, f32) + Send 
 
         if !entries.is_empty() {
             if let Some(mut q) = world.query_mut::<RippleEvent>() {
-                for &(entity, surface_entity, position, intensity, _, near_surface) in &entries {
-                    if !near_surface {
-                        continue;
-                    }
+                for (&surface_entity, &(entity, position, intensity)) in &ripple_by_surface {
                     q.insert(
                         surface_entity,
                         RippleEvent {
