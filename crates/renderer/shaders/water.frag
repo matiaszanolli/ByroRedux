@@ -57,7 +57,7 @@ layout(early_fragment_tests) in;
 //   composite-pass tone-mapper + TAA handles the residual jitter.
 //
 // Per-water material data lives in a compact per-frame UBO. Keeping the
-// 288-byte record here, rather than in push constants, leaves room to grow
+// 304-byte record here, rather than in push constants, leaves room to grow
 // the canonical cross-game material without raising device requirements.
 struct WaterParams {
     // x = time (engine uptime in seconds — `TotalTime`, accumulated
@@ -94,6 +94,8 @@ struct WaterParams {
     vec4 detail;
     // x = authored Skyrim noise-falloff distance; yzw reserved.
     vec4 noise_falloff;
+    // x = displacement starting size, y = radial falloff, z = dampener.
+    vec4 displacement;
     // x/y/z/w = reflection/refraction/normal/specular depth weights.
     vec4 depth;
     // x/y/z/w = refraction magnitude, local specular power, reflection
@@ -114,7 +116,7 @@ struct WaterParams {
 };
 
 layout(std140, set = 2, binding = 1) uniform WaterParamsBlock {
-    WaterParams params[227];
+    WaterParams params[215];
 } waterParams;
 
 layout(push_constant) uniform WaterDrawPush {
@@ -703,10 +705,19 @@ void main() {
     if (push.ripple.z > 0.0) {
         vec2 delta = vWorldPos.xz - push.ripple.xy;
         float distanceToCenter = length(delta);
-        float radius = max(push.ripple.w, 0.5);
+        float authoredStart = max(push.displacement.x, 0.0);
+        float authoredFalloff = push.displacement.y;
+        float authoredDampener = push.displacement.z;
+        float radius = max(push.ripple.w, max(authoredStart, 0.5));
         float width = mix(1.5, 3.5, clamp(push.ripple.z, 0.0, 1.0));
+        if (authoredFalloff > 0.0) {
+            width *= mix(0.5, 2.0, clamp(1.0 - authoredFalloff, 0.0, 1.0));
+        }
         float ring = exp(-pow((distanceToCenter - radius) / width, 2.0))
             * clamp(push.ripple.z, 0.0, 1.0);
+        if (authoredDampener > 0.0) {
+            ring *= exp(-distanceToCenter / authoredDampener);
+        }
         vec2 radial = distanceToCenter > 0.001
             ? delta / distanceToCenter
             : vec2(0.0);

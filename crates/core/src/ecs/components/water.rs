@@ -185,6 +185,9 @@ pub struct WaterMaterial {
     /// Authored distance at which high-frequency water normals fade out.
     /// Zero preserves the legacy always-on normal response.
     pub noise_falloff: f32,
+    /// Authored transient-displacement shape: starting size, radial falloff,
+    /// and dampener. Zero preserves the legacy ripple profile.
+    pub displacement: [f32; 3],
     /// Authored physical normal magnitude. Applied to the noise amplitudes
     /// before the compact GPU material is uploaded; one is neutral.
     pub normal_magnitude: f32,
@@ -273,6 +276,7 @@ impl Default for WaterMaterial {
             uv_scale_c: 1.0 / 512.0,
             noise_amplitude_scales: [1.0; 3],
             noise_falloff: 0.0,
+            displacement: [0.0; 3],
             normal_magnitude: 1.0,
             above_water_fog_amount: 1.0,
             depth_weights: [1.0; 4],

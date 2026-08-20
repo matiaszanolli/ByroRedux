@@ -104,6 +104,8 @@ pub struct GpuWaterParams {
     pub detail: [f32; 4],
     /// x = authored Skyrim noise-falloff distance; yzw reserved.
     pub noise_falloff: [f32; 4],
+    /// x = displacement starting size, y = radial falloff, z = dampener.
+    pub displacement: [f32; 4],
     /// Authored depth-response weights: reflections, refraction, normals,
     /// and specular lighting.
     pub depth: [f32; 4],
@@ -135,8 +137,8 @@ impl GpuWaterParams {
 }
 
 const _: () = assert!(
-    std::mem::size_of::<GpuWaterParams>() == 288,
-    "GpuWaterParams must remain 18 std140 vec4 slots"
+    std::mem::size_of::<GpuWaterParams>() == 304,
+    "GpuWaterParams must remain 19 std140 vec4 slots"
 );
 
 /// Per-draw selector for the material array uploaded once per frame.
@@ -152,10 +154,10 @@ const _: () = assert!(
     "WaterPush must match the shader's 16-byte push block"
 );
 
-/// Fixed UBO capacity: 227 × 288 B = 65,376 B, below Vulkan's portable
+/// Fixed UBO capacity: 215 × 304 B = 65,360 B, below Vulkan's portable
 /// `maxUniformBufferRange` floor while leaving room for the
 /// handful of water bodies normally visible in one cell.
-pub const MAX_WATER_DRAWS: usize = 227;
+pub const MAX_WATER_DRAWS: usize = 215;
 
 /// One water surface to draw in the current frame.
 ///
@@ -891,7 +893,7 @@ mod tests {
 
     #[test]
     fn water_gpu_contract_layouts_are_stable() {
-        assert_eq!(std::mem::size_of::<GpuWaterParams>(), 288);
+        assert_eq!(std::mem::size_of::<GpuWaterParams>(), 304);
         assert_eq!(std::mem::align_of::<GpuWaterParams>(), 4);
         assert_eq!(std::mem::size_of::<WaterPush>(), 16);
         assert_eq!(std::mem::align_of::<WaterPush>(), 4);
@@ -908,10 +910,11 @@ mod tests {
             src.contains("vec4 absorption;")
                 && src.contains("vec4 concentration;")
                 && src.contains("vec4 noise_falloff;")
+                && src.contains("vec4 displacement;")
                 && src.contains("vec4 ripple;")
                 && src.contains("vec4 underwater;"),
             "water.vert must declare the trailing material slots so indexed\n\
-             WaterParams elements retain the 288-byte std140 stride used by\n\
+             WaterParams elements retain the 304-byte std140 stride used by\n\
              Rust and water.frag"
         );
         assert!(
@@ -946,6 +949,8 @@ mod tests {
         assert!(src.contains("float noiseFalloff = push.noise_falloff.x"));
         assert!(src.contains("distance(vWorldPos, cameraPos.xyz) / noiseFalloff"));
         assert!(src.contains("mix(vec3(0.0, 0.0, 1.0), nMix, normalFade)"));
+        assert!(src.contains("float authoredStart = max(push.displacement.x, 0.0)"));
+        assert!(src.contains("exp(-distanceToCenter / authoredDampener)"));
     }
 
     #[test]
@@ -1150,6 +1155,7 @@ mod tests {
                 noise_indices: [u32::MAX; 4],
                 detail: [0.0; 4],
                 noise_falloff: [0.0; 4],
+                displacement: [0.0; 4],
                 depth: [1.0; 4],
                 effects: [0.0, 0.0, 1.0, 1.0],
                 absorption: [0.0; 4],

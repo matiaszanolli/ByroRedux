@@ -170,6 +170,9 @@ pub struct WaterParams {
     /// Skyrim DNAM noise falloff distance. Zero means the source layout did
     /// not author the field and keeps the legacy infinite-noise behavior.
     pub noise_falloff: f32,
+    /// Skyrim displacement simulator: starting size, radial falloff, and
+    /// dampener. Zero triplet is the absent/legacy sentinel.
+    pub displacement: [f32; 3],
     /// Authored physical normal magnitude. Skyrim stores this at DNAM 92;
     /// FO4 stores it at DNAM 52. One is the neutral renderer fallback.
     pub normal_magnitude: f32,
@@ -237,6 +240,7 @@ impl Default for WaterParams {
             noise_uv_scale_c: 0.0,
             noise_amplitude_scales: [0.0; 3],
             noise_falloff: 0.0,
+            displacement: [0.0; 3],
             normal_magnitude: 1.0,
             above_water_fog_amount: 1.0,
             depth_weights: [0.0; 4],
@@ -648,6 +652,11 @@ fn apply_skyrim_dnam_tail(p: &mut WaterParams, data: &[u8]) {
     // retain the prefix value only when the extended field is absent.
     if let Some(force) = read_f32_at(data, 76) {
         p.wave_amplitude = force.clamp(0.0, 2.0);
+    }
+    for (slot, offset) in p.displacement.iter_mut().zip([72, 84, 88]) {
+        if let Some(v) = read_f32_at(data, offset) {
+            *slot = v.max(0.0);
+        }
     }
     for (slot, offset) in p.noise_wind_directions.iter_mut().zip([100, 104, 108]) {
         if let Some(direction_degrees) = read_f32_at(data, offset) {
@@ -1412,6 +1421,9 @@ mod tests {
         // The extended Skyrim tail promotes the underwater fog pair.
         data.resize(228, 0);
         data[76..80].copy_from_slice(&0.4f32.to_le_bytes());
+        data[72..76].copy_from_slice(&0.01f32.to_le_bytes());
+        data[84..88].copy_from_slice(&0.985f32.to_le_bytes());
+        data[88..92].copy_from_slice(&10.0f32.to_le_bytes());
         data[92..96].copy_from_slice(&0.05f32.to_le_bytes());
         data[96..100].copy_from_slice(&300.0f32.to_le_bytes());
         data[132..136].copy_from_slice(&0.75f32.to_le_bytes());
@@ -1447,6 +1459,7 @@ mod tests {
         assert_eq!(w.params.underwater_fog_near, 0.0);
         assert!((w.params.underwater_fog_far - 1000.0).abs() < 1e-3);
         assert_eq!(w.params.wave_amplitude, 0.4);
+        assert_eq!(w.params.displacement, [0.01, 0.985, 10.0]);
         assert!((w.params.noise_uv_scale_a - 1.0 / 1920.0).abs() < 1e-6);
         assert_eq!(w.params.noise_amplitude_scales, [0.7, 0.6, 0.5]);
         assert_eq!(w.params.depth_weights, [0.9, 0.5, 0.1, 0.2]);

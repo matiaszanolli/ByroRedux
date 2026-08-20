@@ -256,6 +256,9 @@ Skyrim's above-water fog amount (DNAM[132]) scales the canonical refraction
 absorption weight while preserving the authored near/far distance ramp.
 Skyrim's Noise Falloff (DNAM[96]) now fades high-frequency water normals by
 camera distance; its zero sentinel preserves the legacy always-on response.
+The Skyrim displacement simulator's starting size, radial falloff, and
+dampener (DNAM[72,84,88]) now shape transient ripple width and attenuation;
+records without those fields retain the shared ripple profile.
 Skyrim's Sun Sparkle Magnitude (DNAM[200]) now folds into the canonical
 direct-sun glint multiplier alongside the existing specular magnitude;
 Specular Brightness (DNAM[168]) contributes to that same intensity.
@@ -333,7 +336,7 @@ shoreline + flow-aligned foam, dual scrolling normal layers, procedural normal
 fallback, underwater fog, water-side caustic splat. Battle-tested across many
 closed bug IDs, correctly RT-gated. The former 128-byte `WaterPush` ceiling is
 removed: authored material records now live in a per-frame, indexed 64 KiB UBO
-(227 records at the current 288-byte stride), while a 16-byte push selector chooses the draw's record. Waves
+(215 records at the current 304-byte stride), while a 16-byte push selector chooses the draw's record. Waves
 combine bounded raster-side vertex displacement with fragment normal
 perturbation. Reflection rays now shade their material-aware hit and apply the
 per-WATR tint.
