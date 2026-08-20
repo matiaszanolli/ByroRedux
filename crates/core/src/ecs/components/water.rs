@@ -140,6 +140,21 @@ pub struct WaterMaterial {
     /// Default `[0.65, 0.70, 0.75]` matches the pre-fix hard-coded
     /// neutral-grey value in `water.frag`.
     pub reflection_tint: [f32; 3],
+    /// Daytime surface palette resolved from GNAM slot 0. When the record
+    /// has no authored daytime variant this mirrors the base palette.
+    pub day_shallow_color: [f32; 3],
+    pub day_deep_color: [f32; 3],
+    pub day_fog_near: f32,
+    pub day_fog_far: f32,
+    pub day_reflection_tint: [f32; 3],
+    /// Nighttime surface palette resolved from GNAM slot 1. The renderer
+    /// blends this with the daytime palette using the live climate TOD
+    /// factor; defaults mirror the daytime values for legacy records.
+    pub night_shallow_color: [f32; 3],
+    pub night_deep_color: [f32; 3],
+    pub night_fog_near: f32,
+    pub night_fog_far: f32,
+    pub night_reflection_tint: [f32; 3],
     /// Normal-map index in the bindless texture array. Both wave
     /// layers sample this; the shader applies a different scale +
     /// scroll vector to each. `u32::MAX` = solid-colour water.
@@ -269,6 +284,16 @@ impl Default for WaterMaterial {
             sun_specular_power: 50.0,
             source_form: 0,
             reflection_tint: [0.65, 0.70, 0.75],
+            day_shallow_color: [0.10, 0.32, 0.38],
+            day_deep_color: [0.02, 0.06, 0.10],
+            day_fog_near: 80.0,
+            day_fog_far: 600.0,
+            day_reflection_tint: [0.65, 0.70, 0.75],
+            night_shallow_color: [0.10, 0.32, 0.38],
+            night_deep_color: [0.02, 0.06, 0.10],
+            night_fog_near: 80.0,
+            night_fog_far: 600.0,
+            night_reflection_tint: [0.65, 0.70, 0.75],
         }
     }
 }

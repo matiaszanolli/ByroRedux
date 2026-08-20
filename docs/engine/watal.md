@@ -231,8 +231,9 @@ part of the canonical GPU material contract.
 extended DNAM, the FO4/FO76 visual-data layout, and Starfield's absorption-based
 DNAM layout; `NNAM`/`TNAM` texture and Skyrim+ NAM2/NAM3/NAM4
 noise paths are parsed, with Skyrim SE NAM5 promoted to the third layer for
-flowing water, while GNAM's unused daytime/nighttime/underwater water
-links are preserved separately; `raw_data`/`raw_dnam` tails remain available.
+flowing water. GNAM daytime/nighttime/underwater links are preserved and the
+first two now resolve into runtime surface palettes (the third feeds the
+underwater tint/fog response); `raw_data`/`raw_dnam` tails remain available.
 `resolve_water_material`
 (`env_translate.rs:535-807`) captures colors/fog/fresnel/reflectivity/flow.
 Wave amplitude/frequency, reflection tint, and the per-game sun-specular exponent
@@ -621,3 +622,6 @@ rates only; the bounded physics current remains independent.
 GNAM's related-water underwater link is also resolved one hop into the
 canonical underwater tint/fog payload, with a safe fallback for missing or
 self-referential links.
+The daytime/nighttime GNAM links are blended per frame using the same
+climate-authored TOD factor as the sky and fog system, so FO3/FO76 climates
+with non-default sunrise/sunset breakpoints do not snap water at fixed hours.

@@ -211,6 +211,24 @@ pub(crate) fn tod_slot_night_factor(slot: usize) -> f32 {
     }
 }
 
+/// Return the climate-authored day/night blend for a game-clock hour.
+///
+/// Water's GNAM surface variants use the same TOD keys as the sky and fog;
+/// keeping this calculation here prevents water from reintroducing fixed
+/// 06:00/18:00 breakpoints that disagree with FO3/FO76 climate schedules.
+pub(crate) fn night_factor_for_hour(hour: f32, tod_hours: [f32; 4]) -> f32 {
+    let hour = if hour.is_finite() {
+        hour.rem_euclid(24.0)
+    } else {
+        12.0
+    };
+    let keys = build_tod_keys(tod_hours);
+    let (slot_a, slot_b, t) = pick_tod_pair(&keys, hour);
+    (tod_slot_night_factor(slot_a)
+        + (tod_slot_night_factor(slot_b) - tod_slot_night_factor(slot_a)) * t)
+        .clamp(0.0, 1.0)
+}
+
 #[inline]
 fn lerp3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
     [
@@ -1085,6 +1103,15 @@ mod tod_keys_tests {
         // SUNSET→NIGHT (0.5→1.0) smoothly.
         assert_eq!(tod_slot_night_factor(TOD_SUNRISE), 0.5);
         assert_eq!(tod_slot_night_factor(TOD_SUNSET), 0.5);
+    }
+
+    #[test]
+    fn night_factor_for_hour_tracks_authored_climate_breakpoints() {
+        let hours = [5.333, 10.0, 17.0, 22.0];
+        assert!((night_factor_for_hour(12.0, hours) - 0.0).abs() < 1.0e-6);
+        assert!((night_factor_for_hour(0.0, hours) - 1.0).abs() < 1.0e-6);
+        let sunrise = night_factor_for_hour(5.7, hours);
+        assert!(sunrise > 0.4 && sunrise < 0.5, "got {sunrise}");
     }
 
     /// Regression for #897 / REN-D15-01.

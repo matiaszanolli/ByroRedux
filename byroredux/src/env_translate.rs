@@ -603,6 +603,88 @@ pub(crate) fn resolve_water_material(
                     *dst = (*dst * (1.0 - silt) + src * silt).clamp(0.0, 1.0);
                 }
             }
+            // GNAM slots 0/1 are the authored daytime/nighttime surface
+            // variants. Keep them as compact material-side palettes so the
+            // renderer can blend them from the live climate clock without
+            // growing the per-draw GPU ABI. Missing or malformed links fall
+            // back to the fully translated parent palette.
+            mat.day_shallow_color = mat.shallow_color;
+            mat.day_deep_color = mat.deep_color;
+            mat.day_fog_near = mat.fog_near;
+            mat.day_fog_far = mat.fog_far;
+            mat.day_reflection_tint = rec.params.reflection_color;
+            mat.night_shallow_color = mat.shallow_color;
+            mat.night_deep_color = mat.deep_color;
+            mat.night_fog_near = mat.fog_near;
+            mat.night_fog_far = mat.fog_far;
+            mat.night_reflection_tint = rec.params.reflection_color;
+            let variant_shallow = |base: [f32; 3], light: [f32; 3], amount: f32| {
+                if amount.is_finite() && amount > 0.0 {
+                    let silt = amount.clamp(0.0, 1.0);
+                    std::array::from_fn(|i| {
+                        (base[i] * (1.0 - silt * 0.25) + light[i] * (silt * 0.25)).clamp(0.0, 1.0)
+                    })
+                } else {
+                    base
+                }
+            };
+            let variant_deep = |base: [f32; 3], dark: [f32; 3], amount: f32| {
+                if amount.is_finite() && amount > 0.0 {
+                    let silt = amount.clamp(0.0, 1.0);
+                    std::array::from_fn(|i| {
+                        (base[i] * (1.0 - silt) + dark[i] * silt).clamp(0.0, 1.0)
+                    })
+                } else {
+                    base
+                }
+            };
+            for (slot, target) in [
+                (
+                    0usize,
+                    (
+                        &mut mat.day_shallow_color,
+                        &mut mat.day_deep_color,
+                        &mut mat.day_fog_near,
+                        &mut mat.day_fog_far,
+                        &mut mat.day_reflection_tint,
+                    ),
+                ),
+                (
+                    1usize,
+                    (
+                        &mut mat.night_shallow_color,
+                        &mut mat.night_deep_color,
+                        &mut mat.night_fog_near,
+                        &mut mat.night_fog_far,
+                        &mut mat.night_reflection_tint,
+                    ),
+                ),
+            ] {
+                let Some(form) = rec
+                    .related_waters
+                    .get(slot)
+                    .copied()
+                    .filter(|form| *form != 0 && *form != rec.form_id)
+                else {
+                    continue;
+                };
+                let Some(variant) = waters.get(&form) else {
+                    continue;
+                };
+                *target.0 = variant_shallow(
+                    variant.params.shallow_color,
+                    variant.params.silt_light_color,
+                    variant.params.silt_amount,
+                );
+                *target.1 = variant_deep(
+                    variant.params.deep_color,
+                    variant.params.silt_dark_color,
+                    variant.params.silt_amount,
+                );
+                *target.2 = variant.params.fog_near;
+                *target.3 = variant.params.fog_far;
+                *target.4 = variant.params.reflection_color;
+            }
             if rec.opacity.is_finite() && rec.opacity > 0.0 {
                 mat.opacity = rec.opacity.clamp(0.05, 1.0);
             }
@@ -2029,6 +2111,51 @@ mod tests {
         assert_eq!(mat.underwater_fog_near, 12.0);
         assert_eq!(mat.underwater_fog_far, 340.0);
         assert_eq!(mat.underwater_fog_amount, 0.65);
+    }
+
+    #[test]
+    fn resolve_water_material_preserves_gnam_day_night_surface_variants() {
+        let parent_id = 0x000A_1100;
+        let day_id = 0x000A_1101;
+        let night_id = 0x000A_1102;
+        let mut parent = calm_watr(parent_id, "LakeSurface", WaterParams::default());
+        parent.related_waters[0] = day_id;
+        parent.related_waters[1] = night_id;
+        let day = calm_watr(
+            day_id,
+            "LakeDay",
+            WaterParams {
+                shallow_color: [0.20, 0.45, 0.55],
+                deep_color: [0.03, 0.10, 0.16],
+                reflection_color: [0.75, 0.80, 0.85],
+                fog_near: 30.0,
+                fog_far: 300.0,
+                ..WaterParams::default()
+            },
+        );
+        let night = calm_watr(
+            night_id,
+            "LakeNight",
+            WaterParams {
+                shallow_color: [0.02, 0.05, 0.10],
+                deep_color: [0.005, 0.01, 0.03],
+                reflection_color: [0.12, 0.16, 0.24],
+                fog_near: 8.0,
+                fog_far: 90.0,
+                ..WaterParams::default()
+            },
+        );
+        let mut waters = HashMap::new();
+        waters.insert(parent_id, parent);
+        waters.insert(day_id, day);
+        waters.insert(night_id, night);
+
+        let (mat, _, _, _, _) = resolve_water_material(&waters, Some(parent_id));
+        assert_eq!(mat.day_shallow_color, [0.20, 0.45, 0.55]);
+        assert_eq!(mat.day_fog_far, 300.0);
+        assert_eq!(mat.night_deep_color, [0.005, 0.01, 0.03]);
+        assert_eq!(mat.night_reflection_tint, [0.12, 0.16, 0.24]);
+        assert_eq!(mat.night_fog_near, 8.0);
     }
 
     /// Default WaterMaterial (no XCWT / no WATR record) uses the neutral

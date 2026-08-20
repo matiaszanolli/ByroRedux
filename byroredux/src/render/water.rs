@@ -25,8 +25,17 @@ use byroredux_core::ecs::components::groundcover::WindField;
 use byroredux_core::ecs::components::water::{WaterFlow, WaterKind, WaterPlane};
 use byroredux_core::ecs::{TotalTime, World};
 use byroredux_renderer::vulkan::context::DrawCommand;
-use byroredux_scripting::RippleEvent;
 use byroredux_renderer::vulkan::water::{GpuWaterParams, WaterDrawCommand};
+use byroredux_scripting::RippleEvent;
+
+#[inline]
+fn lerp_color(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
+    [
+        a[0] + (b[0] - a[0]) * t,
+        a[1] + (b[1] - a[1]) * t,
+        a[2] + (b[2] - a[2]) * t,
+    ]
+}
 
 /// Re-emit water planes: flip the `is_water` flag on each plane's
 /// already-emitted draw command and produce a matching
@@ -57,6 +66,18 @@ pub(super) fn reemit_water_planes(
         .try_resource::<crate::components::WeatherDataRes>()
         .map(|weather| weather.precipitation.clamp(0.0, 1.0))
         .unwrap_or(0.0);
+    let game_hour = world
+        .try_resource::<crate::components::GameTimeRes>()
+        .map(|clock| clock.hour);
+    let tod_hours = world
+        .try_resource::<crate::components::WeatherDataRes>()
+        .map(|weather| weather.tod_hours);
+    let night_factor = match (game_hour, tod_hours) {
+        (Some(hour), Some(hours)) => crate::systems::weather::night_factor_for_hour(hour, hours),
+        // Interior and synthetic worlds without a weather resource retain
+        // the daytime/base palette rather than inventing a second clock.
+        _ => 0.0,
+    };
     let gust = weather_wind.speed
         + weather_wind.gust_amplitude
             * (time_secs * weather_wind.gust_frequency * std::f32::consts::TAU).sin();
@@ -65,8 +86,7 @@ pub(super) fn reemit_water_planes(
     // the strongest weather so calm water remains calm and storm water gains
     // a visible silhouette response without runaway displacement.
     const MAX_WEATHER_WIND_SPEED: f32 = 220.0;
-    let wind_wave_scale = 1.0
-        + (gust.max(0.0) / MAX_WEATHER_WIND_SPEED).clamp(0.0, 1.0) * 0.5;
+    let wind_wave_scale = 1.0 + (gust.max(0.0) / MAX_WEATHER_WIND_SPEED).clamp(0.0, 1.0) * 0.5;
     const WEATHER_WATER_SCROLL_PER_BU_PER_S: f32 = 0.0015;
     let weather_scroll = [
         weather_wind.direction[0] * gust * WEATHER_WATER_SCROLL_PER_BU_PER_S,
@@ -110,7 +130,21 @@ pub(super) fn reemit_water_planes(
         // Each vec4 maps to one std140 slot — see
         // `crates/renderer/src/vulkan/water.rs::GpuWaterParams` for
         // the layout contract.
-        let mat = &plane.material;
+        let mut mat = plane.material;
+        // GNAM daytime/nighttime related-water variants are kept on the
+        // canonical material and blended here at the same climate-authored
+        // TOD factor used by the sky/fog system. This keeps the GPU ABI
+        // unchanged while avoiding a hard 06:00/18:00 water transition.
+        mat.shallow_color =
+            lerp_color(mat.day_shallow_color, mat.night_shallow_color, night_factor);
+        mat.deep_color = lerp_color(mat.day_deep_color, mat.night_deep_color, night_factor);
+        mat.fog_near = mat.day_fog_near + (mat.night_fog_near - mat.day_fog_near) * night_factor;
+        mat.fog_far = mat.day_fog_far + (mat.night_fog_far - mat.day_fog_far) * night_factor;
+        mat.reflection_tint = lerp_color(
+            mat.day_reflection_tint,
+            mat.night_reflection_tint,
+            night_factor,
+        );
         // Starfield's flow-map tile scale is a visual UV-rate control, not a
         // physics velocity. Keep the canonical `WaterFlow` speed bounded and
         // scale only the authored wave scroll vectors here.
