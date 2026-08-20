@@ -46,3 +46,5 @@ mod light_overflow_tests;
 mod material_hash_tests;
 #[cfg(test)]
 mod scene_descriptor_reflection_tests;
+#[cfg(test)]
+mod shader_contract_tests;
