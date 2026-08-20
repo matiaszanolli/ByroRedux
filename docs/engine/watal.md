@@ -312,6 +312,9 @@ canonical shallow, deep, and underwater palette at the same boundary.
 Oblivion's authored rain-simulator force now scales the shared precipitation
 ripple response; records without that TES4 tail retain the neutral
 weather-driven value.
+Oblivion's displacement-simulator starting size, radial falloff, and dampener
+(DATA[76,88,92]) now shape the canonical ripple profile alongside its force and
+velocity, so TES4 water no longer loses its authored disturbance width.
 The remaining Skyrim tail fields stay raw after these verified visual fields. The
 Dedicated NIF mesh-water shaders now also cross NIFAL: Oblivion/FO3/FNV
 `WaterShaderProperty` and Skyrim+ `BSWaterShaderProperty` set a canonical

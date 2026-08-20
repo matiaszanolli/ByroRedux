@@ -441,9 +441,9 @@ fn decode_data(data: &[u8]) -> WaterParams {
 /// inserts two scroll-speed floats before the fog pair and starts the three
 /// byte-colour blocks at offsets 44/48/52.  Treating it as the short FO3
 /// compatibility shape reads the low bytes of the fog float as colour, which
-/// turns vanilla Oblivion water nearly black.  The optional tails are the rain
-/// simulator (60..) and displacement simulator (80..); use the latter for
-/// canonical wave motion when present.
+/// turns vanilla Oblivion water nearly black. The optional tails are the rain
+/// simulator (60..) and displacement simulator (76..); use the latter's
+/// size/falloff/dampener controls for canonical ripple motion when present.
 fn decode_data_oblivion(data: &[u8]) -> WaterParams {
     let mut p = WaterParams::default();
     for (dst, offset) in [
@@ -496,6 +496,14 @@ fn decode_data_oblivion(data: &[u8]) -> WaterParams {
     }
     if let Some(velocity) = read_f32_at(data, 84) {
         p.wave_frequency = velocity.max(0.0);
+    }
+    // TES4 displacement simulator: starting size, radial falloff, and
+    // dampener. These fields were previously discarded, making Oblivion
+    // ripples use the same generic profile regardless of authored water.
+    for (slot, offset) in p.displacement.iter_mut().zip([76, 88, 92]) {
+        if let Some(value) = read_f32_at(data, offset) {
+            *slot = value.max(0.0);
+        }
     }
     // TES4 Rain Simulator force defaults to 0.1. Normalize around that
     // authored default so the canonical value is a bounded multiplier on the
@@ -1449,8 +1457,11 @@ mod tests {
         data[48..52].copy_from_slice(&[0x05, 0x0F, 0x18, 0xFF]);
         data[52..56].copy_from_slice(&[0xC0, 0xD0, 0xE0, 0xFF]);
         data[60..64].copy_from_slice(&0.2f32.to_le_bytes());
+        data[76..80].copy_from_slice(&0.08f32.to_le_bytes()); // displacement start
         data[80..84].copy_from_slice(&0.4f32.to_le_bytes());
         data[84..88].copy_from_slice(&0.6f32.to_le_bytes());
+        data[88..92].copy_from_slice(&0.85f32.to_le_bytes()); // displacement falloff
+        data[92..96].copy_from_slice(&3.5f32.to_le_bytes()); // displacement dampener
 
         let w = parse_watr(0xBEEF, &[sub(b"DATA", &data)], GameKind::Oblivion);
         assert_eq!(w.params.fog_near, 12.0);
@@ -1460,6 +1471,7 @@ mod tests {
         assert!((w.params.reflection_color[1] - 0xD0 as f32 / 255.0).abs() < 1e-6);
         assert_eq!(w.params.wave_amplitude, 0.4);
         assert_eq!(w.params.wave_frequency, 0.6);
+        assert_eq!(w.params.displacement, [0.08, 0.85, 3.5]);
         assert_eq!(w.params.rain_response, 2.0);
     }
 
