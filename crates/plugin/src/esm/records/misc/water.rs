@@ -823,6 +823,11 @@ fn decode_dnam_fo4(data: &[u8]) -> WaterParams {
     if let Some(velocity) = read_f32_at(data, 80) {
         p.wave_frequency = velocity.max(0.0);
     }
+    for (slot, offset) in p.displacement.iter_mut().zip([92, 84, 88]) {
+        if let Some(value) = read_f32_at(data, offset) {
+            *slot = value.max(0.0);
+        }
+    }
 
     // FO4 stores three noise-layer directions in degrees at 128/132/136 and
     // three layer speeds at 140/144/148. Preserve the authored vectors so
@@ -861,17 +866,21 @@ fn decode_dnam_fo4(data: &[u8]) -> WaterParams {
             *slot = normalize_noise_uv_scale(value);
         }
     }
-    // FO4/FO76 append suspended-silt properties after the noise block:
-    // amount (f32), light color (RGBA), dark color (RGBA). Keep the colors
+    // FO4 appends three per-layer noise falloffs after the UV scales, then
+    // suspended-silt properties: amount (f32), light color (RGBA), dark
+    // color (RGBA). Keep the colors
     // separate until the translation boundary so the renderer can blend them
     // with the authored shallow/deep palette once, consistently for both eras.
-    if let Some(amount) = read_f32_at(data, 176) {
+    if let Some(value) = read_f32_at(data, 176) {
+        p.noise_falloff = value.max(0.0);
+    }
+    if let Some(amount) = read_f32_at(data, 188) {
         p.silt_amount = amount.clamp(0.0, 1.0);
     }
-    if let Some(color) = read_rgb_at(data, 180) {
+    if let Some(color) = read_rgb_at(data, 192) {
         p.silt_light_color = color;
     }
-    if let Some(color) = read_rgb_at(data, 184) {
+    if let Some(color) = read_rgb_at(data, 196) {
         p.silt_dark_color = color;
     }
     p
@@ -921,8 +930,8 @@ fn decode_dnam_fo76(data: &[u8]) -> WaterParams {
     }
 
     // Physical Properties: normal magnitude, reflectivity, Fresnel, and
-    // displacement simulator. Falloff/dampener remain raw until the
-    // canonical shader has an equivalent bounded control.
+    // displacement simulator. The canonical ripple path consumes the
+    // authored falloff, dampener, and starting size.
     if let Some(normal) = read_f32_at(data, 52) {
         p.normal_magnitude = normal.max(0.0);
     }
@@ -937,6 +946,11 @@ fn decode_dnam_fo76(data: &[u8]) -> WaterParams {
     }
     if let Some(velocity) = read_f32_at(data, 80) {
         p.wave_frequency = velocity.max(0.0);
+    }
+    for (slot, offset) in p.displacement.iter_mut().zip([92, 84, 88]) {
+        if let Some(value) = read_f32_at(data, offset) {
+            *slot = value.max(0.0);
+        }
     }
     if let Some(color) = read_rgb_at(data, 96) {
         p.reflection_color = color;
@@ -1527,6 +1541,9 @@ mod tests {
         data[104..108].copy_from_slice(&1.25f32.to_le_bytes()); // sun specular magnitude
         data[76..80].copy_from_slice(&0.4f32.to_le_bytes()); // displacement force
         data[80..84].copy_from_slice(&0.6f32.to_le_bytes()); // displacement velocity
+        data[84..88].copy_from_slice(&0.985f32.to_le_bytes()); // displacement falloff
+        data[88..92].copy_from_slice(&10.0f32.to_le_bytes()); // displacement dampener
+        data[92..96].copy_from_slice(&0.05f32.to_le_bytes()); // displacement starting size
         data[52..56].copy_from_slice(&0.5f32.to_le_bytes()); // normal magnitude
         data[128..132].copy_from_slice(&67.824f32.to_le_bytes()); // layer 1 direction (deg)
         data[132..136].copy_from_slice(&210.0f32.to_le_bytes()); // layer 2 direction
@@ -1540,9 +1557,12 @@ mod tests {
         data[164..168].copy_from_slice(&200.0f32.to_le_bytes()); // layer 1 UV
         data[168..172].copy_from_slice(&400.0f32.to_le_bytes()); // layer 2 UV
         data[172..176].copy_from_slice(&800.0f32.to_le_bytes()); // layer 3 UV
-        data[176..180].copy_from_slice(&0.65f32.to_le_bytes()); // silt amount
-        data[180..184].copy_from_slice(&[170, 150, 120, 0]); // silt light
-        data[184..188].copy_from_slice(&[55, 45, 35, 0]); // silt dark
+        data[176..180].copy_from_slice(&300.0f32.to_le_bytes()); // layer 1 noise falloff
+        data[180..184].copy_from_slice(&300.0f32.to_le_bytes()); // layer 2 noise falloff
+        data[184..188].copy_from_slice(&300.0f32.to_le_bytes()); // layer 3 noise falloff
+        data[188..192].copy_from_slice(&0.65f32.to_le_bytes()); // silt amount
+        data[192..196].copy_from_slice(&[170, 150, 120, 0]); // silt light
+        data[196..200].copy_from_slice(&[55, 45, 35, 0]); // silt dark
 
         let w = parse_watr(0x18, &[sub(b"DNAM", &data)], GameKind::Fallout4);
         assert_eq!(w.raw_dnam.len(), 201);
@@ -1566,6 +1586,8 @@ mod tests {
         assert_eq!(w.params.noise_wind_speeds, [0.0109, 0.020, 0.030]);
         assert_eq!(w.params.wave_amplitude, 0.4);
         assert_eq!(w.params.wave_frequency, 0.6);
+        assert_eq!(w.params.displacement, [0.05, 0.985, 10.0]);
+        assert_eq!(w.params.noise_falloff, 300.0);
         assert_eq!(w.params.noise_amplitude_scales, [0.8, 0.6, 0.4]);
         assert_eq!(w.params.noise_uv_scale_a, 1.0 / 200.0);
         assert_eq!(w.params.noise_uv_scale_b, 1.0 / 400.0);
@@ -1639,6 +1661,9 @@ mod tests {
         data[68..72].copy_from_slice(&0.04f32.to_le_bytes());
         data[76..80].copy_from_slice(&0.8f32.to_le_bytes());
         data[80..84].copy_from_slice(&1.2f32.to_le_bytes());
+        data[84..88].copy_from_slice(&0.985f32.to_le_bytes());
+        data[88..92].copy_from_slice(&10.0f32.to_le_bytes());
+        data[92..96].copy_from_slice(&0.05f32.to_le_bytes());
         data[96..100].copy_from_slice(&[100, 110, 120, 0]);
         data[100..104].copy_from_slice(&80.0f32.to_le_bytes());
         data[104..108].copy_from_slice(&0.75f32.to_le_bytes());
@@ -1661,6 +1686,7 @@ mod tests {
         assert!((w.params.underwater_color[2] - 90.0 / 255.0).abs() < 1e-6);
         assert_eq!(w.params.wave_amplitude, 0.8);
         assert_eq!(w.params.wave_frequency, 1.2);
+        assert_eq!(w.params.displacement, [0.05, 0.985, 10.0]);
         assert_eq!(w.params.sun_specular_power, 120.0);
         assert_eq!(w.params.specular_magnitude, 0.9375);
         assert_eq!(w.params.wind_speed, 5.0);

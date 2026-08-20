@@ -244,11 +244,13 @@ noise UV scales now resolve through the bindless water-material contract; FO3/FN
 and FO4 below-water fog ranges now cross the canonical boundary, and Skyrim's
 underwater fog, displacement force, three noise UV scales, three noise
 amplitude scales, and depth weights are verified against the installed master.
-FO4 displacement force/velocity, all three authored normal-layer wind vectors,
+FO4/FO76 displacement force/velocity plus starting-size/falloff/dampener,
+all three authored normal-layer wind vectors,
 and all three authored noise amplitudes and UV scales now cross the same
 canonical boundary; FO4's separate underwater tint also drives the underwater
 composite and underwater fog amount now scales the underwater extinction,
-while older games fall back to deep tint. Skyrim/FO4 physical normal magnitude
+while older games fall back to deep tint. FO4's three authored noise-falloff
+values now use the layer-one value for the shared distance fade. Skyrim/FO4 physical normal magnitude
 also scales the canonical noise amplitudes (Skyrim DNAM[92], FO4 DNAM[52]).
 FO76 deep-fog range zeroes retain the authored depth-amount fallback instead
 of collapsing to a one-unit fog span.
