@@ -143,7 +143,7 @@ fn default_wave_params_are_the_sentinel_the_shader_normalises_against() {
 
 #[test]
 fn weather_wind_reaches_water_scroll_alongside_speedtree_wind_field() {
-    let world = world_with_water_plane(
+    let mut world = world_with_water_plane(
         0.05,
         0.6,
         50.0,

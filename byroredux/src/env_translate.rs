@@ -558,6 +558,23 @@ pub(crate) fn resolve_water_material(
             mat.underwater_fog_near = rec.params.underwater_fog_near;
             mat.underwater_fog_far = rec.params.underwater_fog_far;
             mat.underwater_fog_amount = rec.params.underwater_fog_amount.clamp(0.0, 8.0);
+            // GNAM's third related-water link is the authored underwater
+            // variant. Resolve only one hop and reject self-links so malformed
+            // mod chains cannot recurse or replace the parent surface optics.
+            if let Some(underwater_form) = rec
+                .related_waters
+                .get(2)
+                .copied()
+                .filter(|form| *form != 0 && *form != rec.form_id)
+            {
+                if let Some(underwater) = waters.get(&underwater_form) {
+                    mat.underwater_color = underwater.params.underwater_color;
+                    mat.underwater_fog_near = underwater.params.underwater_fog_near;
+                    mat.underwater_fog_far = underwater.params.underwater_fog_far;
+                    mat.underwater_fog_amount =
+                        underwater.params.underwater_fog_amount.clamp(0.0, 8.0);
+                }
+            }
             // FO4/FO76 authored suspended silt is a water-column color
             // contribution, not a separate shader branch. Blend it once at
             // translation so every consumer (surface, refraction, and
@@ -1984,6 +2001,34 @@ mod tests {
             "reflection_tint must round-trip from WATR DATA reflection_color"
         );
         assert_eq!(mat.sun_specular_power, 90.0);
+    }
+
+    #[test]
+    fn resolve_water_material_uses_gnam_underwater_variant() {
+        let parent_id = 0x000A_1000;
+        let underwater_id = 0x000A_1001;
+        let mut parent = calm_watr(parent_id, "LakeSurface", WaterParams::default());
+        parent.related_waters[2] = underwater_id;
+        let underwater = calm_watr(
+            underwater_id,
+            "LakeUnderwater",
+            WaterParams {
+                underwater_color: [0.08, 0.16, 0.30],
+                underwater_fog_near: 12.0,
+                underwater_fog_far: 340.0,
+                underwater_fog_amount: 0.65,
+                ..WaterParams::default()
+            },
+        );
+        let mut waters = HashMap::new();
+        waters.insert(parent_id, parent);
+        waters.insert(underwater_id, underwater);
+
+        let (mat, _, _, _, _) = resolve_water_material(&waters, Some(parent_id));
+        assert_eq!(mat.underwater_color, [0.08, 0.16, 0.30]);
+        assert_eq!(mat.underwater_fog_near, 12.0);
+        assert_eq!(mat.underwater_fog_far, 340.0);
+        assert_eq!(mat.underwater_fog_amount, 0.65);
     }
 
     /// Default WaterMaterial (no XCWT / no WATR record) uses the neutral

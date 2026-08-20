@@ -618,3 +618,6 @@ uses that response; records without a valid underwater tail retain the shared
 above-water ramp and legacy tint behavior.
 Starfield's authored flow-map tile scale now multiplies visual wave scroll
 rates only; the bounded physics current remains independent.
+GNAM's related-water underwater link is also resolved one hop into the
+canonical underwater tint/fog payload, with a safe fallback for missing or
+self-referential links.
