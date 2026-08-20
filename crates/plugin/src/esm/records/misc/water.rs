@@ -634,36 +634,39 @@ fn decode_data_fo3nv(data: &[u8]) -> WaterParams {
     }
     p.wind_direction = p.noise_wind_directions[0];
     p.wind_speed = p.noise_wind_speeds[0];
-    if let Some(value) = read_f32_at(data, 136) {
+    // FO3/FNV's documented long DATA layout places the fog amount at 132,
+    // shared normal UV scale at 136, and underwater amount/near/far at
+    // 140/144/148 respectively.
+    if let Some(value) = read_f32_at(data, 132) {
         p.above_water_fog_amount = value.max(0.0);
     }
-    if let Some(value) = read_f32_at(data, 140) {
+    if let Some(value) = read_f32_at(data, 136) {
         p.noise_uv_scale_a = normalize_noise_uv_scale(value);
     }
-    if let Some(value) = read_f32_at(data, 144) {
+    if let Some(value) = read_f32_at(data, 140) {
         p.underwater_fog_amount = value.max(0.0);
     }
-    if let Some(value) = read_f32_at(data, 148) {
+    if let Some(value) = read_f32_at(data, 144) {
         p.underwater_fog_near = value.max(0.0);
     }
-    if let Some(value) = read_f32_at(data, 152) {
+    if let Some(value) = read_f32_at(data, 148) {
         p.underwater_fog_far = value.max(p.underwater_fog_near + 1.0);
     }
-    // The general normal UV scale at 140 is retained as a fallback; the
-    // three layer-specific scales at 176/180/184 take precedence when
+    // The general normal UV scale at 136 is retained as a fallback; the
+    // three layer-specific scales at 172/176/180 take precedence when
     // present.
-    if let Some(value) = read_f32_at(data, 176) {
+    if let Some(value) = read_f32_at(data, 172) {
         p.noise_uv_scale_a = normalize_noise_uv_scale(value);
     }
     for (dst, offset) in [
-        (&mut p.noise_uv_scale_b, 180usize),
-        (&mut p.noise_uv_scale_c, 184usize),
+        (&mut p.noise_uv_scale_b, 176usize),
+        (&mut p.noise_uv_scale_c, 180usize),
     ] {
         if let Some(value) = read_f32_at(data, offset) {
             *dst = normalize_noise_uv_scale(value);
         }
     }
-    for (slot, offset) in p.noise_amplitude_scales.iter_mut().zip([188, 192, 196]) {
+    for (slot, offset) in p.noise_amplitude_scales.iter_mut().zip([184, 188, 192]) {
         if let Some(value) = read_f32_at(data, offset) {
             *slot = value.max(0.0);
         }
@@ -1565,9 +1568,11 @@ mod tests {
         data[40..44].copy_from_slice(&[36, 47, 36, 0]); // shallow
         data[44..48].copy_from_slice(&[13, 13, 11, 0]); // deep
         data[48..52].copy_from_slice(&[41, 48, 46, 0]); // reflection
-        data[144..148].copy_from_slice(&0.5f32.to_le_bytes()); // underwater amount
-        data[148..152].copy_from_slice(&18.0f32.to_le_bytes()); // underwater near
-        data[152..156].copy_from_slice(&240.0f32.to_le_bytes()); // underwater far
+        data[132..136].copy_from_slice(&0.8f32.to_le_bytes()); // above-water fog amount
+        data[136..140].copy_from_slice(&(1.0 / 512.0f32).to_le_bytes()); // normal UV fallback
+        data[140..144].copy_from_slice(&0.5f32.to_le_bytes()); // underwater amount
+        data[144..148].copy_from_slice(&18.0f32.to_le_bytes()); // underwater near
+        data[148..152].copy_from_slice(&240.0f32.to_le_bytes()); // underwater far
         data[72..76].copy_from_slice(&0.06f32.to_le_bytes()); // displacement start
         data[84..88].copy_from_slice(&0.8f32.to_le_bytes()); // displacement falloff
         data[88..92].copy_from_slice(&4.0f32.to_le_bytes()); // displacement dampener
@@ -1581,8 +1586,8 @@ mod tests {
         data[168..172].copy_from_slice(&1.4f32.to_le_bytes()); // specular brightness
         data[100..104].copy_from_slice(&90.0f32.to_le_bytes()); // layer 1 direction
         data[112..116].copy_from_slice(&0.25f32.to_le_bytes()); // layer 1 speed
-        data[176..180].copy_from_slice(&(1.0 / 320.0f32).to_le_bytes()); // noise UV 1
-        data[180..184].copy_from_slice(&(1.0 / 760.0f32).to_le_bytes()); // noise UV 2
+        data[172..176].copy_from_slice(&(1.0 / 320.0f32).to_le_bytes()); // noise UV 1
+        data[176..180].copy_from_slice(&(1.0 / 760.0f32).to_le_bytes()); // noise UV 2
 
         let w = parse_watr(0x00100000, &[sub(b"DATA", &data)], GameKind::Fallout3NV);
         assert!((w.params.shallow_color[0] - 36.0 / 255.0).abs() < 1e-6);
@@ -1606,6 +1611,7 @@ mod tests {
         assert_eq!(w.params.fog_far, 109.0);
         assert_eq!(w.params.wind_speed, 0.25);
         assert_eq!(w.params.noise_wind_directions[0], 90.0f32.to_radians());
+        assert_eq!(w.params.above_water_fog_amount, 0.8);
         assert_eq!(w.params.underwater_fog_amount, 0.5);
         assert_eq!(w.params.underwater_fog_near, 18.0);
         assert_eq!(w.params.underwater_fog_far, 240.0);
