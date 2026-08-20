@@ -592,21 +592,28 @@ void main() {
     vec3 nA = sampleScrollingNormal(noiseMapA, uvWorld, uvOrigin, push.scroll.xy, push.tune.x, time, ampScale * max(push.detail.y, 0.05) * max(push.depth.z, 0.0), freqScale);
     vec3 nB = sampleScrollingNormal(noiseMapB, uvWorld, uvOrigin, push.scroll.zw, push.tune.y, time, ampScale * max(push.detail.z, 0.05) * max(push.depth.z, 0.0), freqScale);
 
-    // Rapids adds a third high-frequency layer scrolled by the flow
-    // — gives that chaotic whitewater chop pattern.
+    // A distinct authored NAM4 layer contributes on every horizontal water
+    // kind. Rapids uses the faster flow-biased path for whitewater; calm and
+    // river surfaces use the slower primary scroll so legacy sentinel slots
+    // (where all three indices are identical) remain exact no-ops.
     vec3 nMix;
-    if (kind == WATER_RAPIDS) {
+    bool hasAuthoredThirdLayer = noiseMapC != noiseMapA && noiseMapC != noiseMapB;
+    if (kind == WATER_RAPIDS || hasAuthoredThirdLayer) {
+        vec2 thirdScroll = kind == WATER_RAPIDS
+            ? push.flow.xy * push.flow.w * 2.0
+            : push.scroll.xy * 0.5;
+        float thirdWeight = kind == WATER_RAPIDS ? 0.7 : 0.35;
         vec3 nC = sampleScrollingNormal(
             noiseMapC,
             uvWorld,
             uvOrigin,
-            push.flow.xy * push.flow.w * 2.0,
+            thirdScroll,
             push.detail.x,
             time,
             ampScale * max(push.detail.w, 0.05) * max(push.depth.z, 0.0),
             freqScale
         );
-        nMix = normalize(nA + nB + nC * 0.7);
+        nMix = normalize(nA + nB + nC * thirdWeight);
     } else {
         nMix = normalize(nA + nB);
     }
