@@ -57,7 +57,7 @@ layout(early_fragment_tests) in;
 //   composite-pass tone-mapper + TAA handles the residual jitter.
 //
 // Per-water material data lives in a compact per-frame UBO. Keeping the
-// 320-byte record here, rather than in push constants, leaves room to grow
+// 352-byte record here, rather than in push constants, leaves room to grow
 // the canonical cross-game material without raising device requirements.
 struct WaterParams {
     // x = time (engine uptime in seconds — `TotalTime`, accumulated
@@ -117,10 +117,16 @@ struct WaterParams {
     // underwater near/far ramp lives in `scroll_c.zw` to reuse its reserved
     // legacy slots without changing the wave upload shape.
     vec4 underwater;
+    // x/y = shallow/deep alpha, z/w = shallow/deep distance thresholds.
+    // All zero is the legacy constant-opacity sentinel.
+    vec4 alpha;
+    // xy = authored mesh-water UV offset; z = flow-map index bit-cast;
+    // w = authored flow-map scale.
+    vec4 uv_offset;
 };
 
 layout(std140, set = 2, binding = 1) uniform WaterParamsBlock {
-    WaterParams params[204];
+    WaterParams params[186];
 } waterParams;
 
 layout(push_constant) uniform WaterDrawPush {
@@ -142,13 +148,9 @@ layout(location = 0) in vec3 vWorldPos;
 layout(location = 1) in vec3 vWorldNormal;
 layout(location = 2) in vec3 vWorldTangent;
 layout(location = 3) in float vWorldBitangentSign;
-// #1036 / F-WAT-08 — `vUV` (loc 4) and `vInstanceIndex` (loc 5)
-// were declared as orphan inputs (vertex shader wrote them, this
-// fragment shader never read them). Both removed in lockstep with
-// `water.vert`. UVs are computed below from world XZ / T-B
-// projection; the selected `WaterParams` UBO record carries every
-// per-plane parameter the fragment shader needs, so there's no
-// `gl_InstanceIndex`-driven instance lookup on this path.
+// Mesh-bound BGSM flow maps sample authored mesh UVs. Cell WATR surfaces
+// retain the u32::MAX flow-map sentinel and ignore this input.
+layout(location = 4) in vec2 vUV;
 
 // Single HDR output — water is a transparent draw, blended onto the
 // opaque pass's main colour attachment via standard SRC_ALPHA /
@@ -229,7 +231,7 @@ float valueNoise(vec2 p) {
 // authored WATR (or one that round-trips the sentinel) reproduces
 // the pre-#2240 hardcoded chop exactly; other authored values scale
 // the perturbation strength / chop density proportionally.
-vec3 sampleScrollingNormal(uint normalMapIndex, vec2 uvBase, vec2 originOffset, vec2 scroll, float scale, float time, float ampScale, float freqScale) {
+vec3 sampleScrollingNormal(uint normalMapIndex, vec2 uvBase, vec2 originOffset, vec2 uvOffset, vec2 scroll, float scale, float time, float ampScale, float freqScale) {
     if (normalMapIndex == 0xFFFFFFFFu) {
         // Procedural fallback — animated six-octave value-noise gradient.
         // The broad first octave carries the swell while the lighter higher
@@ -264,7 +266,7 @@ vec3 sampleScrollingNormal(uint normalMapIndex, vec2 uvBase, vec2 originOffset, 
         // multiplier puts the tangent-space normal at
         // `(±0.12, ±0.12, 1)` worst case → world tilt < 10°, well
         // under the 23° threshold where crest foam starts firing.
-        vec2 uv = (uvBase - originOffset) * scale + scroll * time;
+        vec2 uv = (uvBase - originOffset) * scale + uvOffset + scroll * time;
         float h0 = valueNoise(uv * 4.0 * freqScale);
         float h1 = valueNoise(uv * 9.0 * freqScale + 17.0);
         float h2 = valueNoise(uv * 16.0 * freqScale + 41.0);
@@ -303,12 +305,21 @@ vec3 sampleScrollingNormal(uint normalMapIndex, vec2 uvBase, vec2 originOffset, 
     // `originOffset` (small, since fragments render near the camera)
     // plus a bounded fractional remainder.
     vec2 o = floor(originOffset * scale * freqScale);
-    vec2 uv = uvBase * scale * freqScale - o + scroll * time;
+    vec2 uv = uvBase * scale * freqScale - o + uvOffset + scroll * time;
     vec3 n = texture(textures[nonuniformEXT(normalMapIndex)], uv).xyz;
     n = normalize(n * 2.0 - 1.0);
     // Scale the tangent-space tilt by the authored amplitude, keep the
     // sign of the up component, renormalise (mirrors the procedural path).
     return normalize(vec3(n.xy * ampScale, n.z));
+}
+
+vec2 sampleFlowMap(uint flowMapIndex, vec2 uv) {
+    if (flowMapIndex == 0xFFFFFFFFu) {
+        return vec2(0.0);
+    }
+    vec2 flow = texture(textures[nonuniformEXT(flowMapIndex)], uv).rg * 2.0 - 1.0;
+    float lengthSq = dot(flow, flow);
+    return lengthSq > 1.0e-5 ? flow * inversesqrt(lengthSq) : vec2(0.0);
 }
 
 // ── RT reflection / refraction ────────────────────────────────────────
@@ -591,6 +602,7 @@ void main() {
     float foamStrength = push.timing.z;
     float ior  = push.timing.w;
     uint  normalMapIndex = floatBitsToUint(push.misc.z);
+    uint  flowMapIndex = floatBitsToUint(push.uv_offset.z);
     uint  noiseMapA = push.noise_indices.x;
     uint  noiseMapB = push.noise_indices.y;
     uint  noiseMapC = push.noise_indices.z;
@@ -602,6 +614,16 @@ void main() {
     // `sampleScrollingNormal`'s doc comment above).
     float ampScale  = push.tune.w / 0.05;
     float freqScale = push.misc.y / 0.6;
+
+    // FO4/Starfield mesh water can author a BGSM flow map. Its RG direction
+    // field bends the normal-map UVs over time; the world-WindField scroll is
+    // still added by the CPU, so authored flow and atmospheric wind compose
+    // instead of one replacing the other. Cell WATR water keeps the sentinel.
+    vec2 flowOffset = vec2(0.0);
+    if (flowMapIndex != 0xFFFFFFFFu) {
+        vec2 flowDirection = sampleFlowMap(flowMapIndex, vUV);
+        flowOffset = flowDirection * time * 0.02 * clamp(push.uv_offset.w, 0.05, 8.0);
+    }
 
     // Imported NIF water meshes are not guaranteed to carry a valid tangent
     // frame (old NiTriShapes commonly have a zero tangent or a tangent
@@ -660,13 +682,13 @@ void main() {
         uvWorld = vWorldPos.xz;
         uvOrigin = renderOrigin.xz;
     }
-
     // Two scrolling normal layers (the "movement on flat surfaces"
     // case). For River/Rapids/Waterfall, layer A's scroll vector is
     // baked from `flow` on the CPU side, so we don't have to branch
     // here. Push constants carry the final scroll vectors.
-    vec3 nA = sampleScrollingNormal(noiseMapA, uvWorld, uvOrigin, push.scroll.xy, push.tune.x, time, ampScale * max(push.detail.y, 0.05) * max(push.depth.z, 0.0), freqScale);
-    vec3 nB = sampleScrollingNormal(noiseMapB, uvWorld, uvOrigin, push.scroll.zw, push.tune.y, time, ampScale * max(push.detail.z, 0.05) * max(push.depth.z, 0.0), freqScale);
+    vec2 normalUvOffset = push.uv_offset.xy + flowOffset;
+    vec3 nA = sampleScrollingNormal(noiseMapA, uvWorld, uvOrigin, normalUvOffset, push.scroll.xy, push.tune.x, time, ampScale * max(push.detail.y, 0.05) * max(push.depth.z, 0.0), freqScale);
+    vec3 nB = sampleScrollingNormal(noiseMapB, uvWorld, uvOrigin, normalUvOffset, push.scroll.zw, push.tune.y, time, ampScale * max(push.detail.z, 0.05) * max(push.depth.z, 0.0), freqScale);
 
     // A distinct authored NAM4 layer contributes on every horizontal water
     // kind. Rapids uses the faster flow-biased path for whitewater; calm and
@@ -687,6 +709,7 @@ void main() {
             noiseMapC,
             uvWorld,
             uvOrigin,
+            normalUvOffset,
             thirdScroll,
             push.detail.x,
             time,
@@ -1059,6 +1082,21 @@ void main() {
     // visible at low view angles (avoids the classic "water vanishes
     // at the shoreline" artefact).
     float baseAlpha = authoredOpacity;
+    // FO4/FO76 expose a depth-dependent alpha ramp. Preserve the legacy
+    // constant-opacity path when the tuple is all zero, otherwise blend the
+    // authored shallow/deep alpha over the refraction distance.
+    if (push.alpha.x > 0.0 || push.alpha.y > 0.0
+        || push.alpha.z > 0.0 || push.alpha.w > 0.0) {
+        float alphaSpan = max(push.alpha.w - push.alpha.z, 1.0);
+        float alphaT = clamp((refrDist - push.alpha.z) / alphaSpan, 0.0, 1.0);
+        // FO4/FO76 author ANAM but mark it unused: their DNAM alpha ramp is
+        // the complete surface-opacity contract, not a multiplier on the
+        // legacy ANAM value. Keep the branch replacement-style so the
+        // default ANAM byte in modern masters cannot make authored water
+        // spuriously translucent.
+        baseAlpha = mix(clamp(push.alpha.x, 0.0, 1.0),
+                        clamp(push.alpha.y, 0.0, 1.0), alphaT);
+    }
     float grazingBoost = pow(1.0 - NdotV, 2.0) * 0.1;
     float alpha = baseAlpha <= 0.0
         ? 0.0

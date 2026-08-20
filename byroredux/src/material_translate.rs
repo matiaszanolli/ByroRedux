@@ -90,6 +90,7 @@ pub(crate) struct ResolvedPaths {
 pub(crate) fn water_material_from_mesh(
     material: &Material,
     normal_map_index: u32,
+    flow_map_index: u32,
 ) -> WaterMaterial {
     let mut water = WaterMaterial::default();
     water.shader_flags = material.water_shader_flags;
@@ -100,37 +101,49 @@ pub(crate) fn water_material_from_mesh(
     } else {
         normal_map_index
     };
+    water.flow_map_index = if flow_map_index == 0 {
+        u32::MAX
+    } else {
+        flow_map_index
+    };
     if material.env_map_scale.is_finite() {
         water.reflectivity = material.env_map_scale.clamp(0.0, 1.0);
     }
     if material.alpha.is_finite() {
         water.opacity = material.alpha.clamp(0.0, 1.0);
     }
-    // Skyrim's `WaterShaderPropertyFlags` explicitly gates the two optical
-    // lobes. Preserve the renderer's compatibility defaults for zero (the
-    // FO3/FNV/Oblivion property has no dedicated word), but honor a nonzero
-    // authored word without growing the fixed 240-byte GPU water ABI. The
-    // specular and fog bits use the same compact controls: disabling
-    // specular clears both local and sun glints, while disabling fog clears
-    // the Beer–Lambert depth weight used by the refraction path.
+    // `BSWaterShaderProperty.uv_scale` is preserved by the NIF material
+    // importer as the canonical Material UV scale. Mesh-bound water does not
+    // have a WATR record, so apply that authored multiplier to the renderer's
+    // world-space tiling defaults instead of silently reverting to generic
+    // lake scales. The unit scale is the compatibility sentinel; malformed
+    // or non-positive values keep the default tiling.
+    if material
+        .uv_scale
+        .iter()
+        .all(|value| value.is_finite() && *value > 0.0)
+    {
+        water.uv_scale_a = (water.uv_scale_a * material.uv_scale[0])
+            .clamp(1.0 / 4096.0, 1.0 / 8.0);
+        water.uv_scale_b = (water.uv_scale_b * material.uv_scale[1])
+            .clamp(1.0 / 4096.0, 1.0 / 8.0);
+    }
+    if material.uv_offset.iter().all(|value| value.is_finite()) {
+        water.uv_offset = material.uv_offset;
+    }
+    // Skyrim's `BSWaterShaderProperty::WaterFlag` word is not the generic
+    // shader-flag layout. CommonLibSSE names bit 6 as use-reflections, bit 15
+    // as flowmap enable, and bit 16 as blend-normals; the zero word remains
+    // the compatibility sentinel for pre-Skyrim `WaterShaderProperty`.
+    // Honor those authored water flags without inventing low-bit specular,
+    // refraction, or fog gates that belong to unrelated shader properties.
     if water.shader_flags != 0 {
-        const SPECULAR: u32 = 1 << 0;
-        const REFLECTIONS: u32 = (1 << 1) | (1 << 6);
-        const REFRACTIONS: u32 = (1 << 2) | (1 << 7);
-        const FOG: u32 = 1 << 11;
-        if water.shader_flags & SPECULAR == 0 {
-            water.effect_controls[1] = 0.0;
-            water.effect_controls[3] = 0.0;
-        }
-        if water.shader_flags & REFRACTIONS == 0 {
-            water.effect_controls[0] = 0.0;
-        }
-        if water.shader_flags & REFLECTIONS == 0 {
+        const USE_REFLECTIONS: u32 = 1 << 6;
+        const BLEND_NORMALS: u32 = 1 << 16;
+        if water.shader_flags & USE_REFLECTIONS == 0 {
             water.effect_controls[2] = 0.0;
         }
-        if water.shader_flags & FOG == 0 {
-            water.depth_weights[1] = 0.0;
-        }
+        water.blend_normals = water.shader_flags & BLEND_NORMALS != 0;
     }
     water
 }
@@ -704,7 +717,7 @@ mod tests {
     #[test]
     fn mesh_water_zero_normal_handle_uses_procedural_sentinel() {
         let material = Material::default();
-        let water = water_material_from_mesh(&material, 0);
+        let water = water_material_from_mesh(&material, 0, 0);
         assert_eq!(water.normal_map_index, u32::MAX);
     }
 
@@ -713,28 +726,50 @@ mod tests {
         let mut material = Material::default();
         material.env_map_scale = 0.42;
         material.alpha = 0.73;
-        let water = water_material_from_mesh(&material, 17);
+        let water = water_material_from_mesh(&material, 17, 0);
         assert_eq!(water.normal_map_index, 17);
         assert!((water.reflectivity - 0.42).abs() < f32::EPSILON);
         assert!((water.opacity - 0.73).abs() < f32::EPSILON);
     }
 
     #[test]
+    fn mesh_water_preserves_authored_flow_map_handle() {
+        let water = water_material_from_mesh(&Material::default(), 0, 23);
+        assert_eq!(water.flow_map_index, 23);
+        assert_eq!(
+            water_material_from_mesh(&Material::default(), 0, 0).flow_map_index,
+            u32::MAX
+        );
+    }
+
+    #[test]
+    fn mesh_water_applies_authored_uv_scale_to_world_tiling() {
+        let mut material = Material::default();
+        material.uv_scale = [2.0, 0.5];
+        material.uv_offset = [0.125, -0.25];
+        let water = water_material_from_mesh(&material, 0, 0);
+        assert!((water.uv_scale_a - 2.0 / 256.0).abs() < f32::EPSILON);
+        assert!((water.uv_scale_b - 0.5 / 700.0).abs() < f32::EPSILON);
+        assert_eq!(water.uv_offset, [0.125, -0.25]);
+    }
+
+    #[test]
     fn mesh_water_honors_authored_optical_flag_gates() {
         let mut material = Material::default();
-        // Skyrim WaterShaderPropertyFlags: refraction only, no reflection.
-        material.water_shader_flags = 1 << 2;
-        let water = water_material_from_mesh(&material, 9);
-        assert_eq!(water.shader_flags, 1 << 2);
+        // Skyrim BSWaterShaderProperty: blended normals only, no reflection.
+        material.water_shader_flags = 1 << 16;
+        let water = water_material_from_mesh(&material, 9, 0);
+        assert_eq!(water.shader_flags, 1 << 16);
         assert_eq!(
             water.effect_controls[0],
             WaterMaterial::default().effect_controls[0]
         );
         assert_eq!(water.effect_controls[2], 0.0);
+        assert!(water.blend_normals);
 
         // A zero word is the compatibility sentinel for pre-Skyrim water.
         material.water_shader_flags = 0;
-        let legacy = water_material_from_mesh(&material, 9);
+        let legacy = water_material_from_mesh(&material, 9, 0);
         assert_eq!(
             legacy.effect_controls,
             WaterMaterial::default().effect_controls
@@ -742,21 +777,23 @@ mod tests {
     }
 
     #[test]
-    fn mesh_water_honors_authored_specular_and_fog_flag_gates() {
+    fn mesh_water_honors_authored_reflection_and_blend_flags() {
         let mut material = Material::default();
-        // Skyrim WaterShaderPropertyFlags: reflection + refraction only.
-        // Specular (bit 0) and Fog (bit 11) are intentionally absent.
-        material.water_shader_flags = (1 << 1) | (1 << 2);
-        let water = water_material_from_mesh(&material, 9);
-        assert_eq!(water.effect_controls[1], 0.0);
-        assert_eq!(water.effect_controls[3], 0.0);
-        assert_eq!(water.depth_weights[1], 0.0);
+        // Skyrim BSWaterShaderProperty: reflection only. The water flag word
+        // does not contain generic specular or fog gates.
+        material.water_shader_flags = 1 << 6;
+        let water = water_material_from_mesh(&material, 9, 0);
+        assert_eq!(water.effect_controls[1], WaterMaterial::default().effect_controls[1]);
+        assert!(water.effect_controls[3] > 0.0);
+        assert!(water.depth_weights[1] > 0.0);
+        assert!(!water.blend_normals);
 
         // A fully authored optical word keeps all three responses enabled.
-        material.water_shader_flags = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 11);
-        let authored = water_material_from_mesh(&material, 9);
+        material.water_shader_flags = (1 << 6) | (1 << 16);
+        let authored = water_material_from_mesh(&material, 9, 0);
         assert!(authored.effect_controls[3] > 0.0);
         assert!(authored.depth_weights[1] > 0.0);
+        assert!(authored.blend_normals);
     }
 
     #[test]

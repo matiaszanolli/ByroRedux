@@ -121,14 +121,18 @@ impl WatrRecord {
 #[derive(Debug, Clone, Copy)]
 pub struct WaterParams {
     /// Linear RGB of the shallow-water tint (DATA / DNAM RGBA bytes
-    /// → f32; alpha is dropped — the renderer drives opacity from
-    /// `WaterKind` + grazing angle).
+    /// → f32). Legacy ANAM opacity is carried on `WatrRecord`; FO4/FO76
+    /// depth-dependent alpha is preserved separately in `alpha_controls`.
     pub shallow_color: [f32; 3],
     /// Linear RGB of the deep-water tint.
     pub deep_color: [f32; 3],
     /// Linear RGB of the authored underwater post-process tint. Legacy
     /// records use the deep-water tint as their canonical fallback.
     pub underwater_color: [f32; 3],
+    /// FO4/FO76 depth-dependent surface alpha controls: shallow alpha,
+    /// deep alpha, and the shallow/deep distance thresholds. An all-zero
+    /// tuple is the compatibility sentinel used by older layouts.
+    pub alpha_controls: [f32; 4],
     /// Linear RGB of the reflection tint — multiplied into the RT
     /// reflection ray hit colour by the water shader.
     pub reflection_color: [f32; 3],
@@ -262,6 +266,7 @@ impl Default for WaterParams {
             shallow_color: [0.10, 0.32, 0.38],
             deep_color: [0.02, 0.06, 0.10],
             underwater_color: [0.02, 0.06, 0.10],
+            alpha_controls: [0.0; 4],
             reflection_color: [0.85, 0.88, 0.92],
             reflection_hdr_multiplier: 1.0,
             fog_near: 80.0,
@@ -778,6 +783,23 @@ fn apply_skyrim_dnam_tail(p: &mut WaterParams, data: &[u8]) {
     if let Some(velocity) = read_f32_at(data, 80) {
         p.wave_frequency = velocity.max(0.0);
     }
+    // The Skyrim DNAM rain simulator is laid out immediately before the
+    // displacement simulator. These values are consumed by the shared water
+    // shader's packed rain-ripple controls; leaving them at zero makes
+    // authored Skyrim rain look identical to dry weather. The first value is
+    // the simulator force, normalized against TES4's neutral 0.1 response.
+    if let Some(force) = read_f32_at(data, 56) {
+        p.rain_response = (force / 0.1).clamp(0.0, 4.0);
+    }
+    if let Some(velocity) = read_f32_at(data, 60) {
+        p.rain_velocity = velocity.max(0.0);
+    }
+    if let Some(falloff) = read_f32_at(data, 64) {
+        p.rain_falloff = falloff.max(0.0);
+    }
+    if let Some(dampener) = read_f32_at(data, 68) {
+        p.rain_dampener = dampener.max(0.0);
+    }
     for (slot, offset) in p.displacement.iter_mut().zip([72, 84, 88]) {
         if let Some(v) = read_f32_at(data, offset) {
             *slot = v.max(0.0);
@@ -928,6 +950,13 @@ fn decode_dnam_fo4(data: &[u8]) -> WaterParams {
     if let Some(far) = read_f32_at(data, 48) {
         p.underwater_fog_far = far.max(p.underwater_fog_near + 1.0);
     }
+    // FO4/FO76 author shallow/deep alpha and the corresponding distance
+    // thresholds immediately before the physical-properties block.
+    for (slot, offset) in p.alpha_controls.iter_mut().zip([20, 24, 28, 32]) {
+        if let Some(value) = read_f32_at(data, offset) {
+            *slot = value.max(0.0);
+        }
+    }
     if let Some(reflectivity) = read_f32_at(data, 64) {
         p.reflectivity = reflectivity.clamp(0.0, 1.0);
     }
@@ -1065,6 +1094,13 @@ fn decode_dnam_fo76(data: &[u8]) -> WaterParams {
     }
     if let Some(far) = read_f32_at(data, 48) {
         p.underwater_fog_far = far.max(p.underwater_fog_near + 1.0);
+    }
+    // FO4/FO76 author shallow/deep alpha and the corresponding distance
+    // thresholds immediately before the physical-properties block.
+    for (slot, offset) in p.alpha_controls.iter_mut().zip([20, 24, 28, 32]) {
+        if let Some(value) = read_f32_at(data, offset) {
+            *slot = value.max(0.0);
+        }
     }
 
     // Physical Properties: normal magnitude, reflectivity, Fresnel, and
@@ -1569,8 +1605,8 @@ mod tests {
         data[20..24].copy_from_slice(&0.65f32.to_le_bytes()); // reflectivity
         data[24..28].copy_from_slice(&0.04f32.to_le_bytes()); // fresnel
         data[32..36].copy_from_slice(&7.0f32.to_le_bytes()); // fog near
-        // offset 36-39: the extra fog f32 (109.0) the legacy code mistook
-        // for the shallow colour — its low bytes are obvious garbage as RGB.
+                                                             // offset 36-39: the extra fog f32 (109.0) the legacy code mistook
+                                                             // for the shallow colour — its low bytes are obvious garbage as RGB.
         data[36..40].copy_from_slice(&109.0f32.to_le_bytes());
         // offset 40/44/48: the real shallow / deep / reflection colours.
         data[40..44].copy_from_slice(&[36, 47, 36, 0]); // shallow
@@ -1692,6 +1728,10 @@ mod tests {
         data.resize(228, 0);
         data[76..80].copy_from_slice(&0.4f32.to_le_bytes());
         data[80..84].copy_from_slice(&1.35f32.to_le_bytes());
+        data[56..60].copy_from_slice(&0.2f32.to_le_bytes());
+        data[60..64].copy_from_slice(&2.25f32.to_le_bytes());
+        data[64..68].copy_from_slice(&0.5f32.to_le_bytes());
+        data[68..72].copy_from_slice(&1.25f32.to_le_bytes());
         data[72..76].copy_from_slice(&0.01f32.to_le_bytes());
         data[84..88].copy_from_slice(&0.985f32.to_le_bytes());
         data[88..92].copy_from_slice(&10.0f32.to_le_bytes());
@@ -1733,6 +1773,10 @@ mod tests {
         assert!((w.params.underwater_fog_far - 1000.0).abs() < 1e-3);
         assert_eq!(w.params.wave_amplitude, 0.4);
         assert_eq!(w.params.wave_frequency, 1.35);
+        assert_eq!(w.params.rain_response, 2.0);
+        assert_eq!(w.params.rain_velocity, 2.25);
+        assert_eq!(w.params.rain_falloff, 0.5);
+        assert_eq!(w.params.rain_dampener, 1.25);
         assert_eq!(w.params.displacement, [0.01, 0.985, 10.0]);
         assert!((w.params.noise_uv_scale_a - 1.0 / 1920.0).abs() < 1e-6);
         assert_eq!(w.params.noise_amplitude_scales, [0.7, 0.6, 0.5]);
@@ -1796,6 +1840,10 @@ mod tests {
         data[40..44].copy_from_slice(&0.75f32.to_le_bytes()); // underwater fog amount
         data[44..48].copy_from_slice(&(-6400.0f32).to_le_bytes()); // underwater near
         data[48..52].copy_from_slice(&1700.0f32.to_le_bytes()); // underwater far
+        data[20..24].copy_from_slice(&0.35f32.to_le_bytes()); // shallow alpha
+        data[24..28].copy_from_slice(&0.90f32.to_le_bytes()); // deep alpha
+        data[28..32].copy_from_slice(&12.0f32.to_le_bytes()); // alpha shallow range
+        data[32..36].copy_from_slice(&240.0f32.to_le_bytes()); // alpha deep range
         data[64..68].copy_from_slice(&0.2935f32.to_le_bytes()); // reflectivity
         data[68..72].copy_from_slice(&0.058f32.to_le_bytes()); // Fresnel
         data[56..60].copy_from_slice(&0.9f32.to_le_bytes()); // shallow normal falloff
@@ -1841,6 +1889,7 @@ mod tests {
         assert_eq!(w.params.fog_far, 3007.0);
         assert_eq!(w.params.underwater_fog_near, 0.0);
         assert_eq!(w.params.underwater_fog_far, 1700.0);
+        assert_eq!(w.params.alpha_controls, [0.35, 0.90, 12.0, 240.0]);
         assert!((w.params.reflectivity - 0.2935).abs() < 1e-6);
         assert!((w.params.fresnel - 0.058).abs() < 1e-6);
         assert!((w.params.sun_specular_power - 83.0).abs() < 1e-6);
@@ -1922,6 +1971,10 @@ mod tests {
         data[40..44].copy_from_slice(&0.65f32.to_le_bytes());
         data[44..48].copy_from_slice(&4.0f32.to_le_bytes());
         data[48..52].copy_from_slice(&900.0f32.to_le_bytes());
+        data[20..24].copy_from_slice(&0.30f32.to_le_bytes());
+        data[24..28].copy_from_slice(&0.85f32.to_le_bytes());
+        data[28..32].copy_from_slice(&8.0f32.to_le_bytes());
+        data[32..36].copy_from_slice(&180.0f32.to_le_bytes());
         data[52..56].copy_from_slice(&0.6f32.to_le_bytes());
         data[56..60].copy_from_slice(&0.85f32.to_le_bytes());
         data[60..64].copy_from_slice(&0.65f32.to_le_bytes());
@@ -1949,6 +2002,7 @@ mod tests {
         );
         assert_eq!(w.params.fog_near, 25.0);
         assert_eq!(w.params.fog_far, 450.0);
+        assert_eq!(w.params.alpha_controls, [0.30, 0.85, 8.0, 180.0]);
         assert_eq!(w.params.normal_magnitude, 0.6);
         assert_eq!(w.params.normal_falloff, [0.85, 0.65, 0.75]);
         assert!((w.params.shallow_color[2] - 30.0 / 255.0).abs() < 1e-6);

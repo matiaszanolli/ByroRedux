@@ -328,6 +328,9 @@ geometry-hit reflections in addition to shaping the shared direct-sun
 highlight exponent. Skyrim's separate Specular Radius is also preserved and
 widens that environment-reflection lobe. FO4/FO76 silt amount plus light/dark colors now blend into the
 canonical shallow, deep, and underwater palette at the same boundary.
+FO4/FO76 shallow/deep alpha and their authored distance thresholds now drive
+the transparent surface alpha ramp directly (their ANAM byte is unused);
+older layouts retain the constant-opacity sentinel.
 Oblivion's authored rain-simulator force now scales the shared precipitation
 ripple response; records without that TES4 tail retain the neutral
 weather-driven value.
@@ -701,11 +704,17 @@ and **best-effort** across Skyrim 1.5/1.6. FO3/FNV DATA offsets 144/148 (underwa
 fog) and 172/176 (noise UV scales), plus FO4 DNAM offsets
 44/48 (underwater fog), 76/80 (displacement), 152/156/160 (noise amplitudes),
 and 164/168/172 (noise UV scales), now feed canonical water fields;
+Skyrim's DNAM rain-simulator force/velocity/falloff/dampener at 56/60/64/68
+now feed the shared precipitation ripple path;
 the remaining Skyrim fields should be byte-decoded via the extract→trace method
 ([[nif_v10x_stride_drift_resolved]]). Until then they stay SENTINEL — correctness
 is not blocked, only fidelity.
 
-The authored underwater tint and near/far fog pair are now part of the runtime
+The authoritative Skyrim WATR definition also contains a one-byte `Texture
+Blend` value after the three legacy RGB colors. xEdit does not assign it a
+runtime meaning, so it remains preserved in `raw_dnam` rather than being
+guessed into the normal-layer or opacity paths. The authored underwater tint
+and near/far fog pair are now part of the runtime
 water UBO. When the camera is below a horizontal surface, the fragment pass
 uses that response; records without a valid underwater tail retain the shared
 above-water ramp and legacy tint behavior.

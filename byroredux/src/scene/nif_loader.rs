@@ -1030,6 +1030,7 @@ pub(crate) fn load_nif_bytes_with_skeleton(
                     .get::<byroredux_core::ecs::components::Material>(entity)
                     .unwrap(),
                 texture_handles.normal,
+                texture_handles.flow,
             );
             let (water_kind, water_flow) = crate::material_translate::water_kind_from_mesh_geometry(
                 mesh.name.as_deref(),

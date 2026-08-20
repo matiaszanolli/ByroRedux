@@ -74,9 +74,21 @@ fn resolved_exterior_water_height(
     }
 }
 
+/// Return the center and half extent used by an exterior water tile.
+///
+/// Keeping this conversion next to the exterior loader makes the tiling
+/// contract explicit: neighboring cells must share the exact same world-XZ
+/// edge after Bethesda's Z-up coordinates are converted to renderer Y-up.
+#[inline]
+fn exterior_water_tile_transform(gx: i32, gy: i32) -> ((f32, f32), f32) {
+    let origin = cell_grid_to_world_yup(gx, gy);
+    let half = water::exterior_half_extent();
+    ((origin.x + half, origin.z - half), half)
+}
+
 #[cfg(test)]
 mod exterior_water_height_tests {
-    use super::resolved_exterior_water_height;
+    use super::{exterior_water_tile_transform, resolved_exterior_water_height};
 
     #[test]
     fn absent_xclw_inherits_worldspace_water() {
@@ -97,6 +109,18 @@ mod exterior_water_height_tests {
             None,
             "an authored no-water sentinel must keep the cell dry"
         );
+    }
+
+    #[test]
+    fn exterior_water_tiles_share_world_edges_after_coordinate_conversion() {
+        let ((x0, z0), half) = exterior_water_tile_transform(12, -7);
+        let ((x1, _z1), half_next_x) = exterior_water_tile_transform(13, -7);
+        let ((_x2, z2), half_next_z) = exterior_water_tile_transform(12, -6);
+
+        assert_eq!(half, half_next_x);
+        assert_eq!(half, half_next_z);
+        assert_eq!(x0 + half, x1 - half_next_x);
+        assert_eq!(z0 - half, z2 + half_next_z);
     }
 }
 
@@ -1106,8 +1130,7 @@ impl ExteriorCellApplyJob {
         ) {
             // Exterior cell origin in Y-up world coords. The helper composes
             // grid-scale and the Z-up→Y-up flip; see TD3-202 / #1112.
-            let origin = cell_grid_to_world_yup(gx, gy);
-            let half = water::exterior_half_extent();
+            let (water_center, half) = exterior_water_tile_transform(gx, gy);
             // #1855 — `spawn_water_plane` already `log::warn!`s a mesh-upload
             // failure, but without cell coords (it doesn't take gx/gy). This
             // call-site line adds the cell correlation so a dry cell that
@@ -1121,7 +1144,7 @@ impl ExteriorCellApplyJob {
                 water_height,
                 cell.water_type_form.or(wctx.default_water_type_form),
                 cell.water_velocity,
-                (origin.x + half, origin.z - half),
+                water_center,
                 half,
                 cell.landscape.as_ref(),
                 blas_sink,

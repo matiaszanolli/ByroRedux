@@ -88,7 +88,9 @@ impl WaterKind {
 pub struct WaterMaterial {
     /// Authored `BSWaterShaderProperty.water_shader_flags` for mesh-bound
     /// water. Zero means the legacy property had no dedicated flag word and
-    /// keeps the renderer's compatibility defaults.
+    /// keeps the renderer's compatibility defaults. Skyrim's documented
+    /// water bits include `0x40` reflections, `0x8000` flowmap, and `0x10000`
+    /// blended normals; translation resolves the visual gates once.
     pub shader_flags: u32,
     /// Colour seen looking down through shallow water — blended with
     /// the refraction-ray hit colour via depth-through-water.
@@ -126,6 +128,9 @@ pub struct WaterMaterial {
     /// Authored surface opacity from WATR.ANAM. The procedural fallback uses
     /// 0.88 when no WATR record supplies a value.
     pub opacity: f32,
+    /// FO4/FO76 depth-dependent surface alpha controls. An all-zero tuple
+    /// preserves the legacy constant-opacity path.
+    pub alpha_controls: [f32; 4],
     /// Schlick F0 at normal incidence. ~0.02 for clean water; ~0.04
     /// for muddy / chemical / Hubris Comics water. Drives fresnel.
     pub fresnel_f0: f32,
@@ -161,6 +166,10 @@ pub struct WaterMaterial {
     /// layers sample this; the shader applies a different scale +
     /// scroll vector to each. `u32::MAX` = solid-colour water.
     pub normal_map_index: u32,
+    /// Authored BGSM flow-map index for mesh-bound water. The map stores a
+    /// tangent-plane direction in RG; `u32::MAX` means no flow map. Cell WATR
+    /// surfaces retain this sentinel because their flow comes from WaterFlow.
+    pub flow_map_index: u32,
     /// Skyrim WATR.FNAM bit 0x10. When false, only the primary authored
     /// normal layer contributes; `true` is the compatibility default.
     pub blend_normals: bool,
@@ -184,6 +193,10 @@ pub struct WaterMaterial {
     /// UV scale for the authored third noise layer (NAM4). Legacy records
     /// use the canonical sentinel and the shader falls back to layer A.
     pub uv_scale_c: f32,
+    /// Authored mesh-water UV translation from `WaterShaderProperty` /
+    /// `BSWaterShaderProperty`. Cell WATR surfaces use the zero sentinel;
+    /// mesh-bound water applies this offset to its world-space normal UVs.
+    pub uv_offset: [f32; 2],
     /// Authored normal-amplitude multipliers for NAM2/NAM3/NAM4. A value of
     /// one is the neutral legacy fallback.
     pub noise_amplitude_scales: [f32; 3],
@@ -290,9 +303,11 @@ impl Default for WaterMaterial {
             underwater_fog_far: 0.0,
             underwater_fog_amount: 1.0,
             opacity: 0.88,
+            alpha_controls: [0.0; 4],
             fresnel_f0: 0.02,
             reflectivity: 0.85,
             normal_map_index: u32::MAX,
+            flow_map_index: u32::MAX,
             blend_normals: true,
             noise_map_indices: [u32::MAX; 3],
             scroll_a: [0.020, 0.011],
@@ -301,6 +316,7 @@ impl Default for WaterMaterial {
             uv_scale_a: 1.0 / 256.0,
             uv_scale_b: 1.0 / 700.0,
             uv_scale_c: 1.0 / 512.0,
+            uv_offset: [0.0, 0.0],
             noise_amplitude_scales: [1.0; 3],
             noise_falloff: 0.0,
             normal_falloff: [0.0; 3],

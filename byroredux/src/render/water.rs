@@ -44,7 +44,11 @@ fn lerp_color(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
 #[inline]
 fn pack_rain_controls(velocity: f32, falloff: f32, dampener: f32) -> f32 {
     let quantize = |value: f32| {
-        let value = if value.is_finite() { value.max(0.0) } else { 0.0 };
+        let value = if value.is_finite() {
+            value.max(0.0)
+        } else {
+            0.0
+        };
         ((value / (value + 1.0)).clamp(0.0, 0.999) * 1023.0).round() as u32
     };
     let packed = quantize(velocity) | (quantize(falloff) << 10) | (quantize(dampener) << 20);
@@ -124,8 +128,7 @@ pub(super) fn reemit_water_planes(
     // the strongest weather so calm water remains calm and storm water gains
     // a visible silhouette response without runaway displacement.
     let wind_wave_scale = 1.0
-        + (gust / byroredux_core::ecs::components::groundcover::MAX_WIND_SPEED)
-            .clamp(0.0, 1.0)
+        + (gust / byroredux_core::ecs::components::groundcover::MAX_WIND_SPEED).clamp(0.0, 1.0)
             * 0.5;
     let weather_scroll = [
         wind_direction[0]
@@ -324,6 +327,16 @@ pub(super) fn reemit_water_planes(
                 mat.underwater_color[1],
                 mat.underwater_color[2],
                 mat.underwater_fog_amount,
+            ],
+            alpha: mat.alpha_controls,
+            // z carries the optional mesh-water flow-map bindless index as
+            // integer bits; w carries its authored tile scale. Cell WATR
+            // surfaces upload the u32::MAX index and neutral scale.
+            uv_offset: [
+                mat.uv_offset[0],
+                mat.uv_offset[1],
+                f32::from_bits(mat.flow_map_index),
+                mat.flowmap_scale,
             ],
         };
         water_commands.push(WaterDrawCommand {

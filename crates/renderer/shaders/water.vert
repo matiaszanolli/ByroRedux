@@ -116,7 +116,7 @@ struct WaterParams {
     vec4 effects;
     // x/y/z = Starfield per-channel absorption ranges; w = precipitation.
     // Keep these trailing slots in lockstep with water.frag and
-    // GpuWaterParams so every array element uses the same 320-byte std140
+    // GpuWaterParams so every array element uses the same 352-byte std140
     // stride when the vertex shader selects a water material by index.
     vec4 absorption;
     // Starfield phytoplankton, sediment, yellow matter, oceanness.
@@ -125,9 +125,14 @@ struct WaterParams {
     vec4 ripple;
     // rgb = authored underwater tint, a = underwater fog amount.
     vec4 underwater;
+    // x/y = shallow/deep alpha, z/w = shallow/deep distance thresholds.
+    vec4 alpha;
+    // xy = authored mesh-water UV offset; z = flow-map index bit-cast;
+    // w = authored flow-map scale.
+    vec4 uv_offset;
 };
 layout(std140, set = 2, binding = 1) uniform WaterParamsBlock {
-    WaterParams params[204];
+    WaterParams params[186];
 } waterParams;
 
 layout(push_constant) uniform WaterDrawPush {
@@ -139,13 +144,9 @@ layout(location = 0) out vec3 vWorldPos;
 layout(location = 1) out vec3 vWorldNormal;
 layout(location = 2) out vec3 vWorldTangent;
 layout(location = 3) out float vWorldBitangentSign;
-// #1036 / F-WAT-08 — `vUV` (loc 4) and `vInstanceIndex` (loc 5)
-// were declared here but `water.frag` never read them; locations 4
-// and 5 are now free. Water computes its UVs from world XZ (flat
-// planes) or T/B projection (waterfalls) directly in the fragment
-// shader, and the push-constant block carries every per-plane
-// parameter that would otherwise need an instance lookup — there's
-// no per-fragment `gl_InstanceIndex` dependency on this path.
+// Mesh-bound BGSM flow maps use authored mesh UVs; cell WATR surfaces leave
+// the flow-map index at the u32::MAX sentinel and continue using world UVs.
+layout(location = 4) out vec2 vUV;
 
 void main() {
     GpuInstance inst = instances[gl_InstanceIndex];
@@ -222,6 +223,7 @@ void main() {
     vWorldNormal       = normalize(modelRot * localNormal);
     vWorldTangent      = normalize(modelRot * inTangent.xyz);
     vWorldBitangentSign = inTangent.w;
+    vUV = inUV;
 
     // TAA jitter pulled from the camera UBO — keeps water's projected
     // depth coherent with the opaque pass so the shoreline foam ray

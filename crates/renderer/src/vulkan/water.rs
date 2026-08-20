@@ -59,7 +59,7 @@ pub(crate) const WATER_VERT_SPV: &[u8] = include_bytes!("../../shaders/water.ver
 pub(crate) const WATER_FRAG_SPV: &[u8] = include_bytes!("../../shaders/water.frag.spv");
 
 /// Canonical GPU material payload for one water draw. Layout matches
-/// `WaterParams` in `shaders/water.frag` exactly (20 std140 vec4 slots).
+/// `WaterParams` in `shaders/water.frag` exactly (22 std140 vec4 slots).
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct GpuWaterParams {
@@ -130,6 +130,12 @@ pub struct GpuWaterParams {
     /// rgb = underwater post-process tint, a = authored underwater fog
     /// amount. The near/far ramp is packed in `scroll_c.zw`.
     pub underwater: [f32; 4],
+    /// x/y = shallow/deep alpha, z/w = shallow/deep distance thresholds.
+    /// All zero is the legacy constant-opacity sentinel.
+    pub alpha: [f32; 4],
+    /// xy = authored mesh-water UV offset; zw are reserved for future
+    /// transform terms. Cell WATR surfaces upload zero.
+    pub uv_offset: [f32; 4],
 }
 
 impl GpuWaterParams {
@@ -143,8 +149,8 @@ impl GpuWaterParams {
 }
 
 const _: () = assert!(
-    std::mem::size_of::<GpuWaterParams>() == 320,
-    "GpuWaterParams must remain 20 std140 vec4 slots"
+    std::mem::size_of::<GpuWaterParams>() == 352,
+    "GpuWaterParams must remain 22 std140 vec4 slots"
 );
 
 /// Per-draw selector for the material array uploaded once per frame.
@@ -160,10 +166,10 @@ const _: () = assert!(
     "WaterPush must match the shader's 16-byte push block"
 );
 
-/// Fixed UBO capacity: 204 × 320 B = 65,280 B, below Vulkan's portable
+/// Fixed UBO capacity: 186 × 352 B = 65,472 B, below Vulkan's portable
 /// `maxUniformBufferRange` floor while leaving room for the
 /// handful of water bodies normally visible in one cell.
-pub const MAX_WATER_DRAWS: usize = 204;
+pub const MAX_WATER_DRAWS: usize = 186;
 
 /// One water surface to draw in the current frame.
 ///
@@ -899,7 +905,7 @@ mod tests {
 
     #[test]
     fn water_gpu_contract_layouts_are_stable() {
-        assert_eq!(std::mem::size_of::<GpuWaterParams>(), 320);
+        assert_eq!(std::mem::size_of::<GpuWaterParams>(), 352);
         assert_eq!(std::mem::align_of::<GpuWaterParams>(), 4);
         assert_eq!(std::mem::size_of::<WaterPush>(), 16);
         assert_eq!(std::mem::align_of::<WaterPush>(), 4);
@@ -919,9 +925,10 @@ mod tests {
                 && src.contains("vec4 normal_falloff;")
                 && src.contains("vec4 displacement;")
                 && src.contains("vec4 ripple;")
-                && src.contains("vec4 underwater;"),
+                && src.contains("vec4 underwater;")
+                && src.contains("vec4 alpha;"),
             "water.vert must declare the trailing material slots so indexed\n\
-             WaterParams elements retain the 304-byte std140 stride used by\n\
+             WaterParams elements retain the 352-byte std140 stride used by\n\
              Rust and water.frag"
         );
         assert!(
@@ -979,13 +986,25 @@ mod tests {
     fn water_fragment_shader_preserves_zero_authored_opacity() {
         let src = include_str!("../../shaders/water.frag");
         assert!(
-            src.contains("float authoredOpacity = clamp(uintBitsToFloat(push.noise_indices.w), 0.0, 1.0)"),
+            src.contains(
+                "float authoredOpacity = clamp(uintBitsToFloat(push.noise_indices.w), 0.0, 1.0)"
+            ),
             "ANAM=0 must remain a valid transparent-water value"
         );
         assert!(
             src.contains("float alpha = baseAlpha <= 0.0") && src.contains("? 0.0"),
             "opacity zero must bypass grazing and foam alpha boosts"
         );
+    }
+
+    #[test]
+    fn water_fragment_shader_uses_authored_depth_alpha_ramp() {
+        let src = include_str!("../../shaders/water.frag");
+        assert!(src.contains("push.alpha.x > 0.0 || push.alpha.y > 0.0"));
+        assert!(src.contains("float alphaT = clamp((refrDist - push.alpha.z)"));
+        assert!(src.contains("mix(clamp(push.alpha.x, 0.0, 1.0)"));
+        assert!(src.contains("baseAlpha = mix(clamp(push.alpha.x, 0.0, 1.0)"));
+        assert!(!src.contains("baseAlpha *= mix(clamp(push.alpha.x, 0.0, 1.0)"));
     }
 
     #[test]
@@ -1016,7 +1035,9 @@ mod tests {
         let src = include_str!("../../shaders/water.frag");
         assert!(
             src.contains("vec3 NsurfaceRaw = vWorldNormal")
-                && src.contains("vec3 tangentProjected = tangentRaw - Nsurface * dot(tangentRaw, Nsurface)")
+                && src.contains(
+                    "vec3 tangentProjected = tangentRaw - Nsurface * dot(tangentRaw, Nsurface)"
+                )
                 && src.contains("vec3 fallbackAxis = abs(Nsurface.y) < 0.9"),
             "legacy water meshes need a deterministic tangent-frame fallback"
         );
@@ -1185,6 +1206,8 @@ mod tests {
                 concentration: [0.0; 4],
                 ripple: [0.0; 4],
                 underwater: [0.0; 4],
+                alpha: [0.0; 4],
+                uv_offset: [0.0; 4],
             },
         }
     }

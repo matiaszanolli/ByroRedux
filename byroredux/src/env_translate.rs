@@ -690,6 +690,28 @@ pub(crate) fn resolve_water_material(
             if rec.opacity_authored && rec.opacity.is_finite() {
                 mat.opacity = rec.opacity.clamp(0.0, 1.0);
             }
+            // FO4/FO76 expose a depth-dependent alpha ramp in DNAM. Keep an
+            // all-zero tuple as the legacy sentinel; otherwise clamp the
+            // authored controls before they enter the fixed GPU contract.
+            if rec
+                .params
+                .alpha_controls
+                .iter()
+                .any(|value| value.is_finite() && *value > 0.0)
+            {
+                mat.alpha_controls = rec.params.alpha_controls.map(|value| {
+                    if value.is_finite() {
+                        value.max(0.0)
+                    } else {
+                        0.0
+                    }
+                });
+                mat.alpha_controls[0] = mat.alpha_controls[0].clamp(0.0, 1.0);
+                mat.alpha_controls[1] = mat.alpha_controls[1].clamp(0.0, 1.0);
+                mat.alpha_controls[2] = mat.alpha_controls[2].clamp(0.0, 100_000.0);
+                mat.alpha_controls[3] =
+                    mat.alpha_controls[3].clamp(mat.alpha_controls[2] + 1.0, 100_000.0);
+            }
             mat.fresnel_f0 = rec.params.fresnel.clamp(0.001, 0.20);
             mat.reflectivity = rec.params.reflectivity;
             // FO3/FNV's legacy FNAM bit 0x02 is an explicit reflective
@@ -2137,6 +2159,7 @@ mod tests {
                 shallow_color: [1.0, 0.4, 0.1],
                 deep_color: [0.6, 0.1, 0.0],
                 underwater_color: [0.6, 0.1, 0.0],
+                alpha_controls: [0.0; 4],
                 reflection_color: lava_tint,
                 reflection_hdr_multiplier: 2.5,
                 fog_near: 20.0,
@@ -2513,6 +2536,7 @@ mod tests {
                 shallow_color: [0.8, 0.8, 0.8],
                 deep_color: [0.8, 0.8, 0.8],
                 underwater_color: [0.8, 0.8, 0.8],
+                alpha_controls: [0.35, 0.9, 12.0, 240.0],
                 silt_amount: 0.5,
                 silt_light_color: [1.0, 0.0, 0.0],
                 silt_dark_color: [0.0, 0.0, 0.0],
@@ -2525,6 +2549,7 @@ mod tests {
         assert!(mat.shallow_color[0] > mat.shallow_color[1]);
         assert!(mat.deep_color.iter().all(|channel| *channel < 0.8));
         assert_eq!(mat.deep_color, mat.underwater_color);
+        assert_eq!(mat.alpha_controls, [0.35, 0.9, 12.0, 240.0]);
     }
 
     #[test]

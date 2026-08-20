@@ -2,7 +2,8 @@
 
 use byroredux_core::ecs::components::groundcover::WindField;
 use byroredux_core::ecs::{
-    ActiveCamera, Billboard, BillboardMode, GlobalTransform, MeshHandle, SpeedTreeWind, World,
+    ActiveCamera, Billboard, BillboardMode, GlobalTransform, MeshHandle, SpeedTreeWind, TotalTime,
+    World,
 };
 use byroredux_core::math::{Quat, Vec2, Vec3};
 use std::collections::HashMap;
@@ -40,6 +41,15 @@ pub(crate) fn make_billboard_system() -> impl FnMut(&World, f32) + Send + Sync {
             .try_resource::<WindField>()
             .map(|w| *w)
             .unwrap_or_default();
+        // Water's weather scroll is evaluated from the shared engine clock.
+        // Use that same clock for SpeedTree gust phase whenever available so
+        // a streamed/restarted system cannot make foliage and water drift out
+        // of phase; the closure-local accumulator remains a test/synthetic
+        // world fallback for callers that do not register TotalTime.
+        let wind_time = world
+            .try_resource::<TotalTime>()
+            .map(|time| time.0)
+            .unwrap_or(elapsed);
         let wind_active = wind.speed > 1.0e-4 || wind.gust_amplitude > 1.0e-4;
         // Compare the complete field, not only its active/inactive state:
         // weather transitions can change direction, speed, or gust shape
@@ -112,7 +122,7 @@ pub(crate) fn make_billboard_system() -> impl FnMut(&World, f32) + Send + Sync {
                         global.translation,
                         wind,
                         tree_wind.unwrap(),
-                        elapsed,
+                        wind_time,
                     );
                 }
                 global.rotation = new_rot;
@@ -133,7 +143,7 @@ pub(crate) fn make_billboard_system() -> impl FnMut(&World, f32) + Send + Sync {
                 };
                 let base = *geometry_bases.entry(entity).or_insert(global.rotation);
                 global.rotation = if wind_active {
-                    apply_speedtree_wind(base, global.translation, wind, *tree_wind, elapsed)
+                    apply_speedtree_wind(base, global.translation, wind, *tree_wind, wind_time)
                 } else {
                     base
                 };
@@ -353,6 +363,49 @@ mod tests {
         assert_ne!(
             before, after,
             "a stationary camera must not suppress active-to-active wind changes"
+        );
+    }
+
+    #[test]
+    fn speedtree_gust_phase_uses_shared_total_time_clock() {
+        fn rotation_at(total_time: f32) -> Quat {
+            let mut world = World::new();
+            let camera = world.spawn();
+            world.insert(camera, Transform::IDENTITY);
+            world.insert(camera, GlobalTransform::IDENTITY);
+            world.insert(camera, Camera::default());
+            world.insert_resource(ActiveCamera(camera));
+            world.insert_resource(TotalTime(total_time));
+            world.insert_resource(WindField {
+                direction: [1.0, 0.0],
+                speed: 120.0,
+                gust_amplitude: 80.0,
+                gust_frequency: 0.5,
+            });
+
+            let tree = world.spawn();
+            world.insert(
+                tree,
+                GlobalTransform::new(Vec3::new(12.0, 0.0, 8.0), Quat::IDENTITY, 1.0),
+            );
+            world.insert(tree, Billboard::new(BillboardMode::BsRotateAboutUp));
+            world.insert(tree, SpeedTreeWind::new(1.0, 0.0));
+
+            let mut system = make_billboard_system();
+            system(&world, 0.0);
+            let rotation = world
+                .query::<GlobalTransform>()
+                .unwrap()
+                .get(tree)
+                .unwrap()
+                .rotation;
+            rotation
+        }
+
+        assert_ne!(
+            rotation_at(0.0),
+            rotation_at(1.0),
+            "SpeedTree gust phase must follow the shared engine clock"
         );
     }
 
