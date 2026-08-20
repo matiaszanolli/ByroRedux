@@ -879,9 +879,15 @@ pub(crate) fn resolve_water_material(
                 let canonical = rec
                     .linear_velocity
                     .map(|velocity| {
+                        let magnitude = velocity[0].hypot(velocity[1]);
+                        let direction = if magnitude.is_finite() && magnitude > 1.0e-5 {
+                            [velocity[0] / magnitude, 0.0, velocity[1] / magnitude]
+                        } else {
+                            [cos_theta, 0.0, sin_theta]
+                        };
                         WaterFlow::new(
-                            [cos_theta, 0.0, sin_theta],
-                            velocity[0].hypot(velocity[1]),
+                            direction,
+                            magnitude,
                         )
                     })
                     .unwrap_or_else(|| WaterFlow::for_kind(kind, [cos_theta, 0.0, sin_theta]));
@@ -2459,14 +2465,17 @@ mod tests {
     #[test]
     fn authored_nam0_velocity_promotes_localized_water_to_river() {
         let mut rec = calm_watr(0x000A_0008, "AguaPrincipal", WaterParams::default());
-        rec.linear_velocity = Some([0.0, 3.0]);
+        rec.linear_velocity = Some([3.0, 0.0]);
+        // The authored current points along renderer +X; weather wind points
+        // along +Z. Translation must preserve NAM0 rather than substitute the
+        // atmospheric direction.
         rec.params.wind_direction = std::f32::consts::FRAC_PI_2;
         let mut waters = HashMap::new();
         waters.insert(rec.form_id, rec);
         let (_, kind, flow, _, _) = resolve_water_material(&waters, Some(0x000A_0008));
         assert!(matches!(kind, WaterKind::River));
         let flow = flow.expect("NAM0 velocity must produce a canonical current");
-        assert!(flow.direction[2] > 0.99);
+        assert!(flow.direction[0] > 0.99);
         assert!((flow.speed - 3.0).abs() < 1.0e-6);
     }
 
