@@ -2481,6 +2481,8 @@ mod tests {
         assert!((flow.speed - 3.0).abs() < 1.0e-6);
         assert!(material.scroll_a[0] > 0.0);
         assert!(material.scroll_a[1].abs() < 1.0e-6);
+        assert!(material.scroll_b[0].abs() < 1.0e-6);
+        assert!(material.scroll_b[1] > 0.0);
     }
 
     #[test]
