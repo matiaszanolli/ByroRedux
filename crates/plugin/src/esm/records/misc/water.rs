@@ -826,8 +826,18 @@ pub fn parse_watr(form_id: u32, subs: &[SubRecord], game: GameKind) -> WatrRecor
             if speed.is_finite() && speed > 1.0e-5 {
                 out.params.wind_speed = speed;
                 out.params.wind_direction = (-y).atan2(x);
-                out.params.noise_wind_speeds[0] = speed;
-                out.params.noise_wind_directions[0] = out.params.wind_direction;
+                // FO76 (and other records that use NAM0) carries one
+                // record-level linear velocity instead of the three
+                // per-layer DNAM vectors. Populate every missing layer so
+                // the authored normal stack moves as one coherent surface;
+                // retain a non-zero per-layer value when a newer layout
+                // supplied one explicitly.
+                for layer in 0..3 {
+                    if out.params.noise_wind_speeds[layer] <= 1.0e-5 {
+                        out.params.noise_wind_speeds[layer] = speed;
+                        out.params.noise_wind_directions[layer] = out.params.wind_direction;
+                    }
+                }
             }
         }
     }
@@ -1190,7 +1200,11 @@ mod tests {
         assert!((w.params.shallow_color[2] - 30.0 / 255.0).abs() < 1e-6);
         assert_eq!(w.params.wind_speed, 5.0);
         assert!((w.params.wind_direction - (-4.0f32).atan2(3.0)).abs() < 1e-6);
-        assert_eq!(w.params.noise_wind_speeds, [5.0, 0.0, 0.0]);
+        assert_eq!(w.params.noise_wind_speeds, [5.0, 5.0, 5.0]);
+        assert_eq!(
+            w.params.noise_wind_directions,
+            [(-4.0f32).atan2(3.0); 3]
+        );
     }
 
     #[test]
