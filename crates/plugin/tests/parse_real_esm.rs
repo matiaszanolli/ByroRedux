@@ -268,6 +268,12 @@ fn installed_masters_water_fields_are_finite_and_ordered() {
             "FNV",
         ),
         (
+            "BYROREDUX_FO3_DATA",
+            "/mnt/data/SteamLibrary/steamapps/common/Fallout 3 goty/Data",
+            "Fallout3.esm",
+            "FO3",
+        ),
+        (
             "BYROREDUX_SKYRIMSE_DATA",
             "/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data",
             "Skyrim.esm",
@@ -278,6 +284,12 @@ fn installed_masters_water_fields_are_finite_and_ordered() {
             "/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data",
             "Fallout4.esm",
             "FO4",
+        ),
+        (
+            "BYROREDUX_STARFIELD_DATA",
+            "/mnt/data/SteamLibrary/steamapps/common/Starfield/Data",
+            "Starfield.esm",
+            "Starfield",
         ),
     ];
 
@@ -294,8 +306,12 @@ fn installed_masters_water_fields_are_finite_and_ordered() {
             "{label} master must contain WATR records"
         );
 
+        let mut authored_absorption_records = 0;
         for water in index.waters.values() {
             let p = water.params;
+            if p.absorption_ranges.iter().any(|value| *value > 0.0) {
+                authored_absorption_records += 1;
+            }
             let scalars = [
                 p.fog_near,
                 p.fog_far,
@@ -312,6 +328,8 @@ fn installed_masters_water_fields_are_finite_and_ordered() {
                 p.noise_uv_scale_b,
                 p.noise_uv_scale_c,
                 p.flowmap_scale,
+                p.roughness,
+                p.silt_amount,
             ];
             assert!(
                 p.shallow_color
@@ -325,6 +343,9 @@ fn installed_masters_water_fields_are_finite_and_ordered() {
                     .chain(p.effect_controls.iter())
                     .chain(std::iter::once(&p.specular_magnitude))
                     .chain(std::iter::once(&p.underwater_fog_amount))
+                    .chain(p.absorption_ranges.iter())
+                    .chain(p.silt_light_color.iter())
+                    .chain(p.silt_dark_color.iter())
                     .all(|value| value.is_finite()),
                 "{label} WATR {} has non-finite translated fields",
                 water.editor_id
@@ -333,6 +354,12 @@ fn installed_masters_water_fields_are_finite_and_ordered() {
             assert!(
                 p.underwater_fog_far == 0.0 || p.underwater_fog_far >= p.underwater_fog_near,
                 "{label} WATR underwater fog ramp is inverted"
+            );
+        }
+        if label == "Starfield" {
+            assert!(
+                authored_absorption_records > 0,
+                "Starfield WATR records must expose authored color-absorption ranges"
             );
         }
         checked_games += 1;
