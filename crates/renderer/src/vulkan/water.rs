@@ -900,7 +900,9 @@ mod tests {
     fn water_vertex_shader_keeps_the_full_material_array_stride() {
         let src = include_str!("../../shaders/water.vert");
         assert!(
-            src.contains("vec4 absorption;") && src.contains("vec4 ripple;"),
+            src.contains("vec4 absorption;")
+                && src.contains("vec4 ripple;")
+                && src.contains("vec4 underwater;"),
             "water.vert must declare the trailing material slots so indexed\n\
              WaterParams elements retain the 256-byte std140 stride used by\n\
              Rust and water.frag"
