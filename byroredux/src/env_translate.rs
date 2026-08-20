@@ -729,6 +729,7 @@ pub(crate) fn resolve_water_material(
             // records retain their authored/default exponent unchanged.
             if rec.params.roughness.is_finite() && rec.params.roughness > 0.0 {
                 let roughness = rec.params.roughness.clamp(0.02, 1.0);
+                mat.roughness = roughness;
                 mat.sun_specular_power = (2.0 / (roughness * roughness) - 2.0).clamp(1.0, 2048.0);
             }
             // FO3/FNV long DATA records carry independent authored tiling
@@ -2446,6 +2447,7 @@ mod tests {
         let mut waters = HashMap::new();
         waters.insert(rec.form_id, rec);
         let (mat, _, _, _, _) = resolve_water_material(&waters, Some(0x000A_0009));
+        assert!((mat.roughness - 0.5).abs() < 1e-6);
         assert!((mat.sun_specular_power - 6.0).abs() < 1e-6);
     }
 

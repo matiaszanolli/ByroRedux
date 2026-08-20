@@ -300,9 +300,11 @@ the stronger `Rapids` foam/normal profile.
 Starfield's DNAM color-absorption ranges now survive translation as
 per-channel Beer–Lambert distances; older games retain the zero sentinel and
 the established scalar fog response. Its concentration block no longer leaks
-into Skyrim-only depth weights, its authored flow-map scale is preserved, and
-its surface roughness is translated into the shared direct-sun highlight
-exponent. FO4/FO76 silt amount plus light/dark colors now blend into the
+into Skyrim-only depth weights: phytoplankton/sediment/yellow-matter feed
+column density and `oceanness` feeds both absorption and forward scattering.
+Its authored flow-map scale is preserved, and surface roughness now softens
+geometry-hit reflections in addition to shaping the shared direct-sun
+highlight exponent. FO4/FO76 silt amount plus light/dark colors now blend into the
 canonical shallow, deep, and underwater palette at the same boundary.
 Oblivion's authored rain-simulator force now scales the shared precipitation
 ripple response; records without that TES4 tail retain the neutral

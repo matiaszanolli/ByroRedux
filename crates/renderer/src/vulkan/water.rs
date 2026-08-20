@@ -102,7 +102,8 @@ pub struct GpuWaterParams {
     /// x = authored NAM4 UV scale; yzw = authored NAM2/3/4 amplitude
     /// scales, keeping this extension std140-aligned.
     pub detail: [f32; 4],
-    /// x = authored Skyrim noise-falloff distance; yzw reserved.
+    /// x = authored Skyrim noise-falloff distance; y = Blend Normals gate;
+    /// z = Starfield surface roughness; w reserved.
     pub noise_falloff: [f32; 4],
     /// x/y/z = shallow/deep/surface-effect normal falloff multipliers.
     /// A zero triplet preserves the legacy always-on normal response.
@@ -1513,6 +1514,11 @@ mod absorption_ramp_tests {
                 && src.contains("float oceanScatter = 1.0 + clamp(push.concentration.a")
                 && src.contains("channelTransmission = exp("),
             "Starfield absorption ranges and oceanness must feed the Beer-Lambert and scattering paths"
+        );
+        assert!(
+            src.contains("float surfaceRoughness = clamp(push.noise_falloff.z, 0.0, 1.0)")
+                && src.contains("reflColor = mix(reflColor, reflectionMiss, surfaceRoughness * surfaceRoughness)"),
+            "Starfield surface roughness must soften geometry-hit reflections"
         );
         assert!(
             src.contains("float h4 = valueNoise")

@@ -251,6 +251,10 @@ pub struct WaterMaterial {
     /// Larger values produce a smaller, tighter highlight. This is an
     /// exponent, not an intensity multiplier.
     pub sun_specular_power: f32,
+    /// Starfield's authored surface roughness. Zero is the legacy sentinel;
+    /// the water shader uses it to soften geometry-hit reflections while the
+    /// direct-sun exponent remains derived separately from the same source.
+    pub roughness: f32,
     /// Source WATR FormID for debug overlays / save-game roundtrip.
     /// `0` when the plane was spawned without an XCWT reference
     /// (default water material).
@@ -312,6 +316,7 @@ impl Default for WaterMaterial {
             angular_velocity: 0.0,
             rain_response: 1.0,
             sun_specular_power: 50.0,
+            roughness: 0.0,
             source_form: 0,
             reflection_tint: [0.65, 0.70, 0.75],
             day_shallow_color: [0.10, 0.32, 0.38],

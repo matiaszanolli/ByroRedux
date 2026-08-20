@@ -92,7 +92,8 @@ struct WaterParams {
     uvec4 noise_indices;
     // x = authored NAM4 UV scale; yzw = authored NAM2/3/4 amplitude scales.
     vec4 detail;
-    // x = authored Skyrim noise-falloff distance; yzw reserved.
+    // x = authored Skyrim noise-falloff distance; y = Blend Normals gate;
+    // z = Starfield surface roughness; w reserved.
     vec4 noise_falloff;
     // xyz = shallow/deep/surface-effect normal falloff multipliers.
     vec4 normal_falloff;
@@ -850,6 +851,15 @@ void main() {
         reflDist,
         reflHit
     );
+    // Starfield's WATR roughness is a surface-width control, not a change to
+    // dielectric Fresnel. The ray query returns a single sharp hit, so soften
+    // only the geometry reflection toward the already-correct environment
+    // miss. This approximates the prefiltered radiance a rough reflection
+    // would receive without adding another ray or disturbing legacy records.
+    float surfaceRoughness = clamp(push.noise_falloff.z, 0.0, 1.0);
+    if (surfaceRoughness > 0.0) {
+        reflColor = mix(reflColor, reflectionMiss, surfaceRoughness * surfaceRoughness);
+    }
     if (reflHit) {
         reflColor *= exp(-reflDist * DIST_FALLOFF);
     }
