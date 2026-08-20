@@ -702,6 +702,12 @@ pub(crate) fn resolve_water_material(
                 mat.reflectivity = 0.0;
             }
             mat.reflection_tint = rec.params.reflection_color;
+            if rec.params.reflection_hdr_multiplier.is_finite()
+                && rec.params.reflection_hdr_multiplier > 0.0
+            {
+                mat.reflection_hdr_multiplier =
+                    rec.params.reflection_hdr_multiplier.clamp(0.0, 16.0);
+            }
             // WATAL Phase 1: carry the wave fields that were previously
             // parsed into WaterParams but dropped here. AUTHORED for all
             // eras (Oblivion/FO3/FNV/Skyrim DATA all encode amp+freq);

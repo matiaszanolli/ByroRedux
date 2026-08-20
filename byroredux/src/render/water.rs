@@ -165,6 +165,9 @@ pub(super) fn reemit_water_planes(
             mat.night_reflection_tint,
             night_factor,
         );
+        mat.reflection_tint = mat
+            .reflection_tint
+            .map(|channel| channel * mat.reflection_hdr_multiplier.max(0.0));
         // Starfield's flow-map tile scale is a visual UV-rate control, not a
         // physics velocity. Keep the canonical `WaterFlow` speed bounded and
         // scale only the authored wave scroll vectors here.

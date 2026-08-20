@@ -268,6 +268,9 @@ equivalent trio (DNAM[52,56,60]) now scale the shallow, deep, and surface-effect
 normal contributions; an all-zero triplet preserves the legacy response.
 FO3/FNV's long-tail Light Radius and Light Brightness (DATA[164,168]) now
 feed the shared reflection-width and specular-intensity controls.
+Its Reflection HDR Multiplier (DATA[160]) now scales the resolved reflection
+tint before upload, preserving bright authored reflections without changing
+the fixed GPU ABI.
 Their displacement-simulator starting size, radial falloff, and dampener
 (DATA[72,84,88]) likewise reach the shared ripple profile.
 The legacy rain-simulator starting-size field (TES4 DATA[96], FO3/FNV

@@ -92,8 +92,8 @@ pub struct GpuWaterParams {
     /// f32 (shader does `floatBitsToUint`), w = WATR `Sun Specular Power`
     /// (Blinn-Phong exponent for the direct-sun glint).
     pub misc: [f32; 4],
-    /// xyz = reflection_tint (WATR `reflection_color`; tints the
-    /// geometry-hit colour in `traceWaterRay`). w = reflectivity
+    /// xyz = reflection_tint (WATR `reflection_color`, including legacy HDR
+    /// multiplier; tints the geometry-hit colour in `traceWaterRay`). w = reflectivity
     /// (0..1 — fresnel multiplier; moved here from `tune.w` in #1069).
     pub tint_reflect: [f32; 4],
     /// xyz = bindless indices for authored NAM2/NAM3/NAM4 noise layers;

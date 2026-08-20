@@ -132,6 +132,8 @@ pub struct WaterParams {
     /// Linear RGB of the reflection tint — multiplied into the RT
     /// reflection ray hit colour by the water shader.
     pub reflection_color: [f32; 3],
+    /// FO3/FNV reflection HDR multiplier. One is the neutral sentinel.
+    pub reflection_hdr_multiplier: f32,
     /// NEAR PLANE of the underwater fog ramp (world units) — absorption
     /// starts here; the column is clear before it.
     ///
@@ -255,6 +257,7 @@ impl Default for WaterParams {
             deep_color: [0.02, 0.06, 0.10],
             underwater_color: [0.02, 0.06, 0.10],
             reflection_color: [0.85, 0.88, 0.92],
+            reflection_hdr_multiplier: 1.0,
             fog_near: 80.0,
             fog_far: 600.0,
             underwater_fog_near: 0.0,
@@ -582,6 +585,9 @@ fn decode_data_fo3nv(data: &[u8]) -> WaterParams {
     }
     if let Some(value) = read_f32_at(data, 168) {
         p.specular_magnitude = value.max(0.0);
+    }
+    if let Some(value) = read_f32_at(data, 160) {
+        p.reflection_hdr_multiplier = value.max(0.0);
     }
     for (slot, offset) in p.noise_wind_directions.iter_mut().zip([100, 104, 108]) {
         if let Some(value) = read_f32_at(data, offset) {
@@ -1520,6 +1526,7 @@ mod tests {
         data[84..88].copy_from_slice(&0.8f32.to_le_bytes()); // displacement falloff
         data[88..92].copy_from_slice(&4.0f32.to_le_bytes()); // displacement dampener
         data[92..96].copy_from_slice(&1.75f32.to_le_bytes()); // rain start
+        data[160..164].copy_from_slice(&2.5f32.to_le_bytes()); // reflection HDR multiplier
         data[164..168].copy_from_slice(&180.0f32.to_le_bytes()); // specular radius
         data[168..172].copy_from_slice(&1.4f32.to_le_bytes()); // specular brightness
         data[100..104].copy_from_slice(&90.0f32.to_le_bytes()); // layer 1 direction
@@ -1536,6 +1543,7 @@ mod tests {
         assert_eq!(w.params.sun_specular_power, 61.0);
         assert_eq!(w.params.displacement, [0.06, 0.8, 4.0]);
         assert_eq!(w.params.rain_start_size, 1.75);
+        assert_eq!(w.params.reflection_hdr_multiplier, 2.5);
         assert_eq!(w.params.specular_radius, 180.0);
         assert_eq!(w.params.specular_magnitude, 1.4);
         assert_eq!(w.params.reflectivity, 0.65);

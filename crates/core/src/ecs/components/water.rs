@@ -140,6 +140,8 @@ pub struct WaterMaterial {
     /// Default `[0.65, 0.70, 0.75]` matches the pre-fix hard-coded
     /// neutral-grey value in `water.frag`.
     pub reflection_tint: [f32; 3],
+    /// Authored legacy reflection HDR multiplier. One is neutral.
+    pub reflection_hdr_multiplier: f32,
     /// Daytime surface palette resolved from GNAM slot 0. When the record
     /// has no authored daytime variant this mirrors the base palette.
     pub day_shallow_color: [f32; 3],
@@ -326,6 +328,7 @@ impl Default for WaterMaterial {
             roughness: 0.0,
             source_form: 0,
             reflection_tint: [0.65, 0.70, 0.75],
+            reflection_hdr_multiplier: 1.0,
             day_shallow_color: [0.10, 0.32, 0.38],
             day_deep_color: [0.02, 0.06, 0.10],
             day_fog_near: 80.0,
