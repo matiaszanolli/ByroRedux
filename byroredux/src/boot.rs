@@ -393,6 +393,11 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // the soak baseline + per-cycle history and stays empty until an operator
     // runs `world.owners baseline`.
     world.insert_resource(byroredux_core::ecs::ImageHealth::default());
+    // EX-10/11 / #2371 — exterior LOD residency coverage audit. Refreshed by
+    // every `reconcile_lod_rings` call (`streaming_helpers.rs`); starts
+    // `sampled = false` so `lod.coverage` reads PENDING before the first
+    // reconcile (e.g. an interior-only session, which never streams LOD).
+    world.insert_resource(byroredux_core::ecs::LodCoverageStats::default());
     world.insert_resource(byroredux_core::ecs::OwnershipTelemetry::default());
     world.insert_resource(byroredux_core::ecs::OwnershipTracker::new());
     world.insert_resource(byroredux_core::ecs::UpscalerTelemetry::default());

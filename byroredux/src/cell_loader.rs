@@ -63,6 +63,7 @@ mod index;
 mod load;
 mod load_order;
 mod lod_bands;
+mod lod_coverage;
 mod lod_support;
 mod nif_import_registry;
 mod object_lod;
@@ -125,6 +126,7 @@ pub use load::{load_cell_with_masters, validate_cell_loadable, CellLoadResult};
 // same masters-first merged index the cell loader builds but stops after
 // the parse phase.
 pub(crate) use load_order::parse_record_indexes_in_load_order;
+pub(crate) use lod_coverage::{find_full_detail_overlaps, find_overlaps, ChurnTracker};
 pub(crate) use lod_support::{worldspace_lod_grid_origin, LodReconcileInput, LodWorkBudget};
 #[allow(unused_imports)]
 pub(crate) use object_lod::{stream_object_lod_blocks, unload_object_lod_block, ObjectLodBlock};

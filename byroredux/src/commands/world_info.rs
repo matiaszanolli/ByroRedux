@@ -468,6 +468,27 @@ impl ConsoleCommand for RtIntegrityCommand {
     }
 }
 
+/// `lod.coverage` — exterior distant-LOD residency audit (EX-10/11 /
+/// #2371): resident-quad overlap, LOD-vs-full-detail overlap, streaming
+/// settledness, and per-scheme churn.
+pub(crate) struct LodCoverageCommand;
+impl ConsoleCommand for LodCoverageCommand {
+    fn name(&self) -> &str {
+        "lod.coverage"
+    }
+
+    fn description(&self) -> &str {
+        "Distant-LOD residency overlap/hole/thrash audit (#2371)"
+    }
+
+    fn execute(&self, world: &World, _args: &str) -> CommandOutput {
+        let Some(snapshot) = world.try_resource::<byroredux_core::ecs::LodCoverageStats>() else {
+            return CommandOutput::line("LodCoverageStats resource not present");
+        };
+        CommandOutput::line(snapshot.machine_line())
+    }
+}
+
 /// `render.debug <mode> [x y]` — select a named correctness view and
 /// optionally queue one bounded selected-light visibility-ray capture.
 pub(crate) struct RenderDebugCommand;

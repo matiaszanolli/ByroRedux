@@ -844,6 +844,87 @@ impl RtIntegrityStats {
 
 impl Resource for RtIntegrityStats {}
 
+/// Live-residency LOD coverage audit (EX-10/11 / #2371).
+///
+/// Distinct from [`RtIntegrityStats`] (renderer-side, TLAS/light budget) —
+/// this covers the exterior LOD streaming ring's own state-consistency
+/// invariants: no two resident quads (or a quad and a resident full-detail
+/// cell) claim the same ground, every quad the current band ladder wants is
+/// either resident or a confirmed permanent miss, and no quad key is
+/// flapping in and out of residency across a traversal. The pure geometry
+/// and churn-tracking logic lives in `byroredux::cell_loader::lod_coverage`
+/// (binary-crate-only, no `crates/core` dependency); this resource is just
+/// the stable snapshot `lod.coverage` and smoke-test gates read.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct LodCoverageStats {
+    /// At least one reconcile has populated this resource.
+    pub sampled: bool,
+    /// The most recent reconcile reported every desired quad coordinate
+    /// resident or a confirmed miss — no outstanding streaming work.
+    pub settled: bool,
+    /// Resident quad pairs (terrain-vs-terrain, object-vs-object) whose
+    /// cell footprints intersect. Always 0 unless state has drifted away
+    /// from the quadtree-descent invariant `lod_bands` proves by
+    /// construction.
+    pub overlaps: u32,
+    /// Resident LOD quads (terrain or object) whose footprint intersects a
+    /// still-resident full-detail cell — the cross-scheme boundary #1866 /
+    /// #1871 keep conservative specifically to hold this at 0.
+    pub full_detail_overlaps: u32,
+    /// Terrain LOD quad keys that left residency and later returned —
+    /// real thrash, not merely an in-flight load superseded by the next
+    /// boundary crossing (see `streaming::StreamingTelemetry::superseded_lod`
+    /// for that narrower signal).
+    pub terrain_churn: u32,
+    /// Same as `terrain_churn`, for the baked object-LOD `.bto` scheme.
+    pub object_churn: u32,
+    /// Resident terrain LOD quad count at the last sample.
+    pub terrain_resident: u32,
+    /// Resident object LOD quad count at the last sample.
+    pub object_resident: u32,
+}
+
+impl LodCoverageStats {
+    /// Stable three-state verdict mirroring [`RtIntegrityStats::verdict`]'s
+    /// shape, for the console command and smoke-test gates alike.
+    pub fn verdict(&self) -> &'static str {
+        if !self.sampled {
+            "PENDING"
+        } else if self.overlaps == 0
+            && self.full_detail_overlaps == 0
+            && self.settled
+            && self.terrain_churn == 0
+            && self.object_churn == 0
+        {
+            "PASS"
+        } else {
+            "FAIL"
+        }
+    }
+
+    /// Machine-readable line shared by the console command and (future)
+    /// benchmark harness — same convention as
+    /// [`RtIntegrityStats::machine_line`].
+    pub fn machine_line(&self) -> String {
+        format!(
+            "lod-coverage: sampled={} settled={} overlaps={} full_detail_overlaps={} \
+             terrain_churn={} object_churn={} terrain_resident={} object_resident={} \
+             verdict={}",
+            u8::from(self.sampled),
+            u8::from(self.settled),
+            self.overlaps,
+            self.full_detail_overlaps,
+            self.terrain_churn,
+            self.object_churn,
+            self.terrain_resident,
+            self.object_resident,
+            self.verdict(),
+        )
+    }
+}
+
+impl Resource for LodCoverageStats {}
+
 pub mod ownership;
 pub use ownership::{
     FindingKind, OwnerClass, OwnershipFinding, OwnershipSnapshot, OwnershipTelemetry,

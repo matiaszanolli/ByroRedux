@@ -122,10 +122,53 @@ pub(crate) fn reconcile_lod_rings(
         flush_pending_lod_textures(ctx);
     }
 
+    let complete = terrain_complete && object_complete && placement_complete;
+    update_lod_coverage(world, state, complete);
+
     LodReconcileProgress {
-        complete: terrain_complete && object_complete && placement_complete,
+        complete,
         attempted,
     }
+}
+
+/// Refresh [`byroredux_core::ecs::LodCoverageStats`] from this reconcile's
+/// post-state (EX-10/11 / #2371). Runs on every call — including
+/// zero-budget reconciles — since the checks are cheap key-set diffs/pair
+/// scans over residency counts the ring radius already bounds to the tens,
+/// not a rescan of the world.
+///
+/// Placement LOD (Oblivion's per-cell `_far.nif` scheme) is deliberately
+/// excluded from the overlap/churn checks: it has no quad-footprint concept
+/// to overlap with (`placement_lod_blocks` is keyed by bare cell, one
+/// instanced-mesh list per cell, not a banded quadtree), so `find_overlaps`'
+/// footprint model does not apply to it. `complete` still folds its
+/// settledness in, upstream of this function.
+fn update_lod_coverage(
+    world: &mut byroredux_core::ecs::World,
+    state: &mut streaming::WorldStreamingState,
+    settled: bool,
+) {
+    let terrain_keys: Vec<(i32, i32, i32)> = state.lod_blocks.keys().copied().collect();
+    let object_keys: Vec<(i32, i32, i32)> = state.object_lod_blocks.keys().copied().collect();
+    let full_cells: Vec<(i32, i32)> = state.loaded.keys().copied().collect();
+
+    let overlaps =
+        cell_loader::find_overlaps(&terrain_keys) + cell_loader::find_overlaps(&object_keys);
+    let full_detail_overlaps = cell_loader::find_full_detail_overlaps(&terrain_keys, &full_cells)
+        + cell_loader::find_full_detail_overlaps(&object_keys, &full_cells);
+
+    state.terrain_lod_churn.observe(&state.lod_blocks);
+    state.object_lod_churn.observe(&state.object_lod_blocks);
+
+    let mut coverage = world.resource_mut::<byroredux_core::ecs::LodCoverageStats>();
+    coverage.sampled = true;
+    coverage.settled = settled;
+    coverage.overlaps = overlaps;
+    coverage.full_detail_overlaps = full_detail_overlaps;
+    coverage.terrain_churn = state.terrain_lod_churn.churned();
+    coverage.object_churn = state.object_lod_churn.churned();
+    coverage.terrain_resident = terrain_keys.len() as u32;
+    coverage.object_resident = object_keys.len() as u32;
 }
 
 /// LOD texture resolution happens after normal cell-load texture flushing.

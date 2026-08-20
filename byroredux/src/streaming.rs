@@ -619,6 +619,13 @@ pub struct WorldStreamingState {
     /// the old `(level, …)` entry plus a load of the new one, which is what
     /// keeps two levels from ever double-drawing it.
     pub object_lod_blocks: HashMap<(i32, i32, i32), crate::cell_loader::ObjectLodBlock>,
+    /// Real load/unload/reload churn on `lod_blocks`' keys, independent of
+    /// `telemetry.superseded_lod` (which only catches one in-flight load
+    /// cancelled by the *next* boundary; this catches a settled key
+    /// flapping across several) — EX-10/11 / #2371.
+    pub(crate) terrain_lod_churn: crate::cell_loader::ChurnTracker,
+    /// Same as `terrain_lod_churn`, for `object_lod_blocks`.
+    pub(crate) object_lod_churn: crate::cell_loader::ChurnTracker,
     /// Distant **object** LOD cells for Oblivion's placement scheme, keyed
     /// by cell `(x, y)`. Each entry is the cell's
     /// `DistantLOD\*.lod` instanced `_far.nif` meshes (or an empty sentinel
@@ -743,6 +750,8 @@ impl WorldStreamingState {
             lod_blocks: HashMap::new(),
             lod_missing_blocks: HashMap::new(),
             object_lod_blocks: HashMap::new(),
+            terrain_lod_churn: crate::cell_loader::ChurnTracker::default(),
+            object_lod_churn: crate::cell_loader::ChurnTracker::default(),
             placement_lod_blocks: HashMap::new(),
             lod_water: None,
             pending: HashMap::new(),
