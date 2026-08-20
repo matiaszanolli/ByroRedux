@@ -182,8 +182,14 @@ fn update_lod_coverage(
     let vwd_full_model_overlaps =
         cell_loader::find_full_detail_overlaps(&object_keys, &vwd_cells);
 
-    state.terrain_lod_churn.observe(&state.lod_blocks);
-    state.object_lod_churn.observe(&state.object_lod_blocks);
+    // Only compare settled snapshots. During a reconcile the finest terrain
+    // blocks can be temporarily removed while their resident-cell hole masks
+    // are rebuilt; treating that in-flight gap as eviction reports false
+    // churn even though the settled ring never flaps.
+    if settled {
+        state.terrain_lod_churn.observe(&state.lod_blocks);
+        state.object_lod_churn.observe(&state.object_lod_blocks);
+    }
 
     let mut coverage = world.resource_mut::<byroredux_core::ecs::LodCoverageStats>();
     coverage.sampled = true;
