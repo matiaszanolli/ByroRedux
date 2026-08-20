@@ -994,15 +994,6 @@ pub(crate) fn load_nif_bytes_with_skeleton(
         let material_kind = material.material_kind;
         let mesh_water = material.water_shader_flags != 0;
         world.insert(entity, material);
-        if mesh_water {
-            world.insert(
-                entity,
-                byroredux_core::ecs::components::WaterPlane {
-                    kind: byroredux_core::ecs::components::WaterKind::Calm,
-                    material: byroredux_core::ecs::components::WaterMaterial::default(),
-                },
-            );
-        }
         // PERF-D3-NEW-02 / #1136 — mirror of the cell_loader::spawn path.
         if let Some(ref tp) = owned_textures.base_color {
             if texture_path_is_fx_mesh(tp, material_kind) {
@@ -1033,6 +1024,18 @@ pub(crate) fn load_nif_bytes_with_skeleton(
                 parallax_max_passes: mesh.material.parallax_max_passes.unwrap_or(4.0),
             },
         );
+        if mesh_water {
+            let mut water_material =
+                byroredux_core::ecs::components::WaterMaterial::default();
+            water_material.normal_map_index = texture_handles.normal;
+            world.insert(
+                entity,
+                byroredux_core::ecs::components::WaterPlane {
+                    kind: byroredux_core::ecs::components::WaterKind::Calm,
+                    material: water_material,
+                },
+            );
+        }
         world.insert(
             entity,
             MaterialTextureDebugInfo {
