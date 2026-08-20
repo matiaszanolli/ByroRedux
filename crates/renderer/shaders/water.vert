@@ -142,6 +142,7 @@ void main() {
     uint kind = uint(water.timing.y + 0.5);
     // Flat cell planes use the authored wave pair. Waterfall meshes are
     // already artist-oriented sheets and keep their authored geometry.
+    vec3 localNormal = inNormal;
     if (kind != WATER_WATERFALL) {
         vec3 absolutePos = worldPos.xyz + renderOrigin.xyz;
         vec2 dirA = water.scroll.xy;
@@ -160,7 +161,24 @@ void main() {
         // Author data can contain corrupt/extreme values; keep displacement
         // finite and below a conservative shoreline-safe bound.
         float amplitude = clamp(water.tune.w, 0.0, 32.0);
-        worldPos.y += amplitude * (sin(phaseA) * 0.60 + sin(phaseB) * 0.40);
+        float slopeA = spatialA * 6.2831853;
+        float slopeB = spatialB * 6.2831853;
+        float waveA = sin(phaseA) * 0.60;
+        float waveB = sin(phaseB) * 0.40;
+        worldPos.y += amplitude * (waveA + waveB);
+        // Keep the geometric normal consistent with the displaced surface.
+        // The fragment shader adds high-frequency tangent detail later; this
+        // low-frequency gradient is what makes silhouettes, Fresnel, and the
+        // direct-sun lobe agree with the vertex-wave shape.
+        float dHeightDx = amplitude * (
+            cos(phaseA) * dirA.x * slopeA * 0.60
+            + cos(phaseB) * dirB.x * slopeB * 0.40
+        );
+        float dHeightDz = amplitude * (
+            cos(phaseA) * dirA.y * slopeA * 0.60
+            + cos(phaseB) * dirB.y * slopeB * 0.40
+        );
+        localNormal = normalize(vec3(-dHeightDx, 1.0, -dHeightDz));
     }
     // #markarth-precision — `inst.model` is rebased by the render origin (the
     // water plane reuses the same instance buffer as opaques), so `worldPos`
@@ -177,7 +195,7 @@ void main() {
     // water meshes never carry non-uniform scale (`INSTANCE_FLAG_NUS`
     // is clear).
     mat3 modelRot = mat3(inst.model);
-    vWorldNormal       = normalize(modelRot * inNormal);
+    vWorldNormal       = normalize(modelRot * localNormal);
     vWorldTangent      = normalize(modelRot * inTangent.xyz);
     vWorldBitangentSign = inTangent.w;
 

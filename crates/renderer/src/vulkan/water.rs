@@ -900,6 +900,12 @@ mod tests {
              WaterParams elements retain the 224-byte std140 stride used by\n\
              Rust and water.frag"
         );
+        assert!(
+            src.contains("float dHeightDx")
+                && src.contains("float dHeightDz")
+                && src.contains("localNormal = normalize(vec3(-dHeightDx"),
+            "water.vert must derive normals from the authored vertex-wave slope"
+        );
     }
 
     /// #1129 — forward-compat trap. Every "no-op baseline" the water
