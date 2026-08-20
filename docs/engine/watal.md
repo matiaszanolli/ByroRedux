@@ -253,7 +253,8 @@ also scales the canonical noise amplitudes (Skyrim DNAM[92], FO4 DNAM[52]).
 Skyrim's above-water fog amount (DNAM[132]) scales the canonical refraction
 absorption weight while preserving the authored near/far distance ramp.
 Skyrim's Sun Sparkle Magnitude (DNAM[200]) now folds into the canonical
-direct-sun glint multiplier alongside the existing specular magnitude.
+direct-sun glint multiplier alongside the existing specular magnitude;
+Specular Brightness (DNAM[168]) contributes to that same intensity.
 Sun Sparkle Power (DNAM[224]) similarly scales the canonical direct-sun
 exponent; its authored default of `1.0` is neutral.
 WATR.ANAM surface opacity now reaches the water fragment path; records without
@@ -281,7 +282,7 @@ canonical shallow, deep, and underwater palette at the same boundary.
 Oblivion's authored rain-simulator force now scales the shared precipitation
 ripple response; records without that TES4 tail retain the neutral
 weather-driven value.
-The remaining Skyrim tail fields stay raw. The
+The remaining Skyrim tail fields stay raw after these verified visual fields. The
 Dedicated NIF mesh-water shaders now also cross NIFAL: Oblivion/FO3/FNV
 `WaterShaderProperty` and Skyrim+ `BSWaterShaderProperty` set a canonical
 mesh-water marker, and both cell and loose-NIF spawn paths route those meshes
@@ -631,7 +632,9 @@ magnitude at 92, displacement
 force at 76, all three noise UV scales at 172/176/180, three noise amplitude
 scales at 184/188/192, and depth weights at 208/212/216/220 now feed the
 canonical presentation path, with reflection/specular controls at 152/156/196/204;
-the separate specular magnitude at 160 now scales the sun-glint intensity;
+the separate specular magnitude at 160, Specular Brightness at 168, and Sun
+Sparkle Magnitude at 200 now scale the sun-glint intensity; Sun Sparkle Power
+at 224 scales its exponent;
 the Skyrim SE-only 232-byte extension's flow-map tile scale at 228 now scales
 the visual scroll rate while leaving the canonical physics current bounded;
 remaining authored tail fields remain `raw_dnam`

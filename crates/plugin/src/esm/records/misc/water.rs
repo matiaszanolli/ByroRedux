@@ -698,6 +698,14 @@ fn apply_skyrim_dnam_tail(p: &mut WaterParams, data: &[u8]) {
             p.specular_magnitude = (p.specular_magnitude * v).clamp(0.0, 8.0);
         }
     }
+    // Specular Brightness is the authored intensity for the same lobe. Its
+    // default is one, so retain the compact canonical magnitude while
+    // preserving per-water brightness variants.
+    if let Some(v) = read_f32_at(data, 168) {
+        if v.is_finite() && v > 0.0 {
+            p.specular_magnitude = (p.specular_magnitude * v).clamp(0.0, 8.0);
+        }
+    }
     // Sun Sparkle Power is an authored exponent multiplier. Its vanilla
     // default is one, so folding it into the existing sun exponent preserves
     // older records while allowing Skyrim water variants to widen or tighten
@@ -1333,6 +1341,7 @@ mod tests {
         data[152..156].copy_from_slice(&9.0f32.to_le_bytes());
         data[156..160].copy_from_slice(&500.0f32.to_le_bytes());
         data[160..164].copy_from_slice(&2.0f32.to_le_bytes());
+        data[168..172].copy_from_slice(&1.25f32.to_le_bytes());
         data[196..200].copy_from_slice(&0.34f32.to_le_bytes());
         data[200..204].copy_from_slice(&1.5f32.to_le_bytes());
         data[204..208].copy_from_slice(&3.2f32.to_le_bytes());
@@ -1353,7 +1362,7 @@ mod tests {
         assert_eq!(w.params.noise_amplitude_scales, [0.7, 0.6, 0.5]);
         assert_eq!(w.params.depth_weights, [0.9, 0.5, 0.1, 0.2]);
         assert_eq!(w.params.effect_controls, [9.0, 500.0, 0.34, 3.2]);
-        assert_eq!(w.params.specular_magnitude, 3.0);
+        assert_eq!(w.params.specular_magnitude, 3.75);
         assert_eq!(w.params.sun_specular_power, 122.0);
         assert_eq!(w.params.normal_magnitude, 0.05);
         assert_eq!(w.params.above_water_fog_amount, 0.75);
