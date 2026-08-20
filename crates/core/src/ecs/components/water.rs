@@ -485,6 +485,21 @@ impl Component for WaterVolume {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// Non-rendering current volume authored by a placed water-current marker
+/// (`REFR.XWCU` + spatial bounds). Unlike [`WaterPlane`], this component
+/// never participates in submersion or buoyancy surface selection; it only
+/// contributes bounded current drag to dynamic bodies inside its volume.
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
+pub struct WaterCurrentVolume {
+    pub volume: WaterVolume,
+    pub flow: WaterFlow,
+}
+
+impl Component for WaterCurrentVolume {
+    type Storage = SparseSetStorage<Self>;
+}
+
 /// Per-frame submersion state for actors and cameras.
 ///
 /// Recomputed every frame by `submersion_system` from current world

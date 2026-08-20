@@ -10,6 +10,45 @@
 
 use super::*;
 
+fn water_current_volume_from_ref(
+    placed_ref: &esm::cell::PlacedRef,
+    position: Vec3,
+    scale: f32,
+) -> Option<WaterCurrentVolume> {
+    let velocity = placed_ref.water_velocity?;
+    let primitive = placed_ref.primitive?;
+    let speed = velocity[0].hypot(velocity[1]);
+    if !speed.is_finite() || speed <= 1.0e-5 || !scale.is_finite() || scale <= 0.0 {
+        return None;
+    }
+    let extents = [
+        primitive.bounds[0].abs() * scale,
+        primitive.bounds[2].abs() * scale,
+        primitive.bounds[1].abs() * scale,
+    ];
+    if !extents
+        .iter()
+        .all(|extent| extent.is_finite() && *extent > 0.0)
+    {
+        return None;
+    }
+    Some(WaterCurrentVolume {
+        volume: WaterVolume {
+            min: [
+                position.x - extents[0],
+                position.y - extents[1],
+                position.z - extents[2],
+            ],
+            max: [
+                position.x + extents[0],
+                position.y + extents[1],
+                position.z + extents[2],
+            ],
+        },
+        flow: WaterFlow::new([velocity[0], 0.0, -velocity[1]], speed),
+    })
+}
+
 pub(super) fn stamp_quest_reference(
     world: &mut World,
     entity: EntityId,
@@ -622,6 +661,9 @@ pub(super) fn spawn_synth_child(
     accum.unresolved_packed_collision += spawn_stats.unresolved_packed_collision;
     if is_primary_synth {
         stamp_quest_reference(world, placement_root, placed_ref, load_order);
+        if let Some(current) = water_current_volume_from_ref(placed_ref, ref_pos, ref_scale) {
+            world.insert(placement_root, current);
+        }
     }
 
     // #1889 / EXAL §5.2 — materialise the base record's

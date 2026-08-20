@@ -19,7 +19,7 @@
 use byroredux_core::ecs::components::collision::{MotionType, RigidBodyData};
 use byroredux_core::ecs::components::groundcover::WindField;
 use byroredux_core::ecs::components::water::{
-    WaterContact, WaterFlow, WaterMaterial, WaterPlane, WaterVolume,
+    WaterContact, WaterCurrentVolume, WaterFlow, WaterMaterial, WaterPlane, WaterVolume,
 };
 use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::resources::TotalTime;
@@ -339,6 +339,13 @@ fn collect_water_surfaces(world: &World) -> Vec<WaterSurface> {
     out
 }
 
+fn collect_water_current_volumes(world: &World) -> Vec<WaterCurrentVolume> {
+    world
+        .query::<WaterCurrentVolume>()
+        .map(|query| query.iter().map(|(_, current)| *current).collect())
+        .unwrap_or_default()
+}
+
 /// Restore dynamic bodies whose source water plane streamed out before the
 /// body did. The normal buoyancy loop handles this transition when another
 /// surface remains resident; this helper covers the all-surfaces-empty fast
@@ -434,6 +441,7 @@ pub(crate) fn apply_buoyancy(world: &World, had_newcomers: bool) {
         .unwrap_or_default();
 
     let surfaces = collect_water_surfaces(world);
+    let current_volumes = collect_water_current_volumes(world);
     let time_secs = world.try_resource::<TotalTime>().map(|time| time.0);
     let (weather_scroll, wind_wave_scale) = time_secs
         .map(|time| weather_wave_adjustment(world, time))
@@ -446,7 +454,7 @@ pub(crate) fn apply_buoyancy(world: &World, had_newcomers: bool) {
     // whole per-body scan. Keeps interior / no-water / loose-NIF frames free
     // (the common case). A body that was wet last frame is co-unloaded with
     // its cell's water plane, so there is nothing left to restore here.
-    if surfaces.is_empty() {
+    if surfaces.is_empty() && current_volumes.is_empty() {
         clear_stale_water_contacts(world);
         return;
     }
@@ -478,6 +486,12 @@ pub(crate) fn apply_buoyancy(world: &World, had_newcomers: bool) {
         uz0 = uz0.min(s.volume.min[2]);
         ux1 = ux1.max(s.volume.max[0]);
         uz1 = uz1.max(s.volume.max[2]);
+    }
+    for current in &current_volumes {
+        ux0 = ux0.min(current.volume.min[0]);
+        uz0 = uz0.min(current.volume.min[2]);
+        ux1 = ux1.max(current.volume.max[0]);
+        uz1 = uz1.max(current.volume.max[2]);
     }
 
     // Gather dynamic bodies + their authored damping (to restore on exit) +
@@ -553,6 +567,23 @@ pub(crate) fn apply_buoyancy(world: &World, had_newcomers: bool) {
                 *body.translation()
             };
             let center_y = pos.y;
+
+            let current_flow = if pos.x < ux0 || pos.x > ux1 || pos.z < uz0 || pos.z > uz1 {
+                None
+            } else {
+                current_volumes
+                    .iter()
+                    .find(|current| {
+                        let v = &current.volume;
+                        pos.x >= v.min[0]
+                            && pos.x <= v.max[0]
+                            && pos.y >= v.min[1]
+                            && pos.y <= v.max[1]
+                            && pos.z >= v.min[2]
+                            && pos.z <= v.max[2]
+                    })
+                    .map(|current| current.flow)
+            };
 
             // Find the containing surface: body centre inside the volume's XZ
             // extent, and the body within the column (band-extended above the
@@ -688,6 +719,26 @@ pub(crate) fn apply_buoyancy(world: &World, had_newcomers: bool) {
                     }
                 }
             }
+
+            // Placed XWCU markers are current volumes, not water surfaces.
+            // Apply their bounded drag after the surface branch so a
+            // water-plane force reset cannot discard the marker's current.
+            if let Some(flow) = current_flow {
+                if let Some(b) = pw.bodies.get_mut(t.handles.body) {
+                    if !b.is_sleeping() {
+                        let mass = b.mass();
+                        let velocity = b.linvel();
+                        let f = current_force(
+                            flow,
+                            Vec3::new(velocity.x, velocity.y, velocity.z),
+                            mass,
+                            1.0,
+                            consts.current_drag,
+                        );
+                        b.add_force(vector![f.x, f.y, f.z], false);
+                    }
+                }
+            }
         }
 
         // A body woken on a dry→wet transition is NOT yet in
@@ -730,10 +781,32 @@ mod tests {
     use super::*;
     use crate::convert::iso_from_trs;
     use crate::world::{PhysicsWorld, PHYSICS_DT};
+    use byroredux_core::ecs::components::water::WaterCurrentVolume;
     use byroredux_core::math::{Quat, Vec3};
     use rapier3d::prelude::*;
 
     const G_Y: f32 = -686.7; // PhysicsWorld gravity, BU/s².
+
+    #[test]
+    fn placed_current_volume_is_collected_without_becoming_a_water_surface() {
+        let mut world = World::new();
+        let entity = world.spawn();
+        world.insert(
+            entity,
+            WaterCurrentVolume {
+                volume: WaterVolume {
+                    min: [-10.0, -4.0, -10.0],
+                    max: [10.0, 4.0, 10.0],
+                },
+                flow: WaterFlow::new([1.0, 0.0, 0.0], 2.0),
+            },
+        );
+
+        let currents = collect_water_current_volumes(&world);
+        assert_eq!(currents.len(), 1);
+        assert_eq!(currents[0].flow.direction, [1.0, 0.0, 0.0]);
+        assert!(world.query::<WaterPlane>().is_none());
+    }
 
     #[test]
     fn buoyancy_force_is_zero_when_dry() {
