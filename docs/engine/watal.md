@@ -274,6 +274,13 @@ through the same water pipeline (including authored normal-map handles). The
 (`rapid`/`waterfall`/`falls`/`river`/`stream`), English-only, with `waterfall`
 deliberately demoted to `River` for cell planes.
 
+Mesh-bound water now also contributes a bounds-derived `WaterVolume` in both
+cell and loose-NIF spawn paths, with its top pinned to the rendered surface;
+legacy water meshes therefore participate in swimming, buoyancy, and current
+queries through the same canonical component as CELL water. The installed
+Oblivion, FNV, Skyrim SE, and FO4 parse-rate gates plus the Skyrim default-WATR
+tail and cross-master water-field matrix pass when run with local game data.
+
 ### Spawn — **functional, coarse**
 
 `cell_loader/water.rs` spawns one tessellated plane per cell (interior: a
