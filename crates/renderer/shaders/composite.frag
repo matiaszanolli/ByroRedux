@@ -53,10 +53,8 @@ layout(set = 0, binding = 3) uniform CompositeParams {
     vec4 camera_pos;     // xyz = camera position in render-origin-RELATIVE space (matches inv_view_proj; the CPU subtracts render_origin at upload). Fog distance origin (#428) + ray origin for screen_to_world_dir (#1490). w = height-fog reference altitude (REN-D16-01 / #2225), same relative space as xyz — ground height near the camera, or camera Y as a fallback.
     mat4 inv_view_proj;  // inverse view-projection for ray reconstruction
     // xyz = water deep-color tint (linear RGB), w = authored Beer-Lambert
-    // extinction (0..1). Vestigial here — kept for
-    // UBO layout parity but never read below. The underwater post-FX
-    // (mix toward `underwater.xyz` by a depth-driven extinction when
-    // `underwater.w > 0`) lives in presentation.frag now.
+    // extinction (0..1). Presentation still owns the final underwater grade;
+    // composite uses this field for the bounded sun-aligned shaft term below.
     vec4 underwater;
     // x = water-side caustic accumulator (binding 8, waterCausticTex) is
     // genuinely live this frame (1.0) vs. absent and fallback-bound to
@@ -758,6 +756,33 @@ void main() {
         float opacity = clamp(1.0 - sampledVolume.a, 0.0, 1.0);
         outColor = vec4(max(mappedRadiance, vec3(opacity)), 1.0);
         return;
+    }
+
+    // Underwater god rays. The authored submersion extinction is already
+    // computed from each game's WATR fog range on the CPU, so use it as the
+    // gate/energy budget rather than inventing a second water-depth model.
+    // A narrow sun-alignment lobe gives shafts toward the visible sun, while
+    // the depth ramp keeps the effect negligible at the waterline. This is a
+    // screen-space presentation term intentionally kept after the integrated
+    // froxel debug return and before bloom; it requires no new descriptor.
+    if (params.underwater.w > 0.0 && params.sun_dir.w > 0.0) {
+        vec3 viewDir = screen_to_world_dir(fragUV);
+        vec3 sunDirection = normalize(params.sun_dir.xyz);
+        float sunAlignment = max(dot(viewDir, sunDirection), 0.0);
+        float shaftLobe = pow(sunAlignment, 18.0);
+        float underwaterDistance = has_surface
+            ? linearViewDepth(depth)
+            : params.volume_params.x;
+        float depthRamp = 1.0 - exp(-max(underwaterDistance, 0.0) * 0.002);
+        float shaftStrength = shaftLobe * depthRamp
+            * clamp(params.underwater.w, 0.0, 0.85)
+            * params.sun_dir.w * 0.12;
+        vec3 shaftColor = mix(
+            params.underwater.rgb,
+            params.sun_color.rgb,
+            0.35
+        );
+        combined += shaftColor * shaftStrength;
     }
 
     // M58 — bloom add. Sampled with bilinear from mip 0 of the

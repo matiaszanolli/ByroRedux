@@ -122,10 +122,9 @@ pub struct CompositeParams {
     /// `deep_color` (linear RGB) the scene should blend toward when
     /// the camera is submerged; `w` = Beer-Lambert extinction (0..1).
     ///
-    /// Vestigial here — `composite.frag` declares this field for UBO
-    /// layout parity but never reads it. The underwater post-FX moved
-    /// to `presentation.frag`'s `underwater` field (same packing),
-    /// which owns the live `params.underwater.w > 0.0` mix branch.
+    /// Composite uses this for bounded sun-aligned underwater shafts;
+    /// presentation applies the final underwater tint/grade from the same
+    /// packed values.
     pub underwater: [f32; 4],
     /// `x` = water-side caustic accumulator (binding 8, `waterCausticTex`)
     /// is genuinely live this frame (`1.0`) vs. absent and fallback-bound
@@ -1742,6 +1741,22 @@ mod composite_params_layout_tests {
             !shader.contains("depth >= 0.9999") && !shader.contains("depth < 0.9999"),
             "composite depth classification must reserve only the exact clear value for background"
         );
+    }
+
+    #[test]
+    fn underwater_composite_adds_bounded_sun_aligned_shafts() {
+        let shader = include_str!("../../shaders/composite.frag");
+        for needle in [
+            "if (params.underwater.w > 0.0 && params.sun_dir.w > 0.0)",
+            "float shaftLobe = pow(sunAlignment, 18.0);",
+            "float depthRamp = 1.0 - exp(-max(underwaterDistance, 0.0) * 0.002);",
+            "combined += shaftColor * shaftStrength;",
+        ] {
+            assert!(
+                shader.contains(needle),
+                "composite underwater shaft term must retain `{needle}`"
+            );
+        }
     }
 
     /// Compact local media often cover only a handful of froxel columns.
