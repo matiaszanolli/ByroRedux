@@ -539,8 +539,9 @@ authored worldspace LOD water, NAM2–4 noise layers, and bounded sunlight
 
 4. **Phase 3 — RENDER-FIDELITY + GAMEPLAY POLISH — OPEN.** The indexed per-frame
    water UBO, authored noise layers, bounded sunlight scattering, and the
-   kinematic swim core and bounded breath/drowning damage are live; refine the
-   OpenMW-style swimlevel model; `SplashEvent`/`RippleEvent` → particle +
+   kinematic swim core, bounded breath/drowning damage, and the OpenMW-style
+   swimlevel threshold (shallow wading stays terrestrial) are live;
+   `SplashEvent`/`RippleEvent` → particle +
    audio is live, as is bounded ripple normal injection (A10); underwater god-rays via the M55
    volumetrics gated on `WaterContact`; replace the EDID `WaterKind` heuristic with
    data-driven classification. Each sub-item independently shippable.

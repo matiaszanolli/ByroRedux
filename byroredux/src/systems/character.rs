@@ -221,14 +221,21 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
     // state instead of continuing terrestrial gravity through a lake or river.
     // The snapshot is completed before borrowing PhysicsWorld below, keeping
     // ECS query guards out of the physics lock interval.
-    let swim = player_water_state(
+    let water_contact = player_water_state(
         world,
         current_pos,
         controller.half_height + controller.radius,
     );
-    let head_submerged = swim
+    // Match the OpenMW swimlevel convention: merely wetting the capsule's
+    // feet does not switch the controller from walking to swimming. The
+    // center must pass the engine-defined fraction of the capsule height;
+    // surface waves are already included in `surface_y`.
+    let head_submerged = water_contact
         .map(|(surface_y, _, _, _)| current_pos.y + controller.eye_height <= surface_y)
         .unwrap_or(false);
+    let swim = water_contact.filter(|(surface_y, _, _, _)| {
+        swimlevel_reached(current_pos.y, *surface_y, controller.half_height + controller.radius)
+    });
     let (breath_remaining, drowning_damage) = advance_breath(
         controller.breath_remaining,
         controller.drowning_damage_accumulator,
@@ -940,6 +947,16 @@ fn player_water_state(
     best.map(|(surface_y, fraction, flow, damage, _)| (surface_y, fraction, flow, damage))
 }
 
+/// OpenMW's `swimlevel = waterLevel - halfExtentsZ * fSwimHeightScale`
+/// expressed for this capsule controller. Keep the scale engine-defined and
+/// game-invariant; water records do not author movement physics.
+const SWIM_HEIGHT_SCALE: f32 = 0.35;
+
+#[inline]
+fn swimlevel_reached(center_y: f32, surface_y: f32, half_span: f32) -> bool {
+    center_y < surface_y - half_span * SWIM_HEIGHT_SCALE
+}
+
 /// Integrate a swimmer toward a neutral buoyancy point near the waterline.
 /// Gravity is replaced by a critically-damped buoyancy spring; jump remains a
 /// bounded upward stroke while submerged. This keeps entry/exit continuous and
@@ -959,7 +976,7 @@ pub(crate) fn swim_vertical_velocity(
             .mul_add(0.55, prev_velocity * 0.15)
             .clamp(-120.0, 220.0);
     }
-    let target_y = surface_y - half_span * 0.35;
+    let target_y = surface_y - half_span * SWIM_HEIGHT_SCALE;
     let spring = (target_y - center_y) * (5.0 + 7.0 * fraction.clamp(0.0, 1.0));
     (prev_velocity * 0.72 + spring * dt).clamp(-120.0, 160.0)
 }
@@ -1339,6 +1356,13 @@ mod tests {
             "diagonal length must match forward-only length (input is normalised); \
              forward={forward_len}, diag={diag_len}"
         );
+    }
+
+    #[test]
+    fn swimlevel_keeps_shallow_wading_out_of_swim_mode() {
+        assert!(!swimlevel_reached(90.0, 100.0, 50.0));
+        assert!(swimlevel_reached(80.0, 100.0, 50.0));
+        assert!(!swimlevel_reached(82.5, 100.0, 50.0));
     }
 
     #[test]
