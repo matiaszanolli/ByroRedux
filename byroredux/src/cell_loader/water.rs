@@ -38,7 +38,7 @@ use byroredux_renderer::{Vertex, VulkanContext};
 use std::collections::HashMap;
 
 use crate::asset_provider::{resolve_texture, TextureProvider};
-use crate::components::{NormalMapHandle, WaterNoiseMapHandles};
+use crate::components::{NormalMapHandle, WaterLodInfo, WaterNoiseMapHandles};
 use crate::streaming::LodWaterPlane;
 use byroredux_core::math::coord::{zup_to_yup_pos, EXTERIOR_CELL_UNITS};
 
@@ -553,6 +553,13 @@ pub(crate) fn spawn_lod_water_plane(
             kind,
             material,
             damage_per_second,
+        },
+    );
+    world.insert(
+        entity,
+        WaterLodInfo {
+            height: lod_height,
+            water_form: lod_water_form,
         },
     );
     world.insert(entity, ParticleEmitter::water_splash());

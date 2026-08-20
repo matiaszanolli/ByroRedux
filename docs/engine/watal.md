@@ -557,8 +557,10 @@ authored worldspace LOD water, NAM2–4 noise layers, and bounded sunlight
   `WaterContact` (depth, submerged fraction, full-submersion flag, flow, and
   source material). `m-exteriors.sh` captures both commands in its retained
   per-game debug artifact.
-- Still open: include the worldspace-level `WaterLod` translation explicitly in
-  `water.dump`, and add a real-data GPU smoke.
+- **Shipped 2026-08-20:** `water.dump` now reports the worldspace-level LOD
+  water entity, authored height, and resolved NAM3 water form when present;
+  the provenance is attached to the render-only LOD entity and disappears with
+  it on unload. A real-data GPU smoke remains open.
 - A per-game translate-up unit harness (Phase 1) asserting SENTINEL-identity across
   Oblivion / FNV / Skyrim WATR inputs.
 

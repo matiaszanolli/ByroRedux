@@ -256,6 +256,18 @@ impl Component for WaterNoiseMapHandles {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// Authored worldspace LOD-water provenance exposed by `water.dump`.
+/// This is diagnostic state attached to the render-only LOD entity; it is not
+/// a second gameplay water representation.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct WaterLodInfo {
+    pub(crate) height: f32,
+    pub(crate) water_form: Option<u32>,
+}
+impl Component for WaterLodInfo {
+    type Storage = SparseSetStorage<Self>;
+}
+
 /// Resolved bindless indices for the common NIF material texture contract.
 ///
 /// Every static material carries the same semantic role set regardless of

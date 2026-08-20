@@ -6,7 +6,7 @@
 
 pub(crate) use crate::components::{
     AlphaBlend, DoorTeleport, InputState, IsFxMesh, MaterialTextureDebugInfo,
-    MaterialTextureHandles, MaterialTextureSource, TwoSided,
+    MaterialTextureHandles, MaterialTextureSource, TwoSided, WaterLodInfo,
 };
 pub(crate) use crate::helpers::world_resource_set;
 pub(crate) use byroredux_core::console::{CommandOutput, CommandRegistry, ConsoleCommand};

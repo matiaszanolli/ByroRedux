@@ -56,6 +56,18 @@ impl ConsoleCommand for WaterDumpCommand {
         let plane_count = plane_q.as_ref().map_or(0, |query| query.len());
 
         let mut lines = vec![format!("Water dump: planes={plane_count}")];
+        let lod_q = world.query::<WaterLodInfo>();
+        match lod_q.as_ref().and_then(|query| query.iter().next()) {
+            Some((entity, lod)) => lines.push(format!(
+                "  lod_water=entity:{} height={:.2} form={}",
+                entity,
+                lod.height,
+                lod.water_form
+                    .map(|form| format!("0x{form:08X}"))
+                    .unwrap_or_else(|| "none".to_string()),
+            )),
+            None => lines.push("  lod_water=none".to_string()),
+        }
         match (camera, camera_state) {
             (Some((entity, position)), Some(state)) => lines.push(format!(
                 "  camera={} pos=[{:.2},{:.2},{:.2}] submerged={} depth={:.2} material={}",
@@ -305,9 +317,21 @@ mod tests {
                 speed: 8.0,
             },
         );
+        world.insert(
+            water,
+            WaterLodInfo {
+                height: -500.0,
+                water_form: Some(0x00AB_CDEF),
+            },
+        );
 
         let output = WaterDumpCommand.execute(&world, "").lines.join("\n");
         assert!(output.contains("Water dump: planes=1"), "{output}");
+        assert!(
+            output.contains("lod_water=entity:")
+                && output.contains("height=-500.00 form=0x00ABCDEF"),
+            "{output}"
+        );
         assert!(
             output.contains("submerged=true depth=3.00 material=0x00001234"),
             "{output}"

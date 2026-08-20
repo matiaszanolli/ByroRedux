@@ -150,6 +150,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("WaterFlow", "static per-cell flow vector set once from WATR wind_direction or authored NAM0 velocity at cell load, no runtime mutator"),
         ("WaterPlane", "static per-cell water geometry+material set once from XCWT/WATR at cell load, no runtime mutator"),
         ("WaterVolume", "static per-cell AABB set once from XCLW/cell floor data at cell load, no runtime mutator"),
+        ("WaterLodInfo", "diagnostic-only worldspace LOD provenance rebuilt with the render-only LOD entity and removed on unload"),
         ("WaterNoiseMapHandles", "GPU bindless noise-texture handles rebuilt from WATR NAM2/NAM3/NAM4 paths at cell load; released on unload and never save-relevant"),
         ("WindField", "EXAL-derived (#2369): re-translated from the live WeatherDataRes wind byte at every worldspace entry; the saved WTHR state it derives from is what carries forward"),
         ("WorldBound", "per-frame bound recomputed from saved LocalBound + GlobalTransform, same exclusion class as GlobalTransform"),
