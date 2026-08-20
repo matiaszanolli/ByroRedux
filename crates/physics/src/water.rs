@@ -191,6 +191,11 @@ struct WaterSurface {
     flow: Option<WaterFlow>,
 }
 
+#[inline]
+fn nearest_surface_distance(surface_y: f32, reference_y: f32) -> f32 {
+    (surface_y - reference_y).abs()
+}
+
 /// Collect every active water plane's volume + surface height + material
 /// (+ optional flow). Linear scan — cells carry 1–3 planes; a broadphase
 /// would only matter at dozens (mirrors `submersion_system`).
@@ -375,7 +380,7 @@ pub(crate) fn apply_buoyancy(world: &World, had_newcomers: bool) {
                 let (min_y, max_y) = (aabb.mins.y, aabb.maxs.y);
                 surfaces
                     .iter()
-                    .find(|s| {
+                    .filter(|s| {
                         let v = &s.volume;
                         pos.x >= v.min[0]
                             && pos.x <= v.max[0]
@@ -383,6 +388,10 @@ pub(crate) fn apply_buoyancy(world: &World, had_newcomers: bool) {
                             && pos.z <= v.max[2]
                             && min_y <= s.surface_y + WATERLINE_HYSTERESIS
                             && max_y >= v.min[1]
+                    })
+                    .min_by(|a, b| {
+                        nearest_surface_distance(a.surface_y, center_y)
+                            .total_cmp(&nearest_surface_distance(b.surface_y, center_y))
                     })
                     .map(|s| (s, min_y, max_y))
             };

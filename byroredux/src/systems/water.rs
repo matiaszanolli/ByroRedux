@@ -153,13 +153,14 @@ pub(crate) fn submersion_system(world: &World, _dt: f32) {
         // the hysteresis resolver handles the near-surface sign.
         let surface_y = volume.max[1];
         let depth = surface_y - cam_pos.y;
-        // Pick the closest match (smallest depth wins — for nested
-        // / overlapping water volumes, the one closest to the camera
-        // controls the underwater FX).
+        // Pick the closest match by absolute vertical distance. During cell
+        // transitions an upper and lower water volume can overlap in XZ; a
+        // signed-depth comparison would incorrectly prefer the lowest
+        // surface whenever the camera is above both.
         let candidate = (depth, plane.material);
         match best {
             None => best = Some(candidate),
-            Some((prev_depth, _)) if depth < prev_depth => best = Some(candidate),
+            Some((prev_depth, _)) if depth.abs() < prev_depth.abs() => best = Some(candidate),
             _ => {}
         }
     }
@@ -554,5 +555,51 @@ mod tests {
             "material must reset to default, not keep feeding \
              compute_underwater_params a stale value"
         );
+    }
+
+    #[test]
+    fn overlapping_water_volumes_choose_nearest_surface() {
+        let mut world = World::new();
+        let camera = world.spawn();
+        world.insert_resource(ActiveCamera(camera));
+        world.insert(
+            camera,
+            GlobalTransform::new(
+                Vec3::new(0.0, 103.0, 0.0),
+                byroredux_core::math::Quat::IDENTITY,
+                1.0,
+            ),
+        );
+        world.insert(camera, SubmersionState::default());
+
+        for (surface_y, color) in [(0.0, [0.1, 0.2, 0.3]), (100.0, [0.7, 0.8, 0.9])] {
+            let water = world.spawn();
+            let mut material = WaterMaterial::default();
+            material.shallow_color = color;
+            world.insert(
+                water,
+                WaterPlane {
+                    kind: WaterKind::Calm,
+                    material,
+                },
+            );
+            world.insert(
+                water,
+                WaterVolume {
+                    min: [-50.0, surface_y - 100.0, -50.0],
+                    max: [50.0, surface_y, 50.0],
+                },
+            );
+        }
+
+        submersion_system(&world, 0.016);
+        let state = world
+            .query::<SubmersionState>()
+            .expect("submersion storage")
+            .get(camera)
+            .copied()
+            .expect("camera state");
+        assert_eq!(state.depth, -3.0);
+        assert_eq!(state.material.expect("selected water").shallow_color, [0.7, 0.8, 0.9]);
     }
 }
