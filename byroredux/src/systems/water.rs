@@ -184,6 +184,18 @@ pub(crate) fn submersion_system(world: &World, _dt: f32) {
         let Some(volume) = vq.get(entity) else {
             continue;
         };
+        let surface_y = volume.max[1]
+            + wave_adjustment
+                .map(|(time, (weather_scroll, wind_wave_scale))| {
+                    byroredux_physics::authored_wave_height_with_weather(
+                        &plane.material,
+                        cam_pos,
+                        time,
+                        weather_scroll,
+                        wind_wave_scale,
+                    )
+                })
+                .unwrap_or(0.0);
         // Full 3-D AABB containment. The previous version checked
         // only the horizontal extent + a "below the surface"
         // condition, which mis-flagged cameras that sat far below
@@ -201,27 +213,16 @@ pub(crate) fn submersion_system(world: &World, _dt: f32) {
         if cam_pos.x < volume.min[0]
             || cam_pos.x > volume.max[0]
             || cam_pos.y < volume.min[1]
-            || cam_pos.y > volume.max[1] + WATERLINE_HYSTERESIS
+            || cam_pos.y > surface_y + WATERLINE_HYSTERESIS
             || cam_pos.z < volume.min[2]
             || cam_pos.z > volume.max[2]
         {
             continue;
         }
-        // Surface is at volume.max.y. With the band-extended upper
-        // bound above, `depth` ranges in (-WATERLINE_HYSTERESIS, ...];
-        // the hysteresis resolver handles the near-surface sign.
-        let surface_y = volume.max[1]
-            + wave_adjustment
-                .map(|(time, (weather_scroll, wind_wave_scale))| {
-                    byroredux_physics::authored_wave_height_with_weather(
-                        &plane.material,
-                        cam_pos,
-                        time,
-                        weather_scroll,
-                        wind_wave_scale,
-                    )
-                })
-                .unwrap_or(0.0);
+        // Surface is the authored volume height plus the bounded rendered
+        // wave. With the band-extended upper bound above, `depth` ranges in
+        // (-WATERLINE_HYSTERESIS, ...]; the hysteresis resolver handles the
+        // near-surface sign.
         let depth = surface_y - cam_pos.y;
         // Pick the closest match by absolute vertical distance. During cell
         // transitions an upper and lower water volume can overlap in XZ; a
@@ -671,6 +672,67 @@ mod tests {
         let splashes = world.query::<SplashEvent>().expect("splash storage");
         assert!(ripples.get(water).is_some());
         assert!(splashes.get(water).is_some());
+    }
+
+    #[test]
+    fn camera_submersion_accepts_a_wave_crest_above_flat_hysteresis() {
+        let mut world = World::new();
+        let material = WaterMaterial {
+            wave_amplitude: 32.0,
+            wave_frequency: 0.6,
+            ..WaterMaterial::default()
+        };
+        let (position, wave) = (0..64)
+            .flat_map(|x| (0..64).map(move |z| Vec3::new(x as f32 * 17.0, 0.0, z as f32 * 19.0)))
+            .map(|position| {
+                let wave = byroredux_physics::authored_wave_height_with_weather(
+                    &material,
+                    position,
+                    0.37,
+                    [0.0; 2],
+                    1.0,
+                );
+                (position, wave)
+            })
+            .find(|(_, wave)| *wave > WATERLINE_HYSTERESIS + 1.0)
+            .expect("test material must produce a crest above the flat band");
+        let camera = world.spawn();
+        world.insert_resource(ActiveCamera(camera));
+        world.insert_resource(byroredux_core::ecs::resources::TotalTime(0.37));
+        world.insert(
+            camera,
+            GlobalTransform::new(
+                Vec3::new(position.x, wave + 1.0, position.z),
+                byroredux_core::math::Quat::IDENTITY,
+                1.0,
+            ),
+        );
+        world.insert(camera, SubmersionState::default());
+        let water = world.spawn();
+        world.insert(
+            water,
+            WaterPlane {
+                kind: WaterKind::Calm,
+                material,
+                damage_per_second: 0.0,
+            },
+        );
+        world.insert(
+            water,
+            WaterVolume {
+                min: [-2000.0, -100.0, -2000.0],
+                max: [2000.0, 0.0, 2000.0],
+            },
+        );
+
+        submersion_system(&world, 0.0);
+        let state = world
+            .query::<SubmersionState>()
+            .expect("submersion storage")
+            .get(camera)
+            .copied()
+            .expect("camera state");
+        assert!(state.depth < 0.0, "camera is above the crest: {state:?}");
     }
 
     #[test]
