@@ -690,6 +690,15 @@ pub(crate) fn resolve_water_material(
             }
             let authored_wind = rec.params.noise_wind_speeds;
             let authored_dirs = rec.params.noise_wind_directions;
+            let authored_layer_scroll = |layer: usize| {
+                let speed = authored_wind[layer];
+                if speed.is_finite() && speed > 0.0 && authored_dirs[layer].is_finite() {
+                    let (sin_theta, cos_theta) = authored_dirs[layer].sin_cos();
+                    [cos_theta * speed, sin_theta * speed]
+                } else {
+                    [0.0, 0.0]
+                }
+            };
             mat.source_form = rec.form_id;
 
             // ── WaterKind heuristic from EDID naming convention ──
@@ -761,11 +770,22 @@ pub(crate) fn resolve_water_material(
                 // but let the visual scroll rate follow that scale.
                 let flowmap_scale = mat.flowmap_scale.clamp(0.05, 8.0);
                 // Rebuild scroll vectors to bias along the flow axis,
-                // converting out of BU/s at the documented rate.
+                // converting out of BU/s at the documented rate. Preserve
+                // authored per-layer motion as an additional component;
+                // otherwise Skyrim/FO4 velocity tails silently disappear
+                // whenever a water record is classified as flowing.
                 let scroll = canonical.speed * flowmap_scale * WATER_SCROLL_UV_PER_BU_PER_S;
-                mat.scroll_a = [cos_theta * scroll, sin_theta * scroll];
+                let authored_a = authored_layer_scroll(0);
+                let authored_b = authored_layer_scroll(1);
+                mat.scroll_a = [
+                    cos_theta * scroll + authored_a[0],
+                    sin_theta * scroll + authored_a[1],
+                ];
                 // Perpendicular shear at half rate for the second layer.
-                mat.scroll_b = [-sin_theta * scroll * 0.5, cos_theta * scroll * 0.5];
+                mat.scroll_b = [
+                    -sin_theta * scroll * 0.5 + authored_b[0],
+                    cos_theta * scroll * 0.5 + authored_b[1],
+                ];
                 flow = Some(canonical);
             }
             // Calm bodies have no canonical current. Preserve authored
@@ -773,13 +793,13 @@ pub(crate) fn resolve_water_material(
             // visual UV velocity only and must not replace the shared
             // weather wind later used by SpeedTree vegetation.
             if matches!(kind, WaterKind::Calm) {
-                if authored_wind[0] > 0.0 {
-                    let (sin_theta, cos_theta) = authored_dirs[0].sin_cos();
-                    mat.scroll_a = [cos_theta * authored_wind[0], sin_theta * authored_wind[0]];
+                let authored_a = authored_layer_scroll(0);
+                let authored_b = authored_layer_scroll(1);
+                if authored_a != [0.0, 0.0] {
+                    mat.scroll_a = authored_a;
                 }
-                if authored_wind[1] > 0.0 {
-                    let (sin_theta, cos_theta) = authored_dirs[1].sin_cos();
-                    mat.scroll_b = [cos_theta * authored_wind[1], sin_theta * authored_wind[1]];
+                if authored_b != [0.0, 0.0] {
+                    mat.scroll_b = authored_b;
                 }
             }
             // TNAM is the diffuse / noise texture — used as the
@@ -2015,6 +2035,31 @@ mod tests {
             "wave_frequency must round-trip from WATR"
         );
         assert!(matches!(kind, WaterKind::Calm));
+    }
+
+    #[test]
+    fn flowing_water_preserves_authored_layer_motion() {
+        let mut rec = calm_watr(
+            0x000A_0002,
+            "LocalizedWater",
+            WaterParams {
+                wind_direction: 0.0,
+                noise_wind_directions: [0.0, std::f32::consts::FRAC_PI_2, 0.0],
+                noise_wind_speeds: [0.10, 0.20, 0.0],
+                ..WaterParams::default()
+            },
+        );
+        // NAM5 is an authored flow signal even when the EDID is localized or
+        // otherwise gives no English river/stream hint.
+        rec.flow_noise_texture_path = "textures\\water\\flow.dds".to_string();
+        let mut waters = HashMap::new();
+        waters.insert(rec.form_id, rec);
+
+        let (mat, kind, flow, _, _) = resolve_water_material(&waters, Some(0x000A_0002));
+        assert!(matches!(kind, WaterKind::River));
+        assert!(flow.is_some());
+        assert!(mat.scroll_a[0] > 0.10);
+        assert!(mat.scroll_b[1] > 0.20);
     }
 
     #[test]

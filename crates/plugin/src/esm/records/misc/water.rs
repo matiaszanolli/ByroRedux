@@ -125,9 +125,8 @@ pub struct WaterParams {
     pub wind_speed: f32,
     /// Wind direction in radians (DATA `wind_direction`).
     pub wind_direction: f32,
-    /// Wave amplitude — vertex displacement magnitude. Not used by
-    /// the flat-mesh shader (we perturb shading normals instead) but
-    /// carried for future displacement work / underwater systems.
+    /// Wave amplitude — vertex displacement magnitude. The renderer applies
+    /// it to the tessellated flat mesh, modulated by shared weather wind.
     pub wave_amplitude: f32,
     /// Wave frequency, Hz.
     pub wave_frequency: f32,
