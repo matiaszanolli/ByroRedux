@@ -147,7 +147,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("TravelBehavior", "active-package-derived config rebuilt at spawn and replaced by ambient_ai_package_system; mutable companion TravelState is registered"),
         ("WanderBehavior", "active-package-derived config rebuilt at spawn and replaced by ambient_ai_package_system; mutable companion WanderState is registered"),
         ("WaterContact", "per-tick physics-derived output recomputed from body pose + WaterVolume; drowning accumulation is not yet wired"),
-        ("WaterFlow", "static per-cell flow vector set once from WATR wind_direction at cell load, no runtime mutator"),
+        ("WaterFlow", "static per-cell flow vector set once from WATR wind_direction or authored NAM0 velocity at cell load, no runtime mutator"),
         ("WaterPlane", "static per-cell water geometry+material set once from XCWT/WATR at cell load, no runtime mutator"),
         ("WaterVolume", "static per-cell AABB set once from XCLW/cell floor data at cell load, no runtime mutator"),
         ("WaterNoiseMapHandles", "GPU bindless noise-texture handles rebuilt from WATR NAM2/NAM3/NAM4 paths at cell load; released on unload and never save-relevant"),
