@@ -60,6 +60,13 @@ pub(super) fn reemit_water_planes(
     let gust = weather_wind.speed
         + weather_wind.gust_amplitude
             * (time_secs * weather_wind.gust_frequency * std::f32::consts::TAU).sin();
+    // Use the same instantaneous gust magnitude that drives SpeedTree sway.
+    // Keep authored WATR amplitude as the baseline, then add at most 50% in
+    // the strongest weather so calm water remains calm and storm water gains
+    // a visible silhouette response without runaway displacement.
+    const MAX_WEATHER_WIND_SPEED: f32 = 220.0;
+    let wind_wave_scale = 1.0
+        + (gust.max(0.0) / MAX_WEATHER_WIND_SPEED).clamp(0.0, 1.0) * 0.5;
     const WEATHER_WATER_SCROLL_PER_BU_PER_S: f32 = 0.0015;
     let weather_scroll = [
         weather_wind.direction[0] * gust * WEATHER_WATER_SCROLL_PER_BU_PER_S,
@@ -134,7 +141,7 @@ pub(super) fn reemit_water_planes(
                 mat.uv_scale_a,
                 mat.uv_scale_b,
                 mat.shoreline_width,
-                mat.wave_amplitude, // #2240 — WATR-authored, consumed by water.frag
+                mat.wave_amplitude * wind_wave_scale, // #2240 — WATR + shared wind
             ],
             misc: [
                 mat.fresnel_f0,

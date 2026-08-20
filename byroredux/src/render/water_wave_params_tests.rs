@@ -156,6 +156,9 @@ fn weather_wind_reaches_water_scroll_alongside_speedtree_wind_field() {
     let windy = run_build(&world);
     assert!(windy[0].params.scroll[0] > calm[0].params.scroll[0]);
     assert_eq!(windy[0].params.scroll[1], calm[0].params.scroll[1]);
+    assert!(windy[0].params.tune[3] > calm[0].params.tune[3]);
+    let expected_scale = 1.0 + (100.0 / 220.0) * 0.5;
+    assert!((windy[0].params.tune[3] - 0.05 * expected_scale).abs() < 1e-6);
 }
 
 #[test]
