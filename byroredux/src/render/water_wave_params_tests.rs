@@ -47,6 +47,7 @@ fn world_with_water_plane(
                 underwater_fog_near: 14.0,
                 underwater_fog_far: 260.0,
                 underwater_fog_amount: 0.8,
+                reflection_hdr_multiplier: 1.5,
                 ..WaterMaterial::default()
             },
             damage_per_second: 0.0,
@@ -118,6 +119,16 @@ fn authored_wave_and_sun_params_reach_the_water_gpu_record() {
     assert_eq!(params.detail[1..4], [0.7, 0.6, 0.5]);
     assert_eq!(params.depth, [0.9, 0.5, 0.1, 0.2]);
     assert_eq!(params.effects, [9.0, 500.0, 0.34, 3.2]);
+    for (actual, expected) in params
+        .tint_reflect
+        .iter()
+        .zip([0.975, 1.05, 1.125, 0.85])
+    {
+        assert!(
+            (actual - expected).abs() < 1.0e-5,
+            "legacy reflection HDR multiplier must reach the water GPU tint"
+        );
+    }
     assert_eq!([params.scroll_c[2], params.scroll_c[3]], [14.0, 260.0]);
     assert_eq!(params.underwater, [0.12, 0.24, 0.36, 0.8]);
 }
