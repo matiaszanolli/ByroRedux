@@ -553,6 +553,14 @@ fn decode_data_fo3nv(data: &[u8]) -> WaterParams {
     if let Some(value) = read_f32_at(data, 80) {
         p.wave_frequency = value.max(0.0);
     }
+    // FO3/FNV displacement simulator: starting size, radial falloff, and
+    // dampener. Keep these authored ripple-shape controls in the canonical
+    // material instead of reducing every water type to force/velocity only.
+    for (slot, offset) in p.displacement.iter_mut().zip([72, 84, 88]) {
+        if let Some(value) = read_f32_at(data, offset) {
+            *slot = value.max(0.0);
+        }
+    }
     if let Some(value) = read_f32_at(data, 96) {
         p.normal_magnitude = value.max(0.0);
     }
@@ -1496,6 +1504,9 @@ mod tests {
         data[144..148].copy_from_slice(&0.5f32.to_le_bytes()); // underwater amount
         data[148..152].copy_from_slice(&18.0f32.to_le_bytes()); // underwater near
         data[152..156].copy_from_slice(&240.0f32.to_le_bytes()); // underwater far
+        data[72..76].copy_from_slice(&0.06f32.to_le_bytes()); // displacement start
+        data[84..88].copy_from_slice(&0.8f32.to_le_bytes()); // displacement falloff
+        data[88..92].copy_from_slice(&4.0f32.to_le_bytes()); // displacement dampener
         data[164..168].copy_from_slice(&180.0f32.to_le_bytes()); // specular radius
         data[168..172].copy_from_slice(&1.4f32.to_le_bytes()); // specular brightness
         data[100..104].copy_from_slice(&90.0f32.to_le_bytes()); // layer 1 direction
@@ -1510,6 +1521,7 @@ mod tests {
         assert!((w.params.reflection_color[0] - 41.0 / 255.0).abs() < 1e-6);
         assert!((w.params.reflection_color[2] - 46.0 / 255.0).abs() < 1e-6);
         assert_eq!(w.params.sun_specular_power, 61.0);
+        assert_eq!(w.params.displacement, [0.06, 0.8, 4.0]);
         assert_eq!(w.params.specular_radius, 180.0);
         assert_eq!(w.params.specular_magnitude, 1.4);
         assert_eq!(w.params.reflectivity, 0.65);

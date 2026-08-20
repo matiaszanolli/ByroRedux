@@ -268,6 +268,8 @@ equivalent trio (DNAM[52,56,60]) now scale the shallow, deep, and surface-effect
 normal contributions; an all-zero triplet preserves the legacy response.
 FO3/FNV's long-tail Light Radius and Light Brightness (DATA[164,168]) now
 feed the shared reflection-width and specular-intensity controls.
+Their displacement-simulator starting size, radial falloff, and dampener
+(DATA[72,84,88]) likewise reach the shared ripple profile.
 Skyrim's Sun Sparkle Magnitude (DNAM[200]) now folds into the canonical
 direct-sun glint multiplier alongside the existing specular magnitude;
 Specular Brightness (DNAM[168]) contributes to that same intensity.
