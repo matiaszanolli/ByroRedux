@@ -74,6 +74,11 @@ const DEFAULT_INTERIOR_VOLUME_DEPTH: f32 = 200.0;
 /// fragment normal path still supplies the fine ripples.
 const FULL_DETAIL_WATER_GRID_SEGMENTS: usize = 16;
 
+/// Subdivisions per side of the distant-water annulus' outer-to-hole bands.
+/// Eight keeps the single worldspace mesh small while preventing its wave
+/// displacement from collapsing into four giant corner panels.
+const LOD_WATER_RING_SUBDIVISIONS: usize = 8;
+
 /// Derive a conservative horizontal placement for an interior water plane
 /// from the cell's authored REFR positions. Interior references are stored in
 /// Bethesda Z-up coordinates; the renderer's horizontal axes are X/Z after
@@ -406,19 +411,18 @@ fn build_lod_water_frame(
         return None;
     }
 
-    let cols = [
-        center_x_zup - outer,
-        center_x_zup - inner,
-        center_x_zup + inner,
-        center_x_zup + outer,
-    ];
-    let rows = [
-        center_y_zup - outer,
-        center_y_zup - inner,
-        center_y_zup + inner,
-        center_y_zup + outer,
-    ];
-    let n = 4usize;
+    let mut axis = Vec::with_capacity(2 * (LOD_WATER_RING_SUBDIVISIONS + 1));
+    for i in 0..=LOD_WATER_RING_SUBDIVISIONS {
+        let t = i as f32 / LOD_WATER_RING_SUBDIVISIONS as f32;
+        axis.push(-outer + (outer - inner) * t);
+    }
+    for i in 0..=LOD_WATER_RING_SUBDIVISIONS {
+        let t = i as f32 / LOD_WATER_RING_SUBDIVISIONS as f32;
+        axis.push(inner + (outer - inner) * t);
+    }
+    let cols: Vec<f32> = axis.iter().map(|offset| center_x_zup + offset).collect();
+    let rows: Vec<f32> = axis.iter().map(|offset| center_y_zup + offset).collect();
+    let n = axis.len();
 
     let mut vertices: Vec<Vertex> = Vec::with_capacity(n * n);
     for &world_y_zup in &rows {
@@ -442,13 +446,14 @@ fn build_lod_water_frame(
         }
     }
 
-    // 3×3 quads; (r=1, c=1) is the hole cut out for the full-detail
-    // streamed area. Same tl/tr/bl/br two-triangle winding as
+    // The central quad band is the hole cut out for the full-detail streamed
+    // area. Same tl/tr/bl/br two-triangle winding as
     // `spawn_lod_block`.
-    let mut indices: Vec<u32> = Vec::with_capacity(8 * 6);
+    let hole_band = LOD_WATER_RING_SUBDIVISIONS;
+    let mut indices: Vec<u32> = Vec::with_capacity((n - 1) * (n - 1) * 6);
     for r in 0..(n - 1) {
         for c in 0..(n - 1) {
-            if r == 1 && c == 1 {
+            if r == hole_band && c == hole_band {
                 continue; // the hole
             }
             let tl = (r * n + c) as u32;
@@ -751,25 +756,40 @@ mod tests {
         assert!(build_lod_water_frame(1000.0, 2000.0, 0.0, 0.0, 0.0).is_none());
     }
 
-    /// A valid annulus request produces the expected vertex/triangle
-    /// counts: 16 vertices (4×4 grid), 16 triangles (8 of the 9 quads —
-    /// the center one is the hole, per `build_lod_water_frame`'s doc).
+    /// A valid annulus request produces the expected vertex/triangle counts:
+    /// the two eight-subdivision bands form an 18×18 grid, with one central
+    /// quad removed for the hole.
     #[test]
     fn valid_annulus_has_expected_vertex_and_triangle_counts() {
         let (vertices, indices) = build_lod_water_frame(2000.0, 500.0, 0.0, 0.0, 100.0)
             .expect("outer > inner must build a frame");
-        assert_eq!(vertices.len(), 16);
-        assert_eq!(indices.len(), 8 * 6, "8 quads × 2 triangles × 3 indices");
+        let side = 2 * (LOD_WATER_RING_SUBDIVISIONS + 1);
+        assert_eq!(vertices.len(), side * side);
+        assert_eq!(
+            indices.len(),
+            ((side - 1) * (side - 1) - 1) * 6,
+            "all grid quads except the center hole"
+        );
     }
 
     /// The center quad (the hole) must never appear as a triangle — its
-    /// four corner indices (5, 6, 9, 10 in the row-major 4×4 grid) must
-    /// never all-three appear together as one emitted triangle.
+    /// four corner indices around the center hole must never all-three appear
+    /// together as one emitted triangle.
     #[test]
     fn center_quad_is_never_emitted() {
         let (_, indices) = build_lod_water_frame(2000.0, 500.0, 0.0, 0.0, 100.0)
             .expect("outer > inner must build a frame");
-        let hole_corners: std::collections::HashSet<u32> = [5, 6, 9, 10].into_iter().collect();
+        let side = 2 * (LOD_WATER_RING_SUBDIVISIONS + 1);
+        let h = LOD_WATER_RING_SUBDIVISIONS as u32;
+        let side = side as u32;
+        let hole_corners: std::collections::HashSet<u32> = [
+            h * side + h,
+            h * side + h + 1,
+            (h + 1) * side + h,
+            (h + 1) * side + h + 1,
+        ]
+        .into_iter()
+        .collect();
         for tri in indices.chunks_exact(3) {
             let all_in_hole = tri.iter().all(|i| hole_corners.contains(i));
             assert!(
