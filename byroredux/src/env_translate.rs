@@ -558,6 +558,34 @@ pub(crate) fn resolve_water_material(
             mat.underwater_fog_near = rec.params.underwater_fog_near;
             mat.underwater_fog_far = rec.params.underwater_fog_far;
             mat.underwater_fog_amount = rec.params.underwater_fog_amount.clamp(0.0, 8.0);
+            // FO4/FO76 authored suspended silt is a water-column color
+            // contribution, not a separate shader branch. Blend it once at
+            // translation so every consumer (surface, refraction, and
+            // underwater presentation) sees the same resolved palette.
+            if rec.params.silt_amount.is_finite() && rec.params.silt_amount > 0.0 {
+                let silt = rec.params.silt_amount.clamp(0.0, 1.0);
+                for (dst, src) in mat
+                    .shallow_color
+                    .iter_mut()
+                    .zip(rec.params.silt_light_color)
+                {
+                    *dst = (*dst * (1.0 - silt * 0.25) + src * (silt * 0.25)).clamp(0.0, 1.0);
+                }
+                for (dst, src) in mat
+                    .deep_color
+                    .iter_mut()
+                    .zip(rec.params.silt_dark_color)
+                {
+                    *dst = (*dst * (1.0 - silt) + src * silt).clamp(0.0, 1.0);
+                }
+                for (dst, src) in mat
+                    .underwater_color
+                    .iter_mut()
+                    .zip(rec.params.silt_dark_color)
+                {
+                    *dst = (*dst * (1.0 - silt) + src * silt).clamp(0.0, 1.0);
+                }
+            }
             if rec.opacity.is_finite() && rec.opacity > 0.0 {
                 mat.opacity = rec.opacity.clamp(0.05, 1.0);
             }
@@ -571,6 +599,15 @@ pub(crate) fn resolve_water_material(
             mat.wave_amplitude = rec.params.wave_amplitude;
             mat.wave_frequency = rec.params.wave_frequency;
             mat.sun_specular_power = rec.params.sun_specular_power;
+            // Starfield replaces the legacy sun-power scalar with a physical
+            // surface roughness. Convert the authored roughness to the
+            // Blinn exponent consumed by the shared direct-sun path; older
+            // records retain their authored/default exponent unchanged.
+            if rec.params.roughness.is_finite() && rec.params.roughness > 0.0 {
+                let roughness = rec.params.roughness.clamp(0.02, 1.0);
+                mat.sun_specular_power = (2.0 / (roughness * roughness) - 2.0)
+                    .clamp(1.0, 2048.0);
+            }
             // FO3/FNV long DATA records carry independent authored tiling
             // controls for the first two noise layers. Keep the canonical
             // defaults for short/Oblivion records, and clamp only finite
@@ -638,6 +675,15 @@ pub(crate) fn resolve_water_material(
             }
             if rec.params.flowmap_scale.is_finite() && rec.params.flowmap_scale > 0.0 {
                 mat.flowmap_scale = rec.params.flowmap_scale.clamp(0.05, 8.0);
+            }
+            for (dst, src) in mat
+                .absorption_ranges
+                .iter_mut()
+                .zip(rec.params.absorption_ranges)
+            {
+                if src.is_finite() && src > 0.0 {
+                    *dst = src.clamp(0.01, 100_000.0);
+                }
             }
             if rec.params.specular_magnitude.is_finite() && rec.params.specular_magnitude > 0.0 {
                 mat.specular_magnitude = rec.params.specular_magnitude.clamp(0.0, 8.0);
@@ -1870,6 +1916,11 @@ mod tests {
                 specular_magnitude: 0.0,
                 noise_wind_directions: [0.0; 3],
                 noise_wind_speeds: [0.0; 3],
+                absorption_ranges: [0.0; 3],
+                roughness: 0.0,
+                silt_amount: 0.0,
+                silt_light_color: [0.0; 3],
+                silt_dark_color: [0.0; 3],
             },
             raw_dnam: Vec::new(),
             raw_data: Vec::new(),
@@ -1947,6 +1998,61 @@ mod tests {
             "wave_frequency must round-trip from WATR"
         );
         assert!(matches!(kind, WaterKind::Calm));
+    }
+
+    #[test]
+    fn resolve_water_material_carries_starfield_absorption_ranges() {
+        let rec = calm_watr(
+            0x000A_0008,
+            "StarfieldOcean",
+            WaterParams {
+                absorption_ranges: [12.0, 34.0, 56.0],
+                ..WaterParams::default()
+            },
+        );
+        let mut waters = HashMap::new();
+        waters.insert(rec.form_id, rec);
+        let (mat, _, _, _, _) = resolve_water_material(&waters, Some(0x000A_0008));
+        assert_eq!(mat.absorption_ranges, [12.0, 34.0, 56.0]);
+    }
+
+    #[test]
+    fn resolve_water_material_maps_starfield_roughness_to_sun_exponent() {
+        let rec = calm_watr(
+            0x000A_0009,
+            "StarfieldOcean",
+            WaterParams {
+                roughness: 0.5,
+                ..WaterParams::default()
+            },
+        );
+        let mut waters = HashMap::new();
+        waters.insert(rec.form_id, rec);
+        let (mat, _, _, _, _) = resolve_water_material(&waters, Some(0x000A_0009));
+        assert!((mat.sun_specular_power - 6.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn resolve_water_material_blends_fo4_silt_into_water_palette() {
+        let rec = calm_watr(
+            0x000A_000A,
+            "MuddyWater",
+            WaterParams {
+                shallow_color: [0.8, 0.8, 0.8],
+                deep_color: [0.8, 0.8, 0.8],
+                underwater_color: [0.8, 0.8, 0.8],
+                silt_amount: 0.5,
+                silt_light_color: [1.0, 0.0, 0.0],
+                silt_dark_color: [0.0, 0.0, 0.0],
+                ..WaterParams::default()
+            },
+        );
+        let mut waters = HashMap::new();
+        waters.insert(rec.form_id, rec);
+        let (mat, _, _, _, _) = resolve_water_material(&waters, Some(0x000A_000A));
+        assert!(mat.shallow_color[0] > mat.shallow_color[1]);
+        assert!(mat.deep_color.iter().all(|channel| *channel < 0.8));
+        assert_eq!(mat.deep_color, mat.underwater_color);
     }
 
     #[test]

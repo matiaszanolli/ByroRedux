@@ -24,6 +24,7 @@
 use byroredux_core::ecs::components::groundcover::WindField;
 use byroredux_core::ecs::components::water::{WaterFlow, WaterKind, WaterPlane};
 use byroredux_core::ecs::{TotalTime, World};
+use byroredux_scripting::RippleEvent;
 use byroredux_renderer::vulkan::context::DrawCommand;
 use byroredux_renderer::vulkan::water::{GpuWaterParams, WaterDrawCommand};
 
@@ -64,6 +65,7 @@ pub(super) fn reemit_water_planes(
         return;
     };
     let fq = world.query::<WaterFlow>();
+    let rq = world.query::<RippleEvent>();
     for (entity, plane) in wq.iter() {
         let Some(idx) = draw_commands.iter().position(|c| c.entity_id == entity) else {
             // Entity has WaterPlane but no DrawCommand was emitted —
@@ -76,6 +78,18 @@ pub(super) fn reemit_water_planes(
         draw_commands[idx].is_water = true;
 
         let flow = fq.as_ref().and_then(|q| q.get(entity).copied());
+        let ripple = rq
+            .as_ref()
+            .and_then(|q| q.get(entity).copied())
+            .map(|event| {
+                [
+                    event.position[0],
+                    event.position[2],
+                    event.intensity.clamp(0.0, 1.0),
+                    4.0 + event.intensity.clamp(0.0, 1.0) * 20.0,
+                ]
+            })
+            .unwrap_or([0.0; 4]);
         let (flow_dir, flow_speed) = match flow {
             Some(f) => (f.direction, f.speed),
             None => ([1.0, 0.0, 0.0], 0.0),
@@ -149,6 +163,13 @@ pub(super) fn reemit_water_planes(
                 mat.effect_controls[2],
                 mat.effect_controls[3] * mat.specular_magnitude,
             ],
+            absorption: [
+                mat.absorption_ranges[0],
+                mat.absorption_ranges[1],
+                mat.absorption_ranges[2],
+                0.0,
+            ],
+            ripple,
         };
         water_commands.push(WaterDrawCommand {
             mesh_handle: draw_commands[idx].mesh_handle,

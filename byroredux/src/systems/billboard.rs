@@ -23,6 +23,7 @@ pub(crate) fn make_billboard_system() -> impl FnMut(&World, f32) + Send + Sync {
     // Sentinel: `None` on first frame so the loop always runs once.
     let mut last_cam: Option<(Vec3, Vec3)> = None;
     let mut elapsed = 0.0_f32;
+    let mut last_wind_active = false;
 
     move |world: &World, dt: f32| {
         elapsed = (elapsed + dt.max(0.0)).max(0.0);
@@ -31,6 +32,8 @@ pub(crate) fn make_billboard_system() -> impl FnMut(&World, f32) + Send + Sync {
             .map(|w| *w)
             .unwrap_or_default();
         let wind_active = wind.speed > 1.0e-4 || wind.gust_amplitude > 1.0e-4;
+        let wind_state_changed = wind_active != last_wind_active;
+        last_wind_active = wind_active;
         // Active camera lookup (position + forward).
         let Some(active) = world.try_resource::<ActiveCamera>() else {
             return;
@@ -61,7 +64,7 @@ pub(crate) fn make_billboard_system() -> impl FnMut(&World, f32) + Send + Sync {
         // Exact equality is appropriate here: the camera transform is
         // written by camera_follow_system / fly_camera_system with no
         // floating-point accumulation.
-        if last_cam == Some((cam_pos, cam_forward)) && !wind_active {
+        if last_cam == Some((cam_pos, cam_forward)) && !wind_active && !wind_state_changed {
             return;
         }
         last_cam = Some((cam_pos, cam_forward));
@@ -174,4 +177,54 @@ fn compute_billboard_rotation(
         return Quat::IDENTITY;
     }
     Quat::from_rotation_arc(from, look_dir)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use byroredux_core::ecs::components::groundcover::WindField;
+    use byroredux_core::ecs::{Camera, Transform};
+
+    #[test]
+    fn speedtree_billboard_bends_with_shared_weather_wind() {
+        let mut world = World::new();
+        let camera = world.spawn();
+        world.insert(camera, Transform::IDENTITY);
+        world.insert(camera, GlobalTransform::IDENTITY);
+        world.insert(camera, Camera::default());
+        world.insert_resource(ActiveCamera(camera));
+
+        let tree = world.spawn();
+        world.insert(
+            tree,
+            GlobalTransform::new(Vec3::new(12.0, 0.0, 8.0), Quat::IDENTITY, 1.0),
+        );
+        world.insert(tree, Billboard::new(BillboardMode::BsRotateAboutUp));
+        world.insert_resource(WindField {
+            direction: [1.0, 0.0],
+            speed: 220.0,
+            gust_amplitude: 0.0,
+            gust_frequency: 0.0,
+        });
+
+        let mut system = make_billboard_system();
+        system(&world, 0.0);
+        let first = world
+            .query::<GlobalTransform>()
+            .unwrap()
+            .get(tree)
+            .unwrap()
+            .rotation;
+        system(&world, 0.5);
+        let second = world
+            .query::<GlobalTransform>()
+            .unwrap()
+            .get(tree)
+            .unwrap()
+            .rotation;
+        assert_ne!(
+            first, second,
+            "SpeedTree billboard must respond to weather wind"
+        );
+    }
 }

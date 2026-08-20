@@ -3,8 +3,10 @@
 //! exact `GpuWaterParams` slots consumed by `water.frag`.
 
 use super::*;
+use byroredux_core::ecs::components::groundcover::WindField;
 use byroredux_core::ecs::components::water::{WaterKind, WaterMaterial, WaterPlane};
 use byroredux_core::ecs::{ActiveCamera, Camera, GlobalTransform, MeshHandle, World};
+use byroredux_scripting::RippleEvent;
 
 fn world_with_water_plane(
     wave_amplitude: f32,
@@ -131,4 +133,83 @@ fn default_wave_params_are_the_sentinel_the_shader_normalises_against() {
     assert_eq!(params.tune[3], 0.05);
     assert_eq!(params.misc[1], 0.6);
     assert_eq!(params.misc[3], 50.0);
+}
+
+#[test]
+fn weather_wind_reaches_water_scroll_alongside_speedtree_wind_field() {
+    let mut world = world_with_water_plane(
+        0.05,
+        0.6,
+        50.0,
+        1.0 / 512.0,
+        [1.0; 3],
+        [1.0; 4],
+        [0.0, 0.0, 1.0, 1.0],
+    );
+    let calm = run_build(&world);
+    world.insert_resource(WindField {
+        direction: [1.0, 0.0],
+        speed: 100.0,
+        gust_amplitude: 0.0,
+        gust_frequency: 0.0,
+    });
+    let windy = run_build(&world);
+    assert!(windy[0].params.scroll[0] > calm[0].params.scroll[0]);
+    assert_eq!(windy[0].params.scroll[1], calm[0].params.scroll[1]);
+}
+
+#[test]
+fn starfield_absorption_ranges_reach_water_gpu_params() {
+    let world = world_with_water_plane(
+        0.05,
+        0.6,
+        50.0,
+        1.0 / 512.0,
+        [1.0; 3],
+        [1.0; 4],
+        [0.0, 0.0, 1.0, 1.0],
+    );
+    let water = world
+        .query::<WaterPlane>()
+        .unwrap()
+        .iter()
+        .next()
+        .map(|(entity, _)| entity)
+        .expect("water plane");
+    {
+        let mut query = world.query_mut::<WaterPlane>().unwrap();
+        query.get_mut(water).unwrap().material.absorption_ranges = [12.0, 34.0, 56.0];
+    }
+    let draws = run_build(&world);
+    assert_eq!(draws[0].params.absorption, [12.0, 34.0, 56.0, 0.0]);
+}
+
+#[test]
+fn ripple_event_reaches_water_gpu_params() {
+    let mut world = world_with_water_plane(
+        0.05,
+        0.6,
+        50.0,
+        1.0 / 512.0,
+        [1.0; 3],
+        [1.0; 4],
+        [0.0, 0.0, 1.0, 1.0],
+    );
+    let water = world
+        .query::<WaterPlane>()
+        .unwrap()
+        .iter()
+        .next()
+        .map(|(entity, _)| entity)
+        .expect("water plane");
+    world.insert(
+        water,
+        RippleEvent {
+            actor: water,
+            intensity: 0.75,
+            position: [10.0, 0.0, 20.0],
+        },
+    );
+    let draws = run_build(&world);
+    assert_eq!(draws[0].params.ripple, [10.0, 20.0, 0.75, 19.0]);
 }

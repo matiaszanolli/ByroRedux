@@ -95,6 +95,11 @@ struct WaterParams {
     // magnitude, and sun-specular magnitude (including the authored
     // Skyrim specular-properties magnitude multiplier).
     vec4 effects;
+    // xyz = Starfield color-absorption ranges in world units; zero means
+    // pre-Starfield/legacy water and selects the scalar fog response.
+    vec4 absorption;
+    // xy = transient ripple center in world XZ, z = intensity, w = radius.
+    vec4 ripple;
 };
 
 layout(std140, set = 2, binding = 1) uniform WaterParamsBlock {
@@ -209,7 +214,7 @@ float valueNoise(vec2 p) {
 // the perturbation strength / chop density proportionally.
 vec3 sampleScrollingNormal(uint normalMapIndex, vec2 uvBase, vec2 originOffset, vec2 scroll, float scale, float time, float ampScale, float freqScale) {
     if (normalMapIndex == 0xFFFFFFFFu) {
-        // Procedural fallback — animated four-octave value-noise gradient.
+        // Procedural fallback — animated six-octave value-noise gradient.
         // The broad first octave carries the swell while the lighter higher
         // octaves restore the small-scale chop that legacy records lack in
         // their texture slots. This keeps Oblivion/FO3/FNV water from reading
@@ -247,16 +252,23 @@ vec3 sampleScrollingNormal(uint normalMapIndex, vec2 uvBase, vec2 originOffset, 
         float h1 = valueNoise(uv * 9.0 * freqScale + 17.0);
         float h2 = valueNoise(uv * 16.0 * freqScale + 41.0);
         float h3 = valueNoise(uv * 31.0 * freqScale + 73.0);
-        float h  = h0 * 0.45 + h1 * 0.30 + h2 * 0.15 + h3 * 0.10;
+        float h4 = valueNoise(uv * 52.0 * freqScale + 113.0);
+        float h5 = valueNoise(uv * 83.0 * freqScale + 157.0);
+        float h  = h0 * 0.38 + h1 * 0.26 + h2 * 0.16 + h3 * 0.10
+                 + h4 * 0.06 + h5 * 0.04;
         const float eps = 1.0;
         float hx = valueNoise(uv * 4.0 * freqScale + vec2(eps, 0.0)) * 0.45
                  + valueNoise(uv * 9.0 * freqScale + vec2(eps, 0.0) + 17.0) * 0.30
                  + valueNoise(uv * 16.0 * freqScale + vec2(eps, 0.0) + 41.0) * 0.15
-                 + valueNoise(uv * 31.0 * freqScale + vec2(eps, 0.0) + 73.0) * 0.10;
+                 + valueNoise(uv * 31.0 * freqScale + vec2(eps, 0.0) + 73.0) * 0.10
+                 + valueNoise(uv * 52.0 * freqScale + vec2(eps, 0.0) + 113.0) * 0.06
+                 + valueNoise(uv * 83.0 * freqScale + vec2(eps, 0.0) + 157.0) * 0.04;
         float hy = valueNoise(uv * 4.0 * freqScale + vec2(0.0, eps)) * 0.45
                  + valueNoise(uv * 9.0 * freqScale + vec2(0.0, eps) + 17.0) * 0.30
                  + valueNoise(uv * 16.0 * freqScale + vec2(0.0, eps) + 41.0) * 0.15
-                 + valueNoise(uv * 31.0 * freqScale + vec2(0.0, eps) + 73.0) * 0.10;
+                 + valueNoise(uv * 31.0 * freqScale + vec2(0.0, eps) + 73.0) * 0.10
+                 + valueNoise(uv * 52.0 * freqScale + vec2(0.0, eps) + 113.0) * 0.06
+                 + valueNoise(uv * 83.0 * freqScale + vec2(0.0, eps) + 157.0) * 0.04;
         return normalize(vec3((h - hx) * 0.12 * ampScale, (h - hy) * 0.12 * ampScale, 1.0));
     }
     // PRECISION BOUND (#2496, following #2240): this branch stays
@@ -422,7 +434,18 @@ vec3 absorbWaterColumn(vec3 refractedRadiance, float hitDist) {
     float span = max(fogFar - fogNear, 1.0);
     float t = clamp((hitDist - fogNear) / span, 0.0, 1.0);
     float absorption = exp(-t * 2.0 * max(push.depth.y, 0.0));
-    return mix(push.deep.rgb, refractedRadiance * push.shallow.rgb, absorption);
+    vec3 authoredRanges = max(push.absorption.rgb, vec3(0.0));
+    // Starfield authors independent red/green/blue absorption distances.
+    // Preserve the legacy scalar path when the triplet is zero, otherwise
+    // apply the per-channel Beer–Lambert transmission on top of the shared
+    // near/far ramp. This keeps older games byte-compatible while preventing
+    // Starfield oceans from collapsing to a generic blue tint.
+    vec3 channelTransmission = vec3(1.0);
+    if (any(greaterThan(authoredRanges, vec3(0.0)))) {
+        channelTransmission = exp(-hitDist / max(authoredRanges, vec3(0.01)));
+    }
+    vec3 transmission = clamp(channelTransmission * absorption, 0.0, 1.0);
+    return mix(push.deep.rgb, refractedRadiance * push.shallow.rgb, transmission);
 }
 
 // ── Foam ──────────────────────────────────────────────────────────────
@@ -580,6 +603,25 @@ void main() {
         nMix = normalize(nA + nB);
     }
 
+    // Surface-interaction ripple. `RippleEvent` is emitted on the water
+    // plane for the same frame as the particle/audio disturbance. Keep the
+    // perturbation local and bounded: a narrow annulus produces the radial
+    // wavefront while the underlying authored/procedural normals remain in
+    // control everywhere else. A zero intensity is the canonical no-event
+    // sentinel for all ordinary frames.
+    if (push.ripple.z > 0.0) {
+        vec2 delta = vWorldPos.xz - push.ripple.xy;
+        float distanceToCenter = length(delta);
+        float radius = max(push.ripple.w, 0.5);
+        float width = mix(1.5, 3.5, clamp(push.ripple.z, 0.0, 1.0));
+        float ring = exp(-pow((distanceToCenter - radius) / width, 2.0))
+            * clamp(push.ripple.z, 0.0, 1.0);
+        vec2 radial = distanceToCenter > 0.001
+            ? delta / distanceToCenter
+            : vec2(0.0);
+        nMix = normalize(nMix + vec3(radial * ring * 0.28, 0.0));
+    }
+
     // Tangent → world space.
     vec3 Nperturbed = normalize(TBN * nMix);
 
@@ -667,8 +709,8 @@ void main() {
     // WATR DATA reflection_color is a filter on reflected radiance. It must
     // not be mixed into the shared ray terminus, because that contaminates
     // the refraction branch with a reflection-only material parameter.
-    reflColor *= push.tint_reflect.rgb
-        * max(push.depth.x, 0.0)
+    reflColor *= push.tint_reflect.rgb;
+    reflColor *= max(push.depth.x, 0.0)
         * max(push.effects.z, 0.0);
 
     // ── Refraction ray (skipped for waterfalls) ──

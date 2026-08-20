@@ -171,6 +171,19 @@ pub struct WaterParams {
     /// Skyrim SE-only flow-map tile scale at DNAM offset 228. A zero
     /// sentinel means the record uses the canonical engine scale.
     pub flowmap_scale: f32,
+    /// Starfield DNAM color-absorption ranges (red, green, blue), in world
+    /// units. Zero means the source layout did not author per-channel
+    /// absorption and the renderer uses its legacy scalar fog curve.
+    pub absorption_ranges: [f32; 3],
+    /// Starfield DNAM surface roughness. Zero is the absent/legacy sentinel;
+    /// authored values are normalized to 0..1 before translation.
+    pub roughness: f32,
+    /// FO4/FO76 authored suspended-silt amount and its light/dark colors.
+    /// A zero amount is the sentinel used by older layouts and leaves the
+    /// canonical palette untouched.
+    pub silt_amount: f32,
+    pub silt_light_color: [f32; 3],
+    pub silt_dark_color: [f32; 3],
 }
 
 impl Default for WaterParams {
@@ -204,6 +217,11 @@ impl Default for WaterParams {
             noise_wind_directions: [0.0; 3],
             noise_wind_speeds: [0.0; 3],
             flowmap_scale: 0.0,
+            absorption_ranges: [0.0; 3],
+            roughness: 0.0,
+            silt_amount: 0.0,
+            silt_light_color: [0.0; 3],
+            silt_dark_color: [0.0; 3],
         }
     }
 }
@@ -619,6 +637,19 @@ fn decode_dnam_fo4(data: &[u8]) -> WaterParams {
             *slot = normalize_noise_uv_scale(value);
         }
     }
+    // FO4/FO76 append suspended-silt properties after the noise block:
+    // amount (f32), light color (RGBA), dark color (RGBA). Keep the colors
+    // separate until the translation boundary so the renderer can blend them
+    // with the authored shallow/deep palette once, consistently for both eras.
+    if let Some(amount) = read_f32_at(data, 176) {
+        p.silt_amount = amount.clamp(0.0, 1.0);
+    }
+    if let Some(color) = read_rgb_at(data, 180) {
+        p.silt_light_color = color;
+    }
+    if let Some(color) = read_rgb_at(data, 184) {
+        p.silt_dark_color = color;
+    }
     p
 }
 
@@ -647,6 +678,20 @@ fn decode_dnam_starfield(data: &[u8]) -> WaterParams {
     if let Some(depth) = read_f32_at(data, 0) {
         p.fog_near = 0.0;
         p.fog_far = depth.max(1.0);
+    }
+    // Starfield's first post-depth block is three independent color
+    // absorption ranges (xEdit: Color Absorbtion Ranges). Preserve them as
+    // distances rather than folding them into a guessed RGB tint; the
+    // renderer can then apply Beer–Lambert per channel without losing the
+    // authored water chemistry.
+    for (slot, offset) in p.absorption_ranges.iter_mut().zip([4, 8, 12]) {
+        if let Some(range) = read_f32_at(data, offset) {
+            *slot = if range.is_finite() && range > 0.0 {
+                range
+            } else {
+                0.0
+            };
+        }
     }
     if let Some(color) = read_rgb_at(data, 32) {
         p.underwater_color = color;
@@ -696,10 +741,13 @@ fn decode_dnam_starfield(data: &[u8]) -> WaterParams {
             *slot = normalize_noise_uv_scale(value);
         }
     }
-    for (slot, offset) in p.depth_weights.iter_mut().zip([4, 8, 12, 28]) {
-        if let Some(value) = read_f32_at(data, offset) {
-            *slot = value.max(0.0);
-        }
+    // The post-noise fields are shared by Starfield's flow-map and surface
+    // controls, not Skyrim's depth-response block.
+    if let Some(scale) = read_f32_at(data, 144) {
+        p.flowmap_scale = scale.max(0.0);
+    }
+    if let Some(roughness) = read_f32_at(data, 148) {
+        p.roughness = roughness.clamp(0.0, 1.0);
     }
     p.wind_direction = p.noise_wind_directions[0];
     p.wind_speed = p.noise_wind_speeds[0];
@@ -1040,6 +1088,9 @@ mod tests {
         data[164..168].copy_from_slice(&200.0f32.to_le_bytes()); // layer 1 UV
         data[168..172].copy_from_slice(&400.0f32.to_le_bytes()); // layer 2 UV
         data[172..176].copy_from_slice(&800.0f32.to_le_bytes()); // layer 3 UV
+        data[176..180].copy_from_slice(&0.65f32.to_le_bytes()); // silt amount
+        data[180..184].copy_from_slice(&[170, 150, 120, 0]); // silt light
+        data[184..188].copy_from_slice(&[55, 45, 35, 0]); // silt dark
 
         let w = parse_watr(0x18, &[sub(b"DNAM", &data)], GameKind::Fallout4);
         assert_eq!(w.raw_dnam.len(), 201);
@@ -1067,6 +1118,9 @@ mod tests {
         assert_eq!(w.params.noise_uv_scale_a, 1.0 / 200.0);
         assert_eq!(w.params.noise_uv_scale_b, 1.0 / 400.0);
         assert_eq!(w.params.noise_uv_scale_c, 1.0 / 800.0);
+        assert_eq!(w.params.silt_amount, 0.65);
+        assert!((w.params.silt_light_color[0] - 170.0 / 255.0).abs() < 1e-6);
+        assert!((w.params.silt_dark_color[2] - 35.0 / 255.0).abs() < 1e-6);
     }
 
     #[test]
@@ -1158,8 +1212,11 @@ mod tests {
         data[96..100].copy_from_slice(&0.02f32.to_le_bytes());
         data[108..112].copy_from_slice(&0.8f32.to_le_bytes());
         data[120..124].copy_from_slice(&200.0f32.to_le_bytes());
+        data[144..148].copy_from_slice(&3.0f32.to_le_bytes());
+        data[148..152].copy_from_slice(&0.5f32.to_le_bytes());
         let w = parse_watr(0x1234, &[sub(b"DNAM", &data)], GameKind::Starfield);
         assert_eq!(w.params.fog_far, 1200.0);
+        assert_eq!(w.params.absorption_ranges, [0.1, 0.2, 0.3]);
         assert_eq!(w.params.underwater_fog_amount, 0.7);
         assert_eq!(w.params.underwater_fog_near, 4.0);
         assert_eq!(w.params.underwater_fog_far, 80.0);
@@ -1170,6 +1227,8 @@ mod tests {
         assert_eq!(w.params.wind_speed, 0.02);
         assert_eq!(w.params.noise_amplitude_scales[0], 0.8);
         assert_eq!(w.params.noise_uv_scale_a, 1.0 / 200.0);
-        assert_eq!(w.params.depth_weights, [0.1, 0.2, 0.3, 0.0]);
+        assert_eq!(w.params.depth_weights, [0.0; 4]);
+        assert_eq!(w.params.flowmap_scale, 3.0);
+        assert_eq!(w.params.roughness, 0.5);
     }
 }

@@ -180,6 +180,10 @@ pub struct WaterMaterial {
     /// Authored flow-map tile scale. One is neutral; zero means legacy
     /// records without a dedicated flow-map field.
     pub flowmap_scale: f32,
+    /// Starfield per-channel color-absorption ranges in world units. A zero
+    /// triplet is the canonical sentinel for pre-Starfield records and keeps
+    /// their legacy scalar fog response unchanged.
+    pub absorption_ranges: [f32; 3],
     /// Foam intensity multiplier. 0 = no foam anywhere; 1 = full
     /// rapids / waterfall whitewater. Cell loader sets from
     /// [`WaterKind`].
@@ -242,6 +246,7 @@ impl Default for WaterMaterial {
             effect_controls: [0.0, 0.0, 1.0, 1.0],
             specular_magnitude: 1.0,
             flowmap_scale: 1.0,
+            absorption_ranges: [0.0; 3],
             foam_strength: 0.0,
             shoreline_width: 32.0,
             ior: 1.33,

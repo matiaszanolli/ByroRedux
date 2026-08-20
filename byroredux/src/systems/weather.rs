@@ -5,6 +5,7 @@
 //! transition, and writes the result into `SkyParamsRes` /
 //! `CloudSimState` / `CellLightingRes`.
 
+use byroredux_core::ecs::components::groundcover::WindField;
 use byroredux_core::ecs::World;
 
 use crate::components::{
@@ -631,8 +632,27 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
     // still" to "visibly streaking storm clouds." Replace with a
     // bench-captured calibration when one becomes available.
     let cloud_scroll_rate = cloud_scroll_rate_from_wind(wd.wind_speed);
+    let weather_wind_speed = if transition_t > 0.0 {
+        world
+            .try_resource::<WeatherTransitionRes>()
+            .map(|tr| {
+                wd.wind_speed as f32
+                    + (tr.target.wind_speed as f32 - wd.wind_speed as f32) * transition_t
+            })
+            .unwrap_or(wd.wind_speed as f32) as u8
+    } else {
+        wd.wind_speed
+    };
 
     drop(wd);
+
+    // Keep the shared atmospheric wind live during weather transitions. The
+    // ground-cover install path seeds this resource when entering a
+    // worldspace, but WTHR changes can occur without a worldspace reload;
+    // SpeedTree sway and water-normal motion must follow those changes too.
+    if let Some(mut wind) = world.try_resource_mut::<WindField>() {
+        *wind = WindField::from_weather_byte(weather_wind_speed, wind.direction);
+    }
 
     // Update SkyParamsRes.
     if let Some(mut sky) = world.try_resource_mut::<SkyParamsRes>() {

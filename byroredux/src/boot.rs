@@ -725,6 +725,8 @@ pub(crate) fn build_scheduler() -> Scheduler {
             .writes_resource::<crate::components::GameTimeRes>()
             .reads_resource::<crate::components::CellLightingRes>()
             .writes_resource::<crate::components::CellLightingRes>()
+            .reads_resource::<byroredux_core::ecs::components::groundcover::WindField>()
+            .writes_resource::<byroredux_core::ecs::components::groundcover::WindField>()
             .writes_resource::<crate::components::SkyParamsRes>()
             .writes_resource::<crate::components::CloudSimState>(),
     );

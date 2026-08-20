@@ -251,12 +251,20 @@ Skyrim's above-water fog amount (DNAM[132]) scales the canonical refraction
 absorption weight while preserving the authored near/far distance ramp.
 WATR.ANAM surface opacity now reaches the water fragment path; records without
 ANAM retain the procedural 0.88 fallback.
-These WATR wind vectors
-are water-local normal motion; shared weather wind for SpeedTree/vegetation
-continues to come from `WeatherDataRes::wind_speed` plus each tree's authored
-response.
+These WATR wind vectors remain water-local normal motion. The shared EXAL
+`WindField` is refreshed from live `WeatherDataRes::wind_speed` during weather
+transitions and now drives both atmospheric water-normal drift and coherent
+`BsRotateAboutUp` SpeedTree canopy sway; TREE response metadata remains
+threaded through the importer for the geometry-tail path.
 WATR `NAM0` linear velocity is projected from Gamebryo Z-up into renderer X/Z
  coordinates for authored water motion and flow direction.
+Starfield's DNAM color-absorption ranges now survive translation as
+per-channel Beer–Lambert distances; older games retain the zero sentinel and
+the established scalar fog response. Its concentration block no longer leaks
+into Skyrim-only depth weights, its authored flow-map scale is preserved, and
+its surface roughness is translated into the shared direct-sun highlight
+exponent. FO4/FO76 silt amount plus light/dark colors now blend into the
+canonical shallow, deep, and underwater palette at the same boundary.
 The remaining Skyrim tail fields stay raw. The
 `WaterKind` classification is a fragile EDID-substring heuristic
 (`rapid`/`waterfall`/`falls`/`river`/`stream`), English-only, with `waterfall`
@@ -551,7 +559,7 @@ emitters on movement > 10 u (`ripplesimulation.cpp:148-195`).
 `WAVE_SCALE=75`), Fresnel reflection mix (`:144`), depth-aware refraction with
 shore suppression + Beer-Lambert tint (`:147-202`), sun specular (`:160-176`),
 sunlight scattering (`:202-212`), wobbly-shore + foam (`:217-233`), rain/disturbance
-ripple injection (`:82-133`). The engine now uses a four-octave procedural
+ripple injection (`:82-133`). The engine now uses a six-octave procedural
 fallback for textureless legacy water plus authored texture layers where present;
 `normal_octaves` (§5.1) lets the canonical reach Skyrim chop.
 
