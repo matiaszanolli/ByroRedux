@@ -868,7 +868,15 @@ pub(crate) fn resolve_water_material(
                 let theta = rec.params.wind_direction;
                 // Compute once — cos/sin were duplicated pre-#1068 (F-WAT-06).
                 let (sin_theta, cos_theta) = theta.sin_cos();
-                let canonical = WaterFlow::for_kind(kind, [cos_theta, 0.0, sin_theta]);
+                let canonical = rec
+                    .linear_velocity
+                    .map(|velocity| {
+                        WaterFlow::new(
+                            [cos_theta, 0.0, sin_theta],
+                            velocity[0].hypot(velocity[1]),
+                        )
+                    })
+                    .unwrap_or_else(|| WaterFlow::for_kind(kind, [cos_theta, 0.0, sin_theta]));
                 // Skyrim SE's 232-byte DNAM tail carries an authored
                 // flow-map tile scale. Keep the canonical physics band,
                 // but let the visual scroll rate follow that scale.
@@ -2409,6 +2417,7 @@ mod tests {
         assert!(matches!(kind, WaterKind::River));
         let flow = flow.expect("NAM0 velocity must produce a canonical current");
         assert!(flow.direction[2] > 0.99);
+        assert!((flow.speed - 3.0).abs() < 1.0e-6);
     }
 
     #[test]
