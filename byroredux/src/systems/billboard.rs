@@ -25,7 +25,7 @@ pub(crate) fn make_billboard_system() -> impl FnMut(&World, f32) + Send + Sync {
     // Sentinel: `None` on first frame so the loop always runs once.
     let mut last_cam: Option<(Vec3, Vec3)> = None;
     let mut elapsed = 0.0_f32;
-    let mut last_wind_active = false;
+    let mut last_wind: Option<WindField> = None;
 
     move |world: &World, dt: f32| {
         elapsed = (elapsed + dt.max(0.0)).max(0.0);
@@ -34,8 +34,12 @@ pub(crate) fn make_billboard_system() -> impl FnMut(&World, f32) + Send + Sync {
             .map(|w| *w)
             .unwrap_or_default();
         let wind_active = wind.speed > 1.0e-4 || wind.gust_amplitude > 1.0e-4;
-        let wind_state_changed = wind_active != last_wind_active;
-        last_wind_active = wind_active;
+        // Compare the complete field, not only its active/inactive state:
+        // weather transitions can change direction, speed, or gust shape
+        // while both endpoints remain windy. SpeedTree canopies must respond
+        // on that frame even when the camera is stationary.
+        let wind_state_changed = last_wind != Some(wind);
+        last_wind = Some(wind);
         // Active camera lookup (position + forward).
         let Some(active) = world.try_resource::<ActiveCamera>() else {
             return;
@@ -271,6 +275,53 @@ mod tests {
         assert_ne!(
             calm, rotate_about_up,
             "SpeedTreeWind marker must drive trees using the legacy RotateAboutUp mode"
+        );
+    }
+
+    #[test]
+    fn active_weather_direction_change_rebends_stationary_speedtree() {
+        let mut world = World::new();
+        let camera = world.spawn();
+        world.insert(camera, Transform::IDENTITY);
+        world.insert(camera, GlobalTransform::IDENTITY);
+        world.insert(camera, Camera::default());
+        world.insert_resource(ActiveCamera(camera));
+
+        let tree = world.spawn();
+        world.insert(
+            tree,
+            GlobalTransform::new(Vec3::new(12.0, 0.0, 8.0), Quat::IDENTITY, 1.0),
+        );
+        world.insert(tree, Billboard::new(BillboardMode::BsRotateAboutUp));
+        world.insert(tree, SpeedTreeWind::new(1.0, 0.0));
+        world.insert_resource(WindField {
+            direction: [1.0, 0.0],
+            speed: 220.0,
+            gust_amplitude: 0.0,
+            gust_frequency: 0.0,
+        });
+
+        let mut system = make_billboard_system();
+        system(&world, 0.0);
+        let before = world
+            .query::<GlobalTransform>()
+            .unwrap()
+            .get(tree)
+            .unwrap()
+            .rotation;
+
+        world.resource_mut::<WindField>().direction = [0.0, 1.0];
+        system(&world, 0.0);
+        let after = world
+            .query::<GlobalTransform>()
+            .unwrap()
+            .get(tree)
+            .unwrap()
+            .rotation;
+
+        assert_ne!(
+            before, after,
+            "a stationary camera must not suppress active-to-active wind changes"
         );
     }
 }
