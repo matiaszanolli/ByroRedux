@@ -1331,32 +1331,34 @@ void main() {
     //       that doesn't exist yet; add alongside the FO4 env-reflect
     //       cubemap path.
 
-    // PBR vs Gamebryo F0 gate.
+    // F0 derivation — single format-agnostic mix, NOT a PBR-vs-legacy
+    // shader branch. (Pre-`31c99bb3` the shader itself read authored
+    // `specular_color` for BGSM PBR; that branch is gone — F0 is
+    // assigned exactly twice in this file, both `f0Dielectric`-derived,
+    // immediately below and again at the glass override further down.)
     //
-    // BGSM PBR (FO4+) uses the **specular-glossiness** workflow, NOT
+    // BGSM PBR (FO4+) authors the **specular-glossiness** workflow, NOT
     // the metallic-roughness one our `metalness` scalar implies:
-    //   * `specular_color * specular_mult` IS F0 directly.
-    //   * Metals author bright spec RGB (steel ≈ 0.95/0.93/0.88, gold
-    //     ≈ 1.0/0.86/0.57) → high F0 → conductor-like Fresnel + tinted
-    //     reflection that doesn't desaturate at grazing.
-    //   * Dielectrics author near-0.04 spec RGB (plastic, painted
-    //     surfaces) → standard dielectric F0.
+    //   * `specular_color * specular_mult` is literal F0 only when the
+    //     BGSM's own `pbr` flag is set — rare (0 of 793 sampled vanilla
+    //     FO4 BGSMs). For the vanilla-common `pbr == false` case,
+    //     `specular_color` is the Blinn highlight TINT, not F0 — near-
+    //     white on most dielectrics, so keying metalness off its
+    //     luminance reads plain concrete as mirror chrome. The signal
+    //     that actually survives on legacy content is spec-color
+    //     CHROMATICITY (conductor F0 is tinted; dielectric F0 is
+    //     achromatic), which is what's used instead.
     //   * There is NO scalar metalness field in BGSM (`wetness_control_
     //     metalness` is a wetness-effect parameter, not material
     //     metalness — verified against `Material-Editor:BGSM.cs:152`).
-    // So for PBR materials we use the authored spec_color as F0
-    // directly. The standard metallic-roughness `mix(0.04, conductor,
-    // metalness)` mix only applies on the legacy path where
-    // `classify_pbr` keyword-matched a known conductor texture path
-    // and set `metalness ≈ 0.9`.
-    //
-    // Pre-fix this gate mixed `mix(0.04, specColAuth, metalness)` even
-    // on BGSM PBR, but `metalness` was 0 for every FO4 BGSM material
-    // (no metalness signal source plumbed in) so F0 collapsed to 0.04
-    // dielectric and the authored `specularR/G/B` was silently ignored.
-    // Symptom: every FO4 Institute / Med-Tek metal panel rendered as
-    // matte plastic with zero specular reflection — the
-    // "boxes-look-plastic" complaint repeated across multiple sessions.
+    // None of this reaches the shader directly — see `bgsm_metalness`'s
+    // doc (#1476) in `asset_provider/material.rs` for the full
+    // `pbr`-flag-gated derivation. `31c99bb3` is the commit that first
+    // wired authored BGSM specular data into `metalness` at all (fixing
+    // the "every FO4 Institute / Med-Tek panel renders as matte
+    // plastic" symptom); the chromaticity refinement above landed
+    // later, replacing that commit's luminance-based read for the
+    // `pbr == false` path.
     //
     // Same conservative directive as the Oblivion path: trust the
     // EXPLICIT authored signal, never infer metalness from indirect
@@ -1364,36 +1366,30 @@ void main() {
     // pre-fix for Oblivion as the "chrome cushion" bug — same rule
     // applies here for BGSM, just with a different explicit signal).
     //
-    // For badly-authored BGSMs that ship default `specular_color =
-    // (1, 1, 1)` × `specular_mult = 1.0` without artist tuning, F0
-    // would render as full white chrome. That's authored data — we
-    // can't second-guess it without an external metalness signal.
-    // Vanilla FO4 BGSMs configure `specular_color` deliberately per
-    // material (sampled across `Fallout4 - Materials.ba2` 2026-05-24)
-    // so the chrome-default failure mode is mod-content only.
-    //
-    // The dielectric F0 derivation from IoR (`mat.ior`) is kept as
-    // the fallback for the legacy / non-PBR branch — that path uses
-    // `albedo` for metals (legacy keyword classification).
     // Single PBR contract — the shader is FORMAT-AGNOSTIC. Source
     // formats (BGSM spec-glossiness, NIF metallic-roughness with
     // keyword classification, Starfield .mat) are translated to the
     // standard `(albedo, metalness, roughness)` triple in the
     // translation layer between parser and renderer:
-    //   * BGSM/BGEM merge (`byroredux/src/asset_provider.rs`) writes
-    //     `mesh.metalness_override` / `mesh.roughness_override`
-    //     derived from `luminance(spec_color * spec_mult)` and
-    //     `1 - smoothness` — Bethesda's PBR-Lite spec-glossiness
-    //     authoring translated once, here.
+    //   * BGSM/BGEM merge (`byroredux/src/asset_provider/material.rs`)
+    //     writes `mesh.metalness_override` / `mesh.roughness_override` —
+    //     Bethesda's PBR-Lite spec-glossiness authoring translated
+    //     once, here.
     //   * Legacy NIF (Oblivion / FO3 / FNV) — `classify_pbr` keyword
     //     fallback fills the same fields from texture-path tokens.
     // The shader doesn't (and shouldn't) know which path produced
     // its inputs. Per-format branches in the shader were a smell
     // we explicitly factored OUT — see `feedback_format_translation.md`.
     //
-    // `mat.ior` (BGSM v9+ / Starfield .mat author) overrides the
-    // 0.04 dielectric default; legacy NIF content keeps `ior = 1.5`
-    // (= 0.04 F0) byte-for-byte from `GpuMaterial::default()`.
+    // `mat.ior` does NOT carry authored per-material data for BGSM or
+    // Starfield content — #2703 found no current importer authors this
+    // field (`crates/bgsm` decodes no IOR/refraction field at any BGSM
+    // version; Starfield's CDB reader has no refractive-index component
+    // either). `material_translate::translate_material` always resolves
+    // it via `material_optical_scalar` — the generic dielectric default
+    // (or glass promotion) for every game, every format — same as
+    // legacy NIF content, which keeps `ior = 1.5` (= 0.04 F0)
+    // byte-for-byte from `GpuMaterial::default()`. See #1248.
     float f0Dielectric = dielectricF0FromIor(mat.ior);
     vec3 F0 = mix(vec3(f0Dielectric), albedo, metalness);
 
