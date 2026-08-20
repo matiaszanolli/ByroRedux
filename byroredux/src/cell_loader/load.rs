@@ -446,6 +446,9 @@ pub fn load_cell_with_masters(
     // WATR record table.
     if let Some(water_height) = cell.water_height {
         let mut _blas_dummy: Vec<(u32, u32, u32)> = Vec::new();
+        let (water_center, water_half_extent) = water::interior_water_placement(
+            cell.references.iter().map(|reference| reference.position),
+        );
         // #1855 — same SIBLING gap as the exterior route: `spawn_water_plane`
         // already `log::warn!`s a mesh-upload failure, but without cell
         // context (it doesn't take a cell identifier). Add the correlation
@@ -458,16 +461,11 @@ pub fn load_cell_with_masters(
             &index.waters,
             water_height,
             cell.water_type_form,
-            // Interior cells use a local-origin frame; the cell's
-            // reference bounds are not yet aggregated at this site
-            // (the cell loader runs reference loading before bounds
-            // collection lands). For MVP we centre the plane on the
-            // world origin — references in flooded interiors are
-            // typically authored around the origin too. Improving
-            // the centroid is a separate audit-pass once the cell
-            // root's WorldBound aggregation is plumbed through.
-            (0.0, 0.0),
-            water::default_interior_half_extent(),
+            // Interior water is authored in the same local frame as REFR
+            // placements. Use the bounded reference-derived estimate so
+            // offset pools do not remain stranded at world origin.
+            water_center,
+            water_half_extent,
             &mut _blas_dummy,
         )
         .is_none()

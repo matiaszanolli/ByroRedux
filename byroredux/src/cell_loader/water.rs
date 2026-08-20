@@ -73,6 +73,49 @@ const DEFAULT_INTERIOR_VOLUME_DEPTH: f32 = 200.0;
 /// plane extent; the fragment normal path still supplies the fine ripples.
 const FULL_DETAIL_WATER_GRID_SEGMENTS: usize = 8;
 
+/// Derive a conservative horizontal placement for an interior water plane
+/// from the cell's authored REFR positions. Interior references are stored in
+/// Bethesda Z-up coordinates; the renderer's horizontal axes are X/Z after
+/// the shared coordinate conversion, so source Y becomes renderer -Z.
+///
+/// The cell format does not provide a shoreline polygon. This is therefore a
+/// bounded coverage estimate rather than a claim that every interior room is
+/// water-filled: it fixes the much worse historical `(0, 0)` placement while
+/// retaining the legacy 256-unit minimum for sparse pool cells and capping
+/// pathological marker spread at one room-scale extent.
+pub(super) fn interior_water_placement<I>(positions: I) -> ((f32, f32), f32)
+where
+    I: IntoIterator<Item = [f32; 3]>,
+{
+    const MIN_HALF_EXTENT: f32 = DEFAULT_INTERIOR_HALF_EXTENT;
+    const MAX_HALF_EXTENT: f32 = 2048.0;
+    const EDGE_MARGIN: f32 = 32.0;
+
+    let mut min_x = f32::INFINITY;
+    let mut min_z = f32::INFINITY;
+    let mut max_x = f32::NEG_INFINITY;
+    let mut max_z = f32::NEG_INFINITY;
+    for p in positions {
+        if !p.iter().all(|v| v.is_finite()) {
+            continue;
+        }
+        let converted = zup_to_yup_pos(p);
+        min_x = min_x.min(converted[0]);
+        min_z = min_z.min(converted[2]);
+        max_x = max_x.max(converted[0]);
+        max_z = max_z.max(converted[2]);
+    }
+
+    if !min_x.is_finite() {
+        return ((0.0, 0.0), MIN_HALF_EXTENT);
+    }
+
+    let center = ((min_x + max_x) * 0.5, (min_z + max_z) * 0.5);
+    let span = (max_x - min_x).max(max_z - min_z);
+    let half_extent = ((span * 0.5) + EDGE_MARGIN).clamp(MIN_HALF_EXTENT, MAX_HALF_EXTENT);
+    (center, half_extent)
+}
+
 fn build_full_detail_water_grid(half_extent: f32) -> (Vec<Vertex>, Vec<u32>) {
     let segments = FULL_DETAIL_WATER_GRID_SEGMENTS;
     let side = segments + 1;
@@ -533,16 +576,6 @@ pub(crate) fn unload_lod_water_plane(
     world.despawn(plane.entity);
 }
 
-/// Convenience for the interior path — picks a default half-extent
-/// when the cell-load step doesn't yet know the actual reference
-/// bounds (most interior cells with water are small pools or
-/// flooded rooms; the half-extent is generous so the plane covers
-/// the whole room).
-#[inline]
-pub(super) fn default_interior_half_extent() -> f32 {
-    DEFAULT_INTERIOR_HALF_EXTENT
-}
-
 /// Convenience for the exterior path — one exterior cell quad.
 #[inline]
 pub(super) fn exterior_half_extent() -> f32 {
@@ -606,6 +639,28 @@ mod tests {
             Some(resolved_normal_idx),
             "water entity's normal-map handle must be reachable by the unload \
              walk's NormalMapHandle query so the texture refcount is released"
+        );
+    }
+
+    #[test]
+    fn interior_water_placement_converts_horizontal_axes_and_adds_margin() {
+        // Bethesda Z-up: source X is renderer X and source Y becomes
+        // renderer -Z. The vertical source Z must not affect the footprint.
+        let positions = [
+            [0.0, 300.0, -500.0],
+            [600.0, -300.0, 900.0],
+        ];
+        let (center, half_extent) = interior_water_placement(positions.iter().copied());
+        assert_eq!(center, (300.0, 0.0));
+        assert_eq!(half_extent, 332.0); // max span 600 / 2 + 32
+    }
+
+    #[test]
+    fn interior_water_placement_keeps_safe_default_for_empty_or_invalid_cells() {
+        let positions = [[f32::NAN, 0.0, 0.0], [0.0, f32::INFINITY, 0.0]];
+        assert_eq!(
+            interior_water_placement(positions.iter().copied()),
+            ((0.0, 0.0), DEFAULT_INTERIOR_HALF_EXTENT)
         );
     }
 
