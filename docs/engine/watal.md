@@ -616,3 +616,5 @@ The authored underwater tint and near/far fog pair are now part of the runtime
 water UBO. When the camera is below a horizontal surface, the fragment pass
 uses that response; records without a valid underwater tail retain the shared
 above-water ramp and legacy tint behavior.
+Starfield's authored flow-map tile scale now multiplies visual wave scroll
+rates only; the bounded physics current remains independent.

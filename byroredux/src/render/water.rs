@@ -111,6 +111,14 @@ pub(super) fn reemit_water_planes(
         // `crates/renderer/src/vulkan/water.rs::GpuWaterParams` for
         // the layout contract.
         let mat = &plane.material;
+        // Starfield's flow-map tile scale is a visual UV-rate control, not a
+        // physics velocity. Keep the canonical `WaterFlow` speed bounded and
+        // scale only the authored wave scroll vectors here.
+        let flowmap_scale = if mat.flowmap_scale.is_finite() && mat.flowmap_scale > 0.0 {
+            mat.flowmap_scale.clamp(0.05, 8.0)
+        } else {
+            1.0
+        };
         let params = GpuWaterParams {
             timing: [
                 time_secs,
@@ -132,14 +140,14 @@ pub(super) fn reemit_water_planes(
                 mat.fog_far,
             ],
             scroll: [
-                mat.scroll_a[0] + weather_scroll[0],
-                mat.scroll_a[1] + weather_scroll[1],
-                mat.scroll_b[0] + weather_scroll[0] * 0.65,
-                mat.scroll_b[1] + weather_scroll[1] * 0.65,
+                mat.scroll_a[0] * flowmap_scale + weather_scroll[0],
+                mat.scroll_a[1] * flowmap_scale + weather_scroll[1],
+                mat.scroll_b[0] * flowmap_scale + weather_scroll[0] * 0.65,
+                mat.scroll_b[1] * flowmap_scale + weather_scroll[1] * 0.65,
             ],
             scroll_c: [
-                mat.scroll_c[0] + weather_scroll[0] * 0.45,
-                mat.scroll_c[1] + weather_scroll[1] * 0.45,
+                mat.scroll_c[0] * flowmap_scale + weather_scroll[0] * 0.45,
+                mat.scroll_c[1] * flowmap_scale + weather_scroll[1] * 0.45,
                 mat.underwater_fog_near,
                 mat.underwater_fog_far,
             ],

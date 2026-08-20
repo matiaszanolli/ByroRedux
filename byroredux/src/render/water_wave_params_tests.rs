@@ -143,7 +143,7 @@ fn default_wave_params_are_the_sentinel_the_shader_normalises_against() {
 
 #[test]
 fn weather_wind_reaches_water_scroll_alongside_speedtree_wind_field() {
-    let mut world = world_with_water_plane(
+    let world = world_with_water_plane(
         0.05,
         0.6,
         50.0,
@@ -165,6 +165,35 @@ fn weather_wind_reaches_water_scroll_alongside_speedtree_wind_field() {
     assert!(windy[0].params.tune[3] > calm[0].params.tune[3]);
     let expected_scale = 1.0 + (100.0 / 220.0) * 0.5;
     assert!((windy[0].params.tune[3] - 0.05 * expected_scale).abs() < 1e-6);
+}
+
+#[test]
+fn authored_flowmap_scale_changes_visual_scroll_not_flow_physics() {
+    let world = world_with_water_plane(
+        0.05,
+        0.6,
+        50.0,
+        1.0 / 512.0,
+        [1.0; 3],
+        [1.0; 4],
+        [0.0, 0.0, 1.0, 1.0],
+    );
+    let water = world
+        .query::<WaterPlane>()
+        .unwrap()
+        .iter()
+        .next()
+        .map(|(entity, _)| entity)
+        .expect("water plane");
+    {
+        let mut query = world.query_mut::<WaterPlane>().unwrap();
+        let material = &mut query.get_mut(water).unwrap().material;
+        material.flowmap_scale = 2.5;
+        material.scroll_a = [0.2, 0.0];
+    }
+    let draws = run_build(&world);
+    assert_eq!(draws[0].params.scroll[0], 0.5);
+    assert_eq!(draws[0].params.flow[3], 0.0);
 }
 
 #[test]
