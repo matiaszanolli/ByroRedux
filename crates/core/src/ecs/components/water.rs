@@ -159,6 +159,9 @@ pub struct WaterMaterial {
     /// layers sample this; the shader applies a different scale +
     /// scroll vector to each. `u32::MAX` = solid-colour water.
     pub normal_map_index: u32,
+    /// Skyrim WATR.FNAM bit 0x10. When false, only the primary authored
+    /// normal layer contributes; `true` is the compatibility default.
+    pub blend_normals: bool,
     /// Bindless indices for Skyrim+/FO4 authored noise layers NAM2–4.
     /// `u32::MAX` means procedural fallback; the loader fills missing
     /// layers from `normal_map_index` when a legacy record has no NAM paths.
@@ -274,6 +277,7 @@ impl Default for WaterMaterial {
             fresnel_f0: 0.02,
             reflectivity: 0.85,
             normal_map_index: u32::MAX,
+            blend_normals: true,
             noise_map_indices: [u32::MAX; 3],
             scroll_a: [0.020, 0.011],
             scroll_b: [-0.014, 0.025],

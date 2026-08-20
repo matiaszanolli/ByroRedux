@@ -253,7 +253,9 @@ pub(super) fn reemit_water_planes(
                 mat.noise_amplitude_scales[1],
                 mat.noise_amplitude_scales[2],
             ],
-            noise_falloff: [mat.noise_falloff, 0.0, 0.0, 0.0],
+            // `.y` carries Skyrim WATR.FNAM's Blend Normals gate; keeping it
+            // in this existing vec4 preserves the fixed water UBO ABI.
+            noise_falloff: [mat.noise_falloff, if mat.blend_normals { 1.0 } else { 0.0 }, 0.0, 0.0],
             normal_falloff: [
                 mat.normal_falloff[0],
                 mat.normal_falloff[1],

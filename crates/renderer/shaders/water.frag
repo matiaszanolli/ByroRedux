@@ -665,8 +665,12 @@ void main() {
     // river surfaces use the slower primary scroll so legacy sentinel slots
     // (where all three indices are identical) remain exact no-ops.
     vec3 nMix;
+    // Skyrim WATR.FNAM bit 0x10 controls whether authored normal layers are
+    // blended. The UBO carries this gate in noise_falloff.y; legacy records
+    // use the canonical `1.0` default and retain the layered path.
+    bool blendAuthoredNormals = push.noise_falloff.y > 0.5;
     bool hasAuthoredThirdLayer = noiseMapC != noiseMapA && noiseMapC != noiseMapB;
-    if (kind == WATER_RAPIDS || hasAuthoredThirdLayer) {
+    if (blendAuthoredNormals && (kind == WATER_RAPIDS || hasAuthoredThirdLayer)) {
         vec2 thirdScroll = kind == WATER_RAPIDS
             ? vec2(push.flow.x, push.flow.z) * push.flow.w * 2.0
             : push.scroll_c.xy;
@@ -684,6 +688,9 @@ void main() {
         nMix = normalize(nA + nB + nC * thirdWeight);
     } else {
         nMix = normalize(nA + nB);
+    }
+    if (!blendAuthoredNormals) {
+        nMix = nA;
     }
     // Skyrim's Noise Falloff fades high-frequency normals by camera distance.
     // A zero value is the legacy sentinel and keeps normals active at every

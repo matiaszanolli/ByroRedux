@@ -58,6 +58,10 @@ pub struct WatrRecord {
     /// Kept separately from `legacy_flags` so callers can distinguish the
     /// modern flag contract from FO3/FNV's reflective bit 0x02.
     pub water_flags: Option<u8>,
+    /// Skyrim FNAM bit 0x10 (`Blend Normals`). `None` preserves the
+    /// compatibility default; other modern games use a different FNAM
+    /// contract and therefore do not populate this field.
+    pub blend_normals: Option<bool>,
     /// Diffuse / noise texture path. FO3 / FNV ship this in `NNAM`
     /// (e.g. `Data\Textures\Water\WastelandWaterPotomac.dds` on every
     /// vanilla FO3 WATR); Skyrim+ ships it in `TNAM`. Both arms write
@@ -1162,6 +1166,9 @@ pub fn parse_watr(form_id: u32, subs: &[SubRecord], game: GameKind) -> WatrRecor
                 if matches!(game, GameKind::Fallout3NV) {
                     out.legacy_flags = Some(sub.data[0]);
                 }
+                if matches!(game, GameKind::Skyrim) {
+                    out.blend_normals = Some(sub.data[0] & 0x10 != 0);
+                }
             }
             b"TNAM" => out.texture_path = read_zstring(&sub.data),
             b"NNAM" => out.texture_path = read_zstring(&sub.data),
@@ -1314,9 +1321,14 @@ mod tests {
         let skyrim = parse_watr(2, &[sub(b"FNAM", &[0x02])], GameKind::Skyrim);
         assert_eq!(skyrim.legacy_flags, None);
         assert_eq!(skyrim.water_flags, Some(0x02));
+        assert_eq!(skyrim.blend_normals, Some(false));
+
+        let skyrim_blended = parse_watr(2, &[sub(b"FNAM", &[0x12])], GameKind::Skyrim);
+        assert_eq!(skyrim_blended.blend_normals, Some(true));
 
         let oblivion = parse_watr(3, &[sub(b"FNAM", &[0x01])], GameKind::Oblivion);
         assert_eq!(oblivion.water_flags, None);
+        assert_eq!(oblivion.blend_normals, None);
     }
 
     #[test]

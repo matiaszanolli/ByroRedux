@@ -961,6 +961,14 @@ mod tests {
     }
 
     #[test]
+    fn water_fragment_shader_honors_skyrim_blend_normals_flag() {
+        let src = include_str!("../../shaders/water.frag");
+        assert!(src.contains("push.noise_falloff.y > 0.5"));
+        assert!(src.contains("if (!blendAuthoredNormals)"));
+        assert!(src.contains("nMix = nA;"));
+    }
+
+    #[test]
     fn water_fragment_shader_preserves_zero_authored_opacity() {
         let src = include_str!("../../shaders/water.frag");
         assert!(

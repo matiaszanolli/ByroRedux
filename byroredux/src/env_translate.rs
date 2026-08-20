@@ -708,6 +708,7 @@ pub(crate) fn resolve_water_material(
             // see docs/engine/watal.md §4.
             mat.wave_amplitude = rec.params.wave_amplitude;
             mat.wave_frequency = rec.params.wave_frequency;
+            mat.blend_normals = rec.blend_normals.unwrap_or(true);
             // WATR.NAM1 is an angular-velocity vector in Gamebryo space.
             // Horizontal surfaces rotate around source Z (the up axis), so
             // promote only that component to the renderer's yaw rate.
@@ -2104,6 +2105,7 @@ mod tests {
             legacy_flags: None,
             legacy_damage: None,
             water_flags: None,
+            blend_normals: None,
             texture_path: String::new(),
             noise_texture_paths: Default::default(),
             flow_noise_texture_path: String::new(),
@@ -2284,6 +2286,7 @@ mod tests {
             legacy_flags: None,
             legacy_damage: None,
             water_flags: None,
+            blend_normals: None,
             texture_path: String::new(),
             noise_texture_paths: Default::default(),
             flow_noise_texture_path: String::new(),
@@ -2357,18 +2360,21 @@ mod tests {
         let mut disabled = calm_watr(0x000A_0003, "LocalizedWater", WaterParams::default());
         disabled.flow_noise_texture_path = "textures\\water\\flow.dds".to_string();
         disabled.water_flags = Some(0x00);
+        disabled.blend_normals = Some(false);
         let mut enabled = disabled.clone();
         enabled.form_id += 1;
         enabled.water_flags = Some(0x08);
+        enabled.blend_normals = Some(true);
         let waters = HashMap::from([(disabled.form_id, disabled), (enabled.form_id, enabled)]);
 
-        let (_, disabled_kind, disabled_flow, _, disabled_noise) =
+        let (disabled_mat, disabled_kind, disabled_flow, _, disabled_noise) =
             resolve_water_material(&waters, Some(0x000A_0003));
         assert!(matches!(disabled_kind, WaterKind::Calm));
         assert!(disabled_flow.is_none());
         assert!(disabled_noise[2].is_none());
+        assert!(!disabled_mat.blend_normals);
 
-        let (_, enabled_kind, enabled_flow, _, enabled_noise) =
+        let (enabled_mat, enabled_kind, enabled_flow, _, enabled_noise) =
             resolve_water_material(&waters, Some(0x000A_0004));
         assert!(matches!(enabled_kind, WaterKind::River));
         assert!(enabled_flow.is_some());
@@ -2376,6 +2382,7 @@ mod tests {
             enabled_noise[2].as_deref(),
             Some("textures\\water\\flow.dds")
         );
+        assert!(enabled_mat.blend_normals);
     }
 
     #[test]
