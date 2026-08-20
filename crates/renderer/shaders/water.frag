@@ -754,7 +754,14 @@ void main() {
     }
     float rainIntensity = clamp(push.absorption.w, 0.0, 1.0);
     if (rainIntensity > 0.0) {
-        float rainNoise = rainSurfaceNoise(uvWorld, time);
+        // Older WATR layouts author rain-ripple starting size separately
+        // from force. Zero keeps the established procedural scale; positive
+        // values widen the rings by reducing the noise frequency.
+        float rainScale = 1.7;
+        if (push.displacement.w > 0.0) {
+            rainScale = clamp(1.7 / max(push.displacement.w, 0.25), 0.25, 4.0);
+        }
+        float rainNoise = rainSurfaceNoise(uvWorld * rainScale, time);
         float rainPerturbation = rainNoise * 0.06 * rainIntensity;
         nMix = normalize(nMix + vec3(rainPerturbation, rainPerturbation, 0.0));
     }

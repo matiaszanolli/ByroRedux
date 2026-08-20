@@ -194,6 +194,9 @@ pub struct WaterMaterial {
     /// Authored transient-displacement shape: starting size, radial falloff,
     /// and dampener. Zero preserves the legacy ripple profile.
     pub displacement: [f32; 3],
+    /// Legacy rain-simulator starting ripple size. Zero uses the shader
+    /// default profile.
+    pub rain_start_size: f32,
     /// Authored physical normal magnitude. Applied to the noise amplitudes
     /// before the compact GPU material is uploaded; one is neutral.
     pub normal_magnitude: f32,
@@ -295,6 +298,7 @@ impl Default for WaterMaterial {
             noise_falloff: 0.0,
             normal_falloff: [0.0; 3],
             displacement: [0.0; 3],
+            rain_start_size: 0.0,
             normal_magnitude: 1.0,
             above_water_fog_amount: 1.0,
             depth_weights: [1.0; 4],

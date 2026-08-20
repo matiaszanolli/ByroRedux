@@ -768,6 +768,9 @@ pub(crate) fn resolve_water_material(
                     *dst = src.clamp(0.0, 10_000.0);
                 }
             }
+            if rec.params.rain_start_size.is_finite() && rec.params.rain_start_size > 0.0 {
+                mat.rain_start_size = rec.params.rain_start_size.clamp(0.05, 10_000.0);
+            }
             // Skyrim/FO4 author an additional physical normal magnitude
             // alongside the per-layer amplitudes. Fold it into the
             // canonical amplitudes so the compact GPU ABI stays unchanged.
@@ -2141,6 +2144,7 @@ mod tests {
                 noise_falloff: 0.0,
                 normal_falloff: [0.0; 3],
                 displacement: [0.0; 3],
+                rain_start_size: 0.0,
                 normal_magnitude: 1.0,
                 above_water_fog_amount: 1.0,
                 depth_weights: [0.0; 4],

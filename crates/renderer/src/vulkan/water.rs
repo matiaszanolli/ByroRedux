@@ -108,7 +108,8 @@ pub struct GpuWaterParams {
     /// x/y/z = shallow/deep/surface-effect normal falloff multipliers.
     /// A zero triplet preserves the legacy always-on normal response.
     pub normal_falloff: [f32; 4],
-    /// x = displacement starting size, y = radial falloff, z = dampener.
+    /// x = displacement starting size, y = radial falloff, z = dampener,
+    /// w = legacy rain-simulator starting ripple size.
     pub displacement: [f32; 4],
     /// Authored depth-response weights: reflections, refraction, normals,
     /// and specular lighting.

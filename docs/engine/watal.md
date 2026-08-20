@@ -270,6 +270,9 @@ FO3/FNV's long-tail Light Radius and Light Brightness (DATA[164,168]) now
 feed the shared reflection-width and specular-intensity controls.
 Their displacement-simulator starting size, radial falloff, and dampener
 (DATA[72,84,88]) likewise reach the shared ripple profile.
+The legacy rain-simulator starting-size field (TES4 DATA[96], FO3/FNV
+DATA[92]) now controls the rendered rain-ripple scale; zero remains the
+procedural compatibility sentinel.
 Skyrim's Sun Sparkle Magnitude (DNAM[200]) now folds into the canonical
 direct-sun glint multiplier alongside the existing specular magnitude;
 Specular Brightness (DNAM[168]) contributes to that same intensity.

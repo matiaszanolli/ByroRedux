@@ -271,7 +271,7 @@ pub(super) fn reemit_water_planes(
                 mat.displacement[0],
                 mat.displacement[1],
                 mat.displacement[2],
-                0.0,
+                mat.rain_start_size.max(0.0),
             ],
             depth: mat.depth_weights,
             effects: [

@@ -201,6 +201,9 @@ pub struct WaterParams {
     /// Skyrim displacement simulator: starting size, radial falloff, and
     /// dampener. Zero triplet is the absent/legacy sentinel.
     pub displacement: [f32; 3],
+    /// Legacy rain-simulator starting ripple size. Zero preserves the
+    /// renderer's procedural default.
+    pub rain_start_size: f32,
     /// Authored physical normal magnitude. Skyrim stores this at DNAM 92;
     /// FO4 stores it at DNAM 52. One is the neutral renderer fallback.
     pub normal_magnitude: f32,
@@ -273,6 +276,7 @@ impl Default for WaterParams {
             noise_falloff: 0.0,
             normal_falloff: [0.0; 3],
             displacement: [0.0; 3],
+            rain_start_size: 0.0,
             normal_magnitude: 1.0,
             above_water_fog_amount: 1.0,
             depth_weights: [0.0; 4],
@@ -505,6 +509,9 @@ fn decode_data_oblivion(data: &[u8]) -> WaterParams {
             *slot = value.max(0.0);
         }
     }
+    if let Some(value) = read_f32_at(data, 96) {
+        p.rain_start_size = value.max(0.0);
+    }
     // TES4 Rain Simulator force defaults to 0.1. Normalize around that
     // authored default so the canonical value is a bounded multiplier on the
     // live weather precipitation intensity.
@@ -560,6 +567,9 @@ fn decode_data_fo3nv(data: &[u8]) -> WaterParams {
         if let Some(value) = read_f32_at(data, offset) {
             *slot = value.max(0.0);
         }
+    }
+    if let Some(value) = read_f32_at(data, 92) {
+        p.rain_start_size = value.max(0.0);
     }
     if let Some(value) = read_f32_at(data, 96) {
         p.normal_magnitude = value.max(0.0);
@@ -1470,6 +1480,7 @@ mod tests {
         data[84..88].copy_from_slice(&0.6f32.to_le_bytes());
         data[88..92].copy_from_slice(&0.85f32.to_le_bytes()); // displacement falloff
         data[92..96].copy_from_slice(&3.5f32.to_le_bytes()); // displacement dampener
+        data[96..100].copy_from_slice(&2.25f32.to_le_bytes()); // rain start
 
         let w = parse_watr(0xBEEF, &[sub(b"DATA", &data)], GameKind::Oblivion);
         assert_eq!(w.params.fog_near, 12.0);
@@ -1480,6 +1491,7 @@ mod tests {
         assert_eq!(w.params.wave_amplitude, 0.4);
         assert_eq!(w.params.wave_frequency, 0.6);
         assert_eq!(w.params.displacement, [0.08, 0.85, 3.5]);
+        assert_eq!(w.params.rain_start_size, 2.25);
         assert_eq!(w.params.rain_response, 2.0);
     }
 
@@ -1507,6 +1519,7 @@ mod tests {
         data[72..76].copy_from_slice(&0.06f32.to_le_bytes()); // displacement start
         data[84..88].copy_from_slice(&0.8f32.to_le_bytes()); // displacement falloff
         data[88..92].copy_from_slice(&4.0f32.to_le_bytes()); // displacement dampener
+        data[92..96].copy_from_slice(&1.75f32.to_le_bytes()); // rain start
         data[164..168].copy_from_slice(&180.0f32.to_le_bytes()); // specular radius
         data[168..172].copy_from_slice(&1.4f32.to_le_bytes()); // specular brightness
         data[100..104].copy_from_slice(&90.0f32.to_le_bytes()); // layer 1 direction
@@ -1522,6 +1535,7 @@ mod tests {
         assert!((w.params.reflection_color[2] - 46.0 / 255.0).abs() < 1e-6);
         assert_eq!(w.params.sun_specular_power, 61.0);
         assert_eq!(w.params.displacement, [0.06, 0.8, 4.0]);
+        assert_eq!(w.params.rain_start_size, 1.75);
         assert_eq!(w.params.specular_radius, 180.0);
         assert_eq!(w.params.specular_magnitude, 1.4);
         assert_eq!(w.params.reflectivity, 0.65);
