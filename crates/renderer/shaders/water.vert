@@ -105,7 +105,7 @@ struct WaterParams {
     vec4 depth;
     // x/y/z/w = refraction/local-specular/reflection/sun-specular controls.
     vec4 effects;
-    // x/y/z = Starfield per-channel absorption ranges; w is reserved.
+    // x/y/z = Starfield per-channel absorption ranges; w = precipitation.
     // Keep these trailing slots in lockstep with water.frag and
     // GpuWaterParams so every array element uses the same 224-byte std140
     // stride when the vertex shader selects a water material by index.

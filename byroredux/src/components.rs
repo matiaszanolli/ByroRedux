@@ -1033,6 +1033,9 @@ pub(crate) struct WeatherDataRes {
     /// synthetic-fallback path (no WTHR record loaded) — produces a
     /// static cloud layer, which is the safe default.
     pub(crate) wind_speed: u8,
+    /// WTHR precipitation intensity: rain is `1`, snow is a subtle wet-surface
+    /// contribution, and clear/cloudy/unclassified weather is `0`.
+    pub(crate) precipitation: f32,
 }
 impl Resource for WeatherDataRes {}
 

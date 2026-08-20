@@ -24,8 +24,8 @@
 use byroredux_core::ecs::components::groundcover::WindField;
 use byroredux_core::ecs::components::water::{WaterFlow, WaterKind, WaterPlane};
 use byroredux_core::ecs::{TotalTime, World};
-use byroredux_scripting::RippleEvent;
 use byroredux_renderer::vulkan::context::DrawCommand;
+use byroredux_scripting::RippleEvent;
 use byroredux_renderer::vulkan::water::{GpuWaterParams, WaterDrawCommand};
 
 /// Re-emit water planes: flip the `is_water` flag on each plane's
@@ -53,6 +53,10 @@ pub(super) fn reemit_water_planes(
         .try_resource::<WindField>()
         .map(|w| *w)
         .unwrap_or_default();
+    let precipitation = world
+        .try_resource::<crate::components::WeatherDataRes>()
+        .map(|weather| weather.precipitation.clamp(0.0, 1.0))
+        .unwrap_or(0.0);
     let gust = weather_wind.speed
         + weather_wind.gust_amplitude
             * (time_secs * weather_wind.gust_frequency * std::f32::consts::TAU).sin();
@@ -167,7 +171,7 @@ pub(super) fn reemit_water_planes(
                 mat.absorption_ranges[0],
                 mat.absorption_ranges[1],
                 mat.absorption_ranges[2],
-                0.0,
+                precipitation,
             ],
             ripple,
         };

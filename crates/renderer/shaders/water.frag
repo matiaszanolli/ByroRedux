@@ -520,6 +520,14 @@ float foamCrest(vec3 perturbedNormal, vec3 surfaceNormal) {
     return smoothstep(0.92, 0.78, n); // inverted: lower n = more foam
 }
 
+float rainSurfaceNoise(vec2 uv, float time) {
+    vec2 p = uv * 0.32 + vec2(time * 0.37, -time * 0.29);
+    float c = valueNoise(p);
+    float dx = valueNoise(p + vec2(0.035, 0.0)) - c;
+    float dy = valueNoise(p + vec2(0.0, 0.035)) - c;
+    return clamp(length(vec2(dx, dy)) * 10.0, 0.0, 1.0);
+}
+
 void main() {
     outFsrReactive = 1.0;
     outFsrTransparency = 1.0;
@@ -620,6 +628,12 @@ void main() {
             ? delta / distanceToCenter
             : vec2(0.0);
         nMix = normalize(nMix + vec3(radial * ring * 0.28, 0.0));
+    }
+    float rainIntensity = clamp(push.absorption.w, 0.0, 1.0);
+    if (rainIntensity > 0.0) {
+        float rainNoise = rainSurfaceNoise(uvWorld, time);
+        float rainPerturbation = rainNoise * 0.06 * rainIntensity;
+        nMix = normalize(nMix + vec3(rainPerturbation, rainPerturbation, 0.0));
     }
 
     // Tangent → world space.
@@ -777,6 +791,10 @@ void main() {
         foamMask += foamCrest(Nperturbed, N) * 0.45;
     }
     foamMask = clamp(foamMask * foamStrength, 0.0, 1.0);
+    if (rainIntensity > 0.0) {
+        foamMask = clamp(foamMask + rainSurfaceNoise(uvWorld * 1.7, time * 1.3)
+            * 0.08 * rainIntensity, 0.0, 1.0);
+    }
 
     // ── Direct-sun glint ──
     // `sunDirection.xyz` points from the surface toward the sun. WATR's

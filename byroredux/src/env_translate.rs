@@ -939,6 +939,17 @@ fn fog_coverage_from_weather(classification: u8) -> f32 {
     }
 }
 
+fn precipitation_from_weather(classification: u8) -> f32 {
+    use byroredux_plugin::esm::records::weather::{WTHR_RAINY, WTHR_SNOW};
+    if classification & WTHR_RAINY != 0 {
+        1.0
+    } else if classification & WTHR_SNOW != 0 {
+        0.12
+    } else {
+        0.0
+    }
+}
+
 /// Per-climate sunrise/sunset breakpoints in hours. CLMT TNAM bytes
 /// are in 10-min units (`hour = byte / 6`); the valid authored range is
 /// `1..=144` (`1` = 0:10, `144` = 24:00). Returns the pre-#463 hardcoded
@@ -1027,6 +1038,7 @@ pub(crate) fn translate_weather(
         skyrim_dalc_per_tod,
         // #1033 — WTHR DATA wind_speed drives per-weather cloud-scroll rate.
         wind_speed: wthr.wind_speed,
+        precipitation: precipitation_from_weather(wthr.classification),
     }
 }
 
@@ -1139,6 +1151,7 @@ pub(crate) fn procedural_fallback_weather() -> WeatherDataRes {
         tod_hours: [6.0, 10.0, 18.0, 22.0],
         skyrim_dalc_per_tod: None,
         wind_speed: 0,
+        precipitation: 0.0,
     }
 }
 
@@ -2578,6 +2591,14 @@ mod tests {
             let translated = translate_weather(&weather, None);
             assert_eq!(translated.fog_media[0].coverage, expected);
             assert_eq!(translated.fog_media[1].coverage, expected);
+            let expected_precipitation = if classification & WTHR_RAINY != 0 {
+                1.0
+            } else if classification & WTHR_SNOW != 0 {
+                0.12
+            } else {
+                0.0
+            };
+            assert_eq!(translated.precipitation, expected_precipitation);
         }
     }
 

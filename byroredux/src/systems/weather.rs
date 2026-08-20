@@ -1442,6 +1442,7 @@ mod interior_gate_tests {
             tod_hours: [6.0, 10.0, 18.0, 22.0],
             skyrim_dalc_per_tod: None,
             wind_speed: 0,
+            precipitation: 0.0,
         });
 
         world
@@ -1681,6 +1682,7 @@ mod seeded_at_wrong_tod_resample_tests {
             tod_hours: [6.0, 10.0, 18.0, 22.0],
             skyrim_dalc_per_tod: None,
             wind_speed: 0,
+            precipitation: 0.0,
         });
 
         // The buggy seed: direction already correct (below-horizon
@@ -1781,6 +1783,7 @@ mod dalc_cube_crossfade_tests {
             tod_hours: [6.0, 10.0, 18.0, 22.0],
             skyrim_dalc_per_tod: dalc,
             wind_speed: 0,
+            precipitation: 0.0,
         }
     }
 

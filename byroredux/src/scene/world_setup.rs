@@ -989,6 +989,7 @@ mod tests {
             tod_hours: [6.0, 10.0, 18.0, 22.0],
             skyrim_dalc_per_tod: None,
             wind_speed,
+            precipitation: 0.0,
         }
     }
 
