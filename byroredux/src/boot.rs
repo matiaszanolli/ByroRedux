@@ -1186,6 +1186,8 @@ pub(crate) fn build_scheduler() -> Scheduler {
             .reads_resource::<ActiveCamera>()
             .reads_resource::<byroredux_core::ecs::components::groundcover::WindField>()
             .reads::<byroredux_core::ecs::Billboard>()
+            .reads::<byroredux_core::ecs::SpeedTreeWind>()
+            .reads::<byroredux_core::ecs::MeshHandle>()
             .writes::<byroredux_core::ecs::GlobalTransform>(),
     );
     // Bound propagation runs last in PostUpdate so it sees final

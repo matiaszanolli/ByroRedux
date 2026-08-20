@@ -2,9 +2,10 @@
 
 use byroredux_core::ecs::components::groundcover::WindField;
 use byroredux_core::ecs::{
-    ActiveCamera, Billboard, BillboardMode, GlobalTransform, SpeedTreeWind, World,
+    ActiveCamera, Billboard, BillboardMode, GlobalTransform, MeshHandle, SpeedTreeWind, World,
 };
 use byroredux_core::math::{Quat, Vec2, Vec3};
+use std::collections::HashMap;
 
 /// Billboard system factory — returns a closure with a cached camera pose.
 ///
@@ -26,6 +27,12 @@ pub(crate) fn make_billboard_system() -> impl FnMut(&World, f32) + Send + Sync {
     let mut last_cam: Option<(Vec3, Vec3)> = None;
     let mut elapsed = 0.0_f32;
     let mut last_wind: Option<WindField> = None;
+    // Geometry-backed SpeedTree meshes do not have a Billboard component, so
+    // their authored orientation comes from transform propagation each frame.
+    // Keep that orientation separate from the transient wind bend; otherwise
+    // multiplying the bend onto the already-bent GlobalTransform would drift
+    // the tree permanently as the gust oscillates.
+    let mut geometry_bases: HashMap<u32, Quat> = HashMap::new();
 
     move |world: &World, dt: f32| {
         elapsed = (elapsed + dt.max(0.0)).max(0.0);
@@ -75,71 +82,100 @@ pub(crate) fn make_billboard_system() -> impl FnMut(&World, f32) + Send + Sync {
         }
         last_cam = Some((cam_pos, cam_forward));
 
-        let Some(bq) = world.query::<Billboard>() else {
-            return;
-        };
+        let bq = world.query::<Billboard>();
         let swq = world.query::<SpeedTreeWind>();
 
-        for (entity, billboard) in bq.iter() {
-            let Some(global) = gq.get_mut(entity) else {
-                continue;
-            };
-
-            let mut new_rot = compute_billboard_rotation(
-                billboard.mode,
-                global.translation,
-                cam_pos,
-                cam_forward,
-            );
-            // SpeedTree placements carry the authoritative `SpeedTreeWind`
-            // marker, but their source NIFs are not uniform about which
-            // billboard enum they use (some author `RotateAboutUp`, others
-            // Bethesda's `BsRotateAboutUp`). Key the canopy response off the
-            // marker rather than one enum value so every imported tree gets
-            // the shared weather wind while ordinary billboards remain
-            // unaffected. Phase is world-position seeded, keeping nearby
-            // trees in sync while avoiding lockstep.
-            let tree_wind = swq.as_ref().and_then(|q| q.get(entity).copied());
-            if wind_active && tree_wind.is_some() {
-                let gust = wind.speed
-                    + wind.gust_amplitude
-                        * (elapsed * wind.gust_frequency * std::f32::consts::TAU).sin();
-                let strength = (gust
-                    / byroredux_core::ecs::components::groundcover::MAX_WIND_SPEED)
-                    .clamp(0.0, 1.0);
-                // Wind direction is the horizontal X/Z vector used by the
-                // weather and water paths. Project the tree position onto it
-                // so trees downwind share a coherent travelling wave rather
-                // than merely oscillating at a speed-dependent frequency.
-                let wind_dir = Vec2::new(wind.direction[0], wind.direction[1]);
-                let wind_dir = if wind_dir.length_squared() > 1.0e-6 {
-                    wind_dir.normalize()
-                } else {
-                    Vec2::X
+        if let Some(bq) = bq.as_ref() {
+            for (entity, billboard) in bq.iter() {
+                let Some(global) = gq.get_mut(entity) else {
+                    continue;
                 };
-                let along_wind =
-                    global.translation.x * wind_dir.x + global.translation.z * wind_dir.y;
-                let phase = along_wind * 0.017;
-                let wave = (elapsed * (0.35 + strength * 0.85) + phase).sin();
-                let cross = (elapsed * (0.47 + strength * 0.65) + phase * 1.7).cos();
-                let (response, stiffness) = tree_wind
-                    .map(|wind| {
-                        (
-                            wind.response.clamp(0.0, 4.0),
-                            wind.stiffness.clamp(0.0, 1.0),
-                        )
-                    })
-                    .unwrap_or((1.0, 0.0));
-                let bend = strength * 0.16 * response * (1.0 - stiffness);
-                let along_weight = wind_dir.x.abs().max(0.25);
-                let cross_weight = wind_dir.y.abs().max(0.25);
-                new_rot = new_rot
-                    * Quat::from_rotation_z(wave * bend * along_weight)
-                    * Quat::from_rotation_x(cross * bend * 0.65 * cross_weight);
+
+                let mut new_rot = compute_billboard_rotation(
+                    billboard.mode,
+                    global.translation,
+                    cam_pos,
+                    cam_forward,
+                );
+                // SpeedTree placements carry the authoritative `SpeedTreeWind`
+                // marker, but their source NIFs are not uniform about which
+                // billboard enum they use (some author `RotateAboutUp`, others
+                // Bethesda's `BsRotateAboutUp`). Key the canopy response off the
+                // marker rather than one enum value so every imported tree gets
+                // the shared weather wind while ordinary billboards remain
+                // unaffected. Phase is world-position seeded, keeping nearby
+                // trees in sync while avoiding lockstep.
+                let tree_wind = swq.as_ref().and_then(|q| q.get(entity).copied());
+                if wind_active && tree_wind.is_some() {
+                    new_rot = apply_speedtree_wind(
+                        new_rot,
+                        global.translation,
+                        wind,
+                        tree_wind.unwrap(),
+                        elapsed,
+                    );
+                }
+                global.rotation = new_rot;
             }
-            global.rotation = new_rot;
+        }
+
+        // Full SpeedTree geometry (rather than billboard impostors) carries
+        // the same marker but has no Billboard component. Bend only the mesh
+        // entity, not its placement root: the loader mirrors the marker onto
+        // both, and rotating both would apply the canopy response twice.
+        if let (Some(swq), Some(mesh_q)) = (swq.as_ref(), world.query::<MeshHandle>()) {
+            for (entity, tree_wind) in swq.iter() {
+                if bq.as_ref().is_some_and(|q| q.contains(entity)) || !mesh_q.contains(entity) {
+                    continue;
+                }
+                let Some(global) = gq.get_mut(entity) else {
+                    continue;
+                };
+                let base = *geometry_bases.entry(entity).or_insert(global.rotation);
+                global.rotation = if wind_active {
+                    apply_speedtree_wind(base, global.translation, wind, *tree_wind, elapsed)
+                } else {
+                    base
+                };
+            }
+            // Despawned streamed meshes disappear from the component storage;
+            // pruning here keeps this per-system cache bounded by live trees.
+            geometry_bases.retain(|entity, _| mesh_q.contains(*entity) && swq.contains(*entity));
         }
     }
+}
+
+/// Apply the shared atmospheric wind to an authored SpeedTree orientation.
+/// Water's wave path uses the same WindField, so weather transitions keep
+/// vegetation and surface motion phase-coherent.
+fn apply_speedtree_wind(
+    base: Quat,
+    position: Vec3,
+    wind: WindField,
+    tree: SpeedTreeWind,
+    elapsed: f32,
+) -> Quat {
+    let gust = wind.speed
+        + wind.gust_amplitude * (elapsed * wind.gust_frequency * std::f32::consts::TAU).sin();
+    let strength =
+        (gust / byroredux_core::ecs::components::groundcover::MAX_WIND_SPEED).clamp(0.0, 1.0);
+    let wind_dir = Vec2::new(wind.direction[0], wind.direction[1]);
+    let wind_dir = if wind_dir.length_squared() > 1.0e-6 {
+        wind_dir.normalize()
+    } else {
+        Vec2::X
+    };
+    let along_wind = position.x * wind_dir.x + position.z * wind_dir.y;
+    let phase = along_wind * 0.017;
+    let wave = (elapsed * (0.35 + strength * 0.85) + phase).sin();
+    let cross = (elapsed * (0.47 + strength * 0.65) + phase * 1.7).cos();
+    let response = tree.response.clamp(0.0, 4.0);
+    let stiffness = tree.stiffness.clamp(0.0, 1.0);
+    let bend = strength * 0.16 * response * (1.0 - stiffness);
+    let along_weight = wind_dir.x.abs().max(0.25);
+    let cross_weight = wind_dir.y.abs().max(0.25);
+    base * Quat::from_rotation_z(wave * bend * along_weight)
+        * Quat::from_rotation_x(cross * bend * 0.65 * cross_weight)
 }
 
 /// Compute a world-space rotation for a billboard.
@@ -220,11 +256,7 @@ mod tests {
 
     #[test]
     fn speedtree_billboard_bends_with_shared_weather_wind() {
-        fn rotation_after_wind(
-            mode: BillboardMode,
-            direction: [f32; 2],
-            speed: f32,
-        ) -> Quat {
+        fn rotation_after_wind(mode: BillboardMode, direction: [f32; 2], speed: f32) -> Quat {
             let mut world = World::new();
             let camera = world.spawn();
             world.insert(camera, Transform::IDENTITY);
@@ -270,8 +302,7 @@ mod tests {
             "SpeedTree sway must follow the atmospheric wind direction"
         );
 
-        let rotate_about_up =
-            rotation_after_wind(BillboardMode::RotateAboutUp, [1.0, 0.0], 220.0);
+        let rotate_about_up = rotation_after_wind(BillboardMode::RotateAboutUp, [1.0, 0.0], 220.0);
         assert_ne!(
             calm, rotate_about_up,
             "SpeedTreeWind marker must drive trees using the legacy RotateAboutUp mode"
@@ -323,5 +354,59 @@ mod tests {
             before, after,
             "a stationary camera must not suppress active-to-active wind changes"
         );
+    }
+
+    #[test]
+    fn geometry_speedtree_mesh_bends_without_billboard_component() {
+        let mut world = World::new();
+        let camera = world.spawn();
+        world.insert(camera, Transform::IDENTITY);
+        world.insert(camera, GlobalTransform::IDENTITY);
+        world.insert(camera, Camera::default());
+        world.insert_resource(ActiveCamera(camera));
+
+        let tree = world.spawn();
+        let authored = Quat::from_rotation_y(0.35);
+        world.insert(
+            tree,
+            GlobalTransform::new(Vec3::new(12.0, 0.0, 8.0), authored, 1.0),
+        );
+        world.insert(tree, MeshHandle(7));
+        world.insert(tree, SpeedTreeWind::new(1.0, 0.0));
+        world.insert_resource(WindField {
+            direction: [1.0, 0.0],
+            speed: 220.0,
+            gust_amplitude: 0.0,
+            gust_frequency: 0.0,
+        });
+
+        let mut system = make_billboard_system();
+        system(&world, 0.0);
+        let first = world
+            .query::<GlobalTransform>()
+            .unwrap()
+            .get(tree)
+            .unwrap()
+            .rotation;
+        system(&world, 0.5);
+        let second = world
+            .query::<GlobalTransform>()
+            .unwrap()
+            .get(tree)
+            .unwrap()
+            .rotation;
+
+        assert_ne!(first, authored, "geometry trees must respond to wind");
+        assert_ne!(second, first, "geometry tree sway must remain time-varying");
+
+        world.resource_mut::<WindField>().speed = 0.0;
+        system(&world, 0.0);
+        let calm = world
+            .query::<GlobalTransform>()
+            .unwrap()
+            .get(tree)
+            .unwrap()
+            .rotation;
+        assert_eq!(calm, authored, "calm weather must restore authored pose");
     }
 }

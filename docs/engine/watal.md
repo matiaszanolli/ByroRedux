@@ -276,8 +276,9 @@ ANAM retain the procedural 0.88 fallback.
 These WATR wind vectors remain water-local normal motion. The shared EXAL
 `WindField` is refreshed from live `WeatherDataRes::wind_speed` during weather
 transitions and now drives both atmospheric water-normal drift and coherent
-`BsRotateAboutUp` SpeedTree canopy sway; TREE response metadata remains
-threaded through the importer for the geometry-tail path.
+SpeedTree sway. Billboard impostors and full geometry-backed tree meshes both
+consume the same field; TREE response metadata controls each mesh's bend while
+the authored placement pose is restored when weather calms.
 WATR `NAM0` linear velocity is projected from Gamebryo Z-up into renderer X/Z
 coordinates for authored water motion and flow direction.
 WATR `NAM1` angular velocity is now retained for all supported layouts; its
