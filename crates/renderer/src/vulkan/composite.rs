@@ -594,12 +594,14 @@ impl CompositePipeline {
             // COLOR_ATTACHMENT_OUTPUT covers the attachment loadOp itself.
             // The colour attachment is `initial_layout = UNDEFINED` +
             // `LOAD_OP_DONT_CARE`, so this EXTERNAL→0 dependency is what
-            // synchronizes the swapchain image's UNDEFINED→COLOR_ATTACHMENT
-            // layout transition. A DONT_CARE loadOp is itself a
+            // synchronizes `scene_image_views[i]`'s UNDEFINED→COLOR_ATTACHMENT
+            // layout transition — an offscreen HDR_FORMAT image, not the
+            // swapchain (presentation happens after the upscale boundary;
+            // see the module doc above). A DONT_CARE loadOp is itself a
             // COLOR_ATTACHMENT_WRITE at COLOR_ATTACHMENT_OUTPUT; without that
             // stage/access in the dst scope, the loadOp write races the
             // layout transition this dependency drives — the sync-val
-            // WRITE_AFTER_WRITE flagged on the composite swapchain image.
+            // WRITE_AFTER_WRITE flagged on this composite HDR image.
             .dst_stage_mask(
                 vk::PipelineStageFlags::FRAGMENT_SHADER
                     | vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
