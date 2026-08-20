@@ -23,6 +23,7 @@
 
 use crate::components::MaterialTextureHandles;
 use byroredux_core::ecs::components::material::{EffectFalloff, Material};
+use byroredux_core::ecs::components::water::WaterMaterial;
 use byroredux_core::ecs::{EntityId, World};
 use byroredux_nif::import::{ImportedMaterial, MaterialTextureSet};
 
@@ -79,6 +80,22 @@ fn material_optical_scalar(material_kind: u32, refraction_strength: f32) -> f32 
 pub(crate) struct ResolvedPaths {
     pub textures: MaterialTextureSet<Option<String>>,
     pub material_path: Option<String>,
+}
+
+/// Build the canonical water payload for a mesh-bound water shader. Legacy
+/// NIF water properties do not carry a WATR record, so they cannot use the
+/// cell-loader's full per-record translation; they still author optical
+/// response through the shared material property chain.
+pub(crate) fn water_material_from_mesh(material: &Material, normal_map_index: u32) -> WaterMaterial {
+    let mut water = WaterMaterial::default();
+    water.normal_map_index = normal_map_index;
+    if material.env_map_scale.is_finite() {
+        water.reflectivity = material.env_map_scale.clamp(0.0, 1.0);
+    }
+    if material.alpha.is_finite() {
+        water.opacity = material.alpha.clamp(0.0, 1.0);
+    }
+    water
 }
 
 /// Translate a source-normalized [`ImportedMaterial`] + caller-resolved

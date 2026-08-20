@@ -1025,9 +1025,10 @@ pub(crate) fn load_nif_bytes_with_skeleton(
             },
         );
         if mesh_water {
-            let mut water_material =
-                byroredux_core::ecs::components::WaterMaterial::default();
-            water_material.normal_map_index = texture_handles.normal;
+            let water_material = crate::material_translate::water_material_from_mesh(
+                &world.get::<byroredux_core::ecs::components::Material>(entity).unwrap(),
+                texture_handles.normal,
+            );
             world.insert(
                 entity,
                 byroredux_core::ecs::components::WaterPlane {
