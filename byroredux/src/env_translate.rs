@@ -2357,6 +2357,29 @@ mod tests {
         assert!(matches!(kind, WaterKind::Calm));
     }
 
+    /// WATAL: the authored rain-simulator response must survive the WATR
+    /// translation boundary so precipitation-driven ripples retain each
+    /// game's water-specific intensity instead of silently using the default.
+    #[test]
+    fn resolve_water_material_carries_rain_response() {
+        let rec = calm_watr(
+            0x000A_0004,
+            "RainSensitiveWater",
+            WaterParams {
+                rain_response: 2.75,
+                ..WaterParams::default()
+            },
+        );
+        let mut waters = HashMap::new();
+        waters.insert(rec.form_id, rec);
+
+        let (mat, _, _, _, _) = resolve_water_material(&waters, Some(0x000A_0004));
+        assert_eq!(
+            mat.rain_response, 2.75,
+            "rain_response must round-trip from WATR into WaterMaterial"
+        );
+    }
+
     #[test]
     fn flowing_water_preserves_authored_layer_motion() {
         let mut rec = calm_watr(
