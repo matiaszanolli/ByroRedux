@@ -712,6 +712,11 @@ pub(crate) fn resolve_water_material(
             // see docs/engine/watal.md §4.
             mat.wave_amplitude = rec.params.wave_amplitude;
             mat.wave_frequency = rec.params.wave_frequency;
+            mat.rain_response = if rec.params.rain_response.is_finite() {
+                rec.params.rain_response.clamp(0.0, 4.0)
+            } else {
+                1.0
+            };
             mat.sun_specular_power = rec.params.sun_specular_power;
             // Starfield replaces the legacy sun-power scalar with a physical
             // surface roughness. Convert the authored roughness to the
@@ -2098,6 +2103,7 @@ mod tests {
                 wind_direction: 0.0,
                 wave_amplitude: 0.0,
                 wave_frequency: 0.0,
+                rain_response: 1.0,
                 sun_specular_power: 90.0,
                 noise_uv_scale_a: 0.0,
                 noise_uv_scale_b: 0.0,
@@ -2132,6 +2138,7 @@ mod tests {
             "reflection_tint must round-trip from WATR DATA reflection_color"
         );
         assert_eq!(mat.sun_specular_power, 90.0);
+        assert_eq!(mat.rain_response, 1.0);
     }
 
     #[test]

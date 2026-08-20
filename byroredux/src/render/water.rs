@@ -246,7 +246,12 @@ pub(super) fn reemit_water_planes(
                 mat.absorption_ranges[0],
                 mat.absorption_ranges[1],
                 mat.absorption_ranges[2],
-                precipitation,
+                precipitation
+                    * if mat.rain_response.is_finite() {
+                        mat.rain_response.clamp(0.0, 4.0)
+                    } else {
+                        1.0
+                    },
             ],
             ripple,
             underwater: [

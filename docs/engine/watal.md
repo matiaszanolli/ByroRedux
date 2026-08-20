@@ -228,7 +228,7 @@ part of the canonical GPU material contract.
 ### Decode + translate — **good (render), Skyrim tail partially promoted**
 
 `water.rs` decodes Oblivion's authoritative TES4 DATA shape (including its
-separate scroll-speed, fog/color, and displacement-simulator offsets), the
+separate scroll-speed, fog/color, rain-simulator, and displacement-simulator offsets), the
 authoritative FO3/FNV 186/196-byte visual layout, Skyrim's extended DNAM, the
 FO4/FO76 visual-data layout, and Starfield's absorption-based
 DNAM layout; `NNAM`/`TNAM` texture and Skyrim+ NAM2/NAM3/NAM4
@@ -274,6 +274,9 @@ into Skyrim-only depth weights, its authored flow-map scale is preserved, and
 its surface roughness is translated into the shared direct-sun highlight
 exponent. FO4/FO76 silt amount plus light/dark colors now blend into the
 canonical shallow, deep, and underwater palette at the same boundary.
+Oblivion's authored rain-simulator force now scales the shared precipitation
+ripple response; records without that TES4 tail retain the neutral
+weather-driven value.
 The remaining Skyrim tail fields stay raw. The
 Dedicated NIF mesh-water shaders now also cross NIFAL: Oblivion/FO3/FNV
 `WaterShaderProperty` and Skyrim+ `BSWaterShaderProperty` set a canonical

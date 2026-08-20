@@ -147,6 +147,10 @@ pub struct WaterParams {
     pub wave_amplitude: f32,
     /// Wave frequency, Hz.
     pub wave_frequency: f32,
+    /// Authored rain-simulator response. One is the TES4 default; zero/absent
+    /// records use the neutral engine response so older games retain the
+    /// shared weather precipitation behavior.
+    pub rain_response: f32,
     /// Blinn-Phong exponent for the direct-sun glint. Bethesda names this
     /// `Sun Specular Power`; larger values produce a tighter highlight.
     /// Authored by every supported WATR visual-data generation.
@@ -220,6 +224,7 @@ impl Default for WaterParams {
             wind_direction: 0.0,
             wave_amplitude: 0.05,
             wave_frequency: 0.6,
+            rain_response: 1.0,
             sun_specular_power: 50.0,
             noise_uv_scale_a: 0.0,
             noise_uv_scale_b: 0.0,
@@ -446,6 +451,12 @@ fn decode_data_oblivion(data: &[u8]) -> WaterParams {
     }
     if let Some(velocity) = read_f32_at(data, 84) {
         p.wave_frequency = velocity.max(0.0);
+    }
+    // TES4 Rain Simulator force defaults to 0.1. Normalize around that
+    // authored default so the canonical value is a bounded multiplier on the
+    // live weather precipitation intensity.
+    if let Some(force) = read_f32_at(data, 60) {
+        p.rain_response = (force / 0.1).clamp(0.0, 4.0);
     }
     p
 }
@@ -1166,6 +1177,7 @@ mod tests {
         data[44..48].copy_from_slice(&[0x20, 0x60, 0x80, 0xFF]);
         data[48..52].copy_from_slice(&[0x05, 0x0F, 0x18, 0xFF]);
         data[52..56].copy_from_slice(&[0xC0, 0xD0, 0xE0, 0xFF]);
+        data[60..64].copy_from_slice(&0.2f32.to_le_bytes());
         data[80..84].copy_from_slice(&0.4f32.to_le_bytes());
         data[84..88].copy_from_slice(&0.6f32.to_le_bytes());
 
@@ -1177,6 +1189,7 @@ mod tests {
         assert!((w.params.reflection_color[1] - 0xD0 as f32 / 255.0).abs() < 1e-6);
         assert_eq!(w.params.wave_amplitude, 0.4);
         assert_eq!(w.params.wave_frequency, 0.6);
+        assert_eq!(w.params.rain_response, 2.0);
     }
 
     #[test]

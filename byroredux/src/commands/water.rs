@@ -172,7 +172,7 @@ impl ConsoleCommand for WaterDumpCommand {
                 material.specular_magnitude,
             ));
             lines.push(format!(
-                "    underwater_fog={:.1}..{:.1} depth_weights=[{:.3},{:.3},{:.3},{:.3}] effects=[{:.3},{:.3},{:.3},{:.3}] absorption=[{:.1},{:.1},{:.1}] opacity={:.3} shoreline={:.1} flowmap_scale={:.3}",
+                "    underwater_fog={:.1}..{:.1} depth_weights=[{:.3},{:.3},{:.3},{:.3}] effects=[{:.3},{:.3},{:.3},{:.3}] absorption=[{:.1},{:.1},{:.1}] opacity={:.3} shoreline={:.1} flowmap_scale={:.3} rain_response={:.3}",
                 material.underwater_fog_near,
                 material.underwater_fog_far,
                 material.depth_weights[0],
@@ -189,6 +189,7 @@ impl ConsoleCommand for WaterDumpCommand {
                 material.opacity,
                 material.shoreline_width,
                 material.flowmap_scale,
+                material.rain_response,
             ));
         }
 

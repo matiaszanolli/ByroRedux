@@ -224,6 +224,10 @@ pub struct WaterMaterial {
     pub wave_amplitude: f32,
     /// Wave frequency (Hz) — companion to [`Self::wave_amplitude`].
     pub wave_frequency: f32,
+    /// Multiplier for live precipitation-driven surface ripples. One is the
+    /// neutral fallback; legacy records without a rain simulator retain the
+    /// shared weather response.
+    pub rain_response: f32,
     /// Direct-sun glint exponent from WATR `Sun Specular Power`.
     /// Larger values produce a smaller, tighter highlight. This is an
     /// exponent, not an intensity multiplier.
@@ -281,6 +285,7 @@ impl Default for WaterMaterial {
             // all games.
             wave_amplitude: 0.05,
             wave_frequency: 0.6,
+            rain_response: 1.0,
             sun_specular_power: 50.0,
             source_form: 0,
             reflection_tint: [0.65, 0.70, 0.75],
