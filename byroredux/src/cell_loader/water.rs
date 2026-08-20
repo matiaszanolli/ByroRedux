@@ -370,10 +370,16 @@ pub(super) fn spawn_water_plane(
     if let Some(cell_flow) = cell_water_flow(cell_water_velocity) {
         // XWCU is an authored current on the cell, so it is stronger
         // classification evidence than a neutral/localized WATR EDID. A
-        // calm WATR with a non-zero cell current must take the River shader
-        // path; otherwise the flow reaches physics and UV scroll but the
-        // renderer suppresses its flow-aligned foam response.
-        kind = kind_with_cell_flow(kind, true);
+        // calm WATR with a non-zero cell current must take a flow shader
+        // path (River or Rapids by speed); otherwise the flow reaches
+        // physics and UV scroll but the renderer suppresses its aligned foam
+        // response.
+        kind = kind_with_cell_flow(kind, cell_flow.speed);
+        if matches!(kind, WaterKind::Rapids) {
+            material.foam_strength = 0.85;
+        } else if matches!(kind, WaterKind::River) {
+            material.foam_strength = 0.20;
+        }
         // Keep the authored WATR layer motion, but add the cell-local
         // current as a world-space UV bias so XWCU affects both physics and
         // the visible surface rather than only drifting debris.
@@ -625,9 +631,13 @@ fn cell_water_flow(velocity: Option<[f32; 3]>) -> Option<WaterFlow> {
 }
 
 #[inline]
-fn kind_with_cell_flow(kind: WaterKind, has_cell_flow: bool) -> WaterKind {
-    if has_cell_flow && matches!(kind, WaterKind::Calm) {
-        WaterKind::River
+fn kind_with_cell_flow(kind: WaterKind, speed: f32) -> WaterKind {
+    if matches!(kind, WaterKind::Calm) && speed.is_finite() && speed > 1.0e-5 {
+        if speed >= WaterFlow::SPEED_RAPIDS {
+            WaterKind::Rapids
+        } else {
+            WaterKind::River
+        }
     } else {
         kind
     }
@@ -919,15 +929,19 @@ mod tests {
     #[test]
     fn authored_cell_current_promotes_neutral_water_to_river_shader() {
         assert_eq!(
-            kind_with_cell_flow(WaterKind::Calm, true),
+            kind_with_cell_flow(WaterKind::Calm, 2.0),
             WaterKind::River
         );
         assert_eq!(
-            kind_with_cell_flow(WaterKind::Rapids, true),
+            kind_with_cell_flow(WaterKind::Calm, WaterFlow::SPEED_RAPIDS),
             WaterKind::Rapids
         );
         assert_eq!(
-            kind_with_cell_flow(WaterKind::Calm, false),
+            kind_with_cell_flow(WaterKind::Rapids, 2.0),
+            WaterKind::Rapids
+        );
+        assert_eq!(
+            kind_with_cell_flow(WaterKind::Calm, 0.0),
             WaterKind::Calm
         );
     }
