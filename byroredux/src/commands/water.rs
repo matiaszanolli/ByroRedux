@@ -159,6 +159,25 @@ impl ConsoleCommand for WaterDumpCommand {
                 material.sun_specular_power,
                 material.specular_magnitude,
             ));
+            lines.push(format!(
+                "    underwater_fog={:.1}..{:.1} depth_weights=[{:.3},{:.3},{:.3},{:.3}] effects=[{:.3},{:.3},{:.3},{:.3}] absorption=[{:.1},{:.1},{:.1}] opacity={:.3} shoreline={:.1} flowmap_scale={:.3}",
+                material.underwater_fog_near,
+                material.underwater_fog_far,
+                material.depth_weights[0],
+                material.depth_weights[1],
+                material.depth_weights[2],
+                material.depth_weights[3],
+                material.effect_controls[0],
+                material.effect_controls[1],
+                material.effect_controls[2],
+                material.effect_controls[3],
+                material.absorption_ranges[0],
+                material.absorption_ranges[1],
+                material.absorption_ranges[2],
+                material.opacity,
+                material.shoreline_width,
+                material.flowmap_scale,
+            ));
         }
 
         CommandOutput::lines(lines)
@@ -243,6 +262,14 @@ mod tests {
             uv_scale_b: 1.0 / 400.0,
             uv_scale_c: 1.0 / 800.0,
             noise_amplitude_scales: [0.8, 0.6, 0.4],
+            underwater_fog_near: 12.0,
+            underwater_fog_far: 240.0,
+            depth_weights: [0.9, 0.8, 0.7, 0.6],
+            effect_controls: [1.1, 44.0, 0.9, 1.2],
+            absorption_ranges: [120.0, 240.0, 480.0],
+            opacity: 0.67,
+            shoreline_width: 28.0,
+            flowmap_scale: 2.5,
             specular_magnitude: 1.5,
             ..WaterMaterial::default()
         };
@@ -301,6 +328,18 @@ mod tests {
         assert!(output.contains("uv=[0.00500,0.00250,0.00125]"), "{output}");
         assert!(output.contains("amp=[0.800,0.600,0.400]"), "{output}");
         assert!(output.contains("spec_mag=1.500"), "{output}");
+        assert!(
+            output.contains("underwater_fog=12.0..240.0 depth_weights=[0.900,0.800,0.700,0.600]"),
+            "{output}"
+        );
+        assert!(
+            output.contains("effects=[1.100,44.000,0.900,1.200] absorption=[120.0,240.0,480.0]"),
+            "{output}"
+        );
+        assert!(
+            output.contains("opacity=0.670 shoreline=28.0 flowmap_scale=2.500"),
+            "{output}"
+        );
     }
 
     #[test]
