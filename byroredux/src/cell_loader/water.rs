@@ -15,11 +15,11 @@
 //!   per-tile quad spanning the cell's 4096×4096 grid square (so
 //!   neighbouring tiles tile seamlessly via the world-XZ UV in
 //!   `water.frag`).
-//! - `WaterKind` heuristic: defaults to `Calm` for every spawn.
-//!   Rivers / rapids / waterfalls land in a follow-up pass once we
-//!   parse the WATR record's EDID naming convention + cell flow
-//!   metadata (Skyrim has REFR XCWT overrides + `RiverWater` named
-//!   WATR records; FNV uses NAM2-suffixed names).
+//! - `WaterKind` is resolved at the canonical WATR boundary. Authored
+//!   linear flow (NAM0), flow-normal textures, and the cross-generation
+//!   EDID compatibility tokens classify rivers/rapids; horizontal cell
+//!   planes deliberately demote waterfall names to river water. Dedicated
+//!   vertical waterfall meshes use geometry classification in the NIF path.
 //! - TLAS exclusion: water planes are spawned with no `in_tlas`
 //!   semantics because the renderer skips this entity in the regular
 //!   draw path (`DrawCommand.is_water == true`), and the water

@@ -283,9 +283,12 @@ while the zero-word legacy sentinel preserves FO3/FNV/Oblivion compatibility.
 Explicit legacy mesh names also promote river/rapids/waterfall kinds and their
 canonical flow vectors; vertical waterfall sheets intentionally do not create
 swimmable AABB volumes.
-`WaterKind` classification is a fragile EDID-substring heuristic
-(`rapid`/`waterfall`/`falls`/`river`/`stream`), English-only, with `waterfall`
-deliberately demoted to `River` for cell planes.
+`WaterKind` classification combines authored NAM0 linear flow, Skyrim+ flow-
+normal texture provenance, and conservative EDID compatibility tokens
+(`rapid`/`waterfall`/`falls`/`river`/`stream`). Horizontal cell planes
+deliberately demote waterfall names to `River`; dedicated vertical waterfall
+meshes use geometry classification in the NIF path. The EDID tokens remain a
+compatibility fallback for records whose native flow metadata is absent.
 
 Mesh-bound water now also contributes a bounds-derived `WaterVolume` in both
 cell and loose-NIF spawn paths, with its top pinned to the rendered surface;
