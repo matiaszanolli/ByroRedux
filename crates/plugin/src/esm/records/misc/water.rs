@@ -164,7 +164,7 @@ pub struct WaterParams {
     pub specular_magnitude: f32,
     /// Authored normal-layer wind directions (radians) and UV speeds. Zero
     /// entries are sentinels for layouts without per-layer motion controls;
-    /// FO76/Starfield NAM0 linear velocity is projected into layer 0.
+    /// FO76/Starfield NAM0 linear velocity fills each missing layer.
     pub noise_wind_directions: [f32; 3],
     pub noise_wind_speeds: [f32; 3],
     /// Skyrim SE-only flow-map tile scale at DNAM offset 228. A zero
