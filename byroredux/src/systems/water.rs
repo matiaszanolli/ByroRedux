@@ -1,11 +1,12 @@
 //! Water submersion detection.
 
 use byroredux_core::ecs::components::water::{
-    SubmersionState, WaterMaterial, WaterPlane, WaterVolume,
+    SubmersionState, WaterContact, WaterMaterial, WaterPlane, WaterVolume,
 };
 use byroredux_core::ecs::components::ParticleEmitter;
-use byroredux_core::ecs::{ActiveCamera, GlobalTransform, World};
+use byroredux_core::ecs::{ActiveCamera, EntityId, GlobalTransform, World};
 use byroredux_scripting::{RippleEvent, SplashEvent};
+use std::collections::HashSet;
 
 /// Hysteresis band half-width for the `head_submerged` boolean, in
 /// Bethesda world units (~1.43 cm/unit — same scale as `WaterVolume`
@@ -273,6 +274,84 @@ pub(crate) fn submersion_system(world: &World, _dt: f32) {
     }
 }
 
+/// Emit surface interaction markers for dynamic physics bodies.
+///
+/// The physics crate deliberately owns only canonical `WaterContact` state;
+/// it does not depend on scripting or presentation. This bridge runs after
+/// the physics step and turns dry→wet transitions into `SplashEvent`s while
+/// keeping a one-frame `RippleEvent` alive for every wet body. The active
+/// camera already has its own volume-based path above, so this covers thrown
+/// clutter, ragdolls, creatures, and any other dynamic body uniformly.
+pub(crate) fn make_water_interaction_system() -> impl FnMut(&World, f32) + Send + Sync {
+    let mut wet_last_frame = HashSet::<EntityId>::new();
+
+    move |world: &World, _dt: f32| {
+        let Some(contact_q) = world.query::<WaterContact>() else {
+            wet_last_frame.clear();
+            return;
+        };
+        let Some(global_q) = world.query::<GlobalTransform>() else {
+            return;
+        };
+
+        let mut wet_now = HashSet::new();
+        let mut entries = Vec::new();
+        for (entity, contact) in contact_q.iter() {
+            if contact.submerged_fraction <= 0.0 {
+                continue;
+            }
+            let Some(global) = global_q.get(entity) else {
+                continue;
+            };
+            // `GlobalTransform` is the body's centre; place the surface event
+            // at the waterline so a deeply submerged body does not sound as
+            // though the splash came from below the surface.
+            let mut position = global.translation;
+            position.y += contact.depth;
+            let intensity = (0.35 + contact.submerged_fraction * 0.65).clamp(0.0, 1.0);
+            entries.push((
+                entity,
+                position,
+                intensity,
+                !wet_last_frame.contains(&entity),
+            ));
+            wet_now.insert(entity);
+        }
+        drop(global_q);
+        drop(contact_q);
+
+        if !entries.is_empty() {
+            if let Some(mut q) = world.query_mut::<RippleEvent>() {
+                for &(entity, position, intensity, _) in &entries {
+                    q.insert(
+                        entity,
+                        RippleEvent {
+                            actor: entity,
+                            intensity,
+                            position: [position.x, position.y, position.z],
+                        },
+                    );
+                }
+            }
+            if let Some(mut q) = world.query_mut::<SplashEvent>() {
+                for &(entity, position, intensity, entering) in &entries {
+                    if entering {
+                        q.insert(
+                            entity,
+                            SplashEvent {
+                                actor: entity,
+                                intensity,
+                                position: [position.x, position.y, position.z],
+                            },
+                        );
+                    }
+                }
+            }
+        }
+        wet_last_frame = wet_now;
+    }
+}
+
 /// Pack the active camera's submersion state into the
 /// `[underwater_color.rgb, extinction]` vec4 the renderer consumes as
 /// underwater fog parameters. Extinction is evaluated from the authored
@@ -361,11 +440,12 @@ fn underwater_extinction(depth: f32, fog_near: f32, fog_far: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        disturbance_rate, resolve_head_submerged, submersion_system, underwater_color_at_depth,
-        underwater_extinction, DISTURBANCE_BAND, DISTURBANCE_RADIUS, WATERLINE_HYSTERESIS,
+        disturbance_rate, make_water_interaction_system, resolve_head_submerged, submersion_system,
+        underwater_color_at_depth, underwater_extinction, DISTURBANCE_BAND, DISTURBANCE_RADIUS,
+        WATERLINE_HYSTERESIS,
     };
     use byroredux_core::ecs::components::water::{
-        SubmersionState, WaterKind, WaterMaterial, WaterPlane, WaterVolume,
+        SubmersionState, WaterContact, WaterKind, WaterMaterial, WaterPlane, WaterVolume,
     };
     use byroredux_core::ecs::components::ParticleEmitter;
     use byroredux_core::ecs::{ActiveCamera, GlobalTransform, World};
@@ -503,6 +583,45 @@ mod tests {
         let splashes = world.query::<SplashEvent>().expect("splash storage");
         assert!(ripples.get(water).is_some());
         assert!(splashes.get(water).is_some());
+    }
+
+    #[test]
+    fn dynamic_water_contact_emits_entry_once_and_ripples_while_wet() {
+        let mut world = World::new();
+        byroredux_scripting::register(&mut world);
+        let body = world.spawn();
+        world.insert(
+            body,
+            GlobalTransform::new(
+                Vec3::new(3.0, 1.0, 4.0),
+                byroredux_core::math::Quat::IDENTITY,
+                1.0,
+            ),
+        );
+        world.insert(
+            body,
+            WaterContact {
+                submerged_fraction: 0.5,
+                ..WaterContact::default()
+            },
+        );
+
+        let mut system = make_water_interaction_system();
+        system(&world, 0.016);
+        let splashes = world.query::<SplashEvent>().expect("splash storage");
+        let ripples = world.query::<RippleEvent>().expect("ripple storage");
+        assert!(splashes.get(body).is_some());
+        assert!(ripples.get(body).is_some());
+        drop(splashes);
+        drop(ripples);
+
+        world.remove::<SplashEvent>(body);
+        world.remove::<RippleEvent>(body);
+        system(&world, 0.016);
+        let splashes = world.query::<SplashEvent>().expect("splash storage");
+        let ripples = world.query::<RippleEvent>().expect("ripple storage");
+        assert!(splashes.get(body).is_none());
+        assert!(ripples.get(body).is_some());
     }
 
     /// Regression for #2792 (REN-D15-09): a `WaterPlane` entity with no

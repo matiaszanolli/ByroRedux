@@ -1320,6 +1320,19 @@ pub(crate) fn build_scheduler() -> Scheduler {
             .reads_resource::<crate::components::CellLightingRes>()
             .writes_resource::<byroredux_audio::AudioWorld>(),
     );
+    // WATAL — bridge physics-derived `WaterContact` into transient surface
+    // interaction markers after the Physics stage has written body poses and
+    // before water audio consumes the events. The physics crate stays free of
+    // scripting/presentation dependencies; this is the canonical adapter.
+    scheduler.add_exclusive_with_access(
+        Stage::Late,
+        crate::systems::make_water_interaction_system(),
+        Access::new()
+            .reads::<byroredux_core::ecs::components::water::WaterContact>()
+            .reads::<byroredux_core::ecs::GlobalTransform>()
+            .writes::<byroredux_scripting::SplashEvent>()
+            .writes::<byroredux_scripting::RippleEvent>(),
+    );
     scheduler.add_exclusive_with_access(
         Stage::Late,
         crate::systems::water_audio_system,
