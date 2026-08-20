@@ -273,6 +273,9 @@ through the same water pipeline (including authored normal-map handles). The
 Skyrim+ authored water-flag word is retained on the canonical mesh material;
 nonzero records now gate the dedicated pass's reflection/refraction lobes,
 while the zero-word legacy sentinel preserves FO3/FNV/Oblivion compatibility.
+Explicit legacy mesh names also promote river/rapids/waterfall kinds and their
+canonical flow vectors; vertical waterfall sheets intentionally do not create
+swimmable AABB volumes.
 `WaterKind` classification is a fragile EDID-substring heuristic
 (`rapid`/`waterfall`/`falls`/`river`/`stream`), English-only, with `waterfall`
 deliberately demoted to `River` for cell planes.
@@ -300,7 +303,7 @@ RT reflection/refraction (Schlick Fresnel, Snell, Beer-Lambert, TIR guard),
 shoreline + flow-aligned foam, dual scrolling normal layers, procedural normal
 fallback, underwater fog, water-side caustic splat. Battle-tested across many
 closed bug IDs, correctly RT-gated. The former 128-byte `WaterPush` ceiling is
-removed: authored material records now live in a per-frame, indexed 36 KiB UBO
+removed: authored material records now live in a per-frame, indexed 64 KiB UBO
 (256 records), while a 16-byte push selector chooses the draw's record. Waves
 combine bounded raster-side vertex displacement with fragment normal
 perturbation. Reflection rays now shade their material-aware hit and apply the

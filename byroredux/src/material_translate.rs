@@ -23,8 +23,7 @@
 
 use crate::components::MaterialTextureHandles;
 use byroredux_core::ecs::components::material::{EffectFalloff, Material};
-use byroredux_core::ecs::components::water::WaterMaterial;
-use byroredux_core::ecs::components::water::WaterVolume;
+use byroredux_core::ecs::components::water::{WaterFlow, WaterKind, WaterMaterial, WaterVolume};
 use byroredux_core::ecs::{EntityId, World};
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_nif::import::{ImportedMaterial, MaterialTextureSet};
@@ -122,6 +121,34 @@ pub(crate) fn water_material_from_mesh(
         }
     }
     water
+}
+
+/// Classify a dedicated water mesh when no CELL/WATR record exists. The NIF
+/// water shader properties carry optics but no semantic kind, so only explicit
+/// asset-name tokens promote the default `Calm` path; ordinary meshes remain
+/// conservative rather than becoming fast-flowing water by accident.
+pub(crate) fn water_kind_from_mesh_name(name: Option<&str>) -> (WaterKind, Option<WaterFlow>) {
+    let lowered = name.unwrap_or_default().to_ascii_lowercase();
+    let kind = if lowered.contains("waterfall") || lowered.contains("falls") {
+        WaterKind::Waterfall
+    } else if lowered.contains("rapid") {
+        WaterKind::Rapids
+    } else if lowered.contains("river")
+        || lowered.contains("stream")
+        || lowered.contains("canal")
+    {
+        WaterKind::River
+    } else {
+        WaterKind::Calm
+    };
+    let flow = match kind {
+        WaterKind::Calm => None,
+        WaterKind::Waterfall => Some(WaterFlow::for_kind(kind, [0.0, -1.0, 0.0])),
+        WaterKind::River | WaterKind::Rapids => {
+            Some(WaterFlow::for_kind(kind, [1.0, 0.0, 0.0]))
+        }
+    };
+    (kind, flow)
 }
 
 /// Derive a conservative physics volume for a mesh-bound water surface. NIF
@@ -673,6 +700,22 @@ mod tests {
         assert_eq!(volume.min[1], 1.0);
         assert_eq!(volume.min[0], 6.0);
         assert_eq!(volume.max[2], -2.0);
+    }
+
+    #[test]
+    fn mesh_water_name_classifier_only_promotes_explicit_flow_assets() {
+        assert!(matches!(
+            water_kind_from_mesh_name(Some("WaterfallSheet01")),
+            (WaterKind::Waterfall, Some(_))
+        ));
+        assert!(matches!(
+            water_kind_from_mesh_name(Some("RiverSegment01")),
+            (WaterKind::River, Some(_))
+        ));
+        assert!(matches!(
+            water_kind_from_mesh_name(Some("LakeWater01")),
+            (WaterKind::Calm, None)
+        ));
     }
 
     // Inputs that pass the gate (lit Skyrim-era matte surface w/ normal map,

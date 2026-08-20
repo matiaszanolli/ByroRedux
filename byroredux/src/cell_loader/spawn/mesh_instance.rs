@@ -726,13 +726,18 @@ pub(super) fn spawn_mesh_instance(
                 .unwrap(),
             texture_handles.normal,
         );
+        let (water_kind, water_flow) =
+            crate::material_translate::water_kind_from_mesh_name(mesh.name.as_deref());
         world.insert(
             entity,
             byroredux_core::ecs::components::WaterPlane {
-                kind: byroredux_core::ecs::components::WaterKind::Calm,
+                kind: water_kind,
                 material: water_material,
             },
         );
+        if let Some(flow) = water_flow {
+            world.insert(entity, flow);
+        }
         // Mesh-bound water has no CELL/XCLW record to create a volume from.
         // Derive a conservative world-space volume from the imported bounds
         // so swimming and buoyancy consume the same surface as rendering.
@@ -741,16 +746,18 @@ pub(super) fn spawn_mesh_instance(
             mesh.local_bound_center[1],
             mesh.local_bound_center[2],
         );
-        world.insert(
-            entity,
-            crate::material_translate::water_volume_from_mesh(
-                final_pos,
-                final_rot,
-                final_scale,
-                bound_center,
-                mesh.local_bound_radius,
-            ),
-        );
+        if water_kind != byroredux_core::ecs::components::WaterKind::Waterfall {
+            world.insert(
+                entity,
+                crate::material_translate::water_volume_from_mesh(
+                    final_pos,
+                    final_rot,
+                    final_scale,
+                    bound_center,
+                    mesh.local_bound_radius,
+                ),
+            );
+        }
     }
     world.insert(
         entity,

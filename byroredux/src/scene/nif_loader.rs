@@ -1031,28 +1031,35 @@ pub(crate) fn load_nif_bytes_with_skeleton(
                     .unwrap(),
                 texture_handles.normal,
             );
+            let (water_kind, water_flow) =
+                crate::material_translate::water_kind_from_mesh_name(mesh.name.as_deref());
             world.insert(
                 entity,
                 byroredux_core::ecs::components::WaterPlane {
-                    kind: byroredux_core::ecs::components::WaterKind::Calm,
+                    kind: water_kind,
                     material: water_material,
                 },
             );
+            if let Some(flow) = water_flow {
+                world.insert(entity, flow);
+            }
             let bound_center = Vec3::new(
                 mesh.local_bound_center[0],
                 mesh.local_bound_center[1],
                 mesh.local_bound_center[2],
             );
-            world.insert(
-                entity,
-                crate::material_translate::water_volume_from_mesh(
-                    translation,
-                    quat,
-                    mesh.scale,
-                    bound_center,
-                    mesh.local_bound_radius,
-                ),
-            );
+            if water_kind != byroredux_core::ecs::components::WaterKind::Waterfall {
+                world.insert(
+                    entity,
+                    crate::material_translate::water_volume_from_mesh(
+                        translation,
+                        quat,
+                        mesh.scale,
+                        bound_center,
+                        mesh.local_bound_radius,
+                    ),
+                );
+            }
         }
         world.insert(
             entity,
