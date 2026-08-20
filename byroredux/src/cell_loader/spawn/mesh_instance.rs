@@ -640,6 +640,14 @@ pub(super) fn spawn_mesh_instance(
     if let Some(raw) = mesh.billboard_mode {
         world.insert(entity, Billboard::new(BillboardMode::from_nif(raw)));
     }
+    // SpeedTree's authored CNAM response is cached on the placement import,
+    // while the billboard mode is carried by each imported placeholder mesh.
+    // Mirror the response onto the render child so the billboard system sees
+    // both components on the same entity. Keeping the root marker as well is
+    // harmless and preserves diagnostics for the placement as a whole.
+    if let Some((response, stiffness)) = cached.speedtree_wind {
+        world.insert(entity, SpeedTreeWind::new(response, stiffness));
+    }
     // Parent/Children edge → embedded animation clip's subtree
     // walk discovers this mesh through `placement_root`.
     world.insert(entity, Parent(placement_root));
