@@ -231,6 +231,11 @@ pub struct CellData {
     /// an LTEX form on FNV/Oblivion). Selects the water material to
     /// use when rendering the plane at `water_height`.
     pub water_type_form: Option<u32>,
+    /// Per-cell water current from `XWCU` (Gamebryo X/Y/Z velocity).
+    /// The horizontal components are preserved in source coordinates so the
+    /// loader can convert them once at the renderer boundary. `None` means
+    /// the cell does not author a local current and the WATR fallback applies.
+    pub water_velocity: Option<[f32; 3]>,
     /// Acoustic space (XCAS, FormID — references an ASPC record).
     /// Drives reverb / occlusion presets for cell audio.
     pub acoustic_space_form: Option<u32>,
@@ -1195,6 +1200,9 @@ fn merge_cell_override(base: &CellData, over: &mut CellData) {
     }
     if over.water_type_form.is_none() {
         over.water_type_form = base.water_type_form;
+    }
+    if over.water_velocity.is_none() {
+        over.water_velocity = base.water_velocity;
     }
     if over.acoustic_space_form.is_none() {
         over.acoustic_space_form = base.acoustic_space_form;

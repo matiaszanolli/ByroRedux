@@ -26,7 +26,7 @@
 //!
 //! Returns the number of water-plane entities spawned (0 or 1 today).
 
-use byroredux_core::ecs::components::water::{WaterPlane, WaterVolume};
+use byroredux_core::ecs::components::water::{WaterFlow, WaterPlane, WaterVolume};
 use byroredux_core::ecs::components::ParticleEmitter;
 use byroredux_core::ecs::components::RenderLayer;
 use byroredux_core::ecs::{GlobalTransform, MeshHandle, Transform, World};
@@ -353,14 +353,36 @@ pub(super) fn spawn_water_plane(
     waters: &HashMap<u32, esm::records::misc::WatrRecord>,
     xclw_height: f32,
     xcwt_form: Option<u32>,
+    cell_water_velocity: Option<[f32; 3]>,
     cell_origin_world_xz: (f32, f32),
     half_extent: f32,
     terrain: Option<&esm::cell::LandscapeData>,
     blas_specs: &mut Vec<(u32, u32, u32)>,
 ) -> Option<usize> {
     // ── Resolve WATR → engine WaterMaterial (EXAL boundary) ──
-    let (material, kind, flow, normal_texture_path, noise_texture_paths) =
+    let (mut material, kind, mut flow, normal_texture_path, noise_texture_paths) =
         crate::env_translate::resolve_water_material(waters, xcwt_form);
+    // CELL.XWCU is a local current vector and takes precedence over the
+    // WATR-level synthesized current for this plane. Convert Gamebryo Z-up
+    // horizontal axes (X/Y) into renderer Y-up (X/Z) once at this boundary;
+    // cell planes are horizontal, so the source vertical component is not a
+    // current target for this path.
+    if let Some(cell_flow) = cell_water_flow(cell_water_velocity) {
+        // Keep the authored WATR layer motion, but add the cell-local
+        // current as a world-space UV bias so XWCU affects both physics and
+        // the visible surface rather than only drifting debris.
+        const CELL_CURRENT_UV_PER_BU_S: f32 = 0.0015;
+        let scroll = cell_flow.speed * CELL_CURRENT_UV_PER_BU_S;
+        let dx = cell_flow.direction[0] * scroll;
+        let dz = cell_flow.direction[2] * scroll;
+        material.scroll_a[0] += dx;
+        material.scroll_a[1] += dz;
+        material.scroll_b[0] += dx * 0.65;
+        material.scroll_b[1] += dz * 0.65;
+        material.scroll_c[0] += dx * 0.45;
+        material.scroll_c[1] += dz * 0.45;
+        flow = Some(cell_flow);
+    }
 
     let allocator = ctx.allocator.as_ref()?;
 
@@ -584,6 +606,16 @@ pub(super) fn spawn_water_plane(
     );
 
     Some(1)
+}
+
+/// Convert a CELL.XWCU Gamebryo velocity into the canonical renderer flow.
+/// X/Y are the horizontal Z-up axes; the source Z component is vertical and
+/// is intentionally ignored for horizontal cell planes.
+fn cell_water_flow(velocity: Option<[f32; 3]>) -> Option<WaterFlow> {
+    let [x, y, _z] = velocity?;
+    let speed = x.hypot(y);
+    (speed.is_finite() && speed > 1.0e-5)
+        .then(|| WaterFlow::new([x, 0.0, -y], speed))
 }
 
 /// Extra cushion (in cells) beyond `radius_unload` the LOD-water hole cuts
@@ -855,6 +887,19 @@ pub(super) fn exterior_half_extent() -> f32 {
 mod tests {
     use super::*;
     use byroredux_core::ecs::components::water::{WaterKind, WaterMaterial};
+
+    #[test]
+    fn cell_water_velocity_converts_zup_horizontal_current() {
+        let flow = cell_water_flow(Some([3.0, 4.0, 99.0])).expect("non-zero XWCU");
+        assert_eq!(flow.direction, [0.6, 0.0, -0.8]);
+        assert_eq!(flow.speed, 5.0);
+    }
+
+    #[test]
+    fn zero_cell_water_velocity_keeps_watr_flow_fallback() {
+        assert!(cell_water_flow(Some([0.0, 0.0, 2.0])).is_none());
+        assert!(cell_water_flow(None).is_none());
+    }
 
     // `resolve_water_material` (+ its WATR reflection-tint / default-tint
     // regressions for #1069) moved to the EXAL boundary in

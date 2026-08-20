@@ -58,6 +58,7 @@ fn empty_cell(form_id: u32, edid: &str) -> CellData {
         water_height_is_explicit: false,
         image_space_form: None,
         water_type_form: None,
+        water_velocity: None,
         acoustic_space_form: None,
         music_type_form: None,
         music_type_enum: None,

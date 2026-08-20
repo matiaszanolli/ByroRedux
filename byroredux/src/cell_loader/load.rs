@@ -461,6 +461,7 @@ pub fn load_cell_with_masters(
             &index.waters,
             water_height,
             cell.water_type_form,
+            cell.water_velocity,
             // Interior water is authored in the same local frame as REFR
             // placements. Use the bounded reference-derived estimate so
             // offset pools do not remain stranded at world origin.

@@ -33,6 +33,12 @@ fn parse_cell_xclw_populates_water_height() {
     sub_data.extend_from_slice(&4u16.to_le_bytes());
     sub_data.extend_from_slice(&water_bytes);
 
+    sub_data.extend_from_slice(b"XWCU");
+    sub_data.extend_from_slice(&12u16.to_le_bytes());
+    for value in [3.0_f32, 4.0, 0.0] {
+        sub_data.extend_from_slice(&value.to_le_bytes());
+    }
+
     // CELL record (Tes5Plus layout — 24-byte header).
     let mut buf = Vec::new();
     buf.extend_from_slice(b"CELL");
@@ -65,6 +71,7 @@ fn parse_cell_xclw_populates_water_height() {
         "XCLW water height must flow through to CellData"
     );
     assert!(cell.water_height_is_explicit);
+    assert_eq!(cell.water_velocity, Some([3.0, 4.0, 0.0]));
 }
 
 /// #2911 — 231 Fallout4.esm interiors omit EDID. They still need a stable

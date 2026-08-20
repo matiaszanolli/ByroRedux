@@ -33,6 +33,7 @@ fn make_interior_cell(form_id: u32, edid: &str) -> CellData {
         water_height_is_explicit: false,
         image_space_form: None,
         water_type_form: None,
+        water_velocity: None,
         acoustic_space_form: None,
         music_type_form: None,
         music_type_enum: None,
@@ -137,6 +138,25 @@ fn merge_from_interior_override_keeps_base_refrs() {
         "re-emitted REFR takes the override"
     );
     assert_eq!(by_id.get(&0x20), Some(&0xDD), "newly-added REFR appears");
+}
+
+#[test]
+fn merge_from_partial_override_inherits_cell_water_velocity() {
+    let mut master = EsmCellIndex::default();
+    let mut base = make_interior_cell(0x100, "CurrentPool");
+    base.water_velocity = Some([3.0, 4.0, 0.0]);
+    master.cells.insert("currentpool".into(), base);
+
+    let mut child = EsmCellIndex::default();
+    child
+        .cells
+        .insert("currentpool".into(), make_interior_cell(0x100, "CurrentPool"));
+    master.merge_from(child);
+
+    assert_eq!(
+        master.cells["currentpool"].water_velocity,
+        Some([3.0, 4.0, 0.0])
+    );
 }
 
 /// A zero-REFR override (the `kagrenzel01` 1017→0 case) keeps ALL base REFRs
