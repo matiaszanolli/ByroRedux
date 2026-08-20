@@ -1449,6 +1449,42 @@ mod absorption_ramp_tests {
             "water.frag must request early fragment tests before its storage-image writes"
         );
 
+        // Keep the checked-in SPIR-V in lockstep with the source declaration.
+        // A source-only guard can pass while an old artifact is still loaded
+        // by `include_bytes!`; that would re-open the overdraw/caustic race on
+        // devices that execute the stale module.  OpExecutionMode is opcode
+        // 16 and EarlyFragmentTests is execution-mode literal 9.
+        let spirv = include_bytes!("../../shaders/water.frag.spv");
+        assert_eq!(spirv.len() % 4, 0, "water.frag.spv must be word aligned");
+        let words: Vec<u32> = spirv
+            .chunks_exact(4)
+            .map(|word| u32::from_le_bytes([word[0], word[1], word[2], word[3]]))
+            .collect();
+        assert_eq!(
+            words.first().copied(),
+            Some(0x0723_0203),
+            "invalid SPIR-V magic"
+        );
+        let mut has_early_tests = false;
+        let mut cursor = 5; // SPIR-V header is five words.
+        while cursor < words.len() {
+            let instruction = words[cursor];
+            let word_count = (instruction >> 16) as usize;
+            let opcode = instruction & 0xffff;
+            if word_count == 3 && opcode == 16 && words.get(cursor + 2).copied() == Some(9) {
+                has_early_tests = true;
+                break;
+            }
+            if word_count == 0 {
+                break;
+            }
+            cursor = cursor.saturating_add(word_count);
+        }
+        assert!(
+            has_early_tests,
+            "water.frag.spv must encode EarlyFragmentTests (regenerate it with glslangValidator)"
+        );
+
         // #2789 — both post-TAA caustic writers use one normalized spatial
         // footprint; water must not regress to a single-pixel atomic.
         assert!(
