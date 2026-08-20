@@ -295,6 +295,11 @@ consume the same field; TREE response metadata controls each mesh's bend while
 the authored placement pose is restored when weather calms.
 WATR `NAM0` linear velocity is projected from Gamebryo Z-up into renderer X/Z
 coordinates for authored water motion and flow direction.
+CELL `XWCU` local water velocity is now parsed for both interior and exterior
+cells. Its horizontal vector overrides the WATR fallback current for that
+cell, feeds swimmer/rigid-body drift, and is added to the visible normal-layer
+scroll; an authored zero vector remains a deliberate no-local-current
+sentinel.
 WATR `NAM1` angular velocity is now retained for all supported layouts; its
 Gamebryo-up-axis component rotates authored normal-layer scroll in both the
 renderer and the CPU wave-height sampler, while shared weather wind keeps its
@@ -481,6 +486,7 @@ Everything else is a SENTINEL the older game leaves unset, identical across game
 | reflection/specular controls | SENTINEL | SENTINEL | AUTHORED | DNAM[152..156,196..204] |
 | authored normal-layer wind (direction / UV speed) | SENTINEL | SENTINEL | AUTHORED (3 layers) | Skyrim DNAM[100..120]; FO4 DNAM[128..148] |
 | authored linear water velocity | SENTINEL | SENTINEL | AUTHORED | NAM0 (`vec3`, X/Y → renderer X/−Z) |
+| per-cell local water velocity | AUTHORED when `XWCU` is present | AUTHORED when `XWCU` is present | AUTHORED when `XWCU` is present | CELL `XWCU` (`vec3`, X/Y → renderer X/−Z) |
 | `sun_power` | AUTHORED (was skipped) | AUTHORED | AUTHORED | DATA[16] |
 | `WaterFlow` | SYNTHESIZED from wind | SYNTHESIZED from wind | AUTHORED flow | wind / DNAM flow |
 | `ior` 1.33, `shoreline_width` 32, foam-by-kind | SENTINEL | SENTINEL | SENTINEL | engine-invariant |
