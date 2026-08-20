@@ -48,6 +48,7 @@ fn world_with_water_plane(
                 underwater_fog_far: 260.0,
                 underwater_fog_amount: 0.8,
                 reflection_hdr_multiplier: 1.5,
+                rain_velocity: 2.0,
                 ..WaterMaterial::default()
             },
             damage_per_second: 0.0,
@@ -118,6 +119,7 @@ fn authored_wave_and_sun_params_reach_the_water_gpu_record() {
     );
     assert_eq!(params.detail[1..4], [0.7, 0.6, 0.5]);
     assert_eq!(params.depth, [0.9, 0.5, 0.1, 0.2]);
+    assert_eq!(params.normal_falloff[3], 2.0);
     assert_eq!(params.effects, [9.0, 500.0, 0.34, 3.2]);
     for (actual, expected) in params
         .tint_reflect

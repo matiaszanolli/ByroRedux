@@ -268,7 +268,7 @@ pub(super) fn reemit_water_planes(
                 mat.normal_falloff[0],
                 mat.normal_falloff[1],
                 mat.normal_falloff[2],
-                0.0,
+                mat.rain_velocity.max(0.0),
             ],
             displacement: [
                 mat.displacement[0],

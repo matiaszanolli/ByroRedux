@@ -105,7 +105,8 @@ pub struct GpuWaterParams {
     /// x = authored Skyrim noise-falloff distance; y = Blend Normals gate;
     /// z = Starfield surface roughness; w = Skyrim Specular Radius.
     pub noise_falloff: [f32; 4],
-    /// x/y/z = shallow/deep/surface-effect normal falloff multipliers.
+    /// x/y/z = shallow/deep/surface-effect normal falloff multipliers;
+    /// w = legacy rain-simulator velocity.
     /// A zero triplet preserves the legacy always-on normal response.
     pub normal_falloff: [f32; 4],
     /// x = displacement starting size, y = radial falloff, z = dampener,

@@ -95,7 +95,8 @@ struct WaterParams {
     // x = authored Skyrim noise-falloff distance; y = Blend Normals gate;
     // z = Starfield surface roughness; w = Skyrim Specular Radius.
     vec4 noise_falloff;
-    // xyz = shallow/deep/surface-effect normal falloff multipliers.
+    // xyz = shallow/deep/surface-effect normal falloff multipliers;
+    // w = legacy rain-simulator velocity.
     vec4 normal_falloff;
     // x = displacement starting size, y = radial falloff, z = dampener.
     vec4 displacement;
@@ -761,7 +762,10 @@ void main() {
         if (push.displacement.w > 0.0) {
             rainScale = clamp(1.7 / max(push.displacement.w, 0.25), 0.25, 4.0);
         }
-        float rainNoise = rainSurfaceNoise(uvWorld * rainScale, time);
+        float rainRate = push.normal_falloff.w > 0.0
+            ? clamp(push.normal_falloff.w, 0.25, 16.0)
+            : 1.0;
+        float rainNoise = rainSurfaceNoise(uvWorld * rainScale, time * rainRate);
         float rainPerturbation = rainNoise * 0.06 * rainIntensity;
         nMix = normalize(nMix + vec3(rainPerturbation, rainPerturbation, 0.0));
     }
