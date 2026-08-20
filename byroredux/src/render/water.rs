@@ -123,8 +123,10 @@ pub(super) fn reemit_water_planes(
     // Keep authored WATR amplitude as the baseline, then add at most 50% in
     // the strongest weather so calm water remains calm and storm water gains
     // a visible silhouette response without runaway displacement.
-    const MAX_WEATHER_WIND_SPEED: f32 = 220.0;
-    let wind_wave_scale = 1.0 + (gust / MAX_WEATHER_WIND_SPEED).clamp(0.0, 1.0) * 0.5;
+    let wind_wave_scale = 1.0
+        + (gust / byroredux_core::ecs::components::groundcover::MAX_WIND_SPEED)
+            .clamp(0.0, 1.0)
+            * 0.5;
     const WEATHER_WATER_SCROLL_PER_BU_PER_S: f32 = 0.0015;
     let weather_scroll = [
         wind_direction[0] * gust * WEATHER_WATER_SCROLL_PER_BU_PER_S,
