@@ -259,7 +259,7 @@ pub(super) fn reemit_water_planes(
                 mat.noise_falloff,
                 if mat.blend_normals { 1.0 } else { 0.0 },
                 mat.roughness.clamp(0.0, 1.0),
-                0.0,
+                mat.specular_radius.max(0.0),
             ],
             normal_falloff: [
                 mat.normal_falloff[0],

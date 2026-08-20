@@ -93,7 +93,7 @@ struct WaterParams {
     // x = authored NAM4 UV scale; yzw = authored NAM2/3/4 amplitude scales.
     vec4 detail;
     // x = authored Skyrim noise-falloff distance; y = Blend Normals gate;
-    // z = Starfield surface roughness; w reserved.
+    // z = Starfield surface roughness; w = Skyrim Specular Radius.
     vec4 noise_falloff;
     // xyz = shallow/deep/surface-effect normal falloff multipliers.
     vec4 normal_falloff;
@@ -856,7 +856,12 @@ void main() {
     // only the geometry reflection toward the already-correct environment
     // miss. This approximates the prefiltered radiance a rough reflection
     // would receive without adding another ray or disturbing legacy records.
-    float surfaceRoughness = clamp(push.noise_falloff.z, 0.0, 1.0);
+        float surfaceRoughness = clamp(push.noise_falloff.z, 0.0, 1.0);
+        // Skyrim's Specular Radius widens the authored environment lobe. The
+        // reciprocal mapping keeps the zero sentinel legacy-compatible while
+        // preventing large Creation-Kit values from destabilising the ray hit.
+        surfaceRoughness = max(surfaceRoughness,
+            clamp(push.noise_falloff.w / (push.noise_falloff.w + 100.0), 0.0, 1.0));
     if (surfaceRoughness > 0.0) {
         reflColor = mix(reflColor, reflectionMiss, surfaceRoughness * surfaceRoughness);
     }

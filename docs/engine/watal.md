@@ -304,7 +304,8 @@ into Skyrim-only depth weights: phytoplankton/sediment/yellow-matter feed
 column density and `oceanness` feeds both absorption and forward scattering.
 Its authored flow-map scale is preserved, and surface roughness now softens
 geometry-hit reflections in addition to shaping the shared direct-sun
-highlight exponent. FO4/FO76 silt amount plus light/dark colors now blend into the
+highlight exponent. Skyrim's separate Specular Radius is also preserved and
+widens that environment-reflection lobe. FO4/FO76 silt amount plus light/dark colors now blend into the
 canonical shallow, deep, and underwater palette at the same boundary.
 Oblivion's authored rain-simulator force now scales the shared precipitation
 ripple response; records without that TES4 tail retain the neutral

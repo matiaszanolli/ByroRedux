@@ -830,6 +830,9 @@ pub(crate) fn resolve_water_material(
             if rec.params.specular_magnitude.is_finite() && rec.params.specular_magnitude > 0.0 {
                 mat.specular_magnitude = rec.params.specular_magnitude.clamp(0.0, 8.0);
             }
+            if rec.params.specular_radius.is_finite() && rec.params.specular_radius > 0.0 {
+                mat.specular_radius = rec.params.specular_radius.clamp(0.0, 10_000.0);
+            }
             let authored_wind = rec.params.noise_wind_speeds;
             let authored_dirs = rec.params.noise_wind_directions;
             let authored_layer_scroll = |layer: usize| {
@@ -2144,6 +2147,7 @@ mod tests {
                 effect_controls: [0.0; 4],
                 flowmap_scale: 0.0,
                 specular_magnitude: 0.0,
+                specular_radius: 0.0,
                 noise_wind_directions: [0.0; 3],
                 noise_wind_speeds: [0.0; 3],
                 absorption_ranges: [0.0; 3],

@@ -217,6 +217,8 @@ pub struct WaterParams {
     /// Skyrim's specular-properties magnitude at DNAM offset 160. This
     /// unnamed xEdit field defaults to one and scales authored sun glints.
     pub specular_magnitude: f32,
+    /// Skyrim's authored specular-radius control; zero is the legacy sentinel.
+    pub specular_radius: f32,
     /// Authored normal-layer wind directions (radians) and UV speeds. Zero
     /// entries are sentinels for layouts without per-layer motion controls;
     /// FO76/Starfield NAM0 linear velocity fills each missing layer.
@@ -276,6 +278,7 @@ impl Default for WaterParams {
             depth_weights: [0.0; 4],
             effect_controls: [0.0; 4],
             specular_magnitude: 0.0,
+            specular_radius: 0.0,
             noise_wind_directions: [0.0; 3],
             noise_wind_speeds: [0.0; 3],
             flowmap_scale: 0.0,
@@ -758,6 +761,11 @@ fn apply_skyrim_dnam_tail(p: &mut WaterParams, data: &[u8]) {
         if v.is_finite() && v > 0.0 {
             p.specular_magnitude = (p.specular_magnitude * v).clamp(0.0, 8.0);
         }
+    }
+    // Skyrim keeps Specular Radius separate from power and brightness. Carry
+    // it through as a reflection-width control instead of dropping the tail.
+    if let Some(v) = read_f32_at(data, 164) {
+        p.specular_radius = v.max(0.0);
     }
     // Sun Sparkle Power is an authored exponent multiplier. Its vanilla
     // default is one, so folding it into the existing sun exponent preserves
@@ -1574,6 +1582,7 @@ mod tests {
         data[152..156].copy_from_slice(&9.0f32.to_le_bytes());
         data[156..160].copy_from_slice(&500.0f32.to_le_bytes());
         data[160..164].copy_from_slice(&2.0f32.to_le_bytes());
+        data[164..168].copy_from_slice(&240.0f32.to_le_bytes());
         data[168..172].copy_from_slice(&1.25f32.to_le_bytes());
         data[196..200].copy_from_slice(&0.34f32.to_le_bytes());
         data[200..204].copy_from_slice(&1.5f32.to_le_bytes());
@@ -1597,6 +1606,7 @@ mod tests {
         assert_eq!(w.params.depth_weights, [0.9, 0.5, 0.1, 0.2]);
         assert_eq!(w.params.effect_controls, [9.0, 500.0, 0.34, 3.2]);
         assert_eq!(w.params.specular_magnitude, 3.75);
+        assert_eq!(w.params.specular_radius, 240.0);
         assert_eq!(w.params.sun_specular_power, 122.0);
         assert_eq!(w.params.normal_magnitude, 0.05);
         assert_eq!(w.params.noise_falloff, 300.0);

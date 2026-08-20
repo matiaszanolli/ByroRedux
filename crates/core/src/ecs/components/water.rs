@@ -209,6 +209,8 @@ pub struct WaterMaterial {
     /// Authored specular magnitude. One is neutral; zero means legacy
     /// records without a separate magnitude field.
     pub specular_magnitude: f32,
+    /// Skyrim's authored specular-radius control. Zero is the legacy sentinel.
+    pub specular_radius: f32,
     /// Authored flow-map tile scale. One is neutral; zero means legacy
     /// records without a dedicated flow-map field.
     pub flowmap_scale: f32,
@@ -298,6 +300,7 @@ impl Default for WaterMaterial {
             depth_weights: [1.0; 4],
             effect_controls: [0.0, 0.0, 1.0, 1.0],
             specular_magnitude: 1.0,
+            specular_radius: 0.0,
             flowmap_scale: 1.0,
             absorption_ranges: [0.0; 3],
             concentration: [0.0; 4],
