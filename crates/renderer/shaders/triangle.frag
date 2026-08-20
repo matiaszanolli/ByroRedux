@@ -3654,7 +3654,11 @@ void main() {
             indirect *= giLodFade;
     }
 
-    // Sample ambient occlusion from the SSAO texture (computed last frame).
+    // Sample ambient occlusion from the SSAO texture. With per-FIF AO
+    // images (MAX_FRAMES_IN_FLIGHT == 2) this main-pass read runs before
+    // this frame's own SSAO dispatch, so the sampled texel was computed
+    // two frames ago, not last frame — see `record_ssao_pass`'s doc in
+    // `context/post_passes.rs`.
     // The floor was raised to 0.45 in commit 14f2e63 to compensate for a
     // 2.5x XCLL ambient boost that has since been removed (now 1.0x in
     // render.rs). With XCLL passed through raw and RT GI providing real

@@ -767,8 +767,14 @@ impl VulkanContext {
 
     /// SSAO compute pass (#2258 / TD1-080, extracted from
     /// `record_post_passes`): reads depth buffer (now in READ_ONLY layout
-    /// after render pass), writes AO texture for this frame's fragment
-    /// shader. Runs before composite so AO is current-frame (no lag).
+    /// after render pass), writes this frame's slot of the per-FIF AO
+    /// image array. `composite.frag` has no AO binding at all — the sole
+    /// reader is `triangle.frag`'s main render pass, which for a given
+    /// frame runs *before* this SSAO dispatch in command order. With
+    /// `MAX_FRAMES_IN_FLIGHT == 2`, that main-pass read samples the AO
+    /// slot this same pass wrote two frames ago, not the current frame
+    /// and not the immediately-prior one — see the AO-sample site in
+    /// `triangle.frag`.
     ///
     /// # Safety
     /// `cmd` is in the recording state — opened by `begin_command_buffer`
