@@ -588,11 +588,7 @@ pub(crate) fn resolve_water_material(
                 {
                     *dst = (*dst * (1.0 - silt * 0.25) + src * (silt * 0.25)).clamp(0.0, 1.0);
                 }
-                for (dst, src) in mat
-                    .deep_color
-                    .iter_mut()
-                    .zip(rec.params.silt_dark_color)
-                {
+                for (dst, src) in mat.deep_color.iter_mut().zip(rec.params.silt_dark_color) {
                     *dst = (*dst * (1.0 - silt) + src * silt).clamp(0.0, 1.0);
                 }
                 for (dst, src) in mat
@@ -724,8 +720,7 @@ pub(crate) fn resolve_water_material(
             // records retain their authored/default exponent unchanged.
             if rec.params.roughness.is_finite() && rec.params.roughness > 0.0 {
                 let roughness = rec.params.roughness.clamp(0.02, 1.0);
-                mat.sun_specular_power = (2.0 / (roughness * roughness) - 2.0)
-                    .clamp(1.0, 2048.0);
+                mat.sun_specular_power = (2.0 / (roughness * roughness) - 2.0).clamp(1.0, 2048.0);
             }
             // FO3/FNV long DATA records carry independent authored tiling
             // controls for the first two noise layers. Keep the canonical
@@ -878,8 +873,7 @@ pub(crate) fn resolve_water_material(
                     && authored_flow_speed > 1.0e-5
             });
             if lowered.contains("rapid")
-                || (has_authored_linear_flow
-                    && authored_flow_speed >= WaterFlow::SPEED_RAPIDS)
+                || (has_authored_linear_flow && authored_flow_speed >= WaterFlow::SPEED_RAPIDS)
             {
                 kind = WaterKind::Rapids;
                 mat.foam_strength = 0.85;
@@ -890,7 +884,7 @@ pub(crate) fn resolve_water_material(
                 // Skyrim SE's NAM5 is explicitly the flow-normal texture.
                 // Treat its presence as an authored flow signal even when
                 // the EDID is localized or uses a neutral name.
-                || !rec.flow_noise_texture_path.is_empty()
+                || rec.flow_noise_texture_path_is_enabled()
                 // NAM0 is stronger evidence than naming: it is the record's
                 // explicit linear current and must classify a neutral or
                 // localized EDID as flowing water.
@@ -928,10 +922,7 @@ pub(crate) fn resolve_water_material(
                         } else {
                             [cos_theta, 0.0, sin_theta]
                         };
-                        WaterFlow::new(
-                            direction,
-                            magnitude,
-                        )
+                        WaterFlow::new(direction, magnitude)
                     })
                     .unwrap_or_else(|| WaterFlow::for_kind(kind, [cos_theta, 0.0, sin_theta]));
                 // Rebuild scroll vectors to bias along the flow axis,
@@ -997,7 +988,7 @@ pub(crate) fn resolve_water_material(
             // Skyrim SE's NAM5 is a flow-normal texture. Preserve the
             // compact three-layer GPU ABI by promoting it over NAM4 only
             // for flowing bodies; calm water keeps its authored NAM4 layer.
-            if !matches!(kind, WaterKind::Calm) && !rec.flow_noise_texture_path.is_empty() {
+            if !matches!(kind, WaterKind::Calm) && rec.flow_noise_texture_path_is_enabled() {
                 noise_paths[2] = Some(rec.flow_noise_texture_path.clone());
             }
         }
@@ -2104,6 +2095,7 @@ mod tests {
             opacity_authored: false,
             legacy_flags: None,
             legacy_damage: None,
+            water_flags: None,
             texture_path: String::new(),
             noise_texture_paths: Default::default(),
             flow_noise_texture_path: String::new(),
@@ -2282,6 +2274,7 @@ mod tests {
             opacity_authored: false,
             legacy_flags: None,
             legacy_damage: None,
+            water_flags: None,
             texture_path: String::new(),
             noise_texture_paths: Default::default(),
             flow_noise_texture_path: String::new(),
@@ -2351,6 +2344,32 @@ mod tests {
     }
 
     #[test]
+    fn modern_fnam_flowmap_flag_gates_nam5_but_keeps_authored_current() {
+        let mut disabled = calm_watr(0x000A_0003, "LocalizedWater", WaterParams::default());
+        disabled.flow_noise_texture_path = "textures\\water\\flow.dds".to_string();
+        disabled.water_flags = Some(0x00);
+        let mut enabled = disabled.clone();
+        enabled.form_id += 1;
+        enabled.water_flags = Some(0x08);
+        let waters = HashMap::from([(disabled.form_id, disabled), (enabled.form_id, enabled)]);
+
+        let (_, disabled_kind, disabled_flow, _, disabled_noise) =
+            resolve_water_material(&waters, Some(0x000A_0003));
+        assert!(matches!(disabled_kind, WaterKind::Calm));
+        assert!(disabled_flow.is_none());
+        assert!(disabled_noise[2].is_none());
+
+        let (_, enabled_kind, enabled_flow, _, enabled_noise) =
+            resolve_water_material(&waters, Some(0x000A_0004));
+        assert!(matches!(enabled_kind, WaterKind::River));
+        assert!(enabled_flow.is_some());
+        assert_eq!(
+            enabled_noise[2].as_deref(),
+            Some("textures\\water\\flow.dds")
+        );
+    }
+
+    #[test]
     fn flowmap_scale_is_not_baked_into_canonical_flow_scroll() {
         let mut rec = calm_watr(
             0x000A_0004,
@@ -2366,7 +2385,9 @@ mod tests {
         waters.insert(rec.form_id, rec);
 
         let (mat, kind, flow, _, _) = resolve_water_material(&waters, Some(0x000A_0004));
-        let speed = flow.expect("flowing water must have a canonical current").speed;
+        let speed = flow
+            .expect("flowing water must have a canonical current")
+            .speed;
         assert!(matches!(kind, WaterKind::River));
         assert_eq!(mat.flowmap_scale, 3.0);
         assert!((mat.scroll_a[0] - speed * WATER_SCROLL_UV_PER_BU_PER_S).abs() < 1.0e-6);
@@ -2591,7 +2612,10 @@ mod tests {
         let (material, kind, flow, _, _) = resolve_water_material(&waters, Some(0x000A_000A));
         assert!(matches!(kind, WaterKind::Calm));
         assert!(flow.is_none());
-        assert_eq!(material.foam_strength, WaterMaterial::default().foam_strength);
+        assert_eq!(
+            material.foam_strength,
+            WaterMaterial::default().foam_strength
+        );
     }
 
     #[test]

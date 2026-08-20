@@ -457,7 +457,12 @@ pub(super) fn spawn_water_plane(
     world.insert(entity, MeshHandle(mesh_handle));
     let damage_per_second = xcwt_form
         .and_then(|form| waters.get(&form))
-        .filter(|record| record.legacy_flags.is_some_and(|flags| flags & 0x01 != 0))
+        .filter(|record| {
+            record
+                .water_flags
+                .or(record.legacy_flags)
+                .is_some_and(|flags| flags & 0x01 != 0)
+        })
         .and_then(|record| record.legacy_damage)
         .map(f32::from)
         .unwrap_or(0.0);
@@ -762,7 +767,12 @@ pub(crate) fn spawn_lod_water_plane(
     world.insert(entity, MeshHandle(mesh_handle));
     let damage_per_second = lod_water_form
         .and_then(|form| waters.get(&form))
-        .filter(|record| record.legacy_flags.is_some_and(|flags| flags & 0x01 != 0))
+        .filter(|record| {
+            record
+                .water_flags
+                .or(record.legacy_flags)
+                .is_some_and(|flags| flags & 0x01 != 0)
+        })
         .and_then(|record| record.legacy_damage)
         .map(f32::from)
         .unwrap_or(0.0);

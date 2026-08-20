@@ -53,6 +53,11 @@ pub struct WatrRecord {
     /// two-byte `DATA` subrecord alongside the visual-data `DATA`/`DNAM`;
     /// preserve it even when the renderer does not yet apply actor damage.
     pub legacy_damage: Option<u16>,
+    /// WATR.FNAM flags shared by the modern WATR layouts. Bit 0x01 marks
+    /// harmful water and bit 0x08 enables Skyrim's flow-map normal layer.
+    /// Kept separately from `legacy_flags` so callers can distinguish the
+    /// modern flag contract from FO3/FNV's reflective bit 0x02.
+    pub water_flags: Option<u8>,
     /// Diffuse / noise texture path. FO3 / FNV ship this in `NNAM`
     /// (e.g. `Data\Textures\Water\WastelandWaterPotomac.dds` on every
     /// vanilla FO3 WATR); Skyrim+ ships it in `TNAM`. Both arms write
@@ -87,6 +92,16 @@ pub struct WatrRecord {
     /// Raw DATA bytes (Oblivion / FO3 / FNV path). Same rationale
     /// as [`Self::raw_dnam`] — preserved for future re-decode.
     pub raw_data: Vec<u8>,
+}
+
+impl WatrRecord {
+    /// Whether the authored NAM5 flow-normal texture is enabled by FNAM.
+    /// Skyrim-family records with no FNAM retain the historical compatibility
+    /// behavior and accept NAM5; an explicit FNAM uses bit 0x08 as the gate.
+    pub fn flow_noise_texture_path_is_enabled(&self) -> bool {
+        !self.flow_noise_texture_path.is_empty()
+            && self.water_flags.is_none_or(|flags| flags & 0x08 != 0)
+    }
 }
 
 /// Engine-side water shader parameter view. The renderer's
@@ -1123,13 +1138,24 @@ pub fn parse_watr(form_id: u32, subs: &[SubRecord], game: GameKind) -> WatrRecor
                     out.opacity_authored = true;
                 }
             }
-            // Fallout 3/New Vegas define FNAM as a one-byte water flag
-            // field (0x01 damage, 0x02 reflective). Skyrim+ reuses the
-            // subrecord name in later layouts, so keep this arm scoped to
-            // the legacy DATA games rather than applying an unverified
-            // meaning cross-generation.
-            b"FNAM" if matches!(game, GameKind::Fallout3NV) && !sub.data.is_empty() => {
-                out.legacy_flags = Some(sub.data[0]);
+            // FNAM is a one-byte water flag field in every supported WATR
+            // layout. FO3/FNV additionally use bit 0x02 as their reflective
+            // surface gate; modern records use bit 0x08 for flow-map enable.
+            b"FNAM"
+                if !sub.data.is_empty()
+                    && matches!(
+                        game,
+                        GameKind::Fallout3NV
+                            | GameKind::Skyrim
+                            | GameKind::Fallout4
+                            | GameKind::Fallout76
+                            | GameKind::Starfield
+                    ) =>
+            {
+                out.water_flags = Some(sub.data[0]);
+                if matches!(game, GameKind::Fallout3NV) {
+                    out.legacy_flags = Some(sub.data[0]);
+                }
             }
             b"TNAM" => out.texture_path = read_zstring(&sub.data),
             b"NNAM" => out.texture_path = read_zstring(&sub.data),
@@ -1138,10 +1164,11 @@ pub fn parse_watr(form_id: u32, subs: &[SubRecord], game: GameKind) -> WatrRecor
             b"NAM4" => out.noise_texture_paths[2] = read_zstring(&sub.data),
             b"NAM5" => out.flow_noise_texture_path = read_zstring(&sub.data),
             b"DATA" => {
-                // FO3/FNV use a second DATA subrecord for the authored
-                // damage amount (uint16). Do not let that short record
-                // overwrite the visual payload when both are present.
-                if matches!(game, GameKind::Fallout3NV) && sub.data.len() == 2 {
+                // Creation-era WATR records use a two-byte DATA subrecord
+                // for damage-per-second (Skyrim and later retain the same
+                // shape). Do not let that short record overwrite the visual
+                // payload when both are present.
+                if !matches!(game, GameKind::Oblivion) && sub.data.len() == 2 {
                     out.legacy_damage = Some(u16::from_le_bytes([sub.data[0], sub.data[1]]));
                 } else {
                     // Oblivion inserts scroll speeds before its fog/color
@@ -1264,12 +1291,17 @@ mod tests {
     }
 
     #[test]
-    fn parse_watr_captures_legacy_fnam_flags_only_for_fonv_layout() {
+    fn parse_watr_captures_legacy_and_modern_fnam_flags() {
         let reflective = parse_watr(1, &[sub(b"FNAM", &[0x02])], GameKind::Fallout3NV);
         assert_eq!(reflective.legacy_flags, Some(0x02));
+        assert_eq!(reflective.water_flags, Some(0x02));
 
         let skyrim = parse_watr(2, &[sub(b"FNAM", &[0x02])], GameKind::Skyrim);
         assert_eq!(skyrim.legacy_flags, None);
+        assert_eq!(skyrim.water_flags, Some(0x02));
+
+        let oblivion = parse_watr(3, &[sub(b"FNAM", &[0x01])], GameKind::Oblivion);
+        assert_eq!(oblivion.water_flags, None);
     }
 
     #[test]
@@ -1290,6 +1322,18 @@ mod tests {
         assert_eq!(w.legacy_damage, Some(42));
         assert_eq!(w.params.sun_specular_power, 61.0);
         assert_eq!(w.raw_data, visual);
+    }
+
+    #[test]
+    fn parse_watr_preserves_skyrim_damage_data_with_modern_flags() {
+        let w = parse_watr(
+            4,
+            &[sub(b"FNAM", &[0x01]), sub(b"DATA", &42u16.to_le_bytes())],
+            GameKind::Skyrim,
+        );
+        assert_eq!(w.water_flags, Some(0x01));
+        assert_eq!(w.legacy_damage, Some(42));
+        assert!(w.raw_data.is_empty());
     }
 
     #[test]
@@ -1733,10 +1777,7 @@ mod tests {
         assert_eq!(w.params.wind_speed, 5.0);
         assert!((w.params.wind_direction - (-4.0f32).atan2(3.0)).abs() < 1e-6);
         assert_eq!(w.params.noise_wind_speeds, [5.0, 5.0, 5.0]);
-        assert_eq!(
-            w.params.noise_wind_directions,
-            [(-4.0f32).atan2(3.0); 3]
-        );
+        assert_eq!(w.params.noise_wind_directions, [(-4.0f32).atan2(3.0); 3]);
         data[16..20].copy_from_slice(&0.0f32.to_le_bytes());
         let fallback = parse_watr(
             0x18,

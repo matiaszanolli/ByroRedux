@@ -278,6 +278,9 @@ transitions and now drives both atmospheric water-normal drift and coherent
 threaded through the importer for the geometry-tail path.
 WATR `NAM0` linear velocity is projected from Gamebryo Z-up into renderer X/Z
 coordinates for authored water motion and flow direction.
+Modern WATR `FNAM` flags now cross the same boundary: bit `0x01` drives the
+canonical damage hazard and bit `0x08` gates Skyrim-family `NAM5` flow normals;
+records without FNAM retain the compatibility flow-texture behavior.
 An all-zero `NAM0` is treated as a sentinel: named or flow-textured rivers
 retain their bounded kind fallback current instead of becoming motionless.
 That explicit velocity is also retained as provenance and promotes a neutral
