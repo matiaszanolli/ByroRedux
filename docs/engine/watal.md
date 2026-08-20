@@ -250,6 +250,8 @@ canonical boundary; FO4's separate underwater tint also drives the underwater
 composite and underwater fog amount now scales the underwater extinction,
 while older games fall back to deep tint. Skyrim/FO4 physical normal magnitude
 also scales the canonical noise amplitudes (Skyrim DNAM[92], FO4 DNAM[52]).
+FO76 deep-fog range zeroes retain the authored depth-amount fallback instead
+of collapsing to a one-unit fog span.
 Skyrim's above-water fog amount (DNAM[132]) scales the canonical refraction
 absorption weight while preserving the authored near/far distance ramp.
 Skyrim's Sun Sparkle Magnitude (DNAM[200]) now folds into the canonical

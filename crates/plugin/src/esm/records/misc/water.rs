@@ -863,10 +863,14 @@ fn decode_dnam_fo4(data: &[u8]) -> WaterParams {
 fn decode_dnam_fo76(data: &[u8]) -> WaterParams {
     let mut p = WaterParams::default();
     // Fog Properties: depth amount, shallow/deep colors and authored ranges.
-    if let Some(depth) = read_f32_at(data, 0) {
+    let depth_far = if let Some(depth) = read_f32_at(data, 0) {
         p.fog_near = 0.0;
-        p.fog_far = depth.max(1.0);
-    }
+        let depth_far = depth.max(1.0);
+        p.fog_far = depth_far;
+        Some(depth_far)
+    } else {
+        None
+    };
     if let Some(color) = read_rgb_at(data, 4) {
         p.shallow_color = color;
     }
@@ -877,7 +881,11 @@ fn decode_dnam_fo76(data: &[u8]) -> WaterParams {
         p.fog_near = near.max(0.0);
     }
     if let Some(far) = read_f32_at(data, 16) {
-        p.fog_far = far.max(p.fog_near + 1.0);
+        if far > 0.0 {
+            p.fog_far = far.max(p.fog_near + 1.0);
+        } else if let Some(depth_far) = depth_far {
+            p.fog_far = depth_far.max(p.fog_near + 1.0);
+        }
     }
     if let Some(color) = read_rgb_at(data, 36) {
         p.underwater_color = color;
@@ -1627,6 +1635,13 @@ mod tests {
             w.params.noise_wind_directions,
             [(-4.0f32).atan2(3.0); 3]
         );
+        data[16..20].copy_from_slice(&0.0f32.to_le_bytes());
+        let fallback = parse_watr(
+            0x18,
+            &[sub(b"DNAM", &data), sub(b"NAM0", &velocity)],
+            GameKind::Fallout76,
+        );
+        assert_eq!(fallback.params.fog_far, 900.0);
     }
 
     #[test]
