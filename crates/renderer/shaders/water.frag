@@ -671,6 +671,12 @@ void main() {
 
     // Tangent → world space.
     vec3 Nperturbed = normalize(TBN * nMix);
+    // Caustics are sunlight entering the water from the authored top side;
+    // keep that wave normal before the camera-facing orientation below. The
+    // view normal is intentionally flipped for underwater shading, but using
+    // that flipped value for Snell transport makes the caustic footprint
+    // change when the camera crosses the waterline.
+    vec3 causticNormal = Nperturbed;
 
     // Orient the shading surface toward the viewer. Water is transmissive
     // from both sides: reflection stays on the camera side (+N), refraction
@@ -721,6 +727,16 @@ void main() {
     }
     if (dot(Nperturbed, V) <= 0.0) {
         Nperturbed = N;
+    }
+
+    // Keep caustic transport in the top-side half-space even when a strongly
+    // tilted normal map sample points below the geometric plane. This mirrors
+    // the shading stability clamp without coupling it to the camera side.
+    float causticNormalDotSurface = dot(causticNormal, Nsurface);
+    if (causticNormalDotSurface < NORMAL_PLANE_EPS) {
+        causticNormal = normalize(
+            causticNormal + Nsurface * (NORMAL_PLANE_EPS - causticNormalDotSurface)
+        );
     }
 
     // ── Fresnel ──
@@ -965,7 +981,7 @@ void main() {
             // same Nperturbed already used by the primary refraction ray
             // above (line ~547) is required to focus light into a caustic
             // pattern.
-            vec3 refractDir = refract(-sunDir, Nperturbed, 1.0 / 1.33);
+            vec3 refractDir = refract(-sunDir, causticNormal, 1.0 / 1.33);
             if (length(refractDir) > 1e-4) {
                 // 3. Find floor via TLAS ray (single bounce).
                 //
@@ -1026,7 +1042,7 @@ void main() {
                             // using the flat Nsurface here would weight the
                             // caustic by the plane's macro facing instead of
                             // the same wave-perturbed geometry that focused it.
-                            float NdotSun = max(dot(Nperturbed, sunDir), 0.0);
+                            float NdotSun = max(dot(causticNormal, sunDir), 0.0);
                             float travelFall = 1.0 / (1.0 + floorT * floorT * 1e-4);
                             float contrib = sunDirection.w * sunVisibility
                                 * NdotSun * travelFall;

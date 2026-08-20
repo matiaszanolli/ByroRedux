@@ -933,6 +933,28 @@ mod tests {
         assert!(src.contains("push.underwater.rgb"));
     }
 
+    #[test]
+    fn water_caustics_keep_the_top_side_wave_normal_below_the_surface() {
+        let src = include_str!("../../shaders/water.frag");
+        let normal_decl = src
+            .find("vec3 causticNormal = Nperturbed;")
+            .expect("water.frag must preserve the pre-view-flip wave normal");
+        let orientation = src
+            .find("if (!viewFromPositiveSide)")
+            .expect("water.frag must retain the camera-side orientation branch");
+        let caustic_refract = src
+            .find("refract(-sunDir, causticNormal")
+            .expect("water caustic transport must use the top-side normal");
+        assert!(
+            normal_decl < orientation && orientation < caustic_refract,
+            "camera-side normal flipping must not feed water caustic Snell transport"
+        );
+        assert!(
+            src.contains("dot(causticNormal, Nsurface)"),
+            "water caustic normal needs a top-side stability clamp"
+        );
+    }
+
     /// #1129 — forward-compat trap. Every "no-op baseline" the water
     /// rasterizer / depth-stencil sets statically MUST also appear in
     /// `WATER_PIPELINE_DYNAMIC_STATES` — otherwise the static value
@@ -1357,9 +1379,10 @@ mod absorption_ramp_tests {
              these tests mirror"
         );
         assert!(
-            src.contains("float fogNear = push.shallow.a;"),
-            "fog_near must be read from shallow.a — an unread slot is the \
-             #2785 defect"
+            src.contains(": push.shallow.a;")
+                && src.contains("cameraUnderwater && hasUnderwaterRamp"),
+            "fog_near must feed the above-water ramp while the underwater \
+             variant may select its own authored near plane"
         );
         assert!(
             src.contains("vec3 authoredRanges = max(push.absorption.rgb, vec3(0.0));")
