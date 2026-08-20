@@ -582,6 +582,7 @@ mod tests {
             WaterPlane {
                 kind: WaterKind::Calm,
                 material: WaterMaterial::default(),
+                damage_per_second: 0.0,
             },
         );
         world.insert(
@@ -690,6 +691,7 @@ mod tests {
             WaterPlane {
                 kind: WaterKind::River,
                 material: WaterMaterial::default(),
+                damage_per_second: 0.0,
             },
         );
 
@@ -735,6 +737,7 @@ mod tests {
                 WaterPlane {
                     kind: WaterKind::Calm,
                     material,
+                    damage_per_second: 0.0,
                 },
             );
             world.insert(

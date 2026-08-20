@@ -1040,6 +1040,7 @@ pub(crate) fn load_nif_bytes_with_skeleton(
                 byroredux_core::ecs::components::WaterPlane {
                     kind: water_kind,
                     material: water_material,
+                    damage_per_second: 0.0,
                 },
             );
             if let Some(flow) = water_flow {

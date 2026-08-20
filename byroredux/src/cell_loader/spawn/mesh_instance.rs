@@ -735,6 +735,7 @@ pub(super) fn spawn_mesh_instance(
             byroredux_core::ecs::components::WaterPlane {
                 kind: water_kind,
                 material: water_material,
+                damage_per_second: 0.0,
             },
         );
         if let Some(flow) = water_flow {

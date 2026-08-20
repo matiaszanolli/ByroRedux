@@ -20,8 +20,9 @@ use crate::esm::sub_reader::SubReader;
 ///
 /// - Oblivion DATA: short legacy payloads retain the compatibility decoder.
 /// - FO3 / FNV DATA: full 186/196-byte payloads have an opaque 16-byte
-///   prefix, then the documented visual fields; the parser uses the exact
-///   offsets and leaves damage-only 2-byte stubs at defaults.
+///   prefix, then the documented visual fields; a companion 2-byte DATA
+///   damage subrecord is preserved separately when FNAM marks the surface
+///   as harmful.
 ///
 /// **Best-effort decode** for Skyrim DNAM (228/232 bytes) — the field
 /// names are documented but the offsets vary between 1.5 / 1.6
@@ -1027,9 +1028,14 @@ mod tests {
         visual[40..44].copy_from_slice(&[36, 47, 36, 0]);
         let w = parse_watr(
             3,
-            &[sub(b"DATA", &visual), sub(b"DATA", &42u16.to_le_bytes())],
+            &[
+                sub(b"FNAM", &[0x01]),
+                sub(b"DATA", &visual),
+                sub(b"DATA", &42u16.to_le_bytes()),
+            ],
             GameKind::Fallout3NV,
         );
+        assert_eq!(w.legacy_flags, Some(0x01));
         assert_eq!(w.legacy_damage, Some(42));
         assert_eq!(w.params.sun_specular_power, 61.0);
         assert_eq!(w.raw_data, visual);

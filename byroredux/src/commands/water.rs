@@ -118,11 +118,12 @@ impl ConsoleCommand for WaterDumpCommand {
                 },
             );
             lines.push(format!(
-                "  plane={} camera_inside={} kind={:?} source=0x{:08X} volume={} flow={}",
+                "  plane={} camera_inside={} kind={:?} source=0x{:08X} damage/s={:.1} volume={} flow={}",
                 entity,
                 contains_camera,
                 plane.kind,
                 material.source_form,
+                plane.damage_per_second,
                 volume_text,
                 format_flow(flow),
             ));
@@ -259,6 +260,7 @@ mod tests {
             WaterPlane {
                 kind: WaterKind::River,
                 material,
+                damage_per_second: 0.0,
             },
         );
         world.insert(

@@ -304,6 +304,9 @@ impl Default for WaterMaterial {
 pub struct WaterPlane {
     pub kind: WaterKind,
     pub material: WaterMaterial,
+    /// FO3/FNV authored water damage per second. Zero means the surface is
+    /// harmless (the default for all non-legacy water generations).
+    pub damage_per_second: f32,
 }
 
 impl Component for WaterPlane {

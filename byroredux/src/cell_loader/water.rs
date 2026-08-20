@@ -274,7 +274,20 @@ pub(super) fn spawn_water_plane(
         GlobalTransform::new(position, Quat::IDENTITY, scale),
     );
     world.insert(entity, MeshHandle(mesh_handle));
-    world.insert(entity, WaterPlane { kind, material });
+    let damage_per_second = xcwt_form
+        .and_then(|form| waters.get(&form))
+        .filter(|record| record.legacy_flags.is_some_and(|flags| flags & 0x01 != 0))
+        .and_then(|record| record.legacy_damage)
+        .map(f32::from)
+        .unwrap_or(0.0);
+    world.insert(
+        entity,
+        WaterPlane {
+            kind,
+            material,
+            damage_per_second,
+        },
+    );
     // Keep a dormant, textureless spray emitter resident on the plane. The
     // water interaction system only raises its rate while the active camera
     // is near the surface, so this produces localized ripples without
@@ -528,7 +541,20 @@ pub(crate) fn spawn_lod_water_plane(
     world.insert(entity, Transform::IDENTITY);
     world.insert(entity, GlobalTransform::IDENTITY);
     world.insert(entity, MeshHandle(mesh_handle));
-    world.insert(entity, WaterPlane { kind, material });
+    let damage_per_second = lod_water_form
+        .and_then(|form| waters.get(&form))
+        .filter(|record| record.legacy_flags.is_some_and(|flags| flags & 0x01 != 0))
+        .and_then(|record| record.legacy_damage)
+        .map(f32::from)
+        .unwrap_or(0.0);
+    world.insert(
+        entity,
+        WaterPlane {
+            kind,
+            material,
+            damage_per_second,
+        },
+    );
     world.insert(entity, ParticleEmitter::water_splash());
     if resolved_normal_idx != 0 {
         world.insert(entity, NormalMapHandle(resolved_normal_idx));
@@ -620,6 +646,7 @@ mod tests {
             WaterPlane {
                 kind: WaterKind::Calm,
                 material: WaterMaterial::default(),
+                damage_per_second: 0.0,
             },
         );
         // The fix: a non-zero resolved normal index becomes a handle.

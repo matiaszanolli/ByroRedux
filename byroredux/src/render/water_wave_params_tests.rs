@@ -49,6 +49,7 @@ fn world_with_water_plane(
                 underwater_fog_amount: 0.8,
                 ..WaterMaterial::default()
             },
+            damage_per_second: 0.0,
         },
     );
 

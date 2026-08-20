@@ -16,6 +16,7 @@ fn calm_water() -> WaterPlane {
     WaterPlane {
         kind: WaterKind::Calm,
         material: WaterMaterial::default(),
+        damage_per_second: 0.0,
     }
 }
 

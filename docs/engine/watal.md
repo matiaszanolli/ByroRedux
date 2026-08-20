@@ -395,6 +395,7 @@ Everything else is a SENTINEL the older game leaves unset, identical across game
 | WATR appearance payload | DATA ~102 B | DATA 186/196 B (opaque 16 B prefix) | DNAM 228/232 B; FO4/FO76 201 B; Starfield 152 B+ | `water.rs:30-61` |
 | shallow/deep color, reflectivity, fresnel | AUTHORED | AUTHORED | AUTHORED | DATA/DNAM RGBA |
 | surface opacity | AUTHORED (`ANAM`) | AUTHORED (`ANAM`) | AUTHORED (`ANAM`) | ANAM (u8 / 255) |
+| legacy water damage | SENTINEL | AUTHORED when `FNAM` bit 0x01 is set | SENTINEL | `DATA` uint16 damage + `FNAM` |
 | `fog_near`/`fog_far` | **SENTINEL** 80/600 (short DATA) | AUTHORED | AUTHORED | FO3/FNV DATA[32..40] |
 | FO4 surface depth ramp | SENTINEL | SENTINEL | AUTHORED | DNAM[0] (`Depth Amount`) |
 | FO4 underwater fog amount | SENTINEL | SENTINEL | AUTHORED | DNAM[40] |

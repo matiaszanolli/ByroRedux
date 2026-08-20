@@ -227,7 +227,7 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
         controller.half_height + controller.radius,
     );
     let head_submerged = swim
-        .map(|(surface_y, _, _)| current_pos.y + controller.eye_height <= surface_y)
+        .map(|(surface_y, _, _, _)| current_pos.y + controller.eye_height <= surface_y)
         .unwrap_or(false);
     let (breath_remaining, drowning_damage) = advance_breath(
         controller.breath_remaining,
@@ -242,7 +242,7 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
     let speed_mul = if want_sprint { 2.0 } else { 1.0 };
     let mut horizontal_translation =
         horizontal_motion(yaw, move_dir, controller.move_speed * speed_mul, dt);
-    if let Some((_, fraction, Some(flow))) = swim {
+    if let Some((_, fraction, Some(flow), _)) = swim {
         // Currents push a swimmer, but are deliberately bounded below the
         // authored flow speed so a river cannot turn the controller into an
         // uncontrollable projectile. Waterfalls keep their vertical flow in
@@ -258,7 +258,7 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
     let jump_fired =
         want_jump_now && (controller.is_grounded || swim.is_some()) && !controller.wants_jump;
     let vertical_velocity = match swim {
-        Some((surface_y, fraction, _)) => swim_vertical_velocity(
+        Some((surface_y, fraction, _, _)) => swim_vertical_velocity(
             controller.vertical_velocity,
             current_pos.y,
             surface_y,
@@ -469,6 +469,12 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
     }
     if drowning_damage.whole > 0.0 {
         apply_player_drowning_damage(world, player_entity, drowning_damage.whole);
+    }
+    if let Some((_, fraction, _, damage_per_second)) = swim {
+        let damage = water_damage_for_contact(damage_per_second, fraction, dt);
+        if damage > 0.0 {
+            apply_player_drowning_damage(world, player_entity, damage);
+        }
     }
     // Push the new pose into Rapier so other bodies' queries see the
     // player at the right spot. KinematicPositionBased bodies apply
@@ -869,20 +875,21 @@ pub(crate) fn horizontal_motion(yaw: f32, move_dir: Vec3, speed: f32, dt: f32) -
 
 /// Return the nearest water column intersecting a capsule centred at `pos`.
 /// The fraction is the capsule's vertical span below the authored surface.
+/// The final tuple element carries FO3/FNV authored water damage per second.
 /// This mirrors the dynamic-body `WaterContact` calculation without creating
 /// a transient component for the kinematic player.
 fn player_water_state(
     world: &World,
     pos: Vec3,
     half_span: f32,
-) -> Option<(f32, f32, Option<WaterFlow>)> {
+) -> Option<(f32, f32, Option<WaterFlow>, f32)> {
     let (Some(wq), Some(vq)) = (world.query::<WaterPlane>(), world.query::<WaterVolume>()) else {
         return None;
     };
     let flow_q = world.query::<WaterFlow>();
     let bottom = pos.y - half_span;
     let top = pos.y + half_span;
-    let mut best: Option<(f32, f32, Option<WaterFlow>, f32)> = None;
+    let mut best: Option<(f32, f32, Option<WaterFlow>, f32, f32)> = None;
     for (entity, _) in wq.iter() {
         let Some(volume) = vq.get(entity) else {
             continue;
@@ -904,11 +911,19 @@ fn player_water_state(
         }
         let distance = (surface_y - pos.y).abs();
         let flow = flow_q.as_ref().and_then(|q| q.get(entity).copied());
-        if best.as_ref().is_none_or(|candidate| distance < candidate.3) {
-            best = Some((surface_y, fraction, flow, distance));
+        if best.as_ref().is_none_or(|candidate| distance < candidate.4) {
+            best = Some((
+                surface_y,
+                fraction,
+                flow,
+                wq.get(entity)
+                    .map(|plane| plane.damage_per_second)
+                    .unwrap_or(0.0),
+                distance,
+            ));
         }
     }
-    best.map(|(surface_y, fraction, flow, _)| (surface_y, fraction, flow))
+    best.map(|(surface_y, fraction, flow, damage, _)| (surface_y, fraction, flow, damage))
 }
 
 /// Integrate a swimmer toward a neutral buoyancy point near the waterline.
@@ -996,6 +1011,11 @@ fn apply_player_drowning_damage(world: &World, player: EntityId, damage: f32) {
             dead_q.insert(player, Dead);
         }
     }
+}
+
+#[inline]
+fn water_damage_for_contact(damage_per_second: f32, submerged_fraction: f32, dt: f32) -> f32 {
+    damage_per_second.max(0.0) * submerged_fraction.clamp(0.0, 1.0) * dt.max(0.0)
 }
 
 /// Compute the next-frame vertical velocity given current state, the
@@ -1345,6 +1365,14 @@ mod tests {
         let (_, second) = advance_breath(0.0, first.remainder, true, 1.0 / 60.0);
         assert!(second.whole >= 0.0);
         assert!(second.remainder < 1.0);
+    }
+
+    #[test]
+    fn authored_water_damage_scales_with_contact_fraction_and_dt() {
+        assert_eq!(water_damage_for_contact(20.0, 0.5, 0.25), 2.5);
+        assert_eq!(water_damage_for_contact(20.0, 2.0, 0.25), 5.0);
+        assert_eq!(water_damage_for_contact(-1.0, 0.5, 1.0), 0.0);
+        assert_eq!(water_damage_for_contact(20.0, 0.5, -1.0), 0.0);
     }
 
     #[test]
