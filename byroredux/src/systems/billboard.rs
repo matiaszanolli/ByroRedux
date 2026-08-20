@@ -4,7 +4,7 @@ use byroredux_core::ecs::components::groundcover::WindField;
 use byroredux_core::ecs::{
     ActiveCamera, Billboard, BillboardMode, GlobalTransform, SpeedTreeWind, World,
 };
-use byroredux_core::math::{Quat, Vec3};
+use byroredux_core::math::{Quat, Vec2, Vec3};
 
 /// Billboard system factory — returns a closure with a cached camera pose.
 ///
@@ -99,7 +99,19 @@ pub(crate) fn make_billboard_system() -> impl FnMut(&World, f32) + Send + Sync {
                 let strength = (gust
                     / byroredux_core::ecs::components::groundcover::MAX_WIND_SPEED)
                     .clamp(0.0, 1.0);
-                let phase = global.translation.x * 0.017 + global.translation.z * 0.013;
+                // Wind direction is the horizontal X/Z vector used by the
+                // weather and water paths. Project the tree position onto it
+                // so trees downwind share a coherent travelling wave rather
+                // than merely oscillating at a speed-dependent frequency.
+                let wind_dir = Vec2::new(wind.direction[0], wind.direction[1]);
+                let wind_dir = if wind_dir.length_squared() > 1.0e-6 {
+                    wind_dir.normalize()
+                } else {
+                    Vec2::X
+                };
+                let along_wind =
+                    global.translation.x * wind_dir.x + global.translation.z * wind_dir.y;
+                let phase = along_wind * 0.017;
                 let wave = (elapsed * (0.35 + strength * 0.85) + phase).sin();
                 let cross = (elapsed * (0.47 + strength * 0.65) + phase * 1.7).cos();
                 let (response, stiffness) = swq
@@ -113,9 +125,11 @@ pub(crate) fn make_billboard_system() -> impl FnMut(&World, f32) + Send + Sync {
                     })
                     .unwrap_or((1.0, 0.0));
                 let bend = strength * 0.16 * response * (1.0 - stiffness);
+                let along_weight = wind_dir.x.abs().max(0.25);
+                let cross_weight = wind_dir.y.abs().max(0.25);
                 new_rot = new_rot
-                    * Quat::from_rotation_z(wave * bend)
-                    * Quat::from_rotation_x(cross * bend * 0.65);
+                    * Quat::from_rotation_z(wave * bend * along_weight)
+                    * Quat::from_rotation_x(cross * bend * 0.65 * cross_weight);
             }
             global.rotation = new_rot;
         }
@@ -200,44 +214,49 @@ mod tests {
 
     #[test]
     fn speedtree_billboard_bends_with_shared_weather_wind() {
-        let mut world = World::new();
-        let camera = world.spawn();
-        world.insert(camera, Transform::IDENTITY);
-        world.insert(camera, GlobalTransform::IDENTITY);
-        world.insert(camera, Camera::default());
-        world.insert_resource(ActiveCamera(camera));
+        fn rotation_after_wind(direction: [f32; 2], speed: f32) -> Quat {
+            let mut world = World::new();
+            let camera = world.spawn();
+            world.insert(camera, Transform::IDENTITY);
+            world.insert(camera, GlobalTransform::IDENTITY);
+            world.insert(camera, Camera::default());
+            world.insert_resource(ActiveCamera(camera));
 
-        let tree = world.spawn();
-        world.insert(
-            tree,
-            GlobalTransform::new(Vec3::new(12.0, 0.0, 8.0), Quat::IDENTITY, 1.0),
+            let tree = world.spawn();
+            world.insert(
+                tree,
+                GlobalTransform::new(Vec3::new(12.0, 0.0, 8.0), Quat::IDENTITY, 1.0),
+            );
+            world.insert(tree, Billboard::new(BillboardMode::BsRotateAboutUp));
+            world.insert_resource(WindField {
+                direction,
+                speed,
+                gust_amplitude: 0.0,
+                gust_frequency: 0.0,
+            });
+
+            let mut system = make_billboard_system();
+            system(&world, 0.0);
+            system(&world, 0.5);
+            let rotation = world
+                .query::<GlobalTransform>()
+                .unwrap()
+                .get(tree)
+                .unwrap()
+                .rotation;
+            rotation
+        }
+
+        let calm = rotation_after_wind([1.0, 0.0], 0.0);
+        let first = rotation_after_wind([1.0, 0.0], 220.0);
+        let second = rotation_after_wind([0.0, 1.0], 220.0);
+        assert_ne!(
+            calm, first,
+            "SpeedTree billboard must respond to weather wind"
         );
-        world.insert(tree, Billboard::new(BillboardMode::BsRotateAboutUp));
-        world.insert_resource(WindField {
-            direction: [1.0, 0.0],
-            speed: 220.0,
-            gust_amplitude: 0.0,
-            gust_frequency: 0.0,
-        });
-
-        let mut system = make_billboard_system();
-        system(&world, 0.0);
-        let first = world
-            .query::<GlobalTransform>()
-            .unwrap()
-            .get(tree)
-            .unwrap()
-            .rotation;
-        system(&world, 0.5);
-        let second = world
-            .query::<GlobalTransform>()
-            .unwrap()
-            .get(tree)
-            .unwrap()
-            .rotation;
         assert_ne!(
             first, second,
-            "SpeedTree billboard must respond to weather wind"
+            "SpeedTree sway must follow the atmospheric wind direction"
         );
     }
 }
