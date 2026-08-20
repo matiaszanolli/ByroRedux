@@ -992,7 +992,17 @@ pub(crate) fn load_nif_bytes_with_skeleton(
             0,
         );
         let material_kind = material.material_kind;
+        let mesh_water = material.water_shader_flags != 0;
         world.insert(entity, material);
+        if mesh_water {
+            world.insert(
+                entity,
+                byroredux_core::ecs::components::WaterPlane {
+                    kind: byroredux_core::ecs::components::WaterKind::Calm,
+                    material: byroredux_core::ecs::components::WaterMaterial::default(),
+                },
+            );
+        }
         // PERF-D3-NEW-02 / #1136 — mirror of the cell_loader::spawn path.
         if let Some(ref tp) = owned_textures.base_color {
             if texture_path_is_fx_mesh(tp, material_kind) {

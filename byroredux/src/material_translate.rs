@@ -118,6 +118,7 @@ pub(crate) fn translate_material(
     } = paths;
     let texture_path = textures.base_color.clone();
     let mut material = Material {
+        water_shader_flags: source.water_shader_flags,
         emissive_color: source.emissive_color,
         emissive_mult: source.emissive_mult,
         emissive_source: source.emissive_source,

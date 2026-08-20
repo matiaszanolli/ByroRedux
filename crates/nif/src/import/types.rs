@@ -445,6 +445,8 @@ mod material_texture_set_tests {
 /// consumers never need to know which mesh block carried it.
 #[derive(Debug, Clone)]
 pub struct ImportedMaterial {
+    /// Skyrim+ `BSWaterShaderProperty` authored water feature flags.
+    pub water_shader_flags: u32,
     pub textures: MaterialTextureSet<Option<FixedString>>,
     pub material_path: Option<FixedString>,
     pub has_alpha: bool,
@@ -564,6 +566,7 @@ pub struct ImportedMaterial {
 impl Default for ImportedMaterial {
     fn default() -> Self {
         Self {
+            water_shader_flags: 0,
             textures: MaterialTextureSet::default(),
             material_path: None,
             has_alpha: false,

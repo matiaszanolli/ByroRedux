@@ -867,14 +867,9 @@ pub(super) struct MaterialInfo {
     /// `BSShaderPropertyData::shader_flags_1/2` (`BSShaderFlags`) in
     /// here would mix two unrelated flag namespaces. #1856.
     ///
-    /// **No consumer past this struct, deliberately.** `ImportedMesh`
-    /// and the ECS `Material` carry no counterpart, so the value stops
-    /// at the NIFAL boundary; there is no legacy-mesh-water render
-    /// route for it to land in yet, and fabricating a downstream field
-    /// with no reader would just move the dead end one layer down. Plumb
-    /// it through `ImportedMesh` → `translate_material` when that route
-    /// lands — until then this is a capture-with-no-consumer gap, *not*
-    /// a `translate_material` divergence. Pinned by
+    /// The value crosses `ImportedMesh` → `translate_material` into the ECS
+    /// `Material`; mesh entities with non-zero flags are promoted to the
+    /// dedicated water pipeline at spawn time. Pinned by
     /// `water_shader_legacy_tests`. #1856.
     pub water_shader_flags: u32,
 }
@@ -1389,6 +1384,7 @@ impl MaterialInfo {
 
         super::types::ImportedMaterial {
             textures,
+            water_shader_flags: self.water_shader_flags,
             material_path: self.material_path,
             has_alpha,
             src_blend_mode: self.src_blend_mode,

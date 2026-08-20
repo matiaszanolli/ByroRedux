@@ -53,6 +53,9 @@ pub const GLASS_SURFACE_BEHAVIOR: SurfaceBehavior = SurfaceBehavior {
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct Material {
+    /// Authored Skyrim+ water shader flags; non-zero routes mesh water through
+    /// the dedicated water pipeline while preserving ordinary material data.
+    pub water_shader_flags: u32,
     /// Emissive color (RGB, linear). Self-illumination independent of lighting.
     pub emissive_color: [f32; 3],
     /// Emissive intensity multiplier.
@@ -418,6 +421,7 @@ impl ShaderTypeFields {
 impl Default for Material {
     fn default() -> Self {
         Self {
+            water_shader_flags: 0,
             emissive_color: [0.0, 0.0, 0.0],
             // 0.0, not a "neutral" 1.0 — matches `EmissiveSource::None`'s own
             // doc ("no emissive authoring; `emissive_mult` defaulted to

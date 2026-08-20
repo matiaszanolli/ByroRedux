@@ -680,7 +680,21 @@ pub(super) fn spawn_mesh_instance(
         extra_material_flags,
     );
     let material_kind = material.material_kind;
+    let mesh_water = material.water_shader_flags != 0;
     world.insert(entity, material);
+    if mesh_water {
+        // Skyrim+ mesh water carries its own shader-property flags rather than
+        // an ESM WATR plane. Reuse the dedicated water pass so rivers,
+        // waterfalls, and authored water meshes receive the same waves,
+        // refraction, and weather response as cell water.
+        world.insert(
+            entity,
+            byroredux_core::ecs::components::WaterPlane {
+                kind: byroredux_core::ecs::components::WaterKind::Calm,
+                material: byroredux_core::ecs::components::WaterMaterial::default(),
+            },
+        );
+    }
     // PERF-D3-NEW-02 / #1136 — classify FX-decoration meshes at spawn
     // time so build_render_data can skip them via a component query
     // instead of running 6 substring scans per draw per frame.
