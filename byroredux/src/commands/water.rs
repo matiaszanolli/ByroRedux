@@ -97,6 +97,10 @@ impl ConsoleCommand for WaterDumpCommand {
             let volume = volume_q
                 .as_ref()
                 .and_then(|query| query.get(entity).copied());
+            let lod_render_only = lod_q
+                .as_ref()
+                .and_then(|query| query.get(entity))
+                .is_some();
             let flow = flow_q.as_ref().and_then(|query| query.get(entity).copied());
             let contains_camera = match (camera, volume) {
                 (Some((_, position)), Some(volume)) => {
@@ -109,14 +113,27 @@ impl ConsoleCommand for WaterDumpCommand {
                 }
                 _ => false,
             };
-            rows.push((entity, *plane, volume, flow, contains_camera));
+            rows.push((
+                entity,
+                *plane,
+                volume,
+                flow,
+                contains_camera,
+                lod_render_only,
+            ));
         }
         rows.sort_by_key(|row| row.0);
 
-        for (entity, plane, volume, flow, contains_camera) in rows {
+        for (entity, plane, volume, flow, contains_camera, lod_render_only) in rows {
             let material = plane.material;
             let volume_text = volume.map_or_else(
-                || "missing".to_string(),
+                || {
+                    if lod_render_only {
+                        "lod-render-only".to_string()
+                    } else {
+                        "missing".to_string()
+                    }
+                },
                 |volume| {
                     format!(
                         "[{:.1},{:.1},{:.1}]..[{:.1},{:.1},{:.1}]",
@@ -326,8 +343,25 @@ mod tests {
             },
         );
 
+        let lod_water = world.spawn();
+        world.insert(
+            lod_water,
+            WaterPlane {
+                kind: WaterKind::Calm,
+                material: WaterMaterial::default(),
+                damage_per_second: 0.0,
+            },
+        );
+        world.insert(
+            lod_water,
+            WaterLodInfo {
+                height: -500.0,
+                water_form: None,
+            },
+        );
+
         let output = WaterDumpCommand.execute(&world, "").lines.join("\n");
-        assert!(output.contains("Water dump: planes=1"), "{output}");
+        assert!(output.contains("Water dump: planes=2"), "{output}");
         assert!(
             output.contains("lod_water=entity:")
                 && output.contains("height=-500.00 form=0x00ABCDEF"),
@@ -345,6 +379,7 @@ mod tests {
             output.contains("flow=[1.000,0.000,0.000]@8.000"),
             "{output}"
         );
+        assert!(output.contains("volume=lod-render-only"), "{output}");
         assert!(
             output.contains("underwater=[0.110,0.220,0.330]"),
             "{output}"
