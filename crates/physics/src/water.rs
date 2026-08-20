@@ -208,7 +208,11 @@ fn nearest_surface_distance(surface_y: f32, reference_y: f32) -> f32 {
 /// flow-map scale and boosts amplitude by at most 50% in the strongest wind;
 /// keeping the solver on that contract prevents a floating body from tracking
 /// a different crest than the one visible under it.
-fn authored_wave_height_with_weather(
+/// CPU evaluation of the bounded low-frequency water displacement used by
+/// `water.vert`. `weather_scroll` and `wind_wave_scale` come from
+/// [`weather_wave_adjustment`] so gameplay, camera effects, and buoyancy all
+/// agree with the rendered crest.
+pub fn authored_wave_height_with_weather(
     material: &WaterMaterial,
     position: Vec3,
     time_secs: f32,
@@ -261,7 +265,10 @@ fn authored_wave_height_with_weather(
     amplitude * (phase_a.sin() * 0.60 + phase_b.sin() * 0.40)
 }
 
-fn weather_wave_adjustment(world: &World, time_secs: f32) -> ([f32; 2], f32) {
+/// Return the live weather contribution used by the water vertex shader:
+/// directional scroll in world units per second and a bounded amplitude
+/// multiplier. A missing `WindField` is the calm-water sentinel.
+pub fn weather_wave_adjustment(world: &World, time_secs: f32) -> ([f32; 2], f32) {
     const MAX_WEATHER_WIND_SPEED: f32 = 220.0;
     const WEATHER_WATER_SCROLL_PER_BU_PER_S: f32 = 0.0015;
     let wind = world

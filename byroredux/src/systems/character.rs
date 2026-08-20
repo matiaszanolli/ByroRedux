@@ -21,7 +21,7 @@
 
 use byroredux_core::ecs::components::actor_state::Dead;
 use byroredux_core::ecs::components::actor_values::{ActorValues, ActorVitals};
-use byroredux_core::ecs::components::water::{WaterFlow, WaterMaterial, WaterPlane, WaterVolume};
+use byroredux_core::ecs::components::water::{WaterFlow, WaterPlane, WaterVolume};
 use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{ActiveCamera, GlobalTransform, TotalTime, Transform, World};
@@ -873,61 +873,6 @@ pub(crate) fn horizontal_motion(yaw: f32, move_dir: Vec3, speed: f32, dt: f32) -
     (forward * dir.z + right * dir.x) * speed * dt
 }
 
-/// Match the low-frequency displacement in `shaders/water.vert` for the
-/// kinematic player. Water physics intentionally remains volume-based, but
-/// the visible swimmer/camera should follow the authored wave crest rather
-/// than hover against a perfectly flat contact plane.
-fn authored_wave_height(material: &WaterMaterial, position: Vec3, time_secs: f32) -> f32 {
-    let amplitude = material.wave_amplitude.clamp(0.0, 32.0);
-    let frequency = material.wave_frequency.max(0.0);
-    if !amplitude.is_finite() || !frequency.is_finite() || !time_secs.is_finite() {
-        return 0.0;
-    }
-    let direction = |scroll: [f32; 2], fallback: [f32; 2]| {
-        let len_sq = scroll[0] * scroll[0] + scroll[1] * scroll[1];
-        if len_sq.is_finite() && len_sq > 1.0e-10 {
-            let inv = len_sq.sqrt().recip();
-            [scroll[0] * inv, scroll[1] * inv]
-        } else {
-            fallback
-        }
-    };
-    let dir_a = direction(material.scroll_a, [1.0, 0.35]);
-    let dir_b = direction(material.scroll_b, [-0.4, 1.0]);
-    let spatial_a = material.uv_scale_a.abs().max(1.0 / 2048.0);
-    let spatial_b = material.uv_scale_b.abs().max(1.0 / 4096.0);
-    let flowmap_scale = if material.flowmap_scale.is_finite() && material.flowmap_scale > 0.0 {
-        material.flowmap_scale.clamp(0.05, 8.0)
-    } else {
-        1.0
-    };
-    let scroll_a = (
-        material.scroll_a[0] * flowmap_scale,
-        material.scroll_a[1] * flowmap_scale,
-    );
-    let scroll_b = (
-        material.scroll_b[0] * flowmap_scale,
-        material.scroll_b[1] * flowmap_scale,
-    );
-    const DEFAULT_SCROLL_A: f32 = 0.0228254;
-    const DEFAULT_SCROLL_B: f32 = 0.0286531;
-    let rate_a = ((scroll_a.0 * scroll_a.0 + scroll_a.1 * scroll_a.1).sqrt()
-        / DEFAULT_SCROLL_A)
-        .clamp(0.25, 4.0);
-    let rate_b = ((scroll_b.0 * scroll_b.0 + scroll_b.1 * scroll_b.1).sqrt()
-        / DEFAULT_SCROLL_B)
-        .clamp(0.25, 4.0);
-    let phase_a = (position.x * dir_a[0] + position.z * dir_a[1])
-        * spatial_a
-        * std::f32::consts::TAU
-        + time_secs * frequency * rate_a * std::f32::consts::TAU;
-    let phase_b = (position.x * dir_b[0] + position.z * dir_b[1])
-        * spatial_b
-        * std::f32::consts::TAU
-        - time_secs * frequency * rate_b * (std::f32::consts::TAU * 0.75);
-    amplitude * (phase_a.sin() * 0.60 + phase_b.sin() * 0.40)
-}
-
 /// Return the nearest water column intersecting a capsule centred at `pos`.
 /// The fraction is the capsule's vertical span below the wave-adjusted surface.
 /// The final tuple element carries FO3/FNV authored water damage per second.
@@ -958,7 +903,17 @@ fn player_water_state(
         }
         let wave_height = world
             .try_resource::<TotalTime>()
-            .map(|time| authored_wave_height(&plane.material, pos, time.0))
+            .map(|time| {
+                let (weather_scroll, wind_wave_scale) =
+                    byroredux_physics::weather_wave_adjustment(world, time.0);
+                byroredux_physics::authored_wave_height_with_weather(
+                    &plane.material,
+                    pos,
+                    time.0,
+                    weather_scroll,
+                    wind_wave_scale,
+                )
+            })
             .unwrap_or(0.0);
         let surface_y = volume.max[1] + wave_height;
         if top < volume.min[1] || bottom > surface_y {
@@ -1102,6 +1057,7 @@ pub(crate) fn integrate_vertical(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use byroredux_core::ecs::components::water::WaterMaterial;
 
     #[test]
     fn papyrus_control_and_restraint_state_gate_player_movement() {
@@ -1414,8 +1370,20 @@ mod tests {
             ..WaterMaterial::default()
         };
         let position = Vec3::new(113.0, 0.0, -47.0);
-        let at_start = authored_wave_height(&material, position, 0.0);
-        let later = authored_wave_height(&material, position, 0.37);
+        let at_start = byroredux_physics::authored_wave_height_with_weather(
+            &material,
+            position,
+            0.0,
+            [0.0; 2],
+            1.0,
+        );
+        let later = byroredux_physics::authored_wave_height_with_weather(
+            &material,
+            position,
+            0.37,
+            [0.0; 2],
+            1.0,
+        );
         assert!(at_start.is_finite() && later.is_finite());
         assert!(at_start.abs() <= 4.0 && later.abs() <= 4.0);
         assert!(

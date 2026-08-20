@@ -1219,6 +1219,8 @@ pub(crate) fn build_scheduler() -> Scheduler {
         crate::systems::submersion_system,
         Access::new()
             .reads_resource::<ActiveCamera>()
+            .reads_resource::<byroredux_core::ecs::resources::TotalTime>()
+            .reads_resource::<byroredux_core::ecs::components::groundcover::WindField>()
             .reads::<byroredux_core::ecs::components::WaterPlane>()
             .reads::<byroredux_core::ecs::components::WaterVolume>()
             .reads::<byroredux_core::ecs::GlobalTransform>()

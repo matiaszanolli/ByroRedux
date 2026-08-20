@@ -172,6 +172,14 @@ pub(crate) fn submersion_system(world: &World, _dt: f32) {
         }
         return;
     };
+    let wave_adjustment = world
+        .try_resource::<byroredux_core::ecs::resources::TotalTime>()
+        .map(|time| {
+            (
+                time.0,
+                byroredux_physics::weather_wave_adjustment(world, time.0),
+            )
+        });
     for (entity, plane) in wq.iter() {
         let Some(volume) = vq.get(entity) else {
             continue;
@@ -202,7 +210,18 @@ pub(crate) fn submersion_system(world: &World, _dt: f32) {
         // Surface is at volume.max.y. With the band-extended upper
         // bound above, `depth` ranges in (-WATERLINE_HYSTERESIS, ...];
         // the hysteresis resolver handles the near-surface sign.
-        let surface_y = volume.max[1];
+        let surface_y = volume.max[1]
+            + wave_adjustment
+                .map(|(time, (weather_scroll, wind_wave_scale))| {
+                    byroredux_physics::authored_wave_height_with_weather(
+                        &plane.material,
+                        cam_pos,
+                        time,
+                        weather_scroll,
+                        wind_wave_scale,
+                    )
+                })
+                .unwrap_or(0.0);
         let depth = surface_y - cam_pos.y;
         // Pick the closest match by absolute vertical distance. During cell
         // transitions an upper and lower water volume can overlap in XZ; a

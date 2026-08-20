@@ -37,7 +37,10 @@ pub use sync::{
     set_linear_velocity, SpawnCensusAuthoring, SpawnCensusEntry, SpawnCensusProbe,
     SpawnProbeVerdict,
 };
-pub use water::{buoyancy_force, submerged_fraction, PhysicsWaterConstants};
+pub use water::{
+    authored_wave_height_with_weather, buoyancy_force, submerged_fraction,
+    weather_wave_adjustment, PhysicsWaterConstants,
+};
 pub use world::{
     CharacterMoveParams, CharacterMoveResult, NearbyCollider, PhysicsRayHit, PhysicsWorld,
     ACTOR_BONE_GROUP, PHYSICS_DT,
