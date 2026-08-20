@@ -338,8 +338,9 @@ would compile clean and pass every existing test.
 drives underwater presentation. `crates/physics/src/water.rs` runs before the
 Rapier step: dynamic bodies overlapping a `WaterVolume` receive `WaterContact`,
 Archimedes lift, submerged damping, and a mass-correct velocity-matching force
-toward `WaterFlow`; authored wave displacement is sampled on the same contact
-surface so dynamic bodies follow the rendered wave crest. Dry→wet wake and
+toward `WaterFlow`; authored wave displacement plus the live weather wind
+scroll/strength is sampled on the same contact surface so dynamic bodies follow
+the rendered wave crest. Dry→wet wake and
 settled-body sleep are regression-tested so
 water does not reintroduce the exterior physics freeze. The kinematic
 `CharacterController` now samples the same authored water AABBs: gravity is

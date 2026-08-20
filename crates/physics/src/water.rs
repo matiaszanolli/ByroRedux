@@ -17,6 +17,7 @@
 //! preserves the exterior-reroute wake/sleep discipline (WATAL §7 Phase 2).
 
 use byroredux_core::ecs::components::collision::{MotionType, RigidBodyData};
+use byroredux_core::ecs::components::groundcover::WindField;
 use byroredux_core::ecs::components::water::{
     WaterContact, WaterFlow, WaterMaterial, WaterPlane, WaterVolume,
 };
@@ -202,8 +203,19 @@ fn nearest_surface_distance(surface_y: f32, reference_y: f32) -> f32 {
 /// CPU counterpart of the bounded low-frequency displacement in
 /// `renderer/shaders/water.vert`. Dynamic bodies use this only for their
 /// contact fraction; the authored volume remains the broadphase column.
-fn authored_wave_height(material: &WaterMaterial, position: Vec3, time_secs: f32) -> f32 {
-    let amplitude = material.wave_amplitude.clamp(0.0, 32.0);
+/// Add the same live-atmosphere contribution used by `water.vert` to the CPU
+/// contact surface. The renderer adds this scroll after applying the authored
+/// flow-map scale and boosts amplitude by at most 50% in the strongest wind;
+/// keeping the solver on that contract prevents a floating body from tracking
+/// a different crest than the one visible under it.
+fn authored_wave_height_with_weather(
+    material: &WaterMaterial,
+    position: Vec3,
+    time_secs: f32,
+    weather_scroll: [f32; 2],
+    wind_wave_scale: f32,
+) -> f32 {
+    let amplitude = material.wave_amplitude.clamp(0.0, 32.0) * wind_wave_scale;
     let frequency = material.wave_frequency.max(0.0);
     if !amplitude.is_finite() || !frequency.is_finite() || !time_secs.is_finite() {
         return 0.0;
@@ -226,8 +238,14 @@ fn authored_wave_height(material: &WaterMaterial, position: Vec3, time_secs: f32
     } else {
         1.0
     };
-    let scroll_a = [material.scroll_a[0] * flowmap_scale, material.scroll_a[1] * flowmap_scale];
-    let scroll_b = [material.scroll_b[0] * flowmap_scale, material.scroll_b[1] * flowmap_scale];
+    let scroll_a = [
+        material.scroll_a[0] * flowmap_scale + weather_scroll[0],
+        material.scroll_a[1] * flowmap_scale + weather_scroll[1],
+    ];
+    let scroll_b = [
+        material.scroll_b[0] * flowmap_scale + weather_scroll[0] * 0.65,
+        material.scroll_b[1] * flowmap_scale + weather_scroll[1] * 0.65,
+    ];
     let rate_a = ((scroll_a[0] * scroll_a[0] + scroll_a[1] * scroll_a[1]).sqrt() / 0.0228254)
         .clamp(0.25, 4.0);
     let rate_b = ((scroll_b[0] * scroll_b[0] + scroll_b[1] * scroll_b[1]).sqrt() / 0.0286531)
@@ -241,6 +259,35 @@ fn authored_wave_height(material: &WaterMaterial, position: Vec3, time_secs: f32
         * std::f32::consts::TAU
         - time_secs * frequency * rate_b * (std::f32::consts::TAU * 0.75);
     amplitude * (phase_a.sin() * 0.60 + phase_b.sin() * 0.40)
+}
+
+fn weather_wave_adjustment(world: &World, time_secs: f32) -> ([f32; 2], f32) {
+    const MAX_WEATHER_WIND_SPEED: f32 = 220.0;
+    const WEATHER_WATER_SCROLL_PER_BU_PER_S: f32 = 0.0015;
+    let wind = world
+        .try_resource::<WindField>()
+        .map(|field| *field)
+        .unwrap_or_default();
+    let gust = wind.speed
+        + wind.gust_amplitude
+            * (time_secs * wind.gust_frequency * std::f32::consts::TAU).sin();
+    let gust = if gust.is_finite() { gust } else { 0.0 };
+    let len_sq = wind.direction[0] * wind.direction[0] + wind.direction[1] * wind.direction[1];
+    let direction = if len_sq.is_finite() && len_sq > 1.0e-6 {
+        let inv_len = len_sq.sqrt().recip();
+        [wind.direction[0] * inv_len, wind.direction[1] * inv_len]
+    } else {
+        [1.0, 0.0]
+    };
+    let scroll = [
+        direction[0] * gust * WEATHER_WATER_SCROLL_PER_BU_PER_S,
+        direction[1] * gust * WEATHER_WATER_SCROLL_PER_BU_PER_S,
+    ];
+    let scale = 1.0
+        + (gust.max(0.0) / MAX_WEATHER_WIND_SPEED)
+            .clamp(0.0, 1.0)
+            * 0.5;
+    (scroll, scale)
 }
 
 /// Collect every active water plane's volume + surface height + material
@@ -365,6 +412,9 @@ pub(crate) fn apply_buoyancy(world: &World, had_newcomers: bool) {
 
     let surfaces = collect_water_surfaces(world);
     let time_secs = world.try_resource::<TotalTime>().map(|time| time.0);
+    let (weather_scroll, wind_wave_scale) = time_secs
+        .map(|time| weather_wave_adjustment(world, time))
+        .unwrap_or(([0.0; 2], 1.0));
     let waves_active = time_secs.is_some()
         && surfaces
             .iter()
@@ -509,10 +559,12 @@ pub(crate) fn apply_buoyancy(world: &World, had_newcomers: bool) {
                         }
                         let surface_y = time_secs
                             .map(|time| {
-                                authored_wave_height(
+                                authored_wave_height_with_weather(
                                     &s.material,
                                     Vec3::new(pos.x, pos.y, pos.z),
                                     time,
+                                    weather_scroll,
+                                    wind_wave_scale,
                                 )
                             })
                             .unwrap_or(0.0)
@@ -722,11 +774,29 @@ mod tests {
             ..WaterMaterial::default()
         };
         let position = Vec3::new(113.0, 0.0, -47.0);
-        let start = authored_wave_height(&material, position, 0.0);
-        let later = authored_wave_height(&material, position, 0.37);
+        let start = authored_wave_height_with_weather(&material, position, 0.0, [0.0; 2], 1.0);
+        let later = authored_wave_height_with_weather(&material, position, 0.37, [0.0; 2], 1.0);
         assert!(start.is_finite() && later.is_finite());
         assert!(start.abs() <= 4.0 && later.abs() <= 4.0);
         assert!((start - later).abs() > 1.0e-4);
+    }
+
+    #[test]
+    fn authored_wave_height_tracks_weather_scroll_and_amplitude() {
+        let material = WaterMaterial {
+            wave_amplitude: 4.0,
+            wave_frequency: 0.7,
+            scroll_a: [0.0228254, 0.0],
+            scroll_b: [0.0, 0.0286531],
+            ..WaterMaterial::default()
+        };
+        let position = Vec3::new(37.0, 0.0, 91.0);
+        let calm = authored_wave_height_with_weather(&material, position, 2.3, [0.0, 0.0], 1.0);
+        let wind_x = authored_wave_height_with_weather(&material, position, 2.3, [0.2, 0.0], 1.0);
+        let amplified =
+            authored_wave_height_with_weather(&material, position, 2.3, [0.0, 0.0], 1.5);
+        assert!((calm - wind_x).abs() > 1.0e-4);
+        assert!((amplified - calm * 1.5).abs() < 1.0e-5);
     }
 
     #[test]
