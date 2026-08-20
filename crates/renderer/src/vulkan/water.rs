@@ -940,6 +940,10 @@ mod tests {
             src.contains("float authoredOpacity = clamp(uintBitsToFloat(push.noise_indices.w), 0.0, 1.0)"),
             "ANAM=0 must remain a valid transparent-water value"
         );
+        assert!(
+            src.contains("float alpha = baseAlpha <= 0.0") && src.contains("? 0.0"),
+            "opacity zero must bypass grazing and foam alpha boosts"
+        );
     }
 
     #[test]

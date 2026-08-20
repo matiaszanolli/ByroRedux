@@ -926,7 +926,9 @@ void main() {
     // at the shoreline" artefact).
     float baseAlpha = authoredOpacity;
     float grazingBoost = pow(1.0 - NdotV, 2.0) * 0.1;
-    float alpha = clamp(baseAlpha + grazingBoost + foamMask * 0.1, 0.0, 1.0);
+    float alpha = baseAlpha <= 0.0
+        ? 0.0
+        : clamp(baseAlpha + grazingBoost + foamMask * 0.1, 0.0, 1.0);
 
     outColor = vec4(surfaceColor, alpha);
 
