@@ -576,12 +576,30 @@ void main() {
     float ampScale  = push.tune.w / 0.05;
     float freqScale = push.misc.y / 0.6;
 
-    vec3 Nsurface = normalize(vWorldNormal);
-    vec3 T = normalize(vWorldTangent);
-    // Re-orthogonalise T against N (Gram-Schmidt) — drops the
-    // floating-point drift from interpolation across the quad.
-    T = normalize(T - Nsurface * dot(T, Nsurface));
-    vec3 B = normalize(cross(Nsurface, T) * vWorldBitangentSign);
+    // Imported NIF water meshes are not guaranteed to carry a valid tangent
+    // frame (old NiTriShapes commonly have a zero tangent or a tangent
+    // parallel to the normal). Never normalize those values directly: a
+    // single non-finite basis vector poisons every reflection/refraction
+    // result in the fragment. Build a deterministic orthonormal fallback.
+    vec3 NsurfaceRaw = vWorldNormal;
+    vec3 Nsurface = length(NsurfaceRaw) > 1.0e-5
+        ? normalize(NsurfaceRaw)
+        : vec3(0.0, 1.0, 0.0);
+    vec3 tangentRaw = vWorldTangent;
+    vec3 tangentProjected = tangentRaw - Nsurface * dot(tangentRaw, Nsurface);
+    vec3 T;
+    if (length(tangentProjected) > 1.0e-5) {
+        T = normalize(tangentProjected);
+    } else {
+        vec3 fallbackAxis = abs(Nsurface.y) < 0.9
+            ? vec3(0.0, 1.0, 0.0)
+            : vec3(1.0, 0.0, 0.0);
+        T = normalize(cross(fallbackAxis, Nsurface));
+    }
+    vec3 bitangentRaw = cross(Nsurface, T);
+    vec3 B = length(bitangentRaw) > 1.0e-5
+        ? normalize(bitangentRaw) * vWorldBitangentSign
+        : vec3(0.0, 0.0, 1.0);
     mat3 TBN = mat3(T, B, Nsurface);
 
     vec3 V = normalize(cameraPos.xyz - vWorldPos);

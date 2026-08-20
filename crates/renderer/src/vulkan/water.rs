@@ -970,6 +970,17 @@ mod tests {
     }
 
     #[test]
+    fn water_shader_builds_a_finite_basis_for_degenerate_mesh_tangents() {
+        let src = include_str!("../../shaders/water.frag");
+        assert!(
+            src.contains("vec3 NsurfaceRaw = vWorldNormal")
+                && src.contains("vec3 tangentProjected = tangentRaw - Nsurface * dot(tangentRaw, Nsurface)")
+                && src.contains("vec3 fallbackAxis = abs(Nsurface.y) < 0.9"),
+            "legacy water meshes need a deterministic tangent-frame fallback"
+        );
+    }
+
+    #[test]
     fn water_caustics_keep_the_top_side_wave_normal_below_the_surface() {
         let src = include_str!("../../shaders/water.frag");
         let normal_decl = src
