@@ -266,6 +266,10 @@ its surface roughness is translated into the shared direct-sun highlight
 exponent. FO4/FO76 silt amount plus light/dark colors now blend into the
 canonical shallow, deep, and underwater palette at the same boundary.
 The remaining Skyrim tail fields stay raw. The
+Dedicated NIF mesh-water shaders now also cross NIFAL: Oblivion/FO3/FNV
+`WaterShaderProperty` and Skyrim+ `BSWaterShaderProperty` set a canonical
+mesh-water marker, and both cell and loose-NIF spawn paths route those meshes
+through the same water pipeline (including authored normal-map handles). The
 `WaterKind` classification is a fragile EDID-substring heuristic
 (`rapid`/`waterfall`/`falls`/`river`/`stream`), English-only, with `waterfall`
 deliberately demoted to `River` for cell planes.
