@@ -685,9 +685,13 @@ pub(crate) fn resolve_water_material(
                 *target.3 = variant.params.fog_far;
                 *target.4 = variant.params.reflection_color;
             }
-            if rec.opacity.is_finite() && rec.opacity > 0.0 {
-                mat.opacity = rec.opacity.clamp(0.0, 1.0);
-            } else if rec.opacity_authored && rec.opacity.is_finite() {
+            // `WatrRecord::opacity` carries a legacy parser default for
+            // records that omit ANAM. Only an actual ANAM value is authored;
+            // otherwise retain WaterMaterial's canonical 0.88 fallback so
+            // every game generation resolves the same missing-opacity
+            // sentinel instead of inheriting the parser's compatibility
+            // placeholder.
+            if rec.opacity_authored && rec.opacity.is_finite() {
                 mat.opacity = rec.opacity.clamp(0.0, 1.0);
             }
             mat.fresnel_f0 = rec.params.fresnel.clamp(0.001, 0.20);
@@ -2432,10 +2436,20 @@ mod tests {
     fn resolve_water_material_carries_authored_opacity() {
         let mut rec = calm_watr(0x000A_0005, "OpaqueWater", WaterParams::default());
         rec.opacity = 0.62;
+        rec.opacity_authored = true;
         let mut waters = HashMap::new();
         waters.insert(rec.form_id, rec);
         let (mat, _, _, _, _) = resolve_water_material(&waters, Some(0x000A_0005));
         assert!((mat.opacity - 0.62).abs() < 1e-6);
+    }
+
+    #[test]
+    fn resolve_water_material_uses_canonical_opacity_when_anam_is_absent() {
+        let rec = calm_watr(0x000A_0008, "DefaultWater", WaterParams::default());
+        let mut waters = HashMap::new();
+        waters.insert(rec.form_id, rec);
+        let (mat, _, _, _, _) = resolve_water_material(&waters, Some(0x000A_0008));
+        assert_eq!(mat.opacity, WaterMaterial::default().opacity);
     }
 
     #[test]
