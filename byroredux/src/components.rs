@@ -190,6 +190,15 @@ impl Component for IsLodTerrain {
 /// reintroduce the #1866 overlap risk and needs real-game visual validation
 /// before it can be enabled). This component materialises the signal so that
 /// work does not have to re-derive the parse→spawn plumbing. See #1889.
+///
+/// It does have a **telemetry** consumer, which is not the same thing: EX-10/11
+/// (#2371)'s `lod.coverage` audit queries every resident instance of this marker
+/// and checks its cell against the resident object-LOD quads, live, every
+/// reconcile (`streaming_helpers::resident_vwd_refr_cells` /
+/// `LodCoverageStats::vwd_full_model_overlaps`). That always reads 0 today —
+/// it is proving the ring-separation argument above holds in a real running
+/// session, not exercising a cull — but it is the regression gate that would
+/// catch the day someone enables the active cull this doc still says not to.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct VisibleWhenDistant;
 impl Component for VisibleWhenDistant {

@@ -132,10 +132,12 @@ pub(crate) fn reconcile_lod_rings(
 }
 
 /// Refresh [`byroredux_core::ecs::LodCoverageStats`] from this reconcile's
-/// post-state (EX-10/11 / #2371). Runs on every call — including
-/// zero-budget reconciles — since the checks are cheap key-set diffs/pair
-/// scans over residency counts the ring radius already bounds to the tens,
-/// not a rescan of the world.
+/// post-state (EX-10/11 / #2371, #2371 VWD follow-up). Runs on every call —
+/// including zero-budget reconciles — since the checks are cheap key-set
+/// diffs/pair scans over residency counts the ring radius already bounds to
+/// the tens, not a rescan of the world (the one exception, the VWD REFR
+/// query below, is likewise bounded — VWD-flagged placements are a sparse
+/// minority and only resident ones are visited).
 ///
 /// Placement LOD (Oblivion's per-cell `_far.nif` scheme) is deliberately
 /// excluded from the overlap/churn checks: it has no quad-footprint concept
@@ -157,6 +159,21 @@ fn update_lod_coverage(
     let full_detail_overlaps = cell_loader::find_full_detail_overlaps(&terrain_keys, &full_cells)
         + cell_loader::find_full_detail_overlaps(&object_keys, &full_cells);
 
+    // EXAL §5.2's VWD culling rule, checked live rather than only by
+    // construction: a resident `VisibleWhenDistant` full REFR's cell must
+    // never fall inside a resident object-LOD quad's footprint (that quad's
+    // `.bto` already bakes the object in — both drawing it is the z-fight
+    // the rule exists to prevent). `find_full_detail_overlaps` already
+    // answers exactly this shape of question (does a LOD quad footprint
+    // intersect a given cell); a VWD REFR's cell is that same kind of
+    // "still-resident full-detail" input, just gathered from a different
+    // source than `state.loaded`. Terrain LOD is deliberately excluded —
+    // VWD culls against the *object* scheme only (EXAL §5.2), terrain LOD
+    // has no discrete-object concept to conflict with.
+    let vwd_cells = resident_vwd_refr_cells(world);
+    let vwd_full_model_overlaps =
+        cell_loader::find_full_detail_overlaps(&object_keys, &vwd_cells);
+
     state.terrain_lod_churn.observe(&state.lod_blocks);
     state.object_lod_churn.observe(&state.object_lod_blocks);
 
@@ -165,10 +182,32 @@ fn update_lod_coverage(
     coverage.settled = settled;
     coverage.overlaps = overlaps;
     coverage.full_detail_overlaps = full_detail_overlaps;
+    coverage.vwd_full_model_overlaps = vwd_full_model_overlaps;
     coverage.terrain_churn = state.terrain_lod_churn.churned();
     coverage.object_churn = state.object_lod_churn.churned();
     coverage.terrain_resident = terrain_keys.len() as u32;
     coverage.object_resident = object_keys.len() as u32;
+}
+
+/// Distinct grid cells containing at least one resident
+/// [`crate::components::VisibleWhenDistant`]-flagged full REFR — the live
+/// input side of the VWD culling audit above.
+///
+/// Deduplicated the same way `state.loaded.keys()` already is: a cell with
+/// several VWD statics is one overlap incident, not one per REFR. The
+/// marker is a sparse ZST (most placements aren't VWD-flagged), so querying
+/// it first and looking up `GlobalTransform` per hit is cheaper than a
+/// joint query would be over the far larger `GlobalTransform` set.
+fn resident_vwd_refr_cells(world: &byroredux_core::ecs::World) -> Vec<(i32, i32)> {
+    let mut cells = std::collections::HashSet::new();
+    if let Some(q) = world.query::<crate::components::VisibleWhenDistant>() {
+        for (entity, _) in q.iter() {
+            if let Some(t) = world.get::<byroredux_core::ecs::GlobalTransform>(entity) {
+                cells.insert(streaming::world_pos_to_grid(t.translation.x, t.translation.z));
+            }
+        }
+    }
+    cells.into_iter().collect()
 }
 
 /// LOD texture resolution happens after normal cell-load texture flushing.
@@ -708,5 +747,66 @@ mod tests {
         let mut placements: HashMap<(i32, i32), PlacementLodBlock> = HashMap::new();
         let (t, o, p) = drain_lod_reclaim_targets(&mut terrain, &mut objects, &mut placements);
         assert!(t.is_empty() && o.is_empty() && p.is_empty());
+    }
+
+    // ── resident_vwd_refr_cells (EX-10/11 VWD culling audit) ────────────
+
+    use crate::components::VisibleWhenDistant;
+    use byroredux_core::ecs::{GlobalTransform, World};
+    use byroredux_core::math::{Quat, Vec3};
+
+    fn spawn_at(world: &mut World, x: f32, z: f32, vwd: bool) {
+        let e = world.spawn();
+        world.insert(e, GlobalTransform::new(Vec3::new(x, 0.0, z), Quat::IDENTITY, 1.0));
+        if vwd {
+            world.insert(e, VisibleWhenDistant);
+        }
+    }
+
+    #[test]
+    fn resident_vwd_refr_cells_is_empty_on_a_bare_world() {
+        let world = World::new();
+        assert!(resident_vwd_refr_cells(&world).is_empty());
+    }
+
+    #[test]
+    fn resident_vwd_refr_cells_ignores_unflagged_entities() {
+        let mut world = World::new();
+        spawn_at(&mut world, 0.0, 0.0, false);
+        assert!(resident_vwd_refr_cells(&world).is_empty());
+    }
+
+    #[test]
+    fn resident_vwd_refr_cells_converts_world_position_to_grid() {
+        let mut world = World::new();
+        // 4096 units/cell (EXTERIOR_CELL_UNITS) — one cell east, two south of
+        // the origin cell. Matches the same world_pos_to_grid contract
+        // app_step.rs's player-position conversion already relies on.
+        spawn_at(&mut world, 4096.0 * 1.5, -4096.0 * 2.5, true);
+        assert_eq!(resident_vwd_refr_cells(&world), vec![(1, 2)]);
+    }
+
+    #[test]
+    fn resident_vwd_refr_cells_dedupes_multiple_refrs_in_one_cell() {
+        let mut world = World::new();
+        // Two VWD statics sharing a cell is one overlap incident, not two —
+        // matches how `state.loaded.keys()` already gives one entry per cell
+        // regardless of the REFR count inside it. Negative Z so
+        // `world_pos_to_grid`'s `-world_z` stays positive and both points
+        // land in cell (0, 0), not (0, -1).
+        spawn_at(&mut world, 10.0, -10.0, true);
+        spawn_at(&mut world, 20.0, -20.0, true);
+        assert_eq!(resident_vwd_refr_cells(&world), vec![(0, 0)]);
+    }
+
+    #[test]
+    fn resident_vwd_refr_cells_reports_every_distinct_occupied_cell() {
+        let mut world = World::new();
+        spawn_at(&mut world, 0.0, 0.0, true); // cell (0, 0)
+        spawn_at(&mut world, 4096.0 * 3.0, 0.0, true); // cell (3, 0)
+        spawn_at(&mut world, 0.0, 0.0, false); // unflagged, ignored
+        let mut cells = resident_vwd_refr_cells(&world);
+        cells.sort();
+        assert_eq!(cells, vec![(0, 0), (3, 0)]);
     }
 }

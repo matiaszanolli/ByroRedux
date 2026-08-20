@@ -305,29 +305,36 @@ EOF
         fi
 
         # EX-10/11 / #2371 — live LOD residency coverage: no two resident
-        # quads (or a quad and a still-resident full-detail cell) claim the
-        # same ground, and no quad key flapped in and out of residency
-        # across the three-crossing traversal. `lod.coverage`'s single-line
-        # `machine_line()` has no embedded `\n`, so (unlike `env.health`
-        # below) it needs no unescape pass — grep the quoted line directly.
+        # quads (or a quad and a still-resident full-detail cell, or a quad
+        # and a resident VisibleWhenDistant REFR — the EXAL §5.2 culling
+        # rule) claim the same ground, and no quad key flapped in and out of
+        # residency across the three-crossing traversal. `lod.coverage`'s
+        # single-line `machine_line()` has no embedded `\n`, so (unlike
+        # `env.health` below) it needs no unescape pass — grep the quoted
+        # line directly.
         local coverage_line
         coverage_line="$(grep -oE 'lod-coverage: [^"]*' "$debug_log" | head -1 || true)"
         if [[ -z "$coverage_line" ]]; then
             echo "exterior-smoke[$label]: WARN - lod.coverage reported nothing (pre-#2371 binary, or an interior-only profile)"
         else
-            local cov_sampled cov_overlaps cov_full_overlaps cov_terrain_churn cov_object_churn
+            local cov_sampled cov_overlaps cov_full_overlaps cov_vwd_overlaps cov_terrain_churn cov_object_churn
             cov_sampled="$(grep -oE 'sampled=[01]' <<< "$coverage_line" | cut -d= -f2 || true)"
             cov_overlaps="$(grep -oE 'overlaps=[0-9]+' <<< "$coverage_line" | head -1 | cut -d= -f2 || true)"
             cov_full_overlaps="$(grep -oE 'full_detail_overlaps=[0-9]+' <<< "$coverage_line" | cut -d= -f2 || true)"
+            # EX-10/11 VWD follow-up — the EXAL §5.2 culling rule checked
+            # live: a resident VisibleWhenDistant REFR must never fall
+            # inside a resident object-LOD quad's footprint.
+            cov_vwd_overlaps="$(grep -oE 'vwd_full_model_overlaps=[0-9]+' <<< "$coverage_line" | cut -d= -f2 || true)"
             cov_terrain_churn="$(grep -oE 'terrain_churn=[0-9]+' <<< "$coverage_line" | cut -d= -f2 || true)"
             cov_object_churn="$(grep -oE 'object_churn=[0-9]+' <<< "$coverage_line" | cut -d= -f2 || true)"
             if [[ "$cov_sampled" != "1" ]]; then
                 echo "exterior-smoke[$label]: WARN - lod.coverage never sampled (no LOD reconcile ran this traversal)"
             elif [[ ! "$cov_overlaps" =~ ^[0-9]+$ || ! "$cov_full_overlaps" =~ ^[0-9]+$ \
+                    || ! "$cov_vwd_overlaps" =~ ^[0-9]+$ \
                     || ! "$cov_terrain_churn" =~ ^[0-9]+$ || ! "$cov_object_churn" =~ ^[0-9]+$ ]]; then
                 echo "exterior-smoke[$label]: HARD FAIL - incomplete lod.coverage line: $coverage_line"
                 hard_fail=1
-            elif (( cov_overlaps != 0 || cov_full_overlaps != 0 \
+            elif (( cov_overlaps != 0 || cov_full_overlaps != 0 || cov_vwd_overlaps != 0 \
                     || cov_terrain_churn != 0 || cov_object_churn != 0 )); then
                 echo "exterior-smoke[$label]: HARD FAIL - LOD coverage violation: $coverage_line"
                 hard_fail=1

@@ -335,7 +335,13 @@ Per-game impls (the runtime source per the Q3 finding):
     full model and its LOD proxy never coexist — there is no z-fight to cull.
     Turning the marker into an active suppression means decoupling the full-detail
     radius from the streaming ring (reintroducing the #1866 overlap risk) and
-    needs real-game visual validation before it is enabled.
+    needs real-game visual validation before it is enabled. What **is** live
+    (#2371 VWD follow-up): `lod.coverage` audits every resident marker instance
+    against the resident object-LOD quads on every reconcile
+    (`LodCoverageStats::vwd_full_model_overlaps`, wired into `m-exteriors.sh`'s
+    hard gate) — always 0 today, proving the ring-separation argument above
+    holds on real traversals rather than only by construction, and the gate
+    that would catch a regression the day the radius decoupling above lands.
 - **PlacementLodProvider** (Oblivion only — see FO3-D4-01/#2086) — the
   **per-object placement** scheme.
   - Terrain: `Meshes\Landscape\LOD\*.nif` + `_lod` diffuse/normal textures.

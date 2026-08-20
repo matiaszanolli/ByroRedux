@@ -871,6 +871,16 @@ pub struct LodCoverageStats {
     /// still-resident full-detail cell — the cross-scheme boundary #1866 /
     /// #1871 keep conservative specifically to hold this at 0.
     pub full_detail_overlaps: u32,
+    /// Resident object-LOD `.bto` quads whose footprint intersects the cell
+    /// of a resident `VisibleWhenDistant`-flagged full REFR — the runtime
+    /// half of the VWD culling rule (EXAL §5.2): a full model and its own
+    /// `.bto` proxy must never both be resident over the same ground.
+    /// Always 0 today because full REFRs and object-LOD quads are gated on
+    /// disjoint rings (#1866); this is the live audit that would catch a
+    /// regression the day anything decouples that radius, in place of an
+    /// active per-record cull (still deliberately unbuilt — see
+    /// `byroredux::components::VisibleWhenDistant`'s own doc for why).
+    pub vwd_full_model_overlaps: u32,
     /// Terrain LOD quad keys that left residency and later returned —
     /// real thrash, not merely an in-flight load superseded by the next
     /// boundary crossing (see `streaming::StreamingTelemetry::superseded_lod`
@@ -892,6 +902,7 @@ impl LodCoverageStats {
             "PENDING"
         } else if self.overlaps == 0
             && self.full_detail_overlaps == 0
+            && self.vwd_full_model_overlaps == 0
             && self.settled
             && self.terrain_churn == 0
             && self.object_churn == 0
@@ -908,12 +919,13 @@ impl LodCoverageStats {
     pub fn machine_line(&self) -> String {
         format!(
             "lod-coverage: sampled={} settled={} overlaps={} full_detail_overlaps={} \
-             terrain_churn={} object_churn={} terrain_resident={} object_resident={} \
-             verdict={}",
+             vwd_full_model_overlaps={} terrain_churn={} object_churn={} terrain_resident={} \
+             object_resident={} verdict={}",
             u8::from(self.sampled),
             u8::from(self.settled),
             self.overlaps,
             self.full_detail_overlaps,
+            self.vwd_full_model_overlaps,
             self.terrain_churn,
             self.object_churn,
             self.terrain_resident,
