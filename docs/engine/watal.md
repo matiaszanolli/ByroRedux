@@ -227,8 +227,8 @@ part of the canonical GPU material contract.
 
 ### Decode + translate — **good (render), Skyrim tail partially promoted**
 
-`water.rs` decodes the shared 60-byte DATA prefix (Oblivion/FO3/FNV), Skyrim's
-extended DNAM, the FO4/FO76 visual-data layout, and Starfield's absorption-based
+`water.rs` decodes Oblivion's short compatibility DATA shape, the authoritative
+FO3/FNV 186/196-byte visual layout, Skyrim's extended DNAM, the FO4/FO76 visual-data layout, and Starfield's absorption-based
 DNAM layout; `NNAM`/`TNAM` texture and Skyrim+ NAM2/NAM3/NAM4
 noise paths are parsed, with Skyrim SE NAM5 promoted to the third layer for
 flowing water. GNAM daytime/nighttime/underwater links are preserved and the
@@ -392,16 +392,16 @@ Everything else is a SENTINEL the older game leaves unset, identical across game
 
 | Concern | Oblivion | FO3 / FNV | Skyrim (canonical) | Source field |
 |---|---|---|---|---|
-| WATR appearance payload | DATA ~102 B | DATA 196 B (60 B shared prefix) | DNAM 252 B+; FO4/FO76 201 B; Starfield 152 B+ | `water.rs:30-61` |
+| WATR appearance payload | DATA ~102 B | DATA 186/196 B (opaque 16 B prefix) | DNAM 228/232 B; FO4/FO76 201 B; Starfield 152 B+ | `water.rs:30-61` |
 | shallow/deep color, reflectivity, fresnel | AUTHORED | AUTHORED | AUTHORED | DATA/DNAM RGBA |
 | surface opacity | AUTHORED (`ANAM`) | AUTHORED (`ANAM`) | AUTHORED (`ANAM`) | ANAM (u8 / 255) |
-| `fog_near`/`fog_far` | **SENTINEL** 80/600 (DATA omits 28..36) | AUTHORED | AUTHORED | DATA[28..36] |
+| `fog_near`/`fog_far` | **SENTINEL** 80/600 (short DATA) | AUTHORED | AUTHORED | FO3/FNV DATA[32..40] |
 | FO4 surface depth ramp | SENTINEL | SENTINEL | AUTHORED | DNAM[0] (`Depth Amount`) |
 | FO4 underwater fog amount | SENTINEL | SENTINEL | AUTHORED | DNAM[40] |
 | diffuse/normal texture | **SENTINEL** `u32::MAX` → procedural | AUTHORED (`NNAM`) | AUTHORED (`TNAM`) | NNAM/TNAM |
 | noise layers (`NAM2`/`NAM3`/`NAM4`, flowing `NAM5`) | **SENTINEL** `[u32::MAX;3]` | **SENTINEL** | AUTHORED (NAM5 replaces layer 3 for flow) | NAM2-5 |
 | below-water fog split | **SENTINEL** (reuse above) | **SENTINEL** | AUTHORED (DNAM tail) | DNAM[144..152] |
-| `wave_amplitude/frequency` | AUTHORED | AUTHORED | AUTHORED (displacement force overrides amplitude) | DATA[8..16], DNAM[76..80] |
+| `wave_amplitude/frequency` | AUTHORED | AUTHORED (displacement force/velocity) | AUTHORED (displacement force overrides amplitude) | FO3/FNV DATA[76..84], DNAM[76..80] |
 | physical normal magnitude | SENTINEL | SENTINEL | AUTHORED (scales noise amplitudes) | Skyrim DNAM[92]; FO4 DNAM[52] |
 | above-water fog amount | SENTINEL | SENTINEL | AUTHORED (scales refraction absorption) | Skyrim DNAM[132] |
 | depth response weights | SENTINEL | SENTINEL | AUTHORED | DNAM[208..224] |
