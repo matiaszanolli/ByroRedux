@@ -202,8 +202,8 @@ The genuinely **new** canonical types (no prior ECS role) are: shipped
 `PhysicsWaterConstants` (engine-defined buoyancy/current params — *no game authors
 these*) and `WaterContact` (generalises camera-only `SubmersionState` to all
 dynamic bodies); the LOD translation/spawn path is live without a standalone
-`WaterLod` ECS component. Transient `SplashEvent` / `RippleEvent` markers remain
-planned.
+`WaterLod` ECS component. Transient `SplashEvent` / `RippleEvent` markers are
+live and now feed a bounded surface-normal ripple in the water fragment path.
 
 ---
 
@@ -495,7 +495,7 @@ authored worldspace LOD water, NAM2–4 noise layers, and bounded sunlight
    water UBO, authored noise layers, bounded sunlight scattering, and the
    kinematic swim core and bounded breath/drowning damage are live; refine the
    OpenMW-style swimlevel model; `SplashEvent`/`RippleEvent` → particle +
-   audio + ripple normal injection (A10); underwater god-rays via the M55
+   audio is live, as is bounded ripple normal injection (A10); underwater god-rays via the M55
    volumetrics gated on `WaterContact`; replace the EDID `WaterKind` heuristic with
    data-driven classification. Each sub-item independently shippable.
 
