@@ -301,8 +301,8 @@ bounded reference-derived center and horizontal extent with a 256-unit minimum;
 exterior: full 4096-unit tile). Per-game default height via
 `default_water_for_worldspace`. **Gaps:** no shoreline-fit mesh, one plane per
 cell (can't represent multiple bodies at different heights, or rivers spanning
-cells). The `WaterVolume` AABB now feeds body physics directly; there is still no
-shoreline-fit volume or character-controller water-contact path.
+cells). The `WaterVolume` AABB now feeds body physics and the kinematic player
+contact path directly; shoreline-fit geometry and volumes remain open.
 
 ### Render — **mature, with documented fragilities**
 

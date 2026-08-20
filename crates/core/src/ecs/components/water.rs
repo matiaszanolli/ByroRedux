@@ -491,6 +491,9 @@ pub struct WaterContact {
     /// so the physics current force and gameplay can consume it without
     /// re-querying the plane.
     pub flow: Option<WaterFlow>,
+    /// FO3/FNV authored water damage per second, carried through contact
+    /// resolution for actor/gameplay consumers. Zero is harmless water.
+    pub damage_per_second: f32,
     /// The water material driving this body's underwater FX / surface
     /// interaction. `None` when the body is out of all water volumes.
     pub material: Option<WaterMaterial>,

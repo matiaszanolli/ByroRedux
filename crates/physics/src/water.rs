@@ -190,6 +190,7 @@ struct WaterSurface {
     surface_y: f32,
     material: WaterMaterial,
     flow: Option<WaterFlow>,
+    damage_per_second: f32,
 }
 
 #[inline]
@@ -217,6 +218,7 @@ fn collect_water_surfaces(world: &World) -> Vec<WaterSurface> {
             surface_y: volume.max[1],
             material: plane.material,
             flow,
+            damage_per_second: plane.damage_per_second,
         });
     }
     out
@@ -509,6 +511,7 @@ pub(crate) fn apply_buoyancy(world: &World, had_newcomers: bool) {
                                 submerged_fraction: frac,
                                 head_submerged: max_y <= s.surface_y,
                                 flow: s.flow,
+                                damage_per_second: s.damage_per_second,
                                 material: Some(s.material),
                             },
                         ));
@@ -796,7 +799,7 @@ mod tests {
             WaterPlane {
                 kind: WaterKind::Calm,
                 material: WaterMaterial::default(),
-                damage_per_second: 0.0,
+                damage_per_second: 9.0,
             },
         );
         world.insert(
@@ -886,6 +889,7 @@ mod tests {
             Some([1.0, 0.0, 0.0]),
             "contact carries the same current consumed by the solver"
         );
+        assert_eq!(contact.damage_per_second, 9.0);
         drop(contact);
 
         // Streaming can remove the water plane before the dynamic body is

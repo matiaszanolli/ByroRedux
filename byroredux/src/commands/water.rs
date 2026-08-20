@@ -203,11 +203,12 @@ impl ConsoleCommand for WaterContactsCommand {
         )];
         for (entity, contact) in rows {
             lines.push(format!(
-                "  entity={} depth={:.2} fraction={:.3} head_submerged={} flow={} material={}",
+                "  entity={} depth={:.2} fraction={:.3} head_submerged={} damage/s={:.1} flow={} material={}",
                 entity,
                 contact.depth,
                 contact.submerged_fraction,
                 contact.head_submerged,
+                contact.damage_per_second,
                 format_flow(contact.flow),
                 contact
                     .material
@@ -318,6 +319,7 @@ mod tests {
                     direction: [0.0, 0.0, 1.0],
                     speed: 2.0,
                 }),
+                damage_per_second: 12.0,
                 material: Some(WaterMaterial {
                     source_form: 0xABCD,
                     ..WaterMaterial::default()
