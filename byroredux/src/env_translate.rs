@@ -2375,7 +2375,7 @@ mod tests {
                 absorption_ranges: [12.0, 34.0, 56.0],
                 concentration: [0.2, 0.4, 0.6, 0.8],
                 noise_falloff: 300.0,
-                displacement: [0.01, 0.985, 10.0],
+                displacement: [0.05, 0.985, 10.0],
                 ..WaterParams::default()
             },
         );
@@ -2385,7 +2385,7 @@ mod tests {
         assert_eq!(mat.absorption_ranges, [12.0, 34.0, 56.0]);
         assert_eq!(mat.concentration, [0.2, 0.4, 0.6, 0.8]);
         assert_eq!(mat.noise_falloff, 300.0);
-        assert_eq!(mat.displacement, [0.01, 0.985, 10.0]);
+        assert_eq!(mat.displacement, [0.05, 0.985, 10.0]);
     }
 
     #[test]

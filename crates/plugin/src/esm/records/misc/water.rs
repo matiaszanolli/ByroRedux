@@ -1029,6 +1029,13 @@ fn decode_dnam_starfield(data: &[u8]) -> WaterParams {
     if let Some(velocity) = read_f32_at(data, 68) {
         p.wave_frequency = velocity.max(0.0);
     }
+    // Starfield's displacement simulator follows its force/velocity pair
+    // with falloff, dampener, and starting size at 72/76/80.
+    for (slot, offset) in p.displacement.iter_mut().zip([80, 72, 76]) {
+        if let Some(value) = read_f32_at(data, offset) {
+            *slot = value.max(0.0);
+        }
+    }
     for (slot, offset) in p.noise_wind_directions.iter_mut().zip([84, 88, 92]) {
         if let Some(degrees) = read_f32_at(data, offset) {
             *slot = degrees.to_radians();
@@ -1055,6 +1062,12 @@ fn decode_dnam_starfield(data: &[u8]) -> WaterParams {
         if let Some(value) = read_f32_at(data, offset) {
             *slot = normalize_noise_uv_scale(value);
         }
+    }
+    // Starfield stores one falloff per authored noise layer. The compact
+    // renderer uses the first layer's value as the shared distance fade;
+    // vanilla records use the same 300-unit default across the three.
+    if let Some(value) = read_f32_at(data, 132) {
+        p.noise_falloff = value.max(0.0);
     }
     // The post-noise fields are shared by Starfield's flow-map and surface
     // controls, not Skyrim's depth-response block.
@@ -1723,10 +1736,14 @@ mod tests {
         data[48..52].copy_from_slice(&0.45f32.to_le_bytes());
         data[64..68].copy_from_slice(&0.25f32.to_le_bytes());
         data[68..72].copy_from_slice(&0.5f32.to_le_bytes());
+        data[72..76].copy_from_slice(&0.985f32.to_le_bytes());
+        data[76..80].copy_from_slice(&10.0f32.to_le_bytes());
+        data[80..84].copy_from_slice(&0.05f32.to_le_bytes());
         data[84..88].copy_from_slice(&90.0f32.to_le_bytes());
         data[96..100].copy_from_slice(&0.02f32.to_le_bytes());
         data[108..112].copy_from_slice(&0.8f32.to_le_bytes());
         data[120..124].copy_from_slice(&200.0f32.to_le_bytes());
+        data[132..136].copy_from_slice(&300.0f32.to_le_bytes());
         data[144..148].copy_from_slice(&3.0f32.to_le_bytes());
         data[148..152].copy_from_slice(&0.5f32.to_le_bytes());
         let w = parse_watr(0x1234, &[sub(b"DNAM", &data)], GameKind::Starfield);
@@ -1739,6 +1756,8 @@ mod tests {
         assert_eq!(w.params.normal_magnitude, 0.45);
         assert_eq!(w.params.wave_amplitude, 0.25);
         assert_eq!(w.params.wave_frequency, 0.5);
+        assert_eq!(w.params.displacement, [0.05, 0.985, 10.0]);
+        assert_eq!(w.params.noise_falloff, 300.0);
         assert_eq!(w.params.wind_direction, 90.0f32.to_radians());
         assert_eq!(w.params.wind_speed, 0.02);
         assert_eq!(w.params.noise_amplitude_scales[0], 0.8);
