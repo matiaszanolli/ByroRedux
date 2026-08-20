@@ -343,9 +343,9 @@ water does not reintroduce the exterior physics freeze. The kinematic
 `CharacterController` now samples the same authored water AABBs: gravity is
 replaced by bounded buoyancy while the capsule overlaps a volume, the jump
 action becomes a capped swim stroke, and horizontal flow contributes a
-fractional current drift. Drowning, localized surface spray, and transient
-splash/ripple markers are live; concrete audio consumption, water-walking,
-freezing, and underwater audio remain open.
+fractional current drift. Drowning, localized surface spray, transient
+splash/ripple markers, and listener-scoped underwater low-pass audio are live;
+water-walking and freezing remain open.
 
 ---
 

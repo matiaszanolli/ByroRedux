@@ -121,6 +121,7 @@ use byroredux_core::ecs::storage::{Component, EntityId};
 use byroredux_core::ecs::world::World;
 use byroredux_core::ecs::Resource;
 use glam::Vec3;
+use kira::effect::filter::{FilterBuilder, FilterHandle, FilterMode};
 use kira::effect::reverb::ReverbBuilder;
 use kira::listener::ListenerHandle;
 use kira::sound::static_sound::{StaticSoundData, StaticSoundHandle};
@@ -136,6 +137,8 @@ use std::time::Duration;
 /// Silence floor in decibels for the linear→dB conversion — clamps
 /// non-positive / near-zero amplitudes so `log10` doesn't blow up.
 const SILENCE_DB: f32 = -60.0;
+const UNDERWATER_CUTOFF_HZ: f64 = 900.0;
+const ABOVE_WATER_CUTOFF_HZ: f64 = 20_000.0;
 
 /// Convert a linear gameplay volume (1.0 = "as authored", 0.5 = half-loud)
 /// to the decibel gain kira reasons in: `db = 20·log10(amplitude)`, clamped
@@ -215,6 +218,10 @@ struct ActiveSound {
     entity: Option<EntityId>,
     handle: StaticSoundHandle,
     _track: SpatialTrackHandle,
+    /// Low-pass control kept with the spatial track so water transitions can
+    /// be applied to sounds that are already playing.
+    underwater_filter: FilterHandle,
+    underwater: bool,
     /// Fade-out duration captured from `AudioEmitter.unload_fade_ms` at
     /// dispatch time. Read by `prune_stopped_sounds` when the source
     /// entity loses its emitter component (cell unload). Applies to
@@ -298,6 +305,9 @@ pub struct AudioWorld {
     /// per-frame log spam during third-person camera transitions or
     /// fly-cam swaps where two listener entities briefly coexist.
     multi_listener_warned: bool,
+    /// Whether the active listener is head-submerged. The engine water
+    /// system updates this before `audio_system` dispatches new sounds.
+    underwater: bool,
 }
 
 impl Default for AudioWorld {
@@ -371,6 +381,7 @@ impl AudioWorld {
             listener: None,
             manager,
             multi_listener_warned: false,
+            underwater: false,
         }
     }
 
@@ -549,6 +560,18 @@ impl AudioWorld {
     pub fn reverb_send_db(&self) -> f32 {
         self.reverb_send_db
     }
+
+    /// Update the listener's water state. The next audio tick applies a
+    /// short low-pass transition to every active spatial sound and uses the
+    /// same cutoff for newly-dispatched sounds.
+    pub fn set_underwater(&mut self, underwater: bool) {
+        self.underwater = underwater;
+    }
+
+    /// Current listener water state, exposed for diagnostics and tests.
+    pub fn underwater(&self) -> bool {
+        self.underwater
+    }
 }
 
 impl Resource for AudioWorld {}
@@ -700,9 +723,27 @@ pub fn audio_system(world: &World, _dt: f32) {
     }
 
     sync_listener_pose(world, &mut audio_world);
+    update_underwater_filters(&mut audio_world);
     drain_pending_oneshots(&mut audio_world);
     dispatch_new_oneshots(world, &mut audio_world);
     prune_stopped_sounds(world, &mut audio_world);
+}
+
+fn update_underwater_filters(audio_world: &mut AudioWorld) {
+    let cutoff = if audio_world.underwater {
+        UNDERWATER_CUTOFF_HZ
+    } else {
+        ABOVE_WATER_CUTOFF_HZ
+    };
+    for active in &mut audio_world.active_sounds {
+        if active.underwater == audio_world.underwater {
+            continue;
+        }
+        active
+            .underwater_filter
+            .set_cutoff(cutoff, Tween::default());
+        active.underwater = audio_world.underwater;
+    }
 }
 
 /// Find the (first) `AudioListener` entity in the world, read its
@@ -830,6 +871,18 @@ fn drain_pending_oneshots(audio_world: &mut AudioWorld) {
             audio_world.reverb_send.as_ref(),
             audio_world.reverb_send_db,
         );
+        let mut track_builder = track_builder;
+        let underwater = audio_world.underwater;
+        let cutoff = if underwater {
+            UNDERWATER_CUTOFF_HZ
+        } else {
+            ABOVE_WATER_CUTOFF_HZ
+        };
+        let underwater_filter = track_builder.add_effect(
+            FilterBuilder::new()
+                .mode(FilterMode::LowPass)
+                .cutoff(cutoff),
+        );
         let mut track = match mgr.add_spatial_sub_track(listener_id, p.position, track_builder) {
             Ok(t) => t,
             Err(e) => {
@@ -850,6 +903,8 @@ fn drain_pending_oneshots(audio_world: &mut AudioWorld) {
             entity: None,
             handle,
             _track: track,
+            underwater_filter,
+            underwater,
             // Queue-driven sounds have `entity == None` — they're
             // intentionally decoupled from despawn coupling (no
             // entity, no cell unload to truncate against), so the
@@ -953,6 +1008,18 @@ fn dispatch_new_oneshots(world: &World, audio_world: &mut AudioWorld) {
             audio_world.reverb_send.as_ref(),
             audio_world.reverb_send_db,
         );
+        let mut track_builder = track_builder;
+        let underwater = audio_world.underwater;
+        let cutoff = if underwater {
+            UNDERWATER_CUTOFF_HZ
+        } else {
+            ABOVE_WATER_CUTOFF_HZ
+        };
+        let underwater_filter = track_builder.add_effect(
+            FilterBuilder::new()
+                .mode(FilterMode::LowPass)
+                .cutoff(cutoff),
+        );
         let mut track = match mgr.add_spatial_sub_track(listener_id, p.position, track_builder) {
             Ok(t) => t,
             Err(e) => {
@@ -994,6 +1061,8 @@ fn dispatch_new_oneshots(world: &World, audio_world: &mut AudioWorld) {
             entity: Some(p.entity),
             handle,
             _track: track,
+            underwater_filter,
+            underwater,
             unload_fade_ms: p.unload_fade_ms,
             stop_issued: false,
         });

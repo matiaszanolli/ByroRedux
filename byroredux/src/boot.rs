@@ -1349,6 +1349,8 @@ pub(crate) fn build_scheduler() -> Scheduler {
         Access::new()
             .reads_resource::<crate::components::WaterAudioConfig>()
             .writes_resource::<crate::components::WaterAudioState>()
+            .reads_resource::<ActiveCamera>()
+            .reads::<byroredux_core::ecs::components::water::SubmersionState>()
             .reads::<byroredux_scripting::SplashEvent>()
             .reads::<byroredux_scripting::RippleEvent>()
             .writes_resource::<byroredux_audio::AudioWorld>(),

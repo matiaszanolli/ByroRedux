@@ -1,6 +1,7 @@
 //! Audio routing systems — reverb zones, footstep emitters.
 
-use byroredux_core::ecs::{GlobalTransform, World};
+use byroredux_core::ecs::components::water::SubmersionState;
+use byroredux_core::ecs::{ActiveCamera, GlobalTransform, World};
 use byroredux_core::math::Vec3;
 use byroredux_scripting::{RippleEvent, SplashEvent};
 
@@ -206,6 +207,23 @@ pub(crate) fn footstep_system(world: &World, _dt: f32) {
 /// only the edge-triggered splash is audible, preventing a looping sound on
 /// every frame an actor remains near the surface.
 pub(crate) fn water_audio_system(world: &World, dt: f32) {
+    // Keep the audio filter state in lockstep with the camera submersion
+    // result, even on frames with no splash/ripple event. `audio_system`
+    // runs immediately after this adapter in Late and applies the tween to
+    // both existing and newly-created spatial tracks.
+    let head_submerged = world
+        .try_resource::<ActiveCamera>()
+        .and_then(|active| {
+            world
+                .query::<SubmersionState>()
+                .and_then(|states| states.get(active.0).copied())
+                .map(|state| state.head_submerged)
+        })
+        .unwrap_or(false);
+    if let Some(mut audio_world) = world.try_resource_mut::<byroredux_audio::AudioWorld>() {
+        audio_world.set_underwater(head_submerged);
+    }
+
     let Some(config) = world.try_resource::<crate::components::WaterAudioConfig>() else {
         return;
     };

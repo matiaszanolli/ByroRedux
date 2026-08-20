@@ -395,6 +395,7 @@ fn audio_system_no_op_when_audio_world_inactive() {
         listener: None,
         manager: None,
         multi_listener_warned: false,
+        underwater: false,
     };
     world.insert_resource(inactive);
 
@@ -459,11 +460,22 @@ fn set_reverb_send_db_persists() {
         listener: None,
         manager: None,
         multi_listener_warned: false,
+        underwater: false,
     };
     world.set_reverb_send_db(-12.0);
     assert!((world.reverb_send_db() - (-12.0)).abs() < 1e-6);
     world.set_reverb_send_db(f32::NEG_INFINITY);
     assert!(world.reverb_send_db().is_infinite());
+}
+
+#[test]
+fn underwater_listener_state_persists() {
+    let mut world = AudioWorld::new();
+    assert!(!world.underwater());
+    world.set_underwater(true);
+    assert!(world.underwater());
+    world.set_underwater(false);
+    assert!(!world.underwater());
 }
 
 /// **Phase 5**: `play_music` and `stop_music` are no-ops when
@@ -485,6 +497,7 @@ fn play_music_no_op_when_inactive() {
         listener: None,
         manager: None,
         multi_listener_warned: false,
+        underwater: false,
     };
     assert!(!audio_world.is_music_active());
     audio_world.stop_music(0.5); // No-op on no-music + no-manager.
@@ -779,6 +792,7 @@ fn play_oneshot_drops_when_manager_inactive() {
         listener: None,
         manager: None,
         multi_listener_warned: false,
+        underwater: false,
     };
     let sound = Arc::new(StaticSoundData {
         sample_rate: 22_050,
@@ -847,6 +861,7 @@ fn play_oneshot_queue_caps_at_max_pending_when_active() {
         listener: None,
         manager: Some(manager),
         multi_listener_warned: false,
+        underwater: false,
     };
     let sound = Arc::new(StaticSoundData {
         sample_rate: 22_050,
