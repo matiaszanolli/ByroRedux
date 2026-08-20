@@ -95,7 +95,11 @@ pub(super) fn reemit_water_planes(
     let gust = weather_wind.speed
         + weather_wind.gust_amplitude
             * (time_secs * weather_wind.gust_frequency * std::f32::consts::TAU).sin();
-    let gust = if gust.is_finite() { gust } else { 0.0 };
+    // SpeedTree treats a negative instantaneous gust as calm weather by
+    // clamping its bend strength to zero. Keep water's UV drift on that same
+    // one-sided magnitude contract; otherwise a gust trough briefly reverses
+    // the surface while vegetation has stopped responding.
+    let gust = if gust.is_finite() { gust.max(0.0) } else { 0.0 };
     // SpeedTree sway treats the field as a direction, not a magnitude. Keep
     // water's weather scroll on that same contract so a hand-authored or
     // malformed resource cannot make water travel faster than the foliage it
@@ -120,7 +124,7 @@ pub(super) fn reemit_water_planes(
     // the strongest weather so calm water remains calm and storm water gains
     // a visible silhouette response without runaway displacement.
     const MAX_WEATHER_WIND_SPEED: f32 = 220.0;
-    let wind_wave_scale = 1.0 + (gust.max(0.0) / MAX_WEATHER_WIND_SPEED).clamp(0.0, 1.0) * 0.5;
+    let wind_wave_scale = 1.0 + (gust / MAX_WEATHER_WIND_SPEED).clamp(0.0, 1.0) * 0.5;
     const WEATHER_WATER_SCROLL_PER_BU_PER_S: f32 = 0.0015;
     let weather_scroll = [
         wind_direction[0] * gust * WEATHER_WATER_SCROLL_PER_BU_PER_S,

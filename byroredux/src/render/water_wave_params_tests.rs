@@ -213,6 +213,31 @@ fn weather_wind_reaches_water_scroll_alongside_speedtree_wind_field() {
 }
 
 #[test]
+fn negative_instantaneous_gust_matches_speedtree_calm_clamp() {
+    let mut world = world_with_water_plane(
+        0.05,
+        0.6,
+        50.0,
+        1.0 / 512.0,
+        [1.0; 3],
+        [1.0; 4],
+        [0.0, 0.0, 1.0, 1.0],
+    );
+    let calm = run_build(&world);
+    world.insert_resource(TotalTime(1.0));
+    world.insert_resource(WindField {
+        direction: [1.0, 0.0],
+        speed: 0.0,
+        gust_amplitude: -100.0,
+        gust_frequency: 0.25,
+    });
+
+    let trough = run_build(&world);
+    assert_eq!(trough[0].params.scroll, calm[0].params.scroll);
+    assert_eq!(trough[0].params.tune[3], calm[0].params.tune[3]);
+}
+
+#[test]
 fn non_unit_weather_direction_is_normalized_for_water_scroll() {
     let mut world = world_with_water_plane(
         0.05,
