@@ -68,10 +68,11 @@ const DEFAULT_INTERIOR_VOLUME_DEPTH: f32 = 200.0;
 /// Full-detail water needs enough vertices for the authored vertex waves to
 /// affect the silhouette. A four-vertex quad turns the whole 256–4096 wu
 /// surface into one broad saddle, so the displacement is effectively absent
-/// at the shoreline. Eight cells per side keeps the near-water mesh cheap
-/// (81 vertices / 128 triangles) while putting a vertex every 1/8 of the
-/// plane extent; the fragment normal path still supplies the fine ripples.
-const FULL_DETAIL_WATER_GRID_SEGMENTS: usize = 8;
+/// at the shoreline. Sixteen cells per side puts a vertex every 256 world
+/// units across a 4096-unit exterior cell, avoiding the visible 512-unit
+/// wave facets of the former 8×8 grid while keeping the mesh bounded; the
+/// fragment normal path still supplies the fine ripples.
+const FULL_DETAIL_WATER_GRID_SEGMENTS: usize = 16;
 
 /// Derive a conservative horizontal placement for an interior water plane
 /// from the cell's authored REFR positions. Interior references are stored in
