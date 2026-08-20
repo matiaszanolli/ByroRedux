@@ -73,52 +73,72 @@ graphics+compute queue. Pass ordering is inside
 [`vulkan/context/draw.rs`](../../crates/renderer/src/vulkan/context/draw.rs).
 
 ```
-1  skin_palette.comp    ─┐ compute
-2  skin_vertices.comp   ─┘ skinned BLAS input ready
-3  AccelerationManager   ─  BLAS rebuild / refit + TLAS build
-4  cluster_cull.comp     ─  per-froxel light lists (cluster grid +
+1  collect_image_health  ─  CPU readback (#2740 / REN-D4-04): harvest this
+   [host, no cmds]          frame-in-flight slot's image-health counters
+                           from its PRIOR use (MAX_FRAMES_IN_FLIGHT == 2
+                           frames ago), then reset them for reuse. Runs
+                           once, right after the per-slot fence wait, before
+                           any command below is recorded. The counters are
+                           WRITTEN continuously by step 20 (presentation.frag's
+                           isnan/isinf check) during that prior frame — there
+                           is no separate GPU "write" step of its own.
+2  skin_palette.comp    ─┐ compute
+3  skin_vertices.comp   ─┘ skinned BLAS input ready
+4  AccelerationManager   ─  BLAS rebuild / refit + TLAS build
+5  cluster_cull.comp     ─  per-froxel light lists (cluster grid +
                            light-index list); consumed by both the
                            triangle.frag fragment shader AND
                            volumetrics_inject (same per-frame buffers,
                            #977eb95a)
-5  [Main render pass]   ─  raster (BEGIN → END):
+6  [Main render pass]   ─  raster (BEGIN → END):
      triangle.vert / .frag  geometry + RT ray-queries
      water.vert / .frag     water + caustic imageAtomicAdd
-6  [Barrier]               SHADER_READ_ONLY_OPTIMAL on all G-buffer attachments
-7  [Barrier]               caustic accum atomic-add → SHADER_READ
-8  svgf_temporal.comp   ─  temporal denoiser (indirect lighting)
-9  svgf_atrous.comp ×3  ─  à-trous spatial denoiser (ATROUS_ITERATIONS),
+7  copy_depth_to_history ─  [TRANSFER] snapshot this frame's opaque depth into
+                           the sampleable depth-history image, for next
+                           frame's soft-particle fade. Two depth-image layout
+                           transitions (READ_ONLY → TRANSFER_SRC → READ_ONLY
+                           restored after the copy); history image mirrors
+                           SHADER_READ_ONLY → TRANSFER_DST → SHADER_READ_ONLY.
+8  [Barrier]               SHADER_READ_ONLY_OPTIMAL on all G-buffer attachments
+9  [Barrier]               caustic accum atomic-add → SHADER_READ
+10 svgf_temporal.comp   ─  temporal denoiser (indirect lighting)
+11 svgf_atrous.comp ×3  ─  à-trous spatial denoiser (ATROUS_ITERATIONS),
    [COMPUTE→COMPUTE]        ping-pong slots gated each iteration by a
                            COMPUTE→COMPUTE barrier; final (odd count → slot 0)
                            is what composite samples via indirect_view(frame)
-10 caustic_splat.comp   ─  caustic scatter
-11 volumetrics_inject   ─┐ froxel grid (gated: VOLUMETRIC_OUTPUT_CONSUMED);
+12 caustic_splat.comp   ─  caustic scatter
+13 volumetrics_inject   ─┐ froxel grid (gated: VOLUMETRIC_OUTPUT_CONSUMED);
                            reads cluster_cull's cluster grid + light-index
-                           list from step 4
-12 volumetrics_integrate ─┘
-13 taa.comp              ─  TAA resolve
-14 ssao.comp             ─  SSAO texture
-15 bloom_downsample ×N   ─┐ bloom pyramid
+                           list from step 5
+14 volumetrics_integrate ─┘
+15 taa.comp              ─  TAA resolve
+16 ssao.comp             ─  SSAO texture
+17 bloom_downsample ×N   ─┐ bloom pyramid
    bloom_upsample   ×N   ─┘
-16 [Composite render pass]─ raster:
+18 [Composite render pass]─ raster:
      composite.vert / .frag  HDR combine → intermediate HDR image
                            (`R16G16B16A16_SFLOAT`, `SHADER_READ_ONLY_OPTIMAL`;
                            no tone-map, does NOT write the swapchain)
-17 frame_upscaler.record  ─  FSR 3.1 SDK dispatch (Quality preset default) or
+19 frame_upscaler.record  ─  FSR 3.1 SDK dispatch (Quality preset default) or
                            native-blit fallback (`--upscaler taa`) — render-
                            resolution HDR → output-resolution HDR. Raw
                            correctness debug views force the native path.
-18 [Presentation pass]    ─  raster: composite.vert / presentation.frag —
+20 [Presentation pass]    ─  raster: composite.vert / presentation.frag —
                            exposure + ACES tone-map + underwater extinction,
-                           writes the swapchain (`PRESENT_SRC_KHR`). Raw debug
-                           views bypass these look transforms.
-19 [Egui render pass]    ─  egui overlay (blended on swapchain)
-20 [Screenshot copy]     ─  transfer blit → staging buffer (if requested)
-21 Queue submit
-22 Present
+                           writes the swapchain (`PRESENT_SRC_KHR`). Also
+                           where step 1's image-health counters get WRITTEN:
+                           an isnan/isinf check on the pre-tonemap linear HDR
+                           value, atomicAdd'd into the `ImageHealth` SSBO this
+                           same frame-in-flight slot's step 1 will harvest,
+                           two frames from now. Raw debug views bypass the
+                           look transforms but not this check.
+21 [Egui render pass]    ─  egui overlay (blended on swapchain)
+22 [Screenshot copy]     ─  transfer blit → staging buffer (if requested)
+23 Queue submit
+24 Present
 ```
 
-Steps 17–18 are the FSR 3.1 tail added 2026-07-22→24 (`crates/fsr3-sys`,
+Steps 19–20 are the FSR 3.1 tail added 2026-07-22→24 (`crates/fsr3-sys`,
 `vulkan/frame_upscaler.rs`, `vulkan/presentation.rs`, `vulkan/exposure.rs`);
 the split moves ACES tone-mapping out of `composite.frag` (which now emits
 un-tonemapped linear HDR) and into `presentation.frag`, which runs at output
@@ -155,6 +175,16 @@ After `vkCmdEndRenderPass` all attachments transition to `SHADER_READ_ONLY_OPTIM
 > 31), so they keep the sorted index in the low bits — `caustic_splat.comp`
 > consumes it to index the current-frame instance SSBO. `0` remains the
 > clear/background value. See `triangle.frag`'s `stableSurfaceId` block.
+
+> **`depth_history_image` isn't one of the nine attachments above.** It's a
+> separate, single (not per-FIF-double-buffered) `D32_SFLOAT` image, same
+> extent as Depth, `SAMPLED | TRANSFER_DST`. It isn't written by the render
+> pass at all — step 7 (`copy_depth_to_history`) populates it via an
+> explicit `vkCmdCopyImage` right after the render pass ends, so next
+> frame's effect-shader soft-particle fade can sample the *previous*
+> frame's opaque depth while this frame's own Depth attachment is bound
+> and unsampleable. See `copy_depth_to_history`'s doc comment
+> (`vulkan/context/post_passes.rs`).
 
 ---
 
