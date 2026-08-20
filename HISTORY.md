@@ -24,6 +24,93 @@ Commits hold that record.
 
 ---
 
+## Session 70 — WATAL reaches near-complete per-game coverage, CHARAL's wiring gap closes, and two exterior-streaming ownership audits  (2026-08-18 → 2026-08-20, `82904bed..1a428278`, 284 commits)
+
+This is a large, multi-track close spanning several days and, for long
+stretches, more than one concurrent working session — the commit volume alone
+(284, versus the usual few dozen) reflects that. By far the dominant thread is
+WATAL: what began the session as a partially-wired water pipeline ended it
+with legacy per-game translation, current/flow physics, buoyancy/damage, and
+gameplay contact events built out across essentially the full game roster.
+Running alongside it: CHARAL's own audit-flagged wiring gap (docs/audits/AUDIT_CHARACTER_2026-08-15.md's
+"~60% of shipped CHARAL is runtime-dead" finding) closed for the games it
+named, PACKAL landed its first two ambient-AI package slices, a long tail of
+individually-filed NIF/ESM parser-correctness issues drained, and two
+exterior-streaming ownership/coverage audits extended the EX-10/11/14/15 LOD
+and precombine work from earlier sessions.
+
+- **WATAL — water subsystem near-complete build-out.** Legacy per-game WATR
+  translation across Oblivion, FO3, FNV, Skyrim, FO4, FO76, and Starfield
+  (rain damping/velocity/ripple size, specular radius/brightness/sparkle,
+  displacement simulators, noise falloff, oceanness scattering, absorption
+  ranges); current/flow physics (rapids projected onto XZ, cell-authored
+  current velocities, atmospheric wind on floating bodies, flowmap scale);
+  full-detail and distant-LOD wave tessellation with shared-wind-driven
+  displacement; buoyancy/damage/drowning with audio filtering while
+  submerged; splash/ripple gameplay events routed to the strongest
+  overlapping surface; caustic transport with top-side-normal correctness;
+  underwater fog and bounded sun shafts; and mesh-based water as its own
+  dedicated pass (physics volumes, normal maps, optical-flag translation,
+  legacy-shader routing across game generations). The vertex/fragment shader
+  side changed with it — the vertex water ABI itself, a third authored
+  material layer's velocity/normal blending, degenerate mesh tangent/foam-flow
+  frame stabilization — landing #2371's precombine/VWD-audit work (below) in
+  the same window as this shader churn without touching it.
+- **CHARAL wiring sweep.** Closed the Session 67 audit's "~60% of shipped
+  CHARAL is runtime-dead" finding for the games it named: FO3's leveling
+  model no longer shadowed by FNV's (`#2941`), NPC_ Use Stats/Use Traits
+  template inheritance resolved (`#2956`), every ruleset builder validated
+  against a real master's AVIF (`#3095`), FO3/FNV resistance formulas floored
+  at zero and Action Points' player-only scope flagged unsourced (`#2939`,
+  `#2937`), perk ranks range-checked and ghost `set_rank(0)` entries rejected
+  (`#2944`), combat.rs/stealth.rs brought into the audit's declared scope and
+  wired to CHARAL's Melee Damage row (`#2962`, `#3092`), HitEvent::blocked
+  wired to the aggressor's held Block action (`#2976`), and unsaved XP
+  accumulation now aborts the save loudly rather than silently (`#2947`).
+- **PACKAL — Skyrim+ ambient AI execution gap.** Proposed
+  (`d8b37b25`, scoped against a real Skyrim+ ambient-shape survey,
+  `ac7cfe8f`) then landed its first two slices: ambient Sandbox
+  (`14a80fe8`) and ambient Patrol (`8a71d87a`).
+- **Exterior streaming — two ownership/coverage audits (EX-10/11/14/15).**
+  `#2371`: live LOD residency coverage (overlap / full-detail overlap /
+  churn, `235c787c`) and a live audit of the EXAL §5.2 VWD-culling
+  invariant reusing that same overlap logic (`2a84ab97`) — both read clean
+  on real Skyrim data and are wired into `m-exteriors.sh`'s hard gate.
+  `#2369`: precombine geometry got its own `world.owners` reclaim class
+  (`78f190a3`), distinguishing a precombine-specific leak from the generic
+  `cell_root_rows` aggregate.
+- **NIF/ESM parser correctness — a long individually-filed tail.** FO3
+  BSShaderProperty.shader_type capture (`#2320`), the fo3nv_f1 bit-22
+  Tree_Billboard/Own_Emit mixup (`#2319`), NiBlendFloatInterpolator followed
+  in emitter-rate extraction (`#2548`), bhkRigidBody's non-collidable Havok
+  layer honored (`#2549`), the controller `until=10.1.0.103` Data ref read
+  across 9 controller types (`#2562`/`#2563`), FO4 FaceTint's cubemap/
+  wrinkle-map slots (`#2999`), the full BGSM/BGEM texture-role set forwarded
+  through material fill (`#2594`, `#2601`, `#2627`, `#2626`, `#2622`),
+  `NifImportRegistry` key normalization unified across loaders (`#3038`),
+  QUST given a multi-type dialogue/scene walker (`#2908`), REFR XLOC parsed
+  and activation gated on lock state (`#3098`), authored weapon reach/speed
+  given a canonical landing site (`#3096`), and terrain/water tangent
+  orthogonalization corrected for degenerate Z-up frames.
+- **Save/plugin/renderer hardening.** Persistence made "truthful and
+  player-facing" (`8a56a2b6`), ESM schema/localization fidelity preserved
+  (`a05b2c2e`), CELL identity/overrides preserved across masters (`3ac08105`),
+  FO4 item schemas decoded (`0a220b68`), and a temporal/GPU-resource-contract
+  hardening pass across TAA/SVGF and the acceleration structures
+  (`506fcfe4`).
+
+Net: tests 5303 → **5602 passing** (+299), 0 failing, 159 ignored (was 143).
+Rust source lines ~396 037 → **~413 277** (+17 240); total ~422 794 →
+**~441 249** (+18 455). Open issue directories 2963 → 2972. The FSR
+bench-of-record (`34074b93`) is now 369 commits stale — the R6a-stale-20
+tracker's fifth fold, driven almost entirely by the WATAL shader rewrite
+above; see [Known Issues](ROADMAP.md#known-issues) for the harness-still-valid
+re-run recommendation. Two advisory audit-skill symbol references
+(`enhancement`, `prod_loc`) were italicized rather than backticked, per the
+skill-drift gate's own resolution rule — no path drift found.
+
+---
+
 ## Session 69 — a transported combustion solver, and the nine boundary fixes that cleared the way  (2026-08-17 → 2026-08-18, `e3986e38..348f4cd0`, 34 commits)
 
 Session 68 gave `GpuFogVolume` three fog profiles and gave explosions a
