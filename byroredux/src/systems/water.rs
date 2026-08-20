@@ -273,11 +273,14 @@ pub(crate) fn submersion_system(world: &World, _dt: f32) {
 }
 
 /// Pack the active camera's submersion state into the
-/// `[deep_color.rgb, extinction]` vec4 the renderer consumes as
+/// `[underwater_color.rgb, extinction]` vec4 the renderer consumes as
 /// underwater fog parameters. Extinction is evaluated from the authored
 /// water fog range, so each game's WATR material controls its underwater
-/// transition rather than a presentation-time fixed distance. Returns `[0; 4]` when the camera is
-/// out of water (or no active camera). Moved out of `main.rs`
+/// transition rather than a presentation-time fixed distance. Starfield's
+/// non-zero per-channel absorption ranges additionally attenuate the target
+/// tint with Beer–Lambert transmission; the zero triplet preserves the
+/// legacy path exactly. Returns `[0; 4]` when the camera is out of water (or
+/// no active camera). Moved out of `main.rs`
 /// under TD9-NEW-01 / #1267 to keep the binary entry file below
 /// the 2000-LOC ceiling.
 pub fn compute_underwater_params(world: &World) -> [f32; 4] {
@@ -304,12 +307,47 @@ pub fn compute_underwater_params(world: &World) -> [f32; 4] {
     };
     let extinction = underwater_extinction(state.depth, fog_near, fog_far)
         * mat.underwater_fog_amount.clamp(0.0, 8.0);
+    let underwater_color = underwater_color_at_depth(
+        mat.underwater_color,
+        state.depth,
+        fog_near,
+        mat.absorption_ranges,
+    );
     [
-        mat.underwater_color[0],
-        mat.underwater_color[1],
-        mat.underwater_color[2],
+        underwater_color[0],
+        underwater_color[1],
+        underwater_color[2],
         extinction,
     ]
+}
+
+/// Apply authored Starfield color-absorption ranges to the underwater target
+/// tint. A zero triplet is the legacy sentinel and must remain an exact no-op.
+/// Ranges are 1/e distances, so the physically meaningful response is
+/// `exp(-distance / range)` per channel. The near fog plane is clear by
+/// definition and therefore does not contribute to this optical path.
+#[inline]
+fn underwater_color_at_depth(
+    color: [f32; 3],
+    depth: f32,
+    fog_near: f32,
+    absorption_ranges: [f32; 3],
+) -> [f32; 3] {
+    if !absorption_ranges
+        .iter()
+        .any(|range| range.is_finite() && *range > 0.0)
+    {
+        return color;
+    }
+    let optical_depth = (depth - fog_near).max(0.0);
+    std::array::from_fn(|index| {
+        let range = absorption_ranges[index];
+        if range.is_finite() && range > 0.0 {
+            (color[index] * (-optical_depth / range).exp()).clamp(0.0, 1.0)
+        } else {
+            color[index]
+        }
+    })
 }
 
 #[inline]
@@ -322,8 +360,8 @@ fn underwater_extinction(depth: f32, fog_near: f32, fog_far: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        disturbance_rate, resolve_head_submerged, submersion_system, underwater_extinction,
-        DISTURBANCE_BAND, DISTURBANCE_RADIUS, WATERLINE_HYSTERESIS,
+        disturbance_rate, resolve_head_submerged, submersion_system, underwater_color_at_depth,
+        underwater_extinction, DISTURBANCE_BAND, DISTURBANCE_RADIUS, WATERLINE_HYSTERESIS,
     };
     use byroredux_core::ecs::components::water::{
         SubmersionState, WaterKind, WaterMaterial, WaterPlane, WaterVolume,
@@ -345,6 +383,24 @@ mod tests {
             "shorter authored fog range should absorb faster"
         );
         assert!(underwater_extinction(600.0, 80.0, 600.0) > 0.8);
+    }
+
+    #[test]
+    fn zero_absorption_ranges_preserve_legacy_underwater_tint() {
+        let color = [0.2, 0.4, 0.8];
+        assert_eq!(
+            underwater_color_at_depth(color, 500.0, 0.0, [0.0; 3]),
+            color
+        );
+    }
+
+    #[test]
+    fn starfield_absorption_attenuates_channels_independently_after_near_plane() {
+        let color = [1.0, 1.0, 1.0];
+        let result = underwater_color_at_depth(color, 20.0, 10.0, [10.0, 20.0, 40.0]);
+        assert!((result[0] - (-1.0f32).exp()).abs() < 1.0e-6);
+        assert!((result[1] - (-0.5f32).exp()).abs() < 1.0e-6);
+        assert!((result[2] - (-0.25f32).exp()).abs() < 1.0e-6);
     }
 
     #[test]
