@@ -328,11 +328,12 @@ sets being available.
 
 `cell_loader/water.rs` spawns one tessellated plane per cell (interior: a
 bounded reference-derived center and horizontal extent with a 256-unit minimum;
-exterior: LAND-height-masked 4096-unit tile). Per-game default height via
+exterior: LAND-height-clipped 4096-unit tile). Per-game default height via
 `default_water_for_worldspace`. Exterior LAND samples now suppress fully dry
-triangles, split disconnected wet regions into matching physics volumes, and
-give coarse shoreline coverage without inventing a polygon absent from the
-cell format. **Gaps:** one render plane per cell still cannot represent
+triangles, clip mixed shoreline cells at the interpolated XCLW crossing, split
+disconnected wet regions into matching physics volumes, and give shoreline
+coverage without inventing a polygon absent from the cell format. **Gaps:** one
+render plane per cell still cannot represent
 multiple independent bodies at different heights, and rivers spanning cells
 still need authored continuity.
 

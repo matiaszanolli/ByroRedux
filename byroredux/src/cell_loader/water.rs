@@ -128,69 +128,127 @@ fn build_full_detail_water_grid(
 ) -> (Vec<Vertex>, Vec<u32>) {
     let segments = FULL_DETAIL_WATER_GRID_SEGMENTS;
     let side = segments + 1;
-    let mut vertices = Vec::with_capacity(side * side);
-    for row in 0..=segments {
-        let z = row as f32 / segments as f32 * 2.0 - 1.0;
-        for col in 0..=segments {
-            let x = col as f32 / segments as f32 * 2.0 - 1.0;
-            vertices.push(Vertex {
-                position: [x, 0.0, z],
-                color: [1.0, 1.0, 1.0, 1.0],
-                normal: [0.0, 1.0, 0.0],
-                // UVs are world-distance based so adjacent cells keep the
-                // same normal-map derivative and wave phase.
-                uv: [x * half_extent, z * half_extent],
-                bone_indices: [0, 0, 0, 0],
-                bone_weights: [0.0, 0.0, 0.0, 0.0],
-                splat_weights_0: [0, 0, 0, 0],
-                splat_weights_1: [0, 0, 0, 0],
-                tangent: [1.0, 0.0, 0.0, -1.0],
-            });
-        }
-    }
+    let vertex = |x: f32, z: f32| Vertex {
+        position: [x, 0.0, z],
+        color: [1.0, 1.0, 1.0, 1.0],
+        normal: [0.0, 1.0, 0.0],
+        // UVs are world-distance based so adjacent cells keep the same
+        // normal-map derivative and wave phase.
+        uv: [x * half_extent, z * half_extent],
+        bone_indices: [0, 0, 0, 0],
+        bone_weights: [0.0, 0.0, 0.0, 0.0],
+        splat_weights_0: [0, 0, 0, 0],
+        splat_weights_1: [0, 0, 0, 0],
+        tangent: [1.0, 0.0, 0.0, -1.0],
+    };
 
+    // Keep the regular shared grid for interiors and for callers without a
+    // valid LAND height field. Exterior shoreline cells use the clipped path
+    // below, where each surviving polygon gets its own vertices.
+    let mut vertices = if terrain.is_none() {
+        let mut grid = Vec::with_capacity(side * side);
+        for row in 0..=segments {
+            let z = row as f32 / segments as f32 * 2.0 - 1.0;
+            for col in 0..=segments {
+                let x = col as f32 / segments as f32 * 2.0 - 1.0;
+                grid.push(vertex(x, z));
+            }
+        }
+        grid
+    } else {
+        Vec::with_capacity(segments * segments * 4)
+    };
     let mut indices = Vec::with_capacity(segments * segments * 6);
     for row in 0..segments {
         for col in 0..segments {
-            if let Some(land) = terrain {
-                const LAND_SEGMENTS: usize = 32;
-                let sample = |r: usize, c: usize| {
+            let Some(land) = terrain else {
+                let top_left = (row * side + col) as u32;
+                let top_right = top_left + 1;
+                let bottom_left = top_left + side as u32;
+                let bottom_right = bottom_left + 1;
+                indices.extend_from_slice(&[
+                    top_left,
+                    bottom_left,
+                    top_right,
+                    top_right,
+                    bottom_left,
+                    bottom_right,
+                ]);
+                continue;
+            };
+
+            const LAND_SEGMENTS: usize = 32;
+            let sample = |r: usize, c: usize| {
+                land.heights.get(
                     (r * LAND_SEGMENTS / segments) * (LAND_SEGMENTS + 1)
-                        + c * LAND_SEGMENTS / segments
-                };
-                let i0 = sample(row, col);
-                let i1 = sample(row, col + 1);
-                let i2 = sample(row + 1, col);
-                let i3 = sample(row + 1, col + 1);
-                // LAND is a 33×33 height field. A water triangle whose
-                // corners are all above the authored XCLW surface belongs to
-                // dry terrain; omit it instead of retaining a full-cell
-                // water sheet. Terrain depth testing still handles the
-                // mixed shoreline triangles naturally.
-                if [i0, i1, i2, i3]
-                    .into_iter()
-                    .all(|idx| {
-                        land.heights
-                            .get(idx)
-                            .is_some_and(|height| *height > water_height_zup)
-                    })
-                {
-                    continue;
+                        + c * LAND_SEGMENTS / segments,
+                )
+            };
+            let x0 = col as f32 / segments as f32 * 2.0 - 1.0;
+            let x1 = (col + 1) as f32 / segments as f32 * 2.0 - 1.0;
+            let z0 = row as f32 / segments as f32 * 2.0 - 1.0;
+            let z1 = (row + 1) as f32 / segments as f32 * 2.0 - 1.0;
+            // Polygon order matches the original +Y winding: top-left,
+            // bottom-left, bottom-right, top-right.
+            let corners = [
+                ([x0, z0], sample(row, col)),
+                ([x0, z1], sample(row + 1, col)),
+                ([x1, z1], sample(row + 1, col + 1)),
+                ([x1, z0], sample(row, col + 1)),
+            ];
+            let Some(heights) = corners
+                .iter()
+                .map(|(_, height)| height.copied())
+                .collect::<Option<Vec<f32>>>()
+            else {
+                // A malformed/incomplete LAND payload should not erase a
+                // water surface. Fall back to the conservative full quad.
+                let base = vertices.len() as u32;
+                for (point, _) in corners {
+                    vertices.push(vertex(point[0], point[1]));
+                }
+                indices.extend_from_slice(&[
+                    base,
+                    base + 1,
+                    base + 3,
+                    base + 1,
+                    base + 2,
+                    base + 3,
+                ]);
+                continue;
+            };
+            let mut polygon = Vec::with_capacity(6);
+            for edge in 0..4 {
+                let next = (edge + 1) % 4;
+                let a = corners[edge].0;
+                let b = corners[next].0;
+                let ha = heights[edge];
+                let hb = heights[next];
+                let a_wet = ha <= water_height_zup;
+                let b_wet = hb <= water_height_zup;
+                if a_wet {
+                    polygon.push(a);
+                }
+                if a_wet != b_wet {
+                    let denom = hb - ha;
+                    let t = if denom.abs() > f32::EPSILON {
+                        ((water_height_zup - ha) / denom).clamp(0.0, 1.0)
+                    } else {
+                        0.5
+                    };
+                    polygon.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
                 }
             }
-            let top_left = (row * side + col) as u32;
-            let top_right = top_left + 1;
-            let bottom_left = top_left + side as u32;
-            let bottom_right = bottom_left + 1;
-            // Match the original quad's +Y winding.
-            indices.extend_from_slice(&[
-                top_left,
-                bottom_left,
-                top_right,
-                top_right,
-                bottom_left,
-                bottom_right,
-            ]);
+            if polygon.len() < 3 {
+                continue;
+            }
+            let base = vertices.len() as u32;
+            for point in polygon.iter().copied() {
+                vertices.push(vertex(point[0], point[1]));
+            }
+            for i in 1..polygon.len() - 1 {
+                indices.extend_from_slice(&[base, base + i as u32, base + i as u32 + 1]);
+            }
         }
     }
     (vertices, indices)
@@ -208,8 +266,10 @@ fn terrain_water_components(
     const LAND_SEGMENTS: usize = 32;
     let sample = |r: usize, c: usize| {
         land.heights
-            .get((r * LAND_SEGMENTS / WATER_SEGMENTS) * (LAND_SEGMENTS + 1)
-                + c * LAND_SEGMENTS / WATER_SEGMENTS)
+            .get(
+                (r * LAND_SEGMENTS / WATER_SEGMENTS) * (LAND_SEGMENTS + 1)
+                    + c * LAND_SEGMENTS / WATER_SEGMENTS,
+            )
             .copied()
     };
     let mut wet = vec![false; WATER_SEGMENTS * WATER_SEGMENTS];
@@ -914,8 +974,35 @@ mod tests {
         mixed.heights[16 * 33 + 16] = -100.0;
         let (_, mixed_indices) = build_full_detail_water_grid(2048.0, Some(&mixed), 0.0);
         assert!(!mixed_indices.is_empty());
-        assert!(mixed_indices.len()
-            < FULL_DETAIL_WATER_GRID_SEGMENTS * FULL_DETAIL_WATER_GRID_SEGMENTS * 6);
+        assert!(
+            mixed_indices.len()
+                < FULL_DETAIL_WATER_GRID_SEGMENTS * FULL_DETAIL_WATER_GRID_SEGMENTS * 6
+        );
+    }
+
+    #[test]
+    fn terrain_mask_clips_mixed_cells_at_the_waterline() {
+        let mut land = esm::cell::LandscapeData {
+            heights: vec![100.0; 33 * 33],
+            normals: None,
+            vertex_colors: None,
+            quadrants: Default::default(),
+        };
+        // Only the top-left LAND sample is below XCLW. The first water cell
+        // must therefore be a clipped polygon, not the original full quad.
+        land.heights[0] = -100.0;
+        let (vertices, indices) = build_full_detail_water_grid(2048.0, Some(&land), 0.0);
+        assert!(!indices.is_empty());
+        assert!(vertices.iter().any(|vertex| {
+            (vertex.position[0] + 1.0).abs() < 1.0e-6
+                && (vertex.position[2] + 0.9375).abs() < 1.0e-6
+        }));
+        assert!(vertices.iter().all(|vertex| {
+            vertex.position[0] >= -1.0
+                && vertex.position[0] <= 1.0
+                && vertex.position[2] >= -1.0
+                && vertex.position[2] <= 1.0
+        }));
     }
 
     #[test]
