@@ -643,8 +643,27 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
     } else {
         wd.wind_speed
     };
+    let weather_precipitation = if transition_t > 0.0 {
+        world
+            .try_resource::<WeatherTransitionRes>()
+            .map(|tr| {
+                wd.precipitation
+                    + (tr.target.precipitation - wd.precipitation) * transition_t
+            })
+            .unwrap_or(wd.precipitation)
+    } else {
+        wd.precipitation
+    };
 
     drop(wd);
+
+    // Keep rainfall/snowfall disturbance continuous during a WTHR cross-fade;
+    // the completion path below still promotes the exact target snapshot.
+    if !transition_done {
+        if let Some(mut wd) = world.try_resource_mut::<WeatherDataRes>() {
+            wd.precipitation = weather_precipitation.clamp(0.0, 1.0);
+        }
+    }
 
     // Keep the shared atmospheric wind live during weather transitions. The
     // ground-cover install path seeds this resource when entering a
