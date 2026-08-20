@@ -234,7 +234,7 @@ noise paths are parsed, with Skyrim SE NAM5 promoted to the third layer for
 flowing water, while GNAM's unused daytime/nighttime/underwater water
 links are preserved separately; `raw_data`/`raw_dnam` tails remain available.
 `resolve_water_material`
-(`env_translate.rs:89-176`) captures colors/fog/fresnel/reflectivity/flow.
+(`env_translate.rs:535-807`) captures colors/fog/fresnel/reflectivity/flow.
 Wave amplitude/frequency, reflection tint, and the per-game sun-specular exponent
 now cross the boundary. NAM2/NAM3/NAM4 noise layers and the FO3/FNV long-tail
 noise UV scales now resolve through the bindless water-material contract; FO3/FNV
@@ -286,11 +286,23 @@ shoreline + flow-aligned foam, dual scrolling normal layers, procedural normal
 fallback, underwater fog, water-side caustic splat. Battle-tested across many
 closed bug IDs, correctly RT-gated. The former 128-byte `WaterPush` ceiling is
 removed: authored material records now live in a per-frame, indexed 36 KiB UBO
-(256 records), while a 16-byte push selector chooses the draw's record. Remaining
-fragilities: procedural-noise hash bands past ~176k world units (#1502, visual
-only); waves combine bounded raster-side vertex displacement with fragment normal
-perturbation. Reflection rays now
-shade their material-aware hit and apply the per-WATR tint.
+(256 records), while a 16-byte push selector chooses the draw's record. Waves
+combine bounded raster-side vertex displacement with fragment normal
+perturbation. Reflection rays now shade their material-aware hit and apply the
+per-WATR tint.
+
+**Regression guard, not a remaining fragility:** the procedural-noise hash
+bands past ~176k world units (#1502) are fixed — `sampleScrollingNormal` and
+`foamFlowStreaks` both subtract `originOffset` before hashing, rebased twice
+since as new call sites were added (#1997, #2469). The *textured* normal
+branch stays absolute deliberately, not as a residual bug: it needs a
+seamless wrap at a render-origin crossing, so #2496 bounds its precision by
+subtracting only the texel-integral part of the origin's own UV instead of
+origin-relating it like the procedural branch. Both fixes are guarded only by
+in-shader comments today, not a `cargo test`-visible regression test — a
+future edit that reintroduces absolute-UV hashing in the procedural branch,
+or that makes the textured branch origin-relative and breaks its wrap seam,
+would compile clean and pass every existing test.
 
 ### Physics / gameplay — **dynamic bodies live; character swim core live**
 
