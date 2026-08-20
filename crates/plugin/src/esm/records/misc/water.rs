@@ -170,6 +170,10 @@ pub struct WaterParams {
     /// Skyrim DNAM noise falloff distance. Zero means the source layout did
     /// not author the field and keeps the legacy infinite-noise behavior.
     pub noise_falloff: f32,
+    /// FO4/FO76/Starfield normal-detail falloff multipliers. The three values
+    /// correspond to shallow, deep, and surface-effect normal response; an
+    /// all-zero triplet preserves the legacy always-on path.
+    pub normal_falloff: [f32; 3],
     /// Skyrim displacement simulator: starting size, radial falloff, and
     /// dampener. Zero triplet is the absent/legacy sentinel.
     pub displacement: [f32; 3],
@@ -240,6 +244,7 @@ impl Default for WaterParams {
             noise_uv_scale_c: 0.0,
             noise_amplitude_scales: [0.0; 3],
             noise_falloff: 0.0,
+            normal_falloff: [0.0; 3],
             displacement: [0.0; 3],
             normal_magnitude: 1.0,
             above_water_fog_amount: 1.0,
@@ -813,6 +818,11 @@ fn decode_dnam_fo4(data: &[u8]) -> WaterParams {
     if let Some(magnitude) = read_f32_at(data, 52) {
         p.normal_magnitude = magnitude.max(0.0);
     }
+    for (slot, offset) in p.normal_falloff.iter_mut().zip([56, 60, 72]) {
+        if let Some(value) = read_f32_at(data, offset) {
+            *slot = value.max(0.0);
+        }
+    }
 
     // FO4's physical section carries the authored displacement force and
     // velocity. Promote those into the canonical animated wave controls;
@@ -935,6 +945,11 @@ fn decode_dnam_fo76(data: &[u8]) -> WaterParams {
     if let Some(normal) = read_f32_at(data, 52) {
         p.normal_magnitude = normal.max(0.0);
     }
+    for (slot, offset) in p.normal_falloff.iter_mut().zip([56, 60, 72]) {
+        if let Some(value) = read_f32_at(data, offset) {
+            *slot = value.max(0.0);
+        }
+    }
     if let Some(reflectivity) = read_f32_at(data, 64) {
         p.reflectivity = reflectivity.clamp(0.0, 1.0);
     }
@@ -1022,6 +1037,11 @@ fn decode_dnam_starfield(data: &[u8]) -> WaterParams {
     }
     if let Some(normal) = read_f32_at(data, 48) {
         p.normal_magnitude = normal.max(0.0);
+    }
+    for (slot, offset) in p.normal_falloff.iter_mut().zip([52, 56, 60]) {
+        if let Some(value) = read_f32_at(data, offset) {
+            *slot = value.max(0.0);
+        }
     }
     if let Some(force) = read_f32_at(data, 64) {
         p.wave_amplitude = force.max(0.0);
@@ -1549,6 +1569,9 @@ mod tests {
         data[48..52].copy_from_slice(&1700.0f32.to_le_bytes()); // underwater far
         data[64..68].copy_from_slice(&0.2935f32.to_le_bytes()); // reflectivity
         data[68..72].copy_from_slice(&0.058f32.to_le_bytes()); // Fresnel
+        data[56..60].copy_from_slice(&0.9f32.to_le_bytes()); // shallow normal falloff
+        data[60..64].copy_from_slice(&0.7f32.to_le_bytes()); // deep normal falloff
+        data[72..76].copy_from_slice(&0.8f32.to_le_bytes()); // surface effect falloff
         data[96..100].copy_from_slice(&[51, 68, 70, 0]); // reflection colour
         data[100..104].copy_from_slice(&83.0f32.to_le_bytes()); // sun specular power
         data[104..108].copy_from_slice(&1.25f32.to_le_bytes()); // sun specular magnitude
@@ -1583,6 +1606,7 @@ mod tests {
         assert!((w.params.deep_color[2] - 57.0 / 255.0).abs() < 1e-6);
         assert!((w.params.underwater_color[1] - 27.0 / 255.0).abs() < 1e-6);
         assert_eq!(w.params.underwater_fog_amount, 0.75);
+        assert_eq!(w.params.normal_falloff, [0.9, 0.7, 0.8]);
         assert!((w.params.reflection_color[1] - 68.0 / 255.0).abs() < 1e-6);
         assert_eq!(w.params.fog_near, 0.0);
         assert_eq!(w.params.fog_far, 3007.0);
@@ -1670,6 +1694,9 @@ mod tests {
         data[44..48].copy_from_slice(&4.0f32.to_le_bytes());
         data[48..52].copy_from_slice(&900.0f32.to_le_bytes());
         data[52..56].copy_from_slice(&0.6f32.to_le_bytes());
+        data[56..60].copy_from_slice(&0.85f32.to_le_bytes());
+        data[60..64].copy_from_slice(&0.65f32.to_le_bytes());
+        data[72..76].copy_from_slice(&0.75f32.to_le_bytes());
         data[64..68].copy_from_slice(&0.35f32.to_le_bytes());
         data[68..72].copy_from_slice(&0.04f32.to_le_bytes());
         data[76..80].copy_from_slice(&0.8f32.to_le_bytes());
@@ -1694,6 +1721,7 @@ mod tests {
         assert_eq!(w.params.fog_near, 25.0);
         assert_eq!(w.params.fog_far, 450.0);
         assert_eq!(w.params.normal_magnitude, 0.6);
+        assert_eq!(w.params.normal_falloff, [0.85, 0.65, 0.75]);
         assert!((w.params.shallow_color[2] - 30.0 / 255.0).abs() < 1e-6);
         assert!((w.params.deep_color[0] - 40.0 / 255.0).abs() < 1e-6);
         assert!((w.params.underwater_color[2] - 90.0 / 255.0).abs() < 1e-6);
@@ -1734,6 +1762,9 @@ mod tests {
         data[40..44].copy_from_slice(&4.0f32.to_le_bytes());
         data[44..48].copy_from_slice(&80.0f32.to_le_bytes());
         data[48..52].copy_from_slice(&0.45f32.to_le_bytes());
+        data[52..56].copy_from_slice(&0.9f32.to_le_bytes());
+        data[56..60].copy_from_slice(&0.7f32.to_le_bytes());
+        data[60..64].copy_from_slice(&0.8f32.to_le_bytes());
         data[64..68].copy_from_slice(&0.25f32.to_le_bytes());
         data[68..72].copy_from_slice(&0.5f32.to_le_bytes());
         data[72..76].copy_from_slice(&0.985f32.to_le_bytes());
@@ -1757,6 +1788,7 @@ mod tests {
         assert_eq!(w.params.wave_amplitude, 0.25);
         assert_eq!(w.params.wave_frequency, 0.5);
         assert_eq!(w.params.displacement, [0.05, 0.985, 10.0]);
+        assert_eq!(w.params.normal_falloff, [0.9, 0.7, 0.8]);
         assert_eq!(w.params.noise_falloff, 300.0);
         assert_eq!(w.params.wind_direction, 90.0f32.to_radians());
         assert_eq!(w.params.wind_speed, 0.02);

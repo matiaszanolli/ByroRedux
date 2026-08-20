@@ -261,6 +261,9 @@ camera distance; its zero sentinel preserves the legacy always-on response.
 The Skyrim displacement simulator's starting size, radial falloff, and
 dampener (DNAM[72,84,88]) now shape transient ripple width and attenuation;
 records without those fields retain the shared ripple profile.
+FO4/FO76 physical normal falloff multipliers (DNAM[56,60,72]) and Starfield's
+equivalent trio (DNAM[52,56,60]) now scale the shallow, deep, and surface-effect
+normal contributions; an all-zero triplet preserves the legacy response.
 Skyrim's Sun Sparkle Magnitude (DNAM[200]) now folds into the canonical
 direct-sun glint multiplier alongside the existing specular magnitude;
 Specular Brightness (DNAM[168]) contributes to that same intensity.
@@ -436,6 +439,7 @@ Everything else is a SENTINEL the older game leaves unset, identical across game
 | below-water fog split | **SENTINEL** (reuse above) | **SENTINEL** | AUTHORED (DNAM tail) | DNAM[144..152] |
 | `wave_amplitude/frequency` | AUTHORED | AUTHORED (displacement force/velocity) | AUTHORED (displacement force overrides amplitude) | FO3/FNV DATA[76..84], DNAM[76..80] |
 | physical normal magnitude | SENTINEL | SENTINEL | AUTHORED (scales noise amplitudes) | Skyrim DNAM[92]; FO4 DNAM[52] |
+| physical normal falloff multipliers | SENTINEL | SENTINEL | AUTHORED (shallow/deep/surface response) | FO4/FO76 DNAM[56,60,72]; Starfield DNAM[52,56,60] |
 | above-water fog amount | SENTINEL | SENTINEL | AUTHORED (scales refraction absorption) | Skyrim DNAM[132] |
 | depth response weights | SENTINEL | SENTINEL | AUTHORED | DNAM[208..224] |
 | reflection/specular controls | SENTINEL | SENTINEL | AUTHORED | DNAM[152..156,196..204] |

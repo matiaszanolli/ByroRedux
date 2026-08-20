@@ -236,6 +236,12 @@ pub(super) fn reemit_water_planes(
                 mat.noise_amplitude_scales[2],
             ],
             noise_falloff: [mat.noise_falloff, 0.0, 0.0, 0.0],
+            normal_falloff: [
+                mat.normal_falloff[0],
+                mat.normal_falloff[1],
+                mat.normal_falloff[2],
+                0.0,
+            ],
             displacement: [
                 mat.displacement[0],
                 mat.displacement[1],

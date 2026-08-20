@@ -753,6 +753,11 @@ pub(crate) fn resolve_water_material(
             if rec.params.noise_falloff.is_finite() && rec.params.noise_falloff > 0.0 {
                 mat.noise_falloff = rec.params.noise_falloff.clamp(1.0, 100_000.0);
             }
+            for (dst, src) in mat.normal_falloff.iter_mut().zip(rec.params.normal_falloff) {
+                if src.is_finite() && src > 0.0 {
+                    *dst = src.clamp(0.0, 4.0);
+                }
+            }
             for (dst, src) in mat.displacement.iter_mut().zip(rec.params.displacement) {
                 if src.is_finite() && src > 0.0 {
                     *dst = src.clamp(0.0, 10_000.0);
@@ -2127,6 +2132,7 @@ mod tests {
                 noise_uv_scale_c: 0.0,
                 noise_amplitude_scales: [0.0; 3],
                 noise_falloff: 0.0,
+                normal_falloff: [0.0; 3],
                 displacement: [0.0; 3],
                 normal_magnitude: 1.0,
                 above_water_fog_amount: 1.0,
@@ -2375,6 +2381,7 @@ mod tests {
                 absorption_ranges: [12.0, 34.0, 56.0],
                 concentration: [0.2, 0.4, 0.6, 0.8],
                 noise_falloff: 300.0,
+                normal_falloff: [0.9, 0.7, 0.8],
                 displacement: [0.05, 0.985, 10.0],
                 ..WaterParams::default()
             },
@@ -2385,6 +2392,7 @@ mod tests {
         assert_eq!(mat.absorption_ranges, [12.0, 34.0, 56.0]);
         assert_eq!(mat.concentration, [0.2, 0.4, 0.6, 0.8]);
         assert_eq!(mat.noise_falloff, 300.0);
+        assert_eq!(mat.normal_falloff, [0.9, 0.7, 0.8]);
         assert_eq!(mat.displacement, [0.05, 0.985, 10.0]);
     }
 

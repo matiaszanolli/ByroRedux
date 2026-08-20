@@ -106,6 +106,8 @@ struct WaterParams {
     vec4 detail;
     // x = authored Skyrim noise-falloff distance; yzw reserved.
     vec4 noise_falloff;
+    // xyz = shallow/deep/surface-effect normal falloff multipliers.
+    vec4 normal_falloff;
     // x = displacement starting size, y = radial falloff, z = dampener.
     vec4 displacement;
     // x/y/z/w = reflection/refraction/normal/specular depth weights.
@@ -114,7 +116,7 @@ struct WaterParams {
     vec4 effects;
     // x/y/z = Starfield per-channel absorption ranges; w = precipitation.
     // Keep these trailing slots in lockstep with water.frag and
-    // GpuWaterParams so every array element uses the same 304-byte std140
+    // GpuWaterParams so every array element uses the same 320-byte std140
     // stride when the vertex shader selects a water material by index.
     vec4 absorption;
     // Starfield phytoplankton, sediment, yellow matter, oceanness.
@@ -125,7 +127,7 @@ struct WaterParams {
     vec4 underwater;
 };
 layout(std140, set = 2, binding = 1) uniform WaterParamsBlock {
-    WaterParams params[215];
+    WaterParams params[204];
 } waterParams;
 
 layout(push_constant) uniform WaterDrawPush {

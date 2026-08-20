@@ -57,7 +57,7 @@ layout(early_fragment_tests) in;
 //   composite-pass tone-mapper + TAA handles the residual jitter.
 //
 // Per-water material data lives in a compact per-frame UBO. Keeping the
-// 304-byte record here, rather than in push constants, leaves room to grow
+// 320-byte record here, rather than in push constants, leaves room to grow
 // the canonical cross-game material without raising device requirements.
 struct WaterParams {
     // x = time (engine uptime in seconds — `TotalTime`, accumulated
@@ -94,6 +94,8 @@ struct WaterParams {
     vec4 detail;
     // x = authored Skyrim noise-falloff distance; yzw reserved.
     vec4 noise_falloff;
+    // xyz = shallow/deep/surface-effect normal falloff multipliers.
+    vec4 normal_falloff;
     // x = displacement starting size, y = radial falloff, z = dampener.
     vec4 displacement;
     // x/y/z/w = reflection/refraction/normal/specular depth weights.
@@ -116,7 +118,7 @@ struct WaterParams {
 };
 
 layout(std140, set = 2, binding = 1) uniform WaterParamsBlock {
-    WaterParams params[215];
+    WaterParams params[204];
 } waterParams;
 
 layout(push_constant) uniform WaterDrawPush {
@@ -694,6 +696,19 @@ void main() {
             1.0
         );
         nMix = normalize(mix(vec3(0.0, 0.0, 1.0), nMix, normalFade));
+    }
+    // Bethesda's physical water layouts author independent multipliers for
+    // shallow, deep, and surface-effect normal response. A zero triplet is
+    // the legacy sentinel; otherwise apply the authored factors directly to
+    // each normal contribution before normalising.
+    if (push.normal_falloff.x > 0.0 || push.normal_falloff.y > 0.0 || push.normal_falloff.z > 0.0) {
+        float shallowNormalScale = push.normal_falloff.x > 0.0 ? push.normal_falloff.x : 1.0;
+        float deepNormalScale = push.normal_falloff.y > 0.0 ? push.normal_falloff.y : 1.0;
+        float surfaceNormalScale = push.normal_falloff.z > 0.0 ? push.normal_falloff.z : 1.0;
+        vec3 layered = nMix * surfaceNormalScale
+            + nA * (shallowNormalScale - 1.0)
+            + nB * (deepNormalScale - 1.0);
+        nMix = normalize(layered);
     }
 
     // Surface-interaction ripple. `RippleEvent` is emitted on the water
