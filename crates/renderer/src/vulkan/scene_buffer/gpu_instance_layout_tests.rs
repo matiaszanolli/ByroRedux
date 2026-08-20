@@ -508,8 +508,8 @@ fn gbuffer_history_uses_stable_surface_id_but_caustics_keep_draw_lookup() {
 /// as in the pre-#807 days), but the texture index would still
 /// be wrong (the UI texture lives in `inst.textureIndex`, not
 /// in any GpuMaterial slot). The guard stays as defense-in-depth
-/// against future drift. See `scene_buffer.rs:172-176` for the
-/// contract and `feedback_shader_struct_sync.md` for the
+/// against future drift. See `scene_buffer/gpu_types.rs:191-197` for
+/// the contract and `feedback_shader_struct_sync.md` for the
 /// broader invariant.
 ///
 /// #785 was a stale-hunk regression of #776 introduced by an

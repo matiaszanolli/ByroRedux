@@ -393,7 +393,7 @@ pub(super) fn hash_material_slice(materials: &[super::super::material::GpuMateri
     let byte_size = std::mem::size_of_val(materials);
     // SAFETY: `GpuMaterial` is `#[repr(C)]` with f32/u32 fields and
     // explicit padding fields the producer always initialises (see
-    // `GpuMaterial::as_bytes` doc at vulkan/material.rs:281-294).
+    // `GpuMaterial::as_bytes` doc at vulkan/material.rs:653-666).
     // The slice view is contiguous because `[T]` storage is too;
     // `byte_size` matches the slice's footprint exactly.
     let bytes: &[u8] =

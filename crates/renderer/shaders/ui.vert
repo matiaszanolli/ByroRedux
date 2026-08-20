@@ -46,10 +46,13 @@ void main() {
     gl_Position = vec4(inPosition.xy, 0.0, 1.0);
     fragUV = inUV;
     // The UI quad is appended at draw.rs with `..GpuInstance::default()`,
-    // which leaves `materialId = 0`. The MaterialBuffer is keyed by per-
-    // frame intern order, so `materials[0]` is the FIRST scene material
-    // — not the UI texture. Reading per-instance `textureIndex` is the
-    // contracted path (scene_buffer.rs:172-176) and matches triangle.vert.
+    // which leaves `materialId = 0`. Post-#807 `materials[0]` is the
+    // reserved neutral default (not an arbitrary scene material, as in
+    // the pre-#807 days) — reading it here would still pull the wrong
+    // texture, since the UI texture lives in per-instance `textureIndex`,
+    // not in any GpuMaterial slot. Reading per-instance `textureIndex` is
+    // the contracted path (scene_buffer/gpu_types.rs:191-197) and matches
+    // triangle.vert.
     // See #776 / #785 for the Phase-5 regressions this guards against.
     GpuInstance inst = instances[gl_InstanceIndex];
     fragTexIndex = inst.textureIndex;
