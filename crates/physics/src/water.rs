@@ -283,8 +283,6 @@ pub fn authored_wave_height_with_weather(
     };
     let authored_a = rotate_scroll(material.scroll_a);
     let authored_b = rotate_scroll(material.scroll_b);
-    let dir_a = direction(authored_a, [1.0, 0.35]);
-    let dir_b = direction(authored_b, [-0.4, 1.0]);
     let spatial_a = material.uv_scale_a.abs().max(1.0 / 2048.0);
     let spatial_b = material.uv_scale_b.abs().max(1.0 / 4096.0);
     let flowmap_scale = if material.flowmap_scale.is_finite() && material.flowmap_scale > 0.0 {
@@ -300,6 +298,12 @@ pub fn authored_wave_height_with_weather(
         authored_b[0] * flowmap_scale + weather_scroll[0] * 0.65,
         authored_b[1] * flowmap_scale + weather_scroll[1] * 0.65,
     ];
+    // The renderer normalizes these same post-weather vectors in
+    // `water.vert`. Deriving the CPU directions before adding weather would
+    // make buoyancy/submersion sample a different crest orientation whenever
+    // atmospheric wind is active.
+    let dir_a = direction(scroll_a, [1.0, 0.35]);
+    let dir_b = direction(scroll_b, [-0.4, 1.0]);
     let rate_a = ((scroll_a[0] * scroll_a[0] + scroll_a[1] * scroll_a[1]).sqrt() / 0.0228254)
         .clamp(0.25, 4.0);
     let rate_b = ((scroll_b[0] * scroll_b[0] + scroll_b[1] * scroll_b[1]).sqrt() / 0.0286531)
@@ -930,6 +934,27 @@ mod tests {
             authored_wave_height_with_weather(&material, position, 2.3, [0.0, 0.0], 1.5);
         assert!((calm - wind_x).abs() > 1.0e-4);
         assert!((amplified - calm * 1.5).abs() < 1.0e-5);
+    }
+
+    #[test]
+    fn authored_wave_height_uses_weather_for_crest_direction() {
+        // With zero temporal frequency, any change here must come from the
+        // post-weather spatial direction (the same normalized scroll vector
+        // used by water.vert), not from a rate-only adjustment.
+        let material = WaterMaterial {
+            wave_amplitude: 4.0,
+            wave_frequency: 0.0,
+            scroll_a: [1.0, 0.0],
+            scroll_b: [0.0, 0.0],
+            uv_scale_a: 0.01,
+            uv_scale_b: 0.01,
+            ..WaterMaterial::default()
+        };
+        let position = Vec3::new(0.0, 0.0, 100.0);
+        let calm = authored_wave_height_with_weather(&material, position, 0.0, [0.0, 0.0], 1.0);
+        let wind = authored_wave_height_with_weather(&material, position, 0.0, [0.0, 1.0], 1.0);
+        assert!(calm.abs() < 1.0e-5);
+        assert!(wind.abs() > 1.0e-3);
     }
 
     #[test]
