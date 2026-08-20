@@ -65,6 +65,59 @@ const DEFAULT_INTERIOR_HALF_EXTENT: f32 = 256.0;
 /// interior plane's XZ extent.
 const DEFAULT_INTERIOR_VOLUME_DEPTH: f32 = 200.0;
 
+/// Full-detail water needs enough vertices for the authored vertex waves to
+/// affect the silhouette. A four-vertex quad turns the whole 256–4096 wu
+/// surface into one broad saddle, so the displacement is effectively absent
+/// at the shoreline. Eight cells per side keeps the near-water mesh cheap
+/// (81 vertices / 128 triangles) while putting a vertex every 1/8 of the
+/// plane extent; the fragment normal path still supplies the fine ripples.
+const FULL_DETAIL_WATER_GRID_SEGMENTS: usize = 8;
+
+fn build_full_detail_water_grid(half_extent: f32) -> (Vec<Vertex>, Vec<u32>) {
+    let segments = FULL_DETAIL_WATER_GRID_SEGMENTS;
+    let side = segments + 1;
+    let mut vertices = Vec::with_capacity(side * side);
+    for row in 0..=segments {
+        let z = row as f32 / segments as f32 * 2.0 - 1.0;
+        for col in 0..=segments {
+            let x = col as f32 / segments as f32 * 2.0 - 1.0;
+            vertices.push(Vertex {
+                position: [x, 0.0, z],
+                color: [1.0, 1.0, 1.0, 1.0],
+                normal: [0.0, 1.0, 0.0],
+                // UVs are world-distance based so adjacent cells keep the
+                // same normal-map derivative and wave phase.
+                uv: [x * half_extent, z * half_extent],
+                bone_indices: [0, 0, 0, 0],
+                bone_weights: [0.0, 0.0, 0.0, 0.0],
+                splat_weights_0: [0, 0, 0, 0],
+                splat_weights_1: [0, 0, 0, 0],
+                tangent: [1.0, 0.0, 0.0, -1.0],
+            });
+        }
+    }
+
+    let mut indices = Vec::with_capacity(segments * segments * 6);
+    for row in 0..segments {
+        for col in 0..segments {
+            let top_left = (row * side + col) as u32;
+            let top_right = top_left + 1;
+            let bottom_left = top_left + side as u32;
+            let bottom_right = bottom_left + 1;
+            // Match the original quad's +Y winding.
+            indices.extend_from_slice(&[
+                top_left,
+                bottom_left,
+                top_right,
+                top_right,
+                bottom_left,
+                bottom_right,
+            ]);
+        }
+    }
+    (vertices, indices)
+}
+
 /// Spawn one water-plane entity for the given cell.
 ///
 /// `xclw_height` is the cell's parsed `water_height` in Bethesda
@@ -94,70 +147,12 @@ pub(super) fn spawn_water_plane(
 
     let allocator = ctx.allocator.as_ref()?;
 
-    // ── Build the flat quad mesh ──
-    // Local-space mesh: 4 verts on Y=0, square covering [-1, 1] × [-1, 1].
-    // The entity's Transform places the quad at world Y = xclw_height
-    // and scales it by `half_extent`. Normal map UV scrolls in world
-    // space, so the mesh UVs don't matter visually — they're set to
-    // [-half_extent, half_extent] so the perturbed-normal blend in
-    // the fragment shader has a consistent UV-derivative magnitude
-    // across the plane.
-    let uv = half_extent;
-    let vertices = vec![
-        // Position is local space; the model matrix scales by
-        // half_extent on X/Z. UV mirrors local position so world-
-        // space UV derivatives behave.
-        Vertex {
-            position: [-1.0, 0.0, -1.0],
-            color: [1.0, 1.0, 1.0, 1.0],
-            normal: [0.0, 1.0, 0.0],
-            uv: [-uv, -uv],
-            bone_indices: [0, 0, 0, 0],
-            bone_weights: [0.0, 0.0, 0.0, 0.0],
-            splat_weights_0: [0, 0, 0, 0],
-            splat_weights_1: [0, 0, 0, 0],
-            // World +X tangent; mirrored V requires a negative bitangent sign.
-            tangent: [1.0, 0.0, 0.0, -1.0],
-        },
-        Vertex {
-            position: [1.0, 0.0, -1.0],
-            color: [1.0, 1.0, 1.0, 1.0],
-            normal: [0.0, 1.0, 0.0],
-            uv: [uv, -uv],
-            bone_indices: [0, 0, 0, 0],
-            bone_weights: [0.0, 0.0, 0.0, 0.0],
-            splat_weights_0: [0, 0, 0, 0],
-            splat_weights_1: [0, 0, 0, 0],
-            tangent: [1.0, 0.0, 0.0, -1.0],
-        },
-        Vertex {
-            position: [-1.0, 0.0, 1.0],
-            color: [1.0, 1.0, 1.0, 1.0],
-            normal: [0.0, 1.0, 0.0],
-            uv: [-uv, uv],
-            bone_indices: [0, 0, 0, 0],
-            bone_weights: [0.0, 0.0, 0.0, 0.0],
-            splat_weights_0: [0, 0, 0, 0],
-            splat_weights_1: [0, 0, 0, 0],
-            tangent: [1.0, 0.0, 0.0, -1.0],
-        },
-        Vertex {
-            position: [1.0, 0.0, 1.0],
-            color: [1.0, 1.0, 1.0, 1.0],
-            normal: [0.0, 1.0, 0.0],
-            uv: [uv, uv],
-            bone_indices: [0, 0, 0, 0],
-            bone_weights: [0.0, 0.0, 0.0, 0.0],
-            splat_weights_0: [0, 0, 0, 0],
-            splat_weights_1: [0, 0, 0, 0],
-            tangent: [1.0, 0.0, 0.0, -1.0],
-        },
-    ];
-    // Two triangles, CCW after the engine's Z→Y up swizzle would
-    // negate winding — emit CW so it becomes CCW post-conversion.
-    // For this mesh we don't apply the negate (we author already in
-    // Y-up local), so emit CCW directly.
-    let indices = vec![0u32, 2, 1, 1, 2, 3];
+    // ── Build the tessellated full-detail water mesh ──
+    // The entity's Transform places the grid at `xclw_height` and scales it
+    // by `half_extent`; tessellation lets the vertex shader's two authored
+    // waves produce real near-field silhouette motion instead of only moving
+    // the four corners of a cell plane.
+    let (vertices, indices) = build_full_detail_water_grid(half_extent);
 
     let upload_ctx = GpuUploadCtx {
         device: &ctx.device,
@@ -611,6 +606,28 @@ mod tests {
             Some(resolved_normal_idx),
             "water entity's normal-map handle must be reachable by the unload \
              walk's NormalMapHandle query so the texture refcount is released"
+        );
+    }
+
+    #[test]
+    fn full_detail_water_grid_supports_vertex_wave_silhouette() {
+        let (vertices, indices) = build_full_detail_water_grid(256.0);
+        let side = FULL_DETAIL_WATER_GRID_SEGMENTS + 1;
+        assert_eq!(vertices.len(), side * side);
+        assert_eq!(
+            indices.len(),
+            FULL_DETAIL_WATER_GRID_SEGMENTS * FULL_DETAIL_WATER_GRID_SEGMENTS * 6
+        );
+        assert_eq!(vertices[0].position, [-1.0, 0.0, -1.0]);
+        assert_eq!(vertices[0].uv, [-256.0, -256.0]);
+        assert_eq!(
+            vertices.last().expect("grid has corners").position,
+            [1.0, 0.0, 1.0]
+        );
+        // The first cell uses the same +Y winding as the former quad.
+        assert_eq!(
+            &indices[..6],
+            &[0, side as u32, 1, 1, side as u32, side as u32 + 1]
         );
     }
 
