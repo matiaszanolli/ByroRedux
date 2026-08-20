@@ -754,6 +754,13 @@ fn apply_skyrim_dnam_tail(p: &mut WaterParams, data: &[u8]) {
     if let Some(force) = read_f32_at(data, 76) {
         p.wave_amplitude = force.clamp(0.0, 2.0);
     }
+    // The displacement simulator's authored velocity is the live temporal
+    // rate for Skyrim's surface disturbance. The short prefix's value at
+    // offset 12 is an unnamed legacy field in the extended layout, so use
+    // this explicit simulator velocity whenever the tail is present.
+    if let Some(velocity) = read_f32_at(data, 80) {
+        p.wave_frequency = velocity.max(0.0);
+    }
     for (slot, offset) in p.displacement.iter_mut().zip([72, 84, 88]) {
         if let Some(v) = read_f32_at(data, offset) {
             *slot = v.max(0.0);
@@ -1658,6 +1665,7 @@ mod tests {
         // The extended Skyrim tail promotes the underwater fog pair.
         data.resize(228, 0);
         data[76..80].copy_from_slice(&0.4f32.to_le_bytes());
+        data[80..84].copy_from_slice(&1.35f32.to_le_bytes());
         data[72..76].copy_from_slice(&0.01f32.to_le_bytes());
         data[84..88].copy_from_slice(&0.985f32.to_le_bytes());
         data[88..92].copy_from_slice(&10.0f32.to_le_bytes());
@@ -1698,6 +1706,7 @@ mod tests {
         assert_eq!(w.params.underwater_fog_near, 0.0);
         assert!((w.params.underwater_fog_far - 1000.0).abs() < 1e-3);
         assert_eq!(w.params.wave_amplitude, 0.4);
+        assert_eq!(w.params.wave_frequency, 1.35);
         assert_eq!(w.params.displacement, [0.01, 0.985, 10.0]);
         assert!((w.params.noise_uv_scale_a - 1.0 / 1920.0).abs() < 1e-6);
         assert_eq!(w.params.noise_amplitude_scales, [0.7, 0.6, 0.5]);

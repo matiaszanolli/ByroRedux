@@ -327,6 +327,8 @@ weather-driven value.
 Oblivion's displacement-simulator starting size, radial falloff, and dampener
 (DATA[76,88,92]) now shape the canonical ripple profile alongside its force and
 velocity, so TES4 water no longer loses its authored disturbance width.
+Skyrim's displacement-simulator velocity (DNAM[80]) now supplies the canonical
+wave-frequency input instead of falling back to the unnamed short-prefix value.
 The remaining Skyrim tail fields stay raw after these verified visual fields. The
 Dedicated NIF mesh-water shaders now also cross NIFAL: Oblivion/FO3/FNV
 `WaterShaderProperty` and Skyrim+ `BSWaterShaderProperty` set a canonical
