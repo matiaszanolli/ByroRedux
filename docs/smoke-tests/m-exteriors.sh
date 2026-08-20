@@ -261,6 +261,9 @@ EOF
     if ! grep -Fq 'Water dump: planes=' "$debug_log"; then
         echo "exterior-smoke[$label]: HARD FAIL - water.dump did not report canonical water state"
         hard_fail=1
+    elif grep -Fq 'volume=missing' "$debug_log"; then
+        echo "exterior-smoke[$label]: HARD FAIL - one or more water planes have no canonical WaterVolume"
+        hard_fail=1
     elif grep -Eq '3402823[0-9]+|(^|[^0-9])[-]?2147483648([.]0)?([^0-9]|$)' "$debug_log"; then
         echo "exterior-smoke[$label]: HARD FAIL - water.dump exposed an unfiltered no-water sentinel"
         hard_fail=1
