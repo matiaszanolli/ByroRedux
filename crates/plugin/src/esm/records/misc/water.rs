@@ -209,6 +209,9 @@ pub struct WaterParams {
     /// Legacy rain-simulator velocity. Zero keeps the renderer's default
     /// temporal rate.
     pub rain_velocity: f32,
+    /// Legacy rain-simulator falloff and dampener.
+    pub rain_falloff: f32,
+    pub rain_dampener: f32,
     /// Authored physical normal magnitude. Skyrim stores this at DNAM 92;
     /// FO4 stores it at DNAM 52. One is the neutral renderer fallback.
     pub normal_magnitude: f32,
@@ -284,6 +287,8 @@ impl Default for WaterParams {
             displacement: [0.0; 3],
             rain_start_size: 0.0,
             rain_velocity: 0.0,
+            rain_falloff: 0.0,
+            rain_dampener: 0.0,
             normal_magnitude: 1.0,
             above_water_fog_amount: 1.0,
             depth_weights: [0.0; 4],
@@ -528,6 +533,12 @@ fn decode_data_oblivion(data: &[u8]) -> WaterParams {
     if let Some(value) = read_f32_at(data, 64) {
         p.rain_velocity = value.max(0.0);
     }
+    if let Some(value) = read_f32_at(data, 68) {
+        p.rain_falloff = value.max(0.0);
+    }
+    if let Some(value) = read_f32_at(data, 72) {
+        p.rain_dampener = value.max(0.0);
+    }
     p
 }
 
@@ -595,6 +606,12 @@ fn decode_data_fo3nv(data: &[u8]) -> WaterParams {
     }
     if let Some(value) = read_f32_at(data, 60) {
         p.rain_velocity = value.max(0.0);
+    }
+    if let Some(value) = read_f32_at(data, 64) {
+        p.rain_falloff = value.max(0.0);
+    }
+    if let Some(value) = read_f32_at(data, 68) {
+        p.rain_dampener = value.max(0.0);
     }
     if let Some(value) = read_f32_at(data, 160) {
         p.reflection_hdr_multiplier = value.max(0.0);
@@ -1492,6 +1509,8 @@ mod tests {
         data[52..56].copy_from_slice(&[0xC0, 0xD0, 0xE0, 0xFF]);
         data[60..64].copy_from_slice(&0.2f32.to_le_bytes());
         data[64..68].copy_from_slice(&1.5f32.to_le_bytes()); // rain velocity
+        data[68..72].copy_from_slice(&0.75f32.to_le_bytes()); // rain falloff
+        data[72..76].copy_from_slice(&2.0f32.to_le_bytes()); // rain dampener
         data[76..80].copy_from_slice(&0.08f32.to_le_bytes()); // displacement start
         data[80..84].copy_from_slice(&0.4f32.to_le_bytes());
         data[84..88].copy_from_slice(&0.6f32.to_le_bytes());
@@ -1510,6 +1529,8 @@ mod tests {
         assert_eq!(w.params.displacement, [0.08, 0.85, 3.5]);
         assert_eq!(w.params.rain_start_size, 2.25);
         assert_eq!(w.params.rain_velocity, 1.5);
+        assert_eq!(w.params.rain_falloff, 0.75);
+        assert_eq!(w.params.rain_dampener, 2.0);
         assert_eq!(w.params.rain_response, 2.0);
     }
 
@@ -1539,6 +1560,8 @@ mod tests {
         data[88..92].copy_from_slice(&4.0f32.to_le_bytes()); // displacement dampener
         data[92..96].copy_from_slice(&1.75f32.to_le_bytes()); // rain start
         data[60..64].copy_from_slice(&2.25f32.to_le_bytes()); // rain velocity
+        data[64..68].copy_from_slice(&0.5f32.to_le_bytes()); // rain falloff
+        data[68..72].copy_from_slice(&1.25f32.to_le_bytes()); // rain dampener
         data[160..164].copy_from_slice(&2.5f32.to_le_bytes()); // reflection HDR multiplier
         data[164..168].copy_from_slice(&180.0f32.to_le_bytes()); // specular radius
         data[168..172].copy_from_slice(&1.4f32.to_le_bytes()); // specular brightness
@@ -1557,6 +1580,8 @@ mod tests {
         assert_eq!(w.params.displacement, [0.06, 0.8, 4.0]);
         assert_eq!(w.params.rain_start_size, 1.75);
         assert_eq!(w.params.rain_velocity, 2.25);
+        assert_eq!(w.params.rain_falloff, 0.5);
+        assert_eq!(w.params.rain_dampener, 1.25);
         assert_eq!(w.params.reflection_hdr_multiplier, 2.5);
         assert_eq!(w.params.specular_radius, 180.0);
         assert_eq!(w.params.specular_magnitude, 1.4);

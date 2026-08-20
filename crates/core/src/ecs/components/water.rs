@@ -201,6 +201,9 @@ pub struct WaterMaterial {
     pub rain_start_size: f32,
     /// Legacy rain-simulator velocity. Zero uses the shader default rate.
     pub rain_velocity: f32,
+    /// Legacy rain-simulator falloff and dampener.
+    pub rain_falloff: f32,
+    pub rain_dampener: f32,
     /// Authored physical normal magnitude. Applied to the noise amplitudes
     /// before the compact GPU material is uploaded; one is neutral.
     pub normal_magnitude: f32,
@@ -304,6 +307,8 @@ impl Default for WaterMaterial {
             displacement: [0.0; 3],
             rain_start_size: 0.0,
             rain_velocity: 0.0,
+            rain_falloff: 0.0,
+            rain_dampener: 0.0,
             normal_magnitude: 1.0,
             above_water_fog_amount: 1.0,
             depth_weights: [1.0; 4],

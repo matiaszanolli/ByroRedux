@@ -106,7 +106,7 @@ pub struct GpuWaterParams {
     /// z = Starfield surface roughness; w = Skyrim Specular Radius.
     pub noise_falloff: [f32; 4],
     /// x/y/z = shallow/deep/surface-effect normal falloff multipliers;
-    /// w = legacy rain-simulator velocity.
+    /// w = packed legacy rain velocity/falloff/dampener controls.
     /// A zero triplet preserves the legacy always-on normal response.
     pub normal_falloff: [f32; 4],
     /// x = displacement starting size, y = radial falloff, z = dampener,
@@ -963,6 +963,8 @@ mod tests {
         assert!(src.contains("exp(-distanceToCenter / authoredDampener)"));
         assert!(src.contains("float rainScale = 1.7"));
         assert!(src.contains("1.7 / max(push.displacement.w, 0.25)"));
+        assert!(src.contains("uint rainPacked = floatBitsToUint(push.normal_falloff.w)"));
+        assert!(src.contains("rainControls.z / 4.0"));
     }
 
     #[test]

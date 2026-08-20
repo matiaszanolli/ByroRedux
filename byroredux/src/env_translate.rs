@@ -780,6 +780,12 @@ pub(crate) fn resolve_water_material(
             if rec.params.rain_velocity.is_finite() && rec.params.rain_velocity > 0.0 {
                 mat.rain_velocity = rec.params.rain_velocity.clamp(0.05, 16.0);
             }
+            if rec.params.rain_falloff.is_finite() && rec.params.rain_falloff > 0.0 {
+                mat.rain_falloff = rec.params.rain_falloff.clamp(0.0, 64.0);
+            }
+            if rec.params.rain_dampener.is_finite() && rec.params.rain_dampener > 0.0 {
+                mat.rain_dampener = rec.params.rain_dampener.clamp(0.0, 64.0);
+            }
             // Skyrim/FO4 author an additional physical normal magnitude
             // alongside the per-layer amplitudes. Fold it into the
             // canonical amplitudes so the compact GPU ABI stays unchanged.
@@ -2156,6 +2162,8 @@ mod tests {
                 displacement: [0.0; 3],
                 rain_start_size: 0.0,
                 rain_velocity: 0.0,
+                rain_falloff: 0.0,
+                rain_dampener: 0.0,
                 normal_magnitude: 1.0,
                 above_water_fog_amount: 1.0,
                 depth_weights: [0.0; 4],

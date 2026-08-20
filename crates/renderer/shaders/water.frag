@@ -96,7 +96,7 @@ struct WaterParams {
     // z = Starfield surface roughness; w = Skyrim Specular Radius.
     vec4 noise_falloff;
     // xyz = shallow/deep/surface-effect normal falloff multipliers;
-    // w = legacy rain-simulator velocity.
+    // w = packed legacy rain velocity/falloff/dampener controls.
     vec4 normal_falloff;
     // x = displacement starting size, y = radial falloff, z = dampener.
     vec4 displacement;
@@ -762,11 +762,24 @@ void main() {
         if (push.displacement.w > 0.0) {
             rainScale = clamp(1.7 / max(push.displacement.w, 0.25), 0.25, 4.0);
         }
-        float rainRate = push.normal_falloff.w > 0.0
-            ? clamp(push.normal_falloff.w, 0.25, 16.0)
+        uint rainPacked = floatBitsToUint(push.normal_falloff.w);
+        vec3 rainNormalised = vec3(
+            float(rainPacked & 1023u),
+            float((rainPacked >> 10u) & 1023u),
+            float((rainPacked >> 20u) & 1023u)
+        ) / 1023.0;
+        vec3 rainControls = rainNormalised / max(vec3(1.0) - rainNormalised, vec3(0.001));
+        float rainRate = rainControls.x > 0.0
+            ? clamp(rainControls.x, 0.25, 16.0)
             : 1.0;
+        if (rainControls.y > 0.0) {
+            rainScale *= clamp(1.0 / max(rainControls.y, 0.25), 0.25, 4.0);
+        }
         float rainNoise = rainSurfaceNoise(uvWorld * rainScale, time * rainRate);
-        float rainPerturbation = rainNoise * 0.06 * rainIntensity;
+        float rainDamping = rainControls.z > 0.0
+            ? mix(1.0, 0.20, clamp(rainControls.z / 4.0, 0.0, 1.0))
+            : 1.0;
+        float rainPerturbation = rainNoise * 0.06 * rainIntensity * rainDamping;
         nMix = normalize(nMix + vec3(rainPerturbation, rainPerturbation, 0.0));
     }
 

@@ -278,6 +278,8 @@ DATA[92]) now controls the rendered rain-ripple scale; zero remains the
 procedural compatibility sentinel.
 Its authored rain velocity (TES4 DATA[64], FO3/FNV DATA[60]) now controls
 the ripple animation rate through the existing fixed UBO contract.
+Rain falloff and dampener (TES4 DATA[68,72], FO3/FNV DATA[64,68]) share that
+packed lane and respectively widen and attenuate the procedural rain ripple.
 Skyrim's Sun Sparkle Magnitude (DNAM[200]) now folds into the canonical
 direct-sun glint multiplier alongside the existing specular magnitude;
 Specular Brightness (DNAM[168]) contributes to that same intensity.
