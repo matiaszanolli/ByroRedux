@@ -2129,6 +2129,7 @@ mod tests {
                 deep_color: [0.6, 0.1, 0.0],
                 underwater_color: [0.6, 0.1, 0.0],
                 reflection_color: lava_tint,
+                reflection_hdr_multiplier: 2.5,
                 fog_near: 20.0,
                 fog_far: 80.0,
                 underwater_fog_near: 0.0,
@@ -2183,6 +2184,7 @@ mod tests {
         );
         assert_eq!(mat.sun_specular_power, 90.0);
         assert_eq!(mat.rain_response, 1.0);
+        assert_eq!(mat.reflection_hdr_multiplier, 2.5);
     }
 
     #[test]
