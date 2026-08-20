@@ -196,6 +196,29 @@ fn non_unit_weather_direction_is_normalized_for_water_scroll() {
 }
 
 #[test]
+fn non_finite_weather_gust_keeps_water_params_finite() {
+    let mut world = world_with_water_plane(
+        0.05,
+        0.6,
+        50.0,
+        1.0 / 512.0,
+        [1.0; 3],
+        [1.0; 4],
+        [0.0, 0.0, 1.0, 1.0],
+    );
+    world.insert_resource(WindField {
+        direction: [1.0, 0.0],
+        speed: f32::NAN,
+        gust_amplitude: 10.0,
+        gust_frequency: 1.0,
+    });
+
+    let params = &run_build(&world)[0].params;
+    assert!(params.scroll.iter().all(|value| value.is_finite()));
+    assert!(params.tune[3].is_finite());
+}
+
+#[test]
 fn authored_flow_direction_reaches_gpu_flow_and_scroll_payload() {
     let mut world = world_with_water_plane(
         0.05,
