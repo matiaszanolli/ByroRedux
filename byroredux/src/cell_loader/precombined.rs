@@ -31,7 +31,7 @@
 //!   Currently no occlusion-volume or CPU coarse-cull system exists.
 
 use byroredux_bsa::CsgArchive;
-use byroredux_core::ecs::components::RenderLayer;
+use byroredux_core::ecs::components::{PrecombinedMesh, RenderLayer};
 use byroredux_core::ecs::World;
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_core::string::StringPool;
@@ -377,6 +377,7 @@ impl PrecombinedSpawnJob {
             let prepare_elapsed = hash_started.elapsed();
 
             let spawn_started = Instant::now();
+            let first_entity = world.next_entity_id();
             let (_placement_root, count, spawn_timings) = spawn_placed_instances(
                 world,
                 ctx,
@@ -402,6 +403,18 @@ impl PrecombinedSpawnJob {
                 None,
                 None,
             );
+            // #2369 (EX-15) — stamp the entities this call just spawned as
+            // precombine-owned, distinct from ordinary per-REFR
+            // architecture, so `world.owners` can track them as their own
+            // reclaim class instead of folding them into the generic
+            // `cell_root_rows` count. `CellRoot` itself is stamped by the
+            // caller (`exterior.rs` / `spawn_precombined_meshes`) once this
+            // job either yields or completes; this narrower marker is
+            // independent of that and safe to apply per-hash.
+            let last_entity = world.next_entity_id();
+            for eid in first_entity..last_entity {
+                world.insert(eid, PrecombinedMesh);
+            }
             let spawn_elapsed = spawn_started.elapsed();
             let total_elapsed = hash_started.elapsed();
             self.timed_hashes += 1;

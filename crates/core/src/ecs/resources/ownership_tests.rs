@@ -23,7 +23,28 @@ fn classes_cover_every_field() {
     // it represents would then be invisible, which is the exact failure mode
     // EX-08 exists to prevent. Bump this deliberately, alongside `classes()`
     // *and* `write_values()`.
-    assert_eq!(OwnershipSnapshot::default().classes().len(), 21);
+    assert_eq!(OwnershipSnapshot::default().classes().len(), 22);
+}
+
+#[test]
+fn precombine_mesh_rows_above_baseline_is_a_leak() {
+    // EX-15 / #2369 — a precombine-owned entity that outlives its cell's
+    // unload is exactly the "double geometry that never goes away" failure
+    // mode the class exists to catch, distinct from a generic
+    // `cell_root_rows` surplus that could be any owner type.
+    let mut base = OwnershipSnapshot::default();
+    base.precombine_mesh_rows = 12;
+    let mut leaked = base;
+    leaked.precombine_mesh_rows = 18;
+
+    let mut t = OwnershipTracker::new();
+    t.set_baseline(base);
+    t.record_cycle(leaked);
+
+    let findings = t.evaluate();
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].class, "precombine_mesh_rows");
+    assert_eq!(findings[0].kind, FindingKind::NotReclaimed);
 }
 
 #[test]

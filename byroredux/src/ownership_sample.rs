@@ -14,6 +14,7 @@
 //! Neither samples anything it has to allocate for; both are cheap enough to
 //! run on the existing throttled telemetry cadence rather than every frame.
 
+use byroredux_core::ecs::components::PrecombinedMesh;
 use byroredux_core::ecs::{
     MeshHandle, OwnershipSnapshot, ParticleEmitter, TextureHandle, Transform, World,
 };
@@ -45,6 +46,7 @@ pub(crate) fn sample_ecs_owners(world: &World, out: &mut OwnershipSnapshot) {
         .try_resource::<CellRootIndex>()
         .map(|idx| idx.map.len() as u64)
         .unwrap_or(0);
+    out.precombine_mesh_rows = world.count::<PrecombinedMesh>() as u64;
 
     out.physics_bodies = world
         .try_resource::<byroredux_physics::PhysicsWorld>()

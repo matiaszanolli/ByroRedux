@@ -29,6 +29,7 @@ pub mod particle;
 pub mod patrol;
 pub mod perk_list;
 pub mod physics_source;
+pub mod precombine;
 pub mod render_layer;
 pub mod sandbox;
 pub mod scene_flags;
@@ -79,6 +80,7 @@ pub use particle::{EmitterShape, ParticleEmitter, ParticleForceField, ParticleSo
 pub use patrol::{PatrolBehavior, PatrolState};
 pub use perk_list::PerkList;
 pub use physics_source::PhysicsSourceForm;
+pub use precombine::PrecombinedMesh;
 pub use render_layer::{
     escalate_small_static_to_clutter, render_layer_with_decal_escalation, RenderLayer,
     SMALL_STATIC_RADIUS_UNITS,

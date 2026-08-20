@@ -6,7 +6,9 @@
 //! collection contract is verifiable in `cargo test`.
 
 use super::*;
-use byroredux_core::ecs::components::{CellRoot, WaterKind, WaterMaterial, WaterPlane};
+use byroredux_core::ecs::components::{
+    CellRoot, PrecombinedMesh, WaterKind, WaterMaterial, WaterPlane,
+};
 
 /// `WaterPlane` has no `Default` (its `kind` has no meaningful neutral value),
 /// so the row-counting tests build the calm variant explicitly.
@@ -59,6 +61,7 @@ fn component_rows_are_counted_per_class() {
     world.insert(a, Transform::default());
     world.insert(a, CellRoot(root));
     world.insert(a, calm_water());
+    world.insert(a, PrecombinedMesh);
 
     let b = world.spawn();
     world.insert(b, Transform::default());
@@ -70,6 +73,10 @@ fn component_rows_are_counted_per_class() {
     assert_eq!(snap.transform_rows, 2);
     assert_eq!(snap.cell_root_rows, 2);
     assert_eq!(snap.water_planes, 1);
+    // Only `a` is precombine-owned; `b` is an ordinary per-REFR entity —
+    // pins that the class counts the marker, not `RenderLayer::Architecture`
+    // or `CellRoot` membership in general (EX-15 / #2369).
+    assert_eq!(snap.precombine_mesh_rows, 1);
     // `next_entity_id` counts the root too — it is the allocator watermark,
     // not a live count, which is why its reclaim policy is Bounded.
     assert_eq!(snap.entities_spawned, 3);
@@ -85,15 +92,19 @@ fn despawn_returns_ecs_classes_to_baseline() {
 
     let root = world.spawn();
     let mut victims = Vec::new();
-    for _ in 0..8 {
+    for i in 0..8 {
         let e = world.spawn();
         world.insert(e, Transform::default());
         world.insert(e, CellRoot(root));
+        if i < 3 {
+            world.insert(e, PrecombinedMesh);
+        }
         victims.push(e);
     }
     let mut loaded = OwnershipSnapshot::default();
     sample_ecs_owners(&world, &mut loaded);
     assert_eq!(loaded.transform_rows, 8);
+    assert_eq!(loaded.precombine_mesh_rows, 3);
 
     world.despawn_batch(victims);
     world.despawn(root);
@@ -102,6 +113,10 @@ fn despawn_returns_ecs_classes_to_baseline() {
     sample_ecs_owners(&world, &mut after);
     assert_eq!(after.transform_rows, before.transform_rows);
     assert_eq!(after.cell_root_rows, before.cell_root_rows);
+    // The EX-15 / #2369 shape: precombine-owned entities must return to
+    // baseline exactly like every other `Exact` class — no residue from
+    // being a distinct component rather than folded into `cell_root_rows`.
+    assert_eq!(after.precombine_mesh_rows, before.precombine_mesh_rows);
     assert!(
         after.entities_spawned > before.entities_spawned,
         "entity ids must stay monotonic across despawn"

@@ -82,6 +82,12 @@ pub struct OwnershipSnapshot {
     /// Drained by `unload_cell_inner`; a surplus here means a cell root
     /// outlived its unload.
     pub cell_root_index_entries: u64,
+    /// Live `PrecombinedMesh` rows — entities spawned from a baked FO4
+    /// `_oc.nif` precombine object, a subset of `cell_root_rows` split out
+    /// on its own (EX-15 / #2369) so a leak specific to precombine
+    /// geometry — as opposed to ordinary per-REFR architecture — surfaces
+    /// as its own named finding instead of hiding inside the aggregate.
+    pub precombine_mesh_rows: u64,
 
     // ── GPU ─────────────────────────────────────────────
     /// Distinct non-zero `MeshHandle` values reachable from live entities.
@@ -163,6 +169,11 @@ impl OwnershipSnapshot {
             OwnerClass {
                 name: "cell_root_index_entries",
                 value: self.cell_root_index_entries,
+                policy: Exact,
+            },
+            OwnerClass {
+                name: "precombine_mesh_rows",
+                value: self.precombine_mesh_rows,
                 policy: Exact,
             },
             // `meshes_in_use` / `textures_in_use` count *distinct handle
@@ -309,6 +320,7 @@ impl OwnershipSnapshot {
         self.transform_rows = next();
         self.cell_root_rows = next();
         self.cell_root_index_entries = next();
+        self.precombine_mesh_rows = next();
         self.meshes_in_use = next();
         self.meshes_registry = next();
         self.meshes_live_slots = next();

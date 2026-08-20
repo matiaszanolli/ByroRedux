@@ -134,6 +134,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("PatrolBehavior", "active-package-derived config rebuilt at spawn and replaced by ambient_ai_package_system; mutable companion PatrolState is registered"),
         ("PerkList", "zero production write sites exist anywhere (only #[cfg(test)]); do not confuse with the unrelated, already-tracked Perks character component"),
         ("PhysicsSourceForm", "write-once at bhk-shape spawn; its own doc says \"read only by diagnostics\", never mutated"),
+        ("PrecombinedMesh", "write-once at precombine spawn (EX-15 / #2369), idempotent across reloads of the same cell — same category as CellRoot/RenderLayer, split out purely so world.owners can track precombine geometry as its own reclaim class"),
         ("RenderDebugControl", "operator-only renderer diagnostics and one-frame probe handoff state; deliberately resets to the default view on process start/load"),
         ("RenderLayer", "every insert site is one-shot at cell-load/NPC-spawn via pure classifier functions, no runtime mutator"),
         // RigidBodyData: FIXED — registered (#2379 / SAVE-D1-14), no
