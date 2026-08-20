@@ -309,11 +309,16 @@ pub(crate) fn make_water_interaction_system() -> impl FnMut(&World, f32) + Send 
             let mut position = global.translation;
             position.y += contact.depth;
             let intensity = (0.35 + contact.submerged_fraction * 0.65).clamp(0.0, 1.0);
+            let Some(surface_entity) = contact.surface_entity else {
+                continue;
+            };
             entries.push((
                 entity,
+                surface_entity,
                 position,
                 intensity,
                 !wet_last_frame.contains(&entity),
+                contact.submerged_fraction < 0.98,
             ));
             wet_now.insert(entity);
         }
@@ -322,9 +327,12 @@ pub(crate) fn make_water_interaction_system() -> impl FnMut(&World, f32) + Send 
 
         if !entries.is_empty() {
             if let Some(mut q) = world.query_mut::<RippleEvent>() {
-                for &(entity, position, intensity, _) in &entries {
+                for &(entity, surface_entity, position, intensity, _, near_surface) in &entries {
+                    if !near_surface {
+                        continue;
+                    }
                     q.insert(
-                        entity,
+                        surface_entity,
                         RippleEvent {
                             actor: entity,
                             intensity,
@@ -334,7 +342,7 @@ pub(crate) fn make_water_interaction_system() -> impl FnMut(&World, f32) + Send 
                 }
             }
             if let Some(mut q) = world.query_mut::<SplashEvent>() {
-                for &(entity, position, intensity, entering) in &entries {
+                for &(entity, _, position, intensity, entering, _) in &entries {
                     if entering {
                         q.insert(
                             entity,
@@ -589,6 +597,7 @@ mod tests {
     fn dynamic_water_contact_emits_entry_once_and_ripples_while_wet() {
         let mut world = World::new();
         byroredux_scripting::register(&mut world);
+        let surface = world.spawn();
         let body = world.spawn();
         world.insert(
             body,
@@ -601,6 +610,7 @@ mod tests {
         world.insert(
             body,
             WaterContact {
+                surface_entity: Some(surface),
                 submerged_fraction: 0.5,
                 ..WaterContact::default()
             },
@@ -611,17 +621,33 @@ mod tests {
         let splashes = world.query::<SplashEvent>().expect("splash storage");
         let ripples = world.query::<RippleEvent>().expect("ripple storage");
         assert!(splashes.get(body).is_some());
-        assert!(ripples.get(body).is_some());
+        assert!(ripples.get(surface).is_some());
         drop(splashes);
         drop(ripples);
 
         world.remove::<SplashEvent>(body);
-        world.remove::<RippleEvent>(body);
+        world.remove::<RippleEvent>(surface);
         system(&world, 0.016);
         let splashes = world.query::<SplashEvent>().expect("splash storage");
         let ripples = world.query::<RippleEvent>().expect("ripple storage");
         assert!(splashes.get(body).is_none());
-        assert!(ripples.get(body).is_some());
+        assert!(ripples.get(surface).is_some());
+        drop(splashes);
+        drop(ripples);
+
+        world.remove::<RippleEvent>(surface);
+        {
+            let mut contacts = world.query_mut::<WaterContact>().unwrap();
+            contacts.get_mut(body).unwrap().submerged_fraction = 1.0;
+        }
+        system(&world, 0.016);
+        let splashes = world.query::<SplashEvent>().expect("splash storage");
+        let ripples = world.query::<RippleEvent>().expect("ripple storage");
+        assert!(splashes.get(body).is_none());
+        assert!(
+            ripples.get(surface).is_none(),
+            "fully submerged bodies must not emit surface ripples"
+        );
     }
 
     /// Regression for #2792 (REN-D15-09): a `WaterPlane` entity with no

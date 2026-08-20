@@ -185,6 +185,7 @@ const WATERLINE_HYSTERESIS: f32 = 4.0;
 /// One water plane's volume + surface height + material (+ optional flow),
 /// snapshotted for the per-body buoyancy scan.
 struct WaterSurface {
+    entity: EntityId,
     volume: WaterVolume,
     surface_y: f32,
     material: WaterMaterial,
@@ -211,6 +212,7 @@ fn collect_water_surfaces(world: &World) -> Vec<WaterSurface> {
         };
         let flow = flow_q.as_ref().and_then(|fq| fq.get(entity).copied());
         out.push(WaterSurface {
+            entity,
             volume: *volume,
             surface_y: volume.max[1],
             material: plane.material,
@@ -442,6 +444,7 @@ pub(crate) fn apply_buoyancy(world: &World, had_newcomers: bool) {
                         writes.push((
                             t.entity,
                             WaterContact {
+                                surface_entity: Some(s.entity),
                                 depth: s.surface_y - center_y,
                                 submerged_fraction: frac,
                                 head_submerged: max_y <= s.surface_y,

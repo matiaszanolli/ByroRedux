@@ -308,6 +308,7 @@ mod tests {
         world.insert(
             wet,
             WaterContact {
+                surface_entity: None,
                 depth: 5.0,
                 submerged_fraction: 0.75,
                 head_submerged: true,

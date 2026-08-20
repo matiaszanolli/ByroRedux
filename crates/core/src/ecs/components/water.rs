@@ -39,7 +39,7 @@
 //! [`GameKind`]: ../../../../../plugin/src/esm/reader.rs
 
 use crate::ecs::sparse_set::SparseSetStorage;
-use crate::ecs::storage::Component;
+use crate::ecs::storage::{Component, EntityId};
 
 /// How the surface should move and shade. Drives shader path selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -469,6 +469,10 @@ impl Component for SubmersionState {
 #[derive(Debug, Clone, Copy, Default)]
 #[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct WaterContact {
+    /// Water-plane entity that supplied this contact. Presentation bridges
+    /// use it to place a body ripple on the actual rendered surface; `None`
+    /// is the dry sentinel.
+    pub surface_entity: Option<EntityId>,
     /// Surface Y minus the body's centre Y. Positive = centre below the
     /// surface. Mirrors [`SubmersionState::depth`].
     pub depth: f32,
