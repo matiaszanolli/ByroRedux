@@ -258,7 +258,11 @@ transitions and now drives both atmospheric water-normal drift and coherent
 `BsRotateAboutUp` SpeedTree canopy sway; TREE response metadata remains
 threaded through the importer for the geometry-tail path.
 WATR `NAM0` linear velocity is projected from Gamebryo Z-up into renderer X/Z
- coordinates for authored water motion and flow direction.
+coordinates for authored water motion and flow direction.
+That explicit velocity is also retained as provenance and promotes a neutral
+or localized WATR editor ID to `River`, so FO76/Starfield-style authored flow
+cannot silently fall back to calm-water physics just because its name is not
+an English `river`/`stream` token.
 Starfield's DNAM color-absorption ranges now survive translation as
 per-channel Beer–Lambert distances; older games retain the zero sentinel and
 the established scalar fog response. Its concentration block no longer leaks

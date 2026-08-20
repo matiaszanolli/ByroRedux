@@ -824,6 +824,7 @@ pub(crate) fn resolve_water_material(
             // smoke-test screenshot reported alongside this
             // change.
             let lowered = rec.editor_id.to_ascii_lowercase();
+            let has_authored_linear_flow = rec.linear_velocity.is_some();
             if lowered.contains("rapid") {
                 kind = WaterKind::Rapids;
                 mat.foam_strength = 0.85;
@@ -835,6 +836,10 @@ pub(crate) fn resolve_water_material(
                 // Treat its presence as an authored flow signal even when
                 // the EDID is localized or uses a neutral name.
                 || !rec.flow_noise_texture_path.is_empty()
+                // NAM0 is stronger evidence than naming: it is the record's
+                // explicit linear current and must classify a neutral or
+                // localized EDID as flowing water.
+                || has_authored_linear_flow
             {
                 kind = WaterKind::River;
                 mat.foam_strength = 0.20;
@@ -2032,6 +2037,7 @@ mod tests {
             texture_path: String::new(),
             noise_texture_paths: Default::default(),
             flow_noise_texture_path: String::new(),
+            linear_velocity: None,
             related_waters: [0; 3],
             params: WaterParams {
                 shallow_color: [1.0, 0.4, 0.1],
@@ -2182,6 +2188,7 @@ mod tests {
             texture_path: String::new(),
             noise_texture_paths: Default::default(),
             flow_noise_texture_path: String::new(),
+            linear_velocity: None,
             related_waters: [0; 3],
             params,
             raw_dnam: Vec::new(),
@@ -2389,6 +2396,19 @@ mod tests {
         let (_, kind, _, _, noise) = resolve_water_material(&waters, Some(0x000A_0007));
         assert!(matches!(kind, WaterKind::River));
         assert_eq!(noise[2].as_deref(), Some("textures/water/flow.dds"));
+    }
+
+    #[test]
+    fn authored_nam0_velocity_promotes_localized_water_to_river() {
+        let mut rec = calm_watr(0x000A_0008, "AguaPrincipal", WaterParams::default());
+        rec.linear_velocity = Some([0.0, 3.0]);
+        rec.params.wind_direction = std::f32::consts::FRAC_PI_2;
+        let mut waters = HashMap::new();
+        waters.insert(rec.form_id, rec);
+        let (_, kind, flow, _, _) = resolve_water_material(&waters, Some(0x000A_0008));
+        assert!(matches!(kind, WaterKind::River));
+        let flow = flow.expect("NAM0 velocity must produce a canonical current");
+        assert!(flow.direction[2] > 0.99);
     }
 
     #[test]
