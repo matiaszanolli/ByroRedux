@@ -686,7 +686,7 @@ pub(crate) fn resolve_water_material(
                 *target.4 = variant.params.reflection_color;
             }
             if rec.opacity.is_finite() && rec.opacity > 0.0 {
-                mat.opacity = rec.opacity.clamp(0.05, 1.0);
+                mat.opacity = rec.opacity.clamp(0.0, 1.0);
             } else if rec.opacity_authored && rec.opacity.is_finite() {
                 mat.opacity = rec.opacity.clamp(0.0, 1.0);
             }
@@ -2437,6 +2437,17 @@ mod tests {
         waters.insert(rec.form_id, rec);
         let (mat, _, _, _, _) = resolve_water_material(&waters, Some(0x000A_0006));
         assert_eq!(mat.opacity, 0.0);
+    }
+
+    #[test]
+    fn resolve_water_material_preserves_low_authored_opacity() {
+        let mut rec = calm_watr(0x000A_0007, "ThinWater", WaterParams::default());
+        rec.opacity = 0.01;
+        rec.opacity_authored = true;
+        let mut waters = HashMap::new();
+        waters.insert(rec.form_id, rec);
+        let (mat, _, _, _, _) = resolve_water_material(&waters, Some(0x000A_0007));
+        assert!((mat.opacity - 0.01).abs() < 1.0e-6);
     }
 
     #[test]
