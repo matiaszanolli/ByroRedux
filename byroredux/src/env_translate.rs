@@ -723,6 +723,10 @@ pub(crate) fn resolve_water_material(
                 || lowered.contains("falls")
                 || lowered.contains("river")
                 || lowered.contains("stream")
+                // Skyrim SE's NAM5 is explicitly the flow-normal texture.
+                // Treat its presence as an authored flow signal even when
+                // the EDID is localized or uses a neutral name.
+                || !rec.flow_noise_texture_path.is_empty()
             {
                 kind = WaterKind::River;
                 mat.foam_strength = 0.20;
@@ -2134,15 +2138,15 @@ mod tests {
     }
 
     #[test]
-    fn calm_water_retains_nam4_when_flow_normal_is_authored() {
+    fn authored_flow_normal_promotes_neutral_water_to_river() {
         let mut rec = calm_watr(0x000A_0007, "DefaultWater", WaterParams::default());
         rec.noise_texture_paths[2] = "textures/water/noise_c.dds".into();
         rec.flow_noise_texture_path = "textures/water/flow.dds".into();
         let mut waters = HashMap::new();
         waters.insert(rec.form_id, rec);
         let (_, kind, _, _, noise) = resolve_water_material(&waters, Some(0x000A_0007));
-        assert!(matches!(kind, WaterKind::Calm));
-        assert_eq!(noise[2].as_deref(), Some("textures/water/noise_c.dds"));
+        assert!(matches!(kind, WaterKind::River));
+        assert_eq!(noise[2].as_deref(), Some("textures/water/flow.dds"));
     }
 
     #[test]
