@@ -7,7 +7,7 @@ use byroredux_core::ecs::components::groundcover::WindField;
 use byroredux_core::ecs::components::water::{
     WaterFlow, WaterKind, WaterMaterial, WaterPlane,
 };
-use byroredux_core::ecs::{ActiveCamera, Camera, GlobalTransform, MeshHandle, World};
+use byroredux_core::ecs::{ActiveCamera, Camera, GlobalTransform, MeshHandle, TotalTime, World};
 use byroredux_scripting::RippleEvent;
 
 fn world_with_water_plane(
@@ -142,6 +142,29 @@ fn default_wave_params_are_the_sentinel_the_shader_normalises_against() {
     assert_eq!(params.tune[3], 0.05);
     assert_eq!(params.misc[1], 0.6);
     assert_eq!(params.misc[3], 50.0);
+}
+
+#[test]
+fn authored_angular_velocity_rotates_surface_scroll_without_rotating_weather() {
+    let mut world = world_with_water_plane(
+        0.05,
+        0.6,
+        50.0,
+        1.0 / 512.0,
+        [1.0; 3],
+        [1.0; 4],
+        [0.0, 0.0, 1.0, 1.0],
+    );
+    world.insert_resource(TotalTime(1.0));
+    let mut water_query = world.query_mut::<WaterPlane>().unwrap();
+    let (_, plane) = water_query.iter_mut().next().unwrap();
+    plane.material.scroll_a = [1.0, 0.0];
+    plane.material.angular_velocity = std::f32::consts::FRAC_PI_2;
+    drop(water_query);
+
+    let params = &run_build(&world)[0].params;
+    assert!(params.scroll[0].abs() < 1.0e-6);
+    assert!((params.scroll[1] - 1.0).abs() < 1.0e-6);
 }
 
 #[test]

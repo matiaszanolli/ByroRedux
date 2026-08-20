@@ -157,6 +157,11 @@ pub struct WaterParams {
     pub wind_speed: f32,
     /// Wind direction in radians (DATA `wind_direction`).
     pub wind_direction: f32,
+    /// Skyrim-family WATR `NAM1` angular velocity vector. The renderer uses
+    /// the source Z component (the Gamebryo up axis) as the surface yaw rate;
+    /// the horizontal components are retained for provenance but do not
+    /// rotate a horizontal water plane.
+    pub angular_velocity: [f32; 3],
     /// Wave amplitude — vertex displacement magnitude. The renderer applies
     /// it to the tessellated flat mesh, modulated by shared weather wind.
     pub wave_amplitude: f32,
@@ -250,6 +255,7 @@ impl Default for WaterParams {
             fresnel: 0.02,
             wind_speed: 1.0,
             wind_direction: 0.0,
+            angular_velocity: [0.0; 3],
             wave_amplitude: 0.05,
             wave_frequency: 0.6,
             rain_response: 1.0,
@@ -1163,6 +1169,15 @@ pub fn parse_watr(form_id: u32, subs: &[SubRecord], game: GameKind) -> WatrRecor
             b"NAM3" => out.noise_texture_paths[1] = read_zstring(&sub.data),
             b"NAM4" => out.noise_texture_paths[2] = read_zstring(&sub.data),
             b"NAM5" => out.flow_noise_texture_path = read_zstring(&sub.data),
+            b"NAM1" if sub.data.len() >= 12 => {
+                let mut angular_velocity = [0.0; 3];
+                for (slot, bytes) in angular_velocity.iter_mut().zip(sub.data.chunks_exact(4)) {
+                    *slot = f32::from_le_bytes(bytes.try_into().expect("4-byte NAM1 component"));
+                }
+                if angular_velocity.iter().all(|value| value.is_finite()) {
+                    out.params.angular_velocity = angular_velocity;
+                }
+            }
             b"DATA" => {
                 // Creation-era WATR records use a two-byte DATA subrecord
                 // for damage-per-second (Skyrim and later retain the same
@@ -1334,6 +1349,16 @@ mod tests {
         assert_eq!(w.water_flags, Some(0x01));
         assert_eq!(w.legacy_damage, Some(42));
         assert!(w.raw_data.is_empty());
+    }
+
+    #[test]
+    fn parse_watr_promotes_nam1_angular_velocity() {
+        let mut angular = Vec::new();
+        for value in [0.25f32, -0.5, 1.75] {
+            angular.extend_from_slice(&value.to_le_bytes());
+        }
+        let w = parse_watr(5, &[sub(b"NAM1", &angular)], GameKind::Skyrim);
+        assert_eq!(w.params.angular_velocity, [0.25, -0.5, 1.75]);
     }
 
     #[test]

@@ -233,8 +233,22 @@ pub fn authored_wave_height_with_weather(
             fallback
         }
     };
-    let dir_a = direction(material.scroll_a, [1.0, 0.35]);
-    let dir_b = direction(material.scroll_b, [-0.4, 1.0]);
+    let angular_rate = if material.angular_velocity.is_finite() {
+        material.angular_velocity.clamp(-32.0, 32.0)
+    } else {
+        0.0
+    };
+    let (sin_angle, cos_angle) = (angular_rate * time_secs).sin_cos();
+    let rotate_scroll = |scroll: [f32; 2]| {
+        [
+            scroll[0] * cos_angle - scroll[1] * sin_angle,
+            scroll[0] * sin_angle + scroll[1] * cos_angle,
+        ]
+    };
+    let authored_a = rotate_scroll(material.scroll_a);
+    let authored_b = rotate_scroll(material.scroll_b);
+    let dir_a = direction(authored_a, [1.0, 0.35]);
+    let dir_b = direction(authored_b, [-0.4, 1.0]);
     let spatial_a = material.uv_scale_a.abs().max(1.0 / 2048.0);
     let spatial_b = material.uv_scale_b.abs().max(1.0 / 4096.0);
     let flowmap_scale = if material.flowmap_scale.is_finite() && material.flowmap_scale > 0.0 {
@@ -243,12 +257,12 @@ pub fn authored_wave_height_with_weather(
         1.0
     };
     let scroll_a = [
-        material.scroll_a[0] * flowmap_scale + weather_scroll[0],
-        material.scroll_a[1] * flowmap_scale + weather_scroll[1],
+        authored_a[0] * flowmap_scale + weather_scroll[0],
+        authored_a[1] * flowmap_scale + weather_scroll[1],
     ];
     let scroll_b = [
-        material.scroll_b[0] * flowmap_scale + weather_scroll[0] * 0.65,
-        material.scroll_b[1] * flowmap_scale + weather_scroll[1] * 0.65,
+        authored_b[0] * flowmap_scale + weather_scroll[0] * 0.65,
+        authored_b[1] * flowmap_scale + weather_scroll[1] * 0.65,
     ];
     let rate_a = ((scroll_a[0] * scroll_a[0] + scroll_a[1] * scroll_a[1]).sqrt() / 0.0228254)
         .clamp(0.25, 4.0);
@@ -804,6 +818,24 @@ mod tests {
             authored_wave_height_with_weather(&material, position, 2.3, [0.0, 0.0], 1.5);
         assert!((calm - wind_x).abs() > 1.0e-4);
         assert!((amplified - calm * 1.5).abs() < 1.0e-5);
+    }
+
+    #[test]
+    fn authored_wave_height_tracks_nam1_surface_rotation() {
+        let mut static_surface = WaterMaterial {
+            wave_amplitude: 4.0,
+            wave_frequency: 0.7,
+            scroll_a: [0.0228254, 0.0],
+            scroll_b: [0.0, 0.0286531],
+            ..WaterMaterial::default()
+        };
+        let position = Vec3::new(37.0, 0.0, 91.0);
+        let static_height =
+            authored_wave_height_with_weather(&static_surface, position, 1.0, [0.0; 2], 1.0);
+        static_surface.angular_velocity = std::f32::consts::FRAC_PI_2;
+        let rotating_height =
+            authored_wave_height_with_weather(&static_surface, position, 1.0, [0.0; 2], 1.0);
+        assert!((static_height - rotating_height).abs() > 1.0e-4);
     }
 
     #[test]

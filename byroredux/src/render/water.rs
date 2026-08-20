@@ -173,6 +173,24 @@ pub(super) fn reemit_water_planes(
         } else {
             1.0
         };
+        // Skyrim-family WATR.NAM1 supplies an angular velocity vector. Rotate
+        // only the authored surface scroll here; atmospheric weather wind is
+        // an external world-space field and must keep its direction shared
+        // with SpeedTree sway. A zero/invalid rate is the legacy no-op.
+        let angular_rate = if mat.angular_velocity.is_finite() {
+            mat.angular_velocity.clamp(-32.0, 32.0)
+        } else {
+            0.0
+        };
+        let (sin_angle, cos_angle) = (angular_rate * time_secs).sin_cos();
+        let rotate_scroll = |scroll: [f32; 2], scale: f32| {
+            let x = scroll[0] * scale;
+            let y = scroll[1] * scale;
+            [x * cos_angle - y * sin_angle, x * sin_angle + y * cos_angle]
+        };
+        let authored_scroll_a = rotate_scroll(mat.scroll_a, flowmap_scale);
+        let authored_scroll_b = rotate_scroll(mat.scroll_b, flowmap_scale);
+        let authored_scroll_c = rotate_scroll(mat.scroll_c, flowmap_scale);
         let params = GpuWaterParams {
             timing: [
                 time_secs,
@@ -194,14 +212,14 @@ pub(super) fn reemit_water_planes(
                 mat.fog_far,
             ],
             scroll: [
-                mat.scroll_a[0] * flowmap_scale + weather_scroll[0],
-                mat.scroll_a[1] * flowmap_scale + weather_scroll[1],
-                mat.scroll_b[0] * flowmap_scale + weather_scroll[0] * 0.65,
-                mat.scroll_b[1] * flowmap_scale + weather_scroll[1] * 0.65,
+                authored_scroll_a[0] + weather_scroll[0],
+                authored_scroll_a[1] + weather_scroll[1],
+                authored_scroll_b[0] + weather_scroll[0] * 0.65,
+                authored_scroll_b[1] + weather_scroll[1] * 0.65,
             ],
             scroll_c: [
-                mat.scroll_c[0] * flowmap_scale + weather_scroll[0] * 0.45,
-                mat.scroll_c[1] * flowmap_scale + weather_scroll[1] * 0.45,
+                authored_scroll_c[0] + weather_scroll[0] * 0.45,
+                authored_scroll_c[1] + weather_scroll[1] * 0.45,
                 mat.underwater_fog_near,
                 mat.underwater_fog_far,
             ],

@@ -236,6 +236,10 @@ pub struct WaterMaterial {
     pub wave_amplitude: f32,
     /// Wave frequency (Hz) — companion to [`Self::wave_amplitude`].
     pub wave_frequency: f32,
+    /// Authored WATR `NAM1` angular velocity around the Gamebryo up axis,
+    /// converted to renderer radians per second. Zero is the legacy
+    /// sentinel; it rotates authored normal-layer scroll vectors only.
+    pub angular_velocity: f32,
     /// Multiplier for live precipitation-driven surface ripples. One is the
     /// neutral fallback; legacy records without a rain simulator retain the
     /// shared weather response.
@@ -301,6 +305,7 @@ impl Default for WaterMaterial {
             // all games.
             wave_amplitude: 0.05,
             wave_frequency: 0.6,
+            angular_velocity: 0.0,
             rain_response: 1.0,
             sun_specular_power: 50.0,
             source_form: 0,

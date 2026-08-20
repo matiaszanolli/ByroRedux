@@ -278,6 +278,10 @@ transitions and now drives both atmospheric water-normal drift and coherent
 threaded through the importer for the geometry-tail path.
 WATR `NAM0` linear velocity is projected from Gamebryo Z-up into renderer X/Z
 coordinates for authored water motion and flow direction.
+WATR `NAM1` angular velocity is now retained for all supported layouts; its
+Gamebryo-up-axis component rotates authored normal-layer scroll in both the
+renderer and the CPU wave-height sampler, while shared weather wind keeps its
+world-space direction.
 Modern WATR `FNAM` flags now cross the same boundary: bit `0x01` drives the
 canonical damage hazard and bit `0x08` gates Skyrim-family `NAM5` flow normals;
 records without FNAM retain the compatibility flow-texture behavior.

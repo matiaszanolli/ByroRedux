@@ -708,6 +708,14 @@ pub(crate) fn resolve_water_material(
             // see docs/engine/watal.md §4.
             mat.wave_amplitude = rec.params.wave_amplitude;
             mat.wave_frequency = rec.params.wave_frequency;
+            // WATR.NAM1 is an angular-velocity vector in Gamebryo space.
+            // Horizontal surfaces rotate around source Z (the up axis), so
+            // promote only that component to the renderer's yaw rate.
+            mat.angular_velocity = rec.params.angular_velocity[2]
+                .is_finite()
+                .then_some(rec.params.angular_velocity[2])
+                .unwrap_or(0.0)
+                .clamp(-32.0, 32.0);
             mat.rain_response = if rec.params.rain_response.is_finite() {
                 rec.params.rain_response.clamp(0.0, 4.0)
             } else {
@@ -2115,6 +2123,7 @@ mod tests {
                 fresnel: 0.04,
                 wind_speed: 0.0,
                 wind_direction: 0.0,
+                angular_velocity: [0.0; 3],
                 wave_amplitude: 0.0,
                 wave_frequency: 0.0,
                 rain_response: 1.0,
