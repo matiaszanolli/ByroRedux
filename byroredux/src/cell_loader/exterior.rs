@@ -1122,6 +1122,7 @@ impl ExteriorCellApplyJob {
                 cell.water_type_form.or(wctx.default_water_type_form),
                 (origin.x + half, origin.z - half),
                 half,
+                cell.landscape.as_ref(),
                 blas_sink,
             )
             .is_none()

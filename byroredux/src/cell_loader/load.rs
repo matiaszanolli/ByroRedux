@@ -466,6 +466,7 @@ pub fn load_cell_with_masters(
             // offset pools do not remain stranded at world origin.
             water_center,
             water_half_extent,
+            None,
             &mut _blas_dummy,
         )
         .is_none()

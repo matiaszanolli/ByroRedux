@@ -328,11 +328,12 @@ sets being available.
 
 `cell_loader/water.rs` spawns one tessellated plane per cell (interior: a
 bounded reference-derived center and horizontal extent with a 256-unit minimum;
-exterior: full 4096-unit tile). Per-game default height via
-`default_water_for_worldspace`. **Gaps:** no shoreline-fit mesh, one plane per
-cell (can't represent multiple bodies at different heights, or rivers spanning
-cells). The `WaterVolume` AABB now feeds body physics and the kinematic player
-contact path directly; shoreline-fit geometry and volumes remain open.
+exterior: LAND-height-masked 4096-unit tile). Per-game default height via
+`default_water_for_worldspace`. Exterior LAND samples now suppress fully dry
+triangles and bound the matching `WaterVolume`, giving coarse shoreline
+coverage without inventing a polygon absent from the cell format. **Gaps:**
+one plane per cell still cannot represent multiple independent bodies at
+different heights, and rivers spanning cells still need authored continuity.
 
 ### Render — **mature, with documented fragilities**
 

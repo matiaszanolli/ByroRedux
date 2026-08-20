@@ -11,10 +11,9 @@
 //! Scope (initial cut):
 //!
 //! - One `WaterPlane` per cell — interior cells get a centred quad
-//!   sized to their reference bounds; exterior cells get a single
-//!   per-tile quad spanning the cell's 4096×4096 grid square (so
-//!   neighbouring tiles tile seamlessly via the world-XZ UV in
-//!   `water.frag`).
+//!   sized to their reference bounds; exterior cells use the LAND 33×33
+//!   height field to omit fully dry triangles and bound the matching
+//!   `WaterVolume`, while neighboring wet tiles still share world-XZ UVs.
 //! - `WaterKind` is resolved at the canonical WATR boundary. Authored
 //!   linear flow (NAM0), flow-normal textures, and the cross-generation
 //!   EDID compatibility tokens classify rivers/rapids; horizontal cell
@@ -122,7 +121,11 @@ where
     (center, half_extent)
 }
 
-fn build_full_detail_water_grid(half_extent: f32) -> (Vec<Vertex>, Vec<u32>) {
+fn build_full_detail_water_grid(
+    half_extent: f32,
+    terrain: Option<&esm::cell::LandscapeData>,
+    water_height_zup: f32,
+) -> (Vec<Vertex>, Vec<u32>) {
     let segments = FULL_DETAIL_WATER_GRID_SEGMENTS;
     let side = segments + 1;
     let mut vertices = Vec::with_capacity(side * side);
@@ -149,6 +152,32 @@ fn build_full_detail_water_grid(half_extent: f32) -> (Vec<Vertex>, Vec<u32>) {
     let mut indices = Vec::with_capacity(segments * segments * 6);
     for row in 0..segments {
         for col in 0..segments {
+            if let Some(land) = terrain {
+                const LAND_SEGMENTS: usize = 32;
+                let sample = |r: usize, c: usize| {
+                    (r * LAND_SEGMENTS / segments) * (LAND_SEGMENTS + 1)
+                        + c * LAND_SEGMENTS / segments
+                };
+                let i0 = sample(row, col);
+                let i1 = sample(row, col + 1);
+                let i2 = sample(row + 1, col);
+                let i3 = sample(row + 1, col + 1);
+                // LAND is a 33×33 height field. A water triangle whose
+                // corners are all above the authored XCLW surface belongs to
+                // dry terrain; omit it instead of retaining a full-cell
+                // water sheet. Terrain depth testing still handles the
+                // mixed shoreline triangles naturally.
+                if [i0, i1, i2, i3]
+                    .into_iter()
+                    .all(|idx| {
+                        land.heights
+                            .get(idx)
+                            .is_some_and(|height| *height > water_height_zup)
+                    })
+                {
+                    continue;
+                }
+            }
             let top_left = (row * side + col) as u32;
             let top_right = top_left + 1;
             let bottom_left = top_left + side as u32;
@@ -165,6 +194,38 @@ fn build_full_detail_water_grid(half_extent: f32) -> (Vec<Vertex>, Vec<u32>) {
         }
     }
     (vertices, indices)
+}
+
+/// Return the normalized X/Z footprint of LAND vertices at or below XCLW.
+/// The footprint feeds the gameplay `WaterVolume` as well as the render mask,
+/// preventing an inherited worldspace sea level from making an entire dry
+/// terrain tile buoyant. `None` means the tile has no below-surface samples.
+fn terrain_water_coverage(
+    land: &esm::cell::LandscapeData,
+    water_height_zup: f32,
+) -> Option<(f32, f32, f32, f32)> {
+    const LAND_SEGMENTS: usize = 32;
+    let mut min_x = f32::INFINITY;
+    let mut max_x = f32::NEG_INFINITY;
+    let mut min_z = f32::INFINITY;
+    let mut max_z = f32::NEG_INFINITY;
+    for row in 0..=LAND_SEGMENTS {
+        for col in 0..=LAND_SEGMENTS {
+            let Some(&height) = land.heights.get(row * (LAND_SEGMENTS + 1) + col) else {
+                continue;
+            };
+            if height > water_height_zup {
+                continue;
+            }
+            let x = col as f32 / LAND_SEGMENTS as f32 * 2.0 - 1.0;
+            let z = row as f32 / LAND_SEGMENTS as f32 * 2.0 - 1.0;
+            min_x = min_x.min(x);
+            max_x = max_x.max(x);
+            min_z = min_z.min(z);
+            max_z = max_z.max(z);
+        }
+    }
+    min_x.is_finite().then_some((min_x, max_x, min_z, max_z))
 }
 
 /// Spawn one water-plane entity for the given cell.
@@ -188,6 +249,7 @@ pub(super) fn spawn_water_plane(
     xcwt_form: Option<u32>,
     cell_origin_world_xz: (f32, f32),
     half_extent: f32,
+    terrain: Option<&esm::cell::LandscapeData>,
     blas_specs: &mut Vec<(u32, u32, u32)>,
 ) -> Option<usize> {
     // ── Resolve WATR → engine WaterMaterial (EXAL boundary) ──
@@ -201,7 +263,14 @@ pub(super) fn spawn_water_plane(
     // by `half_extent`; tessellation lets the vertex shader's two authored
     // waves produce real near-field silhouette motion instead of only moving
     // the four corners of a cell plane.
-    let (vertices, indices) = build_full_detail_water_grid(half_extent);
+    let (vertices, indices) = build_full_detail_water_grid(half_extent, terrain, xclw_height);
+    if indices.is_empty() {
+        // A cell can inherit a worldspace water height while its LAND tile is
+        // entirely above that level. Keep the caller's successful-load path,
+        // but do not create a render or physics surface on dry terrain.
+        log::debug!("Water plane suppressed: LAND tile is entirely above water");
+        return Some(0);
+    }
 
     let upload_ctx = GpuUploadCtx {
         device: &ctx.device,
@@ -329,18 +398,21 @@ pub(super) fn spawn_water_plane(
         DEFAULT_INTERIOR_VOLUME_DEPTH
     };
     let volume_floor_y = xclw_height - volume_depth;
+    let (coverage_min_x, coverage_max_x, coverage_min_z, coverage_max_z) = terrain
+        .and_then(|land| terrain_water_coverage(land, xclw_height))
+        .unwrap_or((-1.0, 1.0, -1.0, 1.0));
     world.insert(
         entity,
         WaterVolume {
             min: [
-                position.x - half_extent,
+                position.x + coverage_min_x * half_extent,
                 volume_floor_y,
-                position.z - half_extent,
+                position.z + coverage_min_z * half_extent,
             ],
             max: [
-                position.x + half_extent,
+                position.x + coverage_max_x * half_extent,
                 xclw_height,
-                position.z + half_extent,
+                position.z + coverage_max_z * half_extent,
             ],
         },
     );
@@ -726,7 +798,7 @@ mod tests {
 
     #[test]
     fn full_detail_water_grid_supports_vertex_wave_silhouette() {
-        let (vertices, indices) = build_full_detail_water_grid(256.0);
+        let (vertices, indices) = build_full_detail_water_grid(256.0, None, 0.0);
         let side = FULL_DETAIL_WATER_GRID_SEGMENTS + 1;
         assert_eq!(vertices.len(), side * side);
         assert_eq!(
@@ -743,6 +815,41 @@ mod tests {
         assert_eq!(
             &indices[..6],
             &[0, side as u32, 1, 1, side as u32, side as u32 + 1]
+        );
+    }
+
+    #[test]
+    fn terrain_mask_removes_fully_dry_water_cells_and_preserves_shoreline_triangles() {
+        let dry = esm::cell::LandscapeData {
+            heights: vec![100.0; 33 * 33],
+            normals: None,
+            vertex_colors: None,
+            quadrants: Default::default(),
+        };
+        let (_, dry_indices) = build_full_detail_water_grid(2048.0, Some(&dry), 0.0);
+        assert!(dry_indices.is_empty());
+
+        let mut mixed = dry.clone();
+        mixed.heights[16 * 33 + 16] = -100.0;
+        let (_, mixed_indices) = build_full_detail_water_grid(2048.0, Some(&mixed), 0.0);
+        assert!(!mixed_indices.is_empty());
+        assert!(mixed_indices.len()
+            < FULL_DETAIL_WATER_GRID_SEGMENTS * FULL_DETAIL_WATER_GRID_SEGMENTS * 6);
+    }
+
+    #[test]
+    fn terrain_water_coverage_bounds_the_physics_footprint() {
+        let mut land = esm::cell::LandscapeData {
+            heights: vec![100.0; 33 * 33],
+            normals: None,
+            vertex_colors: None,
+            quadrants: Default::default(),
+        };
+        land.heights[0] = -10.0;
+        land.heights[32 * 33 + 32] = -20.0;
+        assert_eq!(
+            terrain_water_coverage(&land, 0.0),
+            Some((-1.0, 1.0, -1.0, 1.0))
         );
     }
 
