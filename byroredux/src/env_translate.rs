@@ -750,6 +750,9 @@ pub(crate) fn resolve_water_material(
                     *dst = src.clamp(0.05, 4.0);
                 }
             }
+            if rec.params.noise_falloff.is_finite() && rec.params.noise_falloff > 0.0 {
+                mat.noise_falloff = rec.params.noise_falloff.clamp(1.0, 100_000.0);
+            }
             // Skyrim/FO4 author an additional physical normal magnitude
             // alongside the per-layer amplitudes. Fold it into the
             // canonical amplitudes so the compact GPU ABI stays unchanged.
@@ -2118,6 +2121,7 @@ mod tests {
                 noise_uv_scale_b: 0.0,
                 noise_uv_scale_c: 0.0,
                 noise_amplitude_scales: [0.0; 3],
+                noise_falloff: 0.0,
                 normal_magnitude: 1.0,
                 above_water_fog_amount: 1.0,
                 depth_weights: [0.0; 4],
@@ -2364,6 +2368,7 @@ mod tests {
             WaterParams {
                 absorption_ranges: [12.0, 34.0, 56.0],
                 concentration: [0.2, 0.4, 0.6, 0.8],
+                noise_falloff: 300.0,
                 ..WaterParams::default()
             },
         );
@@ -2372,6 +2377,7 @@ mod tests {
         let (mat, _, _, _, _) = resolve_water_material(&waters, Some(0x000A_0008));
         assert_eq!(mat.absorption_ranges, [12.0, 34.0, 56.0]);
         assert_eq!(mat.concentration, [0.2, 0.4, 0.6, 0.8]);
+        assert_eq!(mat.noise_falloff, 300.0);
     }
 
     #[test]

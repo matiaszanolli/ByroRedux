@@ -235,6 +235,7 @@ pub(super) fn reemit_water_planes(
                 mat.noise_amplitude_scales[1],
                 mat.noise_amplitude_scales[2],
             ],
+            noise_falloff: [mat.noise_falloff, 0.0, 0.0, 0.0],
             depth: mat.depth_weights,
             effects: [
                 mat.effect_controls[0],

@@ -104,13 +104,15 @@ struct WaterParams {
     uvec4 noise_indices;
     // x = authored NAM4 UV scale; yzw = authored NAM2/3/4 amplitude scales.
     vec4 detail;
+    // x = authored Skyrim noise-falloff distance; yzw reserved.
+    vec4 noise_falloff;
     // x/y/z/w = reflection/refraction/normal/specular depth weights.
     vec4 depth;
     // x/y/z/w = refraction/local-specular/reflection/sun-specular controls.
     vec4 effects;
     // x/y/z = Starfield per-channel absorption ranges; w = precipitation.
     // Keep these trailing slots in lockstep with water.frag and
-    // GpuWaterParams so every array element uses the same 272-byte std140
+    // GpuWaterParams so every array element uses the same 288-byte std140
     // stride when the vertex shader selects a water material by index.
     vec4 absorption;
     // Starfield phytoplankton, sediment, yellow matter, oceanness.
@@ -121,7 +123,7 @@ struct WaterParams {
     vec4 underwater;
 };
 layout(std140, set = 2, binding = 1) uniform WaterParamsBlock {
-    WaterParams params[240];
+    WaterParams params[227];
 } waterParams;
 
 layout(push_constant) uniform WaterDrawPush {

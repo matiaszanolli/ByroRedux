@@ -167,6 +167,9 @@ pub struct WaterParams {
     /// Skyrim+/FO4 noise-layer amplitude multipliers (NAM2/NAM3/NAM4
     /// companion tail). Zero means the record did not carry the fields.
     pub noise_amplitude_scales: [f32; 3],
+    /// Skyrim DNAM noise falloff distance. Zero means the source layout did
+    /// not author the field and keeps the legacy infinite-noise behavior.
+    pub noise_falloff: f32,
     /// Authored physical normal magnitude. Skyrim stores this at DNAM 92;
     /// FO4 stores it at DNAM 52. One is the neutral renderer fallback.
     pub normal_magnitude: f32,
@@ -233,6 +236,7 @@ impl Default for WaterParams {
             noise_uv_scale_b: 0.0,
             noise_uv_scale_c: 0.0,
             noise_amplitude_scales: [0.0; 3],
+            noise_falloff: 0.0,
             normal_magnitude: 1.0,
             above_water_fog_amount: 1.0,
             depth_weights: [0.0; 4],
@@ -674,6 +678,9 @@ fn apply_skyrim_dnam_tail(p: &mut WaterParams, data: &[u8]) {
     // Skyrim's physical normal magnitude precedes the noise falloff.
     if let Some(v) = read_f32_at(data, 92) {
         p.normal_magnitude = v.max(0.0);
+    }
+    if let Some(v) = read_f32_at(data, 96) {
+        p.noise_falloff = v.max(0.0);
     }
     if let Some(v) = read_f32_at(data, 132) {
         p.above_water_fog_amount = v.clamp(0.0, 8.0);
@@ -1406,6 +1413,7 @@ mod tests {
         data.resize(228, 0);
         data[76..80].copy_from_slice(&0.4f32.to_le_bytes());
         data[92..96].copy_from_slice(&0.05f32.to_le_bytes());
+        data[96..100].copy_from_slice(&300.0f32.to_le_bytes());
         data[132..136].copy_from_slice(&0.75f32.to_le_bytes());
         data[144..148].copy_from_slice(&(-1000.0f32).to_le_bytes());
         data[148..152].copy_from_slice(&1000.0f32.to_le_bytes());
@@ -1446,6 +1454,7 @@ mod tests {
         assert_eq!(w.params.specular_magnitude, 3.75);
         assert_eq!(w.params.sun_specular_power, 122.0);
         assert_eq!(w.params.normal_magnitude, 0.05);
+        assert_eq!(w.params.noise_falloff, 300.0);
         assert_eq!(w.params.above_water_fog_amount, 0.75);
         assert_eq!(w.params.noise_wind_directions[0], 270.0f32.to_radians());
         assert_eq!(w.params.noise_wind_directions[1], 210.0f32.to_radians());

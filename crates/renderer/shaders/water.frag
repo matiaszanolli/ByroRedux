@@ -57,7 +57,7 @@ layout(early_fragment_tests) in;
 //   composite-pass tone-mapper + TAA handles the residual jitter.
 //
 // Per-water material data lives in a compact per-frame UBO. Keeping the
-// 272-byte record here, rather than in push constants, leaves room to grow
+// 288-byte record here, rather than in push constants, leaves room to grow
 // the canonical cross-game material without raising device requirements.
 struct WaterParams {
     // x = time (engine uptime in seconds — `TotalTime`, accumulated
@@ -92,6 +92,8 @@ struct WaterParams {
     uvec4 noise_indices;
     // x = authored NAM4 UV scale; yzw = authored NAM2/3/4 amplitude scales.
     vec4 detail;
+    // x = authored Skyrim noise-falloff distance; yzw reserved.
+    vec4 noise_falloff;
     // x/y/z/w = reflection/refraction/normal/specular depth weights.
     vec4 depth;
     // x/y/z/w = refraction magnitude, local specular power, reflection
@@ -112,7 +114,7 @@ struct WaterParams {
 };
 
 layout(std140, set = 2, binding = 1) uniform WaterParamsBlock {
-    WaterParams params[240];
+    WaterParams params[227];
 } waterParams;
 
 layout(push_constant) uniform WaterDrawPush {
@@ -678,6 +680,18 @@ void main() {
         nMix = normalize(nA + nB + nC * thirdWeight);
     } else {
         nMix = normalize(nA + nB);
+    }
+    // Skyrim's Noise Falloff fades high-frequency normals by camera distance.
+    // A zero value is the legacy sentinel and keeps normals active at every
+    // distance for older layouts and hand-authored defaults.
+    float noiseFalloff = push.noise_falloff.x;
+    if (noiseFalloff > 0.0) {
+        float normalFade = clamp(
+            1.0 - distance(vWorldPos, cameraPos.xyz) / noiseFalloff,
+            0.0,
+            1.0
+        );
+        nMix = normalize(mix(vec3(0.0, 0.0, 1.0), nMix, normalFade));
     }
 
     // Surface-interaction ripple. `RippleEvent` is emitted on the water

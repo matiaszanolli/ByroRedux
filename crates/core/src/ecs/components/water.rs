@@ -182,6 +182,9 @@ pub struct WaterMaterial {
     /// Authored normal-amplitude multipliers for NAM2/NAM3/NAM4. A value of
     /// one is the neutral legacy fallback.
     pub noise_amplitude_scales: [f32; 3],
+    /// Authored distance at which high-frequency water normals fade out.
+    /// Zero preserves the legacy always-on normal response.
+    pub noise_falloff: f32,
     /// Authored physical normal magnitude. Applied to the noise amplitudes
     /// before the compact GPU material is uploaded; one is neutral.
     pub normal_magnitude: f32,
@@ -269,6 +272,7 @@ impl Default for WaterMaterial {
             uv_scale_b: 1.0 / 700.0,
             uv_scale_c: 1.0 / 512.0,
             noise_amplitude_scales: [1.0; 3],
+            noise_falloff: 0.0,
             normal_magnitude: 1.0,
             above_water_fog_amount: 1.0,
             depth_weights: [1.0; 4],
