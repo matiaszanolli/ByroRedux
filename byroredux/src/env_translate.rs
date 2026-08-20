@@ -804,6 +804,11 @@ pub(crate) fn resolve_water_material(
                     *dst = src.clamp(0.01, 100_000.0);
                 }
             }
+            for (dst, src) in mat.concentration.iter_mut().zip(rec.params.concentration) {
+                if src.is_finite() && src > 0.0 {
+                    *dst = src.clamp(0.0, 1.0);
+                }
+            }
             if rec.params.specular_magnitude.is_finite() && rec.params.specular_magnitude > 0.0 {
                 mat.specular_magnitude = rec.params.specular_magnitude.clamp(0.0, 8.0);
             }
@@ -2122,6 +2127,7 @@ mod tests {
                 noise_wind_directions: [0.0; 3],
                 noise_wind_speeds: [0.0; 3],
                 absorption_ranges: [0.0; 3],
+                concentration: [0.0; 4],
                 roughness: 0.0,
                 silt_amount: 0.0,
                 silt_light_color: [0.0; 3],
@@ -2357,6 +2363,7 @@ mod tests {
             "StarfieldOcean",
             WaterParams {
                 absorption_ranges: [12.0, 34.0, 56.0],
+                concentration: [0.2, 0.4, 0.6, 0.8],
                 ..WaterParams::default()
             },
         );
@@ -2364,6 +2371,7 @@ mod tests {
         waters.insert(rec.form_id, rec);
         let (mat, _, _, _, _) = resolve_water_material(&waters, Some(0x000A_0008));
         assert_eq!(mat.absorption_ranges, [12.0, 34.0, 56.0]);
+        assert_eq!(mat.concentration, [0.2, 0.4, 0.6, 0.8]);
     }
 
     #[test]

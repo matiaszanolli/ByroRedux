@@ -57,7 +57,7 @@ layout(early_fragment_tests) in;
 //   composite-pass tone-mapper + TAA handles the residual jitter.
 //
 // Per-water material data lives in a compact per-frame UBO. Keeping the
-// 256-byte record here, rather than in push constants, leaves room to grow
+// 272-byte record here, rather than in push constants, leaves room to grow
 // the canonical cross-game material without raising device requirements.
 struct WaterParams {
     // x = time (engine uptime in seconds — `TotalTime`, accumulated
@@ -101,6 +101,8 @@ struct WaterParams {
     // xyz = Starfield color-absorption ranges in world units; zero means
     // pre-Starfield/legacy water and selects the scalar fog response.
     vec4 absorption;
+    // Starfield phytoplankton, sediment, yellow matter, oceanness.
+    vec4 concentration;
     // xy = transient ripple center in world XZ, z = intensity, w = radius.
     vec4 ripple;
     // rgb = authored underwater tint, a = underwater fog amount. The
@@ -110,7 +112,7 @@ struct WaterParams {
 };
 
 layout(std140, set = 2, binding = 1) uniform WaterParamsBlock {
-    WaterParams params[256];
+    WaterParams params[240];
 } waterParams;
 
 layout(push_constant) uniform WaterDrawPush {
@@ -450,6 +452,14 @@ vec3 absorbWaterColumn(vec3 refractedRadiance, float hitDist, bool cameraUnderwa
         : 1.0;
     float absorption = exp(-t * 2.0 * max(push.depth.y * fogAmount, 0.0));
     vec3 authoredRanges = max(push.absorption.rgb, vec3(0.0));
+    // Starfield's authored concentrations increase the optical density of
+    // the corresponding water column without replacing its RGB palette.
+    // This preserves the zero sentinel and keeps legacy records unchanged.
+    float concentrationDensity = clamp(
+        dot(max(push.concentration.rgb, vec3(0.0)), vec3(0.25, 0.50, 0.25)),
+        0.0,
+        1.0
+    );
     // Starfield authors independent red/green/blue absorption distances.
     // Preserve the legacy scalar path when the triplet is zero, otherwise
     // apply the per-channel Beer–Lambert transmission on top of the shared
@@ -457,7 +467,10 @@ vec3 absorbWaterColumn(vec3 refractedRadiance, float hitDist, bool cameraUnderwa
     // Starfield oceans from collapsing to a generic blue tint.
     vec3 channelTransmission = vec3(1.0);
     if (any(greaterThan(authoredRanges, vec3(0.0)))) {
-        channelTransmission = exp(-hitDist / max(authoredRanges, vec3(0.01)));
+        channelTransmission = exp(
+            -hitDist * (1.0 + concentrationDensity)
+            / max(authoredRanges, vec3(0.01))
+        );
     }
     vec3 transmission = clamp(channelTransmission * absorption, 0.0, 1.0);
     vec3 shallowTint = cameraUnderwater

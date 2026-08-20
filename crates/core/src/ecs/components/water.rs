@@ -204,6 +204,9 @@ pub struct WaterMaterial {
     /// triplet is the canonical sentinel for pre-Starfield records and keeps
     /// their legacy scalar fog response unchanged.
     pub absorption_ranges: [f32; 3],
+    /// Starfield water-column concentrations: phytoplankton, sediment,
+    /// yellow matter, and oceanness. Zero is the legacy sentinel.
+    pub concentration: [f32; 4],
     /// Foam intensity multiplier. Calm water uses a moderate shoreline
     /// baseline; the cell loader raises it for river/rapids whitewater.
     /// `1` is full rapids / waterfall foam.
@@ -273,6 +276,7 @@ impl Default for WaterMaterial {
             specular_magnitude: 1.0,
             flowmap_scale: 1.0,
             absorption_ranges: [0.0; 3],
+            concentration: [0.0; 4],
             // Shoreline foam is authored by the shader's contact ray for
             // every non-waterfall surface. Keep a visible but restrained
             // baseline for calm lakes/oceans; flow kinds override this with

@@ -59,7 +59,7 @@ pub(crate) const WATER_VERT_SPV: &[u8] = include_bytes!("../../shaders/water.ver
 pub(crate) const WATER_FRAG_SPV: &[u8] = include_bytes!("../../shaders/water.frag.spv");
 
 /// Canonical GPU material payload for one water draw. Layout matches
-/// `WaterParams` in `shaders/water.frag` exactly (16 std140 vec4 slots).
+/// `WaterParams` in `shaders/water.frag` exactly (17 std140 vec4 slots).
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct GpuWaterParams {
@@ -111,6 +111,9 @@ pub struct GpuWaterParams {
     /// Starfield per-channel color-absorption ranges in world units; zero
     /// triplet is the legacy scalar-fog sentinel.
     pub absorption: [f32; 4],
+    /// Starfield water-column concentrations: phytoplankton, sediment,
+    /// yellow matter, and oceanness.
+    pub concentration: [f32; 4],
     /// xy = transient ripple center in world XZ, z = intensity, w = radius.
     /// A zero intensity disables the event-driven normal disturbance.
     pub ripple: [f32; 4],
@@ -130,8 +133,8 @@ impl GpuWaterParams {
 }
 
 const _: () = assert!(
-    std::mem::size_of::<GpuWaterParams>() == 256,
-    "GpuWaterParams must remain 16 std140 vec4 slots"
+    std::mem::size_of::<GpuWaterParams>() == 272,
+    "GpuWaterParams must remain 17 std140 vec4 slots"
 );
 
 /// Per-draw selector for the material array uploaded once per frame.
@@ -147,10 +150,10 @@ const _: () = assert!(
     "WaterPush must match the shader's 16-byte push block"
 );
 
-/// Fixed UBO capacity: 256 × 256 B = 64 KiB, exactly at Vulkan's portable
+/// Fixed UBO capacity: 240 × 272 B = 65,280 B, below Vulkan's portable
 /// `maxUniformBufferRange` floor while leaving room for the
 /// handful of water bodies normally visible in one cell.
-pub const MAX_WATER_DRAWS: usize = 256;
+pub const MAX_WATER_DRAWS: usize = 240;
 
 /// One water surface to draw in the current frame.
 ///
@@ -886,7 +889,7 @@ mod tests {
 
     #[test]
     fn water_gpu_contract_layouts_are_stable() {
-        assert_eq!(std::mem::size_of::<GpuWaterParams>(), 256);
+        assert_eq!(std::mem::size_of::<GpuWaterParams>(), 272);
         assert_eq!(std::mem::align_of::<GpuWaterParams>(), 4);
         assert_eq!(std::mem::size_of::<WaterPush>(), 16);
         assert_eq!(std::mem::align_of::<WaterPush>(), 4);
@@ -901,10 +904,11 @@ mod tests {
         let src = include_str!("../../shaders/water.vert");
         assert!(
             src.contains("vec4 absorption;")
+                && src.contains("vec4 concentration;")
                 && src.contains("vec4 ripple;")
                 && src.contains("vec4 underwater;"),
             "water.vert must declare the trailing material slots so indexed\n\
-             WaterParams elements retain the 256-byte std140 stride used by\n\
+             WaterParams elements retain the 272-byte std140 stride used by\n\
              Rust and water.frag"
         );
         assert!(
@@ -1137,6 +1141,7 @@ mod tests {
                 depth: [1.0; 4],
                 effects: [0.0, 0.0, 1.0, 1.0],
                 absorption: [0.0; 4],
+                concentration: [0.0; 4],
                 ripple: [0.0; 4],
                 underwater: [0.0; 4],
             },
@@ -1433,7 +1438,8 @@ mod absorption_ramp_tests {
         );
         assert!(
             src.contains("vec3 authoredRanges = max(push.absorption.rgb, vec3(0.0));")
-                && src.contains("channelTransmission = exp(-hitDist / max(authoredRanges, vec3(0.01)))"),
+                && src.contains("float concentrationDensity = clamp(")
+                && src.contains("channelTransmission = exp("),
             "Starfield color-absorption ranges must feed the per-channel Beer-Lambert path"
         );
         assert!(

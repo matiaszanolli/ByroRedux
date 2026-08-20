@@ -253,6 +253,7 @@ pub(super) fn reemit_water_planes(
                         1.0
                     },
             ],
+            concentration: mat.concentration,
             ripple,
             underwater: [
                 mat.underwater_color[0],

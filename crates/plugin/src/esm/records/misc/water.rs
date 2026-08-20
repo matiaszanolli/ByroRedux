@@ -195,6 +195,9 @@ pub struct WaterParams {
     /// units. Zero means the source layout did not author per-channel
     /// absorption and the renderer uses its legacy scalar fog curve.
     pub absorption_ranges: [f32; 3],
+    /// Starfield DNAM water-column concentrations: phytoplankton, sediment,
+    /// yellow matter, and oceanness. Zero is the absent/legacy sentinel.
+    pub concentration: [f32; 4],
     /// Starfield DNAM surface roughness. Zero is the absent/legacy sentinel;
     /// authored values are normalized to 0..1 before translation.
     pub roughness: f32,
@@ -239,6 +242,7 @@ impl Default for WaterParams {
             noise_wind_speeds: [0.0; 3],
             flowmap_scale: 0.0,
             absorption_ranges: [0.0; 3],
+            concentration: [0.0; 4],
             roughness: 0.0,
             silt_amount: 0.0,
             silt_light_color: [0.0; 3],
@@ -965,6 +969,15 @@ fn decode_dnam_starfield(data: &[u8]) -> WaterParams {
             };
         }
     }
+    for (slot, offset) in p.concentration.iter_mut().zip([16, 20, 24, 28]) {
+        if let Some(value) = read_f32_at(data, offset) {
+            *slot = if value.is_finite() && value > 0.0 {
+                value
+            } else {
+                0.0
+            };
+        }
+    }
     if let Some(color) = read_rgb_at(data, 32) {
         p.underwater_color = color;
     }
@@ -1651,6 +1664,10 @@ mod tests {
         data[4..8].copy_from_slice(&0.1f32.to_le_bytes());
         data[8..12].copy_from_slice(&0.2f32.to_le_bytes());
         data[12..16].copy_from_slice(&0.3f32.to_le_bytes());
+        data[16..20].copy_from_slice(&0.4f32.to_le_bytes());
+        data[20..24].copy_from_slice(&0.5f32.to_le_bytes());
+        data[24..28].copy_from_slice(&0.6f32.to_le_bytes());
+        data[28..32].copy_from_slice(&0.7f32.to_le_bytes());
         data[32..35].copy_from_slice(&[12, 24, 36]);
         data[36..40].copy_from_slice(&0.7f32.to_le_bytes());
         data[40..44].copy_from_slice(&4.0f32.to_le_bytes());
@@ -1667,6 +1684,7 @@ mod tests {
         let w = parse_watr(0x1234, &[sub(b"DNAM", &data)], GameKind::Starfield);
         assert_eq!(w.params.fog_far, 1200.0);
         assert_eq!(w.params.absorption_ranges, [0.1, 0.2, 0.3]);
+        assert_eq!(w.params.concentration, [0.4, 0.5, 0.6, 0.7]);
         assert_eq!(w.params.underwater_fog_amount, 0.7);
         assert_eq!(w.params.underwater_fog_near, 4.0);
         assert_eq!(w.params.underwater_fog_far, 80.0);

@@ -110,16 +110,18 @@ struct WaterParams {
     vec4 effects;
     // x/y/z = Starfield per-channel absorption ranges; w = precipitation.
     // Keep these trailing slots in lockstep with water.frag and
-    // GpuWaterParams so every array element uses the same 256-byte std140
+    // GpuWaterParams so every array element uses the same 272-byte std140
     // stride when the vertex shader selects a water material by index.
     vec4 absorption;
+    // Starfield phytoplankton, sediment, yellow matter, oceanness.
+    vec4 concentration;
     // xy = transient ripple center, z = intensity, w = radius.
     vec4 ripple;
     // rgb = authored underwater tint, a = underwater fog amount.
     vec4 underwater;
 };
 layout(std140, set = 2, binding = 1) uniform WaterParamsBlock {
-    WaterParams params[256];
+    WaterParams params[240];
 } waterParams;
 
 layout(push_constant) uniform WaterDrawPush {
