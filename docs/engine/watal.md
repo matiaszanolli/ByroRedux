@@ -252,6 +252,8 @@ while older games fall back to deep tint. Skyrim/FO4 physical normal magnitude
 also scales the canonical noise amplitudes (Skyrim DNAM[92], FO4 DNAM[52]).
 Skyrim's above-water fog amount (DNAM[132]) scales the canonical refraction
 absorption weight while preserving the authored near/far distance ramp.
+Skyrim's Sun Sparkle Magnitude (DNAM[200]) now folds into the canonical
+direct-sun glint multiplier alongside the existing specular magnitude.
 WATR.ANAM surface opacity now reaches the water fragment path; records without
 ANAM retain the procedural 0.88 fallback.
 These WATR wind vectors remain water-local normal motion. The shared EXAL

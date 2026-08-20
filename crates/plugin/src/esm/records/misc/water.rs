@@ -689,6 +689,15 @@ fn apply_skyrim_dnam_tail(p: &mut WaterParams, data: &[u8]) {
     if let Some(v) = read_f32_at(data, 160) {
         p.specular_magnitude = v.max(0.0);
     }
+    // Skyrim's Sun Sparkle Magnitude is a second authored multiplier for the
+    // same direct-sun lobe. Fold it into the canonical scalar so the renderer
+    // does not need a new GPU field; absent/zero tails preserve the legacy
+    // offset-160 value used by older fixtures.
+    if let Some(v) = read_f32_at(data, 200) {
+        if v.is_finite() && v > 0.0 {
+            p.specular_magnitude = (p.specular_magnitude * v).clamp(0.0, 8.0);
+        }
+    }
     // Skyrim SE 232-byte records append the flow-map tile scale after the
     // common 228-byte DNAM payload. Older records retain the zero sentinel.
     if let Some(v) = read_f32_at(data, 228) {
@@ -1316,6 +1325,7 @@ mod tests {
         data[156..160].copy_from_slice(&500.0f32.to_le_bytes());
         data[160..164].copy_from_slice(&2.0f32.to_le_bytes());
         data[196..200].copy_from_slice(&0.34f32.to_le_bytes());
+        data[200..204].copy_from_slice(&1.5f32.to_le_bytes());
         data[204..208].copy_from_slice(&3.2f32.to_le_bytes());
         data.resize(232, 0);
         data[228..232].copy_from_slice(&1.75f32.to_le_bytes());
@@ -1333,7 +1343,7 @@ mod tests {
         assert_eq!(w.params.noise_amplitude_scales, [0.7, 0.6, 0.5]);
         assert_eq!(w.params.depth_weights, [0.9, 0.5, 0.1, 0.2]);
         assert_eq!(w.params.effect_controls, [9.0, 500.0, 0.34, 3.2]);
-        assert_eq!(w.params.specular_magnitude, 2.0);
+        assert_eq!(w.params.specular_magnitude, 3.0);
         assert_eq!(w.params.normal_magnitude, 0.05);
         assert_eq!(w.params.above_water_fog_amount, 0.75);
         assert_eq!(w.params.noise_wind_directions[0], 270.0f32.to_radians());
