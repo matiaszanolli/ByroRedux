@@ -904,14 +904,16 @@ pub(crate) fn resolve_water_material(
                 let authored_a = authored_layer_scroll(0);
                 let authored_b = authored_layer_scroll(1);
                 let authored_c = authored_layer_scroll(2);
+                let flow_x = canonical.direction[0];
+                let flow_z = canonical.direction[2];
                 mat.scroll_a = [
-                    cos_theta * scroll + authored_a[0],
-                    sin_theta * scroll + authored_a[1],
+                    flow_x * scroll + authored_a[0],
+                    flow_z * scroll + authored_a[1],
                 ];
                 // Perpendicular shear at half rate for the second layer.
                 mat.scroll_b = [
-                    -sin_theta * scroll * 0.5 + authored_b[0],
-                    cos_theta * scroll * 0.5 + authored_b[1],
+                    -flow_z * scroll * 0.5 + authored_b[0],
+                    flow_x * scroll * 0.5 + authored_b[1],
                 ];
                 mat.scroll_c = if authored_c != [0.0, 0.0] {
                     authored_c
@@ -2472,11 +2474,13 @@ mod tests {
         rec.params.wind_direction = std::f32::consts::FRAC_PI_2;
         let mut waters = HashMap::new();
         waters.insert(rec.form_id, rec);
-        let (_, kind, flow, _, _) = resolve_water_material(&waters, Some(0x000A_0008));
+        let (material, kind, flow, _, _) = resolve_water_material(&waters, Some(0x000A_0008));
         assert!(matches!(kind, WaterKind::River));
         let flow = flow.expect("NAM0 velocity must produce a canonical current");
         assert!(flow.direction[0] > 0.99);
         assert!((flow.speed - 3.0).abs() < 1.0e-6);
+        assert!(material.scroll_a[0] > 0.0);
+        assert!(material.scroll_a[1].abs() < 1.0e-6);
     }
 
     #[test]
