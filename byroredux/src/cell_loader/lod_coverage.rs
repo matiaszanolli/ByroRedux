@@ -83,6 +83,33 @@ pub(crate) fn find_full_detail_overlaps(
     overlaps
 }
 
+/// Count terrain LOD/full-detail intersections that remain drawable after the
+/// finest-band block's per-cell hole mask is applied. Finest terrain blocks
+/// intentionally span the full-detail ring; the uploaded mesh cuts those
+/// cells out, so their raw rectangle is not itself a rendered overlap.
+pub(crate) fn find_terrain_full_detail_overlaps(
+    lod_keys: &[((i32, i32, i32), u16)],
+    full_cells: &[(i32, i32)],
+) -> u32 {
+    let mut overlaps = 0u32;
+    for &((level, qx, qy), hole_mask) in lod_keys {
+        let quad = quad_rect(qx, qy, level);
+        for &(cx, cy) in full_cells {
+            if !rects_overlap(quad, quad_rect(cx, cy, 1)) {
+                continue;
+            }
+            let holed = level == 4
+                && (0..4).contains(&(cx - qx))
+                && (0..4).contains(&(cy - qy))
+                && (hole_mask & (1u16 << ((cy - qy) * 4 + (cx - qx)))) != 0;
+            if !holed {
+                overlaps += 1;
+            }
+        }
+    }
+    overlaps
+}
+
 /// Tracks quad keys that left residency and later came back — real thrash
 /// across a traversal, as opposed to `streaming::StreamingTelemetry`'s
 /// `superseded_*` counters, which only catch one in-flight load being
@@ -182,6 +209,19 @@ mod tests {
         // Inclusive rectangles: (3,3) is the quad's own max corner.
         assert_eq!(find_full_detail_overlaps(&[(4, 0, 0)], &[(3, 3)]), 1);
         assert_eq!(find_full_detail_overlaps(&[(4, 0, 0)], &[(4, 4)]), 0);
+    }
+
+    #[test]
+    fn terrain_hole_mask_suppresses_expected_full_detail_intersection() {
+        let mask = 1u16 << (2 * 4 + 2);
+        assert_eq!(
+            find_terrain_full_detail_overlaps(&[((4, 0, 0), mask)], &[(2, 2)]),
+            0
+        );
+        assert_eq!(
+            find_terrain_full_detail_overlaps(&[((4, 0, 0), mask)], &[(1, 1)]),
+            1
+        );
     }
 
     #[test]

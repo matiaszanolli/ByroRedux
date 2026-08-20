@@ -158,8 +158,14 @@ fn update_lod_coverage(
 
     let overlaps =
         cell_loader::find_overlaps(&terrain_keys) + cell_loader::find_overlaps(&object_keys);
-    let full_detail_overlaps = cell_loader::find_full_detail_overlaps(&terrain_keys, &full_cells)
-        + cell_loader::find_full_detail_overlaps(&object_keys, &full_cells);
+    let terrain_keys_with_holes: Vec<((i32, i32, i32), u16)> = state
+        .lod_blocks
+        .iter()
+        .map(|(key, block)| (*key, block.hole_mask))
+        .collect();
+    let full_detail_overlaps =
+        cell_loader::find_terrain_full_detail_overlaps(&terrain_keys_with_holes, &full_cells)
+            + cell_loader::find_full_detail_overlaps(&object_keys, &full_cells);
 
     // EXAL §5.2's VWD culling rule, checked live rather than only by
     // construction: a resident `VisibleWhenDistant` full REFR's cell must
