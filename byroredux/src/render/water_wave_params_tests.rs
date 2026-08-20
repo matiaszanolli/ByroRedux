@@ -4,7 +4,9 @@
 
 use super::*;
 use byroredux_core::ecs::components::groundcover::WindField;
-use byroredux_core::ecs::components::water::{WaterKind, WaterMaterial, WaterPlane};
+use byroredux_core::ecs::components::water::{
+    WaterFlow, WaterKind, WaterMaterial, WaterPlane,
+};
 use byroredux_core::ecs::{ActiveCamera, Camera, GlobalTransform, MeshHandle, World};
 use byroredux_scripting::RippleEvent;
 
@@ -165,6 +167,48 @@ fn weather_wind_reaches_water_scroll_alongside_speedtree_wind_field() {
     assert!(windy[0].params.tune[3] > calm[0].params.tune[3]);
     let expected_scale = 1.0 + (100.0 / 220.0) * 0.5;
     assert!((windy[0].params.tune[3] - 0.05 * expected_scale).abs() < 1e-6);
+}
+
+#[test]
+fn authored_flow_direction_reaches_gpu_flow_and_scroll_payload() {
+    let mut world = world_with_water_plane(
+        0.05,
+        0.6,
+        50.0,
+        1.0 / 512.0,
+        [1.0; 3],
+        [1.0; 4],
+        [0.0, 0.0, 1.0, 1.0],
+    );
+    let water = world
+        .query::<WaterPlane>()
+        .expect("water plane")
+        .iter()
+        .next()
+        .expect("one water plane")
+        .0;
+    let mut plane_q = world
+        .query_mut::<WaterPlane>()
+        .expect("water plane storage");
+    let plane = plane_q.get_mut(water).expect("water plane");
+    plane.kind = WaterKind::River;
+    plane.material.scroll_a = [0.12, 0.0];
+    plane.material.scroll_b = [0.0, 0.06];
+    drop(plane_q);
+    world.insert(
+        water,
+        WaterFlow {
+            direction: [1.0, 0.0, 0.0],
+            speed: 8.0,
+        },
+    );
+
+    let water_commands = run_build(&world);
+    let params = &water_commands[0].params;
+    assert_eq!(params.flow, [1.0, 0.0, 0.0, 8.0]);
+    assert!(params.scroll[0] > params.scroll[1].abs());
+    assert!(params.scroll[2].abs() < 1.0e-6);
+    assert!(params.scroll[3] > 0.0);
 }
 
 #[test]
