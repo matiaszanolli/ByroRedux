@@ -103,6 +103,9 @@ pub(crate) fn spawn_logical_quest_reference(
     let entity = world.spawn();
     world.insert(entity, Transform::new(position, rotation, scale));
     world.insert(entity, GlobalTransform::new(position, rotation, scale));
+    if let Some(current) = water_current_volume_from_ref(placed_ref, position, scale) {
+        world.insert(entity, current);
+    }
     stamp_quest_reference(world, entity, placed_ref, load_order);
     entity
 }
@@ -213,6 +216,11 @@ pub(super) fn spawn_synth_child(
                 world.insert(entity, Transform::new(ref_pos, ref_rot, ref_scale));
                 world.insert(entity, GlobalTransform::new(ref_pos, ref_rot, ref_scale));
                 world.insert(entity, volume);
+                if let Some(current) =
+                    water_current_volume_from_ref(placed_ref, ref_pos, ref_scale)
+                {
+                    world.insert(entity, current);
+                }
                 stamp_quest_reference(world, entity, placed_ref, load_order);
                 if attach_script_for_refr(
                     world,
