@@ -777,6 +777,7 @@ pub(crate) fn resolve_water_material(
                 let scroll = canonical.speed * flowmap_scale * WATER_SCROLL_UV_PER_BU_PER_S;
                 let authored_a = authored_layer_scroll(0);
                 let authored_b = authored_layer_scroll(1);
+                let authored_c = authored_layer_scroll(2);
                 mat.scroll_a = [
                     cos_theta * scroll + authored_a[0],
                     sin_theta * scroll + authored_a[1],
@@ -786,6 +787,11 @@ pub(crate) fn resolve_water_material(
                     -sin_theta * scroll * 0.5 + authored_b[0],
                     cos_theta * scroll * 0.5 + authored_b[1],
                 ];
+                mat.scroll_c = if authored_c != [0.0, 0.0] {
+                    authored_c
+                } else {
+                    mat.scroll_a
+                };
                 flow = Some(canonical);
             }
             // Calm bodies have no canonical current. Preserve authored
@@ -795,11 +801,15 @@ pub(crate) fn resolve_water_material(
             if matches!(kind, WaterKind::Calm) {
                 let authored_a = authored_layer_scroll(0);
                 let authored_b = authored_layer_scroll(1);
+                let authored_c = authored_layer_scroll(2);
                 if authored_a != [0.0, 0.0] {
                     mat.scroll_a = authored_a;
                 }
                 if authored_b != [0.0, 0.0] {
                     mat.scroll_b = authored_b;
+                }
+                if authored_c != [0.0, 0.0] {
+                    mat.scroll_c = authored_c;
                 }
             }
             // TNAM is the diffuse / noise texture — used as the
@@ -2044,8 +2054,8 @@ mod tests {
             "LocalizedWater",
             WaterParams {
                 wind_direction: 0.0,
-                noise_wind_directions: [0.0, std::f32::consts::FRAC_PI_2, 0.0],
-                noise_wind_speeds: [0.10, 0.20, 0.0],
+                noise_wind_directions: [0.0, std::f32::consts::FRAC_PI_2, 0.25],
+                noise_wind_speeds: [0.10, 0.20, 0.30],
                 ..WaterParams::default()
             },
         );
@@ -2060,6 +2070,8 @@ mod tests {
         assert!(flow.is_some());
         assert!(mat.scroll_a[0] > 0.10);
         assert!(mat.scroll_b[1] > 0.20);
+        assert!((mat.scroll_c[0] - 0.30 * 0.25_f32.cos()).abs() < 1e-6);
+        assert!((mat.scroll_c[1] - 0.30 * 0.25_f32.sin()).abs() < 1e-6);
     }
 
     #[test]

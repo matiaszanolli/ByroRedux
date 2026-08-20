@@ -137,6 +137,12 @@ pub(super) fn reemit_water_planes(
                 mat.scroll_b[0] + weather_scroll[0] * 0.65,
                 mat.scroll_b[1] + weather_scroll[1] * 0.65,
             ],
+            scroll_c: [
+                mat.scroll_c[0] + weather_scroll[0] * 0.45,
+                mat.scroll_c[1] + weather_scroll[1] * 0.45,
+                0.0,
+                0.0,
+            ],
             tune: [
                 mat.uv_scale_a,
                 mat.uv_scale_b,

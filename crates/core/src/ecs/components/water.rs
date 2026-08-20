@@ -144,13 +144,14 @@ pub struct WaterMaterial {
     /// `u32::MAX` means procedural fallback; the loader fills missing
     /// layers from `normal_map_index` when a legacy record has no NAM paths.
     pub noise_map_indices: [u32; 3],
-    /// World-space scroll vectors for the two wave layers (xy = m/s).
-    /// For `Calm`, the cell loader picks two non-parallel arbitrary
-    /// vectors. For `River` / `Rapids` / `Waterfall`, vector 0 is
+    /// World-space scroll vectors for the three wave layers (xy = m/s).
+    /// For `Calm`, the cell loader preserves authored vectors when present.
+    /// For `River` / `Rapids` / `Waterfall`, vector 0 is
     /// `flow.direction * flow.speed`, vector 1 is a perpendicular
-    /// shear at half speed.
+    /// shear at half speed, and vector 2 carries the authored third layer.
     pub scroll_a: [f32; 2],
     pub scroll_b: [f32; 2],
+    pub scroll_c: [f32; 2],
     /// UV scale for each normal-map layer. Detail tile size — small
     /// (~1/200 world units) for choppy water, large (~1/800) for
     /// slow swells.
@@ -236,6 +237,7 @@ impl Default for WaterMaterial {
             noise_map_indices: [u32::MAX; 3],
             scroll_a: [0.020, 0.011],
             scroll_b: [-0.014, 0.025],
+            scroll_c: [0.0, 0.0],
             uv_scale_a: 1.0 / 256.0,
             uv_scale_b: 1.0 / 700.0,
             uv_scale_c: 1.0 / 512.0,

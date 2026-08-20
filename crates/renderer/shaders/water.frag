@@ -74,6 +74,8 @@ struct WaterParams {
     vec4 deep;
     // xy = scroll_a (world units/s), zw = scroll_b
     vec4 scroll;
+    // xy = scroll_c for the authored third normal layer; zw reserved.
+    vec4 scroll_c;
     // x = uv_scale_a, y = uv_scale_b, z = shoreline_width,
     // w = wave_amplitude (WATR DATA wave_amplitude — #2240)
     vec4 tune;
@@ -601,7 +603,7 @@ void main() {
     if (kind == WATER_RAPIDS || hasAuthoredThirdLayer) {
         vec2 thirdScroll = kind == WATER_RAPIDS
             ? push.flow.xy * push.flow.w * 2.0
-            : push.scroll.xy * 0.5;
+            : push.scroll_c.xy;
         float thirdWeight = kind == WATER_RAPIDS ? 0.7 : 0.35;
         vec3 nC = sampleScrollingNormal(
             noiseMapC,
