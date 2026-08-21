@@ -299,15 +299,39 @@ fn apply_alias_injections(
             }
             for &(item, count) in &alias.injected.inventory {
                 if count > 0 {
-                    if let Some(&reference_form_id) = reference_form_ids.get(&entity) {
-                        desired_inventory.push((
+                    // #2670 — the SAVE-D6-01 rekey made `reference_form_id`
+                    // (a stable authored ESM FormID that survives an
+                    // in-session cell reload, unlike a raw `EntityId`) the
+                    // grant key. Unreachable today: every alias-bindable
+                    // entity is stamped with a `SceneAliasCandidate` at REFR
+                    // spawn, so the lookup always hits.
+                    //
+                    // It becomes reachable with the Phase 4+ **Created
+                    // Object** alias fill, which by definition produces
+                    // entities with no authored REFR and therefore no
+                    // `reference_form_id`. Dropping the grant silently there
+                    // would be indistinguishable from "already granted", so
+                    // say so — and note that the fix at that point is a
+                    // synthetic stable key for created objects, not an
+                    // authored FormID this entity will never have.
+                    match reference_form_ids.get(&entity) {
+                        Some(&reference_form_id) => desired_inventory.push((
                             source.0,
                             source.1,
                             entity,
                             reference_form_id,
                             item,
                             count,
-                        ));
+                        )),
+                        None => log::warn!(
+                            "quest alias inventory grant skipped: quest {:08X} alias {} \
+                             resolved to entity {entity} which carries no \
+                             SceneAliasCandidate, so it has no stable reference_form_id \
+                             to key the grant by (item {item:08X} x{count}). Created-Object \
+                             alias fill will need a synthetic stable key here (#2670).",
+                            source.0 .0,
+                            source.1,
+                        ),
                     }
                 }
             }
@@ -522,10 +546,19 @@ pub fn refresh_scene_actor_bindings(world: &World) -> usize {
                     None => !alias.match_conditions.is_empty(),
                 };
                 if !fill_matches
+                    // #2671 — hand the evaluator the bindings resolved so
+                    // far in THIS pass. `resolved` is committed to
+                    // `SceneActorBindings` only after the loop, so a
+                    // match-CTDA naming a sibling alias via
+                    // `RunOn::QuestAlias` otherwise read last refresh's
+                    // table (or nothing on the first refresh) and the fill
+                    // lagged a refresh behind its own dependency.
                     || !evaluate(
                         &alias.match_conditions,
                         world,
-                        &ConditionContext::for_subject(*entity).with_quest(*quest),
+                        &ConditionContext::for_subject(*entity)
+                            .with_quest(*quest)
+                            .with_pending_alias_bindings(&resolved),
                     )
                 {
                     return None;

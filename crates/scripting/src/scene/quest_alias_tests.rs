@@ -327,6 +327,98 @@ fn quest_alias_refresh_resolves_direct_unique_and_distinct_xlrt_roles() {
     assert_eq!(refresh_scene_actor_bindings(&world), 0, "clean fast path");
 }
 
+/// Regression for #2671. Aliases are filled in order into a local map that
+/// is committed to `SceneActorBindings` only at the end of the pass, but a
+/// match-CTDA naming a *sibling* alias via `RunOn::QuestAlias` resolved
+/// against the committed table — so a sibling filled earlier in the SAME
+/// refresh was invisible, and the dependent alias saw last refresh's binding
+/// (or nothing at all on the first).
+///
+/// Alias 1 fills unconditionally; alias 2's condition asks "is the actor
+/// bound to alias 1 at level 12?". Pre-fix the first refresh bound only
+/// alias 1 and alias 2 self-corrected on the next tick. Both must bind in
+/// one pass.
+#[test]
+fn cross_alias_match_conditions_see_siblings_filled_in_the_same_refresh() {
+    use byroredux_core::character::CharacterLevel;
+    use byroredux_plugin::esm::records::condition::{
+        ComparisonOp, Condition, ConditionValue, RunOn,
+    };
+
+    let mut world = World::new();
+    crate::register(&mut world);
+    world.register::<CharacterLevel>();
+
+    let anchor = world.spawn();
+    let dependent = world.spawn();
+    world.insert(
+        anchor,
+        SceneAliasCandidate {
+            reference_form_id: 0xA1,
+            base_form_id: 0xB1,
+            linked_refs: Vec::new(),
+            location_ref_types: Vec::new(),
+        },
+    );
+    world.insert(
+        dependent,
+        SceneAliasCandidate {
+            reference_form_id: 0xA2,
+            base_form_id: 0xB2,
+            linked_refs: Vec::new(),
+            location_ref_types: Vec::new(),
+        },
+    );
+    // The condition reads the *anchor's* level through alias 1, so only a
+    // resolution that sees alias 1's in-pass binding can pass it.
+    world.insert(anchor, CharacterLevel { level: 12, xp: 0 });
+
+    install_scene_quest_aliases(
+        &mut world,
+        [QustRecord {
+            form_id: QUEST,
+            aliases: vec![
+                QuestAlias {
+                    alias_id: 1,
+                    name: "Anchor".to_owned(),
+                    fill_type: Some(AliasFillType::ForcedReference(0xA1)),
+                    ..Default::default()
+                },
+                QuestAlias {
+                    alias_id: 2,
+                    name: "Dependent".to_owned(),
+                    fill_type: Some(AliasFillType::ForcedReference(0xA2)),
+                    // GetLevel(alias 1) == 12
+                    match_conditions: vec![Condition {
+                        function_index: 80,
+                        comparator: ComparisonOp::Eq,
+                        comparand: ConditionValue::Literal(12.0),
+                        run_on: RunOn::QuestAlias,
+                        extra_data_id: 1,
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }],
+    );
+
+    assert_eq!(
+        refresh_scene_actor_bindings(&world),
+        2,
+        "both aliases must bind in ONE refresh — the dependent's condition \
+         has to see the anchor filled earlier in this same pass (#2671)"
+    );
+    let bindings = world.resource::<SceneActorBindings>();
+    assert_eq!(bindings.resolve(QuestFormId(QUEST), 1), Some(anchor));
+    assert_eq!(
+        bindings.resolve(QuestFormId(QUEST), 2),
+        Some(dependent),
+        "the conditional fill must not lag a refresh behind its dependency"
+    );
+}
+
 #[test]
 fn quest_alias_reservations_block_later_quests_unless_allowed() {
     let mut world = World::new();

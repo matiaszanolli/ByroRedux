@@ -53,6 +53,8 @@
 //! function → safe-default" contract) and are logged at debug for
 //! future-catalog tracking.
 
+use std::collections::HashMap;
+
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::world::World;
 use byroredux_plugin::esm::records::condition::{Condition, ConditionList, ConditionValue, RunOn};
@@ -270,7 +272,7 @@ impl ConditionFunction {
 /// [`RunOn::Subject`], which defaults to `subject` (always Some, since
 /// every condition list runs in the context of a subject).
 #[derive(Debug, Clone, Copy)]
-pub struct ConditionContext {
+pub struct ConditionContext<'a> {
     /// The "self" entity — quest target, dialogue speaker, magic
     /// effect caster. Always populated.
     pub subject: EntityId,
@@ -287,9 +289,24 @@ pub struct ConditionContext {
     /// Owning quest for `RunOn::QuestAlias` resolution. Scene evaluation
     /// supplies this; consumers outside a quest leave it `None`.
     pub quest: Option<QuestFormId>,
+    /// Alias bindings resolved so far *in the refresh currently running*,
+    /// consulted by `RunOn::QuestAlias` ahead of the committed
+    /// [`SceneActorBindings`] table (#2671).
+    ///
+    /// The alias fill loop accumulates into a local map and commits it only
+    /// at the end of the pass, so without this a match-CTDA referencing a
+    /// *sibling* alias saw last refresh's binding — or nothing at all on the
+    /// first refresh — even when the sibling had already been filled earlier
+    /// in the same pass. That made cross-alias conditional fills lag one
+    /// refresh and, worse, order-dependent in a way the design does not
+    /// intend.
+    ///
+    /// `None` for every consumer outside that loop, which then reads the
+    /// committed table exactly as before.
+    pub pending_alias_bindings: Option<&'a HashMap<(QuestFormId, i32), EntityId>>,
 }
 
-impl ConditionContext {
+impl<'a> ConditionContext<'a> {
     /// Build a minimal context with only the subject populated. Most
     /// consumers (quest stage gates, dialogue branches) start here
     /// and add `target` per call.
@@ -300,7 +317,19 @@ impl ConditionContext {
             combat_target: None,
             linked_reference: None,
             quest: None,
+            pending_alias_bindings: None,
         }
+    }
+
+    /// Attach the in-progress alias-binding map so `RunOn::QuestAlias` can
+    /// see siblings filled earlier in the same refresh (#2671). See
+    /// [`Self::pending_alias_bindings`].
+    pub fn with_pending_alias_bindings(
+        mut self,
+        bindings: &'a HashMap<(QuestFormId, i32), EntityId>,
+    ) -> Self {
+        self.pending_alias_bindings = Some(bindings);
+        self
     }
 
     /// Attach an owning quest so `RunOn::QuestAlias` CTDAs can resolve the
@@ -329,8 +358,20 @@ impl ConditionContext {
             }
             RunOn::QuestAlias => {
                 let quest = self.quest?;
+                let alias_id = condition.extra_data_id as i32;
+                // #2671 — the in-progress pass wins. A sibling alias filled
+                // earlier in THIS refresh is not in `SceneActorBindings`
+                // yet (the fill loop commits once, at the end), so reading
+                // only the committed table made cross-alias conditions see
+                // stale data and self-correct a refresh later.
+                if let Some(&entity) = self
+                    .pending_alias_bindings
+                    .and_then(|pending| pending.get(&(quest, alias_id)))
+                {
+                    return Some(entity);
+                }
                 let bindings = world.try_resource::<SceneActorBindings>()?;
-                bindings.resolve(quest, condition.extra_data_id as i32)
+                bindings.resolve(quest, alias_id)
             }
             RunOn::PackageData | RunOn::EventData => {
                 log::trace!(
@@ -826,7 +867,7 @@ mod tests {
     use byroredux_core::ecs::world::World;
     use byroredux_plugin::esm::records::condition::{ComparisonOp, RunOn};
 
-    fn ctx(subject: EntityId) -> ConditionContext {
+    fn ctx(subject: EntityId) -> ConditionContext<'static> {
         ConditionContext::for_subject(subject)
     }
 

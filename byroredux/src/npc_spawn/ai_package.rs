@@ -442,13 +442,10 @@ fn select_active_package<'a>(
     game_hour: f32,
     packages: impl IntoIterator<Item = &'a PackRecord>,
 ) -> Option<&'a PackRecord> {
-    let context = ConditionContext {
-        subject: actor,
-        target: None,
-        combat_target: None,
-        linked_reference: None,
-        quest: None,
-    };
+    // #2671 — `ConditionContext` gained a `pending_alias_bindings` slot for
+    // the quest-alias fill loop; every other consumer, including this one,
+    // reads the committed `SceneActorBindings` table exactly as before.
+    let context = ConditionContext::for_subject(actor);
     byroredux_plugin::esm::records::active_package(packages, game_hour, |package| {
         package_conditions_pass(&package.conditions, world, &context)
     })
