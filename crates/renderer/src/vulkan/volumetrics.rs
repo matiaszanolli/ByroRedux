@@ -3322,14 +3322,34 @@ mod unit_tests {
 
     #[test]
     fn froxel_extent_uses_render_resolution_and_configured_divisor() {
-        let extent = froxel_extent(
-            vk::Extent2D {
-                width: 1280,
-                height: 720,
-            },
-            VolumetricsConfig::default(),
+        // Derive from the config rather than snapshotting the default: this
+        // test is named for the *relationship*, and hardcoding `[320, 180, 64]`
+        // made it a tripwire on the default's value instead (it broke when the
+        // divisor moved 4 -> 8, which is a retune, not a regression).
+        let config = VolumetricsConfig::default();
+        let render = vk::Extent2D {
+            width: 1280,
+            height: 720,
+        };
+        let extent = froxel_extent(render, config);
+        assert_eq!(
+            [extent.width, extent.height, extent.depth],
+            [
+                render.width.div_ceil(config.froxel_xy_divisor),
+                render.height.div_ceil(config.froxel_xy_divisor),
+                config.froxel_z_slices,
+            ]
         );
-        assert_eq!([extent.width, extent.height, extent.depth], [320, 180, 64]);
+        // And pin an explicit divisor so the relationship itself is covered
+        // independently of whatever the default happens to be.
+        let explicit = froxel_extent(
+            render,
+            VolumetricsConfig {
+                froxel_xy_divisor: 4,
+                ..config
+            },
+        );
+        assert_eq!([explicit.width, explicit.height], [320, 180]);
     }
 
     #[test]
@@ -3524,23 +3544,34 @@ mod unit_tests {
 
         // And the headline totals must match the formula, so a divisor change
         // cannot leave the table behind. Decimal MB, as the doc uses.
+        // Read the divisor from the config rather than hardcoding it, so a
+        // future retune fails on the DOC assertions below — which is the point
+        // — instead of on stale arithmetic here.
+        let config = crate::vulkan::upscaling::VolumetricsConfig::default();
         let total_mb = |w: u64, h: u64| -> f64 {
-            let (fx, fy) = (w.div_ceil(4), h.div_ceil(4));
-            (fx * fy * 64 * FROXEL_BYTES_PER_SLOT * MAX_FRAMES_IN_FLIGHT as u64) as f64 / 1.0e6
+            let d = config.froxel_xy_divisor as u64;
+            let (fx, fy) = (w.div_ceil(d), h.div_ceil(d));
+            (fx * fy
+                * config.froxel_z_slices as u64
+                * FROXEL_BYTES_PER_SLOT
+                * MAX_FRAMES_IN_FLIGHT as u64) as f64
+                / 1.0e6
         };
         assert!(
-            (total_mb(1920, 1080) - 729.9).abs() < 1.0,
-            "1080p: {}",
+            (total_mb(1920, 1080) - 182.5).abs() < 1.0,
+            "1080p native: {} MB",
             total_mb(1920, 1080)
         );
         assert!(
-            (total_mb(3840, 2160) - 2919.6).abs() < 1.0,
-            "4K: {}",
+            (total_mb(3840, 2160) - 729.9).abs() < 1.0,
+            "4K native: {} MB",
             total_mb(3840, 2160)
         );
         assert!(
-            DOC.contains("~730 MB") && DOC.contains("~2.92 GB"),
-            "memory-budget.md's volumetrics totals no longer match the formula (#3117)"
+            DOC.contains("~183 MB") && DOC.contains("~730 MB"),
+            "memory-budget.md's volumetrics totals no longer match the formula \
+             at the shipped froxel_xy_divisor of {} (#3117)",
+            config.froxel_xy_divisor
         );
     }
 }

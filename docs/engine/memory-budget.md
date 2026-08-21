@@ -232,8 +232,8 @@ every other entry in this section, the froxel grid scales with the
 **render** resolution (`froxel_extent`, deliberately downstream of the FSR
 preset query — using the final output resolution here would silently
 overspend whenever FSR Quality/Balanced/Performance is active). One froxel
-column per `froxel_xy_divisor` (default 4) render pixels in X/Y,
-`froxel_z_slices` (default 64) depth slices.
+column per `froxel_xy_divisor` (default **8**, Frostbite's own density) render
+pixels in X/Y, `froxel_z_slices` (default 64) depth slices.
 
 **Six volumes per frame-in-flight slot**, not two — `44 B/froxel/slot`
 (`FROXEL_VOLUMES_PER_SLOT` / `FROXEL_BYTES_PER_SLOT` in `volumetrics.rs`,
@@ -249,35 +249,80 @@ which the boot log and a regression test both read):
 | `emission_history_volumes` | R32F | 4 | deterministic-emission fraction (#2809) |
 | **Total** | | **44** | × `MAX_FRAMES_IN_FLIGHT` (2) = **88 B/froxel** |
 
-Formula: `ceil(width / 4) × ceil(height / 4) × 64 froxels × 44 B × 2 FIF`
+Formula: `ceil(width / 8) × ceil(height / 8) × 64 froxels × 44 B × 2 FIF`
 
 | Render extent | Grid (W×H×64) | Froxels | Total (6 volumes, 2 FIF) |
 |---|---|---:|---:|
-| 1920×1080 | 480×270×64 | 8 294 400 | **~730 MB** |
-| 2560×1440 | 640×360×64 | 14 745 600 | **~1.30 GB** |
-| 3840×2160 | 960×540×64 | 33 177 600 | **~2.92 GB** |
+| 1920×1080 | 240×135×64 | 2 073 600 | **~183 MB** |
+| 2560×1440 | 320×180×64 | 3 686 400 | **~324 MB** |
+| 3840×2160 | 480×270×64 | 8 294 400 | **~730 MB** |
 
-**This is the single largest resolution-scaled allocation in the engine, and
-FSR is the mitigation.** The grid keys on *render* extent, so an FSR preset
-shrinks it quadratically — FSR Quality (1.5×) at 1080p output renders
-1280×720 and costs **~324 MB**, and at 4K output renders 2560×1440 for
-**~1.30 GB**. Native 4K is the number the `< 4 GB` ceiling has to survive,
-and volumetrics alone consumes ~73 % of it before ReSTIR, SVGF, textures or
-BLAS. Treat native 4K + RT as out of budget on a 6 GB card
-(`feedback_vram_baseline.md`) unless the froxel divisor is raised.
+**This is still the largest resolution-scaled allocation in the engine.** The
+grid keys on *render* extent, so an FSR preset shrinks it quadratically — FSR
+Quality (1.5×) at 1080p output renders 1280×720 for **~81 MB**, and at 4K
+output renders 2560×1440 for **~324 MB**.
 
-The four combustion/emission volumes are allocated unconditionally with the
-pipeline (`context/mod.rs`), so they are resident in every session including
-scenes that never light a fire — ~400 MB at 1080p that a lazily-created
-combustion sub-group would return. That is a runtime change, not a ledger
-one, and is tracked separately.
+Budget per preset rather than against one ceiling — a single number is true for
+the default and false for a mode nobody targets:
+
+| Configuration | Volumetrics | Fixed floor (all resolution-scaled rows + scene SSBOs) |
+|---|---:|---:|
+| 1080p native | ~183 MB | ~1.10 GB |
+| 4K output, FSR Quality (renders 1440p) | ~324 MB | ~1.55 GB |
+| **4K native** (`--upscaler taa`) | ~730 MB | **~2.32 GB** |
+
+Native 4K leaves ~1.68 GB for vertices, textures, BLAS and TLAS against a
+~0.97 GB typical FNV interior, so the `< 4 GB` target now holds there too. It
+was **~4.51 GB — over the ceiling before any content loaded** — at the previous
+`froxel_xy_divisor` of 4.
+
+Four of the six volumes — the three combustion transport fields and the
+emission-history sidecar — are allocated unconditionally with the pipeline
+(`context/mod.rs`), so they are resident in every session including scenes that
+never light a fire. That is 20 B of the 22 B/froxel/FIF that fog alone does not
+need: **~133 MB of the 183 MB at 1080p, ~531 MB of the 730 MB at native 4K.**
+
+The end state is to move them into local high-density volumes attached to the
+effect, which is where compact fire belongs anyway — advection is numerically
+diffusive, so a coarser global grid roughly doubles smear per step and fire
+degrades at `/8` in a way fog does not.
+
+**Measured, not assumed** (2026-08-21, one binary, `--froxel-xy-divisor 4` vs
+`8`, fixed camera, `--upscaler taa`, capture at a fixed frame):
+
+| Scene | mean \|Δ\| per channel | where the difference is |
+|---|---:|---|
+| `--combustion-lab` (fire + fog) | 2.79 / 255 | flame region mean **7.18**, max **188**; rest of frame mean 2.59 |
+| FNV exterior `--grid 0,0` (fog, no fire) | **0.03 / 255** | 0.01 % of pixels differ by more than 8 |
+
+At `/4` the flame is a coherent tapered plume; at `/8` it breaks into two or
+three blocky columns with a squared top — the exact failure `0ff7b537` raised
+the density to avoid. The fog path is essentially insensitive to the divisor.
+So the divisor's whole perceptual cost is combustion, which is the argument for
+moving combustion local rather than for paying 4x globally. Note that neither a
+bilateral composite upsample nor a blue-noise march offset recovers this: both
+address sampling artifacts in the fog read, while this is advection diffusion in
+the transported field. Once they are local, the global grid is
+two volumes at 24 B/froxel (~199 MB at native 4K) and its density stops being a
+fire question at all. Runtime work, tracked separately.
+
+Note the inject and integrate dispatches are *already* skipped in a fogless
+frame — `requires_dispatch` falls back to `record_neutral_frame`, a single clear
+to `(0,0,0,1)` that composite applies as an exact no-op. The unconditional cost
+is residency, not bandwidth.
 
 Prior to Session 62 (2026-07-26→2026-08-01) the grid was a **fixed**
 160×90×128 volume regardless of resolution (≈59.0 MB total, the flat
 `56 MB` figure this section previously documented at every resolution —
 that older figure used a binary-MiB basis rather than this doc's
-decimal-MB convention elsewhere) — understating peak 4K VRAM by almost
-exactly 2× (118.0 MB vs. 59.0 MB) at that time.
+decimal-MB convention elsewhere).
+
+The old claim here — "understating peak 4K VRAM by almost exactly 2× (118.0 MB
+vs. 59.0 MB)" — was **circular**: it checked the pre-Session-62 grid against the
+bad summary row rather than against the code. That `~29.5 MB` row was the fixed
+160×90×128 grid counted at half its multiplicity, with a 4× resolution scale
+bolted onto a grid that by definition did not scale — wrong three ways at once.
+The real understatement was ~18×.
 
 The grid then grew along **two independent axes** without either reaching
 this ledger (#3117): `froxel_xy_divisor` went 8 → 4 in `0ff7b537`
@@ -498,14 +543,14 @@ the fence slot is complete before the tick runs (#418).
 | Glass + water caustics (2 FIF) | ~66 MB (1080p) | ~265 MB (4K) |
 | SSAO (2 FIF) | ~4 MB (1080p) | ~17 MB (4K) |
 | Bloom pyramid (2 FIF) | ~11 MB (1080p) | ~44 MB (4K) |
-| Volumetrics froxel grid (6 volumes, 44 B/froxel/slot, 2 FIF) | ~730 MB (1080p native) | **~2.92 GB (4K native)** — ~324 MB at 1080p / ~1.30 GB at 4K with FSR Quality |
+| Volumetrics froxel grid (6 volumes, 44 B/froxel/slot, 2 FIF) | ~183 MB (1080p native) | **~730 MB (4K native)** — ~81 MB at 1080p / ~324 MB at 4K with FSR Quality |
 | FSR 3.1 upscaler output (2 FIF, output resolution) | ~33 MB (1080p) | ~133 MB (4K) — SDK working memory not separately tracked |
 | Vertex / index pools | ~208 MB | ~1.66 GB cap |
 | Textures (BC compressed) | ~400 MB | ~2 GB |
 | BLAS structures | ~300 MB | ~1 GB (heavy scene) |
 | TLAS + scratch | ~50 MB | ~256 MB |
 | Pipeline cache blob | < 10 MB | — |
-| **Estimated total** | **~2.29 GB** | **exceeds the < 4 GB target at native 4K** — volumetrics alone is ~2.92 GB there; FSR Quality brings the peak back inside it |
+| **Estimated total** | **~1.74 GB** | **~3.4 GB at native 4K**, inside the < 4 GB target — see the per-preset table in the Volumetrics section |
 
 The 6 GB RT-minimum and 4 GB budget ceiling are not enforced by code;
 they are design targets. The RTX 4070 Ti (12 GB) has headroom for all

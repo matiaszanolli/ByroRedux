@@ -112,7 +112,27 @@ pub struct VolumetricsConfig {
 impl Default for VolumetricsConfig {
     fn default() -> Self {
         Self {
-            froxel_xy_divisor: 4,
+            // One froxel column per 8 render pixels. Session 62 shipped `4`
+            // (`0ff7b537`) to keep compact fire from collapsing into a single
+            // blocky ray column — the right problem, the wrong lever: density
+            // is the most expensive possible fix for it, costing 4x VRAM and
+            // 4x the inject dispatch globally to serve a local effect.
+            //
+            // At six volumes and 44 B/froxel/slot across 2 frames in flight,
+            // `4` put the froxel grid at 2.92 GB on a native-4K render extent
+            // — ~65% of a 4.51 GB fixed floor, breaching the documented < 4 GB
+            // ceiling before any content loads. `8` is 730 MB and a 2.32 GB
+            // floor, leaving ~1.68 GB for vertices/textures/BLAS against a
+            // ~0.97 GB typical FNV interior.
+            //
+            // Frostbite's own grid is 8x8; `4` was 2x denser than the
+            // reference. The compact-fire case belongs in local high-density
+            // volumes attached to the effect, which is also where the
+            // combustion transport fields belong — once they move, this grid
+            // is two volumes at 24 B/froxel and its density stops being a fire
+            // question at all. Still tunable per-run via
+            // `--froxel-xy-divisor` (validated 2..=32).
+            froxel_xy_divisor: 8,
             froxel_z_slices: 64,
             grid_far_meters: 128,
         }
@@ -412,10 +432,25 @@ mod tests {
     }
 
     #[test]
-    fn default_volumetrics_resolve_one_froxel_per_four_pixels() {
+    fn default_volumetrics_resolve_one_froxel_per_eight_pixels() {
         let config = VolumetricsConfig::default();
-        assert_eq!(config.froxel_xy_divisor, 4);
+        // Frostbite's reference density. Was 4 between `0ff7b537` and this
+        // change; see the `Default` impl for why it moved back.
+        assert_eq!(config.froxel_xy_divisor, 8);
         assert_eq!(config.froxel_z_slices, 64);
+        // The froxel grid is the single largest resolution-scaled allocation
+        // in the engine, so pin what this default actually costs: 6 volumes x
+        // 44 B/slot x 2 FIF = 88 B/froxel.
+        let froxels_4k = (3840u64.div_ceil(config.froxel_xy_divisor as u64))
+            * (2160u64.div_ceil(config.froxel_xy_divisor as u64))
+            * config.froxel_z_slices as u64;
+        let bytes_4k = froxels_4k * 44 * 2;
+        assert!(
+            (bytes_4k as f64 / 1.0e6 - 729.9).abs() < 1.0,
+            "native-4K froxel residency is {} MB, not the ~730 MB this default \
+             was chosen for — re-derive docs/engine/memory-budget.md",
+            bytes_4k as f64 / 1.0e6
+        );
     }
 
     #[test]
