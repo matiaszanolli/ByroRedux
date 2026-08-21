@@ -5,7 +5,7 @@
 //! unchanged from the pre-split `draw_frame`.
 
 use super::super::pipeline::{gamebryo_to_vk_compare_op, PipelineKey};
-use super::super::water::{WaterDrawCommand, MAX_WATER_DRAWS};
+use super::super::water::WaterDrawCommand;
 use super::draw::{group_state, needs_two_sided_blend_split, should_use_indirect_draws, DrawBatch};
 use super::{DrawCommand, VulkanContext};
 use ash::vk;
@@ -541,9 +541,7 @@ impl VulkanContext {
                             self.texture_registry.descriptor_set(frame), // #1258 — set 0
                             self.scene_buffers.descriptor_set(frame), // #1258 — set 1
                         );
-                        for (water_index, wc) in
-                            water_commands.iter().take(MAX_WATER_DRAWS).enumerate()
-                        {
+                        for (water_index, wc) in water_commands.iter().enumerate() {
                             if let Some(mesh) = self.mesh_registry.get(wc.mesh_handle) {
                                 // #2505 / D12-2026-08-07-03 — no live path
                                 // registers a water plane global-only today

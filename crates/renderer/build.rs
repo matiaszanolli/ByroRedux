@@ -603,6 +603,16 @@ fn main() {
     writeln!(out, "#define WATER_RIVER {WATER_RIVER}u").unwrap();
     writeln!(out, "#define WATER_RAPIDS {WATER_RAPIDS}u").unwrap();
     writeln!(out, "#define WATER_WATERFALL {WATER_WATERFALL}u").unwrap();
+    writeln!(
+        out,
+        "#define DEFAULT_WATER_WAVE_AMPLITUDE {DEFAULT_WATER_WAVE_AMPLITUDE:?}"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define DEFAULT_WATER_WAVE_FREQUENCY {DEFAULT_WATER_WAVE_FREQUENCY:?}"
+    )
+    .unwrap();
     writeln!(out).unwrap();
 
     writeln!(out, "// Local fog-volume clustering (M55/Session 62).").unwrap();

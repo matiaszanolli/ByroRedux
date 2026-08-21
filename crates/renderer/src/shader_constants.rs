@@ -211,6 +211,8 @@ mod tests {
             ("WATER_RIVER", format!("#define WATER_RIVER {WATER_RIVER}u")),
             ("WATER_RAPIDS", format!("#define WATER_RAPIDS {WATER_RAPIDS}u")),
             ("WATER_WATERFALL", format!("#define WATER_WATERFALL {WATER_WATERFALL}u")),
+            ("DEFAULT_WATER_WAVE_AMPLITUDE", format!("#define DEFAULT_WATER_WAVE_AMPLITUDE {DEFAULT_WATER_WAVE_AMPLITUDE:?}")),
+            ("DEFAULT_WATER_WAVE_FREQUENCY", format!("#define DEFAULT_WATER_WAVE_FREQUENCY {DEFAULT_WATER_WAVE_FREQUENCY:?}")),
             ("FOG_VOLUME_CLUSTER_DIM", format!("#define FOG_VOLUME_CLUSTER_DIM {FOG_VOLUME_CLUSTER_DIM}u")),
             ("MAX_FOG_VOLUMES_PER_CLUSTER", format!("#define MAX_FOG_VOLUMES_PER_CLUSTER {MAX_FOG_VOLUMES_PER_CLUSTER}u")),
             ("FOG_VOLUME_PROFILE_HOMOGENEOUS", format!("#define FOG_VOLUME_PROFILE_HOMOGENEOUS {FOG_VOLUME_PROFILE_HOMOGENEOUS:?}")),
@@ -572,6 +574,27 @@ mod tests {
                  the #define from shader_constants.glsl is the source of truth (#1256)",
             );
         }
+    }
+
+    #[test]
+    fn water_wave_sentinels_flow_from_core_into_glsl() {
+        use byroredux_core::ecs::components::water::{
+            WaterMaterial, DEFAULT_WATER_WAVE_AMPLITUDE, DEFAULT_WATER_WAVE_FREQUENCY,
+        };
+
+        let default = WaterMaterial::default();
+        assert_eq!(default.wave_amplitude, DEFAULT_WATER_WAVE_AMPLITUDE);
+        assert_eq!(default.wave_frequency, DEFAULT_WATER_WAVE_FREQUENCY);
+
+        let header = include_str!("../shaders/include/shader_constants.glsl");
+        assert!(header.contains("#define DEFAULT_WATER_WAVE_AMPLITUDE 0.05"));
+        assert!(header.contains("#define DEFAULT_WATER_WAVE_FREQUENCY 0.6"));
+
+        let shader = include_str!("../shaders/water.frag");
+        assert!(shader.contains("push.tune.w / DEFAULT_WATER_WAVE_AMPLITUDE"));
+        assert!(shader.contains("push.misc.y / DEFAULT_WATER_WAVE_FREQUENCY"));
+        assert!(!shader.contains("push.tune.w / 0.05"));
+        assert!(!shader.contains("push.misc.y / 0.6"));
     }
 
     /// TD4-206 / #1162 — `triangle.frag` must NOT redeclare any of the

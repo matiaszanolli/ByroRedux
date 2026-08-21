@@ -41,6 +41,12 @@
 use crate::ecs::sparse_set::SparseSetStorage;
 use crate::ecs::storage::{Component, EntityId};
 
+/// Canonical sentinel values for water records that omit authored wave data.
+/// Parser defaults, ECS defaults, and shader normalization all derive from
+/// these constants so compatibility water preserves one baseline response.
+pub const DEFAULT_WATER_WAVE_AMPLITUDE: f32 = 0.05;
+pub const DEFAULT_WATER_WAVE_FREQUENCY: f32 = 0.6;
+
 /// Canonical half-width of the waterline acceptance/hysteresis band, in
 /// Bethesda world units. Camera submersion and rigid-body contact must use
 /// this same value so overlapping surfaces and boundary transitions resolve
@@ -350,8 +356,8 @@ impl Default for WaterMaterial {
             // SENTINEL (WATAL §4): matches `WaterParams::default` so a
             // record that omits wave data resolves identically across
             // all games.
-            wave_amplitude: 0.05,
-            wave_frequency: 0.6,
+            wave_amplitude: DEFAULT_WATER_WAVE_AMPLITUDE,
+            wave_frequency: DEFAULT_WATER_WAVE_FREQUENCY,
             angular_velocity: 0.0,
             rain_response: 1.0,
             sun_specular_power: 50.0,

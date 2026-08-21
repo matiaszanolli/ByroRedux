@@ -1010,6 +1010,22 @@ fn couple_skin_compute_to_palette<T>(skin_compute: Option<T>, skin_palette_ok: b
     }
 }
 
+/// A water pipeline may only remain enabled when set 2 binding 0 can name a
+/// live storage image. Either the real accumulator or the pre-created sink is
+/// sufficient; losing both disables water instead of leaving an unwritten
+/// descriptor that `water.frag` atomically writes.
+fn couple_water_to_caustic_sink<T>(
+    water: Option<T>,
+    accumulator_ok: bool,
+    placeholder_ok: bool,
+) -> Option<T> {
+    if accumulator_ok || placeholder_ok {
+        water
+    } else {
+        None
+    }
+}
+
 /// Byte size of one per-frame image-health counter buffer (EX-05 / #2736):
 /// two `u32` atomics — non-finite RGB pixels and non-finite alpha pixels.
 const IMAGE_HEALTH_BUFFER_BYTES: vk::DeviceSize = 8;
@@ -2230,7 +2246,7 @@ impl VulkanContext {
         // RT-capable hardware (the only configuration this engine targets —
         // RT is mandatory) is unaffected: the pipeline is created exactly as
         // before. The matching draw-side skip lives in `draw.rs`.
-        let water = if device_caps.ray_query_supported {
+        let mut water = if device_caps.ray_query_supported {
             match WaterPipeline::new(
                 &device,
                 &gpu_allocator,
@@ -2352,6 +2368,17 @@ impl VulkanContext {
         // descriptor unwritten (init) or pointing at a destroyed view
         // (resize failure) is an atomic write to freed memory, not a
         // harmless no-op.
+        let water_was_enabled = water.is_some();
+        water = couple_water_to_caustic_sink(
+            water,
+            water_caustic_accum.is_some(),
+            placeholder_caustic_sink.is_some(),
+        );
+        if water_was_enabled && water.is_none() {
+            log::error!(
+                "Water pipeline has neither a caustic accumulator nor a placeholder storage sink; disabling water to preserve descriptor validity"
+            );
+        }
         if let Some(w) = water.as_ref() {
             let views: Option<Vec<vk::ImageView>> = match water_caustic_accum.as_ref() {
                 Some(accum) => Some(
@@ -2365,9 +2392,10 @@ impl VulkanContext {
                     .as_ref()
                     .map(|p| vec![p.view; super::sync::MAX_FRAMES_IN_FLIGHT]),
             };
-            if let Some(views) = views {
-                w.update_water_caustic_descriptors(&device, &views);
-            }
+            let views = views.expect(
+                "water/caustic coupling must disable water when both storage sinks are absent",
+            );
+            w.update_water_caustic_descriptors(&device, &views);
         }
 
         // 14a. SSAO pipeline (reads depth buffer after render pass)
@@ -4345,6 +4373,34 @@ mod skin_pipeline_coupling_tests {
     fn compute_absent_but_palette_ok_stays_none() {
         let skin_compute: Option<u32> = None;
         assert_eq!(couple_skin_compute_to_palette(skin_compute, true), None);
+    }
+}
+
+/// Regression for #3138: the water pipeline must never survive init with an
+/// unwritten storage-image descriptor.
+#[cfg(test)]
+mod water_caustic_coupling_tests {
+    use super::couple_water_to_caustic_sink;
+
+    #[test]
+    fn either_real_or_placeholder_sink_keeps_water_enabled() {
+        assert_eq!(
+            couple_water_to_caustic_sink(Some(7u32), true, false),
+            Some(7)
+        );
+        assert_eq!(
+            couple_water_to_caustic_sink(Some(7u32), false, true),
+            Some(7)
+        );
+        assert_eq!(
+            couple_water_to_caustic_sink(Some(7u32), true, true),
+            Some(7)
+        );
+    }
+
+    #[test]
+    fn losing_both_sinks_disables_water() {
+        assert_eq!(couple_water_to_caustic_sink(Some(7u32), false, false), None);
     }
 }
 

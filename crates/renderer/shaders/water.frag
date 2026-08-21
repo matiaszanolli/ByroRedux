@@ -56,7 +56,7 @@ layout(early_fragment_tests) in;
 //   thanks to the perturbed-normal averaging across the surface. The
 //   composite-pass tone-mapper + TAA handles the residual jitter.
 //
-// Per-water material data lives in a compact per-frame UBO. Keeping the
+// Per-water material data lives in a compact, growable per-frame SSBO. Keeping the
 // 352-byte record here, rather than in push constants, leaves room to grow
 // the canonical cross-game material without raising device requirements.
 struct WaterParams {
@@ -127,8 +127,8 @@ struct WaterParams {
     vec4 uv_offset;
 };
 
-layout(std140, set = 2, binding = 1) uniform WaterParamsBlock {
-    WaterParams params[186];
+layout(std430, set = 2, binding = 1) readonly buffer WaterParamsBlock {
+    WaterParams params[];
 } waterParams;
 
 layout(push_constant) uniform WaterDrawPush {
@@ -137,7 +137,7 @@ layout(push_constant) uniform WaterDrawPush {
 } drawPush;
 
 // Preserve the established `push.field` spelling throughout the shader;
-// every reference now resolves through the selected UBO record.
+// every reference now resolves through the selected SSBO record.
 #define push waterParams.params[drawPush.waterIndex]
 
 // WATER_CALM / WATER_RIVER / WATER_RAPIDS / WATER_WATERFALL now come
@@ -185,7 +185,7 @@ layout(location = 7) out float outFsrTransparency;
 // REN-D13-NEW-04), sampled by composite (#1257, Phase E) alongside
 // the existing causticTex. Bound at set 2 binding 0 per the
 // WaterPipeline pipeline-layout shape declared in #1255. Binding 1 is the
-// material UBO above.
+// material SSBO above.
 layout(set = 2, binding = 0, r32ui) uniform uimage2D waterCausticAccum;
 
 const float REFLECTION_MAX_DIST = 5000.0;
@@ -228,7 +228,7 @@ float valueNoise(vec2 p) {
 
 // `ampScale`/`freqScale` are the WATR-authored `wave_amplitude`/
 // `wave_frequency` (#2240), normalised against the engine sentinel
-// defaults (`WaterMaterial::default()`: 0.05 / 0.6 Hz — see
+// defaults (`WaterMaterial::default()` — see
 // `crates/core/src/ecs/components/water.rs`) so a plane with no
 // authored WATR (or one that round-trips the sentinel) reproduces
 // the pre-#2240 hardcoded chop exactly; other authored values scale
@@ -609,13 +609,13 @@ void main() {
     uint  noiseMapB = push.noise_indices.y;
     uint  noiseMapC = push.noise_indices.z;
     // WATR.ANAM is packed into the otherwise-unused fourth noise-index slot
-    // so the compact 12-vec4 UBO ABI remains stable.
+    // so the compact 22-vec4 SSBO ABI remains stable.
     float authoredOpacity = clamp(uintBitsToFloat(push.noise_indices.w), 0.0, 1.0);
     // #2240 — WATR-authored wave_amplitude/wave_frequency, normalised
     // against the WaterMaterial sentinel default (see
     // `sampleScrollingNormal`'s doc comment above).
-    float ampScale  = push.tune.w / 0.05;
-    float freqScale = push.misc.y / 0.6;
+    float ampScale  = push.tune.w / DEFAULT_WATER_WAVE_AMPLITUDE;
+    float freqScale = push.misc.y / DEFAULT_WATER_WAVE_FREQUENCY;
 
     // FO4/Starfield mesh water can author a BGSM flow map. Its RG direction
     // field bends the normal-map UVs over time; the world-WindField scroll is
@@ -698,7 +698,7 @@ void main() {
     // (where all three indices are identical) remain exact no-ops.
     vec3 nMix;
     // Skyrim WATR.FNAM bit 0x10 controls whether authored normal layers are
-    // blended. The UBO carries this gate in noise_falloff.y; legacy records
+    // blended. The SSBO carries this gate in noise_falloff.y; legacy records
     // use the canonical `1.0` default and retain the layered path.
     bool blendAuthoredNormals = push.noise_falloff.y > 0.5;
     bool hasAuthoredThirdLayer = noiseMapC != noiseMapA && noiseMapC != noiseMapB;

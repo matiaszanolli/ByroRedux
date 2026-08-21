@@ -163,6 +163,8 @@
 #define WATER_RIVER 1u
 #define WATER_RAPIDS 2u
 #define WATER_WATERFALL 3u
+#define DEFAULT_WATER_WAVE_AMPLITUDE 0.05
+#define DEFAULT_WATER_WAVE_FREQUENCY 0.6
 
 // Local fog-volume clustering (M55/Session 62).
 #define FOG_VOLUME_CLUSTER_DIM 16u

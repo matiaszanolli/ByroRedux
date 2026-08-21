@@ -106,7 +106,8 @@ struct WaterParams {
     uvec4 noise_indices;
     // x = authored NAM4 UV scale; yzw = authored NAM2/3/4 amplitude scales.
     vec4 detail;
-    // x = authored Skyrim noise-falloff distance; yzw reserved.
+    // x = authored Skyrim noise-falloff distance; y = Blend Normals gate;
+    // z = Starfield surface roughness; w = Skyrim Specular Radius.
     vec4 noise_falloff;
     // xyz = shallow/deep/surface-effect normal falloff multipliers.
     vec4 normal_falloff;
@@ -120,7 +121,7 @@ struct WaterParams {
     // authored rain-response (0..4). Not a free slot — same trap as
     // VolumetricsParams.render_origin.w / GpuCamera.render_origin.w.
     // Keep these trailing slots in lockstep with water.frag and
-    // GpuWaterParams so every array element uses the same 352-byte std140
+    // GpuWaterParams so every array element uses the same 352-byte std430
     // stride when the vertex shader selects a water material by index.
     vec4 absorption;
     // Starfield phytoplankton, sediment, yellow matter, oceanness.
@@ -135,8 +136,8 @@ struct WaterParams {
     // w = authored flow-map scale.
     vec4 uv_offset;
 };
-layout(std140, set = 2, binding = 1) uniform WaterParamsBlock {
-    WaterParams params[186];
+layout(std430, set = 2, binding = 1) readonly buffer WaterParamsBlock {
+    WaterParams params[];
 } waterParams;
 
 layout(push_constant) uniform WaterDrawPush {

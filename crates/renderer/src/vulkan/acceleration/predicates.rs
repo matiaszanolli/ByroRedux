@@ -676,14 +676,21 @@ pub(super) fn compute_blas_budget(
                 | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
         )
         .sharing_mode(vk::SharingMode::EXCLUSIVE);
+    // SAFETY: `device` is live; `create_info` is fully initialized and
+    // borrowed only for this call. The returned probe is destroyed below.
     let probe = unsafe {
         device
             .create_buffer(&create_info, None)
             .context("create BLAS memory-requirements probe buffer")?
     };
+    // SAFETY: `probe` was just created by `device` and remains live.
     let requirements = unsafe { device.get_buffer_memory_requirements(probe) };
+    // SAFETY: requirements have been copied out and no command buffer or
+    // allocation references this unbound probe buffer.
     unsafe { device.destroy_buffer(probe, None) };
 
+    // SAFETY: `physical_device` was selected from `instance` and both handles
+    // remain live for the renderer context's lifetime.
     let mem_props = unsafe { instance.get_physical_device_memory_properties(physical_device) };
     let heap_bytes = super::super::device::device_local_heap_bytes_for_memory_type_bits(
         &mem_props,

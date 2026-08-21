@@ -1111,7 +1111,7 @@ fn parse_glsl_struct_fields(src: &str, decl: &str) -> Vec<String> {
     const TYPES: &[&str] = &[
         "float", "uint", "int", "bool", "vec2", "vec3", "vec4", "mat2", "mat3", "mat4",
         // GpuInstance-only types (#2219 skinned_vertex_address + padding).
-        "uint64_t", "uvec2",
+        "uint64_t", "uvec2", "uvec4",
     ];
     let body =
         extract_struct_body(src, decl).unwrap_or_else(|| panic!("source must declare `{decl}`"));
@@ -1140,6 +1140,49 @@ fn parse_glsl_struct_fields(src: &str, decl: &str) -> Vec<String> {
         }
     }
     out
+}
+
+/// The water record is duplicated in Rust and both shader stages. Keep the
+/// field order and the growable std430 binding shape as one checked contract;
+/// a size-only assertion cannot detect two same-sized fields being swapped.
+#[test]
+fn gpu_water_params_rust_and_glsl_copies_stay_in_lockstep() {
+    let rust_src = include_str!("../water.rs");
+    let vert_src = include_str!("../../../shaders/water.vert");
+    let frag_src = include_str!("../../../shaders/water.frag");
+
+    let rust_fields = parse_rust_struct_fields(rust_src, "pub struct GpuWaterParams");
+    let vert_fields = parse_glsl_struct_fields(vert_src, "struct WaterParams");
+    let frag_fields = parse_glsl_struct_fields(frag_src, "struct WaterParams");
+    assert_eq!(
+        rust_fields.len(),
+        22,
+        "GpuWaterParams must remain 22 vec4 slots"
+    );
+    assert_eq!(
+        vert_fields, rust_fields,
+        "water.vert WaterParams field order drifted"
+    );
+    assert_eq!(
+        frag_fields, rust_fields,
+        "water.frag WaterParams field order drifted"
+    );
+
+    const SSBO_DECL: &str = "layout(std430, set = 2, binding = 1) readonly buffer WaterParamsBlock";
+    for (name, src) in [("water.vert", vert_src), ("water.frag", frag_src)] {
+        assert!(
+            src.contains(SSBO_DECL),
+            "{name} must bind water params as std430 SSBO"
+        );
+        assert!(
+            src.contains("WaterParams params[];"),
+            "{name} must use an unsized array"
+        );
+        assert!(
+            !src.contains("params[186]"),
+            "{name} retained the retired fixed cap"
+        );
+    }
 }
 
 /// #1657 / SF-D8-01 — cross-check the GLSL `struct GpuMaterial` field

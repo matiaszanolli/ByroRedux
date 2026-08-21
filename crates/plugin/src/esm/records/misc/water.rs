@@ -3,6 +3,9 @@
 use super::super::common::{read_zstring, CommonNamedFields};
 use crate::esm::reader::{FormIdRemap, GameKind, SubRecord};
 use crate::esm::sub_reader::SubReader;
+use byroredux_core::ecs::components::water::{
+    DEFAULT_WATER_WAVE_AMPLITUDE, DEFAULT_WATER_WAVE_FREQUENCY,
+};
 
 /// Remap a raw plugin-local FormID to global space, leaving 0 (no
 /// FormID / null ref) untouched. Same convention as `outfit.rs` / `actor.rs`'s
@@ -320,8 +323,8 @@ impl Default for WaterParams {
             wind_speed: 1.0,
             wind_direction: 0.0,
             angular_velocity: [0.0; 3],
-            wave_amplitude: 0.05,
-            wave_frequency: 0.6,
+            wave_amplitude: DEFAULT_WATER_WAVE_AMPLITUDE,
+            wave_frequency: DEFAULT_WATER_WAVE_FREQUENCY,
             rain_response: 1.0,
             sun_specular_power: 50.0,
             noise_uv_scale_a: 0.0,
