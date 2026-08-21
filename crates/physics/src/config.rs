@@ -70,6 +70,17 @@ pub struct ContactConfig {
 
     /// `KinematicCharacterController.offset` distance in BU. Was 4.0
     /// before unification.
+    ///
+    /// **Invariant (#2885): `kcc_offset_bu > 2.0 * default_contact_skin_bu`.**
+    /// Two colliders each contribute their own skin, so a player capsule
+    /// resting on a floor is separated by `2 * default_contact_skin_bu`; the
+    /// KCC offset must clear that or the controller starts every step already
+    /// inside the skin-inflated floor — the #2193 "blocked but permanently
+    /// ungrounded" configuration. `capsule_center_y_on_surface`
+    /// (`byroredux/src/scene.rs`) derives spawn height from this field alone
+    /// and does not account for the skin, so the relation is what keeps spawn
+    /// placement sound. Pinned by
+    /// `kcc_offset_clears_the_combined_contact_skin`.
     pub kcc_offset_bu: f32,
 
     /// Extra angular damping added to every ragdoll body on top of the
@@ -133,5 +144,32 @@ mod tests {
         let c = ContactConfig::default();
         assert_eq!(c.kcc_offset_bu, 4.0, "must match world.rs:285 value");
         assert!(c.default_contact_skin_bu >= 0.0);
+        // #2884 — the damping dial is documented as the biggest "less floppy
+        // than Havok" lever, so a stray non-zero default would change every
+        // ragdoll's feel with nothing failing. Pin the inert default.
+        assert_eq!(
+            c.ragdoll_extra_angular_damping, 0.0,
+            "default must stay inert — non-zero alters every ragdoll's settle \
+             behaviour (physal.md §4); opt in per-config instead"
+        );
+    }
+
+    /// #2885 — the defaults are consistent today, but nothing enforced the
+    /// relation, and `ContactConfig`'s own doc invites single-field re-tuning.
+    /// Raising `default_contact_skin_bu` to or above half the KCC offset
+    /// reproduces #2193 (blocked but permanently ungrounded) with no test
+    /// failure anywhere.
+    #[test]
+    fn kcc_offset_clears_the_combined_contact_skin() {
+        let c = ContactConfig::default();
+        assert!(
+            c.kcc_offset_bu > 2.0 * c.default_contact_skin_bu,
+            "kcc_offset_bu ({}) must exceed the combined two-collider skin \
+             ({} = 2 x {}); otherwise the character controller begins each \
+             step inside the skin-inflated floor (#2193)",
+            c.kcc_offset_bu,
+            2.0 * c.default_contact_skin_bu,
+            c.default_contact_skin_bu,
+        );
     }
 }

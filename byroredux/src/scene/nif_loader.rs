@@ -316,6 +316,34 @@ pub(super) fn parse_import_and_merge(
         };
         log::warn!("NIF '{}' imported with zero meshes — {}", label, cause_hint,);
     }
+    // #2882 / PHYS-D4-02 — tell "no ragdoll authored" apart from "ragdoll
+    // authored but undecodable". `extract_ragdoll` bails silently when no
+    // `BhkConstraint` / `BhkBreakableConstraint` block exists, which on
+    // FO4 / FO76 / Starfield is the *normal* state even for a fully rigged
+    // skeleton: the constraint graph lives inside the still-undecoded
+    // `BhkSystemBinary` blob. Without this the `ragdoll` console command
+    // reports "entity N has no RagdollTemplate" — byte-identical to the
+    // message for a rock.
+    //
+    // Sited here rather than in `extract_ragdoll` because the collider path
+    // already proves the cheap census is the right signal
+    // (`cell_loader/partial.rs`, `references/import.rs`), and because this
+    // function is the *loose*-NIF path — bulk cell architecture goes through
+    // the cell loader, so this cannot flood a cell load the way a diagnostic
+    // inside the shared extractor would.
+    if imported.ragdoll.is_none() {
+        let summary = byroredux_nif::import::collision::summarize_collision_authoring(&scene);
+        if summary.needs_packed_havok_fallback() {
+            log::info!(
+                "NIF '{}': {} packed-Havok collision object(s) authored but no ragdoll \
+                 articulation was extracted — the constraint graph is inside an undecoded \
+                 BhkSystemBinary (FO4+/FO76/Starfield). This is a documented PHYSAL \
+                 limitation (rollout step 6), not an unrigged asset.",
+                label,
+                summary.new_physics,
+            );
+        }
+    }
     Some(imported)
 }
 

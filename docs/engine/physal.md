@@ -115,8 +115,20 @@ both produces scale² geometry while ragdoll articulation remains scale¹ (#3064
 
 ### Source boundary — per-game constraint decode
 
-The whole per-game seam is the typed decode of two constraint CInfos
-(`crates/nif/src/blocks/collision/constraints.rs`). The importer
+> **Not the only seam.** §1 enumerates three source-boundary seams and all three
+> are live in this pipeline: the constraint decode described below, `havok_scale_for`
+> (`crates/nif/src/lib.rs` — the compatibility table below depends on it for the
+> Skyrim+ ×69.99 row), and collision-object-kind dispatch. All three sit at the
+> parse→canonical boundary, which is what the doctrine requires; an earlier
+> wording here claimed "the whole per-game seam" was the constraint decode alone,
+> which contradicted §1 and the table twenty lines below it (#2883).
+>
+> `humanoid_skeleton_path(GameKind)` (`byroredux/src/npc_spawn.rs`) game-branches
+> *which* skeleton asset feeds this pipeline. That is asset resolution, not
+> physics translation — no physics semantics, not a fourth seam.
+
+The per-game seam **in the constraint graph** is the typed decode of two
+constraint CInfos (`crates/nif/src/blocks/collision/constraints.rs`). The importer
 (`ragdoll_joint` / `limited_hinge_joint`) reads the **common subset** of
 fields (twist/plane/pivot + angle limits for ragdoll; axis/perp/pivot +
 limits for hinge — the LimitedHinge perp-axis zero-reference threads through

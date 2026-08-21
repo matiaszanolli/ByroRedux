@@ -1130,4 +1130,105 @@ mod tests {
              isn't reaching build_joint: {built_rotation:?}"
         );
     }
+
+    /// #2884 — `remove_ragdoll` had **zero** test coverage: three grep hits
+    /// (definition, one doc reference, one production call site in
+    /// `cell_loader/unload.rs`) and nothing exercising it. The one adjacent
+    /// test, `reactivating_ragdoll_does_not_leak_previous_bodies`, covers the
+    /// #2083 double-*activate* path, not the build→remove cycle #1531 was
+    /// filed against.
+    ///
+    /// A **branching** tree (not a chain) is deliberate: the multibody joint
+    /// set indexes differently for a body with two children, so a linear spec
+    /// would miss a whole class of arena drift. Repeated so a leak that only
+    /// shows on reuse of freed arena slots surfaces.
+    #[test]
+    fn build_remove_cycle_leaves_no_bodies_colliders_or_multibodies() {
+        let mut pw = PhysicsWorld::new();
+
+        // root ─┬─ 1 ─┬─ 3        two children at two levels, so at least one
+        //       │     └─ 4        body carries >1 outgoing joint
+        //       └─ 2 ─┬─ 5
+        //             └─ 6
+        let spec = RagdollSpec {
+            bodies: (0..7)
+                .map(|i| ball_body(i as EntityId, i as f32 * 30.0, 100.0))
+                .collect(),
+            constraints: vec![
+                loose_ragdoll(0, 1),
+                loose_ragdoll(0, 2),
+                loose_ragdoll(1, 3),
+                loose_ragdoll(1, 4),
+                loose_ragdoll(2, 5),
+                loose_ragdoll(2, 6),
+            ],
+        };
+
+        for cycle in 0..3 {
+            let rag = build_ragdoll(&mut pw, &spec, &ContactConfig::DEFAULT);
+            assert_eq!(
+                rag.bodies.len(),
+                7,
+                "cycle {cycle}: every spec body must be built"
+            );
+            assert_eq!(pw.body_count(), 7, "cycle {cycle}: bodies live after build");
+
+            pw.step(PHYSICS_DT);
+            pw.remove_ragdoll(&rag);
+
+            assert_eq!(
+                pw.body_count(),
+                0,
+                "cycle {cycle}: remove_ragdoll must drop every body (#1531)"
+            );
+            assert_eq!(
+                pw.colliders.len(),
+                0,
+                "cycle {cycle}: colliders must cascade out with their bodies"
+            );
+            assert_eq!(
+                pw.multibody_joints.multibodies().count(),
+                0,
+                "cycle {cycle}: multibody joints must cascade out too — a \
+                 stranded multibody is the #1531 leak shape"
+            );
+        }
+    }
+
+    /// #2884 — `ragdoll_extra_angular_damping` is documented in
+    /// `physal.md` §4 as the biggest "less floppy than Havok" lever, and it is
+    /// added in the *body* loop. Nothing pinned that it lands once per body
+    /// rather than once per constraint, so a refactor moving it into the joint
+    /// loop would silently double it on any body with two joints.
+    #[test]
+    fn extra_angular_damping_is_added_once_per_body_not_once_per_joint() {
+        let mut pw = PhysicsWorld::new();
+        let cfg = ContactConfig {
+            ragdoll_extra_angular_damping: 0.75,
+            ..ContactConfig::DEFAULT
+        };
+
+        // Body 0 carries two joints; bodies 1 and 2 carry one each. If the
+        // extra were applied per joint, body 0 would land at authored + 1.50.
+        let spec = RagdollSpec {
+            bodies: (0..3)
+                .map(|i| ball_body(i as EntityId, i as f32 * 30.0, 100.0))
+                .collect(),
+            constraints: vec![loose_ragdoll(0, 1), loose_ragdoll(0, 2)],
+        };
+
+        let rag = build_ragdoll(&mut pw, &spec, &cfg);
+        let authored = 0.05_f32; // `ball_body`'s angular_damping
+
+        for (idx, (_, h, _)) in rag.bodies.iter().enumerate() {
+            let actual = pw.bodies[*h].angular_damping();
+            assert!(
+                (actual - (authored + 0.75)).abs() < 1e-5,
+                "body {idx}: expected authored {authored} + extra 0.75 = {}, got {actual} \
+                 (per-joint application would give {} on the two-joint body)",
+                authored + 0.75,
+                authored + 1.5,
+            );
+        }
+    }
 }
