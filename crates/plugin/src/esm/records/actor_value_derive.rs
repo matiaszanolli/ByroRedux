@@ -42,9 +42,36 @@
 //!   so it is left out rather than fabricated. The base values below are
 //!   correct; tag skills will read a few points low until the level model
 //!   is pinned against the engine.
-//! - **Non-auto-calc NPCs.** NPCs with "Auto-calculate stats" off store
-//!   their own SPECIAL; we always use the class base attributes. Correct
-//!   for the auto-calc majority; an approximation for hand-tuned actors.
+//! - **Non-auto-calc NPCs — ~40 % of every FO3/FNV actor, not a tail
+//!   (#2957).** The discriminator is `ACBS` flag bit 4 (`0x0010`,
+//!   "Auto-calculate stats"): when it is *clear* the NPC stores its own
+//!   SPECIAL and skills in the `NPC_` record's DNAM-era layout, and those
+//!   authored values — not the class averages — are what the game reads.
+//!   [`derive_autocalc_actor_values`] never consults `acbs_flags`; it goes
+//!   straight to the class for every FO3/FNV actor.
+//!
+//!   Censused over the vanilla masters (`cargo run -p byroredux-plugin
+//!   --example autocalc_census -- FalloutNV.esm Fallout3.esm`):
+//!
+//!   |                  |    FNV    |    FO3    |
+//!   |------------------|-----------|-----------|
+//!   | `NPC_` records   |   3816    |   1647    |
+//!   | auto-calc **ON** | 2283 (59.8 %) | 935 (56.8 %) |
+//!   | auto-calc **OFF**| **1533 (40.2 %)** | **712 (43.2 %)** |
+//!
+//!   So this is a bare-majority-correct path, not a near-universal one: ~1500
+//!   FNV and ~700 FO3 actors — disproportionately the hand-authored named
+//!   NPCs that quests and dialogue conditions target — currently receive
+//!   class-averaged stats instead of their authored ones.
+//!
+//!   The deferral stands because the stored values are not merely unread,
+//!   they are **unparsed**: the FO3/FNV `NPC_` DNAM skill/SPECIAL block has
+//!   no parser arm at all (the only actor-value-capturing `b"DNAM"` arm is
+//!   gated on `GameKind::uses_actor_value_properties`, i.e. FO4+). That parse
+//!   is `/audit-esm` Dimension 4 work — `NPC_` record decoding, not CHARAL.
+//!   Once it lands, [`derive_npc_actor_values`] gains a third arm gated on
+//!   this bit, in the same resolve-or-skip shape the FO4 and Skyrim arms
+//!   already use.
 //! - **Derived attributes** beyond FO3/FNV/Skyrim Health and FO4's baked
 //!   Health / Action Points (Carry Weight, regeneration, …).
 //!

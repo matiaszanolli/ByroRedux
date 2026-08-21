@@ -236,6 +236,39 @@ have no citable source yet (§9). The mechanism is proven with stand-in data
 `AfflictionStatus` at spawn, registering the tick system, populating real tables —
 waits on that data.
 
+### 4.7 `PoolRegenAccumulator` — **NEW, BUILT** (pool regeneration, the layer's only fixed-step system)
+
+```rust
+pub struct PoolRegenAccumulator { seconds: f32 }                                   // the fixed 60 Hz clock
+pub struct PoolRegenConfig { fatigue_avif: u32, magicka_avif: u32, willpower_avif: u32 }  // per-game resolved AVIF ids
+```
+
+Passive Fatigue/Magicka regeneration. Every regen rate sourced so far is expressed
+**per real-time second**, so applying `rate × frame_dt` would make regen frame-rate
+dependent; `PoolRegenAccumulator` drains the variable frame `dt` in fixed
+`POOL_REGEN_DT` (1/60 s) increments with a substep cap, mirroring `crates/physics`'s
+accumulator. This is the **only time-integrated system in CHARAL** — `derived_value`
+and `affliction_tick_system` are both stateless / on-demand.
+
+Sourced (classic Oblivion, `charal-oblivion-ruleset.md`; Remastered's diverging math is
+out of scope):
+
+| Pool | Rate | Constants |
+|---|---|---|
+| Fatigue | flat `10`/sec | `FATIGUE_REGEN_PER_SEC` (`fFatigueReturnBase`=10, `fFatigureReturnMult`=0 in vanilla) |
+| Magicka | `(Willpower × 0.02 + 0.75) × (MaxMagicka / 100)` | `MAGICKA_REGEN_WILLPOWER_COEFF` / `MAGICKA_REGEN_BASE`, via `magicka_regen_per_sec` |
+| Health | **none** — no passive regen in classic Oblivion | deliberately unmodelled |
+
+**Mechanism BUILT, registered, and no-op.** `pool_regen_tick_system` is registered in
+`Stage::Update` (`byroredux/src/boot.rs`) and runs every frame, but early-returns
+forever: its required `PoolRegenConfig` is inserted only by unit tests, never by a
+live per-game path (`oblivion_pool_regen_config` builds one, nothing calls it at
+load). Same shape as §4.6 — mechanism ahead of its wiring. Stunted Magicka is
+modelled in the formula (`magicka_regen_per_sec`'s `stunted` parameter) but always
+passed `false`, because no status-effect component exists to carry the flag.
+
+---
+
 ---
 
 ## 5. The per-game ruleset (the data the user provides)
@@ -291,8 +324,12 @@ xp_per_skill_rank, pool_pick_gain, level_cap }` (Skyrim — `SKYRIM` = 25·L+75 
 rank, +10 pool pick + perk/level; UESP-sourced). Skyrim helpers: `xp_from_skill_rank`,
 `pool_pick_gain`. **`skyrim_ruleset(resolve)`** assembles TES V: empty `AttributeSet::SKYRIM`
 (no attributes) + the 18 ungoverned `SkillSet::SKYRIM` skills + `LevelingModel::SKYRIM`, with
-an **empty derived table** (Health/Magicka/Stamina aren't attribute-derived — they start at
-`SKYRIM_POOL_BASE` 100 and grow only by the level pick). Archery/Speech use their CK internal
+**two derived rows and no attribute-derived pools** — an Armor Rating multiplier
+(`LIGHT_ARMOR_RATING_COEFF` 0.004, player-only scope) and Carry Weight
+(`CARRY_WEIGHT_BIAS` 250 + `CARRY_WEIGHT_STAMINA_COEFF` 0.5 × base Stamina). The
+*pools* really are underived: Health/Magicka/Stamina start at `SKYRIM_POOL_BASE` 100
+and grow only by the level pick, which is why Skyrim has no SPECIAL-style
+attribute → pool table at all. Archery/Speech use their CK internal
 AV names (`Marksman`/`Speechcraft`); resolution is verified at load (resolve-or-skip).
 **`oblivion_ruleset(resolve)`
 now assembles the full TES ruleset end-to-end** — `AttributeSet::TES_CLASSIC` +
@@ -522,11 +559,15 @@ while). Struck-through items are done; the remaining two are genuinely open.
 3. ~~**FO4 `CharacterRuleset` builder**~~ — shipped: `fallout4_ruleset()`
    (`crates/core/src/character/fallout.rs`), SPECIAL roster + Health/Action
    Points/Carry Weight/Melee Damage derived formulas, 4 tests green. **What's
-   still open** is narrower than this item's original framing: **FO4 NPC
-   *population*** — resolving actual per-NPC SPECIAL values from ESM storage
-   (PRPS property pairs vs. `RACE`/template inheritance vs. both, §9) — is
-   unstarted, plus perk-gate population. The ruleset/formula half this item
-   was named for is done; only the ESM-reading half remains.
+   still open** is narrower than this item's original framing, and narrower
+   again since: **FO4 NPC *population*** shipped its main path.
+   `derive_stored_actor_values`
+   (`crates/plugin/src/esm/records/actor_value_derive.rs`) reads the `NPC_`
+   `PRPS` property pairs verbatim plus the baked `DNAM` `Calculated Health` /
+   `Action Points`, gated on `GameKind::uses_actor_value_properties`, with
+   wire-level tests in `crates/plugin/src/esm/records/actor/tests.rs`. What
+   remains is the **`RACE`/template inheritance fallback** for NPCs that
+   author no `PRPS` pairs of their own, plus perk-gate population.
 4. ~~**Canonical model**~~ — shipped: `CharacterLevel` / `Perks` / `Background`
    components (`character/components.rs`), `CharacterRuleset` is a real
    `Resource` (`impl Resource for CharacterRuleset`, `ruleset.rs:128`).
@@ -556,10 +597,14 @@ follows the smoke-test pattern).
 
 ## 9. Open research items (no-guessing — [[feedback_no_guessing]])
 
-- **FO4 NPC SPECIAL storage.** Whether FO4 NPCs store SPECIAL as `PRPS`
-  `(AVIF FormID, value)` property pairs, inherit from `RACE`/template, or both —
-  needed before FO4 population (item 3). *(Research was in flight when CHARAL was
-  proposed; resume before implementing FO4.)*
+- ~~**FO4 NPC SPECIAL storage.**~~ **CLOSED** — answered by this spec's own
+  child capture: `charal-fo4-ruleset.md` § "NPC SPECIAL storage — RESOLVED
+  (xEdit `Core/wbDefinitionsFO4.pas`, dev-4.1.6)". It is the **`PRPS`
+  (Properties) subrecord**, `(AVIF FormID, value)` pairs, with Health and
+  Action Points additionally baked into `DNAM`. Consumed by
+  `derive_stored_actor_values` (§8 item 3). Only the `RACE`/template fallback
+  for NPCs authoring no `PRPS` of their own is still open, and that is an
+  implementation gap, not a research one.
 - **Per-game derived-stat formulas.** Health / AP / Carry Weight / Melee Damage /
   Magicka / Stamina as functions of attributes + level — one citable formula per
   game (FO4 first).

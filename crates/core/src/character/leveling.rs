@@ -16,8 +16,19 @@
 //!   The level-up attribute bonuses are implemented by the TES leveling
 //!   helpers (`docs/engine/charal.md` §5). Sourced: UESP
 //!   *Oblivion:Leveling*.
+//! * [`LevelingModel::SkillXp`] — **Skyrim**. A third shape, neither of the
+//!   above: skill *use* grants XP (1 per skill rank, `xp_from_skill_rank`)
+//!   against a character XP-to-next curve `xp_mult·L + xp_base`
+//!   (`SKYRIM` = 25·L + 75), and each level-up grants a +10 Health/Magicka/
+//!   Stamina pool pick plus a perk. Sourced in
+//!   `docs/engine/charal-skyrim-ruleset.md`; the curve constants overlay the
+//!   authored `fXPLevelUpBase` / `fXPLevelUpMult` / `fXPPerSkillRank` GMSTs
+//!   when present.
 //!
-//! Skyrim's per-skill-XP model (`SkillXp`) is the third shipped variant.
+//! Starfield is a documented **fourth** shape (skill points spent on
+//! challenge-gated per-skill ranks) and is deliberately absent: its XP curve
+//! and category-spend thresholds are unpublished research (`charal.md` §9),
+//! so no `LevelingModel::STARFIELD` is buildable yet.
 
 /// What a single level-up grants in the [`LevelingModel::XpCurve`] (Fallout)
 /// model — the per-game progression seam.

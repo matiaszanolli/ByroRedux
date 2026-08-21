@@ -3,17 +3,22 @@
 //! The game-agnostic tier that per-game character rulesets translate into:
 //! attributes, skills, perks, level, and derived stats, all resolved so the
 //! gameplay runtime reads one representation regardless of source game. See
-//! the design doc `docs/engine/charal.md` and the per-game data captures
-//! `docs/engine/charal-fo4-ruleset.md` / `charal-fnv-fo3-ruleset.md`.
+//! the design doc `docs/engine/charal.md` and the six per-game data captures
+//! it indexes: `docs/engine/charal-fo4-ruleset.md`,
+//! `charal-fnv-fo3-ruleset.md`, `charal-oblivion-ruleset.md`,
+//! `charal-skyrim-ruleset.md`, `charal-fo76-ruleset.md`, and
+//! `charal-starfield-ruleset.md`.
 //!
 //! The numeric substrate is [`crate::ecs::components::ActorValues`] (shipped
 //! with #1663). This module adds the *rules* and *structure* layered over it:
 //!
 //! * [`derived`] — [`DerivedStatFormula`], the fixed-layout bilinear formula
 //!   every Bethesda derived stat (Health, AP, Carry Weight, …) reduces to.
-//! * [`leveling`] — [`LevelingModel`] (enum) + [`LevelReward`]: the FO
-//!   XP-curve + reward (FO4 SPECIAL-or-perk vs FO3/FNV skill points) vs the
-//!   TES skill-use model (Oblivion: 10 major-skill-ups → level).
+//! * [`leveling`] — [`LevelingModel`] (enum) + [`LevelReward`]: all three
+//!   shipped shapes — `XpCurve` (Fallout: XP-to-next curve + reward, FO4
+//!   SPECIAL-or-perk vs FO3/FNV skill points), `SkillUse` (classic TES —
+//!   Oblivion: 10 major-skill-ups → level), and `SkillXp` (Skyrim: per-skill
+//!   XP, `25·L+75` to next, +10 pool pick and a perk per level).
 //! * [`ruleset`] — [`CharacterRuleset`], the per-game `Resource` bundling the
 //!   derived-formula table + leveling model.
 //! * [`reputation`] — the reputation family: [`KarmaBand`] (FO3/FNV Karma) +
@@ -32,10 +37,32 @@
 //!   AVIF ids) + [`pool_regen_tick_system`] (the driver).
 //! * [`components`] — [`CharacterLevel`] / [`Perks`] / [`Background`], the
 //!   structural per-actor ECS components.
+//! * [`attribute`] — [`Attribute`] / [`AttributeSet`]: the per-family
+//!   attribute roster (`FALLOUT` SPECIAL, `TES_CLASSIC`, and Skyrim's
+//!   deliberately empty set) plus its canonical ordering.
+//! * [`skill`] — [`SkillDef`] / [`SkillSet`] / [`ResolvedSkill`]: the
+//!   per-game skill roster and its governing-attribute map, resolved to
+//!   `AVIF` FormIDs at load (resolve-or-skip).
+//! * **Per-game family impls** — where every per-game *number* actually
+//!   lives, one module per lineage:
+//!   * [`fallout`] — [`fallout3_ruleset`], [`falloutnv_ruleset`],
+//!     [`fallout4_ruleset`] + [`MeleeDamageConfig`].
+//!   * [`tes`] — [`oblivion_ruleset`] + the classic-TES pool/level helpers.
+//!   * [`skyrim`] — [`skyrim_ruleset`] + the per-skill-XP helpers.
+//! * [`profile`] — [`CharacterRulesProfile`], the narrow per-game rules key
+//!   the parser translates its broad `GameKind` into (FO3 and FNV share one
+//!   `GameKind` but not one ruleset), plus [`NpcHealthCurve`] /
+//!   [`NpcStatModel`].
 //!
 //! Per-game **population** lives at the parser boundary (FO4 `PRPS`/`DNAM`,
 //! FNV/FO3 class auto-calc) in `byroredux_plugin`; this crate holds the
-//! game-agnostic canonical types those boundaries feed.
+//! game-agnostic canonical types those boundaries feed. The rulesets
+//! themselves have exactly one construction site —
+//! `CharacterRulesProfile::build_ruleset`, reached from
+//! `build_character_ruleset` (`byroredux/src/npc_spawn.rs`) — so "is game X
+//! wired?" is answered there, not by whether a `*_ruleset()` builder exists
+//! (Oblivion's and Skyrim's do, and are not yet reachable: #2961's matrix
+//! row).
 //!
 //! See also [`crate::combat`] and [`crate::stealth`] — CHARAL-*adjacent*
 //! siblings (not submodules of this module) that read `ActorValues` as
@@ -97,6 +124,45 @@ pub use tes::{
 
 #[cfg(test)]
 mod tests {
+    /// Regression for CHAR-D6-01 / #2958. The docstring above is the entry
+    /// point every CHARAL contributor reads first, and it had drifted to
+    /// covering 8 of 14 sub-modules — the five it omitted were the entire
+    /// attribute/skill roster half *and* all three per-game family impls, so
+    /// a reader working only from it would conclude the crate had no ruleset
+    /// builders at all. Counting `pub mod` declarations against the
+    /// docstring's own bullets (the `DBG_BITS` catalog-parity pattern, one
+    /// crate over) makes that specific drift impossible to reintroduce: a
+    /// new sub-module must be indexed, not merely declared.
+    #[test]
+    fn mod_docstring_indexes_every_sub_module() {
+        let src = include_str!("mod.rs");
+        let docstring: String = src
+            .lines()
+            .take_while(|line| line.starts_with("//!"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let declared: Vec<&str> = src
+            .lines()
+            .filter_map(|line| line.strip_prefix("pub mod "))
+            .filter_map(|rest| rest.strip_suffix(';'))
+            .collect();
+        assert_eq!(
+            declared.len(),
+            14,
+            "sub-module count changed — {declared:?}"
+        );
+        for module in declared {
+            assert!(
+                docstring.contains(&format!("[`{module}`]")),
+                "character::mod's docstring never mentions the `{module}` \
+                 sub-module. Every `pub mod` needs an index entry: this \
+                 docstring is the layer's entry point, and #2958 was five \
+                 modules — including every ruleset builder — invisible from \
+                 it while re-exported eleven lines below."
+            );
+        }
+    }
+
     /// Regression for CHAR-D6-05 / #2962. `combat.rs` and `stealth.rs` held
     /// CHARAL-sourced constants outside every audit skill's declared scope —
     /// this docstring's "see also" pointer is one of the fixes that closed
