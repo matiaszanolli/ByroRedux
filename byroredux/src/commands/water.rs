@@ -54,6 +54,10 @@ impl ConsoleCommand for WaterDumpCommand {
         let volume_q = world.query::<WaterVolume>();
         let flow_q = world.query::<WaterFlow>();
         let plane_count = plane_q.as_ref().map_or(0, |query| query.len());
+        let camera_material = camera_state
+            .and_then(|state| state.surface_entity)
+            .and_then(|surface| plane_q.as_ref()?.get(surface))
+            .map(|plane| plane.material.source_form);
 
         let mut lines = vec![format!("Water dump: planes={plane_count}")];
         let lod_q = world.query::<WaterLodInfo>();
@@ -77,9 +81,8 @@ impl ConsoleCommand for WaterDumpCommand {
                 position.z,
                 state.head_submerged,
                 state.depth,
-                state
-                    .material
-                    .map(|material| format!("0x{:08X}", material.source_form))
+                camera_material
+                    .map(|source_form| format!("0x{source_form:08X}"))
                     .unwrap_or_else(|| "none".to_string()),
             )),
             (Some((entity, position)), None) => lines.push(format!(
@@ -97,10 +100,7 @@ impl ConsoleCommand for WaterDumpCommand {
             let volume = volume_q
                 .as_ref()
                 .and_then(|query| query.get(entity).copied());
-            let lod_render_only = lod_q
-                .as_ref()
-                .and_then(|query| query.get(entity))
-                .is_some();
+            let lod_render_only = lod_q.as_ref().and_then(|query| query.get(entity)).is_some();
             let flow = flow_q.as_ref().and_then(|query| query.get(entity).copied());
             let contains_camera = match (camera, volume) {
                 (Some((_, position)), Some(volume)) => {
@@ -230,6 +230,7 @@ impl ConsoleCommand for WaterContactsCommand {
         let Some(contact_q) = world.query::<WaterContact>() else {
             return CommandOutput::line("Water contacts: total=0 wet=0 submerged=0");
         };
+        let plane_q = world.query::<WaterPlane>();
         let mut rows: Vec<(EntityId, WaterContact)> = contact_q
             .iter()
             .map(|(entity, contact)| (entity, *contact))
@@ -260,8 +261,9 @@ impl ConsoleCommand for WaterContactsCommand {
                 contact.damage_per_second,
                 format_flow(contact.flow),
                 contact
-                    .material
-                    .map(|material| format!("0x{:08X}", material.source_form))
+                    .surface_entity
+                    .and_then(|surface| plane_q.as_ref()?.get(surface))
+                    .map(|plane| format!("0x{:08X}", plane.material.source_form))
                     .unwrap_or_else(|| "none".to_string()),
             ));
         }
@@ -303,15 +305,6 @@ mod tests {
             specular_magnitude: 1.5,
             ..WaterMaterial::default()
         };
-        world.insert(
-            camera,
-            SubmersionState {
-                depth: 3.0,
-                head_submerged: true,
-                material: Some(material),
-            },
-        );
-
         let water = world.spawn();
         world.insert(
             water,
@@ -319,6 +312,14 @@ mod tests {
                 kind: WaterKind::River,
                 material,
                 damage_per_second: 0.0,
+            },
+        );
+        world.insert(
+            camera,
+            SubmersionState {
+                depth: 3.0,
+                head_submerged: true,
+                surface_entity: Some(water),
             },
         );
         world.insert(
@@ -407,10 +408,22 @@ mod tests {
         let mut world = World::new();
         let wet = world.spawn();
         let dry = world.spawn();
+        let surface = world.spawn();
+        world.insert(
+            surface,
+            WaterPlane {
+                kind: WaterKind::River,
+                material: WaterMaterial {
+                    source_form: 0xABCD,
+                    ..WaterMaterial::default()
+                },
+                damage_per_second: 12.0,
+            },
+        );
         world.insert(
             wet,
             WaterContact {
-                surface_entity: None,
+                surface_entity: Some(surface),
                 depth: 5.0,
                 submerged_fraction: 0.75,
                 head_submerged: true,
@@ -419,10 +432,6 @@ mod tests {
                     speed: 2.0,
                 }),
                 damage_per_second: 12.0,
-                material: Some(WaterMaterial {
-                    source_form: 0xABCD,
-                    ..WaterMaterial::default()
-                }),
             },
         );
         world.insert(dry, WaterContact::default());

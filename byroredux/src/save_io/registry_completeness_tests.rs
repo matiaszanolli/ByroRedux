@@ -224,6 +224,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("CharacterController", "mutable per-frame fields (velocity/grounded/jump) are deliberately zeroed on reload by the pose-restore path, not carried over"),
         ("ContactConfig", "boot-time tunable resource, no runtime mutator (no resource_mut call exists outside tests)"),
         ("PhysicsWaterConstants", "boot-time tunable resource, no runtime mutator (no resource_mut call exists outside tests)"),
+        ("WaterContactScratch", "transient per-tick staging buffer whose capacity is reused; drained contents are derived from live water contacts"),
         ("PhysicsWorld", "owns live Rapier handle sets, architecturally rebuilt from cell data (CollisionShape/RigidBodyData/Transform) every load, not snapshot-restored"),
         ("Ragdoll", "handle bookkeeping only, no live inserter exists yet (debug console command only) — same posture as Dead (#2293)"),
         ("RapierHandles", "self-healing generational index; its own doc states absence is the signal to re-derive it, and physics_sync_system does so automatically"),

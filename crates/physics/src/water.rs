@@ -96,6 +96,18 @@ impl Default for PhysicsWaterConstants {
 
 impl Resource for PhysicsWaterConstants {}
 
+/// Reusable staging storage for per-tick [`WaterContact`] writes.
+///
+/// The physics system temporarily takes this vector while Rapier is locked,
+/// drains it into ECS storage afterward, then returns the allocation so wet
+/// scenes do not grow a fresh buffer every frame.
+#[derive(Default)]
+pub struct WaterContactScratch {
+    writes: Vec<(EntityId, WaterContact)>,
+}
+
+impl Resource for WaterContactScratch {}
+
 /// Archimedes buoyancy force on a submerged dynamic body — engine
 /// world-space (Y-up), Bethesda-unit "Newtons".
 ///
@@ -594,8 +606,14 @@ pub(crate) fn apply_buoyancy(world: &World, had_newcomers: bool) {
     }
 
     // Buoyancy + damping under the write lock; collect the `WaterContact`
-    // writes to apply after the lock drops.
-    let mut writes: Vec<(EntityId, WaterContact)> = Vec::new();
+    // writes to apply after the lock drops. The live engine supplies a
+    // `WaterContactScratch`; tests and embedders without one retain the same
+    // behavior through the local-vector fallback.
+    let (mut writes, reuse_writes) = match world.try_resource_mut::<WaterContactScratch>() {
+        Some(mut scratch) => (std::mem::take(&mut scratch.writes), true),
+        None => (Vec::new(), false),
+    };
+    writes.clear();
     {
         let mut pw = world.resource_mut::<PhysicsWorld>();
         let gravity_y = pw.gravity.y;
@@ -794,7 +812,6 @@ pub(crate) fn apply_buoyancy(world: &World, had_newcomers: bool) {
                                 head_submerged: max_y <= surface_y,
                                 flow: s.flow,
                                 damage_per_second: s.damage_per_second,
-                                material: Some(s.material),
                             },
                         ));
                     } else if t.prior_wet {
@@ -864,24 +881,30 @@ pub(crate) fn apply_buoyancy(world: &World, had_newcomers: bool) {
         }
     }
 
-    if writes.is_empty() {
-        return;
-    }
-    match world.query_mut::<WaterContact>() {
-        Some(mut wq) => {
-            for (entity, contact) in writes {
-                wq.insert(entity, contact);
+    if !writes.is_empty() {
+        match world.query_mut::<WaterContact>() {
+            Some(mut wq) => {
+                for (entity, contact) in writes.drain(..) {
+                    wq.insert(entity, contact);
+                }
             }
+            // Mirror `register_newcomers`' RapierHandles breadcrumb: without this,
+            // a forgotten `register::<WaterContact>()` at setup would silently
+            // apply buoyancy forces but never record a contact — an invisible
+            // failure. Log once-ish at error so it's caught.
+            None => log::error!(
+                "WaterContact storage missing — call World::register::<WaterContact>() \
+                 during setup before running physics_sync_system; buoyancy still \
+                 applies but no per-body water contact is recorded"
+            ),
         }
-        // Mirror `register_newcomers`' RapierHandles breadcrumb: without this,
-        // a forgotten `register::<WaterContact>()` at setup would silently
-        // apply buoyancy forces but never record a contact — an invisible
-        // failure. Log once-ish at error so it's caught.
-        None => log::error!(
-            "WaterContact storage missing — call World::register::<WaterContact>() \
-             during setup before running physics_sync_system; buoyancy still \
-             applies but no per-body water contact is recorded"
-        ),
+    }
+    if reuse_writes {
+        if let Some(mut scratch) = world.try_resource_mut::<WaterContactScratch>() {
+            scratch.writes = writes;
+        } else {
+            log::error!("WaterContactScratch disappeared during physics_sync_system");
+        }
     }
 }
 
@@ -928,6 +951,7 @@ mod tests {
         let mut world = World::new();
         world.insert_resource(PhysicsWorld::new());
         world.insert_resource(PhysicsWaterConstants::default());
+        world.insert_resource(WaterContactScratch::default());
         world.register::<RapierHandles>();
         world.register::<WaterContact>();
 
@@ -974,12 +998,22 @@ mod tests {
 
         physics_sync_system(&world, PHYSICS_DT);
 
+        let first_capacity = world.resource::<WaterContactScratch>().writes.capacity();
+        assert!(first_capacity >= 1);
         let contact = world
             .get::<WaterContact>(body)
             .expect("nearest surface writes a contact");
         assert_eq!(contact.surface_entity, upper_surface);
         assert_eq!(contact.depth, 1.0);
         assert_eq!(contact.damage_per_second, 7.0);
+        drop(contact);
+
+        physics_sync_system(&world, PHYSICS_DT);
+        assert_eq!(
+            world.resource::<WaterContactScratch>().writes.capacity(),
+            first_capacity,
+            "contact staging allocation must survive across physics ticks"
+        );
     }
 
     #[test]
@@ -1542,10 +1576,7 @@ mod tests {
             "submerged_fraction out of range: {}",
             contact.submerged_fraction
         );
-        assert!(
-            contact.material.is_some(),
-            "contact carries the plane material"
-        );
+        assert_eq!(contact.surface_entity, Some(water));
         assert_eq!(
             contact.flow.map(|flow| flow.direction),
             Some([1.0, 0.0, 0.0]),

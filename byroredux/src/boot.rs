@@ -500,6 +500,7 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // `physics_sync_system` reads it; absent it falls back to the same
     // default, so this insert is the single source of truth.
     world.insert_resource(byroredux_physics::PhysicsWaterConstants::default());
+    world.insert_resource(byroredux_physics::WaterContactScratch::default());
     // M44 Phase 1 — audio world. Init failure (no audio device,
     // CI, headless server) leaves the inner `AudioManager` as
     // `None` and every subsequent audio operation no-ops. Boot
@@ -1218,6 +1219,7 @@ pub(crate) fn build_scheduler() -> Scheduler {
             // WATAL Phase 2 — the buoyancy phase reads the engine water
             // constants resource (declaration completeness; read-only).
             .reads_resource::<byroredux_physics::PhysicsWaterConstants>()
+            .writes_resource::<byroredux_physics::WaterContactScratch>()
             // #1787 / CONC-D4-01 — `register_newcomers` snapshots
             // `ContactConfig` once per batch (kcc_offset_bu / trimesh
             // flags); read-only, but must be declared so a future

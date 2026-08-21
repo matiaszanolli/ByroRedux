@@ -542,9 +542,10 @@ pub struct SubmersionState {
     /// `true` once `depth >= head_offset`. Actors set `head_offset`
     /// implicitly via their collider height; cameras set it to 0.
     pub head_submerged: bool,
-    /// The water material driving underwater FX. `None` when the
-    /// entity is above any water plane or out of all volumes.
-    pub material: Option<WaterMaterial>,
+    /// Water-plane entity that supplied this state. Underwater consumers
+    /// resolve its canonical [`WaterPlane::material`] on demand; `None` means
+    /// the entity is above every surface or outside all water volumes.
+    pub surface_entity: Option<EntityId>,
 }
 
 impl Component for SubmersionState {
@@ -562,7 +563,7 @@ impl Component for SubmersionState {
 /// `depth` cannot provide.
 ///
 /// A body that has left every water volume keeps a **dry** `WaterContact`
-/// (`submerged_fraction == 0`, `material == None`) for one transition so
+/// (`submerged_fraction == 0`, `surface_entity == None`) for one transition so
 /// the buoyancy phase can restore the body's authored damping exactly
 /// once; bodies that have never touched water carry no component at all.
 #[derive(Debug, Clone, Copy, Default)]
@@ -590,9 +591,6 @@ pub struct WaterContact {
     /// FO3/FNV authored water damage per second, carried through contact
     /// resolution for actor/gameplay consumers. Zero is harmless water.
     pub damage_per_second: f32,
-    /// The water material driving this body's underwater FX / surface
-    /// interaction. `None` when the body is out of all water volumes.
-    pub material: Option<WaterMaterial>,
 }
 
 impl Component for WaterContact {

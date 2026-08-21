@@ -1,7 +1,7 @@
 //! Water submersion detection.
 
 use byroredux_core::ecs::components::water::{
-    SubmersionState, WaterContact, WaterMaterial, WaterPlane, WaterVolume, WATERLINE_HYSTERESIS,
+    SubmersionState, WaterContact, WaterPlane, WaterVolume, WATERLINE_HYSTERESIS,
 };
 use byroredux_core::ecs::components::{ActorValues, ActorVitals, Dead, ParticleEmitter};
 use byroredux_core::ecs::{ActiveCamera, EntityId, GlobalTransform, World};
@@ -148,7 +148,7 @@ pub(crate) fn submersion_system(world: &World, _dt: f32) {
     // re-acquire GlobalTransform here only to confirm the plane's
     // world Y matches its volume `max.y` (defensive — `WaterVolume`
     // is authored at spawn time so the two should already agree).
-    let mut best: Option<(f32, f32, WaterMaterial)> = None;
+    let mut best: Option<(f32, f32, EntityId)> = None;
     let Some(wq) = world.query::<WaterPlane>() else {
         // No water entities at all → clear any prior state on the
         // camera so the next frame's render reads default-above-water.
@@ -233,7 +233,7 @@ pub(crate) fn submersion_system(world: &World, _dt: f32) {
         // transitions an upper and lower water volume can overlap in XZ; a
         // signed-depth comparison would incorrectly prefer the lowest
         // surface whenever the camera is above both.
-        let candidate = (depth, distance, plane.material);
+        let candidate = (depth, distance, entity);
         match best {
             None => best = Some(candidate),
             Some((_, prev_distance, _)) if distance < prev_distance => best = Some(candidate),
@@ -314,10 +314,10 @@ pub(crate) fn submersion_system(world: &World, _dt: f32) {
         let was = state.head_submerged;
         let head_submerged = resolve_head_submerged(was, best_depth);
         let new_state = match best {
-            Some((depth, _, material)) => SubmersionState {
+            Some((depth, _, surface_entity)) => SubmersionState {
                 depth,
                 head_submerged,
-                material: Some(material),
+                surface_entity: Some(surface_entity),
             },
             None => SubmersionState::default(),
         };
@@ -502,15 +502,23 @@ pub fn compute_underwater_params(world: &World) -> [f32; 4] {
     let Some(sq) = world.query::<SubmersionState>() else {
         return [0.0; 4];
     };
-    let Some(state) = sq.get(cam_entity) else {
+    let Some(state) = sq.get(cam_entity).copied() else {
         return [0.0; 4];
     };
+    drop(sq);
     if !state.head_submerged || state.depth <= 0.0 {
         return [0.0; 4];
     }
-    let Some(mat) = state.material.as_ref() else {
+    let Some(surface_entity) = state.surface_entity else {
         return [0.0; 4];
     };
+    let Some(plane_q) = world.query::<WaterPlane>() else {
+        return [0.0; 4];
+    };
+    let Some(plane) = plane_q.get(surface_entity) else {
+        return [0.0; 4];
+    };
+    let mat = &plane.material;
     let (fog_near, fog_far) = if mat.underwater_fog_far > mat.underwater_fog_near {
         (mat.underwater_fog_near, mat.underwater_fog_far)
     } else {
@@ -884,7 +892,7 @@ mod tests {
             SubmersionState {
                 depth: 5.0,
                 head_submerged: true,
-                material: Some(WaterMaterial::default()),
+                surface_entity: Some(u32::MAX),
             },
         );
 
@@ -913,8 +921,8 @@ mod tests {
             "head_submerged must reset to default, not stay stuck true"
         );
         assert!(
-            state.material.is_none(),
-            "material must reset to default, not keep feeding \
+            state.surface_entity.is_none(),
+            "surface entity must reset to default, not keep feeding \
              compute_underwater_params a stale value"
         );
     }
@@ -934,6 +942,7 @@ mod tests {
         );
         world.insert(camera, SubmersionState::default());
 
+        let mut expected_surface = None;
         for (surface_y, color) in [(0.0, [0.1, 0.2, 0.3]), (3.0, [0.7, 0.8, 0.9])] {
             let water = world.spawn();
             let mut material = WaterMaterial::default();
@@ -953,6 +962,9 @@ mod tests {
                     max: [50.0, surface_y, 50.0],
                 },
             );
+            if surface_y == 3.0 {
+                expected_surface = Some(water);
+            }
         }
 
         submersion_system(&world, 0.016);
@@ -963,10 +975,7 @@ mod tests {
             .copied()
             .expect("camera state");
         assert_eq!(state.depth, 1.0);
-        assert_eq!(
-            state.material.expect("selected water").shallow_color,
-            [0.7, 0.8, 0.9]
-        );
+        assert_eq!(state.surface_entity, expected_surface);
     }
 
     /// #3115 — the two `SplashEvent` producers disagreed with each other and
