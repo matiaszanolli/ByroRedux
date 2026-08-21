@@ -757,6 +757,8 @@ mod tests {
     /// volumetric-term correctness view adds one post-integration mode branch,
     /// bringing the count to 30. The bounded underwater shaft term adds its
     /// gate plus the surface/volume depth selection, bringing the count to 33.
+    /// The beyond-grid tail's boundary-radiance continuation adds its
+    /// sufficient-opacity gate, bringing the count to 34.
     /// Pins the
     /// current count so a future stale-recompile of this file fails
     /// loudly instead of shipping silently, the same failure mode #1447
@@ -766,8 +768,8 @@ mod tests {
         let spv = include_bytes!("../../shaders/composite.frag.spv");
         let count = count_branch_conditionals(spv).expect("reflect composite.frag.spv");
         assert_eq!(
-            count, 33,
-            "composite.frag.spv has {count} OpBranchConditional instructions, expected 33 — \
+            count, 34,
+            "composite.frag.spv has {count} OpBranchConditional instructions, expected 34 — \
              the committed .spv looks stale relative to composite.frag; recompile it \
              (glslangValidator -V composite.frag -o composite.frag.spv from \
              crates/renderer/shaders). The raw correctness-debug guard is intentionally \

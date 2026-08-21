@@ -738,9 +738,39 @@ void main() {
                 params.height_fog_params.y
             );
             float transmittance = exp(-min(tau, 80.0));
-            vec3 aerial = params.fog_color.rgb
-                * params.height_fog_params.z
-                * (1.0 - transmittance);
+
+            // Continue from the grid's own boundary radiance rather than
+            // restarting with a flat `fog_color * albedo`. The froxel integral
+            // and this tail are two different models of the same medium: the
+            // grid's `vol.rgb` is real in-scattered radiance (sun, sky, light
+            // injection, phase function), while a flat authored colour is not.
+            // Restarting made distant geometry — the only geometry past
+            // `gridFar` — shade differently from everything inside the grid,
+            // which shows up as the mountains changing appearance when the
+            // grid's reach changes. Measured on an FNV vista, moving
+            // `--fog-grid-far-m` 128 -> 512 shifted the distant ridge by up to
+            // 117/255 while every in-grid pixel stayed identical.
+            //
+            // `vol.rgb / (1 - vol.a)` is the opacity-weighted average source
+            // radiance the grid resolved, so handing it to the tail makes the
+            // two agree at the seam by construction. Falls back to the authored
+            // colour when the grid carried too little opacity for that ratio to
+            // mean anything, and is clamped so a bright near-field froxel
+            // (a fire in view) cannot bleed into the aerial term.
+            vec3 authoredRadiance = params.fog_color.rgb
+                * params.height_fog_params.z;
+            float gridOpacity = 1.0 - clamp(vol.a, 0.0, 1.0);
+            vec3 sourceRadiance = authoredRadiance;
+            if (gridOpacity > 0.02) {
+                vec3 gridRadiance = vol.rgb / gridOpacity;
+                // Bound the continuation to the authored energy scale; the
+                // grid can hold local emitters the distant medium does not.
+                float authoredLuma = max(dot(authoredRadiance, vec3(0.2126, 0.7152, 0.0722)), 1.0e-4);
+                float gridLuma = max(dot(gridRadiance, vec3(0.2126, 0.7152, 0.0722)), 0.0);
+                float scale = min(1.0, (authoredLuma * 4.0) / max(gridLuma, 1.0e-4));
+                sourceRadiance = gridRadiance * scale;
+            }
+            vec3 aerial = sourceRadiance * (1.0 - transmittance);
             combined = combined * transmittance + aerial;
             fogTransmittance *= transmittance;
         }
