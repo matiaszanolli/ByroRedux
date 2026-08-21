@@ -269,20 +269,41 @@ fn flatten_to_parts(
         CollisionShape::ConvexHull { vertices } => {
             let pts: Vec<Point3<f32>> =
                 vertices.iter().map(|v| vec3_to_point(*v * scale)).collect();
-            let fallback = || {
-                log::warn!(
-                    "convex hull with {} pts rejected by Rapier; falling back to ball",
-                    pts.len()
-                );
-                SharedShape::ball(1e-3)
-            };
-            // #3066 — parry panics rather than returning `None` below its
-            // documented three-point precondition, so the fallback must guard
-            // the call itself for untrusted NIF collision data.
-            let shape = if pts.len() < 3 {
-                fallback()
-            } else {
-                SharedShape::convex_hull(&pts).unwrap_or_else(fallback)
+            // #3066 / #2551 — classify the point set BEFORE parry sees it.
+            // `convex_hull` has two distinct failure modes on untrusted NIF
+            // data, and only one of them is recoverable by the caller:
+            // a set with no extent at all unwraps an internal
+            // `MissingSupportPoint` (a *panic*, not a `None`), while a merely
+            // collinear set returns `None`. Coplanar sets are not a failure
+            // mode at all — parry builds a flat polyhedron from them.
+            let shape = match hull_degeneracy(&pts) {
+                HullDegeneracy::Pointlike => {
+                    log::warn!(
+                        "convex hull with {} pts has no extent; falling back to ball",
+                        pts.len()
+                    );
+                    SharedShape::ball(1e-3)
+                }
+                HullDegeneracy::Collinear { start, end } => {
+                    // The authored extent is real even though the volume
+                    // isn't: span it instead of collapsing to a millimetre
+                    // ball the player walks straight through (#2551).
+                    log::debug!(
+                        "convex hull with {} pts is collinear; falling back to a \
+                         capsule spanning its authored extent",
+                        pts.len()
+                    );
+                    SharedShape::capsule(start, end, DEGENERATE_HULL_RADIUS)
+                }
+                HullDegeneracy::Buildable => {
+                    SharedShape::convex_hull(&pts).unwrap_or_else(|| {
+                        log::warn!(
+                            "convex hull with {} pts rejected by Rapier; falling back to ball",
+                            pts.len()
+                        );
+                        SharedShape::ball(1e-3)
+                    })
+                }
             };
             out.push((parent_iso, shape));
         }
@@ -338,6 +359,83 @@ fn flatten_to_parts(
         }
     }
 }
+
+/// Radius given to a collision shape that has extent but no volume.
+///
+/// Matches the `ball(1e-3)` convention the no-volume fallbacks in this file
+/// already use — a degenerate hull recovers its authored *extent*, which is
+/// real data, and inherits its thickness from that existing convention
+/// rather than from an invented number.
+const DEGENERATE_HULL_RADIUS: f32 = 1e-3;
+
+/// How degenerate a `ConvexHull` point set is, as far as `parry` cares.
+enum HullDegeneracy {
+    /// No extent — every point is (near) coincident. `parry` *panics* on
+    /// these: `convex_hull` unwraps a `MissingSupportPoint`.
+    Pointlike,
+    /// Extent along one axis only. `parry` returns `None` for these.
+    Collinear { start: Point3<f32>, end: Point3<f32> },
+    /// Anything `convex_hull` can actually work with — including coplanar
+    /// sets, which build a flat `ConvexPolyhedron` without complaint.
+    Buildable,
+}
+
+/// Classify a `ConvexHull` point set ahead of `parry::convex_hull` (#2551).
+///
+/// Bethesda content authors `bhkConvexVerticesShape` blocks that collapse to
+/// a line or a point (17 across the FO3 base+DLC corpus). Handing those to
+/// `convex_hull` either panics the engine mid-frame or yields `None`, and the
+/// old answer for the `None` case — `SharedShape::ball(1e-3)` — is a
+/// millimetre ball at the shape origin, so an authored solid silently stopped
+/// colliding anywhere near where it was placed.
+///
+/// Note this is *not* the "fewer than four non-coplanar points" precondition
+/// parry documents: measured against parry 0.17.6, coplanar triangles, quads
+/// and n-gons all build fine. Only extent is decisive.
+fn hull_degeneracy(pts: &[Point3<f32>]) -> HullDegeneracy {
+    let Some(origin) = pts.first().copied() else {
+        return HullDegeneracy::Pointlike;
+    };
+    // Longest chord from `origin` fixes both the extent test and the axis the
+    // collinearity test measures against. Taking the farthest point rather
+    // than `pts[1]` keeps that axis well-conditioned when the first two
+    // vertices happen to be near-coincident.
+    let (mut far, mut span) = (origin, 0.0f32);
+    for p in pts {
+        let len = (p - origin).norm();
+        if len > span {
+            (far, span) = (*p, len);
+        }
+    }
+    if span <= f32::EPSILON {
+        return HullDegeneracy::Pointlike;
+    }
+    let axis = (far - origin) / span;
+    // `|axis × d|` is the perpendicular distance from the chord. Scaling the
+    // floor to the chord keeps the test size-independent: a 1 mm bow in a
+    // 10 m shape is collinear, the same 1 mm in a 5 mm shape is not.
+    let off_axis = pts
+        .iter()
+        .map(|p| axis.cross(&(p - origin)).norm())
+        .fold(0.0f32, f32::max);
+    if off_axis > span * 1e-4 {
+        return HullDegeneracy::Buildable;
+    }
+    // Collinear: the segment runs between the two extremes along `axis`,
+    // which `origin` and `far` are by construction only if `origin` is an
+    // endpoint — it need not be, so take the real projection range.
+    let (mut lo, mut hi) = (0.0f32, 0.0f32);
+    for p in pts {
+        let t = (p - origin).dot(&axis);
+        lo = lo.min(t);
+        hi = hi.max(t);
+    }
+    HullDegeneracy::Collinear {
+        start: origin + axis * lo,
+        end: origin + axis * hi,
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -795,23 +893,137 @@ mod tests {
         );
     }
 
-    /// Regression for #3066: parry panics when asked to construct a convex
-    /// hull from fewer than three points. The PHYSAL boundary must reject the
-    /// knowable bad precondition before entering the library.
+    /// Regression for #3066, corrected under #2551: parry panics when asked
+    /// for a hull it cannot find a support point for. The PHYSAL boundary
+    /// must reject that before entering the library — but "fewer than three
+    /// points" was never the real precondition (a two-point set has an
+    /// authored extent), so the guard is on extent, not count.
     #[test]
-    fn undersized_convex_hulls_fall_back_to_a_ball_without_panicking() {
-        for count in 0..3 {
-            let shape = CollisionShape::ConvexHull {
-                vertices: (0..count).map(|x| Vec3::new(x as f32, 0.0, 0.0)).collect(),
-            };
+    fn extentless_convex_hulls_fall_back_to_a_ball_without_panicking() {
+        for vertices in [
+            vec![],
+            vec![Vec3::ZERO],
+            vec![Vec3::ZERO; 4],
+            // Distinct floats, but closer together than parry can find a
+            // support point across — the case that actually panicked.
+            vec![Vec3::ZERO, Vec3::splat(f32::EPSILON * 0.5)],
+        ] {
+            let count = vertices.len();
+            let shape = CollisionShape::ConvexHull { vertices };
             let parts = parts(&shape);
             assert_eq!(parts.len(), 1);
             assert_eq!(
                 shape_type_of(&parts, 0),
                 ShapeType::Ball,
-                "{count}-point hull must use the safe fallback"
+                "{count}-point extentless hull must use the safe fallback"
             );
         }
+    }
+
+    /// Regression for #2551: a collinear convex vertex set still carries an
+    /// authored *extent*. `convex_hull` returns `None` for these, and the old
+    /// answer — `ball(1e-3)` at the shape origin — is a millimetre ball the
+    /// player walks straight through, so 17 FO3 `bhkConvexVerticesShape`
+    /// blocks silently stopped colliding. Span the extent instead.
+    #[test]
+    fn collinear_convex_hull_spans_its_authored_extent() {
+        let shape = CollisionShape::ConvexHull {
+            vertices: (0..5).map(|x| Vec3::new(x as f32 * 5.0, 0.0, 0.0)).collect(),
+        };
+        let parts = parts(&shape);
+        assert_eq!(parts.len(), 1);
+        assert_eq!(
+            shape_type_of(&parts, 0),
+            ShapeType::Capsule,
+            "a collinear hull must span its extent, not collapse to a ball"
+        );
+        let aabb = parts[0].1.compute_local_aabb();
+        assert!(
+            (aabb.maxs.x - aabb.mins.x - 20.0).abs() < 1e-2,
+            "the fallback must span the authored 20-unit segment, got {aabb:?}"
+        );
+    }
+
+    /// The segment must take the same uniform scale every other shape gets —
+    /// the classifier runs on already-scaled points, so this pins that it
+    /// does not silently reconstruct at authored size.
+    #[test]
+    fn collinear_hull_fallback_respects_scale() {
+        let shape = CollisionShape::ConvexHull {
+            vertices: (0..5).map(|x| Vec3::new(x as f32 * 5.0, 0.0, 0.0)).collect(),
+        };
+        let parts = collision_shape_to_parts(&shape, 3.0, &ContactConfig::DEFAULT);
+        let aabb = parts[0].1.compute_local_aabb();
+        assert!(
+            (aabb.maxs.x - aabb.mins.x - 60.0).abs() < 1e-2,
+            "scaled segment must span the scaled extent, got {aabb:?}"
+        );
+    }
+
+    /// The collinearity floor scales with the shape: a bow that is negligible
+    /// on a 10-unit shape is a real hull on a millimetre one. Pins that the
+    /// classifier is size-independent rather than using a bare epsilon.
+    #[test]
+    fn collinearity_floor_is_relative_to_shape_extent() {
+        // 1e-4 of bow across a 10-unit span — an order of magnitude inside
+        // the 1e-3 floor, so still a line.
+        let flat = CollisionShape::ConvexHull {
+            vertices: vec![
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(5.0, 1e-4, 0.0),
+                Vec3::new(10.0, 0.0, 0.0),
+            ],
+        };
+        assert_eq!(shape_type_of(&parts(&flat), 0), ShapeType::Capsule);
+
+        // The same absolute bow across a 0.01-unit span is 1% of the shape —
+        // a hundred times the floor there, so a real (if thin) hull.
+        let bowed = CollisionShape::ConvexHull {
+            vertices: vec![
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(0.005, 1e-4, 0.0),
+                Vec3::new(0.01, 0.0, 0.0),
+            ],
+        };
+        assert_eq!(shape_type_of(&parts(&bowed), 0), ShapeType::ConvexPolyhedron);
+    }
+
+    /// Coplanar sets are NOT a parry failure mode — measured against parry
+    /// 0.17.6, a flat quad builds a `ConvexPolyhedron` without complaint. The
+    /// classifier must not divert them into a fallback (the premise #2551 was
+    /// filed on; kept as a pin so a future parry bump that changes it fails
+    /// here rather than silently degrading 
+    /// every flat plate in the corpus).
+    #[test]
+    fn coplanar_hulls_still_build_a_real_polyhedron() {
+        let plate = CollisionShape::ConvexHull {
+            vertices: vec![
+                Vec3::new(-10.0, 0.0, -10.0),
+                Vec3::new(10.0, 0.0, -10.0),
+                Vec3::new(10.0, 0.0, 10.0),
+                Vec3::new(-10.0, 0.0, 10.0),
+            ],
+        };
+        assert_eq!(
+            shape_type_of(&parts(&plate), 0),
+            ShapeType::ConvexPolyhedron,
+            "coplanar input is buildable; diverting it would lose the real hull"
+        );
+    }
+
+    /// A well-formed hull must still take the real `convex_hull` path — the
+    /// fallbacks are only reachable through degeneracy.
+    #[test]
+    fn non_degenerate_hulls_still_build_a_convex_polyhedron() {
+        let tetra = CollisionShape::ConvexHull {
+            vertices: vec![
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(10.0, 0.0, 0.0),
+                Vec3::new(0.0, 10.0, 0.0),
+                Vec3::new(0.0, 0.0, 10.0),
+            ],
+        };
+        assert_eq!(shape_type_of(&parts(&tetra), 0), ShapeType::ConvexPolyhedron);
     }
 
     /// The multi-part case the issue calls out as worse than the sizing bug:

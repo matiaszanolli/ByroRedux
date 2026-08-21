@@ -182,6 +182,17 @@ impl<'a> Packfile<'a> {
             .map(|index| self.local_fixups[index].1)
     }
 
+    /// Resolve a pointer whose target lives in a *different* section.
+    ///
+    /// Unused by the two object types this crate decodes today: `hkaSkeleton`,
+    /// `hkaSplineCompressedAnimation` and `hkaAnimationBinding` all reference
+    /// same-section data, which [`Self::local_target`] handles. It is kept —
+    /// and exercised by the tests below rather than left as silent
+    /// scaffolding (#2267) — because the global fixup table is part of the
+    /// packfile format this reader already parses and validates, so the
+    /// accessor is the read half of data we decode either way. The first
+    /// object type with a pointer that crosses a section boundary is its
+    /// consumer.
     #[allow(dead_code)]
     pub(crate) fn global_target(&self, source: usize) -> Option<(usize, usize)> {
         self.global_fixups
@@ -247,4 +258,321 @@ fn read_cstr<'a>(bytes: &'a [u8], offset: usize, label: &'static str) -> Result<
         .position(|byte| *byte == 0)
         .ok_or(HkxError::Truncated(label))?;
     std::str::from_utf8(&rest[..len]).map_err(|_| HkxError::InvalidData("non-UTF-8 string"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const HEADER: usize = HEADER_SIZE;
+    const SECTION_TABLE: usize = 2 * SECTION_HEADER_SIZE;
+
+    /// Assembles a minimal but *structurally real* 64-bit little-endian
+    /// Havok 2010 packfile: a `__classnames__` section holding the class
+    /// name strings, and a `__data__` section carrying object bytes followed
+    /// by the local / global / virtual fixup tables in the order the format
+    /// mandates.
+    #[derive(Default)]
+    struct PackfileBuilder {
+        classnames: Vec<u8>,
+        data: Vec<u8>,
+        local: Vec<(u32, u32)>,
+        global: Vec<(u32, u32, u32)>,
+        virtual_fixups: Vec<(u32, u32, u32)>,
+    }
+
+    impl PackfileBuilder {
+        /// Append a NUL-terminated class name, returning its offset within
+        /// the classnames section.
+        fn class(&mut self, name: &str) -> u32 {
+            let offset = self.classnames.len() as u32;
+            self.classnames.extend_from_slice(name.as_bytes());
+            self.classnames.push(0);
+            offset
+        }
+
+        fn build(&self) -> Vec<u8> {
+            self.build_with(|_| {})
+        }
+
+        /// `tweak` gets the finished buffer so a test can corrupt one field
+        /// without hand-rolling the whole layout again.
+        fn build_with(&self, tweak: impl FnOnce(&mut Vec<u8>)) -> Vec<u8> {
+            let names_start = HEADER + SECTION_TABLE;
+            let names_len = self.classnames.len();
+            let data_start = names_start + names_len;
+
+            let local_rel = self.data.len();
+            let global_rel = local_rel + self.local.len() * 8;
+            let virtual_rel = global_rel + self.global.len() * 12;
+            let exports_rel = virtual_rel + self.virtual_fixups.len() * 12;
+
+            let mut bytes = vec![0u8; names_start];
+            bytes[0..4].copy_from_slice(&MAGIC_0.to_le_bytes());
+            bytes[4..8].copy_from_slice(&MAGIC_1.to_le_bytes());
+            bytes[0x10] = 8; // 64-bit pointers
+            bytes[0x11] = 1; // little endian
+            bytes[0x14..0x18].copy_from_slice(&2u32.to_le_bytes());
+
+            let section = |bytes: &mut Vec<u8>,
+                               index: usize,
+                               tag: &str,
+                               start: usize,
+                               local: usize,
+                               global: usize,
+                               virt: usize,
+                               exports: usize,
+                               end: usize| {
+                let base = HEADER + index * SECTION_HEADER_SIZE;
+                bytes[base..base + tag.len()].copy_from_slice(tag.as_bytes());
+                let put = |bytes: &mut Vec<u8>, field: usize, value: usize| {
+                    bytes[base + field..base + field + 4]
+                        .copy_from_slice(&(value as u32).to_le_bytes());
+                };
+                put(bytes, 20, start);
+                put(bytes, 24, local);
+                put(bytes, 28, global);
+                put(bytes, 32, virt);
+                put(bytes, 36, exports);
+                put(bytes, 44, end);
+            };
+            // Section offsets past `start` are all section-relative.
+            section(
+                &mut bytes, 0, "__classnames__", names_start, names_len, names_len, names_len,
+                names_len, names_len,
+            );
+            section(
+                &mut bytes,
+                1,
+                "__data__",
+                data_start,
+                local_rel,
+                global_rel,
+                virtual_rel,
+                exports_rel,
+                exports_rel,
+            );
+
+            bytes.extend_from_slice(&self.classnames);
+            bytes.extend_from_slice(&self.data);
+            for (source, target) in &self.local {
+                bytes.extend_from_slice(&source.to_le_bytes());
+                bytes.extend_from_slice(&target.to_le_bytes());
+            }
+            for (source, section, target) in &self.global {
+                bytes.extend_from_slice(&source.to_le_bytes());
+                bytes.extend_from_slice(&section.to_le_bytes());
+                bytes.extend_from_slice(&target.to_le_bytes());
+            }
+            for (source, section, offset) in &self.virtual_fixups {
+                bytes.extend_from_slice(&source.to_le_bytes());
+                bytes.extend_from_slice(&section.to_le_bytes());
+                bytes.extend_from_slice(&offset.to_le_bytes());
+            }
+            tweak(&mut bytes);
+            bytes
+        }
+    }
+
+    /// `Packfile` carries a borrowed slice and derives neither `Debug` nor
+    /// `PartialEq`, so rejection tests assert on the error alone.
+    fn parse_err(bytes: &[u8]) -> HkxError {
+        Packfile::parse(bytes).err().expect("must be rejected")
+    }
+
+    /// One object at data offset 0x20, a same-section pointer at 0x30, and a
+    /// cross-section pointer at 0x40 — the three things every decode in
+    /// `animation.rs` is built out of.
+    fn sample() -> PackfileBuilder {
+        let mut builder = PackfileBuilder {
+            data: vec![0u8; 0x60],
+            ..Default::default()
+        };
+        let class = builder.class("hkaSkeleton");
+        builder.local.push((0x30, 0x50));
+        builder.global.push((0x40, 0, 4));
+        builder.virtual_fixups.push((0x20, 0, class));
+        builder
+    }
+
+    #[test]
+    fn parses_sections_fixups_and_objects() {
+        let bytes = sample().build();
+        let pack = Packfile::parse(&bytes).unwrap();
+        assert_eq!(pack.object("hkaSkeleton").unwrap(), 0x20);
+        assert_eq!(pack.local_target(0x30), Some(0x50));
+    }
+
+    /// #2267 — `global_target` had zero call sites and zero coverage. Cross-
+    /// section fixups carry a *section index* alongside the offset, which is
+    /// exactly what distinguishes them from local ones.
+    #[test]
+    fn global_target_resolves_the_section_and_offset() {
+        let bytes = sample().build();
+        let pack = Packfile::parse(&bytes).unwrap();
+        assert_eq!(pack.global_target(0x40), Some((0, 4)));
+        assert_eq!(
+            pack.global_target(0x30),
+            None,
+            "a local fixup source must not resolve as a global one"
+        );
+        assert_eq!(pack.global_target(0x1234), None);
+    }
+
+    #[test]
+    fn unmapped_local_sources_do_not_resolve() {
+        let bytes = sample().build();
+        let pack = Packfile::parse(&bytes).unwrap();
+        assert_eq!(pack.local_target(0x40), None);
+        assert_eq!(pack.local_target(0x1234), None);
+    }
+
+    /// Havok terminates a fixup table with an all-ones source; entries after
+    /// it are padding, not data.
+    #[test]
+    fn fixup_walk_stops_at_the_terminator() {
+        let mut builder = sample();
+        builder.local.clear();
+        builder.local.push((0x30, 0x50));
+        builder.local.push((u32::MAX, u32::MAX));
+        builder.local.push((0x38, 0x58));
+        let bytes = builder.build();
+        let pack = Packfile::parse(&bytes).unwrap();
+        assert_eq!(pack.local_target(0x30), Some(0x50));
+        assert_eq!(
+            pack.local_target(0x38),
+            None,
+            "entries past the terminator are padding"
+        );
+    }
+
+    #[test]
+    fn missing_class_is_named_in_the_error() {
+        let bytes = sample().build();
+        let pack = Packfile::parse(&bytes).unwrap();
+        assert_eq!(
+            pack.object("hkaSplineCompressedAnimation"),
+            Err(HkxError::MissingClass("hkaSplineCompressedAnimation"))
+        );
+    }
+
+    #[test]
+    fn rejects_a_non_packfile() {
+        assert_eq!(
+            parse_err(&[]),
+            (HkxError::Truncated("HKX magic")));
+        let mut bytes = sample().build();
+        bytes[0] ^= 0xFF;
+        assert_eq!(
+            parse_err(&bytes),
+            (HkxError::InvalidMagic));
+    }
+
+    /// The crate deliberately supports one layout — Skyrim SE's. A 32-bit or
+    /// big-endian packfile must be refused, not misread.
+    #[test]
+    fn rejects_layouts_other_than_64_bit_little_endian() {
+        for (offset, value) in [(0x10, 4u8), (0x11, 0u8)] {
+            let bytes = sample().build_with(|bytes| bytes[offset] = value);
+            assert_eq!(
+            parse_err(&bytes),
+            (HkxError::UnsupportedLayout(
+                    "expected a 64-bit little-endian packfile"
+                ))
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_an_implausible_section_count() {
+        for count in [0u32, 65] {
+            let bytes = sample().build_with(|bytes| {
+                bytes[0x14..0x18].copy_from_slice(&count.to_le_bytes())
+            });
+            assert_eq!(
+            parse_err(&bytes),
+            (HkxError::InvalidData("implausible section count"))
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_a_truncated_section_table() {
+        let bytes = sample().build();
+        assert_eq!(
+            parse_err(&bytes[..HEADER + SECTION_HEADER_SIZE]),
+            (HkxError::Truncated("section table"))
+        );
+    }
+
+    /// The fixup tables are stored in a fixed order; a section header that
+    /// claims otherwise would make the walkers read one table as another.
+    #[test]
+    fn rejects_out_of_order_fixup_tables() {
+        // Swap the data section's local and global fixup offsets.
+        let bytes = sample().build_with(|bytes| {
+            let base = HEADER + SECTION_HEADER_SIZE;
+            let local: [u8; 4] = bytes[base + 24..base + 28].try_into().unwrap();
+            let global: [u8; 4] = bytes[base + 28..base + 32].try_into().unwrap();
+            bytes[base + 24..base + 28].copy_from_slice(&global);
+            bytes[base + 28..base + 32].copy_from_slice(&local);
+        });
+        assert_eq!(
+            parse_err(&bytes),
+            (HkxError::InvalidData("global fixups precede local fixups"))
+        );
+    }
+
+    #[test]
+    fn rejects_a_missing_data_section() {
+        let bytes = sample().build_with(|bytes| {
+            let base = HEADER + SECTION_HEADER_SIZE;
+            bytes[base..base + 8].copy_from_slice(b"__misc__");
+        });
+        assert_eq!(
+            parse_err(&bytes),
+            (HkxError::MissingSection("__data__"))
+        );
+    }
+
+    #[test]
+    fn rejects_a_global_fixup_naming_a_section_that_does_not_exist() {
+        let mut builder = sample();
+        builder.global.clear();
+        builder.global.push((0x40, 7, 4));
+        let bytes = builder.build();
+        assert_eq!(
+            parse_err(&bytes),
+            (HkxError::InvalidData("global fixup section out of range"))
+        );
+    }
+
+    /// `data_slice` is the choke point every typed accessor goes through: it
+    /// must not hand out bytes past the object data, where the fixup tables
+    /// live.
+    #[test]
+    fn data_reads_stop_at_the_end_of_the_object_region() {
+        let mut builder = sample();
+        builder.data[0x10..0x14].copy_from_slice(&0xDEAD_BEEFu32.to_le_bytes());
+        builder.data[0x14..0x18].copy_from_slice(&1.5f32.to_bits().to_le_bytes());
+        builder.data[0x18..0x1D].copy_from_slice(b"bone ");
+        let bytes = builder.build();
+        let pack = Packfile::parse(&bytes).unwrap();
+
+        assert_eq!(pack.u32(0x10, "probe").unwrap(), 0xDEAD_BEEF);
+        assert_eq!(pack.f32(0x14, "probe").unwrap(), 1.5);
+        assert_eq!(pack.cstr(0x18, "probe").unwrap(), "bone");
+        assert_eq!(pack.data_slice(0x10, 4, "probe").unwrap().len(), 4);
+
+        // 0x60 is the first byte of the local fixup table.
+        assert_eq!(
+            pack.u32(0x60, "probe"),
+            Err(HkxError::Truncated("probe")),
+            "a read must not walk off the object data into the fixup tables"
+        );
+        assert_eq!(
+            pack.data_slice(usize::MAX, 4, "probe"),
+            Err(HkxError::InvalidData("data offset overflow"))
+        );
+    }
 }

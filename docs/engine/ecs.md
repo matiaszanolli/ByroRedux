@@ -590,6 +590,38 @@ to arbitrary N-lock hold patterns with two checks:
    orders. Once the graph stabilises, every acquisition takes the read-only
    fast path.
 
+### Canonical acquisition order
+
+`TypeId` sorting covers *paired* queries. A system that acquires four or five
+single-type queries in sequence orders them by hand, so the hierarchy /
+skinning / bounds cluster — the types most systems touch together — has one
+process-wide order every site follows (#313, #2388):
+
+```
+Transform → Parent → Children → GlobalTransform → SkinnedMesh
+          → MeshHandle → LocalBound → WorldBound → Name → StringPool
+```
+
+Acquire a subset in that relative order; skipping types is fine, reordering
+them is not. `make_transform_propagation_system` establishes the head of the
+chain, `build_skinned_palettes` (`byroredux/src/render/skinned.rs`) the
+`GlobalTransform → SkinnedMesh` pair, `resolve_entity_name`
+(`byroredux/src/commands/shared.rs`) the `Name → StringPool` tail, and
+`ragdoll_writeback_system` walks the longest span of it.
+
+Two properties make a violation cheap to miss and expensive to hit:
+
+- Exclusive systems can invert the order and never deadlock, because no two
+  of them ever hold overlapping guards. The safety is circumstantial —
+  promoting one to `add_to_with_access` is a one-line change with no
+  compile-time or test-time signal.
+- The `BYRO_LOCK_ORDER_CHECK` graph cannot distinguish sequential temporaries
+  on one thread from a genuine overlap, so an inverted pair that is *safe*
+  still aborts a debug build once both sites run. Before #2388, `skin <id>`
+  followed by `walk <id>` in `byro-dbg` did exactly that — two ordinary
+  console commands, both routed through the same exclusive
+  `DebugDrainSystem`.
+
 Same-type paired access is rejected up front: `query_2_mut::<Foo, Foo>()`
 hits an `assert_ne!` (`"query_2_mut: A and B must be different component
 types"`) rather than blocking forever. A poisoned storage or resource lock

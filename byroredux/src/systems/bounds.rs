@@ -122,16 +122,21 @@ pub(crate) fn make_world_bound_propagation_system() -> impl FnMut(&World, f32) +
             gq.storage_mut().drain_dirty_into(&mut g_dirty);
         }
 
-        // Acquire LocalBound, Parent, Children, GlobalTransform once — used
-        // by both passes (#250). Parent before Children matches the order
-        // `transform_propagation_system` establishes for this pair (#313).
-        let local_q = world.query::<LocalBound>();
+        // Acquire Parent, Children, GlobalTransform, SkinnedMesh and
+        // LocalBound once — used by both passes (#250), in the canonical
+        // hierarchy-cluster order documented in `docs/engine/ecs.md`
+        // (#313, #2388): Transform → Parent → Children → GlobalTransform →
+        // SkinnedMesh → LocalBound → WorldBound. LocalBound used to be taken
+        // first here, inverting `Parent↔LocalBound`, `Children↔LocalBound`
+        // and `GlobalTransform↔LocalBound` against
+        // `ragdoll_writeback_system`, which walks the same cluster.
         let parent_q = world.query::<Parent>();
         let children_q = world.query::<Children>();
-        let skin_q = world.query::<SkinnedMesh>();
         let Some(g_q) = world.query::<GlobalTransform>() else {
             return;
         };
+        let skin_q = world.query::<SkinnedMesh>();
+        let local_q = world.query::<LocalBound>();
         let Some(ref lb_q) = local_q else {
             return;
         };

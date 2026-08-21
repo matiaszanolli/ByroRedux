@@ -251,6 +251,14 @@ fn eval_inspect_skinned_mesh(world: &World, entity: u32) -> DebugResponse {
     use byroredux_core::ecs::components::Name;
     use byroredux_core::ecs::{GlobalTransform, SkinnedMesh};
 
+    // Canonical acquisition order (`docs/engine/ecs.md`, #2388):
+    // GlobalTransform → SkinnedMesh → Name → StringPool. GlobalTransform
+    // used to be taken *after* SkinnedMesh here, which inverted
+    // `SkinnedMesh↔GlobalTransform` against both `build_skinned_palettes`
+    // and this file's own `eval_walk_entity` — two functions driven by the
+    // same `DebugDrainSystem`, so `skin <id>` then `walk <id>` was enough to
+    // trip the `BYRO_LOCK_ORDER_CHECK` detector on a spurious ABBA report.
+    let gt_q = world.query::<GlobalTransform>();
     let Some(skin_q) = world.query::<SkinnedMesh>() else {
         return DebugResponse::error("no SkinnedMesh storage");
     };
@@ -283,7 +291,8 @@ fn eval_inspect_skinned_mesh(world: &World, entity: u32) -> DebugResponse {
     // bind_inverses[i]`); capturing it makes the renderer's view of the
     // skeleton reproducible from outside the engine — the missing piece
     // for the #841 spike-artifact diff against the M29 standalone path.
-    let gt_q = world.query::<GlobalTransform>();
+    // (`gt_q` is acquired at the top of the function — see the ordering note
+    // there.)
     let bone_world_matrices: Vec<Option<[f32; 16]>> = skin
         .bones
         .iter()
@@ -328,13 +337,19 @@ fn eval_walk_entity(world: &World, root: u32, max_depth: u32) -> DebugResponse {
     use byroredux_core::ecs::{GlobalTransform, SkinnedMesh, Transform};
     use byroredux_debug_protocol::HierarchyNode;
 
+    // Canonical acquisition order (`docs/engine/ecs.md`, #2388):
+    // Transform → Parent → Children → GlobalTransform → SkinnedMesh →
+    // MeshHandle → Name → StringPool. Transform used to be taken after the
+    // hierarchy trio (inverting it against `transform_propagation_system`)
+    // and Name before SkinnedMesh (inverting it against the `skin.list`
+    // console command).
+    let t_q = world.query::<Transform>();
     let parent_q = world.query::<Parent>();
     let children_q = world.query::<Children>();
     let gt_q = world.query::<GlobalTransform>();
-    let t_q = world.query::<Transform>();
-    let name_q = world.query::<Name>();
     let skin_q = world.query::<SkinnedMesh>();
     let mesh_q = world.query::<MeshHandle>();
+    let name_q = world.query::<Name>();
     let pool = world.try_resource::<byroredux_core::string::StringPool>();
 
     let mut nodes: Vec<HierarchyNode> = Vec::new();
@@ -867,6 +882,85 @@ fn resolve_entity_name(world: &World, entity: u32) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+
+    /// Regression for #2388. The canonical acquisition order for the
+    /// hierarchy / skinning cluster is documented in `docs/engine/ecs.md`;
+    /// these two functions are the sharpest instance of violating it — both
+    /// run under the same exclusive `DebugDrainSystem`, so `skin <id>`
+    /// followed by `walk <id>` in `byro-dbg` was enough to abort a
+    /// `BYRO_LOCK_ORDER_CHECK=1` build on a spurious ABBA report.
+    ///
+    /// Asserted against the source because acquisition *order* is only
+    /// visible there: the detector is `pub(super)` to `byroredux-core` and
+    /// cannot be enabled from this crate, and with it off an inverted pair
+    /// deadlocks nothing — it just re-arms the abort. Same technique as
+    /// `byroredux/src/scheduler_access_tests.rs`.
+    #[test]
+    fn debug_evaluator_acquires_locks_in_canonical_order() {
+        /// `docs/engine/ecs.md` § Canonical acquisition order.
+        const CANONICAL: [&str; 10] = [
+            "Transform",
+            "Parent",
+            "Children",
+            "GlobalTransform",
+            "SkinnedMesh",
+            "MeshHandle",
+            "LocalBound",
+            "WorldBound",
+            "Name",
+            "StringPool",
+        ];
+        const SOURCE: &str = include_str!("evaluator.rs");
+
+        // Everything from the fn signature to the next item at column 0.
+        fn body<'a>(source: &'a str, signature: &str) -> &'a str {
+            let start = source
+                .find(signature)
+                .unwrap_or_else(|| panic!("{signature} not found — was it renamed?"));
+            let rest = &source[start + signature.len()..];
+            let end = rest
+                .find("\nfn ")
+                .into_iter()
+                .chain(rest.find("\n#[cfg(test)]"))
+                .min()
+                .unwrap_or(rest.len());
+            &rest[..end]
+        }
+
+        for signature in [
+            "fn eval_inspect_skinned_mesh(",
+            "fn eval_walk_entity(",
+        ] {
+            let body = body(SOURCE, signature);
+            let mut acquired: Vec<(usize, &str)> = Vec::new();
+            for (offset, _) in body.match_indices("world.") {
+                let tail = &body[offset..];
+                let Some(open) = tail.find("::<") else { continue };
+                // Only the acquisition calls, not e.g. `world.entities()`.
+                let call = &tail[..open];
+                if !(call.contains("query") || call.contains("resource")) {
+                    continue;
+                }
+                let Some(close) = tail.find('>') else { continue };
+                // Strip any module path: `byroredux_core::string::StringPool`.
+                let ty = tail[open + 3..close].rsplit("::").next().unwrap();
+                if let Some(rank) = CANONICAL.iter().position(|c| *c == ty) {
+                    acquired.push((rank, ty));
+                }
+            }
+            assert!(
+                acquired.len() >= 2,
+                "{signature} matched {} acquisitions — the scan broke, not the order",
+                acquired.len()
+            );
+            assert!(
+                acquired.windows(2).all(|pair| pair[0].0 <= pair[1].0),
+                "{signature} acquires locks out of canonical order: {:?}\n\
+                 canonical order is {CANONICAL:?} (docs/engine/ecs.md)",
+                acquired.iter().map(|(_, ty)| *ty).collect::<Vec<_>>()
+            );
+        }
+    }
     use super::*;
     use byroredux_core::console::{CommandOutput, ConsoleCommand};
     use byroredux_debug_protocol::registry::ComponentRegistry;
