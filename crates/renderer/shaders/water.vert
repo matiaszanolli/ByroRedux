@@ -44,9 +44,11 @@ layout(location = 8) in vec4 inTangent;      // xyz = tangent, w = bitangent sig
 // not driven by the water material path (which lives in push
 // constants — see water.frag). Layout must match the Rust struct
 // at `crates/renderer/src/vulkan/scene_buffer/gpu_types.rs`
-// byte-for-byte — the 112-byte invariant is pinned by
-// `gpu_instance_is_112_bytes_std430_compatible` at
+// byte-for-byte — the 128-byte invariant is pinned by
+// `gpu_instance_is_128_bytes_std430_compatible` at
 // `crates/renderer/src/vulkan/scene_buffer/gpu_instance_layout_tests.rs`.
+// (The struct grew to 128 B when #2219 added `skinnedVertexAddress`; this
+// mirror's body tracked it, only the comment kept quoting the old size.)
 // Path moved from `vulkan/instance.rs` during the Session-34 split (#1187).
 struct GpuInstance {
     mat4 model;

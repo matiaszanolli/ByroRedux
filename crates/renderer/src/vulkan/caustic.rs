@@ -185,10 +185,18 @@ pub struct CausticParams {
 
 struct CausticSlot {
     image: vk::Image,
-    /// `r32ui` storage view for atomic writes from the compute shader.
-    storage_view: vk::ImageView,
-    /// Separate view used by composite to sample as a `usampler2DArray`.
-    sampled_view: vk::ImageView,
+    /// The slot's only `VkImageView`, used for both roles: `r32ui` storage
+    /// for the compute shader's atomic writes, and `usampler2DArray` for
+    /// composite's sampling.
+    ///
+    /// These were two views until #2779. The `610cb170` RGB-array refactor
+    /// left both built from the same `ImageViewCreateInfo` — same image,
+    /// type, format and subresource range — so the pair was byte-identical,
+    /// costing two extra `VkImageView`s per frame in flight and a second
+    /// destroy on every teardown path. A view carries no usage or layout
+    /// state (the descriptor type and the barrier's `image_layout` supply
+    /// both), so nothing distinguished them.
+    view: vk::ImageView,
     allocation: Option<vk_alloc::Allocation>,
 }
 
@@ -621,43 +629,27 @@ impl CausticPipeline {
             return Err(e);
         }
 
-        let make_view = |img: vk::Image| -> Result<vk::ImageView> {
-            // SAFETY: callers below pass `image` (bound above) twice —
-            // once for storage view, once for sampled view. Both views
-            // are owned by the returned CausticSlot.
-            Ok(unsafe {
-                device
-                    .create_image_view(
-                        &vk::ImageViewCreateInfo::default()
-                            .image(img)
-                            .view_type(vk::ImageViewType::TYPE_2D_ARRAY)
-                            .format(CAUSTIC_FORMAT)
-                            .subresource_range(caustic_subresource_range()),
-                        None,
-                    )
-                    .context("caustic image view")?
-            })
+        // One view serves both roles — see `CausticSlot::view` (#2779).
+        // SAFETY: `image` is bound above and the view is owned by the
+        // returned CausticSlot, which destroys it on teardown.
+        let view = unsafe {
+            device.create_image_view(
+                &vk::ImageViewCreateInfo::default()
+                    .image(image)
+                    .view_type(vk::ImageViewType::TYPE_2D_ARRAY)
+                    .format(CAUSTIC_FORMAT)
+                    .subresource_range(caustic_subresource_range()),
+                None,
+            )
         };
-        let storage_view = match make_view(image) {
+        let view = match view.context("caustic image view") {
             Ok(v) => v,
             Err(e) => {
                 allocator.lock().expect("allocator lock").free(alloc).ok();
-                // SAFETY: storage view creation failed; free alloc first,
-                // destroy bound image.
-                unsafe { device.destroy_image(image, None) };
-                return Err(e);
-            }
-        };
-        let sampled_view = match make_view(image) {
-            Ok(v) => v,
-            Err(e) => {
-                // SAFETY: sampled view creation failed; tear down
-                // already-created storage view, free alloc, destroy image.
-                unsafe { device.destroy_image_view(storage_view, None) };
-                allocator.lock().expect("allocator lock").free(alloc).ok();
-                // SAFETY: `image` was created by this device just above and has
-                // not been bound to any in-flight command buffer on this error
-                // path, so destroying it here is sound.
+                // SAFETY: view creation failed; free alloc first, then
+                // destroy the bound image. It was created by this device
+                // just above and has not been bound to any in-flight
+                // command buffer on this error path.
                 unsafe { device.destroy_image(image, None) };
                 return Err(e);
             }
@@ -665,8 +657,7 @@ impl CausticPipeline {
 
         Ok(CausticSlot {
             image,
-            storage_view,
-            sampled_view,
+            view,
             allocation: Some(alloc),
         })
     }
@@ -715,7 +706,7 @@ impl CausticPipeline {
                 range: instance_buffer_size,
             }];
             let caustic_info = [vk::DescriptorImageInfo::default()
-                .image_view(self.slots[f].storage_view)
+                .image_view(self.slots[f].view)
                 .image_layout(vk::ImageLayout::GENERAL)];
             let params_info = [vk::DescriptorBufferInfo {
                 buffer: self.param_buffers[f].buffer,
@@ -779,9 +770,11 @@ impl CausticPipeline {
         }
     }
 
-    /// Caustic accumulator view used by the composite pass as `usampler2DArray`.
+    /// Caustic accumulator view used by the composite pass as
+    /// `usampler2DArray` — the same view the compute pass binds as storage,
+    /// see [`CausticSlot::view`] (#2779).
     pub fn sampled_view(&self, frame: usize) -> vk::ImageView {
-        self.slots[frame].sampled_view
+        self.slots[frame].view
     }
 
     /// Update the TLAS binding for a given frame (binding 6). Mirrors the
@@ -1187,8 +1180,7 @@ impl CausticPipeline {
             // waits both frames-in-flight first). Slot view / image
             // handles are unreferenced by any in-flight command.
             unsafe {
-                device.destroy_image_view(slot.storage_view, None);
-                device.destroy_image_view(slot.sampled_view, None);
+                device.destroy_image_view(slot.view, None);
                 device.destroy_image(slot.image, None);
             }
             if let Some(a) = slot.allocation {
@@ -1291,8 +1283,7 @@ impl CausticPipeline {
             // SAFETY: caller's unsafe-fn contract — no in-flight cmd
             // buffer references slot resources.
             unsafe {
-                device.destroy_image_view(slot.storage_view, None);
-                device.destroy_image_view(slot.sampled_view, None);
+                device.destroy_image_view(slot.view, None);
                 device.destroy_image(slot.image, None);
             }
             if let Some(a) = slot.allocation {
@@ -1302,16 +1293,81 @@ impl CausticPipeline {
     }
 }
 
-// CAUSTIC_FIXED_SCALE drift test moved to shader_constants::tests after #1038
-// folded the constant into the build.rs codegen path. Canonical check:
-//   shader_constants::tests::generated_header_contains_all_defines
-//   shader_constants::tests::affected_shaders_include_constants_header
+// CAUSTIC_FIXED_SCALE reaches the two ends of the caustic round trip by two
+// different channels, and each needs its own guard:
+//   * compile-time `#define`, consumed by composite.frag's divide — pinned by
+//     `shader_constants::tests::{generated_header_contains_all_defines,
+//     affected_shaders_include_constants_header}` (the header is generated,
+//     #1038) and by `composite::tests::
+//     caustic_radiance_combines_glass_rgb_and_water_in_float_fixed_point`
+//     (the divide is actually written).
+//   * runtime UBO lane `tune.x`, consumed by caustic_splat.comp's deposit —
+//     pinned by `upload_scale_matches_the_constant_composite_divides_by`
+//     below (#2776). Neither shader_constants test covers this end: they
+//     check that the `#define` is generated and included, not what the host
+//     uploads.
 
 #[cfg(test)]
 mod tests {
     use super::{
         caustic_megabytes, caustic_subresource_range, CAUSTIC_BYTES_PER_PIXEL, CAUSTIC_COLOR_LAYERS,
     };
+
+    /// #2776 — the caustic round trip only balances if the `tune.x` lane the
+    /// host uploads is the same number `composite.frag` divides by. The two
+    /// ends never meet in one expression: the deposit scales by a *runtime*
+    /// UBO lane (`causticTune.x`), the decode divides by a *compile-time*
+    /// `#define`. Nothing checked the upload end, so making `tune.x` a live
+    /// tunable would have desynced them silently — every caustic pixel wrong
+    /// by the ratio, with no test, validation layer or visual tell beyond
+    /// "the pool looks off".
+    ///
+    /// Asserted against source because `dispatch` needs a live device and a
+    /// mapped UBO; the value is a compile-time symbol either way.
+    #[test]
+    fn upload_scale_matches_the_constant_composite_divides_by() {
+        const SOURCE: &str = include_str!("caustic.rs");
+        const SHADER: &str = include_str!("../../shaders/caustic_splat.comp");
+
+        // The `tune` lane assignment inside `dispatch`'s `CausticParams`.
+        let tune = SOURCE
+            .split_once("        let params = CausticParams {")
+            .expect("dispatch must build its CausticParams inline")
+            .1;
+        let lanes = tune
+            .split_once("tune: [")
+            .expect("CausticParams must set `tune`")
+            .1
+            .split_once(']')
+            .expect("unterminated tune array")
+            .0;
+        let x = lanes
+            .split(',')
+            .next()
+            .expect("tune array must have an x lane")
+            .trim();
+        assert_eq!(
+            x, "CAUSTIC_FIXED_SCALE",
+            "tune.x must upload the CAUSTIC_FIXED_SCALE symbol, not a literal \
+             or a runtime field — composite.frag divides by the `#define` of \
+             the same name, so any other value scales every caustic pixel by \
+             the ratio between them"
+        );
+
+        // The consuming end: the shader must still route that lane into the
+        // scale the deposit and the atomic-range clamp are built on.
+        assert!(
+            SHADER.contains("float scale = causticTune.x;"),
+            "caustic_splat.comp must take its fixed-point scale from \
+             causticTune.x — if the deposit stops reading the uploaded lane, \
+             pinning the upload proves nothing"
+        );
+        assert!(
+            SHADER.contains("float clamp_max = float(0xFFFFFFFFu) / scale;"),
+            "the atomic-range clamp must stay anchored to the same scale \
+             (#1099)"
+        );
+    }
 
     /// #2679 / PERF-D3-03 — pins the "Glass + Water Caustics" table in
     /// `docs/engine/memory-budget.md` against the live layer count. The doc
