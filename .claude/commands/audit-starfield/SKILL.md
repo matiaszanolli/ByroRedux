@@ -320,3 +320,4 @@ the classification feeding it happens at the single `translate_material` boundar
 3. Remove cross-dimension duplicates.
 
 Suggest: `/audit-publish docs/audits/AUDIT_STARFIELD_<TODAY>.md`
+(label every finding `game:starfield` + `legacy-compat`, plus its own domain label.)

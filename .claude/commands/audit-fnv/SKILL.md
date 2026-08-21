@@ -172,3 +172,4 @@ cell-boundary + door-teleport swaps) — both verified against the tree 2026-07-
 3. Remove cross-dimension duplicates.
 
 Suggest: `/audit-publish docs/audits/AUDIT_FNV_<TODAY>.md`
+(label every finding `game:fnv` + `legacy-compat`, plus its own domain label.)

@@ -175,3 +175,4 @@ Dimensions are ordered by FO4 risk: the precombine pipeline, BGSM material trans
 3. Remove cross-dimension duplicates.
 
 Suggest: `/audit-publish docs/audits/AUDIT_FO4_<TODAY>.md`
+(label every finding `game:fo4` + `legacy-compat`, plus its own domain label.)

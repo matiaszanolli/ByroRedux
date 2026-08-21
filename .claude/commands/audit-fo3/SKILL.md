@@ -161,3 +161,4 @@ for the severity scale (including the NIFAL canonical-translation rows).
 3. Remove cross-dimension duplicates.
 
 Suggest: `/audit-publish docs/audits/AUDIT_FO3_<TODAY>.md`
+(label every finding `game:fo3` + `legacy-compat`, plus its own domain label.)

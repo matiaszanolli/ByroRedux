@@ -365,3 +365,5 @@ leaks compound; denoiser/shader correctness is mostly visual.
 1. `rm -rf /tmp/audit/renderer`.
 2. Inform the user the report is ready.
 3. Suggest: `/audit-publish docs/audits/AUDIT_RENDERER_<TODAY>.md`.
+   (domain label: `renderer`; add `shaders` for GLSL/SPIR-V findings, `water` for WATAL
+   render-side findings, `vulkan`/`pipeline`/`memory` as they apply).

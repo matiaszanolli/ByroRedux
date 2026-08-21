@@ -413,8 +413,22 @@ breadcrumbs).
 2. Tell the user the report is ready.
 3. Suggest: `/audit-publish docs/audits/AUDIT_TECH_DEBT_<TODAY>.md`.
 
-## GitHub Label
+## GitHub Labels
 
 Findings publish under the `tech-debt` label (plus the standard `<severity>` and
 `<domain>` labels). It is registered in the repo — `/audit-publish` applies it
 automatically when a finding's audit type is `TECH_DEBT`.
+
+Two sibling kind labels split the bucket further (both registered 2026-08-21) —
+apply the one that matches the defect instead of leaving everything under bare
+`tech-debt`:
+
+- **`doc-rot`** — documentation drifted from code: a stale ROADMAP row, a SKILL
+  doc naming a deleted symbol, a comment describing removed behaviour. These
+  publish as `documentation` (type), not `bug`.
+- **`test-gap`** — missing, vacuous, or non-asserting coverage: an `#[ignore]`d
+  test with no data gate, a test whose assertions are satisfied by a sibling, an
+  entry point with zero tests.
+
+Pure debt — dead code, duplication, magic numbers, oversized files, stale
+markers — stays `tech-debt` + `bug`.

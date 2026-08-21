@@ -354,4 +354,5 @@ resource lookup); `byroredux/src/commands/actor_value.rs`
 1. `rm -rf /tmp/audit/character`
 2. Inform the user the report is ready.
 3. Suggest: `/audit-publish docs/audits/AUDIT_CHARACTER_<TODAY>.md`
-   (there is no `character` domain label — map to `legacy-compat`).
+   (domain label: `character`; add the matching `game:*` — CHARAL findings are almost
+   always specific to one title's ruleset).

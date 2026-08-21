@@ -87,33 +87,54 @@ gh label list --repo matiaszanolli/ByroRedux --limit 200 --json name --jq '.[].n
   > /tmp/audit/labels.txt
 ```
 
-Every label this skill applies MUST appear in that file. The mapping below reflects how
-the repo is *actually* labeled (verified against label-usage counts across all issues) —
-**not** the broader vocabulary in _audit-common's "Domain Labels" list, several of which
-have no label in this repo.
+Every label this skill applies MUST appear in that file. The four axes are defined in
+_audit-common's **Issue Labels** section — do not restate them; the summary below is the
+publish-time mapping only.
 
-**Severity** (always exactly one, all exist): `critical` · `high` · `medium` · `low`.
+**Severity** (always exactly one): `critical` · `high` · `medium` · `low` · `info`.
 
-**Domain** (zero or more; only these exist as labels):
-`ecs` · `renderer` · `vulkan` · `pipeline` · `memory` · `sync` · `cxx` · `nif` ·
-`nif-parser` · `import-pipeline` · `animation` · `legacy-compat` · `performance` ·
-`safety` · `tech-debt` · `info`.
+**Type** (always exactly one): `bug` · `enhancement` · `documentation`. There is **no**
+`maintenance` label — tech-debt findings use the `tech-debt` domain label plus `bug`;
+doc-rot findings use `documentation` + `doc-rot`.
 
-**Type** (one): `bug` · *enhancement* · `documentation`. There is **no** `maintenance`
-label — tech-debt findings use the `tech-debt` domain label plus `bug` (or `documentation`
-for doc-rot), never `maintenance`.
+**Domain** (one or more) — as of 2026-08-21 nearly every audited subsystem has its own
+label. Map the finding's subsystem directly:
 
-**Domain mapping for subsystems with no own label** — map to the closest existing label
-and note the gap in the summary; never invent a label:
+| Finding subsystem | Domain label(s) |
+|-------------------|-----------------|
+| NIF parser / block dispatch | `nif-parser` (primary) + `nif` (format tag) |
+| NIFAL canonical translation | `nifal` + the subsystem it lands in (`nif-parser` / `renderer`) |
+| ESM / CELL / WRLD / plugin loading | `esm-plugin` |
+| BSA / BA2 / CSG archive readers | `import-pipeline` *(no `bsa` label — flag the gap)* |
+| Vulkan renderer / RT / denoiser | `renderer` (+ `vulkan` / `pipeline` / `memory`) |
+| GLSL / SPIR-V sources, shader contract | `shaders` (+ `renderer`) |
+| Water — WATAL, buoyancy, waterline | `water` |
+| Terrain / LOD / sky / weather / worldspace (EXAL) | `terrain-exterior` |
+| Physics — Havok→Rapier, colliders, ragdoll (PHYSAL) | `physics` |
+| SpeedTree (`.spt`) | `speedtree` |
+| Character rulesets — ActorValues, perks, leveling (CHARAL) | `character` |
+| Audio (M44) | `audio` |
+| Scaleform / SWF UI (R4 + M48) | `ui` |
+| Save/load (M45) | `save-load` |
+| Papyrus / ObScript / scripting runtime | `scripting` |
+| ECS storage / queries / scheduler | `ecs` |
+| GPU sync (semaphores, fences, barriers) | `sync` |
+| CPU lock ordering / races / access declarations | `concurrency` |
+| Platform / windowing, debug-server, audit infrastructure | `tech-debt` *(no own label — flag the gap)* |
 
-| Finding subsystem | Apply (exists) | NOT (does not exist) |
-|-------------------|----------------|----------------------|
-| NIF parser / block dispatch | `nif-parser` (primary) `nif` (format tag) | — |
-| BSA / BA2 / CSG archive readers | `import-pipeline` (or `nif-parser`) | `bsa` |
-| ESM / cell / plugin loading | `import-pipeline` + `legacy-compat` | `esm` |
-| Audio (M44) | `legacy-compat` / `tech-debt` per finding | `audio` |
-| SpeedTree / sfmaterial / debug-ui / facegen / physics / platform | closest of `renderer` / `import-pipeline` / `legacy-compat` | `spt` `sfmaterial` `debug-ui` `platform` |
-| NIFAL canonical-translation | the subsystem it lives in (`nif-parser` / `renderer`) + cross-link `/audit-nifal` | — |
+**Game** (zero or more) — apply whenever the finding is specific to a title, *in addition*
+to the domain label. A per-game audit report labels every finding with its game; a
+cross-cutting audit labels only the findings that name a specific title's data:
+`game:fnv` · `game:fo3` · `game:fo4` · `game:fo76` · `game:skyrim` · `game:oblivion` ·
+`game:starfield`.
+
+**Cross-cutting kind tags** (zero or more, alongside the domain):
+- `doc-rot` — the defect is documentation drifted from code (stale ROADMAP row, SKILL doc
+  naming a deleted symbol, a comment describing removed behaviour). Pair with
+  `documentation` as the type.
+- `test-gap` — the defect is missing/vacuous/non-asserting coverage. Pair with the domain
+  of the code left untested.
+- `tech-debt` — dead code, duplication, stale markers, magic numbers, oversized files.
 
 If a finding genuinely has no reasonable existing label, file it with severity + `bug`
 only and flag the missing-label gap in the summary. Do **not** `gh label create` ad hoc —
@@ -126,16 +147,26 @@ domain/type; a per-finding `Dimension`/domain always overrides it:
 |------------------------------|----------------|------|-------|
 | `AUDIT_RENDERER_*` | `renderer` | `bug` | — |
 | `AUDIT_ECS_*` | `ecs` | `bug` | — |
-| `AUDIT_CONCURRENCY_*` | `sync` | `bug` | — |
-| `AUDIT_NIF_*` / `AUDIT_NIFAL_*` | `nif-parser` | `bug` | — |
-| `AUDIT_FNV_*` / `AUDIT_FO3_*` / `AUDIT_FO4_*` / `AUDIT_SKYRIM_*` / `AUDIT_OBLIVION_*` / `AUDIT_STARFIELD_*` | `nif-parser` (+ per finding) | `bug` | `legacy-compat` |
-| `AUDIT_LEGACY_COMPAT_*` | `legacy-compat` | `bug` | — |
-| `AUDIT_AUDIO_*` | (per finding; `legacy-compat`) | `bug` | — |
+| `AUDIT_CONCURRENCY_*` | `concurrency` | `bug` | `sync` on GPU-side findings |
+| `AUDIT_NIF_*` | `nif-parser` | `bug` | `nif` |
+| `AUDIT_NIFAL_*` | `nifal` | `bug` | + the landing subsystem |
+| `AUDIT_ESM_*` | `esm-plugin` | `bug` | — |
+| `AUDIT_PHYSICS_*` | `physics` | `bug` | `water` on the WATAL buoyancy sink |
+| `AUDIT_CHARACTER_*` | `character` | `bug` | — |
+| `AUDIT_UI_*` | `ui` | `bug` | — |
+| `AUDIT_SAVE_*` | `save-load` | `bug` | — |
+| `AUDIT_AUDIO_*` | `audio` | `bug` | — |
+| `AUDIT_SPEEDTREE_*` | `speedtree` | `bug` | `terrain-exterior` |
+| `AUDIT_SCRIPTING_*` | `scripting` | `bug` | — |
+| `AUDIT_FNV_*` / `AUDIT_FO3_*` / `AUDIT_FO4_*` / `AUDIT_SKYRIM_*` / `AUDIT_OBLIVION_*` / `AUDIT_STARFIELD_*` | (per finding) | `bug` | the matching `game:*` on **every** finding + `legacy-compat` |
+| `AUDIT_LEGACY_COMPAT_*` | `legacy-compat` | `bug` | `game:*` where title-specific |
 | `AUDIT_TECH_DEBT_*` | (per finding) | `bug` | `tech-debt` |
-| `AUDIT_INCREMENTAL_*` | (per finding) | `bug` | — |
+| `AUDIT_INCREMENTAL_*` / `AUDIT_REGRESSION_*` | (per finding) | `bug` | — |
 
-For `AUDIT_TECH_DEBT_*` the final set is `<severity>,<domain?>,tech-debt,bug` (doc-rot
-findings swap `bug` → `documentation`). For everything else: `<severity>,<domain>,bug`.
+For `AUDIT_TECH_DEBT_*` the final set is `<severity>,<domain?>,tech-debt,bug`. Doc-rot
+findings — in any report family — swap `bug` → `documentation` and add `doc-rot`;
+coverage findings add `test-gap`. For everything else: `<severity>,<domain>,bug`,
+plus `game:<title>` whenever the finding is specific to one game's data.
 
 ### 7. Build the completeness checklist (per CONFIRMED finding)
 

@@ -279,3 +279,6 @@ Run `.claude/commands/_audit-validate.sh` before finalizing (backticked paths mu
 resolve against the live tree — Path-Reference Convention in `_audit-common.md`).
 
 Suggest: `/audit-publish docs/audits/AUDIT_NIFAL_<TODAY>.md`
+(domain label: `nifal`, plus the subsystem the finding lands in — `nif-parser` for
+parse-side, `renderer`/`shaders` for the consuming end; add the matching `game:*` when the
+finding is specific to one title's translation path.)

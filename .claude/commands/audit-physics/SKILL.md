@@ -343,4 +343,5 @@ preset); `byroredux/src/systems/character.rs` — `character_controller_system`,
 1. `rm -rf /tmp/audit/physics`
 2. Inform the user the report is ready.
 3. Suggest: `/audit-publish docs/audits/AUDIT_PHYSICS_<TODAY>.md`
-   (there is no `physics` domain label — map to `legacy-compat` or `tech-debt`).
+   (domain label: `physics`; add `water` for WATAL buoyancy-sink findings, and the
+   matching `game:*` when the finding is specific to one title's Havok data).

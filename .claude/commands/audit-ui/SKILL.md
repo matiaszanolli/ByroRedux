@@ -315,4 +315,5 @@ leaks an `InputAction` edge into `combat_input_system` is a Dim 7 finding.
 1. `rm -rf /tmp/audit/ui`
 2. Inform the user the report is ready.
 3. Suggest: `/audit-publish docs/audits/AUDIT_UI_<TODAY>.md`
-   (there is no `ui` domain label — map to `tech-debt` or `legacy-compat`).
+   (domain label: `ui`; add `legacy-compat` when the finding is about Bethesda menu
+   fidelity, and the matching `game:*` when it is specific to one title's menus).

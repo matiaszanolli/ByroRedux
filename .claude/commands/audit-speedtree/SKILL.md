@@ -310,4 +310,6 @@ the `spawn.rs` call site), `crates/core/src/ecs/components/material.rs`
 Write findings to **`docs/audits/AUDIT_SPEEDTREE_<TODAY>.md`** using the
 base finding format from `_audit-common.md`. Mark anything already covered
 by #994–#1002 as a regression guard, not a new finding. Suggest
-`/audit-publish` on completion.
+`/audit-publish` on completion (domain labels: `speedtree` + `terrain-exterior`;
+add the matching `game:*` when the finding is specific to one title's `.spt`
+corpus).

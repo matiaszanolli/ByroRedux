@@ -440,3 +440,5 @@ the ONLY `set_reverb_send_db` caller. Neither is covered by the crate dimensions
 1. `rm -rf /tmp/audit/audio`
 2. Inform user the report is ready
 3. Suggest: `/audit-publish docs/audits/AUDIT_AUDIO_<TODAY>.md`
+   (domain label: `audio`; add the matching `game:*` when the finding is specific to
+   one title's sound data).

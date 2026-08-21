@@ -317,26 +317,51 @@ Before reporting ANY finding:
 
 Deep audit commands add extra fields (e.g., `Trigger Conditions`, `Flow`, `Changed File`) — see each command for details.
 
-## Domain Labels
+## Issue Labels
 
 These are the labels that actually exist in the repo (verify drift with
 `gh label list --repo matiaszanolli/ByroRedux`). `/audit-publish` must only
-apply labels from this set — `gh issue create` rejects unknown labels.
+apply labels from this set — `gh issue create` rejects unknown labels. Labels
+are a deliberate repo decision: never `gh label create` from an audit.
 
-Severity: `critical`, `high`, `medium`, `low`
-Domain: `ecs`, `renderer`, `vulkan`, `pipeline`, `memory`, `sync`, `cxx`, `nif-parser`, `nif`, `import-pipeline`, `animation`, `legacy-compat`, `performance`, `safety`, `tech-debt`
-Type: `bug`, *enhancement*, `documentation`
+Four independent axes. A finding carries one **severity**, one **type**, one or
+more **domain** labels, and a **game** label only when the finding is specific
+to a title.
 
-Subsystems without their own label map to the closest existing domain:
-BSA/BA2/CSG and ESM/cell loading → `import-pipeline`; audio / platform /
-SpeedTree / sfmaterial → `legacy-compat` or `tech-debt`. There is **no**
-`bsa`, `esm`, `platform`, or `maintenance` label — do not apply them.
+**Severity** (exactly one): `critical` · `high` · `medium` · `low` · `info`
 
-The four audits added 2026-08-13 have no label of their own either:
-`/audit-esm` → `import-pipeline`; `/audit-physics` and `/audit-character` →
-`legacy-compat` (or `tech-debt` for pure-debt findings); `/audit-ui` →
-`tech-debt` (or `legacy-compat` when the finding is about Bethesda menu
-fidelity). Add a real label only after creating it in the repo.
+**Type** (exactly one): `bug` · `enhancement` · `documentation`
+
+**Domain** (one or more):
+`ecs` · `renderer` · `vulkan` · `pipeline` · `shaders` · `memory` · `sync` ·
+`concurrency` · `cxx` · `nif` · `nif-parser` · `nifal` · `import-pipeline` ·
+`esm-plugin` · `animation` · `physics` · `character` · `water` ·
+`terrain-exterior` · `speedtree` · `audio` · `ui` · `save-load` · `scripting` ·
+`gameplay` · `ai` · `combat` · `dialogue` · `inventory` · `quests` ·
+`legacy-compat` · `performance` · `safety` · `tech-debt` · `doc-rot` ·
+`test-gap` · `info`
+
+**Game** (zero or more — only when the finding is specific to a title):
+`game:fnv` · `game:fo3` · `game:fo4` · `game:fo76` · `game:skyrim` ·
+`game:oblivion` · `game:starfield`
+
+`sync` vs `concurrency`: `sync` is GPU-side (Vulkan semaphores, fences,
+barriers, queue submission); `concurrency` is CPU-side (ECS lock ordering,
+scheduler access declarations, `RwLock` scopes, data races).
+
+**Added 2026-08-21** — every `game:*`, plus `water` `terrain-exterior`
+`shaders` `nifal` `esm-plugin` `save-load` `ui` `physics` `speedtree`
+`concurrency` `character` `audio` `doc-rot` `test-gap`. These closed the old
+"no label for this subsystem" gaps: the prior guidance to fold them into
+`import-pipeline` / `legacy-compat` / `tech-debt` is **obsolete** — label the
+subsystem directly.
+
+Still without a label of their own — map to the closest domain and flag the gap
+in the publish summary: BSA/BA2/CSG archive readers → `import-pipeline`;
+platform/windowing, debug-server / `byro-dbg`, and audit infrastructure
+(`.claude/commands/`, `_audit-validate.sh`) → `tech-debt`; FaceGen →
+`import-pipeline`. There is no `bsa`, `platform`, `debug-ui`, or `maintenance`
+label — do not apply them.
 
 ## Report Finalization
 

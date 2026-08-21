@@ -30,8 +30,11 @@ With `--issues`, fetch those numbers directly (`gh issue view <N> --repo
 matiaszanolli/ByroRedux --json number,title,body,closedAt,labels`) instead.
 
 > Default `--label bug` structurally misses closed issues carrying only the
-> `documentation` label (e.g. #1818, a doc-rot fix) — pass
-> `--label bug,documentation` to include doc-rot regressions in the discovery pass.
+> `documentation` / `doc-rot` labels (e.g. #1818, a doc-rot fix) — pass
+> `--label bug,documentation,doc-rot` to include doc-rot regressions in the
+> discovery pass. To scope a regression sweep to one title, filter on the game
+> axis instead: `--label game:skyrim` (likewise `game:fnv`, `game:fo3`,
+> `game:fo4`, `game:fo76`, `game:oblivion`, `game:starfield`).
 
 For each issue, pull out:
 - **Number + title** — the regression handle.

@@ -201,3 +201,4 @@ benches refresh every `/session-close`.
 3. Remove cross-dimension duplicates.
 
 Suggest: `/audit-publish docs/audits/AUDIT_SKYRIM_<TODAY>.md`
+(label every finding `game:skyrim` + `legacy-compat`, plus its own domain label.)

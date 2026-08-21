@@ -1116,3 +1116,5 @@ asset-resolution catalog, and five playback systems. Dims 1–7 cover none of it
 1. `rm -rf /tmp/audit/scripting`
 2. Inform user the report is ready.
 3. Suggest: `/audit-publish docs/audits/AUDIT_SCRIPTING_<TODAY>.md`
+   (domain label: `scripting`; add `quests` for QUST/alias findings and the matching
+   `game:*` when the finding is specific to one title's scripts).

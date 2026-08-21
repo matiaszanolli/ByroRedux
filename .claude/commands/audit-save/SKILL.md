@@ -529,3 +529,5 @@ exact flow, verified against the tree 2026-07-15).
 1. `rm -rf /tmp/audit/save`
 2. Inform user the report is ready.
 3. Suggest: `/audit-publish docs/audits/AUDIT_SAVE_<TODAY>.md`
+   (domain label: `save-load`; add `test-gap` for coverage findings and `doc-rot` for
+   drifted save/load docs).

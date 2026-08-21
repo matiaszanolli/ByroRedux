@@ -157,3 +157,5 @@ dimension is therefore a **regression guard**, not migration tracking.
 3. Remove cross-dimension duplicates
 
 Suggest: `/audit-publish docs/audits/AUDIT_CONCURRENCY_<TODAY>.md`
+(domain label: `concurrency` for CPU-side lock ordering / access declarations, `sync`
+for GPU-side semaphore/fence/barrier findings.)

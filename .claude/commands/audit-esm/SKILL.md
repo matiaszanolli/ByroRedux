@@ -350,4 +350,5 @@ Locations; `crates/plugin/examples/` probes; `byroredux/src/list_cells.rs`;
 1. `rm -rf /tmp/audit/esm`
 2. Inform the user the report is ready.
 3. Suggest: `/audit-publish docs/audits/AUDIT_ESM_<TODAY>.md`
-   (domain label: `import-pipeline` — there is no `esm` label).
+   (domain label: `esm-plugin`; `import-pipeline` only for BSA/BA2 archive findings,
+   plus the matching `game:*` when the finding is specific to one title's records).

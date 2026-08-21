@@ -336,3 +336,4 @@ Oblivion-specific slice.
 3. Remove cross-dimension duplicates.
 
 Suggest: `/audit-publish docs/audits/AUDIT_OBLIVION_<TODAY>.md`
+(label every finding `game:oblivion` + `legacy-compat`, plus its own domain label.)
