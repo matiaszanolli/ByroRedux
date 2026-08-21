@@ -108,6 +108,8 @@ struct WaterParams {
     vec4 effects;
     // xyz = Starfield color-absorption ranges in world units; zero means
     // pre-Starfield/legacy water and selects the scalar fog response.
+    // w = precipitation * authored rain-response (0..4). Not a free slot —
+    // same trap as VolumetricsParams.render_origin.w / GpuCamera.render_origin.w.
     vec4 absorption;
     // Starfield phytoplankton, sediment, yellow matter, oceanness.
     vec4 concentration;

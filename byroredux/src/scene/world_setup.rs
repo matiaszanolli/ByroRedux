@@ -6,6 +6,7 @@
 //! [`super::setup_scene`]. Split out of the parent `scene.rs` to keep
 //! it under ~1000 lines.
 
+use byroredux_core::ecs::components::groundcover::WindField;
 use byroredux_core::ecs::World;
 use byroredux_core::math::Vec3;
 use byroredux_renderer::VulkanContext;
@@ -489,6 +490,22 @@ pub(crate) fn apply_cell_climate_override(
     true
 }
 
+/// #3194 — sanitise a resolved `WindField` once, at the single install
+/// site ([`install_ground_cover`]), so every consumer (SpeedTree billboard
+/// sway, render-side water scroll, physics-side water scroll) inherits one
+/// well-formed value instead of each re-deriving its own non-finite/
+/// negative-gust guard. `f32::clamp` is NaN-transparent, so a malformed
+/// field left unsanitised would otherwise propagate a NaN world rotation
+/// onto every tree (EX-05). Falls back to dead calm rather than a
+/// partially-poisoned field.
+fn sanitize_wind(wind: WindField) -> WindField {
+    if wind.is_well_formed() {
+        wind
+    } else {
+        WindField::CALM
+    }
+}
+
 /// EXAL ground-cover translate site (#2369, design §7).
 ///
 /// Runs after both weather branches so the wind field reads whichever
@@ -519,7 +536,7 @@ fn install_ground_cover(world: &mut World, wctx: &cell_loader::ExteriorWorldCont
         &wctx.worldspace_key,
     );
     let palette = resolve_palette_for_chain(&chain, Vec::new());
-    let wind = resolve_wind(&wctx.worldspace_key, wind_speed);
+    let wind = sanitize_wind(resolve_wind(&wctx.worldspace_key, wind_speed));
     log::info!(
         target: "engine::groundcover",
         "Ground cover for '{}' (chain {:?}): climate {:?}, {} species, \
@@ -873,6 +890,48 @@ mod tests {
             ExteriorBootstrapMode::from_cli_args(&bench),
             ExteriorBootstrapMode::FullRadius
         );
+    }
+
+    /// #3194 — a well-formed `WindField` passes through unchanged. Wind's
+    /// SpeedTree/water consumers must still see the authored direction and
+    /// gust shape, not always-CALM.
+    #[test]
+    fn sanitize_wind_passes_through_well_formed_field() {
+        let wind = WindField::from_weather_byte(180, [0.6, 0.8]);
+        assert!(wind.is_well_formed());
+        assert_eq!(sanitize_wind(wind), wind);
+    }
+
+    /// #3194 — a non-finite `WindField` (the shape a hand-authored, modded,
+    /// or future procedurally-driven resource could produce) must not reach
+    /// any consumer: `f32::clamp` is NaN-transparent, so an unguarded NaN
+    /// gust would poison `strength` → `Quat::from_rotation_z` →
+    /// `GlobalTransform.rotation` on every SpeedTree entity.
+    #[test]
+    fn sanitize_wind_substitutes_calm_for_non_finite_field() {
+        let malformed = WindField {
+            direction: [1.0, 0.0],
+            speed: f32::NAN,
+            gust_amplitude: 10.0,
+            gust_frequency: 0.2,
+        };
+        assert!(!malformed.is_well_formed());
+        assert_eq!(sanitize_wind(malformed), WindField::CALM);
+    }
+
+    /// #3194 — a negative authored speed is equally malformed (the field's
+    /// contract is a magnitude, not a signed velocity) and must fall back
+    /// to calm rather than reach SpeedTree/water as a reversed gust.
+    #[test]
+    fn sanitize_wind_substitutes_calm_for_negative_speed() {
+        let malformed = WindField {
+            direction: [1.0, 0.0],
+            speed: -5.0,
+            gust_amplitude: 0.0,
+            gust_frequency: 0.0,
+        };
+        assert!(!malformed.is_well_formed());
+        assert_eq!(sanitize_wind(malformed), WindField::CALM);
     }
 
     /// #1339 / D3-03 — on a worldspace re-acquire, every real prior sky

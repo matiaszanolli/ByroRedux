@@ -21,7 +21,6 @@
 //! This function must run AFTER the draw_commands sort and BEFORE
 //! the renderer consumes them.
 
-use byroredux_core::ecs::components::groundcover::WindField;
 use byroredux_core::ecs::components::water::{WaterFlow, WaterKind, WaterPlane};
 use byroredux_core::ecs::{TotalTime, World};
 use byroredux_renderer::vulkan::context::DrawCommand;
@@ -73,71 +72,31 @@ pub(super) fn reemit_water_planes(
         .try_resource::<TotalTime>()
         .map(|t| t.0)
         .unwrap_or(0.0);
-    // The same weather wind that drives SpeedTree canopy sway also perturbs
-    // water's surface normals. WATR wind remains water-local authored motion;
-    // this resource is the live atmosphere shared by both surfaces.
-    let weather_wind = world
-        .try_resource::<WindField>()
-        .map(|w| *w)
-        .unwrap_or_default();
-    let precipitation = world
-        .try_resource::<crate::components::WeatherDataRes>()
-        .map(|weather| weather.precipitation.clamp(0.0, 1.0))
+    // #3207 — the weather scroll/scale pair is the seam WATAL's double-ended
+    // design depends on: gameplay (`systems/water.rs`), buoyancy/submersion
+    // (`systems/character.rs`), and this renderer all need to agree on which
+    // crest is visible. `weather_wave_adjustment` is the declared single
+    // source (it also carries the SpeedTree-matching gust/direction guards);
+    // recomputing it here let the two ends drift silently on any future
+    // retune.
+    let (weather_scroll, wind_wave_scale) =
+        byroredux_physics::weather_wave_adjustment(world, time_secs);
+    let weather = world.try_resource::<crate::components::WeatherDataRes>();
+    let precipitation = weather
+        .as_ref()
+        .map(|w| w.precipitation.clamp(0.0, 1.0))
         .unwrap_or(0.0);
     let game_hour = world
         .try_resource::<crate::components::GameTimeRes>()
         .map(|clock| clock.hour);
-    let tod_hours = world
-        .try_resource::<crate::components::WeatherDataRes>()
-        .map(|weather| weather.tod_hours);
+    let tod_hours = weather.as_ref().map(|w| w.tod_hours);
+    drop(weather);
     let night_factor = match (game_hour, tod_hours) {
         (Some(hour), Some(hours)) => crate::systems::weather::night_factor_for_hour(hour, hours),
         // Interior and synthetic worlds without a weather resource retain
         // the daytime/base palette rather than inventing a second clock.
         _ => 0.0,
     };
-    let gust = weather_wind.speed
-        + weather_wind.gust_amplitude
-            * (time_secs * weather_wind.gust_frequency * std::f32::consts::TAU).sin();
-    // SpeedTree treats a negative instantaneous gust as calm weather by
-    // clamping its bend strength to zero. Keep water's UV drift on that same
-    // one-sided magnitude contract; otherwise a gust trough briefly reverses
-    // the surface while vegetation has stopped responding.
-    let gust = if gust.is_finite() { gust.max(0.0) } else { 0.0 };
-    // SpeedTree sway treats the field as a direction, not a magnitude. Keep
-    // water's weather scroll on that same contract so a hand-authored or
-    // malformed resource cannot make water travel faster than the foliage it
-    // is meant to share wind with.
-    let wind_direction = {
-        let len_sq = weather_wind.direction[0] * weather_wind.direction[0]
-            + weather_wind.direction[1] * weather_wind.direction[1];
-        if len_sq.is_finite() && len_sq > 1.0e-6 {
-            let inv_len = len_sq.sqrt().recip();
-            [
-                weather_wind.direction[0] * inv_len,
-                weather_wind.direction[1] * inv_len,
-            ]
-        } else {
-            // Match the billboard path's deterministic fallback for a zero
-            // or non-finite direction.
-            [1.0, 0.0]
-        }
-    };
-    // Use the same instantaneous gust magnitude that drives SpeedTree sway.
-    // Keep authored WATR amplitude as the baseline, then add at most 50% in
-    // the strongest weather so calm water remains calm and storm water gains
-    // a visible silhouette response without runaway displacement.
-    let wind_wave_scale = 1.0
-        + (gust / byroredux_core::ecs::components::groundcover::MAX_WIND_SPEED).clamp(0.0, 1.0)
-            * 0.5;
-    let weather_scroll = [
-        wind_direction[0]
-            * gust
-            * byroredux_core::ecs::components::water::WEATHER_SCROLL_PER_BU_PER_S,
-        wind_direction[1]
-            * gust
-            * byroredux_core::ecs::components::water::WEATHER_SCROLL_PER_BU_PER_S,
-    ];
     let Some(wq) = world.query::<WaterPlane>() else {
         return;
     };

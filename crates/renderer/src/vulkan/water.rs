@@ -118,8 +118,12 @@ pub struct GpuWaterParams {
     /// Authored effect controls: refraction magnitude, local specular power,
     /// reflection magnitude, and sun-specular magnitude.
     pub effects: [f32; 4],
-    /// Starfield per-channel color-absorption ranges in world units; zero
-    /// triplet is the legacy scalar-fog sentinel.
+    /// xyz = Starfield per-channel color-absorption ranges in world units;
+    /// zero triplet is the legacy scalar-fog sentinel. w = precipitation ×
+    /// authored rain-response (0..4), driving rain-surface response. Not a
+    /// free slot — same trap as `VolumetricsParams.render_origin.w` (#1928)
+    /// and `GpuCamera.render_origin.w` (#2164): `GpuWaterParams` has no
+    /// headroom for a new vec4 (see the `MAX_WATER_DRAWS` UBO-size finding).
     pub absorption: [f32; 4],
     /// Starfield water-column concentrations: phytoplankton, sediment,
     /// yellow matter, and oceanness.
@@ -133,8 +137,12 @@ pub struct GpuWaterParams {
     /// x/y = shallow/deep alpha, z/w = shallow/deep distance thresholds.
     /// All zero is the legacy constant-opacity sentinel.
     pub alpha: [f32; 4],
-    /// xy = authored mesh-water UV offset; zw are reserved for future
-    /// transform terms. Cell WATR surfaces upload zero.
+    /// xy = authored mesh-water UV offset; z carries the optional
+    /// mesh-water flow-map bindless index as integer bits (`u32::MAX` =
+    /// none); w carries its authored tile scale. Cell WATR surfaces upload
+    /// the `u32::MAX` index and a neutral scale, not zero. Not a free slot —
+    /// same trap as `VolumetricsParams.render_origin.w` (#1928) and
+    /// `GpuCamera.render_origin.w` (#2164).
     pub uv_offset: [f32; 4],
 }
 

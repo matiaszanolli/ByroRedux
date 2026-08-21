@@ -44,9 +44,14 @@ pub(super) fn dispatch_misc_gameplay_a_group(
         // Supplementary records previously catch-all-skipped (#458).
         // Stubs capture EDID + form refs + scalar fields; full
         // per-record decoding lands with the consuming subsystem.
-        b"WATR" => extract_records(reader, end, b"WATR", &mut |fid, subs| {
-            index.waters.insert(fid, parse_watr(fid, subs, game));
-        })?,
+        b"WATR" => {
+            // #3200 — XNAM carries a cross-record SPEL FormID that needs
+            // the same load-order remap as every other cross-reference.
+            let watr_remap = reader.get_form_id_remap();
+            extract_records(reader, end, b"WATR", &mut |fid, subs| {
+                index.waters.insert(fid, parse_watr(fid, subs, game, &watr_remap));
+            })?
+        }
         b"NAVI" => extract_records(reader, end, b"NAVI", &mut |fid, subs| {
             index.navi_info.insert(fid, parse_navi(fid, subs));
         })?,

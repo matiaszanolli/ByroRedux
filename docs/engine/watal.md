@@ -310,6 +310,12 @@ Modern WATR `FNAM` flags now cross the same boundary: bit `0x01` drives the
 canonical damage hazard and bit `0x08` gates Skyrim-family `NAM5` flow normals;
 Skyrim bit `0x10` also gates authored normal-layer blending; records without
 FNAM retain the compatibility layered-normal and flow-texture behavior.
+The `FNAM`-bit-0x01 mechanism above is real but never authored on vanilla
+FO3/FNV content (#3200): every vanilla `WATR`'s `FNAM` clears the bit and its
+`DATA` damage word is zero. That era's actual hazard is `XNAM`, a `SPEL`
+("water quality") FormID link present on 73/78 FNV and 51/53 FO3 records,
+now captured on `WatrRecord::effect_form` at the parse boundary — see the
+table below.
 An all-zero `NAM0` is treated as a sentinel: named or flow-textured rivers
 retain their bounded kind fallback current instead of becoming motionless.
 That explicit velocity is also retained as provenance and promotes a neutral
@@ -476,7 +482,8 @@ Everything else is a SENTINEL the older game leaves unset, identical across game
 | WATR appearance payload | DATA ~102 B | DATA 186/196 B (opaque 16 B prefix) | DNAM 228/232 B; FO4/FO76 201 B; Starfield 152 B+ | `water.rs:30-61` |
 | shallow/deep color, reflectivity, fresnel | AUTHORED | AUTHORED | AUTHORED | DATA/DNAM RGBA |
 | surface opacity | AUTHORED (`ANAM`) | AUTHORED (`ANAM`) | AUTHORED (`ANAM`) | ANAM (u8 / 255) |
-| legacy water damage | SENTINEL | AUTHORED when `FNAM` bit 0x01 is set | SENTINEL | `DATA` uint16 damage + `FNAM` |
+| legacy water damage | SENTINEL | **SENTINEL on vanilla** — `FNAM` bit 0x01 is never set, `DATA` damage is always 0 | SENTINEL | `DATA` uint16 damage + `FNAM` |
+| water hazard (FO3/FNV era) | n/a | AUTHORED via `XNAM` → `SPEL` ("water quality") FormID link, e.g. `WaterHeal1Rads500`/`WaterHeal5Terrible` (#3200) | n/a | `XNAM` → `WatrRecord::effect_form`; not yet resolved past the parse boundary — needs a SPEL/magic-effect runtime |
 | `fog_near`/`fog_far` | **SENTINEL** 80/600 (short DATA) | AUTHORED | AUTHORED | FO3/FNV DATA[32..40] |
 | FO4 surface depth ramp | SENTINEL | SENTINEL | AUTHORED | DNAM[0] (`Depth Amount`) |
 | FO4 underwater fog amount | SENTINEL | SENTINEL | AUTHORED | DNAM[40] |

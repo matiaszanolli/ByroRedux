@@ -167,6 +167,15 @@ fn apply_speedtree_wind(
 ) -> Quat {
     let gust = wind.speed
         + wind.gust_amplitude * (elapsed * wind.gust_frequency * std::f32::consts::TAU).sin();
+    // #3194 — match both water consumers' one-sided magnitude contract: a
+    // negative or non-finite instantaneous gust is calm weather, not a
+    // reversed bend. `install_ground_cover` already substitutes
+    // `WindField::CALM` for a malformed field, so this is defense-in-depth
+    // against a hand-authored or future procedurally-driven resource that
+    // bypasses that install site — without it, `f32::clamp` is NaN-
+    // transparent and a non-finite gust would poison `strength` and every
+    // tree's `GlobalTransform.rotation` below.
+    let gust = if gust.is_finite() { gust.max(0.0) } else { 0.0 };
     let strength =
         (gust / byroredux_core::ecs::components::groundcover::MAX_WIND_SPEED).clamp(0.0, 1.0);
     let wind_dir = Vec2::new(wind.direction[0], wind.direction[1]);

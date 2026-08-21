@@ -1,8 +1,19 @@
 //! Water record (`WATR`) and decoded water parameters.
 
 use super::super::common::{read_zstring, CommonNamedFields};
-use crate::esm::reader::{GameKind, SubRecord};
+use crate::esm::reader::{FormIdRemap, GameKind, SubRecord};
 use crate::esm::sub_reader::SubReader;
+
+/// Remap a raw plugin-local FormID to global space, leaving 0 (no
+/// FormID / null ref) untouched. Same convention as `outfit.rs` / `actor.rs`'s
+/// `remap_fid` — kept local rather than shared since neither module depends
+/// on the other's record types.
+fn remap_fid(raw: u32, remap: &Option<FormIdRemap>) -> u32 {
+    if raw == 0 {
+        return 0;
+    }
+    remap.as_ref().map_or(raw, |r| r.remap(raw))
+}
 
 /// Water record — referenced by `CELL.XCWT` (water type form ID on a
 /// cell). Pre-fix every XCWT reference dangled at cell load.
@@ -96,6 +107,15 @@ pub struct WatrRecord {
     /// GNAM's three related-water FormIDs (daytime, nighttime,
     /// underwater), preserved for runtime variant resolution.
     pub related_waters: [u32; 3],
+    /// FO3/FNV `XNAM` — the era's actual hazard channel: a `SPEL` FormID
+    /// ("water quality") whose `EFIT` magnitude is the radiation/poison
+    /// dose, e.g. vanilla FO3's `WaterHeal1Rads500`/`WaterHeal5Terrible`
+    /// chain. **Not** a damage value itself — named for what it is (an
+    /// effect-record link) rather than overloading `legacy_damage`, which
+    /// stays the Skyrim-era `DATA` uint16 path. 0 means no `XNAM` sub-record
+    /// (#3200 — `legacy_damage`/`legacy_flags` are structurally zero/unset
+    /// on vanilla FO3/FNV; this is the field that is actually authored).
+    pub effect_form: u32,
     /// Raw DNAM bytes — preserved so a future per-game-precise
     /// decoder can re-parse without re-walking the ESM. ~252+ bytes
     /// on Skyrim, ~196 on FNV/FO3, ~102 on Oblivion. Empty when the
@@ -1371,7 +1391,12 @@ fn decode_dnam_starfield(data: &[u8]) -> WaterParams {
     p
 }
 
-pub fn parse_watr(form_id: u32, subs: &[SubRecord], game: GameKind) -> WatrRecord {
+pub fn parse_watr(
+    form_id: u32,
+    subs: &[SubRecord],
+    game: GameKind,
+    remap: &Option<FormIdRemap>,
+) -> WatrRecord {
     let mut out = WatrRecord {
         form_id,
         opacity: 0.75,
@@ -1488,6 +1513,14 @@ pub fn parse_watr(form_id: u32, subs: &[SubRecord], game: GameKind) -> WatrRecor
                     }
                 }
             }
+            // #3200 — FO3/FNV's real hazard channel: a FormID link to a
+            // SPEL record ("water quality"), not the DATA damage word
+            // (structurally zero on both titles' vanilla WATR records).
+            b"XNAM" if sub.data.len() >= 4 => {
+                if let Ok(fid) = SubReader::new(&sub.data).u32() {
+                    out.effect_form = remap_fid(fid, remap);
+                }
+            }
             _ => {}
         }
     }
@@ -1553,7 +1586,7 @@ mod tests {
             sub(b"ANAM", &[192]),
             sub(b"TNAM", b"textures\\water\\fresh.dds\0"),
         ];
-        let w = parse_watr(0x1234, &subs, GameKind::Skyrim);
+        let w = parse_watr(0x1234, &subs, GameKind::Skyrim, &None);
         assert_eq!(w.form_id, 0x1234);
         assert_eq!(w.editor_id, "WaterFreshDefault");
         assert_eq!(w.full_name, "Fresh Water");
@@ -1564,26 +1597,26 @@ mod tests {
 
     #[test]
     fn parse_watr_preserves_authored_zero_opacity() {
-        let w = parse_watr(0x1235, &[sub(b"ANAM", &[0])], GameKind::Skyrim);
+        let w = parse_watr(0x1235, &[sub(b"ANAM", &[0])], GameKind::Skyrim, &None);
         assert_eq!(w.opacity, 0.0);
         assert!(w.opacity_authored);
     }
 
     #[test]
     fn parse_watr_captures_legacy_and_modern_fnam_flags() {
-        let reflective = parse_watr(1, &[sub(b"FNAM", &[0x02])], GameKind::Fallout3NV);
+        let reflective = parse_watr(1, &[sub(b"FNAM", &[0x02])], GameKind::Fallout3NV, &None);
         assert_eq!(reflective.legacy_flags, Some(0x02));
         assert_eq!(reflective.water_flags, Some(0x02));
 
-        let skyrim = parse_watr(2, &[sub(b"FNAM", &[0x02])], GameKind::Skyrim);
+        let skyrim = parse_watr(2, &[sub(b"FNAM", &[0x02])], GameKind::Skyrim, &None);
         assert_eq!(skyrim.legacy_flags, None);
         assert_eq!(skyrim.water_flags, Some(0x02));
         assert_eq!(skyrim.blend_normals, Some(false));
 
-        let skyrim_blended = parse_watr(2, &[sub(b"FNAM", &[0x12])], GameKind::Skyrim);
+        let skyrim_blended = parse_watr(2, &[sub(b"FNAM", &[0x12])], GameKind::Skyrim, &None);
         assert_eq!(skyrim_blended.blend_normals, Some(true));
 
-        let oblivion = parse_watr(3, &[sub(b"FNAM", &[0x01])], GameKind::Oblivion);
+        let oblivion = parse_watr(3, &[sub(b"FNAM", &[0x01])], GameKind::Oblivion, &None);
         assert_eq!(oblivion.water_flags, None);
         assert_eq!(oblivion.blend_normals, None);
     }
@@ -1601,6 +1634,7 @@ mod tests {
                 sub(b"DATA", &42u16.to_le_bytes()),
             ],
             GameKind::Fallout3NV,
+            &None,
         );
         assert_eq!(w.legacy_flags, Some(0x01));
         assert_eq!(w.legacy_damage, Some(42));
@@ -1614,6 +1648,7 @@ mod tests {
             4,
             &[sub(b"FNAM", &[0x01]), sub(b"DATA", &42u16.to_le_bytes())],
             GameKind::Skyrim,
+            &None,
         );
         assert_eq!(w.water_flags, Some(0x01));
         assert_eq!(w.legacy_damage, Some(42));
@@ -1626,7 +1661,7 @@ mod tests {
         for value in [0.25f32, -0.5, 1.75] {
             angular.extend_from_slice(&value.to_le_bytes());
         }
-        let w = parse_watr(5, &[sub(b"NAM1", &angular)], GameKind::Skyrim);
+        let w = parse_watr(5, &[sub(b"NAM1", &angular)], GameKind::Skyrim, &None);
         assert_eq!(w.params.angular_velocity, [0.25, -0.5, 1.75]);
     }
 
@@ -1649,7 +1684,7 @@ mod tests {
         data.extend_from_slice(&[0xC0, 0xD0, 0xE0, 0xFF]); // reflection RGBA
 
         let subs = vec![sub(b"DATA", &data)];
-        let w = parse_watr(0xAAAA, &subs, GameKind::Fallout3NV);
+        let w = parse_watr(0xAAAA, &subs, GameKind::Fallout3NV, &None);
         assert!((w.params.wind_speed - 1.5).abs() < 1e-6);
         assert!((w.params.wave_frequency - 0.80).abs() < 1e-6);
         assert!((w.params.sun_specular_power - 37.0).abs() < 1e-6);
@@ -1699,7 +1734,7 @@ mod tests {
         data[92..96].copy_from_slice(&3.5f32.to_le_bytes()); // displacement dampener
         data[96..100].copy_from_slice(&0.08f32.to_le_bytes()); // displacement start
 
-        let w = parse_watr(0xBEEF, &[sub(b"DATA", &data)], GameKind::Oblivion);
+        let w = parse_watr(0xBEEF, &[sub(b"DATA", &data)], GameKind::Oblivion, &None);
         assert_eq!(w.params.fog_near, 12.0);
         assert_eq!(w.params.fog_far, 640.0);
         assert!((w.params.shallow_color[0] - 0x20 as f32 / 255.0).abs() < 1e-6);
@@ -1758,7 +1793,7 @@ mod tests {
         data[172..176].copy_from_slice(&(1.0 / 320.0f32).to_le_bytes()); // noise UV 1
         data[176..180].copy_from_slice(&(1.0 / 760.0f32).to_le_bytes()); // noise UV 2
 
-        let w = parse_watr(0x00100000, &[sub(b"DATA", &data)], GameKind::Fallout3NV);
+        let w = parse_watr(0x00100000, &[sub(b"DATA", &data)], GameKind::Fallout3NV, &None);
         assert!((w.params.shallow_color[0] - 36.0 / 255.0).abs() < 1e-6);
         assert!((w.params.shallow_color[1] - 47.0 / 255.0).abs() < 1e-6);
         assert!((w.params.deep_color[2] - 11.0 / 255.0).abs() < 1e-6);
@@ -1807,7 +1842,7 @@ mod tests {
         data.extend_from_slice(&1.0f32.to_le_bytes());
         data.extend_from_slice(&0.5f32.to_le_bytes());
         let subs = vec![sub(b"DATA", &data)];
-        let w = parse_watr(0xBBBB, &subs, GameKind::Fallout3NV);
+        let w = parse_watr(0xBBBB, &subs, GameKind::Fallout3NV, &None);
         assert!((w.params.wind_speed - 3.0).abs() < 1e-6);
         assert!((w.params.wave_amplitude - 0.5).abs() < 1e-6);
         // Defaults preserved past offset 12.
@@ -1836,7 +1871,7 @@ mod tests {
         data.extend_from_slice(&[0xA0, 0xB0, 0xC0, 0xFF]); // reflection
 
         let subs = vec![sub(b"DNAM", &data)];
-        let w = parse_watr(0xCCCC, &subs, GameKind::Skyrim);
+        let w = parse_watr(0xCCCC, &subs, GameKind::Skyrim, &None);
         assert!((w.params.wind_speed - 2.0).abs() < 1e-6);
         // Degrees on the wire (#3144). This fixture's 52-byte DNAM is shorter
         // than the 228 bytes `apply_skyrim_dnam_tail` requires, so the prefix
@@ -1894,7 +1929,7 @@ mod tests {
         data[112..116].copy_from_slice(&0.019f32.to_le_bytes());
         data[116..120].copy_from_slice(&0.013f32.to_le_bytes());
         data[120..124].copy_from_slice(&0.096f32.to_le_bytes());
-        let w = parse_watr(0xCCCC, &[sub(b"DNAM", &data)], GameKind::Skyrim);
+        let w = parse_watr(0xCCCC, &[sub(b"DNAM", &data)], GameKind::Skyrim, &None);
         assert_eq!(w.params.underwater_fog_near, 0.0);
         assert!((w.params.underwater_fog_far - 1000.0).abs() < 1e-3);
         assert_eq!(w.params.wave_amplitude, 0.4);
@@ -1938,6 +1973,7 @@ mod tests {
             0xCAFE,
             &[sub(b"DNAM", &[0; 228]), sub(b"NAM0", &velocity)],
             GameKind::Skyrim,
+            &None,
         );
         assert_eq!(w.params.wind_speed, 5.0);
         assert!((w.params.wind_direction - (-4.0f32).atan2(3.0)).abs() < 1e-6);
@@ -1955,6 +1991,7 @@ mod tests {
             0xCAFE,
             &[sub(b"DNAM", &[0; 228]), sub(b"NAM0", &velocity)],
             GameKind::Skyrim,
+            &None,
         );
         assert_eq!(w.linear_velocity, Some([0.0, -0.0]));
         assert_eq!(w.params.wind_speed, 0.0);
@@ -2010,7 +2047,7 @@ mod tests {
         data[192..196].copy_from_slice(&[170, 150, 120, 0]); // silt light
         data[196..200].copy_from_slice(&[55, 45, 35, 0]); // silt dark
 
-        let w = parse_watr(0x18, &[sub(b"DNAM", &data)], GameKind::Fallout4);
+        let w = parse_watr(0x18, &[sub(b"DNAM", &data)], GameKind::Fallout4, &None);
         assert_eq!(w.raw_dnam.len(), 201);
         assert!((w.params.shallow_color[0] - 45.0 / 255.0).abs() < 1e-6);
         assert!((w.params.deep_color[2] - 57.0 / 255.0).abs() < 1e-6);
@@ -2058,7 +2095,7 @@ mod tests {
                 b"Data\\Textures\\Water\\WastelandWaterPotomac.dds\0",
             ),
         ];
-        let w = parse_watr(0x100A8C, &subs, GameKind::Fallout3NV);
+        let w = parse_watr(0x100A8C, &subs, GameKind::Fallout3NV, &None);
         assert_eq!(w.editor_id, "PotomacNRShallow");
         assert_eq!(
             w.texture_path,
@@ -2079,7 +2116,7 @@ mod tests {
             sub(b"NAM5", b"textures\\water\\flow.dds\0"),
             sub(b"GNAM", &gnam),
         ];
-        let w = parse_watr(0xDDDD, &subs, GameKind::Skyrim);
+        let w = parse_watr(0xDDDD, &subs, GameKind::Skyrim, &None);
         assert_eq!(
             w.noise_texture_paths,
             [
@@ -2090,6 +2127,46 @@ mod tests {
         );
         assert_eq!(w.flow_noise_texture_path, "textures\\water\\flow.dds");
         assert_eq!(w.related_waters, [0x11111111, 0x22222222, 0x33333333]);
+    }
+
+    /// #3200 — `XNAM` is FO3/FNV's real hazard channel (a `SPEL` FormID),
+    /// undecoded before this fix. Confirms the sub-record is captured and
+    /// remapped like every other cross-record FormID reference.
+    #[test]
+    fn parse_watr_captures_xnam_effect_form() {
+        let w = parse_watr(
+            0x1234,
+            &[sub(b"XNAM", &0x0004_5656u32.to_le_bytes())],
+            GameKind::Fallout3NV,
+            &None,
+        );
+        assert_eq!(w.effect_form, 0x0004_5656);
+    }
+
+    #[test]
+    fn parse_watr_xnam_remaps_to_global_form_id_space() {
+        // Plugin slot 2, one master at slot 0 — same fixture shape as
+        // `otft_embedded_form_ids_remap_to_global_space`.
+        let remap = crate::esm::reader::FormIdRemap::regular(2, vec![0]);
+        // mod_index 0 → the master's slot (a base-game SPEL, e.g.
+        // Fallout3.esm's WaterHeal4Bad).
+        let master_spel: u32 = 0x0004_5656;
+        let w = parse_watr(
+            0x000A_0001,
+            &[sub(b"XNAM", &master_spel.to_le_bytes())],
+            GameKind::Fallout3NV,
+            &Some(remap),
+        );
+        assert_eq!(
+            w.effect_form, master_spel,
+            "master-slot XNAM reference (mod_index 0) stays at slot 0's byte"
+        );
+    }
+
+    #[test]
+    fn parse_watr_missing_xnam_leaves_effect_form_zero() {
+        let w = parse_watr(0xEEEE, &[], GameKind::Fallout3NV, &None);
+        assert_eq!(w.effect_form, 0);
     }
 
     #[test]
@@ -2132,6 +2209,7 @@ mod tests {
             0x18,
             &[sub(b"DNAM", &data), sub(b"NAM0", &velocity)],
             GameKind::Fallout76,
+            &None,
         );
         assert_eq!(w.params.fog_near, 25.0);
         assert_eq!(w.params.fog_far, 450.0);
@@ -2155,6 +2233,7 @@ mod tests {
             0x18,
             &[sub(b"DNAM", &data), sub(b"NAM0", &velocity)],
             GameKind::Fallout76,
+            &None,
         );
         assert_eq!(fallback.params.fog_far, 900.0);
     }
@@ -2190,7 +2269,7 @@ mod tests {
         data[132..136].copy_from_slice(&300.0f32.to_le_bytes());
         data[144..148].copy_from_slice(&3.0f32.to_le_bytes());
         data[148..152].copy_from_slice(&0.5f32.to_le_bytes());
-        let w = parse_watr(0x1234, &[sub(b"DNAM", &data)], GameKind::Starfield);
+        let w = parse_watr(0x1234, &[sub(b"DNAM", &data)], GameKind::Starfield, &None);
         assert_eq!(w.params.fog_far, 1200.0);
         assert_eq!(w.params.absorption_ranges, [0.1, 0.2, 0.3]);
         assert_eq!(w.params.concentration, [0.4, 0.5, 0.6, 0.7]);
@@ -2236,7 +2315,7 @@ mod tests {
         // 211.0 deg is the third-most-common shipped value at DNAM[100]
         // (11/69 FNV records); the field genuinely varies there, unlike [4].
         data[100..104].copy_from_slice(&211.0f32.to_le_bytes());
-        let w = parse_watr(0x1001, &[sub(b"DNAM", &data)], GameKind::Fallout3NV);
+        let w = parse_watr(0x1001, &[sub(b"DNAM", &data)], GameKind::Fallout3NV, &None);
         assert_eq!(w.params.wind_direction, 211.0f32.to_radians());
         assert_eq!(w.params.noise_wind_directions[0], 211.0f32.to_radians());
         // Degrees must not reach the radians field on either route (#3144).
@@ -2250,7 +2329,7 @@ mod tests {
     #[test]
     fn fo3nv_prefix_wind_direction_survives_when_the_tail_is_absent() {
         let data = buf_with_wind_direction(52, 90.0);
-        let w = parse_watr(0x1002, &[sub(b"DNAM", &data)], GameKind::Fallout3NV);
+        let w = parse_watr(0x1002, &[sub(b"DNAM", &data)], GameKind::Fallout3NV, &None);
         assert_eq!(w.params.wind_direction, 90.0f32.to_radians());
         assert_ne!(w.params.wind_direction, 90.0);
     }
@@ -2261,7 +2340,7 @@ mod tests {
         // 100.0 (x7), 90.0 (x5), 62.0 and 0.0 across its 102-byte records.
         for degrees in [35.0f32, 62.0, 90.0, 100.0] {
             let data = buf_with_wind_direction(102, degrees);
-            let w = parse_watr(0x1002, &[sub(b"DATA", &data)], GameKind::Oblivion);
+            let w = parse_watr(0x1002, &[sub(b"DATA", &data)], GameKind::Oblivion, &None);
             assert_eq!(
                 w.params.wind_direction,
                 degrees.to_radians(),
@@ -2278,7 +2357,7 @@ mod tests {
         // twice now that the prefix converts too.
         let mut data = buf_with_wind_direction(228, 90.0);
         data[100..104].copy_from_slice(&270.0f32.to_le_bytes());
-        let w = parse_watr(0x1003, &[sub(b"DNAM", &data)], GameKind::Skyrim);
+        let w = parse_watr(0x1003, &[sub(b"DNAM", &data)], GameKind::Skyrim, &None);
         assert_eq!(w.params.wind_direction, 270.0f32.to_radians());
         assert_eq!(w.params.noise_wind_directions[0], 270.0f32.to_radians());
     }
@@ -2296,8 +2375,8 @@ mod tests {
             dnam[20..24].copy_from_slice(&reflectivity.to_le_bytes());
             vec![sub(b"DNAM", &dnam), sub(b"FNAM", &[0x02])]
         };
-        let reflective = parse_watr(0x0010_09CA, &build(0.6), GameKind::Fallout3NV);
-        let matte = parse_watr(0x0017_B612, &build(0.0), GameKind::Fallout3NV);
+        let reflective = parse_watr(0x0010_09CA, &build(0.6), GameKind::Fallout3NV, &None);
+        let matte = parse_watr(0x0017_B612, &build(0.0), GameKind::Fallout3NV, &None);
 
         assert_eq!(reflective.params.reflectivity, 0.6);
         assert_eq!(matte.params.reflectivity, 0.0);

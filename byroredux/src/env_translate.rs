@@ -2173,6 +2173,7 @@ mod tests {
             flow_noise_texture_path: String::new(),
             linear_velocity: None,
             related_waters: [0; 3],
+            effect_form: 0,
             params: WaterParams {
                 shallow_color: [1.0, 0.4, 0.1],
                 deep_color: [0.6, 0.1, 0.0],
@@ -2406,6 +2407,7 @@ mod tests {
             flow_noise_texture_path: String::new(),
             linear_velocity: None,
             related_waters: [0; 3],
+            effect_form: 0,
             params,
             raw_dnam: Vec::new(),
             raw_data: Vec::new(),
