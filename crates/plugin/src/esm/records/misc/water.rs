@@ -407,32 +407,32 @@ fn decode_data(data: &[u8]) -> WaterParams {
     }
     let mut p = WaterParams::default();
     let mut r = SubReader::new(data);
-    if let Ok(v) = r.f32() {
+    if let Ok(v) = r.f32_finite() {
         p.wind_speed = v;
     }
-    if let Ok(v) = r.f32() {
+    if let Ok(v) = r.f32_finite() {
         // Degrees on the wire (#3144) — see `WaterParams::wind_direction`.
         p.wind_direction = v.to_radians();
     }
-    if let Ok(v) = r.f32() {
+    if let Ok(v) = r.f32_finite() {
         p.wave_amplitude = v;
     }
-    if let Ok(v) = r.f32() {
+    if let Ok(v) = r.f32_finite() {
         p.wave_frequency = v;
     }
-    if let Ok(v) = r.f32() {
+    if let Ok(v) = r.f32_finite() {
         p.sun_specular_power = v.clamp(1.0, 2048.0);
     }
-    if let Ok(v) = r.f32() {
+    if let Ok(v) = r.f32_finite() {
         p.reflectivity = v.clamp(0.0, 1.0);
     }
-    if let Ok(v) = r.f32() {
+    if let Ok(v) = r.f32_finite() {
         p.fresnel = v.clamp(0.0, 1.0);
     }
-    if let Ok(v) = r.f32() {
+    if let Ok(v) = r.f32_finite() {
         p.fog_near = v.max(0.0);
     }
-    if let Ok(v) = r.f32() {
+    if let Ok(v) = r.f32_finite() {
         p.fog_far = v.max(p.fog_near + 1.0);
     }
     // FO3/FNV DNAM/DATA tail: Under Water fog near/far at 144/148.
@@ -806,37 +806,37 @@ fn decode_dnam_pre_fo4(data: &[u8]) -> WaterParams {
         return p;
     }
     let mut r = SubReader::new(data);
-    if let Ok(v) = r.f32() {
+    if let Ok(v) = r.f32_finite() {
         p.wind_speed = v;
     }
-    if let Ok(v) = r.f32() {
+    if let Ok(v) = r.f32_finite() {
         // Degrees on the wire (#3144) — see `WaterParams::wind_direction`.
         // Skyrim overwrites this in `apply_skyrim_dnam_tail` from the
         // already-converted noise layer 1, so this conversion is only
         // observable on the FO3/FNV arm and on short Skyrim fixtures.
         p.wind_direction = v.to_radians();
     }
-    if let Ok(v) = r.f32() {
+    if let Ok(v) = r.f32_finite() {
         p.wave_amplitude = v;
     }
-    if let Ok(v) = r.f32() {
+    if let Ok(v) = r.f32_finite() {
         p.wave_frequency = v;
     }
-    if let Ok(v) = r.f32() {
+    if let Ok(v) = r.f32_finite() {
         p.sun_specular_power = v.clamp(1.0, 2048.0);
     }
-    if let Ok(v) = r.f32() {
+    if let Ok(v) = r.f32_finite() {
         p.reflectivity = v.clamp(0.0, 1.0);
     }
-    if let Ok(v) = r.f32() {
+    if let Ok(v) = r.f32_finite() {
         p.fresnel = v.clamp(0.0, 1.0);
     }
     // Unnamed/unused float at 28..32 in the TES5 record definition.
     r.skip_or_eof(4);
-    if let Ok(v) = r.f32() {
+    if let Ok(v) = r.f32_finite() {
         p.fog_near = v.max(0.0);
     }
-    if let Ok(v) = r.f32() {
+    if let Ok(v) = r.f32_finite() {
         p.fog_far = v.max(p.fog_near + 1.0);
     }
     if data.len() >= 44 {
@@ -1793,7 +1793,12 @@ mod tests {
         data[172..176].copy_from_slice(&(1.0 / 320.0f32).to_le_bytes()); // noise UV 1
         data[176..180].copy_from_slice(&(1.0 / 760.0f32).to_le_bytes()); // noise UV 2
 
-        let w = parse_watr(0x00100000, &[sub(b"DATA", &data)], GameKind::Fallout3NV, &None);
+        let w = parse_watr(
+            0x00100000,
+            &[sub(b"DATA", &data)],
+            GameKind::Fallout3NV,
+            &None,
+        );
         assert!((w.params.shallow_color[0] - 36.0 / 255.0).abs() < 1e-6);
         assert!((w.params.shallow_color[1] - 47.0 / 255.0).abs() < 1e-6);
         assert!((w.params.deep_color[2] - 11.0 / 255.0).abs() < 1e-6);
@@ -1849,6 +1854,52 @@ mod tests {
         assert!((w.params.fog_near - 80.0).abs() < 1e-3);
         assert!((w.params.fog_far - 600.0).abs() < 1e-3);
         assert!((w.params.fresnel - 0.02).abs() < 1e-6);
+    }
+
+    #[test]
+    fn non_finite_watr_prefix_fields_keep_finite_defaults_without_offset_drift() {
+        let defaults = WaterParams::default();
+        let mut data = Vec::new();
+        for value in [
+            f32::NAN,
+            90.0,
+            f32::INFINITY,
+            0.75,
+            f32::NEG_INFINITY,
+            0.6,
+            f32::NAN,
+            20.0,
+            200.0,
+        ] {
+            data.extend_from_slice(&value.to_le_bytes());
+        }
+        data.extend_from_slice(&[10, 20, 30, 0]);
+        data.extend_from_slice(&[40, 50, 60, 0]);
+        data.extend_from_slice(&[70, 80, 90, 0]);
+
+        let mut dnam = data[..28].to_vec();
+        dnam.extend_from_slice(&0.0f32.to_le_bytes()); // unnamed TES5 field
+        dnam.extend_from_slice(&data[28..]);
+
+        for (game, sub_type, bytes) in [
+            (GameKind::Fallout3NV, b"DATA", data.as_slice()),
+            (GameKind::Skyrim, b"DNAM", dnam.as_slice()),
+        ] {
+            let water = parse_watr(0xDEAD, &[sub(sub_type, bytes)], game, &None);
+            let p = water.params;
+            assert_eq!(p.wind_speed, defaults.wind_speed);
+            assert!(p.wind_direction.is_finite());
+            assert_eq!(p.wave_amplitude, defaults.wave_amplitude);
+            assert_eq!(p.wave_frequency, 0.75);
+            assert_eq!(p.sun_specular_power, defaults.sun_specular_power);
+            assert_eq!(p.reflectivity, 0.6);
+            assert_eq!(p.fresnel, defaults.fresnel);
+            assert_eq!(p.fog_near, 20.0);
+            assert_eq!(p.fog_far, 200.0);
+            assert!(p.shallow_color.into_iter().all(f32::is_finite));
+            assert!(p.deep_color.into_iter().all(f32::is_finite));
+            assert!(p.reflection_color.into_iter().all(f32::is_finite));
+        }
     }
 
     #[test]

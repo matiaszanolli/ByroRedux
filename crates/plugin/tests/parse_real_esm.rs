@@ -286,6 +286,12 @@ fn installed_masters_water_fields_are_finite_and_ordered() {
             "FO4",
         ),
         (
+            "BYROREDUX_FO76_DATA",
+            "/mnt/data/SteamLibrary/steamapps/common/Fallout76/Data",
+            "SeventySix.esm",
+            "FO76",
+        ),
+        (
             "BYROREDUX_STARFIELD_DATA",
             "/mnt/data/SteamLibrary/steamapps/common/Starfield/Data",
             "Starfield.esm",
@@ -2262,6 +2268,18 @@ fn installed_masters_per_water_scalars_are_not_decoded_constants() {
             "/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data",
             "Fallout4.esm",
             "FO4",
+        ),
+        (
+            "BYROREDUX_FO76_DATA",
+            "/mnt/data/SteamLibrary/steamapps/common/Fallout76/Data",
+            "SeventySix.esm",
+            "FO76",
+        ),
+        (
+            "BYROREDUX_STARFIELD_DATA",
+            "/mnt/data/SteamLibrary/steamapps/common/Starfield/Data",
+            "Starfield.esm",
+            "Starfield",
         ),
     ];
 

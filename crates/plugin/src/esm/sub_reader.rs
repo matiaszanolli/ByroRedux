@@ -154,6 +154,21 @@ impl<'a> SubReader<'a> {
         Ok(f32::from_le_bytes(bytes))
     }
 
+    /// Read one finite little-endian `f32`.
+    ///
+    /// Unlike a truncation error, a non-finite encoded value consumes its
+    /// four-byte field before returning an error. This keeps lenient schema
+    /// walkers aligned so they can reject one corrupt float without reading
+    /// every following field from the wrong offset.
+    pub fn f32_finite(&mut self) -> Result<f32> {
+        let field_pos = self.pos;
+        let value = self.f32()?;
+        if !value.is_finite() {
+            bail!("SubReader::f32_finite: non-finite value at pos {field_pos}");
+        }
+        Ok(value)
+    }
+
     /// Read a fixed-length byte array. The const generic is the field
     /// length, so type inference makes this `r.fixed::<3>()` →
     /// `[u8; 3]`. Errors on truncation.
@@ -287,6 +302,19 @@ mod tests {
         );
         // Falling through to a u16 still works.
         assert_eq!(r.u16().unwrap(), 0x0201);
+    }
+
+    #[test]
+    fn finite_float_read_rejects_non_finite_and_keeps_schema_alignment() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&f32::NAN.to_le_bytes());
+        data.extend_from_slice(&7.5f32.to_le_bytes());
+        let mut r = SubReader::new(&data);
+
+        assert!(r.f32_finite().is_err());
+        assert_eq!(r.position(), 4, "the rejected field must still be consumed");
+        assert_eq!(r.f32_finite().unwrap(), 7.5);
+        assert!(r.is_empty());
     }
 
     #[test]
