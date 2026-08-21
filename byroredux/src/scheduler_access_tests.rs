@@ -81,6 +81,38 @@ fn contact_config_read_is_declared_on_both_physics_systems() {
     );
 }
 
+/// #3121 — WATAL buoyancy reads live time/weather/current state, while the
+/// animation subtree walk reads `Children`. Keep those reads on the exact
+/// parallel-system declarations so the scheduler can reject future conflicts.
+#[test]
+fn water_and_animation_parallel_accesses_are_complete() {
+    let animation = BOOT_RS
+        .split("make_animation_system(),")
+        .nth(1)
+        .and_then(|tail| tail.split("// Translate clip text keys").next())
+        .expect("animation access declaration");
+    assert!(
+        animation.contains(".reads::<byroredux_core::ecs::Children>()"),
+        "animation declaration must include the subtree walk's Children read"
+    );
+
+    let physics = BOOT_RS
+        .split("byroredux_physics::physics_sync_system,")
+        .nth(1)
+        .and_then(|tail| tail.split("// M28.5 — camera follow").next())
+        .expect("physics-sync access declaration");
+    for needle in [
+        ".reads_resource::<TotalTime>()",
+        ".reads_resource::<byroredux_core::ecs::components::groundcover::WindField>()",
+        ".reads::<byroredux_core::ecs::components::water::WaterCurrentVolume>()",
+    ] {
+        assert!(
+            physics.contains(needle),
+            "physics-sync declaration is missing `{needle}`"
+        );
+    }
+}
+
 /// #1788 / CONC-D4-02 — `debug_server::start` must run before
 /// `install_runtime_registries` in `App::new`: the former adds
 /// `DebugDrainSystem` to the scheduler via `add_exclusive`, and the

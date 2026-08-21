@@ -965,6 +965,7 @@ pub(crate) fn build_scheduler() -> Scheduler {
             .writes_resource::<crate::components::NameIndex>()
             .writes_resource::<byroredux_core::string::StringPool>()
             .reads::<byroredux_core::ecs::Name>()
+            .reads::<byroredux_core::ecs::Children>()
             .writes::<Transform>()
             .writes::<byroredux_core::animation::RootMotionDelta>()
             .writes::<byroredux_core::ecs::AnimatedVisibility>()
@@ -1220,6 +1221,8 @@ pub(crate) fn build_scheduler() -> Scheduler {
             // constants resource (declaration completeness; read-only).
             .reads_resource::<byroredux_physics::PhysicsWaterConstants>()
             .writes_resource::<byroredux_physics::WaterContactScratch>()
+            .reads_resource::<TotalTime>()
+            .reads_resource::<byroredux_core::ecs::components::groundcover::WindField>()
             // #1787 / CONC-D4-01 — `register_newcomers` snapshots
             // `ContactConfig` once per batch (kcc_offset_bu / trimesh
             // flags); read-only, but must be declared so a future
@@ -1237,6 +1240,7 @@ pub(crate) fn build_scheduler() -> Scheduler {
             .reads::<byroredux_core::ecs::components::water::WaterPlane>()
             .reads::<byroredux_core::ecs::components::water::WaterVolume>()
             .reads::<byroredux_core::ecs::components::water::WaterFlow>()
+            .reads::<byroredux_core::ecs::components::water::WaterCurrentVolume>()
             .writes::<byroredux_core::ecs::components::water::WaterContact>()
             // #1787 / CONC-D4-01 — the #1698 `BYRO_PROFILE_FALLERS`
             // opt-in diagnostic (`dump_awake_fallers`) reads these
