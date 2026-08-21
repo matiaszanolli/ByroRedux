@@ -89,6 +89,28 @@ fn ground_probe_groups() -> rapier3d::prelude::InteractionGroups {
     InteractionGroups::new(Group::ALL, Group::ALL & !ACTOR_BONE_GROUP)
 }
 
+/// The filter every *solid-world* probe must use: fixed geometry only, actor
+/// bones masked out, and **sensors excluded**.
+///
+/// #3116 — `ground_probe_groups()` is an interaction-group mask, not a sensor
+/// filter; it only masks `ACTOR_BONE_GROUP`. Since `00fc0f3b` (#2549) the
+/// engine registers every Havok layer-15 body (`OL_NONCOLLIDABLE` /
+/// `FOL_NONCOLLIDABLE` / `SKYL_NONCOLLIDABLE` — the same numeric value across
+/// Oblivion / FO3 / FNV / Skyrim) as a Rapier **sensor**. Sensors generate no
+/// contact response, but they are still returned by shape and ray casts unless
+/// explicitly excluded, so a spawn probe would ground the player on geometry
+/// the author marked non-collidable and the player would fall through it on the
+/// first step.
+///
+/// Factored into one function so a fourth probe cannot drift away from the
+/// other three — the drift that produced #3116 in the first place.
+#[inline]
+fn solid_probe_filter<'a>() -> rapier3d::prelude::QueryFilter<'a> {
+    rapier3d::prelude::QueryFilter::exclude_dynamic()
+        .groups(ground_probe_groups())
+        .exclude_sensors()
+}
+
 /// One collider found by [`PhysicsWorld::colliders_near_xz`] (#2202).
 ///
 /// `body_type` is the Rapier label of the *parent* body, because that is the
@@ -659,11 +681,10 @@ impl PhysicsWorld {
             point![origin.x, origin.y, origin.z],
             vector![0.0, -1.0, 0.0],
         );
-        // Restrict to fixed bodies — we don't want to spawn the player
-        // standing on a dropped barrel. `exclude_dynamic()` is an
-        // associated-fn constructor on `QueryFilter`, not a builder
-        // method; call it directly.
-        let mut filter = QueryFilter::exclude_dynamic().groups(ground_probe_groups());
+        // Restrict to fixed, non-sensor geometry — we don't want to spawn the
+        // player standing on a dropped barrel, nor on a non-collidable marker
+        // (#3116). See `solid_probe_filter`.
+        let mut filter = solid_probe_filter();
         if let Some(body) = excluded_body {
             filter = filter.exclude_rigid_body(body);
         }
@@ -812,7 +833,7 @@ impl PhysicsWorld {
         use rapier3d::prelude::*;
         let shape = SharedShape::capsule_y(capsule_half_height.max(1e-3), capsule_radius.max(1e-3));
         let pos = Isometry::translation(origin.x, origin.y, origin.z);
-        let mut filter = QueryFilter::exclude_dynamic().groups(ground_probe_groups());
+        let mut filter = solid_probe_filter();
         if let Some(body) = excluded_body {
             filter = filter.exclude_rigid_body(body);
         }
@@ -849,6 +870,13 @@ impl PhysicsWorld {
         let mut max = [f32::NEG_INFINITY; 3];
         let mut count = 0u32;
         for (_h, c) in self.colliders.iter() {
+            // #3116 — a sensor sitting where the floor should be is not a
+            // floor, so it must not count toward "the collision world is
+            // populated". Mirrors the discrimination `NearbyCollider::is_sensor`
+            // already carries (#2874).
+            if c.is_sensor() {
+                continue;
+            }
             if let Some(parent) = c.parent() {
                 if let Some(rb) = self.bodies.get(parent) {
                     if rb.body_type() == RigidBodyType::Fixed {
@@ -1011,10 +1039,20 @@ impl PhysicsWorld {
             params.desired_translation.z,
         );
 
+        // #3116 — sensors must be excluded here too. Rapier 0.22's
+        // `KinematicCharacterController` does not add the flag for you: the
+        // only mutation it makes to the caller's filter is
+        // `filter.flags |= QueryFilterFlags::EXCLUDE_DYNAMIC`
+        // (`control/character_controller.rs:670`), and the sweep passes that
+        // same filter straight into `queries.cast_shape`. Without this, every
+        // Havok layer-15 body registered as a sensor since #2549 still walls
+        // off the player — for the character controller that change was a
+        // no-op, which is the exact bug #2549 was filed to fix.
+        let base = QueryFilter::default().exclude_sensors();
         let filter = if let Some(exclude) = params.exclude_collider {
-            QueryFilter::default().exclude_collider(exclude)
+            base.exclude_collider(exclude)
         } else {
-            QueryFilter::default()
+            base
         };
 
         let result = controller.move_shape(
@@ -1708,6 +1746,163 @@ mod tests {
         let dead = w2.bodies.insert(RigidBodyBuilder::dynamic().build());
         w2.remove_body(dead);
         assert!(!w.add_force(dead, up), "dead handle must be a no-op");
+    }
+
+    /// Test helper: a 100×40×4 BU wall at `pos`, optionally a sensor.
+    /// Mirrors what `register_newcomers` builds for a Havok layer-15
+    /// (`*_NONCOLLIDABLE`) body since #2549.
+    fn insert_wall(w: &mut PhysicsWorld, pos: Vec3, sensor: bool) {
+        use rapier3d::prelude::*;
+        let body = w.bodies.insert(
+            RigidBodyBuilder::fixed()
+                .position(iso_from_trs(pos, Quat::IDENTITY))
+                .build(),
+        );
+        w.colliders.insert_with_parent(
+            ColliderBuilder::cuboid(50.0, 20.0, 2.0)
+                .sensor(sensor)
+                .build(),
+            body,
+            &mut w.bodies,
+        );
+    }
+
+    fn walk_into_wall(w: &PhysicsWorld) -> f32 {
+        w.move_character(CharacterMoveParams {
+            capsule_half_height: 30.0,
+            capsule_radius: 15.0,
+            position: Vec3::new(0.0, 0.0, 40.0),
+            desired_translation: Vec3::new(0.0, 0.0, -60.0),
+            dt: 1.0 / 60.0,
+            max_slope_climb_deg: 50.0,
+            step_height: 32.0,
+            step_min_width: 8.0,
+            snap_to_ground: 0.0,
+            exclude_collider: None,
+            kcc_offset_bu: 2.0,
+        })
+        .translation
+        .z
+    }
+
+    /// #3116 — #2549 made every Havok layer-15 body a Rapier **sensor**, on the
+    /// grounds that sensors are "already excluded from ray queries elsewhere in
+    /// this crate". That was true of exactly one of five query entry points.
+    /// Rapier 0.22's `KinematicCharacterController` never sets
+    /// `EXCLUDE_SENSORS` for you — it only ORs in `EXCLUDE_DYNAMIC` — so the
+    /// KCC still treated the sensor as solid and the player was walled off by
+    /// geometry the author marked non-collidable. For the character controller
+    /// #2549 was a no-op.
+    #[test]
+    fn character_walks_through_a_noncollidable_sensor_wall() {
+        let mut solid = PhysicsWorld::new();
+        insert_wall(&mut solid, Vec3::new(0.0, 0.0, 0.0), false);
+        solid.update_query_pipeline();
+        let blocked = walk_into_wall(&solid);
+
+        let mut sensor = PhysicsWorld::new();
+        insert_wall(&mut sensor, Vec3::new(0.0, 0.0, 0.0), true);
+        sensor.update_query_pipeline();
+        let through = walk_into_wall(&sensor);
+
+        // Non-vacuity: the solid wall must actually stop the capsule, otherwise
+        // the sensor assertion below proves nothing about sensor filtering.
+        assert!(
+            blocked > -60.0 * 0.5,
+            "the solid wall did not block the capsule (moved {blocked} of -60) \
+             — fixture is wrong, so the sensor case proves nothing"
+        );
+        assert!(
+            (through - (-60.0)).abs() < 1.0,
+            "capsule moved {through} of a desired -60 through a SENSOR wall — \
+             the KCC filter is not excluding sensors, so a non-collidable \
+             Havok body is still an invisible wall (#3116)"
+        );
+    }
+
+    /// #3116 — the spawn ground probes shared the same blind spot. Grounding
+    /// the player on a non-solid marker is worse than finding no floor: the
+    /// player is placed, then falls through it on the first step, which looks
+    /// exactly like the door-threshold spawn gap and would be misattributed
+    /// to it.
+    #[test]
+    fn ground_probes_do_not_accept_a_sensor_as_a_floor() {
+        let mut w = PhysicsWorld::new();
+        // A sensor slab where a floor would be.
+        let body = w.bodies.insert(
+            rapier3d::prelude::RigidBodyBuilder::fixed()
+                .position(iso_from_trs(Vec3::ZERO, Quat::IDENTITY))
+                .build(),
+        );
+        w.colliders.insert_with_parent(
+            rapier3d::prelude::ColliderBuilder::cuboid(50.0, 1.0, 50.0)
+                .sensor(true)
+                .build(),
+            body,
+            &mut w.bodies,
+        );
+        w.update_query_pipeline();
+
+        assert!(
+            w.cast_ray_down(Vec3::new(0.0, 100.0, 0.0), 200.0, None)
+                .is_none(),
+            "cast_ray_down grounded the player on a sensor (#3116)"
+        );
+        assert!(
+            w.cast_capsule_down_onto_walkable_surface(
+                Vec3::new(0.0, 100.0, 0.0),
+                10.0,
+                5.0,
+                200.0,
+                50.0_f32.to_radians().cos(),
+                None,
+            )
+            .is_none(),
+            "the walkable-surface probe accepted a sensor as a floor (#3116)"
+        );
+
+        // Non-vacuity: the same slab as a solid collider MUST be found, so a
+        // filter that rejected everything would fail here.
+        let mut solid = PhysicsWorld::new();
+        insert_slab(&mut solid, Vec3::ZERO, false);
+        solid.update_query_pipeline();
+        assert!(
+            solid
+                .cast_ray_down(Vec3::new(0.0, 100.0, 0.0), 200.0, None)
+                .is_some(),
+            "the solid control slab was not found — the probe filter is too strict"
+        );
+    }
+
+    /// #3116 — a sensor sitting where the floor should be is not a floor, so it
+    /// must not count toward "the collision world is populated". Mirrors the
+    /// discrimination `NearbyCollider::is_sensor` already carries (#2874).
+    #[test]
+    fn static_collider_census_excludes_sensors() {
+        let mut w = PhysicsWorld::new();
+        let body = w
+            .bodies
+            .insert(rapier3d::prelude::RigidBodyBuilder::fixed().build());
+        w.colliders.insert_with_parent(
+            rapier3d::prelude::ColliderBuilder::cuboid(50.0, 1.0, 50.0)
+                .sensor(true)
+                .build(),
+            body,
+            &mut w.bodies,
+        );
+        assert!(
+            w.static_colliders_aabb().is_none(),
+            "a sensor-only world reported a populated static collision census (#3116)"
+        );
+
+        insert_slab(&mut w, Vec3::new(0.0, -50.0, 0.0), false);
+        let (_, _, count) = w
+            .static_colliders_aabb()
+            .expect("the solid slab must be counted");
+        assert_eq!(
+            count, 1,
+            "the sensor was counted alongside the solid slab (#3116)"
+        );
     }
 }
 

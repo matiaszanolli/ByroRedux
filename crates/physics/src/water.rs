@@ -664,6 +664,36 @@ pub(crate) fn apply_buoyancy(world: &World, had_newcomers: bool) {
                     .map(|(s, surface_y)| (s, min_y, max_y, surface_y))
             };
 
+            // #3114 — ONE owner of the force clear per body per frame, before
+            // any branch applies. Rapier's `add_force` accumulates into
+            // `forces.user_force`, which persists across `pipeline.step()` and
+            // is cleared only by `reset_forces`. The current-volume branch at
+            // the bottom of this loop deliberately runs *after* the surface
+            // branch so a plane's force reset cannot discard the marker's
+            // current — correct for a body floating in a river, where the
+            // surface branch resets first. But when the surface branch never
+            // runs (`surface == None && !prior_wet`, or `frac == 0.0 &&
+            // !prior_wet` — a body above the waterline inside the marker's
+            // vertical extent, or in a marker that overlaps no plane in XZ)
+            // nothing zeroed `user_force` and the per-frame term compounded.
+            // For a body held at rest by friction the term is a constant
+            // `m·c·s`, so `user_force` grew as `n·m·c·s` until it exceeded
+            // static friction and launched the body. Resetting up here makes
+            // the "marker after plane" ordering safe by construction.
+            //
+            // Scoped to bodies water is acting on rather than made
+            // unconditional: `targets` is EVERY dynamic body, and
+            // `PhysicsWorld::add_force`'s documented contract is that an
+            // external force "accumulates across frames until cleared with
+            // reset_forces". Clearing every dynamic body every frame would
+            // silently turn that public API into a one-frame impulse.
+
+            if current_flow.is_some() || surface.is_some() || t.prior_wet {
+                if let Some(b) = pw.bodies.get_mut(t.handles.body) {
+                    b.reset_forces(false);
+                }
+            }
+
             match surface {
                 Some((s, min_y, max_y, surface_y)) => {
                     let frac = submerged_fraction(min_y, max_y, surface_y);
@@ -715,7 +745,6 @@ pub(crate) fn apply_buoyancy(world: &World, had_newcomers: bool) {
                                     1.0 - frac,
                                     consts.wind_drag,
                                 );
-                                b.reset_forces(false);
                                 b.add_force(vector![f.x, f.y, f.z], false);
                             }
                         }
@@ -740,7 +769,6 @@ pub(crate) fn apply_buoyancy(world: &World, had_newcomers: bool) {
                         if let Some(b) = pw.bodies.get_mut(t.handles.body) {
                             b.set_linear_damping(t.authored_lin);
                             b.set_angular_damping(t.authored_ang);
-                            b.reset_forces(false);
                         }
                         writes.push((t.entity, WaterContact::default()));
                     }
@@ -754,7 +782,6 @@ pub(crate) fn apply_buoyancy(world: &World, had_newcomers: bool) {
                         if let Some(b) = pw.bodies.get_mut(t.handles.body) {
                             b.set_linear_damping(t.authored_lin);
                             b.set_angular_damping(t.authored_ang);
-                            b.reset_forces(false);
                         }
                         writes.push((t.entity, WaterContact::default()));
                     }
@@ -763,7 +790,9 @@ pub(crate) fn apply_buoyancy(world: &World, had_newcomers: bool) {
 
             // Placed XWCU markers are current volumes, not water surfaces.
             // Apply their bounded drag after the surface branch so a
-            // water-plane force reset cannot discard the marker's current.
+            // co-located water plane's force does not discard the marker's
+            // current. Safe to add without resetting here because the single
+            // reset above already ran for this body this frame (#3114).
             if let Some(flow) = current_flow {
                 if let Some(b) = pw.bodies.get_mut(t.handles.body) {
                     if !b.is_sleeping() {
@@ -1377,6 +1406,165 @@ mod tests {
         assert_eq!(
             steps, 0,
             "static-scene fast path must skip stepping once the float sleeps"
+        );
+    }
+
+    /// #3114 — `add_force` accumulates into `forces.user_force`, which persists
+    /// across `pipeline.step()` and is cleared only by `reset_forces`. The
+    /// placed-`XWCU` current branch ran *after* the surface branch and did not
+    /// reset, which is correct only when the surface branch reset first. With a
+    /// current marker that overlaps no water plane the surface branch never
+    /// runs, so the per-frame term compounded: for a body held near rest the
+    /// term is a constant `m·c·s`, giving `user_force ~ n·m·c·s` — unbounded
+    /// linear growth until the body is launched ("havok explosion"), and a body
+    /// under a growing force never sleeps, pinning the static-scene fast path.
+    #[test]
+    fn current_volume_without_a_water_plane_does_not_wind_up_user_force() {
+        use crate::{physics_sync_system, RapierHandles};
+        use byroredux_core::ecs::components::collision::{
+            CollisionShape, MotionType, RigidBodyData,
+        };
+        use byroredux_core::ecs::components::{GlobalTransform, Transform};
+        use byroredux_core::ecs::World;
+
+        let mut world = World::new();
+        world.insert_resource(PhysicsWorld::new());
+        world.insert_resource(PhysicsWaterConstants::default());
+        world.register::<RapierHandles>();
+        world.register::<WaterContact>();
+
+        // An authored current marker and NO WaterPlane anywhere — the exact
+        // configuration in which the surface branch cannot run.
+        let marker = world.spawn();
+        world.insert(
+            marker,
+            WaterCurrentVolume {
+                volume: WaterVolume {
+                    min: [-500.0, -500.0, -500.0],
+                    max: [500.0, 500.0, 500.0],
+                },
+                flow: WaterFlow::new([1.0, 0.0, 0.0], 8.0),
+            },
+        );
+        assert!(
+            world.query::<WaterPlane>().is_none(),
+            "the whole point of this fixture is that no water surface exists"
+        );
+
+        // A static floor is load-bearing for this test, not scenery. The
+        // wind-up only diverges while the body is held near rest: then the
+        // per-frame term `m·c·(s - v·d)` is a CONSTANT `m·c·s` and the sum
+        // grows linearly. A free-falling body accelerates, `v·d` overshoots
+        // `s`, the term flips sign and the accumulator self-corrects — so a
+        // fixture without a floor passes against the bug and proves nothing.
+        let floor = world.spawn();
+        world.insert(
+            floor,
+            CollisionShape::Cuboid {
+                half_extents: Vec3::new(400.0, 10.0, 400.0),
+            },
+        );
+        world.insert(
+            floor,
+            RigidBodyData {
+                motion_type: MotionType::Static,
+                mass: 0.0,
+                friction: 1.0,
+                restitution: 0.0,
+                linear_damping: 0.0,
+                angular_damping: 0.0,
+                collidable: true,
+            },
+        );
+        world.insert(
+            floor,
+            GlobalTransform::new(Vec3::new(0.0, -30.0, 0.0), Quat::IDENTITY, 1.0),
+        );
+        world.insert(
+            floor,
+            Transform::from_translation(Vec3::new(0.0, -30.0, 0.0)),
+        );
+
+        let body = world.spawn();
+        world.insert(body, CollisionShape::Ball { radius: 10.0 });
+        world.insert(
+            body,
+            RigidBodyData {
+                motion_type: MotionType::Dynamic,
+                mass: 20.0,
+                friction: 1.0,
+                restitution: 0.0,
+                linear_damping: 0.0,
+                angular_damping: 0.0,
+                collidable: true,
+            },
+        );
+        world.insert(
+            body,
+            GlobalTransform::new(Vec3::new(0.0, -9.0, 0.0), Quat::IDENTITY, 1.0),
+        );
+        world.insert(body, Transform::from_translation(Vec3::new(0.0, -9.0, 0.0)));
+
+        // Register first so there is a handle to hold awake.
+        physics_sync_system(&world, PHYSICS_DT);
+
+        let force_of = |world: &World| -> (f32, f32) {
+            let pw = world.resource::<PhysicsWorld>();
+            let handles = *world.query::<RapierHandles>().unwrap().get(body).unwrap();
+            let b = pw.bodies.get(handles.body).expect("body is registered");
+            let f = b.user_force();
+            let v = b.linvel();
+            ((f.x * f.x + f.y * f.y + f.z * f.z).sqrt(), v.x)
+        };
+
+        let mut peak = 0.0_f32;
+        for _ in 0..120 {
+            // Hold the body awake and armed. Both are load-bearing and neither
+            // is incidental to the defect: the current branch is gated on
+            // `!is_sleeping()`, and `apply_buoyancy`'s quiesced-scene fast path
+            // returns before the per-body scan unless something is awake or
+            // `pending_wake` is armed. Nothing in the current-volume path wakes
+            // a body itself — only the SURFACE branch calls `wake_up` — so a
+            // marker with no overlapping plane needs an independent
+            // disturbance, which is exactly this issue's trigger condition.
+            {
+                let mut pw = world.resource_mut::<PhysicsWorld>();
+                let handles = *world.query::<RapierHandles>().unwrap().get(body).unwrap();
+                if let Some(b) = pw.bodies.get_mut(handles.body) {
+                    b.wake_up(true);
+                }
+                pw.wake();
+            }
+            physics_sync_system(&world, PHYSICS_DT);
+            let (magnitude, _) = force_of(&world);
+            assert!(magnitude.is_finite(), "user_force went non-finite");
+            peak = peak.max(magnitude);
+        }
+
+        // `current_force` documents a bounded first-order response: with the
+        // body at rest the term is at most `m·c·s` = 20 × 4 × 8 = 640, and it
+        // decays as the body's velocity approaches the authored current.
+        let bound = 20.0 * 4.0 * 8.0;
+        assert!(
+            peak <= bound * 1.05,
+            "user_force peaked at {peak}, above the bounded response {bound} — \
+             the per-frame current term is compounding across steps (#3114). \
+             Pre-fix this fixture peaks around 2900 and oscillates."
+        );
+
+        // Convergence, not oscillation: an accumulating force is an integral
+        // controller where a proportional one was intended, so it overshoots
+        // the authored speed and rings instead of settling.
+        let (final_force, final_vx) = force_of(&world);
+        assert!(
+            final_force < peak * 0.05,
+            "user_force settled at {final_force} against a {peak} peak — a \
+             first-order response should have decayed to near zero (#3114)"
+        );
+        assert!(
+            final_vx <= 8.0 * 1.05 && final_vx > 8.0 * 0.9,
+            "body settled at {final_vx} BU/s against an authored current of 8.0 \
+             — overshoot or undershoot means the response is not proportional"
         );
     }
 }

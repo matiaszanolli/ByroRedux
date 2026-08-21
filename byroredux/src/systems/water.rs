@@ -401,7 +401,6 @@ pub(crate) fn make_water_interaction_system() -> impl FnMut(&World, f32) + Send 
                 position,
                 intensity,
                 !wet_last_frame.contains(&entity),
-                contact.submerged_fraction < 0.98,
             ));
             if contact.submerged_fraction < 0.98 {
                 ripple_by_surface
@@ -419,8 +418,46 @@ pub(crate) fn make_water_interaction_system() -> impl FnMut(&World, f32) + Send 
         drop(contact_q);
 
         if !entries.is_empty() {
+            // #3115 — `SplashEvent`'s documented contract is that the marker
+            // lands on the WATER-PLANE entity (`crates/scripting/src/events.rs`),
+            // which `submersion_system` honours and this producer did not: it
+            // hosted the splash on the BODY while hosting the sibling
+            // `RippleEvent` on `surface_entity`, so one function used two host
+            // classes and one of them contradicted the doc. Nothing is visibly
+            // wrong today only because the sole consumer (`water_audio_system`)
+            // reads the payload's own `position` and ignores the host — a
+            // scripting/quest consumer attaching to a plane would silently see
+            // half the splashes.
+            //
+            // Deduped strongest-wins per surface, like the ripple path above:
+            // two bodies entering one plane in the same frame must not collapse
+            // to whichever iterated last.
+            let mut splash_by_surface: HashMap<EntityId, (EntityId, Vec3, f32)> = HashMap::new();
+            for &(entity, surface_entity, position, intensity, entering) in &entries {
+                if entering {
+                    splash_by_surface
+                        .entry(surface_entity)
+                        .and_modify(|current| {
+                            if intensity > current.2 {
+                                *current = (entity, position, intensity);
+                            }
+                        })
+                        .or_insert((entity, position, intensity));
+                }
+            }
+
             if let Some(mut q) = world.query_mut::<RippleEvent>() {
                 for (&surface_entity, &(entity, position, intensity)) in &ripple_by_surface {
+                    // #3115 — `submersion_system` runs earlier in Stage::Late
+                    // and may already have written the camera's disturbance on
+                    // this same plane. `insert` overwrites, so a dynamic body
+                    // sharing the plane used to drop the camera's event without
+                    // trace. Keep whichever is stronger.
+                    if q.get(surface_entity)
+                        .is_some_and(|existing| existing.intensity >= intensity)
+                    {
+                        continue;
+                    }
                     q.insert(
                         surface_entity,
                         RippleEvent {
@@ -432,17 +469,20 @@ pub(crate) fn make_water_interaction_system() -> impl FnMut(&World, f32) + Send 
                 }
             }
             if let Some(mut q) = world.query_mut::<SplashEvent>() {
-                for &(entity, _, position, intensity, entering, _) in &entries {
-                    if entering {
-                        q.insert(
-                            entity,
-                            SplashEvent {
-                                actor: entity,
-                                intensity,
-                                position: [position.x, position.y, position.z],
-                            },
-                        );
+                for (&surface_entity, &(entity, position, intensity)) in &splash_by_surface {
+                    if q.get(surface_entity)
+                        .is_some_and(|existing| existing.intensity >= intensity)
+                    {
+                        continue;
                     }
+                    q.insert(
+                        surface_entity,
+                        SplashEvent {
+                            actor: entity,
+                            intensity,
+                            position: [position.x, position.y, position.z],
+                        },
+                    );
                 }
             }
         }
@@ -539,9 +579,8 @@ fn underwater_extinction(depth: f32, fog_near: f32, fog_far: f32) -> f32 {
 mod tests {
     use super::{
         disturbance_rate, make_water_interaction_system, resolve_head_submerged, submersion_system,
-        water_damage_system,
-        underwater_color_at_depth, underwater_extinction, DISTURBANCE_BAND, DISTURBANCE_RADIUS,
-        WATERLINE_HYSTERESIS,
+        underwater_color_at_depth, underwater_extinction, water_damage_system, DISTURBANCE_BAND,
+        DISTURBANCE_RADIUS, WATERLINE_HYSTERESIS,
     };
     use byroredux_core::ecs::components::water::{
         SubmersionState, WaterContact, WaterKind, WaterMaterial, WaterPlane, WaterVolume,
@@ -698,11 +737,7 @@ mod tests {
             .flat_map(|x| (0..64).map(move |z| Vec3::new(x as f32 * 17.0, 0.0, z as f32 * 19.0)))
             .map(|position| {
                 let wave = byroredux_physics::authored_wave_height_with_weather(
-                    &material,
-                    position,
-                    0.37,
-                    [0.0; 2],
-                    1.0,
+                    &material, position, 0.37, [0.0; 2], 1.0,
                 );
                 (position, wave)
             })
@@ -774,17 +809,26 @@ mod tests {
         system(&world, 0.016);
         let splashes = world.query::<SplashEvent>().expect("splash storage");
         let ripples = world.query::<RippleEvent>().expect("ripple storage");
-        assert!(splashes.get(body).is_some());
+        // #3115 — was `splashes.get(body)`. The marker belongs on the
+        // water-plane entity per `SplashEvent`'s documented contract, which
+        // this producer contradicted while its sibling `RippleEvent` (asserted
+        // on the line below) already honoured it. `actor` carries the body.
+        assert!(splashes.get(surface).is_some());
+        assert_eq!(splashes.get(surface).unwrap().actor, body);
+        assert!(
+            splashes.get(body).is_none(),
+            "the body must not host the marker"
+        );
         assert!(ripples.get(surface).is_some());
         drop(splashes);
         drop(ripples);
 
-        world.remove::<SplashEvent>(body);
+        world.remove::<SplashEvent>(surface);
         world.remove::<RippleEvent>(surface);
         system(&world, 0.016);
         let splashes = world.query::<SplashEvent>().expect("splash storage");
         let ripples = world.query::<RippleEvent>().expect("ripple storage");
-        assert!(splashes.get(body).is_none());
+        assert!(splashes.get(surface).is_none());
         assert!(ripples.get(surface).is_some());
         drop(splashes);
         drop(ripples);
@@ -797,7 +841,7 @@ mod tests {
         system(&world, 0.016);
         let splashes = world.query::<SplashEvent>().expect("splash storage");
         let ripples = world.query::<RippleEvent>().expect("ripple storage");
-        assert!(splashes.get(body).is_none());
+        assert!(splashes.get(surface).is_none());
         assert!(
             ripples.get(surface).is_none(),
             "fully submerged bodies must not emit surface ripples"
@@ -926,6 +970,181 @@ mod tests {
             .copied()
             .expect("camera state");
         assert_eq!(state.depth, -3.0);
-        assert_eq!(state.material.expect("selected water").shallow_color, [0.7, 0.8, 0.9]);
+        assert_eq!(
+            state.material.expect("selected water").shallow_color,
+            [0.7, 0.8, 0.9]
+        );
+    }
+
+    /// #3115 — the two `SplashEvent` producers disagreed with each other and
+    /// with the component's own doc about which entity hosts the marker.
+    /// `submersion_system` put it on the water-plane entity (correct);
+    /// `make_water_interaction_system` put it on the BODY while putting its
+    /// sibling `RippleEvent` on the surface, so one function used two host
+    /// classes. Nothing was visibly wrong only because the sole consumer reads
+    /// the payload's own `position` and ignores the host — a scripting/quest
+    /// consumer attaching to a plane would have seen half the splashes.
+    #[test]
+    fn both_splash_producers_host_the_marker_on_the_water_plane() {
+        // Producer A — submersion_system (camera enters the plane).
+        let host_a = {
+            let mut world = World::new();
+            byroredux_scripting::register(&mut world);
+            let camera = world.spawn();
+            world.insert_resource(ActiveCamera(camera));
+            world.insert(
+                camera,
+                GlobalTransform::new(
+                    Vec3::new(0.0, -10.0, 0.0),
+                    byroredux_core::math::Quat::IDENTITY,
+                    1.0,
+                ),
+            );
+            world.insert(camera, SubmersionState::default());
+            let water = world.spawn();
+            world.insert(
+                water,
+                WaterPlane {
+                    kind: WaterKind::Calm,
+                    material: WaterMaterial::default(),
+                    damage_per_second: 0.0,
+                },
+            );
+            world.insert(
+                water,
+                WaterVolume {
+                    min: [-50.0, -100.0, -50.0],
+                    max: [50.0, 0.0, 50.0],
+                },
+            );
+            world.insert(water, GlobalTransform::IDENTITY);
+            world.insert(water, ParticleEmitter::water_splash());
+
+            submersion_system(&world, 0.016);
+            let splashes = world.query::<SplashEvent>().expect("splash storage");
+            assert!(splashes.get(water).is_some(), "producer A: plane must host");
+            assert!(
+                splashes.get(camera).is_none(),
+                "producer A: actor must not host"
+            );
+            "plane"
+        };
+
+        // Producer B — make_water_interaction_system (dynamic body enters).
+        let host_b = {
+            let mut world = World::new();
+            byroredux_scripting::register(&mut world);
+            let surface = world.spawn();
+            world.insert(
+                surface,
+                WaterPlane {
+                    kind: WaterKind::Calm,
+                    material: WaterMaterial::default(),
+                    damage_per_second: 0.0,
+                },
+            );
+            world.insert(surface, GlobalTransform::IDENTITY);
+            let body = world.spawn();
+            world.insert(
+                body,
+                GlobalTransform::new(
+                    Vec3::new(0.0, -5.0, 0.0),
+                    byroredux_core::math::Quat::IDENTITY,
+                    1.0,
+                ),
+            );
+            world.insert(
+                body,
+                WaterContact {
+                    surface_entity: Some(surface),
+                    submerged_fraction: 0.5,
+                    ..WaterContact::default()
+                },
+            );
+
+            let mut system = make_water_interaction_system();
+            system(&world, 0.016);
+            let splashes = world.query::<SplashEvent>().expect("splash storage");
+            assert!(
+                splashes.get(surface).is_some(),
+                "producer B: plane must host"
+            );
+            assert!(
+                splashes.get(body).is_none(),
+                "producer B: body must not host"
+            );
+            assert_eq!(
+                splashes.get(surface).unwrap().actor,
+                body,
+                "the body belongs in `actor`, not in the host entity"
+            );
+            "plane"
+        };
+
+        assert_eq!(
+            host_a, host_b,
+            "the two producers must agree on the host class"
+        );
+    }
+
+    /// #3115 (SIBLING half) — `insert` overwrites, so a `RippleEvent` written
+    /// by `submersion_system` earlier in `Stage::Late` was clobbered by
+    /// `make_water_interaction_system` whenever a dynamic body shared the
+    /// plane: the camera's disturbance vanished without trace. Both producers
+    /// now keep the stronger event.
+    #[test]
+    fn a_weaker_body_disturbance_does_not_clobber_a_stronger_camera_one() {
+        let mut world = World::new();
+        byroredux_scripting::register(&mut world);
+        let surface = world.spawn();
+        world.insert(
+            surface,
+            WaterPlane {
+                kind: WaterKind::Calm,
+                material: WaterMaterial::default(),
+                damage_per_second: 0.0,
+            },
+        );
+        world.insert(surface, GlobalTransform::IDENTITY);
+        let body = world.spawn();
+        world.insert(
+            body,
+            GlobalTransform::new(
+                Vec3::new(0.0, -5.0, 0.0),
+                byroredux_core::math::Quat::IDENTITY,
+                1.0,
+            ),
+        );
+        world.insert(
+            body,
+            WaterContact {
+                surface_entity: Some(surface),
+                submerged_fraction: 0.5,
+                ..WaterContact::default()
+            },
+        );
+
+        // Stand in for the earlier producer's stronger event on the same plane.
+        let camera = world.spawn();
+        world.insert(
+            surface,
+            RippleEvent {
+                actor: camera,
+                intensity: 99.0,
+                position: [1.0, 2.0, 3.0],
+            },
+        );
+
+        let mut system = make_water_interaction_system();
+        system(&world, 0.016);
+
+        let ripples = world.query::<RippleEvent>().expect("ripple storage");
+        let kept = ripples.get(surface).expect("an event must remain");
+        assert_eq!(
+            kept.actor, camera,
+            "the stronger earlier disturbance (intensity 99) was clobbered by a \
+             weaker one from the body producer (#3115)"
+        );
+        assert_eq!(kept.intensity, 99.0);
     }
 }

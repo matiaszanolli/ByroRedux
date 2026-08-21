@@ -541,6 +541,20 @@ const COMBUSTION_FIELD_FORMAT: vk::Format = vk::Format::R16G16B16A16_SFLOAT;
 /// format, avoiding a `shaderStorageImageExtendedFormats` requirement for the
 /// temporal correctness sidecar. #2809 (REN-D16-04).
 const EMISSION_HISTORY_FORMAT: vk::Format = vk::Format::R32_SFLOAT;
+
+/// Froxel volumes allocated per frame-in-flight slot: `lighting`,
+/// `emission_history`, `combustion_state`, `combustion_dynamics`,
+/// `combustion_optical`, `integrated`.
+pub(crate) const FROXEL_VOLUMES_PER_SLOT: usize = 6;
+/// Bytes of VRAM per froxel per slot — five RGBA16F volumes at 8 B plus the
+/// R32F emission-history sidecar at 4 B.
+///
+/// #3117 — named so the boot log and `docs/engine/memory-budget.md` cannot
+/// silently disagree. The doc's ledger row sat at the pre-Session-62
+/// two-volume figure while this grew to six, understating the froxel grid by
+/// ~24x; `froxel_grid_cost_matches_the_memory_budget_doc` now pins them
+/// together. Multiply by `MAX_FRAMES_IN_FLIGHT` for the resident total.
+pub(crate) const FROXEL_BYTES_PER_SLOT: u64 = 44;
 const DENSITY_NOISE_FORMAT: vk::Format = vk::Format::R8_UNORM;
 /// Continue advancing transported smoke after the source entity disappears.
 /// Core owns the matching aerosol decay/cutoff contract, avoiding a visible
@@ -1599,15 +1613,19 @@ impl VolumetricsPipeline {
         }
 
         log::info!(
-            "Volumetrics pipeline created from render {}x{}: {}x{}x{} froxels (1/{} XY), {} MiB / slot (5×RGBA16F + R32F), far={} m",
+            "Volumetrics pipeline created from render {}x{}: {}x{}x{} froxels (1/{} XY), {} MiB / slot ({} volumes: 5×RGBA16F + R32F), far={} m",
             render_extent.width,
             render_extent.height,
             extent.width,
             extent.height,
             extent.depth,
             config.froxel_xy_divisor,
-            (extent.width as u64 * extent.height as u64 * extent.depth as u64 * 44)
+            (extent.width as u64
+                * extent.height as u64
+                * extent.depth as u64
+                * FROXEL_BYTES_PER_SLOT)
                 / (1024 * 1024),
+            FROXEL_VOLUMES_PER_SLOT,
             config.grid_far_meters,
         );
 
@@ -3446,6 +3464,84 @@ mod unit_tests {
             &mut indices,
         );
         assert!(entries.iter().all(|entry| entry.count == 0));
+    }
+
+    /// #3117 — `docs/engine/memory-budget.md` is the authoritative VRAM source
+    /// (`/audit-performance` Dimension 3 forbids re-deriving ceilings from
+    /// anywhere else), and it sat at the pre-Session-62 two-volume figure while
+    /// the froxel grid grew along two axes: `froxel_xy_divisor` 8 → 4 and the
+    /// per-slot volume set 2 → 6. The ledger row understated the grid ~24x, and
+    /// the doc's own detail section disagreed with its ledger by a further ~9x.
+    ///
+    /// The code already knew the right number — the boot log prints it. This
+    /// pins the doc to the same constants so they cannot drift apart silently.
+    #[test]
+    fn froxel_grid_cost_matches_the_memory_budget_doc() {
+        const DOC: &str = include_str!("../../../../docs/engine/memory-budget.md");
+
+        // The six volume vectors this cost is derived from must still exist.
+        const SRC: &str = include_str!("volumetrics.rs");
+        let volume_fields = [
+            "lighting_volumes: Vec<FroxelSlot>",
+            "integrated_volumes: Vec<FroxelSlot>",
+            "emission_history_volumes: Vec<FroxelSlot>",
+            "combustion_state_volumes: Vec<FroxelSlot>",
+            "combustion_dynamics_volumes: Vec<FroxelSlot>",
+            "combustion_optical_volumes: Vec<FroxelSlot>",
+        ];
+        assert_eq!(
+            volume_fields.len(),
+            FROXEL_VOLUMES_PER_SLOT,
+            "FROXEL_VOLUMES_PER_SLOT disagrees with the list this test checks"
+        );
+        for field in volume_fields {
+            assert!(
+                SRC.contains(field),
+                "`{field}` is gone — the per-slot volume set changed, so \
+                 FROXEL_BYTES_PER_SLOT ({FROXEL_BYTES_PER_SLOT}) and the \
+                 memory-budget ledger both need re-deriving (#3117)"
+            );
+        }
+        // 5 x RGBA16F (8 B) + 1 x R32F (4 B).
+        assert_eq!(FROXEL_BYTES_PER_SLOT, 5 * 8 + 4);
+
+        // The doc must state the same per-slot cost and volume count.
+        assert!(
+            DOC.contains(&format!("{FROXEL_BYTES_PER_SLOT} B/froxel/slot")),
+            "memory-budget.md does not state `{FROXEL_BYTES_PER_SLOT} B/froxel/slot` \
+             — the froxel cost changed and the ledger was not updated (#3117)"
+        );
+        assert!(
+            DOC.contains(&format!("{FROXEL_VOLUMES_PER_SLOT} volumes")),
+            "memory-budget.md does not state `{FROXEL_VOLUMES_PER_SLOT} volumes` (#3117)"
+        );
+        // The exact stale strings this issue was filed for must not come back.
+        assert!(
+            !DOC.contains("(2 volumes, 2 FIF)"),
+            "memory-budget.md's ledger row is back to the pre-Session-62 \
+             two-volume figure (#3117)"
+        );
+
+        // And the headline totals must match the formula, so a divisor change
+        // cannot leave the table behind. Decimal MB, as the doc uses.
+        let total_mb = |w: u64, h: u64| -> f64 {
+            let (fx, fy) = (w.div_ceil(4), h.div_ceil(4));
+            (fx * fy * 64 * FROXEL_BYTES_PER_SLOT * MAX_FRAMES_IN_FLIGHT as u64) as f64 / 1.0e6
+        };
+        assert!(
+            (total_mb(1920, 1080) - 729.9).abs() < 1.0,
+            "1080p: {}",
+            total_mb(1920, 1080)
+        );
+        assert!(
+            (total_mb(3840, 2160) - 2919.6).abs() < 1.0,
+            "4K: {}",
+            total_mb(3840, 2160)
+        );
+        assert!(
+            DOC.contains("~730 MB") && DOC.contains("~2.92 GB"),
+            "memory-budget.md's volumetrics totals no longer match the formula (#3117)"
+        );
     }
 }
 
