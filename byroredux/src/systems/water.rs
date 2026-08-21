@@ -7,7 +7,7 @@ use byroredux_core::ecs::components::{ActorValues, ActorVitals, Dead, ParticleEm
 use byroredux_core::ecs::{ActiveCamera, EntityId, GlobalTransform, World};
 use byroredux_core::math::Vec3;
 use byroredux_scripting::{RippleEvent, SplashEvent};
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap, FxHashSet};
 
 const DISTURBANCE_BAND: f32 = 24.0;
 const DISTURBANCE_RADIUS: f32 = 18.0;
@@ -358,7 +358,11 @@ pub(crate) fn submersion_system(world: &World, _dt: f32) {
 /// camera already has its own volume-based path above, so this covers thrown
 /// clutter, ragdolls, creatures, and any other dynamic body uniformly.
 pub(crate) fn make_water_interaction_system() -> impl FnMut(&World, f32) + Send + Sync {
-    let mut wet_last_frame = HashSet::<EntityId>::new();
+    let mut wet_last_frame = FxHashSet::<EntityId>::default();
+    let mut wet_now = FxHashSet::<EntityId>::default();
+    let mut entries = Vec::new();
+    let mut ripple_by_surface = FxHashMap::<EntityId, (EntityId, Vec3, f32)>::default();
+    let mut splash_by_surface = FxHashMap::<EntityId, (EntityId, Vec3, f32)>::default();
 
     move |world: &World, _dt: f32| {
         let Some(contact_q) = world.query::<WaterContact>() else {
@@ -369,9 +373,10 @@ pub(crate) fn make_water_interaction_system() -> impl FnMut(&World, f32) + Send 
             return;
         };
 
-        let mut wet_now = HashSet::new();
-        let mut entries = Vec::new();
-        let mut ripple_by_surface = HashMap::<EntityId, (EntityId, Vec3, f32)>::new();
+        wet_now.clear();
+        entries.clear();
+        ripple_by_surface.clear();
+        splash_by_surface.clear();
         for (entity, contact) in contact_q.iter() {
             if contact.submerged_fraction <= 0.0 {
                 continue;
@@ -425,7 +430,6 @@ pub(crate) fn make_water_interaction_system() -> impl FnMut(&World, f32) + Send 
             // Deduped strongest-wins per surface, like the ripple path above:
             // two bodies entering one plane in the same frame must not collapse
             // to whichever iterated last.
-            let mut splash_by_surface: HashMap<EntityId, (EntityId, Vec3, f32)> = HashMap::new();
             for &(entity, surface_entity, position, intensity, entering) in &entries {
                 if entering {
                     splash_by_surface
@@ -479,7 +483,8 @@ pub(crate) fn make_water_interaction_system() -> impl FnMut(&World, f32) + Send 
                 }
             }
         }
-        wet_last_frame = wet_now;
+        std::mem::swap(&mut wet_last_frame, &mut wet_now);
+        wet_now.clear();
     }
 }
 
@@ -593,6 +598,35 @@ mod tests {
     use byroredux_scripting::{RippleEvent, SplashEvent};
 
     const EPS: f32 = WATERLINE_HYSTERESIS;
+
+    #[test]
+    fn per_frame_water_and_billboard_collections_use_reused_fx_storage() {
+        let water = include_str!("water.rs");
+        let water = water.split("#[cfg(test)]").next().expect("production water source");
+        assert!(!water.contains("use std::collections::"));
+        for needle in [
+            "FxHashSet::<EntityId>::default()",
+            "FxHashMap::<EntityId, (EntityId, Vec3, f32)>::default()",
+            "std::mem::swap(&mut wet_last_frame, &mut wet_now)",
+            "entries.clear()",
+            "ripple_by_surface.clear()",
+            "splash_by_surface.clear()",
+        ] {
+            assert!(
+                water.contains(needle),
+                "water scratch contract lost `{needle}`"
+            );
+        }
+
+        let billboard = include_str!("billboard.rs");
+        let billboard = billboard
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production billboard source");
+        assert!(!billboard.contains("use std::collections::"));
+        assert!(billboard.contains("FxHashMap<u32, Quat>"));
+        assert!(billboard.contains("if geometry_bases.len() > live_geometry_count"));
+    }
 
     #[test]
     fn underwater_extinction_respects_authored_fog_range() {

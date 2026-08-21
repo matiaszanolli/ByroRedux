@@ -6,7 +6,7 @@ use byroredux_core::ecs::{
     World,
 };
 use byroredux_core::math::{Quat, Vec2, Vec3};
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 /// Billboard system factory — returns a closure with a cached camera pose.
 ///
@@ -33,7 +33,7 @@ pub(crate) fn make_billboard_system() -> impl FnMut(&World, f32) + Send + Sync {
     // Keep that orientation separate from the transient wind bend; otherwise
     // multiplying the bend onto the already-bent GlobalTransform would drift
     // the tree permanently as the gust oscillates.
-    let mut geometry_bases: HashMap<u32, Quat> = HashMap::new();
+    let mut geometry_bases: FxHashMap<u32, Quat> = FxHashMap::default();
 
     move |world: &World, dt: f32| {
         elapsed = (elapsed + dt.max(0.0)).max(0.0);
@@ -134,10 +134,12 @@ pub(crate) fn make_billboard_system() -> impl FnMut(&World, f32) + Send + Sync {
         // entity, not its placement root: the loader mirrors the marker onto
         // both, and rotating both would apply the canopy response twice.
         if let (Some(swq), Some(mesh_q)) = (swq.as_ref(), world.query::<MeshHandle>()) {
+            let mut live_geometry_count = 0usize;
             for (entity, tree_wind) in swq.iter() {
                 if bq.as_ref().is_some_and(|q| q.contains(entity)) || !mesh_q.contains(entity) {
                     continue;
                 }
+                live_geometry_count += 1;
                 let Some(global) = gq.get_mut(entity) else {
                     continue;
                 };
@@ -148,9 +150,14 @@ pub(crate) fn make_billboard_system() -> impl FnMut(&World, f32) + Send + Sync {
                     base
                 };
             }
-            // Despawned streamed meshes disappear from the component storage;
-            // pruning here keeps this per-system cache bounded by live trees.
-            geometry_bases.retain(|entity, _| mesh_q.contains(*entity) && swq.contains(*entity));
+            // Only pay the O(cache) prune when a despawn made the cache larger
+            // than the live geometry population. Weathered exteriors revisit
+            // this system every frame, but steady-state trees no longer incur
+            // a redundant retain plus two sparse-set probes apiece.
+            if geometry_bases.len() > live_geometry_count {
+                geometry_bases
+                    .retain(|entity, _| mesh_q.contains(*entity) && swq.contains(*entity));
+            }
         }
     }
 }
