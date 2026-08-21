@@ -1,7 +1,7 @@
 //! Water submersion detection.
 
 use byroredux_core::ecs::components::water::{
-    SubmersionState, WaterContact, WaterMaterial, WaterPlane, WaterVolume,
+    SubmersionState, WaterContact, WaterMaterial, WaterPlane, WaterVolume, WATERLINE_HYSTERESIS,
 };
 use byroredux_core::ecs::components::{ActorValues, ActorVitals, Dead, ParticleEmitter};
 use byroredux_core::ecs::{ActiveCamera, EntityId, GlobalTransform, World};
@@ -9,14 +9,6 @@ use byroredux_core::math::Vec3;
 use byroredux_scripting::{RippleEvent, SplashEvent};
 use std::collections::{HashMap, HashSet};
 
-/// Hysteresis band half-width for the `head_submerged` boolean, in
-/// Bethesda world units (~1.43 cm/unit — same scale as `WaterVolume`
-/// min/max). Small enough to be visually imperceptible (~5.7 cm), large
-/// enough to swamp sub-frame camera/float dither when the eye is parked
-/// exactly at the waterline. Tunable; the only constraint is that the
-/// vertical AABB acceptance below is extended by the *same* constant so
-/// the exit transition fires precisely at the band edge (#1450 / WAT-01).
-const WATERLINE_HYSTERESIS: f32 = 4.0;
 const DISTURBANCE_BAND: f32 = 24.0;
 const DISTURBANCE_RADIUS: f32 = 18.0;
 
@@ -156,7 +148,7 @@ pub(crate) fn submersion_system(world: &World, _dt: f32) {
     // re-acquire GlobalTransform here only to confirm the plane's
     // world Y matches its volume `max.y` (defensive — `WaterVolume`
     // is authored at spawn time so the two should already agree).
-    let mut best: Option<(f32, WaterMaterial)> = None;
+    let mut best: Option<(f32, f32, WaterMaterial)> = None;
     let Some(wq) = world.query::<WaterPlane>() else {
         // No water entities at all → clear any prior state on the
         // camera so the next frame's render reads default-above-water.
@@ -236,14 +228,15 @@ pub(crate) fn submersion_system(world: &World, _dt: f32) {
         // (-WATERLINE_HYSTERESIS, ...]; the hysteresis resolver handles the
         // near-surface sign.
         let depth = surface_y - cam_pos.y;
+        let distance = byroredux_physics::nearest_surface_distance(surface_y, cam_pos.y);
         // Pick the closest match by absolute vertical distance. During cell
         // transitions an upper and lower water volume can overlap in XZ; a
         // signed-depth comparison would incorrectly prefer the lowest
         // surface whenever the camera is above both.
-        let candidate = (depth, plane.material);
+        let candidate = (depth, distance, plane.material);
         match best {
             None => best = Some(candidate),
-            Some((prev_depth, _)) if depth.abs() < prev_depth.abs() => best = Some(candidate),
+            Some((_, prev_distance, _)) if distance < prev_distance => best = Some(candidate),
             _ => {}
         }
     }
@@ -304,7 +297,7 @@ pub(crate) fn submersion_system(world: &World, _dt: f32) {
         }
     }
 
-    let best_depth = best.as_ref().map(|(d, _)| *d);
+    let best_depth = best.as_ref().map(|(depth, _, _)| *depth);
     let Some(mut sq) = world.query_mut::<SubmersionState>() else {
         return;
     };
@@ -321,7 +314,7 @@ pub(crate) fn submersion_system(world: &World, _dt: f32) {
         let was = state.head_submerged;
         let head_submerged = resolve_head_submerged(was, best_depth);
         let new_state = match best {
-            Some((depth, material)) => SubmersionState {
+            Some((depth, _, material)) => SubmersionState {
                 depth,
                 head_submerged,
                 material: Some(material),
@@ -934,14 +927,14 @@ mod tests {
         world.insert(
             camera,
             GlobalTransform::new(
-                Vec3::new(0.0, 103.0, 0.0),
+                Vec3::new(0.0, 2.0, 0.0),
                 byroredux_core::math::Quat::IDENTITY,
                 1.0,
             ),
         );
         world.insert(camera, SubmersionState::default());
 
-        for (surface_y, color) in [(0.0, [0.1, 0.2, 0.3]), (100.0, [0.7, 0.8, 0.9])] {
+        for (surface_y, color) in [(0.0, [0.1, 0.2, 0.3]), (3.0, [0.7, 0.8, 0.9])] {
             let water = world.spawn();
             let mut material = WaterMaterial::default();
             material.shallow_color = color;
@@ -956,7 +949,7 @@ mod tests {
             world.insert(
                 water,
                 WaterVolume {
-                    min: [-50.0, surface_y - 100.0, -50.0],
+                    min: [-50.0, -100.0, -50.0],
                     max: [50.0, surface_y, 50.0],
                 },
             );
@@ -969,7 +962,7 @@ mod tests {
             .get(camera)
             .copied()
             .expect("camera state");
-        assert_eq!(state.depth, -3.0);
+        assert_eq!(state.depth, 1.0);
         assert_eq!(
             state.material.expect("selected water").shallow_color,
             [0.7, 0.8, 0.9]

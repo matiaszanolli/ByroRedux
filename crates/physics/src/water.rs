@@ -38,6 +38,7 @@ use byroredux_core::ecs::components::collision::{MotionType, RigidBodyData};
 use byroredux_core::ecs::components::groundcover::WindField;
 use byroredux_core::ecs::components::water::{
     WaterContact, WaterCurrentVolume, WaterFlow, WaterMaterial, WaterPlane, WaterVolume,
+    WATERLINE_HYSTERESIS,
 };
 use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::resources::TotalTime;
@@ -231,13 +232,6 @@ pub fn submerged_fraction(aabb_min_y: f32, aabb_max_y: f32, surface_y: f32) -> f
     ((surface_y - aabb_min_y) / height).clamp(0.0, 1.0)
 }
 
-/// Near-surface acceptance band (Bethesda world units) for the body↔water
-/// containment test, so a body bobbing right at the waterline doesn't
-/// flicker in and out of contact. Mirrors the camera submersion system's
-/// `WATERLINE_HYSTERESIS` (`byroredux::systems::water`, #1450) — kept as a
-/// local constant because that one is private to the binary crate.
-const WATERLINE_HYSTERESIS: f32 = 4.0;
-
 /// One water plane's volume + surface height + material (+ optional flow),
 /// snapshotted for the per-body buoyancy scan.
 struct WaterSurface {
@@ -249,8 +243,13 @@ struct WaterSurface {
     damage_per_second: f32,
 }
 
+/// Absolute vertical distance from a reference point to a water surface.
+///
+/// This is the canonical tie-break metric for overlapping water volumes.
+/// Camera submersion and rigid-body contact both select the eligible surface
+/// with the smallest returned distance.
 #[inline]
-fn nearest_surface_distance(surface_y: f32, reference_y: f32) -> f32 {
+pub fn nearest_surface_distance(surface_y: f32, reference_y: f32) -> f32 {
     (surface_y - reference_y).abs()
 }
 
@@ -916,6 +915,71 @@ mod tests {
         assert_eq!(currents.len(), 1);
         assert_eq!(currents[0].flow.direction, [1.0, 0.0, 0.0]);
         assert!(world.query::<WaterPlane>().is_none());
+    }
+
+    #[test]
+    fn overlapping_water_volumes_choose_nearest_surface() {
+        use crate::physics_sync_system;
+        use byroredux_core::ecs::components::collision::{
+            CollisionShape, MotionType, RigidBodyData,
+        };
+        use byroredux_core::ecs::components::{GlobalTransform, Transform};
+
+        let mut world = World::new();
+        world.insert_resource(PhysicsWorld::new());
+        world.insert_resource(PhysicsWaterConstants::default());
+        world.register::<RapierHandles>();
+        world.register::<WaterContact>();
+
+        let mut upper_surface = None;
+        for (surface_y, damage_per_second) in [(0.0, 1.0), (3.0, 7.0)] {
+            let water = world.spawn();
+            world.insert(
+                water,
+                WaterPlane {
+                    kind: byroredux_core::ecs::components::water::WaterKind::Calm,
+                    material: WaterMaterial::default(),
+                    damage_per_second,
+                },
+            );
+            world.insert(
+                water,
+                WaterVolume {
+                    min: [-50.0, -100.0, -50.0],
+                    max: [50.0, surface_y, 50.0],
+                },
+            );
+            if surface_y == 3.0 {
+                upper_surface = Some(water);
+            }
+        }
+
+        let body = world.spawn();
+        world.insert(body, CollisionShape::Ball { radius: 1.0 });
+        world.insert(
+            body,
+            RigidBodyData {
+                motion_type: MotionType::Dynamic,
+                mass: 20.0,
+                friction: 0.5,
+                restitution: 0.0,
+                linear_damping: 0.0,
+                angular_damping: 0.0,
+                collidable: true,
+            },
+        );
+        let position = Vec3::new(0.0, 2.0, 0.0);
+        world.insert(body, GlobalTransform::new(position, Quat::IDENTITY, 1.0));
+        world.insert(body, Transform::from_translation(position));
+
+        physics_sync_system(&world, PHYSICS_DT);
+
+        let contact = world
+            .get::<WaterContact>(body)
+            .expect("nearest surface writes a contact");
+        assert_eq!(contact.surface_entity, upper_surface);
+        assert_eq!(contact.depth, 1.0);
+        assert_eq!(contact.damage_per_second, 7.0);
     }
 
     #[test]

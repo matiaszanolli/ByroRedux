@@ -41,6 +41,12 @@
 use crate::ecs::sparse_set::SparseSetStorage;
 use crate::ecs::storage::{Component, EntityId};
 
+/// Canonical half-width of the waterline acceptance/hysteresis band, in
+/// Bethesda world units. Camera submersion and rigid-body contact must use
+/// this same value so overlapping surfaces and boundary transitions resolve
+/// identically across gameplay and physics.
+pub const WATERLINE_HYSTERESIS: f32 = 4.0;
+
 /// How the surface should move and shade. Drives shader path selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
