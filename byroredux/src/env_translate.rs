@@ -181,7 +181,7 @@ pub(crate) fn default_water_for_worldspace(
     if !worldspaces.contains_key(worldspace_key) {
         return (None, None);
     }
-    let water_form = inherit_up_chain(worldspaces, worldspace_key, pnam::INHERIT_WATER, |w| {
+    let water_form = inherit_up_chain(worldspaces, worldspace_key, pnam::INHERIT_WATER, |_, w| {
         w.water_form
     });
     if game == GameKind::Oblivion {
@@ -196,7 +196,7 @@ pub(crate) fn default_water_for_worldspace(
     }
     // FO3/FNV/Skyrim+/FO4: the DNAM default water height is the signal that
     // the worldspace has default water; pair it with the NAM2 type form.
-    match inherit_up_chain(worldspaces, worldspace_key, pnam::INHERIT_LAND, |w| {
+    match inherit_up_chain(worldspaces, worldspace_key, pnam::INHERIT_LAND, |_, w| {
         w.default_water_height
     }) {
         Some(height) => (Some(height), water_form),
@@ -234,10 +234,10 @@ pub(crate) fn translate_lod_water(
         return (None, None);
     }
     (
-        inherit_up_chain(worldspaces, worldspace_key, pnam::INHERIT_LOD, |w| {
+        inherit_up_chain(worldspaces, worldspace_key, pnam::INHERIT_LOD, |_, w| {
             w.lod_water_height
         }),
-        inherit_up_chain(worldspaces, worldspace_key, pnam::INHERIT_LOD, |w| {
+        inherit_up_chain(worldspaces, worldspace_key, pnam::INHERIT_LOD, |_, w| {
             w.lod_water_form
         }),
     )
@@ -293,7 +293,15 @@ use pnam::INHERIT_CLIMATE as PNAM_INHERIT_CLIMATE;
 /// value can never have it overridden by an ancestor.
 ///
 /// Cycle-guarded: corrupt or adversarial plugin data terminates the walk
-/// instead of hanging, matching [`resolve_worldspace_climate`].
+/// instead of hanging.
+///
+/// `extract` receives the current worldspace key alongside its record
+/// (#2814). Most inheritable fields live on [`WorldspaceRecord`] and ignore
+/// the key, but climate is held in a side-map keyed the same way, and giving
+/// it the key is what lets [`resolve_worldspace_climate`] use this walk
+/// instead of carrying a second copy of the cycle guard, the linear
+/// form_id reverse lookup, the three `warn!` termination cases, and the
+/// precedence ordering.
 fn inherit_up_chain<T, F>(
     worldspaces: &HashMap<String, WorldspaceRecord>,
     start_key: &str,
@@ -301,13 +309,13 @@ fn inherit_up_chain<T, F>(
     extract: F,
 ) -> Option<T>
 where
-    F: Fn(&WorldspaceRecord) -> Option<T>,
+    F: Fn(&str, &WorldspaceRecord) -> Option<T>,
 {
     let mut current = start_key.to_string();
     let mut visited = std::collections::HashSet::new();
     loop {
         let record = worldspaces.get(&current)?;
-        if let Some(value) = extract(record) {
+        if let Some(value) = extract(&current, record) {
             return Some(value);
         }
         if record.parent_flags & bit == 0 {
@@ -356,58 +364,42 @@ where
 /// actual climate.
 ///
 /// `worldspaces` and `worldspace_climates` are both keyed by the same
-/// lowercased-editor-id string (`worldspace_key` in the cell loader);
-/// `parent_worldspace` is a raw FormID, so each hop needs a reverse lookup
-/// by `WorldspaceRecord::form_id` — worldspace counts are small (tens),
-/// so a linear scan per hop is fine; this runs once per worldspace entry,
-/// not per frame. Guards against a cyclic `WNAM` chain (corrupt/adversarial
-/// plugin data) via `visited`. Logs at `warn` when the chain terminates
-/// unresolved so a real inheritance gap is diagnosable instead of reading
-/// as an unrelated weather bug.
+/// lowercased-editor-id string (`worldspace_key` in the cell loader), which
+/// is why the CLMT FormID can be read from the side-map by the key
+/// [`inherit_up_chain`] is already walking.
+///
+/// Everything else — the `visited` cycle guard, the linear
+/// `WorldspaceRecord::form_id` reverse lookup per hop, the three `warn!`
+/// termination cases, and "own value beats the chain" precedence — belongs
+/// to that helper and is described there.
 pub(crate) fn resolve_worldspace_climate(
     worldspaces: &HashMap<String, WorldspaceRecord>,
     worldspace_climates: &HashMap<String, u32>,
     start_key: &str,
 ) -> Option<u32> {
-    let mut current_key = start_key;
-    let mut visited = std::collections::HashSet::new();
-    loop {
-        if let Some(&clmt_fid) = worldspace_climates.get(current_key) {
-            return Some(clmt_fid);
-        }
-        if !visited.insert(current_key) {
-            log::warn!(
-                "resolve_worldspace_climate: cyclic WNAM parent chain detected starting from \
-                 '{start_key}' (revisited '{current_key}') — treating as unresolved",
-            );
-            return None;
-        }
-        let record = worldspaces.get(current_key)?;
-        if record.parent_flags & PNAM_INHERIT_CLIMATE == 0 {
-            // No own CNAM, and not flagged to inherit one — this
-            // worldspace is genuinely climate-less (falls back to the
-            // engine's procedural default), not an inheritance gap.
-            return None;
-        }
-        let Some(parent_fid) = record.parent_worldspace else {
-            log::warn!(
-                "resolve_worldspace_climate: '{current_key}' sets the PNAM climate-inherit bit \
-                 but authors no WNAM parent — chain terminates unresolved (starting from \
-                 '{start_key}')",
-            );
-            return None;
-        };
-        let Some((parent_key, _)) = worldspaces.iter().find(|(_, w)| w.form_id == parent_fid)
-        else {
-            log::warn!(
-                "resolve_worldspace_climate: '{current_key}'s WNAM parent {parent_fid:08X} was \
-                 not found among parsed worldspaces — chain terminates unresolved (starting \
-                 from '{start_key}')",
-            );
-            return None;
-        };
-        current_key = parent_key.as_str();
-    }
+    // #2814 — routed through the shared walk rather than a bespoke copy of
+    // it. `e681a3c1` introduced `inherit_up_chain` and moved DNAM / NAM3+NAM4
+    // / NAM2 onto it, but climate — the highest-traffic PNAM bit, since a
+    // missed one downgrades a whole worldspace to the procedural fallback
+    // sky — kept its pre-helper loop, duplicating the `visited` cycle guard,
+    // the linear form_id reverse lookup, the three `warn!` termination cases
+    // and the precedence ordering. A future fix to the walk would have landed
+    // in one copy and silently missed this one.
+    //
+    // The only thing climate needed that the helper lacked was the current
+    // key: the CLMT FormID is not a `WorldspaceRecord` field, it lives in a
+    // side-map keyed the same way. `extract` now receives both.
+    //
+    // One deliberate behaviour change comes with the merge: the helper reads
+    // `worldspaces.get(current)` *before* extracting, so a key present in
+    // `worldspace_climates` but absent from `worldspaces` no longer resolves.
+    // Both maps are built from the same WRLD walk in the cell loader, so a
+    // climate without its own worldspace record is not a state the parser
+    // produces — and if it ever were, resolving a climate for a worldspace
+    // the loader never parsed would be the bug, not the fix.
+    inherit_up_chain(worldspaces, start_key, PNAM_INHERIT_CLIMATE, |key, _| {
+        worldspace_climates.get(key).copied()
+    })
 }
 
 /// Resolve the climate in effect for one exterior cell: its own `XCCM`
@@ -1056,9 +1048,29 @@ pub(crate) fn resolve_water_material(
 /// Cos-threshold of the rendered sun-disc half-angle (~1.8°). Matches the
 /// pre-EXAL hardcoded `SkyParamsRes` literal.
 const SUN_SIZE_COS: f32 = 0.9995;
-/// Directional-light intensity at full day. The per-frame `weather_system`
-/// re-derives the live value from the TOD arc; this is the bootstrap seed.
-const SUN_INTENSITY: f32 = 4.0;
+/// Peak directional-light intensity at full day — the **one** declaration
+/// (#2813).
+///
+/// Three unrelated consumers must agree on this number or the exterior
+/// directional ramp stops spanning `[0, 1]`:
+///
+/// * the producer, [`crate::systems::weather::compute_sun_arc`], which
+///   ramps up to it and holds it between sunrise-end and sunset-begin;
+/// * the bootstrap seed used by [`translate_climate_sky`] below, before the
+///   per-frame `weather_system` re-derives the live value from the TOD arc;
+/// * the divisor in `render::compute_directional_upload`, which normalises
+///   `sun_intensity / peak` into the surface-lighting scale.
+///
+/// It used to be spelled `4.0` independently at all three, with both sun-arc
+/// tests asserting against their own hardcoded copies — so a one-sided change
+/// stayed green while either saturating the ramp early (producer raised
+/// alone) or capping daytime exterior directional below full strength
+/// (producer lowered alone). Whole-frame exterior lighting, silently.
+///
+/// Lives here because `env_translate` is the EXAL boundary both other
+/// modules already sit downstream of; `weather.rs` re-exports it under the
+/// producer-side name.
+pub(crate) const SUN_INTENSITY_PEAK: f32 = 4.0;
 /// Tangent-plane half-radius of the directional disk in radians (~1.15°);
 /// drives PCSS-lite shadow jitter (#1023). Pre-EXAL hardcoded constant.
 const SUN_ANGULAR_RADIUS: f32 = 0.020;
@@ -1133,7 +1145,7 @@ pub(crate) fn translate_sky(
         sun_direction: sun_dir,
         sun_color: wthr.sky_colors[SKY_SUN][TOD_DAY].to_rgb_f32(),
         sun_size: SUN_SIZE_COS,
-        sun_intensity: SUN_INTENSITY,
+        sun_intensity: SUN_INTENSITY_PEAK,
         sun_angular_radius: SUN_ANGULAR_RADIUS,
         is_exterior: true,
         cloud_tile_scale: s0,
@@ -1194,7 +1206,8 @@ fn precipitation_from_weather(classification: u8) -> f32 {
 pub(crate) fn climate_tod_hours(
     climate: Option<&byroredux_plugin::esm::records::ClimateRecord>,
 ) -> [f32; 4] {
-    const FALLBACK: [f32; 4] = [6.0, 10.0, 18.0, 22.0];
+    // #2812 — the shared EXAL boundary quad, not a private copy.
+    const FALLBACK: [f32; 4] = FB_TOD_HOURS;
     let Some(c) = climate else {
         return FALLBACK;
     };
@@ -1291,6 +1304,25 @@ const FB_LOWER: [f32; 3] = [
     FB_HORIZON[2] * 0.3,
 ];
 const FB_SUN_COLOR: [f32; 3] = [1.0, 0.95, 0.8];
+/// Sunrise-begin / sunrise-end / sunset-begin / sunset-end breakpoints used
+/// whenever no climate record drives them — the **one** declaration (#2812).
+///
+/// Same "exterior, no authored climate" state, three producers that must
+/// agree: [`climate_tod_hours`]'s no-/invalid-climate return,
+/// [`procedural_fallback_weather`]'s `tod_hours`, and the sun arc
+/// `weather::apply_neutral_exterior_fallback` evaluates (via
+/// `weather::DEFAULT_TOD_HOURS`, which aliases this).
+///
+/// It used to be written out independently at all three. That is the exact
+/// shape `apply_neutral_exterior_fallback`'s own doc warns about — "the
+/// **one** canonical EXAL boundary fallback … not a private set", the #1722
+/// lesson — and `DEFAULT_TOD_HOURS`'s doc asserted the coupling while
+/// referencing neither of the other two literals. A re-anchor applied to one
+/// or two would silently split the fallback sun arc from the fallback palette
+/// interpolation.
+///
+/// Value is the pre-#463 hardcoded default (`exal.md` boundary fallback).
+pub(crate) const FB_TOD_HOURS: [f32; 4] = [6.0, 10.0, 18.0, 22.0];
 const FB_FOG_NEAR: f32 = 15000.0;
 const FB_FOG_FAR: f32 = 80000.0;
 
@@ -1329,7 +1361,7 @@ pub(crate) fn procedural_fallback_sky(sun_dir: [f32; 3]) -> SkyParamsRes {
         sun_direction: sun_dir,
         sun_color: FB_SUN_COLOR,
         sun_size: SUN_SIZE_COS,
-        sun_intensity: SUN_INTENSITY,
+        sun_intensity: SUN_INTENSITY_PEAK,
         sun_angular_radius: SUN_ANGULAR_RADIUS,
         is_exterior: true,
         cloud_tile_scale: 0.0,
@@ -1377,8 +1409,9 @@ pub(crate) fn procedural_fallback_weather() -> WeatherDataRes {
             crate::fog::FogMedium::from_legacy_ramp(FB_FOG_NEAR, FB_FOG_FAR, None),
             crate::fog::FogMedium::from_legacy_ramp(FB_FOG_NEAR, FB_FOG_FAR, None),
         ],
-        // Pre-#463 hardcoded TOD breakpoints.
-        tod_hours: [6.0, 10.0, 18.0, 22.0],
+        // Pre-#463 hardcoded TOD breakpoints — shared with
+        // `climate_tod_hours` and `weather::DEFAULT_TOD_HOURS` (#2812).
+        tod_hours: FB_TOD_HOURS,
         skyrim_dalc_per_tod: None,
         wind_speed: 0,
         precipitation: 0.0,

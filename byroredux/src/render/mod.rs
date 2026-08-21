@@ -277,11 +277,14 @@ fn apply_fog_overrides(near: f32, far: f32) -> (f32, f32, bool) {
 /// the 0..4 ramp into a 0..1 contribution multiplier.
 ///
 /// Tracked here (not as a `pub const` next to `weather_system`) because
-/// the consumer is the directional-light upload — a bump on the
-/// systems-side ramp without a matching bump here would silently
-/// re-introduce a daytime brightness regression. Pin it via the
-/// `directional_upload_peak_matches_weather_system` test.
-const SUN_INTENSITY_PEAK: f32 = 4.0;
+/// the consumer is the directional-light upload.
+///
+/// #2813 — an alias for the canonical declaration, not a third copy. The
+/// pin test below used to be the only thing holding this equal to the
+/// producer's literal, and it asserted against its own hardcoded `4.0`, so
+/// a one-sided bump stayed green while re-introducing a daytime brightness
+/// regression.
+const SUN_INTENSITY_PEAK: f32 = crate::env_translate::SUN_INTENSITY_PEAK;
 
 /// Project the cell's authored directional colour into the value the
 /// renderer pushes to the per-frame `GpuLight` SSBO.

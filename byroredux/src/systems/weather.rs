@@ -137,14 +137,19 @@ pub(crate) fn compute_sun_arc(hour: f32, tod_hours: [f32; 4]) -> ([f32; 3], f32)
         [0.0, -1.0, 0.0]
     };
 
+    // #2813 — ramp to the shared peak rather than a local `4.0`. The
+    // renderer divides by the same constant to normalise this into
+    // `[0, 1]`, so a one-sided edit here saturates or caps every exterior
+    // surface's directional lighting.
+    let peak = crate::env_translate::SUN_INTENSITY_PEAK;
     let sun_intensity = if hour >= sunrise_end && hour <= sunset_begin {
-        4.0
+        peak
     } else if hour >= sunrise_begin && hour < sunrise_end {
         let ramp_span = (sunrise_end - sunrise_begin).max(1e-3);
-        ((hour - sunrise_begin) / ramp_span * 4.0).clamp(0.0, 4.0)
+        ((hour - sunrise_begin) / ramp_span * peak).clamp(0.0, peak)
     } else if hour > sunset_begin && hour <= sunset_end {
         let ramp_span = (sunset_end - sunset_begin).max(1e-3);
-        ((sunset_end - hour) / ramp_span * 4.0).clamp(0.0, 4.0)
+        ((sunset_end - hour) / ramp_span * peak).clamp(0.0, peak)
     } else {
         0.0
     };
@@ -244,9 +249,14 @@ fn lerp1(a: f32, b: f32, t: f32) -> f32 {
 }
 
 /// Sunrise/sunset/etc. breakpoints used when no climate record drives
-/// `WeatherDataRes::tod_hours`. Matches the pre-#463 hardcoded
-/// defaults the synthetic-fallback path in `scene::world_setup` ships.
-pub(crate) const DEFAULT_TOD_HOURS: [f32; 4] = [6.0, 10.0, 18.0, 22.0];
+/// `WeatherDataRes::tod_hours`.
+///
+/// #2812 — an alias for the canonical EXAL boundary quad, not a second
+/// declaration. This doc used to *assert* the coupling with
+/// `climate_tod_hours` and `procedural_fallback_weather` while all three
+/// spelled the literal out independently, so a re-anchor applied to one
+/// would split the fallback sun arc from the fallback palette interpolation.
+pub(crate) const DEFAULT_TOD_HOURS: [f32; 4] = crate::env_translate::FB_TOD_HOURS;
 
 /// Write the exterior no-weather fallback into `cell_lit` when no WTHR
 /// record is loaded (#1034 / REN-D15-NEW-15). Pre-#1034 the no-WTHR
@@ -1261,11 +1271,15 @@ mod tod_keys_tests {
             "sun should be in the western half at hour 17.5; got dir.x={:.3}",
             dir[0],
         );
-        // Hour 17.5 is 0.5h past sunset_begin (17.0) of a 5h sunset
-        // band → intensity ≈ 4.0 * (22.0 - 17.5)/5.0 = 3.6.
+        // Hour 17.5 is 0.5h past sunset_begin (17.0) of a 5h sunset band →
+        // 90 % of the way down the ramp. #2813 — derived from the shared
+        // peak rather than the pre-fix hardcoded `3.6`, which stayed green
+        // through a one-sided producer re-tune.
+        let expected = crate::env_translate::SUN_INTENSITY_PEAK * (22.0 - 17.5) / 5.0;
         assert!(
-            (intensity - 3.6).abs() < 0.05,
-            "FO3 sunset_begin=17, sunset_end=22 → intensity at 17.5h ≈ 3.6; got {intensity:.3}",
+            (intensity - expected).abs() < 0.05,
+            "FO3 sunset_begin=17, sunset_end=22 → intensity at 17.5h ≈ \
+             {expected:.3}; got {intensity:.3}",
         );
     }
 
@@ -1282,8 +1296,13 @@ mod tod_keys_tests {
         assert_eq!(dir, [0.0, -1.0, 0.0]);
         assert_eq!(intensity, 0.0);
 
-        // Sunrise band [6, 10]: ramping intensity. At hour 8 the
-        // ramp is half-way → intensity = 2.0.
+        // #2813 — half-peak / full-peak, derived. Both assertions used to
+        // carry their own `2.0` / `4.0` literals, so a producer re-tune
+        // left them green.
+        let peak = crate::env_translate::SUN_INTENSITY_PEAK;
+
+        // Sunrise band [6, 10]: ramping intensity. At hour 8 the ramp is
+        // half-way → half peak.
         let (dir, intensity) = compute_sun_arc(8.0, fnv_tod);
         assert!(
             dir[1] > 0.0,
@@ -1291,15 +1310,16 @@ mod tod_keys_tests {
             dir[1],
         );
         assert!(
-            (intensity - 2.0).abs() < 0.05,
-            "FNV sunrise band hour 8 → intensity ≈ 2.0; got {intensity:.3}",
+            (intensity - peak * 0.5).abs() < 0.05,
+            "FNV sunrise band hour 8 → intensity ≈ {:.3}; got {intensity:.3}",
+            peak * 0.5,
         );
 
         // Day band [10, 18]: full intensity.
         let (_, intensity) = compute_sun_arc(14.0, fnv_tod);
         assert!(
-            (intensity - 4.0).abs() < 1e-5,
-            "FNV day band → intensity 4.0; got {intensity:.3}",
+            (intensity - peak).abs() < 1e-5,
+            "FNV day band → intensity {peak}; got {intensity:.3}",
         );
 
         // Post-sunset: sentinel.
@@ -1709,7 +1729,9 @@ mod seeded_at_wrong_tod_resample_tests {
 
         const NOON_ZENITH: [f32; 3] = [0.3, 0.5, 0.9];
         const NIGHT_ZENITH: [f32; 3] = [0.0, 0.0, 0.0];
-        const SUN_INTENSITY_PEAK_CONSTANT: f32 = 4.0;
+        // #2813 — the seed this reproduces is the shared peak, not a
+        // fourth copy of the literal.
+        const SUN_INTENSITY_PEAK_CONSTANT: f32 = crate::env_translate::SUN_INTENSITY_PEAK;
 
         // Game clock at 01:00 — well inside the night window for the
         // tod_hours below (sunrise 6h, sunset 22h). Frozen so `dt = 0.0`

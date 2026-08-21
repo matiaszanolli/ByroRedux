@@ -1797,6 +1797,63 @@ fn derive_ax_ay_clamps_anisotropic_against_nan_and_floor_escape() {
          BSLightingShader gloss-cap behaviour (#1250 closeout / #2471)"
     );
 
+    // #2806 — the specular-AA filter must cap the ADDED kernel term, not
+    // only the sum. Filament's `normalFiltering()` computes
+    // `kernelRoughness = min(2.0 * variance, threshold)` and saturates
+    // afterwards; this shader clamped the sum alone, so a single
+    // high-frequency-normal fragment (foliage cutout, chain-link, fine
+    // grating) could drive an authored-polished surface to roughness = 1.0
+    // in one step and carry that into the anisotropic lobe via `deriveAxAy`.
+    assert!(
+        pbr.contains("min(2.0 * variance, SPECULAR_AA_THRESHOLD)"),
+        "specularAaRoughness must cap the kernel term before adding it \
+         (Filament `normalFiltering()`); clamping only the sum lets one \
+         aliasing fragment saturate roughness to 1.0 (#2806)"
+    );
+    assert!(
+        pbr.contains("#define SPECULAR_AA_VARIANCE")
+            && pbr.contains("#define SPECULAR_AA_THRESHOLD"),
+        "both specular-AA coefficients must be named and citable — every \
+         neighbouring constant in this file is, and the bare literals were \
+         indistinguishable from arbitrary ones (#2806)"
+    );
+    assert!(
+        !pbr.contains("0.25 * (dot(dNdx, dNdx)"),
+        "the variance coefficient must go through SPECULAR_AA_VARIANCE, not \
+         a re-inlined literal (#2806)"
+    );
+
+    // Numeric: the capped filter must be monotonic in variance, must leave
+    // a smooth surface smooth at zero variance, and must NOT reach the GGX
+    // ceiling from the kernel alone however badly the normal aliases.
+    fn filtered_roughness(roughness: f64, variance_sum: f64) -> f64 {
+        const VARIANCE: f64 = 0.25;
+        const THRESHOLD: f64 = 0.2;
+        let kernel = (2.0 * VARIANCE * variance_sum).min(THRESHOLD);
+        let alpha2 = (roughness * roughness).powi(2);
+        (alpha2 + kernel).clamp(0.025f64.powi(4), 1.0).sqrt().sqrt()
+    }
+    let polished = 0.05;
+    assert!(
+        (filtered_roughness(polished, 0.0) - polished).abs() < 1e-6,
+        "zero normal variance must return the authored roughness untouched"
+    );
+    let mut previous = filtered_roughness(polished, 0.0);
+    for &variance_sum in &[0.01, 0.1, 1.0, 10.0, 1.0e6] {
+        let filtered = filtered_roughness(polished, variance_sum);
+        assert!(
+            filtered >= previous,
+            "filtered roughness must be monotonic in normal variance"
+        );
+        assert!(
+            filtered < 0.9,
+            "the kernel cap must keep an authored-polished surface off the \
+             GGX ceiling however badly its normal aliases; variance_sum \
+             {variance_sum} gave {filtered} (#2806)"
+        );
+        previous = filtered;
+    }
+
     // Numeric: out-of-range inputs must stay finite and ordered.
     fn derive_ax_ay(roughness: f64, anisotropic: f64) -> (f64, f64) {
         let alpha = roughness * roughness;

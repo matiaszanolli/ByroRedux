@@ -100,15 +100,23 @@ fn interior_authored_directional_fade_replaces_legacy_scale() {
 /// match against the known-good value.
 #[test]
 fn directional_upload_peak_matches_weather_system() {
-    // weather_system at byroredux/src/systems.rs:1446-1454 uses
-    // 4.0 as the daytime ceiling; the linear ramps at 6-7h /
-    // 17-18h reach this peak at the steady-state hours. If that
-    // value changes, this test is the canary.
+    // #2813 — assert against the PRODUCER, not a third hardcoded `4.0`.
+    // The pre-fix version compared this constant to a literal, so it went
+    // green whenever the producer moved and this constant did not — the
+    // exact drift it was written to catch.
+    let peak_from_producer =
+        crate::systems::weather::compute_sun_arc(12.0, [6.0, 10.0, 18.0, 22.0]).1;
     assert_eq!(
-        SUN_INTENSITY_PEAK, 4.0,
-        "SUN_INTENSITY_PEAK must match weather_system's daytime peak \
-         (`systems.rs:1446-1454`); a tuning change there must update \
-         this constant in the same commit or every exterior surface \
-         dims/brightens by the ratio."
+        SUN_INTENSITY_PEAK, peak_from_producer,
+        "SUN_INTENSITY_PEAK must equal the daytime ceiling \
+         `compute_sun_arc` actually ramps to; a tuning change there must \
+         reach this divisor or every exterior surface dims/brightens by \
+         the ratio."
+    );
+    // …and the normalised ramp must therefore span exactly [0, 1].
+    assert_eq!(
+        (peak_from_producer / SUN_INTENSITY_PEAK).clamp(0.0, 1.0),
+        1.0,
+        "full daylight must normalise to full directional strength"
     );
 }

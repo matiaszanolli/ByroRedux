@@ -240,8 +240,9 @@ DisneyDiffuseSplit disneyDiffuseSplit(
 //
 // Estimate the per-fragment normal-vector variance from screen-space
 // derivatives, then widen `α²` (NOT `α`, NOT `roughness²` — see #2471)
-// by `2 × kernel_variance`, per the published filter: `α²_filtered =
-// α² + 2σ²`. The lobe smears the bright/dark across pixels at exactly
+// by the kernel term, per the published filter: `α²_filtered =
+// α² + min(2σ², threshold)` (#2806 — the cap is on the added term, not
+// on the sum; see `SPECULAR_AA_THRESHOLD` below). The lobe smears the bright/dark across pixels at exactly
 // the rate the underlying normal aliases — converging back to the
 // authored roughness on smooth surfaces (small variance) so
 // close-range specular highlights stay sharp.
@@ -264,15 +265,49 @@ DisneyDiffuseSplit disneyDiffuseSplit(
 // value that round-trips (via `sqrt(sqrt(..))`) back to the same
 // `roughness ≥ 0.025` floor the pre-fix `0.025²` clamp on `α`
 // enforced (mirrors what the BSLightingShader gloss path reaches at
-// maximum gloss); the `min(.., 1.0)` upper bound is the GGX validity
-// ceiling.
+// maximum gloss); the `1.0` upper bound is the GGX validity ceiling,
+// which `SPECULAR_AA_THRESHOLD` now keeps the kernel from reaching on
+// its own.
+// Screen-space normal-variance coefficient. Filament exposes this as the
+// named material parameter `specularAntiAliasingVariance` (default 0.15);
+// this engine's 0.25 arrived with `f684a910`, the commit that fixed the
+// Nellis Museum Quonset-wall striping, and carries no separate derivation.
+//
+// #2806 — NAMED, not re-anchored. Lowering it to Filament's default would
+// weaken the filter globally, and the value was chosen against a real
+// regression whose reproduction needs game data + a visual A/B, not a unit
+// test. Re-anchoring is a RenderDoc bench, not an edit (§7 "do not tune
+// blind"). What this constant needed was a name and a citation so the next
+// reader can tell a tuned value from an arbitrary one.
+#define SPECULAR_AA_VARIANCE 0.25
+// Ceiling on the *added* kernel term, in α² units. Filament's
+// `specularAntiAliasingThreshold`, same 0.2 default.
+//
+// #2806 — this was MISSING, which is the actual defect. The reference filter
+// caps the kernel before adding it (`kernelRoughness = min(2.0 * variance,
+// threshold)`) and only then saturates the sum; this shader clamped the sum
+// alone, so a fragment with high-frequency normals — foliage cutouts,
+// chain-link, fine grating — could drive a polished surface straight to
+// `roughness = 1.0` in a single step, which the reference explicitly
+// prevents. It propagates into the anisotropic lobe via `deriveAxAy`.
+//
+// Behaviour delta is confined to that saturating tail: where `2σ² <= 0.2`
+// (moderate variance — the corrugated-metal case `f684a910` was written for)
+// nothing changes at all. Only fragments that would have been pushed past
+// α² = 0.2 are affected, and they now stop at roughness ≈ 0.669 instead of
+// 1.0.
+#define SPECULAR_AA_THRESHOLD 0.2
+
 float specularAaRoughness(vec3 N, float roughness) {
     vec3 dNdx = dFdx(N);
     vec3 dNdy = dFdy(N);
-    float kernelVariance = 0.25 * (dot(dNdx, dNdx) + dot(dNdy, dNdy));
+    float variance = SPECULAR_AA_VARIANCE * (dot(dNdx, dNdx) + dot(dNdy, dNdy));
+    // Cap the kernel BEFORE adding (Filament `normalFiltering()`), so one
+    // aliasing fragment cannot saturate an authored-smooth surface.
+    float kernelAlpha2 = min(2.0 * variance, SPECULAR_AA_THRESHOLD);
     float alpha = roughness * roughness; // α = roughness²
     float alpha2 = alpha * alpha;        // α²
-    float filteredAlpha2 = clamp(alpha2 + 2.0 * kernelVariance, 0.025 * 0.025 * 0.025 * 0.025, 1.0);
+    float filteredAlpha2 = clamp(alpha2 + kernelAlpha2, 0.025 * 0.025 * 0.025 * 0.025, 1.0);
     return sqrt(sqrt(filteredAlpha2));
 }
 
