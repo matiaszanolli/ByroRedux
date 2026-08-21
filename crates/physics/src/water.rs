@@ -12,9 +12,27 @@
 //! by every game; the per-game translate-up cost for water physics is zero.
 //!
 //! The force *application* path lives on [`crate::world::PhysicsWorld`]
-//! (`add_force` / `apply_impulse` / `reset_forces`). [`apply_buoyancy`] runs
-//! from the live physics-sync pre-step, combines lift with current drag, and
-//! preserves the exterior-reroute wake/sleep discipline (WATAL §7 Phase 2).
+//! (`add_force` / `reset_forces`), and [`apply_buoyancy`] genuinely routes
+//! through it — every force this module applies goes through those wrappers
+//! with `wake_up = false`, never through the Rapier body directly.
+//!
+//! That flag is the whole reason it can (#2889). These are *per-frame* terms,
+//! re-derived from the body's own mass and velocity on every tick: a wrapper
+//! that woke unconditionally would re-wake the body it had just settled and
+//! pin the scene stepping forever, which is the opposite of what the rest of
+//! this module exists to protect. The forces are derived under a
+//! `bodies.get_mut` borrow (they need `mass()` / `linvel()`) and applied
+//! after it ends, so the borrow stays short and the public API stays the
+//! single application path.
+//!
+//! `PhysicsWorld::apply_impulse` is the third member of that family and has
+//! **no consumer here** — it is the hook for the not-yet-built WATAL Phase 3
+//! splash kick, not something buoyancy uses.
+//!
+//! [`apply_buoyancy`] runs from the live physics-sync pre-step (phase 2.5,
+//! before the step integrates what it applies), combines lift with current
+//! drag, and preserves the exterior-reroute wake/sleep discipline
+//! (WATAL §7 Phase 2).
 
 use byroredux_core::ecs::components::collision::{MotionType, RigidBodyData};
 use byroredux_core::ecs::components::groundcover::WindField;
@@ -26,7 +44,7 @@ use byroredux_core::ecs::resources::TotalTime;
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::world::World;
 use byroredux_core::math::Vec3;
-use rapier3d::prelude::{vector, RigidBodyType};
+use rapier3d::prelude::RigidBodyType;
 
 use crate::components::RapierHandles;
 use crate::world::PhysicsWorld;
@@ -598,7 +616,6 @@ pub(crate) fn apply_buoyancy(world: &World, had_newcomers: bool) {
                 }
                 *body.translation()
             };
-            let center_y = pos.y;
 
             let current_flow = if pos.x < ux0 || pos.x > ux1 || pos.z < uz0 || pos.z > uz1 {
                 None
@@ -631,6 +648,15 @@ pub(crate) fn apply_buoyancy(world: &World, had_newcomers: bool) {
                 };
                 let aabb = collider.compute_aabb();
                 let (min_y, max_y) = (aabb.mins.y, aabb.maxs.y);
+                // #2887 — the collider AABB centre, NOT `pos.y` (the rigid
+                // body's ORIGIN). They coincide only for a shape centred on
+                // its body, which is exactly what this module's test balls
+                // are and exactly what the bhk import path is not:
+                // `collision_shape_to_parts` attaches every compound part at
+                // its own local isometry, and ragdoll bones are offset by
+                // construction. `submerged_fraction` already reads the AABB
+                // span, so sorting and `depth` were the odd ones out.
+                let center_y = 0.5 * (min_y + max_y);
                 surfaces
                     .iter()
                     .filter_map(|s| {
@@ -689,13 +715,17 @@ pub(crate) fn apply_buoyancy(world: &World, had_newcomers: bool) {
             // silently turn that public API into a one-frame impulse.
 
             if current_flow.is_some() || surface.is_some() || t.prior_wet {
-                if let Some(b) = pw.bodies.get_mut(t.handles.body) {
-                    b.reset_forces(false);
-                }
+                pw.reset_forces(t.handles.body, false);
             }
 
             match surface {
                 Some((s, min_y, max_y, surface_y)) => {
+                    // Same AABB centre the surface search sorted by (#2887).
+                    let center_y = 0.5 * (min_y + max_y);
+                    // Carries the derived force out of the `bodies.get_mut`
+                    // borrow so it can be applied through `PhysicsWorld`'s
+                    // own API rather than the raw Rapier body (#2889).
+                    let mut pending_force: Option<Vec3> = None;
                     let frac = submerged_fraction(min_y, max_y, surface_y);
                     if frac > 0.0 {
                         if let Some(b) = pw.bodies.get_mut(t.handles.body) {
@@ -745,8 +775,16 @@ pub(crate) fn apply_buoyancy(world: &World, had_newcomers: bool) {
                                     1.0 - frac,
                                     consts.wind_drag,
                                 );
-                                b.add_force(vector![f.x, f.y, f.z], false);
+                                // Derived under the borrow (it needs mass +
+                                // linvel), applied through the wrapper after
+                                // it ends — `wake_up = false` because this is
+                                // re-derived every tick and waking here would
+                                // pin the scene awake forever (#2889).
+                                pending_force = Some(f);
                             }
+                        }
+                        if let Some(f) = pending_force.take() {
+                            pw.add_force(t.handles.body, f, false);
                         }
                         writes.push((
                             t.entity,
@@ -794,19 +832,21 @@ pub(crate) fn apply_buoyancy(world: &World, had_newcomers: bool) {
             // current. Safe to add without resetting here because the single
             // reset above already ran for this body this frame (#3114).
             if let Some(flow) = current_flow {
-                if let Some(b) = pw.bodies.get_mut(t.handles.body) {
-                    if !b.is_sleeping() {
-                        let mass = b.mass();
+                let current = pw.bodies.get(t.handles.body).and_then(|b| {
+                    (!b.is_sleeping()).then(|| {
                         let velocity = b.linvel();
-                        let f = current_force(
+                        current_force(
                             flow,
                             Vec3::new(velocity.x, velocity.y, velocity.z),
-                            mass,
+                            b.mass(),
                             1.0,
                             consts.current_drag,
-                        );
-                        b.add_force(vector![f.x, f.y, f.z], false);
-                    }
+                        )
+                    })
+                });
+                if let Some(f) = current {
+                    // Per-frame term, so no wake — see the surface branch.
+                    pw.add_force(t.handles.body, f, false);
                 }
             }
         }
@@ -1156,9 +1196,9 @@ mod tests {
         for _ in 0..600 {
             let y = w.bodies[h].translation().y;
             let frac = submerged(y);
-            w.reset_forces(h);
+            w.reset_forces(h, true);
             let f = buoyancy_force(mass, frac, G_Y, consts.buoyancy_density_ratio);
-            w.add_force(h, f);
+            w.add_force(h, f, true);
             w.step(PHYSICS_DT);
         }
 
@@ -1257,6 +1297,76 @@ mod tests {
             Transform::from_translation(Vec3::new(0.0, start_y, 0.0)),
         );
         (world, water, body)
+    }
+
+    /// Regression for #2887. `WaterContact::depth` is documented as "Surface
+    /// Y minus the body's **centre** Y", but it was computed from
+    /// `body.translation().y` — the rigid body's ORIGIN. Those coincide only
+    /// for a shape centred on its body, which is what every test ball in this
+    /// module is and what the bhk import path is not:
+    /// `collision_shape_to_parts` attaches each compound part at its own
+    /// local isometry, and ragdoll bones are offset by construction.
+    ///
+    /// A compound whose only leaf sits well below the origin makes the two
+    /// disagree by a known amount, so the assertion can name which one it got.
+    #[test]
+    fn depth_is_measured_from_the_collider_aabb_centre_not_the_body_origin() {
+        use crate::physics_sync_system;
+        use byroredux_core::ecs::components::collision::CollisionShape;
+        use byroredux_core::ecs::components::water::WaterContact;
+        use byroredux_core::ecs::components::Transform;
+
+        // Reuse the calm-column fixture, then swap the centred ball for a
+        // compound whose leaf hangs 40 BU below the body origin.
+        const OFFSET: f32 = -40.0;
+        const RADIUS: f32 = 10.0;
+        let body_origin_y = -30.0_f32;
+        let (mut world, _water, body) = submerged_ball_world(body_origin_y);
+        world.insert(
+            body,
+            CollisionShape::Compound {
+                children: vec![(
+                    Vec3::new(0.0, OFFSET, 0.0),
+                    Quat::IDENTITY,
+                    Box::new(CollisionShape::Ball { radius: RADIUS }),
+                )],
+            },
+        );
+
+        // One frame: registers the newcomer and writes the first contact.
+        // Read before the solver has moved anything, so the geometry under
+        // test is exactly what was authored.
+        physics_sync_system(&world, PHYSICS_DT);
+
+        let placed_y = world
+            .get::<Transform>(body)
+            .expect("transform present")
+            .translation
+            .y;
+        assert!(
+            (placed_y - body_origin_y).abs() < 1.0,
+            "fixture precondition: the body has not moved far yet ({placed_y})"
+        );
+        let contact = world
+            .get::<WaterContact>(body)
+            .expect("WaterContact written");
+        assert!(
+            contact.submerged_fraction > 0.0,
+            "fixture precondition: the offset collider is under the surface"
+        );
+
+        // Surface is y=0, so depth is just -centre_y. The AABB centre sits at
+        // `origin + OFFSET`; the body origin is 40 BU higher.
+        let from_aabb_centre = -(body_origin_y + OFFSET);
+        let from_body_origin = -body_origin_y;
+        assert!(
+            (contact.depth - from_aabb_centre).abs() < 1.5,
+            "depth must be measured from the collider AABB centre \
+             (expected ≈{from_aabb_centre}); got {} — {} is the body-origin \
+             value the doc does not promise",
+            contact.depth,
+            from_body_origin
+        );
     }
 
     /// Regression for #2871 / #2856. Every other live buoyancy test drives

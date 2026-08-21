@@ -301,10 +301,26 @@ impl PhysicsWorld {
     /// force **accumulates across frames** until cleared with
     /// [`reset_forces`](Self::reset_forces); the WATAL buoyancy / flow
     /// systems re-derive it every frame, so they call `reset_forces`
-    /// first and `add_force` after. Wakes the body and re-arms the
-    /// static-scene fast path so the next [`step`](Self::step) runs (the
-    /// island lists only reflect the *previous* step, so a freshly-forced
-    /// body isn't in them yet — same reason [`wake`](Self::wake) exists).
+    /// first and `add_force` after.
+    ///
+    /// `wake_up` decides whether the force is allowed to *start* motion:
+    ///
+    /// - `true` — wake the body and re-arm the static-scene fast path so the
+    ///   next [`step`](Self::step) runs (the island lists only reflect the
+    ///   *previous* step, so a freshly-forced body isn't in them yet — same
+    ///   reason [`wake`](Self::wake) exists). The right choice for a one-off
+    ///   push at a body that may be asleep.
+    /// - `false` — apply to an already-moving body without disturbing sleep.
+    ///   Required by any *per-frame* force: waking unconditionally would keep
+    ///   the whole scene stepping forever, since the force is re-derived on
+    ///   every tick and would re-wake the body it just settled.
+    ///
+    /// That parameter is why the buoyancy phase can use this at all (#2889).
+    /// Before it, the wrappers hard-coded `wake_up = true` plus `self.wake()`,
+    /// which would have defeated the wake discipline
+    /// [`crate::water::apply_buoyancy`] is built around — so the one consumer
+    /// the API was written for reached past it to the Rapier body instead,
+    /// leaving this an untested-in-production public surface.
     ///
     /// Returns `false` (no-op) if `handle` is dead or non-dynamic — a
     /// static water-plane or kinematic actor can't take a buoyancy force.
@@ -317,11 +333,14 @@ impl PhysicsWorld {
         &mut self,
         handle: RigidBodyHandle,
         force: byroredux_core::math::Vec3,
+        wake_up: bool,
     ) -> bool {
         if let Some(b) = self.bodies.get_mut(handle) {
             if b.body_type() == RigidBodyType::Dynamic {
-                b.add_force(vector![force.x, force.y, force.z], true);
-                self.wake();
+                b.add_force(vector![force.x, force.y, force.z], wake_up);
+                if wake_up {
+                    self.wake();
+                }
                 return true;
             }
         }
@@ -330,9 +349,19 @@ impl PhysicsWorld {
 
     /// Apply an instantaneous impulse (engine world-space, Y-up) to a
     /// dynamic body — changes velocity by `impulse / mass` immediately,
-    /// independent of the per-frame force accumulation. Used for one-shot
-    /// effects (a splash kick, an actor jumping out of water). Wakes the
-    /// body + re-arms the fast path. No-op on dead / non-dynamic handles.
+    /// independent of the per-frame force accumulation. Wakes the body +
+    /// re-arms the fast path. No-op on dead / non-dynamic handles.
+    ///
+    /// Unlike its two siblings this takes no `wake_up` flag, because a
+    /// one-shot impulse at a body that must stay asleep is not a meaningful
+    /// request — the impulse would be integrated into a velocity nothing
+    /// steps.
+    ///
+    /// **No production consumer yet** (#2889): the intended one is the WATAL
+    /// Phase 3 splash kick / actor-jumping-out-of-water effect, which is not
+    /// built. Exercised only by this module's unit tests until then — stated
+    /// here so the gap is visible from the API rather than discovered by
+    /// grep.
     pub fn apply_impulse(
         &mut self,
         handle: RigidBodyHandle,
@@ -351,13 +380,17 @@ impl PhysicsWorld {
     /// Clear the accumulated external force + torque on a body. Called by
     /// the buoyancy / flow systems at the top of each frame before they
     /// re-`add_force`, so forces don't compound frame-over-frame. No-op on
-    /// a dead handle. Does **not** re-arm the fast path (the following
+    /// a dead handle. Never re-arms the fast path (the following
     /// `add_force` does that when there's still a force to apply; a body
     /// with zero net force this frame should be allowed to sleep).
-    pub fn reset_forces(&mut self, handle: RigidBodyHandle) -> bool {
+    ///
+    /// `wake_up` is Rapier's own body-level wake, distinct from the fast-path
+    /// arming above: `false` clears the accumulator without disturbing a
+    /// sleeping body, which is what a per-frame re-derivation wants (#2889).
+    pub fn reset_forces(&mut self, handle: RigidBodyHandle, wake_up: bool) -> bool {
         if let Some(b) = self.bodies.get_mut(handle) {
-            b.reset_forces(true);
-            b.reset_torques(true);
+            b.reset_forces(wake_up);
+            b.reset_torques(wake_up);
             return true;
         }
         false
@@ -435,11 +468,41 @@ impl PhysicsWorld {
             self.accumulator = max_acc;
         }
 
-        // Static-scene fast path. A `pipeline.step()` pays full broad-phase
-        // + query-pipeline-rebuild cost over *every* collider regardless of
-        // motion — on a radius-12 exterior that's ~8-10 ms/step × up to 5
-        // substeps, ~40 ms/frame for a scene where nothing is actually
-        // moving. Skip it when there's no simulation work:
+        // Static-scene fast path — skip the whole tick when there is no
+        // simulation work to do.
+        //
+        // WHY IT EXISTS (history, not current cost — #2890). Before
+        // `6e55b492` a radius-12 FNV exterior spent ~45 ms/frame in `step`
+        // for a scene where nothing was moving, from three compounding
+        // causes: `length_unit` was left at 1.0 so bodies never slept, there
+        // was no fast path, and the query pipeline was rebuilt inside *every*
+        // substep. That commit fixed all three and measured ~45 ms → ~0.02 ms
+        // once settled. The old wording here quoted the pre-fix
+        // "~8-10 ms/step × 5 substeps" figure in the present tense and
+        // attributed it to `pipeline.step()`, which is wrong twice over: the
+        // number predates its own commit, and the per-substep rebuild it
+        // measured is removed forty lines below (`None` is passed for the
+        // query pipeline).
+        //
+        // WHERE THE COST ACTUALLY IS, today: the single post-loop
+        // `QueryPipeline::update`, which is a full QBVH `clear_and_rebuild`
+        // over every collider — not the solver. Synthetic in-crate proxy,
+        // release build, 30 000 fixed cuboids + 1 awake dynamic body, 20
+        // iterations after warmup:
+        //
+        //     PhysicsWorld::step (1 substep + the post-loop QP update) ≈ 2.1-2.4 ms
+        //     bare QueryPipeline::update(&colliders)                   ≈ 2.1 ms
+        //
+        // i.e. the rebuild accounts for essentially all of it and
+        // `pipeline.step()` itself sits below the run-to-run noise floor on
+        // this collider mix. Caveat, stated plainly: all-cuboid with one
+        // moving body is not a real cell — real content is TriMesh-heavy
+        // (whose QBVH rebuild is more expensive still) and has real contact
+        // work for the solver, so both sides go up. What the proxy
+        // establishes is the *attribution*: budget from the rebuild, not from
+        // the step.
+        //
+        // Skip conditions:
         //
         //   * No awake dynamic body (`active_dynamic_bodies()` reflects the
         //     previous step; a body can only newly wake via a contact, which
@@ -485,10 +548,12 @@ impl PhysicsWorld {
                 &mut self.multibody_joints,
                 &mut self.ccd_solver,
                 // Do NOT rebuild the query pipeline inside each substep:
-                // `QueryPipeline::update` is O(all colliders) (BVH refit over
-                // the whole set), so passing it here rebuilt it up to 5× per
-                // frame over ~30 k static colliders — the bulk of the per-step
-                // cost. The raycast/overlap accelerator only needs to reflect
+                // `QueryPipeline::update` is O(all colliders) — a full QBVH
+                // `clear_and_rebuild`, NOT an incremental refit
+                // (rapier3d-0.22.0 `query_pipeline/mod.rs`; #2890) — so
+                // passing it here rebuilt the whole tree up to 5× per frame
+                // over ~30 k static colliders, and it remains the dominant
+                // per-frame physics cost even at once per frame. The raycast/overlap accelerator only needs to reflect
                 // the post-step collider poses *once* per frame; we refresh it
                 // after the loop instead. (Explicit `update_query_pipeline`
                 // call sites — e.g. the spawn ground-snap — are unaffected.)
@@ -553,7 +618,7 @@ impl PhysicsWorld {
             }
         }
 
-        // One BVH refit per frame after all substeps, only when something
+        // One QBVH rebuild per frame after all substeps, only when something
         // actually stepped (the fast-path early-return above skips this when
         // the scene is asleep and colliders haven't moved).
         if steps > 0 || self.colliders_dirty {
@@ -1742,11 +1807,134 @@ mod tests {
 
         // Sanity: the WATAL force API still wakes it (buoyancy/interaction path).
         let up = byroredux_core::math::Vec3::new(0.0, 1.0e7, 0.0);
-        assert!(w.add_force(h, up), "force applies to the sleeping body");
+        assert!(
+            w.add_force(h, up, true),
+            "force applies to the sleeping body"
+        );
         assert!(w.step(PHYSICS_DT) > 0, "applied force re-engages the sim");
     }
 
     // ── WATAL Phase 2: external-force API (buoyancy/flow prerequisite) ──
+
+    /// Regression for #2890. The comment justifying the static-scene fast
+    /// path quoted "~8-10 ms/step × up to 5 substeps, ~40 ms/frame" in the
+    /// present tense and attributed it to `pipeline.step()`. Both halves were
+    /// wrong: the figure predates `6e55b492` (the commit that introduced it,
+    /// which also removed the per-substep query-pipeline rebuild the number
+    /// measured), and the dominant cost today is the once-per-frame
+    /// `QueryPipeline::update`, not the solver.
+    ///
+    /// Also pinned: `QueryPipeline::update` is a full QBVH
+    /// `clear_and_rebuild`, so calling it a "refit" understates it as
+    /// incremental. Source-inspection guard, since neither claim is
+    /// observable from behaviour.
+    #[test]
+    fn step_cost_rationale_is_scoped_to_history_and_names_the_real_cost_centre() {
+        let src = include_str!("world.rs");
+        let start = src
+            .find("        // Static-scene fast path")
+            .expect("the fast path rationale is still here");
+        let rationale = &src[start..start + 2600];
+
+        assert!(
+            !rationale.contains("~8-10 ms/step × up to 5"),
+            "the pre-fix per-step figure must not be restated as current cost \
+             (#2890) — it predates the commit that removed the rebuild it \
+             measured"
+        );
+        assert!(
+            rationale.contains("6e55b492"),
+            "the rationale must attribute its historical numbers to the \
+             commit they came from, so the next reader can date them"
+        );
+        assert!(
+            rationale.contains("QueryPipeline::update"),
+            "the rationale must name the current cost centre — a reader \
+             budgeting physics from this comment needs the rebuild, not the \
+             solver"
+        );
+
+        // "refit" implies an incremental cost that is not there.
+        for (site, needle) in [
+            (
+                "in-substep note",
+                "clear_and_rebuild`, NOT an incremental refit",
+            ),
+            ("post-loop note", "One QBVH rebuild per frame"),
+        ] {
+            assert!(
+                src.contains(needle),
+                "{site}: QueryPipeline::update is a full QBVH rebuild, not a \
+                 refit (#2890)"
+            );
+        }
+    }
+
+    /// Regression for #2889. The three force wrappers hard-coded
+    /// `wake_up = true` plus `self.wake()`, so the one consumer they were
+    /// built for — `water::apply_buoyancy`, whose whole design is a wake
+    /// discipline — could not use them and reached past to the Rapier body
+    /// instead. A per-frame force that wakes unconditionally re-wakes the
+    /// body it just settled, pinning the scene awake forever.
+    ///
+    /// Pin both directions of the flag: the wake must be opt-in, and opting
+    /// out must leave both the body and the fast path undisturbed.
+    #[test]
+    fn per_frame_forces_can_be_applied_without_arming_the_fast_path() {
+        let up = byroredux_core::math::Vec3::new(0.0, 1.0e7, 0.0);
+
+        let mut w = PhysicsWorld::new();
+        let h = spawn_ball(&mut w, 0.0);
+        // Settle so the scene is genuinely quiesced.
+        for _ in 0..8 {
+            w.step(PHYSICS_DT);
+        }
+        while w.step(PHYSICS_DT) > 0 {}
+        assert_eq!(w.awake_counts().0, 0, "fixture precondition: settled");
+        assert!(!w.pending_wake(), "fixture precondition: nothing pending");
+
+        assert!(w.add_force(h, up, false), "no-wake force still applies");
+        assert!(
+            !w.pending_wake(),
+            "wake_up=false must NOT re-arm the static-scene fast path — that \
+             is exactly what made this API unusable from the buoyancy phase"
+        );
+        assert!(
+            w.reset_forces(h, false),
+            "the paired per-frame reset takes the same flag"
+        );
+        assert!(!w.pending_wake(), "a no-wake reset must not arm it either");
+
+        // And the opt-in path still behaves as before.
+        assert!(w.add_force(h, up, true), "waking force applies");
+        assert!(w.pending_wake(), "wake_up=true re-arms the fast path");
+    }
+
+    /// Companion for #2889: the module doc for `water` points readers at
+    /// these wrappers as *the* force-application path. Hold that claim by
+    /// checking `apply_buoyancy` actually goes through them rather than
+    /// mutating `pw.bodies` directly — the state the audit found.
+    #[test]
+    fn buoyancy_applies_forces_through_the_public_wrappers() {
+        let src = include_str!("water.rs");
+        let start = src
+            .find("pub(crate) fn apply_buoyancy")
+            .expect("the buoyancy phase is still here");
+        let body = &src[start..];
+        for raw in ["b.add_force(", "b.reset_forces(", "body.add_force("] {
+            assert!(
+                !body.contains(raw),
+                "apply_buoyancy must route `{raw}` through PhysicsWorld's own \
+                 force API (`pw.add_force(handle, f, false)`), not the raw \
+                 Rapier body — the water module doc names those wrappers as \
+                 the force path, and #2889 was that claim being false"
+            );
+        }
+        assert!(
+            body.contains("pw.add_force(") && body.contains("pw.reset_forces("),
+            "…and it must actually call them"
+        );
+    }
 
     /// Helper: spawn a dynamic ball at `y` and return its handle.
     fn spawn_ball(w: &mut PhysicsWorld, y: f32) -> rapier3d::prelude::RigidBodyHandle {
@@ -1775,8 +1963,11 @@ mod tests {
         let up = byroredux_core::math::Vec3::new(0.0, 2.0 * mass * 686.7, 0.0);
 
         for _ in 0..30 {
-            w.reset_forces(h);
-            assert!(w.add_force(h, up), "force applies to a live dynamic body");
+            w.reset_forces(h, true);
+            assert!(
+                w.add_force(h, up, true),
+                "force applies to a live dynamic body"
+            );
             w.step(PHYSICS_DT);
         }
 
@@ -1815,14 +2006,14 @@ mod tests {
 
         // Hold it up for a bit.
         for _ in 0..10 {
-            w.reset_forces(h);
-            w.add_force(h, up);
+            w.reset_forces(h, true);
+            w.add_force(h, up, true);
             w.step(PHYSICS_DT);
         }
         let y_held = w.bodies[h].translation().y;
 
         // Clear the force and stop re-applying → must fall.
-        w.reset_forces(h);
+        w.reset_forces(h, true);
         for _ in 0..30 {
             w.step(PHYSICS_DT);
         }
@@ -1840,7 +2031,10 @@ mod tests {
         let mut w = PhysicsWorld::new();
         let fh = w.bodies.insert(RigidBodyBuilder::fixed().build());
         let up = byroredux_core::math::Vec3::new(0.0, 1.0, 0.0);
-        assert!(!w.add_force(fh, up), "static body must reject add_force");
+        assert!(
+            !w.add_force(fh, up, true),
+            "static body must reject add_force"
+        );
         assert!(
             !w.apply_impulse(fh, up),
             "static body must reject apply_impulse"
@@ -1849,7 +2043,7 @@ mod tests {
         let mut w2 = PhysicsWorld::new();
         let dead = w2.bodies.insert(RigidBodyBuilder::dynamic().build());
         w2.remove_body(dead);
-        assert!(!w.add_force(dead, up), "dead handle must be a no-op");
+        assert!(!w.add_force(dead, up, true), "dead handle must be a no-op");
     }
 
     /// Test helper: a 100×40×4 BU wall at `pos`, optionally a sensor.
