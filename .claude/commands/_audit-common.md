@@ -131,7 +131,7 @@ Prefer them over re-deriving facts from source during an audit.
 | `docs/engine/charal.md` | CHARAL — per-game character ruleset → canonical ActorValues/Level/Perks. Paired with the six per-game rulesets: `docs/engine/charal-fnv-fo3-ruleset.md`, `charal-oblivion-ruleset.md`, `charal-skyrim-ruleset.md`, `charal-fo4-ruleset.md`, `charal-fo76-ruleset.md`, `charal-starfield-ruleset.md` — **these six are the authority for every constant**. Owner audit: `/audit-character`. |
 | `docs/engine/exal.md` | EXAL — exterior abstraction layer (terrain/sky/sun/weather/water/LOD). Boundary is `byroredux/src/env_translate.rs`. Paired with `docs/engine/exal-groundcover.md`. |
 | `docs/engine/physal.md` | PHYSAL — double-ended physics layer (source game + Rapier solver). Per-game seam is ONLY the constraint CInfo decode. Paired with `docs/engine/physics.md`. Owner audit: `/audit-physics`. |
-| `docs/engine/watal.md` | WATAL — double-ended water layer (render + physics). Skyrim-modelled canonical. **Status refreshed 2026-08-13**: the physics half IS built as of the 2026-08-10 checkpoint (`WaterContact`, buoyancy, submerged damping, bounded current drag through `crates/physics/src/water.rs`); open items are character swimming/drowning, exact tail decode, disturbance events. Skill text claiming "the physics half is unbuilt" is stale. Render half → `/audit-renderer` Dim 15; physics half → `/audit-physics` Dim 6. |
+| `docs/engine/watal.md` | WATAL — double-ended water layer (render + physics). Skyrim-modelled canonical. **Status refreshed 2026-08-20**: the physics half IS built (`WaterContact`, buoyancy, submerged damping, bounded current drag through `crates/physics/src/water.rs`), and character swimming + bounded drowning damage went live in `c7561d74` (2026-08-19) — skill text calling either "unbuilt" is stale. The genuinely open items are water-walking, freezing, the exact Skyrim DNAM tail decode, and the cross-game visual smoke matrix; `docs/engine/watal.md:415-425` is the authority, not this row. Render half → `/audit-renderer` Dim 15; physics half → `/audit-physics` Dim 6. |
 | `docs/engine/ui.md` | Scaleform/SWF UI, Ruffle host bridge, `ScaleformProfile` split (Skyrim AVM1 / FO4 AVM2), GameDelegate + BGSCodeObj contracts. Owner audit: `/audit-ui`. |
 | `docs/engine/plugin-loading.md` companion → | the ESM/ESP parser itself (GRUP walk, sub-record accounting, per-record schemas, FormID remap) is owned by `/audit-esm`. |
 | `docs/engine/fsr3-upscaler-integration-plan.md` | FSR 3.1 integration plan, all 7 phases + the SSIM quality matrix. Paired with `docs/engine/fsr3-troubleshooting.md`. **No owner audit skill** — see `/audit-renderer` Dimension 22. |
@@ -277,6 +277,17 @@ hashes and lint names. It is not decoration: it is what caught
 `GpuMaterial` still being documented at 300 B after it grew to 348 B,
 which is a wrong number in a GPU layout contract, not a typo. Clear
 the advisory list rather than learning to scroll past it.
+
+**Never write an instruction to not look** (added 2026-08-20). A skill file may
+record a **"known-open, do NOT re-litigate"** fact — dated, and pointing at the
+doc that owns it — because a fact that rots becomes a false premise an auditor
+can check and correct. It must **never** tell an auditor to *"confirm absence
+rather than reporting it"*: that rots into a blindfold over exactly the newest,
+least-reviewed code, and it suppresses the evidence that would reveal the rot.
+No gate can catch this class — the path gate checks paths and the symbol
+advisory checks symbols; neither can evaluate an instruction. `audit-physics`
+carried such a line over the shipped swim/drown core for one day and came within
+one auditor's skepticism of losing two real findings (#3119, #3125); see #3199.
 
 ## Deduplication (MANDATORY)
 

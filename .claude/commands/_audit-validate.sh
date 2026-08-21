@@ -158,18 +158,45 @@ fi
 # material refactor, and `gpu_material_size_is_300_bytes` outlived a 300→348 B
 # GpuMaterial change — a wrong number in a GPU layout contract.
 #
-# Heuristic: every backticked snake_case token >=7 chars that appears in NO
-# tracked .rs file. Advisory only, because the noise floor is real and mostly
-# legitimate: baseline TSV column names, git hashes, memory-file slugs, rustc
-# lint names, and deliberate references to symbols that SHOULD NOT exist.
+# Heuristic: every backticked identifier-shaped token >=7 chars that appears in
+# NO tracked source file. Advisory only, because the noise floor is real and
+# mostly legitimate: baseline TSV column names, git hashes, memory-file slugs,
+# rustc lint names, and deliberate references to symbols that SHOULD NOT exist.
 # Filters below remove the known-benign classes; what survives is worth a look,
 # not an automatic failure. Historical names should be *italicised*, not
 # backticked (same rule as backwards-looking paths).
+#
+# Two structural blind spots closed 2026-08-20 (#3197) — before that, this
+# block printed "0 advisories" for reasons that had nothing to do with being
+# clean:
+#   (a) the needle was anchored `[a-z]`, so every SCREAMING_SNAKE_CASE constant
+#       was excluded BEFORE any existence check ran. That is the convention for
+#       budgets, limits and flag bits — MAX_TOTAL_BONES, GLASS_RAY_BUDGET,
+#       INSTANCE_FLAG_*, MAT_FLAG_* — i.e. exactly the class audit skills quote
+#       most, and exactly the class whose drift is a wrong number in a GPU
+#       layout contract. 157 such symbols were backticked and none examined.
+#   (b) the corpus was raw `grep -qw` over whole lines, so a symbol whose ONLY
+#       occurrence is inside an assertion that it must NOT exist counted as
+#       evidence that it DOES. That is what hid #3052's REFRACT_PASSTHRU_BUDGET,
+#       whose sole hit is `!src.contains("REFRACT_PASSTHRU_BUDGET = 2")`.
+# Both had to close together: widening the regex alone still missed #3052.
+# The corpus now also covers shader sources, since skills legitimately cite GLSL
+# constants (RESTIR_M_CAP lives in triangle.frag, not in any .rs).
 # ---------------------------------------------------------------------------
 if [[ "${SKIP_SYMBOL_CHECK:-0}" != "1" ]]; then
     src_blob=$(mktemp)
     trap 'rm -f "$all_paths_file" "$src_blob"' EXIT
-    git ls-files '*.rs' | xargs cat 2>/dev/null > "$src_blob" || true
+    # Shader sources count: skills cite GLSL constants that exist in no .rs.
+    # Lines that ASSERT a symbol is absent (`!src.contains("FOO")`, `!source
+    # .contains(...)`) must not count as evidence the symbol exists — see (b).
+    # `grep -a` is load-bearing: several .rs test fixtures embed raw NIF/BSA
+    # bytes, and without it grep calls the whole concatenated stream binary and
+    # emits nothing, silently truncating the corpus to ~70% and turning every
+    # symbol past the first NUL into a false advisory.
+    git ls-files '*.rs' '*.glsl' '*.vert' '*.frag' '*.comp' '*.rgen' '*.rchit' \
+        | xargs cat 2>/dev/null \
+        | grep -a -vE '!\s*[A-Za-z_][A-Za-z0-9_]*\s*\.contains\(|!\s*contains\(' \
+        > "$src_blob" || true
 
     suspect_count=0
     while read -r sym; do
@@ -187,15 +214,30 @@ if [[ "${SKIP_SYMBOL_CHECK:-0}" != "1" ]]; then
         [[ "$sym" == cmd_reset_query_pool ]] && continue     # ash API
         [[ "$sym" == srgb_to_linear ]] && continue           # deliberately-absent (see memory)
         [[ "$sym" == comprehensive ]] && continue            # plain English
+        [[ "$sym" == TECH_DEBT || "$sym" == VERTEX_INPUT ]] && continue  # prose, not symbols
 
         grep -qw "$sym" "$src_blob" && continue
         if (( suspect_count == 0 )); then
             echo
-            echo "ADVISORY — backticked symbols not found in any tracked .rs:"
+            echo "ADVISORY — backticked symbols not found in any tracked source file:"
         fi
-        printf '  %-46s %s\n' "$sym" "$(grep -rl "\`$sym\`" "${skill_files[@]}" 2>/dev/null | sed 's|.claude/commands/||;s|/SKILL.md||' | tr '\n' ' ')"
+        printf '  %-46s %s\n' "$sym" "$(grep -rlE "\`$sym(\`| =)" "${skill_files[@]}" 2>/dev/null | sed 's|.claude/commands/||;s|/SKILL.md||' | tr '\n' ' ')"
         suspect_count=$((suspect_count + 1))
-    done < <(grep -rhoE '`[a-z][a-z0-9_]{6,}`' "${skill_files[@]}" 2>/dev/null | tr -d '`' | sort -u)
+    done < <(
+        # Pass 1: a backticked span that is exactly one identifier.
+        # Pass 2: a backticked span of the form `SYMBOL = value` — how skills
+        # quote a constant together with its value. Blind spot (c), found while
+        # closing (a) and (b): #3052's `REFRACT_PASSTHRU_BUDGET = 2` is matched
+        # by neither the old lowercase needle NOR the widened whole-span one,
+        # because the span is not a bare identifier. Narrow on purpose — a
+        # general "leading word of any backticked span" rule re-floods this
+        # list with shell snippets and prose.
+        {
+            grep -rhoE '`[A-Za-z][A-Za-z0-9_]{6,}`' "${skill_files[@]}" 2>/dev/null | tr -d '`'
+            grep -rhoE '`[A-Za-z][A-Za-z0-9_]{6,} =' "${skill_files[@]}" 2>/dev/null \
+                | sed 's/^`//; s/ =$//'
+        } | sort -u
+    )
 
     if (( suspect_count > 0 )); then
         echo

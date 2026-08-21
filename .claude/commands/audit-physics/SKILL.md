@@ -57,10 +57,13 @@ those here.
   solver path is a PHYSAL doctrine violation, which is the finding class this
   audit exists for.
 - `docs/engine/physics.md` — the implementation companion.
-- `docs/engine/watal.md` — the water half. As of the 2026-08-10 checkpoint the
-  physics end **is** built (buoyancy, submerged damping, bounded current drag);
-  open items are character swimming/drowning, exact tail decode, disturbance
-  events. Do not report the open items as bugs.
+- `docs/engine/watal.md` — the water half, and the source of truth for what is
+  open. As of the 2026-08-10 checkpoint the physics end **is** built (buoyancy,
+  submerged damping, bounded current drag); character swimming, bounded drowning
+  damage, splash/ripple markers and underwater audio went live after it. The
+  genuinely open items are **water-walking, freezing, the exact Skyrim DNAM tail
+  decode, and the cross-game visual smoke matrix** (`docs/engine/watal.md:415-425`).
+  Re-read that list rather than trusting this one — it is a snapshot and rots.
 
 **Known-open, do NOT re-litigate**:
 - *tes_grounding_zero_mass_dynamic_fix* — Skyrim architecture ships mass=0
@@ -287,8 +290,10 @@ preset); `byroredux/src/systems/character.rs` — `character_controller_system`,
 - Cross-check the canonical side: the tri-state `XCLW` decode (`/audit-esm`
   Dim 5) and the render half (`/audit-renderer` Dim 15). Report the seam once,
   here, with pointers.
-- Character swimming/drowning are **unbuilt** (WATAL open items). Confirm absence
-  rather than reporting it.
+- Character swimming and bounded drowning damage **shipped in `c7561d74`
+  (2026-08-19)** and are in scope like any other code — `swimlevel_reached`,
+  `swim_vertical_velocity`, `advance_breath`, `apply_player_drowning_damage` in
+  `byroredux/src/systems/character.rs`. Audit them; do not confirm their absence.
 **Output**: `/tmp/audit/physics/dim_6.md`
 
 ### Dimension 7: Queries, Diagnostics & Cost

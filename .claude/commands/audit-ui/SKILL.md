@@ -57,7 +57,10 @@ those here.
 - *creation_engine_ui_system* + *text_replacement_system* in project memory —
   the 34 vanilla menus and the markup/font system this layer eventually serves.
 
-**Deliberately unbuilt — do NOT report as bugs** (they are the *Pending* row):
+**Deliberately unbuilt — do NOT report as bugs** (verified 2026-08-20; they are
+the *Pending* row — re-verify against `docs/engine/ui.md` rather than trusting
+this line, per the "never write an instruction to not look" convention in
+`_audit-common.md`):
 engine handlers for host methods (menus currently receive `Null` by design),
 Papyrus↔UI bridge, menu stack / focus policy, font fidelity, the full menu pack.
 Audit the *mechanism* that will carry them, and flag anything that would make

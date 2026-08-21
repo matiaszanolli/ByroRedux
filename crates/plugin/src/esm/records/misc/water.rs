@@ -44,10 +44,18 @@ pub struct WatrRecord {
     /// transparent surface from a record that omits ANAM and uses the engine
     /// fallback opacity.
     pub opacity_authored: bool,
-    /// FO3/FNV `FNAM` water flags. Bit 0x01 causes actor damage and bit
-    /// 0x02 marks the surface as reflective. Other game generations use
-    /// different record layouts, so this is only populated for the legacy
-    /// DATA path.
+    /// FO3/FNV `FNAM` water flags. Bit 0x01 causes actor damage. Other game
+    /// generations use different record layouts, so this is only populated for
+    /// the legacy DATA path.
+    ///
+    /// **Bit 0x02 is NOT a reflectivity gate on FO3/FNV** (#3196). It was read
+    /// that way by generalising from Oblivion and the reference title disproves
+    /// it: `NVCleanWater` and `NVCleanWaterNoReflect` differ only in the
+    /// authored reflectivity float and both set 0x02, while 44 of 78 vanilla
+    /// FNV records clear the bit and 42 of those author non-zero reflectivity.
+    /// Reflectivity is the `DNAM`/`DATA` float at offset 20 and nothing else.
+    /// Only bit 0x01 has a verified meaning here — consumers reading any other
+    /// bit off this field need their own evidence first.
     pub legacy_flags: Option<u8>,
     /// FO3/FNV `DATA` damage amount. Bethesda stores this as a separate
     /// two-byte `DATA` subrecord alongside the visual-data `DATA`/`DNAM`;
@@ -56,7 +64,8 @@ pub struct WatrRecord {
     /// WATR.FNAM flags shared by the modern WATR layouts. Bit 0x01 marks
     /// harmful water and bit 0x08 enables Skyrim's flow-map normal layer.
     /// Kept separately from `legacy_flags` so callers can distinguish the
-    /// modern flag contract from FO3/FNV's reflective bit 0x02.
+    /// modern flag contract from the FO3/FNV one (see #3196 — that arm's bit
+    /// 0x02 is not the reflectivity gate it was once decoded as).
     pub water_flags: Option<u8>,
     /// Skyrim FNAM bit 0x10 (`Blend Normals`). `None` preserves the
     /// compatibility default; other modern games use a different FNAM
@@ -165,7 +174,19 @@ pub struct WaterParams {
     pub fresnel: f32,
     /// Wind speed driving normal-map scroll, world units per second.
     pub wind_speed: f32,
-    /// Wind direction in radians (DATA `wind_direction`).
+    /// Wind direction in **radians** (DATA/DNAM `wind_direction`).
+    ///
+    /// Every producer converts on assignment: the wire encodes **degrees** on
+    /// all arms. Verified over shipped masters (#3144) — the raw field is
+    /// `[0, 360)` everywhere, and is a dead editor default on three of four
+    /// titles: `90.0` on 53/53 FO3, 78/78 FNV and 34/34 Skyrim records, and
+    /// only Oblivion varies it (35/90/100/62/0 over 17 full-length records).
+    ///
+    /// The per-record heading actually authored by FO3/FNV lives in the noise
+    /// layer 1 direction at `DNAM[100]` (also degrees, genuinely varied:
+    /// 0/4/40/43/60/76/78/90/120/145/180/183/211/300/360), which Skyrim already
+    /// promotes here via `apply_skyrim_dnam_tail`. That field is unreachable on
+    /// the FO3/FNV arm while the prefix decode stops at byte 52 — see #3107.
     pub wind_direction: f32,
     /// Skyrim-family WATR `NAM1` angular velocity vector. The renderer uses
     /// the source Z component (the Gamebryo up axis) as the surface yaw rate;
@@ -347,7 +368,7 @@ fn normalize_noise_uv_scale(value: f32) -> f32 {
 /// offset  size  field
 /// ------  ----  --------------------------------
 ///  0      4     wind_velocity      (f32)
-///  4      4     wind_direction     (f32)
+///  4      4     wind_direction     (f32, DEGREES on the wire — #3144)
 ///  8      4     wave_amplitude     (f32)
 /// 12      4     wave_frequency     (f32)
 /// 16      4     sun_specular_power (f32)
@@ -370,7 +391,8 @@ fn decode_data(data: &[u8]) -> WaterParams {
         p.wind_speed = v;
     }
     if let Ok(v) = r.f32() {
-        p.wind_direction = v;
+        // Degrees on the wire (#3144) — see `WaterParams::wind_direction`.
+        p.wind_direction = v.to_radians();
     }
     if let Ok(v) = r.f32() {
         p.wave_amplitude = v;
@@ -469,13 +491,18 @@ fn decode_data_oblivion(data: &[u8]) -> WaterParams {
     let mut p = WaterParams::default();
     for (dst, offset) in [
         (&mut p.wind_speed, 0usize),
-        (&mut p.wind_direction, 4usize),
         (&mut p.wave_amplitude, 8usize),
         (&mut p.wave_frequency, 12usize),
     ] {
         if let Some(value) = read_f32_at(data, offset) {
             *dst = value;
         }
+    }
+    // Degrees on the wire (#3144) — see `WaterParams::wind_direction`. Lifted
+    // out of the bare copy loop above because it is the one field in the
+    // prefix that needs a unit conversion.
+    if let Some(degrees) = read_f32_at(data, 4) {
+        p.wind_direction = degrees.to_radians();
     }
     if let Some(value) = read_f32_at(data, 16) {
         p.sun_specular_power = value.clamp(1.0, 2048.0);
@@ -704,7 +731,11 @@ fn decode_dnam_pre_fo4(data: &[u8]) -> WaterParams {
         p.wind_speed = v;
     }
     if let Ok(v) = r.f32() {
-        p.wind_direction = v;
+        // Degrees on the wire (#3144) — see `WaterParams::wind_direction`.
+        // Skyrim overwrites this in `apply_skyrim_dnam_tail` from the
+        // already-converted noise layer 1, so this conversion is only
+        // observable on the FO3/FNV arm and on short Skyrim fixtures.
+        p.wind_direction = v.to_radians();
     }
     if let Ok(v) = r.f32() {
         p.wave_amplitude = v;
@@ -1288,8 +1319,11 @@ pub fn parse_watr(form_id: u32, subs: &[SubRecord], game: GameKind) -> WatrRecor
                 }
             }
             // FNAM is a one-byte water flag field in every supported WATR
-            // layout. FO3/FNV additionally use bit 0x02 as their reflective
-            // surface gate; modern records use bit 0x08 for flow-map enable.
+            // layout. Bit 0x01 is harmful water; modern records use bit 0x08
+            // for flow-map enable and Skyrim bit 0x10 for blend-normals.
+            // FO3/FNV bit 0x02 was decoded as a reflective-surface gate and is
+            // not one (#3196) — the byte is still captured, but no consumer may
+            // read that bit without evidence of its own.
             b"FNAM"
                 if !sub.data.is_empty()
                     && matches!(
@@ -1699,7 +1733,7 @@ mod tests {
         // shortest that fills every decoded field).
         let mut data = Vec::with_capacity(152);
         data.extend_from_slice(&2.0f32.to_le_bytes()); // wind_speed @ 0
-        data.extend_from_slice(&1.2f32.to_le_bytes()); // wind_direction @ 4
+        data.extend_from_slice(&1.2f32.to_le_bytes()); // wind_direction @ 4 (degrees)
         data.extend_from_slice(&0.20f32.to_le_bytes()); // wave_amplitude @ 8
         data.extend_from_slice(&0.55f32.to_le_bytes()); // wave_frequency @ 12
         data.extend_from_slice(&61.0f32.to_le_bytes()); // sun specular power @ 16
@@ -1715,7 +1749,10 @@ mod tests {
         let subs = vec![sub(b"DNAM", &data)];
         let w = parse_watr(0xCCCC, &subs, GameKind::Skyrim);
         assert!((w.params.wind_speed - 2.0).abs() < 1e-6);
-        assert!((w.params.wind_direction - 1.2).abs() < 1e-6);
+        // Degrees on the wire (#3144). This fixture's 52-byte DNAM is shorter
+        // than the 228 bytes `apply_skyrim_dnam_tail` requires, so the prefix
+        // value survives instead of being replaced by noise layer 1.
+        assert!((w.params.wind_direction - 1.2f32.to_radians()).abs() < 1e-6);
         assert!((w.params.wave_amplitude - 0.20).abs() < 1e-6);
         assert!((w.params.wave_frequency - 0.55).abs() < 1e-6);
         assert!((w.params.sun_specular_power - 61.0).abs() < 1e-6);
@@ -2077,5 +2114,82 @@ mod tests {
         assert_eq!(w.params.depth_weights, [0.0; 4]);
         assert_eq!(w.params.flowmap_scale, 3.0);
         assert_eq!(w.params.roughness, 0.5);
+    }
+
+    // ---- #3144: `wind_direction` is degrees on the wire, radians in the
+    // struct. Fixtures below carry the values actually shipped in the vanilla
+    // masters, censused by an independent Python GRUP walk (not this parser).
+
+    /// Builds a DNAM/DATA buffer of `len` bytes with `wind_direction` (offset
+    /// 4) set to `degrees`, leaving every other slot zeroed.
+    fn buf_with_wind_direction(len: usize, degrees: f32) -> Vec<u8> {
+        let mut data = vec![0u8; len];
+        data[4..8].copy_from_slice(&degrees.to_le_bytes());
+        data
+    }
+
+    #[test]
+    fn wind_direction_converts_shipped_degrees_on_the_fo3nv_dnam_arm() {
+        // 90.0 is the value in 53/53 Fallout3.esm and 78/78 FalloutNV.esm
+        // WATR records — a dead editor default, but degrees regardless.
+        let data = buf_with_wind_direction(196, 90.0);
+        let w = parse_watr(0x1001, &[sub(b"DNAM", &data)], GameKind::Fallout3NV);
+        assert_eq!(w.params.wind_direction, 90.0f32.to_radians());
+        // The bug being pinned: the raw degrees reaching the radians field.
+        assert_ne!(w.params.wind_direction, 90.0);
+        // 90 deg is ~1.5708 rad; the pre-fix value was 90.0 rad, which wraps
+        // to ~2.04 rad (~117 deg) — a different heading, not a scale error.
+        assert!(w.params.wind_direction < std::f32::consts::PI);
+    }
+
+    #[test]
+    fn wind_direction_converts_shipped_degrees_on_the_oblivion_data_arm() {
+        // Oblivion.esm is the one master that varies this field: 35.0 (x8),
+        // 100.0 (x7), 90.0 (x5), 62.0 and 0.0 across its 102-byte records.
+        for degrees in [35.0f32, 62.0, 90.0, 100.0] {
+            let data = buf_with_wind_direction(102, degrees);
+            let w = parse_watr(0x1002, &[sub(b"DATA", &data)], GameKind::Oblivion);
+            assert_eq!(
+                w.params.wind_direction,
+                degrees.to_radians(),
+                "oblivion wind_direction {degrees} deg"
+            );
+        }
+    }
+
+    #[test]
+    fn skyrim_dnam_tail_still_overrides_the_converted_prefix_without_double_conversion() {
+        // All 34 vanilla Skyrim.esm records ship a 228+ byte DNAM carrying
+        // 90.0 in the prefix and the real per-record heading at offset 100
+        // (270.0 on 5 records). The tail must win, and must not be converted
+        // twice now that the prefix converts too.
+        let mut data = buf_with_wind_direction(228, 90.0);
+        data[100..104].copy_from_slice(&270.0f32.to_le_bytes());
+        let w = parse_watr(0x1003, &[sub(b"DNAM", &data)], GameKind::Skyrim);
+        assert_eq!(w.params.wind_direction, 270.0f32.to_radians());
+        assert_eq!(w.params.noise_wind_directions[0], 270.0f32.to_radians());
+    }
+
+    /// #3196 — reflectivity is the `DNAM` float at offset 20, and the `FNAM`
+    /// byte plays no part. Mirrors the vanilla `NVCleanWater` (`001009CA`) /
+    /// `NVCleanWaterNoReflect` (`0017B612`) pair: byte-identical 196-byte
+    /// payloads except that one float, and `FNAM == 0x02` on both. Guards the
+    /// decode half — if offset 20 drifts, the whole disproof stops holding.
+    #[test]
+    fn reflectivity_comes_from_dnam_offset_20_not_from_the_fnam_bit() {
+        let build = |reflectivity: f32| {
+            let mut dnam = vec![0u8; 196];
+            dnam[4..8].copy_from_slice(&90.0f32.to_le_bytes()); // shipped wind_direction
+            dnam[20..24].copy_from_slice(&reflectivity.to_le_bytes());
+            vec![sub(b"DNAM", &dnam), sub(b"FNAM", &[0x02])]
+        };
+        let reflective = parse_watr(0x0010_09CA, &build(0.6), GameKind::Fallout3NV);
+        let matte = parse_watr(0x0017_B612, &build(0.0), GameKind::Fallout3NV);
+
+        assert_eq!(reflective.params.reflectivity, 0.6);
+        assert_eq!(matte.params.reflectivity, 0.0);
+        // Same flag byte on both — the bit cannot be what separates them.
+        assert_eq!(reflective.legacy_flags, matte.legacy_flags);
+        assert_eq!(reflective.legacy_flags, Some(0x02));
     }
 }

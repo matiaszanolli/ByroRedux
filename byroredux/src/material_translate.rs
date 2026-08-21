@@ -148,24 +148,71 @@ pub(crate) fn water_material_from_mesh(
     water
 }
 
+/// The **single** name-token → [`WaterKind`] table, shared by both water
+/// producers: WATR `EditorID`s on the CELL path
+/// ([`crate::env_translate::resolve_water_material`]) and mesh/asset names on
+/// the loose-NIF path ([`water_kind_from_mesh_name`]).
+///
+/// It is one function because the two token sets drifted apart while they were
+/// two (#3154, #3198): the mesh side knew `canal` and the CELL side did not,
+/// and neither knew `creek`. A token added for one producer must reach both.
+///
+/// Vocabulary coverage is verified against shipped masters, not guessed:
+///
+/// - `creek` — 5 records in `FalloutNV.esm`, 2 in `Fallout3.esm`, and Skyrim's
+///   `CreekWaterFlow` / `DefaultCreekWater` / `CreekWaterFlowSW|SE`. Without it
+///   **all 78 vanilla FNV records classified `Calm`** and the whole WATAL flow
+///   arm was unreachable on the reference title (#3198).
+/// - `canal` — no vanilla FNV/FO3 hits; retained from the mesh-side set.
+///
+/// Deliberately **not** tokens, checked and rejected against the same census:
+///
+/// - `spill` — its only two FNV records are `ToxicSpillPuddle` and
+///   `WaterTypeQuantumColaSpill`. Both are static puddles; the token would
+///   classify standing water as flowing, which is the error this table's
+///   conservative default exists to avoid.
+/// - `fountain`, `potomac` — `TenPenWaterFountain` / `VStripULFountain` are
+///   basins, and while the Potomac is genuinely a river, `Potomac`
+///   (`00030009`) is the `WRLD` `NAM2` default water for **10 worldspaces**.
+///   Promoting it would add foam and a current to every un-overridden body in
+///   all of them — a blast radius that needs its own evidence, not a token.
+fn water_kind_from_name(name: &str) -> WaterKind {
+    let lowered = name.to_ascii_lowercase();
+    if lowered.contains("rapid") {
+        WaterKind::Rapids
+    } else if lowered.contains("waterfall") || lowered.contains("falls") {
+        WaterKind::Waterfall
+    } else if lowered.contains("river")
+        || lowered.contains("stream")
+        || lowered.contains("canal")
+        || lowered.contains("creek")
+    {
+        WaterKind::River
+    } else {
+        WaterKind::Calm
+    }
+}
+
+/// Classify WATR `EditorID`s on the CELL path. Cell-level water planes are
+/// **always horizontal** (XCLW gives a Y height; the mesh is a flat quad), so a
+/// `Waterfall` name is demoted to `River`: the horizontal plane below a
+/// waterfall is a fast turbulent pool, not a falling sheet, and Skyrim applies
+/// `fall`-named records to horizontal bodies (`DLC2WaterFallingStream`,
+/// `WaterFallingPool`, `WaterRiverFallingSlow`). The `Waterfall` shader mode is
+/// for vertical sheet geometry, which the cell loader never spawns.
+pub(crate) fn water_kind_from_cell_record_name(editor_id: &str) -> WaterKind {
+    match water_kind_from_name(editor_id) {
+        WaterKind::Waterfall => WaterKind::River,
+        other => other,
+    }
+}
+
 /// Classify a dedicated water mesh when no CELL/WATR record exists. The NIF
 /// water shader properties carry optics but no semantic kind, so only explicit
 /// asset-name tokens promote the default `Calm` path; ordinary meshes remain
 /// conservative rather than becoming fast-flowing water by accident.
 pub(crate) fn water_kind_from_mesh_name(name: Option<&str>) -> (WaterKind, Option<WaterFlow>) {
-    let lowered = name.unwrap_or_default().to_ascii_lowercase();
-    let kind = if lowered.contains("waterfall") || lowered.contains("falls") {
-        WaterKind::Waterfall
-    } else if lowered.contains("rapid") {
-        WaterKind::Rapids
-    } else if lowered.contains("river")
-        || lowered.contains("stream")
-        || lowered.contains("canal")
-    {
-        WaterKind::River
-    } else {
-        WaterKind::Calm
-    };
+    let kind = water_kind_from_name(name.unwrap_or_default());
     let flow = match kind {
         WaterKind::Calm => None,
         WaterKind::Waterfall => Some(WaterFlow::for_kind(kind, [0.0, -1.0, 0.0])),
@@ -1287,6 +1334,114 @@ mod tests {
         assert!(!msn_has_authored_z(true, false));
         assert!(!msn_has_authored_z(false, true));
         assert!(!msn_has_authored_z(false, false));
+    }
+
+    /// #3198 — before the shared table existed, the CELL-side token set was
+    /// Skyrim vocabulary only (`rapid` / `waterfall` / `falls` / `river` /
+    /// `stream`), and **all 78 vanilla `FalloutNV.esm` WATR records classified
+    /// `Calm`**: FNV names its moving water `Creek*`. With `NAM0` and `NAM5`
+    /// absent from the FO3/FNV record set entirely, no signal could fire, so
+    /// `WaterFlow`, `foam_strength` and the flow-biased scroll — the whole
+    /// WATAL current half — were unreachable on the reference title.
+    #[test]
+    fn fnv_creek_records_classify_as_river_on_both_producers() {
+        for edid in [
+            "CreekWater01",
+            "CreekWater02nv",
+            "CreekWater02AVGnv",
+            "CreekWater02nvbetter",
+            "RockCreekEstatesWater",
+        ] {
+            assert_eq!(
+                water_kind_from_cell_record_name(edid),
+                WaterKind::River,
+                "CELL producer: {edid}"
+            );
+            assert_eq!(
+                water_kind_from_mesh_name(Some(edid)).0,
+                WaterKind::River,
+                "mesh producer: {edid}"
+            );
+        }
+    }
+
+    /// The arm must not be able to go dark again: at least one record from the
+    /// vanilla FNV roster has to classify non-`Calm`.
+    #[test]
+    fn some_vanilla_fnv_water_record_classifies_as_flowing() {
+        // Verbatim EditorIDs from a byte-level GRUP walk of FalloutNV.esm.
+        let roster = [
+            "NVCleanWater",
+            "WaterTypeUtility",
+            "PPurityWater01Murky",
+            "CreekWater02AVGnv",
+            "Potomac",
+            "ToxicSpillPuddle",
+            "TenPenWaterFountain",
+            "WaterTypeIrradiated",
+        ];
+        assert!(
+            roster
+                .iter()
+                .any(|edid| water_kind_from_cell_record_name(edid) != WaterKind::Calm),
+            "no vanilla FNV WATR EditorID classifies as flowing — the WATAL \
+             current half is unreachable on the reference title again (#3198)"
+        );
+    }
+
+    /// Tokens considered and rejected against the same census. These must stay
+    /// `Calm`: promoting standing water is the failure mode the conservative
+    /// default exists to prevent.
+    #[test]
+    fn rejected_tokens_stay_calm() {
+        for edid in [
+            "ToxicSpillPuddle",          // a puddle, not a spillway
+            "WaterTypeQuantumColaSpill", // ditto
+            "TenPenWaterFountain",       // a basin
+            "VStripULFountain",
+            "Potomac", // WRLD NAM2 default for 10 worldspaces
+            "PotomacNRShallow",
+            "WaterTypeUtility",
+            "PPurityWater01Murky",
+        ] {
+            assert_eq!(
+                water_kind_from_cell_record_name(edid),
+                WaterKind::Calm,
+                "{edid}"
+            );
+        }
+    }
+
+    /// The two producers disagreed on `canal` while they were two tables
+    /// (#3154). Any token must now resolve identically on both, except for the
+    /// deliberate `Waterfall` → `River` demotion the CELL path applies because
+    /// its planes are always horizontal.
+    #[test]
+    fn both_producers_share_one_token_table() {
+        for name in [
+            "canal",
+            "creek",
+            "river",
+            "stream",
+            "rapids",
+            "MyCanalWater",
+            "DefaultCreekWater",
+        ] {
+            assert_eq!(
+                water_kind_from_cell_record_name(name),
+                water_kind_from_mesh_name(Some(name)).0,
+                "{name}"
+            );
+        }
+        // The one intended divergence.
+        assert_eq!(
+            water_kind_from_mesh_name(Some("WaterfallSheet01")).0,
+            WaterKind::Waterfall
+        );
+        assert_eq!(
+            water_kind_from_cell_record_name("DLC2WaterFallingStream"),
+            WaterKind::River
+        );
     }
 }
 

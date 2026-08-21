@@ -713,16 +713,19 @@ pub(crate) fn resolve_water_material(
                     mat.alpha_controls[3].clamp(mat.alpha_controls[2] + 1.0, 100_000.0);
             }
             mat.fresnel_f0 = rec.params.fresnel.clamp(0.001, 0.20);
+            // FO3/FNV encode "not reflective" as an authored ZERO in the
+            // DNAM/DATA reflectivity float, not as an FNAM bit. `02c0d4b6`
+            // added a `legacy_flags & 0x02` gate here by generalising from
+            // Oblivion (#3145, where the correlation does hold); FNV's own
+            // data disproves it and the gate is gone (#3196). Do not
+            // reintroduce it — the reference title ships the counterexample:
+            // `NVCleanWater` (0.6) and `NVCleanWaterNoReflect` (0.0) have
+            // byte-identical 196-byte DNAM payloads except that one float,
+            // and BOTH carry FNAM 0x02. Censused over vanilla FalloutNV.esm:
+            // 44 of 78 records clear bit 0x02 and 42 of those author non-zero
+            // reflectivity, costing 68 of 451 XCWT-referenced cells their RT
+            // reflection (FO3: 38 of 39 records, 9 of 124 cells).
             mat.reflectivity = rec.params.reflectivity;
-            // FO3/FNV's legacy FNAM bit 0x02 is an explicit reflective
-            // surface gate. Preserve authored reflectivity when the flag is
-            // present; when it is explicitly absent, suppress the RT
-            // reflection contribution instead of making non-reflective
-            // sludge/puddle records mirror-bright. Records from newer games
-            // leave `legacy_flags` unset and retain their authored scalar.
-            if rec.legacy_flags.is_some_and(|flags| flags & 0x02 == 0) {
-                mat.reflectivity = 0.0;
-            }
             mat.reflection_tint = rec.params.reflection_color;
             if rec.params.reflection_hdr_multiplier.is_finite()
                 && rec.params.reflection_hdr_multiplier > 0.0
@@ -888,28 +891,13 @@ pub(crate) fn resolve_water_material(
 
             // ── WaterKind heuristic from EDID naming convention ──
             //
-            // Cell-level water planes are **always horizontal**
-            // (XCLW provides a Y height; the mesh is a flat quad).
-            // The `Waterfall` kind in the shader is for vertical
-            // sheet geometry (cliff-side falling water), which the
-            // cell loader does NOT spawn — those land as standalone
-            // mesh refs through the regular NIF import path. So
-            // any EDID match that would otherwise promote a cell
-            // plane to `Waterfall` is demoted to `River` here: the
-            // horizontal plane below a waterfall is a fast,
-            // turbulent pool, not a falling sheet, and the River
-            // shader path is the correct visual.
-            //
-            // Skyrim has many WATR records whose names contain
-            // "fall"/"waterfall" but are applied to horizontal
-            // bodies of water (e.g. `DLC2WaterFallingStream`,
-            // `WaterFallingPool`, `WaterRiverFallingSlow`). The
-            // pre-fix heuristic mis-classified these and the
-            // shader's Waterfall mode painted heavy fizz foam
-            // across whole exterior cells — see the May 2026
-            // smoke-test screenshot reported alongside this
-            // change.
-            let lowered = rec.editor_id.to_ascii_lowercase();
+            // The token table and the horizontal-plane `Waterfall` → `River`
+            // demotion both live in `material_translate`, shared with the
+            // loose-NIF producer so the two token sets cannot drift apart
+            // again (#3154, #3198). The rationale for each token — and for the
+            // ones deliberately rejected — is documented there.
+            let named_kind =
+                crate::material_translate::water_kind_from_cell_record_name(&rec.editor_id);
             let authored_flow_speed = rec
                 .linear_velocity
                 .map(|velocity| velocity[0].hypot(velocity[1]))
@@ -925,15 +913,12 @@ pub(crate) fn resolve_water_material(
                 velocity.iter().all(|component| component.is_finite())
                     && authored_flow_speed > 1.0e-5
             });
-            if lowered.contains("rapid")
+            if matches!(named_kind, WaterKind::Rapids)
                 || (has_authored_linear_flow && authored_flow_speed >= WaterFlow::SPEED_RAPIDS)
             {
                 kind = WaterKind::Rapids;
                 mat.foam_strength = 0.85;
-            } else if lowered.contains("waterfall")
-                || lowered.contains("falls")
-                || lowered.contains("river")
-                || lowered.contains("stream")
+            } else if matches!(named_kind, WaterKind::River)
                 // Skyrim SE's NAM5 is explicitly the flow-normal texture.
                 // Treat its presence as an authored flow signal even when
                 // the EDID is localized or uses a neutral name.
@@ -2222,22 +2207,66 @@ mod tests {
         assert_eq!(mat.reflection_hdr_multiplier, 2.5);
     }
 
+    /// #3196 — the reference title's own counterexample pair. `NVCleanWater`
+    /// (`001009CA`) and `NVCleanWaterNoReflect` (`0017B612`) ship
+    /// byte-identical 196-byte DNAM payloads except for the reflectivity float
+    /// at offset 20, and **both** carry `FNAM == 0x02`. The author who needed a
+    /// non-reflective variant zeroed the float and left the bit set, so the bit
+    /// is not the reflectivity channel on FO3/FNV.
+    ///
+    /// This test **documents the disproof**; it is deliberately not the
+    /// regression guard, and cannot be. Both records set the bit, so the
+    /// removed gate never fired on either — restoring the gate leaves this
+    /// green. The test that fails against the bug is
+    /// `legacy_fnam_without_reflective_bit_keeps_authored_reflectivity` (the
+    /// 44-of-78 majority), and the decode half is pinned by
+    /// `reflectivity_comes_from_dnam_offset_20_not_from_the_fnam_bit` in
+    /// `crates/plugin/src/esm/records/misc/water.rs`.
     #[test]
-    fn resolve_water_material_honors_legacy_non_reflective_flag() {
+    fn legacy_fnam_reflective_bit_does_not_gate_authored_reflectivity() {
+        let mut waters = HashMap::new();
+        for (form_id, edid, reflectivity) in [
+            (0x0010_09CA_u32, "NVCleanWater", 0.6_f32),
+            (0x0017_B612, "NVCleanWaterNoReflect", 0.0),
+        ] {
+            let mut rec = calm_watr(
+                form_id,
+                edid,
+                WaterParams {
+                    reflectivity,
+                    ..WaterParams::default()
+                },
+            );
+            rec.legacy_flags = Some(0x02);
+            waters.insert(form_id, rec);
+        }
+
+        let (reflective, _, _, _, _) = resolve_water_material(&waters, Some(0x0010_09CA));
+        let (matte, _, _, _, _) = resolve_water_material(&waters, Some(0x0017_B612));
+        // Same flag byte on both — only the authored float separates them.
+        assert_eq!(reflective.reflectivity, 0.6);
+        assert_eq!(matte.reflectivity, 0.0);
+    }
+
+    /// The 44-of-78 majority case: bit 0x02 clear, reflectivity authored.
+    /// `WaterTypeUtility` (`000B03A7`, FNAM 0x00, 0.100) is referenced by 18
+    /// vanilla cells and lost its reflection entirely under the removed gate.
+    #[test]
+    fn legacy_fnam_without_reflective_bit_keeps_authored_reflectivity() {
         let mut rec = calm_watr(
-            0x000A_BEEF,
-            "NVCleanWater",
+            0x000B_03A7,
+            "WaterTypeUtility",
             WaterParams {
-                reflectivity: 0.8,
+                reflectivity: 0.1,
                 ..WaterParams::default()
             },
         );
-        rec.legacy_flags = Some(0x01); // damage only; FNAM 0x02 is absent
+        rec.legacy_flags = Some(0x00);
         let mut waters = HashMap::new();
         waters.insert(rec.form_id, rec);
 
-        let (mat, _, _, _, _) = resolve_water_material(&waters, Some(0x000A_BEEF));
-        assert_eq!(mat.reflectivity, 0.0);
+        let (mat, _, _, _, _) = resolve_water_material(&waters, Some(0x000B_03A7));
+        assert_eq!(mat.reflectivity, 0.1);
     }
 
     #[test]

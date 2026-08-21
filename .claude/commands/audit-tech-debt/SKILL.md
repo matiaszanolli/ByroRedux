@@ -71,7 +71,8 @@ Tech-debt findings default to **LOW** (see `_audit-severity.md`). Promote only o
    #
    # Pure-test files by this codebase's own naming convention (`tests.rs` /
    # `*_tests.rs`, or anything under a `tests/` dir — e.g.
-   # `acceleration/tests.rs`, `scene_buffer/gpu_instance_layout_tests.rs`)
+   # `acceleration/tests/predicates_tests.rs`,
+   # `scene_buffer/gpu_instance_layout_tests.rs`)
    # report 0: their `#[cfg(test)] #[path = "..."] mod <name>;` gate lives in
    # the PARENT file that declares them, so no in-file marker exists to
    # detect it from the file's own content.
@@ -144,7 +145,7 @@ Tech-debt findings default to **LOW** (see `_audit-severity.md`). Promote only o
    declaration in its parent) both confirm as false positives under the OLD
    total-LOC recipe. The separate total-LOC->2000 bucket (test-heavy files,
    lower priority — report but do not auto-file as Dim 1) currently also
-   includes `acceleration/tests.rs`, `svgf.rs`, `misc/world.rs`,
+   includes `svgf.rs`, `misc/world.rs`,
    `crates/physics/src/world.rs`, `env_translate.rs`, `cornell.rs`, `mesh.rs`,
    `import/collision/shape.rs`, and `plugin/tests/parse_real_esm.rs` — check
    each with *prod_loc* before filing; only a production count over 2000
