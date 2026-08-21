@@ -24,6 +24,8 @@
 //!   (`time.show`, `time.set`, `time.scale`, `time.pause`, `time.resume`, `time.advance`)
 //! - [`water`] — canonical water render/physics diagnostics
 //!   (`water.dump`, `water.contacts`)
+//! - [`physics`] — collider column census + simulation counters
+//!   (`phys.census`, `phys.stats`)
 //! - [`scene`] — scene / lighting / material / script state
 //!   (`light.*`, `door.teleport`, `script.activate`, `mat.*`, `ragdoll`)
 
@@ -32,6 +34,7 @@ mod assets;
 mod condition;
 mod env_health;
 mod gameplay;
+mod physics;
 mod quest;
 mod scene;
 mod shared;
@@ -45,6 +48,7 @@ use assets::*;
 use condition::*;
 use env_health::*;
 use gameplay::*;
+use physics::*;
 use quest::*;
 use scene::*;
 use shared::*;
@@ -116,6 +120,8 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(MatDumpCommand);
     registry.register(MatSetCommand);
     registry.register(RagdollCommand);
+    registry.register(PhysCensusCommand);
+    registry.register(PhysStatsCommand);
     // M45 — save/load (the matching `SaveRegistry` + `SaveState`
     // resources are installed alongside the command registry).
     registry.register(crate::save_io::SaveCommand);

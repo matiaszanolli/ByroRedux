@@ -149,15 +149,23 @@ fn capsule_center_y_on_surface(
 /// floor out of the initial-penetration blind zone. Derived from the
 /// controller rather than hard-coded so a `CharacterController` re-tune cannot
 /// reintroduce the blind zone.
-const FLOOR_PROBE_CLEARANCE_BU: f32 = 16.0;
+pub(crate) const FLOOR_PROBE_CLEARANCE_BU: f32 = 16.0;
 /// How far below the reference height the probe keeps searching.
-const FLOOR_PROBE_REACH_BELOW_DOOR_BU: f32 = 164.0;
+pub(crate) const FLOOR_PROBE_REACH_BELOW_DOOR_BU: f32 = 164.0;
 
-fn floor_probe_lift(cc: byroredux_physics::CharacterController) -> f32 {
+/// Column half-width the spawn census scans, BU.
+///
+/// `pub(crate)` under #2876 so the `phys.census` console command probes the
+/// same column the boot-time door-teleport census does — a live census that
+/// used a different radius would not be comparable with the frame-0 log it
+/// exists to follow up on.
+pub(crate) const SPAWN_CENSUS_RADIUS_BU: f32 = 256.0;
+
+pub(crate) fn floor_probe_lift(cc: byroredux_physics::CharacterController) -> f32 {
     cc.half_height + cc.radius + FLOOR_PROBE_CLEARANCE_BU
 }
 
-fn min_walkable_normal_y(cc: byroredux_physics::CharacterController) -> f32 {
+pub(crate) fn min_walkable_normal_y(cc: byroredux_physics::CharacterController) -> f32 {
     cc.max_slope_climb_deg.to_radians().cos()
 }
 
@@ -552,7 +560,6 @@ fn plan_character_spawn(
             door_pos.y,
             door_pos.z,
         );
-        const SPAWN_CENSUS_RADIUS_BU: f32 = 256.0;
         let probe_lift = floor_probe_lift(controller);
         let authoring = world
             .try_resource::<crate::cell_loader::NifImportRegistry>()

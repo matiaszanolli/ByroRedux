@@ -461,6 +461,20 @@ fn census_tally(entries: &[SpawnCensusEntry]) -> (usize, usize, usize, usize, us
     t
 }
 
+/// Boot-time sink for [`spawn_collider_census_report`] — emits the same
+/// report through `log::warn!`.
+///
+/// #2876 — the report body moved into `spawn_collider_census_report` so the
+/// `phys.census` console command can render the identical text. This
+/// diagnostic used to be reachable only from `setup_scene`'s frame-0
+/// door-teleport branch, which is never the situation an operator is in: a
+/// missing floor is noticed by falling through it, not by reading boot logs.
+pub fn dump_spawn_collider_census(world: &World, probe: SpawnCensusProbe) {
+    for line in spawn_collider_census_report(world, probe) {
+        log::warn!("{line}");
+    }
+}
+
 /// #2202 — census every collider in the vertical column around a spawn XZ,
 /// grouped by parent body type and resolved back to the placement form that
 /// produced it.
@@ -481,8 +495,14 @@ fn census_tally(entries: &[SpawnCensusEntry]) -> (usize, usize, usize, usize, us
 ///   per-sub-mesh);
 /// - nothing at all → a REFR-level gap, upstream of collision entirely.
 ///
-/// Pure logging, no state change. Called only on the all-rungs-missed path,
-/// so a healthy spawn costs nothing.
+/// Pure reads, no state change — `PhysicsWorld`'s query surface plus the ECS
+/// rows that name the colliders it finds. Same lock-order discipline as
+/// `dump_awake_fallers` (#2136): snapshot everything `PhysicsWorld` can
+/// answer, drop the guard, then open ECS storages.
+///
+/// Returned as lines rather than logged so both sinks render identical
+/// text: [`dump_spawn_collider_census`] on the boot-time all-rungs-missed
+/// path, and the `phys.census` console command on demand (#2876).
 ///
 /// `probe` is the failed spawn probe itself: the XZ column to census, the Y
 /// the floor was expected near, and the capsule the three rungs swept. It
@@ -491,7 +511,8 @@ fn census_tally(entries: &[SpawnCensusEntry]) -> (usize, usize, usize, usize, us
 /// world Y, re-running the sweep *unfiltered* so a walkability rejection is
 /// distinguishable from a genuine miss, and (via `authoring`) splitting
 /// "no collider authored" from "authored but dropped in translation".
-pub fn dump_spawn_collider_census(world: &World, probe: SpawnCensusProbe) {
+pub fn spawn_collider_census_report(world: &World, probe: SpawnCensusProbe) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
     let SpawnCensusProbe {
         x,
         y: probe_y,
@@ -573,56 +594,54 @@ pub fn dump_spawn_collider_census(world: &World, probe: SpawnCensusProbe) {
         SpawnProbeVerdict::RejectedNonWalkable {
             surface_y,
             normal_y,
-        } => log::warn!(
+        } => out.push(format!(
             "#2874 unfiltered sweep from y={probe_y:.0} HIT y={surface_y:.1} with \
              normal_y={normal_y:.3} ⇒ REJECTED as non-walkable (min={min_walkable_normal_y:.3}). \
              The spawn is blocked by a slope, not by a missing or mis-transformed collider — \
              the collider census below is NOT the cause.",
-        ),
-        SpawnProbeVerdict::NoHit => log::warn!(
+        )),
+        SpawnProbeVerdict::NoHit => out.push(format!(
             "#2874 unfiltered sweep from y={probe_y:.0} over {max_distance:.0} BU hit NOTHING \
              (walkability is not the cause; the column census below is).",
-        ),
+        )),
         SpawnProbeVerdict::Walkable {
             surface_y,
             normal_y,
-        } => log::warn!(
+        } => out.push(format!(
             "#2874 unfiltered sweep from y={probe_y:.0} hit a WALKABLE surface y={surface_y:.1} \
              normal_y={normal_y:.3} — the census probe and the spawn rungs disagree (different \
              origin/capsule, or the query pipeline was refreshed between them).",
-        ),
+        )),
     }
     // #2874 — split `0 total` into "nothing authored" vs "authored, dropped
     // in translation". `CollisionAuthoringSummary` already computes the
     // discriminator; the pre-fix census read the Rapier side only and so
     // re-introduced the exact conflation that summary exists to remove.
     match authoring {
-        Some(a) if entries.is_empty() && a.classic + a.new_physics + a.phantom > 0 => log::warn!(
-            "#2874 …but the cell's NIFs DID author collision: classic={} new_physics={} \
+        Some(a) if entries.is_empty() && a.classic + a.new_physics + a.phantom > 0 => {
+            out.push(format!(
+                "#2874 …but the cell's NIFs DID author collision: classic={} new_physics={} \
              phantom={} ⇒ the shapes were DROPPED IN TRANSLATION (decode/registration), not \
              absent from the source. `new_physics>0` additionally means FO4+ packed Havok whose \
              payload is still opaque — the compatibility proxy should have covered it.",
-            a.classic,
-            a.new_physics,
-            a.phantom,
-        ),
-        Some(_) if entries.is_empty() => log::warn!(
+                a.classic, a.new_physics, a.phantom,
+            ))
+        }
+        Some(_) if entries.is_empty() => out.push(format!(
             "#2874 …and the cell's NIFs authored NO collision at all (classic=0 new_physics=0 \
              phantom=0) ⇒ genuinely non-colliding content or a REFR-level gap, NOT a \
              translation drop.",
-        ),
-        Some(a) => log::warn!(
+        )),
+        Some(a) => out.push(format!(
             "#2874 cell collision authoring: classic={} new_physics={} phantom={}.",
-            a.classic,
-            a.new_physics,
-            a.phantom,
-        ),
-        None => log::warn!(
+            a.classic, a.new_physics, a.phantom,
+        )),
+        None => out.push(format!(
             "#2874 cell collision authoring unavailable (no NIF import cache) — `0 total` below \
              cannot be split into 'nothing authored' vs 'dropped in translation'.",
-        ),
+        )),
     }
-    log::warn!(
+    out.push(format!(
         "#2202 spawn-column census at XZ ({x:.1}, {z:.1}) ±{radius:.0} BU around y={probe_y:.0}: \
          {} colliders (Fixed={fixed} Dynamic={dynamic} Kinematic={kinematic} orphan={orphan}, of \
          which {sensors} sensors). Fixed=0 with Dynamic>0 ⇒ the floor is authored non-Fixed and \
@@ -630,9 +649,9 @@ pub fn dump_spawn_collider_census(world: &World, probe: SpawnCensusProbe) {
          at a wrong Y ⇒ transform composition. Nearest {} by distance from the probe height:",
         entries.len(),
         entries.len().min(SPAWN_CENSUS_DETAIL_CAP),
-    );
+    ));
     for e in entries.iter().take(SPAWN_CENSUS_DETAIL_CAP) {
-        log::warn!(
+        out.push(format!(
             "  {}{} entity={} form={} layer={} y=[{:.0}, {:.0}] centre={:.0}",
             e.body_type,
             if e.is_sensor { " (sensor)" } else { "" },
@@ -644,14 +663,15 @@ pub fn dump_spawn_collider_census(world: &World, probe: SpawnCensusProbe) {
             e.min_y,
             e.max_y,
             e.center_y,
-        );
+        ));
     }
     if entries.len() > SPAWN_CENSUS_DETAIL_CAP {
-        log::warn!(
+        out.push(format!(
             "  … {} further colliders omitted",
             entries.len() - SPAWN_CENSUS_DETAIL_CAP,
-        );
+        ));
     }
+    out
 }
 
 // ── Phase 1 ─────────────────────────────────────────────────────────────

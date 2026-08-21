@@ -1183,9 +1183,15 @@ mod tests {
     /// settle near the surface, and have a `WaterContact` written. This
     /// proves the whole chain — register → wake-on-entry → buoyancy +
     /// submerged damping → step → pull → WaterContact — not just the math.
-    #[test]
-    fn body_in_water_volume_floats_and_drifts_via_physics_sync() {
-        use crate::{physics_sync_system, RapierHandles};
+    /// Shared fixture for the two live buoyancy tests: a deep calm column
+    /// with a +X current, surface at `y = 0`, and one dynamic ball released
+    /// fully submerged at `start_y`. Returns `(world, water, body)`.
+    ///
+    /// Factored out under #2871 so the sub-tick companion below exercises
+    /// byte-identical physics content and differs only in the `frame_dt` it
+    /// drives `physics_sync_system` with — the one variable under test.
+    fn submerged_ball_world(start_y: f32) -> (World, EntityId, EntityId) {
+        use crate::RapierHandles;
         use byroredux_core::ecs::components::collision::{
             CollisionShape, MotionType, RigidBodyData,
         };
@@ -1227,9 +1233,7 @@ mod tests {
             },
         );
 
-        // Dynamic ball released fully submerged at y=-60 (top=-50 < surface).
         let radius = 10.0_f32;
-        let start_y = -5.0_f32;
         let body = world.spawn();
         world.insert(body, CollisionShape::Ball { radius });
         world.insert(
@@ -1252,7 +1256,81 @@ mod tests {
             body,
             Transform::from_translation(Vec3::new(0.0, start_y, 0.0)),
         );
+        (world, water, body)
+    }
 
+    /// Regression for #2871 / #2856. Every other live buoyancy test drives
+    /// `physics_sync_system` with `dt` exactly `PHYSICS_DT`, so the
+    /// accumulator always reaches one substep on the very first call — the
+    /// suite was structurally blind to the above-60 fps case.
+    ///
+    /// At `frame_dt < PHYSICS_DT` the dry→wet transition frame runs **zero**
+    /// substeps. Pre-#2856 `step` consumed `pending_wake` anyway; the next
+    /// frame then saw `prior_wet == true` (so buoyancy raised no new wake),
+    /// an empty `active_dynamic_bodies` (the island lists only update inside
+    /// `pipeline.step`), and `pending_wake == false` — which satisfies BOTH
+    /// the buoyancy quiesced guard and the static-scene step fast path. The
+    /// latter zeroes the accumulator, so the banked sub-tick time could never
+    /// reach `PHYSICS_DT` and the body hung mid-water-column indefinitely.
+    ///
+    /// This drives the same fixture at ~240 fps and requires the float to
+    /// rise: the wake must survive however many sub-tick frames it takes to
+    /// bank one full tick.
+    #[test]
+    fn buoyancy_survives_sub_tick_frames_above_sixty_fps() {
+        use crate::physics_sync_system;
+        use byroredux_core::ecs::components::water::WaterContact;
+        use byroredux_core::ecs::components::Transform;
+
+        let start_y = -60.0_f32;
+        let (world, _water, body) = submerged_ball_world(start_y);
+
+        // ~240 fps: four frames per physics tick, so the transition frame
+        // itself runs zero substeps.
+        let frame_dt = PHYSICS_DT / 4.0;
+        assert!(frame_dt < PHYSICS_DT, "fixture must be a sub-tick frame");
+
+        // One frame: registers the newcomer and takes the dry→wet
+        // transition. No substep can have run yet.
+        physics_sync_system(&world, frame_dt);
+        assert!(
+            world
+                .get::<WaterContact>(body)
+                .is_some_and(|contact| contact.submerged_fraction > 0.0),
+            "the newcomer escape hatch must see the body as submerged on \
+             its first frame"
+        );
+
+        // ~10 s of wall clock at 240 fps.
+        for _ in 0..2400 {
+            physics_sync_system(&world, frame_dt);
+        }
+
+        let y = world
+            .get::<Transform>(body)
+            .expect("transform present")
+            .translation
+            .y;
+        assert!(
+            y > start_y + 1.0,
+            "a body that streams in submerged must float up at above-60 fps \
+             frame rates too — it hung at its release depth (y={y}, released \
+             at {start_y}), which is the #2871 wake/quiesce latch"
+        );
+    }
+
+    #[test]
+    fn body_in_water_volume_floats_and_drifts_via_physics_sync() {
+        use crate::physics_sync_system;
+        use byroredux_core::ecs::components::water::{
+            WaterContact, WaterFlow, WaterPlane, WaterVolume,
+        };
+        use byroredux_core::ecs::components::Transform;
+
+        let surface_y = 0.0_f32;
+        let radius = 10.0_f32;
+        let start_y = -5.0_f32;
+        let (mut world, water, body) = submerged_ball_world(start_y);
         // ~10 s through the live system (registers on the first call, then
         // wakes-on-entry + applies buoyancy every tick until it sleeps).
         for _ in 0..600 {

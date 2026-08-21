@@ -34,12 +34,12 @@ pub use ragdoll::{
 };
 pub use sync::{
     dump_spawn_collider_census, physics_sync_system, set_kinematic_translation,
-    set_linear_velocity, SpawnCensusAuthoring, SpawnCensusEntry, SpawnCensusProbe,
-    SpawnProbeVerdict,
+    set_linear_velocity, spawn_collider_census_report, SpawnCensusAuthoring, SpawnCensusEntry,
+    SpawnCensusProbe, SpawnProbeVerdict,
 };
 pub use water::{
-    authored_wave_height_with_weather, buoyancy_force, submerged_fraction,
-    weather_wave_adjustment, wind_force, PhysicsWaterConstants,
+    authored_wave_height_with_weather, buoyancy_force, submerged_fraction, weather_wave_adjustment,
+    wind_force, PhysicsWaterConstants,
 };
 pub use world::{
     CharacterMoveParams, CharacterMoveResult, NearbyCollider, PhysicsRayHit, PhysicsWorld,

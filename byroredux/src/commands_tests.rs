@@ -966,3 +966,91 @@ fn rt_integrity_without_resource_says_so() {
     let text = RtIntegrityCommand.execute(&world, "").lines.join("\n");
     assert!(text.contains("not present"), "{text}");
 }
+
+/// Regression for #2876 (and the #518 defect class it repeats). The spawn
+/// collider census was public, re-exported, and reachable from exactly one
+/// boot-time call site inside `setup_scene`'s door-teleport branch — so the
+/// "why is there no floor here" diagnostic could not be run at the moment
+/// the operator actually needs it, which is after falling through a floor
+/// somewhere else in the cell. `PhysicsWorld`'s entire query surface had zero
+/// console exposure alongside it.
+///
+/// Pin both commands into the live registry: a diagnostic with no console
+/// entry point is a defect in this repo, per #518's closure.
+#[test]
+fn physics_query_surface_is_reachable_from_the_console() {
+    let registry = build_command_registry();
+    let names: Vec<&str> = registry.list().into_iter().map(|(name, _)| name).collect();
+    for expected in ["phys.census", "phys.stats"] {
+        assert!(
+            names.contains(&expected),
+            "`{expected}` must be registered — PhysicsWorld's query surface is \
+             unreachable from byro-dbg without it (#2876/#518). Registered: {names:?}"
+        );
+    }
+}
+
+/// The census must degrade to a clear message rather than panicking when the
+/// world carries no `PhysicsWorld` — the console runs against whatever state
+/// the engine is in, including before the first cell load.
+#[test]
+fn phys_commands_report_a_missing_physics_world_instead_of_panicking() {
+    let world = World::new();
+    let census = PhysCensusCommand.execute(&world, "").lines.join("\n");
+    assert!(census.contains("no PhysicsWorld"), "got: {census}");
+    let stats = PhysStatsCommand.execute(&world, "").lines.join("\n");
+    assert!(stats.contains("no PhysicsWorld"), "got: {stats}");
+}
+
+/// `phys.stats` must surface the quiesced state explicitly. `awake_dynamic
+/// == 0 && !pending_wake` is exactly the static-scene fast path's condition,
+/// so an operator reading "nothing is moving" needs to know whether `step`
+/// ran at all before concluding anything about physics.
+#[test]
+fn phys_stats_names_the_quiesced_fast_path_on_an_empty_world() {
+    let mut world = World::new();
+    world.insert_resource(byroredux_physics::PhysicsWorld::new());
+    // A fresh PhysicsWorld arms `pending_wake`; drain it so the world is
+    // genuinely quiesced.
+    world
+        .resource_mut::<byroredux_physics::PhysicsWorld>()
+        .step(byroredux_physics::PHYSICS_DT);
+
+    let output = PhysStatsCommand.execute(&world, "").lines.join("\n");
+    assert!(output.contains("bodies=0"), "got: {output}");
+    assert!(output.contains("quiesced"), "got: {output}");
+    assert!(
+        output.contains("static colliders: NONE"),
+        "an empty world has no fixed geometry, and the report must say so \
+         rather than printing empty bounds; got: {output}"
+    );
+}
+
+/// Argument handling: a bare `phys.census` needs a reference point, and a
+/// malformed coordinate must be rejected rather than silently censusing 0,0.
+#[test]
+fn phys_census_rejects_malformed_arguments() {
+    let mut world = World::new();
+    world.insert_resource(byroredux_physics::PhysicsWorld::new());
+
+    let no_origin = PhysCensusCommand.execute(&world, "").lines.join("\n");
+    assert!(
+        no_origin.contains("no player or active camera"),
+        "got: {no_origin}"
+    );
+
+    let bad = PhysCensusCommand
+        .execute(&world, "banana 0")
+        .lines
+        .join("\n");
+    assert!(bad.contains("must be a finite number"), "got: {bad}");
+
+    let lone = PhysCensusCommand.execute(&world, "12").lines.join("\n");
+    assert!(lone.contains("expected"), "got: {lone}");
+
+    let negative = PhysCensusCommand.execute(&world, "0 0 -5").lines.join("\n");
+    assert!(
+        negative.contains("radius must be positive"),
+        "got: {negative}"
+    );
+}

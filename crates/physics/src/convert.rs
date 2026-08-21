@@ -96,8 +96,14 @@ pub fn iso_from_trs(translation: Vec3, rotation: Quat) -> Isometry3<f32> {
 /// - `ConvexHull` → `SharedShape::convex_hull` (falls back to a tiny
 ///   ball if the hull is degenerate — Rapier rejects fewer than 4
 ///   non-coplanar points).
-/// - `TriMesh` → `SharedShape::trimesh` (falls back to a tiny ball on
-///   empty mesh or if trimesh construction fails).
+/// - `TriMesh` → `SharedShape::trimesh` (falls back to a tiny ball on an
+///   empty vertex/index buffer, a non-finite vertex, or an index buffer
+///   with no in-range triangle left after filtering). There is no
+///   "construction failed" fallback and there cannot be one:
+///   `SharedShape::trimesh_with_flags` returns `Self`, not a `Result`, and
+///   `TriMesh::with_flags` *panics* on an empty index buffer and indexes
+///   `vertices[idx]` unchecked thereafter — so every condition that would
+///   "fail construction" has to be rejected before the call (#2878).
 /// - `Compound` → depth-first flatten, composing transforms.
 ///
 /// An empty compound with no viable leaves emits a single tiny-ball
@@ -293,7 +299,29 @@ fn flatten_to_parts(
             }
             let pts: Vec<Point3<f32>> =
                 vertices.iter().map(|v| vec3_to_point(*v * scale)).collect();
-            let idx: Vec<[u32; 3]> = indices.clone();
+            // #2878 — the index-range guard belongs HERE, at the choke point
+            // the comment above claims, not only in each producer. Both of
+            // today's producers carry their own copy (`finish_trimesh`,
+            // `synthesize_static_trimesh`), so this is defense-in-depth for
+            // them — but a future producer that skips it would otherwise
+            // panic *inside* `TriMesh::with_flags`' unchecked
+            // `self.vertices[idx as usize]`, mid-frame in
+            // `physics_sync_system`. `spawn_collision_shapes`' `catch_unwind`
+            // does not cover that: it wraps only the shape `Clone`, and the
+            // conversion happens later in the sync system.
+            let vertex_count = pts.len() as u32;
+            let idx: Vec<[u32; 3]> = indices
+                .iter()
+                .copied()
+                .filter(|[a, b, c]| *a < vertex_count && *b < vertex_count && *c < vertex_count)
+                .collect();
+            // Filtering can empty a non-empty buffer — that reaches the same
+            // `assert!` as an originally-empty one, so it takes the same
+            // degrade-to-a-ball exit rather than the panic.
+            if idx.is_empty() {
+                out.push((parent_iso, SharedShape::ball(1e-3)));
+                return;
+            }
             // M28.5 follow-up — TriMesh contact-normal treatment is
             // owned by `ContactConfig::trimesh_flags`. The default
             // (`FIX_INTERNAL_EDGES`, which transitively ORs in
@@ -560,6 +588,125 @@ mod tests {
         assert_eq!(parts.len(), 1);
         assert_eq!(shape_type_of(&parts, 0), ShapeType::Ball);
         assert!((parts[0].0.translation.y - 3.0).abs() < 1e-6);
+    }
+
+    /// Regression for #2877. The two tests above build every level with
+    /// `Quat::IDENTITY`, and composition of pure translations **commutes** —
+    /// so `child * parent` produces byte-identical results and both pass
+    /// under a reversed/transposed compose. That is the exact failure this
+    /// area is most exposed to ("collider in the wrong place, visually
+    /// invisible, physically fatal"), and nothing in the crate exercised a
+    /// non-identity rotation through a nested compound.
+    ///
+    /// A 90° parent yaw with an off-axis child offset makes the two orders
+    /// disagree: the correct `parent * child` puts the child at
+    /// `parent_rot * child_t + parent_t`, while `child * parent` would put it
+    /// at `child_rot * parent_t + child_t` — a different point.
+    #[test]
+    fn rotated_compound_composes_parent_then_child() {
+        use std::f32::consts::FRAC_PI_2;
+
+        let parent_t = Vec3::new(0.0, 5.0, 0.0);
+        let parent_r = Quat::from_rotation_y(FRAC_PI_2);
+        let child_t = Vec3::new(4.0, 0.0, 0.0);
+
+        let inner = CollisionShape::Compound {
+            children: vec![(
+                child_t,
+                Quat::IDENTITY,
+                Box::new(CollisionShape::Ball { radius: 1.0 }),
+            )],
+        };
+        let outer = CollisionShape::Compound {
+            children: vec![(parent_t, parent_r, Box::new(inner))],
+        };
+
+        let parts = parts(&outer);
+        assert_eq!(parts.len(), 1);
+        let actual = parts[0].0.translation.vector;
+
+        // parent-then-child: a +90° yaw maps +X to −Z, so (4,0,0) lands at
+        // (0,5,−4).
+        let expected = parent_r * child_t + parent_t;
+        assert!(
+            (actual.x - expected.x).abs() < 1e-5
+                && (actual.y - expected.y).abs() < 1e-5
+                && (actual.z - expected.z).abs() < 1e-5,
+            "compose must be parent_iso * child; expected {expected:?}, got {actual:?}"
+        );
+
+        // And it must NOT be the reversed product — pinned explicitly so the
+        // assertion above can't be satisfied by an accidental symmetry.
+        let reversed = Quat::IDENTITY * parent_t + child_t;
+        let delta = Vec3::new(actual.x, actual.y, actual.z) - reversed;
+        assert!(
+            delta.length() > 1.0,
+            "composed translation coincides with the reversed product \
+             ({reversed:?}) — this test no longer distinguishes compose order"
+        );
+
+        // The child's own orientation is the parent's, since the child
+        // authored identity: a reversed compose would leave it identity.
+        let rot = parts[0].0.rotation;
+        let expected_rot = quat_to_na(parent_r);
+        assert!(
+            (rot.i - expected_rot.i).abs() < 1e-5
+                && (rot.j - expected_rot.j).abs() < 1e-5
+                && (rot.k - expected_rot.k).abs() < 1e-5
+                && (rot.w - expected_rot.w).abs() < 1e-5,
+            "composed rotation must carry the parent yaw; got {rot:?}"
+        );
+    }
+
+    /// Regression for #2878. The `#1779` comment calls the `TriMesh` arm
+    /// "the single choke point every TriMesh source passes through", but the
+    /// index-range guard lived only in each producer — so a shape reaching
+    /// here with an out-of-range index panicked inside
+    /// `TriMesh::with_flags`' unchecked `self.vertices[idx as usize]`,
+    /// mid-frame in `physics_sync_system`. Out-of-range triangles are now
+    /// filtered here; a mesh with nothing left degrades to the same tiny
+    /// ball an originally-empty one gets.
+    #[test]
+    fn out_of_range_trimesh_indices_are_filtered_at_the_choke_point() {
+        // Three vertices, two triangles: one valid, one referencing index 9.
+        let mesh = CollisionShape::TriMesh {
+            vertices: vec![
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(1.0, 0.0, 0.0),
+                Vec3::new(0.0, 0.0, 1.0),
+            ],
+            indices: vec![[0, 1, 2], [0, 1, 9]],
+        };
+        let parts = parts(&mesh);
+        assert_eq!(parts.len(), 1);
+        assert_eq!(
+            shape_type_of(&parts, 0),
+            ShapeType::TriMesh,
+            "the valid triangle must survive as a real TriMesh"
+        );
+        assert_eq!(
+            parts[0].1.as_trimesh().unwrap().indices().len(),
+            1,
+            "only the in-range triangle may reach Rapier"
+        );
+    }
+
+    /// Companion: when *every* triangle is out of range the filtered index
+    /// buffer is empty, which is precisely the input `TriMesh::with_flags`
+    /// asserts on. It must take the tiny-ball exit, not panic.
+    #[test]
+    fn all_out_of_range_trimesh_degrades_to_a_ball_instead_of_panicking() {
+        let mesh = CollisionShape::TriMesh {
+            vertices: vec![
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(1.0, 0.0, 0.0),
+                Vec3::new(0.0, 0.0, 1.0),
+            ],
+            indices: vec![[7, 8, 9]],
+        };
+        let parts = parts(&mesh);
+        assert_eq!(parts.len(), 1);
+        assert_eq!(shape_type_of(&parts, 0), ShapeType::Ball);
     }
 
     // ── #2860 — uniform placement scale must reach the collider ──────
