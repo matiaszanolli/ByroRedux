@@ -20,6 +20,31 @@ pub(crate) struct UiInputState {
     modifiers: ModifiersState,
 }
 
+/// Update the cached window state that must stay current whether or not a menu
+/// holds input focus. **Dispatches nothing** — this is a pure cache refresh.
+///
+/// #2973 — `dispatch_window_event` is the only writer of [`UiInputState`], and
+/// its caller early-returns on `!has_input_focus()` before reaching it. Both
+/// cached fields were therefore only updated while a menu already had focus,
+/// and nothing reset them on focus loss. Concretely: menu focused with Ctrl
+/// held -> focus released -> user releases Ctrl -> menu refocused -> the next
+/// `a` keypress translates as `UiTextControlCode::SelectAll` instead of typing
+/// a character, and stays wrong until winit next emits `ModifiersChanged`.
+///
+/// Feeding unconditionally is preferred over clearing on focus transitions:
+/// clearing loses the true current modifier state, which winit will not resend
+/// until it next changes. Only cache updates move ahead of the focus gate --
+/// no actionable input is routed to an unfocused menu.
+pub(crate) fn cache_window_state(event: &WindowEvent, state: &mut UiInputState) {
+    match event {
+        WindowEvent::CursorMoved { position, .. } => state.cursor_position = *position,
+        WindowEvent::ModifiersChanged(modifiers) => state.modifiers = modifiers.state(),
+        // Every other event either carries no cacheable window state or is
+        // actionable input, which must stay behind the focus gate.
+        _ => {}
+    }
+}
+
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct UiWindowDispatch {
     pub(crate) captured: bool,
@@ -508,5 +533,77 @@ mod tests {
             text_control(Key::Character("a"), ModifiersState::CONTROL),
             Some(UiTextControlCode::SelectAll)
         );
+    }
+
+    /// #2973 — `dispatch_window_event` is the only writer of [`UiInputState`]
+    /// and its caller early-returns on `!has_input_focus()` before reaching it,
+    /// so a modifier released while the menu was unfocused was never observed.
+    /// The concrete failure: menu focused with Ctrl held -> focus released ->
+    /// user releases Ctrl -> menu refocused -> the next `a` keypress translates
+    /// as `SelectAll` instead of typing a character.
+    #[test]
+    fn a_modifier_released_while_unfocused_does_not_survive_into_the_next_keypress() {
+        let mut state = UiInputState::default();
+
+        // Focused, Ctrl held: `a` is Select All.
+        cache_window_state(&modifiers_event(ModifiersState::CONTROL), &mut state);
+        assert_eq!(
+            text_control(Key::Character("a"), state.modifiers),
+            Some(UiTextControlCode::SelectAll),
+            "with Ctrl held, `a` must be Select All"
+        );
+
+        // Focus is lost, and the user releases Ctrl while unfocused. This is
+        // the event the focus gate used to swallow.
+        cache_window_state(&modifiers_event(ModifiersState::empty()), &mut state);
+
+        // Refocused: the very next keypress must type a character.
+        assert_eq!(
+            text_control(Key::Character("a"), state.modifiers),
+            None,
+            "Ctrl was released while the menu was unfocused, so `a` must type a \
+             character rather than firing SelectAll (#2973)"
+        );
+    }
+
+    /// #2973 FOCUS-TRANSITION — the cursor cache has the same shape: the first
+    /// `MouseDown` after a focus grant used the last position seen during a
+    /// *previous* focused period.
+    #[test]
+    fn cursor_position_tracks_while_unfocused() {
+        let mut state = UiInputState::default();
+        cache_window_state(
+            &WindowEvent::CursorMoved {
+                device_id: winit::event::DeviceId::dummy(),
+                position: PhysicalPosition::new(320.0, 180.0),
+            },
+            &mut state,
+        );
+        assert_eq!(state.cursor_position, PhysicalPosition::new(320.0, 180.0));
+    }
+
+    /// #2973 NO-LEAK — only cache updates moved ahead of the focus gate. The
+    /// cache path must never dispatch actionable input; if it grew a dispatch
+    /// arm, an unfocused menu would start receiving events.
+    #[test]
+    fn the_cache_path_dispatches_nothing() {
+        const SRC: &str = include_str!("ui_input.rs");
+        let body_start = SRC
+            .find("pub(crate) fn cache_window_state")
+            .expect("cache_window_state exists");
+        let body_end = body_start
+            + SRC[body_start..]
+                .find("\n}\n")
+                .expect("function has a terminating brace");
+        let body = &SRC[body_start..body_end];
+        assert!(
+            !body.contains("dispatch"),
+            "cache_window_state gained a dispatch — actionable input must stay \
+             behind the focus gate (#2973)"
+        );
+    }
+
+    fn modifiers_event(state: ModifiersState) -> WindowEvent {
+        WindowEvent::ModifiersChanged(state.into())
     }
 }

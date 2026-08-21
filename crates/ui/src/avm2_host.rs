@@ -53,6 +53,26 @@ pub(crate) fn inject_host_object_adapter(
     let decompressed =
         decompress_swf(swf_data).map_err(|error| format!("decompressing SWF: {error}"))?;
     let mut movie = parse_swf(&decompressed).map_err(|error| format!("parsing SWF: {error}"))?;
+    // #2970 — idempotency. `ADAPTER_NAME` was written as the injected tag's
+    // name and never read back (a workspace grep found the `const` and one
+    // write site, no read). Feeding already-patched bytes through would emit a
+    // SECOND adapter script with the same trait names into the same domain and
+    // call the installer twice, re-firing `onCodeObjCreate`. No live
+    // double-injection path exists today — each `SwfPlayer` constructor injects
+    // once on bytes freshly read from disk or archive — but caching patched
+    // bytes (the obvious response to UI-D1-01) or rebuilding a player from its
+    // current movie makes it reachable. Cheap scan over tags already in hand.
+    if movie.tags.iter().any(|tag| {
+        matches!(tag, Tag::DoAbc2(do_abc)
+                if do_abc.name == SwfStr::from_utf8_str(ADAPTER_NAME))
+    }) {
+        log::debug!(
+            "Fallout 4 AVM2 adapter '{ADAPTER_NAME}' is already present; \
+             skipping injection (#2970)"
+        );
+        return Ok((swf_data.to_vec(), ScaleformHostObjectState::AdapterInjected));
+    }
+
     let declares_contract = movie.tags.iter().any(|tag| {
         abc_payload(tag).is_some_and(|abc| {
             contains_bytes(abc, b"BGSCodeObj") && contains_bytes(abc, b"onCodeObjCreate")
@@ -466,6 +486,34 @@ fn patch_root_constructor(abc_data: &[u8], root_class: &[u8]) -> Result<Vec<u8>,
         .and_then(|method| method.body)
         .ok_or_else(|| "Fallout 4 root constructor has no method body".to_string())?
         .as_u30() as usize;
+    // #2970 — SIBLING guard, and it needs its OWN full pass over the body.
+    // The insertion-offset scan below `break`s at the first `InitProperty` /
+    // `SetProperty` naming `BGSCodeObj`, and the bootstrap is spliced at the
+    // offset *after* that op — so a guard folded into that loop would never
+    // reach its own call site. The outer tag scan in
+    // `inject_host_object_adapter` short-circuits the normal re-injection
+    // path; this catches a caller that reaches here directly, or a movie whose
+    // adapter tag was renamed or stripped while its root ABC stayed patched.
+    {
+        let body = abc
+            .method_bodies
+            .get(body_index)
+            .ok_or_else(|| "Fallout 4 root constructor body index is invalid".to_string())?;
+        let mut reader = Reader::new(&body.code);
+        while !reader.as_slice().is_empty() {
+            let op = reader
+                .read_op()
+                .map_err(|error| format!("scanning Fallout 4 root constructor: {error}"))?;
+            if let Op::CallPropVoid { index, .. } | Op::CallProperty { index, .. } = op {
+                if multiname_local_name(&abc, index).as_deref() == Some(INSTALL_HELPER.as_bytes()) {
+                    return Err(format!(
+                        "Fallout 4 root constructor already calls {INSTALL_HELPER}; \
+                         these bytes are already patched (#2970)"
+                    ));
+                }
+            }
+        }
+    }
     let insertion_offset = {
         let body = abc
             .method_bodies
@@ -1669,5 +1717,140 @@ mod tests {
             max_stack_with_injected_bootstrap_headroom(u32::MAX - 1),
             u32::MAX
         );
+    }
+
+    /// #2970 — `ADAPTER_NAME` was written as the injected tag's name and never
+    /// read back, and `patch_root_constructor` simply spliced in front of the
+    /// first `InitProperty`/`SetProperty` naming `BGSCodeObj`. Feeding
+    /// already-patched bytes back through would emit a second adapter script
+    /// with the same trait names into the same domain and call the installer
+    /// twice, re-firing `onCodeObjCreate`.
+    ///
+    /// No live double-injection path exists today, which is why it was LOW —
+    /// so this is pinned on real shipped movies rather than a synthetic one,
+    /// because the whole risk is that a future caller (byte caching, or
+    /// rebuilding a player from its current movie) reaches it with real bytes.
+    /// Self-skips when FO4 isn't installed, like its corpus siblings.
+    #[test]
+    fn re_injecting_already_patched_bytes_is_a_no_op() {
+        let Some(archive) =
+            fallout4_interface_archive("re_injecting_already_patched_bytes_is_a_no_op")
+        else {
+            return;
+        };
+        let catalog = ScaleformHostCatalog::for_profile(ScaleformProfile::Fallout4Avm2);
+
+        let adapter_tag_count = |bytes: &[u8]| -> usize {
+            let decompressed = swf::decompress_swf(&*bytes).expect("decompress patched movie");
+            let movie = swf::parse_swf(&decompressed).expect("parse patched movie");
+            movie
+                .tags
+                .iter()
+                .filter(|tag| {
+                    matches!(tag, Tag::DoAbc2(do_abc)
+                        if do_abc.name == SwfStr::from_utf8_str(super::ADAPTER_NAME))
+                })
+                .count()
+        };
+
+        let mut checked = 0usize;
+        for movie_path in fallout4_swf_paths(&archive) {
+            let Ok(swf) = archive.extract(&movie_path) else {
+                continue;
+            };
+            let Ok((once, state)) = inject_host_object_adapter(&swf, catalog) else {
+                continue;
+            };
+            if state != super::ScaleformHostObjectState::AdapterInjected {
+                continue;
+            }
+            checked += 1;
+
+            assert_eq!(
+                adapter_tag_count(&once),
+                1,
+                "{movie_path}: first pass should install exactly one adapter tag"
+            );
+
+            let (twice, second_state) = inject_host_object_adapter(&once, catalog)
+                .unwrap_or_else(|error| panic!("{movie_path}: second pass errored: {error}"));
+
+            assert_eq!(
+                second_state,
+                super::ScaleformHostObjectState::AdapterInjected,
+                "{movie_path}: an already-patched movie is still 'adapter injected'"
+            );
+            assert_eq!(
+                adapter_tag_count(&twice),
+                1,
+                "{movie_path}: second pass duplicated the adapter script (#2970)"
+            );
+            // The strongest form of the guarantee: injection is idempotent
+            // byte-for-byte, so nothing downstream can observe a second pass.
+            assert_eq!(
+                twice, once,
+                "{movie_path}: re-injection changed the bytes — the guard is not \
+                 short-circuiting before the splice (#2970)"
+            );
+
+            if checked >= 12 {
+                break; // A dozen real movies is ample; the corpus sweep is elsewhere.
+            }
+        }
+
+        assert!(
+            checked > 0,
+            "no FO4 movie reached AdapterInjected — this guard proved nothing"
+        );
+        eprintln!("[#2970] idempotency verified on {checked} shipped FO4 movie(s)");
+    }
+
+    /// #2970 SIBLING — the tag scan short-circuits before `patch_root_constructor`
+    /// on the normal path, so this pins the inner guard independently: called
+    /// directly on an already-patched root ABC it must refuse rather than
+    /// splice a second bootstrap in front of the same `BGSCodeObj` init.
+    #[test]
+    fn patching_an_already_patched_root_constructor_is_rejected() {
+        let Some(archive) =
+            fallout4_interface_archive("patching_an_already_patched_root_constructor_is_rejected")
+        else {
+            return;
+        };
+        let catalog = ScaleformHostCatalog::for_profile(ScaleformProfile::Fallout4Avm2);
+
+        for movie_path in fallout4_swf_paths(&archive) {
+            let Ok(swf) = archive.extract(&movie_path) else {
+                continue;
+            };
+            let Ok((once, state)) = inject_host_object_adapter(&swf, catalog) else {
+                continue;
+            };
+            if state != super::ScaleformHostObjectState::AdapterInjected {
+                continue;
+            }
+
+            // Strip the adapter tag so the outer guard cannot short-circuit,
+            // leaving a root ABC that is still patched.
+            let decompressed = swf::decompress_swf(&*once).expect("decompress");
+            let mut movie = swf::parse_swf(&decompressed).expect("parse");
+            movie.tags.retain(|tag| {
+                !matches!(tag, Tag::DoAbc2(do_abc)
+                    if do_abc.name == SwfStr::from_utf8_str(super::ADAPTER_NAME))
+            });
+            let mut stripped = Vec::new();
+            swf::write_swf(movie.header.swf_header(), &movie.tags, &mut stripped)
+                .expect("re-serialize");
+
+            let error = inject_host_object_adapter(&stripped, catalog)
+                .expect_err("a patched root constructor must be refused (#2970)");
+            assert!(
+                error.contains(super::INSTALL_HELPER),
+                "expected the refusal to name {}, got: {error}",
+                super::INSTALL_HELPER
+            );
+            eprintln!("[#2970] inner guard verified on {movie_path}");
+            return;
+        }
+        eprintln!("[#2970] no FO4 movie reached AdapterInjected; inner guard unverified");
     }
 }

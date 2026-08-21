@@ -16,7 +16,9 @@ Source: [`crates/ui/src/`](../../crates/ui/src/)
 > Bethesda profiles. The first M48 slice now includes profile detection,
 > a bidirectional ExternalInterface bridge, and a pinned 74-method
 > Skyrim/SkyUI host catalog. The second slice adds Fallout 4's
-> `BGSCodeObj` lifecycle, a 138-method installed-corpus catalog, and
+> `BGSCodeObj` lifecycle, a 138-method installed-corpus catalog (a *sample*
+> of what the sweep observed, not a complete FO4 host surface — the 311-movie
+> sweep finds more, and uncataloged methods are forwarded anyway per #2718), and
 > an injected AVM2 forwarding adapter. The third slice adds a BSA/BA2-backed
 > Ruffle navigator and executor-driven `ImportAssets` preload; the installed
 > Fallout 4 HUD now resolves `fonts_en.swf` and reaches frame 1. HUD and
@@ -106,7 +108,7 @@ offscreen wgpu TextureTarget (RGBA8) on Ruffle's own wgpu/Vulkan device
         ▼  downcast renderer → WgpuRenderBackend::capture_frame() → CPU RGBA into SwfPlayer.pixel_buffer
 RGBA pixel buffer (cached; only re-emitted when `dirty`)
         │
-        ▼  byroredux::main → texture_registry.update_rgba(ui_texture_handle, …)
+        ▼  byroredux::app_frame → texture_registry.update_rgba(ui_texture_handle, …)
 existing Vulkan VkImage replaced in place (deferred-destroy of the old one)
         │
         ▼  draw_frame: bind pipeline_ui (no depth, alpha blend, bindless sampler)
@@ -137,26 +139,37 @@ pub struct SwfPlayer {
     height: u32,
     pixel_buffer: Vec<u8>,   // last captured RGBA8, reused frame to frame
     dirty: bool,             // set on tick(), cleared after a successful render()
+    uploaded_once: bool,     // gates the "unchanged content" early-out below
     host_object_state: ScaleformHostObjectState,
+    host_bridge: ScaleformHostBridge,
     navigator_runtime: Option<ScaleformNavigatorRuntime>,
+    resource_errors: Vec<String>,
+    resource_errors_capped: bool,
+    preload_stall_frames: u32,
+    preload_stalled: bool,
 }
 
 impl SwfPlayer {
     pub fn new(swf_data: &[u8], width: u32, height: u32) -> anyhow::Result<Self>;
     pub fn from_resource_provider(
-        provider: Rc<dyn ScaleformResourceProvider>,
+        provider: Arc<dyn ScaleformResourceProvider>,
         movie_path: &str,
         width: u32,
         height: u32,
         profile: ScaleformProfile,
     ) -> anyhow::Result<Self>;
     pub fn tick(&mut self, dt: f64);          // seconds; wrapped in FloatDuration internally
-    pub fn render(&mut self) -> Option<&[u8]>; // borrows pixel_buffer; None if not dirty
+    pub fn render(&mut self) -> Option<&[u8]>; // borrows pixel_buffer; None if the pixels are unchanged
     pub fn dimensions(&self) -> (u32, u32);
     pub fn host_object_state(&self) -> ScaleformHostObjectState;
     pub fn current_frame(&self) -> Option<u16>;
     pub fn resource_loads(&self) -> Vec<ScaleformResourceLoad>;
     pub fn resource_error(&self) -> Option<&str>;
+    pub fn resource_errors(&self) -> &[String];
+    pub fn preload_stalled(&self) -> bool;
+    pub fn invoke_callback(&mut self, name: &str, args: &[ScaleformValue]) -> bool;
+    pub fn profile(&self) -> ScaleformProfile;
+    pub fn host_bridge(&self) -> ScaleformHostBridge;
 }
 ```
 
@@ -201,8 +214,12 @@ player lock, then marks the player **dirty**.
 `Player::render()`, downcasts the boxed renderer back to the concrete
 `WgpuRenderBackend<TextureTarget>`, calls `capture_frame()`, and copies
 the resulting `RgbaImage` into the reused `pixel_buffer` (with a size-
-mismatch guard that logs and skips). It returns a borrow of that buffer
-and clears the dirty flag. The width/height are the renderer-side surface
+mismatch guard that logs and skips). It clears the dirty flag, then decides
+on **content**, not on the render having happened (#2719): it compares the
+freshly captured RGBA against `pixel_buffer` and returns `None` when the
+pixels are unchanged and at least one upload has already gone out
+(`uploaded_once`). A render that produced identical pixels therefore costs
+no GPU upload. The width/height are the renderer-side surface
 dimensions, **not** the SWF's native size — Ruffle scales internally.
 
 ## UiManager
@@ -222,13 +239,13 @@ impl UiManager {
     pub fn load_swf(&mut self, swf_data: &[u8], name: &str) -> anyhow::Result<()>;
     pub fn load_swf_from_resource_provider(
         &mut self,
-        provider: Rc<dyn ScaleformResourceProvider>,
+        provider: Arc<dyn ScaleformResourceProvider>,
         movie_path: &str,
         name: &str,
         profile: ScaleformProfile,
     ) -> anyhow::Result<()>;
     pub fn tick(&mut self, dt: f64);             // forwards to the active player when visible
-    pub fn render(&mut self) -> Option<&[u8]>;   // None when hidden or no player
+    pub fn render(&mut self) -> UiFrame<'_>;     // Fresh / Unchanged / Hidden (#2972)
     pub fn has_input_focus(&self) -> bool;
     pub fn set_input_focus(&mut self, focused: bool) -> bool;
     pub fn handle_input(&mut self, event: UiInputEvent) -> bool;
@@ -494,8 +511,10 @@ notes for the format-string system menus rely on.
 
 ## Tests
 
-The UI crate has 26 default tests plus three ignored installed-corpus
-smokes; the executable adds four winit-translation tests. The synthetic
+The UI crate has **48 default tests plus 2 ignored** installed-corpus smokes
+(measured 2026-08-21 with `cargo test -q -p byroredux-ui`; re-measure rather
+than trusting this line — it has drifted three times). The executable adds
+winit-translation tests in `byroredux/src/ui_input.rs`. The synthetic
 non-Bethesda SWFs come from Ruffle's pinned ExternalInterface fixtures:
 
 - The `byroredux-ui` crate compiles as part of the workspace.
@@ -531,7 +550,7 @@ ActionScript→engine call and `drain_calls` is the only thing that removes
 one. Until #2714 the engine never drained it — the binary's whole use of
 `crates/ui` was `new` / `load_swf` / `tick` / `render` / input — so the queue
 grew for the life of a loaded menu. The main loop now drains it once per
-frame beside `ui.tick(dt)` (`byroredux/src/main.rs`), which is what keeps the
+frame beside `ui.tick(dt)` (`byroredux/src/app_frame.rs`), which is what keeps the
 backlog at its natural depth, and logs each call at `debug` plus a one-shot
 `warn` for any method the bridge classified `Unknown` or `MissingResponse`.
 That turns `unknown_methods()` / `unanswered_methods()` into live

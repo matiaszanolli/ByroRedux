@@ -31,6 +31,20 @@ pub use input::{
 pub use navigator::{ScaleformResourceLoad, ScaleformResourceProvider};
 pub use player::SwfPlayer;
 pub use profile::ScaleformProfile;
+/// What [`UiManager::render`] wants the compositor to do this frame.
+///
+/// #2972 — three states, because `Option` only has two and the overlay has
+/// three distinct outcomes. `Unchanged` and `Hidden` both used to be `None`,
+/// so hiding the overlay kept compositing its last uploaded frame.
+#[derive(Debug)]
+pub enum UiFrame<'a> {
+    /// Freshly rendered pixels; upload them and composite.
+    Fresh(&'a [u8]),
+    /// Nothing changed — keep compositing the previously uploaded texture.
+    Unchanged,
+    /// The overlay is hidden or has no live player — stop compositing.
+    Hidden,
+}
 
 /// Global UI manager. Owns the active Ruffle player and UI state.
 ///
@@ -124,15 +138,29 @@ impl UiManager {
         }
     }
 
-    /// Render the current frame and return the RGBA pixel buffer if dirty.
-    pub fn render(&mut self) -> Option<&[u8]> {
+    /// Render the current frame and report what the compositor should do.
+    ///
+    /// #2972 — this returned `Option<&[u8]>`, and since #2719 the frame driver
+    /// reads `None` as "keep showing the texture you already have". That
+    /// conflated two opposite meanings: *nothing changed, reuse the last
+    /// upload* and *the overlay is hidden, stop drawing*. Setting
+    /// `visible = false` therefore froze Ruffle but left the last uploaded
+    /// frame composited over the world forever.
+    ///
+    /// The three-state return makes the ambiguity unrepresentable rather than
+    /// relying on the caller to remember to check `visible` as a second field.
+    pub fn render(&mut self) -> UiFrame<'_> {
         if !self.visible {
-            return None;
+            return UiFrame::Hidden;
         }
-        if let Some(ref mut player) = self.player {
-            player.render()
-        } else {
-            None
+        let Some(player) = self.player.as_mut() else {
+            // No live player: there is nothing to composite, and a stale
+            // texture from a closed menu must not survive.
+            return UiFrame::Hidden;
+        };
+        match player.render() {
+            Some(pixels) => UiFrame::Fresh(pixels),
+            None => UiFrame::Unchanged,
         }
     }
 
@@ -247,5 +275,48 @@ mod tests {
         let manager = UiManager::new(1280, 720);
         assert!(manager.host_bridge().is_none());
         assert!(manager.drain_host_calls().is_empty());
+    }
+
+    /// #2972 — `render()` returned `Option<&[u8]>`, and since #2719 the frame
+    /// driver reads `None` as "keep showing the texture you already have". So
+    /// `visible = false` froze Ruffle but kept the last uploaded frame
+    /// composited over the world forever: "unchanged" and "hidden" shared one
+    /// `None`. Three states make that unrepresentable.
+    #[test]
+    fn hiding_the_overlay_is_distinguishable_from_an_unchanged_frame() {
+        let mut manager = UiManager::new(1280, 720);
+
+        // No player: nothing to composite. Must be Hidden, not Unchanged —
+        // otherwise a stale texture from a closed menu would survive.
+        assert!(matches!(manager.render(), UiFrame::Hidden));
+
+        // And explicitly hidden is Hidden regardless of player state.
+        manager.visible = false;
+        assert!(matches!(manager.render(), UiFrame::Hidden));
+    }
+
+    /// #2972 SIBLING — the frame driver is the only consumer of
+    /// `UiManager::render`, and the whole fix depends on it treating the three
+    /// states differently. A future edit that collapses `Hidden` back into the
+    /// reuse arm would restore the bug silently, because nothing observable
+    /// changes until a menu-stack policy first sets `visible = false`.
+    #[test]
+    fn the_frame_driver_stops_compositing_on_hidden() {
+        const APP_FRAME: &str = include_str!("../../../byroredux/src/app_frame.rs");
+        assert!(
+            APP_FRAME.contains("UiFrame::Hidden => {}"),
+            "app_frame.rs no longer has an explicit no-composite arm for \
+             UiFrame::Hidden (#2972)"
+        );
+        assert!(
+            APP_FRAME.contains("UiFrame::Unchanged => {"),
+            "app_frame.rs no longer distinguishes Unchanged from Hidden (#2972)"
+        );
+        // The pre-fix shape must not come back.
+        assert!(
+            !APP_FRAME.contains("} else if self.ui_texture_handle.is_some() {"),
+            "app_frame.rs is back to reusing the last texture on a bare `None` \
+             — that is the conflation #2972 removed"
+        );
     }
 }

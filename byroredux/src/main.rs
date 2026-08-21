@@ -529,6 +529,13 @@ impl App {
     /// Route native window input to the focused Scaleform menu before world
     /// controls. F3 remains an engine-global debug-overlay binding.
     fn route_scaleform_window_event(&mut self, event: &WindowEvent) -> bool {
+        // #2973 — refresh the cached modifier set and cursor position BEFORE
+        // any early return. `dispatch_window_event` below is the only other
+        // writer and it sits behind the focus gate, so without this a modifier
+        // pressed or released while the menu is unfocused is never observed.
+        // Cache only: nothing is dispatched to the menu from here.
+        ui_input::cache_window_state(event, &mut self.ui_input_state);
+
         if ui_input::is_debug_overlay_key(event) {
             return false;
         }

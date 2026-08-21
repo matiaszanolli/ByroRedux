@@ -271,25 +271,34 @@ impl App {
                     }
                 }
 
-                if let Some(pixels) = ui.render() {
-                    if let Some(handle) = self.ui_texture_handle {
-                        let allocator = ctx.allocator.as_ref().unwrap();
-                        let upload_ctx = GpuUploadCtx {
-                            device: &ctx.device,
-                            allocator,
-                            queue: &ctx.graphics_queue,
-                            command_pool: ctx.transfer_pool,
-                        };
-                        if let Err(e) = ctx
-                            .texture_registry
-                            .update_rgba(upload_ctx, handle, ui_w, ui_h, pixels)
-                        {
-                            log::error!("UI texture update failed: {e:#}");
+                // #2972 — three-state, so "hidden" and "unchanged" no longer
+                // share one `None`. Leaving `ui_tex` at `None` is what stops
+                // `draw_frame` emitting the UI quad; previously a hidden
+                // overlay fell into the `Unchanged` arm and kept compositing
+                // its last uploaded frame over the world indefinitely.
+                match ui.render() {
+                    byroredux_ui::UiFrame::Fresh(pixels) => {
+                        if let Some(handle) = self.ui_texture_handle {
+                            let allocator = ctx.allocator.as_ref().unwrap();
+                            let upload_ctx = GpuUploadCtx {
+                                device: &ctx.device,
+                                allocator,
+                                queue: &ctx.graphics_queue,
+                                command_pool: ctx.transfer_pool,
+                            };
+                            if let Err(e) = ctx
+                                .texture_registry
+                                .update_rgba(upload_ctx, handle, ui_w, ui_h, pixels)
+                            {
+                                log::error!("UI texture update failed: {e:#}");
+                            }
+                            ui_tex = Some(handle);
                         }
-                        ui_tex = Some(handle);
                     }
-                } else if self.ui_texture_handle.is_some() {
-                    ui_tex = self.ui_texture_handle;
+                    byroredux_ui::UiFrame::Unchanged => {
+                        ui_tex = self.ui_texture_handle;
+                    }
+                    byroredux_ui::UiFrame::Hidden => {}
                 }
             }
             if is_benching {
