@@ -213,6 +213,7 @@ mod tests {
             ("WATER_WATERFALL", format!("#define WATER_WATERFALL {WATER_WATERFALL}u")),
             ("DEFAULT_WATER_WAVE_AMPLITUDE", format!("#define DEFAULT_WATER_WAVE_AMPLITUDE {DEFAULT_WATER_WAVE_AMPLITUDE:?}")),
             ("DEFAULT_WATER_WAVE_FREQUENCY", format!("#define DEFAULT_WATER_WAVE_FREQUENCY {DEFAULT_WATER_WAVE_FREQUENCY:?}")),
+            ("STARFIELD_WATER_CONCENTRATION_REFERENCE", format!("#define STARFIELD_WATER_CONCENTRATION_REFERENCE {STARFIELD_WATER_CONCENTRATION_REFERENCE:?}")),
             ("FOG_VOLUME_CLUSTER_DIM", format!("#define FOG_VOLUME_CLUSTER_DIM {FOG_VOLUME_CLUSTER_DIM}u")),
             ("MAX_FOG_VOLUMES_PER_CLUSTER", format!("#define MAX_FOG_VOLUMES_PER_CLUSTER {MAX_FOG_VOLUMES_PER_CLUSTER}u")),
             ("FOG_VOLUME_PROFILE_HOMOGENEOUS", format!("#define FOG_VOLUME_PROFILE_HOMOGENEOUS {FOG_VOLUME_PROFILE_HOMOGENEOUS:?}")),
@@ -580,6 +581,7 @@ mod tests {
     fn water_wave_sentinels_flow_from_core_into_glsl() {
         use byroredux_core::ecs::components::water::{
             WaterMaterial, DEFAULT_WATER_WAVE_AMPLITUDE, DEFAULT_WATER_WAVE_FREQUENCY,
+            STARFIELD_WATER_CONCENTRATION_REFERENCE,
         };
 
         let default = WaterMaterial::default();
@@ -589,12 +591,15 @@ mod tests {
         let header = include_str!("../shaders/include/shader_constants.glsl");
         assert!(header.contains("#define DEFAULT_WATER_WAVE_AMPLITUDE 0.05"));
         assert!(header.contains("#define DEFAULT_WATER_WAVE_FREQUENCY 0.6"));
+        assert_eq!(STARFIELD_WATER_CONCENTRATION_REFERENCE, 20.0);
+        assert!(header.contains("#define STARFIELD_WATER_CONCENTRATION_REFERENCE 20.0"));
 
         let shader = include_str!("../shaders/water.frag");
         assert!(shader.contains("push.tune.w / DEFAULT_WATER_WAVE_AMPLITUDE"));
         assert!(shader.contains("push.misc.y / DEFAULT_WATER_WAVE_FREQUENCY"));
         assert!(!shader.contains("push.tune.w / 0.05"));
         assert!(!shader.contains("push.misc.y / 0.6"));
+        assert!(shader.contains("/ STARFIELD_WATER_CONCENTRATION_REFERENCE"));
     }
 
     /// TD4-206 / #1162 — `triangle.frag` must NOT redeclare any of the

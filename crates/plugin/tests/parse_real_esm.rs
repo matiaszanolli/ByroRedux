@@ -315,7 +315,7 @@ fn installed_masters_water_fields_are_finite_and_ordered() {
         let mut authored_absorption_records = 0;
         for water in index.waters.values() {
             let p = water.params;
-            if p.absorption_ranges.iter().any(|value| *value > 0.0) {
+            if p.absorption_coefficients.iter().any(|value| *value > 0.0) {
                 authored_absorption_records += 1;
             }
             let scalars = [
@@ -349,7 +349,7 @@ fn installed_masters_water_fields_are_finite_and_ordered() {
                     .chain(p.effect_controls.iter())
                     .chain(std::iter::once(&p.specular_magnitude))
                     .chain(std::iter::once(&p.underwater_fog_amount))
-                    .chain(p.absorption_ranges.iter())
+                    .chain(p.absorption_coefficients.iter())
                     .chain(p.silt_light_color.iter())
                     .chain(p.silt_dark_color.iter())
                     .all(|value| value.is_finite()),
@@ -365,7 +365,50 @@ fn installed_masters_water_fields_are_finite_and_ordered() {
         if label == "Starfield" {
             assert!(
                 authored_absorption_records > 0,
-                "Starfield WATR records must expose authored color-absorption ranges"
+                "Starfield WATR records must expose authored extinction coefficients"
+            );
+            let water_clear = index
+                .waters
+                .values()
+                .find(|water| water.editor_id == "WaterClear")
+                .expect("Starfield WaterClear WATR");
+            let water_mud_brown = index
+                .waters
+                .values()
+                .find(|water| water.editor_id == "WaterMudBrown")
+                .expect("Starfield WaterMudBrown WATR");
+            for (actual, expected) in water_clear
+                .params
+                .absorption_coefficients
+                .into_iter()
+                .zip([0.16558, 0.09624, 0.07627])
+            {
+                assert!((actual - expected).abs() < 1.0e-5);
+            }
+            for (actual, expected) in water_clear
+                .params
+                .concentration
+                .into_iter()
+                .zip([8.840, 6.594, 4.710, 0.5145])
+            {
+                assert!((actual - expected).abs() < 1.0e-4);
+            }
+            for (actual, expected) in water_mud_brown
+                .params
+                .concentration
+                .into_iter()
+                .zip([7.392, 15.580, 18.550, 1.0])
+            {
+                assert!((actual - expected).abs() < 1.0e-4);
+            }
+            assert_ne!(
+                water_clear.params.concentration, water_mud_brown.params.concentration,
+                "distinct vanilla concentration vectors must survive parsing"
+            );
+            assert!(
+                water_clear.params.concentration[0] > 1.0
+                    && water_mud_brown.params.concentration[2] > 1.0,
+                "vanilla pigment concentrations must not be normalized at the parser boundary"
             );
         }
         checked_games += 1;

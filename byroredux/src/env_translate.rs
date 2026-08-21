@@ -849,9 +849,9 @@ pub(crate) fn resolve_water_material(
                 mat.flowmap_scale = rec.params.flowmap_scale.clamp(0.05, 8.0);
             }
             for (dst, src) in mat
-                .absorption_ranges
+                .absorption_coefficients
                 .iter_mut()
-                .zip(rec.params.absorption_ranges)
+                .zip(rec.params.absorption_coefficients)
             {
                 if src.is_finite() && src > 0.0 {
                     *dst = src.clamp(0.01, 100_000.0);
@@ -859,7 +859,10 @@ pub(crate) fn resolve_water_material(
             }
             for (dst, src) in mat.concentration.iter_mut().zip(rec.params.concentration) {
                 if src.is_finite() && src > 0.0 {
-                    *dst = src.clamp(0.0, 1.0);
+                    // Starfield authors pigment concentrations up to 20.0.
+                    // Preserve that magnitude here; the shader normalizes
+                    // the RGB lanes against the shared vanilla reference.
+                    *dst = src;
                 }
             }
             if rec.params.specular_magnitude.is_finite() && rec.params.specular_magnitude > 0.0 {
@@ -2215,7 +2218,7 @@ mod tests {
                 specular_radius: 0.0,
                 noise_wind_directions: [0.0; 3],
                 noise_wind_speeds: [0.0; 3],
-                absorption_ranges: [0.0; 3],
+                absorption_coefficients: [0.0; 3],
                 concentration: [0.0; 4],
                 roughness: 0.0,
                 silt_amount: 0.0,
@@ -2551,13 +2554,13 @@ mod tests {
     }
 
     #[test]
-    fn resolve_water_material_carries_starfield_absorption_ranges() {
+    fn resolve_water_material_carries_starfield_optical_controls_without_clamping() {
         let rec = calm_watr(
             0x000A_0008,
             "StarfieldOcean",
             WaterParams {
-                absorption_ranges: [12.0, 34.0, 56.0],
-                concentration: [0.2, 0.4, 0.6, 0.8],
+                absorption_coefficients: [0.16558, 0.09624, 0.07627],
+                concentration: [8.840, 6.594, 4.710, 0.514],
                 noise_falloff: 300.0,
                 normal_falloff: [0.9, 0.7, 0.8],
                 displacement: [0.05, 0.985, 10.0],
@@ -2567,8 +2570,8 @@ mod tests {
         let mut waters = HashMap::new();
         waters.insert(rec.form_id, rec);
         let (mat, _, _, _, _) = resolve_water_material(&waters, Some(0x000A_0008));
-        assert_eq!(mat.absorption_ranges, [12.0, 34.0, 56.0]);
-        assert_eq!(mat.concentration, [0.2, 0.4, 0.6, 0.8]);
+        assert_eq!(mat.absorption_coefficients, [0.16558, 0.09624, 0.07627]);
+        assert_eq!(mat.concentration, [8.840, 6.594, 4.710, 0.514]);
         assert_eq!(mat.noise_falloff, 300.0);
         assert_eq!(mat.normal_falloff, [0.9, 0.7, 0.8]);
         assert_eq!(mat.displacement, [0.05, 0.985, 10.0]);

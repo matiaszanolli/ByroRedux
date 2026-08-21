@@ -493,7 +493,7 @@ pub(crate) fn make_water_interaction_system() -> impl FnMut(&World, f32) + Send 
 /// underwater fog parameters. Extinction is evaluated from the authored
 /// water fog range, so each game's WATR material controls its underwater
 /// transition rather than a presentation-time fixed distance. Starfield's
-/// non-zero per-channel absorption ranges additionally attenuate the target
+/// non-zero per-channel absorption coefficients additionally attenuate the target
 /// tint with Beer–Lambert transmission; the zero triplet preserves the
 /// legacy path exactly. Returns `[0; 4]` when the camera is out of water (or
 /// no active camera). Moved out of `main.rs`
@@ -535,7 +535,7 @@ pub fn compute_underwater_params(world: &World) -> [f32; 4] {
         mat.underwater_color,
         state.depth,
         fog_near,
-        mat.absorption_ranges,
+        mat.absorption_coefficients,
     );
     [
         underwater_color[0],
@@ -545,29 +545,29 @@ pub fn compute_underwater_params(world: &World) -> [f32; 4] {
     ]
 }
 
-/// Apply authored Starfield color-absorption ranges to the underwater target
+/// Apply authored Starfield extinction coefficients to the underwater target
 /// tint. A zero triplet is the legacy sentinel and must remain an exact no-op.
-/// Ranges are 1/e distances, so the physically meaningful response is
-/// `exp(-distance / range)` per channel. The near fog plane is clear by
-/// definition and therefore does not contribute to this optical path.
+/// Beer–Lambert transmission is `exp(-distance * coefficient)` per channel.
+/// The near fog plane is clear by definition and therefore does not
+/// contribute to this optical path.
 #[inline]
 fn underwater_color_at_depth(
     color: [f32; 3],
     depth: f32,
     fog_near: f32,
-    absorption_ranges: [f32; 3],
+    absorption_coefficients: [f32; 3],
 ) -> [f32; 3] {
-    if !absorption_ranges
+    if !absorption_coefficients
         .iter()
-        .any(|range| range.is_finite() && *range > 0.0)
+        .any(|coefficient| coefficient.is_finite() && *coefficient > 0.0)
     {
         return color;
     }
     let optical_depth = (depth - fog_near).max(0.0);
     std::array::from_fn(|index| {
-        let range = absorption_ranges[index];
-        if range.is_finite() && range > 0.0 {
-            (color[index] * (-optical_depth / range).exp()).clamp(0.0, 1.0)
+        let coefficient = absorption_coefficients[index];
+        if coefficient.is_finite() && coefficient > 0.0 {
+            (color[index] * (-optical_depth * coefficient).exp()).clamp(0.0, 1.0)
         } else {
             color[index]
         }
@@ -602,7 +602,10 @@ mod tests {
     #[test]
     fn per_frame_water_and_billboard_collections_use_reused_fx_storage() {
         let water = include_str!("water.rs");
-        let water = water.split("#[cfg(test)]").next().expect("production water source");
+        let water = water
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production water source");
         assert!(!water.contains("use std::collections::"));
         for needle in [
             "FxHashSet::<EntityId>::default()",
@@ -641,7 +644,7 @@ mod tests {
     }
 
     #[test]
-    fn zero_absorption_ranges_preserve_legacy_underwater_tint() {
+    fn zero_absorption_coefficients_preserve_legacy_underwater_tint() {
         let color = [0.2, 0.4, 0.8];
         assert_eq!(
             underwater_color_at_depth(color, 500.0, 0.0, [0.0; 3]),
@@ -652,10 +655,11 @@ mod tests {
     #[test]
     fn starfield_absorption_attenuates_channels_independently_after_near_plane() {
         let color = [1.0, 1.0, 1.0];
-        let result = underwater_color_at_depth(color, 20.0, 10.0, [10.0, 20.0, 40.0]);
-        assert!((result[0] - (-1.0f32).exp()).abs() < 1.0e-6);
-        assert!((result[1] - (-0.5f32).exp()).abs() < 1.0e-6);
-        assert!((result[2] - (-0.25f32).exp()).abs() < 1.0e-6);
+        let result = underwater_color_at_depth(color, 20.0, 10.0, [0.16558, 0.09624, 0.07627]);
+        assert!((result[0] - (-1.6558f32).exp()).abs() < 1.0e-6);
+        assert!((result[1] - (-0.9624f32).exp()).abs() < 1.0e-6);
+        assert!((result[2] - (-0.7627f32).exp()).abs() < 1.0e-6);
+        assert!(result[2] > result[1] && result[1] > result[0]);
     }
 
     #[test]

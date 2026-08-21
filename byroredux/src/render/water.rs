@@ -269,9 +269,9 @@ pub(super) fn reemit_water_planes(
                 mat.effect_controls[3] * mat.specular_magnitude,
             ],
             absorption: [
-                mat.absorption_ranges[0],
-                mat.absorption_ranges[1],
-                mat.absorption_ranges[2],
+                mat.absorption_coefficients[0],
+                mat.absorption_coefficients[1],
+                mat.absorption_coefficients[2],
                 precipitation
                     * if mat.rain_response.is_finite() {
                         mat.rain_response.clamp(0.0, 4.0)

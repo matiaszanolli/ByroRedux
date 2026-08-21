@@ -4,9 +4,7 @@
 
 use super::*;
 use byroredux_core::ecs::components::groundcover::WindField;
-use byroredux_core::ecs::components::water::{
-    WaterFlow, WaterKind, WaterMaterial, WaterPlane,
-};
+use byroredux_core::ecs::components::water::{WaterFlow, WaterKind, WaterMaterial, WaterPlane};
 use byroredux_core::ecs::{ActiveCamera, Camera, GlobalTransform, MeshHandle, TotalTime, World};
 use byroredux_scripting::RippleEvent;
 
@@ -127,11 +125,7 @@ fn authored_wave_and_sun_params_reach_the_water_gpu_record() {
         "legacy rain controls must be packed into the reserved water lane"
     );
     assert_eq!(params.effects, [9.0, 500.0, 0.34, 3.2]);
-    for (actual, expected) in params
-        .tint_reflect
-        .iter()
-        .zip([0.975, 1.05, 1.125, 0.85])
-    {
+    for (actual, expected) in params.tint_reflect.iter().zip([0.975, 1.05, 1.125, 0.85]) {
         assert!(
             (actual - expected).abs() < 1.0e-5,
             "legacy reflection HDR multiplier must reach the water GPU tint"
@@ -357,7 +351,7 @@ fn authored_flowmap_scale_changes_visual_scroll_not_flow_physics() {
 }
 
 #[test]
-fn starfield_absorption_ranges_reach_water_gpu_params() {
+fn starfield_absorption_coefficients_reach_water_gpu_params() {
     let world = world_with_water_plane(
         0.05,
         0.6,
@@ -376,10 +370,14 @@ fn starfield_absorption_ranges_reach_water_gpu_params() {
         .expect("water plane");
     {
         let mut query = world.query_mut::<WaterPlane>().unwrap();
-        query.get_mut(water).unwrap().material.absorption_ranges = [12.0, 34.0, 56.0];
+        query
+            .get_mut(water)
+            .unwrap()
+            .material
+            .absorption_coefficients = [0.16558, 0.09624, 0.07627];
     }
     let draws = run_build(&world);
-    assert_eq!(draws[0].params.absorption, [12.0, 34.0, 56.0, 0.0]);
+    assert_eq!(draws[0].params.absorption, [0.16558, 0.09624, 0.07627, 0.0]);
 }
 
 #[test]

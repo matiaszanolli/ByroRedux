@@ -324,11 +324,13 @@ cannot silently fall back to calm-water physics just because its name is not
 an English `river`/`stream` token. Its bounded magnitude drives the canonical
 current speed as well; velocities at the documented rapids threshold select
 the stronger `Rapids` foam/normal profile.
-Starfield's DNAM color-absorption ranges now survive translation as
-per-channel Beer–Lambert distances; older games retain the zero sentinel and
-the established scalar fog response. Its concentration block no longer leaks
-into Skyrim-only depth weights: phytoplankton/sediment/yellow-matter feed
-column density and `oceanness` feeds both absorption and forward scattering.
+Starfield's DNAM color-absorption values survive translation as per-channel
+extinction coefficients; consumers apply Beer–Lambert transmission as
+`exp(-distance * coefficient)`. Older games retain the zero sentinel and the
+established scalar fog response. Its authored pigment concentrations remain
+in their vanilla 0..20 range and are normalized in the shader against the
+shared `STARFIELD_WATER_CONCENTRATION_REFERENCE`; `oceanness` retains its
+native 0..1 scale and feeds both absorption and forward scattering.
 Its authored flow-map scale is preserved, and surface roughness now softens
 geometry-hit reflections in addition to shaping the shared direct-sun
 highlight exponent. Skyrim's separate Specular Radius is also preserved and

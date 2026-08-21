@@ -118,7 +118,7 @@ pub struct GpuWaterParams {
     /// Authored effect controls: refraction magnitude, local specular power,
     /// reflection magnitude, and sun-specular magnitude.
     pub effects: [f32; 4],
-    /// xyz = Starfield per-channel color-absorption ranges in world units;
+    /// xyz = Starfield per-channel extinction coefficients;
     /// zero triplet is the legacy scalar-fog sentinel. w = precipitation ×
     /// authored rain-response (0..4), driving rain-surface response. Not a
     /// free slot — same trap as `VolumetricsParams.render_origin.w` (#1928)
@@ -1564,12 +1564,13 @@ mod absorption_ramp_tests {
              variant may select its own authored near plane"
         );
         assert!(
-            src.contains("vec3 authoredRanges = max(push.absorption.rgb, vec3(0.0));")
+            src.contains("vec3 authoredCoefficients = max(push.absorption.rgb, vec3(0.0));")
                 && src.contains("float concentrationDensity = clamp(")
-                && src.contains("max(push.concentration.a, 0.0) * 0.25")
+                && src.contains("/ STARFIELD_WATER_CONCENTRATION_REFERENCE")
+                && src.contains("clamp(push.concentration.a, 0.0, 1.0) * 0.25")
                 && src.contains("float oceanScatter = 1.0 + clamp(push.concentration.a")
-                && src.contains("channelTransmission = exp("),
-            "Starfield absorption ranges and oceanness must feed the Beer-Lambert and scattering paths"
+                && src.contains("-hitDist * authoredCoefficients * (1.0 + concentrationDensity)"),
+            "Starfield extinction coefficients and concentrations must feed the Beer-Lambert and scattering paths"
         );
         assert!(
             src.contains("float surfaceRoughness = clamp(push.noise_falloff.z, 0.0, 1.0)")

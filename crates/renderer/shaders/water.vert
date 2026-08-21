@@ -117,7 +117,7 @@ struct WaterParams {
     vec4 depth;
     // x/y/z/w = refraction/local-specular/reflection/sun-specular controls.
     vec4 effects;
-    // x/y/z = Starfield per-channel absorption ranges; w = precipitation *
+    // x/y/z = Starfield per-channel extinction coefficients; w = precipitation *
     // authored rain-response (0..4). Not a free slot — same trap as
     // VolumetricsParams.render_origin.w / GpuCamera.render_origin.w.
     // Keep these trailing slots in lockstep with water.frag and

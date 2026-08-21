@@ -46,6 +46,11 @@ use crate::ecs::storage::{Component, EntityId};
 /// these constants so compatibility water preserves one baseline response.
 pub const DEFAULT_WATER_WAVE_AMPLITUDE: f32 = 0.05;
 pub const DEFAULT_WATER_WAVE_FREQUENCY: f32 = 0.6;
+/// Upper bound authored by vanilla Starfield for each RGB water-column
+/// concentration lane. The shader normalizes pigment concentrations against
+/// this shared reference while preserving the fourth `oceanness` lane's
+/// native 0..1 scale.
+pub const STARFIELD_WATER_CONCENTRATION_REFERENCE: f32 = 20.0;
 
 /// Canonical half-width of the waterline acceptance/hysteresis band, in
 /// Bethesda world units. Camera submersion and rigid-body contact must use
@@ -249,10 +254,10 @@ pub struct WaterMaterial {
     /// Authored flow-map tile scale. One is neutral; zero means legacy
     /// records without a dedicated flow-map field.
     pub flowmap_scale: f32,
-    /// Starfield per-channel color-absorption ranges in world units. A zero
-    /// triplet is the canonical sentinel for pre-Starfield records and keeps
-    /// their legacy scalar fog response unchanged.
-    pub absorption_ranges: [f32; 3],
+    /// Starfield per-channel extinction coefficients. A zero triplet is the
+    /// canonical sentinel for pre-Starfield records and keeps their legacy
+    /// scalar fog response unchanged.
+    pub absorption_coefficients: [f32; 3],
     /// Starfield water-column concentrations: phytoplankton, sediment,
     /// yellow matter, and oceanness. Zero is the legacy sentinel.
     pub concentration: [f32; 4],
@@ -344,7 +349,7 @@ impl Default for WaterMaterial {
             specular_magnitude: 1.0,
             specular_radius: 0.0,
             flowmap_scale: 1.0,
-            absorption_ranges: [0.0; 3],
+            absorption_coefficients: [0.0; 3],
             concentration: [0.0; 4],
             // Shoreline foam is authored by the shader's contact ray for
             // every non-waterfall surface. Keep a visible but restrained

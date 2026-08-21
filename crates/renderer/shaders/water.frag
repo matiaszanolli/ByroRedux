@@ -106,7 +106,7 @@ struct WaterParams {
     // magnitude, and sun-specular magnitude (including the authored
     // Skyrim specular-properties magnitude multiplier).
     vec4 effects;
-    // xyz = Starfield color-absorption ranges in world units; zero means
+    // xyz = Starfield per-channel extinction coefficients; zero means
     // pre-Starfield/legacy water and selects the scalar fog response.
     // w = precipitation * authored rain-response (0..4). Not a free slot —
     // same trap as VolumetricsParams.render_origin.w / GpuCamera.render_origin.w.
@@ -472,31 +472,36 @@ vec3 absorbWaterColumn(vec3 refractedRadiance, float hitDist, bool cameraUnderwa
         ? clamp(push.underwater.a, 0.0, 8.0)
         : 1.0;
     float absorption = exp(-t * 2.0 * max(push.depth.y * fogAmount, 0.0));
-    vec3 authoredRanges = max(push.absorption.rgb, vec3(0.0));
+    vec3 authoredCoefficients = max(push.absorption.rgb, vec3(0.0));
     // Starfield's authored concentrations increase the optical density of
     // the corresponding water column without replacing its RGB palette.
     // This preserves the zero sentinel and keeps legacy records unchanged.
+    vec3 pigmentConcentration = clamp(
+        max(push.concentration.rgb, vec3(0.0))
+            / STARFIELD_WATER_CONCENTRATION_REFERENCE,
+        vec3(0.0),
+        vec3(1.0)
+    );
     float concentrationDensity = clamp(
-        dot(max(push.concentration.rgb, vec3(0.0)), vec3(0.25, 0.50, 0.25))
+        dot(pigmentConcentration, vec3(0.25, 0.50, 0.25))
             // Starfield's fourth concentration is "oceanness": unlike
             // phytoplankton/sediment/yellow matter it is not a pigment, but
             // controls the authored ocean absorption curve. Keep it as a
             // bounded density contribution and leave the zero sentinel
             // exactly legacy-compatible.
-            + max(push.concentration.a, 0.0) * 0.25,
+            + clamp(push.concentration.a, 0.0, 1.0) * 0.25,
         0.0,
         1.0
     );
-    // Starfield authors independent red/green/blue absorption distances.
+    // Starfield authors independent red/green/blue extinction coefficients.
     // Preserve the legacy scalar path when the triplet is zero, otherwise
     // apply the per-channel Beer–Lambert transmission on top of the shared
     // near/far ramp. This keeps older games byte-compatible while preventing
     // Starfield oceans from collapsing to a generic blue tint.
     vec3 channelTransmission = vec3(1.0);
-    if (any(greaterThan(authoredRanges, vec3(0.0)))) {
+    if (any(greaterThan(authoredCoefficients, vec3(0.0)))) {
         channelTransmission = exp(
-            -hitDist * (1.0 + concentrationDensity)
-            / max(authoredRanges, vec3(0.01))
+            -hitDist * authoredCoefficients * (1.0 + concentrationDensity)
         );
     }
     vec3 transmission = clamp(channelTransmission * absorption, 0.0, 1.0);

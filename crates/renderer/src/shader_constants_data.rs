@@ -432,6 +432,8 @@ pub const DEFAULT_WATER_WAVE_AMPLITUDE: f32 =
     byroredux_core::ecs::components::water::DEFAULT_WATER_WAVE_AMPLITUDE;
 pub const DEFAULT_WATER_WAVE_FREQUENCY: f32 =
     byroredux_core::ecs::components::water::DEFAULT_WATER_WAVE_FREQUENCY;
+pub const STARFIELD_WATER_CONCENTRATION_REFERENCE: f32 =
+    byroredux_core::ecs::components::water::STARFIELD_WATER_CONCENTRATION_REFERENCE;
 
 // Local fog-volume clustering (M55/Session 62). Lockstep with
 // `volumetrics_inject.comp`'s `sampleLocalMedium` and

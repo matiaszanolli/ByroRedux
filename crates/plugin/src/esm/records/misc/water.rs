@@ -286,10 +286,10 @@ pub struct WaterParams {
     /// Skyrim SE-only flow-map tile scale at DNAM offset 228. A zero
     /// sentinel means the record uses the canonical engine scale.
     pub flowmap_scale: f32,
-    /// Starfield DNAM color-absorption ranges (red, green, blue), in world
-    /// units. Zero means the source layout did not author per-channel
+    /// Starfield DNAM per-channel extinction coefficients (red, green,
+    /// blue). Zero means the source layout did not author per-channel
     /// absorption and the renderer uses its legacy scalar fog curve.
-    pub absorption_ranges: [f32; 3],
+    pub absorption_coefficients: [f32; 3],
     /// Starfield DNAM water-column concentrations: phytoplankton, sediment,
     /// yellow matter, and oceanness. Zero is the absent/legacy sentinel.
     pub concentration: [f32; 4],
@@ -347,7 +347,7 @@ impl Default for WaterParams {
             noise_wind_directions: [0.0; 3],
             noise_wind_speeds: [0.0; 3],
             flowmap_scale: 0.0,
-            absorption_ranges: [0.0; 3],
+            absorption_coefficients: [0.0; 3],
             concentration: [0.0; 4],
             roughness: 0.0,
             silt_amount: 0.0,
@@ -559,14 +559,17 @@ fn decode_data_oblivion(data: &[u8]) -> WaterParams {
             *dst = color;
         }
     }
-    // Displacement Simulator: force + velocity. These are the authored
-    // near-field chop controls; leave the prefix wave pair intact when the
-    // optional tail is absent on short 42/62-byte records.
-    if let Some(force) = read_f32_at(data, 80) {
-        p.wave_amplitude = force.max(0.0);
-    }
-    if let Some(velocity) = read_f32_at(data, 84) {
-        p.wave_frequency = velocity.max(0.0);
+    // The complete displacement simulator ends at byte 100. Oblivion's
+    // 86-byte SwampWater/MS31Water variant contains only two three-float
+    // simulator prefixes; byte 80 is their falloff, not wave amplitude.
+    // Preserve the prefix wave pair unless the full five-float block exists.
+    if data.len() >= 100 {
+        if let Some(force) = read_f32_at(data, 80) {
+            p.wave_amplitude = force.max(0.0);
+        }
+        if let Some(velocity) = read_f32_at(data, 84) {
+            p.wave_frequency = velocity.max(0.0);
+        }
     }
     // TES4 displacement simulator: starting size, radial falloff, and
     // dampener. These fields were previously discarded, making Oblivion
@@ -582,9 +585,11 @@ fn decode_data_oblivion(data: &[u8]) -> WaterParams {
     // full-length records against the GECK default tuple: rain
     // `0.1 0.6 0.985 2.0 0.01` at 60..76, displacement
     // `0.4 0.6 0.985 10.0 0.05` at 80..96.
-    for (slot, offset) in p.displacement.iter_mut().zip([96, 88, 92]) {
-        if let Some(value) = read_f32_at(data, offset) {
-            *slot = value.max(0.0);
+    if data.len() >= 100 {
+        for (slot, offset) in p.displacement.iter_mut().zip([96, 88, 92]) {
+            if let Some(value) = read_f32_at(data, offset) {
+                *slot = value.max(0.0);
+            }
         }
     }
     if let Some(value) = read_f32_at(data, 76) {
@@ -880,7 +885,9 @@ fn apply_skyrim_dnam_tail(p: &mut WaterParams, data: &[u8]) {
     let Some(far) = read_f32_at(data, 148) else {
         return;
     };
-    p.underwater_fog_near = near.max(0.0);
+    // Skyrim intentionally authors negative near planes (HelgenWater is
+    // -1000..-172). They are signed distances, not invalid values.
+    p.underwater_fog_near = near;
     p.underwater_fog_far = far.max(p.underwater_fog_near + 1.0);
     // Skyrim's visible chop is authored by the displacement simulator, not
     // the legacy four-byte "Wave Amplitude" prefix (which xEdit marks
@@ -1053,8 +1060,9 @@ fn read_rgb_at(data: &[u8], offset: usize) -> Option<[f32; 3]> {
 fn decode_dnam_fo4(data: &[u8]) -> WaterParams {
     let mut p = WaterParams::default();
 
-    // FO4's first float is the above-water depth/color ramp. Keep it
-    // separate from the underwater near/far pair at 44/48.
+    // FO4's first float is the depth amount. The authored above-water
+    // color-ramp near/far distances are the floats at 12/16; using 0..depth
+    // erases the per-water ramp authored by vanilla records.
     if let Some(depth_amount) = read_f32_at(data, 0) {
         p.fog_near = 0.0;
         p.fog_far = depth_amount.max(1.0);
@@ -1066,6 +1074,12 @@ fn decode_dnam_fo4(data: &[u8]) -> WaterParams {
     if let Some(color) = read_rgb_at(data, 8) {
         p.deep_color = color;
     }
+    if let Some(near) = read_f32_at(data, 12) {
+        p.fog_near = near;
+    }
+    if let Some(far) = read_f32_at(data, 16) {
+        p.fog_far = far.max(p.fog_near + 1.0);
+    }
     if let Some(color) = read_rgb_at(data, 36) {
         p.underwater_color = color;
     }
@@ -1073,7 +1087,10 @@ fn decode_dnam_fo4(data: &[u8]) -> WaterParams {
         p.underwater_fog_amount = amount.clamp(0.0, 8.0);
     }
     if let Some(near) = read_f32_at(data, 44) {
-        p.underwater_fog_near = near.max(0.0);
+        // Signed near planes are authored deliberately (for example FO4's
+        // exterior ocean uses -6400). Preserve them and only order the far
+        // plane relative to that authored origin.
+        p.underwater_fog_near = near;
     }
     if let Some(far) = read_f32_at(data, 48) {
         p.underwater_fog_far = far.max(p.underwater_fog_near + 1.0);
@@ -1181,106 +1198,12 @@ fn decode_dnam_fo4(data: &[u8]) -> WaterParams {
     p
 }
 
-/// Decode Fallout 76's WATR visual data. FO76 has a compact, explicit
-/// fog/physical/specular layout; it is not the FO4 noise-tail layout. Motion
-/// is carried separately by the record's `NAM0` linear-velocity vector.
+/// Decode Fallout 76's WATR visual data. Its 148-byte DNAM is byte-identical
+/// to Starfield's 152-byte Creation-2 layout through offset 144; Starfield
+/// alone appends roughness at 148. Share that verified prefix instead of
+/// maintaining a second, contradictory offset table.
 fn decode_dnam_fo76(data: &[u8]) -> WaterParams {
-    let mut p = WaterParams::default();
-    // Fog Properties: depth amount, shallow/deep colors and authored ranges.
-    let depth_far = if let Some(depth) = read_f32_at(data, 0) {
-        p.fog_near = 0.0;
-        let depth_far = depth.max(1.0);
-        p.fog_far = depth_far;
-        Some(depth_far)
-    } else {
-        None
-    };
-    if let Some(color) = read_rgb_at(data, 4) {
-        p.shallow_color = color;
-    }
-    if let Some(color) = read_rgb_at(data, 8) {
-        p.deep_color = color;
-    }
-    if let Some(near) = read_f32_at(data, 12) {
-        p.fog_near = near.max(0.0);
-    }
-    if let Some(far) = read_f32_at(data, 16) {
-        if far > 0.0 {
-            p.fog_far = far.max(p.fog_near + 1.0);
-        } else if let Some(depth_far) = depth_far {
-            p.fog_far = depth_far.max(p.fog_near + 1.0);
-        }
-    }
-    if let Some(color) = read_rgb_at(data, 36) {
-        p.underwater_color = color;
-    }
-    if let Some(amount) = read_f32_at(data, 40) {
-        p.underwater_fog_amount = amount.clamp(0.0, 8.0);
-    }
-    if let Some(near) = read_f32_at(data, 44) {
-        p.underwater_fog_near = near.max(0.0);
-    }
-    if let Some(far) = read_f32_at(data, 48) {
-        p.underwater_fog_far = far.max(p.underwater_fog_near + 1.0);
-    }
-    // FO4/FO76 author shallow/deep alpha and the corresponding distance
-    // thresholds immediately before the physical-properties block.
-    for (slot, offset) in p.alpha_controls.iter_mut().zip([20, 24, 28, 32]) {
-        if let Some(value) = read_f32_at(data, offset) {
-            *slot = value.max(0.0);
-        }
-    }
-
-    // Physical Properties: normal magnitude, reflectivity, Fresnel, and
-    // displacement simulator. The canonical ripple path consumes the
-    // authored falloff, dampener, and starting size.
-    if let Some(normal) = read_f32_at(data, 52) {
-        p.normal_magnitude = normal.max(0.0);
-    }
-    for (slot, offset) in p.normal_falloff.iter_mut().zip([56, 60, 72]) {
-        if let Some(value) = read_f32_at(data, offset) {
-            *slot = value.max(0.0);
-        }
-    }
-    if let Some(reflectivity) = read_f32_at(data, 64) {
-        p.reflectivity = reflectivity.clamp(0.0, 1.0);
-    }
-    if let Some(fresnel) = read_f32_at(data, 68) {
-        p.fresnel = fresnel.clamp(0.0, 1.0);
-    }
-    if let Some(force) = read_f32_at(data, 76) {
-        p.wave_amplitude = force.max(0.0);
-    }
-    if let Some(velocity) = read_f32_at(data, 80) {
-        p.wave_frequency = velocity.max(0.0);
-    }
-    for (slot, offset) in p.displacement.iter_mut().zip([92, 84, 88]) {
-        if let Some(value) = read_f32_at(data, offset) {
-            *slot = value.max(0.0);
-        }
-    }
-    if let Some(color) = read_rgb_at(data, 96) {
-        p.reflection_color = color;
-    }
-
-    // FO76's sun/specular block is distinct from the FO4 noise tail.
-    if let Some(power) = read_f32_at(data, 100) {
-        p.sun_specular_power = power.clamp(1.0, 2048.0);
-    }
-    if let Some(magnitude) = read_f32_at(data, 104) {
-        p.specular_magnitude = magnitude.max(0.0);
-    }
-    if let Some(power) = read_f32_at(data, 108) {
-        if power.is_finite() && power > 0.0 {
-            p.sun_specular_power = (p.sun_specular_power * power).clamp(1.0, 2048.0);
-        }
-    }
-    if let Some(magnitude) = read_f32_at(data, 112) {
-        if magnitude.is_finite() && magnitude > 0.0 {
-            p.specular_magnitude = (p.specular_magnitude * magnitude).clamp(0.0, 8.0);
-        }
-    }
-    p
+    decode_dnam_starfield(data)
 }
 
 /// Decode Starfield's WATR.DNAM visual data. Starfield replaced the RGB fog
@@ -1293,14 +1216,14 @@ fn decode_dnam_starfield(data: &[u8]) -> WaterParams {
         p.fog_far = depth.max(1.0);
     }
     // Starfield's first post-depth block is three independent color
-    // absorption ranges (xEdit: Color Absorbtion Ranges). Preserve them as
-    // distances rather than folding them into a guessed RGB tint; the
-    // renderer can then apply Beer–Lambert per channel without losing the
-    // authored water chemistry.
-    for (slot, offset) in p.absorption_ranges.iter_mut().zip([4, 8, 12]) {
-        if let Some(range) = read_f32_at(data, offset) {
-            *slot = if range.is_finite() && range > 0.0 {
-                range
+    // absorption coefficients. Vanilla orders and magnitudes these as
+    // extinction coefficients (red > green > blue), despite xEdit's legacy
+    // "Color Absorbtion Ranges" display label. Preserve the authored values
+    // so consumers can apply Beer–Lambert per channel.
+    for (slot, offset) in p.absorption_coefficients.iter_mut().zip([4, 8, 12]) {
+        if let Some(coefficient) = read_f32_at(data, offset) {
+            *slot = if coefficient.is_finite() && coefficient > 0.0 {
+                coefficient
             } else {
                 0.0
             };
@@ -1984,7 +1907,7 @@ mod tests {
         data[116..120].copy_from_slice(&0.013f32.to_le_bytes());
         data[120..124].copy_from_slice(&0.096f32.to_le_bytes());
         let w = parse_watr(0xCCCC, &[sub(b"DNAM", &data)], GameKind::Skyrim, &None);
-        assert_eq!(w.params.underwater_fog_near, 0.0);
+        assert_eq!(w.params.underwater_fog_near, -1000.0);
         assert!((w.params.underwater_fog_far - 1000.0).abs() < 1e-3);
         assert_eq!(w.params.wave_amplitude, 0.4);
         assert_eq!(w.params.wave_frequency, 1.35);
@@ -2060,6 +1983,8 @@ mod tests {
         data[0..4].copy_from_slice(&3007.0f32.to_le_bytes()); // depth amount
         data[4..8].copy_from_slice(&[45, 62, 62, 0]); // shallow colour
         data[8..12].copy_from_slice(&[46, 61, 57, 0]); // deep colour
+        data[12..16].copy_from_slice(&86.0f32.to_le_bytes()); // above-water fog near
+        data[16..20].copy_from_slice(&580.0f32.to_le_bytes()); // above-water fog far
         data[36..40].copy_from_slice(&[18, 27, 36, 0]); // underwater colour
         data[40..44].copy_from_slice(&0.75f32.to_le_bytes()); // underwater fog amount
         data[44..48].copy_from_slice(&(-6400.0f32).to_le_bytes()); // underwater near
@@ -2109,9 +2034,9 @@ mod tests {
         assert_eq!(w.params.underwater_fog_amount, 0.75);
         assert_eq!(w.params.normal_falloff, [0.9, 0.7, 0.8]);
         assert!((w.params.reflection_color[1] - 68.0 / 255.0).abs() < 1e-6);
-        assert_eq!(w.params.fog_near, 0.0);
-        assert_eq!(w.params.fog_far, 3007.0);
-        assert_eq!(w.params.underwater_fog_near, 0.0);
+        assert_eq!(w.params.fog_near, 86.0);
+        assert_eq!(w.params.fog_far, 580.0);
+        assert_eq!(w.params.underwater_fog_near, -6400.0);
         assert_eq!(w.params.underwater_fog_far, 1700.0);
         assert_eq!(w.params.alpha_controls, [0.35, 0.90, 12.0, 240.0]);
         assert!((w.params.reflectivity - 0.2935).abs() < 1e-6);
@@ -2224,7 +2149,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_watr_decodes_fo76_visual_layout() {
+    fn parse_watr_fo76_uses_the_creation2_prefix_layout() {
         let mut data = vec![0u8; 148];
         data[0..4].copy_from_slice(&900.0f32.to_le_bytes());
         data[4..8].copy_from_slice(&[10, 20, 30, 0]);
@@ -2255,41 +2180,25 @@ mod tests {
         data[104..108].copy_from_slice(&0.75f32.to_le_bytes());
         data[108..112].copy_from_slice(&1.5f32.to_le_bytes());
         data[112..116].copy_from_slice(&1.25f32.to_le_bytes());
-        let mut velocity = Vec::new();
-        velocity.extend_from_slice(&3.0f32.to_le_bytes());
-        velocity.extend_from_slice(&4.0f32.to_le_bytes());
-        velocity.extend_from_slice(&0.0f32.to_le_bytes());
-        let w = parse_watr(
-            0x18,
-            &[sub(b"DNAM", &data), sub(b"NAM0", &velocity)],
-            GameKind::Fallout76,
-            &None,
+        let w = parse_watr(0x18, &[sub(b"DNAM", &data)], GameKind::Fallout76, &None);
+        assert_eq!(w.params.fog_near, 0.0);
+        assert_eq!(w.params.fog_far, 900.0);
+        assert_eq!(w.params.absorption_coefficients[2], 25.0);
+        assert_eq!(w.params.concentration, [450.0, 0.30, 0.85, 8.0]);
+        assert_eq!(w.params.underwater_fog_near, 0.65);
+        assert_eq!(w.params.underwater_fog_far, 4.0);
+        assert_eq!(w.params.normal_magnitude, 900.0);
+        assert_eq!(w.params.normal_falloff, [0.6, 0.85, 0.65]);
+        assert_eq!(w.params.wave_amplitude, 0.35);
+        assert_eq!(w.params.wave_frequency, 0.04);
+        assert_eq!(w.params.displacement, [1.2, 0.75, 0.8]);
+        assert_eq!(w.params.noise_wind_directions[0], 0.985f32.to_radians());
+        assert_eq!(w.params.noise_wind_speeds[1], 80.0);
+        assert_eq!(w.params.noise_amplitude_scales, [1.5, 1.25, 0.0]);
+        assert_eq!(
+            w.params.roughness, 0.0,
+            "FO76 has no trailing roughness float"
         );
-        assert_eq!(w.params.fog_near, 25.0);
-        assert_eq!(w.params.fog_far, 450.0);
-        assert_eq!(w.params.alpha_controls, [0.30, 0.85, 8.0, 180.0]);
-        assert_eq!(w.params.normal_magnitude, 0.6);
-        assert_eq!(w.params.normal_falloff, [0.85, 0.65, 0.75]);
-        assert!((w.params.shallow_color[2] - 30.0 / 255.0).abs() < 1e-6);
-        assert!((w.params.deep_color[0] - 40.0 / 255.0).abs() < 1e-6);
-        assert!((w.params.underwater_color[2] - 90.0 / 255.0).abs() < 1e-6);
-        assert_eq!(w.params.wave_amplitude, 0.8);
-        assert_eq!(w.params.wave_frequency, 1.2);
-        assert_eq!(w.params.displacement, [0.05, 0.985, 10.0]);
-        assert_eq!(w.params.sun_specular_power, 120.0);
-        assert_eq!(w.params.specular_magnitude, 0.9375);
-        assert_eq!(w.params.wind_speed, 5.0);
-        assert!((w.params.wind_direction - (-4.0f32).atan2(3.0)).abs() < 1e-6);
-        assert_eq!(w.params.noise_wind_speeds, [5.0, 5.0, 5.0]);
-        assert_eq!(w.params.noise_wind_directions, [(-4.0f32).atan2(3.0); 3]);
-        data[16..20].copy_from_slice(&0.0f32.to_le_bytes());
-        let fallback = parse_watr(
-            0x18,
-            &[sub(b"DNAM", &data), sub(b"NAM0", &velocity)],
-            GameKind::Fallout76,
-            &None,
-        );
-        assert_eq!(fallback.params.fog_far, 900.0);
     }
 
     #[test]
@@ -2325,7 +2234,7 @@ mod tests {
         data[148..152].copy_from_slice(&0.5f32.to_le_bytes());
         let w = parse_watr(0x1234, &[sub(b"DNAM", &data)], GameKind::Starfield, &None);
         assert_eq!(w.params.fog_far, 1200.0);
-        assert_eq!(w.params.absorption_ranges, [0.1, 0.2, 0.3]);
+        assert_eq!(w.params.absorption_coefficients, [0.1, 0.2, 0.3]);
         assert_eq!(w.params.concentration, [0.4, 0.5, 0.6, 0.7]);
         assert_eq!(w.params.underwater_fog_amount, 0.7);
         assert_eq!(w.params.underwater_fog_near, 4.0);
@@ -2401,6 +2310,22 @@ mod tests {
                 "oblivion wind_direction {degrees} deg"
             );
         }
+    }
+
+    #[test]
+    fn oblivion_86_byte_data_does_not_promote_simulator_falloff_to_wave_amplitude() {
+        // SwampWater/MS31Water carry this short shipped shape: the final
+        // three-float simulator starts at 76 and ends at 86, so offset 80 is
+        // falloff rather than a complete displacement block's force.
+        let mut data = vec![0u8; 86];
+        data[8..12].copy_from_slice(&0.10f32.to_le_bytes());
+        data[12..16].copy_from_slice(&0.60f32.to_le_bytes());
+        data[76..80].copy_from_slice(&0.40f32.to_le_bytes());
+        data[80..84].copy_from_slice(&0.985f32.to_le_bytes());
+        let w = parse_watr(0x1004, &[sub(b"DATA", &data)], GameKind::Oblivion, &None);
+        assert_eq!(w.params.wave_amplitude, 0.10);
+        assert_eq!(w.params.wave_frequency, 0.60);
+        assert_eq!(w.params.displacement, [0.0; 3]);
     }
 
     #[test]

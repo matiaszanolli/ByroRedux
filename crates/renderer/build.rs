@@ -613,6 +613,11 @@ fn main() {
         "#define DEFAULT_WATER_WAVE_FREQUENCY {DEFAULT_WATER_WAVE_FREQUENCY:?}"
     )
     .unwrap();
+    writeln!(
+        out,
+        "#define STARFIELD_WATER_CONCENTRATION_REFERENCE {STARFIELD_WATER_CONCENTRATION_REFERENCE:?}"
+    )
+    .unwrap();
     writeln!(out).unwrap();
 
     writeln!(out, "// Local fog-volume clustering (M55/Session 62).").unwrap();
