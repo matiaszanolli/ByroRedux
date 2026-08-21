@@ -162,6 +162,19 @@ impl CharacterController {
     /// capsule — matches Skyrim's 1st-person eye height. The test
     /// `character_controller_human_dimensions` asserts `eye_height <
     /// half_height + radius` to keep the eye inside the visible capsule.
+    /// Worst-case frame `dt` the character integration is allowed to see.
+    ///
+    /// `character_controller_system` clamps its incoming `dt` to this before
+    /// integrating: a frame hitch must degrade to "freeze for one tick", never
+    /// to "teleport across the cell". Frames slower than 30 fps read as
+    /// hitches anyway.
+    ///
+    /// Lives here rather than in the consumer (#2886) so
+    /// `character_controller_human_dimensions` can state the
+    /// terminal-velocity invariant in the units it actually holds in —
+    /// `gravity × dt` is a velocity, `gravity` alone is not.
+    pub const MAX_FRAME_DT: f32 = 1.0 / 30.0;
+
     pub const HUMAN: Self = Self {
         half_height: 46.0,
         radius: 18.0,
@@ -235,9 +248,22 @@ mod tests {
         assert!(c.jump_velocity > 0.0);
         assert!(c.gravity < 0.0, "gravity is downward (negative Y)");
         assert!(c.terminal_velocity < 0.0);
+        // #2886 — this used to read `terminal_velocity < gravity`, comparing
+        // a BU/s velocity against a BU/s² acceleration. It happened to hold,
+        // but it did not test what its message claimed. The real invariant is
+        // that the clamp must be unreachable in a single worst-case frame, so
+        // terminal velocity is a multi-frame free-fall limit rather than an
+        // instantaneous cap on the very first integration step.
+        let one_frame_of_gravity = c.gravity * CharacterController::MAX_FRAME_DT;
         assert!(
-            c.terminal_velocity < c.gravity,
-            "terminal velocity must be more negative than 1-frame gravity"
+            c.terminal_velocity < one_frame_of_gravity,
+            "terminal velocity ({}) must be more negative than one worst-case \
+             frame of gravity ({} BU/s = {} BU/s² × {} s), or the clamp fires \
+             on the first airborne tick instead of bounding free fall",
+            c.terminal_velocity,
+            one_frame_of_gravity,
+            c.gravity,
+            CharacterController::MAX_FRAME_DT,
         );
         assert!(c.step_height > 0.0);
         assert!(c.step_min_width > 0.0);

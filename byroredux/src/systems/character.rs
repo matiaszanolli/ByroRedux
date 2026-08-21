@@ -138,8 +138,10 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
     // 1/30 s is a reasonable cap — frames above that are perceived
     // as hitches anyway, and the simulation behaviour for any frame
     // taking >33 ms degrades to "freeze for one tick", not "teleport".
-    const MAX_DT: f32 = 1.0 / 30.0;
-    let dt = dt.min(MAX_DT);
+    // #2886 — the clamp value lives on `CharacterController` so the preset's
+    // own invariant test can state the terminal-velocity bound in velocity
+    // units instead of comparing against a bare acceleration.
+    let dt = dt.min(byroredux_physics::CharacterController::MAX_FRAME_DT);
     let mode = world
         .try_resource::<PlayerMode>()
         .map(|r| *r)
@@ -1241,10 +1243,18 @@ mod tests {
     /// Free-fall: gravity accumulates frame-by-frame, capped at
     /// terminal velocity. Pin the integration so a refactor can't
     /// silently swap to a different integrator.
+    ///
+    /// #2886 — the constants are READ from the preset, not transcribed. The
+    /// pre-fix literals (`g = -1373.4`, `jv = 380.0`) had been superseded by
+    /// a 2× jump-height / 1.5× hang-time retune (`gravity = -1220.8`,
+    /// `jump_velocity = 506.6667`) that these tests never noticed, while
+    /// their comments claimed to pin the preset. A link asserted only in a
+    /// comment is not a link.
     #[test]
     fn integrate_vertical_free_fall_accumulates_to_terminal() {
-        let g = -1373.4; // CharacterController::HUMAN.gravity
-        let tv = -2000.0; // CharacterController::HUMAN.terminal_velocity
+        let human = byroredux_physics::CharacterController::HUMAN;
+        let g = human.gravity;
+        let tv = human.terminal_velocity;
         let mut v = 0.0;
         let dt = 1.0 / 60.0;
         for _ in 0..60 {
@@ -1263,8 +1273,9 @@ mod tests {
     /// Terminal velocity is a clamp on the downward direction.
     #[test]
     fn integrate_vertical_clamps_at_terminal() {
-        let g = -1373.4;
-        let tv = -2000.0;
+        let human = byroredux_physics::CharacterController::HUMAN;
+        let g = human.gravity;
+        let tv = human.terminal_velocity;
         // Start already at terminal — one more step shouldn't go past.
         let v = integrate_vertical(tv, g, tv, 1.0 / 60.0, 0.0, false);
         assert_eq!(v, tv);
@@ -1275,9 +1286,10 @@ mod tests {
     /// "always available when grounded" jump model.
     #[test]
     fn integrate_vertical_jump_replaces_velocity() {
-        let g = -1373.4;
-        let tv = -2000.0;
-        let jv = 380.0;
+        let human = byroredux_physics::CharacterController::HUMAN;
+        let g = human.gravity;
+        let tv = human.terminal_velocity;
+        let jv = human.jump_velocity;
         let v = integrate_vertical(tv, g, tv, 1.0 / 60.0, jv, true);
         assert_eq!(v, jv, "jump must set velocity to jump_velocity exactly");
     }

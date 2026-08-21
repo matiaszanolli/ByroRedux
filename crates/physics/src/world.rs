@@ -409,10 +409,26 @@ impl PhysicsWorld {
     /// the substeps run this frame have consumed [`SUBSTEP_TIME_BUDGET`],
     /// the loop stops and forfeits the remaining backlog instead of
     /// running the full 5-substep budget at tens-of-ms-per-substep settle
-    /// cost. At least one substep always runs (the check is after the
-    /// step), so a genuinely slow frame still advances the simulation.
-    /// See [`SUBSTEP_TIME_BUDGET`] (#1698).
+    /// cost. Once the loop is entered at least one substep always runs (the
+    /// budget check is *after* the step), so a genuinely slow frame still
+    /// advances the simulation. See [`SUBSTEP_TIME_BUDGET`] (#1698).
+    ///
+    /// That guarantee is scoped to the budget bail-out and does **not** mean
+    /// every call steps (#2879): whenever the accumulator has not yet reached
+    /// `PHYSICS_DT` this returns `0` having done nothing — the normal case
+    /// above 60 fps, where several frames bank sub-tick time before one
+    /// full tick is due. Callers must not read `0` as "the simulation is
+    /// idle"; that is what [`Self::pending_wake`] is for.
+    ///
+    /// `frame_dt` is sanitised through `f32::max`, which returns the
+    /// **non-NaN** operand — so `NAN` and negatives alike contribute zero
+    /// rather than poisoning the accumulator. This is deliberate, not
+    /// incidental: `f32::maximum` *propagates* NaN, and a NaN accumulator
+    /// can never satisfy `>= PHYSICS_DT`, wedging the simulation forever
+    /// with no error. Pinned by `non_finite_frame_dt_cannot_poison_the_accumulator`.
     pub fn step(&mut self, frame_dt: f32) -> u32 {
+        // Do NOT rewrite as `f32::maximum` or an `if frame_dt > 0.0` guard
+        // without re-reading the NaN note above (#2879).
         self.accumulator += frame_dt.max(0.0);
         let max_acc = MAX_SUBSTEPS as f32 * PHYSICS_DT;
         if self.accumulator > max_acc {
@@ -1525,6 +1541,94 @@ mod tests {
         w.wake();
         assert!(w.step(PHYSICS_DT) > 0, "wake() must re-engage the step");
         assert_eq!(w.step(PHYSICS_DT), 0, "sleeps again once idle");
+    }
+
+    /// Regression for #2879. Every `step()` call in this suite passed either
+    /// exactly `PHYSICS_DT` or `100.0` — the one dt at which the accumulator
+    /// always reaches a substep on the first call, and a hitch. The
+    /// `accumulator < PHYSICS_DT` branch (the whole above-60 fps regime, the
+    /// project's own target) was never exercised, which is how #2856's total
+    /// stall shipped green.
+    ///
+    /// Sub-tick frames must **bank** time rather than forfeit it: four
+    /// quarter-tick frames owe exactly one substep, and the wake that armed
+    /// them has to survive all four.
+    #[test]
+    fn sub_tick_frames_bank_time_until_a_full_tick_is_due() {
+        let mut w = PhysicsWorld::new();
+        w.step(PHYSICS_DT); // settle
+        assert_eq!(w.step(PHYSICS_DT), 0, "asleep");
+
+        w.wake();
+        let quarter = PHYSICS_DT / 4.0;
+        // Three sub-tick frames: no substep is due yet, and the wake must
+        // still be armed — consuming it here is exactly #2856, and the
+        // static-scene fast path would then zero the banked accumulator.
+        for frame in 0..3 {
+            assert_eq!(w.step(quarter), 0, "frame {frame} owes no full tick yet");
+            assert!(
+                w.pending_wake(),
+                "the wake must survive sub-tick frame {frame} — clearing it \
+                 lets the fast path zero the accumulator and freeze the scene"
+            );
+        }
+        assert_eq!(w.step(quarter), 1, "the fourth quarter completes one tick");
+        assert!(!w.pending_wake(), "a substep ran, so the wake is consumed");
+    }
+
+    /// Companion for #2879: the quiesced fast path must reach the same
+    /// verdict at a sub-tick `dt` as at exactly `PHYSICS_DT`. With nothing
+    /// awake and no pending wake there is no work at any frame rate.
+    #[test]
+    fn static_scene_skips_step_at_sub_tick_frame_rates_too() {
+        let mut w = PhysicsWorld::new();
+        let floor = single_shape(&CollisionShape::Cuboid {
+            half_extents: Vec3::new(500.0, 1.0, 500.0),
+        });
+        let fh = w.bodies.insert(RigidBodyBuilder::fixed().build());
+        w.colliders
+            .insert_with_parent(ColliderBuilder::new(floor).build(), fh, &mut w.bodies);
+
+        assert!(w.step(PHYSICS_DT) > 0, "first step settles initial state");
+        let half = PHYSICS_DT / 2.0;
+        for _ in 0..8 {
+            assert_eq!(w.step(half), 0, "no dynamics awake → step skipped");
+        }
+        // Eight half-ticks is four ticks of wall time; a quiesced scene must
+        // not have banked any of it, or it would burst four substeps the
+        // instant anything woke.
+        assert_eq!(
+            w.accumulator, 0.0,
+            "the quiesced fast path zeroes the accumulator every frame"
+        );
+    }
+
+    /// Regression for #2879. `frame_dt.max(0.0)` is NaN-safe only because
+    /// Rust's `f32::max` returns the non-NaN operand. Nothing stated that was
+    /// intentional and no test pinned it, so a refactor to `f32::maximum`
+    /// (which *propagates* NaN) or to an `if frame_dt > 0.0` guard would turn
+    /// the accumulator into NaN — which can never satisfy `>= PHYSICS_DT`,
+    /// wedging the simulation forever with no error and no panic.
+    #[test]
+    fn non_finite_frame_dt_cannot_poison_the_accumulator() {
+        for bad in [f32::NAN, -1.0, f32::NEG_INFINITY] {
+            let mut w = PhysicsWorld::new();
+            w.step(PHYSICS_DT); // settle
+            w.wake();
+            let before = w.accumulator;
+
+            assert_eq!(w.step(bad), 0, "{bad} owes no substep");
+            assert!(
+                w.accumulator.is_finite(),
+                "frame_dt={bad} poisoned the accumulator ({}) — it can never \
+                 reach PHYSICS_DT again and the simulation is wedged",
+                w.accumulator
+            );
+            assert_eq!(w.accumulator, before, "a bad frame_dt must contribute 0");
+
+            // And the world must still be steppable afterwards.
+            assert_eq!(w.step(PHYSICS_DT), 1, "recovers on the next good frame");
+        }
     }
 
     /// A falling dynamic body is awake, so the fast path must NOT skip it —

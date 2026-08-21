@@ -88,8 +88,13 @@ The public surface (`lib.rs`):
 
 The system lives in [`sync.rs`](../../crates/physics/src/sync.rs) and
 runs in `Stage::Physics`, after transform propagation. It early-returns
-if no `PhysicsWorld` resource is present (the loose-NIF viewer opt-out).
-It's structured as four phases:
+if no `PhysicsWorld` resource is present — which covers test fixtures and
+embedders that omit the resource, **not** a loose-NIF viewer opt-out: the
+shipping binary inserts `PhysicsWorld` unconditionally in
+[`boot.rs`](../../byroredux/src/boot.rs), so every path including
+`cargo run -- mesh.nif` runs the full tick (#2880).
+
+It's structured as four phases plus a 2.5 buoyancy hook:
 
 **Phase 1 — Register newcomers.** Collect every entity that has
 `(CollisionShape, RigidBodyData, GlobalTransform)` but not yet a
@@ -128,9 +133,33 @@ Rapier via `set_next_kinematic_position`. `CharacterKinematic` bodies are
 `set_kinematic_translation` call, and pushing the ECS transform would
 race the KCC-corrected pose write.
 
+**Phase 2.5 — Buoyancy.** Call `water::apply_buoyancy`, which adds
+Archimedes lift and submerged damping to every dynamic body inside a
+`WaterVolume` (the WATAL physics sink — see
+[watal.md](watal.md) for the model itself).
+
+**Its position in the sequence is the correctness property.** These are
+*forces*, so they have to land before the step that integrates them: run
+after Phase 3 and every float lags a frame, which reads as a water bug
+rather than an ordering bug. It is numbered 2.5 rather than renumbering
+3/4 because it is a hook into an existing sequence, and because it carries
+its own labelled `BYRO_PROFILE` bracket (`buoyancy=`) alongside the four
+originals.
+
+It is a no-op when the cell has no `WaterPlane` entities, and is
+wake-disciplined so it never pins the static-scene fast path awake — with
+one deliberate exception: a body that streamed in *already submerged*
+spawns asleep, so the phase is passed `n_new > 0` to force a scan on the
+frame it registers (`sync.rs`). Skipping that frame is what #2871 pinned.
+
 **Phase 3 — Step.** Call `PhysicsWorld::step(dt)`, which drains the
 accumulator at the fixed 60 Hz tick rate (see below). Logs at `trace`
 when more than one substep ran.
+
+`step` returns `0` whenever the accumulator has not yet reached
+`PHYSICS_DT` — the normal case above 60 fps, where several frames bank
+sub-tick time before one full tick is due. A `0` return is not "the
+simulation is idle" (#2879).
 
 **Phase 4 — Pull dynamic transforms back.** For every `RapierHandles`
 entity whose `RigidBodyData.motion_type == Dynamic`, read the

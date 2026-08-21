@@ -2,16 +2,30 @@
 //!
 //! Runs after `transform_propagation_system` so that `GlobalTransform`
 //! is fresh for Phase 1 spawning and Phase 2 kinematic pushes. Walks
-//! four phases:
+//! four phases plus a 2.5 buoyancy hook:
 //!
 //! 1. **Register** new entities: `(CollisionShape, RigidBodyData,
 //!    GlobalTransform)` without `RapierHandles` → build & insert
 //!    Rapier body + collider, attach `RapierHandles`.
 //! 2. **Push kinematic** transforms: keyframed bodies track the ECS
 //!    `GlobalTransform` via `set_next_kinematic_position`.
+//! 2.5. **Buoyancy** (`crate::water::apply_buoyancy`, WATAL Phase 2):
+//!    Archimedes lift + submerged damping on dynamic bodies inside a
+//!    `WaterVolume`. **Its position is the correctness property** — forces
+//!    have to be applied before the step that integrates them, so moving it
+//!    after phase 3 makes lift lag a frame and reads as a water bug, not an
+//!    ordering bug. Numbered 2.5 rather than renumbering 3/4 because it is a
+//!    hook into an existing sequence, and it carries its own labelled
+//!    `BYRO_PROFILE` bracket (`buoyancy=`).
 //! 3. **Step**: drain the fixed-timestep accumulator.
 //! 4. **Pull dynamic** transforms back into ECS `Transform` (dynamic
 //!    bodies only — static/keyframed are driven the other way).
+//!
+//! The system early-returns when no `PhysicsWorld` resource is present. That
+//! covers test fixtures and embedders that omit it — **not** a loose-NIF
+//! viewer opt-out: the shipping binary inserts `PhysicsWorld`
+//! unconditionally (`byroredux/src/boot.rs`), so every path including
+//! `cargo run -- mesh.nif` runs the full tick (#2880).
 
 use byroredux_core::ecs::components::collision::{CollisionShape, MotionType, RigidBodyData};
 use byroredux_core::ecs::components::{
@@ -23,6 +37,7 @@ use byroredux_core::form_id::FormIdPool;
 use rapier3d::prelude::{ColliderBuilder, RigidBodyBuilder, RigidBodyType};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::OnceLock;
 
 use crate::components::{ActorBoneCollider, RapierHandles};
 use crate::config::ContactConfig;
@@ -100,8 +115,9 @@ pub fn physics_sync_system(world: &World, dt: f32) {
 
     // `BYRO_PROFILE=1` logs a per-phase breakdown so the dominant phase
     // can be localized without guessing (Phase 1 collect/register, 2
-    // push-kinematic, 3 Rapier step, 4 pull-dynamic). Silent otherwise.
-    let profile = std::env::var_os("BYRO_PROFILE").is_some();
+    // push-kinematic, 2.5 buoyancy, 3 Rapier step, 4 pull-dynamic). Silent
+    // otherwise.
+    let profile = profile_phases();
     let t = |on: bool| on.then(std::time::Instant::now);
     let ms = |s: Option<std::time::Instant>| s.map(|i| i.elapsed().as_secs_f32() * 1000.0);
 
@@ -167,10 +183,33 @@ pub fn physics_sync_system(world: &World, dt: f32) {
 
     // #1698 — opt-in awake-faller diagnostic (separate from BYRO_PROFILE so a
     // root-cause run can name the clutter behind a cell-entry settle storm
-    // without the per-phase spam). Zero cost when the flag is unset.
-    if std::env::var_os("BYRO_PROFILE_FALLERS").is_some() {
+    // without the per-phase spam).
+    if profile_fallers() {
         dump_awake_fallers(world);
     }
+}
+
+/// `BYRO_PROFILE` — per-phase timing breakdown.
+///
+/// #2881 — read once per process, not once per frame. The previous
+/// `std::env::var_os(...)` call sites carried the comment "zero cost when the
+/// flag is unset", which describes the *branch*, not the lookup: `var_os`
+/// takes the process-wide environ lock on every call and allocates an
+/// `OsString` on a hit, regardless of the value. Both flags are read on the
+/// per-tick path, so that ran twice a frame forever.
+///
+/// Caching also makes the flags honest: a diagnostic that could flip
+/// mid-session would produce a log with an unannounced gap in it.
+fn profile_phases() -> bool {
+    static PROFILE: OnceLock<bool> = OnceLock::new();
+    *PROFILE.get_or_init(|| std::env::var_os("BYRO_PROFILE").is_some())
+}
+
+/// `BYRO_PROFILE_FALLERS` — one-shot awake-faller dump. See
+/// [`profile_phases`] for why this is cached (#2881).
+fn profile_fallers() -> bool {
+    static PROFILE_FALLERS: OnceLock<bool> = OnceLock::new();
+    *PROFILE_FALLERS.get_or_init(|| std::env::var_os("BYRO_PROFILE_FALLERS").is_some())
 }
 
 // ── #1698 awake-faller diagnostic ───────────────────────────────────────
@@ -1654,5 +1693,119 @@ mod actor_bone_group_tests {
                 normal_y: -0.98,
             }
         );
+    }
+}
+
+#[cfg(test)]
+mod tick_documentation_tests {
+    /// Regression for #2880. The module doc is the authoritative description
+    /// of the tick, and it said "four phases" while the live sequence has
+    /// five — `apply_buoyancy` runs as phase 2.5, between the kinematic push
+    /// and the step. That omission matters because the phase's *position* is
+    /// the correctness property: forces must be applied before the step that
+    /// integrates them, so a future reorder would be checked against a doc
+    /// that never mentioned the constraint.
+    ///
+    /// Source-inspection check (same pattern as `character::regen`'s
+    /// doc-drift regressions) tying the doc to the call it describes.
+    #[test]
+    fn module_doc_covers_the_buoyancy_phase_and_its_ordering() {
+        let src = include_str!("sync.rs");
+        let doc: String = src
+            .lines()
+            .take_while(|line| line.starts_with("//!"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            src.contains("crate::water::apply_buoyancy(world,"),
+            "fixture precondition: the buoyancy phase is still called here"
+        );
+        // An *enumerated* entry, not merely the word somewhere in the prose:
+        // the pre-fix doc listed 1-4 and mentioned water nowhere, and a fix
+        // that only added a passing mention would leave the phase absent
+        // from the list a reorder is checked against.
+        let enumerated = doc
+            .lines()
+            .any(|line| line.starts_with("//! 2.5.") && line.to_lowercase().contains("buoyancy"));
+        assert!(
+            enumerated,
+            "the tick doc must enumerate the 2.5 buoyancy phase in its phase \
+             list — it is a real phase with its own BYRO_PROFILE bracket, \
+             not an implementation detail of phase 3 (#2880)"
+        );
+        assert!(
+            doc.contains("before the step"),
+            "the doc must state WHY 2.5 precedes phase 3 — the ordering is \
+             the correctness property, and a doc that only lists the phase \
+             would not catch a reorder (#2880)"
+        );
+    }
+
+    /// Companion for #2880. The doc claimed the `PhysicsWorld` early-return
+    /// was "the loose-NIF viewer opt-out". It is not: the shipping binary
+    /// inserts the resource unconditionally, so the premise hid a live code
+    /// path from review. Pin the corrected wording.
+    #[test]
+    fn module_doc_does_not_claim_a_loose_nif_physics_opt_out() {
+        let src = include_str!("sync.rs");
+        let doc: String = src
+            .lines()
+            .take_while(|line| line.starts_with("//!"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            doc.contains("not** a loose-NIF"),
+            "the early-return covers test fixtures and embedders; the doc \
+             must not re-describe it as a viewer opt-out the shipping \
+             binary does not have (#2880)"
+        );
+    }
+
+    /// Regression for #2881. Both `BYRO_PROFILE*` probes ran
+    /// `std::env::var_os` on the per-tick path while the adjacent comment
+    /// claimed "zero cost when the flag is unset" — which describes the
+    /// branch, not the lookup (`var_os` takes the environ lock and allocates
+    /// on a hit regardless). Pin them to a once-per-process read.
+    #[test]
+    fn profile_flags_are_read_once_per_process_not_per_tick() {
+        let src = include_str!("sync.rs");
+        let system_start = src
+            .find("pub fn physics_sync_system")
+            .expect("the tick system is still here");
+        let system_end = src[system_start..]
+            .find("\n}\n")
+            .expect("system body is delimited")
+            + system_start;
+        let system_body = &src[system_start..system_end];
+        assert!(
+            !system_body.contains("env::var"),
+            "physics_sync_system must not probe the environment per tick — \
+             hoist the flag into a OnceLock accessor like `profile_phases` \
+             (#2881)"
+        );
+        // Both accessors must actually cache, not merely wrap the lookup.
+        for accessor in ["fn profile_phases", "fn profile_fallers"] {
+            let start = src.find(accessor).expect("accessor present");
+            let body = &src[start..start + 400];
+            assert!(
+                body.contains("OnceLock"),
+                "`{accessor}` must cache its lookup (#2881)"
+            );
+        }
+    }
+
+    /// The two accessors must agree with the environment they were built
+    /// from. Cheap, but it stops a copy-paste that reads the same variable
+    /// name twice from going unnoticed.
+    #[test]
+    fn profile_accessors_read_their_own_variables() {
+        let src = include_str!("sync.rs");
+        assert!(src.contains(r#"var_os("BYRO_PROFILE")"#));
+        assert!(src.contains(r#"var_os("BYRO_PROFILE_FALLERS")"#));
+        // Both are absent from this test process, so both must be false —
+        // and, being cached, must stay stable across calls.
+        assert_eq!(super::profile_phases(), super::profile_phases());
+        assert_eq!(super::profile_fallers(), super::profile_fallers());
     }
 }
