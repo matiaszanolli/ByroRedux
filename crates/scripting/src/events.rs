@@ -31,6 +31,17 @@ pub struct HitEvent {
     pub aggressor: EntityId,
     pub source: EntityId,
     pub projectile: EntityId,
+    /// Damage the producer resolved for this hit, before the target's own
+    /// defenses (see [`Self::blocked`]).
+    ///
+    /// #2980 — carried on the event rather than recomputed at consumption.
+    /// Papyrus's `OnHit` has no such parameter because its VM could always
+    /// re-interrogate the aggressor's equipment; here the producer is the
+    /// only party that knows what the hit was worth. A scripted producer has
+    /// no `EquippedWeapon` to recompute from at all, and a consumer that
+    /// recomputed would silently diverge the moment anything wrote
+    /// `EquippedWeapon` between production and consumption.
+    pub damage: f32,
     pub power_attack: bool,
     pub sneak_attack: bool,
     pub bash_attack: bool,

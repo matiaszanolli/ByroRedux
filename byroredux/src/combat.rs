@@ -168,10 +168,18 @@ pub(crate) fn combat_input_system(world: &World, dt: f32) {
             aggressor,
             // Equipped weapons are inventory records rather than standalone
             // ECS entities today. Use the aggressor as the source until item
-            // instances acquire stable entities; damage was snapshotted into
-            // the trace and is re-read same-frame by the consumer.
+            // instances acquire stable entities; the damage that weapon was
+            // worth rides on the event itself (`damage` below) rather than
+            // being re-derived from `source`.
             source: aggressor,
             projectile: 0,
+            // #2980 — resolved once, here. `combat_damage_system` used to
+            // call `attack_damage(world, event.aggressor)` a second time and
+            // this producer's value was discarded; the comment above claimed
+            // the opposite. Same-frame equality made that harmless but
+            // undetectable, and a scripted producer has no `EquippedWeapon`
+            // to recompute from.
+            damage,
             power_attack: false,
             sneak_attack: false,
             bash_attack: false,
@@ -223,10 +231,12 @@ pub(crate) fn combat_damage_system(world: &World, _dt: f32) {
         let Some(vitals) = world.get::<ActorVitals>(target).map(|vitals| *vitals) else {
             continue;
         };
+        // `blocked` is the target's defense, so it is resolved here rather
+        // than folded into the producer's `damage` (#2980).
         let damage = if event.blocked {
             0.0
         } else {
-            attack_damage(world, event.aggressor)
+            event.damage.max(0.0)
         };
         let Some((before, after)) = apply_health_damage(world, target, vitals.health, damage)
         else {
@@ -449,12 +459,15 @@ mod tests {
         let target = world.spawn();
         world.insert(target, ActorValues::from_pairs([(0x2D4, health)]));
         world.insert(target, ActorVitals { health: 0x2D4 });
+        // Mirror the live producer: resolve damage once, at production
+        // time, and put it on the event (#2980).
         world.insert(
             target,
             byroredux_scripting::HitEvent {
                 aggressor,
                 source: aggressor,
                 projectile: 0,
+                damage: attack_damage(&world, aggressor),
                 power_attack: false,
                 sneak_attack: false,
                 bash_attack: false,
@@ -609,6 +622,54 @@ mod tests {
             UNARMED_DAMAGE,
             "no equipped weapon means no Melee Damage bonus, regardless of Strength"
         );
+    }
+
+    /// Regression for #2980. The producer resolved `damage` and the consumer
+    /// threw it away, calling `attack_damage` a second time — two derivations
+    /// of one number, indistinguishable while both ran same-frame against an
+    /// unchanged `EquippedWeapon`. Pin the event as the single source: an
+    /// aggressor with no `EquippedWeapon` at all (what a scripted producer
+    /// looks like) must still land the damage the event carries, not the
+    /// `UNARMED_DAMAGE` baseline a recompute would return.
+    #[test]
+    fn consumer_applies_the_producers_damage_rather_than_recomputing_it() {
+        let (world, aggressor, target) = damage_fixture(100.0, None, false);
+        assert_eq!(
+            attack_damage(&world, aggressor),
+            UNARMED_DAMAGE,
+            "fixture precondition: a recompute would return the unarmed baseline"
+        );
+        if let Some(mut events) = world.query_mut::<byroredux_scripting::HitEvent>() {
+            events.get_mut(target).unwrap().damage = 25.0;
+        }
+
+        combat_damage_system(&world, 0.0);
+
+        assert_eq!(
+            world.get::<ActorValues>(target).unwrap().current(0x2D4),
+            75.0,
+            "the consumer must apply HitEvent::damage, not re-derive it"
+        );
+        assert_eq!(
+            world
+                .resource::<CombatState>()
+                .last
+                .as_ref()
+                .unwrap()
+                .damage,
+            25.0
+        );
+    }
+
+    /// Companion: the live producer is what fills that field, so the
+    /// end-to-end value must still be the weapon's own authored damage plus
+    /// any CHARAL bonus — `attack_damage` moved, it did not disappear.
+    #[test]
+    fn producer_snapshots_attack_damage_onto_the_event() {
+        let (world, aggressor, target) = damage_fixture(100.0, Some(18.0), false);
+        let event = *world.get::<byroredux_scripting::HitEvent>(target).unwrap();
+        assert_eq!(event.damage, attack_damage(&world, aggressor));
+        assert_eq!(event.damage, 18.0);
     }
 
     /// Regression for #2976. `HitEvent::blocked` was hardcoded `false` at the

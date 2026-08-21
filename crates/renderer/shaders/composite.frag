@@ -508,11 +508,13 @@ void main() {
         outColor = vec4(1.0, 0.0, 1.0, 1.0);
         return;
     }
+    // #2978 — the "which views are oracles" policy is generated into
+    // shader_constants.glsl from DBG_VIZ_RAW_OUTPUT_ANY/_ALL, the same two
+    // catalogs shader_constants.rs's debug_viz_requires_raw_output walks. Do
+    // not re-spell its clauses here: that is what let the Rust side and both
+    // shaders drift apart behind a four-literal subset check.
     bool rawDebug = debugMode == RENDER_DEBUG_LEGACY_FLAGS
-        ? ((dbgFlags & DBG_VIZ_SELECTED_LIGHT) != 0u
-            || (dbgFlags & DBG_VIZ_DIRECT) != 0u
-            || (dbgFlags & DBG_VIZ_RAW_INDIRECT) != 0u
-            || (dbgFlags & DBG_VIZ_RT_LOD) == DBG_VIZ_RT_LOD)
+        ? DBG_VIZ_REQUIRES_RAW_OUTPUT(dbgFlags)
         : (debugMode != RENDER_DEBUG_FINAL
             && debugMode != RENDER_DEBUG_COMPOSITE_TERM
             && debugMode != RENDER_DEBUG_VOLUMETRIC_TERM);

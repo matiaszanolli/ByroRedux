@@ -6,11 +6,24 @@
 //! (weapon condition, base weapon damage) that never lives in `ActorValues`
 //! — the same "AV in, mechanic-formula out" boundary already drawn for
 //! Sneak Detection (`crate::stealth`) and documented for Lockpicking/
-//! Acrobatics in `docs/engine/charal-oblivion-ruleset.md`. No combat/attack-
-//! resolution consumer system exists yet in the engine; this module is the
-//! reusable, tested piece built ahead of that consumer, mirroring how
-//! `stealth::detection_score` and `character::resistance` were built ahead
-//! of their consumers.
+//! Acrobatics in `docs/engine/charal-oblivion-ruleset.md`.
+//!
+//! ## Status: shipped consumer, but not this module's consumer (#2979)
+//!
+//! A combat/attack-resolution consumer *does* now exist —
+//! `byroredux/src/combat.rs`'s `combat_input_system` + `combat_damage_system`
+//! (two `Stage::Update` exclusives, `byroredux/src/boot.rs`), a ray → hit →
+//! damage → death melee slice that landed 2026-08-15/16. It does not route
+//! through this module: its damage model is `EquippedWeapon.damage` plus the
+//! CHARAL `MeleeDamage` bonus (#3092), or the flat `UNARMED_DAMAGE` baseline
+//! — nothing here has a caller outside its own tests.
+//!
+//! That is not (yet) a bug: this module is *classic Oblivion* math, and the
+//! live slice runs on Skyrim/FNV content, where these formulas do not apply.
+//! Whether the shipped consumer should dispatch per-game into this module is
+//! the open design question tracked by #2962 and
+//! `AUDIT_CHARACTER_2026-08-16` § CHAR-2026-08-16-D1-01 — read the
+//! zero-caller state as *unresolved*, not as deliberate.
 //!
 //! Source: UESP *Oblivion:The Complete Damage Formula*, *Oblivion:Blade*,
 //! *Oblivion:Blunt* (`docs/engine/charal-oblivion-ruleset.md`). Scope is

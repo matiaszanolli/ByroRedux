@@ -646,6 +646,37 @@ fn main() {
     }
     writeln!(out).unwrap();
 
+    // #2978 — raw-output policy, folded from the two shared catalogs so
+    // `composite.frag` / `presentation.frag` consume the same decision the
+    // Rust `debug_viz_requires_raw_output` makes instead of re-spelling its
+    // clauses. Adding a view to either catalog updates all three sites at once.
+    writeln!(
+        out,
+        "// Debug views that must bypass the post-transport frame graph."
+    )
+    .unwrap();
+    let mut any_mask = 0u32;
+    let mut any_names = Vec::new();
+    for (name, value) in DBG_VIZ_RAW_OUTPUT_ANY {
+        any_mask |= value;
+        any_names.push(*name);
+    }
+    writeln!(out, "// Any-of: {}", any_names.join(" | ")).unwrap();
+    writeln!(out, "#define DBG_VIZ_RAW_OUTPUT_ANY_MASK {any_mask}u").unwrap();
+    let mut predicate = String::from("(((flags) & DBG_VIZ_RAW_OUTPUT_ANY_MASK) != 0u");
+    for (name, _) in DBG_VIZ_RAW_OUTPUT_ALL {
+        // All-of: the constituent bits each select a different view, so the
+        // full mask has to match, not merely intersect.
+        write!(predicate, " || ((flags) & {name}) == {name}").unwrap();
+    }
+    predicate.push(')');
+    writeln!(
+        out,
+        "#define DBG_VIZ_REQUIRES_RAW_OUTPUT(flags) {predicate}"
+    )
+    .unwrap();
+    writeln!(out).unwrap();
+
     writeln!(out, "// Main-pass ray-query decomposition.").unwrap();
     writeln!(
         out,

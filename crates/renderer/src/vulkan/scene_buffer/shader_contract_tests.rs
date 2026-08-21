@@ -510,20 +510,40 @@ fn all_secondary_ray_consumers_use_scale_aware_origins() {
 /// A transport image is an oracle only if later frame-graph terms preserve
 /// it. Pin the bypass through composite, temporal upscale, and presentation
 /// so fog/bloom/ACES cannot make black, white, or isolated energy ambiguous.
+///
+/// #2978 — this used to assert that four hardcoded clause strings appeared in
+/// each shader. That is a subset check against an expected set derived from
+/// nothing: a fifth raw-output view added to the Rust predicate left both
+/// shaders tone-mapping a correctness oracle with the suite green. Both
+/// shaders now consume the generated `DBG_VIZ_REQUIRES_RAW_OUTPUT(flags)`
+/// macro, so the policy has one definition; what this test guards is that
+/// neither shader has re-grown a hand-written copy of it.
 #[test]
 fn correctness_debug_views_bypass_non_transport_frame_graph_terms() {
+    use crate::shader_constants::{DBG_VIZ_RAW_OUTPUT_ALL, DBG_VIZ_RAW_OUTPUT_ANY};
+
     let composite = include_str!("../../../shaders/composite.frag");
     let presentation = include_str!("../../../shaders/presentation.frag");
     for (source, name) in [(composite, "composite"), (presentation, "presentation")] {
         assert!(
-            source.contains("(dbgFlags & DBG_VIZ_SELECTED_LIGHT) != 0u")
-                && source.contains("(dbgFlags & DBG_VIZ_DIRECT) != 0u")
-                && source.contains("(dbgFlags & DBG_VIZ_RAW_INDIRECT) != 0u")
-                && source.contains("(dbgFlags & DBG_VIZ_RT_LOD) == DBG_VIZ_RT_LOD")
+            source.contains("DBG_VIZ_REQUIRES_RAW_OUTPUT(dbgFlags)")
                 && source.contains("RENDER_DEBUG_LEGACY_FLAGS")
                 && source.contains("if (rawDebug)"),
-            "{name} must preserve renderer correctness-oracle output"
+            "{name} must preserve renderer correctness-oracle output via the \
+             generated DBG_VIZ_REQUIRES_RAW_OUTPUT policy macro"
         );
+        // Every catalog entry is covered by construction once the macro is
+        // used. Iterating the catalogs here instead of listing literals
+        // makes the reverse true too: a shader that re-spells any single
+        // clause by hand has forked the policy and fails, however many
+        // views the catalogs grow to.
+        for (view, _) in DBG_VIZ_RAW_OUTPUT_ANY.iter().chain(DBG_VIZ_RAW_OUTPUT_ALL) {
+            assert!(
+                !source.contains(&format!("dbgFlags & {view}")),
+                "{name} re-spells the raw-output policy for {view} by hand — \
+                 it must consume DBG_VIZ_REQUIRES_RAW_OUTPUT instead (#2978)"
+            );
+        }
     }
     let post = include_str!("../context/post_passes.rs");
     assert!(post.contains("render_debug_requires_raw_output"));

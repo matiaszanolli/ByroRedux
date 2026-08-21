@@ -222,6 +222,11 @@
 #define DBG_VIZ_RT_LOD 3145728u
 #define DBG_VIZ_SHADOW_VISIBILITY 2214592512u
 
+// Debug views that must bypass the post-transport frame graph.
+// Any-of: DBG_VIZ_SELECTED_LIGHT | DBG_VIZ_DIRECT | DBG_VIZ_RAW_INDIRECT
+#define DBG_VIZ_RAW_OUTPUT_ANY_MASK 2215116800u
+#define DBG_VIZ_REQUIRES_RAW_OUTPUT(flags) (((flags) & DBG_VIZ_RAW_OUTPUT_ANY_MASK) != 0u || ((flags) & DBG_VIZ_RT_LOD) == DBG_VIZ_RT_LOD)
+
 // Main-pass ray-query decomposition.
 #define RT_ABLATION_DIRECT_SHADOW 1u
 #define RT_ABLATION_GI 2u

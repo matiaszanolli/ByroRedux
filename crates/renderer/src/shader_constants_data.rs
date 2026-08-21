@@ -822,6 +822,51 @@ pub const DBG_VIZ_RT_LOD: u32 = DBG_VIZ_MATERIAL_STATE | DBG_VIZ_GI_BOUNCE;
 /// "occluded" can never be confused with "nothing selected".
 pub const DBG_VIZ_SHADOW_VISIBILITY: u32 = DBG_VIZ_SELECTED_LIGHT | DBG_VIZ_DIRECT;
 
+/// Debug-viz views that are correctness oracles, keyed by **any one bit**:
+/// if the flag word carries any of these, raw output is required.
+///
+/// #2978 — this catalog plus [`DBG_VIZ_RAW_OUTPUT_ALL`] is the single source
+/// of truth for the raw-output policy. `build.rs` folds it into the
+/// `DBG_VIZ_RAW_OUTPUT_ANY_MASK` / `DBG_VIZ_REQUIRES_RAW_OUTPUT(flags)`
+/// header emit that `composite.frag` and `presentation.frag` consume, and
+/// `shader_constants::debug_viz_requires_raw_output` evaluates the same two
+/// catalogs in Rust. Before that the policy was hand-written once in Rust and
+/// twice in GLSL, held together only by a four-literal `source.contains`
+/// subset check — so a fifth view could land in Rust while both shaders went
+/// on tone-mapping the oracle, with the whole suite green.
+///
+/// Note the compound views need no entry here: `DBG_VIZ_SHADOW_VISIBILITY`
+/// and `DBG_VIZ_MATERIAL_LOBES` both contain `DBG_VIZ_SELECTED_LIGHT`, so
+/// they already match on that bit.
+pub const DBG_VIZ_RAW_OUTPUT_ANY: &[(&str, u32)] = &[
+    ("DBG_VIZ_SELECTED_LIGHT", DBG_VIZ_SELECTED_LIGHT),
+    ("DBG_VIZ_DIRECT", DBG_VIZ_DIRECT),
+    ("DBG_VIZ_RAW_INDIRECT", DBG_VIZ_RAW_INDIRECT),
+];
+
+/// Correctness-oracle views keyed by an **exact compound**: every bit in the
+/// mask must be set, because the constituent bits individually select a
+/// different (non-oracle) view. `DBG_VIZ_RT_LOD` is `MATERIAL_STATE |
+/// GI_BOUNCE`, and neither of those alone requires raw output.
+///
+/// Companion to [`DBG_VIZ_RAW_OUTPUT_ANY`]; see that constant for the #2978
+/// rationale.
+pub const DBG_VIZ_RAW_OUTPUT_ALL: &[(&str, u32)] = &[("DBG_VIZ_RT_LOD", DBG_VIZ_RT_LOD)];
+
+/// Folded [`DBG_VIZ_RAW_OUTPUT_ANY`] mask. A `const fn` rather than a
+/// `pub const DBG_…: u32` so it stays out of the `DBG_*` *bit* census that
+/// `dbg_bits_catalog_covers_every_dbg_constant` counts — it is derived from
+/// bits, not one of them.
+pub const fn dbg_viz_raw_output_any_mask() -> u32 {
+    let mut mask = 0u32;
+    let mut i = 0;
+    while i < DBG_VIZ_RAW_OUTPUT_ANY.len() {
+        mask |= DBG_VIZ_RAW_OUTPUT_ANY[i].1;
+        i += 1;
+    }
+    mask
+}
+
 /// Single source of truth for every `DBG_*` debug-viz bit, in emit order.
 /// Both `build.rs` (GLSL header emit) and `shader_constants.rs`'s test
 /// module (`generated_header_contains_all_defines` value-pin,

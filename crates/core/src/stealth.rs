@@ -31,6 +31,14 @@
 //! iterating detector/target pairs) waits until M42 gives it something to
 //! drive.
 //!
+//! One correction to "nothing feeds this yet" (#2979): a melee-combat
+//! consumer shipped 2026-08-15/16 (`byroredux/src/combat.rs`), and the
+//! canonical `HitEvent` it produces carries a `sneak_attack` field — set to a
+//! hardcoded `false`, because no sneak/crouch input, alert state, or
+//! detection tick exists to compute it from. That field is this module's
+//! concrete future hook point, not evidence of a wired consumer; the
+//! zero-caller state above still holds.
+//!
 //! ## No-guessing caveat
 //!
 //! Unlike most CHARAL formulas, the source page gives **no worked numeric

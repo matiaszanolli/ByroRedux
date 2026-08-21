@@ -98,6 +98,7 @@ mod tests {
                 aggressor: 1,
                 source: 2,
                 projectile: 3,
+                damage: 4.0,
                 power_attack: false,
                 sneak_attack: false,
                 bash_attack: false,

@@ -35,9 +35,24 @@ pub const LOD_SHADOW_CASTER_DISTANCE: f32 = SHADOW_FADE_END + DIRECTIONAL_SHADOW
 /// mapping. This includes categorical/scalar views and the direct/indirect
 /// term-isolation views: automatic exposure can otherwise turn a zero-light
 /// Cornell rung grey and destroy the meaning of a black pixel.
+///
+/// #2978 — evaluated from [`DBG_VIZ_RAW_OUTPUT_ANY`] / [`DBG_VIZ_RAW_OUTPUT_ALL`]
+/// rather than re-spelling their contents, so this and the GLSL
+/// `DBG_VIZ_REQUIRES_RAW_OUTPUT(flags)` macro `build.rs` emits from the same
+/// two catalogs cannot disagree about what an oracle is.
 pub const fn debug_viz_requires_raw_output(flags: u32) -> bool {
-    flags & (DBG_VIZ_SELECTED_LIGHT | DBG_VIZ_DIRECT | DBG_VIZ_RAW_INDIRECT) != 0
-        || (flags & DBG_VIZ_RT_LOD) == DBG_VIZ_RT_LOD
+    if flags & dbg_viz_raw_output_any_mask() != 0 {
+        return true;
+    }
+    let mut i = 0;
+    while i < DBG_VIZ_RAW_OUTPUT_ALL.len() {
+        let mask = DBG_VIZ_RAW_OUTPUT_ALL[i].1;
+        if flags & mask == mask {
+            return true;
+        }
+        i += 1;
+    }
+    false
 }
 
 /// Raw-output decision for the full structured/legacy debug contract.
@@ -70,12 +85,15 @@ mod tests {
     #[test]
     fn dbg_bits_catalog_covers_every_dbg_constant() {
         let data_src = include_str!("shader_constants_data.rs");
-        // Exclude `DBG_BITS` itself — it's the catalog, typed
-        // `&[(&str, u32)]`, not one of the `u32` bit constants it lists.
+        // Count only the `u32` bit constants. The `DBG_*` catalogs
+        // (`DBG_BITS`, and #2978's `DBG_VIZ_RAW_OUTPUT_ANY`/`_ALL`) are
+        // typed `&[(&str, u32)]` — they list bits, they are not bits — so
+        // the type suffix, rather than a growing name deny-list, is what
+        // separates them.
         let declared = data_src
             .lines()
             .filter(|l| l.trim_start().starts_with("pub const DBG_"))
-            .filter(|l| !l.trim_start().starts_with("pub const DBG_BITS"))
+            .filter(|l| l.contains(": u32 ="))
             .count();
         assert_eq!(
             DBG_BITS.len(),
@@ -322,6 +340,32 @@ mod tests {
                 "shader_constants.glsl missing or wrong value for {name}: expected `{expected}`",
             );
         }
+        // #2978 — the raw-output policy the shaders consume, folded from the
+        // same two catalogs the Rust predicate walks. Rebuilt here rather
+        // than pinned as a literal so adding a view to either catalog moves
+        // this expectation with it.
+        let expected_mask = format!(
+            "#define DBG_VIZ_RAW_OUTPUT_ANY_MASK {}u",
+            dbg_viz_raw_output_any_mask()
+        );
+        assert!(
+            header.contains(&expected_mask),
+            "shader_constants.glsl missing or wrong DBG_VIZ_RAW_OUTPUT_ANY_MASK: \
+             expected `{expected_mask}`",
+        );
+        let mut expected_predicate = String::from(
+            "#define DBG_VIZ_REQUIRES_RAW_OUTPUT(flags) \
+                          (((flags) & DBG_VIZ_RAW_OUTPUT_ANY_MASK) != 0u",
+        );
+        for (name, _) in DBG_VIZ_RAW_OUTPUT_ALL {
+            expected_predicate.push_str(&format!(" || ((flags) & {name}) == {name}"));
+        }
+        expected_predicate.push(')');
+        assert!(
+            header.contains(&expected_predicate),
+            "shader_constants.glsl missing or wrong DBG_VIZ_REQUIRES_RAW_OUTPUT: \
+             expected `{expected_predicate}`",
+        );
     }
 
     /// Direct-light shadow reach is scene policy, not cell-kind policy.

@@ -85,6 +85,7 @@ fn fnv_spawned_actor_gets_derived_health_and_combat_consumes_it() {
             aggressor,
             source: aggressor,
             projectile: 0,
+            damage: 18.0,
             power_attack: false,
             sneak_attack: false,
             bash_attack: false,
