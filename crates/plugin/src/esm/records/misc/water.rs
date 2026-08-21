@@ -548,12 +548,23 @@ fn decode_data_oblivion(data: &[u8]) -> WaterParams {
     // TES4 displacement simulator: starting size, radial falloff, and
     // dampener. These fields were previously discarded, making Oblivion
     // ripples use the same generic profile regardless of authored water.
-    for (slot, offset) in p.displacement.iter_mut().zip([76, 88, 92]) {
+    //
+    // #3105 — TES4's whole simulator block sits **+4 bytes** relative to
+    // FO3/FNV/Skyrim/FO4: rain is Force/Velocity/Falloff/Dampener/StartingSize
+    // at 60/64/68/72/76 and displacement at 80/84/88/92/96. The two starting
+    // sizes were exactly swapped here — displacement[0] read 76 (the RAIN
+    // start) and `rain_start_size` read 96 (the DISPLACEMENT start), giving
+    // every Oblivion water a ripple starting size 5x too small and a rain
+    // ripple 5x too large. Both are live to the GPU. Confirmed on 17/17
+    // full-length records against the GECK default tuple: rain
+    // `0.1 0.6 0.985 2.0 0.01` at 60..76, displacement
+    // `0.4 0.6 0.985 10.0 0.05` at 80..96.
+    for (slot, offset) in p.displacement.iter_mut().zip([96, 88, 92]) {
         if let Some(value) = read_f32_at(data, offset) {
             *slot = value.max(0.0);
         }
     }
-    if let Some(value) = read_f32_at(data, 96) {
+    if let Some(value) = read_f32_at(data, 76) {
         p.rain_start_size = value.max(0.0);
     }
     // TES4 Rain Simulator force defaults to 0.1. Normalize around that
@@ -605,6 +616,28 @@ fn decode_data_fo3nv(data: &[u8]) -> WaterParams {
             *dst = color;
         }
     }
+    apply_fo3nv_tail(&mut p, data);
+    p
+}
+
+/// Decode the FO3/FNV visual tail — everything from byte 56 onward.
+///
+/// Shared by BOTH carriers, which is the point (#3107). Vanilla FO3/FNV never
+/// put `DATA` and `DNAM` on the same record (0/53 and 0/78), and the 196/184-B
+/// `DNAM` is the *majority* form: 42 of 53 FO3 records and 70 of 78 FNV. Before
+/// this was shared, that majority ran `decode_dnam_pre_fo4` alone, which reads
+/// bytes 0..52 and returns — so the rain and displacement simulators, all three
+/// noise layers, the fog amounts, the underwater fog pair, the noise UV scales
+/// and amplitudes and the specular tail were left at canonical defaults on 79%
+/// of FO3 and 90% of FNV water types.
+///
+/// The two carriers are byte-identical from 56 onward — verified against
+/// shipped bytes, not inferred: both hold the GECK default simulator tuple
+/// `0.1 0.6 0.985 2.0 0.01` (rain) and `0.4 0.6 0.985 10.0 0.05` (displacement)
+/// at 56..92, degree-valued noise directions at 100/104/108, small noise speeds
+/// at 112/116/120, fog amounts at 132..148 and the specular pair at 164/168.
+/// Offsets past the 186-byte `DATA` simply read as absent via `read_f32_at`.
+fn apply_fo3nv_tail(p: &mut WaterParams, data: &[u8]) {
     // Displacement force/velocity are the closest legacy equivalents of the
     // canonical wave amplitude/frequency controls.
     if let Some(value) = read_f32_at(data, 76) {
@@ -616,7 +649,17 @@ fn decode_data_fo3nv(data: &[u8]) -> WaterParams {
     // FO3/FNV displacement simulator: starting size, radial falloff, and
     // dampener. Keep these authored ripple-shape controls in the canonical
     // material instead of reducing every water type to force/velocity only.
-    for (slot, offset) in p.displacement.iter_mut().zip([72, 84, 88]) {
+    //
+    // #3105 — the starting size is at 92, NOT 72. Each simulator block is
+    // Force / Velocity / Falloff / Dampener / StartingSize at +0/+4/+8/+12/+16
+    // from its force offset, so rain occupies 56..72 and displacement 76..92.
+    // Offset 72 is the RAIN starting size; reading it here (and the
+    // displacement starting size into `rain_start_size` below) swapped the two
+    // simulators' sizes. Confirmed by the GECK default tuple in shipped bytes:
+    // rain `0.1 0.6 0.985 2.0 0.01` at 56..72 and displacement
+    // `0.4 0.6 0.985 10.0 0.05` at 76..92. The FO4 decoder already had this
+    // right (`zip([92, 84, 88])`); this now matches it.
+    for (slot, offset) in p.displacement.iter_mut().zip([92, 84, 88]) {
         if let Some(value) = read_f32_at(data, offset) {
             *slot = value.max(0.0);
         }
@@ -627,12 +670,20 @@ fn decode_data_fo3nv(data: &[u8]) -> WaterParams {
     if let Some(force) = read_f32_at(data, 56) {
         p.rain_response = (force / 0.1).clamp(0.0, 4.0);
     }
-    if let Some(value) = read_f32_at(data, 92) {
+    // Rain starting size — rain force (56) + 16. See the displacement note.
+    if let Some(value) = read_f32_at(data, 72) {
         p.rain_start_size = value.max(0.0);
     }
-    if let Some(value) = read_f32_at(data, 96) {
-        p.normal_magnitude = value.max(0.0);
-    }
+    // #3108 — offset 96 previously fed `normal_magnitude`. It is not that on
+    // the Fallout layout: across every long-`DATA` record it reads
+    // `0xCDCDCDCD` (MSVC uninitialised fill, -4.316e8) on 3/11 FO3 and 2/8 FNV,
+    // and otherwise 0.36 / 0.4 / 0.7 / 1.5 / 1.8 / 7.25 / 9.1. Negative reads
+    // fell back to the neutral 1.0, but 9.1 clamped to 8.0 and multiplied all
+    // three noise amplitudes 8x. Skyrim's decoder calls the same offset
+    // `noise_falloff`, and its distribution there (1009 / 3770 / 4007 / 4037 /
+    // 5000 / 8192) matches the FO76/Starfield noise-falloff family while
+    // FO3/FNV's does not — so the two cannot both be right. Left neutral until
+    // offset 96 is byte-decoded for the Fallout layout specifically.
     // FO3/FNV's long tail names these two controls Light Radius and Light
     // Brightness. Preserve them in the canonical specular controls used by
     // the shared water shader; zero remains the absent-tail sentinel.
@@ -664,8 +715,17 @@ fn decode_data_fo3nv(data: &[u8]) -> WaterParams {
             *slot = value.max(0.0);
         }
     }
-    p.wind_direction = p.noise_wind_directions[0];
-    p.wind_speed = p.noise_wind_speeds[0];
+    // Noise layer 1 supersedes the legacy prefix wind pair — but only when it
+    // was actually present. Assigning unconditionally would zero the converted
+    // prefix value on a truncated buffer, which is reachable now that this tail
+    // also runs for DNAM (#3107); `decode_data_fo3nv`'s own 186-byte form
+    // always carries these offsets, so its behaviour is unchanged.
+    if read_f32_at(data, 100).is_some() {
+        p.wind_direction = p.noise_wind_directions[0];
+    }
+    if read_f32_at(data, 112).is_some() {
+        p.wind_speed = p.noise_wind_speeds[0];
+    }
     // FO3/FNV's documented long DATA layout places the fog amount at 132,
     // shared normal UV scale at 136, and underwater amount/near/far at
     // 140/144/148 respectively.
@@ -711,7 +771,6 @@ fn decode_data_fo3nv(data: &[u8]) -> WaterParams {
             *slot = value.max(0.0);
         }
     }
-    p
 }
 
 /// Decode the pre-FO4 DNAM visual prefix shared by FO3/FNV and TES5.
@@ -831,10 +890,19 @@ fn apply_skyrim_dnam_tail(p: &mut WaterParams, data: &[u8]) {
     if let Some(dampener) = read_f32_at(data, 68) {
         p.rain_dampener = dampener.max(0.0);
     }
-    for (slot, offset) in p.displacement.iter_mut().zip([72, 84, 88]) {
+    // #3105 — displacement is Force/Velocity/Falloff/Dampener/StartingSize at
+    // 76/80/84/88/92; the starting size is 92, not 72 (72 is the RAIN starting
+    // size). `DNAM[92] == 0.05` on 34/34 vanilla Skyrim records, matching the
+    // GECK displacement default and the FO4 sibling's `zip([92, 84, 88])`.
+    for (slot, offset) in p.displacement.iter_mut().zip([92, 84, 88]) {
         if let Some(v) = read_f32_at(data, offset) {
             *slot = v.max(0.0);
         }
+    }
+    // Rain starting size — rain force (56) + 16. Previously never set on the
+    // Skyrim arm at all, so `rain_start_size` kept its default here (#3105).
+    if let Some(v) = read_f32_at(data, 72) {
+        p.rain_start_size = v.max(0.0);
     }
     for (slot, offset) in p.noise_wind_directions.iter_mut().zip([100, 104, 108]) {
         if let Some(direction_degrees) = read_f32_at(data, offset) {
@@ -862,10 +930,16 @@ fn apply_skyrim_dnam_tail(p: &mut WaterParams, data: &[u8]) {
             *slot = v.max(0.0);
         }
     }
-    // Skyrim's physical normal magnitude precedes the noise falloff.
-    if let Some(v) = read_f32_at(data, 92) {
-        p.normal_magnitude = v.max(0.0);
-    }
+    // #3104 — `normal_magnitude` previously read DNAM[92]. That offset is the
+    // Displacement Starting Size, and it holds `0.05` on 34/34 vanilla
+    // Skyrim.esm records (one distinct value), while the authored amplitudes at
+    // 184/188/192 span 0.0725..1.0 across 27+ distinct values. Feeding the
+    // constant into `normal_magnitude` rendered every Skyrim water type at the
+    // shader's minimum normal tilt with zero per-water differentiation — on
+    // WATAL's canonical reference game. The same offset holds `0.05` on 42/42
+    // FO4 records, where this file's own FO4 decoder already names it the
+    // displacement starting size. Left at the 1.0 sentinel until an offset is
+    // byte-decoded for it.
     if let Some(v) = read_f32_at(data, 96) {
         p.noise_falloff = v.max(0.0);
     }
@@ -1390,6 +1464,16 @@ pub fn parse_watr(form_id: u32, subs: &[SubRecord], game: GameKind) -> WatrRecor
                         p
                     }
                     GameKind::Starfield => decode_dnam_starfield(&sub.data),
+                    // #3107 — the 196/184-byte DNAM is the MAJORITY FO3/FNV
+                    // carrier (42/53 FO3, 70/78 FNV; it never co-occurs with
+                    // DATA). It shares the visual tail with the 186-byte DATA
+                    // form byte-for-byte from offset 56, so it gets the same
+                    // tail decode instead of stopping at the 52-byte prefix.
+                    GameKind::Fallout3NV => {
+                        let mut p = decode_dnam_pre_fo4(&sub.data);
+                        apply_fo3nv_tail(&mut p, &sub.data);
+                        p
+                    }
                     _ => decode_dnam_pre_fo4(&sub.data),
                 };
                 out.raw_dnam = sub.data.clone();
@@ -1605,12 +1689,15 @@ mod tests {
         data[64..68].copy_from_slice(&1.5f32.to_le_bytes()); // rain velocity
         data[68..72].copy_from_slice(&0.75f32.to_le_bytes()); // rain falloff
         data[72..76].copy_from_slice(&2.0f32.to_le_bytes()); // rain dampener
-        data[76..80].copy_from_slice(&0.08f32.to_le_bytes()); // displacement start
-        data[80..84].copy_from_slice(&0.4f32.to_le_bytes());
-        data[84..88].copy_from_slice(&0.6f32.to_le_bytes());
+                                                             // #3109 — these two were written at each other's offsets, pinning the
+                                                             // #3105 swap as expected behaviour. TES4's block is +4 vs FO3/FNV:
+                                                             // rain start is 76, displacement start is 96.
+        data[76..80].copy_from_slice(&2.25f32.to_le_bytes()); // rain start
+        data[80..84].copy_from_slice(&0.4f32.to_le_bytes()); // displacement force
+        data[84..88].copy_from_slice(&0.6f32.to_le_bytes()); // displacement velocity
         data[88..92].copy_from_slice(&0.85f32.to_le_bytes()); // displacement falloff
         data[92..96].copy_from_slice(&3.5f32.to_le_bytes()); // displacement dampener
-        data[96..100].copy_from_slice(&2.25f32.to_le_bytes()); // rain start
+        data[96..100].copy_from_slice(&0.08f32.to_le_bytes()); // displacement start
 
         let w = parse_watr(0xBEEF, &[sub(b"DATA", &data)], GameKind::Oblivion);
         assert_eq!(w.params.fog_near, 12.0);
@@ -1653,10 +1740,12 @@ mod tests {
         data[148..152].copy_from_slice(&240.0f32.to_le_bytes()); // underwater far
         data[152..156].copy_from_slice(&9.0f32.to_le_bytes()); // distortion amount
         data[156..160].copy_from_slice(&500.0f32.to_le_bytes()); // shininess
-        data[72..76].copy_from_slice(&0.06f32.to_le_bytes()); // displacement start
+                                                                 // #3109 — swapped offsets, as above. Rain start is 72, displacement
+                                                                 // start is 92 (matching the already-correct FO4 fixture below).
+        data[72..76].copy_from_slice(&1.75f32.to_le_bytes()); // rain start
         data[84..88].copy_from_slice(&0.8f32.to_le_bytes()); // displacement falloff
         data[88..92].copy_from_slice(&4.0f32.to_le_bytes()); // displacement dampener
-        data[92..96].copy_from_slice(&1.75f32.to_le_bytes()); // rain start
+        data[92..96].copy_from_slice(&0.06f32.to_le_bytes()); // displacement start
         data[56..60].copy_from_slice(&0.2f32.to_le_bytes()); // rain force
         data[60..64].copy_from_slice(&2.25f32.to_le_bytes()); // rain velocity
         data[64..68].copy_from_slice(&0.5f32.to_le_bytes()); // rain falloff
@@ -1814,7 +1903,11 @@ mod tests {
         assert_eq!(w.params.rain_velocity, 2.25);
         assert_eq!(w.params.rain_falloff, 0.5);
         assert_eq!(w.params.rain_dampener, 1.25);
-        assert_eq!(w.params.displacement, [0.01, 0.985, 10.0]);
+        // #3109 — was `[0.01, ...]`, i.e. the RAIN starting size at 72. The
+        // fixture's bytes were always correct; only this expectation encoded
+        // the #3105 swap.
+        assert_eq!(w.params.displacement, [0.05, 0.985, 10.0]);
+        assert_eq!(w.params.rain_start_size, 0.01);
         assert!((w.params.noise_uv_scale_a - 1.0 / 1920.0).abs() < 1e-6);
         assert_eq!(w.params.noise_amplitude_scales, [0.7, 0.6, 0.5]);
         assert_eq!(w.params.depth_weights, [0.9, 0.5, 0.1, 0.2]);
@@ -1822,7 +1915,10 @@ mod tests {
         assert_eq!(w.params.specular_magnitude, 3.75);
         assert_eq!(w.params.specular_radius, 240.0);
         assert_eq!(w.params.sun_specular_power, 122.0);
-        assert_eq!(w.params.normal_magnitude, 0.05);
+        // #3104 — this asserted 0.05, the Displacement Starting Size, which is
+        // invariant across all 34 vanilla Skyrim records. `normal_magnitude`
+        // now stays at its neutral sentinel until an offset is byte-decoded.
+        assert_eq!(w.params.normal_magnitude, 1.0);
         assert_eq!(w.params.noise_falloff, 300.0);
         assert_eq!(w.params.above_water_fog_amount, 0.75);
         assert_eq!(w.params.underwater_fog_amount, 0.65);
@@ -2130,16 +2226,33 @@ mod tests {
 
     #[test]
     fn wind_direction_converts_shipped_degrees_on_the_fo3nv_dnam_arm() {
-        // 90.0 is the value in 53/53 Fallout3.esm and 78/78 FalloutNV.esm
-        // WATR records — a dead editor default, but degrees regardless.
-        let data = buf_with_wind_direction(196, 90.0);
+        // The DNAM prefix at [4] is 90.0 on 53/53 Fallout3.esm and 78/78
+        // FalloutNV.esm records — a dead editor default. Since #3107 routed
+        // this arm through the shared tail, the prefix is superseded by the
+        // per-record noise-layer-1 heading at [100], exactly as Skyrim's tail
+        // already did. That is the point: FO3/FNV water now flows on its own
+        // authored bearing instead of one global constant.
+        let mut data = buf_with_wind_direction(196, 90.0);
+        // 211.0 deg is the third-most-common shipped value at DNAM[100]
+        // (11/69 FNV records); the field genuinely varies there, unlike [4].
+        data[100..104].copy_from_slice(&211.0f32.to_le_bytes());
         let w = parse_watr(0x1001, &[sub(b"DNAM", &data)], GameKind::Fallout3NV);
+        assert_eq!(w.params.wind_direction, 211.0f32.to_radians());
+        assert_eq!(w.params.noise_wind_directions[0], 211.0f32.to_radians());
+        // Degrees must not reach the radians field on either route (#3144).
+        assert_ne!(w.params.wind_direction, 211.0);
+        assert!(w.params.wind_direction < std::f32::consts::TAU);
+    }
+
+    /// #3144 + #3107 — where the DNAM tail is absent the prefix still governs,
+    /// and it is still degrees. A 52-byte buffer is below every tail offset, so
+    /// `read_f32_at(data, 100)` misses and the converted prefix survives.
+    #[test]
+    fn fo3nv_prefix_wind_direction_survives_when_the_tail_is_absent() {
+        let data = buf_with_wind_direction(52, 90.0);
+        let w = parse_watr(0x1002, &[sub(b"DNAM", &data)], GameKind::Fallout3NV);
         assert_eq!(w.params.wind_direction, 90.0f32.to_radians());
-        // The bug being pinned: the raw degrees reaching the radians field.
         assert_ne!(w.params.wind_direction, 90.0);
-        // 90 deg is ~1.5708 rad; the pre-fix value was 90.0 rad, which wraps
-        // to ~2.04 rad (~117 deg) — a different heading, not a scale error.
-        assert!(w.params.wind_direction < std::f32::consts::PI);
     }
 
     #[test]

@@ -2214,3 +2214,214 @@ fn parse_rate_fnv_pack_pldt_location() {
         mismatched.len(),
     );
 }
+
+/// #3109 / WATR-ARB-06 — the signal that caught #3104: a decoder folding a
+/// *constant* into a per-water control is invisible to synthetic fixtures
+/// (which pin one record) but obvious across a shipped population.
+/// `normal_magnitude` read `DNAM[92]`, the Displacement Starting Size, which is
+/// `0.05` on 34/34 vanilla Skyrim records — so every Skyrim water type shared
+/// one normal tilt while its authored amplitudes spanned 0.0725..1.0.
+///
+/// The invariant: a per-water scalar is either **untouched** (every record at
+/// the struct default, meaning nothing was decoded) or **genuinely per-record**
+/// (two or more distinct values). Uniform at a *non-default* value is the
+/// failure signature — it means an offset was decoded and it was the wrong one.
+///
+/// `#[ignore]`-gated like its siblings: needs installed game data.
+#[test]
+#[ignore]
+fn installed_masters_per_water_scalars_are_not_decoded_constants() {
+    // Same master list as `installed_masters_water_fields_are_finite_and_ordered`.
+    let masters = [
+        (
+            "BYROREDUX_OBL_DATA",
+            "/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data",
+            "Oblivion.esm",
+            "Oblivion",
+        ),
+        (
+            "BYROREDUX_FNV_DATA",
+            "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data",
+            "FalloutNV.esm",
+            "FNV",
+        ),
+        (
+            "BYROREDUX_FO3_DATA",
+            "/mnt/data/SteamLibrary/steamapps/common/Fallout 3 goty/Data",
+            "Fallout3.esm",
+            "FO3",
+        ),
+        (
+            "BYROREDUX_SKYRIMSE_DATA",
+            "/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data",
+            "Skyrim.esm",
+            "Skyrim SE",
+        ),
+        (
+            "BYROREDUX_FO4_DATA",
+            "/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data",
+            "Fallout4.esm",
+            "FO4",
+        ),
+    ];
+
+    // Struct defaults — "nothing was decoded into this slot".
+    const NORMAL_MAGNITUDE_SENTINEL: f32 = 1.0;
+    const NOISE_AMPLITUDE_SENTINEL: f32 = 0.0;
+    // Below this, a population is too small for uniformity to mean anything.
+    const MIN_POPULATION: usize = 8;
+
+    let distinct = |values: &[f32]| -> usize {
+        let mut keys: Vec<i64> = values.iter().map(|v| (*v as f64 * 1.0e6) as i64).collect();
+        keys.sort_unstable();
+        keys.dedup();
+        keys.len()
+    };
+
+    let mut checked_games = 0;
+    for (env_var, fallback, filename, label) in masters {
+        let Some(data) = data_dir(env_var, fallback) else {
+            eprintln!("[{label} WATR] skipping: game data unavailable");
+            continue;
+        };
+        let bytes = std::fs::read(data.join(filename)).expect("read installed master");
+        let index = parse_esm(&bytes).expect("parse installed master");
+        if index.waters.len() < MIN_POPULATION {
+            eprintln!(
+                "[{label} WATR] skipping: {} records is below the meaningfulness floor",
+                index.waters.len()
+            );
+            continue;
+        }
+        checked_games += 1;
+
+        for (field, sentinel, values) in [
+            (
+                "normal_magnitude",
+                NORMAL_MAGNITUDE_SENTINEL,
+                index
+                    .waters
+                    .values()
+                    .map(|w| w.params.normal_magnitude)
+                    .collect::<Vec<_>>(),
+            ),
+            (
+                "noise_amplitude_scales[0]",
+                NOISE_AMPLITUDE_SENTINEL,
+                index
+                    .waters
+                    .values()
+                    .map(|w| w.params.noise_amplitude_scales[0])
+                    .collect::<Vec<_>>(),
+            ),
+        ] {
+            let n = distinct(&values);
+            if n > 1 {
+                continue; // genuinely per-record
+            }
+            let only = values[0];
+            assert!(
+                (only - sentinel).abs() < 1.0e-6,
+                "[{label}] {field} is uniform at {only} across all {} WATR records, and that \
+                 is not the {sentinel} struct default — a decoder folded a CONSTANT into a \
+                 per-water control. This is the #3104 signature: `normal_magnitude` read the \
+                 Displacement Starting Size (0.05 on 34/34 Skyrim records) and collapsed every \
+                 water type onto one normal tilt. Either the offset is wrong, or the field is \
+                 not per-record and should stay at its sentinel (#3109).",
+                values.len(),
+            );
+        }
+    }
+
+    assert!(
+        checked_games > 0,
+        "no installed master was available — this guard proved nothing. Install a supported \
+         game or point BYROREDUX_*_DATA at one."
+    );
+    eprintln!("[WATR] per-water scalar guard checked {checked_games} game(s)");
+}
+
+/// #3107 / WATR-ARB-04 — the 196/184-byte `DNAM` is the MAJORITY FO3/FNV
+/// carrier (42/53 FO3, 70/78 FNV), and it used to run `decode_dnam_pre_fo4`
+/// alone, which reads bytes 0..52 and returns. Everything past the prefix — the
+/// rain and displacement simulators, the three noise layers, the fog amounts,
+/// the underwater fog pair, the noise UV scales and amplitudes and the specular
+/// tail — was left at canonical defaults on 79% of FO3 and 90% of FNV water.
+///
+/// Pinned against shipped bytes rather than the decoder's own output: the
+/// assertion is that the tail actually *lands* on the majority of the real
+/// population, so a regression that reverts the dispatch arm fails here even
+/// though every synthetic fixture still passes.
+///
+/// `#[ignore]`-gated like its siblings: needs installed game data.
+#[test]
+#[ignore]
+fn installed_fallout_masters_decode_the_dnam_visual_tail() {
+    let masters = [
+        (
+            "BYROREDUX_FNV_DATA",
+            "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data",
+            "FalloutNV.esm",
+            "FNV",
+        ),
+        (
+            "BYROREDUX_FO3_DATA",
+            "/mnt/data/SteamLibrary/steamapps/common/Fallout 3 goty/Data",
+            "Fallout3.esm",
+            "FO3",
+        ),
+    ];
+
+    let mut checked_games = 0;
+    for (env_var, fallback, filename, label) in masters {
+        let Some(data) = data_dir(env_var, fallback) else {
+            eprintln!("[{label} WATR] skipping: game data unavailable");
+            continue;
+        };
+        let bytes = std::fs::read(data.join(filename)).expect("read installed master");
+        let index = parse_esm(&bytes).expect("parse installed master");
+        assert!(
+            !index.waters.is_empty(),
+            "{label} must contain WATR records"
+        );
+        checked_games += 1;
+
+        let total = index.waters.len();
+        // The displacement simulator lives at 76..92, well past the 52-byte
+        // prefix, and vanilla authors it on essentially every record (the GECK
+        // default tuple `0.4 0.6 0.985 10.0 0.05`). A record still sitting on
+        // the all-zero default never had its tail read.
+        let with_tail = index
+            .waters
+            .values()
+            .filter(|w| w.params.displacement != [0.0; 3])
+            .count();
+        // Underwater fog far at 148 is the deepest field the tail reads.
+        let with_deep_tail = index
+            .waters
+            .values()
+            .filter(|w| w.params.underwater_fog_far > 1.0)
+            .count();
+
+        eprintln!(
+            "[{label} WATR] {total} records: {with_tail} with a decoded displacement block, \
+             {with_deep_tail} reaching the underwater fog pair at 144/148"
+        );
+        assert!(
+            with_tail * 2 > total,
+            "[{label}] only {with_tail} of {total} WATR records decoded the displacement \
+             simulator at 76..92. The majority DNAM carrier is stopping at the 52-byte \
+             prefix again (#3107)."
+        );
+        assert!(
+            with_deep_tail * 2 > total,
+            "[{label}] only {with_deep_tail} of {total} WATR records reached the underwater \
+             fog pair at 144/148 — the tail is being truncated short of its end (#3107)."
+        );
+    }
+
+    assert!(
+        checked_games > 0,
+        "neither Fallout master was available — this guard proved nothing."
+    );
+}
