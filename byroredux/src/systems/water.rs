@@ -124,6 +124,18 @@ fn resolve_head_submerged(was: bool, depth: Option<f32>) -> bool {
 /// - `head_submerged` is computed at zero offset for cameras (the
 ///   eye is the submerged surface). The component still carries the
 ///   bool for downstream uniformity with the actor path.
+///
+/// # Scheduling requirement
+///
+/// Must run **after** `camera_follow_system`, which authors the camera pose in
+/// `Stage::Late` in player / third-person mode (writing both `Transform` and
+/// `GlobalTransform` directly, bypassing the missing late-stage propagation
+/// pass). Registered as a `Stage::Late` exclusive so that holds in every
+/// camera mode; a `Stage::PostUpdate` registration reads the *previous*
+/// frame's pose outside fly-cam mode, which lags the underwater low-pass and
+/// composite tint by a frame (#3180). It must also stay ahead of
+/// `water_audio_system`, which consumes the `SubmersionState` and the
+/// Splash/Ripple markers written here.
 pub(crate) fn submersion_system(world: &World, _dt: f32) {
     let Some(active) = world.try_resource::<ActiveCamera>() else {
         return;

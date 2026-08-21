@@ -1267,3 +1267,154 @@ fn oneshot_marker_is_consumed_on_both_dispatch_failure_arms() {
          doesn't consume the marker reintroduces #2394",
     );
 }
+
+// ---------------------------------------------------------------------------
+// #3178 — the BU -> metre seam at the audio boundary.
+// ---------------------------------------------------------------------------
+
+/// The conversion the whole spatial contract rests on: an emitter parked at
+/// `Attenuation::default().max_distance` metres of world distance must land
+/// exactly on that attenuation bound in kira space.
+#[test]
+fn emitter_at_max_distance_in_bu_lands_on_max_distance_in_audio_space() {
+    let max_m = Attenuation::default().max_distance;
+    // Listener at the origin, emitter `max_distance` metres away in BU.
+    let emitter_bu = Vec3::new(0.0, 0.0, max_m * BETHESDA_UNITS_PER_METER);
+    let converted = bu_to_audio_space(emitter_bu);
+
+    assert!(
+        (converted.length() - max_m).abs() < 1.0e-3,
+        "emitter {max_m} m away resolved to {} in kira space — the BU->metre \
+         seam is wrong, which silently shrinks every audible radius by ~70x \
+         (#3178)",
+        converted.length(),
+    );
+    // The pre-fix behaviour, pinned so it cannot come back: raw BU would put
+    // this emitter 70x past `max_distance` and therefore at Decibels::SILENCE.
+    assert!(
+        emitter_bu.length() > max_m * 10.0,
+        "sanity: raw BU must be far outside the metre-authored bound"
+    );
+}
+
+/// The default attenuation band, stated in the units it is authored in.
+#[test]
+fn default_attenuation_band_is_metres_not_bethesda_units() {
+    let a = Attenuation::default();
+    assert_eq!((a.min_distance, a.max_distance), (2.0, 30.0));
+    // 2 m .. 30 m of world is 140 BU .. 2100 BU. If someone "fixes" this by
+    // pre-scaling the constants instead of converting at the boundary, kira's
+    // metre-scaled ear model (EAR_DISTANCE = 0.1) ends up in the wrong space.
+    assert!(
+        a.max_distance < BETHESDA_UNITS_PER_METER,
+        "Attenuation constants look pre-scaled into Bethesda units — they must \
+         stay in metres; the conversion belongs in bu_to_audio_space (#3178)"
+    );
+}
+
+/// SIBLING guard for #3178: **every** position handed to kira crosses the
+/// seam. One missed site is a silent half-fix, and none of them are
+/// observable from a unit test of behaviour.
+#[test]
+fn every_kira_position_site_goes_through_the_unit_seam() {
+    // Whitespace-normalized so rustfmt's line wrapping can't break the needles.
+    let lib_rs: String = squeeze_whitespace(include_str!("lib.rs"));
+    let lib_rs = lib_rs.as_str();
+    for needle in [
+        "mgr.add_listener(bu_to_audio_space(pose.0), pose.1)",
+        "handle.set_position(bu_to_audio_space(pose.0), Tween::default())",
+    ] {
+        assert!(
+            lib_rs.contains(needle),
+            "listener position site no longer converts BU -> metres: \
+             expected `{needle}` (#3178)"
+        );
+    }
+    // Both dispatch paths (queue + entity).
+    assert_eq!(
+        lib_rs
+            .matches("add_spatial_sub_track( listener_id, bu_to_audio_space(p.position)")
+            .count(),
+        2,
+        "expected both spatial dispatch paths to convert BU -> metres (#3178)"
+    );
+    assert!(
+        !lib_rs.contains("add_spatial_sub_track(listener_id, p.position"),
+        "a spatial dispatch path still passes raw Bethesda units to kira (#3178)"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// #3179 — the above-water filter state must be a real bypass.
+// ---------------------------------------------------------------------------
+
+/// `FilterBuilder::default()` is `Mix::WET`, so "above water" is only a bypass
+/// if the dry mix is set explicitly. kira blends
+/// `output * sqrt(mix) + input * sqrt(1 - mix)`, so `Mix::DRY` is bit-exact
+/// passthrough at every device sample rate.
+#[test]
+fn above_water_filter_state_is_a_dry_bypass() {
+    assert_eq!(underwater_mix(false), Mix::DRY);
+    assert_eq!(underwater_mix(true), Mix::WET);
+    // The default this overrides — if kira ever changes it, the override is
+    // still correct, but the reason in the docs would need revisiting.
+    assert_eq!(
+        kira::effect::filter::FilterBuilder::default().mix,
+        kira::Value::Fixed(Mix::WET),
+        "kira's FilterBuilder default is no longer Mix::WET — re-read the \
+         bypass rationale on apply_underwater_filter (#3179)"
+    );
+}
+
+#[test]
+fn underwater_cutoff_matches_the_submersion_state() {
+    assert_eq!(underwater_cutoff_hz(true), UNDERWATER_CUTOFF_HZ);
+    assert_eq!(underwater_cutoff_hz(false), ABOVE_WATER_CUTOFF_HZ);
+}
+
+/// #3179 — the above-water cutoff must stay strictly below half of the lowest
+/// device rate we expect. kira computes
+/// `g = tan(PI * clamp(f_c / f_s, 0.0001, 0.5))`, so a cutoff at or above
+/// Nyquist pins the clamp at 0.5 and yields `tan(PI/2)` ~ 1.6e16 with
+/// `a1 = 1/(1 + g*(g + k))` ~ 3.7e-33 — a numerically degenerate filter, not a
+/// transparent one. This is why transparency is bought with `Mix::DRY` rather
+/// than by parking the cutoff beyond Nyquist.
+#[test]
+fn above_water_cutoff_never_reaches_the_kira_clamp_ceiling() {
+    const LOWEST_PLAUSIBLE_DEVICE_RATE_HZ: f64 = 44_100.0;
+    let nyquist = LOWEST_PLAUSIBLE_DEVICE_RATE_HZ / 2.0;
+    assert!(
+        ABOVE_WATER_CUTOFF_HZ < nyquist,
+        "ABOVE_WATER_CUTOFF_HZ ({ABOVE_WATER_CUTOFF_HZ} Hz) is at or above \
+         Nyquist for a {LOWEST_PLAUSIBLE_DEVICE_RATE_HZ} Hz device \
+         ({nyquist} Hz) — that pins kira's clamp at 0.5 and makes the filter \
+         numerically degenerate (#3179)"
+    );
+}
+
+/// SIBLING guard for #3179: the filter is constructed in exactly one place, so
+/// a future change cannot land on one dispatch path only — the same failure
+/// #2405 was filed for on the reverb-send gate three lines above.
+#[test]
+fn both_dispatch_paths_build_the_filter_through_one_call_site() {
+    let lib_rs = squeeze_whitespace(include_str!("lib.rs"));
+    assert_eq!(
+        lib_rs.matches("FilterBuilder::new()").count(),
+        1,
+        "the underwater filter is constructed in more than one place — route \
+         both dispatch paths through apply_underwater_filter (#3179 / #2405)"
+    );
+    assert_eq!(
+        lib_rs
+            .matches("apply_underwater_filter(&mut track_builder, underwater)")
+            .count(),
+        2,
+        "expected both dispatch paths to call the shared filter helper (#3179)"
+    );
+}
+
+/// Collapse every run of whitespace to a single space so source assertions
+/// survive rustfmt re-wrapping a call across lines.
+fn squeeze_whitespace(src: &str) -> String {
+    src.split_whitespace().collect::<Vec<_>>().join(" ")
+}

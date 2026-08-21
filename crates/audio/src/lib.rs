@@ -104,6 +104,28 @@
 //!   loop the per-frame send level naturally as new sounds replace
 //!   old ones).
 //!
+//! # Water audio (WATAL consumer, shipped)
+//!
+//! - [`AudioWorld::set_underwater`] / [`AudioWorld::underwater`] — the
+//!   listener's submersion state, written each frame by
+//!   `byroredux::systems::water_audio_system` from the active camera's
+//!   `SubmersionState`.
+//! - Every spatial sub-track carries a low-pass built by
+//!   `apply_underwater_filter` at construction and driven per frame by
+//!   `update_underwater_filters`: `UNDERWATER_CUTOFF_HZ` (900 Hz) fully wet
+//!   while submerged, and a genuine `Mix::DRY` bypass above water.
+//! - Water-surface splash / ripple one-shots reach the queue path through
+//!   `water_audio_system` + `WaterAudioConfig`, sourced from the
+//!   `SplashEvent` / `RippleEvent` markers WATAL emits.
+//!
+//! # Units
+//!
+//! World positions are **Bethesda units** (70 BU/m); kira is metre-scaled.
+//! [`bu_to_audio_space`] is the single conversion seam, applied to the
+//! listener pose and to both spatial-sub-track dispatch paths.
+//! [`Attenuation`] distances are authored in **metres** and must not be
+//! pre-scaled by callers. See #3178.
+//!
 //! # Future work (not in this commit)
 //!
 //! Listed by name rather than phase number (Phases 4–6 above have
@@ -120,6 +142,7 @@ use byroredux_core::ecs::sparse_set::SparseSetStorage;
 use byroredux_core::ecs::storage::{Component, EntityId};
 use byroredux_core::ecs::world::World;
 use byroredux_core::ecs::Resource;
+use byroredux_core::lighting::BETHESDA_UNITS_PER_METER;
 use glam::Vec3;
 use kira::effect::filter::{FilterBuilder, FilterHandle, FilterMode};
 use kira::effect::reverb::ReverbBuilder;
@@ -137,8 +160,89 @@ use std::time::Duration;
 /// Silence floor in decibels for the linear→dB conversion — clamps
 /// non-positive / near-zero amplitudes so `log10` doesn't blow up.
 const SILENCE_DB: f32 = -60.0;
+/// Low-pass cutoff applied while the listener is submerged.
 const UNDERWATER_CUTOFF_HZ: f64 = 900.0;
+/// Cutoff parked on the filter while above water.
+///
+/// This value is **not** what makes the dry state transparent — the `Mix`
+/// does (see [`apply_underwater_filter`]). It only shapes the brief
+/// surfacing/submerging crossfade, where a partially-wet 20 kHz low-pass is
+/// the natural-sounding midpoint.
+///
+/// Deliberately NOT raised to a "beyond Nyquist" value to force transparency
+/// (#3179): kira computes `g = tan(pi * clamp(f_c/f_s, 0.0001, 0.5))`
+/// (`kira-0.10.8/src/effect/filter.rs`), so any cutoff at or above half the
+/// device rate pins the clamp at `0.5` and gives `tan(pi/2)` ~ 1.6e16, with
+/// `a1 = 1/(1 + g*(g+k))` collapsing to ~3.7e-33. That is a numerically
+/// degenerate filter, not a transparent one.
 const ABOVE_WATER_CUTOFF_HZ: f64 = 20_000.0;
+
+/// Convert a world position from Bethesda units into the metre-scaled space
+/// kira reasons in. **This is the one and only unit seam for audio.**
+///
+/// The engine's world space is Bethesda units (`BETHESDA_UNITS_PER_METER`,
+/// 70 BU/m, declared in `byroredux_core::lighting` and already the authority
+/// for physics and the renderer), so every `GlobalTransform.translation` that
+/// reaches this crate is in BU. kira is metre-scaled — most visibly its
+/// hardcoded `EAR_DISTANCE = 0.1` (`kira-0.10.8/src/track/sub.rs`), which is
+/// 10 cm of head width and would otherwise be 10 cm *of Bethesda unit*, i.e.
+/// 1.4 mm of world, collapsing the stereo image.
+///
+/// Converting here rather than scaling [`Attenuation`] keeps kira's ear model
+/// in the right space and keeps the metre-authored attenuation constants
+/// honest. Every producer that adds a new emitter inherits it for free.
+///
+/// #3178 — before this existed, BU went in unconverted against metre-authored
+/// distances, making the effective audible radius ~1/70th of the intent:
+/// `Attenuation::default()` was 2.9 cm..43 cm rather than 2 m..30 m.
+fn bu_to_audio_space(position: Vec3) -> Vec3 {
+    position / BETHESDA_UNITS_PER_METER
+}
+
+/// Add the submersion low-pass to a spatial track and return its handle.
+///
+/// Shared by both dispatch paths so a future change cannot land on one only —
+/// the same extraction [`apply_reverb_send`] exists for (#2405), applied to
+/// the duplication that grew back three lines below it (#3179).
+///
+/// The above-water state is a genuine **bypass**: `Mix::DRY` makes kira's
+/// blend `output * sqrt(0) + input * sqrt(1)`, i.e. bit-exact passthrough at
+/// every device sample rate. `FilterBuilder::default()` is `Mix::WET`, so the
+/// dry state has to be set explicitly — leaving it default meant every sound
+/// on dry land carried a fully-wet 20 kHz SVF (Q = 0.5), losing ~1.9 dB at
+/// 10 kHz and ~3.9 dB at 15 kHz, by an amount that shifted with the output
+/// device's sample rate.
+fn apply_underwater_filter(
+    track_builder: &mut SpatialTrackBuilder,
+    underwater: bool,
+) -> FilterHandle {
+    track_builder.add_effect(
+        FilterBuilder::new()
+            .mode(FilterMode::LowPass)
+            .cutoff(underwater_cutoff_hz(underwater))
+            .mix(underwater_mix(underwater)),
+    )
+}
+
+/// Cutoff for a given submersion state. Split out so the dispatch-time and
+/// per-frame paths cannot disagree.
+fn underwater_cutoff_hz(underwater: bool) -> f64 {
+    if underwater {
+        UNDERWATER_CUTOFF_HZ
+    } else {
+        ABOVE_WATER_CUTOFF_HZ
+    }
+}
+
+/// Wet/dry mix for a given submersion state. `Mix::DRY` above water is what
+/// makes the filter transparent; see [`apply_underwater_filter`].
+fn underwater_mix(underwater: bool) -> Mix {
+    if underwater {
+        Mix::WET
+    } else {
+        Mix::DRY
+    }
+}
 
 /// Convert a linear gameplay volume (1.0 = "as authored", 0.5 = half-loud)
 /// to the decibel gain kira reasons in: `db = 20·log10(amplitude)`, clamped
@@ -596,6 +700,14 @@ impl Component for AudioListener {
 /// supports more nuanced curves (logarithmic, custom), and we'll plumb
 /// those in once perf lets us afford a custom-curve descriptor per
 /// emitter.
+///
+/// # Units: these distances are **metres**
+///
+/// World positions are Bethesda units (70 BU/m); the audio boundary converts
+/// them on the way in via [`bu_to_audio_space`], so producers author
+/// attenuation in metres and never scale anything themselves. Do not
+/// pre-multiply these by `BETHESDA_UNITS_PER_METER` — that would double the
+/// conversion and leave kira's ear model in the wrong space (#3178).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Attenuation {
     pub min_distance: f32,
@@ -618,10 +730,10 @@ impl Attenuation {
 
 impl Default for Attenuation {
     fn default() -> Self {
-        // Defaults chosen for Bethesda interior cells: inside a 2-3m
-        // sphere it's full volume; out at 30m it's gone. Footsteps
-        // and small impacts will want tighter ranges; ambient loops
-        // and music want larger.
+        // Metres (see the type docs). Chosen for Bethesda interior
+        // cells: inside a 2-3m sphere it's full volume; out at 30m
+        // it's gone. Footsteps and small impacts will want tighter
+        // ranges; ambient loops and music want larger.
         Self {
             min_distance: 2.0,
             max_distance: 30.0,
@@ -695,25 +807,31 @@ impl Component for OneShotSound {
 /// propagation has produced final world poses for the listener and
 /// every emitter).
 ///
-/// Phase 3 implementation:
+/// The five passes, in body order:
 ///
-/// 1. **Listener sync**: locate the (single) `AudioListener` entity.
-///    On first frame, lazily call `manager.add_listener` with its
-///    `GlobalTransform`. On subsequent frames, push pose updates
-///    through `ListenerHandle::set_position` / `set_orientation`.
-/// 2. **Dispatch new one-shots**: for each entity carrying both
+/// 1. **Listener sync** ([`sync_listener_pose`]): locate the (single)
+///    `AudioListener` entity. On first frame, lazily call
+///    `manager.add_listener` with its `GlobalTransform`. On subsequent
+///    frames, push pose updates through `ListenerHandle::set_position` /
+///    `set_orientation`. Positions cross the BU→metre seam here
+///    ([`bu_to_audio_space`]).
+/// 2. **Underwater filters** ([`update_underwater_filters`]): drive every
+///    live sub-track's low-pass cutoff and wet/dry mix to match
+///    [`AudioWorld::underwater`], which `water_audio_system` sets from the
+///    camera's `SubmersionState`.
+/// 3. **Drain the pending queue** ([`AudioWorld::play_oneshot`]'s Phase 3.5
+///    path): dispatch each queued entry through the spatial-sub-track path.
+///    No entity allocation — this is the API for Systems, which cannot spawn.
+/// 4. **Dispatch new one-shots**: for each entity carrying both
 ///    `OneShotSound` + `AudioEmitter`, create a spatial sub-track
 ///    anchored at the entity's `GlobalTransform`, play the sound on
 ///    that track, and remove `OneShotSound` so the dispatcher won't
 ///    re-trigger next frame. The `AudioEmitter` stays so callers
 ///    can query "is this entity still playing?" via the active list.
-/// 3. **Prune stopped**: walk `active_sounds`, drop any whose handle
+/// 5. **Prune stopped**: walk `active_sounds`, drop any whose handle
 ///    reports `PlaybackState::Stopped`. Removing the entity's
 ///    `AudioEmitter` lets a downstream cleanup system (or the cell
 ///    unloader) despawn it without coupling to audio state.
-///
-/// Looping playback / fade-in / fade-out / streaming lifecycle land
-/// in subsequent phases on top of the same shape.
 pub fn audio_system(world: &World, _dt: f32) {
     let Some(mut audio_world) = world.try_resource_mut::<AudioWorld>() else {
         return;
@@ -729,20 +847,23 @@ pub fn audio_system(world: &World, _dt: f32) {
     prune_stopped_sounds(world, &mut audio_world);
 }
 
+/// Drive every live sub-track's low-pass to match the listener's submersion
+/// state. Both the cutoff **and** the wet/dry mix are tweened: the mix is what
+/// actually engages and bypasses the filter (#3179), the cutoff shapes the
+/// crossfade in between.
 fn update_underwater_filters(audio_world: &mut AudioWorld) {
-    let cutoff = if audio_world.underwater {
-        UNDERWATER_CUTOFF_HZ
-    } else {
-        ABOVE_WATER_CUTOFF_HZ
-    };
+    let underwater = audio_world.underwater;
+    let cutoff = underwater_cutoff_hz(underwater);
+    let mix = underwater_mix(underwater);
     for active in &mut audio_world.active_sounds {
-        if active.underwater == audio_world.underwater {
+        if active.underwater == underwater {
             continue;
         }
         active
             .underwater_filter
             .set_cutoff(cutoff, Tween::default());
-        active.underwater = audio_world.underwater;
+        active.underwater_filter.set_mix(mix, Tween::default());
+        active.underwater = underwater;
     }
 }
 
@@ -808,7 +929,7 @@ fn sync_listener_pose(world: &World, audio_world: &mut AudioWorld) {
         let Some(mgr) = audio_world.manager.as_mut() else {
             return;
         };
-        match mgr.add_listener(pose.0, pose.1) {
+        match mgr.add_listener(bu_to_audio_space(pose.0), pose.1) {
             Ok(handle) => {
                 log::info!(
                     "M44 Phase 3: kira listener created at ({:.1},{:.1},{:.1})",
@@ -823,7 +944,7 @@ fn sync_listener_pose(world: &World, audio_world: &mut AudioWorld) {
             }
         }
     } else if let Some(handle) = audio_world.listener.as_mut() {
-        handle.set_position(pose.0, Tween::default());
+        handle.set_position(bu_to_audio_space(pose.0), Tween::default());
         handle.set_orientation(pose.1, Tween::default());
     }
 }
@@ -873,17 +994,12 @@ fn drain_pending_oneshots(audio_world: &mut AudioWorld) {
         );
         let mut track_builder = track_builder;
         let underwater = audio_world.underwater;
-        let cutoff = if underwater {
-            UNDERWATER_CUTOFF_HZ
-        } else {
-            ABOVE_WATER_CUTOFF_HZ
-        };
-        let underwater_filter = track_builder.add_effect(
-            FilterBuilder::new()
-                .mode(FilterMode::LowPass)
-                .cutoff(cutoff),
-        );
-        let mut track = match mgr.add_spatial_sub_track(listener_id, p.position, track_builder) {
+        let underwater_filter = apply_underwater_filter(&mut track_builder, underwater);
+        let mut track = match mgr.add_spatial_sub_track(
+            listener_id,
+            bu_to_audio_space(p.position),
+            track_builder,
+        ) {
             Ok(t) => t,
             Err(e) => {
                 log::warn!("M44 Phase 3.5: add_spatial_sub_track failed: {e}");
@@ -999,7 +1115,9 @@ fn dispatch_new_oneshots(world: &World, audio_world: &mut AudioWorld) {
         // `RangeInclusive<f32>` (or `(f32, f32)` / `[f32; 2]`); the
         // exclusive `..` range we use elsewhere doesn't impl
         // `Into<SpatialTrackDistances>`. The values are min..=max
-        // game-units, falloff between is linear (kira default).
+        // **metres** (#3178 — the position handed to kira alongside
+        // them is converted from BU by `bu_to_audio_space`), falloff
+        // between is linear (kira default).
         let track_builder = SpatialTrackBuilder::new().distances(p.attenuation.distance_range());
         // Phase 6: route a fraction of this track's signal to the
         // global reverb send, if one exists and the level isn't muted.
@@ -1010,17 +1128,12 @@ fn dispatch_new_oneshots(world: &World, audio_world: &mut AudioWorld) {
         );
         let mut track_builder = track_builder;
         let underwater = audio_world.underwater;
-        let cutoff = if underwater {
-            UNDERWATER_CUTOFF_HZ
-        } else {
-            ABOVE_WATER_CUTOFF_HZ
-        };
-        let underwater_filter = track_builder.add_effect(
-            FilterBuilder::new()
-                .mode(FilterMode::LowPass)
-                .cutoff(cutoff),
-        );
-        let mut track = match mgr.add_spatial_sub_track(listener_id, p.position, track_builder) {
+        let underwater_filter = apply_underwater_filter(&mut track_builder, underwater);
+        let mut track = match mgr.add_spatial_sub_track(
+            listener_id,
+            bu_to_audio_space(p.position),
+            track_builder,
+        ) {
             Ok(t) => t,
             Err(e) => {
                 log::warn!(

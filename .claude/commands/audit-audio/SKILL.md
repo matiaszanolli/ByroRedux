@@ -170,10 +170,18 @@ first, manager/ECS lifecycle and gameplay wiring last.
   in renderer space — a residual coordinate-frame mismatch is left/right channel
   inversion across the whole soundscape, subtle and lethal.
 - **Attenuation curve**: `Attenuation` is `min_distance..=max_distance` linear
-  falloff via `SpatialTrackBuilder::distances`. Default `{2.0, 30.0}`. Verify the
-  range is passed as `RangeInclusive` (the exclusive `..` doesn't impl
-  `Into<SpatialTrackDistances>`) and that `min <= max` is never violated by a
-  caller (footsteps use `{0.5, 12.0}`).
+  falloff via `SpatialTrackBuilder::distances`, in **metres**. Default
+  `{2.0, 30.0}`. Verify the range is passed as `RangeInclusive` (the exclusive
+  `..` doesn't impl `Into<SpatialTrackDistances>`) and that `min <= max` is never
+  violated by a caller (footsteps use `{0.5, 12.0}`).
+- **Units (#3178)**: the engine's world space is Bethesda units
+  (`BETHESDA_UNITS_PER_METER` = 70) and kira is metre-scaled. `bu_to_audio_space`
+  is the single seam, applied to the listener pose and to **both**
+  `add_spatial_sub_track` dispatch paths. Verify no position reaches kira
+  unconverted — a missed site is inaudible past ~43 cm and produces no log line,
+  no counter, and no failing test. Note this was invisible for eleven audit
+  cycles because the only emitter was co-located with the listener, so distance
+  was always exactly 0.
 - `add_listener` failure is logged WARN and leaves `listener = None`; the next
   frame retries (lazy create is idempotent on `None`). Verify the retry — a
   transient init failure must not permanently break audio for the session.
@@ -374,9 +382,12 @@ the ONLY `set_reverb_send_db` caller. Neither is covered by the crate dimensions
   acquisition contract. Verify no component query lock is held across
   `play_oneshot`.
 - **Footstep attenuation**: each footstep uses `Attenuation { min_distance: 0.5,
-  max_distance: 12.0 }` (tighter than the `{2.0, 30.0}` default — footsteps drop
-  off fast). Flag any widening (distant NPC footsteps audible across a whole
-  interior).
+  max_distance: 12.0 }` — **metres**, tighter than the `{2.0, 30.0}` default
+  because footsteps drop off fast. Flag any widening (distant NPC footsteps
+  audible across a whole interior), and equally flag any *pre-scaling* into
+  Bethesda units: world BU crosses into kira's metre space exactly once, in
+  `bu_to_audio_space` at the audio boundary (#3178). A producer multiplying its
+  own constants by 70 is the regression, not the fix.
 - **Silent no-op contracts**: `footstep_system` returns early and silently when
   `FootstepConfig` is absent, `default_sound` is `None`, `FootstepScratch` is
   absent, the emitter/transform queries fail, or `AudioWorld` is absent. Verify

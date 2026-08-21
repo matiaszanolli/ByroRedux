@@ -130,7 +130,7 @@ layouts); see the gaps table below.
 
 ---
 
-## Audio (M44 — Phases 1–6 complete)
+## Audio (M44 — Phases 1–6 complete, plus the WATAL water consumer)
 
 | Feature | Status |
 |---|---|
@@ -140,6 +140,8 @@ layouts); see the gaps table below.
 | Looping ambient (tweened stop on despawn) | ✓ |
 | Streaming music (OGG, crossfade) | ✓ |
 | Per-cell reverb send (`-12 dB` interior / silent exterior) | ✓ |
+| Underwater low-pass (submersion-driven, 900 Hz wet / dry bypass) | ✓ |
+| Water-surface splash + ripple one-shots (WATAL events) | ✓ |
 | Per-material footsteps (FOOT records) | ✗ |
 | Region ambient (REGN) | ✗ |
 

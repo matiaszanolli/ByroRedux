@@ -1209,28 +1209,6 @@ pub(crate) fn build_scheduler() -> Scheduler {
             .writes::<byroredux_core::ecs::GlobalTransform>()
             .writes::<byroredux_core::ecs::WorldBound>(),
     );
-    // Submersion detection runs in PostUpdate after bound
-    // propagation so the camera's GlobalTransform is already
-    // current for the frame. Reads `WaterPlane`/`WaterVolume` +
-    // `GlobalTransform`, writes `SubmersionState` on the active
-    // camera entity. Downstream consumers (audio low-pass send,
-    // underwater composite tint) read the result later in the
-    // frame.
-    scheduler.add_exclusive_with_access(
-        Stage::PostUpdate,
-        crate::systems::submersion_system,
-        Access::new()
-            .reads_resource::<ActiveCamera>()
-            .reads_resource::<byroredux_core::ecs::resources::TotalTime>()
-            .reads_resource::<byroredux_core::ecs::components::groundcover::WindField>()
-            .reads::<byroredux_core::ecs::components::WaterPlane>()
-            .reads::<byroredux_core::ecs::components::WaterVolume>()
-            .reads::<byroredux_core::ecs::GlobalTransform>()
-            .writes::<byroredux_core::ecs::components::ParticleEmitter>()
-            .writes::<byroredux_scripting::RippleEvent>()
-            .writes::<byroredux_scripting::SplashEvent>()
-            .writes::<byroredux_core::ecs::components::SubmersionState>(),
-    );
     scheduler.add_to_with_access(
         Stage::Physics,
         byroredux_physics::physics_sync_system,
@@ -1272,6 +1250,11 @@ pub(crate) fn build_scheduler() -> Scheduler {
     // `physics_sync_system` has settled the kinematic body's
     // post-step pose. Must run BEFORE `audio_system` /
     // `submersion_system` (both read camera GlobalTransform).
+    // Both are `Stage::Late` **exclusives**, which sequence after this
+    // parallel batch, so the ordering is structural rather than incidental.
+    // #3180 — `submersion_system` was in `Stage::PostUpdate` when this
+    // comment was written, so the second half of the claim was false; it was
+    // moved to a Late exclusive rather than the comment being weakened.
     // The character system writes both Transform and
     // GlobalTransform on the camera to bypass the missing
     // late-stage propagation pass.
@@ -1315,6 +1298,43 @@ pub(crate) fn build_scheduler() -> Scheduler {
     // keeps the scheduler's known_conflict_count() at 0. Matches the
     // existing add_exclusive treatment of audio_system / event_cleanup.
     scheduler.add_exclusive(Stage::Late, crate::ragdoll::ragdoll_writeback_system);
+    // Submersion detection. #3180 — this was registered in
+    // `Stage::PostUpdate`, whose placement comment claimed the camera's
+    // GlobalTransform was "already current for the frame". That held only in
+    // fly-cam mode, where the fly camera writes `Transform` in `Stage::Update`
+    // and PostUpdate propagation resolves it. In player / third-person mode
+    // `camera_follow_system` is the pose author and writes both `Transform`
+    // and `GlobalTransform` in `Stage::Late`, so a PostUpdate read saw the
+    // PREVIOUS frame's pose — one frame of lag on the underwater low-pass and
+    // the underwater composite tint, and a `camera_follow_system` comment
+    // asserting an ordering that did not hold.
+    //
+    // Registered here as a `Stage::Late` exclusive: exclusives sequence after
+    // the Late parallel batch, which contains `camera_follow_system`, so the
+    // camera pose is this frame's in BOTH modes. Placed immediately after
+    // `ragdoll_writeback_system` and before `water_damage_system` to preserve
+    // the documented Late exclusive order (ragdoll -> submersion ->
+    // water_damage -> water_interaction -> water_audio -> audio_system ->
+    // event_cleanup), keeping `SubmersionState` and the Splash/Ripple markers
+    // written before `water_audio_system` consumes them.
+    //
+    // Reads `WaterPlane`/`WaterVolume` + `GlobalTransform`, writes
+    // `SubmersionState` on the active camera entity.
+    scheduler.add_exclusive_with_access(
+        Stage::Late,
+        crate::systems::submersion_system,
+        Access::new()
+            .reads_resource::<ActiveCamera>()
+            .reads_resource::<byroredux_core::ecs::resources::TotalTime>()
+            .reads_resource::<byroredux_core::ecs::components::groundcover::WindField>()
+            .reads::<byroredux_core::ecs::components::WaterPlane>()
+            .reads::<byroredux_core::ecs::components::WaterVolume>()
+            .reads::<byroredux_core::ecs::GlobalTransform>()
+            .writes::<byroredux_core::ecs::components::ParticleEmitter>()
+            .writes::<byroredux_scripting::RippleEvent>()
+            .writes::<byroredux_scripting::SplashEvent>()
+            .writes::<byroredux_core::ecs::components::SubmersionState>(),
+    );
     // M44 Phase 6 — cell-acoustics → reverb send (#846). Runs
     // before `audio_system` so any new spatial track constructed
     // this frame picks up the right send level. Already-playing

@@ -388,3 +388,101 @@ fn contract_bearing_exclusives_declare_their_access() {
         );
     }
 }
+
+/// #3180 — `camera_follow_system`'s comment claims it runs before both
+/// `audio_system` **and** `submersion_system`. That was only half true:
+/// `submersion_system` was registered in `Stage::PostUpdate`, an earlier stage
+/// entirely, so in player / third-person mode it read the previous frame's
+/// camera pose (`camera_follow_system` authors the pose in `Stage::Late`).
+///
+/// This pins the ordering the comment asserts, on the real schedule, so the
+/// claim cannot re-rot into aspiration. Within a stage the access report lists
+/// the parallel batch first and then exclusives in registration order, which
+/// is also the execution order.
+#[test]
+fn submersion_runs_after_camera_follow_and_before_water_audio() {
+    use byroredux_core::ecs::Stage;
+
+    let report = crate::boot::build_scheduler().access_report();
+    let late = report
+        .stages
+        .iter()
+        .find(|s| s.stage == Stage::Late)
+        .expect("Stage::Late must exist in the schedule");
+
+    let index_of = |needle: &str| -> usize {
+        late.systems
+            .iter()
+            .position(|row| row.name.contains(needle))
+            .unwrap_or_else(|| {
+                panic!(
+                    "no Stage::Late system matching `{needle}` — the \
+                     registration moved stage or was renamed (#3180). \
+                     Late systems: {:?}",
+                    late.systems.iter().map(|r| &r.name).collect::<Vec<_>>()
+                )
+            })
+    };
+
+    // Fully-qualified needles: `audio_system` is a suffix of
+    // `water_audio_system`, so a `contains` on the bare name matches both.
+    let camera_follow = index_of("systems::character::camera_follow_system");
+    let submersion = index_of("systems::water::submersion_system");
+    let water_audio = index_of("systems::audio::water_audio_system");
+    let audio = index_of("byroredux_audio::audio_system");
+    let ragdoll = index_of("ragdoll::ragdoll_writeback_system");
+
+    assert!(
+        !late.systems[camera_follow].is_exclusive,
+        "camera_follow_system is no longer in the Late parallel batch — the \
+         'parallel batch completes before exclusives' argument that makes \
+         this ordering structural no longer applies (#3180)"
+    );
+    assert!(
+        late.systems[submersion].is_exclusive,
+        "submersion_system must stay a Late exclusive so it sequences after \
+         the parallel batch that authors the camera pose (#3180)"
+    );
+    assert!(
+        ragdoll < submersion,
+        "the documented Late exclusive order is ragdoll -> submersion -> \
+         water_damage -> water_interaction -> water_audio -> audio_system -> \
+         event_cleanup; submersion ({submersion}) must follow \
+         ragdoll_writeback ({ragdoll}) (#3180)"
+    );
+    assert!(
+        camera_follow < submersion,
+        "submersion_system ({submersion}) must run AFTER camera_follow_system \
+         ({camera_follow}) — otherwise it reads a stale camera pose in \
+         player mode and the underwater low-pass lags a frame (#3180)"
+    );
+    assert!(
+        submersion < water_audio,
+        "submersion_system ({submersion}) must run BEFORE water_audio_system \
+         ({water_audio}), which consumes the SubmersionState and the \
+         Splash/Ripple markers it writes (#3180)"
+    );
+    assert!(
+        water_audio < audio,
+        "water_audio_system ({water_audio}) must run BEFORE audio_system \
+         ({audio}) — it sets AudioWorld::underwater that the filter pass reads"
+    );
+
+    // The regression itself: an earlier-stage registration would silently
+    // restore the one-frame lag while every assertion above still passed.
+    for stage in &report.stages {
+        if stage.stage == Stage::Late {
+            continue;
+        }
+        assert!(
+            !stage
+                .systems
+                .iter()
+                .any(|r| r.name.contains("systems::water::submersion_system")),
+            "submersion_system is registered in {:?} as well as Stage::Late — \
+             an earlier-stage copy reads the previous frame's camera pose \
+             (#3180)",
+            stage.stage,
+        );
+    }
+}
