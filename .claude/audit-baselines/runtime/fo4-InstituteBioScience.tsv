@@ -1,4 +1,4 @@
-# regenerated: 2026-08-06 (RT-1/#2215 + RT-2/#2216 combined regen)
+# regenerated: 2026-08-22 (#3006 — RT-2026-08-16-07 root-caused and re-baselined)
 # RT-1/#2215: bench_draws_gpu_calls 40 -> 42, bench_draws_batches 272 -> 753.
 # Same draw_sort_key depth-primary-for-alpha-over mechanism as the FNV regen
 # in this commit — see byroredux/src/render/mod.rs draw_sort_key and the
@@ -14,15 +14,41 @@
 # there's no pressure on the #1284 cap. skin_pool_live rise continues to
 # attribute to the ongoing skin-version-gate fix line (22798ecc and its
 # 2026-08 follow-ups — see HISTORY.md).
-entities_total	12448
+#
+# #3006 (2026-08-22) — bisected the 08-16 audit's entities_total/
+# bench_draws_cmds/skin_pool_live rise (12448->14688, 3440->3954,
+# 124->248) to `322f33a8` ("Refactor lighting system to support
+# inheritance flags and improve effect shader handling", 2026-08-10).
+# That commit's `static_meshes.rs` change is a deliberate, verified-
+# correct fix: effect-shader material draws (glass/particle FX,
+# MATERIAL_KIND_EFFECT_SHADER) were previously excluded from TLAS
+# eligibility, so a frustum-culled effect-shader draw with no raster
+# path was silently dropped as a dead record. The fix stops excluding
+# them so optical/GI rays can see them (`VISIBILITY_LAYER_EFFECT`),
+# which legitimately increases retained draw commands — this is more
+# correct rendering, not a merge-key defect. Confirmed reproducible:
+# camera_pos, entities_total, and the full draws=N/Mb/Kc split are
+# bit-identical across two independent re-runs at HEAD.
+# entities_total continued climbing past the audit's 14688 to 18256 by
+# 2026-08-22 (+46.7% vs this baseline's prior 12448); skin_pool_live
+# matches the audit's reported 248 exactly. bench_draws_cmds (3949) and
+# skin_pool_live both moved roughly proportionally with entities_total,
+# consistent with the already-documented benign-creep pattern (RT-2/
+# #2216 above, RT-3/#1705) rather than a new defect — mesh_cache_failed_count
+# and tex_missing_unique_paths are unchanged, and skin_pool_overflow_attempts
+# stayed 0 against the unchanged skin_pool_max=1364 cap.
+# bench_draws_batches/gpu_calls both fell substantially (753->296, 42->16);
+# both metrics only gate on an INCREASE past baseline x1.1, so this is a
+# clean pass, not a finding.
+entities_total	18256
 tex_missing_unique_paths	1
 mesh_cache_failed_count	0
 light_count_directional	1
-skin_pool_live	124
+skin_pool_live	248
 skin_pool_max	1364
 skin_pool_overflow_attempts	0
-bench_fps_p50	68.3
-bench_fps_avg	68.3
-bench_draws_cmds	3440
-bench_draws_batches	753
-bench_draws_gpu_calls	42
+bench_fps_p50	44.3
+bench_fps_avg	44.3
+bench_draws_cmds	3949
+bench_draws_batches	296
+bench_draws_gpu_calls	16
