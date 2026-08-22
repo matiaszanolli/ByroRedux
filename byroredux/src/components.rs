@@ -9,6 +9,7 @@ use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{Component, Resource, SparseSetStorage};
 use byroredux_core::math::Vec3;
 use byroredux_core::string::FixedString;
+use rustc_hash::FxHashMap;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use winit::event::MouseButton;
@@ -1291,7 +1292,7 @@ impl Default for WaterAudioConfig {
 /// edges are never delayed; this cooldown only prevents a stationary actor
 /// from producing a one-shot every frame while `RippleEvent` is present.
 pub(crate) struct WaterAudioState {
-    pub(crate) ripple_cooldown: f32,
+    pub(crate) ripple_cooldowns: FxHashMap<EntityId, f32>,
 }
 
 impl Resource for WaterAudioState {}
@@ -1299,7 +1300,7 @@ impl Resource for WaterAudioState {}
 impl Default for WaterAudioState {
     fn default() -> Self {
         Self {
-            ripple_cooldown: 0.0,
+            ripple_cooldowns: FxHashMap::default(),
         }
     }
 }

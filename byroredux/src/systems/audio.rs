@@ -1,11 +1,26 @@
 //! Audio routing systems — reverb zones, footstep emitters.
 
 use byroredux_core::ecs::components::water::SubmersionState;
-use byroredux_core::ecs::{ActiveCamera, GlobalTransform, World};
+use byroredux_core::ecs::{ActiveCamera, EntityId, GlobalTransform, World};
 use byroredux_core::math::Vec3;
 use byroredux_scripting::{RippleEvent, SplashEvent};
 
 use crate::components::CellLightingRes;
+
+const RIPPLE_COOLDOWN_SECS: f32 = 0.18;
+
+type RippleCandidate = (EntityId, Vec3, f32);
+
+fn strongest_ready_ripple(
+    candidates: &[RippleCandidate],
+    cooldowns: &rustc_hash::FxHashMap<EntityId, f32>,
+) -> Option<RippleCandidate> {
+    candidates
+        .iter()
+        .filter(|(surface, _, _)| !cooldowns.contains_key(surface))
+        .max_by(|a, b| a.2.total_cmp(&b.2))
+        .copied()
+}
 
 /// M44 Phase 6 — cell-acoustics → reverb send wiring (#846 / AUD-D5-NEW-05).
 ///
@@ -233,14 +248,6 @@ pub(crate) fn water_audio_system(world: &World, dt: f32) {
     let volume = config.volume;
     drop(config);
 
-    let ripple_ready = {
-        let Some(mut state) = world.try_resource_mut::<crate::components::WaterAudioState>() else {
-            return;
-        };
-        state.ripple_cooldown = (state.ripple_cooldown - dt.max(0.0)).max(0.0);
-        state.ripple_cooldown <= 0.0
-    };
-
     let Some(events) = world.query::<SplashEvent>() else {
         return;
     };
@@ -254,18 +261,33 @@ pub(crate) fn water_audio_system(world: &World, dt: f32) {
         })
         .collect();
     drop(events);
-    let ripple = world.query::<RippleEvent>().and_then(|events| {
-        events.iter().next().map(|(_, event)| {
-            (
-                Vec3::new(event.position[0], event.position[1], event.position[2]),
-                events
-                    .iter()
-                    .map(|(_, candidate)| candidate.intensity)
-                    .fold(0.0f32, f32::max),
-            )
+    let ripples: Vec<RippleCandidate> = world
+        .query::<RippleEvent>()
+        .map(|events| {
+            events
+                .iter()
+                .map(|(surface, event)| {
+                    (
+                        surface,
+                        Vec3::new(event.position[0], event.position[1], event.position[2]),
+                        event.intensity,
+                    )
+                })
+                .collect()
         })
-    });
-    if splashes.is_empty() && (!ripple_ready || ripple.is_none()) {
+        .unwrap_or_default();
+    let ripple = {
+        let Some(mut state) = world.try_resource_mut::<crate::components::WaterAudioState>() else {
+            return;
+        };
+        let elapsed = dt.max(0.0);
+        state.ripple_cooldowns.retain(|_, cooldown| {
+            *cooldown = (*cooldown - elapsed).max(0.0);
+            *cooldown > 0.0
+        });
+        strongest_ready_ripple(&ripples, &state.ripple_cooldowns)
+    };
+    if splashes.is_empty() && ripple.is_none() {
         return;
     }
     let had_splash = !splashes.is_empty();
@@ -284,8 +306,8 @@ pub(crate) fn water_audio_system(world: &World, dt: f32) {
             (volume * intensity).clamp(0.0, 1.0),
         );
     }
-    if !had_splash && ripple_ready {
-        if let Some((position, intensity)) = ripple {
+    let played_ripple_surface = if !had_splash {
+        if let Some((surface, position, intensity)) = ripple {
             audio_world.play_oneshot(
                 std::sync::Arc::clone(&sound),
                 position,
@@ -295,10 +317,17 @@ pub(crate) fn water_audio_system(world: &World, dt: f32) {
                 },
                 (volume * intensity * 0.45).clamp(0.0, 1.0),
             );
+            Some(surface)
+        } else {
+            None
         }
-        drop(audio_world);
+    } else {
+        None
+    };
+    drop(audio_world);
+    if let Some(surface) = played_ripple_surface {
         if let Some(mut state) = world.try_resource_mut::<crate::components::WaterAudioState>() {
-            state.ripple_cooldown = 0.18;
+            state.ripple_cooldowns.insert(surface, RIPPLE_COOLDOWN_SECS);
         }
     }
 }
@@ -560,7 +589,34 @@ mod footstep_tests {
             },
         );
         water_audio_system(&world, 0.016);
-        assert!(world.resource::<WaterAudioState>().ripple_cooldown > 0.0);
+        assert!(world
+            .resource::<WaterAudioState>()
+            .ripple_cooldowns
+            .contains_key(&water));
+    }
+
+    #[test]
+    fn ripple_selection_keeps_event_fields_together_and_cooldowns_per_surface() {
+        let quiet_surface = 10;
+        let loud_surface = 20;
+        let candidates = [
+            (quiet_surface, Vec3::new(1.0, 2.0, 3.0), 0.2),
+            (loud_surface, Vec3::new(7.0, 8.0, 9.0), 0.9),
+        ];
+        let mut cooldowns = rustc_hash::FxHashMap::default();
+
+        assert_eq!(
+            strongest_ready_ripple(&candidates, &cooldowns),
+            Some((loud_surface, Vec3::new(7.0, 8.0, 9.0), 0.9)),
+            "position and intensity must come from the same loudest event"
+        );
+
+        cooldowns.insert(loud_surface, RIPPLE_COOLDOWN_SECS);
+        assert_eq!(
+            strongest_ready_ripple(&candidates, &cooldowns),
+            Some((quiet_surface, Vec3::new(1.0, 2.0, 3.0), 0.2)),
+            "one surface's cooldown must not suppress a different surface"
+        );
     }
 }
 
