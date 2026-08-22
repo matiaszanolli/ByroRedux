@@ -465,6 +465,35 @@ fn clear_stale_water_contacts(world: &World) {
     }
 }
 
+/// Whether animated surface displacement can change an existing body's
+/// contact state while the rigid-body scene itself is otherwise quiescent.
+///
+/// Authored waves are common (including on the canonical default material),
+/// but they matter to buoyancy only when a body already has a live contact
+/// close enough to the surface for a crest or trough to change immersion.
+/// Treating the mere presence of any non-zero wave amplitude as activity
+/// makes the settled-scene fast path unreachable in virtually every water
+/// cell (#3135).
+fn waves_require_contact_rescan(world: &World, surfaces: &[WaterSurface]) -> bool {
+    let max_amplitude = surfaces
+        .iter()
+        .map(|surface| surface.material.wave_amplitude.abs())
+        .filter(|amplitude| amplitude.is_finite())
+        .fold(0.0_f32, f32::max);
+    if max_amplitude <= 1.0e-4 {
+        return false;
+    }
+    let Some(contacts) = world.query::<WaterContact>() else {
+        return false;
+    };
+    let needs_rescan = contacts.iter().any(|(_, contact)| {
+        contact.surface_entity.is_some()
+            && (contact.submerged_fraction > 0.0
+                || contact.depth.abs() <= max_amplitude + WATERLINE_HYSTERESIS)
+    });
+    needs_rescan
+}
+
 /// WATAL Phase 2 — the buoyancy phase of [`physics_sync_system`]
 /// (`crate::sync`). Runs BEFORE the Rapier step so the lift it adds
 /// integrates this tick.
@@ -510,17 +539,16 @@ pub(crate) fn apply_buoyancy(world: &World, had_newcomers: bool) {
     let (weather_scroll, wind_wave_scale) = time_secs
         .map(|time| weather_wave_adjustment(world, time))
         .unwrap_or(([0.0; 2], 1.0));
-    let waves_active = time_secs.is_some()
-        && surfaces
-            .iter()
-            .any(|surface| surface.material.wave_amplitude.abs() > 1.0e-4);
-    // Fast path: no water anywhere → no body can be buoyant, so skip the
-    // whole per-body scan. Keeps interior / no-water / loose-NIF frames free
-    // (the common case). A body that was wet last frame is co-unloaded with
-    // its cell's water plane, so there is nothing left to restore here.
-    if surfaces.is_empty() && current_volumes.is_empty() {
+    let waves_require_rescan =
+        time_secs.is_some() && waves_require_contact_rescan(world, &surfaces);
+    // Fast path: without a surface no body can remain buoyant. Always clear
+    // stale contacts first because a placed current marker may outlive the
+    // plane during streaming; only return immediately when it is absent too.
+    if surfaces.is_empty() {
         clear_stale_water_contacts(world);
-        return;
+        if current_volumes.is_empty() {
+            return;
+        }
     }
 
     // Quiesced-scene fast path: a dry→wet transition can only occur if some
@@ -535,7 +563,8 @@ pub(crate) fn apply_buoyancy(world: &World, had_newcomers: bool) {
     // first-frame dry→wet float-up would be skipped here.
     {
         let pw = world.resource::<PhysicsWorld>();
-        if pw.awake_counts().0 == 0 && !pw.pending_wake() && !had_newcomers && !waves_active {
+        if pw.awake_counts().0 == 0 && !pw.pending_wake() && !had_newcomers && !waves_require_rescan
+        {
             return;
         }
     }
@@ -938,6 +967,44 @@ mod tests {
         assert_eq!(currents.len(), 1);
         assert_eq!(currents[0].flow.direction, [1.0, 0.0, 0.0]);
         assert!(world.query::<WaterPlane>().is_none());
+    }
+
+    #[test]
+    fn default_authored_waves_only_rescan_nearby_live_contacts() {
+        let mut world = World::new();
+        world.register::<WaterContact>();
+        let surface_entity = world.spawn();
+        let surfaces = [WaterSurface {
+            entity: surface_entity,
+            volume: WaterVolume {
+                min: [-10.0, -10.0, -10.0],
+                max: [10.0, 0.0, 10.0],
+            },
+            surface_y: 0.0,
+            material: WaterMaterial::default(),
+            flow: None,
+            damage_per_second: 0.0,
+        }];
+
+        assert!(
+            !waves_require_contact_rescan(&world, &surfaces),
+            "the canonical non-zero wave default must not disarm quiescence by itself"
+        );
+
+        let body = world.spawn();
+        world.insert(
+            body,
+            WaterContact {
+                surface_entity: Some(surface_entity),
+                depth: WaterMaterial::default().wave_amplitude * 0.5,
+                submerged_fraction: 0.0,
+                ..WaterContact::default()
+            },
+        );
+        assert!(
+            waves_require_contact_rescan(&world, &surfaces),
+            "a live contact inside the crest band must continue to track authored waves"
+        );
     }
 
     #[test]
@@ -1586,8 +1653,20 @@ mod tests {
         drop(contact);
 
         // Streaming can remove the water plane before the dynamic body is
-        // reclaimed. The empty-surface fast path must still clear the
-        // canonical contact instead of leaving a phantom wet body behind.
+        // reclaimed while an independent current marker remains resident.
+        // The no-surface path must still clear the canonical contact instead
+        // of returning through the quiesced current-only fast path (#3127).
+        let marker = world.spawn();
+        world.insert(
+            marker,
+            WaterCurrentVolume {
+                volume: WaterVolume {
+                    min: [-500.0, -500.0, -500.0],
+                    max: [500.0, 500.0, 500.0],
+                },
+                flow: WaterFlow::new([1.0, 0.0, 0.0], 8.0),
+            },
+        );
         world.remove::<WaterPlane>(water);
         world.remove::<WaterVolume>(water);
         world.remove::<WaterFlow>(water);
