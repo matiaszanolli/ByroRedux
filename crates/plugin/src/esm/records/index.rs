@@ -404,9 +404,19 @@ impl EsmIndex {
             return;
         }
 
+        // #2991 — reset each currently-`Mod` item back to the classification
+        // its own record carried before promotion (`was_junk`), not
+        // unconditionally to `Misc`. A previous merge pass may have already
+        // promoted this item; discarding its CVPA-Junk provenance here would
+        // make it unrecoverable once the loop below no longer re-promotes it
+        // (e.g. a later plugin's OMOD override drops the `LNAM` reference).
         for item in self.items.values_mut() {
-            if matches!(item.kind, super::ItemKind::Mod) {
-                item.kind = super::ItemKind::Misc;
+            if let super::ItemKind::Mod { was_junk } = item.kind {
+                item.kind = if was_junk {
+                    super::ItemKind::Junk
+                } else {
+                    super::ItemKind::Misc
+                };
             }
         }
         for &loose_item in self.object_mod_loose_items.values() {
@@ -414,8 +424,9 @@ impl EsmIndex {
                 continue;
             }
             if let Some(item) = self.items.get_mut(&loose_item) {
+                let was_junk = matches!(item.kind, super::ItemKind::Junk);
                 if matches!(item.kind, super::ItemKind::Misc | super::ItemKind::Junk) {
-                    item.kind = super::ItemKind::Mod;
+                    item.kind = super::ItemKind::Mod { was_junk };
                 }
             }
         }
@@ -912,6 +923,61 @@ mod tests {
         assert_eq!(
             merged.armor_addons[&0x0011_53D8].female_biped_model,
             r"actors\character\characterassets\desdemona.nif"
+        );
+    }
+
+    /// #2991 — a two-plugin load order where the base plugin's `CVPA`
+    /// classifies a MISC record `Junk`, an OMOD promotes it to `Mod`, and a
+    /// later override plugin clears that OMOD's `LNAM` (demoting the item
+    /// back out of `Mod`). The item must fall back to its authored `Junk`
+    /// classification, not collapse to plain `Misc` — single-plugin loads
+    /// cannot reproduce this because the reset/promote pass only runs
+    /// across a `merge_from` boundary.
+    #[test]
+    fn classify_fallout_inventory_kinds_restores_junk_after_omod_override_drops_it() {
+        use crate::esm::records::items::{ItemKind, ItemRecord};
+        use crate::esm::records::common::CommonItemFields;
+
+        const JUNK_ITEM: u32 = 0x100;
+        const OMOD: u32 = 0x200;
+
+        // Base plugin: a CVPA-classified Junk MISC, promoted to Mod by an
+        // OMOD referencing it via LNAM.
+        let mut base = EsmIndex::default();
+        base.game = GameKind::Fallout4;
+        base.items.insert(
+            JUNK_ITEM,
+            ItemRecord {
+                form_id: JUNK_ITEM,
+                common: CommonItemFields::default(),
+                kind: ItemKind::Junk,
+            },
+        );
+        base.object_mod_loose_items.insert(OMOD, JUNK_ITEM);
+
+        let mut merged = EsmIndex::default();
+        merged.merge_from(base);
+        assert!(
+            matches!(
+                merged.items[&JUNK_ITEM].kind,
+                ItemKind::Mod { was_junk: true }
+            ),
+            "OMOD promotion must record that the underlying record was Junk"
+        );
+
+        // Override plugin: same OMOD form ID, no LNAM (loose item 0) — the
+        // override clears the reference without re-shipping the MISC record.
+        let mut over_ride = EsmIndex::default();
+        over_ride.game = GameKind::Fallout4;
+        over_ride.object_mod_loose_items.insert(OMOD, 0);
+
+        merged.merge_from(over_ride);
+
+        assert!(
+            matches!(merged.items[&JUNK_ITEM].kind, ItemKind::Junk),
+            "losing the OMOD reference must restore the authored Junk \
+             classification, not collapse it to Misc: got {:?}",
+            merged.items[&JUNK_ITEM].kind
         );
     }
 

@@ -154,7 +154,7 @@ fn describe_kind(kind: &ItemKind) -> (&'static str, String, Option<u32>) {
         ItemKind::Book { .. } => ("Book", "Book".to_owned(), None),
         ItemKind::Note { .. } => ("Note", "Note".to_owned(), None),
         ItemKind::Key => ("Key", "Key".to_owned(), None),
-        ItemKind::Mod => ("Mods", "Loose object modification".to_owned(), None),
+        ItemKind::Mod { .. } => ("Mods", "Loose object modification".to_owned(), None),
         ItemKind::Junk => ("Junk", "Scrappable components".to_owned(), None),
         ItemKind::Misc => ("Misc", "Miscellaneous item".to_owned(), None),
     }
@@ -608,7 +608,7 @@ mod tests {
 
     #[test]
     fn fallout_categories_are_preserved_for_native_inventory() {
-        assert_eq!(describe_kind(&ItemKind::Mod).0, "Mods");
+        assert_eq!(describe_kind(&ItemKind::Mod { was_junk: false }).0, "Mods");
         assert_eq!(describe_kind(&ItemKind::Junk).0, "Junk");
         assert_eq!(describe_kind(&ItemKind::Misc).0, "Misc");
     }

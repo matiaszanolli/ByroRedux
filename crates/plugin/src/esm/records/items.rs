@@ -24,7 +24,15 @@ pub enum ItemKind {
     /// Fallout 4 / 76 loose object-mod item. The inventory object is a MISC
     /// record referenced by an OMOD's `LNAM`; the OMOD definition itself is
     /// not the carried stack.
-    Mod,
+    Mod {
+        /// Whether the underlying MISC record's own `CVPA` classified it
+        /// `Junk` before `EsmIndex::classify_fallout_inventory_kinds`
+        /// promoted it to `Mod`. Preserved so a later plugin's override
+        /// clearing the `OMOD.LNAM` reference (demoting it back out of
+        /// `Mod`) restores the record's authored classification instead of
+        /// collapsing it to plain `Misc` (#2991).
+        was_junk: bool,
+    },
     /// BOOK: notes, skill book teach data.
     Book {
         /// Skill bonus form ID (AVIF) when this is a skill book; 0 for plain books.
@@ -138,7 +146,7 @@ impl ItemKind {
             // Junk and Mods are Fallout inventory categories layered over
             // carried MISC records; keep diagnostics truthful about the
             // underlying plugin record type.
-            ItemKind::Misc | ItemKind::Junk | ItemKind::Mod => "MISC",
+            ItemKind::Misc | ItemKind::Junk | ItemKind::Mod { .. } => "MISC",
             ItemKind::Book { .. } => "BOOK",
             ItemKind::Note { .. } => "NOTE",
             ItemKind::Ingredient { .. } => "INGR",

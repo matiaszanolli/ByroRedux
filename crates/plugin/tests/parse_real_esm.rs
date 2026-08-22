@@ -1449,7 +1449,12 @@ fn parse_rate_fo4_esm() {
     let loose_mod_items = index
         .items
         .values()
-        .filter(|item| matches!(item.kind, byroredux_plugin::esm::records::ItemKind::Mod))
+        .filter(|item| {
+            matches!(
+                item.kind,
+                byroredux_plugin::esm::records::ItemKind::Mod { .. }
+            )
+        })
         .count();
     let decoded_weapons = index.items.values().filter_map(|item| match &item.kind {
         byroredux_plugin::esm::records::ItemKind::Weapon { damage, .. } => Some(*damage),
