@@ -166,7 +166,24 @@ vec3 perturbNormal(vec3 N, vec3 worldPos, vec2 uv, uint normalMapIdx, vec4 verte
         // the authored per-vertex N at the same vertex due to
         // smoothing groups) doesn't break the right-angle invariant
         // the bitangent sign was authored against.
-        T = normalize(T - dot(T, N) * N);
+        vec3 Tproj = T - dot(T, N) * N;
+        // #2815 / REN-D19-04 — the guard above only proves the RAW
+        // tangent is non-zero, not that it is non-parallel to N. When
+        // T ∥ N the projection is the zero vector and normalize() on
+        // it is undefined (0/0 → NaN), propagating through mat3(T,B,N)
+        // into the shaded normal, the octEncode(N) G-buffer write, and
+        // every RT ray origin built from it. Guard the POST-projection
+        // length like the sibling TBN builders already do
+        // (`parallaxDisplaceUV`'s `dot(T, T) < 1e-8` bail,
+        // `getRayHitTangentFrame`'s identical `worldT` guard) — Path 2
+        // below needs no equivalent guard because its derivative-built
+        // T is already tangent-plane by construction. Fall back to the
+        // unperturbed geometric normal: there is no valid tangent
+        // frame left to map the normal-map sample into.
+        if (dot(Tproj, Tproj) < 1e-8) {
+            return N;
+        }
+        T = normalize(Tproj);
         // The ±1 handedness guarantee is per-vertex (import-time clamp,
         // #2246); the varying is linearly interpolated across the triangle,
         // so a mixed-sign triangle (a UV-fold vertex disagreeing with its

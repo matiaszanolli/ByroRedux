@@ -1597,6 +1597,47 @@ fn bloom_dispatches_after_composite_and_applies_itself_downstream() {
     );
 }
 
+/// #2815 / REN-D19-04 regression. `perturbNormal`'s Path 1 (authored
+/// vertex tangent) must guard the POST-Gram-Schmidt-projection tangent
+/// length before normalizing it, not just the raw incoming tangent's
+/// length — a T ∥ N vertex tangent passes the raw-length check but
+/// projects to the zero vector, and `normalize(vec3(0))` is NaN. Static
+/// source check: the projected tangent must be bound to a name, checked
+/// against a small-magnitude threshold, and only normalized after that
+/// check passes — mirroring the guard shape `parallaxDisplaceUV` and
+/// `getRayHitTangentFrame` already use for the identical hazard.
+#[test]
+fn perturb_normal_guards_post_projection_tangent_length() {
+    let src = include_str!("../../../shaders/include/material_sampling.glsl");
+    let fn_start = src
+        .find("vec3 perturbNormal(")
+        .expect("perturbNormal must exist");
+    // Path 1 ends where Path 2's comment begins.
+    let path2_start = src[fn_start..]
+        .find("// Path 2")
+        .map(|i| fn_start + i)
+        .expect("perturbNormal must have a Path 2");
+    let path1_body = &src[fn_start..path2_start];
+
+    assert!(
+        path1_body.contains("vec3 Tproj = T - dot(T, N) * N;"),
+        "perturbNormal Path 1: the Gram-Schmidt projection must be bound \
+         to a name so it can be guarded before normalizing — see \
+         #2815 / REN-D19-04."
+    );
+    assert!(
+        path1_body.contains("if (dot(Tproj, Tproj) < 1e-8)") && path1_body.contains("return N;"),
+        "perturbNormal Path 1 must bail to the unperturbed geometric \
+         normal when the projected tangent is near-zero (T ∥ N), before \
+         ever normalizing it — see #2815 / REN-D19-04."
+    );
+    assert!(
+        !path1_body.contains("normalize(T - dot(T, N) * N)"),
+        "perturbNormal Path 1 must not reintroduce the unguarded \
+         normalize-of-a-possibly-zero-vector expression."
+    );
+}
+
 // ── GpuLight four-way GLSL lockstep (#1916) ──
 
 /// Strip a GLSL struct body down to its bare `<type> <name>;` declaration

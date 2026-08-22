@@ -254,10 +254,18 @@ guard below.
   hit is keyed on `materialKind == MATERIAL_KIND_GLASS` (`triangle.frag`, since
   `a09d2b76` — replaced the original texture-equality identity check, which
   misfired whenever glass shared a texture with opaque geometry). The actual
-  unbounded-recursion guard is the fixed `REFRACT_PASSTHRU_BUDGET = 2` loop-
-  iteration cap, independent of which identity check gates continuation. A
-  regression is a frame-time hang on any paired-glass cell. Verify the budget
-  is enforced and the `materialKind` check is present.
+  unbounded-recursion guard is `const int MAX_REFRACT_PASSTHRUS = 8;`, a
+  fixed compile-time loop bound (`triangle.frag`, near the passthru loop) —
+  independent of which identity check gates continuation. Within that hard
+  bound, `refractPassthruBudget` early-exits the loop at an ADAPTIVE
+  2/4/6/8 interfaces (quality tier 0-3, `rayBudget.qualityTier`) — verify
+  the tier value, not a fixed 2 (#3052 / SAFE-2026-08-16-05: an earlier
+  revision of this bullet named a nonexistent *REFRACT_PASSTHRU_BUDGET = 2*
+  symbol that doesn't exist anywhere in the tree — `shader_constants.rs`
+  actively asserts that exact string is ABSENT from triangle.frag). A
+  regression is a frame-time hang on any paired-glass cell. Verify
+  `MAX_REFRACT_PASSTHRUS` is still the loop bound and the `materialKind`
+  check is present.
 - **Glass ray budget** `GLASS_RAY_BUDGET`
   (`crates/renderer/src/shader_constants_data.rs`, mirrored in
   `crates/renderer/shaders/include/shader_constants.glsl` — verify the two stay

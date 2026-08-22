@@ -457,6 +457,8 @@ mod tests {
     /// (`WATER_*` + `CAUSTIC_FIXED_SCALE`), and the four compute passes whose
     /// `local_size_x = WORKGROUP_X` qualifier reads the header
     /// (`ssao.comp`, `svgf_atrous.comp`, `svgf_temporal.comp`, `taa.comp`).
+    /// #2984 (TD9-2026-08-16-02) closed a second round of the same
+    /// omission — `presentation.frag`, `water.vert`, `bloom_apply.comp`.
     /// Cross-check when adding a shader: `grep -L` the include across
     /// `shaders/*.{comp,frag,vert}` and reconcile against this list.
     #[test]
@@ -509,6 +511,25 @@ mod tests {
                 include_str!("../shaders/svgf_temporal.comp"),
             ),
             ("taa.comp", include_str!("../shaders/taa.comp")),
+            // #2984 / TD9-2026-08-16-02 — presentation.frag gained the
+            // include in 5f970bae (2026-08-15) and was never added here;
+            // it consumes DBG_VIZ_SELECTED_LIGHT/DIRECT/RAW_INDIRECT/RT_LOD.
+            // Re-verifying the reconciliation this issue asked for
+            // (`grep -l` across shaders/*.{comp,frag,vert}) also found two
+            // MORE gaps that opened after the issue was filed:
+            // water.vert (WATER_WATERFALL, c7561d74, 2026-08-19) and
+            // bloom_apply.comp (BLOOM_INTENSITY/WORKGROUP_X/Y, #2796,
+            // 2026-08-22, new this session). All three added together so
+            // this reconciliation doesn't need a fourth round.
+            (
+                "presentation.frag",
+                include_str!("../shaders/presentation.frag"),
+            ),
+            ("water.vert", include_str!("../shaders/water.vert")),
+            (
+                "bloom_apply.comp",
+                include_str!("../shaders/bloom_apply.comp"),
+            ),
         ] {
             assert!(
                 src.contains("#include \"include/shader_constants.glsl\""),
