@@ -989,6 +989,7 @@ mod skinned;
 mod sky;
 mod static_meshes;
 mod water;
+pub(crate) use water::WaterDrawIndexScratch;
 
 #[cfg(test)]
 mod bone_palette_overflow_tests;

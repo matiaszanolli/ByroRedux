@@ -58,7 +58,12 @@ fn world_with_water_plane(
     world
 }
 
-fn run_build(world: &World) -> Vec<byroredux_renderer::vulkan::water::WaterDrawCommand> {
+fn run_build_pair(
+    world: &World,
+) -> (
+    Vec<byroredux_renderer::vulkan::context::DrawCommand>,
+    Vec<byroredux_renderer::vulkan::water::WaterDrawCommand>,
+) {
     let mut draw_commands = Vec::new();
     let mut water_commands = Vec::new();
     let mut gpu_lights = Vec::new();
@@ -82,7 +87,47 @@ fn run_build(world: &World) -> Vec<byroredux_renderer::vulkan::water::WaterDrawC
         &mut material_table,
         None,
     );
-    water_commands
+    (draw_commands, water_commands)
+}
+
+fn run_build(world: &World) -> Vec<byroredux_renderer::vulkan::water::WaterDrawCommand> {
+    run_build_pair(world).1
+}
+
+#[test]
+fn mesh_water_reemit_preserves_sorted_slots_for_many_surfaces() {
+    let mut world = world_with_water_plane(
+        0.05,
+        0.6,
+        50.0,
+        1.0 / 512.0,
+        [1.0; 3],
+        [1.0; 4],
+        [0.0, 0.0, 1.0, 1.0],
+    );
+    world.insert_resource(super::water::WaterDrawIndexScratch::default());
+    for index in 0..12 {
+        let water = world.spawn();
+        let position = byroredux_core::math::Vec3::new(index as f32 * 3.0, 0.0, 0.0);
+        world.insert(water, Transform::from_translation(position));
+        world.insert(
+            water,
+            GlobalTransform::new(position, byroredux_core::math::Quat::IDENTITY, 1.0),
+        );
+        world.insert(water, MeshHandle(1));
+        world.insert(
+            water,
+            WaterPlane {
+                kind: WaterKind::Calm,
+                material: WaterMaterial::default(),
+                damage_per_second: 0.0,
+            },
+        );
+    }
+
+    let (draws, water) = run_build_pair(&world);
+    assert_eq!(water.len(), 13);
+    assert!(byroredux_renderer::vulkan::water::water_commands_match_draw_slots(&water, &draws));
 }
 
 #[test]

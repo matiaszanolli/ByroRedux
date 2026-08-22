@@ -502,6 +502,7 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // default, so this insert is the single source of truth.
     world.insert_resource(byroredux_physics::PhysicsWaterConstants::default());
     world.insert_resource(byroredux_physics::WaterContactScratch::default());
+    world.insert_resource(crate::render::WaterDrawIndexScratch::default());
     // M44 Phase 1 — audio world. Init failure (no audio device,
     // CI, headless server) leaves the inner `AudioManager` as
     // `None` and every subsequent audio operation no-ops. Boot

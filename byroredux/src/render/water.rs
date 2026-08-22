@@ -22,10 +22,22 @@
 //! the renderer consumes them.
 
 use byroredux_core::ecs::components::water::{WaterFlow, WaterKind, WaterPlane};
-use byroredux_core::ecs::{TotalTime, World};
+use byroredux_core::ecs::{EntityId, Resource, TotalTime, World};
 use byroredux_renderer::vulkan::context::DrawCommand;
 use byroredux_renderer::vulkan::water::{GpuWaterParams, WaterDrawCommand};
 use byroredux_scripting::RippleEvent;
+use rustc_hash::FxHashMap;
+
+/// Reused entity-to-slot index for the post-sort water re-emit pass.
+/// Mesh-authored water can contribute dozens of surfaces, so production
+/// frames build this once in O(draws) instead of rescanning every draw for
+/// every water entity (#3141). Bare test worlds use a local fallback.
+#[derive(Default)]
+pub(crate) struct WaterDrawIndexScratch {
+    indices: FxHashMap<EntityId, usize>,
+}
+
+impl Resource for WaterDrawIndexScratch {}
 
 #[inline]
 fn lerp_color(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
@@ -58,11 +70,10 @@ fn pack_rain_controls(velocity: f32, falloff: f32, dampener: f32) -> f32 {
 /// already-emitted draw command and produce a matching
 /// `WaterDrawCommand` referencing the same SSBO slot.
 ///
-/// Linear scan over `draw_commands` per water entity is O(N×W);
-/// typical N is ~thousands of draws and W is ≤ ~3 water planes per
-/// cell, so this is well under a microsecond. A
-/// `HashMap<EntityId, usize>` would be premature for the expected
-/// scale.
+/// The draw index is built once after sorting. This matters now that CELL
+/// planes, LOD water, and every mesh water sub-shape can coexist up to the
+/// renderer's `MAX_WATER_DRAWS` contract; the old O(draws × water) scan was
+/// based on a no-longer-valid three-planes-per-cell assumption (#3141).
 pub(super) fn reemit_water_planes(
     world: &World,
     draw_commands: &mut [DrawCommand],
@@ -100,10 +111,24 @@ pub(super) fn reemit_water_planes(
     let Some(wq) = world.query::<WaterPlane>() else {
         return;
     };
+    let mut scratch = world.try_resource_mut::<WaterDrawIndexScratch>();
+    let mut fallback = FxHashMap::default();
+    let draw_indices = scratch
+        .as_mut()
+        .map(|scratch| &mut scratch.indices)
+        .unwrap_or(&mut fallback);
+    draw_indices.clear();
+    draw_indices.reserve(draw_commands.len());
+    draw_indices.extend(
+        draw_commands
+            .iter()
+            .enumerate()
+            .map(|(index, command)| (command.entity_id, index)),
+    );
     let fq = world.query::<WaterFlow>();
     let rq = world.query::<RippleEvent>();
     for (entity, plane) in wq.iter() {
-        let Some(idx) = draw_commands.iter().position(|c| c.entity_id == entity) else {
+        let Some(&idx) = draw_indices.get(&entity) else {
             // Entity has WaterPlane but no DrawCommand was emitted —
             // typically because the cell loader spawned the water
             // entity but the mesh wasn't yet uploaded, or the
