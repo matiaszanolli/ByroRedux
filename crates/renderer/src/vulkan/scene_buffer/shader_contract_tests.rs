@@ -1032,6 +1032,39 @@ fn triangle_frag_soft_particle_rebases_camera_before_depth_gap() {
     );
 }
 
+/// #2777 / REN-D2-01 regression. Both ReSTIR reuse depth-compatibility
+/// gates compare a `packHalf2x16`-clamped history depth (65504.0 max —
+/// the largest finite half-float) against the current frame's UNCLAMPED
+/// f32 `worldDist`. Without clamping `worldDist` the same way on read,
+/// the comparison provably fails for every pixel past ~65504 BU (both
+/// this-frame and history depth exceed the clamp — reuse goes silently
+/// inert exactly where distant exteriors need it). Static source check:
+/// both `*DepthCompatible` comparisons must clamp `worldDist` before
+/// differencing.
+#[test]
+fn restir_depth_compatibility_gates_clamp_world_dist_to_match_packed_history() {
+    let src = include_str!("../../../shaders/triangle.frag");
+    let cases = [
+        (
+            "temporalDepthCompatible",
+            "abs(rpHistoryDepth.y - min(worldDist, 65504.0)) <= temporalDepthTolerance",
+        ),
+        (
+            "spatialDepthCompatible",
+            "abs(rnWorldDist - min(worldDist, 65504.0)) <= spatialDepthTolerance",
+        ),
+    ];
+    for (name, needle) in cases {
+        assert!(
+            src.contains(needle),
+            "triangle.frag: `{name}` must clamp `worldDist` to \
+                 `min(worldDist, 65504.0)` before differencing against the \
+                 packHalf2x16-clamped history depth (expected to find: \
+                 `{needle}`) — see #2777 / REN-D2-01."
+        );
+    }
+}
+
 /// #1490 / REN2-05 regression. `screen_to_world_dir` must return the
 /// direction from the CAMERA to the unprojected far-plane point, not
 /// from the coordinate-space origin. `params.camera_pos` is uploaded in
@@ -1503,6 +1536,65 @@ fn material_kind_multi_layer_parallax_has_no_raw_literal_call_sites() {
              MATERIAL_KIND_MULTI_LAYER_PARALLAX."
         );
     }
+}
+
+/// #2796 / REN-D16-01 regression. Bloom must run AFTER composite (reading
+/// composite's assembled scene, not the pre-composite raw HDR that never
+/// contained sky/GI/caustics), and composite.frag must no longer fold
+/// bloom into `combined` itself — the add now happens downstream, in
+/// place, via `bloom.rs::apply_to_scene`. Static source checks (no
+/// glslang / Vulkan device needed):
+/// - `record_post_passes` calls `record_composite_pass` before
+///   `record_bloom_pass`.
+/// - `composite.frag` no longer contains the old `combined += bloom *
+///   BLOOM_INTENSITY` add.
+/// - `bloom_apply.comp` exists and performs the expected
+///   read-modify-write against `sceneImage`.
+#[test]
+fn bloom_dispatches_after_composite_and_applies_itself_downstream() {
+    let post_passes = include_str!("../context/post_passes.rs");
+    let record_post_passes_start = post_passes
+        .find("pub(super) fn record_post_passes")
+        .expect("record_post_passes must exist");
+    let body = &post_passes[record_post_passes_start..];
+    let composite_call = body
+        .find("self.record_composite_pass(cmd, frame)")
+        .expect("record_post_passes must call record_composite_pass");
+    let bloom_call = body
+        .find("self.record_bloom_pass(cmd, frame)")
+        .expect("record_post_passes must call record_bloom_pass");
+    assert!(
+        composite_call < bloom_call,
+        "record_post_passes must call record_composite_pass BEFORE \
+         record_bloom_pass — bloom's pyramid must read composite's own \
+         assembled scene (sky + GI + caustics + direct), not the \
+         pre-composite raw HDR. See #2796 / REN-D16-01."
+    );
+
+    let composite_frag = include_str!("../../../shaders/composite.frag");
+    assert!(
+        !composite_frag.contains("combined += bloom * BLOOM_INTENSITY"),
+        "composite.frag must not fold bloom into `combined` itself any \
+         more — that add now happens downstream in \
+         `bloom.rs::apply_to_scene`, in place on composite's own output. \
+         See #2796 / REN-D16-01."
+    );
+
+    let apply_comp = include_str!("../../../shaders/bloom_apply.comp");
+    assert!(
+        apply_comp.contains("imageLoad(sceneImage, coord)")
+            && apply_comp.contains("texture(bloomTex, uv)")
+            && apply_comp.contains("imageStore(sceneImage, coord,"),
+        "bloom_apply.comp must read the scene, sample bloom, and write \
+         the sum back to the same image in place."
+    );
+
+    let bloom_rs = include_str!("../bloom.rs");
+    assert!(
+        bloom_rs.contains("pub unsafe fn apply_to_scene("),
+        "BloomPipeline must expose apply_to_scene — the compute pass that \
+         adds bloom back onto composite's output."
+    );
 }
 
 // ── GpuLight four-way GLSL lockstep (#1916) ──

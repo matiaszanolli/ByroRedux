@@ -416,7 +416,16 @@ impl CompositePipeline {
                 .usage(
                     vk::ImageUsageFlags::COLOR_ATTACHMENT
                         | vk::ImageUsageFlags::SAMPLED
-                        | vk::ImageUsageFlags::TRANSFER_SRC,
+                        | vk::ImageUsageFlags::TRANSFER_SRC
+                        // #2796 / REN-D16-01 — STORAGE lets
+                        // `BloomPipeline::apply_to_scene` read-modify-write
+                        // this image in place (imageLoad current scene +
+                        // imageStore scene + bloom*intensity) once bloom's
+                        // pyramid has been built FROM this same image, so
+                        // the sky/GI/caustics composite adds now actually
+                        // receive bloom instead of the pre-composite raw
+                        // HDR that never contained them.
+                        | vk::ImageUsageFlags::STORAGE,
                 )
                 .sharing_mode(vk::SharingMode::EXCLUSIVE)
                 .initial_layout(vk::ImageLayout::UNDEFINED);
@@ -732,10 +741,12 @@ impl CompositePipeline {
                 .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-            // 7: bloom output mip 0 (M58). HDR-linear, half-screen
-            // resolution; sampled with bilinear filter to upscale to
-            // full screen. Shader does `combined += bloom * intensity`
-            // before tone-map.
+            // 7: bloom output mip 0 (M58). #2796 / REN-D16-01 — no longer
+            // read by composite.frag (bloom now dispatches AFTER this
+            // pass and adds itself via `bloom.rs::apply_to_scene`
+            // instead); kept declared here, unread, so `bloom_views`
+            // stays wired through the existing descriptor-set plumbing
+            // rather than renumbering every binding after it.
             vk::DescriptorSetLayoutBinding::default()
                 .binding(7)
                 .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
@@ -1263,7 +1274,10 @@ impl CompositePipeline {
                     .usage(
                         vk::ImageUsageFlags::COLOR_ATTACHMENT
                             | vk::ImageUsageFlags::SAMPLED
-                            | vk::ImageUsageFlags::TRANSFER_SRC,
+                            | vk::ImageUsageFlags::TRANSFER_SRC
+                            // #2796 / REN-D16-01 — see the matching comment
+                            // at the initial-creation site above.
+                            | vk::ImageUsageFlags::STORAGE,
                     )
                     .sharing_mode(vk::SharingMode::EXCLUSIVE)
                     .initial_layout(vk::ImageLayout::UNDEFINED);

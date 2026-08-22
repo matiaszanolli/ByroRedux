@@ -252,6 +252,46 @@ pub fn image_barrier_general_write_to_read(image: vk::Image) -> vk::ImageMemoryB
         .subresource_range(color_subresource_single_mip())
 }
 
+/// SHADER_READ_ONLY_OPTIMAL → GENERAL on a single-mip COLOR image that a
+/// render pass just finished producing (its documented `final_layout`) and
+/// that a compute shader is about to read-modify-write as a storage image.
+/// #2796 / REN-D16-01 — `BloomPipeline::apply_to_scene`'s only caller:
+/// `composite`'s render pass leaves its scene attachment
+/// SHADER_READ_ONLY_OPTIMAL, and nothing else in the frame transitions it
+/// before the bloom-apply compute step needs GENERAL for `imageLoad` +
+/// `imageStore`.
+///   src_access = SHADER_READ
+///   dst_access = SHADER_READ | SHADER_WRITE
+#[inline]
+pub fn image_barrier_shader_read_to_general(image: vk::Image) -> vk::ImageMemoryBarrier<'static> {
+    vk::ImageMemoryBarrier::default()
+        .src_access_mask(vk::AccessFlags::SHADER_READ)
+        .dst_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE)
+        .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+        .new_layout(vk::ImageLayout::GENERAL)
+        .image(image)
+        .subresource_range(color_subresource_single_mip())
+}
+
+/// GENERAL → SHADER_READ_ONLY_OPTIMAL on a single-mip COLOR image after a
+/// compute read-modify-write, restoring the layout `frame_upscaler.rs`
+/// requires on entry (its documented "composition's output layout"
+/// contract — FSR and the native bridge both assume composite's render
+/// pass was the last writer). #2796 / REN-D16-01's counterpart to
+/// [`image_barrier_shader_read_to_general`].
+///   src_access = SHADER_WRITE
+///   dst_access = SHADER_READ
+#[inline]
+pub fn image_barrier_general_to_shader_read(image: vk::Image) -> vk::ImageMemoryBarrier<'static> {
+    vk::ImageMemoryBarrier::default()
+        .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+        .dst_access_mask(vk::AccessFlags::SHADER_READ)
+        .old_layout(vk::ImageLayout::GENERAL)
+        .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+        .image(image)
+        .subresource_range(color_subresource_single_mip())
+}
+
 /// UNDEFINED → TRANSFER_DST_OPTIMAL on a (potentially multi-mip) COLOR
 /// image. Mirrors the explicit `texture.rs` convention:
 ///   src_queue_family = dst_queue_family = QUEUE_FAMILY_IGNORED

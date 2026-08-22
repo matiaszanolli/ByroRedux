@@ -51,6 +51,7 @@
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
 use super::descriptors::{
+    image_barrier_general_to_shader_read, image_barrier_shader_read_to_general,
     image_barrier_undef_to_general, write_combined_image_sampler, write_storage_image,
     write_uniform_buffer, DescriptorPoolBuilder,
 };
@@ -63,6 +64,9 @@ use gpu_allocator::vulkan as vk_alloc;
 
 const BLOOM_DOWNSAMPLE_COMP_SPV: &[u8] = include_bytes!("../../shaders/bloom_downsample.comp.spv");
 const BLOOM_UPSAMPLE_COMP_SPV: &[u8] = include_bytes!("../../shaders/bloom_upsample.comp.spv");
+/// #2796 / REN-D16-01 — reads composite's own assembled scene back as a
+/// storage image and writes bloom into it in place. See `apply_to_scene`.
+const BLOOM_APPLY_COMP_SPV: &[u8] = include_bytes!("../../shaders/bloom_apply.comp.spv");
 
 /// Number of mip levels in the down-pyramid. The up-pyramid has
 /// `BLOOM_MIP_COUNT - 1` levels (the smallest mip is the seed for
@@ -125,17 +129,30 @@ struct BloomFrame {
 
     down_param_buffers: Vec<GpuBuffer>, // BLOOM_MIP_COUNT
     up_param_buffers: Vec<GpuBuffer>,   // BLOOM_MIP_COUNT - 1
+
+    /// #2796 / REN-D16-01 — one set for the bloom-apply step. Binding 0
+    /// (the scene storage image) is rewritten each frame from
+    /// `apply_to_scene`, same reason `down_descriptor_sets[0]` binding 0
+    /// is: the scene image is owned externally (by `CompositePipeline`)
+    /// and not stable across `BloomPipeline` construction. Binding 1
+    /// (this pipeline's own final up_mips[0] view) is written once below,
+    /// same as every other internally-owned binding.
+    apply_descriptor_set: vk::DescriptorSet,
 }
 
 pub struct BloomPipeline {
     downsample_pipeline: vk::Pipeline,
     upsample_pipeline: vk::Pipeline,
+    /// #2796 / REN-D16-01 — see `apply_to_scene`.
+    apply_pipeline: vk::Pipeline,
 
     downsample_pipeline_layout: vk::PipelineLayout,
     upsample_pipeline_layout: vk::PipelineLayout,
+    apply_pipeline_layout: vk::PipelineLayout,
 
     downsample_dsl: vk::DescriptorSetLayout,
     upsample_dsl: vk::DescriptorSetLayout,
+    apply_dsl: vk::DescriptorSetLayout,
 
     descriptor_pool: vk::DescriptorPool,
 
@@ -174,10 +191,13 @@ impl BloomPipeline {
         let mut partial = Self {
             downsample_pipeline: vk::Pipeline::null(),
             upsample_pipeline: vk::Pipeline::null(),
+            apply_pipeline: vk::Pipeline::null(),
             downsample_pipeline_layout: vk::PipelineLayout::null(),
             upsample_pipeline_layout: vk::PipelineLayout::null(),
+            apply_pipeline_layout: vk::PipelineLayout::null(),
             downsample_dsl: vk::DescriptorSetLayout::null(),
             upsample_dsl: vk::DescriptorSetLayout::null(),
+            apply_dsl: vk::DescriptorSetLayout::null(),
             descriptor_pool: vk::DescriptorPool::null(),
             sampler: vk::Sampler::null(),
             frames: Vec::new(),
@@ -304,6 +324,42 @@ impl BloomPipeline {
                 .context("bloom upsample DSL")
         });
 
+        // #2796 / REN-D16-01 — apply: 0=scene storage (read-modify-write),
+        // 1=bloom output sampler.
+        let apply_bindings = [
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(0)
+                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(1)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+        ];
+        validate_set_layout(
+            0,
+            &apply_bindings,
+            &[ReflectedShader {
+                name: "bloom_apply.comp",
+                spirv: BLOOM_APPLY_COMP_SPV,
+            }],
+            "bloom_apply",
+            &[],
+        )
+        .expect("bloom apply layout drifted against bloom_apply.comp (see #427)");
+        // SAFETY: trivial ash create call; `device` is live and `apply_bindings`
+        // outlives the create info borrowed by this call.
+        partial.apply_dsl = try_or_cleanup!(unsafe {
+            device
+                .create_descriptor_set_layout(
+                    &vk::DescriptorSetLayoutCreateInfo::default().bindings(&apply_bindings),
+                    None,
+                )
+                .context("bloom apply DSL")
+        });
+
         // ── 3. Pipeline layouts ───────────────────────────────────────
         // SAFETY: trivial ash create call; `device` is live and
         // `partial.downsample_dsl` was just created by us and is still live.
@@ -327,6 +383,17 @@ impl BloomPipeline {
                 )
                 .context("bloom upsample pipeline layout")
         });
+        // SAFETY: trivial ash create call; `device` is live and
+        // `partial.apply_dsl` was just created by us and is still live.
+        partial.apply_pipeline_layout = try_or_cleanup!(unsafe {
+            device
+                .create_pipeline_layout(
+                    &vk::PipelineLayoutCreateInfo::default()
+                        .set_layouts(std::slice::from_ref(&partial.apply_dsl)),
+                    None,
+                )
+                .context("bloom apply pipeline layout")
+        });
 
         // ── 4. Compute pipelines ──────────────────────────────────────
         partial.downsample_pipeline = try_or_cleanup!(super::pipeline::create_compute_pipeline(
@@ -343,20 +410,30 @@ impl BloomPipeline {
             partial.upsample_pipeline_layout,
             "bloom upsample",
         ));
+        partial.apply_pipeline = try_or_cleanup!(super::pipeline::create_compute_pipeline(
+            device,
+            pipeline_cache,
+            BLOOM_APPLY_COMP_SPV,
+            partial.apply_pipeline_layout,
+            "bloom apply",
+        ));
 
         // ── 5. Descriptor pool ────────────────────────────────────────
         // One pool backs BLOOM_MIP_COUNT down-sets (down_bindings
-        // layout) + (BLOOM_MIP_COUNT-1) up-sets (up_bindings layout)
-        // per frame-in-flight. Pool sizes derived from each layout's
+        // layout) + (BLOOM_MIP_COUNT-1) up-sets (up_bindings layout) +
+        // 1 apply-set (apply_bindings layout, #2796 / REN-D16-01) per
+        // frame-in-flight. Pool sizes derived from each layout's
         // bindings via `add_layout_bindings` (#1030 / REN-D10-NEW-09).
         let down_sets = MAX_FRAMES_IN_FLIGHT * BLOOM_MIP_COUNT;
         let up_sets = MAX_FRAMES_IN_FLIGHT * (BLOOM_MIP_COUNT - 1);
-        let total_sets = down_sets + up_sets;
+        let apply_sets = MAX_FRAMES_IN_FLIGHT;
+        let total_sets = down_sets + up_sets + apply_sets;
         partial.descriptor_pool = try_or_cleanup!(DescriptorPoolBuilder::from_layout_bindings(
             &down_bindings,
             down_sets as u32,
         )
         .add_layout_bindings(&up_bindings, up_sets as u32)
+        .add_layout_bindings(&apply_bindings, apply_sets as u32)
         .max_sets(total_sets as u32)
         .build(device, "bloom descriptor pool"));
 
@@ -369,6 +446,7 @@ impl BloomPipeline {
                 partial.descriptor_pool,
                 partial.downsample_dsl,
                 partial.upsample_dsl,
+                partial.apply_dsl,
                 partial.sampler,
                 frame_idx,
             ));
@@ -625,13 +703,11 @@ impl BloomPipeline {
                 .new_layout(vk::ImageLayout::GENERAL)
                 .image(f.up_mips[i].image)
                 .subresource_range(subresource);
-            // Last upsample (i==0) feeds composite's fragment read,
-            // so dst stage includes FRAGMENT_SHADER.
-            let dst_stage = if i == 0 {
-                vk::PipelineStageFlags::FRAGMENT_SHADER
-            } else {
-                vk::PipelineStageFlags::COMPUTE_SHADER
-            };
+            // #2796 / REN-D16-01 — mip 0's consumer used to be composite's
+            // fragment read; it's now `apply_to_scene`'s compute dispatch
+            // (composite no longer samples bloom directly), so every level
+            // — including i==0 — only needs COMPUTE_SHADER visibility.
+            let dst_stage = vk::PipelineStageFlags::COMPUTE_SHADER;
             device.cmd_pipeline_barrier(
                 cmd,
                 vk::PipelineStageFlags::COMPUTE_SHADER,
@@ -646,15 +722,132 @@ impl BloomPipeline {
         Ok(())
     }
 
-    /// View into the bloom result for this frame — sampled by
-    /// composite via `combined += vol_inscatter + bloom * intensity`
-    /// in HDR-linear space before the ACES tone-map.
+    /// View into the bloom result for this frame. #2796 / REN-D16-01 —
+    /// consumed internally by `apply_to_scene`'s own descriptor set
+    /// (`combined_scene += bloom * BLOOM_INTENSITY`, same HDR-linear,
+    /// pre-ACES math composite.frag used to do directly); no longer
+    /// sampled by composite itself.
     pub fn output_view(&self, frame: usize) -> vk::ImageView {
         self.frames[frame].up_mips[0].view
     }
 
     pub fn output_views(&self) -> Vec<vk::ImageView> {
         self.frames.iter().map(|f| f.up_mips[0].view).collect()
+    }
+
+    /// Add this frame's already-built bloom pyramid onto `scene_view` in
+    /// place — `scene_view + bloom * BLOOM_INTENSITY`, written back to the
+    /// same image. #2796 / REN-D16-01.
+    ///
+    /// Must run AFTER [`Self::dispatch`] has built the pyramid for this
+    /// frame from the SAME scene image (so the bloom pyramid and the
+    /// value being added to are the same frame's content), and the scene
+    /// image must currently be `SHADER_READ_ONLY_OPTIMAL` — composite's
+    /// render pass `final_layout` contract, unchanged by `dispatch`
+    /// sampling it. Leaves the scene image `SHADER_READ_ONLY_OPTIMAL`
+    /// again on return, restoring `frame_upscaler.rs`'s documented
+    /// "composition's output layout" entry contract.
+    ///
+    /// # Safety
+    /// Caller must ensure `device` and `cmd` are valid and live, `cmd` is
+    /// recording outside a render pass, the device is not lost, `scene_image`
+    /// / `scene_view` are the exact pair `composite.scene_images[frame]` /
+    /// `composite.scene_image_views[frame]` and are not concurrently
+    /// accessed by another in-flight command buffer, and that image is
+    /// currently `SHADER_READ_ONLY_OPTIMAL` (its state immediately after
+    /// `record_composite_pass` + this frame's `dispatch` call, before
+    /// `record_upscale_pass` runs).
+    pub unsafe fn apply_to_scene(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+        scene_image: vk::Image,
+        scene_view: vk::ImageView,
+    ) {
+        let f = &mut self.frames[frame];
+
+        // Rewrite binding 0 (the scene storage image) — externally owned,
+        // not stable across `BloomPipeline` construction. Same reasoning
+        // as `dispatch`'s per-frame rewrite of `down_descriptor_sets[0]`
+        // binding 0.
+        let scene_info = [vk::DescriptorImageInfo::default()
+            .image_view(scene_view)
+            .image_layout(vk::ImageLayout::GENERAL)];
+        let scene_write = write_storage_image(f.apply_descriptor_set, 0, &scene_info);
+        // SAFETY: `f.apply_descriptor_set` was allocated at construction and
+        // is not in use by any pending command buffer at this point in the
+        // frame (the caller's contract).
+        unsafe { device.update_descriptor_sets(&[scene_write], &[]) };
+
+        // SHADER_READ_ONLY_OPTIMAL -> GENERAL: `dispatch` above sampled
+        // `scene_view` (COMPUTE_SHADER read) after composite's render pass
+        // wrote it (COLOR_ATTACHMENT_OUTPUT); this transition's source
+        // scope must cover both, mirroring `frame_upscaler.rs::
+        // record_native_blit`'s identical three-stage source mask for the
+        // same image's *next* transition out of SHADER_READ_ONLY_OPTIMAL.
+        let to_general = image_barrier_shader_read_to_general(scene_image);
+        // SAFETY: `cmd` is recording outside a render pass (caller's
+        // contract); `scene_image` is live and currently
+        // SHADER_READ_ONLY_OPTIMAL (caller's contract).
+        unsafe {
+            device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
+                    | vk::PipelineStageFlags::FRAGMENT_SHADER
+                    | vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[to_general],
+            );
+        }
+
+        // SAFETY: `cmd` is recording; `self.apply_pipeline` and
+        // `f.apply_descriptor_set` are live for this frame; `scene_image` is
+        // now GENERAL (barrier above) and matches `imageSize`/coordinates the
+        // shader assumes (same render-resolution extent bloom's own mips
+        // were built against).
+        unsafe {
+            device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.apply_pipeline);
+            device.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::COMPUTE,
+                self.apply_pipeline_layout,
+                0,
+                &[f.apply_descriptor_set],
+                &[],
+            );
+            let groups_x = self.extent.width.div_ceil(WORKGROUP_X);
+            let groups_y = self.extent.height.div_ceil(WORKGROUP_Y);
+            device.cmd_dispatch(cmd, groups_x, groups_y, 1);
+        }
+
+        // GENERAL -> SHADER_READ_ONLY_OPTIMAL: restore the layout
+        // `frame_upscaler.rs` requires on entry. dst_access covers both
+        // known downstream consumption patterns of `scene_color`
+        // (`record_native_blit`'s TRANSFER_READ blit source and the FSR
+        // SDK's own SHADER_READ sampling) since either may run next
+        // depending on the active upscaler.
+        let to_shader_read = image_barrier_general_to_shader_read(scene_image)
+            .dst_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::TRANSFER_READ);
+        // SAFETY: `cmd` is recording outside a render pass; `scene_image` is
+        // live and was just transitioned to GENERAL and written by the
+        // dispatch above.
+        unsafe {
+            device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::PipelineStageFlags::FRAGMENT_SHADER
+                    | vk::PipelineStageFlags::COMPUTE_SHADER
+                    | vk::PipelineStageFlags::TRANSFER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[to_shader_read],
+            );
+        }
     }
 
     /// Destroy all bloom images, views, and allocations.
@@ -697,6 +890,10 @@ impl BloomPipeline {
             device.destroy_pipeline(self.upsample_pipeline, None);
             self.upsample_pipeline = vk::Pipeline::null();
         }
+        if self.apply_pipeline != vk::Pipeline::null() {
+            device.destroy_pipeline(self.apply_pipeline, None);
+            self.apply_pipeline = vk::Pipeline::null();
+        }
         if self.downsample_pipeline_layout != vk::PipelineLayout::null() {
             device.destroy_pipeline_layout(self.downsample_pipeline_layout, None);
             self.downsample_pipeline_layout = vk::PipelineLayout::null();
@@ -705,6 +902,10 @@ impl BloomPipeline {
             device.destroy_pipeline_layout(self.upsample_pipeline_layout, None);
             self.upsample_pipeline_layout = vk::PipelineLayout::null();
         }
+        if self.apply_pipeline_layout != vk::PipelineLayout::null() {
+            device.destroy_pipeline_layout(self.apply_pipeline_layout, None);
+            self.apply_pipeline_layout = vk::PipelineLayout::null();
+        }
         if self.downsample_dsl != vk::DescriptorSetLayout::null() {
             device.destroy_descriptor_set_layout(self.downsample_dsl, None);
             self.downsample_dsl = vk::DescriptorSetLayout::null();
@@ -712,6 +913,10 @@ impl BloomPipeline {
         if self.upsample_dsl != vk::DescriptorSetLayout::null() {
             device.destroy_descriptor_set_layout(self.upsample_dsl, None);
             self.upsample_dsl = vk::DescriptorSetLayout::null();
+        }
+        if self.apply_dsl != vk::DescriptorSetLayout::null() {
+            device.destroy_descriptor_set_layout(self.apply_dsl, None);
+            self.apply_dsl = vk::DescriptorSetLayout::null();
         }
         if self.sampler != vk::Sampler::null() {
             device.destroy_sampler(self.sampler, None);
@@ -729,6 +934,7 @@ impl BloomFrame {
         descriptor_pool: vk::DescriptorPool,
         down_dsl: vk::DescriptorSetLayout,
         up_dsl: vk::DescriptorSetLayout,
+        apply_dsl: vk::DescriptorSetLayout,
         sampler: vk::Sampler,
         frame_idx: usize,
     ) -> Result<Self> {
@@ -891,6 +1097,32 @@ impl BloomFrame {
             unsafe { device.update_descriptor_sets(&writes, &[]) };
         }
 
+        // #2796 / REN-D16-01 — apply set. Binding 0 (scene storage image)
+        // is externally owned (CompositePipeline) and rewritten per-frame
+        // from `apply_to_scene`, same reason down[0]'s binding 0 is left
+        // unwritten here. Binding 1 (this pyramid's own final up_mips[0]
+        // result) is internally owned and stable, written once now.
+        let apply_layouts = [apply_dsl];
+        // SAFETY: trivial ash call; `device` and `descriptor_pool` are live and
+        // `apply_layouts` outlives the call.
+        let apply_descriptor_set = unsafe {
+            device
+                .allocate_descriptor_sets(
+                    &vk::DescriptorSetAllocateInfo::default()
+                        .descriptor_pool(descriptor_pool)
+                        .set_layouts(&apply_layouts),
+                )
+                .context("bloom apply descriptor set")?[0]
+        };
+        let bloom_result_info = [vk::DescriptorImageInfo::default()
+            .sampler(sampler)
+            .image_view(up_mips[0].view)
+            .image_layout(vk::ImageLayout::GENERAL)];
+        let apply_write = write_combined_image_sampler(apply_descriptor_set, 1, &bloom_result_info);
+        // SAFETY: the written set and `up_mips[0]`'s view are both freshly
+        // created and not yet bound by any in-flight frame.
+        unsafe { device.update_descriptor_sets(&[apply_write], &[]) };
+
         Ok(Self {
             down_mips,
             up_mips,
@@ -898,6 +1130,7 @@ impl BloomFrame {
             up_descriptor_sets,
             down_param_buffers,
             up_param_buffers,
+            apply_descriptor_set,
         })
     }
 }

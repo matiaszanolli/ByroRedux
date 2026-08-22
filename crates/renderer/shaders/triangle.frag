@@ -667,6 +667,13 @@ void main() {
     // NDC back to SDK render-pixel units (including the Vulkan Y flip) so the
     // view directly exposes the dispatch contract rather than an extent-
     // dependent tiny NDC value. See BYROREDUX_RENDER_DEBUG=0x400000.
+    //
+    // #2772 / REN-D13-05 — this reconstruction assumes the FSR SDK's Y sign
+    // convention. `context::draw::taa_jitter` negates its own Halton Y to
+    // match it, so `jitter.y` carries the same sign meaning whether TAA or
+    // FSR produced it; this view stays correct under either upscaler.
+    // `renderOrigin.w` is hard-zeroed by the TAA branch, so under TAA the
+    // third (blue) channel here always reads 0 — expected, not a bug.
     if ((dbgFlags & DBG_VIZ_FSR_TEMPORAL) != 0u) {
         vec2 pixelJitter = vec2(
             jitter.x * screen.x * 0.5,
@@ -2967,8 +2974,17 @@ void main() {
                 float temporalDepthTolerance = max(
                     2.0,
                     max(worldDist, rpHistoryDepth.y) * 0.005);
+                // #2777 / REN-D2-01 — `rpHistoryDepth.y` was packed through
+                // `packHalf2x16`, so the write side clamped it to the
+                // largest finite half-float (65504.0) to avoid packing
+                // +Inf (see the matching `min(worldDist, 65504.0)` at the
+                // reservoir-write site below). Comparing that clamped
+                // history value against the CURRENT frame's unclamped f32
+                // `worldDist` diverges as soon as either point passes
+                // 65504 BU, permanently failing this gate beyond that
+                // range. Clamp `worldDist` the same way before comparing.
                 bool temporalDepthCompatible =
-                    abs(rpHistoryDepth.y - worldDist) <= temporalDepthTolerance;
+                    abs(rpHistoryDepth.y - min(worldDist, 65504.0)) <= temporalDepthTolerance;
                 bool sameSurface = rpSurfaceId == surfaceId
                     && temporalDepthCompatible
                     && dot(geomN, rpGeomN) >= TEMPORAL_NORMAL_COS;
@@ -3082,8 +3098,17 @@ void main() {
                     // Re-evaluate the neighbour's pick at THIS surface, gated on
                     // geometric-normal similarity (skip cross-edge neighbours).
                     float spatialDepthTolerance = max(8.0, worldDist * 0.02);
+                    // #2777 / REN-D2-01 — same half-float clamp mismatch as
+                    // `temporalDepthCompatible` above: `rnWorldDist` was
+                    // packed through `packHalf2x16` and clamped to 65504.0
+                    // on write (see `min(worldDist, 65504.0)` at the
+                    // reservoir-write site below), so comparing it against
+                    // the current frame's unclamped `worldDist` provably
+                    // fails this gate for every pixel past ~65504 BU —
+                    // spatial reuse goes silently inert there. Clamp
+                    // `worldDist` the same way before comparing.
                     bool spatialDepthCompatible =
-                        abs(rnWorldDist - worldDist) <= spatialDepthTolerance;
+                        abs(rnWorldDist - min(worldDist, 65504.0)) <= spatialDepthTolerance;
                     if (rnSurfaceId == surfaceId
                         && spatialDepthCompatible
                         && rnLightIndex < lightCount

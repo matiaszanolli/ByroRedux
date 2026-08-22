@@ -250,7 +250,11 @@ mod tests {
         assert!(
             src.contains("rpSurfaceId == surfaceId")
                 && src.contains("temporalDepthCompatible")
-                && src.contains("abs(rpHistoryDepth.y - worldDist)")
+                // #2777 / REN-D2-01 — `worldDist` is now clamped to match
+                // the packHalf2x16-clamped `rpHistoryDepth.y` before
+                // differencing (see `restir_depth_compatibility_gates_
+                // clamp_world_dist_to_match_packed_history`).
+                && src.contains("abs(rpHistoryDepth.y - min(worldDist, 65504.0))")
                 && src.contains("dot(geomN, rpGeomN) >= TEMPORAL_NORMAL_COS"),
             "ReSTIR temporal history must validate surface identity, depth, and normal"
         );

@@ -263,6 +263,18 @@ mod skinned_vertex_address_tests {
 /// Returns `(0.0, 0.0)` (no jitter) whenever `taa_present` is false OR
 /// `taa_failed` is true (#1932 / TAA-D13-01) — a permanent TAA failure must
 /// fall back to a stable pinhole image, not a jittered-but-unresolved one.
+///
+/// SIGN CONVENTION (#2772 / REN-D13-05): Y is negated to agree with
+/// [`super::super::upscaling::fsr_pixel_jitter_to_ndc`]'s Vulkan-NDC-vs-
+/// SDK-render-pixel flip, so `GpuCamera.jitter.y` carries the SAME sign
+/// meaning regardless of which upscaler is active. `clip.xy += jitter.xy *
+/// clip.w` in triangle.vert/water.vert is sign-agnostic (a jittered sample
+/// is undone by neighborhood-clamp + motion-vector reprojection in TAA/SVGF
+/// resolve, never by re-reading the sign back out), so this had no
+/// rendering effect either way — the only shader-side reader that cares
+/// about the sign is `triangle.frag`'s `DBG_VIZ_FSR_TEMPORAL` debug view,
+/// which hard-codes the FSR convention and was silently wrong under TAA
+/// before this fix.
 fn taa_jitter(
     taa_present: bool,
     taa_failed: bool,
@@ -274,8 +286,9 @@ fn taa_jitter(
         let idx = (frame_counter % 16) + 1; // 1-indexed
         let hx = halton(idx, 2);
         let hy = halton(idx, 3);
-        // Map [0,1] → [-0.5, 0.5] pixels, then to NDC.
-        ((hx - 0.5) * 2.0 / width, (hy - 0.5) * 2.0 / height)
+        // Map [0,1] → [-0.5, 0.5] pixels, then to NDC. Y negated — see the
+        // SIGN CONVENTION doc above.
+        ((hx - 0.5) * 2.0 / width, -(hy - 0.5) * 2.0 / height)
     } else {
         (0.0, 0.0)
     }
@@ -310,6 +323,43 @@ mod taa_jitter_tests {
         assert!(
             jx != 0.0 || jy != 0.0,
             "expected a nonzero Halton jitter offset"
+        );
+    }
+
+    /// #2772 / REN-D13-05 — TAA and FSR must negate Y the same way when
+    /// writing `GpuCamera.jitter.y`, so a shader reading it back (e.g.
+    /// `DBG_VIZ_FSR_TEMPORAL`) doesn't need to know which upscaler
+    /// produced the value. TAA negates its raw Halton offset; FSR negates
+    /// the SDK's raw pixel-space offset — both must flip sign the same
+    /// direction relative to their own "positive raw offset" case.
+    #[test]
+    fn taa_and_fsr_negate_jitter_y_the_same_way() {
+        use super::super::super::upscaling::fsr_pixel_jitter_to_ndc;
+        use super::halton;
+
+        let frame_counter = 7;
+        let idx = (frame_counter % 16) + 1;
+        let raw_halton_y = halton(idx, 3);
+        let (_, taa_jy) = taa_jitter(true, false, frame_counter, 1920.0, 1080.0);
+        assert_eq!(
+            taa_jy.is_sign_negative(),
+            (raw_halton_y - 0.5).is_sign_positive(),
+            "taa_jitter's Y component must be the negation of the raw \
+             (halton_y - 0.5) offset"
+        );
+
+        let fsr_ndc = fsr_pixel_jitter_to_ndc(
+            [0.0, 3.0],
+            ash::vk::Extent2D {
+                width: 1920,
+                height: 1080,
+            },
+        );
+        assert!(
+            fsr_ndc[1].is_sign_negative(),
+            "fsr_pixel_jitter_to_ndc must negate a positive raw pixel-Y \
+             offset — same direction taa_jitter negates its own positive \
+             raw offset above"
         );
     }
 }

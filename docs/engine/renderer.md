@@ -41,7 +41,9 @@ Source: `crates/renderer/src/vulkan/`
   mesh-id disocclusion, albedo-demodulated accumulation
 - **Composite pass**: direct + denoised indirect reassembly (multiplies
   indirect by local albedo per #268's invariant) + water/glass caustic
-  accumulators + bloom add, with ACES tone mapping
+  accumulators + sky, with ACES tone mapping. Bloom's own pyramid now
+  dispatches AFTER this pass and adds itself back onto composite's output
+  in place (#2796 / REN-D16-01) — see the Bloom bullet below.
 - **TAA** (M37.5): `taa.comp` with Halton(2,3) projection jitter (period 16
   per #1093), motion-vector reprojection, Catmull-Rom 9-tap history resample,
   3×3 YCoCg neighborhood variance clamp (γ = 1.25), mesh-id disocclusion,

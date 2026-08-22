@@ -336,6 +336,14 @@ pub enum FsrTemporalError {
 }
 
 /// Convert the SDK's render-pixel jitter into ByroRedux's Vulkan NDC offset.
+///
+/// SIGN CONVENTION (#2772 / REN-D13-05): Y is negated to convert the FSR
+/// SDK's render-pixel jitter axis into this engine's Vulkan clip-space NDC
+/// axis. `context::draw::taa_jitter` negates its own Halton Y to match
+/// this convention, so `GpuCamera.jitter.y` carries the SAME sign meaning
+/// under both upscalers; `triangle.frag`'s `DBG_VIZ_FSR_TEMPORAL` debug
+/// view relies on that agreement to reconstruct SDK render-pixel units
+/// correctly regardless of which upscaler produced the value.
 pub fn fsr_pixel_jitter_to_ndc(pixel: [f32; 2], render: vk::Extent2D) -> [f32; 2] {
     [
         2.0 * pixel[0] / render.width as f32,

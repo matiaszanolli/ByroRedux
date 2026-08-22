@@ -817,22 +817,24 @@ void main() {
         combined += shaftColor * shaftStrength;
     }
 
-    // M58 — bloom add. Sampled with bilinear from mip 0 of the
-    // bloom up-pyramid (half-screen resolution; hardware filter
-    // upscales to full screen for free). Added in HDR-linear
-    // (pre-ACES) so the tone-mapper compresses scene + bloom
-    // together — bright surfaces' glow doesn't clip independently
-    // of the surface. `fragUV` in [0,1]² works directly against
-    // the half-res bloom view.
-    //
-    // REN-D8-02 — unconditional (previously geometry-branch-only, so sky
-    // pixels — e.g. a bright sun disc — never bloomed).
-    vec3 bloom = texture(bloomTex, fragUV).rgb;
-    combined += bloom * BLOOM_INTENSITY;
+    // M58 — bloom add. #2796 / REN-D16-01 moved this OUT of composite:
+    // bloom now dispatches AFTER this pass, reading this shader's own
+    // assembled `combined` (sky + demodulated GI + caustics + direct)
+    // back from the scene image instead of the pre-composite raw HDR,
+    // which never contained sky/GI/caustics — those only ever existed in
+    // `combined` here. `bloomTex` (binding 7) is therefore unused by this
+    // shader now; left declared (not renumbered) so `bloom_views` stays
+    // wired through `CompositePipeline`'s existing descriptor-set
+    // machinery unchanged. See `bloom.rs::apply_to_scene` for the actual
+    // scene-plus-bloom add, now performed in place on this pass's own
+    // output.
     if (debugMode == RENDER_DEBUG_COMPOSITE_TERM) {
         // Final render-resolution linear composite: direct + denoised
-        // indirect/albedo + caustics + volumetrics/fog + bloom, before
-        // stochastic dither, temporal reconstruction, exposure or grading.
+        // indirect/albedo + caustics + volumetrics/fog, before stochastic
+        // dither, temporal reconstruction, exposure or grading. #2796 /
+        // REN-D16-01 — bloom is NOT included here any more (it now runs
+        // downstream of this pass, see `bloom.rs::apply_to_scene`), so
+        // this debug view no longer doubles as a scene+bloom preview.
         outColor = vec4(max(combined, vec3(0.0)), direct4.a);
         return;
     }

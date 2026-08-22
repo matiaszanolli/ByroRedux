@@ -262,8 +262,12 @@ impl VulkanContext {
         );
         self.record_taa_pass(cmd, frame);
         self.record_ssao_pass(cmd, frame, vp, inv_vp_arr, camera_pos, render_origin);
-        self.record_bloom_pass(cmd, frame);
         self.record_composite_pass(cmd, frame);
+        // #2796 / REN-D16-01 — bloom now runs AFTER composite, reading and
+        // writing composite's own assembled scene (sky + GI + caustics +
+        // direct) instead of the pre-composite raw HDR that never
+        // contained sky/GI/caustics. See `record_bloom_pass`'s doc.
+        self.record_bloom_pass(cmd, frame);
         self.record_upscale_pass(cmd, frame, fsr_frame);
         self.record_presentation_pass(cmd, frame, img, underwater, image_space_modifier);
     }
@@ -826,24 +830,38 @@ impl VulkanContext {
     }
 
     /// Bloom pyramid (M58) (#2258 / TD1-080, extracted from
-    /// `record_post_passes`). Reads the raw pre-TAA HDR attachment
-    /// (`composite.hdr_image_views[frame]` — the main render pass' HDR
-    /// target, NOT TAA's output) and writes a multi-scale blurred
-    /// bright-content texture. Composite adds bloom to `combined` before
-    /// the ACES tone-map. The render pass's final_layout already moved
-    /// HDR to SHADER_READ_ONLY_OPTIMAL, so the input is sample-ready.
+    /// `record_post_passes`; moved to run AFTER composite under #2796 /
+    /// REN-D16-01). Reads `composite.scene_image_views[frame]` — the
+    /// FULLY ASSEMBLED scene composite.frag just wrote (sky + demodulated
+    /// GI + caustics + direct + fog) — builds the down/up mip pyramid
+    /// from it, then [`bloom::BloomPipeline::apply_to_scene`] adds the
+    /// result back onto that same image in place, before FSR/native
+    /// upscale samples it.
     ///
-    /// Why pre-TAA: TAA's resolved output is consumed by composite
-    /// separately (`composite.rebind_hdr_views` rewires the descriptor at
-    /// `VulkanContext::new`'s `rebind_hdr_views` call, but the
-    /// `hdr_image_views` field still
-    /// references the raw attachment — only the descriptor was swapped).
-    /// Bloom intentionally shares the raw view because the blur pyramid
-    /// smears out sub-pixel jitter, making the bloom haloes spatially
-    /// stable anyway. Final image = ACES(TAA-stable base + spatial
-    /// bloom). #1166: the previous comment claimed bloom was post-TAA;
-    /// that was wrong. #1107 / REN-D19-002 is the original
-    /// rewire-composite-to-TAA work this commit references.
+    /// This is a SEPARATE image from composite's own `hdrTex` input
+    /// (binding 0, `composite.hdr_image_views`): that one still gets
+    /// swapped between the raw main-pass HDR and TAA's resolved output by
+    /// `rebind_hdr_views` (unaffected by this change — composite still
+    /// reads whichever one TAA availability selects); bloom now reads
+    /// composite's OUTPUT (`scene_image_views`) instead, which is
+    /// downstream of that swap either way.
+    ///
+    /// Pre-#2796 this read the pre-composite raw HDR attachment (whatever
+    /// the main render pass alone had written), which structurally never
+    /// contained sky, GI, or caustics — those only ever existed inside
+    /// composite.frag's own `combined` accumulator. That meant the sun
+    /// disc and bright sky could never bloom (despite #2233's rationale
+    /// for making the add unconditional), and for exteriors the untouched
+    /// sky texels bloom's pyramid saw were the raw HDR clear colour
+    /// (`byroredux_core::types::Color::CORNFLOWER_BLUE` pre-#2466,
+    /// transparent black since) rather than real sky radiance.
+    ///
+    /// The scene image must be `SHADER_READ_ONLY_OPTIMAL` on entry
+    /// (composite's render pass `final_layout` contract) — `dispatch`
+    /// only samples it (no layout change); `apply_to_scene` owns the
+    /// round-trip through `GENERAL` and restores `SHADER_READ_ONLY_
+    /// OPTIMAL` before returning, satisfying `frame_upscaler.rs`'s entry
+    /// contract for `record_upscale_pass` right after this.
     ///
     /// The `if let Some(...)` guard below is dead at runtime (#1276):
     /// `VulkanContext::new`'s bloom-init arm hard-fails with
@@ -858,23 +876,34 @@ impl VulkanContext {
     /// `cmd` is in the recording state — opened by `begin_command_buffer`
     /// in `draw_frame` and not yet closed — and this runs once per frame
     /// between the main render pass end and `end_command_buffer`, at the
-    /// fixed position `record_post_passes` calls it from.
+    /// fixed position `record_post_passes` calls it from, AFTER
+    /// `record_composite_pass` and BEFORE `record_upscale_pass`.
     fn record_bloom_pass(&mut self, cmd: vk::CommandBuffer, frame: usize) {
         // SAFETY: `cmd` is recording outside a render pass, and bloom's input
         // view, pipeline resources, and timers are live for the current frame.
         unsafe {
             if let Some(ref mut bloom) = self.bloom {
                 if let Some(ref composite) = self.composite {
-                    let hdr_view = composite.hdr_image_views[frame];
+                    let scene_image = composite.scene_images[frame];
+                    let scene_view = composite.scene_image_views[frame];
                     if let Some(ref mut timers) = self.gpu_timers {
                         timers.cmd_bloom_start(&self.device, cmd, frame);
                     }
-                    let bloom_result = bloom.dispatch(&self.device, cmd, frame, hdr_view);
+                    let bloom_result = bloom.dispatch(&self.device, cmd, frame, scene_view);
+                    match bloom_result {
+                        Ok(()) => {
+                            bloom.apply_to_scene(
+                                &self.device,
+                                cmd,
+                                frame,
+                                scene_image,
+                                scene_view,
+                            );
+                        }
+                        Err(e) => log::warn!("Bloom dispatch failed: {e}"),
+                    }
                     if let Some(ref mut timers) = self.gpu_timers {
                         timers.cmd_bloom_end(&self.device, cmd, frame);
-                    }
-                    if let Err(e) = bloom_result {
-                        log::warn!("Bloom dispatch failed: {e}");
                     }
                 }
             }
