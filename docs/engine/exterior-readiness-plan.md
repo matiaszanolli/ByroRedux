@@ -382,6 +382,157 @@ comparison before expanding to the next game.
 Exit: EX-10 through EX-15 are closed and all five primary profiles are visually
 continuous from near field to horizon.
 
+#### EX-10/11 (#2371) — near-terrain correctness and distant LOD bands
+
+**Correction (2026-08-22): this row and ROADMAP.md's M35 entry were stale.**
+Substantial work landed 2026-08-12 through 2026-08-19 that neither doc
+reflected — the 4/8/16/32 band ladder, far-plane sizing, Skyrim `.btr` normal
+maps, and a live LOD-overlap/churn audit gate are all done. The plan below
+starts from the corrected state.
+
+1. [x] **4/8/16/32 LOD band selection** — done for Skyrim/FO4
+   (`byroredux/src/cell_loader/lod_bands.rs`, commit `d96110eb`,
+   2026-08-12). `LodBandLadder::for_game` reads each game's own
+   `fBlockLevel0/1/2Distance` from the shipped `Ultra.ini`; both `.btr`
+   (`terrain_lod_btr.rs`) and `.bto` (`object_lod.rs`) consume the same
+   ladder. Oblivion/FO3/FNV correctly stay single-ring (no baked quadtree
+   exists for those games) — that is the right per-game fallback, not a
+   remaining gap.
+2. [x] **Far-plane / depth-resolution measurement** — done (commit
+   `9e96a9f9`, 2026-08-12). `DEFAULT_RENDER_DISTANCE` is derived and
+   compile-time-asserted against the widest LOD ring's far-corner diagonal
+   (`crates/core/src/ecs/components/camera.rs:65,213-228`);
+   `Camera::depth_resolution_at` measures (not guesses) the ~37,250 BU/step
+   precision collapse at the 250,000 BU ring on the current conventional
+   (non-reversed) depth buffer.
+3. [x] **Skyrim `.btr` normal maps** — done (commit `d96110eb`). FO4's
+   `.btr` normals are `_msn` model-space and are deliberately left unbound
+   pending a `Material` component on LOD entities — tracked as #2444, not
+   re-scoped here.
+4. [x] **Collider/render agreement** — already correct by construction:
+   `spawn_terrain_mesh` (`byroredux/src/cell_loader/terrain.rs:652-668`)
+   derives the trimesh collider from the exact same vertex/index buffers
+   just uploaded to the GPU. Add the one missing piece: a regression test
+   for the `log::warn!` zero-triangle-collider path (currently untested).
+5. [ ] **LAND real-data guards** — not started. `parse_land_record`
+   (`crates/plugin/src/esm/cell/walkers.rs:991-1087`) only checks
+   sub-record byte lengths, not value plausibility (height range, VNML
+   unit-vector sanity, VCLR range, BTXT/ATXT FormID existence). Add
+   per-game validation plus a `land.rs` test file exercising real corpus
+   bytes — no such test exists today.
+6. [ ] **Adjacent-cell crack detection** — not started. `spawn_terrain_mesh`
+   builds each cell independently from its own `LandscapeData`; nothing
+   verifies neighboring cells' shared edge vertices/normals agree, despite
+   LAND's 33×33 grid being authored to share edge rows/columns by
+   construction (`crates/plugin/src/esm/cell/mod.rs:165-167`). Add a pure
+   seam-agreement checker plus a capture-mode addition to
+   `m-exteriors.sh` — this is a detection/regression gate, not a
+   geometry rebuild.
+7. [ ] **Extend `lod_coverage.rs`/`m-exteriors.sh`** to catch near-field
+   (full-detail LAND) geometric cracks/holes and pixel-level seam
+   regressions. The live `lod.coverage` gate (`lod_coverage.rs`,
+   `find_overlaps`/`find_full_detail_overlaps`/`ChurnTracker`, commit
+   `235c787c`) proves footprint-set correctness — no LOD-vs-full-detail
+   overlap, zero churn — but not sub-cell geometric correctness within the
+   full-detail ring itself. Item 6's seam checker is the natural first
+   addition here.
+8. [ ] **VWD active culling** — deliberately deferred, not a blocker.
+   `exal.md` §5.2's ring-separation argument (full REFRs only inside
+   `radius_unload`, LOD rings only outside it) already prevents a full
+   model and its `.bto` proxy from coexisting by construction; the
+   regression-detection half (`LodCoverageStats::vwd_full_model_overlaps`,
+   gated at 0 in `m-exteriors.sh`) is done. Building an *active* cull needs
+   decoupling the full-detail spawn radius from `radius_unload` (reintroducing
+   the #1866 overlap risk) plus real-game visual validation — scope as its
+   own follow-up issue rather than folding into EX-10/11 closure.
+9. [ ] **Reversed-Z** — deliberately deferred (documented in
+   `camera.rs:34-64`); touches SSAO/SVGF/TAA/composite/water/FSR3 and needs
+   a GPU capture gate. The measurement work items 2 already did (far-plane
+   sizing, depth-resolution-at-distance) is exactly the data that follow-up
+   issue needs — file it separately given the blast radius, don't fold it
+   into this one.
+
+**First action**: refresh ROADMAP.md's M35 row and this section (done as
+part of landing this plan) so the starting line is accurate before any of
+items 5-7 begin.
+
+#### EX-14/15 (#2369) — ground cover/trees, persistent refs, FO4 spatial data
+
+Three independent sub-threads — recommend separate PRs/tracking sub-issues
+per the project's own "re-scoped buildable slices" convention (§ above)
+rather than one PR.
+
+**A. Ground cover.** Phase 0 (canonical types, LTEX keyword map, palette) is
+already done under this issue number (2026-08-12,
+[`groundcover.rs`](../../crates/core/src/ecs/components/groundcover.rs) /
+[`groundcover_translate.rs`](../../byroredux/src/groundcover_translate.rs)).
+Phases 1-5 per [`exal-groundcover.md`](exal-groundcover.md) §9:
+
+1. [ ] **§11.1 blocking measurement** — bench the terrain-attribute-sampling
+   indirection cost (global-vertex-SSBO read per candidate point vs. a
+   baked per-cell attribute texture) via `--bench-hold` against real
+   terrain. Required before any Phase 1 code by the doc's own gate and this
+   project's no-guessing policy — do not estimate this, measure it.
+2. [ ] **Phase 1 — scatter**: `ExcludedFromTlas` generalisation, chunking
+   (size TBD by the §11.2 sweep), the density field in GLSL,
+   `groundcover_scatter.comp`, debug point rendering over real terrain.
+3. [ ] **Phase 2 — blades + wind** (near tier only).
+4. [ ] **Phase 3 — LOD chain**, tier-3 (always-on detail layer) lands first
+   within this phase so later tiers are authored against a correct backdrop.
+5. [ ] **Phase 4 — RT proxy shell.**
+6. [ ] **Phase 5 — per-game palette**: `GRAS` → species resolution. This is
+   where GRAS finally gets a real consumer — today it parses to a
+   `MinimalEsmRecord` stub with every field discarded
+   (`crates/plugin/src/esm/records/dispatch_misc_stub.rs:96-99`), so a real
+   GRAS field decode is a prerequisite for this phase, not assumed done.
+7. [ ] Add `OwnershipTracker` classes for ground-cover blade/chunk buffer
+   byte counts alongside Phase 1 — none exist today, and the soak (EX-08)
+   currently cannot distinguish a ground-cover leak from anything else.
+
+**B. SpeedTree full rendering.** Confirmed billboard-only today
+(`crates/spt/src/import/mod.rs` — always emits one placeholder quad,
+fully wired and tested via `byroredux/src/systems/billboard.rs`). Genuinely
+**has no existing design authority**: `exal-groundcover.md` §10 defers it to
+`exal.md` §5, but §5 only covers terrain/object LOD, not SpeedTree geometry.
+Recommend: write a short design doc (a §5.x addition to `exal.md`, or a
+sibling `exal-trees.md`) covering geometry-tail decode, leaf-card billboards,
+and `BezierSpline` wind-curve consumption — per `crates/spt/src/import/mod.rs`'s
+own Phase 2 TODO (lines 31-45) — **before** any code, matching how ground
+cover got its design doc before Phase 0. Scope as its own follow-up issue.
+
+**C. Persistent refs across parent worlds + FO4 precombine previs/occlusion.**
+
+1. [ ] Fix `byroredux/src/cell_loader/transition.rs:21-29`'s stale module
+   doc — it still says exterior↔exterior transitions are "out of scope,
+   errors," but `app_step.rs:755-871` fully implements them (drain, rebuild
+   `ExteriorWorldContext`, restream). Trivial, do first — flagged
+   independently by both this investigation and #2370's.
+2. [ ] **Persistent-ref cross-worldspace continuity** — today a worldspace
+   crossing is a full drain-and-reparse
+   (`streaming_helpers::drain_streaming_state`) with no live-state
+   carry-over for modified persistent refs, and
+   `begin_worldspace_persistent_cell` (`cell_loader/exterior.rs:388-390`)
+   only exact-matches the *current* worldspace's own key — it never walks
+   the WNAM parent chain. **Sequence after #2370 lands its FormId→Entity
+   identity index** (see EX-09/17 below, item 3) — building parent-chain
+   persistent-ref inheritance without an identity mechanism first would be
+   building on sand.
+3. [ ] **FO4 previs/occlusion** (`.uvd`, XPCI-equivalent) — zero parser,
+   zero consumer (`byroredux/src/cell_loader/precombined.rs:25-31`
+   documents this as a known deferred sub-item). No niftools spec is cited
+   anywhere in the codebase. This is greenfield: file as a research spike
+   (format reverse-engineering, mirroring how `.lod`/`.bto` formats were
+   cracked per `exal.md` §Q2/§Q3) before any parsing work is scoped.
+4. [ ] **Precombine collision** (`_precomb.nif` convex hulls) — currently a
+   synthesized-trimesh fallback only (same file, same deferred-items note).
+   Smaller, better-scoped than previs: the block types are already
+   understood (crates/nif's existing `bhk*` collision parsers), so this
+   could land independently and sooner.
+5. [x] **Double-geometry guard** — already correct and shared between
+   interior/exterior loaders via `absorbed_refs_or_empty`
+   (`byroredux/src/cell_loader/precombined.rs:52-75`, #2063). No work
+   needed here; VWD/LOD overlap is covered separately under EX-11 above.
+
 ### Tranche D — make the exterior a world, not a render demo
 
 Persist streaming/change-form state, integrate REGN/NAVM/audio/AI, and validate
@@ -390,6 +541,131 @@ profiles are stable.
 
 Exit: EX-09, EX-16, and EX-17 are closed; exterior traversal survives gameplay,
 transitions, saves, and load-order changes.
+
+#### EX-09/17 (#2370) — exterior transitions, save/load, load-order conformance
+
+1. [ ] **Trivial first**: fix `transition.rs:21-29`'s stale module doc (see
+   EX-14/15 item C1 above — same finding, do it once).
+2. [x] **Transition mechanics** (worldspace/grid/pose/time/weather) — all
+   fully wired today via `App::step_cell_transition`
+   (`byroredux/src/app_step.rs:692-873`): grid/pose restore correctly
+   (citing two prior bug fixes, #1874 and #2869), the game clock is never
+   touched by transition code (`GameTimeRes` survives by omission, per
+   `world_setup.rs`'s own comment), and `collapse_weather_transition` runs
+   before every re-apply so no stuck crossfade survives a crossing. What's
+   missing is test coverage: only coordinate-conversion and radius-arg unit
+   tests exist in `transition.rs` today — add one that exercises the full
+   multi-field restore end-to-end (grid + pose + time + weather together).
+3. [ ] **Duplicate-persistent-ref guard** — no `FormId → Entity` dedup
+   index exists anywhere (`CellRootIndex` is unload bookkeeping, not an
+   identity map). Same-worldspace round trips are *accidentally* safe
+   today because `drain_streaming_state` fully tears down the persistent
+   CELL root before rebuild — there is no real dedup mechanism to build on.
+   **This is the foundational piece both EX-14/15 (parent-world persistent
+   refs) and EX-16 (actor/package migration) are blocked on** — design and
+   land a `FormId → Entity` index scoped to persistent refs (not all
+   entities) first.
+4. [ ] **Exterior save/load** — confirmed *not* a race (the streaming
+   worker never touches `World` directly), but genuinely unimplemented:
+   `LoadCommand::execute` (`save_io.rs:864-868`) hard-rejects any save
+   lacking `CurrentCellContext`, an interior-only resource, with the
+   explicit error "live load needs an interior cell." `WorldStreamingState`
+   lives on `App`, not as a `World` resource, so it is never captured by
+   the save registry at all — that's the core architectural gap, not a
+   missing serialization impl. Needs: a `CurrentExteriorContext`-equivalent
+   `World` resource capturing worldspace/grid/radius, plus a design
+   decision for in-flight streaming workers at capture time (cancel vs.
+   wait vs. snapshot-and-resume — pick one deliberately, don't default into
+   whichever is easiest to implement).
+5. [x] **CELL/REFR/LAND/environment multi-master merge** — fully wired and
+   tested via `EsmCellIndex::merge_from`
+   (`crates/plugin/src/esm/cell/mod.rs:1271-1316`): per-REFR-FormID
+   last-write-wins reference merging (fixing the historical #1546
+   whole-vec-replace bug), absent-field-inherits-from-base for
+   lighting/landscape/water/climate, all covered by real tests in
+   `crates/plugin/src/esm/cell/tests/merge.rs`. **Correction**: the
+   `crates/plugin/src/datastore.rs`/`resolver.rs` (`DataStore`,
+   `DependencyResolver`) machinery this issue's "conflict-resolution
+   mechanism" language might suggest looking at is dead code — never
+   constructed anywhere in `byroredux/src`. Don't build on it; either wire
+   it in for real or formally deprecate it in a follow-up (flagging for a
+   decision, not deciding here).
+6. [ ] **WRLD merge is weaker than CELL's** — whole-record last-write-wins
+   (`merge_from_worldspaces_last_write_wins`) rather than CELL's
+   partial-field inherit. Matches vanilla's typical full-re-author pattern
+   for WRLD overrides, so low risk to leave as-is — but flag it explicitly
+   rather than silently assume parity with CELL; only revisit if a real
+   sparse-WRLD-override mod turns up.
+7. [ ] **Cross-plugin deleted-ref bug (found, not just a gap)**: a DLC
+   deleting a base-master REFR is silently ignored today. The deleted
+   record is `continue`-skipped out of the *override plugin's own* list at
+   parse time (`walkers.rs:641-654`) rather than recorded as a tombstone,
+   so `merge_placed_references` never sees a removal signal and the base
+   copy survives untouched post-merge — despite that function's own doc
+   comment claiming deleted-ref handling is covered (true only for the
+   single-plugin case; no cross-plugin test exists). Needs a
+   `deleted_refs`/tombstone-carrying field on `CellData`, populated instead
+   of the current skip, consumed by the cross-plugin merge. Add the
+   missing regression test alongside.
+8. [ ] **Load-order conformance profiles** — none exist (searched for
+   `*load_order*`/`*conformance*`/`*multi_master*` test files; the closest
+   hit, `mq101_conformance.rs`, is an unrelated scripting example). Add
+   base-game / one-DLC / synthetic-override-chain ESM fixtures exercising
+   items 6-7 above plus the already-working CELL/REFR merge as real
+   regression coverage, not just today's synthetic two-plugin unit
+   fixtures.
+
+#### EX-16 (#2372) — REGN, NAVM, ambient audio, AI integration
+
+Buildable parse-side slices are done: EX-16a (REGN RDAT, #2737) and EX-16b
+(NAVM geometry + connectivity, #2738) are both closed. Everything below is
+genuinely new — **zero runtime consumers exist for either parsed dataset
+today**, confirmed by exhaustive grep.
+
+1. [ ] **REGN runtime consumption — start here.** `RegionDataEntry`/
+   `RegionDataKind` (`crates/plugin/src/esm/records/misc/world.rs:452-780`)
+   fully expose Objects/Weather/Map/Landscape/Grass/Sound/Imposter payloads
+   with authored priority ordering (`entries_by_priority`), but nothing
+   outside the plugin crate reads them. Recommended first, most isolated
+   slice: ambient sound (`RegionDataKind::Sound`) into `crates/audio` —
+   its `SUB_TRACK_CAPACITY` sizing already anticipates this
+   (`lib.rs:300`, comment: "Phase 4 REGN ambients land"). Ground
+   cover/fog-weather/encounter consumption naturally sequence after #2369's
+   ground cover itself exists, not before.
+2. [ ] **NAVM streaming lifecycle** — zero wiring into `WorldStreamingState`
+   today (grepped `streaming.rs`/`cell_loader*.rs`, zero hits). Add tile
+   load/unload tied to cell streaming, mirroring how terrain-LOD blocks
+   already do it, before any pathfinding work — pathfinding needs resident
+   tiles first.
+3. [ ] **NAVM pathfinding** — genuinely greenfield. `locomotion.rs:9` and
+   `wander.rs:6-7,23-26` explicitly document straight-line-only movement as
+   a known gap, not an oversight. This is the single largest item in the
+   whole epic — a pathfinding algorithm plus integration with all five
+   existing AI package systems (sandbox/wander/travel/follow/guard/escort).
+   **Recommend scoping as its own follow-up issue** rather than folding
+   into EX-16, given its size relative to everything else here.
+4. [ ] **Actor/package suspend-migrate-resume across stream boundaries** —
+   `unload_cell_inner` (`cell_loader/unload.rs:90-247`) does an
+   unconditional `despawn_batch` with zero AI-package-state awareness;
+   reload respawns fresh via `spawn_npc_entity` with package state
+   re-initialized from scratch (Sandbox seat re-picked, Wander/Travel state
+   reset). Needs: identify which package state is worth preserving
+   (Sandbox seat, Travel progress) vs. safe to re-roll (Wander pick), routed
+   through the same persistent-ref identity mechanism EX-09 (#2370 item 3)
+   needs to build regardless — **sequence after that lands.**
+5. [ ] **Ambient audio emitter REGN-binding** — the generic
+   crossfade/prune-on-unload machinery already exists (`AudioEmitter`,
+   `unload_fade_ms`, `prune_stopped_sounds`, `crates/audio/src/lib.rs`);
+   needs a REGN-keyed emitter type reusing it, gated behind item 1.
+6. [ ] **OwnershipTracker telemetry** — add `navm_tiles_resident`,
+   `regn_active_entries`, `ai_package_rows` classes following the existing
+   `OwnerClass`/`ReclaimPolicy` pattern (`ownership.rs`), once items 2/4
+   give them something real to count.
+
+**Recommended sequencing**: items 1 (REGN ambient sound) and 2 (NAVM
+streaming lifecycle) can start immediately and in parallel — neither
+depends on anything else in this epic. Items 3-6 are downstream of either
+#2370 (persistent-ref identity) or #2369 (ground cover) landing first.
 
 ## Verification policy
 
