@@ -1053,45 +1053,25 @@ pub(crate) fn load_nif_bytes_with_skeleton(
             },
         );
         if mesh_water {
-            let water_material = crate::material_translate::water_material_from_mesh(
-                &world
-                    .get::<byroredux_core::ecs::components::Material>(entity)
-                    .unwrap(),
+            crate::material_translate::attach_mesh_water(
+                world,
+                entity,
                 texture_handles.normal,
                 texture_handles.flow,
-            );
-            let (water_kind, water_flow) = crate::material_translate::water_kind_from_mesh_geometry(
-                mesh.name.as_deref(),
-                &mesh.positions,
-            );
-            world.insert(
-                entity,
-                byroredux_core::ecs::components::WaterPlane {
-                    kind: water_kind,
-                    material: water_material,
-                    damage_per_second: 0.0,
+                crate::material_translate::MeshWaterSource {
+                    name: mesh.name.as_deref(),
+                    positions: &mesh.positions,
+                    position: translation,
+                    rotation: quat,
+                    scale: mesh.scale,
+                    local_bound_center: Vec3::new(
+                        mesh.local_bound_center[0],
+                        mesh.local_bound_center[1],
+                        mesh.local_bound_center[2],
+                    ),
+                    local_bound_radius: mesh.local_bound_radius,
                 },
             );
-            if let Some(flow) = water_flow {
-                world.insert(entity, flow);
-            }
-            let bound_center = Vec3::new(
-                mesh.local_bound_center[0],
-                mesh.local_bound_center[1],
-                mesh.local_bound_center[2],
-            );
-            if water_kind != byroredux_core::ecs::components::WaterKind::Waterfall {
-                world.insert(
-                    entity,
-                    crate::material_translate::water_volume_from_mesh(
-                        translation,
-                        quat,
-                        mesh.scale,
-                        bound_center,
-                        mesh.local_bound_radius,
-                    ),
-                );
-            }
         }
         world.insert(
             entity,

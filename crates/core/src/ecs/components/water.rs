@@ -83,6 +83,21 @@ pub enum WaterKind {
 }
 
 impl WaterKind {
+    /// Canonical renderer-tuned foam response for this semantic kind.
+    ///
+    /// These are engine presentation anchors, not claimed WATR-authored
+    /// values: calm shoreline contact has the established 0.65 baseline,
+    /// rivers keep restrained streaks at 0.20, and rapids/waterfall
+    /// whitewater use 0.85. Keeping the profile beside the kind makes ESM
+    /// planes and NIF mesh water resolve identically (#3184).
+    pub const fn canonical_foam_strength(self) -> f32 {
+        match self {
+            WaterKind::Calm => 0.65,
+            WaterKind::River => 0.20,
+            WaterKind::Rapids | WaterKind::Waterfall => 0.85,
+        }
+    }
+
     /// `true` when the renderer should fire a refraction ray below
     /// the surface. Waterfalls are opaque enough that the refraction
     /// ray is wasted budget.
@@ -105,9 +120,9 @@ impl WaterKind {
 pub struct WaterMaterial {
     /// Authored `BSWaterShaderProperty.water_shader_flags` for mesh-bound
     /// water. Zero means the legacy property had no dedicated flag word and
-    /// keeps the renderer's compatibility defaults. Skyrim's documented
-    /// water bits include `0x40` reflections, `0x8000` flowmap, and `0x10000`
-    /// blended normals; translation resolves the visual gates once.
+    /// keeps the renderer's compatibility defaults. The nif.xml
+    /// `WaterShaderPropertyFlags` vocabulary occupies bits 0..=13;
+    /// translation resolves the visual gates once.
     pub shader_flags: u32,
     /// Colour seen looking down through shallow water — blended with
     /// the refraction-ray hit colour via depth-through-water.

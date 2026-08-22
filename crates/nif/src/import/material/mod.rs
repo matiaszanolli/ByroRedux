@@ -845,10 +845,11 @@ pub(super) struct MaterialInfo {
     /// `crates/nif/src/blocks/shader.rs`.
     pub sky_object_type: u32,
     /// Captured from `BSWaterShaderProperty.water_shader_flags` per
-    /// nif.xml `WaterShaderPropertyFlags`. Bit layout: `0=Specular,
-    /// 1=Reflections, 2=Refractions, 3=Vertex_UV, 6=Reflections,
-    /// 7=Refractions, 8=Vertex_UV, 9=Vertex_Alpha_Depth, 10=Procedural,
-    /// 11=Fog, 12=Update_Constants, 13=Cubemap`. Zero when no
+    /// nif.xml `WaterShaderPropertyFlags`. Bit layout: `0=Displacement,
+    /// 1=LOD, 2=Depth, 3=Actor_In_Water, 4=Actor_In_Water_Is_Moving,
+    /// 5=Underwater, 6=Reflections, 7=Refractions, 8=Vertex_UV,
+    /// 9=Vertex_Alpha_Depth, 10=Procedural, 11=Fog,
+    /// 12=Update_Constants, 13=Cubemap`. Zero when no
     /// `BSWaterShaderProperty` was bound. Renderer-side dispatch (#977
     /// follow-up) will let the M38 `WaterPipeline` honor authored
     /// reflection / refraction / cubemap intent on legacy mesh-driven

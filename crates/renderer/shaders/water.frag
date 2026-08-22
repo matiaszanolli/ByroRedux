@@ -940,7 +940,10 @@ void main() {
     // ── Refraction ray (skipped for waterfalls) ──
     vec3 refrColor;
     float refrDist = push.deep.a; // default: full deep tint on skip
-    if (kind != WATER_WATERFALL) {
+    // A negative refraction-magnitude lane is WATAL's compact canonical
+    // "authored refractions disabled" sentinel for mesh water. Zero remains
+    // the legacy/default fully perturbed-normal path.
+    if (kind != WATER_WATERFALL && push.effects.x >= 0.0) {
         float eta = viewFromPositiveSide
             ? (1.0 / max(ior, 1.0))
             : max(ior, 1.0);

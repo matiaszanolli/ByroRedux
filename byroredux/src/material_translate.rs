@@ -1,6 +1,6 @@
 //! NIFAL (NIF Abstraction Layer) — the **material** translation boundary.
 //!
-//! [`translate_material`] is the **single** site that turns a raw,
+//! [`translate_material`] is the **single base-material** site that turns a raw,
 //! per-game [`ImportedMaterial`] (with BGSM/BGEM already merged into it by
 //! [`crate::asset_provider`]'s `merge_external_material`) into the engine's
 //! canonical [`Material`] ECS component. Every consumer downstream of
@@ -14,7 +14,12 @@
 //! ~110 near-identical lines each, kept in sync by hand. That
 //! duplication was itself a translation leak: a field added to one site
 //! and not the other silently diverged the two load paths. Both sites
-//! now call this boundary.
+//! now call this boundary. Mesh water then passes through the second, explicit
+//! canonical producer [`attach_mesh_water`], which translates that resolved
+//! [`Material`] plus placement/bounds into [`WaterPlane`] / [`WaterFlow`] /
+//! [`WaterVolume`]. ESM WATR water uses `env_translate::resolve_water_material`;
+//! the two producers deliberately share [`WaterKind`] classification and foam
+//! semantics rather than pretending unlike source formats are one record.
 //!
 //! Architecture: see `docs/engine/nifal.md`. The canonical tier is the
 //! ECS `Material` component itself (it already lives in `byroredux_core`,
@@ -23,7 +28,9 @@
 
 use crate::components::MaterialTextureHandles;
 use byroredux_core::ecs::components::material::{EffectFalloff, Material};
-use byroredux_core::ecs::components::water::{WaterFlow, WaterKind, WaterMaterial, WaterVolume};
+use byroredux_core::ecs::components::water::{
+    WaterFlow, WaterKind, WaterMaterial, WaterPlane, WaterVolume,
+};
 use byroredux_core::ecs::{EntityId, World};
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_nif::import::{ImportedMaterial, MaterialTextureSet};
@@ -123,27 +130,30 @@ pub(crate) fn water_material_from_mesh(
         .iter()
         .all(|value| value.is_finite() && *value > 0.0)
     {
-        water.uv_scale_a = (water.uv_scale_a * material.uv_scale[0])
-            .clamp(1.0 / 4096.0, 1.0 / 8.0);
-        water.uv_scale_b = (water.uv_scale_b * material.uv_scale[1])
-            .clamp(1.0 / 4096.0, 1.0 / 8.0);
+        water.uv_scale_a = (water.uv_scale_a * material.uv_scale[0]).clamp(1.0 / 4096.0, 1.0 / 8.0);
+        water.uv_scale_b = (water.uv_scale_b * material.uv_scale[1]).clamp(1.0 / 4096.0, 1.0 / 8.0);
     }
     if material.uv_offset.iter().all(|value| value.is_finite()) {
         water.uv_offset = material.uv_offset;
     }
-    // Skyrim's `BSWaterShaderProperty::WaterFlag` word is not the generic
-    // shader-flag layout. CommonLibSSE names bit 6 as use-reflections, bit 15
-    // as flowmap enable, and bit 16 as blend-normals; the zero word remains
-    // the compatibility sentinel for pre-Skyrim `WaterShaderProperty`.
-    // Honor those authored water flags without inventing low-bit specular,
-    // refraction, or fog gates that belong to unrelated shader properties.
+    // `BSWaterShaderProperty::WaterFlag` uses nif.xml's dedicated
+    // WaterShaderPropertyFlags vocabulary (bits 0..=13), not generic shader
+    // flags. The zero word remains the compatibility sentinel for the older
+    // field-less `WaterShaderProperty`. Reflection/refraction are the only
+    // optical gates this compact material currently exposes; other bits stay
+    // preserved in `shader_flags` for future consumers (#3152).
     if water.shader_flags != 0 {
-        const USE_REFLECTIONS: u32 = 1 << 6;
-        const BLEND_NORMALS: u32 = 1 << 16;
-        if water.shader_flags & USE_REFLECTIONS == 0 {
+        const REFLECTIONS: u32 = 1 << 6;
+        const REFRACTIONS: u32 = 1 << 7;
+        if water.shader_flags & REFLECTIONS == 0 {
             water.effect_controls[2] = 0.0;
         }
-        water.blend_normals = water.shader_flags & BLEND_NORMALS != 0;
+        if water.shader_flags & REFRACTIONS == 0 {
+            // Positive/zero is the authored/default refraction-magnitude
+            // domain. A negative value is the compact canonical sentinel
+            // consumed by water.frag to skip the refraction ray entirely.
+            water.effect_controls[0] = -1.0;
+        }
     }
     water
 }
@@ -216,9 +226,11 @@ pub(crate) fn water_kind_from_mesh_name(name: Option<&str>) -> (WaterKind, Optio
     let flow = match kind {
         WaterKind::Calm => None,
         WaterKind::Waterfall => Some(WaterFlow::for_kind(kind, [0.0, -1.0, 0.0])),
-        WaterKind::River | WaterKind::Rapids => {
-            Some(WaterFlow::for_kind(kind, [1.0, 0.0, 0.0]))
-        }
+        // A name can establish the semantic kind but cannot establish the
+        // sign or axis of a horizontal current. Emit no physics flow rather
+        // than fabricating a world-+X push for rotated/localized assets
+        // (#3185). Authored cell/WATR vectors still produce WaterFlow.
+        WaterKind::River | WaterKind::Rapids => None,
     };
     (kind, flow)
 }
@@ -255,7 +267,14 @@ pub(crate) fn water_kind_from_mesh_geometry(
     }
     let spans = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
     let horizontal = spans[0].max(spans[2]).max(1.0);
-    if spans[1] > 16.0 && spans[1] > horizontal * 1.5 {
+    // Conservative, explicitly unmeasured compatibility heuristic. These
+    // named thresholds isolate a geometry fallback that shipped-mesh census
+    // work can replace without mistaking them for source-format constants.
+    const MIN_WATERFALL_VERTICAL_SPAN: f32 = 16.0;
+    const MIN_WATERFALL_VERTICAL_ASPECT: f32 = 1.5;
+    if spans[1] > MIN_WATERFALL_VERTICAL_SPAN
+        && spans[1] > horizontal * MIN_WATERFALL_VERTICAL_ASPECT
+    {
         (
             WaterKind::Waterfall,
             Some(WaterFlow::for_kind(WaterKind::Waterfall, [0.0, -1.0, 0.0])),
@@ -277,13 +296,71 @@ pub(crate) fn water_volume_from_mesh(
 ) -> WaterVolume {
     let center = position + rotation * (local_center * scale);
     let radius = (local_radius * scale.abs()).max(1.0);
+    // Conservative, unmeasured gameplay volume depth used only when a NIF
+    // water surface has no CELL/XCLW bounds. Named so a future mesh census or
+    // authored volume source can replace it without ABI churn (#3185).
+    const MESH_WATER_VOLUME_DEPTH_RADII: f32 = 4.0;
     WaterVolume {
         min: [
             center.x - radius,
-            position.y - radius * 4.0,
+            position.y - radius * MESH_WATER_VOLUME_DEPTH_RADII,
             center.z - radius,
         ],
         max: [center.x + radius, position.y, center.z + radius],
+    }
+}
+
+/// Placement data needed to translate and attach one mesh-bound water
+/// surface. Both loose-NIF loading and placed-cell meshes feed this exact
+/// boundary so classification, optics, foam, current, and gameplay volume
+/// cannot drift between the two spawn paths (#3182).
+pub(crate) struct MeshWaterSource<'a> {
+    pub name: Option<&'a str>,
+    pub positions: &'a [[f32; 3]],
+    pub position: Vec3,
+    pub rotation: Quat,
+    pub scale: f32,
+    pub local_bound_center: Vec3,
+    pub local_bound_radius: f32,
+}
+
+pub(crate) fn attach_mesh_water(
+    world: &mut World,
+    entity: EntityId,
+    normal_map_index: u32,
+    flow_map_index: u32,
+    source: MeshWaterSource<'_>,
+) {
+    let mut water_material = {
+        let material = world
+            .get::<Material>(entity)
+            .expect("mesh water attachment requires canonical Material");
+        water_material_from_mesh(material, normal_map_index, flow_map_index)
+    };
+    let (kind, flow) = water_kind_from_mesh_geometry(source.name, source.positions);
+    water_material.foam_strength = kind.canonical_foam_strength();
+    world.insert(
+        entity,
+        WaterPlane {
+            kind,
+            material: water_material,
+            damage_per_second: 0.0,
+        },
+    );
+    if let Some(flow) = flow {
+        world.insert(entity, flow);
+    }
+    if kind != WaterKind::Waterfall {
+        world.insert(
+            entity,
+            water_volume_from_mesh(
+                source.position,
+                source.rotation,
+                source.scale,
+                source.local_bound_center,
+                source.local_bound_radius,
+            ),
+        );
     }
 }
 
@@ -803,15 +880,12 @@ mod tests {
     #[test]
     fn mesh_water_honors_authored_optical_flag_gates() {
         let mut material = Material::default();
-        // Skyrim BSWaterShaderProperty: blended normals only, no reflection.
-        material.water_shader_flags = 1 << 16;
+        // Real nif.xml default: DEPTH | REFLECTIONS | REFRACTIONS (0xC4).
+        material.water_shader_flags = 0xC4;
         let water = water_material_from_mesh(&material, 9, 0);
-        assert_eq!(water.shader_flags, 1 << 16);
-        assert_eq!(
-            water.effect_controls[0],
-            WaterMaterial::default().effect_controls[0]
-        );
-        assert_eq!(water.effect_controls[2], 0.0);
+        assert_eq!(water.shader_flags, 0xC4);
+        assert!(water.effect_controls[0] >= 0.0);
+        assert!(water.effect_controls[2] > 0.0);
         assert!(water.blend_normals);
 
         // A zero word is the compatibility sentinel for pre-Skyrim water.
@@ -824,23 +898,71 @@ mod tests {
     }
 
     #[test]
-    fn mesh_water_honors_authored_reflection_and_blend_flags() {
+    fn mesh_water_honors_authored_reflection_and_refraction_flags() {
         let mut material = Material::default();
-        // Skyrim BSWaterShaderProperty: reflection only. The water flag word
-        // does not contain generic specular or fog gates.
+        // Reflection only: keep reflection and explicitly suppress the
+        // refraction ray through the compact negative sentinel.
         material.water_shader_flags = 1 << 6;
         let water = water_material_from_mesh(&material, 9, 0);
-        assert_eq!(water.effect_controls[1], WaterMaterial::default().effect_controls[1]);
-        assert!(water.effect_controls[3] > 0.0);
-        assert!(water.depth_weights[1] > 0.0);
-        assert!(!water.blend_normals);
+        assert!(water.effect_controls[2] > 0.0);
+        assert!(water.effect_controls[0] < 0.0);
+        assert!(water.blend_normals);
 
-        // A fully authored optical word keeps all three responses enabled.
-        material.water_shader_flags = (1 << 6) | (1 << 16);
+        // Both documented optical bits keep both responses enabled.
+        material.water_shader_flags = (1 << 6) | (1 << 7);
         let authored = water_material_from_mesh(&material, 9, 0);
-        assert!(authored.effect_controls[3] > 0.0);
-        assert!(authored.depth_weights[1] > 0.0);
+        assert!(authored.effect_controls[2] > 0.0);
+        assert!(authored.effect_controls[0] >= 0.0);
         assert!(authored.blend_normals);
+    }
+
+    #[test]
+    fn named_horizontal_mesh_water_never_fabricates_world_axis_flow() {
+        for name in ["River01", "WhiteRapids"] {
+            let (kind, flow) = water_kind_from_mesh_name(Some(name));
+            assert!(matches!(kind, WaterKind::River | WaterKind::Rapids));
+            assert!(flow.is_none(), "{name} has no authored current axis");
+        }
+    }
+
+    #[test]
+    fn mesh_and_cell_water_kinds_share_the_canonical_foam_profile() {
+        for (kind, expected) in [
+            (WaterKind::Calm, 0.65),
+            (WaterKind::River, 0.20),
+            (WaterKind::Rapids, 0.85),
+            (WaterKind::Waterfall, 0.85),
+        ] {
+            assert_eq!(kind.canonical_foam_strength(), expected);
+        }
+    }
+
+    #[test]
+    fn shared_mesh_attachment_applies_kind_foam_without_inventing_current() {
+        let mut world = World::new();
+        let entity = world.spawn();
+        world.insert(entity, Material::default());
+        let positions = [[-8.0, 0.0, -2.0], [8.0, 0.0, -2.0], [0.0, 0.0, 2.0]];
+        attach_mesh_water(
+            &mut world,
+            entity,
+            0,
+            0,
+            MeshWaterSource {
+                name: Some("RiverSegment01"),
+                positions: &positions,
+                position: Vec3::new(10.0, 20.0, 30.0),
+                rotation: Quat::IDENTITY,
+                scale: 1.0,
+                local_bound_center: Vec3::ZERO,
+                local_bound_radius: 8.0,
+            },
+        );
+        let plane = world.get::<WaterPlane>(entity).expect("WaterPlane");
+        assert_eq!(plane.kind, WaterKind::River);
+        assert_eq!(plane.material.foam_strength, 0.20);
+        assert!(world.get::<WaterFlow>(entity).is_none());
+        assert!(world.get::<WaterVolume>(entity).is_some());
     }
 
     #[test]
@@ -866,7 +988,7 @@ mod tests {
         ));
         assert!(matches!(
             water_kind_from_mesh_name(Some("RiverSegment01")),
-            (WaterKind::River, Some(_))
+            (WaterKind::River, None)
         ));
         assert!(matches!(
             water_kind_from_mesh_name(Some("LakeWater01")),

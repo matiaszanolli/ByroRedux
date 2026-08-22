@@ -913,7 +913,6 @@ pub(crate) fn resolve_water_material(
                 || (has_authored_linear_flow && authored_flow_speed >= WaterFlow::SPEED_RAPIDS)
             {
                 kind = WaterKind::Rapids;
-                mat.foam_strength = 0.85;
             } else if matches!(named_kind, WaterKind::River)
                 // Skyrim SE's NAM5 is explicitly the flow-normal texture.
                 // Treat its presence as an authored flow signal even when
@@ -925,8 +924,8 @@ pub(crate) fn resolve_water_material(
                 || has_authored_linear_flow
             {
                 kind = WaterKind::River;
-                mat.foam_strength = 0.20;
             }
+            mat.foam_strength = kind.canonical_foam_strength();
             // Synthesise a flow vector from WATR's wind direction + the
             // canonical per-`WaterKind` current speed when the kind
             // implies flow. Bethesda's wind_direction is in radians from

@@ -277,6 +277,24 @@ fn fo4_effect_shader_env_map_texture_forwards_to_material_info() {
     );
 }
 
+/// #3186: the file's BSVER selects texture-slot semantics even when the mesh
+/// has only a BSEffectShaderProperty. Before the shared walker seeded this
+/// context, only BSLightingShaderProperty updated the layout and this FO4
+/// mesh incorrectly escaped with the MaterialInfo default (`Skyrim`).
+#[test]
+fn fo4_effect_only_mesh_preserves_scene_texture_slot_layout() {
+    let blocks: Vec<Box<dyn NiObject>> = vec![Box::new(fully_populated_fo4_shader())];
+    let scene = NifScene {
+        blocks,
+        bsver: crate::version::bsver::FALLOUT4,
+        ..NifScene::default()
+    };
+    let mut pool = StringPool::new();
+    let info =
+        extract_material_info_from_refs(&scene, BlockRef(0), BlockRef::NULL, &[], &[], &mut pool);
+    assert_eq!(info.texture_slot_layout, TextureSlotLayout::Fallout4);
+}
+
 // ── #890 / SK-D4-NEW-04 — BSEffect flag-bit capture ──────────────
 //
 // Pre-fix the four BSEffect-relevant flag bits (Soft_Effect,

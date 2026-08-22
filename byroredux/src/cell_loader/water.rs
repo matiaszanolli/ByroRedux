@@ -375,11 +375,7 @@ pub(super) fn spawn_water_plane(
         // physics and UV scroll but the renderer suppresses its aligned foam
         // response.
         kind = kind_with_cell_flow(kind, cell_flow.speed);
-        if matches!(kind, WaterKind::Rapids) {
-            material.foam_strength = 0.85;
-        } else if matches!(kind, WaterKind::River) {
-            material.foam_strength = 0.20;
-        }
+        material.foam_strength = kind.canonical_foam_strength();
         // Keep the authored WATR layer motion, but add the cell-local
         // current as a world-space UV bias so XWCU affects both physics and
         // the visible surface rather than only drifting debris.

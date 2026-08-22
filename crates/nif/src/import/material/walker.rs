@@ -116,6 +116,11 @@ pub(crate) fn extract_material_info_from_refs(
     pool: &mut StringPool,
 ) -> MaterialInfo {
     let mut info = MaterialInfo::default();
+    // Texture roles are a property of the file generation, not of whichever
+    // shader-property subtype happens to be bound. Seed the scene context at
+    // the shared boundary so BSEffect/sky/water-only meshes cannot silently
+    // retain MaterialInfo's Skyrim default on FO4+ content (#3186).
+    info.texture_slot_layout = TextureSlotLayout::from_bsver(scene.bsver);
 
     // Skyrim+ dedicated refs (#2059 — split into `dedicated_shader.rs`).
     // Alpha MUST run before the shader-property block so the BSEffectShader

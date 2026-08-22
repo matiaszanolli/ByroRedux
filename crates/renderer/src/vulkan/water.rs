@@ -1014,6 +1014,13 @@ mod tests {
     }
 
     #[test]
+    fn water_fragment_shader_skips_authored_disabled_mesh_refraction() {
+        let src = include_str!("../../shaders/water.frag");
+        assert!(src.contains("kind != WATER_WATERFALL && push.effects.x >= 0.0"));
+        assert!(src.contains("float refractionNormalWeight = push.effects.x > 0.0"));
+    }
+
+    #[test]
     fn water_fragment_shader_preserves_zero_authored_opacity() {
         let src = include_str!("../../shaders/water.frag");
         assert!(

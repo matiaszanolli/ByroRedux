@@ -722,54 +722,25 @@ pub(super) fn spawn_mesh_instance(
         },
     );
     if mesh_water {
-        // Skyrim+ mesh water carries its own shader-property flags rather than
-        // an ESM WATR plane. Reuse the dedicated water pass so rivers,
-        // waterfalls, and authored water meshes receive the same waves,
-        // refraction, and weather response as cell water. Preserve the
-        // authored normal map when one exists; the water shader treats the
-        // sentinel as a procedural fallback.
-        let water_material = crate::material_translate::water_material_from_mesh(
-            &world
-                .get::<byroredux_core::ecs::components::Material>(entity)
-                .unwrap(),
+        crate::material_translate::attach_mesh_water(
+            world,
+            entity,
             texture_handles.normal,
             texture_handles.flow,
-        );
-        let (water_kind, water_flow) = crate::material_translate::water_kind_from_mesh_geometry(
-            mesh.name.as_deref(),
-            &mesh.positions,
-        );
-        world.insert(
-            entity,
-            byroredux_core::ecs::components::WaterPlane {
-                kind: water_kind,
-                material: water_material,
-                damage_per_second: 0.0,
+            crate::material_translate::MeshWaterSource {
+                name: mesh.name.as_deref(),
+                positions: &mesh.positions,
+                position: final_pos,
+                rotation: final_rot,
+                scale: final_scale,
+                local_bound_center: Vec3::new(
+                    mesh.local_bound_center[0],
+                    mesh.local_bound_center[1],
+                    mesh.local_bound_center[2],
+                ),
+                local_bound_radius: mesh.local_bound_radius,
             },
         );
-        if let Some(flow) = water_flow {
-            world.insert(entity, flow);
-        }
-        // Mesh-bound water has no CELL/XCLW record to create a volume from.
-        // Derive a conservative world-space volume from the imported bounds
-        // so swimming and buoyancy consume the same surface as rendering.
-        let bound_center = Vec3::new(
-            mesh.local_bound_center[0],
-            mesh.local_bound_center[1],
-            mesh.local_bound_center[2],
-        );
-        if water_kind != byroredux_core::ecs::components::WaterKind::Waterfall {
-            world.insert(
-                entity,
-                crate::material_translate::water_volume_from_mesh(
-                    final_pos,
-                    final_rot,
-                    final_scale,
-                    bound_center,
-                    mesh.local_bound_radius,
-                ),
-            );
-        }
     }
     world.insert(
         entity,
