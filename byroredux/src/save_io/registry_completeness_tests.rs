@@ -276,6 +276,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("NifImportRegistry", "process-lifetime parsed-NIF LRU cache, keyed by model path — re-populated on demand, never save-relevant"),
         ("NormalMapHandle", "bindless GPU texture handle for the water normal-map path, rebuilt by the texture-upload path every load"),
         ("PendingCellTransitionSlot", "one-shot queued-transition slot, always present but empty except mid-transition"),
+        ("PendingDeathReconciliations", "same-frame death handoff queue drained by the late exclusive reconciliation sink; canonical Dead state is saved separately"),
         ("PendingSaveLoadSlot", "one-shot queued-load slot (#1848/SAVE-05), empty except mid-drain — save/load plumbing itself, not save-worthy state"),
         ("PlayerEntity", "set by scene::spawn_player_character and cleared by cell unload — always freshly re-set on load, not restore-worthy"),
         ("PlayerInventoryTemplate", "read-only starting loadout rebuilt from the master Player NPC record; live Inventory/EquipmentSlots are saved separately"),
@@ -293,6 +294,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("TerrainTileSlot", "index into the renderer's per-frame GpuTerrainTile SSBO, rebuilt by the terrain-spawn path every load (#470)"),
         ("TwoSided", "marker for backface-culling state, rederived identically from NIF material data every load"),
         ("VisibleWhenDistant", "spawn-time classification derived from the streaming-ring/LOD-radius relationship (#1889), rederived identically every load"),
+        ("WaterDrawIndexScratch", "per-frame render scratch whose map is cleared and rebuilt from the current sorted draw list; only allocation capacity persists"),
         ("WeatherDataRes", "WTHR NAM0 sky-color table, rebuilt from the parsed record whenever weather is (re)applied"),
         ("WeatherTransitionRes", "one-shot weather-blend accumulator, present only mid-transition and removed on completion"),
     ];
