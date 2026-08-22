@@ -344,6 +344,72 @@ pub fn count_branch_conditionals(spirv_bytes: &[u8]) -> Result<usize> {
         .count())
 }
 
+/// Largest `u32` literal compared as the RHS of an `OpUGreaterThan` in a
+/// SPIR-V module, or `None` if the module contains no such comparison.
+///
+/// Read directly from the committed SPIR-V — no recompile, no
+/// `glslangValidator` — the same compiler-version-independent approach as
+/// [`count_branch_conditionals`]. `#define`d GLSL constants like
+/// `RENDER_DEBUG_MODE_MAX` leave no `OpName` behind (macros are pure text
+/// substitution before compilation), so unlike [`uniform_block_size_by_name`]
+/// this can't look the constant up by name — but the compiled comparison
+/// `debugMode > RENDER_DEBUG_MODE_MAX` bakes the literal in as the RHS
+/// operand of exactly one `OpUGreaterThan`, which is enough to pin it. See
+/// #3120: `triangle.frag.spv` shipped stale against a `RENDER_DEBUG_MODE_MAX`
+/// bump (7 → 8) with no test noticing — this guard closes that gap.
+pub fn max_u_greater_than_rhs_constant(spirv_bytes: &[u8]) -> Result<Option<u32>> {
+    if !spirv_bytes.len().is_multiple_of(4) {
+        bail!(
+            "SPIR-V byte length {} is not a multiple of 4",
+            spirv_bytes.len()
+        );
+    }
+    let mut loader = Loader::new();
+    binary::parse_bytes(spirv_bytes, &mut loader)
+        .map_err(|e| anyhow!("SPIR-V parse failed: {e:?}"))?;
+    let module = loader.module();
+
+    // Only trust the literal as a plain 32-bit value when the constant's own
+    // type is a 32-bit `OpTypeInt` — `OpConstant`'s literal operand encoding
+    // otherwise varies (e.g. `LiteralFloat`, `LiteralBit64`), and blindly
+    // calling `unwrap_literal_bit32()` on those panics.
+    let mut int32_types: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    for inst in &module.types_global_values {
+        if inst.class.opcode == Op::TypeInt {
+            if let (Some(id), Some(width)) = (inst.result_id, inst.operands.first()) {
+                if width.unwrap_literal_bit32() == 32 {
+                    int32_types.insert(id);
+                }
+            }
+        }
+    }
+    let mut constants: HashMap<u32, u32> = HashMap::new();
+    for inst in &module.types_global_values {
+        if inst.class.opcode == Op::Constant {
+            let is_int32 = inst.result_type.is_some_and(|t| int32_types.contains(&t));
+            if let (Some(id), Some(op), true) = (inst.result_id, inst.operands.first(), is_int32)
+            {
+                constants.insert(id, op.unwrap_literal_bit32());
+            }
+        }
+    }
+
+    let mut max = None;
+    for inst in module.all_inst_iter() {
+        if inst.class.opcode != Op::UGreaterThan {
+            continue;
+        }
+        let Some(rhs) = inst.operands.get(1) else {
+            continue;
+        };
+        let Some(&value) = constants.get(&rhs.unwrap_id_ref()) else {
+            continue;
+        };
+        max = Some(max.map_or(value, |m: u32| m.max(value)));
+    }
+    Ok(max)
+}
+
 /// std140 size in bytes of a scalar / vector / square-matrix type — the only
 /// shapes the engine's UBO blocks use. Bails on anything else so an unhandled
 /// member type can never silently under-report a block size.
@@ -868,6 +934,35 @@ mod tests {
                  crates/renderer/shaders. See #1929 / REN-D11-01."
             );
         }
+    }
+
+    /// Regression: #3120. `2325c1de` bumped `RENDER_DEBUG_MODE_MAX` 7 → 8 and
+    /// recompiled `composite.frag` but not `triangle.frag`, so the shipped
+    /// `triangle.frag.spv` still encoded the "unrecognised structured debug
+    /// mode" guard against the old bound (`OpUGreaterThan %bool %debugMode
+    /// %uint_7`) — every fragment in `r.debug volumetric` (mode 8) took the
+    /// magenta contract-failure early-out in the shipped binary even though
+    /// GLSL source said mode 8 was valid. Neither existing guard could see
+    /// it: `uniform_block_size_by_name` is blind to `#define` value drift
+    /// (no struct changed shape) and `shader_constants.rs`'s
+    /// `1..=RENDER_DEBUG_MODE_MAX` loop reads GLSL source, not SPIR-V. This
+    /// pins the compiled guard's literal directly against the Rust constant
+    /// it must track.
+    #[test]
+    fn triangle_frag_spv_debug_mode_guard_matches_render_debug_mode_max() {
+        use crate::shader_constants::RENDER_DEBUG_MODE_MAX;
+        let spv = include_bytes!("../../shaders/triangle.frag.spv");
+        let max = max_u_greater_than_rhs_constant(spv)
+            .expect("reflect triangle.frag.spv")
+            .expect("triangle.frag.spv has no OpUGreaterThan comparison");
+        assert_eq!(
+            max, RENDER_DEBUG_MODE_MAX,
+            "triangle.frag.spv's largest OpUGreaterThan RHS constant is {max}, but \
+             RENDER_DEBUG_MODE_MAX is {RENDER_DEBUG_MODE_MAX} — the shader's committed \
+             .spv looks stale relative to shader_constants_data.rs; recompile it \
+             (glslangValidator -V triangle.frag -o triangle.frag.spv from \
+             crates/renderer/shaders). See #3120."
+        );
     }
 
     #[test]

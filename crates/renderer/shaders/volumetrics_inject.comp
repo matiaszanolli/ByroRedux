@@ -507,15 +507,17 @@ float blackbodyVisibleRadianceRatio(float kelvin, float referenceKelvin) {
 // (`VolumetricsPipeline::dispatch`, volumetrics.rs) is rewritten every
 // single frame, either explicitly zeroed when this frame's fog-volume list
 // is empty, or set fresh by `build_fog_volume_clusters` — which itself
-// `fill()`s the ENTIRE fixed-size cluster/index arrays with defaults before
-// repopulating them from this frame's volumes, every call, with no
-// incremental/partial update. The `fog_cluster_buffers`/`fog_cluster_index_
-// buffers` GPU writes are skipped as an optimisation exactly when
-// `fogVolumeCount` is also unconditionally zeroed, so this early-out always
-// gates the stale/skipped-write case correctly. A cell transition simply
-// means next frame's `collect_fog_volumes` (byroredux/src/render/fog_
-// volumes.rs) returns a different `Vec` from live ECS state — the whole
-// pipeline is a full per-frame rebuild, not an incremental one.
+// resets EVERY cluster entry's `count` to 0 before repopulating from this
+// frame's volumes, every call, with no incremental/partial update (#3133:
+// `offset` is a permanent per-slot invariant seeded once and no longer
+// re-touched per frame, but `count` still is). The `fog_cluster_buffers`/
+// `fog_cluster_index_buffers` GPU writes are skipped as an optimisation
+// exactly when `fogVolumeCount` is also unconditionally zeroed, so this
+// early-out always gates the stale/skipped-write case correctly. A cell
+// transition simply means next frame's `collect_fog_volumes`
+// (byroredux/src/render/fog_volumes.rs) returns a different `Vec` from live
+// ECS state — the whole pipeline is a full per-frame rebuild, not an
+// incremental one.
 bool localFogCluster(vec3 worldPos, out FogClusterEntry cluster) {
     if (fogVolumeCount == 0u || params.local_volume_grid.w <= 0.0) {
         return false;

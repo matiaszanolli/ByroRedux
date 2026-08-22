@@ -201,6 +201,24 @@ fn has_transport_emitter(volumes: &[GpuFogVolume]) -> bool {
     })
 }
 
+/// Whether `transportCombustion`'s RK2 advection block — the 18-fetch
+/// neighbour gather gated in-shader on `dt > 0.0` — should run this frame.
+/// True while an emitter is present, or while transported soot from a
+/// recently-removed emitter is still within its linger window; false once
+/// both conditions lapse, in which case the caller zeroes `simulationDt` and
+/// the shader's whole RK2 block collapses to a no-op. See #3131 (PERF-D5-01):
+/// without this the stencil ran unconditionally, and its most expensive
+/// branch (`incomingDynamicsFromNeighbors`) is itself gated on *low*
+/// combustion activity — so the quiet majority of froxels in every
+/// fog-bearing cell paid the full 18-fetch cost for a uniformly-zero field.
+fn combustion_transport_active(
+    fog_volumes: &[GpuFogVolume],
+    simulation_time: f32,
+    combustion_active_until_seconds: f32,
+) -> bool {
+    has_transport_emitter(fog_volumes) || simulation_time <= combustion_active_until_seconds
+}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct GpuFogVolumeUpload {
@@ -222,6 +240,26 @@ impl Default for GpuFogVolumeUpload {
 struct GpuFogClusterEntry {
     offset: u32,
     count: u32,
+}
+
+/// A fresh fog-cluster entry array with `offset` seeded to its final,
+/// permanent value (`cluster_index * MAX_FOG_VOLUMES_PER_CLUSTER`) — a pure
+/// function of array position that never changes for the lifetime of the
+/// grid. #3133 (PERF-D4-01): `build_fog_volume_clusters` used to recompute
+/// every entry's `offset` from scratch each frame (a 4096-iteration scalar
+/// loop on top of a full-array memset) even though the value it wrote was
+/// always identical to what was already there. Seeding it once here — used
+/// both by `VolumetricsPipeline::new` and by tests that exercise
+/// `build_fog_volume_clusters` directly — lets the per-frame rebuild reset
+/// only `count`, which is the one field a full-rebuild architecture (see the
+/// doc comment on `build_fog_volume_clusters`) actually needs touched every
+/// frame.
+fn fog_cluster_entries_with_offsets() -> Box<[GpuFogClusterEntry; FOG_VOLUME_CLUSTER_COUNT]> {
+    let mut entries = Box::new([GpuFogClusterEntry::default(); FOG_VOLUME_CLUSTER_COUNT]);
+    for (cluster_index, entry) in entries.iter_mut().enumerate() {
+        entry.offset = (cluster_index * MAX_FOG_VOLUMES_PER_CLUSTER) as u32;
+    }
+    entries
 }
 
 /// Gamebryo/Fallout world-coordinate scale. The renderer keeps positions in
@@ -366,17 +404,20 @@ pub fn hybrid_slice_coordinate(
     }
 }
 
-/// #2242 (REN-D16-04) — every call fully `fill()`s BOTH fixed-size output
-/// arrays with defaults before repopulating them from `volumes`. There is
-/// no incremental/partial update: a cell transition that changes the fog-
-/// volume list (or shifts the camera-centred grid origin under it) can
-/// never leave a stale entry from a previous frame's call sitting in a
-/// cluster cell this frame's rebuild didn't happen to touch. Combined with
-/// `fogVolumeCount` (`upload.count`) being unconditionally rewritten every
-/// frame in `dispatch` below — including the branch that skips calling
-/// this function entirely — this is why `volumetrics_inject.comp`'s
-/// `localFogCluster` early-out is a complete guard, not a fragile lone
-/// line of defense against replaying a previous cell's local fog.
+/// #2242 (REN-D16-04) — every call resets every entry's `count` to 0 before
+/// repopulating from `volumes` (`offset` is a caller-seeded invariant as of
+/// #3133, see `fog_cluster_entries_with_offsets` — it never needs touching
+/// here). There is no incremental/partial update to `count`: a cell
+/// transition that changes the fog-volume list (or shifts the camera-centred
+/// grid origin under it) can never leave a stale nonzero `count` from a
+/// previous frame's call sitting in a cluster cell this frame's rebuild
+/// didn't happen to touch. Combined with `fogVolumeCount` (`upload.count`)
+/// being unconditionally rewritten every frame in `dispatch` below —
+/// including the branch that skips calling this function entirely — this is
+/// why `volumetrics_inject.comp`'s `localFogCluster` early-out is a complete
+/// guard, not a fragile lone line of defense against replaying a previous
+/// cell's local fog. `indices` needs no per-frame reset at all — see the
+/// comment at its `count = 0` reset loop below for why.
 fn build_fog_volume_clusters(
     volumes: &[GpuFogVolume],
     camera_pos: [f32; 3],
@@ -393,10 +434,19 @@ fn build_fog_volume_clusters(
         camera_pos[2] - far,
     ];
 
-    entries.fill(GpuFogClusterEntry::default());
-    indices.fill(0);
-    for (cluster_index, entry) in entries.iter_mut().enumerate() {
-        entry.offset = (cluster_index * MAX_FOG_VOLUMES_PER_CLUSTER) as u32;
+    // #3133 (PERF-D4-01) — `offset` is a pure function of array position
+    // (see `fog_cluster_entries_with_offsets`) and is seeded once by every
+    // caller (`VolumetricsPipeline::new` in production, the same helper in
+    // tests below); only `count` needs resetting every frame, so this no
+    // longer re-derives `offset` nor memsets it. `indices` needs no reset at
+    // all: the shader only ever reads `fogClusterIndices[cluster.offset +
+    // i]` for `i < min(cluster.count, MAX_FOG_VOLUMES_PER_CLUSTER)`
+    // (`sampleLocalMedium`, volumetrics_inject.comp), and `count` is reset
+    // to 0 for every cluster below before any of this frame's volumes are
+    // clustered — so a slot past this frame's `count` for a given cluster
+    // is never observed, stale contents or not.
+    for entry in entries.iter_mut() {
+        entry.count = 0;
     }
 
     let volume_count = volumes.len().min(MAX_GPU_FOG_VOLUMES);
@@ -891,9 +941,7 @@ impl VolumetricsPipeline {
             combustion_light_candidates: Vec::new(),
             last_combustion_light_topology: None,
             fog_volume_upload: Box::new(GpuFogVolumeUpload::default()),
-            fog_cluster_entries: Box::new(
-                [GpuFogClusterEntry::default(); FOG_VOLUME_CLUSTER_COUNT],
-            ),
+            fog_cluster_entries: fog_cluster_entries_with_offsets(),
             fog_cluster_indices: Box::new([0; FOG_VOLUME_INDEX_COUNT]),
             integration_pipeline: vk::Pipeline::null(),
             integration_pipeline_layout: vk::PipelineLayout::null(),
@@ -2051,7 +2099,22 @@ impl VolumetricsPipeline {
             // source input so a flame is visible immediately.
             1.0 / 60.0
         };
-        frame_params.fog_reference[3] = simulation_dt;
+        // #3131 (PERF-D5-01) — `transportCombustion`'s whole RK2 advection
+        // block (source/midpoint/destination probes, 18-fetch neighbour
+        // gather) is gated in-shader on `dt > 0.0`. Without a scene-level
+        // gate here, every froxel of every fog-bearing cell pays it even
+        // when nothing is burning: `combustionActivity(...) < 0.08` is the
+        // *quiet* case, so the expensive neighbour gather fires precisely
+        // on the froxels with no combustion. `combustion_active_until_seconds`
+        // is exactly the CPU-side "combustion is (or was recently) active"
+        // signal `requires_dispatch` already maintains — reuse it to zero
+        // `dt` and skip the stencil outright when nothing is transporting.
+        let combustion_active = combustion_transport_active(
+            fog_volumes,
+            simulation_time,
+            self.combustion_active_until_seconds,
+        );
+        frame_params.fog_reference[3] = if combustion_active { simulation_dt } else { 0.0 };
         self.pending_simulation_time_seconds = Some(simulation_time);
         let camera_position = [
             frame_params.camera_pos[0],
@@ -3178,6 +3241,31 @@ mod unit_tests {
         assert!(!has_transport_emitter(&[volume(f32::NAN)]));
     }
 
+    /// Regression: #3131 (PERF-D5-01). No emitter and an expired linger
+    /// window must zero the shader's `dt` and skip the combustion transport
+    /// stencil; a live emitter or an unexpired linger window must not.
+    #[test]
+    fn combustion_transport_skips_only_once_nothing_is_burning_or_lingering() {
+        // No emitter, never active (fresh/reset state) -> inactive.
+        assert!(!combustion_transport_active(&[], 10.0, f32::NEG_INFINITY));
+        // No emitter, but still inside the linger window -> stays active.
+        assert!(combustion_transport_active(&[], 10.0, 12.0));
+        // Exactly at the linger boundary -> still active (inclusive).
+        assert!(combustion_transport_active(&[], 12.0, 12.0));
+        // Linger window expired -> inactive again.
+        assert!(!combustion_transport_active(&[], 13.0, 12.0));
+        // A live transport emitter overrides an expired/absent linger window.
+        let smoke = GpuFogVolume {
+            profile_params: [FOG_VOLUME_PROFILE_SMOKE, 0.0, 0.0, 0.0],
+            ..GpuFogVolume::default()
+        };
+        assert!(combustion_transport_active(
+            &[smoke],
+            10.0,
+            f32::NEG_INFINITY
+        ));
+    }
+
     #[test]
     fn every_contributing_local_fog_light_obeys_structural_visibility() {
         let shader = include_str!("../../shaders/volumetrics_inject.comp");
@@ -3441,7 +3529,7 @@ mod unit_tests {
             profile_params: [FOG_VOLUME_PROFILE_SMOKE, 0.0, 0.0, 0.0],
         };
         let mut upload = GpuFogVolumeUpload::default();
-        let mut entries = Box::new([GpuFogClusterEntry::default(); FOG_VOLUME_CLUSTER_COUNT]);
+        let mut entries = fog_cluster_entries_with_offsets();
         let mut indices = Box::new([0; FOG_VOLUME_INDEX_COUNT]);
         let grid = build_fog_volume_clusters(
             &[volume],
@@ -3473,7 +3561,7 @@ mod unit_tests {
             profile_params: [FOG_VOLUME_PROFILE_HOMOGENEOUS, 0.0, 0.0, 0.0],
         };
         let mut upload = GpuFogVolumeUpload::default();
-        let mut entries = Box::new([GpuFogClusterEntry::default(); FOG_VOLUME_CLUSTER_COUNT]);
+        let mut entries = fog_cluster_entries_with_offsets();
         let mut indices = Box::new([0; FOG_VOLUME_INDEX_COUNT]);
         build_fog_volume_clusters(
             &[volume],
@@ -3484,6 +3572,76 @@ mod unit_tests {
             &mut indices,
         );
         assert!(entries.iter().all(|entry| entry.count == 0));
+    }
+
+    /// Regression: #3133 (PERF-D4-01). `build_fog_volume_clusters` used to
+    /// recompute every entry's `offset` from scratch each call; now it is
+    /// seeded once by `fog_cluster_entries_with_offsets` and never rewritten
+    /// by the per-frame rebuild. Pins that invariant across repeated calls
+    /// (simulating N frames without re-initialising the caller's buffer),
+    /// and that a cluster whose volume moved out of it — the one case the
+    /// removed `entries.fill(default())` used to guarantee stays
+    /// correct — reports `count == 0` and is therefore never read (per
+    /// `localFogCluster`'s `fogVolumeCount`/`count` early-out).
+    #[test]
+    fn fog_cluster_offsets_persist_and_stale_counts_clear_across_frames() {
+        let volume = GpuFogVolume {
+            center_shape: [0.0, 0.0, 0.0, 1.0],
+            half_extents_extinction: [10.0, 20.0, 10.0, 0.01],
+            inverse_rotation: [0.0, 0.0, 0.0, 1.0],
+            albedo_edge: [0.9, 0.9, 0.9, 0.4],
+            emission_temperature: [0.0; 4],
+            profile_params: [FOG_VOLUME_PROFILE_SMOKE, 0.0, 0.0, 0.0],
+        };
+        let mut upload = GpuFogVolumeUpload::default();
+        let mut entries = fog_cluster_entries_with_offsets();
+        let mut indices = Box::new([0; FOG_VOLUME_INDEX_COUNT]);
+        let center = FOG_VOLUME_CLUSTER_DIM / 2;
+        let center_cluster = center
+            + center * FOG_VOLUME_CLUSTER_DIM
+            + center * FOG_VOLUME_CLUSTER_DIM * FOG_VOLUME_CLUSTER_DIM;
+
+        // Frame 1: a volume sits at the grid center.
+        build_fog_volume_clusters(
+            &[volume],
+            [0.0; 3],
+            160.0,
+            &mut upload,
+            &mut entries,
+            &mut indices,
+        );
+        assert_eq!(entries[center_cluster].count, 1);
+        let expected_offset = (center_cluster * MAX_FOG_VOLUMES_PER_CLUSTER) as u32;
+        assert_eq!(entries[center_cluster].offset, expected_offset);
+
+        // Frame 2: no volumes at all (e.g. the emitter despawned). The
+        // buffer is reused as-is, exactly like the real per-frame call —
+        // `offset` must still be correct and `count` must have cleared.
+        build_fog_volume_clusters(
+            &[],
+            [0.0; 3],
+            160.0,
+            &mut upload,
+            &mut entries,
+            &mut indices,
+        );
+        assert_eq!(
+            entries[center_cluster].count, 0,
+            "a cluster's volume list must clear once its volume is gone, even though \
+             offset is no longer re-derived every frame"
+        );
+        assert_eq!(
+            entries[center_cluster].offset, expected_offset,
+            "offset must remain the permanent per-slot invariant across frames"
+        );
+
+        // Every entry's offset must still be correct, not just the center's.
+        for (cluster_index, entry) in entries.iter().enumerate() {
+            assert_eq!(
+                entry.offset,
+                (cluster_index * MAX_FOG_VOLUMES_PER_CLUSTER) as u32
+            );
+        }
     }
 
     /// #3117 — `docs/engine/memory-budget.md` is the authoritative VRAM source
