@@ -516,10 +516,411 @@ pub(crate) fn worldspace_name_chain(
 /// scale up in proportion to the current the physics sink is simulating.
 const WATER_SCROLL_UV_PER_BU_PER_S: f32 = 0.045_651;
 
+fn resolve_water_colors(
+    waters: &HashMap<u32, esm::records::misc::WatrRecord>,
+    rec: &esm::records::misc::WatrRecord,
+    mat: &mut WaterMaterial,
+) {
+    mat.shallow_color = rec.params.shallow_color;
+    mat.deep_color = rec.params.deep_color;
+    mat.underwater_color = rec.params.underwater_color;
+    mat.fog_near = rec.params.fog_near;
+    mat.fog_far = rec.params.fog_far;
+    mat.depth_amount = rec.params.depth_amount;
+    mat.underwater_fog_near = rec.params.underwater_fog_near;
+    mat.underwater_fog_far = rec.params.underwater_fog_far;
+    mat.underwater_fog_amount = rec.params.underwater_fog_amount.clamp(0.0, 8.0);
+
+    // GNAM's third related-water link is the authored underwater variant.
+    // Resolve only one hop and reject self-links so malformed mod chains
+    // cannot recurse or replace the parent surface optics.
+    if let Some(underwater_form) = rec
+        .related_waters
+        .get(2)
+        .copied()
+        .filter(|form| *form != 0 && *form != rec.form_id)
+    {
+        if let Some(underwater) = waters.get(&underwater_form) {
+            mat.underwater_color = underwater.params.underwater_color;
+            mat.underwater_fog_near = underwater.params.underwater_fog_near;
+            mat.underwater_fog_far = underwater.params.underwater_fog_far;
+            mat.underwater_fog_amount = underwater.params.underwater_fog_amount.clamp(0.0, 8.0);
+        }
+    }
+
+    // FO4/FO76 suspended silt is a water-column contribution. Resolve it
+    // once so the surface, refraction, and underwater sinks share a palette.
+    if rec.params.silt_amount.is_finite() && rec.params.silt_amount > 0.0 {
+        let silt = rec.params.silt_amount.clamp(0.0, 1.0);
+        for (dst, src) in mat
+            .shallow_color
+            .iter_mut()
+            .zip(rec.params.silt_light_color)
+        {
+            *dst = (*dst * (1.0 - silt * 0.25) + src * (silt * 0.25)).clamp(0.0, 1.0);
+        }
+        for (dst, src) in mat.deep_color.iter_mut().zip(rec.params.silt_dark_color) {
+            *dst = (*dst * (1.0 - silt) + src * silt).clamp(0.0, 1.0);
+        }
+        for (dst, src) in mat
+            .underwater_color
+            .iter_mut()
+            .zip(rec.params.silt_dark_color)
+        {
+            *dst = (*dst * (1.0 - silt) + src * silt).clamp(0.0, 1.0);
+        }
+    }
+
+    mat.day_shallow_color = mat.shallow_color;
+    mat.day_deep_color = mat.deep_color;
+    mat.day_fog_near = mat.fog_near;
+    mat.day_fog_far = mat.fog_far;
+    mat.day_reflection_tint = rec.params.reflection_color;
+    mat.night_shallow_color = mat.shallow_color;
+    mat.night_deep_color = mat.deep_color;
+    mat.night_fog_near = mat.fog_near;
+    mat.night_fog_far = mat.fog_far;
+    mat.night_reflection_tint = rec.params.reflection_color;
+
+    let variant_shallow = |base: [f32; 3], light: [f32; 3], amount: f32| {
+        if amount.is_finite() && amount > 0.0 {
+            let silt = amount.clamp(0.0, 1.0);
+            std::array::from_fn(|i| {
+                (base[i] * (1.0 - silt * 0.25) + light[i] * (silt * 0.25)).clamp(0.0, 1.0)
+            })
+        } else {
+            base
+        }
+    };
+    let variant_deep = |base: [f32; 3], dark: [f32; 3], amount: f32| {
+        if amount.is_finite() && amount > 0.0 {
+            let silt = amount.clamp(0.0, 1.0);
+            std::array::from_fn(|i| (base[i] * (1.0 - silt) + dark[i] * silt).clamp(0.0, 1.0))
+        } else {
+            base
+        }
+    };
+    for (slot, target) in [
+        (
+            0usize,
+            (
+                &mut mat.day_shallow_color,
+                &mut mat.day_deep_color,
+                &mut mat.day_fog_near,
+                &mut mat.day_fog_far,
+                &mut mat.day_reflection_tint,
+            ),
+        ),
+        (
+            1usize,
+            (
+                &mut mat.night_shallow_color,
+                &mut mat.night_deep_color,
+                &mut mat.night_fog_near,
+                &mut mat.night_fog_far,
+                &mut mat.night_reflection_tint,
+            ),
+        ),
+    ] {
+        let Some(form) = rec
+            .related_waters
+            .get(slot)
+            .copied()
+            .filter(|form| *form != 0 && *form != rec.form_id)
+        else {
+            continue;
+        };
+        let Some(variant) = waters.get(&form) else {
+            continue;
+        };
+        *target.0 = variant_shallow(
+            variant.params.shallow_color,
+            variant.params.silt_light_color,
+            variant.params.silt_amount,
+        );
+        *target.1 = variant_deep(
+            variant.params.deep_color,
+            variant.params.silt_dark_color,
+            variant.params.silt_amount,
+        );
+        *target.2 = variant.params.fog_near;
+        *target.3 = variant.params.fog_far;
+        *target.4 = variant.params.reflection_color;
+    }
+}
+
+fn resolve_water_specular(rec: &esm::records::misc::WatrRecord, mat: &mut WaterMaterial) {
+    if rec.opacity_authored && rec.opacity.is_finite() {
+        mat.opacity = rec.opacity.clamp(0.0, 1.0);
+    }
+    if rec
+        .params
+        .alpha_controls
+        .iter()
+        .any(|value| value.is_finite() && *value > 0.0)
+    {
+        mat.alpha_controls = rec.params.alpha_controls.map(|value| {
+            if value.is_finite() {
+                value.max(0.0)
+            } else {
+                0.0
+            }
+        });
+        mat.alpha_controls[0] = mat.alpha_controls[0].clamp(0.0, 1.0);
+        mat.alpha_controls[1] = mat.alpha_controls[1].clamp(0.0, 1.0);
+        mat.alpha_controls[2] = mat.alpha_controls[2].clamp(0.0, 100_000.0);
+        mat.alpha_controls[3] = mat.alpha_controls[3].clamp(mat.alpha_controls[2] + 1.0, 100_000.0);
+    }
+    mat.fresnel_f0 = rec.params.fresnel.clamp(0.001, 0.20);
+    // FO3/FNV encode disabled reflection as an authored zero, not an FNAM
+    // bit. Preserve the scalar verbatim (#3196).
+    mat.reflectivity = rec.params.reflectivity;
+    mat.reflection_tint = rec.params.reflection_color;
+    if rec.params.reflection_hdr_multiplier.is_finite()
+        && rec.params.reflection_hdr_multiplier > 0.0
+    {
+        mat.reflection_hdr_multiplier = rec.params.reflection_hdr_multiplier.clamp(0.0, 16.0);
+    }
+    mat.sun_specular_power = rec.params.sun_specular_power;
+    if rec.params.roughness.is_finite() && rec.params.roughness > 0.0 {
+        let roughness = rec.params.roughness.clamp(0.02, 1.0);
+        mat.roughness = roughness;
+        mat.sun_specular_power = (2.0 / (roughness * roughness) - 2.0).clamp(1.0, 2048.0);
+    }
+    if rec.params.specular_magnitude.is_finite() && rec.params.specular_magnitude > 0.0 {
+        mat.specular_magnitude = rec.params.specular_magnitude.clamp(0.0, 8.0);
+    }
+    if rec.params.specular_radius.is_finite() && rec.params.specular_radius > 0.0 {
+        mat.specular_radius = rec.params.specular_radius.clamp(0.0, 10_000.0);
+    }
+}
+
+fn resolve_water_noise_and_rain(rec: &esm::records::misc::WatrRecord, mat: &mut WaterMaterial) {
+    mat.wave_amplitude = rec.params.wave_amplitude;
+    mat.wave_frequency = rec.params.wave_frequency;
+    mat.blend_normals = rec.blend_normals.unwrap_or(true);
+    mat.angular_velocity = rec.params.angular_velocity[2]
+        .is_finite()
+        .then_some(rec.params.angular_velocity[2])
+        .unwrap_or(0.0)
+        .clamp(-32.0, 32.0);
+    mat.rain_response = if rec.params.rain_response.is_finite() {
+        rec.params.rain_response.clamp(0.0, 4.0)
+    } else {
+        1.0
+    };
+    for (dst, src) in [
+        (&mut mat.uv_scale_a, rec.params.noise_uv_scale_a),
+        (&mut mat.uv_scale_b, rec.params.noise_uv_scale_b),
+        (&mut mat.uv_scale_c, rec.params.noise_uv_scale_c),
+    ] {
+        if src.is_finite() && src > 0.0 {
+            *dst = src.clamp(1.0 / 4096.0, 1.0 / 8.0);
+        }
+    }
+    for (dst, src) in mat
+        .noise_amplitude_scales
+        .iter_mut()
+        .zip(rec.params.noise_amplitude_scales)
+    {
+        if src.is_finite() && src > 0.0 {
+            *dst = src.clamp(0.05, 4.0);
+        }
+    }
+    if rec.params.noise_falloff.is_finite() && rec.params.noise_falloff > 0.0 {
+        mat.noise_falloff = rec.params.noise_falloff.clamp(1.0, 100_000.0);
+    }
+    for (dst, src) in mat.normal_falloff.iter_mut().zip(rec.params.normal_falloff) {
+        if src.is_finite() && src > 0.0 {
+            *dst = src.clamp(0.0, 4.0);
+        }
+    }
+    for (dst, src) in mat.displacement.iter_mut().zip(rec.params.displacement) {
+        if src.is_finite() && src > 0.0 {
+            *dst = src.clamp(0.0, 10_000.0);
+        }
+    }
+    for (dst, src, min, max) in [
+        (
+            &mut mat.rain_start_size,
+            rec.params.rain_start_size,
+            0.05,
+            10_000.0,
+        ),
+        (&mut mat.rain_velocity, rec.params.rain_velocity, 0.05, 16.0),
+        (&mut mat.rain_falloff, rec.params.rain_falloff, 0.0, 64.0),
+        (&mut mat.rain_dampener, rec.params.rain_dampener, 0.0, 64.0),
+    ] {
+        if src.is_finite() && src > 0.0 {
+            *dst = src.clamp(min, max);
+        }
+    }
+    let normal_magnitude =
+        if rec.params.normal_magnitude.is_finite() && rec.params.normal_magnitude > 0.0 {
+            rec.params.normal_magnitude.clamp(0.01, 8.0)
+        } else {
+            1.0
+        };
+    for amplitude in &mut mat.noise_amplitude_scales {
+        *amplitude = (*amplitude * normal_magnitude).clamp(0.0, 8.0);
+    }
+    mat.above_water_fog_amount = if rec.params.above_water_fog_amount.is_finite() {
+        rec.params.above_water_fog_amount.clamp(0.0, 8.0)
+    } else {
+        1.0
+    };
+    for (dst, src) in mat.depth_weights.iter_mut().zip(rec.params.depth_weights) {
+        if src.is_finite() && src > 0.0 {
+            *dst = src.clamp(0.0, 4.0);
+        }
+    }
+    mat.depth_weights[1] = (mat.depth_weights[1] * mat.above_water_fog_amount).clamp(0.0, 8.0);
+    for (index, (dst, src)) in mat
+        .effect_controls
+        .iter_mut()
+        .zip(rec.params.effect_controls)
+        .enumerate()
+    {
+        if src.is_finite() && src > 0.0 {
+            *dst = if index == 1 {
+                src.clamp(1.0, 2048.0)
+            } else {
+                src.clamp(0.0, 8.0)
+            };
+        }
+    }
+    if rec.params.flowmap_scale.is_finite() && rec.params.flowmap_scale > 0.0 {
+        mat.flowmap_scale = rec.params.flowmap_scale.clamp(0.05, 8.0);
+    }
+    for (dst, src) in mat
+        .absorption_coefficients
+        .iter_mut()
+        .zip(rec.params.absorption_coefficients)
+    {
+        if src.is_finite() && src > 0.0 {
+            *dst = src.clamp(0.01, 100_000.0);
+        }
+    }
+    for (dst, src) in mat.concentration.iter_mut().zip(rec.params.concentration) {
+        if src.is_finite() && src > 0.0 {
+            *dst = src;
+        }
+    }
+}
+
+fn resolve_water_layer_motion(rec: &esm::records::misc::WatrRecord, layer: usize) -> [f32; 2] {
+    let speed = rec.params.noise_wind_speeds[layer];
+    let direction = rec.params.noise_wind_directions[layer];
+    if speed.is_finite() && speed > 0.0 && direction.is_finite() {
+        let (sin_theta, cos_theta) = direction.sin_cos();
+        [cos_theta * speed, sin_theta * speed]
+    } else {
+        [0.0, 0.0]
+    }
+}
+
+fn classify_water_kind_and_flow(
+    rec: &esm::records::misc::WatrRecord,
+    mat: &mut WaterMaterial,
+) -> (WaterKind, Option<WaterFlow>) {
+    let named_kind = crate::material_translate::water_kind_from_cell_record_name(&rec.editor_id);
+    let authored_flow_speed = rec
+        .linear_velocity
+        .map(|velocity| velocity[0].hypot(velocity[1]))
+        .unwrap_or(0.0);
+    let has_authored_linear_flow = rec.linear_velocity.is_some_and(|velocity| {
+        velocity.iter().all(|component| component.is_finite()) && authored_flow_speed > 1.0e-5
+    });
+    let kind = if rec.material_name.eq_ignore_ascii_case("lava") {
+        WaterKind::Lava
+    } else if matches!(named_kind, WaterKind::Rapids)
+        || (has_authored_linear_flow && authored_flow_speed >= WaterFlow::SPEED_RAPIDS)
+    {
+        WaterKind::Rapids
+    } else if matches!(named_kind, WaterKind::River)
+        || rec.flow_noise_texture_path_is_enabled()
+        || has_authored_linear_flow
+    {
+        WaterKind::River
+    } else {
+        WaterKind::Calm
+    };
+    mat.foam_strength = kind.canonical_foam_strength();
+
+    let mut flow = None;
+    if kind.has_directional_flow() {
+        let (sin_theta, cos_theta) = rec.params.wind_direction.sin_cos();
+        let canonical = rec
+            .linear_velocity
+            .filter(|velocity| {
+                let magnitude = velocity[0].hypot(velocity[1]);
+                magnitude.is_finite() && magnitude > 1.0e-5
+            })
+            .map(|velocity| {
+                let magnitude = velocity[0].hypot(velocity[1]);
+                WaterFlow::new(
+                    [velocity[0] / magnitude, 0.0, velocity[1] / magnitude],
+                    magnitude,
+                )
+            })
+            .unwrap_or_else(|| WaterFlow::for_kind(kind, [cos_theta, 0.0, sin_theta]));
+        let scroll = canonical.speed * WATER_SCROLL_UV_PER_BU_PER_S;
+        let authored_a = resolve_water_layer_motion(rec, 0);
+        let authored_b = resolve_water_layer_motion(rec, 1);
+        let authored_c = resolve_water_layer_motion(rec, 2);
+        let flow_x = canonical.direction[0];
+        let flow_z = canonical.direction[2];
+        mat.scroll_a = [
+            flow_x * scroll + authored_a[0],
+            flow_z * scroll + authored_a[1],
+        ];
+        mat.scroll_b = [
+            -flow_z * scroll * 0.5 + authored_b[0],
+            flow_x * scroll * 0.5 + authored_b[1],
+        ];
+        mat.scroll_c = if authored_c != [0.0, 0.0] {
+            authored_c
+        } else {
+            mat.scroll_a
+        };
+        flow = Some(canonical);
+    } else {
+        for (dst, authored) in [
+            (&mut mat.scroll_a, resolve_water_layer_motion(rec, 0)),
+            (&mut mat.scroll_b, resolve_water_layer_motion(rec, 1)),
+            (&mut mat.scroll_c, resolve_water_layer_motion(rec, 2)),
+        ] {
+            if authored != [0.0, 0.0] {
+                *dst = authored;
+            }
+        }
+    }
+    (kind, flow)
+}
+
+fn resolve_water_texture_paths(
+    rec: &esm::records::misc::WatrRecord,
+    kind: WaterKind,
+) -> (Option<String>, [Option<String>; 3]) {
+    // The parser has already resolved the per-game texture role: this field
+    // is normal/noise only. Oblivion TNAM diffuse art is preserved separately
+    // and intentionally reaches the procedural normal fallback (#3222).
+    let normal_path = (!rec.texture_path.is_empty()).then(|| rec.texture_path.clone());
+    let mut noise_paths = std::array::from_fn(|index| {
+        (!rec.noise_texture_paths[index].is_empty()).then(|| rec.noise_texture_paths[index].clone())
+    });
+    // Skyrim SE's NAM5 is a flow-normal texture. Preserve the compact
+    // three-layer GPU ABI by promoting it over NAM4 only for flowing bodies;
+    // calm water keeps its authored NAM4 layer.
+    if kind.has_directional_flow() && rec.flow_noise_texture_path_is_enabled() {
+        noise_paths[2] = Some(rec.flow_noise_texture_path.clone());
+    }
+    (normal_path, noise_paths)
+}
+
 /// Resolve a cell's `XCWT` FormID to an engine [`WaterMaterial`]
-/// plus a [`WaterKind`] (currently always `Calm`) plus an optional
-/// [`WaterFlow`] and an optional normal-texture path the cell loader
-/// should attempt to bind.
+/// plus its classified [`WaterKind`], optional canonical [`WaterFlow`], and
+/// resolved normal/noise texture paths for the cell loader to bind.
 ///
 /// `xcwt_form == None` (no WATR reference on the cell) falls back to
 /// engine defaults — same shape Skyrim uses for unmodded cells that
@@ -542,491 +943,12 @@ pub(crate) fn resolve_water_material(
 
     if let Some(form) = xcwt_form {
         if let Some(rec) = waters.get(&form) {
-            mat.shallow_color = rec.params.shallow_color;
-            mat.deep_color = rec.params.deep_color;
-            mat.underwater_color = rec.params.underwater_color;
-            mat.fog_near = rec.params.fog_near;
-            mat.fog_far = rec.params.fog_far;
-            mat.depth_amount = rec.params.depth_amount;
-            mat.underwater_fog_near = rec.params.underwater_fog_near;
-            mat.underwater_fog_far = rec.params.underwater_fog_far;
-            mat.underwater_fog_amount = rec.params.underwater_fog_amount.clamp(0.0, 8.0);
-            // GNAM's third related-water link is the authored underwater
-            // variant. Resolve only one hop and reject self-links so malformed
-            // mod chains cannot recurse or replace the parent surface optics.
-            if let Some(underwater_form) = rec
-                .related_waters
-                .get(2)
-                .copied()
-                .filter(|form| *form != 0 && *form != rec.form_id)
-            {
-                if let Some(underwater) = waters.get(&underwater_form) {
-                    mat.underwater_color = underwater.params.underwater_color;
-                    mat.underwater_fog_near = underwater.params.underwater_fog_near;
-                    mat.underwater_fog_far = underwater.params.underwater_fog_far;
-                    mat.underwater_fog_amount =
-                        underwater.params.underwater_fog_amount.clamp(0.0, 8.0);
-                }
-            }
-            // FO4/FO76 authored suspended silt is a water-column color
-            // contribution, not a separate shader branch. Blend it once at
-            // translation so every consumer (surface, refraction, and
-            // underwater presentation) sees the same resolved palette.
-            if rec.params.silt_amount.is_finite() && rec.params.silt_amount > 0.0 {
-                let silt = rec.params.silt_amount.clamp(0.0, 1.0);
-                for (dst, src) in mat
-                    .shallow_color
-                    .iter_mut()
-                    .zip(rec.params.silt_light_color)
-                {
-                    *dst = (*dst * (1.0 - silt * 0.25) + src * (silt * 0.25)).clamp(0.0, 1.0);
-                }
-                for (dst, src) in mat.deep_color.iter_mut().zip(rec.params.silt_dark_color) {
-                    *dst = (*dst * (1.0 - silt) + src * silt).clamp(0.0, 1.0);
-                }
-                for (dst, src) in mat
-                    .underwater_color
-                    .iter_mut()
-                    .zip(rec.params.silt_dark_color)
-                {
-                    *dst = (*dst * (1.0 - silt) + src * silt).clamp(0.0, 1.0);
-                }
-            }
-            // GNAM slots 0/1 are the authored daytime/nighttime surface
-            // variants. Keep them as compact material-side palettes so the
-            // renderer can blend them from the live climate clock without
-            // growing the per-draw GPU ABI. Missing or malformed links fall
-            // back to the fully translated parent palette.
-            mat.day_shallow_color = mat.shallow_color;
-            mat.day_deep_color = mat.deep_color;
-            mat.day_fog_near = mat.fog_near;
-            mat.day_fog_far = mat.fog_far;
-            mat.day_reflection_tint = rec.params.reflection_color;
-            mat.night_shallow_color = mat.shallow_color;
-            mat.night_deep_color = mat.deep_color;
-            mat.night_fog_near = mat.fog_near;
-            mat.night_fog_far = mat.fog_far;
-            mat.night_reflection_tint = rec.params.reflection_color;
-            let variant_shallow = |base: [f32; 3], light: [f32; 3], amount: f32| {
-                if amount.is_finite() && amount > 0.0 {
-                    let silt = amount.clamp(0.0, 1.0);
-                    std::array::from_fn(|i| {
-                        (base[i] * (1.0 - silt * 0.25) + light[i] * (silt * 0.25)).clamp(0.0, 1.0)
-                    })
-                } else {
-                    base
-                }
-            };
-            let variant_deep = |base: [f32; 3], dark: [f32; 3], amount: f32| {
-                if amount.is_finite() && amount > 0.0 {
-                    let silt = amount.clamp(0.0, 1.0);
-                    std::array::from_fn(|i| {
-                        (base[i] * (1.0 - silt) + dark[i] * silt).clamp(0.0, 1.0)
-                    })
-                } else {
-                    base
-                }
-            };
-            for (slot, target) in [
-                (
-                    0usize,
-                    (
-                        &mut mat.day_shallow_color,
-                        &mut mat.day_deep_color,
-                        &mut mat.day_fog_near,
-                        &mut mat.day_fog_far,
-                        &mut mat.day_reflection_tint,
-                    ),
-                ),
-                (
-                    1usize,
-                    (
-                        &mut mat.night_shallow_color,
-                        &mut mat.night_deep_color,
-                        &mut mat.night_fog_near,
-                        &mut mat.night_fog_far,
-                        &mut mat.night_reflection_tint,
-                    ),
-                ),
-            ] {
-                let Some(form) = rec
-                    .related_waters
-                    .get(slot)
-                    .copied()
-                    .filter(|form| *form != 0 && *form != rec.form_id)
-                else {
-                    continue;
-                };
-                let Some(variant) = waters.get(&form) else {
-                    continue;
-                };
-                *target.0 = variant_shallow(
-                    variant.params.shallow_color,
-                    variant.params.silt_light_color,
-                    variant.params.silt_amount,
-                );
-                *target.1 = variant_deep(
-                    variant.params.deep_color,
-                    variant.params.silt_dark_color,
-                    variant.params.silt_amount,
-                );
-                *target.2 = variant.params.fog_near;
-                *target.3 = variant.params.fog_far;
-                *target.4 = variant.params.reflection_color;
-            }
-            // `WatrRecord::opacity` carries a legacy parser default for
-            // records that omit ANAM. Only an actual ANAM value is authored;
-            // otherwise retain WaterMaterial's canonical 0.88 fallback so
-            // every game generation resolves the same missing-opacity
-            // sentinel instead of inheriting the parser's compatibility
-            // placeholder.
-            if rec.opacity_authored && rec.opacity.is_finite() {
-                mat.opacity = rec.opacity.clamp(0.0, 1.0);
-            }
-            // FO4/FO76 expose a depth-dependent alpha ramp in DNAM. Keep an
-            // all-zero tuple as the legacy sentinel; otherwise clamp the
-            // authored controls before they enter the fixed GPU contract.
-            if rec
-                .params
-                .alpha_controls
-                .iter()
-                .any(|value| value.is_finite() && *value > 0.0)
-            {
-                mat.alpha_controls = rec.params.alpha_controls.map(|value| {
-                    if value.is_finite() {
-                        value.max(0.0)
-                    } else {
-                        0.0
-                    }
-                });
-                mat.alpha_controls[0] = mat.alpha_controls[0].clamp(0.0, 1.0);
-                mat.alpha_controls[1] = mat.alpha_controls[1].clamp(0.0, 1.0);
-                mat.alpha_controls[2] = mat.alpha_controls[2].clamp(0.0, 100_000.0);
-                mat.alpha_controls[3] =
-                    mat.alpha_controls[3].clamp(mat.alpha_controls[2] + 1.0, 100_000.0);
-            }
-            mat.fresnel_f0 = rec.params.fresnel.clamp(0.001, 0.20);
-            // FO3/FNV encode "not reflective" as an authored ZERO in the
-            // DNAM/DATA reflectivity float, not as an FNAM bit. `02c0d4b6`
-            // added a `legacy_flags & 0x02` gate here by generalising from
-            // Oblivion (#3145, where the correlation does hold); FNV's own
-            // data disproves it and the gate is gone (#3196). Do not
-            // reintroduce it — the reference title ships the counterexample:
-            // `NVCleanWater` (0.6) and `NVCleanWaterNoReflect` (0.0) have
-            // byte-identical 196-byte DNAM payloads except that one float,
-            // and BOTH carry FNAM 0x02. Censused over vanilla FalloutNV.esm:
-            // 44 of 78 records clear bit 0x02 and 42 of those author non-zero
-            // reflectivity, costing 68 of 451 XCWT-referenced cells their RT
-            // reflection (FO3: 38 of 39 records, 9 of 124 cells).
-            mat.reflectivity = rec.params.reflectivity;
-            mat.reflection_tint = rec.params.reflection_color;
-            if rec.params.reflection_hdr_multiplier.is_finite()
-                && rec.params.reflection_hdr_multiplier > 0.0
-            {
-                mat.reflection_hdr_multiplier =
-                    rec.params.reflection_hdr_multiplier.clamp(0.0, 16.0);
-            }
-            // WATAL Phase 1: carry the wave fields that were previously
-            // parsed into WaterParams but dropped here. AUTHORED for all
-            // eras (Oblivion/FO3/FNV/Skyrim DATA all encode amp+freq);
-            // see docs/engine/watal.md §4.
-            mat.wave_amplitude = rec.params.wave_amplitude;
-            mat.wave_frequency = rec.params.wave_frequency;
-            mat.blend_normals = rec.blend_normals.unwrap_or(true);
-            // WATR.NAM1 is an angular-velocity vector in Gamebryo space.
-            // Horizontal surfaces rotate around source Z (the up axis), so
-            // promote only that component to the renderer's yaw rate.
-            mat.angular_velocity = rec.params.angular_velocity[2]
-                .is_finite()
-                .then_some(rec.params.angular_velocity[2])
-                .unwrap_or(0.0)
-                .clamp(-32.0, 32.0);
-            mat.rain_response = if rec.params.rain_response.is_finite() {
-                rec.params.rain_response.clamp(0.0, 4.0)
-            } else {
-                1.0
-            };
-            mat.sun_specular_power = rec.params.sun_specular_power;
-            // Starfield replaces the legacy sun-power scalar with a physical
-            // surface roughness. Convert the authored roughness to the
-            // Blinn exponent consumed by the shared direct-sun path; older
-            // records retain their authored/default exponent unchanged.
-            if rec.params.roughness.is_finite() && rec.params.roughness > 0.0 {
-                let roughness = rec.params.roughness.clamp(0.02, 1.0);
-                mat.roughness = roughness;
-                mat.sun_specular_power = (2.0 / (roughness * roughness) - 2.0).clamp(1.0, 2048.0);
-            }
-            // FO3/FNV long DATA records carry independent authored tiling
-            // controls for the first two noise layers. Keep the canonical
-            // defaults for short/Oblivion records, and clamp only finite
-            // positive values so malformed tails cannot create shimmering
-            // sub-texel bands or near-uniform surfaces.
-            if rec.params.noise_uv_scale_a.is_finite() && rec.params.noise_uv_scale_a > 0.0 {
-                mat.uv_scale_a = rec.params.noise_uv_scale_a.clamp(1.0 / 4096.0, 1.0 / 8.0);
-            }
-            if rec.params.noise_uv_scale_b.is_finite() && rec.params.noise_uv_scale_b > 0.0 {
-                mat.uv_scale_b = rec.params.noise_uv_scale_b.clamp(1.0 / 4096.0, 1.0 / 8.0);
-            }
-            if rec.params.noise_uv_scale_c.is_finite() && rec.params.noise_uv_scale_c > 0.0 {
-                mat.uv_scale_c = rec.params.noise_uv_scale_c.clamp(1.0 / 4096.0, 1.0 / 8.0);
-            }
-            for (dst, src) in mat
-                .noise_amplitude_scales
-                .iter_mut()
-                .zip(rec.params.noise_amplitude_scales)
-            {
-                if src.is_finite() && src > 0.0 {
-                    *dst = src.clamp(0.05, 4.0);
-                }
-            }
-            if rec.params.noise_falloff.is_finite() && rec.params.noise_falloff > 0.0 {
-                mat.noise_falloff = rec.params.noise_falloff.clamp(1.0, 100_000.0);
-            }
-            for (dst, src) in mat.normal_falloff.iter_mut().zip(rec.params.normal_falloff) {
-                if src.is_finite() && src > 0.0 {
-                    *dst = src.clamp(0.0, 4.0);
-                }
-            }
-            for (dst, src) in mat.displacement.iter_mut().zip(rec.params.displacement) {
-                if src.is_finite() && src > 0.0 {
-                    *dst = src.clamp(0.0, 10_000.0);
-                }
-            }
-            if rec.params.rain_start_size.is_finite() && rec.params.rain_start_size > 0.0 {
-                mat.rain_start_size = rec.params.rain_start_size.clamp(0.05, 10_000.0);
-            }
-            if rec.params.rain_velocity.is_finite() && rec.params.rain_velocity > 0.0 {
-                mat.rain_velocity = rec.params.rain_velocity.clamp(0.05, 16.0);
-            }
-            if rec.params.rain_falloff.is_finite() && rec.params.rain_falloff > 0.0 {
-                mat.rain_falloff = rec.params.rain_falloff.clamp(0.0, 64.0);
-            }
-            if rec.params.rain_dampener.is_finite() && rec.params.rain_dampener > 0.0 {
-                mat.rain_dampener = rec.params.rain_dampener.clamp(0.0, 64.0);
-            }
-            // Skyrim/FO4 author an additional physical normal magnitude
-            // alongside the per-layer amplitudes. Fold it into the
-            // canonical amplitudes so the compact GPU ABI stays unchanged.
-            // A zero/invalid value is treated as the neutral legacy fallback.
-            let normal_magnitude =
-                if rec.params.normal_magnitude.is_finite() && rec.params.normal_magnitude > 0.0 {
-                    rec.params.normal_magnitude.clamp(0.01, 8.0)
-                } else {
-                    1.0
-                };
-            for amplitude in &mut mat.noise_amplitude_scales {
-                *amplitude = (*amplitude * normal_magnitude).clamp(0.0, 8.0);
-            }
-            mat.above_water_fog_amount = if rec.params.above_water_fog_amount.is_finite() {
-                rec.params.above_water_fog_amount.clamp(0.0, 8.0)
-            } else {
-                1.0
-            };
-            for (dst, src) in mat.depth_weights.iter_mut().zip(rec.params.depth_weights) {
-                if src.is_finite() && src > 0.0 {
-                    *dst = src.clamp(0.0, 4.0);
-                }
-            }
-            // The compact shader already uses depth.y as the Beer-Lambert
-            // refraction weight. Fold Skyrim's separate above-water fog
-            // amount into that slot instead of growing the UBO ABI.
-            mat.depth_weights[1] =
-                (mat.depth_weights[1] * mat.above_water_fog_amount).clamp(0.0, 8.0);
-            for (index, (dst, src)) in mat
-                .effect_controls
-                .iter_mut()
-                .zip(rec.params.effect_controls)
-                .enumerate()
-            {
-                if src.is_finite() && src > 0.0 {
-                    *dst = if index == 1 {
-                        src.clamp(1.0, 2048.0)
-                    } else {
-                        src.clamp(0.0, 8.0)
-                    };
-                }
-            }
-            if rec.params.flowmap_scale.is_finite() && rec.params.flowmap_scale > 0.0 {
-                mat.flowmap_scale = rec.params.flowmap_scale.clamp(0.05, 8.0);
-            }
-            for (dst, src) in mat
-                .absorption_coefficients
-                .iter_mut()
-                .zip(rec.params.absorption_coefficients)
-            {
-                if src.is_finite() && src > 0.0 {
-                    *dst = src.clamp(0.01, 100_000.0);
-                }
-            }
-            for (dst, src) in mat.concentration.iter_mut().zip(rec.params.concentration) {
-                if src.is_finite() && src > 0.0 {
-                    // Starfield authors pigment concentrations up to 20.0.
-                    // Preserve that magnitude here; the shader normalizes
-                    // the RGB lanes against the shared vanilla reference.
-                    *dst = src;
-                }
-            }
-            if rec.params.specular_magnitude.is_finite() && rec.params.specular_magnitude > 0.0 {
-                mat.specular_magnitude = rec.params.specular_magnitude.clamp(0.0, 8.0);
-            }
-            if rec.params.specular_radius.is_finite() && rec.params.specular_radius > 0.0 {
-                mat.specular_radius = rec.params.specular_radius.clamp(0.0, 10_000.0);
-            }
-            let authored_wind = rec.params.noise_wind_speeds;
-            let authored_dirs = rec.params.noise_wind_directions;
-            let authored_layer_scroll = |layer: usize| {
-                let speed = authored_wind[layer];
-                if speed.is_finite() && speed > 0.0 && authored_dirs[layer].is_finite() {
-                    let (sin_theta, cos_theta) = authored_dirs[layer].sin_cos();
-                    [cos_theta * speed, sin_theta * speed]
-                } else {
-                    [0.0, 0.0]
-                }
-            };
+            resolve_water_colors(waters, rec, &mut mat);
+            resolve_water_specular(rec, &mut mat);
+            resolve_water_noise_and_rain(rec, &mut mat);
             mat.source_form = rec.form_id;
-
-            // ── WaterKind heuristic from EDID naming convention ──
-            //
-            // The token table and the horizontal-plane `Waterfall` → `River`
-            // demotion both live in `material_translate`, shared with the
-            // loose-NIF producer so the two token sets cannot drift apart
-            // again (#3154, #3198). The rationale for each token — and for the
-            // ones deliberately rejected — is documented there.
-            let named_kind =
-                crate::material_translate::water_kind_from_cell_record_name(&rec.editor_id);
-            let authored_flow_speed = rec
-                .linear_velocity
-                .map(|velocity| velocity[0].hypot(velocity[1]))
-                .unwrap_or(0.0);
-            // NAM0 is present on some FO76/Starfield records even when the
-            // authored velocity is the all-zero sentinel. Presence alone is
-            // not evidence of a current: promoting that sentinel to River
-            // adds foam and a zero-speed WaterFlow to calm ponds. Treat only
-            // a finite, non-trivial vector as an authored flow signal; the
-            // explicit flow-normal texture and naming fallbacks below still
-            // cover records whose flow is authored through those channels.
-            let has_authored_linear_flow = rec.linear_velocity.is_some_and(|velocity| {
-                velocity.iter().all(|component| component.is_finite())
-                    && authored_flow_speed > 1.0e-5
-            });
-            if rec.material_name.eq_ignore_ascii_case("lava") {
-                kind = WaterKind::Lava;
-            } else if matches!(named_kind, WaterKind::Rapids)
-                || (has_authored_linear_flow && authored_flow_speed >= WaterFlow::SPEED_RAPIDS)
-            {
-                kind = WaterKind::Rapids;
-            } else if matches!(named_kind, WaterKind::River)
-                // Skyrim SE's NAM5 is explicitly the flow-normal texture.
-                // Treat its presence as an authored flow signal even when
-                // the EDID is localized or uses a neutral name.
-                || rec.flow_noise_texture_path_is_enabled()
-                // NAM0 is stronger evidence than naming: it is the record's
-                // explicit linear current and must classify a neutral or
-                // localized EDID as flowing water.
-                || has_authored_linear_flow
-            {
-                kind = WaterKind::River;
-            }
-            mat.foam_strength = kind.canonical_foam_strength();
-            // Synthesise a flow vector from WATR's wind direction + the
-            // canonical per-`WaterKind` current speed when the kind
-            // implies flow. Bethesda's wind_direction is in radians from
-            // north (UESP).
-            //
-            // #2872 — a WATR normal-layer speed is visual UV motion, not a
-            // physics current. `WaterFlow::for_kind` supplies a bounded
-            // gameplay current for named/flagged flowing bodies, while an
-            // explicit NAM0 linear velocity remains authoritative when the
-            // record provides one. The shader scroll below is derived from
-            // that canonical flow and then adds authored normal-layer motion;
-            // one scalar never serves two incompatible unit systems.
-            if kind.has_directional_flow() {
-                let theta = rec.params.wind_direction;
-                // Compute once — cos/sin were duplicated pre-#1068 (F-WAT-06).
-                let (sin_theta, cos_theta) = theta.sin_cos();
-                let canonical = rec
-                    .linear_velocity
-                    .filter(|velocity| {
-                        let magnitude = velocity[0].hypot(velocity[1]);
-                        magnitude.is_finite() && magnitude > 1.0e-5
-                    })
-                    .map(|velocity| {
-                        let magnitude = velocity[0].hypot(velocity[1]);
-                        let direction = if magnitude.is_finite() && magnitude > 1.0e-5 {
-                            [velocity[0] / magnitude, 0.0, velocity[1] / magnitude]
-                        } else {
-                            [cos_theta, 0.0, sin_theta]
-                        };
-                        WaterFlow::new(direction, magnitude)
-                    })
-                    .unwrap_or_else(|| WaterFlow::for_kind(kind, [cos_theta, 0.0, sin_theta]));
-                // Rebuild scroll vectors to bias along the flow axis,
-                // converting out of BU/s at the documented rate. The
-                // authored flow-map scale is intentionally applied once at
-                // the render upload boundary; keeping it out of this
-                // canonical material vector prevents a double scale on every
-                // flowing surface. Preserve authored per-layer motion as an
-                // additional component; otherwise Skyrim/FO4 velocity tails
-                // silently disappear whenever a water record is classified
-                // as flowing.
-                let scroll = canonical.speed * WATER_SCROLL_UV_PER_BU_PER_S;
-                let authored_a = authored_layer_scroll(0);
-                let authored_b = authored_layer_scroll(1);
-                let authored_c = authored_layer_scroll(2);
-                let flow_x = canonical.direction[0];
-                let flow_z = canonical.direction[2];
-                mat.scroll_a = [
-                    flow_x * scroll + authored_a[0],
-                    flow_z * scroll + authored_a[1],
-                ];
-                // Perpendicular shear at half rate for the second layer.
-                mat.scroll_b = [
-                    -flow_z * scroll * 0.5 + authored_b[0],
-                    flow_x * scroll * 0.5 + authored_b[1],
-                ];
-                mat.scroll_c = if authored_c != [0.0, 0.0] {
-                    authored_c
-                } else {
-                    mat.scroll_a
-                };
-                flow = Some(canonical);
-            }
-            // Calm bodies have no canonical current. Preserve authored
-            // per-layer normal motion (Skyrim/FO4) when present; this is a
-            // visual UV velocity only and must not replace the shared
-            // weather wind later used by SpeedTree vegetation.
-            if matches!(kind, WaterKind::Calm | WaterKind::Lava) {
-                let authored_a = authored_layer_scroll(0);
-                let authored_b = authored_layer_scroll(1);
-                let authored_c = authored_layer_scroll(2);
-                if authored_a != [0.0, 0.0] {
-                    mat.scroll_a = authored_a;
-                }
-                if authored_b != [0.0, 0.0] {
-                    mat.scroll_b = authored_b;
-                }
-                if authored_c != [0.0, 0.0] {
-                    mat.scroll_c = authored_c;
-                }
-            }
-            // The parser has already resolved the per-game texture role:
-            // this field is normal/noise only. Oblivion TNAM diffuse art is
-            // preserved separately and intentionally reaches the procedural
-            // normal fallback (#3222).
-            if !rec.texture_path.is_empty() {
-                normal_path = Some(rec.texture_path.clone());
-            }
-            for (dst, path) in noise_paths.iter_mut().zip(&rec.noise_texture_paths) {
-                if !path.is_empty() {
-                    *dst = Some(path.clone());
-                }
-            }
-            // Skyrim SE's NAM5 is a flow-normal texture. Preserve the
-            // compact three-layer GPU ABI by promoting it over NAM4 only
-            // for flowing bodies; calm water keeps its authored NAM4 layer.
-            if kind.has_directional_flow() && rec.flow_noise_texture_path_is_enabled() {
-                noise_paths[2] = Some(rec.flow_noise_texture_path.clone());
-            }
+            (kind, flow) = classify_water_kind_and_flow(rec, &mut mat);
+            (normal_path, noise_paths) = resolve_water_texture_paths(rec, kind);
         }
     }
 
