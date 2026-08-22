@@ -724,9 +724,8 @@ pub(super) fn shadow_mask_for_instance(
 ) -> u8 {
     // Keep in lockstep with `context::draw::is_refractive_glass` — both
     // answer "is this the same authored refractive-glass-family surface".
-    const MATERIAL_KIND_MULTI_LAYER_PARALLAX: u32 = 11;
     let is_refractive_glass = material_kind == crate::vulkan::scene_buffer::MATERIAL_KIND_GLASS
-        || (material_kind == MATERIAL_KIND_MULTI_LAYER_PARALLAX
+        || (material_kind == crate::vulkan::scene_buffer::MATERIAL_KIND_MULTI_LAYER_PARALLAX
             && multi_layer_refraction_scale > 0.0);
     if is_refractive_glass {
         crate::shader_constants::VISIBILITY_LAYER_GLASS as u8

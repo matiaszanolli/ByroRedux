@@ -137,6 +137,11 @@ fn main() {
         "// Authoritative values: scene_buffer/constants.rs. #1401."
     )
     .unwrap();
+    writeln!(
+        out,
+        "#define MATERIAL_KIND_MULTI_LAYER_PARALLAX {MATERIAL_KIND_MULTI_LAYER_PARALLAX}u"
+    )
+    .unwrap();
     writeln!(out, "#define MATERIAL_KIND_GLASS {MATERIAL_KIND_GLASS}u").unwrap();
     writeln!(
         out,

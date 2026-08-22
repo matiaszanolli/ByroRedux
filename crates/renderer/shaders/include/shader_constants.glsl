@@ -40,6 +40,7 @@
 
 // Material kind enum (`GpuMaterial.materialKind`).
 // Authoritative values: scene_buffer/constants.rs. #1401.
+#define MATERIAL_KIND_MULTI_LAYER_PARALLAX 11u
 #define MATERIAL_KIND_GLASS 100u
 #define MATERIAL_KIND_EFFECT_SHADER 101u
 #define MATERIAL_KIND_NO_LIGHTING 102u

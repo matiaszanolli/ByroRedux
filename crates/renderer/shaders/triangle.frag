@@ -1175,7 +1175,7 @@ void main() {
         albedo = mix(albedo, albedo * tintSample.rgb, tintSample.a);
     }
 
-    if (mat.materialKind == 11u && mat.innerLayerMapIndex != 0u) {
+    if (mat.materialKind == MATERIAL_KIND_MULTI_LAYER_PARALLAX && mat.innerLayerMapIndex != 0u) {
         vec2 authoredInnerScale = abs(vec2(
             mat.multiLayerInnerScaleU,
             mat.multiLayerInnerScaleV

@@ -24,7 +24,14 @@ layout(set = 0, binding = 2) uniform SSAOParams {
     mat4 invViewProj;   // precomputed inverse(viewProj) for world reconstruction
     vec4 params;        // x = radius (pixels), y = normal bias (cosine), z = intensity, w = unused
     vec4 screenSize;    // x = width, y = height, z = 1/width, w = 1/height
-    vec4 cameraPos;     // xyz = camera world position
+    // xyz = CAMERA-RELATIVE camera position (`ssao_cam_rel = camera_pos -
+    // render_origin`, computed CPU-side in post_passes.rs — this UBO has
+    // no `renderOrigin` field of its own, unlike CameraUBO). `viewProj` /
+    // `invViewProj` above are built in the same relative frame, so every
+    // use below is a same-frame difference and stays correct without ever
+    // reading an absolute position. #2756 / REN-D10-05 — this field is
+    // NOT absolute despite its old "camera world position" wording.
+    vec4 cameraPos;
 };
 
 const float PI = 3.14159265359;

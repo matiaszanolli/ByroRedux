@@ -358,7 +358,7 @@ fn shadow_mask_bucket_selection_is_pinned() {
     };
     use crate::vulkan::scene_buffer::{
         MATERIAL_KIND_EFFECT_SHADER, MATERIAL_KIND_FIRE_REFRACTION, MATERIAL_KIND_GLASS,
-        MATERIAL_KIND_NO_LIGHTING,
+        MATERIAL_KIND_MULTI_LAYER_PARALLAX, MATERIAL_KIND_NO_LIGHTING,
     };
     use byroredux_core::ecs::components::RenderLayer;
 
@@ -373,7 +373,6 @@ fn shadow_mask_bucket_selection_is_pinned() {
     // 11, non-zero refraction scale) is a caustic source per the CPU gate
     // (`draw::is_refractive_glass`) and must land in the same glass bucket,
     // not opaque — else it self-shadows its own caustic.
-    const MATERIAL_KIND_MULTI_LAYER_PARALLAX: u32 = 11;
     assert_eq!(
         shadow_mask_for_instance(
             MATERIAL_KIND_MULTI_LAYER_PARALLAX,

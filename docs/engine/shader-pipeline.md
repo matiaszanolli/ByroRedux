@@ -552,10 +552,12 @@ Absolute-space AS transforms still have a finite representable range, so the
 conservative ceiling remains ~1 M units (`REN2-10` / **#1495**). Vanilla worldspaces top
 out far below this (Skyrim Tamriel ≈ ±233 k), so nothing ships near the
 limit — but a future mega-worldspace could trip it silently. The cell
-loader guards against that: `cell_loader/references.rs` computes the
-loaded cell's worldspace bounds and `debug_assert!`s the max `|coord|`
+loader guards against that: `cell_loader/references/` (a directory —
+`RT_ABSOLUTE_PRECISION_CEILING` and the `worldspace_extent_over_rt_ceiling`
+predicate live in `mod.rs`, the firing `debug_assert!` in `complete.rs`)
+computes the loaded cell's worldspace bounds and asserts the max `|coord|`
 stays below `RT_ABSOLUTE_PRECISION_CEILING` (`2^20 = 1_048_576` u). The
-predicate (`worldspace_extent_over_rt_ceiling`) is unit-tested.
+predicate is unit-tested (`import_tests.rs`).
 
 **Any future absolute-space shader consumer inherits this same ceiling.** It
 must include the shared origin helper rather than adding a local bias.

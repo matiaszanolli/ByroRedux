@@ -280,6 +280,17 @@ pub const INSTANCE_FLAG_DIFFUSE_ALPHA: u32 = 1 << 8;
 /// (see #344). The high range (100..) is reserved for kinds the
 /// engine classifies itself from heuristics against the NIF material.
 ///
+/// `MultiLayerParallax` (11) is the one low-range value with its own
+/// named constant here: unlike the other verbatim-forwarded shader
+/// types, it is also consulted by RT classification logic
+/// (`context::draw::is_refractive_glass`,
+/// `acceleration::predicates::shadow_mask_for_instance`) alongside the
+/// high-range engine-classified kinds below, so it needs the same
+/// single-source-of-truth treatment they get. #2770 / REN-D1-03 —
+/// previously hand-copied as a local `const ... = 11` at four
+/// independent sites (three Rust, one raw `11u` in triangle.frag).
+pub const MATERIAL_KIND_MULTI_LAYER_PARALLAX: u32 = 11;
+
 /// `Glass` is the first such kind (#Tier C Phase 2): alpha-blend
 /// material, metalness < 0.3, not a decal. The fragment shader branches
 /// on this value to dispatch the RT reflection + refraction path —

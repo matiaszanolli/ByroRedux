@@ -104,6 +104,11 @@ pub const SKIN_WORKGROUP_SIZE: u32 = 64;
 
 // Material kind enum (GpuMaterial.materialKind).
 // Authoritative Rust-side values live in `scene_buffer/constants.rs`. #1401.
+// MULTI_LAYER_PARALLAX is the one low-range (NIF-forwarded shader_type)
+// value mirrored here too — see its doc comment in constants.rs (#2770 /
+// REN-D1-03) for why it needs the same GLSL lockstep as the high-range
+// engine-classified kinds below.
+pub const MATERIAL_KIND_MULTI_LAYER_PARALLAX: u32 = 11;
 pub const MATERIAL_KIND_GLASS: u32 = 100;
 pub const MATERIAL_KIND_EFFECT_SHADER: u32 = 101;
 pub const MATERIAL_KIND_NO_LIGHTING: u32 = 102;

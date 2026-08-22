@@ -323,7 +323,11 @@ pub struct GpuCamera {
     /// to reconstruct world positions from depth without a per-invocation
     /// matrix inverse on the GPU.
     pub inv_view_proj: [[f32; 4]; 4],
-    /// xyz = world position, w = frame counter (for temporal jitter seed).
+    /// xyz = ABSOLUTE world position (raw camera position, NOT rebased by
+    /// `render_origin` the way `GpuInstance.model` translations are — see
+    /// `triangle.frag`'s "`cameraPos.xyz` is ABSOLUTE" comment near its
+    /// `ssao_cam_rel` rebase, #2756); w = frame counter (for temporal
+    /// jitter seed).
     pub position: [f32; 4],
     /// x = RT enabled (1.0), y/z/w = ambient light color (RGB).
     pub flags: [f32; 4],
@@ -410,13 +414,19 @@ pub struct GpuCamera {
     /// `prev_view_proj` is origin-corrected (`prev_vp · translation(O₂ − O₁)`,
     /// #1489) so motion vectors stay valid — temporal history is NOT reset.
     ///
-    /// Consumers (#1492): every `CameraUBO` re-declarer carries the field for
-    /// layout parity; the ones that USE it are `triangle.vert` (skinned-path
-    /// rebase + absolute `fragWorldPos`), `water.vert` (absolute `vWorldPos`),
-    /// `cluster_cull.comp` + `caustic_splat.comp` (absolute reconstruction),
-    /// and `water.frag` / `caustic_splat.comp` again on the deposit
-    /// re-projection side (#1488). `ssao.comp` and `composite.frag` do NOT
-    /// declare `CameraUBO` at all — they take their own param blocks and stay
+    /// Consumers (#1492, corrected #2753 / REN-D10-03): every `CameraUBO`
+    /// re-declarer carries the field for layout parity; the ones that USE
+    /// it are `triangle.vert` (subtracts it when building the pre-rebased
+    /// model matrix — since #1496 it no longer reconstructs absolute
+    /// position itself, only emits `fragWorldPosRel`), `triangle.frag`
+    /// (now the busiest consumer: absolute `fragWorldPos = fragWorldPosRel
+    /// + renderOrigin`, the `camRel` soft-particle depth rebase, and
+    /// `renderOrigin.w` as the FSR history-reset-pending diagnostic bit),
+    /// `water.vert` (absolute `vWorldPos`), `cluster_cull.comp` +
+    /// `caustic_splat.comp` (absolute reconstruction), and `water.frag` /
+    /// `caustic_splat.comp` again on the deposit re-projection side
+    /// (#1488). `ssao.comp` and `composite.frag` do NOT declare
+    /// `CameraUBO` at all — they take their own param blocks and stay
     /// fully origin-relative (the CPU supplies the camera position minus
     /// `render_origin`); `volumetrics_inject.comp` receives the origin via
     /// `VolumetricsParams`.

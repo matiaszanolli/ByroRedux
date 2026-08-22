@@ -10,7 +10,7 @@ use super::super::scene_buffer::{
     INSTANCE_FLAG_DIFFUSE_ALPHA, INSTANCE_FLAG_FLAT_SHADING, INSTANCE_FLAG_NON_UNIFORM_SCALE,
     INSTANCE_FLAG_TERRAIN_SPLAT, INSTANCE_RENDER_LAYER_MASK, INSTANCE_RENDER_LAYER_SHIFT,
     INSTANCE_TERRAIN_TILE_MASK, INSTANCE_TERRAIN_TILE_SHIFT, MATERIAL_KIND_GLASS,
-    MAX_INDIRECT_DRAWS,
+    MATERIAL_KIND_MULTI_LAYER_PARALLAX, MAX_INDIRECT_DRAWS,
 };
 use super::super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::super::upscaling::fsr_camera_parameters;
@@ -1017,7 +1017,6 @@ fn is_refractive_glass(cmd: &DrawCommand) -> bool {
     if cmd.material_kind == MATERIAL_KIND_GLASS {
         return true;
     }
-    const MATERIAL_KIND_MULTI_LAYER_PARALLAX: u32 = 11;
     if cmd.material_kind == MATERIAL_KIND_MULTI_LAYER_PARALLAX
         && cmd.multi_layer_refraction_scale > 0.0
     {
@@ -4226,7 +4225,7 @@ mod is_caustic_source_tests {
     fn multi_layer_parallax_with_refraction_is_caustic_source() {
         // Skyrim+ BSLightingShaderProperty MultiLayerParallax variant
         // with non-zero refraction scale — real two-layer refraction.
-        assert!(is_caustic_source(&cmd(11, 0.3)));
+        assert!(is_caustic_source(&cmd(MATERIAL_KIND_MULTI_LAYER_PARALLAX, 0.3)));
     }
 
     #[test]
@@ -4234,7 +4233,10 @@ mod is_caustic_source_tests {
         // Opaque mesh-ID pixels carry a stable surface ID rather than the
         // live instance index caustic_splat.comp requires. Neither material
         // classification alone may opt such a draw into the compute pass.
-        for mut draw in [cmd(MATERIAL_KIND_GLASS, 0.0), cmd(11, 0.3)] {
+        for mut draw in [
+            cmd(MATERIAL_KIND_GLASS, 0.0),
+            cmd(MATERIAL_KIND_MULTI_LAYER_PARALLAX, 0.3),
+        ] {
             draw.alpha_blend = false;
             assert!(!is_caustic_source(&draw));
         }
@@ -4243,7 +4245,7 @@ mod is_caustic_source_tests {
     #[test]
     fn multi_layer_parallax_without_refraction_is_not_caustic() {
         // Kind 11 with zero refraction scale = parallax but no refraction.
-        assert!(!is_caustic_source(&cmd(11, 0.0)));
+        assert!(!is_caustic_source(&cmd(MATERIAL_KIND_MULTI_LAYER_PARALLAX, 0.0)));
     }
 
     #[test]

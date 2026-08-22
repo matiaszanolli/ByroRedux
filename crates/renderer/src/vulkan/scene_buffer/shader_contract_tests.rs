@@ -970,6 +970,68 @@ fn cluster_cull_differences_relative_positions_for_ray_direction() {
     );
 }
 
+/// #2756 / REN-D10-05 regression. `ssao.comp`'s `cameraPos` UBO field is
+/// fed `ssao_cam_rel = camera_pos - render_origin` from the host
+/// (post_passes.rs) — camera-RELATIVE, in the same frame as `viewProj` /
+/// `invViewProj` — even though the field used to be commented as absolute
+/// "camera world position". The shader math was always correct (every use
+/// is a same-frame difference), but the stale comment is exactly what a
+/// future author reads before wiring in a new absolute-space consumer.
+/// Static source check: the SSAOParams declaration must document the
+/// field as camera-relative, and the host upload site must still compute
+/// it that way.
+#[test]
+fn ssao_camera_pos_is_documented_as_render_origin_relative() {
+    let shader_src = include_str!("../../../shaders/ssao.comp");
+    assert!(
+        shader_src.contains("CAMERA-RELATIVE camera position"),
+        "ssao.comp: SSAOParams.cameraPos must be documented as camera-\
+             relative (`ssao_cam_rel = camera_pos - render_origin`), not \
+             absolute — see #2756 / REN-D10-05."
+    );
+    assert!(
+        !shader_src.contains("xyz = camera world position"),
+        "ssao.comp: the stale \"camera world position\" (absolute) wording \
+             for SSAOParams.cameraPos must not come back."
+    );
+
+    let host_src = include_str!("../context/post_passes.rs");
+    assert!(
+        host_src.contains("let ssao_cam_rel = [")
+            && host_src.contains("camera_pos[0] - render_origin.x"),
+        "post_passes.rs: the SSAO dispatch must still feed a render-origin-\
+             relative camera position, matching the shader's documented \
+             contract."
+    );
+}
+
+/// #1642 / #2756 (REN-D10-05) regression. `triangle.frag`'s soft-particle
+/// depth-fade path reconstructs `sceneWorld`/`fragSceneWorld` via the
+/// render-origin-RELATIVE `invViewProj`, but `cameraPos.xyz` (CameraUBO) is
+/// ABSOLUTE — the two must not be differenced directly, or the result is
+/// dominated by `|renderOrigin|` in large exterior worldspaces. Static
+/// source check: the rebase (`camRel = cameraPos.xyz - renderOrigin.xyz`)
+/// must exist and both `length()` gap terms must use `camRel`, never the
+/// raw absolute `cameraPos`.
+#[test]
+fn triangle_frag_soft_particle_rebases_camera_before_depth_gap() {
+    let src = include_str!("../../../shaders/triangle.frag");
+    assert!(
+        src.contains("vec3 camRel = cameraPos.xyz - renderOrigin.xyz;"),
+        "triangle.frag: expected the soft-particle depth-fade path to \
+             rebase the camera into render-origin-relative space \
+             (`camRel = cameraPos.xyz - renderOrigin.xyz`) before \
+             differencing against `sceneWorld`/`fragSceneWorld` — see \
+             #1642 / #2756."
+    );
+    assert!(
+        src.contains("length(sceneWorld - camRel)") && src.contains("length(fragSceneWorld - camRel)"),
+        "triangle.frag: the soft-particle depth gap must difference the \
+             RELATIVE `camRel`, not the absolute `cameraPos`, against \
+             `sceneWorld`/`fragSceneWorld` — see #1642 / #2756."
+    );
+}
+
 /// #1490 / REN2-05 regression. `screen_to_world_dir` must return the
 /// direction from the CAMERA to the unprojected far-plane point, not
 /// from the coordinate-space origin. `params.camera_pos` is uploaded in
@@ -1344,6 +1406,103 @@ fn rust_glsl_scalar_type_matches(rust_ty: &str, glsl_ty: &str) -> bool {
         (rust_ty, glsl_ty),
         ("f32", "float") | ("u32", "uint") | ("i32", "int") | ("bool", "bool")
     )
+}
+
+/// #2770 / REN-D1-03 — `MATERIAL_KIND_*` values exist in two independent
+/// Rust tables: `scene_buffer::constants` (the authoritative values other
+/// Rust code imports and compares against) and `shader_constants_data` (a
+/// mirror `build.rs` uses to generate the GLSL `#define`s). Nothing
+/// previously pinned the two tables together — the same class of
+/// decoupling #2686 found for `GLASS_RAY_BUDGET`. Also asserts the
+/// generated GLSL header carries the same values, closing the loop.
+#[test]
+fn material_kind_constants_stay_in_lockstep_across_rust_and_glsl() {
+    use crate::vulkan::scene_buffer as rust_authoritative;
+    use crate::shader_constants as rust_glsl_mirror;
+
+    let pairs: &[(&str, u32, u32)] = &[
+        (
+            "MATERIAL_KIND_MULTI_LAYER_PARALLAX",
+            rust_authoritative::MATERIAL_KIND_MULTI_LAYER_PARALLAX,
+            rust_glsl_mirror::MATERIAL_KIND_MULTI_LAYER_PARALLAX,
+        ),
+        (
+            "MATERIAL_KIND_GLASS",
+            rust_authoritative::MATERIAL_KIND_GLASS,
+            rust_glsl_mirror::MATERIAL_KIND_GLASS,
+        ),
+        (
+            "MATERIAL_KIND_EFFECT_SHADER",
+            rust_authoritative::MATERIAL_KIND_EFFECT_SHADER,
+            rust_glsl_mirror::MATERIAL_KIND_EFFECT_SHADER,
+        ),
+        (
+            "MATERIAL_KIND_NO_LIGHTING",
+            rust_authoritative::MATERIAL_KIND_NO_LIGHTING,
+            rust_glsl_mirror::MATERIAL_KIND_NO_LIGHTING,
+        ),
+        (
+            "MATERIAL_KIND_FIRE_REFRACTION",
+            rust_authoritative::MATERIAL_KIND_FIRE_REFRACTION,
+            rust_glsl_mirror::MATERIAL_KIND_FIRE_REFRACTION,
+        ),
+    ];
+
+    let glsl_header = include_str!("../../../shaders/include/shader_constants.glsl");
+    for (name, authoritative, mirror) in pairs {
+        assert_eq!(
+            authoritative, mirror,
+            "{name}: scene_buffer::constants ({authoritative}) and \
+             shader_constants_data ({mirror}) disagree — see #2770 / \
+             REN-D1-03 and #2686 / SAFE-D7-01 for the same class of \
+             decoupling."
+        );
+        assert!(
+            glsl_header.contains(&format!("#define {name} {authoritative}u")),
+            "shader_constants.glsl is missing or stale for `{name}` — run \
+             `cargo build -p byroredux-renderer` to regenerate it."
+        );
+    }
+}
+
+/// #2770 / REN-D1-03 regression: material kind 11 (MultiLayerParallax)
+/// must be referenced through the shared `MATERIAL_KIND_MULTI_LAYER_PARALLAX`
+/// constant, not a raw `11u` literal, everywhere it gates RT classification.
+/// Pins the production (non-test) sites; the four sites the issue named
+/// were `predicates.rs`, `draw.rs`, the acceleration test module, and
+/// `triangle.frag`.
+#[test]
+fn material_kind_multi_layer_parallax_has_no_raw_literal_call_sites() {
+    let cases = [
+        (
+            "triangle.frag",
+            include_str!("../../../shaders/triangle.frag"),
+            "mat.materialKind == MATERIAL_KIND_MULTI_LAYER_PARALLAX",
+        ),
+        (
+            "acceleration/predicates.rs",
+            include_str!("../acceleration/predicates.rs"),
+            "material_kind == crate::vulkan::scene_buffer::MATERIAL_KIND_MULTI_LAYER_PARALLAX",
+        ),
+        (
+            "context/draw.rs",
+            include_str!("../context/draw.rs"),
+            "cmd.material_kind == MATERIAL_KIND_MULTI_LAYER_PARALLAX",
+        ),
+    ];
+    for (name, src, needle) in cases {
+        assert!(
+            src.contains(needle),
+            "{name}: expected the shared `MATERIAL_KIND_MULTI_LAYER_PARALLAX` \
+             constant at the material-kind-11 gate (expected to find: \
+             `{needle}`) — see #2770 / REN-D1-03."
+        );
+        assert!(
+            !src.contains("const MATERIAL_KIND_MULTI_LAYER_PARALLAX: u32 = 11"),
+            "{name}: must not reintroduce a locally hand-declared copy of \
+             MATERIAL_KIND_MULTI_LAYER_PARALLAX."
+        );
+    }
 }
 
 // ── GpuLight four-way GLSL lockstep (#1916) ──
