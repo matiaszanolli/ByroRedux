@@ -209,6 +209,41 @@ After `vkCmdEndRenderPass` all attachments transition to `SHADER_READ_ONLY_OPTIM
 | 304 | 16 | `dof_params` | x = aperture half-radius; y = focus distance; z = `light_atten_knee` (ambient-cull falloff knee); w = `camera_static` flag (1.0 = parked, gates GI reprojection) |
 | 320 | 16 | `render_origin` | xyz = camera-relative render origin (#markarth-precision); **w = FSR one-frame history-reset flag** (1.0 = reset pending), read by `triangle.frag`'s FSR-temporal debug view (#2164). Not a free slot — same trap as `VolumetricsParams.render_origin.w` (#1928) |
 
+### `GpuWaterParams` — 368 bytes, SSBO (Set 2, Binding 1)
+
+One std430 record per active water draw. The buffer starts at a small initial
+capacity and grows geometrically; the retired 186-entry / ~64 KiB uniform-buffer
+cap and its 64-byte headroom no longer exist. Rust, `water.vert`, and
+`water.frag` are field-order checked by
+`gpu_water_params_rust_and_glsl_copies_stay_in_lockstep`, which also pins the
+unsized SSBO declaration in both shader stages.
+
+| Offset | Size | Field | Contents |
+|---|---|---|---|
+| 0 | 16 | `timing` | time, `WaterKind`, foam strength, IOR |
+| 16 | 16 | `flow` | xyz direction, w speed |
+| 32 | 16 | `shallow` | shallow RGB, fog-near |
+| 48 | 16 | `deep` | deep RGB, fog-far |
+| 64 | 16 | `scroll` | layer A/B scroll vectors |
+| 80 | 16 | `scroll_c` | layer C scroll, underwater fog near/far |
+| 96 | 16 | `tune` | layer A/B scale, shoreline width, wave amplitude |
+| 112 | 16 | `misc` | Fresnel F0, wave frequency, normal-map index bits, sun power |
+| 128 | 16 | `tint_reflect` | reflection RGB and reflectivity |
+| 144 | 16 | `noise_indices` | three noise indices and opacity bits (`uvec4`) |
+| 160 | 16 | `detail` | layer C scale and three amplitude scales |
+| 176 | 16 | `noise_falloff` | noise distance, blend gate, roughness, specular radius |
+| 192 | 16 | `normal_falloff` | three normal falloffs and packed rain controls |
+| 208 | 16 | `displacement` | displacement size/falloff/dampener and ripple size |
+| 224 | 16 | `depth` | reflection/refraction/normal/specular depth weights |
+| 240 | 16 | `effects` | refraction, local specular, reflection, sun-specular controls |
+| 256 | 16 | `absorption` | Starfield extinction RGB and rain response |
+| 272 | 16 | `concentration` | Starfield pigment/oceanness concentrations |
+| 288 | 16 | `ripple` | world-XZ center, intensity, radius |
+| 304 | 16 | `underwater` | underwater RGB and fog amount |
+| 320 | 16 | `alpha` | shallow/deep alpha and distance thresholds |
+| 336 | 16 | `uv_offset` | mesh UV offset, flow-map index bits, tile scale |
+| 352 | 16 | `optical` | x = Creation-era depth amount; yzw reserved |
+
 ### `GpuInstance` — 128 bytes, SSBO (Set 1, Binding 4)
 
 One entry per draw call (up to `MAX_INSTANCES` = 262 144).
@@ -396,6 +431,7 @@ pipeline. Defined in
 | 1 | 17 | `STORAGE_BUFFER` | ReSTIR reservoir buffer (previous frame) | triangle (Session-49 ReSTIR) |
 | 1 | 18 | `STORAGE_BUFFER` | Previous-frame rigid instance model matrices (rigid motion vectors). Entries align **index-for-index** with binding 4's current-frame `GpuInstance[]` after sorting/batching, so `gl_InstanceIndex` addresses both without depending on last frame's draw order | triangle (vertex stage) |
 | 2 | 0 | `STORAGE_IMAGE` (`R32_UINT`) | Water caustic accumulator | water.frag (atomic add) |
+| 2 | 1 | `STORAGE_BUFFER` (std430, growable) | Unsized `GpuWaterParams[]` table, 368 B per active water draw | water.vert, water.frag |
 
 Volumetrics uses its own private `set = 0` layout, split across two shaders
 that do NOT share one binding scheme — neither binds any Set-1 resource
