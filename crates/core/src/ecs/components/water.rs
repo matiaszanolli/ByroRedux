@@ -625,7 +625,7 @@ pub struct WaterContact {
     /// column. The displaced-volume proxy buoyancy integrates against.
     pub submerged_fraction: f32,
     /// `true` once the whole body (AABB top) is below the surface — the
-    /// drowning / fully-submerged-FX gate. (Drowning is not yet wired.)
+    /// drowning / fully-submerged-FX gate.
     pub head_submerged: bool,
     /// The current acting on this body, when it sits in flowing water
     /// (river / rapids / waterfall). `None` for calm water. Carried here

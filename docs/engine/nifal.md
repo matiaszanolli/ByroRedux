@@ -98,6 +98,29 @@ an unmodulated direct lookup, so the *rendered* behaviour is unchanged until
 that follow-up lands; what changed is that the authored value now survives to
 the canonical tier instead of dying at the boundary.
 
+### Mesh water — **converged at the NIFAL/WATAL seam**
+
+Dedicated `WaterShaderProperty` / `BSWaterShaderProperty` meshes cross NIFAL
+through `byroredux/src/material_translate.rs`, rather than constructing water
+components independently at their consumers. The live boundary has four
+reviewable helpers:
+
+- `water_material_from_mesh` translates canonical `Material` optics and the
+  authored normal/flow-map handles into `WaterMaterial`;
+- `water_kind_from_mesh_geometry` combines conservative name classification
+  with mesh orientation, keeping horizontal waterfall-named planes as rivers;
+- `water_volume_from_mesh` derives the Y-up gameplay volume for non-waterfall
+  surfaces; and
+- `attach_mesh_water` composes `WaterPlane`, optional `WaterFlow`, and optional
+  `WaterVolume` once, including canonical foam-by-kind.
+
+Both consumers—`cell_loader/spawn/mesh_instance.rs::spawn_mesh_instance` and
+`scene/nif_loader.rs::load_nif_bytes_with_skeleton`—call
+`attach_mesh_water`. Mesh-water damage remains deliberately parked at
+`damage_per_second = 0.0`: neither NIF water shader property authors a gameplay
+hazard, unlike ESM WATR/XNAM content. See `docs/engine/watal.md` for the shared
+rendering/physics contract.
+
 ### Geometry / transform — **converged (reference template)**
 
 Z-up → Y-up conversion (`crates/nif/src/import/coord.rs`), tangent extraction +
@@ -522,8 +545,12 @@ The material slice was executed this session as the template. Mechanics:
     add a second place the ladder lives (drift risk vs the shader). **Future-slice
     invariant**: any `SurfaceClass` enum MUST lower to the exact `triangle.frag`
     ladder, and is a shader-adjacent change.
-- **The boundary**: `byroredux/src/material_translate.rs::translate_material(mesh,
-  paths, extra_material_flags) -> Material`. It:
+- **The boundary**: the live signature at
+  `byroredux/src/material_translate.rs::translate_material` takes
+  `(&ImportedMaterial, mesh_name: Option<&str>, ResolvedPaths,
+  extra_material_flags: u32) -> Material`. In particular, it cannot inspect an
+  `ImportedMesh`; geometry-dependent material translation is excluded by the
+  type boundary. It:
   1. copies the scalars / colours / flags across;
   2. packs `effect_shader_flags` as the union of the BSEffect SLSF bits, the BGSM
      v>2 bits, and the caller's extra bits (REFR-overlay model-space-normals on the
@@ -537,8 +564,9 @@ The material slice was executed this session as the template. Mechanics:
   4. classifies glass once, alpha-aware (`helpers::classify_glass_into_material`),
      after the PBR resolve so the forced glass roughness wins.
 - **De-duplication**: the two ~110-line `Material` construction sites
-  (`cell_loader/spawn.rs`, `scene/nif_loader.rs`) now both call the boundary. A field
-  added in one place can no longer silently diverge the two load paths.
+  (`cell_loader/spawn/mesh_instance.rs`, `scene/nif_loader.rs`) now both call
+  the boundary. A field added in one place can no longer silently diverge the
+  two load paths.
 - **Renderer**: `render/static_meshes.rs` reads `m.metalness` / `m.roughness`
   directly — no per-draw keyword scan.
 

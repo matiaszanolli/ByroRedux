@@ -181,7 +181,7 @@ near the ~2 s watchdog; a separate perf item, not a fault.
 | Tier | What it is | Where it lives | Rule |
 |---|---|---|---|
 | **Raw / `Imported*`** | A faithful, per-game decode of the WATR wire format (Oblivion DATA ~102 B, FO3/FNV DATA 196 B, Skyrim DNAM 252 B+) + cell `XCLW`/`XCWT` + worldspace `NAM2`/`DNAM`. May carry `Option`s and undecoded `raw_data`/`raw_dnam` tails. **Allowed to be messy.** | `crates/plugin/src/esm/records/misc/water.rs`, `crates/plugin/src/esm/cell/wrld.rs` | Decode only; never the engine's source of truth. |
-| **`translate()` boundary** | The single function that resolves a raw `WatrRecord` into the canonical tier, folding every per-game quirk into one convention. | `byroredux/src/env_translate.rs` (`resolve_water_material`, `default_water_for_worldspace`) — WATAL is the water *arm* of EXAL's boundary module; **extend it, do not duplicate**. | Exactly **one** site. No duplicate construction. |
+| **`translate()` boundary** | One composition boundary per authored family: ESM WATR/worldspace records and NIF mesh-water shader properties. Each folds its source quirks into the same convention. | `byroredux/src/env_translate.rs` (`resolve_water_material`, `default_water_for_worldspace`) and `byroredux/src/material_translate.rs` (`attach_mesh_water` plus its pure helpers). | Exactly one site per source family; no consumer-side construction. |
 | **Canonical** | The resolved, game-agnostic components/resources the renderer + solver consume. No `Option` "resolve-later" fields. | ECS components in `crates/core/src/ecs/components/water.rs` + a `PhysicsWaterConstants` resource. | The single source of truth. |
 
 ### The canonical-type rule (inherited from NIFAL)
@@ -196,7 +196,8 @@ The render-facing components already exist and are mature:
 these copy from. It reaches the canonical tier by **(a)** promoting the missing
 Skyrim-authored *render* fields onto `WaterMaterial`, **(b)** adding the missing
 *physics* state (the one place no component exists), and **(c)** routing every
-per-game decision through the single `resolve_water_material` site.
+source-specific decision through its EXAL or NIFAL boundary before either
+renderer or physics sees it.
 
 The genuinely **new** canonical types (no prior ECS role) are: shipped
 `PhysicsWaterConstants` (engine-defined buoyancy/current params — *no game authors
@@ -439,7 +440,7 @@ camera is stationary.
 
 ---
 
-## 3. The single boundary (proposed)
+## 3. Canonical translation boundaries
 
 WATAL extends the existing EXAL water arm rather than adding a module. Convention:
 **AUTHORED** = copied from the parsed record; **SENTINEL** = explicit canonical
@@ -452,23 +453,41 @@ render-time guess.
 pub(crate) fn resolve_water_material(
     waters: &HashMap<u32, WatrRecord>,
     xcwt_form: Option<u32>,
-) -> (WaterMaterial, WaterKind, Option<WaterFlow>, Option<WaterLod>, Option<String>);
-//                                                ^^^^^^^^^^^^^^^^^^^ added: NAM3/NAM4 LOD (None for pre-Skyrim = sentinel)
+) -> (
+    WaterMaterial,
+    WaterKind,
+    Option<WaterFlow>,
+    Option<String>,
+    [Option<String>; 3],
+);
 
-pub(crate) fn default_water_for_worldspace(wrld: &WorldspaceRecord, game: GameKind) -> f32;
-//   the ONE genuine per-game leak — the §4 GameVariant arm
+pub(crate) fn default_water_for_worldspace(
+    worldspaces: &HashMap<String, WorldspaceRecord>,
+    worldspace_key: &str,
+    game: GameKind,
+) -> (Option<f32>, Option<u32>);
+
+// NIF-authored mesh water crosses the sibling NIFAL boundary once:
+pub(crate) fn attach_mesh_water(/* canonical Material + mesh geometry */);
 ```
+
+The final two return fields are the optional normal path and three optional
+noise-layer paths; absence is the procedural-texture sentinel.
 
 **Contract for every function above:**
 
-1. **Single site.** Both the bulk `--grid` loader and the streaming bootstrap call
-   these — no second construction of `WaterMaterial`/`WaterFlow` anywhere.
+1. **One composition site per authored family.** ESM WATR/XCWT content resolves
+   only through `resolve_water_material`; NIF shader-property water resolves
+   only through `material_translate::attach_mesh_water`. Both produce the same
+   canonical components, and neither renderer nor physics consumer reclassifies
+   them.
 2. **No render-time fallback.** A missing/absent WATR field is resolved *here* by
    returning the documented canonical SENTINEL, not by a branch in `water.frag` or
    the physics systems.
-3. **No `Option` resolve-later leaks** on the canonical output beyond ones that
-   encode a real game distinction (`WaterFlow` is `None` for calm water;
-   `WaterLod` is `None` for pre-Skyrim — these are real, not deferred work).
+3. **No `Option` resolve-later leaks** on canonical component fields. Optional
+   `WaterFlow` means calm water; optional texture paths mean the procedural
+   normal/noise sentinel. Water LOD is separate worldspace state, not part of
+   the per-WATR material return.
 4. **Physics is game-invariant.** No game's WATR authors buoyancy/density/swim —
    those are `PhysicsWaterConstants` engine constants. `GameKind` never enters the
    physics path; older games contribute a coarser *synthesized* `WaterFlow`
@@ -541,13 +560,14 @@ authored reflection/specular/refraction controls ·
 Procedural }` (A13) · `below_water_fog: { near, far, color }` (Skyrim DNAM split;
 sentinel = reuse above-water fog).
 
-### 5.2 `WaterLod` — distant water (the EXAL §5 LOD gap)
+### 5.2 Distant water — live, without a parallel material type
 
-```rust
-pub struct WaterLod { over_color: [f32;3] /*NAM3*/, under_color: [f32;3] /*NAM4*/, lod_mesh: Option<MeshHandle> }
-```
-`None` for Oblivion/FO3/FNV. Per-worldspace. Its LOD mesh/colors depend on the
-worldspace bounds EXAL owns — sequence after the exterior-reroute terrain work.
+Distant worldspace water reuses canonical `WaterPlane` / `WaterMaterial`; it
+does not introduce a second `WaterLod` material representation. The render-only
+`WaterLodInfo { height, water_form }` component retains provenance for
+diagnostics and streaming teardown, while worldspace bounds size the distant
+plane. Older games naturally use the same path with their translated sentinel
+material fields.
 
 ### 5.3 `PhysicsWaterConstants` — engine-defined buoyancy (ECS Resource)
 
@@ -564,7 +584,14 @@ pub struct PhysicsWaterConstants {
 ### 5.4 `WaterContact` — per-body submersion (generalises camera-only `SubmersionState`)
 
 ```rust
-pub struct WaterContact { depth, submerged_fraction /*NEW*/, head_submerged, flow: Option<WaterFlow>, material: Option<WaterMaterial> }
+pub struct WaterContact {
+    surface_entity: Option<EntityId>,
+    depth: f32,
+    submerged_fraction: f32,
+    head_submerged: bool,
+    flow: Option<WaterFlow>,
+    damage_per_second: f32,
+}
 ```
 `submerged_fraction` (displaced-volume estimate from collider-AABB vs
 `WaterVolume` overlap) is the field buoyancy needs that the scalar `depth` cannot
