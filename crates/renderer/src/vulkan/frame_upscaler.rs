@@ -5,6 +5,20 @@
 //! target that the FSR path writes. This keeps scene composition and
 //! presentation decoupled, and gives FSR one explicit frame-graph slot instead
 //! of letting the final composite pass silently bilinear-upscale its inputs.
+//!
+//! #2520 (REN-D23-2026-08-07-04) — that split is not free in `UpscalerMode::
+//! Taa`. `FrameExtentSet::for_output` sets `render == output` for `Taa`, so
+//! `record_native_blit`'s src/dst offsets are identical and its `LINEAR`
+//! filter degenerates to an exact copy: every TAA-mode frame still reads and
+//! writes a full-resolution `R16G16B16A16_SFLOAT` image (~16 MB of traffic at
+//! 1080p, ~66 MB at 4K) plus two pipeline barriers, purely to move data into
+//! a target `presentation.frag` could have sampled directly. `Taa` is not the
+//! default path (`UpscalerMode::default()` is `Fsr3(FsrQuality::Quality)`),
+//! so this is pure bandwidth on a non-default configuration, not a
+//! correctness issue — left undone rather than adding the risk of
+//! `PresentationPipeline` binding composite's scene view directly, which
+//! would need re-benching per #2520's own note not to conflate this with the
+//! FSR path. Revisit if `Taa` mode's perf ever matters again.
 
 use super::allocator::SharedAllocator;
 use super::composite::HDR_FORMAT;
@@ -585,6 +599,12 @@ impl FrameUpscaler {
     /// currently in: `SHADER_READ_ONLY_OPTIMAL` on the steady-state bridge
     /// path, or `GENERAL` when the FSR boundary barriers already ran and the
     /// dispatch then failed.
+    ///
+    /// #2520 — when called from the `UpscalerMode::Taa` path, `scene_color`
+    /// and `output` are always the same resolution (see the module doc), so
+    /// this blit is a byte-identical copy: real bandwidth cost, no visual
+    /// effect. See the module doc for why that's left as documented cost
+    /// rather than an added blit-skip fast path.
     ///
     /// # On the width of the acquire barrier's source scope (#2145)
     ///

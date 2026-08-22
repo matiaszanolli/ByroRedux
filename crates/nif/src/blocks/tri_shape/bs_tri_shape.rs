@@ -16,6 +16,7 @@ use crate::stream::NifStream;
 use crate::types::{BlockRef, NiPoint3, NiTransform};
 use std::any::Any;
 use std::io;
+use std::sync::Arc;
 
 // Re-export `NiTriShape` into this module's scope so the `#[path]`-mounted
 // `tri_shape_skin_vertex_tests.rs` (which calls `use super::*;`) can dispatch
@@ -31,11 +32,21 @@ use super::NiTriShape;
 ///
 /// Mirrors the [`super::node::BsRangeKind`] pattern.
 ///
-/// Was `#[derive(Copy, Eq)]` pre-#404. `SubIndex(Box<...>)` makes the
-/// enum heap-owning so `Copy` is gone, and the boxed payload contains
+/// Was `#[derive(Copy, Eq)]` pre-#404. `SubIndex(Arc<...>)` makes the
+/// enum heap-owning so `Copy` is gone, and the payload contains
 /// `Vec<f32>` cut-offsets (no `Eq` for `f32`). Downstream consumers
 /// only ever clone or `PartialEq`-compare the discriminant, so the
 /// loss is non-load-bearing.
+///
+/// #2600 — `Arc`, not `Box`: `extract_bs_tri_shape` used to
+/// `(**data).clone()` the whole boxed payload (segment table, nested
+/// sub-segment lists, shared-data string) into `ImportedMesh` on every
+/// mesh import, even though nothing reads `ImportedMesh::bs_sub_index`
+/// back out yet (`#1206`, held for the eventual dismemberment
+/// consumer). `Arc::clone` turns that into an atomic refcount bump —
+/// same shared payload, zero-copy — while `ImportedMesh` still carries
+/// the full data, not a lossy presence flag, so the eventual consumer
+/// needs no further parser work.
 #[derive(Debug, Clone, PartialEq)]
 pub enum BsTriShapeKind {
     /// Plain `BSTriShape` — the baseline Skyrim SE+ geometry block.
@@ -57,9 +68,10 @@ pub enum BsTriShapeKind {
     /// `BSSubIndexTriShape` — ubiquitous in Skyrim SE DLC / FO4 actor
     /// meshes for dismemberment segmentation. Carries the parsed
     /// segmentation payload (segment table + optional shared sub-segment
-    /// data with SSF filename). Boxed because `BsSubIndexTriShapeData`
-    /// is large and only one variant carries it. See #404.
-    SubIndex(Box<BsSubIndexTriShapeData>),
+    /// data with SSF filename). Heap-owning (originally `Box`, now `Arc`,
+    /// see #2600 above) because `BsSubIndexTriShapeData` is large and only
+    /// one variant carries it. See #404.
+    SubIndex(Arc<BsSubIndexTriShapeData>),
     /// `BSDynamicTriShape` — Skyrim facegen head meshes. `VF_VERTEX` is
     /// clear on every real block of this type (SK-D1-02 / #2322), so the
     /// base parse produces no packed position field — the trailing
@@ -826,7 +838,7 @@ impl BsTriShape {
         let segmentation_start = stream.position();
         match BsSubIndexTriShapeData::parse(stream, &shape) {
             Ok(sub_data) => {
-                shape.kind = BsTriShapeKind::SubIndex(Box::new(sub_data));
+                shape.kind = BsTriShapeKind::SubIndex(Arc::new(sub_data));
             }
             Err(e) => {
                 // Segmentation parse failed — typically a misaligned
@@ -882,7 +894,7 @@ impl BsTriShape {
                     );
                     stream.set_position(segmentation_start);
                 }
-                shape.kind = BsTriShapeKind::SubIndex(Box::default());
+                shape.kind = BsTriShapeKind::SubIndex(Arc::default());
             }
         }
         Ok(shape)

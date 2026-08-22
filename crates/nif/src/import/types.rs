@@ -727,7 +727,15 @@ pub struct ImportedMesh {
     /// discriminator entirely; the dismemberment system implementation
     /// (deferred) has nothing to consume. `None` on every non-SubIndex
     /// BSTriShape and every NiTriShape / BSGeometry.
-    pub bs_sub_index: Option<BsSubIndexTriShapeData>,
+    ///
+    /// `Arc`, not an owned value (#2600): with zero readers today, every
+    /// mesh import used to pay a full deep clone (segment table + nested
+    /// sub-segment lists + shared-data string) into this field for
+    /// nothing. `BsTriShapeKind::SubIndex` already holds the parsed
+    /// payload behind an `Arc`, so this just shares that same allocation
+    /// — an atomic refcount bump instead of a clone — while still handing
+    /// the eventual consumer the full data, not a lossy presence flag.
+    pub bs_sub_index: Option<Arc<BsSubIndexTriShapeData>>,
     /// #2631 / SF2D2-D2-03 — which of the source `BSGeometry`'s 4 LOD
     /// slots (0-3) this mesh was resolved from. `BSGeometry::meshes` only
     /// contains *present* slots (absent test-byte slots are skipped, not

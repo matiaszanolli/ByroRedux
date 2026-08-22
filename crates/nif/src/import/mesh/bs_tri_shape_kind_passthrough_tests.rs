@@ -18,6 +18,7 @@ use crate::blocks::tri_shape::{
     BsGeometryPerSegmentSharedData, BsGeometrySegmentData, BsGeometrySegmentSharedData,
     BsGeometrySubSegment, BsSubIndexTriShapeData, BsTriShape, BsTriShapeKind,
 };
+use std::sync::Arc;
 use crate::scene::NifScene;
 use crate::types::{BlockRef, NiPoint3};
 
@@ -174,13 +175,13 @@ fn sample_subindex_data() -> BsSubIndexTriShapeData {
 #[test]
 fn subindex_kind_surfaces_payload_verbatim() {
     let payload = sample_subindex_data();
-    let shape = renderable_shape_with_kind(BsTriShapeKind::SubIndex(Box::new(payload.clone())));
+    let shape = renderable_shape_with_kind(BsTriShapeKind::SubIndex(Arc::new(payload.clone())));
     let mesh = import(&shape);
     let surfaced = mesh
         .bs_sub_index
         .as_ref()
         .expect("BsTriShapeKind::SubIndex must surface segmentation payload");
-    assert_eq!(surfaced, &payload);
+    assert_eq!(surfaced.as_ref(), &payload);
     assert!(
         mesh.bs_lod_cutoffs.is_none(),
         "SubIndex variant must not synthesize LOD cutoffs"

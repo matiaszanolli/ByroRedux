@@ -11,6 +11,7 @@ use super::super::coord::{zup_matrix_to_yup_quat, zup_point_to_yup};
 use super::super::ImportedMesh;
 use super::*;
 use byroredux_core::string::StringPool;
+use std::sync::Arc;
 
 pub fn extract_bs_tri_shape(
     scene: &NifScene,
@@ -248,7 +249,7 @@ pub fn extract_bs_tri_shape(
             _ => None,
         },
         bs_sub_index: match &shape.kind {
-            BsTriShapeKind::SubIndex(data) => Some((**data).clone()),
+            BsTriShapeKind::SubIndex(data) => Some(Arc::clone(data)),
             _ => None,
         },
         bs_geometry_lod_slot: None,
