@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Cross-game exterior readiness smoke matrix and traversal gate
-# (EX-01 / EX-05 / EX-06 / EX-08).
+# (EX-01 / EX-05 / EX-06 / EX-08 / EX-09 / EX-17).
 #
 # Each installed profile loads a known populated exterior at radius 1, retains
 # a deterministic screenshot plus engine/debug telemetry, and applies hard
@@ -18,9 +18,13 @@
 #             engine-side at each return to origin (see `BenchCameraPath::
 #             soak_cycle_completed`), so cycles bind to traversal phase rather
 #             than to when this script happens to reconnect.
+#   cycle     one settled exterior, then in-session sunrise/noon/night samples.
+#             Every phase captures a PNG and gates the live clock, environment,
+#             pre-tonemap finite counter, and canonical water ownership without
+#             restarting the world or resetting its resources.
 #
 # Usage:
-#   docs/smoke-tests/m-exteriors.sh [fnv|fo3|oblivion|skyrim|fo4|all] [static|boundary|soak]
+#   docs/smoke-tests/m-exteriors.sh [fnv|fo3|oblivion|skyrim|fo4|all] [static|boundary|soak|cycle]
 #
 # Useful overrides:
 #   BYROREDUX_SMOKE_FRAMES=10
@@ -46,12 +50,13 @@ FO4_DATA="${BYROREDUX_FO4_DATA:-/mnt/data/SteamLibrary/steamapps/common/Fallout 
 PORT="${BYRO_DEBUG_PORT:-9876}"
 case "$MODE" in
     static)   BENCH_FRAMES="${BYROREDUX_SMOKE_FRAMES:-30}" ;;
+    cycle)    BENCH_FRAMES="${BYROREDUX_SMOKE_FRAMES:-30}" ;;
     boundary) BENCH_FRAMES="${BYROREDUX_BOUNDARY_FRAMES:-900}" ;;
     # Six out-and-back traversals need materially more logical frames than the
     # single one-way pass; the clock also pauses on every boundary.
     soak)     BENCH_FRAMES="${BYROREDUX_SOAK_FRAMES:-1800}" ;;
     *)
-        echo "Usage: $0 [fnv|fo3|oblivion|skyrim|fo4|all] [static|boundary|soak]"
+        echo "Usage: $0 [fnv|fo3|oblivion|skyrim|fo4|all] [static|boundary|soak|cycle]"
         exit 2
         ;;
 esac
@@ -178,7 +183,43 @@ run_profile () {
         sleep 0.5
     done
 
-    env BYRO_DEBUG_PORT="$PORT" "$DEBUG_BIN" > "$debug_log" 2>&1 <<'EOF' || true
+    if [[ "$MODE" == cycle ]]; then
+        env BYRO_DEBUG_PORT="$PORT" "$DEBUG_BIN" > "$debug_log" 2>&1 <<EOF || true
+time.pause
+time.set 06:00
+time.show
+env.health
+water.dump
+r.health
+screenshot $profile_dir/sunrise.png
+time.set 12:00
+time.show
+env.health
+water.dump
+r.health
+screenshot $profile_dir/noon.png
+time.set 23:00
+time.show
+env.health
+water.dump
+r.health
+screenshot $profile_dir/night.png
+r.health
+stats
+light.dump
+water.contacts
+tex.missing
+mesh.cache
+mesh.cache failed
+ctx.scratch
+cam.where
+lod.coverage
+world.owners
+world.owners report
+.quit
+EOF
+    else
+        env BYRO_DEBUG_PORT="$PORT" "$DEBUG_BIN" > "$debug_log" 2>&1 <<'EOF' || true
 stats
 light.dump
 env.health
@@ -195,6 +236,7 @@ world.owners
 world.owners report
 .quit
 EOF
+    fi
 
     cleanup_active
 
@@ -277,6 +319,60 @@ EOF
     else
         echo "exterior-smoke[$label]: HARD FAIL - screenshot missing, blank, white-out, or near-solid"
         hard_fail=1
+    fi
+
+    if [[ "$MODE" == cycle ]]; then
+        local phase phase_image
+        for phase in sunrise noon night; do
+            phase_image="$profile_dir/$phase.png"
+            if image_health "$phase_image"; then
+                echo "exterior-smoke[$label]: PASS $phase image mean=$IMAGE_MEAN stddev=$IMAGE_STDDEV"
+            else
+                echo "exterior-smoke[$label]: HARD FAIL - $phase screenshot missing, blank, white-out, or near-solid"
+                hard_fail=1
+            fi
+        done
+
+        if ! grep -Fq 'clock=06:00 phase=sunrise' "$debug_log" \
+                || ! grep -Fq 'clock=12:00 phase=day' "$debug_log" \
+                || ! grep -Fq 'clock=23:00 phase=night' "$debug_log"; then
+            echo "exterior-smoke[$label]: HARD FAIL - deterministic sunrise/noon/night clock phases were not all observed"
+            hard_fail=1
+        elif ! grep -Fq 'sun: intensity=4.000' "$debug_log" \
+                || ! grep -Fq 'sun: intensity=0.000' "$debug_log"; then
+            echo "exterior-smoke[$label]: HARD FAIL - day/night sun intensity endpoints were not observed"
+            hard_fail=1
+        else
+            echo "exterior-smoke[$label]: PASS in-session sunrise/noon/night endpoints"
+        fi
+
+        local cycle_water_samples
+        cycle_water_samples="$(grep -c 'Water dump: planes=[0-9]*' "$debug_log" || true)"
+        if (( cycle_water_samples != 3 )); then
+            echo "exterior-smoke[$label]: HARD FAIL - canonical water was not sampled at all three clock phases ($cycle_water_samples/3)"
+            hard_fail=1
+        elif grep -Eq 'Water dump: planes=0([^0-9]|$)' "$debug_log"; then
+            echo "exterior-smoke[$label]: HARD FAIL - cycle profile is not water-adjacent (zero canonical planes)"
+            hard_fail=1
+        else
+            echo "exterior-smoke[$label]: PASS canonical water remains resident across all clock phases"
+        fi
+
+        local cycle_health_samples cycle_bad_health
+        cycle_health_samples="$(sed 's/\\n/\n/g' "$debug_log" \
+            | grep -cE 'since startup: *rgb=[0-9]+ alpha=[0-9]+' || true)"
+        cycle_bad_health="$(sed 's/\\n/\n/g' "$debug_log" \
+            | grep -E 'since startup: *rgb=[0-9]+ alpha=[0-9]+' \
+            | grep -Evc 'rgb=0 alpha=0' || true)"
+        if (( cycle_health_samples < 4 )); then
+            echo "exterior-smoke[$label]: HARD FAIL - incomplete per-phase pre-tonemap health telemetry ($cycle_health_samples/4)"
+            hard_fail=1
+        elif (( cycle_bad_health != 0 )); then
+            echo "exterior-smoke[$label]: HARD FAIL - non-finite pre-tonemap pixels occurred during the clock cycle"
+            hard_fail=1
+        else
+            echo "exterior-smoke[$label]: PASS pre-tonemap output stayed finite across the clock cycle"
+        fi
     fi
 
     if [[ "$MODE" == boundary ]]; then
@@ -528,13 +624,19 @@ skyrim_run () {
     done
     profile_ready skyrim "${required[@]}" || return 0
 
-    local args=(--esm "$esm" --grid 2,-4 --radius 1 --wrld Tamriel)
+    local grid="2,-4"
+    if [[ "$MODE" == cycle ]]; then
+        # BleakfallsBarrowPath: the established WATAL water-adjacent streaming
+        # fixture. Static/population baselines retain their historical grid.
+        grid="2,-10"
+    fi
+    local args=(--esm "$esm" --grid "$grid" --radius 1 --wrld Tamriel)
     args+=(--bsa "$SKYRIM_DATA/Skyrim - Meshes0.bsa")
     args+=(--bsa "$SKYRIM_DATA/Skyrim - Meshes1.bsa")
     for archive in "$SKYRIM_DATA"/Skyrim\ -\ Textures{0..8}.bsa; do
         args+=(--textures-bsa "$archive")
     done
-    run_profile skyrim "$SKYRIM_DATA" Tamriel 2,-4 3500 500 "${args[@]}"
+    run_profile skyrim "$SKYRIM_DATA" Tamriel "$grid" 3500 500 "${args[@]}"
 }
 
 fo4_run () {
@@ -582,7 +684,7 @@ case "$GAME" in
         run_selected fo4_run
         ;;
     *)
-        echo "Usage: $0 [fnv|fo3|oblivion|skyrim|fo4|all] [static|boundary|soak]"
+        echo "Usage: $0 [fnv|fo3|oblivion|skyrim|fo4|all] [static|boundary|soak|cycle]"
         exit 2
         ;;
 esac

@@ -611,8 +611,9 @@ crossing / submerged movement, feeding *both* the render ripple-normal injection
   render-pass / pipeline. `water.frag` already consumes canonical inputs; WATAL
   changes only what *produces* them (and the §0 crash-fix bounds RT *cost*, not
   water sync). The one render plumbing change—moving water params off the full
-  128-byte `WaterPush` to an indexed per-frame UBO—is complete, so the richer
-  canonical material can grow without another pipeline-layout migration.
+  128-byte `WaterPush` to an indexed, growable per-frame SSBO—is complete, so
+  the richer canonical material can grow without another pipeline-layout
+  migration.
 - **OpenMW-style RTT planar reflection cameras.** The flat-mesh + RT-ray
   substitution is the canonical realisation of reflection/refraction; keep it. The
   canonical *type* still carries DISPLACEMENT/LOD/DEPTH/REFLECTIONS/REFRACTIONS
@@ -639,9 +640,12 @@ reflection tint, authored direct-sun glint, per-game default-water height,
 authored worldspace LOD water, NAM2–4 noise layers, and bounded sunlight
    scattering, localized surface disturbance emitters, transient disturbance
    markers, and concrete spatial audio for splash/ripple interaction are live.
-   An ignored real-master fixture now asserts finite, ordered canonical fields
-   across installed Oblivion, FNV, Skyrim SE, and FO4 masters. Remaining work is
-   the rest of the Skyrim DNAM-tail decode and cross-game visual smoke coverage.
+   An ignored real-master fixture asserts finite, ordered canonical fields
+   across installed Oblivion, FNV, Skyrim SE, and FO4 masters. The cross-game
+   `m-exteriors.sh cycle` gate keeps each exterior live while sampling
+   sunrise/noon/night, and requires healthy captures, finite environment and
+   pre-tonemap state, and resident canonical water at every phase. Remaining
+   translation work is the rest of the Skyrim DNAM-tail decode.
 
 3. **Phase 2 — PHYSICS FORCE API + BUOYANCY / FLOW — BODY CORE LIVE
    2026-08-10.** Force/reset APIs, pre-step application, `WaterContact`, buoyancy,

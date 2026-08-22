@@ -9,7 +9,7 @@
 use crate::cell_loader::{
     FrameTimeBudget, LodReconcileInput, LodWorkBudget, ObjectLodBlock, PlacementLodBlock,
 };
-use crate::streaming::LodBlock;
+use crate::streaming::{LodBlock, LodWaterPlane};
 use crate::{cell_loader, streaming};
 use std::collections::HashMap;
 
@@ -246,10 +246,11 @@ fn flush_pending_lod_textures(ctx: &mut byroredux_renderer::VulkanContext) {
     }
 }
 
-/// Drain all three distant-LOD rings out of a worldspace-streaming state,
-/// returning the resident blocks so the caller can hand each to its
+/// Drain every rootless distant-LOD owner out of a worldspace-streaming state,
+/// returning the resident blocks and worldspace water plane so the caller can hand each to its
 /// canonical reclaim fn (`unload_lod_block` / `unload_object_lod_block` /
-/// `unload_placement_lod_block`). Pure over the maps (no `World` /
+/// `unload_placement_lod_block` / `unload_lod_water_plane`). Pure over the
+/// containers (no `World` /
 /// `VulkanContext`) so the "LOD blocks are part of the worldspace-drain
 /// reclaim set" contract is unit-testable without a GPU device — these
 /// blocks carry no `CellRoot`, so the only thing that proves they're
@@ -257,16 +258,26 @@ fn flush_pending_lod_textures(ctx: &mut byroredux_renderer::VulkanContext) {
 /// Mirrors the `collect_victim_gpu_handles` (#1341) extraction in
 /// `cell_loader::unload`. `placement_lod_blocks` (#1726) and
 /// `object_lod_blocks` are mutually exclusive per game, but both are drained
-/// unconditionally so the reclaim set is game-agnostic.
+/// unconditionally so the reclaim set is game-agnostic. LOD water belongs in
+/// this same transaction: it has no `CellRoot`, so collecting it separately
+/// would leave the transition's water-ownership invariant outside the tested
+/// reclaim boundary.
 pub(crate) fn drain_lod_reclaim_targets(
     lod_blocks: &mut HashMap<(i32, i32, i32), LodBlock>,
     object_lod_blocks: &mut HashMap<(i32, i32, i32), ObjectLodBlock>,
     placement_lod_blocks: &mut HashMap<(i32, i32), PlacementLodBlock>,
-) -> (Vec<LodBlock>, Vec<ObjectLodBlock>, Vec<PlacementLodBlock>) {
+    lod_water: &mut Option<LodWaterPlane>,
+) -> (
+    Vec<LodBlock>,
+    Vec<ObjectLodBlock>,
+    Vec<PlacementLodBlock>,
+    Option<LodWaterPlane>,
+) {
     (
         lod_blocks.drain().map(|(_, b)| b).collect(),
         object_lod_blocks.drain().map(|(_, b)| b).collect(),
         placement_lod_blocks.drain().map(|(_, b)| b).collect(),
+        lod_water.take(),
     )
 }
 
@@ -290,11 +301,13 @@ pub fn drain_streaming_state(
     // ground texture refcount + ECS row each). Collect both rings via the
     // pure `drain_lod_reclaim_targets` (unit-tested without a GPU) and feed
     // each through its canonical reclaim fn.
-    let (lod_blocks, object_lod_blocks, placement_lod_blocks) = drain_lod_reclaim_targets(
-        &mut state.lod_blocks,
-        &mut state.object_lod_blocks,
-        &mut state.placement_lod_blocks,
-    );
+    let (lod_blocks, object_lod_blocks, placement_lod_blocks, lod_water) =
+        drain_lod_reclaim_targets(
+            &mut state.lod_blocks,
+            &mut state.object_lod_blocks,
+            &mut state.placement_lod_blocks,
+            &mut state.lod_water,
+        );
     log::info!(
         "Cell transition: draining {} streamed cells + {} persistent worldspace CELL + {} terrain-LOD + {} object-LOD + {} placement-LOD blocks before swap",
         cells.len(),
@@ -321,7 +334,7 @@ pub fn drain_streaming_state(
     // #2449 / EXAL-01 — the worldspace-wide LOD water quad carries no
     // `CellRoot` either (same reclaim gap `lod_blocks` had pre-#1536); its
     // only teardown path is here.
-    if let Some(plane) = state.lod_water.take() {
+    if let Some(plane) = lod_water {
         cell_loader::unload_lod_water_plane(world, ctx, &plane);
     }
     // Mirrors the CloseRequested path — release per-queue Arc
@@ -665,7 +678,8 @@ mod tests {
         }
     }
 
-    /// #1536 / #1726 — the worldspace drain must reclaim ALL THREE LOD rings.
+    /// #1536 / #1726 / #2449 — the worldspace drain must reclaim all three LOD
+    /// rings and the rootless worldspace water plane in one transaction.
     /// The pure collector empties every map and returns every resident block
     /// so the caller's reclaim loop sees them (pre-fix the maps were never
     /// touched, leaking the whole ring on every exterior→interior transition).
@@ -692,13 +706,21 @@ mod tests {
                 texture_handles: vec![20],
             },
         );
+        let mut water = Some(LodWaterPlane {
+            entity: 6,
+            mesh_handle: 15,
+            normal_map_handle: Some(21),
+            noise_map_handles: [22, 23, 24],
+            center_grid: (0, 0),
+        });
 
-        let (terrain_out, object_out, placement_out) =
-            drain_lod_reclaim_targets(&mut terrain, &mut objects, &mut placements);
+        let (terrain_out, object_out, placement_out, water_out) =
+            drain_lod_reclaim_targets(&mut terrain, &mut objects, &mut placements, &mut water);
 
         assert_eq!(terrain_out.len(), 2, "both terrain LOD blocks collected");
         assert_eq!(object_out.len(), 1, "the object LOD quad collected");
         assert_eq!(placement_out.len(), 1, "the placement LOD cell collected");
+        assert_eq!(water_out.expect("LOD water collected").mesh_handle, 15);
         assert!(
             terrain.is_empty(),
             "terrain ring drained — no leak left behind"
@@ -710,6 +732,10 @@ mod tests {
         assert!(
             placements.is_empty(),
             "placement ring drained — no leak left behind"
+        );
+        assert!(
+            water.is_none(),
+            "LOD water drained — no stale ocean remains"
         );
         // Mesh handles that the reclaim loop will `drop_mesh` are preserved.
         let mut meshes: Vec<u32> = terrain_out.iter().map(|b| b.mesh_handle).collect();
@@ -759,8 +785,10 @@ mod tests {
         let mut terrain: HashMap<(i32, i32, i32), LodBlock> = HashMap::new();
         let mut objects: HashMap<(i32, i32, i32), ObjectLodBlock> = HashMap::new();
         let mut placements: HashMap<(i32, i32), PlacementLodBlock> = HashMap::new();
-        let (t, o, p) = drain_lod_reclaim_targets(&mut terrain, &mut objects, &mut placements);
-        assert!(t.is_empty() && o.is_empty() && p.is_empty());
+        let mut water = None;
+        let (t, o, p, w) =
+            drain_lod_reclaim_targets(&mut terrain, &mut objects, &mut placements, &mut water);
+        assert!(t.is_empty() && o.is_empty() && p.is_empty() && w.is_none());
     }
 
     // ── resident_vwd_refr_cells (EX-10/11 VWD culling audit) ────────────
