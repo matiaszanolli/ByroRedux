@@ -110,7 +110,29 @@ pub fn parse_spt(bytes: &[u8]) -> io::Result<SptScene> {
                 let value = if next_is_known_tag {
                     SptValue::Bare
                 } else {
-                    SptValue::String(stream.read_string_lp()?)
+                    // #1822 — "not a known tag" alone isn't enough to
+                    // conclude String: a bare 13005 sitting immediately
+                    // before the binary geometry tail looks identical
+                    // from here, since the tail's leading u32 is just as
+                    // likely to fall outside the dictionary as a genuine
+                    // curve-string length. Every observed curve string is
+                    // printable-ASCII BezierSpline text (see the fixture
+                    // in `tag_13005_followed_by_string_length_resolves_
+                    // as_string` below); geometry-tail bytes essentially
+                    // never satisfy that uniformly by chance. Peek the
+                    // candidate string's bytes and only take the String
+                    // branch if they pass — otherwise fall back to
+                    // `Bare` without consuming anything, so tail
+                    // detection sees the real tail value next iteration
+                    // instead of a slab of it having been swallowed as a
+                    // bogus string.
+                    match stream
+                        .peek_string_lp_bytes()
+                        .filter(|bytes| is_plausible_spt_curve_string(bytes))
+                    {
+                        Some(_) => SptValue::String(stream.read_string_lp()?),
+                        None => SptValue::Bare,
+                    }
                 };
                 scene.entries.push(TagEntry {
                     tag,
@@ -134,6 +156,22 @@ pub fn parse_spt(bytes: &[u8]) -> io::Result<SptScene> {
     scene.tail_offset = stream.position();
     scene.reached_eof = true;
     Ok(scene)
+}
+
+/// Whether `bytes` plausibly hold BezierSpline curve text — the only
+/// content ever observed behind tag 13005's optional String branch (see
+/// `tag_13005_followed_by_string_length_resolves_as_string`'s fixture:
+/// `"BezierSpline 0\t1\t0\n{\n\n\t2\n\t0 1 0.714831 ...\n\n}\n"`). Every
+/// byte must be printable ASCII (0x20..=0x7E) or one of the whitespace
+/// control codes that format actually uses (tab, LF, CR). Binary geometry-
+/// tail bytes essentially never satisfy this uniformly across a candidate
+/// length, which is what makes it a robust discriminator for #1822 — unlike
+/// a bare length-range check, it doesn't get fooled by a tail u32 that
+/// happens to decode to a small, in-bounds "length".
+fn is_plausible_spt_curve_string(bytes: &[u8]) -> bool {
+    bytes
+        .iter()
+        .all(|&b| matches!(b, 0x20..=0x7E | b'\t' | b'\n' | b'\r'))
 }
 
 /// Read the payload for a tag of a known [`SptTagKind`].
@@ -364,29 +402,63 @@ mod tests {
     }
 
     /// EOF immediately after tag 13005 (no peek bytes available) is
-    /// safe — peek returns `None`, walker treats as String, and the
-    /// length-read fails with `UnexpectedEof`. Defensive coverage.
+    /// safe and, since #1822, deterministic: `peek_string_lp_bytes`
+    /// requires 4 bytes to even read a length prefix, has none, and the
+    /// walker falls back to `Bare` cleanly rather than attempting a read
+    /// that would `UnexpectedEof`. Pre-#1822 this always hit the `Err`
+    /// path instead (the String branch's `read_string_lp` had no length
+    /// bytes to consume); either way, must not panic.
     #[test]
     fn tag_13005_at_eof_does_not_panic() {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(MAGIC_HEAD);
         bytes.extend_from_slice(&13005u32.to_le_bytes());
         // No payload bytes; peek returns None.
-        let result = parse_spt(&bytes);
-        // Either resolves cleanly (length-read fails) or returns an
-        // io::Error — but must not panic.
-        match result {
-            Ok(scene) => {
-                // If the walker treated 13005 as Bare on a None peek, fine.
-                assert!(
-                    scene.entries.iter().all(|e| e.tag != 13005)
-                        || scene
-                            .entries
-                            .iter()
-                            .any(|e| matches!(e.value, SptValue::Bare))
-                );
-            }
-            Err(e) => assert_eq!(e.kind(), io::ErrorKind::UnexpectedEof),
-        }
+        let scene = parse_spt(&bytes).expect("must resolve as Bare, not error, since #1822");
+        assert_eq!(scene.entries.len(), 1);
+        assert_eq!(scene.entries[0].tag, 13005);
+        assert_eq!(scene.entries[0].value, SptValue::Bare);
+    }
+
+    /// Regression: #1822 (SPT-NEW-07). A bare 13005 sitting immediately
+    /// before the binary geometry tail must resolve as `Bare` with
+    /// `tail_offset` at 13005's successor — not have the tail's leading
+    /// u32 misread as a string length, swallowing tail bytes as a bogus
+    /// string (and, since that string's declared length here exactly
+    /// matches the bytes available, the pre-fix walker would have
+    /// consumed the *entire* rest of the stream as "string payload"
+    /// without erroring — silently losing the tail rather than crashing).
+    /// The leading tail value (8) is deliberately `< TAG_MIN` so, once
+    /// correctly left unconsumed, the *existing* out-of-range tail-
+    /// detection guard is what stops the walker on the next iteration —
+    /// proving the fix reinstates that guard's ability to see the tail at
+    /// all, rather than merely swapping one swallow bug for another.
+    #[test]
+    fn tag_13005_before_geometry_tail_resolves_as_bare_not_swallowed_string() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(MAGIC_HEAD);
+        bytes.extend_from_slice(&13005u32.to_le_bytes());
+        let tail_start = bytes.len();
+        // Geometry tail: leading u32 = 8 (out-of-range for
+        // TAG_MIN..=TAG_MAX, *and* — pre-fix — a perfectly plausible
+        // string length matching the 8 trailing bytes exactly), followed
+        // by non-ASCII binary bytes a real curve string would never
+        // contain.
+        bytes.extend_from_slice(&8u32.to_le_bytes());
+        bytes.extend_from_slice(&[0xFF, 0x00, 0xDE, 0xAD, 0xBE, 0xEF, 0x80, 0x01]);
+
+        let scene = parse_spt(&bytes).expect("must parse");
+        assert_eq!(scene.entries.len(), 1);
+        assert_eq!(scene.entries[0].tag, 13005);
+        assert_eq!(
+            scene.entries[0].value,
+            SptValue::Bare,
+            "the tail's leading u32 must not be misread as a string length"
+        );
+        assert_eq!(
+            scene.tail_offset, tail_start,
+            "tail_offset must sit at 13005's successor, not past a swallowed string"
+        );
+        assert!(scene.unknown_tags.is_empty());
     }
 }

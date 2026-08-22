@@ -109,6 +109,31 @@ impl<'a> SptStream<'a> {
         Ok(String::from_utf8_lossy(bytes).into_owned())
     }
 
+    /// Peek the byte slice a [`Self::read_string_lp`] call would read at
+    /// the current position, without consuming anything. Returns `None`
+    /// if there aren't 4 bytes for the length prefix, if the declared
+    /// length exceeds `read_string_lp`'s 64 KiB sanity cap, or if that
+    /// length would run past the end of the stream — the same "not a
+    /// plausible string" conditions `read_string_lp` itself rejects, but
+    /// checkable before committing to consume anything (#1822).
+    pub fn peek_string_lp_bytes(&self) -> Option<&'a [u8]> {
+        if self.remaining() < 4 {
+            return None;
+        }
+        let len = u32::from_le_bytes([
+            self.bytes[self.pos],
+            self.bytes[self.pos + 1],
+            self.bytes[self.pos + 2],
+            self.bytes[self.pos + 3],
+        ]) as usize;
+        if len > 65_536 {
+            return None;
+        }
+        let start = self.pos + 4;
+        let end = start.checked_add(len)?;
+        self.bytes.get(start..end)
+    }
+
     /// Peek the next 4 bytes as a u32 without advancing.
     pub fn peek_u32_le(&self) -> Option<u32> {
         if self.remaining() < 4 {
