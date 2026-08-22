@@ -1113,6 +1113,18 @@ fn extract_struct_body<'a>(src: &'a str, decl: &str) -> Option<&'a str> {
 /// its source file. A field line is `pub <ident>: <ty>,`; comment /
 /// attribute / blank lines are skipped.
 pub(super) fn parse_rust_struct_fields(src: &str, decl: &str) -> Vec<String> {
+    parse_rust_struct_fields_typed(src, decl)
+        .into_iter()
+        .map(|(_, name)| name)
+        .collect()
+}
+
+/// Ordered (type, name) pairs of a Rust `#[repr(C)]` struct — as
+/// [`parse_rust_struct_fields`], but keeps the declared type instead of
+/// discarding it. #2688 / SAFE-D6-01: the name-only parser can't catch a
+/// `uint`<->`float` reinterpretation in the GLSL mirror that preserves
+/// field order and struct size.
+fn parse_rust_struct_fields_typed(src: &str, decl: &str) -> Vec<(String, String)> {
     let body =
         extract_struct_body(src, decl).unwrap_or_else(|| panic!("source must declare `{decl}`"));
     let mut out = Vec::new();
@@ -1126,9 +1138,17 @@ pub(super) fn parse_rust_struct_fields(src: &str, decl: &str) -> Vec<String> {
         };
         let lhs = line[..colon].trim();
         let ident = lhs.strip_prefix("pub ").unwrap_or(lhs).trim();
-        if is_ident(ident) {
-            out.push(ident.to_string());
+        if !is_ident(ident) {
+            continue;
         }
+        // RHS is `<Type>,` (field decl) with an optional trailing `// ...`
+        // offset comment, e.g. `pub roughness: f32, // offset 0`.
+        let rhs = match line[colon + 1..].find("//") {
+            Some(i) => &line[colon + 1..][..i],
+            None => &line[colon + 1..],
+        };
+        let ty = rhs.trim().trim_end_matches(',').trim();
+        out.push((ty.to_string(), ident.to_string()));
     }
     out
 }
@@ -1138,6 +1158,17 @@ pub(super) fn parse_rust_struct_fields(src: &str, decl: &str) -> Vec<String> {
 /// source file. Handles multi-name declarations (`float a, b, c;`) and
 /// skips `//`/`///` comment lines.
 fn parse_glsl_struct_fields(src: &str, decl: &str) -> Vec<String> {
+    parse_glsl_struct_fields_typed(src, decl)
+        .into_iter()
+        .map(|(_, name)| name)
+        .collect()
+}
+
+/// Ordered (type, name) pairs of a GLSL struct declaration — as
+/// [`parse_glsl_struct_fields`], but keeps the type token instead of
+/// discarding it. #2688 / SAFE-D6-01: the name-only parser can't catch a
+/// `uint`<->`float` reinterpretation that preserves field order and size.
+fn parse_glsl_struct_fields_typed(src: &str, decl: &str) -> Vec<(String, String)> {
     const TYPES: &[&str] = &[
         "float", "uint", "int", "bool", "vec2", "vec3", "vec4", "mat2", "mat3", "mat4",
         // GpuInstance-only types (#2219 skinned_vertex_address + padding).
@@ -1165,7 +1196,7 @@ fn parse_glsl_struct_fields(src: &str, decl: &str) -> Vec<String> {
         for piece in rest.split(',') {
             let id = piece.trim();
             if is_ident(id) {
-                out.push(id.to_string());
+                out.push((ty.to_string(), id.to_string()));
             }
         }
     }
@@ -1235,13 +1266,23 @@ fn gpu_water_params_rust_and_glsl_copies_stay_in_lockstep() {
 /// normalizes snake_case ↔ camelCase, and asserts the two ordered lists
 /// are identical. The Rust struct stays the source of truth (its offsets
 /// are pinned elsewhere); this makes the GLSL declaration track it.
+///
+/// Also asserts, field-by-field, that the GLSL scalar type agrees with the
+/// Rust type (#2688 / SAFE-D6-01). The name/order checks above pass on a
+/// `uint`<->`float` reinterpretation as long as field order and count are
+/// unchanged — that flip is byte-lethal for any field read through an
+/// implicit widening conversion, and every `GpuMaterial` field is a bare
+/// scalar (`f32`/`u32`; see the struct definition), so this check doesn't
+/// need to handle vector/matrix types.
 #[test]
 fn gpu_material_glsl_field_order_matches_rust_struct() {
     let rust_src = include_str!("../material.rs");
     let glsl_src = include_str!("../../../shaders/include/bindings.glsl");
 
-    let rust_fields = parse_rust_struct_fields(rust_src, "pub struct GpuMaterial");
-    let glsl_fields = parse_glsl_struct_fields(glsl_src, "struct GpuMaterial");
+    let rust_typed = parse_rust_struct_fields_typed(rust_src, "pub struct GpuMaterial");
+    let glsl_typed = parse_glsl_struct_fields_typed(glsl_src, "struct GpuMaterial");
+    let rust_fields: Vec<String> = rust_typed.iter().map(|(_, n)| n.clone()).collect();
+    let glsl_fields: Vec<String> = glsl_typed.iter().map(|(_, n)| n.clone()).collect();
 
     assert!(
         rust_fields.len() > 60,
@@ -1280,6 +1321,29 @@ fn gpu_material_glsl_field_order_matches_rust_struct() {
             rust_fields[i], glsl_fields[i],
         );
     }
+
+    for (i, ((rust_ty, rust_name), (glsl_ty, glsl_name))) in
+        rust_typed.iter().zip(glsl_typed.iter()).enumerate()
+    {
+        assert!(
+            rust_glsl_scalar_type_matches(rust_ty, glsl_ty),
+            "GpuMaterial field #{i} TYPE mismatch: Rust `{rust_name}: {rust_ty}` vs GLSL \
+             `{glsl_ty} {glsl_name}`. Every GpuMaterial field is a bare scalar; a uint<->float \
+             reinterpretation preserves field order and struct size but corrupts the value read \
+             through the mismatched type — see #2688 / SAFE-D6-01.",
+        );
+    }
+}
+
+/// True if a Rust scalar field type and its GLSL mirror are the same bit
+/// pattern's intended interpretation. #2688 / SAFE-D6-01 — covers the
+/// scalar types `GpuMaterial` actually declares; extend if a future field
+/// needs a vector/matrix type here.
+fn rust_glsl_scalar_type_matches(rust_ty: &str, glsl_ty: &str) -> bool {
+    matches!(
+        (rust_ty, glsl_ty),
+        ("f32", "float") | ("u32", "uint") | ("i32", "int") | ("bool", "bool")
+    )
 }
 
 // ── GpuLight four-way GLSL lockstep (#1916) ──

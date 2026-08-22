@@ -200,18 +200,27 @@ impl AdaptiveRayBudget {
     }
 
     pub const fn settings_for_tier(tier: u32) -> GpuRayBudget {
+        // #2686 / SAFE-D7-01 — `glass_ray_limit` for each tier is derived
+        // from `GLASS_RAY_BUDGET` (the documented single source of truth,
+        // also mirrored into shader_constants.glsl) rather than an
+        // independently hand-maintained literal, so editing the constant
+        // actually changes the tier table instead of silently doing
+        // nothing. Tiers 0-2 are power-of-two fractions of the tier-3
+        // ceiling; pinned exactly by `glass_ray_limit_tiers_derive_from_
+        // glass_ray_budget` below.
+        use crate::shader_constants::GLASS_RAY_BUDGET;
         match tier {
             0 => GpuRayBudget::settings(
-                262_144, 1,
+                GLASS_RAY_BUDGET / 8, 1,
                 // True safe floor: gather GPU timing with direct shadows but
                 // no diffuse path. A non-zero minimum here defeated the
                 // controller on Cydonia: the 97k-instance first frame could
                 // lose the device before a timing sample existed.
                 0, 0, 2, 0,
             ),
-            1 => GpuRayBudget::settings(524_288, 2, 3, 1, 4, 1),
-            2 => GpuRayBudget::settings(1_048_576, 4, 4, 2, 6, 2),
-            _ => GpuRayBudget::settings(2_097_152, 8, 6, 2, 8, 3),
+            1 => GpuRayBudget::settings(GLASS_RAY_BUDGET / 4, 2, 3, 1, 4, 1),
+            2 => GpuRayBudget::settings(GLASS_RAY_BUDGET / 2, 4, 4, 2, 6, 2),
+            _ => GpuRayBudget::settings(GLASS_RAY_BUDGET, 8, 6, 2, 8, 3),
         }
     }
 }
@@ -219,6 +228,32 @@ impl AdaptiveRayBudget {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #2686 / SAFE-D7-01 — every tier's `glass_ray_limit` must derive from
+    /// `GLASS_RAY_BUDGET`, not an independently hand-maintained literal that
+    /// only happens to numerically match it. Pins both the tier-3 ceiling
+    /// and the tiers-0-2 fractions so editing the constant actually moves
+    /// the whole table.
+    #[test]
+    fn glass_ray_limit_tiers_derive_from_glass_ray_budget() {
+        use crate::shader_constants::GLASS_RAY_BUDGET;
+        assert_eq!(
+            AdaptiveRayBudget::settings_for_tier(3).glass_ray_limit,
+            GLASS_RAY_BUDGET
+        );
+        assert_eq!(
+            AdaptiveRayBudget::settings_for_tier(2).glass_ray_limit,
+            GLASS_RAY_BUDGET / 2
+        );
+        assert_eq!(
+            AdaptiveRayBudget::settings_for_tier(1).glass_ray_limit,
+            GLASS_RAY_BUDGET / 4
+        );
+        assert_eq!(
+            AdaptiveRayBudget::settings_for_tier(0).glass_ray_limit,
+            GLASS_RAY_BUDGET / 8
+        );
+    }
 
     #[test]
     fn cold_start_uses_the_watchdog_safe_quality_floor() {

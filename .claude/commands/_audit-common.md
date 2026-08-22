@@ -118,7 +118,7 @@ Prefer them over re-deriving facts from source during an audit.
 
 | Doc | What it documents |
 |-----|------------------|
-| `docs/engine/shader-pipeline.md` | All 19 shaders, G-buffer attachment formats, `GpuCamera`/`GpuInstance`/`GpuMaterial`/`GpuLight` exact byte layouts, descriptor set bindings (Set 0–2), per-frame submission order, pipeline cache |
+| `docs/engine/shader-pipeline.md` | All 21 shaders (re-count via `ls crates/renderer/shaders/*.{vert,frag,comp}` — don't trust this prose count, see #2421), G-buffer attachment formats, `GpuCamera`/`GpuInstance`/`GpuMaterial`/`GpuLight` exact byte layouts, descriptor set bindings (Set 0–2), per-frame submission order, pipeline cache |
 | `docs/engine/memory-budget.md` | VRAM/RAM ceilings, SSBO sizes, LRU eviction thresholds (`AccelerationManager`, `TextureRegistry`, BGSM cache, `MeshRegistry`), deferred-destroy countdown depth |
 | `docs/engine/nifal.md` | NIFAL three-tier canonical translation spec (Imported* → translate() → Canonical); single-boundary / no-fabrication / no-render-time-fallback rules |
 | `docs/engine/plugin-loading.md` | `PluginManifest` TOML schema, `DataStore`, `DependencyResolver` algorithm, Form ID three-layer design, ESM parser entry points, conflict resolution |

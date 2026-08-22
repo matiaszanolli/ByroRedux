@@ -264,11 +264,16 @@ const _: () = {
 // Glass / IOR ray-work telemetry. GLASS_RAY_COST is the tier-0 estimate
 // (one optional reflection + three refraction queries); the shader records
 // two more estimated queries per adaptive quality tier as its interface
-// allowance grows from 2 to 8. GLASS_RAY_BUDGET is retained as the tier-3
-// controller comparison ceiling. The atomic counter is deliberately not a
-// per-fragment admission pool: unordered winners split alpha glass between
-// IOR and Fresnel paths and create permanent stipple. The controller chooses
-// one coherent quality tier for the next frame instead.
+// allowance grows from 2 to 8. GLASS_RAY_BUDGET is the tier-3 ceiling that
+// `AdaptiveRayBudget::settings_for_tier` (ray_budget.rs) derives every
+// tier's `glass_ray_limit` from (tiers 0-2 are /8, /4, /2 of this value) —
+// #2686 / SAFE-D7-01 closed the prior state where the tier table was four
+// independent literals that only happened to match this constant. The
+// atomic counter itself is deliberately not a per-fragment admission pool:
+// unordered winners split alpha glass between IOR and Fresnel paths and
+// create permanent stipple. The controller chooses one coherent quality
+// tier for the next frame instead; `glass_ray_limit` is retained in the
+// GPU-side ABI for telemetry comparison only.
 pub const GLASS_RAY_BUDGET: u32 = 2_097_152;
 pub const GLASS_RAY_COST: u32 = 4;
 

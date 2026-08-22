@@ -1007,6 +1007,13 @@ impl BSLightingShaderProperty {
     /// - No `lighting_effect_1/2` (Skyrim-only).
     /// - No FO76 luminance/translucency/texture-arrays.
     fn parse_fo4(stream: &mut NifStream, bsver: u32) -> io::Result<Self> {
+        // BSVER 140-154 (>= FO4_DLC_UPPER) forces shader_type=0
+        // (ShaderTypeData::None below), so no SkinTint/HairTint/EnvironmentMap/
+        // etc. payload is reachable in that band. Intentional, not an
+        // oversight: 140-154 is a dead dev-stream band with no shipping
+        // game content — see the FO4_DLC_UPPER-gated env_map_scale comment
+        // in `parse_shader_type_data_fo4` for the same "dead band, no
+        // shipping game" call on the sibling field. #2605 / FO4-D5-05.
         let shader_type = if bsver < crate::version::bsver::FO4_DLC_UPPER {
             stream.read_u32_le()?
         } else {
