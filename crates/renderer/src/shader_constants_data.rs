@@ -424,10 +424,12 @@ pub const NORMAL_ALPHA_SPEC_BIT: u32 = 0x8000_0000;
 
 // Water motion-kind enum (WATR-driven, mapped per-WATR record).
 // Lockstep with `water.frag` and `byroredux/src/cell_loader/water.rs`.
-pub const WATER_CALM: u32 = 0;
-pub const WATER_RIVER: u32 = 1;
-pub const WATER_RAPIDS: u32 = 2;
-pub const WATER_WATERFALL: u32 = 3;
+pub const WATER_CALM: u32 = byroredux_core::ecs::components::water::WaterKind::Calm as u32;
+pub const WATER_RIVER: u32 = byroredux_core::ecs::components::water::WaterKind::River as u32;
+pub const WATER_RAPIDS: u32 = byroredux_core::ecs::components::water::WaterKind::Rapids as u32;
+pub const WATER_WATERFALL: u32 =
+    byroredux_core::ecs::components::water::WaterKind::Waterfall as u32;
+pub const WATER_LAVA: u32 = byroredux_core::ecs::components::water::WaterKind::Lava as u32;
 pub const DEFAULT_WATER_WAVE_AMPLITUDE: f32 =
     byroredux_core::ecs::components::water::DEFAULT_WATER_WAVE_AMPLITUDE;
 pub const DEFAULT_WATER_WAVE_FREQUENCY: f32 =

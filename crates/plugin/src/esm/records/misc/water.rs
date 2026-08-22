@@ -58,9 +58,7 @@ pub struct WatrRecord {
     /// transparent surface from a record that omits ANAM and uses the engine
     /// fallback opacity.
     pub opacity_authored: bool,
-    /// FO3/FNV `FNAM` water flags. Bit 0x01 causes actor damage. Other game
-    /// generations use different record layouts, so this is only populated for
-    /// the legacy DATA path.
+    /// Oblivion/FO3/FNV `FNAM` water flags. Bit 0x01 causes actor damage.
     ///
     /// **Bit 0x02 is NOT a reflectivity gate on FO3/FNV** (#3196). It was read
     /// that way by generalising from Oblivion and the reference title disproves
@@ -71,27 +69,34 @@ pub struct WatrRecord {
     /// Only bit 0x01 has a verified meaning here — consumers reading any other
     /// bit off this field need their own evidence first.
     pub legacy_flags: Option<u8>,
-    /// FO3/FNV `DATA` damage amount. Bethesda stores this as a separate
-    /// two-byte `DATA` subrecord alongside the visual-data `DATA`/`DNAM`;
-    /// preserve it even when the renderer does not yet apply actor damage.
+    /// Oblivion/FO3/FNV `DATA` damage amount. FO3/FNV store this as a
+    /// separate two-byte subrecord; Oblivion stores it either alone or as the
+    /// trailing u16 of its variable-length visual DATA payload.
     pub legacy_damage: Option<u16>,
-    /// WATR.FNAM flags shared by the modern WATR layouts. Bit 0x01 marks
-    /// harmful water and bit 0x08 enables Skyrim's flow-map normal layer.
-    /// Kept separately from `legacy_flags` so callers can distinguish the
-    /// modern flag contract from the FO3/FNV one (see #3196 — that arm's bit
-    /// 0x02 is not the reflectivity gate it was once decoded as).
+    /// Raw WATR.FNAM flags across supported layouts. Bit 0x01 marks harmful
+    /// water in Oblivion and modern records; bit 0x08 enables Skyrim's
+    /// flow-map normal layer. `legacy_flags` additionally preserves the
+    /// Oblivion/FO3/FNV vocabulary for compatibility consumers.
     pub water_flags: Option<u8>,
     /// Skyrim FNAM bit 0x10 (`Blend Normals`). `None` preserves the
     /// compatibility default; other modern games use a different FNAM
     /// contract and therefore do not populate this field.
     pub blend_normals: Option<bool>,
-    /// Diffuse / noise texture path. FO3 / FNV ship this in `NNAM`
+    /// Canonical water normal/noise texture path. FO3/FNV ship this in `NNAM`
     /// (e.g. `Data\Textures\Water\WastelandWaterPotomac.dds` on every
-    /// vanilla FO3 WATR); Skyrim+ ships it in `TNAM`. Both arms write
-    /// here; per Bethesda, NNAM and TNAM are game-mutually-exclusive
-    /// in vanilla content, so last-arm-wins is safe without a
-    /// `GameKind` gate (#1271).
+    /// vanilla FO3 WATR); Skyrim+ ships it in `TNAM`. Oblivion's TNAM is a
+    /// diffuse colour texture and is deliberately kept out of this role.
     pub texture_path: String,
+    /// Oblivion WATR.TNAM surface-colour texture. No current renderer input
+    /// consumes water diffuse art, but preserving its true role prevents it
+    /// from being decoded as a tangent-space normal (#3222).
+    pub diffuse_texture_path: String,
+    /// Oblivion WATR.MNAM Havok surface-material name. Vanilla authors the
+    /// literal `lava` on the two unambiguous lava planes (#3223).
+    pub material_name: String,
+    /// Oblivion WATR.SNAM authored surface sound name. Preserved at the ESM
+    /// boundary even though an audio consumer is not yet attached.
+    pub surface_sound: String,
     /// Decoded water shader / shading params. Fields are at their
     /// per-spec defaults when the source record omits a sub-record or
     /// when the byte layout doesn't match the parser's expectations.
@@ -1361,7 +1366,8 @@ pub fn parse_watr(
                 if !sub.data.is_empty()
                     && matches!(
                         game,
-                        GameKind::Fallout3NV
+                        GameKind::Oblivion
+                            | GameKind::Fallout3NV
                             | GameKind::Skyrim
                             | GameKind::Fallout4
                             | GameKind::Fallout76
@@ -1369,15 +1375,24 @@ pub fn parse_watr(
                     ) =>
             {
                 out.water_flags = Some(sub.data[0]);
-                if matches!(game, GameKind::Fallout3NV) {
+                if matches!(game, GameKind::Oblivion | GameKind::Fallout3NV) {
                     out.legacy_flags = Some(sub.data[0]);
                 }
                 if matches!(game, GameKind::Skyrim) {
                     out.blend_normals = Some(sub.data[0] & 0x10 != 0);
                 }
             }
+            b"TNAM" if matches!(game, GameKind::Oblivion) => {
+                out.diffuse_texture_path = read_zstring(&sub.data)
+            }
             b"TNAM" => out.texture_path = read_zstring(&sub.data),
             b"NNAM" => out.texture_path = read_zstring(&sub.data),
+            b"MNAM" if matches!(game, GameKind::Oblivion) => {
+                out.material_name = read_zstring(&sub.data)
+            }
+            b"SNAM" if matches!(game, GameKind::Oblivion) => {
+                out.surface_sound = read_zstring(&sub.data)
+            }
             b"NAM2" => out.noise_texture_paths[0] = read_zstring(&sub.data),
             b"NAM3" => out.noise_texture_paths[1] = read_zstring(&sub.data),
             b"NAM4" => out.noise_texture_paths[2] = read_zstring(&sub.data),
@@ -1396,7 +1411,7 @@ pub fn parse_watr(
                 // for damage-per-second (Skyrim and later retain the same
                 // shape). Do not let that short record overwrite the visual
                 // payload when both are present.
-                if !matches!(game, GameKind::Oblivion) && sub.data.len() == 2 {
+                if sub.data.len() == 2 {
                     out.legacy_damage = Some(u16::from_le_bytes([sub.data[0], sub.data[1]]));
                 } else {
                     // Oblivion inserts scroll speeds before its fog/color
@@ -1408,6 +1423,10 @@ pub fn parse_watr(
                         decode_data(&sub.data)
                     };
                     out.raw_data = sub.data.clone();
+                    if matches!(game, GameKind::Oblivion) && sub.data.len() >= 2 {
+                        let tail = &sub.data[sub.data.len() - 2..];
+                        out.legacy_damage = Some(u16::from_le_bytes([tail[0], tail[1]]));
+                    }
                 }
             }
             b"DNAM" => {
@@ -1551,8 +1570,64 @@ mod tests {
         assert_eq!(skyrim_blended.blend_normals, Some(true));
 
         let oblivion = parse_watr(3, &[sub(b"FNAM", &[0x01])], GameKind::Oblivion, &None);
-        assert_eq!(oblivion.water_flags, None);
+        assert_eq!(oblivion.water_flags, Some(0x01));
+        assert_eq!(oblivion.legacy_flags, Some(0x01));
         assert_eq!(oblivion.blend_normals, None);
+    }
+
+    #[test]
+    fn oblivion_preserves_diffuse_material_sound_and_trailing_damage_roles() {
+        let mut data = vec![0u8; 102];
+        data[100..102].copy_from_slice(&5000u16.to_le_bytes());
+        let watr = parse_watr(
+            0x0001_0001,
+            &[
+                sub(b"TNAM", b"Water\\OblivionLava06.dds\0"),
+                sub(b"MNAM", b"lava\0"),
+                sub(b"SNAM", b"AMBWaterLavaLP\0"),
+                sub(b"FNAM", &[0x01]),
+                sub(b"DATA", &data),
+            ],
+            GameKind::Oblivion,
+            &None,
+        );
+        assert_eq!(watr.texture_path, "", "TES4 TNAM is not a normal map");
+        assert_eq!(watr.diffuse_texture_path, "Water\\OblivionLava06.dds");
+        assert_eq!(watr.material_name, "lava");
+        assert_eq!(watr.surface_sound, "AMBWaterLavaLP");
+        assert_eq!(watr.legacy_damage, Some(5000));
+    }
+
+    #[test]
+    fn oblivion_two_byte_data_is_damage_only() {
+        let watr = parse_watr(
+            0x0001_0002,
+            &[sub(b"DATA", &65535u16.to_le_bytes())],
+            GameKind::Oblivion,
+            &None,
+        );
+        assert_eq!(watr.legacy_damage, Some(65535));
+        assert!(watr.raw_data.is_empty());
+    }
+
+    #[test]
+    fn fnv_nnam_and_skyrim_tnam_remain_normal_texture_roles() {
+        let fnv = parse_watr(
+            1,
+            &[sub(b"NNAM", b"textures\\water\\wasteland.dds\0")],
+            GameKind::Fallout3NV,
+            &None,
+        );
+        let skyrim = parse_watr(
+            2,
+            &[sub(b"TNAM", b"textures\\water\\defaultwater.dds\0")],
+            GameKind::Skyrim,
+            &None,
+        );
+        assert_eq!(fnv.texture_path, "textures\\water\\wasteland.dds");
+        assert_eq!(skyrim.texture_path, "textures\\water\\defaultwater.dds");
+        assert!(fnv.diffuse_texture_path.is_empty());
+        assert!(skyrim.diffuse_texture_path.is_empty());
     }
 
     #[test]

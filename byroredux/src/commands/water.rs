@@ -394,7 +394,9 @@ mod tests {
             "{output}"
         );
         assert!(
-            output.contains("effects=[1.100,44.000,0.900,1.200] absorption=[120.0,240.0,480.0]"),
+            output.contains(
+                "effects=[1.100,44.000,0.900,1.200] extinction_coefficients=[0.16558,0.09624,0.07627]"
+            ),
             "{output}"
         );
         assert!(

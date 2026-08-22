@@ -415,6 +415,26 @@ fn installed_masters_water_fields_are_finite_and_ordered() {
             assert_eq!(water_clear.params.fog_near, 80.0);
             assert_eq!(water_clear.params.fog_far, 600.0);
         }
+        if label == "Oblivion" {
+            let citadel = index
+                .waters
+                .values()
+                .find(|water| water.editor_id == "OblivionCitadelLavaPlane")
+                .expect("OblivionCitadelLavaPlane WATR");
+            let lava_test = index
+                .waters
+                .values()
+                .find(|water| water.editor_id == "OblivionLavaTest01")
+                .expect("OblivionLavaTest01 WATR");
+            assert_eq!(citadel.material_name, "lava");
+            assert_eq!(lava_test.material_name, "lava");
+            assert_eq!(citadel.legacy_flags, Some(0x01));
+            assert_eq!(citadel.legacy_damage, Some(5000));
+            assert_eq!(lava_test.legacy_damage, Some(50));
+            assert!(citadel.texture_path.is_empty());
+            assert!(lava_test.texture_path.is_empty());
+            assert!(!lava_test.diffuse_texture_path.is_empty());
+        }
         checked_games += 1;
     }
     assert!(

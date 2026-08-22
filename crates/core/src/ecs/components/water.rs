@@ -80,6 +80,10 @@ pub enum WaterKind {
     /// and scrolls the noise sheet along it at high speed. Heavily
     /// opaque, foam at top + bottom of the sheet, no refraction ray.
     Waterfall = 3,
+    /// Authored non-water liquid such as Oblivion WATR.MNAM=`lava`.
+    /// It remains a contact/damage surface but does not use water refraction,
+    /// underwater presentation, directional current, or shoreline foam.
+    Lava = 4,
 }
 
 impl WaterKind {
@@ -95,6 +99,7 @@ impl WaterKind {
             WaterKind::Calm => 0.65,
             WaterKind::River => 0.20,
             WaterKind::Rapids | WaterKind::Waterfall => 0.85,
+            WaterKind::Lava => 0.0,
         }
     }
 
@@ -103,7 +108,15 @@ impl WaterKind {
     /// ray is wasted budget.
     #[inline]
     pub fn refracts(self) -> bool {
-        !matches!(self, WaterKind::Waterfall)
+        !matches!(self, WaterKind::Waterfall | WaterKind::Lava)
+    }
+
+    /// Whether this semantic kind implies a directed current.
+    pub const fn has_directional_flow(self) -> bool {
+        matches!(
+            self,
+            WaterKind::River | WaterKind::Rapids | WaterKind::Waterfall
+        )
     }
 }
 
@@ -506,7 +519,7 @@ impl WaterFlow {
         match kind {
             // Calm water carries no `WaterFlow` at all; the arm exists so
             // the match stays total if a caller asks anyway.
-            WaterKind::Calm | WaterKind::River => Self::SPEED_MIN,
+            WaterKind::Calm | WaterKind::River | WaterKind::Lava => Self::SPEED_MIN,
             WaterKind::Rapids => Self::SPEED_RAPIDS,
             WaterKind::Waterfall => Self::SPEED_MAX,
         }

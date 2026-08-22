@@ -211,6 +211,7 @@ mod tests {
             ("WATER_RIVER", format!("#define WATER_RIVER {WATER_RIVER}u")),
             ("WATER_RAPIDS", format!("#define WATER_RAPIDS {WATER_RAPIDS}u")),
             ("WATER_WATERFALL", format!("#define WATER_WATERFALL {WATER_WATERFALL}u")),
+            ("WATER_LAVA", format!("#define WATER_LAVA {WATER_LAVA}u")),
             ("DEFAULT_WATER_WAVE_AMPLITUDE", format!("#define DEFAULT_WATER_WAVE_AMPLITUDE {DEFAULT_WATER_WAVE_AMPLITUDE:?}")),
             ("DEFAULT_WATER_WAVE_FREQUENCY", format!("#define DEFAULT_WATER_WAVE_FREQUENCY {DEFAULT_WATER_WAVE_FREQUENCY:?}")),
             ("STARFIELD_WATER_CONCENTRATION_REFERENCE", format!("#define STARFIELD_WATER_CONCENTRATION_REFERENCE {STARFIELD_WATER_CONCENTRATION_REFERENCE:?}")),
@@ -567,6 +568,7 @@ mod tests {
             "WATER_RIVER",
             "WATER_RAPIDS",
             "WATER_WATERFALL",
+            "WATER_LAVA",
         ] {
             let needle = format!("const uint {name}");
             assert!(

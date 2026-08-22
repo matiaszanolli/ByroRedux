@@ -143,7 +143,7 @@ layout(push_constant) uniform WaterDrawPush {
 // every reference now resolves through the selected SSBO record.
 #define push waterParams.params[drawPush.waterIndex]
 
-// WATER_CALM / WATER_RIVER / WATER_RAPIDS / WATER_WATERFALL now come
+// WATER_CALM / WATER_RIVER / WATER_RAPIDS / WATER_WATERFALL / WATER_LAVA come
 // from `include/shader_constants.glsl` (generated from Rust). The
 // pre-#1256 local `const uint` declarations were a duplicate of the
 // shared #defines; #1256's include directive made the duplicates a
@@ -665,7 +665,7 @@ void main() {
     // Determine the camera side from the authored geometric normal rather
     // than assuming +Y. This keeps rotated legacy mesh-water planes correct;
     // explicit waterfall sheets still use their ordinary two-sided tint path.
-    bool cameraUnderwater = kind != WATER_WATERFALL
+    bool cameraUnderwater = kind != WATER_WATERFALL && kind != WATER_LAVA
         && dot(cameraPos.xyz - vWorldPos, Nsurface) < 0.0;
 
     // ── Wave UVs ──
@@ -729,9 +729,6 @@ void main() {
         nMix = normalize(nA + nB + nC * thirdWeight);
     } else {
         nMix = normalize(nA + nB);
-    }
-    if (!blendAuthoredNormals) {
-        nMix = nA;
     }
     // Skyrim's Noise Falloff fades high-frequency normals by camera distance.
     // A zero value is the legacy sentinel and keeps normals active at every
@@ -943,7 +940,7 @@ void main() {
     // A negative refraction-magnitude lane is WATAL's compact canonical
     // "authored refractions disabled" sentinel for mesh water. Zero remains
     // the legacy/default fully perturbed-normal path.
-    if (kind != WATER_WATERFALL && push.effects.x >= 0.0) {
+    if (kind != WATER_WATERFALL && kind != WATER_LAVA && push.effects.x >= 0.0) {
         float eta = viewFromPositiveSide
             ? (1.0 / max(ior, 1.0))
             : max(ior, 1.0);
@@ -982,7 +979,7 @@ void main() {
             fresnel = 1.0;
         }
     } else {
-        // Waterfalls: just use the deep colour modulated slightly by
+        // Non-refracting sheets/media: use the deep colour modulated by
         // the perturbed normal facing direction — gives the sheet a
         // pearlescent sheen rather than a flat tint.
         refrColor = push.deep.rgb * (0.7 + 0.3 * NdotV);
@@ -990,7 +987,7 @@ void main() {
 
     // ── Foam composite ──
     float foamMask = 0.0;
-    if (kind != WATER_WATERFALL) {
+    if (kind != WATER_WATERFALL && kind != WATER_LAVA) {
         foamMask += foamShoreline(vWorldPos, Nsurface) * 1.0;
     }
     if (kind == WATER_RAPIDS) {

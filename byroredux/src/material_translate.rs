@@ -224,7 +224,7 @@ pub(crate) fn water_kind_from_cell_record_name(editor_id: &str) -> WaterKind {
 pub(crate) fn water_kind_from_mesh_name(name: Option<&str>) -> (WaterKind, Option<WaterFlow>) {
     let kind = water_kind_from_name(name.unwrap_or_default());
     let flow = match kind {
-        WaterKind::Calm => None,
+        WaterKind::Calm | WaterKind::Lava => None,
         WaterKind::Waterfall => Some(WaterFlow::for_kind(kind, [0.0, -1.0, 0.0])),
         // A name can establish the semantic kind but cannot establish the
         // sign or axis of a horizontal current. Emit no physics flow rather
@@ -335,7 +335,7 @@ pub(crate) fn attach_mesh_water(
         let material = world
             .get::<Material>(entity)
             .expect("mesh water attachment requires canonical Material");
-        water_material_from_mesh(material, normal_map_index, flow_map_index)
+        water_material_from_mesh(&material, normal_map_index, flow_map_index)
     };
     let (kind, flow) = water_kind_from_mesh_geometry(source.name, source.positions);
     water_material.foam_strength = kind.canonical_foam_strength();
@@ -932,6 +932,7 @@ mod tests {
             (WaterKind::River, 0.20),
             (WaterKind::Rapids, 0.85),
             (WaterKind::Waterfall, 0.85),
+            (WaterKind::Lava, 0.0),
         ] {
             assert_eq!(kind.canonical_foam_strength(), expected);
         }

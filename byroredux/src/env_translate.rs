@@ -909,7 +909,9 @@ pub(crate) fn resolve_water_material(
                 velocity.iter().all(|component| component.is_finite())
                     && authored_flow_speed > 1.0e-5
             });
-            if matches!(named_kind, WaterKind::Rapids)
+            if rec.material_name.eq_ignore_ascii_case("lava") {
+                kind = WaterKind::Lava;
+            } else if matches!(named_kind, WaterKind::Rapids)
                 || (has_authored_linear_flow && authored_flow_speed >= WaterFlow::SPEED_RAPIDS)
             {
                 kind = WaterKind::Rapids;
@@ -938,7 +940,7 @@ pub(crate) fn resolve_water_material(
             // record provides one. The shader scroll below is derived from
             // that canonical flow and then adds authored normal-layer motion;
             // one scalar never serves two incompatible unit systems.
-            if !matches!(kind, WaterKind::Calm) {
+            if kind.has_directional_flow() {
                 let theta = rec.params.wind_direction;
                 // Compute once — cos/sin were duplicated pre-#1068 (F-WAT-06).
                 let (sin_theta, cos_theta) = theta.sin_cos();
@@ -993,7 +995,7 @@ pub(crate) fn resolve_water_material(
             // per-layer normal motion (Skyrim/FO4) when present; this is a
             // visual UV velocity only and must not replace the shared
             // weather wind later used by SpeedTree vegetation.
-            if matches!(kind, WaterKind::Calm) {
+            if matches!(kind, WaterKind::Calm | WaterKind::Lava) {
                 let authored_a = authored_layer_scroll(0);
                 let authored_b = authored_layer_scroll(1);
                 let authored_c = authored_layer_scroll(2);
@@ -1007,9 +1009,10 @@ pub(crate) fn resolve_water_material(
                     mat.scroll_c = authored_c;
                 }
             }
-            // TNAM is the diffuse / noise texture — used as the
-            // bindless normal map for the shader. Empty path =
-            // procedural fallback.
+            // The parser has already resolved the per-game texture role:
+            // this field is normal/noise only. Oblivion TNAM diffuse art is
+            // preserved separately and intentionally reaches the procedural
+            // normal fallback (#3222).
             if !rec.texture_path.is_empty() {
                 normal_path = Some(rec.texture_path.clone());
             }
@@ -1021,7 +1024,7 @@ pub(crate) fn resolve_water_material(
             // Skyrim SE's NAM5 is a flow-normal texture. Preserve the
             // compact three-layer GPU ABI by promoting it over NAM4 only
             // for flowing bodies; calm water keeps its authored NAM4 layer.
-            if !matches!(kind, WaterKind::Calm) && rec.flow_noise_texture_path_is_enabled() {
+            if kind.has_directional_flow() && rec.flow_noise_texture_path_is_enabled() {
                 noise_paths[2] = Some(rec.flow_noise_texture_path.clone());
             }
         }
@@ -2172,6 +2175,9 @@ mod tests {
             water_flags: None,
             blend_normals: None,
             texture_path: String::new(),
+            diffuse_texture_path: String::new(),
+            material_name: String::new(),
+            surface_sound: String::new(),
             noise_texture_paths: Default::default(),
             flow_noise_texture_path: String::new(),
             linear_velocity: None,
@@ -2407,6 +2413,9 @@ mod tests {
             water_flags: None,
             blend_normals: None,
             texture_path: String::new(),
+            diffuse_texture_path: String::new(),
+            material_name: String::new(),
+            surface_sound: String::new(),
             noise_texture_paths: Default::default(),
             flow_noise_texture_path: String::new(),
             linear_velocity: None,
@@ -2416,6 +2425,32 @@ mod tests {
             raw_dnam: Vec::new(),
             raw_data: Vec::new(),
         }
+    }
+
+    #[test]
+    fn oblivion_lava_uses_authored_material_and_keeps_diffuse_out_of_normal_role() {
+        let mut rec = calm_watr(0x000A_0000, "LocalizedSurfaceName", WaterParams::default());
+        rec.material_name = "lava".to_string();
+        rec.diffuse_texture_path = "Water\\OblivionLava06.dds".to_string();
+        let mut waters = HashMap::new();
+        waters.insert(rec.form_id, rec);
+
+        let (material, kind, flow, normal_path, noise_paths) =
+            resolve_water_material(&waters, Some(0x000A_0000));
+        assert_eq!(kind, WaterKind::Lava);
+        assert_eq!(material.foam_strength, 0.0);
+        assert!(flow.is_none());
+        assert!(normal_path.is_none());
+        assert_eq!(noise_paths, [None, None, None]);
+    }
+
+    #[test]
+    fn lava_editor_id_without_authored_material_does_not_guess_the_medium() {
+        let rec = calm_watr(0x000A_0001, "OblivionLavaTest01", WaterParams::default());
+        let mut waters = HashMap::new();
+        waters.insert(rec.form_id, rec);
+        let (_, kind, _, _, _) = resolve_water_material(&waters, Some(0x000A_0001));
+        assert_eq!(kind, WaterKind::Calm);
     }
 
     /// WATAL Phase 1: `wave_amplitude` / `wave_frequency` are parsed into

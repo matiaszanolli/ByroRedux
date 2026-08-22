@@ -485,15 +485,18 @@ Everything else is a SENTINEL the older game leaves unset, identical across game
 
 | Concern | Oblivion | FO3 / FNV | Skyrim (canonical) | Source field |
 |---|---|---|---|---|
-| WATR appearance payload | DATA ~102 B | DATA 186/196 B (opaque 16 B prefix) | DNAM 228/232 B; FO4/FO76 201 B; Starfield 152 B+ | `water.rs:30-61` |
+| WATR appearance payload | DATA 102/86/62/42/2 B | DNAM 196/184 B (majority) or DATA 186 B plus 2 B damage | Skyrim DNAM 228/232 B; FO4 201/188 B; FO76 148 B; Starfield 152 B | `water.rs` per-game decoders |
 | shallow/deep color, reflectivity, fresnel | AUTHORED | AUTHORED | AUTHORED | DATA/DNAM RGBA |
 | surface opacity | AUTHORED (`ANAM`) | AUTHORED (`ANAM`) | AUTHORED (`ANAM`) | ANAM (u8 / 255) |
-| legacy water damage | SENTINEL | **SENTINEL on vanilla** — `FNAM` bit 0x01 is never set, `DATA` damage is always 0 | SENTINEL | `DATA` uint16 damage + `FNAM` |
+| legacy water damage | AUTHORED on 5/23 (`FNAM` bit 0x01; trailing or standalone DATA u16) | **SENTINEL on vanilla** — `FNAM` bit 0x01 is never set, `DATA` damage is always 0 | SENTINEL | `DATA` uint16 damage + `FNAM` |
 | water hazard (FO3/FNV era) | n/a | AUTHORED via `XNAM` → `SPEL` ("water quality") FormID link, e.g. `WaterHeal1Rads500`/`WaterHeal5Terrible` (#3200) | n/a | `XNAM` → `WatrRecord::effect_form`; not yet resolved past the parse boundary — needs a SPEL/magic-effect runtime |
-| `fog_near`/`fog_far` | **SENTINEL** 80/600 (short DATA) | AUTHORED | AUTHORED | FO3/FNV DATA[32..40] |
+| `fog_near`/`fog_far` | AUTHORED on 17 full 102 B records; sentinel on short layouts | AUTHORED | AUTHORED | per-era DATA/DNAM decoder |
 | FO4 surface depth ramp | SENTINEL | SENTINEL | AUTHORED | DNAM[0] (`Depth Amount`) |
 | FO4 underwater fog amount | SENTINEL | SENTINEL | AUTHORED | DNAM[40] |
-| diffuse/normal texture | **SENTINEL** `u32::MAX` → procedural | AUTHORED (`NNAM`) | AUTHORED (`TNAM`) | NNAM/TNAM |
+| surface diffuse texture | AUTHORED `TNAM` on 15/23 (preserved; not sampled as a normal) | n/a | n/a | Oblivion `TNAM` → `diffuse_texture_path` |
+| normal/noise texture | **SENTINEL** `u32::MAX` → procedural | AUTHORED (`NNAM`) | AUTHORED (`TNAM`) | NNAM/TNAM role resolved by `GameKind` |
+| surface material / medium | AUTHORED `MNAM`; `lava` on 2/23 | n/a | n/a | Oblivion `MNAM` → `material_name` → `WaterKind::Lava` |
+| surface sound | AUTHORED `SNAM` on 17/23 (consumer pending) | n/a | n/a | Oblivion `SNAM` → `surface_sound` |
 | noise layers (`NAM2`/`NAM3`/`NAM4`, flowing `NAM5`) | **SENTINEL** `[u32::MAX;3]` | **SENTINEL** | AUTHORED (NAM5 replaces layer 3 for flow) | NAM2-5 |
 | below-water fog split | **SENTINEL** (reuse above) | **SENTINEL** | AUTHORED (DNAM tail) | DNAM[144..152] |
 | `wave_amplitude/frequency` | AUTHORED | AUTHORED (displacement force/velocity) | AUTHORED (displacement force overrides amplitude) | FO3/FNV DATA[76..84], DNAM[76..80] |
@@ -655,6 +658,21 @@ authored worldspace LOD water, NAM2–4 noise layers, and bounded sunlight
 ---
 
 ## 9. Resolved questions (research pass, 2026-06-19)
+
+### Standing WATR carrier census (installed vanilla masters, 2026-08-20)
+
+This is the re-checkable ground truth for §4's payload row; it distinguishes
+visual carriers from the separate short damage DATA records.
+
+| Master | WATR records | Visual/damage carrier lengths |
+|---|---:|---|
+| Oblivion.esm | 23 | DATA: 102×17, 86×2, 62×1, 42×2, 2×1 |
+| Fallout3.esm | 53 | DNAM: 196×41, 184×1; DATA: 186×11, 2×42 |
+| FalloutNV.esm | 78 | DNAM: 196×69, 184×1; DATA: 186×8, 2×70 |
+| Skyrim.esm | 34 | DNAM: 228×31, 232×3; DATA: 2×34 |
+| Fallout4.esm | 42 | DNAM: 201×40, 188×2; DATA: 0×42 |
+| SeventySix.esm | 47 | DNAM: 148×47; DATA: 0×47 |
+| Starfield.esm | 15 | DNAM: 152×15; DATA: 0×15 |
 
 Sources: OpenMW (`/mnt/data/src/reference/openmw/`), nif.xml
 (`/mnt/data/src/reference/nifxml/nif.xml`), Havok 2013

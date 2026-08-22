@@ -1006,18 +1006,38 @@ mod tests {
     }
 
     #[test]
-    fn water_fragment_shader_honors_skyrim_blend_normals_flag() {
+    fn water_fragment_shader_uses_skyrim_blend_bit_only_for_third_layer() {
         let src = include_str!("../../shaders/water.frag");
         assert!(src.contains("push.noise_falloff.y > 0.5"));
-        assert!(src.contains("if (!blendAuthoredNormals)"));
-        assert!(src.contains("nMix = nA;"));
+        assert!(src.contains(
+            "if (blendAuthoredNormals && (kind == WATER_RAPIDS || hasAuthoredThirdLayer))"
+        ));
+        assert!(!src.contains("if (!blendAuthoredNormals)"));
     }
 
     #[test]
     fn water_fragment_shader_skips_authored_disabled_mesh_refraction() {
         let src = include_str!("../../shaders/water.frag");
-        assert!(src.contains("kind != WATER_WATERFALL && push.effects.x >= 0.0"));
+        assert!(
+            src.contains("kind != WATER_WATERFALL && kind != WATER_LAVA && push.effects.x >= 0.0")
+        );
         assert!(src.contains("float refractionNormalWeight = push.effects.x > 0.0"));
+    }
+
+    #[test]
+    fn water_fragment_shader_keeps_two_layers_when_skyrim_blend_bit_is_clear() {
+        let src = include_str!("../../shaders/water.frag");
+        assert!(src.contains("nMix = normalize(nA + nB);"));
+        assert!(!src.contains("if (!blendAuthoredNormals)"));
+    }
+
+    #[test]
+    fn authored_lava_bypasses_water_refraction_underwater_and_foam_paths() {
+        let src = include_str!("../../shaders/water.frag");
+        assert!(src.contains("kind != WATER_WATERFALL && kind != WATER_LAVA"));
+        assert!(
+            src.contains("bool cameraUnderwater = kind != WATER_WATERFALL && kind != WATER_LAVA")
+        );
     }
 
     #[test]
