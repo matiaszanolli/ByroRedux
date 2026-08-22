@@ -68,6 +68,27 @@ impl Default for CombatState {
 
 impl Resource for CombatState {}
 
+/// Death transitions produced inside parallel systems are queued here and
+/// reconciled by one Late-stage exclusive sink. The persisted [`Dead`] marker
+/// is the fact; this queue only defers the structural AI/animation/ragdoll
+/// consequences until it is safe to mutate their component storages.
+#[derive(Debug, Default)]
+pub(crate) struct PendingDeathReconciliations {
+    actors: Vec<EntityId>,
+}
+
+impl Resource for PendingDeathReconciliations {}
+
+pub(crate) fn queue_dead_actor_reconciliation(world: &World, actor: EntityId) {
+    let Some(mut pending) = world.try_resource_mut::<PendingDeathReconciliations>() else {
+        log::error!("PendingDeathReconciliations missing; actor {actor} remains unreconciled");
+        return;
+    };
+    if !pending.actors.contains(&actor) {
+        pending.actors.push(actor);
+    }
+}
+
 /// Physical Attack/Block action frontend and melee-hit producer.
 pub(crate) fn combat_input_system(world: &World, dt: f32) {
     let (attack_pressed, block_held) = world
@@ -383,7 +404,7 @@ fn disable_actor_ai(world: &World, actor: EntityId) {
 /// animation components is not serialized as a second, generic tombstone
 /// format. Both the combat transition and save-load drain call this one
 /// reconciler, keeping those derived removals consistent (#3022).
-fn reconcile_dead_actor(world: &World, actor: EntityId) -> String {
+pub(crate) fn reconcile_dead_actor(world: &World, actor: EntityId) -> String {
     disable_actor_ai(world, actor);
     let Some(skeleton_root) = world
         .get::<HavokAnimationTarget>(actor)
@@ -395,6 +416,19 @@ fn reconcile_dead_actor(world: &World, actor: EntityId) -> String {
     match crate::ragdoll::activate_ragdoll(world, skeleton_root) {
         Ok(body_count) => format!("; ragdoll activated ({body_count} bodies)"),
         Err(error) => format!("; ragdoll unavailable: {error}"),
+    }
+}
+
+/// Drain parallel-safe death notifications after all producers have run.
+pub(crate) fn reconcile_pending_dead_actors_system(world: &World, _dt: f32) {
+    let actors = world
+        .try_resource_mut::<PendingDeathReconciliations>()
+        .map(|mut pending| std::mem::take(&mut pending.actors))
+        .unwrap_or_default();
+    for actor in actors {
+        if world.get::<Dead>(actor).is_some() {
+            reconcile_dead_actor(world, actor);
+        }
     }
 }
 

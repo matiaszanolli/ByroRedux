@@ -1043,6 +1043,7 @@ fn apply_player_drowning_damage(world: &World, player: EntityId, damage: f32) {
         if let Some(mut dead_q) = world.query_mut::<Dead>() {
             dead_q.insert(player, Dead);
         }
+        crate::combat::queue_dead_actor_reconciliation(world, player);
     }
 }
 
@@ -1464,6 +1465,7 @@ mod tests {
         world.register::<ActorValues>();
         world.register::<ActorVitals>();
         world.register::<Dead>();
+        world.insert_resource(crate::combat::PendingDeathReconciliations::default());
         let player = world.spawn();
         world.insert(player, ActorVitals { health: 7 });
         world.insert(player, ActorValues::from_pairs([(7, 5.0)]));

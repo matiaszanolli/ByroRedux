@@ -474,6 +474,7 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // any world that skips this registration (bare test worlds).
     world.insert_resource(InteractionCandidateScratch::default());
     world.insert_resource(crate::combat::CombatState::default());
+    world.insert_resource(crate::combat::PendingDeathReconciliations::default());
     world.insert_resource(StringPool::new());
     // #1212 / D1-NEW-01 — FormIdPool is the intern table backing
     // `FormIdComponent` and `World::find_by_form_id`. Every
@@ -700,6 +701,7 @@ pub(crate) fn build_scheduler() -> Scheduler {
             .reads_resource::<ActionBindings>()
             .reads_resource::<ActionState>()
             .writes_resource::<ActionState>()
+            .writes_resource::<crate::combat::PendingDeathReconciliations>()
             .writes_resource::<InjectedKeyPulse>()
             .writes_resource::<InjectedKeyHold>()
             .reads_resource::<byroredux_scripting::PlayerControlState>()
@@ -1365,8 +1367,20 @@ pub(crate) fn build_scheduler() -> Scheduler {
             .reads::<byroredux_core::ecs::components::water::WaterContact>()
             .reads::<byroredux_core::ecs::components::ActorVitals>()
             .reads::<byroredux_core::ecs::components::Dead>()
+            .writes_resource::<crate::combat::PendingDeathReconciliations>()
             .writes::<byroredux_core::ecs::components::ActorValues>()
             .writes::<byroredux_core::ecs::components::Dead>(),
+    );
+    // Water hazards and drowning can mark actors dead from different stages.
+    // Reconcile their structural consequences only after both producers have
+    // run, in this exclusive lane where AI removal and ragdoll activation are
+    // legal. This is the same reconciler combat and save-load use (#3119).
+    scheduler.add_exclusive_with_access(
+        Stage::Late,
+        crate::combat::reconcile_pending_dead_actors_system,
+        Access::new()
+            .writes_resource::<crate::combat::PendingDeathReconciliations>()
+            .reads::<byroredux_core::ecs::components::Dead>(),
     );
     scheduler.add_exclusive_with_access(
         Stage::Late,

@@ -57,6 +57,7 @@ pub(crate) fn water_damage_system(world: &World, dt: f32) {
             if let Some(mut dead_q) = world.query_mut::<Dead>() {
                 dead_q.insert(entity, Dead);
             }
+            crate::combat::queue_dead_actor_reconciliation(world, entity);
         }
     }
 }
@@ -592,7 +593,7 @@ mod tests {
         SubmersionState, WaterContact, WaterKind, WaterMaterial, WaterPlane, WaterVolume,
     };
     use byroredux_core::ecs::components::ParticleEmitter;
-    use byroredux_core::ecs::components::{ActorValues, ActorVitals, Dead};
+    use byroredux_core::ecs::components::{ActorValues, ActorVitals, Dead, FollowBehavior};
     use byroredux_core::ecs::{ActiveCamera, GlobalTransform, World};
     use byroredux_core::math::Vec3;
     use byroredux_scripting::{RippleEvent, SplashEvent};
@@ -893,10 +894,19 @@ mod tests {
         world.register::<ActorValues>();
         world.register::<ActorVitals>();
         world.register::<Dead>();
+        world.register::<FollowBehavior>();
         world.register::<WaterContact>();
+        world.insert_resource(crate::combat::PendingDeathReconciliations::default());
         let actor = world.spawn();
         world.insert(actor, ActorVitals { health: 7 });
         world.insert(actor, ActorValues::from_pairs([(7, 5.0)]));
+        world.insert(
+            actor,
+            FollowBehavior {
+                target_form_id: Some(0x14),
+                follow_distance: Some(64.0),
+            },
+        );
         world.insert(
             actor,
             WaterContact {
@@ -910,6 +920,13 @@ mod tests {
 
         assert_eq!(world.get::<ActorValues>(actor).unwrap().current(7), 0.0);
         assert!(world.get::<Dead>(actor).is_some());
+        assert!(world.get::<FollowBehavior>(actor).is_some());
+
+        crate::combat::reconcile_pending_dead_actors_system(&world, 0.0);
+        assert!(
+            world.get::<FollowBehavior>(actor).is_none(),
+            "the Late sink must apply the shared death reconciler to water kills"
+        );
     }
 
     /// Regression for #2792 (REN-D15-09): a `WaterPlane` entity with no
