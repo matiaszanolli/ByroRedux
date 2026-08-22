@@ -3862,11 +3862,10 @@ impl VulkanContext {
         if let Some(ref mut b) = self.bloom {
             b.destroy(&self.device, alloc);
         }
-        // NOTE: `self.water` teardown hoisted to the
-        // allocator-independent block near the top of Drop
-        // (#1483) — its pipeline + caustic descriptor pool need no
-        // allocator. The per-FIF `water_caustic_accum` images
-        // below DO need the allocator and stay here.
+        // `self.water` teardown is hoisted above because WaterPipeline owns
+        // the SharedAllocator clone needed to free its parameter SSBOs. Its
+        // destroy must stay before the Arc::try_unwrap below; the per-FIF
+        // accumulator images still use the context allocator here (#3140).
         if let Some(ref mut wca) = self.water_caustic_accum {
             // SAFETY: parent Drop runs after `device_wait_idle`
             // earlier in the teardown sequence; no in-flight

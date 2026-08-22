@@ -140,6 +140,11 @@ fn advance_parked_visits(
     (n / (n + 1.0)).min(CAUSTIC_DECAY_MAX)
 }
 
+#[inline]
+fn reset_parked_slot(parked: &mut [u32; MAX_FRAMES_IN_FLIGHT], frame: usize) {
+    parked[frame] = 0;
+}
+
 /// FNV-1a offset basis / prime — the caustic scene key's mixer.
 const CAUSTIC_KEY_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
 const CAUSTIC_KEY_PRIME: u64 = 0x0000_0100_0000_01b3;
@@ -1091,11 +1096,15 @@ impl CausticPipeline {
     /// after the main render pass ends and before composite reads the
     /// accumulator.
     pub unsafe fn clear_for_skip(
-        &self,
+        &mut self,
         device: &ash::Device,
         cmd: vk::CommandBuffer,
         frame: usize,
     ) {
+        // The image is emptied below, so its temporal age must restart too.
+        // Otherwise a long skip streak resumes with a near-0.995 history
+        // weight against black and takes ~200 slot visits to fade back in.
+        reset_parked_slot(&mut self.parked_frames, frame);
         let slot_img = self.slots[frame].image;
         let clear_range = caustic_subresource_range();
         // Same over-specified wait stages `dispatch`'s moving-camera clear
@@ -1538,8 +1547,8 @@ mod tests {
 #[cfg(test)]
 mod parked_visit_tests {
     use super::{
-        advance_parked_visits, caustic_key_seed, fold_caustic_key_f32, CAUSTIC_DECAY_MAX,
-        MAX_FRAMES_IN_FLIGHT,
+        advance_parked_visits, caustic_key_seed, fold_caustic_key_f32, reset_parked_slot,
+        CAUSTIC_DECAY_MAX, MAX_FRAMES_IN_FLIGHT,
     };
 
     /// #2401 / CHAIN2-D2-02 — after k parked *global* frames, the slot
@@ -1595,6 +1604,19 @@ mod parked_visit_tests {
             "every slot's counter must reset on motion, or the next parked \
              run over-weights a slot holding pre-motion energy (#2401)",
         );
+    }
+
+    #[test]
+    fn skipped_slot_restarts_temporal_convergence_after_clear() {
+        let mut parked = [1_000; MAX_FRAMES_IN_FLIGHT];
+        reset_parked_slot(&mut parked, 1);
+        assert_eq!(parked[1], 0);
+        assert_eq!(
+            advance_parked_visits(&mut parked, 1, true),
+            0.5,
+            "a cleared skip slot must admit a fresh sample at first-visit weight"
+        );
+        assert_eq!(parked[0], 1_000, "only the cleared FIF slot resets");
     }
 
     /// #2468 / REN-D14-2026-08-07-01 — a parked camera is not enough to
