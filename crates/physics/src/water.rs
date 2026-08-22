@@ -96,13 +96,27 @@ impl Default for PhysicsWaterConstants {
 
 impl Resource for PhysicsWaterConstants {}
 
-/// Reusable staging storage for per-tick [`WaterContact`] writes.
+#[derive(Clone, Copy)]
+struct BuoyancyTarget {
+    entity: EntityId,
+    handles: RapierHandles,
+    authored_lin: f32,
+    authored_ang: f32,
+    prior_wet: bool,
+    prior_depth: f32,
+}
+
+/// Reusable staging storage for the complete per-tick buoyancy scan.
 ///
-/// The physics system temporarily takes this vector while Rapier is locked,
-/// drains it into ECS storage afterward, then returns the allocation so wet
-/// scenes do not grow a fresh buffer every frame.
+/// The physics system temporarily takes these vectors, clears and refills
+/// them, then returns their allocations after every exit path. This keeps
+/// water surfaces, placed currents, dynamic-body targets, and contact writes
+/// allocation-free after their high-water marks (#3135).
 #[derive(Default)]
 pub struct WaterContactScratch {
+    surfaces: Vec<WaterSurface>,
+    current_volumes: Vec<WaterCurrentVolume>,
+    targets: Vec<BuoyancyTarget>,
     writes: Vec<(EntityId, WaterContact)>,
 }
 
@@ -381,10 +395,10 @@ pub fn weather_wave_adjustment(world: &World, time_secs: f32) -> ([f32; 2], f32)
 /// Collect every active water plane's volume + surface height + material
 /// (+ optional flow). Linear scan — cells carry 1–3 planes; a broadphase
 /// would only matter at dozens (mirrors `submersion_system`).
-fn collect_water_surfaces(world: &World) -> Vec<WaterSurface> {
-    let mut out = Vec::new();
+fn collect_water_surfaces(world: &World, out: &mut Vec<WaterSurface>) {
+    out.clear();
     let (Some(wq), Some(vq)) = (world.query::<WaterPlane>(), world.query::<WaterVolume>()) else {
-        return out;
+        return;
     };
     let flow_q = world.query::<WaterFlow>();
     for (entity, plane) in wq.iter() {
@@ -401,14 +415,13 @@ fn collect_water_surfaces(world: &World) -> Vec<WaterSurface> {
             damage_per_second: plane.damage_per_second,
         });
     }
-    out
 }
 
-fn collect_water_current_volumes(world: &World) -> Vec<WaterCurrentVolume> {
-    world
-        .query::<WaterCurrentVolume>()
-        .map(|query| query.iter().map(|(_, current)| *current).collect())
-        .unwrap_or_default()
+fn collect_water_current_volumes(world: &World, out: &mut Vec<WaterCurrentVolume>) {
+    out.clear();
+    if let Some(query) = world.query::<WaterCurrentVolume>() {
+        out.extend(query.iter().map(|(_, current)| *current));
+    }
 }
 
 /// Restore dynamic bodies whose source water plane streamed out before the
@@ -521,6 +534,51 @@ fn waves_require_contact_rescan(world: &World, surfaces: &[WaterSurface]) -> boo
 /// - On the wet→dry transition the body's authored damping is restored
 ///   exactly once and the buoyancy force cleared.
 pub(crate) fn apply_buoyancy(world: &World, had_newcomers: bool) {
+    let (mut surfaces, mut current_volumes, mut targets, mut writes, reuse_scratch) =
+        match world.try_resource_mut::<WaterContactScratch>() {
+            Some(mut scratch) => (
+                std::mem::take(&mut scratch.surfaces),
+                std::mem::take(&mut scratch.current_volumes),
+                std::mem::take(&mut scratch.targets),
+                std::mem::take(&mut scratch.writes),
+                true,
+            ),
+            None => (Vec::new(), Vec::new(), Vec::new(), Vec::new(), false),
+        };
+
+    apply_buoyancy_with_scratch(
+        world,
+        had_newcomers,
+        &mut surfaces,
+        &mut current_volumes,
+        &mut targets,
+        &mut writes,
+    );
+
+    if reuse_scratch {
+        if let Some(mut scratch) = world.try_resource_mut::<WaterContactScratch>() {
+            scratch.surfaces = surfaces;
+            scratch.current_volumes = current_volumes;
+            scratch.targets = targets;
+            scratch.writes = writes;
+        } else {
+            log::error!("WaterContactScratch disappeared during physics_sync_system");
+        }
+    }
+}
+
+fn apply_buoyancy_with_scratch(
+    world: &World,
+    had_newcomers: bool,
+    surfaces: &mut Vec<WaterSurface>,
+    current_volumes: &mut Vec<WaterCurrentVolume>,
+    targets: &mut Vec<BuoyancyTarget>,
+    writes: &mut Vec<(EntityId, WaterContact)>,
+) {
+    surfaces.clear();
+    current_volumes.clear();
+    targets.clear();
+    writes.clear();
     if world.try_resource::<PhysicsWorld>().is_none() {
         return;
     }
@@ -529,8 +587,8 @@ pub(crate) fn apply_buoyancy(world: &World, had_newcomers: bool) {
         .map(|r| *r)
         .unwrap_or_default();
 
-    let surfaces = collect_water_surfaces(world);
-    let current_volumes = collect_water_current_volumes(world);
+    collect_water_surfaces(world, surfaces);
+    collect_water_current_volumes(world, current_volumes);
     let time_secs = world.try_resource::<TotalTime>().map(|time| time.0);
     let atmospheric_wind = world
         .try_resource::<WindField>()
@@ -539,8 +597,7 @@ pub(crate) fn apply_buoyancy(world: &World, had_newcomers: bool) {
     let (weather_scroll, wind_wave_scale) = time_secs
         .map(|time| weather_wave_adjustment(world, time))
         .unwrap_or(([0.0; 2], 1.0));
-    let waves_require_rescan =
-        time_secs.is_some() && waves_require_contact_rescan(world, &surfaces);
+    let waves_require_rescan = time_secs.is_some() && waves_require_contact_rescan(world, surfaces);
     // Fast path: without a surface no body can remain buoyant. Always clear
     // stale contacts first because a placed current marker may outlive the
     // plane during streaming; only return immediately when it is absent too.
@@ -574,13 +631,13 @@ pub(crate) fn apply_buoyancy(world: &World, had_newcomers: bool) {
     // large exterior cell with one small lake. The per-surface test below
     // still refines XZ + the vertical band; this only prunes far-away bodies.
     let (mut ux0, mut uz0, mut ux1, mut uz1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
-    for s in &surfaces {
+    for s in surfaces.iter() {
         ux0 = ux0.min(s.volume.min[0]);
         uz0 = uz0.min(s.volume.min[2]);
         ux1 = ux1.max(s.volume.max[0]);
         uz1 = uz1.max(s.volume.max[2]);
     }
-    for current in &current_volumes {
+    for current in current_volumes.iter() {
         ux0 = ux0.min(current.volume.min[0]);
         uz0 = uz0.min(current.volume.min[2]);
         ux1 = ux1.max(current.volume.max[0]);
@@ -598,15 +655,6 @@ pub(crate) fn apply_buoyancy(world: &World, had_newcomers: bool) {
     };
     let contact_q = world.query::<WaterContact>();
 
-    struct Target {
-        entity: EntityId,
-        handles: RapierHandles,
-        authored_lin: f32,
-        authored_ang: f32,
-        prior_wet: bool,
-        prior_depth: f32,
-    }
-    let mut targets: Vec<Target> = Vec::new();
     for (entity, handles) in handles_q.iter() {
         let Some(bd) = body_q.get(entity) else {
             continue;
@@ -615,7 +663,7 @@ pub(crate) fn apply_buoyancy(world: &World, had_newcomers: bool) {
             continue;
         }
         let prior_contact = contact_q.as_ref().and_then(|cq| cq.get(entity)).copied();
-        targets.push(Target {
+        targets.push(BuoyancyTarget {
             entity,
             handles: *handles,
             authored_lin: bd.linear_damping,
@@ -635,21 +683,14 @@ pub(crate) fn apply_buoyancy(world: &World, had_newcomers: bool) {
     }
 
     // Buoyancy + damping under the write lock; collect the `WaterContact`
-    // writes to apply after the lock drops. The live engine supplies a
-    // `WaterContactScratch`; tests and embedders without one retain the same
-    // behavior through the local-vector fallback.
-    let (mut writes, reuse_writes) = match world.try_resource_mut::<WaterContactScratch>() {
-        Some(mut scratch) => (std::mem::take(&mut scratch.writes), true),
-        None => (Vec::new(), false),
-    };
-    writes.clear();
+    // writes to apply after the lock drops.
     {
         let mut pw = world.resource_mut::<PhysicsWorld>();
         let gravity_y = pw.gravity.y;
         // Set once if any body is woken on a dry→wet transition this frame
         // (see the `pw.wake()` after the loop).
         let mut woke_any = false;
-        for t in &targets {
+        for t in targets.iter() {
             // Cheap reject first (body translation only); pay for the collider
             // AABB + the per-surface vertical test ONLY for bodies inside the
             // water XZ footprint. The immutable `body` borrow ends with `pos`.
@@ -928,13 +969,6 @@ pub(crate) fn apply_buoyancy(world: &World, had_newcomers: bool) {
             ),
         }
     }
-    if reuse_writes {
-        if let Some(mut scratch) = world.try_resource_mut::<WaterContactScratch>() {
-            scratch.writes = writes;
-        } else {
-            log::error!("WaterContactScratch disappeared during physics_sync_system");
-        }
-    }
 }
 
 #[cfg(test)]
@@ -963,7 +997,8 @@ mod tests {
             },
         );
 
-        let currents = collect_water_current_volumes(&world);
+        let mut currents = Vec::new();
+        collect_water_current_volumes(&world, &mut currents);
         assert_eq!(currents.len(), 1);
         assert_eq!(currents[0].flow.direction, [1.0, 0.0, 0.0]);
         assert!(world.query::<WaterPlane>().is_none());
@@ -1044,6 +1079,17 @@ mod tests {
                 upper_surface = Some(water);
             }
         }
+        let current = world.spawn();
+        world.insert(
+            current,
+            WaterCurrentVolume {
+                volume: WaterVolume {
+                    min: [100.0, -10.0, 100.0],
+                    max: [110.0, 10.0, 110.0],
+                },
+                flow: WaterFlow::new([1.0, 0.0, 0.0], 1.0),
+            },
+        );
 
         let body = world.spawn();
         world.insert(body, CollisionShape::Ball { radius: 1.0 });
@@ -1065,8 +1111,19 @@ mod tests {
 
         physics_sync_system(&world, PHYSICS_DT);
 
-        let first_capacity = world.resource::<WaterContactScratch>().writes.capacity();
-        assert!(first_capacity >= 1);
+        let first_capacities = {
+            let scratch = world.resource::<WaterContactScratch>();
+            (
+                scratch.surfaces.capacity(),
+                scratch.current_volumes.capacity(),
+                scratch.targets.capacity(),
+                scratch.writes.capacity(),
+            )
+        };
+        assert!(first_capacities.0 >= 2);
+        assert!(first_capacities.1 >= 1);
+        assert!(first_capacities.2 >= 1);
+        assert!(first_capacities.3 >= 1);
         let contact = world
             .get::<WaterContact>(body)
             .expect("nearest surface writes a contact");
@@ -1076,10 +1133,16 @@ mod tests {
         drop(contact);
 
         physics_sync_system(&world, PHYSICS_DT);
+        let scratch = world.resource::<WaterContactScratch>();
         assert_eq!(
-            world.resource::<WaterContactScratch>().writes.capacity(),
-            first_capacity,
-            "contact staging allocation must survive across physics ticks"
+            (
+                scratch.surfaces.capacity(),
+                scratch.current_volumes.capacity(),
+                scratch.targets.capacity(),
+                scratch.writes.capacity(),
+            ),
+            first_capacities,
+            "every buoyancy staging allocation must survive across physics ticks"
         );
     }
 
