@@ -331,6 +331,10 @@ established scalar fog response. Its authored pigment concentrations remain
 in their vanilla 0..20 range and are normalized in the shader against the
 shared `STARFIELD_WATER_CONCENTRATION_REFERENCE`; `oceanness` retains its
 native 0..1 scale and feeds both absorption and forward scattering.
+Its leading DNAM float is carried independently as `depth_amount`; xEdit's
+current Starfield definition names it `Depth Amount`, so it is not reused as
+an above-water fog distance. Creation-2 records retain the canonical fog
+defaults until an explicit authored near/far pair exists.
 Its authored flow-map scale is preserved, and surface roughness now softens
 geometry-hit reflections in addition to shaping the shared direct-sun
 highlight exponent. Skyrim's separate Specular Radius is also preserved and

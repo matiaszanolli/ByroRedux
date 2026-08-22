@@ -185,6 +185,10 @@ pub struct WaterParams {
     /// takes over. Default `600.0`. Clamped to at least `fog_near + 1`
     /// on parse so the ramp span is never zero.
     pub fog_far: f32,
+    /// Authored `Depth Amount` from FO4+/Creation-2 WATR.DNAM. This is not a
+    /// fog distance: source schemas define it separately from explicit color
+    /// and underwater near/far ranges. Zero is the pre-FO4/absent sentinel.
+    pub depth_amount: f32,
     /// Underwater fog ramp. Zero/invalid means reuse the above-water ramp.
     pub underwater_fog_near: f32,
     pub underwater_fog_far: f32,
@@ -315,6 +319,7 @@ impl Default for WaterParams {
             reflection_hdr_multiplier: 1.0,
             fog_near: 80.0,
             fog_far: 600.0,
+            depth_amount: 0.0,
             underwater_fog_near: 0.0,
             underwater_fog_far: 0.0,
             underwater_fog_amount: 1.0,
@@ -1064,6 +1069,7 @@ fn decode_dnam_fo4(data: &[u8]) -> WaterParams {
     // color-ramp near/far distances are the floats at 12/16; using 0..depth
     // erases the per-water ramp authored by vanilla records.
     if let Some(depth_amount) = read_f32_at(data, 0) {
+        p.depth_amount = depth_amount.max(0.0);
         p.fog_near = 0.0;
         p.fog_far = depth_amount.max(1.0);
     }
@@ -1212,8 +1218,10 @@ fn decode_dnam_fo76(data: &[u8]) -> WaterParams {
 fn decode_dnam_starfield(data: &[u8]) -> WaterParams {
     let mut p = WaterParams::default();
     if let Some(depth) = read_f32_at(data, 0) {
-        p.fog_near = 0.0;
-        p.fog_far = depth.max(1.0);
+        // xEdit dev-4.1.6 defines DNAM[0] as `Depth Amount`, not a fog
+        // distance. Creation-2 records have no above-water near/far fields,
+        // so preserve the canonical fog defaults and carry this independently.
+        p.depth_amount = depth.max(0.0);
     }
     // Starfield's first post-depth block is three independent color
     // absorption coefficients. Vanilla orders and magnitudes these as
@@ -2181,8 +2189,9 @@ mod tests {
         data[108..112].copy_from_slice(&1.5f32.to_le_bytes());
         data[112..116].copy_from_slice(&1.25f32.to_le_bytes());
         let w = parse_watr(0x18, &[sub(b"DNAM", &data)], GameKind::Fallout76, &None);
-        assert_eq!(w.params.fog_near, 0.0);
-        assert_eq!(w.params.fog_far, 900.0);
+        assert_eq!(w.params.fog_near, 80.0);
+        assert_eq!(w.params.fog_far, 600.0);
+        assert_eq!(w.params.depth_amount, 900.0);
         assert_eq!(w.params.absorption_coefficients[2], 25.0);
         assert_eq!(w.params.concentration, [450.0, 0.30, 0.85, 8.0]);
         assert_eq!(w.params.underwater_fog_near, 0.65);
@@ -2233,7 +2242,9 @@ mod tests {
         data[144..148].copy_from_slice(&3.0f32.to_le_bytes());
         data[148..152].copy_from_slice(&0.5f32.to_le_bytes());
         let w = parse_watr(0x1234, &[sub(b"DNAM", &data)], GameKind::Starfield, &None);
-        assert_eq!(w.params.fog_far, 1200.0);
+        assert_eq!(w.params.fog_near, 80.0);
+        assert_eq!(w.params.fog_far, 600.0);
+        assert_eq!(w.params.depth_amount, 1200.0);
         assert_eq!(w.params.absorption_coefficients, [0.1, 0.2, 0.3]);
         assert_eq!(w.params.concentration, [0.4, 0.5, 0.6, 0.7]);
         assert_eq!(w.params.underwater_fog_amount, 0.7);

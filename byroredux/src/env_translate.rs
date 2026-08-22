@@ -547,6 +547,7 @@ pub(crate) fn resolve_water_material(
             mat.underwater_color = rec.params.underwater_color;
             mat.fog_near = rec.params.fog_near;
             mat.fog_far = rec.params.fog_far;
+            mat.depth_amount = rec.params.depth_amount;
             mat.underwater_fog_near = rec.params.underwater_fog_near;
             mat.underwater_fog_far = rec.params.underwater_fog_far;
             mat.underwater_fog_amount = rec.params.underwater_fog_amount.clamp(0.0, 8.0);
@@ -2186,6 +2187,7 @@ mod tests {
                 reflection_hdr_multiplier: 2.5,
                 fog_near: 20.0,
                 fog_far: 80.0,
+                depth_amount: 0.0,
                 underwater_fog_near: 0.0,
                 underwater_fog_far: 0.0,
                 underwater_fog_amount: 1.0,

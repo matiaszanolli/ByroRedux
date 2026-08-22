@@ -121,7 +121,7 @@ struct WaterParams {
     // authored rain-response (0..4). Not a free slot — same trap as
     // VolumetricsParams.render_origin.w / GpuCamera.render_origin.w.
     // Keep these trailing slots in lockstep with water.frag and
-    // GpuWaterParams so every array element uses the same 352-byte std430
+    // GpuWaterParams so every array element uses the same 368-byte std430
     // stride when the vertex shader selects a water material by index.
     vec4 absorption;
     // Starfield phytoplankton, sediment, yellow matter, oceanness.
@@ -135,6 +135,8 @@ struct WaterParams {
     // xy = authored mesh-water UV offset; z = flow-map index bit-cast;
     // w = authored flow-map scale.
     vec4 uv_offset;
+    // x = FO4+/Creation-2 WATR Depth Amount; yzw reserved.
+    vec4 optical;
 };
 layout(std430, set = 2, binding = 1) readonly buffer WaterParamsBlock {
     WaterParams params[];

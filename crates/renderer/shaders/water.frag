@@ -57,7 +57,7 @@ layout(early_fragment_tests) in;
 //   composite-pass tone-mapper + TAA handles the residual jitter.
 //
 // Per-water material data lives in a compact, growable per-frame SSBO. Keeping the
-// 352-byte record here, rather than in push constants, leaves room to grow
+// 368-byte record here, rather than in push constants, leaves room to grow
 // the canonical cross-game material without raising device requirements.
 struct WaterParams {
     // x = time (engine uptime in seconds — `TotalTime`, accumulated
@@ -125,6 +125,9 @@ struct WaterParams {
     // xy = authored mesh-water UV offset; z = flow-map index bit-cast;
     // w = authored flow-map scale.
     vec4 uv_offset;
+    // x = FO4+/Creation-2 WATR Depth Amount; yzw reserved. This is not a
+    // substitute for the fog distances in shallow.a/deep.a.
+    vec4 optical;
 };
 
 layout(std430, set = 2, binding = 1) readonly buffer WaterParamsBlock {

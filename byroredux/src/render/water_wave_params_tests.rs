@@ -370,14 +370,13 @@ fn starfield_absorption_coefficients_reach_water_gpu_params() {
         .expect("water plane");
     {
         let mut query = world.query_mut::<WaterPlane>().unwrap();
-        query
-            .get_mut(water)
-            .unwrap()
-            .material
-            .absorption_coefficients = [0.16558, 0.09624, 0.07627];
+        let material = &mut query.get_mut(water).unwrap().material;
+        material.absorption_coefficients = [0.16558, 0.09624, 0.07627];
+        material.depth_amount = 8.0;
     }
     let draws = run_build(&world);
     assert_eq!(draws[0].params.absorption, [0.16558, 0.09624, 0.07627, 0.0]);
+    assert_eq!(draws[0].params.optical, [8.0, 0.0, 0.0, 0.0]);
 }
 
 #[test]

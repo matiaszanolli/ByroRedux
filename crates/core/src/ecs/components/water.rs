@@ -135,6 +135,10 @@ pub struct WaterMaterial {
     /// `deep_color`). Always `> fog_near` — the ESM parser clamps it to
     /// `fog_near + 1` at minimum.
     pub fog_far: f32,
+    /// FO4+/Creation-2 WATR `Depth Amount`. Kept distinct from fog ranges:
+    /// source schemas author explicit color/underwater ranges separately.
+    /// Zero is the absent sentinel for older records and mesh water.
+    pub depth_amount: f32,
     /// Underwater fog near/far ramp. A zero far value means reuse the
     /// above-water ramp (legacy records without an underwater tail).
     pub underwater_fog_near: f32,
@@ -316,6 +320,7 @@ impl Default for WaterMaterial {
             underwater_color: [0.02, 0.06, 0.10],
             fog_near: 80.0,
             fog_far: 600.0,
+            depth_amount: 0.0,
             underwater_fog_near: 0.0,
             underwater_fog_far: 0.0,
             underwater_fog_amount: 1.0,

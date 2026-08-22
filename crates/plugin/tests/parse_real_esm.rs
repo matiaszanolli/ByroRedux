@@ -321,6 +321,7 @@ fn installed_masters_water_fields_are_finite_and_ordered() {
             let scalars = [
                 p.fog_near,
                 p.fog_far,
+                p.depth_amount,
                 p.underwater_fog_near,
                 p.underwater_fog_far,
                 p.reflectivity,
@@ -410,6 +411,9 @@ fn installed_masters_water_fields_are_finite_and_ordered() {
                     && water_mud_brown.params.concentration[2] > 1.0,
                 "vanilla pigment concentrations must not be normalized at the parser boundary"
             );
+            assert!((water_clear.params.depth_amount - 8.0).abs() < 1.0e-5);
+            assert_eq!(water_clear.params.fog_near, 80.0);
+            assert_eq!(water_clear.params.fog_far, 600.0);
         }
         checked_games += 1;
     }

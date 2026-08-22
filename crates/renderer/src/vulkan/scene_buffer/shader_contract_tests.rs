@@ -1156,8 +1156,8 @@ fn gpu_water_params_rust_and_glsl_copies_stay_in_lockstep() {
     let frag_fields = parse_glsl_struct_fields(frag_src, "struct WaterParams");
     assert_eq!(
         rust_fields.len(),
-        22,
-        "GpuWaterParams must remain 22 vec4 slots"
+        23,
+        "GpuWaterParams must remain 23 vec4 slots"
     );
     assert_eq!(
         vert_fields, rust_fields,

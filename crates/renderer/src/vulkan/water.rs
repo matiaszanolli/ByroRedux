@@ -59,7 +59,7 @@ pub(crate) const WATER_VERT_SPV: &[u8] = include_bytes!("../../shaders/water.ver
 pub(crate) const WATER_FRAG_SPV: &[u8] = include_bytes!("../../shaders/water.frag.spv");
 
 /// Canonical GPU material payload for one water draw. Layout matches
-/// `WaterParams` in both water shaders exactly (22 std430 vec4 slots).
+/// `WaterParams` in both water shaders exactly (23 std430 vec4 slots).
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct GpuWaterParams {
@@ -144,6 +144,9 @@ pub struct GpuWaterParams {
     /// same trap as `VolumetricsParams.render_origin.w` (#1928) and
     /// `GpuCamera.render_origin.w` (#2164).
     pub uv_offset: [f32; 4],
+    /// x = FO4+/Creation-2 WATR `Depth Amount`; yzw reserved. This remains
+    /// separate from `shallow.a`/`deep.a`, which are actual fog distances.
+    pub optical: [f32; 4],
 }
 
 impl GpuWaterParams {
@@ -157,8 +160,8 @@ impl GpuWaterParams {
 }
 
 const _: () = assert!(
-    std::mem::size_of::<GpuWaterParams>() == 352,
-    "GpuWaterParams must remain 22 std430 vec4 slots"
+    std::mem::size_of::<GpuWaterParams>() == 368,
+    "GpuWaterParams must remain 23 std430 vec4 slots"
 );
 
 /// Per-draw selector for the material array uploaded once per frame.
@@ -935,7 +938,7 @@ mod tests {
 
     #[test]
     fn water_gpu_contract_layouts_are_stable() {
-        assert_eq!(std::mem::size_of::<GpuWaterParams>(), 352);
+        assert_eq!(std::mem::size_of::<GpuWaterParams>(), 368);
         assert_eq!(std::mem::align_of::<GpuWaterParams>(), 4);
         assert_eq!(std::mem::size_of::<WaterPush>(), 16);
         assert_eq!(std::mem::align_of::<WaterPush>(), 4);
@@ -953,9 +956,10 @@ mod tests {
                 && src.contains("vec4 displacement;")
                 && src.contains("vec4 ripple;")
                 && src.contains("vec4 underwater;")
-                && src.contains("vec4 alpha;"),
+                && src.contains("vec4 alpha;")
+                && src.contains("vec4 optical;"),
             "water.vert must declare the trailing material slots so indexed\n\
-             WaterParams elements retain the 352-byte std430 stride used by\n\
+             WaterParams elements retain the 368-byte std430 stride used by\n\
              Rust and water.frag"
         );
         assert!(
@@ -1235,6 +1239,7 @@ mod tests {
                 underwater: [0.0; 4],
                 alpha: [0.0; 4],
                 uv_offset: [0.0; 4],
+                optical: [0.0; 4],
             },
         }
     }
