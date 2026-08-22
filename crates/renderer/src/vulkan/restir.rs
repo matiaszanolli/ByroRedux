@@ -25,6 +25,7 @@
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
 use super::sync::MAX_FRAMES_IN_FLIGHT;
+use super::texture::with_one_time_commands;
 use anyhow::Result;
 use ash::vk;
 
@@ -46,6 +47,8 @@ impl ReservoirBuffers {
     pub fn new(
         device: &ash::Device,
         allocator: &SharedAllocator,
+        queue: &std::sync::Mutex<vk::Queue>,
+        pool: vk::CommandPool,
         width: u32,
         height: u32,
     ) -> Result<Self> {
@@ -55,9 +58,18 @@ impl ReservoirBuffers {
                 device,
                 allocator,
                 Self::byte_size(width, height),
-                vk::BufferUsageFlags::STORAGE_BUFFER,
+                // TRANSFER_DST for the zero-fill below (#2152 / CHAIN-D2-05).
+                vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
             )?);
         }
+        // #2152 / CHAIN-D2-05 — zero both slots on creation. Without this,
+        // the temporal ping-pong's first-use read (and every read after a
+        // resize, see `recreate_on_resize`) samples undefined device memory,
+        // relying entirely on the shader-side surface/W/M/nan gate to reject
+        // it. SVGF and TAA (the analogous history consumers) both clear
+        // their history on init; this brings ReSTIR in line, near-free
+        // (one-time, once per swapchain generation).
+        Self::zero_fill(device, queue, pool, &buffers)?;
         // PERF-D5-NEW-04 / #1814 — this is the largest single VRAM
         // addition of the Session 49 denoiser overhaul (~127 MB at
         // 1080p, ~236 MB at 1440p, ~531 MB at 4K across both FIF
@@ -100,14 +112,18 @@ impl ReservoirBuffers {
     }
 
     /// Recreate at a new extent after a swapchain resize. History is
-    /// meaningless across a resize; the temporal pass's first-frame reset
-    /// is owned by the shader's packed surface-ID + normal check, and stale
-    /// reservoir contents cannot pass both validations, so no explicit clear
-    /// is needed.
+    /// meaningless across a resize, and the temporal pass's shader-side
+    /// packed surface-ID + normal check already rejects a stale slot's
+    /// contents — but the freshly-allocated slot at the new extent is
+    /// undefined device memory until zeroed below (#2152 / CHAIN-D2-05:
+    /// same reasoning as `new()`, this is the other point where the
+    /// resource is (re)created without ever being written first).
     pub fn recreate_on_resize(
         &mut self,
         device: &ash::Device,
         allocator: &SharedAllocator,
+        queue: &std::sync::Mutex<vk::Queue>,
+        pool: vk::CommandPool,
         width: u32,
         height: u32,
     ) -> Result<()> {
@@ -124,9 +140,10 @@ impl ReservoirBuffers {
                 device,
                 allocator,
                 Self::byte_size(width, height),
-                vk::BufferUsageFlags::STORAGE_BUFFER,
+                vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
             )?);
         }
+        Self::zero_fill(device, queue, pool, &self.buffers)?;
         // PERF-D5-NEW-04 / #1814 — same telemetry as `new()`; a resize
         // is exactly when this footprint changes, so it's the other
         // point where under-tracked VRAM growth would otherwise go
@@ -141,6 +158,32 @@ impl ReservoirBuffers {
                 / (1024.0 * 1024.0),
         );
         Ok(())
+    }
+
+    /// Zero every reservoir slot via `vkCmdFillBuffer`, submitted as a
+    /// one-time command and fence-waited before returning. #2152 /
+    /// CHAIN-D2-05 — called once from `new()` and once from
+    /// `recreate_on_resize()`, both of which only ever run outside the
+    /// per-frame hot path (startup / swapchain resize), so the extra
+    /// submit + wait here is not a per-frame cost.
+    fn zero_fill(
+        device: &ash::Device,
+        queue: &std::sync::Mutex<vk::Queue>,
+        pool: vk::CommandPool,
+        buffers: &[GpuBuffer],
+    ) -> Result<()> {
+        with_one_time_commands(device, queue, pool, |cmd| {
+            for buf in buffers {
+                // SAFETY: `cmd` is a valid, recording primary command buffer
+                // (guaranteed by `with_one_time_commands`); `buf.buffer` was
+                // just created on this `device` with TRANSFER_DST usage and
+                // is not yet referenced by any in-flight submission.
+                unsafe {
+                    device.cmd_fill_buffer(cmd, buf.buffer, 0, vk::WHOLE_SIZE, 0);
+                }
+            }
+            Ok(())
+        })
     }
 
     /// Destroy all reservoir buffers.
@@ -167,6 +210,38 @@ mod tests {
         // lightAndSurface + W + M + packed(histLen, depth) + accumR/G/B
         // + pad0 (packed geometric normal). 8 scalars × 4 bytes.
         assert_eq!(RESERVOIR_STRIDE, 8 * 4);
+    }
+
+    /// #2152 / CHAIN-D2-05 — both `new()` and `recreate_on_resize()` must
+    /// allocate with TRANSFER_DST and route through `zero_fill` so neither
+    /// slot's first-use read (nor its first read after a resize) samples
+    /// undefined device memory. A real Vulkan device is out of scope for
+    /// `cargo test`, so this pins the source shape instead — mirrors the
+    /// project's established pattern for GPU-only behavior (see the
+    /// `include_str!`-based tests above).
+    #[test]
+    fn reservoir_buffers_zero_fill_on_create_and_resize() {
+        let src = include_str!("restir.rs");
+        assert!(
+            src.contains("Self::zero_fill(device, queue, pool, &buffers)?;"),
+            "new() must zero-fill its freshly allocated slots"
+        );
+        assert!(
+            src.contains("Self::zero_fill(device, queue, pool, &self.buffers)?;"),
+            "recreate_on_resize() must zero-fill its freshly allocated slots"
+        );
+        // Built from two literals (rather than one) so this assertion's own
+        // text — read back via the `include_str!` above — doesn't count
+        // itself as a third match.
+        let usage_flags = format!(
+            "{}{}",
+            "vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::", "TRANSFER_DST"
+        );
+        assert_eq!(
+            src.matches(&usage_flags).count(),
+            2,
+            "both allocation sites must add TRANSFER_DST for the zero-fill"
+        );
     }
 
     #[test]

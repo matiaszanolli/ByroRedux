@@ -36,11 +36,12 @@ vec3 traceShadowTransmittanceDetailed(
 ) {
     committedInstance = 0xFFFFFFFFu;
     committedDistance = uintBitsToFloat(0x7F800000u);
-    const int MAX_OPAQUE_LAYERS = 8;
+    // MAX_ALPHA_SKIP_LAYERS is the shared 8-layer budget (#2265 / TD7-001;
+    // shader_constants.glsl).
     vec3 opaqueOrigin = origin;
     float opaqueRemaining = maxDist;
     uint opaqueMask = visibilityMask & VISIBILITY_MASK_ALL_OPAQUE;
-    for (int layer = 0; layer < MAX_OPAQUE_LAYERS; ++layer) {
+    for (int layer = 0; layer < int(MAX_ALPHA_SKIP_LAYERS); ++layer) {
         if (opaqueMask == 0u) break;
         rayQueryEXT opaqueRQ;
         rayQueryInitializeEXT(

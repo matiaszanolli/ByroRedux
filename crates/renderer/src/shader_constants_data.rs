@@ -48,6 +48,18 @@ const _: () = {
     assert!(RESERVOIR_SURFACE_MASK == 0x003f_ffff);
 };
 
+// Ray-query alpha-skip walk budget. Bounds any loop that walks a ray query
+// past alpha-tested/uncovered geometry (reflection self-skips, water's
+// foliage-cutout skips, opaque shadow-transmittance layering) — eight
+// layers is enough for realistic authored foliage/grate stacks without
+// letting a pathological stack turn one ray into an unbounded walk.
+//
+// #2265 / TD7-001 — previously hand-redeclared as `MAX_TRANSPARENT_SKIPS`
+// (raytrace.glsl, water.frag) and `MAX_OPAQUE_LAYERS` (shadow_transport.glsl)
+// at each call site; consolidated here so a future tuning pass has one
+// value to change instead of three to find.
+pub const MAX_ALPHA_SKIP_LAYERS: u32 = 8;
+
 // Vertex layout (global SSBO)
 pub const VERTEX_STRIDE_FLOATS: u32 = 26;
 // Skinned-vertex OUTPUT stride (`SkinSlot::output_buffer`) — position

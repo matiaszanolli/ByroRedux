@@ -22,6 +22,9 @@
 #define RESERVOIR_LIGHT_MASK 1023u
 #define RESERVOIR_SURFACE_MASK 4194303u
 
+// Ray-query alpha-skip walk budget (#2265 / TD7-001)
+#define MAX_ALPHA_SKIP_LAYERS 8u
+
 // Vertex layout (global SSBO)
 #define VERTEX_STRIDE_FLOATS 26u
 // Skinned-vertex output stride — position only (#2170).

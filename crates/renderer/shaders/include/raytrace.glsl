@@ -48,7 +48,8 @@ vec4 traceReflection(vec3 origin, vec3 direction, float maxDist, float mipBias,
     // Every caller supplies a scale-aware origin from offsetRayOriginForDirection.
     // Continue alpha/self skips with the same representable-float offset and a
     // zero tMin; no world-space epsilon is valid across all seven games.
-    const int MAX_TRANSPARENT_SKIPS = 8;
+    // MAX_ALPHA_SKIP_LAYERS is the shared 8-layer budget (#2265 / TD7-001;
+    // shader_constants.glsl).
     vec3 rayOrigin = origin;
     float remaining = maxDist;
     float travelled = 0.0;
@@ -58,7 +59,7 @@ vec4 traceReflection(vec3 origin, vec3 direction, float maxDist, float mipBias,
     vec2 hitUV = vec2(0.0);
     vec3 hitPosition = vec3(0.0);
 
-    for (int layer = 0; layer < MAX_TRANSPARENT_SKIPS; ++layer) {
+    for (int layer = 0; layer < int(MAX_ALPHA_SKIP_LAYERS); ++layer) {
         rayQueryEXT rq;
         rayQueryInitializeEXT(
             rq, topLevelAS, gl_RayFlagsOpaqueEXT, 0xFF,

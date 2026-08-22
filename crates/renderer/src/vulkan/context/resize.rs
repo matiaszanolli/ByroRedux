@@ -589,6 +589,8 @@ impl VulkanContext {
             self.reservoir_buffers.recreate_on_resize(
                 &self.device,
                 allocator,
+                &self.graphics_queue,
+                self.transfer_pool,
                 self.frame_extents.render.width,
                 self.frame_extents.render.height,
             )?;

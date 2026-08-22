@@ -83,6 +83,14 @@ fn main() {
     .unwrap();
     writeln!(out).unwrap();
 
+    writeln!(out, "// Ray-query alpha-skip walk budget (#2265 / TD7-001)").unwrap();
+    writeln!(
+        out,
+        "#define MAX_ALPHA_SKIP_LAYERS {MAX_ALPHA_SKIP_LAYERS}u"
+    )
+    .unwrap();
+    writeln!(out).unwrap();
+
     writeln!(out, "// Vertex layout (global SSBO)").unwrap();
     writeln!(out, "#define VERTEX_STRIDE_FLOATS {VERTEX_STRIDE_FLOATS}u").unwrap();
     writeln!(

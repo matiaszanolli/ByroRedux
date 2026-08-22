@@ -2616,6 +2616,8 @@ impl VulkanContext {
         let reservoir_buffers = super::restir::ReservoirBuffers::new(
             &device,
             &gpu_allocator,
+            &graphics_queue,
+            transfer_pool,
             render_extent.width,
             render_extent.height,
         )?;

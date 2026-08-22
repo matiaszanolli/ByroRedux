@@ -364,14 +364,14 @@ vec3 traceWaterRay(
     // slabs in water. Ray queries cannot invoke the raster material's alpha
     // test, so resolve the closest candidate, sample its real UV/material,
     // and continue behind uncovered texels. This is the same bounded
-    // contract as traceReflection; eight layers prevents pathological
+    // contract as traceReflection; MAX_ALPHA_SKIP_LAYERS (shared 8-layer
+    // budget, #2265 / TD7-001; shader_constants.glsl) prevents pathological
     // foliage stacks from turning a water pixel into an unbounded walk.
-    const int MAX_TRANSPARENT_SKIPS = 8;
     vec3 rayOrigin = origin;
     float travelled = 0.0;
     float remaining = maxDist;
 
-    for (int layer = 0; layer < MAX_TRANSPARENT_SKIPS; ++layer) {
+    for (int layer = 0; layer < int(MAX_ALPHA_SKIP_LAYERS); ++layer) {
         rayQueryEXT rq;
         rayQueryInitializeEXT(
             rq, topLevelAS,

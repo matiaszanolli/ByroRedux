@@ -35,6 +35,36 @@ fn max_lights_leaves_the_packed_restir_sentinel_unoccupied() {
     assert!(shader.contains("explicit 1023 invalid value"));
 }
 
+/// #2265 / TD7-001 — the 8-layer ray-walk budget shared by
+/// `traceReflection` (raytrace.glsl), water's foliage-cutout skip walk
+/// (water.frag), and `traceShadowTransmittanceDetailed`
+/// (shadow_transport.glsl) must come from the single `MAX_ALPHA_SKIP_LAYERS`
+/// GLSL macro, not three independently hand-declared local constants that
+/// can silently drift out of sync.
+#[test]
+fn alpha_skip_layer_budget_is_a_single_shared_constant() {
+    let header = include_str!("../../../shaders/include/shader_constants.glsl");
+    assert!(header.contains("#define MAX_ALPHA_SKIP_LAYERS 8u"));
+
+    let raytrace = include_str!("../../../shaders/include/raytrace.glsl");
+    let water = include_str!("../../../shaders/water.frag");
+    let shadow_transport = include_str!("../../../shaders/include/shadow_transport.glsl");
+    for (name, src) in [
+        ("raytrace.glsl", raytrace),
+        ("water.frag", water),
+        ("shadow_transport.glsl", shadow_transport),
+    ] {
+        assert!(
+            src.contains("int(MAX_ALPHA_SKIP_LAYERS)"),
+            "{name} must bound its ray-walk loop with the shared MAX_ALPHA_SKIP_LAYERS"
+        );
+        assert!(
+            !src.contains("MAX_TRANSPARENT_SKIPS") && !src.contains("MAX_OPAQUE_LAYERS"),
+            "{name} must not re-introduce a locally hand-declared alpha-skip cap"
+        );
+    }
+}
+
 /// The categorical selected-light oracle distinguishes a legitimate absence
 /// (black) from a corrupt non-sentinel index (magenta).
 #[test]
