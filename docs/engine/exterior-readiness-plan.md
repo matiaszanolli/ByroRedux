@@ -502,11 +502,11 @@ cover got its design doc before Phase 0. Scope as its own follow-up issue.
 
 **C. Persistent refs across parent worlds + FO4 precombine previs/occlusion.**
 
-1. [ ] Fix `byroredux/src/cell_loader/transition.rs:21-29`'s stale module
-   doc — it still says exterior↔exterior transitions are "out of scope,
-   errors," but `app_step.rs:755-871` fully implements them (drain, rebuild
-   `ExteriorWorldContext`, restream). Trivial, do first — flagged
-   independently by both this investigation and #2370's.
+1. [x] Fix `byroredux/src/cell_loader/transition.rs`'s stale module doc —
+   done. It claimed exterior↔exterior transitions were "out of scope,
+   errors"; `app_step.rs:755-871` actually fully implements them (drain,
+   rebuild `ExteriorWorldContext`, restream) — flagged independently by
+   both this investigation and #2370's.
 2. [ ] **Persistent-ref cross-worldspace continuity** — today a worldspace
    crossing is a full drain-and-reparse
    (`streaming_helpers::drain_streaming_state`) with no live-state
@@ -544,8 +544,8 @@ transitions, saves, and load-order changes.
 
 #### EX-09/17 (#2370) — exterior transitions, save/load, load-order conformance
 
-1. [ ] **Trivial first**: fix `transition.rs:21-29`'s stale module doc (see
-   EX-14/15 item C1 above — same finding, do it once).
+1. [x] **Trivial first**: fix `transition.rs`'s stale module doc — done
+   (see EX-14/15 item C1 above — same finding, fixed once for both).
 2. [x] **Transition mechanics** (worldspace/grid/pose/time/weather) — all
    fully wired today via `App::step_cell_transition`
    (`byroredux/src/app_step.rs:692-873`): grid/pose restore correctly

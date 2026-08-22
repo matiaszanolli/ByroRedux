@@ -23,10 +23,17 @@
 //!   [`CurrentCellRoot`]), load destination, reposition camera.
 //! - **Exterior → Interior**: caller drains the `WorldStreamingState`
 //!   beforehand (App-owned, not World-visible), then dispatches here.
-//! - **Interior → Exterior**: out of scope this stage — errors cleanly.
-//!   Requires spinning up a fresh `WorldStreamingState`; deferred to
-//!   M40 Phase 2 Stage 3b.
-//! - **Exterior → Exterior** (cross-worldspace): out of scope, errors.
+//! - **Interior → Exterior** and **Exterior → Exterior** (including
+//!   cross-worldspace): both handled by `App::step_cell_transition`'s
+//!   `TransitionDestination::Exterior` arm — tear down any active
+//!   interior first (no-op on the Exterior→Exterior path), drain any
+//!   existing `WorldStreamingState` (always, even intra-worldspace, so
+//!   the failure mode stays uniform), rebuild a fresh
+//!   `ExteriorWorldContext` + `WorldStreamingState` for the destination
+//!   worldspace/grid, and restream the initial radius. This is a full
+//!   drain-and-reparse, not a state-preserving crossing: live changes to
+//!   persistent refs made in the worldspace being left are not carried
+//!   forward across the crossing (EX-15/#2369 tracks closing that gap).
 
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::Resource;
@@ -139,10 +146,12 @@ pub enum TransitionDestination {
         /// Main ESM path. Same caveat as `masters`.
         esm_path: String,
     },
-    /// Exterior cell at the given worldspace + grid. **Not yet
-    /// implemented** — Stage 3b work. Trigger sites can populate this
-    /// today; the orchestrator errors cleanly so the queueing path
-    /// still gets exercised.
+    /// Exterior cell at the given worldspace + grid. Implemented —
+    /// `App::step_cell_transition` drains any existing streaming state,
+    /// rebuilds a fresh `ExteriorWorldContext`/`WorldStreamingState` for
+    /// this worldspace/grid, and restreams the initial radius. Covers
+    /// both Interior→Exterior and Exterior→Exterior (including
+    /// cross-worldspace), per the module doc above.
     Exterior {
         worldspace: String,
         grid: (i32, i32),
