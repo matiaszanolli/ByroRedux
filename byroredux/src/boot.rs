@@ -487,6 +487,7 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.insert_resource(NameIndex::new());
     world.insert_resource(SubtreeCache::new());
     world.insert_resource(CellRootIndex::new());
+    world.insert_resource(crate::components::PersistentRefIndex::new());
     world.insert_resource(byroredux_physics::PhysicsWorld::new());
     // M28.5 follow-up — engine-wide contact / KCC tunables. Owned
     // as a resource so a single edit propagates through every

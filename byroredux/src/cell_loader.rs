@@ -68,6 +68,7 @@ mod lod_support;
 mod nif_import_registry;
 mod object_lod;
 mod partial;
+mod persistent_ref_index;
 mod placement_lod;
 pub(crate) mod precombined;
 pub(crate) mod references;

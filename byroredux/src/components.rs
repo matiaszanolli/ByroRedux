@@ -1169,6 +1169,60 @@ impl NameIndex {
     }
 }
 
+/// FormId (raw, global load-order `u32` space — the same key space
+/// `resolve_entity_by_global_form_id` resolves through) → `Entity` index,
+/// scoped to the active worldspace's *persistent* CELL rather than every
+/// entity in the world. Build/query logic lives in
+/// `cell_loader::persistent_ref_index` (mirrors `CellRootIndex`: the
+/// resource is a plain data holder here, populated by a free function
+/// in the module that owns the concept it indexes).
+///
+/// # EX-09 (#2370) — why persistent refs only, not a general FormId index
+/// `World::find_by_form_id` / `resolve_entity_by_global_form_id` already
+/// cover the general case (an O(n) scan over every `FormIdComponent`,
+/// "fine for the rare condition-eval path" per the latter's own doc) —
+/// reused for this index's rebuild, not duplicated. A cache over *every*
+/// `FormIdComponent` entity would need invalidating on every ordinary
+/// cell-streaming tick, since ordinary REFRs churn constantly as cells
+/// load/unload; a persistent CELL's contents are stable for as long as
+/// its root entity is resident, so scoping to it keeps invalidation rare
+/// and tied to something that actually changes infrequently: a
+/// worldspace crossing (which always allocates a fresh persistent-cell
+/// root entity — see `built_for` below).
+///
+/// This is the foundational identity mechanism EX-14/15's cross-worldspace
+/// persistent-ref continuity and EX-16's actor/package migration both
+/// need before they can be built — see
+/// `docs/engine/exterior-readiness-plan.md`.
+///
+/// Landed ahead of its consumer, same posture as `groundcover_translate`'s
+/// Phase 0 constants: fully exercised by `cell_loader::persistent_ref_index`'s
+/// test suite, a *pending* production consumer (EX-14/15, EX-16) rather than
+/// unused code — hence the field-level `#[allow(dead_code)]` below.
+pub(crate) struct PersistentRefIndex {
+    #[allow(dead_code)] // see the struct doc — EX-14/15/EX-16 is the pending consumer
+    pub(crate) map: HashMap<u32, EntityId>,
+    /// The persistent-cell root entity this index was last built against.
+    /// `None` before the first build. A worldspace crossing always
+    /// allocates a fresh root entity for the destination's persistent
+    /// CELL, so comparing this to the caller's current `persistent_root`
+    /// is a precise (not merely probable) invalidation signal — unlike
+    /// `NameIndex`/`SubtreeCache`'s component-count heuristic, which is
+    /// the right tool when nothing more specific is available but isn't
+    /// needed here.
+    #[allow(dead_code)] // see the struct doc — EX-14/15/EX-16 is the pending consumer
+    pub(crate) built_for: Option<EntityId>,
+}
+impl Resource for PersistentRefIndex {}
+impl PersistentRefIndex {
+    pub(crate) fn new() -> Self {
+        Self {
+            map: HashMap::new(),
+            built_for: None,
+        }
+    }
+}
+
 /// Tracks keyboard and mouse input state for the fly camera.
 pub(crate) const DEFAULT_LOOK_SENSITIVITY: f32 = 0.002;
 

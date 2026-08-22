@@ -513,10 +513,12 @@ cover got its design doc before Phase 0. Scope as its own follow-up issue.
    carry-over for modified persistent refs, and
    `begin_worldspace_persistent_cell` (`cell_loader/exterior.rs:388-390`)
    only exact-matches the *current* worldspace's own key — it never walks
-   the WNAM parent chain. **Sequence after #2370 lands its FormId→Entity
-   identity index** (see EX-09/17 below, item 3) — building parent-chain
-   persistent-ref inheritance without an identity mechanism first would be
-   building on sand.
+   the WNAM parent chain. **Unblocked**: #2370 item 3's `PersistentRefIndex`
+   (`cell_loader::persistent_ref_index`) landed — the `FormId → Entity`
+   identity mechanism this needs to build on now exists. Still to do: walk
+   the WNAM parent chain in `begin_worldspace_persistent_cell`, and use the
+   index to reconcile a parent's already-resident persistent refs against
+   the child's on a crossing instead of re-spawning them.
 3. [ ] **FO4 previs/occlusion** (`.uvd`, XPCI-equivalent) — zero parser,
    zero consumer (`byroredux/src/cell_loader/precombined.rs:25-31`
    documents this as a known deferred sub-item). No niftools spec is cited
@@ -556,15 +558,26 @@ transitions, saves, and load-order changes.
    missing is test coverage: only coordinate-conversion and radius-arg unit
    tests exist in `transition.rs` today — add one that exercises the full
    multi-field restore end-to-end (grid + pose + time + weather together).
-3. [ ] **Duplicate-persistent-ref guard** — no `FormId → Entity` dedup
-   index exists anywhere (`CellRootIndex` is unload bookkeeping, not an
-   identity map). Same-worldspace round trips are *accidentally* safe
-   today because `drain_streaming_state` fully tears down the persistent
-   CELL root before rebuild — there is no real dedup mechanism to build on.
-   **This is the foundational piece both EX-14/15 (parent-world persistent
-   refs) and EX-16 (actor/package migration) are blocked on** — design and
-   land a `FormId → Entity` index scoped to persistent refs (not all
-   entities) first.
+3. [x] **Duplicate-persistent-ref guard** — done. Landed
+   `PersistentRefIndex` (`byroredux/src/components.rs`) + its build/query
+   logic (`cell_loader::persistent_ref_index::{resolve_persistent_ref,
+   invalidate}`): an `O(1)`-after-rebuild `FormId(u32, global load-order
+   space) → Entity` map scoped to the resident persistent CELL, keyed for
+   invalidation on the persistent-cell root's `EntityId` rather than
+   `NameIndex`/`SubtreeCache`'s component-count heuristic (a worldspace
+   crossing always allocates a fresh root, so identity is a precise
+   signal here). Reuses `resolve_entity_by_global_form_id`'s key space
+   and `FormIdPool` resolution rather than duplicating it — this only
+   adds the missing O(1) cache over an already-correct O(n) resolver.
+   Landed ahead of its consumer (`#[allow(dead_code)]`, same posture as
+   `groundcover_translate.rs`'s Phase 0 constants), since today's call
+   pattern (`begin_worldspace_persistent_cell` always spawns a fresh root
+   after a full teardown) genuinely has nothing to guard against yet —
+   confirmed by investigation, not assumed. **This is the foundational
+   piece both EX-14/15 (parent-world persistent refs) and EX-16
+   (actor/package migration) were blocked on** — both can now build on
+   it. 5 unit tests cover resolve/miss/cross-root-exclusion/rebuild/
+   invalidate.
 4. [ ] **Exterior save/load** — confirmed *not* a race (the streaming
    worker never touches `World` directly), but genuinely unimplemented:
    `LoadCommand::execute` (`save_io.rs:864-868`) hard-rejects any save
@@ -649,10 +662,11 @@ today**, confirmed by exhaustive grep.
    unconditional `despawn_batch` with zero AI-package-state awareness;
    reload respawns fresh via `spawn_npc_entity` with package state
    re-initialized from scratch (Sandbox seat re-picked, Wander/Travel state
-   reset). Needs: identify which package state is worth preserving
-   (Sandbox seat, Travel progress) vs. safe to re-roll (Wander pick), routed
-   through the same persistent-ref identity mechanism EX-09 (#2370 item 3)
-   needs to build regardless — **sequence after that lands.**
+   reset). **Unblocked**: #2370 item 3's `PersistentRefIndex`
+   (`cell_loader::persistent_ref_index`) landed. Still to do: identify
+   which package state is worth preserving (Sandbox seat, Travel
+   progress) vs. safe to re-roll (Wander pick), and route resolution
+   through the index instead of a naive respawn.
 5. [ ] **Ambient audio emitter REGN-binding** — the generic
    crossfade/prune-on-unload machinery already exists (`AudioEmitter`,
    `unload_fade_ms`, `prune_stopped_sounds`, `crates/audio/src/lib.rs`);
