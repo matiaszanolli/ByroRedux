@@ -414,21 +414,51 @@ starts from the corrected state.
    derives the trimesh collider from the exact same vertex/index buffers
    just uploaded to the GPU. Add the one missing piece: a regression test
    for the `log::warn!` zero-triangle-collider path (currently untested).
-5. [x] **LAND real-data guards** — partially re-scoped, partially done.
-   **Correction (2026-08-23)**: BTXT/ATXT FormID *existence* is not
+5. [x] **LAND real-data guards** — done, including the value-plausibility
+   half. **Correction (2026-08-23)**: BTXT/ATXT FormID *existence* is not
    actually a parse-time gap — `cell_loader::terrain::spawn_terrain_mesh`
    already resolves every layer's LTEX against `landscape_textures` and
    `log::warn!`s + skips the layer when it's missing (`terrain.rs:158-162,
-   528-532`). Value-plausibility validation (height range, VNML
-   unit-vector sanity, VCLR range) needs real corpus-derived bounds to
-   avoid inventing unverified thresholds — no game data was available this
-   session to derive them, so that half stays open, deliberately not
-   guessed at. What landed: the missing `land.rs` test file (`crates/plugin/
-   src/esm/cell/tests/land.rs`, 9 tests) — VHGT delta-decode arithmetic
-   (including the forward-row-accumulation case, the actual algorithmic
-   risk in that function), VNML/VCLR raw-byte storage, and the
-   ATXT-then-VTXT pairing contract (multi-layer, orphan-VTXT-dropped). No
-   such coverage existed before.
+   528-532`). What landed the same day: the missing `land.rs` test file
+   (`crates/plugin/src/esm/cell/tests/land.rs`, 9 tests) — VHGT
+   delta-decode arithmetic (including the forward-row-accumulation case,
+   the actual algorithmic risk in that function), VNML/VCLR raw-byte
+   storage, and the ATXT-then-VTXT pairing contract (multi-layer,
+   orphan-VTXT-dropped). No such coverage existed before.
+
+   **Value-plausibility guards landed same day, later in the session** —
+   the "no game data was available this session" premise turned out to
+   be wrong too: real Oblivion/Skyrim/FalloutNV `.esm` files are present
+   on this machine. A throwaway probe (`crates/plugin/examples/
+   _tmp_land_stats.rs`, deleted after use) parsed all three real ESMs
+   (~83M height samples, ~82M VNML samples total) rather than guessing
+   thresholds:
+   - **Height**: 0 non-finite samples across every real game. Still
+     worth guarding at the consumer (`sanitize_land_height` in
+     `terrain.rs`, clamps to 0.0) — `parse_land_record`'s VHGT decode
+     starts from a raw `f32` read directly off the wire, so a corrupt or
+     adversarial sub-record *could* seed NaN/Inf into an entire row's
+     delta chain even though vanilla content never does; a poisoned
+     world-space vertex would corrupt the mesh AABB, BLAS, and collision
+     trimesh.
+   - **VNML**: raw (pre-renormalize) magnitude ranged **0.7501–1.4254,
+     identical to four decimal places across all three independently
+     authored games** — strong evidence this is the byte-quantization
+     grid's achievable range for "mostly upward" terrain normals, not
+     an incidental per-game property. `vnml_raw_magnitude` +
+     `VNML_DEGENERATE_RAW_MAGNITUDE = 0.5` (a wide margin below the
+     measured floor) flags genuinely degenerate data — chiefly the
+     exact-zero vector (`(128,128,128)` bytes) the existing `.max(0.001)`
+     renormalize floor already survives without exploding into NaN/Inf,
+     but previously with no diagnostic visibility into when it fires.
+   - **VCLR**: confirmed a non-issue, not merely undone — a `u8` byte is
+     inherently bounded to `0..=255`; there is no "out of range" a VCLR
+     value could ever be. No guard needed, and none was invented.
+
+   Both guards count anomalies across a cell's 1089 vertices and emit
+   one summary `log::warn!` after the loop (not per-vertex — a fully
+   corrupt file could otherwise flood the log). 4 new unit tests on the
+   pure `sanitize_land_height`/`vnml_raw_magnitude` helpers.
 6. [x] **Adjacent-cell crack detection** — pure checker half done; live
    wiring flagged, not rushed. Landed `cell_loader::terrain_seam::
    check_seam` — a pure function over two `LandscapeData` values (no

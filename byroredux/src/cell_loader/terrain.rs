@@ -335,6 +335,56 @@ fn release_splat_layer_textures(ctx: &mut VulkanContext, indices: &[u32]) {
     }
 }
 
+// ── LAND value-plausibility guards (EX-10/11 item 5, #2371) ─────────────
+//
+// Corpus-derived, not guessed: a throwaway probe over real
+// Oblivion.esm/Skyrim.esm/FalloutNV.esm LAND data (~83M height samples,
+// ~82M VNML samples across the three games) found zero non-finite
+// heights and a raw VNML magnitude range of exactly 0.7501–1.4254 —
+// identical to four decimal places across all three independently
+// authored games, strongly suggesting it's the achievable range of the
+// byte-quantization grid for "mostly upward" terrain normals rather than
+// an incidental property of any one game's content. Both thresholds
+// below sit well outside that measured real-data range so vanilla
+// content never trips them, while still catching genuinely malformed or
+// adversarial input.
+
+/// Fallback height when a LAND vertex's decoded value is non-finite
+/// (NaN/Inf). `parse_land_record`'s VHGT delta-decode starts from a raw
+/// `f32` `base_offset` read directly off the wire; a corrupt or
+/// adversarial sub-record whose first 4 bytes happen to encode a
+/// NaN/Inf bit pattern propagates that through the entire row's delta
+/// chain. Never observed in real content, but a NaN/Inf world-space
+/// vertex position would poison the mesh's AABB, BLAS build, and
+/// collision trimesh — worth clamping even though vanilla content never
+/// exercises this path.
+const LAND_HEIGHT_FALLBACK: f32 = 0.0;
+
+/// Below this raw (pre-renormalize) VNML magnitude, a decoded normal is
+/// treated as degenerate rather than legitimately near-flat authored
+/// terrain. Real data never drops below 0.7501 raw magnitude; `0.5`
+/// leaves a wide safety margin while still catching genuinely degenerate
+/// data — most notably the exact-zero vector (`(128,128,128)` bytes),
+/// which the existing `.max(0.001)` renormalize floor already prevents
+/// from exploding into a NaN/Inf normal but does not surface as a
+/// diagnostic.
+const VNML_DEGENERATE_RAW_MAGNITUDE: f32 = 0.5;
+
+/// Sanitize one decoded LAND height sample. Returns the value to use plus
+/// whether a fallback was substituted (for the caller's per-cell summary).
+fn sanitize_land_height(raw: f32) -> (f32, bool) {
+    if raw.is_finite() {
+        (raw, false)
+    } else {
+        (LAND_HEIGHT_FALLBACK, true)
+    }
+}
+
+/// Raw (pre-renormalize) magnitude of a decoded VNML sample.
+fn vnml_raw_magnitude(nx: f32, ny: f32, nz: f32) -> f32 {
+    (nx * nx + ny * ny + nz * nz).sqrt()
+}
+
 /// Renderer-side borrows shared by terrain spawning: the Vulkan context,
 /// texture provider, the cell's landscape-texture lookup, and the BLAS spec
 /// sink the caller batches builds through. Grouped to keep
@@ -396,6 +446,11 @@ pub(super) fn spawn_terrain_mesh(
 
     // Build vertices (33×33 = 1089).
     let mut vertices = Vec::with_capacity(GRID * GRID);
+    // EX-10/11 item 5 (#2371) — counted, not logged per-vertex: a fully
+    // corrupt file could otherwise flood the log with up to 1089 lines
+    // per cell. One summary line after the loop instead.
+    let mut nonfinite_heights = 0u32;
+    let mut degenerate_normals = 0u32;
     for row in 0..GRID {
         for col in 0..GRID {
             let idx = row * GRID + col;
@@ -404,7 +459,10 @@ pub(super) fn spawn_terrain_mesh(
             // canonical helper, #1753).
             let bx = origin_x + col as f32 * SPACING;
             let by = origin_y + row as f32 * SPACING;
-            let bz = land.heights[idx];
+            let (bz, height_was_nonfinite) = sanitize_land_height(land.heights[idx]);
+            if height_was_nonfinite {
+                nonfinite_heights += 1;
+            }
             let position = zup_to_yup_pos([bx, by, bz]);
 
             // Normal: VNML bytes are unsigned 0–255, center at 128 = zero.
@@ -415,6 +473,9 @@ pub(super) fn spawn_terrain_mesh(
                 let nx = (nml[ni] as f32 - 128.0) / 127.0;
                 let ny = (nml[ni + 1] as f32 - 128.0) / 127.0;
                 let nz = (nml[ni + 2] as f32 - 128.0) / 127.0;
+                if vnml_raw_magnitude(nx, ny, nz) < VNML_DEGENERATE_RAW_MAGNITUDE {
+                    degenerate_normals += 1;
+                }
                 let len = (nx * nx + nz * nz + ny * ny).sqrt().max(0.001);
                 zup_to_yup_pos([nx / len, ny / len, nz / len])
             } else {
@@ -458,6 +519,13 @@ pub(super) fn spawn_terrain_mesh(
                 position, color, normal, uv, splat0, splat1,
             ));
         }
+    }
+    if nonfinite_heights > 0 || degenerate_normals > 0 {
+        log::warn!(
+            "Cell ({grid_x},{grid_y}): LAND data anomalies — {nonfinite_heights} non-finite \
+             height sample(s) clamped to {LAND_HEIGHT_FALLBACK}, {degenerate_normals} \
+             degenerate VNML normal(s) (raw magnitude < {VNML_DEGENERATE_RAW_MAGNITUDE})"
+        );
     }
 
     // Indices: 32×32 quads × 2 triangles. The Z-up → Y-up transform
@@ -712,6 +780,49 @@ mod tests {
     fn splat_release_empty_is_empty() {
         assert!(splat_indices_to_release(&[], 99).is_empty());
         assert!(splat_indices_to_release(&[0, 0, 0, 0], 99).is_empty());
+    }
+
+    // ── LAND value-plausibility guards (EX-10/11 item 5, #2371) ─────────
+
+    #[test]
+    fn sanitize_land_height_passes_finite_values_through_unchanged() {
+        assert_eq!(sanitize_land_height(1234.5), (1234.5, false));
+        assert_eq!(sanitize_land_height(-8192.0), (-8192.0, false));
+        assert_eq!(sanitize_land_height(0.0), (0.0, false));
+    }
+
+    #[test]
+    fn sanitize_land_height_clamps_nan_and_infinity() {
+        assert_eq!(sanitize_land_height(f32::NAN), (LAND_HEIGHT_FALLBACK, true));
+        assert_eq!(
+            sanitize_land_height(f32::INFINITY),
+            (LAND_HEIGHT_FALLBACK, true)
+        );
+        assert_eq!(
+            sanitize_land_height(f32::NEG_INFINITY),
+            (LAND_HEIGHT_FALLBACK, true)
+        );
+    }
+
+    #[test]
+    fn vnml_raw_magnitude_matches_measured_real_corpus_range() {
+        // Real Oblivion.esm/Skyrim.esm/FalloutNV.esm VNML data (~82M
+        // samples total) never drops below 0.7501 raw magnitude — a
+        // representative near-vertical authored normal should land
+        // comfortably inside that range, well above the degenerate floor.
+        let mag = vnml_raw_magnitude(0.0, 1.0, 0.05);
+        assert!(mag > VNML_DEGENERATE_RAW_MAGNITUDE);
+        assert!(mag >= 0.75, "expected near-unit magnitude, got {mag}");
+    }
+
+    #[test]
+    fn vnml_raw_magnitude_flags_the_exact_zero_vector_as_degenerate() {
+        // Byte triple (128, 128, 128) decodes to exactly (0.0, 0.0, 0.0)
+        // — the one input the existing `.max(0.001)` renormalize floor
+        // exists to survive without exploding into a NaN/Inf normal.
+        let mag = vnml_raw_magnitude(0.0, 0.0, 0.0);
+        assert_eq!(mag, 0.0);
+        assert!(mag < VNML_DEGENERATE_RAW_MAGNITUDE);
     }
 
     /// Build a layer tuple with one painted quadrant filled to a
