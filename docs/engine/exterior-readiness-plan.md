@@ -527,18 +527,39 @@ cover got its design doc before Phase 0. Scope as its own follow-up issue.
    errors"; `app_step.rs:755-871` actually fully implements them (drain,
    rebuild `ExteriorWorldContext`, restream) — flagged independently by
    both this investigation and #2370's.
-2. [ ] **Persistent-ref cross-worldspace continuity** — today a worldspace
-   crossing is a full drain-and-reparse
-   (`streaming_helpers::drain_streaming_state`) with no live-state
-   carry-over for modified persistent refs, and
-   `begin_worldspace_persistent_cell` (`cell_loader/exterior.rs:388-390`)
-   only exact-matches the *current* worldspace's own key — it never walks
-   the WNAM parent chain. **Unblocked**: #2370 item 3's `PersistentRefIndex`
-   (`cell_loader::persistent_ref_index`) landed — the `FormId → Entity`
-   identity mechanism this needs to build on now exists. Still to do: walk
-   the WNAM parent chain in `begin_worldspace_persistent_cell`, and use the
-   index to reconcile a parent's already-resident persistent refs against
-   the child's on a crossing instead of re-spawning them.
+2. [x] **Persistent-ref cross-worldspace continuity — WNAM walk done; live
+   state carry-over flagged, not attempted.** Landed
+   `cell_loader::exterior::resolve_persistent_cell`: walks the WNAM parent
+   chain (bounded, cycle-guarded) when a worldspace authors no persistent
+   CELL of its own, using its nearest ancestor's instead. Before this, a
+   childless-persistent-CELL worldspace got NONE at all —
+   `begin_worldspace_persistent_cell` exact-matched only the current
+   worldspace's own key, so every globally-persistent quest actor/ref that
+   lives only in a parent worldspace's persistent CELL silently failed to
+   spawn the moment the player entered such a child worldspace, even
+   though the child is meant to inherit that content by construction. 6
+   unit tests (direct hit, one-hop inherit, two-hop inherit, no-persistent-
+   cell-anywhere, WNAM cycle termination, unknown worldspace).
+   **What's still open**: the "reconcile instead of re-spawning" /
+   live-state-carry-over half. A worldspace crossing is still a full
+   `drain_streaming_state` drain-and-reparse regardless of whether the
+   source and destination resolve to the SAME persistent CELL (e.g.
+   leaving a child worldspace back to its parent, or between two
+   siblings sharing one ancestor's persistent CELL) — so a live
+   modification to a persistent ref (moved object, script-driven state
+   change) is lost on any such crossing, and the re-spawn is pure waste
+   when the underlying CELL didn't actually change. Fixing this means
+   comparing the resolved persistent-CELL identity across the crossing
+   (via `resolve_persistent_cell`, now available) BEFORE
+   `drain_streaming_state` runs, and skipping the persistent-CELL
+   drain+rebuild specifically when it matches — while still fully
+   draining the non-persistent grid tiles, which always change with the
+   worldspace. That's a change to the crossing teardown sequence itself
+   (`step_cell_transition`'s Exterior arm, `execute_pending_save_loads`'s
+   exterior reload, `begin_exterior_streaming`), not an additive lookup
+   like the WNAM walk — real regression risk to already-working
+   transition code, flagged for a deliberate follow-up rather than rushed
+   here.
 3. [ ] **FO4 previs/occlusion** (`.uvd`, XPCI-equivalent) — zero parser,
    zero consumer (`byroredux/src/cell_loader/precombined.rs:25-31`
    documents this as a known deferred sub-item). No niftools spec is cited

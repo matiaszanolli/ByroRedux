@@ -7,7 +7,10 @@ use byroredux_core::ecs::World;
 use byroredux_core::math::coord::{cell_grid_to_world_yup, EXTERIOR_CELL_UNITS};
 use byroredux_core::math::Vec3;
 use byroredux_renderer::VulkanContext;
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use crate::asset_provider::{MaterialProvider, TextureProvider};
 
@@ -368,6 +371,209 @@ impl PersistentCellApplyJob {
     }
 }
 
+/// Bound on how many WNAM hops [`resolve_persistent_cell`] follows before
+/// giving up. Vanilla WNAM chains are at most a couple of hops deep; this
+/// exists purely as a cycle guard against malformed/mod-authored data, not
+/// because real content is expected to approach it.
+const MAX_WNAM_DEPTH: usize = 8;
+
+/// Resolve the persistent CELL a worldspace should use: its own, if it
+/// authors one, otherwise the nearest WNAM ancestor's (EX-14/15 item C2,
+/// #2369).
+///
+/// Before this, `begin_worldspace_persistent_cell` exact-matched only the
+/// *current* worldspace's own key. A worldspace with no persistent CELL of
+/// its own therefore got none at all — every globally-persistent quest
+/// actor/ref that lives ONLY in a parent worldspace's persistent CELL
+/// (the structural home Bethesda stores them in) silently failed to spawn
+/// the moment the player entered a child worldspace, even though the child
+/// is meant to inherit that content by construction (WNAM). Walking the
+/// chain fixes that without changing anything for the common case (a
+/// worldspace with its own persistent CELL resolves on the first
+/// iteration, identical to before).
+fn resolve_persistent_cell<'a>(
+    index: &'a byroredux_plugin::esm::cell::EsmCellIndex,
+    worldspace_key: &'a str,
+) -> Option<(&'a str, &'a byroredux_plugin::esm::cell::CellData)> {
+    let mut current_key = worldspace_key.to_string();
+    let mut visited = HashSet::new();
+    for _ in 0..MAX_WNAM_DEPTH {
+        if let Some(cell) = index.worldspace_persistent_cells.get(&current_key) {
+            // `current_key` is a local `String`, so its borrow can't outlive
+            // this call — re-look-up through `worldspaces` (owned by
+            // `index`, lifetime `'a`) to hand back a borrow with the right
+            // lifetime for the diagnostic log line below instead.
+            let owner_key = index
+                .worldspaces
+                .get(&current_key)
+                .map(|w| w.editor_id.as_str())
+                .unwrap_or(worldspace_key);
+            return Some((owner_key, cell));
+        }
+        if !visited.insert(current_key.clone()) {
+            break; // WNAM cycle — malformed data, stop rather than loop.
+        }
+        let Some(record) = index.worldspaces.get(&current_key) else {
+            break;
+        };
+        let Some(parent_form_id) = record.parent_worldspace else {
+            break;
+        };
+        let Some(parent_key) = index
+            .worldspaces
+            .values()
+            .find(|w| w.form_id == parent_form_id)
+            .map(|w| w.editor_id.to_ascii_lowercase())
+        else {
+            break;
+        };
+        current_key = parent_key;
+    }
+    None
+}
+
+#[cfg(test)]
+mod resolve_persistent_cell_tests {
+    use super::resolve_persistent_cell;
+    use byroredux_plugin::esm::cell::{CellData, EsmCellIndex, WorldspaceRecord};
+
+    fn empty_cell(form_id: u32) -> CellData {
+        CellData {
+            form_id,
+            editor_id: String::new(),
+            display_name: None,
+            references: Vec::new(),
+            is_interior: false,
+            grid: None,
+            lighting: None,
+            landscape: None,
+            water_height: None,
+            water_height_is_explicit: false,
+            image_space_form: None,
+            water_type_form: None,
+            water_velocity: None,
+            acoustic_space_form: None,
+            music_type_form: None,
+            music_type_enum: None,
+            climate_override: None,
+            location_form: None,
+            regions: Vec::new(),
+            lighting_template_form: None,
+            ownership: None,
+            regional_color_override: None,
+            precombined_mesh_hashes: Vec::new(),
+            absorbed_refs: std::collections::HashSet::new(),
+            navmeshes: Vec::new(),
+            deleted_refs: Vec::new(),
+        }
+    }
+
+    fn worldspace(form_id: u32, edid: &str, parent: Option<u32>) -> WorldspaceRecord {
+        WorldspaceRecord {
+            form_id,
+            editor_id: edid.to_string(),
+            parent_worldspace: parent,
+            ..WorldspaceRecord::default()
+        }
+    }
+
+    #[test]
+    fn a_worldspace_with_its_own_persistent_cell_resolves_directly() {
+        let mut index = EsmCellIndex::default();
+        index
+            .worldspaces
+            .insert("solo".into(), worldspace(0x10, "Solo", None));
+        index
+            .worldspace_persistent_cells
+            .insert("solo".into(), empty_cell(0x999));
+
+        let (owner, cell) = resolve_persistent_cell(&index, "solo").expect("direct hit");
+        assert_eq!(owner, "Solo");
+        assert_eq!(cell.form_id, 0x999);
+    }
+
+    #[test]
+    fn a_childless_worldspace_inherits_its_parents_persistent_cell() {
+        let mut index = EsmCellIndex::default();
+        index
+            .worldspaces
+            .insert("parentworld".into(), worldspace(0x10, "ParentWorld", None));
+        index.worldspaces.insert(
+            "childworld".into(),
+            worldspace(0x20, "ChildWorld", Some(0x10)),
+        );
+        index
+            .worldspace_persistent_cells
+            .insert("parentworld".into(), empty_cell(0x999));
+        // ChildWorld deliberately has no entry in worldspace_persistent_cells.
+
+        let (owner, cell) =
+            resolve_persistent_cell(&index, "childworld").expect("inherited via WNAM");
+        assert_eq!(owner, "ParentWorld");
+        assert_eq!(cell.form_id, 0x999);
+    }
+
+    #[test]
+    fn a_multi_hop_chain_walks_to_the_first_ancestor_that_has_one() {
+        let mut index = EsmCellIndex::default();
+        index
+            .worldspaces
+            .insert("grandparent".into(), worldspace(0x10, "Grandparent", None));
+        index
+            .worldspaces
+            .insert("parent".into(), worldspace(0x20, "Parent", Some(0x10)));
+        index
+            .worldspaces
+            .insert("child".into(), worldspace(0x30, "Child", Some(0x20)));
+        index
+            .worldspace_persistent_cells
+            .insert("grandparent".into(), empty_cell(0x999));
+        // Neither Parent nor Child authors its own persistent CELL.
+
+        let (owner, cell) = resolve_persistent_cell(&index, "child").expect("two-hop inherit");
+        assert_eq!(owner, "Grandparent");
+        assert_eq!(cell.form_id, 0x999);
+    }
+
+    #[test]
+    fn no_persistent_cell_anywhere_in_the_chain_resolves_to_none() {
+        let mut index = EsmCellIndex::default();
+        index
+            .worldspaces
+            .insert("parentworld".into(), worldspace(0x10, "ParentWorld", None));
+        index.worldspaces.insert(
+            "childworld".into(),
+            worldspace(0x20, "ChildWorld", Some(0x10)),
+        );
+        // Neither worldspace authors a persistent CELL anywhere.
+
+        assert!(resolve_persistent_cell(&index, "childworld").is_none());
+    }
+
+    #[test]
+    fn a_wnam_cycle_terminates_instead_of_looping_forever() {
+        let mut index = EsmCellIndex::default();
+        // A points at B, B points at A — malformed/adversarial data.
+        index
+            .worldspaces
+            .insert("a".into(), worldspace(0x10, "A", Some(0x20)));
+        index
+            .worldspaces
+            .insert("b".into(), worldspace(0x20, "B", Some(0x10)));
+
+        assert!(
+            resolve_persistent_cell(&index, "a").is_none(),
+            "a cycle with no persistent CELL anywhere must terminate cleanly, not hang"
+        );
+    }
+
+    #[test]
+    fn an_unrelated_worldspace_missing_from_the_index_resolves_to_none() {
+        let index = EsmCellIndex::default();
+        assert!(resolve_persistent_cell(&index, "nonexistent").is_none());
+    }
+}
+
 /// Begin spawning the active worldspace's persistent CELL once, outside the
 /// coordinate-streamed tile set.
 ///
@@ -377,6 +583,10 @@ impl PersistentCellApplyJob {
 /// still making the whole set reclaimable on a worldspace transition. The
 /// returned job shares the steady-state reference budget so large persistent
 /// cells cannot monopolize the startup frame (#2275).
+///
+/// EX-14/15 item C2 (#2369) — the persistent CELL used is resolved through
+/// [`resolve_persistent_cell`], which walks the WNAM parent chain when this
+/// worldspace authors no persistent CELL of its own.
 pub(crate) fn begin_worldspace_persistent_cell(
     wctx: &ExteriorWorldContext,
     center_grid: (i32, i32),
@@ -385,9 +595,15 @@ pub(crate) fn begin_worldspace_persistent_cell(
 ) -> Option<PersistentCellApplyJob> {
     super::load::ensure_globals_resource(world, &wctx.record_index.globals);
     let index = &wctx.record_index.cells;
-    let cell = index
-        .worldspace_persistent_cells
-        .get(&wctx.worldspace_key)?;
+    let (owner_key, cell) = resolve_persistent_cell(index, &wctx.worldspace_key)?;
+    if !owner_key.eq_ignore_ascii_case(&wctx.worldspace_key) {
+        log::info!(
+            "Worldspace '{}' authors no persistent CELL of its own — inheriting '{}''s \
+             via the WNAM parent chain (EX-14/15 item C2 / #2369)",
+            wctx.worldspace_key,
+            owner_key,
+        );
+    }
 
     let mut local_refs = Vec::new();
     let mut remote_actor_refs = Vec::new();
