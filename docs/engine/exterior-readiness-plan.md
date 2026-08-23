@@ -957,6 +957,21 @@ grep. REGN's `Sound.music` field now has a real consumer (items 1 + 5,
    existing AI package systems (sandbox/wander/travel/follow/guard/escort).
    **Recommend scoping as its own follow-up issue** rather than folding
    into EX-16, given its size relative to everything else here.
+
+   **Design authority now exists (2026-08-23):**
+   [`docs/engine/navmesh-pathfinding.md`](navmesh-pathfinding.md). Confirms
+   the data layer is already done (item 2's `NavmRecord`/`NavmeshTile`
+   carry real decoded triangle geometry + connectivity for every game
+   except FO4) — the greenfield part is the algorithm (A\* over the
+   triangle-adjacency graph + funnel string-pulling) and its integration
+   into the six `step_toward` consumers, not the data. Also surfaces a
+   previously-unrecorded total gap: door/cover triangle semantics are
+   undecoded on *every* game (`NVDP`/`NVCA`/`NVGD` unwalked on the
+   Gamebryo typed form; the `NVNM` packed form's door/cover lists are
+   walked-but-discarded by design), so pathing will cross door boundaries
+   without door-aware behavior until that's decoded separately. No code
+   lands from the doc itself; 4-phase rollout recommended (single-tile →
+   cross-tile → Wander/Travel → Follow/Escort/Guard/Patrol).
 4. [ ] **Actor/package suspend-migrate-resume across stream boundaries** —
    **correction (2026-08-23): "unblocked by `PersistentRefIndex`" doesn't
    hold up; the real shape is bigger.** `unload_cell_inner`
