@@ -20,10 +20,18 @@
 //!
 //! ## v0 scope (documented approximations, mirroring `sandbox.rs`'s style)
 //!
-//! - **No pathing.** Straight-line walk to point; a wall or obstacle
-//!   between the actor and its target isn't routed around. Fine for open
-//!   ground (the primary FNV/FO3 Wander use case — yard/plaza sandboxing);
-//!   a walled room would need real navigation, out of scope here.
+//! - **No pathing**, unlike `travel_system` (EX-16 item 3 Phase 3,
+//!   `docs/engine/navmesh-pathfinding.md`) — straight-line walk to point;
+//!   a wall or obstacle between the actor and its target isn't routed
+//!   around. Fine for open ground (the primary FNV/FO3 Wander use case —
+//!   yard/plaza sandboxing), so lower-value than Travel to wire up, and
+//!   genuinely harder to wire cleanly: `step_oscillating_wander` below is
+//!   shared verbatim with `patrol_system` (M42.8), which isn't in Phase
+//!   3's scope, and threading a per-tick waypoint override through that
+//!   shared primitive without silently changing Patrol's behavior needs
+//!   its own careful pass rather than being rushed in alongside Travel's
+//!   simpler (non-shared, one-shot) integration. Deferred, not
+//!   forgotten.
 //! - **No target-reference resolution.** The wander *center* is always the
 //!   actor's own position on first tick, never a resolved PLDT FormID
 //!   target — the same v0 simplification `SandboxBehavior` uses (Sandbox's

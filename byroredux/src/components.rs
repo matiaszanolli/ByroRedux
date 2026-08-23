@@ -10,7 +10,7 @@ use byroredux_core::ecs::{Component, Resource, SparseSetStorage};
 use byroredux_core::math::Vec3;
 use byroredux_core::string::FixedString;
 use rustc_hash::FxHashMap;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use winit::event::MouseButton;
 use winit::keyboard::KeyCode;
@@ -1711,7 +1711,6 @@ impl Resource for HavokIdleCatalog {}
 /// teardown chain automatically — no bespoke reclaim path needed the way
 /// `LodBlock`/`ObjectLodBlock` need one, because there's no GPU handle
 /// here to leak.
-#[allow(dead_code)] // landed ahead of its consumer — see the struct doc; EX-16 item 3 (pathfinding, own follow-up issue) is the pending reader
 pub(crate) struct NavmeshTile(pub(crate) byroredux_plugin::esm::records::NavmRecord);
 
 impl Component for NavmeshTile {
@@ -1731,6 +1730,40 @@ pub(crate) fn spawn_navmesh_tiles(
         let entity = world.spawn();
         world.insert(entity, NavmeshTile(navm.clone()));
     }
+}
+
+/// Cached single-tile NAVM path toward `goal`, computed by
+/// `navmesh_path::path_from_resident_tiles` and consumed incrementally by
+/// a `step_toward`-driven locomotion system (EX-16 item 3 Phase 3,
+/// `docs/engine/navmesh-pathfinding.md`) — currently `travel_system`.
+///
+/// Computed **once per (entity, goal) pair, not every tick** — the design
+/// doc's §7 cost posture. A caller recomputes only when its current goal
+/// no longer matches [`goal`](Self::goal); until then it consumes
+/// [`waypoints`](Self::waypoints) by popping the front entry once the
+/// actor arrives within `LOCOMOTION_ARRIVAL_EPSILON` of it.
+///
+/// Deliberately **not** save-registered: rederived on demand from
+/// resident `NavmeshTile` data, same posture as `NavmeshTile` itself — an
+/// empty/missing `NavPath` after a load just means "repath on the next
+/// tick that needs one," harmless and cheap, never lossy gameplay state.
+///
+/// An empty `waypoints` with a matching `goal` is itself a meaningful,
+/// intentionally-cached result ("already tried, no resident-tile path
+/// found for this goal") — see `travel_system`'s Pass 1a for why that
+/// negative result is cached too, not just successful paths.
+#[derive(Clone)]
+pub(crate) struct NavPath {
+    /// The destination this path was computed for.
+    pub(crate) goal: Vec3,
+    /// Remaining stepping points, nearest first, always ending with
+    /// [`goal`](Self::goal) itself while non-empty. Empty means "no
+    /// resident-tile path was found for this goal" — callers fall back
+    /// to walking straight at `goal`, today's pre-pathing behavior.
+    pub(crate) waypoints: VecDeque<Vec3>,
+}
+impl Component for NavPath {
+    type Storage = SparseSetStorage<Self>;
 }
 
 #[cfg(test)]

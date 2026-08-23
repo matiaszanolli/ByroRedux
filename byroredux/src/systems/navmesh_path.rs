@@ -1,18 +1,23 @@
-//! Single-tile NAVM pathfinding — Phase 1 of
+//! Single-tile NAVM pathfinding — Phases 1 and 3 of
 //! `docs/engine/navmesh-pathfinding.md`'s rollout (EX-16 item 3, #2372).
 //!
 //! A\* over one [`NavmRecord`]'s triangle-adjacency graph
 //! (`edge_neighbours`), plus a shared-edge-midpoint waypoint extraction
 //! turning the resulting triangle corridor into an actual walkable
-//! polyline. Pure geometry over parsed NAVM data — no ECS/`World`
-//! dependency, fully exercised by synthetic fixtures below.
+//! polyline. The core algorithm ([`find_path_within_tile`] and below) is
+//! pure geometry over parsed NAVM data — no ECS/`World` dependency, fully
+//! exercised by synthetic fixtures below; [`path_from_resident_tiles`] is
+//! the thin ECS bridge Phase 3 needed to reach real streamed data,
+//! currently consumed by `travel_system`.
 //!
 //! Deliberately **single-tile only**: `external_connections` (cross-tile
-//! links) aren't walked here — that's Phase 2 per the design doc's
-//! rollout. A caller with a start/goal that don't both localize onto the
-//! same tile gets `None` from [`find_path_within_tile`], same "degrade,
-//! don't fail" posture the design doc's §4 establishes for the residency
-//! boundary generally.
+//! links) aren't walked here. Phase 2 (cross-tile search) turned out to
+//! be genuinely **blocked**, not just unscheduled — see the design doc's
+//! §9 Phase 2 entry for the corpus-verified finding (`NavmExternalConnection`
+//! has no confirmed source-triangle field). A caller with a start/goal
+//! that don't both localize onto the same resident tile gets `None`,
+//! same "degrade, don't fail" posture the design doc's §4 establishes for
+//! the residency boundary generally.
 //!
 //! # Coordinate space
 //! [`NavmRecord::vertices`] are raw `NVVX` floats in Bethesda **Z-up**
@@ -98,7 +103,6 @@ fn barycentric_xz(p: Vec3, v0: Vec3, v1: Vec3, v2: Vec3) -> Option<(f32, f32, f3
 /// design-doc §5. When more than one tile-triangle plausibly contains it
 /// (multi-story interiors, a bridge over a lower navmesh), the one whose
 /// interpolated surface height is closest to `point.y` wins.
-#[allow(dead_code)] // landed ahead of its Phase 3 consumer — see the module doc
 pub(crate) fn find_containing_triangle(navm: &NavmRecord, point: Vec3) -> Option<usize> {
     let mut best: Option<(usize, f32)> = None;
     for tri_idx in 0..navm.triangles.len() {
@@ -267,7 +271,6 @@ fn corridor_to_waypoints(
 /// this tile, or when no triangle-adjacency path connects them within it
 /// — callers are expected to fall back to today's straight-line
 /// `step_toward` behavior in either case (design doc §4).
-#[allow(dead_code)] // landed ahead of its Phase 3 consumer — see the module doc
 pub(crate) fn find_path_within_tile(
     navm: &NavmRecord,
     start: Vec3,
@@ -277,6 +280,30 @@ pub(crate) fn find_path_within_tile(
     let goal_tri = find_containing_triangle(navm, goal)?;
     let corridor = astar_triangle_path(navm, start_tri, goal_tri)?;
     corridor_to_waypoints(navm, &corridor, start, goal)
+}
+
+/// Phase 3 ECS bridge: search every currently-resident [`NavmeshTile`]
+/// for one whose geometry localizes `current`, and return the remaining
+/// waypoints from there to `goal` (never including `current` itself,
+/// always ending with `goal` when a path was found). `None` when no
+/// resident tile localizes `current`, or the one that does can't reach
+/// `goal` within itself — callers fall back to walking straight at
+/// `goal`, exactly today's pre-pathing behavior (design doc §4's
+/// residency-boundary degrade, applied to "no tile at all" as well as
+/// "goal outside the known corridor").
+///
+/// Cross-tile search (trying a *different* resident tile than the one
+/// `current` localizes on) is Phase 2, genuinely blocked — see the
+/// design doc's §9 Phase 2 entry — so this only ever searches the single
+/// tile `current` is standing on.
+pub(crate) fn path_from_resident_tiles(
+    tiles: &byroredux_core::ecs::QueryRead<'_, crate::components::NavmeshTile>,
+    current: Vec3,
+    goal: Vec3,
+) -> Option<Vec<Vec3>> {
+    tiles.iter().find_map(|(_, tile)| {
+        find_path_within_tile(&tile.0, current, goal).map(|path| path.into_iter().skip(1).collect())
+    })
 }
 
 #[cfg(test)]

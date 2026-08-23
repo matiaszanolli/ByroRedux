@@ -1004,6 +1004,28 @@ grep. REGN's `Sound.music` field now has a real consumer (items 1 + 5,
    (`#[allow(dead_code)]`). Still open: Phase 2 (cross-tile via
    `external_connections`) and Phase 3/4 (wiring into the six
    `step_toward` consumers).
+
+   **Phase 2 investigated and found genuinely blocked (2026-08-23), not
+   just deferred.** Swept all 94,543 `external_connections` across real
+   `FalloutNV.esm` data (4,771 meshes) testing whether `unknown: u32`
+   names the *source* triangle within the current mesh (the field this
+   doc's own §9 needs and doesn't have). Refuted: only 32.2% of the
+   triangles it would name actually have a border edge, far short of the
+   ~100% a real source-triangle join requires. See
+   [`navmesh-pathfinding.md`](navmesh-pathfinding.md) §9 Phase 2 for the
+   full finding. Cross-tile pathing stays blocked on a further corpus
+   investigation into what `unknown` actually encodes, not on any
+   remaining implementation work.
+
+   **Phase 3 (Travel half) landed (2026-08-23)**: `travel_system` now
+   routes through a resident `NavmeshTile`'s corridor instead of walking
+   straight through it, via a new `NavPath` cache (`components.rs`,
+   `NOT_SAVED_BY_DESIGN`). Wander's half is deliberately deferred — its
+   `step_oscillating_wander` primitive is shared with `patrol_system`
+   (out of scope here), and changing its signature safely needs its own
+   pass; see `wander.rs`'s module doc. See
+   [`navmesh-pathfinding.md`](navmesh-pathfinding.md) §9 Phase 3 for the
+   full writeup.
 4. [ ] **Actor/package suspend-migrate-resume across stream boundaries** —
    **correction (2026-08-23): "unblocked by `PersistentRefIndex`" doesn't
    hold up; the real shape is bigger.** `unload_cell_inner`

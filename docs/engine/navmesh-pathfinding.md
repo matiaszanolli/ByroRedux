@@ -265,11 +265,49 @@ add indexing then, against real evidence.
    the module converts at read time via `zup_to_yup_pos`, documented in
    its own header since missing it would silently produce a
    rotated/mirrored path.
-2. **Phase 2 — cross-tile via `external_connections`.** Extends the A\*
-   graph across `NavmeshTile` entity boundaries per §4. Needs at least one
-   multi-tile fixture — either a small hand-built two-mesh pair, or (once
-   Phase 1 is solid) a real adjacent-cell pair from the corpus.
+2. **Phase 2 — cross-tile via `external_connections`. Blocked, corpus-
+   verified (2026-08-23), not merely assumed.** `NavmExternalConnection`
+   names the *destination* mesh + triangle but has no confirmed field for
+   the **source** triangle within the current mesh — `unknown: u32` was
+   already flagged as "not established by the corpus" (§ this doc
+   predates), and a direct test of the obvious hypothesis (does `unknown`
+   name the source triangle index?) refutes it: swept all 94,543 external
+   connections across `FalloutNV.esm`'s 4,771 meshes, and while
+   `unknown < triangle_count` holds 100% of the time (weak evidence —
+   `unknown` values are usually small regardless), the triangle it would
+   name has an actual border edge (`edge_neighbours` containing `None` —
+   the only kind of triangle that could plausibly originate a link to
+   another mesh) only **32.2%** of the time. A real per-triangle source
+   join would need to be ~100%, not one-third. Without a confirmed source
+   triangle, a cross-tile A\* graph can't be built precisely — only "this
+   whole tile connects somehow to that tile," not "crossing from
+   triangle X lands you in triangle Y." Needs its own corpus investigation
+   (candidate: `unknown` indexes something *other* than a raw triangle
+   index — e.g. the Nth border edge in scan order, or an edge-slot
+   position — not tested yet) before Phase 2 can land precisely; the
+   alternative (treat a tile-to-tile link as connecting via an arbitrary
+   border triangle) is a real approximation this doc isn't willing to
+   ship silently. Deferred, not guessed past.
 3. **Phase 3 — wire into Wander/Travel** (§6's easy consumers first).
+   **Travel half landed (2026-08-23)**, `byroredux/src/systems/travel.rs`
+   + `crate::components::NavPath` (the cached-waypoint-queue component
+   §6 anticipated, byroredux-crate-local, `NOT_SAVED_BY_DESIGN` —
+   rederived on demand same as `NavmeshTile`). Routes through a resident
+   tile's triangle corridor via `navmesh_path::path_from_resident_tiles`
+   when the actor's current position localizes onto one; caches per
+   `(entity, goal)` and only recomputes on a goal change, including
+   caching the negative "no path found" result so an off-navmesh actor
+   doesn't retry every tick — the design doc's §7 "computed once" cost
+   posture, honored for real. 3 new tests, including one that pins an
+   exact post-tick position to 1e-3 precision proving the actor actually
+   routes through the shared-edge waypoint rather than a straight line
+   that happens to look similar. **Wander half deliberately deferred**:
+   `step_oscillating_wander` is shared verbatim with `patrol_system`
+   (out of Phase 3's scope), and threading a waypoint override through
+   that shared primitive without silently changing Patrol's behavior
+   needs its own pass — see `wander.rs`'s module doc for the full
+   reasoning. Travel's integration needed no such change (it already
+   calls `step_toward` directly, one-shot, not shared with anything).
 4. **Phase 4 — wire into Follow/Escort/Guard/Patrol**, including §6's
    repath-threshold tuning for Follow specifically.
 5. **Not this document's job, sequenced after**: FO4 `NVNM` body decode
