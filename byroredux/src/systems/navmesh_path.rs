@@ -1,0 +1,491 @@
+//! Single-tile NAVM pathfinding — Phase 1 of
+//! `docs/engine/navmesh-pathfinding.md`'s rollout (EX-16 item 3, #2372).
+//!
+//! A\* over one [`NavmRecord`]'s triangle-adjacency graph
+//! (`edge_neighbours`), plus a shared-edge-midpoint waypoint extraction
+//! turning the resulting triangle corridor into an actual walkable
+//! polyline. Pure geometry over parsed NAVM data — no ECS/`World`
+//! dependency, fully exercised by synthetic fixtures below.
+//!
+//! Deliberately **single-tile only**: `external_connections` (cross-tile
+//! links) aren't walked here — that's Phase 2 per the design doc's
+//! rollout. A caller with a start/goal that don't both localize onto the
+//! same tile gets `None` from [`find_path_within_tile`], same "degrade,
+//! don't fail" posture the design doc's §4 establishes for the residency
+//! boundary generally.
+//!
+//! # Coordinate space
+//! [`NavmRecord::vertices`] are raw `NVVX` floats in Bethesda **Z-up**
+//! world units — `parse_navm` applies no coordinate conversion, unlike
+//! REFR placement/NIF import. Every public function here takes and
+//! returns **engine Y-up** [`Vec3`] (matching `step_toward` and every
+//! other locomotion-facing API); vertices are converted via
+//! [`byroredux_core::math::coord::zup_to_yup_pos`] the moment they're
+//! read and never left in source space past this module's boundary. This
+//! detail isn't called out in the design doc (an oversight there, not a
+//! decision) — noted here since it's the one thing that would silently
+//! produce a rotated/mirrored path if missed.
+//!
+//! # Funnel/string-pulling — deferred, not attempted
+//! The design doc's §3 recommends a full funnel (string-pulling) pass
+//! for the shortest in-corridor polyline. That needs each portal's two
+//! vertices in a *consistent left/right orientation* along the corridor
+//! — which in turn needs either a corpus-confirmed consistently-wound
+//! `NavmTriangle::vertices` convention (not established anywhere in this
+//! codebase; `parse_navm`'s own doc is silent on winding) or interactive
+//! visual verification (not available in this environment). Rather than
+//! guess an orientation and risk a silently-wrong (not panicking, not
+//! failing any test, just *geometrically incorrect*) path — exactly the
+//! failure mode this project's no-speculative-fixes convention warns
+//! about — this module instead extracts waypoints as the **midpoint of
+//! each shared edge** between consecutive corridor triangles
+//! ([`shared_edge`]). This needs no orientation at all (it's derived from
+//! plain vertex-index set intersection, provably correct for a watertight
+//! mesh) and is guaranteed to stay inside the corridor, just not
+//! shortest-path-optimal — a real, valid, and immediately useful
+//! improvement over today's straight-line-through-walls locomotion,
+//! honestly short of the doc's eventual funnel goal. Upgrading to a true
+//! funnel pass is a well-scoped, isolated follow-up once winding is
+//! confirmed against real data.
+
+use byroredux_core::math::coord::zup_to_yup_pos;
+use byroredux_core::math::Vec3;
+use byroredux_plugin::esm::records::{NavmRecord, NavmTriangle};
+use std::cmp::Ordering;
+use std::collections::{BinaryHeap, HashMap, HashSet};
+
+/// How far a query point's barycentric weights may fall outside `[0, 1]`
+/// (i.e. outside the triangle) and still be accepted — absorbs float
+/// error at a shared edge, where two adjacent triangles' tests would
+/// otherwise both reject a point sitting exactly on the border.
+const BARYCENTRIC_EPSILON: f32 = 1.0e-3;
+
+fn vertex_yup(navm: &NavmRecord, idx: u16) -> Option<Vec3> {
+    navm.vertices
+        .get(idx as usize)
+        .map(|v| Vec3::from_array(zup_to_yup_pos(*v)))
+}
+
+fn triangle_vertices(navm: &NavmRecord, tri_idx: usize) -> Option<[Vec3; 3]> {
+    let tri = navm.triangles.get(tri_idx)?;
+    Some([
+        vertex_yup(navm, tri.vertices[0])?,
+        vertex_yup(navm, tri.vertices[1])?,
+        vertex_yup(navm, tri.vertices[2])?,
+    ])
+}
+
+fn centroid(v: &[Vec3; 3]) -> Vec3 {
+    (v[0] + v[1] + v[2]) / 3.0
+}
+
+/// Barycentric weights of `p`'s XZ projection against triangle
+/// `(v0, v1, v2)`'s own XZ projection. `None` for a degenerate
+/// (zero-XZ-area) triangle. Weights sum to `1.0`; all three `>= 0` means
+/// `p` projects inside the triangle.
+fn barycentric_xz(p: Vec3, v0: Vec3, v1: Vec3, v2: Vec3) -> Option<(f32, f32, f32)> {
+    let denom = (v1.z - v2.z) * (v0.x - v2.x) + (v2.x - v1.x) * (v0.z - v2.z);
+    if denom.abs() < f32::EPSILON {
+        return None;
+    }
+    let u = ((v1.z - v2.z) * (p.x - v2.x) + (v2.x - v1.x) * (p.z - v2.z)) / denom;
+    let v = ((v2.z - v0.z) * (p.x - v2.x) + (v0.x - v2.x) * (p.z - v2.z)) / denom;
+    let w = 1.0 - u - v;
+    Some((u, v, w))
+}
+
+/// Locate the triangle whose XZ projection contains `point`, per
+/// design-doc §5. When more than one tile-triangle plausibly contains it
+/// (multi-story interiors, a bridge over a lower navmesh), the one whose
+/// interpolated surface height is closest to `point.y` wins.
+#[allow(dead_code)] // landed ahead of its Phase 3 consumer — see the module doc
+pub(crate) fn find_containing_triangle(navm: &NavmRecord, point: Vec3) -> Option<usize> {
+    let mut best: Option<(usize, f32)> = None;
+    for tri_idx in 0..navm.triangles.len() {
+        let Some(v) = triangle_vertices(navm, tri_idx) else {
+            continue;
+        };
+        let Some((u, vv, w)) = barycentric_xz(point, v[0], v[1], v[2]) else {
+            continue;
+        };
+        if u < -BARYCENTRIC_EPSILON || vv < -BARYCENTRIC_EPSILON || w < -BARYCENTRIC_EPSILON {
+            continue;
+        }
+        let height = u * v[0].y + vv * v[1].y + w * v[2].y;
+        let diff = (height - point.y).abs();
+        if best.is_none_or(|(_, best_diff)| diff < best_diff) {
+            best = Some((tri_idx, diff));
+        }
+    }
+    best.map(|(idx, _)| idx)
+}
+
+/// The two vertex indices shared between `a` and `b` — the "portal" edge
+/// a path crosses moving from one triangle to the other. Derived from
+/// actual shared vertex *indices*, not an assumed
+/// `edge_neighbours`-slot-to-vertex-pair convention (unverified against
+/// real NAVM data anywhere in this codebase — see the module doc). A
+/// watertight navmesh shares literal vertex indices at a border, so this
+/// is exact, not an approximation; returns `None` only if `a`/`b` aren't
+/// actually adjacent (fewer than 2 shared vertices).
+fn shared_edge(a: &NavmTriangle, b: &NavmTriangle) -> Option<(u16, u16)> {
+    let mut shared = a
+        .vertices
+        .iter()
+        .copied()
+        .filter(|v| b.vertices.contains(v));
+    let first = shared.next()?;
+    let second = shared.next()?;
+    Some((first, second))
+}
+
+#[derive(Copy, Clone)]
+struct ScoredNode {
+    f_score: f32,
+    node: usize,
+}
+impl PartialEq for ScoredNode {
+    fn eq(&self, other: &Self) -> bool {
+        self.f_score == other.f_score && self.node == other.node
+    }
+}
+impl Eq for ScoredNode {}
+impl PartialOrd for ScoredNode {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for ScoredNode {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // Reversed so `BinaryHeap` (a max-heap) pops the lowest f-score
+        // first; ties broken by node index for deterministic tests.
+        other
+            .f_score
+            .total_cmp(&self.f_score)
+            .then_with(|| self.node.cmp(&other.node))
+    }
+}
+
+/// A\* over `navm`'s triangle-adjacency graph (`edge_neighbours` only —
+/// no cross-tile `external_connections`, per this module's Phase-1
+/// scope). Edge cost is centroid-to-centroid distance: the design doc
+/// suggests edge-midpoint distance as a closer-to-optimal refinement, but
+/// that needs the same unconfirmed edge/vertex convention [`shared_edge`]
+/// exists to avoid — centroid distance needs no such assumption and is
+/// still an admissible, consistent cost for A\*. Returns the triangle
+/// index corridor, or `None` if `goal_tri` isn't reachable from
+/// `start_tri` within this tile.
+fn astar_triangle_path(navm: &NavmRecord, start_tri: usize, goal_tri: usize) -> Option<Vec<usize>> {
+    if start_tri == goal_tri {
+        return Some(vec![start_tri]);
+    }
+    let goal_centroid = centroid(&triangle_vertices(navm, goal_tri)?);
+
+    let mut open = BinaryHeap::new();
+    let mut g_score: HashMap<usize, f32> = HashMap::new();
+    let mut came_from: HashMap<usize, usize> = HashMap::new();
+    let mut closed: HashSet<usize> = HashSet::new();
+
+    g_score.insert(start_tri, 0.0);
+    open.push(ScoredNode {
+        f_score: centroid(&triangle_vertices(navm, start_tri)?).distance(goal_centroid),
+        node: start_tri,
+    });
+
+    while let Some(ScoredNode { node: current, .. }) = open.pop() {
+        if current == goal_tri {
+            let mut path = vec![current];
+            let mut cursor = current;
+            while let Some(&prev) = came_from.get(&cursor) {
+                path.push(prev);
+                cursor = prev;
+            }
+            path.reverse();
+            return Some(path);
+        }
+        if !closed.insert(current) {
+            continue;
+        }
+        let Some(current_verts) = triangle_vertices(navm, current) else {
+            continue;
+        };
+        let current_centroid = centroid(&current_verts);
+        let Some(tri) = navm.triangles.get(current) else {
+            continue;
+        };
+        for neighbour in tri.edge_neighbours.iter().filter_map(|n| *n) {
+            let neighbour = neighbour as usize;
+            if closed.contains(&neighbour) {
+                continue;
+            }
+            let Some(neigh_verts) = triangle_vertices(navm, neighbour) else {
+                continue;
+            };
+            let neigh_centroid = centroid(&neigh_verts);
+            let tentative_g = g_score[&current] + current_centroid.distance(neigh_centroid);
+            let better = g_score
+                .get(&neighbour)
+                .is_none_or(|&existing| tentative_g < existing);
+            if better {
+                came_from.insert(neighbour, current);
+                g_score.insert(neighbour, tentative_g);
+                open.push(ScoredNode {
+                    f_score: tentative_g + neigh_centroid.distance(goal_centroid),
+                    node: neighbour,
+                });
+            }
+        }
+    }
+    None
+}
+
+/// Turn an A\* triangle corridor into an actual waypoint polyline: `start`,
+/// then the midpoint of each shared edge between consecutive corridor
+/// triangles ([`shared_edge`] — orientation-free, see the module doc for
+/// why this isn't full funnel string-pulling yet), then `goal`.
+fn corridor_to_waypoints(
+    navm: &NavmRecord,
+    corridor: &[usize],
+    start: Vec3,
+    goal: Vec3,
+) -> Option<Vec<Vec3>> {
+    let mut waypoints = vec![start];
+    for pair in corridor.windows(2) {
+        let &[a, b] = pair else { continue };
+        let tri_a = navm.triangles.get(a)?;
+        let tri_b = navm.triangles.get(b)?;
+        let (v0, v1) = shared_edge(tri_a, tri_b)?;
+        let midpoint = (vertex_yup(navm, v0)? + vertex_yup(navm, v1)?) / 2.0;
+        waypoints.push(midpoint);
+    }
+    waypoints.push(goal);
+    Some(waypoints)
+}
+
+/// Find a walkable waypoint path from `start` to `goal` within one
+/// resident `NavmRecord`. `None` when either point doesn't localize onto
+/// this tile, or when no triangle-adjacency path connects them within it
+/// — callers are expected to fall back to today's straight-line
+/// `step_toward` behavior in either case (design doc §4).
+#[allow(dead_code)] // landed ahead of its Phase 3 consumer — see the module doc
+pub(crate) fn find_path_within_tile(
+    navm: &NavmRecord,
+    start: Vec3,
+    goal: Vec3,
+) -> Option<Vec<Vec3>> {
+    let start_tri = find_containing_triangle(navm, start)?;
+    let goal_tri = find_containing_triangle(navm, goal)?;
+    let corridor = astar_triangle_path(navm, start_tri, goal_tri)?;
+    corridor_to_waypoints(navm, &corridor, start, goal)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use byroredux_plugin::esm::records::NavmTriangle;
+
+    /// A 2-triangle quad on the XZ plane spanning `[0,10] x [0,10]`
+    /// (Y-up), split along the diagonal: `(0,0)-(10,0)-(10,10)` and
+    /// `(0,0)-(10,10)-(0,10)`, sharing the `(0,0)-(10,10)` diagonal edge
+    /// (vertex indices 0 and 2). Vertices are stored pre-converted from
+    /// the Z-up authoring space this fixture stands in for, so
+    /// `vertex_yup`'s conversion round-trips back to these Y-up
+    /// coordinates exactly — built via `zup_to_yup_pos`'s own inverse
+    /// `(x, y, z) -> (x, -z, y)` so the fixture doesn't have to hardcode
+    /// the conversion twice.
+    fn zup_from_yup(p: [f32; 3]) -> [f32; 3] {
+        [p[0], -p[2], p[1]]
+    }
+
+    fn two_triangle_quad() -> NavmRecord {
+        let yup_verts = [
+            [0.0, 0.0, 0.0],
+            [10.0, 0.0, 0.0],
+            [10.0, 0.0, 10.0],
+            [0.0, 0.0, 10.0],
+        ];
+        NavmRecord {
+            vertices: yup_verts.iter().map(|v| zup_from_yup(*v)).collect(),
+            triangles: vec![
+                NavmTriangle {
+                    vertices: [0, 1, 2],
+                    edge_neighbours: [None, Some(1), None],
+                    flags: 0,
+                },
+                NavmTriangle {
+                    vertices: [0, 2, 3],
+                    edge_neighbours: [Some(0), None, None],
+                    flags: 0,
+                },
+            ],
+            ..NavmRecord::default()
+        }
+    }
+
+    /// A 4-triangle strip forming a `[0,40] x [0,10]` hallway (Y-up),
+    /// four quads in a row, each split into 2 triangles, chained
+    /// `0-1-2-3-4-5-6-7` via `edge_neighbours` so a path from one end to
+    /// the other must cross every triangle.
+    fn hallway_strip() -> NavmRecord {
+        let mut yup_verts = Vec::new();
+        for i in 0..5u32 {
+            let x = i as f32 * 10.0;
+            yup_verts.push([x, 0.0, 0.0]); // vertex 2*i   (near/z=0 side)
+            yup_verts.push([x, 0.0, 10.0]); // vertex 2*i+1 (far/z=10 side)
+        }
+        let mut triangles = Vec::new();
+        for i in 0..4u16 {
+            // Vertex indices for this quad's four corners.
+            let v_near_low = 2 * i;
+            let v_far_low = 2 * i + 1;
+            let v_near_high = 2 * i + 2;
+            let v_far_high = 2 * i + 3;
+            // Triangle indices: two triangles pushed per quad, so quad i's
+            // pair sits at 2*i (first half) and 2*i+1 (second half).
+            let tri_first_half = 2 * i;
+            let tri_second_half = 2 * i + 1;
+            let next_quad_first_half = 2 * i + 2;
+            triangles.push(NavmTriangle {
+                vertices: [v_near_low, v_far_low, v_near_high],
+                edge_neighbours: [None, Some(tri_second_half), None],
+                flags: 0,
+            });
+            triangles.push(NavmTriangle {
+                vertices: [v_far_low, v_far_high, v_near_high],
+                edge_neighbours: [
+                    None,
+                    (i < 3).then_some(next_quad_first_half),
+                    Some(tri_first_half),
+                ],
+                flags: 0,
+            });
+        }
+        NavmRecord {
+            vertices: yup_verts.iter().map(|v| zup_from_yup(*v)).collect(),
+            triangles,
+            ..NavmRecord::default()
+        }
+    }
+
+    #[test]
+    fn zup_yup_round_trip_matches_the_real_conversion() {
+        let yup = [1.0, 2.0, 3.0];
+        let zup = zup_from_yup(yup);
+        assert_eq!(zup_to_yup_pos(zup), yup);
+    }
+
+    #[test]
+    fn locates_the_containing_triangle_on_each_side_of_the_diagonal() {
+        let navm = two_triangle_quad();
+        assert_eq!(
+            find_containing_triangle(&navm, Vec3::new(8.0, 0.0, 2.0)),
+            Some(0)
+        );
+        assert_eq!(
+            find_containing_triangle(&navm, Vec3::new(2.0, 0.0, 8.0)),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn returns_none_for_a_point_outside_every_triangle() {
+        let navm = two_triangle_quad();
+        assert_eq!(
+            find_containing_triangle(&navm, Vec3::new(100.0, 0.0, 100.0)),
+            None
+        );
+    }
+
+    #[test]
+    fn same_triangle_start_and_goal_is_a_trivial_direct_path() {
+        let navm = two_triangle_quad();
+        let path = find_path_within_tile(&navm, Vec3::new(1.0, 0.0, 1.0), Vec3::new(2.0, 0.0, 2.0))
+            .expect("both points are on triangle 0");
+        assert_eq!(
+            path,
+            vec![Vec3::new(1.0, 0.0, 1.0), Vec3::new(2.0, 0.0, 2.0)]
+        );
+    }
+
+    #[test]
+    fn crosses_the_shared_diagonal_when_start_and_goal_are_on_different_triangles() {
+        let navm = two_triangle_quad();
+        let start = Vec3::new(8.0, 0.0, 2.0); // triangle 0
+        let goal = Vec3::new(2.0, 0.0, 8.0); // triangle 1
+        let path = find_path_within_tile(&navm, start, goal).expect("adjacent via the diagonal");
+        // start, one portal midpoint (the shared 0-2 diagonal's midpoint), goal.
+        assert_eq!(path.len(), 3);
+        assert_eq!(path[0], start);
+        assert_eq!(path[2], goal);
+        assert_eq!(path[1], Vec3::new(5.0, 0.0, 5.0)); // midpoint of (0,0)-(10,10)
+    }
+
+    #[test]
+    fn walks_a_multi_triangle_corridor_end_to_end() {
+        let navm = hallway_strip();
+        let start = Vec3::new(1.0, 0.0, 1.0); // triangle 0, far end
+        let goal = Vec3::new(39.0, 0.0, 9.0); // last triangle, other far end
+        let path = find_path_within_tile(&navm, start, goal).expect("hallway is fully connected");
+        assert_eq!(path.first().copied(), Some(start));
+        assert_eq!(path.last().copied(), Some(goal));
+        // Must cross through every intermediate portal, not teleport.
+        assert!(
+            path.len() > 2,
+            "a 4-triangle corridor needs intermediate waypoints, got {path:?}"
+        );
+        // Every intermediate waypoint should be a monotonically increasing
+        // step down the hallway's X axis -- not strictly required for
+        // correctness, but a good smoke check that the corridor wasn't
+        // reversed or looped.
+        for pair in path.windows(2) {
+            assert!(
+                pair[1].x >= pair[0].x - 1e-4,
+                "waypoints should progress down the hallway, got {path:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn returns_none_when_goal_does_not_localize_onto_the_tile() {
+        let navm = two_triangle_quad();
+        assert_eq!(
+            find_path_within_tile(
+                &navm,
+                Vec3::new(1.0, 0.0, 1.0),
+                Vec3::new(500.0, 0.0, 500.0)
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn shared_edge_is_derived_from_vertex_index_intersection() {
+        let a = NavmTriangle {
+            vertices: [0, 1, 2],
+            edge_neighbours: [None, None, None],
+            flags: 0,
+        };
+        let b = NavmTriangle {
+            vertices: [1, 2, 3],
+            edge_neighbours: [None, None, None],
+            flags: 0,
+        };
+        let edge = shared_edge(&a, &b).expect("triangles share vertices 1 and 2");
+        assert!(edge == (1, 2) || edge == (2, 1));
+    }
+
+    #[test]
+    fn shared_edge_is_none_for_non_adjacent_triangles() {
+        let a = NavmTriangle {
+            vertices: [0, 1, 2],
+            edge_neighbours: [None, None, None],
+            flags: 0,
+        };
+        let b = NavmTriangle {
+            vertices: [3, 4, 5],
+            edge_neighbours: [None, None, None],
+            flags: 0,
+        };
+        assert_eq!(shared_edge(&a, &b), None);
+    }
+}

@@ -111,6 +111,14 @@ innovate, the textbook shape fits the data exactly as parsed:
    triangles" into "list of waypoints," which is the actual shape
    `step_toward` (§5) needs.
 
+   **Correction, Phase 1 (2026-08-23)**: not landed as planned — see §9's
+   Phase 1 entry. A full funnel pass needs each portal's two vertices in
+   a consistent left/right orientation along the corridor, which needs a
+   winding convention this codebase doesn't confirm anywhere. Phase 1
+   landed shared-edge-midpoint waypoints instead (correct, in-corridor,
+   just not shortest-path-optimal); a true funnel pass is a deferred
+   follow-up, not abandoned.
+
 Both passes are pure graph/geometry algorithms over data already resident
 in memory — no new I/O, no new resource, no interaction with streaming
 beyond "only consider currently-loaded tiles" (§4).
@@ -227,12 +235,36 @@ add indexing then, against real evidence.
 
 ## 9. Rollout
 
-1. **Phase 1 — single-tile pathing.** A\* + funnel over one `NavmRecord`'s
-   triangles, no cross-tile connectivity yet. Fully testable with synthetic
-   small triangle meshes (a handful of hand-built triangles with known
-   adjacency) — doesn't need real game data for algorithm correctness,
-   though the existing corpus (`indices_are_in_range`-verified real meshes)
-   is available for a perf/soak pass once the algorithm is proven.
+1. **Phase 1 — single-tile pathing. Landed (2026-08-23),
+   `byroredux/src/systems/navmesh_path.rs`, with a real correction to
+   §3's plan**: full funnel string-pulling turned out to need each
+   corridor portal's two vertices in a *consistent left/right
+   orientation* along the path, which in turn needs a corpus-confirmed
+   consistently-wound `NavmTriangle::vertices` convention — not
+   established anywhere in this codebase (`parse_navm`'s own doc is
+   silent on winding), and not safely guessable without either that
+   confirmation or interactive visual verification (unavailable in this
+   environment). Landed instead: A\* over the triangle-adjacency graph
+   (as planned, centroid-cost edges — edge-midpoint costing was also
+   deferred for the same unconfirmed-convention reason), plus waypoint
+   extraction as the **midpoint of each shared edge** between corridor
+   triangles, where the shared edge is derived from actual shared vertex
+   *indices* (`shared_edge`, orientation-free — provably correct for a
+   watertight mesh, no convention assumed). This is a real, valid,
+   in-corridor path — a genuine improvement over today's
+   straight-line-through-walls locomotion — just not shortest-path
+   optimal the way a true funnel pass would be. Upgrading to full
+   string-pulling is a well-scoped, isolated follow-up once winding is
+   confirmed against real data, not blocked on anything else landing
+   first. 9 unit tests (point localization on both sides of a split
+   quad, trivial same-triangle path, multi-triangle corridor traversal,
+   off-navmesh `None`, `shared_edge` derivation + non-adjacency). Also
+   surfaced and fixed one thing this document didn't call out: NAVM
+   vertices are raw Z-up floats (`parse_navm` applies no coordinate
+   conversion), while every other locomotion-facing API is engine Y-up —
+   the module converts at read time via `zup_to_yup_pos`, documented in
+   its own header since missing it would silently produce a
+   rotated/mirrored path.
 2. **Phase 2 — cross-tile via `external_connections`.** Extends the A\*
    graph across `NavmeshTile` entity boundaries per §4. Needs at least one
    multi-tile fixture — either a small hand-built two-mesh pair, or (once

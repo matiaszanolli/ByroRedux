@@ -991,6 +991,19 @@ grep. REGN's `Sound.music` field now has a real consumer (items 1 + 5,
    without door-aware behavior until that's decoded separately. No code
    lands from the doc itself; 4-phase rollout recommended (single-tile →
    cross-tile → Wander/Travel → Follow/Escort/Guard/Patrol).
+
+   **Phase 1 landed (2026-08-23)**: `byroredux/src/systems/navmesh_path.rs`
+   — single-tile A\* over `edge_neighbours` + shared-edge-midpoint waypoint
+   extraction (a real correction from the doc's planned full funnel pass —
+   see the doc's own §3/§9 for why: funnel string-pulling needs a
+   triangle-winding convention this codebase doesn't confirm anywhere,
+   deferred rather than guessed). Also fixed a coordinate-space gap the
+   doc didn't call out: `NavmRecord::vertices` are raw Z-up, converted to
+   engine Y-up at read time. Pure geometry, no ECS dependency, 9 unit
+   tests, landed ahead of its Phase 3 consumer
+   (`#[allow(dead_code)]`). Still open: Phase 2 (cross-tile via
+   `external_connections`) and Phase 3/4 (wiring into the six
+   `step_toward` consumers).
 4. [ ] **Actor/package suspend-migrate-resume across stream boundaries** —
    **correction (2026-08-23): "unblocked by `PersistentRefIndex`" doesn't
    hold up; the real shape is bigger.** `unload_cell_inner`
