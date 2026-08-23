@@ -731,9 +731,11 @@ transitions, saves, and load-order changes.
 #### EX-16 (#2372) — REGN, NAVM, ambient audio, AI integration
 
 Buildable parse-side slices are done: EX-16a (REGN RDAT, #2737) and EX-16b
-(NAVM geometry + connectivity, #2738) are both closed. Everything below is
-genuinely new — **zero runtime consumers exist for either parsed dataset
-today**, confirmed by exhaustive grep.
+(NAVM geometry + connectivity, #2738) are both closed. Everything below was
+genuinely new when this section was first written — **zero runtime
+consumers existed for either parsed dataset**, confirmed by exhaustive
+grep. REGN's `Sound.music` field now has a real consumer (items 1 + 5,
+2026-08-23); NAVM and REGN's other fields still do not.
 
 1. [ ] **REGN runtime consumption** — **correction (2026-08-23): NOT the
    isolated slice this originally claimed.** `RegionDataEntry`/
@@ -798,19 +800,15 @@ today**, confirmed by exhaustive grep.
    `NOT_SAVED_BY_DESIGN` (rederived identically every load, same posture
    as `CellLightingRes`/`NavmeshTile`).
 
-   **Still open**: `RegionAmbientRes` has zero consumers — it's real,
-   testable, live-updating state, but nothing plays a sound from it yet.
-   That's item 5's REGN-keyed `AudioEmitter` (BSA archive provider for
-   `--sounds-bsa`, `load_streaming_sound_from_bytes` + `AudioWorld::
-   play_music` dispatch, crossfade-on-change), landed ahead of its
-   consumer the same way `NavmeshTile` and `PersistentRefIndex` were.
-   Also still open: `Weather`/`Map`/`Landscape`/`Objects`/`Grass`/
-   `Imposter` RDAT kinds have no selection logic at all (only `Sound` was
-   built, since it's what item 5 needs) — REGN-driven weather-table
-   selection in particular would overlap with the worldspace-level
-   climate/weather system and needs its own design pass, not an
-   assumption that `select_active_region_sound`'s shape generalises
-   cleanly to every kind.
+   **`RegionAmbientRes` now has a real consumer (2026-08-23, same day)**:
+   item 5's `music`-track dispatch — see item 5 below for the full
+   picture. `incidental` still has none. Also still open:
+   `Weather`/`Map`/`Landscape`/`Objects`/`Grass`/`Imposter` RDAT kinds
+   have no selection logic at all (only `Sound` was built) — REGN-driven
+   weather-table selection in particular would overlap with the
+   worldspace-level climate/weather system and needs its own design
+   pass, not an assumption that `select_active_region_sound`'s shape
+   generalises cleanly to every kind.
 2. [x] **NAVM streaming lifecycle** — done. Landed `NavmeshTile`
    (`byroredux/src/components.rs`), a plain CPU-only component wrapping
    one resident `NavmRecord`, spawned by the new
@@ -848,43 +846,73 @@ today**, confirmed by exhaustive grep.
    which package state is worth preserving (Sandbox seat, Travel
    progress) vs. safe to re-roll (Wander pick), and route resolution
    through the index instead of a naive respawn.
-5. [ ] **Ambient audio emitter REGN-binding** — the generic
-   crossfade/prune-on-unload machinery already exists (`AudioEmitter`,
-   `unload_fade_ms`, `prune_stopped_sounds`, `crates/audio/src/lib.rs`);
-   needs a REGN-keyed emitter type reusing it, gated behind item 1.
-   **Further unblocked (2026-08-23)**: item 1 now supplies the whole
-   chain up to (not including) playback — `RegionAmbientRes` is a real,
-   live-updating resource carrying the resolved `music`/`incidental`
-   FormIDs for whatever cell/tile is resident, and
-   `resolve_sound_path`/`sound_archive_path` turn either into an
-   archive key. What's left is purely the playback half: a
-   `SoundArchiveProvider` (mirroring `ScriptProvider` — no persistent
-   `--sounds-bsa` archive handle exists today; `try_load_default_
-   footstep`/`try_load_default_water_splash` each reopen the archive
-   ad hoc for one hardcoded path, which doesn't fit an arbitrary-FormID
-   lookup), a system that watches `RegionAmbientRes` for a change and
-   dispatches `load_streaming_sound_from_bytes` +
-   `AudioWorld::play_music` (crossfade is already free — `play_music`
-   fades out any existing track), and the REGN-keyed emitter type for
-   `incidental`/future `sounds` list playback.
+5. [x] **Ambient audio emitter REGN-binding — music done, `incidental` not
+   attempted.** The generic crossfade machinery already existed
+   (`AudioWorld::play_music`/`stop_music`, `crates/audio/src/lib.rs`);
+   what landed (2026-08-23) is the dispatch wiring, not a new spatial
+   emitter type — `play_music` is non-spatial by design (background
+   track, not a positioned SFX), which is the right fit for `music` and
+   made the originally-scoped "REGN-keyed `AudioEmitter`" the wrong
+   shape for this field. `asset_provider::audio::SoundArchiveProvider`
+   (mirrors `ScriptProvider`: repeatable `--sounds-bsa`, first-hit-wins,
+   registered once at boot in `boot.rs`) gives arbitrary-FormID-driven
+   archive lookups a persistent handle, unlike
+   `try_load_default_footstep`/`try_load_default_water_splash`'s ad hoc
+   single-hardcoded-path reopens. `dispatch_region_ambient_music`
+   resolves `RegionAmbientRes::music_form` → `resolve_sound_path` →
+   `sound_archive_path` → `SoundArchiveProvider::extract` →
+   `load_streaming_sound_from_bytes` → `AudioWorld::play_music`
+   (3-second crossfade, nominal volume — no per-region volume field
+   exists to scale by), or `stop_music` on any failure at any step
+   (unresolvable FormID, no archive, file not found, decode error) —
+   deliberately fails to silence rather than leaving the *previous*
+   cell's track playing into a cell that doesn't call for it.
+
+   Called from both cell loaders, change-guarded against the resource's
+   *prior* value so walking between two cells/tiles sharing one tagging
+   region doesn't restart the track with an audible crossfade every
+   crossing: interior inside `load_cell_with_masters` itself (reads the
+   live `RegionAmbientRes` — still the *departing* cell's value at that
+   point, since the three external call sites haven't overwritten it
+   yet — compares against the freshly resolved `music_form`, dispatches
+   before returning); exterior inside `apply_cell_region_ambient`
+   (same comparison, using `wctx.record_index.sounds`, before the
+   resource write).
+
+   `SoundArchiveProvider` classified in `NOT_SAVED_BY_DESIGN`
+   (engine-wide archive handle, same posture as
+   `FootstepConfig`/`WaterAudioConfig`). 8 new tests (2
+   `SoundArchiveProvider` construction, 4 `dispatch_region_ambient_music`
+   failure-path no-panic/stops-playback cases — all headless-safe, no
+   audio device or real archive required).
+
+   **What's still open, deliberately**: `incidental` (`RDSI`, FNV-only)
+   and the `sounds: Vec<RegionSound>` chance-based ambient-loop list have
+   no dispatch at all — `incidental` because it genuinely wants a
+   spatial/looping `AudioEmitter` rather than the non-spatial `music`
+   track (a real design decision on emitter placement/attenuation, not
+   attempted here), and `sounds` because its `chance_raw` selection
+   probability still has an unresolved fixed-point scale (unchanged from
+   item 1's note). REGN-driven weather/objects/map/landscape/grass/
+   imposter selection also remains entirely unbuilt — only `Sound` has a
+   selector.
 6. [ ] **OwnershipTracker telemetry** — add `navm_tiles_resident`,
    `regn_active_entries`, `ai_package_rows` classes following the existing
    `OwnerClass`/`ReclaimPolicy` pattern (`ownership.rs`), once items 2/4
    give them something real to count.
 
-**Recommended sequencing**: item 2 (NAVM streaming lifecycle) is done.
-Item 1 (REGN ambient sound) turned out NOT to be dependency-free — see its
-correction above; a real `SOUN` field decode was a prerequisite. **Item
-1 is now done end-to-end up to playback (2026-08-23)**: SOUN decode,
-FormID→path resolver, the priority-ordered cross-region `Sound`-entry
-selector, and the live `RegionAmbientRes` resource wired into both cell
-loaders. What remains under item 5 is purely the audio-dispatch half
-(a `SoundArchiveProvider`, the streaming-music system, the REGN-keyed
-emitter type) — a well-scoped, still-real follow-up, but no longer
-blocked on any design or parsing gap. Items 4/6 are downstream of #2370
-(persistent-ref identity, landed) or #2369 (ground cover, not landed);
-item 3 (pathfinding) is recommended as its own follow-up issue rather
-than folded into EX-16 directly.
+**Recommended sequencing**: items 1, 2, and 5 are done end-to-end for
+`music` — a player crossing into a region-tagged cell now audibly hears
+its REGN ambient track, with no gap left between "parsed" and "playing."
+Item 1 turned out NOT to be dependency-free (a real `SOUN` field decode
+was an unstated prerequisite); item 5 turned out to need a persistent
+`SoundArchiveProvider` `--sounds-bsa` handle that didn't exist (the
+existing footstep/splash loads are one-off hardcoded-path reopens, not a
+FormID-driven lookup) — both gaps are closed. Remaining under this issue:
+`incidental` playback (needs a real spatial-emitter design decision, not
+just dispatch plumbing), item 3 (pathfinding — recommended as its own
+follow-up issue given its size), item 4 (downstream of #2370, landed —
+unblocked but not started), and item 6 (downstream of items 2/4).
 
 ## Verification policy
 

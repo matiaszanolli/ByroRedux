@@ -490,18 +490,21 @@ pub(crate) fn apply_cell_climate_override(
     true
 }
 
-/// Re-resolve the REGN ambient-sound directive (EX-16 item 1, #2372's
-/// `RegionAmbientRes`) for the exterior tile the player is currently in.
+/// Re-resolve the REGN ambient-sound directive (EX-16 items 1 + 5,
+/// #2372's `RegionAmbientRes`) for the exterior tile the player is
+/// currently in, and dispatch background-music playback for it.
 ///
 /// Unlike [`apply_cell_climate_override`], resolution itself is
 /// unconditional every call — a `HashMap` lookup plus a handful of field
 /// copies, cheap enough that gating the *resolve* isn't worth the extra
-/// state. The `RegionAmbientRes` *write* is still change-guarded so a
-/// player standing still doesn't churn the resource every frame. Called
-/// outside the grid-changed guard in `step_streaming`, mirroring the
-/// climate override's own placement — a session that starts (or a save
-/// that loads) inside a region-tagged cell must get its ambient directive
-/// applied immediately, not only on the first subsequent crossing.
+/// state. The `RegionAmbientRes` *write* (and the music dispatch it can
+/// trigger) is still change-guarded so a player standing still doesn't
+/// churn the resource, let alone restart the ambient track, every frame.
+/// Called outside the grid-changed guard in `step_streaming`, mirroring
+/// the climate override's own placement — a session that starts (or a
+/// save that loads) inside a region-tagged cell must get its ambient
+/// directive and music applied immediately, not only on the first
+/// subsequent crossing.
 pub(crate) fn apply_cell_region_ambient(
     world: &mut World,
     wctx: &cell_loader::ExteriorWorldContext,
@@ -517,11 +520,23 @@ pub(crate) fn apply_cell_region_ambient(
         .unwrap_or(&[]);
     let ambient =
         crate::components::RegionAmbientRes::resolve(region_form_ids, &wctx.record_index.regions);
-    let unchanged = world
+    let previous = world
         .try_resource::<crate::components::RegionAmbientRes>()
-        .is_some_and(|existing| *existing == ambient);
-    if unchanged {
+        .map(|existing| *existing);
+    if previous == Some(ambient) {
         return;
+    }
+    // EX-16 item 5 (#2372) — dispatch only on an actual `music` change.
+    // `incidental` has no consumer yet (see `RegionAmbientRes`'s doc), so
+    // an ambient-directive change that only touches it must not restart
+    // whatever track is currently playing.
+    let previous_music_form = previous.and_then(|p| p.music_form);
+    if previous_music_form != ambient.music_form {
+        crate::asset_provider::dispatch_region_ambient_music(
+            world,
+            &wctx.record_index.sounds,
+            ambient.music_form,
+        );
     }
     world.insert_resource(ambient);
 }

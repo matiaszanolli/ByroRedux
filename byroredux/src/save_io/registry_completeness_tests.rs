@@ -292,6 +292,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("SeatReservations", "derived sandbox occupancy, pruned on cell-reference load against live Furniture + claimant Seated state — see its own doc"),
         ("SettingsPersistence", "process-local user-config path; preferences are independently persisted in settings.toml, never inside a gameplay save"),
         ("SkyParamsRes", "WTHR sky rendering parameters, rebuilt from the parsed record every exterior cell load"),
+        ("SoundArchiveProvider", "engine-wide --sounds-bsa archive handle(s) opened once at startup (EX-16 item 5 / #2372), same posture as FootstepConfig/WaterAudioConfig/ScriptProvider — audio assets are re-resolved, not gameplay save state"),
         ("Spinning", "demo-scene marker component, not present on any real gameplay content"),
         ("SubtreeCache", "lazily-rebuilt animation subtree cache, invalidated alongside NameIndex (#278)"),
         ("TerrainTileSlot", "index into the renderer's per-frame GpuTerrainTile SSBO, rebuilt by the terrain-spawn path every load (#470)"),

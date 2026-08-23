@@ -528,6 +528,11 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // flag is absent or the archive isn't openable.
     crate::asset_provider::try_load_default_footstep(&mut world, args);
     crate::asset_provider::try_load_default_water_splash(&mut world, args);
+    // EX-16 item 5 (#2372) — persistent `--sounds-bsa` handle for
+    // FormID-driven REGN ambient dispatch, unlike the two one-off
+    // hardcoded-path loads immediately above. Empty provider (no flag)
+    // makes every dispatch attempt a clean no-op.
+    world.insert_resource(crate::asset_provider::build_sound_archive_provider(args));
     // Process-lifetime cache of parsed-and-imported NIF scenes.
     // Persists across cell transitions so repeat visits don't re-
     // parse every clutter mesh. See #381.

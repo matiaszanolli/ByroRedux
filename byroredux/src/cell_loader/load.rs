@@ -529,6 +529,23 @@ pub fn load_cell_with_masters(
     // resolves it against.
     let region_ambient =
         crate::components::RegionAmbientRes::resolve(&cell.regions, &index.regions);
+    // EX-16 item 5 (#2372) — dispatch (or stop) REGN ambient music here,
+    // BEFORE the caller overwrites the live `RegionAmbientRes` resource
+    // with `result.region_ambient` (that happens after this function
+    // returns, at the same three call sites that apply lighting). At
+    // this point the resource still holds the *previous* cell's
+    // directive, which is exactly the comparison `dispatch_region_
+    // ambient_music` needs to avoid restarting an unchanged track.
+    let previous_music_form = world
+        .try_resource::<crate::components::RegionAmbientRes>()
+        .and_then(|r| r.music_form);
+    if previous_music_form != region_ambient.music_form {
+        crate::asset_provider::dispatch_region_ambient_music(
+            world,
+            &index.sounds,
+            region_ambient.music_form,
+        );
+    }
 
     // #1668 — surface GLOB runtime values so CTDA "Use Global" comparands
     // resolve. Keyed in global load-order space (EsmIndex remaps record
