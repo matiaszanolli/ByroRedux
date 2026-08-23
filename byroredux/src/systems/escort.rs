@@ -32,8 +32,19 @@
 //! ## v0 scope (mirrors `wander.rs`/`travel.rs`/`follow.rs`'s documented
 //! approximations)
 //!
-//! - **No pathing.** Straight-line walk in both phases; no obstacle
-//!   avoidance.
+//! - **Single-tile pathing in both phases** (EX-16 item 3 Phase 4,
+//!   `docs/engine/navmesh-pathfinding.md`) — the lead phase reuses
+//!   `travel_system`'s frozen-goal `crate::components::NavPath` caching
+//!   exactly (`0.0` repath threshold); the collect phase reuses
+//!   `follow_system`'s live-goal caching exactly
+//!   ([`ESCORT_COLLECT_REPATH_THRESHOLD`], a separate constant at the
+//!   same scale as `follow.rs::FOLLOW_REPATH_THRESHOLD` rather than
+//!   importing it — same "own tuning constant per procedure,
+//!   cross-referenced not shared" convention `ESCORT_COLLECT_DISTANCE`
+//!   already follows for `FOLLOW_DEFAULT_DISTANCE`). One `NavPath` per
+//!   actor serves both phases in sequence — the collect→lead transition
+//!   naturally invalidates it (the destination is a different goal than
+//!   the collect target's last position), no special-casing needed.
 //! - **No animation.** `AnimationPlayer` is untouched.
 //! - **No per-frame package re-evaluation.** Same limitation as
 //!   Sandbox/Wander/Travel/Follow.
@@ -53,14 +64,17 @@
 //!   `travel_system` moving on the very tick it resolves) — there's no
 //!   extra idle tick in between.
 
-use super::locomotion::{step_toward, LOCOMOTION_ARRIVAL_EPSILON};
+use super::locomotion::{step_along_waypoints, LOCOMOTION_ARRIVAL_EPSILON};
+use super::navmesh_path::resolve_cached_waypoints;
 use super::travel::resolve_destination as resolve_travel_destination;
+use crate::components::{NavPath, NavmeshTile};
 use byroredux_core::ecs::components::{
     EscortBehavior, EscortState, Escorted, GlobalTransform, Transform,
 };
 use byroredux_core::ecs::{EntityId, World};
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_scripting::condition::resolve_entity_by_global_form_id;
+use std::collections::VecDeque;
 
 /// Distance (world units) within which the target is considered
 /// "collected" — the collect phase ends and the lead phase begins. Engine
@@ -72,6 +86,11 @@ const ESCORT_COLLECT_DISTANCE: f32 = 128.0;
 /// radius 0) *and* `destination_form_id` doesn't resolve. Same scale as
 /// `travel.rs::TRAVEL_DEFAULT_RADIUS`.
 const ESCORT_DEFAULT_RADIUS: f32 = 512.0;
+
+/// Collect-phase repath threshold (EX-16 item 3 Phase 4) — same value
+/// and reasoning as `follow.rs::FOLLOW_REPATH_THRESHOLD`, kept as its
+/// own constant rather than imported (see this module's doc).
+const ESCORT_COLLECT_REPATH_THRESHOLD: f32 = 64.0;
 
 /// Resolve this actor's Escort target once, on first sight. Mirrors
 /// `follow.rs::resolve_follow_target`.
@@ -121,7 +140,19 @@ struct EscortPending {
     entity: EntityId,
     current: Vec3,
     rotation: Quat,
-    target_xz: Vec3,
+    /// The raw (un-Y-adjusted) point this tick is walking toward —
+    /// `step_along_waypoints` projects it onto the XZ plane itself, same
+    /// as `travel_system`/`guard_system`'s usage.
+    goal: Vec3,
+    /// Resident-tile waypoints toward `goal` (EX-16 item 3 Phase 4).
+    waypoints: VecDeque<Vec3>,
+    /// The goal to persist into `NavPath` alongside `waypoints` —
+    /// `resolve_cached_waypoints`'s *effective* goal, not necessarily
+    /// `goal` itself. Identical to `goal` for the Lead phase (frozen,
+    /// `0.0` threshold); may differ for the Collect phase (live target,
+    /// real threshold) — see `follow_system`'s doc for why conflating
+    /// the two there would silently defeat the threshold.
+    effective_goal: Vec3,
     kind: EscortPendingKind,
 }
 
@@ -139,6 +170,10 @@ struct EscortDecision {
     state: Option<EscortState>,
     /// True when this tick's lead-phase move reached the destination.
     arrived: bool,
+    /// The updated `NavPath` cache to write in Pass 2 — `None` once
+    /// `arrived` (nothing left to cache), `Some` otherwise (mirrors
+    /// `TravelDecision`/`FollowDecision`'s identical contract).
+    nav_path: Option<NavPath>,
 }
 
 /// Reusable per-frame scratch for [`escort_system_inner`] — captured by
@@ -176,6 +211,8 @@ fn escort_system_inner(world: &World, dt: f32, scratch: &mut EscortScratch) {
         };
         let escorted_q = world.query::<Escorted>();
         let state_q = world.query::<EscortState>();
+        let tile_q = world.query::<NavmeshTile>();
+        let nav_path_q = world.query::<NavPath>();
 
         for (entity, behavior) in behavior_q.iter() {
             if escorted_q.as_ref().is_some_and(|q| q.contains(entity)) {
@@ -194,12 +231,19 @@ fn escort_system_inner(world: &World, dt: f32, scratch: &mut EscortScratch) {
 
             // ── Already leading: walk toward the frozen destination. ──
             if let Some(destination) = existing_state.and_then(|s| s.destination) {
-                let target_xz = Vec3::new(destination.x, current.y, destination.z);
+                // Effective goal discarded (`_`): with a `0.0` threshold
+                // it's always bit-identical to `destination`, whether
+                // reused or freshly computed.
+                let cached = nav_path_q.as_ref().and_then(|q| q.get(entity));
+                let (_, waypoints) =
+                    resolve_cached_waypoints(cached, tile_q.as_ref(), current, destination, 0.0);
                 scratch.pending.push(EscortPending {
                     entity,
                     current,
                     rotation: transform.rotation,
-                    target_xz,
+                    goal: destination,
+                    waypoints,
+                    effective_goal: destination,
                     kind: EscortPendingKind::Lead {
                         destination,
                         new_state: None,
@@ -223,14 +267,22 @@ fn escort_system_inner(world: &World, dt: f32, scratch: &mut EscortScratch) {
             if collected {
                 // Transition into the lead phase this tick — resolve the
                 // destination and start walking immediately, mirroring
-                // travel_system moving on the very tick it resolves.
+                // travel_system moving on the very tick it resolves. A
+                // brand-new destination, so this always misses any cache
+                // (nothing was ever computed for it before) and falls
+                // through to a fresh resolve — same shape as Travel's
+                // first tick.
                 let destination = resolve_destination(world, behavior, current);
-                let target_xz = Vec3::new(destination.x, current.y, destination.z);
+                let cached = nav_path_q.as_ref().and_then(|q| q.get(entity));
+                let (_, waypoints) =
+                    resolve_cached_waypoints(cached, tile_q.as_ref(), current, destination, 0.0);
                 scratch.pending.push(EscortPending {
                     entity,
                     current,
                     rotation: transform.rotation,
-                    target_xz,
+                    goal: destination,
+                    waypoints,
+                    effective_goal: destination,
                     kind: EscortPendingKind::Lead {
                         destination,
                         new_state: Some(EscortState {
@@ -240,14 +292,25 @@ fn escort_system_inner(world: &World, dt: f32, scratch: &mut EscortScratch) {
                     },
                 });
             } else {
-                // Still collecting: walk toward the target's live position.
+                // Still collecting: walk toward the target's live
+                // position, with the same repath-threshold reuse
+                // `follow_system` uses for its own live target.
                 let pos = live_target_pos.expect("collected == false implies Some");
-                let target_xz = Vec3::new(pos.x, current.y, pos.z);
+                let cached = nav_path_q.as_ref().and_then(|q| q.get(entity));
+                let (effective_goal, waypoints) = resolve_cached_waypoints(
+                    cached,
+                    tile_q.as_ref(),
+                    current,
+                    pos,
+                    ESCORT_COLLECT_REPATH_THRESHOLD,
+                );
                 scratch.pending.push(EscortPending {
                     entity,
                     current,
                     rotation: transform.rotation,
-                    target_xz,
+                    goal: pos,
+                    waypoints,
+                    effective_goal,
                     kind: EscortPendingKind::Collect {
                         new_state: existing_state.is_none().then_some(EscortState {
                             target_entity,
@@ -263,16 +326,22 @@ fn escort_system_inner(world: &World, dt: f32, scratch: &mut EscortScratch) {
         return;
     }
 
-    // ── Pass 1b: compute movement via `step_toward`. `Transform` and
-    // `GlobalTransform` locks from Pass 1a have already dropped, so
+    // ── Pass 1b: compute movement via `step_along_waypoints`. `Transform`
+    // and `GlobalTransform` locks from Pass 1a have already dropped, so
     // `PhysicsWorld` is acquired here without ever overlapping either
     // (#2134). ──
     scratch.decisions.clear();
     {
         let physics = world.try_resource::<byroredux_physics::PhysicsWorld>();
         for p in &scratch.pending {
-            let (new_pos, rotation) =
-                step_toward(p.current, p.rotation, p.target_xz, dt, physics.as_deref());
+            let (new_pos, rotation, waypoints) = step_along_waypoints(
+                p.current,
+                p.rotation,
+                p.waypoints.clone(),
+                p.goal,
+                dt,
+                physics.as_deref(),
+            );
             let (state, arrived) = match &p.kind {
                 EscortPendingKind::Lead {
                     destination,
@@ -292,6 +361,13 @@ fn escort_system_inner(world: &World, dt: f32, scratch: &mut EscortScratch) {
                 rotation,
                 state,
                 arrived,
+                // `effective_goal`, not `p.goal` — see `EscortPending`'s
+                // own doc for why those two may differ in the Collect
+                // phase (mirrors `follow_system`'s identical concern).
+                nav_path: (!arrived).then_some(NavPath {
+                    goal: p.effective_goal,
+                    waypoints,
+                }),
             });
         }
     }
@@ -321,6 +397,18 @@ fn escort_system_inner(world: &World, dt: f32, scratch: &mut EscortScratch) {
         for d in &scratch.decisions {
             if d.arrived {
                 eq.insert(d.entity, Escorted);
+            }
+        }
+    }
+    if let Some(mut nq) = world.query_mut::<NavPath>() {
+        for d in &scratch.decisions {
+            match &d.nav_path {
+                Some(path) => {
+                    nq.insert(d.entity, path.clone());
+                }
+                None => {
+                    nq.remove(d.entity);
+                }
             }
         }
     }
@@ -574,5 +662,144 @@ mod tests {
             tq.get(actor).unwrap().translation.x > 0.0,
             "actor should still close toward the target with a real PhysicsWorld present"
         );
+    }
+
+    // ── EX-16 item 3 Phase 4: single-tile NAVM pathing integration ──
+
+    /// The inverse of `zup_to_yup_pos`, mirroring the other locomotion
+    /// modules' identically-named test helper.
+    fn zup_from_yup(p: [f32; 3]) -> [f32; 3] {
+        [p[0], -p[2], p[1]]
+    }
+
+    /// The same 1000-unit two-triangle quad `travel`/`guard`/`follow`'s
+    /// test modules each pin their own copy of.
+    fn two_triangle_quad_navm() -> byroredux_plugin::esm::records::NavmRecord {
+        use byroredux_plugin::esm::records::{NavmRecord, NavmTriangle};
+        let yup_verts = [
+            [0.0, 0.0, 0.0],
+            [1000.0, 0.0, 0.0],
+            [1000.0, 0.0, 1000.0],
+            [0.0, 0.0, 1000.0],
+        ];
+        NavmRecord {
+            vertices: yup_verts.iter().map(|v| zup_from_yup(*v)).collect(),
+            triangles: vec![
+                NavmTriangle {
+                    vertices: [0, 1, 2],
+                    edge_neighbours: [None, Some(1), None],
+                    flags: 0,
+                },
+                NavmTriangle {
+                    vertices: [0, 2, 3],
+                    edge_neighbours: [Some(0), None, None],
+                    flags: 0,
+                },
+            ],
+            ..NavmRecord::default()
+        }
+    }
+
+    /// Shared assertion both phase-specific tests below need: the actor
+    /// stepped toward the shared-edge waypoint (500,0,500), not a
+    /// straight line toward `raw_goal` that happens to look similar.
+    fn assert_routed_through_waypoint(current: Vec3, raw_goal: Vec3, moved_to: Vec3) {
+        let expected_toward_waypoint = current.move_towards(Vec3::new(500.0, 0.0, 500.0), 100.0);
+        let naive_straight_line = current.move_towards(raw_goal, 100.0);
+        assert!(
+            (expected_toward_waypoint - naive_straight_line).length() > 10.0,
+            "test fixture must be non-degenerate: pathed and naive directions should differ"
+        );
+        assert!(
+            (moved_to - expected_toward_waypoint).length() < 1e-3,
+            "actor should step toward the shared-edge waypoint (500,0,500), got {moved_to:?}, \
+             expected ~{expected_toward_waypoint:?} (naive straight-line would have been {naive_straight_line:?})"
+        );
+    }
+
+    #[test]
+    fn escort_system_routes_through_a_resident_navmesh_tile_during_the_lead_phase() {
+        let mut world = World::new();
+        register_all(&mut world);
+        world.register::<NavmeshTile>();
+        world.register::<NavPath>();
+
+        let tile = world.spawn();
+        world.insert(tile, NavmeshTile(two_triangle_quad_navm()));
+
+        let current = Vec3::new(900.0, 0.0, 100.0);
+        let destination = Vec3::new(600.0, 0.0, 900.0);
+        let entity = world.spawn();
+        world.insert(entity, Transform::from_translation(current));
+        world.insert(
+            entity,
+            EscortBehavior {
+                target_form_id: None,
+                destination_form_id: None,
+                destination_radius: Some(1.0),
+                form_id: 0x0010_0001,
+            },
+        );
+        // Seed directly into the lead phase, mirroring
+        // escort_system_tags_escorted_on_arrival_and_then_stops.
+        world.insert(
+            entity,
+            EscortState {
+                target_entity: None,
+                destination: Some(destination),
+            },
+        );
+
+        escort_system(&world, 1.0); // 1s @ 100 u/s = 100 units of travel
+
+        let tq = world.query::<Transform>().expect("Transform registered");
+        let moved_to = tq.get(entity).expect("actor transform").translation;
+        assert_routed_through_waypoint(current, destination, moved_to);
+
+        let nq = world.query::<NavPath>().expect("NavPath registered");
+        let path = nq.get(entity).expect("cached during the lead phase");
+        assert_eq!(path.goal, destination);
+    }
+
+    #[test]
+    fn escort_system_routes_through_a_resident_navmesh_tile_during_the_collect_phase() {
+        let mut world = World::new();
+        register_all(&mut world);
+        world.register::<NavmeshTile>();
+        world.register::<NavPath>();
+
+        let tile = world.spawn();
+        world.insert(tile, NavmeshTile(two_triangle_quad_navm()));
+
+        let current = Vec3::new(900.0, 0.0, 100.0);
+        let target_pos = Vec3::new(600.0, 0.0, 900.0);
+        let target = spawn_entity_at(&mut world, 0x0011_0001, target_pos);
+
+        let actor = world.spawn();
+        world.insert(actor, Transform::from_translation(current));
+        world.insert(
+            actor,
+            EscortBehavior {
+                target_form_id: Some(0x0011_0001),
+                destination_form_id: None,
+                destination_radius: Some(200.0),
+                form_id: 0x0011_0002,
+            },
+        );
+
+        escort_system(&world, 1.0); // 1s @ 100 u/s = 100 units of travel
+
+        let sq = world
+            .query::<EscortState>()
+            .expect("EscortState registered");
+        assert_eq!(
+            sq.get(actor).unwrap().target_entity,
+            Some(target),
+            "still collecting -- far outside ESCORT_COLLECT_DISTANCE"
+        );
+
+        let tq = world.query::<Transform>().expect("Transform registered");
+        let moved_to = tq.get(actor).expect("actor transform").translation;
+        assert_routed_through_waypoint(current, target_pos, moved_to);
     }
 }
