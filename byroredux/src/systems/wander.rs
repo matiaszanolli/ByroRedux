@@ -20,18 +20,20 @@
 //!
 //! ## v0 scope (documented approximations, mirroring `sandbox.rs`'s style)
 //!
-//! - **No pathing**, unlike `travel_system` (EX-16 item 3 Phase 3,
-//!   `docs/engine/navmesh-pathfinding.md`) — straight-line walk to point;
-//!   a wall or obstacle between the actor and its target isn't routed
-//!   around. Fine for open ground (the primary FNV/FO3 Wander use case —
-//!   yard/plaza sandboxing), so lower-value than Travel to wire up, and
-//!   genuinely harder to wire cleanly: `step_oscillating_wander` below is
-//!   shared verbatim with `patrol_system` (M42.8), which isn't in Phase
-//!   3's scope, and threading a per-tick waypoint override through that
-//!   shared primitive without silently changing Patrol's behavior needs
-//!   its own careful pass rather than being rushed in alongside Travel's
-//!   simpler (non-shared, one-shot) integration. Deferred, not
-//!   forgotten.
+//! - **Single-tile pathing** (EX-16 item 3 Phase 4,
+//!   `docs/engine/navmesh-pathfinding.md`) — landed alongside
+//!   `patrol_system` (M42.8), which shares [`step_oscillating_wander`]
+//!   verbatim and needed the exact same signature extension; deferred out
+//!   of Phase 3 specifically to avoid rushing that shared-primitive
+//!   change in alongside `travel_system`'s simpler (non-shared, one-shot)
+//!   integration. [`step_oscillating_wander`] itself still only decides
+//!   *when* to pause/re-pick — the resident-tile waypoint queue is
+//!   resolved and consumed by the caller (`wander_system_inner`/
+//!   `patrol_system_inner`) and passed in as an override, since
+//!   `WanderState`/`PatrolState` are save-registered `MUTABLE_DELTA_COLUMNS`
+//!   and must not gain a path field (see `crate::components::NavPath`'s
+//!   own doc for why the cache lives outside them entirely, same as
+//!   every other locomotion system's).
 //! - **No target-reference resolution.** The wander *center* is always the
 //!   actor's own position on first tick, never a resolved PLDT FormID
 //!   target — the same v0 simplification `SandboxBehavior` uses (Sandbox's
@@ -55,10 +57,13 @@
 //!   camera placement), not through the physics simulation itself — an
 //!   actor can't be pushed, blocked, or fall.
 
-use super::locomotion::step_toward;
+use super::locomotion::{pop_reached_waypoint, step_toward};
+use super::navmesh_path::resolve_cached_waypoints;
+use crate::components::{NavPath, NavmeshTile};
 use byroredux_core::ecs::components::{Transform, WanderBehavior, WanderPhase, WanderState};
 use byroredux_core::ecs::{EntityId, World};
 use byroredux_core::math::{Quat, Vec3};
+use std::collections::VecDeque;
 
 /// Fallback wander radius (world units) around an actor's spawn position,
 /// used when `WanderBehavior.wander_radius` is `None` (no PLDT / radius 0).
@@ -142,6 +147,19 @@ pub(crate) struct OscillateWalk {
 /// (and their opt-in env gates) differ. Returns the new translation, the
 /// new rotation (`None` when paused or already at target), and the
 /// updated state.
+///
+/// `waypoint_override` (EX-16 item 3 Phase 4) — when `Some`, this is what
+/// `step_toward` actually walks toward this tick instead of `state.target`
+/// directly; the arrival/Walking→Paused-transition check still compares
+/// against `state.target` unconditionally, so pausing only triggers once
+/// the actor has truly walked the whole path to the final wander target,
+/// not just reached an intermediate waypoint. `None` reproduces the exact
+/// pre-Phase-4 straight-line behavior — the caller's own resident-tile
+/// waypoint queue is what decides which one this call gets; this function
+/// itself has no NAVM awareness at all, matching the "landed ahead of a
+/// consumer that owns the actual pathing decision" shape every other
+/// locomotion system in this codebase already uses (`step_toward` itself
+/// knows nothing about NAVM either).
 pub(crate) fn step_oscillating_wander(
     current: Vec3,
     current_rotation: Quat,
@@ -150,6 +168,7 @@ pub(crate) fn step_oscillating_wander(
     radius: f32,
     form_id: u32,
     mut state: OscillateWalk,
+    waypoint_override: Option<Vec3>,
 ) -> (Vec3, Option<Quat>, OscillateWalk) {
     match state.phase {
         WanderPhase::Paused { remaining } => {
@@ -168,9 +187,9 @@ pub(crate) fn step_oscillating_wander(
             // below, not interpolated toward the target's Y (which was
             // only ever a copy of `home.y` at pick time and drifts from
             // real terrain on sloped ground).
-            let target_xz = Vec3::new(state.target.x, current.y, state.target.z);
-            let (new_pos, rotation) =
-                step_toward(current, current_rotation, target_xz, dt, physics);
+            let step_point = waypoint_override.unwrap_or(state.target);
+            let step_xz = Vec3::new(step_point.x, current.y, step_point.z);
+            let (new_pos, rotation) = step_toward(current, current_rotation, step_xz, dt, physics);
 
             let horiz_delta =
                 Vec3::new(new_pos.x - state.target.x, 0.0, new_pos.z - state.target.z);
@@ -197,6 +216,12 @@ struct WanderDecision {
     /// meaningful facing direction (e.g. paused, or already at target).
     rotation: Option<Quat>,
     state: WanderState,
+    /// The updated `NavPath` cache to write in Pass 2 (EX-16 item 3
+    /// Phase 4) — `None` while paused (nothing to walk toward) or once
+    /// the final wander target is reached (mirrors every other
+    /// locomotion system's "drop the stale cache" posture), `Some`
+    /// while actively walking a resident-tile path.
+    nav_path: Option<NavPath>,
 }
 
 /// Reusable per-frame scratch for [`wander_system_inner`] — captured by
@@ -229,6 +254,8 @@ fn wander_system_inner(world: &World, dt: f32, scratch: &mut WanderScratch) {
             return;
         };
         let state_q = world.query::<WanderState>();
+        let tile_q = world.query::<NavmeshTile>();
+        let nav_path_q = world.query::<NavPath>();
         let physics = world.try_resource::<byroredux_physics::PhysicsWorld>();
 
         for (entity, behavior) in behavior_q.iter() {
@@ -250,6 +277,25 @@ fn wander_system_inner(world: &World, dt: f32, scratch: &mut WanderScratch) {
                     }
                 });
 
+            // EX-16 item 3 Phase 4: only bother resolving a path while
+            // actually walking this leg — mirrors `guard_system`'s same
+            // "skip the resident-tile scan while nothing to walk toward"
+            // shape (here: while `Paused`).
+            let (waypoint_override, effective_goal, mut waypoints) =
+                if matches!(state.phase, WanderPhase::Walking) {
+                    let cached = nav_path_q.as_ref().and_then(|q| q.get(entity));
+                    let (effective_goal, waypoints) = resolve_cached_waypoints(
+                        cached,
+                        tile_q.as_ref(),
+                        transform.translation,
+                        state.target,
+                        0.0,
+                    );
+                    (waypoints.front().copied(), effective_goal, waypoints)
+                } else {
+                    (None, state.target, VecDeque::new())
+                };
+
             let (new_pos, rotation, new_state) = step_oscillating_wander(
                 transform.translation,
                 transform.rotation,
@@ -263,12 +309,24 @@ fn wander_system_inner(world: &World, dt: f32, scratch: &mut WanderScratch) {
                     phase: state.phase,
                     pick_count: state.pick_count,
                 },
+                waypoint_override,
             );
+            if !waypoints.is_empty() {
+                pop_reached_waypoint(new_pos, &mut waypoints);
+            }
+            // `Some` only while still walking — arriving (transition to
+            // Paused) drops the cache, same "arrived, remove" posture
+            // every other locomotion system in this codebase uses.
+            let nav_path = matches!(new_state.phase, WanderPhase::Walking).then_some(NavPath {
+                goal: effective_goal,
+                waypoints,
+            });
 
             scratch.decisions.push(WanderDecision {
                 entity,
                 translation: new_pos,
                 rotation,
+                nav_path,
                 state: WanderState {
                     home: new_state.home,
                     target: new_state.target,
@@ -296,6 +354,18 @@ fn wander_system_inner(world: &World, dt: f32, scratch: &mut WanderScratch) {
     if let Some(mut sq) = world.query_mut::<WanderState>() {
         for d in &scratch.decisions {
             sq.insert(d.entity, d.state);
+        }
+    }
+    if let Some(mut nq) = world.query_mut::<NavPath>() {
+        for d in &scratch.decisions {
+            match &d.nav_path {
+                Some(path) => {
+                    nq.insert(d.entity, path.clone());
+                }
+                None => {
+                    nq.remove(d.entity);
+                }
+            }
         }
     }
 }
@@ -466,6 +536,153 @@ mod tests {
             cap_after_first,
             "capacity must not grow on a second frame with the same entity count — \
              the backing allocation must be reused via clear(), not reallocated"
+        );
+    }
+
+    // ── EX-16 item 3 Phase 4: single-tile NAVM pathing integration ──
+
+    /// The inverse of `zup_to_yup_pos`, mirroring the other locomotion
+    /// modules' identically-named test helper.
+    fn zup_from_yup(p: [f32; 3]) -> [f32; 3] {
+        [p[0], -p[2], p[1]]
+    }
+
+    /// The same 1000-unit two-triangle quad `travel`/`guard`/`follow`/
+    /// `escort`'s test modules each pin their own copy of.
+    fn two_triangle_quad_navm() -> byroredux_plugin::esm::records::NavmRecord {
+        use byroredux_plugin::esm::records::{NavmRecord, NavmTriangle};
+        let yup_verts = [
+            [0.0, 0.0, 0.0],
+            [1000.0, 0.0, 0.0],
+            [1000.0, 0.0, 1000.0],
+            [0.0, 0.0, 1000.0],
+        ];
+        NavmRecord {
+            vertices: yup_verts.iter().map(|v| zup_from_yup(*v)).collect(),
+            triangles: vec![
+                NavmTriangle {
+                    vertices: [0, 1, 2],
+                    edge_neighbours: [None, Some(1), None],
+                    flags: 0,
+                },
+                NavmTriangle {
+                    vertices: [0, 2, 3],
+                    edge_neighbours: [Some(0), None, None],
+                    flags: 0,
+                },
+            ],
+            ..NavmRecord::default()
+        }
+    }
+
+    #[test]
+    fn wander_system_routes_through_a_resident_navmesh_tile_instead_of_straight_line() {
+        let mut world = World::new();
+        world.register::<WanderBehavior>();
+        world.register::<WanderState>();
+        world.register::<Transform>();
+        world.register::<NavmeshTile>();
+        world.register::<NavPath>();
+
+        let tile = world.spawn();
+        world.insert(tile, NavmeshTile(two_triangle_quad_navm()));
+
+        // Same non-mirror-symmetric pair every other locomotion module's
+        // equivalent test uses.
+        let current = Vec3::new(900.0, 0.0, 100.0);
+        let target = Vec3::new(600.0, 0.0, 900.0);
+        let entity = world.spawn();
+        world.insert(entity, Transform::from_translation(current));
+        world.insert(
+            entity,
+            WanderBehavior {
+                wander_radius: Some(1.0), // irrelevant: WanderState below fixes the target
+                form_id: 0x0003_0001,
+            },
+        );
+        // Seed directly into a Walking leg toward a known target, instead
+        // of the (deterministic but arithmetic-derived) hash-picked one.
+        world.insert(
+            entity,
+            WanderState {
+                home: current,
+                target,
+                phase: WanderPhase::Walking,
+                pick_count: 0,
+            },
+        );
+
+        wander_system(&world, 1.0); // 1s @ 100 u/s = 100 units of travel
+
+        let expected_toward_waypoint = current.move_towards(Vec3::new(500.0, 0.0, 500.0), 100.0);
+        let naive_straight_line = current.move_towards(target, 100.0);
+        assert!(
+            (expected_toward_waypoint - naive_straight_line).length() > 10.0,
+            "test fixture must be non-degenerate: pathed and naive directions should differ"
+        );
+
+        let tq = world.query::<Transform>().expect("Transform registered");
+        let moved_to = tq.get(entity).expect("actor transform").translation;
+        assert!(
+            (moved_to - expected_toward_waypoint).length() < 1e-3,
+            "actor should step toward the shared-edge waypoint (500,0,500), got {moved_to:?}, \
+             expected ~{expected_toward_waypoint:?} (naive straight-line would have been {naive_straight_line:?})"
+        );
+
+        let nq = world.query::<NavPath>().expect("NavPath registered");
+        let path = nq.get(entity).expect("cached while walking this leg");
+        assert_eq!(path.goal, target);
+    }
+
+    #[test]
+    fn wander_system_skips_the_resident_tile_scan_and_drops_the_cache_while_paused() {
+        let mut world = World::new();
+        world.register::<WanderBehavior>();
+        world.register::<WanderState>();
+        world.register::<Transform>();
+        world.register::<NavmeshTile>();
+        world.register::<NavPath>();
+
+        let tile = world.spawn();
+        world.insert(tile, NavmeshTile(two_triangle_quad_navm()));
+
+        let entity = world.spawn();
+        world.insert(
+            entity,
+            Transform::from_translation(Vec3::new(10.0, 0.0, 10.0)),
+        );
+        world.insert(
+            entity,
+            WanderBehavior {
+                wander_radius: Some(200.0),
+                form_id: 0x0003_0002,
+            },
+        );
+        // Already paused, with a stale cached path left over from a
+        // previous leg — must be dropped, not reused or extended.
+        world.insert(
+            entity,
+            WanderState {
+                home: Vec3::new(10.0, 0.0, 10.0),
+                target: Vec3::new(10.0, 0.0, 10.0),
+                phase: WanderPhase::Paused { remaining: 5.0 },
+                pick_count: 0,
+            },
+        );
+        world.insert(
+            entity,
+            NavPath {
+                goal: Vec3::new(999.0, 0.0, 999.0),
+                waypoints: std::collections::VecDeque::from(vec![Vec3::new(999.0, 0.0, 999.0)]),
+            },
+        );
+
+        wander_system(&world, 0.5);
+
+        let nq = world.query::<NavPath>().expect("NavPath registered");
+        assert!(
+            nq.get(entity).is_none(),
+            "paused — nothing to walk toward this tick, stale cache must be cleared"
         );
     }
 }

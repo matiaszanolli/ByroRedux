@@ -308,8 +308,52 @@ add indexing then, against real evidence.
    needs its own pass — see `wander.rs`'s module doc for the full
    reasoning. Travel's integration needed no such change (it already
    calls `step_toward` directly, one-shot, not shared with anything).
-4. **Phase 4 — wire into Follow/Escort/Guard/Patrol**, including §6's
-   repath-threshold tuning for Follow specifically.
+4. **Phase 4 — wire into Follow/Escort/Guard/Patrol. Landed (2026-08-23),
+   completing Phase 3's deferred Wander half too.** All six locomotion
+   systems now consume single-tile pathing:
+   - `guard_system` — frozen-goal (leash anchor), identical shape to
+     Travel; only resolves a path while beyond the leash.
+   - `follow_system` — introduced the repath-threshold family
+     (`FOLLOW_REPATH_THRESHOLD = 64.0`, half of
+     `FOLLOW_DEFAULT_DISTANCE`'s scale, an engine default per this
+     section's own flag below). Landing this surfaced and fixed a real
+     bug in `resolve_cached_waypoints`'s original contract: every caller
+     was writing its own tick-local goal back into the cache regardless
+     of whether the reused waypoints came from a hit or a miss, which is
+     invisible for a frozen goal (Travel/Guard) but silently defeats a
+     repath threshold entirely for a moving one — the cached goal crept
+     toward the live target every tick, so the "has it moved far enough"
+     check could never fire. Fixed by having the function return the
+     *effective* goal (the cached one on a hit, the new one only on a
+     miss) instead of leaving that judgment to callers. 3 direct unit
+     tests now pin this contract, one of them a named regression guard.
+   - `escort_system` — both phases in one file: the lead phase reuses
+     Travel's frozen-goal shape, the collect phase reuses Follow's
+     repath-threshold shape (own constant,
+     `ESCORT_COLLECT_REPATH_THRESHOLD`, cross-referenced not imported —
+     matches this module's existing `ESCORT_COLLECT_DISTANCE` convention
+     for `FOLLOW_DEFAULT_DISTANCE`). One `NavPath` serves both phases in
+     sequence; the collect→lead transition naturally invalidates it via
+     the ordinary goal-mismatch path, no special-casing needed.
+   - `wander_system`/`patrol_system` — the deferred piece. Both share
+     `step_oscillating_wander` verbatim, which gained one new parameter
+     (`waypoint_override: Option<Vec3>`) rather than any NAVM awareness
+     of its own: it still only decides *when* to pause/re-pick, using
+     `state.target` for that check unconditionally; the caller resolves
+     and consumes the resident-tile waypoint queue and passes in which
+     point to actually step toward this tick. `None` reproduces the
+     exact pre-Phase-4 straight-line behavior, so Patrol's existing
+     tests needed no changes despite the shared primitive's signature
+     changing under it. The path cache is skipped entirely while
+     `Paused` (nothing to walk toward that tick) and dropped the instant
+     the final wander target is reached, mirroring every other system's
+     "arrived → clear the cache" posture.
+
+   Every one of the five new integrations shipped with its own
+   distinguishing test asserting an exact post-tick position, proving
+   the actor actually routed through the shared-edge waypoint rather
+   than a straight line that happens to look similar for a naively
+   chosen start/goal pair.
 5. **Not this document's job, sequenced after**: FO4 `NVNM` body decode
    (unblocks Phase 1+ for FO4 content) and a real door-triangle decode
    (unblocks door-aware pathing) are both separate, already-identified
@@ -323,7 +367,9 @@ add indexing then, against real evidence.
 - **The A\* open-set/closed-set concrete implementation** (a `BinaryHeap`-
   based priority queue is the obvious default; not pinned here).
 - **Follow's repath-threshold constant's actual value** — flagged in §6 as
-  something to land empirically, not derive.
+  something to land empirically, not derive. Landed at `64.0` (§9 Phase
+  4); still just a starting engine default, not tuned against real
+  gameplay observation.
 - **Whether `find_containing_triangle` (§5) ever needs a spatial index** —
   deferred per §8, pending real evidence.
 - **Door/cover triangle decode** — a real prerequisite for full coverage,

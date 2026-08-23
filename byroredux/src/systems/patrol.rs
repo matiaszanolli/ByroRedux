@@ -24,14 +24,23 @@
 //! `patrol_system` would gain its own state machine here without touching
 //! `wander_system` at all.
 //!
-//! v0 scope: identical to `wander.rs`'s documented approximations — no
-//! pathing, no target-reference resolution, no animation-clip swap, no
+//! v0 scope: identical to `wander.rs`'s documented approximations,
+//! including single-tile pathing (EX-16 item 3 Phase 4,
+//! `docs/engine/navmesh-pathfinding.md`) — `patrol_system` resolves and
+//! consumes its own `crate::components::NavPath` cache exactly the way
+//! `wander_system` does, passing the result into the same
+//! `waypoint_override` parameter of the shared `step_oscillating_wander`
+//! core; no target-reference resolution, no animation-clip swap, no
 //! per-frame package re-evaluation.
 
+use super::locomotion::pop_reached_waypoint;
+use super::navmesh_path::resolve_cached_waypoints;
 use super::wander::{step_oscillating_wander, OscillateWalk};
+use crate::components::{NavPath, NavmeshTile};
 use byroredux_core::ecs::components::{PatrolBehavior, PatrolState, Transform, WanderPhase};
 use byroredux_core::ecs::{EntityId, World};
 use byroredux_core::math::{Quat, Vec3};
+use std::collections::VecDeque;
 
 /// Fallback patrol radius (world units) around an actor's spawn position,
 /// used when `PatrolBehavior.patrol_radius` is `None` (no PLDT / radius
@@ -47,6 +56,9 @@ struct PatrolDecision {
     translation: Vec3,
     rotation: Option<Quat>,
     state: PatrolState,
+    /// The updated `NavPath` cache to write in Pass 2 — mirrors
+    /// `WanderDecision::nav_path`'s exact contract.
+    nav_path: Option<NavPath>,
 }
 
 /// Reusable per-frame scratch for [`patrol_system_inner`] — captured by
@@ -76,6 +88,8 @@ fn patrol_system_inner(world: &World, dt: f32, scratch: &mut PatrolScratch) {
             return;
         };
         let state_q = world.query::<PatrolState>();
+        let tile_q = world.query::<NavmeshTile>();
+        let nav_path_q = world.query::<NavPath>();
         let physics = world.try_resource::<byroredux_physics::PhysicsWorld>();
 
         for (entity, behavior) in behavior_q.iter() {
@@ -102,6 +116,24 @@ fn patrol_system_inner(world: &World, dt: f32, scratch: &mut PatrolScratch) {
                     }
                 });
 
+            // EX-16 item 3 Phase 4: mirrors `wander_system_inner` exactly
+            // (same shared primitive, same caching shape) — only resolve
+            // a path while actually walking this leg.
+            let (waypoint_override, effective_goal, mut waypoints) =
+                if matches!(state.phase, WanderPhase::Walking) {
+                    let cached = nav_path_q.as_ref().and_then(|q| q.get(entity));
+                    let (effective_goal, waypoints) = resolve_cached_waypoints(
+                        cached,
+                        tile_q.as_ref(),
+                        transform.translation,
+                        state.target,
+                        0.0,
+                    );
+                    (waypoints.front().copied(), effective_goal, waypoints)
+                } else {
+                    (None, state.target, VecDeque::new())
+                };
+
             let (new_pos, rotation, new_state) = step_oscillating_wander(
                 transform.translation,
                 transform.rotation,
@@ -115,12 +147,21 @@ fn patrol_system_inner(world: &World, dt: f32, scratch: &mut PatrolScratch) {
                     phase: state.phase,
                     pick_count: state.pick_count,
                 },
+                waypoint_override,
             );
+            if !waypoints.is_empty() {
+                pop_reached_waypoint(new_pos, &mut waypoints);
+            }
+            let nav_path = matches!(new_state.phase, WanderPhase::Walking).then_some(NavPath {
+                goal: effective_goal,
+                waypoints,
+            });
 
             scratch.decisions.push(PatrolDecision {
                 entity,
                 translation: new_pos,
                 rotation,
+                nav_path,
                 state: PatrolState {
                     home: new_state.home,
                     target: new_state.target,
@@ -148,6 +189,18 @@ fn patrol_system_inner(world: &World, dt: f32, scratch: &mut PatrolScratch) {
     if let Some(mut sq) = world.query_mut::<PatrolState>() {
         for d in &scratch.decisions {
             sq.insert(d.entity, d.state);
+        }
+    }
+    if let Some(mut nq) = world.query_mut::<NavPath>() {
+        for d in &scratch.decisions {
+            match &d.nav_path {
+                Some(path) => {
+                    nq.insert(d.entity, path.clone());
+                }
+                None => {
+                    nq.remove(d.entity);
+                }
+            }
         }
     }
 }
@@ -249,5 +302,101 @@ mod tests {
             matches!(sq.get(entity).unwrap().phase, WanderPhase::Paused { .. }),
             "actor already at its target must transition to Paused, not keep walking in place"
         );
+    }
+
+    // ── EX-16 item 3 Phase 4: single-tile NAVM pathing integration ──
+
+    /// The inverse of `zup_to_yup_pos`, mirroring `wander::tests::
+    /// zup_from_yup` (Patrol's own copy, per this codebase's per-module
+    /// test-fixture convention).
+    fn zup_from_yup(p: [f32; 3]) -> [f32; 3] {
+        [p[0], -p[2], p[1]]
+    }
+
+    /// The same 1000-unit two-triangle quad every other locomotion
+    /// module's test suite pins.
+    fn two_triangle_quad_navm() -> byroredux_plugin::esm::records::NavmRecord {
+        use byroredux_plugin::esm::records::{NavmRecord, NavmTriangle};
+        let yup_verts = [
+            [0.0, 0.0, 0.0],
+            [1000.0, 0.0, 0.0],
+            [1000.0, 0.0, 1000.0],
+            [0.0, 0.0, 1000.0],
+        ];
+        NavmRecord {
+            vertices: yup_verts.iter().map(|v| zup_from_yup(*v)).collect(),
+            triangles: vec![
+                NavmTriangle {
+                    vertices: [0, 1, 2],
+                    edge_neighbours: [None, Some(1), None],
+                    flags: 0,
+                },
+                NavmTriangle {
+                    vertices: [0, 2, 3],
+                    edge_neighbours: [Some(0), None, None],
+                    flags: 0,
+                },
+            ],
+            ..NavmRecord::default()
+        }
+    }
+
+    #[test]
+    fn patrol_system_routes_through_a_resident_navmesh_tile_instead_of_straight_line() {
+        // Pins that PatrolBehavior/PatrolState get the exact same
+        // pathing treatment WanderBehavior/WanderState do via the shared
+        // step_oscillating_wander core -- not a re-test of the algorithm
+        // itself (navmesh_path's own suite already covers that), just
+        // that patrol_system_inner wires the override/cache through
+        // correctly for its own component types.
+        let mut world = World::new();
+        world.register::<PatrolBehavior>();
+        world.register::<PatrolState>();
+        world.register::<Transform>();
+        world.register::<NavmeshTile>();
+        world.register::<NavPath>();
+
+        let tile = world.spawn();
+        world.insert(tile, NavmeshTile(two_triangle_quad_navm()));
+
+        let current = Vec3::new(900.0, 0.0, 100.0);
+        let target = Vec3::new(600.0, 0.0, 900.0);
+        let entity = world.spawn();
+        world.insert(entity, Transform::from_translation(current));
+        world.insert(
+            entity,
+            PatrolBehavior {
+                patrol_radius: Some(1.0),
+                form_id: 0x000E_0001,
+            },
+        );
+        world.insert(
+            entity,
+            PatrolState {
+                home: current,
+                target,
+                phase: WanderPhase::Walking,
+                pick_count: 0,
+            },
+        );
+
+        patrol_system(&world, 1.0); // 1s @ 100 u/s = 100 units of travel
+
+        let expected_toward_waypoint = current.move_towards(Vec3::new(500.0, 0.0, 500.0), 100.0);
+        let naive_straight_line = current.move_towards(target, 100.0);
+        assert!(
+            (expected_toward_waypoint - naive_straight_line).length() > 10.0,
+            "test fixture must be non-degenerate: pathed and naive directions should differ"
+        );
+
+        let tq = world.query::<Transform>().expect("Transform registered");
+        let moved_to = tq.get(entity).expect("actor transform").translation;
+        assert!(
+            (moved_to - expected_toward_waypoint).length() < 1e-3,
+            "actor should step toward the shared-edge waypoint (500,0,500), got {moved_to:?}"
+        );
+
+        let nq = world.query::<NavPath>().expect("NavPath registered");
+        assert_eq!(nq.get(entity).expect("cached this leg").goal, target);
     }
 }

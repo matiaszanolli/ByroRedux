@@ -969,7 +969,9 @@ grep. REGN's `Sound.music` field now has a real consumer (items 1 + 5,
    shows it matters, same "flag not guess-fix" posture as item 6 above.
    2 new unit tests (`components::navmesh_tile_tests`). Full workspace
    suite: 1412 passed (was 1410), 0 failed, no new warnings.
-3. [ ] **NAVM pathfinding** — genuinely greenfield. `locomotion.rs:9` and
+3. [x] **NAVM pathfinding — single-tile pathing landed end-to-end
+   (2026-08-23); cross-tile and door-aware pathing remain open,
+   separately blocked, see below.** `locomotion.rs:9` and
    `wander.rs:6-7,23-26` explicitly document straight-line-only movement as
    a known gap, not an oversight. This is the single largest item in the
    whole epic — a pathfinding algorithm plus integration with all five
@@ -1026,6 +1028,29 @@ grep. REGN's `Sound.music` field now has a real consumer (items 1 + 5,
    pass; see `wander.rs`'s module doc. See
    [`navmesh-pathfinding.md`](navmesh-pathfinding.md) §9 Phase 3 for the
    full writeup.
+
+   **Phase 4 landed (2026-08-23), same day — all six locomotion systems
+   now path-aware, including Wander's deferred Phase 3 half.**
+   `guard_system` (frozen-goal, mirrors Travel exactly),
+   `follow_system` (live-goal, introduced a repath-threshold family —
+   `FOLLOW_REPATH_THRESHOLD = 64.0` — and in the process found and fixed
+   a real bug: `resolve_cached_waypoints` was letting every caller write
+   its own tick-local goal back into the cache regardless of hit vs.
+   miss, which silently defeats a repath threshold for a moving goal
+   even though it's invisible for a frozen one; now returns the
+   *effective* goal explicitly), `escort_system` (both phases in one
+   file, reusing Travel's and Follow's shapes respectively), and
+   `wander_system`/`patrol_system` (their shared
+   `step_oscillating_wander` core gained one `waypoint_override:
+   Option<Vec3>` parameter — `None` reproduces the exact prior
+   straight-line behavior, so Patrol's existing tests needed no changes
+   despite the primitive's signature changing under them). Every
+   integration shipped with an exact-position distinguishing test. See
+   [`navmesh-pathfinding.md`](navmesh-pathfinding.md) §9 Phase 4 for the
+   full writeup, including the per-system detail. EX-16 item 3 is now
+   fully wired end-to-end for single-tile pathing on every game except
+   FO4 (blocked on the separate `NVNM` body decode) — only cross-tile
+   (Phase 2, corpus-blocked) and door-aware pathing remain open.
 4. [ ] **Actor/package suspend-migrate-resume across stream boundaries** —
    **correction (2026-08-23): "unblocked by `PersistentRefIndex`" doesn't
    hold up; the real shape is bigger.** `unload_cell_inner`
