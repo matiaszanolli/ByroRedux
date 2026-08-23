@@ -278,9 +278,41 @@ Its worst apply slice improved from the preceding 291 ms result to 174.51 ms,
 and unload remained bounded at 40.32 ms. It is not yet a traversal-throughput
 win: this capture accumulated 104,210 entities / 25,154 draws and reported
 58.71/59.45 s full-detail/LOD maxima plus a 1.50 s worst frame. The upload
-transaction is therefore complete as a subtarget, while aggregate cooperative
-apply pacing and global-geometry/LOD rebuild work remain the active EX-07
-bottleneck. Artifacts are retained at `/tmp/byro-perf-after-fo4`,
+transaction is therefore complete as a subtarget.
+
+**Correction (2026-08-23), investigated against real code, not assumed
+stale.** "Aggregate cooperative apply pacing... remain[s] the active EX-07
+bottleneck" doesn't hold up — `advance_streaming_apply`
+(`byroredux/src/streaming_helpers.rs:539-643`) already walks as many
+cells as fit under one shared `FrameTimeBudget` per streaming tick
+(`app_step.rs`'s `STREAMING_APPLY_BUDGET = 16ms`), predating this very
+paragraph by about three weeks (`9926fa50d`, 2026-07-27, vs. this
+paragraph's `687e0a67f`, 2026-08-16). The pacing mechanism exists and
+works; the 174.51 ms worst-apply figure this paragraph cites is a
+*granularity* residual — the yield check fires only *between* whole
+atomic units (one NIF import, one REFR), never mid-unit, so one
+unusually expensive unit can overshoot the 16 ms nominal budget by
+~11x. Same LOD correction as elsewhere in this doc: `LodWorkBudget`
+(`cell_loader/lod_support.rs`) already gates all three distant-LOD
+providers (`terrain_lod.rs`/`object_lod.rs`/`placement_lod.rs`, all
+call `budget.try_take()`) on the identical shared wall-clock deadline.
+**What's still genuinely true**: the global vertex/index SSBO rebuild
+(`MeshRegistry::rebuild_geometry_ssbo`, `crates/renderer/src/mesh.rs:1004-1083`,
+calling `build_geometry_ssbo`, `mesh.rs:921-995`) is a single atomic Vulkan call
+with zero internal yield capability — the only surrounding logic
+(`WorldStreamingState::geometry_batch_in_progress`, `streaming.rs:719-729`,
+consulted at the sole streaming call site `app_frame.rs:168-182`)
+decides only whether the whole call fires *this frame*, never whether
+it can pause partway through a 600+ MiB copy. This is what the 1.50 s
+worst-frame figure above is attributable to, and is the one piece of
+this paragraph's claim that's still accurate. Making it yield
+mid-rebuild is real, high-risk Vulkan work — the same tranche's own
+narrative two paragraphs up already documents a directly analogous
+attempt (yielding CPU work per mesh during BLAS submission) regressing
+throughput 4.5x and hitting the 300 s hard timeout before being
+reverted — so it needs live `grid-cross` validation against real
+FNV/Skyrim/FO4 data, not a speculative code change from source reading
+alone. Artifacts are retained at `/tmp/byro-perf-after-fo4`,
 `/tmp/byro-perf-after-fo3`, and `/tmp/byro-perf-after-fo4-boundary`.
 
 ### Tranche B — make entry and traversal safe
@@ -318,9 +350,24 @@ bottleneck. Artifacts are retained at `/tmp/byro-perf-after-fo4`,
    row removal, and mesh/texture cache purges are also batched. The measured
    unload tail remains about 40 ms total / 21–23 ms GPU and worst apply fell to
    174.51 ms, but the new boundary gate still reaches 58.71/59.45 s
-   full-detail/LOD settlement and a 1.50 s frame tail. Aggregate cooperative
-   apply pacing plus global-geometry and LOD rebuilds are the remaining
-   deadline targets.
+   full-detail/LOD settlement and a 1.50 s frame tail.
+
+   **Correction (2026-08-23)**: "aggregate cooperative apply pacing... are
+   the remaining deadline targets" was wrong on two of its three named
+   items — see the narrative correction above (same date) for the full
+   citations. LOD is already deadline-bound (`LodWorkBudget`, all three
+   providers). Apply pacing across multiple cells per tick already exists
+   too (`advance_streaming_apply`, predating the claim by ~3 weeks); its
+   real residual is coarse per-unit granularity (yield checked between
+   whole units, not mid-unit), not an absent mechanism. Only the global
+   vertex/index SSBO rebuild (`MeshRegistry::rebuild_geometry_ssbo`,
+   `crates/renderer/src/mesh.rs`) is genuinely still a single atomic call
+   with no yield capability, and is what the 1.50 s frame tail above is
+   attributable to. **Not attempted here**: making it yield needs live
+   `grid-cross` validation against real game data, and this same tranche
+   already documents a near-identical attempt (per-mesh yield during BLAS
+   submission) regressing throughput 4.5x and hitting a 300 s timeout
+   before being reverted — real regression risk, not a safe blind edit.
 4. [x] Run cancellation/ownership soak loops and repair leaked owners (EX-08).
 
 The soak is `m-exteriors.sh <profile> soak`. It drives the new `grid-soak`
