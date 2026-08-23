@@ -1192,6 +1192,12 @@ impl ExteriorCellApplyJob {
             // Z-up → Y-up: (x, height, -y), plus 200 units above ground.
             Vec3::new(world_x, mid_height + 200.0, -world_y)
         });
+        // EX-16 item 2 (#2372) — make this tile's NAVM tiles resident.
+        // Must run before `last_entity` is captured below so the spawned
+        // entities land inside the stamped range and get reclaimed on
+        // unload for free.
+        crate::components::spawn_navmesh_tiles(world, &cell.navmeshes);
+
         let last_entity = world.next_entity_id();
         stamp_cell_root_range(world, cell_root, first_entity, last_entity);
         budget.complete_unit();

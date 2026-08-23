@@ -677,21 +677,47 @@ Buildable parse-side slices are done: EX-16a (REGN RDAT, #2737) and EX-16b
 genuinely new — **zero runtime consumers exist for either parsed dataset
 today**, confirmed by exhaustive grep.
 
-1. [ ] **REGN runtime consumption — start here.** `RegionDataEntry`/
+1. [ ] **REGN runtime consumption** — **correction (2026-08-23): NOT the
+   isolated slice this originally claimed.** `RegionDataEntry`/
    `RegionDataKind` (`crates/plugin/src/esm/records/misc/world.rs:452-780`)
    fully expose Objects/Weather/Map/Landscape/Grass/Sound/Imposter payloads
-   with authored priority ordering (`entries_by_priority`), but nothing
-   outside the plugin crate reads them. Recommended first, most isolated
-   slice: ambient sound (`RegionDataKind::Sound`) into `crates/audio` —
-   its `SUB_TRACK_CAPACITY` sizing already anticipates this
-   (`lib.rs:300`, comment: "Phase 4 REGN ambients land"). Ground
-   cover/fog-weather/encounter consumption naturally sequence after #2369's
-   ground cover itself exists, not before.
-2. [ ] **NAVM streaming lifecycle** — zero wiring into `WorldStreamingState`
-   today (grepped `streaming.rs`/`cell_loader*.rs`, zero hits). Add tile
-   load/unload tied to cell streaming, mirroring how terrain-LOD blocks
-   already do it, before any pathfinding work — pathfinding needs resident
-   tiles first.
+   with authored priority ordering (`entries_by_priority`), and `CellData.
+   regions: Vec<u32>` (XCLR) already gives every resident cell its REGN
+   FormID list directly — no polygon-containment math needed. But
+   `RegionDataKind::Sound`'s `sound_form: u32` points at a `SOUN` record,
+   and `SOUN` is dispatched through `parse_minimal_esm_record`
+   (`dispatch_misc_stub.rs:75-79`) — EDID + optional FULL only, same
+   "stub, no real field decode" posture GRAS has for EX-14/15 phase 5. The
+   sound *filename* sub-record is never parsed, so there is no path today
+   from a REGN sound FormID to an actual archive audio file. The existing
+   `crates/audio`/`asset_provider` sound-loading examples
+   (`try_load_default_footstep`/`try_load_default_water_splash`,
+   `asset_provider/texture.rs:92-172`) only prove the archive-extract →
+   decode → `AudioEmitter` pipeline against **hardcoded canonical paths**,
+   not FormID-driven resolution — that resolver doesn't exist either. A
+   real SOUN field decode (mirroring the GRAS gap) plus a FormID→path
+   resolver are both prerequisites this item didn't originally name.
+   Re-sequenced after item 2 as a result — do item 2 first.
+2. [x] **NAVM streaming lifecycle** — done. Landed `NavmeshTile`
+   (`byroredux/src/components.rs`), a plain CPU-only component wrapping
+   one resident `NavmRecord`, spawned by the new
+   `components::spawn_navmesh_tiles` helper from both cell loaders
+   (`cell_loader::load::load_cell_with_masters` for interiors,
+   `ExteriorCellApplyJob::begin` for exterior tiles) inside the same
+   `first_entity..last_entity` window every other cell-owned entity is
+   spawned in. No bespoke reclaim path needed the way `LodBlock` needs
+   one — NAVM carries no GPU handle, so the existing generic
+   `stamp_cell_root_range` → `CellRootIndex` → `unload_cell` teardown
+   chain reclaims it automatically. Landed ahead of its consumer
+   (`#[allow(dead_code)]`, same posture as `PersistentRefIndex`) since
+   item 3 (pathfinding) is deliberately scoped as its own follow-up issue
+   and isn't built here. **Known small gap, not fixed**: the worldspace
+   *persistent* CELL path (`PersistentCellApplyJob` in `exterior.rs`)
+   isn't wired — persistent CELLs are REFR/actor-focused and NAVM data on
+   one has no confirmed real-content occurrence; revisit if real data
+   shows it matters, same "flag not guess-fix" posture as item 6 above.
+   2 new unit tests (`components::navmesh_tile_tests`). Full workspace
+   suite: 1412 passed (was 1410), 0 failed, no new warnings.
 3. [ ] **NAVM pathfinding** — genuinely greenfield. `locomotion.rs:9` and
    `wander.rs:6-7,23-26` explicitly document straight-line-only movement as
    a known gap, not an oversight. This is the single largest item in the
@@ -718,10 +744,13 @@ today**, confirmed by exhaustive grep.
    `OwnerClass`/`ReclaimPolicy` pattern (`ownership.rs`), once items 2/4
    give them something real to count.
 
-**Recommended sequencing**: items 1 (REGN ambient sound) and 2 (NAVM
-streaming lifecycle) can start immediately and in parallel — neither
-depends on anything else in this epic. Items 3-6 are downstream of either
-#2370 (persistent-ref identity) or #2369 (ground cover) landing first.
+**Recommended sequencing**: item 2 (NAVM streaming lifecycle) is done.
+Item 1 (REGN ambient sound) turned out NOT to be dependency-free — see its
+correction above; a real `SOUN` field decode is a prerequisite. Items 4-6
+are downstream of #2370 (persistent-ref identity, landed) or #2369 (ground
+cover, not landed); item 3 (pathfinding) and item 1's `SOUN`-decode
+prerequisite are both recommended as their own follow-up issues rather
+than folded into EX-16 directly.
 
 ## Verification policy
 

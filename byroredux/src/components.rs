@@ -1512,6 +1512,85 @@ pub(crate) struct HavokIdleCatalog {
 
 impl Resource for HavokIdleCatalog {}
 
+/// A resident navmesh tile — CPU-only pathing data, no GPU footprint.
+///
+/// EX-16 item 2 (#2372): makes `NAVM` records "resident" alongside their
+/// owning interior cell / exterior grid tile, so a future pathfinder (item
+/// 3, deliberately scoped as its own follow-up issue — "pathfinding needs
+/// resident tiles first") has something to query. Today this is pure
+/// residency plumbing with zero consumers, same posture as
+/// `PersistentRefIndex` landing ahead of its EX-14/15/EX-16 callers.
+///
+/// Spawned as a plain entity within the same `first_entity..last_entity`
+/// range every other cell-owned entity is spawned in
+/// (`cell_loader::load::load_cell_with_masters` for interiors,
+/// `ExteriorCellApplyJob::begin` for exterior tiles), so it rides the
+/// existing `stamp_cell_root_range` → `CellRootIndex` → `unload_cell`
+/// teardown chain automatically — no bespoke reclaim path needed the way
+/// `LodBlock`/`ObjectLodBlock` need one, because there's no GPU handle
+/// here to leak.
+#[allow(dead_code)] // landed ahead of its consumer — see the struct doc; EX-16 item 3 (pathfinding, own follow-up issue) is the pending reader
+pub(crate) struct NavmeshTile(pub(crate) byroredux_plugin::esm::records::NavmRecord);
+
+impl Component for NavmeshTile {
+    type Storage = SparseSetStorage<Self>;
+}
+
+/// Spawn one [`NavmeshTile`] entity per `navmeshes` entry. Shared by the
+/// interior and exterior cell loaders so the spawn shape can't drift
+/// between them. Caller is responsible for calling this within the same
+/// `first_entity..last_entity` window its `stamp_cell_root_range` call
+/// covers — this function only spawns entities, it does not stamp them.
+pub(crate) fn spawn_navmesh_tiles(
+    world: &mut byroredux_core::ecs::World,
+    navmeshes: &[byroredux_plugin::esm::records::NavmRecord],
+) {
+    for navm in navmeshes {
+        let entity = world.spawn();
+        world.insert(entity, NavmeshTile(navm.clone()));
+    }
+}
+
+#[cfg(test)]
+mod navmesh_tile_tests {
+    use super::*;
+    use byroredux_plugin::esm::records::NavmRecord;
+
+    fn navm(form_id: u32) -> NavmRecord {
+        NavmRecord {
+            form_id,
+            ..NavmRecord::default()
+        }
+    }
+
+    #[test]
+    fn spawns_one_entity_per_navmesh() {
+        let mut world = byroredux_core::ecs::World::new();
+        spawn_navmesh_tiles(&mut world, &[navm(0x100), navm(0x101)]);
+
+        let q = world.query::<NavmeshTile>().expect("NavmeshTile storage");
+        let form_ids: std::collections::HashSet<u32> =
+            q.iter().map(|(_, tile)| tile.0.form_id).collect();
+        assert_eq!(
+            form_ids,
+            [0x100, 0x101].into_iter().collect(),
+            "one resident tile per NavmRecord, identity preserved"
+        );
+    }
+
+    #[test]
+    fn empty_navmesh_list_spawns_nothing() {
+        let mut world = byroredux_core::ecs::World::new();
+        spawn_navmesh_tiles(&mut world, &[]);
+        assert!(
+            world
+                .query::<NavmeshTile>()
+                .is_none_or(|q| q.iter().count() == 0),
+            "a cell with no NAVM children must spawn zero tile entities"
+        );
+    }
+}
+
 #[cfg(test)]
 mod fx_mesh_classification_tests {
     //! PERF-D3-NEW-02 / #1136 — pin the 6-needle FX-decoration set so a

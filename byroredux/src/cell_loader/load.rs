@@ -488,6 +488,11 @@ pub fn load_cell_with_masters(
     let resolved_lighting = resolve_cell_lighting(cell, &index);
     log::info!("Cell lighting: {:?}", resolved_lighting);
 
+    // EX-16 item 2 (#2372) — make this cell's NAVM tiles resident. Must
+    // run before `last_entity` is captured below so the spawned entities
+    // land inside the stamped range and get reclaimed on unload for free.
+    crate::components::spawn_navmesh_tiles(world, &cell.navmeshes);
+
     // Reserve a dedicated root entity and stamp CellRoot on every
     // entity in [first_entity, last_entity). The stamp is sparse-set
     // backed, so entities that never received any component simply
