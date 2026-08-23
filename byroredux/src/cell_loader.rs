@@ -57,8 +57,10 @@ use crate::components::{
     SkyParamsRes, TerrainTileSlot, TwoSided, WeatherDataRes, WeatherTransitionRes,
 };
 
+mod cell_root_ref_index;
 mod euler;
 mod exterior;
+mod form_id_root_index;
 mod index;
 mod load;
 mod load_order;

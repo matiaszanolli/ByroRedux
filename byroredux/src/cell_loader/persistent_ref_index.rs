@@ -8,16 +8,21 @@
 //! `components.rs`, populated by a free function in the module that owns
 //! the concept it indexes.
 //!
+//! The actual single-root build/rebuild walk now lives in
+//! [`super::form_id_root_index`], shared with
+//! [`CellRootRefIndex`](crate::components::CellRootRefIndex) — this module
+//! is a thin wrapper binding that shared logic to the persistent-CELL
+//! resource type.
+//!
 //! This is the foundational identity mechanism EX-14/15's cross-worldspace
 //! persistent-ref continuity and EX-16's actor/package migration both
 //! need before they can be built — see
 //! `docs/engine/exterior-readiness-plan.md`.
 
+use super::form_id_root_index;
 use crate::components::PersistentRefIndex;
-use byroredux_core::ecs::components::{CellRoot, FormIdComponent};
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::World;
-use byroredux_core::form_id::FormIdPool;
 
 /// Resolve `form_id` (global load-order `u32` space — the same key space
 /// `resolve_entity_by_global_form_id` resolves through) to its live
@@ -44,10 +49,13 @@ pub(crate) fn resolve_persistent_ref(
     persistent_root: EntityId,
     form_id: u32,
 ) -> Option<EntityId> {
-    if index.built_for != Some(persistent_root) {
-        rebuild(world, index, persistent_root);
-    }
-    index.map.get(&form_id).copied()
+    form_id_root_index::resolve(
+        world,
+        &mut index.map,
+        &mut index.built_for,
+        persistent_root,
+        form_id,
+    )
 }
 
 /// Force a rebuild on the next [`resolve_persistent_ref`] call regardless
@@ -58,28 +66,6 @@ pub(crate) fn resolve_persistent_ref(
 #[allow(dead_code)] // landed ahead of its consumer — see the module doc; EX-14/15 (#2369) and EX-16 (#2372) are the pending callers
 pub(crate) fn invalidate(index: &mut PersistentRefIndex) {
     index.built_for = None;
-}
-
-fn rebuild(world: &World, index: &mut PersistentRefIndex, persistent_root: EntityId) {
-    index.map.clear();
-    index.built_for = Some(persistent_root);
-    let Some(q) = world.query::<FormIdComponent>() else {
-        return;
-    };
-    let Some(pool) = world.try_resource::<FormIdPool>() else {
-        return;
-    };
-    for (entity, fid) in q.iter() {
-        let owned_by_persistent_cell = world
-            .get::<CellRoot>(entity)
-            .is_some_and(|root| root.0 == persistent_root);
-        if !owned_by_persistent_cell {
-            continue;
-        }
-        if let Some(pair) = pool.resolve(fid.0) {
-            index.map.insert(pair.local.0, entity);
-        }
-    }
 }
 
 #[cfg(test)]

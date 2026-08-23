@@ -640,6 +640,25 @@ the doc's own §8 rollout.
    4's larger snapshot mechanism: smaller diff, higher confidence, and a
    real validation point for the shared FormID-resolution index both
    halves need.
+
+   **§7 step 1 landed (2026-08-23)**: `CellRootRefIndex`
+   (`byroredux/src/components.rs`) + `cell_loader::cell_root_ref_index` —
+   the ordinary-cell-root sibling of `PersistentRefIndex`, resolving a
+   FormID to its live entity within any caller-named `CellRoot` (not only
+   the worldspace's persistent one). The single-root build/rebuild walk
+   itself was factored out to a new shared `cell_loader::form_id_root_index`
+   and `persistent_ref_index` refactored to delegate to it, rather than
+   copy-pasting the same ~20-line walk twice — two independent resource
+   *instances* still exist deliberately (a shared slot would thrash
+   between a concurrent persistent-CELL lookup and an ordinary-root
+   lookup), just not two copies of the logic underneath them. Landed
+   ahead of its consumer, same posture as `PersistentRefIndex` itself
+   (`#[allow(dead_code)]`, registered in `boot.rs`, classified in the
+   save-registry's `NOT_SAVED_BY_DESIGN` list). 9 new unit tests (4
+   mirroring `persistent_ref_index`'s suite for the new resource, 1 on
+   the shared helper directly). Still open: §7 steps 2 (this item's own
+   reconcile-comparison wiring) and 3 (EX-16 item 4's snapshot/restore)
+   — this only lands the shared identity mechanism both need.
 3. [ ] **FO4 previs/occlusion** (`.uvd`, XPCI-equivalent) — zero parser,
    zero consumer (`byroredux/src/cell_loader/precombined.rs:25-31`
    documents this as a known deferred sub-item). Still true; still
@@ -1043,6 +1062,12 @@ grep. REGN's `Sound.music` field now has a real consumer (items 1 + 5,
    sequencing: the shared FormID-resolution index first, then C2's
    (smaller, lower-risk) reconcile half, then this item's snapshot/restore
    mechanism last. No code lands from the design doc itself.
+
+   **Step 1 of that sequencing landed (2026-08-23)**: `CellRootRefIndex`
+   — see EX-14/15 item C2's note above for the full description (it's the
+   one shared piece both this item and C2 need, landed once). This item's
+   own snapshot/restore mechanism (sequencing step 3) is still not
+   started.
 5. [x] **Ambient audio emitter REGN-binding — music done, `incidental` not
    attempted.** The generic crossfade machinery already existed
    (`AudioWorld::play_music`/`stop_music`, `crates/audio/src/lib.rs`);

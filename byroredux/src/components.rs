@@ -1349,6 +1349,62 @@ impl PersistentRefIndex {
     }
 }
 
+/// FormId → `Entity` index scoped to whichever **ordinary** `CellRoot` a
+/// caller names — the sibling [`PersistentRefIndex`] doesn't cover, since
+/// that one is deliberately scoped to only the worldspace's persistent
+/// CELL (see its own doc for why). Build/query logic lives in
+/// `cell_loader::cell_root_ref_index`, which (like
+/// `cell_loader::persistent_ref_index`) is a thin wrapper over the shared
+/// single-root build/rebuild walk in `cell_loader::form_id_root_index`.
+///
+/// # Why a separate resource, not a generalized `PersistentRefIndex`
+/// Both are single-slot caches (`map` + `built_for: Option<EntityId>`
+/// naming the one root they're currently built for) — reusing one slot for
+/// both scopes would thrash the moment a caller needs a persistent-CELL
+/// lookup and an ordinary-cell-root lookup in the same tick (each build
+/// would invalidate the other's cached root). Keeping two independent
+/// resource instances, sharing only the build logic underneath, avoids
+/// that without adding real complexity — same precedent as
+/// `CellRootIndex` and `PersistentRefIndex` already being separate
+/// indices over overlapping `CellRoot` data.
+///
+/// # Why "ordinary," not "every" `CellRoot`
+/// An ordinary cell's contents churn constantly as the streaming grid
+/// loads/unloads tiles — unlike a persistent CELL, which is stable for as
+/// long as its root is resident. A cache proactively maintained for every
+/// resident ordinary root would need invalidating on essentially every
+/// streaming tick. This index is designed to be built **lazily, for one
+/// root at a time, at the moment a caller actually needs to resolve a
+/// reference within it** — e.g. a stream-boundary state-continuity
+/// snapshot restore resolving a FormID-keyed reference (like
+/// `Seated::furniture`) back to a live entity the instant that entity's
+/// owning `CellRoot` respawns. See
+/// `docs/engine/stream-boundary-state-continuity.md` §3 for the design
+/// this index was built to unblock (EX-14/15 item C2's reconcile half,
+/// EX-16 item 4's snapshot/restore).
+///
+/// Landed ahead of its consumer, same posture as `PersistentRefIndex`
+/// itself: fully exercised by `cell_loader::cell_root_ref_index`'s test
+/// suite, a *pending* production consumer rather than unused code.
+pub(crate) struct CellRootRefIndex {
+    #[allow(dead_code)] // see the struct doc — pending stream-boundary-state-continuity consumer
+    pub(crate) map: HashMap<u32, EntityId>,
+    /// The `CellRoot` entity this index was last built against. `None`
+    /// before the first build.
+    #[allow(dead_code)]
+    // see the struct doc — pending stream-boundary-state-continuity consumer
+    pub(crate) built_for: Option<EntityId>,
+}
+impl Resource for CellRootRefIndex {}
+impl CellRootRefIndex {
+    pub(crate) fn new() -> Self {
+        Self {
+            map: HashMap::new(),
+            built_for: None,
+        }
+    }
+}
+
 /// Tracks keyboard and mouse input state for the fly camera.
 pub(crate) const DEFAULT_LOOK_SENSITIVITY: f32 = 0.002;
 
