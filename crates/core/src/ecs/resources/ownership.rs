@@ -132,6 +132,16 @@ pub struct OwnershipSnapshot {
     pub particle_emitters: u64,
     /// Live water-plane owners.
     pub water_planes: u64,
+    /// Live `NavmeshTile` rows — one per resident cell/tile's parsed
+    /// `NAVM` (EX-16 item 6, #2372). No GPU handle backs these (plain CPU
+    /// data, reclaimed by the same generic `stamp_cell_root_range` →
+    /// `CellRootIndex` → `unload_cell` chain every other cell-owned
+    /// entity uses), so this class exists purely to give the soak
+    /// something concrete to catch if that generic reclaim path is ever
+    /// broken for this specific component — same reasoning as
+    /// `precombine_mesh_rows` splitting a residency question out of the
+    /// aggregate `cell_root_rows` count.
+    pub navm_tiles_resident: u64,
 }
 
 /// One owner class: display name, sampled value, and reclaim expectation.
@@ -282,6 +292,11 @@ impl OwnershipSnapshot {
                 value: self.water_planes,
                 policy: Exact,
             },
+            OwnerClass {
+                name: "navm_tiles_resident",
+                value: self.navm_tiles_resident,
+                policy: Exact,
+            },
         ]
     }
 
@@ -338,6 +353,7 @@ impl OwnershipSnapshot {
         self.script_timer_rows = next();
         self.particle_emitters = next();
         self.water_planes = next();
+        self.navm_tiles_resident = next();
     }
 }
 

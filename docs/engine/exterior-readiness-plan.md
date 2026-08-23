@@ -837,15 +837,65 @@ grep. REGN's `Sound.music` field now has a real consumer (items 1 + 5,
    **Recommend scoping as its own follow-up issue** rather than folding
    into EX-16, given its size relative to everything else here.
 4. [ ] **Actor/package suspend-migrate-resume across stream boundaries** —
-   `unload_cell_inner` (`cell_loader/unload.rs:90-247`) does an
-   unconditional `despawn_batch` with zero AI-package-state awareness;
-   reload respawns fresh via `spawn_npc_entity` with package state
-   re-initialized from scratch (Sandbox seat re-picked, Wander/Travel state
-   reset). **Unblocked**: #2370 item 3's `PersistentRefIndex`
-   (`cell_loader::persistent_ref_index`) landed. Still to do: identify
-   which package state is worth preserving (Sandbox seat, Travel
-   progress) vs. safe to re-roll (Wander pick), and route resolution
-   through the index instead of a naive respawn.
+   **correction (2026-08-23): "unblocked by `PersistentRefIndex`" doesn't
+   hold up; the real shape is bigger.** `unload_cell_inner`
+   (`cell_loader/unload.rs:90-247`) does an unconditional `despawn_batch`
+   with zero AI-package-state awareness; reload respawns fresh via
+   `spawn_npc_entity` with package state re-initialized from scratch —
+   confirmed correct, that half of the premise stands.
+
+   What doesn't stand: `PersistentRefIndex` is scoped to entities whose
+   `CellRoot` equals the worldspace's `persistent_root`
+   (`cell_loader::persistent_ref_index::rebuild`'s `owned_by_persistent_cell`
+   check) — and a persistent-flagged actor's `CellRoot` IS
+   `persistent_root`, precisely because `WorldStreamingState.persistent_root`
+   is documented as "not keyed by a grid coordinate and never participates
+   in radius eviction; reclaimed only when the worldspace drains." A truly
+   persistent actor is therefore *never despawned by ordinary streaming in
+   the first place* — there is nothing for `PersistentRefIndex` to help
+   resolve on respawn, because no respawn happens. The actors that DO get
+   despawned/respawned by radius streaming are exactly the *temporary*
+   (non-persistent) ones placed in ordinary grid-tile `CellData`, and
+   those never pass through `persistent_root` at all — `PersistentRefIndex`
+   cannot resolve anything about them by construction. Even setting that
+   aside, `PersistentRefIndex` is a live-entity FormId→Entity *resolver*,
+   not a state *snapshot store*; it has no mechanism to answer "what was
+   this actor's package/animation state before it was despawned" even for
+   entities it can see.
+
+   The real blocker, confirmed by reading the runtime state types
+   (`AmbientPackageRuntime`, `TravelState`, `WanderState`,
+   `crates/core/src/ecs/components/{travel,wander}.rs`): a respawned
+   actor doesn't just lose package *selection* — `spawn_npc_entity`
+   places it back at its **authored REFR position**, discarding any
+   movement since spawn. `TravelState.destination` is a frozen, lazily-
+   resolved point (not a progress/waypoint tracker), and there is a
+   `Traveled` terminal marker with no despawn-time snapshot — so an actor
+   that already finished a Travel package and stopped would, after any
+   cell-boundary despawn/respawn cycle affecting its *spawn* tile
+   (irrespective of the actor's current position — ownership is
+   entity-range/`CellRoot`-based, assigned at spawn, not tracked by
+   current location), restart its entire walk from the original spawn
+   point. `WanderBehavior`'s own doc already establishes the opposite
+   philosophy for Wander specifically — its `form_id` feeds a
+   deterministic desync hash *by design*, so a re-roll is intentional,
+   not a gap — which is presumably why the original framing already
+   named Wander as safe to reset.
+
+   A real fix needs a genuine snapshot/restore mechanism spanning
+   Transform (or lazily re-deriving it correctly instead of resetting)
+   plus `AmbientPackageRuntime`/`TravelState`/`Traveled`/`Seated`
+   together — not a smaller index lookup — and it is the *same*
+   underlying architecture gap already flagged, and deliberately not
+   fixed, under EX-14/15 item C2's "reconcile instead of re-spawning"
+   half: `drain_streaming_state`/`unload_cell_inner` always fully tear
+   down and rebuild, with no live-state-carryover path at all today. Real
+   regression risk to already-working streaming/despawn code, same
+   "flag for a deliberate follow-up, don't rush it" posture applied there
+   and to FO4 previs/precombine-collision above. Recommend scoping as its
+   own design pass (or folding into whatever follow-up eventually attacks
+   EX-14/15 item C2's reconcile half, since they'd likely share a
+   mechanism) rather than attempting a partial fix here.
 5. [x] **Ambient audio emitter REGN-binding — music done, `incidental` not
    attempted.** The generic crossfade machinery already existed
    (`AudioWorld::play_music`/`stop_music`, `crates/audio/src/lib.rs`);
@@ -896,10 +946,23 @@ grep. REGN's `Sound.music` field now has a real consumer (items 1 + 5,
    item 1's note). REGN-driven weather/objects/map/landscape/grass/
    imposter selection also remains entirely unbuilt — only `Sound` has a
    selector.
-6. [ ] **OwnershipTracker telemetry** — add `navm_tiles_resident`,
-   `regn_active_entries`, `ai_package_rows` classes following the existing
-   `OwnerClass`/`ReclaimPolicy` pattern (`ownership.rs`), once items 2/4
-   give them something real to count.
+6. [ ] **OwnershipTracker telemetry** — partially done.
+   `navm_tiles_resident` landed (2026-08-23), `Exact` policy, following
+   the existing `OwnerClass`/`ReclaimPolicy` pattern
+   (`crates/core/src/ecs/resources/ownership.rs`) exactly —
+   `NavmeshTile` carries no GPU handle and relies entirely on the
+   generic `stamp_cell_root_range` → `CellRootIndex` → `unload_cell`
+   chain, so the class exists to prove that generic path actually
+   reclaims it (same reasoning `precombine_mesh_rows` already
+   established for splitting a residency question out of the
+   `cell_root_rows` aggregate), not because a bespoke leak vector is
+   suspected. `regn_active_entries` does NOT fit this pattern and
+   should not be added: `RegionAmbientRes` is a single fixed-size Copy
+   struct, always exactly one instance, nothing to leak or grow — the
+   `OwnershipTracker` model exists for collections/handles that can
+   accumulate, not for a plain resource value. `ai_package_rows`
+   remains blocked on item 4, which is unresolved (see its correction
+   above).
 
 **Recommended sequencing**: items 1, 2, and 5 are done end-to-end for
 `music` — a player crossing into a region-tagged cell now audibly hears
@@ -908,11 +971,19 @@ Item 1 turned out NOT to be dependency-free (a real `SOUN` field decode
 was an unstated prerequisite); item 5 turned out to need a persistent
 `SoundArchiveProvider` `--sounds-bsa` handle that didn't exist (the
 existing footstep/splash loads are one-off hardcoded-path reopens, not a
-FormID-driven lookup) — both gaps are closed. Remaining under this issue:
-`incidental` playback (needs a real spatial-emitter design decision, not
-just dispatch plumbing), item 3 (pathfinding — recommended as its own
-follow-up issue given its size), item 4 (downstream of #2370, landed —
-unblocked but not started), and item 6 (downstream of items 2/4).
+FormID-driven lookup) — both gaps are closed. Item 6's `navm_tiles_resident`
+sub-piece is done (item 2 gave it something real to count); its
+`ai_package_rows` sub-piece and item 4 itself both turned out to need
+more than the plan assumed — item 4's "unblocked by `PersistentRefIndex`"
+premise doesn't hold (see its correction: that index cannot see the
+temporary, non-persistent actors that are actually affected, and
+wouldn't provide state snapshot/restore even if it could) — recommended
+as its own design pass, likely sharing a mechanism with EX-14/15 item
+C2's already-flagged "reconcile instead of re-spawning" half rather than
+being built independently. Remaining: `incidental` playback (needs a
+real spatial-emitter design decision, not just dispatch plumbing) and
+item 3 (pathfinding — recommended as its own follow-up issue given its
+size).
 
 ## Verification policy
 

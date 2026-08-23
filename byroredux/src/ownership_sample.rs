@@ -38,6 +38,12 @@ pub(crate) fn sample_ecs_owners(world: &World, out: &mut OwnershipSnapshot) {
     out.water_planes = world.count::<WaterPlane>() as u64;
     out.script_variable_rows = world.count::<byroredux_scripting::ScriptVariables>() as u64;
     out.script_timer_rows = world.count::<byroredux_scripting::ScriptTimer>() as u64;
+    // EX-16 item 6 (#2372) — `NavmeshTile` carries no GPU handle and relies
+    // entirely on the generic `stamp_cell_root_range` → `CellRootIndex` →
+    // `unload_cell` chain for reclaim (same posture as `DoorTeleport`); this
+    // class exists to prove that generic path actually reclaims it, not
+    // because a bespoke leak vector is suspected.
+    out.navm_tiles_resident = world.count::<crate::components::NavmeshTile>() as u64;
 
     // One entry per *resident cell*, not per owned entity — this is the map
     // `unload_cell_inner` drains, so a surplus is a cell root that outlived

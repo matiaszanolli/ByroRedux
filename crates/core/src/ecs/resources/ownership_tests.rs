@@ -23,7 +23,7 @@ fn classes_cover_every_field() {
     // it represents would then be invisible, which is the exact failure mode
     // EX-08 exists to prevent. Bump this deliberately, alongside `classes()`
     // *and* `write_values()`.
-    assert_eq!(OwnershipSnapshot::default().classes().len(), 22);
+    assert_eq!(OwnershipSnapshot::default().classes().len(), 23);
 }
 
 #[test]
