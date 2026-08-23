@@ -64,7 +64,7 @@ static INTERN_OVERFLOW_WARNED: Once = Once::new();
 /// `ui.vert`, and `caustic_splat.comp`
 /// MUST NOT mirror the struct or index the material buffer — the
 /// test `ui_vert_reads_texture_index_from_instance_not_material_table`
-/// (`scene_buffer/gpu_instance_layout_tests.rs`)
+/// (`scene_buffer/shader_contract_tests.rs`)
 /// pins this for `ui.vert` after #776 / #785; mirror checks for the
 /// other two stages live in the same module. Layout invariant is pinned
 /// by `gpu_material_size_is_364_bytes` and

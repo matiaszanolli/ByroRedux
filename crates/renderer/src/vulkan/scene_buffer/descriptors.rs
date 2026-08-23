@@ -244,8 +244,8 @@ impl super::buffers::SceneBuffers {
         let size = std::mem::size_of::<GpuRayBudget>();
         let mapped = self.ray_budget_buffer.mapped_slice_mut()?;
         let bytes = &mapped[offset..offset + size];
-        // The per-FIF byte stride is Vulkan-aligned, but the mapped slice's
-        // Rust pointer has no typed-alignment guarantee.
+        // SAFETY: the per-FIF byte stride is Vulkan-aligned, but the mapped
+        // slice's Rust pointer has no typed-alignment guarantee.
         let budget = unsafe { std::ptr::read_unaligned(bytes.as_ptr().cast::<GpuRayBudget>()) };
         Ok(budget.into())
     }

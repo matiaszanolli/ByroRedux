@@ -524,8 +524,8 @@ mod sink_attachment_tests {
     use super::*;
     use byroredux_core::animation::{AnimColorKey, AnimFloatKey};
     use byroredux_core::ecs::{
-        AnimatedAlpha, AnimatedMorphWeights, AnimatedShaderFloat, AnimatedUvTransform,
-        AnimatedVisibility, Children, LightSource, Name,
+        AnimatedAlpha, AnimatedMorphWeights, AnimatedShaderFloat, AnimatedTextureFlip,
+        AnimatedUvTransform, AnimatedVisibility, Children, LightSource, Name, TextureFlipEntry,
     };
 
     /// Build a two-entity subtree (`root` → `child`) with both named,
@@ -681,6 +681,48 @@ mod sink_attachment_tests {
         assert_eq!(m.get(0), 0.3);
         assert_eq!(m.get(1), 0.0, "gap between morph indices zero-pads");
         assert_eq!(m.get(2), 0.9);
+    }
+
+    #[test]
+    fn second_clip_targeting_a_new_texture_flip_slot_is_silently_dropped() {
+        // Documents a known, pre-existing limitation of `insert_missing_sinks`
+        // (#3243): `AnimatedTextureFlip` is a `Vec<TextureFlipEntry>` designed
+        // to hold more than one flipbook slot on an entity, but the merge only
+        // happens *within* a single `attach_animation_sinks` call. A second,
+        // later-attached clip that introduces a *new* texture_slot for an
+        // entity that already carries an `AnimatedTextureFlip` (from a first
+        // clip) has its slot dropped entirely, because `insert_missing_sinks`
+        // only checks "does this entity have *a* component of this type
+        // already" — it doesn't know the type is a mergeable collection.
+        // Same trade-off already accepted for `AnimatedMorphWeights`; this
+        // test exists so the boundary is verified rather than assumed.
+        let mut world = World::new();
+        let entity = world.spawn();
+        let first_clip_entry = AnimatedTextureFlip(vec![TextureFlipEntry {
+            texture_slot: 0,
+            handles: vec![1, 2],
+            current_index: 0,
+        }]);
+        insert_missing_sinks(&mut world, vec![(entity, first_clip_entry)]);
+
+        // A second clip targeting a *different* slot on the same entity.
+        let second_clip_entry = AnimatedTextureFlip(vec![TextureFlipEntry {
+            texture_slot: 1,
+            handles: vec![3, 4],
+            current_index: 0,
+        }]);
+        insert_missing_sinks(&mut world, vec![(entity, second_clip_entry)]);
+
+        let flip = world.query::<AnimatedTextureFlip>().unwrap();
+        let entries = &flip.get(entity).unwrap().0;
+        assert_eq!(
+            entries.len(),
+            1,
+            "current behavior: the second clip's slot-1 entry is dropped, \
+             not merged, because `insert_missing_sinks` sees the entity \
+             already has an AnimatedTextureFlip from the first clip"
+        );
+        assert_eq!(entries[0].texture_slot, 0, "only the first clip's slot survives");
     }
 
     #[test]

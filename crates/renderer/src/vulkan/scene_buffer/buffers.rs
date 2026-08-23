@@ -913,7 +913,7 @@ impl SceneBuffers {
         let disabled_probe = GpuSelectedRayProbe::default();
         for buf in &mut bufs.selected_ray_probe_buffers {
             if let Err(e) = buf.write_mapped(device, std::slice::from_ref(&disabled_probe)) {
-                // Same raw-handle ownership window as the DALC seed above.
+                // SAFETY: same raw-handle ownership window as the DALC seed above.
                 unsafe {
                     device.destroy_descriptor_pool(descriptor_pool, None);
                     device.destroy_descriptor_set_layout(descriptor_set_layout, None);
