@@ -10,6 +10,7 @@
 //! - [`sse_recon`]    — Skyrim-SE skinned-geometry reconstruction (#559)
 //! - [`decode`]       — half-float / byte-normal / LE readers
 //! - [`material_path`] — `material_path_from_name` (`.bgsm` / `.bgem` capture)
+//! - [`morph`]        — morph-target vertex-delta extraction (#3231)
 //! - [`skin`]         — skinning extraction (#151) + bone-pose flattening
 //!
 //! Cross-sibling helpers are re-exported at this module's namespace
@@ -23,6 +24,7 @@ mod bs_geometry;
 mod bs_tri_shape;
 mod decode;
 mod material_path;
+mod morph;
 mod ni_tri_shape;
 mod skin;
 mod sse_recon;
@@ -32,6 +34,7 @@ pub(crate) use bs_geometry::*;
 pub(crate) use bs_tri_shape::*;
 pub(crate) use decode::*;
 pub(crate) use material_path::*;
+pub(crate) use morph::*;
 pub(crate) use ni_tri_shape::*;
 pub(crate) use skin::*;
 pub(crate) use sse_recon::*;

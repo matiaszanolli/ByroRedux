@@ -201,7 +201,13 @@ fn time_controller_base_of(
 // `NiTimeControllerBase` envelope (`None` for an unrecognized type).
 // Returns on chain termination (BlockRef::NULL) or on the first
 // missing block. Free helper for `import_embedded_animations` (#1673).
-fn walk_controller_chain(
+//
+// `pub(crate)` since #3231 — `import::mesh::extract_mesh` /
+// `extract_bs_tri_shape` reuse this same walk to find a shape's
+// `NiGeomMorpherController` (morph-target vertex deltas) rather than
+// duplicating the type-dispatch ladder `time_controller_base_of` above
+// already has to stay in lockstep for.
+pub(crate) fn walk_controller_chain(
     scene: &NifScene,
     head: crate::types::BlockRef,
     mut visit: impl FnMut(

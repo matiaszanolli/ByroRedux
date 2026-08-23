@@ -227,6 +227,17 @@ pub fn extract_bs_tri_shape(
         Vec::new()
     };
 
+    // #3231 — morph-target vertex deltas, when the shape carries a
+    // NiGeomMorpherController. Must run before `positions` moves into
+    // the struct literal below (the vertex-count guard checks against
+    // its length).
+    let morph_targets = extract_morph_targets(
+        scene,
+        shape.av.net.controller_ref,
+        positions.len(),
+        shape.av.net.name.as_deref(),
+    );
+
     Some(ImportedMesh {
         positions,
         colors,
@@ -254,6 +265,7 @@ pub fn extract_bs_tri_shape(
         },
         bs_geometry_lod_slot: None,
         billboard_mode: None,
+        morph_targets,
     })
 }
 

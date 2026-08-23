@@ -37,6 +37,10 @@ mod types;
 // that here so the test file can keep its concise import block.
 
 pub use entry::{import_embedded_animations, import_kf};
+// #3231 — reused by `import::mesh::extract_mesh` / `extract_bs_tri_shape`
+// to find a shape's `NiGeomMorpherController` without duplicating the
+// controller-chain type-dispatch ladder.
+pub(crate) use entry::walk_controller_chain;
 pub use types::*;
 
 // Internal cross-sibling re-exports. Each sibling does `use super::*;`

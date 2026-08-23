@@ -359,6 +359,10 @@ pub fn extract_bs_geometry(
         bs_sub_index: None,
         bs_geometry_lod_slot: Some(resolved_slot),
         billboard_mode: None,
+        // #3231 — GPU morph-blend consumer is out of scope for Starfield's
+        // BSGeometry in this pass (v1 targets NiTriShape/BSTriShape only,
+        // matching the concrete FaceGen use case). Not wired here.
+        morph_targets: None,
     })
 }
 

@@ -757,6 +757,30 @@ pub struct ImportedMesh {
     /// mesh instead. `None` for the vast majority of meshes (no billboard
     /// ancestor).
     pub billboard_mode: Option<u16>,
+    /// #3231 — `NiGeomMorpherController` / `NiMorphData` vertex-delta
+    /// targets, when the shape carries one. `None` for the vast majority
+    /// of meshes (no morph controller, or every target failed the
+    /// vertex-count guard — see `import::mesh::morph::extract_morph_targets`).
+    /// The renderer's GPU morph-blend consumer is skinned-mesh-only in
+    /// its current scope (mirrors `SkinSlotPool`'s per-entity slot
+    /// model), but this field is captured regardless of `skin` so a
+    /// future rigid-mesh consumer needs no second import-side change.
+    pub morph_targets: Option<Vec<ImportedMorphTarget>>,
+}
+
+/// One morph target: name + per-vertex position deltas in the renderer's
+/// Y-up convention (same axis-swap `zup_point_to_yup` applies to
+/// [`ImportedMesh::positions`] — valid for deltas too since the swap is
+/// a pure axis permutation/reflection with no translation term). See
+/// [`ImportedMesh::morph_targets`].
+#[derive(Debug, Clone)]
+pub struct ImportedMorphTarget {
+    pub name: Option<Arc<str>>,
+    /// `deltas.len()` is guaranteed to equal the owning mesh's vertex
+    /// count — targets that failed that check at import time are
+    /// dropped before reaching this struct, not represented here with a
+    /// mismatched length.
+    pub deltas: Vec<[f32; 3]>,
 }
 
 impl ImportedMesh {
@@ -813,6 +837,7 @@ impl ImportedMesh {
             bs_sub_index: None,
             bs_geometry_lod_slot: None,
             billboard_mode: None,
+            morph_targets: None,
         }
     }
 }

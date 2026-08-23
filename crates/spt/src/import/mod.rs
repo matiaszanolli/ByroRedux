@@ -334,6 +334,9 @@ fn placeholder_billboard_mesh(
         // Billboard updates operate on renderable mesh entities. Keeping the
         // mode here avoids rotating the non-renderable placement root (#3076).
         billboard_mode: Some(BILLBOARD_MODE_BS_ROTATE_ABOUT_UP),
+        // #3231 — SpeedTree placeholder billboards are synthesized quads,
+        // not NIF-sourced geometry; no NiGeomMorpherController to capture.
+        morph_targets: None,
     }
 }
 

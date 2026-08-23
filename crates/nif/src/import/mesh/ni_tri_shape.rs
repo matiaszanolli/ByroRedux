@@ -185,6 +185,17 @@ pub fn extract_mesh(
     // tangents (~16-40 KB per mesh).
     let tangents_yup = std::mem::take(&mut geom.tangents);
 
+    // #3231 — morph-target vertex deltas, when the shape carries a
+    // NiGeomMorpherController. Must run after `positions` is final (the
+    // vertex-count guard checks against it), before `positions` moves
+    // into the struct literal below.
+    let morph_targets = extract_morph_targets(
+        scene,
+        shape.av.net.controller_ref,
+        positions.len(),
+        shape.av.net.name.as_deref(),
+    );
+
     Some(ImportedMesh {
         positions,
         colors,
@@ -206,6 +217,7 @@ pub fn extract_mesh(
         bs_sub_index: None,
         bs_geometry_lod_slot: None,
         billboard_mode: None,
+        morph_targets,
     })
 }
 
