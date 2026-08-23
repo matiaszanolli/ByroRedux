@@ -631,10 +631,51 @@ cover got its design doc before Phase 0. Scope as its own follow-up issue.
    here.
 3. [ ] **FO4 previs/occlusion** (`.uvd`, XPCI-equivalent) — zero parser,
    zero consumer (`byroredux/src/cell_loader/precombined.rs:25-31`
-   documents this as a known deferred sub-item). No niftools spec is cited
-   anywhere in the codebase. This is greenfield: file as a research spike
-   (format reverse-engineering, mirroring how `.lod`/`.bto` formats were
-   cracked per `exal.md` §Q2/§Q3) before any parsing work is scoped.
+   documents this as a known deferred sub-item). Still true; still
+   recommended as its own research-spike issue rather than folded in
+   here — the visibility-set payload itself remains fully unknown.
+
+   **Partial crack, 2026-08-23**: "no niftools spec is cited anywhere in
+   the codebase" doesn't mean unstartable — real FO4 data was available
+   this session (see item 4's correction below for the same discovery).
+   Extracted and byte-compared 3 real `.uvd` files from `Fallout4 -
+   MeshesExtra.ba2`'s `vis\fallout4.esm\<cell_formid>.uvd` (sizes 3.4 KB
+   / 538 KB / 965 KB — genuine size variance, not a fixed-size format).
+   The outer header cracks cleanly:
+   - Bytes `0..4`: `u32 = 0xD6000012` LE, byte-identical across all 3
+     samples — a format magic/version constant.
+   - Bytes `4..8`: varies per file, not yet identified (candidate: a
+     content hash/checksum, or a per-cell coordinate — not conclusively
+     either).
+   - Bytes `8..12`: `u32` LE, **confirmed exact match to the file's own
+     total byte length** in all 3 samples (3472 / 538176 / 964768) — a
+     self-reported size field, directly verifiable against any sample
+     without guessing.
+   - Bytes `12..16`: `f32` LE `= 512.0`, byte-identical across all 3
+     samples.
+   - Bytes `0xB0..0x100`: a null-padded **embedded ASCII debug string**,
+     byte-identical across all 3 samples: `T 512.0 SO 128.0 SH 16.000
+     BF 100 F 0 CS 0.0 - 3.3.17 F 1 0 OG 0`. The `T 512.0` term matches
+     the `f32` at bytes `12..16` exactly — confirms that field's
+     semantic (tile size) and confirms the string is a generation-tool
+     parameter/version fingerprint baked in at build time, not per-cell
+     content (identical across cells of wildly different size).
+   - Bytes `0x14` onward (before the string) vary per file and look
+     float-shaped (bounding-box/coordinate candidates) — **not
+     decoded**; this is exactly where genuine per-cell visibility-set
+     structure would begin, and guessing a layout here without more
+     samples/cross-referencing against known cell bounds would be the
+     kind of invented-threshold work this project's no-guessing policy
+     exists to prevent.
+
+   Net: the outer framing (magic, self-validating size, tool
+   fingerprint) is real and reproducible, not a guess — but the actual
+   visibility-set payload (what previs data is *for*) is still
+   completely uncracked. Not enough to build a parser worth shipping
+   (a magic-number + debug-string reader has no real consumer), but a
+   real head start for whoever picks up the research spike next —
+   recorded here rather than only in scratch output so it isn't
+   re-discovered from zero.
 4. [ ] **Precombine collision** — **correction (2026-08-23): NOT smaller or
    better-scoped than previs; same blocker class.** Investigated against
    real `Fallout4 - MeshesExtra.ba2` data (159,866 files) rather than
