@@ -331,22 +331,33 @@ pub(crate) fn path_from_resident_tiles(
 /// off-navmesh actor would retry `path_from_resident_tiles` every single
 /// tick instead of once per goal, defeating the whole point of caching.
 /// Callers still own writing the returned queue back into their own
-/// `NavPath` cache (paired with whatever `goal` they resolved this tick)
-/// — this function only decides what to walk *with* this tick, not the
-/// storage side of the cache.
+/// `NavPath` cache — paired with the returned `effective_goal`, **not**
+/// this call's raw `goal` argument. On a cache hit those two differ on
+/// purpose: `effective_goal` is the *cached* path's original goal, held
+/// steady so a live-goal caller's per-tick jitter doesn't creep the
+/// stored goal toward the target's current position every tick (which
+/// would silently widen the effective repath tolerance to infinity —
+/// caught by `follow_system`'s own regression test for this). Only a
+/// genuine recompute (cache miss) advances `effective_goal` to this
+/// call's `goal`.
 pub(crate) fn resolve_cached_waypoints(
     cached: Option<&crate::components::NavPath>,
     tiles: Option<&byroredux_core::ecs::QueryRead<'_, crate::components::NavmeshTile>>,
     current: Vec3,
     goal: Vec3,
     repath_threshold: f32,
-) -> std::collections::VecDeque<Vec3> {
+) -> (Vec3, std::collections::VecDeque<Vec3>) {
     match cached {
-        Some(path) if path.goal.distance(goal) <= repath_threshold => path.waypoints.clone(),
-        _ => tiles
-            .and_then(|tiles| path_from_resident_tiles(tiles, current, goal))
-            .map(std::collections::VecDeque::from)
-            .unwrap_or_default(),
+        Some(path) if path.goal.distance(goal) <= repath_threshold => {
+            (path.goal, path.waypoints.clone())
+        }
+        _ => {
+            let waypoints = tiles
+                .and_then(|tiles| path_from_resident_tiles(tiles, current, goal))
+                .map(std::collections::VecDeque::from)
+                .unwrap_or_default();
+            (goal, waypoints)
+        }
     }
 }
 
@@ -558,5 +569,59 @@ mod tests {
             flags: 0,
         };
         assert_eq!(shared_edge(&a, &b), None);
+    }
+
+    // ── resolve_cached_waypoints: hit/miss + effective-goal contract ──
+
+    use crate::components::NavPath;
+    use std::collections::VecDeque;
+
+    #[test]
+    fn resolve_cached_waypoints_reuses_within_threshold_and_keeps_the_original_goal() {
+        let original_goal = Vec3::new(100.0, 0.0, 100.0);
+        let cached = NavPath {
+            goal: original_goal,
+            waypoints: VecDeque::from(vec![Vec3::new(50.0, 0.0, 50.0), original_goal]),
+        };
+        // New goal is close (within threshold) but NOT identical — this is
+        // exactly follow_system's per-tick live-target-jitter case.
+        let new_goal = Vec3::new(105.0, 0.0, 100.0);
+
+        let (effective_goal, waypoints) =
+            resolve_cached_waypoints(Some(&cached), None, Vec3::ZERO, new_goal, 10.0);
+
+        assert_eq!(
+            effective_goal, original_goal,
+            "a cache hit must keep the ORIGINAL goal, not drift toward the new one \
+             (regression: this exact bug shipped once and was caught by \
+             follow_system's own test)"
+        );
+        assert_eq!(waypoints, cached.waypoints);
+    }
+
+    #[test]
+    fn resolve_cached_waypoints_recomputes_beyond_threshold_and_advances_the_goal() {
+        let cached = NavPath {
+            goal: Vec3::new(100.0, 0.0, 100.0),
+            waypoints: VecDeque::from(vec![Vec3::new(100.0, 0.0, 100.0)]),
+        };
+        let new_goal = Vec3::new(500.0, 0.0, 500.0); // far beyond any reasonable threshold
+
+        // No tiles (`None`) — recompute finds nothing, so this also pins
+        // the "cache the negative result" contract: effective_goal still
+        // advances to the new goal even though waypoints comes back empty.
+        let (effective_goal, waypoints) =
+            resolve_cached_waypoints(Some(&cached), None, Vec3::ZERO, new_goal, 10.0);
+
+        assert_eq!(effective_goal, new_goal);
+        assert!(waypoints.is_empty());
+    }
+
+    #[test]
+    fn resolve_cached_waypoints_with_no_cache_at_all_recomputes() {
+        let (effective_goal, waypoints) =
+            resolve_cached_waypoints(None, None, Vec3::ZERO, Vec3::new(1.0, 0.0, 1.0), 10.0);
+        assert_eq!(effective_goal, Vec3::new(1.0, 0.0, 1.0));
+        assert!(waypoints.is_empty());
     }
 }

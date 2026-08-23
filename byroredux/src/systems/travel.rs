@@ -223,8 +223,11 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
             // only when the goal changed or nothing is cached yet.
             // `0.0` threshold: a frozen goal, so any change at all means
             // "genuinely new destination," not "drifted a little."
+            // Effective goal discarded (`_`): with a `0.0` threshold it's
+            // always bit-identical to `destination`, whether reused or
+            // freshly computed — see `resolve_cached_waypoints`'s own doc.
             let cached = nav_path_q.as_ref().and_then(|q| q.get(entity));
-            let waypoints =
+            let (_, waypoints) =
                 resolve_cached_waypoints(cached, tile_q.as_ref(), current, destination, 0.0);
 
             scratch.pending.push(TravelPending {

@@ -179,10 +179,15 @@ fn guard_system_inner(world: &World, dt: f32, scratch: &mut GuardScratch) {
             // EX-16 item 3 Phase 4: only bother resolving a path when
             // actually walking back this tick — mirrors `wander_system`'s
             // "skip the resident-tile scan while Paused" optimization.
+            // Effective goal discarded (`_`): with a `0.0` threshold it's
+            // always bit-identical to `goal` (the anchor), whether reused
+            // or freshly computed — see `resolve_cached_waypoints`'s doc.
             let waypoints = match walk_back_to {
                 Some(goal) => {
                     let cached = nav_path_q.as_ref().and_then(|q| q.get(entity));
-                    resolve_cached_waypoints(cached, tile_q.as_ref(), current, goal, 0.0)
+                    let (_, waypoints) =
+                        resolve_cached_waypoints(cached, tile_q.as_ref(), current, goal, 0.0);
+                    waypoints
                 }
                 None => VecDeque::new(),
             };
