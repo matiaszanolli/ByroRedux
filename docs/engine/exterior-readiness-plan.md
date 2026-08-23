@@ -580,14 +580,19 @@ Phases 1-5 per [`exal-groundcover.md`](exal-groundcover.md) §9:
 
 **B. SpeedTree full rendering.** Confirmed billboard-only today
 (`crates/spt/src/import/mod.rs` — always emits one placeholder quad,
-fully wired and tested via `byroredux/src/systems/billboard.rs`). Genuinely
-**has no existing design authority**: `exal-groundcover.md` §10 defers it to
-`exal.md` §5, but §5 only covers terrain/object LOD, not SpeedTree geometry.
-Recommend: write a short design doc (a §5.x addition to `exal.md`, or a
-sibling `exal-trees.md`) covering geometry-tail decode, leaf-card billboards,
-and `BezierSpline` wind-curve consumption — per `crates/spt/src/import/mod.rs`'s
-own Phase 2 TODO (lines 31-45) — **before** any code, matching how ground
-cover got its design doc before Phase 0. Scope as its own follow-up issue.
+fully wired and tested via `byroredux/src/systems/billboard.rs`). **Design
+authority now exists**: [`exal-trees.md`](exal-trees.md) (PROPOSED,
+2026-08-23) — covers geometry-tail decode strategy, branch/frond + leaf-card
+import shape, the RT/BLAS boundary, wind response (reusing ground cover's
+`WindField`, not a second system), and a 5-phase rollout (2.1 geometry-tail
+dissection → 2.2 branch/frond + static BLAS → 2.3 leaf-card canopy → 2.4 wind
+→ Phase 3 mid-distance LOD tier, deferred). The geometry-tail decode itself
+(Phase 2.1) remains genuinely unstarted — `format-notes.md`'s own log
+identifies two candidate high-tag markers past `tail_offset` and stops there,
+no vertex/index layout confirmed — and is Phase 2.1's whole job, not assumed
+solved by writing the design doc. No code lands from the design doc itself;
+Phase 2.1 is real research-spike work, scope as its own follow-up issue per
+the doc's own §8 rollout.
 
 **C. Persistent refs across parent worlds + FO4 precombine previs/occlusion.**
 
@@ -628,7 +633,13 @@ cover got its design doc before Phase 0. Scope as its own follow-up issue.
    exterior reload, `begin_exterior_streaming`), not an additive lookup
    like the WNAM walk — real regression risk to already-working
    transition code, flagged for a deliberate follow-up rather than rushed
-   here.
+   here. **Design authority now exists (2026-08-23)**:
+   [`stream-boundary-state-continuity.md`](stream-boundary-state-continuity.md)
+   §1/§7 — covers this half together with EX-16 item 4 (they share every
+   hard part) and recommends sequencing this reconcile half *before* item
+   4's larger snapshot mechanism: smaller diff, higher confidence, and a
+   real validation point for the shared FormID-resolution index both
+   halves need.
 3. [ ] **FO4 previs/occlusion** (`.uvd`, XPCI-equivalent) — zero parser,
    zero consumer (`byroredux/src/cell_loader/precombined.rs:25-31`
    documents this as a known deferred sub-item). Still true; still
@@ -1002,10 +1013,21 @@ grep. REGN's `Sound.music` field now has a real consumer (items 1 + 5,
    down and rebuild, with no live-state-carryover path at all today. Real
    regression risk to already-working streaming/despawn code, same
    "flag for a deliberate follow-up, don't rush it" posture applied there
-   and to FO4 previs/precombine-collision above. Recommend scoping as its
-   own design pass (or folding into whatever follow-up eventually attacks
-   EX-14/15 item C2's reconcile half, since they'd likely share a
-   mechanism) rather than attempting a partial fix here.
+   and to FO4 previs/precombine-collision above.
+
+   **Design authority now exists (2026-08-23)**:
+   [`stream-boundary-state-continuity.md`](stream-boundary-state-continuity.md)
+   — covers both this item and EX-14/15 item C2's reconcile half together,
+   since they share every hard part (identifying "the same logical actor"
+   across a despawn/respawn, avoiding stale `EntityId` references inside
+   restored state via a FormID-keyed resolution index generalizing
+   `PersistentRefIndex`'s existing pattern to ordinary cell roots, and
+   bounding the snapshot store's lifetime). Traces the concrete failure
+   against the real `AmbientPackageRuntime`/`Seated`/`TravelState`/
+   `Traveled` component types (not hypothetical), and recommends
+   sequencing: the shared FormID-resolution index first, then C2's
+   (smaller, lower-risk) reconcile half, then this item's snapshot/restore
+   mechanism last. No code lands from the design doc itself.
 5. [x] **Ambient audio emitter REGN-binding — music done, `incidental` not
    attempted.** The generic crossfade machinery already existed
    (`AudioWorld::play_music`/`stop_music`, `crates/audio/src/lib.rs`);
