@@ -434,13 +434,18 @@ it grew from 18 maps in Session 12 to ~90 today. The struct opens with
 - **Oblivion-unique base records** (#966) — `birthsigns` (BSGN),
   `clothing` (CLOT), `apparatuses` (APPA), `sigil_stones` (SGST),
   `soul_gems` (SLGM).
-- **Long-tail minimal stubs** (#810) — 31 record types
-  (audio: ALOC/ANIO/ASPC/CAMS/CPTH/DOBJ/MICN/MSET/MUSC/SOUN/VTYP;
-  visual/world: AMEF/DEBR/GRAS/IMAD/LSCR/LSCT/PWAT/RGDL; FNV hardcore:
-  DEHY/HUNG/RADS/SLPD; Caravan/Casino: CCRD/CDCK/CHAL/CHIP/CMNY/CSNO;
-  recipe residuals: RCCT/RCPE) parsed via `parse_minimal_esm_record`
-  (EDID + optional FULL) so cross-references resolve at lookup time
-  even though no consumer drives a full per-record parser yet.
+- **Long-tail minimal stubs** (#810) — originally 31 record types
+  parsed via `parse_minimal_esm_record` (EDID + optional FULL) so
+  cross-references resolve at lookup time even though no consumer
+  drives a full per-record parser yet. Two have since graduated to a
+  dedicated typed parser as a real consumer arrived: IMAD (cinematic
+  presentation curves, `parse_imad`) and `sounds` (SOUN, `parse_soun`
+  — FNAM file-path decode, EX-16 item 1 / #2372's FormID→archive-path
+  prerequisite). 29 remain on the minimal-stub path: audio:
+  ALOC/ANIO/ASPC/CAMS/CPTH/DOBJ/MICN/MSET/MUSC/VTYP; visual/world:
+  AMEF/DEBR/GRAS/LSCR/LSCT/PWAT/RGDL; FNV hardcore: DEHY/HUNG/RADS/SLPD;
+  Caravan/Casino: CCRD/CDCK/CHAL/CHIP/CMNY/CSNO; recipe residuals:
+  RCCT/RCPE.
 
 `EsmIndex` carries four cross-cutting helpers:
 

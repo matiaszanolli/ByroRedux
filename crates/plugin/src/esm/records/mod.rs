@@ -29,6 +29,7 @@ pub mod pkin;
 pub mod scol;
 pub mod script;
 pub mod script_instance;
+pub mod soun;
 pub mod tree;
 pub mod weather;
 
@@ -38,6 +39,7 @@ pub use mswp::{parse_mswp, MaterialSwapEntry, MaterialSwapRecord};
 pub use outfit::{parse_otft, OtftRecord};
 pub use pkin::{parse_pkin, PkinRecord};
 pub use scol::{parse_scol, ScolPart, ScolPlacement, ScolRecord};
+pub use soun::{parse_soun, SounRecord};
 
 pub use actor::{
     parse_clas, parse_fact, parse_npc, parse_race, ClassRecord, FactionMembership, FactionRecord,

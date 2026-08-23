@@ -16,8 +16,8 @@ use super::{
     IdleRecord, ImadRecord, ImgsRecord, ImodRecord, IpctRecord, IpdsRecord, ItemRecord,
     LeveledList, LgtmRecord, MesgRecord, MgefRecord, MinimalEsmRecord, NaviRecord, NavmRecord,
     NpcRecord, OtftRecord, PackRecord, PerkRecord, ProjRecord, QustRecord, RaceRecord, RegnRecord,
-    RepuRecord, ScenRecord, ScriptRecord, SlgmRecord, SpelRecord, TermRecord, TreeRecord,
-    WatrRecord, WeatherRecord,
+    RepuRecord, ScenRecord, ScriptRecord, SlgmRecord, SounRecord, SpelRecord, TermRecord,
+    TreeRecord, WatrRecord, WeatherRecord,
 };
 use std::collections::HashMap;
 
@@ -299,8 +299,11 @@ pub struct EsmIndex {
     pub media_sets: HashMap<u32, MinimalEsmRecord>,
     /// `MUSC` music type.
     pub music_types: HashMap<u32, MinimalEsmRecord>,
-    /// `SOUN` sound.
-    pub sounds: HashMap<u32, MinimalEsmRecord>,
+    /// `SOUN` sound. Upgraded from the `MinimalEsmRecord` long-tail stub
+    /// (#810) to a real decode of `FNAM` (file path) — EX-16 item 1's
+    /// stated prerequisite for resolving a REGN `RegionDataKind::Sound`
+    /// FormID to an archive audio file (#2372).
+    pub sounds: HashMap<u32, SounRecord>,
     /// `VTYP` voice type.
     pub voice_types: HashMap<u32, MinimalEsmRecord>,
     // Visual / world (8):

@@ -756,6 +756,26 @@ today**, confirmed by exhaustive grep.
    real SOUN field decode (mirroring the GRAS gap) plus a FormID→path
    resolver are both prerequisites this item didn't originally name.
    Re-sequenced after item 2 as a result — do item 2 first.
+
+   **Both named prerequisites done (2026-08-23).** `parse_soun`
+   (`crates/plugin/src/esm/records/soun.rs`) decodes `FNAM` — SOUN's
+   file path, relative to `Data\Sound\` — graduating `EsmIndex.sounds`
+   from `HashMap<u32, MinimalEsmRecord>` to `HashMap<u32, SounRecord>`;
+   `SNDD`/`SNDX` attenuation-curve bytes are deliberately left undecoded
+   (no verified byte layout available this session, and not needed to
+   resolve a FormID to a playable path — the actual EX-16 item 1
+   blocker). `asset_provider::audio::{resolve_sound_path,
+   sound_archive_path}` add the FormID→archive-key resolver, mirroring
+   `script::pex_archive_path`'s shape (lowercase, `sound\` folder
+   prefix, no double-prefixing). Both landed ahead of their consumer
+   (`#[allow(dead_code)]`), same posture as `NavmeshTile` below — item
+   5's REGN-keyed `AudioEmitter` is the pending caller, not built here.
+   9 new unit tests (3 `parse_soun`, 6 resolver). **Still open**: the
+   actual REGN runtime consumption this item is titled for — iterating
+   a resident cell's `regions: Vec<u32>` in priority order, selecting
+   the active Sound/Weather/Map/etc. entries, and routing Sound entries
+   through the new resolver into a real `AudioEmitter` (item 5). The
+   prerequisites are unblocked; the wiring itself is not attempted here.
 2. [x] **NAVM streaming lifecycle** — done. Landed `NavmeshTile`
    (`byroredux/src/components.rs`), a plain CPU-only component wrapping
    one resident `NavmRecord`, spawned by the new
@@ -797,6 +817,11 @@ today**, confirmed by exhaustive grep.
    crossfade/prune-on-unload machinery already exists (`AudioEmitter`,
    `unload_fade_ms`, `prune_stopped_sounds`, `crates/audio/src/lib.rs`);
    needs a REGN-keyed emitter type reusing it, gated behind item 1.
+   **Unblocked (2026-08-23)**: item 1's `resolve_sound_path`/
+   `sound_archive_path` (`asset_provider/audio.rs`) give this a
+   FormID→archive-key resolver to build on; still to do is the REGN-
+   keyed emitter type itself plus the active-region selection logic
+   (priority order, per-cell `regions: Vec<u32>` walk).
 6. [ ] **OwnershipTracker telemetry** — add `navm_tiles_resident`,
    `regn_active_entries`, `ai_package_rows` classes following the existing
    `OwnerClass`/`ReclaimPolicy` pattern (`ownership.rs`), once items 2/4
@@ -804,11 +829,16 @@ today**, confirmed by exhaustive grep.
 
 **Recommended sequencing**: item 2 (NAVM streaming lifecycle) is done.
 Item 1 (REGN ambient sound) turned out NOT to be dependency-free — see its
-correction above; a real `SOUN` field decode is a prerequisite. Items 4-6
-are downstream of #2370 (persistent-ref identity, landed) or #2369 (ground
-cover, not landed); item 3 (pathfinding) and item 1's `SOUN`-decode
-prerequisite are both recommended as their own follow-up issues rather
-than folded into EX-16 directly.
+correction above; a real `SOUN` field decode is a prerequisite. **Both of
+item 1's named prerequisites (SOUN decode, FormID→path resolver) are now
+done (2026-08-23)**, unblocking item 5 at the prerequisite level; the
+REGN runtime-consumption wiring itself (priority-ordered region walk +
+active-entry selection + the REGN-keyed emitter type) remains open and is
+still recommended as its own follow-up given its size relative to the
+rest of this issue. Items 4-6 are downstream of #2370 (persistent-ref
+identity, landed) or #2369 (ground cover, not landed); item 3
+(pathfinding) is recommended as its own follow-up issue rather than
+folded into EX-16 directly.
 
 ## Verification policy
 

@@ -3,7 +3,9 @@
 //! record types bulk-dispatched via the shared `parse_minimal_esm_record`
 //! (EDID + optional FULL only), typed IMAD image-space curves, and five
 //! Oblivion-unique base records (BSGN/CLOT/APPA/SGST/SLGM — the last four
-//! dual-target for `cells.statics`).
+//! dual-target for `cells.statics`). SOUN graduated to a dedicated
+//! `parse_soun` (FNAM sound-path decode, EX-16 item 1 / #2372); the other
+//! 30 stay on the minimal-stub path.
 
 use super::*;
 
@@ -72,10 +74,12 @@ pub(super) fn dispatch_misc_stub_group(
                 .music_types
                 .insert(fid, parse_minimal_esm_record(fid, subs));
         })?,
+        // SOUN gets a real decode (FNAM sound path) rather than the
+        // minimal-stub treatment its 30 long-tail siblings still use —
+        // EX-16 item 1 (#2372) needs a FormID → archive-path resolution
+        // path for REGN `RegionDataKind::Sound`. See `soun.rs`.
         b"SOUN" => extract_records(reader, end, b"SOUN", &mut |fid, subs| {
-            index
-                .sounds
-                .insert(fid, parse_minimal_esm_record(fid, subs));
+            index.sounds.insert(fid, parse_soun(fid, subs));
         })?,
         b"VTYP" => extract_records(reader, end, b"VTYP", &mut |fid, subs| {
             index
