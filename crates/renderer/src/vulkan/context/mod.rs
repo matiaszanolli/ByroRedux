@@ -361,6 +361,18 @@ pub struct DrawCommand {
     pub translucency_subsurface_color: [f32; 3],
     pub translucency_transmissive_scale: f32,
     pub translucency_turbulence: f32,
+    /// #2221 — `AnimatedShaderColor` sink override, forwarded to
+    /// `GpuMaterial.shader_color_{r,g,b}`. Default `[0.0; 3]` — the
+    /// field is captured for layout parity but unsampled by any shader
+    /// today (see `GpuMaterial::shader_color_r`'s doc for why: the
+    /// component is a deliberately generic single-slot sink with no
+    /// single settled shader-uniform target). Populated by
+    /// `byroredux::render::static_meshes::collect_static_mesh_draws`.
+    pub shader_color: [f32; 3],
+    /// #2221 — `AnimatedShaderFloat` sink override, forwarded to
+    /// `GpuMaterial.shader_float`. Same unsampled-today status as
+    /// `shader_color` above.
+    pub shader_float: f32,
     /// `true` for water-surface entities — the triangle-pipeline path
     /// in `draw_frame` skips this command (only its `GpuInstance` SSBO
     /// slot is populated), and a parallel `WaterDrawCommand` in the
@@ -504,6 +516,11 @@ impl DrawCommand {
             decal_map_1_index: self.supplemental_texture_indices[slot::DECAL_1],
             decal_map_2_index: self.supplemental_texture_indices[slot::DECAL_2],
             decal_map_3_index: self.supplemental_texture_indices[slot::DECAL_3],
+            // #2221 — animated shader color/float, unsampled today.
+            shader_color_r: self.shader_color[0],
+            shader_color_g: self.shader_color[1],
+            shader_color_b: self.shader_color[2],
+            shader_float: self.shader_float,
         }
     }
 
@@ -643,6 +660,12 @@ impl DrawCommand {
         for texture_index in self.supplemental_texture_indices {
             h.write_u32(texture_index);
         }
+        // #2221 — animated shader color/float (offsets 348-360). Same
+        // lockstep requirement as every field above.
+        h.write_u32(self.shader_color[0].to_bits());
+        h.write_u32(self.shader_color[1].to_bits());
+        h.write_u32(self.shader_color[2].to_bits());
+        h.write_u32(self.shader_float.to_bits());
         h.finish()
     }
 }
@@ -2400,6 +2423,10 @@ mod draw_command_tests {
             translucency_subsurface_color: [0.5, 0.4, 0.3],
             translucency_transmissive_scale: 1.5,
             translucency_turbulence: 0.25,
+            // #2221 — distinct non-default shader color/float so the
+            // hash-walk contract covers these fields independently.
+            shader_color: [0.15, 0.25, 0.35],
+            shader_float: 0.45,
             is_water: false,
         }
     }

@@ -184,6 +184,12 @@ struct GpuMaterial {
     uint decalMap1Index;
     uint decalMap2Index;
     uint decalMap3Index;
+    // Animated BSShaderProperty color/scalar (offsets 348-360, #2221).
+    // Same "layout parity, no shader consumer yet" precedent as the
+    // three unsampled map indices above — see the field notes in
+    // crates/renderer/src/vulkan/material.rs.
+    float shaderColorR, shaderColorG, shaderColorB; // unsampled — see #2221
+    float shaderFloat;                              // unsampled — see #2221
 };
 
 layout(std430, set = 1, binding = 13) readonly buffer MaterialBuffer {

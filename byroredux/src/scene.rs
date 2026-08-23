@@ -937,12 +937,20 @@ pub(crate) fn setup_scene(
                                                 clip.bool_channels.clone(),
                                                 clip.float_channels.clone(),
                                                 clip.color_channels.clone(),
+                                                clip.texture_flip_channels.clone(),
                                             )
                                         })
                                     };
-                                    if let Some((bools, floats, colors)) = channels {
+                                    if let Some((bools, floats, colors, texture_flips)) = channels {
                                         crate::anim_convert::attach_animation_sinks(
-                                            world, &bools, &floats, &colors, root,
+                                            world,
+                                            &bools,
+                                            &floats,
+                                            &colors,
+                                            &texture_flips,
+                                            Some(ctx),
+                                            Some(&kf_provider),
+                                            root,
                                         );
                                     }
                                 }

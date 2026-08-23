@@ -46,7 +46,7 @@ pub use actor_values::{ActorValue, ActorValues, ActorVitals};
 pub use animated::{
     AnimatedAlpha, AnimatedAmbientColor, AnimatedDiffuseColor, AnimatedEmissiveColor,
     AnimatedMorphWeights, AnimatedShaderColor, AnimatedShaderFloat, AnimatedSpecularColor,
-    AnimatedUvTransform, AnimatedVisibility,
+    AnimatedTextureFlip, AnimatedUvTransform, AnimatedVisibility, TextureFlipEntry,
 };
 pub use attach_points::{AttachPoint, AttachPoints, ChildAttachConnections};
 pub use billboard::{Billboard, BillboardMode, SpeedTreeWind};

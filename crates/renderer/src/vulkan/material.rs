@@ -37,11 +37,12 @@ use std::sync::Once;
 /// (`scene_buffer/upload.rs`) with actual default-to-0 behaviour.
 static INTERN_OVERFLOW_WARNED: Once = Once::new();
 
-/// std430 GPU-side material record. **348 bytes** per material.
+/// std430 GPU-side material record. **364 bytes** per material.
 /// Size history: 272 B → 260 B (#804 R1-N4 dropped `avg_albedo_r/g/b`)
 /// → 296 B (#1249 Disney sheen/subsurface) → 300 B (#1250 `anisotropic`)
-/// → 348 B (common supplemental texture roles).
-/// Pinned by `gpu_material_size_is_348_bytes`.
+/// → 348 B (common supplemental texture roles) → 364 B (#2221 animated
+/// shader color/float, unsampled).
+/// Pinned by `gpu_material_size_is_364_bytes`.
 ///
 /// (Historical: the per-instance → per-material migration shipped as
 /// R1 Phases 4–6, finishing with #785. The layout below was originally
@@ -66,7 +67,7 @@ static INTERN_OVERFLOW_WARNED: Once = Once::new();
 /// (`scene_buffer/gpu_instance_layout_tests.rs`)
 /// pins this for `ui.vert` after #776 / #785; mirror checks for the
 /// other two stages live in the same module. Layout invariant is pinned
-/// by `gpu_material_size_is_348_bytes` and
+/// by `gpu_material_size_is_364_bytes` and
 /// `gpu_material_field_offsets_match_shader_contract` (added #806 to
 /// catch within-vec4 reorderings the size pin alone would miss).
 #[repr(C)]
@@ -82,7 +83,7 @@ pub struct GpuMaterial {
     /// albedo — set when the source NIF declared
     /// `NiVertexColorProperty.vertex_mode = SOURCE_EMISSIVE`. Pre-#695
     /// this slot was an unused pad; routing the bit through here keeps
-    /// the std430 layout pinned by `gpu_material_size_is_348_bytes`.
+    /// the std430 layout pinned by `gpu_material_size_is_364_bytes`.
     pub material_flags: u32, // offset 12
 
     // ── Emissive RGB + specular_strength (vec4 #2) ─────────────────
@@ -330,7 +331,28 @@ pub struct GpuMaterial {
     pub decal_map_0_index: u32,     // offset 332
     pub decal_map_1_index: u32,     // offset 336
     pub decal_map_2_index: u32,     // offset 340
-    pub decal_map_3_index: u32,     // offset 344 → total 348
+    pub decal_map_3_index: u32,     // offset 344
+
+    // ── Animated BSShaderProperty color/scalar (offsets 348-360) ────
+    //
+    // #2221 — same "layout parity, no shader consumer yet" precedent as
+    // `lighting_map_index` / `flow_map_index` / `wrinkle_map_index`
+    // above: `AnimatedShaderColor` / `AnimatedShaderFloat`
+    // (`crates/core/src/ecs/components/animated.rs`) are deliberately
+    // generic single-slot sinks — the renderer doesn't yet multiplex
+    // per-named shader uniforms, so there is no single existing shader
+    // field these safely map onto without guessing at
+    // `BSLightingShaderPropertyColorController` /
+    // `BSEffectShaderPropertyColorController` /
+    // `*FloatController` target semantics (the "No Guessing" policy:
+    // research the source format before wiring a value, don't infer
+    // one). Populated end-to-end (`DrawCommand` → hash → here) so the
+    // plumbing exists; sampling is future work once a named-uniform
+    // shader dispatch settles which uniform each controller drives.
+    pub shader_color_r: f32, // offset 348
+    pub shader_color_g: f32, // offset 352
+    pub shader_color_b: f32, // offset 356
+    pub shader_float: f32,   // offset 360 → total 364
 }
 
 impl Default for GpuMaterial {
@@ -450,6 +472,11 @@ impl Default for GpuMaterial {
             decal_map_1_index: 0,
             decal_map_2_index: 0,
             decal_map_3_index: 0,
+            // #2221 — unsampled today; zero is a harmless placeholder.
+            shader_color_r: 0.0,
+            shader_color_g: 0.0,
+            shader_color_b: 0.0,
+            shader_float: 0.0,
         }
     }
 }
@@ -922,7 +949,7 @@ pub mod presets {
 /// Canonical material hash — FxHash (#1368) over the 75 live scalar
 /// fields of [`GpuMaterial`] in declaration order. Used by
 /// [`MaterialTable::intern_by_hash`] to dedup without hashing the full
-/// 348-byte struct.
+/// 364-byte struct.
 ///
 /// **Lockstep contract** (#781 / PERF-N4): [`DrawCommand::material_hash`]
 /// walks the same field sequence, in the same order, against the
@@ -1053,6 +1080,14 @@ pub(super) fn hash_gpu_material_fields(mat: &GpuMaterial) -> u64 {
     h.write_u32(mat.decal_map_1_index);
     h.write_u32(mat.decal_map_2_index);
     h.write_u32(mat.decal_map_3_index);
+    // #2221 — animated shader color/float (offsets 348-360). Must
+    // mirror the matching trailing write in `DrawCommand::material_hash`
+    // so the byte-equal-safe contract pinned by
+    // `material_hash_matches_gpu_material_field_hash` holds.
+    h.write_u32(mat.shader_color_r.to_bits());
+    h.write_u32(mat.shader_color_g.to_bits());
+    h.write_u32(mat.shader_color_b.to_bits());
+    h.write_u32(mat.shader_float.to_bits());
     h.finish()
 }
 
@@ -1170,7 +1205,7 @@ impl MaterialTable {
     // the first frame after construction then re-runs `clear()` →
     // `seed_neutral_default` AND uploads the (identical) neutral
     // entry. That re-upload is one std430-aligned `GpuMaterial`
-    // (348 B) of redundant host→device traffic per first frame
+    // (364 B) of redundant host→device traffic per first frame
     // and is not visible in steady-state telemetry. Documented
     // here rather than skipped because the alternative (suppress
     // first-frame clear) gates the seed on a `dirty` flag, which
@@ -1212,7 +1247,7 @@ impl MaterialTable {
     /// Hot-path intern entry: take a precomputed u64 hash + a closure
     /// that produces the [`GpuMaterial`] only on dedup miss. The
     /// closure is NOT invoked when the hash already maps to a stored
-    /// material — `to_gpu_material` (the dominant 348-byte construction
+    /// material — `to_gpu_material` (the dominant 364-byte construction
     /// cost) is skipped on the ~97% dedup-hit path. See #781 / PERF-N4.
     ///
     /// **Hash quality contract**: callers must produce a u64 that is a
@@ -1376,11 +1411,15 @@ mod tests {
     ///   the Disney diffuse lobe — `subsurface` + `sheen` + `sheen_tint`),
     ///   then 296 → 300 under #1250 (+4 B for `anisotropic`, the GGX
     ///   ax/ay aspect ratio driver), then 300 → 348 for the twelve common
-    ///   supplemental texture roles. Test name includes the size so a future
-    ///   size shift updates it in lockstep with the assertion.
+    ///   supplemental texture roles, then 348 → 364 under #2221 (+16 B for
+    ///   `shader_color_r/g/b` + `shader_float`, captured for the animated
+    ///   BSShaderProperty color/float sinks but not yet sampled by any
+    ///   shader — same deferred-lane precedent as the three unsampled
+    ///   texture roles). Test name includes the size so a future size
+    ///   shift updates it in lockstep with the assertion.
     #[test]
-    fn gpu_material_size_is_348_bytes() {
-        assert_eq!(std::mem::size_of::<GpuMaterial>(), 348);
+    fn gpu_material_size_is_364_bytes() {
+        assert_eq!(std::mem::size_of::<GpuMaterial>(), 364);
     }
 
     /// `#[repr(C)]` puts no implicit padding between f32/u32 fields,
@@ -1396,7 +1435,7 @@ mod tests {
     /// Regression guard for `GpuMaterial` GLSL field names —
     /// REN-D14-NEW-02 (audit 2026-05-09). The offset pin
     /// (`gpu_material_field_offsets_match_shader_contract`) and the
-    /// size pin (`gpu_material_size_is_348_bytes`) catch byte-level
+    /// size pin (`gpu_material_size_is_364_bytes`) catch byte-level
     /// drift, but neither catches a GLSL-side field rename: the
     /// shader still reads from the same offset, the value still
     /// arrives in the right register, but the field's MEANING in
@@ -1562,6 +1601,11 @@ mod tests {
             "decalMap1Index;",
             "decalMap2Index;",
             "decalMap3Index;",
+            // #2221 — animated BSShaderProperty color/float, unsampled
+            "shaderColorR,",
+            "shaderColorG,",
+            "shaderColorB;",
+            "shaderFloat;",
         ] {
             assert!(
                 src.contains(name),
@@ -1573,7 +1617,7 @@ mod tests {
     }
 
     /// Regression guard for the GpuMaterial Shader Struct Sync (#806).
-    /// The size pin (`gpu_material_size_is_348_bytes`) catches additions
+    /// The size pin (`gpu_material_size_is_364_bytes`) catches additions
     /// or removals; this catches reorderings within the record that the
     /// size pin alone would miss — e.g. swapping
     /// `texture_index` and `normal_map_index` within vec4 #4 would
@@ -1736,6 +1780,12 @@ mod tests {
         assert_eq!(offset_of!(GpuMaterial, decal_map_1_index), 336);
         assert_eq!(offset_of!(GpuMaterial, decal_map_2_index), 340);
         assert_eq!(offset_of!(GpuMaterial, decal_map_3_index), 344);
+
+        // ── Animated BSShaderProperty color/scalar (#2221, offsets 348-360)
+        assert_eq!(offset_of!(GpuMaterial, shader_color_r), 348);
+        assert_eq!(offset_of!(GpuMaterial, shader_color_g), 352);
+        assert_eq!(offset_of!(GpuMaterial, shader_color_b), 356);
+        assert_eq!(offset_of!(GpuMaterial, shader_float), 360);
     }
 
     #[test]

@@ -171,10 +171,22 @@ pub struct BoolChannel {
 ///
 /// `texture_slot` is the raw `TexType` enum from the controller —
 /// 0=BASE_MAP, 1=DARK_MAP, 2=DETAIL_MAP, 3=GLOSS_MAP, 4=GLOW_MAP, etc.
-/// (per nif.xml). The renderer consumer is expected to interpret it.
+/// (per nif.xml).
 ///
-/// Renderer integration is deferred — only Oblivion / FO3 / FNV ship
-/// `NiFlipController`; Skyrim+ moved to `BSEffectShader` UV scrolling.
+/// Renderer integration (#2221) covers slot 0 (BASE_MAP) only — the
+/// overwhelmingly common vanilla case (TV static, computer terminal
+/// screens): `anim_convert::attach_animation_sinks` resolves
+/// `source_paths` to bindless handles once at clip-attach time into an
+/// `AnimatedTextureFlip` sink, `apply_texture_flip_channels`
+/// (`byroredux::systems::animation`) updates its `current_index` from
+/// this channel's curve each frame, and
+/// `byroredux::render::static_meshes` reads the resulting handle in
+/// place of the spawn-time `TextureHandle`. A flip targeting any other
+/// slot still parses and stores correctly but has no renderer consumer
+/// yet — it would need the same shader-type-aware `slot_to_role`
+/// dispatch `cell_loader/spawn/mesh_instance.rs` uses for XTXR
+/// overrides, which the render loop doesn't currently have a
+/// mesh-material handle to run.
 #[derive(Debug, Clone)]
 pub struct TextureFlipChannel {
     pub texture_slot: u32,

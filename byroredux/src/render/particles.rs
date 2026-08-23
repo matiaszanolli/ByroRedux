@@ -278,6 +278,10 @@ pub(super) fn emit_particles(
                 translucency_subsurface_color: [0.0; 3],
                 translucency_transmissive_scale: 0.0,
                 translucency_turbulence: 0.0,
+                // #2221 — particles never carry an animated
+                // BSShaderProperty color/scalar controller either.
+                shader_color: [0.0; 3],
+                shader_float: 0.0,
                 is_water: false,
             };
             // #781 / PERF-N4 — dedup material payload.

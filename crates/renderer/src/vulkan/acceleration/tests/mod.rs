@@ -100,6 +100,8 @@ pub(super) fn make_draw_command(in_tlas: bool, is_water: bool) -> DrawCommand {
         translucency_subsurface_color: [0.0; 3],
         translucency_transmissive_scale: 0.0,
         translucency_turbulence: 0.0,
+        shader_color: [0.0; 3],
+        shader_float: 0.0,
         is_water,
     }
 }

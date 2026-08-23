@@ -396,6 +396,50 @@ pub(crate) fn apply_float_channels(
     }
 }
 
+/// #2221 — texture-flip (`NiFlipController`) cycle position. Only picks
+/// among the bindless handles `anim_convert::attach_animation_sinks`
+/// already resolved at clip-attach time (`AnimatedTextureFlip.handles`);
+/// this system never touches the texture registry, matching every other
+/// `apply_*_channels` function's "systems take `&World`, not GPU
+/// resources" shape.
+pub(crate) fn apply_texture_flip_channels(
+    world: &World,
+    texture_flip_channels: &[(FixedString, byroredux_core::animation::TextureFlipChannel)],
+    time: f32,
+    resolve_entity: &dyn Fn(&FixedString) -> Option<EntityId>,
+) {
+    use byroredux_core::animation::sample_texture_flip_index;
+    use byroredux_core::ecs::AnimatedTextureFlip;
+
+    let Some(mut q) = world.query_mut::<AnimatedTextureFlip>() else {
+        return;
+    };
+    for (channel_name, channel) in texture_flip_channels {
+        if channel.source_paths.is_empty() {
+            continue;
+        }
+        let Some(target_entity) = resolve_entity(channel_name) else {
+            continue;
+        };
+        let Some(flip) = q.get_mut(target_entity) else {
+            continue;
+        };
+        let Some(entry) = flip
+            .0
+            .iter_mut()
+            .find(|e| e.texture_slot == channel.texture_slot)
+        else {
+            continue;
+        };
+        // The handles Vec length is fixed at attach time (one per
+        // `source_paths` entry) — re-derive the index against the LIVE
+        // channel's key curve rather than trusting `entry.handles.len()`
+        // could ever disagree with `channel.source_paths.len()` (same
+        // data, just resolved once vs. read every frame).
+        entry.current_index = sample_texture_flip_index(channel, time);
+    }
+}
+
 /// Per-entity playback state collected during the player advance pass.
 /// Defined at module level so `animation_system_inner` and
 /// `make_animation_system` can share the type for the scratch buffer.
@@ -707,6 +751,18 @@ fn animation_system_inner(world: &World, dt: f32, scratch: &mut AnimScratch) {
         if !clip.bool_channels.is_empty() {
             apply_bool_channels(world, &clip.bool_channels, current_time, &resolve_entity);
         }
+
+        // #2221 — texture flipbook cycle-position. Only picks among the
+        // handles `anim_convert::attach_animation_sinks` already resolved
+        // at clip-attach time; never touches the texture registry itself.
+        if !clip.texture_flip_channels.is_empty() {
+            apply_texture_flip_channels(
+                world,
+                &clip.texture_flip_channels,
+                current_time,
+                &resolve_entity,
+            );
+        }
     }
 
     // ── AnimationStack processing (multi-layer blending) ──────────────
@@ -900,6 +956,14 @@ fn animation_system_inner(world: &World, dt: f32, scratch: &mut AnimScratch) {
                 }
                 if !clip.bool_channels.is_empty() {
                     apply_bool_channels(world, &clip.bool_channels, time, &stack_resolve);
+                }
+                if !clip.texture_flip_channels.is_empty() {
+                    apply_texture_flip_channels(
+                        world,
+                        &clip.texture_flip_channels,
+                        time,
+                        &stack_resolve,
+                    );
                 }
             }
         }
@@ -1286,6 +1350,97 @@ mod float_channel_dispatch_tests {
         // Survived the call — alpha untouched, no panic.
         let q = world.query::<AnimatedAlpha>().unwrap();
         assert_eq!(q.get(entity).unwrap().0, 1.0);
+    }
+}
+
+#[cfg(test)]
+mod texture_flip_dispatch_tests {
+    use super::*;
+    use byroredux_core::animation::{AnimFloatKey, TextureFlipChannel};
+    use byroredux_core::ecs::{AnimatedTextureFlip, TextureFlipEntry};
+    use std::sync::Arc;
+
+    fn resolve_to(entity: EntityId) -> impl Fn(&FixedString) -> Option<EntityId> {
+        move |_sym: &FixedString| Some(entity)
+    }
+
+    fn flip_channel(source_count: usize, value: f32) -> TextureFlipChannel {
+        TextureFlipChannel {
+            texture_slot: 0,
+            source_paths: (0..source_count)
+                .map(|i| Arc::from(format!("frame{i}.dds")))
+                .collect(),
+            keys: vec![AnimFloatKey { time: 0.0, value }],
+        }
+    }
+
+    /// #2221 — the per-frame system only picks among the handles already
+    /// resolved at attach time (`anim_convert::attach_animation_sinks`);
+    /// it never calls into the texture registry itself.
+    #[test]
+    fn picks_the_pre_resolved_handle_by_curve_index() {
+        let mut world = World::new();
+        let entity = world.spawn();
+        world.insert(
+            entity,
+            AnimatedTextureFlip(vec![TextureFlipEntry {
+                texture_slot: 0,
+                handles: vec![10, 20, 30],
+                current_index: 0,
+            }]),
+        );
+        let mut pool = StringPool::new();
+        let name = pool.intern("target");
+        let channels = vec![(name, flip_channel(3, 2.0))];
+        apply_texture_flip_channels(&world, &channels, 0.0, &resolve_to(entity));
+
+        let q = world.query::<AnimatedTextureFlip>().unwrap();
+        let flip = q.get(entity).unwrap();
+        assert_eq!(flip.handle_for_slot(0), Some(30));
+    }
+
+    /// A channel targeting a `texture_slot` the entity's
+    /// `AnimatedTextureFlip` has no entry for must not create one or
+    /// panic — mirrors `apply_float_channels`'s missing-sink posture.
+    #[test]
+    fn unmatched_texture_slot_is_a_silent_noop() {
+        let mut world = World::new();
+        let entity = world.spawn();
+        world.insert(
+            entity,
+            AnimatedTextureFlip(vec![TextureFlipEntry {
+                texture_slot: 0,
+                handles: vec![10, 20],
+                current_index: 0,
+            }]),
+        );
+        let mut pool = StringPool::new();
+        let name = pool.intern("target");
+        let mut channel = flip_channel(2, 1.0);
+        channel.texture_slot = 4; // GLOW_MAP — no matching entry
+        let channels = vec![(name, channel)];
+        apply_texture_flip_channels(&world, &channels, 0.0, &resolve_to(entity));
+
+        let q = world.query::<AnimatedTextureFlip>().unwrap();
+        let flip = q.get(entity).unwrap();
+        assert_eq!(
+            flip.handle_for_slot(0),
+            Some(10),
+            "slot 0's entry must stay untouched by a slot-4 channel"
+        );
+    }
+
+    /// Missing-sink case (no `AnimatedTextureFlip` on the entity at
+    /// all) must not panic.
+    #[test]
+    fn missing_sink_component_is_a_silent_noop() {
+        let mut world = World::new();
+        let entity = world.spawn();
+        let mut pool = StringPool::new();
+        let name = pool.intern("target");
+        let channels = vec![(name, flip_channel(2, 1.0))];
+        apply_texture_flip_channels(&world, &channels, 0.0, &resolve_to(entity));
+        assert!(world.query::<AnimatedTextureFlip>().is_none());
     }
 }
 
@@ -1909,7 +2064,7 @@ mod sink_lifecycle_end_to_end_tests {
             },
         )];
 
-        attach_animation_sinks(&mut world, &bools, &floats, &colors, root);
+        attach_animation_sinks(&mut world, &bools, &floats, &colors, &[], None, None, root);
 
         let resolve = |n: &FixedString| -> Option<EntityId> {
             if *n == child_name {

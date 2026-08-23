@@ -19,7 +19,7 @@ pub use controller::{
 };
 pub use interpolation::{
     sample_bool_channel, sample_color_channel, sample_float_channel, sample_rotation, sample_scale,
-    sample_translation,
+    sample_texture_flip_index, sample_translation,
 };
 pub use player::{advance_time, AnimationPlayer};
 pub use registry::AnimationClipRegistry;

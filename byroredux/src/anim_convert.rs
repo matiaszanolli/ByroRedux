@@ -9,7 +9,10 @@ use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{Children, Name, World};
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_core::string::{FixedString, StringPool};
+use byroredux_renderer::VulkanContext;
 use std::collections::HashMap;
+
+use crate::asset_provider::TextureProvider;
 
 /// Build a scoped name→entity map by walking the subtree rooted at `root`.
 pub(crate) fn build_subtree_name_map(
@@ -83,37 +86,57 @@ pub(crate) fn build_subtree_name_map(
 ///   targets write into an existing light; synthesising one here would
 ///   spawn a phantom light at every `NiLightColorController` target
 ///   that has no `LIGH` record behind it.
-/// - `TextureFlipChannel` has no renderer consumer yet, so it has no
-///   sink to attach. That half of #2221 stays open.
+/// - `TextureFlipChannel` (#2221's flipbook half) resolves its
+///   `source_paths` to bindless texture handles HERE, once, via
+///   `resolve_texture` — the only production call site with a
+///   `TextureProvider` + `VulkanContext` in scope. Storing pre-resolved
+///   handles means the per-frame animation system (`&World` only, no
+///   GPU-resource access) can pick among them by index without ever
+///   touching the texture registry.
 ///
 /// # Why slices, not `&AnimationClip`
 ///
 /// Channels are passed as slices rather than as a whole `&AnimationClip`
 /// because the caller must release its `AnimationClipRegistry` read
-/// guard before this function takes `&mut World`. Cloning the three
+/// guard before this function takes `&mut World`. Cloning the four
 /// non-transform channel vectors out of the registry is cheap — the
 /// bulk of a clip is its per-bone `TransformChannel` map, which this
 /// path never touches.
+///
+/// `ctx` / `tex_provider` are `Option` rather than required so tests that
+/// only exercise the bool/float/color sinks don't need a live Vulkan
+/// device. Every production caller passes `Some` (all three attach
+/// sites hold both already, for the mesh's other texture slots); `None`
+/// skips flipbook resolution only — the other three channel kinds still
+/// attach normally.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn attach_animation_sinks(
     world: &mut World,
     bool_channels: &[(FixedString, BoolChannel)],
     float_channels: &[(FixedString, FloatChannel)],
     color_channels: &[(FixedString, ColorChannel)],
+    texture_flip_channels: &[(FixedString, TextureFlipChannel)],
+    ctx: Option<&mut VulkanContext>,
+    tex_provider: Option<&TextureProvider>,
     root: EntityId,
 ) {
     use byroredux_core::animation::{
-        sample_bool_channel, sample_color_channel, sample_float_channel,
+        sample_bool_channel, sample_color_channel, sample_float_channel, sample_texture_flip_index,
     };
     use byroredux_core::ecs::{
         AnimatedAlpha, AnimatedAmbientColor, AnimatedDiffuseColor, AnimatedEmissiveColor,
         AnimatedMorphWeights, AnimatedShaderColor, AnimatedShaderFloat, AnimatedSpecularColor,
-        AnimatedUvTransform, AnimatedVisibility,
+        AnimatedTextureFlip, AnimatedUvTransform, AnimatedVisibility, TextureFlipEntry,
     };
 
     // Nothing to do for a pure transform clip — the overwhelmingly
     // common case (every skeletal animation). Bail before paying for
     // the subtree walk.
-    if bool_channels.is_empty() && float_channels.is_empty() && color_channels.is_empty() {
+    if bool_channels.is_empty()
+        && float_channels.is_empty()
+        && color_channels.is_empty()
+        && texture_flip_channels.is_empty()
+    {
         return;
     }
 
@@ -188,6 +211,32 @@ pub(crate) fn attach_animation_sinks(
         }
     }
 
+    // Texture flipbooks — resolve `source_paths` to bindless handles
+    // now (the only point with `ctx`/`tex_provider` in scope), sample
+    // the cycle-position curve at t=0 for the seed index, and group by
+    // entity (mirroring `uv`/`morph` above) since one shape can in
+    // principle carry more than one flip controller.
+    let mut texture_flip: HashMap<EntityId, Vec<TextureFlipEntry>> = HashMap::new();
+    if let (Some(ctx), Some(tex_provider)) = (ctx, tex_provider) {
+        for (name, channel) in texture_flip_channels {
+            let Some(&e) = names.get(name) else { continue };
+            if channel.source_paths.is_empty() {
+                continue;
+            }
+            let handles: Vec<u32> = channel
+                .source_paths
+                .iter()
+                .map(|path| crate::asset_provider::resolve_texture(ctx, tex_provider, Some(path)))
+                .collect();
+            let current_index = sample_texture_flip_index(channel, 0.0);
+            texture_flip.entry(e).or_default().push(TextureFlipEntry {
+                texture_slot: channel.texture_slot,
+                handles,
+                current_index,
+            });
+        }
+    }
+
     // Pass 2 — insert the ones that aren't already there.
     insert_missing_sinks(world, visibility);
     insert_missing_sinks(world, alpha);
@@ -199,6 +248,13 @@ pub(crate) fn attach_animation_sinks(
     insert_missing_sinks(world, shader_color);
     insert_missing_sinks(world, uv.into_iter().collect::<Vec<_>>());
     insert_missing_sinks(world, morph.into_iter().collect::<Vec<_>>());
+    insert_missing_sinks(
+        world,
+        texture_flip
+            .into_iter()
+            .map(|(e, entries)| (e, AnimatedTextureFlip(entries)))
+            .collect::<Vec<_>>(),
+    );
 }
 
 /// Insert each `(entity, component)` pair whose entity does not already
@@ -500,7 +556,7 @@ mod sink_attachment_tests {
 
         // A UV-scroll-only clip — the classic animated-water case.
         let floats = vec![(child_name, float_channel(FloatTarget::UvOffsetU, 0.25))];
-        attach_animation_sinks(&mut world, &[], &floats, &[], root);
+        attach_animation_sinks(&mut world, &[], &floats, &[], &[], None, None, root);
 
         let uv = world.query::<AnimatedUvTransform>().unwrap();
         assert!(
@@ -541,7 +597,7 @@ mod sink_attachment_tests {
         world.insert(child, AnimatedAlpha(0.4));
 
         let floats = vec![(child_name, float_channel(FloatTarget::Alpha, 1.0))];
-        attach_animation_sinks(&mut world, &[], &floats, &[], root);
+        attach_animation_sinks(&mut world, &[], &floats, &[], &[], None, None, root);
 
         let alpha = world.query::<AnimatedAlpha>().unwrap();
         assert_eq!(
@@ -571,7 +627,7 @@ mod sink_attachment_tests {
                 }],
             },
         )];
-        attach_animation_sinks(&mut world, &[], &floats, &colors, root);
+        attach_animation_sinks(&mut world, &[], &floats, &colors, &[], None, None, root);
 
         assert!(
             world
@@ -590,7 +646,7 @@ mod sink_attachment_tests {
         let orphan = pool.intern("NotInThisSubtree");
 
         let floats = vec![(orphan, float_channel(FloatTarget::Alpha, 1.0))];
-        attach_animation_sinks(&mut world, &[], &floats, &[], root);
+        attach_animation_sinks(&mut world, &[], &floats, &[], &[], None, None, root);
 
         assert!(
             world.query::<AnimatedAlpha>().is_none_or(|q| q.is_empty()),
@@ -611,7 +667,7 @@ mod sink_attachment_tests {
             (child_name, float_channel(FloatTarget::MorphWeight(0), 0.3)),
             (child_name, float_channel(FloatTarget::MorphWeight(2), 0.9)),
         ];
-        attach_animation_sinks(&mut world, &[], &floats, &[], root);
+        attach_animation_sinks(&mut world, &[], &floats, &[], &[], None, None, root);
 
         let uv = world.query::<AnimatedUvTransform>().unwrap();
         let t = uv.get(child).unwrap();
@@ -633,7 +689,7 @@ mod sink_attachment_tests {
         let mut pool = StringPool::new();
         let (root, child, _) = subtree(&mut world, &mut pool);
 
-        attach_animation_sinks(&mut world, &[], &[], &[], root);
+        attach_animation_sinks(&mut world, &[], &[], &[], &[], None, None, root);
 
         assert!(world
             .query::<AnimatedShaderFloat>()

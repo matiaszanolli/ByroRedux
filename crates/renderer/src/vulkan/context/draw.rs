@@ -4261,6 +4261,8 @@ mod is_caustic_source_tests {
             translucency_subsurface_color: [0.0; 3],
             translucency_transmissive_scale: 0.0,
             translucency_turbulence: 0.0,
+            shader_color: [0.0; 3],
+            shader_float: 0.0,
             is_water: false,
         }
     }
@@ -4275,7 +4277,10 @@ mod is_caustic_source_tests {
     fn multi_layer_parallax_with_refraction_is_caustic_source() {
         // Skyrim+ BSLightingShaderProperty MultiLayerParallax variant
         // with non-zero refraction scale — real two-layer refraction.
-        assert!(is_caustic_source(&cmd(MATERIAL_KIND_MULTI_LAYER_PARALLAX, 0.3)));
+        assert!(is_caustic_source(&cmd(
+            MATERIAL_KIND_MULTI_LAYER_PARALLAX,
+            0.3
+        )));
     }
 
     #[test]
@@ -4295,7 +4300,10 @@ mod is_caustic_source_tests {
     #[test]
     fn multi_layer_parallax_without_refraction_is_not_caustic() {
         // Kind 11 with zero refraction scale = parallax but no refraction.
-        assert!(!is_caustic_source(&cmd(MATERIAL_KIND_MULTI_LAYER_PARALLAX, 0.0)));
+        assert!(!is_caustic_source(&cmd(
+            MATERIAL_KIND_MULTI_LAYER_PARALLAX,
+            0.0
+        )));
     }
 
     #[test]

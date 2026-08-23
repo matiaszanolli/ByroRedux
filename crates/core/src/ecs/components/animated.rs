@@ -171,3 +171,42 @@ pub struct AnimatedShaderFloat(pub f32);
 impl Component for AnimatedShaderFloat {
     type Storage = SparseSetStorage<Self>;
 }
+
+/// One texture-slot's flipbook state — `NiFlipController` semantics
+/// (`crates/core/src/animation/types.rs::TextureFlipChannel`). `handles`
+/// are bindless texture indices resolved ONCE, at clip-attach time (the
+/// only point in the production pipeline with a `TextureProvider` +
+/// `VulkanContext` in scope for `resolve_texture`); the per-frame
+/// animation system only picks among the already-resolved handles by
+/// updating `current_index`, never touching the texture registry.
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
+pub struct TextureFlipEntry {
+    /// Raw `TexType` slot from the source NIF (0=BASE_MAP, …).
+    pub texture_slot: u32,
+    pub handles: Vec<u32>,
+    pub current_index: usize,
+}
+
+/// Animated texture-flip (flipbook) state, per entity. A `Vec` rather
+/// than a single slot because a shape can in principle carry more than
+/// one `NiFlipController` targeting different texture slots (rare in
+/// vanilla content, but not disallowed by the format) — mirrors
+/// `AnimatedMorphWeights`' per-index `Vec` shape rather than assuming
+/// exactly one animated slot per entity.
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
+pub struct AnimatedTextureFlip(pub Vec<TextureFlipEntry>);
+
+impl AnimatedTextureFlip {
+    /// The currently-active bindless handle for `slot`, or `None` if
+    /// this entity has no flipbook on that slot.
+    pub fn handle_for_slot(&self, slot: u32) -> Option<u32> {
+        self.0
+            .iter()
+            .find(|e| e.texture_slot == slot)
+            .map(|e| e.handles.get(e.current_index).copied().unwrap_or(0))
+    }
+}
+
+impl Component for AnimatedTextureFlip {
+    type Storage = SparseSetStorage<Self>;
+}

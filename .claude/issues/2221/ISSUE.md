@@ -1,14 +1,15 @@
-# #2221 — REN-COMPAT-2026-07-28-02: non-transform animation channels have no production sink components — visibility/alpha/UV/morph/flipbook are runtime-dead
+# Issue #2221: REN-COMPAT-2026-07-28-02: non-transform animation channels have no production sink components — visibility/alpha/UV/morph/flipbook are runtime-dead
 
-_Filed from `docs/audits/AUDIT_RENDERER_2026-07-28.md` by `/audit-publish` on 2026-07-28. Immutable snapshot of the issue **as filed** — GitHub is authoritative for current state (`gh issue view 2221 --json state`)._
+**State**: OPEN
+**Labels**: bug, animation, renderer, medium
 
----
+## Body
 
 **Severity:** MEDIUM · **Dimension:** renderer extraction + animation/material integration
 **Source:** `docs/audits/AUDIT_RENDERER_2026-07-28.md` — REN-COMPAT-2026-07-28-02
 **Status when filed:** NEW — newly consolidated compatibility defect
 
-## Description
+### Description
 
 Non-transform animation channels parse correctly and then go nowhere. The animation
 system updates `Animated*` sink components **only when the target component already
@@ -17,7 +18,7 @@ sinks have no renderer consumer even if they were populated.
 
 Net effect: transform animation works; almost everything else is runtime-dead.
 
-## Evidence
+### Evidence
 
 **No production sink insertion.** `byroredux/src/systems/animation.rs` updates
 `AnimatedVisibility`, `AnimatedAlpha`, animated material colors, `AnimatedShaderColor`,
@@ -46,14 +47,14 @@ animated alpha, material colors, shader values, or morph weights.
 (`crates/core/src/animation/types.rs:178`), and the type's own docs state renderer
 integration is deferred.
 
-## Impact
+### Impact
 
 Fire/lava material motion, visibility controllers, fades, animated emissive/diffuse
 effects, UV scrolling, morph targets, and Oblivion/FO3/FNV texture flipbooks parse
 successfully yet remain visually inert across all games. Light color/intensity
 controllers are the one exception, because they mutate an already-present `LightSource`.
 
-## Suggested Fix
+### Suggested Fix
 
 1. During clip attachment/import, insert **only** the sink components the clip's channel
    types actually require (don't blanket-attach all seven).
@@ -64,7 +65,7 @@ controllers are the one exception, because they mutate an already-present `Light
 5. Add an end-to-end import → system → draw-material test. The current tests are
    helper-only routing tests, which is exactly why the missing insertion went unnoticed.
 
-## Completeness Checks
+### Completeness Checks
 - [ ] **CANONICAL-BOUNDARY**: Animated material values must land before `GpuMaterial`
       interning at the NIFAL boundary, never re-derived at render time — see `/audit-nifal`
 - [ ] **SIBLING**: All seven sink types audited, not just the two `static_meshes.rs`

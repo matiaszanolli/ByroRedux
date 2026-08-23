@@ -2,7 +2,9 @@
 
 use crate::math::{Quat, Vec3};
 
-use super::types::{BoolChannel, ColorChannel, FloatChannel, KeyType, TransformChannel};
+use super::types::{
+    AnimFloatKey, BoolChannel, ColorChannel, FloatChannel, KeyType, TransformChannel,
+};
 
 /// Binary search for the key pair bracketing `time`.
 /// Returns (index_before, index_after, normalized_t).
@@ -380,9 +382,12 @@ pub fn sample_scale(channel: &TransformChannel, time: f32) -> Option<f32> {
     }
 }
 
-/// Sample a float channel at a given time.
-pub fn sample_float_channel(channel: &FloatChannel, time: f32) -> f32 {
-    let keys = &channel.keys;
+/// Sample a raw float keyframe list at a given time (linear
+/// interpolation between the surrounding pair). Shared by
+/// [`sample_float_channel`] and [`sample_texture_flip_index`] — both
+/// [`FloatChannel`] and [`TextureFlipChannel`](crate::animation::types::TextureFlipChannel)
+/// carry the same `Vec<AnimFloatKey>` shape (#2221).
+pub fn sample_float_keys(keys: &[AnimFloatKey], time: f32) -> f32 {
     if keys.is_empty() {
         return 0.0;
     }
@@ -398,6 +403,31 @@ pub fn sample_float_channel(channel: &FloatChannel, time: f32) -> f32 {
         return keys[i0].value;
     }
     keys[i0].value + (keys[i1].value - keys[i0].value) * t
+}
+
+/// Sample a float channel at a given time.
+pub fn sample_float_channel(channel: &FloatChannel, time: f32) -> f32 {
+    sample_float_keys(&channel.keys, time)
+}
+
+/// Sample a [`TextureFlipChannel`](crate::animation::types::TextureFlipChannel)'s
+/// cycle-position curve at a given time and resolve it to a
+/// `source_paths` index (#2221). Matches the type's documented
+/// semantic: `source_paths[floor(value) % source_paths.len()]`.
+/// `rem_euclid` guards against a curve authored with negative values
+/// (not expected from real content, but avoids an out-of-range index
+/// rather than trusting it). Returns `0` for an empty `source_paths`
+/// (caller's responsibility to skip attaching a sink in that case).
+pub fn sample_texture_flip_index(
+    channel: &crate::animation::types::TextureFlipChannel,
+    time: f32,
+) -> usize {
+    let len = channel.source_paths.len();
+    if len == 0 {
+        return 0;
+    }
+    let value = sample_float_keys(&channel.keys, time);
+    (value.floor() as i64).rem_euclid(len as i64) as usize
 }
 
 /// Sample a color channel at a given time (linear interpolation).
@@ -436,4 +466,100 @@ pub fn sample_bool_channel(channel: &BoolChannel, time: f32) -> bool {
         }
     }
     result
+}
+
+#[cfg(test)]
+mod texture_flip_index_tests {
+    use super::*;
+    use crate::animation::types::TextureFlipChannel;
+    use std::sync::Arc;
+
+    fn flip_channel(source_count: usize, keys: Vec<AnimFloatKey>) -> TextureFlipChannel {
+        TextureFlipChannel {
+            texture_slot: 0,
+            source_paths: (0..source_count)
+                .map(|i| Arc::from(format!("frame{i}.dds")))
+                .collect(),
+            keys,
+        }
+    }
+
+    /// #2221 — the documented semantic is `floor(value) % len`, not a
+    /// round or a direct cast — a curve authored 0..N-ε must never
+    /// bounce off the final frame early.
+    #[test]
+    fn floors_before_taking_the_modulus() {
+        let channel = flip_channel(
+            4,
+            vec![AnimFloatKey {
+                time: 0.0,
+                value: 2.9,
+            }],
+        );
+        assert_eq!(sample_texture_flip_index(&channel, 0.0), 2);
+    }
+
+    /// A curve value at or past `len` must wrap, not index out of bounds.
+    #[test]
+    fn wraps_at_the_source_count() {
+        let channel = flip_channel(
+            3,
+            vec![AnimFloatKey {
+                time: 0.0,
+                value: 5.0,
+            }],
+        );
+        assert_eq!(sample_texture_flip_index(&channel, 0.0), 2); // 5 % 3
+    }
+
+    /// Defensive: a negative curve value (not expected from real
+    /// content, but the format doesn't forbid it) must still land in
+    /// range via `rem_euclid`, not panic or underflow.
+    #[test]
+    fn negative_values_stay_in_range() {
+        let channel = flip_channel(
+            4,
+            vec![AnimFloatKey {
+                time: 0.0,
+                value: -1.0,
+            }],
+        );
+        assert_eq!(sample_texture_flip_index(&channel, 0.0), 3);
+    }
+
+    /// An empty `source_paths` (malformed/edge-case content) must return
+    /// index 0 rather than divide by zero.
+    #[test]
+    fn empty_source_paths_returns_zero() {
+        let channel = flip_channel(
+            0,
+            vec![AnimFloatKey {
+                time: 0.0,
+                value: 7.0,
+            }],
+        );
+        assert_eq!(sample_texture_flip_index(&channel, 0.0), 0);
+    }
+
+    /// Interpolates the underlying curve exactly like any other float
+    /// channel before flooring — a two-key ramp at the midpoint must
+    /// floor the INTERPOLATED value, not snap to either endpoint.
+    #[test]
+    fn interpolates_before_flooring() {
+        let channel = flip_channel(
+            10,
+            vec![
+                AnimFloatKey {
+                    time: 0.0,
+                    value: 0.0,
+                },
+                AnimFloatKey {
+                    time: 2.0,
+                    value: 4.0,
+                },
+            ],
+        );
+        // At t=1.0 (halfway), the ramp value is 2.0 -> floor 2.
+        assert_eq!(sample_texture_flip_index(&channel, 1.0), 2);
+    }
 }

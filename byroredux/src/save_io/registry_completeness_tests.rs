@@ -104,6 +104,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("AnimatedShaderColor", "per-frame output re-derived every tick from saved AnimationPlayer/AnimationStack"),
         ("AnimatedShaderFloat", "per-frame output re-derived every tick from saved AnimationPlayer/AnimationStack"),
         ("AnimatedSpecularColor", "per-frame output re-derived every tick from saved AnimationPlayer/AnimationStack"),
+        ("AnimatedTextureFlip", "per-frame output re-derived every tick from saved AnimationPlayer/AnimationStack; handles are bindless texture indices re-resolved by attach_animation_sinks on load, same as the spawn path"),
         ("AnimatedUvTransform", "per-frame output re-derived every tick from saved AnimationPlayer/AnimationStack"),
         ("AnimatedVisibility", "per-frame output re-derived every tick from saved AnimationPlayer/AnimationStack"),
         ("AttachPoints", "write-once NIF-import data, no runtime mutator (no query_mut/get_mut site exists)"),

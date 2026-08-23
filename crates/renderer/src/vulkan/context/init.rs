@@ -626,7 +626,10 @@ impl VulkanContext {
         // legacy `upload_bones` + staging-copy path is removed since
         // M29.5 cleanup, and the engine has no supported no-RT mode).
         let skin_palette = if device_caps.ray_query_supported {
-            match super::super::skin_compute::SkinPaletteComputePipeline::new(&device, pipeline_cache) {
+            match super::super::skin_compute::SkinPaletteComputePipeline::new(
+                &device,
+                pipeline_cache,
+            ) {
                 Ok(sp) => Some(sp),
                 Err(e) => {
                     log::warn!(
@@ -648,16 +651,17 @@ impl VulkanContext {
         // or pool allocation errored) leaves `gpu_timers = None`, the
         // brackets in `draw_frame` no-op, and `skin.coverage` shows
         // `gpu_timer: unavailable` instead of ms values.
-        let gpu_timers = match super::super::gpu_timers::GpuPerFrameTimers::new(&device, &device_caps) {
-            Ok(t) => t,
-            Err(e) => {
-                log::warn!(
-                    "GPU per-pass timer creation failed: {e} — PERF-DIM7 \
+        let gpu_timers =
+            match super::super::gpu_timers::GpuPerFrameTimers::new(&device, &device_caps) {
+                Ok(t) => t,
+                Err(e) => {
+                    log::warn!(
+                        "GPU per-pass timer creation failed: {e} — PERF-DIM7 \
                      instrumentation is unavailable"
-                );
-                None
-            }
-        };
+                    );
+                    None
+                }
+            };
         if gpu_timers.is_none() {
             log::warn!(
                 "GPU timers unavailable; adaptive ray quality will run open-loop \
@@ -756,21 +760,22 @@ impl VulkanContext {
                 None
             }
         };
-        let placeholder_caustic_sink = match super::super::placeholder::PlaceholderImage::new_storage_sink(
-            &device,
-            &gpu_allocator,
-            &graphics_queue,
-            transfer_pool,
-            super::super::caustic::CAUSTIC_FORMAT,
-        ) {
-            Ok(p) => Some(p),
-            Err(e) => {
-                log::warn!(
+        let placeholder_caustic_sink =
+            match super::super::placeholder::PlaceholderImage::new_storage_sink(
+                &device,
+                &gpu_allocator,
+                &graphics_queue,
+                transfer_pool,
+                super::super::caustic::CAUSTIC_FORMAT,
+            ) {
+                Ok(p) => Some(p),
+                Err(e) => {
+                    log::warn!(
                     "Caustic-sink placeholder creation failed: {e} — water set 2 has no fallback if the accumulator drops out"
                 );
-                None
-            }
-        };
+                    None
+                }
+            };
 
         let water_caustic_accum = match super::super::water_caustic::WaterCausticAccum::new(
             &device,

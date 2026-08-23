@@ -20,6 +20,8 @@
 use rustc_hash::FxHashMap;
 
 use byroredux_core::ecs::{
+    AnimatedAlpha, AnimatedAmbientColor, AnimatedDiffuseColor, AnimatedEmissiveColor,
+    AnimatedShaderColor, AnimatedShaderFloat, AnimatedSpecularColor, AnimatedTextureFlip,
     AnimatedUvTransform, AnimatedVisibility, EntityId, GlobalTransform, Material, MeshHandle,
     RenderLayer, TextureHandle, World, WorldBound,
 };
@@ -111,6 +113,30 @@ pub(super) fn collect_static_mesh_draws(
     // mean the override is a no-op until the animation system writes
     // a non-identity slot.
     let anim_uv_q = world.query::<AnimatedUvTransform>();
+    // #2221 — animated material scalars/colors. Each starts absent and is
+    // inserted (at t=0, then kept live) by `anim_convert::attach_animation_sinks`
+    // only for entities whose clip actually drives that channel type — see
+    // that function's doc for why the sink can't just be blanket-attached.
+    // Absent means "no active controller for this role"; the static
+    // `Material` value is the fallback, matching every other optional
+    // modifier in this loop. Mirrors `AnimatedUvTransform`'s "REPLACES,
+    // doesn't blend" semantic (#525) — an active controller fully owns
+    // the role it animates.
+    let anim_alpha_q = world.query::<AnimatedAlpha>();
+    let anim_diffuse_q = world.query::<AnimatedDiffuseColor>();
+    let anim_ambient_q = world.query::<AnimatedAmbientColor>();
+    let anim_specular_q = world.query::<AnimatedSpecularColor>();
+    let anim_emissive_q = world.query::<AnimatedEmissiveColor>();
+    let anim_shader_color_q = world.query::<AnimatedShaderColor>();
+    let anim_shader_float_q = world.query::<AnimatedShaderFloat>();
+    // #2221 — `NiFlipController` flipbook. Only the base-color slot
+    // (`TexType::BASE_MAP == 0`, the overwhelmingly common vanilla case —
+    // TV static, computer terminal screens) is wired here; a flip
+    // targeting a different slot needs the same shader-type-aware
+    // `slot_to_role` dispatch `cell_loader/spawn/mesh_instance.rs` uses
+    // for XTXR overrides, which this loop doesn't have a mesh-material
+    // handle to run (deliberately deferred rather than guessed).
+    let anim_texture_flip_q = world.query::<AnimatedTextureFlip>();
     // #renderlayer — per-entity content-class for the depth-bias
     // ladder (Architecture / Clutter / Actor / Decal). Attached at
     // cell-load time from the REFR's base-record `RecordType` (see
@@ -226,10 +252,15 @@ pub(super) fn collect_static_mesh_draws(
             }
 
             {
-                let tex_handle = tex_q
+                // #2221 — an active base-color flipbook REPLACES the
+                // spawn-time-resolved `TextureHandle`, same "controller
+                // fully owns the role" semantic as every other animated
+                // sink in this loop.
+                let tex_handle = anim_texture_flip_q
                     .as_ref()
                     .and_then(|q| q.get(entity))
-                    .map(|t| t.0)
+                    .and_then(|f| f.handle_for_slot(0))
+                    .or_else(|| tex_q.as_ref().and_then(|q| q.get(entity)).map(|t| t.0))
                     .unwrap_or(0);
                 let alpha_comp = alpha_q.as_ref().and_then(|q| q.get(entity));
                 let alpha_blend = alpha_comp.is_some();
@@ -653,11 +684,34 @@ pub(super) fn collect_static_mesh_draws(
                     // (BGSM authors no anisotropy metadata); `mat.set`-only.
                     anisotropic: mat.map(|m| m.anisotropic).unwrap_or(0.0),
                     emissive_mult,
-                    emissive_color,
+                    // #2221 — `AnimatedEmissiveColor` etc. REPLACE the
+                    // static `Material` value, same "controller fully
+                    // owns the role" semantic `AnimatedUvTransform` (#525)
+                    // established below. Each is driven independently
+                    // (`NiMaterialColorController.target_color`), so a
+                    // mesh with only an animated emissive keeps its
+                    // static diffuse/ambient/specular untouched.
+                    emissive_color: anim_emissive_q
+                        .as_ref()
+                        .and_then(|q| q.get(entity))
+                        .map(|c| c.0.to_array())
+                        .unwrap_or(emissive_color),
                     specular_strength,
-                    specular_color,
-                    diffuse_color,
-                    ambient_color,
+                    specular_color: anim_specular_q
+                        .as_ref()
+                        .and_then(|q| q.get(entity))
+                        .map(|c| c.0.to_array())
+                        .unwrap_or(specular_color),
+                    diffuse_color: anim_diffuse_q
+                        .as_ref()
+                        .and_then(|q| q.get(entity))
+                        .map(|c| c.0.to_array())
+                        .unwrap_or(diffuse_color),
+                    ambient_color: anim_ambient_q
+                        .as_ref()
+                        .and_then(|q| q.get(entity))
+                        .map(|c| c.0.to_array())
+                        .unwrap_or(ambient_color),
                     vertex_offset: v_off,
                     index_offset: i_off,
                     vertex_count: v_count,
@@ -692,7 +746,36 @@ pub(super) fn collect_static_mesh_draws(
                         .map(|t| [t.scale.x, t.scale.y])
                         .or_else(|| mat.map(|m| m.uv_scale))
                         .unwrap_or([1.0, 1.0]),
-                    material_alpha: mat.map(|m| m.alpha).unwrap_or(1.0),
+                    // #2221 — `AnimatedAlpha` REPLACES the static
+                    // `Material.alpha`, same semantic as the color sinks
+                    // above (`NiAlphaController` fully owns the role
+                    // while active — fades, pulsing FX, VATS highlight).
+                    material_alpha: anim_alpha_q
+                        .as_ref()
+                        .and_then(|q| q.get(entity))
+                        .map(|a| a.0)
+                        .or_else(|| mat.map(|m| m.alpha))
+                        .unwrap_or(1.0),
+                    // #2221 — animated BSShaderProperty color/scalar.
+                    // Forwarded to `GpuMaterial.shader_color_*` /
+                    // `.shader_float`, both currently unsampled by any
+                    // shader (see their doc in
+                    // `crates/renderer/src/vulkan/material.rs` for why —
+                    // the sink is deliberately generic with no single
+                    // settled shader-uniform target yet). Absent when no
+                    // `BSLightingShaderPropertyColorController` /
+                    // `BSEffectShaderProperty*Controller` targets this
+                    // entity.
+                    shader_color: anim_shader_color_q
+                        .as_ref()
+                        .and_then(|q| q.get(entity))
+                        .map(|c| c.0.to_array())
+                        .unwrap_or([0.0; 3]),
+                    shader_float: anim_shader_float_q
+                        .as_ref()
+                        .and_then(|q| q.get(entity))
+                        .map(|f| f.0)
+                        .unwrap_or(0.0),
                     // Material tint for the one-bounce GI bounce colour
                     // (read at the ray hit as `hitInst.avgAlbedo`). Carries
                     // the material's diffuse_color: exact for untextured /
@@ -752,7 +835,7 @@ pub(super) fn collect_static_mesh_draws(
                     is_water: false,
                 };
                 // #781 / PERF-N4 — `intern_by_hash` skips the
-                // `to_gpu_material()` 348-byte construction on the
+                // `to_gpu_material()` 364-byte construction on the
                 // dedup-hit path (~97% of calls on Prospector).
                 cmd.material_id =
                     material_table.intern_by_hash(cmd.material_hash(), || cmd.to_gpu_material());
@@ -779,5 +862,219 @@ mod tests {
             100.0,
             Vec3::ZERO,
         ));
+    }
+
+    use byroredux_core::ecs::{GlobalTransform, World};
+    use byroredux_core::math::Quat;
+    use byroredux_renderer::MaterialTable;
+
+    fn spawn_mesh_entity(world: &mut World) -> EntityId {
+        let entity = world.spawn();
+        world.insert(
+            entity,
+            GlobalTransform::new(Vec3::ZERO, Quat::IDENTITY, 1.0),
+        );
+        world.insert(entity, MeshHandle(1));
+        entity
+    }
+
+    /// #2221 end-to-end: an animated alpha/color sink must REPLACE the
+    /// static `Material` value all the way through to the interned
+    /// `GpuMaterial` — not just land in the `DrawCommand` intermediate.
+    /// Exercises the full `collect_static_mesh_draws` → `intern_by_hash`
+    /// → `to_gpu_material` chain, matching the issue's "apply animated
+    /// material values before GpuMaterial interning" ask.
+    #[test]
+    fn animated_alpha_and_diffuse_override_the_static_material_through_interning() {
+        let mut world = World::new();
+        let entity = spawn_mesh_entity(&mut world);
+        world.insert(
+            entity,
+            Material {
+                alpha: 1.0,
+                diffuse_color: [1.0, 1.0, 1.0],
+                ..Default::default()
+            },
+        );
+        world.insert(entity, AnimatedAlpha(0.3));
+        world.insert(entity, AnimatedDiffuseColor(Vec3::new(0.2, 0.4, 0.6)));
+
+        let frustum = FrustumPlanes::from_view_proj(Mat4::IDENTITY);
+        let mut draw_commands = Vec::new();
+        let mut material_table = MaterialTable::new();
+        collect_static_mesh_draws(
+            &world,
+            &frustum,
+            Mat4::IDENTITY,
+            Vec3::ZERO,
+            &FxHashMap::default(),
+            &mut draw_commands,
+            &mut material_table,
+        );
+
+        assert_eq!(
+            draw_commands.len(),
+            1,
+            "the mesh entity must produce a draw"
+        );
+        let cmd = &draw_commands[0];
+        assert_eq!(
+            cmd.material_alpha, 0.3,
+            "AnimatedAlpha must override the static Material.alpha (1.0) on the DrawCommand"
+        );
+        assert_eq!(
+            cmd.diffuse_color,
+            [0.2, 0.4, 0.6],
+            "AnimatedDiffuseColor must override the static Material.diffuse_color on the DrawCommand"
+        );
+
+        let gpu_mat = &material_table.materials()[cmd.material_id as usize];
+        assert_eq!(
+            gpu_mat.material_alpha, 0.3,
+            "the animated alpha must survive to_gpu_material interning, not just the DrawCommand"
+        );
+        assert_eq!(
+            [gpu_mat.diffuse_r, gpu_mat.diffuse_g, gpu_mat.diffuse_b],
+            [0.2, 0.4, 0.6],
+            "the animated diffuse color must survive to_gpu_material interning"
+        );
+    }
+
+    /// A mesh with NO animated sinks must read the static `Material`
+    /// values unchanged — the override is additive, not a behavior
+    /// change for the common (unanimated) case.
+    #[test]
+    fn no_animated_sinks_falls_back_to_the_static_material() {
+        let mut world = World::new();
+        let entity = spawn_mesh_entity(&mut world);
+        world.insert(
+            entity,
+            Material {
+                alpha: 0.75,
+                diffuse_color: [0.9, 0.8, 0.7],
+                ..Default::default()
+            },
+        );
+
+        let frustum = FrustumPlanes::from_view_proj(Mat4::IDENTITY);
+        let mut draw_commands = Vec::new();
+        let mut material_table = MaterialTable::new();
+        collect_static_mesh_draws(
+            &world,
+            &frustum,
+            Mat4::IDENTITY,
+            Vec3::ZERO,
+            &FxHashMap::default(),
+            &mut draw_commands,
+            &mut material_table,
+        );
+
+        assert_eq!(draw_commands.len(), 1);
+        assert_eq!(draw_commands[0].material_alpha, 0.75);
+        assert_eq!(draw_commands[0].diffuse_color, [0.9, 0.8, 0.7]);
+    }
+
+    /// #2221 — `AnimatedShaderColor` / `AnimatedShaderFloat` must reach
+    /// `DrawCommand` and survive interning too, even though no shader
+    /// samples them yet (see `GpuMaterial::shader_color_r`'s doc).
+    #[test]
+    fn animated_shader_color_and_float_reach_the_draw_command() {
+        let mut world = World::new();
+        let entity = spawn_mesh_entity(&mut world);
+        world.insert(entity, AnimatedShaderColor(Vec3::new(0.1, 0.2, 0.3)));
+        world.insert(entity, AnimatedShaderFloat(0.42));
+
+        let frustum = FrustumPlanes::from_view_proj(Mat4::IDENTITY);
+        let mut draw_commands = Vec::new();
+        let mut material_table = MaterialTable::new();
+        collect_static_mesh_draws(
+            &world,
+            &frustum,
+            Mat4::IDENTITY,
+            Vec3::ZERO,
+            &FxHashMap::default(),
+            &mut draw_commands,
+            &mut material_table,
+        );
+
+        assert_eq!(draw_commands.len(), 1);
+        assert_eq!(draw_commands[0].shader_color, [0.1, 0.2, 0.3]);
+        assert_eq!(draw_commands[0].shader_float, 0.42);
+
+        let gpu_mat = &material_table.materials()[draw_commands[0].material_id as usize];
+        assert_eq!(
+            [
+                gpu_mat.shader_color_r,
+                gpu_mat.shader_color_g,
+                gpu_mat.shader_color_b
+            ],
+            [0.1, 0.2, 0.3]
+        );
+        assert_eq!(gpu_mat.shader_float, 0.42);
+    }
+
+    /// #2221 — an active base-color flipbook (`AnimatedTextureFlip` slot
+    /// 0) must REPLACE the spawn-time-resolved `TextureHandle`, same as
+    /// every other animated-sink override in this loop.
+    #[test]
+    fn animated_texture_flip_overrides_the_texture_handle() {
+        use byroredux_core::ecs::TextureFlipEntry;
+
+        let mut world = World::new();
+        let entity = spawn_mesh_entity(&mut world);
+        world.insert(entity, TextureHandle(1));
+        world.insert(
+            entity,
+            AnimatedTextureFlip(vec![TextureFlipEntry {
+                texture_slot: 0,
+                handles: vec![10, 20, 30],
+                current_index: 1,
+            }]),
+        );
+
+        let frustum = FrustumPlanes::from_view_proj(Mat4::IDENTITY);
+        let mut draw_commands = Vec::new();
+        let mut material_table = MaterialTable::new();
+        collect_static_mesh_draws(
+            &world,
+            &frustum,
+            Mat4::IDENTITY,
+            Vec3::ZERO,
+            &FxHashMap::default(),
+            &mut draw_commands,
+            &mut material_table,
+        );
+
+        assert_eq!(draw_commands.len(), 1);
+        assert_eq!(
+            draw_commands[0].texture_handle, 20,
+            "the flipbook's current_index=1 handle (20) must win over the \
+             spawn-time TextureHandle (1)"
+        );
+    }
+
+    /// No `AnimatedTextureFlip` on the entity: the spawn-time
+    /// `TextureHandle` must ride through unchanged.
+    #[test]
+    fn no_texture_flip_falls_back_to_the_static_texture_handle() {
+        let mut world = World::new();
+        let entity = spawn_mesh_entity(&mut world);
+        world.insert(entity, TextureHandle(7));
+
+        let frustum = FrustumPlanes::from_view_proj(Mat4::IDENTITY);
+        let mut draw_commands = Vec::new();
+        let mut material_table = MaterialTable::new();
+        collect_static_mesh_draws(
+            &world,
+            &frustum,
+            Mat4::IDENTITY,
+            Vec3::ZERO,
+            &FxHashMap::default(),
+            &mut draw_commands,
+            &mut material_table,
+        );
+
+        assert_eq!(draw_commands.len(), 1);
+        assert_eq!(draw_commands[0].texture_handle, 7);
     }
 }
