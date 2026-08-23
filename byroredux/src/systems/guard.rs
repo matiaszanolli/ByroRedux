@@ -41,7 +41,20 @@
 //!
 //! ## v0 scope (mirrors `wander.rs`/`travel.rs`'s documented approximations)
 //!
-//! - **No pathing.** Straight-line walk; no obstacle avoidance.
+//! - **Single-tile pathing only** (EX-16 item 3 Phase 4,
+//!   `docs/engine/navmesh-pathfinding.md`), reusing `travel_system`'s
+//!   `crate::components::NavPath` caching shape exactly (frozen goal =
+//!   `GuardState::anchor`, `0.0` repath threshold — recompute only when
+//!   the anchor itself changes, which per this module's v0 scope is
+//!   never, after the first resolve). **One caveat this cache doesn't
+//!   yet handle**: it trusts that `current` only ever changes smoothly,
+//!   via this system's own `step_toward` calls — true for every reachable
+//!   path today (see "No known displacement trigger yet" above), but a
+//!   *teleporting* future shove/knockback system would leave the cached
+//!   path computed from the actor's pre-displacement position, not the
+//!   post-displacement one the leash check reacts to. Not a guessed fix:
+//!   flagged for whoever builds that system to revisit, same "dormant
+//!   until reachable" posture the leash check itself already has.
 //! - **No animation.** `AnimationPlayer` is untouched.
 //! - **No per-frame package re-evaluation.** Same limitation as
 //!   Sandbox/Wander/Travel/Follow/Escort.
@@ -50,10 +63,13 @@
 //!   after resolution isn't re-tracked (unlike Follow's live target).
 //! - **Ground-snapped, not physically simulated**, same as Wander/Travel.
 
-use super::locomotion::step_toward;
+use super::locomotion::step_along_waypoints;
+use super::navmesh_path::resolve_cached_waypoints;
+use crate::components::{NavPath, NavmeshTile};
 use byroredux_core::ecs::components::{GuardBehavior, GuardState, Transform};
 use byroredux_core::ecs::{EntityId, World};
 use byroredux_core::math::{Quat, Vec3};
+use std::collections::VecDeque;
 
 /// Fallback leash tolerance (world units) around a guard's anchor, used
 /// when `GuardBehavior.radius` is `None` (no PLDT / radius 0). Same scale
@@ -79,8 +95,15 @@ struct GuardPending {
     entity: EntityId,
     current: Vec3,
     rotation: Quat,
-    /// `Some` when beyond the leash and a walk-back is needed this tick.
-    target_xz: Option<Vec3>,
+    /// `Some(anchor)` when beyond the leash and a walk-back is needed
+    /// this tick; carries the anchor itself (not yet an XZ target) since
+    /// [`resolve_cached_waypoints`] needs it as the goal to resolve
+    /// against.
+    walk_back_to: Option<Vec3>,
+    /// Resident-tile waypoints toward `walk_back_to`'s anchor (EX-16 item
+    /// 3 Phase 4) — empty when `walk_back_to` is `None` (nothing to walk
+    /// toward this tick) or when no resident-tile path was found.
+    waypoints: VecDeque<Vec3>,
     state: Option<GuardState>,
 }
 
@@ -95,6 +118,10 @@ struct GuardDecision {
     /// sight — the anchor doesn't change afterward, so later ticks never
     /// rewrite it).
     state: Option<GuardState>,
+    /// The updated `NavPath` cache to write in Pass 2 — mirrors
+    /// `TravelDecision::nav_path`'s exact contract (`None` removes any
+    /// stale entry, `Some` caches even an empty "no path found" result).
+    nav_path: Option<NavPath>,
 }
 
 /// Reusable per-frame scratch for [`guard_system_inner`] — captured by
@@ -127,6 +154,8 @@ fn guard_system_inner(world: &World, dt: f32, scratch: &mut GuardScratch) {
             return;
         };
         let state_q = world.query::<GuardState>();
+        let tile_q = world.query::<NavmeshTile>();
+        let nav_path_q = world.query::<NavPath>();
 
         for (entity, behavior) in behavior_q.iter() {
             let Some(transform) = transform_q.get(entity) else {
@@ -145,14 +174,25 @@ fn guard_system_inner(world: &World, dt: f32, scratch: &mut GuardScratch) {
 
             let leash = behavior.radius.unwrap_or(GUARD_DEFAULT_RADIUS);
             let horiz_delta = Vec3::new(anchor.x - current.x, 0.0, anchor.z - current.z);
-            let target_xz =
-                (horiz_delta.length() > leash).then(|| Vec3::new(anchor.x, current.y, anchor.z));
+            let walk_back_to = (horiz_delta.length() > leash).then_some(anchor);
+
+            // EX-16 item 3 Phase 4: only bother resolving a path when
+            // actually walking back this tick — mirrors `wander_system`'s
+            // "skip the resident-tile scan while Paused" optimization.
+            let waypoints = match walk_back_to {
+                Some(goal) => {
+                    let cached = nav_path_q.as_ref().and_then(|q| q.get(entity));
+                    resolve_cached_waypoints(cached, tile_q.as_ref(), current, goal, 0.0)
+                }
+                None => VecDeque::new(),
+            };
 
             scratch.pending.push(GuardPending {
                 entity,
                 current,
                 rotation: transform.rotation,
-                target_xz,
+                walk_back_to,
+                waypoints,
                 state,
             });
         }
@@ -170,15 +210,38 @@ fn guard_system_inner(world: &World, dt: f32, scratch: &mut GuardScratch) {
     {
         let physics = world.try_resource::<byroredux_physics::PhysicsWorld>();
         for p in &scratch.pending {
-            let movement = p.target_xz.map(|target_xz| {
-                step_toward(p.current, p.rotation, target_xz, dt, physics.as_deref())
-            });
+            let (translation, rotation, nav_path) = match p.walk_back_to {
+                Some(anchor) => {
+                    let (new_pos, rotation, waypoints) = step_along_waypoints(
+                        p.current,
+                        p.rotation,
+                        p.waypoints.clone(),
+                        anchor,
+                        dt,
+                        physics.as_deref(),
+                    );
+                    (
+                        new_pos,
+                        rotation,
+                        Some(NavPath {
+                            goal: anchor,
+                            waypoints,
+                        }),
+                    )
+                }
+                // Within the leash — hold position exactly like today,
+                // and drop any stale cached path (nothing to walk toward
+                // this tick; a fresh one is resolved the next time the
+                // actor drifts beyond the leash).
+                None => (p.current, None, None),
+            };
 
             scratch.decisions.push(GuardDecision {
                 entity: p.entity,
-                translation: movement.map_or(p.current, |(pos, _)| pos),
-                rotation: movement.and_then(|(_, rot)| rot),
+                translation,
+                rotation,
                 state: p.state,
+                nav_path,
             });
         }
     }
@@ -201,6 +264,18 @@ fn guard_system_inner(world: &World, dt: f32, scratch: &mut GuardScratch) {
         for d in &scratch.decisions {
             if let Some(state) = d.state {
                 sq.insert(d.entity, state);
+            }
+        }
+    }
+    if let Some(mut nq) = world.query_mut::<NavPath>() {
+        for d in &scratch.decisions {
+            match &d.nav_path {
+                Some(path) => {
+                    nq.insert(d.entity, path.clone());
+                }
+                None => {
+                    nq.remove(d.entity);
+                }
             }
         }
     }
@@ -415,6 +490,153 @@ mod tests {
             sq.get(actor).unwrap().anchor,
             Vec3::new(300.0, 10.0, 400.0),
             "anchor must still resolve to the target's live position with a real PhysicsWorld present"
+        );
+    }
+
+    // ── EX-16 item 3 Phase 4: single-tile NAVM pathing integration ──
+
+    /// The inverse of `zup_to_yup_pos`, mirroring
+    /// `travel::tests::zup_from_yup` — each module owns its own test
+    /// fixtures per this codebase's established convention.
+    fn zup_from_yup(p: [f32; 3]) -> [f32; 3] {
+        [p[0], -p[2], p[1]]
+    }
+
+    /// The same 1000-unit two-triangle quad `travel::tests::
+    /// two_triangle_quad_navm` pins, duplicated here rather than shared
+    /// across modules (each locomotion system owns its own test
+    /// fixtures, matching the rest of this file's conventions).
+    fn two_triangle_quad_navm() -> byroredux_plugin::esm::records::NavmRecord {
+        use byroredux_plugin::esm::records::{NavmRecord, NavmTriangle};
+        let yup_verts = [
+            [0.0, 0.0, 0.0],
+            [1000.0, 0.0, 0.0],
+            [1000.0, 0.0, 1000.0],
+            [0.0, 0.0, 1000.0],
+        ];
+        NavmRecord {
+            vertices: yup_verts.iter().map(|v| zup_from_yup(*v)).collect(),
+            triangles: vec![
+                NavmTriangle {
+                    vertices: [0, 1, 2],
+                    edge_neighbours: [None, Some(1), None],
+                    flags: 0,
+                },
+                NavmTriangle {
+                    vertices: [0, 2, 3],
+                    edge_neighbours: [Some(0), None, None],
+                    flags: 0,
+                },
+            ],
+            ..NavmRecord::default()
+        }
+    }
+
+    #[test]
+    fn guard_system_routes_through_a_resident_navmesh_tile_when_walking_back() {
+        let mut world = World::new();
+        world.register::<GuardBehavior>();
+        world.register::<GuardState>();
+        world.register::<Transform>();
+        world.register::<NavmeshTile>();
+        world.register::<NavPath>();
+
+        let tile = world.spawn();
+        world.insert(tile, NavmeshTile(two_triangle_quad_navm()));
+
+        // Same non-mirror-symmetric pair travel_system's equivalent test
+        // uses: a straight line between them crosses the diagonal at
+        // (681.8, 681.8), a clearly different point than the shared-edge
+        // midpoint (500, 500) the pathed route must go through instead.
+        let current = Vec3::new(900.0, 0.0, 100.0);
+        let anchor = Vec3::new(600.0, 0.0, 900.0);
+        let entity = world.spawn();
+        world.insert(entity, Transform::from_translation(current));
+        world.insert(
+            entity,
+            GuardBehavior {
+                anchor_form_id: None,
+                radius: Some(1.0), // small leash: the anchor is far beyond it
+                form_id: 0x0011_0001,
+            },
+        );
+        world.insert(entity, GuardState { anchor });
+
+        guard_system(&world, 1.0); // 1s @ 100 u/s = 100 units of travel
+
+        let expected_toward_waypoint = current.move_towards(Vec3::new(500.0, 0.0, 500.0), 100.0);
+        let naive_straight_line = current.move_towards(anchor, 100.0);
+        assert!(
+            (expected_toward_waypoint - naive_straight_line).length() > 10.0,
+            "test fixture must be non-degenerate: pathed and naive directions should differ"
+        );
+
+        let tq = world.query::<Transform>().expect("Transform registered");
+        let moved_to = tq.get(entity).expect("actor transform").translation;
+        assert!(
+            (moved_to - expected_toward_waypoint).length() < 1e-3,
+            "actor should step toward the shared-edge waypoint (500,0,500), got {moved_to:?}, \
+             expected ~{expected_toward_waypoint:?} (naive straight-line would have been {naive_straight_line:?})"
+        );
+
+        let nq = world.query::<NavPath>().expect("NavPath registered");
+        let path = nq
+            .get(entity)
+            .expect("a path must be cached while walking back");
+        assert_eq!(path.goal, anchor);
+        assert_eq!(
+            path.waypoints.len(),
+            2,
+            "midpoint waypoint plus the anchor itself, got {:?}",
+            path.waypoints
+        );
+    }
+
+    #[test]
+    fn guard_system_drops_any_cached_path_once_back_within_the_leash() {
+        let mut world = World::new();
+        world.register::<GuardBehavior>();
+        world.register::<GuardState>();
+        world.register::<Transform>();
+        world.register::<NavmeshTile>();
+        world.register::<NavPath>();
+
+        let entity = world.spawn();
+        world.insert(
+            entity,
+            Transform::from_translation(Vec3::new(50.0, 0.0, 50.0)),
+        );
+        world.insert(
+            entity,
+            GuardBehavior {
+                anchor_form_id: None,
+                radius: Some(20.0),
+                form_id: 0x0012_0001,
+            },
+        );
+        world.insert(
+            entity,
+            GuardState {
+                anchor: Vec3::new(50.0, 0.0, 50.0),
+            },
+        );
+        // Seed a stale cached path as if the actor had been walking back
+        // moments ago — must be dropped once within the leash again, not
+        // left to accumulate forever.
+        world.insert(
+            entity,
+            NavPath {
+                goal: Vec3::new(50.0, 0.0, 50.0),
+                waypoints: std::collections::VecDeque::from(vec![Vec3::new(50.0, 0.0, 50.0)]),
+            },
+        );
+
+        guard_system(&world, 0.5);
+
+        let nq = world.query::<NavPath>().expect("NavPath registered");
+        assert!(
+            nq.get(entity).is_none(),
+            "within the leash — any stale cached path must be cleared, nothing to walk toward"
         );
     }
 }
