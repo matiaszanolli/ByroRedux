@@ -24,6 +24,78 @@ Commits hold that record.
 
 ---
 
+## Session 71 — Exterior Tranche C/D closeout, WATAL convergence, GPU morph-target blending, and a nif-deep audit sweep that found five HIGH bugs  (2026-08-20 → 2026-08-23, `bb0b92f2..bfdc3d3f`, 95 commits)
+
+The session picked up where Session 70 left off — WATAL "near-complete" — and
+spent its first half finishing two parallel tracks: closing every checklist
+item across the exterior-readiness plan's Tranche C/D (EX-09/17 persistent-ref
+identity + exterior save/load, EX-10/11 terrain-seam validation, EX-14/15
+worldspace-persistent-CELL resolution, EX-16 NAVM residency), and driving
+WATAL's remaining edge cases to convergence. With both closed out, the session
+shifted to GPU work — #3231's four-phase morph-target-blending pipeline
+landed end-to-end, and #2221 wired the last unconsumed animated-material
+sinks into the draw path — then closed with a full `/audit-suite --preset
+nif-deep` sweep that surfaced five HIGH-severity, previously-unflagged
+defects.
+
+- **Exterior continuity (EX-09/17, EX-10/11, EX-14/15, EX-16, #2369-#2372)**
+  — FormId→Entity persistent-ref identity index landed for both ordinary and
+  worldspace-persistent cells (`5784a060`, `27ae9e09`), unblocking exterior
+  save/load (`0a847910`) and closing a cross-plugin deleted-ref bug + WRLD-merge
+  flag (`0cef6fc0`) — all 8 EX-09/17 items done. Adjacent-cell terrain-seam
+  checking landed live (`a03e55d6`, `1746c4f0`) with corpus-derived LAND
+  value-plausibility guards (`e67756ca`). A WNAM parent-chain walk fixes
+  worldspace-persistent CELL resolution for quest actors living only in a
+  parent worldspace (`cf22abc7`). NAVM streaming residency (`dd36d534`) plus a
+  from-scratch single-tile A* pathfinder with shared-edge waypoints
+  (`81da1e9b`, shared helpers `15183596`) now drives locomotion in
+  wander/patrol/escort/follow/travel/guard — the first pathing any NPC
+  procedure has had beyond straight-line walk. REGN ambient-sound directives
+  now resolve and play live per resident cell/tile off a new SOUN.FNAM decode
+  + FormID→archive-path resolver.
+- **WATAL convergence** — ~35 commits (`c329a91c`→`a6b70773`) closed buoyancy
+  quiescence, ripple-audio cadence isolation, caustic-history reset,
+  cross-game clock-cycle gating, growable water params as an SSBO, and a
+  from-shipped-bytes re-decode of the FO3/FNV DNAM tail. `fa515b9c` unified
+  mesh-water translation into one path.
+- **GPU work — #3231 morph-target blending, #2221 animated sinks, #1749
+  closeout** — #3231 landed in four phases: NIF-side vertex-delta extraction
+  (`c1339301`), `GpuInstance` 128→160 B growth (`5f4dea46`), the
+  `skin_vertices.comp` blend dispatch (`eac9b0e0`), and Phase D wiring the
+  real per-entity `MorphSlot` GPU resource end-to-end (`d0322785`). #2221
+  wired the remaining animated alpha/color/shader/flipbook sinks into
+  `DrawCommand`, growing `GpuMaterial` 348→364 B (`7fbc5baf`). #1749's
+  long-running `VulkanContext::new()` extraction finally finished, splitting
+  `context/mod.rs` into `init.rs`/`teardown.rs` (`6fad32ac`).
+- **`/audit-suite --preset nif-deep`, 13 findings, 5 HIGH** — NIF came back
+  clean; NIFAL and Safety each found two new HIGH bugs: `spawn_nif_lights`
+  rotates a placed light's position but never its direction (#3232); a
+  second, non-canonical BGSM→texture-role resolver swaps the smoothness mask
+  for the real specular map, and the same day's `900aa081` MSWP work widened
+  its reach (#3234); the ESM/ESP GRUP-tree walker has no recursion depth cap
+  unlike its NIF-side sibling — a crafted plugin can stack-overflow the
+  engine (#3237); and `Ball`/`Capsule`/`Cylinder` collision shapes never got
+  the ceiling clamp `Cuboid` got under #2543, so a corrupt-but-finite radius
+  reaches Rapier's broadphase unbounded (#3238). A fifth HIGH surfaced hours
+  after the sweep closed: `d0322785` landed the exact GPU consumer #3233's
+  morph-target index-desync finding was conditioned on, escalating it from
+  dormant-MEDIUM to live-HIGH the same day it was filed — escalated on
+  GitHub post-discovery. The incremental pass caught a sixth real bug the
+  subsystem sweep missed: `900aa081`'s per-shape MSWP loop compares against a
+  mutating value instead of the fixed original, breaking documented
+  later-wins semantics (#3242, MEDIUM). Five LOW doc-drift/test-gap findings
+  (#3236, #3239-#3241, #3243) were fixed and closed same-session; #3232,
+  #3233, #3234, #3237, #3238 (all HIGH) and #3242 (MEDIUM) remain open.
+
+Net: tests 5623→5869 (+246, 0 failing); Rust `src/` LOC ~413 277→426 409
+(+13 132); total LOC ~441 249→457 584 (+16 335); source files 873→886 outside
+`tests/` (937→956 total); workspace members unchanged at 27; open issue dirs
+2972→3123 (+151); bench-of-record unchanged at `34074b93`, now 466 commits
+stale (was 84) — folded into the standing R6a-stale-20 tracker, no GPU device
+available in this environment to re-run it.
+
+---
+
 ## Session 70 — WATAL reaches near-complete per-game coverage, CHARAL's wiring gap closes, and two exterior-streaming ownership audits  (2026-08-18 → 2026-08-20, `82904bed..1a428278`, 284 commits)
 
 This is a large, multi-track close spanning several days and, for long
