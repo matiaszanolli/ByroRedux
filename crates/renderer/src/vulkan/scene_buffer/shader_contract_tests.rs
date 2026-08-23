@@ -1266,7 +1266,12 @@ fn parse_glsl_struct_fields(src: &str, decl: &str) -> Vec<String> {
 fn parse_glsl_struct_fields_typed(src: &str, decl: &str) -> Vec<(String, String)> {
     const TYPES: &[&str] = &[
         "float", "uint", "int", "bool", "vec2", "vec3", "vec4", "mat2", "mat3", "mat4",
-        // GpuInstance-only types (#2219 skinned_vertex_address + padding).
+        // GpuInstance-only types (#2219 skinned_vertex_address + padding;
+        // #3231 morph-target address/count fields). Deliberately no
+        // `uvec3` — this struct's own padding avoids it (16-byte std430
+        // alignment footgun, see gpu_types.rs), so a future field using
+        // it would be a bug this parser should keep failing to see, not
+        // silently accept.
         "uint64_t", "uvec2", "uvec4",
     ];
     let body =
@@ -1808,6 +1813,66 @@ fn gpu_instance_glsl_copies_stay_in_lockstep() {
              `#[repr(C)]` struct — see #2748 / REN-D3-2026-08-12-01.",
             rust_fields[i], glsl_fields[i],
         );
+    }
+}
+
+/// #3231 — closes a real gap the two tests above cannot: neither checks
+/// GLSL's std430 ALIGNMENT rules, only field NAME/ORDER/COUNT. A 3-
+/// component vector type (`vec3`/`ivec3`/`uvec3`) is 16-byte-aligned
+/// under std430 — the exact footgun `GpuInstance`'s own top-of-struct
+/// doc comment warns about for `vec3` — so slipping one into a `struct
+/// GpuInstance` declaration desyncs the array STRIDE the shader
+/// compiler computes from the one the CPU-uploaded `#[repr(C)]` struct
+/// actually uses, corrupting every instance past the first. Confirmed
+/// the hard way: an earlier revision of this exact padding tail used
+/// `uvec3 _reserved2`, passed both tests above (name/order/count all
+/// matched), and produced a GPU device-lost hang with zero
+/// validation-layer diagnostic on the very next `cargo run`. Scoped to
+/// `GpuInstance` specifically (not every struct in these files) because
+/// `GpuMaterial`/`GpuLight`/`GpuCamera` already forbid `vec3` entirely
+/// via their own established "all scalars" convention this test can't
+/// see past struct boundaries to verify generically.
+#[test]
+fn gpu_instance_glsl_declarations_never_use_a_3_component_vector_type() {
+    const SOURCES: &[(&str, &str)] = &[
+        (
+            "include/bindings.glsl",
+            include_str!("../../../shaders/include/bindings.glsl"),
+        ),
+        (
+            "triangle.vert",
+            include_str!("../../../shaders/triangle.vert"),
+        ),
+        ("ui.vert", include_str!("../../../shaders/ui.vert")),
+        ("water.vert", include_str!("../../../shaders/water.vert")),
+        (
+            "caustic_splat.comp",
+            include_str!("../../../shaders/caustic_splat.comp"),
+        ),
+    ];
+    for (name, src) in SOURCES {
+        let body = extract_struct_body(src, "struct GpuInstance")
+            .unwrap_or_else(|| panic!("{name}: source must declare `struct GpuInstance`"));
+        // Strip `//` line comments first (same as parse_glsl_struct_fields_typed)
+        // so an explanatory comment merely NAMING the forbidden type —
+        // e.g. "NOT uvec3" — doesn't trip this as a false positive.
+        let code_only: String = body
+            .lines()
+            .map(|line| match line.find("//") {
+                Some(i) => &line[..i],
+                None => line,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        for needle in ["vec3", "ivec3", "uvec3"] {
+            assert!(
+                !code_only.contains(needle),
+                "{name}: `struct GpuInstance` declares a `{needle}` field — 3-component \
+                 vectors are 16-byte-aligned under std430 and will desync the array stride \
+                 from the tightly-packed Rust struct (#3231). Use separate scalar fields \
+                 instead, matching every other padding lane in this struct."
+            );
+        }
     }
 }
 

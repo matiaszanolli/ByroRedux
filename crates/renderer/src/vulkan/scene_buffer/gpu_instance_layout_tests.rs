@@ -27,7 +27,7 @@ use std::mem::size_of;
 /// update protocol (grep for `struct GpuInstance` in the shaders tree
 /// before touching this struct).
 #[test]
-fn gpu_instance_is_128_bytes_std430_compatible() {
+fn gpu_instance_is_160_bytes_std430_compatible() {
     // R1 Phase 6 collapsed the per-material fields onto the
     // separate `MaterialTable` SSBO. What's left here is
     // strictly per-DRAW: model (64 B) + 4 mesh refs +
@@ -35,11 +35,14 @@ fn gpu_instance_is_128_bytes_std430_compatible() {
     // for caustic compute reads off its own descriptor set)
     // packed into 7 vec4 slots = 112 B, plus one more vec4 slot
     // (8 B `skinned_vertex_address` + 8 B `_reserved`) added by
-    // #2219 for skinned-instance RT hit-normal reconstruction = 128 B.
+    // #2219 for skinned-instance RT hit-normal reconstruction = 128 B,
+    // plus two more vec4 slots (`morph_delta_address` +
+    // `morph_weight_address` + `morph_target_count` + `_reserved2`)
+    // added by #3231 for GPU morph-target blending = 160 B.
     assert_eq!(
         size_of::<GpuInstance>(),
-        128,
-        "GpuInstance must stay 128 B to match std430 shader layout"
+        160,
+        "GpuInstance must stay 160 B to match std430 shader layout"
     );
 }
 
@@ -101,6 +104,12 @@ fn gpu_instance_field_offsets_match_shader_contract() {
     assert_eq!(offset_of!(GpuInstance, surface_id), 108);
     assert_eq!(offset_of!(GpuInstance, skinned_vertex_address), 112);
     assert_eq!(offset_of!(GpuInstance, _reserved), 120);
+    assert_eq!(offset_of!(GpuInstance, morph_delta_address), 128);
+    assert_eq!(offset_of!(GpuInstance, morph_weight_address), 136);
+    assert_eq!(offset_of!(GpuInstance, morph_target_count), 144);
+    assert_eq!(offset_of!(GpuInstance, _reserved2a), 148);
+    assert_eq!(offset_of!(GpuInstance, _reserved2b), 152);
+    assert_eq!(offset_of!(GpuInstance, _reserved2c), 156);
 }
 
 /// R1 Phase 6 sentinel — the fields that USED to live on `GpuInstance`

@@ -33,6 +33,13 @@ struct GpuInstance {
     uint surfaceId;        // offset 108 — stable temporal-shadow identity
     uint64_t skinnedVertexAddress; // offset 112 — #2219, unused here
     uvec2 _reserved;               // offset 120 -> total 128
+    uint64_t morphDeltaAddress;  // offset 128 — #3231, unused here
+    uint64_t morphWeightAddress; // offset 136 — #3231, unused here
+    uint morphTargetCount;       // offset 144 — #3231, unused here
+    // Deliberately three scalar uints, NOT uvec3 — see gpu_types.rs.
+    uint _reserved2a; // offset 148
+    uint _reserved2b; // offset 152
+    uint _reserved2c; // offset 156 -> total 160
 };
 
 layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {

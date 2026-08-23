@@ -2941,6 +2941,16 @@ impl VulkanContext {
                 surface_id: draw_cmd.entity_id.wrapping_add(1),
                 skinned_vertex_address,
                 _reserved: [0; 2],
+                // #3231 — wired below in a follow-up step once
+                // `MorphSlot` exists; `0` is the correct "no morph
+                // data" value in the interim (matches the default for
+                // every non-morphed instance permanently).
+                morph_delta_address: 0,
+                morph_weight_address: 0,
+                morph_target_count: 0,
+                _reserved2a: 0,
+                _reserved2b: 0,
+                _reserved2c: 0,
             });
 
             // Frustum-culled draws still need an SSBO entry so RT hit

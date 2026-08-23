@@ -57,10 +57,35 @@ struct GpuInstance {
     uint surfaceId;        // offset 108 — stable temporal-shadow identity
     uint64_t skinnedVertexAddress; // offset 112 — #2219, unused here
     uvec2 _reserved;               // offset 120 -> total 128
+    // #3231 — GPU morph-target blending. See the matching field doc in
+    // include/bindings.glsl; unlike skinnedVertexAddress this mirror
+    // DOES dereference these (via MorphDeltaRef / MorphWeightRef below)
+    // so the primary rasterized image shows morph deformation, not just
+    // the compute-output-derived BLAS/RT secondary paths.
+    uint64_t morphDeltaAddress;  // offset 128
+    uint64_t morphWeightAddress; // offset 136
+    uint morphTargetCount;       // offset 144
+    // Deliberately three scalar uints, NOT uvec3 — see gpu_types.rs.
+    uint _reserved2a; // offset 148
+    uint _reserved2b; // offset 152
+    uint _reserved2c; // offset 156 -> total 160
 };
 
 layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {
     GpuInstance instances[];
+};
+
+// #3231 — mirrors include/bindings.glsl's MorphDeltaRef / MorphWeightRef.
+// See that file for the layout doc; kept in lockstep by
+// `gpu_instance_glsl_copies_stay_in_lockstep` only checking the
+// GpuInstance struct itself, so these buffer_reference blocks are NOT
+// part of that automated check — verify by hand against bindings.glsl
+// if either changes.
+layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer MorphDeltaRef {
+    vec4 data[];
+};
+layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer MorphWeightRef {
+    float data[];
 };
 
 // Previous rigid transforms aligned to the CURRENT frame's sorted instance
@@ -140,6 +165,33 @@ layout(location = 10) out vec4 fragTangent;
 void main() {
     GpuInstance inst = instances[gl_InstanceIndex];
 
+    // #3231 — GPU morph-target blending, applied in mesh-LOCAL space
+    // BEFORE the rigid/skinned transform below (matches the legacy
+    // engine's "blend shapes in bind pose, then skin" ordering).
+    // `gl_VertexIndex` is an ABSOLUTE index into the shared global
+    // vertex buffer (`vkCmdDrawIndexed`'s `vertexOffset` = `inst.
+    // vertexOffset` shifts the per-mesh-local index range, same
+    // scheme `skin_vertices.comp`'s push-constant `vertex_offset`
+    // uses); subtracting `inst.vertexOffset` recovers the mesh-local
+    // index the delta buffer is packed against.
+    vec3 localPos = inPosition;
+    if (inst.morphDeltaAddress != 0ul) {
+        MorphDeltaRef deltas = MorphDeltaRef(inst.morphDeltaAddress);
+        MorphWeightRef weights = MorphWeightRef(inst.morphWeightAddress);
+        uint localVertex = gl_VertexIndex - inst.vertexOffset;
+        vec3 offset = vec3(0.0);
+        for (uint t = 0u; t < inst.morphTargetCount; t++) {
+            float w = weights.data[t];
+            // Skip zero-weight targets — the overwhelming majority on
+            // any given frame (a facial expression drives a handful of
+            // the mesh's dozens of authored sliders at once).
+            if (w != 0.0) {
+                offset += w * deltas.data[t * inst.vertexCount + localVertex].xyz;
+            }
+        }
+        localPos += offset;
+    }
+
     // Rigid vs skinned vertex selection. `xform` is the current-frame
     // transform; `xformPrev` is the same composition through the prior
     // frame's bone palette (SH-3 / #641). Rigid vertices read the previous
@@ -182,8 +234,16 @@ void main() {
         xformPrev[3].xyz -= renderOrigin.xyz;
     }
 
-    vec4 worldPos = xform * vec4(inPosition, 1.0);
-    vec4 prevWorldPos = xformPrev * vec4(inPosition, 1.0);
+    // #3231 — `localPos` carries the current frame's morph blend into
+    // BOTH the current and previous transform. There is no previous-
+    // frame weight history (unlike `bones` / `bones_prev`), so a
+    // rapidly-changing morph (a blink) sources a one-frame-stale
+    // motion vector on the morphed vertices during the transition —
+    // a transient TAA-ghosting cosmetic edge case, not a correctness
+    // issue, and out of scope for this pass (would need its own
+    // `MorphWeightRef`-shaped previous-frame buffer to fix).
+    vec4 worldPos = xform * vec4(localPos, 1.0);
+    vec4 prevWorldPos = xformPrev * vec4(localPos, 1.0);
     vec4 currClip = viewProj * worldPos;
     // NOTE: gl_Position is jittered below for TAA. fragCurrClipPos must
     // remain un-jittered so motion vectors are correct across frames.

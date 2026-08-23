@@ -62,7 +62,7 @@ pub type GpuPreviousModel = [[f32; 4]; 4];
 /// is an older, narrower complementary check for a few specific
 /// stale/required field names.
 ///
-/// Layout: 128 bytes per instance, 16-byte aligned (8×16). R1 Phase 6
+/// Layout: 160 bytes per instance, 16-byte aligned (10×16). R1 Phase 6
 /// collapsed the per-material fields (texture indices, PBR scalars,
 /// alpha state, Skyrim+ shader-variant payloads, BSEffect falloff,
 /// BGSM UV transform, NiMaterialProperty diffuse/ambient, ~30 fields
@@ -72,9 +72,10 @@ pub type GpuPreviousModel = [[f32; 4]; 4];
 /// strictly per-DRAW data: the model matrix, mesh refs, the
 /// caustic-source `avg_albedo` (still consumed by `caustic_splat.comp`
 /// off its own descriptor set), `flags` (mixed per-instance bits +
-/// terrain tile slot), the `material_id` indirection, and (#2219) the
+/// terrain tile slot), the `material_id` indirection, (#2219) the
 /// skinned-vertex-buffer GPU address for deformed-pose RT hit-normal
-/// reconstruction.
+/// reconstruction, and (#3231) the morph-target delta/weight buffer
+/// addresses for GPU morph-target blending.
 ///
 /// **Layout history** (every step preserves earlier offsets):
 ///   - 192 → 224 (#492, UV + material_alpha)
@@ -84,8 +85,10 @@ pub type GpuPreviousModel = [[f32; 4]; 4];
 ///   - 384 → 400 (R1 Phase 3, `material_id` slot)
 ///   - 400 → 112 (R1 Phase 6, drop the migrated per-material fields)
 ///   - 112 → 128 (#2219, `skinned_vertex_address` + reserved padding)
+///   - 128 → 160 (#3231, `morph_delta_address` + `morph_weight_address`
+///     + `morph_target_count` + reserved padding)
 ///
-/// `gpu_instance_is_128_bytes_std430_compatible` asserts the invariant;
+/// `gpu_instance_is_160_bytes_std430_compatible` asserts the invariant;
 /// shader-side `GpuInstance` must match.
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -169,8 +172,44 @@ pub struct GpuInstance {
     pub skinned_vertex_address: u64, // 8 B, offset 112
     /// Reserved — pads the struct back to a 16-byte-aligned std430 stride
     /// (120 → 128 after `skinned_vertex_address`). No live data.
-    pub _reserved: [u32; 2], // 8 B, offset 120 → total 128
-                              // Struct is 128 bytes (8×16), 16-byte aligned for std430.
+    pub _reserved: [u32; 2], // 8 B, offset 120 → total 128 (pre-#3231)
+    /// #3231 — GPU virtual address of this entity's morph-target DELTA
+    /// buffer (`MorphSlot::delta_buffer`, static — uploaded once at
+    /// spawn time from `ImportedMesh.morph_targets`, never re-uploaded).
+    /// Layout: `target_count` groups of `vertex_count` `vec4` (xyz delta,
+    /// w unused — vec3 would std430-misalign against the tightly-packed
+    /// Rust upload, same rule this whole struct's doc warns about).
+    /// `0` when the entity has no morph data (rigid instances, or
+    /// skinned instances whose mesh carries no `NiGeomMorpherController`
+    /// — the overwhelming majority).
+    pub morph_delta_address: u64, // 8 B, offset 128
+    /// #3231 — GPU virtual address of this entity's CURRENT morph
+    /// weights (`MorphSlot::weight_buffer`, small, host-visible,
+    /// re-written every frame from `AnimatedMorphWeights`). Layout:
+    /// `target_count` scalar floats. `0` under the same conditions as
+    /// `morph_delta_address` (both are always either both zero or both
+    /// live — see `MorphSlot`).
+    pub morph_weight_address: u64, // 8 B, offset 136
+    /// #3231 — number of morph targets `morph_delta_address` /
+    /// `morph_weight_address` carry. `0` when neither address is live.
+    pub morph_target_count: u32, // 4 B, offset 144
+    /// Reserved — pads the struct back to a 16-byte-aligned std430
+    /// stride (148 → 160 after `morph_target_count`). No live data.
+    ///
+    /// **Deliberately three separate scalar `u32`s, NOT `[u32; 3]` /
+    /// `uvec3`** — a `uvec3` GLSL mirror would be 16-byte-aligned under
+    /// std430 (the same "vec3 padding" footgun this struct's own top
+    /// doc warns about for `vec3`), silently desyncing the array
+    /// stride the shader compiler computes from the one the CPU
+    /// uploads with. Confirmed the hard way (#3231): this exact
+    /// substitution produced a GPU device-lost hang with zero
+    /// validation-layer diagnostic — every instance past the first
+    /// read at the wrong offset. Three scalars avoid the rule
+    /// entirely; keep it that way.
+    pub _reserved2a: u32, // 4 B, offset 148
+    pub _reserved2b: u32, // 4 B, offset 152
+    pub _reserved2c: u32, // 4 B, offset 156 → total 160
+                           // Struct is 160 bytes (10×16), 16-byte aligned for std430.
 }
 
 impl Default for GpuInstance {
@@ -203,6 +242,12 @@ impl Default for GpuInstance {
             surface_id: 0,
             skinned_vertex_address: 0,
             _reserved: [0; 2],
+            morph_delta_address: 0,
+            morph_weight_address: 0,
+            morph_target_count: 0,
+            _reserved2a: 0,
+            _reserved2b: 0,
+            _reserved2c: 0,
         }
     }
 }

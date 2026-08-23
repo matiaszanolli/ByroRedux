@@ -116,9 +116,10 @@ pub const MAX_PENDING_BIND_INVERSE_UPLOADS_PER_FRAME: usize = 1366;
 /// follow-up format flip just like the pre-#992 `R16_UINT` → `R32_UINT`
 /// step.
 ///
-/// `262144 × sizeof(GpuInstance) = 262144 × 128 B = 33.6 MB / frame
-/// × 2 frames-in-flight = 67.1 MB` total (#2219 grew `GpuInstance` from
-/// 112 B to 128 B) — within the 6 GB RT-minimum VRAM budget.
+/// `262144 × sizeof(GpuInstance) = 262144 × 160 B = 41.9 MB / frame
+/// × 2 frames-in-flight = 83.9 MB` total (#2219 grew `GpuInstance` from
+/// 112 B to 128 B; #3231 grew it again from 128 B to 160 B for GPU
+/// morph-target blending) — within the 6 GB RT-minimum VRAM budget.
 ///
 /// **History**:
 ///  - 8192 (original sizing for pre-M41 cells).

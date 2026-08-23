@@ -44,11 +44,12 @@ layout(location = 8) in vec4 inTangent;      // xyz = tangent, w = bitangent sig
 // not driven by the water material path (which lives in push
 // constants — see water.frag). Layout must match the Rust struct
 // at `crates/renderer/src/vulkan/scene_buffer/gpu_types.rs`
-// byte-for-byte — the 128-byte invariant is pinned by
-// `gpu_instance_is_128_bytes_std430_compatible` at
+// byte-for-byte — the 160-byte invariant is pinned by
+// `gpu_instance_is_160_bytes_std430_compatible` at
 // `crates/renderer/src/vulkan/scene_buffer/gpu_instance_layout_tests.rs`.
-// (The struct grew to 128 B when #2219 added `skinnedVertexAddress`; this
-// mirror's body tracked it, only the comment kept quoting the old size.)
+// (The struct grew to 128 B when #2219 added `skinnedVertexAddress`, then
+// to 160 B when #3231 added the morph-target address/count fields; this
+// mirror's body tracks it, only the comment kept quoting the old size.)
 // Path moved from `vulkan/instance.rs` during the Session-34 split (#1187).
 struct GpuInstance {
     mat4 model;
@@ -66,6 +67,13 @@ struct GpuInstance {
     uint surfaceId;
     uint64_t skinnedVertexAddress; // offset 112 — #2219, unused here
     uvec2 _reserved;               // offset 120 -> total 128
+    uint64_t morphDeltaAddress;  // offset 128 — #3231, unused here
+    uint64_t morphWeightAddress; // offset 136 — #3231, unused here
+    uint morphTargetCount;       // offset 144 — #3231, unused here
+    // Deliberately three scalar uints, NOT uvec3 — see gpu_types.rs.
+    uint _reserved2a; // offset 148
+    uint _reserved2b; // offset 152
+    uint _reserved2c; // offset 156 -> total 160
 };
 
 layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {

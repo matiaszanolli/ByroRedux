@@ -50,12 +50,43 @@ struct GpuInstance {
     // animated actor's secondary rays (reflection/shadow/refraction).
     uint64_t skinnedVertexAddress; // offset 112, 8 bytes
     uvec2 _reserved;               // offset 120, 8 bytes -> total 128
+    // #3231 — GPU morph-target blending. `morphDeltaAddress` points at
+    // `targetCount` groups of `vertexCount` `vec4` position deltas (xyz,
+    // w unused); `morphWeightAddress` points at `targetCount` scalar
+    // floats, re-uploaded every frame from `AnimatedMorphWeights`. Both
+    // `0` when this entity has no morph data (rigid instances, or
+    // skinned instances whose mesh carries no `NiGeomMorpherController`
+    // — the overwhelming majority). Dereferenced via the MorphDeltaRef /
+    // MorphWeightRef buffer_reference types below.
+    uint64_t morphDeltaAddress;  // offset 128, 8 bytes
+    uint64_t morphWeightAddress; // offset 136, 8 bytes
+    uint morphTargetCount;       // offset 144, 4 bytes
+    // Deliberately three scalar uints, NOT uvec3 — see the matching
+    // Rust field doc (gpu_types.rs) for why: uvec3 is 16-byte-aligned
+    // under std430 (same footgun as vec3), which desyncs the array
+    // stride the shader computes from the one the CPU uploads with.
+    uint _reserved2a; // offset 148, 4 bytes
+    uint _reserved2b; // offset 152, 4 bytes
+    uint _reserved2c; // offset 156, 4 bytes -> total 160
 };
 
 // REN-2026-07-28-02 / #2219 — buffer_reference handle for
 // `GpuInstance.skinnedVertexAddress`. Requires `GL_EXT_buffer_reference`
 // enabled in the including shader (triangle.frag / water.frag).
 layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer SkinnedVertexRef {
+    float data[];
+};
+
+// #3231 — buffer_reference handles for `GpuInstance.morphDeltaAddress` /
+// `.morphWeightAddress`. Requires `GL_EXT_buffer_reference` (same
+// extension `SkinnedVertexRef` above already needs). `MorphDeltaRef` is
+// `vec4`-aligned (not `vec3`) for the same std430 reason every other
+// struct in this file avoids `vec3` — `data[target * vertexCount +
+// localVertexIndex].xyz` is the per-vertex delta; `.w` is unused padding.
+layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer MorphDeltaRef {
+    vec4 data[];
+};
+layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer MorphWeightRef {
     float data[];
 };
 
