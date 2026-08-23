@@ -1,12 +1,9 @@
-# SPT-D3-2026-08-16-02: the is_spt dispatch moved out of references/mod.rs
+# Issue #3079: SPT-D3-2026-08-16-02: the is_spt dispatch moved out of references/mod.rs — skill and prior report both point at the wrong file
 
-**Issue**: #3079
-**Severity**: LOW
-**Labels**: `low,tech-debt,documentation`
-**Source report**: `docs/audits/AUDIT_SPEEDTREE_2026-08-16.md`
-**Filed**: 2026-08-17 via `/audit-publish`
+**State**: OPEN
+**Labels**: documentation, low, tech-debt, terrain-exterior, speedtree, doc-rot
 
----
+## Body
 
 Filed from `docs/audits/AUDIT_SPEEDTREE_2026-08-16.md` (Dimension 3 — dispatch location).
 
@@ -48,7 +45,3 @@ Re-point both SKILL.md references to `byroredux/src/scene/nif_loader.rs` and `by
 - [ ] **BOTH-SITES**: Both live `is_spt` locations named, not just one
 - [ ] **SCOPE-AND-ENTRY**: SKILL.md:40 and :192 both corrected
 - [ ] **PATH-GATE**: `_audit-validate.sh` still passes
-
----
-
-*Immutable snapshot of the issue as filed. GitHub is authoritative for current state — query `gh issue view 3079 --json state` when live state is needed.*
