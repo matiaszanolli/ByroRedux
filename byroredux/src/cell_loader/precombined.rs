@@ -412,6 +412,7 @@ impl PrecombinedSpawnJob {
                 None,
                 None,
                 None,
+                mat_provider.as_deref_mut(),
             );
             // #2369 (EX-15) — stamp the entities this call just spawned as
             // precombine-owned, distinct from ordinary per-REFR

@@ -86,6 +86,13 @@ pub(crate) struct RefrTextureOverlay {
     /// through so the spawn path can walk it once it knows the host
     /// mesh's per-shape material assignments.
     pub(crate) material_swaps: Vec<esm::records::MaterialSwapEntry>,
+    /// The source MSWP's `FNAM` path-prefix filter (#973 /
+    /// FO4-D4-NEW-08-followup), carried alongside `material_swaps` so
+    /// the per-shape spawn-time consumer can re-evaluate it against
+    /// each shape's OWN source path — the eager single-`material_path`
+    /// substitution above only checks it against the overlay's shared
+    /// path. `None` means "apply to any host mesh".
+    pub(crate) material_swaps_filter: Option<FixedString>,
     /// `TextureSet.flags & 0x04` — DNAM `HasModelSpaceNormals` bit
     /// (FO4 TXST records). Set when the overlay's normal slot came
     /// from a TXST that explicitly authors a model-space normal map
@@ -214,7 +221,14 @@ impl RefrTextureOverlay {
     /// Do NOT add a second one-off `.mat` arm here when that lands — route
     /// both resolvers through one shared "resolve external material →
     /// roles" helper instead.
-    fn fill_from_bgsm(&mut self, provider: &mut MaterialProvider, pool: &mut StringPool) {
+    ///
+    /// `pub(crate)` (rather than private) since #973's per-shape MSWP
+    /// consumer (`mesh_instance.rs::resolve_mesh_paths`) re-fires this
+    /// walk against a shape-scoped clone of the overlay whose
+    /// `material_path` has been swapped to that shape's MSWP target —
+    /// the REFR-level walk below only ever resolves the overlay's own
+    /// single `material_path`.
+    pub(crate) fn fill_from_bgsm(&mut self, provider: &mut MaterialProvider, pool: &mut StringPool) {
         let Some(path_sym) = self.material_path else {
             return;
         };
@@ -388,10 +402,11 @@ pub(crate) fn build_refr_texture_overlay(
                     }
                 }
             }
-            // Always preserve the resolved swap list for the spawn-path
-            // per-shape consumer. Clone is cheap — vanilla MSWPs ship
-            // ~2.18 entries on average.
+            // Always preserve the resolved swap list (+ its filter) for
+            // the spawn-path per-shape consumer. Clone is cheap —
+            // vanilla MSWPs ship ~2.18 entries on average.
             ov.material_swaps = table.swaps.clone();
+            ov.material_swaps_filter = table.path_filter.as_deref().map(|f| pool.intern(f));
         }
     }
 

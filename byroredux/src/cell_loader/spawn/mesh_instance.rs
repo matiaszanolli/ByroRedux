@@ -30,16 +30,79 @@ fn resolve_to_owned(
 /// Resolve every mesh's effective texture-slot paths + interned name
 /// under a single StringPool lock (#882). Split out of
 /// `spawn_placed_instances` (#2057).
+///
+/// `mat_provider` is `Some` on the same REFR-processing paths that already
+/// build a `RefrTextureOverlay` (see `build_refr_texture_overlay`'s own
+/// `mat_provider` param) — needed here so a per-shape MSWP swap (#973 /
+/// FO4-D4-NEW-08-followup) can walk the swapped target's BGSM/BGEM chain,
+/// not just substitute the `material_path` string.
 pub(super) fn resolve_mesh_paths(
     world: &mut World,
     imported: &[byroredux_nif::import::ImportedMesh],
     refr_overlay: Option<&RefrTextureOverlay>,
+    mut mat_provider: Option<&mut MaterialProvider>,
 ) -> Vec<ResolvedMeshPaths> {
     let ov = refr_overlay;
     let mut pool = world.resource_mut::<byroredux_core::string::StringPool>();
     imported
         .iter()
         .map(|mesh| {
+            // #973 / FO4-D4-NEW-08-followup — apply the REFR's XMSP
+            // material-swap table per shape. `build_refr_texture_overlay`
+            // only substitutes ONE shape's `material_path` (whichever the
+            // overlay's own XATO/XTNM already carries); every other shape
+            // in a multi-shape mesh (e.g. a Raider armour's separate body /
+            // arm / leg pieces) was silently left on its NIF-authored BGSM.
+            //
+            // Re-evaluates the FNAM path-prefix filter against THIS
+            // shape's own source path (not the overlay's shared one), then
+            // — only when a substitution actually changes the path — walks
+            // the swapped target's BGSM/BGEM chain via a shape-scoped clone
+            // of the overlay. Cloning first means any slot the REFR-level
+            // XATO/XTNM/XTXR already set stays put (`fill_from_bgsm`'s
+            // first-empty-wins policy never overwrites it); only slots the
+            // per-shape swap actually contributes get filled. When no swap
+            // fires, `shape_ov` stays `None` and behaviour is identical to
+            // pre-#973.
+            let mut shape_ov: Option<RefrTextureOverlay> = None;
+            if let Some(refr_ov) = ov {
+                if !refr_ov.material_swaps.is_empty() {
+                    let base_path_sym = refr_ov.material_path.or(mesh.material.material_path);
+                    if let Some(current) = resolve_to_owned(&pool, base_path_sym) {
+                        let filter_ok = refr_ov
+                            .material_swaps_filter
+                            .and_then(|f| pool.resolve(f).map(str::to_owned))
+                            .is_none_or(|f| {
+                                current
+                                    .to_ascii_lowercase()
+                                    .starts_with(&f.to_ascii_lowercase())
+                            });
+                        if filter_ok {
+                            let mut swapped = current.clone();
+                            // Authoring-order, later-wins: matches the MSWP
+                            // file format (later `(BNAM, SNAM)` pair for the
+                            // same source overrides an earlier one).
+                            for entry in &refr_ov.material_swaps {
+                                if entry.source.eq_ignore_ascii_case(&swapped)
+                                    && !entry.target.is_empty()
+                                {
+                                    swapped = entry.target.clone();
+                                }
+                            }
+                            if swapped != current {
+                                let mut ov2 = refr_ov.clone();
+                                ov2.material_path = Some(pool.intern(&swapped));
+                                if let Some(provider) = mat_provider.as_deref_mut() {
+                                    ov2.fill_from_bgsm(provider, &mut pool);
+                                }
+                                shape_ov = Some(ov2);
+                            }
+                        }
+                    }
+                }
+            }
+            let ov = shape_ov.as_ref().or(ov);
+
             let mut textures = mesh
                 .material
                 .textures
@@ -72,6 +135,15 @@ pub(super) fn resolve_mesh_paths(
             // when present; for slots the overlay left empty the
             // cached NIF's texture rides through. `None` on both
             // sides means the slot has no texture. See #584.
+            //
+            // `ov` above is per-shape: either `shape_ov` (this shape's own
+            // MSWP-swapped BGSM textures, filling slots the REFR-level
+            // overlay left empty) or the plain REFR overlay when no swap
+            // fired for this shape. Both report through the same
+            // `TxstOverride` source label at `mesh.info` — a per-shape MSWP
+            // fill is, from the debug command's point of view, exactly
+            // that: a REFR-scoped override winning over the mesh's own
+            // authored material. See #973.
             (textures.base_color, sources.base_color) = resolve_effective(
                 ov.and_then(|o| o.diffuse),
                 mesh.material.textures.base_color,
@@ -1016,7 +1088,7 @@ mod tests {
             ..Default::default()
         };
 
-        let resolved = resolve_mesh_paths(&mut world, &[mesh], Some(&overlay));
+        let resolved = resolve_mesh_paths(&mut world, &[mesh], Some(&overlay), None);
         assert_eq!(
             resolved[0].textures.inner_layer.as_deref(),
             Some(r"textures\ice\override_inner.dds"),
@@ -1044,7 +1116,7 @@ mod tests {
             ..Default::default()
         };
 
-        let resolved = resolve_mesh_paths(&mut world, &[mesh], Some(&overlay));
+        let resolved = resolve_mesh_paths(&mut world, &[mesh], Some(&overlay), None);
         assert_eq!(
             resolved[0].textures.greyscale_lut.as_deref(),
             Some(r"textures\fo4\palette_lgrad.dds")
@@ -1071,7 +1143,7 @@ mod tests {
             ..Default::default()
         };
 
-        let resolved = resolve_mesh_paths(&mut world, &[mesh], Some(&overlay));
+        let resolved = resolve_mesh_paths(&mut world, &[mesh], Some(&overlay), None);
         assert_eq!(
             resolved[0].textures.specular.as_deref(),
             Some(r"textures\fo76\surface_s.dds")
@@ -1102,7 +1174,7 @@ mod tests {
             ..Default::default()
         };
 
-        let resolved = resolve_mesh_paths(&mut world, &[mesh], Some(&overlay));
+        let resolved = resolve_mesh_paths(&mut world, &[mesh], Some(&overlay), None);
         assert_eq!(
             resolved[0].textures.lighting.as_deref(),
             Some(r"textures\fo4\surface_lighting.dds")
@@ -1137,7 +1209,7 @@ mod tests {
         let mut mesh = empty_mesh();
         mesh.material.textures.lighting = Some(lighting);
 
-        let resolved = resolve_mesh_paths(&mut world, &[mesh], None);
+        let resolved = resolve_mesh_paths(&mut world, &[mesh], None, None);
         assert_eq!(
             resolved[0].textures.lighting.as_deref(),
             Some(r"textures\mesh\lighting.dds")
@@ -1147,5 +1219,111 @@ mod tests {
             MaterialTextureSource::MeshMaterial
         );
         assert!(resolved[0].textures.flow.is_none());
+    }
+
+    fn swap_entry(source: &str, target: &str) -> esm::records::MaterialSwapEntry {
+        esm::records::MaterialSwapEntry {
+            source: source.to_string(),
+            target: target.to_string(),
+            color_intensity: None,
+        }
+    }
+
+    /// #973 / FO4-D4-NEW-08-followup — a multi-shape mesh (e.g. Raider
+    /// armour body + arm shapes) where NO XATO/XTNM overrides
+    /// `overlay.material_path` (the common vanilla shape for a plain XMSP
+    /// swap). Pre-fix only the overlay's own single `material_path` could
+    /// ever swap, and it was `None` here — every shape's swap was silently
+    /// dropped. Each shape must resolve its OWN authored `material_path`
+    /// against `material_swaps` independently.
+    #[test]
+    fn mswp_swaps_apply_per_shape_not_just_the_overlay_material_path() {
+        let mut pool = StringPool::new();
+        let body_src = pool.intern(r"materials\armor\raider\body01.bgsm");
+        let arm_src = pool.intern(r"materials\armor\raider\arm01.bgsm");
+        let mut world = World::new();
+        world.insert_resource(pool);
+
+        let mut body = empty_mesh();
+        body.material.material_path = Some(body_src);
+        let mut arm = empty_mesh();
+        arm.material.material_path = Some(arm_src);
+
+        let overlay = RefrTextureOverlay {
+            material_swaps: vec![
+                swap_entry(
+                    r"materials\armor\raider\body01.bgsm",
+                    r"materials\armor\raider\body01_variant04.bgsm",
+                ),
+                swap_entry(
+                    r"materials\armor\raider\arm01.bgsm",
+                    r"materials\armor\raider\arm01_variant04.bgsm",
+                ),
+            ],
+            ..Default::default()
+        };
+
+        let resolved = resolve_mesh_paths(&mut world, &[body, arm], Some(&overlay), None);
+        assert_eq!(
+            resolved[0].material_path.as_deref(),
+            Some(r"materials\armor\raider\body01_variant04.bgsm"),
+            "the body shape's own authored material must swap"
+        );
+        assert_eq!(
+            resolved[1].material_path.as_deref(),
+            Some(r"materials\armor\raider\arm01_variant04.bgsm"),
+            "the arm shape's own authored material must ALSO swap — pre-fix this was left \
+             on its NIF-authored BGSM because build_refr_texture_overlay only ever \
+             substitutes one shared material_path"
+        );
+    }
+
+    /// The FNAM path-prefix filter on an MSWP must be re-evaluated against
+    /// EACH shape's own source path, not the overlay's shared one — a
+    /// shape outside the filtered prefix keeps its authored material even
+    /// though the REFR carries a matching swap table.
+    #[test]
+    fn mswp_filter_is_re_evaluated_per_shape() {
+        let mut pool = StringPool::new();
+        let filter = pool.intern(r"materials\armor\raider\");
+        let in_scope = pool.intern(r"materials\armor\raider\body01.bgsm");
+        let out_of_scope = pool.intern(r"materials\clutter\crate01.bgsm");
+        let mut world = World::new();
+        world.insert_resource(pool);
+
+        let mut body = empty_mesh();
+        body.material.material_path = Some(in_scope);
+        let mut crate_mesh = empty_mesh();
+        crate_mesh.material.material_path = Some(out_of_scope);
+
+        let overlay = RefrTextureOverlay {
+            material_swaps_filter: Some(filter),
+            material_swaps: vec![
+                swap_entry(
+                    r"materials\armor\raider\body01.bgsm",
+                    r"materials\armor\raider\body01_variant04.bgsm",
+                ),
+                // Would match verbatim if the filter weren't re-checked
+                // per shape — the filter must block it.
+                swap_entry(
+                    r"materials\clutter\crate01.bgsm",
+                    r"materials\clutter\crate01_damaged.bgsm",
+                ),
+            ],
+            ..Default::default()
+        };
+
+        let resolved =
+            resolve_mesh_paths(&mut world, &[body, crate_mesh], Some(&overlay), None);
+        assert_eq!(
+            resolved[0].material_path.as_deref(),
+            Some(r"materials\armor\raider\body01_variant04.bgsm"),
+            "in-prefix shape swaps"
+        );
+        assert_eq!(
+            resolved[1].material_path.as_deref(),
+            Some(r"materials\clutter\crate01.bgsm"),
+            "out-of-prefix shape must keep its authored material unchanged"
+        );
     }
 }

@@ -154,7 +154,10 @@ pub(super) fn spawn_synth_child(
     world: &mut World,
     ctx: &mut VulkanContext,
     cell: &CellLoadCtx,
-    mat_provider: Option<&mut MaterialProvider>,
+    // #973 / FO4-D4-NEW-08-followup — `mut` so the NIF-import parse below
+    // and the later `spawn_placed_instances` call can each take their own
+    // `.as_deref_mut()` reborrow instead of one consuming the other's.
+    mut mat_provider: Option<&mut MaterialProvider>,
     placed_ref: &esm::cell::PlacedRef,
     refr_overlay: &Option<super::super::refr::RefrTextureOverlay>,
     child_form_id: u32,
@@ -523,7 +526,7 @@ pub(super) fn spawn_synth_child(
                             parse_and_import_nif(
                                 &d,
                                 &model_path,
-                                mat_provider,
+                                mat_provider.as_deref_mut(),
                                 &mut pool,
                                 Some(tex_provider),
                             )
@@ -663,6 +666,7 @@ pub(super) fn spawn_synth_child(
         // REFR-level data, not per-synthetic-child, so only the first
         // SCOL/PKIN-expansion child carries it.
         is_primary_synth.then_some(placed_ref.lock).flatten(),
+        mat_provider.as_deref_mut(),
     );
     accum.entity_count += count;
     accum.packed_collision_fallbacks += spawn_stats.packed_collision_fallbacks;

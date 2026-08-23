@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 
 use crate::asset_provider::{
     derive_normal_map_path, resolve_material_texture_handles_with_clamp, resolve_texture,
-    resolve_texture_with_clamp, TextureProvider,
+    resolve_texture_with_clamp, MaterialProvider, TextureProvider,
 };
 use crate::components::{
     decal_uses_implicit_alpha_blend, texture_path_is_fx_mesh, AlphaBlend, DoorTeleport,
@@ -537,6 +537,12 @@ pub(super) fn spawn_placed_instances(
     // vast majority of REFRs (unlocked); `Some` on locked doors and
     // containers. Threaded through the same way as `teleport` above.
     lock: Option<esm::cell::LockData>,
+    // #973 / FO4-D4-NEW-08-followup — same provider `build_refr_texture_overlay`
+    // already consumed to build `refr_overlay`. Re-borrowed here (not moved)
+    // so `resolve_mesh_paths`'s per-shape MSWP consumer can walk a swapped
+    // shape's BGSM/BGEM chain. `None` on the precombined path (no REFR
+    // overlay, so the per-shape swap is always a no-op there too).
+    mat_provider: Option<&mut MaterialProvider>,
 ) -> (byroredux_core::ecs::EntityId, usize, PlacementSpawnTimings) {
     let total_started = Instant::now();
     let imported = &cached.meshes;
@@ -619,7 +625,7 @@ pub(super) fn spawn_placed_instances(
             base_layer,
         );
 
-    let resolved_paths = resolve_mesh_paths(world, imported, refr_overlay);
+    let resolved_paths = resolve_mesh_paths(world, imported, refr_overlay, mat_provider);
     let mut blas_specs: Vec<(u32, u32, u32)> = Vec::new();
     let pc = PlacementCtx {
         tex_provider,
