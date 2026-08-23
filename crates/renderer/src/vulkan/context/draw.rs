@@ -196,6 +196,94 @@ fn skin_slot_backs_mesh(slot_vertex_count: u32, mesh_vertex_count: u32) -> bool 
     slot_vertex_count == mesh_vertex_count
 }
 
+/// #3231 — the `MorphSlot` sibling of `skin_slot_backs_mesh`. Same
+/// hazard, same fix: a `MorphSlot` is created once at spawn time for a
+/// specific mesh (vertex_count AND target_count both fixed then) and
+/// never resized, so a slot surviving a mesh remap (mod swap, cell
+/// reload reusing an EntityId before this slot's own despawn cleanup
+/// runs) must not be published for the new mesh — the shader indexes
+/// `deltas.data[target * vertexCount + localVertex]` through a raw
+/// `buffer_reference` with no range check, so an oversized `vertexCount`
+/// (from `GpuInstance`, always the LIVE mesh's count) against an
+/// undersized delta buffer reads out of bounds.
+///
+/// `pub(super)`: also called from `skinned_blas_refit.rs` (a sibling
+/// module under `context/`) to gate the same slot before it's read by
+/// the `skin_vertices.comp` dispatch, not just the raster `GpuInstance`
+/// upload below.
+#[inline]
+pub(super) fn morph_slot_backs_mesh(
+    slot_vertex_count: u32,
+    slot_target_count: u32,
+    mesh_vertex_count: u32,
+) -> bool {
+    slot_vertex_count == mesh_vertex_count && slot_target_count > 0
+}
+
+/// #3231 — resolve the three `GpuInstance` morph fields for a draw.
+/// Pure decision function mirroring `skinned_vertex_address_for_draw`:
+/// unit-testable without a device. `None` addresses (no slot yet, or a
+/// slot that failed the mesh-backing check) fall back to the all-zero
+/// "no morph data" triple — the shader's own `morphDeltaAddress != 0`
+/// gate then never dereferences a stale/absent buffer.
+///
+/// `pub(super)`: see `morph_slot_backs_mesh` above — same cross-module
+/// caller.
+#[inline]
+pub(super) fn morph_gpu_fields_for_draw(
+    slot: Option<(vk::DeviceAddress, vk::DeviceAddress, u32)>,
+) -> (vk::DeviceAddress, vk::DeviceAddress, u32) {
+    slot.unwrap_or((0, 0, 0))
+}
+
+#[cfg(test)]
+mod morph_gpu_fields_tests {
+    use super::{morph_gpu_fields_for_draw, morph_slot_backs_mesh};
+
+    #[test]
+    fn no_slot_is_all_zero() {
+        assert_eq!(morph_gpu_fields_for_draw(None), (0, 0, 0));
+    }
+
+    #[test]
+    fn live_slot_publishes_its_fields() {
+        assert_eq!(
+            morph_gpu_fields_for_draw(Some((0xDEAD_BEEF, 0xFEED_FACE, 12))),
+            (0xDEAD_BEEF, 0xFEED_FACE, 12)
+        );
+    }
+
+    #[test]
+    fn slot_sized_for_this_mesh_backs_it() {
+        assert!(morph_slot_backs_mesh(1_024, 8, 1_024));
+    }
+
+    #[test]
+    fn undersized_slot_is_rejected() {
+        assert!(!morph_slot_backs_mesh(512, 8, 1_024));
+    }
+
+    #[test]
+    fn oversized_slot_is_also_rejected() {
+        // Equality, not `>=` — same reasoning as skin_slot_backs_mesh:
+        // a larger slot is in-bounds but holds a DIFFERENT mesh's
+        // deltas, which would blend the wrong shape onto this one.
+        assert!(!morph_slot_backs_mesh(2_048, 8, 1_024));
+    }
+
+    /// A slot with zero targets (shouldn't exist in practice --
+    /// `attach_animation_sinks` only creates slots with usable morph
+    /// data -- but defend against it anyway, since `morphTargetCount
+    /// == 0` combined with a nonzero address would let the shader's
+    /// `!= 0` gate fire and then iterate a zero-length loop, which is
+    /// harmless but signals a slot that should never have been
+    /// created).
+    #[test]
+    fn zero_target_slot_is_rejected() {
+        assert!(!morph_slot_backs_mesh(1_024, 0, 1_024));
+    }
+}
+
 #[cfg(test)]
 mod skinned_vertex_address_tests {
     use super::skinned_vertex_address_for_draw;
@@ -2913,6 +3001,21 @@ impl VulkanContext {
                 });
             let skinned_vertex_address =
                 skinned_vertex_address_for_draw(draw_cmd.bone_offset, slot_address);
+            // #3231 — GPU morph-target blending. Same shape as the
+            // skinned_vertex_address lookup just above, including the
+            // "backs this mesh" safety filter (#2402's hazard applies
+            // identically here — see `morph_slot_backs_mesh`'s doc).
+            // v1-scoped to skinned meshes only (`bone_offset != 0`),
+            // matching MorphSlot's current spawn-time creation site.
+            let morph_slot_fields = (draw_cmd.bone_offset != 0)
+                .then(|| self.morph_slots.get(&draw_cmd.entity_id))
+                .flatten()
+                .filter(|slot| {
+                    morph_slot_backs_mesh(slot.vertex_count(), slot.target_count(), mesh.vertex_count)
+                })
+                .map(|slot| (slot.delta_address(), slot.weight_address(), slot.target_count()));
+            let (morph_delta_address, morph_weight_address, morph_target_count) =
+                morph_gpu_fields_for_draw(morph_slot_fields);
             gpu_instances.push(GpuInstance {
                 // #markarth-precision — rebase the model translation by the
                 // camera-relative render origin so `model * pos` stays near 0
@@ -2941,13 +3044,9 @@ impl VulkanContext {
                 surface_id: draw_cmd.entity_id.wrapping_add(1),
                 skinned_vertex_address,
                 _reserved: [0; 2],
-                // #3231 — wired below in a follow-up step once
-                // `MorphSlot` exists; `0` is the correct "no morph
-                // data" value in the interim (matches the default for
-                // every non-morphed instance permanently).
-                morph_delta_address: 0,
-                morph_weight_address: 0,
-                morph_target_count: 0,
+                morph_delta_address,
+                morph_weight_address,
+                morph_target_count,
                 _reserved2a: 0,
                 _reserved2b: 0,
                 _reserved2c: 0,

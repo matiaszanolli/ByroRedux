@@ -123,10 +123,15 @@ impl Component for AnimatedUvTransform {
 /// animations, and bake-driven facial morphs.
 ///
 /// Pre-#525 every `MorphWeight(idx)` sample was dropped because the
-/// only `FloatTarget` sink was `Alpha`. The component lands the
-/// values today; the renderer's morph-target mesh deformation is
-/// downstream work — same precedent as `AnimatedAlpha`, which is
-/// likewise written by the animation system pending consumer wiring.
+/// only `FloatTarget` sink was `Alpha`. #3231 wired the consumer:
+/// `render::skinned::update_morph_weights` copies these values into
+/// each entity's `MorphSlot` GPU weight buffer every frame, and
+/// `skin_vertices.comp` / `triangle.vert` blend them into vertex
+/// positions (skinned meshes only, v1). A mesh whose `ImportedMesh`
+/// carried no `NiGeomMorpherController` never gets a `MorphSlot`, so
+/// this component can still exist with no renderer-side effect —
+/// consumer wiring, not producer wiring, gates whether it does
+/// anything.
 #[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct AnimatedMorphWeights(pub Vec<f32>);
 

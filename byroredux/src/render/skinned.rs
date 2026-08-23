@@ -25,7 +25,8 @@ use rustc_hash::FxHashMap;
 use std::sync::Once;
 
 use byroredux_core::ecs::{
-    resources::SkinSlotPool, EntityId, GlobalTransform, SkinnedMesh, World, MAX_BONES_PER_MESH,
+    resources::SkinSlotPool, AnimatedMorphWeights, EntityId, GlobalTransform, SkinnedMesh, World,
+    MAX_BONES_PER_MESH,
 };
 
 /// M41.0 Phase 1b.x followup — frame-gated dump of any bone whose
@@ -164,6 +165,12 @@ pub(super) fn build_skinned_palettes(
     // starts with an empty dirty set (we only re-mark entities whose
     // hash actually changed).
     pool.clear_pose_dirty();
+    // #3231 — read alongside the pose hash below so an entity whose
+    // bones are static but whose morph weights are animating (a
+    // talking/blinking NPC standing still) still marks dirty. See
+    // `mix_morph_weights`'s doc for why this folds into the SAME
+    // running hash rather than a separate one.
+    let morph_q = world.query::<AnimatedMorphWeights>();
     for (entity, skin) in skin_q.iter() {
         let Some(&offset) = skin_offsets.get(&entity) else {
             continue; // pool was full for this entity (rare)
@@ -194,7 +201,14 @@ pub(super) fn build_skinned_palettes(
         // count) instead of `start + MBPM` avoids hashing the
         // padded tail; per-entity hash stays stable across
         // frames as long as the actual bone matrices don't change.
-        let hash = pose_hash(&bone_world_out[start..end]);
+        let mut hash = pose_hash(&bone_world_out[start..end]);
+        // #3231 — GPU morph deformation now runs inside skin_vertices.comp
+        // (see `skin_slot_backs_mesh`'s dispatch loop in
+        // `skinned_blas_refit.rs`), so a weight-only change must also
+        // invalidate the skip-gate this hash feeds, not just a pose change.
+        if let Some(weights) = morph_q.as_ref().and_then(|q| q.get(entity)) {
+            hash = mix_morph_weights(hash, &weights.0);
+        }
         let _dirty = pool.try_mark_pose_dirty(entity, hash);
     }
 
@@ -227,6 +241,57 @@ fn pose_hash(mats: &[[[f32; 4]; 4]]) -> u64 {
         }
     }
     h
+}
+
+/// #3231 — fold morph weights into `pose_dirty`'s running hash, so a
+/// static-pose entity whose only change this frame is its morph weights
+/// (blink/talk while standing still) still marks dirty. Continues the
+/// same FNV-1a accumulator `pose_hash` seeds (same offset basis, same
+/// prime) rather than hashing separately and XOR-combining — XOR of two
+/// independent hashes can cancel to zero on an unlucky coincidence; a
+/// single running hash cannot mask a real change that way.
+fn mix_morph_weights(mut h: u64, weights: &[f32]) -> u64 {
+    const FNV_PRIME: u64 = 0x100000001b3;
+    for &w in weights {
+        h ^= w.to_bits() as u64;
+        h = h.wrapping_mul(FNV_PRIME);
+    }
+    h
+}
+
+/// #3231 — per-frame morph-weight GPU upload. Walks every live
+/// `MorphSlot` (created once at spawn — see
+/// `cell_loader::spawn::mesh_instance::spawn_mesh_instance`) and, for
+/// entities that also carry an `AnimatedMorphWeights` component,
+/// overwrites the slot's host-visible weight buffer with this frame's
+/// values. An entity with a `MorphSlot` but no `AnimatedMorphWeights`
+/// yet (animation system hasn't run, or the clip has no morph channel)
+/// keeps whatever the buffer already holds — `MorphSlot::create`
+/// zero-inits it, so a first-sight frame reads "no deformation" rather
+/// than uninitialised memory.
+///
+/// Deliberately unconditional (no `pose_dirty`-style skip gate): unlike
+/// the skin-compute dispatch this write is a small host-visible memcpy
+/// (≤ `MAX_MORPH_TARGETS_PER_MESH` × 4 B per entity), far cheaper than
+/// the dirty-tracking bookkeeping would save. `pose_dirty` skip-gating
+/// still applies downstream, to the `skin_vertices.comp` dispatch that
+/// reads this buffer — see `mix_morph_weights` above for why that hash
+/// now also depends on these weights.
+pub(super) fn update_morph_weights(world: &World, ctx: &mut byroredux_renderer::VulkanContext) {
+    let Some(weights_q) = world.query::<AnimatedMorphWeights>() else {
+        return;
+    };
+    let device = &ctx.device;
+    for (&entity, slot) in ctx.morph_slots.iter_mut() {
+        let Some(weights) = weights_q.get(entity) else {
+            continue;
+        };
+        let target_count = slot.target_count() as usize;
+        let flat: Vec<f32> = (0..target_count).map(|i| weights.get(i)).collect();
+        if let Err(e) = slot.update_weights(device, &flat) {
+            log::warn!("Failed to update MorphSlot weights for entity {entity}: {e:#}");
+        }
+    }
 }
 
 #[cfg(test)]

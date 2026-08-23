@@ -666,6 +666,49 @@ pub(super) fn spawn_mesh_instance(
         entity,
         GlobalTransform::new(final_pos, final_rot, final_scale),
     );
+    // #3231 — GPU morph-target deformation. v1-scoped to skinned
+    // meshes only (`mesh.skin.is_some()`), matching the `bone_offset
+    // != 0` gate both the draw-time `GpuInstance` lookup in
+    // `context/draw.rs` and the `skin_vertices.comp` dispatch in
+    // `skinned_blas_refit.rs` use — an unskinned mesh's DrawCommand
+    // always carries `bone_offset == 0`, so a slot created for one
+    // would never be read by either consumer. Created once here
+    // (not lazily per-frame like `SkinSlot`) because morph delta
+    // data is only known at NIF-import/mesh-spawn time — see
+    // `MorphSlot`'s own doc comment.
+    if mesh.skin.is_some() {
+        if let Some(morph_targets) = mesh.morph_targets.as_ref().filter(|t| !t.is_empty()) {
+            let vertex_count = mesh.positions.len() as u32;
+            let target_count = morph_targets.len() as u32;
+            // Target-major flat array, `vec4` per delta (w unused
+            // padding) — matches `MorphDeltaRef`'s std430 `vec4
+            // data[]` layout `MorphSlot::create` expects. Deltas are
+            // already Y-up (converted at NIF-import time in
+            // `morph.rs`), so no coordinate work here.
+            let mut deltas = Vec::with_capacity(morph_targets.len() * mesh.positions.len());
+            for target in morph_targets {
+                deltas.extend(target.deltas.iter().map(|d| [d[0], d[1], d[2], 0.0]));
+            }
+            let allocator = ctx.allocator.as_ref().expect("renderer allocator missing");
+            let upload_ctx = GpuUploadCtx {
+                device: &ctx.device,
+                allocator,
+                queue: &ctx.graphics_queue,
+                command_pool: ctx.transfer_pool,
+            };
+            match MorphSlot::create(upload_ctx, &deltas, target_count, vertex_count) {
+                Ok(slot) => {
+                    ctx.morph_slots.insert(entity, slot);
+                }
+                Err(e) => {
+                    log::warn!(
+                        "Failed to create MorphSlot for entity {entity} ({:?}): {e:#}",
+                        mesh.name,
+                    );
+                }
+            }
+        }
+    }
     // #1213 / D1-NEW-02 — seed LocalBound from the mesh-local
     // bounding sphere (`ImportedMesh.local_bound_center`,
     // `.local_bound_radius`, both extracted by the NIF importer

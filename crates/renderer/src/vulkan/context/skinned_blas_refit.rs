@@ -128,17 +128,34 @@ impl VulkanContext {
                         if !mesh.rt_capable {
                             continue;
                         }
+                        // #3231 — mirrors the `GpuInstance` morph lookup in
+                        // `draw.rs`: gate on `morph_slot_backs_mesh` so a
+                        // slot that survived a mesh remap (mod swap, cell
+                        // reload reusing an EntityId) never gets read by
+                        // `skin_vertices.comp` against the wrong mesh's
+                        // vertex/target counts.
+                        let morph_slot_fields = self
+                            .morph_slots
+                            .get(&dc.entity_id)
+                            .filter(|slot| {
+                                super::draw::morph_slot_backs_mesh(
+                                    slot.vertex_count(),
+                                    slot.target_count(),
+                                    mesh.vertex_count,
+                                )
+                            })
+                            .map(|slot| {
+                                (slot.delta_address(), slot.weight_address(), slot.target_count())
+                            });
+                        let (morph_delta_address, morph_weight_address, morph_target_count) =
+                            super::draw::morph_gpu_fields_for_draw(morph_slot_fields);
                         let push = super::super::skin_compute::SkinPushConstants {
-                            // #3231 — wired below in a follow-up step
-                            // once `MorphSlot` exists; `0` is the
-                            // correct "no morph data" value in the
-                            // interim.
-                            morph_delta_address: 0,
-                            morph_weight_address: 0,
+                            morph_delta_address,
+                            morph_weight_address,
                             vertex_offset: mesh.global_vertex_offset,
                             vertex_count: mesh.vertex_count,
                             bone_offset: dc.bone_offset,
-                            morph_target_count: 0,
+                            morph_target_count,
                         };
                         dispatches.push((
                             dc.entity_id,
@@ -369,6 +386,17 @@ impl VulkanContext {
                                 // entity as "active this frame" even
                                 // when the dispatch is skipped.
                                 slot.last_used_frame = self.frame_counter as u64;
+                                // #3231 — same LRU bump for this entity's
+                                // `MorphSlot`, if it has one. Folded into
+                                // the skin-dispatch loop (rather than a
+                                // separate pass) because v1 only creates
+                                // a `MorphSlot` for entities that also
+                                // have a `SkinSlot`-eligible mesh, so
+                                // every entity that reaches here is the
+                                // complete set of candidates.
+                                if let Some(morph_slot) = self.morph_slots.get_mut(&entity_id) {
+                                    morph_slot.last_used_frame = self.frame_counter as u64;
+                                }
 
                                 // #1195 / PERF-DIM7-01 — skip the
                                 // dispatch when the entity's pose is
@@ -736,6 +764,36 @@ impl VulkanContext {
                     // build is a memory-pressure signal, and eviction is
                     // what changes that pressure.
                     self.failed_skin_blas.clear();
+                }
+                // #3231 — same eviction pass, `MorphSlot` sibling. Kept
+                // as its own `evictees`/destroy loop rather than folded
+                // into the skin one above: a `MorphSlot` has no matching
+                // BLAS entry to drop, and the two resources are
+                // deliberately independent (see `morph_compute`'s module
+                // doc) so a bug in one loop can't corrupt the other's
+                // bookkeeping. Same `min_idle`/`now` threshold — both
+                // resources are keyed to the same entity's draw
+                // presence.
+                let mut morph_evictees: Vec<EntityId> =
+                    std::mem::take(&mut self.pending_morph_unload_victims);
+                morph_evictees.extend(self.morph_slots.iter().filter_map(|(&eid, slot)| {
+                    super::super::skin_compute::should_evict_skin_slot(
+                        slot.last_used_frame,
+                        now,
+                        min_idle,
+                    )
+                    .then_some(eid)
+                }));
+                if !morph_evictees.is_empty() {
+                    log::debug!(
+                        "morph_slots eviction: dropping {} idle MorphSlot(s)",
+                        morph_evictees.len()
+                    );
+                    for eid in morph_evictees {
+                        if let Some(mut slot) = self.morph_slots.remove(&eid) {
+                            slot.destroy(&self.device, alloc);
+                        }
+                    }
                 }
             }
         }

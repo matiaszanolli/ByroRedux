@@ -17,6 +17,7 @@ pub mod gbuffer;
 pub mod gpu_timers;
 pub mod instance;
 pub mod material;
+pub mod morph_compute;
 pub mod pipeline;
 pub mod placeholder;
 pub mod presentation;

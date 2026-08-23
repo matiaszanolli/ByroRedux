@@ -974,6 +974,19 @@ pub(crate) fn build_render_data(
     }
 }
 
+/// #3231 — per-frame morph-weight GPU upload. Deliberately called
+/// separately from `build_render_data` rather than folded into it:
+/// `build_render_data` takes `world: &World` only (it's a pure
+/// CPU-side collection pass with no live device access), while this
+/// needs `&mut VulkanContext` to write `MorphSlot`'s host-visible
+/// weight buffers. See `skinned::update_morph_weights`'s doc for the
+/// full reasoning; call this once per frame, any time after
+/// `build_render_data` (order between the two doesn't matter — the
+/// weight write and the draw-command build are independent).
+pub(crate) fn update_morph_weights(world: &World, ctx: &mut byroredux_renderer::VulkanContext) {
+    skinned::update_morph_weights(world, ctx);
+}
+
 // Per-section sub-modules (TD9-001 sweep, #1115). Each sibling owns
 // one of the 8 query families in `build_render_data`; the parent
 // orchestrator above acquires the World queries once and threads

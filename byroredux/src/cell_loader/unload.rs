@@ -209,6 +209,15 @@ fn unload_cell_inner(
         &mut ctx.pending_skin_unload_victims,
         &mut ctx.failed_skin_slots,
     );
+    // #3231 — same leak this cell-unload-without-a-render-tick fix
+    // closed for `skin_slots` (#1003) applies to `morph_slots`: it has
+    // no lazy retry cache to reconcile, so a direct filter+push is
+    // enough (no `queue_skin_unload_victims` reuse needed).
+    for &eid in &victims {
+        if ctx.morph_slots.contains_key(&eid) {
+            ctx.pending_morph_unload_victims.push(eid);
+        }
+    }
     // Same cache-shape fix for textures. Descriptor fallback writes still run
     // once per texture that actually reaches zero; holder refcounts and
     // deferred GPU destruction are unchanged.

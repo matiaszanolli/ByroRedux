@@ -16,7 +16,7 @@ use byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_plugin::esm;
 use byroredux_renderer::vulkan::GpuUploadCtx;
-use byroredux_renderer::{SceneMeshUpload, VulkanContext};
+use byroredux_renderer::{MorphSlot, SceneMeshUpload, VulkanContext};
 use std::time::{Duration, Instant};
 
 use crate::asset_provider::{

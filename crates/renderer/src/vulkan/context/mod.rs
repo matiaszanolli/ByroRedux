@@ -1383,6 +1383,17 @@ pub struct VulkanContext {
         byroredux_core::ecs::storage::EntityId,
         super::skin_compute::SkinSlot,
     >,
+    /// #3231 — per-skinned-entity `MorphSlot` (delta + weight buffers
+    /// for GPU morph-target blending). Deliberately separate from
+    /// `skin_slots` — see `morph_compute`'s module doc for why.
+    /// Populated once at spawn time (not lazily like `skin_slots` —
+    /// the morph-target delta data only exists in `ImportedMesh` at
+    /// that point); entries are torn down on Drop or explicit
+    /// cell-unload despawn.
+    pub morph_slots: std::collections::HashMap<
+        byroredux_core::ecs::storage::EntityId,
+        super::morph_compute::MorphSlot,
+    >,
     /// Entities whose `create_slot` call returned `OUT_OF_POOL_MEMORY`
     /// (or otherwise errored) on a prior frame — gate the retry path
     /// in `draw_frame` against this set so a single failure logs one
@@ -1444,6 +1455,16 @@ pub struct VulkanContext {
     /// `skin_slots`, which `Drop` tears down via the bulk loop at
     /// `mod.rs:1965`).
     pub pending_skin_unload_victims: Vec<byroredux_core::ecs::storage::EntityId>,
+    /// #3231 — the `morph_slots` sibling of `pending_skin_unload_victims`.
+    /// Same reasoning, same drain site (folded into the same eviction
+    /// pass in `skinned_blas_refit.rs` rather than a separate sweep,
+    /// since `MorphSlot` lifetime already tracks `SkinSlot`'s 1:1 —
+    /// v1 only creates a `MorphSlot` for a mesh that also has skin
+    /// data, see `mesh_instance::spawn_mesh_instance`). No `failed_*`
+    /// sibling — unlike `SkinSlot`, `MorphSlot` has no lazy first-sight
+    /// retry path to gate; a spawn-time create failure just logs and
+    /// leaves the entity with no slot for its lifetime.
+    pub pending_morph_unload_victims: Vec<byroredux_core::ecs::storage::EntityId>,
     /// Per-frame counters for the skinned-BLAS coverage path, written
     /// by `draw_frame` and copied into the [`byroredux_core::ecs::
     /// SkinCoverageStats`] resource by [`Self::fill_skin_coverage_stats`].

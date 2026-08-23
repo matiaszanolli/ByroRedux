@@ -1158,6 +1158,14 @@ impl VulkanContext {
         for slot in self.skin_slots.values_mut() {
             slot.last_used_frame = 0;
         }
+        // #3231 — same epoch-rebase, `MorphSlot` sibling: its eviction
+        // sweep in `skinned_blas_refit.rs` reads the identical
+        // `frame_counter` clock via the same `should_evict_skin_slot`
+        // call, so it's exposed to the exact same stale-stamp hazard
+        // described above.
+        for slot in self.morph_slots.values_mut() {
+            slot.last_used_frame = 0;
+        }
 
         // Force a few-frame TAA history reset + SVGF α-elevation
         // window so the first post-resize frames are clean

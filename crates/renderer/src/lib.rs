@@ -37,6 +37,7 @@ pub use vulkan::context::{
     DofView, DrawCommand, FrameTimings, ScreenshotHandle, SkyDalcCube, SkyParams, VulkanContext,
 };
 pub use vulkan::material::{GpuMaterial, MaterialTable};
+pub use vulkan::morph_compute::MorphSlot;
 pub use vulkan::presentation::ImageSpaceModifierView;
 pub use vulkan::render_debug::{RenderDebugMode, SelectedRayProbeResult};
 pub use vulkan::scene_buffer::{
