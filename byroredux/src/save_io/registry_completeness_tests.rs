@@ -285,6 +285,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("PlayerMode", "engine-wide FlyCam/Character flag set at scene-setup from CLI flags + scene type, not gameplay state"),
         ("RagdollActive", "marker for live ragdoll simulation, same physics-rebuild posture as PhysicsWorld above — not snapshot-restored"),
         ("RagdollTemplate", "per-actor ragdoll blueprint resolved at spawn against the loaded skeleton, rederived identically every load — same posture as PhysicsWorld"),
+        ("RegionAmbientRes", "resolved REGN Sound-entry FormIDs for the resident cell/tile (EX-16 item 1 / #2372), rederived identically from the cell's XCLR list + the plugin's parsed REGN map every cell load — same posture as CellLightingRes/NavmeshTile"),
         ("SandboxSitClip", "resolved once at cell load from the archive provider, read-only afterward"),
         ("SaveState", "save-slot directory + ring cursor, resumed from disk at startup (SaveState::new) — save/load plumbing itself, not part of the world snapshot"),
         ("SceneImportCache", "process-lifetime parsed-scene cache wrapper around the same ParsedNifCache core as NifImportRegistry"),

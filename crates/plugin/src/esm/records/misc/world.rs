@@ -4,6 +4,7 @@
 use super::super::common::{read_zstring, CommonNamedFields};
 use crate::esm::reader::{FormIdRemap, SubRecord};
 use crate::esm::sub_reader::SubReader;
+use std::collections::HashMap;
 
 /// Navigation mesh master record (`NAVI`). Skyrim+ splits navigation
 /// metadata into a top-level master + per-cell `NAVM` children; for
@@ -608,6 +609,35 @@ impl RegnRecord {
         matching.sort_by(|a, b| b.priority.cmp(&a.priority));
         matching
     }
+}
+
+/// Resolve the highest-priority `RDAT` `Sound` entry across every region
+/// tagging one resident cell (`CellData::regions`, XCLR) — EX-16 item 1's
+/// "REGN runtime consumption" (#2372).
+///
+/// A cell can be tagged by several overlapping `REGN` polygons at once;
+/// `RDAT`'s authored `priority` byte is the only cross-region ordering
+/// signal that exists (there is no "region A outranks region B" field).
+/// Ties keep authoring order — `region_form_ids` order first, then
+/// within-region entry order — the same tie-break
+/// [`RegnRecord::entries_by_priority`] uses, generalised across more than
+/// one region.
+///
+/// A FormID absent from `regions` (bad data, or a REGN this parser never
+/// saw) is skipped rather than treated as an error — mirrors every other
+/// "resolve a FormID, tolerate a miss" site in this crate.
+pub fn select_active_region_sound<'a>(
+    region_form_ids: &[u32],
+    regions: &'a HashMap<u32, RegnRecord>,
+) -> Option<&'a RegionDataEntry> {
+    let mut candidates: Vec<&RegionDataEntry> = region_form_ids
+        .iter()
+        .filter_map(|id| regions.get(id))
+        .flat_map(|r| r.entries.iter())
+        .filter(|e| e.kind == RegionDataKind::Sound)
+        .collect();
+    candidates.sort_by(|a, b| b.priority.cmp(&a.priority));
+    candidates.into_iter().next()
 }
 
 /// Decode a little-endian `u32` at `offset`, or `None` past the end.
@@ -2112,5 +2142,133 @@ mod navm_tests {
         d.push(0xFF); // 17 bytes
         let r = parse_navm(1, &[verts(3), sub(b"NVTR", &d)]);
         assert_eq!(r.triangles.len(), 1);
+    }
+
+    // ── `select_active_region_sound` (EX-16 item 1, #2372) ────────────
+
+    fn sound_entry(priority: u8, music: Option<u32>) -> RegionDataEntry {
+        RegionDataEntry {
+            kind: RegionDataKind::Sound,
+            flags: 0,
+            priority,
+            payload: RegionDataPayload::Sound {
+                music,
+                incidental: None,
+                sounds: Vec::new(),
+            },
+        }
+    }
+
+    fn weather_entry(priority: u8) -> RegionDataEntry {
+        RegionDataEntry {
+            kind: RegionDataKind::Weather,
+            flags: 0,
+            priority,
+            payload: RegionDataPayload::Weather(Vec::new()),
+        }
+    }
+
+    fn regn(form_id: u32, entries: Vec<RegionDataEntry>) -> RegnRecord {
+        RegnRecord {
+            form_id,
+            entries,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn picks_the_only_sound_entry_in_a_single_tagging_region() {
+        let mut regions = HashMap::new();
+        regions.insert(0x10, regn(0x10, vec![sound_entry(50, Some(0xAAAA))]));
+        let winner = select_active_region_sound(&[0x10], &regions).expect("one Sound entry");
+        assert_eq!(
+            winner.payload,
+            RegionDataPayload::Sound {
+                music: Some(0xAAAA),
+                incidental: None,
+                sounds: Vec::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn higher_priority_wins_across_two_tagging_regions() {
+        // A cell tagged by two overlapping REGN polygons — the RDAT
+        // priority byte, not region list order, decides the winner.
+        let mut regions = HashMap::new();
+        regions.insert(0x10, regn(0x10, vec![sound_entry(50, Some(0xAAAA))]));
+        regions.insert(0x20, regn(0x20, vec![sound_entry(90, Some(0xBBBB))]));
+        // List the lower-priority region FIRST to prove priority, not
+        // list order, is what wins.
+        let winner =
+            select_active_region_sound(&[0x10, 0x20], &regions).expect("higher-priority region");
+        assert_eq!(
+            winner.payload,
+            RegionDataPayload::Sound {
+                music: Some(0xBBBB),
+                incidental: None,
+                sounds: Vec::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn ties_keep_region_list_order_then_within_region_order() {
+        let mut regions = HashMap::new();
+        regions.insert(0x10, regn(0x10, vec![sound_entry(50, Some(0x1111))]));
+        regions.insert(0x20, regn(0x20, vec![sound_entry(50, Some(0x2222))]));
+        let winner = select_active_region_sound(&[0x10, 0x20], &regions).unwrap();
+        assert_eq!(
+            winner.payload,
+            RegionDataPayload::Sound {
+                music: Some(0x1111),
+                incidental: None,
+                sounds: Vec::new(),
+            },
+            "equal priority must keep the first-listed region's entry, mirroring \
+             entries_by_priority's stable-sort tie-break"
+        );
+    }
+
+    #[test]
+    fn non_sound_entries_never_win_even_at_higher_priority() {
+        let mut regions = HashMap::new();
+        regions.insert(
+            0x10,
+            regn(0x10, vec![weather_entry(100), sound_entry(10, Some(0x1))]),
+        );
+        let winner = select_active_region_sound(&[0x10], &regions).unwrap();
+        assert_eq!(winner.kind, RegionDataKind::Sound);
+    }
+
+    #[test]
+    fn no_tagging_regions_yields_none() {
+        let regions = HashMap::new();
+        assert!(select_active_region_sound(&[], &regions).is_none());
+    }
+
+    #[test]
+    fn a_tagging_region_missing_from_the_map_is_skipped_not_a_panic() {
+        // The cell's XCLR points at a REGN this parser never saw (bad
+        // load order, or a REGN type this parser doesn't model) — must
+        // not panic, and other tagging regions still resolve.
+        let mut regions = HashMap::new();
+        regions.insert(0x20, regn(0x20, vec![sound_entry(50, Some(0x2222))]));
+        let winner = select_active_region_sound(&[0x10_u32, 0x20], &regions).unwrap();
+        assert_eq!(
+            winner.payload,
+            RegionDataPayload::Sound {
+                music: Some(0x2222),
+                incidental: None,
+                sounds: Vec::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn a_tagging_region_with_no_sound_entries_yields_none() {
+        let mut regions = HashMap::new();
+        regions.insert(0x10, regn(0x10, vec![weather_entry(100)]));
+        assert!(select_active_region_sound(&[0x10], &regions).is_none());
     }
 }

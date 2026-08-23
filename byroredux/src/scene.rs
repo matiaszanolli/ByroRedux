@@ -596,8 +596,8 @@ mod world_setup;
 // reuse them on Interior→Exterior swaps — same boot-path code, no
 // duplication. See cell_loader::transition.
 pub(crate) use world_setup::{
-    apply_cell_climate_override, assemble_exterior_streaming, begin_exterior_streaming,
-    ExteriorBootstrapMode,
+    apply_cell_climate_override, apply_cell_region_ambient, assemble_exterior_streaming,
+    begin_exterior_streaming, ExteriorBootstrapMode,
 };
 // The four `scene/*_tests.rs` child modules reach for these helpers
 // via `use super::*;` so they need to be in scope at the parent
@@ -795,6 +795,12 @@ pub(crate) fn setup_scene(
                     // interior fallback instead of inheriting a stale
                     // resource (FNV-D1-01).
                     cell_loader::apply_interior_cell_lighting(world, result.lighting.as_ref());
+                    // EX-16 item 1 (#2372) — same "always insert, never
+                    // leave a stale prior-cell resource" reasoning as
+                    // lighting above; `RegionAmbientRes::default()` is the
+                    // correct value for a cell with no ambient directive,
+                    // not an absent resource.
+                    world.insert_resource(result.region_ambient);
                     log::info!(
                         "Cell '{}' ready: {} entities",
                         result.cell_name,

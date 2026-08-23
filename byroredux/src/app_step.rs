@@ -79,6 +79,12 @@ impl App {
             player_grid,
             &mut state.applied_climate_form,
         );
+        // EX-16 item 1 (#2372) — same "outside the grid_changed guard"
+        // placement as the climate override immediately above, and for
+        // the same reason: a session that starts inside a region-tagged
+        // cell must get its ambient directive on frame 0, not only on
+        // the first subsequent boundary crossing.
+        crate::scene::apply_cell_region_ambient(&mut self.world, &state.wctx, player_grid);
         let grid_changed = state.last_player_grid != Some(player_grid);
         if grid_changed {
             let dispatch_started = Instant::now();

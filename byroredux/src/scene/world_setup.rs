@@ -490,6 +490,42 @@ pub(crate) fn apply_cell_climate_override(
     true
 }
 
+/// Re-resolve the REGN ambient-sound directive (EX-16 item 1, #2372's
+/// `RegionAmbientRes`) for the exterior tile the player is currently in.
+///
+/// Unlike [`apply_cell_climate_override`], resolution itself is
+/// unconditional every call — a `HashMap` lookup plus a handful of field
+/// copies, cheap enough that gating the *resolve* isn't worth the extra
+/// state. The `RegionAmbientRes` *write* is still change-guarded so a
+/// player standing still doesn't churn the resource every frame. Called
+/// outside the grid-changed guard in `step_streaming`, mirroring the
+/// climate override's own placement — a session that starts (or a save
+/// that loads) inside a region-tagged cell must get its ambient directive
+/// applied immediately, not only on the first subsequent crossing.
+pub(crate) fn apply_cell_region_ambient(
+    world: &mut World,
+    wctx: &cell_loader::ExteriorWorldContext,
+    player_grid: (i32, i32),
+) {
+    let region_form_ids: &[u32] = wctx
+        .record_index
+        .cells
+        .exterior_cells
+        .get(&wctx.worldspace_key)
+        .and_then(|cells| cells.get(&player_grid))
+        .map(|cell| cell.regions.as_slice())
+        .unwrap_or(&[]);
+    let ambient =
+        crate::components::RegionAmbientRes::resolve(region_form_ids, &wctx.record_index.regions);
+    let unchanged = world
+        .try_resource::<crate::components::RegionAmbientRes>()
+        .is_some_and(|existing| *existing == ambient);
+    if unchanged {
+        return;
+    }
+    world.insert_resource(ambient);
+}
+
 /// #3194 — sanitise a resolved `WindField` once, at the single install
 /// site ([`install_ground_cover`]), so every consumer (SpeedTree billboard
 /// sway, render-side water scroll, physics-side water scroll) inherits one

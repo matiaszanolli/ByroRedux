@@ -87,7 +87,7 @@ pub use scene::{
 pub use water::{parse_watr, watr_to_params, WaterParams, WatrRecord};
 pub use world::{
     parse_acti, parse_eczn, parse_imgs, parse_lgtm, parse_navi, parse_navm, parse_regn, parse_term,
-    ActiRecord, EcznRecord, ImgsRecord, LgtmRecord, NaviRecord, NavmExternalConnection, NavmRecord,
-    NavmTriangle, RegionArea, RegionDataEntry, RegionDataKind, RegionDataPayload, RegionSound,
-    RegionWeather, RegnRecord, TermRecord,
+    select_active_region_sound, ActiRecord, EcznRecord, ImgsRecord, LgtmRecord, NaviRecord,
+    NavmExternalConnection, NavmRecord, NavmTriangle, RegionArea, RegionDataEntry, RegionDataKind,
+    RegionDataPayload, RegionSound, RegionWeather, RegnRecord, TermRecord,
 };

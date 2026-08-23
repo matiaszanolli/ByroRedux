@@ -309,6 +309,9 @@ fn exec_load_interior(
             // `XCLL`/resolvable `LTMP` still gets the engine-default
             // interior fallback rather than a stale carry-over (FNV-D1-01).
             cell_loader::apply_interior_cell_lighting(world, result.lighting.as_ref());
+            // EX-16 item 1 (#2372) — same always-insert reasoning as
+            // lighting above (see the comment there).
+            world.insert_resource(result.region_ambient);
             ctx.signal_temporal_discontinuity(SVGF_TAA_STREAMING_RECOVERY_FRAMES);
             // Update the LoadedPluginSet so a subsequent
             // `door.teleport` from inside the debug-loaded cell

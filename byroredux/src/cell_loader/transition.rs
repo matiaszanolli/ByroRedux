@@ -468,6 +468,10 @@ pub fn load_interior_cell(
     // still gets the engine-default interior fallback, not a stale carry-
     // over from the exterior cell just departed (FNV-D1-01).
     super::apply_interior_cell_lighting(world, result.lighting.as_ref());
+    // EX-16 item 1 (#2372) — same always-insert reasoning as lighting
+    // above: a door-walk into a region-less cell must clear whatever
+    // ambient directive the departed cell left behind, not inherit it.
+    world.insert_resource(result.region_ambient);
 
     let dest_pos = position_zup_to_yup(dest_pos_zup);
     let dest_rot = rotation_zup_to_yup_quat(dest_rot_zup);

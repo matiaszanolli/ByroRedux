@@ -33,6 +33,11 @@ pub struct CellLoadResult {
     pub center: Vec3,
     /// Interior cell lighting (ambient + directional).
     pub lighting: Option<byroredux_plugin::esm::cell::CellLighting>,
+    /// Resolved REGN ambient-sound directive (EX-16 item 1, #2372) — the
+    /// cell's highest-priority tagging region's `Sound` entry, if any.
+    /// `Default` (both fields `None`) when the cell has no `XCLR` regions
+    /// or none of them author a `Sound` RDAT.
+    pub region_ambient: crate::components::RegionAmbientRes,
 }
 
 /// Ambient-only "no authored data" interior default — installed by
@@ -518,6 +523,12 @@ pub fn load_cell_with_masters(
     let cell_name = cell.editor_id.clone();
     let entity_count = result.entity_count;
     let center = result.center;
+    // EX-16 item 1 (#2372) — same "capture before the move" constraint as
+    // `cell_name` above: `cell.regions` borrows from `index.cells`, and
+    // `index.regions` (a sibling field, untouched by the move) is what
+    // resolves it against.
+    let region_ambient =
+        crate::components::RegionAmbientRes::resolve(&cell.regions, &index.regions);
 
     // #1668 — surface GLOB runtime values so CTDA "Use Global" comparands
     // resolve. Keyed in global load-order space (EsmIndex remaps record
@@ -555,6 +566,7 @@ pub fn load_cell_with_masters(
         entity_count,
         center,
         lighting: resolved_lighting,
+        region_ambient,
     })
 }
 

@@ -767,15 +767,50 @@ today**, confirmed by exhaustive grep.
    blocker). `asset_provider::audio::{resolve_sound_path,
    sound_archive_path}` add the FormID→archive-key resolver, mirroring
    `script::pex_archive_path`'s shape (lowercase, `sound\` folder
-   prefix, no double-prefixing). Both landed ahead of their consumer
-   (`#[allow(dead_code)]`), same posture as `NavmeshTile` below — item
-   5's REGN-keyed `AudioEmitter` is the pending caller, not built here.
-   9 new unit tests (3 `parse_soun`, 6 resolver). **Still open**: the
-   actual REGN runtime consumption this item is titled for — iterating
-   a resident cell's `regions: Vec<u32>` in priority order, selecting
-   the active Sound/Weather/Map/etc. entries, and routing Sound entries
-   through the new resolver into a real `AudioEmitter` (item 5). The
-   prerequisites are unblocked; the wiring itself is not attempted here.
+   prefix, no double-prefixing). 9 unit tests (3 `parse_soun`, 6
+   resolver).
+
+   **Selection + live resolution also done (2026-08-23), same day.**
+   `select_active_region_sound` (`crates/plugin/src/esm/records/misc/
+   world.rs`) generalises `RegnRecord::entries_by_priority` across every
+   region tagging one cell: given a cell's `regions: Vec<u32>` (XCLR) and
+   the parsed `REGN` map, it collects every tagging region's `Sound`
+   entries and picks the authored-priority winner (stable-sort tie-break,
+   same rule as the single-region method). `RegionAmbientRes`
+   (`byroredux/src/components.rs`) is the CPU-only resource carrying the
+   winner's `music`/`incidental` FormIDs — deliberately NOT the RDAT
+   `sounds: Vec<RegionSound>` ambient-loop list, whose `chance_raw`
+   selection probability has an unresolved fixed-point scale (ties back
+   to item 5's #2372 note); picking one without a verified scale would be
+   a guessed threshold. Wired at cell-apply time on both loaders: interior
+   via a new `CellLoadResult::region_ambient` field (computed alongside
+   `resolved_lighting`, before the `index.cells` move, same pattern the
+   existing `cell_name` capture already uses) and inserted at all three
+   production call sites (`scene.rs`, `debug_load.rs`,
+   `transition.rs`) right next to `apply_interior_cell_lighting`; exterior
+   via a new `scene::apply_cell_region_ambient`, called from
+   `App::step_streaming` right next to `apply_cell_climate_override` (same
+   "outside the grid-changed guard" placement, for the same bootstrap
+   reason), resolving against `wctx.record_index.cells.exterior_cells` +
+   `wctx.record_index.regions` — no new state needed, `ExteriorWorldContext`
+   already retained the full `EsmIndex`. 7 new selection tests + 3
+   resource tests; `RegionAmbientRes` classified in
+   `NOT_SAVED_BY_DESIGN` (rederived identically every load, same posture
+   as `CellLightingRes`/`NavmeshTile`).
+
+   **Still open**: `RegionAmbientRes` has zero consumers — it's real,
+   testable, live-updating state, but nothing plays a sound from it yet.
+   That's item 5's REGN-keyed `AudioEmitter` (BSA archive provider for
+   `--sounds-bsa`, `load_streaming_sound_from_bytes` + `AudioWorld::
+   play_music` dispatch, crossfade-on-change), landed ahead of its
+   consumer the same way `NavmeshTile` and `PersistentRefIndex` were.
+   Also still open: `Weather`/`Map`/`Landscape`/`Objects`/`Grass`/
+   `Imposter` RDAT kinds have no selection logic at all (only `Sound` was
+   built, since it's what item 5 needs) — REGN-driven weather-table
+   selection in particular would overlap with the worldspace-level
+   climate/weather system and needs its own design pass, not an
+   assumption that `select_active_region_sound`'s shape generalises
+   cleanly to every kind.
 2. [x] **NAVM streaming lifecycle** — done. Landed `NavmeshTile`
    (`byroredux/src/components.rs`), a plain CPU-only component wrapping
    one resident `NavmRecord`, spawned by the new
@@ -817,11 +852,21 @@ today**, confirmed by exhaustive grep.
    crossfade/prune-on-unload machinery already exists (`AudioEmitter`,
    `unload_fade_ms`, `prune_stopped_sounds`, `crates/audio/src/lib.rs`);
    needs a REGN-keyed emitter type reusing it, gated behind item 1.
-   **Unblocked (2026-08-23)**: item 1's `resolve_sound_path`/
-   `sound_archive_path` (`asset_provider/audio.rs`) give this a
-   FormID→archive-key resolver to build on; still to do is the REGN-
-   keyed emitter type itself plus the active-region selection logic
-   (priority order, per-cell `regions: Vec<u32>` walk).
+   **Further unblocked (2026-08-23)**: item 1 now supplies the whole
+   chain up to (not including) playback — `RegionAmbientRes` is a real,
+   live-updating resource carrying the resolved `music`/`incidental`
+   FormIDs for whatever cell/tile is resident, and
+   `resolve_sound_path`/`sound_archive_path` turn either into an
+   archive key. What's left is purely the playback half: a
+   `SoundArchiveProvider` (mirroring `ScriptProvider` — no persistent
+   `--sounds-bsa` archive handle exists today; `try_load_default_
+   footstep`/`try_load_default_water_splash` each reopen the archive
+   ad hoc for one hardcoded path, which doesn't fit an arbitrary-FormID
+   lookup), a system that watches `RegionAmbientRes` for a change and
+   dispatches `load_streaming_sound_from_bytes` +
+   `AudioWorld::play_music` (crossfade is already free — `play_music`
+   fades out any existing track), and the REGN-keyed emitter type for
+   `incidental`/future `sounds` list playback.
 6. [ ] **OwnershipTracker telemetry** — add `navm_tiles_resident`,
    `regn_active_entries`, `ai_package_rows` classes following the existing
    `OwnerClass`/`ReclaimPolicy` pattern (`ownership.rs`), once items 2/4
@@ -829,16 +874,17 @@ today**, confirmed by exhaustive grep.
 
 **Recommended sequencing**: item 2 (NAVM streaming lifecycle) is done.
 Item 1 (REGN ambient sound) turned out NOT to be dependency-free — see its
-correction above; a real `SOUN` field decode is a prerequisite. **Both of
-item 1's named prerequisites (SOUN decode, FormID→path resolver) are now
-done (2026-08-23)**, unblocking item 5 at the prerequisite level; the
-REGN runtime-consumption wiring itself (priority-ordered region walk +
-active-entry selection + the REGN-keyed emitter type) remains open and is
-still recommended as its own follow-up given its size relative to the
-rest of this issue. Items 4-6 are downstream of #2370 (persistent-ref
-identity, landed) or #2369 (ground cover, not landed); item 3
-(pathfinding) is recommended as its own follow-up issue rather than
-folded into EX-16 directly.
+correction above; a real `SOUN` field decode was a prerequisite. **Item
+1 is now done end-to-end up to playback (2026-08-23)**: SOUN decode,
+FormID→path resolver, the priority-ordered cross-region `Sound`-entry
+selector, and the live `RegionAmbientRes` resource wired into both cell
+loaders. What remains under item 5 is purely the audio-dispatch half
+(a `SoundArchiveProvider`, the streaming-music system, the REGN-keyed
+emitter type) — a well-scoped, still-real follow-up, but no longer
+blocked on any design or parsing gap. Items 4/6 are downstream of #2370
+(persistent-ref identity, landed) or #2369 (ground cover, not landed);
+item 3 (pathfinding) is recommended as its own follow-up issue rather
+than folded into EX-16 directly.
 
 ## Verification policy
 

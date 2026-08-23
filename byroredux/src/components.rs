@@ -478,6 +478,132 @@ impl CellLightingRes {
 
 impl Resource for CellLightingRes {}
 
+/// Resolved ambient-audio directive for the currently resident cell's
+/// highest-priority `REGN` `Sound` entry (EX-16 item 1, #2372). CPU-only —
+/// carries FormIDs, not decoded audio; `asset_provider::audio`'s
+/// `resolve_sound_path`/`sound_archive_path` resolve them to archive
+/// paths, and a consumer (item 5's REGN-keyed `AudioEmitter`, not yet
+/// built) dispatches actual playback. Mirrors `CellLightingRes`'s shape
+/// and lifecycle: computed once at cell-apply time from data already
+/// parsed into `EsmIndex`, not recomputed per-frame.
+///
+/// Deliberately carries only `music`/`incidental` — both are single
+/// authored FormIDs (`RDMD`/`RDMO`/`RDSB` and `RDSI`). The RDAT
+/// `sounds: Vec<RegionSound>` ambient-loop list is NOT surfaced here:
+/// each entry's `chance_raw` selection probability has an unresolved
+/// fixed-point scale (see `RegionSound`'s doc in `misc/world.rs`), and
+/// picking one without a verified scale would be exactly the kind of
+/// guessed threshold this project's no-guessing policy exists to
+/// prevent.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct RegionAmbientRes {
+    /// `RDMD` (Oblivion) / `RDMO` (Skyrim) / `RDSB` (FNV) — the winning
+    /// entry's background-music/ambient-bed FormID.
+    pub music_form: Option<u32>,
+    /// `RDSI` — FNV-only incidental sound FormID.
+    pub incidental_form: Option<u32>,
+}
+
+impl RegionAmbientRes {
+    /// Resolve from a resident cell's `regions` (XCLR) FormID list against
+    /// the parsed `REGN` map. Empty/no-match input yields `Self::default()`
+    /// (both fields `None`) rather than an `Option<Self>` — an unambiguous
+    /// "no ambient directive" state a consumer can read unconditionally,
+    /// same posture as `CellLightingRes`'s always-present-resource design.
+    pub(crate) fn resolve(
+        region_form_ids: &[u32],
+        regions: &HashMap<u32, byroredux_plugin::esm::records::RegnRecord>,
+    ) -> Self {
+        use byroredux_plugin::esm::records::{select_active_region_sound, RegionDataPayload};
+        let Some(entry) = select_active_region_sound(region_form_ids, regions) else {
+            return Self::default();
+        };
+        match &entry.payload {
+            RegionDataPayload::Sound {
+                music, incidental, ..
+            } => Self {
+                music_form: *music,
+                incidental_form: *incidental,
+            },
+            // `select_active_region_sound` only ever returns a `Sound`-kind
+            // entry, so this arm is unreachable in practice; kept instead
+            // of `unreachable!()` so a future payload-shape change fails
+            // soft (no ambient directive) rather than panicking mid-load.
+            _ => Self::default(),
+        }
+    }
+}
+
+impl Resource for RegionAmbientRes {}
+
+#[cfg(test)]
+mod region_ambient_res_tests {
+    use super::*;
+    use byroredux_plugin::esm::records::{
+        RegionDataEntry, RegionDataKind, RegionDataPayload, RegnRecord,
+    };
+    use std::collections::HashMap;
+
+    fn regn(entries: Vec<RegionDataEntry>) -> RegnRecord {
+        RegnRecord {
+            entries,
+            ..Default::default()
+        }
+    }
+
+    fn sound_entry(priority: u8, music: Option<u32>, incidental: Option<u32>) -> RegionDataEntry {
+        RegionDataEntry {
+            kind: RegionDataKind::Sound,
+            flags: 0,
+            priority,
+            payload: RegionDataPayload::Sound {
+                music,
+                incidental,
+                sounds: Vec::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn resolves_music_and_incidental_from_the_winning_entry() {
+        let mut regions = HashMap::new();
+        regions.insert(
+            0x10,
+            regn(vec![sound_entry(50, Some(0xAAAA), Some(0xBBBB))]),
+        );
+        let res = RegionAmbientRes::resolve(&[0x10], &regions);
+        assert_eq!(res.music_form, Some(0xAAAA));
+        assert_eq!(res.incidental_form, Some(0xBBBB));
+    }
+
+    #[test]
+    fn no_tagging_regions_yields_default() {
+        let regions = HashMap::new();
+        assert_eq!(
+            RegionAmbientRes::resolve(&[], &regions),
+            RegionAmbientRes::default()
+        );
+    }
+
+    #[test]
+    fn a_tagging_region_with_no_sound_entry_yields_default() {
+        let mut regions = HashMap::new();
+        regions.insert(
+            0x10,
+            regn(vec![RegionDataEntry {
+                kind: RegionDataKind::Weather,
+                flags: 0,
+                priority: 100,
+                payload: RegionDataPayload::Weather(Vec::new()),
+            }]),
+        );
+        assert_eq!(
+            RegionAmbientRes::resolve(&[0x10], &regions),
+            RegionAmbientRes::default()
+        );
+    }
+}
+
 #[cfg(test)]
 mod cell_lighting_res_tests {
     //! Regression for #861 — extended XCLL fields propagate through the
