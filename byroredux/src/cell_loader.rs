@@ -77,6 +77,7 @@ pub(crate) mod spawn;
 mod terrain;
 mod terrain_lod;
 mod terrain_lod_btr;
+mod terrain_seam;
 mod transition;
 mod unload;
 mod water;

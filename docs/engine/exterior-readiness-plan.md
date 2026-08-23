@@ -429,14 +429,25 @@ starts from the corrected state.
    risk in that function), VNML/VCLR raw-byte storage, and the
    ATXT-then-VTXT pairing contract (multi-layer, orphan-VTXT-dropped). No
    such coverage existed before.
-6. [ ] **Adjacent-cell crack detection** — not started. `spawn_terrain_mesh`
-   builds each cell independently from its own `LandscapeData`; nothing
-   verifies neighboring cells' shared edge vertices/normals agree, despite
-   LAND's 33×33 grid being authored to share edge rows/columns by
-   construction (`crates/plugin/src/esm/cell/mod.rs:165-167`). Add a pure
-   seam-agreement checker plus a capture-mode addition to
-   `m-exteriors.sh` — this is a detection/regression gate, not a
-   geometry rebuild.
+6. [x] **Adjacent-cell crack detection** — pure checker half done; live
+   wiring flagged, not rushed. Landed `cell_loader::terrain_seam::
+   check_seam` — a pure function over two `LandscapeData` values (no
+   `World`/`VulkanContext`) that reports every shared-edge vertex where
+   two adjacent cells' heights disagree, plus whether their VNML raw
+   bytes disagree at the edge, mirroring `lod_coverage`'s "pure
+   functions over plain state" posture. Deliberately reports facts, not
+   a pass/fail verdict — inventing a height-delta tolerance without real
+   corpus data to calibrate it against would be exactly the guessed
+   threshold this project avoids elsewhere (see item 5's note on the same
+   constraint). 8 unit tests. **What's still open**: wiring this into a
+   live `m-exteriors.sh` capture-mode check (item 7's stated
+   prerequisite) needs `LandscapeData` to be resident somewhere queryable
+   after `spawn_terrain_mesh` runs — today it's a transient parse-result,
+   consumed and dropped at spawn time, confirmed by grep (zero retention
+   sites). That's a real design decision, not a small addition: retain
+   the full 33×33 grid per loaded cell (~4.4 KB/cell, simplest) vs. a
+   lighter edge-only cache storing just the 4 border rows/columns
+   (~130 B/cell). Flagged for a deliberate choice, not guessed at here.
 7. [ ] **Extend `lod_coverage.rs`/`m-exteriors.sh`** to catch near-field
    (full-detail LAND) geometric cracks/holes and pixel-level seam
    regressions. The live `lod.coverage` gate (`lod_coverage.rs`,
