@@ -1584,7 +1584,9 @@ mod tests {
     /// `context/mod.rs` able to fall back at all.
     #[test]
     fn placeholders_are_created_before_the_passes_that_fall_back_to_them() {
-        let src = include_str!("mod.rs");
+        // #1749 / TD1-004 — this init-order sequence lives in `init.rs`'s
+        // `build_pipelines_and_finish` now, not `mod.rs`.
+        let src = include_str!("init.rs");
 
         let ao_create = src
             .find("PlaceholderImage::new_white_ao")
@@ -1614,7 +1616,9 @@ mod tests {
     /// stale "scaffold-only window" justification must be gone.
     #[test]
     fn init_path_water_set_2_falls_back_and_drops_the_stale_comment() {
-        let src = include_str!("mod.rs");
+        // #1749 / TD1-004 — this init-path wiring lives in `init.rs`'s
+        // `build_pipelines_and_finish` now, not `mod.rs`.
+        let src = include_str!("init.rs");
 
         assert!(
             !src.contains("won't fire during the\n        // scaffold-only window"),

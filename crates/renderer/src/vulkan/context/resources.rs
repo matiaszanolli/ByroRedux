@@ -739,7 +739,9 @@ mod tests {
         let production = &resources_src_full[..resources_src_full
             .find("mod tests {")
             .expect("resources.rs must have a `mod tests` block")];
-        let mod_src = include_str!("mod.rs");
+        // #1749 / TD1-004 — the image_health_buffers allocation loop lives
+        // in `init.rs`'s `build_pipelines_and_finish` now, not `mod.rs`.
+        let mod_src = include_str!("init.rs");
 
         assert!(
             mod_src.contains("GpuBuffer::create_host_readback("),

@@ -1153,7 +1153,11 @@ mod tests {
     /// from inside the guard.
     #[test]
     fn fsr_context_teardown_sits_outside_the_allocator_guard() {
-        const CONTEXT_MOD_RS: &str = include_str!("context/mod.rs");
+        // #1749 / TD1-004 — `destroy_allocator_owned_resources` and
+        // `impl Drop for VulkanContext` both moved to `context/teardown.rs`
+        // (together, as one contiguous block) — the mirror image of
+        // `context/init.rs`.
+        const CONTEXT_MOD_RS: &str = include_str!("context/teardown.rs");
         let helper = CONTEXT_MOD_RS
             .split_once("unsafe fn destroy_allocator_owned_resources")
             .expect("the allocator-owned teardown helper disappeared (#2406)")
