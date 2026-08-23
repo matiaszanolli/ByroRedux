@@ -342,6 +342,12 @@ pub fn drain_streaming_state(
     // streaming state.
     ctx.flush_pending_destroys();
     state.shutdown(std::time::Duration::from_secs(1));
+    // EX-09/17 item 4 — this is the single choke point every streaming
+    // teardown funnels through (Exterior→Interior, Exterior→Exterior,
+    // save-load reload), so it's the right place to clear the exterior
+    // identity mirror — same posture as `unload_current_interior` owning
+    // `clear_current_interior_identity`.
+    cell_loader::clear_current_exterior_identity(world);
 }
 
 /// Result of applying one worker payload through the canonical exterior

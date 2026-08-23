@@ -58,6 +58,103 @@ fn save_then_load_command_queues_with_cell_context() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// EX-09/17 item 4 — exterior counterpart of
+/// `save_then_load_command_queues_with_cell_context`: a save taken mid-
+/// exterior-streaming carries `CurrentExteriorContext` instead of
+/// `CurrentCellContext`, and `LoadCommand` must accept it rather than
+/// hitting the "live load needs an interior cell" rejection this test
+/// would have tripped before EX-09/17 item 4 landed.
+#[test]
+fn save_then_load_command_queues_with_exterior_context() {
+    use crate::cell_loader::CurrentExteriorContext;
+
+    let mut world = World::new();
+    world.insert_resource(StringPool::new());
+    world.insert_resource(FormIdPool::new());
+    world.insert_resource(build_save_registry());
+    let dir = std::env::temp_dir().join(format!("byro_m451_ext_cmd_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    world.insert_resource(SaveState::new(dir.clone(), 4));
+    world.insert_resource(PendingSaveLoadSlot::default());
+    world.insert_resource(CurrentExteriorContext {
+        worldspace_key: "tamriel".to_string(),
+        esm_path: "Oblivion.esm".to_string(),
+        masters: vec![],
+        grid: (3, -2),
+        radius_load: 2,
+        radius_unload: 3,
+    });
+
+    let e = world.spawn();
+    world.insert(e, Transform::from_translation(Vec3::new(7.0, 8.0, 9.0)));
+
+    // save → slot 0
+    let out = SaveCommand.execute(&world, "0");
+    assert!(
+        out.lines.iter().any(|l| l.contains("saved slot 0")),
+        "save output: {:?}",
+        out.lines
+    );
+
+    // load → should queue a snapshot carrying the exterior context, not
+    // get rejected for lacking an interior `CurrentCellContext`.
+    let out = LoadCommand.execute(&world, "0");
+    assert!(
+        out.lines.iter().any(|l| l.contains("tamriel")),
+        "load output: {:?}",
+        out.lines
+    );
+    let pending = world.resource::<PendingSaveLoadSlot>();
+    let snap = pending.snapshot.as_ref().expect("snapshot queued");
+    assert!(
+        snapshot_cell_context(snap).is_none(),
+        "an exterior save must not carry an interior cell context"
+    );
+    let ctx = snapshot_exterior_context(snap).expect("exterior context survived round-trip");
+    assert_eq!(ctx.worldspace_key, "tamriel");
+    assert_eq!(ctx.esm_path, "Oblivion.esm");
+    assert_eq!(ctx.grid, (3, -2));
+    assert_eq!(pending.slot, 0, "queued slot number recorded");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A save taken outside both interior and exterior modes (loose-NIF /
+/// `--mesh`) carries neither context resource — `load` must reject it
+/// with a clear message instead of silently queueing an undreadable
+/// snapshot for `execute_pending_save_loads` to fail on later.
+#[test]
+fn load_command_rejects_a_save_with_no_cell_or_exterior_context() {
+    let mut world = World::new();
+    world.insert_resource(StringPool::new());
+    world.insert_resource(FormIdPool::new());
+    world.insert_resource(build_save_registry());
+    let dir = std::env::temp_dir().join(format!("byro_no_ctx_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    world.insert_resource(SaveState::new(dir.clone(), 4));
+    world.insert_resource(PendingSaveLoadSlot::default());
+
+    let e = world.spawn();
+    world.insert(e, Transform::from_translation(Vec3::new(1.0, 1.0, 1.0)));
+
+    let out = SaveCommand.execute(&world, "0");
+    assert!(
+        out.lines.iter().any(|l| l.contains("saved slot 0")),
+        "save output: {:?}",
+        out.lines
+    );
+
+    let out = LoadCommand.execute(&world, "0");
+    assert!(
+        out.lines.iter().any(|l| l.starts_with("Error:")),
+        "a loose save must be rejected, not queued: {:?}",
+        out.lines
+    );
+    assert!(world.resource::<PendingSaveLoadSlot>().snapshot.is_none());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// #1848 / SAVE-05 — two `load` commands in the same frame (before
 /// `execute_pending_save_loads` drains) resolve last-writer-wins, and
 /// the superseded request is *reported* rather than silently dropped.

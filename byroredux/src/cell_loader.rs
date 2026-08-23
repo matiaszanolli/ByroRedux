@@ -87,10 +87,14 @@ pub use index::LoadedCellIndex;
 pub use transition::{
     load_interior_cell, log_transition_header, position_zup_to_yup, queue_door_transition,
     reposition_camera, rotation_zup_to_yup_quat, take_pending_transition, unload_current_interior,
-    CurrentCellContext, CurrentCellRoot, InteriorCellRequest, LoadedPluginSet,
-    PendingCellTransition, PendingCellTransitionSlot, QueueDoorTransitionError,
+    CurrentCellContext, CurrentCellRoot, CurrentExteriorContext, InteriorCellRequest,
+    LoadedPluginSet, PendingCellTransition, PendingCellTransitionSlot, QueueDoorTransitionError,
     QueuedDoorTransition, TransitionDestination,
 };
+// `clear_current_exterior_identity` is an internal teardown helper (only
+// `streaming_helpers::drain_streaming_state` calls it) — `pub(crate)`, not
+// part of the crate's external `pub` surface the block above re-exports.
+pub(crate) use transition::clear_current_exterior_identity;
 
 // Public re-exports — keep the existing `crate::cell_loader::FOO`
 // call sites in main.rs / streaming.rs / commands.rs working without

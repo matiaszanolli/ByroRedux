@@ -833,6 +833,92 @@ pub(crate) fn stream_initial_radius(
     center
 }
 
+/// Assemble a [`WorldStreamingState`] from an already-resolved
+/// [`cell_loader::ExteriorWorldContext`] and stream its initial footprint —
+/// the runtime-setup half of [`begin_exterior_streaming`], split out so a
+/// caller that must validate the worldspace *before* committing to a
+/// destructive teardown (`save_io::execute_pending_save_loads`, SAVE-D6-02)
+/// can build the context first, teardown only on success, and hand the
+/// already-built context straight in here instead of paying a second parse.
+pub(crate) fn assemble_exterior_streaming(
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    wctx: cell_loader::ExteriorWorldContext,
+    tex_provider: TextureProvider,
+    mat_provider: crate::asset_provider::MaterialProvider,
+    grid: (i32, i32),
+    radius: i32,
+    bootstrap_mode: ExteriorBootstrapMode,
+) -> (WorldStreamingState, Vec3) {
+    crate::asset_provider::populate_scene_runtime(world, &wctx.record_index);
+    crate::asset_provider::populate_havok_idle_runtime(world, &wctx.record_index, &tex_provider);
+    apply_worldspace_weather(world, ctx, &tex_provider, &wctx);
+    let mut state = WorldStreamingState::new(wctx, tex_provider, mat_provider, radius);
+    state.last_player_grid = Some(grid);
+    state.spawn_lod_water(world, ctx);
+    let cam_center = stream_initial_radius(world, ctx, &mut state, grid.0, grid.1, bootstrap_mode);
+    (state, cam_center)
+}
+
+/// Build the worldspace context for `masters`/`esm_path` and start
+/// streaming it, centered on `grid` with `radius`. This is the exact
+/// sequence boot's `--grid` mode, `App::step_cell_transition`'s Exterior
+/// arm, and the `dbgload` exterior console command each ran as separately
+/// maintained copies before exterior save/load (EX-09/17 item 4)
+/// consolidated them into one call, so a fourth caller
+/// (`save_io::execute_pending_save_loads`'s reload path) doesn't add a
+/// fifth.
+///
+/// Also stamps [`cell_loader::CurrentExteriorContext`] onto `world` so a
+/// later `save` can capture the worldspace/grid/radius identity this
+/// session is actually streaming — the one piece none of the three
+/// pre-existing callers needed until save/load did.
+///
+/// Deliberately does NOT touch `CurrentCellRoot`/interior teardown or
+/// camera placement: the four call sites disagree on when (or whether)
+/// those run, so each still owns its own sequencing around this call.
+pub(crate) fn begin_exterior_streaming(
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    tex_provider: TextureProvider,
+    mat_provider: crate::asset_provider::MaterialProvider,
+    masters: &[String],
+    esm_path: &str,
+    wrld_override: Option<&str>,
+    grid: (i32, i32),
+    radius: i32,
+    bootstrap_mode: ExteriorBootstrapMode,
+) -> anyhow::Result<(WorldStreamingState, Vec3)> {
+    let wctx = cell_loader::build_exterior_world_context(
+        masters,
+        esm_path,
+        grid.0,
+        grid.1,
+        radius,
+        wrld_override,
+    )?;
+    let worldspace_key = wctx.worldspace_key.clone();
+    let (state, cam_center) = assemble_exterior_streaming(
+        world,
+        ctx,
+        wctx,
+        tex_provider,
+        mat_provider,
+        grid,
+        radius,
+        bootstrap_mode,
+    );
+    world.insert_resource(cell_loader::CurrentExteriorContext {
+        worldspace_key,
+        esm_path: esm_path.to_string(),
+        masters: masters.to_vec(),
+        grid,
+        radius_load: state.radius_load,
+        radius_unload: state.radius_unload,
+    });
+    Ok((state, cam_center))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

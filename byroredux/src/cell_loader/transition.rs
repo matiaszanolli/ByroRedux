@@ -92,6 +92,55 @@ pub struct CurrentCellRoot(pub Option<EntityId>);
 
 impl Resource for CurrentCellRoot {}
 
+/// Identity of the exterior worldspace/grid currently streaming — the
+/// `CurrentCellContext` equivalent for exterior sessions (EX-09/17 item 4).
+///
+/// `WorldStreamingState` (the thing that actually knows worldspace/grid/
+/// radius) lives on `App`, not as a `World` resource — it can't, since the
+/// streaming driver needs to borrow it alongside `VulkanContext` and the
+/// asset providers every frame, and `SaveCommand::execute` only ever sees
+/// `&World`. This resource is the deliberately-thin mirror: just the
+/// identity fields a save/load round-trip needs, kept in sync at every
+/// point that starts, moves, or tears down exterior streaming (see
+/// [`crate::scene::begin_exterior_streaming`], which sets this after every
+/// fresh exterior session, `App::step_streaming`'s grid-crossing update,
+/// and [`crate::streaming_helpers::drain_streaming_state`], which clears
+/// it — the exterior mirror of [`clear_current_interior_identity`] below).
+///
+/// Absent in loose-NIF / interior modes, same posture as `CurrentCellContext`
+/// being absent in exterior mode — the two are mutually exclusive, matching
+/// `WorldStreamingState`/`CurrentCellRoot`'s existing either-or contract.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct CurrentExteriorContext {
+    /// Lowercase worldspace EDID (`ExteriorWorldContext::worldspace_key`).
+    pub worldspace_key: String,
+    /// Main ESM path (the `--esm` value).
+    pub esm_path: String,
+    /// Master plugin paths in load order (the repeated `--master` values).
+    pub masters: Vec<String>,
+    /// Player's current grid cell — `WorldStreamingState::last_player_grid`.
+    pub grid: (i32, i32),
+    /// Load radius the session was streaming at.
+    pub radius_load: i32,
+    /// Unload radius the session was streaming at.
+    pub radius_unload: i32,
+}
+
+impl Resource for CurrentExteriorContext {}
+
+/// Clear the exterior identity mirror. Called from
+/// [`crate::streaming_helpers::drain_streaming_state`] — the same choke
+/// point every streaming teardown (Exterior→Interior, Exterior→Exterior,
+/// save-load reload) already funnels through, mirroring how
+/// [`clear_current_interior_identity`] hangs off [`unload_current_interior`]
+/// below. A fresh exterior session re-stamps this immediately after
+/// (`begin_exterior_streaming`), so the only observable "absent" window is
+/// between a teardown and its following rebuild — same as `CurrentCellRoot`
+/// briefly reading `None` mid-transition today.
+pub(crate) fn clear_current_exterior_identity(world: &mut byroredux_core::ecs::World) {
+    world.remove_resource::<CurrentExteriorContext>();
+}
+
 /// A queued cell transition. Set by trigger sites (`door.teleport`
 /// console command and E-key gameplay interaction), consumed
 /// by the main loop the next frame.

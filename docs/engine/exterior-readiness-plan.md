@@ -578,18 +578,42 @@ transitions, saves, and load-order changes.
    (actor/package migration) were blocked on** — both can now build on
    it. 5 unit tests cover resolve/miss/cross-root-exclusion/rebuild/
    invalidate.
-4. [ ] **Exterior save/load** — confirmed *not* a race (the streaming
-   worker never touches `World` directly), but genuinely unimplemented:
-   `LoadCommand::execute` (`save_io.rs:864-868`) hard-rejects any save
-   lacking `CurrentCellContext`, an interior-only resource, with the
-   explicit error "live load needs an interior cell." `WorldStreamingState`
-   lives on `App`, not as a `World` resource, so it is never captured by
-   the save registry at all — that's the core architectural gap, not a
-   missing serialization impl. Needs: a `CurrentExteriorContext`-equivalent
-   `World` resource capturing worldspace/grid/radius, plus a design
-   decision for in-flight streaming workers at capture time (cancel vs.
-   wait vs. snapshot-and-resume — pick one deliberately, don't default into
-   whichever is easiest to implement).
+4. [x] **Exterior save/load** — done. Landed `CurrentExteriorContext`
+   (`byroredux/src/cell_loader/transition.rs`), the `CurrentCellContext`
+   counterpart for exterior sessions: worldspace key + esm/masters +
+   grid + load/unload radius, save-registered like `CurrentCellContext`.
+   Kept in sync at every point a fresh exterior session starts
+   (`scene::begin_exterior_streaming`, now the single call site all four
+   producers — boot's `--grid` mode, `App::step_cell_transition`'s
+   Exterior arm, the `dbgload` console command, and `save_io`'s reload
+   path — funnel through, consolidating what had been four separately
+   maintained copies of the same setup sequence), moves (the
+   `grid_changed` block in `App::step_streaming`), or tears down
+   (`clear_current_exterior_identity`, hung off
+   `streaming_helpers::drain_streaming_state` — the same choke point
+   every exterior teardown already funnels through, mirroring how
+   `clear_current_interior_identity` hangs off `unload_current_interior`).
+   `LoadCommand::execute` now accepts either context and only rejects a
+   snapshot carrying neither (loose-NIF saves); `execute_pending_save_loads`
+   dispatches to a new `reload_exterior_session`, split from the interior
+   path into `reload_interior_session`/`reload_exterior_session` sharing
+   one restore/apply/validate/pose-restore tail.
+   **In-flight-streaming-worker decision**: cancel/drain, not wait or
+   snapshot-and-resume — the same posture `drain_streaming_state` already
+   uses at every other exterior teardown boundary (cell transitions, and
+   this function's own interior branch). A discarded in-flight cell
+   payload just means that cell isn't in `World` yet; the fresh
+   `WorldStreamingState` rebuilt around the saved grid re-requests it from
+   scratch, so nothing is lost, only re-fetched — picked because it's the
+   consistent answer, not the convenient one. Preflights the same way
+   SAVE-D6-02 requires for interior (`build_exterior_world_context` before
+   any destructive teardown, so a bad save can't strand the session in an
+   empty world), and reuses the already-built context on success rather
+   than re-parsing, avoiding the double-parse the interior path's separate
+   `validate_cell_loadable`/`load_cell_with_masters` pair accepts.
+   2 new regression tests (exterior save→load command round-trip; loose-save
+   rejection with the updated error message). Full workspace suite: 1408
+   passed (was 1406), 0 failed, no new warnings.
 5. [x] **CELL/REFR/LAND/environment multi-master merge** — fully wired and
    tested via `EsmCellIndex::merge_from`
    (`crates/plugin/src/esm/cell/mod.rs:1271-1316`): per-REFR-FormID

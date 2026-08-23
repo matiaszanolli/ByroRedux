@@ -221,7 +221,7 @@ pub fn build_save_registry() -> SaveRegistry {
         ScriptVariables, TwoStateActivator,
     };
 
-    use crate::cell_loader::CurrentCellContext;
+    use crate::cell_loader::{CurrentCellContext, CurrentExteriorContext};
     use crate::components::GameTimeRes;
 
     let mut r = SaveRegistry::new();
@@ -317,6 +317,11 @@ pub fn build_save_registry() -> SaveRegistry {
         // M45.1 — the cell identity + plugin set the save was taken in,
         // so `load` knows which cell to reload before applying deltas.
         .register_resource::<CurrentCellContext>("CurrentCellContext")
+        // EX-09/17 item 4 — the exterior-mode counterpart to
+        // `CurrentCellContext`: worldspace/grid/radius identity for a save
+        // taken mid-exterior-streaming, so `load` can rebuild the same
+        // `WorldStreamingState` instead of rejecting exterior saves outright.
+        .register_resource::<CurrentExteriorContext>("CurrentExteriorContext")
         // M45.1 refinement — where the player was standing + looking, so
         // `load` restores the pose instead of the cell's default spawn.
         .register_resource::<PlayerPose>("PlayerPose")
@@ -370,6 +375,18 @@ pub fn snapshot_cell_context(
 ) -> Option<crate::cell_loader::CurrentCellContext> {
     snap.resources
         .get("CurrentCellContext")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+}
+
+/// Pull the saved exterior-streaming context out of a decoded snapshot, if
+/// present. Returns `None` for saves taken outside exterior streaming
+/// (interior / loose-NIF modes never set `CurrentExteriorContext`) — the
+/// exterior counterpart of [`snapshot_cell_context`], EX-09/17 item 4.
+pub fn snapshot_exterior_context(
+    snap: &byroredux_save::Snapshot,
+) -> Option<crate::cell_loader::CurrentExteriorContext> {
+    snap.resources
+        .get("CurrentExteriorContext")
         .and_then(|v| serde_json::from_value(v.clone()).ok())
 }
 
@@ -861,10 +878,22 @@ impl ConsoleCommand for LoadCommand {
             Ok(s) => s,
             Err(e) => return CommandOutput::error(format!("slot {slot} INVALID: {e}")),
         };
-        let Some(ctx) = snapshot_cell_context(&snapshot) else {
-            return CommandOutput::error(
-                "save has no cell context (loose/exterior save) — live load needs an interior cell",
-            );
+        // EX-09/17 item 4 — a live load can reconstruct either kind of
+        // session now; only reject a snapshot carrying neither.
+        let destination_label = match (
+            snapshot_cell_context(&snapshot),
+            snapshot_exterior_context(&snapshot),
+        ) {
+            (Some(cell_ctx), _) => format!("cell {}", cell_ctx.cell_editor_id),
+            (None, Some(ext_ctx)) => format!(
+                "worldspace '{}' @ ({},{})",
+                ext_ctx.worldspace_key, ext_ctx.grid.0, ext_ctx.grid.1
+            ),
+            (None, None) => {
+                return CommandOutput::error(
+                    "save has no cell or exterior context (loose save) — live load needs one",
+                );
+            }
         };
 
         // Queue for the between-frames drain (needs &mut World + renderer).
@@ -889,8 +918,7 @@ impl ConsoleCommand for LoadCommand {
                     lines.push(msg);
                 }
                 lines.push(format!(
-                    "queued load of slot {slot} → cell {} (applies next frame)",
-                    ctx.cell_editor_id
+                    "queued load of slot {slot} → {destination_label} (applies next frame)",
                 ));
                 CommandOutput::lines(lines)
             }
@@ -899,44 +927,34 @@ impl ConsoleCommand for LoadCommand {
     }
 }
 
-/// Drain a queued live-load: reload the saved interior cell via the
-/// existing loader (full GPU/physics/camera setup), restore saved
-/// resources, then overlay the form-id-keyed mutable component deltas.
-///
-/// Runs once per frame after `step_debug_loads`. No-op when nothing is
-/// queued. Mirrors [`crate::debug_load::execute_pending_debug_loads`]'s
-/// synchronous loader-in-drain shape.
-pub fn execute_pending_save_loads(
+/// What a `reload_*_session` helper reports back to
+/// [`execute_pending_save_loads`]'s shared tail (delta restore/apply,
+/// validation, pose restore) once the world is repopulated.
+struct ReloadOutcome {
+    /// Human-readable location, for the shared tail's log lines —
+    /// `"cell 'FooInterior01'"` or `"worldspace 'tamriel' @ (3,-2)"`.
+    location_label: String,
+    /// What got (re)populated — `"42 entities"` for an interior cell,
+    /// `"9 cells streaming"` for an exterior worldspace. Deliberately not a
+    /// single `entity_count: usize`: exterior streaming doesn't track a
+    /// per-cell entity count the way `load_cell_with_masters`'s
+    /// `CellLoadResult` does, and counting live entities under every
+    /// just-loaded `CellRoot` post-hoc for a log line isn't worth the
+    /// query — "N cells" is the honest number this path actually has.
+    count_label: String,
+}
+
+/// Reload the saved interior cell (SAVE-D6-02 preflight → teardown →
+/// `load_cell_with_masters`). Returns `None` (having already logged why)
+/// on any failure — the caller's job is just to bail without running the
+/// shared restore/apply tail.
+fn reload_interior_session(
     world: &mut World,
     ctx: &mut byroredux_renderer::VulkanContext,
     streaming: &mut Option<crate::streaming::WorldStreamingState>,
-) {
-    let snapshot = {
-        let Some(mut slot) = world.try_resource_mut::<PendingSaveLoadSlot>() else {
-            return;
-        };
-        match slot.snapshot.take() {
-            Some(s) => s,
-            None => return,
-        }
-    };
-    let Some(cell_ctx) = snapshot_cell_context(&snapshot) else {
-        log::error!("save load: snapshot lost its cell context between queue and drain");
-        return;
-    };
-
-    let registry = build_save_registry();
-
-    // Build asset providers from the boot CLI args (same BSAs the engine
-    // is running with) — matches the cell-transition path. #2039 /
-    // PERF-D7-02: this rebuild discards the same warm BGSM/BGEM/CSG
-    // caches `step_cell_transition`'s identical rebuild does — see the
-    // caching design note on `App::step_cell_transition` in
-    // `app_step.rs` for the shape a shared cache should take.
-    let args = crate::cli_args::effective_args();
-    let tex_provider = crate::asset_provider::build_texture_provider(&args);
-    let mut mat_provider = crate::asset_provider::build_material_provider(&args);
-
+    args: &[String],
+    cell_ctx: &crate::cell_loader::CurrentCellContext,
+) -> Option<ReloadOutcome> {
     // SAVE-D6-02 — pre-flight the reload BEFORE the destructive teardown.
     // `unload_current_interior` + `drain_streaming_state` are irreversible;
     // if the reload then fails (missing/corrupt ESM, renamed/absent cell
@@ -958,7 +976,7 @@ pub fn execute_pending_save_loads(
             cell_ctx.cell_editor_id,
             e
         );
-        return;
+        return None;
     }
 
     // Tear down whatever's loaded, then reload the saved cell fresh.
@@ -967,6 +985,8 @@ pub fn execute_pending_save_loads(
     }
     crate::cell_loader::unload_current_interior(world, ctx);
 
+    let tex_provider = crate::asset_provider::build_texture_provider(args);
+    let mut mat_provider = crate::asset_provider::build_material_provider(args);
     let result = crate::cell_loader::load_cell_with_masters(
         &cell_ctx.masters,
         &cell_ctx.esm_path,
@@ -976,7 +996,7 @@ pub fn execute_pending_save_loads(
         &tex_provider,
         Some(&mut mat_provider),
     );
-    let entity_count = match result {
+    match result {
         Ok(r) => {
             // Always called (not gated on `Some`) so a cell with no
             // `XCLL`/resolvable `LTMP` still gets the engine-default
@@ -990,7 +1010,10 @@ pub fn execute_pending_save_loads(
                 masters: cell_ctx.masters.clone(),
                 esm_path: cell_ctx.esm_path.clone(),
             });
-            r.entity_count
+            Some(ReloadOutcome {
+                location_label: format!("cell '{}'", cell_ctx.cell_editor_id),
+                count_label: format!("{} entities", r.entity_count),
+            })
         }
         Err(e) => {
             log::error!(
@@ -998,8 +1021,154 @@ pub fn execute_pending_save_loads(
                 cell_ctx.cell_editor_id,
                 e
             );
-            return;
+            None
         }
+    }
+}
+
+/// Reload the saved exterior worldspace/grid (EX-09/17 item 4). Same
+/// preflight-before-teardown posture as [`reload_interior_session`]:
+/// `build_exterior_world_context` is the exterior equivalent of
+/// `validate_cell_loadable` (it's the same ESM-parse-and-resolve work,
+/// just with no separate validate-only variant), so it runs first and the
+/// already-built context is threaded straight into
+/// `scene::assemble_exterior_streaming` on success rather than paying a
+/// second parse the way the interior path's separate validate+load calls
+/// do.
+///
+/// In-flight-streaming-worker handling (the design decision the plan
+/// flagged): whatever the current session has in flight is unconditionally
+/// drained/cancelled, not waited-on or resumed — the same posture
+/// `drain_streaming_state` already uses at every other exterior teardown
+/// boundary (cell transitions, this same function's interior branch). A
+/// discarded in-flight cell payload just means that cell isn't in `World`
+/// yet; the fresh `WorldStreamingState` rebuilt below re-requests it from
+/// scratch around the saved grid, so nothing is lost, only re-fetched.
+fn reload_exterior_session(
+    world: &mut World,
+    ctx: &mut byroredux_renderer::VulkanContext,
+    streaming: &mut Option<crate::streaming::WorldStreamingState>,
+    args: &[String],
+    ext_ctx: &crate::cell_loader::CurrentExteriorContext,
+) -> Option<ReloadOutcome> {
+    let wctx = match crate::cell_loader::build_exterior_world_context(
+        &ext_ctx.masters,
+        &ext_ctx.esm_path,
+        ext_ctx.grid.0,
+        ext_ctx.grid.1,
+        ext_ctx.radius_load,
+        Some(&ext_ctx.worldspace_key),
+    ) {
+        Ok(wctx) => wctx,
+        Err(e) => {
+            log::error!(
+                "save load ABORTED — cannot rebuild worldspace '{}'; keeping the current \
+                 session so it isn't stranded in an empty world (the on-disk save is intact; \
+                 relaunch to recover): {:#}",
+                ext_ctx.worldspace_key,
+                e
+            );
+            return None;
+        }
+    };
+
+    // Tear down whatever's loaded, then rebuild the saved worldspace fresh.
+    if streaming.is_some() {
+        crate::streaming_helpers::drain_streaming_state(world, ctx, streaming);
+    }
+    crate::cell_loader::unload_current_interior(world, ctx);
+
+    let tex_provider = crate::asset_provider::build_texture_provider(args);
+    let mat_provider = crate::asset_provider::build_material_provider(args);
+    let (state, _cam_center) = crate::scene::assemble_exterior_streaming(
+        world,
+        ctx,
+        wctx,
+        tex_provider,
+        mat_provider,
+        ext_ctx.grid,
+        ext_ctx.radius_load,
+        crate::scene::ExteriorBootstrapMode::ForegroundFirst,
+    );
+    let location_label = format!(
+        "worldspace '{}' @ ({},{})",
+        ext_ctx.worldspace_key, ext_ctx.grid.0, ext_ctx.grid.1
+    );
+    let count_label = format!(
+        "{} cells streaming ({} pending)",
+        state.loaded.len(),
+        state.pending.len()
+    );
+    world.insert_resource(crate::cell_loader::LoadedPluginSet {
+        masters: ext_ctx.masters.clone(),
+        esm_path: ext_ctx.esm_path.clone(),
+    });
+    // Re-stamp the identity mirror — `assemble_exterior_streaming` doesn't
+    // (only `begin_exterior_streaming` does, and this path can't reuse that
+    // without paying the second ESM parse it exists to avoid), and
+    // `drain_streaming_state` above just cleared the stale one.
+    world.insert_resource(crate::cell_loader::CurrentExteriorContext {
+        worldspace_key: ext_ctx.worldspace_key.clone(),
+        esm_path: ext_ctx.esm_path.clone(),
+        masters: ext_ctx.masters.clone(),
+        grid: ext_ctx.grid,
+        radius_load: state.radius_load,
+        radius_unload: state.radius_unload,
+    });
+    *streaming = Some(state);
+    ctx.signal_temporal_discontinuity(crate::streaming_helpers::SVGF_TAA_STREAMING_RECOVERY_FRAMES);
+    Some(ReloadOutcome {
+        location_label,
+        count_label,
+    })
+}
+
+/// Drain a queued live-load: reload the saved cell or exterior worldspace
+/// via the existing loaders (full GPU/physics/camera setup), restore saved
+/// resources, then overlay the form-id-keyed mutable component deltas.
+///
+/// Runs once per frame after `step_debug_loads`. No-op when nothing is
+/// queued. Mirrors [`crate::debug_load::execute_pending_debug_loads`]'s
+/// synchronous loader-in-drain shape.
+pub fn execute_pending_save_loads(
+    world: &mut World,
+    ctx: &mut byroredux_renderer::VulkanContext,
+    streaming: &mut Option<crate::streaming::WorldStreamingState>,
+) {
+    let snapshot = {
+        let Some(mut slot) = world.try_resource_mut::<PendingSaveLoadSlot>() else {
+            return;
+        };
+        match slot.snapshot.take() {
+            Some(s) => s,
+            None => return,
+        }
+    };
+
+    let registry = build_save_registry();
+
+    // Build asset providers from the boot CLI args (same BSAs the engine
+    // is running with) — matches the cell-transition path. #2039 /
+    // PERF-D7-02: this rebuild discards the same warm BGSM/BGEM/CSG
+    // caches `step_cell_transition`'s identical rebuild does — see the
+    // caching design note on `App::step_cell_transition` in
+    // `app_step.rs` for the shape a shared cache should take.
+    let args = crate::cli_args::effective_args();
+
+    let outcome = if let Some(cell_ctx) = snapshot_cell_context(&snapshot) {
+        reload_interior_session(world, ctx, streaming, &args, &cell_ctx)
+    } else if let Some(ext_ctx) = snapshot_exterior_context(&snapshot) {
+        reload_exterior_session(world, ctx, streaming, &args, &ext_ctx)
+    } else {
+        log::error!("save load: snapshot lost its cell/exterior context between queue and drain");
+        return;
+    };
+    let Some(ReloadOutcome {
+        location_label,
+        count_label,
+    }) = outcome
+    else {
+        return;
     };
 
     // Restore saved resources (ItemInstancePool) so inventory instance
@@ -1013,10 +1182,8 @@ pub fn execute_pending_save_loads(
         Ok(applied) => {
             let dead = crate::combat::reconcile_dead_actor_runtime_state(world);
             log::info!(
-                "save load: cell '{}' reloaded ({} entities); applied {} saved deltas across {} \
-                 form-id-matched entities; reconciled {} dead actors",
-                cell_ctx.cell_editor_id,
-                entity_count,
+                "save load: {location_label} reloaded ({count_label}); applied {} saved deltas \
+                 across {} form-id-matched entities; reconciled {} dead actors",
                 applied,
                 remap.len(),
                 dead
@@ -1034,10 +1201,7 @@ pub fn execute_pending_save_loads(
     let mut issues = validate_world(world);
     issues.extend(validate_form_ids(world));
     issues.extend(validate_cinematic_entity_refs(world));
-    log_validation_warnings(
-        &format!("save load: cell '{}'", cell_ctx.cell_editor_id),
-        &issues,
-    );
+    log_validation_warnings(&format!("save load: {location_label}"), &issues);
 
     // M45.1 refinement — put the player back where they saved, on top of
     // the reloaded cell (which spawns the player at the default door).

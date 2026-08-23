@@ -369,15 +369,19 @@ fn exec_load_exterior(
     let tex_provider = build_texture_provider(&synth_args);
     let mat_provider = build_material_provider(&synth_args);
 
-    let wctx = match cell_loader::build_exterior_world_context(
+    let state = match crate::scene::begin_exterior_streaming(
+        world,
+        ctx,
+        tex_provider,
+        mat_provider,
         masters,
         esm,
-        grid_x,
-        grid_y,
-        clamped_radius,
         worldspace,
+        (grid_x, grid_y),
+        clamped_radius,
+        crate::scene::ExteriorBootstrapMode::ForegroundFirst,
     ) {
-        Ok(c) => c,
+        Ok((state, _cam_center)) => state,
         Err(e) => {
             log::error!(
                 "debug load exterior '{}' ({},{}): build context FAILED: {:#}",
@@ -389,21 +393,6 @@ fn exec_load_exterior(
             return;
         }
     };
-    crate::asset_provider::populate_scene_runtime(world, &wctx.record_index);
-    crate::asset_provider::populate_havok_idle_runtime(world, &wctx.record_index, &tex_provider);
-    crate::scene::apply_worldspace_weather(world, ctx, &tex_provider, &wctx);
-    let mut state =
-        streaming::WorldStreamingState::new(wctx, tex_provider, mat_provider, clamped_radius);
-    state.last_player_grid = Some((grid_x, grid_y));
-    state.spawn_lod_water(world, ctx);
-    let _ = crate::scene::stream_initial_radius(
-        world,
-        ctx,
-        &mut state,
-        grid_x,
-        grid_y,
-        crate::scene::ExteriorBootstrapMode::ForegroundFirst,
-    );
     *streaming = Some(state);
     ctx.signal_temporal_discontinuity(SVGF_TAA_STREAMING_RECOVERY_FRAMES);
 

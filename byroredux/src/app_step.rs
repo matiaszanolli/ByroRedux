@@ -83,6 +83,17 @@ impl App {
         if grid_changed {
             let dispatch_started = Instant::now();
             state.last_player_grid = Some(player_grid);
+            // EX-09/17 item 4 — keep the save-visible identity mirror
+            // current as the player walks; `begin_exterior_streaming`
+            // only stamps it at session start, so without this a save
+            // taken mid-walk would reload back at the *arrival* grid
+            // cell instead of wherever the player actually is now.
+            if let Some(mut ectx) = self
+                .world
+                .try_resource_mut::<cell_loader::CurrentExteriorContext>()
+            {
+                ectx.grid = player_grid;
+            }
             state.recenter_lod_water(&mut self.world, player_grid);
             state.lod_reconcile_pending = true;
             state
@@ -785,46 +796,19 @@ impl App {
                 // else.
                 let tex_provider = crate::asset_provider::build_texture_provider(&args);
                 let mat_provider = crate::asset_provider::build_material_provider(&args);
-                match cell_loader::build_exterior_world_context(
+                match crate::scene::begin_exterior_streaming(
+                    &mut self.world,
+                    ctx,
+                    tex_provider,
+                    mat_provider,
                     &masters,
                     &esm_path,
-                    grid.0,
-                    grid.1,
-                    transition_radius,
                     Some(&worldspace),
+                    grid,
+                    transition_radius,
+                    crate::scene::ExteriorBootstrapMode::ForegroundFirst,
                 ) {
-                    Ok(wctx) => {
-                        crate::asset_provider::populate_scene_runtime(
-                            &mut self.world,
-                            &wctx.record_index,
-                        );
-                        crate::asset_provider::populate_havok_idle_runtime(
-                            &mut self.world,
-                            &wctx.record_index,
-                            &tex_provider,
-                        );
-                        crate::scene::apply_worldspace_weather(
-                            &mut self.world,
-                            ctx,
-                            &tex_provider,
-                            &wctx,
-                        );
-                        let mut state = streaming::WorldStreamingState::new(
-                            wctx,
-                            tex_provider,
-                            mat_provider,
-                            transition_radius,
-                        );
-                        state.last_player_grid = Some(grid);
-                        state.spawn_lod_water(&mut self.world, ctx);
-                        let _ = crate::scene::stream_initial_radius(
-                            &mut self.world,
-                            ctx,
-                            &mut state,
-                            grid.0,
-                            grid.1,
-                            crate::scene::ExteriorBootstrapMode::ForegroundFirst,
-                        );
+                    Ok((state, _cam_center)) => {
                         self.streaming = Some(state);
 
                         // 4. Reposition the camera at the destination

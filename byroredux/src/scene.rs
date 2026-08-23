@@ -596,7 +596,7 @@ mod world_setup;
 // reuse them on Interior→Exterior swaps — same boot-path code, no
 // duplication. See cell_loader::transition.
 pub(crate) use world_setup::{
-    apply_cell_climate_override, apply_worldspace_weather, stream_initial_radius,
+    apply_cell_climate_override, assemble_exterior_streaming, begin_exterior_streaming,
     ExteriorBootstrapMode,
 };
 // The four `scene/*_tests.rs` child modules reach for these helpers
@@ -825,20 +825,19 @@ pub(crate) fn setup_scene(
                     let foreground_readiness = wctx.foreground_readiness((cx, cy), 5);
                     foreground_ready_for_character = foreground_readiness.is_content_backed();
                     has_nif_content = true;
-                    crate::asset_provider::populate_scene_runtime(world, &wctx.record_index);
-                    crate::asset_provider::populate_havok_idle_runtime(
-                        world,
-                        &wctx.record_index,
-                        &tex_provider,
-                    );
-                    apply_worldspace_weather(world, ctx, &tex_provider, &wctx);
-                    let mut state =
-                        WorldStreamingState::new(wctx, tex_provider, mat_provider, radius);
-                    state.last_player_grid = Some((cx, cy));
-                    state.spawn_lod_water(world, ctx);
+                    let worldspace_key = wctx.worldspace_key.clone();
                     let bootstrap_mode = ExteriorBootstrapMode::from_cli_args(&args);
-                    cam_center =
-                        stream_initial_radius(world, ctx, &mut state, cx, cy, bootstrap_mode);
+                    let (state, center) = crate::scene::assemble_exterior_streaming(
+                        world,
+                        ctx,
+                        wctx,
+                        tex_provider,
+                        mat_provider,
+                        (cx, cy),
+                        radius,
+                        bootstrap_mode,
+                    );
+                    cam_center = center;
                     log::info!(
                         "Streaming context ready: worldspace '{}', radius {} (load), {} (unload), {} cells loaded, {} pending ({:?})",
                         state.wctx.worldspace_key,
@@ -848,6 +847,20 @@ pub(crate) fn setup_scene(
                         state.pending.len(),
                         bootstrap_mode,
                     );
+                    // EX-09/17 item 4 — mirror `begin_exterior_streaming`'s identity
+                    // stamp: this call site can't use that helper directly
+                    // (it needs `wctx.foreground_readiness` before the
+                    // context is consumed), so it stamps
+                    // `CurrentExteriorContext` itself instead of silently
+                    // leaving boot-time exterior sessions unsaveable.
+                    world.insert_resource(cell_loader::CurrentExteriorContext {
+                        worldspace_key,
+                        esm_path: esm_path.clone(),
+                        masters: masters.clone(),
+                        grid: (cx, cy),
+                        radius_load: state.radius_load,
+                        radius_unload: state.radius_unload,
+                    });
                     *streaming_slot = Some(state);
                 }
                 Err(e) => log::error!("Failed to build exterior world context: {:#}", e),
