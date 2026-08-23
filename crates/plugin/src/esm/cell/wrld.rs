@@ -259,7 +259,15 @@ pub(crate) fn parse_wrld_children(
                         let mut refs = Vec::new();
                         let mut land = None;
                         let mut navmeshes = Vec::new();
-                        parse_refr_group(reader, sub_end, &mut refs, &mut land, &mut navmeshes)?;
+                        let mut deleted = Vec::new();
+                        parse_refr_group(
+                            reader,
+                            sub_end,
+                            &mut refs,
+                            &mut land,
+                            &mut navmeshes,
+                            &mut deleted,
+                        )?;
                         let cell = match cell_target {
                             Some(grid) => exterior_cells.get_mut(&grid),
                             None => persistent_cell.as_mut(),
@@ -267,6 +275,7 @@ pub(crate) fn parse_wrld_children(
                         if let Some(cell) = cell {
                             cell.references.extend(refs);
                             cell.navmeshes.extend(navmeshes);
+                            cell.deleted_refs.extend(deleted);
                             if land.is_some() && cell.landscape.is_none() {
                                 cell.landscape = land;
                             }
@@ -519,6 +528,7 @@ pub(crate) fn parse_wrld_children(
                     precombined_mesh_hashes,
                     absorbed_refs,
                     navmeshes: Vec::new(),
+                    deleted_refs: Vec::new(),
                 };
                 if force_persistent {
                     if persistent_cell.is_none() {

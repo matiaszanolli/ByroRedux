@@ -8,7 +8,7 @@ use super::reader::EsmReader;
 use super::records::script_instance::ScriptInstanceData;
 use anyhow::Result;
 use byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 mod helpers;
 pub(crate) mod support;
@@ -327,6 +327,20 @@ pub struct CellData {
     /// `parse_esm`. Empty when the cell has no navmesh children, which
     /// is the common case for tiny interior cells. See #1272.
     pub navmeshes: Vec<crate::esm::records::NavmRecord>,
+    /// REFR/ACHR/ACRE FormIDs this specific plugin's own parse marked
+    /// Deleted (the tombstone flag, `RECORD_FLAG_DELETED`) within this
+    /// cell (EX-09/17 item 7, #2370). Deliberately transient, unlike
+    /// every other field `merge_cell_override` inherits from `base` when
+    /// `over` leaves it empty: this list only means something for the ONE
+    /// override round that produced it (a later plugin re-declaring the
+    /// same FormID as a live REFR is a legitimate un-delete, not a bug),
+    /// so `merge_cell_override` deliberately does NOT extend it forward
+    /// the way it does `absorbed_refs`. Consumed by
+    /// `merge_placed_references`, which removes any matching FormID from
+    /// the base cell's inherited `references` before folding this
+    /// plugin's own additions/changes in. Empty for a cell no plugin in
+    /// the load order ever deletes from (the common case).
+    pub deleted_refs: Vec<u32>,
 }
 
 /// Ownership tuple from `XOWN` / `XRNK` / `XGLB` sub-records. Lives
@@ -1106,13 +1120,23 @@ pub struct EsmCellIndex {
 /// REFRs it adds or changes — so the whole-vec replacement this fixes
 /// dropped every base REFR the DLC didn't re-emit (#1546). Deleted-REFR
 /// tombstones (the 0x20 Deleted flag) are skipped at the REFR walk
-/// (`walkers.rs`, `RECORD_FLAG_DELETED`, resolved #1660), so a DLC that
-/// *deletes* a base REFR no longer leaves the base copy resident. FormID `0`
-/// (legacy fixtures with no REFR identity) is
+/// (`walkers.rs`, `RECORD_FLAG_DELETED`, resolved #1660) and never appear in
+/// `over` at all — `deleted` (`over`'s own `CellData::deleted_refs`, EX-09/17
+/// item 7 / #2370) is the separate signal that removes any matching FormID
+/// `base` still carries, so a DLC that *deletes* a base-master REFR no
+/// longer leaves the base copy resident across the merge (pre-fix, only the
+/// single-plugin case — nothing to place either way — was actually correct;
+/// the cross-plugin case silently kept the base copy, since the deletion
+/// left no trace once the DLC's own `over.references` no longer mentioned
+/// the FormID at all). FormID `0` (legacy fixtures with no REFR identity) is
 /// never keyed — those refs always append, so distinct unnamed refs can't
 /// collapse onto each other.
-fn merge_placed_references(base: &[PlacedRef], over: &mut Vec<PlacedRef>) {
+fn merge_placed_references(base: &[PlacedRef], over: &mut Vec<PlacedRef>, deleted: &[u32]) {
     let mut merged = base.to_vec();
+    if !deleted.is_empty() {
+        let tombstoned: HashSet<u32> = deleted.iter().copied().collect();
+        merged.retain(|r| r.form_id == 0 || !tombstoned.contains(&r.form_id));
+    }
     let mut by_form: HashMap<u32, usize> = merged
         .iter()
         .enumerate()
@@ -1133,7 +1157,7 @@ fn merge_placed_references(base: &[PlacedRef], over: &mut Vec<PlacedRef>) {
 }
 
 fn merge_cell_references(base: &CellData, over: &mut CellData) {
-    merge_placed_references(&base.references, &mut over.references);
+    merge_placed_references(&base.references, &mut over.references, &over.deleted_refs);
 }
 
 /// Canonical human/CLI identity for an interior CELL. FO4 legitimately ships
@@ -1266,6 +1290,21 @@ impl EsmCellIndex {
     ///   worldspace doesn't stomp the base game's exterior table.
     ///   Within a shared worldspace, per-(x, y) overrides apply through the
     ///   same partial-CELL merge as interiors.
+    ///
+    /// **`worldspaces` is deliberately NOT given the same partial-field
+    /// treatment** (EX-09/17 item 6, #2370): `self.worldspaces.extend(...)`
+    /// below is whole-record last-write-wins, same as `statics` and the
+    /// other flat record maps — an override WRLD entirely replaces the
+    /// base's `WorldspaceRecord`, field-by-field, rather than inheriting
+    /// absent fields the way `merge_cell_override` does for CELL. This
+    /// matches vanilla's typical authoring pattern (a WRLD override
+    /// re-declares the fields it changes AND the ones it doesn't, unlike a
+    /// partial-CELL override), so it's flagged rather than fixed — low risk
+    /// today, but NOT the same partial-inherit guarantee CELL gets. Revisit
+    /// only if a real sparse-WRLD-override mod turns up (one that omits a
+    /// field expecting it to inherit from the base, the way Dawnguard's
+    /// `kagrenzel01` omitted REFRs above); until then a speculative fix has
+    /// no real fixture to validate against.
     ///
     /// See M46.0 / #561.
     pub fn merge_from(&mut self, other: EsmCellIndex) {

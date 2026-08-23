@@ -597,4 +597,275 @@ mod tests {
             "the raw pre-remap id must not survive — that's the #1554 bug"
         );
     }
+
+    // ── EX-09/17 item 8 (#2370) — load-order conformance fixtures ──────
+    //
+    // The synthetic fixtures above exercise a single plugin (or two
+    // disjoint statics); `crates/plugin/src/esm/cell/tests/merge.rs`
+    // exercises `EsmCellIndex::merge_from` directly with hand-built
+    // `CellData`/`WorldspaceRecord` values — real coverage of the merge
+    // *algorithm*, but never through the actual multi-plugin load-order
+    // pipeline (`parse_record_indexes_in_load_order`: on-disk files, real
+    // MAST-based FormID remap, per-plugin parse feeding the running merge).
+    // These fixtures close that gap with a real base-game→DLC→mod chain,
+    // three plugins deep so a load order longer than the merge tests'
+    // two-plugin base/child pair is actually exercised.
+
+    /// TES4 with explicit `flags` + a Skyrim HEDR + a MAST sub-record per
+    /// declared master. Extends [`build_tes4`] (which has no master-list
+    /// capability) — the parser only reads `MAST`'s null-terminated name,
+    /// no companion `DATA` size placeholder, so this is the minimum wire
+    /// form `read_file_header` needs.
+    fn build_tes4_with_masters(flags: u32, masters: &[&str]) -> Vec<u8> {
+        let mut hedr = Vec::new();
+        hedr.extend_from_slice(b"HEDR");
+        hedr.extend_from_slice(&12u16.to_le_bytes());
+        hedr.extend_from_slice(&1.7f32.to_le_bytes()); // Skyrim
+        hedr.extend_from_slice(&0u32.to_le_bytes());
+        hedr.extend_from_slice(&0u32.to_le_bytes());
+        let mut sub_data = hedr;
+        for master in masters {
+            sub_data.extend_from_slice(b"MAST");
+            let name = format!("{master}\0");
+            sub_data.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            sub_data.extend_from_slice(name.as_bytes());
+        }
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"TES4");
+        buf.extend_from_slice(&(sub_data.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&flags.to_le_bytes());
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        buf.extend_from_slice(&[0u8; 8]);
+        buf.extend_from_slice(&sub_data);
+        buf
+    }
+
+    /// A REFR with just `NAME` (base object) + zeroed `DATA` (pos/rot) —
+    /// the minimum `parse_refr_group` needs to register a placement — at
+    /// raw local `form_id`, optionally carrying the Deleted flag (0x20).
+    fn build_refr_record(form_id: u32, base_form_id: u32, deleted: bool) -> Vec<u8> {
+        let mut sub_data = Vec::new();
+        sub_data.extend_from_slice(b"NAME");
+        sub_data.extend_from_slice(&4u16.to_le_bytes());
+        sub_data.extend_from_slice(&base_form_id.to_le_bytes());
+        sub_data.extend_from_slice(b"DATA");
+        sub_data.extend_from_slice(&24u16.to_le_bytes());
+        sub_data.extend_from_slice(&[0u8; 24]);
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"REFR");
+        buf.extend_from_slice(&(sub_data.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&(if deleted { 0x0000_0020u32 } else { 0 }).to_le_bytes());
+        buf.extend_from_slice(&form_id.to_le_bytes());
+        buf.extend_from_slice(&[0u8; 8]);
+        buf.extend_from_slice(&sub_data);
+        buf
+    }
+
+    /// An interior CELL record at raw local `form_id` (empty EDID, so
+    /// cross-plugin identity matches purely on FormID — same as
+    /// `parse_interior_without_edid_uses_form_id_identity_and_keeps_children`
+    /// in `crates/plugin`), followed by a persistent-children GRUP (type 8)
+    /// wrapping `refrs`. An empty `refrs` still emits the children GRUP —
+    /// real partial-override CELLs commonly carry an empty/tombstone-only
+    /// children group.
+    fn build_cell_with_children(form_id: u32, refrs: &[Vec<u8>]) -> Vec<u8> {
+        let mut cell_subs = Vec::new();
+        cell_subs.extend_from_slice(b"DATA");
+        cell_subs.extend_from_slice(&1u16.to_le_bytes());
+        cell_subs.push(0x01); // is_interior
+        let mut cell = Vec::new();
+        cell.extend_from_slice(b"CELL");
+        cell.extend_from_slice(&(cell_subs.len() as u32).to_le_bytes());
+        cell.extend_from_slice(&0u32.to_le_bytes());
+        cell.extend_from_slice(&form_id.to_le_bytes());
+        cell.extend_from_slice(&[0u8; 8]);
+        cell.extend_from_slice(&cell_subs);
+
+        let refr_payload: Vec<u8> = refrs.iter().flatten().copied().collect();
+        let mut children = Vec::new();
+        children.extend_from_slice(b"GRUP");
+        children.extend_from_slice(&((24 + refr_payload.len()) as u32).to_le_bytes());
+        children.extend_from_slice(&form_id.to_le_bytes()); // group label = owning CELL's raw form_id
+        children.extend_from_slice(&8u32.to_le_bytes()); // group_type 8 = persistent children
+        children.extend_from_slice(&[0u8; 8]);
+        children.extend_from_slice(&refr_payload);
+        cell.extend_from_slice(&children);
+        cell
+    }
+
+    /// Write a TES4(masters) + top-level `CELL` GRUP plugin to
+    /// `dir/<stem>.esm` and return its path.
+    fn write_cell_plugin(
+        dir: &Path,
+        stem: &str,
+        masters: &[&str],
+        cell: &[u8],
+    ) -> std::path::PathBuf {
+        let mut esm_bytes = build_tes4_with_masters(0, masters);
+        esm_bytes.extend_from_slice(&wrap_group(b"CELL", cell));
+        let path = dir.join(format!("{stem}.esm"));
+        fs::write(&path, &esm_bytes).unwrap();
+        path
+    }
+
+    /// #2370 EX-09/17 item 8 — a real 3-plugin chain (base → DLC → mod)
+    /// through the actual `parse_record_indexes_in_load_order` pipeline
+    /// (on-disk files, MAST-based FormID remap), not just the merge
+    /// algorithm exercised in isolation. Covers item 5 (partial-CELL
+    /// override keeps untouched base REFRs — already working) and item 7
+    /// (cross-plugin REFR delete — this session's fix) composing across
+    /// more than two plugins: the DLC's deletion of `refr_a` must survive
+    /// into the mod's own override round, and the mod's own re-placement
+    /// of a REFR at `refr_a`'s old FormID must still win (a legitimate
+    /// later un-delete, not blocked by the earlier deletion).
+    #[test]
+    fn three_plugin_chain_composes_refr_merge_and_cross_plugin_delete() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // base.esm (0 masters): CELL 0x1000 with REFR-A (0x2001) and
+        // REFR-B (0x2002), both self-ref (top byte 0 == 0 masters).
+        let base_cell = build_cell_with_children(
+            0x0000_1000,
+            &[
+                build_refr_record(0x0000_2001, 0xAAA1, false),
+                build_refr_record(0x0000_2002, 0xAAA2, false),
+            ],
+        );
+        let base_path = write_cell_plugin(dir.path(), "base", &[], &base_cell);
+
+        // dlc.esm (master: base.esm): overrides CELL 0x1000 — deletes
+        // REFR-A, changes REFR-B's base object. Both REFRs reference
+        // base.esm (master index 0), same bottom-24 identity as base.
+        let dlc_cell = build_cell_with_children(
+            0x0000_1000,
+            &[
+                build_refr_record(0x0000_2001, 0, true), // deleted; base_form_id irrelevant
+                build_refr_record(0x0000_2002, 0xBEEF, false),
+            ],
+        );
+        let dlc_path = write_cell_plugin(dir.path(), "dlc", &["base.esm"], &dlc_cell);
+
+        // mod.esp (master: base.esm — NOT dlc.esm; it references the
+        // ORIGINAL base identity, matching how a real third-party override
+        // only needs to master whichever plugin first defined the FormID):
+        // re-places a REFR at REFR-A's old FormID (a legitimate un-delete)
+        // and adds a brand-new REFR-C via a self-ref FormID.
+        let mod_cell = build_cell_with_children(
+            0x0000_1000,
+            &[
+                build_refr_record(0x0000_2001, 0xFEED, false), // un-delete
+                build_refr_record(0x0100_3000, 0xCCC3, false), // self-ref new REFR (top byte == mod.esp's 1 master)
+            ],
+        );
+        let mod_path = write_cell_plugin(dir.path(), "modone", &["base.esm"], &mod_cell);
+
+        let paths = [
+            base_path.to_str().unwrap(),
+            dlc_path.to_str().unwrap(),
+            mod_path.to_str().unwrap(),
+        ];
+        let (index, _order) = parse_record_indexes_in_load_order(&paths).unwrap();
+
+        let cell = index
+            .cells
+            .cells
+            .get("cell_00001000")
+            .expect("the 3-plugin-overridden CELL must merge to one entry");
+        let by_id: std::collections::HashMap<u32, u32> = cell
+            .references
+            .iter()
+            .map(|r| (r.form_id, r.base_form_id))
+            .collect();
+
+        // REFR-A (0x2001): deleted by dlc, then re-placed by mod — mod's
+        // copy must win.
+        assert_eq!(
+            by_id.get(&0x0000_2001),
+            Some(&0xFEED),
+            "mod's un-delete re-placement must win over the DLC's earlier deletion"
+        );
+        // REFR-B (0x2002): overridden by dlc, untouched by mod since.
+        assert_eq!(
+            by_id.get(&0x0000_2002),
+            Some(&0xBEEF),
+            "DLC's override of REFR-B must survive mod's unrelated round"
+        );
+        // REFR-C: mod's own new self-ref REFR, remapped to mod's plugin
+        // slot (2, since mod.esp is the 3rd plugin in load order).
+        assert_eq!(
+            by_id.get(&0x0200_3000),
+            Some(&0xCCC3),
+            "mod's own new REFR must remap into its own global slot (index 2)"
+        );
+        assert_eq!(
+            cell.references.len(),
+            3,
+            "exactly REFR-A, REFR-B, REFR-C — no leftover deleted copy"
+        );
+    }
+
+    /// EX-09/17 item 6 (#2370) — pins the documented (not fixed) WRLD
+    /// merge gap as a real load-order fixture: unlike CELL's partial-field
+    /// inherit, an override WRLD wholly replaces the base record. A field
+    /// the override omits does NOT fall back to the base's value; it goes
+    /// to that field's wire-absent default instead. If this test starts
+    /// failing because a future change gives WRLD the same partial-inherit
+    /// treatment as CELL, that's the intentional fix promised in
+    /// `EsmCellIndex::merge_from`'s doc comment — update this test to match,
+    /// don't just relax the assertion.
+    #[test]
+    fn wrld_override_replaces_whole_record_not_partial_fields() {
+        let dir = tempfile::tempdir().unwrap();
+
+        fn build_wrld_record(form_id: u32, edid: &str, dnam_water_height: Option<f32>) -> Vec<u8> {
+            let mut sub_data = Vec::new();
+            let edid_z = format!("{edid}\0");
+            sub_data.extend_from_slice(b"EDID");
+            sub_data.extend_from_slice(&(edid_z.len() as u16).to_le_bytes());
+            sub_data.extend_from_slice(edid_z.as_bytes());
+            if let Some(h) = dnam_water_height {
+                sub_data.extend_from_slice(b"DNAM");
+                sub_data.extend_from_slice(&8u16.to_le_bytes());
+                sub_data.extend_from_slice(&0.0f32.to_le_bytes()); // default_land_height (unused here)
+                sub_data.extend_from_slice(&h.to_le_bytes());
+            }
+            let mut buf = Vec::new();
+            buf.extend_from_slice(b"WRLD");
+            buf.extend_from_slice(&(sub_data.len() as u32).to_le_bytes());
+            buf.extend_from_slice(&0u32.to_le_bytes());
+            buf.extend_from_slice(&form_id.to_le_bytes());
+            buf.extend_from_slice(&[0u8; 8]);
+            buf.extend_from_slice(&sub_data);
+            buf
+        }
+
+        let base_wrld = build_wrld_record(0x0000_0100, "TestWorld", Some(5.0));
+        let mut base_bytes = build_tes4_with_masters(0, &[]);
+        base_bytes.extend_from_slice(&wrap_group(b"WRLD", &base_wrld));
+        let base_path = dir.path().join("baseworld.esm");
+        fs::write(&base_path, &base_bytes).unwrap();
+
+        // DLC override: same WRLD FormID, re-authors EDID but omits DNAM
+        // entirely — a partial-CELL-style override would inherit the
+        // base's water height; today's whole-record WRLD merge does not.
+        let over_wrld = build_wrld_record(0x0000_0100, "TestWorld", None);
+        let mut over_bytes = build_tes4_with_masters(0, &["baseworld.esm"]);
+        over_bytes.extend_from_slice(&wrap_group(b"WRLD", &over_wrld));
+        let over_path = dir.path().join("overworld.esm");
+        fs::write(&over_path, &over_bytes).unwrap();
+
+        let paths = [base_path.to_str().unwrap(), over_path.to_str().unwrap()];
+        let (index, _order) = parse_record_indexes_in_load_order(&paths).unwrap();
+
+        let world = index
+            .cells
+            .worldspaces
+            .get("testworld")
+            .expect("worldspace must merge to one entry");
+        assert_eq!(
+            world.default_water_height, None,
+            "the override's omitted DNAM must NOT inherit the base's water height — \
+             pins today's whole-record WRLD replace (item 6, flagged not fixed)"
+        );
+    }
 }

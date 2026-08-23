@@ -84,7 +84,7 @@ GitHub tracking is grouped by dependency-sized deliverable under
 [#2375](https://github.com/matiaszanolli/ByroRedux/issues/2375), EX-06/07
 [#2376](https://github.com/matiaszanolli/ByroRedux/issues/2376), EX-08
 [#2374](https://github.com/matiaszanolli/ByroRedux/issues/2374) (**done**), EX-09/17
-[#2370](https://github.com/matiaszanolli/ByroRedux/issues/2370), EX-10/11
+[#2370](https://github.com/matiaszanolli/ByroRedux/issues/2370) (**done**), EX-10/11
 [#2371](https://github.com/matiaszanolli/ByroRedux/issues/2371), EX-12/13
 [#2373](https://github.com/matiaszanolli/ByroRedux/issues/2373), EX-14/15
 [#2369](https://github.com/matiaszanolli/ByroRedux/issues/2369), and EX-16
@@ -627,30 +627,48 @@ transitions, saves, and load-order changes.
    constructed anywhere in `byroredux/src`. Don't build on it; either wire
    it in for real or formally deprecate it in a follow-up (flagging for a
    decision, not deciding here).
-6. [ ] **WRLD merge is weaker than CELL's** — whole-record last-write-wins
-   (`merge_from_worldspaces_last_write_wins`) rather than CELL's
-   partial-field inherit. Matches vanilla's typical full-re-author pattern
-   for WRLD overrides, so low risk to leave as-is — but flag it explicitly
-   rather than silently assume parity with CELL; only revisit if a real
-   sparse-WRLD-override mod turns up.
-7. [ ] **Cross-plugin deleted-ref bug (found, not just a gap)**: a DLC
-   deleting a base-master REFR is silently ignored today. The deleted
-   record is `continue`-skipped out of the *override plugin's own* list at
-   parse time (`walkers.rs:641-654`) rather than recorded as a tombstone,
-   so `merge_placed_references` never sees a removal signal and the base
-   copy survives untouched post-merge — despite that function's own doc
-   comment claiming deleted-ref handling is covered (true only for the
-   single-plugin case; no cross-plugin test exists). Needs a
-   `deleted_refs`/tombstone-carrying field on `CellData`, populated instead
-   of the current skip, consumed by the cross-plugin merge. Add the
-   missing regression test alongside.
-8. [ ] **Load-order conformance profiles** — none exist (searched for
-   `*load_order*`/`*conformance*`/`*multi_master*` test files; the closest
-   hit, `mq101_conformance.rs`, is an unrelated scripting example). Add
-   base-game / one-DLC / synthetic-override-chain ESM fixtures exercising
-   items 6-7 above plus the already-working CELL/REFR merge as real
-   regression coverage, not just today's synthetic two-plugin unit
-   fixtures.
+6. [x] **WRLD merge is weaker than CELL's** — flagged, deliberately not
+   fixed (no real fixture to validate a partial-inherit rewrite against —
+   see the "no-guessing" posture applied elsewhere in this codebase).
+   Recorded in code, not just here: `EsmCellIndex::merge_from`'s own doc
+   comment (`crates/plugin/src/esm/cell/mod.rs`) now states explicitly that
+   `self.worldspaces.extend(...)` is whole-record last-write-wins, unlike
+   CELL's `merge_cell_override` partial-field inherit, and names the
+   condition for revisiting it (a real sparse-WRLD-override mod). Pinned by
+   a real load-order fixture, `wrld_override_replaces_whole_record_not_partial_fields`
+   (item 8) — if a future change gives WRLD partial-inherit, that test is
+   *meant* to start failing; update it to match rather than relaxing it.
+7. [x] **Cross-plugin deleted-ref bug** — fixed. Added `CellData::deleted_refs:
+   Vec<u32>` (`crates/plugin/src/esm/cell/mod.rs`), populated by
+   `parse_refr_group` (`walkers.rs`) when it hits a Deleted-flagged
+   REFR/ACHR/ACRE instead of the previous bare `continue` that recorded no
+   removal signal at all. `merge_placed_references` now removes any base
+   REFR whose FormID appears in the override's `deleted_refs` before
+   folding the override's own additions/changes in — a later plugin
+   re-placing a REFR at the same FormID (a legitimate un-delete) still
+   wins via the existing last-write-wins path, unaffected by the earlier
+   deletion. Deliberately transient (not inherited forward via `extend`
+   like `absorbed_refs`): the signal only means something for the ONE
+   override round that produced it. Both `parse_refr_group` call sites
+   (interior `walkers.rs`, exterior/worldspace `wrld.rs`) updated
+   identically (SIBLING check). 4 new unit tests in
+   `crates/plugin/src/esm/cell/tests/merge.rs` (single delete, delete +
+   override combined, delete-then-later-readd, exterior sibling) plus a
+   strengthened `deleted_refr_tombstone_is_skipped` assertion.
+8. [x] **Load-order conformance profiles** — added, in
+   `byroredux/src/cell_loader/load_order.rs`'s existing `#[cfg(test)] mod
+   tests` (the module that already owns `parse_record_indexes_in_load_order`
+   end-to-end fixtures, not `crates/plugin`'s `EsmCellIndex::merge_from`
+   unit tests — those exercise the merge *algorithm* directly; these
+   exercise the real multi-plugin pipeline: on-disk files, MAST-based
+   FormID remap, per-plugin parse feeding the running merge).
+   `three_plugin_chain_composes_refr_merge_and_cross_plugin_delete` is a
+   genuine base→DLC→mod 3-plugin chain (deeper than any existing 2-plugin
+   fixture) exercising item 5 (already-working CELL/REFR merge) and item 7
+   (this session's delete fix) together, including the un-delete case.
+   `wrld_override_replaces_whole_record_not_partial_fields` pins item 6's
+   documented gap with a real fixture. Both go through
+   `parse_record_indexes_in_load_order`, not a hand-built `EsmCellIndex`.
 
 #### EX-16 (#2372) — REGN, NAVM, ambient audio, AI integration
 

@@ -348,6 +348,7 @@ mod tests {
             precombined_mesh_hashes: Vec::new(),
             absorbed_refs: std::collections::HashSet::new(),
             navmeshes: Vec::new(),
+            deleted_refs: Vec::new(),
         }
     }
 

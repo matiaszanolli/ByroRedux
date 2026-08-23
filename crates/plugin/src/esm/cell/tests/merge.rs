@@ -46,6 +46,7 @@ fn make_interior_cell(form_id: u32, edid: &str) -> CellData {
         precombined_mesh_hashes: Vec::new(),
         absorbed_refs: std::collections::HashSet::new(),
         navmeshes: Vec::new(),
+        deleted_refs: Vec::new(),
     }
 }
 
@@ -139,6 +140,166 @@ fn merge_from_interior_override_keeps_base_refrs() {
         "re-emitted REFR takes the override"
     );
     assert_eq!(by_id.get(&0x20), Some(&0xDD), "newly-added REFR appears");
+}
+
+/// EX-09/17 item 7 (#2370) — a DLC/mod override CELL that ONLY deletes a
+/// base-master REFR (no re-emitted `references` at all) must remove that
+/// REFR from the merged cell. Pre-fix, `parse_refr_group` recorded no
+/// removal signal for a Deleted-flagged REFR — it just wasn't in `over`'s
+/// own `references` — so `merge_placed_references` had nothing telling it
+/// to touch the base's copy, and the "deleted" object silently survived
+/// the merge, still resident and still rendering.
+#[test]
+fn cross_plugin_delete_removes_a_base_master_refr() {
+    let mut master = EsmCellIndex::default();
+    master.cells.insert(
+        "kagrenzel01".into(),
+        cell_with_refs(
+            "Kagrenzel01",
+            vec![placed(0x10, 0xAA), placed(0x11, 0xBB), placed(0x12, 0xCC)],
+        ),
+    );
+
+    // DLC override: deletes REFR 0x11, re-emits nothing else.
+    let mut over = make_interior_cell(0x0001_0000, "Kagrenzel01");
+    over.deleted_refs = vec![0x11];
+    let mut child = EsmCellIndex::default();
+    child.cells.insert("kagrenzel01".into(), over);
+
+    master.merge_from(child);
+
+    let cell = master.cells.get("kagrenzel01").unwrap();
+    let ids: std::collections::HashSet<u32> = cell.references.iter().map(|r| r.form_id).collect();
+    assert_eq!(
+        ids,
+        [0x10, 0x12].into_iter().collect(),
+        "the deleted REFR must be gone; the two untouched base REFRs survive"
+    );
+}
+
+/// A single override CELL can both delete one base REFR and add/change
+/// others in the same pass — the two operations must not interfere.
+#[test]
+fn cross_plugin_delete_and_override_combine() {
+    let mut master = EsmCellIndex::default();
+    master.cells.insert(
+        "kagrenzel01".into(),
+        cell_with_refs(
+            "Kagrenzel01",
+            vec![placed(0x10, 0xAA), placed(0x11, 0xBB), placed(0x12, 0xCC)],
+        ),
+    );
+
+    // DLC override: deletes 0x11, changes 0x12's base, adds 0x20.
+    let mut over = cell_with_refs(
+        "Kagrenzel01",
+        vec![placed(0x12, 0xBEEF), placed(0x20, 0xDD)],
+    );
+    over.deleted_refs = vec![0x11];
+    let mut child = EsmCellIndex::default();
+    child.cells.insert("kagrenzel01".into(), over);
+
+    master.merge_from(child);
+
+    let cell = master.cells.get("kagrenzel01").unwrap();
+    let by_id: std::collections::HashMap<u32, u32> = cell
+        .references
+        .iter()
+        .map(|r| (r.form_id, r.base_form_id))
+        .collect();
+    assert_eq!(
+        cell.references.len(),
+        3,
+        "0x11 deleted, 0x10/0x12/0x20 remain"
+    );
+    assert_eq!(
+        by_id.get(&0x10),
+        Some(&0xAA),
+        "untouched base REFR survives"
+    );
+    assert!(!by_id.contains_key(&0x11), "deleted REFR must not survive");
+    assert_eq!(
+        by_id.get(&0x12),
+        Some(&0xBEEF),
+        "re-emitted REFR takes the override"
+    );
+    assert_eq!(by_id.get(&0x20), Some(&0xDD), "newly-added REFR appears");
+}
+
+/// A plugin loaded after the one that deleted a REFR can legitimately
+/// re-place a REFR at the same FormID — that's a deliberate un-delete, not
+/// a bug, and load-order last-write-wins must still apply: the third
+/// plugin's copy wins, same as any other override.
+#[test]
+fn cross_plugin_delete_then_later_plugin_readds_same_form_id() {
+    let mut master = EsmCellIndex::default();
+    master.cells.insert(
+        "cell".into(),
+        cell_with_refs("Cell", vec![placed(0x10, 0xAA)]),
+    );
+
+    let mut deleting = make_interior_cell(0x0001_0000, "Cell");
+    deleting.deleted_refs = vec![0x10];
+    let mut dlc = EsmCellIndex::default();
+    dlc.cells.insert("cell".into(), deleting);
+    master.merge_from(dlc);
+    assert!(
+        master.cells["cell"].references.is_empty(),
+        "the DLC's deletion must remove the base REFR"
+    );
+
+    let mut mod_over = EsmCellIndex::default();
+    mod_over.cells.insert(
+        "cell".into(),
+        cell_with_refs("Cell", vec![placed(0x10, 0xFEED)]),
+    );
+    master.merge_from(mod_over);
+
+    assert_eq!(
+        master.cells["cell"]
+            .references
+            .iter()
+            .map(|r| (r.form_id, r.base_form_id))
+            .collect::<Vec<_>>(),
+        vec![(0x10, 0xFEED)],
+        "a later plugin re-placing the same FormID must win, not be blocked by the earlier deletion"
+    );
+}
+
+/// SIBLING: the exterior per-grid path applies cross-plugin deletes the
+/// same way the interior path does.
+#[test]
+fn cross_plugin_delete_removes_a_base_master_exterior_refr() {
+    let mut master = EsmCellIndex::default();
+    master
+        .exterior_cells
+        .entry("tamriel".into())
+        .or_default()
+        .insert(
+            (5, 7),
+            cell_with_refs("Ext", vec![placed(0x30, 0x01), placed(0x31, 0x02)]),
+        );
+
+    let mut over = make_interior_cell(0x0001_C000, "Ext");
+    over.deleted_refs = vec![0x30];
+    let mut child = EsmCellIndex::default();
+    child
+        .exterior_cells
+        .entry("tamriel".into())
+        .or_default()
+        .insert((5, 7), over);
+
+    master.merge_from(child);
+
+    let cell = &master.exterior_cells["tamriel"][&(5, 7)];
+    assert_eq!(
+        cell.references
+            .iter()
+            .map(|r| r.form_id)
+            .collect::<Vec<_>>(),
+        vec![0x31],
+        "deleted exterior REFR 0x30 is gone; untouched 0x31 survives"
+    );
 }
 
 #[test]

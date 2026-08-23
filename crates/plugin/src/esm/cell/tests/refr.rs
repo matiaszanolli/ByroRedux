@@ -71,7 +71,16 @@ fn parse_one_refr(record: &[u8]) -> PlacedRef {
     let mut refs = Vec::new();
     let mut land = None;
     let mut navmeshes = Vec::new();
-    parse_refr_group(&mut reader, end, &mut refs, &mut land, &mut navmeshes).unwrap();
+    let mut deleted = Vec::new();
+    parse_refr_group(
+        &mut reader,
+        end,
+        &mut refs,
+        &mut land,
+        &mut navmeshes,
+        &mut deleted,
+    )
+    .unwrap();
     assert_eq!(refs.len(), 1, "exactly one REFR expected");
     refs.remove(0)
 }
@@ -83,7 +92,16 @@ fn parse_one_refr_with_remap(record: &[u8], remap: crate::esm::reader::FormIdRem
     let mut refs = Vec::new();
     let mut land = None;
     let mut navmeshes = Vec::new();
-    parse_refr_group(&mut reader, end, &mut refs, &mut land, &mut navmeshes).unwrap();
+    let mut deleted = Vec::new();
+    parse_refr_group(
+        &mut reader,
+        end,
+        &mut refs,
+        &mut land,
+        &mut navmeshes,
+        &mut deleted,
+    )
+    .unwrap();
     assert_eq!(refs.len(), 1, "exactly one REFR expected");
     refs.remove(0)
 }
@@ -299,6 +317,17 @@ fn refr_without_vmad_leaves_script_instance_none() {
 /// SKY-D4-01 (#1660) — a REFR carrying the record-header Deleted flag (0x20)
 /// is a deletion tombstone (a DLC removing a base-master placement) and must
 /// place nothing; otherwise the deleted object over-renders.
+///
+/// EX-09/17 item 7 (#2370) — the record's own FormID must also land in
+/// `deleted`, not just be dropped from `refs`. Pre-fix, `parse_refr_group`
+/// discarded the tombstone with a bare `continue` and recorded no removal
+/// signal anywhere; that's correct for a single-plugin parse (nothing to
+/// place either way) but silently wrong across plugins: when this REFR
+/// exists in a base master and only the *deletion* is re-emitted by an
+/// override plugin, `merge_placed_references` had no way to know the base
+/// master's copy should be removed, so it survived the merge untouched.
+/// See `merge.rs`'s `cross_plugin_delete_removes_a_base_master_refr` for
+/// the merge-level regression this field exists to drive.
 #[test]
 fn deleted_refr_tombstone_is_skipped() {
     let mut sub_data = Vec::new();
@@ -322,8 +351,22 @@ fn deleted_refr_tombstone_is_skipped() {
     let mut refs = Vec::new();
     let mut land = None;
     let mut navmeshes = Vec::new();
-    parse_refr_group(&mut reader, end, &mut refs, &mut land, &mut navmeshes).unwrap();
+    let mut deleted = Vec::new();
+    parse_refr_group(
+        &mut reader,
+        end,
+        &mut refs,
+        &mut land,
+        &mut navmeshes,
+        &mut deleted,
+    )
+    .unwrap();
     assert!(refs.is_empty(), "a Deleted-flagged REFR must place nothing");
+    assert_eq!(
+        deleted,
+        vec![0x9001],
+        "the tombstoned REFR's own FormID must be recorded as a deletion"
+    );
 }
 
 /// Control for #1660 — the same REFR WITHOUT the Deleted flag still places,
@@ -383,7 +426,16 @@ fn parse_one_refr_for_ownership(record: &[u8]) -> PlacedRef {
     let mut refs = Vec::new();
     let mut land = None;
     let mut navmeshes = Vec::new();
-    parse_refr_group(&mut reader, end, &mut refs, &mut land, &mut navmeshes).unwrap();
+    let mut deleted = Vec::new();
+    parse_refr_group(
+        &mut reader,
+        end,
+        &mut refs,
+        &mut land,
+        &mut navmeshes,
+        &mut deleted,
+    )
+    .unwrap();
     assert_eq!(refs.len(), 1, "one REFR per record");
     refs.into_iter().next().unwrap()
 }
@@ -423,7 +475,16 @@ fn parse_refr_extracts_position_and_scale() {
     let mut refs = Vec::new();
     let mut land = None;
     let mut navmeshes = Vec::new();
-    parse_refr_group(&mut reader, end, &mut refs, &mut land, &mut navmeshes).unwrap();
+    let mut deleted = Vec::new();
+    parse_refr_group(
+        &mut reader,
+        end,
+        &mut refs,
+        &mut land,
+        &mut navmeshes,
+        &mut deleted,
+    )
+    .unwrap();
 
     assert_eq!(refs.len(), 1);
     let r = &refs[0];
@@ -450,7 +511,16 @@ fn parse_refr_extracts_non_inverted_xesp_renders_by_default() {
     let mut refs = Vec::new();
     let mut land = None;
     let mut navmeshes = Vec::new();
-    parse_refr_group(&mut reader, end, &mut refs, &mut land, &mut navmeshes).unwrap();
+    let mut deleted = Vec::new();
+    parse_refr_group(
+        &mut reader,
+        end,
+        &mut refs,
+        &mut land,
+        &mut navmeshes,
+        &mut deleted,
+    )
+    .unwrap();
 
     assert_eq!(refs.len(), 1);
     let ep = refs[0]
@@ -475,7 +545,16 @@ fn parse_refr_extracts_inverted_xesp_hidden_by_default() {
     let mut refs = Vec::new();
     let mut land = None;
     let mut navmeshes = Vec::new();
-    parse_refr_group(&mut reader, end, &mut refs, &mut land, &mut navmeshes).unwrap();
+    let mut deleted = Vec::new();
+    parse_refr_group(
+        &mut reader,
+        end,
+        &mut refs,
+        &mut land,
+        &mut navmeshes,
+        &mut deleted,
+    )
+    .unwrap();
 
     assert_eq!(refs.len(), 1);
     let ep = refs[0]
@@ -521,7 +600,16 @@ fn parse_refr_without_xesp_has_no_enable_parent() {
     let mut refs = Vec::new();
     let mut land = None;
     let mut navmeshes = Vec::new();
-    parse_refr_group(&mut reader, end, &mut refs, &mut land, &mut navmeshes).unwrap();
+    let mut deleted = Vec::new();
+    parse_refr_group(
+        &mut reader,
+        end,
+        &mut refs,
+        &mut land,
+        &mut navmeshes,
+        &mut deleted,
+    )
+    .unwrap();
 
     assert_eq!(refs.len(), 1);
     assert!(refs[0].enable_parent.is_none());
@@ -810,7 +898,16 @@ fn parse_refr_group_recognises_oblivion_acre_placement() {
     let mut refs = Vec::new();
     let mut land = None;
     let mut navmeshes = Vec::new();
-    parse_refr_group(&mut reader, end, &mut refs, &mut land, &mut navmeshes).unwrap();
+    let mut deleted = Vec::new();
+    parse_refr_group(
+        &mut reader,
+        end,
+        &mut refs,
+        &mut land,
+        &mut navmeshes,
+        &mut deleted,
+    )
+    .unwrap();
 
     assert_eq!(refs.len(), 1, "ACRE placement must be recognised");
     let r = &refs[0];
@@ -832,7 +929,16 @@ fn parse_refr_xesp_with_null_parent_is_not_default_disabled() {
     let mut refs = Vec::new();
     let mut land = None;
     let mut navmeshes = Vec::new();
-    parse_refr_group(&mut reader, end, &mut refs, &mut land, &mut navmeshes).unwrap();
+    let mut deleted = Vec::new();
+    parse_refr_group(
+        &mut reader,
+        end,
+        &mut refs,
+        &mut land,
+        &mut navmeshes,
+        &mut deleted,
+    )
+    .unwrap();
 
     let ep = refs[0]
         .enable_parent
@@ -925,7 +1031,16 @@ fn parse_refr_group_collects_navm_records() {
     let mut refs = Vec::new();
     let mut land = None;
     let mut navmeshes = Vec::new();
-    parse_refr_group(&mut reader, end, &mut refs, &mut land, &mut navmeshes).unwrap();
+    let mut deleted = Vec::new();
+    parse_refr_group(
+        &mut reader,
+        end,
+        &mut refs,
+        &mut land,
+        &mut navmeshes,
+        &mut deleted,
+    )
+    .unwrap();
 
     assert_eq!(refs.len(), 0, "NAVM must not be misclassified as a REFR");
     assert!(land.is_none(), "NAVM must not be misclassified as LAND");

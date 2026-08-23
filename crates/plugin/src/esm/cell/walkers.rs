@@ -131,10 +131,19 @@ pub(crate) fn parse_cell_group(
                         let mut refs = Vec::new();
                         let mut _land = None; // Interior cells don't have LAND records
                         let mut navmeshes = Vec::new();
-                        parse_refr_group(reader, sub_end, &mut refs, &mut _land, &mut navmeshes)?;
+                        let mut deleted = Vec::new();
+                        parse_refr_group(
+                            reader,
+                            sub_end,
+                            &mut refs,
+                            &mut _land,
+                            &mut navmeshes,
+                            &mut deleted,
+                        )?;
                         if let Some(cell) = cells.get_mut(key) {
                             cell.references.extend(refs);
                             cell.navmeshes.extend(navmeshes);
+                            cell.deleted_refs.extend(deleted);
                         }
                     } else {
                         reader.skip_group(&sub_group);
@@ -596,6 +605,7 @@ pub(crate) fn parse_cell_group(
                             precombined_mesh_hashes,
                             absorbed_refs,
                             navmeshes: Vec::new(),
+                            deleted_refs: Vec::new(),
                         },
                     );
                     current_cell = Some(key);
@@ -617,19 +627,27 @@ pub(crate) fn parse_cell_group(
 /// appear at top level in vanilla Bethesda masters — pre-fix the
 /// catch-all skipped them on every game (`navmeshes=0` on FO3/FNV/
 /// Skyrim SE/FO4 despite ~30k NAVMs per master).
+///
+/// `deleted` collects the FormIDs of Deleted-flagged REFR/ACHR/ACRE
+/// tombstones (EX-09/17 item 7, #2370) — this plugin's own placements
+/// never carry a deleted entry in `refs`, so a cross-plugin merge needs
+/// this separate signal to know a base master's copy of the same FormID
+/// should be removed rather than silently surviving untouched. See
+/// `CellData::deleted_refs` / `merge_placed_references`.
 pub(crate) fn parse_refr_group(
     reader: &mut EsmReader,
     end: usize,
     refs: &mut Vec<PlacedRef>,
     landscape: &mut Option<LandscapeData>,
     navmeshes: &mut Vec<NavmRecord>,
+    deleted: &mut Vec<u32>,
 ) -> Result<()> {
     while reader.position() < end && reader.remaining() > 0 {
         if reader.is_group() {
             // Nested groups within cell children — recurse.
             let sub = reader.read_group_header()?;
             let sub_end = reader.group_content_end(&sub);
-            parse_refr_group(reader, sub_end, refs, landscape, navmeshes)?;
+            parse_refr_group(reader, sub_end, refs, landscape, navmeshes, deleted)?;
             continue;
         }
 
@@ -643,13 +661,19 @@ pub(crate) fn parse_refr_group(
             || &header.record_type == b"ACRE"
         {
             let subs = reader.read_sub_records(&header)?;
-            // SKY-D4-01 — a REFR/ACHR/ACRE with the record-header Deleted flag
-            // (0x20) is a tombstone: a plugin (often a DLC) removing a
-            // base-master placement. The load-order merge keeps it as the
-            // winning override, so without this skip the deleted placement
-            // still spawns and over-renders the object the plugin meant to
-            // delete. Consume the record (above) but place nothing.
+            // SKY-D4-01 / EX-09/17 item 7 — a REFR/ACHR/ACRE with the
+            // record-header Deleted flag (0x20) is a tombstone: a plugin
+            // (often a DLC) removing a base-master placement. The
+            // load-order merge keeps it as the winning override, so
+            // without this skip the deleted placement still spawns and
+            // over-renders the object the plugin meant to delete. Consume
+            // the record (above) but place nothing — and record its own
+            // FormID as a tombstone so a cross-plugin merge can remove any
+            // earlier plugin's copy of the same REFR (#2370 item 7; pre-fix
+            // this recorded no removal signal at all, so a DLC deleting a
+            // base-master REFR silently left the base copy resident).
             if header.flags & RECORD_FLAG_DELETED != 0 {
+                deleted.push(header.form_id);
                 continue;
             }
             let mut base_form_id = 0u32;
