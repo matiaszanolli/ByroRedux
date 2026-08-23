@@ -306,6 +306,50 @@ pub(crate) fn path_from_resident_tiles(
     })
 }
 
+/// Phase 4 ECS bridge: resolve the waypoint queue a locomotion system
+/// should walk this tick — reusing `cached` when it's still close enough
+/// to `goal`, recomputing via [`path_from_resident_tiles`] otherwise.
+///
+/// One function serves both cost postures the design doc's §6/§7
+/// describe, distinguished only by `repath_threshold`:
+/// - **Frozen-goal callers** (Travel, Guard, Escort's lead phase) pass
+///   `0.0` — `goal` is set once and never changes for the rest of the
+///   walk, so this only ever recomputes on the very first tick a given
+///   goal is seen (bit-identical `Vec3::distance` is exactly `0.0` for
+///   an unchanged, uncomputed-on value — no epsilon needed to catch the
+///   "same goal" case).
+/// - **Live-goal callers** (Follow, Escort's collect phase) pass a
+///   real repath-threshold constant — `goal` moves every tick (a live
+///   target's position), and repathing on every single-unit jitter would
+///   be needlessly expensive for a target that's barely moved; only
+///   recompute once it's moved far enough from the endpoint of the
+///   currently-cached path to matter.
+///
+/// The recomputed (or reused) result is cached **including an empty
+/// "no resident-tile path found" result** — see `travel_system`'s Pass 1a
+/// for why that negative result matters: without caching it, an
+/// off-navmesh actor would retry `path_from_resident_tiles` every single
+/// tick instead of once per goal, defeating the whole point of caching.
+/// Callers still own writing the returned queue back into their own
+/// `NavPath` cache (paired with whatever `goal` they resolved this tick)
+/// — this function only decides what to walk *with* this tick, not the
+/// storage side of the cache.
+pub(crate) fn resolve_cached_waypoints(
+    cached: Option<&crate::components::NavPath>,
+    tiles: Option<&byroredux_core::ecs::QueryRead<'_, crate::components::NavmeshTile>>,
+    current: Vec3,
+    goal: Vec3,
+    repath_threshold: f32,
+) -> std::collections::VecDeque<Vec3> {
+    match cached {
+        Some(path) if path.goal.distance(goal) <= repath_threshold => path.waypoints.clone(),
+        _ => tiles
+            .and_then(|tiles| path_from_resident_tiles(tiles, current, goal))
+            .map(std::collections::VecDeque::from)
+            .unwrap_or_default(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

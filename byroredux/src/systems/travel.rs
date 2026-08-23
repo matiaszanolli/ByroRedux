@@ -62,8 +62,8 @@
 //!   that would be Follow's job (a different, unimplemented procedure).
 //! - **Ground-snapped, not physically simulated**, same as Wander.
 
-use super::locomotion::{step_toward, LOCOMOTION_ARRIVAL_EPSILON};
-use super::navmesh_path::path_from_resident_tiles;
+use super::locomotion::{step_along_waypoints, LOCOMOTION_ARRIVAL_EPSILON};
+use super::navmesh_path::resolve_cached_waypoints;
 use super::wander::pick_wander_target;
 use crate::components::{NavPath, NavmeshTile};
 use byroredux_core::ecs::components::{
@@ -221,15 +221,11 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
             // Travel's destination is frozen after the first tick, so
             // this fires exactly once per actor in practice); recompute
             // only when the goal changed or nothing is cached yet.
+            // `0.0` threshold: a frozen goal, so any change at all means
+            // "genuinely new destination," not "drifted a little."
             let cached = nav_path_q.as_ref().and_then(|q| q.get(entity));
-            let waypoints = match cached {
-                Some(path) if path.goal == destination => path.waypoints.clone(),
-                _ => tile_q
-                    .as_ref()
-                    .and_then(|tiles| path_from_resident_tiles(tiles, current, destination))
-                    .map(VecDeque::from)
-                    .unwrap_or_default(),
-            };
+            let waypoints =
+                resolve_cached_waypoints(cached, tile_q.as_ref(), current, destination, 0.0);
 
             scratch.pending.push(TravelPending {
                 entity,
@@ -257,18 +253,14 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
             // Phase 3), falling back to the final destination directly
             // when no resident-tile path was found — unchanged straight-
             // line behavior in that case.
-            let mut waypoints = p.waypoints.clone();
-            let step_target = waypoints.front().copied().unwrap_or(p.destination);
-            let target_xz = Vec3::new(step_target.x, p.current.y, step_target.z);
-            let (new_pos, rotation) =
-                step_toward(p.current, p.rotation, target_xz, dt, physics.as_deref());
-
-            let step_delta = Vec3::new(new_pos.x - step_target.x, 0.0, new_pos.z - step_target.z);
-            if step_delta.length_squared()
-                <= LOCOMOTION_ARRIVAL_EPSILON * LOCOMOTION_ARRIVAL_EPSILON
-            {
-                waypoints.pop_front();
-            }
+            let (new_pos, rotation, waypoints) = step_along_waypoints(
+                p.current,
+                p.rotation,
+                p.waypoints.clone(),
+                p.destination,
+                dt,
+                physics.as_deref(),
+            );
 
             let horiz_delta = Vec3::new(
                 new_pos.x - p.destination.x,
