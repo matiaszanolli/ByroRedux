@@ -414,12 +414,21 @@ starts from the corrected state.
    derives the trimesh collider from the exact same vertex/index buffers
    just uploaded to the GPU. Add the one missing piece: a regression test
    for the `log::warn!` zero-triangle-collider path (currently untested).
-5. [ ] **LAND real-data guards** — not started. `parse_land_record`
-   (`crates/plugin/src/esm/cell/walkers.rs:991-1087`) only checks
-   sub-record byte lengths, not value plausibility (height range, VNML
-   unit-vector sanity, VCLR range, BTXT/ATXT FormID existence). Add
-   per-game validation plus a `land.rs` test file exercising real corpus
-   bytes — no such test exists today.
+5. [x] **LAND real-data guards** — partially re-scoped, partially done.
+   **Correction (2026-08-23)**: BTXT/ATXT FormID *existence* is not
+   actually a parse-time gap — `cell_loader::terrain::spawn_terrain_mesh`
+   already resolves every layer's LTEX against `landscape_textures` and
+   `log::warn!`s + skips the layer when it's missing (`terrain.rs:158-162,
+   528-532`). Value-plausibility validation (height range, VNML
+   unit-vector sanity, VCLR range) needs real corpus-derived bounds to
+   avoid inventing unverified thresholds — no game data was available this
+   session to derive them, so that half stays open, deliberately not
+   guessed at. What landed: the missing `land.rs` test file (`crates/plugin/
+   src/esm/cell/tests/land.rs`, 9 tests) — VHGT delta-decode arithmetic
+   (including the forward-row-accumulation case, the actual algorithmic
+   risk in that function), VNML/VCLR raw-byte storage, and the
+   ATXT-then-VTXT pairing contract (multi-layer, orphan-VTXT-dropped). No
+   such coverage existed before.
 6. [ ] **Adjacent-cell crack detection** — not started. `spawn_terrain_mesh`
    builds each cell independently from its own `LandscapeData`; nothing
    verifies neighboring cells' shared edge vertices/normals agree, despite
