@@ -489,6 +489,27 @@ impl ConsoleCommand for LodCoverageCommand {
     }
 }
 
+/// `terrain.seams` — adjacent-loaded-cell terrain-seam agreement audit
+/// (EX-10/11 item 7 / #2371): shared-edge height/normal disagreement
+/// between resident exterior tiles.
+pub(crate) struct TerrainSeamsCommand;
+impl ConsoleCommand for TerrainSeamsCommand {
+    fn name(&self) -> &str {
+        "terrain.seams"
+    }
+
+    fn description(&self) -> &str {
+        "Adjacent-cell LAND shared-edge height/normal agreement audit (#2371)"
+    }
+
+    fn execute(&self, world: &World, _args: &str) -> CommandOutput {
+        let Some(snapshot) = world.try_resource::<byroredux_core::ecs::TerrainSeamStats>() else {
+            return CommandOutput::line("TerrainSeamStats resource not present");
+        };
+        CommandOutput::line(snapshot.machine_line())
+    }
+}
+
 /// `render.debug <mode> [x y]` — select a named correctness view and
 /// optionally queue one bounded selected-light visibility-ray capture.
 pub(crate) struct RenderDebugCommand;

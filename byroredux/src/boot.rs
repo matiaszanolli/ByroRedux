@@ -398,6 +398,10 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // `sampled = false` so `lod.coverage` reads PENDING before the first
     // reconcile (e.g. an interior-only session, which never streams LOD).
     world.insert_resource(byroredux_core::ecs::LodCoverageStats::default());
+    // EX-10/11 item 7 / #2371 — adjacent-loaded-cell terrain-seam agreement
+    // audit. Same refresh cadence and PENDING-before-first-sample posture
+    // as `LodCoverageStats` immediately above.
+    world.insert_resource(byroredux_core::ecs::TerrainSeamStats::default());
     world.insert_resource(byroredux_core::ecs::OwnershipTelemetry::default());
     world.insert_resource(byroredux_core::ecs::OwnershipTracker::new());
     world.insert_resource(byroredux_core::ecs::UpscalerTelemetry::default());

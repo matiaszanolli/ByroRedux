@@ -937,6 +937,66 @@ impl LodCoverageStats {
 
 impl Resource for LodCoverageStats {}
 
+/// Adjacent-loaded-cell terrain-seam agreement audit (EX-10/11 item 7,
+/// #2371) — the live consumer of
+/// `byroredux::cell_loader::terrain_seam::check_seam`. Sampled from
+/// `state.loaded`'s currently-resident grid tiles on every streaming
+/// reconcile, same cadence as [`LodCoverageStats`]; the accounting logic
+/// itself lives in the binary crate (`streaming_helpers::
+/// update_terrain_seam_stats`) for the same reason `LodCoverageStats`'s
+/// does — this resource is just the stable snapshot the console command
+/// and smoke-test gate read.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct TerrainSeamStats {
+    /// At least one reconcile has populated this resource.
+    pub sampled: bool,
+    /// Adjacent resident-cell pairs actually compared (both sides had a
+    /// parsed LAND heightmap — pairs where one or both lack LAND, or one
+    /// side isn't loaded at all, aren't counted).
+    pub pairs_checked: u32,
+    /// Of `pairs_checked`, how many disagreed on at least one shared-edge
+    /// vertex (height, normal bytes, or both).
+    pub pairs_dirty: u32,
+    /// Sum of disagreeing edge-vertex counts across every dirty pair —
+    /// severity, not just incident count (one pair off by one vertex vs.
+    /// a whole edge disagreeing are both "1 dirty pair" but very
+    /// different problems).
+    pub height_mismatch_vertices: u32,
+    /// Pairs whose `VNML` raw bytes disagree at the shared edge.
+    pub normal_mismatch_pairs: u32,
+}
+
+impl TerrainSeamStats {
+    /// Stable three-state verdict, same shape as
+    /// [`LodCoverageStats::verdict`]/`RtIntegrityStats::verdict`.
+    pub fn verdict(&self) -> &'static str {
+        if !self.sampled {
+            "PENDING"
+        } else if self.pairs_dirty == 0 {
+            "PASS"
+        } else {
+            "FAIL"
+        }
+    }
+
+    /// Machine-readable line, same convention as
+    /// [`LodCoverageStats::machine_line`].
+    pub fn machine_line(&self) -> String {
+        format!(
+            "terrain-seams: sampled={} pairs_checked={} pairs_dirty={} \
+             height_mismatch_vertices={} normal_mismatch_pairs={} verdict={}",
+            u8::from(self.sampled),
+            self.pairs_checked,
+            self.pairs_dirty,
+            self.height_mismatch_vertices,
+            self.normal_mismatch_pairs,
+            self.verdict(),
+        )
+    }
+}
+
+impl Resource for TerrainSeamStats {}
+
 pub mod ownership;
 pub use ownership::{
     FindingKind, OwnerClass, OwnershipFinding, OwnershipSnapshot, OwnershipTelemetry,
@@ -1266,6 +1326,44 @@ mod tests {
              lights_uploaded=0 lights_dropped=0 cluster_sampled=1 \
              cluster_overflowed=0 cluster_dropped=0 cluster_max=23 verdict=PASS"
         );
+    }
+
+    #[test]
+    fn terrain_seam_stats_pending_before_first_sample() {
+        assert_eq!(TerrainSeamStats::default().verdict(), "PENDING");
+    }
+
+    #[test]
+    fn terrain_seam_stats_clean_run_passes() {
+        let clean = TerrainSeamStats {
+            sampled: true,
+            pairs_checked: 12,
+            pairs_dirty: 0,
+            height_mismatch_vertices: 0,
+            normal_mismatch_pairs: 0,
+        };
+        assert_eq!(clean.verdict(), "PASS");
+        assert_eq!(
+            clean.machine_line(),
+            "terrain-seams: sampled=1 pairs_checked=12 pairs_dirty=0 \
+             height_mismatch_vertices=0 normal_mismatch_pairs=0 verdict=PASS"
+        );
+    }
+
+    #[test]
+    fn terrain_seam_stats_any_dirty_pair_fails() {
+        // Zero-tolerance by design (see `terrain_seam.rs`'s module doc):
+        // authored terrain shares byte-identical LAND payloads at seams,
+        // so any disagreement at all is a real authoring/merge defect, not
+        // a magnitude judgement call for this resource to make.
+        let dirty = TerrainSeamStats {
+            sampled: true,
+            pairs_checked: 12,
+            pairs_dirty: 1,
+            height_mismatch_vertices: 3,
+            normal_mismatch_pairs: 0,
+        };
+        assert_eq!(dirty.verdict(), "FAIL");
     }
 
     #[test]

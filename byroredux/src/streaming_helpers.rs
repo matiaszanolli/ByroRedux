@@ -126,6 +126,7 @@ pub(crate) fn reconcile_lod_rings(
 
     let complete = terrain_complete && object_complete && placement_complete;
     update_lod_coverage(world, state, complete);
+    update_terrain_seam_stats(world, state);
 
     LodReconcileProgress {
         complete,
@@ -201,6 +202,85 @@ fn update_lod_coverage(
     coverage.object_churn = state.object_lod_churn.churned();
     coverage.terrain_resident = terrain_keys.len() as u32;
     coverage.object_resident = object_keys.len() as u32;
+}
+
+/// Refresh [`byroredux_core::ecs::TerrainSeamStats`] from the currently
+/// resident exterior tiles (EX-10/11 item 7, #2371) — the live consumer of
+/// `cell_loader::terrain_seam::check_seam`.
+///
+/// Walks `state.loaded`'s key set for east/north neighbor pairs that are
+/// BOTH resident, so a boundary pair is checked exactly once (not twice,
+/// once from each side). `LandscapeData` for both sides is looked up
+/// straight from `state.wctx.record_index` — no retention cache needed;
+/// see `terrain_seam.rs`'s module doc for why the original plan's "needs a
+/// new cache" premise was wrong. A pair where either side lacks LAND (or
+/// isn't in the exterior cell map at all — shouldn't happen for a resident
+/// tile, but a missing lookup fails soft here rather than panicking) is
+/// silently skipped, not counted as checked.
+///
+/// Cost: at most `2 × state.loaded.len()` neighbor lookups plus one
+/// `O(33)` `check_seam` call per actually-adjacent pair — same "cheap
+/// key-set/pair scan over residency counts the ring radius already bounds
+/// to the tens" cost class `update_lod_coverage` above documents for
+/// itself. Runs on every reconcile, settled or not, for the same reason:
+/// `state.loaded`'s key set (not LOD ring state) is the only input, so
+/// there's no in-flight-vs-settled distinction to make.
+fn update_terrain_seam_stats(
+    world: &mut byroredux_core::ecs::World,
+    state: &streaming::WorldStreamingState,
+) {
+    let Some(cells) = state
+        .wctx
+        .record_index
+        .cells
+        .exterior_cells
+        .get(&state.wctx.worldspace_key)
+    else {
+        return;
+    };
+
+    let mut pairs_checked = 0u32;
+    let mut pairs_dirty = 0u32;
+    let mut height_mismatch_vertices = 0u32;
+    let mut normal_mismatch_pairs = 0u32;
+
+    let mut check_pair = |a: (i32, i32), b: (i32, i32), direction: cell_loader::SeamDirection| {
+        let (Some(land_a), Some(land_b)) = (
+            cells.get(&a).and_then(|c| c.landscape.as_ref()),
+            cells.get(&b).and_then(|c| c.landscape.as_ref()),
+        ) else {
+            return;
+        };
+        let report = cell_loader::check_seam(land_a, land_b, direction);
+        pairs_checked += 1;
+        if !report.is_clean() {
+            pairs_dirty += 1;
+        }
+        height_mismatch_vertices += report.height_mismatches.len() as u32;
+        if report.normal_bytes_differ == Some(true) {
+            normal_mismatch_pairs += 1;
+        }
+    };
+
+    for &(gx, gy) in state.loaded.keys() {
+        if state.loaded.contains_key(&(gx + 1, gy)) {
+            check_pair((gx, gy), (gx + 1, gy), cell_loader::SeamDirection::EastWest);
+        }
+        if state.loaded.contains_key(&(gx, gy + 1)) {
+            check_pair(
+                (gx, gy),
+                (gx, gy + 1),
+                cell_loader::SeamDirection::NorthSouth,
+            );
+        }
+    }
+
+    let mut stats = world.resource_mut::<byroredux_core::ecs::TerrainSeamStats>();
+    stats.sampled = true;
+    stats.pairs_checked = pairs_checked;
+    stats.pairs_dirty = pairs_dirty;
+    stats.height_mismatch_vertices = height_mismatch_vertices;
+    stats.normal_mismatch_pairs = normal_mismatch_pairs;
 }
 
 /// Distinct grid cells containing at least one resident

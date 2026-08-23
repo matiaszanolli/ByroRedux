@@ -143,6 +143,7 @@ pub(crate) use placement_lod::{
     stream_placement_lod_blocks, unload_placement_lod_block, PlacementLodBlock,
 };
 pub(crate) use terrain_lod::{stream_lod_blocks, unload_lod_block};
+pub(crate) use terrain_seam::{check_seam, SeamDirection};
 pub use unload::{unload_cell, unload_cells, UnloadPhaseTimings};
 pub(crate) use water::{spawn_lod_water_plane, unload_lod_water_plane};
 pub(crate) use work_budget::FrameTimeBudget;

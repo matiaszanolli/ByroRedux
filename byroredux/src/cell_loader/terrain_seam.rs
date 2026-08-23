@@ -10,33 +10,40 @@
 //! visible height crack or a lit-normal seam at the cell boundary; nothing
 //! today catches it before it reaches the screen.
 //!
-//! This module is the *detection* half only — a pure function over two
+//! This module is the *detection* half — a pure function over two
 //! [`LandscapeData`] values, no `World`/`VulkanContext`, matching
 //! `lod_coverage`'s "pure functions over plain state" testing posture. It
 //! reports facts (which edge indices disagree, by how much), not a
 //! pass/fail verdict — inventing a height-delta tolerance without real
 //! corpus data to calibrate it against would be exactly the kind of guessed
-//! threshold this project's no-guessing policy exists to prevent. A caller
-//! (a future live debug command / smoke-test capture-mode addition) decides
-//! its own tolerance.
+//! threshold this project's no-guessing policy exists to prevent. The live
+//! caller (`streaming_helpers::update_terrain_seam_stats`) decides what
+//! counts as a failure (any dirty pair) and reports facts, not a
+//! magnitude-tolerant judgement.
 //!
-//! # What's NOT here yet
+//! # Correction (2026-08-23): the retention design decision this doc used
+//! to flag never needed making
 //!
-//! Wiring this into a live `m-exteriors.sh` capture-mode check (item 7's
-//! prerequisite, per the plan) needs `LandscapeData` to be resident
-//! somewhere queryable after `spawn_terrain_mesh` runs — today it's a
-//! transient parse-result, consumed and dropped at spawn time (grepped,
-//! zero retention sites). That's a real design decision (retain the full
-//! 33×33 grid per loaded cell — simple, ~4.4 KB/cell — vs. a lighter
-//! edge-only cache storing just the 4 border rows/columns, ~130 B/cell),
-//! not a small addition, so it's flagged here rather than rushed.
+//! The item-7 prerequisite this module's doc previously named — "retain
+//! `LandscapeData` somewhere queryable after `spawn_terrain_mesh` runs,
+//! since it's a transient parse-result, consumed and dropped at spawn
+//! time" — was wrong. `spawn_terrain_mesh` takes `land: &LandscapeData`
+//! *borrowed from* `CellData.landscape`
+//! (`cell_loader/exterior.rs::ExteriorCellApplyJob::begin`, `if let
+//! Some(ref land) = cell.landscape`), and `CellData` lives inside
+//! `EsmIndex.cells.exterior_cells`, which `ExteriorWorldContext.record_index`
+//! (an `Arc<EsmIndex>`) keeps resident for the entire worldspace-streaming
+//! session — it is never dropped after spawn. No new cache, no 4.4 KB- vs.
+//! 130 B-per-cell tradeoff: the live checker below just looks the data up
+//! again through the same `record_index` every other live exterior helper
+//! (`scene::apply_cell_region_ambient`, `scene::apply_cell_climate_override`)
+//! already reaches through.
 
 use byroredux_plugin::esm::cell::LandscapeData;
 
 /// Which shared edge two adjacent cells' grids meet at, from `a`'s side.
 /// `a` is always the lower-grid-coordinate cell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // landed ahead of its consumer — see the module doc; EX-10/11 item 7 (m-exteriors.sh capture-mode wiring) is the pending caller
 pub(crate) enum SeamDirection {
     /// `a` at `(gx, gy)`, `b` at `(gx+1, gy)` — `a`'s east edge (col 32)
     /// meets `b`'s west edge (col 0).
@@ -48,7 +55,6 @@ pub(crate) enum SeamDirection {
 
 /// One shared-edge vertex whose height disagrees between the two cells.
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[allow(dead_code)] // landed ahead of its consumer — see the module doc; EX-10/11 item 7 (m-exteriors.sh capture-mode wiring) is the pending caller
 pub(crate) struct HeightMismatch {
     /// Position along the shared edge, 0..33 (row index for `EastWest`,
     /// column index for `NorthSouth`).
@@ -59,7 +65,6 @@ pub(crate) struct HeightMismatch {
 
 /// Result of comparing one pair of adjacent cells' shared edge.
 #[derive(Debug, Clone, PartialEq, Default)]
-#[allow(dead_code)] // landed ahead of its consumer — see the module doc; EX-10/11 item 7 (m-exteriors.sh capture-mode wiring) is the pending caller
 pub(crate) struct SeamReport {
     /// Every edge vertex where the two cells' heights differ at all —
     /// authored terrain shares byte-identical LAND payloads at seams, so
@@ -74,18 +79,15 @@ pub(crate) struct SeamReport {
 }
 
 impl SeamReport {
-    #[allow(dead_code)] // landed ahead of its consumer — see the module doc; EX-10/11 item 7 (m-exteriors.sh capture-mode wiring) is the pending caller
     pub(crate) fn is_clean(&self) -> bool {
         self.height_mismatches.is_empty() && self.normal_bytes_differ != Some(true)
     }
 }
 
-#[allow(dead_code)] // landed ahead of its consumer — see the module doc; EX-10/11 item 7 (m-exteriors.sh capture-mode wiring) is the pending caller
 const GRID: usize = 33;
 
 /// Edge-vertex index into a 33×33 grid for position `i` (0..33) along the
 /// given side of the given cell (`is_a`: `a`'s far edge vs `b`'s near edge).
-#[allow(dead_code)] // landed ahead of its consumer — see the module doc; EX-10/11 item 7 (m-exteriors.sh capture-mode wiring) is the pending caller
 fn edge_index(direction: SeamDirection, is_a: bool, i: usize) -> usize {
     match (direction, is_a) {
         // a's east edge: col 32, every row.
@@ -101,7 +103,6 @@ fn edge_index(direction: SeamDirection, is_a: bool, i: usize) -> usize {
 
 /// Compare `a`'s and `b`'s shared edge (per `direction`, `a` on the lower
 /// side) for height and normal-byte agreement.
-#[allow(dead_code)] // landed ahead of its consumer — see the module doc; EX-10/11 item 7 (m-exteriors.sh capture-mode wiring) is the pending caller
 pub(crate) fn check_seam(
     a: &LandscapeData,
     b: &LandscapeData,

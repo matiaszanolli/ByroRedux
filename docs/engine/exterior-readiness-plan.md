@@ -448,14 +448,53 @@ starts from the corrected state.
    the full 33×33 grid per loaded cell (~4.4 KB/cell, simplest) vs. a
    lighter edge-only cache storing just the 4 border rows/columns
    (~130 B/cell). Flagged for a deliberate choice, not guessed at here.
-7. [ ] **Extend `lod_coverage.rs`/`m-exteriors.sh`** to catch near-field
-   (full-detail LAND) geometric cracks/holes and pixel-level seam
-   regressions. The live `lod.coverage` gate (`lod_coverage.rs`,
+7. [x] **Extend live coverage to catch near-field (full-detail LAND)
+   geometric cracks** — done (2026-08-23), console-command half; the
+   `m-exteriors.sh` capture-mode half is a natural but separate
+   follow-up. The live `lod.coverage` gate (`lod_coverage.rs`,
    `find_overlaps`/`find_full_detail_overlaps`/`ChurnTracker`, commit
    `235c787c`) proves footprint-set correctness — no LOD-vs-full-detail
    overlap, zero churn — but not sub-cell geometric correctness within the
-   full-detail ring itself. Item 6's seam checker is the natural first
-   addition here.
+   full-detail ring itself. Item 6's seam checker is exactly that missing
+   half, now wired live.
+
+   **Correction**: item 6's own doc previously named a real design
+   decision as this item's prerequisite — retain the full 33×33
+   `LandscapeData` grid per loaded cell (~4.4 KB/cell) vs. a lighter
+   edge-only cache (~130 B/cell) — because `spawn_terrain_mesh` was
+   assumed to consume and drop it. That premise was wrong: `land: &
+   LandscapeData` is borrowed from `CellData.landscape`, which lives
+   inside `EsmIndex.cells.exterior_cells`, and `ExteriorWorldContext.
+   record_index` (`Arc<EsmIndex>`) keeps the whole thing resident for the
+   entire worldspace-streaming session — it's never dropped after spawn.
+   No new cache needed at all; the design decision the doc flagged never
+   actually had to be made.
+
+   `streaming_helpers::update_terrain_seam_stats` walks `state.loaded`'s
+   currently-resident grid-tile keys for east/north neighbor pairs that
+   are BOTH resident (each boundary pair checked exactly once), looks up
+   both sides' `LandscapeData` straight from `state.wctx.record_index`
+   (same access pattern `apply_cell_region_ambient`/
+   `apply_cell_climate_override` already use), and folds `check_seam`'s
+   verdict into a new `TerrainSeamStats` resource — same shape as
+   `LodCoverageStats` (`sampled`/`verdict()`/`machine_line()`), same
+   refresh cadence (every `reconcile_lod_rings` call), same
+   `PENDING`/`PASS`/`FAIL` console-command posture. New `terrain.seams`
+   console command. Zero-tolerance verdict by design: authored terrain
+   shares byte-identical LAND payloads at seams, so `pairs_dirty > 0`
+   is always a real authoring/merge defect, never a magnitude judgement
+   call. 3 new `TerrainSeamStats` tests (`crates/core`); the underlying
+   `check_seam` logic already had 8. `update_terrain_seam_stats` itself
+   has no direct unit test — same posture as `update_lod_coverage`,
+   its untested sibling: too heavy to construct a `WorldStreamingState`
+   fixture for, covered by live smoke instead.
+
+   **Still open**: wiring `terrain.seams`' verdict into
+   `m-exteriors.sh`'s capture-mode gate (the way `lod.coverage`/`r.health`
+   already are) — a real follow-up, not attempted here; and live
+   validation against real cross-plugin/DLC LAND override content (no
+   game data available this session to confirm a real crack actually
+   trips `pairs_dirty`, only synthetic fixtures).
 8. [ ] **VWD active culling** — deliberately deferred, not a blocker.
    `exal.md` §5.2's ring-separation argument (full REFRs only inside
    `radius_unload`, LOD rings only outside it) already prevents a full
