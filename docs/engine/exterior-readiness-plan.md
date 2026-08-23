@@ -566,11 +566,28 @@ cover got its design doc before Phase 0. Scope as its own follow-up issue.
    anywhere in the codebase. This is greenfield: file as a research spike
    (format reverse-engineering, mirroring how `.lod`/`.bto` formats were
    cracked per `exal.md` §Q2/§Q3) before any parsing work is scoped.
-4. [ ] **Precombine collision** (`_precomb.nif` convex hulls) — currently a
-   synthesized-trimesh fallback only (same file, same deferred-items note).
-   Smaller, better-scoped than previs: the block types are already
-   understood (crates/nif's existing `bhk*` collision parsers), so this
-   could land independently and sooner.
+4. [ ] **Precombine collision** — **correction (2026-08-23): NOT smaller or
+   better-scoped than previs; same blocker class.** Investigated against
+   real `Fallout4 - MeshesExtra.ba2` data (159,866 files) rather than
+   assumed. Two premises in the original framing were both wrong:
+   - **Naming**: the sibling file is `<cell_formid:08x>_physics.nif`
+     (4,484 of them in `MeshesExtra.ba2` alone), NOT `_precomb.nif` — that
+     name appears nowhere in the archive.
+   - **Block types**: sampled 16 real `_physics.nif` files (consistent
+     across all 16, not a one-off) — every one is exactly `NiNode` +
+     `NiExtraData` + `bhkNPCollisionObject` + `bhkPhysicsSystem`.
+     `bhkPhysicsSystem` decodes to `BhkSystemBinary`
+     (`crates/nif/src/blocks/collision/collision_object.rs:121-151`): a
+     **raw undecoded Havok-serialised (HKX-like) byte blob**, explicitly
+     documented as "store the raw bytes... hand off to a Havok parser
+     later" — there is no convex-hull/rigid-body data to extract with
+     `crates/nif`'s *existing* parsers the way the original framing
+     assumed. This is the SAME `BhkSystemBinary` blob that already blocks
+     general FO4+ physics/ragdoll work (PHYSAL). Needs a Havok
+     NP-physics binary decoder — greenfield format work, not a small
+     addition — before any precombine-collision extraction is possible.
+     Re-scope as its own research spike, same posture as item C3 above,
+     not "land independently and sooner."
 5. [x] **Double-geometry guard** — already correct and shared between
    interior/exterior loaders via `absorbed_refs_or_empty`
    (`byroredux/src/cell_loader/precombined.rs:52-75`, #2063). No work
