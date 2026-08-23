@@ -46,6 +46,20 @@ use crate::shader_constants::SKIN_WORKGROUP_SIZE as WORKGROUP_SIZE;
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct SkinPushConstants {
+    /// #3231 — GPU virtual address of this entity's morph-target delta
+    /// buffer, or `0` when it has none. Placed FIRST (not appended) so
+    /// the two `u64` fields land at their required 8-byte-aligned
+    /// offsets (0, 8) without needing an explicit padding field —
+    /// appending them after the three `u32`s (ending at byte 12) would
+    /// misalign the first `u64` and need 4 bytes of padding to fix,
+    /// same shape as the `_reserved2a/b/c` lesson on `GpuInstance`
+    /// (see that struct's doc for the std430/std140 vec3 footgun this
+    /// isn't that, but reordering avoids needing to think about it).
+    /// Mirrors `GpuInstance.morphDeltaAddress`.
+    pub morph_delta_address: u64,
+    /// #3231 — GPU virtual address of this entity's current morph
+    /// weights, or `0`. Mirrors `GpuInstance.morphWeightAddress`.
+    pub morph_weight_address: u64,
     /// Where this mesh's bind-pose vertices start in the input SSBO
     /// (in vertices, not floats).
     pub vertex_offset: u32,
@@ -54,6 +68,9 @@ pub struct SkinPushConstants {
     /// mat4 entries). Must match the value the inline-skinning vertex
     /// shader reads from `GpuInstance.boneOffset`.
     pub bone_offset: u32,
+    /// #3231 — number of morph targets the two addresses above carry;
+    /// `0` when neither is live. Mirrors `GpuInstance.morphTargetCount`.
+    pub morph_target_count: u32,
 }
 
 const PUSH_CONSTANTS_SIZE: u32 = std::mem::size_of::<SkinPushConstants>() as u32;
@@ -1120,13 +1137,17 @@ mod tests {
     /// assert here catches the common drift case (adding a field
     /// without updating both sides).
     #[test]
-    fn push_constants_size_is_12_bytes() {
-        // Three u32 fields, no trailing pad. std430 doesn't require
-        // 16-B block alignment when no vec4 follows. Pinning the size
-        // catches the common drift case (adding a field without
-        // updating both Rust + GLSL sides).
-        assert_eq!(PUSH_CONSTANTS_SIZE, 12);
-        assert_eq!(std::mem::size_of::<SkinPushConstants>(), 12);
+    fn push_constants_size_is_32_bytes() {
+        // #3231 grew this from 12 B (three u32 fields) to 32 B: two
+        // u64 morph-buffer addresses (placed FIRST for natural 8-byte
+        // alignment, avoiding a padding field) + the original three
+        // u32s + a u32 morph target count. No trailing pad needed —
+        // 32 is itself 8-byte aligned and push-constant blocks don't
+        // require 16-B rounding the way an SSBO array-of-structs does.
+        // Pinning the size catches the common drift case (adding a
+        // field without updating both Rust + GLSL sides).
+        assert_eq!(PUSH_CONSTANTS_SIZE, 32);
+        assert_eq!(std::mem::size_of::<SkinPushConstants>(), 32);
     }
 
     // ── #643 / MEM-2-1 — SkinSlot LRU eviction predicate ────────────

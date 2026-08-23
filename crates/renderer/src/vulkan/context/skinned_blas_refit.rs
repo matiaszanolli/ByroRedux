@@ -129,9 +129,16 @@ impl VulkanContext {
                             continue;
                         }
                         let push = super::super::skin_compute::SkinPushConstants {
+                            // #3231 — wired below in a follow-up step
+                            // once `MorphSlot` exists; `0` is the
+                            // correct "no morph data" value in the
+                            // interim.
+                            morph_delta_address: 0,
+                            morph_weight_address: 0,
                             vertex_offset: mesh.global_vertex_offset,
                             vertex_count: mesh.vertex_count,
                             bone_offset: dc.bone_offset,
+                            morph_target_count: 0,
                         };
                         dispatches.push((
                             dc.entity_id,
