@@ -316,6 +316,30 @@ fn body_paths_kf_era_select_gender_and_child_variants() {
 }
 
 #[test]
+fn kf_body_piece_masks_follow_each_games_hand_layout() {
+    assert_eq!(
+        humanoid_body_path_biped_mask(GameKind::Fallout3NV, r"x\upperbody.nif"),
+        1 << 2
+    );
+    assert_eq!(
+        humanoid_body_path_biped_mask(GameKind::Fallout3NV, r"x\lefthand.nif"),
+        1 << 3
+    );
+    assert_eq!(
+        humanoid_body_path_biped_mask(GameKind::Fallout3NV, r"x\righthand.nif"),
+        1 << 4
+    );
+    assert_eq!(
+        humanoid_body_path_biped_mask(GameKind::Oblivion, r"x\lefthand.nif"),
+        1 << 4
+    );
+    assert_eq!(
+        humanoid_body_path_biped_mask(GameKind::Oblivion, r"x\righthand.nif"),
+        1 << 4
+    );
+}
+
+#[test]
 fn installed_fnv_sunny_smiles_selects_the_female_body() {
     let data = std::env::var_os("BYROREDUX_FNV_DATA")
         .map(std::path::PathBuf::from)
@@ -354,10 +378,9 @@ fn installed_fnv_sunny_smiles_selects_the_female_body() {
     );
 }
 
-/// Skyrim+/FO4+ stand on the pre-baked-FaceGen track — head + body
-/// ship in one per-NPC `facegeom.nif`. The body resolver must
-/// return an empty slice for those variants so the NPC-spawn loop
-/// no-ops on body load and lets the FaceGen path (Phase 4) fill in.
+/// Skyrim+/FO4+ stand on the pre-baked-FaceGen track. Their head comes from
+/// per-NPC FaceGen while the body comes from the race's default skin armor,
+/// so the KF-era loose-body resolver must return an empty slice.
 #[test]
 fn body_paths_facegen_era_returns_empty_slice() {
     for game in [
@@ -706,6 +729,72 @@ fn arma(form_id: u32, mesh_path: &str) -> byroredux_plugin::esm::records::ArmaRe
     }
 }
 
+fn legacy_armor_item(
+    form_id: u32,
+    biped_flags: u32,
+    mesh_path: &str,
+) -> byroredux_plugin::esm::records::ItemRecord {
+    byroredux_plugin::esm::records::ItemRecord {
+        form_id,
+        common: byroredux_plugin::esm::records::common::CommonItemFields {
+            model_path: mesh_path.to_owned(),
+            ..Default::default()
+        },
+        kind: ItemKind::Armor {
+            biped_flags,
+            dt: 0.0,
+            dr: 0,
+            health: 0,
+            slot_mask: biped_flags as u16,
+            armor_rating_x100: 0,
+            armor_type: None,
+            armatures: Vec::new(),
+        },
+    }
+}
+
+/// Runtime-FaceGen games now consume the same canonical equip result as the
+/// Skyrim+ path. This pins the old path's two important semantics at that
+/// shared boundary: authored CNTO counts survive and a winning upper-body
+/// armor occupies the slot used to suppress the loose naked torso mesh.
+#[test]
+fn unified_equip_state_covers_fallout_runtime_body_and_preserves_count() {
+    use byroredux_core::ecs::components::InventoryIndex;
+    use byroredux_plugin::esm::records::NpcInventoryEntry;
+
+    const ARMOR: u32 = 0x000A_AAAA;
+    const UPPER_BODY: u32 = 1 << 2;
+    let mut npc = test_npc(0x000B_BBBB, "RuntimeSkinFixture");
+    npc.inventory.push(NpcInventoryEntry {
+        item_form_id: ARMOR,
+        count: 3,
+    });
+    let mut index = EsmIndex {
+        game: GameKind::Fallout3NV,
+        ..Default::default()
+    };
+    index.items.insert(
+        ARMOR,
+        legacy_armor_item(ARMOR, UPPER_BODY, r"armor\vaultsuit.nif"),
+    );
+
+    let state = build_npc_equip_state(&npc, &index, GameKind::Fallout3NV, Gender::Female);
+
+    assert!(state.main_body_covered(GameKind::Fallout3NV));
+    assert_eq!(state.armor_to_spawn.len(), 1);
+    assert_eq!(state.armor_to_spawn[0].form_id, ARMOR);
+    assert_eq!(state.armor_to_spawn[0].source_form_id, ARMOR);
+    assert_eq!(state.armor_to_spawn[0].model_path, r"armor\vaultsuit.nif");
+    assert_eq!(
+        state
+            .inventory
+            .get(InventoryIndex(0))
+            .map(|stack| stack.count),
+        Some(3),
+        "the unified builder must retain runtime CNTO stack counts"
+    );
+}
+
 /// The Hulda/Mikael scenario from the audit: OTFT covers only Feet
 /// (`0x80`), so without a `WNAM` skin fallback the NPC has zero mesh
 /// source for torso/hands. With the fallback wired, the race skin
@@ -795,6 +884,87 @@ fn prebaked_equip_state_falls_back_to_race_skin_for_uncovered_slots() {
             .any(|a| a.model_path == r"armor\boots\boots.nif"),
         "the actually-equipped feet armor must still spawn"
     );
+    assert_eq!(
+        state
+            .armor_to_spawn
+            .iter()
+            .find(|armor| armor.form_id == SKIN)
+            .unwrap()
+            .hidden_biped_mask,
+        0,
+        "gear outside the skin's authored slots must not hide skin partitions"
+    );
+}
+
+/// A single race-skin NIF commonly contains several dismember partitions.
+/// Torso armor must hide only the torso partition while the same skin mesh
+/// remains queued to supply uncovered hands.
+#[test]
+fn prebaked_equip_state_marks_only_partially_displaced_skin_slots() {
+    const RACE: u32 = 0x0100_0040;
+    const SKIN: u32 = 0x0100_0041;
+    const SKIN_ARMA: u32 = 0x0100_0042;
+    const TORSO: u32 = 0x0100_0043;
+    const TORSO_ARMA: u32 = 0x0100_0044;
+    const TORSO_BIT: u32 = 0x0004;
+    const HANDS_BIT: u32 = 0x0010;
+
+    let race = byroredux_plugin::esm::records::RaceRecord {
+        form_id: RACE,
+        editor_id: String::new(),
+        full_name: String::new(),
+        description: String::new(),
+        skill_bonuses: Vec::new(),
+        body_models: Vec::new(),
+        head_parts: Vec::new(),
+        base_height: (1.0, 1.0),
+        base_weight: (1.0, 1.0),
+        race_flags: 0,
+        starting_health: None,
+        base_attributes: None,
+        default_hair: None,
+        voice_forms: None,
+        facegen_main_clamp: None,
+        facegen_face_clamp: None,
+        race_reactions: Vec::new(),
+        default_skin: Some(SKIN),
+    };
+    let mut npc = test_npc(0x0100_0045, "PartialSkinDisplacementNpc");
+    npc.race_form_id = RACE;
+    npc.inventory
+        .push(byroredux_plugin::esm::records::NpcInventoryEntry {
+            item_form_id: TORSO,
+            count: 1,
+        });
+
+    let mut index = EsmIndex {
+        game: GameKind::Skyrim,
+        ..Default::default()
+    };
+    index.races.insert(RACE, race);
+    index.items.insert(
+        SKIN,
+        skyrim_armor_item(SKIN, TORSO_BIT | HANDS_BIT, vec![SKIN_ARMA]),
+    );
+    index
+        .armor_addons
+        .insert(SKIN_ARMA, arma(SKIN_ARMA, r"actors\character\skin.nif"));
+    index
+        .items
+        .insert(TORSO, skyrim_armor_item(TORSO, TORSO_BIT, vec![TORSO_ARMA]));
+    index
+        .armor_addons
+        .insert(TORSO_ARMA, arma(TORSO_ARMA, r"armor\robe\robe.nif"));
+
+    let state = build_npc_equip_state(&npc, &index, GameKind::Skyrim, Gender::Male);
+    assert_eq!(state.armor_to_spawn.len(), 2);
+    let skin = state
+        .armor_to_spawn
+        .iter()
+        .find(|armor| armor.form_id == SKIN)
+        .unwrap();
+    assert_eq!(skin.hidden_biped_mask, TORSO_BIT);
+    assert_eq!(skin.hidden_biped_mask & HANDS_BIT, 0);
 }
 
 /// #2094 (SKY-D3-NEW-02) — when the equipped gear fully overlaps the

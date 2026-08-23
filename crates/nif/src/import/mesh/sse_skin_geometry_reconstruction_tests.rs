@@ -657,7 +657,7 @@ fn sse_global_buffer_skin_payload_reaches_imported_skin() {
     scene.blocks.push(Box::new(bone_data));
 
     let shape_ref = scene.get_as::<BsTriShape>(0).unwrap();
-    let skin = extract_skin_bs_tri_shape(&scene, shape_ref)
+    let skin = extract_skin_bs_tri_shape(&scene, shape_ref, &[])
         .expect("global-buffer skin payload must reach ImportedSkin (#638)");
 
     assert_eq!(skin.vertex_bone_weights.len(), 2);

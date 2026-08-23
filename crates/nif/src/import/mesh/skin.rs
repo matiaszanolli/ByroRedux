@@ -3,12 +3,74 @@
 //! `extract_skin_ni_tri_shape` / `extract_skin_bs_tri_shape`, partition /
 //! palette remap, bone-pose flattening, sparse-weight densification.
 
+use std::collections::HashMap;
 use std::sync::Arc;
+
+const UNASSIGNED_BODY_PART: u16 = u16::MAX;
+
+fn canonical_triangle(mut triangle: [u32; 3]) -> [u32; 3] {
+    triangle.sort_unstable();
+    triangle
+}
+
+fn triangle_body_parts(scene: &NifScene, skin_idx: usize, final_indices: &[u32]) -> Vec<u16> {
+    let Some(inst) = scene.get_as::<BsDismemberSkinInstance>(skin_idx) else {
+        return Vec::new();
+    };
+    let Some(partition_idx) = inst.base.skin_partition_ref.index() else {
+        return Vec::new();
+    };
+    let Some(partition) = scene.get_as::<NiSkinPartition>(partition_idx) else {
+        return Vec::new();
+    };
+    if inst.partitions.len() != partition.partitions.len() {
+        return Vec::new();
+    }
+
+    let mut by_triangle = HashMap::new();
+    for (body_info, part) in inst.partitions.iter().zip(&partition.partitions) {
+        for triangle in &part.triangles {
+            let mut global = [0u32; 3];
+            let mut valid = true;
+            for (dst, &local) in global.iter_mut().zip(triangle) {
+                if part.vertex_map.is_empty() {
+                    *dst = local as u32;
+                } else if let Some(&mapped) = part.vertex_map.get(local as usize) {
+                    *dst = mapped as u32;
+                } else {
+                    valid = false;
+                    break;
+                }
+            }
+            if valid {
+                by_triangle
+                    .entry(canonical_triangle(global))
+                    .or_insert(body_info.body_part);
+            }
+        }
+    }
+
+    let mapped: Vec<u16> = final_indices
+        .chunks_exact(3)
+        .map(|triangle| {
+            by_triangle
+                .get(&canonical_triangle([triangle[0], triangle[1], triangle[2]]))
+                .copied()
+                .unwrap_or(UNASSIGNED_BODY_PART)
+        })
+        .collect();
+    mapped
+        .iter()
+        .any(|&part| part != UNASSIGNED_BODY_PART)
+        .then_some(mapped)
+        .unwrap_or_default()
+}
 
 use crate::blocks::bs_geometry::{BSGeometry, BSGeometryMeshData, BoneWeight};
 use crate::blocks::node::NiNode;
 use crate::blocks::skin::{
     BsDismemberSkinInstance, BsSkinBoneData, BsSkinInstance, NiSkinData, NiSkinInstance,
+    NiSkinPartition,
 };
 use crate::blocks::tri_shape::{BsTriShape, NiTriShape};
 use crate::scene::NifScene;
@@ -20,6 +82,7 @@ pub fn extract_skin_ni_tri_shape(
     scene: &NifScene,
     shape: &NiTriShape,
     num_vertices: usize,
+    final_indices: &[u32],
 ) -> Option<ImportedSkin> {
     let skin_idx = shape.skin_instance_ref.index()?;
 
@@ -69,6 +132,7 @@ pub fn extract_skin_ni_tri_shape(
     // composes as the outermost factor. See OpenMW
     // `riggeometry.cpp:175-208`.
     let global_skin_transform = ni_transform_to_yup_matrix(&data.skin_transform);
+    let triangle_body_parts = triangle_body_parts(scene, skin_idx, final_indices);
 
     Some(ImportedSkin {
         bones,
@@ -77,6 +141,7 @@ pub fn extract_skin_ni_tri_shape(
         vertex_bone_weights,
         global_skin_transform,
         body_part_flags,
+        triangle_body_parts,
     })
 }
 
@@ -88,8 +153,13 @@ pub fn extract_skin_ni_tri_shape(
 /// Handles both:
 ///   - NiSkinInstance (Skyrim LE BSTriShape) via NiSkinData
 ///   - BSSkin::Instance (Skyrim SE / FO4+) via BSSkin::BoneData
-pub fn extract_skin_bs_tri_shape(scene: &NifScene, shape: &BsTriShape) -> Option<ImportedSkin> {
+pub fn extract_skin_bs_tri_shape(
+    scene: &NifScene,
+    shape: &BsTriShape,
+    final_indices: &[u32],
+) -> Option<ImportedSkin> {
     let skin_idx = shape.skin_ref.index()?;
+    let triangle_body_parts = triangle_body_parts(scene, skin_idx, final_indices);
 
     // Per-vertex weights come from the BSTriShape vertex buffer
     // (VF_SKINNED) — already decoded at parse time (#177). The
@@ -178,6 +248,7 @@ pub fn extract_skin_bs_tri_shape(scene: &NifScene, shape: &BsTriShape) -> Option
             vertex_bone_weights,
             global_skin_transform,
             body_part_flags,
+            triangle_body_parts,
         });
     }
 
@@ -218,6 +289,7 @@ pub fn extract_skin_bs_tri_shape(scene: &NifScene, shape: &BsTriShape) -> Option
             // partitions of its own — those live on NiSkinInstance /
             // BsDismemberSkinInstance, handled above. See #1659.
             body_part_flags: Vec::new(),
+            triangle_body_parts,
         });
     }
 
@@ -336,6 +408,7 @@ pub fn extract_skin_bs_geometry(
         // BSGeometry's BsSkinInstance carries no dismemberment
         // partitions — see #1659.
         body_part_flags: Vec::new(),
+        triangle_body_parts: Vec::new(),
     })
 }
 

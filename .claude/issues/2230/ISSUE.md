@@ -1,8 +1,9 @@
-# REN-D5-01: memory-budget.md volumetrics VRAM figures are stale by ~2x post-resolution-scaling
+# Issue #2230: REN-D5-01: memory-budget.md volumetrics VRAM figures are stale by ~2x post-resolution-scaling
 
-Severity: medium
-Source audit: docs/audits/AUDIT_RENDERER_2026-08-02.md
-GitHub: https://github.com/matiaszanolli/ByroRedux/issues/2230
+**State**: OPEN
+**Labels**: documentation, renderer, medium, doc-rot
+
+## Body
 
 **Dimension**: 5 (Memory)
 **Location**: `docs/engine/memory-budget.md` (volumetrics section)

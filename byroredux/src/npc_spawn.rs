@@ -16,7 +16,6 @@ use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::World;
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_core::string::StringPool;
-use byroredux_plugin::equip::armor_covers_main_body;
 use byroredux_plugin::esm::reader::GameKind;
 use byroredux_plugin::esm::records::{EsmIndex, ItemKind, NpcRecord, RaceRecord};
 use byroredux_renderer::VulkanContext;
@@ -405,6 +404,23 @@ pub fn humanoid_body_paths(
     }
 }
 
+/// Biped slots represented by one loose KF-era naked-body mesh.
+/// Fallout splits left/right hands into distinct slots; Oblivion has one
+/// shared Hand bit even though its archive also stores two hand NIFs.
+fn humanoid_body_path_biped_mask(game: GameKind, path: &str) -> u32 {
+    if path.ends_with("upperbody.nif") {
+        return 1 << 2;
+    }
+    match game {
+        GameKind::Fallout3NV if path.ends_with("lefthand.nif") => 1 << 3,
+        GameKind::Fallout3NV if path.ends_with("righthand.nif") => 1 << 4,
+        GameKind::Oblivion if path.ends_with("lefthand.nif") || path.ends_with("righthand.nif") => {
+            1 << 4
+        }
+        _ => 0,
+    }
+}
+
 /// Parse a `.kf` clip at `kf_path` from the texture provider's mesh
 /// archives, convert it through `byroredux_nif::anim::import_kf` →
 /// [`AnimationClip`], register the **first** clip with the
@@ -698,7 +714,15 @@ fn pick_idle_handle(pool: &[u32], form_id: u32) -> Option<u32> {
 /// the spawn-function scope.
 struct ResolvedArmor<'a> {
     form_id: u32,
+    /// Form referenced by OTFT/CNTO before leveled-list expansion. This is
+    /// identical to `form_id` for a base ARMO and for the race skin layer.
+    source_form_id: u32,
     model_path: &'a str,
+    /// Biped slots that another equipped item displaced from this mesh.
+    /// Non-zero only for the low-priority `RACE.WNAM` skin layer; the spawn
+    /// hook uses it to remove matching dismember partitions while preserving
+    /// still-uncovered body regions from the same NIF.
+    hidden_biped_mask: u32,
     /// Inventory row this armor mesh resolves from. Cross-checked
     /// against `EquipmentSlots.occupants` after the equip loop
     /// finishes (#2094 / SKY-D3-NEW-02) — an entry whose index no
@@ -725,6 +749,25 @@ struct NpcEquipState<'a> {
     armor_to_spawn: Vec<ResolvedArmor<'a>>,
 }
 
+impl NpcEquipState<'_> {
+    fn covers_biped_mask(&self, mask: u32) -> bool {
+        self.equipment_slots
+            .occupants
+            .iter()
+            .enumerate()
+            .any(|(bit, occupant)| mask & (1u32 << bit) != 0 && occupant.is_some())
+    }
+
+    /// Whether the winning equipment layer occupies this game's canonical
+    /// main-body slot. Runtime-FaceGen games use this to suppress their loose
+    /// naked upper-body mesh; prebaked-FaceGen games get the equivalent result
+    /// by displacing the lower-priority `RACE.WNAM` skin armor.
+    fn main_body_covered(&self, game: GameKind) -> bool {
+        byroredux_plugin::equip::main_body_bit(game)
+            .is_some_and(|bit| self.covers_biped_mask(1u32 << bit))
+    }
+}
+
 /// Walk the NPC's default outfit + inventory, expand LVLI refs to
 /// base ARMO records, populate `Inventory` + `EquipmentSlots`, and
 /// collect the armor mesh paths the spawn-side mesh loader will
@@ -740,16 +783,24 @@ fn build_npc_equip_state<'a>(
     game: GameKind,
     gender: Gender,
 ) -> NpcEquipState<'a> {
+    struct ExpandedEquip {
+        form_id: u32,
+        source_form_id: u32,
+        count: u32,
+    }
+
     let mut inventory = Inventory::new();
     let mut equipment_slots = EquipmentSlots::new();
     let mut equipped_weapon: Option<EquippedWeapon> = None;
     let mut armor_to_spawn: Vec<ResolvedArmor<'a>> = Vec::new();
+    let mut race_skin_slots: Option<(InventoryIndex, u32)> = None;
     // #2955 — same gate as `stamp_character_components`: a PC-level-multiplier
     // record's `level` is not a level, and `expand_leveled_form_id` filters
     // `entry.level <= actor_level` then takes the highest eligible tier, so the
     // raw multiplier made every entry eligible and always drew the top one.
     let actor_level = effective_actor_level(npc);
-    let mut expanded: Vec<u32> = Vec::new();
+    let mut expanded: Vec<ExpandedEquip> = Vec::new();
+    let mut resolved_buf = Vec::new();
 
     // #2093 / SKY-D3-NEW-01 — race default skin (`RACE.WNAM`), equipped
     // FIRST so it's the lowest-priority layer: any OTFT/CNTO armor
@@ -767,6 +818,7 @@ fn build_npc_equip_state<'a>(
             if let Some(item) = index.items.get(&skin_fid) {
                 if let ItemKind::Armor { biped_flags, .. } = item.kind {
                     equipment_slots.equip(biped_flags, inv_idx);
+                    race_skin_slots = Some((inv_idx, biped_flags));
                     if let Some(model_path) = byroredux_plugin::equip::resolve_armor_mesh(
                         item,
                         gender,
@@ -776,7 +828,9 @@ fn build_npc_equip_state<'a>(
                     ) {
                         armor_to_spawn.push(ResolvedArmor {
                             form_id: skin_fid,
+                            source_form_id: skin_fid,
                             model_path,
+                            hidden_biped_mask: 0,
                             inv_idx,
                         });
                     }
@@ -792,12 +846,18 @@ fn build_npc_equip_state<'a>(
     if let Some(otft_fid) = npc.default_outfit {
         if let Some(otft) = index.outfits.get(&otft_fid) {
             for &fid in &otft.items {
+                resolved_buf.clear();
                 byroredux_plugin::equip::expand_leveled_form_id(
                     fid,
                     actor_level,
                     index,
-                    &mut expanded,
+                    &mut resolved_buf,
                 );
+                expanded.extend(resolved_buf.iter().copied().map(|form_id| ExpandedEquip {
+                    form_id,
+                    source_form_id: fid,
+                    count: 1,
+                }));
             }
         }
     }
@@ -811,18 +871,27 @@ fn build_npc_equip_state<'a>(
     // (leveled actors that inherit gear via TPLT) spawned naked. Negative
     // counts are remove-from-inventory deltas; clamp at runtime.
     for entry in byroredux_plugin::equip::resolve_inherited_inventory(npc, actor_level, index) {
-        if entry.count.max(0) > 0 {
-            byroredux_plugin::equip::expand_leveled_form_id(
-                entry.item_form_id,
-                actor_level,
-                index,
-                &mut expanded,
-            );
+        let count = entry.count.max(0) as u32;
+        if count == 0 {
+            continue;
         }
+        resolved_buf.clear();
+        byroredux_plugin::equip::expand_leveled_form_id(
+            entry.item_form_id,
+            actor_level,
+            index,
+            &mut resolved_buf,
+        );
+        expanded.extend(resolved_buf.iter().copied().map(|form_id| ExpandedEquip {
+            form_id,
+            source_form_id: entry.item_form_id,
+            count,
+        }));
     }
 
-    for form_id in expanded {
-        let stack = ItemStack::new(form_id, 1);
+    for expanded in expanded {
+        let form_id = expanded.form_id;
+        let stack = ItemStack::new(form_id, expanded.count);
         let inv_idx = inventory.push(stack);
 
         let Some(item) = index.items.get(&form_id) else {
@@ -868,9 +937,40 @@ fn build_npc_equip_state<'a>(
         {
             armor_to_spawn.push(ResolvedArmor {
                 form_id,
+                source_form_id: expanded.source_form_id,
                 model_path,
+                hidden_biped_mask: 0,
                 inv_idx,
             });
+        }
+    }
+
+    // A race skin can cover several regions in one mesh. If later armor wins
+    // only some of those bits, keep the skin mesh but tell the importer which
+    // dismember partitions to suppress. Bits outside the skin ARMO's authored
+    // mask are irrelevant even if some other item occupies them.
+    if let Some((skin_inv_idx, skin_biped_flags)) = race_skin_slots {
+        let displaced_mask =
+            equipment_slots
+                .occupants
+                .iter()
+                .enumerate()
+                .fold(0u32, |mask, (bit, occupant)| {
+                    let bit_mask = 1u32 << bit;
+                    if skin_biped_flags & bit_mask != 0
+                        && occupant.is_some()
+                        && *occupant != Some(skin_inv_idx)
+                    {
+                        mask | bit_mask
+                    } else {
+                        mask
+                    }
+                });
+        if let Some(skin) = armor_to_spawn
+            .iter_mut()
+            .find(|armor| armor.inv_idx == skin_inv_idx)
+        {
+            skin.hidden_biped_mask = displaced_mask;
         }
     }
 

@@ -343,11 +343,11 @@ fn resolve_inherited_record<'a>(
 /// in-place so the caller can build a mixed flat list across multiple
 /// initial seeds without intermediate allocations.
 ///
-/// **Determinism.** Without TES5's `Use All` flag (bit 2 / `0x04`) or
-/// `Calculate for each item` (bit 1 / `0x02`), the resolver single-picks the
-/// *highest-level entry whose level ≤ actor_level*. Either multi-entry flag
-/// expands every eligible entry, preserving authored armour bundles instead
-/// of silently reducing them to one piece.
+/// **Determinism.** TES5's `Use All` flag (bit 2 / `0x04`) expands every
+/// eligible entry, preserving authored armour bundles. Otherwise the resolver
+/// single-picks the *highest-level entry whose level ≤ actor_level*.
+/// `Calculate for each item` (bit 1 / `0x02`) repeats that one roll for the
+/// list entry's count; it does not turn a level-tier ladder into a bundle.
 ///
 /// **`chance_none`.** Treated as 0 (always produce a result) for the
 /// same render-audit reason. A future RNG-driven dispatch can opt in
@@ -395,10 +395,10 @@ fn expand_leveled_inner(
         return;
     };
 
-    // Filter entries by `level <= actor_level`, then branch on the LVLI
-    // TES5's `Calculate for each item` (bit 1) and `Use All` (bit 2) both
-    // select every eligible entry. The latter is the flag that carries full
-    // armour bundles in vanilla Skyrim.
+    // Filter entries by `level <= actor_level`, then branch on TES5 `Use All`.
+    // `Calculate for each item` (bit 1 / 0x02) changes roll cardinality, not
+    // entry selection; treating it as Use All over-equipped 1,491 vanilla
+    // Skyrim NPCs (#3217).
     let eligible: Vec<&_> = lvli
         .entries
         .iter()
@@ -408,7 +408,7 @@ fn expand_leveled_inner(
         return;
     }
 
-    let multi_pick = lvli.flags & (0x02 | 0x04) != 0;
+    let multi_pick = lvli.flags & 0x04 != 0;
     if multi_pick {
         for entry in &eligible {
             expand_leveled_inner(entry.form_id, actor_level, index, out, depth + 1);
@@ -758,26 +758,28 @@ mod tests {
         );
     }
 
-    /// Multi-pick LVLI (flag bit 1 set) lands every eligible entry,
-    /// not just one. Used by NPC outfit lists that bundle a torso +
-    /// hands + boots LVLI under a single OTFT ref.
+    /// #3217 — TES5 LVLF bit 1 means "calculate for each item in count",
+    /// not "Use All". A level-tier ladder with that flag still selects one
+    /// highest eligible tier instead of equipping the whole ladder.
     #[test]
-    fn expand_leveled_multi_pick_lands_all_eligible() {
+    fn expand_leveled_calculate_each_item_still_picks_one_tier() {
         let mut idx = empty_index();
         add_armo(&mut idx, 0x00AA_AAAA);
         add_armo(&mut idx, 0x00BB_BBBB);
+        add_armo(&mut idx, 0x00DD_DDDD);
         add_lvli(
             &mut idx,
             0x00CC_CCCC,
             0x02, // flag bit 1 = "calculate for each item"
-            vec![(1, 0x00AA_AAAA, 1), (1, 0x00BB_BBBB, 1)],
+            vec![
+                (1, 0x00AA_AAAA, 1),
+                (4, 0x00BB_BBBB, 1),
+                (7, 0x00DD_DDDD, 1),
+            ],
         );
         let mut out = Vec::new();
-        expand_leveled_form_id(0x00CC_CCCC, 10, &idx, &mut out);
-        // Order is iteration-order over `entries`; both must land.
-        assert_eq!(out.len(), 2);
-        assert!(out.contains(&0x00AA_AAAA));
-        assert!(out.contains(&0x00BB_BBBB));
+        expand_leveled_form_id(0x00CC_CCCC, 5, &idx, &mut out);
+        assert_eq!(out, vec![0x00BB_BBBB]);
     }
 
     #[test]

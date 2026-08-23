@@ -69,11 +69,11 @@ fn ni_tri_shape_dismember_partitions_reach_imported_skin() {
         partitions: vec![
             BodyPartInfo {
                 part_flag: 1,
-                body_part: 130, // SBP_30_TORSO
+                body_part: 130, // section-cap variant of SBP_30_HEAD
             },
             BodyPartInfo {
                 part_flag: 0,
-                body_part: 141, // SBP_41_HEAD
+                body_part: 141, // section-cap variant of SBP_41_LONGHAIR
             },
         ],
     };
@@ -94,7 +94,7 @@ fn ni_tri_shape_dismember_partitions_reach_imported_skin() {
     scene.blocks.push(bone_node()); // 3
 
     let shape_ref = scene.get_as::<NiTriShape>(0).unwrap();
-    let skin = extract_skin_ni_tri_shape(&scene, shape_ref, 1)
+    let skin = extract_skin_ni_tri_shape(&scene, shape_ref, 1, &[])
         .expect("BsDismemberSkinInstance-backed shape must build an ImportedSkin");
 
     assert_eq!(
@@ -156,7 +156,7 @@ fn ni_tri_shape_plain_skin_instance_leaves_body_part_flags_empty() {
     scene.blocks.push(bone_node()); // 3
 
     let shape_ref = scene.get_as::<NiTriShape>(0).unwrap();
-    let skin = extract_skin_ni_tri_shape(&scene, shape_ref, 1).unwrap();
+    let skin = extract_skin_ni_tri_shape(&scene, shape_ref, 1, &[]).unwrap();
     assert!(
         skin.body_part_flags.is_empty(),
         "plain NiSkinInstance has no dismemberment data"
@@ -187,19 +187,31 @@ fn bs_tri_shape_dismember_partitions_reach_imported_skin() {
         shader_property_ref: BlockRef::NULL,
         alpha_property_ref: BlockRef::NULL,
         vertex_desc: 0,
-        num_triangles: 0,
-        num_vertices: 1,
-        vertices: vec![NiPoint3 {
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        }],
+        num_triangles: 1,
+        num_vertices: 3,
+        vertices: vec![
+            NiPoint3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            NiPoint3 {
+                x: 1.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            NiPoint3 {
+                x: 0.0,
+                y: 1.0,
+                z: 0.0,
+            },
+        ],
         uvs: Vec::new(),
         normals: Vec::new(),
         vertex_colors: Vec::new(),
-        triangles: Vec::new(),
-        bone_weights: vec![[1.0, 0.0, 0.0, 0.0]],
-        bone_indices: vec![[0, 0, 0, 0]],
+        triangles: vec![[0, 1, 2]],
+        bone_weights: vec![[1.0, 0.0, 0.0, 0.0]; 3],
+        bone_indices: vec![[0, 0, 0, 0]; 3],
         tangents: Vec::new(),
         kind: BsTriShapeKind::Plain,
         data_size: 0,
@@ -214,7 +226,7 @@ fn bs_tri_shape_dismember_partitions_reach_imported_skin() {
         },
         partitions: vec![BodyPartInfo {
             part_flag: 1,
-            body_part: 102, // SBP_102_RIGHTARM (FO3/FNV convention)
+            body_part: 102, // section-cap variant of FO3/FNV BP_HEAD2
         }],
     };
 
@@ -229,13 +241,13 @@ fn bs_tri_shape_dismember_partitions_reach_imported_skin() {
 
     let skin_partition = NiSkinPartition {
         partitions: vec![SkinPartitionEntry {
-            num_vertices: 1,
-            num_triangles: 0,
+            num_vertices: 3,
+            num_triangles: 1,
             bones: vec![0],
             num_weights_per_vertex: 4,
-            vertex_map: vec![0],
+            vertex_map: vec![0, 1, 2],
             vertex_weights: Vec::new(),
-            triangles: Vec::new(),
+            triangles: vec![[0, 1, 2]],
             bone_indices: Vec::new(),
         }],
         global_vertex_data: None,
@@ -249,7 +261,7 @@ fn bs_tri_shape_dismember_partitions_reach_imported_skin() {
     scene.blocks.push(bone_node()); // 4
 
     let shape_ref = scene.get_as::<BsTriShape>(0).unwrap();
-    let skin = extract_skin_bs_tri_shape(&scene, shape_ref)
+    let skin = extract_skin_bs_tri_shape(&scene, shape_ref, &[0, 1, 2])
         .expect("BsDismemberSkinInstance-backed BsTriShape must build an ImportedSkin");
 
     assert_eq!(
@@ -259,5 +271,10 @@ fn bs_tri_shape_dismember_partitions_reach_imported_skin() {
             body_part: 102,
         }],
         "BsDismemberSkinInstance partitions must forward on the BsTriShape path too (#1659)"
+    );
+    assert_eq!(
+        skin.triangle_body_parts,
+        vec![102],
+        "the final draw triangle must retain its dismember partition identity"
     );
 }

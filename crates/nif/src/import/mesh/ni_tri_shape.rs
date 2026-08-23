@@ -160,7 +160,7 @@ pub fn extract_mesh(
 
     // Skinning data (issue #151). Populated when the shape has a
     // NiSkinInstance / BSDismemberSkinInstance backing it.
-    let skin = extract_skin_ni_tri_shape(scene, shape, positions.len());
+    let skin = extract_skin_ni_tri_shape(scene, shape, positions.len(), &indices);
 
     // Local bounding sphere in Y-up renderer space. Prefer the NIF-provided
     // NiBound on NiGeometryData; fall back to a fresh centroid+max-distance

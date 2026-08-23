@@ -136,7 +136,7 @@ pub fn extract_bs_tri_shape(
 
     // Skinning data. BSTriShape per-vertex weights live in the packed
     // vertex buffer (VF_SKINNED), decoded at parse time (#177).
-    let skin = extract_skin_bs_tri_shape(scene, shape);
+    let skin = extract_skin_bs_tri_shape(scene, shape, &indices);
 
     // BSTriShape carries its own bounding sphere (center + radius) on the
     // block. See #217.

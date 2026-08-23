@@ -75,6 +75,7 @@ struct RuntimeNpcState {
     eye_texture_override: Option<String>,
     inventory: Option<Inventory>,
     equipment_slots: Option<EquipmentSlots>,
+    equipped_weapon: Option<EquippedWeapon>,
     armor: Vec<RuntimeArmor>,
     equipped_armor_count: u32,
     phase: RuntimePhase,
@@ -96,6 +97,7 @@ struct RuntimeArmor {
     model_path: String,
     resolved_fid: u32,
     source_fid: u32,
+    hidden_biped_mask: u32,
 }
 
 struct PrebakedNpcState {
@@ -130,6 +132,7 @@ enum PrebakedPhase {
 struct PrebakedArmor {
     form_id: u32,
     model_path: String,
+    hidden_biped_mask: u32,
 }
 
 enum UnitOutcome {
@@ -346,33 +349,7 @@ fn prepare_runtime_state(
     }
 
     let gender = Gender::from_acbs_flags(npc.acbs_flags);
-    let effective_inventory = byroredux_plugin::equip::resolve_inherited_inventory(
-        npc,
-        super::effective_actor_level(npc),
-        index,
-    );
-    let mut body_covered_buf = Vec::new();
-    let body_covered = effective_inventory.iter().any(|entry| {
-        if entry.count.max(0) == 0 {
-            return false;
-        }
-        body_covered_buf.clear();
-        byroredux_plugin::equip::expand_leveled_form_id(
-            entry.item_form_id,
-            super::effective_actor_level(npc),
-            index,
-            &mut body_covered_buf,
-        );
-        body_covered_buf.iter().any(|&fid| {
-            index.items.get(&fid).is_some_and(|item| {
-                matches!(
-                    item.kind,
-                    ItemKind::Armor { biped_flags, .. }
-                        if armor_covers_main_body(game, biped_flags)
-                )
-            })
-        })
-    });
+    let equip = build_npc_equip_state(npc, index, game, gender);
     // FO3/FNV RACE DATA bit 2 is the authored Child flag. Oblivion reuses
     // that bit for BeastRace, so the game gate is part of the translation.
     let is_child = matches!(game, GameKind::Fallout3NV)
@@ -380,10 +357,16 @@ fn prepare_runtime_state(
     let body_paths = humanoid_body_paths(game, gender, is_child)
         .iter()
         .filter(|path| {
-            let keep = !(body_covered && path.ends_with("upperbody.nif"));
+            let body_piece_mask = humanoid_body_path_biped_mask(game, path);
+            let covered = if path.ends_with("upperbody.nif") {
+                equip.main_body_covered(game)
+            } else {
+                equip.covers_biped_mask(body_piece_mask)
+            };
+            let keep = !covered;
             if !keep {
                 log::info!(
-                    "NPC {:08X} ({}): equipped armor covers torso — skipping {}",
+                    "NPC {:08X} ({}): equipped armor covers body mask {body_piece_mask:#06X} — skipping {}",
                     npc.form_id,
                     npc.editor_id,
                     path,
@@ -441,8 +424,16 @@ fn prepare_runtime_state(
         Vec::new()
     };
 
-    let (inventory, equipment_slots, armor) =
-        build_runtime_equip_state(npc, game, gender, index, effective_inventory);
+    let armor = equip
+        .armor_to_spawn
+        .into_iter()
+        .map(|armor| RuntimeArmor {
+            model_path: armor.model_path.to_owned(),
+            resolved_fid: armor.form_id,
+            source_fid: armor.source_form_id,
+            hidden_biped_mask: armor.hidden_biped_mask,
+        })
+        .collect();
 
     RuntimeNpcState {
         placement_root,
@@ -456,8 +447,9 @@ fn prepare_runtime_state(
         brow_path,
         eye_paths,
         eye_texture_override,
-        inventory: Some(inventory),
-        equipment_slots: Some(equipment_slots),
+        inventory: Some(equip.inventory),
+        equipment_slots: Some(equip.equipment_slots),
+        equipped_weapon: equip.equipped_weapon,
         armor,
         equipped_armor_count: 0,
         phase: RuntimePhase::Skeleton,
@@ -502,13 +494,17 @@ fn prepare_creature_state(
     let idle_kf_path = (!dir.is_empty()).then(|| creature_idle_kf_path(&dir));
 
     let gender = Gender::from_acbs_flags(npc.acbs_flags);
-    let effective_inventory = byroredux_plugin::equip::resolve_inherited_inventory(
-        npc,
-        super::effective_actor_level(npc),
-        index,
-    );
-    let (inventory, equipment_slots, armor) =
-        build_runtime_equip_state(npc, game, gender, index, effective_inventory);
+    let equip = build_npc_equip_state(npc, index, game, gender);
+    let armor = equip
+        .armor_to_spawn
+        .into_iter()
+        .map(|armor| RuntimeArmor {
+            model_path: armor.model_path.to_owned(),
+            resolved_fid: armor.form_id,
+            source_fid: armor.source_form_id,
+            hidden_biped_mask: armor.hidden_biped_mask,
+        })
+        .collect();
 
     let _ = world;
     RuntimeNpcState {
@@ -523,99 +519,13 @@ fn prepare_creature_state(
         brow_path: None,
         eye_paths: Vec::new(),
         eye_texture_override: None,
-        inventory: Some(inventory),
-        equipment_slots: Some(equipment_slots),
+        inventory: Some(equip.inventory),
+        equipment_slots: Some(equip.equipment_slots),
+        equipped_weapon: equip.equipped_weapon,
         armor,
         equipped_armor_count: 0,
         phase: RuntimePhase::Skeleton,
     }
-}
-
-fn build_runtime_equip_state(
-    npc: &NpcRecord,
-    game: GameKind,
-    gender: Gender,
-    index: &EsmIndex,
-    effective_inventory: &[byroredux_plugin::esm::records::NpcInventoryEntry],
-) -> (Inventory, EquipmentSlots, Vec<RuntimeArmor>) {
-    struct Candidate {
-        model_path: String,
-        resolved_fid: u32,
-        source_fid: u32,
-        inv_idx: InventoryIndex,
-    }
-
-    let mut inventory = Inventory::new();
-    let mut equipment_slots = EquipmentSlots::new();
-    let mut candidates = Vec::new();
-    let mut resolved_buf = Vec::new();
-
-    for entry in effective_inventory {
-        let runtime_count = entry.count.max(0) as u32;
-        if runtime_count == 0 {
-            continue;
-        }
-        let inv_idx = inventory.push(ItemStack::new(entry.item_form_id, runtime_count));
-        resolved_buf.clear();
-        byroredux_plugin::equip::expand_leveled_form_id(
-            entry.item_form_id,
-            super::effective_actor_level(npc),
-            index,
-            &mut resolved_buf,
-        );
-        for &resolved_fid in &resolved_buf {
-            let Some(item) = index.items.get(&resolved_fid) else {
-                continue;
-            };
-            let ItemKind::Armor {
-                biped_flags,
-                slot_mask,
-                ..
-            } = item.kind
-            else {
-                continue;
-            };
-            let displaced = equipment_slots.equip(biped_flags, inv_idx);
-            if !displaced.is_empty() {
-                log::debug!(
-                    "NPC {:08X} ({}): armor {:08X} (from CNTO {:08X}) \
-                     displaced inventory slots {:?} on biped mask {:#010x}",
-                    npc.form_id,
-                    npc.editor_id,
-                    resolved_fid,
-                    entry.item_form_id,
-                    displaced,
-                    biped_flags,
-                );
-            }
-            let _ = slot_mask;
-            let Some(model_path) = byroredux_plugin::equip::resolve_armor_mesh(
-                item,
-                gender,
-                npc.race_form_id,
-                index,
-                game,
-            ) else {
-                continue;
-            };
-            candidates.push(Candidate {
-                model_path: model_path.to_owned(),
-                resolved_fid,
-                source_fid: entry.item_form_id,
-                inv_idx,
-            });
-        }
-    }
-    candidates.retain(|candidate| equipment_slots.occupants.contains(&Some(candidate.inv_idx)));
-    let armor = candidates
-        .into_iter()
-        .map(|candidate| RuntimeArmor {
-            model_path: candidate.model_path,
-            resolved_fid: candidate.resolved_fid,
-            source_fid: candidate.source_fid,
-        })
-        .collect();
-    (inventory, equipment_slots, armor)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -818,6 +728,14 @@ fn advance_runtime_unit(
             };
             match tex_provider.extract_mesh(&armor.model_path) {
                 Some(data) => {
+                    let hidden_biped_mask = armor.hidden_biped_mask;
+                    let mut hide_displaced_skin =
+                        |scene: &mut byroredux_nif::import::ImportedScene| {
+                            hide_skin_partitions(scene, hidden_biped_mask);
+                        };
+                    let pre_spawn: Option<
+                        &mut dyn FnMut(&mut byroredux_nif::import::ImportedScene),
+                    > = (hidden_biped_mask != 0).then_some(&mut hide_displaced_skin);
                     let (_, root, _) = load_nif_bytes_with_skeleton(
                         world,
                         ctx,
@@ -827,7 +745,7 @@ fn advance_runtime_unit(
                         mat_provider,
                         Some(&state.skel_map),
                         None,
-                        None,
+                        pre_spawn,
                     );
                     if let Some(root) = root {
                         parent_part(world, state.placement_root, root);
@@ -870,6 +788,9 @@ fn advance_runtime_unit(
                 state.placement_root,
                 state.equipment_slots.take().unwrap_or_default(),
             );
+            if let Some(weapon) = state.equipped_weapon.take() {
+                world.insert(state.placement_root, weapon);
+            }
             if let Some(skeleton) = state.skel_root {
                 world.insert(
                     state.placement_root,
@@ -1063,6 +984,7 @@ fn prepare_prebaked_state(
         .map(|armor| PrebakedArmor {
             form_id: armor.form_id,
             model_path: armor.model_path.to_owned(),
+            hidden_biped_mask: armor.hidden_biped_mask,
         })
         .collect();
     world.insert(placement_root, equip.inventory);
@@ -1174,6 +1096,14 @@ fn advance_prebaked_unit(
             };
             match tex_provider.extract_mesh(&armor.model_path) {
                 Some(data) => {
+                    let hidden_biped_mask = armor.hidden_biped_mask;
+                    let mut hide_displaced_skin =
+                        |scene: &mut byroredux_nif::import::ImportedScene| {
+                            hide_skin_partitions(scene, hidden_biped_mask);
+                        };
+                    let pre_spawn: Option<
+                        &mut dyn FnMut(&mut byroredux_nif::import::ImportedScene),
+                    > = (hidden_biped_mask != 0).then_some(&mut hide_displaced_skin);
                     let (_, root, _) = load_nif_bytes_with_skeleton(
                         world,
                         ctx,
@@ -1183,7 +1113,7 @@ fn advance_prebaked_unit(
                         mat_provider,
                         Some(&state.skel_map),
                         None,
-                        None,
+                        pre_spawn,
                     );
                     if let Some(root) = root {
                         parent_part(world, state.placement_root, root);
@@ -1230,6 +1160,23 @@ fn advance_prebaked_unit(
             tag_descendants_as_actor(world, state.placement_root);
             UnitOutcome::Complete(Some(state.placement_root))
         }
+    }
+}
+
+/// Apply an equip-time biped mask before the scene builder uploads meshes.
+/// Unsupported geometry paths simply report no triangle/body-part association
+/// and remain unchanged, preserving a safe visual fallback for formats that
+/// carry no classic dismember or FO4-family sub-index segmentation metadata.
+fn hide_skin_partitions(scene: &mut byroredux_nif::import::ImportedScene, hidden_biped_mask: u32) {
+    let removed: usize = scene
+        .meshes
+        .iter_mut()
+        .map(|mesh| mesh.hide_skin_partitions(hidden_biped_mask))
+        .sum();
+    if removed > 0 {
+        log::debug!(
+            "NPC skin equip mask {hidden_biped_mask:#010X}: hid {removed} displaced triangle(s)"
+        );
     }
 }
 

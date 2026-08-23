@@ -182,7 +182,7 @@ fn multi_partition_remap_picks_correct_global_per_vertex() {
     scene.blocks.push(bone_node()); // 8
 
     let shape_ref = scene.get_as::<BsTriShape>(0).unwrap();
-    let skin = extract_skin_bs_tri_shape(&scene, shape_ref)
+    let skin = extract_skin_bs_tri_shape(&scene, shape_ref, &[])
         .expect("multi-partition skin must build an ImportedSkin");
 
     assert_eq!(
@@ -324,7 +324,7 @@ fn single_partition_shape_remaps_non_identity_palette() {
     scene.blocks.push(bone_node()); // 10
 
     let shape_ref = scene.get_as::<BsTriShape>(0).unwrap();
-    let skin = extract_skin_bs_tri_shape(&scene, shape_ref).unwrap();
+    let skin = extract_skin_bs_tri_shape(&scene, shape_ref, &[]).unwrap();
     // Local slot 2 resolves through [0, 1, 3, 4, 5, 6].
     assert_eq!(skin.vertex_bone_indices[0], [3u16, 0, 0, 0]);
 }
@@ -416,7 +416,7 @@ fn missing_skin_partition_falls_back_to_identity_widen() {
     scene.blocks.push(bone_node()); // 7
 
     let shape_ref = scene.get_as::<BsTriShape>(0).unwrap();
-    let skin = extract_skin_bs_tri_shape(&scene, shape_ref).unwrap();
+    let skin = extract_skin_bs_tri_shape(&scene, shape_ref, &[]).unwrap();
     // No partition table to remap through — identity widen [7] → [7u16].
     assert_eq!(skin.vertex_bone_indices[0], [7u16, 0, 0, 0]);
 }

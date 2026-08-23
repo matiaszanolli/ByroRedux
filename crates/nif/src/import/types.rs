@@ -842,6 +842,98 @@ impl ImportedMesh {
     }
 }
 
+#[cfg(test)]
+mod skin_partition_hiding_tests {
+    use super::*;
+    use crate::blocks::tri_shape::{
+        BsGeometryPerSegmentSharedData, BsGeometrySegmentData, BsGeometrySegmentSharedData,
+        BsGeometrySubSegment,
+    };
+
+    #[test]
+    fn hides_only_triangles_whose_skyrim_body_slot_is_covered() {
+        let mut mesh = ImportedMesh::from_geometry(
+            vec![[0.0; 3]; 4],
+            vec![[1.0; 4]; 4],
+            vec![[0.0, 1.0, 0.0]; 4],
+            Vec::new(),
+            Vec::new(),
+            vec![0, 1, 2, 0, 2, 3],
+        );
+        mesh.skin = Some(ImportedSkin {
+            triangle_body_parts: vec![32, 33],
+            ..Default::default()
+        });
+
+        let removed = mesh.hide_skin_partitions(1 << (32 - 30));
+
+        assert_eq!(removed, 1);
+        assert_eq!(mesh.indices, vec![0, 2, 3]);
+        assert_eq!(mesh.skin.unwrap().triangle_body_parts, vec![33]);
+    }
+
+    #[test]
+    fn fo3_anatomical_parts_are_not_misread_as_biped_slots() {
+        assert_eq!(dismember_body_part_to_biped_bit(0), None);
+        assert_eq!(dismember_body_part_to_biped_bit(13), None);
+        assert_eq!(dismember_body_part_to_biped_bit(32), Some(2));
+        assert_eq!(dismember_body_part_to_biped_bit(132), Some(2));
+        assert_eq!(dismember_body_part_to_biped_bit(232), Some(2));
+    }
+
+    #[test]
+    fn fo4_subindex_ranges_hide_body_but_preserve_nested_hand_segment() {
+        let mut mesh = ImportedMesh::from_geometry(
+            vec![[0.0; 3]; 5],
+            vec![[1.0; 4]; 5],
+            vec![[0.0, 1.0, 0.0]; 5],
+            Vec::new(),
+            Vec::new(),
+            vec![0, 1, 2, 0, 2, 3, 0, 3, 4],
+        );
+        mesh.bs_sub_index = Some(Arc::new(BsSubIndexTriShapeData {
+            num_primitives: 3,
+            num_segments: 1,
+            total_segments: 2,
+            segments: vec![BsGeometrySegmentData {
+                flags: None,
+                start_index: 0,
+                num_primitives: 3,
+                parent_array_index: Some(0),
+                sub_segments: vec![BsGeometrySubSegment {
+                    start_index: 3,
+                    num_primitives: 1,
+                    parent_array_index: 1,
+                    unused: 0,
+                }],
+            }],
+            shared: Some(BsGeometrySegmentSharedData {
+                num_segments: 1,
+                total_segments: 2,
+                segment_starts: vec![0],
+                per_segment_data: vec![
+                    BsGeometryPerSegmentSharedData {
+                        user_index: 3, // FO4 BODY
+                        bone_id: 1,
+                        cut_offsets: Vec::new(),
+                    },
+                    BsGeometryPerSegmentSharedData {
+                        user_index: 4, // FO4 L Hand
+                        bone_id: 2,
+                        cut_offsets: Vec::new(),
+                    },
+                ],
+                ssf_filename: String::new(),
+            }),
+        }));
+
+        let removed = mesh.hide_skin_partitions(1 << 3);
+
+        assert_eq!(removed, 2);
+        assert_eq!(mesh.indices, vec![0, 2, 3]);
+    }
+}
+
 /// Per-bone binding for a skinned mesh. Bone space is Y-up (converted
 /// from Gamebryo Z-up on import).
 #[derive(Debug, Clone)]
@@ -917,15 +1009,19 @@ pub struct ImportedSkin {
     pub global_skin_transform: [[f32; 4]; 4],
     /// Per-partition dismemberment flags (`BSDismemberSkinInstance`'s
     /// `BodyPartInfo`), in the same order as the linked `NiSkinPartition`'s
-    /// `partitions`. A future slot-hiding consumer cross-references this
-    /// against the per-vertex partition assignment (already computed
-    /// during bone-index remap, see `remap_bs_tri_shape_bone_indices`) to
-    /// suppress FaceGen body sub-shapes whose `body_part` overlaps an
-    /// equipped armor's biped slot. Empty when the skin instance is a
+    /// `partitions`. The NPC equip pre-spawn hook consumes the derived
+    /// per-triangle mapping below to suppress only the regions displaced by
+    /// equipped armor. Empty when the skin instance is a
     /// plain `NiSkinInstance` (no dismemberment data) or the geometry
     /// path doesn't resolve one (BSGeometry / FO4+ BSSkin::Instance).
     /// See #1659.
     pub body_part_flags: Vec<crate::blocks::skin::BodyPartInfo>,
+    /// One dismember body-part value per triangle in the owning mesh's
+    /// `indices` vector. `u16::MAX` marks triangles that could not be matched
+    /// to a `NiSkinPartition`. This closes the parser→spawn half of body-slot
+    /// hiding: an NPC skin mesh can discard only the partitions displaced by
+    /// equipped armor instead of keeping or dropping the whole mesh.
+    pub triangle_body_parts: Vec<u16>,
 }
 
 impl Default for ImportedSkin {
@@ -936,6 +1032,7 @@ impl Default for ImportedSkin {
             vertex_bone_indices: Vec::new(),
             vertex_bone_weights: Vec::new(),
             body_part_flags: Vec::new(),
+            triangle_body_parts: Vec::new(),
             // Identity matrix in column-major glam form. Required so a
             // default ImportedSkin doesn't multiply vertices by a zero
             // matrix when `global_skin_transform` is unused (e.g.
@@ -947,6 +1044,117 @@ impl Default for ImportedSkin {
                 [0.0, 0.0, 0.0, 1.0],
             ],
         }
+    }
+}
+
+/// Convert Skyrim-family `BSDismemberBodyPartType` slot values to the biped
+/// mask bit used by ARMO/ARMA records. Ordinary values are 30..=61; cap
+/// variants encode the same slot in their final two digits (130, 230, ...).
+/// FO3/FNV's anatomical 0..=13 values are deliberately left unmapped because
+/// they are not biped-slot numbers.
+pub fn dismember_body_part_to_biped_bit(body_part: u16) -> Option<u8> {
+    let slot = match body_part {
+        30..=61 => body_part,
+        130..=161 | 230..=261 => body_part % 100,
+        _ => return None,
+    };
+    u8::try_from(slot - 30).ok()
+}
+
+impl ImportedMesh {
+    /// Remove indexed triangles belonging to body partitions covered by
+    /// `hidden_biped_mask`. Supports both classic
+    /// `BSDismemberSkinInstance` triangle associations and
+    /// `BSSubIndexTriShape` ranges used by SSE/FO4/FO76. Vertex/skin arrays
+    /// stay intact; only the draw index list changes, so shared skeleton and
+    /// palette contracts are unaffected.
+    pub fn hide_skin_partitions(&mut self, hidden_biped_mask: u32) -> usize {
+        if hidden_biped_mask == 0 {
+            return 0;
+        }
+
+        let old_triangle_count = self.indices.len() / 3;
+        let mut hidden_triangles = vec![false; old_triangle_count];
+
+        if let Some(skin) = &self.skin {
+            if skin.triangle_body_parts.len() == old_triangle_count {
+                for (hidden, &body_part) in
+                    hidden_triangles.iter_mut().zip(&skin.triangle_body_parts)
+                {
+                    *hidden = dismember_body_part_to_biped_bit(body_part)
+                        .is_some_and(|bit| hidden_biped_mask & (1u32 << bit) != 0);
+                }
+            }
+        }
+
+        if let Some(segmentation) = &self.bs_sub_index {
+            let mut segment_bits = vec![None; old_triangle_count];
+            let mut assign_range = |start_index: u32, num_primitives: u32, bit: Option<u8>| {
+                if start_index % 3 != 0 {
+                    return;
+                }
+                let start = (start_index / 3) as usize;
+                let end = start
+                    .saturating_add(num_primitives as usize)
+                    .min(segment_bits.len());
+                if start < end {
+                    segment_bits[start..end].fill(bit);
+                }
+            };
+
+            let shared_bit = |array_index: Option<u32>| {
+                let data = segmentation
+                    .shared
+                    .as_ref()?
+                    .per_segment_data
+                    .get(array_index? as usize)?;
+                // nif.xml: UINT_MAX means `user_index` refers to another
+                // segment, not a Biped Object. Leave those triangles visible
+                // rather than guessing through a malformed/reference chain.
+                (data.bone_id != u32::MAX && data.user_index < 32).then_some(data.user_index as u8)
+            };
+
+            for segment in &segmentation.segments {
+                let bit = segment
+                    .flags
+                    .and_then(|body_part| dismember_body_part_to_biped_bit(body_part as u16))
+                    .or_else(|| shared_bit(segment.parent_array_index));
+                assign_range(segment.start_index, segment.num_primitives, bit);
+                for sub_segment in &segment.sub_segments {
+                    assign_range(
+                        sub_segment.start_index,
+                        sub_segment.num_primitives,
+                        shared_bit(Some(sub_segment.parent_array_index)),
+                    );
+                }
+            }
+            for (hidden, bit) in hidden_triangles.iter_mut().zip(segment_bits) {
+                *hidden |= bit.is_some_and(|bit| hidden_biped_mask & (1u32 << bit) != 0);
+            }
+        }
+
+        if !hidden_triangles.iter().any(|hidden| *hidden) {
+            return 0;
+        }
+
+        let mut kept_indices = Vec::with_capacity(self.indices.len());
+        for (triangle, hidden) in self.indices.chunks_exact(3).zip(&hidden_triangles) {
+            if !hidden {
+                kept_indices.extend_from_slice(triangle);
+            }
+        }
+        self.indices = kept_indices;
+        if let Some(skin) = self.skin.as_mut() {
+            if skin.triangle_body_parts.len() == old_triangle_count {
+                skin.triangle_body_parts = skin
+                    .triangle_body_parts
+                    .iter()
+                    .zip(&hidden_triangles)
+                    .filter_map(|(&part, hidden)| (!hidden).then_some(part))
+                    .collect();
+            }
+        }
+        old_triangle_count - self.indices.len() / 3
     }
 }
 
