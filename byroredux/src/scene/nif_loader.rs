@@ -890,11 +890,39 @@ pub(crate) fn load_nif_bytes_with_skeleton(
             texture_sources.base_color = MaterialTextureSource::RuntimeOverride;
         }
 
+        // Canonical material translation — same single boundary the
+        // cell-loader path uses, so loose-NIF materials are resolved
+        // identically. No REFR overlay on the loose path → no extra
+        // material flags. See `material_translate.rs`.
+        //
+        // #2571 / OBL-D5-01 — computed here, ahead of the texture-clamp
+        // resolve just below (now that `owned_textures` is finalized), so
+        // every `texture_clamp_mode`/`src_blend_mode`/`dst_blend_mode` read
+        // for the rest of this loop iteration goes through this one
+        // canonical `Material` instead of re-reading the raw
+        // `mesh.material` tier at each use site. `world.insert` further
+        // down moves `material`, so pull copies of the small Copy fields
+        // this loop iteration still needs afterward.
+        let material = crate::material_translate::translate_material(
+            &mesh.material,
+            mesh.name.as_deref(),
+            crate::material_translate::ResolvedPaths {
+                textures: owned_textures.clone(),
+                material_path: owned_material_path.clone(),
+            },
+            0,
+        );
+        let material_kind = material.material_kind;
+        let mesh_water = material.is_water_shader;
+        let canonical_clamp_mode = material.texture_clamp_mode;
+        let canonical_src_blend_mode = material.src_blend_mode;
+        let canonical_dst_blend_mode = material.dst_blend_mode;
+
         let tex_handle = resolve_texture_with_clamp(
             ctx,
             tex_provider,
             owned_textures.base_color.as_deref(),
-            mesh.material.texture_clamp_mode,
+            canonical_clamp_mode,
         );
 
         let quat = Quat::from_xyzw(
@@ -938,7 +966,7 @@ pub(crate) fn load_nif_bytes_with_skeleton(
         );
         if mesh.material.has_alpha || implicit_decal_blend {
             let (src_blend, dst_blend) = if mesh.material.has_alpha {
-                (mesh.material.src_blend_mode, mesh.material.dst_blend_mode)
+                (canonical_src_blend_mode, canonical_dst_blend_mode)
             } else {
                 (6, 7)
             };
@@ -1013,21 +1041,8 @@ pub(crate) fn load_nif_bytes_with_skeleton(
                 world.insert(entity, SpeedTreeWind::new(1.0, 0.0));
             }
         }
-        // Canonical material translation — same single boundary the
-        // cell-loader path uses, so loose-NIF materials are resolved
-        // identically. No REFR overlay on the loose path → no extra
-        // material flags. See `material_translate.rs`.
-        let material = crate::material_translate::translate_material(
-            &mesh.material,
-            mesh.name.as_deref(),
-            crate::material_translate::ResolvedPaths {
-                textures: owned_textures.clone(),
-                material_path: owned_material_path.clone(),
-            },
-            0,
-        );
-        let material_kind = material.material_kind;
-        let mesh_water = material.is_water_shader;
+        // `material` was computed earlier in this loop iteration, ahead of
+        // the texture-clamp resolve.
         world.insert(entity, material);
         // PERF-D3-NEW-02 / #1136 — mirror of the cell_loader::spawn path.
         if let Some(ref tp) = owned_textures.base_color {
@@ -1044,7 +1059,7 @@ pub(crate) fn load_nif_bytes_with_skeleton(
             tex_provider,
             &owned_textures,
             tex_handle,
-            mesh.material.texture_clamp_mode,
+            canonical_clamp_mode,
         );
         let normal_has_alpha = texture_handles.normal != 0
             && ctx
@@ -1085,7 +1100,7 @@ pub(crate) fn load_nif_bytes_with_skeleton(
             MaterialTextureDebugInfo {
                 paths: owned_textures,
                 sources: texture_sources,
-                clamp_mode: mesh.material.texture_clamp_mode,
+                clamp_mode: canonical_clamp_mode,
             },
         );
         // #1480 / REN-D22-NEW-01 — resolve the normal-alpha-as-spec roughness

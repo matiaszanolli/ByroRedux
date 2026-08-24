@@ -1199,8 +1199,9 @@ mod xcll_gate_tests {
         assert_eq!(
             xcll_canonical_sizes(GameKind::Starfield),
             &[28, 108],
-            "Starfield's vanilla XCLL is 108 bytes (Skyrim+ 92-byte \
-             body + 16-byte SF tail). See #1291.",
+            "Starfield's vanilla XCLL is 108 bytes (shares only bytes 0-39 \
+             with Skyrim, then diverges into a distinct volumetric \
+             height-fog model). See #1291 / #1293.",
         );
     }
 

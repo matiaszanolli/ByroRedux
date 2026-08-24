@@ -148,6 +148,11 @@ fn main() {
     // Also run the import pipeline and show results
     println!("\n=== Import Results (Y-up) ===");
     let mut pool = byroredux_core::string::StringPool::new();
+    // #2362 / SF2D2-05 — this dump tool operates on a loose NIF file with
+    // no BSA/BA2 archive open, so no `MeshResolver` is available to thread
+    // through here. Starfield external-geometry `BSGeometry` meshes (whose
+    // bytes live in a companion `.mesh` archive entry) import to zero
+    // meshes for that reason; not a production path.
     let meshes = byroredux_nif::import::import_nif(&scene, &mut pool);
     for (i, m) in meshes.iter().enumerate() {
         println!("\nMesh {}: name={:?}", i, m.name);

@@ -511,6 +511,12 @@ pub(crate) fn translate_material(
         sheen: 0.0,
         sheen_tint: 0.0,
         anisotropic: 0.0,
+        // #2571 (OBL-D5-01) — copied verbatim so spawn sites read the
+        // canonical component instead of re-reading `ImportedMaterial`
+        // independently. See the field docs on `Material`.
+        texture_clamp_mode: source.texture_clamp_mode,
+        src_blend_mode: source.src_blend_mode,
+        dst_blend_mode: source.dst_blend_mode,
     };
     material.resolve_pbr();
     crate::helpers::classify_glass_into_material(
@@ -1650,6 +1656,11 @@ mod canonical_completeness_harness {
             rimlight_power: 0.81,
             backlight_power: 0.91,
             fresnel_power: 4.5,
+            // #2571 — non-default values so the round-trip assertion below
+            // actually exercises the copy (the struct default is 0/6/7).
+            texture_clamp_mode: 1, // CLAMP_S_WRAP_T
+            src_blend_mode: 2,     // SRC_COLOR
+            dst_blend_mode: 3,     // INV_SRC_COLOR
             no_lighting_falloff: Some(NoLightingFalloff {
                 start_angle: 0.1,
                 stop_angle: 0.9,
@@ -1724,6 +1735,10 @@ mod canonical_completeness_harness {
         assert_eq!(material.rimlight_power, 0.81);
         assert_eq!(material.backlight_power, 0.91);
         assert_eq!(material.fresnel_power, 4.5);
+        // #2571 (OBL-D5-01)
+        assert_eq!(material.texture_clamp_mode, 1);
+        assert_eq!(material.src_blend_mode, 2);
+        assert_eq!(material.dst_blend_mode, 3);
 
         // Texture handles.
         assert_eq!(

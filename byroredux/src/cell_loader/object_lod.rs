@@ -239,7 +239,18 @@ fn spawn_object_lod_quad(
     // Local pool — we consume only geometry + transforms, not the interned
     // texture handles (the atlas path is deterministic).
     let mut pool = byroredux_core::string::StringPool::new();
-    let imported = byroredux_nif::import::import_nif_scene(&scene, &mut pool);
+    // #2362 / SF2D2-05 — thread the already-in-scope `tex_provider`
+    // (a `MeshResolver`) through so external-geometry `BSGeometry` LOD
+    // slots (Starfield's `meshes\lod\generated\..._lod_N.nif`) resolve
+    // instead of silently importing to zero meshes. Not reachable today
+    // (object_lod is `.bto`-keyed and Starfield's LODMeshes.ba2 has no
+    // `.bto`), but this is exactly the helper a future Starfield
+    // distant-object-LOD arc would reuse.
+    let imported = byroredux_nif::import::import_nif_scene_with_resolver(
+        &scene,
+        &mut pool,
+        Some(tex_provider),
+    );
     if imported.meshes.is_empty() {
         return None;
     }
@@ -546,5 +557,29 @@ mod tests {
         let quads = lod_bands::select_lod_quads(&selection, |_, _, _| false, |_, _, _| true);
         assert!(quads.iter().all(|&(level, _, _)| level <= 16));
         assert!(quads.iter().any(|&(level, _, _)| level == 16));
+    }
+
+    /// #2362 / SF2D2-05 — `spawn_object_lod_quad` must thread the
+    /// already-in-scope `tex_provider` through as a `MeshResolver`, not
+    /// call the no-resolver `import_nif_scene` overload. Not
+    /// Vulkan/archive-reachable to exercise end-to-end (object_lod is
+    /// `.bto`-keyed; Starfield's `LODMeshes.ba2` ships none today), so this
+    /// pins the wiring by source inspection — a regression here would
+    /// silently import every external-geometry `BSGeometry` LOD mesh to
+    /// zero once a future Starfield distant-object-LOD arc reuses this
+    /// path.
+    #[test]
+    fn spawn_object_lod_quad_threads_the_mesh_resolver() {
+        // Whitespace-insensitive so a reformat doesn't spuriously break this.
+        let normalized: String = include_str!("object_lod.rs")
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        assert!(
+            normalized
+                .contains("import_nif_scene_with_resolver(&scene,&mutpool,Some(tex_provider))"),
+            "spawn_object_lod_quad must pass tex_provider as the MeshResolver, \
+             not call the no-resolver import_nif_scene overload",
+        );
     }
 }

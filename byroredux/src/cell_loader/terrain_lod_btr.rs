@@ -170,7 +170,15 @@ pub(crate) fn spawn_btr_block(
     // Local pool — we consume only geometry + transforms; the diffuse path is
     // deterministic (mirrors `object_lod`'s atlas resolution).
     let mut pool = byroredux_core::string::StringPool::new();
-    let imported = byroredux_nif::import::import_nif_scene(&scene, &mut pool);
+    // #2362 / SF2D2-05 — thread the already-in-scope `tex_provider`
+    // through so external-geometry `BSGeometry` LOD slots resolve instead
+    // of silently importing to zero meshes. See the matching note on
+    // `object_lod.rs::spawn_object_lod_quad`.
+    let imported = byroredux_nif::import::import_nif_scene_with_resolver(
+        &scene,
+        &mut pool,
+        Some(tex_provider),
+    );
     if imported.meshes.is_empty() {
         return None;
     }
@@ -451,5 +459,23 @@ mod tests {
     #[test]
     fn world_bound_empty_is_zero() {
         assert_eq!(world_bound(&[]).center, WorldBound::ZERO.center);
+    }
+
+    /// #2362 / SF2D2-05 — `spawn_btr_block` must thread the already-in-
+    /// scope `tex_provider` through as a `MeshResolver`. See the matching
+    /// pin on `object_lod.rs::spawn_object_lod_quad_threads_the_mesh_resolver`.
+    #[test]
+    fn spawn_btr_block_threads_the_mesh_resolver() {
+        // Whitespace-insensitive so a reformat doesn't spuriously break this.
+        let normalized: String = include_str!("terrain_lod_btr.rs")
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        assert!(
+            normalized
+                .contains("import_nif_scene_with_resolver(&scene,&mutpool,Some(tex_provider))"),
+            "spawn_btr_block must pass tex_provider as the MeshResolver, \
+             not call the no-resolver import_nif_scene overload",
+        );
     }
 }

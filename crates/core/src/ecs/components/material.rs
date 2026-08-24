@@ -367,6 +367,29 @@ pub struct Material {
     /// no-source-format-equivalent caveat as [`Self::subsurface`] (BGSM
     /// authors no anisotropy metadata either); `mat.set`-only. #2514.
     pub anisotropic: f32,
+    /// `NiTexturingProperty`/`BSShaderProperty` texture-address mode, per
+    /// nif.xml's `TexClampMode` enum: 0=CLAMP_S_CLAMP_T, 1=CLAMP_S_WRAP_T,
+    /// 2=WRAP_S_CLAMP_T, 3=WRAP_S_WRAP_T. Authored on Oblivion architecture
+    /// trim/signs/banners (#610) via `CLAMP_S_CLAMP_T` so edge texels don't
+    /// bleed into the sampler's wrap. Copied verbatim from
+    /// `ImportedMaterial::texture_clamp_mode`, including that struct's own
+    /// `0` (CLAMP_S_CLAMP_T) parser-stub default.
+    ///
+    /// #2571 (OBL-D5-01) — added so spawn sites can read this off the
+    /// canonical `Material` instead of re-reading the raw `ImportedMaterial`
+    /// tier independently at each call site (the exact hand-synced-
+    /// duplication failure mode NIFAL exists to eliminate).
+    pub texture_clamp_mode: u8,
+    /// `NiAlphaProperty` source blend factor (Gamebryo `AlphaFunction`
+    /// enum; `6` = SRC_ALPHA is the Gamebryo default). Only meaningful
+    /// when the material's alpha-blend path is active. Copied verbatim
+    /// from `ImportedMaterial::src_blend_mode`. See
+    /// [`Self::texture_clamp_mode`]'s doc for why this field exists.
+    pub src_blend_mode: u8,
+    /// `NiAlphaProperty` destination blend factor (same enum as
+    /// [`Self::src_blend_mode`]; `7` = INV_SRC_ALPHA is the Gamebryo
+    /// default). Copied verbatim from `ImportedMaterial::dst_blend_mode`.
+    pub dst_blend_mode: u8,
 }
 
 /// View-angle + soft-depth falloff cone captured from
@@ -500,6 +523,13 @@ impl Default for Material {
             sheen: 0.0,
             sheen_tint: 0.0,
             anisotropic: 0.0,
+            // #2571 — mirror `ImportedMaterial::default()`'s own values
+            // (crates/nif/src/import/types.rs) exactly: SRC_ALPHA (6) /
+            // INV_SRC_ALPHA (7) is the Gamebryo default blend-factor pair;
+            // `0` (CLAMP_S_CLAMP_T) is that struct's stub clamp default.
+            texture_clamp_mode: 0,
+            src_blend_mode: 6,
+            dst_blend_mode: 7,
         }
     }
 }

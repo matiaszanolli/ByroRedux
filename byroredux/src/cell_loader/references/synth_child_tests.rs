@@ -213,3 +213,124 @@ fn base_record_script_attaches_for_every_synth_child_not_just_the_first() {
         "both children's base-record scripts count toward the summary",
     );
 }
+
+/// #2541 / SCR-D7-NEW10-01 — `spawn_synth_child` has no test pinning the
+/// `is_primary_synth` gate that keeps a SCOL/PKIN expansion's
+/// `SceneAliasCandidate` registration to exactly one entity per REFR
+/// (otherwise `SceneActorBindings`'s alias-fill resolution sees N
+/// candidates for one authored alias-fillable reference). A live spawn
+/// fixture would need a real `VulkanContext` (out of unit-test scope, the
+/// same constraint `source_pin_tests.rs`'s sibling pins document), so this
+/// pins the invariant by construction:
+///
+/// 1. `stamp_quest_reference`/`spawn_logical_quest_reference` themselves
+///    correctly register exactly one `SceneAliasCandidate` when called
+///    exactly once (the shape every gated branch below produces).
+/// 2. A source-scan over `spawn_synth_child`'s body confirms every one of
+///    its `stamp_quest_reference(`/`spawn_logical_quest_reference(` call
+///    sites is actually gated — 8 directly by `if`/`else if
+///    is_primary_synth`, plus the trigger-volume branch's `stamp_quest_
+///    reference` call, gated one level up by `trigger_volume_should_spawn_
+///    for_synth_child(is_primary_synth, ..)`. If a future 9th branch adds
+///    an ungated call site, or an existing gate is dropped in a
+///    refactor, the call-site count and the gate count diverge and this
+///    assertion fails — closing the gap at zero Vulkan-fixture cost.
+#[test]
+fn is_primary_synth_gates_every_identity_stamp_call_site() {
+    // Part 1: the stamping primitives themselves produce exactly one
+    // SceneAliasCandidate when called once — the shape every gated branch
+    // in `spawn_synth_child` produces for the first (and only the first)
+    // synthetic child of a SCOL/PKIN expansion.
+    let mut world = World::new();
+    world.insert_resource(byroredux_core::form_id::FormIdPool::new());
+    let placed_ref = esm::cell::PlacedRef {
+        form_id: 0x00AA_0001,
+        base_form_id: 0x00AA_0002,
+        position: [0.0; 3],
+        rotation: [0.0; 3],
+        scale: 1.0,
+        enable_parent: None,
+        teleport: None,
+        primitive: None,
+        linked_refs: Vec::new(),
+        location_ref_types: Vec::new(),
+        rooms: Vec::new(),
+        portals: Vec::new(),
+        radius_override: None,
+        alt_texture_ref: None,
+        land_texture_ref: None,
+        texture_slot_swaps: Vec::new(),
+        emissive_light_ref: None,
+        material_swap_ref: None,
+        ownership: None,
+        script_instance: None,
+        lock: None,
+        water_velocity: None,
+    };
+    let load_order = ["Test.esm".to_string()];
+
+    // Simulate a 3-child expansion: only child 0 is primary.
+    for idx in 0..3u32 {
+        let is_primary_synth = idx == 0;
+        if is_primary_synth {
+            spawn_logical_quest_reference(
+                &mut world,
+                &placed_ref,
+                &load_order,
+                Vec3::ZERO,
+                Quat::IDENTITY,
+                1.0,
+            );
+        }
+    }
+    let count = world
+        .query::<byroredux_scripting::SceneAliasCandidate>()
+        .expect("SceneAliasCandidate storage exists after one insert")
+        .iter()
+        .count();
+    assert_eq!(
+        count, 1,
+        "a multi-child SCOL/PKIN expansion must register exactly one \
+         SceneAliasCandidate for the whole REFR, not one per child",
+    );
+
+    // Part 2: source-scan `spawn_synth_child`'s own body — every call site
+    // must actually be gated, not just the stamping primitives above.
+    let src = include_str!("synth_child.rs");
+    let start = src
+        .find("pub(super) fn spawn_synth_child(")
+        .expect("spawn_synth_child must still exist");
+    let end = src[start..]
+        .find("pub(super) fn trigger_volume_should_spawn_for_synth_child(")
+        .expect("trigger_volume_should_spawn_for_synth_child must still follow spawn_synth_child");
+    let body = &src[start..start + end];
+
+    let stamp_calls = body.matches("stamp_quest_reference(").count();
+    let spawn_logical_calls = body.matches("spawn_logical_quest_reference(").count();
+    let total_call_sites = stamp_calls + spawn_logical_calls;
+
+    let direct_gates = body.matches("if is_primary_synth {").count();
+    // The trigger-volume branch's `stamp_quest_reference` isn't behind a
+    // literal `if is_primary_synth {` — it's gated one level up, by
+    // `trigger_volume_should_spawn_for_synth_child(is_primary_synth, ..)`.
+    let composed_gates = body
+        .matches("trigger_volume_should_spawn_for_synth_child(is_primary_synth,")
+        .count();
+    let total_gates = direct_gates + composed_gates;
+
+    assert_eq!(
+        (stamp_calls, spawn_logical_calls),
+        (4, 5),
+        "expected 4 stamp_quest_reference + 5 spawn_logical_quest_reference \
+         call sites in spawn_synth_child; a changed count means a branch \
+         was added/removed — re-verify its is_primary_synth gate before \
+         updating this baseline",
+    );
+    assert_eq!(
+        total_gates, total_call_sites,
+        "every stamp_quest_reference/spawn_logical_quest_reference call site \
+         in spawn_synth_child must be gated by is_primary_synth (directly or, \
+         for the trigger-volume branch, via trigger_volume_should_spawn_for_\
+         synth_child) — a mismatch means some call site lost its gate",
+    );
+}
