@@ -1256,7 +1256,7 @@ fn bool_arg(args: &[byroredux_papyrus::ast::CallArg], idx: usize) -> Option<Opti
 #[cfg(test)]
 mod tests {
     use super::*;
-    use byroredux_papyrus::ast::{Identifier, ScriptItem, StateItem};
+    use byroredux_papyrus::ast::{CallArg, Identifier, ScriptItem, StateItem};
     use byroredux_papyrus::parse_script;
 
     /// Wrap a node with a dummy span, for ASTs the `.psc` parser cannot
@@ -2136,5 +2136,342 @@ mod tests {
         let body =
             first_fn_body("ScriptName QF extends Quest\n Function Fragment_6()\n EndFunction\n");
         assert_eq!(lower_fragment(&body), Some(vec![]));
+    }
+
+    // ── Decline-path coverage for SCR-D5-NEW5-02 / #2289 ────────────────
+    // One `?`/arg-count/arg-type guard test per primitive that previously
+    // shipped with a positive-path test only.
+
+    #[test]
+    fn set_open_declines_with_extra_arg() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_20()\n\
+             KeepGate.SetOpen(true, true)\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&body), None);
+    }
+
+    #[test]
+    fn set_player_restrained_declines_on_non_player_receiver_and_extra_arg() {
+        let non_player = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_21()\n\
+             SomeActor.SetRestrained(true)\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&non_player), None);
+
+        let extra_arg = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_45()\n\
+             Game.GetPlayer().SetRestrained(true, true)\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&extra_arg), None);
+    }
+
+    #[test]
+    fn player_controls_toggles_decline_with_too_many_args() {
+        // Shared `prim_player_controls`'s `args.len() > 9` guard — covers
+        // both DisablePlayerControls and EnablePlayerControls.
+        let disable = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_22()\n\
+             Game.DisablePlayerControls(false, true, true, false, false, false, true, true, 0, false)\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&disable), None);
+
+        let enable = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_23()\n\
+             Game.EnablePlayerControls(false, true, true, false, false, false, true, true, 0, false)\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&enable), None);
+    }
+
+    #[test]
+    fn set_player_ai_driven_declines_with_extra_arg() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_24()\n\
+             Game.SetPlayerAIDriven(true, true)\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&body), None);
+    }
+
+    #[test]
+    fn set_hud_cart_mode_declines_with_extra_arg() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_25()\n\
+             Game.SetHudCartMode(true, true)\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&body), None);
+    }
+
+    #[test]
+    fn play_idle_declines_on_wrong_arg_count() {
+        let zero_args = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_26()\n\
+             Game.GetPlayer().PlayIdle()\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&zero_args), None);
+
+        let two_args = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_27()\n\
+             Game.GetPlayer().PlayIdle(SomeIdle, SomeIdle)\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&two_args), None);
+    }
+
+    #[test]
+    fn set_vehicle_declines_on_wrong_arg_count() {
+        let zero_args = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_28()\n\
+             Alias_Rider.GetActorRef().SetVehicle()\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&zero_args), None);
+
+        let two_args = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_29()\n\
+             Alias_Rider.GetActorRef().SetVehicle(Alias_Cart.GetRef(), Alias_Cart.GetRef())\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&two_args), None);
+    }
+
+    #[test]
+    fn tether_to_horse_declines_on_wrong_arg_count() {
+        let zero_args = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_30()\n\
+             Alias_Cart.GetRef().TetherToHorse()\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&zero_args), None);
+
+        let two_args = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_47()\n\
+             Alias_Cart.GetRef().TetherToHorse(Alias_Horse.GetActorRef() as ObjectReference, Alias_Horse.GetActorRef() as ObjectReference)\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&two_args), None);
+    }
+
+    #[test]
+    fn set_motion_type_declines_on_arg_count_and_unrecognized_member() {
+        // #2289 flags this as the most structurally intricate untested case.
+        let zero_args = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_31()\n\
+             Cart.SetMotionType()\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&zero_args), None);
+
+        let three_args = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_32()\n\
+             Cart.SetMotionType(6, true, false)\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&three_args), None);
+
+        // An unrecognized member access on the (correctly matched) receiver
+        // falls through `motion_type_arg`'s match arm to `None`.
+        let unrecognized_member = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_33()\n\
+             Cart.SetMotionType(Cart.Motion_NotARealValue, true)\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&unrecognized_member), None);
+    }
+
+    #[test]
+    fn set_sitting_rotation_declines_on_wrong_arg_count() {
+        let zero_args = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_34()\n\
+             Game.SetSittingRotation()\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&zero_args), None);
+
+        let two_args = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_48()\n\
+             Game.SetSittingRotation(-55.0, 1.0)\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&two_args), None);
+    }
+
+    #[test]
+    fn exit_cart_declines_on_wrong_arg_count_and_seat_out_of_range() {
+        let wrong_arg_count = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_35()\n\
+             Quest temp = Self as Quest\n\
+             mq101questscript kmyQuest = temp as mq101questscript\n\
+             kmyQuest.ExitCart(Alias_Prisoner)\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&wrong_arg_count), None);
+
+        let seat_too_low = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_36()\n\
+             Quest temp = Self as Quest\n\
+             mq101questscript kmyQuest = temp as mq101questscript\n\
+             kmyQuest.ExitCart(Alias_Prisoner, 0)\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&seat_too_low), None);
+
+        let seat_too_high = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_37()\n\
+             Quest temp = Self as Quest\n\
+             mq101questscript kmyQuest = temp as mq101questscript\n\
+             kmyQuest.ExitCart(Alias_Prisoner, 6)\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&seat_too_high), None);
+    }
+
+    #[test]
+    fn player_animation_events_decline_with_args() {
+        let imod = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_38()\n\
+             Quest temp = Self as Quest\n\
+             mq101questscript kmyQuest = temp as mq101questscript\n\
+             kmyQuest.PlayerImodAnimation(true)\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&imod), None);
+
+        let furniture = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_39()\n\
+             Quest temp = Self as Quest\n\
+             mq101questscript kmyQuest = temp as mq101questscript\n\
+             kmyQuest.PlayerFurnitureAnimation(true)\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&furniture), None);
+    }
+
+    #[test]
+    fn evaluate_package_declines_with_args() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_40()\n\
+             Alias_Hadvar.GetActorRef().EvaluatePackage(true)\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&body), None);
+    }
+
+    #[test]
+    fn wait_declines_on_wrong_arg_count_and_negative_seconds() {
+        let zero_args = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_41()\n\
+             Utility.Wait()\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&zero_args), None);
+
+        let negative = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_42()\n\
+             Utility.Wait(-1.0)\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&negative), None);
+    }
+
+    #[test]
+    fn start_and_stop_scene_decline_with_args() {
+        let start = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_43()\n\
+             IntroScene.Start(true)\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&start), None);
+
+        let stop = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_44()\n\
+             OldScene.Stop(true)\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&stop), None);
+    }
+
+    // ── #2540 / SCR-D5-NEW10-02 — the objective-index `u16`→`i32` widen ──
+
+    /// A genuinely negative index (i32 on FO3/FNV per `QuestObjective::
+    /// index`'s doc) arrives from the PEX decompiler as a direct signed
+    /// `IntLit`, never as a `.psc`-source `UnaryOp::Neg` — the `.psc` text
+    /// parser lexes `-N` as `Minus` + `IntLit(N)`, which `int_arg` does not
+    /// unwrap. Matching #2657's `::X_var` precedent, this decompiled shape
+    /// has to be built by hand rather than round-tripped through the `.psc`
+    /// parser to exercise the real input this primitive actually receives.
+    #[test]
+    fn objective_primitives_lower_a_negative_index() {
+        for (method, expected) in [
+            (
+                "SetObjectiveDisplayed",
+                Effect::SetObjectiveDisplayed {
+                    quest: QuestRef::SelfRef,
+                    objective: -5,
+                    displayed: true,
+                },
+            ),
+            (
+                "SetObjectiveCompleted",
+                Effect::SetObjectiveCompleted {
+                    quest: QuestRef::SelfRef,
+                    objective: -5,
+                    completed: true,
+                },
+            ),
+            (
+                "SetObjectiveFailed",
+                Effect::SetObjectiveFailed {
+                    quest: QuestRef::SelfRef,
+                    objective: -5,
+                    failed: true,
+                },
+            ),
+        ] {
+            let call = Expr::Call {
+                callee: Box::new(sp(Expr::MemberAccess {
+                    object: Box::new(sp(Expr::Ident(Identifier("Self".into())))),
+                    member: sp(Identifier(method.into())),
+                })),
+                args: vec![CallArg {
+                    name: None,
+                    value: sp(Expr::IntLit(-5)),
+                }],
+            };
+            assert_eq!(
+                classify_effect(&call, &Scope::default()),
+                Some(expected),
+                "{method} must lower a negative index correctly"
+            );
+        }
+    }
+
+    /// An index literal outside `i32`'s range must still decline via
+    /// `i32::try_from(..).ok()?`, not silently truncate.
+    #[test]
+    fn objective_primitives_decline_on_index_overflow() {
+        for method in [
+            "SetObjectiveDisplayed",
+            "SetObjectiveCompleted",
+            "SetObjectiveFailed",
+        ] {
+            let body = first_fn_body(&format!(
+                "ScriptName QF extends Quest\n\
+                 Function Fragment_46()\n\
+                 Self.{method}(5000000000)\n EndFunction\n"
+            ));
+            assert_eq!(
+                lower_fragment(&body),
+                None,
+                "{method} must decline an i32-overflowing index"
+            );
+        }
     }
 }

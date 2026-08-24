@@ -273,9 +273,7 @@ impl<T: Component<Storage = Self>> DynStorage for PackedStorage<T> {
                 victim_idx += 1;
             }
             if victim_idx < victims.len() && victims[victim_idx] == entity {
-                if T::TRACK_CHANGES {
-                    self.dirty.push(entity);
-                }
+                self.mark_dirty(entity);
                 victim_idx += 1;
                 continue;
             }
@@ -770,5 +768,72 @@ mod tests {
 
         s.remove(2); // remove → dirty
         assert_eq!(s.take_dirty(), vec![2]);
+    }
+
+    // ── remove_entities_erased (#2396) ──────────────────────────────────
+
+    #[test]
+    fn remove_entities_erased_preserves_ascending_order() {
+        // The merge-compaction path rebuilds `entities`/`data` from scratch
+        // rather than inheriting sort order from `Vec::remove`, so pin it
+        // directly: iteration must still yield entities in ascending order
+        // after removing a scattered victim set from a >3-element storage.
+        let mut s = PackedStorage::<Transform>::default();
+        for i in [1u32, 2, 3, 4, 5, 6, 7] {
+            s.insert(
+                i,
+                Transform {
+                    x: i as f32,
+                    y: 0.0,
+                    z: 0.0,
+                },
+            );
+        }
+        // Victims must be sorted, per the method's own debug_assert.
+        let victims = [2u32, 4, 6];
+        s.remove_entities_erased(&victims);
+
+        let entities: Vec<_> = s.iter().map(|(e, _)| e).collect();
+        assert_eq!(entities, vec![1, 3, 5, 7]);
+    }
+
+    #[test]
+    fn remove_entities_erased_marks_exactly_the_removed_ids_dirty() {
+        // The merge loop's dirty marking (now routed through `mark_dirty`,
+        // previously hand-inlined) is the only marking site for this
+        // removal path — pin that it fires for exactly the removed
+        // entities, no more and no fewer, on a TRACK_CHANGES fixture.
+        let mut s = PackedStorage::<Tracked>::default();
+        for i in [1u32, 2, 3, 4, 5] {
+            s.insert(i, Tracked(i));
+        }
+        let _ = s.take_dirty(); // clear the insert marks
+
+        let victims = [2u32, 4];
+        s.remove_entities_erased(&victims);
+
+        let mut dirty = s.take_dirty();
+        dirty.sort_unstable();
+        assert_eq!(dirty, vec![2, 4]);
+
+        let entities: Vec<_> = s.iter().map(|(e, _)| e).collect();
+        assert_eq!(entities, vec![1, 3, 5]);
+    }
+
+    #[test]
+    fn remove_entities_erased_on_untracked_storage_stays_dirty_free() {
+        let mut s = PackedStorage::<Transform>::default();
+        for i in [1u32, 2, 3] {
+            s.insert(
+                i,
+                Transform {
+                    x: i as f32,
+                    y: 0.0,
+                    z: 0.0,
+                },
+            );
+        }
+        s.remove_entities_erased(&[2u32]);
+        assert!(s.take_dirty().is_empty());
     }
 }
