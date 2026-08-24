@@ -54,7 +54,8 @@ pub use fragment::{
     apply_effects, fragment_activation_flush_system, fragment_continuation_system,
     populate_quest_fragments_from_pex, populate_scene_fragments_from_pex,
     quest_fragment_dispatch_system, scene_fragment_dispatch_system, DeferredFragmentEffects,
-    FragmentExecutionQueue, PendingFragmentActivations, QuestStageFragments, SceneFragments,
+    FragmentExecutionQueue, PendingFragmentActivations, QuestStageFragments, ReferenceEnableState,
+    SceneFragments,
 };
 pub use globals::Globals;
 pub use package::{

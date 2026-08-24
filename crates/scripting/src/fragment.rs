@@ -33,7 +33,7 @@
 //! `Property`-targeted effect with no VMAD on hand, or naming a property the
 //! VMAD doesn't carry, is skipped (logged), never guessed.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use byroredux_core::ecs::components::{
@@ -55,6 +55,32 @@ use byroredux_papyrus::span::Spanned;
 
 use crate::translate::compose::{ObjectRef, QuestRef};
 use crate::translate::effects::{lower_fragment_with_quest_properties, ActorRef, Effect};
+
+/// Persistent enable/disable state for placed references targeted by
+/// Papyrus fragments. Form IDs keep the state valid while the reference's
+/// cell is unloaded; cell streaming can consult this resource when spawning
+/// enable-parent chains.
+#[derive(Debug, Clone, Default)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
+pub struct ReferenceEnableState {
+    disabled: HashSet<u32>,
+}
+
+impl Resource for ReferenceEnableState {}
+
+impl ReferenceEnableState {
+    pub fn is_enabled(&self, form_id: u32) -> bool {
+        !self.disabled.contains(&form_id)
+    }
+
+    pub fn set_enabled(&mut self, form_id: u32, enabled: bool) {
+        if enabled {
+            self.disabled.remove(&form_id);
+        } else {
+            self.disabled.insert(form_id);
+        }
+    }
+}
 
 /// Lowered quest-stage fragments, keyed by `(quest, stage)`. Populated at
 /// cell load by [`populate_quest_fragments_from_pex`] from the QUST `VMAD`
@@ -469,6 +495,7 @@ pub struct DeferredFragmentEffects {
     /// [`PendingFragmentActivations`] so they are delivered at the head of
     /// the *next* frame (#2654) — see that resource's docs.
     activations: Vec<(EntityId, EntityId)>,
+    reference_enable_changes: Vec<(u32, bool)>,
 }
 
 impl DeferredFragmentEffects {
@@ -497,6 +524,7 @@ impl DeferredFragmentEffects {
             cinematic_presentation: Vec::new(),
             scene_actor_bindings_dirty: false,
             activations: Vec::new(),
+            reference_enable_changes: Vec::new(),
         }
     }
 
@@ -512,6 +540,13 @@ impl DeferredFragmentEffects {
                 None => log::debug!(
                     "fragment Activate dropped: PendingFragmentActivations is unavailable"
                 ),
+            }
+        }
+        if !self.reference_enable_changes.is_empty() {
+            if let Some(mut state) = world.try_resource_mut::<ReferenceEnableState>() {
+                for (form_id, enabled) in self.reference_enable_changes {
+                    state.set_enabled(form_id, enabled);
+                }
             }
         }
         if self.cinematic_presentation.is_empty() {
@@ -689,6 +724,14 @@ fn apply_effect(
                 return None;
             };
             transform.translation = translation;
+            None
+        }
+        Effect::Disable {
+            object,
+            fade_out: _,
+        } => {
+            let form_id = resolve_property_form_id(vmad, object.property_name())?;
+            deferred.reference_enable_changes.push((form_id, false));
             None
         }
         Effect::StartScene { scene } | Effect::StopScene { scene } => {
@@ -1168,6 +1211,7 @@ fn apply_quest_scoped_effect(
         Effect::AddItem { .. }
         | Effect::EquipItem { .. }
         | Effect::MoveTo { .. }
+        | Effect::Disable { .. }
         | Effect::StartScene { .. }
         | Effect::StopScene { .. }
         | Effect::Activate { .. }
@@ -1388,6 +1432,7 @@ pub fn register(world: &mut World) {
     world.insert_resource(SceneFragments::default());
     world.insert_resource(FragmentExecutionQueue::default());
     world.insert_resource(PendingFragmentActivations::default());
+    world.insert_resource(ReferenceEnableState::default());
     world.insert_resource(QuestObjectiveState::default());
 }
 

@@ -402,14 +402,22 @@ pub(crate) fn scene_trigger_actor_approach_system(world: &World, dt: f32) {
     use byroredux_plugin::esm::records::condition::{ComparisonOp, ConditionValue};
     use byroredux_scripting::papyrus_demo::quest_advance::{ActivatorGate, QuestAdvanceOnActivate};
 
-    let awaited: std::collections::HashSet<(u32, u16)> = {
+    let (awaited, between_scenes): (
+        std::collections::HashSet<(u32, u16)>,
+        std::collections::HashSet<u32>,
+    ) = {
         let Some(players) = world.query::<byroredux_scripting::ScenePlayer>() else {
             return;
         };
         let Some(registry) = world.try_resource::<byroredux_scripting::SceneRegistry>() else {
             return;
         };
-        players
+        let active_quests: std::collections::HashSet<u32> = players
+            .iter()
+            .filter(|(_, player)| player.is_running())
+            .filter_map(|(_, player)| registry.definition(player.scene_form_id)?.quest_form_id)
+            .collect();
+        let awaited = players
             .iter()
             .filter(|(_, player)| player.is_running())
             .filter_map(|(_, player)| {
@@ -423,9 +431,16 @@ pub(crate) fn scene_trigger_actor_approach_system(world: &World, dt: f32) {
                     && matches!(condition.comparand, ConditionValue::Literal(value) if (value - 1.0).abs() <= f32::EPSILON))
                 .then_some((condition.param_1, condition.param_2 as u16))
             })
-            .collect()
+            .collect();
+        let between_scenes = players
+            .iter()
+            .filter(|(_, player)| player.state == byroredux_scripting::ScenePlaybackState::Finished)
+            .filter_map(|(_, player)| registry.definition(player.scene_form_id)?.quest_form_id)
+            .filter(|quest| !active_quests.contains(quest))
+            .collect();
+        (awaited, between_scenes)
     };
-    if awaited.is_empty() {
+    if awaited.is_empty() && between_scenes.is_empty() {
         return;
     }
 
@@ -437,26 +452,46 @@ pub(crate) fn scene_trigger_actor_approach_system(world: &World, dt: f32) {
             byroredux_scripting::papyrus_demo::quest_advance::QuestTriggerApproachRegistry,
         >(),
     ) {
-        (Some(advances), Some(volumes), Some(stages), Some(approaches)) => awaited
-            .iter()
-            .flat_map(|(quest_form_id, awaited_stage)| {
+        (Some(advances), Some(volumes), Some(stages), Some(approaches)) => {
+            let mut targets = Vec::new();
+            let caps: Vec<_> = awaited
+                .iter()
+                .copied()
+                .chain(
+                    between_scenes
+                        .iter()
+                        .copied()
+                        .filter(|quest| {
+                            stages.is_running(byroredux_scripting::QuestFormId(*quest))
+                        })
+                        .map(|quest| (quest, u16::MAX)),
+                )
+                .collect();
+            for (quest_form_id, awaited_stage) in caps {
+                let current_stage = stages.get_stage(byroredux_scripting::QuestFormId(quest_form_id));
                 let bases: std::collections::HashSet<u32> = advances
                     .iter()
                     .filter(|(_, advance)| {
-                        advance.owning_quest.0 == *quest_form_id
-                            && advance.target_stage == *awaited_stage
+                        advance.owning_quest.0 == quest_form_id
+                            && (awaited_stage == u16::MAX
+                                || advance.target_stage == awaited_stage)
+                            && (awaited_stage != u16::MAX
+                                || advance.target_stage >= current_stage)
                     })
                     .filter_map(|(_, advance)| match advance.activator_gate {
                         ActivatorGate::BaseForm(base_form_id) => Some(base_form_id),
                         _ => None,
                     })
                     .collect();
-                bases.into_iter().filter_map(|base_form_id| {
-                    advances
+                let mut cap_targets = Vec::new();
+                for base_form_id in bases {
+                    let target = advances
                         .iter()
                         .filter(|(_, advance)| {
-                            advance.owning_quest.0 == *quest_form_id
-                                && advance.target_stage <= *awaited_stage
+                            advance.owning_quest.0 == quest_form_id
+                                && advance.target_stage <= awaited_stage
+                                && (awaited_stage != u16::MAX
+                                    || advance.target_stage >= current_stage)
                                 && matches!(
                                     advance.activator_gate,
                                     ActivatorGate::BaseForm(candidate) if candidate == base_form_id
@@ -488,10 +523,24 @@ pub(crate) fn scene_trigger_actor_approach_system(world: &World, dt: f32) {
                         .min_by_key(|(stage, _, _)| *stage)
                         .map(|(stage, trigger, center)| {
                             (base_form_id, stage, trigger, center)
-                        })
-                })
-            })
-            .collect(),
+                        });
+                    if let Some(target) = target {
+                        cap_targets.push(target);
+                    }
+                }
+                if awaited_stage == u16::MAX {
+                    if let Some(next_stage) = cap_targets
+                        .iter()
+                        .map(|(_, stage, _, _)| *stage)
+                        .min()
+                    {
+                        cap_targets.retain(|(_, stage, _, _)| *stage == next_stage);
+                    }
+                }
+                targets.extend(cap_targets);
+            }
+            targets
+        }
         _ => Vec::new(),
     };
     if targets.is_empty() {
@@ -1132,6 +1181,7 @@ mod tests {
             &mut world,
             [ScenRecord {
                 form_id: 0xBECD4,
+                quest_form_id: Some(quest.0),
                 phases: vec![ScenePhase {
                     completion_conditions: vec![Condition {
                         function_index: 59,
@@ -1190,6 +1240,42 @@ mod tests {
                 disable_after_advance: true,
             },
         );
+        byroredux_scripting::papyrus_demo::quest_advance::install_quest_trigger_approach(
+            &mut world,
+            0x84059,
+            Vec3::new(0.0, 0.0, 1_000.0),
+            QuestAdvanceOnActivate {
+                owning_quest: quest,
+                conditions: Vec::new(),
+                target_stage: 35,
+                activator_gate: ActivatorGate::BaseForm(0x654E5),
+                disable_after_advance: true,
+            },
+        );
+        byroredux_scripting::papyrus_demo::quest_advance::install_quest_trigger_approach(
+            &mut world,
+            0x84060,
+            Vec3::new(0.0, 0.0, 1_000.0),
+            QuestAdvanceOnActivate {
+                owning_quest: quest,
+                conditions: Vec::new(),
+                target_stage: 25,
+                activator_gate: ActivatorGate::BaseForm(0x654E5),
+                disable_after_advance: true,
+            },
+        );
+        byroredux_scripting::papyrus_demo::quest_advance::install_quest_trigger_approach(
+            &mut world,
+            0x84061,
+            Vec3::new(1_000.0, 0.0, 0.0),
+            QuestAdvanceOnActivate {
+                owning_quest: quest,
+                conditions: Vec::new(),
+                target_stage: 32,
+                activator_gate: ActivatorGate::BaseForm(0xB9E1D),
+                disable_after_advance: true,
+            },
+        );
 
         let loaded = world.spawn();
         world.insert(loaded, Transform::IDENTITY);
@@ -1217,6 +1303,17 @@ mod tests {
             },
         );
         world.insert(remote, RemoteSceneActorStub);
+        let next_actor = world.spawn();
+        world.insert(next_actor, Transform::IDENTITY);
+        world.insert(
+            next_actor,
+            SceneAliasCandidate {
+                reference_form_id: 0xB9DF2,
+                base_form_id: 0xB9E1D,
+                linked_refs: Vec::new(),
+                location_ref_types: Vec::new(),
+            },
+        );
 
         scene_trigger_actor_approach_system(&world, 0.1);
 
@@ -1229,6 +1326,32 @@ mod tests {
             world.get::<Transform>(remote).unwrap().translation,
             Vec3::new(900.0, 0.0, 0.0),
             "synthetic offscreen stubs must not win nearest-actor selection"
+        );
+
+        {
+            let mut stages =
+                world.resource_mut::<byroredux_scripting::quest_stages::QuestStageState>();
+            stages.start_quest(quest, Some(0));
+            stages.set_stage(quest, 20);
+            stages.set_stage(quest, 22);
+            stages.set_stage(quest, 26);
+        }
+        world
+            .get_mut::<byroredux_scripting::ScenePlayer>(scene)
+            .unwrap()
+            .state = ScenePlaybackState::Finished;
+
+        scene_trigger_actor_approach_system(&world, 0.1);
+
+        assert_eq!(
+            world.get::<Transform>(loaded).unwrap().translation,
+            Vec3::new(0.0, 0.0, 50.0),
+            "stale stage 25 and later stage 35 must not move in parallel"
+        );
+        assert_eq!(
+            world.get::<Transform>(next_actor).unwrap().translation,
+            Vec3::new(50.0, 0.0, 0.0),
+            "a running quest must approach only its globally next ready trigger between scenes"
         );
     }
 }

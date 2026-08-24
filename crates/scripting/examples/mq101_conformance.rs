@@ -33,6 +33,7 @@ use byroredux_scripting::fragment::quest_property_names;
 use byroredux_scripting::papyrus_demo::quest_advance::{ActivatorGate, QuestAdvanceOnActivate};
 use byroredux_scripting::papyrus_demo::PlayerEntity;
 use byroredux_scripting::quest_stages::QuestStageState;
+use byroredux_scripting::translate::compose::QuestRef;
 use byroredux_scripting::translate::effects::{lower_fragment_with_quest_properties, Effect};
 use byroredux_scripting::{
     dispatch_player_cinematic_animation_event, image_space_modifier_system,
@@ -127,6 +128,7 @@ fn effect_kind(effect: &Effect) -> &'static str {
         Effect::AddItem { .. } => "AddItem",
         Effect::EquipItem { .. } => "EquipItem",
         Effect::MoveTo { .. } => "MoveTo",
+        Effect::Disable { .. } => "Disable",
         Effect::StartScene { .. } => "StartScene",
         Effect::StopScene { .. } => "StopScene",
         Effect::Activate { .. } => "Activate",
@@ -1589,6 +1591,28 @@ fn run() -> Result<Checks, Box<dyn Error>> {
                                         cart_init_actor_gate_count
                                     )
                                 },
+                            ),
+                        );
+                        let stage_30_effects = functions.get("fragment_111").and_then(|function| {
+                            lower_fragment_with_quest_properties(&function.body, &quest_properties)
+                        });
+                        let stage_30_ok = matches!(
+                            stage_30_effects.as_deref(),
+                            Some([
+                                Effect::Disable { object, fade_out: false },
+                                Effect::SetStage { quest: QuestRef::SelfRef, stage: 27 },
+                                Effect::EvaluatePackage { actor: horse_1 },
+                                Effect::EvaluatePackage { actor: horse_2 },
+                            ]) if object.property_name().eq_ignore_ascii_case("CiviliansOutsideHelgenMarker")
+                                && horse_1.property_name().eq_ignore_ascii_case("Alias_CartHorse1")
+                                && horse_2.property_name().eq_ignore_ascii_case("Alias_CartHorse2")
+                        );
+                        checks.record(
+                            "stage 30 handoff",
+                            stage_30_ok,
+                            stage_30_effects.map_or_else(
+                                || "Fragment_111 did not lower".to_owned(),
+                                |effects| format!("Fragment_111 lowered to {effects:?}"),
                             ),
                         );
 

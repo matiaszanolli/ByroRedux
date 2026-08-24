@@ -217,8 +217,8 @@ pub fn build_save_registry() -> SaveRegistry {
     use byroredux_scripting::quest_stages::{QuestObjectiveState, QuestStageState};
     use byroredux_scripting::{
         ActorCinematicState, ActorControlState, CinematicPresentationState, FragmentExecutionQueue,
-        HorseTetherState, PlayerControlState, QuestAliasInjectionState, ScriptTimer,
-        ScriptVariables, TwoStateActivator,
+        HorseTetherState, PlayerControlState, QuestAliasInjectionState, ReferenceEnableState,
+        ScriptTimer, ScriptVariables, TwoStateActivator,
     };
 
     use crate::cell_loader::{CurrentCellContext, CurrentExteriorContext};
@@ -357,6 +357,7 @@ pub fn build_save_registry() -> SaveRegistry {
         // save taken mid-`Utility.Wait` silently dropped the queued
         // effect chain the wait was gating.
         .register_resource::<FragmentExecutionQueue>("FragmentExecutionQueue")
+        .register_resource::<ReferenceEnableState>("ReferenceEnableState")
         // #2380 / SAVE-D1-15 — MQ101 cinematic presentation state
         // (sitting rotation, animation-event registrations, active IMAD
         // applications). No `EntityId`/`FixedString` anywhere.

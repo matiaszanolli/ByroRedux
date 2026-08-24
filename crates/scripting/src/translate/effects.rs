@@ -119,6 +119,9 @@ pub enum Effect {
         moved: ObjectRef,
         destination: ObjectRef,
     },
+    /// `<object>.Disable([fadeOut])` — records the placed reference as
+    /// disabled even when its cell/entity is not currently loaded.
+    Disable { object: ObjectRef, fade_out: bool },
     /// `<scene>.Start()` — resolves a VMAD-bound SCEN FormID and queues the
     /// canonical scene start request at dispatch.
     StartScene { scene: ObjectRef },
@@ -410,6 +413,7 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     prim_add_item,
     prim_equip_item,
     prim_move_to,
+    prim_disable,
     prim_start_scene,
     prim_stop_scene,
     prim_activate,
@@ -706,6 +710,17 @@ fn prim_move_to(e: &Expr, scope: &Scope) -> Option<Effect> {
     let moved = receiver_object(object, scope)?;
     let destination = receiver_object(&args[0].value.node, scope)?;
     Some(Effect::MoveTo { moved, destination })
+}
+
+fn prim_disable(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "Disable")?;
+    if args.len() > 1 {
+        return None;
+    }
+    Some(Effect::Disable {
+        object: receiver_object(object, scope)?,
+        fade_out: bool_arg(args, 0)?.unwrap_or(false),
+    })
 }
 
 fn prim_start_scene(e: &Expr, scope: &Scope) -> Option<Effect> {
@@ -1439,6 +1454,22 @@ mod tests {
             Some(vec![Effect::MoveTo {
                 moved: ObjectRef::Property("SomeRef".into()),
                 destination: ObjectRef::Property("SomeMarker".into()),
+            }])
+        );
+    }
+
+    #[test]
+    fn lowers_disable_with_optional_fade_out() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_12()\n\
+             SomeMarker.Disable(false)\n EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&body),
+            Some(vec![Effect::Disable {
+                object: ObjectRef::Property("SomeMarker".into()),
+                fade_out: false,
             }])
         );
     }

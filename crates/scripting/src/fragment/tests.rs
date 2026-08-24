@@ -7,7 +7,7 @@ use crate::papyrus_demo::PlayerEntity;
 use crate::quest_stages::{
     QuestFormId, QuestObjectiveState, QuestStageAdvanced, QuestStageAdvancedBatch, QuestStageState,
 };
-use crate::translate::compose::QuestRef;
+use crate::translate::compose::{ObjectRef, QuestRef};
 use crate::translate::effects::Effect;
 use crate::CinematicAnimationEvent;
 use byroredux_core::ecs::world::World;
@@ -1188,6 +1188,106 @@ fn dispatch_scene_start_via_registered_vmad() {
     quest_fragment_dispatch_system(&world);
 
     assert!(world.has::<crate::SceneStartRequest>(scene_entity));
+}
+
+#[test]
+fn dispatch_disable_then_stage_cascade_and_package_evaluation() {
+    use byroredux_plugin::esm::records::script_instance::{
+        PropertyValue, ScriptInstance, ScriptInstanceData, ScriptProperty,
+    };
+
+    const MARKER_FORM: u32 = 0x0005_AA55;
+    const HORSE_1_ALIAS: i16 = 1;
+    const HORSE_2_ALIAS: i16 = 2;
+    let mut world = fixture();
+    let horse_1 = world.spawn();
+    let horse_2 = world.spawn();
+    {
+        let mut bindings = world.resource_mut::<crate::SceneActorBindings>();
+        bindings.bind(Q, i32::from(HORSE_1_ALIAS), horse_1);
+        bindings.bind(Q, i32::from(HORSE_2_ALIAS), horse_2);
+    }
+    {
+        let mut frags = world.resource_mut::<QuestStageFragments>();
+        frags.insert_vmad(
+            Q,
+            ScriptInstanceData {
+                scripts: vec![ScriptInstance {
+                    name: "QF_DisableCascade".into(),
+                    status: 0,
+                    properties: vec![
+                        ScriptProperty {
+                            name: "Marker".into(),
+                            status: 1,
+                            value: PropertyValue::Object {
+                                form_id: MARKER_FORM,
+                                alias: -1,
+                            },
+                        },
+                        ScriptProperty {
+                            name: "Horse1".into(),
+                            status: 1,
+                            value: PropertyValue::Object {
+                                form_id: Q.0,
+                                alias: HORSE_1_ALIAS,
+                            },
+                        },
+                        ScriptProperty {
+                            name: "Horse2".into(),
+                            status: 1,
+                            value: PropertyValue::Object {
+                                form_id: Q.0,
+                                alias: HORSE_2_ALIAS,
+                            },
+                        },
+                    ],
+                }],
+                ..Default::default()
+            },
+        );
+        frags.insert(
+            Q,
+            30,
+            vec![
+                Effect::Disable {
+                    object: ObjectRef::Property("Marker".into()),
+                    fade_out: false,
+                },
+                Effect::SetStage {
+                    quest: QuestRef::SelfRef,
+                    stage: 27,
+                },
+                Effect::EvaluatePackage {
+                    actor: ObjectRef::Property("Horse1".into()),
+                },
+                Effect::EvaluatePackage {
+                    actor: ObjectRef::Property("Horse2".into()),
+                },
+            ],
+        );
+        frags.insert(
+            Q,
+            27,
+            vec![Effect::SetStage {
+                quest: QuestRef::SelfRef,
+                stage: 26,
+            }],
+        );
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 30);
+    emit_advance(&world, Q, 30);
+
+    quest_fragment_dispatch_system(&world);
+
+    let stages = world.resource::<QuestStageState>();
+    assert!(stages.get_stage_done(Q, 27));
+    assert!(stages.get_stage_done(Q, 26));
+    drop(stages);
+    assert!(!world
+        .resource::<ReferenceEnableState>()
+        .is_enabled(MARKER_FORM));
+    assert!(world.has::<crate::EvaluatePackageRequest>(horse_1));
+    assert!(world.has::<crate::EvaluatePackageRequest>(horse_2));
 }
 
 #[test]
