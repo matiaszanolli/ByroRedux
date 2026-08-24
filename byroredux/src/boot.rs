@@ -864,6 +864,10 @@ pub(crate) fn build_scheduler() -> Scheduler {
         Stage::Update,
         byroredux_scripting::quest_alias_refresh_system,
     );
+    scheduler.add_exclusive(
+        Stage::Update,
+        byroredux_scripting::quest_alias_readiness_stage_system,
+    );
     // SCEN playback must observe the original quest-start batch before the
     // fragment dispatcher can replace the shared sink with chained SetStage
     // advances. Phase conditions affected by those fragments are retried on
@@ -1543,8 +1547,9 @@ pub(crate) fn install_runtime_registries(world: &mut World, scheduler: &Schedule
 /// Phase 20 — `--game <key>` CLI expansion. Looks up the named
 /// profile in `assets/debug_profiles.toml` (+ per-user override at
 /// `~/.byroredux/profiles.toml`), resolves `<games-root>/<subdir>`,
-/// and appends synthetic `--esm` / `--bsa` / `--textures-bsa` /
-/// `--materials-ba2` args to the input list. The user's own flags
+/// and appends synthetic archive args to the input list. With
+/// `--new-game`, it also expands the profile's authored intro
+/// worldspace/grid/radius. The user's own flags
 /// stay at the FRONT — first-occurrence-wins for unique args means
 /// a user `--esm Custom.esm` beats the profile default; additive
 /// args (`--bsa`) take both. No-op when `--game` is absent.
@@ -1558,6 +1563,7 @@ pub(crate) fn install_runtime_registries(world: &mut World, scheduler: &Schedule
 /// return the input unchanged so the engine still boots (the
 /// user can correct + retry without a re-build cycle).
 fn expand_game_profile_args(mut args: Vec<String>) -> Vec<String> {
+    let new_game = args.iter().any(|arg| arg == "--new-game");
     // Launch defaults from the `[defaults]` table (profiles.toml,
     // shipped + per-user override). Let an explicit `--game` win; fall
     // back to `[defaults].game` ONLY when no other content-loading flag
@@ -1597,6 +1603,7 @@ fn expand_game_profile_args(mut args: Vec<String>) -> Vec<String> {
     // args; downstream code doesn't recognise them.
     args = strip_flag_and_value(args, "--game");
     args = strip_flag_and_value(args, "--games-root");
+    args.retain(|arg| arg != "--new-game");
 
     // Load profile registry from disk. Same loader the App uses
     // at world init; safe to call before logging is initialised
@@ -1658,9 +1665,41 @@ fn expand_game_profile_args(mut args: Vec<String>) -> Vec<String> {
         args.push("--textures-bsa".to_string());
         args.push(join_arg(bsa));
     }
+    for bsa in &entry.default_scripts_bsas {
+        args.push("--scripts-bsa".to_string());
+        args.push(join_arg(bsa));
+    }
+    for bsa in &entry.default_sounds_bsas {
+        args.push("--sounds-bsa".to_string());
+        args.push(join_arg(bsa));
+    }
     for bsa in &entry.default_materials_bsas {
         args.push("--materials-ba2".to_string());
         args.push(join_arg(bsa));
+    }
+
+    if new_game {
+        let has_location = ["--cell", "--grid", "--wrld"]
+            .iter()
+            .any(|flag| args.iter().any(|arg| arg == flag));
+        match (&entry.new_game_worldspace, &entry.new_game_grid) {
+            (Some(worldspace), Some(grid)) if !has_location => {
+                args.push("--wrld".to_string());
+                args.push(worldspace.clone());
+                args.push("--grid".to_string());
+                args.push(grid.clone());
+                if !args.iter().any(|arg| arg == "--radius") {
+                    if let Some(radius) = entry.new_game_radius {
+                        args.push("--radius".to_string());
+                        args.push(radius.to_string());
+                    }
+                }
+            }
+            (Some(_), Some(_)) => {
+                eprintln!("--new-game: explicit location flags override the profile target")
+            }
+            _ => eprintln!("--game {game_key} --new-game: profile has no new-game worldspace/grid"),
+        }
     }
 
     // Default cell: inject `[defaults].cell` only when the profile was

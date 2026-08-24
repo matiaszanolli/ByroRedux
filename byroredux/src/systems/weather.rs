@@ -675,8 +675,7 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
         world
             .try_resource::<WeatherTransitionRes>()
             .map(|tr| {
-                wd.precipitation
-                    + (tr.target.precipitation - wd.precipitation) * transition_t
+                wd.precipitation + (tr.target.precipitation - wd.precipitation) * transition_t
             })
             .unwrap_or(wd.precipitation)
     } else {

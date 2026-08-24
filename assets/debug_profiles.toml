@@ -20,6 +20,8 @@
 #   esm                   Main ESM filename inside the data dir.
 #   default_bsas          Mesh BSA / BA2 archives.
 #   default_textures_bsas Texture archives.
+#   default_scripts_bsas  Compiled Papyrus archives.
+#   default_sounds_bsas   Voice/general sound archives.
 #   default_materials_bsas
 #                         BGSM/BGEM materials archives (FO4+/FO76/SF
 #                         only; empty for Skyrim and older).
@@ -111,6 +113,13 @@ default_textures_bsas = [
     "Skyrim - Textures8.bsa",
 ]
 default_materials_bsas = []
+default_scripts_bsas = ["Skyrim - Misc.bsa"]
+default_sounds_bsas = ["Skyrim - Sounds.bsa", "Skyrim - Voices_en0.bsa"]
+# Vanilla MQ101 opening placements span these adjacent persistent-reference
+# grids: player/Cart2 at (5,-24), Cart1 at (5,-23).
+new_game_worldspace = "Tamriel"
+new_game_grid = "5,-24"
+new_game_radius = 1
 sample_cells = [
     "WhiterunDragonsreach",
     "RiverwoodSleepingGiantInn",

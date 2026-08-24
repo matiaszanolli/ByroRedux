@@ -195,6 +195,22 @@ pub(crate) fn populate_scene_runtime(
                 byroredux_scripting::QuestFormId(quest.form_id),
                 quest.start_up_stage,
             ));
+            // MQ101StartingCellLoadRegisterScript increments a quest-owned
+            // load counter and sets stage 12 once every opening actor/ref is
+            // resident. Alias-attached method dispatch is represented by the
+            // equivalent canonical readiness gate here.
+            byroredux_scripting::install_quest_alias_readiness_gate(
+                world,
+                byroredux_scripting::QuestAliasReadinessGate {
+                    quest: byroredux_scripting::QuestFormId(MQ101),
+                    required_aliases: vec![
+                        119, 1, 12, 4, 9, 13, 14, 38, 42, 43, 44, 29, 17, 34, 93, 94, 116, 117, 22,
+                        23, 24,
+                    ],
+                    target_stage: 12,
+                    only_below_stage: 15,
+                },
+            );
         }
     }
     log::info!(
@@ -318,6 +334,110 @@ pub(crate) fn populate_scene_runtime(
             byroredux_scripting::install_scene_records(world, index.scenes.values().cloned());
         log::info!("Installed {count} SCEN definitions into the ECS scene runtime");
     }
+}
+
+/// Materialize transform-bearing identities for actors required by one scene
+/// when their canonical persistent references live outside the streamed cell
+/// footprint.
+///
+/// Bethesda keeps forced quest aliases alive independently of ordinary cell
+/// residency.  ByroRedux streams geometry by cell, so a new-game scene such
+/// as MQ101 otherwise cannot bind Tullius/Ulfric/Elenwen (their canonical
+/// ACHRs are owned by remote interiors) and its stage-0 `Is3DLoaded` poll
+/// never resumes. These lightweight identities use the same canonical
+/// candidate stamper as model-less REFRs; subsequent fragment/package
+/// effects can move them without pretending their remote home cell is loaded.
+pub(crate) fn materialize_scene_actor_alias_stubs(
+    world: &mut byroredux_core::ecs::world::World,
+    index: &byroredux_plugin::esm::records::EsmIndex,
+    load_order: &[String],
+    quest_form_id: u32,
+    scene_form_id: u32,
+) -> usize {
+    use byroredux_plugin::esm::records::AliasFillType;
+
+    let (Some(quest), Some(scene)) = (
+        index.quests.get(&quest_form_id),
+        index.scenes.get(&scene_form_id),
+    ) else {
+        return 0;
+    };
+    let actor_aliases: std::collections::HashSet<i32> = scene
+        .actors
+        .iter()
+        .map(|actor| actor.actor_id as i32)
+        .collect();
+    let fills: Vec<AliasFillType> = quest
+        .aliases
+        .iter()
+        .filter(|alias| actor_aliases.contains(&alias.alias_id))
+        .filter_map(|alias| alias.fill_type.clone())
+        .collect();
+    let mut existing: std::collections::HashSet<u32> = world
+        .query::<byroredux_scripting::SceneAliasCandidate>()
+        .map(|query| {
+            query
+                .iter()
+                .map(|(_, candidate)| candidate.reference_form_id)
+                .collect()
+        })
+        .unwrap_or_default();
+    let matches_fill = |placed: &byroredux_plugin::esm::cell::PlacedRef| {
+        fills.iter().any(|fill| match fill {
+            AliasFillType::ForcedReference(reference) => placed.form_id == *reference,
+            AliasFillType::UniqueActor(base) => placed.base_form_id == *base,
+            AliasFillType::LocationAliasReference {
+                ref_type: Some(ref_type),
+                ..
+            } => placed.location_ref_types.contains(ref_type),
+            _ => false,
+        })
+    };
+    let mut missing = Vec::new();
+    let mut collect = |cell: &byroredux_plugin::esm::cell::CellData| {
+        missing.extend(
+            cell.references
+                .iter()
+                .filter(|placed| matches_fill(placed))
+                .filter(|placed| !existing.contains(&placed.form_id))
+                .cloned(),
+        );
+    };
+    for cell in index.cells.cells.values() {
+        collect(cell);
+    }
+    for grids in index.cells.exterior_cells.values() {
+        for cell in grids.values() {
+            collect(cell);
+        }
+    }
+    for cell in index.cells.worldspace_persistent_cells.values() {
+        collect(cell);
+    }
+    missing.sort_by_key(|placed| placed.form_id);
+    missing.dedup_by_key(|placed| placed.form_id);
+
+    let mut spawned = 0;
+    for placed in missing {
+        if !existing.insert(placed.form_id) {
+            continue;
+        }
+        crate::cell_loader::references::spawn_logical_quest_reference(
+            world,
+            &placed,
+            load_order,
+            crate::cell_loader::position_zup_to_yup(placed.position),
+            crate::cell_loader::rotation_zup_to_yup_quat(placed.rotation),
+            placed.scale,
+        );
+        spawned += 1;
+    }
+    if spawned > 0 {
+        log::info!(
+            "Materialized {spawned} remote actor alias identities for scene 0x{scene_form_id:08X}"
+        );
+    }
+    spawned
 }
 
 /// Build a [`ScriptProvider`] from CLI arguments. Accepts repeated

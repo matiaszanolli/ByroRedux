@@ -1025,7 +1025,8 @@ fn triangle_frag_soft_particle_rebases_camera_before_depth_gap() {
              #1642 / #2756."
     );
     assert!(
-        src.contains("length(sceneWorld - camRel)") && src.contains("length(fragSceneWorld - camRel)"),
+        src.contains("length(sceneWorld - camRel)")
+            && src.contains("length(fragSceneWorld - camRel)"),
         "triangle.frag: the soft-particle depth gap must difference the \
              RELATIVE `camRel`, not the absolute `cameraPos`, against \
              `sceneWorld`/`fragSceneWorld` — see #1642 / #2756."
@@ -1455,8 +1456,8 @@ fn rust_glsl_scalar_type_matches(rust_ty: &str, glsl_ty: &str) -> bool {
 /// generated GLSL header carries the same values, closing the loop.
 #[test]
 fn material_kind_constants_stay_in_lockstep_across_rust_and_glsl() {
-    use crate::vulkan::scene_buffer as rust_authoritative;
     use crate::shader_constants as rust_glsl_mirror;
+    use crate::vulkan::scene_buffer as rust_authoritative;
 
     let pairs: &[(&str, u32, u32)] = &[
         (

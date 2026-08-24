@@ -219,8 +219,7 @@ pub(super) fn spawn_synth_child(
                 world.insert(entity, Transform::new(ref_pos, ref_rot, ref_scale));
                 world.insert(entity, GlobalTransform::new(ref_pos, ref_rot, ref_scale));
                 world.insert(entity, volume);
-                if let Some(current) =
-                    water_current_volume_from_ref(placed_ref, ref_pos, ref_scale)
+                if let Some(current) = water_current_volume_from_ref(placed_ref, ref_pos, ref_scale)
                 {
                     world.insert(entity, current);
                 }

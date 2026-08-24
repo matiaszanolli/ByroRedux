@@ -3011,9 +3011,19 @@ impl VulkanContext {
                 .then(|| self.morph_slots.get(&draw_cmd.entity_id))
                 .flatten()
                 .filter(|slot| {
-                    morph_slot_backs_mesh(slot.vertex_count(), slot.target_count(), mesh.vertex_count)
+                    morph_slot_backs_mesh(
+                        slot.vertex_count(),
+                        slot.target_count(),
+                        mesh.vertex_count,
+                    )
                 })
-                .map(|slot| (slot.delta_address(), slot.weight_address(), slot.target_count()));
+                .map(|slot| {
+                    (
+                        slot.delta_address(),
+                        slot.weight_address(),
+                        slot.target_count(),
+                    )
+                });
             let (morph_delta_address, morph_weight_address, morph_target_count) =
                 morph_gpu_fields_for_draw(morph_slot_fields);
             gpu_instances.push(GpuInstance {

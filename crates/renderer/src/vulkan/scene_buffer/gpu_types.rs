@@ -207,9 +207,9 @@ pub struct GpuInstance {
     /// read at the wrong offset. Three scalars avoid the rule
     /// entirely; keep it that way.
     pub _reserved2a: u32, // 4 B, offset 148
-    pub _reserved2b: u32, // 4 B, offset 152
-    pub _reserved2c: u32, // 4 B, offset 156 → total 160
-                           // Struct is 160 bytes (10×16), 16-byte aligned for std430.
+    pub _reserved2b: u32,     // 4 B, offset 152
+    pub _reserved2c: u32,     // 4 B, offset 156 → total 160
+                              // Struct is 160 bytes (10×16), 16-byte aligned for std430.
 }
 
 impl Default for GpuInstance {

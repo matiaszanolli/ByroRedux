@@ -41,11 +41,23 @@ pub struct GameProfileEntry {
     pub esm: String,
     pub default_bsas: Vec<String>,
     pub default_textures_bsas: Vec<String>,
+    /// Compiled Papyrus archives expanded as repeatable `--scripts-bsa`
+    /// arguments. Empty for games/launches that do not use the PEX runtime.
+    pub default_scripts_bsas: Vec<String>,
+    /// Voice and general sound archives expanded as repeatable
+    /// `--sounds-bsa` arguments.
+    pub default_sounds_bsas: Vec<String>,
     /// Materials archive (BGSM/BGEM container — FO4 / FO76 / SF
     /// only). The binary expands this into `--materials-ba2 <name>`
     /// args when `--game <key>` is used. Empty Vec for Skyrim+ and
     /// older. Phase 20.
     pub default_materials_bsas: Vec<String>,
+    /// Optional worldspace/grid boot target used by `--game <key>
+    /// --new-game`. Kept in the profile because intro placements differ by
+    /// title and edition.
+    pub new_game_worldspace: Option<String>,
+    pub new_game_grid: Option<String>,
+    pub new_game_radius: Option<u32>,
     pub sample_cells: Vec<String>,
 }
 

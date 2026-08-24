@@ -927,21 +927,22 @@ mod tests {
             &rest[..end]
         }
 
-        for signature in [
-            "fn eval_inspect_skinned_mesh(",
-            "fn eval_walk_entity(",
-        ] {
+        for signature in ["fn eval_inspect_skinned_mesh(", "fn eval_walk_entity("] {
             let body = body(SOURCE, signature);
             let mut acquired: Vec<(usize, &str)> = Vec::new();
             for (offset, _) in body.match_indices("world.") {
                 let tail = &body[offset..];
-                let Some(open) = tail.find("::<") else { continue };
+                let Some(open) = tail.find("::<") else {
+                    continue;
+                };
                 // Only the acquisition calls, not e.g. `world.entities()`.
                 let call = &tail[..open];
                 if !(call.contains("query") || call.contains("resource")) {
                     continue;
                 }
-                let Some(close) = tail.find('>') else { continue };
+                let Some(close) = tail.find('>') else {
+                    continue;
+                };
                 // Strip any module path: `byroredux_core::string::StringPool`.
                 let ty = tail[open + 3..close].rsplit("::").next().unwrap();
                 if let Some(rank) = CANONICAL.iter().position(|c| *c == ty) {

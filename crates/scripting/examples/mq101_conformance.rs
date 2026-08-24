@@ -70,6 +70,26 @@ const CRITICAL_ANIMATIONS: &[&str] = &[
 
 const TWO_STATE_ACTIVATOR_SCRIPT: &str = "scripts\\default2stateactivator.pex";
 const MQ101_GATE_1: u32 = 0x0009_0A05;
+const OPENING_REFERENCES: &[(u32, &str)] = &[
+    (0x0004_678E, "PlayerStartMarker"),
+    (0x0004_6790, "RalofStartMarker"),
+    (0x0004_6795, "HadvarStartMarker"),
+    (0x000B_9DF3, "Cart1"),
+    (0x000B_B970, "Cart2"),
+    (0x000B_9DF2, "CartHorse1"),
+    (0x000B_B971, "CartHorse2"),
+    (0x0001_98BA, "GeneralTullius"),
+    (0x0001_98BC, "Elenwen"),
+    (0x0001_B131, "Ulfric"),
+    (0x0006_54FB, "Prisoner01"),
+    (0x0006_54ED, "StormcloakPrisoner01"),
+    (0x0006_54F0, "StormcloakPrisoner02"),
+    (0x0006_54EF, "StormcloakPrisoner03"),
+    (0x0006_54EE, "StormcloakPrisoner04"),
+    (0x0006_54F6, "ImperialSoldier01"),
+    (0x0006_54F5, "ImperialSoldier02"),
+    (0x0006_54FA, "ImperialSoldierHelgen02"),
+];
 
 #[derive(Default)]
 struct Checks {
@@ -426,6 +446,23 @@ fn run() -> Result<Checks, Box<dyn Error>> {
         );
         return Ok(checks);
     };
+
+    let opening_cells: Vec<String> = OPENING_REFERENCES
+        .iter()
+        .map(|(form_id, name)| {
+            format!(
+                "{name}=0x{form_id:08X}@{:?}",
+                index.cells.cell_for_refr_form_id(*form_id)
+            )
+        })
+        .collect();
+    checks.record(
+        "opening reference cells",
+        OPENING_REFERENCES
+            .iter()
+            .all(|(form_id, _)| index.cells.cell_for_refr_form_id(*form_id).is_some()),
+        opening_cells.join(", "),
+    );
 
     checks.record(
         "MQ101 record",

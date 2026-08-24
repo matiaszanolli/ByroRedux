@@ -180,8 +180,7 @@ fn update_lod_coverage(
     // VWD culls against the *object* scheme only (EXAL §5.2), terrain LOD
     // has no discrete-object concept to conflict with.
     let vwd_cells = resident_vwd_refr_cells(world);
-    let vwd_full_model_overlaps =
-        cell_loader::find_full_detail_overlaps(&object_keys, &vwd_cells);
+    let vwd_full_model_overlaps = cell_loader::find_full_detail_overlaps(&object_keys, &vwd_cells);
 
     // Only compare settled snapshots. During a reconcile the finest terrain
     // blocks can be temporarily removed while their resident-cell hole masks
@@ -297,7 +296,10 @@ fn resident_vwd_refr_cells(world: &byroredux_core::ecs::World) -> Vec<(i32, i32)
     if let Some(q) = world.query::<crate::components::VisibleWhenDistant>() {
         for (entity, _) in q.iter() {
             if let Some(t) = world.get::<byroredux_core::ecs::GlobalTransform>(entity) {
-                cells.insert(streaming::world_pos_to_grid(t.translation.x, t.translation.z));
+                cells.insert(streaming::world_pos_to_grid(
+                    t.translation.x,
+                    t.translation.z,
+                ));
             }
         }
     }
@@ -885,7 +887,10 @@ mod tests {
 
     fn spawn_at(world: &mut World, x: f32, z: f32, vwd: bool) {
         let e = world.spawn();
-        world.insert(e, GlobalTransform::new(Vec3::new(x, 0.0, z), Quat::IDENTITY, 1.0));
+        world.insert(
+            e,
+            GlobalTransform::new(Vec3::new(x, 0.0, z), Quat::IDENTITY, 1.0),
+        );
         if vwd {
             world.insert(e, VisibleWhenDistant);
         }

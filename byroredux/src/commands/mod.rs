@@ -18,8 +18,9 @@
 //! - [`view`] — camera + selection / picking
 //!   (`prid`, `cam.*`, `near`, `pick`, `interaction.status`, `input.*`,
 //!   `player.status`)
-//! - [`quest`] — quest lifecycle, objectives, targets, and alias diagnostics
-//!   (`quest.show`, `quest.aliases`, `quest.start`, `quest.stop`, `quest.setstage`)
+//! - [`quest`] — quest/scene lifecycle, objectives, targets, aliases, and
+//!   playback diagnostics (`quest.show`, `quest.aliases`, `quest.start`,
+//!   `quest.stop`, `quest.setstage`, `scene.show`)
 //! - [`time`] — persistent day/night clock inspection and controls
 //!   (`time.show`, `time.set`, `time.scale`, `time.pause`, `time.resume`, `time.advance`)
 //! - [`water`] — canonical water render/physics diagnostics
@@ -65,6 +66,7 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(ModAvCommand);
     registry.register(QuestShowCommand);
     registry.register(QuestAliasesCommand);
+    registry.register(SceneShowCommand);
     registry.register(QuestStartCommand);
     registry.register(QuestStopCommand);
     registry.register(QuestSetStageCommand);

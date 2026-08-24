@@ -387,8 +387,7 @@ pub fn max_u_greater_than_rhs_constant(spirv_bytes: &[u8]) -> Result<Option<u32>
     for inst in &module.types_global_values {
         if inst.class.opcode == Op::Constant {
             let is_int32 = inst.result_type.is_some_and(|t| int32_types.contains(&t));
-            if let (Some(id), Some(op), true) = (inst.result_id, inst.operands.first(), is_int32)
-            {
+            if let (Some(id), Some(op), true) = (inst.result_id, inst.operands.first(), is_int32) {
                 constants.insert(id, op.unwrap_literal_bit32());
             }
         }

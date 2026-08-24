@@ -310,9 +310,10 @@ fn merge_from_partial_override_inherits_cell_water_velocity() {
     master.cells.insert("currentpool".into(), base);
 
     let mut child = EsmCellIndex::default();
-    child
-        .cells
-        .insert("currentpool".into(), make_interior_cell(0x100, "CurrentPool"));
+    child.cells.insert(
+        "currentpool".into(),
+        make_interior_cell(0x100, "CurrentPool"),
+    );
     master.merge_from(child);
 
     assert_eq!(

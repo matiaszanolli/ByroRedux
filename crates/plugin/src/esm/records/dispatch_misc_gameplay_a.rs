@@ -49,7 +49,9 @@ pub(super) fn dispatch_misc_gameplay_a_group(
             // the same load-order remap as every other cross-reference.
             let watr_remap = reader.get_form_id_remap();
             extract_records(reader, end, b"WATR", &mut |fid, subs| {
-                index.waters.insert(fid, parse_watr(fid, subs, game, &watr_remap));
+                index
+                    .waters
+                    .insert(fid, parse_watr(fid, subs, game, &watr_remap));
             })?
         }
         b"NAVI" => extract_records(reader, end, b"NAVI", &mut |fid, subs| {

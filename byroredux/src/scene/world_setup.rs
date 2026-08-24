@@ -908,6 +908,15 @@ pub(crate) fn assemble_exterior_streaming(
     state.last_player_grid = Some(grid);
     state.spawn_lod_water(world, ctx);
     let cam_center = stream_initial_radius(world, ctx, &mut state, grid.0, grid.1, bootstrap_mode);
+    if state.wctx.record_index.game == byroredux_plugin::esm::reader::GameKind::Skyrim {
+        crate::asset_provider::materialize_scene_actor_alias_stubs(
+            world,
+            &state.wctx.record_index,
+            &state.wctx.load_order,
+            0x0003_372B,
+            0x000B_ECD4,
+        );
+    }
     (state, cam_center)
 }
 
@@ -1219,7 +1228,10 @@ mod tests {
             "in-flight target must be promoted into WeatherDataRes, not left at the stale source"
         );
         assert_eq!(wd.wind_speed, 7, "wind_speed must promote alongside fog");
-        assert_eq!(wd.precipitation, 0.75, "precipitation must promote with the target weather");
+        assert_eq!(
+            wd.precipitation, 0.75,
+            "precipitation must promote with the target weather"
+        );
         assert!(
             world.try_resource::<WeatherTransitionRes>().is_none(),
             "an in-flight transition must be fully removed, not left resident as a dormant \

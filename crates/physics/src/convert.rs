@@ -295,15 +295,13 @@ fn flatten_to_parts(
                     );
                     SharedShape::capsule(start, end, DEGENERATE_HULL_RADIUS)
                 }
-                HullDegeneracy::Buildable => {
-                    SharedShape::convex_hull(&pts).unwrap_or_else(|| {
-                        log::warn!(
-                            "convex hull with {} pts rejected by Rapier; falling back to ball",
-                            pts.len()
-                        );
-                        SharedShape::ball(1e-3)
-                    })
-                }
+                HullDegeneracy::Buildable => SharedShape::convex_hull(&pts).unwrap_or_else(|| {
+                    log::warn!(
+                        "convex hull with {} pts rejected by Rapier; falling back to ball",
+                        pts.len()
+                    );
+                    SharedShape::ball(1e-3)
+                }),
             };
             out.push((parent_iso, shape));
         }
@@ -374,7 +372,10 @@ enum HullDegeneracy {
     /// these: `convex_hull` unwraps a `MissingSupportPoint`.
     Pointlike,
     /// Extent along one axis only. `parry` returns `None` for these.
-    Collinear { start: Point3<f32>, end: Point3<f32> },
+    Collinear {
+        start: Point3<f32>,
+        end: Point3<f32>,
+    },
     /// Anything `convex_hull` can actually work with — including coplanar
     /// sets, which build a flat `ConvexPolyhedron` without complaint.
     Buildable,
@@ -435,7 +436,6 @@ fn hull_degeneracy(pts: &[Point3<f32>]) -> HullDegeneracy {
         end: origin + axis * hi,
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -928,7 +928,9 @@ mod tests {
     #[test]
     fn collinear_convex_hull_spans_its_authored_extent() {
         let shape = CollisionShape::ConvexHull {
-            vertices: (0..5).map(|x| Vec3::new(x as f32 * 5.0, 0.0, 0.0)).collect(),
+            vertices: (0..5)
+                .map(|x| Vec3::new(x as f32 * 5.0, 0.0, 0.0))
+                .collect(),
         };
         let parts = parts(&shape);
         assert_eq!(parts.len(), 1);
@@ -950,7 +952,9 @@ mod tests {
     #[test]
     fn collinear_hull_fallback_respects_scale() {
         let shape = CollisionShape::ConvexHull {
-            vertices: (0..5).map(|x| Vec3::new(x as f32 * 5.0, 0.0, 0.0)).collect(),
+            vertices: (0..5)
+                .map(|x| Vec3::new(x as f32 * 5.0, 0.0, 0.0))
+                .collect(),
         };
         let parts = collision_shape_to_parts(&shape, 3.0, &ContactConfig::DEFAULT);
         let aabb = parts[0].1.compute_local_aabb();
@@ -985,14 +989,17 @@ mod tests {
                 Vec3::new(0.01, 0.0, 0.0),
             ],
         };
-        assert_eq!(shape_type_of(&parts(&bowed), 0), ShapeType::ConvexPolyhedron);
+        assert_eq!(
+            shape_type_of(&parts(&bowed), 0),
+            ShapeType::ConvexPolyhedron
+        );
     }
 
     /// Coplanar sets are NOT a parry failure mode — measured against parry
     /// 0.17.6, a flat quad builds a `ConvexPolyhedron` without complaint. The
     /// classifier must not divert them into a fallback (the premise #2551 was
     /// filed on; kept as a pin so a future parry bump that changes it fails
-    /// here rather than silently degrading 
+    /// here rather than silently degrading
     /// every flat plate in the corpus).
     #[test]
     fn coplanar_hulls_still_build_a_real_polyhedron() {
@@ -1023,7 +1030,10 @@ mod tests {
                 Vec3::new(0.0, 0.0, 10.0),
             ],
         };
-        assert_eq!(shape_type_of(&parts(&tetra), 0), ShapeType::ConvexPolyhedron);
+        assert_eq!(
+            shape_type_of(&parts(&tetra), 0),
+            ShapeType::ConvexPolyhedron
+        );
     }
 
     /// The multi-part case the issue calls out as worse than the sizing bug:

@@ -211,12 +211,16 @@ impl AdaptiveRayBudget {
         use crate::shader_constants::GLASS_RAY_BUDGET;
         match tier {
             0 => GpuRayBudget::settings(
-                GLASS_RAY_BUDGET / 8, 1,
+                GLASS_RAY_BUDGET / 8,
+                1,
                 // True safe floor: gather GPU timing with direct shadows but
                 // no diffuse path. A non-zero minimum here defeated the
                 // controller on Cydonia: the 97k-instance first frame could
                 // lose the device before a timing sample existed.
-                0, 0, 2, 0,
+                0,
+                0,
+                2,
+                0,
             ),
             1 => GpuRayBudget::settings(GLASS_RAY_BUDGET / 4, 2, 3, 1, 4, 1),
             2 => GpuRayBudget::settings(GLASS_RAY_BUDGET / 2, 4, 4, 2, 6, 2),

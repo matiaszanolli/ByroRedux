@@ -78,7 +78,17 @@ struct ProfileEntryDe {
     #[serde(default)]
     default_textures_bsas: Vec<String>,
     #[serde(default)]
+    default_scripts_bsas: Vec<String>,
+    #[serde(default)]
+    default_sounds_bsas: Vec<String>,
+    #[serde(default)]
     default_materials_bsas: Vec<String>,
+    #[serde(default)]
+    new_game_worldspace: Option<String>,
+    #[serde(default)]
+    new_game_grid: Option<String>,
+    #[serde(default)]
+    new_game_radius: Option<u32>,
     #[serde(default)]
     sample_cells: Vec<String>,
 }
@@ -92,7 +102,12 @@ impl From<ProfileEntryDe> for GameProfileEntry {
             esm: de.esm,
             default_bsas: de.default_bsas,
             default_textures_bsas: de.default_textures_bsas,
+            default_scripts_bsas: de.default_scripts_bsas,
+            default_sounds_bsas: de.default_sounds_bsas,
             default_materials_bsas: de.default_materials_bsas,
+            new_game_worldspace: de.new_game_worldspace,
+            new_game_grid: de.new_game_grid,
+            new_game_radius: de.new_game_radius,
             sample_cells: de.sample_cells,
         }
     }
@@ -319,6 +334,11 @@ root = "/tmp/nonexistent-path-for-test"
 esm = "FalloutNV.esm"
 default_bsas = ["Fallout - Meshes.bsa"]
 default_textures_bsas = []
+default_scripts_bsas = ["Fallout - Misc.bsa"]
+default_sounds_bsas = ["Fallout - Sound.bsa"]
+new_game_worldspace = "WastelandNV"
+new_game_grid = "0,0"
+new_game_radius = 2
 sample_cells = ["GSDocMitchellHouse"]
         "#;
         let parsed: ProfilesFile = toml::from_str(toml).expect("parse");
@@ -326,6 +346,11 @@ sample_cells = ["GSDocMitchellHouse"]
         let p = &parsed.profiles["fnv"];
         assert_eq!(p.name, "FNV");
         assert_eq!(p.default_bsas, vec!["Fallout - Meshes.bsa"]);
+        assert_eq!(p.default_scripts_bsas, vec!["Fallout - Misc.bsa"]);
+        assert_eq!(p.default_sounds_bsas, vec!["Fallout - Sound.bsa"]);
+        assert_eq!(p.new_game_worldspace.as_deref(), Some("WastelandNV"));
+        assert_eq!(p.new_game_grid.as_deref(), Some("0,0"));
+        assert_eq!(p.new_game_radius, Some(2));
         // is_usable lives on core's GameProfileEntry — round-
         // trip the converted entry to exercise it.
         let entry: GameProfileEntry = ProfileEntryDe {
@@ -335,7 +360,12 @@ sample_cells = ["GSDocMitchellHouse"]
             esm: p.esm.clone(),
             default_bsas: p.default_bsas.clone(),
             default_textures_bsas: p.default_textures_bsas.clone(),
+            default_scripts_bsas: p.default_scripts_bsas.clone(),
+            default_sounds_bsas: p.default_sounds_bsas.clone(),
             default_materials_bsas: p.default_materials_bsas.clone(),
+            new_game_worldspace: p.new_game_worldspace.clone(),
+            new_game_grid: p.new_game_grid.clone(),
+            new_game_radius: p.new_game_radius,
             sample_cells: p.sample_cells.clone(),
         }
         .into();

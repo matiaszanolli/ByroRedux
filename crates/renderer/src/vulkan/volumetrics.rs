@@ -2114,7 +2114,11 @@ impl VolumetricsPipeline {
             simulation_time,
             self.combustion_active_until_seconds,
         );
-        frame_params.fog_reference[3] = if combustion_active { simulation_dt } else { 0.0 };
+        frame_params.fog_reference[3] = if combustion_active {
+            simulation_dt
+        } else {
+            0.0
+        };
         self.pending_simulation_time_seconds = Some(simulation_time);
         let camera_position = [
             frame_params.camera_pos[0],

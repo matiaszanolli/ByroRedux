@@ -64,8 +64,9 @@ pub use package::{
 };
 pub use player_control::{ActorControlState, PlayerControlSelection, PlayerControlState};
 pub use quest_stages::{
-    install_engine_start_quest, install_start_game_quests, quest_startup_system,
-    quest_terminal_stage_system, resolve_quest_objective_targets, resolve_quest_targets,
+    install_engine_start_quest, install_quest_alias_readiness_gate, install_start_game_quests,
+    quest_alias_readiness_stage_system, quest_startup_system, quest_terminal_stage_system,
+    resolve_quest_objective_targets, resolve_quest_targets, QuestAliasReadinessGate,
     QuestDefinitionRegistry, QuestEventRead, QuestEventSubscriberId, QuestFormId, QuestStatus,
     SequencedQuestStageAdvanced, StartGameQuestRegistry, QUEST_EVENT_RETENTION,
 };

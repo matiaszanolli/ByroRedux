@@ -248,7 +248,9 @@ pub(crate) fn parse_cell_group(
                         b"XCWT" => water_type_form = read_form_id(&sub.data),
                         b"XWCU" if sub.data.len() >= 12 => {
                             let mut values = [0.0; 3];
-                            for (slot, bytes) in values.iter_mut().zip(sub.data.chunks_exact(4).take(3)) {
+                            for (slot, bytes) in
+                                values.iter_mut().zip(sub.data.chunks_exact(4).take(3))
+                            {
                                 *slot = f32::from_le_bytes(bytes.try_into().unwrap());
                             }
                             if values.iter().all(|value| value.is_finite()) {

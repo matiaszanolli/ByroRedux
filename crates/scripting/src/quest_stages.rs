@@ -674,6 +674,22 @@ impl StartGameQuestRegistry {
     }
 }
 
+/// Engine-supplied equivalent of a quest alias script that advances once a
+/// required reference set is resident. This preserves the data-driven gate
+/// while alias-attached Papyrus method dispatch is still being generalized.
+#[derive(Debug, Clone)]
+pub struct QuestAliasReadinessGate {
+    pub quest: QuestFormId,
+    pub required_aliases: Vec<i32>,
+    pub target_stage: u16,
+    pub only_below_stage: u16,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct QuestAliasReadinessGateRegistry(Vec<QuestAliasReadinessGate>);
+
+impl Resource for QuestAliasReadinessGateRegistry {}
+
 /// #2659 (SCR-D6-NEW11-02) — `definitions` is `Arc`-wrapped so
 /// `#[derive(Clone)]` is an O(1) refcount bump, not an O(quest count) deep
 /// copy. `DeferredFragmentEffects::new` (`fragment.rs`) clones this
@@ -845,6 +861,97 @@ pub fn register(world: &mut World) {
     }
     if world.try_resource::<QuestDefinitionRegistry>().is_none() {
         world.insert_resource(QuestDefinitionRegistry::default());
+    }
+    if world
+        .try_resource::<QuestAliasReadinessGateRegistry>()
+        .is_none()
+    {
+        world.insert_resource(QuestAliasReadinessGateRegistry::default());
+    }
+}
+
+pub fn install_quest_alias_readiness_gate(
+    world: &mut World,
+    gate: QuestAliasReadinessGate,
+) -> bool {
+    if world
+        .try_resource::<QuestAliasReadinessGateRegistry>()
+        .is_none()
+    {
+        register(world);
+    }
+    let mut registry = world.resource_mut::<QuestAliasReadinessGateRegistry>();
+    if let Some(existing) = registry.0.iter_mut().find(|item| item.quest == gate.quest) {
+        let changed = existing.required_aliases != gate.required_aliases
+            || existing.target_stage != gate.target_stage
+            || existing.only_below_stage != gate.only_below_stage;
+        *existing = gate;
+        changed
+    } else {
+        registry.0.push(gate);
+        true
+    }
+}
+
+/// Advance configured engine-root quests once every required alias resolves.
+/// Runs after the scheduled alias refresh and before scene playback, matching
+/// the same-frame behavior of Skyrim's `RegisterStartingCellLoad` callback.
+pub fn quest_alias_readiness_stage_system(world: &World, _dt: f32) {
+    let Some(registry) = world.try_resource::<QuestAliasReadinessGateRegistry>() else {
+        return;
+    };
+    let Some(bindings) = world.try_resource::<crate::scene::SceneActorBindings>() else {
+        return;
+    };
+    let ready: Vec<QuestAliasReadinessGate> = registry
+        .0
+        .iter()
+        .filter(|gate| {
+            gate.required_aliases
+                .iter()
+                .all(|alias| bindings.resolve(gate.quest, *alias).is_some())
+        })
+        .cloned()
+        .collect();
+    drop(bindings);
+    drop(registry);
+    if ready.is_empty() {
+        return;
+    }
+
+    let mut emitted = Vec::new();
+    {
+        let Some(mut stages) = world.try_resource_mut::<QuestStageState>() else {
+            return;
+        };
+        for gate in ready {
+            if !stages.is_running(gate.quest)
+                || stages.get_stage(gate.quest) >= gate.only_below_stage
+                || stages.get_stage_done(gate.quest, gate.target_stage)
+            {
+                continue;
+            }
+            let previous_stage = stages.set_stage(gate.quest, gate.target_stage);
+            emitted.push(QuestStageAdvanced {
+                quest: gate.quest,
+                previous_stage,
+                new_stage: gate.target_stage,
+            });
+        }
+    }
+    if emitted.is_empty() {
+        return;
+    }
+    let Some(player) = world.try_resource::<PlayerEntity>().map(|player| player.0) else {
+        return;
+    };
+    let Some(mut batches) = world.query_mut::<QuestStageAdvancedBatch>() else {
+        return;
+    };
+    if let Some(batch) = batches.get_mut(player) {
+        batch.0.extend(emitted);
+    } else {
+        batches.insert(player, QuestStageAdvancedBatch(emitted));
     }
 }
 
@@ -1306,6 +1413,58 @@ mod tests {
             .bind(quest, 7, actor);
 
         assert_eq!(resolve_quest_objective_targets(&world, quest, 10), [actor]);
+    }
+
+    #[test]
+    fn alias_readiness_gate_advances_once_after_every_alias_binds() {
+        let mut world = World::new();
+        crate::register(&mut world);
+        world.insert_resource(QuestStageState::default());
+        let player = world.spawn();
+        world.insert_resource(PlayerEntity(player));
+
+        let quest = QuestFormId(0x3372B);
+        world
+            .resource_mut::<QuestStageState>()
+            .start_quest(quest, None);
+        assert!(install_quest_alias_readiness_gate(
+            &mut world,
+            QuestAliasReadinessGate {
+                quest,
+                required_aliases: vec![1, 12],
+                target_stage: 12,
+                only_below_stage: 15,
+            },
+        ));
+
+        let first_actor = world.spawn();
+        world
+            .resource_mut::<crate::scene::SceneActorBindings>()
+            .bind(quest, 1, first_actor);
+        quest_alias_readiness_stage_system(&world, 0.0);
+        assert_eq!(world.resource::<QuestStageState>().get_stage(quest), 0);
+        assert!(world
+            .query::<QuestStageAdvancedBatch>()
+            .unwrap()
+            .get(player)
+            .is_none());
+
+        let second_actor = world.spawn();
+        world
+            .resource_mut::<crate::scene::SceneActorBindings>()
+            .bind(quest, 12, second_actor);
+        quest_alias_readiness_stage_system(&world, 0.0);
+        assert_eq!(world.resource::<QuestStageState>().get_stage(quest), 12);
+        let query = world.query::<QuestStageAdvancedBatch>().unwrap();
+        let batch = query.get(player).expect("readiness advance batch");
+        assert_eq!(batch.0.len(), 1);
+        assert_eq!(batch.0[0].quest, quest);
+        assert_eq!(batch.0[0].new_stage, 12);
+        drop(query);
+
+        quest_alias_readiness_stage_system(&world, 0.0);
+        let query = world.query::<QuestStageAdvancedBatch>().unwrap();
+        assert_eq!(query.get(player).unwrap().0.len(), 1);
     }
 
     #[test]

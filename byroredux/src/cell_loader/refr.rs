@@ -228,7 +228,11 @@ impl RefrTextureOverlay {
     /// `material_path` has been swapped to that shape's MSWP target —
     /// the REFR-level walk below only ever resolves the overlay's own
     /// single `material_path`.
-    pub(crate) fn fill_from_bgsm(&mut self, provider: &mut MaterialProvider, pool: &mut StringPool) {
+    pub(crate) fn fill_from_bgsm(
+        &mut self,
+        provider: &mut MaterialProvider,
+        pool: &mut StringPool,
+    ) {
         let Some(path_sym) = self.material_path else {
             return;
         };

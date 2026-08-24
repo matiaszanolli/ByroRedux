@@ -315,14 +315,14 @@ mod tests {
             bytes[0x14..0x18].copy_from_slice(&2u32.to_le_bytes());
 
             let section = |bytes: &mut Vec<u8>,
-                               index: usize,
-                               tag: &str,
-                               start: usize,
-                               local: usize,
-                               global: usize,
-                               virt: usize,
-                               exports: usize,
-                               end: usize| {
+                           index: usize,
+                           tag: &str,
+                           start: usize,
+                           local: usize,
+                           global: usize,
+                           virt: usize,
+                           exports: usize,
+                           end: usize| {
                 let base = HEADER + index * SECTION_HEADER_SIZE;
                 bytes[base..base + tag.len()].copy_from_slice(tag.as_bytes());
                 let put = |bytes: &mut Vec<u8>, field: usize, value: usize| {
@@ -338,8 +338,15 @@ mod tests {
             };
             // Section offsets past `start` are all section-relative.
             section(
-                &mut bytes, 0, "__classnames__", names_start, names_len, names_len, names_len,
-                names_len, names_len,
+                &mut bytes,
+                0,
+                "__classnames__",
+                names_start,
+                names_len,
+                names_len,
+                names_len,
+                names_len,
+                names_len,
             );
             section(
                 &mut bytes,
@@ -458,14 +465,10 @@ mod tests {
 
     #[test]
     fn rejects_a_non_packfile() {
-        assert_eq!(
-            parse_err(&[]),
-            (HkxError::Truncated("HKX magic")));
+        assert_eq!(parse_err(&[]), (HkxError::Truncated("HKX magic")));
         let mut bytes = sample().build();
         bytes[0] ^= 0xFF;
-        assert_eq!(
-            parse_err(&bytes),
-            (HkxError::InvalidMagic));
+        assert_eq!(parse_err(&bytes), (HkxError::InvalidMagic));
     }
 
     /// The crate deliberately supports one layout — Skyrim SE's. A 32-bit or
@@ -475,10 +478,8 @@ mod tests {
         for (offset, value) in [(0x10, 4u8), (0x11, 0u8)] {
             let bytes = sample().build_with(|bytes| bytes[offset] = value);
             assert_eq!(
-            parse_err(&bytes),
-            (HkxError::UnsupportedLayout(
-                    "expected a 64-bit little-endian packfile"
-                ))
+                parse_err(&bytes),
+                (HkxError::UnsupportedLayout("expected a 64-bit little-endian packfile"))
             );
         }
     }
@@ -486,12 +487,11 @@ mod tests {
     #[test]
     fn rejects_an_implausible_section_count() {
         for count in [0u32, 65] {
-            let bytes = sample().build_with(|bytes| {
-                bytes[0x14..0x18].copy_from_slice(&count.to_le_bytes())
-            });
+            let bytes = sample()
+                .build_with(|bytes| bytes[0x14..0x18].copy_from_slice(&count.to_le_bytes()));
             assert_eq!(
-            parse_err(&bytes),
-            (HkxError::InvalidData("implausible section count"))
+                parse_err(&bytes),
+                (HkxError::InvalidData("implausible section count"))
             );
         }
     }
@@ -529,10 +529,7 @@ mod tests {
             let base = HEADER + SECTION_HEADER_SIZE;
             bytes[base..base + 8].copy_from_slice(b"__misc__");
         });
-        assert_eq!(
-            parse_err(&bytes),
-            (HkxError::MissingSection("__data__"))
-        );
+        assert_eq!(parse_err(&bytes), (HkxError::MissingSection("__data__")));
     }
 
     #[test]

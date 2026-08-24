@@ -236,7 +236,11 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
         .map(|(surface_y, _, _, _)| current_pos.y + controller.eye_height <= surface_y)
         .unwrap_or(false);
     let swim = water_contact.filter(|(surface_y, _, _, _)| {
-        swimlevel_reached(current_pos.y, *surface_y, controller.half_height + controller.radius)
+        swimlevel_reached(
+            current_pos.y,
+            *surface_y,
+            controller.half_height + controller.radius,
+        )
     });
     let (breath_remaining, drowning_damage) = advance_breath(
         controller.breath_remaining,
@@ -1408,18 +1412,10 @@ mod tests {
         };
         let position = Vec3::new(113.0, 0.0, -47.0);
         let at_start = byroredux_physics::authored_wave_height_with_weather(
-            &material,
-            position,
-            0.0,
-            [0.0; 2],
-            1.0,
+            &material, position, 0.0, [0.0; 2], 1.0,
         );
         let later = byroredux_physics::authored_wave_height_with_weather(
-            &material,
-            position,
-            0.37,
-            [0.0; 2],
-            1.0,
+            &material, position, 0.37, [0.0; 2], 1.0,
         );
         assert!(at_start.is_finite() && later.is_finite());
         assert!(at_start.abs() <= 4.0 && later.abs() <= 4.0);

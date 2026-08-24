@@ -622,8 +622,7 @@ pub(super) fn spawn_water_plane(
 fn cell_water_flow(velocity: Option<[f32; 3]>) -> Option<WaterFlow> {
     let [x, y, _z] = velocity?;
     let speed = x.hypot(y);
-    (speed.is_finite() && speed > 1.0e-5)
-        .then(|| WaterFlow::new([x, 0.0, -y], speed))
+    (speed.is_finite() && speed > 1.0e-5).then(|| WaterFlow::new([x, 0.0, -y], speed))
 }
 
 #[inline]
@@ -924,10 +923,7 @@ mod tests {
 
     #[test]
     fn authored_cell_current_promotes_neutral_water_to_river_shader() {
-        assert_eq!(
-            kind_with_cell_flow(WaterKind::Calm, 2.0),
-            WaterKind::River
-        );
+        assert_eq!(kind_with_cell_flow(WaterKind::Calm, 2.0), WaterKind::River);
         assert_eq!(
             kind_with_cell_flow(WaterKind::Calm, WaterFlow::SPEED_RAPIDS),
             WaterKind::Rapids
@@ -936,10 +932,7 @@ mod tests {
             kind_with_cell_flow(WaterKind::Rapids, 2.0),
             WaterKind::Rapids
         );
-        assert_eq!(
-            kind_with_cell_flow(WaterKind::Calm, 0.0),
-            WaterKind::Calm
-        );
+        assert_eq!(kind_with_cell_flow(WaterKind::Calm, 0.0), WaterKind::Calm);
     }
 
     // `resolve_water_material` (+ its WATR reflection-tint / default-tint

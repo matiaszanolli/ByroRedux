@@ -78,17 +78,15 @@ fn walk_groups(
             .map(|sub| zstring(&sub.data))
             .unwrap_or_default();
         // Legacy records carry visual data in DATA; Skyrim+ carries it in DNAM.
-        let (payload, direction_offset, speed_offset) = match subs
-            .iter()
-            .find(|sub| sub.sub_type == *b"DATA")
-        {
-            Some(sub) if sub.data.len() >= 186 => (&sub.data, 100usize, 112usize),
-            Some(sub) if sub.data.len() >= 8 => (&sub.data, 4usize, 0usize),
-            _ => match subs.iter().find(|sub| sub.sub_type == *b"DNAM") {
-                Some(sub) if sub.data.len() >= 124 => (&sub.data, 100usize, 112usize),
-                _ => continue,
-            },
-        };
+        let (payload, direction_offset, speed_offset) =
+            match subs.iter().find(|sub| sub.sub_type == *b"DATA") {
+                Some(sub) if sub.data.len() >= 186 => (&sub.data, 100usize, 112usize),
+                Some(sub) if sub.data.len() >= 8 => (&sub.data, 4usize, 0usize),
+                _ => match subs.iter().find(|sub| sub.sub_type == *b"DNAM") {
+                    Some(sub) if sub.data.len() >= 124 => (&sub.data, 100usize, 112usize),
+                    _ => continue,
+                },
+            };
         let read = |off: usize| {
             f32::from_le_bytes([
                 payload[off],
@@ -97,7 +95,12 @@ fn walk_groups(
                 payload[off + 3],
             ])
         };
-        rows.push((editor_id, payload.len(), read(speed_offset), read(direction_offset)));
+        rows.push((
+            editor_id,
+            payload.len(),
+            read(speed_offset),
+            read(direction_offset),
+        ));
     }
     Ok(())
 }

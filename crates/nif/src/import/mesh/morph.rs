@@ -228,7 +228,6 @@ mod tests {
         assert!(extract_morph_targets(&scene, BlockRef(0), 3, None).is_none());
     }
 
-
     /// #3231 — more targets than `MAX_MORPH_TARGETS_PER_MESH` must
     /// truncate, not allocate an unbounded GPU delta buffer.
     #[test]

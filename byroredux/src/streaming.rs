@@ -20,11 +20,11 @@
 //! bootstrap uses the same request and payload path instead of maintaining
 //! a second synchronous loader.
 
+use byroredux_core::ecs::components::Transform;
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::World;
-use byroredux_core::ecs::components::Transform;
-use byroredux_core::math::Vec3;
 use byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
+use byroredux_core::math::Vec3;
 use byroredux_renderer::VulkanContext;
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
@@ -455,10 +455,7 @@ pub struct LodWaterPlane {
 /// Translation in renderer Y-up coordinates for a world-grid movement.
 /// Gamebryo's second grid axis maps to renderer -Z.
 #[inline]
-pub(crate) fn lod_water_recenter_delta(
-    old_grid: (i32, i32),
-    new_grid: (i32, i32),
-) -> Vec3 {
+pub(crate) fn lod_water_recenter_delta(old_grid: (i32, i32), new_grid: (i32, i32)) -> Vec3 {
     Vec3::new(
         (new_grid.0 - old_grid.0) as f32 * EXTERIOR_CELL_UNITS,
         0.0,

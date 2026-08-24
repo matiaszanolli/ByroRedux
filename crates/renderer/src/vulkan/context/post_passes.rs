@@ -892,13 +892,7 @@ impl VulkanContext {
                     let bloom_result = bloom.dispatch(&self.device, cmd, frame, scene_view);
                     match bloom_result {
                         Ok(()) => {
-                            bloom.apply_to_scene(
-                                &self.device,
-                                cmd,
-                                frame,
-                                scene_image,
-                                scene_view,
-                            );
+                            bloom.apply_to_scene(&self.device, cmd, frame, scene_image, scene_view);
                         }
                         Err(e) => log::warn!("Bloom dispatch failed: {e}"),
                     }

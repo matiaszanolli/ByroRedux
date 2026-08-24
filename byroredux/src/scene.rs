@@ -1251,6 +1251,23 @@ pub(crate) fn setup_scene(
             world.insert(body, FormIdComponent(fid));
         }
         crate::inventory::attach_to_player(world, body);
+        // The player participates in QUST aliases exactly like an authored
+        // ACHR: Skyrim's MQ101 alias 119 is a forced reference to 0x14 and
+        // carries the opening inventory/package injections.  The player body
+        // was already persistently identifiable through FormIdComponent, but
+        // the alias resolver deliberately reads SceneAliasCandidate instead;
+        // without this stamp MQ101 could start while its Player alias remained
+        // permanently unbound.
+        world.insert(
+            body,
+            byroredux_scripting::SceneAliasCandidate {
+                reference_form_id: 0x0000_0014,
+                base_form_id: 0x0000_0007,
+                linked_refs: Vec::new(),
+                location_ref_types: Vec::new(),
+            },
+        );
+        byroredux_scripting::mark_scene_actor_bindings_dirty(world);
         world.insert_resource(crate::systems::PlayerEntity(Some(body)));
         // M47.0 — the scripting crate's papyrus_demo systems
         // (rumble_on_activate, quest_advance, mg07_door,

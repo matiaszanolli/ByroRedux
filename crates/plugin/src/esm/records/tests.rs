@@ -1696,7 +1696,10 @@ fn fallout_inventory_categories_follow_components_and_loose_mod_links() {
     esm.extend_from_slice(&wrap_group(b"MISC", &misc_records));
     let index = parse_esm(&esm).expect("parse Fallout inventory categories");
 
-    assert!(matches!(index.items[&loose_mod_id].kind, ItemKind::Mod { .. }));
+    assert!(matches!(
+        index.items[&loose_mod_id].kind,
+        ItemKind::Mod { .. }
+    ));
     assert!(matches!(index.items[&junk_id].kind, ItemKind::Junk));
     assert!(matches!(index.items[&misc_id].kind, ItemKind::Misc));
     assert_eq!(index.object_mod_loose_items[&0x0002_0001], loose_mod_id);

@@ -722,7 +722,10 @@ mod sink_attachment_tests {
              not merged, because `insert_missing_sinks` sees the entity \
              already has an AnimatedTextureFlip from the first clip"
         );
-        assert_eq!(entries[0].texture_slot, 0, "only the first clip's slot survives");
+        assert_eq!(
+            entries[0].texture_slot, 0,
+            "only the first clip's slot survives"
+        );
     }
 
     #[test]

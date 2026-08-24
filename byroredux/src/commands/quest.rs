@@ -19,7 +19,7 @@ use byroredux_scripting::{
     apply_effects, quest_alias_diagnostics, refresh_scene_actor_bindings,
     resolve_quest_objective_targets, resolve_quest_targets, DeferredFragmentEffects,
     QuestAliasDiagnostic, QuestAliasResolutionState, QuestFormId, QuestStatus, SceneActorBindings,
-    SceneAliasCandidate,
+    SceneAliasCandidate, ScenePackagePlayback, ScenePlayer, SceneRegistry,
 };
 
 #[derive(Default)]
@@ -449,6 +449,146 @@ impl ConsoleCommand for QuestAliasesCommand {
     }
 }
 
+pub(crate) struct SceneShowCommand;
+
+impl ConsoleCommand for SceneShowCommand {
+    fn name(&self) -> &str {
+        "scene.show"
+    }
+
+    fn description(&self) -> &str {
+        "Show a SCEN definition and its live playback/package state"
+    }
+
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let mut tokens = args.split_whitespace();
+        let Some(raw) = tokens.next() else {
+            return CommandOutput::error("usage: scene.show <formid>");
+        };
+        if tokens.next().is_some() {
+            return CommandOutput::error("usage: scene.show <formid>");
+        }
+        let Some(form_id) = parse_console_u32(raw) else {
+            return CommandOutput::error(format!("bad scene FormID `{raw}`"));
+        };
+        let Some(registry) = world.try_resource::<SceneRegistry>() else {
+            return CommandOutput::error("scene runtime unavailable");
+        };
+        let Some(definition) = registry.definition(form_id) else {
+            return CommandOutput::error(format!("unknown scene 0x{form_id:08X}"));
+        };
+        let Some(entity) = registry.scene_entity(form_id) else {
+            return CommandOutput::error(format!("scene 0x{form_id:08X} has no playback entity"));
+        };
+        let Some(player) = world.get::<ScenePlayer>(entity) else {
+            return CommandOutput::error(format!(
+                "scene 0x{form_id:08X} entity {entity} has no ScenePlayer"
+            ));
+        };
+
+        let mut lines = vec![format!(
+            "Scene 0x{form_id:08X} '{}' entity={entity}",
+            one_line_text(&definition.editor_id, 80)
+        )];
+        lines.push(format!(
+            "  quest: {} flags=0x{:08X} phases={} actors={} actions={}",
+            definition
+                .quest_form_id
+                .map_or_else(|| "none".to_string(), |quest| format!("0x{quest:08X}")),
+            definition.flags,
+            definition.phases.len(),
+            definition.actors.len(),
+            definition.actions.len(),
+        ));
+        lines.push(format!(
+            "  playback: {:?} phase={} active-actions={} completed-actions={}",
+            player.state,
+            player.current_phase,
+            player.active_actions.len(),
+            player.completed_actions.len(),
+        ));
+        if let Some(phase) = definition.phases.get(player.current_phase as usize) {
+            lines.push(format!(
+                "  current-phase: '{}' start-conditions={} completion-conditions={}",
+                one_line_text(&phase.name, 80),
+                phase.start_conditions.len(),
+                phase.completion_conditions.len(),
+            ));
+            for condition in &phase.start_conditions {
+                lines.push(format!("    start-ctda: {condition:?}"));
+            }
+            for condition in &phase.completion_conditions {
+                lines.push(format!("    completion-ctda: {condition:?}"));
+            }
+        }
+        if let (Some(quest), Some(bindings)) = (
+            definition.quest_form_id.map(QuestFormId),
+            world.try_resource::<SceneActorBindings>(),
+        ) {
+            lines.push("  actors:".to_string());
+            for actor in &definition.actors {
+                lines.push(format!(
+                    "    alias {} entity={} flags=0x{:08X} behavior=0x{:08X}",
+                    actor.actor_id,
+                    bindings
+                        .resolve(quest, actor.actor_id as i32)
+                        .map_or_else(|| "unbound".to_string(), |entity| entity.to_string()),
+                    actor.flags,
+                    actor.behavior_flags,
+                ));
+            }
+        }
+        lines.push("  authored-current-actions:".to_string());
+        for action in definition.actions.iter().filter(|action| {
+            action.start_phase <= player.current_phase && action.end_phase >= player.current_phase
+        }) {
+            lines.push(format!(
+                "    action {} type={:?} actor-alias={} range={}..={} topic={} packages={}",
+                action.index,
+                action.action_type,
+                action.actor_id,
+                action.start_phase,
+                action.end_phase,
+                action
+                    .topic_form_id
+                    .map_or_else(|| "none".to_string(), |topic| format!("0x{topic:08X}")),
+                action
+                    .packages
+                    .iter()
+                    .map(|package| format!("0x{package:08X}"))
+                    .collect::<Vec<_>>()
+                    .join(","),
+            ));
+        }
+        for action in &player.active_actions {
+            lines.push(format!(
+                "    action {} type={:?} end-phase={} remaining={:?} completed={}",
+                action.action_index,
+                action.action_type,
+                action.end_phase,
+                action.remaining_seconds,
+                action.completed,
+            ));
+        }
+        let packages = world
+            .get::<ScenePackagePlayback>(entity)
+            .map(|playback| playback.active_actions.clone())
+            .unwrap_or_default();
+        lines.push(format!("  package-actions: {}", packages.len()));
+        for action in &packages {
+            lines.push(format!(
+                "    action {} actor={} package=0x{:08X} template=0x{:08X} command={:?}",
+                action.action_index,
+                action.actor,
+                action.package_form_id,
+                action.template_form_id,
+                action.command,
+            ));
+        }
+        CommandOutput::lines(lines)
+    }
+}
+
 pub(crate) struct QuestStartCommand;
 
 impl ConsoleCommand for QuestStartCommand {
@@ -591,9 +731,11 @@ impl ConsoleCommand for QuestSetStageCommand {
 mod tests {
     use super::*;
     use byroredux_plugin::esm::records::{
-        AliasInjectedData, QuestAlias, QuestObjective, QuestStage, QustRecord,
+        AliasInjectedData, QuestAlias, QuestObjective, QuestStage, QustRecord, ScenRecord,
     };
-    use byroredux_scripting::{install_scene_quest_aliases, install_start_game_quests};
+    use byroredux_scripting::{
+        install_scene_quest_aliases, install_scene_records, install_start_game_quests,
+    };
 
     const QUEST: u32 = 0x1234;
 
@@ -707,5 +849,25 @@ mod tests {
             QuestSetStageCommand.execute(&world, "0x1234 70000").lines[0]
                 .contains("bad quest stage")
         );
+    }
+
+    #[test]
+    fn scene_show_reports_live_playback_state() {
+        let (mut world, _) = fixture();
+        install_scene_records(
+            &mut world,
+            [ScenRecord {
+                form_id: 0x5678,
+                editor_id: "DebugScene".to_string(),
+                quest_form_id: Some(QUEST),
+                ..Default::default()
+            }],
+        );
+
+        let output = SceneShowCommand.execute(&world, "0x5678").lines.join("\n");
+        assert!(output.contains("Scene 0x00005678 'DebugScene'"));
+        assert!(output.contains("quest: 0x00001234"));
+        assert!(output.contains("playback: Dormant phase=0"));
+        assert!(output.contains("package-actions: 0"));
     }
 }

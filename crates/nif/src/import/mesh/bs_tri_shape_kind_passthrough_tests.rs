@@ -18,9 +18,9 @@ use crate::blocks::tri_shape::{
     BsGeometryPerSegmentSharedData, BsGeometrySegmentData, BsGeometrySegmentSharedData,
     BsGeometrySubSegment, BsSubIndexTriShapeData, BsTriShape, BsTriShapeKind,
 };
-use std::sync::Arc;
 use crate::scene::NifScene;
 use crate::types::{BlockRef, NiPoint3};
+use std::sync::Arc;
 
 use super::super::ImportedMesh;
 use crate::blocks::base::{NiAVObjectData, NiObjectNETData};

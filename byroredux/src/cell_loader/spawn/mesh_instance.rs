@@ -1356,8 +1356,7 @@ mod tests {
             ..Default::default()
         };
 
-        let resolved =
-            resolve_mesh_paths(&mut world, &[body, crate_mesh], Some(&overlay), None);
+        let resolved = resolve_mesh_paths(&mut world, &[body, crate_mesh], Some(&overlay), None);
         assert_eq!(
             resolved[0].material_path.as_deref(),
             Some(r"materials\armor\raider\body01_variant04.bgsm"),

@@ -193,6 +193,11 @@ cargo run -- --esm Skyrim.esm --cell <editor_id> \
              --textures-bsa "Skyrim - Textures0.bsa" \
              --scripts-bsa "Skyrim - Misc.bsa"
 
+# Skyrim new game / MQ101 (Unbound). The profile supplies the vanilla mesh,
+# texture, script, sound, and voice archives and loads the two-grid opening
+# footprint containing both carts and every start marker.
+cargo run --release -- --game skyrim_se --new-game
+
 # What can I load? Headless catalogue of every interior cell (--cell) and
 # worldspace (--wrld) in the plugin set — no window, no Vulkan. The optional
 # trailing word filters case-insensitively on editor ID and display name.

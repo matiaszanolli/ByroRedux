@@ -938,8 +938,8 @@ mod tests {
     /// across a `merge_from` boundary.
     #[test]
     fn classify_fallout_inventory_kinds_restores_junk_after_omod_override_drops_it() {
-        use crate::esm::records::items::{ItemKind, ItemRecord};
         use crate::esm::records::common::CommonItemFields;
+        use crate::esm::records::items::{ItemKind, ItemRecord};
 
         const JUNK_ITEM: u32 = 0x100;
         const OMOD: u32 = 0x200;
