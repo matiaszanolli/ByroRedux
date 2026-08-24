@@ -33,7 +33,7 @@
 //! `Property`-targeted effect with no VMAD on hand, or naming a property the
 //! VMAD doesn't carry, is skipped (logged), never guessed.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use byroredux_core::ecs::components::{
@@ -1819,11 +1819,15 @@ pub fn quest_fragment_dispatch_system(world: &World) {
 
     let mut chained: Vec<QuestStageAdvanced> = Vec::new();
     let mut deferred = DeferredFragmentEffects::new(world);
-    let mut steps = 0usize;
+    let mut cascade_steps = 0usize;
     {
         let (mut stages, mut objectives) =
             world.resource_2_mut::<QuestStageState, QuestObjectiveState>();
-        let mut queue: Vec<(QuestFormId, u16)> = Vec::new();
+        // The boolean distinguishes authored ingress from a SetStage emitted
+        // by a fragment. The cascade cap must constrain only the latter: a
+        // Skyrim bootstrap can legitimately deliver hundreds of independent
+        // Start Game Enabled quest events in one tick.
+        let mut queue: VecDeque<(QuestFormId, u16, bool)> = VecDeque::new();
         // Compatibility batches mirror journal events but carry no sequence.
         // Count mirrors as a multiset: all sequenced journal commits remain in
         // order, including two legitimate identical transitions, and only the
@@ -1843,7 +1847,7 @@ pub fn quest_fragment_dispatch_system(world: &World) {
             *journal_mirrors
                 .entry((event.quest, event.previous_stage, event.new_stage))
                 .or_default() += 1;
-            queue.push((event.quest, event.new_stage));
+            queue.push_back((event.quest, event.new_stage, false));
         }
         for event in legacy_events {
             let key = (event.quest, event.previous_stage, event.new_stage);
@@ -1853,16 +1857,18 @@ pub fn quest_fragment_dispatch_system(world: &World) {
                     continue;
                 }
             }
-            queue.push((event.quest, event.new_stage));
+            queue.push_back((event.quest, event.new_stage, false));
         }
 
         if queue.is_empty() {
             return;
         }
 
-        while let Some((quest, stage)) = queue.pop() {
-            steps += 1;
-            if steps > MAX_CASCADE {
+        while let Some((quest, stage, is_cascade)) = queue.pop_front() {
+            if is_cascade {
+                cascade_steps += 1;
+            }
+            if cascade_steps > MAX_CASCADE {
                 log::warn!(
                     "quest fragment cascade exceeded {MAX_CASCADE} steps at quest {:?} stage {stage}; \
                      stopping (possible cyclic SetStage)",
@@ -1893,7 +1899,7 @@ pub fn quest_fragment_dispatch_system(world: &World) {
                 // (false positive, duplicate effect application) whenever
                 // `adv.new_stage` happened to numerically equal `stage`.
                 if adv.previous_stage != adv.new_stage {
-                    queue.push((adv.quest, adv.new_stage));
+                    queue.push_back((adv.quest, adv.new_stage, true));
                 }
                 chained.push(adv);
             }

@@ -2220,6 +2220,44 @@ fn two_same_frame_advances_for_different_quests_are_both_observed() {
 }
 
 #[test]
+fn bootstrap_batch_larger_than_cascade_cap_dispatches_every_initial_event() {
+    let world = fixture();
+    let quests = (0..=MAX_CASCADE)
+        .map(|index| QuestFormId(0x0010_0000 + index as u32))
+        .collect::<Vec<_>>();
+    {
+        let mut fragments = world.resource_mut::<QuestStageFragments>();
+        for (index, quest) in quests.iter().copied().enumerate() {
+            fragments.insert(
+                quest,
+                0,
+                vec![Effect::SetObjectiveCompleted {
+                    quest: QuestRef::SelfRef,
+                    objective: index as i32,
+                    completed: true,
+                }],
+            );
+        }
+    }
+    let advances = quests
+        .iter()
+        .copied()
+        .map(|quest| (quest, 0))
+        .collect::<Vec<_>>();
+    emit_advances(&world, &advances);
+
+    quest_fragment_dispatch_system(&world);
+
+    let objectives = world.resource::<QuestObjectiveState>();
+    for (index, quest) in quests.iter().copied().enumerate() {
+        assert!(
+            objectives.get(quest, index as i32).completed,
+            "initial event {index} was truncated by the cascade guard"
+        );
+    }
+}
+
+#[test]
 fn scene_phase_fragment_advances_its_owning_quest() {
     use byroredux_papyrus::parse_script;
     use byroredux_plugin::esm::records::script_instance::SceneFragmentEvent;
