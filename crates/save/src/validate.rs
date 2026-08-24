@@ -15,7 +15,8 @@
 use byroredux_core::animation::{AnimationClipRegistry, AnimationPlayer};
 use byroredux_core::character::CharacterLevel;
 use byroredux_core::ecs::components::{
-    Children, EquipmentSlots, EquippedWeapon, EscortState, FollowState, Inventory, Parent, Seated,
+    Children, EquipmentSlots, EquippedWeapon, EscortState, FollowState, Inventory, Material,
+    Parent, Seated,
 };
 use byroredux_core::ecs::resources::ItemInstancePool;
 use byroredux_core::ecs::storage::EntityId;
@@ -57,6 +58,9 @@ pub enum ValidationKind {
     /// "re-derived from static ESM data, write-once" now holds state that
     /// isn't actually re-derivable — see [`validate_progression_state`].
     UnsavedProgression,
+    /// A `Material` carries a non-finite (NaN/Inf) scalar — see
+    /// [`validate_material_finiteness`] and [`Material::sanitize_finite`].
+    NonFiniteMaterial,
 }
 
 /// Walk the world and collect every referential-integrity violation.
@@ -74,6 +78,7 @@ pub fn validate_world(world: &World) -> Vec<ValidationError> {
     validate_animation(world, next_entity, &mut errors);
     validate_inventory_instances(world, &mut errors);
     validate_progression_state(world, &mut errors);
+    validate_material_finiteness(world, &mut errors);
 
     errors
 }
@@ -433,6 +438,30 @@ fn validate_progression_state(world: &World, errors: &mut Vec<ValidationError>) 
     }
 }
 
+/// Every `Material` must carry only finite (non-NaN, non-±inf) scalars —
+/// see [`Material::sanitize_finite`] for why. Probes a clone rather than
+/// mutating the live world: `validate_world` takes `&World` and is meant
+/// to be a pure pre-save check, and reusing `sanitize_finite`'s own field
+/// list here (instead of re-deriving one) means a future field added to
+/// `Material` can't drift the two checks apart. #2687 (SAFE-D9-01).
+fn validate_material_finiteness(world: &World, errors: &mut Vec<ValidationError>) {
+    let Some(q) = world.query::<Material>() else {
+        return;
+    };
+    for (entity, material) in q.iter() {
+        let mut probe = material.clone();
+        if probe.sanitize_finite() {
+            errors.push(ValidationError {
+                entity,
+                kind: ValidationKind::NonFiniteMaterial,
+                detail: "Material has a non-finite (NaN/Inf) scalar field — would poison \
+                         GpuMaterial on the GPU"
+                    .to_string(),
+            });
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -580,6 +609,35 @@ mod tests {
         let mut world = World::new();
         let e = world.spawn();
         world.insert(e, CharacterLevel { level: 5, xp: 0 });
+        assert!(validate_world(&world).is_empty());
+    }
+
+    /// #2687 (SAFE-D9-01) — a `Material` with a non-finite scalar (the
+    /// shape a hand-edited/corrupted save would carry) trips the gate
+    /// rather than being written silently. A clean `Material` passes.
+    #[test]
+    fn material_with_non_finite_scalar_trips_the_gate() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(
+            e,
+            Material {
+                roughness: f32::NAN,
+                ..Material::default()
+            },
+        );
+
+        let errors = validate_world(&world);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors[0].entity, e);
+        assert_eq!(errors[0].kind, ValidationKind::NonFiniteMaterial);
+    }
+
+    #[test]
+    fn material_with_only_finite_scalars_is_clean() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, Material::default());
         assert!(validate_world(&world).is_empty());
     }
 

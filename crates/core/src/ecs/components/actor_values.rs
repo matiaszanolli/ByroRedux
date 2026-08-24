@@ -73,6 +73,14 @@ pub struct ActorValues {
 /// ActorValues remains a game-agnostic map. This companion supplies the
 /// resolved per-game Health AVIF FormID so combat never hard-codes or guesses
 /// which entry is health.
+///
+/// **`health` is a FormID, not an HP value** — despite how it reads, this is
+/// not where an actor's current/max health lives. It's stamped once at NPC
+/// spawn from static per-game AVIF data and never mutated afterward; the
+/// actual mutable health (base/damage/mods) lives in [`ActorValues`], looked
+/// up using this FormID as the key. See #3027 (SAVE-D1-2026-08-16-02) — this
+/// note exists because the name alone reads as live vital-signs state, which
+/// cost an audit pass a false "is this an oversight?" investigation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct ActorVitals {

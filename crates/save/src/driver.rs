@@ -9,7 +9,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use byroredux_core::ecs::components::FormIdComponent;
+use byroredux_core::ecs::components::{FormIdComponent, Material};
 use byroredux_core::ecs::world::World;
 use byroredux_core::form_id::{FormIdPair, FormIdPool};
 use byroredux_core::string::StringPool;
@@ -131,6 +131,30 @@ pub fn restore_world(
     for (name, _save, load) in registry.resource_entries() {
         if let Some(value) = snapshot.resources.get(name) {
             load(world, value.clone())?;
+        }
+    }
+
+    // #2687 (SAFE-D9-01) — `restore_world` is a second renderer-bound
+    // `Material` producer alongside `translate_material`, and unlike that
+    // boundary it had no NaN/Inf gate: a hand-edited or corrupted save file
+    // could carry a non-finite scalar straight into `GpuMaterial` on the
+    // next frame. Sweep every restored `Material` through
+    // `sanitize_finite()` before this function returns — see that method's
+    // doc for why this is the repair half (the save-side `validate_world`
+    // gate below is the prevention half).
+    if let Some(mut q) = world.query_mut::<Material>() {
+        let mut repaired = 0u32;
+        for (_entity, material) in q.iter_mut() {
+            if material.sanitize_finite() {
+                repaired += 1;
+            }
+        }
+        if repaired > 0 {
+            log::warn!(
+                "restore_world: repaired {repaired} Material component(s) carrying a \
+                 non-finite (NaN/Inf) scalar — save may predate a validation rule, or \
+                 was hand-edited (#2687)"
+            );
         }
     }
 

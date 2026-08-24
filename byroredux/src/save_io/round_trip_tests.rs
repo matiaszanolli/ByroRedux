@@ -746,6 +746,11 @@ fn npc_spawn_stamped_components_are_saved_or_intentionally_rederived() {
         "Inventory",
         "EquipmentSlots",
         "ActorValues",
+        // #3027 — registered (not re-derived), so it satisfies the XOR
+        // below via `saved`, not `REDERIVED_NOT_SAVED`. See the
+        // registration-site comment in `save_io.rs` for why it's still
+        // excluded from `MUTABLE_DELTA_COLUMNS`.
+        "ActorVitals",
         "FactionRanks",
         "CharacterLevel",
         "Background",
