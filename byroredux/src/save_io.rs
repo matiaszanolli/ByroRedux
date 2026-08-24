@@ -262,6 +262,20 @@ pub fn build_save_registry() -> SaveRegistry {
         // reverted every edited/permanent/temporary/damage layer to the
         // re-derived spawn base. Also a MUTABLE_DELTA_COLUMN (delta-safe).
         .register_component::<ActorValues>("ActorValues")
+        // #3027 (SAVE-D1-2026-08-16-02) — registered (so a hand load of an
+        // older save still resolves the column), but deliberately absent
+        // from `MUTABLE_DELTA_COLUMNS` below: despite the name/field
+        // reading like a live HP value, `ActorVitals.health` is a stable
+        // per-game AVIF FormID key (see the type's own doc comment,
+        // `crates/core/src/ecs/components/actor_values.rs`), stamped once
+        // at NPC spawn from static game data and never mutated at runtime
+        // — combat damage writes through `ActorValues` (already a delta
+        // column) using this FormID as the lookup key, not through this
+        // struct. Mid-session health changes already survive a reload via
+        // that path; this is write-once/re-derivable, the same shape as
+        // `CharacterLevel`/`Perks` below, just not listed in
+        // `REDERIVED_NOT_SAVED` because it's plain-registered (not the
+        // save-omitted case that allowlist tracks).
         .register_component::<ActorVitals>("ActorVitals")
         .register_component::<EquippedWeapon>("EquippedWeapon")
         .register_component::<Dead>("Dead")

@@ -929,6 +929,84 @@ impl Material {
         self.metalness = self.metalness.clamp(0.0, 1.0);
         self.roughness = self.roughness.clamp(0.04, 1.0);
     }
+
+    /// Reset every non-finite (NaN / ±inf) scalar to its
+    /// [`Material::default()`] value. `metalness`/`roughness` defer to
+    /// [`Self::resolve_pbr`] instead of a blind default, since that already
+    /// runs the keyword classifier and clamp for NaN and also normalizes
+    /// ±inf via the same clamp. Returns `true` if any field was non-finite
+    /// (and has now been repaired), `false` if the material was already
+    /// clean — callers use this to decide whether to log/reject rather than
+    /// diffing the struct themselves.
+    ///
+    /// #2687 (SAFE-D9-01) — `translate_material` is the only NIF-import
+    /// producer of a renderer-bound `Material`, and it is NaN-safe end to
+    /// end. Save/restore is a second producer with no equivalent gate: a
+    /// hand-edited or corrupted save file can carry a non-finite scalar
+    /// straight through `restore_world` into `GpuMaterial` on the next
+    /// frame — NaN/Inf feeding the GPU is undefined behavior, not just a
+    /// visual glitch. This is the *repair* half, called once per restored
+    /// `Material` (`crates/save/src/driver.rs::restore_world`); the
+    /// *prevention* half is `crates/save/src/validate.rs`'s pre-save gate
+    /// (which probes a clone with this same method rather than duplicating
+    /// the field list), refusing to persist an already-poisoned world in
+    /// the first place. Every field is reset independently — a NaN `ior`
+    /// does not take down an otherwise-valid `metalness`.
+    pub fn sanitize_finite(&mut self) -> bool {
+        let mut changed = !self.metalness.is_finite() || !self.roughness.is_finite();
+        self.resolve_pbr();
+
+        let default = Self::default();
+
+        macro_rules! fix_scalar {
+            ($field:ident) => {
+                if !self.$field.is_finite() {
+                    self.$field = default.$field;
+                    changed = true;
+                }
+            };
+        }
+        macro_rules! fix_vec {
+            ($field:ident) => {
+                for i in 0..self.$field.len() {
+                    if !self.$field[i].is_finite() {
+                        self.$field[i] = default.$field[i];
+                        changed = true;
+                    }
+                }
+            };
+        }
+
+        fix_vec!(emissive_color);
+        fix_scalar!(emissive_mult);
+        fix_vec!(specular_color);
+        fix_scalar!(specular_strength);
+        fix_vec!(diffuse_color);
+        fix_vec!(ambient_color);
+        fix_scalar!(glossiness);
+        fix_vec!(uv_offset);
+        fix_vec!(uv_scale);
+        fix_scalar!(alpha);
+        fix_scalar!(env_map_scale);
+        fix_scalar!(alpha_threshold);
+        fix_vec!(translucency_subsurface_color);
+        fix_scalar!(translucency_transmissive_scale);
+        fix_scalar!(translucency_turbulence);
+        fix_scalar!(lighting_effect_1);
+        fix_scalar!(lighting_effect_2);
+        fix_scalar!(subsurface_rolloff);
+        fix_scalar!(rimlight_power);
+        fix_scalar!(backlight_power);
+        fix_scalar!(fresnel_power);
+        fix_scalar!(grayscale_to_palette_scale);
+        fix_scalar!(ior);
+        fix_scalar!(subsurface);
+        fix_scalar!(sheen);
+        fix_scalar!(sheen_tint);
+        fix_scalar!(anisotropic);
+
+        changed
+    }
 }
 
 /// ASCII case-insensitive substring match. Zero allocations. Assumes
@@ -1566,6 +1644,69 @@ mod tests {
         m.resolve_pbr();
         assert_eq!(m.metalness, 1.0);
         assert_eq!(m.roughness, 0.04);
+    }
+
+    // ── `sanitize_finite` — #2687 (SAFE-D9-01), the save/restore boundary's
+    //   NaN/Inf gate (repair half; `crates/save/src/validate.rs`'s
+    //   pre-save check is the prevention half, via a clone-and-probe of
+    //   this same method).
+
+    #[test]
+    fn sanitize_finite_repairs_metalness_and_roughness_via_resolve_pbr() {
+        let mut m = Material {
+            texture_path: Some(r"Textures\Weapons\Iron\IronSword.dds".to_string()),
+            metalness: f32::NAN,
+            roughness: f32::INFINITY,
+            ..Material::default()
+        };
+        assert!(m.sanitize_finite());
+        assert!(m.metalness.is_finite());
+        assert!(m.roughness.is_finite());
+        assert!(m.roughness <= 1.0, "resolve_pbr's clamp catches the +inf");
+    }
+
+    #[test]
+    fn sanitize_finite_resets_other_scalars_to_default_independently() {
+        // A poisoned `ior` must not disturb an otherwise-valid `alpha`,
+        // and vice versa — every field is checked and reset on its own.
+        let mut m = Material {
+            ior: f32::NAN,
+            alpha: 0.42,
+            ..Material::default()
+        };
+        assert!(m.sanitize_finite());
+        assert_eq!(m.ior, Material::default().ior);
+        assert_eq!(m.alpha, 0.42, "a valid field must survive the sweep untouched");
+    }
+
+    #[test]
+    fn sanitize_finite_resets_a_poisoned_vec3_component_only() {
+        let mut m = Material {
+            specular_color: [1.0, f32::NAN, 0.5],
+            ..Material::default()
+        };
+        assert!(m.sanitize_finite());
+        let default_specular = Material::default().specular_color;
+        assert_eq!(m.specular_color[0], 1.0, "clean component untouched");
+        assert_eq!(m.specular_color[1], default_specular[1]);
+        assert_eq!(m.specular_color[2], 0.5, "clean component untouched");
+    }
+
+    #[test]
+    fn sanitize_finite_is_a_noop_on_an_already_clean_material() {
+        let mut m = Material::default();
+        assert!(!m.sanitize_finite());
+        assert_eq!(m.diffuse_color, Material::default().diffuse_color);
+    }
+
+    #[test]
+    fn sanitize_finite_handles_negative_infinity_too() {
+        let mut m = Material {
+            fresnel_power: f32::NEG_INFINITY,
+            ..Material::default()
+        };
+        assert!(m.sanitize_finite());
+        assert!(m.fresnel_power.is_finite());
     }
 
     /// #2591 (SKY-D7-03) — either a black color or a zero multiplier

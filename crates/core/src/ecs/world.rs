@@ -6,6 +6,31 @@
 //! The `RwLock` enables query methods to take `&self` instead of `&mut self`,
 //! so multiple queries can be held simultaneously across different component
 //! types without fighting the borrow checker.
+//!
+//! ## House rule: snapshot before you iterate
+//!
+//! A system that reads one or more storages/resources and then, per entity,
+//! calls into a shared helper that itself acquires storages/resources should
+//! copy what it needs into an owned local (a `Vec`, a `HashMap`, a `Copy`
+//! struct) and drop its own guards *before* the per-entity loop — not hold
+//! them across the call into the helper. Two guards on the same `RwLock`
+//! read-locked simultaneously on one thread is the textbook recursive-read
+//! hazard (`std::sync::RwLock` is write-preferring, so it can park behind a
+//! queued writer that is itself waiting on the guard you're still holding);
+//! nested acquisition of *different* locks in an order that varies by call
+//! site is the general ABBA case. Both are avoided by simply not being in
+//! the storage when the helper runs.
+//!
+//! This isn't enforced by the type system — [`RwLock`] will happily let you
+//! hold a guard across an arbitrary call — so it's a convention, not a
+//! guarantee. Established examples: `physics_sync_system`'s
+//! `collect_newcomers` phase (`crates/physics/src/sync.rs`) snapshots into an
+//! owned `Vec` and returns before any write guard opens; the M42
+//! AI-procedure systems (`follow.rs`/`escort.rs`/etc., per #2134) do the
+//! same for their per-entity physics reads; `scene_playback_system`
+//! (`crates/scripting/src/scene/playback.rs`) collects `SceneStartRequest`/
+//! `SceneStopRequest`/`SceneActionCompletionBatch` into owned locals via
+//! `snapshot_entities` before touching anything else. #2270.
 
 use super::lock_tracker;
 use super::query::{ComponentRef, QueryRead, QueryWrite};
