@@ -450,7 +450,6 @@ pub fn load_cell_with_masters(
     // height directly; the water material comes from the global
     // WATR record table.
     if let Some(water_height) = cell.water_height {
-        let mut _blas_dummy: Vec<(u32, u32, u32)> = Vec::new();
         let (water_center, water_half_extent) = water::interior_water_placement(
             cell.references.iter().map(|reference| reference.position),
         );
@@ -473,7 +472,6 @@ pub fn load_cell_with_masters(
             water_center,
             water_half_extent,
             None,
-            &mut _blas_dummy,
         )
         .is_none()
         {

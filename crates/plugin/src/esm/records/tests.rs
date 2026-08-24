@@ -703,10 +703,10 @@ fn parse_real_fnv_esm_record_counts() {
     // percent below the observed count so DLC patches stay green.
     //
     // Observed on FalloutNV.esm:
-    //   WATR=78, NAVI=1, NAVM=0 (NAVM entries live nested under
-    //   CELL children groups on FO3/FNV, not at top level — a
-    //   follow-up can walk those if needed), REGN=276, ECZN=17,
-    //   LGTM=31, HDPT=61, EYES=12, HAIR=67.
+    //   WATR=78, NAVI=1, NAVM=4771 (the per-cell NAVM drain landed in
+    //   #1272; pre-fix this counted 0 because NAVM entries live nested
+    //   under CELL children groups on FO3/FNV, not at top level),
+    //   REGN=276, ECZN=17, LGTM=31, HDPT=61, EYES=12, HAIR=67.
     eprintln!(
         "FNV misc: {} water, {} navi, {} navm, {} region, {} eczn, \
          {} lgtm, {} hdpt, {} eyes, {} hair",
@@ -730,6 +730,14 @@ fn parse_real_fnv_esm_record_counts() {
         1,
         "expected exactly 1 NAVI master (FNV ships one), got {}",
         index.navi_info.len()
+    );
+    // #2341 / NAVM-01 — a real assertion in place of the eprintln-only
+    // count, so a regression in the per-cell NAVM drain (#1272) is
+    // actually caught instead of only visible with --nocapture.
+    assert!(
+        index.navmeshes.len() >= 4000,
+        "expected ≥4000 NAVM navmeshes, got {}",
+        index.navmeshes.len()
     );
     assert!(
         index.regions.len() >= 200,

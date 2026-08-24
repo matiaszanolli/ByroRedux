@@ -1363,7 +1363,6 @@ impl ExteriorCellApplyJob {
                 water_center,
                 half,
                 cell.landscape.as_ref(),
-                blas_sink,
             )
             .is_none()
             {
