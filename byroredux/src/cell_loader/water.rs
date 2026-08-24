@@ -357,7 +357,6 @@ pub(super) fn spawn_water_plane(
     cell_origin_world_xz: (f32, f32),
     half_extent: f32,
     terrain: Option<&esm::cell::LandscapeData>,
-    blas_specs: &mut Vec<(u32, u32, u32)>,
 ) -> Option<usize> {
     // ── Resolve WATR → engine WaterMaterial (EXAL boundary) ──
     let (mut material, mut kind, mut flow, normal_texture_path, noise_texture_paths) =
@@ -427,10 +426,6 @@ pub(super) fn spawn_water_plane(
             return None;
         }
     };
-    // Suppress unused warning when ray tracing is on — water never
-    // adds a BLAS entry, but other spawn helpers in the same call
-    // chain accumulate into the same vec.
-    let _ = blas_specs;
 
     // Texture resolve — the water material's normal_map_index points
     // here. When the WATR record's TNAM is unset (e.g., default

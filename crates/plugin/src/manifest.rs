@@ -70,8 +70,6 @@ struct RawPlugin {
 #[derive(Deserialize)]
 struct RawDependency {
     uuid: uuid::Uuid,
-    #[allow(dead_code)]
-    name: Option<String>,
 }
 
 #[cfg(test)]
