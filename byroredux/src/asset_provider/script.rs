@@ -149,6 +149,65 @@ pub(crate) fn populate_quest_fragments(
     }
 }
 
+/// Populate lowered `SCEN` lifecycle fragments from the compiled `SF_` scripts
+/// referenced by each scene's VMAD fragment table.
+fn populate_scene_fragments(
+    world: &mut byroredux_core::ecs::world::World,
+    index: &byroredux_plugin::esm::records::EsmIndex,
+) -> usize {
+    let have_archive = world
+        .try_resource::<ScriptProvider>()
+        .is_some_and(|provider| !provider.is_empty());
+    if !have_archive {
+        return 0;
+    }
+
+    let mut total = 0;
+    for (&scene_form_id, scene) in &index.scenes {
+        let Some(quest_form_id) = scene.quest_form_id else {
+            continue;
+        };
+        if scene.fragments.is_empty() {
+            continue;
+        }
+        let mut by_script: std::collections::HashMap<
+            &str,
+            Vec<(
+                byroredux_plugin::esm::records::script_instance::SceneFragmentEvent,
+                &str,
+            )>,
+        > = std::collections::HashMap::new();
+        for fragment in &scene.fragments {
+            by_script
+                .entry(fragment.script_name.as_str())
+                .or_default()
+                .push((fragment.event, fragment.fragment_name.as_str()));
+        }
+        for (script_name, bindings) in by_script {
+            let bytes = {
+                let provider = world.resource::<ScriptProvider>();
+                provider.extract_pex(script_name)
+            };
+            let Some(bytes) = bytes else {
+                log::trace!(
+                    "scene-fragment: .pex '{script_name}' not in archive (scene {scene_form_id:08X})"
+                );
+                continue;
+            };
+            let mut fragments = world.resource_mut::<byroredux_scripting::SceneFragments>();
+            total += byroredux_scripting::populate_scene_fragments_from_pex(
+                &mut fragments,
+                scene_form_id,
+                byroredux_scripting::QuestFormId(quest_form_id),
+                scene.script_instance.as_ref(),
+                &bytes,
+                &bindings,
+            );
+        }
+    }
+    total
+}
+
 /// Install every parsed Skyrim+ `SCEN` definition and its referenced
 /// `DIAL`/`INFO` topics into the ECS runtime.
 ///
@@ -333,6 +392,12 @@ pub(crate) fn populate_scene_runtime(
         let count =
             byroredux_scripting::install_scene_records(world, index.scenes.values().cloned());
         log::info!("Installed {count} SCEN definitions into the ECS scene runtime");
+        let fragment_count = populate_scene_fragments(world, index);
+        if fragment_count > 0 {
+            log::info!(
+                "Populated {fragment_count} lowered SCEN lifecycle fragments from compiled scripts"
+            );
+        }
     }
 }
 

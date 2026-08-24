@@ -1994,3 +1994,54 @@ fn two_same_frame_advances_for_different_quests_are_both_observed() {
         "the SECOND same-frame advance must not be lost"
     );
 }
+
+#[test]
+fn scene_phase_fragment_advances_its_owning_quest() {
+    use byroredux_papyrus::parse_script;
+    use byroredux_plugin::esm::records::script_instance::SceneFragmentEvent;
+
+    let (script, errors) = parse_script(
+        "ScriptName SF_TestScene_00000100 extends Scene\n\
+         Function Fragment_0()\n Self.GetOwningQuest().SetStage(14)\n EndFunction\n",
+    )
+    .expect("scene fragment script parses");
+    assert!(errors.is_empty(), "{errors:?}");
+
+    let mut world = fixture();
+    world.resource_mut::<QuestStageState>().start_quest(Q, None);
+    let event = SceneFragmentEvent::PhaseCompletion { phase_index: 5 };
+    let inserted = {
+        let mut fragments = world.resource_mut::<SceneFragments>();
+        populate_scene_fragments_from_script(
+            &mut fragments,
+            0x100,
+            Q,
+            None,
+            &script,
+            &[(event, "Fragment_0")],
+        )
+    };
+    assert_eq!(inserted, 1);
+
+    let scene_entity = world.spawn();
+    world.insert(
+        scene_entity,
+        crate::scene::SceneFragmentInvocationBatch(vec![crate::scene::SceneFragmentInvocation {
+            scene_form_id: 0x100,
+            event,
+            script_name: "SF_TestScene_00000100".to_owned(),
+            fragment_name: "Fragment_0".to_owned(),
+        }]),
+    );
+    scene_fragment_dispatch_system(&world, 0.0);
+
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 14);
+    let player = world.resource::<PlayerEntity>().0;
+    let query = world.query::<QuestStageAdvancedBatch>().unwrap();
+    let batch = query
+        .get(player)
+        .expect("scene SetStage compatibility batch");
+    assert_eq!(batch.0.len(), 1);
+    assert_eq!(batch.0[0].quest, Q);
+    assert_eq!(batch.0[0].new_stage, 14);
+}

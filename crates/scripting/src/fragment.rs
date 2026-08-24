@@ -42,7 +42,9 @@ use byroredux_core::ecs::components::{
 use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::world::World;
-use byroredux_plugin::esm::records::script_instance::{PropertyValue, ScriptInstanceData};
+use byroredux_plugin::esm::records::script_instance::{
+    PropertyValue, SceneFragmentEvent, ScriptInstanceData,
+};
 
 use crate::quest_stages::{
     QuestFormId, QuestObjectiveState, QuestStageAdvanced, QuestStageAdvancedBatch, QuestStageState,
@@ -98,6 +100,57 @@ impl QuestStageFragments {
     }
 
     /// Number of registered stage fragments.
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+}
+
+/// Lowered Papyrus fragments attached to authored `SCEN` lifecycle events.
+///
+/// A scene event has at most one fragment binding in the VMAD format, so the
+/// canonical key is `(scene FormID, event)`. The value retains the owning
+/// quest and scene VMAD property table needed by the shared effect executor.
+#[derive(Debug, Clone, Default)]
+pub struct SceneFragments {
+    map: Arc<HashMap<(u32, SceneFragmentEvent), SceneFragmentEffects>>,
+}
+
+impl Resource for SceneFragments {}
+
+#[derive(Debug, Clone)]
+struct SceneFragmentEffects {
+    context: QuestFormId,
+    vmad: Option<ScriptInstanceData>,
+    effects: Vec<Effect>,
+}
+
+impl SceneFragments {
+    pub fn insert(
+        &mut self,
+        scene_form_id: u32,
+        event: SceneFragmentEvent,
+        context: QuestFormId,
+        vmad: Option<ScriptInstanceData>,
+        effects: Vec<Effect>,
+    ) {
+        Arc::make_mut(&mut self.map).insert(
+            (scene_form_id, event),
+            SceneFragmentEffects {
+                context,
+                vmad,
+                effects,
+            },
+        );
+    }
+
+    fn get(&self, scene_form_id: u32, event: SceneFragmentEvent) -> Option<&SceneFragmentEffects> {
+        self.map.get(&(scene_form_id, event))
+    }
+
     pub fn len(&self) -> usize {
         self.map.len()
     }
@@ -1330,6 +1383,7 @@ pub fn register(world: &mut World) {
     world.register::<Inventory>();
     world.register::<EquipmentSlots>();
     world.insert_resource(QuestStageFragments::default());
+    world.insert_resource(SceneFragments::default());
     world.insert_resource(FragmentExecutionQueue::default());
     world.insert_resource(PendingFragmentActivations::default());
     world.insert_resource(QuestObjectiveState::default());
@@ -1500,6 +1554,134 @@ pub fn populate_quest_fragments_from_script(
         }
     }
     inserted
+}
+
+/// Decompile and lower the lifecycle fragments for one authored scene.
+/// Scene fragments use the same conservative effect vocabulary and property
+/// resolution as quest-stage fragments; any function containing an unknown
+/// operation is declined as a whole.
+pub fn populate_scene_fragments_from_pex(
+    frags: &mut SceneFragments,
+    scene_form_id: u32,
+    context: QuestFormId,
+    vmad: Option<&ScriptInstanceData>,
+    pex_bytes: &[u8],
+    bindings: &[(SceneFragmentEvent, &str)],
+) -> usize {
+    let pex = match byroredux_pex::parse(pex_bytes) {
+        Ok(pex) => pex,
+        Err(error) => {
+            log::debug!(
+                "populate_scene_fragments: .pex parse failed (scene {scene_form_id:08X}): {error}"
+            );
+            return 0;
+        }
+    };
+    let script = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        byroredux_pex::decompile::decompile_script(&pex)
+    })) {
+        Ok(Ok(script)) => script,
+        Ok(Err(error)) => {
+            log::debug!(
+                "populate_scene_fragments: decompile failed (scene {scene_form_id:08X}): {error}"
+            );
+            return 0;
+        }
+        Err(_) => {
+            log::debug!("populate_scene_fragments: decompile panicked (scene {scene_form_id:08X})");
+            return 0;
+        }
+    };
+    populate_scene_fragments_from_script(frags, scene_form_id, context, vmad, &script, bindings)
+}
+
+/// AST half of [`populate_scene_fragments_from_pex`], exposed for focused
+/// conformance tests without requiring compiled game-data fixtures.
+pub fn populate_scene_fragments_from_script(
+    frags: &mut SceneFragments,
+    scene_form_id: u32,
+    context: QuestFormId,
+    vmad: Option<&ScriptInstanceData>,
+    script: &Script,
+    bindings: &[(SceneFragmentEvent, &str)],
+) -> usize {
+    let quest_properties = quest_property_names(script);
+    let mut inserted = 0;
+    for (event, fragment_name) in bindings {
+        let Some(body) = function_body(script, fragment_name) else {
+            log::debug!(
+                "populate_scene_fragments: fn '{fragment_name}' absent in scene {scene_form_id:08X} .pex"
+            );
+            continue;
+        };
+        if let Some(effects) = lower_fragment_with_quest_properties(body, &quest_properties) {
+            if !effects.is_empty() {
+                frags.insert(scene_form_id, *event, context, vmad.cloned(), effects);
+                inserted += 1;
+            }
+        }
+    }
+    inserted
+}
+
+/// Execute the lowered Papyrus fragments emitted by scene playback this
+/// frame. Quest advances enter the canonical journal immediately, allowing
+/// the later quest-fragment dispatcher to cascade the corresponding QUST
+/// fragment in the same update.
+pub fn scene_fragment_dispatch_system(world: &World, _dt: f32) {
+    let invocations: Vec<crate::scene::SceneFragmentInvocation> = world
+        .query::<crate::scene::SceneFragmentInvocationBatch>()
+        .map(|query| {
+            query
+                .iter()
+                .flat_map(|(_, batch)| batch.0.iter().cloned())
+                .collect()
+        })
+        .unwrap_or_default();
+    if invocations.is_empty() {
+        return;
+    }
+    let fragments = world.resource::<SceneFragments>().clone();
+    if fragments.is_empty() {
+        return;
+    }
+
+    let mut advances = Vec::new();
+    let mut deferred = DeferredFragmentEffects::new(world);
+    {
+        let (mut stages, mut objectives) =
+            world.resource_2_mut::<QuestStageState, QuestObjectiveState>();
+        for invocation in invocations {
+            let Some(fragment) = fragments.get(invocation.scene_form_id, invocation.event) else {
+                continue;
+            };
+            advances.extend(apply_effects(
+                &fragment.effects,
+                fragment.context,
+                fragment.vmad.as_ref(),
+                world,
+                &mut stages,
+                &mut objectives,
+                &mut deferred,
+            ));
+        }
+    }
+    deferred.apply(world);
+    if advances.is_empty() {
+        return;
+    }
+
+    let Some(player) = world.try_resource::<crate::papyrus_demo::PlayerEntity>() else {
+        return;
+    };
+    let Some(mut batches) = world.query_mut::<QuestStageAdvancedBatch>() else {
+        return;
+    };
+    if let Some(batch) = batches.get_mut(player.0) {
+        batch.0.extend(advances);
+    } else {
+        batches.insert(player.0, QuestStageAdvancedBatch(advances));
+    }
 }
 
 /// Consume [`QuestStageAdvanced`] markers and run the matching

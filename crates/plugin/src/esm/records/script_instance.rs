@@ -371,7 +371,7 @@ pub fn parse_quest_fragments(vmad: &[u8]) -> Vec<QuestScriptFragment> {
 /// header. Phase fragments carry both an event flag and an authored phase
 /// index. Unknown values are retained so later game-version work can inspect
 /// them without changing the parser's recover-don't-crash contract.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SceneFragmentEvent {
     Begin,
     End,

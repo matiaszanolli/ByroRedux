@@ -873,6 +873,13 @@ pub(crate) fn build_scheduler() -> Scheduler {
     // advances. Phase conditions affected by those fragments are retried on
     // the following tick.
     scheduler.add_exclusive(Stage::Update, byroredux_scripting::scene_playback_system);
+    // Execute SCEN VMAD begin/end/phase fragments immediately after playback
+    // emits them. Any SetStage effect enters the canonical quest journal for
+    // the quest-fragment dispatcher later in this same update.
+    scheduler.add_exclusive(
+        Stage::Update,
+        byroredux_scripting::scene_fragment_dispatch_system,
+    );
     // M42.9 / #2652 — ambient packages observe EvaluatePackageRequest before
     // the SCEN package system drains the transient marker. Time-driven checks
     // are bounded to one pass per in-game minute inside the system.
