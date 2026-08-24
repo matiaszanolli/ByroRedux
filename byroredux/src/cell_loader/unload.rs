@@ -1,6 +1,6 @@
 //! Cell teardown — despawn entities + free GPU resources.
 
-use byroredux_core::ecs::components::{Inventory, ItemInstanceId};
+use byroredux_core::ecs::components::{CellRoot, Children, Inventory, ItemInstanceId};
 use byroredux_core::ecs::resources::ItemInstancePool;
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{MeshHandle, TextureHandle, World};
@@ -11,6 +11,42 @@ use std::time::{Duration, Instant};
 use crate::components::{
     CellRootIndex, MaterialTextureHandles, NormalMapHandle, TerrainTileSlot, WaterNoiseMapHandles,
 };
+
+/// Active native vehicle chains have crossed their source cell boundary by
+/// design. Promote their roots and complete render hierarchies out of cell
+/// ownership so exterior streaming cannot despawn a moving cinematic.
+fn cinematic_retained_entities(world: &World) -> HashSet<EntityId> {
+    let mut retained = HashSet::new();
+    if let Some(tethers) = world.query::<byroredux_scripting::HorseTetherState>() {
+        for (cart, tether) in tethers.iter() {
+            retained.insert(cart);
+            retained.insert(tether.horse);
+        }
+    }
+    if let Some(states) = world.query::<byroredux_scripting::ActorCinematicState>() {
+        for (actor, state) in states.iter() {
+            if let Some(vehicle) = state.vehicle {
+                retained.insert(actor);
+                retained.insert(vehicle);
+            }
+        }
+    }
+    let Some(children) = world.query::<Children>() else {
+        return retained;
+    };
+    let mut stack: Vec<_> = retained.iter().copied().collect();
+    while let Some(parent) = stack.pop() {
+        let Some(row) = children.get(parent) else {
+            continue;
+        };
+        for &child in &row.0 {
+            if retained.insert(child) {
+                stack.push(child);
+            }
+        }
+    }
+    retained
+}
 
 /// Bounded phase timings for one logical cell-unload batch.
 ///
@@ -100,10 +136,19 @@ fn unload_cell_inner(
     // lookup O(victims). If the resource is absent (test fixtures that
     // don't register it) or the cell isn't tracked, fall through with
     // an empty victim set — `unload_cell` is idempotent.
-    let victims: Vec<EntityId> = world
+    let mut victims: Vec<EntityId> = world
         .try_resource_mut::<CellRootIndex>()
         .and_then(|mut idx| idx.map.remove(&cell_root))
         .unwrap_or_default();
+    let retained = cinematic_retained_entities(world);
+    victims.retain(|entity| !retained.contains(entity));
+    if !retained.is_empty() {
+        if let Some(mut roots) = world.query_mut::<CellRoot>() {
+            for entity in retained {
+                roots.remove(entity);
+            }
+        }
+    }
     timings.ownership_index = phase_started.elapsed();
 
     // Collect every GPU handle the victims hold (mesh / texture /
@@ -529,4 +574,48 @@ pub(super) fn queue_skin_unload_victims<F>(
     }
     let victim_set: std::collections::HashSet<EntityId> = victims.iter().copied().collect();
     failed.retain(|eid| !victim_set.contains(eid));
+}
+
+#[cfg(test)]
+mod cinematic_retention_tests {
+    use super::*;
+    use byroredux_core::math::{Quat, Vec3};
+    use byroredux_scripting::{ActorCinematicState, HorseTetherState};
+
+    #[test]
+    fn active_tether_retains_horse_cart_rider_and_hierarchy() {
+        let mut world = World::new();
+        world.register::<Children>();
+        world.register::<HorseTetherState>();
+        world.register::<ActorCinematicState>();
+        let horse = world.spawn();
+        let bone = world.spawn();
+        let cart = world.spawn();
+        let rider = world.spawn();
+        let unrelated = world.spawn();
+        world.insert(horse, Children(vec![bone]));
+        world.insert(
+            cart,
+            HorseTetherState {
+                horse,
+                horse_local_translation: Vec3::ZERO,
+                horse_local_rotation: Quat::IDENTITY,
+                route_target_form_id: None,
+            },
+        );
+        world.insert(
+            rider,
+            ActorCinematicState {
+                vehicle: Some(cart),
+                ..Default::default()
+            },
+        );
+
+        let retained = cinematic_retained_entities(&world);
+        assert!(retained.contains(&horse));
+        assert!(retained.contains(&bone));
+        assert!(retained.contains(&cart));
+        assert!(retained.contains(&rider));
+        assert!(!retained.contains(&unrelated));
+    }
 }

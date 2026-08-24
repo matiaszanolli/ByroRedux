@@ -135,13 +135,13 @@ impl Component for AnimationTextKeyEvents {
 /// exactly one frame (without the drain a re-evaluating consumer such as
 /// `quest_advance_system` would re-fire every frame).
 /// Tests can synthesize via `world.query_mut::<OnTriggerEnterEvent>()
-/// .insert(trigger_entity, OnTriggerEnterEvent { triggerer })`.
-#[derive(Debug, Clone, Copy)]
+/// .insert(trigger_entity, OnTriggerEnterEvent { triggerers: vec![triggerer] })`.
+#[derive(Debug, Clone)]
 pub struct OnTriggerEnterEvent {
-    /// The entity that crossed into the trigger volume — Papyrus's
-    /// `akActionRef` parameter. Typically the player; could be an
-    /// NPC if the trigger covers a patrol path.
-    pub triggerer: EntityId,
+    /// Every entity that crossed into the trigger volume this frame — one
+    /// Papyrus `akActionRef` delivery per entry. Convoys can move several
+    /// attached actors across the same volume in a single tick.
+    pub triggerers: Vec<EntityId>,
 }
 
 impl Component for OnTriggerEnterEvent {

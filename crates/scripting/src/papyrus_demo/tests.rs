@@ -481,7 +481,9 @@ fn on_trigger_enter_event_and_on_equip_event_storages_registered() {
         let mut q = world.query_mut::<crate::OnTriggerEnterEvent>().unwrap();
         q.insert(
             trigger_volume,
-            crate::OnTriggerEnterEvent { triggerer: player },
+            crate::OnTriggerEnterEvent {
+                triggerers: vec![player],
+            },
         );
     }
     assert!(world.has::<crate::OnTriggerEnterEvent>(trigger_volume));

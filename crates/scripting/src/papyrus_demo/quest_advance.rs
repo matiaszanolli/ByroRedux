@@ -86,6 +86,8 @@ use byroredux_core::ecs::sparse_set::SparseSetStorage;
 use byroredux_core::ecs::storage::Component;
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::world::World;
+use byroredux_core::ecs::Resource;
+use byroredux_core::math::Vec3;
 use std::collections::HashSet;
 
 use byroredux_plugin::esm::records::condition::{
@@ -127,10 +129,73 @@ pub struct QuestAdvanceOnActivate {
     /// idiom via [`ActivatorGate::PlayerOnly`]; future expansion
     /// can cover faction / NPC-specific gates).
     pub activator_gate: ActivatorGate,
+    /// Remove this trigger behavior after its first passing advance. Mirrors
+    /// the vanilla `disableWhenDone` / `onlyOnce` trigger-script options.
+    pub disable_after_advance: bool,
 }
 
 impl Component for QuestAdvanceOnActivate {
     type Storage = SparseSetStorage<Self>;
+}
+
+/// Lightweight process-lifetime catalog for actor-specific trigger scripts
+/// whose cells are not currently resident. The logical trigger entity owns
+/// the same [`QuestAdvanceOnActivate`] component as a streamed REFR; its
+/// authored position lets cinematic locomotion reach and signal it without
+/// keeping the cell's render/physics payload loaded.
+#[derive(Debug, Clone, Copy)]
+pub struct QuestTriggerApproach {
+    pub reference_form_id: u32,
+    pub trigger_entity: EntityId,
+    pub center: Vec3,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct QuestTriggerApproachRegistry {
+    entries: Vec<QuestTriggerApproach>,
+}
+
+impl Resource for QuestTriggerApproachRegistry {}
+
+impl QuestTriggerApproachRegistry {
+    pub fn entries(&self) -> &[QuestTriggerApproach] {
+        &self.entries
+    }
+}
+
+/// Install one static trigger-script entry and its logical ECS source.
+pub fn install_quest_trigger_approach(
+    world: &mut World,
+    reference_form_id: u32,
+    center: Vec3,
+    advance: QuestAdvanceOnActivate,
+) -> EntityId {
+    if world
+        .try_resource::<QuestTriggerApproachRegistry>()
+        .is_none()
+    {
+        world.insert_resource(QuestTriggerApproachRegistry::default());
+    }
+    if let Some(existing) = world
+        .resource::<QuestTriggerApproachRegistry>()
+        .entries
+        .iter()
+        .find(|entry| entry.reference_form_id == reference_form_id)
+        .copied()
+    {
+        return existing.trigger_entity;
+    }
+    let trigger_entity = world.spawn();
+    world.insert(trigger_entity, advance);
+    world
+        .resource_mut::<QuestTriggerApproachRegistry>()
+        .entries
+        .push(QuestTriggerApproach {
+            reference_form_id,
+            trigger_entity,
+            center,
+        });
+    trigger_entity
 }
 
 /// Activator gate — Papyrus's `If akActionRef == Game.GetPlayer()`
@@ -151,6 +216,8 @@ pub enum ActivatorGate {
     /// Only the player (resolved via [`super::PlayerEntity`]) can
     /// activate. Matches MG07 / TG05 patterns.
     PlayerOnly,
+    /// Only a placed actor whose canonical NPC/creature base matches.
+    BaseForm(u32),
 }
 
 /// Helper: build the DA10MainDoorScript-equivalent component with
@@ -191,6 +258,7 @@ pub fn da10_main_door(owning_quest: QuestFormId) -> QuestAdvanceOnActivate {
         target_stage: 40,
         // DA10's source has no player gate.
         activator_gate: ActivatorGate::Any,
+        disable_after_advance: false,
     }
 }
 
@@ -199,6 +267,12 @@ pub fn da10_main_door(owning_quest: QuestFormId) -> QuestAdvanceOnActivate {
 pub fn register(world: &mut World) {
     world.register::<QuestAdvanceOnActivate>();
     world.register::<QuestStageAdvancedBatch>();
+    if world
+        .try_resource::<QuestTriggerApproachRegistry>()
+        .is_none()
+    {
+        world.insert_resource(QuestTriggerApproachRegistry::default());
+    }
 }
 
 /// Translation of the `OnActivate` / `OnTriggerEnter` event-handler body.
@@ -280,7 +354,7 @@ pub fn quest_advance_system(world: &World) {
     if let Some(events) = world.query::<OnTriggerEnterEvent>() {
         for (entity, ev) in events.iter() {
             if signalled.insert(entity) {
-                triggered.push((entity, ev.triggerer));
+                triggered.extend(ev.triggerers.iter().map(|triggerer| (entity, *triggerer)));
             }
         }
     }
@@ -288,8 +362,10 @@ pub fn quest_advance_system(world: &World) {
     // Two-phase: collect (read), apply (write). Releases the
     // QuestStageState read borrow before we acquire the write.
     struct PendingAdvance {
+        source: EntityId,
         quest: QuestFormId,
         target_stage: u16,
+        disable_after_advance: bool,
     }
     let mut pending: Vec<PendingAdvance> = Vec::new();
     for (entity, triggerer) in triggered {
@@ -298,7 +374,20 @@ pub fn quest_advance_system(world: &World) {
         };
         // Activator gate — the entity that triggered (activator /
         // triggerer) must be the player when the gate is PlayerOnly.
-        if matches!(comp.activator_gate, ActivatorGate::PlayerOnly) && triggerer != player_entity {
+        let gate_passes = match comp.activator_gate {
+            ActivatorGate::Any => true,
+            ActivatorGate::PlayerOnly => triggerer == player_entity,
+            ActivatorGate::BaseForm(base_form_id) => world
+                .get::<crate::scene::SceneAliasCandidate>(triggerer)
+                .is_some_and(|identity| identity.base_form_id == base_form_id),
+        };
+        if !gate_passes {
+            log::debug!(
+                "quest advance source={entity} triggerer={triggerer} quest=0x{:08X} target={} gate={:?} passes=false",
+                comp.owning_quest.0,
+                comp.target_stage,
+                comp.activator_gate,
+            );
             continue;
         }
         // M47.1 — stage predicates evaluated through the generic
@@ -310,10 +399,19 @@ pub fn quest_advance_system(world: &World) {
         // but the same code path covers HasPerk-or-FactionRank
         // disjunctions, multi-condition gates, etc.
         let ctx = ConditionContext::for_subject(entity);
-        if evaluate_condition_list(&comp.conditions, world, &ctx) {
+        let conditions_pass = evaluate_condition_list(&comp.conditions, world, &ctx);
+        log::debug!(
+            "quest advance source={entity} triggerer={triggerer} quest=0x{:08X} target={} gate={:?} passes=true conditions={conditions_pass}",
+            comp.owning_quest.0,
+            comp.target_stage,
+            comp.activator_gate,
+        );
+        if conditions_pass {
             pending.push(PendingAdvance {
+                source: entity,
                 quest: comp.owning_quest,
                 target_stage: comp.target_stage,
+                disable_after_advance: comp.disable_after_advance,
             });
         }
     }
@@ -330,6 +428,7 @@ pub fn quest_advance_system(world: &World) {
     // the previous-stage is useful for "what changed" inspections
     // and the future fragment dispatcher.
     let mut advances_emitted: Vec<QuestStageAdvanced> = Vec::with_capacity(pending.len());
+    let mut disable_sources = Vec::new();
     {
         let mut stage_state = world.resource_mut::<QuestStageState>();
         for p in pending {
@@ -339,6 +438,16 @@ pub fn quest_advance_system(world: &World) {
                 previous_stage: prev,
                 new_stage: p.target_stage,
             });
+            if p.disable_after_advance {
+                disable_sources.push(p.source);
+            }
+        }
+    }
+    if !disable_sources.is_empty() {
+        if let Some(mut components) = world.query_mut::<QuestAdvanceOnActivate>() {
+            for entity in disable_sources {
+                components.remove(entity);
+            }
         }
     }
 

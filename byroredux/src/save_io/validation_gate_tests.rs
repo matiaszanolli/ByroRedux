@@ -84,6 +84,7 @@ fn dangling_horse_tether_reference_is_rejected() {
             horse: 999, // never spawned
             horse_local_translation: Vec3::ZERO,
             horse_local_rotation: Quat::IDENTITY,
+            route_target_form_id: None,
         },
     );
 
@@ -109,6 +110,7 @@ fn live_horse_tether_reference_passes() {
             horse,
             horse_local_translation: Vec3::ZERO,
             horse_local_rotation: Quat::IDENTITY,
+            route_target_form_id: None,
         },
     );
 

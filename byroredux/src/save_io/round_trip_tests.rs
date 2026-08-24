@@ -672,6 +672,7 @@ fn cinematic_trio_survives_save_load_round_trip() {
             horse,
             horse_local_translation: Vec3::new(4.0, 5.0, 6.0),
             horse_local_rotation: byroredux_core::math::Quat::IDENTITY,
+            route_target_form_id: Some(0xBEEF),
         },
     );
 

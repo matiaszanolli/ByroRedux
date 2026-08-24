@@ -19,7 +19,7 @@ use byroredux_plugin::esm::records::{
     PackDataValue, PackLocationTarget, PackRecord, PackTargetKind,
 };
 use byroredux_scripting::condition::ConditionContext;
-use byroredux_scripting::{EvaluatePackageRequest, PackageRegistry};
+use byroredux_scripting::{EvaluatePackageRequest, PackageRegistry, QuestAliasInjectedOverlays};
 
 /// Whether an AI package's CTDA conditions permit it to be selected for this
 /// actor (M42.2), evaluated through the M47.1 condition evaluator.
@@ -545,14 +545,33 @@ pub(crate) fn ambient_ai_package_system(world: &World, _dt: f32) {
             continue;
         }
 
-        let packages: Vec<&PackRecord> = runtime
-            .package_candidates
+        // QUST ALPC packages override the actor base's PKID stack for as
+        // long as the alias remains filled. Stable source ordering avoids
+        // depending on HashMap iteration when several quests overlay one
+        // actor; authored order within each alias remains intact.
+        let alias_overlays = world.get::<QuestAliasInjectedOverlays>(actor);
+        let mut package_candidates = alias_overlays
+            .map(|overlays| {
+                let mut sources: Vec<_> = overlays.0.iter().collect();
+                sources.sort_by_key(|((quest, alias), _)| (quest.0, *alias));
+                sources
+                    .into_iter()
+                    .flat_map(|(_, injected)| injected.packages.iter().copied())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        for &form_id in &runtime.package_candidates {
+            if !package_candidates.contains(&form_id) {
+                package_candidates.push(form_id);
+            }
+        }
+        let packages: Vec<&PackRecord> = package_candidates
             .iter()
             .filter_map(|form_id| registry.package(*form_id))
             .collect();
         // Cell spawn can precede `populate_scene_runtime`. Do not erase the
         // valid spawn-time winner merely because the catalog is not ready yet.
-        if packages.is_empty() && !runtime.package_candidates.is_empty() {
+        if packages.is_empty() && !package_candidates.is_empty() {
             continue;
         }
         let active = select_active_package(world, actor, game_hour, packages.iter().copied());
@@ -605,7 +624,7 @@ mod tests {
         PackDataInput, PackLocation, PackProcedure, PackSchedule, PROCEDURE_GUARD,
         PROCEDURE_SANDBOX, PROCEDURE_TRAVEL, PROCEDURE_WANDER,
     };
-    use byroredux_plugin::esm::records::SceneActionType;
+    use byroredux_plugin::esm::records::{AliasInjectedData, SceneActionType};
     use byroredux_scripting::quest_stages::QuestStageState;
     use byroredux_scripting::{
         install_package_records, scene_package_system, QuestFormId, SceneEvent, SceneEventBatch,
@@ -878,6 +897,36 @@ mod tests {
         ambient_ai_package_system(&world, 0.0);
 
         assert!(!world.has::<WanderBehavior>(actor));
+    }
+
+    #[test]
+    fn quest_alias_package_overrides_actor_base_package_stack() {
+        let wander = pack(0x100, PROCEDURE_WANDER, None);
+        let travel = pack(0x200, PROCEDURE_TRAVEL, None);
+        let (mut world, actor) = setup_actor(10.0, vec![wander]);
+        install_package_records(&mut world, [travel]);
+        let mut injected = AliasInjectedData::default();
+        injected.packages.push(0x200);
+        world.insert(
+            actor,
+            QuestAliasInjectedOverlays([((QuestFormId(0x900), 1), injected)].into_iter().collect()),
+        );
+        world
+            .query_mut::<EvaluatePackageRequest>()
+            .unwrap()
+            .insert(actor, EvaluatePackageRequest);
+
+        ambient_ai_package_system(&world, 0.0);
+
+        assert!(world.has::<TravelBehavior>(actor));
+        assert!(!world.has::<WanderBehavior>(actor));
+        assert_eq!(
+            world
+                .get::<AmbientPackageRuntime>(actor)
+                .unwrap()
+                .active_package_form_id,
+            Some(0x200)
+        );
     }
 
     #[test]

@@ -43,6 +43,7 @@ use crate::translate::compose::{
 };
 use crate::translate::source::ScriptSource;
 use byroredux_plugin::esm::records::condition::{ComparisonOp, Condition, ConditionValue, RunOn};
+use byroredux_plugin::esm::records::script_instance::PropertyValue;
 
 /// The extracted gate: predicates + target stage + how the quest is
 /// named + whether activation is player-gated.
@@ -62,6 +63,14 @@ pub fn recognize(ctx: &RecognizeCtx<'_>) -> Option<Recognized> {
     let ScriptSource::PapyrusSource(script) = ctx.source else {
         return None;
     };
+    if script
+        .name
+        .node
+        .0
+        .eq_ignore_ascii_case("defaultSetStageTRIGSpecificActor")
+    {
+        return recognize_specific_actor_trigger(ctx, script);
+    }
     let event = find_advance_event(script)?;
     let gate = extract_stage_gate(event)?;
 
@@ -106,6 +115,7 @@ pub fn recognize(ctx: &RecognizeCtx<'_>) -> Option<Recognized> {
         } else {
             ActivatorGate::Any
         },
+        disable_after_advance: false,
     };
 
     Some(Recognized::new(
@@ -113,6 +123,79 @@ pub fn recognize(ctx: &RecognizeCtx<'_>) -> Option<Recognized> {
         move |world, entity| {
             if let Some(mut q) = world.query_mut::<QuestAdvanceOnActivate>() {
                 q.insert(entity, component.clone());
+            }
+        },
+    ))
+}
+
+/// Vanilla's reusable actor-base-gated stage trigger. Its handler casts the
+/// entering reference to Actor, compares `GetActorBase()` with the VMAD-bound
+/// `TriggerActor`, checks an optional prerequisite stage, sets `stage`, then
+/// optionally disables itself. The script name selects this exact shipped
+/// contract; every gameplay value still comes from the attached instance.
+fn recognize_specific_actor_trigger(ctx: &RecognizeCtx<'_>, script: &Script) -> Option<Recognized> {
+    // Require the canonical event to exist so a corrupt/replaced PEX with the
+    // same name does not gain behavior solely from its property table.
+    let event = find_advance_event(script)?;
+    if !event.name.node.eq_ignore_case("OnTriggerEnter") {
+        return None;
+    }
+    let instance = ctx
+        .script_instance?
+        .scripts
+        .iter()
+        .find(|instance| instance.name.eq_ignore_ascii_case(&script.name.node.0))?;
+    let int_property = |name: &str| match &instance.property(name)?.value {
+        PropertyValue::Int32(value) => Some(*value),
+        _ => None,
+    };
+    let bool_property = |name: &str, default: bool| {
+        instance
+            .property(name)
+            .and_then(|property| match &property.value {
+                PropertyValue::Bool(value) => Some(*value),
+                _ => None,
+            })
+            .unwrap_or(default)
+    };
+    let object_property = |name: &str| match &instance.property(name)?.value {
+        PropertyValue::Object { form_id, alias: -1 } => Some(*form_id),
+        _ => None,
+    };
+
+    let owning_quest = object_property("myQuest")?;
+    let trigger_actor = object_property("TriggerActor")?;
+    let target_stage = u16::try_from(int_property("stage")?).ok()?;
+    let prerequisite = int_property("prereqStageOPT").unwrap_or(-1);
+    let conditions = if prerequisite >= 0 {
+        vec![Condition {
+            function_index: 59,
+            comparator: ComparisonOp::Eq,
+            comparand: ConditionValue::Literal(1.0),
+            param_1: owning_quest,
+            param_2: prerequisite as u32,
+            run_on: RunOn::Subject,
+            reference_form_id: 0,
+            extra_data_id: 0,
+            or_next: false,
+            ..Default::default()
+        }]
+    } else {
+        Vec::new()
+    };
+    let component = QuestAdvanceOnActivate {
+        owning_quest: QuestFormId(owning_quest),
+        conditions,
+        target_stage,
+        activator_gate: ActivatorGate::BaseForm(trigger_actor),
+        disable_after_advance: bool_property("disableWhenDone", false)
+            || bool_property("onlyOnce", false),
+    };
+    Some(Recognized::new(
+        format!("quest_stage_gate@{}", script.name.node),
+        move |world, entity| {
+            if let Some(mut query) = world.query_mut::<QuestAdvanceOnActivate>() {
+                query.insert(entity, component.clone());
             }
         },
     ))
@@ -434,6 +517,76 @@ mod tests {
         assert_eq!(got.target_stage, 20);
         assert_eq!(got.conditions.len(), 1);
         assert_eq!(got.conditions[0].param_2, 10); // stage 10
+    }
+
+    #[test]
+    fn recognizes_specific_actor_stage_trigger_from_vmad() {
+        let src = "ScriptName defaultSetStageTRIGSpecificActor extends ObjectReference\n\
+                   Event OnTriggerEnter(ObjectReference triggerRef)\n\
+                   EndEvent\n";
+        let (script, errors) = parse_script(src).expect("specific actor trigger parses");
+        assert!(errors.is_empty(), "{errors:?}");
+        let instance = ScriptInstanceData {
+            version: 5,
+            object_format: 2,
+            scripts: vec![ScriptInstance {
+                name: "defaultSetStageTRIGSpecificActor".into(),
+                status: 1,
+                properties: vec![
+                    ScriptProperty {
+                        name: "myQuest".into(),
+                        status: 1,
+                        value: PropertyValue::Object {
+                            form_id: 0x3372B,
+                            alias: -1,
+                        },
+                    },
+                    ScriptProperty {
+                        name: "TriggerActor".into(),
+                        status: 1,
+                        value: PropertyValue::Object {
+                            form_id: 0x654E5,
+                            alias: -1,
+                        },
+                    },
+                    ScriptProperty {
+                        name: "prereqStageOPT".into(),
+                        status: 1,
+                        value: PropertyValue::Int32(15),
+                    },
+                    ScriptProperty {
+                        name: "stage".into(),
+                        status: 1,
+                        value: PropertyValue::Int32(22),
+                    },
+                    ScriptProperty {
+                        name: "disableWhenDone".into(),
+                        status: 1,
+                        value: PropertyValue::Bool(true),
+                    },
+                ],
+            }],
+        };
+        let source = ScriptSource::PapyrusSource(&script);
+        let recognized = translate_script(&source, GameKind::Skyrim, Some(&instance), None)
+            .expect("specific actor trigger recognized");
+
+        let mut world = byroredux_core::ecs::world::World::new();
+        crate::register(&mut world);
+        let entity = world.spawn();
+        (recognized.spawn)(&mut world, entity);
+        let component = world
+            .get::<QuestAdvanceOnActivate>(entity)
+            .expect("quest stage trigger component");
+        assert_eq!(component.owning_quest, QuestFormId(0x3372B));
+        assert_eq!(component.target_stage, 22);
+        assert_eq!(component.conditions.len(), 1);
+        assert_eq!(component.conditions[0].param_2, 15);
+        assert!(matches!(
+            component.activator_gate,
+            ActivatorGate::BaseForm(0x654E5)
+        ));
+        assert!(component.disable_after_advance);
     }
 
     /// #2186 — the same shape, but the `Quest Property` is alias-bound.

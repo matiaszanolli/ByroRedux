@@ -112,6 +112,16 @@ pub struct SceneAliasCandidate {
     pub location_ref_types: Vec<u32>,
 }
 
+/// Bootstrap-only identity for a forced scene actor whose owning cell is not
+/// resident. Alias resolution prefers an ordinary loaded candidate with the
+/// same authored identity once streaming materializes it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RemoteSceneActorStub;
+
+impl Component for RemoteSceneActorStub {
+    type Storage = SparseSetStorage<Self>;
+}
+
 impl Component for SceneAliasCandidate {
     type Storage = SparseSetStorage<Self>;
 }
@@ -418,14 +428,40 @@ fn apply_alias_injections(
         let mut overlays = world
             .query_mut::<QuestAliasInjectedOverlays>()
             .expect("QuestAliasInjectedOverlays storage registered");
+        let mut package_changes = Vec::new();
         let old_entities: Vec<EntityId> = overlays.iter().map(|(entity, _)| entity).collect();
         for entity in old_entities {
             if !desired_overlays.contains_key(&entity) {
+                if overlays
+                    .get(entity)
+                    .is_some_and(|old| old.0.values().any(|data| !data.packages.is_empty()))
+                {
+                    package_changes.push(entity);
+                }
                 overlays.remove(entity);
             }
         }
         for (entity, injected) in desired_overlays {
+            let old_packages: HashSet<u32> = overlays
+                .get(entity)
+                .into_iter()
+                .flat_map(|old| old.0.values())
+                .flat_map(|data| data.packages.iter().copied())
+                .collect();
+            let new_packages: HashSet<u32> = injected
+                .values()
+                .flat_map(|data| data.packages.iter().copied())
+                .collect();
+            if old_packages != new_packages {
+                package_changes.push(entity);
+            }
             overlays.insert(entity, QuestAliasInjectedOverlays(injected));
+        }
+        drop(overlays);
+        if let Some(mut requests) = world.query_mut::<crate::EvaluatePackageRequest>() {
+            for entity in package_changes {
+                requests.insert(entity, crate::EvaluatePackageRequest);
+            }
         }
     }
 
@@ -472,7 +508,7 @@ pub fn refresh_scene_actor_bindings(world: &World) -> usize {
                 .collect()
         })
         .unwrap_or_default();
-    candidates.sort_by_key(|(entity, _)| *entity);
+    candidates.sort_by_key(|(entity, _)| (world.has::<RemoteSceneActorStub>(*entity), *entity));
 
     let mut quests: Vec<(QuestFormId, Vec<QuestAlias>)> = world
         .resource::<SceneQuestAliasRegistry>()

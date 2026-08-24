@@ -172,6 +172,9 @@ pub struct HorseTetherState {
     pub horse: EntityId,
     pub horse_local_translation: Vec3,
     pub horse_local_rotation: Quat,
+    /// Current XLKR waypoint followed by the horse while this native cart
+    /// tether is active. `None` lazily resolves from the horse's placed ref.
+    pub route_target_form_id: Option<u32>,
 }
 
 impl Component for HorseTetherState {
@@ -558,9 +561,11 @@ mod tests {
             horse: 7,
             horse_local_translation: Vec3::new(0.0, 0.0, -140.0),
             horse_local_rotation: Quat::IDENTITY,
+            route_target_form_id: Some(0x1234),
         };
         assert_eq!(state.horse, 7);
         assert_eq!(state.horse_local_translation.z, -140.0);
+        assert_eq!(state.route_target_form_id, Some(0x1234));
     }
 
     #[test]

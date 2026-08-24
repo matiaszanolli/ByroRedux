@@ -215,6 +215,89 @@ fn populate_scene_fragments(
 /// state, so this is safe on cell transitions and repeated load-order parses.
 /// It intentionally does not require a script archive: SCEN phase/action data
 /// and VMAD function bindings are carried by the plugin record itself.
+fn populate_quest_trigger_approaches(
+    world: &mut byroredux_core::ecs::world::World,
+    index: &byroredux_plugin::esm::records::EsmIndex,
+) -> usize {
+    let mut candidates = Vec::new();
+    let mut collect = |cell: &byroredux_plugin::esm::cell::CellData| {
+        candidates.extend(
+            cell.references
+                .iter()
+                .filter(|placed| placed.primitive.is_some())
+                .filter_map(|placed| {
+                    placed
+                        .script_instance
+                        .as_ref()
+                        .map(|instance| (placed.form_id, placed.position, instance.clone()))
+                }),
+        );
+    };
+    for cell in index.cells.cells.values() {
+        collect(cell);
+    }
+    for grids in index.cells.exterior_cells.values() {
+        for cell in grids.values() {
+            collect(cell);
+        }
+    }
+    for cell in index.cells.worldspace_persistent_cells.values() {
+        collect(cell);
+    }
+
+    let mut installed = 0;
+    for (reference_form_id, position, instance) in candidates {
+        for script in instance
+            .scripts
+            .iter()
+            .filter(|script| script.name.to_ascii_lowercase().contains("trig"))
+        {
+            let bytes = {
+                let Some(provider) = world.try_resource::<ScriptProvider>() else {
+                    return installed;
+                };
+                provider.extract_pex(&script.name)
+            };
+            let Some(bytes) = bytes else {
+                continue;
+            };
+            let Some(recognized) =
+                byroredux_scripting::translate_pex(&bytes, index.game, Some(&instance), None)
+            else {
+                continue;
+            };
+            let probe = world.spawn();
+            (recognized.spawn)(world, probe);
+            let advance = world
+                .get::<byroredux_scripting::papyrus_demo::quest_advance::QuestAdvanceOnActivate>(
+                    probe,
+                )
+                .map(|advance| advance.clone());
+            world.despawn(probe);
+            let Some(advance) = advance else {
+                continue;
+            };
+            if !matches!(
+                advance.activator_gate,
+                byroredux_scripting::papyrus_demo::quest_advance::ActivatorGate::BaseForm(_)
+            ) {
+                continue;
+            }
+            byroredux_scripting::papyrus_demo::quest_advance::install_quest_trigger_approach(
+                world,
+                reference_form_id,
+                byroredux_core::math::Vec3::from_array(
+                    byroredux_core::math::coord::zup_to_yup_pos(position),
+                ),
+                advance,
+            );
+            installed += 1;
+            break;
+        }
+    }
+    installed
+}
+
 pub(crate) fn populate_scene_runtime(
     world: &mut byroredux_core::ecs::world::World,
     index: &byroredux_plugin::esm::records::EsmIndex,
@@ -291,6 +374,10 @@ pub(crate) fn populate_scene_runtime(
         log::info!("Installed {package_count} PACK definitions into the live package runtime");
     }
     if !index.scenes.is_empty() {
+        let trigger_approach_count = populate_quest_trigger_approaches(world, index);
+        log::info!(
+            "Prepared {trigger_approach_count} actor-specific quest trigger approaches across the parsed load order"
+        );
         // The current runtime consumes dialogue only through SCEN actions.
         // Keep the registry proportional to that live surface instead of
         // duplicating every ambient/conversation DIAL retained by EsmIndex.
@@ -327,10 +414,10 @@ pub(crate) fn populate_scene_runtime(
             .filter_map(|package| package.package_template_form_id)
             .collect();
         package_ids.extend(template_ids);
-        // Scene Travel/Patrol/Escort packages overwhelmingly target invisible
-        // XMarkers. Those references are intentionally not render-spawned, so
-        // retain their authored coordinates as a lightweight movement target
-        // registry rather than requiring a live ECS entity.
+        // Travel/Patrol/Escort packages and native cart tethers overwhelmingly
+        // target invisible XMarkers. Those references are intentionally not
+        // render-spawned, so retain authored coordinates and XLKR edges in a
+        // lightweight registry rather than requiring live ECS entities.
         let package_target_ids: std::collections::HashSet<u32> = package_ids
             .iter()
             .filter_map(|form_id| index.packages.get(form_id))
@@ -358,16 +445,61 @@ pub(crate) fn populate_scene_runtime(
                 _ => None,
             })
             .collect();
-        let mut package_target_positions = Vec::new();
+        let mut linked_references: Vec<(u32, Vec<(u32, u32)>)> = Vec::new();
+        let mut collect_cell_links = |cell: &byroredux_plugin::esm::cell::CellData| {
+            linked_references.extend(
+                cell.references
+                    .iter()
+                    .filter(|placed| !placed.linked_refs.is_empty())
+                    .map(|placed| {
+                        (
+                            placed.form_id,
+                            placed
+                                .linked_refs
+                                .iter()
+                                .map(|link| (link.keyword, link.target))
+                                .collect(),
+                        )
+                    }),
+            );
+        };
+        for cell in index.cells.cells.values() {
+            collect_cell_links(cell);
+        }
+        for grids in index.cells.exterior_cells.values() {
+            for cell in grids.values() {
+                collect_cell_links(cell);
+            }
+        }
+        for cell in index.cells.worldspace_persistent_cells.values() {
+            collect_cell_links(cell);
+        }
+
+        let mut retained_reference_ids = package_target_ids.clone();
+        for (source, links) in &linked_references {
+            retained_reference_ids.insert(*source);
+            retained_reference_ids.extend(links.iter().map(|(_, target)| *target));
+        }
+        let mut reference_positions = Vec::new();
+        let mut reference_directions = Vec::new();
         let mut collect_cell_targets = |cell: &byroredux_plugin::esm::cell::CellData| {
-            package_target_positions.extend(cell.references.iter().filter_map(|placed| {
-                package_target_ids.contains(&placed.form_id).then_some((
+            for placed in cell
+                .references
+                .iter()
+                .filter(|placed| retained_reference_ids.contains(&placed.form_id))
+            {
+                reference_positions.push((
                     placed.form_id,
                     byroredux_core::math::Vec3::from_array(
                         byroredux_core::math::coord::zup_to_yup_pos(placed.position),
                     ),
-                ))
-            }));
+                ));
+                reference_directions.push((
+                    placed.form_id,
+                    crate::cell_loader::rotation_zup_to_yup_quat(placed.rotation)
+                        * -byroredux_core::math::Vec3::Z,
+                ));
+            }
         };
         for cell in index.cells.cells.values() {
             collect_cell_targets(cell);
@@ -380,11 +512,18 @@ pub(crate) fn populate_scene_runtime(
         for cell in index.cells.worldspace_persistent_cells.values() {
             collect_cell_targets(cell);
         }
-        let package_target_count =
-            byroredux_scripting::install_package_target_positions(world, package_target_positions);
+        let package_target_count = reference_positions
+            .iter()
+            .filter(|(form_id, _)| package_target_ids.contains(form_id))
+            .count();
+        let reference_count =
+            byroredux_scripting::install_package_target_positions(world, reference_positions);
+        byroredux_scripting::install_package_target_directions(world, reference_directions);
+        let route_edge_count =
+            byroredux_scripting::install_package_linked_references(world, linked_references);
         if !package_ids.is_empty() {
             log::info!(
-                "Prepared {} scene PACK references and {package_target_count}/{} authored movement targets",
+                "Prepared {} scene PACK references, {package_target_count}/{} authored movement targets, and {route_edge_count} linked routes across {reference_count} placed refs",
                 package_ids.len(),
                 package_target_ids.len()
             );
@@ -487,7 +626,7 @@ pub(crate) fn materialize_scene_actor_alias_stubs(
         if !existing.insert(placed.form_id) {
             continue;
         }
-        crate::cell_loader::references::spawn_logical_quest_reference(
+        let entity = crate::cell_loader::references::spawn_logical_quest_reference(
             world,
             &placed,
             load_order,
@@ -495,6 +634,13 @@ pub(crate) fn materialize_scene_actor_alias_stubs(
             crate::cell_loader::rotation_zup_to_yup_quat(placed.rotation),
             placed.scale,
         );
+        log::debug!(
+            "Materialized remote scene actor entity={entity} ref=0x{:08X} base=0x{:08X} links={:?}",
+            placed.form_id,
+            placed.base_form_id,
+            placed.linked_refs
+        );
+        world.insert(entity, byroredux_scripting::RemoteSceneActorStub);
         spawned += 1;
     }
     if spawned > 0 {

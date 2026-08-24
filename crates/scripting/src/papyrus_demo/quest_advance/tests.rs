@@ -42,7 +42,12 @@ fn fire_activate(world: &World, target: EntityId, activator: EntityId) {
 
 fn fire_trigger_enter(world: &World, target: EntityId, triggerer: EntityId) {
     let mut q = world.query_mut::<OnTriggerEnterEvent>().unwrap();
-    q.insert(target, OnTriggerEnterEvent { triggerer });
+    q.insert(
+        target,
+        OnTriggerEnterEvent {
+            triggerers: vec![triggerer],
+        },
+    );
 }
 
 // ── Stage-predicate gating ────────────────────────────────────

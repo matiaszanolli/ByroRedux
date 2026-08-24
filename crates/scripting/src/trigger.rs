@@ -27,6 +27,7 @@ use byroredux_core::ecs::sparse_set::SparseSetStorage;
 use byroredux_core::ecs::storage::{Component, EntityId};
 use byroredux_core::ecs::world::World;
 use byroredux_core::math::{Quat, Vec3};
+use std::collections::{HashMap, HashSet};
 
 /// The primitive shape of a trigger volume (`XPRM` shape-type 1 / 3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,7 +84,30 @@ impl TriggerVolume {
             }
         }
     }
+
+    /// Whether a world-space sphere overlaps this volume. Havok trigger
+    /// callbacks are shape contacts, so actor-driven triggers must account
+    /// for body extent rather than testing only the actor root point.
+    pub fn intersects_sphere(&self, center: Vec3, radius: f32) -> bool {
+        let radius = radius.max(0.0);
+        match self.shape {
+            TriggerShape::Sphere => {
+                let combined = self.half_extents.x + radius;
+                (center - self.center).length_squared() <= combined * combined
+            }
+            TriggerShape::Box => {
+                let local = self.rotation.inverse() * (center - self.center);
+                let closest = local.clamp(-self.half_extents, self.half_extents);
+                (local - closest).length_squared() <= radius * radius
+            }
+        }
+    }
 }
+
+/// Conservative horizontal/body radius for a native tethered horse. The
+/// actor parser does not yet expose NPC/CREA collision bounds to scripting;
+/// this matches the broad Havok capsule needed by cart-route trigger gates.
+const TETHERED_HORSE_TRIGGER_RADIUS: f32 = 96.0;
 
 impl Component for TriggerVolume {
     type Storage = SparseSetStorage<Self>;
@@ -92,7 +116,20 @@ impl Component for TriggerVolume {
 /// Register the [`TriggerVolume`] storage. Called from [`crate::register`].
 pub fn register(world: &mut World) {
     world.register::<TriggerVolume>();
+    if world.try_resource::<TriggerOccupancyState>().is_none() {
+        world.insert_resource(TriggerOccupancyState::default());
+    }
 }
+
+/// Previous-frame occupancy for non-player quest/scene references. Player
+/// occupancy remains embedded in [`TriggerVolume`] for save compatibility;
+/// this sparse side table covers NPC-driven patrol/package crossings.
+#[derive(Debug, Default)]
+struct TriggerOccupancyState {
+    inside: HashMap<(EntityId, EntityId), bool>,
+}
+
+impl byroredux_core::ecs::resource::Resource for TriggerOccupancyState {}
 
 /// Per-frame detection: for every [`TriggerVolume`], test the player's
 /// world position and emit an [`OnTriggerEnterEvent`] on the volume
@@ -115,7 +152,7 @@ pub fn trigger_detection_system(world: &World) {
     // Phase 1 (read+update): flip each volume's occupancy and record the
     // entities that just entered. Mutating `occupant_inside` here keeps
     // the edge-trigger state on the component itself.
-    let mut entered: Vec<EntityId> = Vec::new();
+    let mut entered: Vec<(EntityId, EntityId)> = Vec::new();
     {
         let Some(mut vols) = world.query_mut::<TriggerVolume>() else {
             return;
@@ -130,10 +167,124 @@ pub fn trigger_detection_system(world: &World) {
             // first tick.
             if let Some(was_inside) = vol.occupant_inside {
                 if inside && !was_inside {
-                    entered.push(entity);
+                    entered.push((entity, player));
                 }
             }
             vol.occupant_inside = Some(inside);
+        }
+    }
+
+    // Quest/scene references can drive triggers too (vanilla MQ101 uses a
+    // specific cart horse to set stage 22). Candidate identity keeps this
+    // scan on logical placed references instead of every render child with a
+    // GlobalTransform. Tethered horses are active native movers: if exterior
+    // streaming first materializes a trigger around one already inside, that
+    // first observation is a real entry rather than the player's load-time
+    // cold-start case and must be delivered.
+    let tethered_horses: HashSet<EntityId> = world
+        .query::<crate::HorseTetherState>()
+        .map(|query| query.iter().map(|(_, tether)| tether.horse).collect())
+        .unwrap_or_default();
+    let actors: Vec<(EntityId, Vec3, bool, u32)> = world
+        .query::<crate::scene::SceneAliasCandidate>()
+        .map(|query| {
+            query
+                .iter()
+                .filter(|(entity, _)| *entity != player)
+                .filter_map(|(entity, identity)| {
+                    world.get::<GlobalTransform>(entity).map(|transform| {
+                        (
+                            entity,
+                            transform.translation,
+                            tethered_horses.contains(&entity),
+                            identity.base_form_id,
+                        )
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if !actors.is_empty() {
+        let advances = world.query::<crate::papyrus_demo::quest_advance::QuestAdvanceOnActivate>();
+        let volumes: Vec<(EntityId, TriggerVolume)> = world
+            .query::<TriggerVolume>()
+            .map(|query| {
+                query
+                    .iter()
+                    .map(|(entity, volume)| (entity, *volume))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if let Some(mut occupancy) = world.try_resource_mut::<TriggerOccupancyState>() {
+            let mut observed = HashSet::new();
+            for (trigger, volume) in volumes {
+                for (actor, position, active_mover, base_form_id) in &actors {
+                    let inside = if *active_mover {
+                        volume.intersects_sphere(*position, TETHERED_HORSE_TRIGGER_RADIUS)
+                    } else {
+                        volume.contains(*position)
+                    };
+                    if *active_mover
+                        && (*position - volume.center).length_squared() <= 2048.0 * 2048.0
+                        && advances.as_ref().is_some_and(|advances| {
+                            advances.get(trigger).is_some_and(|advance| {
+                                matches!(
+                                    advance.activator_gate,
+                                    crate::papyrus_demo::quest_advance::ActivatorGate::BaseForm(
+                                        expected
+                                    ) if expected == *base_form_id
+                                )
+                            })
+                        })
+                    {
+                        log::debug!(
+                            "base-gated trigger {trigger} actor {actor} base=0x{base_form_id:08X} position={position:?} center={:?} inside={inside}",
+                            volume.center
+                        );
+                    }
+                    let key = (trigger, *actor);
+                    observed.insert(key);
+                    let was_inside = occupancy.inside.insert(key, inside);
+                    // If a native mover entered before this trigger's quest
+                    // prerequisites became true, Papyrus declined the first
+                    // event while the actor remained inside. Re-deliver once
+                    // the authored condition becomes ready; the target-stage
+                    // done check makes this an edge, not a per-frame pulse.
+                    let became_ready_inside = inside
+                        && *active_mover
+                        && was_inside == Some(true)
+                        && advances.as_ref().is_some_and(|advances| {
+                            advances.get(trigger).is_some_and(|advance| {
+                                matches!(
+                                    advance.activator_gate,
+                                    crate::papyrus_demo::quest_advance::ActivatorGate::BaseForm(
+                                        expected
+                                    ) if expected == *base_form_id
+                                ) && !world
+                                    .try_resource::<crate::quest_stages::QuestStageState>()
+                                    .is_some_and(|stages| {
+                                        stages.get_stage_done(
+                                            advance.owning_quest,
+                                            advance.target_stage,
+                                        )
+                                    })
+                                    && crate::condition::evaluate(
+                                        &advance.conditions,
+                                        world,
+                                        &crate::condition::ConditionContext::for_subject(trigger),
+                                    )
+                            })
+                        });
+                    if inside
+                        && (was_inside == Some(false)
+                            || (was_inside.is_none() && *active_mover)
+                            || became_ready_inside)
+                    {
+                        entered.push((trigger, *actor));
+                    }
+                }
+            }
+            occupancy.inside.retain(|key, _| observed.contains(key));
         }
     }
 
@@ -145,8 +296,20 @@ pub fn trigger_detection_system(world: &World) {
     let Some(mut events) = world.query_mut::<OnTriggerEnterEvent>() else {
         return;
     };
-    for entity in entered {
-        events.insert(entity, OnTriggerEnterEvent { triggerer: player });
+    for (entity, triggerer) in entered {
+        log::debug!("trigger {entity} emitted OnTriggerEnter for actor {triggerer}");
+        if let Some(event) = events.get_mut(entity) {
+            if !event.triggerers.contains(&triggerer) {
+                event.triggerers.push(triggerer);
+            }
+        } else {
+            events.insert(
+                entity,
+                OnTriggerEnterEvent {
+                    triggerers: vec![triggerer],
+                },
+            );
+        }
     }
 }
 
@@ -209,6 +372,14 @@ mod tests {
     }
 
     #[test]
+    fn actor_sphere_contacts_box_even_when_root_point_misses() {
+        let v = axis_box(Vec3::ZERO, Vec3::ONE);
+        assert!(!v.contains(Vec3::new(1.5, 0.0, 0.0)));
+        assert!(v.intersects_sphere(Vec3::new(1.5, 0.0, 0.0), 0.6));
+        assert!(!v.intersects_sphere(Vec3::new(1.5, 0.0, 0.0), 0.4));
+    }
+
+    #[test]
     fn sphere_contains_by_radius() {
         let v = TriggerVolume {
             center: Vec3::new(5.0, 0.0, 0.0),
@@ -246,7 +417,7 @@ mod tests {
         let (world, trigger, fired) = run_once(Vec3::ZERO, axis_box(Vec3::ZERO, Vec3::splat(1.0)));
         assert!(fired, "player inside an unoccupied volume must emit enter");
         let ev = world.get::<OnTriggerEnterEvent>(trigger).unwrap();
-        assert_eq!(ev.triggerer, world.resource::<PlayerEntity>().0);
+        assert_eq!(ev.triggerers, vec![world.resource::<PlayerEntity>().0]);
     }
 
     #[test]
@@ -336,6 +507,245 @@ mod tests {
             world.has::<OnTriggerEnterEvent>(trigger),
             "a later genuine crossing must still fire after the seed tick"
         );
+    }
+
+    #[test]
+    fn quest_actor_crossing_emits_triggerer_identity() {
+        let mut world = World::new();
+        crate::register(&mut world);
+        let outside = Vec3::new(10.0, 0.0, 0.0);
+        let player = world.spawn();
+        world.insert(player, GlobalTransform::new(outside, Quat::IDENTITY, 1.0));
+        world.insert_resource(PlayerEntity(player));
+
+        let actor = world.spawn();
+        world.insert(actor, GlobalTransform::new(outside, Quat::IDENTITY, 1.0));
+        world.insert(
+            actor,
+            crate::scene::SceneAliasCandidate {
+                reference_form_id: 0x100,
+                base_form_id: 0x654E5,
+                linked_refs: Vec::new(),
+                location_ref_types: Vec::new(),
+            },
+        );
+        let trigger = world.spawn();
+        world.insert(
+            trigger,
+            TriggerVolume {
+                center: Vec3::ZERO,
+                half_extents: Vec3::splat(1.0),
+                rotation: Quat::IDENTITY,
+                shape: TriggerShape::Box,
+                occupant_inside: None,
+            },
+        );
+
+        trigger_detection_system(&world); // silently seed both occupants
+        world
+            .query_mut::<GlobalTransform>()
+            .unwrap()
+            .get_mut(actor)
+            .unwrap()
+            .translation = Vec3::ZERO;
+        trigger_detection_system(&world);
+
+        assert_eq!(
+            world
+                .get::<OnTriggerEnterEvent>(trigger)
+                .expect("NPC crossing event")
+                .triggerers,
+            vec![actor]
+        );
+    }
+
+    #[test]
+    fn freshly_streamed_trigger_emits_for_tethered_horse_already_inside() {
+        let mut world = World::new();
+        crate::register(&mut world);
+        let outside = Vec3::new(10.0, 0.0, 0.0);
+        let player = world.spawn();
+        world.insert(player, GlobalTransform::new(outside, Quat::IDENTITY, 1.0));
+        world.insert_resource(PlayerEntity(player));
+
+        let horse = world.spawn();
+        world.insert(horse, GlobalTransform::new(Vec3::ZERO, Quat::IDENTITY, 1.0));
+        world.insert(
+            horse,
+            crate::scene::SceneAliasCandidate {
+                reference_form_id: 0x100,
+                base_form_id: 0x654E5,
+                linked_refs: Vec::new(),
+                location_ref_types: Vec::new(),
+            },
+        );
+        let cart = world.spawn();
+        world.insert(
+            cart,
+            crate::HorseTetherState {
+                horse,
+                horse_local_translation: Vec3::ZERO,
+                horse_local_rotation: Quat::IDENTITY,
+                route_target_form_id: None,
+            },
+        );
+        let trigger = world.spawn();
+        world.insert(
+            trigger,
+            TriggerVolume {
+                center: Vec3::ZERO,
+                half_extents: Vec3::splat(1.0),
+                rotation: Quat::IDENTITY,
+                shape: TriggerShape::Box,
+                occupant_inside: None,
+            },
+        );
+
+        trigger_detection_system(&world);
+
+        assert_eq!(
+            world
+                .get::<OnTriggerEnterEvent>(trigger)
+                .expect("streamed tethered-horse entry")
+                .triggerers,
+            vec![horse]
+        );
+    }
+
+    #[test]
+    fn tethered_horse_inside_reemits_when_quest_prerequisite_becomes_ready() {
+        use crate::papyrus_demo::quest_advance::{ActivatorGate, QuestAdvanceOnActivate};
+        use crate::quest_stages::{QuestFormId, QuestStageState};
+        use byroredux_plugin::esm::records::condition::{ComparisonOp, Condition, ConditionValue};
+
+        let mut world = World::new();
+        crate::register(&mut world);
+        world.insert_resource(QuestStageState::default());
+        let player = world.spawn();
+        world.insert(
+            player,
+            GlobalTransform::new(Vec3::new(10.0, 0.0, 0.0), Quat::IDENTITY, 1.0),
+        );
+        world.insert_resource(PlayerEntity(player));
+
+        let horse = world.spawn();
+        world.insert(horse, GlobalTransform::new(Vec3::ZERO, Quat::IDENTITY, 1.0));
+        world.insert(
+            horse,
+            crate::scene::SceneAliasCandidate {
+                reference_form_id: 0x100,
+                base_form_id: 0xB9E1D,
+                linked_refs: Vec::new(),
+                location_ref_types: Vec::new(),
+            },
+        );
+        let cart = world.spawn();
+        world.insert(
+            cart,
+            crate::HorseTetherState {
+                horse,
+                horse_local_translation: Vec3::ZERO,
+                horse_local_rotation: Quat::IDENTITY,
+                route_target_form_id: None,
+            },
+        );
+        let trigger = world.spawn();
+        world.insert(
+            trigger,
+            TriggerVolume {
+                center: Vec3::ZERO,
+                half_extents: Vec3::splat(1.0),
+                rotation: Quat::IDENTITY,
+                shape: TriggerShape::Box,
+                occupant_inside: None,
+            },
+        );
+        let quest = QuestFormId(0x3372B);
+        world.insert(
+            trigger,
+            QuestAdvanceOnActivate {
+                owning_quest: quest,
+                conditions: vec![Condition {
+                    function_index: 59,
+                    comparator: ComparisonOp::Eq,
+                    comparand: ConditionValue::Literal(1.0),
+                    param_1: quest.0,
+                    param_2: 20,
+                    ..Default::default()
+                }],
+                target_stage: 30,
+                activator_gate: ActivatorGate::BaseForm(0xB9E1D),
+                disable_after_advance: true,
+            },
+        );
+
+        trigger_detection_system(&world);
+        world.remove::<OnTriggerEnterEvent>(trigger);
+        assert!(world.get::<OnTriggerEnterEvent>(trigger).is_none());
+
+        world.resource_mut::<QuestStageState>().set_stage(quest, 20);
+        trigger_detection_system(&world);
+
+        assert_eq!(
+            world
+                .get::<OnTriggerEnterEvent>(trigger)
+                .expect("late-ready tethered-horse entry")
+                .triggerers,
+            vec![horse]
+        );
+    }
+
+    #[test]
+    fn preserves_all_actors_entering_one_volume_in_the_same_frame() {
+        let mut world = World::new();
+        crate::register(&mut world);
+        let outside = Vec3::new(10.0, 0.0, 0.0);
+        let player = world.spawn();
+        world.insert(player, GlobalTransform::new(outside, Quat::IDENTITY, 1.0));
+        world.insert_resource(PlayerEntity(player));
+
+        let actors: Vec<_> = (0..2)
+            .map(|index| {
+                let actor = world.spawn();
+                world.insert(actor, GlobalTransform::new(outside, Quat::IDENTITY, 1.0));
+                world.insert(
+                    actor,
+                    crate::scene::SceneAliasCandidate {
+                        reference_form_id: 0x100 + index,
+                        base_form_id: 0x200 + index,
+                        linked_refs: Vec::new(),
+                        location_ref_types: Vec::new(),
+                    },
+                );
+                actor
+            })
+            .collect();
+        let trigger = world.spawn();
+        world.insert(
+            trigger,
+            TriggerVolume {
+                center: Vec3::ZERO,
+                half_extents: Vec3::splat(1.0),
+                rotation: Quat::IDENTITY,
+                shape: TriggerShape::Box,
+                occupant_inside: None,
+            },
+        );
+        trigger_detection_system(&world);
+        for actor in &actors {
+            world
+                .query_mut::<GlobalTransform>()
+                .unwrap()
+                .get_mut(*actor)
+                .unwrap()
+                .translation = Vec3::ZERO;
+        }
+
+        trigger_detection_system(&world);
+
+        let event = world.get::<OnTriggerEnterEvent>(trigger).unwrap();
+        assert_eq!(event.triggerers.len(), 2);
+        assert!(actors.iter().all(|actor| event.triggerers.contains(actor)));
     }
 
     #[test]

@@ -612,6 +612,16 @@ pub(super) fn load_references_budgeted(
                             // fields Skyrim quest-alias resolution consumes.
                             if synth_idx == 0 {
                                 stamp_quest_reference(world, root, placed_ref, load_order);
+                                if let Some(mut identities) =
+                                    world.query_mut::<byroredux_scripting::SceneAliasCandidate>()
+                                {
+                                    if let Some(identity) = identities.get_mut(root) {
+                                        // A placed ACHR may reference an LVLN. Papyrus
+                                        // GetActorBase observes the resolved NPC_, which is
+                                        // the synthesized child selected above.
+                                        identity.base_form_id = child_form_id;
+                                    }
+                                }
                             }
                             // #2662 — actor jobs bypass `spawn_synth_child`
                             // entirely, so without this they never reached

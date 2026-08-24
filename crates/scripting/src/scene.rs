@@ -111,6 +111,7 @@ pub fn register(world: &mut World) {
     world.register::<Inventory>();
     world.register::<ScenePlayer>();
     world.register::<SceneAliasCandidate>();
+    world.register::<RemoteSceneActorStub>();
     world.register::<QuestAliasInjectedOverlays>();
     world.register::<QuestAliasRuntimeOverlays>();
     world.register::<SceneStartRequest>();

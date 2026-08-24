@@ -9,8 +9,11 @@ use byroredux_core::string::StringPool;
 use byroredux_physics::{PhysicsWorld, RapierHandles};
 use byroredux_scripting::{
     ActorCinematicState, AnimationTextKeyEvents, CinematicAnimationEvent, HorseTetherState,
-    MotionTypeChangeRequest,
+    MotionTypeChangeRequest, PackageTargetRegistry, SceneAliasCandidate, ScenePackageCommand,
+    ScenePackagePlayback,
 };
+
+const SCENE_TRIGGER_APPROACH_SPEED: f32 = 500.0;
 
 /// Consume queued Skyrim `PlayIdle` requests once their IDLE FormID has a
 /// decoded HKX clip. Unresolved requests remain pending, allowing a later cell
@@ -251,11 +254,374 @@ pub(crate) fn scripted_motion_type_system(world: &World, _dt: f32) {
     }
 }
 
+/// Drive a native Skyrim cart tether along the horse reference's authored
+/// XLKR waypoint chain. The vanilla opening convoy uses invisible XMarkers
+/// for this route; they are intentionally not render entities, so positions
+/// and edges come from [`PackageTargetRegistry`].
+pub(crate) fn cinematic_horse_route_system(world: &World, dt: f32) {
+    let Some(routes) = world.try_resource::<PackageTargetRegistry>() else {
+        return;
+    };
+    let pending: Vec<(
+        EntityId,
+        EntityId,
+        u32,
+        byroredux_core::math::Vec3,
+        byroredux_core::math::Quat,
+    )> = {
+        let Some(tethers) = world.query::<HorseTetherState>() else {
+            return;
+        };
+        let Some(transforms) = world.query::<Transform>() else {
+            return;
+        };
+        let candidates = world.query::<SceneAliasCandidate>();
+        tethers
+            .iter()
+            .filter_map(|(cart, tether)| {
+                let horse_transform = transforms.get(tether.horse)?;
+                let target = tether.route_target_form_id.or_else(|| {
+                    candidates
+                        .as_ref()?
+                        .get(tether.horse)?
+                        .linked_refs
+                        .iter()
+                        .find(|(keyword, _)| *keyword == 0)
+                        .or_else(|| candidates.as_ref()?.get(tether.horse)?.linked_refs.first())
+                        .map(|(_, target)| *target)
+                })?;
+                routes.position(target)?;
+                if tether.route_target_form_id.is_none() {
+                    log::info!(
+                        "Initialized tethered horse entity {} route at linked ref 0x{target:08X}",
+                        tether.horse
+                    );
+                }
+                Some((
+                    cart,
+                    tether.horse,
+                    target,
+                    horse_transform.translation,
+                    horse_transform.rotation,
+                ))
+            })
+            .collect()
+    };
+    if pending.is_empty() {
+        return;
+    }
+
+    let decisions: Vec<_> = pending
+        .into_iter()
+        .filter_map(|(cart, horse, target, current, rotation)| {
+            let marker = routes.position(target)?;
+            // A terminal cart marker's authored heading carries the native
+            // tether beyond the explicit chain and through downstream trigger
+            // volumes. Continue far enough for those volumes to observe it.
+            let destination = if routes.linked_reference(target).is_none() {
+                marker
+                    + routes
+                        .direction(target)
+                        .unwrap_or(byroredux_core::math::Vec3::ZERO)
+                        * 4096.0
+            } else {
+                marker
+            };
+            let target_xz =
+                byroredux_core::math::Vec3::new(destination.x, current.y, destination.z);
+            let horizontal_before = byroredux_core::math::Vec3::new(
+                current.x - destination.x,
+                0.0,
+                current.z - destination.z,
+            )
+            .length();
+            // Cart routes are authored 3D splines. Generic actor locomotion's
+            // ground ray is deliberately bypassed here: incomplete road
+            // collision can sit hundreds of units below the XMarkers and
+            // make the convoy miss vertically bounded scripted triggers.
+            let (mut translation, new_rotation) =
+                super::locomotion::step_toward(current, rotation, target_xz, dt, None);
+            if horizontal_before > f32::EPSILON {
+                let horizontal_after = byroredux_core::math::Vec3::new(
+                    translation.x - destination.x,
+                    0.0,
+                    translation.z - destination.z,
+                )
+                .length();
+                let progress =
+                    ((horizontal_before - horizontal_after) / horizontal_before).clamp(0.0, 1.0);
+                translation.y += (destination.y - current.y) * progress;
+            } else {
+                translation.y = destination.y;
+            }
+            let remaining = byroredux_core::math::Vec3::new(
+                translation.x - destination.x,
+                0.0,
+                translation.z - destination.z,
+            );
+            let next_target = if remaining.length_squared()
+                <= super::locomotion::LOCOMOTION_ARRIVAL_EPSILON
+                    * super::locomotion::LOCOMOTION_ARRIVAL_EPSILON
+            {
+                routes.linked_reference(target).unwrap_or(target)
+            } else {
+                target
+            };
+            Some((cart, horse, translation, new_rotation, next_target))
+        })
+        .collect();
+    if let Some(mut transforms) = world.query_mut::<Transform>() {
+        for (_, horse, translation, rotation, _) in &decisions {
+            if let Some(transform) = transforms.get_mut(*horse) {
+                transform.translation = *translation;
+                if let Some(rotation) = rotation {
+                    transform.rotation = *rotation;
+                }
+            }
+        }
+    }
+    if let Some(mut tethers) = world.query_mut::<HorseTetherState>() {
+        for (cart, _, _, _, next_target) in &decisions {
+            if let Some(tether) = tethers.get_mut(*cart) {
+                tether.route_target_form_id = Some(*next_target);
+            }
+        }
+    }
+    if world.try_resource::<PhysicsWorld>().is_some() {
+        for (_, horse, translation, _, _) in decisions {
+            byroredux_physics::set_kinematic_translation(world, horse, translation);
+        }
+    }
+}
+
+/// Bridge offscreen cinematic locomotion for a scene phase whose authored
+/// completion explicitly waits on an actor-specific trigger stage. Creation
+/// can drive a mounted actor outside ordinary cell AI; choose the nearest
+/// loaded actor with the trigger's required base and approach the volume.
+pub(crate) fn scene_trigger_actor_approach_system(world: &World, dt: f32) {
+    use byroredux_plugin::esm::records::condition::{ComparisonOp, ConditionValue};
+    use byroredux_scripting::papyrus_demo::quest_advance::{ActivatorGate, QuestAdvanceOnActivate};
+
+    let awaited: std::collections::HashSet<(u32, u16)> = {
+        let Some(players) = world.query::<byroredux_scripting::ScenePlayer>() else {
+            return;
+        };
+        let Some(registry) = world.try_resource::<byroredux_scripting::SceneRegistry>() else {
+            return;
+        };
+        players
+            .iter()
+            .filter(|(_, player)| player.is_running())
+            .filter_map(|(_, player)| {
+                let scene = registry.definition(player.scene_form_id)?;
+                scene.phases.get(player.current_phase as usize)
+            })
+            .flat_map(|phase| &phase.completion_conditions)
+            .filter_map(|condition| {
+                (condition.function_index == 59
+                    && condition.comparator == ComparisonOp::Eq
+                    && matches!(condition.comparand, ConditionValue::Literal(value) if (value - 1.0).abs() <= f32::EPSILON))
+                .then_some((condition.param_1, condition.param_2 as u16))
+            })
+            .collect()
+    };
+    if awaited.is_empty() {
+        return;
+    }
+
+    let targets: Vec<_> = match (
+        world.query::<QuestAdvanceOnActivate>(),
+        world.query::<byroredux_scripting::TriggerVolume>(),
+        world.try_resource::<byroredux_scripting::quest_stages::QuestStageState>(),
+        world.try_resource::<
+            byroredux_scripting::papyrus_demo::quest_advance::QuestTriggerApproachRegistry,
+        >(),
+    ) {
+        (Some(advances), Some(volumes), Some(stages), Some(approaches)) => awaited
+            .iter()
+            .flat_map(|(quest_form_id, awaited_stage)| {
+                let bases: std::collections::HashSet<u32> = advances
+                    .iter()
+                    .filter(|(_, advance)| {
+                        advance.owning_quest.0 == *quest_form_id
+                            && advance.target_stage == *awaited_stage
+                    })
+                    .filter_map(|(_, advance)| match advance.activator_gate {
+                        ActivatorGate::BaseForm(base_form_id) => Some(base_form_id),
+                        _ => None,
+                    })
+                    .collect();
+                bases.into_iter().filter_map(|base_form_id| {
+                    advances
+                        .iter()
+                        .filter(|(_, advance)| {
+                            advance.owning_quest.0 == *quest_form_id
+                                && advance.target_stage <= *awaited_stage
+                                && matches!(
+                                    advance.activator_gate,
+                                    ActivatorGate::BaseForm(candidate) if candidate == base_form_id
+                                )
+                                && !stages.get_stage_done(
+                                    advance.owning_quest,
+                                    advance.target_stage,
+                                )
+                        })
+                        .filter(|(trigger, advance)| {
+                            byroredux_scripting::evaluate_condition_list(
+                                &advance.conditions,
+                                world,
+                                &byroredux_scripting::ConditionContext::for_subject(*trigger),
+                            )
+                        })
+                        .filter_map(|(trigger, advance)| {
+                            let center = volumes.get(trigger).map(|volume| volume.center).or_else(
+                                || {
+                                    approaches
+                                        .entries()
+                                        .iter()
+                                        .find(|entry| entry.trigger_entity == trigger)
+                                        .map(|entry| entry.center)
+                                },
+                            )?;
+                            Some((advance.target_stage, trigger, center))
+                        })
+                        .min_by_key(|(stage, _, _)| *stage)
+                        .map(|(stage, trigger, center)| {
+                            (base_form_id, stage, trigger, center)
+                        })
+                })
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    if targets.is_empty() {
+        return;
+    }
+
+    let candidates = world.query::<SceneAliasCandidate>();
+    let transforms = world.query::<Transform>();
+    let (Some(candidates), Some(transforms)) = (candidates, transforms) else {
+        return;
+    };
+    let mut movements = Vec::new();
+    let mut arrivals = Vec::new();
+    for (base_form_id, target_stage, trigger, destination) in targets {
+        let actor = candidates
+            .iter()
+            .filter(|(entity, candidate)| {
+                candidate.base_form_id == base_form_id
+                    && !world.has::<byroredux_scripting::RemoteSceneActorStub>(*entity)
+            })
+            .filter_map(|(entity, _)| {
+                let transform = transforms.get(entity)?;
+                Some((entity, transform.translation.distance_squared(destination)))
+            })
+            .min_by(|left, right| left.1.total_cmp(&right.1))
+            .map(|(entity, _)| entity);
+        let Some(actor) = actor else {
+            continue;
+        };
+        let Some(transform) = transforms.get(actor) else {
+            continue;
+        };
+        let delta = destination - transform.translation;
+        let distance = delta.length();
+        if distance <= f32::EPSILON {
+            arrivals.push((trigger, actor));
+            continue;
+        }
+        let step = (SCENE_TRIGGER_APPROACH_SPEED * dt.max(0.0)).min(distance);
+        if step >= distance {
+            log::debug!(
+                "scene trigger approach actor {actor} base=0x{base_form_id:08X} arrived at trigger {trigger} target stage {target_stage}"
+            );
+            arrivals.push((trigger, actor));
+        }
+        movements.push((actor, transform.translation + delta / distance * step));
+    }
+    drop(transforms);
+    if let Some(mut transforms) = world.query_mut::<Transform>() {
+        for (actor, translation) in &movements {
+            if let Some(transform) = transforms.get_mut(*actor) {
+                transform.translation = *translation;
+            }
+        }
+    }
+    if world.try_resource::<PhysicsWorld>().is_some() {
+        for (actor, translation) in movements {
+            byroredux_physics::set_kinematic_translation(world, actor, translation);
+        }
+    }
+    if !arrivals.is_empty() {
+        if let Some(mut events) = world.query_mut::<byroredux_scripting::OnTriggerEnterEvent>() {
+            for (trigger, actor) in arrivals {
+                if let Some(event) = events.get_mut(trigger) {
+                    if !event.triggerers.contains(&actor) {
+                        event.triggerers.push(actor);
+                    }
+                } else {
+                    events.insert(
+                        trigger,
+                        byroredux_scripting::OnTriggerEnterEvent {
+                            triggerers: vec![actor],
+                        },
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// Resolve MQ101's complete attachment chain: package-driven horse -> tethered
 /// cart -> `SetVehicle` riders. This runs in Update before transform
 /// propagation, so carts, riders, and their skeletons observe the new root
 /// poses in the same frame.
 pub(crate) fn vehicle_attachment_system(world: &World, _dt: f32) {
+    // Creation routes mounted actors' package locomotion through their mount.
+    // `scene_package_system` has already advanced the rider root this tick;
+    // solve the vehicle pose that preserves the captured attachment offset
+    // before the ordinary vehicle->rider propagation below.
+    let package_movers: std::collections::HashSet<EntityId> = world
+        .query::<ScenePackagePlayback>()
+        .map(|query| {
+            query
+                .iter()
+                .flat_map(|(_, playback)| &playback.active_actions)
+                .filter(|action| matches!(action.command, ScenePackageCommand::MoveTo { .. }))
+                .map(|action| action.actor)
+                .collect()
+        })
+        .unwrap_or_default();
+    let driven_vehicles: Vec<_> = match (
+        world.query::<ActorCinematicState>(),
+        world.query::<Transform>(),
+    ) {
+        (Some(states), Some(transforms)) => states
+            .iter()
+            .filter(|(actor, _)| package_movers.contains(actor))
+            .filter_map(|(actor, state)| {
+                let vehicle_entity = state.vehicle?;
+                let rider = transforms.get(actor)?;
+                let vehicle = transforms.get(vehicle_entity)?;
+                let local_translation = state.vehicle_local_translation?;
+                let local_rotation = state.vehicle_local_rotation?;
+                let rotation = rider.rotation * local_rotation.inverse();
+                let translation =
+                    rider.translation - rotation * (local_translation * vehicle.scale);
+                Some((vehicle_entity, translation, rotation))
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    if let Some(mut transforms) = world.query_mut::<Transform>() {
+        for (vehicle, translation, rotation) in &driven_vehicles {
+            if let Some(transform) = transforms.get_mut(*vehicle) {
+                transform.translation = *translation;
+                transform.rotation = *rotation;
+            }
+        }
+    }
+
     let tethered_carts: Vec<(
         EntityId,
         byroredux_core::math::Vec3,
@@ -571,6 +937,64 @@ mod tests {
     }
 
     #[test]
+    fn mounted_scene_package_movement_drives_vehicle_before_attachment() {
+        use byroredux_core::math::{Quat, Vec3};
+        use byroredux_scripting::ActiveScenePackageAction;
+
+        let mut world = World::new();
+        world.register::<Transform>();
+        world.register::<ActorCinematicState>();
+        world.register::<ScenePackagePlayback>();
+        let vehicle = world.spawn();
+        let rider = world.spawn();
+        let scene = world.spawn();
+        world.insert(vehicle, Transform::IDENTITY);
+        world.insert(
+            rider,
+            Transform::from_translation(Vec3::new(10.0, 2.0, 0.0)),
+        );
+        world.insert(
+            rider,
+            ActorCinematicState {
+                vehicle: Some(vehicle),
+                vehicle_local_translation: Some(Vec3::new(0.0, 2.0, 0.0)),
+                vehicle_local_rotation: Some(Quat::IDENTITY),
+                ..Default::default()
+            },
+        );
+        world.insert(
+            scene,
+            ScenePackagePlayback {
+                active_actions: vec![ActiveScenePackageAction {
+                    scene_form_id: 1,
+                    action_index: 2,
+                    actor: rider,
+                    package_candidates: vec![3],
+                    package_form_id: 3,
+                    template_form_id: 4,
+                    command: ScenePackageCommand::MoveTo {
+                        procedure_type: "Travel".to_owned(),
+                        destination: Vec3::new(100.0, 0.0, 0.0),
+                        arrival_radius: 1.0,
+                        stall_seconds: 0.0,
+                    },
+                }],
+            },
+        );
+
+        vehicle_attachment_system(&world, 0.0);
+
+        assert_eq!(
+            world.get::<Transform>(vehicle).unwrap().translation,
+            Vec3::new(10.0, 0.0, 0.0)
+        );
+        assert_eq!(
+            world.get::<Transform>(rider).unwrap().translation,
+            Vec3::new(10.0, 2.0, 0.0)
+        );
+    }
+
+    #[test]
     fn tethered_cart_and_rider_follow_package_driven_horse_in_one_tick() {
         use byroredux_core::math::{Quat, Vec3};
 
@@ -597,6 +1021,7 @@ mod tests {
                 horse,
                 horse_local_translation: Vec3::new(0.0, 0.0, -10.0),
                 horse_local_rotation: Quat::IDENTITY,
+                route_target_form_id: None,
             },
         );
         world.insert(
@@ -616,5 +1041,194 @@ mod tests {
         let rider_transform = world.get::<Transform>(rider).unwrap();
         assert!((rider_transform.translation - Vec3::new(90.0, 2.0, 50.0)).length() < 1e-5);
         assert!((rider_transform.rotation * Vec3::Z - Vec3::X).length() < 1e-5);
+    }
+
+    #[test]
+    fn tethered_horse_advances_through_authored_linked_reference_route() {
+        use byroredux_core::math::{Quat, Vec3};
+
+        let mut world = World::new();
+        world.register::<Transform>();
+        world.register::<HorseTetherState>();
+        world.register::<SceneAliasCandidate>();
+        byroredux_scripting::install_package_target_positions(
+            &mut world,
+            [
+                (0x100, Vec3::new(5.0, 20.0, 0.0)),
+                (0x101, Vec3::new(100.0, 0.0, 0.0)),
+            ],
+        );
+        byroredux_scripting::install_package_linked_references(
+            &mut world,
+            [(0x100, vec![(0, 0x101)])],
+        );
+        byroredux_scripting::install_package_target_directions(&mut world, [(0x101, Vec3::X)]);
+
+        let horse = world.spawn();
+        let cart = world.spawn();
+        world.insert(horse, Transform::IDENTITY);
+        world.insert(
+            horse,
+            SceneAliasCandidate {
+                reference_form_id: 0x90,
+                base_form_id: 0x91,
+                linked_refs: vec![(0, 0x100)],
+                location_ref_types: Vec::new(),
+            },
+        );
+        world.insert(
+            cart,
+            HorseTetherState {
+                horse,
+                horse_local_translation: Vec3::ZERO,
+                horse_local_rotation: Quat::IDENTITY,
+                route_target_form_id: None,
+            },
+        );
+
+        cinematic_horse_route_system(&world, 0.1);
+        assert_eq!(
+            world
+                .get::<HorseTetherState>(cart)
+                .unwrap()
+                .route_target_form_id,
+            Some(0x101)
+        );
+        assert!((world.get::<Transform>(horse).unwrap().translation.x - 5.0).abs() < 1e-5);
+        assert!((world.get::<Transform>(horse).unwrap().translation.y - 20.0).abs() < 1e-5);
+
+        cinematic_horse_route_system(&world, 0.1);
+        assert!((world.get::<Transform>(horse).unwrap().translation.x - 15.0).abs() < 1e-5);
+
+        for _ in 0..50 {
+            cinematic_horse_route_system(&world, 0.1);
+        }
+        assert!(
+            world.get::<Transform>(horse).unwrap().translation.x > 100.0,
+            "terminal continuation follows the marker's authored heading"
+        );
+    }
+
+    #[test]
+    fn awaited_actor_trigger_moves_loaded_matching_base_not_remote_stub() {
+        use byroredux_core::math::{Quat, Vec3};
+        use byroredux_plugin::esm::records::condition::{ComparisonOp, Condition, ConditionValue};
+        use byroredux_plugin::esm::records::{ScenRecord, ScenePhase};
+        use byroredux_scripting::papyrus_demo::quest_advance::{
+            ActivatorGate, QuestAdvanceOnActivate,
+        };
+        use byroredux_scripting::{
+            QuestFormId, RemoteSceneActorStub, ScenePlaybackState, TriggerShape, TriggerVolume,
+        };
+
+        let mut world = World::new();
+        byroredux_scripting::register(&mut world);
+        world.insert_resource(byroredux_scripting::quest_stages::QuestStageState::default());
+        world.register::<Transform>();
+        world.register::<QuestAdvanceOnActivate>();
+
+        let quest = QuestFormId(0x3372B);
+        byroredux_scripting::install_scene_records(
+            &mut world,
+            [ScenRecord {
+                form_id: 0xBECD4,
+                phases: vec![ScenePhase {
+                    completion_conditions: vec![Condition {
+                        function_index: 59,
+                        comparator: ComparisonOp::Eq,
+                        comparand: ConditionValue::Literal(1.0),
+                        param_1: quest.0,
+                        param_2: 22,
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        );
+        let scene = world
+            .resource::<byroredux_scripting::SceneRegistry>()
+            .scene_entity(0xBECD4)
+            .unwrap();
+        {
+            let player = world
+                .get_mut::<byroredux_scripting::ScenePlayer>(scene)
+                .unwrap();
+            player.state = ScenePlaybackState::Playing;
+        }
+
+        let trigger = world.spawn();
+        world.insert(
+            trigger,
+            TriggerVolume {
+                center: Vec3::new(1_000.0, 0.0, 0.0),
+                half_extents: Vec3::splat(100.0),
+                rotation: Quat::IDENTITY,
+                shape: TriggerShape::Box,
+                occupant_inside: None,
+            },
+        );
+        world.insert(
+            trigger,
+            QuestAdvanceOnActivate {
+                owning_quest: quest,
+                conditions: Vec::new(),
+                target_stage: 22,
+                activator_gate: ActivatorGate::BaseForm(0x654E5),
+                disable_after_advance: true,
+            },
+        );
+        byroredux_scripting::papyrus_demo::quest_advance::install_quest_trigger_approach(
+            &mut world,
+            0x84058,
+            Vec3::new(0.0, 0.0, 1_000.0),
+            QuestAdvanceOnActivate {
+                owning_quest: quest,
+                conditions: Vec::new(),
+                target_stage: 20,
+                activator_gate: ActivatorGate::BaseForm(0x654E5),
+                disable_after_advance: true,
+            },
+        );
+
+        let loaded = world.spawn();
+        world.insert(loaded, Transform::IDENTITY);
+        world.insert(
+            loaded,
+            SceneAliasCandidate {
+                reference_form_id: 0x654E1,
+                base_form_id: 0x654E5,
+                linked_refs: Vec::new(),
+                location_ref_types: Vec::new(),
+            },
+        );
+        let remote = world.spawn();
+        world.insert(
+            remote,
+            Transform::from_translation(Vec3::new(900.0, 0.0, 0.0)),
+        );
+        world.insert(
+            remote,
+            SceneAliasCandidate {
+                reference_form_id: 0x198BA,
+                base_form_id: 0x654E5,
+                linked_refs: Vec::new(),
+                location_ref_types: Vec::new(),
+            },
+        );
+        world.insert(remote, RemoteSceneActorStub);
+
+        scene_trigger_actor_approach_system(&world, 0.1);
+
+        assert_eq!(
+            world.get::<Transform>(loaded).unwrap().translation,
+            Vec3::new(0.0, 0.0, 50.0),
+            "the lowest ready prerequisite stage is approached before the awaited stage"
+        );
+        assert_eq!(
+            world.get::<Transform>(remote).unwrap().translation,
+            Vec3::new(900.0, 0.0, 0.0),
+            "synthetic offscreen stubs must not win nearest-actor selection"
+        );
     }
 }

@@ -30,6 +30,7 @@ use byroredux_plugin::esm::records::{
     SceneActionType, QUEST_FLAG_START_GAME_ENABLED, SCENE_BEGIN_ON_QUEST_START,
 };
 use byroredux_scripting::fragment::quest_property_names;
+use byroredux_scripting::papyrus_demo::quest_advance::{ActivatorGate, QuestAdvanceOnActivate};
 use byroredux_scripting::papyrus_demo::PlayerEntity;
 use byroredux_scripting::quest_stages::QuestStageState;
 use byroredux_scripting::translate::effects::{lower_fragment_with_quest_properties, Effect};
@@ -1182,6 +1183,57 @@ fn run() -> Result<Checks, Box<dyn Error>> {
     );
 
     let scripts = BsaArchive::open(&scripts_path)?;
+    let stage22_trigger = index
+        .cells
+        .cells
+        .values()
+        .flat_map(|cell| &cell.references)
+        .chain(
+            index
+                .cells
+                .exterior_cells
+                .values()
+                .flat_map(|grids| grids.values())
+                .flat_map(|cell| &cell.references),
+        )
+        .chain(
+            index
+                .cells
+                .worldspace_persistent_cells
+                .values()
+                .flat_map(|cell| &cell.references),
+        )
+        .find(|placed| placed.form_id == 0x000C_1F80);
+    let stage22_recognized = stage22_trigger
+        .and_then(|placed| placed.script_instance.as_ref())
+        .and_then(|vmad| {
+            scripts
+                .extract("scripts\\defaultsetstagetrigspecificactor.pex")
+                .ok()
+                .and_then(|pex| translate_pex(&pex, index.game, Some(vmad), None))
+        });
+    let mut trigger_world = World::new();
+    byroredux_scripting::register(&mut trigger_world);
+    let trigger_entity = trigger_world.spawn();
+    if let Some(recognized) = &stage22_recognized {
+        (recognized.spawn)(&mut trigger_world, trigger_entity);
+    }
+    let trigger_component = trigger_world.get::<QuestAdvanceOnActivate>(trigger_entity);
+    checks.record(
+        "specific actor trigger",
+        trigger_component.is_some_and(|component| {
+            component.owning_quest == QuestFormId(MQ101_FORM_ID)
+                && component.target_stage == 22
+                && component.conditions.len() == 1
+                && component.conditions[0].param_2 == 15
+                && matches!(
+                    component.activator_gate,
+                    ActivatorGate::BaseForm(0x0006_54E5)
+                )
+                && component.disable_after_advance
+        }),
+        "0x000C1F80: MQ101Horse base gate + prereq 15 -> stage 22 + disable",
+    );
     let mut mq101_pex: Vec<String> = scripts
         .list_files()
         .into_iter()

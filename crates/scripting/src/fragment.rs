@@ -906,11 +906,13 @@ fn apply_effect(
                     * (cart_transform.translation - horse_transform.translation)
                     / horse_transform.scale,
                 horse_local_rotation: inverse_rotation * cart_transform.rotation,
+                route_target_form_id: None,
             };
             drop(cart_transform);
             drop(horse_transform);
             if let Some(mut tethers) = world.query_mut::<crate::HorseTetherState>() {
                 tethers.insert(cart, state);
+                log::info!("TetherToHorse attached cart entity {cart} to horse entity {horse}");
             }
             // The native engine realizes this relation through Havok. Redux's
             // deterministic transform follower needs the cart to stop being

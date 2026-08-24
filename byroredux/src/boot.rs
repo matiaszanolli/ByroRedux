@@ -852,6 +852,13 @@ pub(crate) fn build_scheduler() -> Scheduler {
     // OnTriggerEnterEvent emitted this frame is consumed the same
     // frame (before end-of-frame cleanup drains it).
     scheduler.add_exclusive(Stage::Update, trigger_detection_dispatch);
+    // Offscreen scene actors can reach cataloged trigger REFRs whose cells
+    // are not resident. Emit their logical OnTriggerEnter handoff here so
+    // quest_advance consumes it in the same frame.
+    scheduler.add_exclusive(
+        Stage::Update,
+        crate::systems::scene_trigger_actor_approach_system,
+    );
     scheduler.add_exclusive(Stage::Update, quest_advance_dispatch);
     // ESM data is installed before the player/event sink exists. Bootstrap
     // Start Game Enabled quests here so Begin On Quest Start scenes observe
@@ -924,6 +931,9 @@ pub(crate) fn build_scheduler() -> Scheduler {
     // Apply Papyrus SetMotionType requests after both immediate and resumed
     // fragment effects, before the Physics stage consumes body state.
     scheduler.add_exclusive(Stage::Update, crate::systems::scripted_motion_type_system);
+    // Native cart tethers consume the horse ACHR's XLKR marker chain before
+    // the attachment pass copies the resulting pose to carts and riders.
+    scheduler.add_exclusive(Stage::Update, crate::systems::cinematic_horse_route_system);
     // Resolve horse -> tethered cart -> SetVehicle rider poses before the
     // PostUpdate transform pass propagates the chain through actor skeletons.
     scheduler.add_exclusive(Stage::Update, crate::systems::vehicle_attachment_system);

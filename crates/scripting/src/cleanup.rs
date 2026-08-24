@@ -276,7 +276,12 @@ mod tests {
         let d = world.spawn();
         let e = world.spawn();
         let f = world.spawn();
-        world.insert(d, OnTriggerEnterEvent { triggerer: a });
+        world.insert(
+            d,
+            OnTriggerEnterEvent {
+                triggerers: vec![a],
+            },
+        );
         world.insert(e, OnCellLoadEvent);
         world.insert(f, OnEquipEvent { wearer: a });
         let g = world.spawn();

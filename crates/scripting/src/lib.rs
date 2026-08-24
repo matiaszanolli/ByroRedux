@@ -58,10 +58,10 @@ pub use fragment::{
 };
 pub use globals::Globals;
 pub use package::{
-    install_package_records, install_package_target_positions, scene_package_system,
-    ActiveScenePackageAction, EvaluatePackageRequest, PackageRegistry, PackageTargetRegistry,
-    ScenePackageCommand, ScenePackageCompletionBatch, ScenePackageEvent, ScenePackageEventBatch,
-    ScenePackagePlayback,
+    install_package_linked_references, install_package_records, install_package_target_directions,
+    install_package_target_positions, scene_package_system, ActiveScenePackageAction,
+    EvaluatePackageRequest, PackageRegistry, PackageTargetRegistry, ScenePackageCommand,
+    ScenePackageCompletionBatch, ScenePackageEvent, ScenePackageEventBatch, ScenePackagePlayback,
 };
 pub use player_control::{ActorControlState, PlayerControlSelection, PlayerControlState};
 pub use quest_stages::{
@@ -78,9 +78,9 @@ pub use scene::{
     quest_alias_diagnostics, quest_alias_refresh_system, refresh_scene_actor_bindings,
     scene_playback_system, ActiveSceneAction, QuestAliasDiagnostic, QuestAliasInjectedOverlays,
     QuestAliasInjectionState, QuestAliasResolutionState, QuestAliasRuntimeOverlays,
-    SceneActionCompletionBatch, SceneActorBindings, SceneAliasCandidate, SceneEvent,
-    SceneEventBatch, SceneFragmentInvocation, SceneFragmentInvocationBatch, ScenePlaybackState,
-    ScenePlayer, SceneRegistry, SceneStartRequest, SceneStopRequest,
+    RemoteSceneActorStub, SceneActionCompletionBatch, SceneActorBindings, SceneAliasCandidate,
+    SceneEvent, SceneEventBatch, SceneFragmentInvocation, SceneFragmentInvocationBatch,
+    ScenePlaybackState, ScenePlayer, SceneRegistry, SceneStartRequest, SceneStopRequest,
 };
 pub use timer::{timer_tick_system, ScriptTimer};
 pub use translate::{

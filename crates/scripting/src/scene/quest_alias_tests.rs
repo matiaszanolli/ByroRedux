@@ -17,6 +17,48 @@ use crate::quest_stages::QuestStageState;
 const QUEST: u32 = 0x200;
 
 #[test]
+fn loaded_forced_reference_replaces_remote_scene_stub() {
+    let mut world = World::new();
+    crate::register(&mut world);
+    world.insert_resource(QuestStageState::default());
+    world
+        .resource_mut::<QuestStageState>()
+        .start_quest(QuestFormId(QUEST), None);
+    let stub = world.spawn();
+    let loaded = world.spawn();
+    let candidate = SceneAliasCandidate {
+        reference_form_id: 0xA1,
+        base_form_id: 0xB1,
+        linked_refs: Vec::new(),
+        location_ref_types: Vec::new(),
+    };
+    world.insert(stub, candidate.clone());
+    world.insert(stub, RemoteSceneActorStub);
+    world.insert(loaded, candidate);
+    install_scene_quest_aliases(
+        &mut world,
+        [QustRecord {
+            form_id: QUEST,
+            aliases: vec![QuestAlias {
+                alias_id: 1,
+                fill_type: Some(AliasFillType::ForcedReference(0xA1)),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+    );
+
+    refresh_scene_actor_bindings(&world);
+
+    assert_eq!(
+        world
+            .resource::<SceneActorBindings>()
+            .resolve(QuestFormId(QUEST), 1),
+        Some(loaded)
+    );
+}
+
+#[test]
 fn quest_alias_diagnostics_classify_runtime_boundaries_and_dependencies() {
     let mut world = World::new();
     crate::register(&mut world);
@@ -760,6 +802,7 @@ fn quest_alias_injections_are_idempotent_and_clear_transient_factions() {
         fill_type: Some(AliasFillType::ForcedReference(0xA1)),
         injected: byroredux_plugin::esm::records::AliasInjectedData {
             factions: vec![0xF1, 0xF2],
+            packages: vec![0xD1],
             inventory: vec![(0xC1, 2), (0xC2, 1)],
             ..Default::default()
         },
@@ -792,6 +835,11 @@ fn quest_alias_injections_are_idempotent_and_clear_transient_factions() {
             .len(),
         1
     );
+    assert!(world.has::<crate::EvaluatePackageRequest>(actor));
+    world
+        .query_mut::<crate::EvaluatePackageRequest>()
+        .unwrap()
+        .remove(actor);
     assert_eq!(
         world
             .get::<QuestAliasRuntimeOverlays>(actor)
@@ -803,6 +851,10 @@ fn quest_alias_injections_are_idempotent_and_clear_transient_factions() {
 
     mark_scene_actor_bindings_dirty(&world);
     refresh_scene_actor_bindings(&world);
+    assert!(
+        !world.has::<crate::EvaluatePackageRequest>(actor),
+        "an unchanged alias package overlay must not restart AI"
+    );
     assert_eq!(
         world.get::<Inventory>(actor).unwrap().items.len(),
         2,
@@ -822,6 +874,10 @@ fn quest_alias_injections_are_idempotent_and_clear_transient_factions() {
         }],
     );
     refresh_scene_actor_bindings(&world);
+    assert!(
+        world.has::<crate::EvaluatePackageRequest>(actor),
+        "removing an alias package overlay must restore the base stack"
+    );
     assert_eq!(
         world.get::<FactionRanks>(actor).unwrap().rank(0xF1),
         Some(3)

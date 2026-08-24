@@ -76,6 +76,8 @@ impl PackageRegistry {
 #[derive(Debug, Clone, Default)]
 pub struct PackageTargetRegistry {
     positions: HashMap<u32, Vec3>,
+    directions: HashMap<u32, Vec3>,
+    linked_references: HashMap<u32, Vec<(u32, u32)>>,
 }
 
 impl Resource for PackageTargetRegistry {}
@@ -83,6 +85,21 @@ impl Resource for PackageTargetRegistry {}
 impl PackageTargetRegistry {
     pub fn position(&self, reference_form_id: u32) -> Option<Vec3> {
         self.positions.get(&reference_form_id).copied()
+    }
+
+    /// Resolve an authored XLKR edge. A keyword of zero is Skyrim's
+    /// unqualified/default link and is preferred before any named edge.
+    pub fn linked_reference(&self, reference_form_id: u32) -> Option<u32> {
+        let links = self.linked_references.get(&reference_form_id)?;
+        links
+            .iter()
+            .find(|(keyword, _)| *keyword == 0)
+            .or_else(|| links.first())
+            .map(|(_, target)| *target)
+    }
+
+    pub fn direction(&self, reference_form_id: u32) -> Option<Vec3> {
+        self.directions.get(&reference_form_id).copied()
     }
 
     pub fn len(&self) -> usize {
@@ -242,6 +259,40 @@ pub fn install_package_target_positions(
     let count = positions.len();
     let mut registry = world.resource_mut::<PackageTargetRegistry>();
     registry.positions.extend(positions);
+    count
+}
+
+/// Install authored XLKR edges used by linked-reference movement routes.
+pub fn install_package_linked_references(
+    world: &mut World,
+    links: impl IntoIterator<Item = (u32, Vec<(u32, u32)>)>,
+) -> usize {
+    if world.try_resource::<PackageTargetRegistry>().is_none() {
+        register(world);
+    }
+    let links: Vec<(u32, Vec<(u32, u32)>)> = links.into_iter().collect();
+    let count = links.len();
+    world
+        .resource_mut::<PackageTargetRegistry>()
+        .linked_references
+        .extend(links);
+    count
+}
+
+/// Install normalized Y-up forward vectors for linked route markers.
+pub fn install_package_target_directions(
+    world: &mut World,
+    directions: impl IntoIterator<Item = (u32, Vec3)>,
+) -> usize {
+    if world.try_resource::<PackageTargetRegistry>().is_none() {
+        register(world);
+    }
+    let directions: Vec<(u32, Vec3)> = directions.into_iter().collect();
+    let count = directions.len();
+    world
+        .resource_mut::<PackageTargetRegistry>()
+        .directions
+        .extend(directions);
     count
 }
 
