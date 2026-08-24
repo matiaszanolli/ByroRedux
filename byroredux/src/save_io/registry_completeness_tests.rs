@@ -175,7 +175,6 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("EvaluatePackageRequest", "one-shot ingress marker, drained every tick by scene_package_system"),
         // FragmentExecutionQueue: FIXED — registered (#2381 /
         // SAVE-D1-16), no longer allowlisted here.
-        ("Globals", "the runtime mutator (Globals::set) is explicitly documented as dormant — no production SetGlobalValue writer exists yet; re-evaluate when it lands"),
         ("HitEvent", "one-shot event marker drained every frame by event_cleanup_system"),
         ("SplashEvent", "one-shot water-surface event marker drained every frame by event_cleanup_system"),
         ("RippleEvent", "one-frame water-surface event marker drained every frame by event_cleanup_system"),

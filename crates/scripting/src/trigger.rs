@@ -293,6 +293,10 @@ pub fn trigger_detection_system(world: &World) {
     if entered.is_empty() {
         return;
     }
+    entered.retain(|(trigger, _)| actor_quest_trigger_is_in_sequence(world, *trigger));
+    if entered.is_empty() {
+        return;
+    }
     let Some(mut events) = world.query_mut::<OnTriggerEnterEvent>() else {
         return;
     };
@@ -311,6 +315,109 @@ pub fn trigger_detection_system(world: &World) {
             );
         }
     }
+}
+
+/// Prevent already-occupied actor triggers from skipping ahead of the scene
+/// that authors their ordering. During a scene, only stages up to the current
+/// phase's explicit `GetStageDone` wait may fire. Between scenes, only the
+/// lowest ready stage at or above the quest's current stage may fire.
+fn actor_quest_trigger_is_in_sequence(world: &World, trigger: EntityId) -> bool {
+    use byroredux_plugin::esm::records::condition::{ComparisonOp, ConditionValue};
+
+    let Some(advances) =
+        world.query::<crate::papyrus_demo::quest_advance::QuestAdvanceOnActivate>()
+    else {
+        return true;
+    };
+    let Some(advance) = advances.get(trigger) else {
+        return true;
+    };
+    if !matches!(
+        advance.activator_gate,
+        crate::papyrus_demo::quest_advance::ActivatorGate::BaseForm(_)
+    ) {
+        return true;
+    }
+    let Some(players) = world.query::<crate::ScenePlayer>() else {
+        return true;
+    };
+    let Some(registry) = world.try_resource::<crate::SceneRegistry>() else {
+        return true;
+    };
+
+    let mut has_running_scene = false;
+    let mut has_finished_scene = false;
+    let mut awaited_stages = Vec::new();
+    for (_, player) in players.iter() {
+        let Some(scene) = registry.definition(player.scene_form_id) else {
+            continue;
+        };
+        if scene.quest_form_id != Some(advance.owning_quest.0) {
+            continue;
+        }
+        if player.is_running() {
+            has_running_scene = true;
+            if let Some(phase) = scene.phases.get(player.current_phase as usize) {
+                awaited_stages.extend(phase.completion_conditions.iter().filter_map(|condition| {
+                    (condition.function_index == 59
+                        && condition.comparator == ComparisonOp::Eq
+                        && matches!(condition.comparand, ConditionValue::Literal(value) if (value - 1.0).abs() <= f32::EPSILON)
+                        && condition.param_1 == advance.owning_quest.0)
+                    .then_some(condition.param_2 as u16)
+                }));
+            }
+        } else if player.state == crate::ScenePlaybackState::Finished {
+            has_finished_scene = true;
+        }
+    }
+    if has_running_scene {
+        let allowed = awaited_stages
+            .into_iter()
+            .any(|stage| advance.target_stage <= stage);
+        if !allowed {
+            log::debug!(
+                "actor trigger {trigger} target {} held for its owning scene phase",
+                advance.target_stage
+            );
+        }
+        return allowed;
+    }
+    if !has_finished_scene {
+        return true;
+    }
+
+    let Some(stages) = world.try_resource::<crate::quest_stages::QuestStageState>() else {
+        return true;
+    };
+    let current_stage = stages.get_stage(advance.owning_quest);
+    let next_ready = advances
+        .iter()
+        .filter(|(_, candidate)| {
+            candidate.owning_quest == advance.owning_quest
+                && matches!(
+                    candidate.activator_gate,
+                    crate::papyrus_demo::quest_advance::ActivatorGate::BaseForm(_)
+                )
+                && candidate.target_stage >= current_stage
+                && !stages.get_stage_done(candidate.owning_quest, candidate.target_stage)
+        })
+        .filter(|(entity, candidate)| {
+            crate::condition::evaluate(
+                &candidate.conditions,
+                world,
+                &crate::condition::ConditionContext::for_subject(*entity),
+            )
+        })
+        .map(|(_, candidate)| candidate.target_stage)
+        .min();
+    let allowed = next_ready == Some(advance.target_stage);
+    if !allowed {
+        log::debug!(
+            "actor trigger {trigger} target {} held between scenes; next ready={next_ready:?}",
+            advance.target_stage
+        );
+    }
+    allowed
 }
 
 /// The player's world-space translation, via its [`GlobalTransform`].
@@ -746,6 +853,81 @@ mod tests {
         let event = world.get::<OnTriggerEnterEvent>(trigger).unwrap();
         assert_eq!(event.triggerers.len(), 2);
         assert!(actors.iter().all(|actor| event.triggerers.contains(actor)));
+    }
+
+    #[test]
+    fn actor_triggers_follow_scene_phase_and_between_scene_stage_order() {
+        use crate::papyrus_demo::quest_advance::{ActivatorGate, QuestAdvanceOnActivate};
+        use crate::quest_stages::{QuestFormId, QuestStageState};
+        use byroredux_plugin::esm::records::condition::{ComparisonOp, Condition, ConditionValue};
+        use byroredux_plugin::esm::records::{ScenRecord, ScenePhase};
+
+        let mut world = World::new();
+        crate::register(&mut world);
+        let quest = QuestFormId(0x3372B);
+        world.insert_resource(QuestStageState::default());
+        crate::install_scene_records(
+            &mut world,
+            [ScenRecord {
+                form_id: 0xBECD4,
+                quest_form_id: Some(quest.0),
+                phases: vec![
+                    ScenePhase::default(),
+                    ScenePhase {
+                        completion_conditions: vec![Condition {
+                            function_index: 59,
+                            comparator: ComparisonOp::Eq,
+                            comparand: ConditionValue::Literal(1.0),
+                            param_1: quest.0,
+                            param_2: 37,
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }],
+        );
+        let scene = world
+            .resource::<crate::SceneRegistry>()
+            .scene_entity(0xBECD4)
+            .unwrap();
+        world.get_mut::<crate::ScenePlayer>(scene).unwrap().state =
+            crate::ScenePlaybackState::Finished;
+        let trigger_32 = world.spawn();
+        let trigger_37 = world.spawn();
+        for (trigger, target_stage) in [(trigger_32, 32), (trigger_37, 37)] {
+            world.insert(
+                trigger,
+                QuestAdvanceOnActivate {
+                    owning_quest: quest,
+                    conditions: Vec::new(),
+                    target_stage,
+                    activator_gate: ActivatorGate::BaseForm(0xB9E1D),
+                    disable_after_advance: true,
+                },
+            );
+        }
+        {
+            let mut stages = world.resource_mut::<QuestStageState>();
+            stages.start_quest(quest, Some(0));
+            stages.set_stage(quest, 26);
+        }
+
+        assert!(actor_quest_trigger_is_in_sequence(&world, trigger_32));
+        assert!(!actor_quest_trigger_is_in_sequence(&world, trigger_37));
+
+        {
+            let player = world.get_mut::<crate::ScenePlayer>(scene).unwrap();
+            player.state = crate::ScenePlaybackState::Playing;
+            player.current_phase = 0;
+        }
+        assert!(!actor_quest_trigger_is_in_sequence(&world, trigger_37));
+        world
+            .get_mut::<crate::ScenePlayer>(scene)
+            .unwrap()
+            .current_phase = 1;
+        assert!(actor_quest_trigger_is_in_sequence(&world, trigger_37));
     }
 
     #[test]

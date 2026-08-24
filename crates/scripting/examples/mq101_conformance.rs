@@ -29,19 +29,21 @@ use byroredux_plugin::esm::records::script_instance::SceneFragmentEvent;
 use byroredux_plugin::esm::records::{
     SceneActionType, QUEST_FLAG_START_GAME_ENABLED, SCENE_BEGIN_ON_QUEST_START,
 };
-use byroredux_scripting::fragment::quest_property_names;
+use byroredux_scripting::fragment::{populate_quest_fragments_from_script, quest_property_names};
 use byroredux_scripting::papyrus_demo::quest_advance::{ActivatorGate, QuestAdvanceOnActivate};
 use byroredux_scripting::papyrus_demo::PlayerEntity;
 use byroredux_scripting::quest_stages::QuestStageState;
 use byroredux_scripting::translate::compose::QuestRef;
-use byroredux_scripting::translate::effects::{lower_fragment_with_quest_properties, Effect};
+use byroredux_scripting::translate::effects::{
+    lower_fragment_with_quest_properties, Effect, StageDoneGuard,
+};
 use byroredux_scripting::{
     dispatch_player_cinematic_animation_event, image_space_modifier_system,
     install_engine_start_quest, install_image_space_modifiers, install_scene_quest_aliases,
     install_scene_records, quest_startup_system, refresh_scene_actor_bindings,
     scene_playback_system, translate_pex, CinematicAnimationEvent, CinematicPresentationState,
     ConditionFunction, DialogueRegistry, ImageSpaceModifierApplication, QuestFormId,
-    SceneAliasCandidate, ScenePlaybackState, ScenePlayer, SceneRegistry,
+    QuestStageFragments, SceneAliasCandidate, ScenePlaybackState, ScenePlayer, SceneRegistry,
 };
 
 const MQ101_FORM_ID: u32 = 0x0003_372b;
@@ -114,6 +116,8 @@ impl Checks {
 
 fn effect_kind(effect: &Effect) -> &'static str {
     match effect {
+        Effect::Conditional { .. } => "Conditional",
+        Effect::SetGlobalValue { .. } => "SetGlobalValue",
         Effect::SetStage { .. } => "SetStage",
         Effect::StartQuest { .. } => "StartQuest",
         Effect::StopQuest { .. } => "StopQuest",
@@ -1288,6 +1292,56 @@ fn run() -> Result<Checks, Box<dyn Error>> {
             )
         },
     );
+    let scene_1_end_effects = mq101_scenes
+        .iter()
+        .find(|scene| scene.form_id == 0x000B_ECD4)
+        .and_then(|scene| {
+            scene
+                .fragments
+                .iter()
+                .find(|binding| binding.event == SceneFragmentEvent::End)
+        })
+        .and_then(|binding| {
+            let path = format!("scripts\\{}.pex", binding.script_name);
+            let script = scripts
+                .extract(&path)
+                .ok()
+                .and_then(|bytes| parse(&bytes).ok())
+                .and_then(|pex| decompile_script(&pex).ok())?;
+            let properties = quest_property_names(&script);
+            let function = script.body.iter().find_map(|item| match &item.node {
+                ScriptItem::Function(function)
+                    if function
+                        .name
+                        .node
+                        .0
+                        .eq_ignore_ascii_case(&binding.fragment_name) =>
+                {
+                    Some(function)
+                }
+                _ => None,
+            })?;
+            lower_fragment_with_quest_properties(&function.body, &properties)
+        });
+    let scene_1_end_ok = matches!(
+        scene_1_end_effects.as_deref(),
+        Some([Effect::Conditional { guards, then_effects, else_effects }])
+            if guards == &[
+                StageDoneGuard { quest: QuestRef::OwningQuest, stage: 2, done: false },
+                StageDoneGuard { quest: QuestRef::OwningQuest, stage: 6, done: false },
+                StageDoneGuard { quest: QuestRef::OwningQuest, stage: 7, done: false },
+            ]
+            && matches!(then_effects.as_slice(), [Effect::SetStage { quest: QuestRef::OwningQuest, stage: 35 }])
+            && else_effects.is_empty()
+    );
+    checks.record(
+        "Scene1 end handoff",
+        scene_1_end_ok,
+        scene_1_end_effects.map_or_else(
+            || "Scene1 Fragment_6 did not lower".to_owned(),
+            |effects| format!("Scene1 Fragment_6 lowered to {effects:?}"),
+        ),
+    );
     checks.record(
         "package fragment assets",
         package_count > 0,
@@ -1547,6 +1601,61 @@ fn run() -> Result<Checks, Box<dyn Error>> {
                                 )
                             },
                         );
+                        let startup_effects = functions.get("fragment_2").and_then(|function| {
+                            lower_fragment_with_quest_properties(&function.body, &quest_properties)
+                        });
+                        let startup_ok = matches!(
+                            startup_effects.as_deref(),
+                            Some([
+                                Effect::SetGlobalValue { global, value },
+                                Effect::SetStage { quest: QuestRef::SelfRef, stage: 10 },
+                            ]) if global.property_name().eq_ignore_ascii_case("GameHour")
+                                && (*value - 7.0).abs() <= f32::EPSILON
+                        );
+                        checks.record(
+                            "stage 0 handoff",
+                            startup_ok,
+                            startup_effects.map_or_else(
+                                || "Fragment_2 did not lower".to_owned(),
+                                |effects| format!("Fragment_2 lowered to {effects:?}"),
+                            ),
+                        );
+                        let bindings = quest
+                            .fragments
+                            .iter()
+                            .map(|binding| (binding.stage, binding.fragment_name.as_str()))
+                            .collect::<Vec<_>>();
+                        let mut runtime_fragments = QuestStageFragments::default();
+                        populate_quest_fragments_from_script(
+                            &mut runtime_fragments,
+                            QuestFormId(MQ101_FORM_ID),
+                            &script,
+                            &bindings,
+                        );
+                        let runtime_stage_zero = runtime_fragments
+                            .get(QuestFormId(MQ101_FORM_ID), 0)
+                            .unwrap_or_default();
+                        let runtime_handoff_ok = runtime_stage_zero.windows(2).any(|pair| {
+                            matches!(
+                                pair,
+                                [
+                                    Effect::SetGlobalValue { global, value },
+                                    Effect::SetStage {
+                                        quest: QuestRef::SelfRef,
+                                        stage: 10,
+                                    },
+                                ] if global.property_name().eq_ignore_ascii_case("GameHour")
+                                    && (*value - 7.0).abs() <= f32::EPSILON
+                            )
+                        });
+                        checks.record(
+                            "stage 0 runtime chain",
+                            runtime_handoff_ok,
+                            format!(
+                                "{} aggregate effects from duplicate stage bindings",
+                                runtime_stage_zero.len()
+                            ),
+                        );
                         let cart_init_effects =
                             functions.get("fragment_175").and_then(|function| {
                                 lower_fragment_with_quest_properties(
@@ -1615,7 +1724,6 @@ fn run() -> Result<Checks, Box<dyn Error>> {
                                 |effects| format!("Fragment_111 lowered to {effects:?}"),
                             ),
                         );
-
                         let pct = if behavioral == 0 {
                             0.0
                         } else {

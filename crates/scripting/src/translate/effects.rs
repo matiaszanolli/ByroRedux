@@ -43,8 +43,19 @@ use byroredux_papyrus::span::Spanned;
 use crate::cinematic::CinematicAnimationEvent;
 use crate::player_control::PlayerControlSelection;
 use crate::translate::compose::{
-    as_num, int_arg, is_game_get_player, method_call, quest_via, ObjectRef, QuestRef,
+    as_num, classify_guard_atom, int_arg, is_game_get_player, method_call, quest_via, split_and,
+    GuardMatch, ObjectRef, QuestRef,
 };
+
+/// One conservatively lowered `Quest.GetStageDone` predicate guarding a
+/// fragment branch.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
+pub struct StageDoneGuard {
+    pub quest: QuestRef,
+    pub stage: u16,
+    pub done: bool,
+}
 
 /// A canonical effect a fragment statement lowers to. The runtime applies
 /// quest-scoped variants against [`QuestStageState`] / [`QuestObjectiveState`]
@@ -55,6 +66,17 @@ use crate::translate::compose::{
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub enum Effect {
+    /// `If <GetStageDone && ...> ... [Else ...] EndIf`. Only conjunctions
+    /// of exact boolean stage predicates lower; elseif/disjunction and latent
+    /// effects inside either branch remain decline-on-unknown.
+    Conditional {
+        guards: Vec<StageDoneGuard>,
+        then_effects: Vec<Effect>,
+        else_effects: Vec<Effect>,
+    },
+    /// `<global>.SetValue(value)` — resolves the VMAD-bound GLOB FormID and
+    /// updates the canonical runtime [`crate::Globals`] table.
+    SetGlobalValue { global: ObjectRef, value: f32 },
     /// `<quest>.SetStage(stage)`.
     SetStage { quest: QuestRef, stage: u16 },
     /// `<quest>.Start()`.
@@ -210,7 +232,7 @@ pub enum ActorRef {
 /// by [`quest_via`]). The distinction matters: a declared local used as
 /// an effect receiver but not quest-bound must **decline**, never be
 /// misread as a same-named `Quest Property`.
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Scope {
     quest_locals: HashMap<String, QuestRef>,
     object_locals: HashMap<String, ObjectRef>,
@@ -273,6 +295,10 @@ pub fn lower_fragment_with_quest_properties(
         known_quest_properties: quest_property_names.clone(),
         ..Scope::default()
     };
+    lower_statements(body, &mut scope)
+}
+
+fn lower_statements(body: &[Spanned<Stmt>], scope: &mut Scope) -> Option<Vec<Effect>> {
     let mut effects = Vec::new();
     for stmt in body {
         match &stmt.node {
@@ -283,7 +309,7 @@ pub fn lower_fragment_with_quest_properties(
             Stmt::VarDecl(var) => {
                 let name = var.name.node.0.to_ascii_lowercase();
                 match &var.initial_value {
-                    Some(init) => bind_local(&mut scope, name, &init.node)?,
+                    Some(init) => bind_local(scope, name, &init.node)?,
                     None => {
                         scope.decl_locals.insert(name);
                     }
@@ -294,13 +320,63 @@ pub fn lower_fragment_with_quest_properties(
                 let Expr::Ident(name) = &target.node else {
                     return None; // assignment to a field/index — unmodeled
                 };
-                bind_local(&mut scope, name.0.to_ascii_lowercase(), &value.node)?;
+                bind_local(scope, name.0.to_ascii_lowercase(), &value.node)?;
             }
             // `Return` with no value is Champollion's fragment terminator.
             Stmt::Return(None) => {}
             Stmt::ExprStmt(e) => effects.push(classify_effect(&e.node, &scope)?),
             Stmt::While { condition, body } => {
                 effects.push(lower_3d_loaded_wait(&condition.node, body, &scope)?);
+            }
+            Stmt::If {
+                condition,
+                body,
+                elseif_clauses,
+                else_body,
+            } => {
+                if !elseif_clauses.is_empty() {
+                    return None;
+                }
+                let mut atoms = Vec::new();
+                split_and(&condition.node, &mut atoms);
+                let guards = atoms
+                    .into_iter()
+                    .map(|atom| match classify_guard_atom(atom, None)? {
+                        GuardMatch::StageDone {
+                            via,
+                            stage,
+                            expected,
+                        } if expected == 0.0 || expected == 1.0 => Some(StageDoneGuard {
+                            quest: via,
+                            stage,
+                            done: expected == 1.0,
+                        }),
+                        _ => None,
+                    })
+                    .collect::<Option<Vec<_>>>()?;
+                let mut then_scope = scope.clone();
+                let then_effects = lower_statements(body, &mut then_scope)?;
+                let mut else_scope = scope.clone();
+                let else_effects = match else_body.as_deref() {
+                    Some(body) => lower_statements(body, &mut else_scope)?,
+                    None => Vec::new(),
+                };
+                let has_latent = |branch: &[Effect]| {
+                    branch.iter().any(|effect| {
+                        matches!(
+                            effect,
+                            Effect::Wait { .. } | Effect::WaitForActors3DLoaded { .. }
+                        )
+                    })
+                };
+                if has_latent(&then_effects) || has_latent(&else_effects) {
+                    return None;
+                }
+                effects.push(Effect::Conditional {
+                    guards,
+                    then_effects,
+                    else_effects,
+                });
             }
             // Other control flow / valued return remain outside this
             // increment's conservative sequence model — decline.
@@ -399,6 +475,7 @@ type EffectPrimitive = fn(&Expr, &Scope) -> Option<Effect>;
 
 /// The effect-primitive table. First match wins.
 const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
+    prim_set_global_value,
     prim_set_stage,
     prim_start_quest,
     prim_stop_quest,
@@ -496,6 +573,17 @@ fn collect_not_3d_loaded_actors(
 }
 
 // ── Effect primitives ────────────────────────────────────────────────
+
+fn prim_set_global_value(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "SetValue")?;
+    if args.len() != 1 {
+        return None;
+    }
+    Some(Effect::SetGlobalValue {
+        global: receiver_object(object, scope)?,
+        value: as_num(&args[0].value.node)?,
+    })
+}
 
 fn prim_set_stage(e: &Expr, scope: &Scope) -> Option<Effect> {
     let (object, args) = method_call(e, "SetStage")?;
@@ -1214,6 +1302,31 @@ mod tests {
                 quest: QuestRef::SelfRef,
                 stage: 20
             }])
+        );
+    }
+
+    #[test]
+    fn lowers_global_set_value_before_stage_handoff() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             GlobalVariable Property GameHour Auto\n\
+             Function Fragment_0()\n\
+             GameHour.SetValue(7.0)\n\
+             Self.SetStage(10)\n\
+             EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&body),
+            Some(vec![
+                Effect::SetGlobalValue {
+                    global: ObjectRef::Property("GameHour".into()),
+                    value: 7.0,
+                },
+                Effect::SetStage {
+                    quest: QuestRef::SelfRef,
+                    stage: 10,
+                },
+            ])
         );
     }
 
@@ -1970,11 +2083,50 @@ mod tests {
     }
 
     #[test]
-    fn declines_on_control_flow() {
+    fn lowers_get_stage_done_conditional() {
         let body = first_fn_body(
             "ScriptName QF extends Quest\n\
              Function Fragment_5()\n\
-             If Self.GetStageDone(5)\n Self.SetStage(10)\n EndIf\n EndFunction\n",
+             If Self.GetStageDone(2) == false && Self.GetStageDone(6) == 0\n\
+               Self.SetStage(35)\n\
+             Else\n\
+               Self.SetStage(7)\n\
+             EndIf\n\
+             EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&body),
+            Some(vec![Effect::Conditional {
+                guards: vec![
+                    StageDoneGuard {
+                        quest: QuestRef::SelfRef,
+                        stage: 2,
+                        done: false,
+                    },
+                    StageDoneGuard {
+                        quest: QuestRef::SelfRef,
+                        stage: 6,
+                        done: false,
+                    },
+                ],
+                then_effects: vec![Effect::SetStage {
+                    quest: QuestRef::SelfRef,
+                    stage: 35,
+                }],
+                else_effects: vec![Effect::SetStage {
+                    quest: QuestRef::SelfRef,
+                    stage: 7,
+                }],
+            }]),
+        );
+    }
+
+    #[test]
+    fn declines_unmodeled_conditional_guard() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_5()\n\
+             If Self.GetStage() >= 5\n Self.SetStage(10)\n EndIf\n EndFunction\n",
         );
         assert_eq!(lower_fragment(&body), None);
     }

@@ -18,6 +18,7 @@ use std::collections::HashMap;
 
 /// Runtime GLOB values, keyed by global-load-order FormID.
 #[derive(Debug, Clone, Default)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct Globals(pub HashMap<u32, f32>);
 
 impl Globals {
@@ -45,8 +46,8 @@ impl Globals {
         self.0.get(&form_id).copied()
     }
 
-    /// Set (or insert) a GLOB's runtime value — the `SetGlobalValue`
-    /// mutation surface a future script runtime writes through.
+    /// Set (or insert) a GLOB's runtime value. Fragment effects such as
+    /// Papyrus `GlobalVariable.SetValue` write through this surface.
     pub fn set(&mut self, form_id: u32, value: f32) {
         self.0.insert(form_id, value);
     }

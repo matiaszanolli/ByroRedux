@@ -580,6 +580,7 @@ impl DeferredFragmentEffects {
 /// **Nested-lock safety depends on exclusive scheduling.** The full
 /// residual list, current as of #2660 (SCR-D6-NEW11-03):
 ///   - `PlayerControlState` (3 writes — `SetPlayerControls`-family arms)
+///   - `Globals` (1 write — `SetGlobalValue`)
 ///   - 12 component-storage acquisitions across the match arms below,
 ///     including `Inventory` (`AddItem`) and `GlobalTransform` +
 ///     `Transform` (`MoveTo`)
@@ -615,6 +616,17 @@ fn apply_effect(
     deferred: &mut DeferredFragmentEffects,
 ) -> Option<QuestStageAdvanced> {
     match effect {
+        Effect::SetGlobalValue { global, value } => {
+            let form_id = resolve_property_form_id(vmad, global.property_name())?;
+            if let Some(mut globals) = world.try_resource_mut::<crate::Globals>() {
+                globals.set(form_id, *value);
+            } else {
+                log::debug!(
+                    "fragment SetValue skipped: Globals resource is unavailable for {form_id:08X}"
+                );
+            }
+            None
+        }
         Effect::AddItem {
             container,
             item,
@@ -1062,6 +1074,9 @@ fn apply_effect(
             None
         }
         Effect::Wait { .. } | Effect::WaitForActors3DLoaded { .. } => None,
+        Effect::Conditional { .. } => {
+            unreachable!("conditional effects are expanded by apply_effects")
+        }
         _ => apply_quest_scoped_effect(effect, context, vmad, stages, objectives, deferred),
     }
 }
@@ -1208,7 +1223,9 @@ fn apply_quest_scoped_effect(
             }
             None
         }
-        Effect::AddItem { .. }
+        Effect::Conditional { .. }
+        | Effect::SetGlobalValue { .. }
+        | Effect::AddItem { .. }
         | Effect::EquipItem { .. }
         | Effect::MoveTo { .. }
         | Effect::Disable { .. }
@@ -1250,6 +1267,22 @@ pub fn apply_effects(
 ) -> Vec<QuestStageAdvanced> {
     let mut advances = Vec::new();
     for (index, effect) in effects.iter().enumerate() {
+        if let Effect::Conditional {
+            guards,
+            then_effects,
+            else_effects,
+        } = effect
+        {
+            let passes = guards.iter().all(|guard| {
+                resolve_quest_logged(&guard.quest, context, vmad)
+                    .is_some_and(|quest| stages.get_stage_done(quest, guard.stage) == guard.done)
+            });
+            let branch = if passes { then_effects } else { else_effects };
+            advances.extend(apply_effects(
+                branch, context, vmad, world, stages, objectives, deferred,
+            ));
+            continue;
+        }
         let suspension = match effect {
             Effect::Wait { seconds } => Some((*seconds, FragmentResumeCondition::DelayElapsed)),
             Effect::WaitForActors3DLoaded {
@@ -1577,6 +1610,14 @@ pub fn populate_quest_fragments_from_script(
     bindings: &[(u16, &str)],
 ) -> usize {
     let mut inserted = 0;
+    // A QUST stage may carry several log entries, each with its own
+    // Fragment_N binding (MQ101 stage 0 has five). They all run when that
+    // stage is set, in VMAD order. Build one ordered effect chain per stage
+    // and replace the installed chain once, rather than letting the last
+    // binding silently overwrite its siblings. Replacing once also keeps
+    // repeated cell-load population idempotent.
+    let mut stage_order = Vec::new();
+    let mut effects_by_stage: HashMap<u16, Vec<Effect>> = HashMap::new();
     // #2538 / SCR-D5-NEW10-01 — computed once per script, not per
     // fragment; every fragment in the same script shares the same
     // property declarations.
@@ -1595,9 +1636,17 @@ pub fn populate_quest_fragments_from_script(
         // the map (a lookup miss is equivalent to an empty entry).
         if let Some(effects) = lower_fragment_with_quest_properties(body, &quest_properties) {
             if !effects.is_empty() {
-                frags.insert(quest, *stage, effects);
+                if !effects_by_stage.contains_key(stage) {
+                    stage_order.push(*stage);
+                }
+                effects_by_stage.entry(*stage).or_default().extend(effects);
                 inserted += 1;
             }
+        }
+    }
+    for stage in stage_order {
+        if let Some(effects) = effects_by_stage.remove(&stage) {
+            frags.insert(quest, stage, effects);
         }
     }
     inserted

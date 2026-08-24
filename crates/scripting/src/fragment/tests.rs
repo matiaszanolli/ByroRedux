@@ -8,7 +8,7 @@ use crate::quest_stages::{
     QuestFormId, QuestObjectiveState, QuestStageAdvanced, QuestStageAdvancedBatch, QuestStageState,
 };
 use crate::translate::compose::{ObjectRef, QuestRef};
-use crate::translate::effects::Effect;
+use crate::translate::effects::{Effect, StageDoneGuard};
 use crate::CinematicAnimationEvent;
 use byroredux_core::ecs::world::World;
 
@@ -92,6 +92,47 @@ fn apply_effects_writes_stage_and_objectives() {
     // Only the SetStage produces a QuestStageAdvanced.
     assert_eq!(advances.len(), 1);
     assert_eq!(advances[0].new_stage, 30);
+}
+
+#[test]
+fn apply_effects_selects_get_stage_done_conditional_branch() {
+    let world = World::new();
+    let effects = vec![Effect::Conditional {
+        guards: vec![StageDoneGuard {
+            quest: QuestRef::SelfRef,
+            stage: 2,
+            done: false,
+        }],
+        then_effects: vec![Effect::SetStage {
+            quest: QuestRef::SelfRef,
+            stage: 35,
+        }],
+        else_effects: vec![Effect::SetStage {
+            quest: QuestRef::SelfRef,
+            stage: 7,
+        }],
+    }];
+
+    for (stage_2_done, expected) in [(false, 35), (true, 7)] {
+        let mut stages = QuestStageState::default();
+        if stage_2_done {
+            stages.set_stage(Q, 2);
+        }
+        let mut objectives = QuestObjectiveState::default();
+        let mut deferred = DeferredFragmentEffects::new(&world);
+        let advances = apply_effects(
+            &effects,
+            Q,
+            None,
+            &world,
+            &mut stages,
+            &mut objectives,
+            &mut deferred,
+        );
+        assert_eq!(advances.len(), 1);
+        assert_eq!(advances[0].new_stage, expected);
+        assert!(stages.get_stage_done(Q, expected));
+    }
 }
 
 #[test]
@@ -232,6 +273,50 @@ fn property_targeted_effect_skipped_without_vmad() {
     deferred.apply(&world);
     assert!(advances.is_empty());
     assert_eq!(stages.get_stage(Q), 0, "no quest was touched");
+}
+
+#[test]
+fn set_global_value_resolves_vmad_and_updates_runtime_table() {
+    use byroredux_plugin::esm::records::script_instance::{
+        PropertyValue, ScriptInstance, ScriptInstanceData, ScriptProperty,
+    };
+
+    const GAME_HOUR: u32 = 0x0000_0038;
+    let mut world = World::new();
+    world.insert_resource(crate::Globals::default());
+    let vmad = ScriptInstanceData {
+        scripts: vec![ScriptInstance {
+            name: "QF_GlobalValueTest".into(),
+            status: 0,
+            properties: vec![ScriptProperty {
+                name: "GameHour".into(),
+                status: 1,
+                value: PropertyValue::Object {
+                    form_id: GAME_HOUR,
+                    alias: -1,
+                },
+            }],
+        }],
+        ..Default::default()
+    };
+    let mut stages = QuestStageState::default();
+    let mut objectives = QuestObjectiveState::default();
+    let mut deferred = DeferredFragmentEffects::new(&world);
+    let advances = apply_effects(
+        &[Effect::SetGlobalValue {
+            global: ObjectRef::Property("::GameHour_var".into()),
+            value: 7.0,
+        }],
+        Q,
+        Some(&vmad),
+        &world,
+        &mut stages,
+        &mut objectives,
+        &mut deferred,
+    );
+
+    assert!(advances.is_empty());
+    assert_eq!(world.resource::<crate::Globals>().get(GAME_HOUR), Some(7.0));
 }
 
 /// Regression for #2269: quest fragment dispatch must not acquire
@@ -578,6 +663,45 @@ fn populate_from_script_binds_stages_to_the_right_fragments() {
         world.resource::<QuestObjectiveState>().get(Q, 10).completed,
         "the stage-200 cascade ran Fragment_3"
     );
+}
+
+#[test]
+fn populate_from_script_appends_duplicate_stage_bindings_idempotently() {
+    use byroredux_papyrus::parse_script;
+
+    let (script, errs) = parse_script(
+        "ScriptName QF_DuplicateStage_0 extends Quest\n\
+         Function Fragment_0()\n Self.SetObjectiveDisplayed(10)\n EndFunction\n\
+         Function Fragment_1()\n Self.SetObjectiveCompleted(20)\n EndFunction\n",
+    )
+    .expect("QF_ script parses");
+    assert!(errs.is_empty(), "{errs:?}");
+    let bindings = [(0u16, "Fragment_0"), (0u16, "Fragment_1")];
+
+    let world = fixture();
+    {
+        let mut frags = world.resource_mut::<QuestStageFragments>();
+        assert_eq!(
+            populate_quest_fragments_from_script(&mut frags, Q, &script, &bindings),
+            2
+        );
+        assert_eq!(
+            populate_quest_fragments_from_script(&mut frags, Q, &script, &bindings),
+            2,
+            "repopulation lowers both bindings again"
+        );
+        assert_eq!(
+            frags.get(Q, 0).map(<[Effect]>::len),
+            Some(2),
+            "duplicate stage bindings append in VMAD order without duplicating on reload"
+        );
+    }
+
+    emit_advance(&world, Q, 0);
+    quest_fragment_dispatch_system(&world);
+    let objectives = world.resource::<QuestObjectiveState>();
+    assert!(objectives.get(Q, 10).displayed);
+    assert!(objectives.get(Q, 20).completed);
 }
 
 #[test]

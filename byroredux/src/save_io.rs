@@ -217,8 +217,8 @@ pub fn build_save_registry() -> SaveRegistry {
     use byroredux_scripting::quest_stages::{QuestObjectiveState, QuestStageState};
     use byroredux_scripting::{
         ActorCinematicState, ActorControlState, CinematicPresentationState, FragmentExecutionQueue,
-        HorseTetherState, PlayerControlState, QuestAliasInjectionState, ReferenceEnableState,
-        ScriptTimer, ScriptVariables, TwoStateActivator,
+        Globals, HorseTetherState, PlayerControlState, QuestAliasInjectionState,
+        ReferenceEnableState, ScriptTimer, ScriptVariables, TwoStateActivator,
     };
 
     use crate::cell_loader::{CurrentCellContext, CurrentExteriorContext};
@@ -338,6 +338,10 @@ pub fn build_save_registry() -> SaveRegistry {
         // to default on every save/load.
         .register_resource::<QuestStageState>("QuestStageState")
         .register_resource::<QuestObjectiveState>("QuestObjectiveState")
+        // MQ101's startup fragment writes GameHour before advancing to stage
+        // 10. GLOB values are mutable game state, so a save/load must retain
+        // the scripted value instead of silently restoring the ESM default.
+        .register_resource::<Globals>("Globals")
         // QUST alias CNTO injections are permanent. Preserve their grant
         // ledger so the derived alias refresh after load cannot duplicate
         // already-saved inventory stacks. Faction bookkeeping inside this
