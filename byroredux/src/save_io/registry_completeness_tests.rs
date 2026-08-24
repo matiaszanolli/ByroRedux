@@ -332,6 +332,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("PendingCellTransitionSlot", "one-shot queued-transition slot, always present but empty except mid-transition"),
         ("PendingDeathReconciliations", "same-frame death handoff queue drained by the late exclusive reconciliation sink; canonical Dead state is saved separately"),
         ("PendingSaveLoadSlot", "one-shot queued-load slot (#1848/SAVE-05), empty except mid-drain — save/load plumbing itself, not save-worthy state"),
+        ("SaveLoadNotifications", "one-shot player-feedback queue drained into the HUD/console before the next frame"),
         ("PersistentRefIndex", "lazily-rebuilt FormId->Entity cache scoped to the resident persistent CELL (EX-09/#2370), repopulated on demand by cell_loader::persistent_ref_index — same posture as CellRootIndex/NameIndex"),
         ("PlayerEntity", "points to the process-lifetime player body, which deliberately outlives cell unload; the entity remains valid across live reload and the resource is process-local identity, not gameplay state"),
         ("PlayerInventoryTemplate", "read-only starting loadout rebuilt from the master Player NPC record; live Inventory/EquipmentSlots are saved separately"),

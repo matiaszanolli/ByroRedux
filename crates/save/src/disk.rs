@@ -259,10 +259,8 @@ mod tests {
 
     #[test]
     fn latest_slot_ignores_newer_tmp_and_empty_directory() {
-        let dir = std::env::temp_dir().join(format!(
-            "byro_save_latest_filter_{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("byro_save_latest_filter_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         assert_eq!(latest_slot(&dir), None);

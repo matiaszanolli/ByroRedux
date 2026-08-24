@@ -387,23 +387,13 @@ impl App {
         // Queue startup restore after the save resources exist. The request
         // drains after renderer and scene setup, sharing the F9/menu path.
         if let Some(slot) = cli_args::parse_string_arg(args, "--load") {
-            match slot.parse::<u32>() {
-                Ok(slot) => {
-                    let output = save_io::queue_load_slot(&world, slot);
-                    if save_io::command_output_is_failure(&output) {
-                        log::warn!("startup --load: {}", output.lines.join(" | "));
-                    } else {
-                        log::info!("startup --load: {}", output.lines.join(" | "));
-                    }
-                    pending_player_messages.extend(output.lines);
-                }
-                Err(_) => {
-                    let message =
-                        format!("Error: --load requires a numeric save slot, got '{slot}'");
-                    log::error!("{message}");
-                    pending_player_messages.push(message);
-                }
+            let output = save_io::queue_startup_load(&world, &slot);
+            if save_io::command_output_is_failure(&output) {
+                log::warn!("startup --load: {}", output.lines.join(" | "));
+            } else {
+                log::info!("startup --load: {}", output.lines.join(" | "));
             }
+            pending_player_messages.extend(output.lines);
         }
 
         // Universal settings live in core and are presented by the on-screen

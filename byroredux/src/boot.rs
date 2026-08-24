@@ -1555,6 +1555,7 @@ pub(crate) fn install_runtime_registries(world: &mut World, scheduler: &Schedule
     // M45.1 — deferred live-load slot, drained by `step_save_loads`
     // between frames (the `load` command has only `&World`).
     world.insert_resource(crate::save_io::PendingSaveLoadSlot::default());
+    world.insert_resource(crate::save_io::SaveLoadNotifications::default());
     // M45.1 refinement — player/camera pose, refreshed each frame by
     // `capture_player_pose` and rode along in the snapshot so `load`
     // restores the saved spot instead of the cell's default door.

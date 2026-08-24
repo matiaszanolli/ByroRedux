@@ -796,3 +796,51 @@ fn npc_spawn_stamped_components_are_saved_or_intentionally_rederived() {
         );
     }
 }
+
+#[test]
+fn character_controller_breath_state_survives_live_delta_overlay() {
+    use byroredux_core::ecs::components::FormIdComponent;
+    use byroredux_core::form_id::{FormIdPair, LocalFormId, PluginId};
+    use byroredux_physics::CharacterController;
+
+    let pair = FormIdPair {
+        plugin: PluginId::from_filename("Player.esm"),
+        local: LocalFormId(0x14),
+    };
+    let registry = build_save_registry();
+    let mut saved = World::new();
+    saved.insert_resource(StringPool::new());
+    saved.insert_resource(FormIdPool::new());
+    let old = saved.spawn();
+    let fid = saved.resource_mut::<FormIdPool>().intern(pair);
+    saved.insert(old, FormIdComponent(fid));
+    let mut controller = CharacterController::HUMAN;
+    controller.breath_remaining = 12.25;
+    controller.drowning_damage_accumulator = 0.625;
+    saved.insert(old, controller);
+    let snapshot = save_world(&saved, &registry).unwrap();
+
+    let mut live = World::new();
+    live.insert_resource(FormIdPool::new());
+    let current = live.spawn();
+    let fid = live.resource_mut::<FormIdPool>().intern(pair);
+    live.insert(current, FormIdComponent(fid));
+    let mut stale = CharacterController::HUMAN;
+    stale.breath_remaining = 0.2;
+    stale.drowning_damage_accumulator = 9.0;
+    live.insert(current, stale);
+
+    let remap = byroredux_save::build_form_id_remap(&live, &registry, &snapshot);
+    byroredux_save::apply_deltas(
+        &mut live,
+        &registry,
+        &snapshot,
+        &remap,
+        MUTABLE_DELTA_COLUMNS,
+    )
+    .unwrap();
+    let query = live.query::<CharacterController>().unwrap();
+    let restored = query.get(current).unwrap();
+    assert_eq!(restored.breath_remaining, 12.25);
+    assert_eq!(restored.drowning_damage_accumulator, 0.625);
+}

@@ -367,3 +367,55 @@ fn quickload_empty_errors_and_corrupt_newest_falls_back() {
     assert_eq!(world.resource::<PendingSaveLoadSlot>().slot, 0);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn startup_load_parser_queues_valid_slot_and_surfaces_invalid_value() {
+    let dir = std::env::temp_dir().join(format!("byro_startup_load_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let world = quicksave_test_world(dir.clone());
+    assert!(!command_output_is_failure(
+        &SaveCommand.execute(&world, "3")
+    ));
+
+    let invalid = queue_startup_load(&world, "not-a-slot");
+    assert!(command_output_is_failure(&invalid));
+    assert!(invalid
+        .lines
+        .join(" ")
+        .contains("--load requires a numeric"));
+
+    let valid = queue_startup_load(&world, "3");
+    assert!(!command_output_is_failure(&valid));
+    assert_eq!(world.resource::<PendingSaveLoadSlot>().slot, 3);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn validation_aborted_quicksave_is_classified_for_player_feedback() {
+    use byroredux_core::ecs::components::FormIdComponent;
+    use byroredux_core::form_id::{FormIdPair, LocalFormId, PluginId};
+
+    let dir = std::env::temp_dir().join(format!("byro_abort_feedback_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut world = quicksave_test_world(dir.clone());
+    let stray = {
+        let mut pool = FormIdPool::new();
+        pool.intern(FormIdPair {
+            plugin: PluginId::from_filename("Missing.esm"),
+            local: LocalFormId(1),
+        })
+    };
+    let entity = world.spawn();
+    world.insert(entity, FormIdComponent(stray));
+
+    let output = quicksave(&world);
+    assert!(command_output_is_failure(&output));
+    assert!(
+        output
+            .lines
+            .first()
+            .is_some_and(|line| line.starts_with("save ABORTED")),
+        "the exact first line routed to the HUD toast must name the abort"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

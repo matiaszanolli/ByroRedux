@@ -158,6 +158,17 @@ pub struct PlayerPose {
     pub character_mode: bool,
 }
 
+#[derive(Default)]
+pub struct SaveLoadNotifications(pub Vec<String>);
+
+impl Resource for SaveLoadNotifications {}
+
+fn notify_player(world: &World, message: impl Into<String>) {
+    if let Some(mut notifications) = world.try_resource_mut::<SaveLoadNotifications>() {
+        notifications.0.push(message.into());
+    }
+}
+
 impl Resource for PlayerPose {}
 
 /// Where save slots live, plus the round-robin ring cursor.
@@ -850,11 +861,22 @@ pub fn queue_load_slot(world: &World, slot: u32) -> CommandOutput {
     LoadCommand.execute(world, &slot.to_string())
 }
 
+/// Parse and queue the `--load` value through the same command path used by
+/// F9, the pause menu, and the debug console.
+pub fn queue_startup_load(world: &World, value: &str) -> CommandOutput {
+    match value.parse::<u32>() {
+        Ok(slot) => queue_load_slot(world, slot),
+        Err(_) => CommandOutput::error(format!(
+            "--load requires a numeric save slot, got '{value}'"
+        )),
+    }
+}
+
 pub(crate) fn command_output_is_failure(output: &CommandOutput) -> bool {
     output
         .lines
-        .first()
-        .is_some_and(|line| line.starts_with("Error:") || line.starts_with("save ABORTED"))
+        .iter()
+        .any(|line| line.starts_with("Error:") || line.starts_with("save ABORTED"))
 }
 
 /// Queue the newest on-disk slot, matching conventional quickload behavior.
@@ -1004,13 +1026,12 @@ fn reload_interior_session(
         &cell_ctx.esm_path,
         &cell_ctx.cell_editor_id,
     ) {
-        log::error!(
-            "save load ABORTED — cannot reload cell '{}'; keeping the current cell so the \
-             session isn't stranded in an empty world (the on-disk save is intact; relaunch \
-             to recover): {:#}",
-            cell_ctx.cell_editor_id,
-            e
+        let message = format!(
+            "save load ABORTED — cannot reload cell '{}'; keeping the current cell (on-disk save intact): {e:#}",
+            cell_ctx.cell_editor_id
         );
+        log::error!("{message}");
+        notify_player(world, message);
         return None;
     }
 
@@ -1051,11 +1072,12 @@ fn reload_interior_session(
             })
         }
         Err(e) => {
-            log::error!(
-                "save load: failed to reload cell '{}': {:#}",
-                cell_ctx.cell_editor_id,
-                e
+            let message = format!(
+                "save load: failed to reload cell '{}': {e:#}",
+                cell_ctx.cell_editor_id
             );
+            log::error!("{message}");
+            notify_player(world, message);
             None
         }
     }
@@ -1096,13 +1118,12 @@ fn reload_exterior_session(
     ) {
         Ok(wctx) => wctx,
         Err(e) => {
-            log::error!(
-                "save load ABORTED — cannot rebuild worldspace '{}'; keeping the current \
-                 session so it isn't stranded in an empty world (the on-disk save is intact; \
-                 relaunch to recover): {:#}",
-                ext_ctx.worldspace_key,
-                e
+            let message = format!(
+                "save load ABORTED — cannot rebuild worldspace '{}'; keeping the current session (on-disk save intact): {e:#}",
+                ext_ctx.worldspace_key
             );
+            log::error!("{message}");
+            notify_player(world, message);
             return None;
         }
     };
@@ -1186,9 +1207,11 @@ pub fn execute_pending_save_loads(
     // Reject before the irreversible cell/streaming teardown so no serde
     // failure can leave a half-overlaid world.
     if let Err(e) = byroredux_save::validate_snapshot_types(&registry, &snapshot) {
-        log::error!(
+        let message = format!(
             "save load ABORTED — snapshot columns failed typed preflight; keeping the current session: {e}"
         );
+        log::error!("{message}");
+        notify_player(world, message);
         return;
     }
 
@@ -1205,7 +1228,9 @@ pub fn execute_pending_save_loads(
     } else if let Some(ext_ctx) = snapshot_exterior_context(&snapshot) {
         reload_exterior_session(world, ctx, streaming, &args, &ext_ctx)
     } else {
-        log::error!("save load: snapshot lost its cell/exterior context between queue and drain");
+        let message = "save load: snapshot lost its cell/exterior context between queue and drain";
+        log::error!("{message}");
+        notify_player(world, message);
         return;
     };
     let Some(ReloadOutcome {
@@ -1219,7 +1244,9 @@ pub fn execute_pending_save_loads(
     // Restore saved resources (ItemInstancePool) so inventory instance
     // ids resolve, then overlay the form-id-keyed mutable deltas.
     if let Err(e) = byroredux_save::restore_resources(world, &registry, &snapshot) {
-        log::error!("save load: resource restore failed: {e}");
+        let message = format!("save load: resource restore failed: {e}");
+        log::error!("{message}");
+        notify_player(world, message);
         return;
     }
     let remap = byroredux_save::build_form_id_remap(world, &registry, &snapshot);
@@ -1239,9 +1266,11 @@ pub fn execute_pending_save_loads(
             // this arm is an unexpected apply failure. Do not continue into
             // validation or pose restore on a potentially partial overlay.
             let dead = crate::combat::reconcile_dead_actor_runtime_state(world);
-            log::error!(
+            let message = format!(
                 "save load: delta apply failed after preflight: {e}; reconciled {dead} dead actors before aborting"
             );
+            log::error!("{message}");
+            notify_player(world, message);
             return;
         }
     }

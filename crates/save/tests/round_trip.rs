@@ -14,7 +14,9 @@ use byroredux_core::ecs::world::World;
 use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
 use byroredux_core::string::StringPool;
 use byroredux_save::validate::{validate_world, ValidationKind};
-use byroredux_save::{decode, encode, restore_world, save_world, SaveError, SaveRegistry};
+use byroredux_save::{
+    decode, encode, restore_world, save_world, validate_snapshot_types, SaveError, SaveRegistry,
+};
 use glam::{Quat, Vec3};
 
 /// The curated game-state registry the test (and, later, the binary) uses.
@@ -709,6 +711,47 @@ fn restore_world_rejects_snapshot_with_out_of_bounds_entity_id() {
         dst.spawn(),
         0,
         "a rejected restore must not have advanced next_entity via set_next_entity"
+    );
+}
+
+/// #3163 — typed decode is a non-mutating preflight. A malformed later
+/// column must be rejected before restore/apply can touch an existing world.
+#[test]
+fn typed_snapshot_preflight_rejects_bad_column_without_world_mutation() {
+    let (src, _pair) = build_source_world();
+    let reg = registry();
+    let mut snapshot = save_world(&src, &reg).unwrap();
+    let transform = snapshot
+        .components
+        .get_mut("Transform")
+        .and_then(serde_json::Value::as_array_mut)
+        .and_then(|rows| rows.first_mut())
+        .and_then(serde_json::Value::as_array_mut)
+        .and_then(|row| row.get_mut(1))
+        .expect("Transform row payload");
+    *transform = serde_json::json!({"translation": "not a vector"});
+
+    let mut live = World::new();
+    let sentinel = live.spawn();
+    live.insert(
+        sentinel,
+        Transform::from_translation(Vec3::new(99.0, 98.0, 97.0)),
+    );
+
+    assert!(validate_snapshot_types(&reg, &snapshot).is_err());
+    let query = live.query::<Transform>().unwrap();
+    assert_eq!(
+        query.get(sentinel).unwrap().translation,
+        Vec3::new(99.0, 98.0, 97.0)
+    );
+    drop(query);
+
+    assert!(restore_world(&mut live, &reg, &snapshot).is_err());
+    let query = live.query::<Transform>().unwrap();
+    assert_eq!(
+        query.get(sentinel).unwrap().translation,
+        Vec3::new(99.0, 98.0, 97.0),
+        "restore_world must run the same preflight before clear_entities"
     );
 }
 
