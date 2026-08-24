@@ -134,8 +134,9 @@ fn base_skill(governing: u8, luck: u8) -> f32 {
 ///   not derived — the `PRPS` property pairs are the SPECIAL + overrides
 ///   verbatim, plus the baked `DNAM` Calculated Health / Action Points.
 ///   See [`derive_stored_actor_values`].
-/// - **Skyrim**: Health is `RACE.DATA.starting_health +
-///   NPC_.ACBS.health_offset`, resolved through the load order's Health AVIF.
+/// - **Skyrim**: Health, Magicka, and Stamina are their respective
+///   `RACE.DATA` starting values plus signed `NPC_.ACBS` offsets, resolved
+///   through the load order's canonical AVIF records.
 /// - **FNV / FO3**: actor values are *auto-calculated* from the NPC's class
 ///   base SPECIAL (the documented GECK model) — the 7 SPECIAL, the profile's
 ///   exact skill roster, and its sourced Health curve. See
@@ -145,9 +146,9 @@ fn base_skill(governing: u8, luck: u8) -> f32 {
 ///   own `class_form_id`/level are frequently not what the engine actually
 ///   uses.
 ///
-/// Empty for every other game (Oblivion), a Skyrim NPC whose race or Health
-/// AVIF is missing, an FO4 NPC with no `PRPS`, or an FNV NPC whose class
-/// wasn't parsed.
+/// Empty for every other game (Oblivion), a Skyrim NPC whose race has no
+/// usable pool values, an FO4 NPC with no `PRPS`, or an FNV NPC whose class
+/// wasn't parsed. Individual missing Skyrim AVIFs are skipped independently.
 ///
 /// [`ActorValues::from_pairs`]: byroredux_core::ecs::components::ActorValues::from_pairs
 pub fn derive_npc_actor_values(npc: &NpcRecord, index: &EsmIndex) -> Vec<(u32, f32)> {
@@ -163,24 +164,27 @@ pub fn derive_npc_actor_values(npc: &NpcRecord, index: &EsmIndex) -> Vec<(u32, f
     }
 }
 
-/// TES5 NPC Health is authored as a race starting value plus a signed actor
-/// offset. Health resolves through vanilla Skyrim's authored `AVHealth` AVIF.
+/// TES5 NPC resource pools are authored as race starting values plus signed
+/// actor offsets. Each resolves independently through its authored AVIF.
 fn derive_skyrim_actor_values(npc: &NpcRecord, index: &EsmIndex) -> Vec<(u32, f32)> {
-    let Some(health_key) = index.health_actor_value_key() else {
+    let Some(race) = index.races.get(&npc.race_form_id) else {
         return Vec::new();
     };
-    let Some(starting_health) = index
-        .races
-        .get(&npc.race_form_id)
-        .and_then(|race| race.starting_health)
-    else {
-        return Vec::new();
-    };
-    let health = starting_health + f32::from(npc.health_offset);
-    if !health.is_finite() || health <= 0.0 {
-        return Vec::new();
+    let mut out = Vec::with_capacity(3);
+    for (name, starting, offset) in [
+        ("Health", race.starting_health, npc.health_offset),
+        ("Magicka", race.starting_magicka, npc.magicka_offset),
+        ("Stamina", race.starting_stamina, npc.stamina_offset),
+    ] {
+        let Some((key, starting)) = index.actor_value_form_id(name).zip(starting) else {
+            continue;
+        };
+        let value = starting + f32::from(offset);
+        if value.is_finite() && value > 0.0 {
+            out.push((key, value));
+        }
     }
-    vec![(health_key, health)]
+    out
 }
 
 /// FO4+ stored actor values: the `PRPS` `(AVIF FormID, value)` pairs
@@ -463,25 +467,34 @@ mod tests {
     }
 
     #[test]
-    fn skyrim_health_is_race_start_plus_signed_npc_offset() {
+    fn skyrim_pools_are_race_starts_plus_signed_npc_offsets() {
         let mut index = EsmIndex::default();
         index.character_rules = CharacterRulesProfile::SKYRIM;
         index.actor_values.insert(0x3E8, avif(0x3E8, "AVHealth"));
+        index.actor_values.insert(0x3E9, avif(0x3E9, "AVMagicka"));
+        index.actor_values.insert(0x3EA, avif(0x3EA, "AVStamina"));
         index.races.insert(
             0x13746,
             RaceRecord {
                 form_id: 0x13746,
                 starting_health: Some(50.0),
+                starting_magicka: Some(75.0),
+                starting_stamina: Some(100.0),
                 ..Default::default()
             },
         );
         let npc = NpcRecord {
             race_form_id: 0x13746,
             health_offset: -15,
+            magicka_offset: 10,
+            stamina_offset: -20,
             ..Default::default()
         };
 
-        assert_eq!(derive_npc_actor_values(&npc, &index), vec![(0x3E8, 35.0)]);
+        assert_eq!(
+            derive_npc_actor_values(&npc, &index),
+            vec![(0x3E8, 35.0), (0x3E9, 85.0), (0x3EA, 80.0)]
+        );
     }
 
     #[test]

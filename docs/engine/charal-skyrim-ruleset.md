@@ -711,10 +711,11 @@ actor-general, base-Stamina-derived).
 ## XP / level curve — LOCKED
 
 Skyrim's character XP curve is authored by the GMST settings
-`fXPLevelUpBase`, `fXPLevelUpMult`, and `fXPPerSkillRank`. Vanilla values are
-75, 25, and 1 respectively: XP to the next level is `25 × level + 75`, and a
-skill raised to rank `R` awards `R` character XP. Each level also grants a
-10-point Health/Magicka/Stamina pool pick and a perk. Source: [UESP Skyrim:
-Leveling](https://en.uesp.net/wiki/Skyrim:Leveling). Mods may override the
-three GMSTs; the parser supplies those values when present and falls back to
-the vanilla defaults above.
+`fXPLevelUpBase` and `fXPLevelUpMult`, whose vanilla values are 75 and 25:
+XP to the next level is `25 × level + 75`. A skill raised to rank `R` awards
+`R` character XP; that coefficient is an engine rule, not a
+`fXPPerSkillRank` GMST. Each level also grants a 10-point
+Health/Magicka/Stamina pool pick and a perk. Source: [UESP Skyrim:
+Leveling](https://en.uesp.net/wiki/Skyrim:Leveling). Mods may override the two
+authored curve GMSTs; the parser supplies those values when present and falls
+back to the vanilla defaults above.

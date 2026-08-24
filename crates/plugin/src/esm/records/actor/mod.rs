@@ -439,6 +439,10 @@ pub struct RaceRecord {
     /// TES5 RACE `DATA` starting Health (`f32 @ 36`). `None` for games whose
     /// layout has not been modelled and for malformed/non-finite values.
     pub starting_health: Option<f32>,
+    /// TES5 RACE `DATA` starting Magicka (`f32 @ 40`).
+    pub starting_magicka: Option<f32>,
+    /// TES5 RACE `DATA` starting Stamina (`f32 @ 44`).
+    pub starting_stamina: Option<f32>,
     /// Per-gender base attributes from the Oblivion-only `ATTR`
     /// sub-record. 8 attributes per gender (Strength / Intelligence
     /// / Willpower / Agility / Speed / Endurance / Personality /
@@ -1122,6 +1126,8 @@ pub fn parse_race(form_id: u32, subs: &[SubRecord], game: GameKind) -> RaceRecor
         base_weight: (1.0, 1.0),
         race_flags: 0,
         starting_health: None,
+        starting_magicka: None,
+        starting_stamina: None,
         base_attributes: None,
         default_hair: None,
         voice_forms: None,
@@ -1200,7 +1206,7 @@ pub fn parse_race(form_id: u32, subs: &[SubRecord], game: GameKind) -> RaceRecor
             //     magicka / stamina, carry weight, accel + decel rates,
             //     regen rates, unarmed damage and reach, biped object slots)
             //     of which the combat actor-value path currently consumes
-            //     starting health.
+            //     starting health, magicka, and stamina.
             //
             // Layout per OpenMW `esm4/loadrace.cpp:154-170`, and verified
             // byte-for-byte against vanilla `Skyrim.esm` (2026-08-12), which
@@ -1238,6 +1244,14 @@ pub fn parse_race(form_id: u32, subs: &[SubRecord], game: GameKind) -> RaceRecor
                 let starting_health = r.f32_or_default();
                 if starting_health.is_finite() && starting_health > 0.0 {
                     record.starting_health = Some(starting_health);
+                }
+                let starting_magicka = r.f32_or_default();
+                if starting_magicka.is_finite() && starting_magicka > 0.0 {
+                    record.starting_magicka = Some(starting_magicka);
+                }
+                let starting_stamina = r.f32_or_default();
+                if starting_stamina.is_finite() && starting_stamina > 0.0 {
+                    record.starting_stamina = Some(starting_stamina);
                 }
             }
             // DATA (FO4 200 B / FO76 216 B) — a third layout again, and

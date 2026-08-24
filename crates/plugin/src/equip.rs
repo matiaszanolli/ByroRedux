@@ -770,7 +770,7 @@ mod tests {
         add_lvli(
             &mut idx,
             0x00CC_CCCC,
-            0x02, // flag bit 1 = "calculate for each item"
+            0x03, // calculate-from-all-levels + calculate-for-each-item
             vec![
                 (1, 0x00AA_AAAA, 1),
                 (4, 0x00BB_BBBB, 1),

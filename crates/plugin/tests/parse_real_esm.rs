@@ -1002,7 +1002,6 @@ fn parse_rate_fo3_esm() {
     let esm_path = data.join("Fallout3.esm");
     let bytes = std::fs::read(&esm_path).expect("read Fallout3.esm");
     let index = parse_esm(&bytes).expect("parse Fallout3.esm");
-
     eprintln!(
         "[FO3] total={} | items={} containers={} LVLI={} LVLN={} LVLC={} \
          NPCs={} creatures={} factions={} globals={} game_settings={} \

@@ -22,8 +22,8 @@
 //!   (`SKYRIM` = 25·L + 75), and each level-up grants a +10 Health/Magicka/
 //!   Stamina pool pick plus a perk. Sourced in
 //!   `docs/engine/charal-skyrim-ruleset.md`; the curve constants overlay the
-//!   authored `fXPLevelUpBase` / `fXPLevelUpMult` / `fXPPerSkillRank` GMSTs
-//!   when present.
+//!   authored `fXPLevelUpBase` / `fXPLevelUpMult` GMSTs when present. The
+//!   skill-rank coefficient is an engine rule, not an authored setting.
 //!
 //! Starfield is a documented **fourth** shape (skill points spent on
 //! challenge-gated per-skill ranks) and is deliberately absent: its XP curve
@@ -73,8 +73,8 @@ pub enum LevelingModel {
     /// needs `xp_mult · level + xp_base` XP. Each level grants a perk and
     /// `pool_pick_gain` points into a chosen Health / Magicka / Stamina pool.
     /// `level_cap` `0` = uncapped (bounded by skills reaching 100). Sourced:
-    /// UESP *Skyrim:Leveling* (`fXPLevelUpBase`/`fXPLevelUpMult`/
-    /// `fXPPerSkillRank`).
+    /// UESP *Skyrim:Leveling*. Only the level curve is GMST-authored;
+    /// `xp_per_skill_rank` is the engine's fixed rank-to-XP coefficient.
     SkillXp {
         xp_base: f32,
         xp_mult: f32,
@@ -100,7 +100,7 @@ impl LevelingModel {
             } => Self::SkillXp {
                 xp_base: gmst("fXPLevelUpBase").unwrap_or(xp_base),
                 xp_mult: gmst("fXPLevelUpMult").unwrap_or(xp_mult),
-                xp_per_skill_rank: gmst("fXPPerSkillRank").unwrap_or(xp_per_skill_rank),
+                xp_per_skill_rank,
                 pool_pick_gain,
                 level_cap,
             },
@@ -329,16 +329,20 @@ mod tests {
     }
 
     #[test]
-    fn skyrim_gmst_overlay_replaces_authored_curve_values() {
-        let model = LevelingModel::SKYRIM.with_gmst(|name| match name {
-            "fXPLevelUpBase" => Some(80.0),
-            "fXPLevelUpMult" => Some(30.0),
-            "fXPPerSkillRank" => Some(1.5),
-            _ => None,
+    fn skyrim_gmst_overlay_reads_only_authored_curve_settings() {
+        let requested = std::cell::RefCell::new(Vec::new());
+        let model = LevelingModel::SKYRIM.with_gmst(|name| {
+            requested.borrow_mut().push(name.to_owned());
+            match name {
+                "fXPLevelUpBase" => Some(80.0),
+                "fXPLevelUpMult" => Some(30.0),
+                _ => None,
+            }
         });
         assert_eq!(model.xp_to_next(10), 380.0);
-        assert_eq!(model.xp_from_skill_rank(20), Some(30.0));
+        assert_eq!(model.xp_from_skill_rank(20), Some(20.0));
         assert_eq!(model.pool_pick_gain(), Some(10.0));
+        assert_eq!(requested.into_inner(), ["fXPLevelUpBase", "fXPLevelUpMult"]);
     }
 
     #[test]

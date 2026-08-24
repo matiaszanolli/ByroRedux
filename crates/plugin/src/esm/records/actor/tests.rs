@@ -1137,6 +1137,8 @@ fn skyrim_race_data_uses_the_tes5_layout_not_tes4() {
     data[28..32].copy_from_slice(&1.1f32.to_le_bytes());
     data[32..36].copy_from_slice(&0x50a0_8943u32.to_le_bytes());
     data[36..40].copy_from_slice(&50.0f32.to_le_bytes());
+    data[40..44].copy_from_slice(&75.0f32.to_le_bytes());
+    data[44..48].copy_from_slice(&100.0f32.to_le_bytes());
 
     let r = parse_race(0x900, &[sub(b"DATA", &data)], GameKind::Skyrim);
     assert_eq!(
@@ -1149,6 +1151,8 @@ fn skyrim_race_data_uses_the_tes5_layout_not_tes4() {
     assert_eq!(r.base_weight, (0.9, 1.1));
     assert_eq!(r.race_flags, 0x50a0_8943);
     assert_eq!(r.starting_health, Some(50.0));
+    assert_eq!(r.starting_magicka, Some(75.0));
+    assert_eq!(r.starting_stamina, Some(100.0));
 }
 
 /// #2455 — the real thing. Vanilla `Skyrim.esm` `NordRace` DATA, first 36
