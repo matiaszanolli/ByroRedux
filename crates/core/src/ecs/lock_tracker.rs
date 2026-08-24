@@ -11,7 +11,8 @@
 //!    and then trying to `T.write()` on the same thread panics at tracking
 //!    time instead of deadlocking silently.
 //!
-//! 2. **Global lock-order graph** (debug builds only — see #313). Records
+//! 2. **Global lock-order graph** (debug builds and opt-in via
+//!    `BYRO_LOCK_ORDER_CHECK=1` — see #313). Records
 //!    observed "acquired-while-held" edges per type across all threads. If
 //!    thread `T1` observed `A → B` (acquired B while holding A) and thread
 //!    `T2` observed `B → A` (acquired A while holding B), the graph has a
@@ -58,46 +59,68 @@ struct LockState {
 
 thread_local! {
     static LOCKS: RefCell<HashMap<TypeId, LockState>> = RefCell::new(HashMap::new());
+    #[cfg(test)]
+    static RECURSIVE_READ_WARNINGS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Record a read lock acquisition. Panics if a write lock is already held
 /// on this type from the same thread (would deadlock).
 pub(crate) fn track_read(type_id: TypeId, type_name: &'static str) {
     LOCKS.with(|locks| {
-        let mut map = locks.borrow_mut();
-        let is_new = !map.contains_key(&type_id);
-        let entry = map.entry(type_id).or_insert(LockState {
-            read_count: 0,
-            has_write: false,
-            type_name,
-        });
-        if entry.has_write {
-            panic!(
-                "ECS deadlock detected: attempted read lock on `{}` while a write lock \
-                 is already held on the same thread. Drop the write query/resource first.",
-                type_name,
-            );
-        }
-        entry.read_count += 1;
-        if is_new {
-            // Only check global order on transition 0→held — re-entrant
-            // read acquires on the same type don't add any new edges.
-            // The held-set collection + the `record_and_check` call are
-            // debug-only; gated as one block so release builds skip the
-            // Vec allocation entirely (#823 — pre-fix the Vec was built
-            // before the cfg switch and immediately discarded in release,
-            // costing ~100 small allocs/frame on the hot path).
-            #[cfg(debug_assertions)]
-            {
-                let held_others: Vec<(TypeId, &'static str)> = map
-                    .iter()
-                    .filter(|(id, _)| **id != type_id)
-                    .map(|(id, state)| (*id, state.type_name))
-                    .collect();
-                drop(map);
-                global_order::record_and_check(type_id, type_name, &held_others);
+        let recursive_read = {
+            let map = locks.borrow();
+            if let Some(entry) = map.get(&type_id) {
+                if entry.has_write {
+                    panic!(
+                        "ECS deadlock detected: attempted read lock on `{}` while a write lock \
+                         is already held on the same thread. Drop the write query/resource first.",
+                        type_name,
+                    );
+                }
+                true
+            } else {
+                false
             }
+        };
+        if recursive_read {
+            let mut map = locks.borrow_mut();
+            let entry = map.get_mut(&type_id).expect("recursive read row vanished");
+            // #2386 — recursive reads can deadlock behind a parked writer on
+            // some RwLock implementations. TypeId-only tracking cannot tell a
+            // true recursive lock from the same component type in two Worlds,
+            // so warn (once on 1→2) rather than rejecting valid multi-World use.
+            if entry.read_count == 1 {
+                log::warn!(
+                    "ECS recursive-read hazard: a second `{type_name}` read guard is live on this thread; reuse/drop the first guard when both reads target one World (#2386)"
+                );
+                #[cfg(test)]
+                RECURSIVE_READ_WARNINGS.with(|count| count.set(count.get() + 1));
+            }
+            entry.read_count = entry.read_count.saturating_add(1);
+            return;
         }
+
+        // #2384 — the global check can panic. Run it before inserting the
+        // incoming row so catch_unwind cannot orphan an acquisition which no
+        // RAII guard has been constructed to own yet.
+        #[cfg(debug_assertions)]
+        {
+            let held_others = locks
+                .borrow()
+                .iter()
+                .map(|(id, state)| (*id, state.type_name))
+                .collect::<Vec<_>>();
+            global_order::record_and_check(type_id, type_name, &held_others);
+        }
+
+        locks.borrow_mut().insert(
+            type_id,
+            LockState {
+                read_count: 1,
+                has_write: false,
+                type_name,
+            },
+        );
     });
 }
 
@@ -105,41 +128,44 @@ pub(crate) fn track_read(type_id: TypeId, type_name: &'static str) {
 /// already held on this type from the same thread (would deadlock).
 pub(crate) fn track_write(type_id: TypeId, type_name: &'static str) {
     LOCKS.with(|locks| {
-        let mut map = locks.borrow_mut();
-        let is_new = !map.contains_key(&type_id);
-        let entry = map.entry(type_id).or_insert(LockState {
-            read_count: 0,
-            has_write: false,
-            type_name,
-        });
-        if entry.has_write {
-            panic!(
-                "ECS deadlock detected: attempted write lock on `{}` while a write lock \
-                 is already held on the same thread. Drop the existing query/resource first.",
-                type_name,
-            );
-        }
-        if entry.read_count > 0 {
-            panic!(
-                "ECS deadlock detected: attempted write lock on `{}` while {} read lock(s) \
-                 are held on the same thread. Drop all read queries/resources first.",
-                type_name, entry.read_count,
-            );
-        }
-        entry.has_write = true;
-        if is_new {
-            // Debug-only — see the matching gate in `track_read` (#823).
-            #[cfg(debug_assertions)]
-            {
-                let held_others: Vec<(TypeId, &'static str)> = map
-                    .iter()
-                    .filter(|(id, _)| **id != type_id)
-                    .map(|(id, state)| (*id, state.type_name))
-                    .collect();
-                drop(map);
-                global_order::record_and_check(type_id, type_name, &held_others);
+        {
+            let map = locks.borrow();
+            if let Some(entry) = map.get(&type_id) {
+                if entry.has_write {
+                    panic!(
+                        "ECS deadlock detected: attempted write lock on `{}` while a write lock \
+                         is already held on the same thread. Drop the existing query/resource first.",
+                        type_name,
+                    );
+                }
+                if entry.read_count > 0 {
+                    panic!(
+                        "ECS deadlock detected: attempted write lock on `{}` while {} read lock(s) \
+                         are held on the same thread. Drop all read queries/resources first.",
+                        type_name, entry.read_count,
+                    );
+                }
             }
         }
+
+        #[cfg(debug_assertions)]
+        {
+            let held_others = locks
+                .borrow()
+                .iter()
+                .map(|(id, state)| (*id, state.type_name))
+                .collect::<Vec<_>>();
+            global_order::record_and_check(type_id, type_name, &held_others);
+        }
+
+        locks.borrow_mut().insert(
+            type_id,
+            LockState {
+                read_count: 0,
+                has_write: true,
+                type_name,
+            },
+        );
     });
 }
 
@@ -326,7 +352,7 @@ mod global_order {
         // which is now subsumed by the path-length-1 case of the
         // reachability search.)
         {
-            let graph = GRAPH.read().expect("GRAPH poisoned");
+            let graph = GRAPH.read().unwrap_or_else(|poison| poison.into_inner());
             let mut all_present = true;
             for (held_id, _) in held_others {
                 match graph.get(held_id) {
@@ -354,7 +380,7 @@ mod global_order {
         // silently — the detector reported "clean" for a whole class of
         // real deadlocks, and a live 3-cycle already sat in the graph on
         // every character-mode frame.
-        let mut graph = GRAPH.write().expect("GRAPH poisoned");
+        let mut graph = GRAPH.write().unwrap_or_else(|poison| poison.into_inner());
         let mut cycle: Option<(&'static str, Vec<&'static str>)> = None;
         for (held_id, held_name) in held_others {
             if let Some(chain) = find_path(&graph, new_id, new_name, *held_id) {
@@ -409,7 +435,19 @@ mod global_order {
     /// observation doesn't leak into an unrelated test case.
     #[cfg(test)]
     pub(super) fn reset() {
-        GRAPH.write().unwrap().clear();
+        GRAPH
+            .write()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clear();
+    }
+
+    #[cfg(test)]
+    pub(super) fn poison_for_tests() {
+        let _ = std::thread::spawn(|| {
+            let _guard = GRAPH.write().unwrap_or_else(|poison| poison.into_inner());
+            panic!("intentional GRAPH poison for recovery regression");
+        })
+        .join();
     }
 }
 
@@ -497,22 +535,43 @@ pub(crate) fn is_clean() -> bool {
 }
 
 #[cfg(test)]
+fn take_recursive_read_warning_count() -> usize {
+    RECURSIVE_READ_WARNINGS.with(|count| count.replace(0))
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ecs::sparse_set::SparseSetStorage;
+    use crate::ecs::storage::Component;
+    use crate::ecs::World;
     use std::any::TypeId;
 
     struct FakeA;
     struct FakeB;
 
+    struct WorldA;
+    impl Component for WorldA {
+        type Storage = SparseSetStorage<Self>;
+    }
+
+    struct WorldB;
+    impl Component for WorldB {
+        type Storage = SparseSetStorage<Self>;
+    }
+
     #[test]
-    fn multiple_reads_same_type_ok() {
+    fn recursive_read_warns_once_and_continues() {
         let id = TypeId::of::<FakeA>();
+        take_recursive_read_warning_count();
         track_read(id, "FakeA");
         track_read(id, "FakeA");
         track_read(id, "FakeA");
+        assert_eq!(take_recursive_read_warning_count(), 1);
         untrack_read(id);
         untrack_read(id);
         untrack_read(id);
+        assert!(is_clean());
     }
 
     #[test]
@@ -635,10 +694,11 @@ mod tests {
             })
             .is_err();
             assert!(panicked, "ABBA pattern must panic");
-            // catch_unwind leaves the thread-local tracker in
-            // whatever state the panic interrupted. Wipe it for the
-            // next scenario; this is safe because we're isolated.
-            LOCKS.with(|l| l.borrow_mut().clear());
+            untrack_read(b);
+            assert!(
+                is_clean(),
+                "#2384: a caught ABBA panic must leave no orphaned tracker row"
+            );
 
             // Scenario 2: consistent order is fine.
             global_order::reset();
@@ -654,11 +714,11 @@ mod tests {
             untrack_read(d);
             untrack_read(c);
 
-            // Scenario 3: re-entrant reads don't self-edge.
+            // Scenario 3: recursive reads warn but do not add graph self-edges.
             global_order::reset();
             let e = TypeId::of::<FakeA>();
             track_read(e, "FakeA");
-            track_read(e, "FakeA"); // second-entry on same type
+            track_read(e, "FakeA");
             untrack_read(e);
             untrack_read(e);
             track_read(e, "FakeA"); // fresh acquire after release
@@ -695,7 +755,71 @@ mod tests {
                 "a 3-lock cycle must panic — the detector must close cycles of \
                  any length, not just direct A→B / B→A pairs (#2675)"
             );
-            LOCKS.with(|l| l.borrow_mut().clear());
+            untrack_read(h);
+            assert!(
+                is_clean(),
+                "cycle-closing panic must not poison thread-local state"
+            );
+
+            // Scenario 5 (#2387): the headline cross-thread guarantee through
+            // real World queries. Both workers hold their first storage before
+            // racing the reverse second acquisition; exactly one side must be
+            // rejected by the slow-path write-lock re-check, and the other must
+            // finish once that first guard unwinds.
+            global_order::reset();
+            let mut world = World::new();
+            let entity = world.spawn();
+            world.insert(entity, WorldA);
+            world.insert(entity, WorldB);
+            let world = std::sync::Arc::new(world);
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+
+            let left_world = std::sync::Arc::clone(&world);
+            let left_barrier = std::sync::Arc::clone(&barrier);
+            let left = std::thread::spawn(move || {
+                let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let _a = left_world.query::<WorldA>().unwrap();
+                    left_barrier.wait();
+                    let _b = left_world.query::<WorldB>().unwrap();
+                }))
+                .is_err();
+                (panicked, is_clean())
+            });
+            let right_world = std::sync::Arc::clone(&world);
+            let right_barrier = std::sync::Arc::clone(&barrier);
+            let right = std::thread::spawn(move || {
+                let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let _b = right_world.query::<WorldB>().unwrap();
+                    right_barrier.wait();
+                    let _a = right_world.query::<WorldA>().unwrap();
+                }))
+                .is_err();
+                (panicked, is_clean())
+            });
+            let left = left.join().unwrap();
+            let right = right.join().unwrap();
+            let panics = usize::from(left.0) + usize::from(right.0);
+            assert_eq!(
+                panics, 1,
+                "opposite real-World acquisition orders must reject exactly one worker"
+            );
+            assert!(
+                left.1 && right.1,
+                "#2384: RAII query guards must clean both worker-local tracker maps after ABBA unwind"
+            );
+
+            // Scenario 6 (#2385): even if some unrelated writer poisoned the
+            // process-global graph, every detector acquisition and reset must
+            // recover the inner graph instead of replacing the useful ABBA
+            // diagnostic with an opaque `GRAPH poisoned` panic.
+            global_order::poison_for_tests();
+            global_order::reset();
+            let a = TypeId::of::<Abba1>();
+            let b = TypeId::of::<Abba2>();
+            track_read(a, "Abba1");
+            track_read(b, "Abba2");
+            untrack_read(b);
+            untrack_read(a);
         }
     }
 }

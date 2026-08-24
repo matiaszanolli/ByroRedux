@@ -727,6 +727,7 @@ pub(crate) fn build_scheduler() -> Scheduler {
             // reason as the `physics_sync_system` sibling gap.
             .reads_resource::<byroredux_physics::ContactConfig>()
             .reads_resource::<TotalTime>()
+            .reads_resource::<byroredux_core::ecs::components::groundcover::WindField>()
             .reads::<byroredux_physics::CharacterController>()
             .writes::<byroredux_physics::CharacterController>()
             .reads::<byroredux_physics::RapierHandles>()
@@ -740,7 +741,11 @@ pub(crate) fn build_scheduler() -> Scheduler {
             .reads::<Transform>()
             .writes::<Transform>(),
     );
-    scheduler.add_to_with_access(
+    // #3111 — weather writes WindField while the player controller samples it
+    // for water waves. Keep weather in the same stage but serialize it after
+    // the parallel batch so the access analyzer and runtime agree: there is no
+    // same-stage read/write race, and the controller sees one stable snapshot.
+    scheduler.add_exclusive_with_access(
         Stage::Early,
         weather_system,
         Access::new()
@@ -1223,6 +1228,7 @@ pub(crate) fn build_scheduler() -> Scheduler {
         make_billboard_system(),
         Access::new()
             .reads_resource::<ActiveCamera>()
+            .reads_resource::<TotalTime>()
             .reads_resource::<byroredux_core::ecs::components::groundcover::WindField>()
             .reads::<byroredux_core::ecs::Billboard>()
             .reads::<byroredux_core::ecs::SpeedTreeWind>()

@@ -581,7 +581,8 @@ to arbitrary N-lock hold patterns with two checks:
    `T` on the same thread, which `std::sync::RwLock` would otherwise
    deadlock on silently. It panics at acquisition instead.
 
-2. **Global lock-order graph** (debug builds only, #313) — records observed
+2. **Global lock-order graph** (debug builds, opt-in with
+   `BYRO_LOCK_ORDER_CHECK=1`, #313) — records observed
    "acquired-while-held" edges per type across all threads. If one thread
    observed `A → B` and another `B → A`, the graph has a cycle and the
    second observation panics. This catches cross-thread ABBA risks the

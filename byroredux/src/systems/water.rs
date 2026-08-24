@@ -601,7 +601,7 @@ mod tests {
     const EPS: f32 = WATERLINE_HYSTERESIS;
 
     #[test]
-    fn per_frame_water_and_billboard_collections_use_reused_fx_storage() {
+    fn per_frame_water_reuses_fx_storage_and_billboards_allocate_no_scratch_map() {
         let water = include_str!("water.rs");
         let water = water
             .split("#[cfg(test)]")
@@ -628,8 +628,8 @@ mod tests {
             .next()
             .expect("production billboard source");
         assert!(!billboard.contains("use std::collections::"));
-        assert!(billboard.contains("FxHashMap<u32, Quat>"));
-        assert!(billboard.contains("if geometry_bases.len() > live_geometry_count"));
+        assert!(billboard.contains("let swq = world.query::<SpeedTreeWind>()"));
+        assert!(billboard.contains("if !camera_changed && tree_wind.is_none()"));
     }
 
     #[test]

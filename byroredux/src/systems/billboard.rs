@@ -114,12 +114,12 @@ pub(crate) fn make_billboard_system() -> impl FnMut(&World, f32) + Send + Sync {
                 // the shared weather wind while ordinary billboards remain
                 // unaffected. Phase is world-position seeded, keeping nearby
                 // trees in sync while avoiding lockstep.
-                if wind_active && tree_wind.is_some() {
+                if let (true, Some(tree_wind)) = (wind_active, tree_wind) {
                     new_rot = apply_speedtree_wind(
                         new_rot,
                         global.translation,
                         wind,
-                        tree_wind.unwrap(),
+                        tree_wind,
                         wind_time,
                     );
                 }

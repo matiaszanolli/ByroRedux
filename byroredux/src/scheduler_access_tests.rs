@@ -81,6 +81,50 @@ fn contact_config_read_is_declared_on_both_physics_systems() {
     );
 }
 
+#[test]
+fn player_wind_read_is_declared_and_weather_writer_is_exclusive() {
+    let player_start = BOOT_RS
+        .find("crate::systems::player_controller_system,")
+        .expect("player controller registration");
+    let player_end = BOOT_RS[player_start..]
+        .find("\n    );")
+        .map(|offset| player_start + offset)
+        .expect("player controller declaration end");
+    assert!(
+        BOOT_RS[player_start..player_end].contains(
+            ".reads_resource::<byroredux_core::ecs::components::groundcover::WindField>()"
+        ),
+        "#3111: player water sampling must declare its transitive WindField read"
+    );
+
+    let weather_index = BOOT_RS
+        .find("\n        weather_system,")
+        .expect("weather registration");
+    let weather_prefix = &BOOT_RS[weather_index.saturating_sub(160)..weather_index];
+    assert!(
+        weather_prefix.contains("scheduler.add_exclusive_with_access(\n        Stage::Early,"),
+        "#3111: weather's WindField write must stay outside Stage::Early's parallel batch"
+    );
+
+    let scheduler = crate::boot::build_scheduler();
+    assert_eq!(scheduler.access_report().known_conflict_count(), 0);
+}
+
+#[test]
+fn billboard_declaration_includes_shared_total_time_clock() {
+    let start = BOOT_RS
+        .find("make_billboard_system(),")
+        .expect("billboard registration");
+    let end = BOOT_RS[start..]
+        .find("\n    );")
+        .map(|offset| start + offset)
+        .expect("billboard declaration end");
+    assert!(
+        BOOT_RS[start..end].contains(".reads_resource::<TotalTime>()"),
+        "#3123: billboard gust animation reads TotalTime"
+    );
+}
+
 /// #3121 — WATAL buoyancy reads live time/weather/current state, while the
 /// animation subtree walk reads `Children`. Keep those reads on the exact
 /// parallel-system declarations so the scheduler can reject future conflicts.
@@ -183,8 +227,9 @@ fn scheduler_access_invariants_hold_on_the_real_schedule() {
     // systems can be paired, and how many pairs were examined. Deliberate
     // demotion is still allowed — it just has to be an explicit edit here.
     assert!(
-        report.parallel_system_count() >= 10,
-        "only {} parallel systems remain (was 10) — a demotion to \
+        report.parallel_system_count() >= 9,
+        "only {} parallel systems remain (floor 9 after #3111 serialized the \
+         weather WindField writer) — a demotion to \
          add_exclusive shrank the analyzable population. If deliberate, \
          lower this floor in the same commit; otherwise the conflict \
          assertions below are quietly analyzing less than they used to \
@@ -192,9 +237,9 @@ fn scheduler_access_invariants_hold_on_the_real_schedule() {
         report.parallel_system_count(),
     );
     assert!(
-        report.analyzed_pair_count() >= 9,
-        "the analyzer examined only {} same-stage pairs (was 9: Early 3 + \
-         Late 6) — three of five stages already hold a single parallel \
+        report.analyzed_pair_count() >= 7,
+        "the analyzer examined only {} same-stage pairs (floor 7: Early 1 + \
+         Late 6 after #3111) — three of five stages already hold a single parallel \
          system and analyze nothing, so this is the invariant's real \
          coverage measure (#2393)",
         report.analyzed_pair_count(),

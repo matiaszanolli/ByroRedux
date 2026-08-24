@@ -433,9 +433,11 @@ impl World {
     /// The `lock_tracker`'s same-thread reentrancy check is always on
     /// (debug AND release builds — only the separate cross-thread
     /// lock-order graph in [`lock_tracker`](super::lock_tracker) is
-    /// debug-only) and panics if a conflicting lock on `T` —
-    /// specifically, any already-held `QueryWrite<T>` on the same
-    /// thread — would cause a deadlock. Drop the offending guard
+    /// debug-only and `BYRO_LOCK_ORDER_CHECK=1`-gated) and panics if a
+    /// write lock on `T` is already held on the same thread. A second read
+    /// is allowed for distinct `World` instances but logs a hazard warning:
+    /// recursive reads of one `std::sync::RwLock` can deadlock behind a
+    /// parked writer (#2386). Prefer reusing or dropping the first guard
     /// before calling. The release-build cost is a thread-local
     /// `HashMap` probe per acquisition, not a no-op.
     pub fn query<T: Component>(&self) -> Option<QueryRead<'_, T>> {
@@ -494,8 +496,8 @@ impl World {
     ///
     /// The `lock_tracker`'s same-thread reentrancy check is always on
     /// (debug and release builds) and panics if a conflicting lock on
-    /// `A` or `B` is already held on the same thread. In debug builds
-    /// only, it additionally panics if the ordered lock graph detects
+    /// `A` or `B` is already held on the same thread. In debug builds with
+    /// `BYRO_LOCK_ORDER_CHECK=1`, it additionally panics if the ordered lock graph detects
     /// a cross-thread ABBA risk (#313). Drop any offending guard
     /// before calling.
     pub fn query_2_mut<A: Component, B: Component>(
@@ -564,8 +566,8 @@ impl World {
     ///
     /// The `lock_tracker`'s same-thread reentrancy check is always on
     /// (debug and release builds) and panics if a conflicting lock on
-    /// `A` or `B` is already held on the same thread. In debug builds
-    /// only, it additionally panics if the ordered lock graph detects
+    /// `A` or `B` is already held on the same thread. In debug builds with
+    /// `BYRO_LOCK_ORDER_CHECK=1`, it additionally panics if the ordered lock graph detects
     /// a cross-thread ABBA risk (#313). Drop any offending guard
     /// before calling.
     pub fn query_2_mut_mut<A: Component, B: Component>(
@@ -727,7 +729,7 @@ impl World {
     /// The `lock_tracker`'s same-thread reentrancy check is always on
     /// (debug and release builds) and additionally panics if a
     /// conflicting lock on `A` or `B` is already held on the same
-    /// thread. In debug builds only, it further panics if the ordered
+    /// thread. In debug builds with `BYRO_LOCK_ORDER_CHECK=1`, it further panics if the ordered
     /// lock graph detects a cross-thread ABBA risk (#313).
     ///
     /// Also panics if `A`'s or `B`'s `RwLock` is poisoned — a prior holder
@@ -851,7 +853,7 @@ impl World {
     /// The `lock_tracker`'s same-thread reentrancy check is always on
     /// (debug and release builds) and additionally panics if a
     /// conflicting lock on `A` or `B` is already held on the same
-    /// thread. In debug builds only, it further panics if the ordered
+    /// thread. In debug builds with `BYRO_LOCK_ORDER_CHECK=1`, it further panics if the ordered
     /// lock graph detects a cross-thread ABBA risk (#313).
     ///
     /// Also panics (not `None`) if `A`'s or `B`'s `RwLock` is poisoned — the

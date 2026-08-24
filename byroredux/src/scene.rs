@@ -1403,16 +1403,16 @@ pub(crate) fn setup_scene(
     // imports; `--swf` remains the loose-file developer route.
     let archive_menu = archive_menu_args(&args);
     if let Ok(Some((menu_path, archive_path))) = archive_menu.as_ref() {
-        match Archive::open(&archive_path) {
-            Ok(archive) => match archive.extract(&menu_path) {
+        match Archive::open(archive_path) {
+            Ok(archive) => match archive.extract(menu_path) {
                 Ok(root_bytes) => match ScaleformProfile::detect(&root_bytes) {
                     Ok(profile) => {
                         let (w, h) = ctx.swapchain_extent();
                         let mut ui = UiManager::new(w, h);
                         match ui.load_swf_from_resource_provider(
                             Arc::new(archive),
-                            &menu_path,
-                            &menu_path,
+                            menu_path,
+                            menu_path,
                             profile,
                         ) {
                             Ok(()) => {
