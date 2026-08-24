@@ -210,12 +210,18 @@ site) and the parse-side feed `crates/plugin/src/esm/records/actor_value_derive.
 - `level_cap == 0` means uncapped in all three variants. Verify the sentinel is
   handled identically everywhere (an off-by-one at the cap is a hard wall the
   player hits at exactly one level).
-- Skyrim: `xp_mult·level + xp_base` and `rank · xp_per_skill_rank` are sourced to
-  UESP `fXPLevelUpBase` / `fXPLevelUpMult` / `fXPPerSkillRank`. Verify the code
-  constants match the cited GMSTs, and — more importantly — whether they are
-  *hardcoded* or resolved from parsed GMSTs. Hardcoded engine constants that
-  shadow authored GMSTs break every mod that retunes them; flag the ones that
-  should be authored.
+- Skyrim: `xp_mult·level + xp_base` is sourced to UESP `fXPLevelUpBase` /
+  `fXPLevelUpMult` and IS resolved from parsed GMSTs (`with_gmst` overlays both
+  when present). `rank · xp_per_skill_rank` is different: `xp_per_skill_rank`
+  is a deliberate fixed engine coefficient, not authored — the code no longer
+  reads a *fXPPerSkillRank* GMST at all (withdrawn 2026-08-24; see
+  `docs/engine/charal-skyrim-ruleset.md` and
+  `skyrim_gmst_overlay_reads_only_authored_curve_settings` in
+  `crates/core/src/character/leveling.rs`). **Do not re-flag this split as an
+  authoring gap** — it is the settled, verified design: only the level curve
+  is GMST-authored, the skill-rank coefficient is engine-owned. Do verify the
+  overlay still requests exactly `["fXPLevelUpBase", "fXPLevelUpMult"]` and no
+  third GMST creeps back in.
 - Oblivion: the level-up modifier is `+1..5` driven by governing-skill increases
   (*tes_character_rules*). Verify the banding table and the 10-major-skill-ups
   threshold; `oblivion_attribute_bonus` is where a wrong band silently changes
@@ -306,6 +312,16 @@ resource lookup); `byroredux/src/commands/actor_value.rs`
   (*actor_record_structure*) decide which stat groups come from the template.
   Verify CHARAL population respects the flags rather than overwriting inherited
   values.
+- `derive_skyrim_actor_values` (2026-08-24) resolves Health, Magicka, and
+  Stamina independently — each is its own `RACE.DATA` starting value plus a
+  signed `NPC_.ACBS` offset, resolved through its own authored AVIF. This
+  replaced an older all-or-nothing gate that returned Health alone and only
+  when both the Health AVIF and `starting_health` were present. Verify the
+  per-pool independence holds: a race missing `starting_magicka` (or a load
+  order missing the Magicka AVIF) must not suppress Health/Stamina, and vice
+  versa — `RaceRecord.starting_magicka`/`starting_stamina` are `Option<f32>`
+  precisely so partial race data degrades one pool at a time, not the whole
+  NPC.
 **Output**: `/tmp/audit/character/dim_5.md`
 
 ### Dimension 6: Coverage, Documentation & Doctrine Drift

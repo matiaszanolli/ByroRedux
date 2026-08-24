@@ -92,7 +92,10 @@ landing them harder.
    need a real wgpu device and are `#[ignore]`d — note which, because a
    "verified" claim that depends on an ignored test is not verified.
 6. **Count, do not trust, the catalog sizes.** `docs/engine/ui.md` quotes a
-   74-method Skyrim catalog and a 138-method FO4 catalog. Re-derive both from
+   74-method Skyrim catalog and a 269-method FO4 catalog (grown from 138 on
+   2026-08-24, and the earlier "sample, not a complete surface" caveat was
+   dropped from the doc along with it — re-verify that caveat's removal is
+   still accurate rather than assuming it). Re-derive both from
    `crates/ui/src/catalog.rs` before citing either number — a quoted count that
    no longer matches the array is exactly the drift class #2730 was filed for.
 
@@ -164,14 +167,22 @@ fail a test — it produces a movie that loads and misbehaves.
 - Idempotency: injecting twice (menu reload, resize-triggered rebuild) must not
   double-install helpers or duplicate traits. Verify a guard on `ADAPTER_NAME` or
   the helper prefix.
-- `ScaleformHostObjectState` must distinguish *not required* (AVM1),
-  *declared-and-installed*, and *movie does not declare the contract*. A movie
-  that never creates `BGSCodeObj` must land in the third state and be visible to
-  the engine — not silently look identical to success.
+- `ScaleformHostObjectState` has four variants: `NotRequired` (AVM1),
+  `NotPresent` (movie doesn't declare `BGSCodeObj`/`onCodeObjCreate`),
+  `AdapterInjected`, and `AdapterInjectedWithoutDestroyHook` — added
+  2026-08-24 for movies whose lifecycle class declares `onCodeObjCreate` but
+  not the optional `onCodeObjDestruction` trait. A movie that never creates
+  `BGSCodeObj` must land in `NotPresent` and be visible to the engine — not
+  silently look identical to success.
 - Lifecycle ordering: constructor patch → object populated → `onCodeObjCreate`
-  → … → destroy callback → `code_object_destruction_count`. Verify the destroy
-  path runs on menu close and that the counter is observable (it is the only
-  evidence the lifecycle completed).
+  → … → destroy callback (only if declared) → `code_object_destruction_count`.
+  **The destroy callback is registered only when the movie's class declares
+  `onCodeObjDestruction`** (no longer unconditional) — verify the injector
+  checks for the trait before registering rather than assuming its presence,
+  and that `AdapterInjectedWithoutDestroyHook` correctly skips incrementing
+  `code_object_destruction_count()` (there is no hook to invoke it). For
+  movies that DO declare the hook, verify the destroy path still runs on menu
+  close and the counter is observable.
 - Every forwarding function must normalize `BGSCodeObj.Method` → logical method
   `Method` while retaining the transport name in `ScaleformHostCall`. Verify the
   normalization is one shared helper, not repeated per method (212 copies of a
@@ -222,8 +233,16 @@ fail a test — it produces a movie that loads and misbehaves.
 - `resource_loads()` is the observability channel for what a menu actually
   requested. Verify it records misses as well as hits — a missing asset that
   leaves no trace is undebuggable.
-- Unbounded growth: `resource_loads` accumulates for the life of the player.
-  Confirm it is bounded or cleared on menu swap.
+- Unbounded growth: `resource_loads` (`Vec<ScaleformResourceLoad>`, exposed as
+  `&[ScaleformResourceLoad]`) still accumulates for the life of the player —
+  confirm it is bounded or cleared on menu swap. Contrast with the sibling
+  `import_asset_paths` set, which is **now bounded** (`MAX_IMPORT_ASSET_PATHS`
+  = 512, `extend_import_asset_paths`, 2026-08-24): it latches
+  `import_asset_paths_capped` and logs one warn on overflow rather than
+  growing without limit. A hostile or malformed `ImportAssets` graph with more
+  than 512 distinct paths is the concrete DoS shape this closes — verify
+  `resource_loads` doesn't have the same unbounded exposure to that same
+  input.
 **Output**: `/tmp/audit/ui/dim_5.md`
 
 ### Dimension 6: Render Path & Device Lifecycle

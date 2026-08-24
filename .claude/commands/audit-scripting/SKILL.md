@@ -642,7 +642,15 @@ to `i32` (`prim_set_objective_*`; confirm the widen is a genuine bug fix —
 Bethesda objective indices are a signed 32-bit field on the wire — and not a
 silent range-check loosening), `receiver_object`, `prim_add_item`,
 `prim_move_to`, `prim_start_quest`, `prim_stop_quest`, `prim_complete_quest`,
-`prim_reset_quest`, `prim_set_quest_active`, `prim_fail_all_objectives`);
+`prim_reset_quest`, `prim_set_quest_active`, `prim_fail_all_objectives`.
+**Grown further 2026-08-24** (three same-day commits, `5f38402e`/`cee35507`/
+`25a0aabd`): `Effect::Disable` (`prim_disable`, `<object>.Disable([fadeOut])`),
+`Effect::SetGlobalValue` (`prim_set_global_value`, `<GlobalVariable>.SetValue(v)`),
+and `Effect::Conditional` (`StageDoneGuard`, built from a narrowed `Stmt::If`
+lowering in `lower_statements` — see the decline-invariant bullet below, this
+is a real widening of what a fragment body may contain and the existing
+"`Stmt::While` is the one narrowed exception to ANY-control-flow-declines"
+framing is now incomplete);
 `crates/scripting/src/translate/tables.rs` (`CanonicalEvent::from_papyrus`);
 `crates/scripting/src/translate/recognizers/quest_stage_gate.rs` (`recognize`,
 `extract_stage_gate`, `classify_if_condition`);
@@ -672,27 +680,112 @@ refresh; not otherwise covered by this dimension's checklist below).
   left as one atom no primitive matches, forcing a decline. This is intentional
   conservatism (the file documents it). Confirm an `If a || b` condition declines
   rather than lowering only the `a` half.
-- **Effect decline enforcement (`effects.rs::lower_fragment`)**: mostly a
-  flat-sequence model — `Stmt::ExprStmt(e) → classify_effect(&e.node, &scope)?`;
+- **Effect decline enforcement (`effects.rs::lower_fragment`/`lower_statements`)**:
+  mostly a flat-sequence model — `Stmt::ExprStmt(e) → classify_effect(&e.node, &scope)?`;
   `Stmt::VarDecl`/`Stmt::Assign` bind a local via `bind_local` (quest / object /
   player / side-effect-free-plain, or decline — the "ANY var-decl declines"
   framing this bullet used to state is no longer accurate, since a local that
   `bind_local` can classify is recorded, not declined); `Stmt::Return(None)` is
-  the explicit no-op terminator; and — the one narrowed exception to "ANY
-  control flow declines" — `Stmt::While` is accepted **only** through
-  `lower_3d_loaded_wait` (MQ101 cart-cinematic work, post-2026-07-21), which
-  requires the condition to be an OR-tree of `!<actor>.Is3DLoaded()` leaves and
-  the loop body to be exactly one positive `Utility.Wait(..)` call; any other
-  `While`/`If`/valued-`Return` still hits `_ => return None`. Verify the
-  `lower_3d_loaded_wait`/`collect_not_3d_loaded_actors` shape check is still
-  exactly that narrow (an OR-of-NOT-Is3DLoaded, single positive `Wait` body)
-  and hasn't silently widened to accept other loop shapes — that would be a
-  decline-invariant regression. `effects.rs` has grown substantially since this
-  dimension was last refreshed (many more `Effect`/`EFFECT_PRIMITIVES` variants
-  beyond `AddItem`/`MoveTo` — scene/player-control/vehicle/cinematic effects for
-  the MQ101 cart sequence); this checklist does not enumerate them individually,
-  so treat the decline invariant above as the load-bearing thing to re-verify
-  rather than assuming the older, smaller primitive table.
+  the explicit no-op terminator; and there are now **two** narrowed exceptions
+  to "ANY control flow declines" (both post-2026-07-21 — the "`Stmt::While` is
+  the *one* exception" framing this bullet used to carry is stale):
+  1. `Stmt::While` is accepted **only** through `lower_3d_loaded_wait` (MQ101
+     cart-cinematic work), which requires the condition to be an OR-tree of
+     `!<actor>.Is3DLoaded()` leaves and the loop body to be exactly one
+     positive `Utility.Wait(..)` call.
+  2. `Stmt::If` is accepted (2026-08-24, `cee35507`) **only** through the
+     `Effect::Conditional` shape in `lower_statements`: `elseif_clauses` must
+     be empty (any elseif declines the whole `If`); `split_and` +
+     `classify_guard_atom(atom, None)` must classify every condition atom as
+     an exact `GuardMatch::StageDone { expected: 0.0 | 1.0, .. }` (a
+     non-stage-done atom, a non-conjunction, or a non-`0.0`/`1.0` comparand
+     declines); both the `then` and `else` branches lower independently via a
+     **cloned** `Scope` (`then_scope`/`else_scope`, so a local bound in one
+     branch cannot leak into the other) through a recursive `lower_statements`
+     call; and neither branch may contain a `Wait`/`WaitForActors3DLoaded`
+     effect (`has_latent` rejects both — a conditional wrapping a latent
+     effect declines the whole `If`, it does not partially lower). Verify all
+     of these bounds are still exactly this narrow — a widened `elseif`
+     allowance, a disjunction let through `classify_guard_atom`, or a latent
+     effect surviving inside a branch would each be a decline-invariant
+     regression. Any other `If`/valued-`Return` still hits `_ => return None`.
+     Guards: `lowers_get_stage_done_conditional`, `declines_unmodeled_conditional_guard`
+     (`crates/scripting/src/translate/effects.rs`).
+  `effects.rs` has grown substantially since this dimension was last refreshed
+  (many more `Effect`/`EFFECT_PRIMITIVES` variants beyond `AddItem`/`MoveTo` —
+  scene/player-control/vehicle/cinematic effects for the MQ101 cart sequence,
+  plus `Disable`/`SetGlobalValue`/`Conditional`, 2026-08-24); this checklist
+  does not enumerate them individually, so treat the decline invariant above
+  as the load-bearing thing to re-verify rather than assuming the older,
+  smaller primitive table.
+- **`Effect::Conditional` dispatch (`fragment.rs::apply_effects`, 2026-08-24)**:
+  handled as a special case at the *top* of the per-effect loop, not inside
+  `apply_effect` (`apply_effect`'s own `Effect::Conditional { .. } =>
+  unreachable!(...)` arm is a defense-in-depth assertion that the special case
+  always intercepts it first — verify it's never actually hit). Each
+  `StageDoneGuard` resolves its `QuestRef` via `resolve_quest_logged` and
+  compares `stages.get_stage_done(quest, guard.stage) == guard.done`; ALL
+  guards must pass (`.all(...)`) to take `then_effects`, otherwise
+  `else_effects` runs. The chosen branch recurses into `apply_effects` reusing
+  the *same* `&mut stages`/`&mut objectives`/`world`/`deferred` — no new
+  resource or component lock is acquired for the recursion. Verify (a) an
+  unresolvable guard quest (`resolve_quest_logged` returns `None`) makes that
+  guard fail closed (the `then` branch is skipped, not defaulted to true) —
+  a wrong default here would silently run the wrong branch on a data problem;
+  (b) the recursion has no depth/cycle hazard distinct from the outer
+  `MAX_CASCADE` cascade guard (a `Conditional` itself never emits a `SetStage`
+  loop back into the dispatch queue — only a `SetStage`/quest-lifecycle effect
+  inside a branch does, and that re-enters the *outer* cascade queue, not this
+  recursion).
+- **`Effect::Disable` / `ReferenceEnableState` (`fragment.rs`, 2026-08-24,
+  `5f38402e`)**: unlike `AddItem`/`MoveTo`/`EquipItem` (which resolve their
+  object/actor receivers through the alias-aware `resolve_object`/
+  `resolve_actor`, i.e. `deferred.scene_actor_bindings`), `Effect::Disable`
+  resolves its `object: ObjectRef` through the narrower
+  `resolve_property_form_id(vmad, object.property_name())` — the same
+  strict-form-id-only function Dim 5's `QuestRef::Property` bullet documents
+  as deliberately non-alias-aware because quests aren't alias-fillable. A
+  `Disable` receiver is, in authored content, frequently the same kind of
+  scene-marker `ObjectReference Property` that `AddItem`/`MoveTo` alias-bind
+  through — verify whether this is a deliberate narrower scope for `Disable`
+  (documented somewhere) or an inconsistency that makes `<AliasBoundMarker>.Disable()`
+  silently decline where the equivalent `AddItem`/`MoveTo` on the same alias
+  would resolve. Separately: `ReferenceEnableState::is_enabled` (the read
+  side of the resource `Effect::Disable` writes to via
+  `deferred.reference_enable_changes`) has **no production call site**
+  anywhere in `byroredux/` as of 2026-08-24 (only a unit test calls it) —
+  the effect records disable intent but nothing in cell loading, streaming,
+  or rendering currently consults it to actually hide/skip the reference.
+  Flag this as a real gap if a finding assumes `Disable` already suppresses
+  a reference at runtime; this is a report-worthy functional concern, not a
+  skill-doc correction.
+- **`Effect::SetGlobalValue` (`fragment.rs::apply_effect`)**: resolves the
+  `global: ObjectRef` the same strict way as `Disable`
+  (`resolve_property_form_id`, no alias branch — correct here, since a GLOB
+  is a top-level resource never bound through a quest alias) and writes
+  through `world.try_resource_mut::<crate::Globals>()`. `Globals` (
+  `crates/scripting/src/globals.rs`) gained `#[cfg_attr(feature = "save",
+  derive(Serialize, Deserialize))]` in the same commit and IS registered —
+  `byroredux/src/save_io.rs` calls `.register_resource::<Globals>("Globals")`
+  — so this is not the #1862-class "serde derive with no registry entry" gap;
+  confirm that registration still holds on future `save_io.rs` refactors
+  rather than re-deriving it each time.
+- **Multi-fragment-per-stage ordering (`fragment.rs::populate_quest_fragments_from_script`,
+  2026-08-24, `cee35507`)**: a QUST stage can carry several `QSDT` log
+  entries, each with its own `Fragment_N` binding (the module doc cites
+  MQ101 stage 0 having five). The function now accumulates all of a stage's
+  lowered `Effect` chains into one `effects_by_stage: HashMap<u16, Vec<Effect>>`
+  in first-seen (VMAD) order via `stage_order`, and installs each stage's full
+  merged chain into `frags` exactly once at the end — replacing, not
+  appending to, whatever was previously installed for that `(quest, stage)`.
+  This replaces the prior last-write-wins behavior (each `Fragment_N` binding
+  used to overwrite the previous one's effects for the same stage via a bare
+  `frags.insert`). Verify (a) the merge preserves authoring order across
+  bindings, not just within one binding's own statement sequence; (b) a
+  repeated call (re-population on a subsequent cell load) still replaces the
+  installed chain rather than duplicating it — `stage_order`/`effects_by_stage`
+  are function-locals rebuilt from scratch each call, so this should hold, but
+  confirm no caller accumulates across calls.
 - **Hole binding**: `QuestRef::{OwningQuest, SelfRef, Property(name)}` must FULLY
   resolve. `OwningQuest` needs `ctx.owning_quest` (decline if `None` —
   `declines_when_owning_quest_unavailable`); `Property(name)` needs the VMAD
@@ -793,15 +886,23 @@ refresh; not otherwise covered by this dimension's checklist below).
 `crates/scripting/src/condition.rs` (`evaluate`, `evaluate_condition`,
 `evaluate_function`, `ConditionFunction`, `ConditionContext`);
 `crates/scripting/src/trigger.rs` (`trigger_detection_system`, `TriggerVolume`,
-`TriggerShape`, `contains`); `crates/scripting/src/quest_stages.rs`
-(`QuestStageState`, `QuestObjectiveState`, `set_stage`, `get_stage_done`);
+`TriggerShape`, `contains`, and — added 2026-08-24, `7473a387`/`cee35507` —
+`intersects_sphere`, `TETHERED_HORSE_TRIGGER_RADIUS`, `TriggerOccupancyState`,
+`actor_quest_trigger_is_in_sequence`); `crates/scripting/src/quest_stages.rs`
+(`QuestStageState`, `QuestObjectiveState`, `set_stage`, `get_stage_done`, and
+— added 2026-08-23, `eb2e2445` — `QuestAliasReadinessGate`,
+`QuestAliasReadinessGateRegistry`, `install_quest_alias_readiness_gate`,
+`quest_alias_readiness_stage_system`);
 `crates/scripting/src/fragment.rs` (`quest_fragment_dispatch_system`,
 `QuestStageFragments` incl. `insert_vmad`/`vmad` (2026-07-21), `apply_effects`,
 `apply_effect`, `apply_quest_scoped_effect`, `resolve_quest_logged`,
-`resolve_property_form_id`, `resolve_object`, `MAX_CASCADE`);
-`crates/scripting/src/recurring_update.rs` (`recurring_update_tick_system`,
-`RecurringUpdate`, `OnUpdateEvent`); `crates/scripting/src/registry.rs`
-(`ScriptRegistry`).
+`resolve_property_form_id`, `resolve_object`, `MAX_CASCADE`, and — added
+2026-08-23/24 — `SceneFragments`, `populate_scene_fragments_from_pex`/
+`_from_script`, `scene_fragment_dispatch_system`, `ReferenceEnableState`);
+`crates/scripting/src/globals.rs` (`Globals` — read/write surface for
+Papyrus `GlobalVariable`, now save-serialized); `crates/scripting/src/recurring_update.rs`
+(`recurring_update_tick_system`, `RecurringUpdate`, `OnUpdateEvent`);
+`crates/scripting/src/registry.rs` (`ScriptRegistry`).
 **Checklist**:
 - **Two-phase lock-drop discipline**: `timer_tick_system`,
   `trigger_detection_system`, and `recurring_update_tick_system` each Phase-1
@@ -818,44 +919,127 @@ refresh; not otherwise covered by this dimension's checklist below).
   ordering is still there; reintroducing a live `QuestStageFragments` read guard
   held alongside the two mutable ones would reopen the read→write nesting the
   comment says was deliberately avoided.
-- **NEW nested-lock surface (2026-07-21, `AddItem`/`MoveTo`) — verify, don't
-  assume**: `apply_effect` now ALSO takes `world: &World` and, for the two
-  object-targeting variants, acquires a *component* lock
+- **NEW nested-lock surface (2026-07-21, `AddItem`/`MoveTo`; grown 2026-08-24)
+  — verify, don't assume**: `apply_effect` now ALSO takes `world: &World` and,
+  for the object-targeting variants, acquires a *component* lock
   (`world.query_mut::<Inventory>()` for `AddItem`; `world.get::<GlobalTransform>()`
   then `world.query_mut::<Transform>()` for `MoveTo`) **while the two resource
   locks above are still held** (they're bound in the outer scope for the whole
-  `while let Some((quest, stage)) = queue.pop()` loop). This is a real change
-  to the lock-nesting shape this dimension previously described as
-  "resource-locks-only, no component lock held across them" — that framing is
-  now stale. Investigate rather than assume safe: (a) does any *other* code
-  path acquire `Inventory`/`Transform` first and then try to acquire
-  `QuestStageState`/`QuestObjectiveState` — the reverse order — on a path the
-  scheduler could run concurrently with this one; (b)
-  does the engine's scheduler ever run `quest_fragment_dispatch_system`
-  concurrently with anything else that touches these same resources/components
-  (check `sys.accesses` / the scheduler's declared-access report for this
-  system — Dimension 6's own §"ECS lock held across a second resource/component
+  `while let Some((quest, stage, is_cascade)) = queue.pop_front()` loop —
+  see the cascade-queue bullet above for the `Vec`→`VecDeque` rework). This is
+  a real change to the lock-nesting shape this dimension previously described
+  as "resource-locks-only, no component lock held across them" — that framing
+  is now stale, and `apply_effect`'s own doc comment (as of 2026-08-24) is the
+  authoritative running list: it now also names a `Globals` write (1, for
+  `SetGlobalValue`) alongside the `PlayerControlState` writes and "12
+  component-storage acquisitions" — re-read that doc comment rather than this
+  bullet's own count, since it is the thing this bullet is transcribing and
+  will drift again. `Effect::Conditional`'s branch recursion (Dim 5) does NOT
+  add to this list — it reuses the caller's existing `&mut stages`/
+  `&mut objectives` rather than re-acquiring. `scene_fragment_dispatch_system`
+  (below) is now a **second caller** of this same `apply_effect`/
+  `apply_effects` machinery, under the identical `resource_2_mut::<QuestStageState,
+  QuestObjectiveState>()` pattern — the nested-lock safety argument ("only
+  safe because every system that touches those quest resources is registered
+  `add_exclusive`") must hold for both callers, not just
+  `quest_fragment_dispatch_system`; verify `scene_fragment_dispatch_system` is
+  also `add_exclusive` in `byroredux/src/boot.rs`. Investigate rather than
+  assume safe: (a) does any *other* code path acquire `Inventory`/`Transform`/
+  `Globals` first and then try to acquire `QuestStageState`/`QuestObjectiveState`
+  — the reverse order — on a path the scheduler could run concurrently with
+  either caller; (b) does the engine's scheduler ever run
+  `quest_fragment_dispatch_system` or `scene_fragment_dispatch_system`
+  concurrently with anything else that touches these same resources/components,
+  or with EACH OTHER (both hold the same two resource locks — if the
+  scheduler ever parallelizes them the ABBA argument breaks) (check
+  `sys.accesses` / the scheduler's declared-access report for both systems —
+  Dimension 6's own §"ECS lock held across a second resource/component
   mutation" severity row already rates this class HIGH if it's a real
   deadlock vector, not merely theoretical).
-- **Marker single-frame semantics**: all transient markers
-  (`ActivateEvent`, `HitEvent`, `TimerExpired`, `AnimationTextKeyEvents`,
-  `OnUpdateEvent`, `OnTriggerEnterEvent`, `OnCellLoadEvent`, `OnEquipEvent`,
-  `QuestStageAdvancedBatch` — the actual drained `Component`; the bare
-  `QuestStageAdvanced` struct it wraps carries no `Component` impl and is never
-  inserted directly — and the rumble/camera/UI command markers) MUST be drained
-  by `event_cleanup_system` exactly once per frame. Verify `event_cleanup_system`
-  drains EVERY marker type the runtime emits (cross-check the
+- **Scene-fragment dispatch parallels quest-fragment dispatch (`fragment.rs::
+  scene_fragment_dispatch_system`, 2026-08-23, `27875a02`)**: a second
+  fragment-execution pipeline, structurally mirroring
+  `quest_fragment_dispatch_system` but for SCEN `Begin`/`End`/phase
+  lifecycle events instead of QUST stage advances. It drains
+  `SceneFragmentInvocationBatch` (Pattern-A, above), looks up each
+  invocation's `(scene_form_id, SceneFragmentEvent)` in `SceneFragments`
+  (populated at cell load by `populate_scene_fragments_from_pex`/
+  `_from_script`, keyed the same conservative way as `QuestStageFragments` —
+  same decline-on-unmodeled lowering via `lower_fragment_with_quest_properties`,
+  no separate recognizer), and applies via the SAME shared `apply_effects`/
+  `DeferredFragmentEffects` used by quest fragments — any `SetStage` a scene
+  fragment performs enters the canonical `QuestStageAdvancedBatch` sink exactly
+  like a quest fragment's would. Scheduling order in `byroredux/src/boot.rs` is
+  load-bearing and explicitly documented in-line: `scene_playback_system` →
+  `scene_fragment_dispatch_system` → … → `quest_fragment_dispatch_system`
+  (called `quest_fragment_dispatch` there), all `add_exclusive` in
+  `Stage::Update` — a scene fragment's `SetStage` this frame is guaranteed
+  visible to `quest_fragment_dispatch_system` the SAME frame, not the next.
+  Verify that ordering hasn't drifted (a reorder would turn a same-frame
+  cascade into a one-frame-late one, silently) and that `SceneFragments` is
+  populated idempotently across repeated cell loads the same way
+  `QuestStageFragments` is (Dim 5's multi-fragment-per-stage-merge bullet is
+  QUST-side only — `SceneFragments::insert` has no analogous merge, it's one
+  binding per `(scene, event)` by construction since a scene event has at
+  most one fragment in the VMAD format, so confirm that premise still holds
+  rather than assuming it from this note).
+- **Marker lifetime: two sanctioned patterns, not one (#2672 — predates this
+  session but this bullet's "MUST be drained by `event_cleanup_system`" framing
+  never reflected it; correcting it now because the new markers below land in
+  both patterns)**: `cleanup.rs`'s module doc names two legitimate marker
+  lifecycles. **Pattern A** — registered in `event_cleanup_system`'s drain
+  list, for a marker with no single owning consumer: `ActivateEvent`,
+  `HitEvent`, `TimerExpired`, `AnimationTextKeyEvents`, `OnUpdateEvent`,
+  `QuestStageAdvancedBatch` (the actual drained `Component`; the bare
+  `QuestStageAdvanced` struct it wraps carries no `Component` impl and is
+  never inserted directly), the rumble/camera/UI command markers,
+  `SceneEventBatch`, `SceneFragmentInvocationBatch` (added 2026-08-23,
+  `27875a02` — the invocation marker `scene_fragment_dispatch_system`
+  consumes), `OnTriggerEnterEvent`, `OnCellLoadEvent`, `OnEquipEvent`.
+  **Pattern B** — drained unconditionally at the head of the *one* owning
+  consumer instead, a stronger same-frame guarantee: `SceneStartRequest`/
+  `SceneStopRequest`/`SceneActionCompletionBatch` (`scene_playback_system`),
+  `DialoguePresentationEventBatch`/`DialogueLineCompletionBatch`
+  (`dialogue::scene_dialogue_system`), `ScenePackageEventBatch`/
+  `ScenePackageCompletionBatch`/`EvaluatePackageRequest`
+  (`package::scene_package_system`), `TwoStateTransitionBatch`
+  (`vm_state::two_state_activator_system`), `MotionTypeChangeRequest`
+  (`byroredux::systems::cinematic`). For a Pattern-A marker, verify
+  `event_cleanup_system` drains EVERY one the runtime emits (cross-check the
   `cleanup.rs` drain list against every `world.insert` of a marker across the
-  crate) — an undrained marker re-fires its consumer every frame; a marker
-  emitted by a system that runs *after* cleanup lags a frame. `cleanup` must be
-  the LAST scripting system in the schedule. Guards: `cleanup_removes_all_event_types`,
-  `cleanup_preserves_non_event_components`.
+  crate) and that `cleanup` is the LAST scripting system in the schedule. For
+  a Pattern-B marker, verify the drain is unconditional — no early return may
+  sit between the top of the owning system and the drain, or the marker is
+  stranded and its consumer re-fires forever. A marker in neither list (new
+  or renamed) is the actual bug to report — not "which list should it be in"
+  in the abstract, but whether its *actual* drain site matches whichever
+  pattern its docstring claims. Guards: `cleanup_removes_all_event_types`,
+  `cleanup_preserves_non_event_components`, and `cleanup.rs`'s own
+  `every_drained_marker_is_a_documented_pattern_a_marker` contract test.
 - **Producer→consumer cross-stage ordering**: `quest_advance_system` (Dim 7)
-  emits `QuestStageAdvanced`; `quest_fragment_dispatch_system` consumes it and may
-  re-emit (cascade). Verify the cascade is bounded by `MAX_CASCADE = 64` with a
-  WARN on overflow (an unbounded `SetStage`→fragment→`SetStage` loop hangs the
-  frame) and that only *genuine* transitions cascade (a no-op re-set of the same
-  stage is skipped — the `fragment.rs` cascade guard).
+  and `quest_startup_system`/`quest_alias_readiness_stage_system` (above)/
+  `quest_fragment_dispatch_system` itself all emit `QuestStageAdvanced`;
+  `quest_fragment_dispatch_system` consumes every source and may re-emit
+  (cascade). The cascade queue was
+  reworked 2026-08-24 (`25a0aabd`): it is now a `VecDeque<(QuestFormId, u16,
+  bool)>` (FIFO `push_back`/`pop_front`, not the prior `Vec`
+  `push`/`pop` LIFO stack), and the `bool` (`is_cascade`) distinguishes
+  authored ingress (journal/legacy-batch events, pushed `false`) from a
+  `SetStage` a fragment itself emitted (pushed `true`). `MAX_CASCADE = 64`
+  (`cascade_steps`) now bounds **only** `is_cascade == true` entries — the
+  prior scheme counted every dequeue including ingress, which the commit's
+  own comment flags as a false-cap risk ("a Skyrim bootstrap can legitimately
+  deliver hundreds of independent Start Game Enabled quest events in one
+  tick"). Verify (a) `cascade_steps` is genuinely gated on `is_cascade` and
+  not incremented for plain ingress; (b) a WARN still fires on overflow (an
+  unbounded `SetStage`→fragment→`SetStage` loop hangs the frame); (c) only
+  *genuine* transitions cascade (a no-op re-set of the same stage —
+  `adv.previous_stage == adv.new_stage` — is skipped, not re-queued); (d) the
+  FIFO reorder is intentional and doesn't invert an ordering assumption a
+  test or a fragment author relies on (the old LIFO `pop` processed the most
+  recently queued cascade continuation before older sibling ingress; the new
+  FIFO processes strictly in arrival order, so a cascade continuation now
+  runs *after* every currently-queued sibling rather than immediately).
 - **CTDA OR-precedence (`condition.rs::evaluate`)**: Bethesda's **inverted**
   precedence — consecutive `or_next`-flagged conditions form an OR block that
   binds *tighter* than the surrounding AND chain (`A AND B OR C AND D` =
@@ -879,15 +1063,111 @@ refresh; not otherwise covered by this dimension's checklist below).
   `None` means "never checked" and the seed contract is enforced by *skipping*
   the enter check entirely on that first tick (SCR-D6-NEW-02/#1817), not by
   seeding a synthetic `Some(true)`/"was inside" default: a fresh volume writes
-  `Some(inside)` without ever comparing against the `None`. The event lands on
-  the **volume entity** with the triggerer in the marker field. Verify the seed
-  contract (a player loaded already inside a volume must NOT spuriously fire on
-  frame 1 — the `None` branch never pushes to `entered`) and
-  the `contains` math: Sphere = `(p-center).length_squared() <= r*r` with
-  `half_extents.x` as radius; Box (OBB) = `rotation.inverse() * (p-center)` then
-  per-axis `local.abs() <= half_extents`. Guards: `edge_triggered_not_level_triggered`,
+  `Some(inside)` without ever comparing against the `None`. This player-only
+  path is unchanged; verify the seed contract (a player loaded already inside
+  a volume must NOT spuriously fire on frame 1 — the `None` branch never
+  pushes to `entered`) and the `contains` math: Sphere =
+  `(p-center).length_squared() <= r*r` with `half_extents.x` as radius; Box
+  (OBB) = `rotation.inverse() * (p-center)` then per-axis
+  `local.abs() <= half_extents`. Guards: `edge_triggered_not_level_triggered`,
   `re_entry_fires_again`, `sphere_contains_by_radius`, `obb_rotation_is_respected`,
   `aabb_contains_interior_and_rejects_exterior`.
+- **`OnTriggerEnterEvent` is now multi-triggerer (2026-08-24, `7473a387`) —
+  the "the event lands on the volume entity with THE triggerer in the marker
+  field" framing above is stale for the field shape**: the component's field
+  is `triggerers: Vec<EntityId>` (was a single `triggerer: EntityId`).
+  `trigger_detection_system` now scans TWO independent populations per
+  volume in the same frame: the player (via `occupant_inside`, unchanged) and
+  every non-player `crate::scene::SceneAliasCandidate` entity with a
+  `GlobalTransform`, tracked in a NEW `TriggerOccupancyState` resource keyed
+  `(trigger, actor) -> bool` (a sparse side table — player occupancy stays on
+  `TriggerVolume.occupant_inside` for save compatibility, per the file's own
+  comment). If the volume already carries an event this frame, a new
+  triggerer is appended (`if !event.triggerers.contains(&triggerer)`) rather
+  than overwriting — verify no path still assumes singular delivery (e.g. a
+  consumer that reads `triggerers[0]` and ignores the rest would silently
+  drop simultaneous multi-actor crossings). A tethered horse (present in
+  `crate::HorseTetherState`) is tested via `TriggerVolume::intersects_sphere`
+  (a body-radius contact test, `TETHERED_HORSE_TRIGGER_RADIUS = 96.0`) instead
+  of the point-containment `contains` the player/other actors use — verify
+  the sphere math (Sphere: combined-radius distance check; Box (OBB): closest-
+  point-then-radius, both in the volume's local rotated space) and that ONLY
+  tethered horses get the sphere widening (a non-mover actor using
+  `intersects_sphere` would fire triggers it hasn't actually reached). Three
+  re-fire conditions feed `entered`, not just the plain edge
+  (`was_inside == Some(false)`): a first-observed tethered horse already
+  inside on a freshly-streamed volume (`was_inside.is_none() && active_mover`
+  — the deliberate exception to the player-side "first tick never fires"
+  seed contract, justified because exterior streaming can materialize a
+  trigger around an already-moving native actor rather than that actor
+  crossing an edge), and `became_ready_inside` — a `BaseForm`-gated trigger
+  a tethered horse is ALREADY inside (`was_inside == Some(true)`) re-fires
+  once its `QuestAdvanceOnActivate` gate becomes newly satisfiable (target
+  stage not yet done AND its `conditions` now evaluate true), so a horse that
+  entered before the quest was ready gets a fresh entry the moment it
+  becomes ready rather than being stuck un-signaled. Verify `became_ready_inside`
+  re-evaluates every frame while stuck-inside-and-not-yet-ready (expected —
+  it's a level condition, not an edge) but stops firing once the target stage
+  is actually set (checked via `get_stage_done`, so this is bounded by how
+  fast the consumer applies the `SetStage`, not by this system) — and that
+  `occupancy.inside.retain(|key, _| observed.contains(key))` at the end of
+  the actor scan correctly prunes `(trigger, actor)` keys for actors that
+  streamed out or despawned, so `TriggerOccupancyState` doesn't grow
+  unboundedly over a long play session. Guards:
+  `quest_actor_crossing_emits_triggerer_identity`,
+  `freshly_streamed_trigger_emits_for_tethered_horse_already_inside`,
+  `tethered_horse_inside_reemits_when_quest_prerequisite_becomes_ready`,
+  `preserves_all_actors_entering_one_volume_in_the_same_frame`,
+  `actor_sphere_contacts_box_even_when_root_point_misses` (`crates/scripting/src/trigger.rs`).
+- **`actor_quest_trigger_is_in_sequence` (`trigger.rs`, 2026-08-24, `cee35507`)
+  — a second, independent gate layered on top of the above**: after
+  `entered` is computed, it's filtered through this function before any
+  `OnTriggerEnterEvent` is emitted, so an actor genuinely crossing (or a
+  tethered horse becoming ready) can still be held back. Only applies to
+  `BaseForm`-gated triggers (`ActivatorGate::BaseForm`) — anything else
+  passes through (`return true`) unfiltered. Two regimes, keyed off whether a
+  `ScenePlayer` for a scene owned by the trigger's `owning_quest` is
+  currently running: (1) **during a running scene** — only triggers whose
+  `target_stage` is `<=` one of the CURRENT phase's `GetStageDone(quest,
+  stage) == 1` completion-condition stages may fire (`awaited_stages`,
+  scraped from `ScenePhase::completion_conditions` by literal CTDA shape —
+  function 59, `Eq`, comparand `1.0`, `param_1 == owning_quest`); (2)
+  **between scenes** (the owning scene has finished and none is running) —
+  only the numerically LOWEST `target_stage` among all `BaseForm`-gated
+  triggers for that quest that is `>= current_stage`, not yet
+  `get_stage_done`, AND whose own `conditions` currently evaluate true may
+  fire (`next_ready == Some(advance.target_stage)`) — i.e. strict monotonic
+  ordering between scenes, not "any ready trigger". If NEITHER a running nor
+  a finished scene is found for the quest, the gate is a no-op (`return
+  true`). This duplicates — as a SEPARATE implementation — the "which
+  trigger is next" logic `byroredux/src/systems/cinematic.rs`'s
+  `scene_trigger_actor_approach_system` (Dim 8) uses to pick where to
+  *route* a tethered horse; verify the two never disagree (a horse routed
+  toward a trigger this gate would then refuse to fire is a real, silently-
+  broken cart sequence — cross-reference Dim 8). Guard:
+  `actor_triggers_follow_scene_phase_and_between_scene_stage_order`
+  (`crates/scripting/src/trigger.rs`).
+- **`QuestAliasReadinessGate` (`quest_stages.rs`, 2026-08-23, `eb2e2445`)**:
+  an engine-authored substitute for a quest-alias script's own `SetStage`
+  call — `install_quest_alias_readiness_gate` registers `(quest,
+  required_aliases, target_stage, only_below_stage)`;
+  `quest_alias_readiness_stage_system` (scheduled in `Stage::Update` right
+  after `quest_alias_refresh_system`, before `scene_playback_system`) advances
+  the quest to `target_stage` the frame every `required_aliases` entry first
+  resolves through `SceneActorBindings`, mirroring Skyrim's
+  `RegisterStartingCellLoad` same-frame callback timing. Verify the three
+  guard conditions in `quest_alias_readiness_stage_system` all hold before
+  advancing: `stages.is_running(quest)`, `get_stage(quest) < only_below_stage`
+  (an already-advanced-past quest must NOT be pulled backward or re-fired),
+  and `!get_stage_done(quest, target_stage)` (idempotent — a gate that has
+  already fired must not re-fire every frame just because all its aliases
+  remain bound). `install_quest_alias_readiness_gate` is upsert-by-quest
+  (one gate per quest, last-installed-wins on a repeat call with the same
+  `quest`) — verify that's the intended shape for a quest with multiple
+  independent alias-readiness triggers, or confirm it's documented as
+  one-gate-per-quest by design. Guard:
+  `alias_readiness_gate_advances_once_after_every_alias_binds`
+  (`crates/scripting/src/quest_stages.rs`).
 - **Quest stage history (`quest_stages.rs`)**: `set_stage` updates `current_stage`
   AND inserts into `stages_done` (history retained across advances —
   `GetStageDone(37)` stays true after advancing to 40); `set_stage` returns the
@@ -917,10 +1197,19 @@ re-exports them and keeps their call sites); `crates/plugin/src/esm/records/inde
 (`ScriptInstanceData`, `ScriptInstance`); `byroredux/src/asset_provider/script.rs`
 (`build_script_provider`, `extract_pex`, the `--scripts-bsa` parse);
 `crates/scripting/src/papyrus_demo/quest_advance.rs` (`quest_advance_system`,
-`QuestAdvanceOnActivate`); `byroredux/src/cell_loader/references/mod.rs`
+`QuestAdvanceOnActivate`, `ActivatorGate` incl. `ActivatorGate::BaseForm`
+(2026-08-24), `QuestTriggerApproachRegistry`/`QuestTriggerApproach`/
+`install_quest_trigger_approach` — the process-lifetime catalog of
+actor-gated triggers whose cells may not be resident, consumed by
+`byroredux/src/systems/cinematic.rs`'s `scene_trigger_actor_approach_system`,
+Dim 8); `byroredux/src/cell_loader/references/mod.rs`
 (`stamp_quest_reference`, `spawn_logical_quest_reference`,
 `attach_quest_reference_script` — added 2026-08-07, `a844c26b`, "integrate
-canonical reference identities through cell loading").
+canonical reference identities through cell loading"); `byroredux/src/commands/quest.rs`
+(the M47.3 debug-console surface: `QuestStartCommand`/`QuestSetStageCommand`/
+`QuestAliasesCommand` and, added 2026-08-23, `SceneShowCommand`
+(`scene.show <formid>`) — reports a SCEN's live `ScenePlayer`/
+`ScenePackagePlayback` state plus authored phase/action data side by side).
 **Why this dimension**: the decompiler + recognizer chain (Dims 1–5) are the
 *producer* of canonical components; the cell-loader attach path is the only live
 *driver* that feeds them real VMAD + `.pex` from game data. None of the crate
@@ -974,14 +1263,26 @@ dimensions covers it.
   `GlobalTransform` without per-frame composition.
 - **`quest_advance_system` unifies OnActivate + OnTriggerEnter**: both
   `ActivateEvent` (doors/levers, `activator` field) and `OnTriggerEnterEvent`
-  (trigger volumes, `triggerer` field) converge on one `QuestAdvanceOnActivate`
-  component via a combined `(entity, triggerer)` collect. The design relies on a
-  given entity receiving only one signal (doors have no volume, volumes have no
-  use interaction) — verify nothing can deliver both to one entity in one frame
-  (double-advance). Confirm condition gating runs per `QuestAdvanceOnActivate`
-  (`ConditionContext::for_subject` + `evaluate_condition_list`) and the
-  `ActivatorGate::PlayerOnly` is honored. Guards: `trigger_enter_advances_quest`,
-  `trigger_enter_respects_player_only_gate`,
+  converge on one `QuestAdvanceOnActivate` component. `OnTriggerEnterEvent`'s
+  field is now `triggerers: Vec<EntityId>` (2026-08-24, Dim 6) — this system's
+  own collect loop already handles that plural shape correctly
+  (`triggered.extend(ev.triggerers.iter().map(|triggerer| (entity, *triggerer)))`,
+  one `(entity, triggerer)` pair per triggerer), so the "the design relies on a
+  given entity receiving only one signal" framing this bullet used to carry is
+  now ALSO about "only one signal *source*" (Activate xor TriggerEnter), not
+  "only one triggerer" — a trigger volume legitimately fans out to several
+  `(entity, triggerer)` pairs from one `OnTriggerEnterEvent` in one frame now,
+  and each is evaluated independently against `QuestAdvanceOnActivate`'s
+  single `activator_gate`/`conditions`. Verify nothing can deliver both an
+  `ActivateEvent` AND an `OnTriggerEnterEvent` to one entity in one frame
+  (double-advance) — the plural triggerers change doesn't affect this
+  cross-source invariant, only the trigger-side fan-out. Confirm condition
+  gating runs per `(entity, triggerer)` pair (`ConditionContext::for_subject`
+  + `evaluate_condition_list`) and that the gate — now three-way
+  (`ActivatorGate::Any`/`PlayerOnly`/`BaseForm(u32)`, the last added
+  2026-08-24, matched against the triggerer's `SceneAliasCandidate::base_form_id`)
+  — is honored per-triggerer, not just for the first one collected. Guards:
+  `trigger_enter_advances_quest`, `trigger_enter_respects_player_only_gate`,
   `activate_and_trigger_in_same_frame_both_advance`
   (`crates/scripting/src/papyrus_demo/quest_advance/tests.rs`).
 - **Canonical reference identity stamping (`stamp_quest_reference`,
@@ -1008,6 +1309,20 @@ dimensions covers it.
   volumes spawned` line. Verify the counters are wired (recognized++ on a
   `translate_pex` Some, trigger_volumes++ on a volume spawn) so the smoke harness
   has a real signal — a counter that never increments makes the gate vacuous.
+- **`scene.show` debug command (`SceneShowCommand`, `byroredux/src/commands/quest.rs`,
+  added 2026-08-23)**: a diagnostic-only command (not on any live game-state
+  write path — `execute` takes `&World`, not `&mut World`) that renders a
+  SCEN's authored definition next to its live `ScenePlayer`/
+  `ScenePackagePlayback` state and resolves each authored actor alias through
+  `SceneActorBindings`. Lower audit priority than the write-path bullets above
+  since it can't corrupt game state, but verify it stays read-only (a
+  diagnostic command that mutates would be a much higher-severity finding
+  given it's reachable from the debug console) and that the alias resolution
+  it displays (`bindings.resolve(quest, actor.actor_id as i32)`) uses the same
+  entry point `fragment.rs::resolve_object`/`condition.rs::RunOn::QuestAlias`
+  do (Dim 5/6), so a debugging session against this command's output isn't
+  looking at a different resolution path than the one actually driving
+  gameplay.
 **Output**: `/tmp/audit/scripting/dim_7.md`
 
 ### Dimension 8: Havok Idle / Cinematic Slice — `.hkx` Decode → Playback (added 2026-08-13)
@@ -1016,10 +1331,15 @@ dimensions covers it.
 `HkxAnimation`, `HkxTransform`, `HkxAnnotation`);
 `byroredux/src/asset_provider/animation.rs` (`populate_havok_idle_runtime`,
 `convert_hkx_clip`, `idle_animation_candidates`, `behavior_completion_events`) —
-the crate's **only** consumer; `crates/scripting/src/cinematic.rs` and
+the crate's **only** consumer; `crates/scripting/src/cinematic.rs`
+(`HorseTetherState`, `ActorCinematicState`) and
 `byroredux/src/systems/cinematic.rs` (`havok_idle_playback_system`,
 `cinematic_root_motion_system`, `cinematic_animation_event_system`,
-`scripted_motion_type_system`, `vehicle_attachment_system`)
+`scripted_motion_type_system`, `vehicle_attachment_system`, and — added
+2026-08-24, `7473a387`/`5f38402e` — `scene_trigger_actor_approach_system`,
+new in this range, not a pre-existing function this dimension previously
+covered); `byroredux/src/cell_loader/unload.rs` (`cinematic_retained_entities`,
+also added 2026-08-24).
 **Why this dimension exists**: the M47.2 MQ101 cart cinematic is the first
 scripted sequence that drives *animation* rather than ECS state, and it crosses
 three previously-unaudited surfaces — an untrusted binary parser (`hkx`), an
@@ -1064,6 +1384,52 @@ asset-resolution catalog, and five playback systems. Dims 1–7 cover none of it
   the same `Keyframed` discipline `byroredux/src/npc_spawn.rs` uses for live
   ragdoll bones — cross-reference `/audit-physics` Dims 3–4 and report the
   physics half there.
+- **`scene_trigger_actor_approach_system` (new, 2026-08-24)**: routes an
+  offscreen actor-gated trigger's approach target for cataloged (not
+  necessarily cell-resident) triggers registered via
+  `QuestTriggerApproachRegistry` (Dim 7). Computes, per quest with a live
+  `ScenePlayer`, either the CURRENT scene phase's awaited `GetStageDone`
+  stages (`awaited`) or — new this commit, for quests **between** scenes
+  (scene `Finished`, none `is_running`) — a `u16::MAX` sentinel cap meaning
+  "any `BaseForm`-gated `target_stage >= current_stage`" (`between_scenes`).
+  For each cap it picks, per candidate base-form actor, the single
+  LOWEST-stage reachable trigger (`min_by_key`) — and for the `u16::MAX`
+  between-scenes case, an extra `retain` narrows the whole candidate set down
+  to only the globally-lowest `stage` found across all bases, so it never
+  routes an actor toward a stage 2+ triggers ahead of the true next one. This
+  is a SEPARATE reimplementation of the same "what's the next allowed
+  `BaseForm` trigger stage for this quest" question `trigger.rs`'s
+  `actor_quest_trigger_is_in_sequence` (Dim 6) answers to decide whether to
+  fire a trigger. **Verify the two agree** — trace both against the same
+  scene-phase/between-scenes inputs and confirm they'd always pick/allow the
+  same stage; a drift means the horse can be routed toward (or past) a
+  trigger the OTHER function would then refuse to fire, silently breaking the
+  cart sequence with no panic or error to surface it. Guards: the
+  `mod tests` block in `byroredux/src/systems/cinematic.rs` (search
+  `scene_trigger_actor_approach_system` — no single canonical test name is
+  documented here, confirm current coverage directly).
+- **`cinematic_retained_entities` (`byroredux/src/cell_loader/unload.rs`, new,
+  2026-08-24)**: called from `unload_cell_inner` before computing unload
+  victims. Collects every entity reachable from a live `HorseTetherState`
+  (`cart`, `tether.horse`) or `ActorCinematicState.vehicle` (`actor`,
+  `vehicle`), then transitively walks `Children` from that seed set so a
+  retained root's whole render/bone hierarchy survives too. Retained entities
+  are excluded from `victims` AND have their `CellRoot` component stripped
+  (`roots.remove(entity)`) so a moving cart/horse that has crossed its source
+  cell's boundary is not despawned by exterior streaming unloading that cell
+  out from under it. Verify (a) the walk is genuinely transitive (a
+  grandchild two `Children` hops from the horse root must be retained, not
+  just direct children — guard: `active_tether_retains_horse_cart_rider_and_hierarchy`);
+  (b) stripping `CellRoot` doesn't orphan the entity from some OTHER index
+  that still expects every live entity to carry a `CellRoot` (a partial
+  ownership-model exception like this is exactly the kind of thing that grows
+  a second, undocumented "un-owned entity" class over time — check whether
+  anything else in cell-loader/streaming assumes `CellRoot` presence is
+  universal); (c) the retention set has a bounded lifetime — confirm
+  `HorseTetherState`/`ActorCinematicState.vehicle` are themselves cleared at
+  the end of a cart sequence (cross-reference the completion-event bullet
+  above), so a finished cinematic's actors return to normal cell-scoped
+  unload rather than being retained forever as a leak.
 **Output**: `/tmp/audit/scripting/dim_8.md`
 
 ## Phase 3: Merge
@@ -1080,13 +1446,33 @@ asset-resolution catalog, and five playback systems. Dims 1–7 cover none of it
      permanent inventory-grant save ledger, and alias-bound
      `ObjectRef::Property`/`RunOn::QuestAlias` resolution — and the
      quest-lifecycle effects (`Start`/`Stop`/`CompleteQuest`/`Reset`/
-     `SetActive`/`FailAllObjectives`), all 2026-08-07) vs. deferred
-     (Obscript/SCTX Phase 5; the M47.1 condition resolvers' live-cell
-     re-verification; M47.3 Phase 4+ — Created Object alias spawn, Story
-     Manager event fills, true `LCTN` alias traversal, reference-collection
-     aliases, unloaded-world Find-Matching search, and the injected
-     packages/spells/keywords overlay families staying parsed-not-applied;
-     the `AddItem`/`MoveTo` real-corpus yield re-measurement post-alias-runtime).
+     `SetActive`/`FailAllObjectives`), all 2026-08-07; plus, 2026-08-23/24 (six
+     same-day commits — verify each against current source, not this
+     summary): scene-lifecycle fragment dispatch
+     (`SceneFragments`/`scene_fragment_dispatch_system`, mirroring
+     quest-fragment dispatch for SCEN `Begin`/`End`/phase events);
+     actor-specific trigger gating (`ActivatorGate::BaseForm`,
+     `QuestTriggerApproachRegistry`) and tethered-horse trigger detection
+     (multi-triggerer `OnTriggerEnterEvent`, `TriggerVolume::intersects_sphere`,
+     the scene-phase/between-scenes `actor_quest_trigger_is_in_sequence` gate,
+     and its Dim-8 navigation counterpart `scene_trigger_actor_approach_system`);
+     `ReferenceEnableState` + the `Disable` fragment effect (write side shipped,
+     **no production consumer yet** — flag if a finding assumes `Disable`
+     already hides a reference); `Effect::SetGlobalValue` (`Globals`,
+     save-registered); `Effect::Conditional` (a narrow `GetStageDone`-guarded
+     `If`/`Else` now lowers, where previously ALL `If` declined); the
+     cascade-queue FIFO + ingress-vs-cascade rework (`MAX_CASCADE` now bounds
+     only fragment-emitted `SetStage`s, not authored ingress); the
+     multi-`Fragment_N`-per-stage merge fix (previously last-write-wins); and
+     `QuestAliasReadinessGate` (an engine-authored alias-readiness-driven
+     `SetStage`)) vs. deferred (Obscript/SCTX Phase 5; the M47.1 condition
+     resolvers' live-cell re-verification; M47.3 Phase 4+ — Created Object
+     alias spawn, Story Manager event fills, true `LCTN` alias traversal,
+     reference-collection aliases, unloaded-world Find-Matching search, and
+     the injected packages/spells/keywords overlay families staying
+     parsed-not-applied; the `AddItem`/`MoveTo` real-corpus yield
+     re-measurement post-alias-runtime; `ReferenceEnableState`/`Disable`
+     still lacking a runtime consumer).
      Findings count by severity. **Untrusted-input
      robustness verdict** (can a hostile/corrupt `.pex` or `.psc` panic, OOB, or
      OOM the cell loader — MUST be NO). **The 99.996% decompile-rate claim

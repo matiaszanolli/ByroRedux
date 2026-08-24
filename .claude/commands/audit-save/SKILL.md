@@ -24,7 +24,7 @@ those here.
 
 ## Scope
 
-**Crate** (`crates/save/src/`, ~1.2k LOC — read ALL of it before auditing):
+**Crate** (`crates/save/src/`, ~2k LOC — read ALL of it before auditing):
 - `crates/save/src/lib.rs` — module docstring (design intent: full snapshot,
   atomic write, ring, validation gate, load-off-frame), `SaveError` enum, public
   re-exports.
@@ -35,7 +35,11 @@ those here.
   `LoadFn` / `ApplyFn` closures, `register_component` / `register_resource` /
   `register_form_id_component`, `schema_fingerprint` (FNV-1a), `form_id_column`.
 - `crates/save/src/driver.rs` — `save_world`, `restore_world`,
-  `restore_resources`, `build_form_id_remap`, `apply_deltas`.
+  `restore_resources`, `build_form_id_remap`, `apply_deltas`,
+  `validate_snapshot_types` (non-mutating typed-decode preflight, #3163 —
+  read every registered column's JSON through its `ValidateFn` without
+  touching a `World`; called by both `restore_world`, before
+  `clear_entities`, and the live-load drain, before cell teardown).
 - `crates/save/src/disk.rs` — `write_slot` (tmp → fsync → read-back-verify →
   rename), `read_slot`, `list_slots`, `SaveRing`.
 - `crates/save/src/validate.rs` — `validate_world`, `ValidationError`,
@@ -53,13 +57,43 @@ the crate; the crate audit is incomplete without it):
   `SaveState`, `PendingSaveLoadSlot`, `PlayerPose`.
 - `capture_player_pose`, `apply_player_pose`, `execute_pending_save_loads`,
   `snapshot_cell_context`, `snapshot_player_pose`.
+- `SaveLoadNotifications` (added 2026-08-24) — a `Vec<String>` resource that
+  `notify_player` appends to on every *failure* path inside
+  `reload_interior_session` / `reload_exterior_session` /
+  `execute_pending_save_loads` (aborted preflight, failed cell reload, failed
+  resource restore, failed delta apply, lost cell/exterior context). It is
+  NOT a general save/load confirmation channel — success has no notification,
+  only these six abort/error sites do.
+- `queue_startup_load` — parses `--load <slot>` through the same
+  `queue_load_slot` → `LoadCommand` primitive the console's explicit `load
+  <slot>` command calls directly (F9 and the pause menu instead go through
+  `quickload_latest`, which itself calls `queue_load_slot` in its
+  newest-first fallback loop — all three converge on the one `LoadCommand`
+  path). Replaces the old inline `slot.parse::<u32>()` that used to live in
+  `main.rs`'s `App::new`.
+- `command_output_is_failure` — now `.iter().any(...)` over every output
+  line (was `.first()`-only); a multi-line `CommandOutput` whose failure
+  marker isn't the first line no longer reads as success.
+- `quickload_latest` — walks `disk::slots_by_recency` newest-first and
+  falls back to the next-newest slot when the newest fails
+  `command_output_is_failure` (a corrupt/undecodable newest save no longer
+  hard-fails quickload).
 
 **Cross-cut ground truth — read before auditing the relevant dimension**:
-- `byroredux/src/boot.rs` — registry/state install at boot (~line 1137);
+- `byroredux/src/boot.rs` — registry/state install at boot (~line 1137, also
+  installs `SaveLoadNotifications::default()` alongside `PendingSaveLoadSlot`);
   `byroredux/src/app_events.rs` — the per-frame ordering of `capture_player_pose`
-  THEN `step_save_loads` (in `about_to_wait`, ~line 658; moved out of *main.rs*
+  THEN `step_save_loads` (in `about_to_wait`, ~line 684; moved out of *main.rs*
   by the #2731 split); `byroredux/src/app_step.rs` — `step_save_loads`
-  body (~line 291).
+  body (~line 291); `byroredux/src/app_frame.rs` — `render_one_frame` drains
+  `SaveLoadNotifications` via `mem::take` (unconditionally, whether or not a
+  debug-UI is installed) and, later in the SAME `about_to_wait` call, feeds the
+  first message to `byroredux_debug_ui::DebugUiState::push_player_message` and
+  any remaining ones to `push_console_line` — so a load-failure toast from this
+  frame's `step_save_loads` renders in this frame's draw, not next frame's.
+- `crates/debug-ui/src/lib.rs` — `DebugUiState::push_player_message` (also
+  appends to console history, arms a 4-second expiry); `crates/debug-ui/src/panels.rs`
+  — `draw_player_message` (the on-screen toast).
 - `byroredux/src/cell_loader/transition.rs` — `CurrentCellContext` (the saved
   cell identity), `reposition_camera` (FlyCam restore target).
 - `crates/core/src/ecs/world.rs` — `insert_batch` (the `entity < next_entity`
@@ -75,11 +109,21 @@ the crate; the crate audit is incomplete without it):
   `minor` 2 / `schema_fpr` 8 / `crc32` 4 / `payload_len` 8) + serde_json `Snapshot`.
 - `Snapshot { next_entity, strings, components: BTreeMap, resources: BTreeMap }`.
 - Disk slots are `<dir>/save_<slot>.ess`; ring is in-memory round-robin.
-- Live load = reload saved cell via `load_cell_with_masters` → `restore_resources`
-  → `build_form_id_remap` → `apply_deltas(MUTABLE_DELTA_COLUMNS)` → `apply_player_pose`.
+- Live load = `validate_snapshot_types` preflight → reload saved cell via
+  `load_cell_with_masters` → `restore_resources` → `build_form_id_remap` →
+  `apply_deltas(MUTABLE_DELTA_COLUMNS)` → `apply_player_pose`.
 - `restore_world` (clear + full repopulate) is the **test/loose path**; the LIVE
   load path uses `apply_deltas` overlay, NOT `restore_world` — two divergent
-  restore code paths.
+  restore code paths. Both now share the same `validate_snapshot_types` typed
+  preflight (`restore_world` runs it before `clear_entities`; the live path
+  runs it before any cell/streaming teardown) — added 2026-08-24 (#3163) so a
+  malformed column is rejected before either restore path can touch a world.
+- `FORMAT_MAJOR` is 5 (was 4 as of the last skill sync) — the bump added
+  required `Material.water_shader_flags`/`Material.is_water_shader`,
+  `RigidBodyData.collidable`, and the newly-saved `CharacterController`
+  column (#3164/#3165). Do not hardcode this number elsewhere in findings —
+  re-read `crates/save/src/snapshot.rs`'s `FORMAT_MAJOR` doc comment, it will
+  drift again.
 
 **Doc-rot check**: `docs/feature-matrix.md:189` already carries an explicit
 `TD3-002` comment noting Save/load (M45/M45.1) shipped 2026-06-21 — the
@@ -119,15 +163,22 @@ correctly before reporting anything here.
    itself a finding.
 6. Run the registry-completeness guard before Dimension 1 starts: `cargo test -p
    byroredux every_component_or_resource_impl_is_saved_or_explicitly_allowlisted`
-   (SAVE-D1-12, #2295, `byroredux/src/save_io.rs`). It source-scans every `impl
-   Component for` / `impl Resource for` line under
-   `crates/core/src/ecs/components/`, `crates/scripting/src/`, and
-   `crates/physics/src/` and asserts each type is registered in
-   `build_save_registry` XOR listed in the test's own `NOT_SAVED_BY_DESIGN`
-   allowlist with a one-line reason. A green run IS the completeness ledger —
-   Dimension 1 should consume its `NOT_SAVED_BY_DESIGN` list rather than
-   re-deriving completeness from scratch, spot-checking a sample of reasons for
-   staleness (the guard enforces a reason exists, not that it's still true).
+   (SAVE-D1-12, #2295/#3166, `byroredux/src/save_io/registry_completeness_tests.rs`).
+   Its `SCAN_ROOTS` widened 2026-08-24 (#3166) from `crates/core/src/ecs/components/`
+   to the WHOLE of `crates/core/src`, and gained `crates/audio/src` +
+   `crates/plugin/src` alongside the pre-existing `crates/scripting/src`,
+   `crates/physics/src`, `byroredux/src` — do not describe this guard as
+   components-only, it now source-scans every `impl Component for` / `impl
+   Resource for` line under those six roots. It skips test-only sources
+   (any `*_tests.rs` file, anything under a `tests/` path component, and
+   everything after the first `#[cfg(test)]` marker in a production file) so
+   fixture types declared alongside production code don't pollute the ledger.
+   Asserts each surviving type is registered in `build_save_registry` XOR
+   listed in the test's own `NOT_SAVED_BY_DESIGN` allowlist with a one-line
+   reason. A green run IS the completeness ledger — Dimension 1 should consume
+   its `NOT_SAVED_BY_DESIGN` list rather than re-deriving completeness from
+   scratch, spot-checking a sample of reasons for staleness (the guard
+   enforces a reason exists, not that it's still true).
 
 ## Phase 2: Launch Dimension Agents
 
@@ -147,7 +198,17 @@ gone. Data-Loss Class = silent-drop.
   set (inventory, equipment, lights, animation, scripting, form id, plus the
   `ItemInstancePool` / `CurrentCellContext` / `PlayerPose` / `GameTimeRes` /
   `QuestAliasInjectionState` resources — the M34 day/night clock and the QUST
-  alias inventory-grant ledger, both registered 2026-08-07). For EACH persistent
+  alias inventory-grant ledger, both registered 2026-08-07 — and, registered
+  2026-08-24, `Globals` — MQ101's startup fragment writes `GameHour` before
+  advancing to stage 10, so GLOB values are mutable game state, not a
+  from-ESM constant — and `ReferenceEnableState` — the fragment `Disable()`
+  effect's FormId-keyed enable/disable ledger; note it round-trips correctly
+  but has **no consumer anywhere in cell_loader/streaming yet** (`is_enabled`
+  is called only from its own test module), so a save/reload today correctly
+  carries the flag without it having any observable effect live or on
+  reload — a scripting-domain completeness gap, not a save-domain one; don't
+  raise it as a save finding, but don't claim `Disable()` persists visibly
+  either). For EACH persistent
   component type in the codebase that carries player-mutable state, confirm it
   is either registered OR documented as reconstruct-on-load (derived data:
   `GlobalTransform`, `WorldBound`; GPU handles: `MeshHandle`, `TextureHandle`,
@@ -159,7 +220,16 @@ gone. Data-Loss Class = silent-drop.
   (#2382), `Material` (#2378), `FragmentExecutionQueue` (#2381), and the MQ101
   cinematic trio `ActorCinematicState`/`HorseTetherState`/
   `CinematicPresentationState` (#2380). Verify none of the seven regressed back
-  out of `build_save_registry`.
+  out of `build_save_registry`. A later gap closed 2026-08-24 (#3164/#3165):
+  `byroredux_physics::CharacterController` — previously reconstructed fresh
+  every reload with a `NOT_SAVED_BY_DESIGN` entry, now registered because its
+  `breath_remaining`/`drowning_damage_accumulator` fields are genuine
+  fractional gameplay carry (swim/drowning state), not just per-frame motion
+  state. Verify the allowlist entry for `CharacterController` stays REMOVED
+  (it would be a silent-drop regression if it reappeared) and that
+  `WaterContact`'s own allowlist reason was updated to point at the now-saved
+  `CharacterController` column rather than claiming "drowning accumulation is
+  not yet wired".
 - **Two lists, one truth (drift hazard).** `MUTABLE_DELTA_COLUMNS` in
   `byroredux/src/save_io.rs` is a SEPARATE hardcoded `&[&str]` from the
   `register_component` calls in `build_save_registry`. The live load only overlays
@@ -177,7 +247,16 @@ gone. Data-Loss Class = silent-drop.
   `MUTABLE_DELTA_COLUMNS` (blast-radius and `EntityId`-hazard reasons
   respectively, documented at each `register_component` call site in
   `byroredux/src/save_io.rs`). Verify they stay documented as intentional
-  rather than silently drifting into the HIGH bucket above.
+  rather than silently drifting into the HIGH bucket above. `CharacterController`
+  (#3165, added 2026-08-24) is the opposite deliberate case — registered AND
+  present in `MUTABLE_DELTA_COLUMNS`, because unlike `Material`/the cinematic
+  pair its whole struct is plain f32/bool/enum fields (no `FixedString`/
+  `EntityId`), so the tripwire guard passes it. Its overlay happens BEFORE
+  `apply_player_pose`, which unconditionally zeroes `vertical_velocity` /
+  `is_grounded` / `wants_jump` on the SAME struct afterward — verify that
+  ordering still holds (`execute_pending_save_loads` calls `apply_deltas` then
+  later `apply_player_pose`), otherwise a stale grounded/jump flag from the
+  saved session would survive into the reloaded cell.
 - **Determinism.** `Snapshot.components` / `.resources` are `BTreeMap` (sorted
   keys) and `save_world` skips empty columns / null resources. Confirm the CRC is
   reproducible at equal state: column ROW order comes from `World::query` iteration
@@ -209,9 +288,28 @@ gone. Data-Loss Class = silent-drop.
 
 ### Dimension 2: Registry & (De)serialization Fidelity
 **Entry points**: `crates/save/src/registry.rs` — `register_component`,
-`register_resource`, `register_form_id_component`, the `SaveFn`/`LoadFn`/`ApplyFn`
-closures, `schema_fingerprint`, `form_id_column`, `FnvHasher`.
+`register_resource`, `register_form_id_component`, the `SaveFn`/`LoadFn`/`ApplyFn`/`ValidateFn`
+closures, `component_validate`, `resource_validate`, `schema_fingerprint`,
+`form_id_column`, `FnvHasher`; `crates/save/src/driver.rs` —
+`validate_snapshot_types` (the crate-level entry point the two `*_validate`
+accessors feed).
 **Checklist**:
+- **`ValidateFn` is a third closure per `Entry`, added 2026-08-24 (#3163).**
+  Every `register_component` / `register_resource` / `register_form_id_component`
+  call now builds a `validate: Box<dyn Fn(serde_json::Value) -> Result<(), SaveError>>`
+  alongside `save`/`load` (and `apply` for components) — a non-mutating
+  `serde_json::from_value::<T>` decode that never touches a `World`.
+  `driver::validate_snapshot_types` walks every snapshot column through it.
+  Verify: (a) every `register_*` variant builds a matching `validate` closure
+  (a variant that forgets to wire one silently exempts its column from the
+  preflight — the column would only fail during the actual `load`, after
+  teardown has already happened); (b) the closure decodes the SAME target
+  type `load` does (`Vec<(u32, T)>` for components/form-id columns, bare `T`
+  for resources) so a preflight pass genuinely guarantees the later `load`
+  call succeeds; (c) `component_validate`/`resource_validate` do a linear
+  `.find()` over `self.components`/`self.resources` by name — correctness is
+  fine at registry size, but confirm no accidental first-match-wins collision
+  with `form_id_column`'s dedicated-flag fix (Dimension 2's own note below).
 - **Serde availability is feature-gated.** Components serialise only with
   `serde::Serialize + DeserializeOwned`; these derives are behind
   `#[cfg_attr(feature = "inspect", …)]` on the core types, and `crates/save`
@@ -227,12 +325,34 @@ closures, `schema_fingerprint`, `form_id_column`, `FnvHasher`.
   `serde_json::from_value` failing (a `SaveError::Serde`, not a silent
   default-fill). The danger case: a field ADDED with `#[serde(default)]` would
   load OLD saves silently. A guard test, `serde_default_on_saved_struct_requires_format_major_bump`
-  (`byroredux/src/save_io.rs`, #1714, `806ba7af`), source-scans every
-  save-participating type (top-level + nested: `ItemStack`, `AnimationLayer`,
-  `FormIdPair`, …) for a newly-added `#[serde(default)]` while `FORMAT_MAJOR == 1`.
-  The `Option`-widening half is still uncaught statically (legitimate `Option`s
-  already exist) — verify this residual is still documented, not silently
-  dropped.
+  (`byroredux/src/save_io/serde_default_guard_tests.rs`, #1714, `806ba7af`),
+  source-scans every save-participating type (top-level + nested: `ItemStack`,
+  `AnimationLayer`, `FormIdPair`, …) for ANY `#[serde(default)]` attribute —
+  it is an unconditional offender list, not gated on the current
+  `FORMAT_MAJOR` value (prior skill text describing it as checking "while
+  `FORMAT_MAJOR == 1`" was stale — the test has never read `FORMAT_MAJOR` at
+  all). The `Option`-widening half is still uncaught statically (legitimate
+  `Option`s already exist) — verify this residual is still documented, not
+  silently dropped.
+- **Shape-fingerprint guard closes the `Option`-widening gap (added
+  2026-08-24, #3164/#3165).** `saved_type_shape_changes_require_format_major_bump`
+  (same file) is a SECOND, stronger check: it normalizes (whitespace/comment
+  stripped) every `#[derive(...Serialize...)] struct`/`enum` body reachable
+  from `save_type_sources()`, hashes the sorted set with the same FNV-1a
+  scheme as `schema_fingerprint`, and asserts the result against a hardcoded
+  `BASELINE_SHAPE_FINGERPRINT` + `BASELINE_MAJOR`. Unlike the `#[serde(default)]`
+  scan, this ALSO catches a field simply being added/removed/retyped without
+  any `default` attribute (the `Option`-widening case the doc-comment above
+  calls out as previously uncaught). Verify: (a) the baseline was regenerated
+  in the SAME commit `FORMAT_MAJOR` last changed (a stale baseline masks the
+  next real drift as a false failure, training reviewers to bump the
+  baseline reflexively without checking whether `FORMAT_MAJOR` should also
+  move); (b) `save_type_sources()`'s discovery set (feature-gated files +
+  the explicit non-turbofish edges: `crates/core/src/form_id.rs`,
+  `crates/core/src/ecs/components/form_id.rs`, `crates/core/src/string/mod.rs`,
+  `crates/plugin/src/esm/records/script_instance.rs`) still covers every
+  save-participating type — a type reachable ONLY through a manual `impl
+  Serialize` (no `#[derive]`) would be invisible to both guards.
 - **Fingerprint stability across builds.** `FnvHasher` is hand-rolled
   specifically because `DefaultHasher` is unspecified across std versions. Verify
   the FNV constants (`0xcbf2_9ce4_8422_2325` offset basis, `0x100_0000_01b3`
@@ -273,12 +393,25 @@ closures, `schema_fingerprint`, `form_id_column`, `FnvHasher`.
   read-back that compares lengths only, is a HIGH durability hole (a lying/short
   write can replace a good save). Confirm the failed read-back removes the tmp and
   returns `SaveError::Io` rather than proceeding to rename.
-- **Directory durability gap.** `sync_all` fsyncs the FILE; on most filesystems
-  the `rename` itself is not durable until the DIRECTORY is fsynced. A power cut
-  after `rename` returns but before the dir entry is flushed can lose the rename.
-  Check whether the parent dir is fsynced after rename — if not, flag as MEDIUM
-  (the read-back + tmp pattern still protects against half-written content; this
-  is the residual rename-durability gap).
+- **Directory durability gap — CLOSED (SAVE-D3-01).** `sync_all` fsyncs the
+  FILE; on most filesystems the `rename` itself is not durable until the
+  DIRECTORY is fsynced. `write_slot` now opens `dir` as a `File` and calls
+  `sync_all()` on it immediately after `rename` (Unix-only capability — skipped
+  where opening a directory fails, e.g. Windows, which journals the rename
+  instead). Prior skill text framing this as an open "check whether — if not,
+  flag as MEDIUM" is stale; verify the fsync-after-rename call is still there
+  rather than re-deriving the gap as if unaddressed.
+- **`latest_slot` / `slots_by_recency` (rewritten 2026-08-24, #3167 quickload
+  fallback work).** `latest_slot` is now `slots_by_recency(dir).into_iter().next()`;
+  `slots_by_recency` returns EVERY valid slot newest-first, with mtime ties
+  broken by higher slot number (`recency_tie_breaks_by_slot_number`) so
+  ordering is deterministic even when two slots share a filesystem-granularity
+  mtime. Verify: (a) a `.tmp` sibling is still excluded by `parse_slot_filename`
+  (`latest_slot_ignores_newer_tmp_and_empty_directory`); (b) an unreadable
+  metadata entry is skipped, not treated as newest-by-default; (c) the binary's
+  `quickload_latest` (Dimension 5/6) consumes the FULL ordered list — the whole
+  point of exposing `slots_by_recency` beyond a single `Option<u32>` is letting
+  the caller fall back past a corrupt newest slot instead of hard-failing.
 - **Ring never clobbers the last good save.** `SaveRing::advance` is round-robin
   over `0..size` (size floored to ≥1); `SaveCommand` with no arg calls
   `ring.advance()`. Verify a quicksave spreads across slots so the previous good
@@ -315,8 +448,9 @@ closures, `schema_fingerprint`, `form_id_column`, `FnvHasher`.
 ### Dimension 4: Validation Gates (the slow-corruption-tail defense)
 **Entry points**: `crates/save/src/validate.rs` — `validate_world`,
 `validate_hierarchy`, `validate_equipment`, `validate_animation`,
-`ValidationKind`; `byroredux/src/save_io.rs` — `SaveCommand::execute` (the gate
-caller).
+`ValidationKind`; `crates/save/src/driver.rs` — `validate_snapshot_types` (the
+typed-decode preflight, #3163, added 2026-08-24); `byroredux/src/save_io.rs` —
+`SaveCommand::execute` (the write-path gate caller).
 **Why this dimension**: the whole format's thesis is "refuse to persist an
 inconsistent world rather than seed a corruption tail." This dimension verifies
 the gate actually exists, runs before write, and covers the references that matter.
@@ -360,15 +494,39 @@ the gate actually exists, runs before write, and covers the references that matt
   revert). Verify it stays diagnostic-only and covers both restore paths.
   Regression: the `round_trip.rs` test proving `restore_world` neither aborts
   nor silently repairs broken-but-decodable data.
+- **Typed-decode preflight gate — this one DOES abort (added 2026-08-24,
+  #3163).** Distinct from the diagnostic-only post-load `validate_world` above:
+  `validate_snapshot_types` runs a non-mutating `serde_json::from_value`
+  decode of every registered column and, on ANY `SaveError::Serde`, is
+  treated as a hard abort by both callers — `restore_world` returns the error
+  before `clear_entities` runs (verified by
+  `typed_snapshot_preflight_rejects_bad_column_without_world_mutation` in
+  `crates/save/tests/round_trip.rs`), and `execute_pending_save_loads` returns
+  before ANY cell/streaming teardown (`byroredux/src/save_io.rs`, right after
+  `build_save_registry()`, before `snapshot_cell_context`/`reload_interior_session`).
+  This closes exactly the gap Dimension 5/6's "delta apply failed mid-overlay"
+  concern used to describe: a malformed column now fails BEFORE the
+  irreversible teardown, not after. Verify a delta-apply (`apply_deltas`)
+  failure that still occurs post-preflight (an "unexpected apply failure" per
+  its own log message) is a DIFFERENT, narrower failure class — this preflight
+  guarantees typed-decodability, not that every `ApplyFn`'s entity-remap logic
+  succeeds — and that `execute_pending_save_loads` still returns immediately
+  on that later failure too (`crate::combat::reconcile_dead_actor_runtime_state`
+  runs, then it returns without falling through to post-load `validate_world`
+  or `apply_player_pose` on a partially-overlaid world — this `return` was
+  ADDED in the same 2026-08-24 change; prior code logged the error and fell
+  through, continuing on into pose-restore over an admittedly-partial overlay).
 **Output**: `/tmp/audit/save/dim_4.md`
 
 ### Dimension 5: Frame-Boundary Capture & Off-Frame Apply
 **Entry points**: `crates/save/src/driver.rs` — `save_world` (read-only capture),
 `restore_world` (`&mut World`); `byroredux/src/save_io.rs` —
 `SaveCommand` (read-only), `LoadCommand` (queues), `execute_pending_save_loads`
-(the `&mut World` drain), `capture_player_pose`; `byroredux/src/app_events.rs`
-run-loop ordering (the `about_to_wait` arm, ~line 658 — post-#2731; do not look
-for it in *main.rs*).
+(the `&mut World` drain), `capture_player_pose`, `SaveLoadNotifications`,
+`notify_player`; `byroredux/src/app_events.rs` run-loop ordering (the
+`about_to_wait` arm, ~line 684 — post-#2731; do not look for it in *main.rs*);
+`byroredux/src/app_frame.rs` — `render_one_frame`'s `SaveLoadNotifications`
+drain (~line 104, immediately after the debug-UI snapshot is built).
 **Checklist**:
 - **Capture is read-only and consistent.** `save_world` takes `&World` (queries +
   `try_resource`), so it can run as a console command without `&mut`. Verify the
@@ -391,6 +549,21 @@ for it in *main.rs*).
   Verify the load NEVER runs inside the scheduler (it would alias the world). This
   mirrors `PendingDebugLoadSlot`; confirm the drain `take()`s the slot (load runs
   once) and no-ops on an empty slot.
+- **`SaveLoadNotifications` drain is unconditional (added 2026-08-24).**
+  `notify_player` pushes onto this `Vec<String>` resource from every failure
+  arm inside `reload_interior_session` / `reload_exterior_session` /
+  `execute_pending_save_loads` (aborted preflight, failed cell reload, failed
+  resource restore, failed delta apply, lost cell/exterior context) — it is
+  NOT used on the success path, so don't expect a "save complete" toast here.
+  `render_one_frame` (`app_frame.rs`) drains it via `mem::take` regardless of
+  whether `self.debug_ui` is `Some` — verify that stays true, since a `None`
+  debug-UI (headless bench / dedicated-server-style run) that instead
+  SKIPPED the drain would let the `Vec` grow unbounded across every failed
+  load attempt for the process lifetime. Because `step_save_loads` (which can
+  call `notify_player`) and `render_one_frame`'s drain both run inside the
+  SAME `about_to_wait` invocation (drain call site is AFTER the save-load
+  step), a failure this frame surfaces as a toast in this frame's draw, not
+  next frame's — verify that ordering holds if either call site moves.
 - **`clear_entities` does NOT tear down GPU/physics handles.** `restore_world`
   drops component data but the docstring (and `world.rs`) explicitly state GPU/
   physics handles are the CALLER's responsibility. The live path
@@ -415,13 +588,19 @@ for it in *main.rs*).
 **Entry points**: `byroredux/src/save_io.rs` — `execute_pending_save_loads`,
 `build_form_id_remap` (in `crates/save/src/driver.rs`), `apply_deltas`,
 `apply_player_pose`, `snapshot_cell_context`, `snapshot_player_pose`;
-`byroredux/src/cell_loader/transition.rs` — `CurrentCellContext`,
-`reposition_camera`; `crates/physics/src/sync.rs` — `set_kinematic_translation`.
+`crates/save/src/driver.rs` — `validate_snapshot_types` (typed preflight, first
+step of the drain, #3163); `byroredux/src/cell_loader/transition.rs` —
+`CurrentCellContext`, `reposition_camera`; `crates/physics/src/sync.rs` —
+`set_kinematic_translation`.
 Companion doc: `docs/engine/save-load-roundtrip.md` (cross-cutting trace of this
-exact flow, verified against the tree 2026-07-15).
+exact flow, verified against the tree 2026-07-15 — the preflight step below
+postdates that doc's last verification pass; cross-check it's still accurate
+there too).
 **Checklist**:
 - **Strict apply ordering.** `execute_pending_save_loads` must run:
-  drain slot → resolve `CurrentCellContext` → teardown (`drain_streaming_state` +
+  drain slot → `validate_snapshot_types` typed preflight (#3163, added
+  2026-08-24 — ABORTS before any teardown on a decode failure) → resolve
+  `CurrentCellContext` → teardown (`drain_streaming_state` +
   `unload_current_interior`) → `load_cell_with_masters` → apply lighting +
   `signal_temporal_discontinuity` + record `LoadedPluginSet` → `restore_resources`
   → `build_form_id_remap` → `apply_deltas(MUTABLE_DELTA_COLUMNS)` →
@@ -429,7 +608,13 @@ exact flow, verified against the tree 2026-07-15).
   `ItemInstancePool` ids that `Inventory` rows reference resolve against the
   RESTORED arena (a delta-before-resource order would dangle every item instance —
   HIGH reference-break). Verify pose-restore is LAST (after the cell reload places
-  the player at the default door spawn).
+  the player at the default door spawn, and after `apply_deltas` has already
+  overlaid the saved `CharacterController` breath/drowning fields onto the
+  reloaded body — pose-restore's own momentum-zeroing, below, must run AFTER
+  that overlay, not before). Verify a failed `apply_deltas` call also aborts —
+  it `return`s (after reconciling dead actors) rather than falling through
+  into post-load validation/pose-restore on a partial overlay (fixed
+  2026-08-24; prior code merely logged and continued).
 - **Remap correctness & identity.** `build_form_id_remap` matches saved
   `FormIdPair` → live entity carrying the same pair in the RELOADED cell, producing
   `saved-id → live-id`. Verify: (a) entities WITHOUT a form id (NIF child nodes,
@@ -477,7 +662,16 @@ exact flow, verified against the tree 2026-07-15).
   `reposition_camera` (FlyCam reload of a Character save still honours look dir);
   (c) momentum is CLEARED so the body doesn't carry stale free-fall velocity into
   the reloaded cell. A missing momentum-clear = player launches/falls on every
-  load (MEDIUM, gameplay correctness).
+  load (MEDIUM, gameplay correctness). Note the momentum fields this bullet zeroes
+  are a DIFFERENT subset of `CharacterController` from the fields
+  `MUTABLE_DELTA_COLUMNS`'s `"CharacterController"` entry overlays (#3165,
+  2026-08-24) — `apply_deltas` restores `breath_remaining`/
+  `drowning_damage_accumulator` (fractional swim/drowning carry, genuine
+  gameplay state) onto the SAME struct earlier in the ordering above, and this
+  pose-restore step then zeroes only the three motion fields on top. Verify
+  that split still holds field-for-field: a future field added to
+  `CharacterController` needs an explicit decision about which side of this
+  split it belongs on, not a default assumption either way.
 - **Pose capture/restore mode mismatch.** `PlayerPose.character_mode` records the
   SAVE-time mode; restore branches on `character_now` alone (#2018, `SAVE-D6-03`)
   — a live Character-mode session always relocates the body, converting the saved

@@ -99,7 +99,8 @@ consumption of `CellData` (`/audit-<game>` per-game Dimension 1), Papyrus
 ### Dimension 1: Header Detection & GRUP Walk (highest blast radius)
 **Entry points**: `crates/plugin/src/esm/reader.rs` — `EsmVariant::detect`,
 `record_header_size`, `group_header_size`, `GameKind::from_header`,
-`EsmReader::read_file_header`; `crates/plugin/src/esm/records/grup_walker.rs`
+`EsmReader::read_file_header`, `EsmReader::bounded_group_content_end`,
+`MAX_GRUP_NESTING_DEPTH`; `crates/plugin/src/esm/records/grup_walker.rs`
 **Why first**: a header-size or GRUP-bounds error desynchronizes the whole file.
 Everything downstream then decodes garbage that *looks* structurally valid.
 **Checklist**:
@@ -121,7 +122,24 @@ Everything downstream then decodes garbage that *looks* structurally valid.
   the group's own declared size, clamped to the parent's end. Verify a lying
   size field cannot walk past the buffer or loop forever (zero/negative advance).
 - Nested GRUPs (world children, cell children, topic children) recurse with a
-  depth or end-offset bound. A malformed file must terminate, not stack-overflow.
+  depth bound (#3237): every recursive walker's `sub_end` comes from
+  `EsmReader::bounded_group_content_end(header, depth, walker_name)`, which
+  returns `None` (and calls `skip_group` internally) once `depth >=
+  MAX_GRUP_NESTING_DEPTH` (64) instead of handing back an end offset to
+  recurse into — a malformed file with deeper nesting is skipped, not
+  stack-overflowed. Confirmed wired into
+  `grup_walker.rs::{extract_records, extract_records_with_modl,
+  extract_dial_with_info, extract_quest_dialogue_scene_tree_inner}` and
+  `cell/walkers.rs::parse_cell_group` + `cell/wrld.rs::parse_wrld_children`
+  (Dimension 5) — each threading a `depth + 1` argument through its `_inner`
+  recursion. This is **not yet universal**: `cell/support.rs`'s
+  `parse_modl_group`, `parse_ltex_group`, `parse_txst_group`,
+  `parse_scol_group`, `parse_pkin_group`, `parse_movs_group`, and
+  `parse_mswp_group` all still recurse on a raw, unbounded
+  `reader.group_content_end(&sub)`, as does `cell/walkers.rs::parse_refr_group`
+  (see Dimension 5) — check whether that gap has been closed, and if not,
+  flag it as the live instance of exactly the stack-overflow risk this bullet
+  exists to catch, not as a new finding invented from scratch.
 - Record flag `FLAG_COMPRESSED`: the 4-byte uncompressed-size prefix is read
   first, `data_size - 4` is the zlib payload. Verify `data_size >= 4` is checked
   *before* the subtraction (an underflow here is a panic on hostile input) and
@@ -154,10 +172,39 @@ width shifts every later field in the same sub-record, and the result parses
   `GameKind` (or on remaining length), never read unconditionally. Cross-check
   against the xEdit citation in the decoder's comment; a gate with no citation
   and no test is a guess.
+- Worked instance: `crates/plugin/src/esm/records/actor/mod.rs::parse_race`'s
+  TES5 (`GameKind::Skyrim`, 128/164 B) `DATA` arm decodes three back-to-back
+  `f32`s at the fixed offsets 36/40/44 into `RaceRecord.starting_health` /
+  `starting_magicka` / `starting_stamina` (all `Option<f32>`, gated
+  finite-and->0), immediately after the 36-byte
+  skills(14)+padding(2)+height(8)+weight(8)+flags(4) head. Verify a future
+  field added to this tail lands at offset 48 and beyond in sequence, not by
+  reusing 36/40/44, and that it stays scoped to the TES5 arm — the sibling
+  TES4/FO3NV arm (8-slot skill array, no starting-pool floats at all) and the
+  FO4/FO76 arm (200/216 B, no skill-bonus array, floats from offset 0) must
+  not be confused with it. The CHARAL-side consumption of these two new
+  fields is `/audit-character` Dimension 5's territory, not this one's — only
+  the byte offsets are in scope here.
 - `rgb_color` vs `rgba_color`: 3-byte vs 4-byte reads. A swapped pair shifts
   every subsequent field by one byte. Grep both and confirm each against the
   record's documented layout — and remember `feedback_color_space`: these are
   raw monitor-space floats, do **not** flag a missing sRGB conversion.
+- `crates/plugin/src/esm/records/misc/water.rs::decode_data_fo3nv` — WATR's
+  full FO3/FNV `DATA` shares its first 28 bytes with the Oblivion/synthetic
+  short form: `wind_speed`/`wind_direction`/`wave_amplitude`/`wave_frequency`
+  at offsets 0/4/8/12 (direction is degrees-on-the-wire, converted once),
+  then `sun_specular_power`/`reflectivity`/`fresnel` at 16/20/24 (see the
+  docstring's offset table). This shared prefix has been misattributed twice
+  before (#3107 routed it through the per-record noise-layer-1 tail at
+  offset 100/112 and the tail-derived amplitude/frequency at 76/80; #3144 was
+  a degrees→radians double-conversion; #3205 settled it back to the
+  independent 0..28 prefix — `apply_fo3nv_tail`'s comment at the noise-layer
+  block now says so explicitly). Verify against the current docstring table
+  and this file's `tests` module —
+  `parse_watr_186_byte_record_reads_colors_at_40_44_48` and
+  `wind_direction_converts_shipped_degrees_on_the_fo3nv_dnam_arm` both assert
+  the current 0..28-prefix semantics — not against an older audit report's
+  description of the offset map: this field has genuinely moved twice.
 - Null-terminated vs length-prefixed strings (`EDID`, `FULL`, `MODL`): verify
   the terminator is consumed exactly once and a missing terminator can't read
   past the sub-record.
@@ -238,6 +285,17 @@ routers, `crates/plugin/src/esm/records/index.rs` (`EsmIndex`)
   *cell_record_structure* in memory) must each be walked, and a REFR's group
   membership must survive into `PlacedRef` — the persistent/temporary split is
   what streaming and save-restore both key on.
+- GRUP nesting depth bound (#3237, cross-referenced from Dimension 1):
+  `parse_cell_group` (`walkers.rs`) and `parse_wrld_children` (`wrld.rs`) both
+  route their sub-group `sub_end` through
+  `EsmReader::bounded_group_content_end(..., depth, walker_name)` and thread
+  `depth + 1` into their `_inner` recursion, so a file nesting CELL/WRLD
+  groups past `MAX_GRUP_NESTING_DEPTH` (64) is skipped rather than
+  stack-overflowed. `parse_refr_group` (same file, also an entry point above)
+  was **not** updated alongside them — it still recurses on
+  `reader.group_content_end(&sub)` with no depth counter. Verify whether that
+  gap is still open; if so it is the live regression case for this bullet,
+  not a hypothetical.
 - Lighting-template inheritance is **per-field**, not all-or-nothing. Verify the
   inherit flags are applied field-by-field and that "absent" and "authored zero"
   stay distinguishable.

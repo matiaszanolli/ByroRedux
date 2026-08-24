@@ -131,6 +131,16 @@ those here.
 - Degenerate input: zero-area triangles, empty vertex sets, NaN in authored
   transforms. Verify each is rejected before reaching Rapier (Rapier will
   happily build a broken BVH).
+- **Extent clamping is unified across primitives (#3238, 2026-08-24).** Ball,
+  Cuboid, Capsule, and Cylinder all now route their scaled dimensions through
+  one shared `clamp_shape_extent` (floor `1e-3`, ceiling `MAX_SANE_SHAPE_EXTENT`
+  = 1,048,576.0 BU, non-finite → floor). Before this, only Cuboid had a
+  ceiling (a local closure named *clamp_lane*, #2543, since removed —
+  superseded by the shared helper); Ball/Capsule/Cylinder used a bare
+  `.max(1e-3)` with no upper bound, so a huge-but-finite authored radius
+  (corrupt data, not NaN) passed straight into Rapier unclamped. Verify every
+  primitive arm in `flatten_to_parts` calls the shared helper — a new shape
+  variant that reintroduces a local `.max(1e-3)` regresses this class.
 **Output**: `/tmp/audit/physics/dim_1.md`
 
 ### Dimension 2: Step Determinism, Substep Budget & the Fast Path
