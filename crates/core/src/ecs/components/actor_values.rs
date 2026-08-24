@@ -12,11 +12,12 @@
 //!
 //! ## Key space
 //!
-//! Record-backed actor values use their **AVIF FormID in global load-order
-//! space**. Built-in TES5 actor values use Skyrim's engine enum index (for
-//! example Health is 24), because vanilla does not author AVIF records for
-//! them. [`ActorVitals`] carries the canonical Health key alongside each
-//! actor so gameplay consumers do not need game-specific lookup rules.
+//! Every actor value uses its **AVIF FormID in global load-order space**.
+//! Skyrim authors the built-in values as AVIF records too (Health is
+//! `0x000003E8` in vanilla `Skyrim.esm`), so #2987 withdrew the retired TES5
+//! enum-index workaround and restored one key space for all games.
+//! [`ActorVitals`] carries the resolved per-game Health FormID alongside each
+//! actor so gameplay consumers do not need load-order-specific lookup rules.
 //!
 //! ## Composition
 //!
@@ -70,8 +71,8 @@ pub struct ActorValues {
 /// Canonical keys for an actor's vital resource values.
 ///
 /// ActorValues remains a game-agnostic map. This companion supplies the
-/// per-game Health key so combat never hard-codes or guesses which entry is
-/// health.
+/// resolved per-game Health AVIF FormID so combat never hard-codes or guesses
+/// which entry is health.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct ActorVitals {

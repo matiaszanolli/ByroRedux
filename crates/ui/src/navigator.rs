@@ -28,6 +28,9 @@ use ruffle_core::swf::Encoding;
 use swf::{Tag, TagCode};
 use url::{ParseError, Url};
 
+/// Maximum distinct ImportAssets paths retained for one movie graph.
+const MAX_IMPORT_ASSET_PATHS: usize = 512;
+
 /// Supplies files addressed by normalized Gamebryo archive paths.
 ///
 /// Paths use backslashes and are relative to the game data root, such as
@@ -90,6 +93,26 @@ struct NavigatorState {
     loads: Vec<ScaleformResourceLoad>,
     errors: Vec<String>,
     import_asset_paths: HashSet<String>,
+    import_asset_paths_capped: bool,
+}
+
+fn extend_import_asset_paths(state: &mut NavigatorState, paths: impl IntoIterator<Item = String>) {
+    for path in paths {
+        if state.import_asset_paths.contains(&path) {
+            continue;
+        }
+        if state.import_asset_paths.len() >= MAX_IMPORT_ASSET_PATHS {
+            if !state.import_asset_paths_capped {
+                state.import_asset_paths_capped = true;
+                log::warn!(
+                    "Scaleform ImportAssets graph hit the {MAX_IMPORT_ASSET_PATHS}-path cap; \
+                     further distinct paths will not be retained"
+                );
+            }
+            continue;
+        }
+        state.import_asset_paths.insert(path);
+    }
 }
 
 pub(crate) struct ScaleformNavigatorRuntime {
@@ -106,9 +129,7 @@ impl ScaleformNavigatorRuntime {
         let movie_url = archive_movie_url(movie_path)?;
         let executor = NullExecutor::new();
         let mut state = NavigatorState::default();
-        state
-            .import_asset_paths
-            .extend(import_asset_paths(&movie_url, movie_data)?);
+        extend_import_asset_paths(&mut state, import_asset_paths(&movie_url, movie_data)?);
         let state = Rc::new(RefCell::new(state));
         let navigator = ScaleformNavigator {
             movie_url: movie_url.clone(),
@@ -255,7 +276,7 @@ fn load_archive_resource(
     };
     if is_import_asset {
         match import_asset_paths(&resolved, &body) {
-            Ok(paths) => state.borrow_mut().import_asset_paths.extend(paths),
+            Ok(paths) => extend_import_asset_paths(&mut state.borrow_mut(), paths),
             Err(message) => return record_degraded(state, &request_url, message),
         }
     }
@@ -594,12 +615,26 @@ mod tests {
     use swf::{FileAttributes, SwfStr, Tag};
 
     use super::{
-        archive_movie_url, archive_path_from_url, placeholder_movie, ScaleformNavigatorRuntime,
-        ScaleformResourceProvider,
+        archive_movie_url, archive_path_from_url, extend_import_asset_paths, placeholder_movie,
+        NavigatorState, ScaleformNavigatorRuntime, ScaleformResourceProvider,
+        MAX_IMPORT_ASSET_PATHS,
     };
     use crate::{ScaleformProfile, SwfPlayer};
 
     struct MemoryProvider(HashMap<String, Vec<u8>>);
+
+    #[test]
+    fn import_asset_path_graph_is_bounded_and_latches_the_cap() {
+        let mut state = NavigatorState::default();
+        extend_import_asset_paths(
+            &mut state,
+            (0..MAX_IMPORT_ASSET_PATHS + 20).map(|i| format!("interface\\import-{i}.swf")),
+        );
+        assert_eq!(state.import_asset_paths.len(), MAX_IMPORT_ASSET_PATHS);
+        assert!(state.import_asset_paths_capped);
+        extend_import_asset_paths(&mut state, ["interface\\import-0.swf".to_string()]);
+        assert_eq!(state.import_asset_paths.len(), MAX_IMPORT_ASSET_PATHS);
+    }
 
     impl ScaleformResourceProvider for MemoryProvider {
         fn load(&self, path: &str) -> io::Result<Option<Vec<u8>>> {

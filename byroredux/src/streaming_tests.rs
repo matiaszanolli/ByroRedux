@@ -8,9 +8,10 @@
 
 use super::{
     build_stream_parse_pool, classify_payload, compute_streaming_deltas, join_with_timeout,
-    lod_water_recenter_delta, pre_parse_cell_panic_safe, stale_pending_coords, world_pos_to_grid,
-    JoinTimeout, LoadCellPayload, LoadedCell, PayloadDecision, StreamingDeltas,
-    StreamingLatencySummary, StreamingTelemetry, StreamingWorkerTimings,
+    lod_water_recenter_delta, parse_extracted_nifs, pre_parse_cell_panic_safe,
+    stale_pending_coords, world_pos_to_grid, JoinTimeout, LoadCellPayload, LoadedCell,
+    PayloadDecision, StreamingDeltas, StreamingLatencySummary, StreamingTelemetry,
+    StreamingWorkerTimings,
 };
 use crate::cell_loader::UnloadPhaseTimings;
 use byroredux_core::ecs::storage::EntityId;
@@ -243,6 +244,7 @@ fn streaming_telemetry_records_independent_ready_deadlines() {
     telemetry.record_worker(StreamingWorkerTimings {
         queue_wait: Duration::from_millis(6),
         worker: Duration::from_millis(8),
+        ..StreamingWorkerTimings::default()
     });
     telemetry.record_apply_slice(Duration::from_millis(3), true);
     telemetry.record_apply_slice(Duration::from_millis(99), false);
@@ -337,6 +339,7 @@ fn bench_line_emits_per_phase_distributions() {
     telemetry.record_worker(StreamingWorkerTimings {
         queue_wait: Duration::from_millis(4),
         worker: Duration::from_millis(6),
+        ..StreamingWorkerTimings::default()
     });
 
     let line = telemetry.bench_line();
@@ -609,5 +612,26 @@ fn stream_parse_pool_runs_tasks_on_its_own_dedicated_threads() {
             .is_some_and(|n| n.starts_with("byro-stream-parse-")),
         "cell-stream Phase 2 task ran on an unexpected thread ({name:?}) — it must stay on the \
          dedicated pool, never rayon's global pool, or #3089's contention returns"
+    );
+}
+
+#[test]
+fn pre_parse_parallel_branch_uses_the_dedicated_pool() {
+    let pool = build_stream_parse_pool();
+    let extracted = (0..8)
+        .map(|index| (format!("meshes\\synthetic-{index}.nif"), None))
+        .collect();
+    let (results, thread_names) = parse_extracted_nifs(extracted, &pool);
+
+    assert_eq!(results.len(), 8, "fixture must cross PRE_PARSE_RAYON_MIN");
+    assert!(
+        !thread_names.is_empty(),
+        "parallel branch recorded no workers"
+    );
+    assert!(
+        thread_names
+            .iter()
+            .all(|name| name.starts_with("byro-stream-parse-")),
+        "production Phase 2 escaped its dedicated pool: {thread_names:?}"
     );
 }

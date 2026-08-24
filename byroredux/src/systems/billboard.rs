@@ -2,11 +2,9 @@
 
 use byroredux_core::ecs::components::groundcover::WindField;
 use byroredux_core::ecs::{
-    ActiveCamera, Billboard, BillboardMode, GlobalTransform, MeshHandle, SpeedTreeWind, TotalTime,
-    World,
+    ActiveCamera, Billboard, BillboardMode, GlobalTransform, SpeedTreeWind, TotalTime, World,
 };
 use byroredux_core::math::{Quat, Vec2, Vec3};
-use rustc_hash::FxHashMap;
 
 /// Billboard system factory — returns a closure with a cached camera pose.
 ///
@@ -28,13 +26,6 @@ pub(crate) fn make_billboard_system() -> impl FnMut(&World, f32) + Send + Sync {
     let mut last_cam: Option<(Vec3, Vec3)> = None;
     let mut elapsed = 0.0_f32;
     let mut last_wind: Option<WindField> = None;
-    // Geometry-backed SpeedTree meshes do not have a Billboard component, so
-    // their authored orientation comes from transform propagation each frame.
-    // Keep that orientation separate from the transient wind bend; otherwise
-    // multiplying the bend onto the already-bent GlobalTransform would drift
-    // the tree permanently as the gust oscillates.
-    let mut geometry_bases: FxHashMap<u32, Quat> = FxHashMap::default();
-
     move |world: &World, dt: f32| {
         elapsed = (elapsed + dt.max(0.0)).max(0.0);
         let wind = world
@@ -87,7 +78,8 @@ pub(crate) fn make_billboard_system() -> impl FnMut(&World, f32) + Send + Sync {
         // Exact equality is appropriate here: the camera transform is
         // written by camera_follow_system / fly_camera_system with no
         // floating-point accumulation.
-        if last_cam == Some((cam_pos, cam_forward)) && !wind_active && !wind_state_changed {
+        let camera_changed = last_cam != Some((cam_pos, cam_forward));
+        if !camera_changed && !wind_active && !wind_state_changed {
             return;
         }
         last_cam = Some((cam_pos, cam_forward));
@@ -97,6 +89,13 @@ pub(crate) fn make_billboard_system() -> impl FnMut(&World, f32) + Send + Sync {
 
         if let Some(bq) = bq.as_ref() {
             for (entity, billboard) in bq.iter() {
+                let tree_wind = swq.as_ref().and_then(|q| q.get(entity).copied());
+                // A stationary camera leaves ordinary billboards bit-identical.
+                // Active wind and weather transitions update only the marked
+                // SpeedTree subset, preserving #1374's dirty-set fast path.
+                if !camera_changed && tree_wind.is_none() {
+                    continue;
+                }
                 let Some(global) = gq.get_mut(entity) else {
                     continue;
                 };
@@ -115,7 +114,6 @@ pub(crate) fn make_billboard_system() -> impl FnMut(&World, f32) + Send + Sync {
                 // the shared weather wind while ordinary billboards remain
                 // unaffected. Phase is world-position seeded, keeping nearby
                 // trees in sync while avoiding lockstep.
-                let tree_wind = swq.as_ref().and_then(|q| q.get(entity).copied());
                 if wind_active && tree_wind.is_some() {
                     new_rot = apply_speedtree_wind(
                         new_rot,
@@ -126,37 +124,6 @@ pub(crate) fn make_billboard_system() -> impl FnMut(&World, f32) + Send + Sync {
                     );
                 }
                 global.rotation = new_rot;
-            }
-        }
-
-        // Full SpeedTree geometry (rather than billboard impostors) carries
-        // the same marker but has no Billboard component. Bend only the mesh
-        // entity, not its placement root: the loader mirrors the marker onto
-        // both, and rotating both would apply the canopy response twice.
-        if let (Some(swq), Some(mesh_q)) = (swq.as_ref(), world.query::<MeshHandle>()) {
-            let mut live_geometry_count = 0usize;
-            for (entity, tree_wind) in swq.iter() {
-                if bq.as_ref().is_some_and(|q| q.contains(entity)) || !mesh_q.contains(entity) {
-                    continue;
-                }
-                live_geometry_count += 1;
-                let Some(global) = gq.get_mut(entity) else {
-                    continue;
-                };
-                let base = *geometry_bases.entry(entity).or_insert(global.rotation);
-                global.rotation = if wind_active {
-                    apply_speedtree_wind(base, global.translation, wind, *tree_wind, wind_time)
-                } else {
-                    base
-                };
-            }
-            // Only pay the O(cache) prune when a despawn made the cache larger
-            // than the live geometry population. Weathered exteriors revisit
-            // this system every frame, but steady-state trees no longer incur
-            // a redundant retain plus two sparse-set probes apiece.
-            if geometry_bases.len() > live_geometry_count {
-                geometry_bases
-                    .retain(|entity, _| mesh_q.contains(*entity) && swq.contains(*entity));
             }
         }
     }
@@ -194,14 +161,16 @@ fn apply_speedtree_wind(
     let along_wind = position.x * wind_dir.x + position.z * wind_dir.y;
     let phase = along_wind * 0.017;
     let wave = (elapsed * (0.35 + strength * 0.85) + phase).sin();
-    let cross = (elapsed * (0.47 + strength * 0.65) + phase * 1.7).cos();
     let response = tree.response.clamp(0.0, 4.0);
     let stiffness = tree.stiffness.clamp(0.0, 1.0);
     let bend = strength * 0.16 * response * (1.0 - stiffness);
-    let along_weight = wind_dir.x.abs().max(0.25);
-    let cross_weight = wind_dir.y.abs().max(0.25);
-    base * Quat::from_rotation_z(wave * bend * along_weight)
-        * Quat::from_rotation_x(cross * bend * 0.65 * cross_weight)
+    // World-horizontal bend axis perpendicular to the atmospheric direction.
+    // Pre-multiplication keeps the lean fixed in world space even when `base`
+    // is a camera-facing billboard rotation. A positive mean makes reversing
+    // the wind reverse the sustained lean; the sine is only the oscillation.
+    let axis = Vec3::new(-wind_dir.y, 0.0, wind_dir.x);
+    let angle = bend * (0.65 + 0.35 * wave);
+    Quat::from_axis_angle(axis, angle) * base
 }
 
 /// Compute a world-space rotation for a billboard.
@@ -426,7 +395,7 @@ mod tests {
     }
 
     #[test]
-    fn geometry_speedtree_mesh_bends_without_billboard_component() {
+    fn parked_camera_under_wind_does_not_redirty_ordinary_billboard() {
         let mut world = World::new();
         let camera = world.spawn();
         world.insert(camera, Transform::IDENTITY);
@@ -434,13 +403,19 @@ mod tests {
         world.insert(camera, Camera::default());
         world.insert_resource(ActiveCamera(camera));
 
+        let sprite = world.spawn();
+        world.insert(
+            sprite,
+            GlobalTransform::new(Vec3::new(4.0, 0.0, 8.0), Quat::IDENTITY, 1.0),
+        );
+        world.insert(sprite, Billboard::new(BillboardMode::BsRotateAboutUp));
+
         let tree = world.spawn();
-        let authored = Quat::from_rotation_y(0.35);
         world.insert(
             tree,
-            GlobalTransform::new(Vec3::new(12.0, 0.0, 8.0), authored, 1.0),
+            GlobalTransform::new(Vec3::new(12.0, 0.0, 8.0), Quat::IDENTITY, 1.0),
         );
-        world.insert(tree, MeshHandle(7));
+        world.insert(tree, Billboard::new(BillboardMode::BsRotateAboutUp));
         world.insert(tree, SpeedTreeWind::new(1.0, 0.0));
         world.insert_resource(WindField {
             direction: [1.0, 0.0],
@@ -451,31 +426,64 @@ mod tests {
 
         let mut system = make_billboard_system();
         system(&world, 0.0);
-        let first = world
-            .query::<GlobalTransform>()
+        world
+            .query_mut::<GlobalTransform>()
             .unwrap()
-            .get(tree)
-            .unwrap()
-            .rotation;
+            .storage_mut()
+            .take_dirty();
         system(&world, 0.5);
-        let second = world
-            .query::<GlobalTransform>()
+        let dirty = world
+            .query_mut::<GlobalTransform>()
             .unwrap()
-            .get(tree)
-            .unwrap()
-            .rotation;
+            .storage_mut()
+            .take_dirty();
+        assert!(!dirty.contains(&sprite));
+        assert!(dirty.contains(&tree));
+    }
 
-        assert_ne!(first, authored, "geometry trees must respond to wind");
-        assert_ne!(second, first, "geometry tree sway must remain time-varying");
+    #[test]
+    fn speedtree_world_lean_is_camera_orbit_invariant() {
+        let position = Vec3::new(12.0, 0.0, 8.0);
+        let wind = WindField {
+            direction: [1.0, 0.0],
+            speed: 220.0,
+            gust_amplitude: 0.0,
+            gust_frequency: 0.0,
+        };
+        let base_a = compute_billboard_rotation(
+            BillboardMode::BsRotateAboutUp,
+            position,
+            Vec3::new(0.0, 0.0, 20.0),
+            -Vec3::Z,
+        );
+        let base_b = compute_billboard_rotation(
+            BillboardMode::BsRotateAboutUp,
+            position,
+            Vec3::new(24.0, 0.0, -4.0),
+            Vec3::Z,
+        );
+        let up_a = apply_speedtree_wind(base_a, position, wind, SpeedTreeWind::new(1.0, 0.0), 0.5)
+            * Vec3::Y;
+        let up_b = apply_speedtree_wind(base_b, position, wind, SpeedTreeWind::new(1.0, 0.0), 0.5)
+            * Vec3::Y;
+        assert!((up_a - up_b).length() < 1.0e-5);
+    }
 
-        world.resource_mut::<WindField>().speed = 0.0;
-        system(&world, 0.0);
-        let calm = world
-            .query::<GlobalTransform>()
-            .unwrap()
-            .get(tree)
-            .unwrap()
-            .rotation;
-        assert_eq!(calm, authored, "calm weather must restore authored pose");
+    #[test]
+    fn reversing_wind_reverses_mean_lean() {
+        let tree = SpeedTreeWind::new(1.0, 0.0);
+        let make_wind = |x| WindField {
+            direction: [x, 0.0],
+            speed: 220.0,
+            gust_amplitude: 0.0,
+            gust_frequency: 0.0,
+        };
+        let forward =
+            apply_speedtree_wind(Quat::IDENTITY, Vec3::ZERO, make_wind(1.0), tree, 0.0) * Vec3::Y;
+        let reverse =
+            apply_speedtree_wind(Quat::IDENTITY, Vec3::ZERO, make_wind(-1.0), tree, 0.0) * Vec3::Y;
+        assert!((forward.x + reverse.x).abs() < 1.0e-5);
+        assert!((forward.z + reverse.z).abs() < 1.0e-5);
+        assert!(forward.dot(Vec3::Y) < 1.0);
     }
 }

@@ -604,7 +604,7 @@ fn installed_fallout4_representative_menus_obey_host_object_lifecycle() {
         assert_eq!(player.profile(), ScaleformProfile::Fallout4Avm2);
 
         let bridge = player.host_bridge();
-        if expected_state == ScaleformHostObjectState::AdapterInjected {
+        if expected_state.adapter_injected() {
             assert!(bridge.has_callback(crate::avm2_host::LOADED_CALLBACK));
             assert!(
                 bridge.has_callback(crate::avm2_host::READY_CALLBACK),
@@ -617,7 +617,10 @@ fn installed_fallout4_representative_menus_obey_host_object_lifecycle() {
                 Some(ScaleformValue::Bool(true)),
                 "{label} readiness callback"
             );
-            assert!(bridge.has_callback(crate::avm2_host::DESTROY_CALLBACK));
+            assert_eq!(
+                bridge.has_callback(crate::avm2_host::DESTROY_CALLBACK),
+                expected_state.has_destroy_hook()
+            );
         } else {
             assert!(!bridge.has_callback(crate::avm2_host::READY_CALLBACK));
             assert!(!bridge.has_callback(crate::avm2_host::DESTROY_CALLBACK));
@@ -626,7 +629,7 @@ fn installed_fallout4_representative_menus_obey_host_object_lifecycle() {
         drop(player);
         assert_eq!(
             bridge.code_object_destruction_count(),
-            u64::from(expected_state == ScaleformHostObjectState::AdapterInjected),
+            u64::from(expected_state.has_destroy_hook()),
             "{label} destruction hook"
         );
         assert!(

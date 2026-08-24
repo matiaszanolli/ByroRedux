@@ -47,8 +47,8 @@ use crate::parsed_nif_cache::ParsedNifCache;
 /// one already threaded through from the streaming payload) is a
 /// no-op.
 pub(crate) fn canonical_model_path_key(model_path: &str) -> String {
-    let lower = model_path.to_ascii_lowercase();
-    if lower.starts_with("meshes\\") || lower.starts_with("meshes/") {
+    let lower = model_path.to_ascii_lowercase().replace('/', "\\");
+    if lower.starts_with("meshes\\") {
         lower
     } else {
         format!("meshes\\{lower}")
@@ -79,13 +79,13 @@ mod canonical_key_tests {
         );
     }
 
-    /// The forward-slash prefix form (seen in some archive listings)
-    /// is also recognised — no double prefix, forward slashes untouched.
+    /// Archive-listing separators converge with authored backslashes, so the
+    /// same asset cannot occupy two registry keys (#3214).
     #[test]
     fn does_not_double_prefix_forward_slash_form() {
         assert_eq!(
             canonical_model_path_key("meshes/clutter/barrel02firelight.nif"),
-            "meshes/clutter/barrel02firelight.nif"
+            "meshes\\clutter\\barrel02firelight.nif"
         );
     }
 
@@ -99,6 +99,10 @@ mod canonical_key_tests {
         let sync_form = canonical_model_path_key("meshes\\clutter\\barrel02firelight.nif");
         let streaming_form = canonical_model_path_key("clutter\\barrel02firelight.nif");
         assert_eq!(sync_form, streaming_form);
+        assert_eq!(
+            sync_form,
+            canonical_model_path_key("meshes/clutter/barrel02firelight.nif")
+        );
     }
 
     /// Applying the function twice (e.g. once at the streaming

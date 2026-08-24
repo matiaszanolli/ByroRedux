@@ -40,6 +40,22 @@ pub enum ScaleformHostObjectState {
     NotPresent,
     /// A callable adapter was injected and will install on the next AVM2 turn.
     AdapterInjected,
+    /// The callable adapter was injected, but the movie's lifecycle class
+    /// does not declare `onCodeObjDestruction`, so no destroy hook exists.
+    AdapterInjectedWithoutDestroyHook,
+}
+
+impl ScaleformHostObjectState {
+    pub const fn adapter_injected(self) -> bool {
+        matches!(
+            self,
+            Self::AdapterInjected | Self::AdapterInjectedWithoutDestroyHook
+        )
+    }
+
+    pub const fn has_destroy_hook(self) -> bool {
+        matches!(self, Self::AdapterInjected)
+    }
 }
 
 pub(crate) fn inject_host_object_adapter(
@@ -70,7 +86,14 @@ pub(crate) fn inject_host_object_adapter(
             "Fallout 4 AVM2 adapter '{ADAPTER_NAME}' is already present; \
              skipping injection (#2970)"
         );
-        return Ok((swf_data.to_vec(), ScaleformHostObjectState::AdapterInjected));
+        let state = if movie.tags.iter().any(|tag| {
+            abc_payload(tag).is_some_and(|abc| contains_bytes(abc, DESTROY_CALLBACK.as_bytes()))
+        }) {
+            ScaleformHostObjectState::AdapterInjected
+        } else {
+            ScaleformHostObjectState::AdapterInjectedWithoutDestroyHook
+        };
+        return Ok((swf_data.to_vec(), state));
     }
 
     let declares_contract = movie.tags.iter().any(|tag| {
@@ -193,7 +216,16 @@ pub(crate) fn inject_host_object_adapter(
     let mut patched = Vec::new();
     write_swf(movie.header.swf_header(), &movie.tags, &mut patched)
         .map_err(|error| format!("serializing patched SWF: {error}"))?;
-    Ok((patched, ScaleformHostObjectState::AdapterInjected))
+    let state = if has_destroy_trait {
+        ScaleformHostObjectState::AdapterInjected
+    } else {
+        log::info!(
+            "Fallout 4 host adapter injected without onCodeObjDestruction; \
+             menu teardown has no destroy acknowledgement (#3149)"
+        );
+        ScaleformHostObjectState::AdapterInjectedWithoutDestroyHook
+    };
+    Ok((patched, state))
 }
 
 fn qualified_name(abc: &AbcFile, index: Index<Multiname>) -> Option<Vec<u8>> {
@@ -308,9 +340,6 @@ fn referenced_host_methods_in_tags(tags: &[Tag<'_>]) -> Result<BTreeSet<String>,
                 let Some(method) = method else {
                     continue;
                 };
-                if matches!(method.as_slice(), b"InitCodeObj" | b"ReleaseCodeObj") {
-                    continue;
-                }
                 let method = String::from_utf8(method)
                     .map_err(|_| "non-UTF-8 BGSCodeObj method name".to_string())?;
                 methods.insert(method);
@@ -1139,15 +1168,17 @@ fn write_ops(ops: &[Op]) -> std::io::Result<Vec<u8>> {
 mod tests {
     use byroredux_bsa::Ba2Archive;
     use ruffle_core::swf::avm2::read::Reader;
-    use swf::avm2::types::{AbcFile, ConstantPool, Index, Method, MethodBody, MethodFlags, Script};
+    use swf::avm2::types::{
+        AbcFile, ConstantPool, Index, Method, MethodBody, MethodFlags, Multiname, Namespace, Script,
+    };
     use swf::avm2::write::Writer;
     use swf::extensions::ReadSwfExt;
     use swf::{DoAbc2, DoAbc2Flag, FileAttributes, SwfStr, Tag};
 
     use super::{
         build_adapter_abc, inject_host_object_adapter, max_stack_with_injected_bootstrap_headroom,
-        referenced_host_methods, uncataloged_host_methods, write_ops, DESTROYED_EVENT,
-        DESTROY_CALLBACK, LOADED_CALLBACK,
+        referenced_host_methods, referenced_host_methods_in_tags, uncataloged_host_methods,
+        write_ops, DESTROYED_EVENT, DESTROY_CALLBACK, LOADED_CALLBACK,
     };
     use crate::{ScaleformHostCatalog, ScaleformProfile};
 
@@ -1295,6 +1326,33 @@ mod tests {
         }
         // on_create + addCallback(ready) — no addCallback(destroy).
         assert_eq!(add_callback_calls, 2);
+    }
+
+    #[test]
+    fn installed_menus_without_destroy_trait_report_the_partial_lifecycle() {
+        let Some(archive) = fallout4_interface_archive(
+            "installed_menus_without_destroy_trait_report_the_partial_lifecycle",
+        ) else {
+            return;
+        };
+        let catalog = ScaleformHostCatalog::for_profile(ScaleformProfile::Fallout4Avm2);
+        for path in [
+            "interface\\dialoguemenu.swf",
+            "interface\\multiactivatemenu.swf",
+            "interface\\specialmenu.swf",
+            "interface\\terminalmenu.swf",
+        ] {
+            let swf = archive
+                .extract(path)
+                .unwrap_or_else(|error| panic!("extract {path}: {error}"));
+            let (_, state) = inject_host_object_adapter(&swf, catalog)
+                .unwrap_or_else(|error| panic!("inject {path}: {error}"));
+            assert_eq!(
+                state,
+                super::ScaleformHostObjectState::AdapterInjectedWithoutDestroyHook,
+                "{path} must not claim a destroy hook it does not declare"
+            );
+        }
     }
 
     /// Regression for #2725: the adapter's constant pool once carried the
@@ -1460,6 +1518,101 @@ mod tests {
         );
     }
 
+    /// #3151 — these lifecycle-looking names used to be silently discarded
+    /// inside the bytecode inventory. Keep the regression at the scanner
+    /// boundary: reverting the old skip makes this fail even if the catalog
+    /// and adapter-generator tests remain green.
+    #[test]
+    fn init_and_release_code_obj_calls_are_reported_by_inventory() {
+        let public_name = Index::new(0);
+        let namespace = Index::new(1);
+        let bgs_name = Index::new(1);
+        let init_name = Index::new(2);
+        let release_name = Index::new(3);
+        let bgs_qname = Index::new(1);
+        let init_qname = Index::new(2);
+        let release_qname = Index::new(3);
+        let method = Method {
+            name: Index::new(0),
+            params: Vec::new(),
+            return_type: Index::new(0),
+            flags: MethodFlags::empty(),
+            body: Some(Index::new(0)),
+        };
+        let abc = AbcFile {
+            major_version: 46,
+            minor_version: 16,
+            constant_pool: ConstantPool {
+                ints: Vec::new(),
+                uints: Vec::new(),
+                doubles: Vec::new(),
+                strings: vec![
+                    b"BGSCodeObj".to_vec(),
+                    b"InitCodeObj".to_vec(),
+                    b"ReleaseCodeObj".to_vec(),
+                ],
+                namespaces: vec![Namespace::Package(public_name)],
+                namespace_sets: Vec::new(),
+                multinames: vec![
+                    Multiname::QName {
+                        namespace,
+                        name: bgs_name,
+                    },
+                    Multiname::QName {
+                        namespace,
+                        name: init_name,
+                    },
+                    Multiname::QName {
+                        namespace,
+                        name: release_name,
+                    },
+                ],
+            },
+            methods: vec![method],
+            metadata: Vec::new(),
+            instances: Vec::new(),
+            classes: Vec::new(),
+            scripts: Vec::new(),
+            method_bodies: vec![MethodBody {
+                method: Index::new(0),
+                max_stack: 1,
+                num_locals: 1,
+                init_scope_depth: 0,
+                max_scope_depth: 0,
+                code: write_ops(&[
+                    swf::avm2::types::Op::GetLex { index: bgs_qname },
+                    swf::avm2::types::Op::CallPropVoid {
+                        index: init_qname,
+                        num_args: 0,
+                    },
+                    swf::avm2::types::Op::GetLex { index: bgs_qname },
+                    swf::avm2::types::Op::CallPropVoid {
+                        index: release_qname,
+                        num_args: 0,
+                    },
+                    swf::avm2::types::Op::ReturnVoid,
+                ])
+                .unwrap(),
+                exceptions: Vec::new(),
+                traits: Vec::new(),
+            }],
+        };
+        let mut abc_bytes = Vec::new();
+        Writer::new(&mut abc_bytes).write(abc).unwrap();
+        let tags = [Tag::DoAbc2(DoAbc2 {
+            flags: DoAbc2Flag::empty(),
+            name: SwfStr::from_utf8_str("inventory-regression"),
+            data: &abc_bytes,
+        })];
+
+        assert_eq!(
+            referenced_host_methods_in_tags(&tags).unwrap(),
+            ["InitCodeObj".to_string(), "ReleaseCodeObj".to_string()]
+                .into_iter()
+                .collect()
+        );
+    }
+
     /// #2718 — and the union really reaches the emitted bytecode: an extra
     /// method adds one more forwarder, one more installed property, and its
     /// name to the transport strings, without disturbing the fixed tail
@@ -1550,7 +1703,7 @@ mod tests {
             };
             match inject_host_object_adapter(&swf, catalog) {
                 Ok((patched, state)) => {
-                    if state == super::ScaleformHostObjectState::AdapterInjected {
+                    if state.adapter_injected() {
                         injected_count += 1;
                         // The structural sanity check #2717 asks for: the
                         // fully re-serialized movie must still be a valid
@@ -1761,7 +1914,7 @@ mod tests {
             let Ok((once, state)) = inject_host_object_adapter(&swf, catalog) else {
                 continue;
             };
-            if state != super::ScaleformHostObjectState::AdapterInjected {
+            if !state.adapter_injected() {
                 continue;
             }
             checked += 1;
@@ -1776,8 +1929,7 @@ mod tests {
                 .unwrap_or_else(|error| panic!("{movie_path}: second pass errored: {error}"));
 
             assert_eq!(
-                second_state,
-                super::ScaleformHostObjectState::AdapterInjected,
+                second_state, state,
                 "{movie_path}: an already-patched movie is still 'adapter injected'"
             );
             assert_eq!(
@@ -1825,7 +1977,7 @@ mod tests {
             let Ok((once, state)) = inject_host_object_adapter(&swf, catalog) else {
                 continue;
             };
-            if state != super::ScaleformHostObjectState::AdapterInjected {
+            if !state.adapter_injected() {
                 continue;
             }
 

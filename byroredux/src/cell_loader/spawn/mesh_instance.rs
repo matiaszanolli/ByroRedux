@@ -8,6 +8,7 @@
 //! was widened.
 
 use super::*;
+use byroredux_core::ecs::SpeedTreeWind;
 use byroredux_core::string::FixedString;
 use byroredux_nif::import::{slot_to_role, TextureRole, TextureSlotContext};
 
@@ -754,11 +755,9 @@ pub(super) fn spawn_mesh_instance(
     if let Some(raw) = mesh.billboard_mode {
         world.insert(entity, Billboard::new(BillboardMode::from_nif(raw)));
     }
-    // SpeedTree's authored CNAM response is cached on the placement import,
-    // while the billboard mode is carried by each imported placeholder mesh.
-    // Mirror the response onto the render child so the billboard system sees
-    // both components on the same entity. Keeping the root marker as well is
-    // harmless and preserves diagnostics for the placement as a whole.
+    // SpeedTree's neutral runtime response is cached on the placement import,
+    // while the billboard mode is carried by each placeholder mesh. Attach
+    // both components to the render child consumed by the billboard system.
     if let Some((response, stiffness)) = cached.speedtree_wind {
         world.insert(entity, SpeedTreeWind::new(response, stiffness));
     }

@@ -560,7 +560,9 @@ fn combat_approach_positions_and_aims_the_real_player_without_attacking() {
     );
     world.insert(
         target,
-        byroredux_core::ecs::components::ActorVitals { health: 24 },
+        byroredux_core::ecs::components::ActorVitals {
+            health: 0x0000_03E8,
+        },
     );
 
     let out = CombatApproachCommand

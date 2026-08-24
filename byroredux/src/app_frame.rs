@@ -30,6 +30,10 @@ use crate::{
     apply_debug_ui_outputs, build_debug_ui_snapshot, build_interaction_prompt, setting_bool,
 };
 
+fn host_method_diagnostic_key(menu_name: &str, method: &str) -> (String, String) {
+    (menu_name.to_owned(), method.to_owned())
+}
+
 impl App {
     /// Phase 14 — pulled out of the original `WindowEvent::RedrawRequested`
     /// arm so the game loop can call it directly from `about_to_wait`
@@ -258,16 +262,17 @@ impl App {
                         call.arguments.len(),
                     );
                     // #2964 — bounded the same way the bridge's own
-                    // movie-keyed diagnostic sets are: `call.method` is
+                    // movie-keyed diagnostic sets are: menu/method strings are
                     // chosen by untrusted ActionScript content, so this set
                     // needs the same cap `host.rs::MAX_DISTINCT_HOST_METHOD_NAMES`
                     // gives `unknown_methods`/`unanswered_methods` upstream,
                     // or a menu calling a distinct unimplemented name every
                     // frame would grow this HashSet without limit.
+                    let diagnostic_key = host_method_diagnostic_key(&ui.menu_name, &call.method);
                     if matches!(
                         call.dispatch,
                         ScaleformHostDispatch::Unknown | ScaleformHostDispatch::MissingResponse
-                    ) && !self.ui_reported_host_methods.contains(&call.method)
+                    ) && !self.ui_reported_host_methods.contains(&diagnostic_key)
                     {
                         if self.ui_reported_host_methods.len() >= MAX_DISTINCT_HOST_METHOD_NAMES {
                             if !self.ui_reported_host_methods_capped {
@@ -279,7 +284,7 @@ impl App {
                                 );
                             }
                         } else {
-                            self.ui_reported_host_methods.insert(call.method.clone());
+                            self.ui_reported_host_methods.insert(diagnostic_key);
                             log::warn!(
                                 "Scaleform menu '{}' called host method '{}' ({:?}) — \
                                  no engine handler is registered, so the menu received Null",
@@ -613,6 +618,19 @@ impl App {
         cpu_t.rof_pre_draw_ms = rof_pre_draw_ns as f32 * NS_TO_MS;
         cpu_t.rof_draw_call_ms = rof_draw_call_ns as f32 * NS_TO_MS;
         cpu_t.rof_post_draw_ms = rof_post_draw_ns as f32 * NS_TO_MS;
+    }
+}
+
+#[cfg(test)]
+mod host_method_diagnostic_tests {
+    use super::host_method_diagnostic_key;
+
+    #[test]
+    fn same_unknown_method_is_reportable_once_per_menu() {
+        let hud = host_method_diagnostic_key("HUDMenu", "ShowTutorial");
+        let pipboy = host_method_diagnostic_key("PipboyMenu", "ShowTutorial");
+        assert_ne!(hud, pipboy);
+        assert_eq!(hud, host_method_diagnostic_key("HUDMenu", "ShowTutorial"));
     }
 }
 

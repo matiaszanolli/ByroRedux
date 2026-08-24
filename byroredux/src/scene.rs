@@ -7,10 +7,13 @@ use byroredux_core::math::{Quat, Vec3};
 use byroredux_core::string::StringPool;
 use byroredux_renderer::vulkan::GpuUploadCtx;
 use byroredux_renderer::{cube_vertices, quad_vertices, triangle_vertices, VulkanContext};
-use byroredux_ui::UiManager;
+use byroredux_ui::{ScaleformProfile, UiManager};
+use std::sync::Arc;
 
 use crate::anim_convert::convert_nif_clip;
-use crate::asset_provider::{build_material_provider, build_texture_provider, parse_grid_coords};
+use crate::asset_provider::{
+    build_material_provider, build_texture_provider, parse_grid_coords, Archive,
+};
 use crate::cell_loader;
 use crate::components::{InputState, Spinning};
 // Interior cell lighting is now applied via
@@ -72,6 +75,27 @@ pub(crate) fn cornell_sun_mode(args: &[String]) -> Option<bool> {
     } else {
         None
     }
+}
+
+/// Resolve the archive-backed menu CLI pair. Keeping this parser independent
+/// of Vulkan gives the engine route a default-suite regression guard (#3147).
+fn archive_menu_args(args: &[String]) -> Result<Option<(String, String)>, String> {
+    let Some(menu_index) = args.iter().position(|arg| arg == "--menu") else {
+        return Ok(None);
+    };
+    let menu = args
+        .get(menu_index + 1)
+        .filter(|value| !value.starts_with("--"))
+        .ok_or_else(|| "--menu requires an archive-relative SWF path".to_string())?;
+    let archive_index = args
+        .iter()
+        .position(|arg| arg == "--menu-archive")
+        .ok_or_else(|| "--menu requires --menu-archive <BSA-or-BA2>".to_string())?;
+    let archive = args
+        .get(archive_index + 1)
+        .filter(|value| !value.starts_with("--"))
+        .ok_or_else(|| "--menu-archive requires a BSA/BA2 path".to_string())?;
+    Ok(Some((menu.clone(), archive.clone())))
 }
 
 /// Choose the starting player rig.
@@ -1375,8 +1399,67 @@ pub(crate) fn setup_scene(
         log::error!("Failed to register particle quad: {e:#}");
     }
 
-    // UI: --swf <path> loads a SWF menu overlay.
-    if let Some(swf_idx) = args.iter().position(|a| a == "--swf") {
+    // UI: `--menu` launches a vanilla archive-backed menu with its relative
+    // imports; `--swf` remains the loose-file developer route.
+    let archive_menu = archive_menu_args(&args);
+    if let Ok(Some((menu_path, archive_path))) = archive_menu.as_ref() {
+        match Archive::open(&archive_path) {
+            Ok(archive) => match archive.extract(&menu_path) {
+                Ok(root_bytes) => match ScaleformProfile::detect(&root_bytes) {
+                    Ok(profile) => {
+                        let (w, h) = ctx.swapchain_extent();
+                        let mut ui = UiManager::new(w, h);
+                        match ui.load_swf_from_resource_provider(
+                            Arc::new(archive),
+                            &menu_path,
+                            &menu_path,
+                            profile,
+                        ) {
+                            Ok(()) => {
+                                let pixels = vec![0u8; (w * h * 4) as usize];
+                                let allocator = ctx.allocator.as_ref().unwrap();
+                                let upload_ctx = GpuUploadCtx {
+                                    device: &ctx.device,
+                                    allocator,
+                                    queue: &ctx.graphics_queue,
+                                    command_pool: ctx.transfer_pool,
+                                };
+                                match ctx
+                                    .texture_registry
+                                    .register_rgba(upload_ctx, w, h, &pixels)
+                                {
+                                    Ok(handle) => {
+                                        *ui_texture_handle = Some(handle);
+                                        *ui_manager = Some(ui);
+                                    }
+                                    Err(error) => {
+                                        log::error!("Failed to register UI texture: {error:#}")
+                                    }
+                                }
+                            }
+                            Err(error) => log::error!(
+                                "Failed to load archive menu '{}' from '{}': {error:#}",
+                                menu_path,
+                                archive_path
+                            ),
+                        }
+                    }
+                    Err(error) => log::error!(
+                        "Failed to detect Scaleform profile for '{}': {error:#}",
+                        menu_path
+                    ),
+                },
+                Err(error) => log::error!(
+                    "Failed to extract archive menu '{}' from '{}': {error}",
+                    menu_path,
+                    archive_path
+                ),
+            },
+            Err(error) => log::error!("Failed to open UI archive '{}': {error}", archive_path),
+        }
+    } else if let Err(error) = archive_menu {
+        log::error!("{error}");
+    } else if let Some(swf_idx) = args.iter().position(|a| a == "--swf") {
         if let Some(swf_path) = args.get(swf_idx + 1) {
             match std::fs::read(swf_path) {
                 Ok(swf_data) => {
@@ -1422,6 +1505,29 @@ pub(crate) use nif_loader::{load_nif_bytes, load_nif_bytes_with_skeleton};
 
 #[cfg(test)]
 mod cloud_tile_scale_tests;
+#[cfg(test)]
+mod archive_menu_route_tests {
+    use super::archive_menu_args;
+
+    #[test]
+    fn route_requires_and_returns_menu_and_archive_paths() {
+        let args = vec![
+            "byroredux".to_string(),
+            "--menu".to_string(),
+            "interface\\hudmenu.swf".to_string(),
+            "--menu-archive".to_string(),
+            "Fallout4 - Interface.ba2".to_string(),
+        ];
+        assert_eq!(
+            archive_menu_args(&args).unwrap(),
+            Some((
+                "interface\\hudmenu.swf".to_string(),
+                "Fallout4 - Interface.ba2".to_string()
+            ))
+        );
+        assert!(archive_menu_args(&args[..3]).is_err());
+    }
+}
 #[cfg(test)]
 mod nif_loader_light_tests;
 #[cfg(test)]

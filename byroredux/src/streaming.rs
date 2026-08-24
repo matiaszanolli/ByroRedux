@@ -385,10 +385,14 @@ fn phase_distribution(label: &str, summary: &StreamingLatencySummary) -> String 
 /// Queue and worker-service time carried across the worker channel with each
 /// payload. Durations avoid comparing wall clocks and remain valid if worker
 /// execution moves to a pool later.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StreamingWorkerTimings {
     pub queue_wait: Duration,
     pub worker: Duration,
+    /// Worker names observed by the parallel NIF parse fan-out. Empty for the
+    /// serial branch. This is both useful telemetry and the observable that
+    /// keeps #3089's dedicated-pool routing falsifiable (#3211).
+    pub parallel_parse_threads: Vec<String>,
 }
 
 /// One distant-terrain LOD block tracked by [`WorldStreamingState`]
@@ -1068,10 +1072,8 @@ fn cell_pre_parse_worker(
                 &stream_pool,
             )
         });
-        payload.timings = StreamingWorkerTimings {
-            queue_wait: worker_started.saturating_duration_since(queued_at),
-            worker: worker_started.elapsed(),
-        };
+        payload.timings.queue_wait = worker_started.saturating_duration_since(queued_at);
+        payload.timings.worker = worker_started.elapsed();
         if payload_tx.send(payload).is_err() {
             // Receiver dropped — main thread is shutting down; exit cleanly.
             break;
@@ -1164,6 +1166,41 @@ fn parse_one_nif((path, bytes): (String, Option<Vec<u8>>)) -> (String, Option<Pa
         None
     });
     (path, parsed)
+}
+
+const PRE_PARSE_RAYON_MIN: usize = 8;
+
+type ParsedNifResult = (String, Option<PartialNifImport>);
+
+/// Execute Phase 2 on the worker-owned rayon pool and expose the threads that
+/// actually ran it. No lock is acquired inside the closure: every task returns
+/// its thread name alongside its parse result and the caller deduplicates only
+/// after the parallel collect has completed.
+fn parse_extracted_nifs(
+    extracted: Vec<(String, Option<Vec<u8>>)>,
+    stream_pool: &rayon::ThreadPool,
+) -> (Vec<ParsedNifResult>, Vec<String>) {
+    if extracted.len() < PRE_PARSE_RAYON_MIN {
+        return (
+            extracted.into_iter().map(parse_one_nif).collect(),
+            Vec::new(),
+        );
+    }
+
+    let observed: Vec<(ParsedNifResult, Option<String>)> = stream_pool.install(|| {
+        extracted
+            .into_par_iter()
+            .map(|item| {
+                let thread_name = std::thread::current().name().map(str::to_string);
+                (parse_one_nif(item), thread_name)
+            })
+            .collect()
+    });
+    let (results, names): (Vec<_>, Vec<_>) = observed.into_iter().unzip();
+    let mut names: Vec<String> = names.into_iter().flatten().collect();
+    names.sort_unstable();
+    names.dedup();
+    (results, names)
 }
 
 /// `parsed` map if the cell doesn't exist, has no references, or
@@ -1302,25 +1339,19 @@ fn pre_parse_cell(
     // Threshold: 8. Empirically chosen against the steady-state
     // streaming pattern — at N≤7 the parallel dispatch is net-loss
     // or break-even; N≥8 the parallel speedup outpaces wake-overhead.
-    const PRE_PARSE_RAYON_MIN: usize = 8;
-    let results: Vec<(String, Option<PartialNifImport>)> = if extracted.len() < PRE_PARSE_RAYON_MIN
-    {
-        extracted.into_iter().map(parse_one_nif).collect()
-    } else {
-        // #3089 — dispatch into the worker's own dedicated pool, not
-        // rayon's global one. `install` runs the closure (and therefore
-        // every task `into_par_iter()` spawns) on `stream_pool`'s
-        // workers exclusively, so this fan-out can never contend with
-        // the ECS scheduler's parallel stages for the same threads.
-        stream_pool.install(|| extracted.into_par_iter().map(parse_one_nif).collect())
-    };
+    // #3089 — `parse_extracted_nifs` dispatches the fan-out into the worker's
+    // dedicated pool and returns the actual worker names as an observable.
+    let (results, parallel_parse_threads) = parse_extracted_nifs(extracted, stream_pool);
     parsed.extend(results);
 
     LoadCellPayload {
         gx,
         gy,
         generation,
-        timings: StreamingWorkerTimings::default(),
+        timings: StreamingWorkerTimings {
+            parallel_parse_threads,
+            ..StreamingWorkerTimings::default()
+        },
         parsed,
     }
 }

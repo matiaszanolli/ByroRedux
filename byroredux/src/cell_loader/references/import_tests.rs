@@ -71,7 +71,7 @@ fn parse_and_import_spt_surfaces_billboard_mode_on_mesh() {
 }
 
 #[test]
-fn parse_and_import_spt_preserves_tree_cnam_wind_response() {
+fn parse_and_import_spt_does_not_guess_wind_from_tree_cnam() {
     let bytes = minimal_spt_bytes();
     let tree = byroredux_plugin::esm::records::TreeRecord {
         canopy_params: vec![2.0, 0.25],
@@ -80,7 +80,7 @@ fn parse_and_import_spt_preserves_tree_cnam_wind_response() {
     let mut pool = StringPool::new();
     let cached = parse_and_import_spt(&bytes, "trees\\windy.spt", Some(&tree), &mut pool)
         .expect("minimal spt parses through the importer");
-    assert_eq!(cached.speedtree_wind, Some((2.0, 0.25)));
+    assert_eq!(cached.speedtree_wind, Some((1.0, 0.0)));
 }
 
 #[test]

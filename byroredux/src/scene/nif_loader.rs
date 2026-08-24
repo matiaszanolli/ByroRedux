@@ -14,7 +14,7 @@ use byroredux_core::animation::{AnimationClipRegistry, AnimationPlayer};
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{
     BSBound, BSXFlags, Billboard, BillboardMode, GlobalTransform, LocalBound, MeshHandle, Name,
-    Parent, SceneFlags, SkinnedMesh, TextureHandle, Transform, World, WorldBound,
+    Parent, SceneFlags, SkinnedMesh, SpeedTreeWind, TextureHandle, Transform, World, WorldBound,
     MAX_BONES_PER_MESH,
 };
 use byroredux_core::math::{Mat4, Quat, Vec3};
@@ -216,8 +216,8 @@ pub(super) fn parse_import_and_merge(
                 s
             }
             Err(e) => {
-                log::error!("Failed to parse SPT '{}': {}", label, e);
-                return None;
+                log::warn!("Failed to parse SPT '{}': {}", label, e);
+                byroredux_spt::SptScene::default()
             }
         };
         let mut pool = world.resource_mut::<StringPool>();
@@ -402,6 +402,7 @@ pub(crate) fn load_nif_bytes_with_skeleton(
     // The skeleton/body/hand calls all pass `pre_spawn_hook: None`,
     // so they hit the cache.
     let cache_key = label.to_ascii_lowercase();
+    let is_spt = cache_key.ends_with(".spt");
     let cached_arc: Option<std::sync::Arc<byroredux_nif::import::ImportedScene>>;
     let mut owned_for_hook: Option<byroredux_nif::import::ImportedScene> = None;
 
@@ -536,6 +537,9 @@ pub(crate) fn load_nif_bytes_with_skeleton(
         // into a single u16 before we map it to BillboardMode.
         if let Some(raw) = node.billboard_mode {
             world.insert(entity, Billboard::new(BillboardMode::from_nif(raw)));
+            if is_spt {
+                world.insert(entity, SpeedTreeWind::new(1.0, 0.0));
+            }
         }
 
         // Attach raw NiAVObject flags so gameplay systems can branch on
@@ -1005,6 +1009,9 @@ pub(crate) fn load_nif_bytes_with_skeleton(
         // mesh entity instead of relying on parent→child propagation.
         if let Some(raw) = mesh.billboard_mode {
             world.insert(entity, Billboard::new(BillboardMode::from_nif(raw)));
+            if is_spt {
+                world.insert(entity, SpeedTreeWind::new(1.0, 0.0));
+            }
         }
         // Canonical material translation — same single boundary the
         // cell-loader path uses, so loose-NIF materials are resolved
@@ -1373,7 +1380,10 @@ pub(crate) fn load_nif_bytes_with_skeleton(
 
 #[cfg(test)]
 mod tests {
-    use super::{select_facegen_diffuse, MATERIAL_KIND_SKIN_TINT};
+    use super::{parse_import_and_merge, select_facegen_diffuse, MATERIAL_KIND_SKIN_TINT};
+    use crate::asset_provider::TextureProvider;
+    use byroredux_core::ecs::World;
+    use byroredux_core::string::StringPool;
 
     const FACE_TINT: &str =
         "textures\\actors\\character\\facegendata\\facetint\\skyrim.esm\\0001a670.dds";
@@ -1412,5 +1422,22 @@ mod tests {
             select_facegen_diffuse(None, Some(FACE_TINT), MATERIAL_KIND_SKIN_TINT).as_deref(),
             Some(FACE_TINT),
         );
+    }
+
+    #[test]
+    fn malformed_loose_spt_still_imports_placeholder() {
+        let mut world = World::new();
+        world.insert_resource(StringPool::new());
+        let textures = TextureProvider::new();
+        let imported = parse_import_and_merge(
+            &mut world,
+            b"not an spt",
+            "trees\\broken.spt",
+            &textures,
+            None,
+        )
+        .expect("loose SPT parse failure must degrade to a placeholder");
+        assert_eq!(imported.meshes.len(), 1);
+        assert_eq!(imported.meshes[0].billboard_mode, Some(5));
     }
 }

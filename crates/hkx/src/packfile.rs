@@ -552,7 +552,7 @@ mod tests {
         let mut builder = sample();
         builder.data[0x10..0x14].copy_from_slice(&0xDEAD_BEEFu32.to_le_bytes());
         builder.data[0x14..0x18].copy_from_slice(&1.5f32.to_bits().to_le_bytes());
-        builder.data[0x18..0x1D].copy_from_slice(b"bone ");
+        builder.data[0x18..0x1D].copy_from_slice(b"bone\0");
         let bytes = builder.build();
         let pack = Packfile::parse(&bytes).unwrap();
 

@@ -9,7 +9,7 @@
 use byroredux_core::ecs::components::FormIdComponent;
 use byroredux_core::ecs::{
     BSXFlags, Billboard, BillboardMode, GlobalTransform, LightSource, LocalBound, MeshHandle,
-    SceneFlags, SpeedTreeWind, TextureHandle, Transform, World, WorldBound,
+    SceneFlags, TextureHandle, Transform, World, WorldBound,
 };
 use byroredux_core::form_id::{FormIdPair, FormIdPool};
 use byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
@@ -787,9 +787,6 @@ fn spawn_placement_root(
     // Without this insertion `.spt` REFRs render as static quads.
     if let Some(mode) = cached.placement_root_billboard {
         world.insert(placement_root, Billboard::new(mode));
-    }
-    if let Some((response, stiffness)) = cached.speedtree_wind {
-        world.insert(placement_root, SpeedTreeWind::new(response, stiffness));
     }
     // #985 / #1594 — stamp the FO4+ weapon-mod attach graph onto the
     // placement root so it reaches the ECS (it dead-ended at the import

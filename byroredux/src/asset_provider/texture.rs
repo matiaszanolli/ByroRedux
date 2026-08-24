@@ -38,6 +38,14 @@ impl TextureProvider {
         None
     }
 
+    /// Whether a texture exists, without extracting or decompressing it.
+    pub(crate) fn has_texture(&self, path: &str) -> bool {
+        let normalized = normalize_texture_path(path);
+        self.texture_archives
+            .iter()
+            .any(|archive| archive.contains(normalized.as_ref()))
+    }
+
     /// Extract a mesh (NIF) from mesh archives. Path is normalised
     /// via [`normalize_mesh_path`] so authored references that omit
     /// the `meshes\` root segment (every ARMO `MODL`, every RACE

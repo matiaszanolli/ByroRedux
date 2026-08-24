@@ -309,6 +309,8 @@ pub(crate) fn run() -> Result<()> {
             "--radius",
             "--mesh",
             "--tree",
+            "--menu",
+            "--menu-archive",
             "--kf",
         ]
         .iter()
@@ -1592,6 +1594,7 @@ fn expand_game_profile_args(mut args: Vec<String>) -> Vec<String> {
         "--esm",
         "--mesh",
         "--tree",
+        "--menu",
         "--kf",
         "--cmd",
         "--master",

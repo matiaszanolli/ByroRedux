@@ -90,12 +90,12 @@ impl Component for Billboard {
     type Storage = SparseSetStorage<Self>;
 }
 
-/// Authored SpeedTree canopy response carried by a TREE record's CNAM.
+/// Runtime SpeedTree canopy response.
 ///
 /// `response` scales the shared weather-wind bend and `stiffness` attenuates
-/// it (`0` = fully responsive, `1` = rigid).  The atmospheric direction,
-/// gust phase, and base speed still come exclusively from [`WindField`], so
-/// water and vegetation remain driven by the same weather state.
+/// it (`0` = fully responsive, `1` = rigid). TREE.CNAM is deliberately not
+/// projected into these fields because its positional semantics are unpinned;
+/// current SPT placeholders use the neutral `(1, 0)` pair (#3190).
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct SpeedTreeWind {

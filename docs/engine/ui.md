@@ -16,9 +16,7 @@ Source: [`crates/ui/src/`](../../crates/ui/src/)
 > Bethesda profiles. The first M48 slice now includes profile detection,
 > a bidirectional ExternalInterface bridge, and a pinned 74-method
 > Skyrim/SkyUI host catalog. The second slice adds Fallout 4's
-> `BGSCodeObj` lifecycle, a 138-method installed-corpus catalog (a *sample*
-> of what the sweep observed, not a complete FO4 host surface — the 311-movie
-> sweep finds more, and uncataloged methods are forwarded anyway per #2718), and
+> `BGSCodeObj` lifecycle, a 269-method installed-corpus catalog, and
 > an injected AVM2 forwarding adapter. The third slice adds a BSA/BA2-backed
 > Ruffle navigator and executor-driven `ImportAssets` preload; the installed
 > Fallout 4 HUD now resolves `fonts_en.swf` and reaches frame 1. HUD and
@@ -38,7 +36,7 @@ Source: [`crates/ui/src/`](../../crates/ui/src/)
 | Ruffle render backend  | `ruffle_render_wgpu` on its **own** wgpu/Vulkan device (separate from the engine's `ash` Vulkan) |
 | Render path            | Ruffle → wgpu offscreen `TextureTarget` → `capture_frame()` CPU RGBA → Vulkan texture upload → fullscreen quad |
 | Lifetime               | `UiManager` is **not** an ECS resource — Ruffle's `Player` is not `Send + Sync`; it lives in the main loop alongside `VulkanContext` |
-| Status                 | Loose SWF demo working (`--swf path.swf`); AVM1/Skyrim and AVM2/Fallout 4 profiles; bidirectional host bridge; Skyrim `GameDelegate` and Fallout 4 `BGSCodeObj` contracts; BSA/BA2-relative `ImportAssets` loading; focused winit input routing |
+| Status                 | Loose SWF demo (`--swf path.swf`) and archive-backed vanilla menu launch (`--menu interface\\hudmenu.swf --menu-archive <BSA-or-BA2>`); AVM1/Skyrim and AVM2/Fallout 4 profiles; bidirectional host bridge; Skyrim `GameDelegate` and Fallout 4 `BGSCodeObj` contracts; BSA/BA2-relative `ImportAssets` loading; focused winit input routing |
 | Pending                | Host-method behavior, remaining GFx stubs, Papyrus↔UI bridge, menu-stack/focus policy, font fidelity, full menu pack |
 
 ## Why Ruffle?
@@ -163,7 +161,7 @@ impl SwfPlayer {
     pub fn dimensions(&self) -> (u32, u32);
     pub fn host_object_state(&self) -> ScaleformHostObjectState;
     pub fn current_frame(&self) -> Option<u16>;
-    pub fn resource_loads(&self) -> Vec<ScaleformResourceLoad>;
+    pub fn resource_loads(&self) -> &[ScaleformResourceLoad];
     pub fn resource_error(&self) -> Option<&str>;
     pub fn resource_errors(&self) -> &[String];
     pub fn preload_stalled(&self) -> bool;
@@ -413,8 +411,9 @@ sweep. The catalog preserves case because FO4 contains forms such as
 `CloseMenu`, `closeMenu`, `PlaySound`, and `playSound`.
 
 Ruffle deliberately keeps its AVM2 object model private. Rather than fork the
-VM, `avm2_host.rs` locates the class that declares `BGSCodeObj`,
-`onCodeObjCreate`, and `onCodeObjDestruction`, rewrites that constructor
+VM, `avm2_host.rs` locates the class that declares `BGSCodeObj` and
+`onCodeObjCreate`, then records separately whether the optional
+`onCodeObjDestruction` trait exists. It rewrites that constructor
 in-memory immediately after its `BGSCodeObj` initialization, and inserts an
 eager ABC adapter before the class ABC. This avoids Ruffle's intentionally
 stubbed `LoaderInfo.getLoaderInfoByDefinition` root lookup and also brings the
@@ -426,10 +425,11 @@ method such as `BGSCodeObj.PlaySound`; `ScaleformHostBridge` normalizes that
 to logical method `PlaySound` while retaining
 `host_object = Some("BGSCodeObj")`.
 Immediate response handlers therefore also work for FO4 functions used as
-queries. Reserved readiness and destruction callbacks are registered only
-after installation; dropping `SwfPlayer` invokes the latter, and a private
-acknowledgement increments `code_object_destruction_count()` only after the
-menu's `onCodeObjDestruction` hook returns.
+queries. Reserved readiness is registered after installation. The destruction
+callback is registered only when the movie declares that trait; in that case,
+dropping `SwfPlayer` invokes it and a private acknowledgement increments
+`code_object_destruction_count()` only after the hook returns. The public host
+object state distinguishes adapters that lack this optional teardown hook.
 F4SE independently demonstrates the same general extension pattern by
 installing function objects on `root.f4se` in
 [`Hooks_Scaleform.cpp`](https://github.com/ianpatt/f4se/blob/master/f4se/Hooks_Scaleform.cpp).

@@ -1675,7 +1675,7 @@ fn fallout_inventory_categories_follow_components_and_loose_mod_links() {
     let mut misc_records = build_record(
         b"MISC",
         loose_mod_id,
-        &[(b"FULL", b"Long Barrel ".to_vec())],
+        &[(b"FULL", b"Long Barrel\0".to_vec())],
     );
     let mut component = Vec::new();
     component.extend_from_slice(&0x0003_0001u32.to_le_bytes());
@@ -1683,12 +1683,12 @@ fn fallout_inventory_categories_follow_components_and_loose_mod_links() {
     misc_records.extend_from_slice(&build_record(
         b"MISC",
         junk_id,
-        &[(b"FULL", b"Desk Fan ".to_vec()), (b"CVPA", component)],
+        &[(b"FULL", b"Desk Fan\0".to_vec()), (b"CVPA", component)],
     ));
     misc_records.extend_from_slice(&build_record(
         b"MISC",
         misc_id,
-        &[(b"FULL", b"Overdue Book ".to_vec())],
+        &[(b"FULL", b"Overdue Book\0".to_vec())],
     ));
 
     let mut esm = tes4_with_hedr(1.0);

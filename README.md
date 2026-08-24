@@ -205,6 +205,11 @@ cargo run --release -- --game skyrim_se --list-cells dragonsreach
 cargo run --release -- --game fnv --list-cells                  # all of them
 cargo run --release -- --esm Skyrim.esm --master Update.esm --list-cells whiterun
 
+# Vanilla Scaleform menu directly from its BSA/BA2. Imported child movies and
+# images resolve relative to the same archive; use --swf for a loose-file menu.
+cargo run --release -- --menu 'interface\hudmenu.swf' \
+             --menu-archive 'Fallout4 - Interface.ba2'
+
 # Loose NIF + optional animation
 cargo run -- path/to/mesh.nif [--kf path/to/anim.kf]
 

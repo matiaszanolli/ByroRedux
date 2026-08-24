@@ -164,12 +164,19 @@ impl SandboxConfig {
         if self.max_log_entries == 0 || self.max_log_message_bytes == 0 || self.max_log_bytes == 0 {
             return Err(SandboxError::InvalidConfig("log limits must be non-zero"));
         }
-        if self.max_log_entries > MAX_SANE_LIMIT
-            || self.max_log_message_bytes > MAX_SANE_LIMIT
-            || self.max_log_bytes > MAX_SANE_LIMIT
-        {
+        if self.max_log_entries > MAX_SANE_LIMIT {
             return Err(SandboxError::InvalidConfig(
-                "a log limit exceeds the sane ceiling",
+                "max_log_entries exceeds the sane ceiling",
+            ));
+        }
+        if self.max_log_message_bytes > MAX_SANE_LIMIT {
+            return Err(SandboxError::InvalidConfig(
+                "max_log_message_bytes exceeds the sane ceiling",
+            ));
+        }
+        if self.max_log_bytes > MAX_SANE_LIMIT {
+            return Err(SandboxError::InvalidConfig(
+                "max_log_bytes exceeds the sane ceiling",
             ));
         }
         if self.max_log_message_bytes > self.max_log_bytes {
@@ -319,14 +326,15 @@ mod tests {
         };
         assert!(matches!(
             config.validate(),
-            Err(SandboxError::InvalidConfig(_))
+            Err(SandboxError::InvalidConfig(
+                "max_log_bytes exceeds the sane ceiling"
+            ))
         ));
     }
 
-    /// Same as above for `max_log_message_bytes`, with `max_log_bytes`
-    /// raised alongside it so the pre-existing cross-check doesn't
-    /// fire for an unrelated reason and mask which guard actually
-    /// caught it.
+    /// Same as above for `max_log_message_bytes`. The sibling total limit is
+    /// also above its ceiling, so the distinct error proves validation reaches
+    /// this field's own guard first rather than succeeding through the sibling.
     #[test]
     fn oversized_max_log_message_bytes_is_rejected() {
         let config = SandboxConfig {
@@ -336,7 +344,23 @@ mod tests {
         };
         assert!(matches!(
             config.validate(),
-            Err(SandboxError::InvalidConfig(_))
+            Err(SandboxError::InvalidConfig(
+                "max_log_message_bytes exceeds the sane ceiling"
+            ))
+        ));
+    }
+
+    #[test]
+    fn oversized_max_log_entries_is_rejected_by_its_own_guard() {
+        let config = SandboxConfig {
+            max_log_entries: MAX_SANE_LIMIT + 1,
+            ..SandboxConfig::default()
+        };
+        assert!(matches!(
+            config.validate(),
+            Err(SandboxError::InvalidConfig(
+                "max_log_entries exceeds the sane ceiling"
+            ))
         ));
     }
 }

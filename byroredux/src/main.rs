@@ -113,14 +113,14 @@ struct App {
     ui_input_state: ui_input::UiInputState,
     /// Texture handle for the UI overlay (registered in the texture registry).
     ui_texture_handle: Option<u32>,
-    /// Host methods already reported by the per-frame Scaleform drain, so a
-    /// menu that calls an unimplemented method every frame reports it once
-    /// rather than once per frame (#2714). Bounded by
+    /// `(menu, host method)` pairs already reported by the per-frame Scaleform
+    /// drain, so repeated calls report once without suppressing the same
+    /// missing handler when a second menu needs it (#2714 / #3155). Bounded by
     /// `byroredux_ui::MAX_DISTINCT_HOST_METHOD_NAMES` (#2964) — this mirrors
     /// the bridge's own movie-keyed diagnostic sets, so it needs the same
     /// cap for the same reason: an unbounded-by-construction set keyed by a
     /// string untrusted ActionScript content chooses.
-    ui_reported_host_methods: std::collections::HashSet<String>,
+    ui_reported_host_methods: std::collections::HashSet<(String, String)>,
     /// One-shot latch for the `ui_reported_host_methods` cap warning.
     ui_reported_host_methods_capped: bool,
     /// Reusable per-frame draw command buffer (cleared each frame, allocation retained).

@@ -394,8 +394,8 @@ fn normalize_noise_uv_scale(value: f32) -> f32 {
 }
 
 /// Parse the short Oblivion/synthetic WATR.DATA shape. Full FO3/FNV records
-/// are dispatched to [`decode_data_fo3nv`] because their first 16 bytes are
-/// opaque and their visual fields use a different offset map:
+/// are dispatched to [`decode_data_fo3nv`] because their visual fields use a
+/// different offset map after the shared 0..28 prefix:
 ///
 /// ```text
 /// offset  size  field
@@ -623,13 +623,25 @@ fn decode_data_oblivion(data: &[u8]) -> WaterParams {
     p
 }
 
-/// Decode the authoritative full FO3/FNV visual-data layout. The first
-/// sixteen bytes are opaque in xEdit's definition; they are not wind or wave
-/// controls. Visual fields begin at byte 16, and the second fog float at byte
-/// 36 shifts the RGBA colours to 40/44/48. Longer variants expose additional
+/// Decode the authoritative full FO3/FNV visual-data layout. Its 0..28 head
+/// carries the same wind, wave, specular, reflectivity, and Fresnel controls
+/// as the short compatibility/DNAM form. The second fog float at byte 36
+/// shifts the RGBA colours to 40/44/48. Longer variants expose additional
 /// tail entries when those bytes are present.
 fn decode_data_fo3nv(data: &[u8]) -> WaterParams {
     let mut p = WaterParams::default();
+    for (dst, offset) in [
+        (&mut p.wind_speed, 0usize),
+        (&mut p.wave_amplitude, 8usize),
+        (&mut p.wave_frequency, 12usize),
+    ] {
+        if let Some(value) = read_f32_at(data, offset).filter(|value| value.is_finite()) {
+            *dst = value;
+        }
+    }
+    if let Some(degrees) = read_f32_at(data, 4).filter(|value| value.is_finite()) {
+        p.wind_direction = degrees.to_radians();
+    }
     if let Some(value) = read_f32_at(data, 16) {
         p.sun_specular_power = value.clamp(1.0, 2048.0);
     }
@@ -676,14 +688,6 @@ fn decode_data_fo3nv(data: &[u8]) -> WaterParams {
 /// at 112/116/120, fog amounts at 132..148 and the specular pair at 164/168.
 /// Offsets past the 186-byte `DATA` simply read as absent via `read_f32_at`.
 fn apply_fo3nv_tail(p: &mut WaterParams, data: &[u8]) {
-    // Displacement force/velocity are the closest legacy equivalents of the
-    // canonical wave amplitude/frequency controls.
-    if let Some(value) = read_f32_at(data, 76) {
-        p.wave_amplitude = value.max(0.0);
-    }
-    if let Some(value) = read_f32_at(data, 80) {
-        p.wave_frequency = value.max(0.0);
-    }
     // FO3/FNV displacement simulator: starting size, radial falloff, and
     // dampener. Keep these authored ripple-shape controls in the canonical
     // material instead of reducing every water type to force/velocity only.
@@ -753,17 +757,8 @@ fn apply_fo3nv_tail(p: &mut WaterParams, data: &[u8]) {
             *slot = value.max(0.0);
         }
     }
-    // Noise layer 1 supersedes the legacy prefix wind pair — but only when it
-    // was actually present. Assigning unconditionally would zero the converted
-    // prefix value on a truncated buffer, which is reachable now that this tail
-    // also runs for DNAM (#3107); `decode_data_fo3nv`'s own 186-byte form
-    // always carries these offsets, so its behaviour is unchanged.
-    if read_f32_at(data, 100).is_some() {
-        p.wind_direction = p.noise_wind_directions[0];
-    }
-    if read_f32_at(data, 112).is_some() {
-        p.wind_speed = p.noise_wind_speeds[0];
-    }
+    // Noise-layer direction/speed remain layer-local. The canonical surface
+    // wind pair is authored independently in the 0/4-byte prefix (#3205).
     // FO3/FNV's documented long DATA layout places the fog amount at 132,
     // shared normal UV scale at 136, and underwater amount/near/far at
     // 140/144/148 respectively.
@@ -1766,6 +1761,10 @@ mod tests {
         // colour block sits at 40/44/48, NOT 36/40/44. Bytes mirror the
         // real `PPurityWater01Murky` (Fallout3.esm) record.
         let mut data = vec![0u8; 186];
+        data[0..4].copy_from_slice(&0.1f32.to_le_bytes()); // wind velocity
+        data[4..8].copy_from_slice(&90.0f32.to_le_bytes()); // wind direction
+        data[8..12].copy_from_slice(&0.5f32.to_le_bytes()); // wave amplitude
+        data[12..16].copy_from_slice(&1.0f32.to_le_bytes()); // wave frequency
         data[16..20].copy_from_slice(&61.0f32.to_le_bytes()); // sun power
         data[20..24].copy_from_slice(&0.65f32.to_le_bytes()); // reflectivity
         data[24..28].copy_from_slice(&0.04f32.to_le_bytes()); // fresnel
@@ -1827,7 +1826,11 @@ mod tests {
         assert_eq!(w.params.fresnel, 0.04);
         assert_eq!(w.params.fog_near, 7.0);
         assert_eq!(w.params.fog_far, 109.0);
-        assert_eq!(w.params.wind_speed, 0.25);
+        assert_eq!(w.params.wind_speed, 0.1);
+        assert_eq!(w.params.wind_direction, 90.0f32.to_radians());
+        assert_eq!(w.params.wave_amplitude, 0.5);
+        assert_eq!(w.params.wave_frequency, 1.0);
+        assert_eq!(w.params.noise_wind_speeds[0], 0.25);
         assert_eq!(w.params.noise_wind_directions[0], 90.0f32.to_radians());
         assert_eq!(w.params.above_water_fog_amount, 0.8);
         assert_eq!(w.params.underwater_fog_amount, 0.5);
@@ -2356,19 +2359,18 @@ mod tests {
     fn wind_direction_converts_shipped_degrees_on_the_fo3nv_dnam_arm() {
         // The DNAM prefix at [4] is 90.0 on 53/53 Fallout3.esm and 78/78
         // FalloutNV.esm records — a dead editor default. Since #3107 routed
-        // this arm through the shared tail, the prefix is superseded by the
-        // per-record noise-layer-1 heading at [100], exactly as Skyrim's tail
-        // already did. That is the point: FO3/FNV water now flows on its own
-        // authored bearing instead of one global constant.
+        // this arm through the shared tail, the prefix must remain the
+        // canonical surface heading; the per-layer heading at [100] is a
+        // separate normal-scroll control.
         let mut data = buf_with_wind_direction(196, 90.0);
         // 211.0 deg is the third-most-common shipped value at DNAM[100]
         // (11/69 FNV records); the field genuinely varies there, unlike [4].
         data[100..104].copy_from_slice(&211.0f32.to_le_bytes());
         let w = parse_watr(0x1001, &[sub(b"DNAM", &data)], GameKind::Fallout3NV, &None);
-        assert_eq!(w.params.wind_direction, 211.0f32.to_radians());
+        assert_eq!(w.params.wind_direction, 90.0f32.to_radians());
         assert_eq!(w.params.noise_wind_directions[0], 211.0f32.to_radians());
         // Degrees must not reach the radians field on either route (#3144).
-        assert_ne!(w.params.wind_direction, 211.0);
+        assert_ne!(w.params.wind_direction, 90.0);
         assert!(w.params.wind_direction < std::f32::consts::TAU);
     }
 

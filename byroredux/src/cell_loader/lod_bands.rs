@@ -109,6 +109,16 @@ const SKYRIM_ULTRA_REFINE_BU: &[f32] = &[60_000.0, 90_000.0];
 const FALLOUT4_ULTRA_REFINE_BU: &[f32] = &[60_000.0, 90_000.0, 110_000.0];
 const ULTRA_MAX_DISTANCE_BU: f32 = 250_000.0;
 
+// Fallout 3's shipped `VeryHigh.ini` uses the legacy terrain-manager names:
+// `fBlockLoadDistanceLow=50000`, `fSplitDistanceMult=1.5`, and
+// `fBlockLoadDistance=125000`. The split multiplier generates the successive
+// quadtree boundaries. Its archives author level-4/8/16/32 quads through
+// +/-64 cells, which is the availability-clamped outer extent. FNV shares the
+// same format and `GameKind`; missing quads subdivide through the common
+// availability predicate.
+const FALLOUT_LEGACY_REFINE_BU: &[f32] = &[50_000.0, 75_000.0, 112_500.0];
+const FALLOUT_LEGACY_MAX_CELLS: i32 = 64;
+
 /// The per-game distance ladder that drives [`select_lod_quads`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LodBandLadder {
@@ -137,6 +147,23 @@ impl LodBandLadder {
             refine_cells: refine_bu.iter().copied().map(cells_from_bu).collect(),
             max_cells: cells_from_bu(ULTRA_MAX_DISTANCE_BU),
         })
+    }
+
+    /// Terrain ladder, including the older FO3/FNV NIF/DDS quadtree.
+    /// Object LOD deliberately continues to use [`Self::for_game`], because
+    /// Fallout's legacy terrain bands are not Creation-format `.bto` bands.
+    pub(crate) fn for_terrain_game(game: GameKind) -> Option<Self> {
+        if matches!(game, GameKind::Fallout3NV) {
+            return Some(Self {
+                refine_cells: FALLOUT_LEGACY_REFINE_BU
+                    .iter()
+                    .copied()
+                    .map(cells_from_bu)
+                    .collect(),
+                max_cells: FALLOUT_LEGACY_MAX_CELLS,
+            });
+        }
+        Self::for_game(game)
     }
 
     /// Outer extent of the whole LOD ring, in cells.
@@ -366,9 +393,18 @@ mod tests {
         assert_eq!(fo4().coarsest_level(), 32);
     }
 
-    /// Titles with no combined `.btr` quadtree keep their existing single-band
-    /// geometry schemes. FO3/FNV's older NIF/DDS tree is a separate EXAL
-    /// capability (#3100), not evidence that they support this ladder.
+    #[test]
+    fn fallout_legacy_terrain_uses_all_four_authored_bands() {
+        let fo3 = LodBandLadder::for_terrain_game(GameKind::Fallout3NV).unwrap();
+        assert_eq!(fo3.refine_threshold(8), Some(12));
+        assert_eq!(fo3.refine_threshold(16), Some(18));
+        assert_eq!(fo3.refine_threshold(32), Some(27));
+        assert_eq!(fo3.coarsest_level(), 32);
+        assert_eq!(fo3.max_cells(), 64);
+    }
+
+    /// Titles with no combined `.btr` quadtree stay out of the object ladder.
+    /// FO3/FNV's older NIF/DDS tree is exposed only by `for_terrain_game`.
     #[test]
     fn pre_skyrim_games_have_no_combined_btr_ladder() {
         assert!(LodBandLadder::for_game(GameKind::Oblivion).is_none());

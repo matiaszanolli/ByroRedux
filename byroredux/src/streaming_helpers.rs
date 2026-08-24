@@ -7,7 +7,8 @@
 //! signature can't express that.
 
 use crate::cell_loader::{
-    FrameTimeBudget, LodReconcileInput, LodWorkBudget, ObjectLodBlock, PlacementLodBlock,
+    canonical_model_path_key, FrameTimeBudget, LodReconcileInput, LodWorkBudget, ObjectLodBlock,
+    PlacementLodBlock,
 };
 use crate::streaming::{LodBlock, LodWaterPlane};
 use crate::{cell_loader, streaming};
@@ -464,7 +465,7 @@ fn finish_streaming_import(
             );
         }
         None => {
-            let cache_key = model_path.to_ascii_lowercase();
+            let cache_key = canonical_model_path_key(&model_path);
             let freed = {
                 let mut reg = world.resource_mut::<cell_loader::NifImportRegistry>();
                 reg.insert(cache_key, None)
@@ -548,7 +549,7 @@ pub(crate) fn advance_streaming_apply(
                 let Ok(payload) = state.payload_rx.try_recv() else {
                     return budget.completed_units() > 0;
                 };
-                state.telemetry.record_worker(payload.timings);
+                state.telemetry.record_worker(payload.timings.clone());
                 let coord = (payload.gx, payload.gy);
                 match streaming::classify_payload(&state.pending, coord, payload.generation) {
                     streaming::PayloadDecision::Apply => break payload,

@@ -223,7 +223,7 @@ fn block_hole_mask(
 /// it at compile time ([`cells_from_bu`] is float math and cannot run in a
 /// `const`). `max_ring_reach_covers_every_game` proves it stays both correct
 /// and tight.
-pub(crate) const MAX_LOD_RING_REACH_CELLS: i32 = 61;
+pub(crate) const MAX_LOD_RING_REACH_CELLS: i32 = 64;
 
 // #2371 / EX-11 — the camera far plane must clear the ring's far-corner
 // diagonal (`reach · √2`). The frustum's far plane is extracted from the
@@ -251,7 +251,7 @@ const _: () = {
 /// own `fBlockMaximumDistance` (61 cells at the vanilla Ultra tier); the rest
 /// keep the synthesized ring's `LOD_RADIUS_BLOCKS × LOD_BLOCK_CELLS`.
 pub(crate) fn lod_ring_reach_cells(game: GameKind) -> i32 {
-    LodBandLadder::for_game(game)
+    LodBandLadder::for_terrain_game(game)
         .map(|ladder| ladder.max_cells())
         .unwrap_or(LOD_RADIUS_BLOCKS * LOD_BLOCK_CELLS)
 }
@@ -262,15 +262,13 @@ pub(crate) fn lod_ring_reach_cells(game: GameKind) -> i32 {
 ///
 /// Two regimes, by whether the game uses the combined `.btr` quadtree (#2371):
 ///
-/// * **Skyrim / FO4** descend [`super::lod_bands`]' 4/8/16/32 ladder. A
-///   coarse band is only offered where the game actually baked a `.btr`;
+/// * **FO3 / FNV / Skyrim / FO4** descend [`super::lod_bands`]' 4/8/16/32
+///   ladder. A coarse band is only offered where the game actually baked an
+///   authored terrain asset;
 ///   where it did not, the descent subdivides instead of leaving a hole,
 ///   and the finest band always reports available because heightmap synth
 ///   can cover any footprint.
-/// * **Oblivion / FO3 / FNV** ship older NIF/DDS terrain quadtrees, not `.btr`.
-///   Their current geometry provider remains the single synthesized
-///   [`LOD_RADIUS_BLOCKS`]-deep ring at the finest level, with EXAL supplying
-///   its authored level-4 texture quads (#3100). `has_btr` is never consulted.
+/// * **Oblivion** keeps the single synthesized [`LOD_RADIUS_BLOCKS`]-deep ring.
 #[allow(clippy::too_many_arguments)]
 fn desired_lod_quads(
     ladder: Option<&LodBandLadder>,
@@ -369,7 +367,7 @@ pub(crate) fn stream_lod_blocks(
         .unwrap_or(0);
     let k = LOD_BLOCK_CELLS;
     let grid_origin = input.lod_grid_origin;
-    let ladder = LodBandLadder::for_game(game);
+    let ladder = LodBandLadder::for_terrain_game(game);
 
     let desired = desired_lod_quads(
         ladder.as_ref(),
@@ -379,12 +377,17 @@ pub(crate) fn stream_lod_blocks(
         worldspace_cell_bounds(wctx),
         |level, qx, qy| lod_blocks.contains_key(&(level, qx, qy)),
         |level, qx, qy| {
-            tex_provider.has_mesh(&super::terrain_lod_btr::btr_archive_path(
-                worldspace_key,
-                level,
-                qx,
-                qy,
-            ))
+            if combined_lod_supported(game) {
+                tex_provider.has_mesh(&super::terrain_lod_btr::btr_archive_path(
+                    worldspace_key,
+                    level,
+                    qx,
+                    qy,
+                ))
+            } else {
+                translate_terrain_lod_textures(game, worldspace_key, world_form_id, level, qx, qy)
+                    .is_some_and(|lod| tex_provider.has_texture(&lod.diffuse_path))
+            }
         },
     );
     let desired_set: HashSet<_> = desired.iter().copied().collect();
@@ -499,7 +502,7 @@ pub(crate) fn stream_lod_blocks(
         };
         let from_btr = btr_block.is_some();
         let block = btr_block.or_else(|| {
-            if level != k {
+            if level != k && !legacy_landscape_lod_supported(game) {
                 // A coarse band whose `.btr` is present in the archive but
                 // unusable (parse or upload failure — `spawn_btr_block`
                 // warns). The synth builder cannot cover this footprint: its
@@ -527,6 +530,7 @@ pub(crate) fn stream_lod_blocks(
                 game,
                 worldspace_key,
                 world_form_id,
+                level,
             )
         });
         if let Some(block) = block {
@@ -614,8 +618,9 @@ fn spawn_lod_block(
     game: GameKind,
     worldspace_key: &str,
     world_form_id: u32,
+    level: i32,
 ) -> Option<LodBlock> {
-    let k = LOD_BLOCK_CELLS;
+    let k = level;
     let origin_x = bx0 as f32 * EXTERIOR_CELL_UNITS;
     let origin_y = by0 as f32 * EXTERIOR_CELL_UNITS;
 
@@ -882,14 +887,18 @@ fn spawn_lod_block(
     // and is skipped by any TLAS-membership logic.
     world.insert(entity, IsLodTerrain);
 
-    let hole_mask = block_hole_mask(
-        cells_map,
-        bx0,
-        by0,
-        player_grid,
-        max_full_cell_radius,
-        resident_full_cells,
-    );
+    let hole_mask = if level == LOD_BLOCK_CELLS {
+        block_hole_mask(
+            cells_map,
+            bx0,
+            by0,
+            player_grid,
+            max_full_cell_radius,
+            resident_full_cells,
+        )
+    } else {
+        0
+    };
     Some(LodBlock {
         entity,
         mesh_handle,
@@ -1064,13 +1073,30 @@ mod tests {
             "the pinned maximum is looser than any real ring — tighten it"
         );
 
-        // Games with no combined `.btr` ladder keep the synthesized ring; the
-        // combined-ladder games reach further, which is what moved the far plane.
+        // Oblivion keeps the fixed synthesized ring. FO3/FNV use their
+        // authored legacy NIF/DDS ladder; Creation titles use `.btr`.
         assert_eq!(
             lod_ring_reach_cells(GameKind::Oblivion),
             LOD_RADIUS_BLOCKS * LOD_BLOCK_CELLS
         );
         assert!(lod_ring_reach_cells(GameKind::Skyrim) > LOD_RADIUS_BLOCKS * LOD_BLOCK_CELLS);
+        assert!(lod_ring_reach_cells(GameKind::Fallout3NV) >= 64);
+    }
+
+    #[test]
+    fn fallout_legacy_terrain_reaches_authored_coarse_bands() {
+        let ladder = LodBandLadder::for_terrain_game(GameKind::Fallout3NV).unwrap();
+        let quads = desired_lod_quads(
+            Some(&ladder),
+            (0, 0),
+            (0, 0),
+            6,
+            Some(((-64, -64), (63, 63))),
+            |_, _, _| false,
+            |_, _, _| true,
+        );
+        assert!(quads.iter().any(|&(level, _, _)| level > LOD_BLOCK_CELLS));
+        assert!(quads.iter().any(|&(level, _, _)| level == 32));
     }
 
     /// #2371 / #3100 — Oblivion / FO3 / FNV have no combined `.btr` ladder, so

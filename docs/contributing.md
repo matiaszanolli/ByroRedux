@@ -261,10 +261,12 @@ engine binary itself).
 
 ## CI
 
-Five jobs run on every push / PR:
+The following jobs run on pushes and/or pull requests:
 
 | Job | What it checks | GPU? |
 |---|---|---|
+| `issue-traceability` | Every issue a PR closes has a commit carrying `Fix #N` (or another GitHub closing keyword) | No |
+| `source-integrity` | Tracked source/docs contain no raw NUL bytes that make grep treat a file as binary | No |
 | `shader-artifacts` | Recompiles every first-party `.spv` from source and diffs against the checked-in binary (shader/artifact parity) | No |
 | `cargo-test` | `cargo check`, `cargo test --workspace`, `cargo clippy -D warnings` | No |
 | `lock-order-check` | Same tests with `BYRO_LOCK_ORDER_CHECK=1` (ABBA deadlock detector) | No |
@@ -282,7 +284,8 @@ data files that cannot be redistributed.
 
 ## Conventions
 
-- **Commit messages**: Conventional Commits (`feat(nif): …`, `fix(renderer): …`, `docs: …`). No `Co-Authored-By` trailers.
+- **Commit messages**: Conventional Commits (`feat(nif): …`, `fix(renderer): …`, `docs: …`). Every issue closed by a PR needs its own commit-body closing line (`Fix #123`); CI prints and rejects the zero-citation set. No `Co-Authored-By` trailers.
+- **Side-effect closures**: if one issue is manually closed because another fix resolved it incidentally, leave a GitHub close comment in the form `Resolved as a side effect of #123 in commit abcdef12`. This keeps the relationship discoverable even though no second fix commit exists.
 - **Tests**: every new parser feature needs at least one unit test; every bug fix needs a regression test. Integration tests (`#[ignore]`) for real-data validation.
 - **No unsafe without a SAFETY comment** explaining the invariant that makes it sound.
 - **No per-game branches past the NIFAL / EXAL translation boundary** — new game quirks belong in the `Imported*` → `Canonical` translate step, not in the renderer or gameplay code.

@@ -36,9 +36,8 @@
 //! Pre-#TREE wiring this record was collapsed into the generic MODL-only
 //! path at [`super::mod`]'s `parse_modl_group` arm alongside STAT / MSTT
 //! / FURN / etc., so every field beyond MODL was discarded silently.
-//! That's a problem for the FNV / FO3 / Oblivion compatibility path
-//! because `.spt` files need ICON for the leaf texture and CNAM/BNAM for
-//! wind tuning.
+//! That's a problem for the FNV / FO3 / Oblivion compatibility path because
+//! `.spt` files need ICON for the leaf texture and BNAM for fallback sizing.
 
 use super::common::{find_sub, read_f32_sub, read_u32_sub, CommonNamedFields};
 use crate::esm::reader::SubRecord;
@@ -92,9 +91,8 @@ pub struct TreeRecord {
     pub leaf_indices: Vec<u32>,
     /// CNAM — canopy / wind parameters as raw f32. Field count varies
     /// across games (5 on Oblivion, 8 on FO3/FNV); semantics aren't
-    /// pinned down here. The first two finite values are consumed by the
-    /// cell-loader SpeedTree billboard's shared-weather sway response; the
-    /// remaining values stay raw until real branch/leaf animation lands.
+    /// pinned down here. It remains parse-but-don't-consume data until a
+    /// citable layout or real branch/leaf animation decoder lands (#3190).
     pub canopy_params: Vec<f32>,
     /// BNAM — billboard width / height on FO3/FNV. `None` on Oblivion
     /// (BNAM absent there) and Skyrim+ (TREE records dropped the field).

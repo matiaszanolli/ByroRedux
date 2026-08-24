@@ -173,7 +173,7 @@ fn finish_partial_import_early_outs_on_already_cached_positive_entry() {
     let original_ptr = Arc::as_ptr(&original) as usize;
     {
         let mut reg = world.resource_mut::<NifImportRegistry>();
-        let _ = reg.insert("test.nif".to_string(), Some(original));
+        let _ = reg.insert("meshes\\test.nif".to_string(), Some(original));
     }
     assert_eq!(world.resource::<NifImportRegistry>().len(), 1);
     assert_eq!(world.resource::<AnimationClipRegistry>().len(), 0);
@@ -183,7 +183,7 @@ fn finish_partial_import_early_outs_on_already_cached_positive_entry() {
     // Cache entry preserved (same Arc pointer — the early-out didn't
     // rebuild and overwrite).
     let reg = world.resource::<NifImportRegistry>();
-    let entry = reg.get("test.nif").expect("cache entry preserved");
+    let entry = reg.get("meshes\\test.nif").expect("cache entry preserved");
     let cached = entry.as_ref().expect("positive cache hit preserved");
     assert_eq!(
         Arc::as_ptr(cached) as usize,
@@ -209,7 +209,7 @@ fn finish_partial_import_early_outs_on_already_cached_negative_entry() {
     let mut world = world_with_registries();
     {
         let mut reg = world.resource_mut::<NifImportRegistry>();
-        let _ = reg.insert("broken.nif".to_string(), None);
+        let _ = reg.insert("meshes\\broken.nif".to_string(), None);
     }
     assert_eq!(world.resource::<NifImportRegistry>().len(), 1);
 
@@ -218,7 +218,9 @@ fn finish_partial_import_early_outs_on_already_cached_negative_entry() {
     // Cache entry stays negative — the worker's payload (which would
     // have produced a positive entry) is dropped silently.
     let reg = world.resource::<NifImportRegistry>();
-    let entry = reg.get("broken.nif").expect("cache entry preserved");
+    let entry = reg
+        .get("meshes\\broken.nif")
+        .expect("cache entry preserved");
     assert!(entry.is_none(), "negative cache stays negative");
     drop(reg);
     assert_eq!(world.resource::<AnimationClipRegistry>().len(), 0);
@@ -233,13 +235,16 @@ fn finish_partial_import_early_outs_with_mixed_case_model_path() {
     let mut world = world_with_registries();
     {
         let mut reg = world.resource_mut::<NifImportRegistry>();
-        let _ = reg.insert("rock_cliff.nif".to_string(), Some(dummy_cached()));
+        let _ = reg.insert(
+            "meshes\\clutter\\rock_cliff.nif".to_string(),
+            Some(dummy_cached()),
+        );
     }
     finish_partial_import(
         &mut world,
         None,
         None,
-        "Rock_Cliff.NIF", // mixed case — should normalise to the same lowercase key
+        "Meshes/Clutter/Rock_Cliff.NIF",
         dummy_partial(),
     );
     let reg = world.resource::<NifImportRegistry>();
@@ -248,7 +253,7 @@ fn finish_partial_import_early_outs_with_mixed_case_model_path() {
         1,
         "early-out must not append a duplicate-case entry"
     );
-    assert!(reg.get("rock_cliff.nif").is_some());
+    assert!(reg.get("meshes\\clutter\\rock_cliff.nif").is_some());
 }
 
 // ── #3036 / #3102 — BSXFlags bit 5 is presence, not identity ──
@@ -265,7 +270,7 @@ fn finish_partial_import_fo4_bsx_bit5_is_not_editor_marker() {
 
     let reg = world.resource::<NifImportRegistry>();
     let entry = reg
-        .get("hitfloorsolidfull01.nif")
+        .get("meshes\\hitfloorsolidfull01.nif")
         .expect("cache entry inserted");
     assert!(
         entry.is_some(),
@@ -285,7 +290,9 @@ fn finish_partial_import_marker_only_scene_imports_empty() {
     finish_partial_import(&mut world, None, None, "xmarkerheading.nif", partial);
 
     let reg = world.resource::<NifImportRegistry>();
-    let entry = reg.get("xmarkerheading.nif").expect("cache entry inserted");
+    let entry = reg
+        .get("meshes\\xmarkerheading.nif")
+        .expect("cache entry inserted");
     let cached = entry
         .as_ref()
         .expect("marker-only scene parsed successfully");
@@ -303,7 +310,7 @@ fn finish_partial_import_bsx_bit5_keeps_real_geometry_sibling() {
 
     let reg = world.resource::<NifImportRegistry>();
     let cached = reg
-        .get("stool01.nif")
+        .get("meshes\\stool01.nif")
         .expect("cache entry inserted")
         .as_ref()
         .expect("bit 5 must not reject the whole NIF");

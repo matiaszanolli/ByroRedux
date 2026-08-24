@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use crate::asset_provider::{merge_external_material, MaterialProvider};
 
-use super::nif_import_registry::{CachedNifImport, NifImportRegistry};
+use super::nif_import_registry::{canonical_model_path_key, CachedNifImport, NifImportRegistry};
 
 pub(crate) fn finish_partial_import(
     world: &mut World,
@@ -22,7 +22,7 @@ pub(crate) fn finish_partial_import(
     model_path: &str,
     partial: crate::streaming::PartialNifImport,
 ) {
-    let cache_key = model_path.to_ascii_lowercase();
+    let cache_key = canonical_model_path_key(model_path);
     // Already-cached early-out (#864). The streaming worker
     // pre-filters its model_paths against `NifImportRegistry`'s
     // cached-keys snapshot (#862), but the snapshot is captured at

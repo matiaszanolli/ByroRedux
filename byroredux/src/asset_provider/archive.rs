@@ -72,6 +72,16 @@ impl Archive {
     }
 }
 
+impl byroredux_ui::ScaleformResourceProvider for Archive {
+    fn load(&self, path: &str) -> std::io::Result<Option<Vec<u8>>> {
+        if self.contains(path) {
+            self.extract(path).map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+}
+
 /// Prepend `meshes\` to a NIF path when the input doesn't already
 /// start with that segment (case-insensitive, accepts either
 /// separator). `MODL` sub-records on RACE / NPC_ / ARMO records are

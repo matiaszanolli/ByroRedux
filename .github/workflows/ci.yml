@@ -11,6 +11,27 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  issue-traceability:
+    name: Issue/commit traceability
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Require a closing-keyword commit for every issue closed by the PR
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: scripts/check-issue-traceability.sh '${{ github.event.pull_request.base.sha }}' '${{ github.event.pull_request.head.sha }}'
+
+  source-integrity:
+    name: Text-source integrity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reject grep-blinding NUL bytes
+        run: scripts/check-text-source-integrity.sh
+
   playable-smoke-contracts:
     name: Playable smoke gate contracts
     runs-on: ubuntu-latest
