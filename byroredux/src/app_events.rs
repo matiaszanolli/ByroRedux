@@ -146,8 +146,15 @@ impl ApplicationHandler for App {
                 {
                     log::warn!("debug-UI overlay init failed: {e:#}");
                 }
-                let debug_ui_state = byroredux_debug_ui::DebugUiState::new(event_loop, &win);
+                let mut debug_ui_state = byroredux_debug_ui::DebugUiState::new(event_loop, &win);
                 debug_ui_state.sync_registered_settings(&self.world.resource::<SettingsRegistry>());
+                let mut pending = self.pending_player_messages.drain(..);
+                if let Some(first) = pending.next() {
+                    debug_ui_state.push_player_message(first);
+                }
+                for line in pending {
+                    debug_ui_state.push_console_line(line);
+                }
                 self.debug_ui = Some(debug_ui_state);
 
                 self.renderer = Some(ctx);
@@ -297,7 +304,7 @@ impl ApplicationHandler for App {
             _ => None,
         };
         if let Some(output) = save_output {
-            log::info!("player save action: {}", output.lines.join(" | "));
+            crate::surface_save_load_output(self.debug_ui.as_mut(), "player save action", output);
             return;
         }
 

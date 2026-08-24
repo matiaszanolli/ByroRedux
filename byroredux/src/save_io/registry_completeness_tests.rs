@@ -94,6 +94,56 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
     /// Verified 2026-08-05 against real (non-`#[cfg(test)]`) insertion
     /// sites for every entry — see the individual reasons.
     const NOT_SAVED_BY_DESIGN: &[(&str, &str)] = &[
+        // ── crates/core/src outside ecs/components/ (#3166) ───────
+        ("StringPool", "serialized specially as Snapshot.strings so FixedString symbol order is restored before component columns"),
+        ("CommandRegistry", "boot-time function-pointer command table; reconstructed by command registration and not serializable gameplay state"),
+        ("RootMotionDelta", "per-frame animation output consumed and cleared by movement systems"),
+        ("AnimationClipRegistry", "asset registry rebuilt from NIF/KF/KFM content; numeric handles are session-local"),
+        ("AnimationController", "KFM-derived controller catalog with session-local clip handles; playback requests are transient and the catalog is rebuilt with the actor"),
+        ("SettingsRegistry", "user preferences persist independently in settings.toml and are installed before scene setup"),
+        ("AfflictionStatus", "forward-latent: affliction_tick_system has no production scheduler registration; classify as gameplay state when activated"),
+        ("CharacterRuleset", "immutable game-profile rules selected at boot from the source game"),
+        ("MeleeDamageConfig", "immutable Fallout combat tuning selected from the game profile at boot"),
+        ("CharacterLevel", "known progression gap guarded by validate_progression_state: saves are refused once non-default XP/level state exists (#2947)"),
+        ("Perks", "known progression gap guarded by validate_progression_state: saves are refused once perks exist (#2947)"),
+        ("Background", "derived character-creation metadata with no live production mutator; re-created with the actor"),
+        ("FactionReputation", "forward-latent: no production insertion or mutation site exists yet"),
+        ("PoolRegenAccumulator", "fractional fixed-step carry only; canonical pool values live in saved ActorValues and carry is safely re-seeded"),
+        ("PoolRegenConfig", "immutable game-profile regeneration tuning installed at boot"),
+        ("MetricsSnapshot", "diagnostic telemetry sampled from current storages each frame"),
+        ("GameProfileRegistry", "static per-game profile table installed at boot"),
+        ("SystemList", "scheduler introspection snapshot rebuilt from the installed scheduler at boot"),
+        ("SchedulerAccessReport", "scheduler access diagnostics rebuilt from system declarations at boot"),
+        ("ScreenshotBridge", "one-shot renderer/debug-server screenshot handoff"),
+        ("DeltaTime", "per-frame scheduler input overwritten from the current frame clock"),
+        ("TotalTime", "process-session elapsed time used for animation/effects, restarted rather than persisted"),
+        ("EngineConfig", "boot/CLI engine configuration, not mutable gameplay state"),
+        ("DebugStats", "per-frame diagnostic counters"),
+        ("ScratchTelemetry", "per-frame scratch-allocation telemetry"),
+        ("UpscalerTelemetry", "renderer telemetry rebuilt every frame"),
+        ("CpuFrameTimings", "per-frame performance telemetry"),
+        ("SkinCoverageStats", "renderer coverage telemetry recomputed from current draws"),
+        ("ImageHealth", "swapchain/frame health telemetry"),
+        ("RtIntegrityStats", "ray-tracing integrity telemetry recomputed from renderer state"),
+        ("LodCoverageStats", "LOD diagnostic telemetry recomputed from resident content (#3166)"),
+        ("TerrainSeamStats", "terrain diagnostic telemetry recomputed from resident tiles"),
+        ("SelectedRef", "debug-console selection using session-local entity identity"),
+        ("SkinSlotPool", "GPU bone-palette allocation bookkeeping rebuilt as skinned meshes spawn"),
+        ("OwnershipTracker", "derived entity-ownership index rebuilt by spawn/stamp paths"),
+        ("OwnershipTelemetry", "diagnostic counters derived from OwnershipTracker"),
+        ("PendingDebugLoadSlot", "one-shot debug load request drained between frames"),
+        ("PendingUpscalerSwitch", "one-shot renderer configuration request"),
+        ("SchedulerSystemTimings", "per-system performance telemetry"),
+        ("FormIdPool", "stable FormIdPairs are serialized by the special form-id column; session-local handles are re-interned into a fresh pool"),
+        // ── newly-covered scripting/audio/plugin roots (#3166) ─────
+        ("QuestAliasReadinessGateRegistry", "static engine-supplied quest-alias gate definitions rebuilt from installed quest content"),
+        ("SceneFragments", "static lowered SCEN VMAD fragment definitions rebuilt from plugin data on scene installation"),
+        ("AudioWorld", "owns live kira manager/handles and is reconstructed as process audio infrastructure"),
+        ("AudioListener", "derived marker attached to the active camera during scene setup"),
+        ("AudioEmitter", "decoded asset/handle payload rebuilt from authored sound data when its source spawns"),
+        ("OneShotSound", "one-frame dispatch marker removed immediately after audio playback begins"),
+        ("SoundCache", "decoded audio asset cache repopulated on demand"),
+        ("DataStore", "immutable resolved plugin-record database rebuilt from manifests/plugins at boot"),
         // ── crates/core/src/ecs/components/ ─────────────────────────
         ("ActiveCamera", "set once at scene/cell setup (scene.rs), no gameplay mutator reassigns it"),
         ("AnimatedAlpha", "per-frame output re-derived every tick from saved AnimationPlayer/AnimationStack"),
@@ -147,7 +197,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("TextureHandle", "GPU TextureRegistry index, explicitly named in this file's own exclusion doc, re-resolved by path every load"),
         ("TravelBehavior", "active-package-derived config rebuilt at spawn and replaced by ambient_ai_package_system; mutable companion TravelState is registered"),
         ("WanderBehavior", "active-package-derived config rebuilt at spawn and replaced by ambient_ai_package_system; mutable companion WanderState is registered"),
-        ("WaterContact", "per-tick physics-derived output recomputed from body pose + WaterVolume; drowning accumulation is not yet wired"),
+        ("WaterContact", "per-tick physics-derived output recomputed from body pose + WaterVolume; persistent breath/drowning carry lives in the saved CharacterController"),
         ("WaterCurrentVolume", "static REFR.XWCU + XPRM-derived current volume rebuilt during cell reference load, never runtime-mutated"),
         ("WaterFlow", "static per-cell flow vector set once from WATR wind_direction or authored NAM0 velocity at cell load, no runtime mutator"),
         ("WaterPlane", "static per-cell water geometry+material set once from XCWT/WATR at cell load, no runtime mutator"),
@@ -223,7 +273,6 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         // ── crates/physics/src/ ──────────────────────────────────────
         ("ActorBoneCollider", "derived label, not state: re-applied to every skeleton bone by keyframe_live_ragdoll_bones on each NPC spawn, which a load re-runs (#2873)"),
         ("ActorColliderOwner", "derived skeleton-bone to placement-root link rebuilt by keyframe_live_ragdoll_bones on every NPC spawn"),
-        ("CharacterController", "mutable per-frame fields (velocity/grounded/jump) are deliberately zeroed on reload by the pose-restore path, not carried over"),
         ("ContactConfig", "boot-time tunable resource, no runtime mutator (no resource_mut call exists outside tests)"),
         ("PhysicsWaterConstants", "boot-time tunable resource, no runtime mutator (no resource_mut call exists outside tests)"),
         ("WaterContactScratch", "transient per-tick buoyancy staging buffers whose capacities are reused; surfaces, currents, targets, and writes are derived from live ECS/physics state"),
@@ -284,7 +333,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("PendingDeathReconciliations", "same-frame death handoff queue drained by the late exclusive reconciliation sink; canonical Dead state is saved separately"),
         ("PendingSaveLoadSlot", "one-shot queued-load slot (#1848/SAVE-05), empty except mid-drain — save/load plumbing itself, not save-worthy state"),
         ("PersistentRefIndex", "lazily-rebuilt FormId->Entity cache scoped to the resident persistent CELL (EX-09/#2370), repopulated on demand by cell_loader::persistent_ref_index — same posture as CellRootIndex/NameIndex"),
-        ("PlayerEntity", "set by scene::spawn_player_character and cleared by cell unload — always freshly re-set on load, not restore-worthy"),
+        ("PlayerEntity", "points to the process-lifetime player body, which deliberately outlives cell unload; the entity remains valid across live reload and the resource is process-local identity, not gameplay state"),
         ("PlayerInventoryTemplate", "read-only starting loadout rebuilt from the master Player NPC record; live Inventory/EquipmentSlots are saved separately"),
         ("PlayerMode", "engine-wide FlyCam/Character flag set at scene-setup from CLI flags + scene type, not gameplay state"),
         ("RagdollActive", "marker for live ragdoll simulation, same physics-rebuild posture as PhysicsWorld above — not snapshot-restored"),
@@ -308,9 +357,11 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
     ];
 
     const SCAN_ROOTS: &[&str] = &[
-        "../crates/core/src/ecs/components",
+        "../crates/core/src",
         "../crates/scripting/src",
         "../crates/physics/src",
+        "../crates/audio/src",
+        "../crates/plugin/src",
         "../byroredux/src",
     ];
 
@@ -324,7 +375,20 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
     for path in &files {
         let src = std::fs::read_to_string(path)
             .unwrap_or_else(|e| panic!("SAVE-D1-12 guard can't read {}: {e}", path.display()));
-        for (i, line) in src.lines().enumerate() {
+        // Test modules commonly declare fixture Component/Resource types in
+        // production files. They are not live ECS state and must not pollute
+        // the persistence ledger. Repository convention keeps cfg(test)
+        // modules at file tails; standalone *_tests.rs files are all-test.
+        if path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .is_some_and(|stem| stem.ends_with("_tests"))
+            || path.components().any(|part| part.as_os_str() == "tests")
+        {
+            continue;
+        }
+        let production_src = src.split("#[cfg(test)]").next().unwrap_or(&src);
+        for (i, line) in production_src.lines().enumerate() {
             if let Some(name) = impl_target_type(line) {
                 found.push((name.to_string(), format!("{}:{}", path.display(), i + 1)));
             }
@@ -368,9 +432,9 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
     }
     assert!(
         offenders.is_empty(),
-        "SAVE-D1-12 (#2295): every Component/Resource impl under \
-         crates/core/src/ecs/components/, crates/scripting/src/, and \
-         crates/physics/src/ must be registered XOR allowlisted. \
+        "SAVE-D1-12 (#2295/#3166): every production Component/Resource impl under \
+         the configured core, scripting, physics, audio, plugin, and binary roots \
+         must be registered XOR allowlisted. \
          Offenders: {offenders:#?}",
     );
 }

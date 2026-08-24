@@ -153,6 +153,9 @@ pub struct DebugUiState {
     /// Player-facing pause/settings navigation, independent from the F3
     /// developer overlay.
     game_menu: GameMenuState,
+    /// Short player-facing save/load status toast. The same text is retained
+    /// in console history for later diagnostics.
+    player_message: Option<(String, std::time::Instant)>,
 }
 
 /// Per-panel input + history state. Lives on [`DebugUiState`] so it
@@ -203,6 +206,7 @@ impl DebugUiState {
             last_output: None,
             panels: PanelState::default(),
             game_menu: GameMenuState::default(),
+            player_message: None,
         }
     }
 
@@ -214,6 +218,14 @@ impl DebugUiState {
             let overflow = self.panels.console_history.len() - CONSOLE_HISTORY_CAP;
             self.panels.console_history.drain(..overflow);
         }
+    }
+
+    pub fn push_player_message(&mut self, line: String) {
+        self.push_console_line(line.clone());
+        self.player_message = Some((
+            line,
+            std::time::Instant::now() + std::time::Duration::from_secs(4),
+        ));
     }
 
     /// Apply settings that are owned by the overlay presentation layer.
@@ -308,10 +320,18 @@ impl DebugUiState {
     /// Returns an empty `PanelOutputs` when the debug overlay is hidden;
     /// a supplied gameplay prompt can still produce render output.
     pub fn run(&mut self, window: &Window, snapshot: &PanelSnapshot) -> PanelOutputs {
+        if self
+            .player_message
+            .as_ref()
+            .is_some_and(|(_, expires)| std::time::Instant::now() >= *expires)
+        {
+            self.player_message = None;
+        }
         if !self.visible
             && !self.game_menu.visible
             && snapshot.interaction_prompt.is_none()
             && !snapshot.show_crosshair
+            && self.player_message.is_none()
         {
             // #2831 — still drain. `on_window_event` is forwarded for EVERY
             // `WindowEvent`, unconditionally, and appends onto egui-winit's
@@ -340,6 +360,9 @@ impl DebugUiState {
         let mut outputs = PanelOutputs::default();
         if !self.game_menu.visible {
             panels::draw_hud(&self.egui_ctx, snapshot);
+        }
+        if let Some((message, _)) = &self.player_message {
+            panels::draw_player_message(&self.egui_ctx, message);
         }
         if self.visible {
             panels::draw(&self.egui_ctx, snapshot, &mut self.panels, &mut outputs);

@@ -218,6 +218,13 @@ pub(super) fn resolve_mesh_paths(
                 ov.and_then(|o| pick(3, o.height, TextureRole::Detail)),
                 mesh.material.textures.detail,
             );
+            // BGSM authors smoothness/specular-strength separately from its
+            // standalone specular-colour map (#3234). Neither is a raw TXST
+            // slot here, so preserve the canonical role directly.
+            (textures.smooth_spec, sources.smooth_spec) = resolve_effective(
+                ov.and_then(|o| o.smooth_spec),
+                mesh.material.textures.smooth_spec,
+            );
             (textures.environment, sources.environment) = resolve_effective(
                 ov.and_then(|o| pick(4, o.env, TextureRole::Environment)),
                 mesh.material.textures.environment,
@@ -234,7 +241,8 @@ pub(super) fn resolve_mesh_paths(
             // chooses the source; the overlay field names remain raw-slot
             // names, so both candidates must be offered here (#2998/#3085).
             let specular_override = ov.and_then(|o| {
-                pick(6, o.inner, TextureRole::Specular)
+                o.external_specular
+                    .or_else(|| pick(6, o.inner, TextureRole::Specular))
                     .or_else(|| pick(7, o.specular, TextureRole::Specular))
             });
             (textures.specular, sources.specular) =
@@ -679,16 +687,7 @@ pub(super) fn spawn_mesh_instance(
     if mesh.skin.is_some() {
         if let Some(morph_targets) = mesh.morph_targets.as_ref().filter(|t| !t.is_empty()) {
             let vertex_count = mesh.positions.len() as u32;
-            let target_count = morph_targets.len() as u32;
-            // Target-major flat array, `vec4` per delta (w unused
-            // padding) — matches `MorphDeltaRef`'s std430 `vec4
-            // data[]` layout `MorphSlot::create` expects. Deltas are
-            // already Y-up (converted at NIF-import time in
-            // `morph.rs`), so no coordinate work here.
-            let mut deltas = Vec::with_capacity(morph_targets.len() * mesh.positions.len());
-            for target in morph_targets {
-                deltas.extend(target.deltas.iter().map(|d| [d[0], d[1], d[2], 0.0]));
-            }
+            let (deltas, target_count) = flatten_morph_targets(morph_targets, mesh.positions.len());
             let allocator = ctx.allocator.as_ref().expect("renderer allocator missing");
             let upload_ctx = GpuUploadCtx {
                 device: &ctx.device,
@@ -1096,12 +1095,38 @@ pub(super) fn spawn_mesh_instance(
     true
 }
 
+/// Build the target-major GPU buffer without compacting source morph indices.
+/// Filtered/malformed targets leave an all-zero slot so an animation weight
+/// resolved against `NiMorphData.morphs[i]` still deforms target `i` (#3233).
+fn flatten_morph_targets(
+    targets: &[byroredux_nif::import::ImportedMorphTarget],
+    vertex_count: usize,
+) -> (Vec<[f32; 4]>, u32) {
+    let target_count = targets
+        .iter()
+        .map(|target| target.original_index + 1)
+        .max()
+        .unwrap_or(0);
+    let mut deltas = vec![[0.0; 4]; target_count as usize * vertex_count];
+    for target in targets {
+        let start = target.original_index as usize * vertex_count;
+        for (dst, delta) in deltas[start..start + vertex_count]
+            .iter_mut()
+            .zip(&target.deltas)
+        {
+            *dst = [delta[0], delta[1], delta[2], 0.0];
+        }
+    }
+    (deltas, target_count)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use byroredux_core::ecs::World;
     use byroredux_core::string::StringPool;
-    use byroredux_nif::import::{ImportedMesh, TextureSlotLayout};
+    use byroredux_nif::import::{ImportedMesh, ImportedMorphTarget, TextureSlotLayout};
+    use std::sync::Arc;
 
     fn empty_mesh() -> ImportedMesh {
         ImportedMesh::from_geometry(
@@ -1112,6 +1137,32 @@ mod tests {
             Vec::new(),
             Vec::new(),
         )
+    }
+
+    #[test]
+    fn morph_gpu_buffer_preserves_filtered_source_index_holes() {
+        let targets = vec![
+            ImportedMorphTarget {
+                original_index: 0,
+                name: Some(Arc::from("first")),
+                deltas: vec![[1.0, 2.0, 3.0]],
+            },
+            ImportedMorphTarget {
+                original_index: 2,
+                name: Some(Arc::from("after malformed")),
+                deltas: vec![[4.0, 5.0, 6.0]],
+            },
+        ];
+
+        let (deltas, target_count) = flatten_morph_targets(&targets, 1);
+
+        assert_eq!(target_count, 3);
+        assert_eq!(deltas[0], [1.0, 2.0, 3.0, 0.0]);
+        assert_eq!(
+            deltas[1], [0.0; 4],
+            "filtered source index must remain inert"
+        );
+        assert_eq!(deltas[2], [4.0, 5.0, 6.0, 0.0]);
     }
 
     #[test]
@@ -1233,6 +1284,32 @@ mod tests {
         assert_eq!(
             resolved[0].sources.flow,
             MaterialTextureSource::TxstOverride
+        );
+    }
+
+    #[test]
+    fn bgsm_smooth_spec_and_specular_remain_distinct_roles() {
+        let mut pool = StringPool::new();
+        let smooth_spec = pool.intern(r"textures\fo4\surface_smoothspec.dds");
+        let specular = pool.intern(r"textures\fo4\surface_specular.dds");
+        let mut world = World::new();
+        world.insert_resource(pool);
+
+        let mesh = empty_mesh();
+        let overlay = RefrTextureOverlay {
+            smooth_spec: Some(smooth_spec),
+            external_specular: Some(specular),
+            ..Default::default()
+        };
+
+        let resolved = resolve_mesh_paths(&mut world, &[mesh], Some(&overlay), None);
+        assert_eq!(
+            resolved[0].textures.smooth_spec.as_deref(),
+            Some(r"textures\fo4\surface_smoothspec.dds")
+        );
+        assert_eq!(
+            resolved[0].textures.specular.as_deref(),
+            Some(r"textures\fo4\surface_specular.dds")
         );
     }
 

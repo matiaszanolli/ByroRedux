@@ -74,6 +74,36 @@ fn spawn_nif_lights_attaches_light_source_for_spawnable_light() {
     );
 }
 
+/// #3232 — NiLight direction is NIF-local just like its translation. A
+/// placed reference's rotation must carry the cone/directional axis into
+/// world space before the canonical emitter is constructed.
+#[test]
+fn spawn_nif_lights_rotates_direction_by_reference_rotation() {
+    let mut world = World::new();
+    let lights = vec![ImportedLight {
+        translation: [0.0, 0.0, 0.0],
+        direction: [1.0, 0.0, 0.0],
+        color: [1.0, 1.0, 1.0],
+        radius: 512.0,
+        kind: LightKind::Directional,
+        outer_angle: 0.0,
+        affected_node_names: Vec::new(),
+        name: None,
+    }];
+    let quarter_turn = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+
+    spawn_nif_lights(&mut world, &lights, Vec3::ZERO, quarter_turn, 1.0, None);
+
+    let q = world.query::<LightSource>().expect("LightSource query");
+    let (_, spawned) = q.iter().next().expect("spawned directional light");
+    let actual = Vec3::from_array(spawned.emitter.direction);
+    let expected = quarter_turn * Vec3::X;
+    assert!(
+        actual.abs_diff_eq(expected, 1.0e-6),
+        "reference rotation must transform NIF-local direction: expected {expected:?}, got {actual:?}"
+    );
+}
+
 /// Companion: a NIF authoring only zero-colour placeholder lights must
 /// spawn NO `LightSource` entity through this path either — same
 /// `is_spawnable_nif_light` gate the cell loader's own light spawn

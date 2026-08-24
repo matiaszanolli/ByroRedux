@@ -26,6 +26,7 @@ use std::collections::HashMap;
 
 type SaveFn = Box<dyn Fn(&World) -> Result<serde_json::Value, SaveError> + Send + Sync>;
 type LoadFn = Box<dyn Fn(&mut World, serde_json::Value) -> Result<usize, SaveError> + Send + Sync>;
+type ValidateFn = Box<dyn Fn(serde_json::Value) -> Result<(), SaveError> + Send + Sync>;
 /// Apply a saved column onto a *freshly reloaded* world, remapping each
 /// row's saved entity id to its live id (`old → live`) before insert.
 /// Rows whose saved entity isn't in the map (despawned / not present in
@@ -41,6 +42,9 @@ struct Entry {
     name: &'static str,
     save: SaveFn,
     load: LoadFn,
+    /// Non-mutating typed decode used to reject incompatible snapshots
+    /// before any live-world teardown or partial overlay.
+    validate: ValidateFn,
     /// Component-only: remap-and-apply onto a reloaded world. `None` for
     /// resources and for the form-id key column (which IS the identity,
     /// not a delta).
@@ -120,6 +124,14 @@ impl SaveRegistry {
                 world.insert_batch::<T, _>(rows);
                 Ok(n)
             }),
+            validate: Box::new(move |value: serde_json::Value| {
+                serde_json::from_value::<Vec<(u32, T)>>(value)
+                    .map(|_| ())
+                    .map_err(|source| SaveError::Serde {
+                        column: name.to_string(),
+                        source,
+                    })
+            }),
             apply: Some(Box::new(
                 move |world: &mut World, value: serde_json::Value, remap: &HashMap<u32, u32>| {
                     let rows: Vec<(u32, T)> =
@@ -172,6 +184,14 @@ impl SaveRegistry {
                 })?;
                 world.insert_resource(res);
                 Ok(1)
+            }),
+            validate: Box::new(move |value: serde_json::Value| {
+                serde_json::from_value::<R>(value)
+                    .map(|_| ())
+                    .map_err(|source| SaveError::Serde {
+                        column: name.to_string(),
+                        source,
+                    })
             }),
             // Resources aren't entity-keyed, so they have no remap-apply
             // form — `apply_deltas` restores them wholesale via `load`.
@@ -257,6 +277,14 @@ impl SaveRegistry {
                 world.insert_batch::<FormIdComponent, _>(resolved);
                 Ok(n)
             }),
+            validate: Box::new(move |value: serde_json::Value| {
+                serde_json::from_value::<Vec<(u32, FormIdPair)>>(value)
+                    .map(|_| ())
+                    .map_err(|source| SaveError::Serde {
+                        column: name.to_string(),
+                        source,
+                    })
+            }),
             // The form-id column IS the cross-load identity used to build
             // the remap; it's never re-applied as a delta (a reloaded
             // cell already carries its own FormIdComponents).
@@ -327,6 +355,20 @@ impl SaveRegistry {
             .iter()
             .find(|e| e.name == name)
             .and_then(|e| e.apply.as_ref())
+    }
+
+    pub(crate) fn component_validate(&self, name: &str) -> Option<&ValidateFn> {
+        self.components
+            .iter()
+            .find(|e| e.name == name)
+            .map(|e| &e.validate)
+    }
+
+    pub(crate) fn resource_validate(&self, name: &str) -> Option<&ValidateFn> {
+        self.resources
+            .iter()
+            .find(|e| e.name == name)
+            .map(|e| &e.validate)
     }
 
     /// The name registered via [`register_form_id_component`], if any —

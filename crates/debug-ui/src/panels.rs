@@ -129,6 +129,26 @@ pub fn draw_hud(ctx: &Context, snapshot: &PanelSnapshot) {
         });
 }
 
+pub fn draw_player_message(ctx: &Context, message: &str) {
+    egui::Area::new(Id::new("player_save_load_message"))
+        .anchor(Align2::CENTER_TOP, egui::vec2(0.0, 28.0))
+        .interactable(false)
+        .show(ctx, |ui| {
+            Frame::new()
+                .fill(Color32::from_black_alpha(210))
+                .corner_radius(CornerRadius::same(6))
+                .inner_margin(Margin::symmetric(14, 8))
+                .show(ui, |ui| {
+                    ui.label(
+                        RichText::new(message)
+                            .size(18.0)
+                            .strong()
+                            .color(Color32::WHITE),
+                    );
+                });
+        });
+}
+
 /// Local twin of `byroredux_core::ecs::MetricsSnapshot` — the
 /// debug-ui crate doesn't depend on core's resource types directly
 /// (the binary owns the conversion). Same field semantics.

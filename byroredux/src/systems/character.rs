@@ -35,10 +35,9 @@ use crate::interaction::{ActionState, InputAction};
 /// distance computations) can find the player without walking the
 /// `CharacterController` storage.
 ///
-/// `None` means the engine isn't in player mode. Set by
-/// `scene::spawn_player_character`; cleared by
-/// `cell_loader::unload_cell` when the player despawns (it's stamped
-/// with `CellRoot`, so the cell-unload sweep catches it).
+/// `None` means the engine isn't in player mode. Set when `scene` creates the
+/// player rig. The body is intentionally not cell-owned, so it and this
+/// process-local pointer survive live cell reloads.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct PlayerEntity(pub Option<EntityId>);
 

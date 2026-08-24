@@ -775,6 +775,10 @@ pub struct ImportedMesh {
 /// [`ImportedMesh::morph_targets`].
 #[derive(Debug, Clone)]
 pub struct ImportedMorphTarget {
+    /// Stable index in the source `NiMorphData.morphs` array. Animation
+    /// channels resolve names to this same index, so import-time filtering
+    /// must never compact it.
+    pub original_index: u32,
     pub name: Option<Arc<str>>,
     /// `deltas.len()` is guaranteed to equal the owning mesh's vertex
     /// count — targets that failed that check at import time are

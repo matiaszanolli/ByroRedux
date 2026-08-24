@@ -118,6 +118,7 @@ pub fn restore_world(
     snapshot: &Snapshot,
 ) -> Result<(), SaveError> {
     validate_entity_ids_in_bounds(snapshot)?;
+    validate_snapshot_types(registry, snapshot)?;
     world.clear_entities();
     world.insert_resource(StringPool::from_dump(&snapshot.strings));
     world.set_next_entity(snapshot.next_entity);
@@ -142,6 +143,26 @@ pub fn restore_world(
     // point, so there's no previous state to fall back to.
     log_validation_warnings("restore_world", &validate_world(world));
 
+    Ok(())
+}
+
+/// Decode every registered component and resource column without mutating a
+/// world. Live load calls this before cell teardown, making typed serde
+/// failures transactional rather than leaving a partially overlaid session.
+pub fn validate_snapshot_types(
+    registry: &SaveRegistry,
+    snapshot: &Snapshot,
+) -> Result<(), SaveError> {
+    for (name, value) in &snapshot.components {
+        if let Some(validate) = registry.component_validate(name) {
+            validate(value.clone())?;
+        }
+    }
+    for (name, value) in &snapshot.resources {
+        if let Some(validate) = registry.resource_validate(name) {
+            validate(value.clone())?;
+        }
+    }
     Ok(())
 }
 

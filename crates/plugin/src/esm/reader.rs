@@ -26,6 +26,11 @@ const FLAG_COMPRESSED: u32 = 0x00040000;
 /// of a magic number.
 pub const FLAG_VISIBLE_WHEN_DISTANT: u32 = 0x00010000;
 
+/// Maximum number of nested GRUP bodies any recursive ESM walker may enter.
+/// Vanilla files stay below five levels; 64 leaves generous headroom while
+/// preventing adversarial plugins from exhausting the native stack (#3237).
+pub(crate) const MAX_GRUP_NESTING_DEPTH: u32 = 64;
+
 /// ESM format variant — determines record / group header size.
 ///
 /// The two surviving layouts across the Bethesda lineage:
@@ -716,6 +721,33 @@ impl<'a> EsmReader<'a> {
     /// group header (#391).
     pub fn group_content_end(&self, header: &GroupHeader) -> usize {
         self.pos + self.group_content_len(header)
+    }
+
+    /// Return the end offset for a group a recursive walker may enter, or
+    /// skip its body when the shared nesting ceiling has been reached.
+    ///
+    /// `depth` is the caller's current recursive depth; the just-read group
+    /// would occupy the next level. Centralising the guard keeps every GRUP
+    /// walker on the same boundary and makes future recursive walkers harder
+    /// to add without noticing the safety contract.
+    pub(crate) fn bounded_group_content_end(
+        &mut self,
+        header: &GroupHeader,
+        depth: u32,
+        walker: &str,
+    ) -> Option<usize> {
+        if depth >= MAX_GRUP_NESTING_DEPTH {
+            log::warn!(
+                "{walker}: skipping GRUP type {} at nesting depth {} (limit {})",
+                header.group_type,
+                depth.saturating_add(1),
+                MAX_GRUP_NESTING_DEPTH,
+            );
+            self.skip_group(header);
+            None
+        } else {
+            Some(self.group_content_end(header))
+        }
     }
 
     /// Parse the TES4 file header record.

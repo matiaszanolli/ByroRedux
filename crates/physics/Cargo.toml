@@ -9,3 +9,4 @@ glam = { workspace = true }
 log = { workspace = true }
 nalgebra = { workspace = true }
 rapier3d = { workspace = true }
+serde = { workspace = true }

@@ -301,3 +301,69 @@ fn quicksave_ring_cursor_does_not_advance_on_validation_abort() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+fn quicksave_test_world(dir: PathBuf) -> World {
+    use crate::cell_loader::CurrentCellContext;
+    let mut world = World::new();
+    world.insert_resource(StringPool::new());
+    world.insert_resource(FormIdPool::new());
+    world.insert_resource(build_save_registry());
+    world.insert_resource(SaveState::new(dir, 4));
+    world.insert_resource(PendingSaveLoadSlot::default());
+    world.insert_resource(CurrentCellContext {
+        cell_editor_id: "TestCell".to_string(),
+        esm_path: "Test.esm".to_string(),
+        masters: vec![],
+    });
+    world
+}
+
+#[test]
+fn quicksave_shares_the_console_save_command_output_contract() {
+    let base = std::env::temp_dir().join(format!("byro_quicksave_parity_{}", std::process::id()));
+    let quick_dir = base.join("quick");
+    let command_dir = base.join("command");
+    let _ = std::fs::remove_dir_all(&base);
+    let quick = quicksave_test_world(quick_dir.clone());
+    let command = quicksave_test_world(command_dir.clone());
+
+    let quick_lines = quicksave(&quick).lines;
+    let command_lines = SaveCommand.execute(&command, "").lines;
+    assert_eq!(quick_lines.len(), command_lines.len());
+    for (quick, command) in quick_lines.iter().zip(&command_lines) {
+        assert_eq!(
+            quick.replace(&quick_dir.display().to_string(), "<dir>"),
+            command.replace(&command_dir.display().to_string(), "<dir>")
+        );
+    }
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn quickload_empty_errors_and_corrupt_newest_falls_back() {
+    let dir = std::env::temp_dir().join(format!("byro_quickload_fallback_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let world = quicksave_test_world(dir.clone());
+
+    let empty = quickload_latest(&world);
+    assert!(command_output_is_failure(&empty));
+    assert!(empty.lines.join(" ").contains("no save slots available"));
+
+    let saved = SaveCommand.execute(&world, "0");
+    assert!(!command_output_is_failure(&saved));
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    std::fs::write(disk::slot_path(&dir, 1), b"corrupt newest save").unwrap();
+
+    let output = quickload_latest(&world);
+    assert!(!command_output_is_failure(&output));
+    assert!(output
+        .lines
+        .iter()
+        .any(|line| line.contains("skipped invalid quickload slot 1")));
+    assert!(output
+        .lines
+        .iter()
+        .any(|line| line.contains("falling back to valid slot 0")));
+    assert_eq!(world.resource::<PendingSaveLoadSlot>().slot, 0);
+    let _ = std::fs::remove_dir_all(&dir);
+}

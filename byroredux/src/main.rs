@@ -290,6 +290,9 @@ struct App {
     /// Forwarded every `WindowEvent` so egui can grab clicks /
     /// keypresses when the overlay is visible.
     debug_ui: Option<byroredux_debug_ui::DebugUiState>,
+    /// Save/load feedback produced before the window/debug UI exists (notably
+    /// `--load`). Flushed into the player toast + console at resume.
+    pending_player_messages: Vec<String>,
     /// Latched flag: the Entities panel asked us to rebuild its
     /// list this frame. Cleared at the start of every frame; set
     /// true by Phase 4b's `PanelOutputs::refresh_entities`. Held
@@ -380,15 +383,26 @@ impl App {
 
         boot::install_runtime_registries(&mut world, &scheduler);
 
+        let mut pending_player_messages = Vec::new();
         // Queue startup restore after the save resources exist. The request
         // drains after renderer and scene setup, sharing the F9/menu path.
         if let Some(slot) = cli_args::parse_string_arg(args, "--load") {
             match slot.parse::<u32>() {
                 Ok(slot) => {
                     let output = save_io::queue_load_slot(&world, slot);
-                    log::info!("startup --load: {}", output.lines.join(" | "));
+                    if save_io::command_output_is_failure(&output) {
+                        log::warn!("startup --load: {}", output.lines.join(" | "));
+                    } else {
+                        log::info!("startup --load: {}", output.lines.join(" | "));
+                    }
+                    pending_player_messages.extend(output.lines);
                 }
-                Err(_) => log::error!("--load requires a numeric save slot, got '{slot}'"),
+                Err(_) => {
+                    let message =
+                        format!("Error: --load requires a numeric save slot, got '{slot}'");
+                    log::error!("{message}");
+                    pending_player_messages.push(message);
+                }
             }
         }
 
@@ -492,6 +506,7 @@ impl App {
             #[cfg(feature = "debug-server")]
             debug_server,
             debug_ui: None,
+            pending_player_messages,
             debug_ui_refresh_entities: false,
             in_use_mesh_scratch: std::collections::HashSet::new(),
             in_use_tex_scratch: std::collections::HashSet::new(),
@@ -730,6 +745,28 @@ fn build_interaction_prompt(world: &World) -> Option<byroredux_debug_ui::Interac
     Some(byroredux_debug_ui::InteractionPrompt { binding, verb })
 }
 
+fn surface_save_load_output(
+    debug_ui: Option<&mut byroredux_debug_ui::DebugUiState>,
+    context: &str,
+    output: byroredux_core::console::CommandOutput,
+) {
+    let joined = output.lines.join(" | ");
+    if save_io::command_output_is_failure(&output) {
+        log::warn!("{context}: {joined}");
+    } else {
+        log::info!("{context}: {joined}");
+    }
+    if let Some(ui) = debug_ui {
+        let mut lines = output.lines.into_iter();
+        if let Some(first) = lines.next() {
+            ui.push_player_message(first);
+        }
+        for line in lines {
+            ui.push_console_line(line);
+        }
+    }
+}
+
 fn setting_bool(world: &World, id: &str, fallback: bool) -> bool {
     world
         .try_resource::<SettingsRegistry>()
@@ -757,11 +794,11 @@ fn apply_debug_ui_outputs(
     let quit_game = outputs.quit_game;
     if outputs.quicksave {
         let output = save_io::quicksave(world);
-        log::info!("pause menu quicksave: {}", output.lines.join(" | "));
+        surface_save_load_output(debug_ui.as_deref_mut(), "pause menu quicksave", output);
     }
     if outputs.quickload {
         let output = save_io::quickload_latest(world);
-        log::info!("pause menu quickload: {}", output.lines.join(" | "));
+        surface_save_load_output(debug_ui.as_deref_mut(), "pause menu quickload", output);
     }
     let mut settings_changed = false;
     for action in outputs.inventory_actions {

@@ -119,6 +119,10 @@ const MUTABLE_DELTA_COLUMNS: &[&str] = &[
     // #2292 / SAVE-D1-09 — `ActorControlState { restrained: bool }`. Single
     // bool, no session-local identity.
     "ActorControlState",
+    // #3165 — the player entity outlives cell reload, so its mutable breath
+    // and fractional drowning state must be overlaid explicitly. The pose
+    // restore below still clears velocity/grounded/jump after this column.
+    "CharacterController",
     // #2379 / SAVE-D1-14 — `RigidBodyData`: `MotionType` enum (no payload)
     // + 5 plain f32s (mass/friction/restitution/linear_damping/
     // angular_damping). No FixedString / EntityId / session handle.
@@ -284,6 +288,7 @@ pub fn build_save_registry() -> SaveRegistry {
         // bool, delta-safe. Pre-fix a save taken while an NPC was restrained
         // silently freed it on reload.
         .register_component::<ActorControlState>("ActorControlState")
+        .register_component::<byroredux_physics::CharacterController>("CharacterController")
         // #2379 / SAVE-D1-14 — `motion_type` (+ mass/friction/restitution/
         // damping) is mutated at runtime by Papyrus `.SetMotionType()`
         // (`scripted_motion_type_system`), not just static bhkRigidBody
@@ -845,15 +850,40 @@ pub fn queue_load_slot(world: &World, slot: u32) -> CommandOutput {
     LoadCommand.execute(world, &slot.to_string())
 }
 
+pub(crate) fn command_output_is_failure(output: &CommandOutput) -> bool {
+    output
+        .lines
+        .first()
+        .is_some_and(|line| line.starts_with("Error:") || line.starts_with("save ABORTED"))
+}
+
 /// Queue the newest on-disk slot, matching conventional quickload behavior.
 pub fn quickload_latest(world: &World) -> CommandOutput {
-    let latest = world
+    let slots = world
         .try_resource::<SaveState>()
-        .and_then(|state| disk::latest_slot(&state.dir));
-    match latest {
-        Some(slot) => queue_load_slot(world, slot),
-        None => CommandOutput::error("no save slots available"),
+        .map(|state| disk::slots_by_recency(&state.dir))
+        .unwrap_or_default();
+    if slots.is_empty() {
+        return CommandOutput::error("no save slots available");
     }
+    let mut rejected = Vec::new();
+    for slot in slots {
+        let mut output = queue_load_slot(world, slot);
+        if !command_output_is_failure(&output) {
+            if !rejected.is_empty() {
+                rejected.push(format!("falling back to valid slot {slot}"));
+                rejected.append(&mut output.lines);
+                return CommandOutput::lines(rejected);
+            }
+            return output;
+        }
+        rejected.push(format!(
+            "skipped invalid quickload slot {slot}: {}",
+            output.lines.join(" | ")
+        ));
+    }
+    rejected.push("Error: no decodable save slots available".to_string());
+    CommandOutput::lines(rejected)
 }
 
 impl ConsoleCommand for LoadCommand {
@@ -1152,6 +1182,16 @@ pub fn execute_pending_save_loads(
 
     let registry = build_save_registry();
 
+    // #3163 — every typed column is decodable from the snapshot alone.
+    // Reject before the irreversible cell/streaming teardown so no serde
+    // failure can leave a half-overlaid world.
+    if let Err(e) = byroredux_save::validate_snapshot_types(&registry, &snapshot) {
+        log::error!(
+            "save load ABORTED — snapshot columns failed typed preflight; keeping the current session: {e}"
+        );
+        return;
+    }
+
     // Build asset providers from the boot CLI args (same BSAs the engine
     // is running with) — matches the cell-transition path. #2039 /
     // PERF-D7-02: this rebuild discards the same warm BGSM/BGEM/CSG
@@ -1194,7 +1234,16 @@ pub fn execute_pending_save_loads(
                 dead
             );
         }
-        Err(e) => log::error!("save load: delta apply failed: {e}"),
+        Err(e) => {
+            // Typed decoding already succeeded in the preflight above, so
+            // this arm is an unexpected apply failure. Do not continue into
+            // validation or pose restore on a potentially partial overlay.
+            let dead = crate::combat::reconcile_dead_actor_runtime_state(world);
+            log::error!(
+                "save load: delta apply failed after preflight: {e}; reconciled {dead} dead actors before aborting"
+            );
+            return;
+        }
     }
 
     // #1844 / SAVE-01 — mirror the save path's `validate_world` +

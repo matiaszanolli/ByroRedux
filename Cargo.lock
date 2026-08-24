@@ -644,6 +644,7 @@ dependencies = [
  "log",
  "nalgebra",
  "rapier3d",
+ "serde",
 ]
 
 [[package]]

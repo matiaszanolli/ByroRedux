@@ -230,6 +230,24 @@ pub(crate) fn parse_wrld_children(
     persistent_cell: &mut Option<CellData>,
     force_persistent: bool,
 ) -> Result<()> {
+    parse_wrld_children_inner(
+        reader,
+        end,
+        exterior_cells,
+        persistent_cell,
+        force_persistent,
+        0,
+    )
+}
+
+fn parse_wrld_children_inner(
+    reader: &mut EsmReader,
+    end: usize,
+    exterior_cells: &mut HashMap<(i32, i32), CellData>,
+    persistent_cell: &mut Option<CellData>,
+    force_persistent: bool,
+    depth: u32,
+) -> Result<()> {
     // `Some(Some(grid))` is a normal streamed tile, while `Some(None)` is
     // the worldspace's persistent CELL. Plain `None` means no CELL record
     // has established ownership for a following child group.
@@ -238,12 +256,23 @@ pub(crate) fn parse_wrld_children(
     while reader.position() < end && reader.remaining() > 0 {
         if reader.is_group() {
             let sub_group = reader.read_group_header()?;
-            let sub_end = reader.group_content_end(&sub_group);
+            let Some(sub_end) =
+                reader.bounded_group_content_end(&sub_group, depth, "parse_wrld_children")
+            else {
+                continue;
+            };
 
             match sub_group.group_type {
                 // Exterior block (4) and sub-block (5): recurse.
                 4 | 5 => {
-                    parse_wrld_children(reader, sub_end, exterior_cells, persistent_cell, false)?;
+                    parse_wrld_children_inner(
+                        reader,
+                        sub_end,
+                        exterior_cells,
+                        persistent_cell,
+                        false,
+                        depth + 1,
+                    )?;
                 }
                 // Skyrim wraps the worldspace persistent CELL in an outer
                 // type-6 group (labelled with that CELL's FormID), then
@@ -251,7 +280,14 @@ pub(crate) fn parse_wrld_children(
                 // inside it. At this level there is no current CELL yet, so
                 // recurse and mark the enclosed CELL as world-persistent.
                 6 if current_cell.is_none() => {
-                    parse_wrld_children(reader, sub_end, exterior_cells, persistent_cell, true)?;
+                    parse_wrld_children_inner(
+                        reader,
+                        sub_end,
+                        exterior_cells,
+                        persistent_cell,
+                        true,
+                        depth + 1,
+                    )?;
                 }
                 // Cell children (6=temporary, 8=persistent, 9=visible distant).
                 6 | 8 | 9 => {

@@ -71,7 +71,17 @@ pub(crate) fn extract_morph_targets(
     let data = data?;
 
     let mut targets: Vec<ImportedMorphTarget> = Vec::with_capacity(data.morphs.len());
-    for morph in &data.morphs {
+    for (original_index, morph) in data.morphs.iter().enumerate() {
+        if original_index >= MAX_MORPH_TARGETS_PER_MESH {
+            log::warn!(
+                "mesh {:?} carries more than {MAX_MORPH_TARGETS_PER_MESH} morph targets \
+                 (NiMorphData.morphs.len() = {}) — truncating; remaining targets are \
+                 silently inert",
+                mesh_name.unwrap_or("<unnamed>"),
+                data.morphs.len(),
+            );
+            break;
+        }
         if morph.vectors.len() != vertex_count {
             log::warn!(
                 "morph target {:?} on mesh {:?}: {} deltas vs {} mesh vertices — \
@@ -84,17 +94,8 @@ pub(crate) fn extract_morph_targets(
             );
             continue;
         }
-        if targets.len() >= MAX_MORPH_TARGETS_PER_MESH {
-            log::warn!(
-                "mesh {:?} carries more than {MAX_MORPH_TARGETS_PER_MESH} morph targets \
-                 (NiMorphData.morphs.len() = {}) — truncating; remaining targets are \
-                 silently inert",
-                mesh_name.unwrap_or("<unnamed>"),
-                data.morphs.len(),
-            );
-            break;
-        }
         targets.push(ImportedMorphTarget {
+            original_index: original_index as u32,
             name: morph.name.clone(),
             deltas: morph.vectors.iter().map(zup_point_to_yup).collect(),
         });
@@ -162,6 +163,7 @@ mod tests {
         }]);
         let targets = extract_morph_targets(&scene, BlockRef(1), 2, Some("head")).unwrap();
         assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].original_index, 0);
         assert_eq!(targets[0].name.as_deref(), Some("Blink"));
         // zup_point_to_yup: (x, y, z) -> (x, z, -y)
         assert_eq!(targets[0].deltas, vec![[1.0, 3.0, -2.0], [0.0, 0.0, 0.0]]);
@@ -181,10 +183,20 @@ mod tests {
                 name: Some(Arc::from("Bad")),
                 vectors: vec![point(1.0, 0.0, 0.0), point(2.0, 0.0, 0.0)], // 2 deltas, mesh has 1 vertex
             },
+            MorphTarget {
+                name: Some(Arc::from("Later")),
+                vectors: vec![point(3.0, 0.0, 0.0)],
+            },
         ]);
         let targets = extract_morph_targets(&scene, BlockRef(1), 1, None).unwrap();
-        assert_eq!(targets.len(), 1);
+        assert_eq!(targets.len(), 2);
         assert_eq!(targets[0].name.as_deref(), Some("Good"));
+        assert_eq!(targets[0].original_index, 0);
+        assert_eq!(targets[1].name.as_deref(), Some("Later"));
+        assert_eq!(
+            targets[1].original_index, 2,
+            "dropping a malformed target must not compact the channel index space"
+        );
     }
 
     /// Every target mismatched -> the whole result collapses to `None`,

@@ -19,6 +19,18 @@ use rapier3d::prelude::SharedShape;
 /// trust it. #2543.
 const MAX_SANE_SHAPE_EXTENT: f32 = 1_048_576.0;
 
+/// Clamp one primitive dimension at the final Rapier boundary. Every
+/// primitive uses the same floor for degenerate geometry and the same finite
+/// ceiling for corrupt-but-representable authored values (#3238).
+#[inline]
+fn clamp_shape_extent(value: f32) -> f32 {
+    if value.is_finite() {
+        value.clamp(1e-3, MAX_SANE_SHAPE_EXTENT)
+    } else {
+        1e-3
+    }
+}
+
 /// Sanitise a caller-supplied uniform scale (#2860).
 ///
 /// Mirrors `RagdollJointSpec::scaled_pivots`' `factor` closure so both
@@ -203,7 +215,10 @@ fn flatten_to_parts(
             }
         }
         CollisionShape::Ball { radius } => {
-            out.push((parent_iso, SharedShape::ball((*radius * scale).max(1e-3))));
+            out.push((
+                parent_iso,
+                SharedShape::ball(clamp_shape_extent(*radius * scale)),
+            ));
         }
         CollisionShape::Cuboid { half_extents } => {
             debug_assert!(
@@ -224,21 +239,14 @@ fn flatten_to_parts(
             // the same degenerate-avoidance floor the other arms already
             // use, and clamp the ceiling to Rapier's own extent limit so
             // a corrupt-but-finite input can't do the same thing.
-            let clamp_lane = |v: f32| {
-                if v.is_finite() {
-                    v.clamp(1e-3, MAX_SANE_SHAPE_EXTENT)
-                } else {
-                    1e-3
-                }
-            };
             // Scale BEFORE the clamp so the #2543 sanity ceiling bounds the
             // value Rapier actually receives, not the pre-scale authored one.
             out.push((
                 parent_iso,
                 SharedShape::cuboid(
-                    clamp_lane(half_extents.x * scale),
-                    clamp_lane(half_extents.y * scale),
-                    clamp_lane(half_extents.z * scale),
+                    clamp_shape_extent(half_extents.x * scale),
+                    clamp_shape_extent(half_extents.y * scale),
+                    clamp_shape_extent(half_extents.z * scale),
                 ),
             ));
         }
@@ -249,8 +257,8 @@ fn flatten_to_parts(
             out.push((
                 parent_iso,
                 SharedShape::capsule_y(
-                    (*half_height * scale).max(1e-3),
-                    (*radius * scale).max(1e-3),
+                    clamp_shape_extent(*half_height * scale),
+                    clamp_shape_extent(*radius * scale),
                 ),
             ));
         }
@@ -261,8 +269,8 @@ fn flatten_to_parts(
             out.push((
                 parent_iso,
                 SharedShape::cylinder(
-                    (*half_height * scale).max(1e-3),
-                    (*radius * scale).max(1e-3),
+                    clamp_shape_extent(*half_height * scale),
+                    clamp_shape_extent(*radius * scale),
                 ),
             ));
         }
@@ -531,6 +539,34 @@ mod tests {
                 MAX_SANE_SHAPE_EXTENT,
             )
         );
+    }
+
+    #[test]
+    fn huge_finite_ball_radius_clamps_to_sane_ceiling() {
+        let parts = parts(&CollisionShape::Ball { radius: 1.0e30 });
+        assert_eq!(parts[0].1.as_ball().unwrap().radius, MAX_SANE_SHAPE_EXTENT);
+    }
+
+    #[test]
+    fn huge_finite_capsule_dimensions_clamp_to_sane_ceiling() {
+        let parts = parts(&CollisionShape::Capsule {
+            half_height: 1.0e30,
+            radius: 1.0e30,
+        });
+        let capsule = parts[0].1.as_capsule().unwrap();
+        assert_eq!(capsule.half_height(), MAX_SANE_SHAPE_EXTENT);
+        assert_eq!(capsule.radius, MAX_SANE_SHAPE_EXTENT);
+    }
+
+    #[test]
+    fn huge_finite_cylinder_dimensions_clamp_to_sane_ceiling() {
+        let parts = parts(&CollisionShape::Cylinder {
+            half_height: 1.0e30,
+            radius: 1.0e30,
+        });
+        let cylinder = parts[0].1.as_cylinder().unwrap();
+        assert_eq!(cylinder.half_height, MAX_SANE_SHAPE_EXTENT);
+        assert_eq!(cylinder.radius, MAX_SANE_SHAPE_EXTENT);
     }
 
     /// Regression for #2543: the release-build backstop. With

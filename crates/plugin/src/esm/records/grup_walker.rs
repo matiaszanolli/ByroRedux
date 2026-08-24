@@ -21,12 +21,27 @@ pub(super) fn extract_records_with_modl(
     statics: &mut HashMap<u32, StaticObject>,
     f: &mut dyn FnMut(u32, &[SubRecord]),
 ) -> Result<()> {
+    extract_records_with_modl_inner(reader, end, expected_type, statics, f, 0)
+}
+
+fn extract_records_with_modl_inner(
+    reader: &mut EsmReader,
+    end: usize,
+    expected_type: &[u8; 4],
+    statics: &mut HashMap<u32, StaticObject>,
+    f: &mut dyn FnMut(u32, &[SubRecord]),
+    depth: u32,
+) -> Result<()> {
     let remap = reader.get_form_id_remap();
     while reader.position() < end && reader.remaining() > 0 {
         if reader.is_group() {
             let sub_group = reader.read_group_header()?;
-            let sub_end = reader.group_content_end(&sub_group);
-            extract_records_with_modl(reader, sub_end, expected_type, statics, f)?;
+            let Some(sub_end) =
+                reader.bounded_group_content_end(&sub_group, depth, "extract_records_with_modl")
+            else {
+                continue;
+            };
+            extract_records_with_modl_inner(reader, sub_end, expected_type, statics, f, depth + 1)?;
             continue;
         }
         let header = reader.read_record_header()?;
@@ -64,11 +79,25 @@ pub(super) fn extract_records(
     expected_type: &[u8; 4],
     f: &mut dyn FnMut(u32, &[SubRecord]),
 ) -> Result<()> {
+    extract_records_inner(reader, end, expected_type, f, 0)
+}
+
+fn extract_records_inner(
+    reader: &mut EsmReader,
+    end: usize,
+    expected_type: &[u8; 4],
+    f: &mut dyn FnMut(u32, &[SubRecord]),
+    depth: u32,
+) -> Result<()> {
     while reader.position() < end && reader.remaining() > 0 {
         if reader.is_group() {
             let sub_group = reader.read_group_header()?;
-            let sub_end = reader.group_content_end(&sub_group);
-            extract_records(reader, sub_end, expected_type, f)?;
+            let Some(sub_end) =
+                reader.bounded_group_content_end(&sub_group, depth, "extract_records")
+            else {
+                continue;
+            };
+            extract_records_inner(reader, sub_end, expected_type, f, depth + 1)?;
             continue;
         }
         let header = reader.read_record_header()?;
@@ -112,6 +141,15 @@ pub(super) fn extract_dial_with_info(
     end: usize,
     dialogues: &mut HashMap<u32, DialRecord>,
 ) -> Result<()> {
+    extract_dial_with_info_inner(reader, end, dialogues, 0)
+}
+
+fn extract_dial_with_info_inner(
+    reader: &mut EsmReader,
+    end: usize,
+    dialogues: &mut HashMap<u32, DialRecord>,
+    depth: u32,
+) -> Result<()> {
     /// Topic Children group_type from the ESM format (TES4 / FO3 /
     /// FNV / Skyrim / FO4 all share the value).
     const GROUP_TYPE_TOPIC_CHILDREN: u32 = 7;
@@ -122,7 +160,11 @@ pub(super) fn extract_dial_with_info(
     while reader.position() < end && reader.remaining() > 0 {
         if reader.is_group() {
             let sub_group = reader.read_group_header()?;
-            let sub_end = reader.group_content_end(&sub_group);
+            let Some(sub_end) =
+                reader.bounded_group_content_end(&sub_group, depth, "extract_dial_with_info")
+            else {
+                continue;
+            };
 
             if sub_group.group_type == GROUP_TYPE_TOPIC_CHILDREN {
                 // Sub-group label is the parent DIAL's form_id u32.
@@ -151,7 +193,7 @@ pub(super) fn extract_dial_with_info(
             // shouldn't happen in vanilla content): recurse with the
             // same handler so a stray DIAL or another Topic Children
             // tier still gets walked. Bytes accounting stays sound.
-            extract_dial_with_info(reader, sub_end, dialogues)?;
+            extract_dial_with_info_inner(reader, sub_end, dialogues, depth + 1)?;
             continue;
         }
 
@@ -252,6 +294,7 @@ pub(super) fn extract_quest_dialogue_scene_tree(
         scenes,
         &remap,
         &mut last_dial_form_id,
+        0,
     )
 }
 
@@ -263,11 +306,18 @@ fn extract_quest_dialogue_scene_tree_inner(
     scenes: &mut HashMap<u32, ScenRecord>,
     remap: &Option<crate::esm::reader::FormIdRemap>,
     last_dial_form_id: &mut Option<u32>,
+    depth: u32,
 ) -> Result<()> {
     while reader.position() < end && reader.remaining() > 0 {
         if reader.is_group() {
             let sub_group = reader.read_group_header()?;
-            let sub_end = reader.group_content_end(&sub_group);
+            let Some(sub_end) = reader.bounded_group_content_end(
+                &sub_group,
+                depth,
+                "extract_quest_dialogue_scene_tree_inner",
+            ) else {
+                continue;
+            };
             extract_quest_dialogue_scene_tree_inner(
                 reader,
                 sub_end,
@@ -276,6 +326,7 @@ fn extract_quest_dialogue_scene_tree_inner(
                 scenes,
                 remap,
                 last_dial_form_id,
+                depth + 1,
             )?;
             continue;
         }
@@ -309,4 +360,57 @@ fn extract_quest_dialogue_scene_tree_inner(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::esm::reader::MAX_GRUP_NESTING_DEPTH;
+
+    fn tes5_record(record_type: &[u8; 4], form_id: u32) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(24);
+        bytes.extend_from_slice(record_type);
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&form_id.to_le_bytes());
+        bytes.extend_from_slice(&[0; 8]);
+        bytes
+    }
+
+    fn tes5_group(payload: Vec<u8>) -> Vec<u8> {
+        let total_size = 24u32 + u32::try_from(payload.len()).expect("synthetic group fits u32");
+        let mut bytes = Vec::with_capacity(total_size as usize);
+        bytes.extend_from_slice(b"GRUP");
+        bytes.extend_from_slice(&total_size.to_le_bytes());
+        bytes.extend_from_slice(b"TEST");
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&[0; 8]);
+        bytes.extend_from_slice(&payload);
+        bytes
+    }
+
+    #[test]
+    fn deeply_nested_grup_is_skipped_at_shared_limit() {
+        let mut bytes = tes5_record(b"GMST", 0x1234);
+        for _ in 0..(MAX_GRUP_NESTING_DEPTH + 128) {
+            bytes = tes5_group(bytes);
+        }
+
+        let mut reader = EsmReader::new(&bytes);
+        let mut seen = Vec::new();
+        extract_records(&mut reader, bytes.len(), b"GMST", &mut |form_id, _| {
+            seen.push(form_id)
+        })
+        .expect("over-depth GRUP input must be skipped without aborting the parse");
+
+        assert!(
+            seen.is_empty(),
+            "records below the depth cap must be skipped"
+        );
+        assert_eq!(
+            reader.position(),
+            bytes.len(),
+            "skipping the over-depth group must preserve outer byte accounting"
+        );
+    }
 }

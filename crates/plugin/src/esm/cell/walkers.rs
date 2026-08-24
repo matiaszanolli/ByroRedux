@@ -112,18 +112,32 @@ pub(crate) fn parse_cell_group(
     cells: &mut HashMap<String, CellData>,
     game: GameKind,
 ) -> Result<()> {
+    parse_cell_group_inner(reader, end, cells, game, 0)
+}
+
+fn parse_cell_group_inner(
+    reader: &mut EsmReader,
+    end: usize,
+    cells: &mut HashMap<String, CellData>,
+    game: GameKind,
+    depth: u32,
+) -> Result<()> {
     // Track the last parsed interior cell so we can attach children groups to it.
     let mut current_cell: Option<String> = None;
 
     while reader.position() < end && reader.remaining() > 0 {
         if reader.is_group() {
             let sub_group = reader.read_group_header()?;
-            let sub_end = reader.group_content_end(&sub_group);
+            let Some(sub_end) =
+                reader.bounded_group_content_end(&sub_group, depth, "parse_cell_group")
+            else {
+                continue;
+            };
 
             match sub_group.group_type {
                 // Interior cell block (2) and sub-block (3): recurse.
                 2 | 3 => {
-                    parse_cell_group(reader, sub_end, cells, game)?;
+                    parse_cell_group_inner(reader, sub_end, cells, game, depth + 1)?;
                 }
                 // Cell children groups (6=temporary, 8=persistent, 9=visible distant).
                 6 | 8 | 9 => {

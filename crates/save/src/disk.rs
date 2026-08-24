@@ -93,16 +93,27 @@ pub fn list_slots(dir: &Path) -> Vec<u32> {
 /// Most recently modified valid save slot, used by the player-facing
 /// quickload action. Invalid names and unreadable metadata are ignored.
 pub fn latest_slot(dir: &Path) -> Option<u32> {
-    fs::read_dir(dir)
-        .ok()?
-        .filter_map(|entry| entry.ok())
-        .filter_map(|entry| {
-            let slot = parse_slot_filename(&entry.file_name().to_string_lossy())?;
-            let modified = entry.metadata().ok()?.modified().ok()?;
-            Some((slot, modified))
-        })
-        .max_by_key(|(_, modified)| *modified)
-        .map(|(slot, _)| slot)
+    slots_by_recency(dir).into_iter().next()
+}
+
+/// Valid slot filenames ordered newest-first. Modification-time ties are
+/// broken by higher slot number so quickload behavior is deterministic.
+pub fn slots_by_recency(dir: &Path) -> Vec<u32> {
+    let mut slots: Vec<(u32, std::time::SystemTime)> = match fs::read_dir(dir) {
+        Ok(entries) => entries
+            .filter_map(|entry| entry.ok())
+            .filter_map(|entry| {
+                let slot = parse_slot_filename(&entry.file_name().to_string_lossy())?;
+                let modified = entry.metadata().ok()?.modified().ok()?;
+                Some((slot, modified))
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    slots.sort_unstable_by(|(slot_a, time_a), (slot_b, time_b)| {
+        time_b.cmp(time_a).then_with(|| slot_b.cmp(slot_a))
+    });
+    slots.into_iter().map(|(slot, _)| slot).collect()
 }
 
 /// Cursor for a resumed ring: one past the slot with the newest mtime, or
@@ -244,6 +255,36 @@ mod tests {
         assert_eq!(parse_slot_filename("save_42.ess.tmp"), None);
         assert_eq!(parse_slot_filename("notes.txt"), None);
         assert_eq!(parse_slot_filename("save_x.ess"), None);
+    }
+
+    #[test]
+    fn latest_slot_ignores_newer_tmp_and_empty_directory() {
+        let dir = std::env::temp_dir().join(format!(
+            "byro_save_latest_filter_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        assert_eq!(latest_slot(&dir), None);
+        fs::write(dir.join("save_9.ess.tmp"), b"newer temp").unwrap();
+        assert_eq!(latest_slot(&dir), None, "temp files are never live slots");
+        fs::write(slot_path(&dir, 2), b"valid-name slot").unwrap();
+        assert_eq!(latest_slot(&dir), Some(2));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn recency_tie_breaks_by_slot_number() {
+        use std::time::{Duration, SystemTime};
+        let t = SystemTime::UNIX_EPOCH + Duration::from_secs(10);
+        let mut slots = vec![(1u32, t), (3, t), (2, t)];
+        slots.sort_unstable_by(|(slot_a, time_a), (slot_b, time_b)| {
+            time_b.cmp(time_a).then_with(|| slot_b.cmp(slot_a))
+        });
+        assert_eq!(
+            slots.into_iter().map(|(slot, _)| slot).collect::<Vec<_>>(),
+            vec![3, 2, 1]
+        );
     }
 
     #[test]

@@ -216,6 +216,19 @@ impl MaterialStats {
     }
 }
 
+fn assert_pbr_override_fill(s: &MaterialStats, label: &str, floor: f64) {
+    let metalness = MaterialStats::pct(s.with_metalness_override, s.imported_meshes);
+    let roughness = MaterialStats::pct(s.with_roughness_override, s.imported_meshes);
+    assert!(
+        metalness >= floor,
+        "[{label}] metalness_override fill < {floor:.1}% (got {metalness:.1}%)"
+    );
+    assert!(
+        roughness >= floor,
+        "[{label}] roughness_override fill < {floor:.1}% (got {roughness:.1}%)"
+    );
+}
+
 /// The stratification bucket for one NIF path: the top-level *content*
 /// directory under the shared `meshes\` archive root (e.g. `actors`,
 /// `architecture`, `clutter`), or the path's own first component when it
@@ -414,13 +427,11 @@ fn cross_game_translation_completeness() {
     // it exactly, so ordinary content-mix drift doesn't make the gate
     // flaky; that's intentionally less than a byte-exact pin.
     //
-    // `metO`/`rghO` (metalness/roughness override) are a special case: the
-    // sole production `ImportedMaterial` constructor
-    // (`crates/nif/src/import/material/mod.rs`) sets both unconditionally
-    // to `Some(..)` from `legacy_pbr`, so they are exactly 100% by
-    // construction on every game, not a per-game content characteristic —
-    // asserted `>= 99.9` (not exactly `100.0`) only to avoid pinning to
-    // float-percentage rounding.
+    // #2707 deliberately stopped fabricating metalness/roughness overrides
+    // when a source material has no PBR classifier signal. `metO`/`rghO` are
+    // therefore content-dependent completeness signals again. Their floors
+    // below are per-game post-#2707 measurements with regression margin, not
+    // the stale 100%-by-construction invariant this harness used to assert.
     eprintln!("\n=== PER-GAME FILL-RATE FLOORS (#1320 / #2307) ===");
     type FillRateAssertion = (&'static str, Box<dyn Fn(&MaterialStats, &str)>);
     let mut fill_assertions: Vec<FillRateAssertion> = vec![
@@ -439,16 +450,7 @@ fn cross_game_translation_completeness() {
                     "[{label}] tangents fill < 70% (got {:.1}%)",
                     MaterialStats::pct(s.with_tangents, s.imported_meshes)
                 );
-                assert!(
-                    MaterialStats::pct(s.with_metalness_override, s.imported_meshes) >= 99.9,
-                    "[{label}] metalness_override fill < 100% (got {:.1}%)",
-                    MaterialStats::pct(s.with_metalness_override, s.imported_meshes)
-                );
-                assert!(
-                    MaterialStats::pct(s.with_roughness_override, s.imported_meshes) >= 99.9,
-                    "[{label}] roughness_override fill < 100% (got {:.1}%)",
-                    MaterialStats::pct(s.with_roughness_override, s.imported_meshes)
-                );
+                assert_pbr_override_fill(s, label, 90.0);
                 // No normal_map floor: measured 0.0% across the stratified
                 // (multi-content-class) sample, not just the pre-#2213
                 // architecture-only one. `apply_texturing_property`
@@ -480,16 +482,7 @@ fn cross_game_translation_completeness() {
                     "[{label}] normal_map fill < 55% (got {:.1}%)",
                     MaterialStats::pct(s.with_normal_map, s.imported_meshes)
                 );
-                assert!(
-                    MaterialStats::pct(s.with_metalness_override, s.imported_meshes) >= 99.9,
-                    "[{label}] metalness_override fill < 100% (got {:.1}%)",
-                    MaterialStats::pct(s.with_metalness_override, s.imported_meshes)
-                );
-                assert!(
-                    MaterialStats::pct(s.with_roughness_override, s.imported_meshes) >= 99.9,
-                    "[{label}] roughness_override fill < 100% (got {:.1}%)",
-                    MaterialStats::pct(s.with_roughness_override, s.imported_meshes)
-                );
+                assert_pbr_override_fill(s, label, 80.0);
             }),
         ),
         (
@@ -523,16 +516,7 @@ fn cross_game_translation_completeness() {
                     "[{label}] normal_map fill < 55% (got {:.1}%)",
                     MaterialStats::pct(s.with_normal_map, s.imported_meshes)
                 );
-                assert!(
-                    MaterialStats::pct(s.with_metalness_override, s.imported_meshes) >= 99.9,
-                    "[{label}] metalness_override fill < 100% (got {:.1}%)",
-                    MaterialStats::pct(s.with_metalness_override, s.imported_meshes)
-                );
-                assert!(
-                    MaterialStats::pct(s.with_roughness_override, s.imported_meshes) >= 99.9,
-                    "[{label}] roughness_override fill < 100% (got {:.1}%)",
-                    MaterialStats::pct(s.with_roughness_override, s.imported_meshes)
-                );
+                assert_pbr_override_fill(s, label, 82.0);
             }),
         ),
         (
@@ -568,16 +552,7 @@ fn cross_game_translation_completeness() {
                     "[{label}] normal_map fill < 50% (got {:.1}%)",
                     MaterialStats::pct(s.with_normal_map, s.imported_meshes)
                 );
-                assert!(
-                    MaterialStats::pct(s.with_metalness_override, s.imported_meshes) >= 99.9,
-                    "[{label}] metalness_override fill < 100% (got {:.1}%)",
-                    MaterialStats::pct(s.with_metalness_override, s.imported_meshes)
-                );
-                assert!(
-                    MaterialStats::pct(s.with_roughness_override, s.imported_meshes) >= 99.9,
-                    "[{label}] roughness_override fill < 100% (got {:.1}%)",
-                    MaterialStats::pct(s.with_roughness_override, s.imported_meshes)
-                );
+                assert_pbr_override_fill(s, label, 80.0);
             }),
         ),
         (
@@ -606,16 +581,7 @@ fn cross_game_translation_completeness() {
                     "[{label}] normal_map fill < 55% (got {:.1}%)",
                     MaterialStats::pct(s.with_normal_map, s.imported_meshes)
                 );
-                assert!(
-                    MaterialStats::pct(s.with_metalness_override, s.imported_meshes) >= 99.9,
-                    "[{label}] metalness_override fill < 100% (got {:.1}%)",
-                    MaterialStats::pct(s.with_metalness_override, s.imported_meshes)
-                );
-                assert!(
-                    MaterialStats::pct(s.with_roughness_override, s.imported_meshes) >= 99.9,
-                    "[{label}] roughness_override fill < 100% (got {:.1}%)",
-                    MaterialStats::pct(s.with_roughness_override, s.imported_meshes)
-                );
+                assert_pbr_override_fill(s, label, 85.0);
             }),
         ),
         (
@@ -649,16 +615,7 @@ fn cross_game_translation_completeness() {
                     "[{label}] normal_map fill < 3% (got {:.1}%)",
                     MaterialStats::pct(s.with_normal_map, s.imported_meshes)
                 );
-                assert!(
-                    MaterialStats::pct(s.with_metalness_override, s.imported_meshes) >= 99.9,
-                    "[{label}] metalness_override fill < 100% (got {:.1}%)",
-                    MaterialStats::pct(s.with_metalness_override, s.imported_meshes)
-                );
-                assert!(
-                    MaterialStats::pct(s.with_roughness_override, s.imported_meshes) >= 99.9,
-                    "[{label}] roughness_override fill < 100% (got {:.1}%)",
-                    MaterialStats::pct(s.with_roughness_override, s.imported_meshes)
-                );
+                assert_pbr_override_fill(s, label, 8.0);
             }),
         ),
         (
@@ -683,16 +640,7 @@ fn cross_game_translation_completeness() {
                     "[{label}] tangents fill < 88% (got {:.1}%)",
                     MaterialStats::pct(s.with_tangents, s.imported_meshes)
                 );
-                assert!(
-                    MaterialStats::pct(s.with_metalness_override, s.imported_meshes) >= 99.9,
-                    "[{label}] metalness_override fill < 100% (got {:.1}%)",
-                    MaterialStats::pct(s.with_metalness_override, s.imported_meshes)
-                );
-                assert!(
-                    MaterialStats::pct(s.with_roughness_override, s.imported_meshes) >= 99.9,
-                    "[{label}] roughness_override fill < 100% (got {:.1}%)",
-                    MaterialStats::pct(s.with_roughness_override, s.imported_meshes)
-                );
+                assert_pbr_override_fill(s, label, 1.0);
                 // No normal_map floor: BSGeometry resolves textures entirely
                 // through the CDB material file, which this raw-tier harness
                 // never merges in (#2214) — 0.0% here is structural, not a gap.

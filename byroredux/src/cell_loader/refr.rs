@@ -63,6 +63,12 @@ pub(crate) struct RefrTextureOverlay {
     /// FO76 specular. Preserved under the wire-slot name so the shared
     /// game-aware table chooses the canonical destination at spawn.
     pub(crate) inner: Option<FixedString>,
+    /// BGSM smoothness/specular-strength mask. This is not the standalone
+    /// specular-colour role and must remain distinct through translation.
+    pub(crate) smooth_spec: Option<FixedString>,
+    /// BGSM/BGEM semantic specular-colour role. Kept separate from
+    /// `specular`, which is raw BSShaderTextureSet slot 7.
+    pub(crate) external_specular: Option<FixedString>,
     pub(crate) specular: Option<FixedString>,
     /// FO4/FO76 TX02 wrinkle texture. This is a distinct canonical role;
     /// aliasing it to `env_mask` is the TXST/NIF ordering regression this
@@ -253,8 +259,13 @@ impl RefrTextureOverlay {
                 Self::fill(&mut self.normal, Some(f.normal_texture.as_str()), pool);
                 Self::fill(&mut self.glow, Some(f.glow_texture.as_str()), pool);
                 Self::fill(
-                    &mut self.specular,
+                    &mut self.smooth_spec,
                     Some(f.smooth_spec_texture.as_str()),
+                    pool,
+                );
+                Self::fill(
+                    &mut self.external_specular,
+                    Some(f.specular_texture.as_str()),
                     pool,
                 );
                 Self::fill(&mut self.env, Some(f.envmap_texture.as_str()), pool);
@@ -307,7 +318,7 @@ impl RefrTextureOverlay {
             // `crates/bgsm/src/bgem.rs`, so those stay unfilled here —
             // matching `merge_external_material`'s BGEM arm exactly.
             Self::fill(
-                &mut self.specular,
+                &mut self.external_specular,
                 Some(bgem.specular_texture.as_str()),
                 pool,
             );

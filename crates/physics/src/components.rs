@@ -78,7 +78,7 @@ impl Component for ActorColliderOwner {
 /// `half_height` excludes the hemispherical caps — total visible
 /// height = `2 * (half_height + radius)`. Default `HUMAN` matches
 /// vanilla Skyrim actor-capsule dimensions (128 BU tall, 36 BU wide).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct CharacterController {
     // ── Shape ────────────────────────────────────────────────────
     /// Capsule half-height (Y-axis), excludes caps. BU.
@@ -147,8 +147,8 @@ pub struct CharacterController {
     /// The character system replenishes this at the surface and applies
     /// drowning damage only after it reaches zero.
     pub breath_remaining: f32,
-    /// Accumulated drowning damage is kept on the controller so save/load and
-    /// fixed-step updates do not lose fractional damage between ticks.
+    /// Accumulated drowning damage is saved with the controller so live loads
+    /// and fixed-step updates do not lose fractional damage between ticks.
     pub drowning_damage_accumulator: f32,
 }
 

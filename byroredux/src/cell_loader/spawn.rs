@@ -920,6 +920,9 @@ pub(crate) fn spawn_nif_lights(
             _ => 0.0,
         };
         let radius = light_radius_or_default(raw_radius);
+        let world_direction = (ref_rot
+            * Vec3::new(light.direction[0], light.direction[1], light.direction[2]))
+        .to_array();
         let entity = world.spawn();
         world.insert(entity, Transform::from_translation(final_pos));
         world.insert(entity, GlobalTransform::new(final_pos, Quat::IDENTITY, 1.0));
@@ -933,7 +936,7 @@ pub(crate) fn spawn_nif_lights(
                 byroredux_core::ecs::LIGHT_FLAG_SHADOW_OMNIDIRECTIONAL,
                 0.0,
                 light.kind,
-                light.direction,
+                world_direction,
                 light.outer_angle,
                 byroredux_core::ecs::LIGHT_FLAG_SHADOW_OMNIDIRECTIONAL,
             ),

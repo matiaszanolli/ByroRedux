@@ -520,7 +520,8 @@ fn fill_from_bgsm_forwards_every_bgsm_texture_role() {
                 diffuse_texture: r"textures\a\diff.dds".into(),
                 normal_texture: r"textures\a\nrm.dds".into(),
                 glow_texture: r"textures\a\glow.dds".into(),
-                smooth_spec_texture: r"textures\a\spec.dds".into(),
+                smooth_spec_texture: r"textures\a\smooth_spec.dds".into(),
+                specular_texture: r"textures\a\spec.dds".into(),
                 envmap_texture: r"textures\a\env.dds".into(),
                 wrinkles_texture: r"textures\a\wrinkle.dds".into(),
                 displacement_texture: r"textures\a\height.dds".into(),
@@ -541,7 +542,14 @@ fn fill_from_bgsm_forwards_every_bgsm_texture_role() {
     assert_eq!(resolved(&pool, ov.diffuse), Some(r"textures\a\diff.dds"));
     assert_eq!(resolved(&pool, ov.normal), Some(r"textures\a\nrm.dds"));
     assert_eq!(resolved(&pool, ov.glow), Some(r"textures\a\glow.dds"));
-    assert_eq!(resolved(&pool, ov.specular), Some(r"textures\a\spec.dds"));
+    assert_eq!(
+        resolved(&pool, ov.smooth_spec),
+        Some(r"textures\a\smooth_spec.dds")
+    );
+    assert_eq!(
+        resolved(&pool, ov.external_specular),
+        Some(r"textures\a\spec.dds")
+    );
     assert_eq!(resolved(&pool, ov.env), Some(r"textures\a\env.dds"));
     assert_eq!(resolved(&pool, ov.wrinkle), Some(r"textures\a\wrinkle.dds"));
     // `height` — `displacement_texture` wins the wire-slot-3 race over
@@ -663,7 +671,7 @@ fn fill_from_bgsm_forwards_every_bgem_texture_role() {
     assert_eq!(resolved(&pool, ov.env), Some(r"textures\b\env.dds"));
     // #2594-added roles.
     assert_eq!(
-        resolved(&pool, ov.specular),
+        resolved(&pool, ov.external_specular),
         Some(r"textures\b\spec.dds"),
         "BGEM specular_texture must reach the overlay"
     );

@@ -63,6 +63,10 @@ fn delta_columns_carry_only_session_stable_fields() {
         // #2292 — ActorControlState: a single bool (`restrained`). No
         // FixedString / EntityId / session handle → delta-safe.
         "ActorControlState",
+        // #3165 — CharacterController is f32/bool-only. Breath and drowning
+        // carry are gameplay state; pose restore clears its three transient
+        // movement fields after the overlay.
+        "CharacterController",
         // #2379 — RigidBodyData: MotionType enum (no payload) + 5 plain
         // f32s. No FixedString / EntityId / session handle → delta-safe.
         "RigidBodyData",
