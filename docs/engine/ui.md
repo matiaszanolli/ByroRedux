@@ -264,6 +264,23 @@ integration will need to manage multiple active menus (one per layer);
 that compositing happens inside Ruffle, so the engine-side change is
 about which SWF(s) `UiManager` drives, not about stacking Vulkan quads.
 
+**The overlay viewport is fixed at load time, not live-resized** (#2723 /
+SAFEUI-07). `UiManager::new(w, h)` captures the swapchain extent once;
+`SwfPlayer::from_movie` bakes that size into both Ruffle's viewport and the
+offscreen `TextureTarget`. Nothing currently drives Ruffle's
+`set_viewport_dimensions` or re-registers the UI texture when
+`WindowEvent::Resized` recreates the swapchain (`app_events.rs`), so a
+window resize while a menu is loaded stretches the last-rendered frame to
+the new aspect ratio instead of re-rendering at it. This is confirmed
+visual-only, not a Vulkan hazard: `update_rgba` is always called with the
+menu's original `width`/`height`, matching both the registered texture and
+`pixel_buffer`'s size, so `Texture::from_rgba`'s length assertion cannot
+fire and no staging copy can over-read. Making the overlay track a resize
+needs a real teardown/rebuild of the `SwfPlayer`'s renderer (there is no
+in-place resize path on `TextureTarget`/`WgpuRenderBackend` today) plus a
+texture re-registration call from `main.rs`'s resize handler — tracked as
+follow-up work, not implemented here.
+
 ## Vulkan integration
 
 The UI is drawn at the tail of the main render pass, not in a separate

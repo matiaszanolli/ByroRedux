@@ -60,6 +60,14 @@ pub struct UiManager {
     /// Name of the currently loaded menu (e.g. "startmenu").
     pub menu_name: String,
     /// Viewport dimensions for the UI overlay.
+    ///
+    /// #2723 (SAFEUI-07) — fixed at [`Self::new`] time, not live-updated on
+    /// a window resize. Nothing currently drives Ruffle's
+    /// `set_viewport_dimensions` or re-registers the UI texture when the
+    /// swapchain is recreated, so the overlay stretches to the new aspect
+    /// ratio instead of re-rendering at it (visual only — see
+    /// `docs/engine/ui.md`'s "overlay viewport is fixed at load time" note
+    /// for why this cannot over-read the texture upload).
     pub width: u32,
     pub height: u32,
 }
@@ -254,13 +262,15 @@ impl UiManager {
         }
     }
 
-    /// Close the current menu.
-    pub fn close(&mut self) {
-        self.set_input_focus(false);
-        self.player = None;
-        self.visible = false;
-        self.menu_name.clear();
-    }
+    // #2723 (SAFEUI-07) — a `close()` unloading the active menu
+    // (`set_input_focus(false)` + `player = None` + `visible = false` +
+    // `menu_name.clear()`) used to live here. It had zero callers: nothing
+    // in the engine currently drives an interactive menu-dismissal flow
+    // (no Escape-closes-menu handler, no menu-switch trigger) — see
+    // `docs/engine/ui.md`'s "current manager still owns one active menu...
+    // a real menu stack must define which visible layer receives focus"
+    // note. Deleted rather than left as unreachable API surface; trivial
+    // to re-add once that policy exists and needs it.
 }
 
 #[cfg(test)]

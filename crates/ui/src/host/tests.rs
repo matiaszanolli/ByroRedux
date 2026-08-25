@@ -241,6 +241,37 @@ fn skyrim_catalog_distinguishes_commands_requests_and_unknowns() {
     );
 }
 
+/// #2965 (UI-D2-02) — the leading-integer heuristic used to fire on ANY
+/// `SkyrimAvm1` call, catalog membership be damned, because `SkyrimAvm1` is
+/// also the fallback profile for every non-AS3 movie (loose demo SWFs,
+/// third-party AVM1 content) that never went through `GameDelegate.call` at
+/// all. A call to a method the catalog has never heard of, with no `respond`
+/// callback registered, has zero evidence it's a `GameDelegate` request —
+/// pre-fix it still silently lost its first argument and got a bogus
+/// `request_id` anyway. Both must now survive intact.
+#[test]
+fn an_uncataloged_call_with_no_respond_callback_keeps_its_leading_argument() {
+    let bridge = ScaleformHostBridge::new(ScaleformProfile::SkyrimAvm1);
+
+    bridge.record_call(
+        "UnmappedMethod",
+        &[ExternalValue::from(3_i32), ExternalValue::from("payload")],
+    );
+
+    let call = bridge.drain_calls().pop().unwrap();
+    assert_eq!(call.dispatch, ScaleformHostDispatch::Unknown);
+    assert_eq!(
+        call.request_id, None,
+        "an uncataloged call must not be assigned a request_id it never carried"
+    );
+    assert_eq!(
+        call.arguments,
+        vec![ScaleformValue::from(3.0), ScaleformValue::from("payload")],
+        "the leading integer is real call data here, not a GameDelegate \
+         request ID — it must not be stripped"
+    );
+}
+
 #[test]
 fn skyrim_catalog_is_pinned_sorted_and_profile_specific() {
     let catalog = ScaleformHostCatalog::for_profile(ScaleformProfile::SkyrimAvm1);
