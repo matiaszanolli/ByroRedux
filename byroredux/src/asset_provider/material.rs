@@ -1752,17 +1752,25 @@ pub(crate) fn merge_external_material(
             // shared glass shader can choose a surface-consistent base path;
             // texture maps remain ordinary overlays either way.
             material.thin_glass = bgem_uses_thin_glass_behavior(&bgem);
-            // #2109 (SF-D9-02) — the v21+/v22 glass-overlay suite
-            // (`glass_fresnel_color`, `glass_refraction_scale_base`,
-            // `glass_blur_scale_base`, `glass_blur_scale_factor`,
-            // `glass_roughness_scratch`, `glass_dirt_overlay`) decodes
-            // correctly on the BGEM parser side (`bgem.rs`) but has no
-            // `ImportedMesh` sink here — same deferred-consumer class as
-            // `emittance_color` above. Mod-added FO76/Starfield-era BGEM
-            // glass renders with engine-default refraction/tint instead of
-            // these authored values; low severity, since the renderer has no
-            // binding to consume them yet even if forwarded. Deferred
-            // renderer-binding follow-up, not a parser gap.
+            // BGEM v21+/v22 glass-overlay suite. These are semantic glass
+            // inputs, not generic detail/specular maps: preserve dedicated
+            // roles so a material that authors both cannot overwrite one.
+            material.glass_fresnel_color = bgem.glass_fresnel_color;
+            material.glass_refraction_scale = bgem.glass_refraction_scale_base;
+            material.glass_blur_scale = bgem.glass_blur_scale_base;
+            material.glass_blur_scale_factor = bgem.glass_blur_scale_factor;
+            fill(
+                &mut material.textures.glass_roughness_scratch,
+                &bgem.glass_roughness_scratch,
+                &mut touched,
+                pool,
+            );
+            fill(
+                &mut material.textures.glass_dirt_overlay,
+                &bgem.glass_dirt_overlay,
+                &mut touched,
+                pool,
+            );
             //
             // #2608 correction: `environment_mapping_mask_scale` was listed
             // above as sink-less, and no longer is —

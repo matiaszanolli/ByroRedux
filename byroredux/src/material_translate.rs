@@ -505,6 +505,10 @@ pub(crate) fn translate_material(
         // Glass promotion below replaces the ordinary value with the shared
         // glass IOR while preserving source texture overlays.
         ior: material_optical_scalar(source.material_kind, source.refraction_strength),
+        glass_fresnel_color: source.glass_fresnel_color,
+        glass_refraction_scale: source.glass_refraction_scale,
+        glass_blur_scale: source.glass_blur_scale,
+        glass_blur_scale_factor: source.glass_blur_scale_factor,
         // #2514 — Disney-BSDF-only parameters with no source-format
         // equivalent (no BGSM/BGEM/inline-NIF field maps to them); zero
         // matches `Material::default()`'s Burley/isotropic-only fallback.
@@ -1649,6 +1653,10 @@ mod canonical_completeness_harness {
             z_function: 2,
             metalness_override: Some(0.42), // >= 0.3: keeps classify_glass_into_material a no-op
             roughness_override: Some(0.58), // in-range: resolve_pbr's clamp is a no-op
+            glass_fresnel_color: [0.17, 0.27, 0.37],
+            glass_refraction_scale: 0.07,
+            glass_blur_scale: 0.33,
+            glass_blur_scale_factor: 1.25,
             translucency_subsurface_color: [0.21, 0.22, 0.23],
             translucency_transmissive_scale: 0.31,
             translucency_turbulence: 0.41,
@@ -1728,6 +1736,10 @@ mod canonical_completeness_harness {
         assert_eq!(material.z_function, 2);
         assert_eq!(material.metalness, 0.42);
         assert_eq!(material.roughness, 0.58);
+        assert_eq!(material.glass_fresnel_color, [0.17, 0.27, 0.37]);
+        assert_eq!(material.glass_refraction_scale, 0.07);
+        assert_eq!(material.glass_blur_scale, 0.33);
+        assert_eq!(material.glass_blur_scale_factor, 1.25);
         assert_eq!(material.translucency_subsurface_color, [0.21, 0.22, 0.23]);
         assert_eq!(material.translucency_transmissive_scale, 0.31);
         assert_eq!(material.translucency_turbulence, 0.41);

@@ -1252,6 +1252,10 @@ impl MaterialInfo {
                 pool,
                 effect.and_then(|data| data.emit_gradient_texture.as_deref()),
             ),
+            // Dedicated BGEM v21+ roles are populated only by the external
+            // material merge downstream of this inline-NIF translation.
+            glass_roughness_scratch: None,
+            glass_dirt_overlay: None,
             decals: self.decal_maps,
         }
     }
@@ -1407,6 +1411,10 @@ impl MaterialInfo {
             from_bgsm: false,
             bgem_glass: false,
             thin_glass: false,
+            glass_fresnel_color: [1.0; 3],
+            glass_refraction_scale: 0.05,
+            glass_blur_scale: 0.4,
+            glass_blur_scale_factor: 1.0,
             // #2609 — the NIF importer never reads an external material file,
             // so the overrides below are the keyword classifier's guess, not
             // authored scalars. Consumers gating on "authoritative" must see

@@ -77,12 +77,16 @@ fn cmd(alpha_blend: bool, is_decal: bool, two_sided: bool) -> DrawCommand {
         vertex_color_emissive: false,
         effect_shader_flags: 0,
         greyscale_lut_index: 0,
-        supplemental_texture_indices: [0; 12],
+        supplemental_texture_indices: [0; 14],
         translucency_subsurface_color: [0.0; 3],
         translucency_transmissive_scale: 0.0,
         translucency_turbulence: 0.0,
         shader_color: [0.0; 3],
         shader_float: 0.0,
+        glass_fresnel_color: [1.0; 3],
+        glass_refraction_scale: 0.05,
+        glass_blur_scale: 0.4,
+        glass_blur_scale_factor: 1.0,
         is_water: false,
     }
 }

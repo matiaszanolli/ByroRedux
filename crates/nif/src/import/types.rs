@@ -328,6 +328,10 @@ pub struct MaterialTextureSet<T> {
     pub greyscale_lut: T,
     pub reflectance: T,
     pub emittance_gradient: T,
+    /// FO76/Starfield BGEM v21+ per-texel glass roughness/scratch mask.
+    pub glass_roughness_scratch: T,
+    /// FO76/Starfield BGEM v21+ dirt overlay composited over glass optics.
+    pub glass_dirt_overlay: T,
     /// Ordered legacy material-overlay layers.
     pub decals: [T; 4],
 }
@@ -355,6 +359,8 @@ impl<T> MaterialTextureSet<T> {
             greyscale_lut: map(&self.greyscale_lut),
             reflectance: map(&self.reflectance),
             emittance_gradient: map(&self.emittance_gradient),
+            glass_roughness_scratch: map(&self.glass_roughness_scratch),
+            glass_dirt_overlay: map(&self.glass_dirt_overlay),
             decals: std::array::from_fn(|index| map(&self.decals[index])),
         }
     }
@@ -384,6 +390,8 @@ impl<T> MaterialTextureSet<T> {
             &self.greyscale_lut,
             &self.reflectance,
             &self.emittance_gradient,
+            &self.glass_roughness_scratch,
+            &self.glass_dirt_overlay,
         ]
         .into_iter()
         .chain(self.decals.iter())
@@ -423,16 +431,18 @@ mod material_texture_set_tests {
             greyscale_lut: 15,
             reflectance: 16,
             emittance_gradient: 17,
-            decals: [18, 19, 20, 21],
+            glass_roughness_scratch: 18,
+            glass_dirt_overlay: 19,
+            decals: [20, 21, 22, 23],
         };
 
         assert_eq!(
             textures.values().copied().collect::<Vec<_>>(),
-            (0..22).collect::<Vec<_>>()
+            (0..24).collect::<Vec<_>>()
         );
         assert_eq!(
             textures.secondary_values().copied().collect::<Vec<_>>(),
-            (1..22).collect::<Vec<_>>()
+            (1..24).collect::<Vec<_>>()
         );
     }
 }
@@ -472,6 +482,14 @@ pub struct ImportedMaterial {
     pub from_bgsm: bool,
     pub bgem_glass: bool,
     pub thin_glass: bool,
+    /// BGEM v21+ artist tint for the dielectric reflection/Fresnel lobe.
+    pub glass_fresnel_color: [f32; 3],
+    /// BGEM v21+ refraction deviation scale. The format default is 0.05.
+    pub glass_refraction_scale: f32,
+    /// BGEM v21+ base blur applied to reflected/refracted radiance.
+    pub glass_blur_scale: f32,
+    /// BGEM v22+ multiplier applied to [`Self::glass_blur_scale`].
+    pub glass_blur_scale_factor: f32,
     /// #2609 — the BGSM arm of `merge_external_material` resolved authoritative
     /// spec-glossiness scalars and wrote them into
     /// [`Self::metalness_override`] / [`Self::roughness_override`].
@@ -586,6 +604,10 @@ impl Default for ImportedMaterial {
             from_bgsm: false,
             bgem_glass: false,
             thin_glass: false,
+            glass_fresnel_color: [1.0; 3],
+            glass_refraction_scale: 0.05,
+            glass_blur_scale: 0.4,
+            glass_blur_scale_factor: 1.0,
             bgsm_pbr_scalars_authored: false,
             metalness_override: None,
             roughness_override: None,

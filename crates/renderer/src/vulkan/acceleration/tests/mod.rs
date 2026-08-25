@@ -55,6 +55,10 @@ pub(super) fn make_draw_command(in_tlas: bool, is_water: bool) -> DrawCommand {
         roughness: 0.5,
         metalness: 0.0,
         ior: 1.5,        // #1248
+        glass_fresnel_color: [1.0; 3],
+        glass_refraction_scale: 0.05,
+        glass_blur_scale: 0.4,
+        glass_blur_scale_factor: 1.0,
         subsurface: 0.0, // #1249
         sheen: 0.0,
         sheen_tint: 0.0,
@@ -96,7 +100,7 @@ pub(super) fn make_draw_command(in_tlas: bool, is_water: bool) -> DrawCommand {
         vertex_color_emissive: false,
         effect_shader_flags: 0,
         greyscale_lut_index: 0,
-        supplemental_texture_indices: [0; 12],
+        supplemental_texture_indices: [0; 14],
         translucency_subsurface_color: [0.0; 3],
         translucency_transmissive_scale: 0.0,
         translucency_turbulence: 0.0,

@@ -1135,6 +1135,47 @@ fn closed_bgem_glass_does_not_select_thin_surface_behavior() {
 }
 
 #[test]
+fn bgem_glass_forwards_authored_optics_and_overlay_roles() {
+    let mut pool = byroredux_core::string::StringPool::new();
+    let path = "materials/tests/authored_glass.bgem";
+    let mut provider = MaterialProvider::new();
+    provider.insert_bgem_for_test(
+        path,
+        BgemFile {
+            glass_enabled: true,
+            glass_fresnel_color: [0.2, 0.4, 0.8],
+            glass_refraction_scale_base: 0.09,
+            glass_blur_scale_base: 0.25,
+            glass_blur_scale_factor: 1.75,
+            glass_roughness_scratch: "Effects/Glass/scratches.dds".into(),
+            glass_dirt_overlay: "Effects/Glass/dirt.dds".into(),
+            ..Default::default()
+        },
+    );
+    let mut mesh = imported_mesh_with_material_path(&mut pool, path);
+
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool).merged());
+    assert_eq!(mesh.material.glass_fresnel_color, [0.2, 0.4, 0.8]);
+    assert_eq!(mesh.material.glass_refraction_scale, 0.09);
+    assert_eq!(mesh.material.glass_blur_scale, 0.25);
+    assert_eq!(mesh.material.glass_blur_scale_factor, 1.75);
+    assert_eq!(
+        mesh.material
+            .textures
+            .glass_roughness_scratch
+            .and_then(|value| pool.resolve(value)),
+        Some("Effects/Glass/scratches.dds")
+    );
+    assert_eq!(
+        mesh.material
+            .textures
+            .glass_dirt_overlay
+            .and_then(|value| pool.resolve(value)),
+        Some("Effects/Glass/dirt.dds")
+    );
+}
+
+#[test]
 fn legacy_bgem_effect_cards_do_not_become_glass() {
     use byroredux_bgsm::{AlphaBlendMode, BaseMaterial};
 

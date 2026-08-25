@@ -627,6 +627,8 @@ pub(super) fn collect_static_mesh_draws(
                     texture_indices.decals[1],
                     texture_indices.decals[2],
                     texture_indices.decals[3],
+                    texture_indices.glass_roughness_scratch,
+                    texture_indices.glass_dirt_overlay,
                 ];
                 let mut cmd = DrawCommand {
                     mesh_handle: mesh.0,
@@ -671,6 +673,16 @@ pub(super) fn collect_static_mesh_draws(
                     // glass both arrive with the canonical 1.45 behavior.
                     // Texture handles above remain source-authored overlays.
                     ior,
+                    glass_fresnel_color: mat
+                        .map(|m| m.glass_fresnel_color)
+                        .unwrap_or([1.0; 3]),
+                    glass_refraction_scale: mat
+                        .map(|m| m.glass_refraction_scale)
+                        .unwrap_or(0.05),
+                    glass_blur_scale: mat.map(|m| m.glass_blur_scale).unwrap_or(0.4),
+                    glass_blur_scale_factor: mat
+                        .map(|m| m.glass_blur_scale_factor)
+                        .unwrap_or(1.0),
                     // #1249 — Disney diffuse defaults zero so the
                     // shader-side Lambert/Disney branch picks Lambert
                     // (every NIF without MAT_FLAG_BGSM_PBR). No source

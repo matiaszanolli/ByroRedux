@@ -518,6 +518,8 @@ fn map_secondary_texture_handles(
         greyscale_lut: slot(&textures.greyscale_lut, srgb),
         reflectance: slot(&textures.reflectance, linear),
         emittance_gradient: slot(&textures.emittance_gradient, srgb),
+        glass_roughness_scratch: slot(&textures.glass_roughness_scratch, linear),
+        glass_dirt_overlay: slot(&textures.glass_dirt_overlay, srgb),
         decals: std::array::from_fn(|i| slot(&textures.decals[i], srgb)),
     }
 }
@@ -568,6 +570,8 @@ mod tests {
             greyscale_lut: some("greyscale_lut"),
             reflectance: some("reflectance"),
             emittance_gradient: some("emittance_gradient"),
+            glass_roughness_scratch: some("glass_roughness_scratch"),
+            glass_dirt_overlay: some("glass_dirt_overlay"),
             decals: [
                 some("decal_0"),
                 some("decal_1"),
@@ -602,12 +606,19 @@ mod tests {
             "height",
             "environment_mask",
             "specular",
+            "glass_roughness_scratch",
         ] {
             assert!(seen.iter().any(|(path, cubemap, color_space)| path == role
                 && !cubemap
                 && *color_space == TextureColorSpace::Linear));
         }
-        for role in ["emissive", "detail", "dark", "decal_0"] {
+        for role in [
+            "emissive",
+            "detail",
+            "dark",
+            "glass_dirt_overlay",
+            "decal_0",
+        ] {
             assert!(seen.iter().any(|(path, cubemap, color_space)| path == role
                 && !cubemap
                 && *color_space == TextureColorSpace::Srgb));

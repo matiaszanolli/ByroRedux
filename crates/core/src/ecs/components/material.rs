@@ -345,6 +345,14 @@ pub struct Material {
     /// maps remain independent overlays. Generic materials default to 1.5,
     /// while canonical glass uses [`GLASS_SURFACE_BEHAVIOR`]'s 1.45.
     pub ior: f32,
+    /// Source-authored tint for the dielectric reflection/Fresnel lobe.
+    /// Neutral white on legacy content; populated by BGEM v21+ glass.
+    pub glass_fresnel_color: [f32; 3],
+    /// Source-authored refraction deviation scale (BGEM v21+, default 0.05).
+    pub glass_refraction_scale: f32,
+    /// Source-authored optical blur base and v22+ multiplier.
+    pub glass_blur_scale: f32,
+    pub glass_blur_scale_factor: f32,
     /// Disney/Burley fake-subsurface-scattering weight `[0, 1]`, consumed
     /// by `disneyDiffuseSplit` (`include/pbr.glsl`) only when
     /// `MAT_FLAG_PBR_BSDF` is set on `material_flags`. No source format
@@ -516,6 +524,10 @@ impl Default for Material {
             metalness: 0.0,
             roughness: 0.5,
             ior: DEFAULT_DIELECTRIC_IOR,
+            glass_fresnel_color: [1.0; 3],
+            glass_refraction_scale: 0.05,
+            glass_blur_scale: 0.4,
+            glass_blur_scale_factor: 1.0,
             // #2514 — no source format authors these; zero = the
             // shader's Burley/isotropic-only fallback (Lambert-adjacent
             // behavior, matching pre-#2514 rendering exactly).

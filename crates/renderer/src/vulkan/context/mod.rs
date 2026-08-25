@@ -172,6 +172,13 @@ pub struct DrawCommand {
     /// with no authored IOR; FO4 BGSM v9+ and Starfield .mat
     /// materials override with their authored value.
     pub ior: f32,
+    /// BGEM v21+ dielectric reflection tint; neutral white otherwise.
+    pub glass_fresnel_color: [f32; 3],
+    /// BGEM v21+ refraction-deviation scale (format default 0.05).
+    pub glass_refraction_scale: f32,
+    /// BGEM v21+/v22 optical blur controls.
+    pub glass_blur_scale: f32,
+    pub glass_blur_scale_factor: f32,
     /// Disney diffuse "subsurface" lobe weight (#1249). 0.0 keeps the
     /// pre-#1249 Lambert behaviour; 1.0 fully blends in the
     /// Hanrahan-Krueger fake-SSS approximation. Only consulted when
@@ -521,6 +528,16 @@ impl DrawCommand {
             shader_color_g: self.shader_color[1],
             shader_color_b: self.shader_color[2],
             shader_float: self.shader_float,
+            glass_fresnel_r: self.glass_fresnel_color[0],
+            glass_fresnel_g: self.glass_fresnel_color[1],
+            glass_fresnel_b: self.glass_fresnel_color[2],
+            glass_refraction_scale: self.glass_refraction_scale,
+            glass_blur_scale: self.glass_blur_scale,
+            glass_blur_scale_factor: self.glass_blur_scale_factor,
+            glass_roughness_scratch_map_index: self.supplemental_texture_indices
+                [slot::GLASS_ROUGHNESS_SCRATCH],
+            glass_dirt_overlay_map_index: self.supplemental_texture_indices
+                [slot::GLASS_DIRT_OVERLAY],
         }
     }
 
@@ -657,8 +674,8 @@ impl DrawCommand {
         h.write_u32(self.sheen_tint.to_bits());
         // #1250 — anisotropic GGX strength (offset 296). Same lockstep.
         h.write_u32(self.anisotropic.to_bits());
-        for texture_index in self.supplemental_texture_indices {
-            h.write_u32(texture_index);
+        for texture_index in &self.supplemental_texture_indices[..12] {
+            h.write_u32(*texture_index);
         }
         // #2221 — animated shader color/float (offsets 348-360). Same
         // lockstep requirement as every field above.
@@ -666,6 +683,20 @@ impl DrawCommand {
         h.write_u32(self.shader_color[1].to_bits());
         h.write_u32(self.shader_color[2].to_bits());
         h.write_u32(self.shader_float.to_bits());
+        h.write_u32(self.glass_fresnel_color[0].to_bits());
+        h.write_u32(self.glass_fresnel_color[1].to_bits());
+        h.write_u32(self.glass_fresnel_color[2].to_bits());
+        h.write_u32(self.glass_refraction_scale.to_bits());
+        h.write_u32(self.glass_blur_scale.to_bits());
+        h.write_u32(self.glass_blur_scale_factor.to_bits());
+        h.write_u32(
+            self.supplemental_texture_indices
+                [super::material::supplemental_texture_slot::GLASS_ROUGHNESS_SCRATCH],
+        );
+        h.write_u32(
+            self.supplemental_texture_indices
+                [super::material::supplemental_texture_slot::GLASS_DIRT_OVERLAY],
+        );
         h.finish()
     }
 }
@@ -2438,7 +2469,9 @@ mod draw_command_tests {
             // Non-zero LUT handle so the hash-walk contract covers this
             // field (zero would dedup with the default and hide a drift).
             greyscale_lut_index: 7,
-            supplemental_texture_indices: [31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42],
+            supplemental_texture_indices: [
+                31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44,
+            ],
             // Non-zero translucency so the hash-walk covers these
             // fields too (#1147 Phase 2b).
             translucency_subsurface_color: [0.5, 0.4, 0.3],
@@ -2448,6 +2481,10 @@ mod draw_command_tests {
             // hash-walk contract covers these fields independently.
             shader_color: [0.15, 0.25, 0.35],
             shader_float: 0.45,
+            glass_fresnel_color: [0.81, 0.72, 0.63],
+            glass_refraction_scale: 0.09,
+            glass_blur_scale: 0.31,
+            glass_blur_scale_factor: 1.7,
             is_water: false,
         }
     }

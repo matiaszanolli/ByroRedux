@@ -1490,6 +1490,33 @@ void main() {
     bool isWindow = isGlass && isArchitecturalGlass
         && texColor.a < 0.5 && texColor.a > 0.02;
 
+    // BGEM v21+ glass controls. The format defaults (blur 0.4 * 1.0,
+    // refraction 0.05, white Fresnel) normalize to the established glass
+    // result, so older content remains unchanged. The scratch map is a
+    // linear roughness mask: white scratches broaden the optical lobe while
+    // black texels retain the scalar roughness.
+    float glassOpticalRoughness = roughness;
+    vec4 glassDirt = vec4(0.0);
+    if (isGlass) {
+        float blurFactor = max(
+            mat.glassBlurScale * mat.glassBlurScaleFactor, 0.0) / 0.4;
+        glassOpticalRoughness = clamp(roughness * blurFactor, 0.02, 0.95);
+        if (mat.glassRoughnessScratchMapIndex != 0u) {
+            float scratch = texture(
+                textures[nonuniformEXT(mat.glassRoughnessScratchMapIndex)],
+                sampleUV
+            ).r;
+            glassOpticalRoughness = mix(
+                glassOpticalRoughness, 0.95, clamp(scratch, 0.0, 1.0));
+        }
+        if (mat.glassDirtOverlayMapIndex != 0u) {
+            glassDirt = texture(
+                textures[nonuniformEXT(mat.glassDirtOverlayMapIndex)],
+                sampleUV
+            );
+        }
+    }
+
     // Portal classification may become cheaper with distance, but the
     // material must remain glass. The former tier-3 arm set `isGlass=false`,
     // routing distant glass through ordinary opaque PBR. Because rtLOD is
@@ -1627,9 +1654,13 @@ void main() {
             // (opaque, already in the framebuffer) shows through the
             // frame border areas. The alpha blend pipeline composites:
             //   result = transmitted × alpha + framebuffer × (1 - alpha)
-            outColor = vec4(transmitted, texColor.a);
-            outRawIndirect = vec4(0.0, 0.0, 0.0, texColor.a);
-            outAlbedo = vec4(albedo, texColor.a);
+            float portalDirtAlpha = clamp(glassDirt.a, 0.0, 1.0);
+            float portalAlpha = portalDirtAlpha
+                + texColor.a * (1.0 - portalDirtAlpha);
+            vec3 portalSurface = mix(transmitted, glassDirt.rgb, portalDirtAlpha);
+            outColor = vec4(portalSurface, portalAlpha);
+            outRawIndirect = vec4(0.0, 0.0, 0.0, portalAlpha);
+            outAlbedo = vec4(mix(albedo, glassDirt.rgb, portalDirtAlpha), portalAlpha);
             return;
         }
 
@@ -1647,6 +1678,7 @@ void main() {
 
     float glassFresnel = 0.0;
     vec3 glassViewNormal = normalize(fragNormalEffective);
+    vec3 glassFresnelTint = vec3(1.0);
     if (isGlass) {
         // Glass is frequently authored two-sided so a thin shell remains
         // visible from either side. Orient the smooth macro normal toward
@@ -1664,7 +1696,10 @@ void main() {
         // #41eedfe1); 1.5 is DEFAULT_DIELECTRIC_IOR, the generic-dielectric
         // fallback, no longer glass-specific. BGSM-authored glass can
         // diverge further (water 1.33 → 0.02, dense window glass 1.52 → 0.044).
-        vec3 glassF0 = vec3(f0Dielectric);
+        glassFresnelTint = clamp(
+            vec3(mat.glassFresnelR, mat.glassFresnelG, mat.glassFresnelB),
+            vec3(0.0), vec3(4.0));
+        vec3 glassF0 = vec3(f0Dielectric) * glassFresnelTint;
         glassFresnel = fresnelSchlickScalar(glassNdotV, f0Dielectric);
         // Dielectric Fresnel already defines the correct specular energy.
         // Boosting legacy specular strength to 3× made the bounded fallback
@@ -1777,7 +1812,7 @@ void main() {
             vec4 reflRay = traceReflection(
                 offsetRayOriginForDirection(fragWorldPos, N_geom_view, R),
                 R, 3000.0,
-                roughness * 8.0, fragInstanceIndex);
+                glassOpticalRoughness * 8.0, fragInstanceIndex);
             reflColor = reflRay.rgb;
         }
 
@@ -1786,7 +1821,16 @@ void main() {
         // 0.05 roughness → barely visible diffusion (clear glass),
         // 0.3  roughness → gentle scatter (lightly etched / bottle glass).
         // TAA temporal accumulation smooths the per-frame noise.
-        vec3 refractDir = refract(-V, N_geom_view, ETA_AIR_TO_GLASS);
+        vec3 snellDir = refract(-V, N_geom_view, ETA_AIR_TO_GLASS);
+        bool totalInternalReflection = dot(snellDir, snellDir) < 0.0001;
+        vec3 refractDir = snellDir;
+        if (!totalInternalReflection) {
+            // `glassRefractionScale` is an artist deviation control, not an
+            // IOR. Scale the delta from straight-through to the physical
+            // Snell direction; 0.05 is the authored neutral/default.
+            float deviationScale = clamp(mat.glassRefractionScale / 0.05, 0.0, 4.0);
+            refractDir = normalize(-V + (snellDir + V) * deviationScale);
+        }
         {
             float frameCount = cameraPos.w;
             float rn1 = interleavedGradientNoise(gl_FragCoord.xy,
@@ -1801,7 +1845,7 @@ void main() {
             // Pre-fix `roughness * 0.15` jittered even clear glass, which
             // — with the mip blur added to hide it — produced a flat,
             // grainy "frosted" look on glass that should be crystal clear.
-            float spread = max(roughness - 0.2, 0.0) * 0.3;
+            float spread = max(glassOpticalRoughness - 0.2, 0.0) * 0.3;
             if (spread > 0.001 && dot(refractDir, refractDir) > 0.0001) {
                 // #820: at normal incidence `refractDir` is parallel to
                 // `-N_geom_view`, so `cross(refractDir, N_geom_view)` is
@@ -1816,8 +1860,6 @@ void main() {
                     +  rUp    * (rn2 * 2.0 - 1.0)) * spread);
             }
         }
-        bool totalInternalReflection = dot(refractDir, refractDir) < 0.0001;
-
         vec3 refrColor;
         bool refractionResolved = totalInternalReflection;
         float glassDistance = 0.0;
@@ -2124,7 +2166,7 @@ void main() {
                 // hiding is gone for smooth glass. Etched glass still
                 // softens. This is what makes refraction read as "bending
                 // the scene behind" rather than a flat translucent wash.
-                float refrMip = 0.4 + roughness * 5.0;
+                float refrMip = 0.4 + glassOpticalRoughness * 5.0;
                 vec3 tAlbedo = sampleRayHitBase(tInst, tMat, tUV, refrMip).rgb;
 
                 // CRITICAL — tint the sampled texel by the hit material's
@@ -2230,7 +2272,8 @@ void main() {
         // Fresnel mix. At normal incidence F ≈ 0.04 — mostly transmitted.
         // At grazing F → 1.0 — near-mirror. Classic "see-through
         // straight on, shiny at the edges" glass look.
-        vec3 glassSurface = mix(transmission, reflColor, fresnelScalar);
+        vec3 glassSurface = mix(
+            transmission, reflColor * glassFresnelTint, fresnelScalar);
 
         // A traced opaque terminus provides resolved transmission, so replace
         // the framebuffer with that radiance. A miss or a passthrough budget
@@ -2255,10 +2298,17 @@ void main() {
             resolvedAlpha = reflectionCoverage + absorptionCoverage;
             vec3 tintedTransmission = refrColor * glassTint;
             glassSurface = (
-                reflColor * reflectionCoverage
+                reflColor * reflectionCoverage * glassFresnelTint
                 + tintedTransmission * absorptionCoverage
             ) / max(resolvedAlpha, 1e-4);
         }
+        // Dirt is an ordinary straight-alpha surface layer over the optical
+        // result. It raises coverage locally instead of tinting the entire
+        // transmitted ray, preserving clean regions of the same pane.
+        float glassDirtAlpha = clamp(glassDirt.a, 0.0, 1.0);
+        glassSurface = mix(glassSurface, glassDirt.rgb, glassDirtAlpha);
+        resolvedAlpha = glassDirtAlpha
+            + resolvedAlpha * (1.0 - glassDirtAlpha);
         outColor = vec4(glassSurface, resolvedAlpha);
         outNormal = octEncode(N_geom_view);
         // Keep all MRTs on the same optical-coverage contract. The blend
@@ -2331,7 +2381,10 @@ void main() {
             sampleUV,
             6.0
         ).rgb;
-        albedo = glassDiffuse;
+        float fallbackDirtAlpha = clamp(glassDirt.a, 0.0, 1.0);
+        albedo = mix(glassDiffuse, glassDirt.rgb, fallbackDirtAlpha);
+        texColor.a = fallbackDirtAlpha
+            + texColor.a * (1.0 - fallbackDirtAlpha);
     }
 
     // Ambient base from cell lighting — LIGHTING ONLY, no local albedo.

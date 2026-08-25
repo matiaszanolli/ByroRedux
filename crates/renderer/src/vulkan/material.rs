@@ -37,12 +37,12 @@ use std::sync::Once;
 /// (`scene_buffer/upload.rs`) with actual default-to-0 behaviour.
 static INTERN_OVERFLOW_WARNED: Once = Once::new();
 
-/// std430 GPU-side material record. **364 bytes** per material.
+/// std430 GPU-side material record. **396 bytes** per material.
 /// Size history: 272 B → 260 B (#804 R1-N4 dropped `avg_albedo_r/g/b`)
 /// → 296 B (#1249 Disney sheen/subsurface) → 300 B (#1250 `anisotropic`)
 /// → 348 B (common supplemental texture roles) → 364 B (#2221 animated
-/// shader color/float, unsampled).
-/// Pinned by `gpu_material_size_is_364_bytes`.
+/// shader color/float, unsampled) → 396 B (BGEM v21+ glass optics).
+/// Pinned by `gpu_material_size_is_396_bytes`.
 ///
 /// (Historical: the per-instance → per-material migration shipped as
 /// R1 Phases 4–6, finishing with #785. The layout below was originally
@@ -67,7 +67,7 @@ static INTERN_OVERFLOW_WARNED: Once = Once::new();
 /// (`scene_buffer/shader_contract_tests.rs`)
 /// pins this for `ui.vert` after #776 / #785; mirror checks for the
 /// other two stages live in the same module. Layout invariant is pinned
-/// by `gpu_material_size_is_364_bytes` and
+/// by `gpu_material_size_is_396_bytes` and
 /// `gpu_material_field_offsets_match_shader_contract` (added #806 to
 /// catch within-vec4 reorderings the size pin alone would miss).
 #[repr(C)]
@@ -83,7 +83,7 @@ pub struct GpuMaterial {
     /// albedo — set when the source NIF declared
     /// `NiVertexColorProperty.vertex_mode = SOURCE_EMISSIVE`. Pre-#695
     /// this slot was an unused pad; routing the bit through here keeps
-    /// the std430 layout pinned by `gpu_material_size_is_364_bytes`.
+    /// the std430 layout pinned by `gpu_material_size_is_396_bytes`.
     pub material_flags: u32, // offset 12
 
     // ── Emissive RGB + specular_strength (vec4 #2) ─────────────────
@@ -352,7 +352,17 @@ pub struct GpuMaterial {
     pub shader_color_r: f32, // offset 348
     pub shader_color_g: f32, // offset 352
     pub shader_color_b: f32, // offset 356
-    pub shader_float: f32,   // offset 360 → total 364
+    pub shader_float: f32,   // offset 360
+
+    // ── BGEM v21+ glass optical suite (offsets 364-392) ────────────
+    pub glass_fresnel_r: f32, // offset 364
+    pub glass_fresnel_g: f32, // offset 368
+    pub glass_fresnel_b: f32, // offset 372
+    pub glass_refraction_scale: f32, // offset 376
+    pub glass_blur_scale: f32, // offset 380
+    pub glass_blur_scale_factor: f32, // offset 384
+    pub glass_roughness_scratch_map_index: u32, // offset 388
+    pub glass_dirt_overlay_map_index: u32, // offset 392 → total 396
 }
 
 impl Default for GpuMaterial {
@@ -477,6 +487,14 @@ impl Default for GpuMaterial {
             shader_color_g: 0.0,
             shader_color_b: 0.0,
             shader_float: 0.0,
+            glass_fresnel_r: 1.0,
+            glass_fresnel_g: 1.0,
+            glass_fresnel_b: 1.0,
+            glass_refraction_scale: 0.05,
+            glass_blur_scale: 0.4,
+            glass_blur_scale_factor: 1.0,
+            glass_roughness_scratch_map_index: 0,
+            glass_dirt_overlay_map_index: 0,
         }
     }
 }
@@ -495,7 +513,9 @@ pub mod supplemental_texture_slot {
     pub const DECAL_1: usize = 9;
     pub const DECAL_2: usize = 10;
     pub const DECAL_3: usize = 11;
-    pub const COUNT: usize = 12;
+    pub const GLASS_ROUGHNESS_SCRATCH: usize = 12;
+    pub const GLASS_DIRT_OVERLAY: usize = 13;
+    pub const COUNT: usize = 14;
 }
 
 /// `GpuMaterial::material_flags` bit catalog. The single source of truth
@@ -946,10 +966,10 @@ pub mod presets {
     }
 }
 
-/// Canonical material hash — FxHash (#1368) over the 75 live scalar
+/// Canonical material hash — FxHash (#1368) over the 83 live scalar
 /// fields of [`GpuMaterial`] in declaration order. Used by
 /// [`MaterialTable::intern_by_hash`] to dedup without hashing the full
-/// 364-byte struct.
+/// 396-byte struct.
 ///
 /// **Lockstep contract** (#781 / PERF-N4): [`DrawCommand::material_hash`]
 /// walks the same field sequence, in the same order, against the
@@ -1088,6 +1108,14 @@ pub(super) fn hash_gpu_material_fields(mat: &GpuMaterial) -> u64 {
     h.write_u32(mat.shader_color_g.to_bits());
     h.write_u32(mat.shader_color_b.to_bits());
     h.write_u32(mat.shader_float.to_bits());
+    h.write_u32(mat.glass_fresnel_r.to_bits());
+    h.write_u32(mat.glass_fresnel_g.to_bits());
+    h.write_u32(mat.glass_fresnel_b.to_bits());
+    h.write_u32(mat.glass_refraction_scale.to_bits());
+    h.write_u32(mat.glass_blur_scale.to_bits());
+    h.write_u32(mat.glass_blur_scale_factor.to_bits());
+    h.write_u32(mat.glass_roughness_scratch_map_index);
+    h.write_u32(mat.glass_dirt_overlay_map_index);
     h.finish()
 }
 
@@ -1205,7 +1233,7 @@ impl MaterialTable {
     // the first frame after construction then re-runs `clear()` →
     // `seed_neutral_default` AND uploads the (identical) neutral
     // entry. That re-upload is one std430-aligned `GpuMaterial`
-    // (364 B) of redundant host→device traffic per first frame
+    // (396 B) of redundant host→device traffic per first frame
     // and is not visible in steady-state telemetry. Documented
     // here rather than skipped because the alternative (suppress
     // first-frame clear) gates the seed on a `dirty` flag, which
@@ -1247,7 +1275,7 @@ impl MaterialTable {
     /// Hot-path intern entry: take a precomputed u64 hash + a closure
     /// that produces the [`GpuMaterial`] only on dedup miss. The
     /// closure is NOT invoked when the hash already maps to a stored
-    /// material — `to_gpu_material` (the dominant 364-byte construction
+    /// material — `to_gpu_material` (the dominant 396-byte construction
     /// cost) is skipped on the ~97% dedup-hit path. See #781 / PERF-N4.
     ///
     /// **Hash quality contract**: callers must produce a u64 that is a
@@ -1415,11 +1443,13 @@ mod tests {
     ///   `shader_color_r/g/b` + `shader_float`, captured for the animated
     ///   BSShaderProperty color/float sinks but not yet sampled by any
     ///   shader — same deferred-lane precedent as the three unsampled
-    ///   texture roles). Test name includes the size so a future size
+    ///   texture roles), then 364 → 396 for the BGEM v21+ glass optical
+    ///   scalars and two dedicated overlay-map handles. Test name includes
+    ///   the size so a future size
     ///   shift updates it in lockstep with the assertion.
     #[test]
-    fn gpu_material_size_is_364_bytes() {
-        assert_eq!(std::mem::size_of::<GpuMaterial>(), 364);
+    fn gpu_material_size_is_396_bytes() {
+        assert_eq!(std::mem::size_of::<GpuMaterial>(), 396);
     }
 
     /// `#[repr(C)]` puts no implicit padding between f32/u32 fields,
@@ -1435,7 +1465,7 @@ mod tests {
     /// Regression guard for `GpuMaterial` GLSL field names —
     /// REN-D14-NEW-02 (audit 2026-05-09). The offset pin
     /// (`gpu_material_field_offsets_match_shader_contract`) and the
-    /// size pin (`gpu_material_size_is_364_bytes`) catch byte-level
+    /// size pin (`gpu_material_size_is_396_bytes`) catch byte-level
     /// drift, but neither catches a GLSL-side field rename: the
     /// shader still reads from the same offset, the value still
     /// arrives in the right register, but the field's MEANING in
@@ -1606,6 +1636,14 @@ mod tests {
             "shaderColorG,",
             "shaderColorB;",
             "shaderFloat;",
+            "glassFresnelR,",
+            "glassFresnelG,",
+            "glassFresnelB;",
+            "glassRefractionScale;",
+            "glassBlurScale;",
+            "glassBlurScaleFactor;",
+            "glassRoughnessScratchMapIndex;",
+            "glassDirtOverlayMapIndex;",
         ] {
             assert!(
                 src.contains(name),
@@ -1617,7 +1655,7 @@ mod tests {
     }
 
     /// Regression guard for the GpuMaterial Shader Struct Sync (#806).
-    /// The size pin (`gpu_material_size_is_364_bytes`) catches additions
+    /// The size pin (`gpu_material_size_is_396_bytes`) catches additions
     /// or removals; this catches reorderings within the record that the
     /// size pin alone would miss — e.g. swapping
     /// `texture_index` and `normal_map_index` within vec4 #4 would
@@ -1786,6 +1824,17 @@ mod tests {
         assert_eq!(offset_of!(GpuMaterial, shader_color_g), 352);
         assert_eq!(offset_of!(GpuMaterial, shader_color_b), 356);
         assert_eq!(offset_of!(GpuMaterial, shader_float), 360);
+        assert_eq!(offset_of!(GpuMaterial, glass_fresnel_r), 364);
+        assert_eq!(offset_of!(GpuMaterial, glass_fresnel_g), 368);
+        assert_eq!(offset_of!(GpuMaterial, glass_fresnel_b), 372);
+        assert_eq!(offset_of!(GpuMaterial, glass_refraction_scale), 376);
+        assert_eq!(offset_of!(GpuMaterial, glass_blur_scale), 380);
+        assert_eq!(offset_of!(GpuMaterial, glass_blur_scale_factor), 384);
+        assert_eq!(
+            offset_of!(GpuMaterial, glass_roughness_scratch_map_index),
+            388
+        );
+        assert_eq!(offset_of!(GpuMaterial, glass_dirt_overlay_map_index), 392);
     }
 
     #[test]

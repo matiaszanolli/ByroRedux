@@ -96,7 +96,7 @@ layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {
 
 // ── R1 Phase 4: deduplicated material table ─────────────────────────
 //
-// Mirrors the Rust `GpuMaterial` (364 B std430) defined
+// Mirrors the Rust `GpuMaterial` (396 B std430) defined
 // in `crates/renderer/src/vulkan/material.rs`. Indexed by
 // `GpuInstance.materialId`. Phase 4 migrates one field (`roughness`)
 // off the per-instance copy onto this path; Phases 5–6 do the rest
@@ -104,8 +104,8 @@ layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {
 //
 // **Shader Struct Sync**: any field added here must be added in
 // lockstep to the Rust `GpuMaterial` struct + the matching
-// `intern`/encoding sites; the size of this struct (364 B) is pinned by
-// `gpu_material_size_is_364_bytes` on the Rust side.
+// `intern`/encoding sites; the size of this struct (396 B) is pinned by
+// `gpu_material_size_is_396_bytes` on the Rust side.
 struct GpuMaterial {
     // PBR scalars (vec4 #1)
     float roughness;
@@ -221,6 +221,13 @@ struct GpuMaterial {
     // crates/renderer/src/vulkan/material.rs.
     float shaderColorR, shaderColorG, shaderColorB; // unsampled — see #2221
     float shaderFloat;                              // unsampled — see #2221
+    // BGEM v21+/v22 authored glass optics (offsets 364-392).
+    float glassFresnelR, glassFresnelG, glassFresnelB;
+    float glassRefractionScale;
+    float glassBlurScale;
+    float glassBlurScaleFactor;
+    uint glassRoughnessScratchMapIndex;
+    uint glassDirtOverlayMapIndex;
 };
 
 layout(std430, set = 1, binding = 13) readonly buffer MaterialBuffer {

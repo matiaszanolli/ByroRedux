@@ -274,7 +274,7 @@ pub(super) fn emit_particles(
                 // palette LUT either; the bindless 0 slot signals
                 // "no LUT" in the shader.
                 greyscale_lut_index: 0,
-                supplemental_texture_indices: [0; 12],
+                supplemental_texture_indices: [0; 14],
                 translucency_subsurface_color: [0.0; 3],
                 translucency_transmissive_scale: 0.0,
                 translucency_turbulence: 0.0,
@@ -282,6 +282,10 @@ pub(super) fn emit_particles(
                 // BSShaderProperty color/scalar controller either.
                 shader_color: [0.0; 3],
                 shader_float: 0.0,
+                glass_fresnel_color: [1.0; 3],
+                glass_refraction_scale: 0.05,
+                glass_blur_scale: 0.4,
+                glass_blur_scale_factor: 1.0,
                 is_water: false,
             };
             // #781 / PERF-N4 — dedup material payload.
