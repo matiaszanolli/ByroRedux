@@ -1,6 +1,6 @@
 # BASE ISSUE — Complete the NIF→Engine translation layer
 
-**Status**: OPEN / base (umbrella) issue — opened 2026-05-27 — tracked as [#1277](https://github.com/matiaszanolli/ByroRedux/issues/1277)
+**Status**: CLOSED umbrella issue — opened 2026-05-27, closed 2026-05-28 — tracked as [#1277](https://github.com/matiaszanolli/ByroRedux/issues/1277). Retained as the original problem statement and translation-boundary design.
 **Driving symptom**: FNV/FO3/FO4 interiors are broken at the **geometric** level
 (not just material), while Skyrim interiors render correctly. See Exhibit A.
 **Parent of**: [`material-abstraction.md`](./material-abstraction.md) (material axis,
