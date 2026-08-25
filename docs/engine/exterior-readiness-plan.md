@@ -315,6 +315,10 @@ FNV/Skyrim/FO4 data, not a speculative code change from source reading
 alone. Artifacts are retained at `/tmp/byro-perf-after-fo4`,
 `/tmp/byro-perf-after-fo3`, and `/tmp/byro-perf-after-fo4-boundary`.
 
+**Filed as its own issue (2026-08-24)**: #3298 — this is now the sole
+remaining EX-06/07 work item; everything else this section investigated
+was already fixed.
+
 ### Tranche B — make entry and traversal safe
 
 1. [x] Define a foreground-ready result carrying center source, terrain/reference
@@ -1098,6 +1102,9 @@ grep. REGN's `Sound.music` field now has a real consumer (items 1 + 5,
    fully wired end-to-end for single-tile pathing on every game except
    FO4 (blocked on the separate `NVNM` body decode) — only cross-tile
    (Phase 2, corpus-blocked) and door-aware pathing remain open.
+
+   **Filed as its own issue (2026-08-24)**: #3300 — the two open decode
+   questions (cross-tile join field, door/cover triangle semantics).
 4. [ ] **Actor/package suspend-migrate-resume across stream boundaries** —
    **correction (2026-08-23): "unblocked by `PersistentRefIndex`" doesn't
    hold up; the real shape is bigger.** `unload_cell_inner`
@@ -1175,6 +1182,10 @@ grep. REGN's `Sound.music` field now has a real consumer (items 1 + 5,
    one shared piece both this item and C2 need, landed once). This item's
    own snapshot/restore mechanism (sequencing step 3) is still not
    started.
+
+   **Filed as its own issue (2026-08-24)**: #3299 — depends on step 2
+   (EX-14/15 item C2's reconcile half, #2369) landing first, per §7's
+   own sequencing.
 5. [x] **Ambient audio emitter REGN-binding — music done, `incidental` not
    attempted.** The generic crossfade machinery already existed
    (`AudioWorld::play_music`/`stop_music`, `crates/audio/src/lib.rs`);
@@ -1225,6 +1236,9 @@ grep. REGN's `Sound.music` field now has a real consumer (items 1 + 5,
    item 1's note). REGN-driven weather/objects/map/landscape/grass/
    imposter selection also remains entirely unbuilt — only `Sound` has a
    selector.
+
+   **Filed as its own issue (2026-08-24)**: #3301 — `incidental`'s spatial
+   emitter plus the six unbuilt non-`Sound` RDAT-kind selectors.
 6. [ ] **OwnershipTracker telemetry** — partially done.
    `navm_tiles_resident` landed (2026-08-23), `Exact` policy, following
    the existing `OwnerClass`/`ReclaimPolicy` pattern
