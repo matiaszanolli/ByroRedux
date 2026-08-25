@@ -527,11 +527,16 @@ pub(crate) fn camera_follow_system(world: &World, dt: f32) {
     let cam_entity = active.0;
     drop(active);
 
-    // Snapshot both GlobalTransform reads before acquiring
-    // CharacterController. Keeping `gq` alive across the controller query
-    // establishes GlobalTransform -> CharacterController; together with the
-    // propagation and controller-system edges that closes the live three-lock
-    // cycle tracked in #3260.
+    // #3260 — GlobalTransform and CharacterController must NOT be held
+    // concurrently here. `character_controller_system` holds
+    // CharacterController -> Transform, and transform_propagation holds
+    // Transform -> GlobalTransform; composing those with a
+    // GlobalTransform -> CharacterController edge in this system would
+    // close a live three-lock cycle. Snapshotting both GlobalTransform
+    // reads into a tuple and dropping `gq` (block end) before acquiring
+    // `cq` below breaks that edge — see
+    // `camera_follow_does_not_close_character_lock_cycle` for the
+    // regression test that pins this ordering.
     let (body_pos, previous_camera_y) = {
         let Some(gq) = world.query::<GlobalTransform>() else {
             return;
