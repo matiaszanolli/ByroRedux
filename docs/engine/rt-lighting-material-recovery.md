@@ -34,8 +34,8 @@ re-implement or revert them.
 | R1 ingestion | XCLL rotation fields renamed; the axis-invariant test is ignored as an explicit xfail; punctual per-light flat fill removed | Remove the XCLL type-3 `Lo` bypass; validate an XCLL-specific angle conversion; emit kind/direction/fade/provenance in `light.dump` |
 | R2 TLAS | Missing TLAS instances split into skinned/rigid/SSBO causes; `patch_camera_rt_flag`; off-frustum occluders retained; AS publication and shrink synchronization fixed by `c25f61e6` | Persist counters beyond rate-limited logs; cluster overflow telemetry; four-scene runtime integrity captures |
 | R3 transport | Wächter-Binder-style `offsetRayOrigin`; shared material-aware shadow transport; structured correctness views and bounded selected-ray probe | Closed: measured five-scene RT-LOD sweep plus repeated and one-million-unit Cornell visibility/probe gates |
-| R4 oracle | Redistributable Cornell scene; one cube golden test; same-revision upscaler SSIM test | Six-rung Cornell lighting/material ladder and CI comparison artifacts |
-| R5 materials | `GpuMaterial` flags generated from Rust; semantic `MaterialTextureSet`; one NIF slot-to-role table; FO3/FNV TXST-to-NIF role permutation pinned | Material provenance dump; BGSM diffuse-lobe contract; complete REFR/BGSM role forwarding; lobe view; cross-game fixture matrix |
+| R4 oracle | Redistributable Cornell scene; L0-L5 manifest and CPU contracts; hardware-gated L0-L5 captures | Schedule the ignored hardware captures on the RT CI worker and publish comparison artifacts |
+| R5 materials | Generated flags; semantic role walk; FO3/FNV permutation; provenance dump; BGSM/BGEM forwarding; lobe and role views; 432-byte shader contract | Provider-backed five-game fixture capture remains hardware/content gated |
 | R6 contracts | `lighting-from-cells.md` describes directional and ambient as separate controls | Reconcile renderer/shader/material docs with live code and pin critical GPU-layout claims |
 
 The old `28155b79` benchmark and its issue #2367 are historical evidence, not
@@ -96,29 +96,23 @@ carried forward.
   translated probes select light 0/mask `0x3f`: the blocked pixel commits
   blocker instance 1 at `0.993879` with zero visibility, while the control
   commits no hit with unit visibility.
-- **R4 L0-L2 scene and manual runtime gate complete.** `--cornell-oracle l0|l1|l2`
-  constructs the ladder from one manifest: a dark white plane, the same plane
-  under one analytic directional source, then the same scene with one opaque
-  blocker. CPU tests pin CLI selection, one-variable progression, source unit
-  length/Lambert expectation, and shadow/control ray geometry. RTX 4070 Ti
-  captures using the raw direct/direct/visibility selectors passed TLAS/light/
-  cluster integrity: L0 is exactly black, L1 is spatially constant, and L2
-  contains the predicted black blocker-shadow silhouette on white visibility.
-  The ignored `cornell_rt_oracle` integration gate now captures those three
-  frames, requires `rt-integrity verdict=PASS`, and checks analytic L0/L1 plus
-  blocked/control L2 pixels. It passes locally on the RTX 4070 Ti and is ready
-  for the RT-capable CI worker. Its forced-low-BLAS sibling also passes with an
-  intentionally impossible one-byte budget. CI scheduling/artifact publication
-  remains; L3-L5 are not built.
-- **R5 core role/flag observability complete; fixture breadth remains.** The
-  PBR/translucency/model-space-normal bits are generated with the other shader
-  constants, the FO3/FNV TXST↔NIF 2-5 permutation is explicit, `mat.dump`
-  prints all semantic roles with path/source/binding/dimensionality/colour
-  space, and the lobe view is raw. Vanilla BGSM stays on its authored legacy
-  spec-gloss lobe unless a resolved template explicitly opts into PBR. Current
-  provenance still coalesces inline NIF and external material-file roles as
-  `MeshMaterial`; per-format source fields and the five-game fixture matrix
-  remain open.
+- **R4 L0-L5 scene and automated contract complete.** One manifest now owns
+  the dark, directional, blocker, open/partitioned volumetric, and canonical
+  material-probe rungs. CPU tests pin CLI selection and one-variable scene
+  changes. The ignored `cornell_rt_oracle` gate covers L0/L1 analytic output,
+  L2 visibility, L3/L4 volumetric non-leakage, and categorical dielectric,
+  metal, and glass populations in L5. L0-L4 have passed on the RTX 4070 Ti;
+  L5 is ready for the same RT-capable worker but is not claimed as executed in
+  the current no-GPU environment.
+- **R5 canonical roles and authored response complete; provider breadth remains.**
+  The 432-byte `GpuMaterial` carries BGEM glass optics plus soft/rim/back,
+  Fresnel, palette, lighting-mask and back-lighting inputs through upload,
+  hashing, GLSL layout and shading. Soft/rim/back terms share the selected
+  light's visibility; glass uses authored refraction/blur/scratch/dirt inputs.
+  `mat.dump`, `material_lobe`, and `material_role` expose the canonical result
+  without a game/file-format shader branch. Existing synthetic and archive
+  tests cover the role walk and per-generation mappings; a redistributable
+  provider-backed five-game capture set remains open.
 - **R6 partially complete.** `renderer.md` is reconciled with the live light,
   cluster, origin, debug-view, flag and dump contracts. This plan, ROADMAP, and
   the adjacent lighting/shader/material documents are being brought to the
@@ -615,7 +609,7 @@ At minimum reconcile:
 - cluster and reservoir flow;
 - current TLAS consumers and cull masks;
 - origin/tMin and RT LOD policy;
-- generated material flags and the 348-byte `GpuMaterial` layout;
+- generated material flags and the 432-byte `GpuMaterial` layout;
 - canonical texture roles and FO3/FNV TXST permutation;
 - water and volumetric consumers already live at HEAD.
 

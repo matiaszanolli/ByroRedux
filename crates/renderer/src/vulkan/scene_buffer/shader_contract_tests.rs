@@ -2000,10 +2000,37 @@ fn bethesda_lighting_response_is_masked_shadowable_and_palette_scaled() {
         );
     }
     assert!(
-        pbr.contains("vec3 fresnelSchlickPower(")
-            && pbr.contains("abs(exponent - 5.0) < 1e-4"),
+        pbr.contains("vec3 fresnelSchlickPower(") && pbr.contains("abs(exponent - 5.0) < 1e-4"),
         "authored Fresnel power must retain the optimized neutral x^5 path"
     );
+}
+
+#[test]
+fn material_role_debug_view_is_semantic_and_format_agnostic() {
+    let frag = include_str!("../../../shaders/triangle.frag");
+    for needle in [
+        "debugMode == RENDER_DEBUG_MATERIAL_ROLE",
+        "MAT_FLAG_MODEL_SPACE_NORMALS",
+        "mat.normalMapIndex != 0u",
+        "mat.parallaxMapIndex != 0u",
+        "mat.envMapIndex != 0u || mat.envMaskIndex != 0u",
+        "mat.tintMapIndex != 0u",
+    ] {
+        assert!(frag.contains(needle), "material-role view lost `{needle}`");
+    }
+    for forbidden in ["skyrim", "fallout", "starfield", "oblivion"] {
+        let role_branch = frag
+            .split_once("} else if (viewMaterialRole) {")
+            .and_then(|(_, tail)| {
+                tail.split_once("} else if (viewRtLod) {")
+                    .map(|(body, _)| body)
+            })
+            .expect("material-role debug branch must precede rtLOD");
+        assert!(
+            !role_branch.to_ascii_lowercase().contains(forbidden),
+            "material-role view must classify translated semantics, not `{forbidden}` source formats"
+        );
+    }
 }
 
 /// #2819 (REN-D17-05) — `disneyDiffuseSplit`'s sheen colour must mix toward a

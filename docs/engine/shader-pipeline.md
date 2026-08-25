@@ -280,7 +280,7 @@ One entry per draw call (up to `MAX_INSTANCES` = 262 144).
 | 8 | `INSTANCE_FLAG_DIFFUSE_ALPHA` | BC1 diffuse texture carries alpha (guards `NiAlphaProperty`-less alpha test) |
 | 16–31 | terrain tile index | `(flags >> 16) & 0xFFFF` (when bit 3 set) |
 
-### `GpuMaterial` — 348 bytes, SSBO (Set 1, Binding 13)
+### `GpuMaterial` — 432 bytes, SSBO (Set 1, Binding 13)
 
 Indexed by `GpuInstance.material_id`. Deduplicated per frame: identical
 material params share one entry. Up to `MAX_MATERIALS` = 16 384 entries.
@@ -323,13 +323,20 @@ Selected fields (full layout in
 | 320 | `wrinkle_map_index` | Supplemental role — deliberately **unsampled** pending actor-control semantics |
 | 324 | `reflectance_map_index` | Supplemental role |
 | 328 | `emittance_gradient_map_index` | Supplemental role |
-| 332–344 | `decal_map_0..3_index` | Four decal role indices (4 × u32) → total **348** |
+| 332–344 | `decal_map_0..3_index` | Four decal role indices (4 × u32) |
+| 348–360 | animated shader sinks | Animated shader colour RGB + scalar; captured pending named-controller dispatch |
+| 364–392 | BGEM glass optics | Fresnel tint RGB, refraction deviation, blur scale/factor, scratch-roughness and dirt-overlay indices |
+| 396–420 | authored lighting response | lighting-effect pair, subsurface rolloff, rim/back powers, Fresnel power, greyscale-to-palette scale |
+| 424–428 | lighting texture roles | soft/rim lighting mask and back-lighting map indices → total **432** |
 
-The twelve entries at 300–344 are the source-agnostic supplemental texture
-roles introduced with `MaterialTextureSet<T>`; they are what grew the record
-from 300 B to 348 B. Three of them (`lighting_map`, `flow_map`,
+The twelve entries at 300–344 are the original source-agnostic supplemental
+texture roles introduced with `MaterialTextureSet<T>`. Three of them
+(`lighting_map`, `flow_map`,
 `wrinkle_map`) are populated and hashed but not yet sampled by any shader —
-that is intentional, not drift.
+that is intentional, not drift. The glass and Bethesda lighting suites are
+fully sampled by `triangle.frag`; every appended field is included in both
+draw-command and `GpuMaterial` hashing so material-table dedup cannot alias
+distinct authored responses.
 
 **`material_flags`** (offset 12):
 
@@ -347,6 +354,10 @@ that is intentional, not drift.
 | 9 | `MAT_FLAG_TRANSLUCENCY_MIX_ALBEDO` | Translucency: mix subsurface colour with albedo |
 | 10 | *(unused/reserved)* | — |
 | 11 | `MAT_FLAG_THIN_GLASS` | Non-occluding glass — zero-ray Fresnel/framebuffer-transmission path, no RT (#883f57cd) |
+| 12 | `MAT_FLAG_MSN_HAS_AUTHORED_Z` | Model-space normal map carries authored Z instead of requiring reconstruction |
+| 13 | `MAT_FLAG_SOFT_LIGHTING` | Enable masked wrapped diffuse response |
+| 14 | `MAT_FLAG_RIM_LIGHTING` | Enable masked view-dependent rim response |
+| 15 | `MAT_FLAG_BACK_LIGHTING` | Enable the authored back-facing lighting lobe |
 
 Bits 16–23 (`MAT_FLAG_EFFECT_LI_SHIFT`) additionally pack an 8-bit
 lighting-influence value for `MAT_FLAG_EFFECT_LIT` materials, read as
@@ -392,7 +403,7 @@ ReSTIR invalid-selection sentinel and is never occupied by a real light.
 | `MAX_LIGHTS` | 1023 | Per-frame point/spot/directional lights; packed index 1023 remains invalid |
 | `MAX_LIGHTS_PER_CLUSTER` | 512 | Candidate indices retained by each 16×9×24 cluster; overflow/high-water/drop telemetry is fence-lagged |
 | `MAX_INSTANCES` | 262 144 | One indirect draw command per instance worst-case |
-| `MAX_MATERIALS` | 16 384 | 348 B each; deduplicated per frame |
+| `MAX_MATERIALS` | 16 384 | 432 B each; deduplicated per frame |
 | `MAX_TOTAL_BONES` | 196 608 | `floor(196 608 / 144)` = 1 365 palette slots, minus reserved slot 0 → **1 364 allocatable** skinned meshes (M29.6). Not an exact product: 1 365 × 144 = 196 560 leaves a 48-bone unused tail |
 | `MAX_PENDING_BIND_INVERSE_UPLOADS_PER_FRAME` | 1 366 | First-sight bind-inverse upload cap |
 | `MAX_TERRAIN_TILES` | 1 024 | 32 B each |

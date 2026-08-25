@@ -20,6 +20,16 @@
 > space. Inline-NIF versus BGSM/BGEM/.mat per-role provenance and the five-game
 > fixture matrix remain recovery work; see
 > [RT Lighting and Material Correctness Recovery](rt-lighting-material-recovery.md).
+>
+> **2026-08-25 lighting/material convergence.** The canonical record is now
+> 432 bytes and carries BGEM Fresnel tint, refraction deviation, blur,
+> scratch/dirt maps, Bethesda lighting-effect/rim/back/Fresnel/palette scalars,
+> and semantic lighting-mask/back-light roles end to end. `triangle.frag`
+> consumes those fields through format-agnostic flags and roles: authored
+> Fresnel powers drive glass and specular response; soft/rim/back contributions
+> share the selected light's visibility; palette scale is bounded; POM remains
+> a linear height role. `material_lobe`, `material_role`, and Cornell L5 are
+> the deterministic operator oracles.
 
 **Status**: converged 2026-05-28; retained as design history. The live contract
 is [`nifal.md`](nifal.md), with current recovery work linked in the banner.

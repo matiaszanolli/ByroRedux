@@ -94,7 +94,7 @@ type-2 path through ReSTIR visibility; four-scene persistent TLAS/cluster
 integrity captures named Cydonia's 656-light SSBO overflow and 305-light
 cluster high-water; capacities are now 1023 lights globally and 512 per
 cluster; every secondary-ray consumer uses the shared scale-aware origin; and
-selected-light, visibility, material-lobe and RT-LOD views bypass temporal
+selected-light, visibility, material-lobe, material-role and RT-LOD views bypass temporal
 upscaling plus the complete composite/presentation look stack. Generated
 `RenderDebugMode` now makes those views live-selectable through
 `render.debug <mode>` without spending another bit, and the same command can
@@ -102,16 +102,18 @@ arm one bounded pixel record that returns the selected uploaded `GpuLight`,
 ray origin/direction/tMin/tMax, visibility mask, averaged transmission and
 committed hit. Generated shader flags, the FO3/FNV TXST↔NIF 2-5 permutation, `light.dump`, and
 `mat.dump` close the principal ingestion/material observability gaps.
-The data-driven `--cornell-oracle l0|l1|l2` scene now supplies the dark,
-analytic directional, and opaque-blocker rungs. Its first raw captures found
-and removed the shader's hidden zero-light synthetic sun: L0 is now black, L1
-is the expected constant directional response, and L2 is a white visibility
-field with the blocker plus its geometrically predicted hard shadow in black;
-all three frames report `rt-integrity verdict=PASS`. Remaining recovery gates
-are scheduling the now-passing `cornell_rt_oracle` scalar gate on the
-RT-capable CI worker, per-format material provenance and the
-L3-L5/five-game fixture matrix; the
-detailed status is maintained in the linked recovery plan. Forced BLAS pressure
+The data-driven `--cornell-oracle l0|l1|l2|l3|l4|l5` scene now covers dark,
+analytic directional, opaque-blocker, open/partitioned volumetric, and
+dielectric/metal/glass/normal-role probes. Its first raw captures found and
+removed the shader's hidden zero-light synthetic sun: L0 is black, L1 is the
+expected constant directional response, and L2 is a white visibility field
+with the blocker plus its predicted hard shadow in black. L3/L4 add a
+volumetric non-leakage gate; L5 adds categorical material populations. The
+canonical 432-byte `GpuMaterial` now also consumes BGEM glass optics and
+source-normalized soft/rim/back/Fresnel/palette inputs. Remaining recovery
+gates are scheduling L5 on the RT-capable worker and publishing a
+provider-backed five-game capture matrix; the detailed status is maintained
+in the linked recovery plan. Forced BLAS pressure
 is now covered by an explicit one-byte diagnostic budget gate: eligible rigid
 draws are protected before recovery builds, missing retained rigid BLAS are
 restored from dedicated or global geometry buffers before TLAS publication,

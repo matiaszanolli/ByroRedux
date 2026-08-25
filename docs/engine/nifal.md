@@ -77,10 +77,12 @@ Stale notes in `material-abstraction.md` corrected: the render-side glass heuris
 Residual gap (#2284 / MAT-D1-NEW-04, fixed 2026-08-05): six
 `BSLightingShaderProperty` shading scalars (`lighting_effect_1/2`,
 `subsurface_rolloff`, `rimlight_power`, `backlight_power`, `fresnel_power`) now
-land on the canonical `Material` — captured, not yet shaded (no `GpuMaterial`
-field, no `triangle.frag` consumer yet). The boundary itself is still the
-single translation site; the remaining work is a GPU-side follow-up, not a
-boundary leak.
+land on the canonical `Material`. **The GPU-side follow-up closed on
+2026-08-25:** all six are present in the 432-byte `GpuMaterial`, hashed in both
+material-table paths, mirrored in GLSL, and consumed by the canonical direct,
+glass, and GI response. Soft/rim/back feature flags and their lighting-mask /
+back-light texture roles are normalized before the renderer; the shader never
+asks which game or source format authored them.
 
 That paragraph and the `Material` doc used to call this "matching the existing
 `grayscale_to_palette_scale` precedent". It was not one, and the correction
@@ -92,11 +94,10 @@ earlier than the #2284 fields.
 
 **#2443 (MAT-D3-01) closed it**: `Material::grayscale_to_palette_scale` now
 exists and `translate_material` copies it, so the field has caught up to the
-#2284 six and the two groups really are the same shape — captured, awaiting a
-`GpuMaterial`/shader consumer. `triangle.frag`'s palette branch still performs
-an unmodulated direct lookup, so the *rendered* behaviour is unchanged until
-that follow-up lands; what changed is that the authored value now survives to
-the canonical tier instead of dying at the boundary.
+#2284 six and the two groups really are the same shape. The 2026-08-25 GPU
+follow-up added `GpuMaterial.grayscale_to_palette_scale` and applies it as a
+bounded blend in both effect-shader and lit BGSM palette paths, so authored
+non-1.0 values now affect rendered output without a format-specific branch.
 
 ### Mesh water — **converged at the NIFAL/WATAL seam**
 
@@ -511,7 +512,6 @@ the record that each gap is known and bounded, with its unblocking consumer:
 | inv marker | `BSInvMarker` | parsed, not walked into `Imported*` | inventory-icon system |
 | `NiSwitchNode` identity | `NiSwitchNode` | walked via **active-index** (furniture states, sheaths, destruction); the type discriminator is not surfaced. Content-present (Skyrim ~165, FO4 ~51) | geometry state-switching driver (gameplay) |
 | `bs_bound` | `BSBound` extra-data | consumed on the **loose-NIF** path only (`nif_loader.rs`), not the cell path | a cell-path bound consumer (low value — the cell path already derives `WorldBound` from geometry) |
-| `grayscale_to_palette_scale` | FO4+ BGSM (`asset_provider/material.rs`) + inline BSVER>=130 shader block | **boundary crossed (#2443 / MAT-D3-01)** — `Material::grayscale_to_palette_scale` exists and `translate_material` copies it; the field is captured but not yet shaded. Was "dropped by `translate_material`, no canonical field to land in" (#2592 / SKY-D7-04). Unlike the rest of this table it is not blocked on a missing feature: the consumer it modulates already ships — `triangle.frag`'s palette branch is live and its own comment still says the modulator "is not yet plumbed to GpuMaterial — direct lookup for now", so authored non-1.0 scales remain ignored *at the GPU*. FO4-facing; Skyrim never authors the field (SKY-D7-01) | a `GpuMaterial` slot + the multiply in `triangle.frag`'s existing `MAT_FLAG_EFFECT_PALETTE_COLOR` block |
 
 **In-cell LOD (2026-06-02, user-directed):** measured prevalence before building. `NiLODNode`
 (node-level Z-depth LOD) is **content-absent** across all target games; the parser +

@@ -131,7 +131,7 @@ Source: `crates/renderer/src/vulkan/`
   fields that previously lived on every per-instance struct were collapsed
   into a deduped per-frame `MaterialTable` SSBO indexed by
   `material_id: u32`. `GpuInstance` shrank to 112 bytes at R1 (128 bytes
-  today, as of #2219); `GpuMaterial` was 300 bytes at R1 (348 bytes today,
+  today, as of #2219); `GpuMaterial` was 300 bytes at R1 (432 bytes today,
   since `1d94eb24`'s cross-game texture-role unification). See
   [Material table](#material-table-r1).
 - **Disney BSDF** (#1248–#1257, 2026-05): IOR-derived Fresnel F0, Burley +
@@ -525,7 +525,7 @@ alpha state, Skyrim+ shader-variant payloads, BSEffect falloff, BGSM UV
 transform, NiMaterialProperty diffuse/ambient — was duplicated onto every
 per-instance struct, so a cell that places one material 10–30 times carried
 the same ~35 fields that many times. R1 factored them into a deduped
-**`GpuMaterial`** (300 bytes at R1, 348 bytes today — see
+**`GpuMaterial`** (300 bytes at R1, 432 bytes today — see
 [`shader-pipeline.md`](shader-pipeline.md) for the current field layout)
 and a per-frame **`MaterialTable`** SSBO
 (binding 13, `MAX_MATERIALS = 16384`). `GpuInstance` (128 bytes as of
@@ -539,7 +539,7 @@ boundary resolves all per-game shader-property differences into a small
 flag set, and the shader reads only those flags. The full set lives in
 [`material.rs`](../../crates/renderer/src/vulkan/material.rs). Every
 shader-visible flag—including the effect, PBR/Disney, translucency,
-model-space-normal, and thin-glass families—is generated into
+model-space-normal, thin-glass, and soft/rim/back-lighting families—is generated into
 `shaders/include/shader_constants.glsl` from `shader_constants_data.rs` and
 tested bit-for-bit against the Rust constants. `material_flag::BGSM_AUTHORED`
 is host-side provenance only and is intentionally not mirrored:
@@ -551,6 +551,8 @@ is host-side provenance only and is intentionally not mirrored:
 | `MAT_FLAG_PBR_BSDF` | Material authors Disney-style PBR fields → Disney BSDF path |
 | `MAT_FLAG_TRANSLUCENCY` (+ `_THICK_OBJECT` / `_MIX_ALBEDO`) | Subsurface translucency |
 | `MAT_FLAG_MODEL_SPACE_NORMALS` | Model-space (vs tangent-space) normal map |
+| `MAT_FLAG_MSN_HAS_AUTHORED_Z` | Model-space normal carries authored Z rather than reconstructed Z |
+| `MAT_FLAG_SOFT_LIGHTING` / `_RIM_LIGHTING` / `_BACK_LIGHTING` | Source-normalized Bethesda lighting-response lobes |
 | `material_flag::BGSM_AUTHORED` | Host-side only (NOT mirrored to the shader): material came from a BGSM/BGEM file (drives spec-glossiness → metallic-roughness translation) |
 
 The operator-facing material oracle is `mat.dump <entity|.>`. It prints the
@@ -558,8 +560,10 @@ material kind, flag word, selected BRDF lobe, scalar inputs, and each canonical
 texture role with its resolved path, captured source, bindless handle,
 descriptor binding, dimensionality, and sRGB/linear interpretation. In
 particular, environment maps are pinned to set 0/binding 1 as cubes; ordinary
-2D roles use binding 0. `DBG_VIZ_MATERIAL_LOBES` renders the active lobe as a
-stable false colour without involving the final composite.
+2D roles use binding 0. `material_lobe` renders the active lobe as a stable
+false colour without involving the final composite. `material_role`
+independently reports the translated map role: model/tangent normal,
+height/POM, environment, tint, or base. Both views are source-format agnostic.
 
 `material_kind` carries the special-case render path selector
 (`MATERIAL_KIND_GLASS = 100`, `MATERIAL_KIND_EFFECT_SHADER = 101`,
@@ -717,7 +721,8 @@ mistaken for an occluder hit.
 
 The operator-facing path is `render.debug <mode>` rather than a compound flag
 word. Modes are `final`, `shadow_visibility`, `selected_light`, `direct_only`,
-`indirect_only`, `material_lobe`, `composite_term`, and `rt_lod`; the legacy
+`indirect_only`, `material_lobe`, `composite_term`, `rt_lod`, and
+`material_role`; the legacy
 bitmask remains for orthogonal feature ablations. Appending `<x> <y>` (render
 pixels, upper-left origin), or using `render.debug probe <x> <y>`, arms one
 bounded selected-ray record. A later no-argument `render.debug` prints whether
@@ -735,14 +740,14 @@ term isolation: automatic exposure must not turn a zero-light plane grey. The
 debug selector is carried through both push-constant layouts, and a
 source-contract test pins the bypass at all three stages.
 
-For synthetic isolation, `--cornell-oracle l0|l1|l2` builds a data-driven
-dark-plane → analytic directional → opaque-blocker ladder. Its manifest owns
-the camera, source, expected unshadowed Lambert value, primary raw view and
-linear tolerance; CPU tests pin the one-variable progression and L2 shadow /
-control probe geometry before image capture is involved. The initial L0 raw
-capture found the former `lightCount == 0` synthetic directional fallback;
-that path is removed and a source contract now requires zero lights to produce
-zero direct transport.
+For synthetic isolation, `--cornell-oracle l0|l1|l2|l3|l4|l5` builds a
+data-driven ladder. L0–L2 cover dark-plane → analytic directional → opaque
+blocker; L3/L4 compare an open point-lit fog volume against the same volume
+with one opaque partition; L5 adds dielectric, metal, glass, and normal-role
+probes and defaults to the categorical material-lobe view. The manifest owns
+camera, source, raw view, and tolerance. CPU tests pin each one-variable
+progression, while hardware-gated captures assert direct visibility,
+volumetric non-leakage, and stable material populations.
 
 ## Pipeline cache
 

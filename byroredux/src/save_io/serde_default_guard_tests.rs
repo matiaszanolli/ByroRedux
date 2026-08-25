@@ -284,8 +284,8 @@ fn save_shape_fingerprint() -> u64 {
 
 #[test]
 fn saved_type_shape_changes_require_format_major_bump() {
-    const BASELINE_MAJOR: u16 = 6;
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x53d1_433d_b9e3_84cb;
+    const BASELINE_MAJOR: u16 = 7;
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x418d_9952_ddf5_a1ff;
     assert_eq!(
         byroredux_save::FORMAT_MAJOR,
         BASELINE_MAJOR,

@@ -1,4 +1,4 @@
-//! Hardware-gated L0-L4 ray-transport oracle.
+//! Hardware-gated L0-L5 transport and material oracle.
 //!
 //! Run on an RT-capable integration worker:
 //!
@@ -10,6 +10,8 @@
 //! presentation. L0-L2 isolate direct surface transport; L3-L4 capture the
 //! HDR-linear composite term so the volumetric integral is present while
 //! exposure, ACES, bloom, grading and presentation dither remain bypassed.
+//! L5 uses the categorical material-lobe view for dielectric, metal, glass,
+//! and normal-mapped probe geometry.
 
 use image::RgbImage;
 use std::path::Path;
@@ -88,7 +90,7 @@ fn cornell_l3_l4_volumetric_partition_does_not_leak() {
         "l4",
         COMPOSITE_DEBUG,
         "lights_uploaded=1",
-        "tlas_emitted=2",
+        "tlas_emitted=5",
         &[],
     );
 
@@ -117,6 +119,42 @@ fn cornell_l3_l4_volumetric_partition_does_not_leak() {
         l4_edge_left <= l4_right * 0.18,
         "L4 wall-adjacent froxel leaked: edge={l4_edge_left:.6}, lit={l4_right:.6}"
     );
+}
+
+#[test]
+#[ignore = "requires an RT-capable Vulkan device and a display/Xvfb"]
+fn cornell_l5_exposes_canonical_material_lobes() {
+    let workdir = tempfile::tempdir().expect("create material Cornell tempdir");
+    let l5 = capture(
+        workdir.path(),
+        "l5",
+        COMPOSITE_DEBUG,
+        "lights_uploaded=1",
+        "tlas_emitted=2",
+        &[],
+    );
+
+    // The debug view writes stable categorical colours before glass can take
+    // an early return. Require meaningful populations for legacy dielectric
+    // grey, Disney/PBR gold, and glass blue rather than pinning camera pixels.
+    for (name, expected) in [
+        ("dielectric", [0.45, 0.45, 0.45]),
+        ("metal", [1.00, 0.65, 0.05]),
+        ("glass", [0.10, 0.35, 1.00]),
+    ] {
+        let expected = expected.map(linear_to_srgb_u8);
+        let matches = l5
+            .pixels()
+            .filter(|pixel| {
+                pixel
+                    .0
+                    .iter()
+                    .zip(expected)
+                    .all(|(actual, target)| actual.abs_diff(target) <= 4)
+            })
+            .count();
+        assert!(matches >= 64, "L5 has no stable {name} lobe population");
+    }
 }
 
 /// Force the static-BLAS budget below even this tiny scene's live set. The

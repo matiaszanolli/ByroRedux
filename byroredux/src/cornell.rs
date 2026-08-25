@@ -181,6 +181,7 @@ pub(crate) enum CornellOracleRung {
     L2,
     L3,
     L4,
+    L5,
 }
 
 /// Data contract shared by scene construction, analytic tests, and capture
@@ -196,6 +197,8 @@ pub(crate) struct CornellOracleManifest {
     /// Local point-light + fog-volume transport is active. L3 is the open
     /// control and L4 changes only by adding an opaque partition.
     pub volumetric_probe: bool,
+    /// L5 adds the canonical dielectric/metal/glass/normal-role probe row.
+    pub material_probes: bool,
     pub camera_position: Vec3,
     pub camera_target: Vec3,
     pub primary_debug_view: &'static str,
@@ -215,23 +218,54 @@ const ORACLE_CAMERA_TARGET: Vec3 = Vec3::new(0.0, 4.0, 0.0);
 const ORACLE_VOLUMETRIC_SCALE: f32 = 100.0;
 
 pub(crate) fn cornell_oracle_manifest(rung: CornellOracleRung) -> CornellOracleManifest {
-    let (name, directional_radiance, blocker, volumetric_probe, primary_debug_view) = match rung {
-        CornellOracleRung::L0 => ("l0_dark_plane", [0.0; 3], false, false, "direct"),
-        CornellOracleRung::L1 => ("l1_directional_lambert", [1.0; 3], false, false, "direct"),
+    let (
+        name,
+        directional_radiance,
+        blocker,
+        volumetric_probe,
+        material_probes,
+        primary_debug_view,
+    ) = match rung {
+        CornellOracleRung::L0 => ("l0_dark_plane", [0.0; 3], false, false, false, "direct"),
+        CornellOracleRung::L1 => (
+            "l1_directional_lambert",
+            [1.0; 3],
+            false,
+            false,
+            false,
+            "direct",
+        ),
         CornellOracleRung::L2 => (
             "l2_opaque_blocker",
             [1.0; 3],
             true,
             false,
+            false,
             "shadow_visibility",
         ),
-        CornellOracleRung::L3 => ("l3_point_fog_open", [0.0; 3], false, true, "composite_term"),
+        CornellOracleRung::L3 => (
+            "l3_point_fog_open",
+            [0.0; 3],
+            false,
+            true,
+            false,
+            "composite_term",
+        ),
         CornellOracleRung::L4 => (
             "l4_point_fog_partition",
             [0.0; 3],
             true,
             true,
+            false,
             "composite_term",
+        ),
+        CornellOracleRung::L5 => (
+            "l5_material_roles",
+            [1.0; 3],
+            false,
+            false,
+            true,
+            "material_lobe",
         ),
     };
     CornellOracleManifest {
@@ -240,6 +274,7 @@ pub(crate) fn cornell_oracle_manifest(rung: CornellOracleRung) -> CornellOracleM
         direction_toward_source: ORACLE_LIGHT_DIRECTION,
         blocker,
         volumetric_probe,
+        material_probes,
         camera_position: ORACLE_CAMERA_POSITION
             * if volumetric_probe {
                 ORACLE_VOLUMETRIC_SCALE
@@ -259,25 +294,25 @@ pub(crate) fn cornell_oracle_manifest(rung: CornellOracleRung) -> CornellOracleM
     }
 }
 
-/// Parse `--cornell-oracle l0|l1|l2|l3|l4` without silently falling back to
-/// the demo scene on a typo. Later rungs intentionally remain errors until
-/// their full scene and assertions exist.
+/// Parse `--cornell-oracle l0|l1|l2|l3|l4|l5` without silently falling back
+/// to the demo scene on a typo.
 pub(crate) fn cornell_oracle_rung(args: &[String]) -> Result<Option<CornellOracleRung>, String> {
     let Some(index) = args.iter().position(|arg| arg == "--cornell-oracle") else {
         return Ok(None);
     };
     let value = args
         .get(index + 1)
-        .ok_or_else(|| "--cornell-oracle requires one of: l0, l1, l2, l3, l4".to_string())?;
+        .ok_or_else(|| "--cornell-oracle requires one of: l0, l1, l2, l3, l4, l5".to_string())?;
     let rung = match value.to_ascii_lowercase().as_str() {
         "l0" => CornellOracleRung::L0,
         "l1" => CornellOracleRung::L1,
         "l2" => CornellOracleRung::L2,
         "l3" => CornellOracleRung::L3,
         "l4" => CornellOracleRung::L4,
+        "l5" => CornellOracleRung::L5,
         _ => {
             return Err(format!(
-                "unknown Cornell oracle rung '{value}'; expected one of: l0, l1, l2, l3, l4"
+                "unknown Cornell oracle rung '{value}'; expected one of: l0, l1, l2, l3, l4, l5"
             ));
         }
     };
@@ -338,7 +373,7 @@ fn sun_dir() -> [f32; 3] {
     SUN_DIR_RAW.normalize().to_array()
 }
 
-/// Construct the controlled L0-L4 correctness scene selected by
+/// Construct the controlled L0-L5 correctness scene selected by
 /// `--cornell-oracle`. The richer `--cornell` showcase remains untouched.
 pub(crate) fn setup_cornell_oracle_scene(
     world: &mut World,
@@ -352,6 +387,8 @@ pub(crate) fn setup_cornell_oracle_scene(
         // grading and stochastic dither. The capture then remains a direct
         // HDR-linear transport oracle.
         ctx.set_render_debug_mode(RenderDebugMode::CompositeTerm);
+    } else if manifest.material_probes {
+        ctx.set_render_debug_mode(RenderDebugMode::MaterialLobe);
     }
     let expected_unshadowed = manifest.expected_unshadowed_direct([1.0; 3]);
     world.insert_resource(CellLightingRes {
@@ -460,14 +497,53 @@ pub(crate) fn setup_cornell_oracle_scene(
             );
         }
     }
+
+    if manifest.material_probes {
+        let probe = builder.sphere(0.55);
+        let probes = [
+            (-2.4, matte([0.72, 0.72, 0.72]), "l5_dielectric"),
+            (-0.8, pbr_bsdf([0.90, 0.72, 0.22], 1.0, 0.18), "l5_metal"),
+            (0.8, glass([0.82, 0.92, 1.0]), "l5_glass"),
+            (2.4, matte([0.72, 0.72, 0.72]), "l5_normal_role"),
+        ];
+        let mut normal_probe = None;
+        for (x, material, name) in probes {
+            let entity = spawn_object(
+                world,
+                probe,
+                neutral,
+                Vec3::new(x, 4.0, 0.65) + world_offset,
+                Quat::IDENTITY,
+                material,
+                name,
+            );
+            if name == "l5_normal_role" {
+                normal_probe = Some(entity);
+            }
+        }
+        let normal_map = synthesize_wavy_normal_map(builder.ctx);
+        world.insert(
+            normal_probe.expect("L5 normal-role probe must be spawned"),
+            MaterialTextureHandles {
+                textures: byroredux_nif::import::MaterialTextureSet {
+                    normal: normal_map,
+                    ..Default::default()
+                },
+                normal_has_alpha: false,
+                parallax_height_scale: 0.04,
+                parallax_max_passes: 4.0,
+            },
+        );
+    }
     builder.finish();
 
     log::info!(
-        "Cornell oracle {} ready: blocker={}, volumetric={}, debug={}, world_offset={:?}, \
+        "Cornell oracle {} ready: blocker={}, volumetric={}, material_probes={}, debug={}, world_offset={:?}, \
          expected unshadowed direct={:?}, linear tolerance={:.4}",
         manifest.name,
         manifest.blocker,
         manifest.volumetric_probe,
+        manifest.material_probes,
         manifest.primary_debug_view,
         world_offset,
         expected_unshadowed,
@@ -1688,8 +1764,27 @@ mod tests {
             cornell_oracle_rung(&args(&["--cornell-oracle", "l4"])).unwrap(),
             Some(CornellOracleRung::L4)
         );
+        assert_eq!(
+            cornell_oracle_rung(&args(&["--cornell-oracle", "L5"])).unwrap(),
+            Some(CornellOracleRung::L5)
+        );
         assert!(cornell_oracle_rung(&args(&["--cornell-oracle"])).is_err());
-        assert!(cornell_oracle_rung(&args(&["--cornell-oracle", "l5"])).is_err());
+        assert!(cornell_oracle_rung(&args(&["--cornell-oracle", "l6"])).is_err());
+    }
+
+    #[test]
+    fn cornell_oracle_l5_adds_only_the_canonical_material_probe_row() {
+        let l2 = cornell_oracle_manifest(CornellOracleRung::L2);
+        let l5 = cornell_oracle_manifest(CornellOracleRung::L5);
+
+        assert!(l5.material_probes);
+        assert!(!l5.blocker);
+        assert!(!l5.volumetric_probe);
+        assert_eq!(l5.directional_radiance, [1.0; 3]);
+        assert_eq!(l5.primary_debug_view, "material_lobe");
+        assert_eq!(l5.camera_position, l2.camera_position);
+        assert_eq!(l5.camera_target, l2.camera_target);
+        assert_eq!(l5.direction_toward_source, l2.direction_toward_source);
     }
 
     #[test]
