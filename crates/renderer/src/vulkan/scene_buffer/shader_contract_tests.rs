@@ -2023,6 +2023,30 @@ fn unresolved_glass_keeps_tint_and_low_angle_reflections() {
     );
 }
 
+#[test]
+fn bgem_glass_optics_drive_distinct_reflection_refraction_and_overlay_lanes() {
+    let frag = include_str!("../../../shaders/triangle.frag");
+
+    for needle in [
+        "mat.glassBlurScale * mat.glassBlurScaleFactor",
+        "mat.glassRoughnessScratchMapIndex",
+        "mat.glassRefractionScale / 0.05",
+        "reflColor * glassFresnelTint",
+        "mat.glassDirtOverlayMapIndex",
+        "resolvedAlpha * (1.0 - glassDirtAlpha)",
+    ] {
+        assert!(
+            frag.contains(needle),
+            "BGEM glass optical consumer lost `{needle}`"
+        );
+    }
+    assert!(
+        frag.contains("glassOpticalRoughness * 8.0")
+            && frag.contains("0.4 + glassOpticalRoughness * 5.0"),
+        "authored blur/scratch roughness must shape both reflection and refraction"
+    );
+}
+
 /// #2243 — Disney diffuse is /PI while sheen is not. The canonical clustered
 /// path deliberately uses the legacy non-/PI Lambert convention, so it must
 /// rescale the complete Disney lobe. Scaling diffuse alone makes sheen PI

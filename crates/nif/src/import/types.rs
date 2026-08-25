@@ -322,6 +322,12 @@ pub struct MaterialTextureSet<T> {
     pub inner_layer: T,
     /// Standalone specular-colour map, distinct from [`Self::smooth_spec`].
     pub specular: T,
+    /// Skyrim soft/rim-light mask (`BSShaderTextureSet` slot 2 when the
+    /// corresponding SLSF2 feature is enabled).
+    pub lighting_mask: T,
+    /// Skyrim back-light transmission map (`BSShaderTextureSet` slot 7 when
+    /// `SLSF2_Back_Lighting` is enabled).
+    pub back_lighting: T,
     pub lighting: T,
     pub flow: T,
     pub wrinkle: T,
@@ -353,6 +359,8 @@ impl<T> MaterialTextureSet<T> {
             tint: map(&self.tint),
             inner_layer: map(&self.inner_layer),
             specular: map(&self.specular),
+            lighting_mask: map(&self.lighting_mask),
+            back_lighting: map(&self.back_lighting),
             lighting: map(&self.lighting),
             flow: map(&self.flow),
             wrinkle: map(&self.wrinkle),
@@ -384,6 +392,8 @@ impl<T> MaterialTextureSet<T> {
             &self.tint,
             &self.inner_layer,
             &self.specular,
+            &self.lighting_mask,
+            &self.back_lighting,
             &self.lighting,
             &self.flow,
             &self.wrinkle,
@@ -425,24 +435,26 @@ mod material_texture_set_tests {
             tint: 9,
             inner_layer: 10,
             specular: 11,
-            lighting: 12,
-            flow: 13,
-            wrinkle: 14,
-            greyscale_lut: 15,
-            reflectance: 16,
-            emittance_gradient: 17,
-            glass_roughness_scratch: 18,
-            glass_dirt_overlay: 19,
-            decals: [20, 21, 22, 23],
+            lighting_mask: 12,
+            back_lighting: 13,
+            lighting: 14,
+            flow: 15,
+            wrinkle: 16,
+            greyscale_lut: 17,
+            reflectance: 18,
+            emittance_gradient: 19,
+            glass_roughness_scratch: 20,
+            glass_dirt_overlay: 21,
+            decals: [22, 23, 24, 25],
         };
 
         assert_eq!(
             textures.values().copied().collect::<Vec<_>>(),
-            (0..24).collect::<Vec<_>>()
+            (0..26).collect::<Vec<_>>()
         );
         assert_eq!(
             textures.secondary_values().copied().collect::<Vec<_>>(),
-            (1..24).collect::<Vec<_>>()
+            (1..26).collect::<Vec<_>>()
         );
     }
 }
@@ -472,6 +484,12 @@ pub struct ImportedMaterial {
     pub is_pbr: bool,
     pub has_translucency: bool,
     pub model_space_normals: bool,
+    /// Source-authored Skyrim/FO4 soft, rim, and back-light feature gates.
+    /// Scalars and maps may be present while their gate is clear, so the
+    /// booleans must survive translation independently.
+    pub soft_lighting: bool,
+    pub rim_lighting: bool,
+    pub back_lighting: bool,
     /// **Provenance only**: an external `.bgsm` *or* `.bgem` file resolved for
     /// this material. Says nothing about which fields it supplied — the BGEM
     /// arm sets this too, and BGEM authors no smoothness/specular at all.
@@ -601,6 +619,9 @@ impl Default for ImportedMaterial {
             is_pbr: false,
             has_translucency: false,
             model_space_normals: false,
+            soft_lighting: false,
+            rim_lighting: false,
+            back_lighting: false,
             from_bgsm: false,
             bgem_glass: false,
             thin_glass: false,

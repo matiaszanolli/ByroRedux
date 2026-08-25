@@ -417,6 +417,9 @@ pub const MAT_FLAG_THIN_GLASS: u32 = 1 << 11;
 // compression format at texture-load time; see `material_flag::
 // MSN_HAS_AUTHORED_Z` in `vulkan/material.rs` for the full rationale.
 pub const MAT_FLAG_MSN_HAS_AUTHORED_Z: u32 = 1 << 12;
+pub const MAT_FLAG_SOFT_LIGHTING: u32 = 1 << 13;
+pub const MAT_FLAG_RIM_LIGHTING: u32 = 1 << 14;
+pub const MAT_FLAG_BACK_LIGHTING: u32 = 1 << 15;
 // `MAT_FLAG_EFFECT_LI_SHIFT` — bit offset for the 8-bit
 // `BSEffectShaderProperty.lighting_influence` byte packed into bits
 // 16-23 of `materialFlags`. Extract via

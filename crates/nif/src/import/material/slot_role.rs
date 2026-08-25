@@ -63,6 +63,10 @@ pub enum TextureRole {
     InnerLayer,
     /// Standalone specular intensity/colour, on model-space-normal materials.
     Specular,
+    /// Skyrim soft/rim-light mask from texture-set slot 2.
+    LightingMask,
+    /// Skyrim back-light map from texture-set slot 7.
+    BackLighting,
     /// FO4 wrinkle/expression-crease normal map, tint-family shader types
     /// only. See #2999.
     Wrinkle,
@@ -120,6 +124,9 @@ pub struct TextureSlotContext {
     pub shader_type: u32,
     pub glow_map: bool,
     pub model_space_normals: bool,
+    pub soft_lighting: bool,
+    pub rim_lighting: bool,
+    pub back_lighting: bool,
 }
 
 /// Translate a source shader-type integer into the canonical numbering used by
@@ -231,6 +238,8 @@ pub fn slot_to_role(context: TextureSlotContext, slot: u32) -> Option<TextureRol
                 Some(TextureRole::Tint)
             } else if context.glow_map {
                 Some(TextureRole::Emissive)
+            } else if context.soft_lighting || context.rim_lighting {
+                Some(TextureRole::LightingMask)
             } else {
                 // Skyrim multiplexes slot 2 between Glow_Map, Soft_Lighting,
                 // and Rim_Lighting. The latter two have no canonical texture
@@ -331,10 +340,14 @@ pub fn slot_to_role(context: TextureSlotContext, slot: u32) -> Option<TextureRol
         // independent of shader type (#2742) — except on type 11, where it is a
         // back-lighting map with no canonical role.
         (TextureSlotLayout::Skyrim | TextureSlotLayout::Starfield, 7) => {
-            match (shader_type, context.model_space_normals) {
-                (bs_lighting::MULTI_LAYER_PARALLAX, _) => None,
-                (_, true) => Some(TextureRole::Specular),
-                (_, false) => None,
+            if context.back_lighting {
+                Some(TextureRole::BackLighting)
+            } else {
+                match (shader_type, context.model_space_normals) {
+                    (bs_lighting::MULTI_LAYER_PARALLAX, _) => None,
+                    (_, true) => Some(TextureRole::Specular),
+                    (_, false) => None,
+                }
             }
         }
         // FO4 slot 7 is authored specular whether or not the almost-never-set
@@ -357,6 +370,9 @@ mod tests {
             shader_type,
             glow_map,
             model_space_normals,
+            soft_lighting: false,
+            rim_lighting: false,
+            back_lighting: false,
         }
     }
 
@@ -485,6 +501,9 @@ mod tests {
                 shader_type: ty,
                 glow_map: false,
                 model_space_normals: false,
+                soft_lighting: false,
+                rim_lighting: false,
+                back_lighting: false,
             };
             assert_eq!(
                 slot_to_role(context, 4),
@@ -503,6 +522,9 @@ mod tests {
             shader_type: 0,
             glow_map: false,
             model_space_normals: false,
+            soft_lighting: false,
+            rim_lighting: false,
+            back_lighting: false,
         };
         assert_eq!(slot_to_role(non_tint, 4), Some(TextureRole::Environment));
         assert_eq!(
@@ -523,6 +545,9 @@ mod tests {
                 shader_type: bs_lighting::FACE_TINT,
                 glow_map: false,
                 model_space_normals: false,
+                soft_lighting: false,
+                rim_lighting: false,
+                back_lighting: false,
             };
             assert_eq!(
                 slot_to_role(context, 4),
@@ -544,6 +569,9 @@ mod tests {
             shader_type: 0,
             glow_map: false,
             model_space_normals: false,
+            soft_lighting: false,
+            rim_lighting: false,
+            back_lighting: false,
         };
         assert_eq!(
             slot_to_role(context, 3),
@@ -564,6 +592,9 @@ mod tests {
             shader_type: canonical_shader_type(TextureSlotLayout::Fallout76, 5),
             glow_map: false,
             model_space_normals: false,
+            soft_lighting: false,
+            rim_lighting: false,
+            back_lighting: false,
         };
         assert_eq!(context.shader_type, bs_lighting::HAIR_TINT);
         assert_eq!(
@@ -602,6 +633,9 @@ mod tests {
             shader_type: 0,
             glow_map: false,
             model_space_normals: false,
+            soft_lighting: false,
+            rim_lighting: false,
+            back_lighting: false,
         };
         let before = unrouted_texture_slot_bindings(context.layout, 7);
         record_unrouted_texture_slot(context, 7);
@@ -634,6 +668,9 @@ mod tests {
                         shader_type: ty,
                         glow_map: true,
                         model_space_normals: msn,
+                        soft_lighting: false,
+                        rim_lighting: false,
+                        back_lighting: false,
                     };
                     let mut seen = Vec::new();
                     for slot in 0..8u32 {

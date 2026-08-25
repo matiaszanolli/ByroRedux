@@ -233,8 +233,9 @@ pub(crate) fn pack_imported_material_flags(
     material: &byroredux_nif::import::ImportedMaterial,
 ) -> u32 {
     use byroredux_renderer::vulkan::material::material_flag::{
-        BGSM_AUTHORED, EFFECT_PALETTE_ALPHA, EFFECT_PALETTE_COLOR, MODEL_SPACE_NORMALS, PBR_BSDF,
-        THIN_GLASS, TRANSLUCENCY, TRANSLUCENCY_MIX_ALBEDO, TRANSLUCENCY_THICK_OBJECT,
+        BACK_LIGHTING, BGSM_AUTHORED, EFFECT_PALETTE_ALPHA, EFFECT_PALETTE_COLOR,
+        MODEL_SPACE_NORMALS, PBR_BSDF, RIM_LIGHTING, SOFT_LIGHTING, THIN_GLASS, TRANSLUCENCY,
+        TRANSLUCENCY_MIX_ALBEDO, TRANSLUCENCY_THICK_OBJECT,
     };
     let mut flags = 0u32;
     // `BGSM_AUTHORED` — set when `merge_external_material` resolved a
@@ -262,6 +263,15 @@ pub(crate) fn pack_imported_material_flags(
     }
     if material.thin_glass {
         flags |= THIN_GLASS;
+    }
+    if material.soft_lighting {
+        flags |= SOFT_LIGHTING;
+    }
+    if material.rim_lighting {
+        flags |= RIM_LIGHTING;
+    }
+    if material.back_lighting {
+        flags |= BACK_LIGHTING;
     }
     // #1353 / FO4-D8-07 — FO4 BGSM grayscale-to-palette. EFFECT_PALETTE_COLOR
     // IS `SLSF1::Greyscale_To_PaletteColor`; setting it on a BGSM lit material

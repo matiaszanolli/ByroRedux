@@ -190,6 +190,9 @@ pub(super) fn resolve_mesh_paths(
                 shader_type: mesh.material.shader_type,
                 glow_map: mesh.material.slot2_glow_enabled,
                 model_space_normals: effective_model_space_normals,
+                soft_lighting: mesh.material.soft_lighting,
+                rim_lighting: mesh.material.rim_lighting,
+                back_lighting: mesh.material.back_lighting,
             };
             let pick = |slot: u32, raw: Option<FixedString>, role: TextureRole| {
                 raw.filter(|_| slot_to_role(slot_context, slot) == Some(role))
@@ -248,6 +251,14 @@ pub(super) fn resolve_mesh_paths(
             });
             (textures.specular, sources.specular) =
                 resolve_effective(specular_override, mesh.material.textures.specular);
+            (textures.lighting_mask, sources.lighting_mask) = resolve_effective(
+                ov.and_then(|o| pick(2, o.glow, TextureRole::LightingMask)),
+                mesh.material.textures.lighting_mask,
+            );
+            (textures.back_lighting, sources.back_lighting) = resolve_effective(
+                ov.and_then(|o| pick(7, o.specular, TextureRole::BackLighting)),
+                mesh.material.textures.back_lighting,
+            );
             // `wrinkle` is an FO4/FO76 TX02 role, not a BSShaderTextureSet slot
             // index, so it does not go through the slot table.
             (textures.wrinkle, sources.wrinkle) =

@@ -512,6 +512,8 @@ fn map_secondary_texture_handles(
         tint: slot(&textures.tint, srgb),
         inner_layer: slot(&textures.inner_layer, srgb),
         specular: slot(&textures.specular, linear),
+        lighting_mask: slot(&textures.lighting_mask, linear),
+        back_lighting: slot(&textures.back_lighting, srgb),
         lighting: slot(&textures.lighting, linear),
         flow: slot(&textures.flow, linear),
         wrinkle: slot(&textures.wrinkle, linear),
@@ -564,6 +566,8 @@ mod tests {
             tint: some("tint"),
             inner_layer: some("inner_layer"),
             specular: some("specular"),
+            lighting_mask: some("lighting_mask"),
+            back_lighting: some("back_lighting"),
             lighting: some("lighting"),
             flow: some("flow"),
             wrinkle: some("wrinkle"),
@@ -606,6 +610,7 @@ mod tests {
             "height",
             "environment_mask",
             "specular",
+            "lighting_mask",
             "glass_roughness_scratch",
         ] {
             assert!(seen.iter().any(|(path, cubemap, color_space)| path == role
@@ -616,6 +621,7 @@ mod tests {
             "emissive",
             "detail",
             "dark",
+            "back_lighting",
             "glass_dirt_overlay",
             "decal_0",
         ] {

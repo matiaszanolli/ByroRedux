@@ -139,6 +139,22 @@ fn apply_bs_lighting_shader(
         if model_space_normals {
             info.model_space_normals = true;
         }
+        let (soft_lighting, rim_lighting, back_lighting) =
+            if matches!(slot_layout, TextureSlotLayout::Skyrim) {
+                use crate::shader_flags::skyrim_slsf2::{
+                    BACK_LIGHTING, RIM_LIGHTING, SOFT_LIGHTING,
+                };
+                (
+                    shader.shader_flags_2 & SOFT_LIGHTING != 0,
+                    shader.shader_flags_2 & RIM_LIGHTING != 0,
+                    shader.shader_flags_2 & BACK_LIGHTING != 0,
+                )
+            } else {
+                (false, false, false)
+            };
+        info.soft_lighting |= soft_lighting;
+        info.rim_lighting |= rim_lighting;
+        info.back_lighting |= back_lighting;
         if let Some(ts_idx) = shader.texture_set_ref.index() {
             if let Some(tex_set) = scene.get_as::<BSShaderTextureSet>(ts_idx) {
                 // #2695 — slot→role resolution now goes through the single
@@ -160,6 +176,9 @@ fn apply_bs_lighting_shader(
                     shader_type: effective_type,
                     glow_map: slot2_glow_enabled,
                     model_space_normals,
+                    soft_lighting,
+                    rim_lighting,
+                    back_lighting,
                 };
                 for slot in 0..8u32 {
                     let Some(raw) = tex_set.textures.get(slot as usize) else {
@@ -191,6 +210,8 @@ fn apply_bs_lighting_shader(
                         TextureRole::EnvironmentMask => &mut info.env_mask,
                         TextureRole::InnerLayer => &mut info.inner_layer_map,
                         TextureRole::Specular => &mut info.specular_map,
+                        TextureRole::LightingMask => &mut info.lighting_mask_map,
+                        TextureRole::BackLighting => &mut info.back_lighting_map,
                         TextureRole::Wrinkle => &mut info.wrinkle_map,
                     };
                     if dest.is_none() {

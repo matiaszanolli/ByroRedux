@@ -492,6 +492,9 @@ pub(super) struct MaterialInfo {
     /// `BSLightingShaderType::MultiLayerParallax` ("Enables …
     /// Layer(TS7)") and #563.
     pub inner_layer_map: Option<FixedString>,
+    /// Skyrim slot-2 soft/rim-light mask and slot-7 back-light map.
+    pub lighting_mask_map: Option<FixedString>,
+    pub back_lighting_map: Option<FixedString>,
     /// FO4 `BSShaderTextureSet` slot 5, tint-family shader types only
     /// (FaceTint/SkinTint/HairTint) — the wrinkle/expression-crease
     /// normal map (`*_n.dds`: `BaseFemaleHeadWrinkles_n.DDS`,
@@ -639,6 +642,10 @@ pub(super) struct MaterialInfo {
     /// Per-material backlight exponent (paired with `rimlight_power`
     /// when `< FLT_MAX`). Default 0.0. See #1241.
     pub backlight_power: f32,
+    /// Authored feature gates from Skyrim SLSF2 or FO4-era material data.
+    pub soft_lighting: bool,
+    pub rim_lighting: bool,
+    pub back_lighting: bool,
     /// `BSLightingShaderProperty.grayscale_to_palette_scale` — FO4+
     /// BSVER >= 130. Modulator on the greyscale→palette LUT remap
     /// (NPC face tints, gradient-driven palette swaps). Default 1.0
@@ -1101,6 +1108,8 @@ impl Default for MaterialInfo {
             slot2_glow_enabled: false,
             tint_map: None,
             inner_layer_map: None,
+            lighting_mask_map: None,
+            back_lighting_map: None,
             wrinkle_map: None,
             vertex_color_mode: VertexColorMode::AmbientDiffuse,
             alpha_blend: false,
@@ -1145,6 +1154,9 @@ impl Default for MaterialInfo {
             subsurface_rolloff: 0.0,
             rimlight_power: 0.0,
             backlight_power: 0.0,
+            soft_lighting: false,
+            rim_lighting: false,
+            back_lighting: false,
             grayscale_to_palette_scale: 1.0,
             fresnel_power: 5.0,
             uv_offset: [0.0, 0.0],
@@ -1227,6 +1239,8 @@ impl MaterialInfo {
             // Standalone BGSM/BGEM roles are populated by the downstream
             // material-file translator; inline NIF shaders do not expose them.
             specular: self.specular_map,
+            lighting_mask: self.lighting_mask_map,
+            back_lighting: self.back_lighting_map,
             lighting: intern_effect_path(
                 pool,
                 effect.and_then(|data| data.lighting_texture.as_deref()),
@@ -1453,6 +1467,9 @@ impl MaterialInfo {
             subsurface_rolloff: self.subsurface_rolloff,
             rimlight_power: self.rimlight_power,
             backlight_power: self.backlight_power,
+            soft_lighting: self.soft_lighting,
+            rim_lighting: self.rim_lighting,
+            back_lighting: self.back_lighting,
             grayscale_to_palette_scale: self.grayscale_to_palette_scale,
             bgsm_greyscale_lut_is_alpha: false,
             // #2108 — no BGSM/BGEM has merged yet at this NIF-import stage

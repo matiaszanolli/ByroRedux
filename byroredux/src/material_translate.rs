@@ -485,6 +485,9 @@ pub(crate) fn translate_material(
         rimlight_power: source.rimlight_power,
         backlight_power: source.backlight_power,
         fresnel_power: source.fresnel_power,
+        soft_lighting: source.soft_lighting,
+        rim_lighting: source.rim_lighting,
+        back_lighting: source.back_lighting,
         // #890 Stage 2c — BSEffectShaderProperty greyscale LUT path;
         // resolved to a bindless handle at draw-build time.
         greyscale_texture: textures.greyscale_lut,
@@ -1666,6 +1669,9 @@ mod canonical_completeness_harness {
             rimlight_power: 0.81,
             backlight_power: 0.91,
             fresnel_power: 4.5,
+            soft_lighting: true,
+            rim_lighting: true,
+            back_lighting: true,
             // #2571 — non-default values so the round-trip assertion below
             // actually exercises the copy (the struct default is 0/6/7).
             texture_clamp_mode: 1, // CLAMP_S_WRAP_T
@@ -1749,6 +1755,9 @@ mod canonical_completeness_harness {
         assert_eq!(material.rimlight_power, 0.81);
         assert_eq!(material.backlight_power, 0.91);
         assert_eq!(material.fresnel_power, 4.5);
+        assert!(material.soft_lighting);
+        assert!(material.rim_lighting);
+        assert!(material.back_lighting);
         // #2571 (OBL-D5-01)
         assert_eq!(material.texture_clamp_mode, 1);
         assert_eq!(material.src_blend_mode, 2);

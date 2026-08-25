@@ -147,6 +147,10 @@ pub mod skyrim_slsf2 {
     /// is the FO3/FNV `BSShaderFlags2` meaning of this bit). The legacy
     /// decal helper must not test bit 21 on a Skyrim+/FO4 property. See #414.
     pub const ANISOTROPIC_LIGHTING: u32 = 0x0020_0000;
+    /// Bits 25–27 gate Skyrim's soft/rim/back-light maps and response.
+    pub const SOFT_LIGHTING: u32 = 0x0200_0000;
+    pub const RIM_LIGHTING: u32 = 0x0400_0000;
+    pub const BACK_LIGHTING: u32 = 0x0800_0000;
     /// Bit 30 — `Effect_Lighting`. Scene-lit `BSEffectShaderProperty`
     /// surface — receives directional light instead of rendering
     /// purely additive. See #890 / SK-D4-NEW-04.

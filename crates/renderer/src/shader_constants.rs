@@ -320,6 +320,9 @@ mod tests {
             ("MAT_FLAG_TRANSLUCENCY_THICK_OBJECT", format!("#define MAT_FLAG_TRANSLUCENCY_THICK_OBJECT {MAT_FLAG_TRANSLUCENCY_THICK_OBJECT}u")),
             ("MAT_FLAG_TRANSLUCENCY_MIX_ALBEDO", format!("#define MAT_FLAG_TRANSLUCENCY_MIX_ALBEDO {MAT_FLAG_TRANSLUCENCY_MIX_ALBEDO}u")),
             ("MAT_FLAG_THIN_GLASS", format!("#define MAT_FLAG_THIN_GLASS {MAT_FLAG_THIN_GLASS}u")),
+            ("MAT_FLAG_SOFT_LIGHTING", format!("#define MAT_FLAG_SOFT_LIGHTING {MAT_FLAG_SOFT_LIGHTING}u")),
+            ("MAT_FLAG_RIM_LIGHTING", format!("#define MAT_FLAG_RIM_LIGHTING {MAT_FLAG_RIM_LIGHTING}u")),
+            ("MAT_FLAG_BACK_LIGHTING", format!("#define MAT_FLAG_BACK_LIGHTING {MAT_FLAG_BACK_LIGHTING}u")),
             ("MAT_FLAG_EFFECT_LI_SHIFT", format!("#define MAT_FLAG_EFFECT_LI_SHIFT {MAT_FLAG_EFFECT_LI_SHIFT}u")),
             // BGSM_AUTHORED intentionally NOT mirrored to GLSL — see build.rs.
         ] {
@@ -1079,6 +1082,9 @@ mod tests {
             material_flag::TRANSLUCENCY_MIX_ALBEDO
         );
         assert_eq!(MAT_FLAG_THIN_GLASS, material_flag::THIN_GLASS);
+        assert_eq!(MAT_FLAG_SOFT_LIGHTING, material_flag::SOFT_LIGHTING);
+        assert_eq!(MAT_FLAG_RIM_LIGHTING, material_flag::RIM_LIGHTING);
+        assert_eq!(MAT_FLAG_BACK_LIGHTING, material_flag::BACK_LIGHTING);
         // #2826 (REN-D19-02) — model-space normal map Z-source bit.
         assert_eq!(
             MAT_FLAG_MSN_HAS_AUTHORED_Z,

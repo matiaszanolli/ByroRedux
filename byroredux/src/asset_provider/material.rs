@@ -81,14 +81,17 @@ pub(crate) fn forward_bgsm_rim_subsurface(
     set_subsurface: &mut bool,
     touched: &mut bool,
 ) {
-    if !*set_rim && bgsm.rim_lighting {
+    if !*set_rim && (bgsm.rim_lighting || bgsm.back_lighting) {
         material.rimlight_power = bgsm.rim_power;
         material.backlight_power = bgsm.back_light_power;
+        material.rim_lighting = bgsm.rim_lighting;
+        material.back_lighting = bgsm.back_lighting;
         *set_rim = true;
         *touched = true;
     }
     if !*set_subsurface && bgsm.subsurface_lighting {
         material.subsurface_rolloff = bgsm.subsurface_lighting_rolloff;
+        material.soft_lighting = true;
         *set_subsurface = true;
         *touched = true;
     }

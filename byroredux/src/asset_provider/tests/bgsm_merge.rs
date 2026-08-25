@@ -1164,14 +1164,14 @@ fn bgem_glass_forwards_authored_optics_and_overlay_roles() {
             .textures
             .glass_roughness_scratch
             .and_then(|value| pool.resolve(value)),
-        Some("Effects/Glass/scratches.dds")
+        Some("effects/glass/scratches.dds")
     );
     assert_eq!(
         mesh.material
             .textures
             .glass_dirt_overlay
             .and_then(|value| pool.resolve(value)),
-        Some("Effects/Glass/dirt.dds")
+        Some("effects/glass/dirt.dds")
     );
 }
 

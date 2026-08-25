@@ -37,7 +37,7 @@ use std::sync::Once;
 /// (`scene_buffer/upload.rs`) with actual default-to-0 behaviour.
 static INTERN_OVERFLOW_WARNED: Once = Once::new();
 
-/// std430 GPU-side material record. **396 bytes** per material.
+/// std430 GPU-side material record. **432 bytes** per material.
 /// Size history: 272 B → 260 B (#804 R1-N4 dropped `avg_albedo_r/g/b`)
 /// → 296 B (#1249 Disney sheen/subsurface) → 300 B (#1250 `anisotropic`)
 /// → 348 B (common supplemental texture roles) → 364 B (#2221 animated
@@ -362,7 +362,18 @@ pub struct GpuMaterial {
     pub glass_blur_scale: f32, // offset 380
     pub glass_blur_scale_factor: f32, // offset 384
     pub glass_roughness_scratch_map_index: u32, // offset 388
-    pub glass_dirt_overlay_map_index: u32, // offset 392 → total 396
+    pub glass_dirt_overlay_map_index: u32, // offset 392
+
+    // ── Bethesda authored lighting response (offsets 396-428) ──────
+    pub lighting_effect_1: f32, // offset 396
+    pub lighting_effect_2: f32, // offset 400
+    pub subsurface_rolloff: f32, // offset 404
+    pub rimlight_power: f32, // offset 408
+    pub backlight_power: f32, // offset 412
+    pub fresnel_power: f32, // offset 416
+    pub grayscale_to_palette_scale: f32, // offset 420
+    pub lighting_mask_map_index: u32, // offset 424
+    pub back_lighting_map_index: u32, // offset 428 → total 432
 }
 
 impl Default for GpuMaterial {
@@ -495,6 +506,15 @@ impl Default for GpuMaterial {
             glass_blur_scale_factor: 1.0,
             glass_roughness_scratch_map_index: 0,
             glass_dirt_overlay_map_index: 0,
+            lighting_effect_1: 0.0,
+            lighting_effect_2: 0.0,
+            subsurface_rolloff: 0.0,
+            rimlight_power: 0.0,
+            backlight_power: 0.0,
+            fresnel_power: 5.0,
+            grayscale_to_palette_scale: 1.0,
+            lighting_mask_map_index: 0,
+            back_lighting_map_index: 0,
         }
     }
 }
@@ -515,7 +535,9 @@ pub mod supplemental_texture_slot {
     pub const DECAL_3: usize = 11;
     pub const GLASS_ROUGHNESS_SCRATCH: usize = 12;
     pub const GLASS_DIRT_OVERLAY: usize = 13;
-    pub const COUNT: usize = 14;
+    pub const LIGHTING_MASK: usize = 14;
+    pub const BACK_LIGHTING: usize = 15;
+    pub const COUNT: usize = 16;
 }
 
 /// `GpuMaterial::material_flags` bit catalog. The single source of truth
@@ -646,6 +668,12 @@ pub mod material_flag {
     /// NIFAL parser→`Material` canonical-boundary rule — never re-derived
     /// per-fragment in the shader.
     pub const MSN_HAS_AUTHORED_Z: u32 = 1 << 12;
+
+    /// Bethesda legacy lighting-response gates. These are source-normalized
+    /// feature bits; the shader never branches on game or file format.
+    pub const SOFT_LIGHTING: u32 = 1 << 13;
+    pub const RIM_LIGHTING: u32 = 1 << 14;
+    pub const BACK_LIGHTING: u32 = 1 << 15;
 
     /// Bit-shift for the 8-bit `BSEffectShaderProperty.lighting_influence`
     /// byte packed into `material_flags` bits 16–23. Extract in GLSL as

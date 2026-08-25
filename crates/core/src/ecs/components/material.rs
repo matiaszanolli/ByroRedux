@@ -289,6 +289,12 @@ pub struct Material {
     pub rimlight_power: f32,
     pub backlight_power: f32,
     pub fresnel_power: f32,
+    /// Source-authored feature gates for the legacy soft/rim/back-light
+    /// response. Kept separate from the scalar values because Bethesda files
+    /// may serialize a non-zero default while leaving the feature disabled.
+    pub soft_lighting: bool,
+    pub rim_lighting: bool,
+    pub back_lighting: bool,
     /// `BSEffectShaderProperty.greyscale_texture` path (Skyrim+) — the
     /// 1D-as-2D colour palette LUT indexed by the source texture's
     /// luminance when `EFFECT_PALETTE_COLOR` / `EFFECT_PALETTE_ALPHA`
@@ -515,6 +521,9 @@ impl Default for Material {
             rimlight_power: 0.0,
             backlight_power: 0.0,
             fresnel_power: 5.0,
+            soft_lighting: false,
+            rim_lighting: false,
+            back_lighting: false,
             greyscale_texture: None,
             // 1.0 = full-strength palette remap, the BGEM/nif.xml format
             // default and the pre-#2443 hardcoded shader behaviour.

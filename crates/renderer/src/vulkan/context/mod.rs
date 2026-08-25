@@ -179,6 +179,14 @@ pub struct DrawCommand {
     /// BGEM v21+/v22 optical blur controls.
     pub glass_blur_scale: f32,
     pub glass_blur_scale_factor: f32,
+    /// Source-authored Bethesda soft/rim/back-light response controls.
+    pub lighting_effect_1: f32,
+    pub lighting_effect_2: f32,
+    pub subsurface_rolloff: f32,
+    pub rimlight_power: f32,
+    pub backlight_power: f32,
+    pub fresnel_power: f32,
+    pub grayscale_to_palette_scale: f32,
     /// Disney diffuse "subsurface" lobe weight (#1249). 0.0 keeps the
     /// pre-#1249 Lambert behaviour; 1.0 fully blends in the
     /// Hanrahan-Krueger fake-SSS approximation. Only consulted when
@@ -538,6 +546,15 @@ impl DrawCommand {
                 [slot::GLASS_ROUGHNESS_SCRATCH],
             glass_dirt_overlay_map_index: self.supplemental_texture_indices
                 [slot::GLASS_DIRT_OVERLAY],
+            lighting_effect_1: self.lighting_effect_1,
+            lighting_effect_2: self.lighting_effect_2,
+            subsurface_rolloff: self.subsurface_rolloff,
+            rimlight_power: self.rimlight_power,
+            backlight_power: self.backlight_power,
+            fresnel_power: self.fresnel_power,
+            grayscale_to_palette_scale: self.grayscale_to_palette_scale,
+            lighting_mask_map_index: self.supplemental_texture_indices[slot::LIGHTING_MASK],
+            back_lighting_map_index: self.supplemental_texture_indices[slot::BACK_LIGHTING],
         }
     }
 
@@ -2470,7 +2487,7 @@ mod draw_command_tests {
             // field (zero would dedup with the default and hide a drift).
             greyscale_lut_index: 7,
             supplemental_texture_indices: [
-                31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44,
+                31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46,
             ],
             // Non-zero translucency so the hash-walk covers these
             // fields too (#1147 Phase 2b).
@@ -2485,6 +2502,13 @@ mod draw_command_tests {
             glass_refraction_scale: 0.09,
             glass_blur_scale: 0.31,
             glass_blur_scale_factor: 1.7,
+            lighting_effect_1: 0.21,
+            lighting_effect_2: 0.22,
+            subsurface_rolloff: 0.23,
+            rimlight_power: 2.4,
+            backlight_power: 0.25,
+            fresnel_power: 4.6,
+            grayscale_to_palette_scale: 0.27,
             is_water: false,
         }
     }
