@@ -957,6 +957,12 @@ fn player_water_state(
 /// game-invariant; water records do not author movement physics.
 const SWIM_HEIGHT_SCALE: f32 = 0.35;
 
+/// Per-second exponential decay rate for the swim vertical-velocity spring
+/// (see [`swim_vertical_velocity`]). Chosen so `exp(-SWIM_DAMPING / 60.0) ==
+/// 0.72`, reproducing the originally tuned 60 fps feel while making the
+/// integrator dt-correct at any refresh rate (#3125).
+const SWIM_DAMPING: f32 = 19.71;
+
 #[inline]
 fn swimlevel_reached(center_y: f32, surface_y: f32, half_span: f32) -> bool {
     center_y < surface_y - half_span * SWIM_HEIGHT_SCALE
@@ -983,7 +989,12 @@ pub(crate) fn swim_vertical_velocity(
     }
     let target_y = surface_y - half_span * SWIM_HEIGHT_SCALE;
     let spring = (target_y - center_y) * (5.0 + 7.0 * fraction.clamp(0.0, 1.0));
-    (prev_velocity * 0.72 + spring * dt).clamp(-120.0, 160.0)
+    // #3125 — the decay must be per-second, not per-frame, or the swimmer's
+    // approach speed to the waterline varies with refresh rate (a fixed
+    // `* 0.72` per call decays ~4.8x faster in wall-clock terms at 144 fps
+    // than at 30 fps). `integrate_vertical`'s terrestrial sibling is already
+    // dt-correct via `gravity * dt`; this mirrors that.
+    (prev_velocity * (-SWIM_DAMPING * dt).exp() + spring * dt).clamp(-120.0, 160.0)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1004,12 +1015,26 @@ fn advance_breath(
 ) -> (f32, DrowningDamage) {
     const MAX_BREATH: f32 = 15.0;
     const DROWNING_DAMAGE_PER_SECOND: f32 = 12.0;
-    if !head_submerged || dt <= 0.0 {
+    if !head_submerged {
         return (
             MAX_BREATH,
             DrowningDamage {
                 whole: 0.0,
                 remainder: 0.0,
+            },
+        );
+    }
+    if dt <= 0.0 {
+        // #3128 — no time passed, so this must be a no-op: preserve the
+        // accumulated breath and fractional damage instead of refilling the
+        // reserve. `!head_submerged` above is the only case that should
+        // reset state; collapsing the two into one guard let a zero-dt tick
+        // (paused / re-entrant call) refill a drowning player to full air.
+        return (
+            previous_breath.clamp(0.0, MAX_BREATH),
+            DrowningDamage {
+                whole: 0.0,
+                remainder: previous_damage_remainder.max(0.0),
             },
         );
     }
@@ -1400,6 +1425,50 @@ mod tests {
         assert!(v > -120.0, "water drag must reduce a falling speed");
     }
 
+    /// #3125 — one step at 1/60s and two half-steps at 1/120s must land close
+    /// together. The old `prev_velocity * 0.72` decay was per-frame, not
+    /// per-second, so it diverged sharply across frame rates (~7.8 BU/s here
+    /// vs the ~0.15 BU/s of remaining Euler discretization error below).
+    #[test]
+    fn swim_damping_is_frame_rate_independent() {
+        let (center_y, surface_y, half_span, fraction, jump_velocity) =
+            (70.0, 100.0, 50.0, 0.6, 380.0);
+        let full = swim_vertical_velocity(
+            -40.0,
+            center_y,
+            surface_y,
+            half_span,
+            fraction,
+            1.0 / 60.0,
+            jump_velocity,
+            false,
+        );
+        let half1 = swim_vertical_velocity(
+            -40.0,
+            center_y,
+            surface_y,
+            half_span,
+            fraction,
+            1.0 / 120.0,
+            jump_velocity,
+            false,
+        );
+        let half2 = swim_vertical_velocity(
+            half1,
+            center_y,
+            surface_y,
+            half_span,
+            fraction,
+            1.0 / 120.0,
+            jump_velocity,
+            false,
+        );
+        assert!(
+            (full - half2).abs() < 0.3,
+            "swim damping should be ~frame-rate independent: one 1/60s step = {full}, two 1/120s steps = {half2}"
+        );
+    }
+
     #[test]
     fn authored_water_wave_height_is_bounded_and_time_varying() {
         let material = WaterMaterial {
@@ -1444,6 +1513,19 @@ mod tests {
         let (_, second) = advance_breath(0.0, first.remainder, true, 1.0 / 60.0);
         assert!(second.whole >= 0.0);
         assert!(second.remainder < 1.0);
+    }
+
+    /// #3128 — a zero-dt tick while submerged must be a no-op, not a full
+    /// refill. Only `!head_submerged` (surfacing) should reset the reserve.
+    #[test]
+    fn zero_dt_tick_while_submerged_does_not_refill_breath() {
+        let (breath, damage) = advance_breath(3.0, 0.6, true, 0.0);
+        assert_eq!(breath, 3.0, "no time passed — breath must not be refilled");
+        assert_eq!(damage.whole, 0.0, "no time passed — no damage accrues");
+        assert_eq!(
+            damage.remainder, 0.6,
+            "accumulated fractional damage must survive a zero-dt tick"
+        );
     }
 
     #[test]

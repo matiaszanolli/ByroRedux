@@ -1067,6 +1067,13 @@ fn pull_dynamic(world: &World) {
             dynamic_handles.push((entity, handles.body));
         }
     }
+    // #2135 — the `RapierHandles`/`RigidBodyData` read guards are dropped
+    // here, before the `Transform` write lock is ever taken below (`updates`
+    // carries everything the write pass needs). `character_controller_system`
+    // acquires the reverse pair — a `Transform` read held across
+    // `RapierHandles` — so a `Transform` write ever overlapping a live
+    // `RapierHandles`/`RigidBodyData` read here would be the ABBA edge
+    // against it.
     drop(handles_q);
     drop(body_q);
 
@@ -1142,11 +1149,9 @@ fn pull_dynamic(world: &World) {
         }
     }
 
-    // Drop the `RapierHandles`/`RigidBodyData` read guards before taking
-    // the `Transform` write lock below — `updates` already carries
-    // everything needed. `character_controller_system` acquires the
-    // reverse pair (`Transform` read held across `RapierHandles`), so
-    // overlapping the two orders would be an ABBA risk (#2135).
+    // The `RapierHandles`/`RigidBodyData` read guards are already dropped
+    // (see the #2135 note above) — nothing here holds them across this
+    // `Transform` write.
     if updates.is_empty() {
         return;
     }
