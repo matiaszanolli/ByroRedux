@@ -497,15 +497,35 @@ impl ScaleformHostBridge {
         transport_method: &str,
         arguments: Vec<ScaleformValue>,
     ) -> NormalizedCall {
+        // #2965 (UI-D2-02) — `SkyrimAvm1` is the fallback profile for every
+        // non-AS3 movie, so a leading-integer heuristic with no other signal
+        // over-fires on loose demo SWFs and third-party AVM1 content that
+        // never went through `GameDelegate.call` at all, silently dropping
+        // their first real argument and attaching a bogus `request_id`.
+        // Only strip when there's actual evidence this call was routed
+        // through `GameDelegate.call`: the catalog knows the method (real
+        // `GameDelegate.call` assigns a sequential ID to every routed call,
+        // `Command`-kind included — `PlaySound` is `Command` and still
+        // carries one, see `skyrim_catalog_distinguishes_commands_requests_
+        // and_unknowns`; only `Request`-kind ever gets *read back* via
+        // `respond`), or the movie has registered the `respond` callback
+        // `GameDelegate.as` re-enters with the ID. Both signals are already
+        // available here. When neither holds, the whole original
+        // `arguments` list falls through untouched to the generic
+        // `NormalizedCall` below — the raw transport payload is never lost.
         if self.profile == ScaleformProfile::SkyrimAvm1 {
-            if let Some((ScaleformValue::Number(request_id), rest)) = arguments.split_first() {
-                if let Some(request_id) = numeric_request_id(*request_id) {
-                    return NormalizedCall {
-                        method: transport_method.to_string(),
-                        host_object: None,
-                        request_id: Some(request_id),
-                        arguments: rest.to_vec(),
-                    };
+            let looks_like_game_delegate_request =
+                self.catalog.find(transport_method).is_some() || self.has_callback("respond");
+            if looks_like_game_delegate_request {
+                if let Some((ScaleformValue::Number(request_id), rest)) = arguments.split_first() {
+                    if let Some(request_id) = numeric_request_id(*request_id) {
+                        return NormalizedCall {
+                            method: transport_method.to_string(),
+                            host_object: None,
+                            request_id: Some(request_id),
+                            arguments: rest.to_vec(),
+                        };
+                    }
                 }
             }
         }

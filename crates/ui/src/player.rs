@@ -79,11 +79,11 @@ const MAX_RECORDED_RESOURCE_LOADS: usize = 64;
 /// an `Arc<Descriptors>` precisely so several players can render against one
 /// device, each with its own `TextureTarget`. Nothing here is per-player.
 ///
-/// **What this trades.** The device now outlives `UiManager::close()` and
-/// lives for the process, instead of being released with each player. That
+/// **What this trades.** The device now outlives any single player and
+/// lives for the process, instead of being released with each one. That
 /// is the point — a menu can reopen at any time, and paying the device-
 /// creation hitch once beats paying it per open — but it does mean one idle
-/// logical device is retained after the last menu closes.
+/// logical device is retained after the last menu's player is dropped.
 ///
 /// A failed creation is deliberately **not** cached, so a transient failure
 /// doesn't permanently disable the UI. If two threads race the very first
@@ -433,28 +433,43 @@ impl SwfPlayer {
 
         // Capture the rendered frame by downcasting to the concrete backend type.
         // This follows the same pattern as Ruffle's exporter crate.
-        let mut changed = false;
+        //
+        // #2722 (SAFEUI-05) — each of these three failure paths must leave
+        // `dirty` set and return `None` instead of falling through to
+        // publish `pixel_buffer` as if capture had succeeded. All three are
+        // unreachable today (the renderer is always this concrete backend
+        // type, `TextureTarget::new` always populates its buffer, and
+        // `pixel_buffer`/the target share one fixed `(width, height)`), but
+        // the pre-fix fallthrough silently reported failure as success —
+        // and cleared `dirty`, so a genuine future failure would never
+        // retry — which is the wrong failure mode if any of those
+        // invariants ever changes.
+        let changed;
         {
             let mut player = self.player.lock().unwrap();
             let renderer = player.renderer_mut();
-            if let Some(wgpu_backend) =
+            let Some(wgpu_backend) =
                 <dyn Any>::downcast_mut::<WgpuRenderBackend<TextureTarget>>(renderer)
-            {
-                if let Some(image) = wgpu_backend.capture_frame() {
-                    let rgba = image.into_raw();
-                    if rgba.len() == self.pixel_buffer.len() {
-                        changed = rgba != self.pixel_buffer;
-                        if changed {
-                            self.pixel_buffer.copy_from_slice(&rgba);
-                        }
-                    } else {
-                        log::warn!(
-                            "Ruffle frame size mismatch: got {} bytes, expected {}",
-                            rgba.len(),
-                            self.pixel_buffer.len()
-                        );
-                    }
-                }
+            else {
+                log::warn!("Ruffle renderer is not the expected WgpuRenderBackend<TextureTarget>");
+                return None;
+            };
+            let Some(image) = wgpu_backend.capture_frame() else {
+                log::warn!("Ruffle capture_frame() returned no image");
+                return None;
+            };
+            let rgba = image.into_raw();
+            if rgba.len() != self.pixel_buffer.len() {
+                log::warn!(
+                    "Ruffle frame size mismatch: got {} bytes, expected {}",
+                    rgba.len(),
+                    self.pixel_buffer.len()
+                );
+                return None;
+            }
+            changed = rgba != self.pixel_buffer;
+            if changed {
+                self.pixel_buffer.copy_from_slice(&rgba);
             }
         }
 
@@ -787,5 +802,48 @@ mod resource_loads_tests {
         player.record_resource_loads(loads);
 
         assert_eq!(player.resource_loads().len(), MAX_RECORDED_RESOURCE_LOADS);
+    }
+}
+
+#[cfg(test)]
+mod render_failure_tests {
+    use super::SwfPlayer;
+
+    /// A minimal, valid, single-frame AVM1 SWF — mirrors
+    /// `resource_loads_tests::minimal_swf`.
+    fn minimal_swf() -> Vec<u8> {
+        let mut header = swf::Header::default_with_swf_version(6);
+        header.num_frames = 1;
+        let mut bytes = Vec::new();
+        swf::write_swf(&header, &[swf::Tag::ShowFrame], &mut bytes)
+            .expect("writing a fixed, minimal in-memory SWF cannot fail");
+        bytes
+    }
+
+    /// #2722 (SAFEUI-05) — a capture failure (forced here via the size-
+    /// mismatch branch: `pixel_buffer` no longer matches the real captured
+    /// frame's length) must leave `dirty` set and return `None`, not
+    /// publish a stale/zeroed frame and clear `dirty` as if capture had
+    /// succeeded — which pre-fix meant a genuine future failure would
+    /// never retry.
+    #[test]
+    fn render_leaves_dirty_set_and_returns_none_on_a_size_mismatch() {
+        let mut player = SwfPlayer::new(&minimal_swf(), 4, 4).unwrap();
+        assert!(player.dirty, "a freshly constructed player starts dirty");
+        // `capture_frame()` will still produce a real 4x4 RGBA buffer from
+        // the actual render; corrupt `pixel_buffer`'s length so the two no
+        // longer match, forcing the size-mismatch branch.
+        player.pixel_buffer.push(0);
+
+        let frame = player.render();
+
+        assert!(
+            frame.is_none(),
+            "a size-mismatch capture must not be published as a real frame"
+        );
+        assert!(
+            player.dirty,
+            "a failed capture must leave dirty set so the next tick retries (#2722)"
+        );
     }
 }
