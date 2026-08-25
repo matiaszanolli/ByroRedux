@@ -1658,9 +1658,9 @@ mod animation_system_e2e_tests {
         let (mut world, root, bone, handle) = build_skeleton_and_clip(bone_name);
 
         // Attach the player on the root, scoped to its own subtree —
-        // mirrors npc_spawn::spawn_npc_entity's `with_root(skel_root)`
-        // pattern. Pre-#794 the engine's runtime equivalent of this
-        // call left bones at bind pose despite ticking.
+        // mirrors npc_spawn::resumable::NpcSpawnJob::advance's
+        // `with_root(skeleton)` pattern. Pre-#794 the engine's runtime
+        // equivalent of this call left bones at bind pose despite ticking.
         let player = AnimationPlayer::new(handle).with_root(root);
         world.insert(root, player);
 

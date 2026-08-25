@@ -89,6 +89,22 @@ impl LevelingModel {
     /// Missing settings retain the sourced constants, keeping older masters
     /// and synthetic fixtures deterministic while allowing mods to retune the
     /// parsed curve.
+    ///
+    /// Only [`Self::SkillXp`] (Skyrim) is overlaid — **verified against real
+    /// shipped masters (#3170), not left unimplemented**: `Self::XpCurve`
+    /// (FO3/FNV/FO4) and `Self::SkillUse` (Oblivion) have no authored numeric
+    /// GMST to read. A `strings`/GMST sweep of `Fallout3.esm`, `FalloutNV.esm`,
+    /// `Fallout4.esm`, and `Oblivion.esm` found no `fXPLevelUp*`-shaped
+    /// setting on any of them (Fallout's whole `XP*` GMST family governs
+    /// *awards* — kill/hack/pick-lock XP — never the level-up threshold
+    /// curve itself), and no numeric GMST at all for Oblivion's
+    /// major-skill-ups-per-level threshold (only the `sLevelUp*`/`sMajorSkills`
+    /// *string* GMSTs exist, for UI text). Skyrim's `fXPLevelUpBase`/
+    /// `fXPLevelUpMult` are the one confirmed exception — real `Skyrim.esm`
+    /// authors `75.0`/`25.0`, matching [`Self::SKYRIM`]'s hardcoded fallback
+    /// exactly. If a future game or DLC master is found to author one of the
+    /// other curves, source the GMST name here with the same evidence
+    /// standard before adding it — don't guess a plausible-sounding name.
     pub fn with_gmst(self, gmst: impl Fn(&str) -> Option<f32>) -> Self {
         match self {
             Self::SkillXp {

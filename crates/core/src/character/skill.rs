@@ -118,9 +118,13 @@ impl SkillSet {
     /// Skyrim (TES V) — the 18 skills, all **ungoverned** (attributes were
     /// removed; skills carry their own XP and drive character leveling). Six
     /// per specialization (Combat / Magic / Stealth). EditorIDs are the CK
-    /// internal ActorValue names, which differ from the display names for two
-    /// skills retained from earlier engines: Archery = `Marksman`, Speech =
-    /// `Speechcraft`. Resolution against the parsed AVIF set is verified at
+    /// internal ActorValue names, which differ from the display names for
+    /// three skills retained from earlier engines: Archery = `Marksman`,
+    /// Speech = `Speechcraft`, **Illusion = `Mysticism`** (Oblivion's retired
+    /// school — #3169: the only `AVIF` in the 18-skill FormID block
+    /// `0x44C..0x45D` that isn't a Skyrim skill name; a whole-master search
+    /// for `Illusion` only turns up the three *modifier* AVs, never the
+    /// skill itself). Resolution against the parsed AVIF set is verified at
     /// load (resolve-or-skip), so any casing/name drift degrades gracefully.
     /// Source: Elder Scrolls Wiki / UESP *Skyrim:Skills*.
     pub const SKYRIM: Self = Self {
@@ -136,7 +140,7 @@ impl SkillSet {
             SkillDef::ungoverned("Alteration"),
             SkillDef::ungoverned("Conjuration"),
             SkillDef::ungoverned("Destruction"),
-            SkillDef::ungoverned("Illusion"),
+            SkillDef::ungoverned("Mysticism"), // Illusion
             SkillDef::ungoverned("Restoration"),
             SkillDef::ungoverned("Enchanting"),
             // Stealth

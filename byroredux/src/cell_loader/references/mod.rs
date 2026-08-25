@@ -334,8 +334,8 @@ pub(super) fn load_references_budgeted(
 
         // M41.0 Phase 2 + M41.5 Phase A — resolve the shared per-cell idle
         // pool once before the REFR loop; it is threaded through every
-        // `spawn_npc_entity` call, where each NPC picks + phase-desyncs its
-        // own handle. `load_idle_pool` is path-keyed memoised (#790), so
+        // `NpcSpawnJob::advance` call, where each NPC picks + phase-desyncs
+        // its own handle. `load_idle_pool` is path-keyed memoised (#790), so
         // re-entry across cell loads is a HashMap hit — neither the BSA
         // extract nor `AnimationClipRegistry::add` runs a second time for
         // the same `kf_path`. Returns an empty pool when the game is on the

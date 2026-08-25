@@ -1050,11 +1050,12 @@ fn prebaked_equip_state_drops_skin_mesh_fully_displaced_by_gear() {
 
 // ── #2052 / TD1-003 — `apply_ai_package_behavior` shared helper ───
 //
-// Extracted out of `spawn_npc_entity` and now also called by
-// `spawn_prebaked_npc_entity` (which previously had no AI-package
-// gating at all — the SIBLING gap the issue flagged). Needs only a
-// `World` + `NpcRecord` + `EsmIndex`, no Vulkan device, so it's
-// testable in isolation unlike the two spawn functions themselves.
+// Extracted out of the runtime NPC-spawn path and now also called by
+// the pre-baked-FaceGen path (both in `resumable.rs`'s `NpcSpawnJob::
+// advance`), which previously had no AI-package gating at all — the
+// SIBLING gap the issue flagged. Needs only a `World` + `NpcRecord` +
+// `EsmIndex`, no Vulkan device, so it's testable in isolation unlike
+// the spawn job itself.
 
 fn pack_with_procedure(
     form_id: u32,
@@ -1202,9 +1203,14 @@ fn creature_path_derivation_is_idempotent_and_declines_without_a_modl() {
 /// humanoid recipe) would have passed a routing test while spawning a human
 /// torso for a rat.
 ///
-/// Self-skips without the game installed, like the other corpus sweeps in
-/// this tree; set `BYROREDUX_OBLIVION_DATA` to override the path.
+/// `#[ignore]`d like every other data-dependent corpus sweep in this tree
+/// (#3084 — a bare `#[test]` here counted as a pass on any machine without
+/// Oblivion installed, indistinguishable from the guard actually running).
+/// Run explicitly with `cargo test -p byroredux -- --ignored
+/// installed_oblivion_creature_assets_resolve_from_their_records`; set
+/// `BYROREDUX_OBLIVION_DATA` to override the default install path.
 #[test]
+#[ignore]
 fn installed_oblivion_creature_assets_resolve_from_their_records() {
     let data = std::env::var("BYROREDUX_OBLIVION_DATA")
         .unwrap_or_else(|_| "/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data".to_string());

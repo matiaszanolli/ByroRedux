@@ -6,7 +6,10 @@
 //! games, so the parser translates its header once into this profile and all
 //! downstream character consumers read the same table.
 
-use super::{fallout3_ruleset, fallout4_ruleset, falloutnv_ruleset, CharacterRuleset, SkillSet};
+use super::{
+    fallout3_ruleset, fallout4_ruleset, falloutnv_ruleset, skyrim_ruleset, CharacterRuleset,
+    SkillSet,
+};
 
 /// A sourced linear END + level curve used to seed auto-calculated NPC Health.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -42,6 +45,7 @@ enum RulesetBuilder {
     Fallout3,
     FalloutNewVegas,
     Fallout4,
+    Skyrim,
 }
 
 /// One canonical character-policy row selected at the parser boundary.
@@ -103,7 +107,13 @@ impl CharacterRulesProfile {
         name: "Skyrim",
         skills: SkillSet::SKYRIM,
         npc_stats: NpcStatModel::RaceBaseOffsets,
-        ruleset: RulesetBuilder::None,
+        // #3170 — the cheapest step that makes `LevelingModel::with_gmst`'s
+        // one handled variant (`SkillXp`, Skyrim's own) production-reachable
+        // at all: every other `RulesetBuilder` arm carries `XpCurve`
+        // (Fallout) or falls through `RulesetBuilder::None` (Oblivion), so
+        // without this arm `with_gmst` executed only inside its own unit
+        // test.
+        ruleset: RulesetBuilder::Skyrim,
     };
 
     pub const FALLOUT4: Self = Self {
@@ -152,6 +162,7 @@ impl CharacterRulesProfile {
             RulesetBuilder::Fallout3 => fallout3_ruleset(resolve),
             RulesetBuilder::FalloutNewVegas => falloutnv_ruleset(resolve),
             RulesetBuilder::Fallout4 => fallout4_ruleset(resolve),
+            RulesetBuilder::Skyrim => skyrim_ruleset(resolve),
             RulesetBuilder::None => return None,
         };
         ruleset.leveling = ruleset.leveling.with_gmst(gmst);
@@ -236,5 +247,45 @@ mod tests {
         assert!(fo3.leveling.grants_perk_at(3), "FO3: every level");
         assert!(!fnv.leveling.grants_perk_at(3), "FNV: every other level");
         assert!(fnv.leveling.grants_perk_at(2));
+    }
+
+    /// #3170 — before this fix, `CharacterRulesProfile::SKYRIM` carried
+    /// `RulesetBuilder::None`, so `build_ruleset` returned `None` before
+    /// ever reaching `LevelingModel::with_gmst`. `LevelingModel::SkillXp`
+    /// (Skyrim's own variant, and the only one `with_gmst` overlays) was
+    /// therefore never constructed on a real wired game — `with_gmst`
+    /// executed only inside `leveling.rs`'s own isolated unit test. This
+    /// pins actual production reach: `CharacterRulesProfile::SKYRIM.
+    /// build_ruleset` must both succeed and actually invoke the `gmst`
+    /// closure for the curve settings, not just return a ruleset that
+    /// happens to carry `LevelingModel::SkillXp`.
+    #[test]
+    fn skyrim_profile_builds_a_ruleset_and_actually_calls_gmst() {
+        let no_resolve = |_: &str| None;
+        let requested = std::cell::RefCell::new(Vec::new());
+        let gmst = |name: &str| {
+            requested.borrow_mut().push(name.to_owned());
+            None
+        };
+
+        let skyrim = CharacterRulesProfile::SKYRIM
+            .build_ruleset(no_resolve, gmst)
+            .expect("Skyrim must have a ruleset builder now that #3170 wires one");
+
+        assert!(
+            matches!(skyrim.leveling, LevelingModel::SkillXp { .. }),
+            "Skyrim's ruleset must carry its own SkillXp leveling model"
+        );
+        let requested = requested.into_inner();
+        assert!(
+            requested.contains(&"fXPLevelUpBase".to_string()),
+            "gmst must actually be invoked for the level-up base curve setting, \
+             got {requested:?}"
+        );
+        assert!(
+            requested.contains(&"fXPLevelUpMult".to_string()),
+            "gmst must actually be invoked for the level-up mult curve setting, \
+             got {requested:?}"
+        );
     }
 }

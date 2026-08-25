@@ -194,6 +194,19 @@ fn skyrim_health_resolves_to_authored_avif_form_id() {
             .iter()
             .any(|(form_id, value)| *form_id == 0x3E8 && *value > 0.0)
     }));
+
+    // #3169 — every SkillSet::SKYRIM roster entry must resolve against the
+    // real Skyrim.esm AVIF set, the same guard FNV's roster already has
+    // above. This is the test that would have caught the `Illusion` vs.
+    // `Mysticism` EditorID divergence by data instead of by hand-written
+    // string.
+    for skill in byroredux_core::character::SkillSet::SKYRIM.skills() {
+        assert!(
+            index.actor_value_form_id(skill.editor_id).is_some(),
+            "Skyrim roster entry '{}' must resolve against Skyrim.esm",
+            skill.editor_id
+        );
+    }
 }
 
 #[test]

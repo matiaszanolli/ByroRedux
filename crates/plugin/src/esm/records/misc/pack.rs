@@ -1812,8 +1812,8 @@ mod tests {
         assert!(active_package_is_patrol([&patrol_only], 10.0, |_| true));
     }
 
-    /// #2031 / PERF-D7-01 — `npc_spawn::spawn_npc_entity` collapsed 14
-    /// separate `active_package_is_*`/`active_*_location`/`active_*_target`
+    /// #2031 / PERF-D7-01 — `npc_spawn::ai_package::apply_ai_package_behavior`
+    /// collapsed 14 separate `active_package_is_*`/`active_*_location`/`active_*_target`
     /// calls into a single `active_package(...)` resolve, then reads
     /// `procedure_type`/`location`/`target` directly off the one resolved
     /// package instead of re-deriving them through the per-procedure
