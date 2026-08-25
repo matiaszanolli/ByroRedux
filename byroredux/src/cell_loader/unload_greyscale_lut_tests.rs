@@ -112,6 +112,8 @@ fn unload_walk_collects_all_texture_handle_components() {
             tint: 18,
             inner_layer: 19,
             specular: 20,
+            lighting_mask: 33,
+            back_lighting: 34,
             lighting: 21,
             flow: 22,
             wrinkle: 23,
@@ -130,7 +132,7 @@ fn unload_walk_collects_all_texture_handle_components() {
     assert!(mesh_drops.contains(&7), "mesh handle must be collected");
     for tex in [
         10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29,
-        30, 31, 32, 50,
+        30, 31, 32, 33, 34, 50,
     ] {
         assert!(
             texture_drops.contains(&tex),

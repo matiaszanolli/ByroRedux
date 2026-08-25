@@ -629,6 +629,8 @@ pub(super) fn collect_static_mesh_draws(
                     texture_indices.decals[3],
                     texture_indices.glass_roughness_scratch,
                     texture_indices.glass_dirt_overlay,
+                    texture_indices.lighting_mask,
+                    texture_indices.back_lighting,
                 ];
                 let mut cmd = DrawCommand {
                     mesh_handle: mesh.0,
@@ -682,6 +684,15 @@ pub(super) fn collect_static_mesh_draws(
                     glass_blur_scale: mat.map(|m| m.glass_blur_scale).unwrap_or(0.4),
                     glass_blur_scale_factor: mat
                         .map(|m| m.glass_blur_scale_factor)
+                        .unwrap_or(1.0),
+                    lighting_effect_1: mat.map(|m| m.lighting_effect_1).unwrap_or(0.0),
+                    lighting_effect_2: mat.map(|m| m.lighting_effect_2).unwrap_or(0.0),
+                    subsurface_rolloff: mat.map(|m| m.subsurface_rolloff).unwrap_or(0.0),
+                    rimlight_power: mat.map(|m| m.rimlight_power).unwrap_or(0.0),
+                    backlight_power: mat.map(|m| m.backlight_power).unwrap_or(0.0),
+                    fresnel_power: mat.map(|m| m.fresnel_power).unwrap_or(5.0),
+                    grayscale_to_palette_scale: mat
+                        .map(|m| m.grayscale_to_palette_scale)
                         .unwrap_or(1.0),
                     // #1249 — Disney diffuse defaults zero so the
                     // shader-side Lambert/Disney branch picks Lambert

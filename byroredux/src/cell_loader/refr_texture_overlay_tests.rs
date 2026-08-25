@@ -707,6 +707,9 @@ mod slot_role_agreement {
             shader_type,
             glow_map: true,
             model_space_normals,
+            soft_lighting: false,
+            rim_lighting: false,
+            back_lighting: false,
         }
     }
 
