@@ -99,19 +99,21 @@ pub(crate) fn water_material_from_mesh(
     normal_map_index: u32,
     flow_map_index: u32,
 ) -> WaterMaterial {
-    let mut water = WaterMaterial::default();
-    water.shader_flags = material.water_shader_flags;
     // Texture handle 0 is the registry's diagnostic placeholder; the water
     // shader reserves `u32::MAX` for its procedural normal fallback.
-    water.normal_map_index = if normal_map_index == 0 {
-        u32::MAX
-    } else {
-        normal_map_index
-    };
-    water.flow_map_index = if flow_map_index == 0 {
-        u32::MAX
-    } else {
-        flow_map_index
+    let mut water = WaterMaterial {
+        shader_flags: material.water_shader_flags,
+        normal_map_index: if normal_map_index == 0 {
+            u32::MAX
+        } else {
+            normal_map_index
+        },
+        flow_map_index: if flow_map_index == 0 {
+            u32::MAX
+        } else {
+            flow_map_index
+        },
+        ..Default::default()
     };
     if material.env_map_scale.is_finite() {
         water.reflectivity = material.env_map_scale.clamp(0.0, 1.0);

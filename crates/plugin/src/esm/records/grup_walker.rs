@@ -298,6 +298,7 @@ pub(super) fn extract_quest_dialogue_scene_tree(
     )
 }
 
+#[allow(clippy::too_many_arguments)] // Depth is an explicit parser-safety budget.
 fn extract_quest_dialogue_scene_tree_inner(
     reader: &mut EsmReader,
     end: usize,

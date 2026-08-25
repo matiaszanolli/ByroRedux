@@ -59,11 +59,11 @@ fn triangle_body_parts(scene: &NifScene, skin_idx: usize, final_indices: &[u32])
                 .unwrap_or(UNASSIGNED_BODY_PART)
         })
         .collect();
-    mapped
-        .iter()
-        .any(|&part| part != UNASSIGNED_BODY_PART)
-        .then_some(mapped)
-        .unwrap_or_default()
+    if mapped.iter().any(|&part| part != UNASSIGNED_BODY_PART) {
+        mapped
+    } else {
+        Vec::new()
+    }
 }
 
 use crate::blocks::bs_geometry::{BSGeometry, BSGeometryMeshData, BoneWeight};
@@ -330,7 +330,7 @@ fn convert_bs_geometry_skin_weights(
         let mut sorted: Vec<&BoneWeight> = vertex_weights.iter().collect();
         // Descending by raw u16 weight — exact integer order, no NaN
         // concerns from comparing the decoded f32.
-        sorted.sort_by(|a, b| b.weight.cmp(&a.weight));
+        sorted.sort_by_key(|bone| std::cmp::Reverse(bone.weight));
 
         let mut idx = [0u16; 4];
         let mut w = [0.0f32; 4];

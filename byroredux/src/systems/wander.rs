@@ -160,6 +160,7 @@ pub(crate) struct OscillateWalk {
 /// consumer that owns the actual pathing decision" shape every other
 /// locomotion system in this codebase already uses (`step_toward` itself
 /// knows nothing about NAVM either).
+#[allow(clippy::too_many_arguments)] // Pure locomotion step with explicit authored inputs.
 pub(crate) fn step_oscillating_wander(
     current: Vec3,
     current_rotation: Quat,

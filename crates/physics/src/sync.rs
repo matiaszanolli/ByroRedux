@@ -9,6 +9,7 @@
 //!    Rapier body + collider, attach `RapierHandles`.
 //! 2. **Push kinematic** transforms: keyframed bodies track the ECS
 //!    `GlobalTransform` via `set_next_kinematic_position`.
+//!
 //! 2.5. **Buoyancy** (`crate::water::apply_buoyancy`, WATAL Phase 2):
 //!    Archimedes lift + submerged damping on dynamic bodies inside a
 //!    `WaterVolume`. **Its position is the correctness property** — forces
@@ -666,19 +667,21 @@ pub fn spawn_collider_census_report(world: &World, probe: SpawnCensusProbe) -> V
                 a.classic, a.new_physics, a.phantom,
             ))
         }
-        Some(_) if entries.is_empty() => out.push(format!(
+        Some(_) if entries.is_empty() => out.push(
             "#2874 …and the cell's NIFs authored NO collision at all (classic=0 new_physics=0 \
              phantom=0) ⇒ genuinely non-colliding content or a REFR-level gap, NOT a \
-             translation drop.",
-        )),
+             translation drop."
+                .to_string(),
+        ),
         Some(a) => out.push(format!(
             "#2874 cell collision authoring: classic={} new_physics={} phantom={}.",
             a.classic, a.new_physics, a.phantom,
         )),
-        None => out.push(format!(
+        None => out.push(
             "#2874 cell collision authoring unavailable (no NIF import cache) — `0 total` below \
-             cannot be split into 'nothing authored' vs 'dropped in translation'.",
-        )),
+             cannot be split into 'nothing authored' vs 'dropped in translation'."
+                .to_string(),
+        ),
     }
     out.push(format!(
         "#2202 spawn-column census at XZ ({x:.1}, {z:.1}) ±{radius:.0} BU around y={probe_y:.0}: \

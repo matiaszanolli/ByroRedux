@@ -1094,7 +1094,7 @@ impl ImportedMesh {
         if let Some(segmentation) = &self.bs_sub_index {
             let mut segment_bits = vec![None; old_triangle_count];
             let mut assign_range = |start_index: u32, num_primitives: u32, bit: Option<u8>| {
-                if start_index % 3 != 0 {
+                if !start_index.is_multiple_of(3) {
                     return;
                 }
                 let start = (start_index / 3) as usize;

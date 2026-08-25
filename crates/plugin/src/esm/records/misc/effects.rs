@@ -329,11 +329,6 @@ pub fn parse_ipct(form_id: u32, subs: &[SubRecord]) -> IpctRecord {
     let common = CommonNamedFields::from_subs(subs);
     out.editor_id = common.editor_id;
     out.model_path = common.model_path;
-    for sub in subs {
-        match &sub.sub_type {
-            _ => {}
-        }
-    }
     out
 }
 
@@ -365,14 +360,11 @@ pub fn parse_ipds(form_id: u32, subs: &[SubRecord]) -> IpdsRecord {
     let common = CommonNamedFields::from_subs(subs);
     out.editor_id = common.editor_id;
     for sub in subs {
-        match &sub.sub_type {
+        if &sub.sub_type == b"DATA" {
             // FO3/FNV IPDS DATA is a fixed-size 96-byte array
             // (12 × 8 bytes = (material_kind: u32, ipct: u32) per
             // entry). Skyrim uses 4-byte entries. Counting only:
-            b"DATA" => {
-                out.material_pair_count = (sub.data.len() / 8) as u32;
-            }
-            _ => {}
+            out.material_pair_count = (sub.data.len() / 8) as u32;
         }
     }
     out

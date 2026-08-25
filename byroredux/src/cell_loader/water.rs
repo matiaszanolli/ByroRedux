@@ -449,7 +449,6 @@ pub(super) fn spawn_water_plane(
         }
     }
 
-    let mut material = material;
     if resolved_normal_idx != 0 {
         material.normal_map_index = resolved_normal_idx;
     } // else material.normal_map_index stays at u32::MAX (default — triggers shader procedural)

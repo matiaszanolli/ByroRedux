@@ -239,9 +239,9 @@ pub fn resolve_inherited_inventory<'a>(
 /// this actor, honouring FNV / FO3 `TPLT` template inheritance the same way
 /// [`resolve_inherited_inventory`] does for CNTO (#2956).
 ///
-/// `docs/engine/charal-fo4-ruleset.md`'s inheritance-chain section: *"`TPLT`
-/// + ACBS Template Flags — if 'Use Stats' is set, inherit SPECIAL / level /
-/// etc. from the template `NPC_`/`LVLN`"*. Before this existed, CHARAL
+/// `docs/engine/charal-fo4-ruleset.md`'s inheritance-chain section says that
+/// `TPLT` + ACBS Template Flags inherit SPECIAL / level / etc. from the
+/// template `NPC_`/`LVLN` when `Use Stats` is set. Before this existed, CHARAL
 /// population read the NPC's own `class_form_id` and level unconditionally —
 /// measured against vanilla FNV/FO3, 55.0% / 53.4% of templated NPCs carry
 /// `Use Stats`, and among those resolving to a direct `NPC_`, 117/1510 (FNV)

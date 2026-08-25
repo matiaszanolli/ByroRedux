@@ -66,13 +66,10 @@ pub fn parse_flst(form_id: u32, subs: &[SubRecord]) -> FlstRecord {
     let common = CommonNamedFields::from_subs(subs);
     out.editor_id = common.editor_id;
     for sub in subs {
-        match &sub.sub_type {
-            b"LNAM" => {
-                if let Ok(id) = SubReader::new(&sub.data).u32() {
-                    out.entries.push(id);
-                }
+        if &sub.sub_type == b"LNAM" {
+            if let Ok(id) = SubReader::new(&sub.data).u32() {
+                out.entries.push(id);
             }
-            _ => {}
         }
     }
     out

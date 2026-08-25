@@ -166,14 +166,11 @@ pub fn parse_bptd(form_id: u32, subs: &[SubRecord]) -> BptdRecord {
     let common = CommonNamedFields::from_subs(subs);
     out.editor_id = common.editor_id;
     for sub in subs {
-        match &sub.sub_type {
-            b"BPTN" => {
-                if out.part_count == 0 {
-                    out.first_part_name = read_lstring_or_zstring(&sub.data);
-                }
-                out.part_count += 1;
+        if &sub.sub_type == b"BPTN" {
+            if out.part_count == 0 {
+                out.first_part_name = read_lstring_or_zstring(&sub.data);
             }
-            _ => {}
+            out.part_count += 1;
         }
     }
     out
@@ -273,11 +270,6 @@ pub fn parse_minimal_esm_record(form_id: u32, subs: &[SubRecord]) -> MinimalEsmR
     let common = CommonNamedFields::from_subs(subs);
     out.editor_id = common.editor_id;
     out.full_name = common.full_name;
-    for sub in subs {
-        match &sub.sub_type {
-            _ => {}
-        }
-    }
     out
 }
 

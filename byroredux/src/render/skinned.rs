@@ -263,15 +263,16 @@ fn mix_morph_weights(mut h: u64, weights: &[f32]) -> u64 {
 /// `MorphSlot` (created once at spawn — see
 /// `cell_loader::spawn::mesh_instance::spawn_mesh_instance`) and, for
 /// entities that also carry an `AnimatedMorphWeights` component,
-/// overwrites the slot's host-visible weight buffer with this frame's
-/// values. An entity with a `MorphSlot` but no `AnimatedMorphWeights`
+/// stages this frame's values in CPU memory. `draw_frame` publishes them to
+/// the host-visible weight buffer only after its dual-fence wait (#3244).
+/// An entity with a `MorphSlot` but no `AnimatedMorphWeights`
 /// yet (animation system hasn't run, or the clip has no morph channel)
 /// keeps whatever the buffer already holds — `MorphSlot::create`
 /// zero-inits it, so a first-sight frame reads "no deformation" rather
 /// than uninitialised memory.
 ///
 /// Deliberately unconditional (no `pose_dirty`-style skip gate): unlike
-/// the skin-compute dispatch this write is a small host-visible memcpy
+/// the skin-compute dispatch this staging update is a small CPU copy
 /// (≤ `MAX_MORPH_TARGETS_PER_MESH` × 4 B per entity), far cheaper than
 /// the dirty-tracking bookkeeping would save. `pose_dirty` skip-gating
 /// still applies downstream, to the `skin_vertices.comp` dispatch that
@@ -281,16 +282,13 @@ pub(super) fn update_morph_weights(world: &World, ctx: &mut byroredux_renderer::
     let Some(weights_q) = world.query::<AnimatedMorphWeights>() else {
         return;
     };
-    let device = &ctx.device;
     for (&entity, slot) in ctx.morph_slots.iter_mut() {
         let Some(weights) = weights_q.get(entity) else {
             continue;
         };
         let target_count = slot.target_count() as usize;
         let flat: Vec<f32> = (0..target_count).map(|i| weights.get(i)).collect();
-        if let Err(e) = slot.update_weights(device, &flat) {
-            log::warn!("Failed to update MorphSlot weights for entity {entity}: {e:#}");
-        }
+        slot.stage_weights(flat);
     }
 }
 

@@ -650,19 +650,12 @@ impl InteractionState {
 /// the crosshair path runs. `select_interaction_target` moves the map
 /// out via `std::mem::take` for the duration of its own use and hands it
 /// back afterward so the allocated capacity survives to next frame.
+#[derive(Default)]
 pub(crate) struct InteractionCandidateScratch {
     pub(crate) candidates: FxHashMap<EntityId, InteractionKind>,
 }
 
 impl Resource for InteractionCandidateScratch {}
-
-impl Default for InteractionCandidateScratch {
-    fn default() -> Self {
-        Self {
-            candidates: FxHashMap::default(),
-        }
-    }
-}
 
 /// Last canonical activation retained past transient-event cleanup.
 #[derive(Debug, Clone, PartialEq)]

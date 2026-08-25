@@ -1706,7 +1706,10 @@ mod tests {
         };
         assert!(m.sanitize_finite());
         assert_eq!(m.ior, Material::default().ior);
-        assert_eq!(m.alpha, 0.42, "a valid field must survive the sweep untouched");
+        assert_eq!(
+            m.alpha, 0.42,
+            "a valid field must survive the sweep untouched"
+        );
     }
 
     #[test]

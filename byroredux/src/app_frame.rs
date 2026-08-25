@@ -162,8 +162,9 @@ impl App {
             if is_benching {
                 self.bench_build_render_ns += brd_t0.elapsed().as_nanos() as u64;
             }
-            // #3231 — write this frame's morph weights into every live
-            // `MorphSlot`'s host-visible buffer. Independent of
+            // #3231/#3244 — stage this frame's morph weights for every live
+            // `MorphSlot`; draw_frame publishes them after its fence wait.
+            // Independent of
             // `build_render_data` above (see `render::update_morph_weights`'s
             // doc) — needs `&mut ctx`, which `build_render_data` doesn't take.
             crate::render::update_morph_weights(&self.world, ctx);

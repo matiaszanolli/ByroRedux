@@ -116,29 +116,14 @@ impl From<GpuRayBudget> for RtLodTelemetry {
 /// Hysteretic controller targeting the main lighting pass rather than a
 /// hard-coded GPU model. It reacts immediately to sustained overload and only
 /// spends recovered headroom after a long stable window.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct AdaptiveRayBudget {
+    // Cold-start conservatively. Before the first GPU timer sample, starting
+    // above tier zero can launch watchdog-scale work with no feedback yet.
     tier: u32,
     smoothed_lighting_ms: Option<f32>,
     under_budget_frames: u32,
     cooldown_frames: u32,
-}
-
-impl Default for AdaptiveRayBudget {
-    fn default() -> Self {
-        Self {
-            // Cold-start conservatively. Until the first completed GPU timer
-            // sample exists the controller cannot know whether the scene is a
-            // Cornell box or Cydonia's 97k-instance TLAS. Starting at tier 2
-            // made that unknown first frame launch the four-shadow/two-hit GI
-            // workload and could trip a device watchdog before feedback had a
-            // chance to reduce it.
-            tier: 0,
-            smoothed_lighting_ms: None,
-            under_budget_frames: 0,
-            cooldown_frames: 0,
-        }
-    }
 }
 
 impl AdaptiveRayBudget {

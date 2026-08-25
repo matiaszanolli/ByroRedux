@@ -40,13 +40,19 @@ pub struct MorphSlot {
     delta_buffer: GpuBuffer,
     delta_address: vk::DeviceAddress,
     /// Current morph weights, one `f32` per target. Small (≤
-    /// `MAX_MORPH_TARGETS_PER_MESH` × 4 B = 256 B) and host-visible —
-    /// re-written every frame from `AnimatedMorphWeights` via
-    /// [`Self::update_weights`]. Zero-initialized at creation so a
+    /// `MAX_MORPH_TARGETS_PER_MESH` × 4 B = 256 B) and host-visible.
+    /// Writes occur only from [`Self::flush_pending_weights`], after
+    /// `draw_frame` has waited both in-flight fences (#3244). Zero-initialized
+    /// at creation so a
     /// first-sight frame (before the animation system's first write)
     /// reads "no deformation" rather than uninitialised memory.
     weight_buffer: GpuBuffer,
     weight_address: vk::DeviceAddress,
+    /// CPU-side handoff populated before `draw_frame`. Staging here performs
+    /// no mapped-memory access, so it is safe while an earlier submission is
+    /// still reading `weight_buffer`.
+    pending_weights: Vec<f32>,
+    pending_weights_dirty: bool,
     target_count: u32,
     vertex_count: u32,
     /// LRU bookkeeping, same shape as `SkinSlot::last_used_frame` —
@@ -138,14 +144,13 @@ impl MorphSlot {
             .flush_if_needed(device)
             .context("flush morph weight buffer zero-init")?;
 
-        // SAFETY: both buffers were just created above with
-        // SHADER_DEVICE_ADDRESS usage, live for the duration of this
-        // call.
+        // SAFETY: the buffer was just created with SHADER_DEVICE_ADDRESS.
         let delta_address = unsafe {
             device.get_buffer_device_address(
                 &vk::BufferDeviceAddressInfo::default().buffer(delta_buffer.buffer),
             )
         };
+        // SAFETY: the buffer was just created with SHADER_DEVICE_ADDRESS.
         let weight_address = unsafe {
             device.get_buffer_device_address(
                 &vk::BufferDeviceAddressInfo::default().buffer(weight_buffer.buffer),
@@ -157,23 +162,36 @@ impl MorphSlot {
             delta_address,
             weight_buffer,
             weight_address,
+            pending_weights: vec![0.0; target_count as usize],
+            pending_weights_dirty: false,
             target_count,
             vertex_count,
             last_used_frame: 0,
         })
     }
 
-    /// Overwrite the weight buffer's contents. `weights.len()` must
-    /// equal `target_count` (debug-asserted) — the caller
-    /// (`byroredux::render::skinned`) is responsible for producing an
-    /// exactly-`target_count`-length slice from `AnimatedMorphWeights`
-    /// (which already zero-pads via `AnimatedMorphWeights::get`).
-    pub fn update_weights(&mut self, device: &ash::Device, weights: &[f32]) -> Result<()> {
+    /// Stage current-frame weights without touching GPU-visible memory.
+    /// `draw_frame` flushes this handoff only after its dual-fence wait.
+    pub fn stage_weights(&mut self, weights: Vec<f32>) {
         debug_assert_eq!(
             weights.len(),
             self.target_count as usize,
-            "MorphSlot::update_weights: weights length must equal target_count"
+            "MorphSlot::stage_weights: weights length must equal target_count"
         );
+        self.pending_weights = weights;
+        self.pending_weights_dirty = true;
+    }
+
+    /// Copy staged weights into mapped GPU memory. This must only be called
+    /// after all submissions that could reference `weight_buffer` have
+    /// completed; `VulkanContext::draw_frame` owns that fence proof (#3244).
+    pub(crate) fn flush_pending_weights(&mut self, device: &ash::Device) -> Result<()> {
+        if !self.pending_weights_dirty {
+            return Ok(());
+        }
+        let weights = &self.pending_weights;
+        // SAFETY: `weights` is a live contiguous f32 slice, and the byte view
+        // is used only for this copy without outliving the slice.
         let bytes: &[u8] = unsafe {
             std::slice::from_raw_parts(
                 weights.as_ptr() as *const u8,
@@ -181,7 +199,9 @@ impl MorphSlot {
             )
         };
         self.weight_buffer.mapped_slice_mut()?[..bytes.len()].copy_from_slice(bytes);
-        self.weight_buffer.flush_if_needed(device)
+        self.weight_buffer.flush_if_needed(device)?;
+        self.pending_weights_dirty = false;
+        Ok(())
     }
 
     /// Destroy both buffers. Caller must have waited for the device to
@@ -191,5 +211,22 @@ impl MorphSlot {
     pub fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
         self.delta_buffer.destroy(device, allocator);
         self.weight_buffer.destroy(device, allocator);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// #3244 — mapped morph weights may only be written after the dual-fence
+    /// wait that proves both frame-in-flight readers have completed.
+    #[test]
+    fn draw_flushes_pending_morph_weights_after_waiting_both_fences() {
+        let draw = include_str!("context/draw.rs");
+        let wait = draw
+            .find(".wait_for_fences(")
+            .expect("draw_frame must wait its in-flight fences");
+        let flush = draw
+            .find("self.flush_pending_morph_weights()")
+            .expect("draw_frame must flush staged morph weights");
+        assert!(wait < flush, "morph host write must follow the fence wait");
     }
 }

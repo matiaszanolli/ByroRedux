@@ -1376,6 +1376,7 @@ pub(super) fn needs_two_sided_blend_split(b: &DrawBatch) -> bool {
 /// would instead silently drop the tail beyond the ceiling, compounding the
 /// producer's own silent drop. Reachability is a deep tail — it needs
 /// >262 144 post-merge rasterized batches in one frame, ~20× the densest
+///
 /// cell this codebase's own comments cite — which is why this is
 /// defence-in-depth at an already-declared lossy ceiling rather than a live
 /// spec violation.
@@ -1502,6 +1503,16 @@ pub struct FrameInputs<'a> {
 }
 
 impl VulkanContext {
+    /// Publish CPU-staged morph weights after the dual-fence wait has proven
+    /// no prior submission can still read their mapped buffers (#3244).
+    fn flush_pending_morph_weights(&mut self) -> Result<()> {
+        for (&entity, slot) in &mut self.morph_slots {
+            slot.flush_pending_weights(&self.device)
+                .with_context(|| format!("flush MorphSlot weights for entity {entity}"))?;
+        }
+        Ok(())
+    }
+
     /// Whether FSR is not merely the *selected* upscaler mode but is
     /// actually dispatching this frame (#2518).
     ///
@@ -1626,6 +1637,8 @@ impl VulkanContext {
         }
         t.fence_wait_ns = fence_t0.elapsed().as_nanos() as u64;
 
+        self.flush_pending_morph_weights()?;
+
         // EX-05 / #2736 — harvest this slot's image-health counters from the
         // *prior* use of the slot, then zero them for the frame about to be
         // recorded. The fence wait above proves submission completed
@@ -1654,7 +1667,7 @@ impl VulkanContext {
                 .scene_buffers
                 .collect_rt_lod_telemetry(&self.device, frame)
             {
-                Ok(sample) if sample.fragments > 0 && self.frame_counter % 60 == 0 => {
+                Ok(sample) if sample.fragments > 0 && self.frame_counter.is_multiple_of(60) => {
                     let scale = self
                         .renderer_config
                         .rt_test_lod_scale_bits
@@ -2575,8 +2588,9 @@ impl VulkanContext {
         // Picks up just-refit per-skinned-entity BLAS via the
         // `bone_offset != 0` override in `build_tlas`. Static draws
         // continue using the per-mesh `blas_entries` table.
-        // SAFETY: `cmd` is recording; `accel` and `alloc` are live. `build_tlas` records the TLAS build into `cmd` over this frame's just-refit BLAS; the following AS_BUILD_WRITE -> FRAGMENT|COMPUTE READ barrier sequences it before the ray-query consumers. `write_tlas` / `patch_camera_rt_flag` touch this frame's descriptor + UBO, idle by the fence wait.
         self.tlas_build_succeeded_last_frame = false;
+        // SAFETY: `cmd` is recording; `accel` and `alloc` are live. `build_tlas`
+        // records into `cmd`; the following barrier sequences ray-query reads.
         unsafe {
             if let Some(ref mut accel) = self.accel_manager {
                 if let Some(alloc) = self.allocator.as_ref() {

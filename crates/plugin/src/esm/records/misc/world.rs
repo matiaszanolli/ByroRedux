@@ -606,7 +606,7 @@ impl RegnRecord {
     pub fn entries_by_priority(&self, kind: RegionDataKind) -> Vec<&RegionDataEntry> {
         let mut matching: Vec<&RegionDataEntry> =
             self.entries.iter().filter(|e| e.kind == kind).collect();
-        matching.sort_by(|a, b| b.priority.cmp(&a.priority));
+        matching.sort_by_key(|entry| std::cmp::Reverse(entry.priority));
         matching
     }
 }
@@ -636,7 +636,7 @@ pub fn select_active_region_sound<'a>(
         .flat_map(|r| r.entries.iter())
         .filter(|e| e.kind == RegionDataKind::Sound)
         .collect();
-    candidates.sort_by(|a, b| b.priority.cmp(&a.priority));
+    candidates.sort_by_key(|entry| std::cmp::Reverse(entry.priority));
     candidates.into_iter().next()
 }
 
@@ -771,7 +771,7 @@ pub fn parse_regn(form_id: u32, subs: &[SubRecord]) -> RegnRecord {
 /// the common unambiguous cases stay exact.
 fn decode_weather_rows(data: &[u8]) -> Vec<RegionWeather> {
     fn decode(data: &[u8], stride: usize, exact: bool) -> Option<Vec<RegionWeather>> {
-        if exact && data.len() % stride != 0 {
+        if exact && !data.len().is_multiple_of(stride) {
             return None;
         }
         let out: Vec<RegionWeather> = rows(data, stride)
@@ -1075,9 +1075,8 @@ pub fn parse_imgs(form_id: u32, subs: &[SubRecord]) -> ImgsRecord {
     let common = CommonNamedFields::from_subs(subs);
     out.editor_id = common.editor_id;
     for sub in subs {
-        match &sub.sub_type {
-            b"DNAM" => out.dnam_raw = Some(sub.data.clone()),
-            _ => {}
+        if &sub.sub_type == b"DNAM" {
+            out.dnam_raw = Some(sub.data.clone());
         }
     }
     out

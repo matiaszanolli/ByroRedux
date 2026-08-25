@@ -699,11 +699,12 @@ fn resolve_water_noise_and_rain(rec: &esm::records::misc::WatrRecord, mat: &mut 
     mat.wave_amplitude = rec.params.wave_amplitude;
     mat.wave_frequency = rec.params.wave_frequency;
     mat.blend_normals = rec.blend_normals.unwrap_or(true);
-    mat.angular_velocity = rec.params.angular_velocity[2]
-        .is_finite()
-        .then_some(rec.params.angular_velocity[2])
-        .unwrap_or(0.0)
-        .clamp(-32.0, 32.0);
+    mat.angular_velocity = if rec.params.angular_velocity[2].is_finite() {
+        rec.params.angular_velocity[2]
+    } else {
+        0.0
+    }
+    .clamp(-32.0, 32.0);
     mat.rain_response = if rec.params.rain_response.is_finite() {
         rec.params.rain_response.clamp(0.0, 4.0)
     } else {

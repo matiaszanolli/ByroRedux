@@ -527,30 +527,33 @@ pub(crate) fn camera_follow_system(world: &World, dt: f32) {
     let cam_entity = active.0;
     drop(active);
 
-    // Read body position + controller params, and also the camera's
-    // previous-frame Y for step-up smoothing.
-    let (body_pos, eye_height, prev_cam_y) = {
+    // Snapshot both GlobalTransform reads before acquiring
+    // CharacterController. Keeping `gq` alive across the controller query
+    // establishes GlobalTransform -> CharacterController; together with the
+    // propagation and controller-system edges that closes the live three-lock
+    // cycle tracked in #3260.
+    let (body_pos, previous_camera_y) = {
         let Some(gq) = world.query::<GlobalTransform>() else {
             return;
         };
         let Some(g) = gq.get(player_entity) else {
             return;
         };
+        // Absence is resolved after eye_height is snapshotted below so the
+        // first-frame fallback remains the exact target Y.
+        let prev_y = gq.get(cam_entity).map(|cg| cg.translation.y);
+        (g.translation, prev_y)
+    };
+    let eye_height = {
         let Some(cq) = world.query::<byroredux_physics::CharacterController>() else {
             return;
         };
         let Some(c) = cq.get(player_entity) else {
             return;
         };
-        let body_y = g.translation.y;
-        let eye_h = c.eye_height;
-        // Fall back to target Y on the very first frame (camera not yet placed).
-        let prev_y = gq
-            .get(cam_entity)
-            .map(|cg| cg.translation.y)
-            .unwrap_or(body_y + eye_h);
-        (g.translation, eye_h, prev_y)
+        c.eye_height
     };
+    let prev_cam_y = previous_camera_y.unwrap_or(body_pos.y + eye_height);
 
     let Some(input) = world.try_resource::<InputState>() else {
         return;
@@ -972,6 +975,7 @@ fn swimlevel_reached(center_y: f32, surface_y: f32, half_span: f32) -> bool {
 /// Gravity is replaced by a critically-damped buoyancy spring; jump remains a
 /// bounded upward stroke while submerged. This keeps entry/exit continuous and
 /// prevents a falling player from tunnelling through a shallow water volume.
+#[allow(clippy::too_many_arguments)] // Pure scalar integrator; grouping would obscure units.
 pub(crate) fn swim_vertical_velocity(
     prev_velocity: f32,
     center_y: f32,
@@ -1105,6 +1109,47 @@ pub(crate) fn integrate_vertical(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #3260 — recreate the two established sides of the production lock
+    /// triangle, then drive the real camera system. Under the CI lock-order
+    /// detector, holding GlobalTransform while acquiring CharacterController
+    /// closes the cycle and panics here.
+    #[test]
+    fn camera_follow_does_not_close_character_lock_cycle() {
+        if std::env::var_os("BYRO_LOCK_ORDER_CHECK").as_deref() != Some(std::ffi::OsStr::new("1")) {
+            return;
+        }
+
+        let mut world = World::new();
+        let player = world.spawn();
+        let camera = world.spawn();
+        world.insert_resource(PlayerMode::Character);
+        world.insert_resource(PlayerEntity(Some(player)));
+        world.insert_resource(ActiveCamera(camera));
+        world.insert_resource(InputState::default());
+        world.insert(player, Transform::default());
+        world.insert(player, GlobalTransform::default());
+        world.insert(player, byroredux_physics::CharacterController::HUMAN);
+        world.insert(camera, Transform::default());
+        world.insert(camera, GlobalTransform::default());
+
+        // Transform -> GlobalTransform (transform propagation's order).
+        {
+            let _transform = world.query::<Transform>().unwrap();
+            let _global = world.query::<GlobalTransform>().unwrap();
+        }
+        // CharacterController -> Transform (character_controller_system's
+        // order). A subsequent GlobalTransform -> CharacterController edge
+        // would now close the three-lock cycle.
+        {
+            let _controller = world
+                .query::<byroredux_physics::CharacterController>()
+                .unwrap();
+            let _transform = world.query::<Transform>().unwrap();
+        }
+
+        camera_follow_system(&world, 1.0 / 60.0);
+    }
     use byroredux_core::ecs::components::water::WaterMaterial;
 
     #[test]

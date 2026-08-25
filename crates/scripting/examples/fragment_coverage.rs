@@ -57,6 +57,9 @@ impl Archive {
 
 fn effect_kind(e: &Effect) -> &'static str {
     match e {
+        Effect::Conditional { .. } => "Conditional",
+        Effect::SetGlobalValue { .. } => "SetGlobalValue",
+        Effect::Disable { .. } => "Disable",
         Effect::SetStage { .. } => "SetStage",
         Effect::StartQuest { .. } => "StartQuest",
         Effect::StopQuest { .. } => "StopQuest",

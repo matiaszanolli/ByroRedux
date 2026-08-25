@@ -1158,7 +1158,7 @@ fn reload_exterior_session(
         mat_provider,
         ext_ctx.grid,
         ext_ctx.radius_load,
-        crate::scene::ExteriorBootstrapMode::ForegroundFirst,
+        exterior_reload_bootstrap_mode(),
     );
     let location_label = format!(
         "worldspace '{}' @ ({},{})",
@@ -1191,6 +1191,14 @@ fn reload_exterior_session(
         location_label,
         count_label,
     })
+}
+
+/// Live-load delta application is synchronous and runs immediately after the
+/// exterior reload returns. The full radius must therefore be resident before
+/// `build_form_id_remap` scans the world; foreground-first would permanently
+/// drop saved rows belonging to still-pending peripheral cells (#3280).
+fn exterior_reload_bootstrap_mode() -> crate::scene::ExteriorBootstrapMode {
+    crate::scene::ExteriorBootstrapMode::FullRadius
 }
 
 /// Drain a queued live-load: reload the saved cell or exterior worldspace

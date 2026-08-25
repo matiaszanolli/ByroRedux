@@ -665,7 +665,7 @@ pub(super) fn spawn_synth_child(
         // REFR-level data, not per-synthetic-child, so only the first
         // SCOL/PKIN-expansion child carries it.
         is_primary_synth.then_some(placed_ref.lock).flatten(),
-        mat_provider.as_deref_mut(),
+        mat_provider,
     );
     accum.entity_count += count;
     accum.packed_collision_fallbacks += spawn_stats.packed_collision_fallbacks;

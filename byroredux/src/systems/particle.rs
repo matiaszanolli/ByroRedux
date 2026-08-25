@@ -61,6 +61,7 @@ pub fn apply_emitter_params(
 /// that fn); `emitter_rate` overrides the preset density; `force_fields`
 /// are Z-up→Y-up converted (#984). A `None`/empty input leaves the preset
 /// default in place.
+#[allow(clippy::too_many_arguments)] // Fields mirror the imported emitter record.
 pub fn apply_emitter_overlays(
     preset: &mut ParticleEmitter,
     color_curve: &Option<byroredux_nif::import::ParticleColorCurve>,

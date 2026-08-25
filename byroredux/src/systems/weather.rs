@@ -783,28 +783,26 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
     // elapsed_secs is saturated at duration_secs so subsequent frames
     // skip the blend path without removing the resource (remove_resource
     // needs &mut World which systems do not have).
-    if transition_done {
-        if world.try_resource::<WeatherTransitionRes>().is_some() {
-            // Ordering invariant (#1103 / REN-D15-003): the promotion
-            // below reads `tr.target.*` and writes into `wd.*` on the
-            // *same* weather_system invocation that computed the blend
-            // ratio (in the early part of this function). If
-            // weather_system is ever split into a timer-advance pass +
-            // a blend-apply pass, the promotion must move to the
-            // blend-apply pass to preserve lerp(src,tgt,1.0)=tgt
-            // semantics on the completion frame.
-            promote_weather_transition_target(world);
-            // Latch the transition as done. Pre-fix this set
-            // `duration_secs = f32::INFINITY` and relied on float
-            // arithmetic to keep the blend ratio at 0 — the dormant
-            // state machine then accumulated `elapsed_secs += dt`
-            // every frame forever, eventually saturating to INFINITY
-            // itself and making the ratio NaN. The explicit `done`
-            // bool drops both hazards. See REN-D15-NEW-07 (audit
-            // 2026-05-09).
-            if let Some(mut tr) = world.try_resource_mut::<WeatherTransitionRes>() {
-                tr.done = true;
-            }
+    if transition_done && world.try_resource::<WeatherTransitionRes>().is_some() {
+        // Ordering invariant (#1103 / REN-D15-003): the promotion
+        // below reads `tr.target.*` and writes into `wd.*` on the
+        // *same* weather_system invocation that computed the blend
+        // ratio (in the early part of this function). If
+        // weather_system is ever split into a timer-advance pass +
+        // a blend-apply pass, the promotion must move to the
+        // blend-apply pass to preserve lerp(src,tgt,1.0)=tgt
+        // semantics on the completion frame.
+        promote_weather_transition_target(world);
+        // Latch the transition as done. Pre-fix this set
+        // `duration_secs = f32::INFINITY` and relied on float
+        // arithmetic to keep the blend ratio at 0 — the dormant
+        // state machine then accumulated `elapsed_secs += dt`
+        // every frame forever, eventually saturating to INFINITY
+        // itself and making the ratio NaN. The explicit `done`
+        // bool drops both hazards. See REN-D15-NEW-07 (audit
+        // 2026-05-09).
+        if let Some(mut tr) = world.try_resource_mut::<WeatherTransitionRes>() {
+            tr.done = true;
         }
     }
 }

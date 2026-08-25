@@ -435,7 +435,7 @@ impl Ba2Archive {
 
 /// Defense-in-depth header sanity log for the Starfield v2 / v3 trailing
 /// 8 bytes. Originally community-RE'd as `compressed_name_table_size: u32`
-/// + `reserved: u32`, but #2629 / SF-D1-04 found all 129 sampled vanilla
+/// followed by `reserved: u32`, but #2629 / SF-D1-04 found all 129 sampled vanilla
 /// archives byte-identical on this field (`0100000000000000` LE — i.e.
 /// `unknown_1 == 1`, `unknown_2 == 0`): a constant tag, not a size. The
 /// original "compressed name-table size" reading was never actually

@@ -651,7 +651,15 @@ impl ConsoleCommand for MatDumpCommand {
         let p = &debug.paths;
         let s = &debug.sources;
         let h = &handles.textures;
-        let slots: [(&str, Option<&str>, MaterialTextureSource, u32, &str, &str); 18] = [
+        type TextureSlot<'a> = (
+            &'a str,
+            Option<&'a str>,
+            MaterialTextureSource,
+            u32,
+            &'a str,
+            &'a str,
+        );
+        let slots: [TextureSlot<'_>; 18] = [
             (
                 "base_color",
                 p.base_color.as_deref(),

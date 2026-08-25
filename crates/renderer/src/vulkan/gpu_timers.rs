@@ -257,8 +257,10 @@ fn snapshot_from_bits(
         e.saturating_sub(s) as f32 * ticks_to_ms
     };
 
-    let mut snap = GpuTimerSnapshot::default();
-    snap.skin_dispatch_active = bits & BIT_SKIN_DISPATCH != 0;
+    let mut snap = GpuTimerSnapshot {
+        skin_dispatch_active: bits & BIT_SKIN_DISPATCH != 0,
+        ..Default::default()
+    };
     if snap.skin_dispatch_active {
         snap.skin_dispatch_ms = bracket_ms(Q_SKIN_DISPATCH_START);
     }

@@ -1527,19 +1527,12 @@ impl Default for WaterAudioConfig {
 /// Reusable cadence state for recurring near-surface ripple sounds. Splash
 /// edges are never delayed; this cooldown only prevents a stationary actor
 /// from producing a one-shot every frame while `RippleEvent` is present.
+#[derive(Default)]
 pub(crate) struct WaterAudioState {
     pub(crate) ripple_cooldowns: FxHashMap<EntityId, f32>,
 }
 
 impl Resource for WaterAudioState {}
-
-impl Default for WaterAudioState {
-    fn default() -> Self {
-        Self {
-            ripple_cooldowns: FxHashMap::default(),
-        }
-    }
-}
 
 /// Per-frame scratch buffer for `footstep_system`'s two-phase pattern
 /// (collect trigger positions while walking emitters, then drain to
@@ -1598,6 +1591,7 @@ impl Default for LightTuning {
 /// selected visibility-ray probe. Console commands mutate this resource;
 /// `render_one_frame` applies requests at the next frame boundary, where it
 /// has exclusive access to `VulkanContext`.
+#[derive(Default)]
 pub(crate) struct RenderDebugControl {
     pub(crate) active_mode: byroredux_renderer::RenderDebugMode,
     pub(crate) pending_mode: Option<byroredux_renderer::RenderDebugMode>,
@@ -1608,19 +1602,6 @@ pub(crate) struct RenderDebugControl {
 }
 
 impl Resource for RenderDebugControl {}
-
-impl Default for RenderDebugControl {
-    fn default() -> Self {
-        Self {
-            active_mode: byroredux_renderer::RenderDebugMode::default(),
-            pending_mode: None,
-            pending_probe_pixel: None,
-            pending_probe_generation: None,
-            last_probe: None,
-            last_error: None,
-        }
-    }
-}
 
 /// M42 — furniture seats currently occupied (or claimed this frame) by a
 /// sandboxing actor. Each `(furniture entity, sit-marker index)` key maps to

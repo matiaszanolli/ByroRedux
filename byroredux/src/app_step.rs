@@ -839,7 +839,7 @@ impl App {
                         // (`snap_character_body_to_camera`, whose
                         // camera-is-at-eye-height premise does not hold
                         // here). See `ground_character_body_at`.
-                        crate::systems::ground_character_body_at(&mut self.world, dest_pos);
+                        crate::systems::ground_character_body_at(&self.world, dest_pos);
 
                         log::info!(
                             "Cell transition applied: → {} at world ({:.1}, {:.1}, {:.1})",

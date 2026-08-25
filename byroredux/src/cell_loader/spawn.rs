@@ -752,6 +752,7 @@ pub(super) fn spawn_placed_instances(
 /// plus the interned placement `FormId` (when the REFR carried one) so
 /// the standalone collision entities can share it. Split out of
 /// `spawn_placed_instances` (#2057).
+#[allow(clippy::too_many_arguments)] // Mirrors the placement record boundary.
 fn spawn_placement_root(
     world: &mut World,
     cached: &CachedNifImport,

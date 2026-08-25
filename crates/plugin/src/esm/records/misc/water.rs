@@ -1065,13 +1065,13 @@ fn read_rgb_at(data: &[u8], offset: usize) -> Option<[f32; 3]> {
 fn decode_dnam_fo4(data: &[u8]) -> WaterParams {
     let mut p = WaterParams::default();
 
-    // FO4's first float is the depth amount. The authored above-water
-    // color-ramp near/far distances are the floats at 12/16; using 0..depth
-    // erases the per-water ramp authored by vanilla records.
+    // FO4's first float is the depth amount. Offsets 12/16 are not fog
+    // distances: across vanilla Fallout4.esm they are normalized values near
+    // 1.0, and treating them as distances collapses every ramp to ~1 BU
+    // (#3270). Keep the canonical 80/600 fog defaults until those fields'
+    // actual shader roles are identified.
     if let Some(depth_amount) = read_f32_at(data, 0) {
         p.depth_amount = depth_amount.max(0.0);
-        p.fog_near = 0.0;
-        p.fog_far = depth_amount.max(1.0);
     }
 
     if let Some(color) = read_rgb_at(data, 4) {
@@ -1079,12 +1079,6 @@ fn decode_dnam_fo4(data: &[u8]) -> WaterParams {
     }
     if let Some(color) = read_rgb_at(data, 8) {
         p.deep_color = color;
-    }
-    if let Some(near) = read_f32_at(data, 12) {
-        p.fog_near = near;
-    }
-    if let Some(far) = read_f32_at(data, 16) {
-        p.fog_far = far.max(p.fog_near + 1.0);
     }
     if let Some(color) = read_rgb_at(data, 36) {
         p.underwater_color = color;
@@ -2069,8 +2063,10 @@ mod tests {
         data[0..4].copy_from_slice(&3007.0f32.to_le_bytes()); // depth amount
         data[4..8].copy_from_slice(&[45, 62, 62, 0]); // shallow colour
         data[8..12].copy_from_slice(&[46, 61, 57, 0]); // deep colour
-        data[12..16].copy_from_slice(&86.0f32.to_le_bytes()); // above-water fog near
-        data[16..20].copy_from_slice(&580.0f32.to_le_bytes()); // above-water fog far
+                                                       // Vanilla ExtOceanWater values. Their normalized range proves these
+                                                       // slots are not above-water fog distances (#3270).
+        data[12..16].copy_from_slice(&1.0f32.to_le_bytes());
+        data[16..20].copy_from_slice(&0.9299f32.to_le_bytes());
         data[36..40].copy_from_slice(&[18, 27, 36, 0]); // underwater colour
         data[40..44].copy_from_slice(&0.75f32.to_le_bytes()); // underwater fog amount
         data[44..48].copy_from_slice(&(-6400.0f32).to_le_bytes()); // underwater near
@@ -2120,8 +2116,8 @@ mod tests {
         assert_eq!(w.params.underwater_fog_amount, 0.75);
         assert_eq!(w.params.normal_falloff, [0.9, 0.7, 0.8]);
         assert!((w.params.reflection_color[1] - 68.0 / 255.0).abs() < 1e-6);
-        assert_eq!(w.params.fog_near, 86.0);
-        assert_eq!(w.params.fog_far, 580.0);
+        assert_eq!(w.params.fog_near, 80.0);
+        assert_eq!(w.params.fog_far, 600.0);
         assert_eq!(w.params.underwater_fog_near, -6400.0);
         assert_eq!(w.params.underwater_fog_far, 1700.0);
         assert_eq!(w.params.alpha_controls, [0.35, 0.90, 12.0, 240.0]);

@@ -1431,8 +1431,8 @@ fn parse_rate_fo4_esm() {
     assert!((default_water.params.noise_uv_scale_a - 0.0001).abs() < 1e-7);
     assert!((default_water.params.reflectivity - 0.2935).abs() < 1e-6);
     assert!((default_water.params.fresnel - 0.058).abs() < 1e-6);
-    assert_eq!(default_water.params.fog_near, 0.0);
-    assert!((default_water.params.fog_far - 3007.0).abs() < 1e-3);
+    assert_eq!(default_water.params.fog_near, 80.0);
+    assert_eq!(default_water.params.fog_far, 600.0);
 
     let scol_placements: usize = index
         .cells

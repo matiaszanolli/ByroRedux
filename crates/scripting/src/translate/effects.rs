@@ -324,9 +324,9 @@ fn lower_statements(body: &[Spanned<Stmt>], scope: &mut Scope) -> Option<Vec<Eff
             }
             // `Return` with no value is Champollion's fragment terminator.
             Stmt::Return(None) => {}
-            Stmt::ExprStmt(e) => effects.push(classify_effect(&e.node, &scope)?),
+            Stmt::ExprStmt(e) => effects.push(classify_effect(&e.node, scope)?),
             Stmt::While { condition, body } => {
-                effects.push(lower_3d_loaded_wait(&condition.node, body, &scope)?);
+                effects.push(lower_3d_loaded_wait(&condition.node, body, scope)?);
             }
             Stmt::If {
                 condition,

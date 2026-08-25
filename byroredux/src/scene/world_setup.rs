@@ -891,6 +891,7 @@ pub(crate) fn stream_initial_radius(
 /// destructive teardown (`save_io::execute_pending_save_loads`, SAVE-D6-02)
 /// can build the context first, teardown only on success, and hand the
 /// already-built context straight in here instead of paying a second parse.
+#[allow(clippy::too_many_arguments)] // Explicit world-streaming handoff boundary.
 pub(crate) fn assemble_exterior_streaming(
     world: &mut World,
     ctx: &mut VulkanContext,
@@ -937,6 +938,7 @@ pub(crate) fn assemble_exterior_streaming(
 /// Deliberately does NOT touch `CurrentCellRoot`/interior teardown or
 /// camera placement: the four call sites disagree on when (or whether)
 /// those run, so each still owns its own sequencing around this call.
+#[allow(clippy::too_many_arguments)] // Consolidates the former caller-specific sequences.
 pub(crate) fn begin_exterior_streaming(
     world: &mut World,
     ctx: &mut VulkanContext,

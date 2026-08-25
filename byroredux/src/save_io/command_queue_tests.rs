@@ -119,6 +119,18 @@ fn save_then_load_command_queues_with_exterior_context() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// #3280 — unlike interactive world entry, synchronous live-load cannot
+/// return after only the arrival cell: the shared tail immediately builds a
+/// FormId remap and applies deltas exactly once. Pin the full-radius contract
+/// that makes peripheral-cell entities present for that scan.
+#[test]
+fn exterior_live_load_waits_for_full_radius_before_delta_overlay() {
+    assert_eq!(
+        exterior_reload_bootstrap_mode(),
+        crate::scene::ExteriorBootstrapMode::FullRadius
+    );
+}
+
 /// A save taken outside both interior and exterior modes (loose-NIF /
 /// `--mesh`) carries neither context resource — `load` must reject it
 /// with a clear message instead of silently queueing an undreadable
