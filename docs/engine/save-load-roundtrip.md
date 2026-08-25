@@ -7,8 +7,12 @@ how it's written safely to disk, and — the part that makes this engine's
 save/load different from a typical "restart and reload a level" design —
 how a save gets applied to a *running* engine without a process restart.
 
-> **Currency note.** Refreshed 2026-08-24 (#3028 / SAVE-D6-2026-08-16-03),
-> all citations re-checked against current source. §2/§3/§6 had drifted:
+> **Currency note.** Refreshed 2026-08-25 after #3162, #3163 and #3280.
+> Save/load now reports player-visible success/failure notifications, quickload
+> skips corrupt newest slots in recency order, every typed snapshot column is
+> decoded before destructive teardown, and exterior reload waits for the full
+> saved radius before applying FormID-keyed deltas. §2/§3/§6 were also
+> re-checked after #3028:
 > the registered component/resource count roughly doubled since the
 > 2026-08-18 pass (M42 AI-procedure state, cinematic/quest-fragment
 > resources, `Material`, `RigidBodyData`, `RumbleOnActivate`, …),
@@ -85,14 +89,13 @@ treat `validate.rs`'s `ValidationKind` enum as the source of truth.
 
 The three (`validate_world` + `validate_form_ids` +
 `validate_cinematic_entity_refs`) run **before** writing
-(`save_io.rs`, `SaveCommand::execute`): a non-empty
-result aborts the save outright — `save_world`/`write_slot` are never
-called, and the command reports the first 20 issues instead. On the
-**load** side the same checks run again, but only as a diagnostic
-(`log_validation_warnings`) — a load can't cleanly roll back after the
-world's already been torn down, so validation there can only warn, not
-prevent (documented explicitly in the source as an intentional
-asymmetry).
+(`save_io.rs`, `SaveCommand::execute`): a non-empty result aborts the save
+outright — `save_world`/`write_slot` are never called, and both the command
+surface and `SaveLoadNotifications` report failure. On load,
+`validate_snapshot_types` first decodes every registered component/resource
+column against the snapshot alone. A decoding failure aborts while the current
+session is still intact. Referential and world invariants still run as a
+post-load diagnostic because they depend on the rebuilt live world.
 
 ## 4. Atomic write + ring buffer
 
@@ -111,13 +114,15 @@ quicksave can't clobber the most recent good save.
 
 ## 5. Load trigger
 
-`F9` and the pause-menu **Quickload** button select the newest slot;
+`F9` and the pause-menu **Quickload** button scan slots newest-first and select
+the first decodable one, reporting every corrupt slot they skip;
 `--load <slot>` queues a specific slot during startup; and the diagnostic
 console retains `load <slot>`. All three enter through
 `save_io::queue_load_slot`/`LoadCommand`. Being read-only against
-`&World`, it can only decode + verify the slot and check it carries a
-`CurrentCellContext` (a loose-NIF or exterior-only save has no cell to
-reload into — that's an error here); it then pushes the decoded
+`&World`, it can only decode + verify the slot and check it carries exactly one
+reload identity: `CurrentCellContext` for an interior or
+`CurrentExteriorContext` for a streamed worldspace. A loose-NIF save has
+neither and is rejected; it then pushes the decoded
 `Snapshot` into a `PendingSaveLoadSlot` resource for the next frame to
 drain, because actually applying a load needs `&mut World` **and**
 `&mut VulkanContext`, which a console command can't hold. Every load in
@@ -134,10 +139,11 @@ called from `app_events.rs`'s per-frame driver in tick order
 `step_streaming → step_debug_loads → step_save_loads →
 step_cell_transition`. Sequence:
 
-1. **Pre-flight**: `cell_loader::validate_cell_loadable`
-   (`byroredux/src/cell_loader/load.rs:272`) — non-destructively parses
-   the ESM and confirms the target cell exists, so a corrupt/stale save
-   can't strand the player mid-teardown.
+1. **Pre-flight**: `validate_snapshot_types` decodes every typed column before
+   any mutation. The interior branch then calls
+   `cell_loader::validate_cell_loadable`; the exterior branch builds and
+   validates its world context. A corrupt/stale save therefore cannot strand
+   the player mid-teardown.
 2. **Tear down**: drain the streaming state, unload the current interior
    (`streaming_helpers::drain_streaming_state`,
    `cell_loader::unload_current_interior`). The latter clears both
@@ -146,10 +152,12 @@ step_cell_transition`. Sequence:
    carried the departed interior's `CurrentCellContext`, so loading it
    reloaded the wrong worldspace entirely; the two resources are one
    invariant now, cleared at every site that clears either).
-3. **Reload**: the **same** `cell_loader::load_cell_with_masters`
-   (`cell_loader/load.rs:298`) [Pipeline Overview](pipeline-overview.md)
-   traces — not a load-specific variant. The cell comes back exactly as a
-   fresh visit would: full GPU upload, physics bodies, everything.
+3. **Reload**: interiors use the same `cell_loader::load_cell_with_masters`
+   (`cell_loader/load.rs:298`) that [Pipeline Overview](pipeline-overview.md)
+   traces. Exteriors rebuild `WorldStreamingState` through
+   `assemble_exterior_streaming` in `FullRadius` bootstrap mode. That mode is
+   load-bearing: all cells within the saved radius settle before delta remap,
+   preventing saved state outside the arrival cell from being dropped (#3280).
 4. **Restore whole resources**: `restore_resources`
    (`crates/save/src/driver.rs`, called from `save_io.rs:1260`) replaces
    resources like `ItemInstancePool` and `GameTimeRes` wholesale, first,
@@ -206,11 +214,12 @@ shape the fix established: persist a marker fact via the normal additive
 overlay (`Dead`), then run the *same* reconciler the live-session path
 already uses to rebuild whatever runtime state that fact implies removing
 (`combat::reconcile_dead_actor`, shared between the in-session kill branch
-and this load path — see #3022). There is still no generic enable/disable/
-delete persistence mechanism; a future one (a scripted `Disable()`/
-`Delete()` call, say) needs the same explicit marker-plus-reconciler
-contract rather than teaching the generic `apply_deltas` driver domain
-semantics — `driver.rs`'s doc comment says this outright now.
+and this load path — see #3022). There is still no generic delete persistence
+mechanism. Reference visibility is no longer part of that gap: scripted
+`Disable()` records the stable FormID in the saved `ReferenceEnableState`
+resource, and reload/spawn/render consumers reapply it. Future destructive
+domain operations still need an explicit saved fact plus reconciler rather
+than teaching the generic `apply_deltas` driver domain semantics.
 
 Full original-engine cosave compatibility is explicitly out of scope
 ("speculative and not a priority," ROADMAP design-decisions table).

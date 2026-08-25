@@ -7,9 +7,8 @@ place for future multiplatform work.
 
 Source: [`crates/platform/src/`](../../crates/platform/src/) — two files only
 (`lib.rs` re-exports the `window` module; `window.rs` holds everything below).
-As of Session 42 (2026-05-28) the crate is unchanged since it was first written:
-no commit has touched `crates/platform/` since the 2026-03-29 engine rename, so
-the surface area here is genuinely small and stable.
+Verified 2026-08-25: the public API remains the same small window/raw-handle
+surface; #2427 only removed its unused `byroredux-core` dependency.
 
 ## Window Management
 
@@ -83,7 +82,6 @@ Declared in [`crates/platform/Cargo.toml`](../../crates/platform/Cargo.toml):
 | raw-window-handle | 0.6 | Platform-agnostic display/window handle traits |
 | log | workspace | `log::info!` on window creation |
 | anyhow | workspace | `Result` error type on the public fns |
-| byroredux-core | workspace | Declared, but currently unused by `window.rs` (no `core::` references); kept for future platform-side types |
 
 Consumers in the workspace: the `byroredux` binary (window creation + raw
 handles) and the `byroredux-renderer` crate (declares the dependency in its
@@ -92,7 +90,7 @@ the raw handle types passed in from the binary).
 
 ## Future Expansion
 
-These remain unimplemented in this crate as of Session 42 (2026-05-28). Keyboard
+These remain unimplemented in this crate as of 2026-08-25. Keyboard
 and mouse input already work, but live in the binary's event loop rather than
 behind a platform abstraction:
 

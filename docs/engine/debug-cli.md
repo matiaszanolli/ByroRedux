@@ -9,16 +9,16 @@ console commands (`tex.missing`, `mesh.info`, …) dispatch through the engine's
 `CommandRegistry`.
 
 **Crates:** `crates/debug-protocol/`, `crates/debug-server/`, `tools/byro-dbg/`
-**Tests:** 6 wire round-trip (`crates/debug-protocol/src/wire.rs`) + 6 evaluator
-/ `CommandRegistry` dispatch (`crates/debug-server/src/evaluator.rs`, #518) + 5
-listener tests + 12 console-command tests (`byroredux/src/commands_tests.rs`)
+**Tests:** wire, evaluator, listener, command-dispatch, and command-family tests
+live beside their implementations.
 
-> Last reconciled 2026-05-28 (Session 42 closeout). The doc was substantially
+> Last reconciled 2026-08-25 (Session 72 closeout). The doc was substantially
 > rewritten 2026-05-11 (`478b9c0`); since then the debug-UI plan (Phases 1–5)
 > added the `Metrics` / `LoadNif` / `Load*Cell` / `ListGameProfiles` /
 > `ListLoadedAssets` protocol surface, the `--tui` dashboard, the `near` /
 > `pick` / `door.teleport` / `script.activate` console commands, an enriched
-> `mesh.info` (PBR + parent-chain + FormID + markers), and a set of robustness
+> `mesh.info` (PBR + parent-chain + FormID + markers), save/load, quest/scene,
+> gameplay, physics, water, renderer-integrity command families, and a set of robustness
 > fixes (#1006–#1011 owner-tagged screenshot bridge + command-queue cap +
 > shutdown side-channel; #1173 listener sleep 50 ms → 5 ms).
 
@@ -273,8 +273,9 @@ commands were unreachable from `byro-dbg` because `tex.missing` parsed as
 `Ident("tex") . member("missing")` → `find_by_name("tex")` →
 `no entity named 'tex'`.
 
-The console commands are registered in `byroredux/src/commands.rs`
-(`build_command_registry()`). Current registered commands (**23**) grouped by
+The console commands are registered in `byroredux/src/commands/mod.rs`
+(`build_command_registry()`) plus the save/load implementations in
+`byroredux/src/save_io.rs`. Current registered commands (**68**) grouped by
 purpose:
 
 ```
@@ -341,6 +342,33 @@ skin.list                   → list SkinnedMesh entities + slot status
 skin.dump <entity_id>       → full SkinnedMesh dump — per-bone bind / world /
                              palette matrices, identity-dropout flagging (#841)
 light.dump                  → list active LightSource entities + radius / color
+light.atten                 → inspect or tune live light attenuation
+
+# Gameplay, physics, water, and materials
+interaction.status          → report the current interaction target/state
+combat.status               → report player/target combat state
+combat.approach <id|.>      → place the player at a grounded melee approach pose
+input.press <action>        → inject a one-frame logical input action
+input.hold <action> <frames> → inject a bounded multi-frame input hold
+input.look <yaw> <pitch>    → inject a camera-look delta
+player.status               → report player mode, pose, and control state
+inventory.status            → report the player's live inventory/equipment state
+settings.status             → report loaded gameplay settings
+setav / modav               → inspect or mutate an actor value
+cond                        → evaluate a CTDA condition against live ECS state
+water.dump / water.contacts → inspect water surfaces and physics contacts
+phys.census / phys.stats    → inspect nearby bodies and Rapier telemetry
+mat.list / mat.dump / mat.set → inspect and live-edit material state
+ragdoll                     → inspect or control an actor ragdoll
+
+# Renderer and ownership integrity
+r.health                    → renderer health summary
+rt.integrity                → ray-tracing structure integrity checks
+lod.coverage                → current LOD coverage diagnostics
+terrain.seams               → terrain seam diagnostics
+render.debug                → renderer debug-mode control
+env.health                  → validate live lighting/sky environment state
+world.owners                → report owner-tagged world resources
 
 # Game clock / day-night cycle
 time.show                   → day, clock, climate phase, rate, and live sun
@@ -356,6 +384,15 @@ door.teleport <entity_id>   → inspect a door's XTEL destination (FormID,
 script.activate <entity_id> → emit an `ActivateEvent` on the entity (M47.0
                              console-activate path; activator = PlayerEntity
                              resource or 0)
+quest.show / quest.aliases  → inspect quest state, objectives, and aliases
+scene.show                  → inspect a live scene and its phase/action state
+quest.start / quest.stop    → control quest running state
+quest.setstage              → advance a quest through the canonical stage path
+
+# Save/load
+save <slot>                 → queue an atomic snapshot write
+save.info <slot>            → validate and summarize a save container
+load <slot>                 → queue a validated live reload
 ```
 
 The dispatcher (#518) only kicks in for the *first whitespace-delimited

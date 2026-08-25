@@ -6,7 +6,7 @@ arguments choose between several scene-loading entry points; the default
 is the spinning-cube demo. Once a scene is loaded, the per-frame tick runs
 the same ECS schedule regardless of how the scene was created.
 
-> **Currency note.** Reconciled 2026-05-28 against the current tree
+> **Currency note.** Reconciled 2026-08-25 against the current tree
 > (the `App`/scheduler wiring shifted substantially after the
 > 2026-04-07 version of this doc: `systems.rs` was split into a
 > `systems/` submodule tree in Session 34, the M27 declared-access
@@ -137,20 +137,24 @@ The live schedule built in `App::new` is:
 | Stage | System | Mode | Notes |
 |---|---|---|---|
 | `Early` | `player_controller_system` | declared | Dispatches to `fly_camera_system` **or** `character_controller_system` by `PlayerMode`; access is the union of both inner systems (M28.5 + M27 Phase 3) |
-| `Early` | `weather_system` | declared | Weather/TOD/sky/cloud sim (M33) |
+| `Early` | `weather_system` | exclusive + declared | Weather/TOD/sky/cloud sim; serialized after the player-controller batch so `WindField` has one stable writer/reader order |
 | `Early` | `timer_tick_system` | declared | Advances `ScriptTimer`, fires `TimerExpired` |
-| `Update` | papyrus-demo dispatchers (`rumble_*`, `quest_advance_*`, `dlc2_ttr4a_*`, `mg07_*`) | exclusive | M47.0 event-driven script demos; early-return when no event present |
+| `Update` | interaction + combat producers | exclusive | Emits canonical activation/hit/death state before scripting consumers |
+| `Update` | quest/scene/fragment/package/dialogue systems + papyrus-demo dispatchers | exclusive | Ordered QUST/SCEN runtime: startup, aliases, playback, fragments, terminal stages, latent continuations, packages, dialogue, and demo compatibility |
+| `Update` | cinematic/Havok/scripted-motion/vehicle systems | exclusive | Applies fragment-driven presentation, animation, motion-type, horse/cart, and rider state before propagation/physics |
+| `Update` | `pool_regen_tick_system` | exclusive + declared | Fixed-step character-pool regeneration when the per-game ruleset enables it |
 | `Update` | `animation_system` | declared | Advances `AnimationPlayer`/`AnimationStack`, writes `Transform` + all animated-channel storages |
 | `Update` | `spin_system` | exclusive | Demo cube spin |
 | `Update` | `animate_lights_system` | exclusive | Procedural candle/chandelier flicker (Phase 17) |
 | `PostUpdate` | `make_transform_propagation_system()` | declared | Parent→child `GlobalTransform` (BFS) |
 | `PostUpdate` | `footstep_system` | exclusive | Reads propagated `GlobalTransform` (#848) |
 | `PostUpdate` | `particle_system` | exclusive | Needs final emitter world origin (#401) |
-| `PostUpdate` | `billboard_system` | exclusive | Overwrites computed world rotation (#225) |
+| `PostUpdate` | opt-in sandbox/wander/travel/follow/escort/guard/patrol systems | exclusive | Environment-gated NPC locomotion experiments, after propagation |
+| `PostUpdate` | `billboard_system` | exclusive + declared | Overwrites computed world rotation (#225) |
 | `PostUpdate` | `make_world_bound_propagation_system()` | exclusive | Runs last so it sees billboard rotations (#217) |
-| `PostUpdate` | `submersion_system` | exclusive | Camera-vs-water test → `SubmersionState` |
 | `Physics` | `physics_sync_system` | declared | Rapier step → `Transform` writeback |
 | `Late` | `camera_follow_system` | declared | M28.5 — runs after physics settle |
+| `Late` | ragdoll + submersion + water damage/reconciliation/interaction/audio | exclusive | Applies final physics pose and bridges water contacts into gameplay/presentation events |
 | `Late` | `reverb_zone_system` | declared | Cell-acoustics → audio reverb send (M44 Phase 6) |
 | `Late` | `audio_system` | exclusive | Listener pose / emitter update (M44) |
 | `Late` | `log_stats_system` | declared | Periodic stats log |
@@ -214,13 +218,18 @@ actual presentation).
 3. Refresh DebugStats (frame time, entity count, meshes/textures in use,
      registry counts, SkinSlotPool telemetry), ScratchTelemetry,
      SkinCoverageStats
-4. scheduler.run(&world, dt)        ← all ECS systems execute here
-5. step_streaming()                 ← M40 exterior cell stream (no-op otherwise)
-6. step_debug_loads()               ← drain debug-UI / debug-server load queue
-7. step_cell_transition()           ← drain door.teleport interior↔exterior swap
-8. Update the window title (~4×/sec) if EngineConfig.debug_logging
-9. render_one_frame(event_loop)     ← build render data + draw + present
-10. --bench-frames: on the target frame, hash renderer-facing scene state,
+4. step_bench_camera()              ← select the deterministic pose before systems
+5. scheduler.run(&world, dt)        ← all ECS systems execute here unless simulation is paused
+6. restore_bench_camera_pose()      ← undo character-camera replacement for deterministic benches
+7. step_streaming()                 ← M40 exterior cell stream (no-op otherwise)
+8. step_debug_loads()               ← drain debug-UI / debug-server load queue
+9. step_upscaler_switch()           ← apply a queued TAA/FSR change at the frame boundary
+10. capture_player_pose(); step_save_loads()
+                                    ← snapshot current pose, then drain one queued live save/load
+11. step_cell_transition()          ← drain door.teleport interior↔exterior swap
+12. Update the window title (~4×/sec) if EngineConfig.debug_logging
+13. render_one_frame(event_loop)    ← build render data + draw + present
+14. --bench-frames: on the target frame, hash renderer-facing scene state,
       print the named-mode bench summary
       (and screenshot if requested), then exit unless --bench-hold
 ```

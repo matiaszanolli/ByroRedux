@@ -1,11 +1,12 @@
 # M47.2 — Recognizer-catalog scaling: corpus characterization + tiered design
 
-**Status:** engine landing in progress (corpus measured 2026-06-22; b1 guard
-engine + b2 fragment lowerer + QUST VMAD property-table wiring +
-`AddItem`/`MoveTo` object-targeting effects all shipped 2026-07-21 —
-the latter measured at ~0% real-corpus yield pending alias resolution,
-see "Shipped" below. `Enable`/`Disable`, `EvaluatePackage`, `Start`/`Stop`
-remain out of scope — see Backlog)
+**Status (verified 2026-08-25):** the corpus measurements and conservative
+recognizer architecture remain valid, but several backlog statements below
+have since shipped. The live catalog now includes conditional stage guards,
+`GlobalVariable.SetValue`, reference `Disable`, quest/scene `Start`/`Stop`, and
+package re-evaluation, backed by quest-alias/VMAD resolution and persisted
+runtime state. Historical design sections are retained to explain sequencing;
+this banner and [`scripting.md`](scripting.md) state the current result.
 **Companion to:** [`m47-2-design.md`](m47-2-design.md) (the `.pex` decompiler +
 recognizer-chain that this scales)
 
@@ -445,7 +446,15 @@ implementation ships now (correct, tested, and dormant) so it activates
 immediately once alias resolution lands, rather than needing to be built
 twice.
 
-### Explicitly out of scope (not designed here)
+### Originally out of scope; now reconciled
+
+The bullets below record the July design boundary. By 2026-08-25 that boundary
+had moved: `ReferenceEnableState` provides persistent reference visibility
+state and the fragment dispatcher applies `Disable`; render/spawn/interaction
+consumers honor that state. `EvaluatePackageRequest` is shared by ambient and
+scene package runtimes. Quest/scene lifecycle state also gives `Start`/`Stop`
+a canonical sink. Keep the original rationale below as design history, not as
+a current feature-gap list.
 
 - **`Enable`/`Disable`.** No visibility/collision-suppression component
   exists anywhere in the ECS, renderer, or physics today — grepped for

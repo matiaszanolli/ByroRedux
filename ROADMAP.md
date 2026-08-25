@@ -12,41 +12,27 @@ proposes a single synchronised edit across ROADMAP / HISTORY / README.
 Ritual-driven, not hook-driven — one checkpoint per session, not N per
 commit.
 
-**Last verified**: 2026-08-23 (Session 71 closeout — tests 5869, +246; Rust
-`src/` LOC +13 132; workspace members unchanged at 27; open issue dirs
-3123, +151. A 95-commit session: closed all four exterior-readiness Tranche
-C/D checklists (EX-09/17, EX-10/11, EX-14/15, EX-16 — persistent-ref identity,
-exterior save/load, terrain-seam validation, and NAVM streaming residency +
-the engine's first NPC pathfinding, wired into wander/patrol/escort/follow/
-travel/guard), drove WATAL to convergence on its remaining edge cases, landed
-GPU morph-target blending end-to-end (#3231, four phases) and the last
-unconsumed animated-material draw sinks (#2221), and finished the long-running
-`VulkanContext::new()` extraction (#1749). Closed with a full `/audit-suite
---preset nif-deep` sweep (NIF/NIFAL/Safety + a 10-commit incremental pass, 13
-findings) that surfaced **five HIGH-severity bugs no prior sweep had caught**:
-`spawn_nif_lights` rotates a placed light's position but never its direction
-(#3232); a second, non-canonical BGSM→texture-role resolver swaps the
-smoothness mask for the real specular map, and the same day's per-shape MSWP
-work widened its reach (#3234); the ESM/ESP GRUP-tree walker has no recursion
-depth cap, unlike its NIF-side sibling — a crafted plugin can stack-overflow
-the engine (#3237); `Ball`/`Capsule`/`Cylinder` collision shapes never got the
-ceiling clamp `Cuboid` got under #2543, so a corrupt-but-finite radius reaches
-Rapier's broadphase unbounded (#3238); and a morph-target index-desync finding
-(#3233) was escalated from dormant-MEDIUM to live-HIGH hours after filing,
-once the same session's #3231 Phase D landed the exact GPU consumer it was
-conditioned on. Five LOW doc-drift/test-gap findings were fixed and closed
-same-session; the five HIGH findings plus one MEDIUM (#3242, a per-shape MSWP
-later-wins regression the incremental pass caught) remain open. **No milestone
-opened or closed this session** — the exterior Tranche C/D work is tracked in
-`docs/engine/exterior-readiness-plan.md`, not as standalone Active Roadmap
-rows. Bench-of-record is unchanged at **`34074b93` (2026-08-14)** and is now
-**466 commits stale**, over 15× its 30-commit gate — tracked as R6a-stale-20
-in Known Issues; this session alone touched 66 shader/hot-path files (9357
-insertions), and no GPU device exists in this environment to re-run the
-matrix, so the blocker is now capability as well as scheduling. CI has also
-been red on `main` for an unrelated environmental reason — the runner cannot
-find `vulkan/vulkan.h` when building `byroredux-fsr3-sys` — which is tracked
-in Known Issues below.)
+**Last verified**: 2026-08-25 (Session 72 closeout — tests **5965**, +96; Rust
+`src/` LOC **433 473**, +7064; workspace members unchanged at 27; open issue
+dirs **3176**, +53. Across 36 commits the quest/scene fragment runtime gained
+SCEN population, bounded cascade dispatch, conditional/global/reference and
+package effects, saved reference-enable state, and player-facing save/load
+notifications. The Session 71 HIGH audit findings were then fixed in code:
+NIF light directions, morph target index alignment, canonical BGSM specular
+roles, the ESM GRUP depth budget, bounded primitive colliders, plus the
+per-frame morph host-write race. Save/load now preflights typed columns before
+teardown, reconciles failed overlays, and waits for an exterior's full saved
+radius before applying deltas. Local `cargo test --workspace`, examples and
+clippy are green; #3259, #3260 and #3303 are closed. The Vulkan-header CI
+blocker is fixed, but GitHub Actions remains red: hosted tests lack a headless
+wgpu adapter, the shader container lacks Python, lavapipe lacks
+`libxkbcommon-x11`, and the ABBA detector exposes six additional acquisition-
+order failures in binary tests. The full hosted signal is therefore not yet
+restored. Several other fixes remain open in GitHub only because the multi-issue `98eea9b3`
+commit did not use per-issue closing keywords; tracker state must not be read
+as code state for #3232/#3233/#3234/#3237/#3238/#3244/#3270/#3280. The
+bench-of-record remains `34074b93` (2026-08-14), now **503 commits stale**;
+this environment still has no GPU for the required 75-run refresh.)
 
 **Current state in one paragraph.** The FSR 3.1 integration plan is complete
 through phase 7: FSR 3.1.4 Quality is the engine default, all four presets
@@ -724,7 +710,7 @@ to "Papyrus stack-VM as an ECS system." De-risk first.
 | #     | Milestone   | Scope                                                                                                                                                                                                                                  | Depends on                                      |
 |-------|-------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-------------------------------------------------|
 | ~~M44~~ | Audio (moved to Tier 2) | See Tier 2 row — promoted 2026-05-03.                                                                                                                                                                                                | —                                               |
-| M45   | Save/Load   | **Library landed 2026-06-21 (`bd2d0de2`, branch `feat/m45-save-load`).** New `crates/save`: full-ECS-World snapshot (not a delta log) via `SaveRegistry` (type-erased per-component/-resource save/load closures; binary populates the curated game-state set). Versioned binary container — `magic / major+minor / schema-fpr / CRC32 / len` header over a serde_json payload; `decode` rejects bad-magic / version-skew / schema-drift / truncation / CRC corruption before any parse. `save_world(&World)` / `restore_world(&mut World)` drivers; load **preserves entity ids exactly** (new `World::set_next_entity` + `insert_batch` at saved sparse ids → `Parent`/`Children`/`root_entity` refs valid with no remap). Crash-safe atomic write (`tmp → fsync → read-back verify → rename`) + round-robin `SaveRing`. Pre-save `validate_world` refuses poisoned saves (Parent⇄Children, equip indices, clip-handle resolution, dangling refs). StringPool round-trips via `dump`/`from_dump` (symbol-order) + `fixed_string_serde`; `FormIdComponent` persists the **stable `FormIdPair`** (resolved through `FormIdPool`), never the session-local handle. Core `save = ["inspect"]` feature; serde on Name/Parent/Children/FormIdPair/PluginId(hex-string for the u128)/ItemInstancePool; ScriptTimer gains a `save` feature. Binary: `save [slot]` (validate + snapshot + atomic write) + `save.info <slot>` (decode + verify + summarise) console commands. 16 save-crate + 2 World + 2 binary tests (incl. cross-crate ScriptTimer round-trip). **M45.1 live load-apply landed 2026-06-21 (`48e18c4f`, branch `feat/m45.1-live-load`)** via the change-form model: `load <slot>` reloads the saved cell through the existing loader (full GPU/physics/camera setup), then overlays saved game-state deltas keyed by stable `FormIdPair` (`build_form_id_remap` composes saved-entity→pair→live-entity; `apply_deltas` overlays a curated *mutable* column set — Transform/Inventory/EquipmentSlots/Light*/Animation*/ScriptTimer — onto matched live entities; structural columns Name/Parent/Children/form-id-key are not replayed). New `CurrentCellContext` resource (cell + plugins) set at every interior load makes a save self-describing; `restore_resources` replaces `ItemInstancePool` wholesale first so instance ids resolve. Wired as `load` console command + `PendingSaveLoadSlot` + `step_save_loads` between-frames drain. **M45.1 player-pose restore closed 2026-06-21** — new `PlayerPose` save-resource (position + yaw/pitch + character/flycam flag) refreshed each frame post-scheduler by `capture_player_pose`; on `load`, `apply_player_pose` re-places the persisted player body (Character — `camera_follow_system` re-pins the camera next frame, momentum cleared, kinematic Rapier body re-synced) or the camera (FlyCam) at the saved spot, with yaw/pitch restored onto `InputState` (the look-direction source of truth both camera systems rebuild from each frame). `save.info` now prints the pose; +3 binary tests (flycam round-trip, character body-tracking, snapshot survival). Save/Load is feature-complete. | M40 (world streaming dictates what to serialize) |
+| M45   | Save/Load   | **Library landed 2026-06-21 (`bd2d0de2`, branch `feat/m45-save-load`).** New `crates/save`: full-ECS-World snapshot (not a delta log) via `SaveRegistry` (type-erased per-component/-resource save/load closures; binary populates the curated game-state set). Versioned binary container — `magic / major+minor / schema-fpr / CRC32 / len` header over a serde_json payload; `decode` rejects bad-magic / version-skew / schema-drift / truncation / CRC corruption before any parse. `save_world(&World)` / `restore_world(&mut World)` drivers; load **preserves entity ids exactly** (new `World::set_next_entity` + `insert_batch` at saved sparse ids → `Parent`/`Children`/`root_entity` refs valid with no remap). Crash-safe atomic write (`tmp → fsync → read-back verify → rename`) + round-robin `SaveRing`. Pre-save `validate_world` refuses poisoned saves (Parent⇄Children, equip indices, clip-handle resolution, dangling refs). StringPool round-trips via `dump`/`from_dump` (symbol-order) + `fixed_string_serde`; `FormIdComponent` persists the **stable `FormIdPair`** (resolved through `FormIdPool`), never the session-local handle. Core `save = ["inspect"]` feature; serde on Name/Parent/Children/FormIdPair/PluginId(hex-string for the u128)/ItemInstancePool; ScriptTimer gains a `save` feature. Binary: `save [slot]` (validate + snapshot + atomic write) + `save.info <slot>` (decode + verify + summarise) console commands. 16 save-crate + 2 World + 2 binary tests (incl. cross-crate ScriptTimer round-trip). **M45.1 live load-apply landed 2026-06-21 (`48e18c4f`, branch `feat/m45.1-live-load`)** via the change-form model: `load <slot>` reloads the saved cell through the existing loader (full GPU/physics/camera setup), then overlays saved game-state deltas keyed by stable `FormIdPair` (`build_form_id_remap` composes saved-entity→pair→live-entity; `apply_deltas` overlays a curated *mutable* column set — Transform/Inventory/EquipmentSlots/Light*/Animation*/ScriptTimer — onto matched live entities; structural columns Name/Parent/Children/form-id-key are not replayed). New `CurrentCellContext` resource (cell + plugins) set at every interior load makes a save self-describing; `restore_resources` replaces `ItemInstancePool` wholesale first so instance ids resolve. Wired as `load` console command + `PendingSaveLoadSlot` + `step_save_loads` between-frames drain. **M45.1 player-pose restore closed 2026-06-21** — new `PlayerPose` save-resource (position + yaw/pitch + character/flycam flag) refreshed each frame post-scheduler by `capture_player_pose`; on `load`, `apply_player_pose` re-places the persisted player body (Character — `camera_follow_system` re-pins the camera next frame, momentum cleared, kinematic Rapier body re-synced) or the camera (FlyCam) at the saved spot, with yaw/pitch restored onto `InputState` (the look-direction source of truth both camera systems rebuild from each frame). `save.info` now prints the pose; +3 binary tests (flycam round-trip, character body-tracking, snapshot survival). **2026-08-25 hardening:** exterior sessions restore their full saved radius before deltas (#3280); typed columns preflight before teardown (#3163); unexpected apply failures abort after dead-actor reconciliation; quickload falls back across corrupt slots; and `SaveLoadNotifications` surfaces results to the player. Save/Load is feature-complete within the native snapshot scope. | M40 (world streaming dictates what to serialize) |
 
 ### Tier 5 — Renderer polish (quality, not capability)
 
@@ -1071,7 +1057,18 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 
 ### Open — Tier 1 / 2 blockers
 
-- [ ] **CI is red on `main` for an environmental reason — the runner cannot build `byroredux-fsr3-sys` (found 2026-08-13, Session 66 close).** The `Test + Check + Clippy` job fails at `third_party/fidelityfx-sdk-v1.1.4/ffx-api/include/ffx_api/vk/ffx_api_vk.h:26: fatal error: 'vulkan/vulkan.h' file not found` — the FidelityFX headers `#include` the Vulkan SDK headers, which the GitHub runner image does not provide and the workflow does not install. This is **not** a code failure and reproduces on every recent `main` commit (`663b2a44`, `2ce30136`, `c7e5f30a`, `16336a09`, `d48193db` all red), so it predates the commits it is currently failing. Practical effect: every PR this session merged red, and CI currently provides **no** signal — a real regression would be indistinguishable from this. The sibling jobs (shader parity, dhat-heap, ABBA, lavapipe validation) are unaffected and still meaningful. Fix is one workflow line (install `libvulkan-dev` / the LunarG SDK before `cargo test`), not a code change.
+- [ ] **CI compiles past FSR but remains red on runner prerequisites (updated
+  2026-08-25).** `98eea9b3` fixed the original Vulkan-header blocker by
+  installing `libvulkan-dev`; hosted `cargo check` now succeeds. The run then
+  exposes three independent environmental failures: six UI tests cannot create
+  a headless wgpu adapter, the shader-parity container invokes `python3`
+  without installing it, and the lavapipe/Xvfb run lacks
+  `libxkbcommon-x11.so`. The current ABBA job also fails six binary tests under
+  `BYRO_LOCK_ORDER_CHECK=1` (save reload, bounds, cinematic, two escort, and
+  water-interaction cases), so that leg is a real remaining code/test-order
+  signal rather than a runner prerequisite. Local ordinary full-workspace
+  tests, examples and clippy are green, but hosted CI still lacks a clean
+  all-jobs signal.
 
 - [ ] **Fire lighting is now on by default and has never had the visual check that was supposed to gate it (2026-08-18, supersedes the `fire_lights` red-canary entry filed 2026-08-11).** The workspace suite is green again, but not by the remedy the old entry prescribed. `byroredux/src/render/fire_lights.rs` — `derive_fire_light`, `fire_lights_enabled`, the `BYRO_FIRE_LIGHTS` gate and the oversized-reach canary — was **deleted wholesale** in `2325c1de` when combustion moved into the transported field. Surface illumination from fire is now reduced out of that field by [`Volumetrics::append_combustion_surface_lights`](crates/renderer/src/vulkan/volumetrics.rs), called unconditionally from [`draw.rs`](crates/renderer/src/vulkan/context/draw.rs#L1832). It keeps the authored-LIGH suppression rule (derived lights additive only where vanilla placed nothing), so the design is sound — but note what happened procedurally: the old entry's stated blocker was *"flipping a renderer default on one canary needs a visual check, not a green test."* The default got flipped as a side effect of a refactor, the canary that would have flagged the reach was removed in the same commit, and **the visual check still has not happened**. Owed: an A/B on a vanilla torch interior (FNV Prospector, Skyrim BanneredMare) confirming derived reach lands near the ~512-unit vanilla LIGH radius and that fires without a companion LIGH are not now blowing out the room. Until then the green suite is evidence that nothing asserts on this, not evidence that it is right.
 
@@ -1290,17 +1287,17 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 
 ## Project Stats
 
-Ground-truth as of 2026-08-23 (session close, HEAD `bfdc3d3f`). Every
+Ground-truth as of 2026-08-25 (session close, HEAD `df162912`). Every
 figure in this table was measured at that HEAD, not carried forward.
 
 | Metric                                  | Value                        |
 |-----------------------------------------|------------------------------|
-| Rust source lines (`src/` dirs)         | ~426 409                      |
-| Rust total lines (all `.rs`, excl. `target/`) | ~457 584                 |
+| Rust source lines (`src/` dirs)         | ~433 473                      |
+| Rust total lines (all `.rs`, excl. `target/`) | ~464 639                 |
 | Source files (`.rs`, excl. `target/`)   | 956 total · 886 outside `tests/` dirs |
 | Workspace members                       | 27 (24 crates + `byroredux` binary + 2 tools) |
-| Tests                                   | **5869 passing, 0 failing, 161 ignored** (`cargo test --workspace`, 2026-08-23). Clean full-workspace run, including doc-tests. |
-| Open issue directories                  | 3123 (`.claude/issues/`)     |
+| Tests                                   | **5965 passing, 0 failing, 162 ignored** (`cargo test --workspace`, 2026-08-25). Clean full-workspace run, including doc-tests. |
+| Open issue directories                  | 3176 (`.claude/issues/`)     |
 | NIFs in per-game integration sweeps     | 184 886                       |
 | Per-game NIF clean-parse rate           | See the [compatibility matrix](#compatibility-matrix) — it is the single home for per-game parse rates, sweep dates and residual truncation tails. Summary only: 100% clean on FO3 / FNV / Skyrim SE / FO4 / FO76, Oblivion 99.93%, Starfield 99.99% aggregate; recoverable 100% on all seven. |
 | Supported archive formats               | BSA v103/v104/v105, BA2 v1/v2/v3/v7/v8 |

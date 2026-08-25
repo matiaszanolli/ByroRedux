@@ -10,14 +10,11 @@ ByroRedux uses two layers of tests:
    round-trips. Need the relevant game installed and resolve paths via
    env vars or Steam defaults. Run with `cargo test ... -- --ignored`.
 
-The split keeps CI fast and game-data-free while letting developers run
-the heavy sweeps locally on demand. Live test totals (workspace +
-ignored) live in [ROADMAP.md → Project Stats](../../ROADMAP.md), which is
-the authoritative count refreshed each `/session-close`. As of
-2026-05-28 the workspace reports ~2628 tests passing with ~129
-`#[ignore]`d real-data integrations spread across the crates; treat the
-ROADMAP figure as ground truth and the numbers below as a structural map
-of where coverage lives, not a frozen tally.
+The split keeps CI game-data-free while letting developers run the heavy
+sweeps locally on demand. Live passing/ignored totals live in
+[ROADMAP.md → Project Stats](../../ROADMAP.md), the authoritative count
+refreshed each `/session-close`; the sections below are a structural map of
+where coverage lives, not a frozen tally.
 
 ## At-the-keyboard live count
 

@@ -1,6 +1,9 @@
 # M47.0 — Event Hooks Runtime Design
 
-**Status**: in flight (started 2026-05-23). Tier 3 milestone unblocked by R5 closure (2026-05-16, "go ECS-native" verdict).
+**Status**: shipped 2026-05-23. This is the implementation design retained for
+architecture history; current runtime scope is documented in
+[`scripting.md`](scripting.md) and the authoritative milestone state is in
+[`ROADMAP.md`](../../ROADMAP.md).
 
 **Goal**: ECS-native event-hook dispatch for the canonical Bethesda event set (`OnActivate`, `OnHit`, `OnTriggerEnter`, `OnCellLoad`, `OnEquip`), driven by SCPT cross-refs already parsed in `EsmIndex`. Opaque SCDA bytecode is ignored; M47.0 ships hand-translated scripts via the R5 prototype shape, M47.2 auto-transpiles from `.psc` source.
 
@@ -91,13 +94,13 @@ Today in `crates/scripting/src/events.rs`:
 
 | Marker | Status | Emit sites |
 |--------|--------|------------|
-| `ActivateEvent { activator }` | ✅ defined | ❌ no emit site — Phase 4 |
-| `HitEvent { aggressor, source, … }` | ✅ defined | ❌ no emit site — future combat work |
+| `ActivateEvent { activator }` | ✅ defined | ✅ shared gameplay/diagnostic interaction path |
+| `HitEvent { aggressor, source, … }` | ✅ defined | ✅ combat runtime |
 | `TimerExpired { timer_id }` | ✅ defined | ✅ `timer_tick_system` |
 | `AnimationTextKeyEvents` | ✅ defined | ✅ `animation_system` |
-| `OnTriggerEnter { activator }` | ❌ not defined — Phase 5 | ❌ Phase 5 (Rapier sensor) |
-| `OnCellLoad` | ❌ not defined — Phase 5 | ❌ Phase 5 (REFR spawn time) |
-| `OnEquip { item }` | ❌ not defined — Phase 5 | ❌ Phase 5 (M41 equip pipeline) |
+| `OnTriggerEnterEvent` | ✅ defined | ✅ `trigger_detection_system` |
+| `OnCellLoadEvent` | ✅ defined | ✅ REFR script attachment |
+| `OnEquipEvent` | ✅ defined | marker contract shipped; emit coverage remains demand-driven |
 
 ## System registration (M27-aware)
 
@@ -148,13 +151,13 @@ This lives in the plugin crate; the cell loader consumes it.
 
 ## Verification checklist for "M47.0 done"
 
-- [ ] `cargo test -p byroredux_scripting` passes the existing R5 demo unit tests
-- [ ] `cargo test --workspace` passes 
-- [ ] `papyrus_demo::register` is called from `scripting::register`
-- [ ] Demo systems are in the engine scheduler with declared access
-- [ ] `ScriptRegistry` resource is inserted at engine init, populated with every demo spawner
-- [ ] Cell loader looks up base_record.script_form_id → SCPT → ScriptRegistry on every REFR spawn
-- [ ] At least one synthetic E2E test: spawn an ACTI REFR whose base has SCRI → defaultRumbleOnActivate; assert RumbleOnActivate component lands; fire ActivateEvent; assert state machine fires + CameraShakeCommand appears on player entity
-- [ ] ActivateEvent has an actual emit site in the binary (use-key + raycast)
-- [ ] OnTriggerEnter / OnCellLoad / OnEquip exist + have emit sites
-- [ ] sys.accesses still reports 0 unknown / 0 conflicts after new system additions
+- [x] `cargo test -p byroredux-scripting` passes the R5 and runtime tests
+- [x] `cargo test --workspace` passes
+- [x] `papyrus_demo::register` is called from `scripting::register`
+- [x] Demo systems are in the engine scheduler with declared access
+- [x] `ScriptRegistry` is inserted and populated at engine init
+- [x] Cell loading resolves base record → script → registry on REFR spawn
+- [x] Synthetic end-to-end coverage exercises attachment and activation
+- [x] `ActivateEvent` has a shared gameplay/diagnostic emit path
+- [x] `OnTriggerEnterEvent`, `OnCellLoadEvent`, and `OnEquipEvent` exist; trigger and cell-load emit paths are live
+- [x] Scheduler access declarations pass the cargo-test-reachable zero-conflict guard

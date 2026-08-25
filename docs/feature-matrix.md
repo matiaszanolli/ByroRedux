@@ -6,8 +6,10 @@ run the engine, what do you see?
 
 **Legend:** ✓ Working · ~ Partial / known gaps · ✗ Not started · — Not applicable
 
-**Bench staleness:** Numbers in the *Cells* row reference the R6a-stale-13 refresh
-(`4e2ebe8c`, 2026-05-28). See [ROADMAP.md](../ROADMAP.md) for the repro commands.
+**Bench record:** Numbers in the *Cells* row reference the stepped-camera
+75-run matrix (`34074b93`, 2026-08-14). It is intentionally a dated record and
+is currently beyond the 30-commit freshness gate; see
+[ROADMAP.md](../ROADMAP.md) for the live staleness warning and repro commands.
 
 ---
 
@@ -19,7 +21,7 @@ run the engine, what do you see?
 | **Exterior grid (7×7)** | bench pending | ✓ | ✓ | ✓ | ✓ | — | ✓ |
 | **LAND heightmap + splatting** | parse ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ |
 | **World streaming (M40)** | — | ✓ | ✓ | ✓ | ✓ | — | ✓ |
-| **Confirmed bench** | 379 ent · ~1 600 FPS | 929 ent | 3 507 ent · 71 FPS | 3 211 ent · 330 FPS | 15 546 ent · 91 FPS | — | Cydonia walkable |
+| **Confirmed bench** | device check pending | device check pending | 3 757 ent · 71.0 FPS TAA | 5 183 ent · 89.9 FPS TAA | 32 920 ent · 42.5 FPS TAA | — | Cydonia walkable |
 
 **Oblivion exterior**: TES4 worldspace + LAND parse + load ✓ — the wiring
 is implemented and game-agnostic; only an on-device exterior render bench
@@ -213,7 +215,7 @@ capability on this route takes precedence over renderer polish.
 | P2 — melee combat core | ✓ Landed 2026-08-16 | Skyrim race Health + signed ACBS offset → actor-owned bone ray hit → bound Attack edge → canonical `HitEvent` → layered Health damage → one `Dead`/AI-disable transition → the existing 18-body ragdoll. Deterministic weapon selection (highest authored damage, FormID tie-break); explicit 8-damage unarmed fallback. Core checkpoint, not P2 closure. Smoke: [`p2-melee-core.sh`](smoke-tests/p2-melee-core.sh) |
 | Authored attack/hit/death animation + sound | ✗ | P2 remainder |
 | Corpse interaction / loot transfer | ✗ | P2 remainder |
-| Save → exit → reload continuity | ✗ | P5, not started |
+| Save → exit → reload continuity | ✓ | M45/M45.1 — atomic rotating slots, interior/exterior live reload, stable FormID delta overlay, player pose, typed preflight, corrupt-slot fallback and player notifications |
 
 Implementation: `byroredux/src/combat.rs` (melee vertical slice), `byroredux/src/interaction.rs` (Activate/E-key), `byroredux/src/systems.rs` + action-state consumers (movement).
 
@@ -229,7 +231,7 @@ Implementation: `byroredux/src/combat.rs` (melee vertical slice), `byroredux/src
 | Fallout 4 Scaleform host objects | ◐ `BGSCodeObj` lifecycle + 138-method installed-corpus catalog + injected ABC dispatch + BA2-backed `ImportAssets` shipped; HUD/Pip-Boy readiness and destruction plus Atomic Command inventory asserted, method behavior pending M48 |
 | Scaleform menu input routing + modal focus | ✓ M48 (`3ea5e275`) — winit → `UiInputEvent` translation (`crates/ui/src/input.rs`, `byroredux/src/ui_input.rs`), cursor position + modifier state, focus transfer and modal capture ahead of world controls, window→movie coordinate scaling |
 | `byroredux-debug-ui` egui overlay (F-key toggle) | ✓ |
-| Native game menu (Pause / Settings / Inventory) | ✓ Shipped 2026-08-15/16 — `byroredux-debug-ui`'s egui `GameMenuPage::{Pause,Settings,Inventory}` (`crates/debug-ui/src/panels.rs`); native `InventorySnapshot`/`InventoryAction` bridge over the canonical `Inventory`/`EquipmentSlots` components (`byroredux/src/inventory.rs`); validated TOML-persisted settings with stale-entry recovery (`byroredux/src/settings_io.rs`). Runs alongside Scaleform, not a replacement — Ruffle remains the compatibility target for authored Bethesda menus. Container/corpse transfer, weapon equip, visible player-mesh attachment, HUD bars/notifications/objective text remain open (P3 remainder, see Gameplay/Combat section) |
+| Native game menu (Pause / Settings / Inventory) | ✓ Shipped 2026-08-15/16 — `byroredux-debug-ui`'s egui `GameMenuPage::{Pause,Settings,Inventory}` (`crates/debug-ui/src/panels.rs`); native `InventorySnapshot`/`InventoryAction` bridge over the canonical `Inventory`/`EquipmentSlots` components (`byroredux/src/inventory.rs`); validated TOML-persisted settings with stale-entry recovery (`byroredux/src/settings_io.rs`). Runs alongside Scaleform, not a replacement. Save/load toasts are live; container/corpse transfer, visible player-mesh attachment, general HUD bars, and quest-objective presentation remain open. |
 
 ---
 

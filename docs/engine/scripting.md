@@ -1,10 +1,11 @@
 # Scripting Architecture: From Papyrus VM to ECS-Native
 
-> **Status (2026-05-28).** The ECS-native scripting model below started as a
-> design bet and is now partly shipped. R5 (the "prove one real Papyrus quest
-> translates to ECS" prototype) closed 2026-05-16 with a *go* verdict; the
-> event-hook runtime (**M47.0**) and condition evaluator (**M47.1**) both closed
-> 2026-05-23, and the full `.psc` → AST parser (**M30.2**) closed the same day.
+> **Status (verified 2026-08-25).** The ECS-native scripting model is now a
+> production subsystem rather than only the R5 design proof. M47.0/M47.1 and
+> the `.psc` parser remain shipped; the runtime now also decodes `.pex`, lowers
+> and dispatches QUST and SCEN fragments, resolves quest aliases and VMAD
+> properties, persists fragment continuations, globals, quest progress and
+> reference-enable state, and applies a growing conservative `Effect` catalog.
 > The live code lives in [`crates/scripting/`](../../crates/scripting/) and
 > [`crates/papyrus/`](../../crates/papyrus/). Sections marked **DESIGN** are
 > still forward-looking; sections marked **SHIPPED** describe code in the tree
@@ -82,10 +83,8 @@ verdict was *go ECS-native*; full evaluation at
 The scripting crate ([`crates/scripting/`](../../crates/scripting/)) is the
 ECS-native event runtime. It registers its storages via `byroredux_scripting::register(&mut world)`
 ([`crates/scripting/src/lib.rs`](../../crates/scripting/src/lib.rs)), called
-once from `byroredux/src/main.rs` during engine init. The crate carries **83
-tests**; the Papyrus parser crate ([`crates/papyrus/`](../../crates/papyrus/))
-carries **73** (as of 2026-05-28 — verify the live counts via
-[ROADMAP.md](../../ROADMAP.md#project-stats)).
+once during engine init. Test counts change quickly; the authoritative
+workspace total is maintained in [ROADMAP.md](../../ROADMAP.md#project-stats).
 
 ### Module map
 
@@ -98,6 +97,11 @@ carries **73** (as of 2026-05-28 — verify the live counts via
 | Quest stages | [`quest_stages.rs`](../../crates/scripting/src/quest_stages.rs) | `QuestStageState` resource + `QuestStageAdvanced` event |
 | Conditions | [`condition.rs`](../../crates/scripting/src/condition.rs) | `ConditionFunction` + OR-precedence `evaluate` (M47.1) |
 | Script registry | [`registry.rs`](../../crates/scripting/src/registry.rs) | `ScriptRegistry` — editor_id → spawn-fn map (M47.0) |
+| Fragment runtime | [`fragment.rs`](../../crates/scripting/src/fragment.rs) | QUST/SCEN fragment population, cascade dispatch, deferred effects, enable state |
+| Fragment lowering | [`translate/`](../../crates/scripting/src/translate/) | Conservative `.pex`/AST recognizers and canonical `Effect` lowering |
+| Globals | [`globals.rs`](../../crates/scripting/src/globals.rs) | Mutable GLOB values consumed by conditions and `SetValue` effects |
+| Triggers and packages | [`trigger.rs`](../../crates/scripting/src/trigger.rs), [`package.rs`](../../crates/scripting/src/package.rs) | Trigger-enter detection and runtime package re-evaluation |
+| Scenes | [`scene/`](../../crates/scripting/src/scene/) | SCEN population, phase playback, actor binding and phase fragments |
 | Papyrus demos | [`papyrus_demo/`](../../crates/scripting/src/papyrus_demo/) | Hand-translated R5 scripts (the "go ECS-native" proof) |
 
 ### The frame lifecycle (M47.0)
@@ -129,15 +133,15 @@ in the design narrative.
 
 | Marker | Fields | Replaces | Emit site |
 |---|---|---|---|
-| `ActivateEvent` | `activator: EntityId` | `OnActivate` | `script.activate` console command (M47.0 Phase 4); gameplay use-key deferred to M28.5 input |
-| `HitEvent` | `aggressor`, `source`, `projectile: EntityId` + `power_attack`, `sneak_attack`, `bash_attack`, `blocked: bool` | `OnHit` | combat system (not yet wired) |
+| `ActivateEvent` | `activator: EntityId` | `OnActivate` | shared interaction path used by gameplay input and diagnostics |
+| `HitEvent` | `aggressor`, `source`, `projectile: EntityId` + damage/attack flags | `OnHit` | combat runtime |
 | `TimerExpired` | `timer_id: u32` | `OnTimer` | `timer_tick_system` |
 | `AnimationTextKeyEvents` | `Vec<AnimationTextKeyEvent { label: FixedString, time: f32 }>` | KF text keys | `byroredux::systems::animation` (live — fires on every clip) |
 | `OnUpdateEvent` | (unit) | `OnUpdate` | `recurring_update_tick_system` |
-| `OnCellLoadEvent` | (unit) | `OnLoad` / `OnCellLoad` | **live** — cell loader's `attach_script_for_refr` ([`byroredux/src/cell_loader/references.rs`](../../byroredux/src/cell_loader/references.rs)) |
-| `OnTriggerEnterEvent` | `triggerer: EntityId` | `OnTriggerEnter` (Skyrim+) / `OnTrigger` (FO3/FNV) | **structurally registered, no emit yet** — deferred to Rapier sensor wiring |
-| `OnEquipEvent` | `wearer: EntityId` | `OnEquip` / `OnEquipped` | **structurally registered, no emit yet** — deferred to the M41 equip pipeline |
-| `QuestStageAdvanced` | `quest: QuestFormId`, `previous_stage`, `new_stage: u16` | quest stage-advance fragments | emitted by SetStage-driven systems; no consumer subsystem yet |
+| `OnCellLoadEvent` | (unit) | `OnLoad` / `OnCellLoad` | **live** — cell loader's `attach_script_for_refr` ([`byroredux/src/cell_loader/references/attach.rs`](../../byroredux/src/cell_loader/references/attach.rs)) |
+| `OnTriggerEnterEvent` | triggerer set | `OnTriggerEnter` (Skyrim+) / `OnTrigger` (FO3/FNV) | `trigger_detection_system` over live trigger volumes |
+| `OnEquipEvent` | `wearer: EntityId` | `OnEquip` / `OnEquipped` | marker contract is shipped; coverage remains demand-driven |
+| `QuestStageAdvanced` | `quest: QuestFormId`, `previous_stage`, `new_stage: u16` | quest stage-advance fragments | consumed by `quest_fragment_dispatch_system`, including bounded cascades |
 
 The marker pattern is zero-cost for entities that don't participate — no
 registration list. `AnimationTextKeyEvents` is the most exercised marker today:
@@ -176,11 +180,12 @@ actor), keyed by `QuestFormId(u32)`. It exposes the Papyrus surface:
   carries the same shape.
 - `reset(quest)` — Papyrus `Quest.Reset()`.
 
-Entries are lazy: a quest only gets a map entry on first `set_stage`, keeping the
+Entries are lazy: a quest only gets a map entry on first mutation, keeping the
 resource proportional to "quests touched" rather than "every quest in every
-plugin". Deliberately **not** here yet: stage-fragment dispatch, objectives
-(`SetObjectiveDisplayed`/`Completed`/`Failed`), and `OnStageSet` handler
-dispatch — all M47.x follow-ups.
+plugin". Stage-fragment dispatch and objective state are now live through
+`QuestStageFragments`, `QuestObjectiveState`, and
+`quest_fragment_dispatch_system`; the dispatcher queues cascaded stage changes
+and caps them so cyclic authored content cannot loop forever in one frame.
 
 ### Condition evaluator (M47.1)
 
@@ -207,20 +212,15 @@ distributive law. `evaluate(&list, world, &ctx)` walks the list grouping OR
 blocks, short-circuits AND failures, and returns `true` for empty lists
 ("no conditions = always fires").
 
-**Function catalog.** Bethesda ships ~300 condition functions across the
-lineage. M47.1 ships **7 representative functions** at canonical FO3/FNV/Skyrim
-indices; the catalog grows additively (one enum variant + one match arm per new
-function):
-
-| Index | `ConditionFunction` | Status |
-|---|---|---|
-| 9  | `GetActorValue`  | stub (AVIF→ActorStats key resolver deferred) → 0.0 |
-| 36 | `GetDistance`    | stub (FormID→EntityId resolver deferred) → 0.0 |
-| 58 | `GetStage`       | **working** — reads `QuestStageState` |
-| 59 | `GetStageDone`   | **working** — reads `QuestStageState` |
-| 60 | `GetFactionRank` | stub (no FactionMembership component yet) → -1.0 |
-| 71 | `GetIsID`        | stub (base-FormID tracking not yet plumbed) → 0.0 |
-| 99 | `HasPerk`        | stub (no PerkList component yet) → 0.0 |
+**Function catalog.** Bethesda ships hundreds of condition functions across
+the lineage. The initial seven-function M47.1 catalog has grown to **19 modeled
+variants** (plus `Unknown`): actor value/distance/death, quest stage/history,
+cell/faction/level/equipment, XP-to-next-level, scene-action completion,
+loaded-3D, class/race/base-ID, perks, FNV reputation and VM script variables.
+Their per-game indices and exact ECS fallbacks are documented beside the
+authoritative `ConditionFunction` enum in
+[`condition.rs`](../../crates/scripting/src/condition.rs); keeping a second
+index table here previously let the numbers drift.
 
 Unknown indices fall to `ConditionFunction::Unknown(u32)` and evaluate to 0.0 —
 Bethesda's "unknown function → safe-default" contract — trace-logged for catalog
@@ -666,11 +666,12 @@ typos until the branch fired) becomes a compile-time-exhaustive `match`.
 Papyrus fragments are inline script snippets that run at specific moments:
 quest stage set, topic info played, package started, scene phase begun.
 
-ECS: systems that watch for the corresponding state changes. A quest-stage
-fragment becomes a system that reacts to the `QuestStageAdvanced` marker (already
-emitted by the SetStage path) and matches the quest + stage. The dispatch loop
-itself is the M47.x follow-up — the `QuestStageState` resource and the
-`QuestStageAdvanced` event are shipped; the fragment-system consumer is pending.
+ECS: systems that watch for the corresponding state changes. The production
+path populates `QuestStageFragments`/`SceneFragments` from compiled `.pex`,
+then `quest_fragment_dispatch_system` and the scene runtime react to stage and
+phase transitions. Lowering is conservative: an unmodelled statement declines
+the whole fragment rather than approximating it; runtime resolution failures
+skip the affected effect and leave the remaining chain available.
 
 ```rust
 fn quest_stage_0010(world: &World) {
@@ -883,7 +884,7 @@ original `.swf` files. See
 
 ---
 
-## Milestone Status (as of 2026-05-28)
+## Milestone Status (verified 2026-08-25)
 
 | Milestone | Subject | Status |
 |---|---|---|
@@ -891,9 +892,9 @@ original `.swf` files. See
 | **M30 Phase 1** | Papyrus lexer + expression parser | Closed — logos lexer + Pratt parser. |
 | **M30.2** | Papyrus statement + item parser (full `.psc` parse) | **Closed 2026-05-23** (`ab0eee96`). All four R5 scripts round-trip with zero recovered errors. Unblocks M47.2. |
 | **M47.0** | Event-hooks runtime | **Closed 2026-05-23** (6 phases, `6c51af55..03837739`). `ScriptRegistry`, marker catalog, `script.activate` console command, e2e tests. |
-| **M47.1** | Condition eval | **Closed 2026-05-23** (`ea9d0cfa`, `0a835e3e`). CTDA parser + 7-function `ConditionFunction` catalog + OR-precedence evaluator; `quest_advance` is the first `ConditionList` consumer. |
-| **M47.2** | Full scripting runtime | **Pending** — Papyrus transpiler (M30 AST → ECS), VMAD per-instance property decode, ESM-native 136-event dispatch, perk entry-point composition. |
-| **M43** | Quests & dialogue | Pending — quest stages (resource shipped), dialogue trees, Story Manager triggers. |
+| **M47.1** | Condition eval | **Closed 2026-05-23** (`ea9d0cfa`, `0a835e3e`). CTDA parser + OR-precedence evaluator; the initial 7-function catalog has since grown to 19 modeled variants and multiple quest/scene/package consumers. |
+| **M47.2** | Recognizer runtime | **Partly shipped and actively expanding** — `.pex` decompilation, QUST/SCEN fragment population, VMAD property binding, quest aliases, conservative effect lowering, deferred waits/cascades, globals, enable/disable and package re-evaluation are live. It intentionally does not promise exhaustive arbitrary-Papyrus execution. |
+| **M43** | Quests & dialogue | **Quest/scene core shipped; broader integration open** — lifecycle, stages, objectives, aliases, fragments and scene phases are live. Story Manager search/payloads and full dialogue/UI integration remain open; see ROADMAP. |
 
 Design doc for the event runtime: [`docs/engine/m47-0-design.md`](m47-0-design.md).
 Design doc for the full scripting runtime: [`docs/engine/m47-2-design.md`](m47-2-design.md).

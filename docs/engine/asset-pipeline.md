@@ -132,7 +132,7 @@ available cell editor IDs to help the user find the typo.
 ### 4. Walk placed references
 
 The inner REFR walk lives in
-[`cell_loader/references.rs`](../../byroredux/src/cell_loader/references.rs).
+[`cell_loader/references/`](../../byroredux/src/cell_loader/references/).
 Each `CellData` has a `Vec<PlacedRef>` — REFR / ACHR records that placed
 a base form into the cell. The loader walks these in order, resolves
 each `base_form_id` against the `statics` map, and dispatches the result
@@ -491,7 +491,7 @@ smoke run:
   ~21 `#[ignore]`d per-game integration sweeps walking the vanilla NIF
   corpus end-to-end)
 - **BGSM/BGEM merge + path normalisation** →
-  [`asset_provider/tests.rs`](../../byroredux/src/asset_provider/tests.rs)'s
+  [`asset_provider/tests/`](../../byroredux/src/asset_provider/tests/)'s
   `#[cfg(test)]` module (`normalize_material_path_*`,
   `build_material_provider_*`)
 - **Material translation** → exercised through the cell-loader and
@@ -503,8 +503,9 @@ smoke run:
   `lgtm_fallback_tests`, `terrain_splat_tests`, …) plus the manual
   `cargo run -- --esm … --cell …` smoke test
 
-(Workspace-wide: ~2 635 tests pass as of 2026-05-28.) The closest thing
-to a true end-to-end check is running a cell demo with `--bench-hold`
+The current workspace-wide total lives only in
+[ROADMAP Project Stats](../../ROADMAP.md#project-stats). The closest thing to
+a true end-to-end check is running a cell demo with `--bench-hold`
 and driving `byro-dbg` (`tex.missing`, `entities <Component>`, `stats`)
 against the loaded scene.
 

@@ -235,11 +235,11 @@ Bars are eyeballed weight, not a computed metric — read the rows, not the bars
 | `[x]` | Script timers | `Utility.Wait` / `RegisterForSingleUpdate` | dt-driven `ScriptTimer` + `TimerExpired` |
 | `[x]` | Global variables (GLOB) | — | |
 | `[x]` | VMAD script attachment | — | Per-REFR resolution from `--scripts-bsa` at attach time |
-| `[~]` | Quest-stage advance recognizer | `SetStage` | `default*SetStage*` family on `OnActivate` + `OnTriggerEnter` |
-| `[~]` | QUST fragment lowering | Quest fragments | Stage→`Fragment_N` table decoded, cross-validated against 856 Skyrim VMADs |
-| `[~]` | Condition function coverage | ~300 functions | 7 at canonical indices; 2 fully working (`GetStage`, `GetStageDone`), 5 trace-log their ECS gaps |
+| `[~]` | Quest-stage advance recognizer | `SetStage` | Trigger families plus compiled QUST/SCEN fragment dispatch; arbitrary Papyrus remains decline-by-default |
+| `[~]` | QUST/SCEN fragment lowering | Quest/scene fragments | Stage/phase bindings decoded from VMAD and `.pex`; conservative catalog includes objectives, conditionals, globals, lifecycle, object/reference, package and cinematic effects |
+| `[~]` | Condition function coverage | Hundreds across the lineage | 19 modeled variants plus safe-default `Unknown`; actor/quest/cell/faction/level/equipment/perk/reputation/scene/script-variable consumers are live |
 | `[~]` | Papyrus → ECS transpiler | — | Recognizer chain, not a general transpiler; 1 257 FO3 SCPT records still not driven |
-| `[~]` | Script effects (AddItem / MoveTo) | — | Implemented, ~0 % real yield pending alias resolution |
+| `[~]` | Script effects | — | `AddItem`, `MoveTo`, `Disable`, `SetValue`, conditional branches, quest/scene lifecycle, package re-evaluation and cinematic/control effects are live; unsupported shapes decline safely |
 | `[ ]` | Full script-object API (101 types) | ScriptObject tree | |
 | `[ ]` | Custom events / `RegisterForCustomEvent` | — | |
 | `[ ]` | States (`GoToState`) | Papyrus states | Multi-state dispatch proven in R5; not generalized |

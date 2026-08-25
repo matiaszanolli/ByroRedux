@@ -21,7 +21,8 @@
 > fixture matrix remain recovery work; see
 > [RT Lighting and Material Correctness Recovery](rt-lighting-material-recovery.md).
 
-**Status**: DESIGN / in progress (opened 2026-05-27) — see banner above for current state.
+**Status**: converged 2026-05-28; retained as design history. The live contract
+is [`nifal.md`](nifal.md), with current recovery work linked in the banner.
 **Goal**: every supported engine version (Oblivion / FO3 / FNV / Skyrim / FO4 / FO76 / Starfield) translates its native material data into **one canonical `Material`** with **one convention**, classified **at parse time**. The renderer/shader consumes that canonical material **identically** for all games. _All glass behaves the same. All cameras look the same._
 
 This formalises the existing invariants in `feedback_format_translation.md` ("never per-game branches in the shader; translate at the parser→Material boundary") and `format_abstraction.md` (GameVariant trait pattern) — which are documented but **not yet fully realised**.

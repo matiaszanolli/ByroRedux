@@ -25,7 +25,7 @@ shadows on RTX 4070 Ti. Current entity count + bench numbers in
 | | |
 |-|-|
 | **Games supported** | 7 — Oblivion · Fallout 3 · Fallout New Vegas · Skyrim SE · Fallout 4 · Fallout 76 · Starfield |
-| **NIF parse rate** | **100% clean** on FO3 / FNV / Skyrim SE; 95–99% clean / 100% recoverable on Oblivion / FO4 / FO76 / Starfield — 184 886 files validated. See [ROADMAP compatibility matrix](ROADMAP.md#compatibility-matrix). |
+| **NIF parse rate** | **100% clean** on FO3 / FNV / Skyrim SE / FO4 / FO76; Oblivion 99.93%, Starfield 99.99% aggregate; 100% recoverable on all seven — 184 886 files validated. See [ROADMAP compatibility matrix](ROADMAP.md#compatibility-matrix). |
 | **Archive formats** | BSA v103 / v104 / v105 · BA2 v1 / v2 / v3 / v7 / v8 (GNRL + DX10, zlib + LZ4) |
 | **NIF block types** | See `crates/nif/src/blocks/mod.rs` for the canonical dispatch registry (incl. Havok skip-stubs) |
 | **ESM records (FNV)** | ~25 structured types (items, NPCs, factions, cells, CREA, LVLC, SCPT, PACK, QUST, DIAL, MESG, PERK, SPEL, MGEF, …) plus a separate long-tail bucket (sounds / idle / grasses / debris). See [ROADMAP Status](ROADMAP.md#status) for the current count — it's tracked by a floor-based integration test, not a number pinned here. |
@@ -33,7 +33,8 @@ shadows on RTX 4070 Ti. Current entity count + bench numbers in
 | **Test count, LOC, file count, workspace size** | See [ROADMAP Project Stats](ROADMAP.md#project-stats) — refreshed per `/session-close` so the README doesn't drift behind. |
 | **Renderer** | Vulkan 1.3 + `VK_KHR_ray_query` — multi-light RT shadows, reflections, bounded material-aware path-traced GI, SVGF temporal denoiser, TAA, streaming RIS (8 reservoirs/fragment), BLAS compaction + LRU eviction, Disney/Burley BSDF lobe for PBR (BGSM/BGEM + Starfield) content |
 | **Physics** | Rapier3D — collision import from NIF `bhk` chain, dynamic bodies, fixed 60 Hz substep |
-| **Scripting** | Papyrus `.psc` parser (full AST) + `.pex` bytecode decompiler; recognizer-driven attach of compiled vanilla scripts at cell load; ECS-native event + timer runtime |
+| **Scripting** | Papyrus `.psc` parser + `.pex` decompiler; conservative QUST/SCEN fragment lowering; ECS-native quests, aliases, objectives, globals, events, timers, packages and persisted reference state |
+| **Save/load** | Atomic rotating slots; typed preflight; interior/exterior live rebuild + stable FormID delta overlay; player pose, notifications and corrupt-slot fallback |
 | **UI** | Native egui HUD + pause/settings/inventory menus; Scaleform / SWF compatibility menus via Ruffle (offscreen wgpu → Vulkan texture overlay) |
 
 ## Start here
@@ -98,9 +99,9 @@ remain follow-up work.
   collision are likewise canonical, with particle emitter base params and
   authored birth-rate / size folded in this session. See
   [docs/engine/nifal.md](docs/engine/nifal.md).
-- **100% parse coverage** across all seven supported Bethesda titles —
-  100% clean on FO3 / FNV / Skyrim SE and 95–99% clean / 100% recoverable
-  on Oblivion / FO4 / FO76 / Starfield (184 886 NIFs validated). CI fails
+- **100% recoverable parse coverage** across all seven supported Bethesda titles —
+  100% clean on FO3 / FNV / Skyrim SE / FO4 / FO76, with small clean-parse
+  residuals on Oblivion and Starfield (184 886 NIFs validated). CI fails
   on regression (per-game per-block-type baselines).
 - **Full asset round-trip** from unmodified Bethesda game data —
   `Oblivion.esm` + BSA → rendered interior with XCLL lighting +

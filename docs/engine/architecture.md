@@ -5,21 +5,21 @@ built from scratch in Rust and C++ using Vulkan. The goal is a modern engine
 with Rust's safety guarantees that can load and render content from every
 Bethesda Gamebryo/Creation game (Oblivion through Starfield).
 
-> **Doc currency.** This overview was fully reconciled against the tree on
-> 2026-05-28 (post-Session-42). Workspace-wide figures (test counts, file
-> counts, the compat matrix, bench FPS) are authoritative in
+> **Doc currency.** Reconciled against the tree on 2026-08-25. Workspace-wide
+> figures (test counts, file counts, the compat matrix, bench FPS) are
+> authoritative in
 > [`ROADMAP.md`](../../ROADMAP.md#project-stats), which `/session-close`
 > refreshes every session; the snapshots quoted here are allowed to drift one
 > sweep behind.
 
 ## Workspace Structure
 
-The workspace is **25 members**: 22 library crates under `crates/`, the
+The workspace is **27 members**: 24 library/system crates under `crates/`, the
 `byroredux` binary, and two tools.
 
 ```
 byroredux/
-├── Cargo.toml                 Workspace root (25 members)
+├── Cargo.toml                 Workspace root (27 members)
 ├── byroredux/                 Binary crate — game loop, scene setup, cell loader,
 │                              world streaming, NPC spawn/equip, fly + character
 │                              controllers, animation/transform/render systems
@@ -27,10 +27,12 @@ byroredux/
 │   ├── core/                  ECS, math (glam), animation engine, types,
 │   │                          string interning, form IDs, components/resources,
 │   │                          console-command registry
+│   ├── save/                  Snapshot registry, validation, atomic disk format
 │   ├── plugin/                Plugin system, ESM/ESP parser (cell + records),
 │   │                          manifests, conflict resolution, legacy bridge
 │   ├── nif/                   NIF file parser + animation importer, scene import
 │   │                          to ECS-friendly meshes (NIFAL canonical translation)
+│   ├── hkx/                   Havok packfile/skeleton/animation reader
 │   ├── spt/                   SpeedTree (.spt) TLV parser + placeholder-billboard
 │   │                          import (Phase 1)
 │   ├── bsa/                   BSA + BA2 archive readers for every Bethesda game
@@ -42,11 +44,14 @@ byroredux/
 │   │                          character controller, consumes NIF collision data
 │   ├── renderer/              Vulkan graphics via ash + gpu-allocator, with RT
 │   │                          extensions (VK_KHR_ray_query)
+│   ├── fsr3-sys/              FidelityFX FSR 3 native bridge
 │   ├── audio/                 kira-backed audio (spatial sub-tracks, music, reverb)
 │   ├── ui/                    Scaleform/SWF UI system (Ruffle integration)
 │   ├── scripting/             ECS-native scripting (events, timers, conditions,
-│   │                          Papyrus-demo hand-translations)
+│   │                          quest/scene fragments and runtime effects)
 │   ├── papyrus/               Papyrus language parser (.psc source → AST)
+│   ├── pex/                   Compiled Papyrus decompiler
+│   ├── mod-runtime/           Sandboxed linked-mod execution boundary
 │   ├── platform/              Windowing via winit (Linux-first)
 │   ├── cxx-bridge/            C++ interop via cxx
 │   ├── debug-protocol/        Wire types + component registry for the debug CLI
@@ -223,30 +228,35 @@ can pull bytes straight out of archives. The internal edges (verified against
 each crate's `Cargo.toml`):
 
 ```
-byroredux (binary)  →  core, renderer, platform, scripting, nif, spt, bsa,
-                       bgsm, sfmaterial, facegen, audio, physics, plugin,
-                       cxx-bridge, ui, debug-ui (+ debug-server, optional)
+byroredux (binary)  →  core, save, renderer, platform, scripting, nif, hkx,
+                       spt, bsa, bgsm, sfmaterial, facegen, audio, physics,
+                       plugin, cxx-bridge, ui, debug-ui
+                       (+ debug-server, optional)
 
 core            → (no internal deps — spine)
 bsa             → (no internal deps — leaf)
 cxx-bridge      → (no internal deps — leaf)
 papyrus         → (no internal deps — leaf)
 debug-protocol  → (no internal deps — leaf)
+platform        → (no internal deps — leaf)
+hkx             → (no runtime internal deps; bsa dev-only)
+fsr3-sys        → (no internal deps — native SDK boundary)
 
-platform        → core
+save            → core
 plugin          → core
 physics         → core
-renderer        → core, platform
-ui              → core
+renderer        → core, fsr3-sys
+ui              → bsa
 nif             → core            (+ bsa as a dev-dependency, see below)
-spt             → core, nif, bsa
-bgsm            → bsa
-sfmaterial      → bsa
-facegen         → bsa
-audio           → core, bsa
-scripting       → core, plugin
+spt             → core, nif        (+ bsa dev-only)
+bgsm            → (bsa dev-only)
+sfmaterial      → (bsa dev-only)
+facegen         → (bsa dev-only)
+audio           → core             (+ bsa dev-only)
+pex             → papyrus          (+ bsa dev-only)
+scripting       → core, plugin, papyrus, pex (+ bsa dev-only)
 debug-server    → core, papyrus, debug-protocol
-debug-ui        → core, renderer
+debug-ui        → core
 ```
 
 `byroredux-physics` depends only on `core`, keeping `rapier3d` / `nalgebra`
@@ -306,27 +316,17 @@ stages/objectives), and perk entries on top of cell + static extraction. World
 streaming swaps cells in/out around the player; a kinematic character
 controller walks the loaded geometry.
 
-Workspace-wide metrics (ground truth lives in
-[`ROADMAP.md`](../../ROADMAP.md#project-stats), refreshed each
-`/session-close`; snapshot as of the Session 42 close, 2026-05-28):
-
-| Metric                              | Value          |
-|-------------------------------------|----------------|
-| Rust source files (`.rs`, excl. `target/`) | 549 (518 outside `tests/` dirs) |
-| Workspace members                   | 21 (19 crates + `byroredux` + `byro-dbg`) |
-| Tests passing                       | ~2635          |
-| NIFs in per-game integration sweeps | 184,886        |
-| Per-game NIF clean-parse rate       | 100% on FO3 / FNV / Skyrim SE / FO4 / FO76; Oblivion 99.93%, Starfield 99.64% aggregate (recoverable 100% on all games; sweep 2026-07-11, #1900) |
-| Supported archive formats           | BSA v103/104/105, BA2 v1/2/3/7/8 |
+Workspace-wide metrics are intentionally not duplicated here. See the
+session-refreshed [ROADMAP Project Stats](../../ROADMAP.md#project-stats) and
+the [compatibility matrix](../COMPATIBILITY.md) for current counts and parse
+rates.
 
 What works today, end-to-end:
 
 - Open a Vulkan window on Linux (Wayland or X11), validation layers in debug.
 - Load full interior **and** exterior cells from every supported game and
-  render them with RT-shadowed multi-light. Reference benches (R6a-stale-13,
-  2026-05-28): FNV Prospector Saloon 3507 entities @ ~71 FPS, Skyrim SE
-  WhiterunBanneredMare 3211 entities @ ~330 FPS on an RTX 4070 Ti. Exact
-  repro commands and the latest numbers are in
+  render them with RT-shadowed multi-light. Exact reproducible bench records,
+  their staleness status, and commands are in
   [`ROADMAP.md`](../../ROADMAP.md#project-stats).
 - Per-mesh NiLight sources contribute to the GpuLight buffer with per-light
   falloff and candle/chandelier flicker — Oblivion torches and candles light
@@ -342,6 +342,10 @@ What works today, end-to-end:
   refit); `.kf` animations play on named ECS entities with the full
   controller stack.
 - Spawn and equip NPCs (ARMO/ARMA worn-mesh chain + LVLI dispatch + FaceGen).
+- Save and live-reload interiors or streamed exteriors with typed preflight,
+  FormID-keyed delta overlay, player notifications and corrupt-slot fallback.
+- Decode and conservatively dispatch QUST/SCEN `.pex` fragments through
+  quest/alias/objective/global/reference/package ECS state.
 - Sky, sun arc, time-of-day, four cloud layers, fog, and weather fade
   transitions (M33/M33.1); water with RT reflection/refraction and caustics
   (M38 + #1210).

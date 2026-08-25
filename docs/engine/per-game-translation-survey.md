@@ -3,7 +3,12 @@
 **Status**: SURVEY — generated 2026-05-28 from four parallel scans (NIF parser /
 NIF importer / ESM + cell-loader / renderer). Child of
 [`nif-engine-translation-layer.md`](./nif-engine-translation-layer.md) (issue
-[#1277](https://github.com/matiaszanolli/issues/1277)).
+[#1277](https://github.com/matiaszanolli/ByroRedux/issues/1277)).
+
+> Historical survey, retained as the evidence snapshot for #1277. Several
+> findings below have since shipped; use the current compatibility tables in
+> [`ROADMAP.md`](../../ROADMAP.md) and [`feature-matrix.md`](../feature-matrix.md)
+> for present support claims.
 
 **TL;DR**: The renderer is genuinely clean — zero `if (game == …)` branches in
 shaders or in renderer Rust. The invariant from `feedback_format_translation.md`
@@ -153,7 +158,7 @@ one function. It's the textbook candidate for splitting into
    routes it into `emissive_mult` alongside Skyrim LSP `emissive_multiple` and
    legacy `NiMaterialProperty.emissive_mult`. Three different semantics, one
    output field. Documented in code but unresolved.
-10. **`bhkNPCollisionObject` silently dropped** ([`import/collision.rs:26`](../../crates/nif/src/import/collision.rs#L26))
+10. **`bhkNPCollisionObject` silently dropped** ([`import/collision/mod.rs`](../../crates/nif/src/import/collision/mod.rs))
     — `extract_collision` calls `scene.get_as::<BhkCollisionObject>()` only.
     FO4+ uses `bhkNPCollisionObject` (Niagara Physics rewrite), the importer
     returns `None` for every FO4 architecture mesh, **player falls through
@@ -183,7 +188,7 @@ one function. It's the textbook candidate for splitting into
   — explicit `match game` on each record's DATA/DNAM layout.
 - `WTHR` Skyrim split ([`records/weather.rs:278`](../../crates/plugin/src/esm/records/weather.rs#L278))
   — `if matches!(game, GameKind::Skyrim) { return parse_wthr_skyrim(...); }`.
-- `NPC_` Oblivion ATTR/DNAM/VNAM/PNAM/UNAM/XNAM ([`records/actor.rs:457`](../../crates/plugin/src/esm/records/actor.rs#L457))
+- `NPC_` Oblivion ATTR/DNAM/VNAM/PNAM/UNAM/XNAM ([`records/actor/mod.rs`](../../crates/plugin/src/esm/records/actor/mod.rs))
   — `is_oblivion` cached, used per sub-record.
 
 **Where `GameKind` is completely absent (and should be present):**
@@ -212,13 +217,13 @@ one function. It's the textbook candidate for splitting into
 - REFR DATA ([`cell/walkers.rs:460`](../../crates/plugin/src/esm/cell/walkers.rs#L460))
   — assumes uniform 24-byte position+rotation across all games. Oblivion
   trailing fields (if any) not validated.
-- `RACE` DATA ([`records/actor.rs:788`](../../crates/plugin/src/esm/records/actor.rs#L788))
+- `RACE` DATA ([`records/actor/mod.rs`](../../crates/plugin/src/esm/records/actor/mod.rs))
   — size gate ≥ 36 covers Oblivion/FO3/FNV; Skyrim is 128+ bytes with a
   different layout, **no Skyrim arm exists**, Skyrim RACE silently parses with
   the wrong schema.
 
 **Already-fixed model finding** — `BSXFlags` bit 5 semantic flip
-([`cell_loader/references.rs:906`](../../byroredux/src/cell_loader/references.rs#L906))
+([`cell_loader/references/import.rs`](../../byroredux/src/cell_loader/references/import.rs))
 is correctly BSVER-gated post-#560. This is the pattern: *one* bit-semantic flip
 required a game-aware gate; the other 60+ bit semantics in BSXFlags / `flags2`
 may have similar latent flips that haven't surfaced yet.

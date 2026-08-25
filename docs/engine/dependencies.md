@@ -5,8 +5,8 @@ under `[workspace.dependencies]` and are consumed by individual crates via
 `{ workspace = true }`. The internal crate graph is documented in
 [Architecture Overview](architecture.md#crate-dependency-graph).
 
-> Last reconciled against the tree on **2026-05-28** (Session 42 closeout).
-> The workspace has grown to **22 crates under `crates/`** plus the
+> Last reconciled against the tree on **2026-08-25** (Session 72 closeout).
+> The workspace now contains **24 crates under `crates/`** plus the
 > `byroredux` binary and two tools since the Session 7 (2026-04-09)
 > revision of this doc — the dependency surface below reflects the current
 > `Cargo.toml` files, not the early-April snapshot.
@@ -20,15 +20,15 @@ internal graph are not repeated).
 | Crate              | Version  | Used by                                       | Purpose                                                       |
 |--------------------|----------|-----------------------------------------------|---------------------------------------------------------------|
 | **Vulkan / GPU**   |          |                                               |                                                               |
-| ash                | 0.38     | renderer, debug-ui                            | Raw Vulkan bindings                                           |
+| ash                | 0.38     | renderer, fsr3-sys, byroredux                 | Raw Vulkan bindings                                           |
 | ash-window         | 0.13     | renderer                                      | Surface creation from window handles                          |
-| gpu-allocator      | 0.28 (`vulkan`) | renderer, debug-ui                     | Vulkan memory allocation (shared `SharedAllocator`)           |
+| gpu-allocator      | 0.28 (`vulkan`) | renderer                               | Vulkan memory allocation (shared `SharedAllocator`)           |
 | rspirv             | 0.12     | renderer                                      | SPIR-V reflection — cross-check descriptor layouts vs shader declarations (#427) |
 | **Windowing**      |          |                                               |                                                               |
-| winit              | 0.30     | platform, renderer, debug-ui, byroredux       | Cross-platform windowing                                      |
+| winit              | 0.30     | platform, debug-ui, byroredux                 | Cross-platform windowing                                      |
 | raw-window-handle  | 0.6      | platform, renderer                            | Platform-agnostic window handle traits                        |
 | **Math**           |          |                                               |                                                               |
-| glam               | 0.29 (`mint`) | core, physics, audio                     | Linear algebra (Vec, Mat, Quat); `mint` feeds kira's spatial API |
+| glam               | 0.29 (`mint`) | core, physics, audio, save               | Linear algebra (Vec, Mat, Quat); `mint` feeds kira's spatial API |
 | nalgebra           | 0.33     | nif, physics                                  | SVD for degenerate NIF rotation repair; ABI match for rapier3d |
 | **Physics**        |          |                                               |                                                               |
 | rapier3d           | 0.22 (`simd-stable`) | physics                            | Rigid-body / collision sim (kinematic character controller, M28.5) |
@@ -45,17 +45,19 @@ internal graph are not repeated).
 | uuid               | 1 (`v5`, `serde`) | core, plugin                         | Plugin identity (`v5` content hashing)                       |
 | semver             | 1 (`serde`) | plugin                                     | Plugin version constraints                                    |
 | **Serialization**  |          |                                               |                                                               |
-| serde              | 1 (`derive`) | plugin, debug-protocol, debug-server, byroredux, core (`inspect`), texture-upscale | Manifest + debug-wire + profile serialization |
-| serde_json         | 1        | debug-protocol, debug-server, byro-dbg, core (`inspect`), texture-upscale | JSON protocol and upscale provenance reports |
+| serde              | 1 (`derive`) | save, plugin, physics, scripting (optional), debug-protocol, debug-server, byroredux, core (`inspect`), texture-upscale | Save data, manifests, debug wire, and profile serialization |
+| serde_json         | 1        | save, debug-protocol, debug-server, byro-dbg, byroredux, core (`inspect`), texture-upscale | Save payloads, JSON protocol, and upscale provenance reports |
 | toml               | 0.8      | plugin, byroredux, texture-upscale            | Plugin, game-profile, and texture-set manifests               |
 | clap               | 4.6 (`derive`) | texture-upscale                         | Offline texture-workbench CLI                                 |
+| crc32fast          | 1        | save                                          | Save-container payload checksum                               |
 | **Compression**    |          |                                               |                                                               |
 | flate2             | 1        | bsa, plugin                                   | Zlib decompression for BSA + BA2 + ESM records                |
 | lz4_flex           | 0.11     | bsa                                           | LZ4 frame (BSA v105) + LZ4 block (BA2 v3 / Starfield) decompression |
 | **Image**          |          |                                               |                                                               |
 | image              | 0.24     | renderer, byroredux (dev — golden frames), texture-upscale | Image I/O plus BC1/BC2/BC3 DDS decode for the upscale workbench |
-| tempfile           | 3        | texture-upscale                               | Isolated external-upscaler interchange files                  |
+| tempfile           | 3        | texture-upscale, byroredux (dev)              | Isolated external-upscaler files and profile-loader fixtures   |
 | walkdir            | 2.5      | texture-upscale                               | Recursive loose-texture source indexing                       |
+| rustc-hash         | 2        | core, renderer, byroredux                     | Fast non-cryptographic maps and sets on hot paths              |
 | **Profiling**      |          |                                               |                                                               |
 | tracing            | 0.1      | byroredux                                     | Wall-clock span ladder for the cell-load critical path (#886) |
 | tracing-subscriber | 0.3      | byroredux                                     | `fmt` + `env-filter` span output                              |
@@ -71,15 +73,18 @@ internal graph are not repeated).
 | **C++ interop**    |          |                                               |                                                               |
 | cxx                | 1        | cxx-bridge                                     | Type-safe C++ FFI                                            |
 | cxx-build          | 1 (build)| cxx-bridge build script                       | C++ compilation for the cxx bridge                            |
+| cc                 | 1 (build)| fsr3-sys build script                         | FidelityFX SDK C/C++ compilation                              |
 | **Parsing**        |          |                                               |                                                               |
 | logos              | 0.15     | papyrus                                        | Lexer derive for the Papyrus tokenizer (M30)                  |
 | bitflags           | 2        | papyrus                                        | Bitflag types in the Papyrus AST                              |
+| async-channel      | 2        | ui                                             | Host/player coordination around the Ruffle render worker       |
+| url                | 2        | ui                                             | URL handling for Ruffle content                               |
 | **Logging**        |          |                                               |                                                               |
 | log                | 0.4      | nearly all crates                              | Logging facade                                                |
 | env_logger         | 0.11     | byroredux, examples, integration tests         | Stderr log output                                            |
 | **Errors**         |          |                                               |                                                               |
 | anyhow             | 1        | plugin, platform, renderer, ui, debug-ui, byroredux | Context-rich error handling                            |
-| thiserror          | 2        | core, renderer, bsa, bgsm, sfmaterial, nif, spt, facegen, papyrus, mod-runtime | Error type derives               |
+| thiserror          | 2        | core, save, renderer, hkx, bgsm, sfmaterial, facegen, pex, mod-runtime | Error type derives               |
 
 ### Per-crate (non-workspace) dependencies
 
@@ -131,17 +136,21 @@ dependency is only ever consumed by that one crate:
 | byroredux-cxx-bridge     | (none — leaf)                                                           |
 | byroredux-debug-protocol | (none — leaf)                                                           |
 | byroredux-mod-runtime    | (none — leaf; Wasmtime host boundary only)                              |
-| byroredux-platform       | byroredux-core                                                          |
+| byroredux-platform       | (none — leaf)                                                           |
+| byroredux-fsr3-sys       | (none — leaf; native FidelityFX SDK boundary)                           |
+| byroredux-hkx            | (none — leaf; `byroredux-bsa` dev-only)                                 |
+| byroredux-save           | byroredux-core                                                          |
 | byroredux-nif            | byroredux-core                                                          |
 | byroredux-spt            | byroredux-core, byroredux-nif                                           |
 | byroredux-plugin         | byroredux-core                                                          |
 | byroredux-physics        | byroredux-core                                                          |
 | byroredux-audio          | byroredux-core                                                          |
-| byroredux-scripting      | byroredux-core, byroredux-plugin                                        |
-| byroredux-ui             | byroredux-core (+ vendored Ruffle/wgpu)                                 |
-| byroredux-renderer       | byroredux-core, byroredux-platform                                      |
+| byroredux-pex            | byroredux-papyrus (`byroredux-bsa` dev-only)                            |
+| byroredux-scripting      | byroredux-core, byroredux-plugin, byroredux-papyrus, byroredux-pex (`byroredux-bsa` dev-only) |
+| byroredux-ui             | byroredux-bsa (+ vendored Ruffle/wgpu)                                  |
+| byroredux-renderer       | byroredux-core, byroredux-fsr3-sys (`byroredux-core` also build-time)   |
 | byroredux-debug-server   | byroredux-core (`inspect`), byroredux-papyrus, byroredux-debug-protocol |
-| byroredux-debug-ui       | byroredux-core, byroredux-renderer                                      |
+| byroredux-debug-ui       | byroredux-core                                                          |
 | byroredux (binary)       | all engine crates above (debug-server is optional, on by default)       |
 | byro-dbg (tool)          | byroredux-debug-protocol                                                |
 | byro-texture-upscale (tool) | byroredux-bsa                                                     |
@@ -149,8 +158,9 @@ dependency is only ever consumed by that one crate:
 `byroredux-spt` (SpeedTree) depends on `byroredux-nif` so its importer emits
 the same `Imported*` scene types the cell loader spawns through one canonical
 path. `byroredux-scripting` depends on `byroredux-plugin` for the
-`Condition` / `ConditionList` types (M47.1) — no cycle, since plugin parses
-ESM bytes and knows nothing about runtime state.
+`Condition` / `ConditionList` types (M47.1), and on `byroredux-pex` plus
+`byroredux-papyrus` for compiled-script recognition and lowering — no cycle,
+since plugin parses ESM bytes and knows nothing about runtime state.
 
 The integration tests in `crates/nif/tests/parse_real_nifs.rs` (and the
 shared helper `crates/nif/tests/common/mod.rs`) add a **dev**-dependency on
@@ -174,8 +184,9 @@ their corpus-parse regression tests.
   and golden-frame tests, `0.25` inside `byroredux-ui` to match Ruffle's
   expectations.
 - **Leaf crates first.** `byroredux-core`, `byroredux-bsa`, `byroredux-bgsm`,
-  `byroredux-sfmaterial`, `byroredux-facegen`, `byroredux-papyrus`,
-  `byroredux-cxx-bridge`, and `byroredux-debug-protocol` have no engine
+  `byroredux-sfmaterial`, `byroredux-facegen`, `byroredux-hkx`,
+  `byroredux-papyrus`, `byroredux-cxx-bridge`, `byroredux-fsr3-sys`,
+  `byroredux-platform`, and `byroredux-debug-protocol` have no runtime engine
   dependencies. They're testable in isolation and would be the first
   candidates for extracting into separate workspaces if the project ever
   splits.
