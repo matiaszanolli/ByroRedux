@@ -62,7 +62,10 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// Version 5 adds required `Material.water_shader_flags`,
 /// `Material.is_water_shader`, `RigidBodyData.collidable`, and the saved
 /// `CharacterController` column (#3164/#3165).
-pub const FORMAT_MAJOR: u16 = 5;
+/// Version 6 adds required `Material.texture_clamp_mode`,
+/// `Material.src_blend_mode`, `Material.dst_blend_mode` — the NIFAL
+/// canonical-boundary fields added by #2571 (OBL-D5-01).
+pub const FORMAT_MAJOR: u16 = 6;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

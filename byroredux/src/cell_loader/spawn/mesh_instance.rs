@@ -602,6 +602,32 @@ pub(super) fn spawn_mesh_instance(
     let eff_texture_path = eff_textures.base_color.clone();
     let eff_material_path = paths.material_path.clone();
 
+    // Canonical material translation — the single boundary that
+    // resolves a raw `ImportedMesh` into the engine `Material`
+    // (PBR resolved, glass classified once, flag union packed).
+    // The cell path contributes the REFR-overlay model-space-normals
+    // bit as `extra_material_flags`; everything else is shared with
+    // the loose-NIF path. See `material_translate.rs`.
+    //
+    // #2571 / OBL-D5-01 — computed here, ahead of the texture-clamp
+    // resolve just below, so every `texture_clamp_mode`/`src_blend_mode`/
+    // `dst_blend_mode` read for the rest of this function goes through
+    // this one canonical `Material` instead of re-reading the raw
+    // `mesh.material` tier at each use site.
+    let extra_material_flags = refr_overlay
+        .filter(|o| o.model_space_normals)
+        .map(|_| byroredux_renderer::vulkan::material::material_flag::MODEL_SPACE_NORMALS)
+        .unwrap_or(0);
+    let material = crate::material_translate::translate_material(
+        &mesh.material,
+        mesh.name.as_deref(),
+        crate::material_translate::ResolvedPaths {
+            textures: eff_textures.clone(),
+            material_path: eff_material_path.clone(),
+        },
+        extra_material_flags,
+    );
+
     // Load texture (shared resolve: cache → BSA → fallback).
     // #610 — pass the diffuse-slot `TexClampMode` so the bindless
     // descriptor's sampler picks the matching `VkSamplerAddressMode`
@@ -612,7 +638,7 @@ pub(super) fn spawn_mesh_instance(
         ctx,
         tex_provider,
         eff_texture_path.as_deref(),
-        mesh.material.texture_clamp_mode,
+        material.texture_clamp_mode,
     );
 
     // #544 — mesh entities now sit in the NIF-local frame and
@@ -781,27 +807,14 @@ pub(super) fn spawn_mesh_instance(
     }
     world.insert(entity, MeshHandle(mesh_handle));
     world.insert(entity, TextureHandle(tex_handle));
-    // Canonical material translation — the single boundary that
-    // resolves a raw `ImportedMesh` into the engine `Material`
-    // (PBR resolved, glass classified once, flag union packed).
-    // The cell path contributes the REFR-overlay model-space-normals
-    // bit as `extra_material_flags`; everything else is shared with
-    // the loose-NIF path. See `material_translate.rs`.
-    let extra_material_flags = refr_overlay
-        .filter(|o| o.model_space_normals)
-        .map(|_| byroredux_renderer::vulkan::material::material_flag::MODEL_SPACE_NORMALS)
-        .unwrap_or(0);
-    let material = crate::material_translate::translate_material(
-        &mesh.material,
-        mesh.name.as_deref(),
-        crate::material_translate::ResolvedPaths {
-            textures: eff_textures.clone(),
-            material_path: eff_material_path.clone(),
-        },
-        extra_material_flags,
-    );
+    // `material` was computed above, ahead of the texture-clamp resolve.
+    // `world.insert` below moves it, so pull copies of the small Copy
+    // fields the rest of this function still reads (#2571).
     let material_kind = material.material_kind;
     let mesh_water = material.is_water_shader;
+    let canonical_clamp_mode = material.texture_clamp_mode;
+    let canonical_src_blend_mode = material.src_blend_mode;
+    let canonical_dst_blend_mode = material.dst_blend_mode;
     world.insert(entity, material);
     // PERF-D3-NEW-02 / #1136 — classify FX-decoration meshes at spawn
     // time so build_render_data can skip them via a component query
@@ -819,7 +832,7 @@ pub(super) fn spawn_mesh_instance(
         tex_provider,
         &eff_textures,
         tex_handle,
-        mesh.material.texture_clamp_mode,
+        canonical_clamp_mode,
     );
     let normal_has_alpha = texture_handles.normal != 0
         && ctx
@@ -860,7 +873,7 @@ pub(super) fn spawn_mesh_instance(
         MaterialTextureDebugInfo {
             paths: eff_textures,
             sources: paths.sources,
-            clamp_mode: mesh.material.texture_clamp_mode,
+            clamp_mode: canonical_clamp_mode,
         },
     );
     // #1480 / REN-D22-NEW-01 — resolve the normal-alpha-as-spec roughness
@@ -890,7 +903,7 @@ pub(super) fn spawn_mesh_instance(
         // BGSM generic blend function is `None` for low-threshold soft
         // decals. Preserve explicit factors; otherwise use alpha-over.
         let (src_blend, dst_blend) = if mesh.material.has_alpha {
-            (mesh.material.src_blend_mode, mesh.material.dst_blend_mode)
+            (canonical_src_blend_mode, canonical_dst_blend_mode)
         } else {
             (6, 7)
         };

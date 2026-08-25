@@ -477,7 +477,15 @@ fn spawn_placement_lod_cell(
             }
         };
         let mut pool = byroredux_core::string::StringPool::new();
-        let imported = byroredux_nif::import::import_nif_scene(&scene, &mut pool);
+        // #2362 / SF2D2-05 — thread the already-in-scope `tex_provider`
+        // through so external-geometry `BSGeometry` LOD slots resolve
+        // instead of silently importing to zero meshes. See the matching
+        // note on `object_lod.rs::spawn_object_lod_quad`.
+        let imported = byroredux_nif::import::import_nif_scene_with_resolver(
+            &scene,
+            &mut pool,
+            Some(tex_provider),
+        );
         if imported.meshes.is_empty() {
             continue;
         }
@@ -851,5 +859,24 @@ mod tests {
         let expect = byroredux_core::math::coord::zup_to_yup_pos([10.0, 20.0, 30.0]);
         assert_eq!(pos, Vec3::from_array(expect));
         assert_eq!(scale, 1.5);
+    }
+
+    /// #2362 / SF2D2-05 — `spawn_placement_lod_cell` must thread the
+    /// already-in-scope `tex_provider` through as a `MeshResolver`. See
+    /// the matching pin on `object_lod.rs::spawn_object_lod_quad_threads_
+    /// the_mesh_resolver`.
+    #[test]
+    fn spawn_placement_lod_cell_threads_the_mesh_resolver() {
+        // Whitespace-insensitive so a reformat doesn't spuriously break this.
+        let normalized: String = include_str!("placement_lod.rs")
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        assert!(
+            normalized
+                .contains("import_nif_scene_with_resolver(&scene,&mutpool,Some(tex_provider),)"),
+            "spawn_placement_lod_cell must pass tex_provider as the \
+             MeshResolver, not call the no-resolver import_nif_scene overload",
+        );
     }
 }
