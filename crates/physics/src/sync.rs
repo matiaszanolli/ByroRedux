@@ -1100,8 +1100,17 @@ fn pull_dynamic(world: &World) {
 
     // Build a list of (entity, new local translation, new local rotation)
     // before taking the Transform write lock.
-    let mut updates: Vec<(EntityId, glam::Vec3, glam::Quat)> = Vec::new();
-    {
+    //
+    // #3303 — this used to be one pass holding `Parent`, `GlobalTransform`,
+    // and `Transform` together. That established `GlobalTransform ->
+    // Transform`; `make_transform_propagation_system` already establishes
+    // the canonical reverse (`Transform -> GlobalTransform`, `docs/engine/
+    // ecs.md:597`), so the two closed a live lock-order cycle. Split into
+    // two sequential passes — parent-relative resolution first (`Parent` +
+    // `GlobalTransform`), sleeping-skip check second (`Transform` alone) —
+    // so `global_q` is dropped before `transform_q` is ever acquired. See
+    // `pull_dynamic_does_not_close_transform_global_transform_lock_cycle`.
+    let resolved: Vec<(EntityId, glam::Vec3, glam::Quat, bool)> = {
         // #2866 — Rapier's pose is WORLD-space by construction (Phase 1 seeds
         // the body from `GlobalTransform`), but the write target below is the
         // entity's LOCAL `Transform`. For a root those coincide; for a
@@ -1112,28 +1121,38 @@ fn pull_dynamic(world: &World) {
         // this shape (a non-root `NiNode` carrying a Dynamic `bhkCollisionObject`
         // under a non-identity parent chain), so `cargo run -- mesh.nif` reaches
         // it. Divide the parent back out instead of restricting the loader.
-        //
-        // Both guards are read queries acquired here and dropped with this
-        // block, before the `Transform` write below — `transform_propagation_system`
-        // holds `Transform` while acquiring `Parent`/`GlobalTransform`, so
-        // holding these across the write lock would be the reverse edge (#2135).
         let parent_q = world.query::<Parent>();
         let global_q = world.query::<GlobalTransform>();
+        body_states
+            .into_iter()
+            .map(|(entity, translation, rotation, sleeping)| {
+                // A parent that has no `GlobalTransform` cannot be divided out;
+                // propagation `continue`s on that same case, so the child's global
+                // is never recomposed either and the world pose stays correct.
+                let parent_global = parent_q
+                    .as_ref()
+                    .and_then(|pq| pq.get(entity))
+                    .and_then(|parent| global_q.as_ref().and_then(|gq| gq.get(parent.0)));
+                let (translation, rotation) = match parent_global {
+                    Some(parent_global) => {
+                        GlobalTransform::local_from_world(parent_global, translation, rotation)
+                    }
+                    None => (translation, rotation),
+                };
+                (entity, translation, rotation, sleeping)
+            })
+            .collect()
+    };
+    // `parent_q`/`global_q` dropped above, before `transform_q` below.
+
+    let mut updates: Vec<(EntityId, glam::Vec3, glam::Quat)> = Vec::new();
+    {
+        // Read-only, and never overlaps the write guard taken further down —
+        // `transform_propagation_system` holds `Transform` while acquiring
+        // `Parent`/`GlobalTransform`, so holding this across the write lock
+        // below would be the reverse edge (#2135).
         let transform_q = world.query::<Transform>();
-        for (entity, translation, rotation, sleeping) in body_states {
-            // A parent that has no `GlobalTransform` cannot be divided out;
-            // propagation `continue`s on that same case, so the child's global
-            // is never recomposed either and the world pose stays correct.
-            let parent_global = parent_q
-                .as_ref()
-                .and_then(|pq| pq.get(entity))
-                .and_then(|parent| global_q.as_ref().and_then(|gq| gq.get(parent.0)));
-            let (translation, rotation) = match parent_global {
-                Some(parent_global) => {
-                    GlobalTransform::local_from_world(parent_global, translation, rotation)
-                }
-                None => (translation, rotation),
-            };
+        for (entity, translation, rotation, sleeping) in resolved {
             // Dynamic newcomers and settled clutter are intentionally spawned
             // asleep. Once ECS already matches Rapier, avoid handing out a
             // mutable Transform (and arming its dirty bit) every frame. Keep
@@ -1346,6 +1365,46 @@ mod phase_sync_tests {
 
         let transforms = world.query::<Transform>().unwrap();
         assert!((transforms.get(entity).unwrap().translation - seed).length() < 1e-2);
+    }
+
+    /// #3303 — recreate the `Transform -> GlobalTransform` order
+    /// `make_transform_propagation_system` establishes in production, then
+    /// drive `pull_dynamic` (via `physics_sync_system`'s Phase 4) on a
+    /// parented dynamic body — the one shape that makes `pull_dynamic` read
+    /// both `Parent`/`GlobalTransform` and `Transform`. Under the CI
+    /// lock-order detector, `pull_dynamic` acquiring `GlobalTransform` while
+    /// `Transform` is (from this thread's perspective) already known to
+    /// precede it would close the reverse edge and panic here.
+    #[test]
+    fn pull_dynamic_does_not_close_transform_global_transform_lock_cycle() {
+        if std::env::var_os("BYRO_LOCK_ORDER_CHECK").as_deref() != Some(std::ffi::OsStr::new("1"))
+        {
+            return;
+        }
+
+        let mut world = physics_world();
+
+        let parent_global = GlobalTransform::new(Vec3::new(1.0, 2.0, 3.0), Quat::IDENTITY, 1.0);
+        let parent = world.spawn();
+        world.insert(parent, Transform::IDENTITY);
+        world.insert(parent, parent_global);
+
+        let child_global =
+            GlobalTransform::compose(&parent_global, Vec3::new(5.0, 0.0, 0.0), Quat::IDENTITY, 1.0);
+        let child = world.spawn();
+        world.insert(child, Transform::IDENTITY);
+        world.insert(child, child_global);
+        world.insert(child, Parent(parent));
+        world.insert(child, unit_box());
+        world.insert(child, dynamic_body());
+
+        // Transform -> GlobalTransform (transform propagation's order).
+        {
+            let _transform = world.query::<Transform>().unwrap();
+            let _global = world.query::<GlobalTransform>().unwrap();
+        }
+
+        physics_sync_system(&world, 0.0);
     }
 
     /// #2867 — with `RapierHandles` storage missing there is no way to record
