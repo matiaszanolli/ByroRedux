@@ -127,7 +127,7 @@ pub(super) fn load_nif_from_args(
             &tex_provider,
             Some(&mut mat_provider),
         )
-    } else if let Some(nif_path) = args.get(1) {
+    } else if let Some(nif_path) = loose_asset_path(&args) {
         if nif_path.starts_with("--") {
             return (0, None); // Skip flags that aren't NIF paths
         }
@@ -150,6 +150,15 @@ pub(super) fn load_nif_from_args(
     } else {
         (0, None)
     }
+}
+
+/// Resolve the loose asset positional accepted by the regular viewer and by
+/// the SDK Studio host (`--studio path/to/asset.nif`).
+fn loose_asset_path(args: &[String]) -> Option<&String> {
+    if let Some(index) = args.iter().position(|arg| arg == "--studio") {
+        return args.get(index + 1).filter(|path| !path.starts_with("--"));
+    }
+    args.get(1).filter(|path| !path.starts_with("--"))
 }
 
 /// Parse NIF bytes, import meshes with hierarchy, upload to GPU, and spawn ECS entities.
@@ -1395,7 +1404,9 @@ pub(crate) fn load_nif_bytes_with_skeleton(
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_import_and_merge, select_facegen_diffuse, MATERIAL_KIND_SKIN_TINT};
+    use super::{
+        loose_asset_path, parse_import_and_merge, select_facegen_diffuse, MATERIAL_KIND_SKIN_TINT,
+    };
     use crate::asset_provider::TextureProvider;
     use byroredux_core::ecs::World;
     use byroredux_core::string::StringPool;
@@ -1454,5 +1465,16 @@ mod tests {
         .expect("loose SPT parse failure must degrade to a placeholder");
         assert_eq!(imported.meshes.len(), 1);
         assert_eq!(imported.meshes[0].billboard_mode, Some(5));
+    }
+
+    #[test]
+    fn studio_flag_routes_its_loose_asset_positional() {
+        let args = ["byroredux", "--studio", "meshes/probe.nif"]
+            .map(str::to_owned)
+            .to_vec();
+        assert_eq!(
+            loose_asset_path(&args).map(String::as_str),
+            Some("meshes/probe.nif")
+        );
     }
 }

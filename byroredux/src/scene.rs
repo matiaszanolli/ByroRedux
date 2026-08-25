@@ -24,6 +24,9 @@ use crate::components::{InputState, Spinning};
 #[cfg(test)]
 use crate::components::CellLightingRes;
 use crate::streaming::WorldStreamingState;
+use byroredux_sdk::studio::{
+    AssetBounds, AssetSource, BoundSphere, CornellFit, StudioSession, TransformValue,
+};
 
 // Test child modules (procedural_fallback_tests, cloud_tile_scale_tests)
 // reach for these via `use super::*;` — keep them in scope under
@@ -75,6 +78,16 @@ pub(crate) fn cornell_sun_mode(args: &[String]) -> Option<bool> {
     } else {
         None
     }
+}
+
+fn studio_source_label(args: &[String]) -> String {
+    args.iter()
+        .position(|arg| arg == "--mesh" || arg == "--tree")
+        .or_else(|| args.iter().position(|arg| arg == "--studio"))
+        .and_then(|index| args.get(index + 1))
+        .filter(|value| !value.starts_with("--"))
+        .cloned()
+        .unwrap_or_else(|| "Imported asset".to_owned())
 }
 
 /// Resolve the archive-backed menu CLI pair. Keeping this parser independent
@@ -679,8 +692,12 @@ pub(crate) fn setup_scene(
     let combustion_lab = crate::cornell::combustion_lab_mode(&args);
     let cornell_glass_dragon = crate::cornell::glass_dragon_mode(&args);
     let cornell_sun = cornell_sun_mode(&args);
-    let diagnostic_scene =
-        combustion_lab || cornell_glass_dragon || cornell_oracle.is_some() || cornell_sun.is_some();
+    let studio_mode = args.iter().any(|arg| arg == "--studio");
+    let diagnostic_scene = combustion_lab
+        || cornell_glass_dragon
+        || cornell_oracle.is_some()
+        || cornell_sun.is_some()
+        || studio_mode;
     let mut harness_cam: Option<(Vec3, Vec3)> = None;
 
     // Cell loading mode: --esm <path> --cell <editor_id> OR --wrld <name> --grid <x>,<y>
@@ -710,7 +727,11 @@ pub(crate) fn setup_scene(
         // Skip the demo-primitive spawn + flag the scene as populated so
         // the player rig defaults sensibly (see FlyCam gate below).
         has_nif_content = true;
-    } else if let Some(esm_idx) = args.iter().position(|a| a == "--esm") {
+    } else if let Some(esm_idx) = args
+        .iter()
+        .position(|a| a == "--esm")
+        .filter(|_| !studio_mode)
+    {
         let esm_path = args.get(esm_idx + 1).cloned();
         let cell_id = args
             .iter()
@@ -900,9 +921,74 @@ pub(crate) fn setup_scene(
         }
     } else {
         // NIF loading mode: loose file or BSA extraction.
+        let first_asset_entity = world.next_entity_id();
         let (nif_count, loaded_root) = load_nif_from_args(world, ctx);
         has_nif_content = nif_count > 0;
         nif_root = loaded_root;
+        if studio_mode && has_nif_content {
+            let last_asset_entity = world.next_entity_id();
+            let mut propagate = byroredux_core::ecs::systems::make_transform_propagation_system();
+            propagate(world, 0.0);
+            let mut propagate_bounds = crate::systems::make_world_bound_propagation_system();
+            propagate_bounds(world, 0.0);
+
+            let objects: Vec<EntityId> = world
+                .query::<byroredux_core::ecs::LocalBound>()
+                .map(|query| {
+                    query
+                        .iter()
+                        .filter_map(|(entity, _)| {
+                            (entity >= first_asset_entity && entity < last_asset_entity)
+                                .then_some(entity)
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let bounds = AssetBounds::from_spheres(objects.iter().filter_map(|&entity| {
+                world
+                    .get::<byroredux_core::ecs::WorldBound>(entity)
+                    .map(|bound| BoundSphere {
+                        center: bound.center.to_array(),
+                        radius: bound.radius,
+                    })
+            }))
+            .unwrap_or(AssetBounds {
+                min: [-1.0; 3],
+                max: [1.0; 3],
+            });
+            let fit = CornellFit::around(bounds);
+            let (camera, target) = crate::cornell::setup_studio_room(world, ctx, fit);
+            harness_cam = Some((camera, target));
+            cam_center = target;
+            let original_transforms = objects
+                .iter()
+                .filter_map(|&entity| {
+                    world.get::<Transform>(entity).map(|transform| {
+                        let (x, y, z) = transform
+                            .rotation
+                            .to_euler(byroredux_core::math::EulerRot::XYZ);
+                        (
+                            entity,
+                            TransformValue {
+                                translation: transform.translation.to_array(),
+                                rotation_degrees: [x.to_degrees(), y.to_degrees(), z.to_degrees()],
+                                scale: transform.scale,
+                            },
+                        )
+                    })
+                })
+                .collect();
+            world.insert_resource(StudioSession {
+                source: AssetSource {
+                    label: studio_source_label(&args),
+                },
+                selected: objects.first().copied(),
+                objects,
+                fit,
+                revision: 0,
+                original_transforms,
+            });
+        }
     }
 
     // Animation: --kf <path> loads a .kf file and starts playback.
@@ -1536,3 +1622,22 @@ mod procedural_fallback_tests;
 mod radius_parse_tests;
 #[cfg(test)]
 mod spawn_tests;
+
+#[cfg(test)]
+mod studio_cli_tests {
+    use super::studio_source_label;
+
+    #[test]
+    fn archive_mesh_label_wins_over_the_marker_flag() {
+        let args = [
+            "byroredux",
+            "--studio",
+            "--bsa",
+            "meshes.bsa",
+            "--mesh",
+            "meshes/probe.nif",
+        ]
+        .map(str::to_owned);
+        assert_eq!(studio_source_label(&args), "meshes/probe.nif");
+    }
+}

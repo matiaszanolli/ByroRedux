@@ -56,6 +56,7 @@ use byroredux_renderer::{
     box_vertices_colored, uv_sphere, RenderDebugMode, VulkanContext, MATERIAL_KIND_FIRE_REFRACTION,
     MATERIAL_KIND_GLASS,
 };
+use byroredux_sdk::studio::CornellFit;
 
 use crate::components::{CellLightingRes, MaterialTextureHandles};
 use crate::env_translate::{procedural_fallback_cell_lighting, procedural_fallback_sky};
@@ -74,6 +75,121 @@ const HALF_W: f32 = 4.0;
 const HEIGHT: f32 = 5.0;
 /// Wall slab half-thickness.
 const T: f32 = 0.05;
+
+/// Build the SDK Studio's open-front Cornell room around an imported asset.
+/// Room sizing is owned by `byroredux-sdk`; this host function only uploads
+/// the generated geometry and installs canonical neutral lighting.
+pub(crate) fn setup_studio_room(
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    fit: CornellFit,
+) -> (Vec3, Vec3) {
+    install_cornell_lighting(world, false);
+    let neutral = TextureHandle(ctx.texture_registry.neutral_fallback());
+    let mut builder = MeshBuilder::new(ctx);
+    let center = Vec3::from_array(fit.center);
+    let room_center_y = fit.floor_y + fit.height * 0.5;
+    let thickness = fit.wall_thickness;
+    let horizontal = builder.box_mesh([fit.half_width, thickness, fit.half_depth]);
+    let back = builder.box_mesh([fit.half_width, fit.height * 0.5, thickness]);
+    let side = builder.box_mesh([thickness, fit.height * 0.5, fit.half_depth]);
+    for (mesh, position, color, name) in [
+        (
+            horizontal,
+            Vec3::new(center.x, fit.floor_y - thickness, center.z),
+            WHITE,
+            "studio_floor",
+        ),
+        (
+            horizontal,
+            Vec3::new(center.x, fit.floor_y + fit.height + thickness, center.z),
+            WHITE,
+            "studio_ceiling",
+        ),
+        (
+            back,
+            Vec3::new(
+                center.x,
+                room_center_y,
+                center.z - fit.half_depth - thickness,
+            ),
+            WHITE,
+            "studio_back_wall",
+        ),
+        (
+            side,
+            Vec3::new(
+                center.x - fit.half_width - thickness,
+                room_center_y,
+                center.z,
+            ),
+            RED,
+            "studio_left_wall",
+        ),
+        (
+            side,
+            Vec3::new(
+                center.x + fit.half_width + thickness,
+                room_center_y,
+                center.z,
+            ),
+            GREEN,
+            "studio_right_wall",
+        ),
+    ] {
+        spawn_object(
+            world,
+            mesh,
+            neutral,
+            position,
+            Quat::IDENTITY,
+            matte(color),
+            name,
+        );
+    }
+    let panel = builder.box_mesh([
+        (fit.half_width * 0.22).max(thickness),
+        thickness * 0.4,
+        (fit.half_depth * 0.22).max(thickness),
+    ]);
+    let light_y = fit.floor_y + fit.height - thickness * 1.5;
+    spawn_object(
+        world,
+        panel,
+        neutral,
+        Vec3::new(center.x, light_y, center.z),
+        Quat::IDENTITY,
+        emissive([1.0, 0.97, 0.9], 8.0),
+        "studio_light_panel",
+    );
+    spawn_point_light(
+        world,
+        Vec3::new(
+            center.x,
+            light_y - fit.height * 0.08,
+            center.z + fit.half_depth * 0.1,
+        ),
+        fit.half_width.max(fit.half_depth).max(fit.height) * 4.0,
+        [1.6, 1.55, 1.45],
+        "studio_key_light",
+    );
+    spawn_point_light(
+        world,
+        Vec3::new(
+            center.x - fit.half_width * 0.4,
+            fit.floor_y + fit.height * 0.65,
+            center.z + fit.half_depth * 0.7,
+        ),
+        fit.half_width.max(fit.half_depth).max(fit.height) * 3.0,
+        [0.55, 0.58, 0.65],
+        "studio_camera_fill",
+    );
+    builder.finish();
+    (
+        Vec3::from_array(fit.camera_position),
+        Vec3::from_array(fit.camera_target),
+    )
+}
 
 const LAB_UNITS_PER_METER: f32 = byroredux_core::lighting::BETHESDA_UNITS_PER_METER;
 

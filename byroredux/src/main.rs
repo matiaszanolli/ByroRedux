@@ -48,6 +48,7 @@ mod settings_io;
 mod sf_smoke;
 mod streaming;
 mod streaming_helpers;
+mod studio_host;
 mod systems;
 mod ui_input;
 
@@ -721,6 +722,7 @@ fn build_debug_ui_snapshot(
             .then(|| inventory::snapshot(world))
             .flatten(),
         entities,
+        studio: studio_host::snapshot(world),
     }
 }
 
@@ -782,6 +784,9 @@ fn apply_debug_ui_outputs(
     let mut debug_ui = debug_ui;
     let resume_game = outputs.resume_game;
     let quit_game = outputs.quit_game;
+    for command in outputs.studio_commands {
+        studio_host::apply_command(world, command);
+    }
     if outputs.quicksave {
         let output = save_io::quicksave(world);
         surface_save_load_output(debug_ui.as_deref_mut(), "pause menu quicksave", output);

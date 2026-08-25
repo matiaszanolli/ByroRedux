@@ -1,11 +1,11 @@
 {
     "schema_version": 1,
-    "commit": "ceb69d24b2bab276112b26367cb1d43016b41dd3",
-    "indexed_at": "2026-08-25T17:22:00Z",
+    "commit": "cdd9aa41d7640e90f1f06a2f7bc9e91864a25d9a",
+    "indexed_at": "2026-08-25T23:20:24Z",
     "project": "mnt-data-src-gamebyro-redux",
-    "nodes": 47165,
-    "edges": 170363,
-    "original_size": 130875392,
-    "compressed_size": 23366682,
+    "nodes": 47265,
+    "edges": 169605,
+    "original_size": 130613248,
+    "compressed_size": 23345980,
     "compression_level": 3
 }

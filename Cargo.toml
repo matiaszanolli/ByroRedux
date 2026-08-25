@@ -24,6 +24,7 @@ members = [
     "crates/debug-protocol",
     "crates/debug-server",
     "crates/debug-ui",
+    "crates/sdk",
     "tools/byro-dbg",
     "tools/texture-upscale",
     "byroredux",
@@ -61,6 +62,7 @@ byroredux-audio = { path = "crates/audio" }
 byroredux-debug-protocol = { path = "crates/debug-protocol" }
 byroredux-debug-server = { path = "crates/debug-server" }
 byroredux-debug-ui = { path = "crates/debug-ui" }
+byroredux-sdk = { path = "crates/sdk" }
 
 # Vulkan / GPU
 ash = "0.38"

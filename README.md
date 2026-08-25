@@ -214,6 +214,16 @@ cargo run --release -- --menu 'interface\hudmenu.swf' \
 # Loose NIF + optional animation
 cargo run -- path/to/mesh.nif [--kf path/to/anim.kf]
 
+# SDK Studio: import one supported NIF/SPT asset, place it in an automatically
+# sized Cornell room, and open the transform/material inspector. F3 switches
+# between the editor cursor and the existing WASD + mouse fly camera.
+cargo run --release -- --studio path/to/mesh.nif
+
+# The same Studio path works against game archives. A game profile supplies
+# the title's archive/material/texture set; --mesh names the asset within it.
+cargo run --release -- --game skyrim_se --studio \
+             --mesh 'meshes\\clutter\\ingredients\\sweetroll01.nif'
+
 # Cornell-box RT reference harness (no game data needed). `--cornell` is the
 # interior / point-light scene; `--cornell-sun` is the exterior counterpart —
 # ceiling removed, local lights dropped, a fixed-direction sun as the only
@@ -279,6 +289,15 @@ pause/settings menu. WASD + mouse moves, Space jumps/ascends, Q descends in
 fly mode, and Left Shift sprints/boosts. Press `F` to toggle walk ↔ fly. Walk
 mode is the M28.5 kinematic capsule (gravity + collide-and-slide + autostep);
 fly mode keeps the legacy no-clip cam.
+
+**Studio / SDK.** `--studio` is the first host for the public
+[`byroredux-sdk`](crates/sdk/README.md) surface. The SDK owns document state,
+asset fitting, selection snapshots, ray picking, and typed edit commands; the
+current executable supplies Bethesda asset IO, ECS mutation, Vulkan rendering,
+and egui. Studio opens on launch. Select objects from the list or with **Pick at
+crosshair**, edit position/rotation/scale and canonical PBR material values,
+use **Frame selection** to move the camera, and press `F3` to hide the editor
+and fly through the room.
 
 **Upscaler.** FSR 3.1 Quality is the default; `--upscaler taa` selects the
 native-resolution fallback, and `--fsr-quality` picks the FSR preset. Both

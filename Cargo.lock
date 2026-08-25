@@ -467,6 +467,7 @@ dependencies = [
  "byroredux-renderer",
  "byroredux-save",
  "byroredux-scripting",
+ "byroredux-sdk",
  "byroredux-sfmaterial",
  "byroredux-spt",
  "byroredux-ui",
@@ -565,6 +566,7 @@ name = "byroredux-debug-ui"
 version = "0.1.0"
 dependencies = [
  "byroredux-core",
+ "byroredux-sdk",
  "egui",
  "egui-winit",
  "winit",
@@ -717,6 +719,13 @@ dependencies = [
  "byroredux-plugin",
  "log",
  "serde",
+]
+
+[[package]]
+name = "byroredux-sdk"
+version = "0.1.0"
+dependencies = [
+ "byroredux-core",
 ]
 
 [[package]]

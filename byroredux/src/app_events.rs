@@ -161,6 +161,16 @@ impl ApplicationHandler for App {
                 self.window = Some(win);
                 self.last_frame = Instant::now();
                 self.setup_scene();
+                if self
+                    .world
+                    .try_resource::<byroredux_sdk::studio::StudioSession>()
+                    .is_some()
+                {
+                    if let Some(ui) = self.debug_ui.as_mut() {
+                        ui.open_studio();
+                    }
+                    self.release_world_input_for_ui();
+                }
                 crate::sync_camera_setting(&self.world);
                 // Preserve the scene/CLI-authored camera before the startup
                 // scheduler's character-follow system overwrites it. The

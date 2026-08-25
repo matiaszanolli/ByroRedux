@@ -217,12 +217,15 @@ guard below.
 
 ### 6. R1 Material Table Layout Soundness
 
-- **`GpuMaterial` size is pinned at 348 B** by `gpu_material_size_is_348_bytes`
+- **`GpuMaterial` size is pinned at 432 B** by `gpu_material_size_is_432_bytes`
   (`crates/renderer/src/vulkan/material.rs`) — the test name now matches the
   asserted size (history: 272 → 260 after #804 dropped `avg_albedo`, → 296 with the
-  Disney sheen/subsurface lobe #1249, → 300 with `anisotropic` #1250, → **348 on
-  2026-07-27 (`1d94eb24`) with the twelve common supplemental texture roles**).
-  A stale 260/272/296/300 in audit prose, or any test-name-vs-asserted-size
+  Disney sheen/subsurface lobe #1249, → 300 with `anisotropic` #1250, → 348 on
+  2026-07-27 (`1d94eb24`) with the twelve common supplemental texture roles, →
+  364 on 2026-08-23 (#2221) with animated shader color/float fields, → 396 with
+  BGEM v21+ glass optics, → **432 on 2026-08-25 with the soft/rim/back Bethesda
+  lighting response**).
+  A stale 260/272/296/300/348/364/396 in audit prose, or any test-name-vs-asserted-size
   mismatch, means the GPU is reading wrong bytes.
 - **Per-field offset pin** `gpu_material_field_offsets_match_shader_contract` (#806):
   every named field's byte offset asserted against the shader contract. The size pin

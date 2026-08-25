@@ -24,6 +24,57 @@ Commits hold that record.
 
 ---
 
+## Session 73 — Canonical material lighting response: BGEM glass optics, soft/rim/back Bethesda lighting, and the Cornell L3-L5 rungs  (2026-08-25, `3d0d7f16..cdd9aa41`, 6 commits)
+
+A short, single-arc follow-on to Session 72's audit closeout, picking the
+material-recovery plan's R5 (canonical roles) and R4 (Cornell oracle) rows
+back up. The canonical `GpuMaterial` gained the two authored-response families
+still missing from the PBR/legacy-lobe split — BGEM glass optics and
+Bethesda's soft/rim/back lighting terms — and the Cornell oracle grew the
+volumetric and material-population rungs the recovery plan had left as open
+scope.
+
+- **BGEM v21+ glass optics** — `glass_fresnel_color`, `glass_refraction_scale`,
+  `glass_blur_scale`, and `glass_blur_scale_factor` land on `Material` and
+  `GpuMaterial`, wired through `material_translate.rs`, the NIF BGEM import
+  path, and `triangle.frag`'s glass roughness/dirt-overlay sampling.
+  `GpuMaterial` grows 364→396 B. New `bgsm_merge.rs` coverage pins the
+  translation.
+- **Soft/rim/back Bethesda lighting response** — `MAT_FLAG_SOFT_LIGHTING`
+  (bit 13), `MAT_FLAG_RIM_LIGHTING` (bit 14), and `MAT_FLAG_BACK_LIGHTING`
+  (bit 15) join the generated shader-constant catalog, backing new
+  `lighting_effect_1/2`, `subsurface_rolloff`, `rimlight_power`,
+  `backlight_power`, `fresnel_power`, `grayscale_to_palette_scale`,
+  `lighting_mask_map_index`, and `back_lighting_map_index` fields. `lighting.glsl`
+  and `pbr.glsl` gain the response calculations, sharing the selected light's
+  visibility with the existing PBR lobe. `GpuMaterial` grows 396→432 B (92
+  hashed scalar fields, up from 83); `render_debug` gains a material-role
+  visualization mode.
+- **Cornell oracle L3-L5** — the `--cornell-oracle` manifest grows an
+  open/partitioned volumetric non-leakage pair (L3/L4) and a categorical
+  dielectric/metal/glass/normal-role material-population rung (L5). CPU tests
+  pin CLI selection and one-variable scene construction for all six rungs;
+  L0-L4 pass on the RTX 4070 Ti, L5 is written and ready but not yet executed
+  in this no-GPU environment.
+- **Doc sync + skill-drift fix** — `m47-2-design.md` and
+  `nif-engine-translation-layer.md` status sections were refreshed in-session
+  (`56a26547`); `rt-lighting-material-recovery.md`, `material-abstraction.md`,
+  `nifal.md`, and `shader-pipeline.md` were reconciled to the 432-byte
+  contract in the same commit that landed it (`cdd9aa41`). At session close,
+  `audit-renderer`'s `GpuMaterial` size documentation
+  (`gpu_material_size_is_364_bytes`, stale as of this session's own growth)
+  was corrected to `_432_bytes` with the full growth chain, and a matching
+  stale byte-budget comment in `scene_buffer/constants.rs` (348 B → 432 B)
+  was fixed alongside it.
+
+Net: tests 5965→5972 (+7, 0 failing, 163 ignored); Rust `src/` LOC
+433 473→434 208 (+735), total 464 639→465 464 (+825); source files, workspace
+members (27) and open issue directories (3176) unchanged. No milestone opened
+or closed. Bench-of-record remains `34074b93`, now 510 commits stale (folded
+into R6a-stale-20 at this close — see Known Issues).
+
+---
+
 ## Session 72 — Quest/scene fragment expansion, save-load hardening, audit closure, and CI buildability  (2026-08-24 → 2026-08-25, `eb2e2445..df162912`, 36 commits)
 
 This session converted the prior nif-deep audit's highest-risk findings into

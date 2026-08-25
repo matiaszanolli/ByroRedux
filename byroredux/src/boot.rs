@@ -1604,6 +1604,7 @@ fn expand_game_profile_args(mut args: Vec<String>) -> Vec<String> {
         "--kf",
         "--cmd",
         "--master",
+        "--studio",
         "--cornell",
         "--cornell-sun",
         "--cornell-oracle",
@@ -1733,14 +1734,16 @@ fn expand_game_profile_args(mut args: Vec<String>) -> Vec<String> {
     // resolved and no explicit location flag is present. A bare
     // `--game fnv` (or a no-arg default-game launch) then boots
     // straight into the configured cell.
-    if let Some(cell) = &defaults.cell {
-        let has_location = ["--cell", "--grid", "--wrld"]
-            .iter()
-            .any(|f| args.iter().any(|a| a == f));
-        if !has_location {
-            eprintln!("[defaults] cell = {cell:?} (no --cell / --grid / --wrld given)");
-            args.push("--cell".to_string());
-            args.push(cell.clone());
+    if !args.iter().any(|arg| arg == "--studio") {
+        if let Some(cell) = &defaults.cell {
+            let has_location = ["--cell", "--grid", "--wrld"]
+                .iter()
+                .any(|f| args.iter().any(|a| a == f));
+            if !has_location {
+                eprintln!("[defaults] cell = {cell:?} (no --cell / --grid / --wrld given)");
+                args.push("--cell".to_string());
+                args.push(cell.clone());
+            }
         }
     }
     args

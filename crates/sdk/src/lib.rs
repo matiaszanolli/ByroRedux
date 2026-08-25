@@ -1,0 +1,8 @@
+//! Public tooling APIs for building ByroRedux-powered content applications.
+//!
+//! The first surface is [`studio`]: renderer-independent document state,
+//! scene fitting, selection, snapshots, and typed edit commands. Hosts decide
+//! how assets are imported and rendered; UI layers only consume snapshots and
+//! emit commands.
+
+pub mod studio;

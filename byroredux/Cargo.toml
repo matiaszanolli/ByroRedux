@@ -24,6 +24,7 @@ dhat-heap = ["dep:dhat"]
 [dependencies]
 byroredux-debug-server = { workspace = true, optional = true }
 byroredux-debug-ui = { workspace = true }
+byroredux-sdk = { workspace = true }
 byroredux-core = { workspace = true }
 byroredux-save = { workspace = true }
 byroredux-renderer = { workspace = true }

@@ -269,6 +269,12 @@ impl DebugUiState {
         }
     }
 
+    /// Open the SDK Studio inspector on its primary tab.
+    pub fn open_studio(&mut self) {
+        self.visible = true;
+        self.panels.active_tab = PanelTab::Studio;
+    }
+
     pub fn game_menu_visible(&self) -> bool {
         self.game_menu.visible
     }

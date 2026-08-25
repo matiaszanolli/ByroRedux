@@ -1,0 +1,8 @@
+[package]
+name = "byroredux-sdk"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+byroredux-core = { workspace = true }
+

@@ -14,6 +14,7 @@ use egui::{
 };
 
 use byroredux_core::settings::{SettingChange, SettingControl, SettingEntry, SettingValue};
+use byroredux_sdk::studio::{MaterialValue, StudioCommand, StudioSnapshot, TransformValue};
 
 use crate::PanelState;
 
@@ -48,6 +49,8 @@ pub struct PanelSnapshot {
     /// be unnecessary work for an overlay that's hidden most of
     /// the time.
     pub entities: Option<Vec<(u32, String)>>,
+    /// Present when the executable is hosting an SDK Studio document.
+    pub studio: Option<StudioSnapshot>,
 }
 
 /// Allocation-free native prompt assembled from the active binding and the
@@ -192,6 +195,8 @@ pub struct PanelOutputs {
     /// Mutations applied to canonical player inventory state after egui drops
     /// its read-only frame snapshot.
     pub inventory_actions: Vec<InventoryAction>,
+    /// Renderer-independent Studio mutations for the host to apply.
+    pub studio_commands: Vec<StudioCommand>,
     /// True when the operator asked to refresh the entity list.
     /// The binary rebuilds the snapshot's `entities` next frame.
     pub refresh_entities: bool,
@@ -624,28 +629,42 @@ pub fn draw(
     state: &mut PanelState,
     outputs: &mut PanelOutputs,
 ) {
-    Window::new("ByroRedux Debug")
-        .default_width(420.0)
-        .default_height(520.0)
-        .resizable(true)
-        .show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.selectable_value(&mut state.active_tab, PanelTab::Metrics, "Metrics");
-                ui.selectable_value(&mut state.active_tab, PanelTab::Loader, "Loader");
-                ui.selectable_value(&mut state.active_tab, PanelTab::Entities, "Entities");
-                ui.selectable_value(&mut state.active_tab, PanelTab::Console, "Console");
-                ui.selectable_value(&mut state.active_tab, PanelTab::Settings, "Settings");
-            });
-            ui.separator();
-
-            match state.active_tab {
-                PanelTab::Metrics => draw_metrics(ui, snapshot.metrics.as_ref()),
-                PanelTab::Loader => draw_loader(ui, state, outputs),
-                PanelTab::Entities => draw_entities(ui, snapshot.entities.as_deref(), outputs),
-                PanelTab::Console => draw_console(ui, state, outputs),
-                PanelTab::Settings => draw_settings(ui, &snapshot.settings, state, outputs),
+    let studio = snapshot.studio.as_ref();
+    let window = Window::new(if studio.is_some() {
+        "ByroRedux Studio"
+    } else {
+        "ByroRedux Debug"
+    })
+    .default_width(if studio.is_some() { 560.0 } else { 420.0 })
+    .default_height(520.0)
+    .resizable(true);
+    let window = if studio.is_some() {
+        window.frame(Frame::window(&ctx.style()).fill(Color32::from_black_alpha(240)))
+    } else {
+        window
+    };
+    window.show(ctx, |ui| {
+        ui.horizontal(|ui| {
+            if studio.is_some() {
+                ui.selectable_value(&mut state.active_tab, PanelTab::Studio, "Studio");
             }
+            ui.selectable_value(&mut state.active_tab, PanelTab::Metrics, "Metrics");
+            ui.selectable_value(&mut state.active_tab, PanelTab::Loader, "Loader");
+            ui.selectable_value(&mut state.active_tab, PanelTab::Entities, "Entities");
+            ui.selectable_value(&mut state.active_tab, PanelTab::Console, "Console");
+            ui.selectable_value(&mut state.active_tab, PanelTab::Settings, "Settings");
         });
+        ui.separator();
+
+        match state.active_tab {
+            PanelTab::Studio => draw_studio(ui, studio, outputs),
+            PanelTab::Metrics => draw_metrics(ui, snapshot.metrics.as_ref()),
+            PanelTab::Loader => draw_loader(ui, state, outputs),
+            PanelTab::Entities => draw_entities(ui, snapshot.entities.as_deref(), outputs),
+            PanelTab::Console => draw_console(ui, state, outputs),
+            PanelTab::Settings => draw_settings(ui, &snapshot.settings, state, outputs),
+        }
+    });
 }
 
 /// Tab selector enum — `PartialEq` because `selectable_value` needs
@@ -654,10 +673,191 @@ pub fn draw(
 pub enum PanelTab {
     #[default]
     Metrics,
+    Studio,
     Loader,
     Entities,
     Console,
     Settings,
+}
+
+fn draw_studio(ui: &mut egui::Ui, snapshot: Option<&StudioSnapshot>, outputs: &mut PanelOutputs) {
+    let Some(snapshot) = snapshot else {
+        ui.label("No Studio document is open.");
+        return;
+    };
+
+    ui.heading(&snapshot.source_label);
+    ui.label(
+        RichText::new(format!(
+            "{} editable objects · revision {}",
+            snapshot.objects.len(),
+            snapshot.revision
+        ))
+        .small()
+        .color(Color32::GRAY),
+    );
+    ui.horizontal(|ui| {
+        if ui.button("Pick at crosshair").clicked() {
+            outputs.studio_commands.push(StudioCommand::PickFromView);
+        }
+        ui.label(RichText::new("F3 toggles editor / fly controls").small());
+    });
+    ui.separator();
+
+    ui.columns(2, |columns| {
+        columns[0].set_width(220.0);
+        columns[0].label(RichText::new("Scene objects").strong());
+        egui::ScrollArea::vertical()
+            .id_salt("studio_object_list")
+            .max_height(430.0)
+            .show(&mut columns[0], |ui| {
+                for object in &snapshot.objects {
+                    let label = if object.name.is_empty() {
+                        format!("Entity {}", object.entity)
+                    } else {
+                        format!("{}  #{}", object.name, object.entity)
+                    };
+                    if ui
+                        .selectable_label(snapshot.selected == Some(object.entity), label)
+                        .clicked()
+                    {
+                        outputs
+                            .studio_commands
+                            .push(StudioCommand::Select(Some(object.entity)));
+                    }
+                }
+            });
+
+        let Some(selected) = snapshot.selected.and_then(|entity| {
+            snapshot
+                .objects
+                .iter()
+                .find(|object| object.entity == entity)
+        }) else {
+            columns[1].heading("Inspector");
+            columns[1].label("Select an object from the list or use the crosshair picker.");
+            return;
+        };
+
+        columns[1].heading(if selected.name.is_empty() {
+            format!("Entity {}", selected.entity)
+        } else {
+            selected.name.clone()
+        });
+        let mut transform = selected.transform;
+        columns[1].label(RichText::new("Transform").strong());
+        let transform_changed =
+            edit_vec3(&mut columns[1], "Position", &mut transform.translation, 0.1)
+                | edit_vec3(
+                    &mut columns[1],
+                    "Rotation °",
+                    &mut transform.rotation_degrees,
+                    0.25,
+                )
+                | columns[1]
+                    .horizontal(|ui| {
+                        ui.label("Scale");
+                        ui.add(
+                            egui::DragValue::new(&mut transform.scale)
+                                .speed(0.01)
+                                .range(0.001..=10_000.0),
+                        )
+                        .changed()
+                    })
+                    .inner;
+        if transform_changed {
+            outputs.studio_commands.push(StudioCommand::SetTransform {
+                entity: selected.entity,
+                value: sanitize_transform(transform),
+            });
+        }
+        columns[1].horizontal(|ui| {
+            if ui.button("Reset transform").clicked() {
+                outputs
+                    .studio_commands
+                    .push(StudioCommand::ResetTransform(selected.entity));
+            }
+            if ui.button("Frame selection").clicked() {
+                outputs
+                    .studio_commands
+                    .push(StudioCommand::FrameSelection(selected.entity));
+            }
+        });
+
+        if let Some(mut material) = selected.material {
+            columns[1].separator();
+            columns[1].label(RichText::new("Material").strong());
+            let mut changed = columns[1]
+                .horizontal(|ui| {
+                    ui.label("Base color");
+                    ui.color_edit_button_rgb(&mut material.diffuse_color)
+                        .changed()
+                })
+                .inner;
+            changed |= edit_scalar(
+                &mut columns[1],
+                "Metalness",
+                &mut material.metalness,
+                0.0..=1.0,
+            );
+            changed |= edit_scalar(
+                &mut columns[1],
+                "Roughness",
+                &mut material.roughness,
+                0.0..=1.0,
+            );
+            changed |= edit_scalar(&mut columns[1], "Alpha", &mut material.alpha, 0.0..=1.0);
+            changed |= edit_scalar(&mut columns[1], "IOR", &mut material.ior, 1.0..=3.0);
+            if changed {
+                outputs.studio_commands.push(StudioCommand::SetMaterial {
+                    entity: selected.entity,
+                    value: sanitize_material(material),
+                });
+            }
+        }
+    });
+}
+
+fn edit_vec3(ui: &mut egui::Ui, label: &str, value: &mut [f32; 3], speed: f64) -> bool {
+    ui.horizontal(|ui| {
+        ui.label(label);
+        let mut changed = false;
+        for axis in value {
+            changed |= ui.add(egui::DragValue::new(axis).speed(speed)).changed();
+        }
+        changed
+    })
+    .inner
+}
+
+fn edit_scalar(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+) -> bool {
+    ui.horizontal(|ui| {
+        ui.label(label);
+        ui.add(egui::Slider::new(value, range)).changed()
+    })
+    .inner
+}
+
+fn sanitize_transform(mut value: TransformValue) -> TransformValue {
+    if !value.scale.is_finite() {
+        value.scale = 1.0;
+    }
+    value.scale = value.scale.clamp(0.001, 10_000.0);
+    value
+}
+
+fn sanitize_material(mut value: MaterialValue) -> MaterialValue {
+    value.diffuse_color = value.diffuse_color.map(|v| v.clamp(0.0, 1.0));
+    value.metalness = value.metalness.clamp(0.0, 1.0);
+    value.roughness = value.roughness.clamp(0.0, 1.0);
+    value.alpha = value.alpha.clamp(0.0, 1.0);
+    value.ior = value.ior.clamp(1.0, 3.0);
+    value
 }
 
 fn draw_metrics(ui: &mut egui::Ui, snap: Option<&MetricsSnapshotView>) {
