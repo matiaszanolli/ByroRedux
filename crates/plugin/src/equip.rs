@@ -782,6 +782,47 @@ mod tests {
         assert_eq!(out, vec![0x00BB_BBBB]);
     }
 
+    /// #3217 — the real-world shape (`dunIronbindBeemJa`'s outfit) that
+    /// motivated this fix: a `flags = 0x03` tier ladder whose entries are
+    /// themselves `flags = 0x03` enchant-variant sublists. Treating `0x02`
+    /// as multi-pick multiplied the two levels of expansion together
+    /// (18 tiers × 5 variants → hundreds of items on one actor); with only
+    /// `0x04` triggering multi-pick, both levels single-pick and the whole
+    /// outfit slot resolves to exactly one item.
+    #[test]
+    fn expand_leveled_nested_tier_ladders_do_not_combinatorially_explode() {
+        let mut idx = empty_index();
+        // Five enchant variants for the tier the actor's level actually
+        // reaches (level 4) — a `0x03` sublist, same as the tier itself.
+        for variant in 0..5u32 {
+            add_armo(&mut idx, 0x00A0_0000 + variant);
+        }
+        add_lvli(
+            &mut idx,
+            0x00B0_0000, // tier-4 enchant sublist
+            0x03,
+            (0..5u32)
+                .map(|variant| (1, 0x00A0_0000 + variant, 1))
+                .collect(),
+        );
+        // A second tier the actor's level does NOT reach, to prove the
+        // outer ladder still single-picks instead of unioning tiers.
+        add_lvli(&mut idx, 0x00C0_0000, 0x03, vec![(1, 0x00A0_0000, 1)]);
+        add_lvli(
+            &mut idx,
+            0x00D0_0000, // outer tier ladder
+            0x03,
+            vec![(1, 0x00C0_0000, 1), (4, 0x00B0_0000, 1)],
+        );
+        let mut out = Vec::new();
+        expand_leveled_form_id(0x00D0_0000, 5, &idx, &mut out);
+        assert_eq!(
+            out.len(),
+            1,
+            "nested 0x03 ladders must single-pick at every level, not multiply: got {out:?}"
+        );
+    }
+
     #[test]
     fn expand_leveled_use_all_flag_lands_all_eligible() {
         let mut idx = empty_index();
