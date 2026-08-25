@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 thiserror = { workspace = true }
+log = { workspace = true }
 
 [dev-dependencies]
 byroredux-bsa = { workspace = true }

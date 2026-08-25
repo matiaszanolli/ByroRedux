@@ -843,9 +843,19 @@ fn register_newcomers(world: &World, newcomers: Vec<Newcomer>) {
         // collider of the authored size (a 2× rock's collider half the visible
         // stone) while `compose_trs` still spread its parts apart.
         let parts = collision_shape_to_parts(&n.shape, n.global.scale, &cfg);
-        if parts.is_empty() {
-            continue;
-        }
+        // #3067 (PHYS-D3-2026-08-16-04) — `collision_shape_to_parts` always
+        // yields at least one part: every `CollisionShape` variant pushes
+        // unconditionally, and its own `out.is_empty()` fallback (a tiny
+        // ball, #3066) covers the degenerate-shape case. An empty `parts`
+        // here would mean that producer contract broke, not a legitimate
+        // "nothing to register" case — state the invariant instead of
+        // silently skipping the newcomer.
+        debug_assert!(
+            !parts.is_empty(),
+            "collision_shape_to_parts must never return zero parts (see its own \
+             out.is_empty() fallback) — a newcomer would silently register with \
+             no collider"
+        );
 
         let body_type = n.body_type();
         let lock_rotations = n.lock_rotations();

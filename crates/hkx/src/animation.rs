@@ -342,8 +342,21 @@ fn read_annotations(
         for annotation_index in 0..annotation_count {
             let annotation = annotations + annotation_index * ANNOTATION_SIZE;
             let time = pack.f32(annotation, "annotation time")?;
+            // #3018 (SCR-D8-2026-08-16-03) — an out-of-range annotation
+            // timestamp used to hard-fail the whole clip decode, discarding
+            // every transform track over one bad piece of text-event
+            // metadata. The accepted-range path a few lines below already
+            // clamps `time` to `duration` anyway, so the two policies
+            // disagreed about what "out of range" means. Skip just this
+            // annotation and keep decoding — `InvalidData` is reserved for
+            // structural corruption (unbound pointers, size overflow),
+            // not one anomalous float.
             if !time.is_finite() || time < 0.0 || time > duration + 0.001 {
-                return Err(HkxError::InvalidData("annotation time is out of range"));
+                log::warn!(
+                    "hkx: skipping out-of-range annotation time {time} (clip duration \
+                     {duration}) in track {track_name:?} — clip decode continues"
+                );
+                continue;
             }
             let text_offset = pack
                 .local_target(annotation + 0x08)
@@ -898,7 +911,16 @@ mod tests {
         assert!((q[1] + 1.0).abs() < 1e-6);
     }
 
+    /// #3014 (SCR-D8-2026-08-16-04) — this test needs the Skyrim SE
+    /// animation archive on disk, so it never runs in CI. `#[ignore]`
+    /// makes a skipped run show as `ignored`, not `ok` — pre-fix this was
+    /// a plain `return`, so the crate's only integration test reported
+    /// green on every machine without the archive (including CI), leaving
+    /// zero real coverage indistinguishable from a passing run. Run
+    /// locally with:
+    /// `cargo test -p byroredux-hkx -- --ignored --nocapture`
     #[test]
+    #[ignore = "needs Skyrim SE game data on disk"]
     fn skyrim_cart_player_idle_decodes_when_assets_are_available() {
         let data_dir = std::env::var_os("BYROREDUX_SKYRIM_DATA")
             .map(std::path::PathBuf::from)
@@ -909,6 +931,7 @@ mod tests {
             });
         let archive_path = data_dir.join("Skyrim - Animations.bsa");
         if !archive_path.is_file() {
+            eprintln!("SKIP: Skyrim - Animations.bsa not found (no game data?)");
             return;
         }
         let archive = byroredux_bsa::BsaArchive::open(archive_path).unwrap();
@@ -998,6 +1021,108 @@ mod tests {
                 "{path} decoded without any time-varying pose samples"
             );
         }
+    }
+
+    /// #3014 (SCR-D8-2026-08-16-04) — the crate had zero negative/malformed-
+    /// input coverage; the only integration test needed real game data and
+    /// silently passed without it. Checked-in fixture built with
+    /// `crate::packfile::fixtures::PackfileBuilder` (promoted out of
+    /// `packfile.rs`'s own tests for exactly this — #3018), no game data
+    /// required.
+    ///
+    /// Pins #3011's bound: `transform_count * num_frames` past
+    /// `MAX_TRANSFORM_SAMPLES` must be rejected before any `Vec::with_
+    /// capacity` allocation, not after. `num_blocks`/`max_frames_per_block`/
+    /// `mask_size` are left zeroed — the dimension check's `||` chain short-
+    /// circuits on the sample-count clause before reaching theirs, so this
+    /// fixture never needs valid spline block data at all.
+    #[test]
+    fn decode_spline_animation_rejects_a_sample_count_bomb() {
+        use crate::packfile::fixtures::PackfileBuilder;
+
+        // float_count (0x1c..0x20) is left at 0.
+        let mut data = vec![0u8; 0x60];
+        data[0x10..0x14].copy_from_slice(&5u32.to_le_bytes()); // animation_type = spline-compressed
+        data[0x14..0x18].copy_from_slice(&1.0f32.to_le_bytes()); // duration
+        data[0x18..0x1c].copy_from_slice(&4096u32.to_le_bytes()); // transform_count (max allowed)
+        data[0x38..0x3c].copy_from_slice(&5000u32.to_le_bytes()); // num_frames: transform_count * num_frames > MAX_TRANSFORM_SAMPLES
+        data[0x50..0x54].copy_from_slice(&(1.0f32 / 30.0).to_le_bytes()); // frame_duration
+
+        let mut builder = PackfileBuilder {
+            data,
+            ..Default::default()
+        };
+        let class = builder.class("hkaSplineCompressedAnimation");
+        builder.virtual_fixups.push((0, 0, class));
+        let bytes = builder.build();
+
+        let err = decode_spline_animation(&bytes).expect_err(
+            "a transform_count * num_frames product past MAX_TRANSFORM_SAMPLES must be \
+             rejected, not handed to Vec::with_capacity (#3011)",
+        );
+        assert_eq!(
+            err,
+            HkxError::InvalidData("unsupported spline clip dimensions")
+        );
+    }
+
+    /// #3018 (SCR-D8-2026-08-16-03) — an out-of-range annotation timestamp
+    /// used to hard-fail the whole clip decode via `read_annotations`'s `?`
+    /// propagation, discarding every transform track over one bad piece of
+    /// metadata. Pins the fixed policy: skip just the offending annotation
+    /// and keep the rest, using the same clamp-on-accept semantics the
+    /// accepted-range path already had.
+    #[test]
+    fn read_annotations_skips_an_out_of_range_time_and_keeps_the_rest() {
+        use crate::packfile::fixtures::PackfileBuilder;
+        use crate::packfile::Packfile;
+
+        const TRACKS: usize = 0x40;
+        const ANNOTATIONS: usize = 0x60;
+        const ANNOTATION_SIZE: usize = 0x10;
+        const TEXT_BAD: usize = 0x90;
+        const TEXT_GOOD: usize = 0x98;
+
+        // ann[0]'s time is out of range (negative) and must be skipped, not
+        // fail the clip; ann[1]'s is in range and must survive, clamped to
+        // `duration` as before.
+        let mut data = vec![0u8; 0xa0];
+        data[0x30..0x34].copy_from_slice(&1u32.to_le_bytes()); // annotation-track count
+        data[TRACKS + 0x10..TRACKS + 0x14].copy_from_slice(&2u32.to_le_bytes()); // annotation count
+        data[ANNOTATIONS..ANNOTATIONS + 4].copy_from_slice(&(-5.0f32).to_le_bytes()); // ann[0].time
+        data[ANNOTATIONS + ANNOTATION_SIZE..ANNOTATIONS + ANNOTATION_SIZE + 4]
+            .copy_from_slice(&0.1f32.to_le_bytes()); // ann[1].time
+        data[TEXT_BAD..TEXT_BAD + 4].copy_from_slice(b"Bad\0");
+        data[TEXT_GOOD..TEXT_GOOD + 5].copy_from_slice(b"Good\0");
+
+        let builder = PackfileBuilder {
+            data,
+            local: vec![
+                (0x28, TRACKS as u32),
+                ((TRACKS + 0x08) as u32, ANNOTATIONS as u32),
+                ((ANNOTATIONS + 0x08) as u32, TEXT_BAD as u32),
+                (
+                    (ANNOTATIONS + ANNOTATION_SIZE + 0x08) as u32,
+                    TEXT_GOOD as u32,
+                ),
+            ],
+            ..Default::default()
+        };
+        let bytes = builder.build();
+        let pack = Packfile::parse(&bytes).unwrap();
+
+        let annotations = read_annotations(&pack, 0, 1.0).expect(
+            "an out-of-range annotation must be skipped, not fail the whole decode (#3018)",
+        );
+        assert_eq!(
+            annotations,
+            vec![HkxAnnotation {
+                track_name: String::new(),
+                time: 0.1,
+                text: "Good".to_string(),
+            }],
+            "only the in-range annotation should survive, clamped as before"
+        );
     }
 
     #[test]

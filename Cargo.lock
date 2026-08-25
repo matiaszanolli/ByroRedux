@@ -592,6 +592,7 @@ name = "byroredux-hkx"
 version = "0.1.0"
 dependencies = [
  "byroredux-bsa",
+ "log",
  "thiserror 2.0.18",
 ]
 
