@@ -23,10 +23,11 @@ pub enum RenderDebugMode {
     CompositeTerm = crate::shader_constants::RENDER_DEBUG_COMPOSITE_TERM,
     RtLod = crate::shader_constants::RENDER_DEBUG_RT_LOD,
     VolumetricTerm = crate::shader_constants::RENDER_DEBUG_VOLUMETRIC_TERM,
+    MaterialRole = crate::shader_constants::RENDER_DEBUG_MATERIAL_ROLE,
 }
 
 impl RenderDebugMode {
-    pub const USER_MODES: [Self; 9] = [
+    pub const USER_MODES: [Self; 10] = [
         Self::Final,
         Self::ShadowVisibility,
         Self::SelectedLight,
@@ -36,6 +37,7 @@ impl RenderDebugMode {
         Self::CompositeTerm,
         Self::RtLod,
         Self::VolumetricTerm,
+        Self::MaterialRole,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -50,6 +52,7 @@ impl RenderDebugMode {
             Self::CompositeTerm => "composite_term",
             Self::RtLod => "rt_lod",
             Self::VolumetricTerm => "volumetric_term",
+            Self::MaterialRole => "material_role",
         }
     }
 
@@ -88,6 +91,7 @@ impl FromStr for RenderDebugMode {
             "composite" | "composite_term" => Ok(Self::CompositeTerm),
             "lod" | "rt_lod" => Ok(Self::RtLod),
             "volume" | "volumetric" | "volumetric_term" => Ok(Self::VolumetricTerm),
+            "role" | "material_role" => Ok(Self::MaterialRole),
             _ => Err(format!(
                 "unknown render debug mode '{value}' (expected {})",
                 Self::user_mode_names()
@@ -184,6 +188,7 @@ mod tests {
         assert_eq!("direct".parse(), Ok(RenderDebugMode::DirectOnly));
         assert_eq!("rt-lod".parse(), Ok(RenderDebugMode::RtLod));
         assert_eq!("volumetric".parse(), Ok(RenderDebugMode::VolumetricTerm));
+        assert_eq!("material-role".parse(), Ok(RenderDebugMode::MaterialRole));
     }
 
     #[test]

@@ -152,6 +152,7 @@ void main() {
     bool viewMaterialLobe = debugMode == RENDER_DEBUG_MATERIAL_LOBE
         || (legacyDebugMode
             && (dbgFlags & DBG_VIZ_MATERIAL_LOBES) == DBG_VIZ_MATERIAL_LOBES);
+    bool viewMaterialRole = debugMode == RENDER_DEBUG_MATERIAL_ROLE;
     bool viewRtLod = debugMode == RENDER_DEBUG_RT_LOD
         || (legacyDebugMode && (dbgFlags & DBG_VIZ_RT_LOD) == DBG_VIZ_RT_LOD);
 
@@ -859,15 +860,16 @@ void main() {
             vec4 lut = texture(
                 textures[nonuniformEXT(mat.greyscaleLutIndex)],
                 vec2(sourceTextureAlpha, 0.5));
+            float paletteScale = clamp(mat.grayscaleToPaletteScale, 0.0, 1.0);
             if ((mat.materialFlags & MAT_FLAG_EFFECT_PALETTE_COLOR) != 0u) {
-                texColor.rgb = lut.rgb;
+                texColor.rgb = mix(texColor.rgb, lut.rgb, paletteScale);
             }
             if ((mat.materialFlags & MAT_FLAG_EFFECT_PALETTE_ALPHA) != 0u) {
                 // Source alpha continues to gate visibility; the LUT
                 // alpha modulates on top so the palette can fade the
                 // hot core (high source.a) differently from the cool
                 // tail.
-                texColor.a *= lut.a;
+                texColor.a *= mix(1.0, lut.a, paletteScale);
             }
         }
         vec3 emit = texColor.rgb * fragColor.rgb
@@ -1139,22 +1141,18 @@ void main() {
     // the same SLSF1 bit (MAT_FLAG_EFFECT_PALETTE_COLOR, set here only by
     // `pack_imported_material_flags` for BGSM meshes that authored a
     // greyscale_texture) AND a resolved LUT, so non-palette lit content is
-    // untouched. The grayscale_to_palette_scale modulator is not plumbed
-    // here — direct lookup for now. #2592: the gap is wider than "no
-    // GpuMaterial field". The value stops one tier earlier — it is read
-    // off the BGSM into ImportedMaterial and then dropped by
-    // translate_material, so the canonical Material has nothing to
-    // forward and an authored non-1.0 scale is silently ignored. Closing
-    // it needs a Material field first, then a GpuMaterial slot, then the
-    // multiply below. Tint correctness + the luminance coordinate await
-    // RenderDoc validation on real FO4 content (additive/flag-gated
-    // change — cannot regress other content).
+    // untouched. `grayscaleToPaletteScale` is the authored remap weight;
+    // 1.0 preserves the historical full lookup and 0.0 preserves the source.
     if ((mat.materialFlags & MAT_FLAG_EFFECT_PALETTE_COLOR) != 0u
         && mat.greyscaleLutIndex != 0u) {
         float gsIndex = dot(texColor.rgb, vec3(0.2126, 0.7152, 0.0722));
-        texColor.rgb = texture(
+        vec3 paletteColor = texture(
             textures[nonuniformEXT(mat.greyscaleLutIndex)],
             vec2(gsIndex, 0.5)).rgb;
+        texColor.rgb = mix(
+            texColor.rgb,
+            paletteColor,
+            clamp(mat.grayscaleToPaletteScale, 0.0, 1.0));
     }
     bool vertexColorEmissive =
         (mat.materialFlags & MAT_FLAG_VERTEX_COLOR_EMISSIVE) != 0u;
@@ -1549,6 +1547,27 @@ void main() {
         outRawIndirect = vec4(0.0);
         outAlbedo = vec4(1.0);
         return;
+    } else if (viewMaterialRole) {
+        // Stable role colours: purple=model-space normal, green=tangent-space
+        // normal, orange=height/POM, cyan=environment, pink=tint, grey=base.
+        // This view reports the translated semantic role only; it never asks
+        // which game or source file supplied the texture.
+        bool hasNormalRole = mat.normalMapIndex != 0u;
+        bool modelSpaceNormal =
+            (mat.materialFlags & MAT_FLAG_MODEL_SPACE_NORMALS) != 0u;
+        vec3 roleColor = hasNormalRole
+            ? (modelSpaceNormal ? vec3(0.72, 0.20, 1.00) : vec3(0.10, 1.00, 0.25))
+            : (mat.parallaxMapIndex != 0u)
+                ? vec3(1.00, 0.42, 0.05)
+            : (mat.envMapIndex != 0u || mat.envMaskIndex != 0u)
+                ? vec3(0.05, 0.85, 1.00)
+            : (mat.tintMapIndex != 0u)
+                ? vec3(1.00, 0.20, 0.65)
+                : vec3(0.45);
+        outColor = vec4(roleColor, 1.0);
+        outRawIndirect = vec4(0.0);
+        outAlbedo = vec4(1.0);
+        return;
     } else if (viewRtLod) {
         // Continuous heatmap: blue=tier 0, cyan/green=tier 1,
         // yellow=tier 2, red=tier 3.
@@ -1795,7 +1814,8 @@ void main() {
         float NdotV_v = max(dot(N_geom_view, V), 0.05);
         // #1248 — per-material dielectric F0 (same source as glassF0
         // above; the IOR block runs inside the isGlass branch).
-        float fresnelScalar = fresnelSchlickScalar(NdotV_v, f0Dielectric);
+        float fresnelScalar = fresnelSchlickScalarPower(
+            NdotV_v, f0Dielectric, mat.fresnelPower);
 
         // Reflection is only material above the normal-incidence Fresnel
         // floor. The old path traced and fully lit a reflection hit for every
@@ -2524,7 +2544,7 @@ void main() {
         vec3 N_view = dot(N, V) < 0.0 ? -N : N;
         vec3 R = reflect(-V, N_view);
         // Fresnel-weighted reflection: stronger at grazing angles.
-        vec3 F = fresnelSchlick(NdotV, F0);
+        vec3 F = fresnelSchlickPower(NdotV, F0, mat.fresnelPower);
         float environmentMask = mat.envMaskIndex != 0u
             ? texture(
                 textures[nonuniformEXT(mat.envMaskIndex)],
@@ -2618,6 +2638,20 @@ void main() {
         // rises; this is the cheap energy stand-in for that.
         Lo += envColor * F * (1.0 - roughness)
             * environmentReflectionMask * environmentStrength;
+    }
+
+    // Canonical Bethesda direct-light auxiliary maps. Source-specific slot
+    // numbering is gone by this stage; white defaults retain scalar-only
+    // soft/rim/back response when an optional map is absent.
+    vec3 lightingMask = vec3(1.0);
+    if (mat.lightingMaskMapIndex != 0u) {
+        lightingMask = texture(
+            textures[nonuniformEXT(mat.lightingMaskMapIndex)], sampleUV).rgb;
+    }
+    vec3 backLightingMap = vec3(1.0);
+    if (mat.backLightingMapIndex != 0u) {
+        backLightingMap = texture(
+            textures[nonuniformEXT(mat.backLightingMapIndex)], sampleUV).rgb;
     }
 
     // World-space distance from camera for cluster depth slicing.
@@ -2803,8 +2837,16 @@ void main() {
                 atten = 1.0;
             }
 
-            float NdotL = max(dot(N, L), 0.0);
-            float contribution = NdotL * atten;
+            float rawNdotL = dot(N, L);
+            float NdotL = max(rawNdotL, 0.0);
+            vec3 diffuseGate = bethesdaDiffuseLightFactor(
+                mat, lightingMask, rawNdotL);
+            float legacyGate = max(
+                bethesdaRimFactor(mat, NdotV, NdotL),
+                bethesdaBackFactor(mat, rawNdotL));
+            float contribution = max(
+                max(diffuseGate.r, max(diffuseGate.g, diffuseGate.b)),
+                legacyGate) * atten;
             if (contribution < 0.001) {
                 continue;
             }
@@ -2818,7 +2860,8 @@ void main() {
             // locally for the SSS translucency term below.
             vec3 unshadowedRadiance = lightColor * atten;
             vec3 shadowableRadiance = shadowableLightRadiance(
-                i, N, V, NdotV, F0, albedo, roughness, metalness,
+                i, N, V, NdotV, F0, albedo, lightingMask, backLightingMap,
+                roughness, metalness,
                 specStrength, specColor, mat, fragTangent, fragWorldPos, dbgFlags);
             bool needsVisibility = visibilityMaskNeedsTrace(lights[i].params.z);
 
@@ -3050,8 +3093,9 @@ void main() {
                     && rp.M > 0.0
                     && rp.W > 0.0 && !isnan(rp.W) && !isinf(rp.W)) {
                     vec3 rpRad = shadowableLightRadiance(
-                        rpLightIndex, N, V, NdotV, F0, albedo, roughness,
-                        metalness, specStrength, specColor, mat, fragTangent,
+                        rpLightIndex, N, V, NdotV, F0, albedo,
+                        lightingMask, backLightingMap, roughness, metalness,
+                        specStrength, specColor, mat, fragTangent,
                         fragWorldPos, dbgFlags);
                     float rpPHat = max(dot(rpRad,
                         vec3(RESTIR_LUMA_X, RESTIR_LUMA_Y, RESTIR_LUMA_Z)), 1e-6);
@@ -3170,8 +3214,9 @@ void main() {
                         && rn.W > 0.0 && !isnan(rn.W) && !isinf(rn.W)
                         && dot(geomN, nGeomN) >= SPATIAL_NORMAL_COS) {
                         vec3 rnRad = shadowableLightRadiance(
-                            rnLightIndex, N, V, NdotV, F0, albedo, roughness,
-                            metalness, specStrength, specColor, mat, fragTangent,
+                            rnLightIndex, N, V, NdotV, F0, albedo,
+                            lightingMask, backLightingMap, roughness, metalness,
+                            specStrength, specColor, mat, fragTangent,
                             fragWorldPos, dbgFlags);
                         float rnPHat = max(dot(rnRad,
                             vec3(RESTIR_LUMA_X, RESTIR_LUMA_Y, RESTIR_LUMA_Z)), 1e-6);
@@ -3299,7 +3344,8 @@ void main() {
                     visibility = mix(vec3(1.0), transmissionFrame, shadowFade);
                 } // end shadow-ray trace (shadowFade > 0.01)
                 vec3 rad = shadowableLightRadiance(
-                    i, N, V, NdotV, F0, albedo, roughness, metalness,
+                    i, N, V, NdotV, F0, albedo, lightingMask, backLightingMap,
+                    roughness, metalness,
                     specStrength, specColor, mat, fragTangent, fragWorldPos, dbgFlags);
                 // This frame's unbiased ReSTIR estimate of the pixel's direct
                 // shadowed radiance: rad·W·V̄ (V̄ = K-ray averaged visibility,
@@ -3461,7 +3507,8 @@ void main() {
                 // accumulated, so the subtraction cancels bit-for-bit
                 // against pass 1 instead of reading a cached vec3.
                 vec3 shadowable = shadowableLightRadiance(
-                    i, N, V, NdotV, F0, albedo, roughness, metalness,
+                    i, N, V, NdotV, F0, albedo, lightingMask, backLightingMap,
+                    roughness, metalness,
                     specStrength, specColor, mat, fragTangent, fragWorldPos, dbgFlags);
                 Lo = max(
                     Lo - shadowable * W * (vec3(1.0) - transmission) * shadowFade,
@@ -3489,7 +3536,8 @@ void main() {
     // bounce.
     float giEmissiveLum =
         emissiveMult * max(emissiveColor.r, max(emissiveColor.g, emissiveColor.b));
-    vec3 primaryDiffuseWeight = (1.0 - fresnelSchlick(NdotV, F0))
+    vec3 primaryDiffuseWeight = (1.0 - fresnelSchlickPower(
+        NdotV, F0, mat.fresnelPower))
         * (1.0 - metalness);
     bool giTransportEligible = giRayEnabled
         && rayBudget.maxPathSegments > 0u

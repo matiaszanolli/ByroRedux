@@ -574,6 +574,21 @@ fn main() {
     )
     .unwrap();
     writeln!(out, "#define MAT_FLAG_THIN_GLASS {MAT_FLAG_THIN_GLASS}u").unwrap();
+    writeln!(
+        out,
+        "#define MAT_FLAG_SOFT_LIGHTING {MAT_FLAG_SOFT_LIGHTING}u"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define MAT_FLAG_RIM_LIGHTING {MAT_FLAG_RIM_LIGHTING}u"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define MAT_FLAG_BACK_LIGHTING {MAT_FLAG_BACK_LIGHTING}u"
+    )
+    .unwrap();
     // #2826 (REN-D19-02) — model-space normal map's blue channel carries
     // authored Z (three-channel FO4 `_msn`); see MSN_HAS_AUTHORED_Z doc.
     writeln!(

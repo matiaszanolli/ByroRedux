@@ -714,6 +714,21 @@ impl DrawCommand {
             self.supplemental_texture_indices
                 [super::material::supplemental_texture_slot::GLASS_DIRT_OVERLAY],
         );
+        h.write_u32(self.lighting_effect_1.to_bits());
+        h.write_u32(self.lighting_effect_2.to_bits());
+        h.write_u32(self.subsurface_rolloff.to_bits());
+        h.write_u32(self.rimlight_power.to_bits());
+        h.write_u32(self.backlight_power.to_bits());
+        h.write_u32(self.fresnel_power.to_bits());
+        h.write_u32(self.grayscale_to_palette_scale.to_bits());
+        h.write_u32(
+            self.supplemental_texture_indices
+                [super::material::supplemental_texture_slot::LIGHTING_MASK],
+        );
+        h.write_u32(
+            self.supplemental_texture_indices
+                [super::material::supplemental_texture_slot::BACK_LIGHTING],
+        );
         h.finish()
     }
 }

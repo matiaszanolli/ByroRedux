@@ -228,6 +228,18 @@ struct GpuMaterial {
     float glassBlurScaleFactor;
     uint glassRoughnessScratchMapIndex;
     uint glassDirtOverlayMapIndex;
+    // Bethesda-authored direct-light response and translated mask roles
+    // (offsets 396-428). Feature flags independently gate soft, rim and
+    // back lighting so non-zero serialized defaults cannot activate them.
+    float lightingEffect1;
+    float lightingEffect2;
+    float subsurfaceRolloff;
+    float rimlightPower;
+    float backlightPower;
+    float fresnelPower;
+    float grayscaleToPaletteScale;
+    uint lightingMaskMapIndex;
+    uint backLightingMapIndex;
 };
 
 layout(std430, set = 1, binding = 13) readonly buffer MaterialBuffer {

@@ -89,9 +89,45 @@ float pointSpotAtten(
 // expression and the unshadowed accumulation cancels bit-for-bit
 // against the shadowed subtraction. Assumes a point/spot/directional
 // light that already cleared the contribution gate.
+vec3 bethesdaDiffuseLightFactor(
+    GpuMaterial mat, vec3 lightingMask, float rawNdotL)
+{
+    float front = max(rawNdotL, 0.0);
+    if ((mat.materialFlags & MAT_FLAG_SOFT_LIGHTING) == 0u) {
+        return vec3(front);
+    }
+
+    // Skyrim calls the wrap width lightingEffect1; FO4/BGSM calls it
+    // subsurfaceRolloff. Prefer the format-specific non-zero value and keep
+    // the authored slot-2 mask independent per colour channel.
+    float width = mat.subsurfaceRolloff > 0.0
+        ? mat.subsurfaceRolloff : mat.lightingEffect1;
+    width = clamp(width, 0.0, 4.0);
+    float wrapped = max((rawNdotL + width) / (1.0 + width), 0.0);
+    return mix(vec3(front), vec3(wrapped), clamp(lightingMask, 0.0, 1.0));
+}
+
+float bethesdaRimFactor(GpuMaterial mat, float NdotV, float frontNdotL) {
+    if ((mat.materialFlags & MAT_FLAG_RIM_LIGHTING) == 0u) return 0.0;
+    float exponent = mat.rimlightPower > 0.0
+        ? mat.rimlightPower : mat.lightingEffect2;
+    exponent = clamp(exponent, 0.25, 16.0);
+    return pow(clamp(1.0 - NdotV, 0.0, 1.0), exponent) * frontNdotL;
+}
+
+float bethesdaBackFactor(GpuMaterial mat, float rawNdotL) {
+    if ((mat.materialFlags & MAT_FLAG_BACK_LIGHTING) == 0u) return 0.0;
+    // Skyrim's slot-7 back-light map has no separate strength scalar. FO4's
+    // BGSM lane does; zero there therefore means the Skyrim unit-strength
+    // convention rather than disabling a feature whose flag is already set.
+    float strength = mat.backlightPower > 0.0 ? mat.backlightPower : 1.0;
+    return max(-rawNdotL, 0.0) * clamp(strength, 0.0, 4.0);
+}
+
 vec3 shadowableLightRadiance(
     uint i, vec3 N, vec3 V, float NdotV, vec3 F0,
-    vec3 albedo, float roughness, float metalness,
+    vec3 albedo, vec3 lightingMask, vec3 backLightingMap,
+    float roughness, float metalness,
     float specStrength, vec3 specColor,
     GpuMaterial mat, vec4 fragTangent, vec3 fragWorldPos, uint dbgFlags)
 {
@@ -133,7 +169,8 @@ vec3 shadowableLightRadiance(
         atten = 1.0;
     }
 
-    float NdotL = max(dot(N, L), 0.0);
+    float rawNdotL = dot(N, L);
+    float NdotL = max(rawNdotL, 0.0);
 
     vec3 H = normalize(V + L);
     float NdotH = max(dot(N, H), 0.0);
@@ -164,7 +201,7 @@ vec3 shadowableLightRadiance(
         D = distributionGGX(NdotH, aaRoughness);
     }
     float G = geometrySmith(NdotV, NdotL, aaRoughness);
-    vec3 F = fresnelSchlick(HdotV, F0);
+    vec3 F = fresnelSchlickPower(HdotV, F0, mat.fresnelPower);
 
     vec3 kD = (1.0 - F) * (1.0 - metalness);
     vec3 specular = (D * G * F) / max(4.0 * NdotV * NdotL, 0.01);
@@ -196,7 +233,24 @@ vec3 shadowableLightRadiance(
         // longer carries a duplicate synthetic no-light sun/BRDF arm.
         diffuseBrdf = kD * albedo;
     }
-    vec3 brdfResult = (diffuseBrdf + specular * specStrength * specColor) * NdotL;
+    vec3 diffuseFactor = bethesdaDiffuseLightFactor(mat, lightingMask, rawNdotL);
+    vec3 brdfResult = diffuseBrdf * diffuseFactor
+        + specular * specStrength * specColor * NdotL;
+
+    // Skyrim's soft/rim mask occupies translated slot 2; its back-light map
+    // occupies slot 7. These are direct-light lobes, so evaluating them here
+    // keeps ReSTIR selection, visibility, and the legacy shadow subtraction
+    // byte-consistent with the ordinary diffuse/specular response.
+    float rim = bethesdaRimFactor(mat, NdotV, NdotL);
+    if (rim > 0.0) {
+        brdfResult += albedo * clamp(lightingMask, 0.0, 1.0)
+            * rim * (1.0 - metalness);
+    }
+    float back = bethesdaBackFactor(mat, rawNdotL);
+    if (back > 0.0) {
+        brdfResult += albedo * max(backLightingMap, vec3(0.0))
+            * back * (1.0 - metalness);
+    }
     return brdfResult * unshadowedRadiance;
 }
 

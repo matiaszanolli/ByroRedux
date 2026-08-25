@@ -1910,7 +1910,7 @@ fn bounded_path_uses_ggx_bsdf_transport_and_directional_environment() {
         );
     }
     for needle in [
-        "vec3 primaryDiffuseWeight = (1.0 - fresnelSchlick(NdotV, F0))",
+        "vec3 primaryDiffuseWeight = (1.0 - fresnelSchlickPower(",
         "pathEnvironmentRadiance(pathDir)",
         "pathHitRadiance(",
         "samplePathBsdf(",
@@ -1953,7 +1953,7 @@ fn schlick_fresnel_uses_multiply_chain_and_scalar_glass_path() {
     );
     for needle in [
         "fresnelSchlickScalar(glassNdotV, f0Dielectric)",
-        "fresnelSchlickScalar(NdotV_v, f0Dielectric)",
+        "fresnelSchlickScalarPower(",
         "fresnelSchlickScalar(cosTheta, f0)",
     ] {
         assert!(
@@ -1968,6 +1968,41 @@ fn schlick_fresnel_uses_multiply_chain_and_scalar_glass_path() {
     assert!(
         shadow.contains("float weight = x2 * x2 * x;"),
         "glass shadow transport must not regress to pow(x, 5)"
+    );
+}
+
+#[test]
+fn bethesda_lighting_response_is_masked_shadowable_and_palette_scaled() {
+    let frag = include_str!("../../../shaders/triangle.frag");
+    let lighting = include_str!("../../../shaders/include/lighting.glsl");
+    let pbr = include_str!("../../../shaders/include/pbr.glsl");
+
+    for needle in [
+        "mat.lightingMaskMapIndex",
+        "mat.backLightingMapIndex",
+        "clamp(mat.grayscaleToPaletteScale, 0.0, 1.0)",
+        "lightingMask, backLightingMap",
+    ] {
+        assert!(frag.contains(needle), "triangle.frag lost `{needle}`");
+    }
+    for needle in [
+        "MAT_FLAG_SOFT_LIGHTING",
+        "MAT_FLAG_RIM_LIGHTING",
+        "MAT_FLAG_BACK_LIGHTING",
+        "bethesdaDiffuseLightFactor",
+        "bethesdaRimFactor",
+        "bethesdaBackFactor",
+        "fresnelSchlickPower(HdotV, F0, mat.fresnelPower)",
+    ] {
+        assert!(
+            lighting.contains(needle),
+            "canonical direct-light path lost `{needle}`"
+        );
+    }
+    assert!(
+        pbr.contains("vec3 fresnelSchlickPower(")
+            && pbr.contains("abs(exponent - 5.0) < 1e-4"),
+        "authored Fresnel power must retain the optimized neutral x^5 path"
     );
 }
 

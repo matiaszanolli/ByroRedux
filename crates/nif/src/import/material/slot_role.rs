@@ -201,9 +201,9 @@ pub(crate) fn record_unrouted_texture_slot(context: TextureSlotContext, slot: u3
 ///   field, not a texture). Vanilla leaves them empty, but a mis-exported NIF
 ///   with a stray slot-4 string would otherwise bind a spurious env cube
 ///   (#1350).
-/// * **No canonical role exists yet.** Slot 7 on type 11 is a back-lighting
-///   map; `MaterialTextureSet` has no back-lighting role and no shader consumes
-///   one, so inventing a mapping would be fabrication.
+/// * **Feature-gated role.** Skyrim slot 2 can be a soft/rim mask and slot 7
+///   can be a back-lighting map. They route only when the matching shader flag
+///   is authored, so an unrelated populated slot cannot silently change lobes.
 /// * **Owned by another subsystem.** Slot 6 on FaceTint is the per-NPC baked
 ///   FaceGen tint. Routing it to `BaseColor` here would silently pre-empt the
 ///   FaceGen path (#2095), which overrides diffuse from the *actor's* form id.
@@ -242,8 +242,8 @@ pub fn slot_to_role(context: TextureSlotContext, slot: u32) -> Option<TextureRol
                 Some(TextureRole::LightingMask)
             } else {
                 // Skyrim multiplexes slot 2 between Glow_Map, Soft_Lighting,
-                // and Rim_Lighting. The latter two have no canonical texture
-                // role yet and must not become self-illumination (#3068).
+                // and Rim_Lighting. With no matching flag it must not become
+                // self-illumination or a lighting mask (#3068).
                 None
             }
         }
@@ -336,9 +336,9 @@ pub fn slot_to_role(context: TextureSlotContext, slot: u32) -> Option<TextureRol
         // multilayer inner texture (#3085).
         (TextureSlotLayout::Fallout76, 6) => Some(TextureRole::Specular),
 
-        // Slot 7 is the alternate specular on model-space-normal materials,
-        // independent of shader type (#2742) — except on type 11, where it is a
-        // back-lighting map with no canonical role.
+        // Slot 7 is an authored back-lighting map when that feature flag is
+        // set; otherwise it is the alternate specular on model-space-normal
+        // materials, independent of shader type (#2742).
         (TextureSlotLayout::Skyrim | TextureSlotLayout::Starfield, 7) => {
             if context.back_lighting {
                 Some(TextureRole::BackLighting)
@@ -443,6 +443,30 @@ mod tests {
         assert_eq!(
             slot_to_role(skyrim(0, true, false), 2),
             Some(TextureRole::Emissive)
+        );
+    }
+
+    #[test]
+    fn skyrim_feature_flags_route_soft_rim_and_back_lighting_maps() {
+        let mut context = skyrim(0, false, false);
+        context.soft_lighting = true;
+        assert_eq!(
+            slot_to_role(context, 2),
+            Some(TextureRole::LightingMask)
+        );
+
+        context.soft_lighting = false;
+        context.rim_lighting = true;
+        assert_eq!(
+            slot_to_role(context, 2),
+            Some(TextureRole::LightingMask)
+        );
+
+        context.rim_lighting = false;
+        context.back_lighting = true;
+        assert_eq!(
+            slot_to_role(context, 7),
+            Some(TextureRole::BackLighting)
         );
     }
 
