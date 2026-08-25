@@ -1885,3 +1885,50 @@ mod scheduler_timings_gate_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod scheduler_access_report_tests {
+    //! #3111 / ECS-2026-08-20-01 — `install_runtime_registries`'s
+    //! `known_conflict_count() == 0` / `undeclared_parallel_count() == 0`
+    //! / `unknown_pair_count() == 0` guards only run inside a live
+    //! `App::new()` boot (Vulkan device + on-disk game data), so they were
+    //! never exercised by `cargo test` — a regression could sit green in CI
+    //! indefinitely. `build_scheduler()` itself needs neither: it's a pure
+    //! `() -> Scheduler` builder (extracted verbatim from `App::new` in
+    //! #1670), so the same guard checks can run directly here.
+    //!
+    //! This is the honest-declaration half of #3111's fix, not the
+    //! scheduling half — `weather_system` moved to
+    //! `add_exclusive_with_access` and `player_controller_system` gained
+    //! the `WindField` read declaration in the same change (`boot.rs`
+    //! `build_scheduler`, see the `#3111` comment there). Without a real
+    //! `cargo test` assertion, a future regression that re-declared
+    //! `weather_system` as parallel (or dropped the `WindField` read) would
+    //! only be caught by a debug build actually booting the engine.
+    use super::build_scheduler;
+
+    #[test]
+    fn build_scheduler_reports_zero_access_conflicts() {
+        let scheduler = build_scheduler();
+        let report = scheduler.access_report();
+        assert_eq!(
+            report.undeclared_parallel_count(),
+            0,
+            "an undeclared parallel system slipped into the schedule — use \
+             add_to_with_access instead of add_to"
+        );
+        assert_eq!(
+            report.known_conflict_count(),
+            0,
+            "declared access conflict between two parallel same-stage systems \
+             — make one side exclusive or split the access (see sys.accesses); \
+             this is the guard #3111's WindField race would have tripped had \
+             the read been declared without also serializing weather_system"
+        );
+        assert_eq!(
+            report.unknown_pair_count(),
+            0,
+            "unknown (undeclared) parallel pairing detected — declare both sides' access"
+        );
+    }
+}

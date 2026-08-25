@@ -260,12 +260,17 @@ fn read_cstr<'a>(bytes: &'a [u8], offset: usize, label: &'static str) -> Result<
     std::str::from_utf8(&rest[..len]).map_err(|_| HkxError::InvalidData("non-UTF-8 string"))
 }
 
+/// Shared test-only packfile fixture builder (#3018 / SCR-D8-2026-08-16-03 —
+/// promoted out of this module's own `mod tests` so `animation.rs`'s tests
+/// can build a real, minimal Havok packfile too, instead of only being able
+/// to exercise the crate against real game data. See
+/// [`PackfileBuilder`](fixtures::PackfileBuilder).
 #[cfg(test)]
-mod tests {
+pub(crate) mod fixtures {
     use super::*;
 
-    const HEADER: usize = HEADER_SIZE;
-    const SECTION_TABLE: usize = 2 * SECTION_HEADER_SIZE;
+    pub(crate) const HEADER: usize = HEADER_SIZE;
+    pub(crate) const SECTION_TABLE: usize = 2 * SECTION_HEADER_SIZE;
 
     /// Assembles a minimal but *structurally real* 64-bit little-endian
     /// Havok 2010 packfile: a `__classnames__` section holding the class
@@ -273,31 +278,31 @@ mod tests {
     /// by the local / global / virtual fixup tables in the order the format
     /// mandates.
     #[derive(Default)]
-    struct PackfileBuilder {
-        classnames: Vec<u8>,
-        data: Vec<u8>,
-        local: Vec<(u32, u32)>,
-        global: Vec<(u32, u32, u32)>,
-        virtual_fixups: Vec<(u32, u32, u32)>,
+    pub(crate) struct PackfileBuilder {
+        pub(crate) classnames: Vec<u8>,
+        pub(crate) data: Vec<u8>,
+        pub(crate) local: Vec<(u32, u32)>,
+        pub(crate) global: Vec<(u32, u32, u32)>,
+        pub(crate) virtual_fixups: Vec<(u32, u32, u32)>,
     }
 
     impl PackfileBuilder {
         /// Append a NUL-terminated class name, returning its offset within
         /// the classnames section.
-        fn class(&mut self, name: &str) -> u32 {
+        pub(crate) fn class(&mut self, name: &str) -> u32 {
             let offset = self.classnames.len() as u32;
             self.classnames.extend_from_slice(name.as_bytes());
             self.classnames.push(0);
             offset
         }
 
-        fn build(&self) -> Vec<u8> {
+        pub(crate) fn build(&self) -> Vec<u8> {
             self.build_with(|_| {})
         }
 
         /// `tweak` gets the finished buffer so a test can corrupt one field
         /// without hand-rolling the whole layout again.
-        fn build_with(&self, tweak: impl FnOnce(&mut Vec<u8>)) -> Vec<u8> {
+        pub(crate) fn build_with(&self, tweak: impl FnOnce(&mut Vec<u8>)) -> Vec<u8> {
             let names_start = HEADER + SECTION_TABLE;
             let names_len = self.classnames.len();
             let data_start = names_start + names_len;
@@ -380,6 +385,12 @@ mod tests {
             bytes
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fixtures::{PackfileBuilder, HEADER};
+    use super::*;
 
     /// `Packfile` carries a borrowed slice and derives neither `Debug` nor
     /// `PartialEq`, so rejection tests assert on the error alone.
