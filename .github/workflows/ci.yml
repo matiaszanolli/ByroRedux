@@ -120,6 +120,43 @@ jobs:
         run: cargo test --workspace
 
   # ──────────────────────────────────────────────────────────────────────────
+  # ECS cached-pointer aliasing under Stacked Borrows (SAFE-2026-08-03-01 / #2271)
+  #
+  # QueryRead/QueryWrite/ComponentRef (crates/core/src/ecs/query.rs) each cache
+  # a raw pointer resolved once from a held RwLock guard, then deref it in the
+  # hot path without re-touching the guard (#1367). The soundness argument —
+  # the guard field is never re-borrowed after construction — is a convention
+  # the type system does not enforce; a future method that read `self.guard`
+  # post-construction would silently invalidate the cached pointer's Stacked
+  # Borrows tag while still compiling and passing a normal `cargo test`. Miri
+  # is the only tool that actually checks that invariant.
+  #
+  # Scoped to `ecs::world::tests` — the module that constructs and exercises
+  # QueryRead/QueryWrite/ComponentRef end to end (spawn/insert/query/get,
+  # including the dedicated #1367 cached-storage regression tests) — rather
+  # than the whole workspace or even the whole crate: `resource_visible_to_
+  # system_via_scheduler` is the one test in that module that drives
+  # `Scheduler::run`, and rayon's cross-thread work-stealing goes through
+  # crossbeam-epoch's platform thread-local pinning, which Miri's concurrency
+  # model does not support. That test exercises the scheduler, not the
+  # cached-pointer contract this job checks, so it is skipped here rather
+  # than skipping Miri coverage for the module entirely.
+  # ──────────────────────────────────────────────────────────────────────────
+  ecs-query-miri:
+    name: ECS cached-pointer aliasing (Miri)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo miri setup
+        run: cargo miri setup
+      - name: cargo miri test (ecs::world::tests, scheduler test excluded)
+        run: cargo miri test -p byroredux-core --lib ecs::world::tests -- --skip resource_visible_to_system_via_scheduler
+
+  # ──────────────────────────────────────────────────────────────────────────
   # NIF heap-allocation regression (TD9-001 / #1247 / #1381 / #1763)
   #
   # `heap_allocation_bounds` (+ its sibling `heap_allocation_bounds_geometry`,
