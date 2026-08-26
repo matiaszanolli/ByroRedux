@@ -19,8 +19,11 @@
 //!   `.spt` file's first relative leaf-texture tag (`4003`); absolute
 //!   exporter paths are rejected, leaving the renderer's missing-texture
 //!   placeholder reachable.
-//! - **Size** comes from the TREE record's `OBND` bounds, falling
-//!   back to a 256 × 512 game-unit default (Bethesda standard tree).
+//! - **Size** follows the TREE metadata precedence used by the live
+//!   importer: `OBND` extents, then `BNAM` width/height, then an
+//!   `MODB` radius-derived 1:2 silhouette, and finally the 256 × 512
+//!   game-unit default. Every source is clamped to the safe
+//!   `[16, 8192]` band.
 //! - **Billboard mode** is `BsRotateAboutUp` (yaw-to-camera) — the
 //!   correct choice for tree imposters per the rendering plan.
 //! - **Alpha** is alpha-test (cutout) at threshold `0.5`. Leaf
@@ -64,8 +67,9 @@ pub struct SptImportParams<'a> {
     /// ICON without rewriting the `.spt`).
     pub leaf_texture_override: Option<&'a str>,
     /// Object bounds from the TREE record's `OBND` sub-record.
-    /// `(min, max)` in game units (Y-up). When absent the placeholder
-    /// falls back to a 256 × 512 tree silhouette.
+    /// `(min, max)` in Bethesda Z-up game units. This is the preferred
+    /// placeholder-size source; when absent, sizing falls through to
+    /// `billboard_size` (BNAM), `bound_radius` (MODB), then the default.
     pub bounds: Option<([f32; 3], [f32; 3])>,
     /// Currently a neutral runtime constant (`(1.0, 0.0)`), carried to the
     /// spawned SpeedTree billboard to modulate its response to the shared
@@ -74,15 +78,16 @@ pub struct SptImportParams<'a> {
     /// `CNAM`, 5 × f32 on Oblivion / 8 × f32 on FO3/FNV) is parsed but not
     /// consumed here — its field semantics aren't pinned to a citable layout
     /// yet (#3190). **Not** sourced from `BNAM` — per UESP + the TREE parser,
-    /// BNAM is FO3/FNV billboard width/height, which flows into `bounds`
-    /// instead (see #1002).
+    /// BNAM is FO3/FNV billboard width/height, which flows into
+    /// `billboard_size` instead (see #1002).
     pub wind: Option<(f32, f32)>,
     /// FormID of the source TREE record. Useful when downstream code
     /// wants to seed per-tree variation (sway phase, leaf-tint
     /// random offset) deterministically.
     pub form_id: Option<u32>,
     /// MODB bound radius from the TREE record, in game units. Used as
-    /// a per-tree size fallback when `bounds` (OBND) is absent —
+    /// a per-tree size fallback when both `bounds` (OBND) and
+    /// `billboard_size` (BNAM) are absent —
     /// vanilla Oblivion ships MODB on 100 % of TREE records and OBND
     /// on none, while FO3/FNV ship OBND on 100 % and MODB on none
     /// (corpus stats 2026-05-13). Resolving to a billboard size:
@@ -147,10 +152,10 @@ pub fn import_spt_scene(
         .filter(|s| !s.is_empty())
         .map(|s| pool.intern(s));
 
-    // Compute billboard size from OBND when present, falling back to
-    // the 256 × 512 default. The width tracks the X extent of OBND;
-    // the height tracks the Z extent (Bethesda Z-up; the importer
-    // converts to Y-up below).
+    // Compute billboard size through the documented OBND → BNAM → MODB →
+    // default precedence. OBND width tracks X and height tracks Z
+    // (Bethesda Z-up; the importer converts the retained bounds to Y-up
+    // below).
     let (bb_width, bb_height) = compute_billboard_size(params);
 
     // Keep the placement root as a plain hierarchy anchor. The renderable
