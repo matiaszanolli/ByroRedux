@@ -1,12 +1,5 @@
 # EX-06/07: Exterior boundary benchmark and deadline-bounded streaming
 
-**Repo**: matiaszanolli/ByroRedux
-**Number**: #2376
-**State**: OPEN
-**Labels**: ecs, renderer, high, performance, terrain-exterior
-
-## Body
-
 Plan: EX-06 + EX-07.
 
 Problem

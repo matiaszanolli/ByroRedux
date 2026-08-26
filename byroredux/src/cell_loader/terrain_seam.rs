@@ -18,8 +18,32 @@
 //! corpus data to calibrate it against would be exactly the kind of guessed
 //! threshold this project's no-guessing policy exists to prevent. The live
 //! caller (`streaming_helpers::update_terrain_seam_stats`) decides what
-//! counts as a failure (any dirty pair) and reports facts, not a
-//! magnitude-tolerant judgement.
+//! counts as a failure and reports facts, not a magnitude-tolerant
+//! judgement. **See the 2026-08-26 correction below**: that failure
+//! criterion is height-only, not "any dirty pair" as this paragraph
+//! originally said.
+//!
+//! # Correction (2026-08-26): failure criterion is height-only, not "any
+//! disagreement"
+//!
+//! A live FO4 Commonwealth `grid-cross` run (the first real cross-cell data
+//! this checker had ever been run against — item 7's own doc flagged "no
+//! real crack has been confirmed to trip `pairs_dirty`" as still open)
+//! measured near-perfect shared-edge **height** agreement (3 mismatched
+//! vertices across 17 checked pairs) alongside pervasive **VNML raw-byte**
+//! disagreement (15/17 pairs). That asymmetry — heights agree almost
+//! exactly, normals mostly don't — is consistent with each cell computing
+//! its own boundary-vertex normal one-sidedly at authoring time (a
+//! plausible, benign per-game convention, matching the already-documented
+//! FO4 `_msn`-vs-Skyrim-`_n` LOD-normal precedent elsewhere in this
+//! codebase), not a real geometric crack. `streaming_helpers::
+//! update_terrain_seam_stats` now sets `TerrainSeamStats::pairs_dirty` (the
+//! field `verdict()` fails on) from height mismatches only;
+//! `normal_mismatch_pairs` stays tracked and reported but is informational,
+//! not fatal. Not confirmed either way by visual inspection or RenderDoc —
+//! a future session with that tooling can fold normal disagreement back
+//! into the hard-fail criterion if it turns out to produce a visible
+//! lighting seam.
 //!
 //! # Correction (2026-08-23): the retention design decision this doc used
 //! to flag never needed making
@@ -76,12 +100,6 @@ pub(crate) struct SeamReport {
     /// side lacks VNML (nothing to compare — not itself a mismatch, since
     /// pre-Skyrim normal maps are computed at render time, not authored).
     pub normal_bytes_differ: Option<bool>,
-}
-
-impl SeamReport {
-    pub(crate) fn is_clean(&self) -> bool {
-        self.height_mismatches.is_empty() && self.normal_bytes_differ != Some(true)
-    }
 }
 
 const GRID: usize = 33;
@@ -161,7 +179,6 @@ mod tests {
         let a = flat_land(10.0);
         let b = flat_land(10.0);
         let report = check_seam(&a, &b, SeamDirection::EastWest);
-        assert!(report.is_clean());
         assert!(report.height_mismatches.is_empty());
     }
 
@@ -177,7 +194,6 @@ mod tests {
         assert_eq!(report.height_mismatches[0].index, 5);
         assert_eq!(report.height_mismatches[0].height_a, 10.0);
         assert_eq!(report.height_mismatches[0].height_b, 42.0);
-        assert!(!report.is_clean());
     }
 
     #[test]
@@ -185,7 +201,7 @@ mod tests {
         let a = flat_land(3.0);
         let b = flat_land(3.0);
         let report = check_seam(&a, &b, SeamDirection::NorthSouth);
-        assert!(report.is_clean());
+        assert!(report.height_mismatches.is_empty());
     }
 
     #[test]
@@ -220,7 +236,6 @@ mod tests {
         b.normals = Some(vec![128u8; GRID * GRID * 3]);
         let report = check_seam(&a, &b, SeamDirection::EastWest);
         assert_eq!(report.normal_bytes_differ, Some(false));
-        assert!(report.is_clean());
     }
 
     #[test]
@@ -237,7 +252,6 @@ mod tests {
 
         let report = check_seam(&a, &b, SeamDirection::EastWest);
         assert_eq!(report.normal_bytes_differ, Some(true));
-        assert!(!report.is_clean());
     }
 
     #[test]

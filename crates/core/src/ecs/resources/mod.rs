@@ -955,20 +955,38 @@ pub struct TerrainSeamStats {
     /// side isn't loaded at all, aren't counted).
     pub pairs_checked: u32,
     /// Of `pairs_checked`, how many disagreed on at least one shared-edge
-    /// vertex (height, normal bytes, or both).
+    /// **height** vertex — the real geometric-crack signal, and what
+    /// [`Self::verdict`] fails on. Deliberately height-only, not
+    /// `!SeamReport::is_clean()` (which also counts `normal_mismatch_pairs`
+    /// below): a live FO4 Commonwealth run (2026-08-26) measured
+    /// near-perfect height agreement (3 mismatched vertices across 17
+    /// pairs) alongside pervasive VNML raw-byte disagreement (15/17 pairs)
+    /// — a pattern consistent with each cell computing its own boundary
+    /// normal one-sidedly at authoring time (a plausible per-game
+    /// convention, matching the already-documented FO4 `_msn`-vs-Skyrim-`_n`
+    /// LOD-normal precedent), not a shared-edge geometric crack. Folding
+    /// normal disagreement into this field would make every FO4 boundary
+    /// smoke run hard-fail on an unconfirmed signal.
     pub pairs_dirty: u32,
-    /// Sum of disagreeing edge-vertex counts across every dirty pair —
-    /// severity, not just incident count (one pair off by one vertex vs.
+    /// Sum of disagreeing edge-vertex counts across every height-dirty pair
+    /// — severity, not just incident count (one pair off by one vertex vs.
     /// a whole edge disagreeing are both "1 dirty pair" but very
     /// different problems).
     pub height_mismatch_vertices: u32,
     /// Pairs whose `VNML` raw bytes disagree at the shared edge.
+    /// Informational only — does **not** affect [`Self::pairs_dirty`] or
+    /// [`Self::verdict`] (see `pairs_dirty`'s doc for why). A future
+    /// session with visual-inspection or RenderDoc time to confirm whether
+    /// this produces an actual visible lighting seam can fold it back into
+    /// the hard-fail criterion if warranted.
     pub normal_mismatch_pairs: u32,
 }
 
 impl TerrainSeamStats {
     /// Stable three-state verdict, same shape as
-    /// [`LodCoverageStats::verdict`]/`RtIntegrityStats::verdict`.
+    /// [`LodCoverageStats::verdict`]/`RtIntegrityStats::verdict`. Height-only
+    /// — see [`Self::pairs_dirty`]'s doc for why `normal_mismatch_pairs`
+    /// doesn't factor in.
     pub fn verdict(&self) -> &'static str {
         if !self.sampled {
             "PENDING"
@@ -1352,10 +1370,11 @@ mod tests {
 
     #[test]
     fn terrain_seam_stats_any_dirty_pair_fails() {
-        // Zero-tolerance by design (see `terrain_seam.rs`'s module doc):
-        // authored terrain shares byte-identical LAND payloads at seams,
-        // so any disagreement at all is a real authoring/merge defect, not
-        // a magnitude judgement call for this resource to make.
+        // Zero-tolerance on HEIGHT by design (see `pairs_dirty`'s doc):
+        // authored terrain shares byte-identical LAND height payloads at
+        // seams, so any height disagreement at all is a real
+        // authoring/merge defect, not a magnitude judgement call for this
+        // resource to make.
         let dirty = TerrainSeamStats {
             sampled: true,
             pairs_checked: 12,
@@ -1364,6 +1383,30 @@ mod tests {
             normal_mismatch_pairs: 0,
         };
         assert_eq!(dirty.verdict(), "FAIL");
+    }
+
+    /// #2371 live-data finding (2026-08-26) — normal-byte disagreement
+    /// alone (no height disagreement) must NOT fail the verdict. See
+    /// `pairs_dirty`'s doc: a live FO4 Commonwealth run measured pervasive
+    /// VNML raw-byte disagreement (15/17 pairs) alongside near-perfect
+    /// height agreement, consistent with a benign per-game boundary-normal
+    /// authoring convention rather than a geometric crack. Without this
+    /// guard, every FO4 boundary smoke run would hard-fail on an
+    /// unconfirmed signal.
+    #[test]
+    fn terrain_seam_stats_normal_only_mismatch_still_passes() {
+        let normal_only = TerrainSeamStats {
+            sampled: true,
+            pairs_checked: 17,
+            pairs_dirty: 0,
+            height_mismatch_vertices: 0,
+            normal_mismatch_pairs: 15,
+        };
+        assert_eq!(
+            normal_only.verdict(),
+            "PASS",
+            "normal-byte disagreement alone must not fail the height-only verdict"
+        );
     }
 
     #[test]

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Cross-game exterior readiness smoke matrix and traversal gate
-# (EX-01 / EX-05 / EX-06 / EX-08 / EX-09 / EX-17).
+# (EX-01 / EX-05 / EX-06 / EX-08 / EX-09 / EX-10 / EX-11 / EX-17).
 #
 # Each installed profile loads a known populated exterior at radius 1, retains
 # a deterministic screenshot plus engine/debug telemetry, and applies hard
@@ -214,6 +214,7 @@ mesh.cache failed
 ctx.scratch
 cam.where
 lod.coverage
+terrain.seams
 world.owners
 world.owners report
 .quit
@@ -232,6 +233,7 @@ ctx.scratch
 cam.where
 r.health
 lod.coverage
+terrain.seams
 world.owners
 world.owners report
 .quit
@@ -436,6 +438,38 @@ EOF
                 hard_fail=1
             else
                 echo "exterior-smoke[$label]: PASS lod coverage: $coverage_line"
+            fi
+        fi
+
+        # EX-10/11 item 7 / #2371 — adjacent-loaded-cell LAND shared-edge
+        # agreement. Authored terrain shares byte-identical heightmap/normal
+        # payloads at a seam, so `pairs_dirty > 0` is always a real
+        # authoring/merge defect, never a magnitude judgement call (zero
+        # tolerance by design — see `TerrainSeamStats`'s doc). Same
+        # single-line `machine_line()` shape as `lod.coverage` above, so the
+        # same direct-grep parse applies.
+        local seam_line
+        seam_line="$(grep -oE 'terrain-seams: [^"]*' "$debug_log" | head -1 || true)"
+        if [[ -z "$seam_line" ]]; then
+            echo "exterior-smoke[$label]: WARN - terrain.seams reported nothing (pre-#2371-item-7 binary, or an interior-only profile)"
+        else
+            local seam_sampled seam_checked seam_dirty seam_height_mismatch seam_normal_mismatch
+            seam_sampled="$(grep -oE 'sampled=[01]' <<< "$seam_line" | cut -d= -f2 || true)"
+            seam_checked="$(grep -oE 'pairs_checked=[0-9]+' <<< "$seam_line" | cut -d= -f2 || true)"
+            seam_dirty="$(grep -oE 'pairs_dirty=[0-9]+' <<< "$seam_line" | cut -d= -f2 || true)"
+            seam_height_mismatch="$(grep -oE 'height_mismatch_vertices=[0-9]+' <<< "$seam_line" | cut -d= -f2 || true)"
+            seam_normal_mismatch="$(grep -oE 'normal_mismatch_pairs=[0-9]+' <<< "$seam_line" | cut -d= -f2 || true)"
+            if [[ "$seam_sampled" != "1" ]]; then
+                echo "exterior-smoke[$label]: WARN - terrain.seams never sampled (no adjacent resident-cell pair with LAND on both sides this traversal)"
+            elif [[ ! "$seam_checked" =~ ^[0-9]+$ || ! "$seam_dirty" =~ ^[0-9]+$ \
+                    || ! "$seam_height_mismatch" =~ ^[0-9]+$ || ! "$seam_normal_mismatch" =~ ^[0-9]+$ ]]; then
+                echo "exterior-smoke[$label]: HARD FAIL - incomplete terrain.seams line: $seam_line"
+                hard_fail=1
+            elif (( seam_dirty != 0 )); then
+                echo "exterior-smoke[$label]: HARD FAIL - terrain seam disagreement: $seam_line"
+                hard_fail=1
+            else
+                echo "exterior-smoke[$label]: PASS terrain seams: $seam_line"
             fi
         fi
     fi
