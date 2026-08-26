@@ -1328,7 +1328,10 @@ impl MaterialTable {
     /// one — a hash collision (or a drift between the producer hash
     /// and `hash_gpu_material_fields`) fires a panic with the colliding
     /// hash in the message. In release we trust the hash; collisions
-    /// (rare on FxHash's 64-bit output over 92 scalar fields, #1368)
+    /// (rare on FxHash's 64-bit output over `GpuMaterial`'s full scalar
+    /// field set — see `size_of::<GpuMaterial>()`, currently pinned by
+    /// `gpu_material_size_is_432_bytes`, rather than restating a field
+    /// count here that drifts on every struct growth, #1368/#2273)
     /// would silently alias to the first-seen material at that hash.
     pub fn intern_by_hash(
         &mut self,
