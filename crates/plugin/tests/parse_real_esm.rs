@@ -2530,3 +2530,95 @@ fn installed_fallout_masters_decode_the_dnam_visual_tail() {
         "neither Fallout master was available — this guard proved nothing."
     );
 }
+
+/// #3285 — FNV-sourced coverage for the shared `expand_leveled_inner`.
+///
+/// `#3217` narrowed `multi_pick` from `flags & (0x02 | 0x04)` to
+/// `flags & 0x04`, so `LVLF` bit 1 ("calculate for each item in count") no
+/// longer expands every eligible tier. Its justification and both of its tests
+/// are entirely Skyrim-sourced ("over-equipped 1,491 vanilla Skyrim NPCs"), but
+/// `expand_leveled_inner` is game-agnostic and FO3/FNV `LVLI` uses the same
+/// `LVLD`/`LVLF`/`LVLO` layout — so the change silently altered FNV output too,
+/// with no FNV fixture anywhere to notice.
+///
+/// This is a **characterisation** test, not a correctness claim. The true
+/// FO3/FNV mechanic is RNG-driven (roll N times against a caller-supplied
+/// count this codebase does not thread through), so neither the old nor the new
+/// deterministic approximation models it exactly, and this audit found no
+/// GECK-level documentation settling which is closer. Pinning current behaviour
+/// on real records is what is actually available: it makes the blast radius
+/// visible and makes any future change to this shared function announce its
+/// effect on FNV instead of landing unobserved.
+#[test]
+#[ignore]
+fn fnv_leveled_item_multi_pick_semantics_are_pinned_on_the_shipped_master() {
+    let Some(data) = data_dir(
+        "BYROREDUX_FNV_DATA",
+        "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data",
+    ) else {
+        eprintln!("[FNV/LVLI] skipping: game data unavailable");
+        return;
+    };
+    let bytes = std::fs::read(data.join("FalloutNV.esm")).expect("read FalloutNV.esm");
+    let index = parse_esm(&bytes).expect("parse FalloutNV.esm");
+
+    // The affected population: bit 0x02 set, bit 0x04 clear, entries spanning
+    // more than one distinct level. Exactly the records whose selection output
+    // #3217 changed from "every eligible tier" to "the single highest".
+    let affected: Vec<&byroredux_plugin::esm::records::LeveledList> = index
+        .leveled_items
+        .values()
+        .filter(|l| l.flags & 0x02 != 0 && l.flags & 0x04 == 0)
+        .filter(|l| {
+            let mut levels: Vec<u16> = l.entries.iter().map(|e| e.level).collect();
+            levels.sort_unstable();
+            levels.dedup();
+            levels.len() > 1
+        })
+        .collect();
+
+    eprintln!(
+        "[FNV/LVLI] {} total LVLI, {} in the #3217-affected set",
+        index.leveled_items.len(),
+        affected.len()
+    );
+
+    assert!(
+        index.leveled_items.len() >= 2_700,
+        "FNV LVLI count collapsed to {} — the parser, not this fix, regressed",
+        index.leveled_items.len()
+    );
+    assert!(
+        affected.len() >= 200,
+        "the #3217-affected FNV set shrank to {} records; if that is intended, \
+         re-derive the blast radius before re-pinning",
+        affected.len()
+    );
+
+    // A named representative: a Legion armour bundle whose entries sit at two
+    // levels. Under the pre-#3217 code an actor at level >= 9 received both
+    // tiers at once; under current code it receives only the level-9 tier.
+    let recruit_prime = index
+        .leveled_items
+        .values()
+        .find(|l| l.editor_id == "LeveledLegionArmorRecruitPrime")
+        .expect("LeveledLegionArmorRecruitPrime LVLI present in FalloutNV.esm");
+    assert_eq!(
+        recruit_prime.flags & 0x04,
+        0,
+        "the representative must stay a bit-0x02-only record for this pin to mean anything"
+    );
+
+    let mut out = Vec::new();
+    byroredux_plugin::equip::expand_leveled_form_id(recruit_prime.form_id, 20, &index, &mut out);
+    eprintln!(
+        "[FNV/LVLI] {} (flags={:#04x}) at level 20 -> {:?}",
+        recruit_prime.editor_id, recruit_prime.flags, out
+    );
+    assert_eq!(
+        out.len(),
+        1,
+        "a bit-0x02-only tier ladder must resolve to exactly one item on FNV, \
+         same as on Skyrim (#3217); got {out:?}"
+    );
+}
