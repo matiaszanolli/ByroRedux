@@ -58,6 +58,12 @@ pub struct ObjectInstance {
 /// `Ref` builtin — the inner value is stored separately because it can
 /// be of any `BuiltinType` (when `type_ref.is_builtin()`) or a user
 /// object (carried as `Value::Object`).
+///
+/// Note for anyone porting a walker from Gibbed's reference implementation:
+/// Gibbed's `ReadPrimitiveRef` returns the inner value directly, with no
+/// wrapper. This `Ref` struct keeps `type_ref` alongside `inner` instead of
+/// unwrapping — a strict superset (no data loss), but one extra unwrap
+/// level a line-for-line port will miss (#2635).
 #[derive(Debug, Clone)]
 pub struct Ref {
     /// Type of the referent (negative = BuiltinType, non-negative = class).

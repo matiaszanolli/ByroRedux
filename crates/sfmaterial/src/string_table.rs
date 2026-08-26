@@ -18,9 +18,11 @@ impl StringTable {
         Self { bytes }
     }
 
-    /// Resolve a STRT offset. Empty string when `offset == 0` (Gibbed
-    /// treats negative as oob; we mirror that — vanilla CDB never
-    /// authors a negative offset).
+    /// Resolve a STRT offset — reads the NUL-terminated string starting
+    /// *at* `offset`, including `offset == 0` (matching Gibbed; a
+    /// synthetic fixture in `reader.rs` depends on this). Gibbed treats
+    /// negative as oob; we mirror that — vanilla CDB never authors a
+    /// negative offset.
     pub fn get(&self, offset: i32) -> Result<String> {
         if offset < 0 || (offset as usize) >= self.bytes.len() {
             return Err(Error::StringTableOob {
