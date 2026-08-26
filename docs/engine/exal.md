@@ -335,9 +335,21 @@ Per-game impls (the runtime source per the Q3 finding):
     full model and its LOD proxy never coexist — there is no z-fight to cull.
     Turning the marker into an active suppression means decoupling the full-detail
     radius from the streaming ring (reintroducing the #1866 overlap risk) and
-    needs real-game visual validation before it is enabled. What **is** live
-    (#2371 VWD follow-up): `lod.coverage` audits every resident marker instance
-    against the resident object-LOD quads on every reconcile
+    needs real-game visual validation before it is enabled.
+    **Correction (2026-08-26, #3307)**: radius decoupling isn't the only
+    obstacle. `object_lod.rs` spawns a `.bto` quad as one merged, per-quad
+    draw with no per-source-object identifiers — there is no hook to
+    suppress *one specific object's* contribution within an already-baked
+    quad at the granularity this marker was designed for. The only
+    technically available lever is coarser than per-object (hide the whole
+    quad once any full REFR inside it is resident), which pops out every
+    other, unrelated object in that quad — trading one visual regression for
+    another rather than fixing anything. A real per-object cull needs the
+    LOD bake (or its generation-time source data) to carry per-object
+    boundaries, a separate and larger investigation. Deliberately not built;
+    see #3307. What **is** live (#2371 VWD follow-up): `lod.coverage` audits
+    every resident marker instance against the resident object-LOD quads on
+    every reconcile
     (`LodCoverageStats::vwd_full_model_overlaps`, wired into `m-exteriors.sh`'s
     hard gate) — always 0 today, proving the ring-separation argument above
     holds on real traversals rather than only by construction, and the gate

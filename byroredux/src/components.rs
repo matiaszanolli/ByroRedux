@@ -192,6 +192,22 @@ impl Component for IsLodTerrain {
 /// before it can be enabled). This component materialises the signal so that
 /// work does not have to re-derive the parse→spawn plumbing. See #1889.
 ///
+/// **Correction (2026-08-26, #3307)**: radius decoupling turns out not to be
+/// the only obstacle. A per-record cull needs to suppress *this specific
+/// object's* contribution once its LOD proxy is active — but
+/// `object_lod.rs` spawns a `.bto` quad as one merged, per-quad draw with no
+/// BLAS and no per-source-object identifiers (`object_lod.rs:320-345`); the
+/// bake has no hook to attach a per-object suppression to at the granularity
+/// this marker was designed for. The only technically available lever is
+/// coarser than per-object — hide the entire quad once any full REFR inside
+/// it is resident — which pops out every *other*, unrelated object in that
+/// quad too: a new visual regression traded for the one this marker exists
+/// to prevent. Investigated and deliberately not built; see #3307 for the
+/// full writeup. A real per-object cull would need the LOD bake itself (or
+/// its generation-time source data) to carry per-object boundaries, which
+/// is its own separate, larger investigation, not a consequence of this
+/// component's design.
+///
 /// It does have a **telemetry** consumer, which is not the same thing: EX-10/11
 /// (#2371)'s `lod.coverage` audit queries every resident instance of this marker
 /// and checks its cell against the resident object-LOD quads, live, every
