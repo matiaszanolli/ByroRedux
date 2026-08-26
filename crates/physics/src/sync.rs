@@ -190,6 +190,34 @@ pub fn physics_sync_system(world: &World, dt: f32) {
     }
 }
 
+/// Register pending ECS collision rows in Rapier and refresh its query BVH.
+///
+/// This is the narrow pre-query bootstrap for cold-start spawn probing,
+/// cell-transition arrival grounding, and the exclusive `combat.approach`
+/// debug command. It deliberately does **not** push kinematics, apply
+/// buoyancy, step simulation, or pull dynamic transforms; callers that only
+/// need newly loaded colliders must not invoke a zero-dt full physics tick.
+///
+/// # Exclusivity
+///
+/// Although [`World`] uses interior mutability, this function writes
+/// `RapierHandles` and `PhysicsWorld`. Call it only while the scheduler is not
+/// running or from an exclusive system/command. Scheduled per-frame work must
+/// use [`physics_sync_system`] with its declared access set (#3267).
+pub fn register_newcomers_and_refresh_queries(world: &World) -> usize {
+    if world.try_resource::<PhysicsWorld>().is_none() {
+        return 0;
+    }
+
+    let newcomers = collect_newcomers(world);
+    let registered = newcomers.len();
+    if !newcomers.is_empty() {
+        register_newcomers(world, newcomers);
+    }
+    world.resource_mut::<PhysicsWorld>().update_query_pipeline();
+    registered
+}
+
 /// `BYRO_PROFILE` — per-phase timing breakdown.
 ///
 /// #2881 — read once per process, not once per frame. The previous
@@ -1222,7 +1250,7 @@ fn pull_dynamic(world: &World) {
 
 #[cfg(test)]
 mod phase_sync_tests {
-    use super::physics_sync_system;
+    use super::{physics_sync_system, register_newcomers_and_refresh_queries};
     use crate::components::RapierHandles;
     use crate::world::PhysicsWorld;
     use byroredux_core::ecs::components::collision::{CollisionShape, MotionType, RigidBodyData};
@@ -1299,6 +1327,36 @@ mod phase_sync_tests {
         let pw = world.resource::<PhysicsWorld>();
         let collider = pw.colliders.get(h.collider).expect("collider must exist");
         assert!(!collider.is_sensor());
+    }
+
+    /// #3267 — probe bootstrapping has a narrow API: register newcomers and
+    /// refresh Rapier's query BVH without running kinematic push, buoyancy,
+    /// simulation, or dynamic pull phases.
+    #[test]
+    fn newcomer_query_bootstrap_registers_and_refreshes_without_a_full_tick() {
+        let mut world = physics_world();
+        let entity = world.spawn();
+        world.insert(entity, Transform::IDENTITY);
+        world.insert(
+            entity,
+            GlobalTransform::new(Vec3::ZERO, Quat::IDENTITY, 1.0),
+        );
+        world.insert(entity, unit_box());
+        world.insert(entity, RigidBodyData::STATIC);
+
+        assert_eq!(register_newcomers_and_refresh_queries(&world), 1);
+        assert!(
+            world.query::<RapierHandles>().unwrap().get(entity).is_some(),
+            "bootstrap must attach the Rapier handle row"
+        );
+        assert_eq!(
+            world
+                .resource::<PhysicsWorld>()
+                .colliders_near_xz(0.0, 0.0, 0.0, 10.0)
+                .len(),
+            1,
+            "bootstrap must refresh the query BVH so probes see the collider immediately"
+        );
     }
 
     fn unit_box() -> CollisionShape {

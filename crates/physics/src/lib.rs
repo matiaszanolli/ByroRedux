@@ -33,9 +33,9 @@ pub use ragdoll::{
     build_ragdoll, RagdollBodySpec, RagdollConstraintSpec, RagdollJointSpec, RagdollSpec,
 };
 pub use sync::{
-    dump_spawn_collider_census, physics_sync_system, set_kinematic_translation,
-    set_linear_velocity, spawn_collider_census_report, SpawnCensusAuthoring, SpawnCensusEntry,
-    SpawnCensusProbe, SpawnProbeVerdict,
+    dump_spawn_collider_census, physics_sync_system, register_newcomers_and_refresh_queries,
+    set_kinematic_translation, set_linear_velocity, spawn_collider_census_report,
+    SpawnCensusAuthoring, SpawnCensusEntry, SpawnCensusProbe, SpawnProbeVerdict,
 };
 pub use water::{
     authored_wave_height_with_weather, buoyancy_force, nearest_surface_distance,

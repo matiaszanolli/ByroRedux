@@ -773,15 +773,10 @@ pub fn ground_character_body_at(world: &byroredux_core::ecs::World, destination:
         return false;
     };
 
-    // The destination cell's colliders were inserted into `ColliderSet` by the
-    // load, but the query pipeline only learns about them via a pipeline step —
-    // without this flush the probe sweeps an empty BVH and always misses. Same
-    // dt=0 register-then-flush the cold-start probe does.
-    byroredux_physics::physics_sync_system(world, 0.0);
-    {
-        let mut pw = world.resource_mut::<byroredux_physics::PhysicsWorld>();
-        pw.update_query_pipeline();
-    }
+    // Register only the newly loaded colliders and refresh the query BVH.
+    // Transition orchestration runs outside the scheduler, satisfying this
+    // helper's explicit exclusivity contract (#3267).
+    byroredux_physics::register_newcomers_and_refresh_queries(world);
 
     let floor_y = crate::scene::probe_walkable_floor_near(
         world,

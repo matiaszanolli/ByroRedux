@@ -156,11 +156,9 @@ fn find_walkable_combat_approach(
     target_pos: Vec3,
     controller: byroredux_physics::CharacterController,
 ) -> Option<(Vec3, f32)> {
-    byroredux_physics::physics_sync_system(world, 0.0);
-    {
-        let mut physics = world.resource_mut::<byroredux_physics::PhysicsWorld>();
-        physics.update_query_pipeline();
-    }
+    // DebugDrainSystem is Stage::Late exclusive, satisfying the narrow
+    // registration helper's exclusivity contract (#3267).
+    byroredux_physics::register_newcomers_and_refresh_queries(world);
 
     combat_approach_offsets().find_map(|offset| {
         let candidate = target_pos + offset;

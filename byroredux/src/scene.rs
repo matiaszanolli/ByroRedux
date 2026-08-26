@@ -1251,15 +1251,11 @@ pub(crate) fn setup_scene(
     let spawn_plan = if want_fly || (!want_player && (diagnostic_scene || !has_nif_content)) {
         None
     } else {
-        // `physics_sync_system` inserts the colliders into `ColliderSet`, but
-        // `QueryPipeline` only learns about them via `pipeline.step()`. dt=0
-        // registers newcomers without moving anything; the explicit BVH flush
-        // is what makes `cast_ray_down` see the cell architecture at all.
-        byroredux_physics::physics_sync_system(world, 0.0);
-        {
-            let mut pw = world.resource_mut::<byroredux_physics::PhysicsWorld>();
-            pw.update_query_pipeline();
-        }
+        // Scene setup owns `&mut World` before the scheduler starts. Register
+        // only pending colliders and refresh the query BVH for the ground
+        // probe; a zero-dt full physics tick would mutate unrelated phases
+        // without scheduler access analysis (#3267).
+        byroredux_physics::register_newcomers_and_refresh_queries(world);
         let exterior_foreground = streaming_slot
             .as_ref()
             .and_then(|state| state.last_player_grid);
