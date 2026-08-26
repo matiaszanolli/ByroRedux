@@ -304,17 +304,23 @@ impl ApplicationHandler for App {
                 .try_resource::<crate::interaction::ActionBindings>()
                 .and_then(|bindings| bindings.action_for_key(key))
         });
-        let save_output = match save_action {
+        let queued_save_action = match save_action {
             Some(crate::interaction::InputAction::Quicksave) => {
-                Some(crate::save_io::quicksave(&self.world))
+                Some(crate::save_io::PlayerSaveAction::Quicksave)
             }
             Some(crate::interaction::InputAction::Quickload) => {
-                Some(crate::save_io::quickload_latest(&self.world))
+                Some(crate::save_io::PlayerSaveAction::Quickload)
             }
             _ => None,
         };
-        if let Some(output) = save_output {
-            crate::surface_save_load_output(self.debug_ui.as_mut(), "player save action", output);
+        if let Some(action) = queued_save_action {
+            if let Err(error) = crate::save_io::queue_player_save_action(&self.world, action) {
+                crate::surface_save_load_output(
+                    self.debug_ui.as_mut(),
+                    action.context(),
+                    byroredux_core::console::CommandOutput::error(error),
+                );
+            }
             return;
         }
 
@@ -692,6 +698,11 @@ impl ApplicationHandler for App {
         // scheduler's camera systems have published this frame's Transform,
         // so a `save` triggered this frame records where the player stands.
         crate::save_io::capture_player_pose(&self.world);
+
+        // #3113 — execute F5/F9 and pause-menu requests only after the
+        // scheduler's parallel batch has joined. The drain itself drops its
+        // queue guard before entering the save registry's wide lock surface.
+        self.step_player_save_actions();
 
         // M45.1 — live save-load: reload the saved cell + overlay saved
         // form-id-keyed deltas. Runs alongside the other deferred drains,

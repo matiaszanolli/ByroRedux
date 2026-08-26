@@ -788,12 +788,26 @@ fn apply_debug_ui_outputs(
         studio_host::apply_command(world, command);
     }
     if outputs.quicksave {
-        let output = save_io::quicksave(world);
-        surface_save_load_output(debug_ui.as_deref_mut(), "pause menu quicksave", output);
+        if let Err(error) =
+            save_io::queue_player_save_action(world, save_io::PlayerSaveAction::Quicksave)
+        {
+            surface_save_load_output(
+                debug_ui.as_deref_mut(),
+                "pause menu quicksave",
+                byroredux_core::console::CommandOutput::error(error),
+            );
+        }
     }
     if outputs.quickload {
-        let output = save_io::quickload_latest(world);
-        surface_save_load_output(debug_ui.as_deref_mut(), "pause menu quickload", output);
+        if let Err(error) =
+            save_io::queue_player_save_action(world, save_io::PlayerSaveAction::Quickload)
+        {
+            surface_save_load_output(
+                debug_ui.as_deref_mut(),
+                "pause menu quickload",
+                byroredux_core::console::CommandOutput::error(error),
+            );
+        }
     }
     let mut settings_changed = false;
     for action in outputs.inventory_actions {

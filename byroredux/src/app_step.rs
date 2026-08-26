@@ -646,6 +646,14 @@ impl App {
         crate::save_io::execute_pending_save_loads(&mut self.world, ctx, &mut self.streaming);
     }
 
+    /// Drain player save/load input after `Scheduler::run` has joined all
+    /// parallel systems, then route the definitive result to the HUD/console.
+    pub(crate) fn step_player_save_actions(&mut self) {
+        for (action, output) in crate::save_io::execute_pending_player_save_actions(&self.world) {
+            crate::surface_save_load_output(self.debug_ui.as_mut(), action.context(), output);
+        }
+    }
+
     /// Drain any queued [`cell_loader::PendingCellTransition`] and
     /// dispatch the orchestrator. Runs once per frame after
     /// `step_streaming`. No-op on frames with no pending transition.

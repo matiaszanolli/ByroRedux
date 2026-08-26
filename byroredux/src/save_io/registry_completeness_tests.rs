@@ -331,6 +331,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("NormalMapHandle", "bindless GPU texture handle for the water normal-map path, rebuilt by the texture-upload path every load"),
         ("PendingCellTransitionSlot", "one-shot queued-transition slot, always present but empty except mid-transition"),
         ("PendingDeathReconciliations", "same-frame death handoff queue drained by the late exclusive reconciliation sink; canonical Dead state is saved separately"),
+        ("PendingPlayerSaveActions", "one-shot player save/load requests drained after the scheduler's parallel batch joins (#3113)"),
         ("PendingSaveLoadSlot", "one-shot queued-load slot (#1848/SAVE-05), empty except mid-drain — save/load plumbing itself, not save-worthy state"),
         ("SaveLoadNotifications", "one-shot player-feedback queue drained into the HUD/console before the next frame"),
         ("PersistentRefIndex", "lazily-rebuilt FormId->Entity cache scoped to the resident persistent CELL (EX-09/#2370), repopulated on demand by cell_loader::persistent_ref_index — same posture as CellRootIndex/NameIndex"),

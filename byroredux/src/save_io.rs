@@ -163,6 +163,50 @@ pub struct SaveLoadNotifications(pub Vec<String>);
 
 impl Resource for SaveLoadNotifications {}
 
+/// A player-facing save/load request that must execute only after the frame's
+/// scheduler has joined all parallel systems.
+///
+/// Input adapters (keyboard, native menus, and future SDK hosts) enqueue this
+/// small value instead of entering the save registry's wide lock surface
+/// directly. [`execute_pending_player_save_actions`] is the single executor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlayerSaveAction {
+    Quicksave,
+    Quickload,
+}
+
+impl PlayerSaveAction {
+    pub(crate) fn context(self) -> &'static str {
+        match self {
+            Self::Quicksave => "player quicksave",
+            Self::Quickload => "player quickload",
+        }
+    }
+}
+
+/// FIFO ingress for player save/load requests.
+///
+/// This is intentionally transient process state, not part of a save file.
+#[derive(Default)]
+pub struct PendingPlayerSaveActions(Vec<PlayerSaveAction>);
+
+impl Resource for PendingPlayerSaveActions {}
+
+/// Defer a player save/load request to the post-scheduler frame boundary.
+///
+/// Returning an error when boot has not installed the queue makes this usable
+/// by embedders without hiding a partially initialized SDK/runtime.
+pub fn queue_player_save_action(
+    world: &World,
+    action: PlayerSaveAction,
+) -> Result<(), &'static str> {
+    let Some(mut pending) = world.try_resource_mut::<PendingPlayerSaveActions>() else {
+        return Err("player save-action queue not installed");
+    };
+    pending.0.push(action);
+    Ok(())
+}
+
 fn notify_player(world: &World, message: impl Into<String>) {
     if let Some(mut notifications) = world.try_resource_mut::<SaveLoadNotifications>() {
         notifications.0.push(message.into());
@@ -664,10 +708,9 @@ fn validate_cinematic_entity_refs(world: &World) -> Vec<ValidationError> {
 
 pub struct SaveCommand;
 
-/// Player-facing quicksave entry point. This bypasses command lookup while
-/// deliberately sharing the exact validation and atomic-write implementation
-/// with the operator command.
-pub fn quicksave(world: &World) -> CommandOutput {
+/// Execute a quicksave after the scheduler has quiesced. Player input must use
+/// [`queue_player_save_action`] instead of calling this lock-wide operation.
+pub(crate) fn quicksave(world: &World) -> CommandOutput {
     SaveCommand.execute(world, "")
 }
 
@@ -682,13 +725,15 @@ impl ConsoleCommand for SaveCommand {
         // `registry` (SaveRegistry) stays held through `save_world`/`encode`
         // below, alongside the ~26 component-storage + ~7 resource read
         // locks `save_world`/`validate_world`/`validate_form_ids` take —
-        // the widest single-hold edge fan-out in the process. Safe today
-        // only because command dispatch (the sole caller of `execute`) runs
-        // on the exclusive `DebugDrainSystem` lane, so no parallel-lane
-        // system can ever form the other half of an ABBA cycle against it —
-        // same invariant as SCR-D6-NEW3-03 / #2126. Moving command dispatch
-        // off the exclusive lane, or adding a parallel system that also
-        // touches `SaveRegistry`, needs this re-derived. SAVE-D3-02 / #2154.
+        // the widest single-hold edge fan-out in the process. Production
+        // callers are constrained to quiescent lanes: remote operator command
+        // dispatch runs in the exclusive `DebugDrainSystem`; native-overlay
+        // command dispatch and the player-action drain both run after
+        // `Scheduler::run` has joined every parallel system. No live system
+        // can therefore form the other half of an ABBA cycle against this
+        // hold. New input/SDK integrations must enqueue through
+        // `queue_player_save_action`; moving execution onto a live scheduler
+        // lane needs this ordering re-derived. #3113 / #2154.
         let Some(registry) = world.try_resource::<SaveRegistry>() else {
             return CommandOutput::error("save registry not installed");
         };
@@ -894,7 +939,7 @@ pub(crate) fn command_output_is_failure(output: &CommandOutput) -> bool {
 }
 
 /// Queue the newest on-disk slot, matching conventional quickload behavior.
-pub fn quickload_latest(world: &World) -> CommandOutput {
+pub(crate) fn quickload_latest(world: &World) -> CommandOutput {
     let slots = world
         .try_resource::<SaveState>()
         .map(|state| disk::slots_by_recency(&state.dir))
@@ -920,6 +965,32 @@ pub fn quickload_latest(world: &World) -> CommandOutput {
     }
     rejected.push("Error: no decodable save slots available".to_string());
     CommandOutput::lines(rejected)
+}
+
+/// Execute queued player actions after the scheduler has joined.
+///
+/// The queue guard is dropped before either command starts, so it never joins
+/// the save registry/component lock set. FIFO order makes a quicksave followed
+/// by quickload deterministic within one frame.
+pub(crate) fn execute_pending_player_save_actions(
+    world: &World,
+) -> Vec<(PlayerSaveAction, CommandOutput)> {
+    let actions = {
+        let Some(mut pending) = world.try_resource_mut::<PendingPlayerSaveActions>() else {
+            return Vec::new();
+        };
+        std::mem::take(&mut pending.0)
+    };
+    actions
+        .into_iter()
+        .map(|action| {
+            let output = match action {
+                PlayerSaveAction::Quicksave => quicksave(world),
+                PlayerSaveAction::Quickload => quickload_latest(world),
+            };
+            (action, output)
+        })
+        .collect()
 }
 
 impl ConsoleCommand for LoadCommand {

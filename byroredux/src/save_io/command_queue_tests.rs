@@ -352,6 +352,33 @@ fn quicksave_shares_the_console_save_command_output_contract() {
 }
 
 #[test]
+fn player_save_actions_wait_for_the_quiescent_fifo_drain() {
+    let dir =
+        std::env::temp_dir().join(format!("byro_deferred_player_save_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut world = quicksave_test_world(dir.clone());
+    world.insert_resource(PendingPlayerSaveActions::default());
+
+    queue_player_save_action(&world, PlayerSaveAction::Quicksave).unwrap();
+    queue_player_save_action(&world, PlayerSaveAction::Quickload).unwrap();
+    assert!(
+        disk::list_slots(&dir).is_empty(),
+        "input adapters must not execute the wide save lock surface"
+    );
+
+    let outputs = execute_pending_player_save_actions(&world);
+    assert_eq!(outputs.len(), 2);
+    assert_eq!(outputs[0].0, PlayerSaveAction::Quicksave);
+    assert!(!command_output_is_failure(&outputs[0].1));
+    assert_eq!(outputs[1].0, PlayerSaveAction::Quickload);
+    assert!(!command_output_is_failure(&outputs[1].1));
+    assert_eq!(disk::list_slots(&dir), vec![0]);
+    assert_eq!(world.resource::<PendingSaveLoadSlot>().slot, 0);
+    assert!(execute_pending_player_save_actions(&world).is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn quickload_empty_errors_and_corrupt_newest_falls_back() {
     let dir = std::env::temp_dir().join(format!("byro_quickload_fallback_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
