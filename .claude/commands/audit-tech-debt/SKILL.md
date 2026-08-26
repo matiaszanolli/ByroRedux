@@ -117,7 +117,7 @@ Tech-debt findings default to **LOW** (see `_audit-severity.md`). Promote only o
      echo "TODO/FIXME/HACK/XXX:   $(grep -RInE '(TODO|FIXME|HACK|XXX)\b' crates byroredux | wc -l)"
      echo "allow(dead_code):      $(grep -RInE 'allow\(dead_code\)' crates byroredux | wc -l)"
      echo "unimplemented!/todo!(): $(grep -RInE 'unimplemented!|todo!\(\)' crates byroredux | wc -l)"
-     echo "#[ignore] tests:        $(grep -RIn '#\[ignore\]' . | wc -l)"
+     echo "#[ignore] tests:        $(grep -RIn '^\s*#\[ignore\]' --include='*.rs' crates byroredux | wc -l)"
      echo "files >2000 production LOC: $(for f in $(find crates byroredux -name '*.rs'); do echo "$(prod_loc "$f")"; done | awk '$1>2000' | wc -l)"
      echo "test files >2000 total LOC (lower priority, separate bucket): $(find crates byroredux -name '*.rs' -exec wc -l {} + | awk '$1>2000 && $2!="total"' | wc -l | xargs -I{} echo {})"
    } > /tmp/audit/tech-debt/baseline.txt
@@ -125,7 +125,10 @@ Tech-debt findings default to **LOW** (see `_audit-severity.md`). Promote only o
    Orientation only (will drift — re-run, never quote): the marker total runs ~20,
    `unimplemented!/todo!()` is currently **0** (the engine prefers explicit
    fallbacks over panics — a fresh `todo!()` is therefore notable), `#[ignore]`
-   runs in the mid-hundreds (mostly Vulkan/smoke gating, not debt).
+   runs in the low hundreds when scoped to `.rs` sources under `crates`/`byroredux`
+   (mostly Vulkan/smoke gating, not debt) — do not compare against a raw
+   whole-repo grep, which also matches markdown prose mentioning the literal
+   string `#[ignore]` (#2262).
    The **production**->2000-LOC set (Dim 1's actual subject, re-verified
    2026-08-19 with *prod_loc*) is currently 4 files: `context/mod.rs`
    (~4060), `context/draw.rs` (~3490 — most of its file-total length, not
@@ -304,8 +307,12 @@ grep -RInE '(TODO|HACK)' crates/renderer/shaders/
 - Does it name a milestone (M21, M29, …) now complete per ROADMAP.md?
 - `// TODO: implement` on a path now reachable from a shipped CLI flag → promote (see severity table).
 - **False positives to exclude**: `XXXX` is the ESM extended-size sub-record tag
-  (`crates/plugin/src/esm/reader.rs`, `records/misc/magic.rs`) — protocol, not a
-  marker. `// FIXME note` referencing a *reference implementation's* FIXME (e.g.
+  — protocol, not a marker. Key this on comment content ("references the ESM
+  `XXXX` extended-size escape"), not an enumerated file list — new legitimate
+  consumers appear over time (past sites: `esm/reader.rs`,
+  `esm/cell/wrld.rs`; `records/misc/magic.rs` uses the literal `*b"XXXX"` byte
+  pattern as an arbitrary-wrong-type test sentinel, same false-positive class).
+  `// FIXME note` referencing a *reference implementation's* FIXME (e.g.
   `crates/bgsm/src/bgem.rs`) is documentation of upstream, not our debt.
 - **Must-not-delete**: the third-party attribution block atop
   `crates/renderer/shaders/triangle.frag` (GLSL-PathTracer MIT notice + Burley
@@ -374,7 +381,7 @@ cargo machete 2>/dev/null || echo "cargo machete not installed — scan Cargo.to
 ### Dimension 9: Test Hygiene
 **Discovery**:
 ```bash
-grep -RIn '#\[ignore\]' . | grep -v target/
+grep -RIn '^\s*#\[ignore\]' --include='*.rs' crates byroredux
 ```
 Most `#[ignore]`s gate Vulkan/smoke tests that need a GPU or on-disk game data —
 those are **not** debt. Triage the rest:
