@@ -45,7 +45,7 @@ Caustics (M22):  crates/renderer/src/vulkan/caustic.rs       (#321 Option A: per
 Water Caustic:   crates/renderer/src/vulkan/water_caustic.rs (#1210/#1255 Phase C: per-FIF R32_UINT accumulator for water-side caustics)
 GPU Timers:      crates/renderer/src/vulkan/gpu_timers.rs
 egui Pass:       crates/renderer/src/vulkan/egui_pass.rs      (egui overlay render pass; feeds debug-ui)
-Volumetrics(M55):crates/renderer/src/vulkan/volumetrics.rs + volumetrics/ (noise.rs)  (160×90×128 froxel grid, inject + integrate compute, single-ray TLAS shadow, HG phase)
+Volumetrics(M55):crates/renderer/src/vulkan/volumetrics.rs + volumetrics/ (noise.rs)  (render-extent-derived froxel grid configured by `VolumetricsConfig`; size the live per-FIF image set from `VolumetricsPipeline::new`; inject + integrate compute, single-ray TLAS shadow, HG phase)
 ReSTIR-DI:       crates/renderer/src/vulkan/restir.rs      (ReservoirBuffers — screen-sized per-FIF reservoir SSBOs, RESERVOIR_STRIDE = 32 B, set-1 bindings 16/17 ping-pong; the shadow-reservoir half of Dimension 1/2 of /audit-renderer)
 Bloom (M58):     crates/renderer/src/vulkan/bloom.rs        (5-mip down + 4-mip up pyramid, B10G11R11_UFLOAT, 4-tap bilinear)
 Water (M38):     crates/renderer/src/vulkan/water.rs        (WaterPipeline: vertex displacement + Fresnel, RT reflection/refraction against TLAS)
