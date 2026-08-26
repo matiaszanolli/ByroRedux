@@ -293,6 +293,14 @@ impl<T: Component<Storage = Self>> DynStorage for PackedStorage<T> {
         // the dirty list — the consumers re-derive from the (now empty)
         // population on the next frame.
         self.dirty.clear();
+        // #2395 — mirror SparseSetStorage::clear_erased (#2148): `clear()`
+        // alone keeps capacity, so a save-load that replaces the whole
+        // entity population would otherwise hand back nothing. The storage
+        // is known empty here and the next population starts from scratch,
+        // so a full release is unambiguously right.
+        self.entities.shrink_to_fit();
+        self.data.shrink_to_fit();
+        self.dirty.shrink_to_fit();
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -835,5 +843,51 @@ mod tests {
         }
         s.remove_entities_erased(&[2u32]);
         assert!(s.take_dirty().is_empty());
+    }
+
+    // ── clear_erased capacity release (#2395) ───────────────────────────
+
+    #[test]
+    fn clear_erased_releases_capacity() {
+        // Mirror of SparseSetStorage::clear_erased_releases_capacity —
+        // #2395 found PackedStorage's clear_erased dropped only length,
+        // keeping the pre-load peak's capacity alive until the next batch
+        // removal re-fit it.
+        let mut s = PackedStorage::<Transform>::default();
+        for i in 0..1_000u32 {
+            s.insert(
+                i,
+                Transform {
+                    x: i as f32,
+                    y: 0.0,
+                    z: 0.0,
+                },
+            );
+        }
+        assert!(s.entities.capacity() >= 1_000);
+        assert!(s.data.capacity() >= 1_000);
+
+        s.clear_erased();
+
+        assert_eq!(s.entities.len(), 0);
+        assert_eq!(
+            s.entities.capacity(),
+            0,
+            "clear() alone keeps capacity — a save-load would hand back nothing",
+        );
+        assert_eq!(s.data.capacity(), 0);
+    }
+
+    #[test]
+    fn clear_erased_releases_dirty_capacity_for_tracked_component() {
+        let mut s = PackedStorage::<Tracked>::default();
+        for i in 0..1_000u32 {
+            s.insert(i, Tracked(i));
+        }
+        assert!(s.dirty.capacity() >= 1_000);
+
+        s.clear_erased();
+
+        assert_eq!(s.dirty.capacity(), 0);
     }
 }

@@ -171,6 +171,15 @@ impl<T: Component<Storage = Self>> DynStorage for SparseSetStorage<T> {
 
     fn remove_entities_erased(&mut self, entities: &[EntityId]) {
         debug_assert!(entities.windows(2).all(|pair| pair[0] < pair[1]));
+        // #2397 — the one optimization this override exists to add over the
+        // trait default: skip the batch entirely when this storage holds no
+        // components at all. An exterior unload fans thousands of victims to
+        // every registered storage, and most `SparseSetStorage<T>` instances
+        // hold none of them (147 sparse component types vs. 11 packed), so
+        // this turns a guaranteed O(victims) empty-storage probe into O(1).
+        if self.dense.is_empty() {
+            return;
+        }
         for &entity in entities {
             <Self as ComponentStorage<T>>::remove(self, entity);
         }
@@ -441,5 +450,40 @@ mod sparse_footprint_tests {
         );
         assert_eq!(s.dense.capacity(), 0);
         assert_eq!(s.data.capacity(), 0);
+    }
+
+    // ── remove_entities_erased early-out (#2397) ────────────────────────
+
+    #[test]
+    fn remove_entities_erased_removes_every_victim() {
+        let mut s = SparseSetStorage::<Tag>::default();
+        for i in 0..5u32 {
+            s.insert(i, Tag(i));
+        }
+        let victims = [1u32, 3];
+        s.remove_entities_erased(&victims);
+
+        assert_eq!(s.len(), 3);
+        assert!(s.get(1).is_none());
+        assert!(s.get(3).is_none());
+        assert_eq!(s.get(0).unwrap().0, 0);
+        assert_eq!(s.get(2).unwrap().0, 2);
+        assert_eq!(s.get(4).unwrap().0, 4);
+    }
+
+    #[test]
+    fn remove_entities_erased_on_empty_storage_is_a_no_op() {
+        // #2397 — the early-out this override exists to add: a storage that
+        // holds none of the victims (the common case during an exterior
+        // unload, where most `SparseSetStorage<T>` types are irrelevant to
+        // the despawned batch) must return without touching `sparse`/`dense`
+        // at all, not walk the victim slice probing an empty dense array.
+        let mut s = SparseSetStorage::<Tag>::default();
+        let victims = [10u32, 20, 30];
+        s.remove_entities_erased(&victims);
+
+        assert_eq!(s.len(), 0);
+        assert!(s.dense.is_empty());
+        assert!(s.sparse.is_empty(), "empty storage must stay untouched, not grow `sparse` to probe absent victims");
     }
 }
