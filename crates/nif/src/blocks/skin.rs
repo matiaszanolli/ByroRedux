@@ -6,7 +6,7 @@
 use crate::impl_ni_object;
 use crate::stream::NifStream;
 use crate::types::{BlockRef, NiTransform};
-use crate::version::NifVersion;
+use crate::version::{bsver, NifVersion};
 use std::io;
 
 // ── NiSkinInstance ───────────────────────────────────────────────────
@@ -177,7 +177,8 @@ pub struct SkinPartitionEntry {
 }
 
 /// Skyrim SE+ packed-vertex global buffer that fronts the partition
-/// list when `bsver in [100, 130)`. The buffer holds **all** mesh
+/// list when `bsver` is in the half-open
+/// `bsver::SKYRIM_SE..bsver::FALLOUT4` range. The buffer holds **all** mesh
 /// vertices in the same packed format `BsTriShape` uses inline; each
 /// `SkinPartitionEntry::vertex_map` translates partition-local indices
 /// into this global array. Pre-#559 the SSE branch in [`NiSkinPartition::parse`]
@@ -207,9 +208,9 @@ pub struct SseSkinGlobalBuffer {
 pub struct NiSkinPartition {
     pub partitions: Vec<SkinPartitionEntry>,
     /// Skyrim SE+ global packed-vertex buffer. `Some` when the parsed
-    /// NIF was Skyrim SE / SSE (bsver in [100, 130)); `None` for legacy
-    /// FNV/FO3/Oblivion partitions where geometry stays inline on the
-    /// shape. See [`SseSkinGlobalBuffer`] and #559.
+    /// NIF was Skyrim SE / SSE (`bsver::SKYRIM_SE..bsver::FALLOUT4`);
+    /// `None` for legacy FNV/FO3/Oblivion partitions where geometry stays
+    /// inline on the shape. See [`SseSkinGlobalBuffer`] and #559.
     pub global_vertex_data: Option<SseSkinGlobalBuffer>,
 }
 
@@ -217,13 +218,13 @@ impl NiSkinPartition {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let num_partitions = stream.read_u32_le()?;
 
-        // SSE (bsver in [100, 130)): global vertex data before partitions.
-        // The variant classifier maps BSVER 101-129 to SkyrimSE; the exact
-        // `bsver == crate::version::bsver::SKYRIM_SE` check here dropped the SSE-specific data for every
-        // minor above 100, desynchronising the stream on all subsequent
-        // partition reads. See #126 / audit NIF-206.
+        // SSE (`SKYRIM_SE..FALLOUT4`): global vertex data before partitions.
+        // The variant classifier maps every value in the named half-open range
+        // to SkyrimSE; the old exact `bsver == bsver::SKYRIM_SE` check dropped
+        // SSE-specific data for every later minor, desynchronising all
+        // subsequent partition reads. See #126 / audit NIF-206.
         let bsver = stream.bsver();
-        let is_sse = (100..130).contains(&bsver);
+        let is_sse = (bsver::SKYRIM_SE..bsver::FALLOUT4).contains(&bsver);
         // SSE skin partitions store every mesh vertex in this global
         // packed buffer; per-partition `vertex_map` arrays index into
         // it. Capture (don't skip) so the importer can reconstruct the
@@ -343,7 +344,7 @@ impl NiSkinPartition {
                 let _global_vb = stream.read_byte_bool()?;
             }
 
-            // SSE (bsver in [100, 130)): per-partition vertex desc + triangles copy.
+            // SSE (`SKYRIM_SE..FALLOUT4`): per-partition vertex desc + triangles copy.
             // Same reasoning as the global gate above (#126 / audit NIF-206).
             if is_sse {
                 let _vertex_desc = stream.read_u64_le()?;
@@ -677,13 +678,13 @@ mod tests {
     }
 
     /// Regression: #126 / audit NIF-206 — SSE-specific partition fields
-    /// must be consumed for bsver == crate::version::bsver::SKYRIM_SE AND for the [101, 130) gap range
-    /// (the variant classifier maps those to `SkyrimSE`). Previously
-    /// gated on `bsver == crate::version::bsver::SKYRIM_SE` exactly, so any minor above 100 produced
-    /// a stream desync on the first partition.
+    /// must be consumed at `bsver::SKYRIM_SE` and throughout the gap up to
+    /// `bsver::FALLOUT4` (the variant classifier maps those values to
+    /// `SkyrimSE`). Previously gated on exact equality with `SKYRIM_SE`, so
+    /// any later minor produced a stream desync on the first partition.
     #[test]
     fn skin_partition_sse_100_consumes_sse_fields() {
-        let header = make_sse_header(100);
+        let header = make_sse_header(bsver::SKYRIM_SE);
         let bytes = sse_skin_partition_bytes();
         let mut stream = NifStream::new(&bytes, &header);
         let part = NiSkinPartition::parse(&mut stream).unwrap();
@@ -705,8 +706,8 @@ mod tests {
 
     #[test]
     fn skin_partition_sse_129_consumes_sse_fields() {
-        // Upper edge of the [100, 130) SSE range.
-        let header = make_sse_header(129);
+        // Upper edge of the named SSE range.
+        let header = make_sse_header(bsver::FALLOUT4 - 1);
         let bytes = sse_skin_partition_bytes();
         let mut stream = NifStream::new(&bytes, &header);
         let part = NiSkinPartition::parse(&mut stream).unwrap();
@@ -720,7 +721,7 @@ mod tests {
     /// buffer carries 3 vertices × 16-byte stride.
     #[test]
     fn skin_partition_sse_captures_global_vertex_buffer() {
-        let header = make_sse_header(100);
+        let header = make_sse_header(bsver::SKYRIM_SE);
         let mut d = Vec::new();
         // num_partitions = 1
         d.extend_from_slice(&1u32.to_le_bytes());
@@ -765,7 +766,7 @@ mod tests {
     /// circuit reconstruction. Locks the negative branch.
     #[test]
     fn skin_partition_sse_zero_data_size_leaves_global_buffer_none() {
-        let header = make_sse_header(100);
+        let header = make_sse_header(bsver::SKYRIM_SE);
         let bytes = sse_skin_partition_bytes();
         let mut stream = NifStream::new(&bytes, &header);
         let part = NiSkinPartition::parse(&mut stream).unwrap();
