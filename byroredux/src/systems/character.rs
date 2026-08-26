@@ -903,6 +903,15 @@ fn player_water_state(
     pos: Vec3,
     half_span: f32,
 ) -> Option<(f32, f32, Option<WaterFlow>, f32)> {
+    // Frame-global inputs are sampled once before any water storage guard is
+    // acquired. Besides avoiding one resource re-lock per plane, this keeps
+    // the player path aligned with apply_buoyancy_with_scratch's
+    // resource-snapshot-before-storage discipline (#3265).
+    let time_secs = world.try_resource::<TotalTime>().map(|time| time.0);
+    let (weather_scroll, wind_wave_scale) = time_secs
+        .map(|time| byroredux_physics::weather_wave_adjustment(world, time))
+        .unwrap_or(([0.0; 2], 1.0));
+
     let (Some(wq), Some(vq)) = (world.query::<WaterPlane>(), world.query::<WaterVolume>()) else {
         return None;
     };
@@ -921,15 +930,12 @@ fn player_water_state(
         {
             continue;
         }
-        let wave_height = world
-            .try_resource::<TotalTime>()
+        let wave_height = time_secs
             .map(|time| {
-                let (weather_scroll, wind_wave_scale) =
-                    byroredux_physics::weather_wave_adjustment(world, time.0);
                 byroredux_physics::authored_wave_height_with_weather(
                     &plane.material,
                     pos,
-                    time.0,
+                    time,
                     weather_scroll,
                     wind_wave_scale,
                 )
@@ -1154,6 +1160,39 @@ mod tests {
         }
 
         camera_follow_system(&world, 1.0 / 60.0);
+    }
+
+    /// #3265 regression guard: weather inputs are frame-global, so their
+    /// resource locks belong before water-storage acquisition and the weather
+    /// adjustment must not move back into the per-plane loop.
+    #[test]
+    fn player_water_state_samples_weather_once_before_water_queries() {
+        let src = include_str!("character.rs");
+        let fn_start = src
+            .find("fn player_water_state(")
+            .expect("player_water_state must exist");
+        let fn_end = src[fn_start..]
+            .find("\n/// OpenMW's `swimlevel")
+            .map(|off| fn_start + off)
+            .expect("swimlevel docs must follow player_water_state");
+        let body = &src[fn_start..fn_end];
+
+        let adjustment = body
+            .find("byroredux_physics::weather_wave_adjustment")
+            .expect("player water sampling must include weather adjustment");
+        let water_query = body
+            .find("world.query::<WaterPlane>()")
+            .expect("player water sampling must query WaterPlane");
+        assert!(
+            adjustment < water_query,
+            "weather adjustment must run before water storage guards are acquired"
+        );
+        assert_eq!(
+            body.matches("byroredux_physics::weather_wave_adjustment")
+                .count(),
+            1,
+            "weather adjustment must be sampled exactly once per player_water_state call"
+        );
     }
     use byroredux_core::ecs::components::water::WaterMaterial;
 
