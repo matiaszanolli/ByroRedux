@@ -463,6 +463,11 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
             (0.0, false)
         };
 
+    // Canonical weather-pair order: WeatherDataRes →
+    // WeatherTransitionRes. The `wd` guard stays live through the target
+    // samples below, so every nested transition read must follow that
+    // direction (#3263). The reverse-order promotion helper snapshots and
+    // explicitly drops its transition guard before touching WeatherDataRes.
     let Some(wd) = world.try_resource::<WeatherDataRes>() else {
         // #1034 / REN-D15-NEW-15 — no WTHR record loaded for this
         // exterior cell. Without this branch, `CellLightingRes`
@@ -824,6 +829,10 @@ pub(crate) fn promote_weather_transition_target(world: &World) {
     let tr_target_wind = tr.target.wind_speed;
     let tr_target_precipitation = tr.target.precipitation;
     let tr_target_dalc = tr.target.skyrim_dalc_per_tod;
+    // Lock-order boundary (#3263): weather_system holds WeatherDataRes while
+    // reading WeatherTransitionRes. Do not move the WeatherDataRes write
+    // above this drop or borrow `tr.target` through it; either change would
+    // create the reverse edge and close a two-resource cycle.
     drop(tr);
     if let Some(mut wd) = world.try_resource_mut::<WeatherDataRes>() {
         wd.sky_colors = new_sky;
