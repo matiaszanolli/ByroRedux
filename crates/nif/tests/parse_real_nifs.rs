@@ -1,7 +1,10 @@
 //! Per-game NIF parse-rate integration tests.
 //!
-//! These tests walk a real game's mesh archive, parse every `.nif`, and
-//! assert that at least `MIN_SUCCESS_RATE` of them parse without error.
+//! These tests walk **every** mesh-bearing archive a game ships (#3041 —
+//! `Game::mesh_archives`, not just the primary one), parse every NIF entry
+//! in each — `.nif`, plus the renamed distant-LOD `.bto`/`.btr` (#2587) —
+//! and assert that at least `MIN_SUCCESS_RATE` of them parse without error.
+//! A failure names the worst archive so a red build says which one regressed.
 //! They are `#[ignore]`d by default because they require game data and
 //! run for several seconds. Opt in with:
 //!
@@ -14,7 +17,10 @@
 
 mod common;
 
-use common::{open_ba2_by_name, open_mesh_archive, parse_all_nifs_in_archive, Game};
+use common::{
+    open_all_mesh_archives, open_ba2_by_name, open_mesh_archive, parse_all_nifs_in_archive, Game,
+    ParseStats,
+};
 
 /// Acceptance threshold per N23.10 + ROADMAP. Gates on the
 /// **recoverable** rate (clean + NiUnknown-recovered + truncated) so a
@@ -38,33 +44,87 @@ use common::{open_ba2_by_name, open_mesh_archive, parse_all_nifs_in_archive, Gam
 /// loosening the vanilla gate. See issue #487.
 const MIN_RECOVERABLE_RATE: f64 = 1.0;
 
+/// Walk **every** mesh-bearing archive for `game`, not just the primary one.
+///
+/// #3041 — this gate used to open `game.mesh_archive()` alone. On FNV that is
+/// `Fallout - Meshes.bsa`: 14,881 NIFs out of a corpus that also ships four
+/// story DLC, four pre-order packs and the 1.4 `Update.bsa`. The gate that
+/// certifies "FNV NIF parse rate 100% clean" was measuring a fraction of the
+/// content it claimed, and a parser change breaking only DLC assets — entirely
+/// plausible, since DLC ships later-authored content — would not have turned it
+/// red. `Game::mesh_archives()` already enumerated the full set for the
+/// baseline harnesses (#2334); only this gate had not been moved over.
+///
+/// Per-archive attribution is the point of the loop rather than one merged
+/// walk: a failure has to name the archive that regressed, or the widening
+/// just makes the red build harder to diagnose than the narrow one was.
 fn run_game(game: Game, limit: Option<usize>) {
-    let Some(archive) = open_mesh_archive(game) else {
-        return; // Skip if game data not available — common::open_mesh_archive prints the reason.
+    let Some(archives) = open_all_mesh_archives(game) else {
+        return; // Skip if game data not available — common::open_all_mesh_archives prints the reason.
     };
 
-    eprintln!(
-        "[{}] opened {} ({} files)",
-        game.label(),
-        game.mesh_archive(),
-        archive.file_count()
-    );
+    let mut totals = ParseStats::default();
+    let mut worst: Option<(&str, f64, usize)> = None;
 
-    let stats = parse_all_nifs_in_archive(&archive, limit);
-    stats.print_summary(game.label());
+    for (name, archive) in &archives {
+        eprintln!(
+            "[{}] opened {} ({} files)",
+            game.label(),
+            name,
+            archive.file_count()
+        );
+
+        // `limit` is a per-archive cap: it exists so a smoke run can bound
+        // work, and bounding it globally would silently stop walking the
+        // later archives entirely — the exact blind spot this fix closes.
+        let stats = parse_all_nifs_in_archive(archive, limit);
+        eprintln!(
+            "[{}/{}] {} NIFs, {} clean, {} truncated, {} failed ({:.2}% recoverable)",
+            game.label(),
+            name,
+            stats.total,
+            stats.clean,
+            stats.truncated.len(),
+            stats.failures.len(),
+            stats.recoverable_rate() * 100.0,
+        );
+
+        // Track the worst archive so the assertion below can name it.
+        if stats.total > 0 {
+            let rate = stats.recoverable_rate();
+            if worst.is_none_or(|(_, worst_rate, _)| rate < worst_rate) {
+                worst = Some((name, rate, stats.failures.len()));
+            }
+        }
+
+        totals.total += stats.total;
+        totals.clean += stats.clean;
+        totals.truncated.extend(stats.truncated);
+        totals.failures.extend(stats.failures);
+    }
+
+    totals.print_summary(game.label());
 
     assert!(
-        stats.total > 0,
-        "[{}] expected at least one NIF in archive",
-        game.label()
+        totals.total > 0,
+        "[{}] expected at least one NIF across {} archive(s)",
+        game.label(),
+        archives.len(),
     );
     assert!(
-        stats.recoverable_rate() >= MIN_RECOVERABLE_RATE,
-        "[{}] parse recoverable rate {:.2}% is below the {:.0}% threshold ({} hard failures)",
+        totals.recoverable_rate() >= MIN_RECOVERABLE_RATE,
+        "[{}] parse recoverable rate {:.2}% across {} archive(s) is below the {:.0}% \
+         threshold ({} hard failures); worst archive: {}",
         game.label(),
-        stats.recoverable_rate() * 100.0,
+        totals.recoverable_rate() * 100.0,
+        archives.len(),
         MIN_RECOVERABLE_RATE * 100.0,
-        stats.failures.len()
+        totals.failures.len(),
+        match worst {
+            Some((name, rate, fails)) =>
+                format!("{name} at {:.2}% ({fails} hard failures)", rate * 100.0),
+            None => "none".to_string(),
+        },
     );
 }
 
