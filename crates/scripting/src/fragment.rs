@@ -95,6 +95,23 @@ pub struct QuestStageFragments {
     /// effect (`SomeOtherQuest.SetStage(..)` via a `Quest Property`)
     /// resolve at dispatch time instead of always skipping.
     vmad: Arc<HashMap<QuestFormId, ScriptInstanceData>>,
+    /// Whether the QUST walk that fills the two maps above has already run
+    /// for this session.
+    ///
+    /// #3161 — callers used to gate the walk on `is_empty()`, which reads
+    /// only `map`. But the walk fills `map` and `vmad` independently:
+    /// `insert_vmad` runs for every scripted quest before any `.pex` is
+    /// resolved, while `insert` runs only on a successful lowering. A
+    /// session where the VMAD side populates but no `QF_` `.pex` resolves —
+    /// a wrong or missing `--scripts-bsa`, exactly what the smoke harness's
+    /// WARN text anticipates — leaves `map` empty forever, so the full
+    /// 845-quest walk, with a per-quest `HashMap` build and an archive
+    /// `extract_pex` per script name, re-ran on every exterior cell
+    /// `begin` for the rest of the session. A dedicated latch also stays
+    /// correct in the legitimately-empty cases (pre-Papyrus game, no script
+    /// archive) where both maps end empty and `is_empty()` would re-walk
+    /// just the same.
+    populated: bool,
 }
 
 impl Resource for QuestStageFragments {}
@@ -132,6 +149,18 @@ impl QuestStageFragments {
 
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
+    }
+
+    /// Whether the QUST fragment walk has already run this session — see
+    /// [`Self::populated`]. Callers deciding whether to walk must use this
+    /// rather than [`Self::is_empty`].
+    pub fn is_populated(&self) -> bool {
+        self.populated
+    }
+
+    /// Latch the walk as done, whatever it found. Idempotent.
+    pub fn mark_populated(&mut self) {
+        self.populated = true;
     }
 }
 

@@ -86,6 +86,20 @@ pub(crate) fn populate_quest_fragments(
     world: &mut byroredux_core::ecs::world::World,
     index: &byroredux_plugin::esm::records::EsmIndex,
 ) {
+    // #3161 — self-guard rather than trusting each call site to guard.
+    // The walk is idempotent but not cheap (845 quests on Skyrim, a
+    // per-quest `HashMap` build and an archive `extract_pex` per script
+    // name), and it now has more than one caller.
+    if world
+        .resource::<byroredux_scripting::QuestStageFragments>()
+        .is_populated()
+    {
+        return;
+    }
+    world
+        .resource_mut::<byroredux_scripting::QuestStageFragments>()
+        .mark_populated();
+
     // Fast-out before any per-quest work when no script archive was
     // supplied (the common mesh-only / FO3-FNV case).
     let have_archive = world
@@ -302,6 +316,15 @@ pub(crate) fn populate_scene_runtime(
     world: &mut byroredux_core::ecs::world::World,
     index: &byroredux_plugin::esm::records::EsmIndex,
 ) {
+    // #3010 / #3161 — M47.2 keystone. Lives here, alongside its siblings,
+    // rather than at each loader's call site: #3010 was a HIGH that survived
+    // every prior audit precisely because the interior loader called it and
+    // the exterior loader did not, and nothing pinned either call. Fixing
+    // that by adding a *second* external call site left the drift surface
+    // unchanged in kind and one site wider. Both loader entry points already
+    // funnel through this function, so this is the one place that cannot
+    // drift from the three siblings below.
+    populate_quest_fragments(world, index);
     crate::inventory::install_catalog(world, index);
     let imad_count = byroredux_scripting::install_image_space_modifiers(
         world,
@@ -703,5 +726,73 @@ mod tests {
                 .is_some(),
             "NPC_.PKID packages must remain available even when no SCEN references them"
         );
+    }
+
+    /// #3161 — pins that the M47.2 quest-fragment walk is actually reached
+    /// from `populate_scene_runtime`.
+    ///
+    /// #3010 (a HIGH) was that the interior loader called the walk and the
+    /// exterior loader did not; it survived every prior audit because
+    /// nothing pinned the call at all. The first fix added a second external
+    /// call site, which left that condition intact and one site wider — a
+    /// single refactor of the streaming job from silently reverting. Folding
+    /// the walk into `populate_scene_runtime` is only half the fix; this is
+    /// the half that fails if it is lifted back out.
+    ///
+    /// The observable is the populated latch rather than a lowered fragment,
+    /// because lowering a real `QF_` body needs a script archive and game
+    /// data. The latch is set by `populate_quest_fragments` and by nothing
+    /// else, so it is a faithful witness that the call happened.
+    #[test]
+    fn populate_scene_runtime_runs_the_quest_fragment_walk() {
+        let mut world = byroredux_core::ecs::World::new();
+        byroredux_scripting::register(&mut world);
+        let index = byroredux_plugin::esm::records::EsmIndex::default();
+
+        assert!(
+            !world
+                .resource::<byroredux_scripting::QuestStageFragments>()
+                .is_populated(),
+            "precondition: the walk has not run yet"
+        );
+
+        populate_scene_runtime(&mut world, &index);
+
+        assert!(
+            world
+                .resource::<byroredux_scripting::QuestStageFragments>()
+                .is_populated(),
+            "populate_scene_runtime must reach populate_quest_fragments — without it \
+             exterior launches silently lose every quest-stage handler (#3010)"
+        );
+    }
+
+    /// #3161 — the walk latches on a dedicated flag, not on `is_empty()`.
+    ///
+    /// `is_empty()` reads only the `map` half of a resource the walk fills in
+    /// two independent halves, so a session whose VMAD side populated but
+    /// whose `.pex` side resolved nothing — a wrong or missing
+    /// `--scripts-bsa` — re-ran the whole 845-quest walk on every exterior
+    /// cell `begin`. Both maps are empty here, the case where `is_empty()`
+    /// stays true forever, so a regression to that guard makes the second
+    /// call re-walk and this assertion fail.
+    #[test]
+    fn the_quest_fragment_walk_does_not_repeat_when_it_found_nothing() {
+        let mut world = byroredux_core::ecs::World::new();
+        byroredux_scripting::register(&mut world);
+        let index = byroredux_plugin::esm::records::EsmIndex::default();
+
+        populate_quest_fragments(&mut world, &index);
+        let frags = world.resource::<byroredux_scripting::QuestStageFragments>();
+        assert!(frags.is_empty(), "nothing to lower without an archive");
+        assert!(frags.is_populated(), "but the walk is latched as done");
+        drop(frags);
+
+        // A second call must early-out on the latch, not on `is_empty()` —
+        // which is still true and would wave it straight back through.
+        populate_quest_fragments(&mut world, &index);
+        assert!(world
+            .resource::<byroredux_scripting::QuestStageFragments>()
+            .is_populated());
     }
 }
