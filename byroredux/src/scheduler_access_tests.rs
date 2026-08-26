@@ -19,24 +19,29 @@
 const MAIN_RS: &str = include_str!("main.rs");
 const BOOT_RS: &str = include_str!("boot.rs");
 
-/// #1785 / CONC-D3-02 — `apply_color_channels` writes all five
-/// `ColorTarget` color-sink storages (Diffuse, Ambient, Specular,
-/// Emissive, ShaderColor); the animation system's declaration must
-/// claim all five, not just the two it had before the fix.
+/// #1785 / CONC-D3-02 and #3252 — the animation system declaration must
+/// cover every animated-channel sink written by its bool, color, float,
+/// morph, and texture-flip dispatch paths.
 #[test]
-fn animation_declaration_writes_all_five_color_sinks() {
+fn animation_declaration_writes_all_channel_sinks() {
     for ty in [
+        "AnimatedVisibility",
         "AnimatedDiffuseColor",
         "AnimatedAmbientColor",
         "AnimatedSpecularColor",
         "AnimatedEmissiveColor",
         "AnimatedShaderColor",
+        "AnimatedAlpha",
+        "AnimatedUvTransform",
+        "AnimatedShaderFloat",
+        "AnimatedMorphWeights",
+        "AnimatedTextureFlip",
     ] {
         let needle = format!(".writes::<byroredux_core::ecs::{ty}>()");
         assert!(
             BOOT_RS.contains(&needle),
             "animation_system declaration is missing `{needle}` — \
-             apply_color_channels writes this color sink, see \
+             an animation channel dispatch path writes this sink, see \
              byroredux/src/systems/animation.rs",
         );
     }

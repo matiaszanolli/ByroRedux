@@ -1020,6 +1020,7 @@ pub(crate) fn build_scheduler() -> Scheduler {
             .writes::<byroredux_core::ecs::AnimatedUvTransform>()
             .writes::<byroredux_core::ecs::AnimatedShaderFloat>()
             .writes::<byroredux_core::ecs::AnimatedMorphWeights>()
+            .writes::<byroredux_core::ecs::AnimatedTextureFlip>()
             .writes::<byroredux_core::ecs::LightSource>()
             .writes::<byroredux_core::animation::AnimationPlayer>()
             .writes::<byroredux_scripting::events::AnimationTextKeyEvents>()
