@@ -868,7 +868,7 @@ refresh; not otherwise covered by this dimension's checklist below).
   `split_and_flattens_conjunction_keeps_disjunction_whole`, `unmodeled_atom_declines`,
   `stage_done_primitive_binds_holes`, `player_gate_primitive_matches_both_orders`
   (`crates/scripting/src/translate/compose.rs`); `declines_on_unmodeled_effect`,
-  `declines_on_control_flow`, `empty_fragment_is_understood_as_noop`
+  `declines_unmodeled_conditional_guard`, `empty_fragment_is_understood_as_noop`
   (`crates/scripting/src/translate/effects.rs`); the 20 `quest_stage_gate.rs`
   tests incl. `declines_unmodeled_condition_term`, `declines_handler_without_set_stage`,
   `declines_when_quest_property_unbound`, `declines_unconditional_with_extra_statements`

@@ -132,7 +132,9 @@
 //! shipped; see `docs/feature-matrix.md` for authoritative status):
 //!
 //! - FOOT records parser (3.5b) → per-material sound lookup.
-//! - REGN ambient soundscapes (region-based ambient layers).
+//! - REGN `incidental`/`sounds` ambient-loop selection (blocked on the
+//!   `chance_raw` fixed-point scale). REGN ambient background **music** has
+//!   shipped — see `byroredux/src/asset_provider/audio.rs::dispatch_region_ambient_music`.
 //! - MUSC + hardcoded music routing with crossfade.
 //! - Per-cell acoustic reverb zones (kira's `ReverbBuilder`) keyed off
 //!   cell acoustics; raycast occlusion attenuation.

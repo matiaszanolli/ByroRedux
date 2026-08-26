@@ -145,7 +145,8 @@ layouts); see the gaps table below.
 | Underwater low-pass (submersion-driven, 900 Hz wet / dry bypass) | ✓ |
 | Water-surface splash + ripple one-shots (WATAL events) | ✓ |
 | Per-material footsteps (FOOT records) | ✗ |
-| Region ambient (REGN) | ✗ |
+| Region ambient (REGN) — background music | ✓ |
+| Region ambient (REGN) — incidental/loop sounds | ✗ |
 
 ---
 
