@@ -1190,7 +1190,17 @@ pub(crate) fn setup_scene(
     let cam_rotation = Quat::from_rotation_arc(-Vec3::Z, forward);
     world.insert(cam, Transform::new(cam_pos, cam_rotation, 1.0));
     world.insert(cam, GlobalTransform::new(cam_pos, cam_rotation, 1.0));
-    world.insert(cam, Camera::default());
+    // #3308 — BU-scale content (a loaded worldspace/interior cell, a loose
+    // NIF mesh/tree view) gets the vanilla-matching near plane;
+    // `harness_cam.is_some()` excludes calibrated renderer harnesses
+    // (Cornell/combustion-lab scenes), which declare their own camera pose
+    // and some of which sit at comparably small physical scale despite
+    // loading real NIF content — content presence alone isn't a safe scale
+    // signal. See `Camera::for_content_scale`'s doc.
+    world.insert(
+        cam,
+        Camera::for_content_scale(has_nif_content && harness_cam.is_none()),
+    );
     // M44 Phase 1: the camera entity doubles as the audio listener
     // ("ears at the eyes"). M28.5 character controller will likely
     // split listener onto a head joint of the player capsule, but

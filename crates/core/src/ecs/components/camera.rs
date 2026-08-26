@@ -33,36 +33,60 @@ use super::transform::Transform;
 ///
 /// ## Depth-precision policy
 ///
-/// This far plane against the 0.1 near plane is a 4 000 000:1 depth range on
+/// This far plane against a 0.1 near plane is a 4 000 000:1 depth range on
 /// a `D32_SFLOAT` buffer with a conventional (non-reversed) 0→1 mapping —
 /// the arrangement that wastes float depth most thoroughly, because distant
 /// samples crowd into the region near 1.0 where f32 steps are coarsest.
 /// [`Camera::depth_resolution_at`] quantifies it: **~37 250 world units per
 /// depth step out at the 250 000 BU LOD ring** (and ~23 000 already at the
-/// old synth ring's 196 608 BU), i.e. effectively no depth discrimination
-/// between distant terrain and the object LOD standing on it. Raising the
-/// near plane to 5.0 measures at 745 units over the same span — the ~50×
-/// noted below.
+/// old synth ring's 196 608 BU) at `near = 0.1`, i.e. effectively no depth
+/// discrimination between distant terrain and the object LOD standing on
+/// it.
 ///
-/// Two ways out, and only one of them is available cheaply:
+/// Two ways out were identified; only one is available cheaply:
 ///
-/// * **Raising the near plane** is the usual first lever, and every shipped
-///   Gamebryo game does exactly that (`fNearDistance` is 5 in
-///   `Fallout_default.ini`, 10 in `Oblivion_default.ini`, versus 0.1 here) —
-///   it would buy ~50×. It cannot be done as a single global constant while
-///   one camera contract serves every scene: `scene.rs`'s no-content fallback
-///   parks the camera 4 units from the origin, so a 5-unit near plane would
-///   swallow the whole demo scene. Making `near` scale-aware is a real design
-///   change, not a constant edit.
+/// * **Raising the near plane** — done, via [`Camera::for_content_scale`] /
+///   [`NEAR_PLANE_BU_SCALE`]. Every shipped Gamebryo game does this
+///   (`fNearDistance` is 5 in `Fallout_default.ini`, 10 in
+///   `Oblivion_default.ini`, versus the 0.1 this engine's unit-scale demo
+///   scenes still need). Raising `near` to 5.0 measures **745 world units
+///   per depth step** at the same 250 000 BU ring — the ~50× this doc used
+///   to cite as the theoretical payoff. It could not be a single global
+///   constant while one `Camera` contract serves every scene — `scene.rs`'s
+///   no-content fallback parks the camera 4 units from the origin, and some
+///   calibrated renderer harnesses (Cornell/combustion-lab scenes) sit at
+///   comparably small physical scale despite loading real NIF content — so
+///   `for_content_scale` takes an explicit scale flag rather than inferring
+///   it from content presence alone; `scene.rs`'s one production call site
+///   passes `has_nif_content && harness_cam.is_none()`, which is true for
+///   genuine BU-scale content (loaded worldspace/interior cells, loose NIF
+///   mesh/tree views) and false for both the unit-scale procedural demo and
+///   every harness scene that declares its own camera pose (those own their
+///   physical scale directly and are excluded rather than guessed at).
 /// * **Reversed-Z** (far→0 plus `GREATER_OR_EQUAL` depth compare) is the
-///   actual fix, and pairs with `D32_SFLOAT` to give near-uniform world-space
-///   resolution. It is deliberately *not* done here: it touches the
-///   projection, the depth clear, pipeline compare state, and every depth
-///   consumer (SSAO, SVGF reprojection, TAA, composite, water, FSR3
-///   linearization), and none of those failure modes are visible to
-///   `cargo test`. It needs a GPU capture to land safely — the same gate
-///   EX-11 still owes. See #2371.
+///   actual, complete fix, and pairs with `D32_SFLOAT` to give near-uniform
+///   world-space resolution at any near-plane value. It is deliberately
+///   *not* done: investigating it (#3308) found it touches the projection,
+///   the depth clear, both static AND dynamic pipeline compare state (the
+///   latter driven live, per draw batch, from authored Gamebryo Z-test
+///   functions — every one of its 8 compare-op mappings would need
+///   inverting to preserve authored semantics), at least 6 shader files'
+///   hardcoded depth-clear-convention checks, and FSR3's vendored C++
+///   FidelityFX shim (which needs its own depth-inverted context flag wired
+///   through). None of those failure modes are visible to `cargo test`, and
+///   this project has no RenderDoc GUI integration to validate a change
+///   this pervasive live. Left for a dedicated multi-session effort; #3308
+///   tracks it with the measured scope above.
 pub const DEFAULT_RENDER_DISTANCE: f32 = 400_000.0;
+
+/// Near-plane distance for BU-scale content — matches vanilla `fNearDistance`
+/// (5 in `Fallout_default.ini`; Oblivion's 10 would work too, but 5 is the
+/// more conservative of the two shipped values and this project has no
+/// per-game camera profile to pick between them). See
+/// [`DEFAULT_RENDER_DISTANCE`]'s depth-precision policy for the measured
+/// ~50× depth-resolution improvement this buys over the unit-scale default,
+/// and [`Camera::for_content_scale`] for how callers select it.
+pub const NEAR_PLANE_BU_SCALE: f32 = 5.0;
 
 /// Perspective camera parameters.
 ///
@@ -98,6 +122,27 @@ impl Camera {
             aspect,
             aperture: 0.0,
             focus_dist: 20.0,
+        }
+    }
+
+    /// Otherwise-default camera with a near plane chosen for the content's
+    /// physical scale (#3308). `bu_scale_content` should be true for
+    /// anything authored in Bethesda world units — a loaded worldspace or
+    /// interior cell, a loose NIF mesh/tree view — and false for the
+    /// procedural unit-scale demo scene and any calibrated renderer harness
+    /// that declares its own camera pose (those own their physical scale
+    /// directly; some sit at comparably small scale to the demo scene
+    /// despite loading real NIF content, so content-presence alone isn't a
+    /// safe signal — see `DEFAULT_RENDER_DISTANCE`'s doc for the exact
+    /// signal `scene.rs`'s call site uses).
+    pub fn for_content_scale(bu_scale_content: bool) -> Self {
+        Self {
+            near: if bu_scale_content {
+                NEAR_PLANE_BU_SCALE
+            } else {
+                Self::default().near
+            },
+            ..Self::default()
         }
     }
 
@@ -248,15 +293,32 @@ mod tests {
 
         // Resolution degrades with the square of distance, so the vanilla
         // near-plane values would buy roughly the ratio they change: a 5.0
-        // near plane (Fallout_default.ini's fNearDistance) is ~50× better.
-        let raised = Camera {
-            near: 5.0,
-            ..Camera::default()
-        };
+        // near plane (Fallout_default.ini's fNearDistance, what
+        // `for_content_scale(true)` selects, #3308) is ~50× better.
+        let raised = Camera::for_content_scale(true);
         let ratio = at_ring / raised.depth_resolution_at(250_000.0);
         assert!(
             (25.0..100.0).contains(&ratio),
             "a 0.1 → 5.0 near plane should buy roughly 50×, got {ratio}"
+        );
+    }
+
+    /// #3308 — `for_content_scale` is the one place a caller picks between
+    /// the unit-scale and BU-scale near planes; pin both arms and the
+    /// otherwise-unaffected fields.
+    #[test]
+    fn for_content_scale_selects_the_right_near_plane() {
+        let bu = Camera::for_content_scale(true);
+        assert!((bu.near - NEAR_PLANE_BU_SCALE).abs() < 1e-6);
+        assert!((bu.far - DEFAULT_RENDER_DISTANCE).abs() < 1e-6);
+        assert!((bu.fov_y - FRAC_PI_4).abs() < 1e-6);
+
+        let unit = Camera::for_content_scale(false);
+        assert!((unit.near - Camera::default().near).abs() < 1e-6);
+        assert!(
+            unit.near < NEAR_PLANE_BU_SCALE,
+            "unit-scale content must keep the smaller near plane, or a \
+             4-unit-away demo camera clips"
         );
     }
 
