@@ -47,24 +47,30 @@ fn animation_declaration_writes_all_channel_sinks() {
     }
 }
 
-/// #1787 / CONC-D4-01 — `physics_sync_system`'s body reads `ContactConfig`
-/// (register_newcomers) and, behind the opt-in `BYRO_PROFILE_FALLERS`
-/// diagnostic, `RenderLayer` / `FormIdComponent` / `PhysicsSourceForm` /
-/// `FormIdPool` (all in `dump_awake_fallers`, crates/physics/src/sync.rs).
-/// The runtime gate is invisible to the declaration; all five reads must
-/// be present regardless.
+/// #1787 / CONC-D4-01 and #3253 — `physics_sync_system` must declare the
+/// component/resource reads made by its registration, pull-back, and optional
+/// faller-diagnostic paths.
 #[test]
-fn physics_sync_declaration_reads_contact_config_and_faller_dump_types() {
+fn physics_sync_declaration_reads_all_phase_and_diagnostic_types() {
+    let declaration = BOOT_RS
+        .split_once("byroredux_physics::physics_sync_system")
+        .expect("physics_sync_system scheduler registration")
+        .1
+        .split_once("// M28.5 — camera follow")
+        .expect("end of physics_sync_system scheduler registration")
+        .0;
     for needle in [
+        ".reads::<byroredux_physics::ActorBoneCollider>()",
+        ".reads::<byroredux_core::ecs::Parent>()",
         ".reads::<byroredux_core::ecs::components::RenderLayer>()",
         ".reads::<byroredux_core::ecs::components::FormIdComponent>()",
         ".reads::<byroredux_core::ecs::components::PhysicsSourceForm>()",
         ".reads_resource::<byroredux_core::form_id::FormIdPool>()",
     ] {
         assert!(
-            BOOT_RS.contains(needle),
+            declaration.contains(needle),
             "physics_sync_system declaration is missing `{needle}` — \
-             see crates/physics/src/sync.rs::dump_awake_fallers",
+             see crates/physics/src/sync.rs",
         );
     }
 }

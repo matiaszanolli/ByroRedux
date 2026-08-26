@@ -1276,6 +1276,8 @@ pub(crate) fn build_scheduler() -> Scheduler {
             .reads::<byroredux_core::ecs::components::CollisionShape>()
             .reads::<byroredux_core::ecs::components::RigidBodyData>()
             .reads::<byroredux_core::ecs::GlobalTransform>()
+            .reads::<byroredux_core::ecs::Parent>()
+            .reads::<byroredux_physics::ActorBoneCollider>()
             .reads::<byroredux_physics::RapierHandles>()
             .writes::<byroredux_physics::RapierHandles>()
             .writes::<Transform>()
