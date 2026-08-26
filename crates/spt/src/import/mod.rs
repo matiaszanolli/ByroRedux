@@ -67,14 +67,15 @@ pub struct SptImportParams<'a> {
     /// `(min, max)` in game units (Y-up). When absent the placeholder
     /// falls back to a 256 × 512 tree silhouette.
     pub bounds: Option<([f32; 3], [f32; 3])>,
-    /// Wind sensitivity / strength from the TREE record's `CNAM`
-    /// (Oblivion ships 5 × f32; FO3/FNV ship 8 × f32 — exact field
-    /// semantics not pinned). The first two finite values are carried to the
-    /// spawned SpeedTree billboard and modulate its response to the shared
+    /// Currently a neutral runtime constant (`(1.0, 0.0)`), carried to the
+    /// spawned SpeedTree billboard to modulate its response to the shared
     /// weather `WindField`; the atmospheric direction and gust phase remain
-    /// shared with water. **Not** sourced from `BNAM` — per UESP + the TREE
-    /// parser, BNAM is FO3/FNV billboard width/height, which flows into
-    /// `bounds` instead (see #1002).
+    /// shared with water. `TreeRecord.canopy_params` (the TREE record's
+    /// `CNAM`, 5 × f32 on Oblivion / 8 × f32 on FO3/FNV) is parsed but not
+    /// consumed here — its field semantics aren't pinned to a citable layout
+    /// yet (#3190). **Not** sourced from `BNAM` — per UESP + the TREE parser,
+    /// BNAM is FO3/FNV billboard width/height, which flows into `bounds`
+    /// instead (see #1002).
     pub wind: Option<(f32, f32)>,
     /// FormID of the source TREE record. Useful when downstream code
     /// wants to seed per-tree variation (sway phase, leaf-tint

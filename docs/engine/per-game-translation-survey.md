@@ -1,14 +1,19 @@
 # Per-Game Translation Survey — Where the Abstraction Layer Has to Land
 
 **Status**: SURVEY — generated 2026-05-28 from four parallel scans (NIF parser /
-NIF importer / ESM + cell-loader / renderer). Child of
+NIF importer / ESM + cell-loader / renderer); hand-corrected 2026-08-25 (#3281 —
+two stale passages fixed, see notes inline at §2 and §4.3). Child of
 [`nif-engine-translation-layer.md`](./nif-engine-translation-layer.md) (issue
 [#1277](https://github.com/matiaszanolli/ByroRedux/issues/1277)).
 
 > Historical survey, retained as the evidence snapshot for #1277. Several
 > findings below have since shipped; use the current compatibility tables in
 > [`ROADMAP.md`](../../ROADMAP.md) and [`feature-matrix.md`](../feature-matrix.md)
-> for present support claims.
+> for present support claims. The `~70+ per-game branches` headline count
+> below is **unverified against the current tree** (not re-counted by the
+> 2026-08-25 correction pass) and should be treated as unreliable until the
+> document is regenerated — some counted classes remain accurate, so treat
+> this survey as partially, not wholesale, stale.
 
 **TL;DR**: The renderer is genuinely clean — zero `if (game == …)` branches in
 shaders or in renderer Rust. The invariant from `feedback_format_translation.md`
@@ -48,13 +53,19 @@ divergence the user sees is upstream.
 
 ## 2. The bad news — and the real "Fallout looks broken" cause
 
-The renderer is fed values from a translation layer that **doesn't normalise per
-game**. The same `Material` slot that holds `metalness 0.79 / roughness 0.04`
-when the input is an FO4 BGSM holds `metalness 0.00 / roughness 0.80` when the
-input is a FNV `BSShaderPPLightingProperty` (because `classify_pbr_keyword`
-collapses every non-glass surface to the matte default — confirmed in
-`material-abstraction.md` §3a). The shader is identical; the inputs aren't.
-That's the "different stages of development" look.
+**This section's original worked example is stale — see the note below.** The
+renderer is fed values from a translation layer that historically **didn't
+normalise per game**: `classify_pbr_keyword` used to collapse every
+non-keyword, non-glass surface to the matte default regardless of its
+authored specular color, which chromed or flattened surfaces depending on
+which per-game shader property happened to feed the classifier. That specific
+bug was fixed by #1873 (commit `634873db`, "gate PBR env-map metalness lift on
+authored specular, not the struct default") — the classifier
+(`crates/core/src/ecs/components/material.rs:663+`) now runs an evidence-cited
+keyword + `specular_authored` gate rather than a blanket matte default. See
+`material-abstraction.md`'s live examples for the current classification
+behavior; the specific `metalness 0.79` / `metalness 0.00` numbers below are a
+historical snapshot of the pre-fix bug, not a live claim about current output.
 
 So this survey is the input map for the **canonical translation layer** that
 `material-abstraction.md` is one axis of. The other axes are below.
@@ -218,9 +229,10 @@ one function. It's the textbook candidate for splitting into
   — assumes uniform 24-byte position+rotation across all games. Oblivion
   trailing fields (if any) not validated.
 - `RACE` DATA ([`records/actor/mod.rs`](../../crates/plugin/src/esm/records/actor/mod.rs))
-  — size gate ≥ 36 covers Oblivion/FO3/FNV; Skyrim is 128+ bytes with a
-  different layout, **no Skyrim arm exists**, Skyrim RACE silently parses with
-  the wrong schema.
+  — **fixed since this survey was written.** A dedicated Skyrim arm
+  (`records/actor/mod.rs:1225`, gated on `GameKind::Skyrim` + `len` of 128 or
+  164) now exists alongside the Oblivion/FO3/FNV 36-byte arm, verified
+  byte-for-byte against vanilla `Skyrim.esm` (2026-08-12).
 
 **Already-fixed model finding** — `BSXFlags` bit 5 semantic flip
 ([`cell_loader/references/import.rs`](../../byroredux/src/cell_loader/references/import.rs))

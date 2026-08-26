@@ -153,8 +153,11 @@ pub(crate) struct CachedNifImport {
     /// currently leaves this `None` (see #994 — NIF cell-loader has
     /// the same gap, deferred).
     pub(super) placement_root_billboard: Option<BillboardMode>,
-    /// TREE.CNAM response/stiffness for SpeedTree sway. `None` for NIF and
-    /// generated imports, which use the shared weather response fallback.
+    /// Neutral runtime response/stiffness constant (`(1.0, 0.0)`) for
+    /// SpeedTree sway, set by the SPT importer. `TreeRecord.canopy_params`
+    /// (TREE's `CNAM`) is parsed but not consumed until a citable field
+    /// layout lands (#3190). `None` for NIF and generated imports, which use
+    /// the shared weather response fallback.
     pub(super) speedtree_wind: Option<(f32, f32)>,
     /// `BSXFlags` bits authored on the NIF root (havok-managed,
     /// ragdoll, editor-marker, articulated, etc.). Captured at parse
