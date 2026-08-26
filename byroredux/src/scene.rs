@@ -1524,6 +1524,24 @@ pub(crate) fn setup_scene(
                                     .register_rgba(upload_ctx, w, h, &pixels)
                                 {
                                     Ok(handle) => {
+                                        // #3273 — the only success-side
+                                        // observable on this route. Every
+                                        // other arm below logs its failure,
+                                        // so without this the route is
+                                        // silent exactly when it works and
+                                        // a smoke gate has nothing to
+                                        // assert on. Keep the
+                                        // `ui.menu: loaded` prefix and the
+                                        // `profile=` / `texture=` keys
+                                        // stable — `m48-menu-load.sh`
+                                        // greps for them.
+                                        log::info!(
+                                            "ui.menu: loaded path={} archive={} profile={:?} texture={:?}",
+                                            menu_path,
+                                            archive_path,
+                                            profile,
+                                            handle
+                                        );
                                         *ui_texture_handle = Some(handle);
                                         *ui_manager = Some(ui);
                                     }

@@ -36,7 +36,7 @@ Source: [`crates/ui/src/`](../../crates/ui/src/)
 | Ruffle render backend  | `ruffle_render_wgpu` on its **own** wgpu/Vulkan device (separate from the engine's `ash` Vulkan) |
 | Render path            | Ruffle → wgpu offscreen `TextureTarget` → `capture_frame()` CPU RGBA → Vulkan texture upload → fullscreen quad |
 | Lifetime               | `UiManager` is **not** an ECS resource — Ruffle's `Player` is not `Send + Sync`; it lives in the main loop alongside `VulkanContext` |
-| Status                 | Loose SWF demo (`--swf path.swf`) and archive-backed vanilla menu launch (`--menu interface\\hudmenu.swf --menu-archive <BSA-or-BA2>`); AVM1/Skyrim and AVM2/Fallout 4 profiles; bidirectional host bridge; Skyrim `GameDelegate` and Fallout 4 `BGSCodeObj` contracts; BSA/BA2-relative `ImportAssets` loading; focused winit input routing |
+| Status                 | Loose SWF demo (`--swf path.swf`) and archive-backed vanilla menu launch (`--menu interface\\hudmenu.swf --menu-archive <BSA-or-BA2>`); AVM1/Skyrim and AVM2/Fallout 4 profiles; bidirectional host bridge; Skyrim `GameDelegate` and Fallout 4 `BGSCodeObj` contracts; BSA/BA2-relative `ImportAssets` loading; focused winit input routing. The archive-backed route is verified end to end against real game data by [`docs/smoke-tests/m48-menu-load.sh`](../smoke-tests/m48-menu-load.sh) (#3273) — it needs a Vulkan device, so `cargo test` covers only the CLI-argument parser |
 | Pending                | Host-method behavior, remaining GFx stubs, Papyrus↔UI bridge, menu-stack/focus policy, font fidelity, full menu pack |
 
 ## Why Ruffle?
