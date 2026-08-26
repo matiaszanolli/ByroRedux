@@ -137,9 +137,9 @@ Prefer them over re-deriving facts from source during an audit.
 | `docs/engine/fsr3-upscaler-integration-plan.md` | FSR 3.1 integration plan, all 7 phases + the SSIM quality matrix. Paired with `docs/engine/fsr3-troubleshooting.md`. **No owner audit skill** — see `/audit-renderer` Dimension 22. |
 | `docs/contributing.md` | Prerequisites, build, test tiers (unit/integration/Vulkan/smoke), shader recompile, game data paths, CI jobs |
 
-Crate count: 24 under `crates/` — audio, bgsm, bsa, core, cxx-bridge,
+Crate count: 25 under `crates/` — audio, bgsm, bsa, core, cxx-bridge,
 debug-protocol, debug-server, debug-ui, facegen, fsr3-sys, hkx, mod-runtime,
-nif, papyrus, pex, physics, platform, plugin, renderer, save, scripting,
+nif, papyrus, pex, physics, platform, plugin, renderer, save, scripting, sdk,
 sfmaterial, spt, ui.
 Use this as a coverage sanity check: an audit that never touches a relevant
 crate here is incomplete.
@@ -161,19 +161,21 @@ Crate → owner audit map (refreshed 2026-08-16):
 | `crates/plugin` | `/audit-esm` |
 | `crates/renderer` | `/audit-renderer` |
 | `crates/save` | `/audit-save` |
+| `crates/sdk` | no dedicated owner; use the owner for each exposed domain and `/audit-ecs` for shared world contracts |
 | `crates/spt` | `/audit-speedtree` |
 | `crates/ui` | `/audit-ui` |
 
 ### Un-owned subsystems (coverage gaps — read before claiming a sweep is complete)
 
-Six subsystems still have **no owner audit skill** (refreshed 2026-08-16 — the
-list grew by the gameplay slice and FaceGen). An audit that touches them
+Seven subsystems still have **no owner audit skill** (refreshed 2026-08-26 — the
+list grew with the renderer-independent SDK surface). An audit that touches them
 does so incidentally, so nothing guarantees they are ever examined. Do not
 report "full coverage" without saying which of these you skipped:
 
 | Subsystem | Code | Nearest owner today | Why it matters now |
 |---|---|---|---|
 | **Gameplay slice (P2)** | `byroredux/src/combat.rs`, `byroredux/src/inventory.rs`, `byroredux/src/settings_io.rs`, the action half of `byroredux/src/interaction.rs` | `/audit-ecs` (system/resource shape) + `/audit-runtime` (the p0/p1/p2 smoke gates) | **The project's active execution focus.** ~2.6k LOC landed 2026-08-15/16 with three Stage::Update exclusives and a Resource, and nothing owns its damage/equip/activation invariants. Highest-value gap on this list |
+| ByroRedux SDK | `crates/sdk/src/` | Per-domain owner + `/audit-ecs` for shared world contracts | Public renderer/UI-independent document, snapshot, selection, and typed-command contracts are the first tooling API surface; an executable-only audit can miss breaking host-facing changes |
 | FaceGen | `crates/facegen/src/` | `/audit-skyrim` (incidental, via the NPC head path) | `.tri`/`.egt` morph + texture blend on untrusted archive input, with no parser-discipline dimension of its own |
 | Mod Runtime (sandboxed mods) | `crates/mod-runtime/src/` | `/audit-safety` Dimension 11 (added 2026-08-13) | A trust boundary between untrusted WASM guest code and the host. Still has **no consumer in the engine** — audit it as a contract, not as a live path |
 | FSR3 upscaler + FFI | `crates/fsr3-sys/`, `crates/renderer/src/vulkan/{frame_upscaler,upscaling,presentation,exposure}.rs` | `/audit-renderer` Dim 23 + `/audit-safety` Dim 1 | Engine-default render path since phase 7; the only live FFI crossing in the workspace |
