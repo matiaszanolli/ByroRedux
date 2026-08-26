@@ -8,15 +8,17 @@ real measured numbers are.
 > matrix](../../ROADMAP.md#compatibility-matrix) is refreshed every
 > `/session-close` and is the canonical ground truth for parse rates and
 > per-cell status. This doc reconciles to it; where the two disagree,
-> ROADMAP wins. Last reconciled 2026-07-11 (#1900 / NIF-D3-02).
+> ROADMAP wins. Last reconciled 2026-08-26 (#2365).
 
 The headline result: **every supported game parses its full mesh archive
 *recoverably* at 100%** — every file links end-to-end (counting `NiUnknown`
 placeholders and truncated trailers as recoverable). The stricter *clean*
 rate (no `NiUnknown`, no truncation) is 100% on FO3 / FNV / Skyrim SE / FO4 /
-FO76, 99.93% on Oblivion (6 pre-Gamebryo NetImmerse marker files with no
-global type table), and 99.64% aggregate on Starfield (the MeshesPatch
-terrain-overlay truncation tail, #746/#747) — see #1900 / NIF-D3-02.
+FO76 / Oblivion (the 6 pre-Gamebryo NetImmerse marker files with no global
+type table no longer truncate as of the 2026-08-19 baseline regen, #3082),
+and 99.99% aggregate on Starfield (MeshesPatch's populated-`BSWeakReferenceNode`
+truncation tail, fixed by #2105; a residual 6/29,849 files with a distinct,
+still-unexplained cause remain truncated — see #1900 / NIF-D3-02).
 
 ## Parse-rate matrix
 
@@ -29,7 +31,7 @@ but Fallout 3 / FNV / Skyrim SE).
 
 | Game              | Archive            | NIF clean rate            | Recoverable | Notes |
 |-------------------|--------------------|---------------------------|-------------|-------|
-| Oblivion          | BSA v103           | **99.93%** (8 026 / 8 032) | 100%        | `#687` recovered 83 truncations (NiGeomMorpherController + NiControllerSequence Phase). The corrupt-by-design debug marker (#698) is closed and no longer a hard failure. 6 v3.3.0.13 NetImmerse-era marker files (`meshes/marker_*.nif`) truncate; tracked in git log. |
+| Oblivion          | BSA v103           | **100%** (8 032 / 8 032) | 100%        | `#687` recovered 83 truncations (NiGeomMorpherController + NiControllerSequence Phase). The corrupt-by-design debug marker (#698) is closed and no longer a hard failure. The 6 v3.3.0.13 NetImmerse-era marker files (`meshes/marker_*.nif`) no longer truncate as of the 2026-08-19 baseline regen (#3082). |
 | Fallout 3         | BSA v104           | **100%** (10 989)         | 100%        | — |
 | Fallout New Vegas | BSA v104           | **100%** (14 881)         | 100%        | Reference title — most engine features shipped against FNV first. |
 | Skyrim SE         | BSA v105 (LZ4)     | **100%** (18 862)         | 100%        | — |
@@ -191,9 +193,12 @@ cargo run -- --bsa "Skyrim - Meshes0.bsa" \
 
 #### Starfield
 
-- **NIF parser**: 31,058 / 31,058 on Meshes01; **99.64% aggregate clean**
-  (100% recoverable) across all five mesh archives — MeshesPatch (98.91%)
-  is the sole sub-100% archive, residual drift tracked under #746/#747
+- **NIF parser**: 31,058 / 31,058 on Meshes01; **99.99% aggregate clean**
+  (100% recoverable) across all five mesh archives — MeshesPatch (99.98%,
+  29,849 files) is the sole sub-100% archive; the #2105 fix closed the
+  populated-`BSWeakReferenceNode` truncation tail (was mis-attributed to
+  closed #746/#747), leaving a residual 6/29,849 files with a distinct,
+  still-unexplained cause
 - **Mesh archive**: BA2 BTDX v2 GNRL ✓ (32-byte header, +8-byte extension)
 - **Texture archive**: BA2 BTDX v3 DX10 ✓ — verified against the 30
   vanilla Starfield texture archives (see [Archives](archives.md)). The v3
@@ -255,10 +260,9 @@ cargo run -- --esm Starfield.esm \
 
 #### Oblivion
 
-- **NIF parser**: 8,026 / 8,032 (99.93% clean, 100% recoverable) —
-  recoverable rate bumped from the longstanding gap once the M26+ per-block
-  recovery path made the failures legible; the residual 6 files are the
-  pre-Gamebryo NetImmerse marker placeholders below, not a hard failure
+- **NIF parser**: 8,032 / 8,032 (100% clean, 100% recoverable) — the
+  pre-Gamebryo NetImmerse marker placeholders below no longer truncate as of
+  the 2026-08-19 baseline regen (#3082)
 - **Archive**: BSA v103 ✓ (147 629 / 147 629 vanilla files extract cleanly
   across all 17 Oblivion BSAs; the old "v103 decompression broken" framing
   was a stale premise, closed via #699)
@@ -396,10 +400,13 @@ sequential block-with-inline-name walker.
 
 ### Long-tail parser drift
 
-The residual clean-rate gaps on Oblivion / FO4 / FO76 / Starfield are
-truncation drift on edge-case blocks, surfaced by the per-block baseline
-gate and tracked in git log (#687/#688/#697/#698 closed; #746/#747 for the
-Starfield tail). All four games stay at 100% recoverable. One Starfield NIF
+The residual clean-rate gap is now Starfield-only (Oblivion reached 100%
+clean via the 2026-08-19 baseline regen, #3082) — truncation drift on
+edge-case blocks, surfaced by the per-block baseline gate and tracked in git
+log (#687/#688/#697/#698 closed; the Starfield MeshesPatch tail was
+mis-attributed to #746/#747 before #2105 fixed it, leaving a residual
+6/29,849 files with a distinct, still-unexplained cause). All games stay at
+100% recoverable. One Starfield NIF
 (`meshes\marker_radius.nif`) requests a 318 MB single-buffer allocation
 exceeding the 256 MB per-allocation cap and is intentionally rejected
 (one file out of 320 483 in the mesh corpus).
