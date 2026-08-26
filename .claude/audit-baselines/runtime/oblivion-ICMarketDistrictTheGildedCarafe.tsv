@@ -1,18 +1,22 @@
-# regenerated: 2026-08-06 (RT-1 / #2215 — bench_draws_batches 27 -> 47;
-# bench_draws_cmds and bench_draws_gpu_calls unchanged at 324/4). Same
-# draw_sort_key depth-primary-for-alpha-over mechanism as the FNV/FO4
-# regen in this commit — see byroredux/src/render/mod.rs draw_sort_key
-# and the fnv-FreesideAtomicWrangler.tsv header for the full root-cause
-# note. Accepted as the correct cost of the #1804/#2237 compositing fix.
-entities_total	701
-tex_missing_unique_paths	0
-mesh_cache_failed_count	0
-light_count_directional	1
-skin_pool_live	3
-skin_pool_max	1364
-skin_pool_overflow_attempts	0
-bench_fps_p50	613.2
-bench_fps_avg	613.2
-bench_draws_cmds	324
-bench_draws_batches	47
-bench_draws_gpu_calls	4
+# regenerated: 2026-08-26 (#3288 — first live re-run since 2026-08-06; see
+# docs/audits/AUDIT_RUNTIME_2026-08-26.md)
+# entities_total 701 -> 705 (+0.6%, inside the +/-2% band) and the draw split
+# moved DOWN on both gated axes: batches 47 -> 20, gpu_calls 4 -> 2. Recapturing
+# a cell whose gated metrics improved tightens the contract; this is the only
+# one of the five baselines regenerated this pass. fnv / fo3 / skyrim_se each
+# carry a metric past a gating threshold in the WRONG direction and were left
+# stale on purpose, so the evidence survives (RT-2026-08-26-01/02/04).
+# bench_fps_* is advisory only under xvfb (RT-2 / #1701) — never gate on it.
+# entities_total: +/-2% tolerance metric, not exact (#1705 / RT-3).
+entities_total              705
+tex_missing_unique_paths    0
+mesh_cache_failed_count     0
+light_count_directional     1
+skin_pool_live              4
+skin_pool_max               1364
+skin_pool_overflow_attempts 0
+bench_fps_p50               377.6
+bench_fps_avg               377.6
+bench_draws_cmds            325
+bench_draws_batches         20
+bench_draws_gpu_calls       2
