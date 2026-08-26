@@ -16,6 +16,11 @@ dhat = { workspace = true, optional = true }
 
 [dev-dependencies]
 byroredux-bsa = { workspace = true }
+# Dev-only (#2599): the facegen crate keeps its own `half_to_f32` because
+# the canonical one here is `pub(crate)` and facegen is deliberately
+# dependency-light. This dep exists solely so `decode_half_float_tests`
+# can pin the two impls bit-identical. Not a production dependency.
+byroredux-facegen = { workspace = true }
 env_logger = { workspace = true }
 
 [features]

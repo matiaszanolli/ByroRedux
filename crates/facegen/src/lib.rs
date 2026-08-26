@@ -66,8 +66,16 @@ pub enum FaceGenError {
 /// Decode an IEEE 754 binary16 ("half-float") into f32.
 ///
 /// Mirrors `byroredux_nif::import::mesh::half_to_f32` — re-declared
-/// here so this crate doesn't depend on `byroredux-nif`'s internals.
-/// Subnormals are normalised; NaN payloads are preserved.
+/// here so this crate doesn't depend on `byroredux-nif`'s internals
+/// (the canonical impl is `pub(crate)` there, and this crate is
+/// deliberately dependency-light). Subnormals are normalised; NaN
+/// payloads are preserved.
+///
+/// #2599 — the two copies are pinned bit-for-bit across all 65_536
+/// `u16` inputs by `facegen_half_to_f32_copy_matches_canonical_bit_for_bit`
+/// in `byroredux-nif`'s `import::mesh::decode_half_float_tests`. Any
+/// edit here that changes behaviour fails that test until the canonical
+/// decoder is updated to match (and vice versa).
 #[inline]
 pub fn half_to_f32(h: u16) -> f32 {
     let sign = ((h >> 15) & 1) as u32;

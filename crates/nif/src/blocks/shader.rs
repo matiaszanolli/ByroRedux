@@ -1061,24 +1061,32 @@ impl BSLightingShaderProperty {
         ];
         let specular_strength = stream.read_f32_le()?;
 
-        let (subsurface_rolloff, rimlight_power, backlight_power) = if (130..=139).contains(&bsver)
-        {
-            let sub = stream.read_f32_le()?;
-            let rim = stream.read_f32_le()?;
-            // nif.xml gates Backlight Power on `Rimlight Power >= FLT_MAX &&
-            // < FLT_INF` (the `#FLT_MAX#` sentinel). Use the exact FLT_MAX
-            // bound, not a looser 3.0e38 — a rimlight in [3.0e38, FLT_MAX)
-            // would otherwise over-read a 4-byte field nif.xml says is absent.
-            // `is_finite()` covers the `< FLT_INF` clause (and rejects NaN). #1901.
-            let back = if rim >= f32::MAX && rim.is_finite() {
-                stream.read_f32_le()?
+        // #2343 / #2597 — named constants, not a bare `130..=139`: the band
+        // is identical today (`FALLOUT4 == 130`, `FO4_DLC_UPPER == 140`) but
+        // a bare literal here would not follow a future correction to
+        // `FO4_DLC_UPPER` that the sibling gates below (`:1478`, `:1484`)
+        // would, mis-reading 4–12 bytes on the newly in/out-of-band BSVERs.
+        // Same drift class as #1223 / #1552; the site #1242's rename missed.
+        let (subsurface_rolloff, rimlight_power, backlight_power) =
+            if (crate::version::bsver::FALLOUT4..crate::version::bsver::FO4_DLC_UPPER)
+                .contains(&bsver)
+            {
+                let sub = stream.read_f32_le()?;
+                let rim = stream.read_f32_le()?;
+                // nif.xml gates Backlight Power on `Rimlight Power >= FLT_MAX &&
+                // < FLT_INF` (the `#FLT_MAX#` sentinel). Use the exact FLT_MAX
+                // bound, not a looser 3.0e38 — a rimlight in [3.0e38, FLT_MAX)
+                // would otherwise over-read a 4-byte field nif.xml says is absent.
+                // `is_finite()` covers the `< FLT_INF` clause (and rejects NaN). #1901.
+                let back = if rim >= f32::MAX && rim.is_finite() {
+                    stream.read_f32_le()?
+                } else {
+                    0.0
+                };
+                (sub, rim, back)
             } else {
-                0.0
+                (0.0, 0.0, 0.0)
             };
-            (sub, rim, back)
-        } else {
-            (0.0, 0.0, 0.0)
-        };
 
         let grayscale_to_palette_scale = stream.read_f32_le()?;
         let fresnel_power = stream.read_f32_le()?;

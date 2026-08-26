@@ -46,3 +46,37 @@ fn half_to_f32_pins_ieee754_binary16_edge_classes() {
     // Max finite half 0x7BFF = 65504.0
     assert_eq!(half_to_f32(0x7BFF), 65504.0, "max finite half");
 }
+
+/// #2599 / FO4-D4-03 — `crates/facegen` carries a third independent copy of
+/// this decoder (`byroredux_facegen::half_to_f32`). It can't call the
+/// canonical one: this impl is `pub(crate)`, and facegen is deliberately
+/// dependency-light (production deps: `thiserror` only), so pulling in
+/// `byroredux-nif` — or hoisting the shared 20 lines into `byroredux-core`
+/// and pulling *that* into facegen — costs far more than the duplication.
+///
+/// The real risk the audit named is not the duplication itself but that
+/// nothing would catch a *divergence*: a future subnormal / NaN-payload
+/// correction applied here would silently not propagate to facegen. This
+/// pins the two bit-for-bit across the entire input domain, so any such
+/// edit fails here until facegen is updated to match.
+///
+/// Exhaustive rather than sampled: `u16` is only 65_536 values, which
+/// covers every sign / exponent / mantissa class (including all denormals
+/// and every NaN payload) in well under a millisecond.
+#[test]
+fn facegen_half_to_f32_copy_matches_canonical_bit_for_bit() {
+    for raw in 0..=u16::MAX {
+        let canonical = half_to_f32(raw);
+        let facegen = byroredux_facegen::half_to_f32(raw);
+        // Compare raw bits, not values: `==` is false for NaN and would
+        // also let a -0.0 / +0.0 divergence through. Bit equality is the
+        // only assertion that catches a payload or sign-of-zero drift.
+        assert_eq!(
+            canonical.to_bits(),
+            facegen.to_bits(),
+            "half 0x{raw:04X} diverged: canonical 0x{:08X} vs facegen 0x{:08X}",
+            canonical.to_bits(),
+            facegen.to_bits(),
+        );
+    }
+}
