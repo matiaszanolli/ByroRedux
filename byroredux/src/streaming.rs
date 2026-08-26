@@ -1117,10 +1117,6 @@ where
 /// `cached_keys` is the main-thread snapshot of
 /// [`crate::cell_loader::NifImportRegistry`] at request-build time;
 /// any model path it contains is skipped here — the drain step's
-/// `load_one_exterior_cell` will spawn the cell's REFRs against the
-/// cached entries directly, no re-parse needed. See #862.
-///
-/// Returns a populated [`LoadCellPayload`] (which may have an empty
 /// Parse + import a single (path, Option<bytes>) pair. Shared between
 /// the serial and parallel branches of `pre_parse_cell` so both paths
 /// stay byte-identical — no logic drift between code paths.
@@ -1203,9 +1199,19 @@ fn parse_extracted_nifs(
     (results, names)
 }
 
-/// `parsed` map if the cell doesn't exist, has no references, or
-/// every model path was already cached — the main-thread drain still
-/// applies the empty payload so the pending entry is cleared).
+/// Pre-parse one exterior cell's unique, uncached static NIFs for the
+/// main-thread streaming drain.
+///
+/// The coordinator resolves the CELL, canonicalizes and deduplicates its
+/// model paths, skips the caller's cache snapshot (#862), extracts bytes
+/// serially through the archive provider, then delegates the CPU parse/import
+/// phase to [`parse_extracted_nifs`]. `load_one_exterior_cell` can therefore
+/// spawn cached REFR assets directly while consuming this payload only for
+/// cache misses.
+///
+/// Returns a [`LoadCellPayload`] with an empty `parsed` map when the cell is
+/// absent, has no references, or every model was cached. The main-thread drain
+/// still consumes that empty payload so its pending entry is cleared.
 #[tracing::instrument(
     name = "pre_parse_cell",
     skip_all,
