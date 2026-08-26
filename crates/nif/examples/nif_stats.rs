@@ -495,8 +495,11 @@ impl Stats {
     /// hand-inspection of checked-in baselines easier.
     fn print_tsv(&self) {
         println!(
-            "# nif_stats per-block histogram\ttotal={}\tclean={}\ttruncated={}",
-            self.total, self.clean, self.truncated
+            "{}",
+            byroredux_nif::corpus::per_block_tsv_header(
+                self.total,
+                Some((self.clean, self.truncated)),
+            )
         );
         for (name, counts) in &self.block_histogram {
             println!("{}\t{}\t{}", name, counts.parsed, counts.unknown);
@@ -574,7 +577,7 @@ fn process_bsa(stats: &mut Stats, path: &Path) -> Result<(), String> {
     let nif_files: Vec<String> = archive
         .list_files()
         .iter()
-        .filter(|p| p.to_ascii_lowercase().ends_with(".nif"))
+        .filter(|p| byroredux_nif::corpus::is_nif_entry(p))
         .map(|s| s.to_string())
         .collect();
     eprintln!("  → {} .nif entries", nif_files.len());
@@ -602,7 +605,7 @@ fn process_ba2(stats: &mut Stats, path: &Path) -> Result<(), String> {
     let nif_files: Vec<String> = archive
         .list_files()
         .iter()
-        .filter(|p| p.to_ascii_lowercase().ends_with(".nif"))
+        .filter(|p| byroredux_nif::corpus::is_nif_entry(p))
         .map(|s| s.to_string())
         .collect();
     eprintln!("  → {} .nif entries", nif_files.len());

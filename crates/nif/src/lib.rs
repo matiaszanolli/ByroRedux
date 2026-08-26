@@ -14,6 +14,7 @@
 
 pub mod anim;
 pub mod blocks;
+pub mod corpus;
 pub mod header;
 pub mod import;
 pub mod kfm;

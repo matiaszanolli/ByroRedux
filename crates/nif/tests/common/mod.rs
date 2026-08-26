@@ -494,7 +494,7 @@ pub fn parse_all_nifs_in_archive(archive: &MeshArchive, limit: Option<usize>) ->
     let files: Vec<String> = archive
         .list_files()
         .into_iter()
-        .filter(|p| p.to_ascii_lowercase().ends_with(".nif"))
+        .filter(|p| byroredux_nif::corpus::is_nif_entry(p))
         .collect();
 
     let iter: Box<dyn Iterator<Item = &String>> = match limit {
@@ -704,10 +704,11 @@ impl PerBlockHistogram {
     /// stay hand-readable.
     pub fn to_tsv(&self, total_files: usize) -> String {
         let mut out = String::new();
-        out.push_str(&format!(
-            "# nif_stats per-block histogram\ttotal={}\n",
-            total_files
+        out.push_str(&byroredux_nif::corpus::per_block_tsv_header(
+            total_files,
+            None,
         ));
+        out.push('\n');
         for (name, counts) in &self.counts {
             out.push_str(&format!(
                 "{}\t{}\t{}\n",
@@ -831,7 +832,7 @@ pub fn parse_archive_with_histogram(
     let files: Vec<String> = archive
         .list_files()
         .into_iter()
-        .filter(|p| p.to_ascii_lowercase().ends_with(".nif"))
+        .filter(|p| byroredux_nif::corpus::is_nif_entry(p))
         .collect();
 
     let iter: Box<dyn Iterator<Item = &String>> = match limit {
