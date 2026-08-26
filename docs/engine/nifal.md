@@ -64,11 +64,13 @@ How close each NIF data category is to the canonical contract.
 ### Materials — **converged (this session)**
 
 The reference realisation. See §3. The ECS `Material`
-(`crates/core/src/ecs/components/material.rs`) is the canonical type; the boundary
-is `byroredux/src/material_translate.rs::translate_material`. PBR is fully resolved
+(`crates/core/src/ecs/components/material.rs`) is the canonical type. Its boundary
+is the ordered pipeline formed by `merge_external_material`,
+`pack_imported_material_flags`, `translate_material`, and the final
+`Material::resolve_pbr` invariant enforcement. PBR is fully resolved
 (`metalness`/`roughness` are plain `f32`, no `Option`, no render-time fallback);
 glass is classified once, alpha-aware; the two previously-duplicated construction
-sites are collapsed into the one boundary.
+sites both use this pipeline.
 
 Stale notes in `material-abstraction.md` corrected: the render-side glass heuristic
 (its §2 "Leak A" / §4 step-3 "still pending (b)") was already deleted, and the
@@ -338,11 +340,14 @@ the "unsupported shape" fallback → the authored collision silently vanished):
 - `BhkConvexListShape` → now a `Compound` of resolved convex sub-shapes (mirrors
   `BhkListShape`; FO3/FNV/Skyrim destructibles + debris).
 
-All 13 parsed `bhk*Shape` variants now translate. Remaining collision *non*-leaks are
-documented limitations, not gaps: `BhkNPCollisionObject` (FO4+ Havok-serialised
-blob — decoder is a separate project) and `BhkPCollisionObject` phantoms (need a
-`TriggerVolume` ECS path, not a rigid body) — see the table at the top of
-`import/collision/mod.rs`.
+The authoritative shape-coverage inventory is the type-dispatch in
+`import/collision/shape.rs::resolve_shape_inner`; do not copy its arm count into
+this spec. Every parsed shape is either mapped there, explicitly routed through a
+wrapped child, or deliberately rejected to the documented mesh/trigger fallback.
+Remaining collision *non*-leaks are documented limitations, not gaps:
+`BhkNPCollisionObject` (FO4+ Havok-serialised blob — decoder is a separate project)
+and `BhkPCollisionObject` phantoms (need a `TriggerVolume` ECS path, not a rigid
+body) — see the table at the top of `import/collision/mod.rs`.
 
 **`BhkNPCollisionObject` fallback coverage** (#2355 / SF-D8-04, 2026-08-03 audit,
 closed by `8ee151e0`/`716b7ee9`/`8d67c700`): this is Starfield's *entire* collision
@@ -545,12 +550,27 @@ The material slice was executed this session as the template. Mechanics:
     add a second place the ladder lives (drift risk vs the shader). **Future-slice
     invariant**: any `SurfaceClass` enum MUST lower to the exact `triangle.frag`
     ladder, and is a shader-adjacent change.
-- **The boundary**: the live signature at
-  `byroredux/src/material_translate.rs::translate_material` takes
-  `(&ImportedMaterial, mesh_name: Option<&str>, ResolvedPaths,
-  extra_material_flags: u32) -> Material`. In particular, it cannot inspect an
-  `ImportedMesh`; geometry-dependent material translation is excluded by the
-  type boundary. It:
+- **Boundary pipeline**: all four sites below are part of the material contract.
+  External-material enrichment runs only when that source exists; the remaining
+  sites form the common lowering path rather than renderer post-processes:
+
+  1. `byroredux/src/asset_provider/material.rs::merge_external_material` resolves
+     BGSM/BGEM data into `ImportedMaterial` before canonical lowering.
+  2. `byroredux/src/material_translate.rs::translate_material` is the sole lowering
+     step. Its live signature takes
+     `(&ImportedMaterial, mesh_name: Option<&str>, ResolvedPaths,
+     extra_material_flags: u32) -> Material`. In particular, it cannot inspect an
+     `ImportedMesh`; geometry-dependent material translation is excluded by the
+     type boundary.
+  3. `byroredux/src/cell_loader.rs::pack_imported_material_flags` is the shared
+     feature-bit packer called inside `translate_material`; despite its module
+     location, it runs for both cell and loose-NIF lowering. Placement-only bits
+     arrive separately through `extra_material_flags`.
+  4. `Material::resolve_pbr` runs inside the lowering step and guarantees finite,
+     clamped canonical PBR scalars before the result reaches ECS consumers.
+
+  The lowering step:
+
   1. copies the scalars / colours / flags across;
   2. packs `effect_shader_flags` as the union of the BSEffect SLSF bits, the BGSM
      v>2 bits, and the caller's extra bits (REFR-overlay model-space-normals on the
@@ -565,8 +585,8 @@ The material slice was executed this session as the template. Mechanics:
      after the PBR resolve so the forced glass roughness wins.
 - **De-duplication**: the two ~110-line `Material` construction sites
   (`cell_loader/spawn/mesh_instance.rs`, `scene/nif_loader.rs`) now both call
-  the boundary. A field added in one place can no longer silently diverge the
-  two load paths.
+  the common lowering boundary. A field added in one place can no longer silently
+  diverge the two load paths.
 - **Renderer**: `render/static_meshes.rs` reads `m.metalness` / `m.roughness`
   directly — no per-draw keyword scan.
 
@@ -630,8 +650,9 @@ mismatch (Effect emisM 1.0–1.2 matches the others). Open question Q2 in
    params override the preset. Follow-ups: spawn rate, grow/fade size, multi-emitter
    attribution.
 4. ~~Collision~~ — audited (2026-05-28): found + fixed two dropped shapes
-   (BhkMultiSphereShape, BhkConvexListShape); all 13 parsed shape variants now
-   translate. Remaining gaps (FO4+ NP blob, phantoms) are documented limitations.
+   (`BhkMultiSphereShape`, `BhkConvexListShape`). The live coverage inventory is
+   `import/collision/shape.rs::resolve_shape_inner`; remaining gaps (FO4+ NP blob,
+   phantoms) are documented limitations.
 5. ~~Emissive unification~~ — resolved no-op (2026-05-28): all three `EmissiveSource`
    variants measured across Oblivion/FNV/Skyrim/FO4 already share a ~1.0 scale (§4);
    no normalization needed.
