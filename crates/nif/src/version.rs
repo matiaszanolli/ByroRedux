@@ -382,14 +382,19 @@ pub mod bsver {
     /// (`parallax_max_passes`, `parallax_scale`). Content with
     /// `bsver > FO3_PARALLAX` carries these fields.
     pub const FO3_PARALLAX: u32 = 24;
+    /// First BSVER whose `NiControllerSequence` carries the FO3-era
+    /// singular `Ref<BSAnimNotes>`. The singular layout is inclusive from
+    /// this value through [`ANIM_NOTES_THRESHOLD`]; later content stores a
+    /// counted list instead.
+    pub const FO3_ANIM_NOTES_LOWER: u32 = 24;
     /// BSVER threshold at which NiAVObject `flags` widens from u16 to
     /// u32 (`bsver > FLAGS_U32_THRESHOLD`). nif.xml gates
     /// `NiAVObject.Flags` on the inline `#BSVER# #GT# 26` vercond (no
     /// named token); u16 at `bsver <= 26`.
     pub const FLAGS_U32_THRESHOLD: u32 = 26;
-    /// BSVER threshold at which NiControllerSequence gains an animation-
-    /// notes list (`bsver > ANIM_NOTES_THRESHOLD`). Content with
-    /// `bsver <= 28` (Oblivion and early FO3 dev) omits the list.
+    /// Upper bound of NiControllerSequence's FO3-era singular animation-
+    /// notes reference. Content with `bsver > ANIM_NOTES_THRESHOLD` carries
+    /// a counted list; content below [`FO3_ANIM_NOTES_LOWER`] has no field.
     pub const ANIM_NOTES_THRESHOLD: u32 = 28;
     /// Fallout 3 retail + Fallout New Vegas (binary-identical at
     /// BSVER 34 per nif.xml `V20_2_0_7_FO3`).

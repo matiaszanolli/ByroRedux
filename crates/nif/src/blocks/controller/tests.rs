@@ -5,7 +5,7 @@
 use super::*;
 use crate::header::NifHeader;
 use crate::stream::NifStream;
-use crate::version::NifVersion;
+use crate::version::{bsver, NifVersion};
 
 pub(super) fn make_header_fnv() -> NifHeader {
     NifHeader {
@@ -532,6 +532,49 @@ fn parse_controller_sequence_no_blocks() {
     assert_eq!(seq.name.as_deref(), Some("TestName"));
     assert_eq!(seq.controlled_blocks.len(), 0);
     assert!(seq.text_keys_ref.is_null());
+}
+
+/// #2425 — the three `NiControllerSequence` animation-note layouts meet at
+/// named BSVER boundaries: absent before FO3, one ref for the FO3 dev band,
+/// then a counted list. This pins both inclusive edges so the public version
+/// constants remain the wire-format contract rather than incidental numbers.
+#[test]
+fn controller_sequence_anim_note_layout_uses_named_boundaries() {
+    for (version, expected_refs) in [
+        (bsver::FO3_ANIM_NOTES_LOWER - 1, 0),
+        (bsver::FO3_ANIM_NOTES_LOWER, 1),
+        (bsver::ANIM_NOTES_THRESHOLD, 1),
+        (bsver::ANIM_NOTES_THRESHOLD + 1, 2),
+    ] {
+        let mut header = make_header_fnv();
+        header.user_version_2 = version;
+
+        let mut data = Vec::new();
+        data.extend_from_slice(&0i32.to_le_bytes()); // name
+        data.extend_from_slice(&0u32.to_le_bytes()); // controlled blocks
+        data.extend_from_slice(&0u32.to_le_bytes()); // array grow by
+        data.extend_from_slice(&1.0f32.to_le_bytes()); // weight
+        data.extend_from_slice(&(-1i32).to_le_bytes()); // text keys
+        data.extend_from_slice(&0u32.to_le_bytes()); // cycle type
+        data.extend_from_slice(&1.0f32.to_le_bytes()); // frequency
+        data.extend_from_slice(&0.0f32.to_le_bytes()); // start time
+        data.extend_from_slice(&1.0f32.to_le_bytes()); // stop time
+        data.extend_from_slice(&(-1i32).to_le_bytes()); // manager
+        data.extend_from_slice(&(-1i32).to_le_bytes()); // accum root name
+
+        if version > bsver::ANIM_NOTES_THRESHOLD {
+            data.extend_from_slice(&2u16.to_le_bytes());
+            data.extend_from_slice(&7i32.to_le_bytes());
+            data.extend_from_slice(&8i32.to_le_bytes());
+        } else if version >= bsver::FO3_ANIM_NOTES_LOWER {
+            data.extend_from_slice(&7i32.to_le_bytes());
+        }
+
+        let mut stream = NifStream::new(&data, &header);
+        let seq = NiControllerSequence::parse(&mut stream).unwrap();
+        assert_eq!(stream.position() as usize, data.len(), "bsver {version}");
+        assert_eq!(seq.anim_note_refs.len(), expected_refs, "bsver {version}");
+    }
 }
 
 /// Build an Oblivion-era header (v20.0.0.5, user_version=11, uv2=11).

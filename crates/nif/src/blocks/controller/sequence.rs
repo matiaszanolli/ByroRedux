@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::impl_ni_object;
+use crate::version::bsver;
 
 #[derive(Debug)]
 pub struct NiMultiTargetTransformController {
@@ -291,18 +292,18 @@ impl NiControllerSequence {
         }
 
         // Anim notes — layout diverges by BSVER (#432):
-        //   FO3/FNV (BSVER 24–28):  single Ref<BSAnimNotes>
+        //   FO3-era (BSVER 24–28): single Ref<BSAnimNotes>
         //   Skyrim+ (BSVER > 28):   u16 count + Vec<Ref<BSAnimNotes>>
         // Normalise both into the same Vec so downstream consumers only
         // see one shape. Older BSVERs (< 24) carry no anim notes at all.
-        let anim_note_refs = if bsver > crate::version::bsver::ANIM_NOTES_THRESHOLD {
+        let anim_note_refs = if bsver > bsver::ANIM_NOTES_THRESHOLD {
             let num = stream.read_u16_le()? as u32;
             let mut refs = stream.allocate_vec(num)?;
             for _ in 0..num {
                 refs.push(stream.read_block_ref()?);
             }
             refs
-        } else if (24..=28).contains(&bsver) {
+        } else if (bsver::FO3_ANIM_NOTES_LOWER..=bsver::ANIM_NOTES_THRESHOLD).contains(&bsver) {
             vec![stream.read_block_ref()?]
         } else {
             Vec::new()
