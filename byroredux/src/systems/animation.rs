@@ -488,6 +488,23 @@ struct AnimScratch {
 /// Inner implementation of the animation system, parameterised on a
 /// reusable [`AnimScratch`] the caller either provides fresh (test path)
 /// or persists across frames (production closure path, #1372 / #1725).
+///
+/// **Lock-order invariant (#2400):** `registry` (`AnimationClipRegistry`,
+/// bound just below) and `name_index` (`NameIndex`, bound further down)
+/// are function-scope locals held read-locked for this entire function —
+/// every other acquisition in the body (`Name`, `SubtreeCache`,
+/// `AnimationPlayer`, `AnimationTextKeyEvents`, `Transform`,
+/// `RootMotionDelta`, `AnimationStack`, and every animated-channel sink)
+/// happens underneath both. Treat `AnimationClipRegistry` and `NameIndex`
+/// as the two outermost locks in this system: nothing reachable from this
+/// function may acquire either of them while already holding any animation
+/// component storage (`AnimationPlayer`/`AnimationStack`/`Transform`/etc.),
+/// or a system on another rayon worker taking that reverse order closes an
+/// ABBA cycle the scheduler's parallel lane for this system doesn't
+/// currently backstop (`Stage::Update`, `boot.rs`). Mirrors the
+/// NameIndex-before-`Name` rule documented at the `NameIndex` rebuild
+/// check below (#824/#827), generalized to the whole function body. See
+/// CONC-D3-2026-08-07-02 / #2153 / #2126.
 fn animation_system_inner(world: &World, dt: f32, scratch: &mut AnimScratch) {
     // Split the scratch into disjoint per-buffer references up front so the
     // player and stack passes each see independent `&mut Vec`s (the borrow
@@ -501,7 +518,9 @@ fn animation_system_inner(world: &World, dt: f32, scratch: &mut AnimScratch) {
         channel_names: channel_names_scratch,
         updates: updates_scratch,
     } = scratch;
-    // Read the clip registry (immutable).
+    // Read the clip registry (immutable). Held for the rest of this
+    // function — see the outermost-lock invariant on `animation_system_inner`'s
+    // doc comment (#2400).
     let Some(registry) = world.try_resource::<AnimationClipRegistry>() else {
         return;
     };
@@ -570,6 +589,9 @@ fn animation_system_inner(world: &World, dt: f32, scratch: &mut AnimScratch) {
         }
     }
 
+    // Held for the rest of this function alongside `registry` above — the
+    // second of the two outermost locks; see `animation_system_inner`'s doc
+    // comment (#2400).
     let name_index = world.try_resource::<NameIndex>().unwrap();
 
     // Iterate all animation players and apply.

@@ -607,6 +607,71 @@ mod tests {
     }
 
     #[test]
+    fn text_key_full_period_advance_fires_every_key_once() {
+        // #3034 — a `CycleType::Loop` clip whose per-frame delta lands on
+        // an exact multiple of `duration` wraps back onto the exact instant
+        // it started from (prev_time == curr_time). The naive forward-
+        // window scan `(prev, curr]` is empty for that pair, so pre-fix
+        // every text key silently dropped instead of firing for the
+        // period(s) actually traversed.
+        use crate::string::StringPool;
+        let mut pool = StringPool::new();
+        let clip = AnimationClip {
+            name: "test".into(),
+            duration: 2.0,
+            cycle_type: CycleType::Loop,
+            frequency: 1.0,
+            weight: 1.0,
+            accum_root_name: None,
+            channels: HashMap::new(),
+            float_channels: Vec::new(),
+            color_channels: Vec::new(),
+            bool_channels: Vec::new(),
+            texture_flip_channels: Vec::new(),
+            text_keys: vec![(0.5, pool.intern("hit")), (1.8, pool.intern("end"))],
+        };
+
+        // A whole period (2.0s) elapsed and the loop landed exactly back at
+        // 0.5 — every key must fire once, not zero times.
+        let events = collect_text_key_events(&clip, &pool, 0.5, 0.5, false);
+        assert_eq!(events, vec!["hit", "end"]);
+
+        // The pair carries no period count — a caller reporting 2 or 3
+        // full periods presents the identical (prev, curr) pair. Each key
+        // must still fire exactly once, not N times (ONCE-EACH).
+        let events = collect_text_key_events(&clip, &pool, 0.5, 0.5, false);
+        assert_eq!(events, vec!["hit", "end"]);
+    }
+
+    #[test]
+    fn text_key_settled_clamp_stays_silent_at_prev_eq_curr() {
+        // Sibling guard: a `Clamp` clip parked at `duration` also presents
+        // prev_time == curr_time on every subsequent frame once it has
+        // fully played out — but that's a *settled* clip, not a wrap, and
+        // must stay silent forever after, unlike the Loop case above.
+        // Pins that #3034's fix is gated on `CycleType::Loop` and doesn't
+        // regress `clamped_completion_key_fires_once_at_clip_end` below.
+        use crate::string::StringPool;
+        let mut pool = StringPool::new();
+        let clip = AnimationClip {
+            name: "test".into(),
+            duration: 1.0,
+            cycle_type: CycleType::Clamp,
+            frequency: 1.0,
+            weight: 1.0,
+            accum_root_name: None,
+            channels: HashMap::new(),
+            float_channels: Vec::new(),
+            color_channels: Vec::new(),
+            bool_channels: Vec::new(),
+            texture_flip_channels: Vec::new(),
+            text_keys: vec![(1.0, pool.intern("end"))],
+        };
+        let events = collect_text_key_events(&clip, &pool, 1.0, 1.0, false);
+        assert!(events.is_empty());
+    }
+
+    #[test]
     fn text_key_reverse_backward_leg() {
         // FNV-D6-01 / #2082 — a ping-pong `CycleType::Reverse` clip on its
         // backward leg steps DOWN (prev > curr) with no loop wrap. The keys

@@ -35,13 +35,11 @@ impl ConsoleCommand for InventoryStatusCommand {
                 inventory.items.iter().map(|stack| stack.count as u64).sum(),
             )
         });
-        let occupied_slots = world.get::<EquipmentSlots>(player).map_or(0, |slots| {
-            slots
-                .occupants
-                .iter()
-                .filter(|occupant| occupant.is_some())
-                .count()
-        });
+        // #3112 — counts the weapon slot alongside the biped occupants; it is
+        // a separate field, not `occupants[31]`.
+        let occupied_slots = world
+            .get::<EquipmentSlots>(player)
+            .map_or(0, |slots| slots.equipped_indices().count());
         let weapon = world.get::<EquippedWeapon>(player).map(|weapon| *weapon);
 
         let mut lines = vec!["Inventory status:".to_owned()];

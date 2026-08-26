@@ -284,8 +284,10 @@ fn save_shape_fingerprint() -> u64 {
 
 #[test]
 fn saved_type_shape_changes_require_format_major_bump() {
-    const BASELINE_MAJOR: u16 = 7;
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x418d_9952_ddf5_a1ff;
+    // #3112 — v8 moves the wielded weapon out of `EquipmentSlots`
+    // occupancy bit 31 into its own required field.
+    const BASELINE_MAJOR: u16 = 8;
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xa6ba_8f20_d6fe_4907;
     assert_eq!(
         byroredux_save::FORMAT_MAJOR,
         BASELINE_MAJOR,

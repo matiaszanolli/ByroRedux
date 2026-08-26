@@ -17,11 +17,24 @@ use crate::npc_spawn::effective_actor_level;
 use crate::systems::PlayerEntity;
 
 const PLAYER_NPC_FORM_ID: u32 = 0x0000_0007;
-/// Dedicated equipment bit for the currently wielded weapon. Biped slot
-/// masks occupy the lower 32-bit contract in legacy records; keeping this
-/// bit separate prevents a weapon toggle from displacing body armor.
-const WEAPON_EQUIP_SLOT: usize = 31;
-const WEAPON_EQUIP_SLOT_MASK: u32 = 1 << WEAPON_EQUIP_SLOT;
+
+/// Where an equippable item goes when the player toggles it.
+///
+/// #3112 — this used to be a bare `Option<u32>` slot mask, with weapons
+/// assigned a "spare" bit 31. There is no spare bit: `EquipmentSlots`
+/// indexes `MAX_BIPED_SLOTS = 32` occupants and Skyrim+ `BOD2` addresses
+/// all 32 of them (bit 0 = body-part 30, so bit 31 = body-part 61 /
+/// `FX01`), so an authored ARMO in that slot displaced the weapon and
+/// dropped the player to unarmed damage. Modelling the two destinations
+/// as distinct variants makes the collision unrepresentable instead of
+/// relying on a bit nobody authors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EquipTarget {
+    /// Authored biped-slot bits (FO3/FNV `BMDT`, Skyrim+ `BOD2`).
+    BipedSlots(u32),
+    /// The wielded-weapon slot, outside the biped occupancy array.
+    Weapon,
+}
 
 /// Resolve the base `NPC_` record for the player, never the placed player
 /// reference (`0x00000014`). Every currently supported master preserves the
@@ -46,7 +59,7 @@ pub(crate) struct InventoryItemDefinition {
     pub(crate) value: u32,
     pub(crate) weight: f32,
     pub(crate) details: String,
-    pub(crate) equip_slot_mask: Option<u32>,
+    pub(crate) equip_target: Option<EquipTarget>,
     pub(crate) weapon_damage: Option<f32>,
     /// Authored reach/speed, `0.0` when the source game's weapon layout
     /// isn't decoded (see `ItemKind::Weapon::reach`/`speed`). `combat.rs`
@@ -91,7 +104,7 @@ pub(crate) fn install_catalog(world: &mut World, index: &EsmIndex) {
             } else {
                 format!("Item {form_id:08X}")
             };
-            let (category, details, equip_slot_mask) = describe_kind(&item.kind);
+            let (category, details, equip_target) = describe_kind(&item.kind);
             let (weapon_damage, weapon_reach, weapon_speed) = match &item.kind {
                 ItemKind::Weapon {
                     damage,
@@ -109,7 +122,7 @@ pub(crate) fn install_catalog(world: &mut World, index: &EsmIndex) {
                     value: item.common.value,
                     weight: item.common.weight.max(0.0),
                     details,
-                    equip_slot_mask,
+                    equip_target,
                     weapon_damage,
                     weapon_reach,
                     weapon_speed,
@@ -121,7 +134,7 @@ pub(crate) fn install_catalog(world: &mut World, index: &EsmIndex) {
     world.insert_resource(build_player_template(index));
 }
 
-fn describe_kind(kind: &ItemKind) -> (&'static str, String, Option<u32>) {
+fn describe_kind(kind: &ItemKind) -> (&'static str, String, Option<EquipTarget>) {
     match kind {
         ItemKind::Armor {
             biped_flags,
@@ -140,13 +153,15 @@ fn describe_kind(kind: &ItemKind) -> (&'static str, String, Option<u32>) {
             (
                 "Armor",
                 protection,
-                (*biped_flags != 0).then_some(*biped_flags),
+                // The authored mask verbatim — every bit of it addresses a
+                // biped slot, including bit 31 (#3112).
+                (*biped_flags != 0).then(|| EquipTarget::BipedSlots(*biped_flags)),
             )
         }
         ItemKind::Weapon { damage, .. } => (
             "Weapon",
             format!("Damage {damage}"),
-            Some(WEAPON_EQUIP_SLOT_MASK),
+            Some(EquipTarget::Weapon),
         ),
         ItemKind::Ammo { damage, .. } => ("Ammo", format!("Damage {damage:.1}"), None),
         ItemKind::Aid { .. } => ("Aid", "Consumable".to_owned(), None),
@@ -297,7 +312,16 @@ pub(crate) fn attach_to_player(world: &mut World, player: byroredux_core::ecs::E
         .map(|template| template.clone())
         .unwrap_or_default();
     world.insert(player, template.inventory);
-    world.insert(player, template.equipment);
+    let mut equipment = template.equipment;
+    // #3112 — mirror the template's starting weapon into the equipment's
+    // weapon slot. `prefer_weapon` only fills `equipped_weapon`, so pre-fix
+    // the slots and the component disagreed from spawn: the very first menu
+    // toggle re-derived `EquippedWeapon` from an empty slot and dropped the
+    // authored starting weapon.
+    if let Some(weapon) = template.equipped_weapon {
+        equipment.equip_weapon(weapon.inventory_index);
+    }
+    world.insert(player, equipment);
     if let Some(weapon) = template.equipped_weapon {
         world.insert(player, weapon);
     }
@@ -341,10 +365,13 @@ pub(crate) fn snapshot(world: &World) -> Option<byroredux_debug_ui::InventorySna
             count: stack.count,
             value: definition.map_or(0, |definition| definition.value),
             weight,
+            // #3112 — `is_equipped`, not a bare `occupants` scan: the
+            // wielded weapon lives outside the biped array and would
+            // otherwise render as unequipped in the menu.
             equipped: equipment
                 .as_ref()
-                .is_some_and(|slots| slots.occupants.contains(&Some(InventoryIndex(index)))),
-            equippable: definition.is_some_and(|definition| definition.equip_slot_mask.is_some()),
+                .is_some_and(|slots| slots.is_equipped(InventoryIndex(index))),
+            equippable: definition.is_some_and(|definition| definition.equip_target.is_some()),
         });
     }
     items.sort_by(|left, right| {
@@ -388,15 +415,12 @@ pub(crate) fn apply_action(
     else {
         return MutationResult::Unavailable;
     };
-    let Some(slot_mask) = world
-        .try_resource::<InventoryCatalog>()
-        .and_then(|catalog| {
-            catalog
-                .entries
-                .get(&form_id)
-                .and_then(|item| item.equip_slot_mask)
-        })
-    else {
+    let Some(equip_target) = world.try_resource::<InventoryCatalog>().and_then(|catalog| {
+        catalog
+            .entries
+            .get(&form_id)
+            .and_then(|item| item.equip_target)
+    }) else {
         return MutationResult::Unavailable;
     };
     let Some(mut equipment_query) = world.query_mut::<EquipmentSlots>() else {
@@ -406,22 +430,34 @@ pub(crate) fn apply_action(
         return MutationResult::Unavailable;
     };
 
-    let mutation = if equipment.occupants.contains(&Some(inventory_index)) {
-        for occupant in &mut equipment.occupants {
-            if *occupant == Some(inventory_index) {
-                *occupant = None;
-            }
-        }
+    // #3112 — release/equip through the whole-entry helpers so a toggle
+    // reaches both destinations, and route the equip through the variant the
+    // catalog recorded rather than a slot mask that could address either.
+    let mutation = if equipment.release(inventory_index) {
         log::info!("inventory: player unequipped {form_id:08X}");
         MutationResult::Unequipped
     } else {
-        equipment.equip(slot_mask, inventory_index);
+        match equip_target {
+            EquipTarget::BipedSlots(mask) => {
+                equipment.equip(mask, inventory_index);
+            }
+            EquipTarget::Weapon => {
+                equipment.equip_weapon(inventory_index);
+            }
+        }
         log::info!("inventory: player equipped {form_id:08X}");
         MutationResult::Equipped
     };
-    let equipped_weapon = equipment.occupants[WEAPON_EQUIP_SLOT];
+    // Only a weapon toggle can change what is wielded — an armor toggle
+    // must leave `EquippedWeapon` alone. Pre-#3112 this re-derived from
+    // `occupants[31]` after *every* toggle, so equipping an armor whose
+    // BOD2 set bit 31 silently unequipped the player's weapon.
+    let weapon_changed = equip_target == EquipTarget::Weapon;
+    let equipped_weapon = equipment.weapon;
     drop(equipment_query);
-    reconcile_equipped_weapon(world, player, equipped_weapon);
+    if weapon_changed {
+        reconcile_equipped_weapon(world, player, equipped_weapon);
+    }
     mutation
 }
 
@@ -485,7 +521,7 @@ mod tests {
                         value: 125,
                         weight: 30.0,
                         details: "Armor rating 25.0".to_owned(),
-                        equip_slot_mask: Some(1 << 12),
+                        equip_target: Some(EquipTarget::BipedSlots(1 << 12)),
                         weapon_damage: None,
                         weapon_reach: 0.0,
                         weapon_speed: 0.0,
@@ -499,7 +535,7 @@ mod tests {
                         value: 1,
                         weight: 0.0,
                         details: "Damage 8.0".to_owned(),
-                        equip_slot_mask: None,
+                        equip_target: None,
                         weapon_damage: None,
                         weapon_reach: 0.0,
                         weapon_speed: 0.0,
@@ -513,7 +549,7 @@ mod tests {
                         value: 100,
                         weight: 8.0,
                         details: "Damage 12".to_owned(),
-                        equip_slot_mask: Some(WEAPON_EQUIP_SLOT_MASK),
+                        equip_target: Some(EquipTarget::Weapon),
                         weapon_damage: Some(12.0),
                         weapon_reach: 90.0,
                         weapon_speed: 1.1,
@@ -590,10 +626,7 @@ mod tests {
         assert_eq!(weapon.speed, 1.1);
         drop(weapon);
         assert_eq!(
-            world
-                .get::<EquipmentSlots>(player)
-                .unwrap()
-                .at(WEAPON_EQUIP_SLOT as u8),
+            world.get::<EquipmentSlots>(player).unwrap().weapon,
             Some(InventoryIndex(2))
         );
         assert_eq!(
@@ -611,6 +644,141 @@ mod tests {
         assert_eq!(describe_kind(&ItemKind::Mod { was_junk: false }).0, "Mods");
         assert_eq!(describe_kind(&ItemKind::Junk).0, "Junk");
         assert_eq!(describe_kind(&ItemKind::Misc).0, "Misc");
+    }
+
+    // ── weapon slot vs. authored biped masks (#3112) ────────────────────
+
+    /// The headline regression: a Skyrim/FO4 ARMO whose `BOD2` sets bit 31
+    /// (body-part 61 / `FX01`) is a real authorable record. Pre-fix the
+    /// weapon lived at `occupants[31]`, so equipping such an armor wrote
+    /// over it and `reconcile_equipped_weapon` — reading that same bit and
+    /// finding an armor with `weapon_damage: None` — removed the player's
+    /// `EquippedWeapon`, silently dropping melee damage to `UNARMED_DAMAGE`.
+    #[test]
+    fn equipping_a_bit31_armor_does_not_unequip_the_weapon() {
+        let (mut world, player) = fixture();
+        // Re-author the armor with the exact mask that used to collide.
+        world
+            .try_resource_mut::<InventoryCatalog>()
+            .unwrap()
+            .entries
+            .get_mut(&0x1234)
+            .unwrap()
+            .equip_target = Some(EquipTarget::BipedSlots(1 << 31));
+
+        // Wield the sword first.
+        assert_eq!(
+            apply_action(
+                &mut world,
+                byroredux_debug_ui::InventoryAction::ToggleEquip { index: 2 }
+            ),
+            MutationResult::Equipped
+        );
+        assert!(world.get::<EquippedWeapon>(player).is_some());
+
+        // Now equip the bit-31 armor — the weapon must survive.
+        assert_eq!(
+            apply_action(
+                &mut world,
+                byroredux_debug_ui::InventoryAction::ToggleEquip { index: 0 }
+            ),
+            MutationResult::Equipped
+        );
+        let weapon = world
+            .get::<EquippedWeapon>(player)
+            .expect("a bit-31 armor must not unequip the wielded weapon (#3112)");
+        assert_eq!(weapon.inventory_index, InventoryIndex(2));
+        assert_eq!(weapon.damage, 12.0);
+        drop(weapon);
+
+        // And the armor really did land in biped bit 31 — the two occupy
+        // genuinely disjoint storage, not one displacing the other.
+        let slots = world.get::<EquipmentSlots>(player).unwrap();
+        assert_eq!(slots.at(31), Some(InventoryIndex(0)));
+        assert_eq!(slots.weapon, Some(InventoryIndex(2)));
+    }
+
+    /// The reverse direction from the same finding: wielding a weapon must
+    /// not evict an armor that occupies bit 31.
+    #[test]
+    fn equipping_a_weapon_does_not_displace_a_bit31_armor() {
+        let (mut world, player) = fixture();
+        world
+            .try_resource_mut::<InventoryCatalog>()
+            .unwrap()
+            .entries
+            .get_mut(&0x1234)
+            .unwrap()
+            .equip_target = Some(EquipTarget::BipedSlots(1 << 31));
+
+        apply_action(
+            &mut world,
+            byroredux_debug_ui::InventoryAction::ToggleEquip { index: 0 },
+        );
+        apply_action(
+            &mut world,
+            byroredux_debug_ui::InventoryAction::ToggleEquip { index: 2 },
+        );
+
+        let slots = world.get::<EquipmentSlots>(player).unwrap();
+        assert_eq!(
+            slots.at(31),
+            Some(InventoryIndex(0)),
+            "wielding a weapon must not displace an armor from biped bit 31"
+        );
+        assert_eq!(slots.weapon, Some(InventoryIndex(2)));
+    }
+
+    /// `describe_kind` is the only producer of `EquipTarget`, so the
+    /// collision is closed at the source: no `ItemKind::Armor` — whatever
+    /// its authored mask — can ever yield `EquipTarget::Weapon`.
+    #[test]
+    fn no_armor_describe_kind_output_can_target_the_weapon_slot() {
+        for biped_flags in [1u32 << 31, u32::MAX, 0x8000_1000, 1, 0] {
+            let (_, _, target) = describe_kind(&ItemKind::Armor {
+                biped_flags,
+                dt: 0.0,
+                dr: 0,
+                health: 0,
+                slot_mask: 0,
+                armor_rating_x100: 0,
+                armor_type: None,
+                armatures: Vec::new(),
+            });
+            assert_ne!(
+                target,
+                Some(EquipTarget::Weapon),
+                "armor with biped_flags {biped_flags:#010X} must never target the weapon slot",
+            );
+        }
+    }
+
+    /// An armor toggle must leave `EquippedWeapon` untouched entirely —
+    /// not merely "re-derive to the same value". Pins the `weapon_changed`
+    /// gate in `apply_action`.
+    #[test]
+    fn armor_toggles_never_touch_the_equipped_weapon() {
+        let (mut world, player) = fixture();
+        apply_action(
+            &mut world,
+            byroredux_debug_ui::InventoryAction::ToggleEquip { index: 2 },
+        );
+        let before = *world.get::<EquippedWeapon>(player).unwrap();
+
+        // Equip then unequip the armor.
+        apply_action(
+            &mut world,
+            byroredux_debug_ui::InventoryAction::ToggleEquip { index: 0 },
+        );
+        apply_action(
+            &mut world,
+            byroredux_debug_ui::InventoryAction::ToggleEquip { index: 0 },
+        );
+
+        let after = *world.get::<EquippedWeapon>(player).unwrap();
+        assert_eq!(before.inventory_index, after.inventory_index);
+        assert_eq!(before.base_form_id, after.base_form_id);
+        assert_eq!(before.damage, after.damage);
     }
 
     #[test]

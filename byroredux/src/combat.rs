@@ -102,16 +102,28 @@ pub(crate) fn combat_input_system(world: &World, dt: f32) {
         .unwrap_or((false, false));
 
     // Resolved once up front: both the cooldown arm below and the reach
-    // used for the ray cast need the equipped weapon, and the cooldown has
-    // to be armed before the mode/aggressor gating below returns early.
+    // used for the ray cast need the equipped weapon.
     let aggressor = world
         .try_resource::<PlayerEntity>()
         .and_then(|player| player.0);
 
+    // #3033 — the eligibility gate must be read BEFORE the `CombatState`
+    // mutation, not after it. Pre-fix the attack edge was consumed, the
+    // cooldown armed and `attacks_started` incremented, and only *then* was
+    // the mode checked — so a fly-cam session inflated the swing counter and
+    // reported a cooldown the player never incurred, corrupting the very
+    // telemetry `combat.status` (the P2 gate's console surface) reads.
+    let in_character_mode = world
+        .try_resource::<PlayerMode>()
+        .is_some_and(|mode| *mode == PlayerMode::Character);
+
     let attack_ready = if let Some(mut state) = world.try_resource_mut::<CombatState>() {
+        // Continuous state, not an edge: the cooldown clock and the block
+        // flag keep tracking in every mode, so entering and leaving fly-cam
+        // neither freezes a running cooldown nor strands `blocking` true.
         state.blocking = block_held;
         state.cooldown_remaining = (state.cooldown_remaining - dt.max(0.0)).max(0.0);
-        if attack_pressed && state.cooldown_remaining <= 0.0 {
+        if attack_pressed && in_character_mode && state.cooldown_remaining <= 0.0 {
             state.cooldown_remaining = aggressor.map_or(MELEE_COOLDOWN_SECONDS, |aggressor| {
                 attack_cooldown_seconds(world, aggressor)
             });
@@ -123,11 +135,12 @@ pub(crate) fn combat_input_system(world: &World, dt: f32) {
     } else {
         false
     };
-    if !attack_ready
-        || !world
-            .try_resource::<PlayerMode>()
-            .is_some_and(|mode| *mode == PlayerMode::Character)
-    {
+    if !attack_ready {
+        // Deliberately NOT `record_miss`: every miss reason below describes a
+        // swing that happened and failed to connect. A press outside
+        // character mode (or during cooldown) is not a swing at all, so
+        // `CombatState.last` keeps the previous real attempt rather than
+        // being overwritten by a non-event. #3033.
         return;
     }
 
@@ -836,5 +849,104 @@ mod tests {
         assert!(world.get::<FollowBehavior>(actor).is_none());
         assert!(world.get::<FollowState>(actor).is_none());
         assert!(world.get::<Dead>(actor).is_some());
+    }
+
+    // ── attack edge is gated on PlayerMode::Character (#3033) ───────────
+
+    /// Drive the real input pipeline so the attack edge is produced the
+    /// way the engine produces it, then run one `combat_input_system` tick.
+    fn attack_edge_fixture(mode: PlayerMode) -> World {
+        use crate::components::InputState;
+        use crate::interaction::{ActionBindings, InjectedKeyHold, InjectedKeyPulse};
+
+        let mut world = World::new();
+        byroredux_scripting::register(&mut world);
+        world.register::<EquippedWeapon>();
+        world.register::<Dead>();
+        world.insert_resource(CombatState::default());
+        world.insert_resource(InputState::default());
+        world.insert_resource(ActionBindings::default());
+        world.insert_resource(ActionState::default());
+        world.insert_resource(InjectedKeyPulse::default());
+        world.insert_resource(InjectedKeyHold::default());
+        world.insert_resource(mode);
+        world.insert_resource(PlayerEntity(None));
+        world
+    }
+
+    fn press_attack(world: &World) {
+        use crate::components::InputState;
+        use winit::keyboard::KeyCode;
+
+        world
+            .resource_mut::<InputState>()
+            .keys_held
+            .insert(KeyCode::KeyR);
+        crate::interaction::refresh_action_state(world);
+        assert!(world
+            .resource::<ActionState>()
+            .was_pressed(InputAction::Attack));
+    }
+
+    #[test]
+    fn fly_cam_attack_press_does_not_burn_the_edge_or_arm_the_cooldown() {
+        // #3033 — pre-fix the `CombatState` mutation ran *before* the
+        // `PlayerMode::Character` gate, so a fly-cam press inflated
+        // `attacks_started` and armed a cooldown the player never incurred,
+        // corrupting the telemetry `combat.status` reports.
+        let world = attack_edge_fixture(PlayerMode::FlyCam);
+        press_attack(&world);
+
+        combat_input_system(&world, 1.0 / 60.0);
+
+        let state = world.resource::<CombatState>();
+        assert_eq!(
+            state.attacks_started, 0,
+            "a fly-cam press is not a swing and must not move the counter"
+        );
+        assert_eq!(
+            state.cooldown_remaining, 0.0,
+            "a fly-cam press must not arm the melee cooldown"
+        );
+        assert!(
+            state.last.is_none(),
+            "the mode bail deliberately leaves `last` untouched — it is not a miss"
+        );
+    }
+
+    #[test]
+    fn character_mode_attack_press_consumes_the_edge_and_arms_the_cooldown() {
+        // Companion to the above: the gate must not have broken the real
+        // path. In character mode the same press still counts and arms.
+        let world = attack_edge_fixture(PlayerMode::Character);
+        press_attack(&world);
+
+        combat_input_system(&world, 1.0 / 60.0);
+
+        let state = world.resource::<CombatState>();
+        assert_eq!(state.attacks_started, 1);
+        assert_eq!(state.cooldown_remaining, MELEE_COOLDOWN_SECONDS);
+    }
+
+    #[test]
+    fn cooldown_keeps_ticking_down_in_fly_cam() {
+        // The decay and the block flag are continuous state, not an edge:
+        // entering fly-cam mid-cooldown must not freeze the clock, or the
+        // player returns to character mode still locked out.
+        let world = attack_edge_fixture(PlayerMode::Character);
+        press_attack(&world);
+        combat_input_system(&world, 0.0);
+        assert_eq!(
+            world.resource::<CombatState>().cooldown_remaining,
+            MELEE_COOLDOWN_SECONDS
+        );
+
+        *world.resource_mut::<PlayerMode>() = PlayerMode::FlyCam;
+        combat_input_system(&world, 0.2);
+        let remaining = world.resource::<CombatState>().cooldown_remaining;
+        assert!(
+            (remaining - (MELEE_COOLDOWN_SECONDS - 0.2)).abs() < 1e-5,
+            "cooldown must keep decaying in fly-cam, got {remaining}"
+        );
     }
 }

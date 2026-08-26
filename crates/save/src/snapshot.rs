@@ -68,7 +68,14 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// Version 7 adds required canonical glass-optics and Bethesda authored
 /// lighting-response fields to saved `Material` / material-texture state.
 /// Older snapshots cannot reconstruct those source values safely.
-pub const FORMAT_MAJOR: u16 = 7;
+/// Version 8 moves `EquipmentSlots`' wielded weapon out of biped occupancy
+/// bit 31 into a required `weapon` field (#3112). Bit 31 is a real
+/// authorable Skyrim+ `BOD2` slot (body-part 61 / `FX01`), so pre-v8 saves
+/// cannot distinguish "an armor occupies slot 61" from "this is the wielded
+/// weapon" — the ambiguity the field split exists to remove. Defaulting the
+/// new field would re-introduce exactly that guess, so old snapshots are
+/// rejected instead.
+pub const FORMAT_MAJOR: u16 = 8;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

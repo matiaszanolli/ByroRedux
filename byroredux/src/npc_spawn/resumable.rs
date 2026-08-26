@@ -784,11 +784,18 @@ fn advance_runtime_unit(
                 state.placement_root,
                 state.inventory.take().unwrap_or_default(),
             );
-            world.insert(
-                state.placement_root,
-                state.equipment_slots.take().unwrap_or_default(),
-            );
-            if let Some(weapon) = state.equipped_weapon.take() {
+            let mut equipment_slots = state.equipment_slots.take().unwrap_or_default();
+            let weapon = state.equipped_weapon.take();
+            // #3112 — mirror the wielded weapon into `EquipmentSlots::weapon`
+            // so "is this equipped?" consumers (CTDA `GetEquipped`) see it.
+            // The equip pipeline only fills `equipped_weapon`; the weapon slot
+            // is deliberately outside the biped occupancy array, so nothing
+            // else writes it.
+            if let Some(weapon) = weapon {
+                equipment_slots.equip_weapon(weapon.inventory_index);
+            }
+            world.insert(state.placement_root, equipment_slots);
+            if let Some(weapon) = weapon {
                 world.insert(state.placement_root, weapon);
             }
             if let Some(skeleton) = state.skel_root {
@@ -988,7 +995,12 @@ fn prepare_prebaked_state(
         })
         .collect();
     world.insert(placement_root, equip.inventory);
-    world.insert(placement_root, equip.equipment_slots);
+    let mut equipment_slots = equip.equipment_slots;
+    // #3112 — same weapon-slot mirror as the resumable finalize path above.
+    if let Some(weapon) = equip.equipped_weapon {
+        equipment_slots.equip_weapon(weapon.inventory_index);
+    }
+    world.insert(placement_root, equipment_slots);
     if let Some(weapon) = equip.equipped_weapon {
         world.insert(placement_root, weapon);
     }

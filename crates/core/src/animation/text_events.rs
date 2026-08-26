@@ -1,6 +1,6 @@
 //! Text key event detection during animation playback.
 
-use super::types::AnimationClip;
+use super::types::{AnimationClip, CycleType};
 use crate::string::{FixedString, StringPool};
 
 /// Visit each text key event crossed between `prev_time` and `curr_time`,
@@ -12,7 +12,10 @@ use crate::string::{FixedString, StringPool};
 ///
 /// For forward-playing looping animations, wrap-around is handled: a step
 /// from 4.8 → 0.3 in a 5-second clip fires events in both [4.8, 5.0] and
-/// [0.0, 0.3].
+/// [0.0, 0.3]. A `CycleType::Loop` step whose delta is an exact multiple of
+/// `duration` — landing back on the exact instant it started from — fires
+/// every key once rather than the empty window that bare equality would
+/// otherwise scan (#3034).
 ///
 /// `reverse_direction` must be the layer/player's ping-pong direction flag
 /// (`CycleType::Reverse`). On a backward leg the playhead moves *down*
@@ -48,6 +51,24 @@ pub fn visit_text_key_events(
             if *t > curr_time && *t <= prev_time {
                 visit(*t, *sym);
             }
+        }
+    } else if curr_time == prev_time && clip.duration > 0.0 && clip.cycle_type == CycleType::Loop {
+        // #3034 — a `CycleType::Loop` clip whose delta this step is an
+        // exact multiple of `duration` (one full period, or several) wraps
+        // back onto the same instant it started from. The normal forward
+        // scan below is the half-open window `(prev, curr]`, which is empty
+        // when `prev == curr`, so every text key silently drops instead of
+        // firing for the period(s) actually traversed. Fire each key once —
+        // the semantically defensible reading for a single frame — rather
+        // than falling through to the empty result.
+        //
+        // `Clamp` and `Reverse` never reach this arm: `Clamp` saturates at
+        // `duration` and stays there on every subsequent frame (a *settled*
+        // clip, not a wrap — see `clamped_completion_key_fires_once_at_clip_end`,
+        // which must stay silent there), and `Reverse`'s ping-pong fold is
+        // handled entirely by the `reverse_direction` arm above.
+        for (t, sym) in &clip.text_keys {
+            visit(*t, *sym);
         }
     } else if curr_time >= prev_time {
         // Normal forward progression (no wrap).

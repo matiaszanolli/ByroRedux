@@ -203,7 +203,10 @@ fn validate_equipment(world: &World, errors: &mut Vec<ValidationError>) {
                 .as_ref()
                 .and_then(|q| q.get(entity))
                 .map(|i| i.items.len());
-            for occupant in slots.occupants.iter().flatten() {
+            // #3112 — spans the weapon slot too, which is a separate field
+            // rather than a biped occupant and would otherwise restore
+            // unvalidated.
+            for occupant in slots.equipped_indices() {
                 validate_inventory_index(entity, "EquipmentSlots", occupant.0, item_count, errors);
             }
         }

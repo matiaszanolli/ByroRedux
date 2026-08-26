@@ -621,7 +621,10 @@ pub fn evaluate_function(
             let Some(inventory) = world.get::<Inventory>(entity) else {
                 return 0.0;
             };
-            let equipped = slots.occupants.iter().flatten().any(|&index| {
+            // #3112 — `equipped_indices()` spans the biped occupants AND the
+            // wielded weapon, which lives outside the occupancy array. A bare
+            // `occupants` scan reports every equipped weapon as unequipped.
+            let equipped = slots.equipped_indices().any(|index| {
                 inventory
                     .get(index)
                     .is_some_and(|stack| stack.count > 0 && stack.base_form_id == condition.param_1)

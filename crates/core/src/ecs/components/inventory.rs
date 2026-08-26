@@ -178,16 +178,37 @@ pub const MAX_BIPED_SLOTS: usize = 32;
 /// overlaps an existing item's slot mask supersedes the old occupant
 /// in the overlapping bits — visualisation responsibility, not save-
 /// state churn.
+///
+/// The wielded weapon lives in its own [`weapon`](Self::weapon) field
+/// rather than a biped bit — see that field's docs (#3112).
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct EquipmentSlots {
     pub occupants: [Option<InventoryIndex>; MAX_BIPED_SLOTS],
+    /// The currently wielded weapon's `Inventory` entry.
+    ///
+    /// #3112 — deliberately **not** a bit in `occupants`. Every index in
+    /// `0..MAX_BIPED_SLOTS` is addressable by an authored armor mask:
+    /// FO3/FNV `BMDT.biped_flags` reaches the low 16, and Skyrim+ `BOD2`
+    /// reaches all 32 (bit 0 = body-part 30, so bit 31 = body-part 61 /
+    /// `FX01`, a real `BSDismemberBodyPartType`). Carving a "spare" bit
+    /// out of that array — as the first pass at #3032 did with bit 31 —
+    /// lets an authored ARMO and the weapon displace each other, silently
+    /// dropping the player's `EquippedWeapon` back to unarmed damage.
+    /// A separate field is unreachable from any record mask by
+    /// construction.
+    ///
+    /// Deliberately no `serde(default)`: per SAVE-D2-01 (#1714) a
+    /// compatibility default would mask this intra-type change, so
+    /// `byroredux_save::FORMAT_MAJOR` is bumped instead.
+    pub weapon: Option<InventoryIndex>,
 }
 
 impl Default for EquipmentSlots {
     fn default() -> Self {
         Self {
             occupants: [None; MAX_BIPED_SLOTS],
+            weapon: None,
         }
     }
 }
@@ -238,6 +259,50 @@ impl EquipmentSlots {
     /// for bits beyond [`MAX_BIPED_SLOTS`] rather than panicking.
     pub fn at(&self, bit: u8) -> Option<InventoryIndex> {
         self.occupants.get(usize::from(bit)).copied().flatten()
+    }
+
+    /// Wield `idx`, returning the inventory entry it displaced (if any).
+    /// Never touches [`occupants`](Self::occupants), so no authored armor
+    /// mask can collide with it (#3112).
+    pub fn equip_weapon(&mut self, idx: InventoryIndex) -> Option<InventoryIndex> {
+        self.weapon.replace(idx).filter(|&prev| prev != idx)
+    }
+
+    /// Stop wielding whatever is in the weapon slot, returning it.
+    pub fn unequip_weapon(&mut self) -> Option<InventoryIndex> {
+        self.weapon.take()
+    }
+
+    /// Every inventory entry this actor currently has equipped — biped
+    /// occupants and the wielded weapon. Yields duplicates when one item
+    /// covers several biped bits; callers that need uniqueness dedup.
+    ///
+    /// Use this (not a bare `occupants` scan) for any "is this item
+    /// equipped?" question, or the weapon reads as unequipped (#3112).
+    pub fn equipped_indices(&self) -> impl Iterator<Item = InventoryIndex> + '_ {
+        self.occupants.iter().flatten().copied().chain(self.weapon)
+    }
+
+    /// Whether `idx` is equipped in any biped slot or the weapon slot.
+    pub fn is_equipped(&self, idx: InventoryIndex) -> bool {
+        self.equipped_indices().any(|equipped| equipped == idx)
+    }
+
+    /// Release `idx` from every biped slot it occupies and from the weapon
+    /// slot. Returns whether anything was actually released.
+    pub fn release(&mut self, idx: InventoryIndex) -> bool {
+        let mut released = false;
+        for occupant in &mut self.occupants {
+            if *occupant == Some(idx) {
+                *occupant = None;
+                released = true;
+            }
+        }
+        if self.weapon == Some(idx) {
+            self.weapon = None;
+            released = true;
+        }
+        released
     }
 }
 
@@ -329,5 +394,90 @@ mod tests {
         for o in slots.occupants.iter() {
             assert!(o.is_none());
         }
+    }
+
+    // ── weapon slot lives outside the biped array (#3112) ───────────────
+
+    #[test]
+    fn no_armor_mask_can_reach_the_weapon_slot() {
+        // The invariant #3112 exists to pin: NO value an authored BOD2 /
+        // BMDT mask can take — including the all-ones u32, which sets the
+        // former WEAPON_EQUIP_SLOT bit 31 (Skyrim+ body-part 61 / FX01) —
+        // may touch the wielded weapon. Pre-fix the weapon lived at
+        // occupants[31], so equipping such an armor silently unequipped it.
+        let mut slots = EquipmentSlots::new();
+        slots.equip_weapon(InventoryIndex(9));
+
+        let displaced = slots.equip(u32::MAX, InventoryIndex(4));
+        assert!(
+            !displaced.contains(&InventoryIndex(9)),
+            "an armor mask must never displace the weapon"
+        );
+        assert_eq!(
+            slots.weapon,
+            Some(InventoryIndex(9)),
+            "the weapon survives an armor covering every addressable biped bit"
+        );
+
+        // And the reverse direction: wielding a weapon must not evict armor.
+        slots.equip_weapon(InventoryIndex(5));
+        for bit in 0..MAX_BIPED_SLOTS {
+            assert_eq!(slots.occupants[bit], Some(InventoryIndex(4)));
+        }
+    }
+
+    #[test]
+    fn unequip_mask_cannot_clear_the_weapon_slot() {
+        let mut slots = EquipmentSlots::new();
+        slots.equip_weapon(InventoryIndex(9));
+        let released = slots.unequip(u32::MAX);
+        assert!(released.is_empty());
+        assert_eq!(slots.weapon, Some(InventoryIndex(9)));
+    }
+
+    #[test]
+    fn equip_weapon_reports_the_displaced_weapon_only_on_a_real_swap() {
+        let mut slots = EquipmentSlots::new();
+        assert_eq!(slots.equip_weapon(InventoryIndex(1)), None);
+        // Re-wielding the same entry is not a swap.
+        assert_eq!(slots.equip_weapon(InventoryIndex(1)), None);
+        assert_eq!(slots.equip_weapon(InventoryIndex(2)), Some(InventoryIndex(1)));
+        assert_eq!(slots.unequip_weapon(), Some(InventoryIndex(2)));
+        assert_eq!(slots.unequip_weapon(), None);
+    }
+
+    #[test]
+    fn equipped_indices_covers_both_biped_slots_and_the_weapon() {
+        let mut slots = EquipmentSlots::new();
+        slots.equip(0b0110, InventoryIndex(3));
+        slots.equip_weapon(InventoryIndex(9));
+
+        assert!(slots.is_equipped(InventoryIndex(3)));
+        assert!(
+            slots.is_equipped(InventoryIndex(9)),
+            "a bare `occupants` scan would report the weapon as unequipped"
+        );
+        assert!(!slots.is_equipped(InventoryIndex(4)));
+
+        let mut seen: Vec<_> = slots.equipped_indices().collect();
+        seen.sort_by_key(|i| i.0);
+        seen.dedup();
+        assert_eq!(seen, vec![InventoryIndex(3), InventoryIndex(9)]);
+    }
+
+    #[test]
+    fn release_clears_an_entry_from_biped_slots_and_the_weapon() {
+        let mut slots = EquipmentSlots::new();
+        slots.equip(0b0110, InventoryIndex(3));
+        slots.equip_weapon(InventoryIndex(9));
+
+        assert!(slots.release(InventoryIndex(3)));
+        assert!(!slots.is_equipped(InventoryIndex(3)));
+        assert_eq!(slots.weapon, Some(InventoryIndex(9)));
+
+        assert!(slots.release(InventoryIndex(9)));
+        assert_eq!(slots.weapon, None);
+
+        assert!(!slots.release(InventoryIndex(9)), "already released");
     }
 }
