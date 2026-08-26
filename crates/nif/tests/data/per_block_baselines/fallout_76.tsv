@@ -59,12 +59,14 @@ NiPathInterpolator	138	0
 NiPoint3Interpolator	6613	0
 NiPointLight	991	0
 NiPosData	6604	0
-NiSingleInterpController	17439	0
+NiSingleInterpController	246	0
 NiSpotLight	2	0
 NiSwitchNode	180	0
 NiTextKeyExtraData	11300	0
+NiTransformController	14274	0
 NiTransformData	47027	0
 NiTransformInterpolator	65813	0
+NiVisController	2919	0
 bhkNPCollisionObject	54799	0
 bhkPhysicsSystem	38700	0
 bhkRagdollSystem	225	0

@@ -17,6 +17,7 @@ BSShaderTextureSet	56789	0
 BSValueNode	482	0
 BSWArray	1	0
 NiAdditionalGeometryData	3567	0
+NiAlphaController	843	0
 NiAlphaProperty	15253	0
 NiAmbientLight	12	0
 NiBSBoneLODController	41	0
@@ -55,7 +56,7 @@ NiPathInterpolator	56	0
 NiPoint3Interpolator	1637	0
 NiPointLight	119	0
 NiPosData	1679	0
-NiSingleInterpController	11598	0
+NiSingleInterpController	614	0
 NiSkinData	5396	0
 NiSkinInstance	239	0
 NiSkinPartition	5396	0
@@ -64,11 +65,13 @@ NiStencilProperty	839	0
 NiTextKeyExtraData	2689	0
 NiTextureTransformController	2077	0
 NiTexturingProperty	3018	0
+NiTransformController	7321	0
 NiTransformData	20379	0
 NiTransformInterpolator	22653	0
 NiTriShape	67974	0
 NiTriShapeData	10178	0
 NiTriStripsData	57794	0
+NiVisController	2820	0
 SkyShaderProperty	9	0
 TallGrassShaderProperty	18	0
 TileShaderProperty	49	0

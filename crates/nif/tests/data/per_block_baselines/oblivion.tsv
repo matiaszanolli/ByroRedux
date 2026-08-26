@@ -2,7 +2,8 @@
 BSBound	43	0
 BSFurnitureMarker	75	0
 BSKeyframeController	61	0
-NiAlphaProperty	1314	0
+NiAlphaController	27	0
+NiAlphaProperty	1315	0
 NiAmbientLight	17	0
 NiBSBoneLODController	36	0
 NiBillboardNode	213	0
@@ -26,8 +27,9 @@ NiFloatData	965	0
 NiFloatInterpolator	2284	0
 NiFogProperty	11	0
 NiGeomMorpherController	96	0
+NiKeyframeController	1	0
 NiMaterialColorController	177	0
-NiMaterialProperty	30872	0
+NiMaterialProperty	30874	0
 NiMorphData	96	0
 NiMultiTargetTransformController	413	0
 NiNode	25244	0
@@ -40,7 +42,6 @@ NiParticleSystem	547	0
 NiPathInterpolator	82	0
 NiPoint3Interpolator	231	0
 NiPosData	255	0
-NiSingleInterpController	3034	0
 NiSkinData	1596	0
 NiSkinInstance	1596	0
 NiSkinPartition	1596	0
@@ -51,12 +52,14 @@ NiStringPalette	410	0
 NiTextKeyExtraData	822	0
 NiTextureTransformController	95	0
 NiTexturingProperty	30121	0
-NiTransformData	4473	0
+NiTransformController	2645	0
+NiTransformData	4474	0
 NiTransformInterpolator	6907	0
-NiTriShape	35914	0
-NiTriShapeData	2134	0
+NiTriShape	35916	0
+NiTriShapeData	2136	0
 NiTriStripsData	40553	0
 NiVertexColorProperty	4968	0
+NiVisController	361	0
 NiWireframeProperty	8	0
 NiZBufferProperty	177	0
 bhkBlendController	850	0
