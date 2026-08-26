@@ -528,9 +528,10 @@ notes for the format-string system menus rely on.
 
 ## Tests
 
-The UI crate has **48 default tests plus 2 ignored** installed-corpus smokes
-(measured 2026-08-21 with `cargo test -q -p byroredux-ui`; re-measure rather
-than trusting this line — it has drifted three times). The executable adds
+The UI crate has **53 default tests plus 2 ignored** installed-corpus smokes
+(measured 2026-08-26 with `cargo test -p byroredux-ui -- --list` and
+`cargo test -p byroredux-ui -- --list --ignored`; re-measure rather than
+trusting this line — it has drifted four times). The executable adds
 winit-translation tests in `byroredux/src/ui_input.rs`. The synthetic
 non-Bethesda SWFs come from Ruffle's pinned ExternalInterface fixtures:
 
