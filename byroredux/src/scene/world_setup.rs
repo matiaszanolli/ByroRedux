@@ -7,6 +7,7 @@
 //! it under ~1000 lines.
 
 use byroredux_core::ecs::components::groundcover::WindField;
+use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::World;
 use byroredux_core::math::Vec3;
 use byroredux_renderer::VulkanContext;
@@ -891,6 +892,18 @@ pub(crate) fn stream_initial_radius(
 /// destructive teardown (`save_io::execute_pending_save_loads`, SAVE-D6-02)
 /// can build the context first, teardown only on success, and hand the
 /// already-built context straight in here instead of paying a second parse.
+///
+/// `preserved_persistent_root` — EX-14/15 item C2 (#2369): when `Some`, the
+/// caller has already determined (via
+/// [`cell_loader::persistent_root_survives_crossing`]) that this crossing
+/// resolves to the SAME persistent CELL the entity is already the root of,
+/// and has detached it from the old streaming state *before* draining so it
+/// survived. Installing it here — before [`stream_initial_radius`] runs —
+/// makes that fn's existing `persistent_root.is_none()` guard skip the
+/// fresh persistent-CELL spawn entirely, instead of building one and
+/// silently leaking the old one underneath it. `None` (every caller except
+/// the two worldspace-crossing paths) is the ordinary always-rebuild
+/// behavior.
 #[allow(clippy::too_many_arguments)] // Explicit world-streaming handoff boundary.
 pub(crate) fn assemble_exterior_streaming(
     world: &mut World,
@@ -901,11 +914,19 @@ pub(crate) fn assemble_exterior_streaming(
     grid: (i32, i32),
     radius: i32,
     bootstrap_mode: ExteriorBootstrapMode,
+    preserved_persistent_root: Option<EntityId>,
 ) -> (WorldStreamingState, Vec3) {
     crate::asset_provider::populate_scene_runtime(world, &wctx.record_index);
     crate::asset_provider::populate_havok_idle_runtime(world, &wctx.record_index, &tex_provider);
     apply_worldspace_weather(world, ctx, &tex_provider, &wctx);
     let mut state = WorldStreamingState::new(wctx, tex_provider, mat_provider, radius);
+    if let Some(root) = preserved_persistent_root {
+        state.persistent_root = Some(root);
+        log::info!(
+            "EX-14/15 item C2: persistent CELL identity unchanged across this worldspace \
+             crossing — {root:?} survives instead of draining + rebuilding (#2369)"
+        );
+    }
     state.last_player_grid = Some(grid);
     state.spawn_lod_water(world, ctx);
     let cam_center = stream_initial_radius(world, ctx, &mut state, grid.0, grid.1, bootstrap_mode);
@@ -969,6 +990,10 @@ pub(crate) fn begin_exterior_streaming(
         grid,
         radius,
         bootstrap_mode,
+        // Boot / `--grid`-mode start and the `dbgload` debug console
+        // command are one-shot resets, not routine gameplay crossings —
+        // no prior streaming state to compare identity against anyway.
+        None,
     );
     world.insert_resource(cell_loader::CurrentExteriorContext {
         worldspace_key,

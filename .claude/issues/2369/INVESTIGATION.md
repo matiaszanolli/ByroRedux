@@ -1,3 +1,93 @@
+# #2369 (EX-14/15) — buildable slice 2 (2026-08-26): item C2's reconcile half
+
+**This section.** A second, unrelated buildable slice of the same epic —
+EX-14/15 item C2's "reconcile instead of re-spawning" half, the sequencing
+step `docs/engine/stream-boundary-state-continuity.md` §7 names as step 2
+of 3 (step 1, `CellRootRefIndex`, landed 2026-08-23 in `27ae9e09`; step 3,
+EX-16 item 4's full snapshot/restore, is #3299 and stays blocked on this
+step landing and holding up in practice).
+
+## Scope taken
+
+Only the identity-comparison-and-skip mechanism the design doc's §1 table
+and §7 describe: **compare resolved persistent-CELL identity across a
+worldspace crossing before draining; skip the persistent-CELL drain+rebuild
+specifically when it's unchanged, while the ordinary grid tiles still always
+drain.** Not attempted: EX-16 item 4's snapshot/restore (blocked on this
+landing first, per the doc's own sequencing — filed separately as #3299).
+
+## What changed
+
+- `cell_loader::exterior::persistent_cell_identity_unchanged` — pure core
+  (no `World`): does `new_index`/`new_worldspace_key` resolve, via the
+  already-landed `resolve_persistent_cell`, to the same FormID as
+  `current_form_id`? Unit-tested the same way `resolve_persistent_cell`
+  itself is (child→parent, sibling→sibling via shared ancestor, distinct
+  persistent CELL, no resolvable destination).
+- `cell_loader::exterior::persistent_root_survives_crossing` — thin `World`
+  wrapper: reads the currently-active root's `CellFormId` component and
+  calls the pure fn above.
+- `scene::assemble_exterior_streaming` gained a `preserved_persistent_root:
+  Option<EntityId>` parameter, installed on the fresh `WorldStreamingState`
+  *before* `stream_initial_radius` runs, so that fn's existing
+  `persistent_root.is_none()` guard skips the fresh spawn instead of
+  building one and leaking the old one underneath it.
+- `App::step_cell_transition`'s Exterior arm (`app_step.rs`) — the one real
+  wiring site. Restructured to build the destination's `ExteriorWorldContext`
+  *before* draining (previously built only after, inside
+  `begin_exterior_streaming`, called after the drain already ran).
+  Necessary ordering, not just cleanliness: the identity comparison needs
+  the destination's resolved cell index, which doesn't exist until this
+  parse runs — deciding "should we preserve" is only possible before the
+  destructive drain if the parse also happens before it. Bypasses
+  `begin_exterior_streaming` in favor of calling
+  `assemble_exterior_streaming` directly with the already-built context
+  (mirroring the pattern `save_io::reload_exterior_session` already used,
+  which is exactly what `assemble_exterior_streaming`'s own doc comment
+  anticipated as a future caller shape).
+
+## A latent bug this restructuring incidentally fixes
+
+Pre-fix, `step_cell_transition`'s Exterior arm drained the old streaming
+state *unconditionally*, then tried to build the new one — so a failure at
+that second step (missing/corrupt destination ESM, e.g.) left the player in
+an empty, undrivable world. Building the context first and bailing before
+any drain if it fails (this change's necessary ordering) closes that gap
+too, the same way `save_io`'s SAVE-D6-02 fix closed the equivalent gap on
+the save-load path. Not the point of this change, but free.
+
+## Deliberately NOT wired into `save_io::reload_exterior_session`
+
+The design doc's §6 names this reload path as one of three candidate wiring
+sites. Investigated and declined: a save load's correctness model is
+"always rebuild fresh from ESM, then restore" — the full per-component
+registry round-trip for most components, plus `MUTABLE_DELTA_COLUMNS`'s
+targeted FormID-keyed overlay (`Transform`, `WanderState`, `TravelState`,
+`Traveled`, etc.) for the rest. A preserved LIVE persistent root would never
+pass through either restore step, so its entities would silently keep
+whatever state the *current* session left them in instead of the state
+actually recorded in the save file being loaded — a real save-fidelity
+regression disguised as an optimization, and not a rare edge case: it would
+fire on the common case of reloading the same worldspace you were already
+in. `reload_exterior_session` passes `None` explicitly, with this same
+reasoning inlined as a comment at the call site.
+
+## Verification
+
+`persistent_cell_identity_unchanged`'s 4 unit tests (child→parent,
+sibling→sibling, own-persistent-CELL is-changed, no-resolvable-destination
+is-changed) are the correctness-critical, decidable-without-I/O piece. The
+wiring itself (detach-before-drain, reattach-after-assemble) is mechanical
+glue around already-tested primitives (`drain_streaming_state`,
+`assemble_exterior_streaming`, `WorldStreamingState::new`); an end-to-end
+"the entity really survives a live crossing" test needs a `VulkanContext` +
+on-disk game data, out of `cargo test` scope, matching this file's own
+established convention for untestable wiring paths (see
+`logical_stub_source_pin_tests` above). Full workspace suite: 6000 passing
+(was 5996), 0 failing, 163 ignored, zero new warnings.
+
+---
+
 # #2369 (EX-14/15) — buildable slice: FO4 precombine CSG routing
 
 ## Scope taken

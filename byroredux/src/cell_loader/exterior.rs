@@ -432,6 +432,52 @@ fn resolve_persistent_cell<'a>(
     None
 }
 
+/// EX-14/15 item C2 (#2369) — pure core of the persistent-CELL identity
+/// check: does `new_index`'s `new_worldspace_key` resolve (via
+/// [`resolve_persistent_cell`]) to the SAME persistent CELL as
+/// `current_form_id`? Split out from [`persistent_root_survives_crossing`]
+/// so it's unit-testable the same way `resolve_persistent_cell` is — no
+/// `World` required. See `docs/engine/stream-boundary-state-continuity.md`
+/// §1 + §7 for why this comparison exists: a worldspace crossing that
+/// resolves to the same persistent CELL (a child leaving back to its
+/// parent, or between siblings sharing one ancestor's persistent CELL via
+/// the WNAM chain) makes the persistent-CELL drain+rebuild pure waste —
+/// the *ordinary* grid tiles still always change and must still drain.
+pub(crate) fn persistent_cell_identity_unchanged(
+    new_index: &byroredux_plugin::esm::cell::EsmCellIndex,
+    new_worldspace_key: &str,
+    current_form_id: u32,
+) -> bool {
+    resolve_persistent_cell(new_index, new_worldspace_key)
+        .is_some_and(|(_, cell)| cell.form_id == current_form_id)
+}
+
+/// Whether `current_persistent_root` (the currently-active persistent-CELL
+/// root, if any) should survive a worldspace crossing into `new_wctx`,
+/// per EX-14/15 item C2. `None` means the ordinary full drain+rebuild is
+/// correct — there's no active root, its [`CellFormId`] is missing (should
+/// not happen for a root [`begin_worldspace_persistent_cell`] built, but a
+/// missing component fails safe into "rebuild" rather than panicking), or
+/// the resolved identity differs. `Some(root)` means the caller must
+/// detach `root` from the old streaming state's `persistent_root` field
+/// *before* calling `drain_streaming_state` (so the drain's unconditional
+/// `unload_cell` never sees it) and hand it back in through
+/// `assemble_exterior_streaming`'s `preserved_persistent_root` parameter.
+pub(crate) fn persistent_root_survives_crossing(
+    world: &World,
+    current_persistent_root: Option<EntityId>,
+    new_wctx: &ExteriorWorldContext,
+) -> Option<EntityId> {
+    let root = current_persistent_root?;
+    let current_form_id = world.get::<CellFormId>(root)?.0;
+    persistent_cell_identity_unchanged(
+        &new_wctx.record_index.cells,
+        &new_wctx.worldspace_key,
+        current_form_id,
+    )
+    .then_some(root)
+}
+
 #[cfg(test)]
 mod resolve_persistent_cell_tests {
     use super::resolve_persistent_cell;
@@ -571,6 +617,147 @@ mod resolve_persistent_cell_tests {
     fn an_unrelated_worldspace_missing_from_the_index_resolves_to_none() {
         let index = EsmCellIndex::default();
         assert!(resolve_persistent_cell(&index, "nonexistent").is_none());
+    }
+}
+
+#[cfg(test)]
+mod persistent_cell_identity_unchanged_tests {
+    use super::persistent_cell_identity_unchanged;
+    use byroredux_plugin::esm::cell::{CellData, EsmCellIndex, WorldspaceRecord};
+
+    fn empty_cell(form_id: u32) -> CellData {
+        CellData {
+            form_id,
+            editor_id: String::new(),
+            display_name: None,
+            references: Vec::new(),
+            is_interior: false,
+            grid: None,
+            lighting: None,
+            landscape: None,
+            water_height: None,
+            water_height_is_explicit: false,
+            image_space_form: None,
+            water_type_form: None,
+            water_velocity: None,
+            acoustic_space_form: None,
+            music_type_form: None,
+            music_type_enum: None,
+            climate_override: None,
+            location_form: None,
+            regions: Vec::new(),
+            lighting_template_form: None,
+            ownership: None,
+            regional_color_override: None,
+            precombined_mesh_hashes: Vec::new(),
+            absorbed_refs: std::collections::HashSet::new(),
+            navmeshes: Vec::new(),
+            deleted_refs: Vec::new(),
+        }
+    }
+
+    fn worldspace(form_id: u32, edid: &str, parent: Option<u32>) -> WorldspaceRecord {
+        WorldspaceRecord {
+            form_id,
+            editor_id: edid.to_string(),
+            parent_worldspace: parent,
+            ..WorldspaceRecord::default()
+        }
+    }
+
+    /// A child worldspace crossing back to its parent resolves to the
+    /// SAME persistent CELL — the case item C2 exists to catch.
+    #[test]
+    fn child_to_parent_crossing_is_unchanged_when_child_has_no_own_persistent_cell() {
+        let mut index = EsmCellIndex::default();
+        index
+            .worldspaces
+            .insert("parentworld".into(), worldspace(0x10, "ParentWorld", None));
+        index.worldspaces.insert(
+            "childworld".into(),
+            worldspace(0x20, "ChildWorld", Some(0x10)),
+        );
+        index
+            .worldspace_persistent_cells
+            .insert("parentworld".into(), empty_cell(0x999));
+
+        // The player was in ParentWorld (root's CellFormId == 0x999);
+        // crossing into ChildWorld resolves to the same 0x999 via WNAM.
+        assert!(persistent_cell_identity_unchanged(
+            &index,
+            "childworld",
+            0x999,
+        ));
+    }
+
+    /// Two sibling worldspaces sharing one ancestor's persistent CELL:
+    /// crossing between them is also unchanged.
+    #[test]
+    fn sibling_to_sibling_crossing_is_unchanged_via_shared_ancestor() {
+        let mut index = EsmCellIndex::default();
+        index
+            .worldspaces
+            .insert("parentworld".into(), worldspace(0x10, "ParentWorld", None));
+        index
+            .worldspaces
+            .insert("siblinga".into(), worldspace(0x20, "SiblingA", Some(0x10)));
+        index
+            .worldspaces
+            .insert("siblingb".into(), worldspace(0x30, "SiblingB", Some(0x10)));
+        index
+            .worldspace_persistent_cells
+            .insert("parentworld".into(), empty_cell(0x999));
+
+        assert!(persistent_cell_identity_unchanged(
+            &index, "siblingb", 0x999,
+        ));
+    }
+
+    /// A worldspace with its own distinct persistent CELL must NOT be
+    /// treated as unchanged — this is the ordinary case that must still
+    /// fully drain+rebuild.
+    #[test]
+    fn crossing_into_a_worldspace_with_its_own_persistent_cell_is_changed() {
+        let mut index = EsmCellIndex::default();
+        index
+            .worldspaces
+            .insert("worlda".into(), worldspace(0x10, "WorldA", None));
+        index
+            .worldspaces
+            .insert("worldb".into(), worldspace(0x20, "WorldB", None));
+        index
+            .worldspace_persistent_cells
+            .insert("worlda".into(), empty_cell(0x999));
+        index
+            .worldspace_persistent_cells
+            .insert("worldb".into(), empty_cell(0x888));
+
+        assert!(!persistent_cell_identity_unchanged(
+            &index, "worldb", 0x999,
+        ));
+    }
+
+    /// No persistent CELL resolves at all for the destination — must not
+    /// be treated as unchanged (there is nothing to compare against, and
+    /// falsely reporting "unchanged" here would preserve a root that the
+    /// new worldspace has no home for).
+    #[test]
+    fn destination_with_no_resolvable_persistent_cell_is_changed() {
+        let mut index = EsmCellIndex::default();
+        index
+            .worldspaces
+            .insert("worlda".into(), worldspace(0x10, "WorldA", None));
+        index
+            .worldspaces
+            .insert("worldb".into(), worldspace(0x20, "WorldB", None));
+        index
+            .worldspace_persistent_cells
+            .insert("worlda".into(), empty_cell(0x999));
+        // WorldB authors no persistent CELL and has no parent to inherit from.
+
+        assert!(!persistent_cell_identity_unchanged(
+            &index, "worldb", 0x999,
+        ));
     }
 }
 

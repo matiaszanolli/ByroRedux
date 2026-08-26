@@ -1213,6 +1213,25 @@ fn reload_exterior_session(
         }
     };
 
+    // EX-14/15 item C2 (#2369) — deliberately NOT wired in here, despite
+    // `docs/engine/stream-boundary-state-continuity.md` §6 naming this
+    // reload path as one of three candidate sites. Skipping the
+    // persistent-CELL rebuild would mean skipping its ONLY restore path
+    // too: a save load's correctness model is "always rebuild fresh from
+    // ESM, then restore" — the full per-component registry round-trip for
+    // most components, plus `MUTABLE_DELTA_COLUMNS`'s targeted overlay
+    // (`Transform`, `WanderState`, `TravelState`, `Traveled`, etc., all
+    // FormID-keyed) for the rest. A preserved LIVE root would never pass
+    // through either restore step, so its entities would silently keep
+    // whatever state the CURRENT session left them in instead of the
+    // state actually recorded in the save file being loaded — a real
+    // save-fidelity regression, not an optimization, the first time this
+    // session's persistent-cell state has drifted from the loaded save's
+    // (any save older than "the same instant", i.e. every real load).
+    // Item C2's identity-skip is scoped to the genuine still-in-session,
+    // still-live worldspace crossing (`step_cell_transition`'s Exterior
+    // arm) where there is no save file whose recorded state must win.
+
     // Tear down whatever's loaded, then rebuild the saved worldspace fresh.
     if streaming.is_some() {
         crate::streaming_helpers::drain_streaming_state(world, ctx, streaming);
@@ -1230,6 +1249,9 @@ fn reload_exterior_session(
         ext_ctx.grid,
         ext_ctx.radius_load,
         exterior_reload_bootstrap_mode(),
+        // See the comment above `wctx`'s teardown for why item C2's
+        // identity-skip is deliberately not used on the save-load path.
+        None,
     );
     let location_label = format!(
         "worldspace '{}' @ ({},{})",

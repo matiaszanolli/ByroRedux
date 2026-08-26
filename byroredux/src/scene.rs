@@ -887,6 +887,9 @@ pub(crate) fn setup_scene(
                         (cx, cy),
                         radius,
                         bootstrap_mode,
+                        // First-ever load off the `--grid` CLI path — no
+                        // prior streaming state to preserve a root from.
+                        None,
                     );
                     cam_center = center;
                     log::info!(

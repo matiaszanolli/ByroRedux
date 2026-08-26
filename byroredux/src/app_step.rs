@@ -790,42 +790,90 @@ impl App {
                 // was loaded).
                 cell_loader::unload_current_interior(&mut self.world, ctx);
 
-                // 2. Tear down any existing streaming state. Always
-                // rebuild on exterior-destination transitions, even
-                // intra-worldspace, so the orchestrator's failure
-                // mode is uniform.
-                if self.streaming.is_some() {
-                    crate::streaming_helpers::drain_streaming_state(
-                        &mut self.world,
-                        ctx,
-                        &mut self.streaming,
-                    );
-                }
-
-                // 3. Build the fresh streaming context for the
-                // destination worldspace + initial grid. `wrld_override`
-                // pins the worldspace to what the reverse-lookup
-                // returned so the heuristic search inside
-                // `build_exterior_world_context` doesn't pick something
-                // else.
-                let tex_provider = crate::asset_provider::build_texture_provider(&args);
-                let mat_provider = crate::asset_provider::build_material_provider(&args);
-                match crate::scene::begin_exterior_streaming(
-                    &mut self.world,
-                    ctx,
-                    tex_provider,
-                    mat_provider,
+                // 2. Build the destination worldspace context FIRST,
+                // before any destructive teardown — mirrors the
+                // SAVE-D6-02 preflight-before-teardown posture
+                // `save_io::reload_exterior_session` already established,
+                // and (EX-14/15 item C2, #2369) is what makes the
+                // persistent-CELL identity comparison below possible: the
+                // comparison needs the destination's resolved index, which
+                // only exists once this parse has run. `wrld_override`
+                // pins the worldspace to what the reverse-lookup returned
+                // so the heuristic search inside `build_exterior_world_context`
+                // doesn't pick something else.
+                match cell_loader::build_exterior_world_context(
                     &masters,
                     &esm_path,
-                    Some(&worldspace),
-                    grid,
+                    grid.0,
+                    grid.1,
                     transition_radius,
-                    crate::scene::ExteriorBootstrapMode::ForegroundFirst,
+                    Some(&worldspace),
                 ) {
-                    Ok((state, _cam_center)) => {
+                    Ok(wctx) => {
+                        // 3. EX-14/15 item C2 — does this crossing resolve
+                        // to the SAME persistent CELL the currently-active
+                        // root already is (a child worldspace crossing
+                        // back to its parent, or between siblings sharing
+                        // one ancestor's persistent CELL via the WNAM
+                        // chain)? If so, detach that root from the old
+                        // streaming state now, before draining, so the
+                        // drain's unconditional `unload_cell(persistent_root)`
+                        // never sees it and it survives the crossing intact
+                        // instead of being torn down and immediately
+                        // rebuilt identically.
+                        let preserved_persistent_root =
+                            self.streaming.as_mut().and_then(|state| {
+                                let root = cell_loader::persistent_root_survives_crossing(
+                                    &self.world,
+                                    state.persistent_root,
+                                    &wctx,
+                                )?;
+                                state.persistent_root = None;
+                                Some(root)
+                            });
+
+                        // 4. Tear down any existing streaming state. The
+                        // ordinary grid tiles always rebuild — only the
+                        // persistent-CELL root, when preserved above, is
+                        // spared.
+                        if self.streaming.is_some() {
+                            crate::streaming_helpers::drain_streaming_state(
+                                &mut self.world,
+                                ctx,
+                                &mut self.streaming,
+                            );
+                        }
+
+                        // 5. Assemble the fresh streaming state for the
+                        // destination worldspace + initial grid, handing
+                        // back the preserved persistent root (if any)
+                        // instead of paying a second ESM parse the way
+                        // `begin_exterior_streaming` would.
+                        let worldspace_key = wctx.worldspace_key.clone();
+                        let tex_provider = crate::asset_provider::build_texture_provider(&args);
+                        let mat_provider = crate::asset_provider::build_material_provider(&args);
+                        let (state, _cam_center) = crate::scene::assemble_exterior_streaming(
+                            &mut self.world,
+                            ctx,
+                            wctx,
+                            tex_provider,
+                            mat_provider,
+                            grid,
+                            transition_radius,
+                            crate::scene::ExteriorBootstrapMode::ForegroundFirst,
+                            preserved_persistent_root,
+                        );
+                        self.world.insert_resource(cell_loader::CurrentExteriorContext {
+                            worldspace_key,
+                            esm_path: esm_path.to_string(),
+                            masters: masters.to_vec(),
+                            grid,
+                            radius_load: state.radius_load,
+                            radius_unload: state.radius_unload,
+                        });
                         self.streaming = Some(state);
 
-                        // 4. Reposition the camera at the destination
+                        // 6. Reposition the camera at the destination
                         // spawn point. Foreground-first bootstrap has made
                         // the arrival cell coherent; here we still want the
                         // XTEL-authored pose, not its terrain centre.
