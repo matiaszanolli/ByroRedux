@@ -75,8 +75,8 @@ renderer.
 > past ~2000 LOC were split into submodule directories. The biggest moves that
 > matter for navigation: `byroredux/src/systems.rs` → `systems/`
 > (animation / particle / character / camera / audio / weather / …),
-> `byroredux/src/render.rs` → `render/` (static_meshes / skinned / particles /
-> lights / sky / water / camera), `crates/nif/src/blocks/collision.rs` →
+> `byroredux/src/render/mod.rs` → `render/` (static_meshes / skinned / particles /
+> lights / sky / water / camera), `crates/nif/src/blocks/collision/mod.rs` →
 > `collision/` (9 siblings), `crates/nif/src/import/mesh/` and `.../anim/`,
 > `crates/core/src/animation/`, `crates/renderer/src/vulkan/acceleration/` +
 > `.../scene_buffer/` + `.../context/`, `crates/plugin/src/esm/cell/`, and

@@ -17,6 +17,7 @@ while IFS= read -r -d '' source; do
 done < <(
     git ls-files -z -- \
         '*.rs' '*.md' '*.glsl' '*.vert' '*.frag' '*.comp' '*.sh' '*.toml' \
+        '*.rgen' '*.rchit' '*.wgsl' '*.xml' \
         '*.yml' '*.yaml'
 )
 

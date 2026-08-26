@@ -87,7 +87,7 @@ The renderer crate carries real unit tests now, not just doc-tests. Coverage tha
 - **DDS / texture registry** — `vulkan/dds.rs` header parsing, `texture_registry_tests` + `texture_registry_bindless_tests`
 - **Shader reflection** — `vulkan/reflect.rs` and `shader_constants.rs` keep the GLSL-side constants in lockstep
 - **Deferred destroy + sync** — `deferred_destroy.rs`, `vulkan/sync.rs`, `vulkan/allocator.rs`, `vulkan/buffer.rs` exercise the frames-in-flight teardown window
-- **Acceleration structures** — `vulkan/acceleration/tests.rs` covers the BLAS/TLAS predicate functions (`scratch_should_shrink`, `decide_use_update`, eviction thresholds) split out in Session 35
+- **Acceleration structures** — `vulkan/acceleration/tests/` covers the BLAS/TLAS predicate functions (`scratch_should_shrink`, `decide_use_update`, eviction thresholds) split out in Session 35
 
 ### Other crates
 - **`byroredux-scripting`** — event marker round-trips, timer expiry, end-of-frame cleanup; plus the **M47.0** ECS-native script runtime (`papyrus_demo` dispatcher systems + `ScriptRegistry` + the 14 e2e tests in `papyrus_demo/tests.rs`) and the **M47.1** condition evaluator (`condition` module: CTDA `ConditionFunction` dispatch + the load-bearing OR-precedence regression pairs)

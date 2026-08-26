@@ -409,7 +409,7 @@ protocol change.
 ### `mesh.info` — the "what is this entity?" dump
 
 `mesh.info <id>` is the workhorse for diagnosing a single entity. It now
-prints (in `byroredux/src/commands.rs::MeshInfoCommand`):
+prints (in `byroredux/src/commands/mod.rs::MeshInfoCommand`):
 
 - **Transform.local** — translation, ZYX-extracted Euler in degrees (for human
   reading; the quat is canonical, ZYX matches the FNVEdit/CK REFR DATA
@@ -458,7 +458,7 @@ byro> prid                    # no arg = print current
 selected: entity 42 (DocMitchell)
 ```
 
-Implementation in `byroredux/src/commands.rs` (`PridCommand`):
+Implementation in `byroredux/src/commands/mod.rs` (`PridCommand`):
 
 - Writes the `byroredux_core::ecs::SelectedRef` resource (world-scoped, not
   per-TCP-client — single-developer-at-a-time is the dev-tool reality).
@@ -556,7 +556,7 @@ per-frame telemetry like `skin.coverage` against a known viewpoint.
 ### Look-at math
 
 `cam.tp` computes a fly-camera-compatible `(yaw, pitch)` pair via the
-`look_at_yaw_pitch(from, to)` helper in `byroredux/src/commands.rs`. The fly
+`look_at_yaw_pitch(from, to)` helper in `byroredux/src/commands/mod.rs`. The fly
 camera composes rotation as `Q_y(yaw) * Q_x(pitch)` and treats `-Z` as forward;
 the look-at inverse is:
 
@@ -673,7 +673,7 @@ refit — surfaces as:
   failed_entity_ids (sample): [128, 142]
 ```
 
-See `crates/core/src/ecs/resources.rs` (`SkinCoverageStats`) for the canonical
+See `crates/core/src/ecs/resources/mod.rs` (`SkinCoverageStats`) for the canonical
 schema and `crates/renderer/src/vulkan/context/draw.rs` for the per-frame
 increments.
 
@@ -890,7 +890,7 @@ and the debug server, so the result slot is **owner-tagged**:
 |------|------|
 | `crates/renderer/src/vulkan/context/screenshot.rs` | Copy commands, staging buffer, PNG encode |
 | `crates/renderer/src/vulkan/context/mod.rs` | `ScreenshotHandle` (Arc-shared request/result) |
-| `crates/core/src/ecs/resources.rs` | `ScreenshotBridge` (Resource, owner-tagged, bridges renderer↔server) |
+| `crates/core/src/ecs/resources/mod.rs` | `ScreenshotBridge` (Resource, owner-tagged, bridges renderer↔server) |
 | `crates/debug-server/src/system.rs` | Multi-frame screenshot flow in drain system |
 
 ## Feature Gating

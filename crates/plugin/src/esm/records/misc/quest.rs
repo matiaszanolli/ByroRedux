@@ -231,6 +231,12 @@ pub struct AliasFlags(pub u32);
 // assertion in the test module below (dead-code analysis just doesn't
 // credit test-only usage for the non-test build), so all are
 // `dead_code`-allowed here rather than left to warn.
+//
+// #2983 — that "every constant" claim used to be unenforced: the test roster
+// was hand-copied and a 26th constant would simply never have been exercised.
+// `alias_flag_roster_covers_every_declared_constant` now counts these
+// declarations from source text, so adding a constant here without a roster
+// entry and value pin below fails the build.
 /// Reserves Location (`ALLS`) / Reserves Reference (`ALST`).
 #[allow(dead_code)]
 pub const ALIAS_FLAG_RESERVES: u32 = 0x0000_0001;
@@ -1902,48 +1908,95 @@ mod tests {
         assert_eq!(q.targets[0].conditions[0].function_index, 12);
     }
 
+    /// The catalog, paired with an independently-written value pin.
+    ///
+    /// #2983 — the pins are transcribed from the declarations at the top of
+    /// this file, NOT derived from an external spec: no wire-level test
+    /// anywhere decodes a real `FNAM` payload and asserts a named alias
+    /// flag, so these 25 values have no outside authority behind them. What
+    /// the pin buys is drift detection — editing a declaration without
+    /// editing this table fails — not confirmation that the catalog matches
+    /// the on-disk format. Treat "what is the authority for these values?"
+    /// as a separate, still-open question.
+    const ALL_FLAGS: &[(&str, u32, u32)] = &[
+        ("RESERVES", ALIAS_FLAG_RESERVES, 0x0000_0001),
+        ("OPTIONAL", ALIAS_FLAG_OPTIONAL, 0x0000_0002),
+        ("QUEST_OBJECT", ALIAS_FLAG_QUEST_OBJECT, 0x0000_0004),
+        ("ALLOW_REUSE", ALIAS_FLAG_ALLOW_REUSE, 0x0000_0008),
+        ("ALLOW_DEAD", ALIAS_FLAG_ALLOW_DEAD, 0x0000_0010),
+        ("IN_LOADED_AREA", ALIAS_FLAG_IN_LOADED_AREA, 0x0000_0020),
+        ("ESSENTIAL", ALIAS_FLAG_ESSENTIAL, 0x0000_0040),
+        ("ALLOW_DISABLED", ALIAS_FLAG_ALLOW_DISABLED, 0x0000_0080),
+        ("STORES_TEXT", ALIAS_FLAG_STORES_TEXT, 0x0000_0100),
+        ("ALLOW_RESERVED", ALIAS_FLAG_ALLOW_RESERVED, 0x0000_0200),
+        ("PROTECTED", ALIAS_FLAG_PROTECTED, 0x0000_0400),
+        ("FORCED_BY_ALIASES", ALIAS_FLAG_FORCED_BY_ALIASES, 0x0000_0800),
+        ("ALLOW_DESTROYED", ALIAS_FLAG_ALLOW_DESTROYED, 0x0000_1000),
+        ("CLOSEST", ALIAS_FLAG_CLOSEST, 0x0000_2000),
+        ("USES_STORED_TEXT", ALIAS_FLAG_USES_STORED_TEXT, 0x0000_4000),
+        (
+            "INITIALLY_DISABLED",
+            ALIAS_FLAG_INITIALLY_DISABLED,
+            0x0000_8000,
+        ),
+        ("ALLOW_CLEARED", ALIAS_FLAG_ALLOW_CLEARED, 0x0001_0000),
+        (
+            "CLEAR_NAMES_WHEN_REMOVED",
+            ALIAS_FLAG_CLEAR_NAMES_WHEN_REMOVED,
+            0x0002_0000,
+        ),
+        ("ACTORS_ONLY", ALIAS_FLAG_ACTORS_ONLY, 0x0004_0000),
+        ("CREATE_TEMPORARY", ALIAS_FLAG_CREATE_TEMPORARY, 0x0008_0000),
+        ("EXTERNAL_LINKED", ALIAS_FLAG_EXTERNAL_LINKED, 0x0010_0000),
+        ("NO_PICKPOCKET", ALIAS_FLAG_NO_PICKPOCKET, 0x0020_0000),
+        (
+            "APPLY_TO_NON_ALIASED_REFS",
+            ALIAS_FLAG_APPLY_TO_NON_ALIASED_REFS,
+            0x0040_0000,
+        ),
+        ("COMPANION", ALIAS_FLAG_COMPANION, 0x0080_0000),
+        (
+            "OPTIONAL_ALL_SCENES",
+            ALIAS_FLAG_OPTIONAL_ALL_SCENES,
+            0x0100_0000,
+        ),
+    ];
+
+    /// #2983 — this test used to assert `(a | b | c).has(a)`, which is true
+    /// for every non-zero `a` by construction: an identity over the OR-fold
+    /// that produced the mask. It read as a value guard and was a presence
+    /// guard, so the defect its own comment named — "a copy-paste bit-value
+    /// typo … each must be its own distinct, correctly-shifted bit" — was
+    /// exactly what it could not catch. A wrong-but-distinct bit
+    /// (`0x0000_2000` typo'd to `0x0002_0000`) passed, and so did a
+    /// multi-bit value.
+    ///
+    /// Five of these constants drive live alias-fill policy in
+    /// `crates/scripting/src/scene/quest_alias.rs`, so a wrong bit silently
+    /// changes which references fill a quest alias.
     #[test]
     fn alias_flags_has_recognizes_every_named_bit() {
-        // Every `ALIAS_FLAG_*` constant, individually — guards against a
-        // copy-paste bit-value typo in the catalog (each must be its own
-        // distinct, correctly-shifted bit).
-        const ALL_FLAGS: &[u32] = &[
-            ALIAS_FLAG_RESERVES,
-            ALIAS_FLAG_OPTIONAL,
-            ALIAS_FLAG_QUEST_OBJECT,
-            ALIAS_FLAG_ALLOW_REUSE,
-            ALIAS_FLAG_ALLOW_DEAD,
-            ALIAS_FLAG_IN_LOADED_AREA,
-            ALIAS_FLAG_ESSENTIAL,
-            ALIAS_FLAG_ALLOW_DISABLED,
-            ALIAS_FLAG_STORES_TEXT,
-            ALIAS_FLAG_ALLOW_RESERVED,
-            ALIAS_FLAG_PROTECTED,
-            ALIAS_FLAG_FORCED_BY_ALIASES,
-            ALIAS_FLAG_ALLOW_DESTROYED,
-            ALIAS_FLAG_CLOSEST,
-            ALIAS_FLAG_USES_STORED_TEXT,
-            ALIAS_FLAG_INITIALLY_DISABLED,
-            ALIAS_FLAG_ALLOW_CLEARED,
-            ALIAS_FLAG_CLEAR_NAMES_WHEN_REMOVED,
-            ALIAS_FLAG_ACTORS_ONLY,
-            ALIAS_FLAG_CREATE_TEMPORARY,
-            ALIAS_FLAG_EXTERNAL_LINKED,
-            ALIAS_FLAG_NO_PICKPOCKET,
-            ALIAS_FLAG_APPLY_TO_NON_ALIASED_REFS,
-            ALIAS_FLAG_COMPANION,
-            ALIAS_FLAG_OPTIONAL_ALL_SCENES,
-        ];
-        let combined = AliasFlags(ALL_FLAGS.iter().fold(0u32, |acc, &f| acc | f));
-        for &flag in ALL_FLAGS {
+        for &(name, flag, pinned) in ALL_FLAGS {
+            assert_eq!(
+                flag, pinned,
+                "ALIAS_FLAG_{name} = {flag:#010x} but is pinned at {pinned:#010x} \
+                 — the declaration moved without updating the pin"
+            );
+            // "Correctly-shifted" means a single bit. A multi-bit value
+            // would make `has()` match on any of its bits.
+            assert_eq!(
+                flag.count_ones(),
+                1,
+                "ALIAS_FLAG_{name} = {flag:#010x} is not a single bit"
+            );
             assert!(
-                combined.has(flag),
-                "bit {flag:#x} not set in the combined mask"
+                AliasFlags(flag).has(flag),
+                "ALIAS_FLAG_{name} does not match itself"
             );
         }
-        // Every constant is a distinct bit — the fold above didn't
-        // silently collapse two identical values.
-        let mut sorted = ALL_FLAGS.to_vec();
+
+        // Every constant is a distinct bit — no two collapse onto one value.
+        let mut sorted: Vec<u32> = ALL_FLAGS.iter().map(|&(_, f, _)| f).collect();
         sorted.sort_unstable();
         sorted.dedup();
         assert_eq!(
@@ -1951,7 +2004,47 @@ mod tests {
             ALL_FLAGS.len(),
             "duplicate flag value in the catalog"
         );
+
+        // The catalog occupies bits 0..=24 with no holes. Pinned from the
+        // declarations as they stand, not from an external spec — its job is
+        // to fail on a wrong-but-distinct bit, which the per-flag pin above
+        // would also catch but which this states as one contiguous shape.
+        let combined = AliasFlags(ALL_FLAGS.iter().fold(0u32, |acc, &(_, f, _)| acc | f));
+        assert_eq!(
+            combined.0, 0x01FF_FFFF,
+            "the 25 alias flags no longer occupy exactly bits 0..=24"
+        );
         // A bit outside the catalog is correctly absent.
         assert!(!combined.has(0x8000_0000));
+    }
+
+    /// #2983 — `ALL_FLAGS` is hand-maintained, so on its own it cannot notice
+    /// a 26th constant being added: the roster would simply never exercise
+    /// it, while the `#[allow(dead_code)]` block comment above the
+    /// declarations kept claiming "every constant is exercised by an
+    /// `AliasFlags::has` assertion in the test module below".
+    ///
+    /// Counts `pub const ALIAS_FLAG_` declarations in this file's own source
+    /// text rather than re-listing them, so the roster cannot silently drift
+    /// behind the catalog. Same shape as
+    /// `dbg_bits_catalog_covers_every_dbg_constant` in
+    /// `crates/renderer/src/shader_constants.rs`, which solved this exact
+    /// problem for the `DBG_*` bits.
+    #[test]
+    fn alias_flag_roster_covers_every_declared_constant() {
+        let declared = include_str!("quest.rs")
+            .lines()
+            .filter(|l| l.trim_start().starts_with("pub const ALIAS_FLAG_"))
+            .filter(|l| l.contains(": u32 ="))
+            .count();
+        assert_eq!(
+            ALL_FLAGS.len(),
+            declared,
+            "ALL_FLAGS lists {} flags but quest.rs declares {} `pub const \
+             ALIAS_FLAG_*` constants — a new constant was added without a \
+             matching roster entry and value pin",
+            ALL_FLAGS.len(),
+            declared,
+        );
     }
 }

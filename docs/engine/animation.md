@@ -360,7 +360,7 @@ Animation runtime tests live alongside the modules in
   of `AnimationPlayer` / `AnimationStack` state (#486).
 
 NIF-side keyframe import tests live in
-`crates/nif/src/anim/tests.rs` and
+`crates/nif/src/anim/tests/` and
 `crates/nif/src/blocks/interpolator_tests.rs`, covering
 `NiTransformData` / `NiKeyframeData` parsing across the key types and the
 B-spline path. End-to-end coverage runs through `mtidle.kf` →

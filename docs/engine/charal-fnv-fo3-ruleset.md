@@ -460,7 +460,7 @@ clamp to it.
 FACT faction) and `param_2` = axis (1=Fame, 0=Infamy). Gameplay/dialogue reads the
 **threshold**, not the raw value (the wiki documents a vanilla bug where Mick/Ralph's
 discount script wrongly used `GetReputation` instead of `GetReputationThreshold`). 573 +
-575 are now wired in `scripting/condition.rs` against the `FactionReputation` component
+575 are now wired in `crates/scripting/src/condition.rs` against the `FactionReputation` component
 (574 deferred). **Karma has NO dedicated condition function** — there is no
 `GetIsKarmaType`; karma is read through plain `GetActorValue` on the `karma` AV (consistent
 with `getav karma`), so the band classifier is for UI/companion-gate logic, not a CTDA fn.

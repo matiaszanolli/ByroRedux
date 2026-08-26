@@ -147,7 +147,7 @@ Two differences:
   loader's per-REFR `RefrTextureOverlay` (XATO/XTNM/XTXR shadow in
   `byroredux/src/cell_loader/refr.rs`) also stores `Option<FixedString>`,
   so REFR overlays share the dedup table with `ImportedMesh`; the
-  BGSM/BGEM merge path in `byroredux/src/asset_provider.rs` interns into
+  BGSM/BGEM merge path in `byroredux/src/asset_provider/mod.rs` interns into
   the same engine pool.
 - **Animation channels and text keys** — `AnimationClip` keys its
   transform/float/color/bool/texture-flip channels and text-key events by

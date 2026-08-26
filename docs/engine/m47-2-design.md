@@ -226,7 +226,7 @@ Scripts once attached via M47.0's static chain
 ScriptSpawnFn`) populated by a hardcoded `papyrus_demo::register_spawners`
 (retired at boot by #2191 — see below). M47.2 makes attachment **dynamic
 and recognizer-driven**, in the cell loader's per-REFR walk
-(`cell_loader/references.rs`, after entity spawn):
+(`cell_loader/references/mod.rs`, after entity spawn):
 
 ```
 for each spawned REFR:

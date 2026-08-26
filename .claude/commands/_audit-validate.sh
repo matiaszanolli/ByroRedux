@@ -46,6 +46,22 @@ should_skip() {
     [[ "$p" == feedback_*.md ]] && return 0
     [[ "$p" == *.bsa || "$p" == *.esm || "$p" == *.ba2 || "$p" == *.nif ]] && return 0
     [[ "$p" == *"://"* ]] && return 0
+    # #3202 — two artifact classes the extractor produces on its own, both
+    # surfaced by extending the glob to `docs/engine/`. Neither is a path
+    # reference that can go stale, so neither should be reported as one:
+    #
+    #   (a) Deliberate prose elision — `crates/plugin/.../actor_value_derive.rs`,
+    #       `byroredux/src/systems/{follow,escort,...}.rs`. The `...` says "and
+    #       the rest"; there is no path here to resolve.
+    #   (b) A brace span the one-pair `expand_braces` could not close, leaving
+    #       a stray `{` or `}` in the result: multi-line spans
+    #       (`crates/spt/src/{tag.rs, stream.rs,` wraps mid-list) and nested
+    #       pairs (`byroredux/src/{fog,render/{fog_volumes,lights}}.rs`).
+    #       Reporting `byroredux/src/fog}.rs` as STALE says nothing about the
+    #       doc — it is the extractor failing to parse, and the enclosing
+    #       real paths are checked by the other expansions anyway.
+    [[ "$p" == *...* ]] && return 0
+    [[ "$p" == *"{"* || "$p" == *"}"* ]] && return 0
     return 1
 }
 
@@ -75,10 +91,23 @@ shopt -s nullglob
 # protocol files stay flat at the top level. Glob both shapes so the
 # gate actually inspects every skill (the old flat `audit-*.md` glob
 # silently matched zero files after the subdir migration).
-skill_files=(
+#
+# #3202 — `docs/engine/*.md` joins them. `_audit-common.md` lists eighteen
+# of those files as "the authoritative, code-verified reference for their
+# domain" and tells every audit to prefer them over re-deriving facts from
+# source, yet they were checked by neither half of this gate. The existing
+# logic already worked there; only the glob kept it blind — extending it
+# would have caught the `GpuCamera` 336 -> 352 B doc drift on day one
+# instead of four days and one audit sweep later. Reference docs are what
+# audits are told to believe, so they get the same policing as the skills.
+command_files=(
     .claude/commands/audit-*/SKILL.md
     .claude/commands/_audit-*.md
 )
+reference_docs=(
+    docs/engine/*.md
+)
+skill_files=("${command_files[@]}" "${reference_docs[@]}")
 shopt -u nullglob
 
 # Enumerate every checkable repo path once so partial refs like
@@ -135,6 +164,42 @@ echo "Checked $checked_count refs across ${#skill_files[@]} skill files."
 # skills deliberately no longer quote a number at all (#2420); this guards the
 # one remaining literal, in the file that owns it.
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# NUL bytes in tracked text sources (FATAL)
+#
+# #3210 — three raw NUL bytes inside byte-string literals in
+# `crates/plugin/src/esm/records/misc/quest.rs`'s sibling
+# `crates/plugin/src/esm/records/tests.rs` (`b"Long Barrel<NUL>"`, where the
+# source meant the two-character escape `\0`) made GNU grep classify the whole
+# 1,944-line file as binary and skip it silently. That hid 40 regression guards
+# citing 31 issue numbers from the `grep -rn "#<N>" --include='*.rs'` discovery
+# recipe that all 27 audit skills prescribe — including two guards that landed
+# after the file went binary and so were never greppable at any point in their
+# life. They are valid Rust and compile fine, so nothing in the build complains.
+#
+# The failure mode is the worst kind: an auditor following the documented recipe
+# concludes "fix present, no guard" (a PARTIAL where the truth is PASS) or
+# "guard deleted" (a FAIL against a fix that is right there). The 2026-08-20
+# sweep came one command from publishing exactly that FAIL.
+#
+# This is FATAL rather than advisory because there is no legitimate reason for a
+# tracked `.rs` / `.md` / shader / script source to contain a NUL, and because
+# the cost of missing one is measured in false audit findings.
+#
+# `scripts/check-text-source-integrity.sh` already owns the check and CI already
+# runs it on every PR ("Reject grep-blinding NUL bytes"). Delegate rather than
+# reimplement: this gate is what an auditor runs locally, and CI only fires on a
+# PR, so the value here is reaching the same verdict before the push — not a
+# second copy of the rule that can drift from the first.
+# ---------------------------------------------------------------------------
+if ! nul_report=$(scripts/check-text-source-integrity.sh 2>&1); then
+    echo
+    echo "STALE  tracked text source(s) contain NUL bytes — plain \`grep\` skips them"
+    echo "       silently, hiding every symbol and issue citation inside. See #3210."
+    printf '%s\n' "$nul_report" | sed 's/^/       /'
+    stale_count=$((stale_count + 1))
+fi
+
 crate_dirs=$(find crates -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')
 common_md=.claude/commands/_audit-common.md
 documented=$(grep -oE '^Crate count: [0-9]+' "$common_md" 2>/dev/null | grep -oE '[0-9]+')
@@ -198,54 +263,90 @@ if [[ "${SKIP_SYMBOL_CHECK:-0}" != "1" ]]; then
         | grep -a -vE '!\s*[A-Za-z_][A-Za-z0-9_]*\s*\.contains\(|!\s*contains\(' \
         > "$src_blob" || true
 
-    suspect_count=0
-    while read -r sym; do
-        # Benign classes, in order of frequency:
-        [[ "$sym" =~ ^[0-9a-f]{7,8}$ ]] && continue          # git short hashes
-        [[ "$sym" == feedback_* ]] && continue               # ~/.claude memory slugs
-        [[ "$sym" == nif_v10x_* ]] && continue               # memory slugs
-        [[ "$sym" == bench_* || "$sym" == light_count_* ]] && continue   # baseline TSV columns
-        [[ "$sym" == tex_missing_* || "$sym" == mesh_cache_* ]] && continue
-        [[ "$sym" == entities_total || "$sym" == tlas_instances ]] && continue
-        [[ "$sym" == static_frames || "$sym" == terrain_tile ]] && continue
-        [[ "$sym" == unknown_records || "$sym" == marker_arrow ]] && continue
-        [[ "$sym" == max_size || "$sym" == local_size ]] && continue     # GLSL / generic
-        [[ "$sym" == unreachable_patterns ]] && continue     # rustc lint name
-        [[ "$sym" == cmd_reset_query_pool ]] && continue     # ash API
-        [[ "$sym" == srgb_to_linear ]] && continue           # deliberately-absent (see memory)
-        [[ "$sym" == comprehensive ]] && continue            # plain English
-        [[ "$sym" == TECH_DEBT || "$sym" == VERTEX_INPUT ]] && continue  # prose, not symbols
+    # #3202 — the two corpora are reported separately rather than merged.
+    # `docs/engine/` contributes ~275 advisories to the command files' ~10,
+    # and merging them buries the tuned list under the untuned one. The doc
+    # advisories are not mostly wrong — the run that added them caught
+    # `extract_tangents` (the real symbol is `extract_tangents_from_extra_data`)
+    # — but reference docs legitimately name a great deal of vocabulary that
+    # is not, and never will be, a repo symbol: Papyrus event names, nif.xml
+    # field names, Vulkan entry points, GMST/perk/actor-value rosters, and
+    # on-disk format fields. Those are filtered by pattern below where they
+    # are mechanically identifiable. What is left over is a genuinely mixed
+    # bag of drifted symbols and forward-looking design names, so it stays
+    # advisory and stays in its own section with its own count.
+    symbol_advisory() {
+        local label="$1"
+        shift
+        local -a files=("$@")
+        local suspect_count=0
+        local sym
+        while read -r sym; do
+            # Benign classes, in order of frequency:
+            [[ "$sym" =~ ^[0-9a-f]{7,8}$ ]] && continue          # git short hashes
+            [[ "$sym" == feedback_* ]] && continue               # ~/.claude memory slugs
+            [[ "$sym" == nif_v10x_* ]] && continue               # memory slugs
+            [[ "$sym" == bench_* || "$sym" == light_count_* ]] && continue   # baseline TSV columns
+            [[ "$sym" == tex_missing_* || "$sym" == mesh_cache_* ]] && continue
+            [[ "$sym" == entities_total || "$sym" == tlas_instances ]] && continue
+            [[ "$sym" == static_frames || "$sym" == terrain_tile ]] && continue
+            [[ "$sym" == unknown_records || "$sym" == marker_arrow ]] && continue
+            [[ "$sym" == max_size || "$sym" == local_size ]] && continue     # GLSL / generic
+            [[ "$sym" == unreachable_patterns ]] && continue     # rustc lint name
+            [[ "$sym" == cmd_reset_query_pool ]] && continue     # ash API
+            [[ "$sym" == srgb_to_linear ]] && continue           # deliberately-absent (see memory)
+            [[ "$sym" == comprehensive ]] && continue            # plain English
+            [[ "$sym" == TECH_DEBT || "$sym" == VERTEX_INPUT ]] && continue  # prose, not symbols
 
-        grep -qw "$sym" "$src_blob" && continue
-        if (( suspect_count == 0 )); then
+            # #3202 — external vocabulary the reference docs quote by name.
+            # None of these can ever resolve to a repo symbol, so flagging
+            # them says nothing about drift. Pattern-matched, not listed, so
+            # the filter does not become the hand-maintained roster #2983
+            # penalised.
+            [[ "$sym" == has_* || "$sym" == uses_* ]] && continue   # nif.xml condition fields
+            [[ "$sym" == bhk_* || "$sym" == nif_* ]] && continue    # nif.xml block/field names
+            [[ "$sym" =~ ^On[A-Z] ]] && continue                    # Papyrus event names
+            [[ "$sym" =~ ^Get[A-Z] ]] && continue                   # CTDA condition functions
+            [[ "$sym" =~ ^[Vv]k[A-Z] || "$sym" == VK_* ]] && continue  # Vulkan / ash API
+
+            grep -qw "$sym" "$src_blob" && continue
+            if (( suspect_count == 0 )); then
+                echo
+                echo "ADVISORY ($label) — backticked symbols not found in any tracked source file:"
+            fi
+            printf '  %-46s %s\n' "$sym" \
+                "$(grep -rlE "\`$sym(\`| =)" "${files[@]}" 2>/dev/null \
+                    | sed 's|.claude/commands/||;s|/SKILL.md||;s|docs/engine/||' | tr '\n' ' ')"
+            suspect_count=$((suspect_count + 1))
+        done < <(
+            # Pass 1: a backticked span that is exactly one identifier.
+            # Pass 2: a backticked span of the form `SYMBOL = value` — how skills
+            # quote a constant together with its value. Blind spot (c), found while
+            # closing (a) and (b): #3052's `REFRACT_PASSTHRU_BUDGET = 2` is matched
+            # by neither the old lowercase needle NOR the widened whole-span one,
+            # because the span is not a bare identifier. Narrow on purpose — a
+            # general "leading word of any backticked span" rule re-floods this
+            # list with shell snippets and prose.
+            {
+                grep -rhoE '`[A-Za-z][A-Za-z0-9_]{6,}`' "${files[@]}" 2>/dev/null | tr -d '`'
+                grep -rhoE '`[A-Za-z][A-Za-z0-9_]{6,} =' "${files[@]}" 2>/dev/null \
+                    | sed 's/^`//; s/ =$//'
+            } | sort -u
+        )
+
+        if (( suspect_count > 0 )); then
             echo
-            echo "ADVISORY — backticked symbols not found in any tracked source file:"
+            echo "  $suspect_count advisory symbol(s) in $label. Each is either (a) genuinely"
+            echo "  renamed — update the reference, or (b) an intentional historical /"
+            echo "  never-should-exist / not-yet-built name — italicise it instead of"
+            echo "  backticking. Not a failure."
         fi
-        printf '  %-46s %s\n' "$sym" "$(grep -rlE "\`$sym(\`| =)" "${skill_files[@]}" 2>/dev/null | sed 's|.claude/commands/||;s|/SKILL.md||' | tr '\n' ' ')"
-        suspect_count=$((suspect_count + 1))
-    done < <(
-        # Pass 1: a backticked span that is exactly one identifier.
-        # Pass 2: a backticked span of the form `SYMBOL = value` — how skills
-        # quote a constant together with its value. Blind spot (c), found while
-        # closing (a) and (b): #3052's `REFRACT_PASSTHRU_BUDGET = 2` is matched
-        # by neither the old lowercase needle NOR the widened whole-span one,
-        # because the span is not a bare identifier. Narrow on purpose — a
-        # general "leading word of any backticked span" rule re-floods this
-        # list with shell snippets and prose.
-        {
-            grep -rhoE '`[A-Za-z][A-Za-z0-9_]{6,}`' "${skill_files[@]}" 2>/dev/null | tr -d '`'
-            grep -rhoE '`[A-Za-z][A-Za-z0-9_]{6,} =' "${skill_files[@]}" 2>/dev/null \
-                | sed 's/^`//; s/ =$//'
-        } | sort -u
-    )
+    }
 
-    if (( suspect_count > 0 )); then
-        echo
-        echo "  $suspect_count advisory symbol(s). Each is either (a) genuinely renamed —"
-        echo "  update the skill, or (b) an intentional historical/never-should-exist"
-        echo "  reference — italicise it instead of backticking. Not a failure."
-        echo "  Set SKIP_SYMBOL_CHECK=1 to silence."
-    fi
+    symbol_advisory "audit skills" "${command_files[@]}"
+    symbol_advisory "docs/engine reference docs" "${reference_docs[@]}"
+    echo
+    echo "  Set SKIP_SYMBOL_CHECK=1 to silence both advisories."
 fi
 
 if (( stale_count > 0 )); then

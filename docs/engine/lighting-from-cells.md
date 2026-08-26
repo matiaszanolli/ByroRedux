@@ -25,7 +25,7 @@ The NIF parser now handles the full `NiLight` hierarchy (#156):
   `NiLight` scalar fields (dimmer + ambient / diffuse / specular color3).
 - The `attenuation_radius` solver in
   [`crates/nif/src/import/walk/mod.rs`](../../crates/nif/src/import/walk/mod.rs)
-  (formerly `import/walk.rs`, split into `walk/` during the Session 34/35
+  (formerly `import/walk/mod.rs`, split into `walk/` during the Session 34/35
   refactors) derives each point/spot light's effective radius from the
   attenuation polynomial: it solves `1/(const + lin·d + quad·d²) = 1/256`
   for `d` — the distance where contribution drops to ~0.4 % of peak,

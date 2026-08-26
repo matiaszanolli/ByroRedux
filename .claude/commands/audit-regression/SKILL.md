@@ -75,8 +75,18 @@ For each issue, work the fix → guard-test chain:
 3. **Find the guard test.** Tests live as `*_tests.rs` siblings next to the
    module they cover (e.g. `crates/nif/src/blocks/interpolator_tests.rs`), or as
    `#[cfg(test)] mod tests` inline. To locate one:
-   - `grep -rn "<N>" crates/ byroredux/ --include='*.rs'` — many tests cite the
+   - `grep -arn "<N>" crates/ byroredux/ --include='*.rs'` — many tests cite the
      issue number in a name or comment (`fn fix_1516_…`, `// #1516`).
+     **The `-a` is load-bearing** (#3210): a single raw NUL byte anywhere in a
+     `.rs` file — trivially introduced by writing `b"Foo<NUL>"` where the source
+     meant `b"Foo\0"`, and accepted silently by rustc — makes plain `grep`
+     classify the whole file as binary and skip it without a word. That once hid
+     40 guards citing 31 issues in one 1,944-line file, and the sweep that found
+     it came one command from filing a FAIL against a fix that was present.
+     `rg` and `git grep` are immune; plain `grep` is not.
+     `scripts/check-text-source-integrity.sh` (run in CI, and by
+     `_audit-validate.sh`) now rejects such files, but keep the `-a`: a
+     PARTIAL/FAIL published on a blind grep costs far more than a flag.
    - Failing that, grep the fixed symbol or a keyword from the title across
      `*_tests.rs` siblings of the fix file.
 4. **Run the guard** to prove it still passes. Crate packages are named

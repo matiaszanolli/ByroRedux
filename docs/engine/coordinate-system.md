@@ -238,7 +238,7 @@ REFR placement now lives in `references.rs` / `refr.rs`, the spawn
 composition in `spawn.rs`, and the Euler dispatcher in `euler.rs`.
 
 Each REFR (placed reference) has a Z-up position and Euler rotation. These
-are converted to Y-up (`byroredux/src/cell_loader/references.rs`):
+are converted to Y-up (`byroredux/src/cell_loader/references/mod.rs`):
 
 ```rust
 let outer_pos = Vec3::new(position[0], position[2], -position[1]);

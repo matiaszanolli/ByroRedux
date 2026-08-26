@@ -100,7 +100,7 @@ Travel-, Follow-, Escort-, Guard-, or Patrol-type entry,
 ## 3. PACK record parsing
 
 `crates/plugin/src/esm/records/mod.rs:587` dispatches `b"PACK"` groups
-to `parse_pack` (`crates/plugin/src/esm/records/misc/ai.rs:178`),
+to `parse_pack` (`crates/plugin/src/esm/records/misc/pack.rs:178`),
 populating `EsmIndex.packages: HashMap<u32, PackRecord>`. `PackRecord`
 (`ai.rs:20`) decodes four sub-records: `PKDT` (flags +
 `procedure_type`, a **single byte** — a pre-#446 bug had read this as a
@@ -113,7 +113,7 @@ second target, for two-target procedures like Escort-someone-to-someone)
 is **not parsed** — Escort's own v0 runtime (§9) only ever escorts one
 actor, so no implemented procedure needs it yet.
 `NpcRecord.ai_packages: Vec<u32>`
-(`crates/plugin/src/esm/records/actor.rs:190-191`, from `PKID`
+(`crates/plugin/src/esm/records/actor/mod.rs:190-191`, from `PKID`
 sub-records) holds the NPC's package list in priority order.
 
 ## 4. Package selection: narrower than "priority stack" suggests
@@ -305,7 +305,7 @@ tested* layouts before trusting it for a brand-new sub-record: fetched
 PSDT and PLDT layouts both matched this codebase's existing, tested
 decode exactly, which is what made the PTDT fetch trustworthy despite
 being new. New `PackTarget`/`PackTargetKind` types
-(`crates/plugin/src/esm/records/misc/ai.rs`) mirror
+(`crates/plugin/src/esm/records/misc/pack.rs`) mirror
 `PackLocation`/`PackLocationTarget`'s exact shape — only `SpecificReference`/
 `ObjectId` target types get named, resolvable-FormID variants; the rest
 fold into `Other`. `PTD2` (a second target) is not decoded — no

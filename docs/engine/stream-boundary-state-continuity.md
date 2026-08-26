@@ -107,7 +107,7 @@ any state worth snapshotting).
 
 Not "snapshot every component," which would balloon into a second save
 system with none of the real save system's validation/versioning
-discipline (`docs/engine/save_invariants.md`). Scope it the same way the
+discipline (`docs/engine/save-load-roundtrip.md`). Scope it the same way the
 save-registry completeness guard already forces every `Component`/`Resource`
 to be classified — explicit allow-list, not a blanket rule:
 

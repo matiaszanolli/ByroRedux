@@ -119,7 +119,7 @@ The existing CELL walker (`crates/plugin/src/esm/cell/walkers.rs`) handles FO3 �
 
 **Deliverables**:
 - `parse_cell_group(..., GameKind::Starfield)` walks Cydonia's CELL without panic and extracts all REFR positions / rotations / scales / form-id refs.
-- New test `parse_cydonia_cell` in `crates/plugin/src/esm/cell/tests/` (likely new `tests/starfield.rs` sibling).
+- New test `parse_cydonia_cell` in `crates/plugin/src/esm/cell/tests/` (likely a new _tests/starfield.rs_ sibling — proposed, does not exist yet).
 - TSV regression baseline for Cydonia CELL: entity count, REFR count, lighting struct values.
 
 ## Phase 5 — Render Cydonia interior (validation milestone)

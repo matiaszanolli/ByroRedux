@@ -108,10 +108,10 @@ without dragging in `glam` or any renderer types.
 
 > **Session 34/35/36 layout note.** Several files referenced by older
 > audits as single `.rs` files are now submodule directories:
-> `blocks/tri_shape.rs` → `blocks/tri_shape/`, `blocks/collision.rs` →
-> `blocks/collision/`, `blocks/controller.rs` → `blocks/controller/`,
-> `import/mesh.rs` → `import/mesh/`, `import/material.rs` →
-> `import/material/`, `import/walk.rs` → `import/walk/`, `anim.rs` →
+> `blocks/tri_shape/mod.rs` → `blocks/tri_shape/`, `blocks/collision/mod.rs` →
+> `blocks/collision/`, `blocks/controller/mod.rs` → `blocks/controller/`,
+> `import/mesh/mod.rs` → `import/mesh/`, `import/material/mod.rs` →
+> `import/material/`, `import/walk/mod.rs` → `import/walk/`, `anim.rs` →
 > `anim/`. The `Imported*` structs moved out of `import/mod.rs` into
 > `import/types.rs`, and the SVD rotation repair moved out of
 > `import/transform.rs` to the top-level `rotation.rs`. Translate stale
@@ -834,11 +834,11 @@ parser was split into per-variant dispatch (#1279) and now captures the
 (#1175 / #1241).
 
 **Session 35/36 submodule splits.** The >1500-LOC monoliths were broken into
-directories: `blocks/tri_shape.rs` → `tri_shape/` (#1118 TD9-005, agd / bs_tri_shape /
-ni_tri_shape), `blocks/collision.rs` → `collision/` (9 production + test siblings),
-`blocks/controller.rs` → `controller/` (legacy / sequence / morph / shader),
-`import/mesh.rs` → `mesh/`, `import/material.rs` → `material/` (walker + shader_data),
-`import/walk.rs` → `walk/`, and `anim.rs` → `anim/`. The `Imported*` structs moved
+directories: `blocks/tri_shape/mod.rs` → `tri_shape/` (#1118 TD9-005, agd / bs_tri_shape /
+ni_tri_shape), `blocks/collision/mod.rs` → `collision/` (9 production + test siblings),
+`blocks/controller/mod.rs` → `controller/` (legacy / sequence / morph / shader),
+`import/mesh/mod.rs` → `mesh/`, `import/material/mod.rs` → `material/` (walker + shader_data),
+`import/walk/mod.rs` → `walk/`, and `anim.rs` → `anim/`. The `Imported*` structs moved
 to `import/types.rs`, the SVD rotation repair to the top-level `rotation.rs` (#1044),
 and the lib.rs recovery tests to a sibling `tests.rs` (#1118 TD9-002). New
 top-level files: `shader_flags.rs` (named flag constants + typed variant view,

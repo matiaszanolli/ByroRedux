@@ -282,7 +282,7 @@ for (id, health) in q.iter_mut() { ... }
 
 ## Resources
 
-Source: `crates/core/src/ecs/resource.rs`, `crates/core/src/ecs/resources.rs`
+Source: `crates/core/src/ecs/resource.rs`, `crates/core/src/ecs/resources/mod.rs`
 
 Resources are global state not tied to any entity. Same `RwLock` guard
 pattern as queries — `ResourceRead<R>` derefs to `&R`, `ResourceWrite<R>`
