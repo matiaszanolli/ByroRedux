@@ -1,8 +1,9 @@
 //! G-Buffer attachments for SVGF denoising.
 //!
-//! Five auxiliary render targets written by the main render pass alongside
-//! the HDR color intermediate. These carry the per-pixel geometric and
-//! material data that downstream SVGF and composite passes need:
+//! The auxiliary render targets written by the main render pass alongside
+//! the HDR color intermediate are enumerated below. They carry the per-pixel
+//! geometric and material data that downstream SVGF, FSR, and composite
+//! passes need:
 //!
 //! | Attachment    | Format             | Contents                                     |
 //! |---------------|--------------------|----------------------------------------------|
