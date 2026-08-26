@@ -126,9 +126,13 @@ impl CharacterRuleset {
     /// exist workspace-wide; the coefficients currently sit in
     /// `crates/plugin/src/esm/records/actor_value_derive.rs`, i.e. in a
     /// consumer rather than in the ruleset. The attribute-roster half of the
-    /// duplication is closed (that module now reads `AttributeSet::FALLOUT`);
-    /// the rule half is deliberately paired with sourcing those coefficients
-    /// from GMSTs (#2942), which is what would populate the field.
+    /// duplication is closed (that module now reads `AttributeSet::FALLOUT`).
+    /// The rule half is only partly GMST-sourceable (#3173): `base` is
+    /// per-skill and authored (`fAVDSkill<DisplayName>Base`, 13 FNV GMSTs,
+    /// keyed by display name — the inverse of the `AVIF` record-identity
+    /// convention); `attr_mult` and `luck_mult` are geckwiki-documented but
+    /// authored by neither `Fallout3.esm` nor `FalloutNV.esm` — they stay
+    /// engine constants when this field lands, not a GMST read.
     ///
     /// Number of derived-stat formula **rows** — not the number of distinct
     /// stats.

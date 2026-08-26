@@ -462,9 +462,11 @@ const MAX_PKIN_DEPTH: u32 = 4;
 /// levels (#635 / FNV-D3-06) so a child PKIN's contents fan out instead
 /// of being silently dropped at the caller's `index.statics.get` lookup.
 /// Children that resolve to a non-PKIN form pass through unchanged.
-/// Children that resolve to a SCOL or LVLI stay single-level — those
-/// expansions live in `expand_scol_placements` (#585) and an unimplemented
-/// LVLI helper (#386).
+/// Children that resolve to a SCOL recurse too (#1180): the SCOL expander
+/// (`expand_scol_placements`, #585) applies its own SCOL-of-SCOL gate
+/// (#1182), bounded by the same shared `MAX_PKIN_DEPTH`. LVLI children are
+/// the one case that still stays single-level — no LVLI helper exists yet
+/// (#386).
 ///
 /// Returns `None` when the outer REFR's base isn't a PKIN, or when the
 /// PKIN's `contents` list is empty.

@@ -21,11 +21,14 @@
 //! - **SPECIAL**: an auto-calc NPC adopts its **class's base attributes**
 //!   as its SPECIAL (geckwiki *Stats Tab - NPC* / *Class*). Those are the
 //!   7 bytes of the class's `ATTR` subrecord (fopdoc `CLAS`), Str → Luck.
-//! - **Skill base**: `skill = fAVDSkill<name>Base + governing_SPECIAL ×
+//! - **Skill base**: `skill = fAVDSkill<DisplayName>Base + governing_SPECIAL ×
 //!   fAVDSkillPrimaryBonusMult + ceil(Luck × fAVDSkillLuckBonusMult)`
 //!   (geckwiki *Derived Skill Settings*). Defaults: base **2**, primary
 //!   mult **2**, luck mult **0.5**. Worked example (geckwiki): END 5 +
-//!   Luck 5 → Unarmed = 2 + 5×2 + ceil(5×0.5) = 15.
+//!   Luck 5 → Unarmed = 2 + 5×2 + ceil(5×0.5) = 15. Of these, only the base
+//!   is actually authored (per-skill, by display name — 13 FNV GMSTs, all
+//!   `2.0`); the two mults are geckwiki-documented but unauthored by either
+//!   master, so they're engine defaults, not a pending GMST read (#3173).
 //! - **Governing SPECIAL per skill**: fallout.fandom *New Vegas SPECIAL* /
 //!   geckwiki *SPECIAL*. FO3 and FNV use distinct canonical 13-skill rosters;
 //!   FNV's displayed Guns/Survival retain the `AVSmallGuns`/`AVThrowing`
@@ -112,14 +115,23 @@ fn special_index(attr: Attribute) -> Option<usize> {
 // CHARAL's stated shape puts rules on `CharacterRuleset` (the spec's
 // `skill_calc: SkillDerivation { base, attr_mult, luck_mult }` field), not in
 // a consumer crate. They live here because nothing populates that field yet —
-// it does not exist workspace-wide. Moving them is deliberately paired with
-// sourcing them from GMSTs (#2942): the values would then have one place to be
-// read into, and `derive_npc_actor_values` would take the ruleset rather than
-// re-deriving the rule. Until then this is a known, recorded deviation rather
-// than a silent one.
-const SKILL_BASE: f32 = 2.0; // fAVDSkill<name>Base
-const SKILL_ATTR_MULT: f32 = 2.0; // fAVDSkillPrimaryBonusMult
-const SKILL_LUCK_MULT: f32 = 0.5; // fAVDSkillLuckBonusMult
+// it does not exist workspace-wide. Until then this is a known, recorded
+// deviation rather than a silent one.
+//
+// #3173 — GMST authoring, corrected. `SKILL_BASE` is per-skill in vanilla:
+// FNV authors thirteen `fAVDSkill<DisplayName>Base` GMSTs (Barter, BigGuns,
+// EnergyWeapons, Explosives, Lockpick, Medicine, MeleeWeapons, Repair,
+// Science, SmallGuns, Sneak, Speech, Survival — keyed on the *display* name,
+// the inverse of the `AVIF` record-identity convention), all `2.0` in
+// vanilla and collapsed into this one shared constant. `fAVDSkillPrimaryBonusMult`
+// and `fAVDSkillLuckBonusMult` do NOT exist in either `FalloutNV.esm` or
+// `Fallout3.esm` (verified by raw byte search) — they are geckwiki-documented
+// but unauthored; there is nothing to source them from, so when `skill_calc`
+// lands on `CharacterRuleset` these two stay engine constants and only
+// `SKILL_BASE` becomes a per-skill GMST read (by display name, `2.0` fallback).
+const SKILL_BASE: f32 = 2.0; // fAVDSkill<DisplayName>Base (per-skill; see #3173)
+const SKILL_ATTR_MULT: f32 = 2.0; // geckwiki fAVDSkillPrimaryBonusMult — unauthored, engine default
+const SKILL_LUCK_MULT: f32 = 0.5; // geckwiki fAVDSkillLuckBonusMult — unauthored, engine default
 
 /// `skill = 2 + 2 × governing + ceil(Luck × 0.5)`.
 fn base_skill(governing: u8, luck: u8) -> f32 {
