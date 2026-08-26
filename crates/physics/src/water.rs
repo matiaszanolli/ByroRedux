@@ -1934,8 +1934,8 @@ mod tests {
         physics_sync_system(&world, PHYSICS_DT);
 
         let force_of = |world: &World| -> (f32, f32) {
-            let pw = world.resource::<PhysicsWorld>();
             let handles = *world.query::<RapierHandles>().unwrap().get(body).unwrap();
+            let pw = world.resource::<PhysicsWorld>();
             let b = pw.bodies.get(handles.body).expect("body is registered");
             let f = b.user_force();
             let v = b.linvel();
@@ -1952,9 +1952,9 @@ mod tests {
             // a body itself — only the SURFACE branch calls `wake_up` — so a
             // marker with no overlapping plane needs an independent
             // disturbance, which is exactly this issue's trigger condition.
+            let handles = *world.query::<RapierHandles>().unwrap().get(body).unwrap();
             {
                 let mut pw = world.resource_mut::<PhysicsWorld>();
-                let handles = *world.query::<RapierHandles>().unwrap().get(body).unwrap();
                 if let Some(b) = pw.bodies.get_mut(handles.body) {
                     b.wake_up(true);
                 }

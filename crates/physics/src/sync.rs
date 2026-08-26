@@ -1292,8 +1292,12 @@ mod phase_sync_tests {
 
         physics_sync_system(&world, 0.0);
 
-        let handles = world.query::<RapierHandles>().unwrap();
-        let h = handles.get(entity).copied().expect("body must register");
+        let h = world
+            .query::<RapierHandles>()
+            .unwrap()
+            .get(entity)
+            .copied()
+            .expect("body must register");
         let pw = world.resource::<PhysicsWorld>();
         let collider = pw
             .colliders
@@ -1322,8 +1326,12 @@ mod phase_sync_tests {
 
         physics_sync_system(&world, 0.0);
 
-        let handles = world.query::<RapierHandles>().unwrap();
-        let h = handles.get(entity).copied().expect("body must register");
+        let h = world
+            .query::<RapierHandles>()
+            .unwrap()
+            .get(entity)
+            .copied()
+            .expect("body must register");
         let pw = world.resource::<PhysicsWorld>();
         let collider = pw.colliders.get(h.collider).expect("collider must exist");
         assert!(!collider.is_sensor());
@@ -1754,24 +1762,29 @@ mod actor_bone_group_tests {
 
         physics_sync_system(&world, 0.0);
 
-        let handles = world.query::<RapierHandles>().expect("storage");
+        let (bone_handle, prop_handle) = {
+            let handles = world.query::<RapierHandles>().expect("storage");
+            (
+                handles.get(bone).copied().expect("registered bone"),
+                handles.get(prop).copied().expect("registered prop"),
+            )
+        };
         let pw = world.resource::<PhysicsWorld>();
-        let groups = |e: EntityId| {
-            let h = handles.get(e).copied().expect("registered");
+        let groups = |h: RapierHandles| {
             pw.colliders
                 .get(h.collider)
                 .expect("collider")
                 .collision_groups()
         };
 
-        assert_eq!(groups(bone).memberships, crate::ACTOR_BONE_GROUP);
+        assert_eq!(groups(bone_handle).memberships, crate::ACTOR_BONE_GROUP);
         assert_eq!(
-            groups(bone).filter,
+            groups(bone_handle).filter,
             rapier3d::prelude::Group::ALL,
             "the mask is query-side only — contact generation must be unchanged"
         );
         assert_eq!(
-            groups(prop),
+            groups(prop_handle),
             rapier3d::prelude::InteractionGroups::all(),
             "an untagged keyframed body keeps the default groups"
         );
@@ -1806,9 +1819,13 @@ mod actor_bone_group_tests {
 
         physics_sync_system(&world, 0.0);
 
-        let handles = world.query::<RapierHandles>().expect("storage");
+        let h = world
+            .query::<RapierHandles>()
+            .expect("storage")
+            .get(scaled)
+            .copied()
+            .expect("registered");
         let pw = world.resource::<PhysicsWorld>();
-        let h = handles.get(scaled).copied().expect("registered");
         let collider = pw.colliders.get(h.collider).expect("collider");
         let half = collider
             .shape()
