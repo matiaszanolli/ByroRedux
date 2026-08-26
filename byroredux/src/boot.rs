@@ -1511,12 +1511,18 @@ pub(crate) fn build_scheduler() -> Scheduler {
 /// console-command and save registries. Reads the built `scheduler`
 /// immutably; mutates `world`. Extracted verbatim from `App::new`.
 pub(crate) fn install_runtime_registries(world: &mut World, scheduler: &Scheduler) {
-    // #1394 — guard against silently re-introducing undeclared parallel
-    // systems.  All parallel-batch entries must use add_to_with_access;
-    // any future add_to() call will trip this in debug builds before
-    // the Unknown row appears in the sys.accesses conflict report.
+    // #1394 / #2690 — this access report is the construction-time static
+    // deadlock proof for every same-stage parallel batch. With no undeclared
+    // systems or unknown pairs, every pair is analyzable; with no known
+    // conflict, no pair overlaps on a component/resource lock where either
+    // side writes. The batch therefore has no cross-thread blocking edge and
+    // cannot form an ABBA cycle. Keep these as release assertions: schedule
+    // construction runs once, and a release-only divergence must not ship
+    // without the proof. `BYRO_LOCK_ORDER_CHECK` is a dynamic supplement for
+    // exercised paths, not a replacement for this exhaustive declared-pair
+    // check.
     let report_snapshot = scheduler.access_report();
-    debug_assert_eq!(
+    assert_eq!(
         report_snapshot.undeclared_parallel_count(),
         0,
         "undeclared parallel system detected — use add_to_with_access instead of add_to"
@@ -1528,13 +1534,13 @@ pub(crate) fn install_runtime_registries(world: &mut World, scheduler: &Schedule
     // GlobalTransform in the Late parallel batch) slipped through.
     // Either run `sys.accesses` to see the offending pair, or make one
     // side exclusive.
-    debug_assert_eq!(
+    assert_eq!(
         report_snapshot.known_conflict_count(),
         0,
         "declared access conflict between two parallel same-stage systems \
          — make one side exclusive or split the access (see sys.accesses)"
     );
-    debug_assert_eq!(
+    assert_eq!(
         report_snapshot.unknown_pair_count(),
         0,
         "unknown (undeclared) parallel pairing detected — declare both sides' access"

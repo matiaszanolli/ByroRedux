@@ -29,6 +29,15 @@
 //!    `B → C` on a second, `C → A` on a third — each edge individually
 //!    legal) panics on the observation that closes it. See #2675.
 //!
+//! For scheduler-managed parallel systems, the primary cross-thread guarantee
+//! is static: `Scheduler::access_report` classifies undeclared/unknown pairs
+//! and every write/read or write/write overlap within a stage. A zeroed report
+//! therefore proves that declared parallel pairs have no blocking lock edge
+//! and cannot form ABBA. `install_runtime_registries` enforces that report in
+//! every build. This runtime graph supplements the proof for incomplete
+//! declarations and other multi-lock paths that an enabled run actually
+//! reaches; it is deliberately not presented as whole-program coverage.
+//!
 //! The per-acquisition cost is a thread-local HashMap lookup plus (debug
 //! only) a fast-path `RwLock::read()` + one `HashMap::contains_key()` per
 //! held lock — negligible compared to the real RwLock the check is
