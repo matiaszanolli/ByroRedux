@@ -1386,12 +1386,12 @@ pub(crate) fn build_scheduler() -> Scheduler {
             .writes::<byroredux_scripting::SplashEvent>()
             .writes::<byroredux_core::ecs::components::SubmersionState>(),
     );
-    // M44 Phase 6 — cell-acoustics → reverb send (#846). Runs
-    // before `audio_system` so any new spatial track constructed
-    // this frame picks up the right send level. Already-playing
-    // sounds keep their construction-time send (kira contract);
-    // long-running ambients across interior/exterior transitions
-    // are tracked separately in AUD-D5-NEW-06.
+    // M44 Phase 6 — cell-acoustics → reverb send (#846). This
+    // `build_scheduler` block is the registration authority; the system
+    // runs before `audio_system` so any new spatial track constructed this
+    // frame picks up the right send level. Already-playing sounds keep their
+    // construction-time send (kira contract); long-running ambients across
+    // interior/exterior transitions are tracked separately in AUD-D5-NEW-06.
     scheduler.add_to_with_access(
         Stage::Late,
         crate::systems::reverb_zone_system,
@@ -1446,12 +1446,11 @@ pub(crate) fn build_scheduler() -> Scheduler {
             .reads::<byroredux_scripting::RippleEvent>()
             .writes_resource::<byroredux_audio::AudioWorld>(),
     );
-    // M44 Phase 1 — audio update runs in Stage::Late so it sees
-    // final world transforms after propagation. The Phase 1 body
-    // is a stub (see byroredux_audio::audio_system); future
-    // phases (one-shot dispatch, listener pose sync, looping
-    // emitter lifecycle) flesh it out without touching the
-    // schedule wiring.
+    // M44 — the live audio update synchronizes listener pose, applies
+    // underwater filtering, dispatches queued and entity-backed one-shots,
+    // and prunes finished emitters. It runs in Stage::Late so it sees final
+    // world transforms after propagation. `build_scheduler` is the canonical
+    // registration authority for this ordering contract.
     //
     // M27 Phase 3 — registered as **exclusive** so it sequences
     // after the Late parallel batch. The ordering comment at
