@@ -699,8 +699,9 @@ impl CompositePipeline {
         }
 
         // ── 6. Descriptor set layout + pipeline layout ───────────────
-        // 7 bindings — HDR, indirect, albedo, params UBO, depth,
-        // caustic, volumetric (M55 Phase 4).
+        // 9 bindings — HDR, indirect, albedo, params UBO, depth,
+        // caustic, volumetric (M55 Phase 4), bloom (#2796), water-side
+        // caustic accumulator (#1257) — see per-binding comments below.
         let ds_bindings = [
             vk::DescriptorSetLayoutBinding::default()
                 .binding(0)

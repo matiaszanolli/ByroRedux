@@ -787,8 +787,8 @@ pub struct SkyParams {
     /// edges; smaller values approach the physical sun (~0.0047 rad)
     /// at the cost of cell-scale soft shadows. Plumbed via
     /// `GpuCamera.sky_tint.w` (the previously-reserved slot) so this
-    /// change doesn't touch GpuCamera's 336 B layout. See #1023 /
-    /// REN-D20-NEW-01.
+    /// change didn't touch GpuCamera's then-336 B layout (since grown to
+    /// 352 B by unrelated additions). See #1023 / REN-D20-NEW-01.
     pub sun_angular_radius: f32,
     /// Whether sky rendering is enabled (true for exterior cells).
     pub is_exterior: bool,

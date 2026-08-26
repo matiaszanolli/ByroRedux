@@ -268,7 +268,7 @@ the allocator fires after the logical device has already been destroyed.
 5. Walk the ECS via `build_render_data` to collect visible mesh handles,
    transforms, the per-frame `MaterialTable`, light sources, decals, and
    skinned-mesh bone palettes.
-6. Update the camera UBO (`GpuCamera`, 336 bytes) — view + prev-view-proj
+6. Update the camera UBO (`GpuCamera`, 352 bytes) — view + prev-view-proj
    + inverse(viewProj) + **Halton jitter** for TAA + `rt_flag` (1.0 only
    when ray_query is supported AND the TLAS is written for this frame;
    `patch_camera_rt_flag` flips it in-place after `write_tlas` succeeds,
@@ -579,8 +579,8 @@ material-level) stay on `GpuInstance.flags`:
 > `triangle.vert/frag`, `water.vert/frag`, `cluster_cull.comp`,
 > `caustic_splat.comp`. Post-R1 the contract narrowed so only
 > `triangle.frag` mirrors the full `GpuMaterial`. The
-> `gpu_instance_is_128_bytes_std430_compatible`, `gpu_camera_is_336_bytes`
-> (the live 336-byte `GpuCamera` layout), and `GpuMaterial`-size tests pin
+> `gpu_instance_is_128_bytes_std430_compatible`, `gpu_camera_is_352_bytes`
+> (the live 352-byte `GpuCamera` layout), and `GpuMaterial`-size tests pin
 > the byte layout; the `feedback_shader_struct_sync` note records the update
 > protocol.
 

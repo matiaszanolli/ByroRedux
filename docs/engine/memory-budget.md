@@ -31,10 +31,10 @@ Constants in [`scene_buffer/constants.rs`](../../crates/renderer/src/vulkan/scen
 | Instance SSBO | `MAX_INSTANCES` = 262 144 | 262 144 | 128 B (#2219) | 33.6 MB | **67.1 MB** |
 | Previous-model SSBO (`33d9a468`) | `MAX_INSTANCES` = 262 144 | 262 144 | 64 B (`mat4`) | 16.8 MB | **33.6 MB** |
 | Indirect draw SSBO | `MAX_INDIRECT_DRAWS` = 262 144 | 262 144 | 20 B | 5.2 MB | **10.5 MB** |
-| Material SSBO | `MAX_MATERIALS` = 16 384 | 16 384 | 348 B | 5.7 MB | **11.4 MB** |
+| Material SSBO | `MAX_MATERIALS` = 16 384 | 16 384 | 432 B | 6.75 MB | **13.5 MB** |
 | Terrain tile SSBO | `MAX_TERRAIN_TILES` = 1 024 | 1 024 | 32 B | — | **32 KB** (single shared buffer, NOT FIF-doubled) |
 | Bone buffers ¹ | `MAX_TOTAL_BONES` = 196 608 | 196 608 | 64 B | 12.6 MB/buffer | **100.6 MB** |
-| Camera UBO | — | 1 | 336 B | 336 B | **672 B** |
+| Camera UBO | — | 1 | 352 B | 352 B | **704 B** |
 
 ¹ Eight 12.6 MB bone-sized allocations, not one: palette (`bone_device`),
 `bone_world` staging, and `bone_world` device-copy are each FIF-doubled
@@ -45,7 +45,7 @@ scratch (`1 366 × MAX_BONES_PER_MESH(144) × 64 B ≈ 12.6 MB`, M29.6). Total
 [`scene_buffer/buffers.rs`](../../crates/renderer/src/vulkan/scene_buffer/buffers.rs)
 `allocate_scene_render_buffers`.
 
-**Total resident scene buffers:** ≈ **223 MB** across all copies.
+**Total resident scene buffers:** ≈ **225 MB** across all copies.
 
 Exceeding `MAX_INSTANCES` logs a one-shot `warn!` and clamps to
 `MAX_INSTANCES` (#956/#992) — it is no longer a `debug_assert`. Exceeding
