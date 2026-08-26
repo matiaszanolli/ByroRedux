@@ -201,6 +201,12 @@ The pattern has been the same in every prior FNV-D2 audit: each round closes ~3-
   **Recipes / crafting (3)**:
   RCCT (recipe category), RCPE (recipe — superseded by COBJ in MEDIUM; FNV ships both)
 
+  > **Correction (#3040, 2026-08-26)**: this claim is backwards. `FalloutNV.esm`
+  > contains exactly one `COBJ` occurrence and it is an empty `GRUP` header —
+  > zero records. RCPE is FNV's live recipe format (106 occurrences observed);
+  > COBJ is the FO4+ successor, unauthored on FNV. See `EsmIndex::recipes` /
+  > `EsmIndex::recipe_records` in `crates/plugin/src/esm/records/index.rs`.
+
 - **Trigger Conditions**: None block any current rendering or simulation.
 - **Impact**: Cumulative — none of these is *individually* important enough to file as MEDIUM, but the long tail keeps the dispatch coverage at 58/101 instead of approaching parity. Each record represents authored content the engine ignores.
 - **Suggested Fix**: Defer until a concrete consumer needs them. The dispatch-coverage progression has been driven by consumers (#629 ENCH driven by perk effect simulation, #631 INFO driven by quest dialogue, #634 EsmIndex driven by category telemetry). Same model for the long tail — file individual issues as consumers arrive.

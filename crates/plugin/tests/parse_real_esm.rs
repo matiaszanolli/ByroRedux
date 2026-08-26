@@ -495,7 +495,8 @@ fn parse_rate_fnv_esm() {
          spells={} magic_effects={} activators={} terminals={} form_lists={} \
          projectiles={} effect_shaders={} item_mods={} armor_addons={} body_parts={} \
          reputations={} explosions={} combat_styles={} idle_animations={} \
-         impacts={} impact_data_sets={} recipes={} trees={}",
+         impacts={} impact_data_sets={} recipes(COBJ)={} recipe_categories(RCCT)={} \
+         recipe_records(RCPE)={} trees={}",
         index.total(),
         index.items.len(),
         index.containers.len(),
@@ -529,6 +530,8 @@ fn parse_rate_fnv_esm() {
         index.impacts.len(),
         index.impact_data_sets.len(),
         index.recipes.len(),
+        index.recipe_categories.len(),
+        index.recipe_records.len(),
         index.trees.len(),
     );
 
@@ -779,6 +782,19 @@ fn parse_rate_fnv_esm() {
         index.impact_data_sets.len(),
     );
     // COBJ vanilla=0 — dispatch arm is in place; DLC content adds some.
+
+    // #3040 — RCPE is FNV's actual live recipe format (COBJ's predecessor
+    // on this game, not its successor). It's already summed into the
+    // long-tail floor below via `recipe_records`, but pin a standalone
+    // floor too so a regression in this specific record's dispatch doesn't
+    // hide inside the 31-record sum — this is the record a `recipes=0`
+    // reading of the COBJ counter could otherwise misread as "FNV authors
+    // no recipes at all".
+    assert!(
+        index.recipe_records.len() >= 90,
+        "RCPE={} (expected >= 90; vanilla ships ~106)",
+        index.recipe_records.len(),
+    );
 
     // At least one EXPL must have parsed damage > 0 — proves the DATA
     // sub-record decode fires.

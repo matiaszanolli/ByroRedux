@@ -268,7 +268,12 @@ pub struct EsmIndex {
     /// `IPDS` impact data sets — 12-entry table mapping per-material
     /// surface kinds to their respective IPCT records.
     pub impact_data_sets: HashMap<u32, IpdsRecord>,
-    /// `COBJ` constructible-object records — FNV crafting recipes.
+    /// `COBJ` constructible-object records — the FO4+ crafting-recipe
+    /// format. **Empty on FNV/FO3** (#3040): `FalloutNV.esm` authors exactly
+    /// one `COBJ` occurrence and it's a zero-record `GRUP` header. FNV's
+    /// live recipe data is `RCPE` ([`recipe_records`](Self::recipe_records)
+    /// below), routed to the `MinimalEsmRecord` stub bucket since nothing
+    /// consumes it yet.
     pub recipes: HashMap<u32, CobjRecord>,
     // ── #810 / FNV-D2-NEW-03 — long-tail catch-all stubs ────────────
     //
@@ -347,10 +352,13 @@ pub struct EsmIndex {
     /// `CSNO` casino.
     pub casinos: HashMap<u32, MinimalEsmRecord>,
     // Recipe residuals (2):
-    /// `RCCT` recipe category — superseded by COBJ in #809 but FNV
-    /// ships both record types.
+    /// `RCCT` recipe category — groups [`recipe_records`](Self::recipe_records)
+    /// entries. FNV's live crafting-recipe format (#3040); COBJ (the FO4+
+    /// successor named in #809) is empty on FNV, not the other way round.
     pub recipe_categories: HashMap<u32, MinimalEsmRecord>,
-    /// `RCPE` recipe — superseded by COBJ; FNV ships both.
+    /// `RCPE` recipe — FNV's live recipe format (#3040), NOT superseded by
+    /// COBJ on this game: `FalloutNV.esm` authors 106 `RCPE` records and an
+    /// empty `COBJ` group. COBJ supersedes RCPE only from FO4 onward.
     pub recipe_records: HashMap<u32, MinimalEsmRecord>,
     // ── #966 / OBL-D3-NEW-02 — Oblivion-unique base records ────────────
     //
