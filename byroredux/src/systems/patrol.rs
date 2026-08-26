@@ -53,6 +53,12 @@ const PATROL_DEFAULT_RADIUS: f32 = 512.0;
 /// two-pass structure).
 struct PatrolDecision {
     entity: EntityId,
+    source_rotation: Quat,
+    radius: f32,
+    form_id: u32,
+    waypoint_override: Option<Vec3>,
+    effective_goal: Vec3,
+    waypoints: VecDeque<Vec3>,
     translation: Vec3,
     rotation: Option<Quat>,
     state: PatrolState,
@@ -77,21 +83,20 @@ struct PatrolScratch {
 /// are propagation roots (no `Parent`), so `Transform` == world position
 /// for them.
 fn patrol_system_inner(world: &World, dt: f32, scratch: &mut PatrolScratch) {
-    let Some(behavior_q) = world.query::<PatrolBehavior>() else {
-        return;
-    };
-
-    // ── Pass 1: gather decisions (reads only). ──
+    // ── Pass 1a: gather component snapshots. `PhysicsWorld` is NOT
+    // acquired in this scope, so it never overlaps the five storage read
+    // guards (#3262, mirroring the #2134 sibling shape). ──
     scratch.decisions.clear();
     {
+        let Some(behavior_q) = world.query::<PatrolBehavior>() else {
+            return;
+        };
         let Some(transform_q) = world.query::<Transform>() else {
             return;
         };
         let state_q = world.query::<PatrolState>();
         let tile_q = world.query::<NavmeshTile>();
         let nav_path_q = world.query::<NavPath>();
-        let physics = world.try_resource::<byroredux_physics::PhysicsWorld>();
-
         for (entity, behavior) in behavior_q.iter() {
             let Some(transform) = transform_q.get(entity) else {
                 continue;
@@ -119,7 +124,7 @@ fn patrol_system_inner(world: &World, dt: f32, scratch: &mut PatrolScratch) {
             // EX-16 item 3 Phase 4: mirrors `wander_system_inner` exactly
             // (same shared primitive, same caching shape) — only resolve
             // a path while actually walking this leg.
-            let (waypoint_override, effective_goal, mut waypoints) =
+            let (waypoint_override, effective_goal, waypoints) =
                 if matches!(state.phase, WanderPhase::Walking) {
                     let cached = nav_path_q.as_ref().and_then(|q| q.get(entity));
                     let (effective_goal, waypoints) = resolve_cached_waypoints(
@@ -134,45 +139,62 @@ fn patrol_system_inner(world: &World, dt: f32, scratch: &mut PatrolScratch) {
                     (None, state.target, VecDeque::new())
                 };
 
-            let (new_pos, rotation, new_state) = step_oscillating_wander(
-                transform.translation,
-                transform.rotation,
-                dt,
-                physics.as_deref(),
-                radius,
-                behavior.form_id,
-                OscillateWalk {
-                    home: state.home,
-                    target: state.target,
-                    phase: state.phase,
-                    pick_count: state.pick_count,
-                },
-                waypoint_override,
-            );
-            if !waypoints.is_empty() {
-                pop_reached_waypoint(new_pos, &mut waypoints);
-            }
-            let nav_path = matches!(new_state.phase, WanderPhase::Walking).then_some(NavPath {
-                goal: effective_goal,
-                waypoints,
-            });
-
             scratch.decisions.push(PatrolDecision {
                 entity,
-                translation: new_pos,
-                rotation,
-                nav_path,
-                state: PatrolState {
-                    home: new_state.home,
-                    target: new_state.target,
-                    phase: new_state.phase,
-                    pick_count: new_state.pick_count,
-                },
+                source_rotation: transform.rotation,
+                radius,
+                form_id: behavior.form_id,
+                waypoint_override,
+                effective_goal,
+                waypoints,
+                translation: transform.translation,
+                rotation: None,
+                state,
+                nav_path: None,
             });
         }
     }
     if scratch.decisions.is_empty() {
         return;
+    }
+
+    // ── Pass 1b: finish movement with only `PhysicsWorld` live. All
+    // component guards from Pass 1a have dropped before this acquisition
+    // (#3262). ──
+    {
+        let physics = world.try_resource::<byroredux_physics::PhysicsWorld>();
+        for d in &mut scratch.decisions {
+            let (new_pos, rotation, new_state) = step_oscillating_wander(
+                d.translation,
+                d.source_rotation,
+                dt,
+                physics.as_deref(),
+                d.radius,
+                d.form_id,
+                OscillateWalk {
+                    home: d.state.home,
+                    target: d.state.target,
+                    phase: d.state.phase,
+                    pick_count: d.state.pick_count,
+                },
+                d.waypoint_override,
+            );
+            if !d.waypoints.is_empty() {
+                pop_reached_waypoint(new_pos, &mut d.waypoints);
+            }
+            d.translation = new_pos;
+            d.rotation = rotation;
+            d.state = PatrolState {
+                home: new_state.home,
+                target: new_state.target,
+                phase: new_state.phase,
+                pick_count: new_state.pick_count,
+            };
+            d.nav_path = matches!(new_state.phase, WanderPhase::Walking).then(|| NavPath {
+                goal: d.effective_goal,
+                waypoints: std::mem::take(&mut d.waypoints),
+            });
+        }
     }
 
     // ── Pass 2: apply writes (each a scoped single-type lock). ──
@@ -260,6 +282,35 @@ mod tests {
         assert!(
             sq.get(entity).is_some(),
             "patrol_system must lazily insert PatrolState on first tick"
+        );
+    }
+
+    /// #3262 regression guard: all five component snapshots must be
+    /// released before the real `PhysicsWorld` guard is acquired.
+    #[test]
+    fn patrol_system_moves_actor_with_a_real_physics_world_installed() {
+        let mut world = World::new();
+        world.register::<PatrolBehavior>();
+        world.register::<PatrolState>();
+        world.register::<Transform>();
+        world.insert_resource(byroredux_physics::PhysicsWorld::new());
+
+        let entity = world.spawn();
+        world.insert(entity, Transform::from_translation(Vec3::ZERO));
+        world.insert(
+            entity,
+            PatrolBehavior {
+                patrol_radius: Some(200.0),
+                form_id: 0x000D_3262,
+            },
+        );
+
+        patrol_system(&world, 0.5);
+
+        let tq = world.query::<Transform>().expect("Transform registered");
+        assert!(
+            tq.get(entity).unwrap().translation.length() > 0.0,
+            "actor should still move with a real PhysicsWorld present"
         );
     }
 
