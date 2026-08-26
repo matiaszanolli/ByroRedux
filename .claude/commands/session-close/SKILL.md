@@ -77,6 +77,15 @@ git log -1 --format="%h %s (%ci)"
 # out of sync. Cheap to run, and the class of error it catches (a GPU
 # struct documented at the wrong byte size) is expensive to hit later.
 .claude/commands/_audit-validate.sh
+
+# Fix -> issue citation audit for this session's range (#3218). The CI
+# traceability gate is `if: github.event_name == 'pull_request'`, and this
+# repo's history is overwhelmingly direct commits to main — so for the
+# dominant workflow it never fires, and the gap is real: 43 of 134 issues
+# closed in the 2026-08-16..20 window (32%) had no commit citing them, 14 had
+# no citation anywhere. All 14 were genuinely fixed; what broke was the link
+# `/audit-regression` structurally depends on.
+scripts/check-issue-traceability.sh --window <session-start-sha> HEAD
 ```
 
 Fill in the **Ground truth** block below:
@@ -96,6 +105,27 @@ If the audit gate reports anything, fix the skills as part of this
 close — do not defer it. Skill drift compounds silently: every later
 audit reasons from the stale description and reports findings against
 code that no longer exists.
+
+If the citation audit reports a zero-citation set, resolve it **now**,
+while you still remember why each issue closed. A closed issue with no
+citing commit is indistinguishable, to the next regression sweep, from a
+fix that was never made — and the likelier outcome is not a cautious
+UNVERIFIABLE but a FAIL filed against working code. Two conventions,
+both cheap:
+
+- **Closed by a commit that forgot the keyword** — leave a GitHub close
+  comment naming the commit.
+- **Closed as a side effect of another issue's fix** (#3102 via #3036,
+  #3095's siblings via #2986) — leave a close comment saying
+  `resolved as a side effect of #NNNN`. One line is enough, and it is
+  the only place that archaeology can live, since by definition no
+  commit will ever name it.
+
+Note the sibling hazard recorded in project memory: `Fix #A #B #C`
+auto-closes only `#A`. Repeat the keyword per issue — `Fix #A, Fix #B` —
+or the bare-ref siblings sit open despite a landed fix. This finding is
+the opposite failure of the same discipline: there the keyword is present
+but under-applied, here it is absent entirely.
 
 ---
 

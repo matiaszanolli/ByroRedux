@@ -31,8 +31,77 @@ if [[ "${1:-}" == "--self-test" ]]; then
     exit 0
 fi
 
+# Window-audit mode (#3218). The PR mode above is gated on
+# `github.event_name == 'pull_request'` in ci.yml, but this repo's history is
+# overwhelmingly direct commits to main, so for the dominant workflow that gate
+# never fires at all. That is why 43 of 134 issues closed in the 2026-08-16..20
+# window (32%) ended up with no commit citing them, and 14 with no citation
+# anywhere in the tree — every one of them genuinely fixed, but unverifiable.
+#
+# `/audit-regression` Step 2.1 is `git log --grep="#<N>"`. When that returns
+# nothing for a third of a window, the audit cannot tell "no citation" from "no
+# fix", so it reports UNVERIFIABLE or — worse and more likely — files a FAIL
+# against a fix that is present. The degradation is self-concealing: a
+# regression audit that cannot find fixes gets quieter, not louder.
+#
+# This mode reports the gap while the context is still fresh, at close time,
+# rather than leaving it for the next sweep to rediscover. Needs `gh`.
+if [[ "${1:-}" == "--window" ]]; then
+    if [[ "$#" -ne 3 ]]; then
+        echo "usage: $0 --window <base-commit> <head-commit>" >&2
+        exit 2
+    fi
+    base="$2"
+    head="$3"
+    command -v gh >/dev/null 2>&1 || {
+        echo "check-issue-traceability: --window needs the gh CLI" >&2
+        exit 2
+    }
+
+    since="$(git log -1 --format=%cI "${base}")"
+    commit_messages="$(git log --format='%B' "${base}..${head}")"
+
+    mapfile -t closed < <(
+        gh issue list --state closed --limit 500 \
+            --search "closed:>=${since%T*}" --json number --jq '.[].number' | sort -n
+    )
+    if [[ "${#closed[@]}" -eq 0 ]]; then
+        echo "check-issue-traceability: no issues closed in this window"
+        exit 0
+    fi
+
+    uncited=()
+    for issue in "${closed[@]}"; do
+        printf '%s\n' "${commit_messages}" | commit_cites_issue "${issue}" && continue
+        uncited+=("${issue}")
+    done
+
+    echo "check-issue-traceability: ${#closed[@]} issue(s) closed in ${base}..${head}"
+    if [[ "${#uncited[@]}" -eq 0 ]]; then
+        echo "check-issue-traceability: every one is cited by a closing-keyword commit"
+        exit 0
+    fi
+
+    echo
+    echo "ZERO-CITATION SET -- ${#uncited[@]} of ${#closed[@]} closed issues have no"
+    echo "closing-keyword commit in this range. Each is either:"
+    echo "  (a) closed as a side effect of another issue's fix -- leave a GitHub close"
+    echo "      comment naming that issue ('resolved as a side effect of #NNNN'), so the"
+    echo "      archaeology survives outside the commit log; or"
+    echo "  (b) fixed by a commit that forgot the keyword -- say so in a close comment."
+    echo
+    for issue in "${uncited[@]}"; do
+        title="$(gh issue view "${issue}" --json title --jq .title 2>/dev/null || echo '?')"
+        printf '  #%-6s %s\n' "${issue}" "${title}"
+    done
+    # Advisory: this reports history that is already written and cannot be
+    # fixed by failing a build.
+    exit 0
+fi
+
 if [[ "$#" -ne 2 ]]; then
     echo "usage: $0 <base-commit> <head-commit>" >&2
+    echo "       $0 --window <base-commit> <head-commit>   # close-time citation audit" >&2
     exit 2
 fi
 
