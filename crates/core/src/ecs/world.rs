@@ -709,8 +709,9 @@ impl World {
         let guard = lock
             .read()
             .unwrap_or_else(|_| resource_lock_poisoned::<R>());
+        let resource = ResourceRead::new(guard, type_id);
         scope.defuse();
-        ResourceRead::new(guard, type_id)
+        resource
     }
 
     /// Mutable access to a resource (takes `&self`).
@@ -738,8 +739,9 @@ impl World {
         let guard = lock
             .write()
             .unwrap_or_else(|_| resource_lock_poisoned::<R>());
+        let resource = ResourceWrite::new(guard, type_id);
         scope.defuse();
-        ResourceWrite::new(guard, type_id)
+        resource
     }
 
     /// Mutable access to two different resources with TypeId-sorted lock ordering.
@@ -794,12 +796,11 @@ impl World {
             let guard_b = lock_b
                 .write()
                 .unwrap_or_else(|_| resource_lock_poisoned::<B>());
+            let resource_a = ResourceWrite::new(guard_a, id_a);
+            let resource_b = ResourceWrite::new(guard_b, id_b);
             scope_a.defuse();
             scope_b.defuse();
-            (
-                ResourceWrite::new(guard_a, id_a),
-                ResourceWrite::new(guard_b, id_b),
-            )
+            (resource_a, resource_b)
         } else {
             let scope_b = lock_tracker::TrackedWrite::new(id_b, std::any::type_name::<B>());
             let scope_a = lock_tracker::TrackedWrite::new(id_a, std::any::type_name::<A>());
@@ -809,12 +810,11 @@ impl World {
             let guard_a = lock_a
                 .write()
                 .unwrap_or_else(|_| resource_lock_poisoned::<A>());
+            let resource_a = ResourceWrite::new(guard_a, id_a);
+            let resource_b = ResourceWrite::new(guard_b, id_b);
             scope_a.defuse();
             scope_b.defuse();
-            (
-                ResourceWrite::new(guard_a, id_a),
-                ResourceWrite::new(guard_b, id_b),
-            )
+            (resource_a, resource_b)
         }
     }
 
@@ -836,8 +836,9 @@ impl World {
         let guard = lock
             .read()
             .unwrap_or_else(|_| resource_lock_poisoned::<R>());
+        let resource = ResourceRead::new(guard, type_id);
         scope.defuse();
-        Some(ResourceRead::new(guard, type_id))
+        Some(resource)
     }
 
     /// Try to write a resource, returning `None` if it doesn't exist.
@@ -856,8 +857,9 @@ impl World {
         let guard = lock
             .write()
             .unwrap_or_else(|_| resource_lock_poisoned::<R>());
+        let resource = ResourceWrite::new(guard, type_id);
         scope.defuse();
-        Some(ResourceWrite::new(guard, type_id))
+        Some(resource)
     }
 
     /// Try to mutably access two different resources with TypeId-sorted

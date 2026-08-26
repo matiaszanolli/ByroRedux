@@ -1546,20 +1546,24 @@ mod tracker_defuse_ordering_tests {
 
     /// The ordering itself. The failure this guards is unreachable by
     /// construction — two distinct types cannot share a `TypeId`, so
-    /// `QueryRead::new`'s `downcast_ref().expect(...)` cannot fire — which is
-    /// exactly why it needs a source assertion rather than a behavioural test:
-    /// there is no way to provoke the panic and observe the orphaned tracker
-    /// row. If it *could* fire with the scope already defused, the row would
-    /// be owned by nobody (the wrapper's `Drop` is the only untrack path) and
-    /// the next acquisition on that thread after a `catch_unwind` would report
-    /// a spurious "ECS deadlock detected" — the #137 failure mode.
+    /// `QueryRead::new`'s `downcast_ref().expect(...)` cannot fire, and the
+    /// resource wrappers are currently infallible struct construction. That is
+    /// exactly why this needs a source assertion rather than a behavioural
+    /// test: if any wrapper construction can panic in the future with its scope
+    /// already defused, the tracker row is owned by nobody and the next
+    /// acquisition after `catch_unwind` reports a spurious deadlock (#137,
+    /// #2149, #3264).
     #[test]
-    fn defuse_follows_wrapper_construction_at_every_query_site() {
+    fn defuse_follows_wrapper_construction_at_every_access_site() {
         const WORLD_RS: &str = include_str!("world.rs");
 
         for (site, wrapper) in [
             ("pub fn query<", "QueryRead::new"),
             ("pub fn query_mut<", "QueryWrite::new"),
+            ("pub fn resource<", "ResourceRead::new"),
+            ("pub fn resource_mut<", "ResourceWrite::new"),
+            ("pub fn try_resource<", "ResourceRead::new"),
+            ("pub fn try_resource_mut<", "ResourceWrite::new"),
         ] {
             let body = WORLD_RS
                 .split_once(site)
@@ -1575,16 +1579,20 @@ mod tracker_defuse_ordering_tests {
             assert!(
                 construct < defuse,
                 "{site} defuses at byte {defuse} before constructing {wrapper} \
-                 at byte {construct} — the wrapper's downcast would panic with \
-                 the tracker row owned by nobody (#2149 / #137)",
+                 at byte {construct} — a wrapper panic would leave the tracker \
+                 row owned by nobody (#2149 / #137 / #3264)",
             );
         }
 
-        // The two-query forms: both wrappers must exist before either defuse,
-        // since either downcast can panic and a half-defused pair orphans a
-        // row. These have two TypeId-ordered branches, so check each on its
+        // The two-guard forms: both wrappers must exist before either defuse,
+        // since either construction can panic and a half-defused pair orphans
+        // a row. These have two TypeId-ordered branches, so check each on its
         // own — comparing across branches proves nothing.
-        for site in ["pub fn query_2_mut<", "pub fn query_2_mut_mut<"] {
+        for site in [
+            "pub fn query_2_mut<",
+            "pub fn query_2_mut_mut<",
+            "pub fn resource_2_mut<",
+        ] {
             let body = WORLD_RS
                 .split_once(site)
                 .unwrap_or_else(|| panic!("`{site}` not found in world.rs"))
@@ -1600,7 +1608,7 @@ mod tracker_defuse_ordering_tests {
             for (i, branch) in branches.iter().enumerate() {
                 let last_construct = branch
                     .rfind("::new(guard")
-                    .unwrap_or_else(|| panic!("{site} branch {i} builds no query wrapper"));
+                    .unwrap_or_else(|| panic!("{site} branch {i} builds no access wrapper"));
                 let first_defuse = branch
                     .find(".defuse()")
                     .unwrap_or_else(|| panic!("{site} branch {i} defuses no scope"));
@@ -1608,8 +1616,8 @@ mod tracker_defuse_ordering_tests {
                     last_construct < first_defuse,
                     "{site} branch {i} defuses at byte {first_defuse} before \
                      the last wrapper construction at byte {last_construct} \
-                     — either downcast can panic, so both wrappers must exist \
-                     before either defuse (#2149)",
+                     — both wrappers must exist before either defuse \
+                     (#2149 / #3264)",
                 );
             }
         }
