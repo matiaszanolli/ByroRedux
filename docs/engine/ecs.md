@@ -599,16 +599,31 @@ skinning / bounds cluster — the types most systems touch together — has one
 process-wide order every site follows (#313, #2388):
 
 ```
-Transform → Parent → Children → GlobalTransform → SkinnedMesh
-          → MeshHandle → LocalBound → WorldBound → Name → StringPool
+CharacterController → RapierHandles → Transform → Parent → Children
+                    → GlobalTransform → SkinnedMesh → MeshHandle
+                    → LocalBound → WorldBound → Name → StringPool
 ```
 
 Acquire a subset in that relative order; skipping types is fine, reordering
-them is not. `make_transform_propagation_system` establishes the head of the
-chain, `build_skinned_palettes` (`byroredux/src/render/skinned.rs`) the
+them is not. `character_controller_system` establishes the physics prelude,
+`make_transform_propagation_system` the hierarchy span,
+`build_skinned_palettes` (`byroredux/src/render/skinned.rs`) the
 `GlobalTransform → SkinnedMesh` pair, `resolve_entity_name`
 (`byroredux/src/commands/shared.rs`) the `Name → StringPool` tail, and
 `ragdoll_writeback_system` walks the longest span of it.
+
+The physics prelude is also the worked example for guards that do not need to
+overlap. `character_controller_system` snapshots `CharacterController`, then
+scopes its `Transform` read so that guard is dropped before it acquires
+`RapierHandles` (#2135). Consequently it records
+`CharacterController → Transform` and `CharacterController → RapierHandles`,
+but no `Transform → RapierHandles` edge. If new code really must hold all
+three, it follows the total order above: controller, handles, transform.
+`physics_sync::collect_newcomers` independently establishes
+`RapierHandles → GlobalTransform`. Conversely, `camera_follow_system`
+snapshots and drops `GlobalTransform` before reading `CharacterController`;
+holding them as `GlobalTransform → CharacterController` would close the live
+cycle through `CharacterController → Transform → GlobalTransform` (#3260).
 
 Two properties make a violation cheap to miss and expensive to hit:
 
