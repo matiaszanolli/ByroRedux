@@ -177,12 +177,12 @@ table, §5 LOD, §7 rollout status).
   prebaked `.btr` mesh on Skyrim+/FO4 (M35, #1685 — `byroredux/src/cell_loader/terrain_lod_btr.rs::spawn_btr_block`,
   dispatched from `cell_loader/terrain_lod.rs`), falling back to heightmap synthesis for older
   games and missing `.btr` blocks. The **Oblivion-only** `DistantLOD\*.lod` → `_far.nif`
-  placement scheme is now consumed via `PlacementLodProvider`
+  placement scheme is now consumed via `stream_placement_lod_blocks`
   (`byroredux/src/cell_loader/placement_lod.rs`, #1726) — do not re-flag it as
   unimplemented. It is gated to `GameKind::Oblivion` (`placement_lod_supported`)
   because FO3/FNV ship **zero** `distantlod\*.lod` files in any vanilla archive
   (FO3-D4-01 / #2086) — "FO3/FNV distant-object LOD is missing" is a real gap but
-  not a `PlacementLodProvider` gap. `docs/engine/exal.md` §5 is the coverage
+  not a `placement_lod.rs` gap. `docs/engine/exal.md` §5 is the coverage
   source of truth for what remains open here. WRLD `NAM3`/`NAM4` LOD-water are
   **parsed** (#1849, onto `WorldspaceRecord::lod_water_form` /
   `lod_water_height`) **and consumed** (#2449 / EXAL-01). WRLD `OFST` is

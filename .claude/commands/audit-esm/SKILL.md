@@ -354,7 +354,8 @@ and `byroredux/src/npc_spawn.rs`
   *m47_scripting_state*) — **not** a raw `World::find_by_form_id`.
 - `equip.rs` biped-slot constants: per-game bit meanings differ (BMDT vs BOD2 vs
   FO4). Verify each constant block cites its xEdit definition and that the
-  slot→`AddonIndex` mapping matches *equipment_system* in memory.
+  slot→`addon_index` mapping (`AddonData::addon_index`,
+  `crates/plugin/src/esm/cell/mod.rs`) matches *equipment_system* in memory.
 - The Redux-native tier (`manifest`/`record`/`datastore`/`resolver`) is
   forward-looking: `DependencyResolver`'s DAG and `Conflict` reporting have few
   or no live callers. Audit it for **rot** (does it still compile against the

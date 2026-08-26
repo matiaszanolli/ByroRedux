@@ -136,11 +136,11 @@ A wrong lock order is a HIGH (per `_audit-severity`: "ECS deadlock potential").
 
 The stages are **`Early` → `Update` → `PostUpdate` → `Physics` → `Late`**
 (`Stage` enum, `scheduler.rs`, discriminants `0..=4`, iterated via
-`BTreeMap<Stage, _>` `Ord`). There is **no** `ParallelUpdate` or `LateExclusive`
+`BTreeMap<Stage, _>` `Ord`). There is **no** *ParallelUpdate* or *LateExclusive*
 stage — "exclusive" is a *phase within every stage* (`StageData.exclusive`),
 not a stage. Exclusive systems run serially after the stage's parallel batch.
 
-- **`Access` (not `SystemAccess`) is the declaration type** (`access.rs`):
+- **`Access` (not *SystemAccess*) is the declaration type** (`access.rs`):
   `Access::new().reads::<T>().writes::<U>().reads_resource::<R>()…`. A system's
   declaration is `Some(Access)` or `None` (undeclared). Three states: declared-
   empty ("touches no ECS state"), declared-with-claims, or undeclared (`None`).

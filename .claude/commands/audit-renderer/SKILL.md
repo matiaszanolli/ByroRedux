@@ -91,7 +91,7 @@ leaks compound; denoiser/shader correctness is mostly visual.
 **Severity floor**: SSBO index mismatch = CRITICAL; ray self-intersection / wrong tMin = HIGH.
 **Checklist**:
 - `instance_custom_index` (NOT `gl_InstanceID`) indexes `GpuInstance[]`; `materials[instance.material_id]`, vertex/index SSBOs (Set 1 bindings 8/9 per shader-pipeline.md) use the same offsets the Rust upload writes.
-- Shadow rays: origin = surface world pos with normal/tMin bias, direction toward light, `TerminateOnFirstHit`, `CommittedIntersectionNone` → 0/1. Disk/cone jitter geometry correct (point/spot concentric disk, directional angular cone).
+- Shadow rays: origin = surface world pos with normal/tMin bias, direction toward light, `TerminateOnFirstHit`, `gl_RayQueryCommittedIntersectionNoneEXT` → 0/1. Disk/cone jitter geometry correct (point/spot concentric disk, directional angular cone).
 - Reflection rays: normal-biased origin, `reflect(viewDir, N)` sign, metalness/roughness gate consistent with PBR intent, barycentric UV interp from vertex SSBO, descriptor-valid texture lookup.
 - 1-bounce GI: cosine-weighted hemisphere with correct tangent-basis, distance cutoff, miss → sky/ambient fill with no NaN/inf.
 - Glass / IOR refraction:

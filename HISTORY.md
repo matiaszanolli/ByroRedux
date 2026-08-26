@@ -24,6 +24,90 @@ Commits hold that record.
 
 ---
 
+## Session 74 — Renderer-independent SDK, ECS concurrency-declaration sweep, terrain-seam closeout, and a 27-issue doc-rot batch  (2026-08-26, `21a840d5..2bcaf1cc`, 47 commits)
+
+A broad, multi-arc session bridging several tracks that had been queued
+since Session 73: a new renderer-independent SDK crate for external
+tooling, the continuation of the M27 scheduler declared-access sweep across
+~20 more ECS/physics systems, closeout of the EX-10/11 terrain-seam item
+(with two new findings spun off), one real code fix to FNV's ESM index,
+and a large batch of stale-doc-comment repairs surfaced by recent audit
+passes — this session's own 27-issue slice plus three smaller doc-rot
+batches merged in via PR.
+
+- **`byroredux-sdk` crate** (`21a840d5`) — a new renderer-independent
+  `studio` module: asset bounds, session management, and a command
+  protocol for external tools to manipulate a loaded scene. `studio_host.rs`
+  adapts the ECS to this protocol (scene-object listing, transform edits);
+  the debug UI gained a Studio panel for object manipulation and material
+  editing; scene loading now accepts SDK Studio commands. Workspace grows
+  to 28 members.
+- **ECS/physics concurrency-declaration sweep** (~20 commits, #3250/#3252/
+  #3253/#3261-#3267/#3275/#3304/#3113, plus #2690/#2424/#2425/#2762/#3312) —
+  continuing the M27 declared-access + lock-order documentation effort:
+  declared read/write access for physics-sync, texture-flip animation, and
+  wander-physics systems; documented lock order for physics and weather
+  resources; isolated physics test guards and query bootstrap; released
+  repeated transform read guards; hoisted player water-weather sampling and
+  deferred player save actions out of guard-held sections; resolved
+  diagnostic forms after storage snapshots instead of during; eliminated
+  residual lock-order edges (#3312) and documented the concurrency
+  guarantees the whole sweep establishes (#2690).
+- **Audit-skill inventory refresh** (9 commits, #3035/#3046/#3075/#3080/
+  #3087/#3091/#3129/#3143/#3272) — re-derived and re-documented checklists
+  and inventories across the scheduler, renderer, NIFAL, SpeedTree, audio,
+  streaming, and UI audit skills so their stated coverage matches current
+  code (e.g. UI's default+installed-corpus test counts, renderer audit
+  geometry, NIFAL boundary inventory).
+- **Prior doc-rot batches merged in** — #2262/#2263/#2273 (#2264 found
+  already fixed), #3283/#3281/#3276/#3274 (from the 2026-08-24 audit
+  sweep), and #3147/#3162/#3163 closed as already-fixed with a status
+  comment left on the parent exterior-readiness epic (#2377).
+- **EX-10/11 terrain-seam closeout** (#2371, `355e66a1`) — wired the
+  live `terrain.seams` checker into `m-exteriors.sh`'s capture-mode gate;
+  live cross-plugin validation found FO4's per-cell boundary-normal
+  disagreement is a benign authoring convention (now informational, not
+  fatal) but also a genuine 3-vertex height crack at Commonwealth cells
+  (3,0)/(4,0) — filed as #3306. The other two EX-10/11 items split off by
+  this closeout: #3307 (active VWD culling) investigated and found blocked
+  deeper than framed — baked `.bto` LOD quads carry no per-object
+  identifiers to cull at; #3308 (reversed-Z) partially landed — a
+  scale-aware near plane (`Camera::for_content_scale`) gives a ~50×
+  depth-resolution improvement at the 250,000 BU LOD ring, while the full
+  reversed-Z convention flip stays open as its own multi-session effort.
+- **Renderer** (#3298, `ae7179a3`) — `GpuBuffer::create_empty_device_local_buffer`
+  makes the global geometry SSBO rebuild resumable across frames instead of
+  one atomic upload.
+- **This session's 27-issue doc-rot batch** (9 commits, `cad6025d..2bcaf1cc`)
+  — closed a curated batch spanning audit-skill doc drift (`IsCollisionOnly`,
+  `BSSegmentedTriShape`, `DeferredDestroyQueue`, `profile.rs` scope gaps),
+  stale ROADMAP/game-compatibility parse-rate figures (Oblivion 99.93%→100%
+  after the #3082 baseline regen; Starfield 99.64%→99.99% after #2105),
+  GpuCamera/GpuMaterial doc-sync sites (336→352 B, missing field-table rows,
+  a dead test-name citation), NIF/NIFAL comment drift (BSVER ranges,
+  EmissiveSource gating, pre-#2059-split file pointers), sfmaterial
+  doc-precision gaps, the scripting-pipeline docstring, FO4/CHARAL GMST
+  authoring drift, and one real code fix: FNV's `EsmIndex::recipes`/
+  `recipe_records` doc comments had COBJ and RCPE backwards (RCPE is FNV's
+  live recipe format, 106 records; COBJ is the FO4+ successor, an empty
+  GRUP header on FNV) — added a standalone RCPE regression floor alongside
+  the fix. 7 of the 27 issues needed no edit, already resolved by
+  intervening sessions; closed with an explanatory comment instead.
+  Gathering this close's ground truth also found and fixed 3 more advisory
+  audit-skill symbol drifts (`AddonIndex`, `PlacementLodProvider`, plus the
+  `IsCollisionOnly` italicization), dropping the validator's advisory count
+  from 16 to 7 (the remainder are label-name/doc-format false positives).
+
+Net: tests 5972→5996 (+24, 0 failing, 163 ignored); Rust `src/` LOC
+434 208→436 665 (+2 457), total 465 464→467 937 (+2 473); source files
+956→959 (+3); workspace members 27→28 (+1, `byroredux-sdk`); open issue
+directories 3176→3183 (+7). No milestone opened or closed. Bench-of-record
+remains `34074b93`, now 557 commits stale (folded into R6a-stale-20 at this
+close — no shader files touched this session; the one geometry-path
+addition, #3298, is noted but not treated as a new measured-cost source).
+
+---
+
 ## Session 73 — Canonical material lighting response: BGEM glass optics, soft/rim/back Bethesda lighting, and the Cornell L3-L5 rungs  (2026-08-25, `3d0d7f16..cdd9aa41`, 6 commits)
 
 A short, single-arc follow-on to Session 72's audit closeout, picking the
