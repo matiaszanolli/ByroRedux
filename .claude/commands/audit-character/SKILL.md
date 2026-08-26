@@ -28,6 +28,10 @@ those here.
 - `crates/core/src/character/ruleset.rs` — `CharacterRuleset`, the per-game
   `Resource` seam (attribute roster + skill roster + flat derived table +
   leveling model).
+- `crates/core/src/character/profile.rs` — `CharacterRulesProfile`, the single
+  per-game policy row selected at the parser boundary (`NpcStatModel`,
+  `RulesetBuilder`, `NpcHealthCurve`) — the construction seam Dimension 1's
+  doctrine check and Dimension 3's coverage matrix both depend on.
 - `crates/core/src/character/derived.rs` — `DerivedStatFormula`, `DerivedInput`,
   `DerivedOutput`, `DerivedScope`, `RoundMode`: the fixed-layout bilinear form
   every Bethesda derived stat reduces to.
@@ -125,7 +129,9 @@ site) and the parse-side feed `crates/plugin/src/esm/records/actor_value_derive.
 ### Dimension 1: Ruleset Seam & CHARAL Doctrine
 **Entry points**: `crates/core/src/character/ruleset.rs` — `CharacterRuleset`,
 `new`, `with_attributes`, `with_skills`, `with_derived`, `push_derived`;
-`crates/core/src/character/mod.rs` (the re-export surface)
+`crates/core/src/character/profile.rs` — `CharacterRulesProfile`, the per-game
+policy row the doctrine check depends on; `crates/core/src/character/mod.rs`
+(the re-export surface)
 **Checklist**:
 - **The doctrine check.** The per-game seam must be *data in the tables*, never a
   branch in a consumer. Grep every consumer of `CharacterRuleset` for a match on
@@ -202,7 +208,9 @@ site) and the parse-side feed `crates/plugin/src/esm/records/actor_value_derive.
 `crates/core/src/character/tes.rs` — `oblivion_attribute_bonus`,
 `oblivion_health_gain_per_level`, `oblivion_health_formula`,
 `oblivion_magicka_formula`, `oblivion_fatigue_formulas`;
-`crates/core/src/character/components.rs` — `CharacterLevel`, `Perks`, `PerkRank`
+`crates/core/src/character/components.rs` — `CharacterLevel`, `Perks`, `PerkRank`;
+`crates/core/src/character/profile.rs` — `NpcHealthCurve`/`NpcStatModel`, the
+per-game coverage matrix's construction seam
 **Checklist**:
 - Three genuinely different models — Fallout XP curve, classic-TES skill-use,
   Skyrim skill-XP — must be three data variants, not three code paths in the
@@ -285,7 +293,9 @@ the actor-spawn tail that writes `ActorValues` / `CharacterLevel` / `Perks`;
 `crates/plugin/src/esm/records/actor_value_derive.rs`;
 `crates/plugin/src/esm/records/actor/mod.rs`;
 `byroredux/src/cell_loader/references/mod.rs` (the `CharacterRuleset`
-resource lookup); `byroredux/src/commands/actor_value.rs`
+resource lookup); `byroredux/src/commands/actor_value.rs`;
+`crates/core/src/character/profile.rs` — `CharacterRulesProfile`, the row
+`derive_skyrim_actor_values` and its siblings are selected from
 **Checklist**:
 - `build_character_ruleset` returns `None` for Oblivion / Skyrim / FO76 /
   Starfield. Verify every caller handles `None` as "no CHARAL for this game" and

@@ -200,8 +200,13 @@ in full against xEdit SF1 `wbStruct(XCLL,'Lighting')` (the old #1293
 **#1295** `DoorTeleport` stamped from REFR XTEL; **#1212/#1213/#1214**
 `FormIdComponent` / `LocalBound` / `BSXFlags` at spawn; **#1284** `SkinSlotPool`
 ceiling raise (`crates/core/src/ecs/resources/skin_slot_pool.rs`) for Cydonia's skinned density.
-Also confirm synthesized colliders carry `IsCollisionOnly` (`components.rs`) so
-they stay out of the BLAS (R6a-stale-13/14 collider-cost fix, see ROADMAP).
+Also confirm synthesized colliders stay out of the BLAS: `IsCollisionOnly` was
+removed as dead code by #1570 (2026-06-15) — the real exclusion mechanism is
+structural, not marker-based. `spawn_trimesh_collider_ghost` /
+`spawn_packed_havok_proxy` (`byroredux/src/cell_loader/spawn.rs`) spawn
+colliders without a `MeshHandle`, so they can never enter `blas_specs`
+regardless of any marker component (R6a-stale-13/14 collider-cost fix, see
+ROADMAP).
 **Output**: `/tmp/audit/starfield/dim_5.md`
 
 ### Dimension 6: NIF Shader Blocks — BSVER 155+ (regression guard)

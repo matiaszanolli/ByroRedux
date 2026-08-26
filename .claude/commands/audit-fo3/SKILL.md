@@ -41,8 +41,11 @@ for the severity scale (including the NIFAL canonical-translation rows).
   `BSLightingShaderProperty` (Skyrim+) and never BGSM external materials (FO4+).
   Disney-BSDF and BGSM paths must be provably unreachable.
 - **Earlier authoring conventions** than FNV: pre-FNV record subforms (NPC_,
-  DIAL/INFO), `BSSegmentedTriShape` biped parts, FO3-era particle stacks. These
-  are the FNV-shared paths most likely to hit an untested edge on FO3 data.
+  DIAL/INFO), FO3-era particle stacks. These are the FNV-shared paths most
+  likely to hit an untested edge on FO3 data. (`BSSegmentedTriShape` is NOT one
+  of these — see #3101: the 96-type block histogram over all 10,989 vanilla FO3
+  NIFs contains zero `BSSegmentedTriShape` entries; it's a Skyrim-LE/FO4-era
+  block, dispatch-reachable but never authored by FO3 content.)
 - **Different worldspace.** Capital Wasteland is a distinct WRLD form ID with its
   own origin/CLMT curves — any FNV-hardcoded worldspace name or coord is a bug.
 - **B-splines are reachable** (`NiBSplineCompTransformInterpolator`) — do not
@@ -84,7 +87,6 @@ for the severity scale (including the NIFAL canonical-translation rows).
 **Entry points**: `crates/nif/src/blocks/properties.rs`, `crates/nif/src/blocks/shader.rs`, `crates/nif/src/blocks/particle.rs`, `crates/nif/src/blocks/mod.rs` (dispatch), `crates/nif/src/import/walk/mod.rs` (`extract_emitter_params` / `extract_emitter_rate`), `byroredux/src/systems/particle.rs` (`apply_emitter_params`)
 **Checklist**:
 - `BSShaderPPLightingProperty` field completeness (refraction strength/period, parallax passes/scale, bump-map tiling) and `BSShaderNoLightingProperty` decode.
-- `BSSegmentedTriShape` (biped body parts) vertex-index handling.
 - Stream-position audit: any block type that passes on FNV but trips on FO3-era authoring. The dispatch arm count is in `crates/nif/src/blocks/mod.rs` — a histogram shift from `nif_stats` flags a mis-dispatched block.
 - **Typed particle emitters (NIFAL particle slice, `5708b5b9` / `9db60714` / `8f856d35`)**: `NiPSysEmitter` / `NiPSysEmitterCtlr` / `NiPSysEmitterCtlrData` / `NiPSysGrowFadeModifier` are TYPED blocks (`crates/nif/src/blocks/particle.rs` — `parse_box_emitter` / `parse_sphere_emitter` / `parse_grow_fade_modifier`), not the old opaque controller stack. `extract_emitter_params` / `extract_emitter_rate` decode authored base kinematics + birth rate + GrowFade `base_scale` into `apply_emitter_params`. Dispatch is version-agnostic so FO3 smoke/fire/dust emitters hit this path — **but the NIFAL decode doc-comments verify only against FNV + Oblivion, so FO3 is an UNVERIFIED gap**: confirm FO3 authored emitter params + rate + GrowFade scale extract correctly. See also `/audit-nifal`.
 **Output**: `/tmp/audit/fo3/dim_2.md`
@@ -111,9 +113,12 @@ for the severity scale (including the NIFAL canonical-translation rows).
 - **Exterior is WIRED** (ROADMAP: "Exterior wired; fresh GPU bench pending"). Capital Wasteland is a distinct WRLD form ID — audit `cell_loader/exterior.rs` + `crates/plugin/src/esm/cell/wrld.rs` for any FNV-hardcoded worldspace name, origin coord, or default grid that would mis-place FO3 exterior cells. The open item is a fresh GPU bench (R6a-stale-15), not a missing feature.
 - No FNV-only branch in the shared cell loader. WTHR→CLMT→WTHR resolution and FO3 CLMT sun-position curves resolve through the shared weather path.
 - `CachedNifImport` Arc cache prevents duplicate parsing; no leak across FO3 unload/load cycles.
-- `_far.nif` distant-object LOD (#1726/#1745, Session 52) — verify the
-  Oblivion/FO3/FNV placement scheme + real LOD textures resolve on FO3's
-  Capital Wasteland exteriors; entry points `cell_loader/object_lod.rs`,
+- `_far.nif` distant-object LOD (#1726/#1745, Session 52) — the
+  `placement_lod_supported` scheme is **Oblivion-only** (#2086, closed;
+  `cell_loader/placement_lod.rs::placement_lod_supported` gates on
+  `GameKind::Oblivion` alone), so don't ask FO3 to reproduce it. Instead
+  confirm the baked `landscape\lod\<world>\` asset tree (see #3100, closed)
+  is consumed where it exists; entry points `cell_loader/object_lod.rs`,
   `cell_loader/placement_lod.rs`.
 **Output**: `/tmp/audit/fo3/dim_4.md`
 

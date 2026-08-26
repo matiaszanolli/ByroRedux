@@ -131,7 +131,12 @@ guard below.
   `byroredux/src/cell_loader/rapier_release_tests.rs`. Verify the release path is
   still wired and the test still asserts emptiness post-unload.
 - **Deferred-destroy drain** (`crates/renderer/src/deferred_destroy.rs`,
-  `DeferredDestroyQueue<T>` shared by mesh + BLAS + BLAS-scratch buffer (#1782) + texture + skin compute):
+  `DeferredDestroyQueue<T>` — confirmed as of #2274 to have exactly three
+  production instantiations: mesh vertex/index buffers (`mesh.rs`), BLAS entries
+  and BLAS scratch buffers (`vulkan/acceleration/mod.rs`, #1782). No instantiation
+  exists for texture or skin-compute resources; if those subsystems free deferred
+  resources it is via a different, not-yet-verified mechanism — don't assume they
+  share this queue):
   objects are destroyed only after the in-flight fence clears (#418 moved the tick
   after fence wait; #732 added an explicit shutdown drain). Verify the tick still
   runs **after** fence wait in `context/draw.rs` and the shutdown sweep drains the
@@ -154,8 +159,11 @@ guard below.
   MaterialBuffer SSBO, volumetric/bloom mip pyramids. Cross-check eviction
   thresholds against `docs/engine/memory-budget.md`; do not re-derive.
 - **CPU-side unbounded growth** — `Vec`/`HashMap` keyed by cell or path that never
-  shrinks. The MaterialTable dedup map and AnimationClipRegistry (Dimension 8) are
-  the known per-cell-growth risks.
+  shrinks. `MaterialTable`'s dedup map is NOT one of these: `build_render_data`
+  calls `material_table.clear()` at the top of every frame (`byroredux/src/render/mod.rs`),
+  so it is rebuilt fresh each frame and cannot grow across cells or the session
+  (re-verified #2274). AnimationClipRegistry (Dimension 8) is the known
+  per-cell-growth risk here.
 
 ### 4. Unsafe-Block Discipline (MEDIUM — the bread-and-butter sweep)
 
