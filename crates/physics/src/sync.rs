@@ -34,7 +34,7 @@ use byroredux_core::ecs::components::{
 };
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::world::World;
-use byroredux_core::form_id::FormIdPool;
+use byroredux_core::form_id::{FormId, FormIdPool};
 use rapier3d::prelude::{ColliderBuilder, RigidBodyBuilder, RigidBodyType};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -278,7 +278,10 @@ fn dump_awake_fallers(world: &World) {
     use rapier3d::prelude::RigidBodyHandle;
 
     // Snapshot everything `PhysicsWorld` alone can answer (awake handles +
-    // their y/vy), then drop the guard before opening any ECS storage —
+    // their y/vy), then drop the guard before opening any ECS storage.
+    // The same rule applies to every later resource: gather owned form IDs
+    // under the storage guards, drop those guards, then acquire FormIdPool
+    // for resolution (#3266).
     // every other site in this crate (`push_kinematic`, `pull_dynamic`,
     // `apply_buoyancy`) acquires `RapierHandles` before `PhysicsWorld`;
     // holding `PhysicsWorld` underneath `RapierHandles` here was the
@@ -319,9 +322,8 @@ fn dump_awake_fallers(world: &World) {
     // directly (e.g. a future physics-on-render-entity path), else fall
     // back to the source backlink.
     let physics_source_q = world.query::<PhysicsSourceForm>();
-    let pool = world.try_resource::<FormIdPool>();
-
-    let mut entries: Vec<FallerEntry> = Vec::with_capacity(body_snapshots.len());
+    let mut unresolved_entries: Vec<(FallerEntry, Option<FormId>)> =
+        Vec::with_capacity(body_snapshots.len());
     let (mut vy_min, mut vy_max) = (f32::INFINITY, f32::NEG_INFINITY);
     for (h, y, vy) in &body_snapshots {
         let vy = *vy;
@@ -331,23 +333,38 @@ fn dump_awake_fallers(world: &World) {
         let layer = entity
             .and_then(|e| layer_q.as_ref().and_then(|q| q.get(e).copied()))
             .map(render_layer_label);
-        let form = entity.and_then(|e| {
+        let source_form = entity.and_then(|e| {
             let direct = form_q.as_ref().and_then(|q| q.get(e).copied()).map(|c| c.0);
             let backlink = physics_source_q
                 .as_ref()
                 .and_then(|q| q.get(e).copied())
                 .map(|c| c.0);
-            let fid = resolve_source_form(direct, backlink)?;
-            pool.as_ref()?.resolve(fid).map(|pair| pair.local.0)
+            resolve_source_form(direct, backlink)
         });
-        entries.push(FallerEntry {
-            entity: entity.map(|e| e.to_string()).unwrap_or_else(|| "?".into()),
-            y: *y,
-            vy,
-            form,
-            layer,
-        });
+        unresolved_entries.push((
+            FallerEntry {
+                entity: entity.map(|e| e.to_string()).unwrap_or_else(|| "?".into()),
+                y: *y,
+                vy,
+                form: None,
+                layer,
+            },
+            source_form,
+        ));
     }
+    drop(layer_q);
+    drop(form_q);
+    drop(physics_source_q);
+
+    let pool = world.try_resource::<FormIdPool>();
+    let entries: Vec<FallerEntry> = unresolved_entries
+        .into_iter()
+        .map(|(mut entry, source_form)| {
+            entry.form =
+                source_form.and_then(|fid| pool.as_ref()?.resolve(fid).map(|pair| pair.local.0));
+            entry
+        })
+        .collect();
 
     let total = entries.len();
     let worst = worst_fallers(entries, 24);
@@ -564,9 +581,9 @@ pub fn spawn_collider_census_report(world: &World, probe: SpawnCensusProbe) -> V
         min_walkable_normal_y,
         authoring,
     } = probe;
-    // Same lock-order discipline as `dump_awake_fallers` (#2136): snapshot
-    // everything `PhysicsWorld` can answer, drop the guard, then open ECS
-    // storages.
+    // Same lock-order discipline as `dump_awake_fallers` (#2136 / #3266):
+    // snapshot each resource, drop its guard, then open ECS storages. No
+    // resource acquisition is allowed while those storage guards are live.
     let (nearby, verdict) = {
         let pw = world.resource::<PhysicsWorld>();
         let nearby = pw.colliders_near_xz(x, probe_y, z, radius);
@@ -595,34 +612,48 @@ pub fn spawn_collider_census_report(world: &World, probe: SpawnCensusProbe) -> V
     let layer_q = world.query::<RenderLayer>();
     let form_q = world.query::<FormIdComponent>();
     let physics_source_q = world.query::<PhysicsSourceForm>();
-    let pool = world.try_resource::<FormIdPool>();
-
-    let entries: Vec<SpawnCensusEntry> = nearby
+    let unresolved_entries = nearby
         .iter()
         .map(|n| {
             let entity = n.body.and_then(|h| body_to_entity.get(&h).copied());
-            SpawnCensusEntry {
-                body_type: n.body_type,
-                is_sensor: n.is_sensor,
-                center_y: 0.5 * (n.aabb_min[1] + n.aabb_max[1]),
-                min_y: n.aabb_min[1],
-                max_y: n.aabb_max[1],
-                entity: entity.map(|e| e.to_string()),
-                form: entity.and_then(|e| {
-                    let direct = form_q.as_ref().and_then(|q| q.get(e).copied()).map(|c| c.0);
-                    let backlink = physics_source_q
-                        .as_ref()
-                        .and_then(|q| q.get(e).copied())
-                        .map(|c| c.0);
-                    let fid = resolve_source_form(direct, backlink)?;
-                    pool.as_ref()?.resolve(fid).map(|pair| pair.local.0)
-                }),
-                layer: entity
-                    .and_then(|e| layer_q.as_ref().and_then(|q| q.get(e).copied()))
-                    .map(render_layer_label),
-            }
+            let source_form = entity.and_then(|e| {
+                let direct = form_q.as_ref().and_then(|q| q.get(e).copied()).map(|c| c.0);
+                let backlink = physics_source_q
+                    .as_ref()
+                    .and_then(|q| q.get(e).copied())
+                    .map(|c| c.0);
+                resolve_source_form(direct, backlink)
+            });
+            (
+                SpawnCensusEntry {
+                    body_type: n.body_type,
+                    is_sensor: n.is_sensor,
+                    center_y: 0.5 * (n.aabb_min[1] + n.aabb_max[1]),
+                    min_y: n.aabb_min[1],
+                    max_y: n.aabb_max[1],
+                    entity: entity.map(|e| e.to_string()),
+                    form: None,
+                    layer: entity
+                        .and_then(|e| layer_q.as_ref().and_then(|q| q.get(e).copied()))
+                        .map(render_layer_label),
+                },
+                source_form,
+            )
         })
-        .collect();
+        .collect::<Vec<_>>();
+    drop(layer_q);
+    drop(form_q);
+    drop(physics_source_q);
+
+    let pool = world.try_resource::<FormIdPool>();
+    let entries = unresolved_entries
+        .into_iter()
+        .map(|(mut entry, source_form)| {
+            entry.form =
+                source_form.and_then(|fid| pool.as_ref()?.resolve(fid).map(|pair| pair.local.0));
+            entry
+        })
+        .collect::<Vec<_>>();
 
     let (fixed, dynamic, kinematic, sensors, orphan) = census_tally(&entries);
     // #2874 — the walkability arm the pre-fix summary was missing entirely.
@@ -1884,5 +1915,42 @@ mod tick_documentation_tests {
         // and, being cached, must stay stable across calls.
         assert_eq!(super::profile_phases(), super::profile_phases());
         assert_eq!(super::profile_fallers(), super::profile_fallers());
+    }
+
+    /// #3266 regression guard: both diagnostic paths stage runtime FormIds
+    /// while storage guards are live, release every guard, and only then
+    /// acquire FormIdPool to resolve the owned handles.
+    #[test]
+    fn physics_diagnostics_resolve_forms_after_storage_guards_drop() {
+        let src = include_str!("sync.rs");
+        for (start_needle, end_needle) in [
+            ("fn dump_awake_fallers(", "\n/// Number of nearby colliders"),
+            ("pub fn spawn_collider_census_report(", "\n// ── Phase 1"),
+        ] {
+            let start = src.find(start_needle).expect("diagnostic function exists");
+            let end = src[start..]
+                .find(end_needle)
+                .map(|off| start + off)
+                .expect("diagnostic function has a stable following item");
+            let body = &src[start..end];
+            let storage = body
+                .find("world.query::<RenderLayer>()")
+                .expect("diagnostic queries RenderLayer");
+            let release = body
+                .find("drop(physics_source_q)")
+                .expect("diagnostic explicitly releases its final storage guard");
+            let pool = body
+                .find("world.try_resource::<FormIdPool>()")
+                .expect("diagnostic resolves runtime form IDs");
+            assert!(
+                storage < release && release < pool,
+                "{start_needle} must acquire storages, release them, then acquire FormIdPool"
+            );
+            assert_eq!(
+                body.matches("world.try_resource::<FormIdPool>()").count(),
+                1,
+                "{start_needle} must resolve the staged forms through one pool snapshot"
+            );
+        }
     }
 }
