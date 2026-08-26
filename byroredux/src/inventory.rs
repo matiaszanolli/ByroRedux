@@ -155,7 +155,7 @@ fn describe_kind(kind: &ItemKind) -> (&'static str, String, Option<EquipTarget>)
                 protection,
                 // The authored mask verbatim — every bit of it addresses a
                 // biped slot, including bit 31 (#3112).
-                (*biped_flags != 0).then(|| EquipTarget::BipedSlots(*biped_flags)),
+                (*biped_flags != 0).then_some(EquipTarget::BipedSlots(*biped_flags)),
             )
         }
         ItemKind::Weapon { damage, .. } => (
