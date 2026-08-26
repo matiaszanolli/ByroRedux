@@ -41,6 +41,97 @@ pub const INDEX_POOL_HARD_CAP: usize = 64_000_000;
 /// capacity-managed append/update buffer that remains fully asynchronous.
 pub const GEOMETRY_REBUILD_IDLE_THRESHOLD_BYTES: u64 = 256 * 1024 * 1024;
 
+/// Per-`advance_geometry_rebuild`-call byte budget for a resumable global
+/// geometry SSBO copy (#3298). Chosen conservatively pending live
+/// `grid-cross` tuning against real FO4/Skyrim/FNV data — the 1.50 s
+/// worst-frame figure this replaces came from one atomic ~600 MiB copy, so
+/// this value trades total elapsed time (unchanged) for a bounded
+/// per-frame slice of it. Not a `FrameTimeBudget`-style wall-clock deadline:
+/// a submitted `vkCmdCopyBuffer` cannot be paused mid-flight, so the unit of
+/// pacing here is bytes-per-call, converted to a whole-element count per
+/// phase (`Vertex` for the vertex phase, `u32` for the index phase) so
+/// every chunk's offset and size stay 4-byte aligned as `vkCmdCopyBuffer`
+/// requires.
+pub const GEOMETRY_REBUILD_CHUNK_BYTES: usize = 64 * 1024 * 1024;
+
+/// State for an in-flight, multi-frame global geometry SSBO rebuild
+/// (#3298). Both destination buffers are allocated empty, at their full
+/// target size, when the rebuild starts; `vertices_copied`/`indices_copied`
+/// track how much of `pending_vertices`/`pending_indices` has landed in
+/// them so far.
+///
+/// The OLD `global_vertex_buffer`/`global_index_buffer` keep serving every
+/// draw, completely unmodified, for the whole copy — only
+/// `MeshRegistry::advance_geometry_rebuild` swaps them out, and only once
+/// both targets are fully copied. That means two full geometry SSBO
+/// generations are resident in device-local memory at once for the
+/// rebuild's duration. This is an accepted trade-off (#3298): it smooths a
+/// multi-hundred-ms atomic stall into several bounded per-frame chunks, at
+/// the cost of a temporarily higher VRAM high-water mark. If the up-front
+/// allocation for the second generation fails (no headroom), the caller
+/// (`MeshRegistry::rebuild_geometry_ssbo`) falls back to the original
+/// atomic idle-reclaim-then-build path unchanged — #2374's device-loss
+/// protection stays intact as a fallback, not the common case.
+struct GeometryRebuildInProgress {
+    new_vertex_buffer: GpuBuffer,
+    new_index_buffer: GpuBuffer,
+    /// `pending_vertices.len()` / `pending_indices.len()` snapshotted when
+    /// this rebuild started — the copy targets exactly this much data.
+    /// Streaming can append more to `pending_vertices`/`pending_indices`
+    /// while this rebuild is still copying (a later boundary crossing
+    /// starting before this one finishes); that tail is deliberately left
+    /// uncopied rather than grown into mid-flight. `advance_geometry_rebuild`
+    /// notices the mismatch at completion and leaves `geometry_dirty` set so
+    /// the next eligible frame starts a follow-up rebuild for it.
+    target_vertex_count: usize,
+    target_index_count: usize,
+    vertices_copied: usize,
+    indices_copied: usize,
+}
+
+/// What a single `advance_geometry_rebuild` call should do next, given the
+/// current copy progress. Pure — no Vulkan/`self` access — so the resumable
+/// rebuild's core sequencing decision is unit-testable without a live
+/// device (#3298), mirroring the `acceleration/predicates.rs` pattern.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GeometryRebuildStep {
+    /// Copy `pending_vertices[start..end]` into the target vertex buffer.
+    CopyVertices { start: usize, end: usize },
+    /// Copy `pending_indices[start..end]` into the target index buffer.
+    CopyIndices { start: usize, end: usize },
+    /// Both targets are fully copied.
+    Finished,
+}
+
+/// Vertex phase runs to completion first, then index — never interleaved.
+/// Each `_chunk_elems` is clamped to at least 1 so a chunk size smaller than
+/// one element can never produce a zero-progress, infinitely-looping step.
+fn next_geometry_rebuild_chunk(
+    vertices_copied: usize,
+    target_vertex_count: usize,
+    indices_copied: usize,
+    target_index_count: usize,
+    vertex_chunk_elems: usize,
+    index_chunk_elems: usize,
+) -> GeometryRebuildStep {
+    if vertices_copied < target_vertex_count {
+        let end =
+            (vertices_copied + vertex_chunk_elems.max(1)).min(target_vertex_count);
+        GeometryRebuildStep::CopyVertices {
+            start: vertices_copied,
+            end,
+        }
+    } else if indices_copied < target_index_count {
+        let end = (indices_copied + index_chunk_elems.max(1)).min(target_index_count);
+        GeometryRebuildStep::CopyIndices {
+            start: indices_copied,
+            end,
+        }
+    } else {
+        GeometryRebuildStep::Finished
+    }
+}
+
 static VERTEX_POOL_SOFT_WARNED: Once = Once::new();
 static INDEX_POOL_SOFT_WARNED: Once = Once::new();
 
@@ -261,6 +352,9 @@ pub struct MeshRegistry {
     /// the per-call create/destroy fallback. Mirrors
     /// `TextureRegistry::staging_pool`.
     geometry_staging_pool: Option<StagingPool>,
+    /// In-flight multi-frame global geometry SSBO rebuild (#3298). `None`
+    /// when no rebuild is running. See [`GeometryRebuildInProgress`].
+    geometry_rebuild: Option<GeometryRebuildInProgress>,
 }
 
 impl Default for MeshRegistry {
@@ -286,6 +380,7 @@ impl MeshRegistry {
             mesh_cache: HashMap::new(),
             mesh_ref_counts: Vec::new(),
             geometry_staging_pool: None,
+            geometry_rebuild: None,
         }
     }
 
@@ -995,12 +1090,25 @@ impl MeshRegistry {
     }
 
     /// Rebuild the global geometry SSBO after new meshes have been loaded.
-    /// Destroys the old SSBO and creates a new one from all accumulated
-    /// vertex/index data. Only call when `is_geometry_dirty()` returns true.
+    /// Only call when `is_geometry_dirty()` returns true, or every frame
+    /// while [`geometry_rebuild_in_progress`](Self::geometry_rebuild_in_progress)
+    /// is true (see that method's doc for why the two calls are not the
+    /// same gate).
     ///
-    /// This is the simple "full rebuild" path — acceptable for infrequent
-    /// cell transitions. A future streaming optimization could append
-    /// in-place with buffer resize. See #258.
+    /// #3298 — large rebuilds no longer copy the whole buffer atomically.
+    /// The common path allocates the replacement vertex/index buffers empty
+    /// at their full target size (the OLD pair keeps serving every draw,
+    /// untouched) and copies bounded chunks in via
+    /// [`advance_geometry_rebuild`](Self::advance_geometry_rebuild), one
+    /// chunk per call, across as many frames as it takes — smoothing what
+    /// used to be a single multi-hundred-ms stall (the FO4 boundary-
+    /// crossing 1.50 s worst frame, #2376/EX-06/07) into several bounded
+    /// slices. If the up-front allocation for the second (temporarily
+    /// duplicate) generation fails, this falls back unchanged to the
+    /// original atomic idle-reclaim-then-build path
+    /// ([`Self::rebuild_geometry_ssbo_atomic_fallback`]) — #2374's
+    /// device-loss protection stays intact as the low-headroom recovery
+    /// path, not the common case.
     pub fn rebuild_geometry_ssbo(
         &mut self,
         device: &ash::Device,
@@ -1009,11 +1117,284 @@ impl MeshRegistry {
         command_pool: vk::CommandPool,
         rt_enabled: bool,
     ) -> Result<()> {
+        if self.geometry_rebuild.is_some() {
+            return self.advance_geometry_rebuild(device, allocator, queue, command_pool);
+        }
+
         // If any scene meshes were dropped since the last build, compact
         // the pending buffers and rewrite every live mesh's offsets. Pure
-        // appends (no drops) skip this pass.
+        // appends (no drops) skip this pass. Only safe to run here, when no
+        // rebuild is in flight — running it mid-copy would rewrite the very
+        // data a chunked rebuild is reading from underneath it.
         self.compact_pending_geometry();
 
+        if self.pending_vertices.is_empty() {
+            return Ok(());
+        }
+
+        let target_vertex_count = self.pending_vertices.len();
+        let target_index_count = self.pending_indices.len();
+        let vertex_size = (target_vertex_count * std::mem::size_of::<Vertex>()) as vk::DeviceSize;
+        let index_size = (target_index_count * std::mem::size_of::<u32>()) as vk::DeviceSize;
+        let projected_bytes = vertex_size + index_size;
+        let has_existing_buffers =
+            self.global_vertex_buffer.is_some() || self.global_index_buffer.is_some();
+
+        // Only meaningful once there's an old generation to duplicate
+        // alongside — a first build has nothing to keep serving draws, so
+        // it always goes straight through the chunked path below.
+        if has_existing_buffers {
+            let rt_usage = if rt_enabled {
+                vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
+                    | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+            } else {
+                vk::BufferUsageFlags::empty()
+            };
+            match Self::try_allocate_empty_geometry_buffers(
+                device, allocator, vertex_size, index_size, rt_usage,
+            ) {
+                Ok((new_vertex_buffer, new_index_buffer)) => {
+                    self.geometry_rebuild = Some(GeometryRebuildInProgress {
+                        new_vertex_buffer,
+                        new_index_buffer,
+                        target_vertex_count,
+                        target_index_count,
+                        vertices_copied: 0,
+                        indices_copied: 0,
+                    });
+                    return self.advance_geometry_rebuild(device, allocator, queue, command_pool);
+                }
+                Err(e) => {
+                    log::warn!(
+                        "Geometry SSBO rebuild: could not allocate a second full-size \
+                         generation ({:.1} MiB) alongside the current one ({e:#}) — \
+                         falling back to the atomic idle-reclaim path (#2374)",
+                        projected_bytes as f64 / (1024.0 * 1024.0),
+                    );
+                }
+            }
+        }
+
+        self.rebuild_geometry_ssbo_atomic_fallback(device, allocator, queue, command_pool, rt_enabled)
+    }
+
+    /// Whether a chunked global geometry SSBO rebuild is currently copying
+    /// (#3298). The frame driver must call `rebuild_geometry_ssbo` every
+    /// frame while this is true, **regardless** of
+    /// `WorldStreamingState::geometry_batch_in_progress` — that gate only
+    /// decides whether to *start* a new rebuild once the current streaming
+    /// transaction settles; it says nothing about whether one already
+    /// running should keep advancing. Gating the advance call on it too
+    /// would stall an in-flight copy indefinitely the moment a second
+    /// streaming transaction (e.g. another boundary crossing) begins before
+    /// the first rebuild's chunks finish.
+    pub fn geometry_rebuild_in_progress(&self) -> bool {
+        self.geometry_rebuild.is_some()
+    }
+
+    /// Allocate the two empty, full-target-size device-local buffers a
+    /// chunked rebuild copies into. On partial failure (vertex succeeds,
+    /// index doesn't), destroys the vertex buffer before returning — no
+    /// half-started state survives into the caller's fallback path.
+    fn try_allocate_empty_geometry_buffers(
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+        vertex_size: vk::DeviceSize,
+        index_size: vk::DeviceSize,
+        rt_usage: vk::BufferUsageFlags,
+    ) -> Result<(GpuBuffer, GpuBuffer)> {
+        let new_vertex_buffer = GpuBuffer::create_empty_device_local_buffer(
+            device,
+            allocator,
+            vertex_size,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::VERTEX_BUFFER | rt_usage,
+        )?;
+        let new_index_buffer = match GpuBuffer::create_empty_device_local_buffer(
+            device,
+            allocator,
+            index_size,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::INDEX_BUFFER | rt_usage,
+        ) {
+            Ok(ib) => ib,
+            Err(e) => {
+                let mut vb = new_vertex_buffer;
+                vb.destroy(device, allocator);
+                return Err(e);
+            }
+        };
+        Ok((new_vertex_buffer, new_index_buffer))
+    }
+
+    /// Copy up to [`GEOMETRY_REBUILD_CHUNK_BYTES`] more of the pending
+    /// vertex/index data into the in-flight rebuild's target buffers, and
+    /// finish (swap the buffers in, bump the generation, clear dirty) once
+    /// both are fully copied. No-op if no rebuild is in flight.
+    ///
+    /// One phase advances per call — vertex fully, then index — never both
+    /// in the same call ([`next_geometry_rebuild_chunk`] decides which).
+    /// That keeps each call's chunk bounded to one `vkCmdCopyBuffer` + fence
+    /// wait against a single, uniformly-sized element type, rather than
+    /// juggling a byte budget shared across two different element sizes.
+    fn advance_geometry_rebuild(
+        &mut self,
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+        queue: &std::sync::Mutex<vk::Queue>,
+        command_pool: vk::CommandPool,
+    ) -> Result<()> {
+        if self.geometry_staging_pool.is_none() {
+            self.geometry_staging_pool = Some(StagingPool::new(device.clone(), allocator.clone()));
+        }
+
+        let vertex_chunk_elems = GEOMETRY_REBUILD_CHUNK_BYTES / std::mem::size_of::<Vertex>();
+        let index_chunk_elems = GEOMETRY_REBUILD_CHUNK_BYTES / std::mem::size_of::<u32>();
+
+        if let Some(job) = self.geometry_rebuild.as_ref() {
+            let step = next_geometry_rebuild_chunk(
+                job.vertices_copied,
+                job.target_vertex_count,
+                job.indices_copied,
+                job.target_index_count,
+                vertex_chunk_elems,
+                index_chunk_elems,
+            );
+            match step {
+                GeometryRebuildStep::CopyVertices { start, end } => {
+                    let dst_offset = (start * std::mem::size_of::<Vertex>()) as vk::DeviceSize;
+                    let slice = &self.pending_vertices[start..end];
+                    // SAFETY: `Vertex` is `Copy` / no padding concerns
+                    // relevant to a byte-wise copy (mirrors
+                    // `create_device_local_buffer`'s identical cast);
+                    // `slice` is a valid, live sub-slice of
+                    // `self.pending_vertices` for the duration of this call.
+                    let bytes: &[u8] = unsafe {
+                        std::slice::from_raw_parts(
+                            slice.as_ptr() as *const u8,
+                            std::mem::size_of_val(slice),
+                        )
+                    };
+                    job.new_vertex_buffer.copy_bytes_range(
+                        GpuUploadCtx {
+                            device,
+                            allocator,
+                            queue,
+                            command_pool,
+                        },
+                        dst_offset,
+                        bytes,
+                        self.geometry_staging_pool.as_mut().expect("just initialised above"),
+                    )?;
+                    self.geometry_rebuild
+                        .as_mut()
+                        .expect("checked Some above")
+                        .vertices_copied = end;
+                }
+                GeometryRebuildStep::CopyIndices { start, end } => {
+                    let dst_offset = (start * std::mem::size_of::<u32>()) as vk::DeviceSize;
+                    let slice = &self.pending_indices[start..end];
+                    // SAFETY: `u32` is `Copy` with no padding; `slice` is a
+                    // valid, live sub-slice of `self.pending_indices` for
+                    // the duration of this call.
+                    let bytes: &[u8] = unsafe {
+                        std::slice::from_raw_parts(
+                            slice.as_ptr() as *const u8,
+                            std::mem::size_of_val(slice),
+                        )
+                    };
+                    job.new_index_buffer.copy_bytes_range(
+                        GpuUploadCtx {
+                            device,
+                            allocator,
+                            queue,
+                            command_pool,
+                        },
+                        dst_offset,
+                        bytes,
+                        self.geometry_staging_pool.as_mut().expect("just initialised above"),
+                    )?;
+                    self.geometry_rebuild
+                        .as_mut()
+                        .expect("checked Some above")
+                        .indices_copied = end;
+                }
+                GeometryRebuildStep::Finished => {}
+            }
+        }
+
+        let finished = self.geometry_rebuild.as_ref().is_some_and(|job| {
+            next_geometry_rebuild_chunk(
+                job.vertices_copied,
+                job.target_vertex_count,
+                job.indices_copied,
+                job.target_index_count,
+                vertex_chunk_elems,
+                index_chunk_elems,
+            ) == GeometryRebuildStep::Finished
+        });
+        if finished {
+            let job = self
+                .geometry_rebuild
+                .take()
+                .expect("finished implies geometry_rebuild is Some");
+
+            let old_vb = self.global_vertex_buffer.take();
+            let old_ib = self.global_index_buffer.take();
+            if old_vb.is_some() || old_ib.is_some() {
+                self.deferred_destroy
+                    .push((old_vb, old_ib), DEFAULT_COUNTDOWN);
+            }
+            self.global_vertex_buffer = Some(job.new_vertex_buffer);
+            self.global_index_buffer = Some(job.new_index_buffer);
+            self.geometry_generation = self.geometry_generation.wrapping_add(1);
+            self.ssbo_vertex_count = job.target_vertex_count;
+            self.ssbo_index_count = job.target_index_count;
+
+            log::info!(
+                "Global geometry SSBO rebuild complete: {} vertices ({:.1} KB), {} indices \
+                 ({:.1} KB)",
+                job.target_vertex_count,
+                (job.target_vertex_count * std::mem::size_of::<Vertex>()) as f64 / 1024.0,
+                job.target_index_count,
+                (job.target_index_count * std::mem::size_of::<u32>()) as f64 / 1024.0,
+            );
+
+            // Only clear dirty if nothing outgrew this rebuild's snapshot
+            // while it was copying — see `GeometryRebuildInProgress`'s doc.
+            if self.pending_vertices.len() == job.target_vertex_count
+                && self.pending_indices.len() == job.target_index_count
+            {
+                self.geometry_dirty = false;
+            } else {
+                log::info!(
+                    "Geometry SSBO: pending data grew during the chunked rebuild \
+                     ({} -> {} vertices, {} -> {} indices); leaving dirty for a follow-up \
+                     rebuild (#3298)",
+                    job.target_vertex_count,
+                    self.pending_vertices.len(),
+                    job.target_index_count,
+                    self.pending_indices.len(),
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Original atomic rebuild path (pre-#3298): idle-reclaim (or
+    /// defer-destroy) the old SSBO, then build the replacement in one
+    /// synchronous call. Kept as the fallback when there isn't enough
+    /// device-local headroom to hold two full generations at once —
+    /// [`Self::rebuild_geometry_ssbo`] tries the chunked path first and only
+    /// reaches this when that allocation fails, or on any build with no
+    /// prior generation to keep serving draws.
+    fn rebuild_geometry_ssbo_atomic_fallback(
+        &mut self,
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+        queue: &std::sync::Mutex<vk::Queue>,
+        command_pool: vk::CommandPool,
+        rt_enabled: bool,
+    ) -> Result<()> {
         let projected_bytes = (self.pending_vertices.len() * std::mem::size_of::<Vertex>()
             + self.pending_indices.len() * std::mem::size_of::<u32>())
             as u64;
@@ -1164,6 +1545,17 @@ impl MeshRegistry {
         self.global_index_buffer = None;
         self.ssbo_vertex_count = 0;
         self.ssbo_index_count = 0;
+        // #3298 — an in-flight chunked rebuild's target buffers are real,
+        // live allocations that never made it into `global_vertex_buffer`/
+        // `global_index_buffer` above. `GpuBuffer::Drop` would eventually
+        // self-free them, but that's a leak-prevention safety net, not the
+        // canonical path (#927 — relying on it during shutdown let the
+        // allocator's `Arc` outlive `Arc::try_unwrap`'s window). Destroy
+        // explicitly here, same as every other buffer in this function.
+        if let Some(mut job) = self.geometry_rebuild.take() {
+            job.new_vertex_buffer.destroy(device, allocator);
+            job.new_index_buffer.destroy(device, allocator);
+        }
         // The shared mesh-cache map only holds handle indices; the
         // backing GPU buffers were already torn down by the per-slot
         // `mesh.destroy` loop above. Clear the map so a post-shutdown
@@ -2049,5 +2441,102 @@ mod compaction_gate_tests {
             !reg.geometry_has_holes,
             "uploads create no holes; only drops do"
         );
+    }
+}
+
+#[cfg(test)]
+mod geometry_rebuild_step_tests {
+    //! Pure-logic regression tests for #3298's resumable geometry SSBO
+    //! rebuild sequencing (`next_geometry_rebuild_chunk`). No Vulkan device
+    //! is exercised — the actual copy/allocation path is validated live via
+    //! `docs/smoke-tests/m-exteriors.sh boundary` (`grid-cross`), per this
+    //! project's convention for GPU-touching code (see the module doc on
+    //! `GeometryRebuildStep`). These tests pin the state machine's decisions
+    //! against hand-picked progress/target/chunk-size combinations instead.
+    use super::*;
+
+    /// A fresh rebuild with nonzero work in both phases starts on vertices,
+    /// not indices — the documented "vertex phase runs to completion first"
+    /// ordering.
+    #[test]
+    fn starts_on_vertices_when_both_phases_have_work() {
+        let step = next_geometry_rebuild_chunk(0, 100, 0, 300, 40, 40);
+        assert_eq!(step, GeometryRebuildStep::CopyVertices { start: 0, end: 40 });
+    }
+
+    /// A chunk that would overrun the target clamps to it exactly, rather
+    /// than reading/copying past the end of `pending_vertices`.
+    #[test]
+    fn vertex_chunk_clamps_to_target_on_the_last_slice() {
+        let step = next_geometry_rebuild_chunk(80, 100, 0, 300, 40, 40);
+        assert_eq!(
+            step,
+            GeometryRebuildStep::CopyVertices { start: 80, end: 100 },
+            "80 + 40 overruns the 100-vertex target; must clamp to exactly 100"
+        );
+    }
+
+    /// Once the vertex phase is fully copied, the index phase starts — even
+    /// though `indices_copied` is still 0, vertices being done is what
+    /// switches phases.
+    #[test]
+    fn switches_to_indices_once_vertices_are_fully_copied() {
+        let step = next_geometry_rebuild_chunk(100, 100, 0, 300, 40, 90);
+        assert_eq!(step, GeometryRebuildStep::CopyIndices { start: 0, end: 90 });
+    }
+
+    /// Both phases fully copied reports `Finished`, not another chunk of
+    /// either — the completion signal `advance_geometry_rebuild` swaps on.
+    #[test]
+    fn both_phases_complete_reports_finished() {
+        let step = next_geometry_rebuild_chunk(100, 100, 300, 300, 40, 90);
+        assert_eq!(step, GeometryRebuildStep::Finished);
+    }
+
+    /// A target of exactly one chunk's width finishes that phase in a
+    /// single step (`end` lands exactly on the target, not one short or one
+    /// chunk past it) — the boundary case between "needs another chunk" and
+    /// "done".
+    #[test]
+    fn chunk_exactly_covering_the_target_finishes_that_phase_in_one_step() {
+        let step = next_geometry_rebuild_chunk(0, 40, 0, 300, 40, 90);
+        assert_eq!(step, GeometryRebuildStep::CopyVertices { start: 0, end: 40 });
+        // The following call (as if this chunk just landed) must now switch
+        // phases rather than emit a zero-length vertex chunk.
+        let next = next_geometry_rebuild_chunk(40, 40, 0, 300, 40, 90);
+        assert_eq!(next, GeometryRebuildStep::CopyIndices { start: 0, end: 90 });
+    }
+
+    /// A zero-sized chunk budget (degenerate `GEOMETRY_REBUILD_CHUNK_BYTES`
+    /// misconfiguration, or an element wider than the whole configured
+    /// budget) must still make forward progress — one element per call,
+    /// never zero — so the rebuild cannot stall indefinitely. Mirrors
+    /// `FrameTimeBudget`'s "first unit always admitted" guarantee
+    /// (`work_budget.rs`).
+    #[test]
+    fn zero_chunk_size_still_advances_by_at_least_one_element() {
+        let step = next_geometry_rebuild_chunk(0, 5, 0, 5, 0, 0);
+        assert_eq!(
+            step,
+            GeometryRebuildStep::CopyVertices { start: 0, end: 1 },
+            "a zero chunk size must still copy 1 element, or progress never happens"
+        );
+    }
+
+    /// An empty target (nothing pending in one phase) skips straight past
+    /// it — an already-satisfied phase (`copied == target == 0`) must not
+    /// be mistaken for "has work".
+    #[test]
+    fn empty_vertex_target_skips_straight_to_indices() {
+        let step = next_geometry_rebuild_chunk(0, 0, 0, 50, 40, 40);
+        assert_eq!(step, GeometryRebuildStep::CopyIndices { start: 0, end: 40 });
+    }
+
+    /// Both targets empty (a rebuild started against no pending data at
+    /// all) reports `Finished` immediately rather than looping.
+    #[test]
+    fn both_targets_empty_reports_finished() {
+        let step = next_geometry_rebuild_chunk(0, 0, 0, 0, 40, 40);
+        assert_eq!(step, GeometryRebuildStep::Finished);
     }
 }

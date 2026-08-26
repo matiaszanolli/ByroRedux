@@ -194,7 +194,18 @@ impl App {
                 .streaming
                 .as_ref()
                 .is_some_and(streaming::WorldStreamingState::geometry_batch_in_progress);
-            if ctx.mesh_registry.is_geometry_dirty() && !defer_geometry_rebuild {
+            // #3298 — an already-running chunked rebuild must keep advancing
+            // every frame regardless of `defer_geometry_rebuild`: that gate
+            // only decides whether to *start* a new rebuild once the current
+            // streaming transaction settles, not whether one already in
+            // flight should keep copying. Gating the advance call on it too
+            // would stall an in-flight copy indefinitely the moment another
+            // streaming transaction (e.g. a second boundary crossing) begins
+            // before the first rebuild's chunks finish.
+            let rebuild_in_progress = ctx.mesh_registry.geometry_rebuild_in_progress();
+            if rebuild_in_progress
+                || (ctx.mesh_registry.is_geometry_dirty() && !defer_geometry_rebuild)
+            {
                 if let Err(e) = ctx.mesh_registry.rebuild_geometry_ssbo(
                     &ctx.device,
                     ctx.allocator.as_ref().unwrap(),

@@ -1432,6 +1432,152 @@ impl GpuBuffer {
             allocator: Some(allocator.clone()),
         })
     }
+
+    /// Create an empty (uninitialized) device-local buffer of `size` bytes —
+    /// no staging, no copy. Paired with [`copy_bytes_range`](Self::copy_bytes_range)
+    /// for callers that fill the buffer incrementally across many calls
+    /// instead of one atomic upload (#3298 — resumable global geometry SSBO
+    /// rebuild). Every byte is left whatever the allocator/driver handed
+    /// back; the caller must not read any range before a `copy_bytes_range`
+    /// call has covered it.
+    pub fn create_empty_device_local_buffer(
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+        size: vk::DeviceSize,
+        usage: vk::BufferUsageFlags,
+    ) -> Result<Self> {
+        let buffer_info = vk::BufferCreateInfo::default()
+            .size(size)
+            .usage(usage | vk::BufferUsageFlags::TRANSFER_DST)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+
+        // SAFETY: `device` is the caller's live logical device, valid for the
+        // call; `buffer_info` is a fully-populated valid VkBufferCreateInfo.
+        let buffer = unsafe {
+            device
+                .create_buffer(&buffer_info, None)
+                .context("Failed to create empty device-local buffer")?
+        };
+
+        // SAFETY: `buffer` was just created by this device above and is live;
+        // the device outlives the call.
+        let requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
+
+        let allocation = match allocator
+            .lock()
+            .expect("allocator lock poisoned")
+            .allocate(&vulkan::AllocationCreateDesc {
+                name: "gpu_buffer_resumable",
+                requirements,
+                location: MemoryLocation::GpuOnly,
+                linear: true,
+                allocation_scheme: vulkan::AllocationScheme::GpuAllocatorManaged,
+            }) {
+            Ok(allocation) => allocation,
+            Err(e) => {
+                // The buffer handle was created above but never bound — free
+                // it before propagating, or an allocation-failure caller
+                // (the resumable rebuild's OOM fallback, #3298) leaks a
+                // Vulkan object on every retry.
+                unsafe {
+                    // SAFETY: `buffer` was created by this device above,
+                    // never bound to memory, and not yet destroyed.
+                    device.destroy_buffer(buffer, None);
+                }
+                return Err(e).context("Failed to allocate empty device-local memory");
+            }
+        };
+
+        // SAFETY: `buffer` and `allocation` were both created here from this
+        // device; the memory/offset come from the allocation that satisfied
+        // `buffer`'s memory requirements, and the buffer is not yet bound.
+        if let Err(e) = unsafe { device.bind_buffer_memory(buffer, allocation.memory(), allocation.offset()) }
+        {
+            // SAFETY: same as above — created, unbound (bind just failed),
+            // not yet destroyed.
+            unsafe {
+                device.destroy_buffer(buffer, None);
+            }
+            allocator
+                .lock()
+                .expect("allocator lock poisoned")
+                .free(allocation)
+                .ok();
+            return Err(e).context("Failed to bind empty device-local buffer");
+        }
+
+        Ok(Self {
+            buffer,
+            size,
+            allocation: Some(allocation),
+            is_coherent: false,
+            device: device.clone(),
+            allocator: Some(allocator.clone()),
+        })
+    }
+
+    /// Copy one byte range of `bytes` into `self` at `dst_offset`, through a
+    /// pooled staging buffer, as one submit + fence-wait. Paired with
+    /// [`create_empty_device_local_buffer`](Self::create_empty_device_local_buffer)
+    /// — the resumable counterpart of [`create_device_local_buffer`](Self::create_device_local_buffer)'s
+    /// single-shot staging/copy, called once per chunk across several frames
+    /// instead of once for the whole buffer (#3298).
+    ///
+    /// `dst_offset` and `bytes.len()` must both be 4-byte aligned
+    /// (`vkCmdCopyBuffer` requires it) — callers chunk by whole elements
+    /// (`Vertex` / `u32`), which already satisfies this.
+    pub fn copy_bytes_range(
+        &self,
+        ctx: GpuUploadCtx,
+        dst_offset: vk::DeviceSize,
+        bytes: &[u8],
+        staging_pool: &mut StagingPool,
+    ) -> Result<()> {
+        let GpuUploadCtx {
+            device,
+            allocator,
+            queue,
+            command_pool,
+        } = ctx;
+        let size = bytes.len() as vk::DeviceSize;
+
+        let (staging_buffer, staging_alloc) = staging_pool.acquire(size)?;
+        let mut staging = StagingGuard::new(
+            staging_buffer,
+            staging_alloc,
+            device.clone(),
+            allocator.clone(),
+        );
+        staging.mapped_slice_mut()?[..bytes.len()].copy_from_slice(bytes);
+
+        let copy_region = vk::BufferCopy {
+            src_offset: 0,
+            dst_offset,
+            size,
+        };
+        with_one_time_commands(device, queue, command_pool, |cmd| {
+            // SAFETY: `cmd` is in the recording state for the duration of the
+            // `with_one_time_commands` closure; `staging.buffer` and
+            // `self.buffer` are both live, distinct, and have matching
+            // TRANSFER_SRC/DST usage; the copy region was sized to the
+            // caller-supplied `bytes` and is within `self`'s bounds (the
+            // caller tracks a monotonic per-buffer write cursor); no other
+            // access to either buffer races this command.
+            unsafe {
+                device.cmd_copy_buffer(cmd, staging.buffer, self.buffer, &[copy_region]);
+            }
+            Ok(())
+        })?;
+
+        let capacity = staging
+            .allocation
+            .as_ref()
+            .map(|a| a.size())
+            .unwrap_or(size);
+        staging.release_to(staging_pool, capacity);
+
+        Ok(())
+    }
 }
 
 /// One destination buffer in a packed upload transaction.
