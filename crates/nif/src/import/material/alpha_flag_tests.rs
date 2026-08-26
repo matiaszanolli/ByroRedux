@@ -116,12 +116,14 @@ fn alpha_test_func_default_when_no_test() {
 
 // ── #1201 — cascade gate honours `alpha_property_consumed` ─────────
 //
-// Pre-#1201 the cascade gate at `walker.rs:494` read
-// `!alpha_blend && !alpha_test`. A direct shape NiAlphaProperty with
-// `flags=0` (explicit "no blend, no test") left both bits false and
-// admitted the inherited parent NiNode's NiAlphaProperty, silently
-// overwriting the shape's intent. #982 added `alpha_property_consumed`
-// but the consumer change was never made.
+// Pre-#1201 the cascade gate read `!alpha_blend && !alpha_test`. A direct
+// shape NiAlphaProperty with `flags=0` (explicit "no blend, no test") left
+// both bits false and admitted the inherited parent NiNode's
+// NiAlphaProperty, silently overwriting the shape's intent. #982 added
+// `alpha_property_consumed` but the consumer change was never made. Post-
+// #2059, the live gate is `legacy_properties.rs::apply_material_property`
+// (`if !info.alpha_property_consumed`); this logic is no longer in
+// walker.rs, which is now a thin orchestrator.
 
 #[test]
 fn flags_zero_alpha_property_marks_consumption() {
@@ -134,7 +136,7 @@ fn flags_zero_alpha_property_marks_consumption() {
     assert!(
         info.alpha_property_consumed,
         "apply_alpha_flags must mark the property consumed even when \
-         flags=0 (#1201 — gates the cascade in walker.rs)",
+         flags=0 (#1201 — gates the cascade in legacy_properties.rs::apply_material_property)",
     );
 }
 
@@ -174,12 +176,13 @@ fn explicit_opaque_shape_blocks_inherited_blend_cascade() {
 
 /// #1202 — BSEffectShader-backed shape with explicit-opaque
 /// `NiAlphaProperty { flags: 0 }` bound via `alpha_property_ref` must
-/// suppress the BSEffectShader implicit alpha-blend. Pre-fix the
-/// implicit `alpha_blend = true` at walker.rs:427 ran inside the
-/// shader-property block (line 298+) before `apply_alpha_flags` saw
-/// the NiAlphaProperty at line 480; the gate `!alpha_blend &&
+/// suppress the BSEffectShader implicit alpha-blend. Pre-fix the implicit
+/// `alpha_blend = true` ran inside the shader-property handling before
+/// `apply_alpha_flags` saw the NiAlphaProperty; the gate `!alpha_blend &&
 /// !alpha_test` admitted the implicit write, and the subsequent
-/// `apply_alpha_flags(flags=0)` had nothing to clear.
+/// `apply_alpha_flags(flags=0)` had nothing to clear. Post-#2059, the live
+/// gate is `dedicated_shader.rs::apply_bs_effect_shader`
+/// (`if !info.alpha_property_consumed`), not walker.rs.
 #[test]
 fn bs_effect_shader_explicit_opaque_blocks_implicit_blend() {
     use crate::blocks::shader::BSEffectShaderProperty;

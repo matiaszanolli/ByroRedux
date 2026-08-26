@@ -1,15 +1,18 @@
 //! Pin the `EmissiveSource` discriminator at each of the three NIF
-//! shader-property set-sites in walker.rs. #1280 step 4 — canonical
-//! material convergence.
+//! shader-property set-sites. #1280 step 4 — canonical material
+//! convergence.
 //!
 //! The three sites all flow into the same `MaterialInfo.emissive_mult`
-//! slot but carry different semantics:
+//! slot but carry different semantics. Post-#2059, these live in
+//! `dedicated_shader.rs` and `legacy_properties.rs`, not the (now
+//! 157-line orchestrator) `walker.rs` — referenced here by function name
+//! so a future file split can't stale this pointer again:
 //!
-//! | NIF property class          | Set-site         | Tag              |
-//! |-----------------------------|------------------|------------------|
-//! | `BSLightingShaderProperty`  | walker.rs:~292   | `Lighting`       |
-//! | `BSEffectShaderProperty`    | walker.rs:~347   | `Effect` (tint!) |
-//! | `NiMaterialProperty`        | walker.rs:~578   | `Material`       |
+//! | NIF property class          | Set-site (function)                                  | Tag              |
+//! |-----------------------------|-------------------------------------------------------|------------------|
+//! | `BSLightingShaderProperty`  | `dedicated_shader.rs::apply_bs_lighting_shader`        | `Lighting`       |
+//! | `BSEffectShaderProperty`    | `dedicated_shader.rs::apply_bs_effect_shader`          | `Effect` (tint!) |
+//! | `NiMaterialProperty`        | `legacy_properties.rs::apply_material_property`        | `Material`       |
 //!
 //! `BSEffectShaderProperty.base_color_scale` is semantically a diffuse-
 //! tint multiplier (see #166), conflated into the emissive slot for the

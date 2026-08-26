@@ -446,8 +446,10 @@ pub mod bsver {
     /// Fallout 76 (lower bound; FO76 spans 152..=167 in shipping
     /// content).
     pub const FO76: u32 = 155;
-    /// Starfield (lower bound — `>=168` in retail; 170 is the
-    /// historical cutoff vs FO76 dev builds).
+    /// Starfield (lower bound). A corpus-wide bsver histogram over 87,994
+    /// retail Starfield NIFs observes only `{172,173,174,175}` — 168-171
+    /// is unattested in shipped content (#2639); 170 is the historical
+    /// cutoff vs FO76 dev builds.
     pub const STARFIELD: u32 = 172;
     /// Starfield dev+ builds that carry a `form_id` field in some
     /// blocks (e.g. NiNode). Content with `bsver >= SF_FORM_ID` has
@@ -464,13 +466,13 @@ pub mod bsver {
     /// |-------|---------------------|------------|-----------------------|
     /// | 172   | no                  | no         | "packin" composites   |
     /// | 173   | yes                 | **no**     | `Meshes02.ba2`        |
+    /// | 174   | yes                 | **no**     | `MeshesPatch.ba2` (13 files) |
     /// | 175   | yes                 | **yes**    | `MeshesPatch.ba2`     |
     ///
-    /// 174 is unobserved in any archive on hand, so the true boundary is
-    /// somewhere in `(173, 175]`; this constant sits at the lowest value
-    /// the field is actually known to be present at. If bsver-174 content
-    /// ever turns up, byte-check it rather than assuming which side it
-    /// falls on — both neighbours are attested and they disagree.
+    /// 174 IS observed (13 bsver-174 terrain files in `MeshesPatch.ba2`,
+    /// all parsing clean under this gate — #2640), and it lands on the
+    /// no-gap side: `form_id` present, 2-byte gap absent. The boundary is
+    /// pinned exactly at 175, not merely "somewhere in (173, 175]".
     pub const SF_WEAK_REF_GAP: u32 = 175;
 }
 

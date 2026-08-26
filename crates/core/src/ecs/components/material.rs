@@ -590,8 +590,13 @@ pub struct PbrMaterial {
 #[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub enum EmissiveSource {
     /// No emissive authoring; `emissive_mult` defaulted to 0.0.
-    /// Materials without any of the three shader-property classes (or
-    /// where none of them authored a non-zero emissive) land here.
+    /// Materials without any of the three shader-property classes bound
+    /// land here. All three writers (`dedicated_shader.rs`,
+    /// `legacy_properties.rs`, `asset_provider/material.rs`) set their
+    /// variant unconditionally once their property class is bound — there
+    /// is no non-zero-emissive gate, so e.g. a `BSLightingShaderProperty`
+    /// with `emissive_multiple == 0.0` still reports `Lighting`, not
+    /// `None` (#2641).
     #[default]
     None,
     /// `NiMaterialProperty.emissive_mult` (Oblivion / FO3 / FNV legacy
