@@ -14,6 +14,25 @@ use byroredux_core::ecs::world::World;
 
 const Q: QuestFormId = QuestFormId(0x0001_2345);
 
+#[test]
+fn copied_transform_releases_each_component_guard() {
+    use byroredux_core::ecs::components::Transform;
+    use byroredux_core::math::Vec3;
+
+    let mut world = World::new();
+    let first = world.spawn();
+    let second = world.spawn();
+    world.insert(first, Transform::from_translation(Vec3::X));
+    world.insert(second, Transform::from_translation(Vec3::Y));
+
+    let first_value = copied_transform(&world, first).expect("first transform");
+    let second_value = copied_transform(&world, second).expect("second transform");
+    let _write_after_reads = world.query_mut::<Transform>().expect("Transform storage");
+
+    assert_eq!(first_value.translation, Vec3::X);
+    assert_eq!(second_value.translation, Vec3::Y);
+}
+
 /// A world with the scripting subsystem registered, a player entity, and
 /// a fresh quest-stage store — the standard fixture for dispatch tests.
 fn fixture() -> World {

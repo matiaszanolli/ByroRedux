@@ -606,6 +606,13 @@ impl DeferredFragmentEffects {
 /// Every production caller constructs the batch before taking quest
 /// resource guards and applies it only after those guards have dropped
 /// (#2269, #2539, #2660).
+fn copied_transform(world: &World, entity: EntityId) -> Option<Transform> {
+    // #3250 — `World::get` returns an owning read guard. Copy the component
+    // before another Transform lookup so a queued writer can never strand a
+    // recursive read behind the first guard.
+    world.get::<Transform>(entity).map(|transform| *transform)
+}
+
 fn apply_effect(
     effect: &Effect,
     context: QuestFormId,
@@ -913,8 +920,8 @@ fn apply_effect(
                 None => None,
             };
             let relative_pose = vehicle.and_then(|vehicle| {
-                let actor_transform = world.get::<Transform>(actor)?;
-                let vehicle_transform = world.get::<Transform>(vehicle)?;
+                let actor_transform = copied_transform(world, actor)?;
+                let vehicle_transform = copied_transform(world, vehicle)?;
                 if vehicle_transform.scale.abs() <= f32::EPSILON {
                     return None;
                 }
@@ -942,11 +949,11 @@ fn apply_effect(
             let cart = resolve_object(vmad, world, context, cart, &deferred.scene_actor_bindings)?;
             let horse =
                 resolve_object(vmad, world, context, horse, &deferred.scene_actor_bindings)?;
-            let Some(cart_transform) = world.get::<Transform>(cart) else {
+            let Some(cart_transform) = copied_transform(world, cart) else {
                 log::debug!("fragment TetherToHorse skipped: cart has no Transform");
                 return None;
             };
-            let Some(horse_transform) = world.get::<Transform>(horse) else {
+            let Some(horse_transform) = copied_transform(world, horse) else {
                 log::debug!("fragment TetherToHorse skipped: horse has no Transform");
                 return None;
             };
@@ -963,8 +970,6 @@ fn apply_effect(
                 horse_local_rotation: inverse_rotation * cart_transform.rotation,
                 route_target_form_id: None,
             };
-            drop(cart_transform);
-            drop(horse_transform);
             if let Some(mut tethers) = world.query_mut::<crate::HorseTetherState>() {
                 tethers.insert(cart, state);
                 log::info!("TetherToHorse attached cart entity {cart} to horse entity {horse}");
