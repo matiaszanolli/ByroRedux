@@ -104,25 +104,44 @@ pub fn translate_pex(
             return None;
         }
     };
-    // SCR-D5-NEW-02 / #1816: the decompiler carries internal invariant
-    // `.expect()`s that a hostile/corrupt `.pex` can trip; catch that panic
-    // here the same way `pex_corpus_smoke` does, rather than letting it
-    // escape through `attach_vmad_scripts` and abort cell load.
-    let script = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        byroredux_pex::decompile::decompile_script(&pex)
-    })) {
-        Ok(Ok(s)) => s,
+    let script = decompile_catching_panics(|| byroredux_pex::decompile::decompile_script(&pex))?;
+    let source = ScriptSource::PapyrusSource(&script);
+    translate_script(&source, game, script_instance, owning_quest)
+}
+
+/// Run a decompile and flatten both failure modes — a returned `Err` and an
+/// unwinding panic — into `None`.
+///
+/// SCR-D5-NEW-02 / #1816: the decompiler carries internal invariant
+/// `.expect()`s that a hostile or corrupt `.pex` can trip; catching that panic
+/// here, the same way `pex_corpus_smoke` does, keeps it from escaping through
+/// `attach_vmad_scripts` and aborting cell load.
+///
+/// #3287 — this exists as a named function taking a closure, rather than as an
+/// inline `catch_unwind` in [`translate_pex`], so the panic arm is reachable
+/// from a test. The obvious guard — feed `translate_pex` a hostile `.pex`
+/// crafted to trip one of the cited `.expect()`s — turns out not to be
+/// constructible by hand: `cfg.rs`'s `checked_target` already converts every
+/// malformed-jump case reachable from bytes into a `DecompileError`, so the
+/// surviving `.expect()`s need a genuine fuzzing campaign to reach, not a
+/// fixture. Guarding the mechanism is what is actually available, and it is
+/// falsifiable: drop the `catch_unwind` and
+/// `a_decompile_panic_is_a_silent_none` unwinds instead of passing.
+fn decompile_catching_panics<F>(decompile: F) -> Option<byroredux_papyrus::ast::Script>
+where
+    F: FnOnce() -> Result<byroredux_papyrus::ast::Script, byroredux_pex::decompile::DecompileError>,
+{
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(decompile)) {
+        Ok(Ok(s)) => Some(s),
         Ok(Err(e)) => {
             log::debug!("translate_pex: decompile failed: {e}");
-            return None;
+            None
         }
         Err(_) => {
             log::debug!("translate_pex: decompile panicked");
-            return None;
+            None
         }
-    };
-    let source = ScriptSource::PapyrusSource(&script);
-    translate_script(&source, game, script_instance, owning_quest)
+    }
 }
 
 #[cfg(test)]
@@ -138,6 +157,40 @@ mod tests {
         assert!(errors.is_empty());
         let src = ScriptSource::PapyrusSource(&script);
         assert!(translate_script(&src, GameKind::Skyrim, None, None).is_none());
+    }
+
+    /// #3287 — #1816's `catch_unwind` had no guard at all: the fix was
+    /// confirmed present only by reading it, so a refactor that dropped the
+    /// wrapper (a `translate_pex` signature change, say) would have gone
+    /// unnoticed by CI, and the escaping panic aborts cell load.
+    ///
+    /// A hostile `.pex` fixture would be the more direct guard, but is not
+    /// constructible by hand — see [`decompile_catching_panics`] for why.
+    /// This drives the panic arm through the same function production uses,
+    /// so deleting the `catch_unwind` makes this test unwind rather than
+    /// pass. The panic hook is silenced for the duration so the expected
+    /// unwind does not print a scary backtrace in a passing run.
+    #[test]
+    fn a_decompile_panic_is_a_silent_none() {
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let caught = decompile_catching_panics(|| panic!("decompiler invariant tripped"));
+        std::panic::set_hook(prev);
+        assert!(
+            caught.is_none(),
+            "a decompiler panic must flatten to None, not escape to the caller"
+        );
+    }
+
+    /// The sibling arm: a clean `Err` from the decompiler is the same silent
+    /// `None`, so the panic guard above is not the only thing keeping this
+    /// path quiet.
+    #[test]
+    fn a_decompile_error_is_a_silent_none() {
+        let caught = decompile_catching_panics(|| {
+            Err(byroredux_pex::decompile::DecompileError::BadJumpOffset { ip: 0 })
+        });
+        assert!(caught.is_none());
     }
 
     #[test]
