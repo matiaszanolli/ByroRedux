@@ -4,14 +4,22 @@
 //! `PscDecompiler`), retargeted: where Champollion emits `.psc` text,
 //! ByroRedux lowers to `byroredux_papyrus::ast::Script` (the final commit).
 //!
-//! Pipeline, built up across commits:
+//! Five-phase pipeline, all shipped:
 //!
-//! 1. **`cfg`** — basic-block control-flow graph (this commit). Splits the
-//!    flat instruction stream into blocks at jump boundaries and records
-//!    each block's successor edges.
-//! 2. *opcode → node-tree lifting + copy-propagation* (next).
-//! 3. *control-flow + boolean-operator reconstruction* (next).
-//! 4. *lower the node tree → `byroredux_papyrus::ast::Script`* (next).
+//! 1. [`cfg`] — basic-block control-flow graph. Splits the flat
+//!    instruction stream into blocks at jump boundaries and records each
+//!    block's successor edges.
+//! 2. [`lift`] — opcode → node-tree lifting + copy-propagation.
+//! 3. [`control_flow`] — control-flow reconstruction (if/else, loops) over
+//!    the CFG.
+//! 4. [`lower`] — lowers the node tree → `byroredux_papyrus::ast::Script`,
+//!    with a fidelity gate.
+//! 5. [`boolean`] — short-circuit boolean-operator reconstruction
+//!    (`rebuild_boolean_operators`).
+//!
+//! [`node`] holds the shared node-tree types; [`event_names`] is a support
+//! module for event-handler name recognition. Neither is a pipeline phase
+//! on its own.
 
 mod boolean;
 mod cfg;

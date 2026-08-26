@@ -15,9 +15,13 @@
 //!   that turns it into recognizable shapes is a later phase.
 //!
 //! A third form — compiled Papyrus `.pex` (the vanilla-runtime format) —
-//! is the next front-end to add; it is intentionally NOT a variant yet
-//! because no `.pex` parser exists, and an unconstructable variant would
-//! be dead. It joins here when that parser lands.
+//! is supported, but not as a `ScriptSource` variant: [`translate_pex`]
+//! (in `super`) takes raw `.pex` bytes directly, decompiles them via
+//! `byroredux_pex::decompile::decompile_script`, and feeds the result
+//! through the same recognizer boundary as `PapyrusSource`. It stays out
+//! of this enum because its input (raw bytes) and failure mode (parse/
+//! decompile error, handled as a clean `None`) don't fit the borrowed-AST
+//! shape the other two variants share.
 //!
 //! All front-ends translate to the *same* canonical behavior at the
 //! boundary; per-game variance is resolved once, in [`super::tables`].
