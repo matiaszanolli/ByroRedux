@@ -147,11 +147,13 @@ not a stage. Exclusive systems run serially after the stage's parallel batch.
   The default for both `System::access()` and the per-entry override is `None`.
 - **M27 Phase 1+2** (`a9810d40`): every parallel-stage system on the engine
   binary declares reads/writes via `Scheduler::add_to_with_access` at the
-  registration site in `byroredux/src/boot.rs` (`build_scheduler`; **13** such
-  calls as of 2026-08-16 — closures can't impl `System::access`). Any parallel
-  system registered via plain `add_to` (no declared access) is a regression.
-  Count this fresh rather than quoting the number — it has drifted twice
-  (10 → 13) between skill refreshes.
+  registration site in `byroredux/src/boot.rs` (`build_scheduler`; closures
+  can't impl `System::access`). Any parallel system registered via plain
+  `add_to` (no declared access) is a regression. Do not pin the registration
+  count: enumerate live declarations with
+  `rg -n '^\s*scheduler\.add_to_with_access\(' byroredux/src/boot.rs`, then
+  verify that `rg -n '^\s*scheduler\.add_to\(' byroredux/src/boot.rs` is empty.
+  The invariant is the zeroed access report below, not a wiring total.
 - **M27 Phase 3** (`05fe2bac`): 4 analyzer-visible conflicts were resolved two
   ways — one dispatcher merge plus two exclusive re-stages. `player_controller_system`
   (Stage::Early) stays **parallel** and declares the *union* of `fly_camera` +
