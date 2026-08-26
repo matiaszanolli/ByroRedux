@@ -122,7 +122,7 @@ fn player_wind_read_is_declared_and_weather_writer_is_exclusive() {
 }
 
 #[test]
-fn billboard_declaration_includes_shared_total_time_clock() {
+fn billboard_declaration_matches_shared_clock_and_component_surface() {
     let start = BOOT_RS
         .find("make_billboard_system(),")
         .expect("billboard registration");
@@ -130,9 +130,14 @@ fn billboard_declaration_includes_shared_total_time_clock() {
         .find("\n    );")
         .map(|offset| start + offset)
         .expect("billboard declaration end");
+    let declaration = &BOOT_RS[start..end];
     assert!(
-        BOOT_RS[start..end].contains(".reads_resource::<TotalTime>()"),
+        declaration.contains(".reads_resource::<TotalTime>()"),
         "#3123: billboard gust animation reads TotalTime"
+    );
+    assert!(
+        !declaration.contains("MeshHandle"),
+        "#3275: billboard no longer queries mesh geometry, so its declaration must not claim MeshHandle"
     );
 }
 
