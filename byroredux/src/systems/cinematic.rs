@@ -406,21 +406,24 @@ pub(crate) fn scene_trigger_actor_approach_system(world: &World, dt: f32) {
         std::collections::HashSet<(u32, u16)>,
         std::collections::HashSet<u32>,
     ) = {
-        let Some(players) = world.query::<byroredux_scripting::ScenePlayer>() else {
-            return;
+        let players: Vec<byroredux_scripting::ScenePlayer> = {
+            let Some(players) = world.query::<byroredux_scripting::ScenePlayer>() else {
+                return;
+            };
+            players.iter().map(|(_, player)| player.clone()).collect()
         };
         let Some(registry) = world.try_resource::<byroredux_scripting::SceneRegistry>() else {
             return;
         };
         let active_quests: std::collections::HashSet<u32> = players
             .iter()
-            .filter(|(_, player)| player.is_running())
-            .filter_map(|(_, player)| registry.definition(player.scene_form_id)?.quest_form_id)
+            .filter(|player| player.is_running())
+            .filter_map(|player| registry.definition(player.scene_form_id)?.quest_form_id)
             .collect();
         let awaited = players
             .iter()
-            .filter(|(_, player)| player.is_running())
-            .filter_map(|(_, player)| {
+            .filter(|player| player.is_running())
+            .filter_map(|player| {
                 let scene = registry.definition(player.scene_form_id)?;
                 scene.phases.get(player.current_phase as usize)
             })
@@ -434,8 +437,8 @@ pub(crate) fn scene_trigger_actor_approach_system(world: &World, dt: f32) {
             .collect();
         let between_scenes = players
             .iter()
-            .filter(|(_, player)| player.state == byroredux_scripting::ScenePlaybackState::Finished)
-            .filter_map(|(_, player)| registry.definition(player.scene_form_id)?.quest_form_id)
+            .filter(|player| player.state == byroredux_scripting::ScenePlaybackState::Finished)
+            .filter_map(|player| registry.definition(player.scene_form_id)?.quest_form_id)
             .filter(|quest| !active_quests.contains(quest))
             .collect();
         (awaited, between_scenes)
@@ -547,9 +550,19 @@ pub(crate) fn scene_trigger_actor_approach_system(world: &World, dt: f32) {
         return;
     }
 
-    let candidates = world.query::<SceneAliasCandidate>();
-    let transforms = world.query::<Transform>();
-    let (Some(candidates), Some(transforms)) = (candidates, transforms) else {
+    let mut candidates: Vec<(EntityId, u32)> = world
+        .query::<SceneAliasCandidate>()
+        .map(|candidates| {
+            candidates
+                .iter()
+                .map(|(entity, candidate)| (entity, candidate.base_form_id))
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Some(remote_stubs) = world.query::<byroredux_scripting::RemoteSceneActorStub>() {
+        candidates.retain(|(entity, _)| !remote_stubs.contains(*entity));
+    }
+    let Some(transforms) = world.query::<Transform>() else {
         return;
     };
     let mut movements = Vec::new();
@@ -557,13 +570,10 @@ pub(crate) fn scene_trigger_actor_approach_system(world: &World, dt: f32) {
     for (base_form_id, target_stage, trigger, destination) in targets {
         let actor = candidates
             .iter()
-            .filter(|(entity, candidate)| {
-                candidate.base_form_id == base_form_id
-                    && !world.has::<byroredux_scripting::RemoteSceneActorStub>(*entity)
-            })
+            .filter(|(_, candidate_base)| *candidate_base == base_form_id)
             .filter_map(|(entity, _)| {
-                let transform = transforms.get(entity)?;
-                Some((entity, transform.translation.distance_squared(destination)))
+                let transform = transforms.get(*entity)?;
+                Some((*entity, transform.translation.distance_squared(destination)))
             })
             .min_by(|left, right| left.1.total_cmp(&right.1))
             .map(|(entity, _)| entity);

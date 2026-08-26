@@ -759,10 +759,16 @@ mod tests {
 
         submersion_system(&world, 0.016);
 
-        let ripples = world.query::<RippleEvent>().expect("ripple storage");
-        let splashes = world.query::<SplashEvent>().expect("splash storage");
-        assert!(ripples.get(water).is_some());
-        assert!(splashes.get(water).is_some());
+        assert!(world
+            .query::<RippleEvent>()
+            .expect("ripple storage")
+            .get(water)
+            .is_some());
+        assert!(world
+            .query::<SplashEvent>()
+            .expect("splash storage")
+            .get(water)
+            .is_some());
     }
 
     #[test]
@@ -847,31 +853,38 @@ mod tests {
 
         let mut system = make_water_interaction_system();
         system(&world, 0.016);
-        let splashes = world.query::<SplashEvent>().expect("splash storage");
-        let ripples = world.query::<RippleEvent>().expect("ripple storage");
         // #3115 — was `splashes.get(body)`. The marker belongs on the
         // water-plane entity per `SplashEvent`'s documented contract, which
         // this producer contradicted while its sibling `RippleEvent` (asserted
         // on the line below) already honoured it. `actor` carries the body.
-        assert!(splashes.get(surface).is_some());
-        assert_eq!(splashes.get(surface).unwrap().actor, body);
-        assert!(
-            splashes.get(body).is_none(),
-            "the body must not host the marker"
-        );
-        assert!(ripples.get(surface).is_some());
-        drop(splashes);
-        drop(ripples);
+        {
+            let splashes = world.query::<SplashEvent>().expect("splash storage");
+            assert!(splashes.get(surface).is_some());
+            assert_eq!(splashes.get(surface).unwrap().actor, body);
+            assert!(
+                splashes.get(body).is_none(),
+                "the body must not host the marker"
+            );
+        }
+        assert!(world
+            .query::<RippleEvent>()
+            .expect("ripple storage")
+            .get(surface)
+            .is_some());
 
         world.remove::<SplashEvent>(surface);
         world.remove::<RippleEvent>(surface);
         system(&world, 0.016);
-        let splashes = world.query::<SplashEvent>().expect("splash storage");
-        let ripples = world.query::<RippleEvent>().expect("ripple storage");
-        assert!(splashes.get(surface).is_none());
-        assert!(ripples.get(surface).is_some());
-        drop(splashes);
-        drop(ripples);
+        assert!(world
+            .query::<SplashEvent>()
+            .expect("splash storage")
+            .get(surface)
+            .is_none());
+        assert!(world
+            .query::<RippleEvent>()
+            .expect("ripple storage")
+            .get(surface)
+            .is_some());
 
         world.remove::<RippleEvent>(surface);
         {
@@ -879,11 +892,17 @@ mod tests {
             contacts.get_mut(body).unwrap().submerged_fraction = 1.0;
         }
         system(&world, 0.016);
-        let splashes = world.query::<SplashEvent>().expect("splash storage");
-        let ripples = world.query::<RippleEvent>().expect("ripple storage");
-        assert!(splashes.get(surface).is_none());
+        assert!(world
+            .query::<SplashEvent>()
+            .expect("splash storage")
+            .get(surface)
+            .is_none());
         assert!(
-            ripples.get(surface).is_none(),
+            world
+                .query::<RippleEvent>()
+                .expect("ripple storage")
+                .get(surface)
+                .is_none(),
             "fully submerged bodies must not emit surface ripples"
         );
     }

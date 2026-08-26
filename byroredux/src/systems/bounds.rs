@@ -516,6 +516,8 @@ mod tests {
         {
             let mut wb = world.query_mut::<WorldBound>().unwrap();
             *wb.get_mut(mesh).unwrap() = WorldBound::new(Vec3::ZERO, SENTINEL);
+        }
+        {
             let mut gq = world.query_mut::<GlobalTransform>().unwrap();
             gq.get_mut(other).unwrap().translation = Vec3::new(60.0, 0.0, 0.0);
         }

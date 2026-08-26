@@ -651,11 +651,13 @@ mod tests {
 
         escort_system(&world, 0.1);
 
-        let sq = world
-            .query::<EscortState>()
-            .expect("EscortState registered");
-        let state = sq.get(actor).expect("state written on first tick");
-        assert_eq!(state.target_entity, Some(target));
+        {
+            let sq = world
+                .query::<EscortState>()
+                .expect("EscortState registered");
+            let state = sq.get(actor).expect("state written on first tick");
+            assert_eq!(state.target_entity, Some(target));
+        }
 
         let tq = world.query::<Transform>().expect("Transform registered");
         assert!(
@@ -789,14 +791,16 @@ mod tests {
 
         escort_system(&world, 1.0); // 1s @ 100 u/s = 100 units of travel
 
-        let sq = world
-            .query::<EscortState>()
-            .expect("EscortState registered");
-        assert_eq!(
-            sq.get(actor).unwrap().target_entity,
-            Some(target),
-            "still collecting -- far outside ESCORT_COLLECT_DISTANCE"
-        );
+        {
+            let sq = world
+                .query::<EscortState>()
+                .expect("EscortState registered");
+            assert_eq!(
+                sq.get(actor).unwrap().target_entity,
+                Some(target),
+                "still collecting -- far outside ESCORT_COLLECT_DISTANCE"
+            );
+        }
 
         let tq = world.query::<Transform>().expect("Transform registered");
         let moved_to = tq.get(actor).expect("actor transform").translation;
