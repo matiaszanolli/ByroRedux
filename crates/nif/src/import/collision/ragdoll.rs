@@ -976,3 +976,77 @@ mod ragdoll_extract_tests {
         ));
     }
 }
+
+#[cfg(test)]
+mod drop_site_diagnostics_tests {
+    /// #2339 / FNV-D7-04 — every articulation-edge drop in `extract_ragdoll`
+    /// must stay loud.
+    ///
+    /// The finding was that four drop sites `continue`d silently while two
+    /// neighbours (#1539 `Other`, #1850 breakable) warned for the same class
+    /// of lost edge, so an auditor reading a log saw warnings for some
+    /// dropped edges and not others. All six now warn; this pins that they
+    /// keep doing so.
+    ///
+    /// **What this does and does not prove.** It asserts each drop site still
+    /// carries its diagnostic, which is exactly what a regression here looks
+    /// like — someone refactors the bodies loop and a `log::warn!` goes with
+    /// it. It does *not* assert the warning fires at runtime: that needs a
+    /// `log` capture implementation, and this workspace has none (only
+    /// `env_logger`, a writer). Adding a capture crate is a new dependency,
+    /// which the project gates on explicit approval, so it is deliberately
+    /// not done here for a telemetry-only LOW.
+    ///
+    /// A behavioural sibling would also need a synthetic `NifScene` carrying
+    /// a hand-built `BhkRigidBody` (22 fields, no `Default`), a hosting
+    /// `NiNode`, a resolvable shape and a `BhkConstraint` — worth writing the
+    /// day this function grows real logic to test, but it would still not
+    /// assert the log line, which is the thing the issue is about.
+    #[test]
+    fn every_ragdoll_drop_site_still_logs_its_reason() {
+        const SRC: &str = include_str!("ragdoll.rs");
+        let body = SRC
+            .split("pub fn extract_ragdoll")
+            .nth(1)
+            .expect("extract_ragdoll must exist in this file");
+
+        // One distinctive fragment per drop site. Keyed on the *reason* text
+        // rather than the issue number so a reworded-but-present diagnostic
+        // still passes and a deleted one fails.
+        for (site, needle) in [
+            ("unhosted body (#2339)", "no named NiNode hosts it"),
+            (
+                "shape did not resolve (#2339)",
+                "did not resolve to a supported finite shape",
+            ),
+            ("non-finite mass (#1534/#2339)", "non-finite mass"),
+            (
+                "non-finite translation (#1534/#2339)",
+                "non-finite translation",
+            ),
+            ("non-finite rotation (#1534/#2339)", "non-finite rotation"),
+            (
+                "unresolved constraint endpoint (#2339)",
+                "do not both resolve to retained ragdoll bodies",
+            ),
+            (
+                "self-linked constraint",
+                "both endpoints resolve to bone",
+            ),
+            ("breakable constraint (#1850)", "dropping bhkBreakableConstraint"),
+            (
+                "unsupported constraint kind (#1539)",
+                "dropping unsupported constraint linking bones",
+            ),
+        ] {
+            assert!(
+                body.contains(needle),
+                "extract_ragdoll lost the diagnostic for its {site} drop site \
+                 (expected text containing {needle:?}). Every dropped articulation \
+                 edge must stay diagnosable from the log alone — that is the whole \
+                 point of #1539/#1850's warnings, and #2339 was filed because four \
+                 siblings were silent."
+            );
+        }
+    }
+}
