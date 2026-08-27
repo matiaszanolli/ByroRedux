@@ -123,8 +123,37 @@ pub struct NiControllerSequence {
 
 impl NiControllerSequence {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
-        // NiSequence fields (for v >= 20.1.0.1, string table format)
+        // ── Inherited NiSequence fields ──────────────────────────────
+        // nif.xml `<niobject name="NiSequence">`:
+        //   Name              string
+        //   Accum Root Name   string  until="10.1.0.103"
+        //   Text Keys         Ref     until="10.1.0.103"
+        //   Num Controlled Blocks  uint
+        //   Array Grow By     uint    since="10.1.0.106"
         let name = stream.read_string()?;
+
+        // #2345 — the `until=10.1.0.103` prologue pair. Absent before this
+        // fix, so any NiSequence/NiControllerSequence at or below 10.1.0.103
+        // under-read by a string plus a ref and mis-advanced the stream into
+        // `Num Controlled Blocks`, in a version band with no size anchor to
+        // recover from.
+        //
+        // NOTE these are NiSequence's OWN `Accum Root Name` / `Text Keys`,
+        // NOT the same-named NiControllerSequence fields read after the
+        // block array below. The derived class re-declares both with the
+        // opposite gate (`since="10.1.0.106"`), so the two never coexist:
+        // <= 10.1.0.103 reads them here, >= 10.1.0.106 reads them there, and
+        // the 10.1.0.104/105 gap reads neither. Conflating them is easy and
+        // wrong — the issue that prompted this fix did exactly that.
+        let seq_accum_root_name = if stream.version() <= NifVersion::V10_1_0_103 {
+            stream.read_string()?
+        } else {
+            None
+        };
+        if stream.version() <= NifVersion::V10_1_0_103 {
+            let _seq_text_keys_ref = stream.read_block_ref()?;
+        }
+
         let num_controlled_blocks = stream.read_u32_le()?;
 
         // Array Grow By (since 10.1.0.106)
@@ -158,7 +187,20 @@ impl NiControllerSequence {
             && stream.version() < NifVersion::STRING_TABLE_THRESHOLD;
         let mut controlled_blocks = stream.allocate_vec(num_controlled_blocks)?;
         for _ in 0..num_controlled_blocks {
-            let interpolator_ref = stream.read_block_ref()?;
+            // Target Name — nif.xml `SizedString until="10.1.0.103"`. #2345:
+            // never read at all before this fix, so every pre-10.1.0.104
+            // ControlledBlock started one length-prefixed string too early.
+            if stream.version() <= NifVersion::V10_1_0_103 {
+                let _target_name = stream.read_sized_string()?;
+            }
+            // Interpolator — nif.xml `since="10.1.0.106"`. #2345: read
+            // unconditionally before this fix, a 4-byte over-read on
+            // anything below that version.
+            let interpolator_ref = if stream.version() >= NifVersion::V10_1_0_106 {
+                stream.read_block_ref()?
+            } else {
+                BlockRef::NULL
+            };
             let controller_ref = stream.read_block_ref()?;
             // Blend Interpolator (Ref) + Blend Index (ushort): nif.xml
             // gates both `since=10.1.0.104 until=10.1.0.110`, between
@@ -174,8 +216,13 @@ impl NiControllerSequence {
                 let _blend_interpolator = stream.read_block_ref()?;
                 let _blend_index = stream.read_u16_le()?;
             }
-            // Priority byte (BSVER > 0, i.e. any Bethesda game)
-            let priority = if bsver > crate::version::bsver::PRE_BETHESDA {
+            // Priority — nif.xml `since="10.1.0.106" vercond="#BSSTREAM#"`.
+            // #2345: only the `#BSSTREAM#` half (bsver > 0) was applied, so a
+            // Bethesda file BELOW 10.1.0.106 read a phantom priority byte
+            // that isn't in the layout. Both halves are required.
+            let priority = if stream.version() >= NifVersion::V10_1_0_106
+                && bsver > crate::version::bsver::PRE_BETHESDA
+            {
                 stream.read_u8()?
             } else {
                 0
@@ -206,12 +253,31 @@ impl NiControllerSequence {
                     interpolator_id_offset,
                 });
             } else {
-                // Modern string-table (or pre-10.2 inline) format.
-                let node_name = stream.read_string()?;
-                let property_type = stream.read_string()?;
-                let controller_type = stream.read_string()?;
-                let controller_id = stream.read_string()?;
-                let interpolator_id = stream.read_string()?;
+                // Modern string-table (or 10.1.0.104-113 inline) format.
+                //
+                // #2345 — nif.xml declares the five IDTag strings twice, in
+                // two disjoint bands: `since="10.1.0.104" until="10.1.0.113"`
+                // (inline) and `since="20.1.0.1"` (string-table). Below
+                // 10.1.0.104 they DO NOT EXIST — the ControlledBlock ends
+                // after Controller/Priority. Reading them there consumed five
+                // phantom length-prefixed strings and destroyed the stream.
+                // The palette band (10.2.0.0-20.1.0.0) is handled above and
+                // does not overlap either — 10.2.0.0 sorts after 10.1.0.113.
+                let has_id_tag_strings = (stream.version() >= NifVersion::V10_1_0_104
+                    && stream.version() <= NifVersion::V10_1_0_113)
+                    || stream.version() >= NifVersion::STRING_TABLE_THRESHOLD;
+                let (node_name, property_type, controller_type, controller_id, interpolator_id) =
+                    if has_id_tag_strings {
+                        (
+                            stream.read_string()?,
+                            stream.read_string()?,
+                            stream.read_string()?,
+                            stream.read_string()?,
+                            stream.read_string()?,
+                        )
+                    } else {
+                        (None, None, None, None, None)
+                    };
                 controlled_blocks.push(ControlledBlock {
                     interpolator_ref,
                     controller_ref,
@@ -231,11 +297,44 @@ impl NiControllerSequence {
             }
         }
 
-        // NiControllerSequence fields
-        let weight = stream.read_f32_le()?;
-        let text_keys_ref = stream.read_block_ref()?;
-        let cycle_type = stream.read_u32_le()?;
-        let frequency = stream.read_f32_le()?;
+        // ── NiControllerSequence's own fields ────────────────────────
+        // #2345 — nif.xml gates EVERY field of the derived class
+        // `since="10.1.0.106"`: Weight, Text Keys, Cycle Type, Frequency,
+        // Phase, Start/Stop Time, Play Backwards, Manager, Accum Root Name.
+        // Below that version a NiControllerSequence is structurally just its
+        // NiSequence base — the block ends after the ControlledBlock array.
+        // Reading this group unconditionally consumed ~30 phantom bytes on
+        // any sub-10.1.0.106 file. `Phase` and `Play Backwards` already
+        // carried their own gates, which is what made the surrounding gap
+        // easy to miss: the two rarest fields were guarded and the eight
+        // ordinary ones were not.
+        //
+        // Defaults are nif.xml's own (`weight` 1.0, `frequency` 1.0,
+        // `cycle_type` CYCLE_CLAMP = 0, `start_time` FLT_MAX,
+        // `stop_time` FLT_MIN) so a pre-10.1.0.106 sequence presents the
+        // same neutral values the format itself specifies.
+        let has_ctlr_seq_fields = stream.version() >= NifVersion::V10_1_0_106;
+
+        let weight = if has_ctlr_seq_fields {
+            stream.read_f32_le()?
+        } else {
+            1.0
+        };
+        let text_keys_ref = if has_ctlr_seq_fields {
+            stream.read_block_ref()?
+        } else {
+            BlockRef::NULL
+        };
+        let cycle_type = if has_ctlr_seq_fields {
+            stream.read_u32_le()?
+        } else {
+            0
+        };
+        let frequency = if has_ctlr_seq_fields {
+            stream.read_f32_le()?
+        } else {
+            1.0
+        };
 
         // Phase — only present in v ∈ [10.1.0.106, 10.4.0.1]. nif.xml:
         //   <field name="Phase" type="float" since="10.1.0.106"
@@ -258,8 +357,16 @@ impl NiControllerSequence {
             0.0
         };
 
-        let start_time = stream.read_f32_le()?;
-        let stop_time = stream.read_f32_le()?;
+        let start_time = if has_ctlr_seq_fields {
+            stream.read_f32_le()?
+        } else {
+            f32::MAX
+        };
+        let stop_time = if has_ctlr_seq_fields {
+            stream.read_f32_le()?
+        } else {
+            f32::MIN
+        };
 
         // Play Backwards — exactly v=10.1.0.106. None of our targets
         // ship content at that exact version (Oblivion is 20.0.0.x,
@@ -269,8 +376,21 @@ impl NiControllerSequence {
             let _play_backwards = stream.read_u8()?;
         }
 
-        let manager_ref = stream.read_block_ref()?;
-        let accum_root_name = stream.read_string()?;
+        let manager_ref = if has_ctlr_seq_fields {
+            stream.read_block_ref()?
+        } else {
+            BlockRef::NULL
+        };
+        // The derived class's own Accum Root Name (`since="10.1.0.106"`).
+        // Below that band the accumulation root comes from the NiSequence
+        // base field read in the prologue instead — the two are the same
+        // concept declared twice with disjoint gates, so exactly one is
+        // present for any given version and the component sees one value.
+        let accum_root_name = if has_ctlr_seq_fields {
+            stream.read_string()?
+        } else {
+            seq_accum_root_name
+        };
 
         // Deprecated string-palette link (Gamebryo 2.3
         // `NiControllerSequence::LoadBinary`, v ∈ [10.1.0.113, 20.1.0.1)):

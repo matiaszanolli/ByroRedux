@@ -17,6 +17,8 @@ use std::sync::Arc;
 mod legacy;
 mod morph;
 mod sequence;
+#[cfg(test)]
+mod sequence_pre_10_1_0_106_tests;
 mod shader;
 
 pub use legacy::{NiLookAtController, NiPathController, NiSequenceStreamHelper, NiUVController};
