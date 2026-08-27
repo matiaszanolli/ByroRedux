@@ -1486,8 +1486,18 @@ pub struct VulkanContext {
     /// bench, observed at 58 WARN / 300 frames pre-fix on Prospector
     /// post-#896 B.2). Cleared whenever any LRU eviction frees a
     /// slot, since capacity opening up means a previously-failing
-    /// entity's next attempt could now succeed. `EntityId` is
-    /// generational so an entry can't poison a re-issued id. See #900.
+    /// entity's next attempt could now succeed. A stale entry cannot
+    /// poison a re-issued id because `EntityId`s are **never recycled** —
+    /// `World::spawn` is monotonic and `despawn` does not reclaim (#372).
+    /// `EntityId` is a bare `u32` with no generation field
+    /// (`crates/core/src/ecs/storage.rs`); the owning invariant, and the
+    /// reason it is deliberately not generational, is documented on
+    /// `World::spawn` in `crates/core/src/ecs/world.rs`. Every
+    /// entity-keyed renderer cache here (`skin_slots`, `morph_slots`,
+    /// `failed_skin_slots`, `failed_skin_blas`, the
+    /// `pending_*_unload_victims` lists) rests on that same never-recycled
+    /// rule — not on generational tagging, which the ECS does not have.
+    /// See #900, #3375.
     ///
     /// Drop contract (REN-D7-NEW-03): purely host-side state, no
     /// Vulkan handles or device memory involved — the HashSet

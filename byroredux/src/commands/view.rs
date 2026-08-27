@@ -477,10 +477,16 @@ impl ConsoleCommand for PlayerStatusCommand {
 ///
 /// With no arg, `prid` prints the current selection (`SelectedRef`
 /// resource state). The selection is not implicitly cleared on cell
-/// unload — a re-issued generational `EntityId` could re-bind to a
-/// new entity. This is a known dev-tool sharp edge that matches
-/// Bethesda's own `prid` semantics; M40 cell streaming will need an
-/// explicit clear-on-unload pass later.
+/// unload, so after a streaming unload it can name an entity that no
+/// longer exists and follow-up commands simply find nothing.
+///
+/// #3375 — this note used to say "a re-issued generational `EntityId`
+/// could re-bind to a new entity". That hazard does not exist:
+/// `EntityId` is a bare `u32` and ids are **never recycled**
+/// (`World::spawn` is monotonic, `despawn` does not reclaim, #372), so a
+/// stale selection goes dead rather than silently re-pointing. The sharp
+/// edge is a dangling selection, which matches Bethesda's own `prid`
+/// semantics; an explicit clear-on-unload pass is still worth having.
 pub(crate) struct PridCommand;
 impl ConsoleCommand for PridCommand {
     fn name(&self) -> &str {
