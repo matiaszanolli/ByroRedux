@@ -26,7 +26,6 @@
 
 use crate::esm::reader::{FormIdRemap, SubRecord};
 use crate::esm::records::common::CommonNamedFields;
-use crate::esm::sub_reader::SubReader;
 
 /// Parsed OTFT record — flat array of item FormIDs (ARMO or LVLI).
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -70,8 +69,22 @@ pub fn parse_otft(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
     out.editor_id = common.editor_id;
     for sub in subs {
         match &sub.sub_type {
-            b"INAM" if sub.data.len() >= 4 => {
-                if let Ok(id) = SubReader::new(&sub.data).u32() {
+            // #3356 — `INAM` is ONE sub-record holding an ARRAY of 4-byte
+            // FormIDs (xEdit `wbDefinitionsTES5.pas`: `wbArray(INAM,
+            // 'Items', wbFormIDCk('Item', [ARMO, LVLI]))`), not one FormID
+            // per sub-record. Reading a single `u32` consumed the first
+            // entry and discarded bytes 4..N, so every outfit yielded
+            // exactly one item however many it authored — 765 of 1,246
+            // Skyrim.esm items (61%) dropped, 387 of 481 outfits truncated.
+            // The old `len() >= 4` guard made it invisible: a 20-byte
+            // 5-item array passes it and contributes one item.
+            //
+            // `chunks_exact(4)` keeps the existing "short / trailing bytes
+            // are dropped" contract that `malformed_inam_short_payload_is_dropped`
+            // pins.
+            b"INAM" => {
+                for chunk in sub.data.chunks_exact(4) {
+                    let id = u32::from_le_bytes(chunk.try_into().expect("chunks_exact(4)"));
                     out.items.push(remap_fid(id, remap));
                 }
             }
@@ -102,24 +115,86 @@ mod tests {
         mk_sub(b"INAM", form_id.to_le_bytes().to_vec())
     }
 
+    /// One `INAM` sub-record holding N FormIDs — the shape the games
+    /// actually emit.
+    fn inam_array(form_ids: &[u32]) -> SubRecord {
+        let mut data = Vec::with_capacity(form_ids.len() * 4);
+        for id in form_ids {
+            data.extend_from_slice(&id.to_le_bytes());
+        }
+        mk_sub(b"INAM", data)
+    }
+
+    /// #3356 — the real wire shape: a SINGLE `INAM` carrying an array.
+    /// This replaces a fixture that modelled four separate 4-byte `INAM`
+    /// sub-records under a comment asserting it was "a real OTFT shape"
+    /// for `WhiterunGuardOutfit` — there is no such EditorID and no
+    /// FormID `0008F09E` in `Skyrim.esm`, and every one of its 481
+    /// outfits carries exactly one `INAM`. That fabricated shape is
+    /// precisely why the array bug survived: it exercised the one-FormID-
+    /// per-sub-record path the parser implemented.
+    ///
+    /// `ArmorBandedIronAllOutfit` (`000B1FAE`) is real, and its 16-byte
+    /// `INAM` is transcribed verbatim from `Skyrim.esm`.
     #[test]
-    fn parses_outfit_with_multiple_items() {
-        // Models a real OTFT shape: `WhiterunGuardOutfit` with helmet,
-        // cuirass, gauntlets, boots referenced by INAM.
+    fn parses_a_single_inam_array_of_items() {
         let subs = vec![
-            edid("WhiterunGuardOutfit"),
-            inam(0x0001_3937),
-            inam(0x0001_3938),
-            inam(0x0001_3939),
-            inam(0x0001_393A),
+            edid("ArmorBandedIronAllOutfit"),
+            inam_array(&[0x0001_3948, 0x0001_2E46, 0x0001_2E4B, 0x0001_2E4D]),
         ];
-        let r = parse_otft(0x0008_F09E, &subs, &None);
-        assert_eq!(r.editor_id, "WhiterunGuardOutfit");
+        let r = parse_otft(0x000B_1FAE, &subs, &None);
+        assert_eq!(r.editor_id, "ArmorBandedIronAllOutfit");
         assert_eq!(
             r.items,
-            vec![0x0001_3937, 0x0001_3938, 0x0001_3939, 0x0001_393A],
-            "INAM order must round-trip verbatim"
+            vec![0x0001_3948, 0x0001_2E46, 0x0001_2E4B, 0x0001_2E4D],
+            "all four array entries must survive, in authored order (#3356)"
         );
+    }
+
+    /// The Bannered Mare outfits, verbatim from `Skyrim.esm` — the bench
+    /// cell this defect was traced on. Each is one `INAM` array.
+    #[test]
+    fn parses_the_bannered_mare_outfit_arrays() {
+        for (edid_name, fid, items) in [
+            (
+                "FarmClothesOutfit02",
+                0x0002_D75E_u32,
+                vec![0x0002_09A5, 0x0002_09A6],
+            ),
+            (
+                "BarkeepClothes01",
+                0x0005_FB81,
+                vec![0x0005_B6A1, 0x0005_B6A0],
+            ),
+            (
+                "BeggarWithHatOutfit",
+                0x0002_8B61,
+                vec![0x0001_3105, 0x0001_3106, 0x0001_3104],
+            ),
+            (
+                "FineClothesOutfit02",
+                0x000E_40DD,
+                vec![0x000C_EE82, 0x000C_EE80],
+            ),
+        ] {
+            let subs = vec![edid(edid_name), inam_array(&items)];
+            let r = parse_otft(fid, &subs, &None);
+            assert_eq!(r.items, items, "{edid_name} lost items (#3356)");
+        }
+    }
+
+    /// Several `INAM` sub-records, each an array, concatenate. Not a
+    /// shape vanilla emits, but the parser must not lose data if a mod
+    /// authors it.
+    #[test]
+    fn multiple_inam_sub_records_concatenate() {
+        let subs = vec![
+            edid("ModdedOutfit"),
+            inam_array(&[0x0000_0001, 0x0000_0002]),
+            inam(0x0000_0003),
+        ];
+        let r = parse_otft(0x0000_00FF, &subs, &None);
+        assert_eq!(r.items, vec![1, 2, 3]);
     }
 
     #[test]
