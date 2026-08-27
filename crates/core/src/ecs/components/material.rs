@@ -709,11 +709,80 @@ pub struct PbrClassifierInputs<'a> {
 /// don't look glassy." Routing both sites through one list makes a
 /// glass-keyword surface smooth (0.1) AND glass-classified, so it
 /// renders through the IOR refraction path — with no shader change.
+/// Whether `path` names an ice / frozen surface.
+///
+/// #3359 — `ice` used to ride the symmetric word-boundary matcher
+/// [`contains_any_ci_word`] alongside `gem`. On Skyrim that arm was exactly
+/// inverted: a census of the vanilla mesh archives found **0** genuine ice
+/// surfaces reaching it and **269** Imperial-fort stone draws that did.
+///
+/// Both directions came from the same boundary:
+///
+/// * Skyrim names ice assets as concatenated compounds — `icefrozen01`,
+///   `icecavewall01`, `icerock01`, `icelakesurface`, `iceberglargelod`. The
+///   character after `ice` is alphabetic in every one, so the trailing
+///   boundary failed and 1,928 instances across 67 paths fell through to the
+///   stone / default-matte arms at roughness 0.85 — well above
+///   `triangle.frag`'s `roughness < 0.6` reflection gate, so ice received no
+///   environment reflection and read as grey plaster.
+/// * [`contains_any_ci_word`] treats a *digit* as a word boundary, and
+///   Skyrim's Imperial-fort snow variants are named `impextwall01ice.dds` /
+///   `impwall05ice.dds` / `impextrubble01ice.dds` / `impextdecals01ice.dds`
+///   — `ice` preceded by a digit, followed by `.`. Those matched, so rough
+///   masonry resolved to glass-smooth roughness 0.10 and was additionally
+///   flagged by [`is_glass_keyword_path`].
+///
+/// The replacement accepts `ice` in the two positions real ice assets use,
+/// and in no others:
+///
+/// 1. **Path-component initial** — `\icefrozen01`, `\icecavewall01`. No
+///    ordinary English word begins a filename with `ice`, and a leading
+///    digit no longer opens the boundary, so `impwall05ice` is rejected.
+/// 2. **Followed by an ice noun** — catches the mid-name compounds like
+///    `dlc01icewalllod`.
+///
+/// The English collisions #2009 introduced the boundary for stay rejected,
+/// since none of them is component-initial or followed by an ice noun:
+/// `riftenlattice01`, `wrwoodlattice01`, `mageapprentice`,
+/// `blacksmithnovice`, `practicedummy01`, `sanspicedwine`, `dlc01chalice`,
+/// `birthsignapprentice01`, `sbitsandpices`.
+///
+/// Known residual: a name where `ice` is neither component-initial nor
+/// followed by an ice noun is still missed — `frozenmarshice01` (11
+/// instances of the ~1,783 genuine) is the only vanilla example found.
+/// Widening further would re-admit the trailing-`ice` English words.
+fn path_indicates_ice(path: &str) -> bool {
+    /// Nouns Bethesda concatenates directly after `ice`.
+    const ICE_NOUNS: &[&str] = &[
+        "cave", "wall", "rock", "frozen", "lake", "berg", "floe", "vine", "snow",
+    ];
+    let hs = path.as_bytes();
+    hs.windows(3).enumerate().any(|(i, w)| {
+        if !w.eq_ignore_ascii_case(b"ice") {
+            return false;
+        }
+        // 1. Component-initial: start of string, or straight after a path
+        //    separator. Deliberately NOT "any non-alphabetic", which is what
+        //    let a digit through.
+        let component_initial = i == 0 || hs[i - 1] == b'\\' || hs[i - 1] == b'/';
+        if component_initial {
+            return true;
+        }
+        // 2. Immediately followed by an ice noun.
+        let rest = &hs[i + 3..];
+        ICE_NOUNS.iter().any(|noun| {
+            let nb = noun.as_bytes();
+            rest.len() >= nb.len() && rest[..nb.len()].eq_ignore_ascii_case(nb)
+        })
+    })
+}
+
 pub fn is_glass_keyword_path(path: &str) -> bool {
     contains_any_ci(
         path,
         &["glass", "crystal", "window", "bottle", "jar", "vial"],
-    ) || contains_any_ci_word(path, &["ice", "gem"])
+    ) || path_indicates_ice(path)
+        || contains_any_ci_word(path, &["gem"])
 }
 
 pub fn classify_pbr_keyword(inputs: PbrClassifierInputs<'_>) -> PbrMaterial {
@@ -759,17 +828,20 @@ pub fn classify_pbr_keyword(inputs: PbrClassifierInputs<'_>) -> PbrMaterial {
     // and roughness is forced as a consequence of the GLASS classification
     // — never an alpha-unaware roughness guess here (which over-shone
     // opaque container surfaces, the reverted step-3 side effect).
-    // #2009 / MAT-D1-01 — "ice"/"gem" are word-boundary-checked
-    // (`contains_any_ci_word`), not plain substring: they're short
-    // enough to collide with ordinary English words that plausibly
-    // appear in legacy diffuse texture paths (office/notice/device/
-    // justice/invoice/spice/voice/twice/advice/entice/artifice/
-    // sacrifice/practice/police/juice/dice/slice for "ice"; management
-    // for "gem"). "glass"/"crystal" stay on the unbounded matcher —
+    // #2009 / MAT-D1-01 — "gem" is word-boundary-checked
+    // (`contains_any_ci_word`), not plain substring: it is short enough to
+    // collide with ordinary English words in legacy diffuse texture paths
+    // ("management"). "ice" had the same treatment until #3359 found the
+    // boundary was exactly inverted on Skyrim; it now goes through
+    // `path_indicates_ice`, which documents both failure directions.
+    // "glass"/"crystal" stay on the unbounded matcher —
     // they're long enough to have no such collisions, and Bethesda's
     // own concatenated-compound naming convention (`brokenglasssheet*`)
     // relies on the mid-word match still firing for them.
-    if contains_any_ci(path, &["glass", "crystal"]) || contains_any_ci_word(path, &["ice", "gem"]) {
+    if contains_any_ci(path, &["glass", "crystal"])
+        || path_indicates_ice(path)
+        || contains_any_ci_word(path, &["gem"])
+    {
         return PbrMaterial {
             roughness: 0.1,
             metalness: 0.0,
@@ -2000,6 +2072,110 @@ mod tests {
     /// #2591 (SKY-D7-03) — either a black color or a zero multiplier
     /// alone is sufficient to mark a contribution unauthored; both must
     /// be non-zero for "authored".
+    /// #3359 — every path here is transcribed from a census of the vanilla
+    /// Skyrim SE mesh archives. The classifier had these exactly backwards:
+    /// 0 of the genuine ice surfaces reached the glass arm, and 269
+    /// Imperial-fort stone draws did.
+    #[test]
+    fn skyrim_ice_surfaces_reach_the_glass_arm() {
+        let m = Material::default();
+        for path in [
+            r"textures\dungeons\caves\icefrozen01.dds",
+            r"textures\dungeons\caves\icefrozen02.dds",
+            r"textures\dungeons\caves\icecavesnowtrim01.dds",
+            r"textures\dungeons\caves\icecavewall01.dds",
+            r"textures\dungeons\caves\icecavewall04.dds",
+            r"textures\dungeons\caves\icecaverocks01.dds",
+            r"textures\dungeons\caves\icerock01.dds",
+            r"textures\dlc01\landscape\icewall01.dds",
+            r"textures\dlc01\landscape\icelakesurface.dds",
+            r"textures\dlc01\landscape\icelakesnowcracks.dds",
+            r"textures\dlc01\lod\dlc01icewalllod.dds",
+            r"textures\lod\iceberglargelod.dds",
+        ] {
+            assert!(
+                path_indicates_ice(path),
+                "{path} is a genuine ice surface and must reach the glass arm (#3359)"
+            );
+            assert_eq!(
+                classify(&m, path).roughness,
+                0.1,
+                "{path} must resolve glass-smooth, not matte stone (#3359)"
+            );
+            assert!(
+                is_glass_keyword_path(path),
+                "{path} must also register as a glass-keyword path"
+            );
+        }
+    }
+
+    /// The other direction: Imperial-fort snow variants are `ice` preceded
+    /// by a digit and followed by `.`. `contains_any_ci_word` treated the
+    /// digit as a word boundary and let rough masonry resolve to roughness
+    /// 0.10 — mirror-smooth stone walls.
+    #[test]
+    fn skyrim_imperial_fort_stone_does_not_reach_the_glass_arm() {
+        let m = Material::default();
+        for path in [
+            r"textures\dungeons\imperial\impextwall01ice.dds",
+            r"textures\dungeons\imperial\impwall05ice.dds",
+            r"textures\dungeons\imperial\impextrubble01ice.dds",
+            r"textures\dungeons\imperial\impextdecals01ice.dds",
+        ] {
+            assert!(
+                !path_indicates_ice(path),
+                "{path} is Imperial-fort masonry, not ice — a digit must not open \
+                 the boundary (#3359)"
+            );
+            assert_ne!(
+                classify(&m, path).roughness,
+                0.1,
+                "{path} must not resolve glass-smooth (#3359)"
+            );
+            assert!(
+                !is_glass_keyword_path(path),
+                "{path} must not be promoted through the glass-keyword path"
+            );
+        }
+    }
+
+    /// #2009's English collisions must stay rejected — that boundary existed
+    /// for a reason, and the #3359 replacement must not undo it.
+    #[test]
+    fn ordinary_english_ice_words_stay_rejected() {
+        for path in [
+            r"textures\architecture\riften\riftenlattice01.dds",
+            r"textures\clutter\wrwoodlattice01.dds",
+            r"textures\actors\character\mageapprentice\robes.dds",
+            r"textures\clutter\blacksmithnovice01.dds",
+            r"textures\clutter\practicedummy01.dds",
+            r"textures\clutter\sanspicedwine.dds",
+            r"textures\dlc01\clutter\dlc01chalice.dds",
+            r"textures\clutter\birthsignapprentice01.dds",
+            r"textures\clutter\sbitsandpices.dds",
+            // The FO3/FNV words #2009 named.
+            r"textures\interiors\office\officedesk01.dds",
+            r"textures\clutter\noticeboard.dds",
+            r"textures\clutter\justice01.dds",
+        ] {
+            assert!(
+                !path_indicates_ice(path),
+                "{path} is not ice — the #2009 collisions must stay rejected (#3359)"
+            );
+        }
+    }
+
+    /// `gem` keeps the symmetric word boundary it always had; only `ice`
+    /// changed.
+    #[test]
+    fn gem_keeps_its_word_boundary() {
+        assert!(is_glass_keyword_path(r"textures\clutter\gem01.dds"));
+        assert!(
+            !is_glass_keyword_path(r"textures\interface\management.dds"),
+            "'management' must not match 'gem' (#2009)"
+        );
+    }
+
     #[test]
     fn emissive_contribution_is_authored_requires_both_nonzero_color_and_mult() {
         assert!(emissive_contribution_is_authored([0.5, 0.5, 0.5], 1.25));
