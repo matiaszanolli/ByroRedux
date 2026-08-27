@@ -1,18 +1,31 @@
 #!/usr/bin/env bash
-# Playable-slice P2 core combat gate against the frozen Bleak Falls Draugr.
+# Playable-slice P2 core combat gate against a frozen actor fixture.
 #
 # Setup-only `combat.approach` repositions the real character capsule. Every
 # hit still enters through `input.press attack` -> ActionBindings/ActionState
 # -> camera ray -> actor-owned bone collider -> HitEvent -> Health/death.
+#
+# Game-parameterised (#3039): the cell, the frozen reference/base pair, the
+# weapon family and the target's Health all come from `fixtures/<game>.env`.
+# Pass the game as the first argument (or set `BYROREDUX_SMOKE_GAME`);
+# default `skyrim_se`.
+#
+#   docs/smoke-tests/p2-melee-core.sh                   # Skyrim SE
+#   docs/smoke-tests/p2-melee-core.sh fnv               # Fallout New Vegas
 
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/fixture.sh"
+smoke_load_fixture p2-melee-core "$@"
+smoke_require_fixture_fields \
+    P2_CELL P2_PROBE_CELL_LINE P2_PROBE_NPC_LINE P2_TARGET_NAME \
+    P2_TARGET_REFR_LINE P2_TARGET_HEALTH P2_BENCH_FRAMES
+
+ROOT_DIR="$SMOKE_ROOT_DIR"
 ENGINE_BIN="$ROOT_DIR/target/release/byroredux"
 DEBUG_BIN="$ROOT_DIR/target/release/byro-dbg"
-SKYRIM_DATA="${BYROREDUX_SKYRIM_DATA:-/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data}"
 PORT="${BYRO_DEBUG_PORT:-9876}"
-BENCH_FRAMES="${BYROREDUX_SMOKE_FRAMES:-5}"
+BENCH_FRAMES="${BYROREDUX_SMOKE_FRAMES:-$P2_BENCH_FRAMES}"
 TIMEOUT="${BYROREDUX_SMOKE_TIMEOUT:-360}"
 
 LOG_DIR="$(mktemp -d /tmp/byro-p2-melee-core.XXXXXX)"
@@ -37,16 +50,7 @@ fail() {
     exit 1
 }
 
-for required in \
-    "$SKYRIM_DATA/Skyrim.esm" \
-    "$SKYRIM_DATA/Skyrim - Meshes0.bsa" \
-    "$SKYRIM_DATA/Skyrim - Textures0.bsa" \
-    "$SKYRIM_DATA/Skyrim - Misc.bsa"; do
-    if [[ ! -f "$required" ]]; then
-        echo "smoke[p2-melee-core]: SKIP -- missing $required"
-        exit 77
-    fi
-done
+smoke_require_data
 
 if [[ ! -x "$ENGINE_BIN" || ! -x "$DEBUG_BIN" ]]; then
     echo "smoke[p2-melee-core]: building release binaries"
@@ -94,30 +98,27 @@ wait_for_pattern() {
 }
 
 echo "================================================================"
-echo "  smoke[p2-melee-core]: Bleak Falls Draugr melee death"
+echo "  smoke[p2-melee-core]: $FIXTURE_LABEL -- $P2_HEADLINE"
 echo "================================================================"
 
 cd "$ROOT_DIR"
 cargo run --quiet -p byroredux-plugin --example probe_combat_fixture -- \
-    "$SKYRIM_DATA/Skyrim.esm" BleakFallsBarrow01 >"$fixture_log" \
-    || fail "fixture preflight could not parse Skyrim.esm"
-grep -Fq "CELL BleakFallsBarrow01 form=000371DE" "$fixture_log" \
-    || fail "fixture CELL drifted from 000371DE"
-grep -Fq "NPC ref=000383F7 base=000E9895" "$fixture_log" \
-    || fail "fixture reference/base pair drifted from 000383F7/000E9895"
-grep -Fq "0001CB64:DraugrBattleAxe:damage=18" "$fixture_log" \
-    || fail "Draugr Battleaxe leaf 0001CB64 is absent from the fixture family"
-grep -Fq "000236A5:DraugrGreatsword:damage=17" "$fixture_log" \
-    || fail "Draugr Greatsword leaf 000236A5 is absent from the fixture family"
+    "$SMOKE_DATA/$FIXTURE_ESM" "$P2_CELL" >"$fixture_log" \
+    || fail "fixture preflight could not parse $FIXTURE_ESM"
+grep -Fq "$P2_PROBE_CELL_LINE" "$fixture_log" \
+    || fail "fixture CELL drifted from '$P2_PROBE_CELL_LINE'"
+grep -Fq "$P2_PROBE_NPC_LINE" "$fixture_log" \
+    || fail "fixture reference/base pair drifted from '$P2_PROBE_NPC_LINE'"
+for weapon in "${P2_PROBE_WEAPON_LINES[@]}"; do
+    grep -Fq "$weapon" "$fixture_log" \
+        || fail "weapon leaf $weapon is absent from the fixture family"
+done
 echo "smoke[p2-melee-core]: PASS -- frozen CELL/reference/base/weapon family preflight"
 
 env BYRO_DEBUG_PORT="$PORT" RUST_LOG="${BYROREDUX_SMOKE_LOG:-error}" \
     "$ENGINE_BIN" \
-    --esm "$SKYRIM_DATA/Skyrim.esm" \
-    --cell BleakFallsBarrow01 \
-    --bsa "$SKYRIM_DATA/Skyrim - Meshes0.bsa" \
-    --textures-bsa "$SKYRIM_DATA/Skyrim - Textures0.bsa" \
-    --scripts-bsa "$SKYRIM_DATA/Skyrim - Misc.bsa" \
+    "${SMOKE_ENGINE_ARGS[@]}" \
+    --cell "$P2_CELL" \
     --player \
     --radius 1 \
     --bench-frames "$BENCH_FRAMES" \
@@ -138,19 +139,18 @@ echo "smoke[p2-melee-core]: PASS -- engine reached held interactive state"
 debug_commands "entities Inventory" "$inventory_log" \
     || fail "could not list NPC inventory roots"
 mapfile -t candidates < <(
-    sed -nE 's/^ *Entity ([0-9]+) "encdraugr01ambushmelee2hheadm06".*/\1/p' \
-        "$inventory_log"
+    sed -nE "s/^ *Entity ([0-9]+) \"$P2_TARGET_NAME\".*/\1/p" "$inventory_log"
 )
 target=""
 for candidate in "${candidates[@]}"; do
     debug_commands "mesh.info $candidate" "$mesh_log" || continue
-    if grep -Fq "REFR FormID:       0x0383F7" "$mesh_log"; then
+    if grep -Fq "$P2_TARGET_REFR_LINE" "$mesh_log"; then
         target="$candidate"
         break
     fi
 done
-[[ -n "$target" ]] || fail "frozen reference 000383F7 was not found"
-echo "smoke[p2-melee-core]: PASS -- frozen reference 000383F7 resolved to entity $target"
+[[ -n "$target" ]] || fail "frozen reference '$P2_TARGET_REFR_LINE' was not found"
+echo "smoke[p2-melee-core]: PASS -- frozen reference resolved to entity $target"
 
 wait_for_pattern "player.status" "mode=Character" "$command_log" "Character mode is active"
 wait_for_pattern "combat.status" "attacks=0 hits=0 kills=0" "$status_log" "combat state starts clean"
@@ -159,8 +159,8 @@ wait_for_pattern "combat.status" "attacks=0 hits=0 kills=0" "$status_log" "comba
 # deal zero damage; the pre-fix HitEvent producer hardcoded blocked=false,
 # making combat_damage_system's zero-damage arm unreachable from any live
 # path. This runs before the real kill sequence below specifically because it
-# must NOT change the frozen Draugr's Health — the loop after it still starts
-# its expected_hits math from a clean 50.0.
+# must NOT change the frozen target's Health — the loop after it still starts
+# its expected_hits math from a clean P2_TARGET_HEALTH.
 #
 # The hold, approach, and swing are queued in one `byro-dbg` connection (a
 # frame budget just past what one such batch needs, not a second round-trip)
@@ -175,9 +175,17 @@ grep -Fq "input.press: queued action=Attack binding=R" "$command_log" \
     || fail "blocked swing did not enter through the normal Attack binding"
 wait_for_pattern "combat.status" "blocking=true attacks=1 hits=1 kills=0" "$status_log" \
     "swing thrown while blocking still lands as a hit"
+# #3039 — pin *which* actor the swing landed on. `combat.approach` only
+# places the capsule; the swing itself is a camera ray, so in a densely
+# populated cell it can land on a bystander standing between the player and
+# the approached reference. Without this the Health assertions below fail
+# with a misleading "Health changed" message when the real fault is that a
+# different actor was hit.
+grep -Fq "last_target=$target " "$status_log" \
+    || fail "the swing did not land on the fixture's target (entity $target); $(grep -oE 'last_target=[0-9]+' "$status_log" | tail -1)"
 grep -Fq "damage=0.0" "$status_log" \
     || fail "a blocked hit must deal zero damage"
-grep -Fq "health_before=50.0 health_after=50.0" "$status_log" \
+grep -Fq "health_before=$P2_TARGET_HEALTH health_after=$P2_TARGET_HEALTH" "$status_log" \
     || fail "a blocked hit must not change the target's Health"
 wait_for_pattern "combat.status" "cooldown=0.000" "$status_log" "blocked swing cooldown elapsed"
 # There is no console command to release a hold early — wait for the 40-frame
@@ -212,13 +220,13 @@ grep -Fq 'controls.bind.attack=key_r restart_required=false' "$settings_status_l
     || fail "settings.status did not expose the live Attack binding"
 echo "smoke[p2-melee-core]: PASS -- persistent settings registry is observable"
 
-expected_hits="$(awk -v health=50.0 -v damage="$loadout_damage" \
+expected_hits="$(awk -v health="$P2_TARGET_HEALTH" -v damage="$loadout_damage" \
     'BEGIN { print int((health + damage - 0.0001) / damage) }')"
-previous_health="50.0"
+previous_health="$P2_TARGET_HEALTH"
 # The #2976 blocked swing above already landed one hit (zero damage) before
 # this loop starts, so CombatState's cumulative attacks/hits counters are
 # offset by one from here on. Health is unaffected, so previous_health still
-# correctly starts clean at 50.0.
+# correctly starts clean at P2_TARGET_HEALTH.
 blocked_swing_count=1
 for hit in $(seq 1 "$expected_hits"); do
     debug_commands "combat.approach $target
@@ -253,8 +261,16 @@ total_hits=$((expected_hits + blocked_swing_count))
 grep -Fq "attacks=$total_hits hits=$total_hits kills=1" "$status_log" \
     || fail "final counters are not exactly $total_hits attacks / $total_hits hits / 1 kill"
 grep -Fq "killed=true" "$status_log" || fail "zero Health did not mark the kill"
-grep -Fq "ragdoll activated (18 bodies)" "$status_log" \
-    || fail "death did not activate the frozen Draugr's ragdoll"
+if [[ -n "${P2_RAGDOLL_BODIES:-}" ]]; then
+    grep -Fq "ragdoll activated ($P2_RAGDOLL_BODIES bodies)" "$status_log" \
+        || fail "death did not activate the frozen target's $P2_RAGDOLL_BODIES-body ragdoll"
+else
+    # The fixture has no measured body count yet. Still gate that a ragdoll
+    # activated at all — a missing count must not silently drop the check.
+    grep -Fq "ragdoll activated (" "$status_log" \
+        || fail "death did not activate the frozen target's ragdoll"
+    echo "smoke[p2-melee-core]: NOTE -- $SMOKE_GAME.env pins no ragdoll body count yet"
+fi
 
-echo "smoke[p2-melee-core]: PASS -- 50 Health -> $expected_hits bound attacks at $loadout_damage damage -> Dead -> 18-body ragdoll"
+echo "smoke[p2-melee-core]: PASS -- $P2_TARGET_HEALTH Health -> $expected_hits bound attacks at $loadout_damage damage -> Dead -> ragdoll"
 echo "smoke[p2-melee-core]: PASS"

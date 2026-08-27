@@ -10,6 +10,59 @@ invokes all three playable-slice scripts to pin that contract; the manually
 dispatched `Playable Smoke Gates` workflow runs the real gates on the
 `byroredux-game-data` self-hosted runner.
 
+## Playable-slice gates are game-parameterised (#3039)
+
+`p0-door-interaction.sh`, `p1-character-traversal.sh` and `p2-melee-core.sh`
+take the title as their first argument (or `BYROREDUX_SMOKE_GAME`), defaulting
+to `skyrim_se`:
+
+```bash
+docs/smoke-tests/p0-door-interaction.sh          # Skyrim SE (default)
+docs/smoke-tests/p0-door-interaction.sh fnv      # Fallout: New Vegas
+```
+
+Every game-specific value — data dir, archives, cell, camera pose, destination
+tokens, the exterior route, the frozen melee reference — lives in
+`fixtures/<game>.env`. Adding a title costs one fixture file, not three script
+copies. An unknown game exits `2` with a diagnostic, never `77`, so a
+misconfigured runner can't look like "data absent".
+
+Fixture values are *derived from the plugin*, not hand-tuned:
+
+```bash
+# doors, destinations, and a camera pose aimed at each (Y-up, paste-ready)
+cargo run -p byroredux-plugin --example probe_slice_fixture -- <ESM> <CELL>
+# the melee half: reference/base pair, derived Health, weapon leaves
+cargo run -p byroredux-plugin --example probe_combat_fixture -- <ESM> <CELL>
+```
+
+### FNV status (measured 2026-08-27, `cc666a48`)
+
+FNV is the project's reference title and had no playable-slice gate at all
+before #3039. The gates are landed **honestly red** where the engine is red —
+they were not weakened to pass:
+
+| Gate | FNV result | What it found |
+|------|-----------|---------------|
+| P0 door interaction | **PASS** | `[E] Open` prompt → KeyE → one `ActivateEvent` → `wastelandnv (-17,0)`, 3056 entities |
+| P1 character traversal | **FAIL** | The interior spawn lands the capsule *inside* the first door's collider (`distance=0.00`); 120 frames of `forward` move it ~40 units, `backward` ~42, and a `right` strafe drops it through the floor (`y 3523 → -8191`, `vertical_velocity=-2000`). The character controller cannot traverse the FNV bench-of-record interior. |
+| P2 melee core | **FAIL** | `combat.approach <target>` places the capsule but the swing is a camera ray, so in this crowded cell it lands on a bystander (`last_target=927`, GSSettlerCM) instead of the fixture's reference (entity `1088`, GSTrudy). The zero-damage blocked-swing arm itself is correct. |
+
+Skyrim was re-run on the same commit as a refactor control: **P0 and P1 pass
+end to end** (P1 including all ten fixture-driven route legs). **Skyrim P2 is
+RED for a reason that predates #3039** — `expand_leveled_form_id` no longer
+yields the `0001CB64:DraugrBattleAxe:damage=18` leaf for the frozen reference
+(only `000236A5:DraugrGreatsword:damage=17` and `0002C672:DraugrWarAxe:damage=9`
+survive), so the weapon-family preflight fails. The reference itself
+(`000383F7`/`000E9895`, `health=50.0`) is intact. The assertion is byte-identical
+to the pre-#3039 inline one, so this is an existing gate regression the fixture
+split neither caused nor hides.
+
+Note the FNV probe also shows `derive_npc_actor_values` returning 21 values
+with real Health (GSTrudy 240.0, GSSettlerCM 220.0), and live combat applying
+`220.0 → 212.0`. #2986's premise (FO3/FNV actors get no `ActorValues`) does not
+reproduce at this commit — re-verify it before working from it.
+
 ## Procedure shape
 
 All smoke tests follow the same workflow:
@@ -37,9 +90,9 @@ Inventory` returned nothing.
 
 | Script | Milestone | Verifies |
 |--------|-----------|----------|
-| [`p0-door-interaction.sh`](p0-door-interaction.sh) | Playable slice P0 close-out | Loads Skyrim's Bannered Mare at a deterministic camera pose, selects the authored XTEL exit, observes the native `[E] Open` prompt, injects one physical `KeyE` pulse through `ActionBindings`/`ActionState`, and requires exactly one canonical `ActivateEvent` plus a completed deferred transition to `WhiterunWorld (6,-2)`. The 2026-08-10 close-out run passed with 5,183 source-cell entities. |
-| [`p1-character-traversal.sh`](p1-character-traversal.sh) | Playable slice P1 traversal gate | Spawns the real character capsule in the Bannered Mare, walks away and back through binding-aware held input, activates both sides of the XTEL door, crosses `WhiterunWorld (6,-2) → (6,-3) → (6,-2)` through the Rapier KCC, and requires grounded control after the round trip. It uses a radius-1 exterior ring and deterministic `InputState` yaw; no camera/body teleport participates in the route. |
-| [`p2-melee-core.sh`](p2-melee-core.sh) | Playable slice P2 combat-core checkpoint | Preflights CELL `000371DE`, grounded reference/base `000383F7`/`000E9895`, and both Draugr weapon leaves; uses setup-only `combat.approach` to place the real character capsule on nearby authored collision; then requires `grounded=true` for every bound attack needed to reduce 50 Health to zero. Damage is derived from live `inventory.status` (authored `EquippedWeapon` or the documented unarmed fallback), not pinned to a literal. The gate also proves `settings.status` is live before requiring one `Dead` transition and the existing 18-body ragdoll. |
+| [`p0-door-interaction.sh`](p0-door-interaction.sh) | Playable slice P0 close-out | Game-parameterised (#3039). On Skyrim: loads the Bannered Mare at a deterministic camera pose, selects the authored XTEL exit, observes the native `[E] Open` prompt, injects one physical `KeyE` pulse through `ActionBindings`/`ActionState`, and requires exactly one canonical `ActivateEvent` plus a completed deferred transition to `WhiterunWorld (6,-2)`. The 2026-08-10 close-out run passed with 5,183 source-cell entities. |
+| [`p1-character-traversal.sh`](p1-character-traversal.sh) | Playable slice P1 traversal gate | Game-parameterised (#3039); the exterior route is a fixture array. On Skyrim: spawns the real character capsule in the Bannered Mare, walks away and back through binding-aware held input, activates both sides of the XTEL door, crosses `WhiterunWorld (6,-2) → (6,-3) → (6,-2)` through the Rapier KCC, and requires grounded control after the round trip. It uses a radius-1 exterior ring and deterministic `InputState` yaw; no camera/body teleport participates in the route. |
+| [`p2-melee-core.sh`](p2-melee-core.sh) | Playable slice P2 combat-core checkpoint | Game-parameterised (#3039). On Skyrim: preflights CELL `000371DE`, grounded reference/base `000383F7`/`000E9895`, and both Draugr weapon leaves; uses setup-only `combat.approach` to place the real character capsule on nearby authored collision; then requires `grounded=true` for every bound attack needed to reduce 50 Health to zero. Damage is derived from live `inventory.status` (authored `EquippedWeapon` or the documented unarmed fallback), not pinned to a literal. The gate also proves `settings.status` is live before requiring one `Dead` transition and the existing 18-body ragdoll. |
 | [`m-exteriors.sh`](m-exteriors.sh) | Exterior readiness EX-01 / EX-05 / EX-06 / EX-07 / EX-09 / EX-10 / EX-11 / EX-13 / EX-17 | Cross-game matrix for FNV WastelandNV, FO3 MegatonWorld, Oblivion/Skyrim Tamriel, and FO4 Commonwealth. `static` mode gates populated exterior captures; `boundary` mode drives the deterministic three-cell `grid-cross` path and additionally requires every full-detail and LOD handoff to settle without supersession, plus a `lod.coverage` gate (#2371, VWD follow-up): zero resident-quad overlaps, zero LOD-vs-full-detail overlaps, zero LOD-vs-VWD-REFR overlaps (the EXAL §5.2 culling rule, checked live), and zero terrain/object LOD keys that churned (left residency and later returned) across the traversal; and a `terrain.seams` gate (#2371 item 7): zero disagreeing shared-edge LAND height/normal vertices between adjacent resident cells — authored terrain shares byte-identical heightmap payloads at a seam, so any disagreement is a real authoring/merge defect, checked live, zero tolerance by design. `cycle` mode keeps one live world resident while driving sunrise/noon/night, capturing and image-gating every phase and requiring finite environment/pre-tonemap state plus nonzero canonical water at all three samples; Skyrim uses the established water-adjacent BleakfallsBarrowPath `(2,-10)` fixture in this mode. Debug artifacts include `water.dump` and `water.contacts` so plane/material/volume coverage and solver contact can be correlated with each retained image; render-only distant LOD water is reported as `lod-render-only` rather than an interaction-volume failure; leaked `#INT_MIN#`/FLT_MAX no-water sentinels are hard failures. Image health is gated at both ends: `r.health` for non-finite pixels after the scene is rendered (#2736) and `env.health` for the lighting/sky values that feed it (#2368), the latter retained per profile as `env-health.log`. |
 | `cargo run --release -p byroredux-scripting --example mq101_conformance` | MQ101 intro vertical-slice preflight | Production ESM/BSA/PEX paths recover the `MQ101` quest plus its typed `SCEN` timelines, aliases, phases, dialogue/package/timer actions, stage/scene-fragment bindings, attached properties, critical intro scripts, cart HKX files, and localized FUZ dialogue. Hard checks verify every scene actor, phase range, DIAL/PACK reference, SCEN-bound PEX asset, and construction of the live `SceneRegistry`/`ScenePlayer` shape. Also reports the exact share of bound quest fragments the current effect lowerer understands. This does not need Vulkan; it proves data ingress and orchestration-plan construction, not actor-alias spawning or dialogue/package execution. Pass a data-directory argument or set `BYROREDUX_SKYRIM_DATA` to override the default install path. |
 | [`r6a_stale_15_bench.sh`](r6a_stale_15_bench.sh) | R6a-stale-15 bench-of-record refresh | Canonical three-cell benchmark suite: Prospector Saloon (FNV synthesized collision), Whiterun (Skyrim control), MedTek (FO4 precombined). Collects FPS / wall_ms / fence_ms / brd_ms / entities / draws / IsCollisionOnly counts. Formats output for ROADMAP.md copy-paste. Enforces CWD rule (run from each game's `Data/` directory). |
@@ -125,6 +178,7 @@ falls back to the canonical Steam install paths:
 | `BYROREDUX_OBLIVION_DATA`   | `/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data`                                  |
 | `BYROREDUX_SKYRIM_DATA`     | `/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data`                    |
 | `BYROREDUX_FO4_DATA`        | `/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data`                                 |
+| `BYROREDUX_SMOKE_GAME`      | `skyrim_se` (playable-slice gate title; also the gates' first positional argument)        |
 | `BYRO_DEBUG_PORT`           | `9876`                                                                                   |
 | `BYROREDUX_SMOKE_FRAMES`    | `30` (static exterior and other smoke bench frames before hold)                           |
 | `BYROREDUX_BOUNDARY_FRAMES` | `900` (logical movement/capture frames; boundary settle holds are inserted)               |

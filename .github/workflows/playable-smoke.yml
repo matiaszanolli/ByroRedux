@@ -3,6 +3,14 @@ name: Playable Smoke Gates
 on:
   workflow_dispatch:
     inputs:
+      game:
+        description: Title to gate (#3039 — the gates are game-parameterised)
+        required: true
+        default: skyrim_se
+        type: choice
+        options:
+          - skyrim_se
+          - fnv
       gate:
         description: Playable-slice gate to execute
         required: true
@@ -16,7 +24,7 @@ on:
 
 jobs:
   smoke:
-    name: ${{ inputs.gate }}
+    name: ${{ inputs.game }} / ${{ inputs.gate }}
     runs-on: [self-hosted, linux, x64, byroredux-game-data]
     timeout-minutes: 90
     steps:
@@ -27,17 +35,19 @@ jobs:
         run: cargo build --release -p byroredux -p byro-dbg
       - name: Run requested gate
         env:
+          GAME: ${{ inputs.game }}
           BYROREDUX_SKYRIM_DATA: ${{ vars.BYROREDUX_SKYRIM_DATA }}
+          BYROREDUX_FNV_DATA: ${{ vars.BYROREDUX_FNV_DATA }}
         run: |
           run_gate() {
             local gate="$1"
             set +e
             xvfb-run -a --server-args="-screen 0 1280x720x24" \
-              "docs/smoke-tests/$gate.sh"
+              "docs/smoke-tests/$gate.sh" "$GAME"
             local status=$?
             set -e
             if (( status == 77 )); then
-              echo "::error::$gate skipped because Skyrim data is unavailable"
+              echo "::error::$gate skipped because $GAME data is unavailable"
               exit 1
             fi
             return "$status"

@@ -372,14 +372,18 @@ impl PackRecord {
 /// = always fires"). Unresolved packages are skipped by the caller (pass
 /// only resolved records, in order).
 ///
-/// `pub` (#2031 / PERF-D7-01) so a caller that needs more than one of the
-/// `active_package_is_*`/`active_*_location`/`active_*_target` projections
-/// below can resolve the winning package once and read `procedure_type` /
-/// `location` / `target` directly, instead of re-running this walk (which
-/// re-evaluates every rejected package's CTDA conditions) once per
-/// projection. An NPC's active package is a single winning `PackRecord` by
-/// construction, so every `active_package_is_*` call below against the
-/// same `(packages, hour, condition_met)` resolves to the same package.
+/// This is the *only* package selector (#3042). #2031 / PERF-D7-01
+/// collapsed the spawn tail onto a single resolve, and the seven
+/// `active_package_is_*` predicates plus the eight
+/// `active_*_location`/`active_*_target` accessors it replaced were deleted
+/// here — they had no remaining call site and `pub` visibility was
+/// suppressing the dead-code lint. Callers resolve the winning package once
+/// and read `procedure_type` / `location` / `target` (or `PackRecord::is_*`)
+/// straight off it, instead of re-running this walk — which re-evaluates
+/// every rejected package's CTDA conditions — once per projection. An NPC's
+/// active package is a single winning `PackRecord` by construction, so all
+/// those projections against the same `(packages, hour, condition_met)`
+/// resolved to the same package anyway.
 pub fn active_package<'a>(
     packages: impl IntoIterator<Item = &'a PackRecord>,
     hour: f32,
@@ -388,212 +392,6 @@ pub fn active_package<'a>(
     packages
         .into_iter()
         .find(|pk| pk.scheduled_active_at(hour) && condition_met(pk))
-}
-
-/// Whether an NPC's active package at `hour` (see [`active_package`]) is a
-/// Sandbox package. `condition_met` injects M47.1 CTDA evaluation (M42.2);
-/// pass `|_| true` for schedule-only selection.
-pub fn active_package_is_sandbox<'a>(
-    packages: impl IntoIterator<Item = &'a PackRecord>,
-    hour: f32,
-    condition_met: impl Fn(&PackRecord) -> bool,
-) -> bool {
-    active_package(packages, hour, condition_met).is_some_and(PackRecord::is_sandbox)
-}
-
-/// The PLDT location of an NPC's active package at `hour` (see
-/// [`active_package`]), when that package is Sandbox-type. `None` when the
-/// active package isn't Sandbox, carries no PLDT, or nothing is scheduled
-/// active. M42.1's seat system uses this to size its search radius around
-/// the authored center instead of a fixed guess. `condition_met` injects
-/// M47.1 CTDA evaluation (M42.2); pass `|_| true` for schedule-only.
-pub fn active_sandbox_location<'a>(
-    packages: impl IntoIterator<Item = &'a PackRecord>,
-    hour: f32,
-    condition_met: impl Fn(&PackRecord) -> bool,
-) -> Option<PackLocation> {
-    active_package(packages, hour, condition_met)
-        .filter(|pk| pk.is_sandbox())
-        .and_then(|pk| pk.location)
-}
-
-/// Whether an NPC's active package at `hour` (see [`active_package`]) is a
-/// Wander package (M42.3). `condition_met` injects M47.1 CTDA evaluation;
-/// pass `|_| true` for schedule-only selection. Mirrors
-/// [`active_package_is_sandbox`] — an NPC's active package is always a
-/// single winning `PackRecord`, so this and `active_package_is_sandbox`
-/// are naturally mutually exclusive for the same package list/hour.
-pub fn active_package_is_wander<'a>(
-    packages: impl IntoIterator<Item = &'a PackRecord>,
-    hour: f32,
-    condition_met: impl Fn(&PackRecord) -> bool,
-) -> bool {
-    active_package(packages, hour, condition_met).is_some_and(PackRecord::is_wander)
-}
-
-/// The PLDT location of an NPC's active package at `hour` (see
-/// [`active_package`]), when that package is Wander-type. `None` when the
-/// active package isn't Wander, carries no PLDT, or nothing is scheduled
-/// active. `wander_system` uses this to size its wander radius around the
-/// authored center instead of a fixed default. Mirrors
-/// [`active_sandbox_location`]. `condition_met` injects M47.1 CTDA
-/// evaluation; pass `|_| true` for schedule-only.
-pub fn active_wander_location<'a>(
-    packages: impl IntoIterator<Item = &'a PackRecord>,
-    hour: f32,
-    condition_met: impl Fn(&PackRecord) -> bool,
-) -> Option<PackLocation> {
-    active_package(packages, hour, condition_met)
-        .filter(|pk| pk.is_wander())
-        .and_then(|pk| pk.location)
-}
-
-/// Whether an NPC's active package at `hour` (see [`active_package`]) is a
-/// Travel package. Mirrors [`active_package_is_wander`]. `condition_met`
-/// injects M47.1 CTDA evaluation; pass `|_| true` for schedule-only.
-pub fn active_package_is_travel<'a>(
-    packages: impl IntoIterator<Item = &'a PackRecord>,
-    hour: f32,
-    condition_met: impl Fn(&PackRecord) -> bool,
-) -> bool {
-    active_package(packages, hour, condition_met).is_some_and(PackRecord::is_travel)
-}
-
-/// The PLDT location of an NPC's active package at `hour` (see
-/// [`active_package`]), when that package is Travel-type. `None` when the
-/// active package isn't Travel, carries no PLDT, or nothing is scheduled
-/// active. `travel_system` uses `PackLocation.radius` as its
-/// no-target-resolved fallback pick radius, and `PackLocation.target`
-/// (when it's `NearReference`) as the FormID to resolve to a live
-/// destination. Mirrors [`active_wander_location`]. `condition_met`
-/// injects M47.1 CTDA evaluation; pass `|_| true` for schedule-only.
-pub fn active_travel_location<'a>(
-    packages: impl IntoIterator<Item = &'a PackRecord>,
-    hour: f32,
-    condition_met: impl Fn(&PackRecord) -> bool,
-) -> Option<PackLocation> {
-    active_package(packages, hour, condition_met)
-        .filter(|pk| pk.is_travel())
-        .and_then(|pk| pk.location)
-}
-
-/// Whether an NPC's active package at `hour` (see [`active_package`]) is a
-/// Follow package. Mirrors [`active_package_is_travel`]. `condition_met`
-/// injects M47.1 CTDA evaluation; pass `|_| true` for schedule-only.
-pub fn active_package_is_follow<'a>(
-    packages: impl IntoIterator<Item = &'a PackRecord>,
-    hour: f32,
-    condition_met: impl Fn(&PackRecord) -> bool,
-) -> bool {
-    active_package(packages, hour, condition_met).is_some_and(PackRecord::is_follow)
-}
-
-/// The PTDT target of an NPC's active package at `hour` (see
-/// [`active_package`]), when that package is Follow-type. `None` when the
-/// active package isn't Follow, carries no PTDT, or nothing is scheduled
-/// active. Mirrors [`active_travel_location`]. `condition_met` injects
-/// M47.1 CTDA evaluation; pass `|_| true` for schedule-only.
-pub fn active_follow_target<'a>(
-    packages: impl IntoIterator<Item = &'a PackRecord>,
-    hour: f32,
-    condition_met: impl Fn(&PackRecord) -> bool,
-) -> Option<PackTarget> {
-    active_package(packages, hour, condition_met)
-        .filter(|pk| pk.is_follow())
-        .and_then(|pk| pk.target)
-}
-
-/// Whether an NPC's active package at `hour` (see [`active_package`]) is an
-/// Escort package (M42.6). Mirrors [`active_package_is_follow`].
-/// `condition_met` injects M47.1 CTDA evaluation; pass `|_| true` for
-/// schedule-only selection.
-pub fn active_package_is_escort<'a>(
-    packages: impl IntoIterator<Item = &'a PackRecord>,
-    hour: f32,
-    condition_met: impl Fn(&PackRecord) -> bool,
-) -> bool {
-    active_package(packages, hour, condition_met).is_some_and(PackRecord::is_escort)
-}
-
-/// The PTDT target (who to collect) of an NPC's active package at `hour`
-/// (see [`active_package`]), when that package is Escort-type. Mirrors
-/// [`active_follow_target`]. `condition_met` injects M47.1 CTDA evaluation;
-/// pass `|_| true` for schedule-only.
-pub fn active_escort_target<'a>(
-    packages: impl IntoIterator<Item = &'a PackRecord>,
-    hour: f32,
-    condition_met: impl Fn(&PackRecord) -> bool,
-) -> Option<PackTarget> {
-    active_package(packages, hour, condition_met)
-        .filter(|pk| pk.is_escort())
-        .and_then(|pk| pk.target)
-}
-
-/// The PLDT location (where to lead the target) of an NPC's active package
-/// at `hour` (see [`active_package`]), when that package is Escort-type.
-/// Mirrors [`active_travel_location`]. `condition_met` injects M47.1 CTDA
-/// evaluation; pass `|_| true` for schedule-only.
-pub fn active_escort_location<'a>(
-    packages: impl IntoIterator<Item = &'a PackRecord>,
-    hour: f32,
-    condition_met: impl Fn(&PackRecord) -> bool,
-) -> Option<PackLocation> {
-    active_package(packages, hour, condition_met)
-        .filter(|pk| pk.is_escort())
-        .and_then(|pk| pk.location)
-}
-
-/// Whether an NPC's active package at `hour` (see [`active_package`]) is a
-/// Guard package (M42.7). Mirrors [`active_package_is_travel`].
-/// `condition_met` injects M47.1 CTDA evaluation; pass `|_| true` for
-/// schedule-only selection.
-pub fn active_package_is_guard<'a>(
-    packages: impl IntoIterator<Item = &'a PackRecord>,
-    hour: f32,
-    condition_met: impl Fn(&PackRecord) -> bool,
-) -> bool {
-    active_package(packages, hour, condition_met).is_some_and(PackRecord::is_guard)
-}
-
-/// The PLDT location (the post to hold) of an NPC's active package at
-/// `hour` (see [`active_package`]), when that package is Guard-type.
-/// Mirrors [`active_travel_location`]. `condition_met` injects M47.1 CTDA
-/// evaluation; pass `|_| true` for schedule-only.
-pub fn active_guard_location<'a>(
-    packages: impl IntoIterator<Item = &'a PackRecord>,
-    hour: f32,
-    condition_met: impl Fn(&PackRecord) -> bool,
-) -> Option<PackLocation> {
-    active_package(packages, hour, condition_met)
-        .filter(|pk| pk.is_guard())
-        .and_then(|pk| pk.location)
-}
-
-/// Whether an NPC's active package at `hour` (see [`active_package`]) is a
-/// Patrol package (M42.8). Mirrors [`active_package_is_wander`] — v0
-/// Patrol reduces to the exact same algorithm (see [`PROCEDURE_PATROL`]'s
-/// doc). `condition_met` injects M47.1 CTDA evaluation; pass `|_| true`
-/// for schedule-only selection.
-pub fn active_package_is_patrol<'a>(
-    packages: impl IntoIterator<Item = &'a PackRecord>,
-    hour: f32,
-    condition_met: impl Fn(&PackRecord) -> bool,
-) -> bool {
-    active_package(packages, hour, condition_met).is_some_and(PackRecord::is_patrol)
-}
-
-/// The PLDT location of an NPC's active package at `hour` (see
-/// [`active_package`]), when that package is Patrol-type. Mirrors
-/// [`active_wander_location`]. `condition_met` injects M47.1 CTDA
-/// evaluation; pass `|_| true` for schedule-only.
-pub fn active_patrol_location<'a>(
-    packages: impl IntoIterator<Item = &'a PackRecord>,
-    hour: f32,
-    condition_met: impl Fn(&PackRecord) -> bool,
-) -> Option<PackLocation> {
-    active_package(packages, hour, condition_met)
-        .filter(|pk| pk.is_patrol())
-        .and_then(|pk| pk.location)
 }
 
 /// Remap a raw plugin-local FormID to global space, leaving 0 (no
@@ -967,6 +765,33 @@ pub fn parse_pack(
 mod tests {
     use super::*;
     use crate::esm::records::condition::Condition;
+
+    /// #3042 — the seven production `active_package_is_*` wrappers were
+    /// deleted as dead code (#2031 collapsed the spawn tail onto a single
+    /// `active_package` resolve and left them unreachable). Their coverage
+    /// is worth keeping: it pins the selector's priority / schedule / CTDA
+    /// gating and the by-construction mutual exclusivity of the procedure
+    /// classes. These test-local shims express exactly what the deleted
+    /// wrappers did, over the surviving `active_package` +
+    /// `PackRecord::is_*` pair the spawn tail actually calls.
+    macro_rules! active_package_is {
+        ($name:ident, $pred:ident) => {
+            fn $name<'a>(
+                packages: impl IntoIterator<Item = &'a PackRecord>,
+                hour: f32,
+                condition_met: impl Fn(&PackRecord) -> bool,
+            ) -> bool {
+                active_package(packages, hour, condition_met).is_some_and(PackRecord::$pred)
+            }
+        };
+    }
+    active_package_is!(active_package_is_sandbox, is_sandbox);
+    active_package_is!(active_package_is_wander, is_wander);
+    active_package_is!(active_package_is_travel, is_travel);
+    active_package_is!(active_package_is_follow, is_follow);
+    active_package_is!(active_package_is_escort, is_escort);
+    active_package_is!(active_package_is_guard, is_guard);
+    active_package_is!(active_package_is_patrol, is_patrol);
 
     fn sub(typ: &[u8; 4], data: &[u8]) -> SubRecord {
         SubRecord {
@@ -1812,51 +1637,48 @@ mod tests {
         assert!(active_package_is_patrol([&patrol_only], 10.0, |_| true));
     }
 
-    /// #2031 / PERF-D7-01 — `npc_spawn::spawn_npc_entity` collapsed 14
-    /// separate `active_package_is_*`/`active_*_location`/`active_*_target`
-    /// calls into a single `active_package(...)` resolve, then reads
-    /// `procedure_type`/`location`/`target` directly off the one resolved
-    /// package instead of re-deriving them through the per-procedure
-    /// getters. This pins the equivalence that refactor depends on: for a
-    /// Travel package (PLDT-only, mirrors Sandbox/Wander/Guard/Patrol's
-    /// location-only shape) and a Follow package (PTDT-only, mirrors
-    /// Escort's target-plus-location shape), a single `active_package` call
-    /// exposes the exact same `location`/`target` data the old
-    /// `active_travel_location`/`active_follow_target` getters would have
-    /// returned — so the refactor is not just "same procedure selected" but
-    /// "same location/target payload available from one resolve".
+    /// #2031 / PERF-D7-01 — `npc_spawn::spawn_npc_entity` collapsed the
+    /// per-procedure `active_package_is_*`/`active_*_location`/
+    /// `active_*_target` calls into a single `active_package(...)` resolve,
+    /// then reads `procedure_type`/`location`/`target` directly off the one
+    /// resolved package. #3042 deleted those getters outright, so there is
+    /// no longer a second implementation to compare against; what these two
+    /// tests pin is the property the spawn tail depends on — one resolve
+    /// carries the full payload. Travel is the PLDT-only shape (mirrors
+    /// Sandbox/Wander/Guard/Patrol); Follow is the PTDT-only shape (mirrors
+    /// Escort's target-plus-location).
     #[test]
-    fn active_package_single_resolve_exposes_same_location_as_travel_getter() {
+    fn active_package_single_resolve_exposes_travel_location_payload() {
         let mut p = pack(PROCEDURE_TRAVEL, None);
-        p.location = Some(PackLocation {
+        let authored = PackLocation {
             location_type: 0,
             target: PackLocationTarget::NearReference(0xDEAD_BEEF),
             radius: 512,
-        });
-        let via_getter = active_travel_location([&p], 10.0, |_| true);
+        };
+        p.location = Some(authored);
         let resolved = active_package([&p], 10.0, |_| true);
         assert_eq!(
             resolved.and_then(|pk| pk.location),
-            via_getter,
-            "single active_package resolve's .location must match active_travel_location"
+            Some(authored),
+            "single active_package resolve must carry the authored PLDT payload"
         );
         assert!(resolved.is_some_and(PackRecord::is_travel));
     }
 
     #[test]
-    fn active_package_single_resolve_exposes_same_target_as_follow_getter() {
+    fn active_package_single_resolve_exposes_follow_target_payload() {
         let mut p = pack(PROCEDURE_FOLLOW, None);
-        p.target = Some(PackTarget {
+        let authored = PackTarget {
             target_type: 0,
             target: PackTargetKind::SpecificReference(0xCAFE_F00D),
             count_or_distance: 128,
-        });
-        let via_getter = active_follow_target([&p], 10.0, |_| true);
+        };
+        p.target = Some(authored);
         let resolved = active_package([&p], 10.0, |_| true);
         assert_eq!(
             resolved.and_then(|pk| pk.target),
-            via_getter,
-            "single active_package resolve's .target must match active_follow_target"
+            Some(authored),
+            "single active_package resolve must carry the authored PTDT payload"
         );
         assert!(resolved.is_some_and(PackRecord::is_follow));
     }

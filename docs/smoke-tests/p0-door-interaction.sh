@@ -1,22 +1,33 @@
 #!/usr/bin/env bash
-# Playable-slice P0 close-out smoke: exercise a real Skyrim interior door
-# through the production interaction path.
+# Playable-slice P0 close-out smoke: exercise a real interior door through
+# the production interaction path.
 #
-# Fixture: WhiterunBanneredMare's vanilla XTEL exit. The camera pose is a
-# stable fly-camera preflight aimed at that authored door. FlyCam keeps the
-# targeting fixture deterministic; character traversal across the threshold
-# belongs to P1. `input.press activate` queues one KeyE pulse into the normal
-# ActionBindings/ActionState edge path -- it does not call activation or cell
-# transition code directly.
+# Game-parameterised (#3039): every cell / pose / destination literal comes
+# from `fixtures/<game>.env`. Pass the game as the first argument (or set
+# `BYROREDUX_SMOKE_GAME`); default `skyrim_se`.
+#
+#   docs/smoke-tests/p0-door-interaction.sh              # Skyrim SE
+#   docs/smoke-tests/p0-door-interaction.sh fnv          # Fallout New Vegas
+#
+# The camera pose is a stable fly-camera preflight aimed at the fixture's
+# authored XTEL door. FlyCam keeps the targeting fixture deterministic;
+# character traversal across the threshold belongs to P1. `input.press
+# activate` queues one KeyE pulse into the normal ActionBindings/ActionState
+# edge path -- it does not call activation or cell transition code directly.
 #
 # Gate:
-#   prompt -> KeyE edge -> ActivateEvent -> persistent exterior destination
-#   lookup -> deferred interior unload -> WhiterunWorld (6,-2) arrival.
+#   prompt -> KeyE edge -> ActivateEvent -> persistent destination lookup
+#   -> deferred interior unload -> arrival at the authored destination.
 
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-SKYRIM_DATA="${BYROREDUX_SKYRIM_DATA:-/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data}"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/fixture.sh"
+smoke_load_fixture p0-door-interaction "$@"
+smoke_require_fixture_fields \
+    P0_CELL P0_CAMERA_POS P0_CAMERA_FORWARD P0_TARGET_KIND P0_PROMPT \
+    P0_QUEUE_LOG P0_APPLIED_LOG P0_OUTCOME P0_ENTITY_FLOOR
+
+ROOT_DIR="$SMOKE_ROOT_DIR"
 PORT="${BYRO_DEBUG_PORT:-9876}"
 BENCH_FRAMES="${BYROREDUX_SMOKE_FRAMES:-30}"
 TIMEOUT="${BYROREDUX_SMOKE_TIMEOUT:-240}"
@@ -32,19 +43,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
-for required in \
-    "$SKYRIM_DATA/Skyrim.esm" \
-    "$SKYRIM_DATA/Skyrim - Meshes0.bsa" \
-    "$SKYRIM_DATA/Skyrim - Textures0.bsa" \
-    "$SKYRIM_DATA/Skyrim - Misc.bsa"; do
-    if [[ ! -f "$required" ]]; then
-        echo "smoke[p0-door-interaction]: SKIP -- missing $required"
-        exit 77
-    fi
-done
+smoke_require_data
 
 echo "================================================================"
-echo "  smoke[p0-door-interaction]: Bannered Mare -> WhiterunWorld"
+echo "  smoke[p0-door-interaction]: $FIXTURE_LABEL -- $P0_HEADLINE"
 echo "================================================================"
 
 engine_stdout="$LOG_DIR/engine.stdout"
@@ -57,14 +59,11 @@ cd "$ROOT_DIR"
 BYRO_DEBUG_PORT="$PORT" \
 RUST_LOG="warn,byroredux::interaction=info,byroredux::cell_loader::transition=info,byroredux::app_step=info" \
 cargo run --release --quiet -- \
-    --esm "$SKYRIM_DATA/Skyrim.esm" \
-    --cell WhiterunBanneredMare \
-    --bsa "$SKYRIM_DATA/Skyrim - Meshes0.bsa" \
-    --textures-bsa "$SKYRIM_DATA/Skyrim - Textures0.bsa" \
-    --scripts-bsa "$SKYRIM_DATA/Skyrim - Misc.bsa" \
+    "${SMOKE_ENGINE_ARGS[@]}" \
+    --cell "$P0_CELL" \
     --fly \
-    --camera-pos "-116,226,982" \
-    --camera-forward "0,-0.29,0.96" \
+    --camera-pos "$P0_CAMERA_POS" \
+    --camera-forward "$P0_CAMERA_FORWARD" \
     --bench-frames "$BENCH_FRAMES" \
     --bench-hold \
     >"$engine_stdout" 2>"$engine_stderr" &
@@ -103,8 +102,8 @@ require_in() {
     fi
 }
 
-require_in "$preflight_log" "kind=Door" "camera-forward target is a real XTEL door"
-require_in "$preflight_log" "prompt=[E] Open" "native interaction prompt is present"
+require_in "$preflight_log" "$P0_TARGET_KIND" "camera-forward target is a real XTEL door"
+require_in "$preflight_log" "$P0_PROMPT" "native interaction prompt is present"
 require_in "$preflight_log" "activations=0" "fixture starts without a stale activation edge"
 
 BYRO_DEBUG_PORT="$PORT" cargo run --release --quiet -p byro-dbg <<'EOF' >"$press_log" 2>&1 || true
@@ -117,9 +116,9 @@ require_in "$press_log" \
 
 deadline=$(( $(date +%s) + TIMEOUT ))
 while ! grep -F "Cell transition applied:" "$engine_stderr" \
-    | grep -Fq "exterior 'whiterunworld' (6,-2) at world"; do
+    | grep -Fq "$P0_APPLIED_LOG"; do
     if [[ $(date +%s) -gt $deadline ]]; then
-        echo "smoke[p0-door-interaction]: FAIL -- timeout waiting for exterior transition"
+        echo "smoke[p0-door-interaction]: FAIL -- timeout waiting for the authored transition"
         hard_fail=1
         break
     fi
@@ -132,8 +131,8 @@ while ! grep -F "Cell transition applied:" "$engine_stderr" \
 done
 
 # The transition temporarily drops the debug connection while the main thread
-# rebuilds the exterior scene. Reconnect after the applied log and inspect the
-# retained InteractionTrace.
+# rebuilds the destination scene. Reconnect after the applied log and inspect
+# the retained InteractionTrace.
 if (( hard_fail == 0 )); then
     BYRO_DEBUG_PORT="$PORT" cargo run --release --quiet -p byro-dbg <<'EOF' >"$arrival_log" 2>&1
 interaction.status
@@ -142,15 +141,15 @@ EOF
 fi
 
 require_in "$engine_stderr" \
-    "activated; queued exterior 'whiterunworld' (6,-2)" \
-    "door activation queued the persistent exterior destination"
+    "$P0_QUEUE_LOG" \
+    "door activation queued the persistent destination"
 require_in "$engine_stderr" \
-    "exterior 'whiterunworld' (6,-2) at world" \
-    "deferred orchestrator applied the exterior transition"
+    "$P0_APPLIED_LOG" \
+    "deferred orchestrator applied the transition"
 require_in "$arrival_log" "activations=1" "exactly one Activate edge was consumed"
 require_in "$arrival_log" "event_emitted=true" "canonical ActivateEvent was emitted"
 require_in "$arrival_log" \
-    "outcome=ActivateEvent emitted; queued exterior 'whiterunworld' (6,-2)" \
+    "$P0_OUTCOME" \
     "post-transition trace retained the successful outcome"
 
 bench_line="$(grep '^bench:' "$engine_stdout" | tail -1 || true)"
@@ -161,8 +160,8 @@ else
     echo "$bench_line"
     entities="$(echo "$bench_line" | grep -oE 'entities=[0-9]+' | head -1 | cut -d= -f2)"
     : "${entities:=0}"
-    if (( entities < 3000 )); then
-        echo "smoke[p0-door-interaction]: FAIL -- source entities=$entities < floor 3000"
+    if (( entities < P0_ENTITY_FLOOR )); then
+        echo "smoke[p0-door-interaction]: FAIL -- source entities=$entities < floor $P0_ENTITY_FLOOR"
         hard_fail=1
     else
         echo "smoke[p0-door-interaction]: PASS -- source cell populated ($entities entities)"
@@ -181,4 +180,4 @@ if (( hard_fail != 0 )); then
     exit "$hard_fail"
 fi
 
-echo "smoke[p0-door-interaction]: PASS -- prompt -> E -> ActivateEvent -> WhiterunWorld"
+echo "smoke[p0-door-interaction]: PASS -- prompt -> E -> ActivateEvent -> $P0_HEADLINE"

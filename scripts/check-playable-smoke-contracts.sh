@@ -12,7 +12,33 @@ fail() {
     exit 1
 }
 
-for name in p0-door-interaction p1-character-traversal p2-melee-core m48-menu-load; do
+# #3039 — the three playable-slice gates are game-parameterised. Every
+# shipped fixture must honour the SKIP != PASS contract, not just the
+# default game, or a title could be "covered" by a gate that silently
+# no-ops on the runner.
+mapfile -t GAMES < <(cd "$ROOT_DIR/docs/smoke-tests/fixtures" && ls ./*.env | sed 's|^\./||; s|\.env$||')
+(( ${#GAMES[@]} >= 2 )) \
+    || fail "expected at least the skyrim_se and fnv fixtures, found ${#GAMES[@]}"
+echo "playable-smoke-contracts: fixtures = ${GAMES[*]}"
+
+for name in p0-door-interaction p1-character-traversal p2-melee-core; do
+    smoke="$ROOT_DIR/docs/smoke-tests/$name.sh"
+    for game in "${GAMES[@]}"; do
+        set +e
+        output="$(BYROREDUX_SKYRIM_DATA="$MISSING_DATA" \
+            BYROREDUX_FNV_DATA="$MISSING_DATA" \
+            BYROREDUX_FO4_DATA="$MISSING_DATA" "$smoke" "$game" 2>&1)"
+        status=$?
+        set -e
+        [[ $status -eq 77 ]] \
+            || fail "$name[$game] missing-data path exited $status instead of SKIP=77"
+        grep -Fq "smoke[$name]: SKIP -- missing" <<<"$output" \
+            || fail "$name[$game] did not emit an explicit SKIP diagnostic"
+        echo "playable-smoke-contracts: PASS -- $name[$game] distinguishes SKIP from PASS"
+    done
+done
+
+for name in m48-menu-load; do
     smoke="$ROOT_DIR/docs/smoke-tests/$name.sh"
     set +e
     output="$(BYROREDUX_SKYRIM_DATA="$MISSING_DATA" BYROREDUX_FO4_DATA="$MISSING_DATA" "$smoke" 2>&1)"
@@ -24,6 +50,17 @@ for name in p0-door-interaction p1-character-traversal p2-melee-core m48-menu-lo
         || fail "$name did not emit an explicit SKIP diagnostic"
     echo "playable-smoke-contracts: PASS -- $name distinguishes SKIP from PASS"
 done
+
+# An unknown game must be a loud configuration error, never a SKIP that a CI
+# lane would read as "data absent, nothing to do".
+set +e
+output="$("$ROOT_DIR/docs/smoke-tests/p0-door-interaction.sh" no-such-game 2>&1)"
+status=$?
+set -e
+[[ $status -eq 2 ]] || fail "an unknown game exited $status instead of 2"
+grep -Fq "no fixture for game 'no-such-game'" <<<"$output" \
+    || fail "an unknown game did not name the missing fixture"
+echo "playable-smoke-contracts: PASS -- an unknown game fails loudly, not as SKIP"
 
 grep -Fq 'input.press: queued action=Activate binding=E' \
     "$ROOT_DIR/docs/smoke-tests/p0-door-interaction.sh" \
@@ -38,15 +75,23 @@ grep -Fq '"grounded=true"' "$ROOT_DIR/docs/smoke-tests/p2-melee-core.sh" \
     || fail "P2 no longer gates floor support"
 grep -Fq 'inventory.status' "$ROOT_DIR/docs/smoke-tests/p2-melee-core.sh" \
     || fail "P2 no longer derives damage from the live loadout"
-grep -Fq 'NPC ref=000383F7 base=000E9895' \
-    "$ROOT_DIR/docs/smoke-tests/p2-melee-core.sh" \
-    || fail "P2 no longer pins the grounded reference/base pair"
-grep -Fq '0001CB64:DraugrBattleAxe:damage=18' \
-    "$ROOT_DIR/docs/smoke-tests/p2-melee-core.sh" \
-    || fail "P2 no longer pins the Draugr Battleaxe leaf"
-grep -Fq '000236A5:DraugrGreatsword:damage=17' \
-    "$ROOT_DIR/docs/smoke-tests/p2-melee-core.sh" \
-    || fail "P2 no longer pins the Draugr Greatsword leaf"
+# Post-#3039 these live in the Skyrim fixture rather than inline in P2.
+SKYRIM_FIXTURE="$ROOT_DIR/docs/smoke-tests/fixtures/skyrim_se.env"
+grep -Fq 'NPC ref=000383F7 base=000E9895' "$SKYRIM_FIXTURE" \
+    || fail "the Skyrim fixture no longer pins the grounded reference/base pair"
+grep -Fq '0001CB64:DraugrBattleAxe:damage=18' "$SKYRIM_FIXTURE" \
+    || fail "the Skyrim fixture no longer pins the Draugr Battleaxe leaf"
+grep -Fq '000236A5:DraugrGreatsword:damage=17' "$SKYRIM_FIXTURE" \
+    || fail "the Skyrim fixture no longer pins the Draugr Greatsword leaf"
+
+# #3039 FNV — the reference title must keep a gate of its own. A fixture
+# that quietly drops back to Skyrim's cell would re-open the exact gap
+# FNV-2026-08-16-D8-01 reported.
+FNV_FIXTURE="$ROOT_DIR/docs/smoke-tests/fixtures/fnv.env"
+grep -Fq 'FIXTURE_ESM="FalloutNV.esm"' "$FNV_FIXTURE" \
+    || fail "the FNV fixture no longer targets FalloutNV.esm"
+grep -Fq 'NPC ref=00104C6D base=00104C6C' "$FNV_FIXTURE" \
+    || fail "the FNV fixture no longer pins its frozen reference/base pair"
 
 # #3273 — M48's gate is only meaningful while it asserts the route's positive
 # observable. A gate that merely checks "no error was logged" passes on a run

@@ -1,16 +1,29 @@
 #!/usr/bin/env bash
 # Playable-slice P1 traversal gate: drive a real CharacterController through
-# the Bannered Mare interior, both sides of its XTEL door, and an exterior
-# streaming boundary. Debug commands are deterministic input frontends only:
-# movement still flows through ActionBindings -> ActionState -> Rapier KCC,
-# and input.look writes the same yaw/pitch accumulator as mouse look.
+# an interior, both sides of its XTEL door, and an exterior streaming
+# boundary. Debug commands are deterministic input frontends only: movement
+# still flows through ActionBindings -> ActionState -> Rapier KCC, and
+# input.look writes the same yaw/pitch accumulator as mouse look.
+#
+# Game-parameterised (#3039): cell, camera pose, destination tokens and the
+# whole exterior route come from `fixtures/<game>.env`. Pass the game as the
+# first argument (or set `BYROREDUX_SMOKE_GAME`); default `skyrim_se`.
+#
+#   docs/smoke-tests/p1-character-traversal.sh          # Skyrim SE
+#   docs/smoke-tests/p1-character-traversal.sh fnv      # Fallout New Vegas
 
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/fixture.sh"
+smoke_load_fixture p1-character-traversal "$@"
+smoke_require_fixture_fields \
+    P1_CELL P1_CAMERA_POS P1_CAMERA_FORWARD P1_PROMPT P1_WALK_AWAY_FRAMES \
+    P1_WALK_BACK_FRAMES P1_OUTBOUND_LOG P1_ARRIVAL_GRID P1_RETURN_LOG \
+    P1_RETURN_OUTCOME P1_ENTITY_FLOOR P1_MIN_CROSSINGS
+
+ROOT_DIR="$SMOKE_ROOT_DIR"
 ENGINE_BIN="$ROOT_DIR/target/release/byroredux"
 DEBUG_BIN="$ROOT_DIR/target/release/byro-dbg"
-SKYRIM_DATA="${BYROREDUX_SKYRIM_DATA:-/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data}"
 PORT="${BYRO_DEBUG_PORT:-9876}"
 BENCH_FRAMES="${BYROREDUX_SMOKE_FRAMES:-30}"
 TIMEOUT="${BYROREDUX_SMOKE_TIMEOUT:-360}"
@@ -37,16 +50,7 @@ fail() {
     exit 1
 }
 
-for required in \
-    "$SKYRIM_DATA/Skyrim.esm" \
-    "$SKYRIM_DATA/Skyrim - Meshes0.bsa" \
-    "$SKYRIM_DATA/Skyrim - Textures0.bsa" \
-    "$SKYRIM_DATA/Skyrim - Misc.bsa"; do
-    if [[ ! -f "$required" ]]; then
-        echo "smoke[p1-character-traversal]: SKIP -- missing $required"
-        exit 77
-    fi
-done
+smoke_require_data
 
 if [[ ! -x "$ENGINE_BIN" || ! -x "$DEBUG_BIN" ]]; then
     echo "smoke[p1-character-traversal]: building release binaries"
@@ -197,6 +201,38 @@ move_until() {
     fail "$description did not reach $axis $comparison $target (last $axis=$current)"
 }
 
+# Drive one fixture-declared route leg. See the P1_ROUTE comment in
+# `fixtures/<game>.env` for the two leg forms.
+run_route_leg() {
+    local leg="$1"
+    local IFS='|'
+    # shellcheck disable=SC2206
+    local field=($leg)
+    unset IFS
+    case "${field[0]}" in
+        hold)
+            run_hold "${field[1]}" "${field[2]}" "${field[3]}"
+            if [[ -n "${field[4]:-}" ]]; then
+                grep -Fq "${field[4]}" "$status_log" \
+                    || fail "${field[3]} did not leave the player at ${field[4]}"
+                echo "smoke[p1-character-traversal]: PASS -- ${field[3]} reached ${field[4]}"
+            fi
+            ;;
+        until)
+            move_until "${field[1]}" "${field[2]}" "${field[3]}" "${field[4]}" \
+                "${field[6]}" "${field[5]}"
+            if [[ -n "${field[7]:-}" ]]; then
+                grep -Fq "${field[7]}" "$status_log" \
+                    || fail "${field[6]} did not leave the player at ${field[7]}"
+                echo "smoke[p1-character-traversal]: PASS -- ${field[6]} reached ${field[7]}"
+            fi
+            ;;
+        *)
+            fail "unknown P1_ROUTE leg form '${field[0]}' in $SMOKE_GAME.env"
+            ;;
+    esac
+}
+
 wait_for_engine_log() {
     local pattern="$1"
     local description="$2"
@@ -212,21 +248,18 @@ wait_for_engine_log() {
 }
 
 echo "================================================================"
-echo "  smoke[p1-character-traversal]: Bannered Mare round trip"
+echo "  smoke[p1-character-traversal]: $FIXTURE_LABEL -- $P1_HEADLINE"
 echo "================================================================"
 
 cd "$ROOT_DIR"
 env BYRO_DEBUG_PORT="$PORT" \
     RUST_LOG="error,byroredux::interaction=info,byroredux::cell_loader::transition=info,byroredux::app_step=info" \
     "$ENGINE_BIN" \
-    --esm "$SKYRIM_DATA/Skyrim.esm" \
-    --cell WhiterunBanneredMare \
-    --bsa "$SKYRIM_DATA/Skyrim - Meshes0.bsa" \
-    --textures-bsa "$SKYRIM_DATA/Skyrim - Textures0.bsa" \
-    --scripts-bsa "$SKYRIM_DATA/Skyrim - Misc.bsa" \
+    "${SMOKE_ENGINE_ARGS[@]}" \
+    --cell "$P1_CELL" \
     --player \
-    --camera-pos=-116,226,982 \
-    --camera-forward=0,-0.29,0.96 \
+    --camera-pos="$P1_CAMERA_POS" \
+    --camera-forward="$P1_CAMERA_FORWARD" \
     --radius 1 \
     --bench-frames "$BENCH_FRAMES" \
     --bench-hold \
@@ -236,72 +269,54 @@ engine_pid=$!
 wait_for_engine_log "bench-hold:" "engine reached the held interactive state"
 wait_for_debug_pattern "player.status" "mode=Character" "$status_log" "Character mode is active"
 wait_for_debug_pattern "player.status" "grounded=true" "$status_log" "interior spawn settled on the floor"
-wait_for_debug_pattern "interaction.status" "prompt=[E] Open" "$interaction_log" "interior XTEL prompt is reachable"
+wait_for_debug_pattern "interaction.status" "$P1_PROMPT" "$interaction_log" "interior XTEL prompt is reachable"
 
 # Prove free walking and a collision-stable return to the threshold before
-# using the door. The extra ten return frames account for the capsule nudge.
-run_hold forward 120 "interior walk-away"
+# using the door. The extra return frames account for the capsule nudge.
+run_hold forward "$P1_WALK_AWAY_FRAMES" "interior walk-away"
 debug_command "interaction.status" "$interaction_log"
 grep -Fq "target=none prompt=none" "$interaction_log" \
     || fail "interior walk-away did not leave the door's interaction volume"
-run_hold backward 130 "interior threshold return"
-wait_for_debug_pattern "interaction.status" "prompt=[E] Open" "$interaction_log" "door prompt recovered after walking"
+run_hold backward "$P1_WALK_BACK_FRAMES" "interior threshold return"
+wait_for_debug_pattern "interaction.status" "$P1_PROMPT" "$interaction_log" "door prompt recovered after walking"
 
 debug_command "input.press activate" "$command_log" || fail "could not activate the interior door"
 grep -Fq "input.press: queued action=Activate binding=E" "$command_log" \
     || fail "interior door activation bypassed the action binding"
-wait_for_engine_log \
-    "Cell transition applied: → exterior 'whiterunworld' (6,-2)" \
-    "interior-to-exterior transition completed"
-wait_for_debug_pattern "player.status" "grid=(6,-2)" "$status_log" "exterior arrival grid is correct"
+wait_for_engine_log "$P1_OUTBOUND_LOG" "interior-to-exterior transition completed"
+wait_for_debug_pattern "player.status" "$P1_ARRIVAL_GRID" "$status_log" "exterior arrival grid is correct"
 grep -Fq "grounded=true" "$status_log" || fail "exterior arrival was not grounded"
 
 # Freeze yaw through the same InputState accumulator mouse look owns, then
-# traverse authored collision. The route deliberately follows the open road
-# around Whiterun's static clutter rather than teleporting the capsule.
+# traverse authored collision. Every leg is a normal KCC step through held
+# gameplay input; no capsule teleport participates in the route.
 debug_command "input.look 0 0" "$command_log" || fail "could not seed traversal yaw"
 grep -Fq "yaw=0.0° pitch=0.0°" "$command_log" || fail "traversal yaw was not applied"
-run_hold left 700 "exterior road approach"
-run_hold backward 700 "outbound exterior boundary walk"
-grep -Fq "grid=(6,-3)" "$status_log" \
-    || fail "character did not cross from exterior grid (6,-2) to (6,-3)"
-move_until forward z le 8050 "inbound exterior boundary walk" 30
-grep -Fq "grid=(6,-2)" "$status_log" \
-    || fail "character did not return from exterior grid (6,-3) to (6,-2)"
-
-# Collision-stable authored-road waypoints back to the Bannered Mare door.
-# Coordinate gates make the route independent of renderer FPS while every
-# translation remains a normal KCC step through held gameplay input.
-move_until forward z le 7600 "return road south leg" 30
-move_until right x ge 25120 "return road east leg one" 50
-move_until backward z ge 7700 "return road north jog" 30
-move_until right x ge 25420 "return road east leg two" 50
-move_until forward z le 7550 "return road south jog" 30
-move_until right x ge 25620 "return road east leg three" 50
-move_until backward z ge 7670 "reverse-door approach" 30
-wait_for_debug_pattern "interaction.status" "prompt=[E] Open" "$interaction_log" "reverse exterior door prompt is reachable"
+for leg in "${P1_ROUTE[@]}"; do
+    run_route_leg "$leg"
+done
+wait_for_debug_pattern "interaction.status" "$P1_PROMPT" "$interaction_log" "reverse exterior door prompt is reachable"
 
 debug_command "input.press activate" "$command_log" || fail "could not activate the reverse door"
 grep -Fq "input.press: queued action=Activate binding=E" "$command_log" \
     || fail "reverse door activation bypassed the action binding"
-wait_for_engine_log \
-    "Cell transition applied: → interior 'WhiterunBanneredMare'" \
-    "exterior-to-interior transition completed"
+wait_for_engine_log "$P1_RETURN_LOG" "exterior-to-interior transition completed"
 wait_for_debug_pattern "player.status" "mode=Character" "$status_log" "character control survived the round trip"
 wait_for_debug_pattern "player.status" "grounded=true" "$status_log" "round-trip interior arrival settled on the floor"
 wait_for_debug_pattern "interaction.status" "activations=2" "$interaction_log" "exactly two door activations were consumed"
-grep -Fq "queued interior 'WhiterunBanneredMare'" "$interaction_log" \
+grep -Fq "$P1_RETURN_OUTCOME" "$interaction_log" \
     || fail "reverse-door outcome was not retained"
 
 crossings="$(grep -Fc "Player crossed cell boundary" "$engine_stderr" || true)"
-(( crossings >= 2 )) || fail "streaming telemetry reported only $crossings boundary crossings"
+(( crossings >= P1_MIN_CROSSINGS )) \
+    || fail "streaming telemetry reported only $crossings boundary crossings"
 echo "smoke[p1-character-traversal]: PASS -- streaming observed $crossings boundary crossings"
 
 bench_line="$(grep '^bench:' "$engine_stdout" | tail -1 || true)"
 [[ -n "$bench_line" ]] || fail "bench summary missing"
 entities="$(grep -oE 'entities=[0-9]+' <<<"$bench_line" | head -1 | cut -d= -f2)"
 : "${entities:=0}"
-(( entities >= 3000 )) || fail "source cell populated only $entities entities"
+(( entities >= P1_ENTITY_FLOOR )) || fail "source cell populated only $entities entities"
 if grep -Eiq 'panicked at|VUID-|validation error|ERROR.*Vulkan|Vulkan.*ERROR' \
     "$engine_stdout" "$engine_stderr"; then
     fail "panic or Vulkan validation error appeared in engine logs"

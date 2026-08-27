@@ -693,8 +693,8 @@ fn npc_undersized_fmrs_is_dropped() {
 /// a remap at all, so `PKID`/`RNAM`/`CNAM` stayed plugin-local and any
 /// multi-plugin load silently failed every `index.packages.get(pk)` /
 /// `index.races.get(...)` / `index.classes.get(...)` lookup for an
-/// override-plugin NPC — e.g. `active_package_is_sandbox` always
-/// returning `false` for that NPC's sandbox packages.
+/// override-plugin NPC — e.g. the spawn tail's `active_package`
+/// resolve always coming back empty for that NPC's packages.
 #[test]
 fn npc_embedded_form_ids_remap_to_global_space() {
     // Plugin slot 2, one master at slot 0 (mirrors
@@ -727,8 +727,8 @@ fn npc_embedded_form_ids_remap_to_global_space() {
         vec![(2u32 << 24) | 0x0000_1234],
         "self-referential PKID must resolve to the plugin's own \
              global slot (2), not stay at its local self-ref top byte (1) — \
-             this is the exact field `active_package_is_sandbox` looks up \
-             via `index.packages.get(pk)`"
+             this is the exact field the spawn tail looks up via \
+             `index.packages.get(pk)` before `active_package`"
     );
 }
 
