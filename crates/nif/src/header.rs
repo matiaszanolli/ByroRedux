@@ -354,9 +354,16 @@ fn read_u32_le(cursor: &mut Cursor<&[u8]>) -> io::Result<u32> {
 /// `target_endian = "big"` compile-error gate at the top of `stream.rs`
 /// covers the whole crate.
 ///
-/// Caller is responsible for the byte-budget bounds check on
-/// `count * size_of::<T>()` — every header call site already does
-/// this against `total_bytes - cursor.position()` (see #388).
+/// The byte-budget bounds check on `count * size_of::<T>()` is applied
+/// **internally** via [`check_header_alloc`], mirroring what
+/// `NifStream::read_pod_vec` does with `check_alloc` for the post-header
+/// arrays. It used to be a caller contract — every call site checking
+/// `total_bytes - cursor.position()` itself (#388) — which meant a new
+/// caller that forgot the check would `vec![T::default(); count]` up to
+/// ~4 GB before `read_exact` failed. #2272 moved the guard in here so it
+/// can't be forgotten. The call-site checks are kept: they carry a
+/// count-specific diagnostic ("claims N blocks but only M bytes remain")
+/// that the generic byte-count message can't reproduce.
 fn read_pod_vec_from_cursor<T: crate::stream::AnyBitPattern>(
     cursor: &mut Cursor<&[u8]>,
     count: usize,
@@ -370,6 +377,11 @@ fn read_pod_vec_from_cursor<T: crate::stream::AnyBitPattern>(
             ),
         )
     })?;
+    // #2272 — gate the allocation here rather than trusting each caller.
+    // `check_header_alloc` derives the remaining budget from the cursor
+    // itself, which is exactly the `total_bytes - position` the call sites
+    // compute, and additionally applies the 256 MB hard cap.
+    check_header_alloc(byte_count, cursor)?;
     let mut out: Vec<T> = vec![T::default(); count];
     // SAFETY: same invariants as `NifStream::read_pod_vec` —
     // `out.as_mut_ptr()` is non-null, the region is exactly
@@ -462,6 +474,33 @@ mod tests {
         assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
         // A plausible in-bounds length is accepted.
         assert!(check_header_alloc(8, &cursor).is_ok());
+    }
+
+    #[test]
+    fn read_pod_vec_from_cursor_rejects_oversized_count_without_caller_guard() {
+        // #2272 — the guard used to be a caller contract. This exercises the
+        // helper the way a *new* call site that forgot the preceding
+        // `total_bytes - position` check would: straight in with a count off
+        // a corrupt header field. It must fail before the allocation, not
+        // `vec![T::default(); count]` first and fault at `read_exact`.
+        let data = vec![0u8; 16];
+
+        // ~4 GB (u32::MAX u32s) — past the 256 MB hard cap.
+        let mut cursor = Cursor::new(data.as_slice());
+        let err = read_pod_vec_from_cursor::<u32>(&mut cursor, u32::MAX as usize).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+
+        // Under the cap but past the bytes remaining → clean EOF, no alloc.
+        let mut cursor = Cursor::new(data.as_slice());
+        let err = read_pod_vec_from_cursor::<u16>(&mut cursor, 64).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+
+        // An in-bounds count still reads normally — the guard is not a
+        // blanket rejection.
+        let mut cursor = Cursor::new(data.as_slice());
+        let v = read_pod_vec_from_cursor::<u16>(&mut cursor, 8).unwrap();
+        assert_eq!(v.len(), 8);
+        assert_eq!(cursor.position(), 16);
     }
 
     #[test]
