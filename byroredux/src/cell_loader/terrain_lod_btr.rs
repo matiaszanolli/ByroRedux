@@ -140,6 +140,35 @@ pub(crate) fn btr_normal_path(worldspace_key: &str, level: i32, qx: i32, qy: i32
     format!("textures\\terrain\\{w}\\{w}.{level}.{qx}.{qy}_n.dds")
 }
 
+/// Whether this `.btr` sub-mesh hangs off the authored `WATER` node.
+///
+/// #3363 — the discriminator is already in `ImportedScene.nodes`: the water
+/// plate's parent `BSMultiBoundNode` is named `WATER`, the land sub-tree's is
+/// named `chunk`. Walks the full parent chain rather than only the immediate
+/// parent, so a deeper `WATER` sub-tree is still caught.
+fn btr_mesh_is_water(
+    nodes: &[byroredux_nif::import::ImportedNode],
+    parent_node: Option<usize>,
+) -> bool {
+    let mut node = parent_node;
+    // Bounded by the node count: a malformed cyclic parent chain must not
+    // spin here.
+    for _ in 0..nodes.len() {
+        let Some(idx) = node else { return false };
+        let Some(n) = nodes.get(idx) else {
+            return false;
+        };
+        if n.name
+            .as_deref()
+            .is_some_and(|name| name.eq_ignore_ascii_case("WATER"))
+        {
+            return true;
+        }
+        node = n.parent_node;
+    }
+    false
+}
+
 /// Map a `.btr`'s quad-local Y-up vertex into world space for the level-`level`
 /// quad whose SW-corner cell is `(qx, qy)`. The mesh is normalized to a unit
 /// 4096-BU square carrying a uniform authored scale of `level`, so all three
@@ -223,6 +252,27 @@ pub(crate) fn spawn_btr_block(
     let mut indices: Vec<u32> = Vec::new();
     for mesh in &imported.meshes {
         if mesh.positions.is_empty() || mesh.indices.is_empty() {
+            continue;
+        }
+        // #3363 — a vanilla `.btr` is not one surface. Alongside the
+        // `chunk`/`land` sub-tree it ships a separate `WATER`
+        // `BSMultiBoundNode` carrying a flat water plate (1,937 of Tamriel's
+        // 3,060 quads have one). Welding that into the opaque land buffer
+        // rasterised it as ground with the terrain diffuse bound, covering
+        // the lake/sea bed beneath it, and it never reached the water pass —
+        // a WATAL boundary violation.
+        //
+        // It also z-fights: the engine already draws a worldspace-wide LOD
+        // water frame over the same annulus at the worldspace's DNAM height
+        // (`spawn_lod_water_plane`, #2449), and since #3358 put these plates
+        // at their true authored heights the two are coplanar.
+        //
+        // Dropped rather than routed to WATAL: distant water is already
+        // owned by `spawn_lod_water_plane`. Handing these to WATAL as
+        // per-quad LOD water would additionally represent lakes above sea
+        // level, which the single-height frame cannot express — worth doing,
+        // but a feature, not this fix.
+        if btr_mesh_is_water(&imported.nodes, mesh.parent_node) {
             continue;
         }
         let base = vertices.len() as u32;
@@ -473,6 +523,68 @@ mod tests {
         // corner sits exactly where quad `4.0.-4`'s east edge ended.
         let adj_sw = btr_local_to_world([0.0, 0.0, 0.0], 4, 4, -4);
         assert_eq!(adj_sw[0], 4.0 * cell); // = ne[0], no gap/overlap
+    }
+
+    /// Build an `ImportedNode` with just a name + parent; every other field
+    /// is inert for the `WATER` discriminator.
+    fn node(name: Option<&str>, parent: Option<usize>) -> byroredux_nif::import::ImportedNode {
+        byroredux_nif::import::ImportedNode {
+            name: name.map(std::sync::Arc::from),
+            translation: [0.0; 3],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale: 1.0,
+            parent_node: parent,
+            collision: None,
+            billboard_mode: None,
+            tree_bones: None,
+            range_kind: None,
+            flags: 0,
+            bs_value_node: None,
+            bs_ordered_node: None,
+            lod_group: None,
+        }
+    }
+
+    /// #3363 — the shipped `.btr` shape: a `chunk` sub-tree holding `land`,
+    /// and a sibling `WATER` node holding a flat plate. Only the latter is
+    /// water; welding it into the land buffer drew it as opaque ground and
+    /// (since #3358 put it at its true height) z-fought the LOD water frame.
+    #[test]
+    fn btr_water_submesh_is_identified_by_its_parent_node() {
+        let nodes = vec![node(Some("chunk"), None), node(Some("WATER"), Some(0))];
+        // mesh[0] 'land' hangs off `chunk`; mesh[1] hangs off `WATER`.
+        assert!(!btr_mesh_is_water(&nodes, Some(0)), "land must be kept");
+        assert!(btr_mesh_is_water(&nodes, Some(1)), "WATER must be skipped");
+    }
+
+    /// Case-insensitive, and found through a deeper chain rather than only
+    /// the immediate parent.
+    #[test]
+    fn btr_water_detection_walks_the_parent_chain_case_insensitively() {
+        let nodes = vec![
+            node(Some("chunk"), None),
+            node(Some("water"), Some(0)),
+            node(Some("sub"), Some(1)),
+        ];
+        assert!(btr_mesh_is_water(&nodes, Some(2)));
+        assert!(btr_mesh_is_water(&nodes, Some(1)));
+        assert!(!btr_mesh_is_water(&nodes, Some(0)));
+    }
+
+    /// An unparented or dangling mesh is land, and a cyclic parent chain
+    /// must terminate rather than spin.
+    #[test]
+    fn btr_water_detection_is_total() {
+        let nodes = vec![node(Some("chunk"), None)];
+        assert!(!btr_mesh_is_water(&nodes, None), "no parent → land");
+        assert!(
+            !btr_mesh_is_water(&nodes, Some(99)),
+            "dangling index → land"
+        );
+
+        // Two nodes pointing at each other: bounded by the node count.
+        let cyclic = vec![node(Some("a"), Some(1)), node(Some("b"), Some(0))];
+        assert!(!btr_mesh_is_water(&cyclic, Some(0)));
     }
 
     /// #3358 — the cross-band agreement that proves the scale belongs on Y.
