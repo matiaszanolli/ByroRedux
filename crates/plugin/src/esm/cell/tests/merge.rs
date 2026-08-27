@@ -672,3 +672,135 @@ fn merge_from_worldspaces_last_write_wins() {
     assert_eq!(sc.parent_worldspace, Some(0x0000_003C));
     assert_eq!(master.worldspaces.len(), 2);
 }
+
+/// #3362 — a REFR is a globally-unique FormID, so a tombstone authored under
+/// a DIFFERENT CELL than the base placement must still remove it. Pre-fix
+/// `merge_cell_references` only applied a cell's `deleted_refs` against that
+/// same cell's base references, so the `retain` matched nothing and the
+/// object stayed resident.
+///
+/// This is the shape of HearthFires deleting `0010C205` (a cooking pot) under
+/// cell `00016778` while `Skyrim.esm` placed it in `00016A06` — the pot still
+/// spawned in Proudspire Manor. 5 of 202 vanilla tombstones hit this hole.
+#[test]
+fn a_tombstone_authored_under_another_cell_still_removes_the_refr() {
+    let mut master = EsmCellIndex::default();
+    master.cells.insert(
+        "proudspiremanor".into(),
+        cell_with_refs(
+            "SolitudeProudspireManor",
+            vec![placed(0x0010_C205, 0x0010_10B3), placed(0x10, 0xAA)],
+        ),
+    );
+
+    // The DLC tombstones the pot under a completely different cell.
+    let mut elsewhere = make_interior_cell(0x0001_6778, "SomeOtherCell");
+    elsewhere.deleted_refs = vec![0x0010_C205];
+    let mut child = EsmCellIndex::default();
+    child.cells.insert("someothercell".into(), elsewhere);
+
+    master.merge_from(child);
+
+    let cell = master.cells.get("proudspiremanor").unwrap();
+    let ids: std::collections::HashSet<u32> = cell.references.iter().map(|r| r.form_id).collect();
+    assert_eq!(
+        ids,
+        [0x10].into_iter().collect(),
+        "a cross-cell tombstone must remove the placement wherever it lives (#3362)"
+    );
+}
+
+/// The same, across the exterior / persistent maps rather than interiors —
+/// two of the five vanilla survivors cross the persistent(8) -> temporary(9)
+/// group boundary.
+#[test]
+fn a_cross_cell_tombstone_reaches_exterior_and_persistent_cells() {
+    let mut master = EsmCellIndex::default();
+    let mut ext = cell_with_refs("Tamriel", vec![placed(0x000D_DD36, 0x0002_BCA7)]);
+    ext.is_interior = false;
+    master
+        .exterior_cells
+        .entry("tamriel".into())
+        .or_default()
+        .insert((-39, 2), ext);
+    master.worldspace_persistent_cells.insert(
+        "tamriel".into(),
+        cell_with_refs("TamrielPersistent", vec![placed(0x000C_E60D, 0x0001_40BD)]),
+    );
+
+    let mut over = make_interior_cell(0x0000_BC34, "UnrelatedCell");
+    over.deleted_refs = vec![0x000D_DD36, 0x000C_E60D];
+    let mut child = EsmCellIndex::default();
+    child.cells.insert("unrelatedcell".into(), over);
+
+    master.merge_from(child);
+
+    assert!(
+        master.exterior_cells["tamriel"][&(-39, 2)]
+            .references
+            .is_empty(),
+        "exterior placement must be removed by a cross-cell tombstone (#3362)"
+    );
+    assert!(
+        master.worldspace_persistent_cells["tamriel"]
+            .references
+            .is_empty(),
+        "persistent placement must be removed by a cross-cell tombstone (#3362)"
+    );
+}
+
+/// Load order still wins: a plugin that both tombstones a FormID and
+/// re-places it keeps its own placement, and a LATER plugin re-placing a
+/// FormID an earlier one deleted un-deletes it. The cross-cell sweep must
+/// not break either.
+#[test]
+fn a_replacement_in_the_same_or_a_later_plugin_survives_the_sweep() {
+    // Distinct FormIDs: `merge_from` keys interior cells by form_id, so
+    // reusing `cell_with_refs`'s fixed id would collapse them.
+    let with_id = |form_id: u32, edid: &str, refs: Vec<PlacedRef>| {
+        let mut c = make_interior_cell(form_id, edid);
+        c.references = refs;
+        c
+    };
+
+    // Same plugin: deletes 0x11 under cell C, re-places it in cell B.
+    let mut master = EsmCellIndex::default();
+    master.cells.insert(
+        "cella".into(),
+        with_id(0xA1, "CellA", vec![placed(0x11, 0xBB)]),
+    );
+
+    let mut deleter = make_interior_cell(0xC1, "CellC");
+    deleter.deleted_refs = vec![0x11];
+    let mut child = EsmCellIndex::default();
+    child.cells.insert("cellc".into(), deleter);
+    child.cells.insert(
+        "cellb".into(),
+        with_id(0xB1, "CellB", vec![placed(0x11, 0xDEAD)]),
+    );
+
+    master.merge_from(child);
+
+    assert!(
+        master.cells["cella"].references.is_empty(),
+        "the old placement is removed"
+    );
+    assert_eq!(
+        master.cells["cellb"].references.len(),
+        1,
+        "the same plugin's own re-placement must survive its own tombstone (#3362)"
+    );
+
+    // Later plugin re-places what an earlier one deleted.
+    let mut third = EsmCellIndex::default();
+    third.cells.insert(
+        "cella".into(),
+        with_id(0xA1, "CellA", vec![placed(0x11, 0xCC)]),
+    );
+    master.merge_from(third);
+    assert_eq!(
+        master.cells["cella"].references.len(),
+        1,
+        "a later plugin re-placing a deleted FormID un-deletes it"
+    );
+}

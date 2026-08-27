@@ -1316,6 +1316,52 @@ impl EsmCellIndex {
     ///
     /// See M46.0 / #561.
     pub fn merge_from(&mut self, other: EsmCellIndex) {
+        // #3362 — a REFR is a globally-unique FormID: deleting it removes the
+        // object wherever it lives, and the CELL GRUP the tombstone happens
+        // to be authored under is not part of its identity.
+        //
+        // `merge_cell_references` only ever applies a cell's own
+        // `deleted_refs` against that same cell's base references, so a
+        // tombstone authored under a DIFFERENT cell than the base placement
+        // matched nothing and the object stayed resident. Bethesda's own DLCs
+        // do this routinely — a REFR moved across a cell boundary before
+        // being deleted, or a home interior a later master re-authored. On a
+        // full Skyrim SE + 3 DLC load, 197 of 202 tombstones were honoured
+        // and 5 were not; the user-visible one is HearthFires deleting a
+        // cooking pot from Proudspire Manor, which still spawned.
+        //
+        // Applied BEFORE the per-cell merge loops, while `self` still holds
+        // only earlier plugins' data. That is what makes load order come out
+        // right with no special-casing: the tombstone clears what came
+        // before, and anything this plugin (or a later one) places is merged
+        // in afterwards and survives untouched — the un-delete semantics
+        // `three_plugin_chain_composes_refr_merge_and_cross_plugin_delete`
+        // pins. Doing it after the loops would need a "but not what `other`
+        // re-placed" guard, which cannot tell a stale base copy from a fresh
+        // placement.
+        let tombstones: HashSet<u32> = other
+            .cells
+            .values()
+            .chain(other.worldspace_persistent_cells.values())
+            .chain(other.exterior_cells.values().flat_map(|g| g.values()))
+            .flat_map(|c| c.deleted_refs.iter().copied())
+            .collect();
+        if !tombstones.is_empty() {
+            for cell in self
+                .cells
+                .values_mut()
+                .chain(self.worldspace_persistent_cells.values_mut())
+                .chain(
+                    self.exterior_cells
+                        .values_mut()
+                        .flat_map(|g| g.values_mut()),
+                )
+            {
+                cell.references
+                    .retain(|r| r.form_id == 0 || !tombstones.contains(&r.form_id));
+            }
+        }
+
         let mut interior_keys_by_form: HashMap<u32, String> = self
             .cells
             .iter()
