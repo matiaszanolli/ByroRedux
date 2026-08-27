@@ -457,8 +457,9 @@ pub(crate) fn persistent_cell_identity_unchanged(
 /// per EX-14/15 item C2. `None` means the ordinary full drain+rebuild is
 /// correct — there's no active root, its [`CellFormId`] is missing (should
 /// not happen for a root [`begin_worldspace_persistent_cell`] built, but a
-/// missing component fails safe into "rebuild" rather than panicking), or
-/// the resolved identity differs. `Some(root)` means the caller must
+/// missing component fails safe into "rebuild" rather than panicking), the
+/// resolved identity differs, or the root's own spawn is still in flight
+/// (#3376). `Some(root)` means the caller must
 /// detach `root` from the old streaming state's `persistent_root` field
 /// *before* calling `drain_streaming_state` (so the drain's unconditional
 /// `unload_cell` never sees it) and hand it back in through
@@ -467,7 +468,27 @@ pub(crate) fn persistent_root_survives_crossing(
     world: &World,
     current_persistent_root: Option<EntityId>,
     new_wctx: &ExteriorWorldContext,
+    persistent_apply_in_flight: bool,
 ) -> Option<EntityId> {
+    // #3376 — identity is necessary but not sufficient: the root must also be
+    // *finished*. A `PersistentCellApplyJob` is the resumable continuation
+    // that spawns the CELL's `local_refs` / `logical_stub_refs`, and it lives
+    // on the streaming state that the imminent `drain_streaming_state` throws
+    // away (it cancels `active_apply` only; `persistent_apply` is dropped with
+    // the moved-out state). Preserving the root would then make
+    // `stream_initial_radius`'s `persistent_root.is_none() &&
+    // persistent_apply.is_none()` guard false, so no replacement job is ever
+    // created and the unspawned tail of that CELL — doors, quest refs, unique
+    // actors — is silently absent for the rest of the session.
+    //
+    // A job in flight is the normal state for the first frames after entering
+    // any worldspace (`ExteriorBootstrapMode::ForegroundFirst`, i.e. every
+    // launch without `--bench-frames`), so this is the ordinary interactive
+    // path, not an exotic one. Falling back to the always-rebuild path costs a
+    // teardown and respawn of a root that was incomplete anyway.
+    if persistent_apply_in_flight {
+        return None;
+    }
     let root = current_persistent_root?;
     let current_form_id = world.get::<CellFormId>(root)?.0;
     persistent_cell_identity_unchanged(
@@ -617,6 +638,139 @@ mod resolve_persistent_cell_tests {
     fn an_unrelated_worldspace_missing_from_the_index_resolves_to_none() {
         let index = EsmCellIndex::default();
         assert!(resolve_persistent_cell(&index, "nonexistent").is_none());
+    }
+}
+
+#[cfg(test)]
+mod persistent_root_survives_crossing_tests {
+    //! #3376 — identity is necessary but not sufficient for preserving a
+    //! persistent-CELL root across a worldspace crossing: the root's own
+    //! spawn must also be finished.
+    //!
+    //! The job that finishes it (`WorldStreamingState::persistent_apply`)
+    //! does not survive the imminent `drain_streaming_state`, which cancels
+    //! `active_apply` only. Preserving an unfinished root then makes
+    //! `stream_initial_radius`'s `persistent_root.is_none() &&
+    //! persistent_apply.is_none()` guard false, so no replacement job is
+    //! created and the CELL's unspawned tail — doors, quest refs, unique
+    //! actors — is absent for the rest of the session, silently.
+    use super::*;
+    use byroredux_plugin::esm::cell::{CellData, EsmCellIndex, WorldspaceRecord};
+
+    fn wctx_with_same_persistent_cell() -> ExteriorWorldContext {
+        let mut cells = EsmCellIndex::default();
+        cells.worldspaces.insert(
+            "parentworld".into(),
+            WorldspaceRecord {
+                form_id: 0x10,
+                editor_id: "ParentWorld".into(),
+                parent_worldspace: None,
+                ..WorldspaceRecord::default()
+            },
+        );
+        cells.worldspaces.insert(
+            "childworld".into(),
+            WorldspaceRecord {
+                form_id: 0x20,
+                editor_id: "ChildWorld".into(),
+                parent_worldspace: Some(0x10),
+                ..WorldspaceRecord::default()
+            },
+        );
+        cells.worldspace_persistent_cells.insert(
+            "parentworld".into(),
+            CellData {
+                form_id: 0x999,
+                editor_id: String::new(),
+                display_name: None,
+                references: Vec::new(),
+                is_interior: false,
+                grid: None,
+                lighting: None,
+                landscape: None,
+                water_height: None,
+                water_height_is_explicit: false,
+                image_space_form: None,
+                water_type_form: None,
+                water_velocity: None,
+                acoustic_space_form: None,
+                music_type_form: None,
+                music_type_enum: None,
+                climate_override: None,
+                location_form: None,
+                regions: Vec::new(),
+                lighting_template_form: None,
+                ownership: None,
+                regional_color_override: None,
+                precombined_mesh_hashes: Vec::new(),
+                absorbed_refs: std::collections::HashSet::new(),
+                navmeshes: Vec::new(),
+                deleted_refs: Vec::new(),
+            },
+        );
+
+        let mut index = byroredux_plugin::esm::records::EsmIndex::default();
+        index.cells = cells;
+        ExteriorWorldContext {
+            record_index: std::sync::Arc::new(index),
+            load_order: std::sync::Arc::new(Vec::new()),
+            plugin_path: String::new(),
+            plugin_paths: Vec::new(),
+            worldspace_key: "childworld".into(),
+            climate: None,
+            default_weather: None,
+            default_water_height: None,
+            default_water_type_form: None,
+        }
+    }
+
+    /// A finished root whose identity is unchanged is preserved — the
+    /// #2369 item-C2 behaviour this must not regress.
+    #[test]
+    fn a_finished_root_with_unchanged_identity_is_preserved() {
+        let mut world = World::new();
+        let root = world.spawn();
+        world.insert(root, CellFormId(0x999));
+        let wctx = wctx_with_same_persistent_cell();
+
+        assert_eq!(
+            persistent_root_survives_crossing(&world, Some(root), &wctx, false),
+            Some(root),
+            "an unchanged, finished persistent root must still survive the crossing"
+        );
+    }
+
+    /// The fix: the same root, same identity, but its apply job is still
+    /// in flight — must fall back to the always-rebuild path.
+    #[test]
+    fn an_unfinished_root_is_not_preserved_even_when_identity_matches() {
+        let mut world = World::new();
+        let root = world.spawn();
+        world.insert(root, CellFormId(0x999));
+        let wctx = wctx_with_same_persistent_cell();
+
+        assert_eq!(
+            persistent_root_survives_crossing(&world, Some(root), &wctx, true),
+            None,
+            "a persistent root whose PersistentCellApplyJob is still in flight must \
+             NOT be preserved — the job does not survive the drain, so the CELL's \
+             unspawned refs would never be spawned again (#3376)"
+        );
+    }
+
+    /// No root at all is still `None`, in-flight or not.
+    #[test]
+    fn no_root_is_never_preserved() {
+        let world = World::new();
+        let wctx = wctx_with_same_persistent_cell();
+        assert_eq!(
+            persistent_root_survives_crossing(&world, None, &wctx, false),
+            None
+        );
+        assert_eq!(
+            persistent_root_survives_crossing(&world, None, &wctx, true),
+            None
+        );
     }
 }
 

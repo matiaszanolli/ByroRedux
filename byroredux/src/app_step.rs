@@ -827,6 +827,11 @@ impl App {
                                     &self.world,
                                     state.persistent_root,
                                     &wctx,
+                                    // #3376 — an unfinished root must be
+                                    // rebuilt, not preserved: the job that
+                                    // would finish it does not survive the
+                                    // drain below.
+                                    state.persistent_apply.is_some(),
                                 )?;
                                 state.persistent_root = None;
                                 Some(root)
