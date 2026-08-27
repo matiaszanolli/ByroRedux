@@ -72,6 +72,23 @@ pub const GEOMETRY_REBUILD_CHUNK_BYTES: usize = 64 * 1024 * 1024;
 /// (`MeshRegistry::rebuild_geometry_ssbo`) falls back to the original
 /// atomic idle-reclaim-then-build path unchanged — #2374's device-loss
 /// protection stays intact as a fallback, not the common case.
+/// A computed-but-unpublished geometry compaction (#3372).
+///
+/// Produced by `plan_geometry_compaction`, applied by `apply_compaction_plan`.
+/// The chunked rebuild carries one of these for the whole multi-frame copy so
+/// the compacted offsets become visible in the same step that binds the
+/// compacted buffer.
+#[derive(Debug, Clone)]
+struct CompactionPlan {
+    /// `(mesh slot index, new global_vertex_offset, new global_index_offset)`
+    /// for every scene mesh live at plan time.
+    offsets: Vec<(usize, u32, u32)>,
+    /// `meshes.len()` at plan time. Slots at or past this index were appended
+    /// *after* the plan, so they already carry compacted-layout offsets and
+    /// must stay out of raster/TLAS until swap-in — see `is_geometry_resident`.
+    mesh_count: usize,
+}
+
 struct GeometryRebuildInProgress {
     new_vertex_buffer: GpuBuffer,
     new_index_buffer: GpuBuffer,
@@ -87,6 +104,32 @@ struct GeometryRebuildInProgress {
     target_index_count: usize,
     vertices_copied: usize,
     indices_copied: usize,
+}
+
+/// Whether a scene mesh's range is safe to draw against the currently bound
+/// global geometry generation. Pure — no `self` — so the rule is unit-testable
+/// without a live device, mirroring [`next_geometry_rebuild_chunk`] and the
+/// `acceleration/predicates.rs` pattern.
+///
+/// `deferred_plan_mesh_count` is `Some(n)` while a compaction is computed but
+/// unpublished (#3372): the pools have already shrunk, so anything uploaded at
+/// or past slot `n` carries a compacted-layout offset that can land *inside*
+/// the still-bound uncompacted buffer. The extent check alone would wave it
+/// through to read another mesh's bytes, so those latecomers are held out of
+/// raster/TLAS until swap-in. Slots are never reused (#372), which is what
+/// makes the index an exact test.
+fn scene_geometry_resident(
+    handle: usize,
+    vertex_end: usize,
+    index_end: usize,
+    ssbo_vertex_count: usize,
+    ssbo_index_count: usize,
+    deferred_plan_mesh_count: Option<usize>,
+) -> bool {
+    if deferred_plan_mesh_count.is_some_and(|n| handle >= n) {
+        return false;
+    }
+    vertex_end <= ssbo_vertex_count && index_end <= ssbo_index_count
 }
 
 /// What a single `advance_geometry_rebuild` call should do next, given the
@@ -355,6 +398,10 @@ pub struct MeshRegistry {
     /// In-flight multi-frame global geometry SSBO rebuild (#3298). `None`
     /// when no rebuild is running. See [`GeometryRebuildInProgress`].
     geometry_rebuild: Option<GeometryRebuildInProgress>,
+    /// A compaction whose offsets are computed but **not yet published**,
+    /// because the chunked rebuild that will bind the compacted buffer is
+    /// still copying. Published — and cleared — at swap-in. #3372.
+    deferred_compaction: Option<CompactionPlan>,
 }
 
 impl Default for MeshRegistry {
@@ -381,6 +428,7 @@ impl MeshRegistry {
             mesh_ref_counts: Vec::new(),
             geometry_staging_pool: None,
             geometry_rebuild: None,
+            deferred_compaction: None,
         }
     }
 
@@ -961,7 +1009,34 @@ impl MeshRegistry {
     /// Safe to call with no drops: it exits early unless a scene mesh has been
     /// dropped since the last compaction (`geometry_has_holes`). Pure appends,
     /// and repeat rebuilds with no intervening drop, skip the pass entirely.
+    /// Plan **and** publish in one step — the pre-#3372 behaviour, retained
+    /// for the #2678 compaction tests that assert on the pass in isolation.
+    /// Production callers choose their own publish point: synchronous paths
+    /// publish immediately, the chunked rebuild defers to swap-in.
+    #[cfg(test)]
     fn compact_pending_geometry(&mut self) {
+        if let Some(plan) = self.plan_geometry_compaction() {
+            self.apply_compaction_plan(&plan);
+        }
+    }
+
+    /// Compute the compacted pools and every survivor's new offset **without
+    /// publishing those offsets**.
+    ///
+    /// `pending_vertices`/`pending_indices` are replaced with the compacted
+    /// layout immediately (the rebuild copies linear ranges out of them, so
+    /// they must be final), but each mesh keeps its *old* offset until the
+    /// caller decides it is safe to publish. Returns `None` when there is
+    /// nothing to compact.
+    ///
+    /// #3372 — the two halves used to be inseparable. `#3298` made the upload
+    /// resumable across frames while the old buffer keeps serving draws, so
+    /// publishing compacted offsets at plan time left mesh offsets describing
+    /// the new layout while the *uncompacted* buffer was still bound: every
+    /// draw and every BLAS built in that window read the wrong byte ranges.
+    /// Splitting plan from publish lets the chunked path defer the publish to
+    /// swap-in, where the offsets and the buffer change together.
+    fn plan_geometry_compaction(&mut self) -> Option<CompactionPlan> {
         // Fast path: no holes → nothing to compact.
         //
         // #2678 — gated on the explicit `geometry_has_holes` flag, NOT on
@@ -971,15 +1046,15 @@ impl MeshRegistry {
         // — re-copying both pools to a byte-identical layout once per cell
         // load, at the ~208 MB typical pool size.
         if !self.geometry_has_holes {
-            return;
+            return None;
         }
 
         let mut new_vertices: Vec<Vertex> = Vec::with_capacity(self.pending_vertices.len());
         let mut new_indices: Vec<u32> = Vec::with_capacity(self.pending_indices.len());
+        let mut offsets: Vec<(usize, u32, u32)> = Vec::new();
 
-        // Snapshot old offsets so we can rewrite them without aliasing.
-        for slot in self.meshes.iter_mut() {
-            let Some(mesh) = slot.as_mut() else { continue };
+        for (idx, slot) in self.meshes.iter().enumerate() {
+            let Some(mesh) = slot.as_ref() else { continue };
             if !mesh.is_scene_mesh {
                 continue;
             }
@@ -994,14 +1069,35 @@ impl MeshRegistry {
             new_vertices.extend_from_slice(&self.pending_vertices[v_start..v_end]);
             new_indices.extend_from_slice(&self.pending_indices[i_start..i_end]);
 
-            mesh.global_vertex_offset = new_v_offset;
-            mesh.global_index_offset = new_i_offset;
+            offsets.push((idx, new_v_offset, new_i_offset));
         }
 
         self.pending_vertices = new_vertices;
         self.pending_indices = new_indices;
         // Pools are hole-free again until the next scene-mesh drop.
         self.geometry_has_holes = false;
+
+        Some(CompactionPlan {
+            offsets,
+            mesh_count: self.meshes.len(),
+        })
+    }
+
+    /// Publish a plan's compacted offsets onto the surviving meshes.
+    ///
+    /// Slots vacated between plan and publish are skipped: `drop_mesh` leaves
+    /// `None` behind permanently (#372), and a mesh that died mid-rebuild
+    /// simply keeps its span as dead weight in the new buffer until the next
+    /// compaction reclaims it.
+    fn apply_compaction_plan(&mut self, plan: &CompactionPlan) {
+        for &(idx, v_offset, i_offset) in &plan.offsets {
+            let Some(slot) = self.meshes.get_mut(idx) else {
+                continue;
+            };
+            let Some(mesh) = slot.as_mut() else { continue };
+            mesh.global_vertex_offset = v_offset;
+            mesh.global_index_offset = i_offset;
+        }
     }
 
     /// Build the global geometry SSBO from accumulated vertex/index data.
@@ -1121,14 +1217,22 @@ impl MeshRegistry {
             return self.advance_geometry_rebuild(device, allocator, queue, command_pool);
         }
 
-        // If any scene meshes were dropped since the last build, compact
-        // the pending buffers and rewrite every live mesh's offsets. Pure
-        // appends (no drops) skip this pass. Only safe to run here, when no
-        // rebuild is in flight — running it mid-copy would rewrite the very
-        // data a chunked rebuild is reading from underneath it.
-        self.compact_pending_geometry();
+        // If any scene meshes were dropped since the last build, compact the
+        // pending buffers. Pure appends (no drops) skip this pass. Only safe
+        // to run here, when no rebuild is in flight — running it mid-copy
+        // would rewrite the very data a chunked rebuild is reading from
+        // underneath it.
+        //
+        // #3372 — the survivors' new offsets are *not* published yet. The
+        // chunked path below carries the plan on the job and publishes it at
+        // swap-in, so mesh offsets never describe a buffer that is not bound.
+        // Every path that builds synchronously publishes immediately instead.
+        let compaction = self.plan_geometry_compaction();
 
         if self.pending_vertices.is_empty() {
+            if let Some(plan) = compaction {
+                self.apply_compaction_plan(&plan);
+            }
             return Ok(());
         }
 
@@ -1162,6 +1266,7 @@ impl MeshRegistry {
                         vertices_copied: 0,
                         indices_copied: 0,
                     });
+                    self.deferred_compaction = compaction;
                     return self.advance_geometry_rebuild(device, allocator, queue, command_pool);
                 }
                 Err(e) => {
@@ -1175,6 +1280,11 @@ impl MeshRegistry {
             }
         }
 
+        // Synchronous path: buffer and offsets change together inside this
+        // call, so publish now (#3372).
+        if let Some(plan) = compaction {
+            self.apply_compaction_plan(&plan);
+        }
         self.rebuild_geometry_ssbo_atomic_fallback(device, allocator, queue, command_pool, rt_enabled)
     }
 
@@ -1343,6 +1453,13 @@ impl MeshRegistry {
                 self.deferred_destroy
                     .push((old_vb, old_ib), DEFAULT_COUNTDOWN);
             }
+            // #3372 — publish the compacted offsets in the same step that
+            // binds the compacted buffer. Until this line every mesh still
+            // described the OLD layout, which is what the old buffer held.
+            if let Some(plan) = self.deferred_compaction.take() {
+                self.apply_compaction_plan(&plan);
+            }
+
             self.global_vertex_buffer = Some(job.new_vertex_buffer);
             self.global_index_buffer = Some(job.new_index_buffer);
             self.geometry_generation = self.geometry_generation.wrapping_add(1);
@@ -1494,9 +1611,22 @@ impl MeshRegistry {
         if self.global_vertex_buffer.is_none() || self.global_index_buffer.is_none() {
             return false;
         }
+        // #3372 — a compaction-bearing rebuild shrinks the pools, so a mesh
+        // appended *after* the plan gets a compacted-layout offset that can
+        // land inside the still-bound old buffer's extent. The length check
+        // below would wave it through to read another mesh's bytes. Slots are
+        // never reused (#372), so "index past the plan's snapshot" is an exact
+        // test for those latecomers.
         let vertex_end = mesh.global_vertex_offset as usize + mesh.vertex_count as usize;
         let index_end = mesh.global_index_offset as usize + mesh.index_count as usize;
-        vertex_end <= self.ssbo_vertex_count && index_end <= self.ssbo_index_count
+        scene_geometry_resident(
+            handle as usize,
+            vertex_end,
+            index_end,
+            self.ssbo_vertex_count,
+            self.ssbo_index_count,
+            self.deferred_compaction.as_ref().map(|p| p.mesh_count),
+        )
     }
 
     pub fn get(&self, id: u32) -> Option<&GpuMesh> {
@@ -2440,6 +2570,230 @@ mod compaction_gate_tests {
         assert!(
             !reg.geometry_has_holes,
             "uploads create no holes; only drops do"
+        );
+    }
+}
+
+#[cfg(test)]
+mod deferred_compaction_tests {
+    //! Regression tests for #3372 — a compaction whose upload is resumable
+    //! must not publish its offsets while the *uncompacted* buffer is still
+    //! bound.
+    //!
+    //! Pre-fix, `rebuild_geometry_ssbo` compacted (rewriting every survivor's
+    //! `global_vertex_offset`/`global_index_offset`) and then handed the
+    //! upload to a multi-frame state machine that leaves the old buffer
+    //! serving every draw. For the 2..~15 frames in between, mesh offsets
+    //! described the compacted layout while the bound buffer held the
+    //! uncompacted bytes — so raster and every BLAS built in the window read
+    //! another mesh's triangles. `is_geometry_resident` could not catch it: it
+    //! compares the new (smaller) offsets against the old (larger) counts and
+    //! answers `true` for everything.
+    //!
+    //! These tests exercise the CPU-side bookkeeping only; no Vulkan device is
+    //! involved, which is exactly why the bug was invisible to the suite
+    //! before.
+    use super::*;
+
+    fn three_scene_meshes(reg: &mut MeshRegistry) -> (u32, u32, u32) {
+        let (tv, ti) = triangle_vertices([1.0, 0.0, 0.0]);
+        let (qv, qi) = quad_vertices();
+        let (tv2, ti2) = triangle_vertices([0.0, 1.0, 0.0]);
+        let a = reg.upload_scene_mesh_global_only(&tv, &ti).unwrap();
+        let b = reg.upload_scene_mesh_global_only(&qv, &qi).unwrap();
+        let c = reg.upload_scene_mesh_global_only(&tv2, &ti2).unwrap();
+        (a, b, c)
+    }
+
+    /// The core pin: planning compacts the pools but leaves every survivor's
+    /// offset describing the OLD layout, so offsets stay in step with the
+    /// still-bound old buffer.
+    #[test]
+    fn planning_compaction_does_not_publish_offsets() {
+        let mut reg = MeshRegistry::new();
+        let (a, _b, c) = three_scene_meshes(&mut reg);
+
+        let c_v_before = reg.get(c).unwrap().global_vertex_offset;
+        let c_i_before = reg.get(c).unwrap().global_index_offset;
+        assert!(reg.drop_mesh(a), "refcount 1 → drop frees the mesh");
+
+        let plan = reg
+            .plan_geometry_compaction()
+            .expect("a dropped scene mesh leaves a hole to compact");
+
+        assert_eq!(
+            reg.get(c).unwrap().global_vertex_offset,
+            c_v_before,
+            "planning published a compacted vertex offset while the \
+             uncompacted buffer is still bound (#3372)"
+        );
+        assert_eq!(
+            reg.get(c).unwrap().global_index_offset,
+            c_i_before,
+            "planning published a compacted index offset while the \
+             uncompacted buffer is still bound (#3372)"
+        );
+
+        // ...and the plan really did carry a *different* (smaller) offset,
+        // otherwise this test would pass vacuously.
+        let (_idx, planned_v, _planned_i) = plan
+            .offsets
+            .iter()
+            .copied()
+            .find(|&(idx, _, _)| idx == c as usize)
+            .expect("survivor must appear in the plan");
+        assert!(
+            planned_v < c_v_before,
+            "compaction should move the survivor down; got {planned_v} vs {c_v_before}"
+        );
+    }
+
+    /// Publishing is what moves the offsets — and it moves them to exactly
+    /// what the plan computed.
+    #[test]
+    fn applying_the_plan_publishes_the_compacted_offsets() {
+        let mut reg = MeshRegistry::new();
+        let (a, _b, c) = three_scene_meshes(&mut reg);
+        assert!(reg.drop_mesh(a));
+
+        let plan = reg.plan_geometry_compaction().unwrap();
+        let (_idx, planned_v, planned_i) = plan
+            .offsets
+            .iter()
+            .copied()
+            .find(|&(idx, _, _)| idx == c as usize)
+            .unwrap();
+
+        reg.apply_compaction_plan(&plan);
+
+        assert_eq!(reg.get(c).unwrap().global_vertex_offset, planned_v);
+        assert_eq!(reg.get(c).unwrap().global_index_offset, planned_i);
+    }
+
+    /// A slot vacated between plan and publish must be skipped, not panic and
+    /// not resurrect: `drop_mesh` leaves `None` behind permanently (#372).
+    #[test]
+    fn publishing_skips_meshes_dropped_between_plan_and_swap_in() {
+        let mut reg = MeshRegistry::new();
+        let (a, b, _c) = three_scene_meshes(&mut reg);
+        assert!(reg.drop_mesh(a));
+
+        let plan = reg.plan_geometry_compaction().unwrap();
+        assert!(reg.drop_mesh(b), "b dies mid-rebuild");
+
+        reg.apply_compaction_plan(&plan);
+
+        assert!(reg.get(b).is_none(), "a dropped slot stays empty");
+    }
+
+    /// The plan-and-publish wrapper still behaves exactly as the pre-#3372
+    /// single-step compaction did — the synchronous paths depend on it.
+    #[test]
+    fn the_wrapper_still_compacts_and_publishes_in_one_step() {
+        let mut reg = MeshRegistry::new();
+        let (a, _b, c) = three_scene_meshes(&mut reg);
+        let c_v_before = reg.get(c).unwrap().global_vertex_offset;
+        assert!(reg.drop_mesh(a));
+
+        reg.compact_pending_geometry();
+
+        assert!(
+            reg.get(c).unwrap().global_vertex_offset < c_v_before,
+            "the synchronous wrapper must publish immediately"
+        );
+        assert!(!reg.geometry_has_holes);
+    }
+
+    /// Nothing dropped → no plan, and no offset churn.
+    #[test]
+    fn no_holes_yields_no_plan() {
+        let mut reg = MeshRegistry::new();
+        three_scene_meshes(&mut reg);
+        assert!(
+            reg.plan_geometry_compaction().is_none(),
+            "uploads create no holes; only drops do (#2678)"
+        );
+    }
+
+    /// A mesh appended *after* the plan carries a compacted-layout offset
+    /// while the old buffer is still bound, so it must be held out of
+    /// raster/TLAS until swap-in — the length check alone would wave it
+    /// through into another mesh's bytes.
+    #[test]
+    fn a_mesh_appended_after_the_plan_is_not_resident_mid_rebuild() {
+        let mut reg = MeshRegistry::new();
+        let (a, _b, c) = three_scene_meshes(&mut reg);
+        assert!(reg.drop_mesh(a));
+
+        let plan = reg.plan_geometry_compaction().unwrap();
+        let mesh_count_at_plan = plan.mesh_count;
+
+        // Stand in for the in-flight chunked rebuild: old buffer still bound,
+        // old counts still published, plan not yet applied.
+        reg.ssbo_vertex_count = 10_000;
+        reg.ssbo_index_count = 10_000;
+        reg.deferred_compaction = Some(plan);
+
+        let (lv, li) = triangle_vertices([0.0, 0.0, 1.0]);
+        let late = reg.upload_scene_mesh_global_only(&lv, &li).unwrap();
+        assert!(
+            late as usize >= mesh_count_at_plan,
+            "the latecomer must land past the plan's snapshot"
+        );
+
+        // Asserted through the pure predicate, not `is_geometry_resident`: a
+        // device-free registry has no bound buffer, so the wrapper rejects on
+        // that first and would pass this vacuously with the gate deleted.
+        let lm = reg.get(late).unwrap();
+        let late_v_end = lm.global_vertex_offset as usize + lm.vertex_count as usize;
+        let late_i_end = lm.global_index_offset as usize + lm.index_count as usize;
+        assert!(
+            late_v_end <= 10_000 && late_i_end <= 10_000,
+            "precondition: the latecomer's compacted offsets land INSIDE the \
+             old buffer's extent, which is what makes the extent check unsafe"
+        );
+        assert!(
+            !scene_geometry_resident(
+                late as usize,
+                late_v_end,
+                late_i_end,
+                10_000,
+                10_000,
+                Some(mesh_count_at_plan),
+            ),
+            "a mesh appended after the plan reads compacted coordinates out of \
+             the uncompacted bound buffer — it must not be resident (#3372)"
+        );
+        // The survivor half is asserted through the pure predicate: a
+        // device-free registry has no bound buffer, and `is_geometry_resident`
+        // rejects on that first. What matters is that the #3372 gate does not
+        // over-reach and blank the whole scene for the window.
+        let cm = reg.get(c).unwrap();
+        assert!(
+            scene_geometry_resident(
+                c as usize,
+                cm.global_vertex_offset as usize + cm.vertex_count as usize,
+                cm.global_index_offset as usize + cm.index_count as usize,
+                10_000,
+                10_000,
+                Some(mesh_count_at_plan),
+            ),
+            "a survivor still on OLD offsets matches the bound old buffer and \
+             must keep rendering — the gate must not blank the scene"
+        );
+    }
+
+    /// The gate is scoped to the deferred window: with nothing deferred, a
+    /// latecomer is judged purely on extent, exactly as before #3372.
+    #[test]
+    fn the_gate_is_inert_when_no_compaction_is_deferred() {
+        assert!(
+            scene_geometry_resident(99, 10, 10, 10_000, 10_000, None),
+            "no deferred plan → plain extent check"
+        );
+        assert!(
+            !scene_geometry_resident(99, 20_000, 10, 10_000, 10_000, None),
+            "extent check still rejects a range past the bound tail"
         );
     }
 }
