@@ -152,25 +152,45 @@ fn base_skill(governing: u8, luck: u8) -> f32 {
 /// - **FNV / FO3**: actor values are *auto-calculated* from the NPC's class
 ///   base SPECIAL (the documented GECK model) — the 7 SPECIAL, the profile's
 ///   exact skill roster, and its sourced Health curve. See
-///   [`derive_autocalc_actor_values`]. `TPLT`/`Use Stats` template
-///   inheritance is resolved first (#2956,
-///   [`crate::equip::resolve_inherited_stats`]) — a templated `Lvl*` shell's
-///   own `class_form_id`/level are frequently not what the engine actually
-///   uses.
+///   [`derive_autocalc_actor_values`].
+///
+/// `TPLT`/`Use Stats` template inheritance is resolved first for **every**
+/// stat model (#2956, #3381, #3382, [`crate::equip::resolve_inherited_stats`])
+/// — a templated shell's own `class_form_id`/level/`PRPS`/`DNAM`/race offsets
+/// are frequently not what the engine actually uses, and
+/// `stamp_character_components` resolves the same chain for the
+/// `CharacterLevel`/`Background` it writes on the same entity.
 ///
 /// Empty for every other game (Oblivion), a Skyrim NPC whose race has no
 /// usable pool values, an FO4 NPC with no `PRPS`, or an FNV NPC whose class
 /// wasn't parsed. Individual missing Skyrim AVIFs are skipped independently.
 ///
+/// **Creatures (`CREA`, FO3/FNV) are not populated by this function** (#3383).
+/// They share `NpcRecord` and the whole spawn tail with `NPC_` (#442/#2567),
+/// but their stats are not class-derived: `CNAM` is not a CLAS FormID on
+/// `CREA` (0/1578 FNV and 0/533 FO3 resolve to one), so the auto-calc arm's
+/// class lookup necessarily misses and the result is empty for the entire
+/// bestiary. This is a known structural gap, not a rare parse failure —
+/// decoding `CREA`'s own `DATA` needs a sourced field layout, tracked
+/// separately. Callers must treat an empty result for a creature as
+/// "unpopulated", never as "all zero".
+///
 /// [`ActorValues::from_pairs`]: byroredux_core::ecs::components::ActorValues::from_pairs
 pub fn derive_npc_actor_values(npc: &NpcRecord, index: &EsmIndex) -> Vec<(u32, f32)> {
+    // #3381 / #3382 — `TPLT` + ACBS "Use Stats" inheritance is resolved for
+    // EVERY stat model, not just auto-calc. `template_flags` is parsed on all
+    // three families and `stamp_character_components` already resolves the
+    // same chain for `CharacterLevel`/`Background` on the same entity, so
+    // deriving actor values off the unresolved shell contradicted the
+    // components sitting beside them. Resolving once here also keeps the arms
+    // from drifting apart again — the gap arose because only one of three
+    // resolved.
+    let npc = crate::equip::resolve_inherited_stats(npc, effective_actor_level(npc), index);
     match index.character_rules.npc_stat_model() {
         NpcStatModel::Stored => derive_stored_actor_values(npc, index),
         NpcStatModel::RaceBaseOffsets => derive_skyrim_actor_values(npc, index),
         NpcStatModel::ClassAutoCalc { health } => {
-            let stats_npc =
-                crate::equip::resolve_inherited_stats(npc, effective_actor_level(npc), index);
-            derive_autocalc_actor_values(stats_npc, index, index.character_rules, health)
+            derive_autocalc_actor_values(npc, index, index.character_rules, health)
         }
         NpcStatModel::None => Vec::new(),
     }
@@ -496,6 +516,157 @@ mod tests {
         // Right NPC, unsupported profile → empty.
         index.character_rules = CharacterRulesProfile::NONE;
         assert!(derive_npc_actor_values(&npc_with_class(0x2000), &index).is_empty());
+    }
+
+    /// #3381 — the Skyrim (`RaceBaseOffsets`) arm must resolve `TPLT` +
+    /// "Use Stats" like the auto-calc arm already did. Pre-fix it read the
+    /// shell `NPC_`'s own race and offsets, contradicting the
+    /// `CharacterLevel`/`Background` that `stamp_character_components`
+    /// resolves through the same chain onto the same entity.
+    #[test]
+    fn skyrim_pools_follow_use_stats_template() {
+        let mut index = EsmIndex::default();
+        index.character_rules = CharacterRulesProfile::SKYRIM;
+        index.actor_values.insert(0x3E8, avif(0x3E8, "AVHealth"));
+        index.actor_values.insert(0x3E9, avif(0x3E9, "AVMagicka"));
+        index.actor_values.insert(0x3EA, avif(0x3EA, "AVStamina"));
+        // The race the template points at — the one the engine uses.
+        index.races.insert(
+            0x1000,
+            RaceRecord {
+                form_id: 0x1000,
+                starting_health: Some(100.0),
+                starting_magicka: Some(100.0),
+                starting_stamina: Some(100.0),
+                ..Default::default()
+            },
+        );
+        // The shell's own race, which must never be read.
+        index.races.insert(
+            0x2000,
+            RaceRecord {
+                form_id: 0x2000,
+                starting_health: Some(5.0),
+                starting_magicka: Some(5.0),
+                starting_stamina: Some(5.0),
+                ..Default::default()
+            },
+        );
+
+        let template = NpcRecord {
+            form_id: 0x0010_0001,
+            race_form_id: 0x1000,
+            health_offset: 20,
+            magicka_offset: 10,
+            stamina_offset: 5,
+            ..Default::default()
+        };
+        index.npcs.insert(template.form_id, template);
+
+        let shell = NpcRecord {
+            form_id: 0x0010_0000,
+            race_form_id: 0x2000,
+            health_offset: -1,
+            magicka_offset: -1,
+            stamina_offset: -1,
+            template_form_id: 0x0010_0001,
+            template_flags: crate::equip::TEMPLATE_FLAG_USE_STATS,
+            ..Default::default()
+        };
+
+        let pairs = derive_npc_actor_values(&shell, &index);
+        let val = |fid: u32| pairs.iter().find(|(f, _)| *f == fid).map(|(_, v)| *v);
+        assert_eq!(
+            val(0x3E8),
+            Some(120.0),
+            "Health must come from the template"
+        );
+        assert_eq!(
+            val(0x3E9),
+            Some(110.0),
+            "Magicka must come from the template"
+        );
+        assert_eq!(
+            val(0x3EA),
+            Some(105.0),
+            "Stamina must come from the template"
+        );
+    }
+
+    /// #3382 — the FO4 (`Stored`) arm has the same obligation: `PRPS` and the
+    /// baked `DNAM` pair come from the `Use Stats` source, not the shell.
+    /// Measured against vanilla `Fallout4.esm`, 1,222 of 3,015 actors author
+    /// a `PRPS` set differing from their template's and 1,201 a differing
+    /// `DNAM`, so this is the common case, not an edge one.
+    #[test]
+    fn fo4_stored_values_follow_use_stats_template() {
+        let mut index = EsmIndex::default();
+        index.character_rules = CharacterRulesProfile::FALLOUT4;
+        index.actor_values.insert(0x3E8, avif(0x3E8, "Health"));
+        index
+            .actor_values
+            .insert(0x3E9, avif(0x3E9, "ActionPoints"));
+        index.actor_values.insert(0x3EA, avif(0x3EA, "Strength"));
+
+        let template = NpcRecord {
+            form_id: 0x0010_0001,
+            actor_value_props: vec![(0x3EA, 8.0)],
+            calculated_health: 250,
+            calculated_action_points: 90,
+            ..Default::default()
+        };
+        index.npcs.insert(template.form_id, template);
+
+        let shell = NpcRecord {
+            form_id: 0x0010_0000,
+            actor_value_props: vec![(0x3EA, 1.0)],
+            calculated_health: 5,
+            calculated_action_points: 5,
+            template_form_id: 0x0010_0001,
+            template_flags: crate::equip::TEMPLATE_FLAG_USE_STATS,
+            ..Default::default()
+        };
+
+        let pairs = derive_npc_actor_values(&shell, &index);
+        let val = |fid: u32| pairs.iter().find(|(f, _)| *f == fid).map(|(_, v)| *v);
+        assert_eq!(val(0x3EA), Some(8.0), "PRPS must come from the template");
+        assert_eq!(
+            val(0x3E8),
+            Some(250.0),
+            "baked DNAM Health from the template"
+        );
+        assert_eq!(val(0x3E9), Some(90.0), "baked DNAM AP from the template");
+    }
+
+    /// Without "Use Stats" the shell's own values still win — the resolver is
+    /// resolve-or-fall-back, and hoisting it must not change that.
+    #[test]
+    fn fo4_stored_values_keep_the_shell_when_use_stats_is_clear() {
+        let mut index = EsmIndex::default();
+        index.character_rules = CharacterRulesProfile::FALLOUT4;
+        index.actor_values.insert(0x3EA, avif(0x3EA, "Strength"));
+
+        let template = NpcRecord {
+            form_id: 0x0010_0001,
+            actor_value_props: vec![(0x3EA, 8.0)],
+            ..Default::default()
+        };
+        index.npcs.insert(template.form_id, template);
+
+        let shell = NpcRecord {
+            form_id: 0x0010_0000,
+            actor_value_props: vec![(0x3EA, 1.0)],
+            template_form_id: 0x0010_0001,
+            template_flags: 0, // Use Stats NOT set
+            ..Default::default()
+        };
+
+        let pairs = derive_npc_actor_values(&shell, &index);
+        assert_eq!(
+            pairs.iter().find(|(f, _)| *f == 0x3EA).map(|(_, v)| *v),
+            Some(1.0),
+            "no Use Stats flag → the shell's own PRPS stands"
+        );
     }
 
     #[test]

@@ -565,9 +565,20 @@ while). Struck-through items are done; the remaining two are genuinely open.
    (`crates/plugin/src/esm/records/actor_value_derive.rs`) reads the `NPC_`
    `PRPS` property pairs verbatim plus the baked `DNAM` `Calculated Health` /
    `Action Points`, gated on `GameKind::uses_actor_value_properties`, with
-   wire-level tests in `crates/plugin/src/esm/records/actor/tests.rs`. What
-   remains is the **`RACE`/template inheritance fallback** for NPCs that
-   author no `PRPS` pairs of their own, plus perk-gate population.
+   wire-level tests in `crates/plugin/src/esm/records/actor/tests.rs`.
+   `TPLT` + ACBS "Use Stats" inheritance is resolved before the read
+   (#3382) — see the correction below. What remains is perk-gate population.
+
+   > **Correction (#3382, 2026-08-27).** This item previously described the
+   > remaining gap as a *"`RACE`/template inheritance **fallback** for NPCs
+   > that author no `PRPS` pairs of their own"*. That framing is falsified by
+   > the shipped data: **0 of 3,015** vanilla `Fallout4.esm` `NPC_` records
+   > lack `PRPS`, so the population it named is empty. The real gap was one of
+   > **template precedence**, not fallback — 1,222 of 3,015 actors author a
+   > `PRPS` set that differs from their `Use Stats` template's, and 1,201 a
+   > differing baked `DNAM`. Resolved by hoisting `resolve_inherited_stats`
+   > ahead of the stat-model match in `derive_npc_actor_values`, which fixes
+   > the identical gap on the Skyrim arm at the same time (#3381).
 4. ~~**Canonical model**~~ — shipped: `CharacterLevel` / `Perks` / `Background`
    components (`character/components.rs`), `CharacterRuleset` is a real
    `Resource` (`impl Resource for CharacterRuleset`, `ruleset.rs:128`).
@@ -602,9 +613,12 @@ follows the smoke-test pattern).
   (xEdit `Core/wbDefinitionsFO4.pas`, dev-4.1.6)". It is the **`PRPS`
   (Properties) subrecord**, `(AVIF FormID, value)` pairs, with Health and
   Action Points additionally baked into `DNAM`. Consumed by
-  `derive_stored_actor_values` (§8 item 3). Only the `RACE`/template fallback
-  for NPCs authoring no `PRPS` of their own is still open, and that is an
-  implementation gap, not a research one.
+  `derive_stored_actor_values` (§8 item 3). The `TPLT`/"Use Stats" precedence
+  half is now also closed (#3382): measured on `Fallout4.esm`, 0/3,015 `NPC_`
+  records author no `PRPS`, so the "fallback for PRPS-less NPCs" this item
+  used to name does not exist as a population — the actual gap was that
+  1,222/3,015 shells whose own `PRPS` disagrees with their template's were
+  read unresolved. Nothing on this item remains open.
 - **Per-game derived-stat formulas.** Health / AP / Carry Weight / Melee Damage /
   Magicka / Stamina as functions of attributes + level — one citable formula per
   game (FO4 first).
