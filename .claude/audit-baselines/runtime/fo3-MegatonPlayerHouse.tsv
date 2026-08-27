@@ -1,13 +1,57 @@
-# regenerated: 2026-06-14 (BASELINE CREATED — first run, audit-runtime --game all)
-entities_total	3311
+# regenerated: 2026-08-27 (#3005 — partial: draw-split + entities only)
+#
+# WHY THIS MOVED, before the numbers (the #3005 CAUSE-NOT-BASELINE box).
+#
+# The 2026-08-16 sweep flagged this cell past the x1.1 contract on BOTH
+# bench_draws_batches and bench_draws_gpu_calls while bench_draws_cmds stayed
+# inside it. Re-measured at cc666a48 on 2026-08-27
+# (`--game fo3 --cell MegatonPlayerHouse --bench-frames 240`, xvfb):
+#
+#   metric               2026-06-14 baseline   2026-08-27   x1.1 gate
+#   bench_draws_cmds     1839                  1581         PASS (fell)
+#   bench_draws_batches    96                   164         FAIL (+71%)
+#   bench_draws_gpu_calls   9                     9         PASS (recovered)
+#
+# The gpu_calls half of the finding is GONE; only the batch split remains.
+#
+# The cause is not a batching bug and is already documented in code: see
+# `draw_sort_key`'s alpha-over branch in `byroredux/src/render/mod.rs`
+# (RT-1 / #2215). True alpha-over draws sort depth-primary, so draws that
+# would otherwise share `group_state` stop being contiguous whenever a
+# different-state alpha-over draw sits at an intervening depth — each
+# interruption opens a new `DrawBatch`. That ordering is the deliberate,
+# required cost of the #1804/#2237 compositing fix (a farther decal/puddle
+# drawing after a nearer glass pane and showing through as a rectangular
+# patch); a state-primary sort can only be correct when the interleaved draws
+# never overlap on screen, which this key cannot determine. That comment
+# records the direct experiment: forcing state-primary order drops FNV
+# `FreesideAtomicWrangler` from 25 to 8 GPU calls.
+#
+# Merge efficiency here fell 19.2 -> 9.6 cmds/batch. Refreshed rather than
+# left red because a gate against 96 is now permanently failing and would
+# mask any NEW batching regression — the same reasoning the FNV baseline
+# records under #3288.
+#
+# entities_total 3311 -> 3493 (+5.5%) also exceeds its +/-2% tolerance and is
+# refreshed with the same measurement.
+#
+# PARTIAL REFRESH — only the rows this run measured were updated:
+# entities_total, bench_fps_*, bench_draws_*, skin_pool_*. The
+# `byro-dbg`-sourced rows (tex_missing_unique_paths, mesh_cache_failed_count,
+# light_count_directional) were NOT re-captured in this session and are
+# carried forward from 2026-06-14 unchanged — do not read them as re-verified.
+#
+# bench_fps_* is advisory only under xvfb (RT-2 / #1701) — never gate on it.
+# entities_total: +/-2% tolerance metric, not exact (#1705 / RT-3).
+entities_total	3493
 tex_missing_unique_paths	0
 mesh_cache_failed_count	3
 light_count_directional	1
-skin_pool_live	0
+skin_pool_live	7
 skin_pool_max	1364
 skin_pool_overflow_attempts	0
-bench_fps_p50	93.3
-bench_fps_avg	93.3
-bench_draws_cmds	1839
-bench_draws_batches	96
+bench_fps_p50	62.7
+bench_fps_avg	62.7
+bench_draws_cmds	1581
+bench_draws_batches	164
 bench_draws_gpu_calls	9

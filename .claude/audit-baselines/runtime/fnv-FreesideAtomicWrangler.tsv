@@ -23,6 +23,17 @@
 # #3005 lands; until then a batch gate against 89 would be permanently red and
 # would mask any NEW batching regression, which is why it is refreshed here.
 #
+# #3005 CLOSED 2026-08-27 at cc666a48. Re-measured
+# (`--game fnv --cell FreesideAtomicWrangler --bench-frames 240`, xvfb):
+# entities=7180, draws=2110/109b/26c — i.e. byte-identical to the rows below,
+# so this scene is back inside the x1.1 contract on all three draw metrics.
+# The cause of the 2026-08-16 finding is the depth-primary alpha-over ordering
+# documented in `draw_sort_key` (`byroredux/src/render/mod.rs`, RT-1 / #2215):
+# the deliberate, required cost of the #1804/#2237 compositing fix, not a
+# batching defect. The sibling fo3 baseline was refreshed in the same commit
+# with the same justification; it keeps a residual batch-split regression
+# (96 -> 164) while its gpu_calls half recovered (9 -> 9).
+#
 # bench_fps_* is advisory only under xvfb (RT-2 / #1701) — never gate on it.
 # entities_total: +/-2% tolerance metric, not exact (#1705 / RT-3).
 entities_total              7174

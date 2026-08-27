@@ -268,6 +268,14 @@ already spent on the full matrix + control).
 for reasons not yet understood — tracked under `#2367`'s completeness
 checks rather than assumed benign.
 
+**Harness provenance for `#2367`, checked 2026-08-27:** neither `f19f7f15`
+(parked → stepped camera) nor `76373774` (orbit-radius fix) is inside
+`3a02b02d..28155b79` — both land after `28155b79` — so no harness variable
+moved between the control and HEAD runs above. The comparison is internally
+valid; the methodology caveats belong to the *stepped-camera* refresh, not
+to this one. What is now stale is the range itself: HEAD is 815 commits past
+`28155b79`, and the bisection `#2367` asks for has not been run.
+
 FSR is the engine default at Quality (FSR plan phase 7). The `TAA (native)`
 column stays the reference for historical comparison and remains reachable
 via `--upscaler taa` / `r.upscaler taa`.
