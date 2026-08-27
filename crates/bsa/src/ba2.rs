@@ -744,7 +744,37 @@ fn decompress_chunk(
             Ok(buf)
         }
         Ba2Compression::Lz4Block => {
-            let buf = lz4_flex::block::decompress(packed, unpacked_size).map_err(|e| {
+            // #2097 / LZ4-01 — `lz4_flex::block::decompress`'s own docs say it
+            // "may panic" when the `min_uncompressed_size` hint undershoots the
+            // true decompressed size. Empirical fuzzing against the pinned
+            // 0.11.6 (constructed payloads, undersized from 1 byte down to 0)
+            // found zero panics, so this is not a live bug — but "no panic
+            // today" is a property of one pinned version, not of the crate's
+            // public contract, and archive bytes are attacker-controlled in
+            // the modded-content case. A dependency bump that tightens or
+            // loosens the internal bounds discipline, entirely within its
+            // still-compatible public contract, would otherwise abort the
+            // process on a malformed v3 chunk with no change on this side to
+            // explain why.
+            //
+            // Converting the unwind into the `Err` path this arm already has
+            // costs nothing on the success path and makes the failure mode
+            // match the zlib arm's. `AssertUnwindSafe` is sound here:
+            // `packed` is a shared slice we do not mutate, and the closure
+            // returns the decoded buffer by value, so a panic leaves no
+            // half-updated state behind for a later observer.
+            let decoded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                lz4_flex::block::decompress(packed, unpacked_size)
+            }))
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "BA2 LZ4 block decompression panicked (malformed chunk; \
+                     see #2097 — lz4_flex documents `decompress` as may-panic \
+                     when the size hint undershoots)",
+                )
+            })?;
+            let buf = decoded.map_err(|e| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!("BA2 LZ4 block decompression failed: {}", e),
@@ -1587,6 +1617,75 @@ mod tests {
             result, actual_payload,
             "current behaviour: the returned buffer is silently truncated to the block's \
              real decoded length, not padded/erroring to match the declared unpacked_size"
+        );
+    }
+
+    /// #2097 / LZ4-01 — an aggressively undersized `unpacked_size` hint must
+    /// come back as `Ok` or `Err`, never as an unwind through the caller.
+    ///
+    /// `lz4_flex::block::decompress` documents itself as "may panic" when the
+    /// hint undershoots the true decompressed size. On the pinned 0.11.6 it
+    /// does not — every case below returns normally — so this test cannot
+    /// fail today on behaviour alone. That is precisely why it is paired with
+    /// [`lz4_decompress_is_panic_guarded`]: this one exercises the arm and
+    /// documents the sizes that were probed, and that one is what actually
+    /// fails if the guard is removed.
+    #[test]
+    fn decompress_chunk_lz4_undersized_hint_never_unwinds() {
+        let actual_payload = b"a payload comfortably larger than the hints probed below";
+        let compressed = lz4_flex::block::compress(actual_payload);
+
+        // 0 is rejected upstream by `checked_chunk_size_usize`; start at 1 and
+        // walk up through the true size so both the undershoot and the exact
+        // boundary are covered.
+        for hint in [1usize, 2, 8, 32, actual_payload.len()] {
+            let result = decompress_chunk(&compressed, hint, Ba2Compression::Lz4Block);
+            // Either outcome is acceptable — the contract under test is that
+            // control returns here at all.
+            match result {
+                Ok(buf) => assert!(
+                    !buf.is_empty(),
+                    "hint {hint}: a successful decode must not be empty"
+                ),
+                Err(e) => assert_eq!(
+                    e.kind(),
+                    io::ErrorKind::InvalidData,
+                    "hint {hint}: failures must surface as InvalidData, not a foreign kind"
+                ),
+            }
+        }
+    }
+
+    /// #2097 / LZ4-01 — pins that the LZ4 arm still routes through
+    /// `catch_unwind`.
+    ///
+    /// The behavioural guard above cannot fail on `lz4_flex 0.11.6`, because
+    /// that version simply does not panic on the inputs its own docs warn
+    /// about. So the thing worth guarding is not the behaviour but the
+    /// *defence*: delete the `catch_unwind` and this test fails, which is the
+    /// only way this fix can be kept from silently regressing on a future
+    /// dependency bump — exactly the scenario the issue was filed about.
+    #[test]
+    fn lz4_decompress_is_panic_guarded() {
+        const SRC: &str = include_str!("ba2.rs");
+        let arm = SRC
+            .split("Ba2Compression::Lz4Block =>")
+            .nth(1)
+            .expect("the Lz4Block match arm must exist in this file");
+        // Look only at the arm body, not the whole file, so an unrelated
+        // `catch_unwind` elsewhere cannot satisfy this.
+        let body = &arm[..arm.len().min(2000)];
+        assert!(
+            body.contains("catch_unwind"),
+            "the Lz4Block arm no longer wraps lz4_flex::block::decompress in \
+             catch_unwind — lz4_flex documents `decompress` as may-panic when the \
+             size hint undershoots, and archive bytes are attacker-controlled for \
+             modded content (#2097)"
+        );
+        assert!(
+            body.contains("lz4_flex::block::decompress"),
+            "the Lz4Block arm no longer calls lz4_flex::block::decompress — if the \
+             codec call moved, move this guard with it"
         );
     }
 
