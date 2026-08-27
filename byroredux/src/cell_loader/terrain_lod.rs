@@ -1099,11 +1099,18 @@ mod tests {
         assert!(quads.iter().any(|&(level, _, _)| level == 32));
     }
 
-    /// #2371 / #3100 — Oblivion / FO3 / FNV have no combined `.btr` ladder, so
-    /// their geometry ring remains what it was before band selection existed:
-    /// one finest-level ring, `LOD_RADIUS_BLOCKS` blocks deep, centred on the
-    /// player's block. A regression here is a silently shrunken horizon on
-    /// the three games that have no coarser source to fall back to.
+    /// #2371 / #3100 / #3203 — the `None` arm: a game with no band ladder at
+    /// all keeps the geometry ring it had before band selection existed — one
+    /// finest-level ring, `LOD_RADIUS_BLOCKS` blocks deep, centred on the
+    /// player's block. A regression here is a silently shrunken horizon.
+    ///
+    /// **Oblivion is now the only game that takes it.** This used to say
+    /// "Oblivion / FO3 / FNV", which was true when `for_terrain_game`
+    /// delegated straight to `for_game`; FO3/FNV do ship a baked 4/8/16/32
+    /// `landscape\lod` ladder out to +/-64 cells and now get
+    /// `LodBandLadder::fallout_legacy()` instead (#3203). The `None` passed
+    /// below is therefore the arm under test, not a stand-in for those two —
+    /// `fallout_legacy_terrain_reaches_authored_coarse_bands` covers them.
     #[test]
     fn games_without_a_combined_btr_ladder_keep_the_single_synth_ring() {
         let grid_origin = (0, 0);

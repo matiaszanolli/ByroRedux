@@ -2786,6 +2786,151 @@ fn installed_fallout_masters_decode_the_dnam_visual_tail() {
     );
 }
 
+/// #3205 / FO3-2026-08-20-D3-02 — the long-`DATA` carrier's 0..16 head is
+/// wind and wave controls, not the opaque prefix its doc-comment used to
+/// claim.
+///
+/// `decode_data_fo3nv` skipped offsets 0..16 "because xEdit calls them
+/// opaque" and substituted `wind_direction`/`wind_speed` from noise layer 1
+/// and `wave_amplitude`/`wave_frequency` from the displacement simulator's
+/// force/velocity at 76/80 — so the two FO3 carriers disagreed about where
+/// four canonical fields live. The head is now read exactly as
+/// `decode_dnam_pre_fo4` reads it.
+///
+/// Pinned against **shipped bytes**, not the decoder's own output, and
+/// deliberately over the whole population rather than one fixture: the
+/// substituted values were plausible, which is why this survived.
+///
+/// The census this reproduces (all 53 FO3 / 78 FNV `WATR` visual payloads):
+/// offset 4 is `90.0` on 53/53, and offsets 0/8/12 hold the GECK water
+/// default tuple `0.1 / 0.5 / 1.0` on 46 of 53. The displacement simulator's
+/// `0.4 / 0.6` — what the old arm reported for amp/freq — appears on no
+/// record at all once the head is read.
+#[test]
+#[ignore]
+fn installed_fallout_masters_read_the_watr_head_not_the_simulator_tail() {
+    // The authored `(wave_amplitude, wave_frequency, wind_speed)` tuples in
+    // vanilla FO3/FNV. Every record is one of these; none is the displacement
+    // simulator's force/velocity pair.
+    const AUTHORED: &[(f32, f32, f32)] = &[
+        (0.5, 1.0, 0.1),  // GECK default water
+        (0.2, 0.25, 3.0), // the "open water" tuple (DefaultWater, Potomac, …)
+        (0.5, 0.5, 2.0),  // one FO3 / two FNV records
+    ];
+    const DISPLACEMENT_FORCE_VELOCITY: (f32, f32) = (0.4, 0.6);
+
+    let masters = [
+        (
+            "BYROREDUX_FO3_DATA",
+            "/mnt/data/SteamLibrary/steamapps/common/Fallout 3 goty/Data",
+            "Fallout3.esm",
+            "FO3",
+        ),
+        (
+            "BYROREDUX_FNV_DATA",
+            "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data",
+            "FalloutNV.esm",
+            "FNV",
+        ),
+    ];
+
+    let mut checked_games = 0;
+    for (env_var, fallback, filename, label) in masters {
+        let Some(data) = data_dir(env_var, fallback) else {
+            eprintln!("[{label} WATR head] skipping: game data unavailable");
+            continue;
+        };
+        let bytes = std::fs::read(data.join(filename)).expect("read installed master");
+        let index = parse_esm(&bytes).expect("parse installed master");
+        checked_games += 1;
+
+        let long_data = index
+            .waters
+            .values()
+            .filter(|w| w.raw_data.len() >= 100)
+            .count();
+        assert!(
+            long_data > 0,
+            "[{label}] no long-`DATA` WATR records — this guard would prove nothing"
+        );
+
+        for water in index.waters.values() {
+            let p = &water.params;
+            // Offset 4, degrees on the wire. Unanimous in vanilla; the old arm
+            // sourced this from `noise_wind_directions[0]` on the long-`DATA`
+            // records, which is a different field entirely.
+            assert!(
+                (p.wind_direction.to_degrees() - 90.0).abs() < 1e-3,
+                "[{label}] {} wind_direction {:.3}° — offset 4 is 90.0 on every \
+                 vanilla record; a non-90 reading means the head is being \
+                 sourced from a noise layer again (#3205)",
+                water.editor_id,
+                p.wind_direction.to_degrees(),
+            );
+            assert!(
+                (p.wave_amplitude - DISPLACEMENT_FORCE_VELOCITY.0).abs() > 1e-6
+                    || (p.wave_frequency - DISPLACEMENT_FORCE_VELOCITY.1).abs() > 1e-6,
+                "[{label}] {} reports the displacement simulator's force/velocity \
+                 ({:.3}/{:.3}) as its wave amplitude/frequency — the long-`DATA` \
+                 arm is reading 76/80 instead of the authored head at 8/12 (#3205)",
+                water.editor_id,
+                p.wave_amplitude,
+                p.wave_frequency,
+            );
+            assert!(
+                AUTHORED.iter().any(|&(amp, freq, speed)| {
+                    (p.wave_amplitude - amp).abs() < 1e-6
+                        && (p.wave_frequency - freq).abs() < 1e-6
+                        && (p.wind_speed - speed).abs() < 1e-6
+                }),
+                "[{label}] {} head tuple ({:.3}, {:.3}, {:.3}) is none of the \
+                 authored vanilla tuples {AUTHORED:?}",
+                water.editor_id,
+                p.wave_amplitude,
+                p.wave_frequency,
+                p.wind_speed,
+            );
+        }
+
+        // The named pin the finding asks for: a long-`DATA` record reporting
+        // the GECK default tuple. `PuddleWaterSmall01` (0x0002_4A50) ships the
+        // 186-byte `DATA` on both masters.
+        let puddle = index
+            .waters
+            .get(&0x0002_4A50)
+            .expect("PuddleWaterSmall01 (0x24A50)");
+        assert!(
+            puddle.raw_data.len() >= 100 && puddle.raw_dnam.is_empty(),
+            "[{label}] PuddleWaterSmall01 must be the long-`DATA` carrier, got \
+             data={} dnam={}",
+            puddle.raw_data.len(),
+            puddle.raw_dnam.len(),
+        );
+        assert!((puddle.params.wave_amplitude - 0.5).abs() < 1e-6);
+        assert!((puddle.params.wave_frequency - 1.0).abs() < 1e-6);
+        assert!((puddle.params.wind_speed - 0.1).abs() < 1e-6);
+
+        // Cross-carrier agreement, which is what the divergence actually cost:
+        // `DefaultWater` (0x18) ships the 186-byte `DATA` on FO3 and the
+        // 196-byte `DNAM` on FNV, and both must decode the same head.
+        let default_water = index.waters.get(&0x0000_0018).expect("DefaultWater (0x18)");
+        assert!((default_water.params.wave_amplitude - 0.2).abs() < 1e-6);
+        assert!((default_water.params.wave_frequency - 0.25).abs() < 1e-6);
+        assert!((default_water.params.wind_speed - 3.0).abs() < 1e-6);
+
+        eprintln!(
+            "[{label} WATR head] {} records ({long_data} long-`DATA`): every one \
+             reports a 90° wind direction and an authored wave tuple",
+            index.waters.len(),
+        );
+    }
+
+    assert!(
+        checked_games > 0,
+        "neither Fallout master was available — this guard proved nothing."
+    );
+}
+
 /// #3285 — FNV-sourced coverage for the shared `expand_leveled_inner`.
 ///
 /// `#3217` narrowed `multi_pick` from `flags & (0x02 | 0x04)` to

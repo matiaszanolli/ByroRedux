@@ -358,16 +358,23 @@ fn parse_rate_smoke_all_games() {
 
 /// #401 — particle emitters must surface from real game content. Walks
 /// the first up-to-200 NIFs in any candidate folder (`fire`, `smoke`,
-/// `fx`, etc.) of an available reference archive, parses each, and
-/// asserts that at least one produces an [`ImportedParticleEmitterFlat`].
-/// Pre-fix the importer dropped every NiPSysBlock and every torch
-/// rendered as an invisible node — this test would have caught it.
+/// `fx`, etc.) of every available reference archive, parses each, and
+/// asserts that each one produces at least one
+/// [`ImportedParticleEmitterFlat`]. Pre-fix the importer dropped every
+/// NiPSysBlock and every torch rendered as an invisible node — this test
+/// would have caught it.
 ///
-/// Robust to archive layout differences across games and mods: tries
-/// FNV, Fallout 3, Oblivion, Skyrim SE in turn until one of them has
-/// the expected folders. Fails only if every available archive yields
-/// zero emitters across the full sweep, which would mean the importer
-/// regressed (not that the archive layout drifted).
+/// #3286 — this used to `return` on the **first** game that yielded any
+/// emitters. FNV is first in the list and always yields them, so on any
+/// machine with FNV data installed the loop never reached Fallout 3,
+/// Oblivion or Skyrim SE — confirmed by `--nocapture`, which printed only
+/// the `[Fallout New Vegas]` line. That made this test useless as the
+/// coverage it was cited for: FO3's typed-particle decode
+/// (`extract_emitter_params` / `extract_emitter_rate`) shares FNV's
+/// dispatch with no FO3 gate, but "shares the code path" is an inference,
+/// and this is the one piece of real-archive infrastructure that could
+/// turn it into a verified fact. Every present archive is now swept and
+/// asserted independently.
 #[test]
 #[ignore]
 fn real_archive_torch_meshes_surface_particle_emitters() {
@@ -381,12 +388,12 @@ fn real_archive_torch_meshes_surface_particle_emitters() {
         Game::SkyrimSE,
     ];
 
-    let mut tried_any_archive = false;
+    let mut swept: Vec<(Game, usize, usize)> = Vec::new();
+    let mut barren: Vec<Game> = Vec::new();
     for game in games_to_try {
         let Some(archive) = open_mesh_archive(game) else {
             continue;
         };
-        tried_any_archive = true;
         let all_files = archive.list_files();
         let mut total_emitters = 0usize;
         let mut paths_with_emitters: Vec<String> = Vec::new();
@@ -431,23 +438,39 @@ fn real_archive_torch_meshes_surface_particle_emitters() {
             for p in &paths_with_emitters {
                 eprintln!("  example: {}", p);
             }
-            return; // pass on the first game that yields any emitters
+        } else {
+            eprintln!(
+                "[{}] NO emitters in {} candidate NIFs",
+                game.label(),
+                candidates.len(),
+            );
+            barren.push(game);
         }
-        eprintln!(
-            "[{}] no emitters in {} candidate NIFs — trying next game",
-            game.label(),
-            candidates.len(),
-        );
+        swept.push((game, candidates.len(), total_emitters));
     }
 
-    if !tried_any_archive {
+    if swept.is_empty() {
         eprintln!("no reference game data available — skipping (set BYROREDUX_*_DATA env vars)");
         return;
     }
-    panic!(
-        "no particle emitters surfaced from any reference archive — \
-         the importer regressed (the audit's invisible-torch failure \
-         mode is back)"
+    assert!(
+        barren.is_empty(),
+        "these installed archives yielded zero particle emitters across their \
+         candidate folders: {:?} — the importer regressed for them (the audit's \
+         invisible-torch failure mode is back). Swept: {:?}",
+        barren.iter().map(|g| g.label()).collect::<Vec<_>>(),
+        swept
+            .iter()
+            .map(|(g, c, e)| (g.label(), *c, *e))
+            .collect::<Vec<_>>(),
+    );
+    eprintln!(
+        "[emitters] {} archive(s) swept, all non-zero: {:?}",
+        swept.len(),
+        swept
+            .iter()
+            .map(|(g, _, e)| (g.label(), *e))
+            .collect::<Vec<_>>(),
     );
 }
 
