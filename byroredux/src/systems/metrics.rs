@@ -86,6 +86,13 @@ pub fn metrics_sample_system(world: &World, _dt: f32) {
         }
         state.last_sample_secs = now_secs;
         let pid = state.pid;
+        // #2398 — deliberate deviation from the #466 fail-fast lock-poison
+        // doctrine the ECS layer applies to storages/resources. This lock
+        // guards a `sysinfo::System` handle whose only consumer is the
+        // diagnostics overlay / `byro-dbg`: a torn CPU or RAM reading is a
+        // wrong number on a debug panel, while re-panicking here would take
+        // the render loop down for a metric nothing simulates against.
+        // Losing the overlay is the worse failure, so recover and carry on.
         let mut sys = state.sys.lock().unwrap_or_else(|e| e.into_inner());
         sys.refresh_cpu_usage();
         sys.refresh_memory();
@@ -103,6 +110,11 @@ pub fn metrics_sample_system(world: &World, _dt: f32) {
 
     let (vram_used_b, vram_reserved_b) =
         if let Some(alloc_res) = world.try_resource::<AllocatorResource>() {
+            // #2398 — same diagnostics-only rationale as `state.sys` above.
+            // `generate_report()` reads gpu-allocator's own bookkeeping; a
+            // report taken while another thread panicked mid-update yields a
+            // stale or torn VRAM figure on the overlay, never a GPU
+            // operation. The allocator itself is not mutated here.
             let alloc = alloc_res.0.lock().unwrap_or_else(|e| e.into_inner());
             let report = alloc.generate_report();
             // gpu-allocator 0.28: `total_reserved_bytes` →

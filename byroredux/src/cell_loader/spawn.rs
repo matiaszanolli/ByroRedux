@@ -24,9 +24,8 @@ use crate::asset_provider::{
     resolve_texture_with_clamp, MaterialProvider, TextureProvider,
 };
 use crate::components::{
-    decal_uses_implicit_alpha_blend, texture_path_is_fx_mesh, AlphaBlend, DoorTeleport,
-    IsDecalMesh, IsFxMesh, Locked, MaterialTextureDebugInfo, MaterialTextureHandles,
-    MaterialTextureSource, TwoSided,
+    texture_path_is_fx_mesh, DoorTeleport, IsFxMesh, Locked, MaterialTextureDebugInfo,
+    MaterialTextureHandles, MaterialTextureSource,
 };
 
 use super::nif_import_registry::CachedNifImport;

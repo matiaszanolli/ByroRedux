@@ -1009,6 +1009,23 @@ impl VulkanContext {
             if let Some(ref mut timers) = self.gpu_timers {
                 timers.cmd_upscale_end(&self.device, cmd, frame);
             }
+            // #2519 — a dispatch rejected *inside* `record` fails after this
+            // frame's geometry pass already rendered with the FSR jitter
+            // offset (chosen at the top of `draw_frame`, when dispatch was
+            // still active), and the recovery path blits that image through
+            // with nothing to resolve it. Flush temporal history so the next
+            // frame does not reproject against a half-pixel-shifted image;
+            // later frames are chosen unjittered, so one frame covers it.
+            let fsr_dispatch_failed_this_frame = self
+                .frame_upscaler
+                .as_mut()
+                .expect("frame upscaler must exist while recording")
+                .take_new_dispatch_failure();
+            if fsr_dispatch_failed_this_frame {
+                self.signal_temporal_discontinuity(
+                    super::super::frame_upscaler::FSR_DISPATCH_FAILURE_RECOVERY_FRAMES,
+                );
+            }
         }
     }
 

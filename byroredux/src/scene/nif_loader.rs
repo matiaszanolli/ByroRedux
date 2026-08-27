@@ -28,8 +28,8 @@ use crate::asset_provider::{
     resolve_texture_with_clamp, MaterialProvider, TextureProvider,
 };
 use crate::components::{
-    decal_uses_implicit_alpha_blend, texture_path_is_fx_mesh, AlphaBlend, IsDecalMesh, IsFxMesh,
-    MaterialTextureDebugInfo, MaterialTextureHandles, MaterialTextureSource, TwoSided,
+    texture_path_is_fx_mesh, IsFxMesh, MaterialTextureDebugInfo, MaterialTextureHandles,
+    MaterialTextureSource,
 };
 use crate::helpers::add_child;
 
@@ -967,32 +967,16 @@ pub(crate) fn load_nif_bytes_with_skeleton(
             ),
         );
         world.insert(entity, WorldBound::ZERO);
-        let implicit_decal_blend = decal_uses_implicit_alpha_blend(
-            mesh.material.is_decal,
-            mesh.material.has_alpha,
-            mesh.material.alpha_test,
-            mesh.material.alpha_threshold,
+        // #2490 — the blend/decal/facing markers derive from the raw
+        // `ImportedMaterial` at the same single boundary the `Material`
+        // literal does, so this path cannot diverge from the REFR path.
+        crate::material_translate::attach_blend_and_facing_markers(
+            world,
+            entity,
+            &mesh.material,
+            canonical_src_blend_mode,
+            canonical_dst_blend_mode,
         );
-        if mesh.material.has_alpha || implicit_decal_blend {
-            let (src_blend, dst_blend) = if mesh.material.has_alpha {
-                (canonical_src_blend_mode, canonical_dst_blend_mode)
-            } else {
-                (6, 7)
-            };
-            world.insert(
-                entity,
-                AlphaBlend {
-                    src_blend,
-                    dst_blend,
-                },
-            );
-        }
-        if mesh.material.is_decal {
-            world.insert(entity, IsDecalMesh);
-        }
-        if mesh.material.two_sided {
-            world.insert(entity, TwoSided);
-        }
         // #renderlayer — loose-NIF path has no REFR base record, so
         // the base layer defaults to Architecture (zero bias). The
         // per-mesh escalation still applies regardless of how the mesh

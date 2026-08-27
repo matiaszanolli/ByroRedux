@@ -903,35 +903,16 @@ pub(super) fn spawn_mesh_instance(
     // pattern, for whether the model-space normal map's blue channel
     // carries authored Z.
     crate::material_translate::resolve_msn_z_source(world, entity);
-    let implicit_decal_blend = decal_uses_implicit_alpha_blend(
-        mesh.material.is_decal,
-        mesh.material.has_alpha,
-        mesh.material.alpha_test,
-        mesh.material.alpha_threshold,
+    // #2490 — the blend/decal/facing markers derive from the raw
+    // `ImportedMaterial` at the same single boundary the `Material`
+    // literal does, so this path cannot diverge from the loose-NIF path.
+    crate::material_translate::attach_blend_and_facing_markers(
+        world,
+        entity,
+        &mesh.material,
+        canonical_src_blend_mode,
+        canonical_dst_blend_mode,
     );
-    if mesh.material.has_alpha || implicit_decal_blend {
-        // FO4's dedicated decal pass composites texture alpha even when the
-        // BGSM generic blend function is `None` for low-threshold soft
-        // decals. Preserve explicit factors; otherwise use alpha-over.
-        let (src_blend, dst_blend) = if mesh.material.has_alpha {
-            (canonical_src_blend_mode, canonical_dst_blend_mode)
-        } else {
-            (6, 7)
-        };
-        world.insert(
-            entity,
-            AlphaBlend {
-                src_blend,
-                dst_blend,
-            },
-        );
-    }
-    if mesh.material.is_decal {
-        world.insert(entity, IsDecalMesh);
-    }
-    if mesh.material.two_sided {
-        world.insert(entity, TwoSided);
-    }
     // #renderlayer — derive the per-entity content-class layer.
     // Base layer comes from the REFR's record type
     // (`stat.record_type.render_layer()`); two per-mesh signals then

@@ -59,7 +59,9 @@
 //! is game-agnostic, and is what the renderer reads) — this boundary is
 //! the `translate()` step, not a new type.
 
-use crate::components::MaterialTextureHandles;
+use crate::components::{
+    decal_uses_implicit_alpha_blend, AlphaBlend, IsDecalMesh, MaterialTextureHandles, TwoSided,
+};
 use byroredux_core::ecs::components::material::{EffectFalloff, Material};
 use byroredux_core::ecs::components::water::{
     WaterFlow, WaterKind, WaterMaterial, WaterPlane, WaterVolume,
@@ -582,6 +584,62 @@ pub(crate) fn translate_material(
     material
 }
 
+/// Derive the blend / decal / facing **marker components** from the raw
+/// [`ImportedMaterial`] — the marker-component counterpart to
+/// [`translate_material`]'s `Material` lowering (#2490 / NIFAL-D6-04).
+///
+/// Both spawn sites ran a byte-identical copy of this block:
+/// `scene::nif_loader` (loose-NIF load) and
+/// `cell_loader::spawn::mesh_instance` (REFR cell placement) — the same
+/// duplicated-construction shape that silently diverged the `Material`
+/// literal before this module existed, just for the marker subset. A
+/// blend/decal rule added to one site and not the other renders the same
+/// NIF differently depending on how it was loaded, with no test that can
+/// see the difference.
+///
+/// The canonical blend factors are passed in rather than re-read from
+/// `raw`: the authored pair reaches this helper only after
+/// [`translate_material`] has lowered it, so the explicit branch stays on
+/// the canonical side of the boundary while the fallback pair stays a
+/// property of the decal rule.
+pub(crate) fn attach_blend_and_facing_markers(
+    world: &mut World,
+    entity: EntityId,
+    raw: &ImportedMaterial,
+    canonical_src_blend_mode: u8,
+    canonical_dst_blend_mode: u8,
+) {
+    let implicit_decal_blend = decal_uses_implicit_alpha_blend(
+        raw.is_decal,
+        raw.has_alpha,
+        raw.alpha_test,
+        raw.alpha_threshold,
+    );
+    if raw.has_alpha || implicit_decal_blend {
+        // FO4's dedicated decal pass composites texture alpha even when the
+        // BGSM generic blend function is `None` for low-threshold soft
+        // decals. Preserve explicit factors; otherwise use alpha-over.
+        let (src_blend, dst_blend) = if raw.has_alpha {
+            (canonical_src_blend_mode, canonical_dst_blend_mode)
+        } else {
+            (6, 7)
+        };
+        world.insert(
+            entity,
+            AlphaBlend {
+                src_blend,
+                dst_blend,
+            },
+        );
+    }
+    if raw.is_decal {
+        world.insert(entity, IsDecalMesh);
+    }
+    if raw.two_sided {
+        world.insert(entity, TwoSided);
+    }
+}
+
 /// Canonical `Material` for a drawn surface that has **no source material
 /// record** — only a bound diffuse texture path.
 ///
@@ -885,6 +943,102 @@ pub(crate) fn resolve_msn_z_source(world: &mut World, entity: EntityId) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression for #2490 (NIFAL-D6-04) — the blend/decal/facing marker
+    /// derivation lived copy-pasted at both spawn sites, so a rule added to
+    /// one silently rendered the same NIF differently depending on whether
+    /// it was loaded loose or placed by a REFR. These pin the consolidated
+    /// helper's behaviour; the source-scan test below pins the single
+    /// boundary itself.
+    fn markers_for(raw: &ImportedMaterial) -> (Option<(u8, u8)>, bool, bool) {
+        let mut world = World::new();
+        let entity = world.spawn();
+        attach_blend_and_facing_markers(&mut world, entity, raw, 3, 9);
+        let blend = world
+            .get::<AlphaBlend>(entity)
+            .map(|b| (b.src_blend, b.dst_blend));
+        let is_decal = world.get::<IsDecalMesh>(entity).is_some();
+        let two_sided = world.get::<TwoSided>(entity).is_some();
+        (blend, is_decal, two_sided)
+    }
+
+    #[test]
+    fn authored_blend_keeps_the_canonical_factors() {
+        let raw = ImportedMaterial {
+            has_alpha: true,
+            ..Default::default()
+        };
+        assert_eq!(markers_for(&raw).0, Some((3, 9)));
+    }
+
+    #[test]
+    fn low_threshold_alpha_tested_decal_gets_implicit_alpha_over() {
+        let raw = ImportedMaterial {
+            is_decal: true,
+            has_alpha: false,
+            alpha_test: true,
+            alpha_threshold: 0.1,
+            ..Default::default()
+        };
+        let (blend, is_decal, _) = markers_for(&raw);
+        assert_eq!(blend, Some((6, 7)), "implicit decal blend is alpha-over");
+        assert!(is_decal);
+    }
+
+    #[test]
+    fn high_threshold_cutout_decal_stays_opaque() {
+        let raw = ImportedMaterial {
+            is_decal: true,
+            has_alpha: false,
+            alpha_test: true,
+            alpha_threshold: 0.5,
+            ..Default::default()
+        };
+        let (blend, is_decal, _) = markers_for(&raw);
+        assert_eq!(blend, None, "posters/signs must not get alpha-over");
+        assert!(is_decal, "still an authored decal surface");
+    }
+
+    #[test]
+    fn opaque_single_sided_material_attaches_no_markers() {
+        let (blend, is_decal, two_sided) = markers_for(&ImportedMaterial::default());
+        assert_eq!(blend, None);
+        assert!(!is_decal);
+        assert!(!two_sided);
+    }
+
+    #[test]
+    fn two_sided_flag_attaches_the_facing_marker() {
+        let raw = ImportedMaterial {
+            two_sided: true,
+            ..Default::default()
+        };
+        assert!(markers_for(&raw).2);
+    }
+
+    /// #2490 — both spawn sites must reach the markers through the single
+    /// boundary. Re-introducing an inline `AlphaBlend` literal at either
+    /// site is the exact regression this consolidation removes, and nothing
+    /// else in the crate can see the two paths diverge.
+    #[test]
+    fn both_spawn_sites_derive_markers_through_this_boundary() {
+        const NIF_LOADER_RS: &str = include_str!("scene/nif_loader.rs");
+        const MESH_INSTANCE_RS: &str = include_str!("cell_loader/spawn/mesh_instance.rs");
+
+        for (src, label) in [
+            (NIF_LOADER_RS, "scene/nif_loader.rs"),
+            (MESH_INSTANCE_RS, "cell_loader/spawn/mesh_instance.rs"),
+        ] {
+            assert!(
+                src.contains("attach_blend_and_facing_markers("),
+                "{label} must derive its markers at the NIFAL boundary"
+            );
+            assert!(
+                !src.contains("AlphaBlend {"),
+                "{label} re-introduced an inline AlphaBlend literal"
+            );
+        }
+    }
 
     #[test]
     fn mesh_water_zero_normal_handle_uses_procedural_sentinel() {

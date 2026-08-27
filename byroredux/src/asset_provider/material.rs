@@ -147,6 +147,13 @@ pub(crate) fn forward_bgsm_env_map_scale(
 /// instead, preserving #2705's skip-reextract behavior without the resident
 /// blob. A cap keeps untrusted/modded archive sets from growing keys forever.
 pub(super) const SF_CDB_CACHE_MAX_ENTRIES: usize = 128;
+/// Every caller takes this lock as `.unwrap_or_else(|e| e.into_inner())`,
+/// recovering rather than re-panicking on poison (#2398 — the deliberate
+/// counterpart to the ECS layer's #466 fail-fast doctrine). The map is a pure
+/// memoization of a re-derivable archive probe: the worst a torn entry can do
+/// is hand back a header probe that gets re-read from the archive, and a
+/// panicking material load must not permanently poison texture resolution for
+/// every later mesh in the cell.
 pub(super) fn sf_cdb_cache() -> &'static Mutex<HashMap<String, Option<CdbHeaderInfo>>> {
     static CACHE: OnceLock<Mutex<HashMap<String, Option<CdbHeaderInfo>>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))

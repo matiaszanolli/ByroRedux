@@ -58,6 +58,16 @@ use std::ffi::c_void;
 const FSR_VIEW_SPACE_TO_METERS_FACTOR: f32 =
     1.0 / byroredux_core::lighting::BETHESDA_UNITS_PER_METER;
 
+/// Temporal-recovery window for the one frame an FSR dispatch failure blits
+/// through jittered-but-unresolved (#2519).
+///
+/// One frame is the whole exposure: the geometry pass for the failing frame is
+/// already recorded, so the only thing left to protect is the *next* frame's
+/// reprojection against that image. Every frame after the latch is chosen
+/// unjittered by `is_fsr_dispatch_active()`, so a longer window would only
+/// hold SVGF at its elevated α for frames that carry no offset at all.
+pub const FSR_DISPATCH_FAILURE_RECOVERY_FRAMES: u32 = 1;
+
 /// Camera and temporal values that change for every FSR dispatch.
 #[derive(Debug, Clone, Copy)]
 pub struct FsrFrameParameters {
@@ -99,6 +109,20 @@ pub struct FrameUpscaler {
     /// dispatched again for this swapchain generation; the native blit takes
     /// over so the frame graph keeps producing frames.
     dispatch_failure: Option<String>,
+    /// One-shot edge signal for the frame on which `dispatch_failure` was
+    /// latched, consumed by `record_upscale_pass` via
+    /// [`Self::take_new_dispatch_failure`] (#2519).
+    ///
+    /// That frame's geometry pass already rendered with the FSR sub-pixel
+    /// jitter offset — the jitter is chosen at the top of `draw_frame` from
+    /// `is_fsr_dispatch_active()`, which was still `true` then — and the
+    /// recovery path blits that jittered image through with no pass to
+    /// resolve it. Every later frame is correctly unjittered, so only the
+    /// failing frame's *history* is the hazard: without this signal the next
+    /// frame's SVGF/volumetrics reprojection accumulates against a
+    /// half-pixel-shifted image. Same class of hazard `taa_jitter`'s
+    /// `!taa_failed` gate closes on the TAA side (#1932).
+    new_dispatch_failure: bool,
     /// Cached one-line telemetry for this swapchain generation. Built once
     /// after context creation because the SDK's memory reservation is fixed
     /// for the life of a context — re-querying it per frame would be an FFI
@@ -134,6 +158,7 @@ impl FrameUpscaler {
             extents,
             dispatched_this_frame: false,
             dispatch_failure: None,
+            new_dispatch_failure: false,
             summary: String::new(),
         };
 
@@ -328,6 +353,16 @@ impl FrameUpscaler {
         self.dispatch_failure.as_deref()
     }
 
+    /// Consume the "dispatch failed on *this* frame" edge (#2519).
+    ///
+    /// `true` exactly once, on the frame the failure was latched — the one
+    /// frame that was rendered jittered and then blitted through unresolved.
+    /// The caller turns that into a temporal discontinuity so nothing
+    /// reprojects against it; see [`Self::new_dispatch_failure`].
+    pub fn take_new_dispatch_failure(&mut self) -> bool {
+        std::mem::take(&mut self.new_dispatch_failure)
+    }
+
     /// One-line description of the active reconstruction path: the selected
     /// mode, the render/output extents, and — in FSR mode — the provider
     /// version plus the GPU memory the SDK reserved for its own resources.
@@ -440,6 +475,7 @@ impl FrameUpscaler {
             );
             self.dispatch_failure =
                 Some("FSR context is active but frame parameters are absent".to_string());
+            self.new_dispatch_failure = true;
             unsafe {
                 // SAFETY: same contract as this fn's own `# Safety` doc. No
                 // boundary barrier has run yet on this path, so the output
@@ -554,6 +590,7 @@ impl FrameUpscaler {
                  falling back to the native HDR blit for this swapchain generation"
             );
             self.dispatch_failure = Some(error.to_string());
+            self.new_dispatch_failure = true;
             unsafe {
                 // SAFETY: same contract as the dispatch path above — `cmd` is
                 // recording outside a render pass, and both helpers only
@@ -1009,6 +1046,7 @@ impl FrameUpscaler {
         self.context.take();
         self.dispatched_this_frame = false;
         self.dispatch_failure = None;
+        self.new_dispatch_failure = false;
     }
 
     /// Free the per-frame-in-flight output images/views/allocations — the
@@ -1214,6 +1252,59 @@ mod tests {
         assert_eq!(
             blit_output_src_access(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
             vk::AccessFlags::SHADER_READ
+        );
+    }
+
+    /// Regression for #2519 (REN-D23-03) — the frame on which an FSR
+    /// dispatch is rejected has already rendered its geometry with the FSR
+    /// sub-pixel jitter (chosen at the top of `draw_frame`, while
+    /// `is_fsr_dispatch_active()` was still true) and the recovery path
+    /// blits it through unresolved. Both recovery arms must therefore raise
+    /// the one-shot edge, and `record_upscale_pass` must consume it into a
+    /// temporal discontinuity — otherwise the next frame reprojects against
+    /// a half-pixel-shifted image. Source-scan pin: a device is needed to
+    /// build a `FrameUpscaler`, and an SDK rejection cannot be produced in
+    /// a unit test at all.
+    #[test]
+    fn every_dispatch_failure_latch_raises_the_temporal_discontinuity_edge() {
+        const FRAME_UPSCALER_RS: &str = include_str!("frame_upscaler.rs");
+        const POST_PASSES_RS: &str = include_str!("context/post_passes.rs");
+
+        // Every assignment to `dispatch_failure` inside `record`'s recovery
+        // arms must be followed by the edge flag. `destroy_device_objects`
+        // clears it to `None`, which is not a latch.
+        // Scan production code only — the needles below also occur in this
+        // test's own body.
+        let production = FRAME_UPSCALER_RS
+            .split_once("\n#[cfg(test)]")
+            .expect("frame_upscaler.rs has a #[cfg(test)] module")
+            .0;
+        let latches: Vec<&str> = production
+            .match_indices("self.dispatch_failure =")
+            .map(|(i, _)| &production[i..])
+            .filter(|tail| !tail.starts_with("self.dispatch_failure = None"))
+            .collect();
+        assert_eq!(
+            latches.len(),
+            2,
+            "expected exactly two dispatch-failure latch sites (absent frame              params, rejected dispatch); found {}",
+            latches.len()
+        );
+        for tail in latches {
+            let window: String = tail.chars().take(400).collect();
+            assert!(
+                window.contains("self.new_dispatch_failure = true;"),
+                "a dispatch-failure latch does not raise the #2519 edge:\n{window}"
+            );
+        }
+
+        assert!(
+            POST_PASSES_RS.contains("take_new_dispatch_failure()"),
+            "record_upscale_pass must consume the #2519 edge"
+        );
+        assert!(
+            POST_PASSES_RS.contains("FSR_DISPATCH_FAILURE_RECOVERY_FRAMES"),
+            "the consumed #2519 edge must signal a temporal discontinuity"
         );
     }
 
