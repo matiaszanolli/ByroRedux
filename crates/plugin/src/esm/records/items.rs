@@ -13,6 +13,43 @@ use super::common::CommonItemFields;
 use crate::esm::reader::{FormIdRemap, GameKind, SubRecord};
 use crate::esm::sub_reader::SubReader;
 
+/// FNV `WEAP.VATS` — the per-weapon VATS inputs FO3/FO4 do not author here.
+///
+/// #3324 — `ap_cost` used to be pinned to `0.0` for every FO3/FNV weapon
+/// because the parser searched `DNAM` for it, and the in-code comment said
+/// its "true DNAM offset is unconfirmed". It is not in `DNAM`: FNV ships a
+/// dedicated 20-byte `VATS` sub-record on 245 of its 261 `WEAP` records.
+///
+/// Layout established from the archive, not from a remembered spec — see
+/// `crates/plugin/examples/probe_weap_vats.rs`, which decodes every payload
+/// and reports each slot's distribution:
+///
+/// | offset | type | evidence for the name |
+/// |---|---|---|
+/// | 0 | `u32` | 13 non-null payloads, **all 13 resolve to `SPEL`** against a whole-file FormID→type map; 232 are null |
+/// | 4 | `f32` | exactly two values corpus-wide — `0.0` (x202) and `50.0` (x43): a threshold, not a continuous stat |
+/// | 8 | `f32` | clusters at `0.5 / 0.7 / 1.0 / 1.25 / 2.0` — a multiplier around unity |
+/// | 12 | `f32` | wholly integral, `14.0..=48.0` on 45 weapons — the AP-cost domain |
+/// | 16 | `u8` | `{0: 3, 1: 239}` |
+///
+/// Three of the 245 payloads are 16 bytes rather than 20 and carry no
+/// silence byte; those parse with `silence_level` left at `0`.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct WeaponVats {
+    /// `SPEL` FormID applied on a VATS hit, or `0` for none (232 of 245
+    /// vanilla FNV weapons author no effect).
+    pub effect_form: u32,
+    /// Skill percentage required for the VATS attack. Vanilla authors only
+    /// `0.0` or `50.0`.
+    pub required_skill: f32,
+    /// Damage multiplier applied to the VATS attack.
+    pub damage_mult: f32,
+    /// Silence level. Vanilla FNV authors only `0` and `1`; the wider enum
+    /// domain is deliberately not asserted, since the corpus does not
+    /// evidence it. Feeds stealth detection alongside VATS.
+    pub silence_level: u8,
+}
+
 /// What kind of item this is, with kind-specific stats.
 #[derive(Debug, Clone)]
 pub enum ItemKind {
@@ -115,7 +152,9 @@ pub enum ItemKind {
         clip_size: u16,
         /// Animation type (0 = handgun, 1 = rifle, 2 = launcher, ...).
         anim_type: u8,
-        /// Action point cost (VATS).
+        /// Action point cost (VATS). FO4 reads this from `DNAM` offset
+        /// 112; FNV from the dedicated `VATS` sub-record (#3324), **not**
+        /// from `DNAM` — see [`WeaponVats`].
         ap_cost: f32,
         /// Skill required form (AVIF).
         skill_form: u32,
@@ -136,6 +175,12 @@ pub enum ItemKind {
         speed: f32,
         /// Reload animation (0..n).
         reload_anim: u8,
+        /// FNV `VATS` payload — VATS effect spell, required skill, damage
+        /// multiplier and silence level. `None` for every other game: FO3
+        /// authors no `VATS` sub-record at all (censused: 160 `WEAP` in
+        /// `Fallout3.esm`, zero `VATS`), and FO4 folds AP cost back into
+        /// `DNAM`. See [`WeaponVats`].
+        vats: Option<WeaponVats>,
     },
 }
 
@@ -187,6 +232,7 @@ pub fn parse_weap(
     let mut spread = 0.0f32;
     let mut crit_mult = 1.0f32;
     let mut reload_anim = 0u8;
+    let mut vats: Option<WeaponVats> = None;
     let mut reach = 0.0f32;
     let mut speed = 0.0f32;
 
@@ -252,13 +298,51 @@ pub fn parse_weap(
                 // read as `ap_cost: u32`, a type mislabel confirmed by
                 // parsing the Varmint Rifle's raw DNAM: the bytes at
                 // offset 16 are a float (~0.024), not an integer.
-                // `ap_cost`'s true DNAM offset is unconfirmed; it stays
-                // at the zero default until the full layout is mapped.
+                //
+                // #3324 — this used to add "`ap_cost`'s true DNAM offset is
+                // unconfirmed; it stays at the zero default until the full
+                // layout is mapped", which sent two audits searching this
+                // blob. AP cost is **not in DNAM on FNV**: it is offset 12
+                // of the dedicated `VATS` sub-record handled below. Nothing
+                // here writes `ap_cost`.
                 min_spread = r.f32_or_default(); // offset 16 confirmed
                                                  // Offset 20 — next f32 present in the blob; semantic
                                                  // TBD (may or may not duplicate the NAM6 spread). Not
                                                  // stored; NAM6 remains the authoritative spread source.
                 let _offset_20 = r.f32_or_default();
+            }
+            // FNV `VATS` — the per-weapon VATS inputs, in their own
+            // sub-record rather than folded into `DNAM` (#3324). Present on
+            // 245 of `FalloutNV.esm`'s 261 `WEAP` records; `Fallout3.esm`
+            // authors none at all, so the `Fallout3NV` gate is FNV-only in
+            // practice. See [`WeaponVats`] for how each slot was
+            // established from the archive.
+            //
+            // 20 bytes normally; 3 vanilla records ship 16 and stop before
+            // the silence byte, so every read is length-guarded rather than
+            // assuming the full payload.
+            b"VATS" if matches!(game, GameKind::Fallout3NV) && sub.data.len() >= 16 => {
+                let mut r = SubReader::new(&sub.data);
+                // Same null-preserving remap `parse_omod_loose_item` uses:
+                // 0 is "no effect", not plugin-local slot 0.
+                let raw_effect = r.u32_or_default();
+                let effect_form = if raw_effect == 0 {
+                    0
+                } else {
+                    remap.as_ref().map_or(raw_effect, |m| m.remap(raw_effect))
+                };
+                let required_skill = r.f32_or_default();
+                let damage_mult = r.f32_or_default();
+                // Offset 12 — the field the DNAM comment above spent two
+                // audits looking for.
+                ap_cost = r.f32_or_default();
+                let silence_level = sub.data.get(16).copied().unwrap_or(0);
+                vats = Some(WeaponVats {
+                    effect_form,
+                    required_skill,
+                    damage_mult,
+                    silence_level,
+                });
             }
             // FO4 WEAP DNAM is a packed, unaligned 132-byte structure. Keep
             // the game-specific byte layout here at the parser boundary and
@@ -340,6 +424,7 @@ pub fn parse_weap(
             reach,
             speed,
             reload_anim,
+            vats,
         },
     }
 }
@@ -840,6 +925,86 @@ mod tests {
                 assert_eq!(clip_size, 8);
             }
             _ => panic!("expected Weapon kind"),
+        }
+    }
+
+    /// #3324 — FNV authors VATS in its own `VATS` sub-record, not in
+    /// `DNAM`. The bytes below are the verbatim payload of vanilla
+    /// `WeapKnifeCombatCass` (`FalloutNV.esm`), which the census reported as
+    /// `effect=00000000 @4=50.00 @8=0.70 @12=14.00 @16=1`.
+    ///
+    /// The load-bearing assertion is `ap_cost == 14.0`: pre-fix it was
+    /// pinned to the `0.0` default for every FO3/FNV weapon, because the
+    /// parser looked for it in `DNAM` on the strength of a comment claiming
+    /// its "true DNAM offset is unconfirmed".
+    #[test]
+    fn fnv_weap_vats_decodes_ap_cost_and_siblings() {
+        let mut vats = Vec::new();
+        vats.extend_from_slice(&0u32.to_le_bytes()); // 0: no VATS effect
+        vats.extend_from_slice(&50.0f32.to_le_bytes()); // 4: required skill
+        vats.extend_from_slice(&0.7f32.to_le_bytes()); // 8: damage mult
+        vats.extend_from_slice(&14.0f32.to_le_bytes()); // 12: AP cost
+        vats.extend_from_slice(&[1, 0, 0, 0]); // 16: silence + 3 pad
+        assert_eq!(vats.len(), 20, "vanilla VATS payload is 20 bytes");
+
+        let subs = vec![
+            sub(b"EDID", b"WeapKnifeCombatCass\0"),
+            sub(b"DATA", &build_data_weap(100, 1.0, 9, 0)),
+            sub(b"VATS", &vats),
+        ];
+        let item = parse_weap(0x1000, &subs, GameKind::Fallout3NV, &None);
+        match item.kind {
+            ItemKind::Weapon { ap_cost, vats, .. } => {
+                assert_eq!(ap_cost, 14.0, "AP cost comes from VATS offset 12");
+                let vats = vats.expect("FNV WEAP with a VATS sub-record must decode it");
+                assert_eq!(vats.effect_form, 0);
+                assert_eq!(vats.required_skill, 50.0);
+                assert!((vats.damage_mult - 0.7).abs() < 1e-6);
+                assert_eq!(vats.silence_level, 1);
+            }
+            _ => panic!("expected Weapon kind"),
+        }
+    }
+
+    /// Three vanilla FNV payloads are 16 bytes and stop before the silence
+    /// byte. They must still yield their AP cost rather than being rejected
+    /// or over-read.
+    #[test]
+    fn fnv_weap_vats_accepts_the_short_sixteen_byte_payload() {
+        let mut vats = Vec::new();
+        vats.extend_from_slice(&0u32.to_le_bytes());
+        vats.extend_from_slice(&0.0f32.to_le_bytes());
+        vats.extend_from_slice(&1.0f32.to_le_bytes());
+        vats.extend_from_slice(&48.0f32.to_le_bytes());
+        assert_eq!(vats.len(), 16);
+
+        let subs = vec![sub(b"EDID", b"ShortVats\0"), sub(b"VATS", &vats)];
+        match parse_weap(0x1001, &subs, GameKind::Fallout3NV, &None).kind {
+            ItemKind::Weapon { ap_cost, vats, .. } => {
+                assert_eq!(ap_cost, 48.0);
+                assert_eq!(vats.expect("short payload still decodes").silence_level, 0);
+            }
+            _ => panic!("expected Weapon kind"),
+        }
+    }
+
+    /// The arm is gated to the Fallout3NV kind. FO4 folds AP cost back into
+    /// `DNAM` offset 112 and must not be re-read from a stray `VATS`, and
+    /// `Fallout3.esm` authors no `VATS` at all (160 `WEAP`, zero `VATS`) —
+    /// so a `VATS` on any other game is not FNV data.
+    #[test]
+    fn weap_vats_is_not_read_outside_the_fallout_legacy_gate() {
+        let mut vats = vec![0u8; 20];
+        vats[12..16].copy_from_slice(&48.0f32.to_le_bytes());
+        for game in [GameKind::Fallout4, GameKind::Skyrim, GameKind::Oblivion] {
+            let subs = vec![sub(b"EDID", b"NotFnv\0"), sub(b"VATS", &vats)];
+            match parse_weap(0x1002, &subs, game, &None).kind {
+                ItemKind::Weapon { ap_cost, vats, .. } => {
+                    assert_eq!(ap_cost, 0.0, "{game:?} must not read VATS");
+                    assert!(vats.is_none(), "{game:?} must not populate WeaponVats");
+                }
+                _ => panic!("expected Weapon kind"),
+            }
         }
     }
 

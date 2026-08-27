@@ -698,6 +698,7 @@ pub(crate) fn parse_refr_group(
             let mut scale = 1.0f32;
             let mut enable_parent: Option<EnableParent> = None;
             let mut teleport: Option<TeleportDest> = None;
+            let mut reputation_ref: Option<u32> = None;
             let mut primitive: Option<PrimitiveBounds> = None;
             let mut linked_refs: Vec<LinkedRef> = Vec::new();
             let mut location_ref_types: Vec<u32> = Vec::new();
@@ -761,6 +762,14 @@ pub(crate) fn parse_refr_group(
                         let form_id = reader.remap_form_id(r.u32_or_default());
                         let inverted = r.u8_or_default() & 1 != 0;
                         enable_parent = Some(EnableParent { form_id, inverted });
+                    }
+                    // WMI1 (FNV) — placement-scoped `REPU` override, the
+                    // REFR-side half of the faction → reputation edge
+                    // (#3325). Remapped like every other embedded FormID.
+                    b"WMI1" if sub.data.len() >= 4 => {
+                        let mut r = SubReader::new(&sub.data);
+                        let raw = r.u32_or_default();
+                        reputation_ref = (raw != 0).then(|| reader.remap_form_id(raw));
                     }
                     // XTEL — Teleport destination (doors). Layout per
                     // UESP: DestRef(u32) + pos(3×f32) + rot(3×f32) +
@@ -973,6 +982,7 @@ pub(crate) fn parse_refr_group(
                     scale,
                     enable_parent,
                     teleport,
+                    reputation_ref,
                     primitive,
                     linked_refs,
                     location_ref_types,

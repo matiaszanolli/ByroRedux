@@ -473,6 +473,7 @@ fn weapon_item(form_id: u32, damage: u32) -> byroredux_plugin::esm::records::Ite
             reach: 0.0,
             speed: 0.0,
             reload_anim: 0,
+            vats: None,
         },
     }
 }

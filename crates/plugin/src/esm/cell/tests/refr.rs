@@ -615,6 +615,24 @@ fn parse_refr_without_xesp_has_no_enable_parent() {
     assert!(refs[0].enable_parent.is_none());
 }
 
+/// #3325 — the REFR half of the faction → reputation edge. 36 of
+/// `FalloutNV.esm`'s 82 `WMI1` payloads are placement-scoped overrides like
+/// this (the other 46 sit on `FACT`), and all 36 resolve to a real `REPU`.
+#[test]
+fn parse_refr_extracts_wmi1_reputation_override() {
+    let record = build_refr_with_subs(0xBEEF, &[(b"WMI1", &0x000F_43DDu32.to_le_bytes())]);
+    let r = parse_one_refr(&record);
+    assert_eq!(r.reputation_ref, Some(0x000F_43DD));
+
+    // A null payload is "no override", not an override onto FormID 0.
+    let record = build_refr_with_subs(0xBEF0, &[(b"WMI1", &0u32.to_le_bytes())]);
+    assert_eq!(parse_one_refr(&record).reputation_ref, None);
+
+    // And a REFR with no WMI1 at all.
+    let record = build_refr_with_subs(0xBEF1, &[]);
+    assert_eq!(parse_one_refr(&record).reputation_ref, None);
+}
+
 /// Regression for #412 — XTEL must populate `teleport` with the
 /// destination ref + position + rotation. Pre-fix every interior
 /// door was silently dropped on parse and activation did nothing.

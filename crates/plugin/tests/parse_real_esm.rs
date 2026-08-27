@@ -756,6 +756,56 @@ fn parse_rate_fnv_esm() {
         "REPU={} (expected >= 10; vanilla ships ~13)",
         index.reputations.len(),
     );
+
+    // #3325 — the FACT -> REPU edge. Before this landed, `index.reputations`
+    // was an orphan map: 13 parsed records with nothing able to say which
+    // faction moves which meter. The floor pins that the edge exists AND
+    // that every binding lands inside `reputations` — a binding pointing at
+    // a non-REPU FormID would mean the remap or the sub-record is wrong.
+    let fact_reputation_bindings: Vec<u32> = index
+        .factions
+        .values()
+        .filter_map(|faction| faction.reputation)
+        .collect();
+    assert!(
+        fact_reputation_bindings.len() >= 46,
+        "FACT WMI1 bindings={} (expected >= 46; vanilla ships 46)",
+        fact_reputation_bindings.len(),
+    );
+    let unresolved: Vec<u32> = fact_reputation_bindings
+        .iter()
+        .copied()
+        .filter(|form_id| !index.reputations.contains_key(form_id))
+        .collect();
+    assert!(
+        unresolved.is_empty(),
+        "every FACT WMI1 binding must resolve into index.reputations; \
+         {} did not: {:08X?}",
+        unresolved.len(),
+        &unresolved[..unresolved.len().min(8)],
+    );
+
+    // #3324 — WEAP `VATS`. `ap_cost` was pinned to 0.0 for every FNV weapon
+    // because the parser searched `DNAM`. The census found 245 of 261 WEAP
+    // records carrying a `VATS` sub-record, 45 of them with a non-zero AP
+    // cost at offset 12.
+    let (vats_records, nonzero_ap) = index.items.values().fold((0usize, 0usize), |acc, item| {
+        match &item.kind {
+            byroredux_plugin::esm::records::ItemKind::Weapon { ap_cost, vats, .. } => (
+                acc.0 + usize::from(vats.is_some()),
+                acc.1 + usize::from(*ap_cost > 0.0),
+            ),
+            _ => acc,
+        }
+    });
+    assert!(
+        vats_records >= 240,
+        "WEAP with decoded VATS={vats_records} (expected >= 240; vanilla ships 245)",
+    );
+    assert!(
+        nonzero_ap >= 40,
+        "WEAP with non-zero VATS ap_cost={nonzero_ap} (expected >= 40; vanilla ships 45)",
+    );
     assert!(
         index.explosions.len() >= 130,
         "EXPL={} (expected >= 130; vanilla ships ~154)",

@@ -251,6 +251,7 @@ fn is_primary_synth_gates_every_identity_stamp_call_site() {
         scale: 1.0,
         enable_parent: None,
         teleport: None,
+        reputation_ref: None,
         primitive: None,
         linked_refs: Vec::new(),
         location_ref_types: Vec::new(),

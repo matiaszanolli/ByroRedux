@@ -58,9 +58,15 @@ pub(super) fn dispatch_actor_group(
         b"CLAS" => extract_records(reader, end, b"CLAS", &mut |fid, subs| {
             index.classes.insert(fid, parse_clas(fid, subs, game));
         })?,
-        b"FACT" => extract_records(reader, end, b"FACT", &mut |fid, subs| {
-            index.factions.insert(fid, parse_fact(fid, subs));
-        })?,
+        // #3325 — FACT carries `WMI1` (the faction's `REPU` FormID), which
+        // is plugin-local like every other embedded FormID, so it needs the
+        // same remap NPC_/CREA already take.
+        b"FACT" => {
+            let fact_remap = reader.get_form_id_remap();
+            extract_records(reader, end, b"FACT", &mut |fid, subs| {
+                index.factions.insert(fid, parse_fact(fid, subs, &fact_remap));
+            })?
+        }
         _ => unreachable!("dispatch_actor_group: unexpected label {label:?}"),
     }
     Ok(())

@@ -593,6 +593,19 @@ pub struct FactionRecord {
     pub relations: Vec<FactionRelation>,
     /// Rank index → label.
     pub ranks: Vec<String>,
+    /// `REPU` FormID this faction's standing moves, from `WMI1` (#3325).
+    ///
+    /// FNV replaces FO3's single global karma with per-faction reputation,
+    /// and this sub-record is the **only** edge from a faction to the meter
+    /// it moves — without it `EsmIndex::reputations` is an orphan map that no
+    /// runtime can key off, so vendor pricing, disguise reactions, quest
+    /// branching and hostile/idolized greetings have no input.
+    ///
+    /// Byte-proven rather than assumed: all 46 `FACT` `WMI1` payloads in
+    /// `FalloutNV.esm` resolve to a real `REPU` record against a whole-file
+    /// FormID→type map (100%, alongside 36 more on `REFR`). `None` on every
+    /// other game — no other title in the corpus authors `WMI1`.
+    pub reputation: Option<u32>,
 }
 
 // ── Parsers ───────────────────────────────────────────────────────────
@@ -1522,7 +1535,11 @@ pub fn parse_clas(form_id: u32, subs: &[SubRecord], game: GameKind) -> ClassReco
     record
 }
 
-pub fn parse_fact(form_id: u32, subs: &[SubRecord]) -> FactionRecord {
+pub fn parse_fact(
+    form_id: u32,
+    subs: &[SubRecord],
+    remap: &Option<FormIdRemap>,
+) -> FactionRecord {
     let common = CommonNamedFields::from_subs(subs);
     let mut record = FactionRecord {
         form_id,
@@ -1531,6 +1548,7 @@ pub fn parse_fact(form_id: u32, subs: &[SubRecord]) -> FactionRecord {
         flags: 0,
         relations: Vec::new(),
         ranks: Vec::new(),
+        reputation: None,
     };
 
     for sub in subs {
@@ -1569,6 +1587,14 @@ pub fn parse_fact(form_id: u32, subs: &[SubRecord]) -> FactionRecord {
                     modifier,
                     combat_reaction: combat,
                 });
+            }
+            // WMI1 (FNV): the faction's `REPU` FormID — the faction →
+            // reputation edge (#3325). Remapped to global load-order space
+            // like every other embedded FormID, so `index.reputations`
+            // lookups (keyed by the remapped record header FormID) hit.
+            b"WMI1" if sub.data.len() >= 4 => {
+                let raw = SubReader::new(&sub.data).u32_or_default();
+                record.reputation = (raw != 0).then(|| remap_fid(raw, remap));
             }
             // MNAM: male rank label (string)
             b"MNAM" => record.ranks.push(read_zstring(&sub.data)),

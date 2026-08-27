@@ -23,6 +23,7 @@ fn placed_ref(form_id: u32) -> PlacedRef {
         scale: 1.0,
         enable_parent: None,
         teleport: None,
+        reputation_ref: None,
         primitive: None,
         linked_refs: Vec::new(),
         location_ref_types: Vec::new(),

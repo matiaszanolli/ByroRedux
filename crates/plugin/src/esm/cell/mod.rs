@@ -393,6 +393,14 @@ pub struct PlacedRef {
     /// disabled (XESP set + not inverted) — pre-#349 every "spawn after
     /// quest stage" REFR rendered immediately on cell load. See #349.
     pub enable_parent: Option<EnableParent>,
+    /// Placement-scoped `REPU` override from the REFR's `WMI1` sub-record
+    /// (#3325) — the same faction → reputation edge [`FactionRecord`] carries,
+    /// but bound to this one placement rather than the base faction. 36 of
+    /// `FalloutNV.esm`'s 82 `WMI1` payloads are REFR-scoped like this, and
+    /// all 36 resolve to a real `REPU` record.
+    ///
+    /// [`FactionRecord`]: crate::esm::records::FactionRecord
+    pub reputation_ref: Option<u32>,
     /// Teleport destination from the REFR's `XTEL` sub-record. When
     /// present, this REFR is a door whose activation transports the
     /// player to the destination REFR's position and rotation. Pre-#412

@@ -296,7 +296,7 @@ fn fact_extracts_relations_and_ranks() {
         sub(b"MNAM", b"Trooper\0"),
         sub(b"MNAM", b"Veteran\0"),
     ];
-    let f = parse_fact(0x42, &subs);
+    let f = parse_fact(0x42, &subs, &None);
     assert_eq!(f.editor_id, "NCR");
     assert_eq!(f.flags, 0x01);
     assert_eq!(f.relations.len(), 1);
@@ -328,7 +328,7 @@ fn fact_xnam_combat_reaction_reads_full_u32() {
         sub(b"DATA", &0x00u32.to_le_bytes()),
         sub(b"XNAM", &xnam),
     ];
-    let f = parse_fact(0x77, &subs);
+    let f = parse_fact(0x77, &subs, &None);
     assert_eq!(f.relations.len(), 1);
     assert_eq!(
         f.relations[0].combat_reaction, 2,
@@ -354,7 +354,7 @@ fn fact_data_reads_only_low_byte() {
         0xFFu8, 0xFFu8, 0xEFu8, // tail / padding bytes; must NOT become flags
     ];
     let subs = vec![sub(b"EDID", b"SpookyFaction\0"), sub(b"DATA", &data)];
-    let f = parse_fact(0x88, &subs);
+    let f = parse_fact(0x88, &subs, &None);
     assert_eq!(
         f.flags, 0x01,
         "only byte 0 of DATA carries flag bits on FO3 / FNV (#481)"
@@ -366,7 +366,7 @@ fn fact_data_reads_only_low_byte() {
 #[test]
 fn fact_data_empty_leaves_flags_default() {
     let subs = vec![sub(b"EDID", b"PlaceholderFaction\0"), sub(b"DATA", &[])];
-    let f = parse_fact(0x89, &subs);
+    let f = parse_fact(0x89, &subs, &None);
     assert_eq!(
         f.flags, 0,
         "empty DATA must not override the FactionRecord default"
@@ -1393,5 +1393,61 @@ fn acbs_calc_min_decodes_on_every_layout() {
         n.disposition_base, 50,
         "the fields AFTER calcMin must not shift — the skip length was \
          narrowed from 4 to 2 when calcMin started being read"
+    );
+}
+
+/// #3325 — `WMI1` is the FACT → REPU edge, and it was dropped everywhere.
+/// Without it `EsmIndex::reputations` is an orphan map: 13 parsed `REPU`
+/// records with nothing able to say which faction moves which meter, so no
+/// reputation runtime can be built on the index no matter what lands on top.
+///
+/// The FormID must arrive in **global** load-order space, like every other
+/// embedded FormID, or `index.reputations` lookups miss on any multi-plugin
+/// load — the exact failure #1996 fixed for NPC_.
+#[test]
+fn fact_wmi1_binds_the_faction_to_its_reputation_record() {
+    let subs = vec![
+        sub(b"EDID", b"GoodspringsFaction\0"),
+        sub(b"WMI1", &0x000F_43DEu32.to_le_bytes()),
+    ];
+    let f = parse_fact(0x0010_4C6E, &subs, &None);
+    assert_eq!(
+        f.reputation,
+        Some(0x000F_43DE),
+        "WMI1 must land on FactionRecord::reputation"
+    );
+
+    // Plugin slot 2, one master at slot 0 — same fixture shape as
+    // `npc_embedded_form_ids_remap_to_global_space`.
+    let remap = crate::esm::reader::FormIdRemap::regular(2, vec![0]);
+    let self_ref = (1u32 << 24) | 0x0000_43DE;
+    let subs = vec![
+        sub(b"EDID", b"OverridePluginFaction\0"),
+        sub(b"WMI1", &self_ref.to_le_bytes()),
+    ];
+    let f = parse_fact(0x000A_0002, &subs, &Some(remap));
+    assert_eq!(
+        f.reputation,
+        Some((2u32 << 24) | 0x0000_43DE),
+        "a self-referential WMI1 must resolve to the plugin's own global slot"
+    );
+}
+
+/// A faction without `WMI1` carries no reputation — `Some(0)` would be a
+/// null FormID masquerading as a binding, and every `index.reputations`
+/// lookup for it would miss confusingly rather than obviously.
+#[test]
+fn fact_without_wmi1_has_no_reputation_binding() {
+    let subs = vec![sub(b"EDID", b"PlainFaction\0")];
+    assert_eq!(parse_fact(0x43, &subs, &None).reputation, None);
+
+    let subs = vec![
+        sub(b"EDID", b"NullWmi1Faction\0"),
+        sub(b"WMI1", &0u32.to_le_bytes()),
+    ];
+    assert_eq!(
+        parse_fact(0x44, &subs, &None).reputation,
+        None,
+        "a null WMI1 payload is 'no binding', not a binding to FormID 0"
     );
 }
