@@ -1093,6 +1093,7 @@ mod cycle_tests {
         let packed = HkPackedNiTriStripsData {
             triangles: Vec::new(),
             vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            sub_parts: Vec::new(),
         };
         assert!(
             resolve_packed_mesh(&packed, 1.0, [1.0; 3]).is_none(),
@@ -1915,6 +1916,7 @@ mod cycle_tests {
                 normal: None,
             }],
             vertices: vec![[0.0, 0.0, 0.0], [1.0, 1.0, 1.0], [1.0, 0.0, 0.0]],
+            sub_parts: Vec::new(),
         }));
         let mut visited = HashSet::new();
         match resolve_shape(&scene, BlockRef(0u32), &mut visited) {
@@ -1954,6 +1956,7 @@ mod cycle_tests {
                 normal: None,
             }],
             vertices: vec![[0.0, 0.0, 0.0], [4.0, 0.0, 0.0], [0.0, 0.0, 4.0]],
+            sub_parts: Vec::new(),
         }));
         let mut visited = HashSet::new();
         match resolve_shape(&scene, BlockRef(0u32), &mut visited) {
@@ -2001,6 +2004,7 @@ mod cycle_tests {
                 normal: Some([0.0, 0.0, 1.0]),
             }],
             vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            sub_parts: Vec::new(),
         }));
         let mut visited = HashSet::new();
         match resolve_shape(&scene, BlockRef(0u32), &mut visited) {
@@ -2043,6 +2047,7 @@ mod cycle_tests {
                 normal: Some([0.0, 0.0, 1.0]),
             }],
             vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            sub_parts: Vec::new(),
         }));
         let mut visited = HashSet::new();
         match resolve_shape(&scene, BlockRef(0u32), &mut visited) {

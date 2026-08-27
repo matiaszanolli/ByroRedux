@@ -11,6 +11,24 @@ use crate::header::NifHeader;
 use crate::stream::NifStream;
 use crate::version::NifVersion;
 
+/// Oblivion-era header (NIF 20.0.0.5) — no `Compressed` byte and no FO3+
+/// `hkSubPartData` trailer; that table lives inline on the *shape* there.
+fn oblivion_header() -> NifHeader {
+    NifHeader {
+        version: NifVersion::V20_0_0_5,
+        little_endian: true,
+        user_version: 11,
+        user_version_2: 11,
+        num_blocks: 0,
+        block_types: Vec::new(),
+        block_type_indices: Vec::new(),
+        block_sizes: Vec::new(),
+        strings: Vec::new(),
+        max_string_length: 0,
+        num_groups: 0,
+    }
+}
+
 /// FO3+ header (NIF 20.2.0.7) — `Compressed` byte present.
 fn fo3_header() -> NifHeader {
     NifHeader {
@@ -134,5 +152,79 @@ fn pre_v20_2_0_7_skips_compressed_byte() {
     let parsed = HkPackedNiTriStripsData::parse(&mut stream).expect("parse should succeed");
 
     assert_eq!(parsed.vertices, vec![[9.0, 8.0, 7.0]]);
+    assert_eq!(stream.position() as usize, d.len());
+}
+
+/// #2550 — the FO3+ `hkSubPartData` table was `skip(12)`-ed, discarding the
+/// per-sub-part Havok filter/material assignment on the 3 232 FO3 packed
+/// meshes that carry more than one material. The geometry always collided
+/// correctly; what was lost is the surface-sound / impact-effect
+/// classification. Layout per nif.xml `hkSubPartData` (line 2301):
+/// `HavokFilter` (4) + `Num Vertices` (uint) + `HavokMaterial`.
+#[test]
+fn captures_multi_material_sub_part_table() {
+    let mut d = Vec::new();
+    d.extend_from_slice(&1u32.to_le_bytes()); // num_triangles
+    push_triangle(&mut d, 0, 1, 2, 0);
+    d.extend_from_slice(&3u32.to_le_bytes()); // num_vertices
+    d.push(0u8); // not compressed
+    for v in [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0] {
+        d.extend_from_slice(&v.to_le_bytes());
+    }
+
+    // Two sub-parts with *different* materials — the case that was lost.
+    d.extend_from_slice(&2u16.to_le_bytes());
+    for (filter, num_verts, material) in [(0x0001_0002u32, 2u32, 7u32), (0x0003_0004, 1, 9)] {
+        d.extend_from_slice(&filter.to_le_bytes());
+        d.extend_from_slice(&num_verts.to_le_bytes());
+        d.extend_from_slice(&material.to_le_bytes());
+    }
+
+    let header = fo3_header();
+    let mut stream = NifStream::new(&d, &header);
+    let parsed = HkPackedNiTriStripsData::parse(&mut stream).expect("parse should succeed");
+
+    assert_eq!(parsed.sub_parts.len(), 2, "both sub-parts captured");
+    assert_eq!(parsed.sub_parts[0].havok_filter, 0x0001_0002);
+    assert_eq!(parsed.sub_parts[0].num_vertices, 2);
+    assert_eq!(parsed.sub_parts[0].material, 7);
+    assert_eq!(parsed.sub_parts[1].havok_filter, 0x0003_0004);
+    assert_eq!(parsed.sub_parts[1].num_vertices, 1);
+    assert_eq!(parsed.sub_parts[1].material, 9);
+    assert_ne!(
+        parsed.sub_parts[0].material, parsed.sub_parts[1].material,
+        "the multi-material case is the whole point of #2550"
+    );
+
+    // Decoding must consume exactly the bytes the old skip(12) did.
+    assert_eq!(
+        stream.position() as usize,
+        d.len(),
+        "decode must land at EOF, same byte count as the skip it replaced"
+    );
+}
+
+/// Pre-FO3 data authors no sub-part table at all; the field must stay empty
+/// rather than mis-reading the preceding vertex bytes.
+#[test]
+fn pre_fo3_data_has_no_sub_part_table() {
+    let mut d = Vec::new();
+    d.extend_from_slice(&1u32.to_le_bytes());
+    push_triangle(&mut d, 0, 1, 2, 0);
+    // Oblivion (until="20.0.0.5") carries a per-triangle normal that FO3+
+    // dropped; `push_triangle` writes only the shared 8-byte prefix.
+    for n in [0.0f32, 1.0, 0.0] {
+        d.extend_from_slice(&n.to_le_bytes());
+    }
+    d.extend_from_slice(&1u32.to_le_bytes());
+    // No `Compressed` byte before 20.2.0.7.
+    for v in [1.0f32, 2.0, 3.0] {
+        d.extend_from_slice(&v.to_le_bytes());
+    }
+
+    let header = oblivion_header();
+    let mut stream = NifStream::new(&d, &header);
+    let parsed = HkPackedNiTriStripsData::parse(&mut stream).expect("parse should succeed");
+    assert!(parsed.sub_parts.is_empty());
     assert_eq!(stream.position() as usize, d.len());
 }

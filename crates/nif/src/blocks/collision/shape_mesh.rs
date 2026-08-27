@@ -117,7 +117,19 @@ impl BhkPackedNiTriStripsShape {
 pub struct HkPackedNiTriStripsData {
     pub triangles: Vec<PackedTriangle>,
     pub vertices: Vec<[f32; 3]>,
+    /// FO3+ per-sub-part Havok filter/material table (nif.xml `hkSubPartData`,
+    /// line 2301). One entry per contiguous run of `num_vertices` vertices, in
+    /// vertex order. Empty on pre-20.2.0.7 data, which does not author it.
+    ///
+    /// #2550 — captured, not yet consumed. The geometry always collided
+    /// correctly; what was lost is which Havok material each sub-part carries,
+    /// i.e. the surface-sound / impact-effect classification, on the 3 232 FO3
+    /// packed meshes that ship more than one material per mesh. Stored per the
+    /// NIFAL "capture at the parser, consume later" convention so the eventual
+    /// footstep/impact consumer has it without another parser change.
+    pub sub_parts: Vec<HkSubPartData>,
 }
+
 
 /// A single triangle in packed collision data.
 #[derive(Debug)]
@@ -191,17 +203,32 @@ impl HkPackedNiTriStripsData {
             vertices.push([x, y, z]);
         }
 
-        // FO3+ (since 20.2.0.7): sub-shapes at the end
+        // FO3+ (since 20.2.0.7): sub-shapes at the end. #2550 — decoded
+        // rather than `skip(12)`-ed; the byte count is unchanged, so this
+        // cannot shift the stream position for any existing caller.
+        // Field-for-field identical to the Oblivion-era inline decode in
+        // `BhkPackedNiTriStripsShape::parse` above — FO3+ only moved the same
+        // table out of the shape and into the data block.
+        let mut sub_parts = Vec::new();
         if version >= crate::version::NifVersion::V20_2_0_7 {
             let num_sub_shapes = stream.read_u16_le()? as usize;
+            sub_parts = stream.allocate_vec(num_sub_shapes as u32)?;
             for _ in 0..num_sub_shapes {
-                stream.skip(12)?; // HkSubPartData: filter(4) + numVerts(4) + material(4)
+                let havok_filter = stream.read_u32_le()?;
+                let num_vertices = stream.read_u32_le()?;
+                let material = stream.read_u32_le()?;
+                sub_parts.push(HkSubPartData {
+                    havok_filter,
+                    num_vertices,
+                    material,
+                });
             }
         }
 
         Ok(Self {
             triangles,
             vertices,
+            sub_parts,
         })
     }
 }
