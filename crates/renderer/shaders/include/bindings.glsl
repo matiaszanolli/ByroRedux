@@ -297,6 +297,13 @@ layout(set = 1, binding = 1) uniform CameraUBO {
     vec4 dofParams;      // x = aperture half-radius (0.0 = pinhole), y = focus_dist, z = atten knee frac, w = camera_static (1.0 = parked).
     vec4 renderOrigin;   // #markarth-precision / #1496 — camera-relative render origin (cell-grid snapped). main() adds .xyz to the render-origin-relative `fragWorldPosRel` varying to reconstruct the absolute world position for lighting / RT / fog.
     uvec4 renderDebug;   // x = structured RENDER_DEBUG_* mode; y = optional bitcast RT LOD scale, z = LOD telemetry enable, w reserved. Legacy feature-ablation flags remain in jitter.z.
+    // #3323 — the EXTERIOR TOD/weather zenith colour, carried even on
+    // interior cells. `skyTint` above is `SkyParams::default()` on any
+    // interior by design (#1199 / #2226: an interior must never read a
+    // stale exterior sky), which is right for every consumer except the
+    // window-portal escape below, where the ray genuinely left the cell.
+    // Read ONLY there; widening it anywhere else re-opens #2226.
+    vec4 exteriorSkyTint; // xyz = live exterior zenith colour, w reserved (0)
 };
 
 layout(set = 1, binding = 2) uniform accelerationStructureEXT topLevelAS;

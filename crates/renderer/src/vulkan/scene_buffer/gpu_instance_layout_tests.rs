@@ -63,14 +63,15 @@ fn gpu_instance_is_160_bytes_std430_compatible() {
 /// declares `CameraUBO` — they use their own param blocks in
 /// origin-relative space.)
 #[test]
-fn gpu_camera_is_352_bytes() {
+fn gpu_camera_is_368_bytes() {
     assert_eq!(
             size_of::<GpuCamera>(),
-            352,
-            "GpuCamera must be 352 B (336 B + 16 B render_debug uvec4) to match \
-             the CameraUBO declaration in all 6 re-declaring shaders (triangle.vert, triangle.frag, \
+            368,
+            "GpuCamera must be 368 B (352 B + 16 B exterior_sky_tint vec4, #3323) to match \
+             the CameraUBO declaration in every re-declaring shader (triangle.vert, triangle.frag, \
              water.vert, water.frag, cluster_cull.comp, caustic_splat.comp — each pinned against the \
-             shipped .spv by the reflect.rs uniform_block_size_by_name check). render_debug is \
+             shipped .spv by the reflect.rs uniform_block_size_by_name check, which also covers the \
+             include-only consumers skin_vertices/ssao/volumetrics_inject). exterior_sky_tint is \
              APPENDED at the end; every re-declarer must carry the full field list through it."
         );
 }

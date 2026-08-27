@@ -117,6 +117,11 @@ layout(set = 1, binding = 1) uniform CameraUBO {
     vec4 dofParams;      // x = aperture half-radius (0.0 = pinhole), y = focus_dist, z = atten knee frac, w = camera_static (1.0 = parked).
     vec4 renderOrigin;   // #markarth-precision — xyz = camera-relative render origin (cell-grid snapped); add to worldPos_rel for the absolute world position. w = FSR reset diagnostic.
     uvec4 renderDebug;   // x = structured RENDER_DEBUG_* mode; yzw reserved.
+    // #3323 — EXTERIOR TOD zenith colour, live even on interior cells.
+    // Consumed only by triangle.frag's window-portal escape; declared
+    // here to keep the five CameraUBO mirrors byte-identical
+    // (feedback_shader_struct_sync.md).
+    vec4 exteriorSkyTint; // xyz = live exterior zenith colour, w reserved (0)
 };
 
 // Bone palette SSBO (set 1, binding 3) — skinning matrices for the

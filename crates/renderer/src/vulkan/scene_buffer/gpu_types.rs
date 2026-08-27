@@ -334,9 +334,10 @@ impl GpuSelectedRayProbe {
 
 /// GPU-side camera data (**352 bytes**, std140-compatible).
 ///
-/// Layout pinned by `gpu_camera_is_352_bytes` test — three `mat4` (3×64 = 192 B) +
-/// ten trailing `vec4` (10×16 = 160 B: position, flags, screen, fog, jitter,
-/// sky_tint, sun_direction, dof_params, render_origin, render_debug) → 352 B. The size grew
+/// Layout pinned by `gpu_camera_is_368_bytes` test — three `mat4` (3×64 = 192 B) +
+/// eleven trailing `vec4` (11×16 = 176 B: position, flags, screen, fog, jitter,
+/// sky_tint, sun_direction, dof_params, render_origin, render_debug,
+/// exterior_sky_tint) → 368 B. The size grew
 /// 304 → 320 B with the DOF `dof_params` field and 320 → 336 B with the
 /// `render_origin` field (#markarth-precision / #1492), then 336 → 352 B with
 /// the structured renderer-debug control.
@@ -482,6 +483,33 @@ pub struct GpuCamera {
     /// named mutually-exclusive views do not consume or reinterpret the
     /// orthogonal legacy feature-ablation bitmask.
     pub render_debug: [u32; 4],
+    /// xyz = the **exterior** TOD/weather zenith colour in linear RGB; w
+    /// reserved (0).
+    ///
+    /// #3323 — deliberately NOT the same lane as [`Self::sky_tint`].
+    /// `build_sky_params` returns `SkyParams::default()` on any interior
+    /// cell, on purpose: #1199 / #2226 established that an interior must
+    /// never read a stale exterior `SkyParamsRes`, because the TOD sky /
+    /// sun / cloud set leaking into interior lighting is a real bug that
+    /// a sealed roof only hides. So `sky_tint.rgb` is the hardcoded
+    /// `SkyParams::default().zenith_color` — clear-noon blue — for every
+    /// interior frame.
+    ///
+    /// The window-portal escape branch in `triangle.frag` is the one
+    /// consumer for which that is wrong rather than right: a ray that
+    /// escapes the cell genuinely *does* see the outdoor sky, so
+    /// transmitting noon-blue at 03:00 defeats the exact TOD cross-fade
+    /// #925 was written for, on the exact cells (Vault 21/34/22, the Novac
+    /// motel rooms) it named. This lane exists so that one branch can read
+    /// the live exterior sky without widening the interior bypass — which
+    /// is what #2226 removed and must not come back.
+    ///
+    /// Populated on interiors from the surviving `SkyParamsRes` (its
+    /// lifetime matches the World, not the cell — see #1199 and
+    /// `cell_loader::unload`'s worldspace-scoped note), and falls back to
+    /// `SkyParams::default().zenith_color` when no exterior has loaded
+    /// this session, which is the pre-#3323 behaviour.
+    pub exterior_sky_tint: [f32; 4],
 }
 
 impl Default for GpuCamera {
@@ -517,6 +545,10 @@ impl Default for GpuCamera {
             // world space (rel == abs), matching pre-camera-relative behaviour.
             render_origin: [0.0; 4],
             render_debug: [crate::shader_constants::RENDER_DEBUG_LEGACY_FLAGS, 0, 0, 0],
+            // Matches `SkyParams::default().zenith_color` — the value the
+            // window portal already transmitted before #3323, so an
+            // unbootstrapped frame is unchanged.
+            exterior_sky_tint: [0.15, 0.3, 0.6, 0.0],
         }
     }
 }

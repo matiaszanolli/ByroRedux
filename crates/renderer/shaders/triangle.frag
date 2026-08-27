@@ -1660,7 +1660,20 @@ void main() {
             // / dawn / dusk / storm just like the outdoor sky behind
             // them. Pre-fix this was hardcoded `vec3(0.6, 0.75, 1.0)`
             // and Megaton / Vault 21 interiors always looked midday.
-            vec3 skyColor = skyTint.rgb;
+            //
+            // #3323 — read `exteriorSkyTint`, NOT `skyTint`. #925 moved the
+            // literal out of the shader but not the behaviour it described:
+            // `build_sky_params` returns `SkyParams::default()` for any
+            // interior (deliberately — #1199 / #2226), so `skyTint.rgb` was
+            // the hardcoded clear-noon `vec3(0.15, 0.3, 0.6)` on every
+            // interior frame and this branch still transmitted midday at
+            // 03:00 — on exactly the cells #925 named. `exteriorSkyTint`
+            // is the live worldspace sky, carried through interior cells
+            // for this one consumer, because a ray that escaped the cell
+            // genuinely sees the outdoors. Do not swap the rest of this
+            // shader onto it: everything else reading a stale exterior sky
+            // from inside is the #2226 leak.
+            vec3 skyColor = exteriorSkyTint.rgb;
             // Use the authored glass color directly instead of biasing
             // toward white. Pre-fix this mix started from pure white
             // and leaned heavily that way for low-alpha clear glass

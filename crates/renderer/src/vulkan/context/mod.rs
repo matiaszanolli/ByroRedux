@@ -763,6 +763,25 @@ pub struct SkyDalcCube {
 pub struct SkyParams {
     /// Zenith (top-of-sky) color, raw monitor-space per 0e8efc6.
     pub zenith_color: [f32; 3],
+    /// The **exterior** worldspace's live TOD/weather zenith colour,
+    /// carried even on interior cells (#3323).
+    ///
+    /// Distinct from [`Self::zenith_color`] on purpose. `build_sky_params`
+    /// returns `SkyParams::default()` for any interior, because #1199 /
+    /// #2226 established that an interior must never read a stale exterior
+    /// `SkyParamsRes` — the whole TOD sky/sun/cloud set leaking into
+    /// interior lighting is a real bug a sealed roof only hides. That is
+    /// correct for every consumer except one: `triangle.frag`'s
+    /// window-portal escape, where a ray that clears the cell genuinely
+    /// sees the outdoor sky, so the interior default transmitted
+    /// clear-noon blue at every hour.
+    ///
+    /// Populated from the surviving `SkyParamsRes` (World-lifetime, not
+    /// cell-lifetime — see #1199) and falling back to
+    /// `Self::default().zenith_color` when no exterior has loaded this
+    /// session. Uploaded as `GpuCamera::exterior_sky_tint` and read by
+    /// exactly that one branch, so the interior bypass stays closed.
+    pub exterior_zenith_color: [f32; 3],
     /// Horizon color, raw monitor-space per 0e8efc6.
     pub horizon_color: [f32; 3],
     /// Below-horizon ground / lower-hemisphere color from WTHR's
@@ -884,6 +903,9 @@ impl Default for SkyParams {
     fn default() -> Self {
         Self {
             zenith_color: [0.15, 0.3, 0.6],
+            // Same value: with no exterior ever loaded there is no live sky
+            // to report, and the portal keeps its pre-#3323 transmission.
+            exterior_zenith_color: [0.15, 0.3, 0.6],
             horizon_color: [0.5, 0.5, 0.45],
             // Pre-#541 fake `horizon * 0.3` baseline preserved as the
             // default; real WTHR-driven exterior cells overwrite from

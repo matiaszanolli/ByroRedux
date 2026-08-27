@@ -52,6 +52,24 @@ fn interior_dalc_cube(world: &World) -> Option<SkyDalcCube> {
 /// retain `SkyParams::default()`. When `CloudSimState` is absent but
 /// `SkyParamsRes` is present (first exterior frame), cloud scrolls
 /// default to zero.
+/// The live exterior TOD/weather zenith colour, readable from inside an
+/// interior cell (#3323).
+///
+/// `SkyParamsRes` is worldspace-scoped with World lifetime (#1199), so it
+/// survives the transition into an interior and the weather sim keeps
+/// updating it. Returns the `SkyParams::default()` zenith when no exterior
+/// has ever loaded this session — an interior-only boot (`--cell ...`) has
+/// no outdoor sky to report, and the portal keeps its pre-#3323 constant.
+///
+/// This is deliberately the **only** exterior field an interior reads. Do
+/// not grow it into a general "inherit the exterior sky" helper: that is
+/// what #2226 removed, and a sealed roof only hides the resulting leak.
+fn exterior_zenith_color(world: &World) -> [f32; 3] {
+    world
+        .try_resource::<SkyParamsRes>()
+        .map_or_else(|| SkyParams::default().zenith_color, |sky| sky.zenith_color)
+}
+
 pub(super) fn build_sky_params(world: &World) -> SkyParams {
     let interior_cube = interior_dalc_cube(world);
 
@@ -71,6 +89,25 @@ pub(super) fn build_sky_params(world: &World) -> SkyParams {
     if is_interior {
         return SkyParams {
             dalc_cube: interior_cube,
+            // #3323 — the one exterior field an interior *does* carry.
+            // Everything else stays at the default on purpose (see above):
+            // an interior must not read a stale exterior sky, because the
+            // TOD/sun/cloud set leaking into interior lighting is the bug
+            // #2226 removed. But `triangle.frag`'s window-portal escape is
+            // the one consumer where "this pixel sees the outdoors" is the
+            // premise, not a leak — a ray that clears the cell genuinely
+            // sees today's sky. Pinning it to `SkyParams::default()` made
+            // every FNV interior window transmit clear-noon blue at 03:00,
+            // which is the exact symptom #925 claimed to have fixed on the
+            // exact cells it named (Vault 21/34/22, the Novac motel rooms).
+            //
+            // `SkyParamsRes` is worldspace-scoped and its lifetime matches
+            // the World, not the cell (#1199 — see `cell_loader::unload`'s
+            // note), so it survives the transition into an interior and the
+            // weather sim keeps updating it. When no exterior has loaded
+            // this session it is absent and the default stands, which is
+            // the pre-#3323 behaviour.
+            exterior_zenith_color: exterior_zenith_color(world),
             ..SkyParams::default()
         };
     }
@@ -95,6 +132,9 @@ pub(super) fn build_sky_params(world: &World) -> SkyParams {
         .unwrap_or_default();
     SkyParams {
         zenith_color: sky_res.zenith_color,
+        // On an exterior the two are the same sky by definition; the lane
+        // only diverges on interiors (#3323).
+        exterior_zenith_color: sky_res.zenith_color,
         horizon_color: sky_res.horizon_color,
         lower_color: sky_res.lower_color,
         sun_direction: sky_res.sun_direction,
@@ -256,6 +296,52 @@ mod tests {
         assert_eq!(params.cloud_tile_scale, default.cloud_tile_scale);
         assert_eq!(params.cloud_texture_index, default.cloud_texture_index);
         assert!(params.dalc_cube.is_none());
+        // #3323 — the one deliberate exception, added *after* #2226 and
+        // narrower than what #2226 removed. `exterior_zenith_color` is a
+        // separate lane read by exactly one shader branch (the window-portal
+        // escape, where the ray provably left the cell), so it carries the
+        // live sky while every field asserted above stays defaulted.
+        assert_eq!(
+            params.exterior_zenith_color, [0.3, 0.5, 0.9],
+            "the exterior sky lane must survive into an interior — that is \
+             the whole point of #3323"
+        );
+        assert_ne!(
+            params.exterior_zenith_color, params.zenith_color,
+            "the two lanes must not collapse into one: `zenith_color` also \
+             drives CompositeParams::sky_zenith, which is the interior sky \
+             leak #2226 removed"
+        );
+    }
+
+    /// #3323 — with no exterior ever loaded this session (an interior-only
+    /// `--cell` boot), there is no live sky to report and the portal must
+    /// keep its pre-#3323 constant rather than transmitting black.
+    #[test]
+    fn interior_only_session_falls_back_to_the_default_exterior_zenith() {
+        let mut world = World::new();
+        world.insert_resource(interior_lighting(None));
+
+        let params = build_sky_params(&world);
+        assert_eq!(
+            params.exterior_zenith_color,
+            SkyParams::default().zenith_color,
+            "no SkyParamsRes means no outdoor sky to report"
+        );
+    }
+
+    /// On an exterior the two lanes describe the same sky, so they must
+    /// agree — a divergence there would mean the portal and the composite
+    /// pass paint different skies through the same window.
+    #[test]
+    fn exterior_cell_reports_the_same_sky_on_both_lanes() {
+        let mut world = World::new();
+        world.insert_resource(stale_exterior_daytime_sky());
+
+        let params = build_sky_params(&world);
+        assert!(params.is_exterior);
+        assert_eq!(params.exterior_zenith_color, params.zenith_color);
+        assert_eq!(params.exterior_zenith_color, [0.3, 0.5, 0.9]);
     }
 
     /// Sibling of the above with an XCLL cube present: the interior cube

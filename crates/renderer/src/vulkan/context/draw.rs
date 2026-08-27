@@ -2315,6 +2315,19 @@ impl VulkanContext {
                 sky_params.zenith_color[2],
                 sky_params.sun_angular_radius,
             ],
+            // #3323 — the exterior sky, carried through interior cells so
+            // the window-portal escape in `triangle.frag` transmits the
+            // live TOD colour instead of `SkyParams::default()`'s
+            // clear-noon blue. Deliberately a separate lane from
+            // `sky_tint` above: widening `zenith_color` itself on
+            // interiors would also move `CompositeParams::sky_zenith`,
+            // which is the interior sky leak #2226 removed.
+            exterior_sky_tint: [
+                sky_params.exterior_zenith_color[0],
+                sky_params.exterior_zenith_color[1],
+                sky_params.exterior_zenith_color[2],
+                0.0,
+            ],
             // #1210 — sun direction + intensity, plumbed for water.frag's
             // caustic synthesis (shadow ray to sun → refract on miss).
             // SkyParams.sun_direction is already unit-length and in
