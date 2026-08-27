@@ -794,7 +794,13 @@ fn build_npc_equip_state<'a>(
                 if let ItemKind::Armor { biped_flags, .. } = item.kind {
                     equipment_slots.equip(biped_flags, inv_idx);
                     race_skin_slots = Some((inv_idx, biped_flags));
-                    if let Some(model_path) = byroredux_plugin::equip::resolve_armor_mesh(
+                    // #3357 — the race skin is the multi-ARMA case: its
+                    // BOD2 covers Head|Body|Hands|Feet and three separate
+                    // addons (torso / hands / feet) serve any given race.
+                    // One `ResolvedArmor` per mesh, all sharing `inv_idx`
+                    // so the displacement mask and the #2094 retain treat
+                    // them as one equipped item.
+                    for model_path in byroredux_plugin::equip::resolve_armor_meshes(
                         item,
                         gender,
                         npc.race_form_id,
@@ -907,9 +913,15 @@ fn build_npc_equip_state<'a>(
 
         equipment_slots.equip(biped_flags, inv_idx);
 
-        if let Some(model_path) =
-            byroredux_plugin::equip::resolve_armor_mesh(item, gender, npc.race_form_id, index, game)
-        {
+        // #3357 — 166 of 2,762 Skyrim ARMOs serve one race with more than
+        // one ARMA; each contributes its own mesh.
+        for model_path in byroredux_plugin::equip::resolve_armor_meshes(
+            item,
+            gender,
+            npc.race_form_id,
+            index,
+            game,
+        ) {
             armor_to_spawn.push(ResolvedArmor {
                 form_id,
                 source_form_id: expanded.source_form_id,
@@ -941,9 +953,14 @@ fn build_npc_equip_state<'a>(
                         mask
                     }
                 });
-        if let Some(skin) = armor_to_spawn
+        // #3357 — `filter`, not `find`: the skin now contributes one
+        // `ResolvedArmor` per ARMA mesh (torso / hands / feet), and every
+        // one of them needs the displacement mask. With `find`, only the
+        // first got it and the rest rendered through gear that should
+        // have hidden them.
+        for skin in armor_to_spawn
             .iter_mut()
-            .find(|armor| armor.inv_idx == skin_inv_idx)
+            .filter(|armor| armor.inv_idx == skin_inv_idx)
         {
             skin.hidden_biped_mask = displaced_mask;
         }

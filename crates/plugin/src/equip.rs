@@ -126,8 +126,39 @@ pub fn resolve_armor_mesh<'a>(
     index: &'a EsmIndex,
     game: GameKind,
 ) -> Option<&'a str> {
+    resolve_armor_meshes(armor, gender, race_form_id, index, game)
+        .into_iter()
+        .next()
+}
+
+/// Every worn mesh an ARMO contributes for this gender + race.
+///
+/// #3357 — on Skyrim+ an ARMO links N ARMAs and its `BOD2` mask is the
+/// **union** of the regions those addons cover, each supplying its own NIF.
+/// The single-`Option` resolver returned the first race-matching addon and
+/// stopped, which is right for a one-region item (a cuirass, a ring) and
+/// wrong for anything multi-region.
+///
+/// The race default skin is the case that matters: `SkinNaked`
+/// (`0x00000D64`, `BOD2 = Head|Body|Hands|Feet`) carries 25 ARMAs, three of
+/// which match any given human race — `NakedTorso`, `NakedHands`,
+/// `NakedFeet`. `NakedFeet` sorts first in the armature list, so the skin
+/// layer resolved to a *feet* NIF for 2,068 of 5,118 vanilla Skyrim NPCs,
+/// and the `hidden_biped_mask` logic then applied a torso/feet displacement
+/// mask to the wrong mesh. 166 of 2,762 Skyrim ARMOs have more than one
+/// ARMA serving the same race, so the shape is wrong beyond the skin too.
+///
+/// Paths are de-duplicated: several ARMAs can legitimately name one NIF,
+/// and spawning it twice would double-draw the same geometry.
+pub fn resolve_armor_meshes<'a>(
+    armor: &'a ItemRecord,
+    gender: Gender,
+    race_form_id: u32,
+    index: &'a EsmIndex,
+    game: GameKind,
+) -> Vec<&'a str> {
     let ItemKind::Armor { ref armatures, .. } = armor.kind else {
-        return None;
+        return Vec::new();
     };
 
     let is_skyrim_or_later = matches!(
@@ -136,9 +167,14 @@ pub fn resolve_armor_mesh<'a>(
     );
 
     if !is_skyrim_or_later {
-        // Oblivion / FO3 / FNV: ARMO MODL is the worn mesh.
+        // Oblivion / FO3 / FNV: ARMO MODL is the worn mesh. One record,
+        // one mesh — no ARMA dispatch, so never more than one path.
         let path = armor.common.model_path.as_str();
-        return if path.is_empty() { None } else { Some(path) };
+        return if path.is_empty() {
+            Vec::new()
+        } else {
+            vec![path]
+        };
     }
 
     let pick_path = |arma: &'a crate::esm::records::ArmaRecord| -> Option<&'a str> {
@@ -153,7 +189,10 @@ pub fn resolve_armor_mesh<'a>(
         }
     };
 
-    // Pass 1: prefer an ARMA whose race set contains the actor's race.
+    // Pass 1: EVERY ARMA whose race set contains the actor's race — the
+    // ARMO's biped mask is their union, so taking only the first leaves the
+    // other regions bare (#3357). Authored armature order is preserved.
+    let mut out: Vec<&'a str> = Vec::new();
     for &arma_fid in armatures {
         let Some(arma) = index.armor_addons.get(&arma_fid) else {
             continue;
@@ -162,25 +201,33 @@ pub fn resolve_armor_mesh<'a>(
             arma.race_form_id == race_form_id || arma.additional_races.contains(&race_form_id);
         if race_match {
             if let Some(path) = pick_path(arma) {
-                return Some(path);
+                if !out.contains(&path) {
+                    out.push(path);
+                }
             }
         }
+    }
+    if !out.is_empty() {
+        return out;
     }
 
     // Pass 2: no race-match — take the first ARMA with a non-empty
     // gender-appropriate mesh. Vanilla "default human" addons often
     // ship without an explicit RNAM (race_form_id == 0) but still
-    // resolve correctly for most humanoid actors.
+    // resolve correctly for most humanoid actors. Deliberately still
+    // single-valued: without a race match there is no evidence that the
+    // remaining addons are meant for this actor, and returning all of
+    // them would stack unrelated meshes.
     for &arma_fid in armatures {
         let Some(arma) = index.armor_addons.get(&arma_fid) else {
             continue;
         };
         if let Some(path) = pick_path(arma) {
-            return Some(path);
+            return vec![path];
         }
     }
 
-    None
+    Vec::new()
 }
 
 /// Maximum LVLI recursion depth before [`expand_leveled_form_id`] gives
@@ -570,6 +617,140 @@ mod tests {
         assert_eq!(
             resolve_armor_mesh(&armor, Gender::Male, 0, &idx, GameKind::Fallout3NV),
             None
+        );
+    }
+
+    /// #3357 — the race default skin is the case the single-`Option`
+    /// resolver got wrong. `SkinNaked` (`0x00000D64`) carries 25 ARMAs and
+    /// its `BOD2` is the union `Head|Body|Hands|Feet`; three addons match
+    /// any given human race. `NakedFeet` sorts first in the armature list,
+    /// so the old resolver returned a *feet* NIF for the whole skin layer —
+    /// 2,068 of 5,118 vanilla Skyrim NPCs rendered with no torso and no
+    /// hands. FormIDs and mesh paths below are the real vanilla values.
+    #[test]
+    fn skyrim_skin_resolves_every_race_matching_arma() {
+        let nord_race = 0x0001_3746;
+        let generic_human = 0x0000_0019;
+        let armor = skyrim_armor(vec![0x0000_0D6E, 0x0000_0D6C, 0x0000_0D67]);
+        let mut idx = empty_index();
+        // Authored order: Feet, Hands, Torso — all three reach Nord via
+        // `additional_races`, exactly as SkinNaked does.
+        for (fid, male, female) in [
+            (
+                0x0000_0D6E_u32,
+                r"Actors\Character\Character Assets\MaleFeet_1.nif",
+                r"Actors\Character\Character Assets\FemaleFeet_1.nif",
+            ),
+            (
+                0x0000_0D6C,
+                r"Actors\Character\Character Assets\MaleHands_1.nif",
+                r"Actors\Character\Character Assets\FemaleHands_1.nif",
+            ),
+            (
+                0x0000_0D67,
+                r"Actors\Character\Character Assets\MaleBody_1.NIF",
+                r"Actors\Character\Character Assets\FemaleBody_1.nif",
+            ),
+        ] {
+            idx.armor_addons.insert(
+                fid,
+                arma_for_race(fid, generic_human, vec![nord_race], male, female),
+            );
+        }
+
+        let paths = resolve_armor_meshes(&armor, Gender::Male, nord_race, &idx, GameKind::Skyrim);
+        assert_eq!(
+            paths,
+            vec![
+                r"Actors\Character\Character Assets\MaleFeet_1.nif",
+                r"Actors\Character\Character Assets\MaleHands_1.nif",
+                r"Actors\Character\Character Assets\MaleBody_1.NIF",
+            ],
+            "all three race-matching addons must contribute a mesh, in authored \
+             order — returning only the first leaves torso and hands bare (#3357)"
+        );
+
+        // The thin wrapper still yields one path for callers that want one.
+        assert_eq!(
+            resolve_armor_mesh(&armor, Gender::Male, nord_race, &idx, GameKind::Skyrim),
+            Some(r"Actors\Character\Character Assets\MaleFeet_1.nif")
+        );
+    }
+
+    /// Several ARMAs can legitimately name one NIF; spawning it twice would
+    /// double-draw the same geometry.
+    #[test]
+    fn skyrim_duplicate_arma_paths_are_deduped() {
+        let nord_race = 0x0001_3746;
+        let armor = skyrim_armor(vec![0xA1, 0xA2]);
+        let mut idx = empty_index();
+        idx.armor_addons.insert(
+            0xA1,
+            arma_for_race(0xA1, nord_race, vec![], "shared.nif", "shared_f.nif"),
+        );
+        idx.armor_addons.insert(
+            0xA2,
+            arma_for_race(0xA2, nord_race, vec![], "shared.nif", "shared_f.nif"),
+        );
+        assert_eq!(
+            resolve_armor_meshes(&armor, Gender::Male, nord_race, &idx, GameKind::Skyrim),
+            vec!["shared.nif"]
+        );
+    }
+
+    /// A single-region item still yields exactly one mesh — the common case
+    /// must not change shape.
+    #[test]
+    fn skyrim_single_region_armor_still_yields_one_mesh() {
+        let nord_race = 0x0001_3746;
+        let armor = skyrim_armor(vec![0xB1]);
+        let mut idx = empty_index();
+        idx.armor_addons.insert(
+            0xB1,
+            arma_for_race(0xB1, nord_race, vec![], "cuirass_m.nif", "cuirass_f.nif"),
+        );
+        assert_eq!(
+            resolve_armor_meshes(&armor, Gender::Male, nord_race, &idx, GameKind::Skyrim),
+            vec!["cuirass_m.nif"]
+        );
+    }
+
+    /// The no-race-match fallback stays single-valued: without a race match
+    /// there is no evidence the remaining addons are meant for this actor,
+    /// and returning all of them would stack unrelated meshes.
+    #[test]
+    fn skyrim_fallback_without_race_match_stays_single() {
+        let armor = skyrim_armor(vec![0xC1, 0xC2]);
+        let mut idx = empty_index();
+        idx.armor_addons.insert(
+            0xC1,
+            arma_for_race(0xC1, 0x999, vec![], "first.nif", "f.nif"),
+        );
+        idx.armor_addons.insert(
+            0xC2,
+            arma_for_race(0xC2, 0x999, vec![], "second.nif", "s.nif"),
+        );
+        assert_eq!(
+            resolve_armor_meshes(&armor, Gender::Male, 0x0001_3746, &idx, GameKind::Skyrim),
+            vec!["first.nif"]
+        );
+    }
+
+    /// Legacy games have no ARMA dispatch — one record, one mesh.
+    #[test]
+    fn fnv_yields_at_most_one_mesh() {
+        let armor = fnv_armor(r"armor\dressclothes\dressm.nif");
+        let idx = EsmIndex {
+            game: GameKind::Fallout3NV,
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_armor_meshes(&armor, Gender::Male, 0, &idx, GameKind::Fallout3NV),
+            vec![r"armor\dressclothes\dressm.nif"]
+        );
+        assert!(
+            resolve_armor_meshes(&fnv_armor(""), Gender::Male, 0, &idx, GameKind::Fallout3NV)
+                .is_empty()
         );
     }
 
