@@ -14,22 +14,36 @@
 //! against a checked-in baseline TSV; any type whose `unknown` count grew
 //! (or `parsed` count shrank) is a regression.
 //!
-//! ## How the rows are keyed (matters for aliased types)
+//! ## How the rows are keyed
 //!
-//! Parsed blocks key on the **struct's** `block_type_name()`; unknown
-//! blocks key on the **header's advertised** type name. So a type that
-//! deliberately shares another's parser — `bhkSPCollisionObject` parses as
-//! `BhkPCollisionObject` (#2332), `bhkBlendCollisionObject` as
-//! `BhkCollisionObject` — has no row of its own while it parses cleanly;
-//! its blocks are counted on the row of the struct it lands in.
+//! **Every row keys on the wire type name** — the string the file's own
+//! header advertises for that block — for parsed and unknown blocks alike.
+//! So `bhkSPCollisionObject`, `bhkBlendCollisionObject`, `bhkRigidBodyT`,
+//! `BSSegmentedTriShape` and every other aliased type each get a standing
+//! row of their own, at their real corpus count.
 //!
-//! That still gates them, in both directions: if such a decode breaks, the
-//! blocks either stop reaching the shared struct (→ `PARSED shrank` on that
-//! row) or fall into the recovery path under their own advertised name
-//! (→ `UNKNOWN grew` from an absent baseline row, which
-//! `compare_histograms` scores against 0). What it does *not* give is a
-//! standing per-alias count, so don't read "no `bhkSPCollisionObject` row"
-//! as "not covered".
+//! Before #3326 parsed blocks keyed on the **struct's**
+//! `block_type_name()`, and this section argued that aliasing "still gates
+//! them, in both directions". It did not. Many dispatch arms deliberately
+//! parse several wire types into one struct and keep the discriminator in a
+//! *field* (`BhkRigidBody.is_t`, `BhkCollisionObject.is_blend`,
+//! `BsRangeNode.kind`, `NiPSysBlock.original_type`,
+//! `NiTriShape::parse_segmented`), so a re-route of wire type X from struct
+//! A to struct B where `A::block_type_name() == B::block_type_name()` moved
+//! **nothing** in the TSV. On FNV that blind spot covered 142,649 blocks —
+//! 21.5% of the corpus — and included the precise shapes of #146
+//! (`BSSegmentedTriShape` reverting to plain `NiTriShape::parse`) and #2316
+//! (`bhkRigidBodyT` losing `is_t`, silently identity-collapsing the CInfo
+//! transform on 28% of FNV rigid bodies). Both have synthetic-fixture unit
+//! tests, so the risk was mitigated — but this gate contributed nothing to
+//! catching them, which is not what the docstring above claimed.
+//!
+//! Two pre-#3326 baseline rows were provably not wire types at all:
+//! `NiSingleInterpController` is `abstract="true"` in nif.xml (no such block
+//! can exist on disk; the FNV count was `BSMaterialEmittanceMultController`
+//! 471 + `BSRefractionStrengthController` 87 + `BSFrustumFOVController` 56 =
+//! exactly the 614 it carried), and `NiPSysBlock` is a parser-internal
+//! catch-all name that appears nowhere in nif.xml.
 //!
 //! ## Workflow
 //!

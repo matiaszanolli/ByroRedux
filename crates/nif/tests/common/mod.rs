@@ -38,6 +38,7 @@
 
 use byroredux_bsa::{Ba2Archive, BsaArchive};
 use byroredux_nif::blocks::{NiObject, NiUnknown};
+use byroredux_nif::header::NifHeader;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -667,19 +668,56 @@ impl PerBlockHistogram {
         }
     }
 
-    pub fn record_scene_blocks<'a>(&mut self, blocks: impl Iterator<Item = &'a Box<dyn NiObject>>) {
-        for block in blocks {
+    /// Bucket a parsed scene's blocks by their **wire** type name — the
+    /// string the file's own header advertises for block `i`, not the name
+    /// of the struct the dispatcher happened to land it in (#3326).
+    ///
+    /// Keying on `block_type_name()` made this gate blind in exactly the
+    /// place it exists to watch. Many dispatch arms deliberately parse
+    /// several wire types into one struct and keep the discriminator in a
+    /// *field* (`BhkRigidBody.is_t`, `BhkCollisionObject.is_blend`,
+    /// `BsRangeNode.kind`, `NiPSysBlock.original_type`,
+    /// `NiTriShape::parse_segmented`). On FNV that collapsed 142,649 blocks
+    /// (21.5% of the corpus) onto a name they do not have, and any re-route
+    /// of wire type X from struct A to struct B where
+    /// `A::block_type_name() == B::block_type_name()` moved nothing in the
+    /// TSV — including the exact shapes of #146 (`BSSegmentedTriShape`
+    /// reverting to plain `NiTriShape::parse`, 989 blocks) and #2316
+    /// (`bhkRigidBodyT` losing `is_t`, 4,701 blocks, silently
+    /// identity-collapsing the CInfo transform on 28% of FNV rigid bodies).
+    ///
+    /// Two baseline rows were provably not wire types at all before this:
+    /// `NiSingleInterpController` is `abstract="true"` in nif.xml so no such
+    /// block can exist on disk, and `NiPSysBlock` is a parser-internal
+    /// catch-all name that appears nowhere in nif.xml.
+    ///
+    /// `NiUnknown` blocks already keyed on the header name and are
+    /// unchanged. Files whose header predates the block-type table
+    /// (`NifVersion::V5_0_0_1`) have no wire names to read, and truncated
+    /// scenes hold fewer blocks than the header describes, so both fall
+    /// back to the struct name for the entries they cannot resolve.
+    pub fn record_scene_blocks(&mut self, header: Option<&NifHeader>, blocks: &[Box<dyn NiObject>]) {
+        for (index, block) in blocks.iter().enumerate() {
             if let Some(unknown) = block.as_any().downcast_ref::<NiUnknown>() {
                 self.counts
                     .entry(unknown.type_name.as_ref().to_string())
                     .or_default()
                     .unknown += 1;
-            } else {
-                self.counts
-                    .entry(block.block_type_name().to_string())
-                    .or_default()
-                    .parsed += 1;
+                continue;
             }
+            let wire_name = header
+                .and_then(|header| {
+                    header
+                        .block_type_indices
+                        .get(index)
+                        .and_then(|&type_index| header.block_types.get(type_index as usize))
+                })
+                .map(|name| name.as_ref())
+                .unwrap_or_else(|| block.block_type_name());
+            self.counts
+                .entry(wire_name.to_string())
+                .or_default()
+                .parsed += 1;
         }
     }
 
@@ -848,7 +886,13 @@ pub fn parse_archive_with_histogram(
             },
             Ok(bytes) => match byroredux_nif::parse_nif(&bytes) {
                 Ok(scene) => {
-                    hist.record_scene_blocks(scene.blocks.iter());
+                    // #3326 — `NifScene` does not retain its header, and the
+                    // wire type table lives there. Re-reading it is a few
+                    // hundred bytes off the front of a buffer already in
+                    // hand; a scene whose header will not re-parse keys on
+                    // struct names, exactly as before.
+                    let header = NifHeader::parse(&bytes).ok().map(|(header, _)| header);
+                    hist.record_scene_blocks(header.as_ref(), &scene.blocks);
                     let status = if scene.truncated || scene.recovered_blocks > 0 {
                         ParseStatus::Truncated {
                             block_count: scene.len(),
