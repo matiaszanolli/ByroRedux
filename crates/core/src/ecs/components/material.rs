@@ -1081,6 +1081,15 @@ impl Material {
         fix_scalar!(sheen);
         fix_scalar!(sheen_tint);
         fix_scalar!(anisotropic);
+        // #3373 — the BGEM glass-optics tail. Added after this method and
+        // missed by it, so both save-path gates (the pre-save probe in
+        // `crates/save/src/validate.rs` and the post-restore repair in
+        // `crates/save/src/driver.rs`) had a hole in exactly the newest
+        // scalars. These reach `GpuMaterial` like any other field.
+        fix_vec!(glass_fresnel_color);
+        fix_scalar!(glass_refraction_scale);
+        fix_scalar!(glass_blur_scale);
+        fix_scalar!(glass_blur_scale_factor);
 
         changed
     }
@@ -1854,6 +1863,138 @@ mod tests {
         };
         assert!(m.sanitize_finite());
         assert!(m.fresnel_power.is_finite());
+    }
+
+    /// #3373 — the BGEM glass-optics tail was added to `Material` after
+    /// `sanitize_finite` and never wired into it, so a poisoned save carried
+    /// NaN through both save-path gates into `GpuMaterial`.
+    #[test]
+    fn sanitize_finite_repairs_the_bgem_glass_optics_fields() {
+        let mut m = Material {
+            glass_fresnel_color: [f32::NAN, 0.5, f32::INFINITY],
+            glass_refraction_scale: f32::NAN,
+            glass_blur_scale: f32::NEG_INFINITY,
+            glass_blur_scale_factor: f32::NAN,
+            ..Material::default()
+        };
+
+        assert!(
+            m.sanitize_finite(),
+            "a poisoned glass tail must report repair"
+        );
+
+        let d = Material::default();
+        assert_eq!(m.glass_fresnel_color[0], d.glass_fresnel_color[0]);
+        assert_eq!(
+            m.glass_fresnel_color[1], 0.5,
+            "a finite component must survive untouched"
+        );
+        assert_eq!(m.glass_fresnel_color[2], d.glass_fresnel_color[2]);
+        assert_eq!(m.glass_refraction_scale, d.glass_refraction_scale);
+        assert_eq!(m.glass_blur_scale, d.glass_blur_scale);
+        assert_eq!(m.glass_blur_scale_factor, d.glass_blur_scale_factor);
+    }
+
+    /// The whole-struct pin: poison **every** float field at once and require
+    /// the material to come back finite. This is the guard that catches the
+    /// #3373 defect *class* — a float field added to `Material` without a
+    /// matching `fix_scalar!`/`fix_vec!` line — rather than only the four
+    /// fields that were missing this time. Extend the literal below whenever
+    /// `Material` gains a float.
+    #[test]
+    fn sanitize_finite_leaves_no_non_finite_float_anywhere() {
+        let n = f32::NAN;
+        let mut m = Material {
+            metalness: n,
+            roughness: n,
+            emissive_color: [n; 3],
+            emissive_mult: n,
+            specular_color: [n; 3],
+            specular_strength: n,
+            diffuse_color: [n; 3],
+            ambient_color: [n; 3],
+            glossiness: n,
+            uv_offset: [n; 2],
+            uv_scale: [n; 2],
+            alpha: n,
+            env_map_scale: n,
+            alpha_threshold: n,
+            translucency_subsurface_color: [n; 3],
+            translucency_transmissive_scale: n,
+            translucency_turbulence: n,
+            lighting_effect_1: n,
+            lighting_effect_2: n,
+            subsurface_rolloff: n,
+            rimlight_power: n,
+            backlight_power: n,
+            fresnel_power: n,
+            grayscale_to_palette_scale: n,
+            ior: n,
+            subsurface: n,
+            sheen: n,
+            sheen_tint: n,
+            anisotropic: n,
+            glass_fresnel_color: [n; 3],
+            glass_refraction_scale: n,
+            glass_blur_scale: n,
+            glass_blur_scale_factor: n,
+            ..Material::default()
+        };
+
+        assert!(m.sanitize_finite());
+
+        let floats: Vec<(&str, f32)> = vec![
+            ("metalness", m.metalness),
+            ("roughness", m.roughness),
+            ("emissive_mult", m.emissive_mult),
+            ("specular_strength", m.specular_strength),
+            ("glossiness", m.glossiness),
+            ("alpha", m.alpha),
+            ("env_map_scale", m.env_map_scale),
+            ("alpha_threshold", m.alpha_threshold),
+            (
+                "translucency_transmissive_scale",
+                m.translucency_transmissive_scale,
+            ),
+            ("translucency_turbulence", m.translucency_turbulence),
+            ("lighting_effect_1", m.lighting_effect_1),
+            ("lighting_effect_2", m.lighting_effect_2),
+            ("subsurface_rolloff", m.subsurface_rolloff),
+            ("rimlight_power", m.rimlight_power),
+            ("backlight_power", m.backlight_power),
+            ("fresnel_power", m.fresnel_power),
+            ("grayscale_to_palette_scale", m.grayscale_to_palette_scale),
+            ("ior", m.ior),
+            ("subsurface", m.subsurface),
+            ("sheen", m.sheen),
+            ("sheen_tint", m.sheen_tint),
+            ("anisotropic", m.anisotropic),
+            ("glass_refraction_scale", m.glass_refraction_scale),
+            ("glass_blur_scale", m.glass_blur_scale),
+            ("glass_blur_scale_factor", m.glass_blur_scale_factor),
+        ];
+        for (name, v) in floats {
+            assert!(v.is_finite(), "{name} left non-finite by sanitize_finite");
+        }
+
+        for (name, v) in [
+            ("emissive_color", &m.emissive_color[..]),
+            ("specular_color", &m.specular_color[..]),
+            ("diffuse_color", &m.diffuse_color[..]),
+            ("ambient_color", &m.ambient_color[..]),
+            ("uv_offset", &m.uv_offset[..]),
+            ("uv_scale", &m.uv_scale[..]),
+            (
+                "translucency_subsurface_color",
+                &m.translucency_subsurface_color[..],
+            ),
+            ("glass_fresnel_color", &m.glass_fresnel_color[..]),
+        ] {
+            assert!(
+                v.iter().all(|c| c.is_finite()),
+                "{name} left non-finite by sanitize_finite"
+            );
+        }
     }
 
     /// #2591 (SKY-D7-03) — either a black color or a zero multiplier
