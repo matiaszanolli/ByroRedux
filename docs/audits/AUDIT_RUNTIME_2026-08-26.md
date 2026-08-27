@@ -38,7 +38,7 @@ Method per `audit-runtime/SKILL.md` Phase 2–3: `xvfb-run` headless launch,
 | `oblivion` | 20 days | PASS, within band; draw split improved |
 | `fo3` | 73 days | entities +5.5 % (outside ±2 %); mesh-cache failures cleared |
 | `skyrim_se` | 17 days | entities +3.5 % (outside ±2 %); **batches ×2.3 past the ×1.1 contract**; device-lost during hold |
-| `fnv` | 20 days | **entities −22.6 %** (a gating drop); batches ×1.22 past contract |
+| `fnv` | 20 days | entities −22.6 % — **traced to a correctness fix, not a regression**; batches ×1.22 past contract (#3005) |
 
 `fo4`'s exact reproduction is the load-bearing control here: its baseline is
 the freshest (2026-08-22) and every one of `entities_total`,
@@ -66,24 +66,42 @@ all (the skill's own Phase 3 note), and was 1 on every captured game.
 
 ## Findings
 
-### RT-2026-08-26-01 — fnv `entities_total` dropped 22.6 %, with `skin_pool_live` down 70 %
+### RT-2026-08-26-01 — fnv `entities_total` −22.6 % is a CORRECTNESS FIX, not a regression — RESOLVED
 
-`FreesideAtomicWrangler`: 9,271 → 7,174 entities, and the skinned-actor pool
-went 677 → 206 live slots. The skill's own tolerance note is explicit that a
-drop past −2 % gates, because "entities failing to spawn is a real
-regression" — this is eleven times that band, and the correlated skin-pool
-collapse points at actors specifically rather than at benign non-render body
-drift.
+`FreesideAtomicWrangler`: 9,271 → 7,174 entities, `skin_pool_live` 677 → 206.
+Investigated rather than filed, and bisected to a single commit.
 
-Not re-baselined. Doing so would erase the only evidence that this happened.
+**Cause: `bfdc3d3f` (2026-08-23)**, which replaced "spawn every expanded armor
+candidate" with biped-slot occupancy resolution — only items that actually win
+a slot get a mesh. Measured across the boundary with a 1-frame probe (cell-load
+numbers are identical at 1 and 240 frames, so the probe is sound):
 
-Two things argue against a pure-regression reading and need checking before
-this is called a bug: `mesh_cache_failed_count` went 11 → 0 over the same
-window (fewer NIFs failing to load, not more), and `bench_draws_cmds` fell
-2553 → 2110, which is *within* contract rather than past it. A cell whose
-actor population genuinely shrank and whose meshes all now load is a strange
-shape for a spawn regression. The FNV baseline predates the #2371/#2372
-exterior-streaming tranche that #3288 flagged.
+```
+e5329d64 (parent)  entities=9511  meshes=1270  draws=2608/109b/26c  skinned=677
+bfdc3d3f (fix)     entities=7174  meshes= 772  draws=2110/109b/26c  skinned=206
+```
+
+Pre-fix, `VFSAtomicWranglerGambler` equipped **29 armor meshes from 9 inventory
+entries**; it now equips 2. An actor has ~15 biped slots, so 29
+simultaneously-worn meshes were interpenetrating duplicates that could never
+all be visible. Cell-wide: armor meshes 123 → 24, skinned meshes 677 → 206.
+
+**Nothing failed to spawn.** NPC count is 19 on both sides and cell-load
+entities move only 2017 → 2001. The loss is armor meshes that should never
+have existed, plus their skinned sub-shapes and bone entities.
+
+Two narrower hypotheses were tested and **falsified**, which is why a commit
+bisect was needed rather than a code reading:
+
+- Reverting #3217's `multi_pick` (`0x04` → `0x02|0x04`) at HEAD moved armor
+  meshes only 24 → 27. The same expression yields 123 at 2026-08-20, so the
+  flag is not what changed.
+- Disabling the #2094 slot-occupancy `retain` at HEAD moved entities only
+  7174 → 7183. The change is structural — the candidate list is built
+  differently now — and is not recoverable by flipping either line.
+
+**Baseline regenerated.** The 2026-08-06 capture recorded the pre-fix
+over-equip, so the old numbers were the wrong ones.
 
 ### RT-2026-08-26-02 — the #3005 draw-batch regression is still live, and skyrim_se is worse than filed
 
@@ -97,6 +115,25 @@ re-baselined since. This run confirms it is unfixed on fnv and shows
 `skyrim_se` — not named in #3005 — is the worst arm of the three. `fo3`'s
 batches are 96 → 100 (×1.04), inside contract, so fo3 appears to have
 recovered while skyrim_se regressed.
+
+**The obvious benign explanation was tested and disproved.** Removing 99
+duplicate armor spawns (RT-01) removes precisely the *most mergeable* draws —
+same mesh, same material — so the batch move looked like it might be an
+artifact of that fix rather than an independent regression. It is not: the
+commit *before* the armor fix already read 109 batches. Bisected timeline for
+this cell's draw split:
+
+```
+c0f3cda3  2026-08-07   2553/ 89b/25c    <- the value the baseline held
+9e96a9f9  2026-08-12   2562/164b/35c    <- spike
+d560427c  2026-08-17   2608/109b/26c    <- partial recovery
+e5329d64  2026-08-23   2608/109b/26c    <- unchanged through the armor fix
+bfdc3d3f  2026-08-23   2110/109b/26c    <- armor fix: cmds fall, batches do not
+```
+
+Merge efficiency fell from 28.7 to 19.4 cmds/batch. The regression entered
+between 08-07 and 08-12 and was partially recovered by 08-17; it is unrelated
+to the armor work. These data points belong to #3005.
 
 ### RT-2026-08-26-03 — skyrim_se `WhiterunDragonsreach` loses the Vulkan device during bench-hold
 
@@ -125,18 +162,32 @@ window is a genuine improvement.
 
 ## Baseline actions
 
-Regenerated: **`oblivion-ICMarketDistrictTheGildedCarafe.tsv`** only. Its
-`entities_total` is inside ±2 %, and its draw split moved *down* on both
-gated axes (batches 47 → 20, gpu_calls 4 → 2), so re-capturing tightens the
-contract rather than laundering a regression.
+Regenerated **two** of five:
 
-Deliberately **not** regenerated: `fnv`, `fo3`, `skyrim_se`. Each carries at
-least one metric that is past a gating threshold in the wrong direction.
-Overwriting them is what would make #3288's stated fear — "a genuine
-regression indistinguishable from staleness" — actually come true, one commit
-after the audit that was supposed to prevent it. `fo4` needed no regeneration:
-it matched exactly.
+- **`oblivion-ICMarketDistrictTheGildedCarafe.tsv`** — `entities_total` inside
+  ±2 %, and the draw split moved *down* on both gated axes (batches 47 → 20,
+  gpu_calls 4 → 2), so re-capturing tightens the contract.
+- **`fnv-FreesideAtomicWrangler.tsv`** — after RT-01 established the −22.6 %
+  is `bfdc3d3f`'s armor over-equip fix. The old capture recorded ~5× the real
+  armor mesh count per NPC, so it was the wrong number to defend. The header
+  records the cause, the cross-boundary measurements, and an explicit caveat
+  that `bench_draws_batches = 109` is carried forward as a known #3005
+  regression rather than an endorsement — gating against the old 89 would be
+  permanently red and would mask a *new* batching regression.
 
-The three stale baselines stay stale *on purpose* until the findings above are
-resolved, and the measurements in this report are the record of what current
-HEAD actually produces.
+Deliberately **not** regenerated:
+
+- **`skyrim_se`** — batches ×2.33 past contract with no benign explanation,
+  and its telemetry could not be captured at all (RT-03).
+- **`fo3`** — +5.5 % entities against a 73-day baseline with no identified
+  deliberate cause. The skill's rule is to regenerate when a *known* change
+  moves the metric past the band; nothing here identifies one yet, so the
+  drift stays visible.
+
+`fo4` needed no write — it matched exactly.
+
+The two held baselines stay stale *on purpose*. Overwriting a baseline whose
+delta you cannot explain is what makes #3288's stated fear — "a genuine
+regression indistinguishable from staleness" — come true; the fnv row was
+regenerated precisely *because* its delta is now explained, and that is the
+distinction this pass is trying to hold.
