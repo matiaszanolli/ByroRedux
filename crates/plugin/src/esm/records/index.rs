@@ -820,14 +820,52 @@ impl EsmIndex {
     /// nested map merges per-worldspace so a DLC adding a new
     /// worldspace doesn't stomp the base game's entry. See M46.0 / #561.
     pub fn merge_from(&mut self, mut other: EsmIndex) {
-        // M41.0 Phase 1b — preserve the latest plugin's game variant
-        // on the merged index. Multi-plugin loads always share a
-        // single game in practice (master + DLC of the same game), so
-        // last-write-wins is correct; the field stays at its
-        // `GameKind::default()` (Fallout3NV) until the first plugin's
-        // parse populates it.
+        // M41.0 Phase 1b — preserve the latest plugin's game variant on the
+        // merged index. Multi-plugin loads always share a single game in
+        // practice (master + DLC of the same game), so last-write-wins is
+        // correct; the field stays at its `GameKind::default()` (Fallout3NV)
+        // until the first plugin's parse populates it.
+        //
+        // NOTE: this field is deliberately *not* given the `character_rules`
+        // guard below. Callers construct an index and set `game` without ever
+        // setting `character_rules` (the FO4 inventory-classification path
+        // does exactly that), so gating the two together would silently drop
+        // the game. The same empty-index hazard applies to `game` in
+        // principle; it is out of scope here and belongs to /audit-esm.
         self.game = other.game;
-        self.character_rules = other.character_rules;
+
+        // #3384 — `character_rules` decides, for every actor in the load
+        // order, which skill roster is used, which Health curve seeds
+        // auto-calc NPCs, and which `CharacterRuleset` builder runs. It used
+        // to be an unconditional last-write-wins, and the load-order driver
+        // merges `EsmIndex::default()` when a plugin fails to parse. A parse
+        // failure in the *last* plugin therefore adopted
+        // `CharacterRulesProfile::NONE`, whose `npc_stat_model()` is `None`:
+        // `derive_npc_actor_values` returns empty for every actor in every
+        // cell and no `CharacterRuleset` resource is built. The whole
+        // character layer switched off behind a `log::warn!` about an
+        // unrelated subject.
+        //
+        // First-non-`NONE` wins rather than last, so the base master decides:
+        // the FO3-vs-FNV split is a bare `HEDR < 1.0` test, and a third-party
+        // plugin authored with a low HEDR would otherwise re-point an entire
+        // FNV load order at `SkillSet::FALLOUT3` and the FO3 Health curve. A
+        // later plugin that would have chosen differently is reported rather
+        // than obeyed.
+        if other.character_rules != byroredux_core::character::CharacterRulesProfile::NONE {
+            if self.character_rules == byroredux_core::character::CharacterRulesProfile::NONE {
+                self.character_rules = other.character_rules;
+            } else if self.character_rules != other.character_rules {
+                log::warn!(
+                    "Load order disagrees on character rules: keeping '{}' from the \
+                     first plugin that selected one; a later plugin selected '{}' \
+                     (#3384). Skill roster and NPC Health curve follow the base \
+                     master, not load order.",
+                    self.character_rules.name(),
+                    other.character_rules.name(),
+                );
+            }
+        }
 
         // Nested cell index — needs per-worldspace handling.
         self.cells.merge_from(std::mem::take(&mut other.cells));
