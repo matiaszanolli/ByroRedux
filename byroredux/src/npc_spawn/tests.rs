@@ -166,8 +166,14 @@ fn pick_idle_handle_is_deterministic_and_in_bounds() {
 
 #[test]
 fn prebaked_facegen_nif_path_matches_vanilla_layout() {
-    // Vanilla SSE Whiterun Mikael (FormID 0x00013BBE in
-    // Skyrim.esm). Path scheme verified by BSA scan 2026-04-28.
+    // A vanilla SSE `Skyrim.esm` NPC FormID. Path scheme verified by BSA
+    // scan 2026-04-28.
+    //
+    // #3361 — this comment used to name `0x00013BBE` as "Whiterun Mikael".
+    // It isn't: Mikael is `0x0001A670` (see `BANNERED_MARE`). The FormID
+    // here is arbitrary as far as this test is concerned — it only pins the
+    // path *format*, and never opens an ESM — so the value stands; only the
+    // false attribution is removed.
     assert_eq!(
         prebaked_facegen_nif_path("Skyrim.esm", 0x00013BBE),
         Some(r"meshes\actors\character\facegendata\facegeom\skyrim.esm\00013bbe.nif".to_string(),),
@@ -1448,5 +1454,139 @@ fn skyrim_parsed_npc_perk_reaches_the_hasperk_condition() {
         has(OTHER_PERK),
         0.0,
         "an unowned perk still reads 0.0 — the fix must not make HasPerk always true"
+    );
+}
+
+// ── #3361 — the real-ESM equip-chain guard ────────────────────────────────
+//
+// Every other `build_npc_equip_state` test in this file builds a synthetic
+// `EsmIndex`, and none of them gives a skin ARMO more than one ARMA — which
+// is exactly why #3356 (OTFT INAM array truncation) and #3357 (single-ARMA
+// skin resolution) both shipped and survived a prior audit pass. Nothing in
+// the tree drove the equip chain against real game data on any game.
+//
+// `#[ignore]`-gated because it needs a Skyrim SE install, matching the
+// `crates/plugin/tests/parse_real_esm.rs` convention. Opt in with:
+//
+//   cargo test -p byroredux --bin byroredux bannered_mare -- --ignored
+
+/// The six named NPCs of `WhiterunBanneredMare`, the bench-of-record cell.
+/// FormIDs read from `Skyrim.esm`.
+const BANNERED_MARE: &[(&str, u32, Gender)] = &[
+    ("Saadia", 0x0001_3BA2, Gender::Female),
+    ("Hulda", 0x0001_3BA3, Gender::Female),
+    ("Brenuin", 0x0001_3BA7, Gender::Male),
+    ("Mikael", 0x0001_A670, Gender::Male),
+    ("Sinmir", 0x0008_13B5, Gender::Male),
+    ("AmaundMotierreEnd", 0x0004_E64F, Gender::Male),
+];
+
+fn skyrim_data_dir() -> Option<std::path::PathBuf> {
+    if let Ok(v) = std::env::var("BYROREDUX_SKYRIMSE_DATA") {
+        let p = std::path::PathBuf::from(v);
+        if p.is_dir() {
+            return Some(p);
+        }
+    }
+    let p = std::path::PathBuf::from(
+        "/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data",
+    );
+    p.is_dir().then_some(p)
+}
+
+/// #3361 — pin the whole equip chain on real data: every Bannered Mare NPC
+/// must reach Inventory + EquipmentSlots, and their race skin must supply a
+/// TORSO mesh, not just the feet.
+///
+/// This is the guard that would have caught #3357: pre-fix every one of
+/// these six resolved their skin to a `*Feet_1.nif` because `SkinNaked`'s
+/// `NakedFeet` ARMA sorts ahead of `NakedTorso` and the resolver stopped at
+/// the first race match.
+#[test]
+#[ignore]
+fn bannered_mare_npcs_resolve_a_full_equip_state_on_real_skyrim_data() {
+    let Some(data) = skyrim_data_dir() else {
+        eprintln!("[#3361] skipping: Skyrim SE data unavailable");
+        return;
+    };
+    let bytes = std::fs::read(data.join("Skyrim.esm")).expect("read Skyrim.esm");
+    let index = byroredux_plugin::esm::parse_esm(&bytes).expect("parse Skyrim.esm");
+
+    for &(name, form_id, gender) in BANNERED_MARE {
+        let npc = index
+            .npcs
+            .get(&form_id)
+            .unwrap_or_else(|| panic!("{name} ({form_id:08X}) must be present in Skyrim.esm"));
+
+        let state = build_npc_equip_state(npc, &index, GameKind::Skyrim, gender);
+
+        assert!(
+            !state.inventory.is_empty(),
+            "{name} must end up with a non-empty inventory"
+        );
+        assert!(
+            state.equipment_slots.occupants.iter().any(Option::is_some),
+            "{name} must occupy at least one biped slot"
+        );
+
+        // #3357 — the race skin must contribute a torso mesh. Pre-fix every
+        // one of these resolved to a Feet nif and nothing else.
+        let has_torso = state.armor_to_spawn.iter().any(|a| {
+            let p = a.model_path.to_ascii_lowercase();
+            p.contains("body") || p.contains("torso")
+        });
+        assert!(
+            has_torso,
+            "{name}: no torso mesh among {:?} — the race skin resolved to the \
+             first race-matching ARMA only (#3357)",
+            state
+                .armor_to_spawn
+                .iter()
+                .map(|a| a.model_path)
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+/// #3356 — the OTFT `INAM` array. Every one of these five Bannered Mare
+/// outfits authors more than one item in a single `INAM`; pre-fix each
+/// yielded exactly one, so 765 of Skyrim.esm's 1,246 outfit items (61%)
+/// never reached an NPC.
+#[test]
+#[ignore]
+fn bannered_mare_outfits_keep_every_inam_entry_on_real_skyrim_data() {
+    let Some(data) = skyrim_data_dir() else {
+        eprintln!("[#3356] skipping: Skyrim SE data unavailable");
+        return;
+    };
+    let bytes = std::fs::read(data.join("Skyrim.esm")).expect("read Skyrim.esm");
+    let index = byroredux_plugin::esm::parse_esm(&bytes).expect("parse Skyrim.esm");
+
+    for (edid, form_id, expected) in [
+        ("FarmClothesOutfit02", 0x0002_D75E_u32, 2usize),
+        ("BarkeepClothes01", 0x0005_FB81, 2),
+        ("BeggarWithHatOutfit", 0x0002_8B61, 3),
+        ("ArmorBandedIronAllOutfit", 0x000B_1FAE, 4),
+        ("FineClothesOutfit02", 0x000E_40DD, 2),
+    ] {
+        let outfit = index
+            .outfits
+            .get(&form_id)
+            .unwrap_or_else(|| panic!("{edid} ({form_id:08X}) must be present"));
+        assert_eq!(
+            outfit.items.len(),
+            expected,
+            "{edid} must keep all {expected} INAM entries, got {:?} (#3356)",
+            outfit.items
+        );
+    }
+
+    // Corpus-level floor: 481 outfits carrying 1,246 items. Pre-fix this was
+    // exactly 481.
+    let total: usize = index.outfits.values().map(|o| o.items.len()).sum();
+    assert!(
+        total >= 1_246,
+        "Skyrim.esm OTFT items: expected >= 1246, got {total} — INAM arrays \
+         are being truncated again (#3356)"
     );
 }
