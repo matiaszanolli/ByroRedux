@@ -1,10 +1,7 @@
-# #3203 — FO3-2026-08-20-D4-01: FO3 bakes a four-level LOD ladder out to +/-64 cells but LodBandLadder::for_game returns None for Fallout3NV — the ring is pinned at level 4 / 48 cells, leaving 567 meshes + 832 textures unreachable
+# FO3-2026-08-20-D4-01: FO3 bakes a four-level LOD ladder out to +/-64 cells but LodBandLadder::for_game returns None for Fallout3NV — the ring is pinned at level 4 / 48 cells, leaving 567 meshes + 832 textures unreachable
 
-**Source**: `docs/audits/AUDIT_FO3_2026-08-20.md`
-**Filed**: 2026-08-20 · **HEAD**: `bb0b92f2`
-**URL**: https://github.com/matiaszanolli/ByroRedux/issues/3203
-
----
+State: OPEN
+Labels: bug,import-pipeline,medium,legacy-compat,game:fo3,terrain-exterior,esm-plugin
 
 - **Severity**: MEDIUM
 - **Dimension**: FO3 Dim 4 — Cell Loading End-to-End, exterior
@@ -66,3 +63,4 @@ Correct the `for_game` doc-comment: FO3/FNV *do* ship a baked ladder; only Obliv
 - [ ] **CANONICAL-BOUNDARY**: band selection stays in `cell_loader`, the per-game *layout* stays in `translate_terrain_lod_textures`; no per-game branch pushed into the terrain pass. See `/audit-nifal`.
 - [ ] **TESTS**: a regression test asserts `lod_ring_reach_cells(Fallout3NV) >= 64` and that `desired_lod_quads` emits at least one `level > 4` quad on a Capital Wasteland grid
 - [ ] **NO-GUESSING**: the refine distances are read from `Fallout3.esm` GMSTs, not invented
+

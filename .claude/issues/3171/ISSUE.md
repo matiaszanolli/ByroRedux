@@ -1,13 +1,7 @@
 # CHAR-2026-08-20-D5-01: effective_npc_level is a third copy of effective_actor_level carrying the exact .max(1) divergence #3081 declared wrong
 
-**Issue**: #3171 — https://github.com/matiaszanolli/ByroRedux/issues/3171
-**Finding ID**: `CHAR-2026-08-20-D5-01`
-**Severity**: MEDIUM
-**Dimension**: 5 — Population Boundary
-**Audit**: `/audit-character` — 2026-08-20 comprehensive suite, HEAD `bb0b92f2`
-**Labels**: medium, legacy-compat, gameplay, bug
-
----
+State: OPEN
+Labels: bug,medium,legacy-compat,gameplay,esm-plugin,character
 
 **Audit**: `/audit-character` — `docs/audits/AUDIT_CHARACTER_2026-08-20.md` (HEAD `bb0b92f2`)
 **Finding ID**: `CHAR-2026-08-20-D5-01`
@@ -105,3 +99,4 @@ Pick `.max(0)`, per that commit's own reasoning. Then extend
 - [ ] **CANONICAL-BOUNDARY**: the shared function lives at the ESM-record boundary (`byroredux_plugin`), with the binary importing it rather than re-deriving the rule
 - [ ] **TESTS**: `pc_level_mult_actors_resolve_to_calc_min_not_the_raw_multiplier` calls the shared function through the plugin crate so a future copy fails the suite
 - [ ] **TESTS**: a case pins that the Health term and `CharacterLevel` agree for a non-mult `level == 0` actor
+

@@ -1,13 +1,7 @@
 # CHAR-2026-08-20-D6-01: the #3095 real-data existence test covers one roster out of five and no derived-row output key on any game
 
-**Issue**: #3172 — https://github.com/matiaszanolli/ByroRedux/issues/3172
-**Finding ID**: `CHAR-2026-08-20-D6-01`
-**Severity**: MEDIUM
-**Dimension**: 6 — Coverage, Documentation & Doctrine Drift
-**Audit**: `/audit-character` — 2026-08-20 comprehensive suite, HEAD `bb0b92f2`
-**Labels**: medium, legacy-compat, bug
-
----
+State: OPEN
+Labels: bug,medium,legacy-compat,esm-plugin,character
 
 **Audit**: `/audit-character` — `docs/audits/AUDIT_CHARACTER_2026-08-20.md` (HEAD `bb0b92f2`)
 **Finding ID**: `CHAR-2026-08-20-D6-01`
@@ -110,3 +104,4 @@ are the right tool.
 - [ ] **SIBLING**: derived-row *output* keys are asserted too, not just input rosters — that half has zero coverage on every game today
 - [ ] **CANONICAL-BOUNDARY**: the helper asserts against the real `EsmIndex` resolver at the parser boundary, never against a roster-derived fixture
 - [ ] **TESTS**: the generalized helper fails on the current `"Illusion"` spelling before `CHAR-2026-08-20-D2-01` is fixed
+

@@ -1,12 +1,7 @@
-# #3195 — SPT-D4-2026-08-20-01: #3078's recoverable-placeholder fix landed on the cell route only
+# SPT-D4-2026-08-20-01: #3078's recoverable-placeholder fix landed on the cell route only — the loose --tree route still deletes the tree on a parse error, and never attaches SpeedTreeWind
 
-- **Filed**: 2026-08-20 (`/audit-publish`)
-- **URL**: https://github.com/matiaszanolli/ByroRedux/issues/3195
-- **Labels**: `low,legacy-compat,bug`
-- **Source report**: `docs/audits/AUDIT_SPEEDTREE_2026-08-20.md`
-- **HEAD at audit**: `bb0b92f2`
-
----
+State: OPEN
+Labels: bug,low,legacy-compat,terrain-exterior,esm-plugin,speedtree
 
 **Severity**: LOW
 **Dimension**: Per-Game Variants & Route Divergence
@@ -91,3 +86,4 @@ single tree under wind in the visualiser is a concrete obstacle to fixing them.
       `scene/nif_loader.rs`) end up with the same error arm — a third route added later must inherit it
 - [ ] **TESTS**: a guard that a malformed `.spt` still yields a placeholder on the **loose** route, the
       mirror of the existing cell-route guard
+

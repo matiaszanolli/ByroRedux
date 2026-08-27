@@ -1,10 +1,7 @@
-# #3205 — FO3-2026-08-20-D3-02: decode_data_fo3nv's "first sixteen bytes are opaque, not wind or wave controls" premise is falsified by 53/53 vanilla FO3 records — wind and wave amp/freq are sourced from the wrong fields
+# FO3-2026-08-20-D3-02: decode_data_fo3nv's "first sixteen bytes are opaque, not wind or wave controls" premise is falsified by 53/53 vanilla FO3 records — wind and wave amp/freq are sourced from the wrong fields
 
-**Source**: `docs/audits/AUDIT_FO3_2026-08-20.md`
-**Filed**: 2026-08-20 · **HEAD**: `bb0b92f2`
-**URL**: https://github.com/matiaszanolli/ByroRedux/issues/3205
-
----
+State: OPEN
+Labels: bug,import-pipeline,low,legacy-compat,game:fo3,esm-plugin
 
 - **Severity**: LOW
 - **Dimension**: FO3 Dim 3 — ESM Record Coverage, FO3-unique authoring
@@ -74,3 +71,4 @@ Stop sourcing `wind_direction`/`wind_speed` from `noise_wind_directions[0]`/`noi
 - [ ] **CANONICAL-BOUNDARY**: per-game layout logic stays in the WATR decoder — never pushed into `resolve_water_material`, `render/water.rs` or `water.frag`. See `/audit-nifal`.
 - [ ] **TESTS**: a regression test pins the fix against *shipped bytes*, asserting a long-`DATA` FO3 record reports `wave_amplitude == 0.5` / `wave_frequency == 1.0` — not against the decoder's own output
 - [ ] **ORDER**: coordinated with #3107 so the collapse keeps `decode_dnam_pre_fo4`'s head **and** `decode_data_fo3nv`'s tail
+

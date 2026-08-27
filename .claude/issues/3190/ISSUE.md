@@ -1,12 +1,7 @@
-# #3190 — SPT-D3-2026-08-20-01: SpeedTreeWind is built from two CNAM floats whose meaning the parser documents as unpinned
+# SPT-D3-2026-08-20-01: SpeedTreeWind is built from two CNAM floats whose meaning the parser itself documents as unpinned (No-Guessing violation) — and the clamp silences sway on both CNAM value sets in the repo
 
-- **Filed**: 2026-08-20 (`/audit-publish`)
-- **URL**: https://github.com/matiaszanolli/ByroRedux/issues/3190
-- **Labels**: `medium,legacy-compat,bug`
-- **Source report**: `docs/audits/AUDIT_SPEEDTREE_2026-08-20.md`
-- **HEAD at audit**: `bb0b92f2`
-
----
+State: OPEN
+Labels: bug,medium,legacy-compat,terrain-exterior,esm-plugin,speedtree
 
 **Severity**: MEDIUM
 **Dimension**: TREE→Billboard Wiring (secondary: Placeholder Fallback)
@@ -134,3 +129,4 @@ records is not degenerate.
       `(response, stiffness)` distribution is not degenerate — the current test hand-picks working values
 - [ ] **DOCS**: `crates/plugin/src/esm/records/tree.rs`'s "semantics not pinned down here" docstring is
       replaced with the cited layout, or left in place and the consumer removed
+
