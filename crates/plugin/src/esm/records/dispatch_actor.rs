@@ -49,6 +49,18 @@ pub(super) fn dispatch_actor_group(
                 // paths and its head from RACE. Set at the one site that
                 // knows which group it read.
                 record.is_creature = true;
+                // #3383 — `CNAM` is a CLAS FormID on NPC_ but names an
+                // unrelated record type on CREA (measured against vanilla:
+                // it resolves to a CLAS record 0/1578 times on FNV and
+                // 0/533 on FO3, and to an IPDS 793/197 times). `parse_npc`
+                // shares the subrecord walk, so it stored that foreign
+                // FormID in `class_form_id`, where it reached
+                // `Background.class_form_id` on 990 creature entities and
+                // fed `GetIsClass`. Clear it here — the one site that knows
+                // which group it read — so the field is honestly "no class"
+                // rather than confidently wrong. Creature stats do not come
+                // from CLAS at all; see `derive_npc_actor_values`.
+                record.class_form_id = 0;
                 index.creatures.insert(fid, record);
             })?
         }

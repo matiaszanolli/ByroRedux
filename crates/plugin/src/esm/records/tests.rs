@@ -1056,6 +1056,124 @@ fn crea_group_dispatches_to_creatures_map() {
     assert!(index.npcs.is_empty());
 }
 
+/// #3384 — the load-order driver merges `EsmIndex::default()` when a plugin
+/// fails to parse. `merge_from` used to adopt that empty index's
+/// `character_rules` wholesale, so a parse failure in the *last* plugin
+/// switched the whole character layer off: `CharacterRulesProfile::NONE`
+/// yields `NpcStatModel::None`, `derive_npc_actor_values` returns empty for
+/// every actor in every cell, and no `CharacterRuleset` is built.
+#[test]
+fn merge_from_keeps_the_profile_when_a_later_plugin_fails_to_parse() {
+    let mut merged = EsmIndex::default();
+    let mut good = EsmIndex::default();
+    good.character_rules = CharacterRulesProfile::FALLOUT_NEW_VEGAS;
+    good.game = GameKind::Fallout3NV;
+    merged.merge_from(good);
+    assert_eq!(
+        merged.character_rules,
+        CharacterRulesProfile::FALLOUT_NEW_VEGAS
+    );
+
+    // The failed plugin's stand-in.
+    merged.merge_from(EsmIndex::default());
+
+    assert_eq!(
+        merged.character_rules,
+        CharacterRulesProfile::FALLOUT_NEW_VEGAS,
+        "an information-free index must not erase the character policy (#3384)"
+    );
+    assert_ne!(
+        merged.character_rules.npc_stat_model(),
+        byroredux_core::character::NpcStatModel::None,
+        "the whole character layer would be off"
+    );
+}
+
+/// The FO3/FNV split is a bare `HEDR < 1.0` test, so a third-party plugin
+/// authored with a low HEDR would otherwise re-point an entire FNV load
+/// order at the FO3 skill roster and Health curve. The base master decides.
+#[test]
+fn merge_from_keeps_the_first_profile_when_a_later_plugin_disagrees() {
+    let mut merged = EsmIndex::default();
+    let mut base = EsmIndex::default();
+    base.character_rules = CharacterRulesProfile::FALLOUT_NEW_VEGAS;
+    merged.merge_from(base);
+
+    let mut odd = EsmIndex::default();
+    odd.character_rules = CharacterRulesProfile::FALLOUT3;
+    merged.merge_from(odd);
+
+    assert_eq!(
+        merged.character_rules,
+        CharacterRulesProfile::FALLOUT_NEW_VEGAS,
+        "a later plugin must not re-point the load order's character rules"
+    );
+}
+
+/// A genuine first population still works — the field starts at `NONE` and
+/// the first plugin that carries a real profile supplies it.
+#[test]
+fn merge_from_adopts_the_first_real_profile() {
+    let mut merged = EsmIndex::default();
+    assert_eq!(merged.character_rules, CharacterRulesProfile::NONE);
+    merged.merge_from(EsmIndex::default());
+
+    let mut good = EsmIndex::default();
+    good.character_rules = CharacterRulesProfile::SKYRIM;
+    good.game = GameKind::Skyrim;
+    merged.merge_from(good);
+
+    assert_eq!(merged.character_rules, CharacterRulesProfile::SKYRIM);
+    assert_eq!(merged.game, GameKind::Skyrim);
+}
+
+/// #3383 — `CNAM` is a CLAS FormID on `NPC_` but names an unrelated record
+/// type on `CREA` (measured against vanilla: 0/1578 FNV and 0/533 FO3 CREA
+/// `CNAM`s resolve to a CLAS record; 793/197 resolve to an IPDS). `parse_npc`
+/// is shared, so the foreign FormID landed in `class_form_id` and reached
+/// `Background.class_form_id` on ~990 creature entities, where `GetIsClass`
+/// would compare it against real class FormIDs. Creatures must carry no
+/// class rather than a confidently wrong one.
+#[test]
+fn crea_does_not_adopt_cnam_as_a_class_form_id() {
+    let subs: Vec<(&[u8; 4], Vec<u8>)> = vec![
+        (b"EDID", b"Radroach\0".to_vec()),
+        // On CREA this is not a class; on NPC_ the identical bytes are.
+        (b"CNAM", 0xBEEF_0999u32.to_le_bytes().to_vec()),
+    ];
+    let record = build_record(b"CREA", 0xBEEF_0002, &subs);
+    let group = wrap_group(b"CREA", &record);
+    let mut tes4 = build_record(b"TES4", 0, &[]);
+    tes4.extend_from_slice(&group);
+    let index = parse_esm(&tes4).unwrap();
+
+    let crea = index.creatures.get(&0xBEEF_0002).expect("CREA indexed");
+    assert!(crea.is_creature, "the CREA arm must mark the record");
+    assert_eq!(
+        crea.class_form_id, 0,
+        "a CREA CNAM must not be stored as a class FormID (#3383)"
+    );
+}
+
+/// The control for the test above: the same subrecord on `NPC_` *is* a class
+/// FormID and must still be adopted.
+#[test]
+fn npc_still_adopts_cnam_as_a_class_form_id() {
+    let subs: Vec<(&[u8; 4], Vec<u8>)> = vec![
+        (b"EDID", b"Guard\0".to_vec()),
+        (b"CNAM", 0xBEEF_0999u32.to_le_bytes().to_vec()),
+    ];
+    let record = build_record(b"NPC_", 0xBEEF_0003, &subs);
+    let group = wrap_group(b"NPC_", &record);
+    let mut tes4 = build_record(b"TES4", 0, &[]);
+    tes4.extend_from_slice(&group);
+    let index = parse_esm(&tes4).unwrap();
+
+    let npc = index.npcs.get(&0xBEEF_0003).expect("NPC_ indexed");
+    assert!(!npc.is_creature);
+    assert_eq!(npc.class_form_id, 0xBEEF_0999);
+}
+
 /// Regression: #448 — a top-level `LVLC` GRUP must dispatch to
 /// `parse_leveled_list` and land in `EsmIndex.leveled_creatures`.
 /// Pre-fix the whole group fell through to the catch-all skip,
