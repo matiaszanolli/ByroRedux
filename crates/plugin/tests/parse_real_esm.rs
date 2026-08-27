@@ -196,6 +196,209 @@ fn skyrim_health_resolves_to_authored_avif_form_id() {
     }));
 }
 
+// ── #3172 — CHARAL rosters, falsified against every shipped master ────────
+//
+// #3095 added one such loop, for `SkillSet::FALLOUT_NV`. The other four
+// rosters, and the derived-row *output* keys on every game, still relied
+// exclusively on hand-written `full()` fixtures in
+// `crates/core/src/character/` — resolvers that enumerate the very strings
+// the builders pass, so they cannot falsify a roster. `CHAR-2026-08-20-D2-01`
+// is the demonstration: `SkillSet::SKYRIM`'s `Illusion` entry (vanilla
+// `Skyrim.esm` authors `AVMysticism`) survived the commit that closed #3095,
+// in a roster the new loop did not cover.
+//
+// Existence is the whole assertion here — no values. The arithmetic stays
+// with the synthetic fixtures, where a hand-written resolver is the right
+// tool.
+
+/// One game's CHARAL roster surface, checked against its own shipped master.
+struct RosterCase {
+    label: &'static str,
+    env: &'static str,
+    fallback: &'static str,
+    master: &'static str,
+    profile: byroredux_core::character::CharacterRulesProfile,
+    /// The primary-attribute roster this family's ruleset attaches. Empty for
+    /// Skyrim (attributes were removed) and for FO4's skill-less profile it is
+    /// still the 7 SPECIAL.
+    attributes: byroredux_core::character::AttributeSet,
+    /// Expected `derived_row_len()` when `build_ruleset` is driven by the
+    /// **real** `EsmIndex` resolver.
+    ///
+    /// This is the derived-row *output key* assertion: every row is pushed
+    /// only `if let Some(out) = resolve(<output editor id>)`, so an output key
+    /// that does not exist on disk silently drops its row and this count
+    /// falls. `None` = the family has no wired `RulesetBuilder` arm yet, in
+    /// which case `build_ruleset` itself must return `None`.
+    derived_rows: Option<usize>,
+    /// Vanilla Oblivion ships **no `AVIF` records at all** — TES4 predates the
+    /// record type and hardwires actor-value indices in the engine (verified:
+    /// zero `AVIF` byte occurrences in `Oblivion.esm`). Its rosters therefore
+    /// cannot be falsified against a master; asserting the empty AVIF set is
+    /// the strongest honest claim, and it flips the moment that stops being
+    /// true.
+    authors_actor_values: bool,
+}
+
+const ROSTER_CASES: &[RosterCase] = &[
+    RosterCase {
+        label: "FNV",
+        env: "BYROREDUX_FNV_DATA",
+        fallback: "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data",
+        master: "FalloutNV.esm",
+        profile: byroredux_core::character::CharacterRulesProfile::FALLOUT_NEW_VEGAS,
+        attributes: byroredux_core::character::AttributeSet::FALLOUT,
+        derived_rows: Some(8),
+        authors_actor_values: true,
+    },
+    RosterCase {
+        label: "FO3",
+        env: "BYROREDUX_FO3_DATA",
+        fallback: "/mnt/data/SteamLibrary/steamapps/common/Fallout 3 goty/Data",
+        master: "Fallout3.esm",
+        profile: byroredux_core::character::CharacterRulesProfile::FALLOUT3,
+        attributes: byroredux_core::character::AttributeSet::FALLOUT,
+        derived_rows: Some(8),
+        authors_actor_values: true,
+    },
+    RosterCase {
+        label: "FO4",
+        env: "BYROREDUX_FO4_DATA",
+        fallback: "/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data",
+        master: "Fallout4.esm",
+        profile: byroredux_core::character::CharacterRulesProfile::FALLOUT4,
+        attributes: byroredux_core::character::AttributeSet::FALLOUT,
+        // Health + Action Points + Carry Weight. FO4 authors no `MeleeDamage`
+        // AVIF (#3093), so the shared FO3/FNV rows have no FO4 counterpart.
+        derived_rows: Some(3),
+        authors_actor_values: true,
+    },
+    RosterCase {
+        label: "Skyrim",
+        env: "BYROREDUX_SKYRIMSE_DATA",
+        fallback: "/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data",
+        master: "Skyrim.esm",
+        profile: byroredux_core::character::CharacterRulesProfile::SKYRIM,
+        attributes: byroredux_core::character::AttributeSet::SKYRIM,
+        derived_rows: None,
+        authors_actor_values: true,
+    },
+    RosterCase {
+        label: "Oblivion",
+        env: "BYROREDUX_OBL_DATA",
+        fallback: "/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data",
+        master: "Oblivion.esm",
+        profile: byroredux_core::character::CharacterRulesProfile::OBLIVION,
+        attributes: byroredux_core::character::AttributeSet::TES_CLASSIC,
+        derived_rows: None,
+        authors_actor_values: false,
+    },
+];
+
+/// Assert one game's rosters + derived-row output keys against its own master.
+fn assert_rosters_resolve(case: &RosterCase) {
+    let Some(data) = data_dir(case.env, case.fallback) else {
+        eprintln!("[{} CHARAL] skipping: game data unavailable", case.label);
+        return;
+    };
+    let path = data.join(case.master);
+    let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
+    let index = parse_esm(&bytes).unwrap_or_else(|e| panic!("parse {path:?}: {e:?}"));
+
+    // The header→profile classification the rest of this asserts against.
+    // Also the real-data half of the FO3-vs-FNV `HEDR < 1.0` split, which was
+    // pinned by a synthetic-HEDR unit test on the FO3 side only.
+    assert_eq!(
+        index.character_rules,
+        case.profile,
+        "[{}] {} must classify as the {} character profile",
+        case.label,
+        case.master,
+        case.profile.name()
+    );
+
+    if !case.authors_actor_values {
+        assert!(
+            index.actor_values.is_empty(),
+            "[{}] {} was expected to author no AVIF records at all — if it now \
+             does, its rosters became falsifiable and this case should assert \
+             them like the others",
+            case.label,
+            case.master
+        );
+        return;
+    }
+
+    assert!(
+        !index.actor_values.is_empty(),
+        "[{}] no AVIF records parsed — every assertion below would pass \
+         vacuously",
+        case.label
+    );
+
+    let mut unresolved: Vec<&str> = Vec::new();
+    for attr in case.attributes.members() {
+        if index.actor_value_form_id(attr.editor_id()).is_none() {
+            unresolved.push(attr.editor_id());
+        }
+    }
+    for skill in index.character_rules.skills().skills() {
+        if index.actor_value_form_id(skill.editor_id).is_none() {
+            unresolved.push(skill.editor_id);
+        }
+    }
+    assert!(
+        unresolved.is_empty(),
+        "[{}] roster entries with no authored AVIF in {}: {:?} — a roster keyed \
+         on a display name instead of the record's identity produces a green \
+         builder test and an empty table",
+        case.label,
+        case.master,
+        unresolved
+    );
+
+    let ruleset = index.character_rules.build_ruleset(
+        |id| index.actor_value_form_id(id),
+        |id| index.game_setting_float(id),
+    );
+    match case.derived_rows {
+        Some(expected) => {
+            let rows = ruleset
+                .as_ref()
+                .unwrap_or_else(|| {
+                    panic!(
+                        "[{}] profile {} must build a ruleset",
+                        case.label,
+                        case.profile.name()
+                    )
+                })
+                .derived_row_len();
+            assert_eq!(
+                rows, expected,
+                "[{}] {} derived rows built against the real AVIF set, expected \
+                 {expected} — every row is resolve-or-skip on its OUTPUT editor \
+                 id, so a shortfall means an output key this game does not author",
+                case.label, rows
+            );
+        }
+        None => assert!(
+            ruleset.is_none(),
+            "[{}] profile {} has no wired RulesetBuilder arm; if one landed, \
+             give this case its expected derived_rows",
+            case.label,
+            case.profile.name()
+        ),
+    }
+}
+
+#[test]
+#[ignore]
+fn charal_rosters_and_derived_keys_resolve_on_every_shipped_master() {
+    for case in ROSTER_CASES {
+        assert_rosters_resolve(case);
+    }
+}
+
 #[test]
 #[ignore]
 fn skyrim_default_water_promotes_underwater_tail() {
@@ -789,15 +992,17 @@ fn parse_rate_fnv_esm() {
     // because the parser searched `DNAM`. The census found 245 of 261 WEAP
     // records carrying a `VATS` sub-record, 45 of them with a non-zero AP
     // cost at offset 12.
-    let (vats_records, nonzero_ap) = index.items.values().fold((0usize, 0usize), |acc, item| {
-        match &item.kind {
-            byroredux_plugin::esm::records::ItemKind::Weapon { ap_cost, vats, .. } => (
-                acc.0 + usize::from(vats.is_some()),
-                acc.1 + usize::from(*ap_cost > 0.0),
-            ),
-            _ => acc,
-        }
-    });
+    let (vats_records, nonzero_ap) =
+        index
+            .items
+            .values()
+            .fold((0usize, 0usize), |acc, item| match &item.kind {
+                byroredux_plugin::esm::records::ItemKind::Weapon { ap_cost, vats, .. } => (
+                    acc.0 + usize::from(vats.is_some()),
+                    acc.1 + usize::from(*ap_cost > 0.0),
+                ),
+                _ => acc,
+            });
     assert!(
         vats_records >= 240,
         "WEAP with decoded VATS={vats_records} (expected >= 240; vanilla ships 245)",

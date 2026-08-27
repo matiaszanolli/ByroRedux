@@ -87,7 +87,7 @@
 //! time (`parse_npc`'s `remap` param — see #1996), so the `index.classes`
 //! lookup is exact on multi-plugin loads too.
 
-use super::actor::{NpcRecord, ACBS_PC_LEVEL_MULT};
+use super::actor::{effective_actor_level, NpcRecord};
 use super::index::EsmIndex;
 use byroredux_core::character::{Attribute, AttributeSet, CharacterRulesProfile, NpcStatModel};
 
@@ -169,7 +169,7 @@ pub fn derive_npc_actor_values(npc: &NpcRecord, index: &EsmIndex) -> Vec<(u32, f
         NpcStatModel::RaceBaseOffsets => derive_skyrim_actor_values(npc, index),
         NpcStatModel::ClassAutoCalc { health } => {
             let stats_npc =
-                crate::equip::resolve_inherited_stats(npc, effective_npc_level(npc) as i16, index);
+                crate::equip::resolve_inherited_stats(npc, effective_actor_level(npc), index);
             derive_autocalc_actor_values(stats_npc, index, index.character_rules, health)
         }
         NpcStatModel::None => Vec::new(),
@@ -221,17 +221,6 @@ fn derive_stored_actor_values(npc: &NpcRecord, index: &EsmIndex) -> Vec<(u32, f3
     out
 }
 
-/// The authored level used by NPC auto-calc. PC-level-multiplier actors carry
-/// a fixed-point multiplier in `level`, so use their authored `calcMin` floor
-/// until the player-relative half of that model exists.
-fn effective_npc_level(npc: &NpcRecord) -> u16 {
-    if npc.acbs_flags & ACBS_PC_LEVEL_MULT != 0 {
-        npc.calc_min.max(1)
-    } else {
-        npc.level.max(1) as u16
-    }
-}
-
 /// FNV / FO3 auto-calc: SPECIAL = the NPC's class base attributes, skills
 /// derived via the GECK formula (`base_skill`), and Health derived from the
 /// locked per-game END + level curve. The #1663 reference path.
@@ -269,7 +258,7 @@ fn derive_autocalc_actor_values(
     }
     if let Some(fid) = index.health_actor_value_key() {
         let endurance = f32::from(special[2]);
-        let level = f32::from(effective_npc_level(npc));
+        let level = f32::from(effective_actor_level(npc));
         let health = health_curve.evaluate(endurance, level);
         out.push((fid, health));
     }
@@ -422,6 +411,37 @@ mod tests {
 
         // 7 SPECIAL + 13 FNV skills + Health.
         assert_eq!(pairs.len(), 21);
+    }
+
+    /// #3171 — the Health curve's level term and the `CharacterLevel`
+    /// component must be the same number.
+    ///
+    /// This path used to run through a private `effective_npc_level` copy
+    /// whose non-multiplier branch floored at `1` while the binary's
+    /// `effective_actor_level` floored at `0` — so a non-mult actor recorded
+    /// at level `0` derived its Health one level above the `CharacterLevel`
+    /// stamped on the very same entity (+5 on FNV, +10 on FO3), and resolved
+    /// its `Use Stats` template against a different `LVLN` tier. 30 FNV
+    /// `NPC_` records are in that set. The copy is gone; this pins the
+    /// agreement so a new one fails here.
+    #[test]
+    fn level_zero_actor_derives_health_at_the_level_its_record_states() {
+        let base = [5, 5, 5, 5, 5, 5, 5];
+        let index = fnv_index_with_class(0x2000, base);
+        let mut npc = npc_with_class(0x2000);
+        npc.level = 0;
+        npc.acbs_flags = 0; // NOT a PC-level-multiplier record
+
+        // The one level every consumer sees — `CharacterLevel { level }` in
+        // `stamp_character_components` reads exactly this.
+        assert_eq!(effective_actor_level(&npc), 0);
+
+        let pairs = derive_npc_actor_values(&npc, &index);
+        let health_fid = index.health_actor_value_key().unwrap();
+        let health = pairs.iter().find(|(f, _)| *f == health_fid).unwrap().1;
+        // FNV: 95 + 20·END + 5·L. END 5, L 0 → 195. The `.max(1)` copy
+        // evaluated the same record at L 1 and returned 200.
+        assert_eq!(health, 195.0);
     }
 
     /// #2956 — a templated `Lvl*` shell's own `class_form_id` must be

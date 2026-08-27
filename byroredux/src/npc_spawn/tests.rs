@@ -1324,7 +1324,12 @@ fn installed_oblivion_creature_assets_resolve_from_their_records() {
 /// one; and `xp_to_next` asked for 150 050 XP instead of ~200.
 #[test]
 fn pc_level_mult_actors_resolve_to_calc_min_not_the_raw_multiplier() {
-    use byroredux_plugin::esm::records::ACBS_PC_LEVEL_MULT;
+    // #3171 — imported explicitly from `byroredux_plugin`, not from this
+    // crate's re-export: the rule now lives beside the `NPC_` record, and
+    // this pin has to exercise *that* function so a fresh binary-side copy
+    // (the #3081 / #3171 failure mode, twice over) has something to fail
+    // against.
+    use byroredux_plugin::esm::records::{effective_actor_level, ACBS_PC_LEVEL_MULT};
 
     // A plain actor: the flag is clear, so the field IS the level.
     let mut plain = test_npc(0x0100, "PlainRaider");

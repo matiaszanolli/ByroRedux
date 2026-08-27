@@ -112,40 +112,15 @@ fn stamp_actor_values(
     }
 }
 
-/// The actor's effective level for anything that treats level as a number.
+/// The actor's effective level for anything that treats level as a number —
+/// re-exported from the plugin crate, where it lives beside the `NPC_` record
+/// whose overloaded `level` field it decodes.
 ///
-/// #2955 — `NpcRecord::level` is overloaded on FO3/FNV: with the ACBS
-/// `PC Level Mult` bit set it carries a fixed-point multiplier on the *player's*
-/// level (vanilla values are round steps up to 2000), not an absolute level.
-/// Feeding that raw into a leveled-list filter makes every entry eligible, so
-/// the actor always draws the top tier; feeding it into an XP curve asks for
-/// 150 050 XP instead of ~200.
-///
-/// The player-relative half is not modelled yet, so multiplier actors resolve
-/// to their ACBS `calcMin` — the record's own level floor, which is game data
-/// rather than a derived guess. `calcMin` is `0` on records that carry none, so
-/// the result is floored at 1: level 0 would make a leveled list resolve to
-/// nothing at all, which trades over-levelled gear for no gear.
-///
-/// The non-multiplier branch does NOT get that same floor: `0` is clamped
-/// only up from negative (malformed/corrupt data), not up to `1`. Unlike
-/// `calcMin`, a plain `level` of `0` is not a documented "record carries
-/// none" sentinel — nothing distinguishes it from an authored `0`, so
-/// forcing it to `1` would be inventing data the record never claimed to
-/// have. See `pc_level_mult_actors_resolve_to_calc_min_not_the_raw_
-/// multiplier`'s `negative` case for the pin.
-///
-/// #3081 (REG-2026-08-16-D1-01) — the single source of truth. A second
-/// copy briefly existed in `inventory.rs` (`09682c71`, one day after
-/// #2955 closed) and had already drifted to `.max(1)` on this branch
-/// before anyone noticed; deleted in favor of importing this one.
-pub(crate) fn effective_actor_level(npc: &byroredux_plugin::esm::records::NpcRecord) -> i16 {
-    if npc.acbs_flags & byroredux_plugin::esm::records::ACBS_PC_LEVEL_MULT != 0 {
-        npc.calc_min.max(1) as i16
-    } else {
-        npc.level.max(0)
-    }
-}
+/// #3171 — this used to be defined here, and both copies made of it drifted to
+/// `.max(1)` on the non-multiplier branch (see the definition's docs). It now
+/// sits at the ESM-record boundary so the binary imports the rule instead of
+/// re-deriving it.
+pub(crate) use byroredux_plugin::esm::records::effective_actor_level;
 
 /// Stamp the CHARAL structural components — [`CharacterLevel`],
 /// [`Background`], and [`Perks`] — on the NPC's placement root. Level +

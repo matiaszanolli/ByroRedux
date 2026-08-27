@@ -159,7 +159,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("AnimatedVisibility", "per-frame output re-derived every tick from saved AnimationPlayer/AnimationStack"),
         ("AttachPoints", "write-once NIF-import data, no runtime mutator (no query_mut/get_mut site exists)"),
         ("Billboard", "write-once at NIF/spawn time, no runtime mutator"),
-        ("SpeedTreeWind", "TREE.CNAM-derived canopy response rebuilt with the SpeedTree import and consumed by the shared weather-wind system"),
+        ("SpeedTreeWind", "neutral (1.0, 0.0) canopy response rebuilt with the SpeedTree import and consumed by the shared weather-wind system; TREE.CNAM is parsed but deliberately not read into it until a citable field layout lands (#3190)"),
         ("BSBound", "NIF-import-derived AABB, debug-inspection only, never mutated"),
         ("BSXFlags", "write-once from NIF root extra data, no runtime mutator"),
         ("Camera", "only field ever runtime-mutated (aspect) is re-derived from the live window size on resize"),

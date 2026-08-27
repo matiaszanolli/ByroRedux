@@ -58,6 +58,49 @@ pub struct NpcFaceMorph {
 /// reads as level 1000 and draws the top tier of every leveled list.
 pub const ACBS_PC_LEVEL_MULT: u32 = 0x0080;
 
+/// The actor's effective level for anything that treats level as a number.
+///
+/// #2955 — [`NpcRecord::level`] is overloaded on FO3/FNV: with the ACBS
+/// [`ACBS_PC_LEVEL_MULT`] bit set it carries a fixed-point multiplier on the
+/// *player's* level (vanilla values are round steps up to 2000), not an
+/// absolute level. Feeding that raw into a leveled-list filter makes every
+/// entry eligible, so the actor always draws the top tier; feeding it into an
+/// XP curve asks for 150 050 XP instead of ~200.
+///
+/// The player-relative half is not modelled yet, so multiplier actors resolve
+/// to their ACBS [`NpcRecord::calc_min`] — the record's own level floor, which
+/// is game data rather than a derived guess. `calc_min` is `0` on records that
+/// carry none, so the result is floored at 1: level 0 would make a leveled
+/// list resolve to nothing at all, which trades over-levelled gear for no
+/// gear.
+///
+/// The non-multiplier branch does NOT get that same floor: `0` is clamped only
+/// up from negative (malformed/corrupt data), not up to `1`. Unlike
+/// `calc_min`, a plain `level` of `0` is not a documented "record carries
+/// none" sentinel — nothing distinguishes it from an authored `0`, so forcing
+/// it to `1` would be inventing data the record never claimed to have. See
+/// `pc_level_mult_actors_resolve_to_calc_min_not_the_raw_multiplier`'s
+/// `negative` case for the pin.
+///
+/// #3081 / #3171 — the SINGLE source of truth, and it lives here, beside the
+/// record it reads, precisely because the two prior copies drifted. The first
+/// (`byroredux/src/inventory.rs`, `09682c71`) had already diverged to
+/// `.max(1)` on the non-multiplier branch before anyone noticed and was
+/// deleted by #3081; the second (`actor_value_derive.rs`'s
+/// `effective_npc_level`, `b434e4c0`) carried the *same* `.max(1)` divergence
+/// #3081 had explicitly rejected, and outlived that fix because the
+/// regression test only ever called the original. Both call sides now import
+/// this one, and the pin calls it through this crate so a future copy has
+/// something to fail against.
+#[must_use]
+pub fn effective_actor_level(npc: &NpcRecord) -> i16 {
+    if npc.acbs_flags & ACBS_PC_LEVEL_MULT != 0 {
+        npc.calc_min.max(1) as i16
+    } else {
+        npc.level.max(0)
+    }
+}
+
 /// FO4 NPC face-morph block. Set on `NpcRecord` only when at least one
 /// of the underlying sub-records was present — most generic settler
 /// NPCs ship none and stay at `None`. See #591 / FO4-DIM6-06.
@@ -1535,11 +1578,7 @@ pub fn parse_clas(form_id: u32, subs: &[SubRecord], game: GameKind) -> ClassReco
     record
 }
 
-pub fn parse_fact(
-    form_id: u32,
-    subs: &[SubRecord],
-    remap: &Option<FormIdRemap>,
-) -> FactionRecord {
+pub fn parse_fact(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>) -> FactionRecord {
     let common = CommonNamedFields::from_subs(subs);
     let mut record = FactionRecord {
         form_id,

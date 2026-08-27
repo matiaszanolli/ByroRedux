@@ -118,9 +118,11 @@ impl SkillSet {
     /// Skyrim (TES V) — the 18 skills, all **ungoverned** (attributes were
     /// removed; skills carry their own XP and drive character leveling). Six
     /// per specialization (Combat / Magic / Stealth). EditorIDs are the CK
-    /// internal ActorValue names, which differ from the display names for two
-    /// skills retained from earlier engines: Archery = `Marksman`, Speech =
-    /// `Speechcraft`. Resolution against the parsed AVIF set is verified at
+    /// internal ActorValue names, which differ from the display names for
+    /// three skills retained from earlier engines: Archery = `Marksman`,
+    /// Speech = `Speechcraft`, Illusion = `Mysticism` (#3169 — the record
+    /// identity Skyrim inherited from Oblivion and never renamed).
+    /// Resolution against the parsed AVIF set is verified at
     /// load (resolve-or-skip), so any casing/name drift degrades gracefully.
     /// Source: Elder Scrolls Wiki / UESP *Skyrim:Skills*.
     pub const SKYRIM: Self = Self {
@@ -136,7 +138,15 @@ impl SkillSet {
             SkillDef::ungoverned("Alteration"),
             SkillDef::ungoverned("Conjuration"),
             SkillDef::ungoverned("Destruction"),
-            SkillDef::ungoverned("Illusion"),
+            // Illusion. Vanilla `Skyrim.esm` never renamed the record it
+            // inherited from Oblivion: the AVIF at 0x45B — sitting between
+            // AVDestruction (0x45A) and AVRestoration (0x45C), exactly
+            // Illusion's slot in the magic school order — is still authored
+            // `AVMysticism`, and no `AVIllusion` record exists. Same
+            // display-name-vs-record-identity split as FNV's Guns/Survival
+            // (#3095); keyed on record identity, per the roster convention.
+            // See #3169.
+            SkillDef::ungoverned("Mysticism"),
             SkillDef::ungoverned("Restoration"),
             SkillDef::ungoverned("Enchanting"),
             // Stealth
@@ -370,9 +380,14 @@ mod tests {
                 s.editor_id
             );
         }
-        // The two renamed-internal skills resolve by CK name.
+        // The three renamed-internal skills resolve by CK record identity.
         assert!(SkillSet::SKYRIM.get("Marksman").is_some()); // Archery
         assert!(SkillSet::SKYRIM.get("Speechcraft").is_some()); // Speech
+        // #3169 — Illusion's AVIF is authored `AVMysticism` in vanilla
+        // Skyrim.esm (0x45B); `AVIllusion` does not exist, so a roster
+        // keyed on the display name resolves to nothing.
+        assert!(SkillSet::SKYRIM.get("Mysticism").is_some()); // Illusion
+        assert!(SkillSet::SKYRIM.get("Illusion").is_none());
         assert_eq!(SkillSet::SKYRIM.governing("OneHanded"), None);
         // No duplicate editor ids.
         let mut ids: Vec<_> = SkillSet::SKYRIM
