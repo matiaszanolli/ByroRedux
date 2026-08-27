@@ -13,6 +13,49 @@ use super::super::{ImportedMesh, MeshResolver};
 use super::*;
 use byroredux_core::string::StringPool;
 
+/// Compose the archive path for a `BSGeometry` external `.mesh` companion,
+/// without double-composing one that already carries the head or tail.
+///
+/// #1292 established that the archive stores these at `geometries\<X>.mesh`
+/// while the block holds `X` as a bare content-addressed hash-tree stem
+/// (e.g. `aa2d865fc6bf336b909b\e84b59f1a4b705a40845`) — so the importer
+/// composes the canonical path rather than teaching every resolver impl
+/// Starfield's convention.
+///
+/// #2361 / SF2D2-04 — but that composition was unconditional, while nifly
+/// (the cited wire-format authority) and this codebase's own block-level doc
+/// both describe the field as holding *either* a bare stem *or* a full path.
+/// A name already carrying `geometries\` and/or `.mesh` composed into
+/// `geometries\geometries\x.mesh.mesh` — a guaranteed miss, and a silent one
+/// until #2357 gave the resolve-miss path a log. Vanilla is unaffected (every
+/// sampled `.mesh` name is a bare 20-hex stem); this is authoring-tool output
+/// and mods that use readable paths.
+///
+/// Head and tail are tested independently — a name may carry either without
+/// the other — and both are case- and separator-insensitive, matching
+/// `normalize_mesh_path`'s technique in `byroredux/src/asset_provider/archive.rs`.
+/// That helper cannot be called from here: it lives in the top-level binary
+/// crate, which `crates/nif` does not (and must not) depend on.
+fn canonical_mesh_path(mesh_name: &str) -> String {
+    const HEAD: &str = "geometries";
+    const TAIL: &str = ".mesh";
+
+    let bytes = mesh_name.as_bytes();
+    // `geometries` + exactly one separator, either slash form.
+    let has_head = bytes.len() > HEAD.len()
+        && bytes[..HEAD.len()].eq_ignore_ascii_case(HEAD.as_bytes())
+        && (bytes[HEAD.len()] == b'\\' || bytes[HEAD.len()] == b'/');
+    let has_tail = mesh_name.len() > TAIL.len()
+        && mesh_name[mesh_name.len() - TAIL.len()..].eq_ignore_ascii_case(TAIL);
+
+    match (has_head, has_tail) {
+        (true, true) => mesh_name.to_string(),
+        (true, false) => format!("{mesh_name}{TAIL}"),
+        (false, true) => format!("{HEAD}\\{mesh_name}"),
+        (false, false) => format!("{HEAD}\\{mesh_name}{TAIL}"),
+    }
+}
+
 pub fn extract_bs_geometry(
     scene: &NifScene,
     shape: &BSGeometry,
@@ -88,7 +131,7 @@ pub fn extract_bs_geometry(
         let mut found = None;
         for m in &shape.meshes {
             if let BSGeometryMeshKind::External { mesh_name } = &m.kind {
-                let canonical = format!("geometries\\{mesh_name}.mesh");
+                let canonical = canonical_mesh_path(mesh_name);
                 let Some(bytes) = resolver.resolve(&canonical) else {
                     log::debug!(
                         "BSGeometry external mesh '{}' (canonical '{}') not found by \
@@ -463,4 +506,69 @@ pub(crate) fn bs_geometry_bounding_sphere_mismatch(
         sphere_radius,
         vertex_extent_radius,
     })
+}
+
+#[cfg(test)]
+mod canonical_mesh_path_tests {
+    use super::canonical_mesh_path;
+
+    /// The vanilla shape #1292 fixed: a bare content-addressed hash-tree
+    /// stem gets both the head and the tail.
+    #[test]
+    fn bare_stem_gets_head_and_tail() {
+        assert_eq!(
+            canonical_mesh_path(r"aa2d865fc6bf336b909b\e84b59f1a4b705a40845"),
+            r"geometries\aa2d865fc6bf336b909b\e84b59f1a4b705a40845.mesh"
+        );
+    }
+
+    /// #2361 — a name that already carries both must pass through
+    /// unchanged rather than becoming
+    /// `geometries\geometries\...mesh.mesh`.
+    #[test]
+    fn fully_qualified_path_is_not_double_composed() {
+        let already = r"geometries\aa2d865fc6bf336b909b\e84b59f1a4b705a40845.mesh";
+        assert_eq!(canonical_mesh_path(already), already);
+    }
+
+    /// Head and tail are independent — a name may carry either alone.
+    #[test]
+    fn head_only_and_tail_only_are_completed_not_duplicated() {
+        assert_eq!(
+            canonical_mesh_path(r"geometries\foo\bar"),
+            r"geometries\foo\bar.mesh"
+        );
+        assert_eq!(canonical_mesh_path(r"foo\bar.mesh"), r"geometries\foo\bar.mesh");
+    }
+
+    /// Both tests are case-insensitive and accept either separator, since
+    /// archive paths are inconsistent about both.
+    #[test]
+    fn head_and_tail_detection_ignore_case_and_separator() {
+        assert_eq!(
+            canonical_mesh_path(r"GEOMETRIES\Foo\Bar.MESH"),
+            r"GEOMETRIES\Foo\Bar.MESH"
+        );
+        assert_eq!(canonical_mesh_path("Geometries/foo/bar"), r"Geometries/foo/bar.mesh");
+    }
+
+    /// A stem that merely *starts with* the letters `geometries` but is not
+    /// the directory (no separator) must still be prefixed — otherwise a
+    /// hash beginning with those characters would silently lose its head.
+    #[test]
+    fn head_match_requires_a_separator_not_just_a_prefix() {
+        assert_eq!(
+            canonical_mesh_path("geometriesabc123"),
+            r"geometries\geometriesabc123.mesh"
+        );
+    }
+
+    /// Likewise a name that is exactly the tail, or exactly the head, is not
+    /// treated as already-composed — guards the length comparisons against
+    /// an off-by-one that would accept an empty stem.
+    #[test]
+    fn degenerate_names_are_still_composed() {
+        assert_eq!(canonical_mesh_path(".mesh"), r"geometries\.mesh.mesh");
+        assert_eq!(canonical_mesh_path("geometries"), r"geometries\geometries.mesh");
+    }
 }
