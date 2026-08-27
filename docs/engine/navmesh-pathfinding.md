@@ -288,6 +288,44 @@ add indexing then, against real evidence.
    alternative (treat a tile-to-tile link as connecting via an arbitrary
    border triangle) is a real approximation this doc isn't willing to
    ship silently. Deferred, not guessed past.
+
+   **Resolved (2026-08-27, #3300) — `unknown` cannot carry the source
+   triangle, and the 32.2% figure above was measuring chance.** A value
+   census over the same 94,543 `FalloutNV.esm` connections shows `unknown`
+   takes exactly **three distinct values across the entire corpus**:
+   `0` (94,303 rows), `1` (120) and `2` (120). It is a 3-valued enum or
+   edge ordinal, not an index into anything — which is also why
+   `unknown < triangle_count` held "100% of the time" and why the
+   border-edge test landed near one-third: with `unknown` almost always
+   `0`, that test was really asking how often *triangle 0* happens to own
+   a border edge. Both prior results were artifacts. The candidate
+   follow-up this doc floated ("the Nth border edge in scan order") is
+   refuted by the same census — three distinct values cannot enumerate a
+   per-mesh edge list.
+
+   **Positional correspondence is refuted too.** If the source triangle
+   were implied by row order, `NVEX` row count would equal the mesh's
+   border-edge or border-triangle count. It equals the border-**edge**
+   count on 123/4,105 FNV meshes (3.0%) and 108/5,521 FO3 (2.0%); the
+   border-**triangle** count on 204/4,105 (5.0%) and 206/5,521 (3.7%).
+   The residual is signless (rows exceed border triangles about as often
+   as they fall short), so it is not an off-by-one either.
+
+   **What would resolve it: geometry, with a measured bound.** The source
+   join is not in the sub-record at all, so it has to be recovered from
+   the meshes themselves — matching this mesh's border-edge vertices
+   against the neighbour's in world space. Viability measured, not
+   assumed: over 3,000 distinct adjacent mesh pairs on `FalloutNV.esm`,
+   **67.1% share at least one exactly-equal vertex** (rounded to 1e-2
+   world units), and where they share any, the median count is **2** —
+   precisely the two endpoints of one shared border edge. So exact vertex
+   identity recovers the join for roughly two thirds of adjacent pairs
+   outright; the remaining third needs a tolerance sweep to bound (the
+   two meshes are authored separately and need not share exact
+   coordinates). That is the accuracy bound Phase 2 would have to accept
+   and state, and it is a real number rather than a hope — but it is a
+   different mechanism from "decode a field", so Phase 2 stays deferred
+   pending a decision to build it.
 3. **Phase 3 — wire into Wander/Travel** (§6's easy consumers first).
    **Travel half landed (2026-08-23)**, `byroredux/src/systems/travel.rs`
    + `crate::components::NavPath` (the cached-waypoint-queue component

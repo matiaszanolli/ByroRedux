@@ -78,6 +78,58 @@ pub struct NavmRecord {
     /// re-parse, and so a consumer can tell "packed form, not yet decoded"
     /// from "empty". `None` once the body decoded into the typed fields above.
     pub packed_geometry: Option<Vec<u8>>,
+    /// Triangles that sit in a door's threshold, with the door reference that
+    /// governs them — `NVDP` on the Gamebryo typed form (stride 8), the
+    /// fourth counted list on the packed `NVNM` form (stride 10). #3300.
+    pub door_triangles: Vec<NavmDoorTriangle>,
+    /// Triangle indices flagged as combat cover — `NVCA` on the typed form,
+    /// the fifth counted list on the packed form. Both are bare `u16`
+    /// indices into [`triangles`](Self::triangles). #3300.
+    pub cover_triangles: Vec<u16>,
+    /// `NVGD` — the typed form's grid acceleration structure: a
+    /// `divisor x divisor` lattice over the mesh's bounds, each cell listing
+    /// the triangles overlapping it. `None` when absent or unrecognised.
+    /// #3300.
+    pub grid_accel: Option<NavmGridAccel>,
+}
+
+/// One `NVDP` row — a door-governed navmesh triangle.
+///
+/// #3300 — layout established by census over the shipped Gamebryo corpus
+/// (`Fallout3.esm` 7,198 meshes / `FalloutNV.esm` 4,771; 1,113 + 1,100 rows):
+/// stride is **8**, not the packed form's 10, and `DATA` word 5 equals the
+/// row count on every one of the 11,969 meshes.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct NavmDoorTriangle {
+    /// The door `REFR` this threshold belongs to.
+    pub door_form_id: u32,
+    /// Index into [`NavmRecord::triangles`]. In range on 1,113/1,113 FO3 rows
+    /// and 1,099/1,100 FNV rows.
+    pub triangle: u16,
+    /// Trailing field, semantics **unresolved** — deliberately not named.
+    /// Zero on 50.8% of FO3 rows and 70.9% of FNV rows, and of the non-zero
+    /// remainder only 72.1% / 56.9% fall inside the triangle range, so it is
+    /// not a second triangle index. Captured raw so a later investigation has
+    /// it; same posture as [`NavmExternalConnection::unknown`].
+    pub unknown: u32,
+}
+
+/// `NVGD` — grid acceleration lattice over a navmesh's bounds.
+///
+/// #3300 — `u32 divisor`, then eight `f32` (max X/Y step, then min/max XYZ
+/// bounds), then `divisor^2` lists of `u16` triangle indices, **each prefixed
+/// by a `u16` count** — the one place this diverges from the packed `NVNM`
+/// tail block, which uses a `u32` count. Established by exact reconciliation:
+/// 11,969 of 11,969 shipped meshes consume their payload to the byte, across
+/// 5,190,668 triangle references with **zero** out of range.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct NavmGridAccel {
+    /// Lattice is `divisor x divisor` cells. Observed 1..=12 on shipped data.
+    pub divisor: u32,
+    /// Max X and Y step, then min XYZ and max XYZ of the mesh bounds.
+    pub bounds: [f32; 8],
+    /// One triangle-index list per lattice cell, row-major, `divisor^2` long.
+    pub cells: Vec<Vec<u16>>,
 }
 
 impl NavmRecord {
@@ -160,9 +212,13 @@ pub struct NavmExternalConnection {
 /// then confirmed against the `DATA` header: words 1, 2 and 3 equal the
 /// vertex, triangle and external-connection counts for **all 11,969** FO3 and
 /// FNV meshes, and **no triangle references an out-of-range vertex** in any of
-/// them. `DATA` word 0 is the parent `CELL` FormID; words 4 and 5 are left
-/// undecoded — word 5 is a small count (0–6) whose meaning the corpus does not
-/// establish.
+/// them. `DATA` word 0 is the parent `CELL` FormID.
+///
+/// Words 4 and 5 are no longer undecoded (#3300): word 4 equals the `NVCA`
+/// cover-triangle count and word 5 the `NVDP` door-triangle count, on every
+/// one of the same 11,969 meshes. That also settles the two strides — `NVCA`
+/// is 2 (bare `u16` triangle indices) and `NVDP` is **8**, not the packed
+/// form's 10.
 ///
 /// `NVTR`'s 16 bytes are three `u16` vertex indices, three `u16` edge
 /// neighbours and a `u32` flag word, with `0xFFFF` marking a border edge.
@@ -183,16 +239,18 @@ pub struct NavmExternalConnection {
 /// u32 n; [f32; 3] * n         vertices
 /// u32 n; 16 B    * n          triangles (same 16-byte row as NVTR)
 /// u32 n; 10 B    * n          external connections (same row as NVEX)
-/// u32 n; 10 B    * n          door triangles      — skipped, see below
-/// u32 n; u16     * n          cover triangles     — skipped, see below
+/// u32 n; 10 B    * n          door triangles      — stored, #3300
+/// u32 n; u16     * n          cover triangles     — stored, #3300
 /// u32 divisor, 8 * f32 bounds, then divisor^2 counted u16 index lists
 /// ```
 ///
-/// Door triangles, cover triangles, the bounds block and the segment lists
-/// are walked but **not stored**: they belong to actor traversal and combat
-/// cover (#2372), and this crate has repeatedly paid for fields parsed ahead
-/// of a consumer. The walk still has to visit them — that is what proves the
-/// stream reconciles.
+/// Door and cover triangles are now **stored** (#3300) into the same
+/// [`NavmRecord::door_triangles`] / [`NavmRecord::cover_triangles`] fields the
+/// Gamebryo `NVDP`/`NVCA` sub-records fill, so a consumer never branches per
+/// game. The packed door row orders its fields differently from `NVDP` — see
+/// the census note at the capture site. The bounds block and segment lists are
+/// still walked but not stored on this form; the Gamebryo form's equivalent
+/// (`NVGD`) is decoded into [`NavmRecord::grid_accel`].
 ///
 /// **Fallout 4 keeps its blob.** The header decodes there (verified below),
 /// but 0 of 7,894 `Fallout4.esm` bodies reconcile under this layout; OpenMW
@@ -280,6 +338,17 @@ pub fn parse_navm(form_id: u32, subs: &[SubRecord]) -> NavmRecord {
             b"NVEX" => {
                 out.external_connections = rows(data, 10).filter_map(decode_nvex_row).collect();
             }
+            // #3300 — door / cover / grid, previously unwalked on the typed
+            // form. Strides come from a census of the shipped Gamebryo corpus,
+            // cross-checked against `DATA`: word 4 equals the `NVCA` count and
+            // word 5 the `NVDP` count on all 11,969 FO3+FNV meshes.
+            b"NVDP" => out.door_triangles = rows(data, 8).map(decode_nvdp_row).collect(),
+            b"NVCA" => {
+                out.cover_triangles = rows(data, 2)
+                    .map(|r| u16::from_le_bytes([r[0], r[1]]))
+                    .collect();
+            }
+            b"NVGD" => out.grid_accel = decode_nvgd(data),
             // #2738 — decode the Creation-Engine packed form into the same
             // canonical fields the Gamebryo typed form fills, so consumers
             // never branch per game. Retains the blob when the body doesn't
@@ -399,8 +468,27 @@ fn decode_nvnm(data: &[u8], out: &mut NavmRecord) {
         let external: Vec<NavmExternalConnection> = rows(cur.counted(10)?, 10)
             .filter_map(decode_nvex_row)
             .collect();
-        cur.skip_counted(10)?; // door triangles — actor traversal, #2372
-        cur.skip_counted(2)?; // cover triangles — combat cover, #2372
+        // #3300 — captured rather than skipped. These go through the same
+        // `counted()` walk that already reconciled 15,966/15,966 Skyrim
+        // blobs, so the offsets are the proven ones; only the disposition
+        // changed. The packed door row is 10 bytes to the typed `NVDP`'s 8 —
+        // and its fields are in a *different order*: the triangle index leads,
+        // then a 4-byte constant, then the door FormID. Established by
+        // census over `Skyrim.esm`'s 1,703 rows — the leading `u16` is in
+        // triangle range 1,703/1,703, the trailing `u32` takes 1,703 distinct
+        // values in the plugin's own FormID range, and the middle `u32` takes
+        // exactly **one** value (`0xE48B73F3`) across every row, so it is a
+        // fixed marker rather than per-door data.
+        let doors: Vec<NavmDoorTriangle> = rows(cur.counted(10)?, 10)
+            .map(|r| NavmDoorTriangle {
+                triangle: u16::from_le_bytes([r[0], r[1]]),
+                unknown: u32::from_le_bytes([r[2], r[3], r[4], r[5]]),
+                door_form_id: u32::from_le_bytes([r[6], r[7], r[8], r[9]]),
+            })
+            .collect();
+        let covers: Vec<u16> = rows(cur.counted(2)?, 2)
+            .map(|r| u16::from_le_bytes([r[0], r[1]]))
+            .collect();
         let divisor = cur.u32()?;
         if divisor > NVNM_MAX_DIVISOR {
             return None;
@@ -409,14 +497,16 @@ fn decode_nvnm(data: &[u8], out: &mut NavmRecord) {
         for _ in 0..(divisor * divisor) {
             cur.skip_counted(2)?; // per-segment triangle index list
         }
-        (cur.pos == data.len()).then_some((vertices, triangles, external))
+        (cur.pos == data.len()).then_some((vertices, triangles, external, doors, covers))
     })();
 
     match body {
-        Some((vertices, triangles, external_connections)) => {
+        Some((vertices, triangles, external_connections, doors, covers)) => {
             out.vertices = vertices;
             out.triangles = triangles;
             out.external_connections = external_connections;
+            out.door_triangles = doors;
+            out.cover_triangles = covers;
         }
         // Header understood, body not (Fallout 4). Keep the bytes; the
         // association above is still usable for streaming.
@@ -439,6 +529,62 @@ fn decode_nvtr_row(r: &[u8]) -> NavmTriangle {
         edge_neighbours: [link(3), link(4), link(5)],
         flags: u32_at(r, 12).unwrap_or(0),
     }
+}
+
+/// Decode one 8-byte `NVDP` row: door `REFR` FormID, triangle index, then a
+/// trailing `u16` whose meaning the corpus does not establish (see
+/// [`NavmDoorTriangle::unknown`]).
+fn decode_nvdp_row(r: &[u8]) -> NavmDoorTriangle {
+    NavmDoorTriangle {
+        door_form_id: u32::from_le_bytes([r[0], r[1], r[2], r[3]]),
+        triangle: u16::from_le_bytes([r[4], r[5]]),
+        unknown: u16::from_le_bytes([r[6], r[7]]) as u32,
+    }
+}
+
+/// Decode an `NVGD` grid-acceleration payload.
+///
+/// Returns `None` unless the payload is consumed **exactly** — the same
+/// all-or-nothing posture [`decode_nvnm`] takes, so a format revision surfaces
+/// as "not recognised" rather than as a half-filled lattice. Shipped data
+/// reconciles 11,969/11,969.
+fn decode_nvgd(data: &[u8]) -> Option<NavmGridAccel> {
+    const HEADER: usize = 4 + 4 * 8;
+    if data.len() < HEADER {
+        return None;
+    }
+    let divisor = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+    // Same bound as the packed form's lattice: the cell count is `divisor^2`,
+    // so a garbage word here is the difference between a bounded walk and a
+    // very long one. Shipped maximum is 12.
+    if divisor == 0 || divisor > NVNM_MAX_DIVISOR {
+        return None;
+    }
+    let mut bounds = [0.0f32; 8];
+    for (i, slot) in bounds.iter_mut().enumerate() {
+        let o = 4 + i * 4;
+        *slot = f32::from_le_bytes([data[o], data[o + 1], data[o + 2], data[o + 3]]);
+    }
+    let cell_count = (divisor as usize).checked_mul(divisor as usize)?;
+    let mut cells = Vec::with_capacity(cell_count);
+    let mut pos = HEADER;
+    for _ in 0..cell_count {
+        let count = u16::from_le_bytes([*data.get(pos)?, *data.get(pos + 1)?]) as usize;
+        pos += 2;
+        let end = pos.checked_add(count.checked_mul(2)?)?;
+        let raw = data.get(pos..end)?;
+        cells.push(
+            raw.chunks_exact(2)
+                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                .collect(),
+        );
+        pos = end;
+    }
+    (pos == data.len()).then_some(NavmGridAccel {
+        divisor,
+        bounds,
+        cells,
+    })
 }
 
 /// Decode one 10-byte external-connection row, shared by `NVEX` and `NVNM`.
@@ -1912,6 +2058,81 @@ mod navm_tests {
         // 0xFFFF is the authored border sentinel — modelling it as an index
         // would send a path walker into element 65535.
         assert_eq!(t.edge_neighbours, [Some(506), None, Some(1)]);
+    }
+
+    /// #3300 — `NVDP` is stride **8** (not the packed form's 10), and `DATA`
+    /// word 5 is its row count. Bytes are a real FO3 row.
+    #[test]
+    fn door_triangles_decode_from_the_typed_form() {
+        // form=0x00003A73, triangle=26, trailing u16=0.
+        let row = [0x73u8, 0x3a, 0x00, 0x00, 0x1a, 0x00, 0x00, 0x00];
+        let r = parse_navm(1, &[sub(b"NVDP", &row)]);
+        assert_eq!(r.door_triangles.len(), 1);
+        let d = &r.door_triangles[0];
+        assert_eq!(d.door_form_id, 0x0000_3A73);
+        assert_eq!(d.triangle, 26);
+        assert_eq!(d.unknown, 0);
+    }
+
+    /// `NVCA` is a bare `u16` triangle-index list (stride 2); `DATA` word 4 is
+    /// its count. Verified in range on 60,534/60,534 FO3 and 15,791/15,791 FNV
+    /// entries.
+    #[test]
+    fn cover_triangles_decode_as_bare_indices() {
+        let data = [7u8, 0, 0, 1, 255, 255];
+        let r = parse_navm(1, &[sub(b"NVCA", &data)]);
+        assert_eq!(r.cover_triangles, vec![7, 256, 65535]);
+    }
+
+    /// `NVGD`: `u32 divisor`, eight `f32`, then `divisor^2` **`u16`-counted**
+    /// index lists. The `u16` count is the one divergence from the packed
+    /// form's tail block, which counts with a `u32` — decoding it as `u32`
+    /// reconciles 0 of 11,969 shipped meshes, which is how the difference was
+    /// found.
+    #[test]
+    fn grid_accel_decodes_a_divisor_two_lattice() {
+        let mut d = Vec::new();
+        d.extend_from_slice(&2u32.to_le_bytes());
+        for f in [32.0f32, 42.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0] {
+            d.extend_from_slice(&f.to_le_bytes());
+        }
+        // Four cells: [0,1], [], [2], [3,4,5].
+        for cell in [vec![0u16, 1], vec![], vec![2], vec![3, 4, 5]] {
+            d.extend_from_slice(&(cell.len() as u16).to_le_bytes());
+            for t in cell {
+                d.extend_from_slice(&t.to_le_bytes());
+            }
+        }
+        let r = parse_navm(1, &[sub(b"NVGD", &d)]);
+        let g = r.grid_accel.expect("lattice must decode");
+        assert_eq!(g.divisor, 2);
+        assert_eq!(g.bounds, [32.0, 42.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        assert_eq!(g.cells.len(), 4, "divisor^2 cells");
+        assert_eq!(g.cells[0], vec![0, 1]);
+        assert!(g.cells[1].is_empty());
+        assert_eq!(g.cells[2], vec![2]);
+        assert_eq!(g.cells[3], vec![3, 4, 5]);
+    }
+
+    /// All-or-nothing: a payload that does not consume exactly is rejected
+    /// rather than half-filled, matching `decode_nvnm`'s posture.
+    #[test]
+    fn grid_accel_rejects_a_payload_that_does_not_reconcile() {
+        let mut d = Vec::new();
+        d.extend_from_slice(&1u32.to_le_bytes());
+        for _ in 0..8 {
+            d.extend_from_slice(&0f32.to_le_bytes());
+        }
+        d.extend_from_slice(&1u16.to_le_bytes()); // count = 1
+        d.extend_from_slice(&5u16.to_le_bytes()); // the index
+        d.push(0xAA); // one trailing byte too many
+        assert!(parse_navm(1, &[sub(b"NVGD", &d)]).grid_accel.is_none());
+
+        // A divisor past the bound must not drive a divisor^2 walk.
+        let mut big = Vec::new();
+        big.extend_from_slice(&(NVNM_MAX_DIVISOR + 1).to_le_bytes());
+        big.extend_from_slice(&[0u8; 32]);
+        assert!(parse_navm(1, &[sub(b"NVGD", &big)]).grid_accel.is_none());
     }
 
     #[test]
