@@ -272,12 +272,17 @@ pub(crate) fn build_static_object_from_subs(
                 });
             }
             b"XPWR" if is_ligh && sub.data.len() >= 4 => {
-                xpwr_form_id = Some(u32::from_le_bytes([
+                // #3314 — a REFR reference like any other. No ECS consumer
+                // reads it yet (settlement power circuits), but it is stored
+                // for one, so it is remapped at decode time rather than
+                // leaving a raw value for a future consumer to trip over.
+                let raw = u32::from_le_bytes([
                     sub.data[0],
                     sub.data[1],
                     sub.data[2],
                     sub.data[3],
-                ]));
+                ]);
+                xpwr_form_id = Some(remap.as_ref().map_or(raw, |r| r.remap(raw)));
             }
             b"DATA" if is_addn && sub.data.len() >= 4 => {
                 addon_index = Some(i32::from_le_bytes([
@@ -388,12 +393,16 @@ pub(crate) fn parse_ltex_group(
                 match sub.sub_type.as_slice() {
                     // FO3/FNV/Skyrim: TNAM → TXST form ID.
                     b"TNAM" if sub.data.len() >= 4 => {
-                        let txst_id = u32::from_le_bytes([
+                        // #3314 — the map KEY (`header.form_id`) is already
+                        // remapped by `read_record_header`; the VALUE is a
+                        // TXST reference and must be remapped too, or the
+                        // `txst_textures` lookup misses on every DLC splat.
+                        let txst_id = reader.remap_form_id(u32::from_le_bytes([
                             sub.data[0],
                             sub.data[1],
                             sub.data[2],
                             sub.data[3],
-                        ]);
+                        ]));
                         ltex_to_txst.insert(header.form_id, txst_id);
                     }
                     // Oblivion: ICON → direct texture path.

@@ -43,8 +43,28 @@ pub fn extract_transform_channel_at(
 
     // Try the modern NiTransformInterpolator → NiTransformData path first.
     if let Some(interp) = scene.get_as::<NiTransformInterpolator>(interp_idx) {
-        let data_idx = interp.data_ref.index()?;
-        let data = scene.get_as::<NiTransformData>(data_idx)?;
+        // #3316 / FNV-D6-01 — a null `data_ref` (or a data ref that does not
+        // resolve to an `NiTransformData`) is NOT "no channel": nif.xml
+        // documents `NiTransformInterpolator.Transform` as the pose used when
+        // the keyframe data is absent, exactly like its `NiPoint3Interpolator`
+        // sibling's "Pose value if lacking NiPosData" (nif.xml:3250-3256), and
+        // Gamebryo v2.6/v3.2 describe the same field as "this NiQuatTransform
+        // can be an unchanging pose".
+        //
+        // Returning `None` here dropped 49 182 of 123 729 (39.7%) of every FNV
+        // transform controlled block, imported 64 vanilla `.kf` files as zero
+        // clips (`2hrdeath`, `mtjumploop`, holster/aim), and cost live clips
+        // real channels (`mtidle.kf` lost Neck + both Clavicles).
+        // `constant_transform_channel` is the same helper `NiLookAtInterpolator`
+        // has used since #604, and it already honours the FLT_MAX per-axis
+        // "no pose for this axis" sentinel.
+        let Some(data) = interp
+            .data_ref
+            .index()
+            .and_then(|i| scene.get_as::<NiTransformData>(i))
+        else {
+            return Some(constant_transform_channel(&interp.transform));
+        };
 
         let (translation_keys, translation_type) = convert_vec3_keys(&data.translations);
         let (rotation_keys, rotation_type) = convert_quat_keys(data);

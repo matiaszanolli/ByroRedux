@@ -258,8 +258,8 @@ fn parse_cell_group_inner(
                         // a 4-byte FormID; the walker previously dropped
                         // them on the `_` arm so the renderer / audio /
                         // quest system had no per-cell context.
-                        b"XCIM" => image_space_form = read_form_id(&sub.data),
-                        b"XCWT" => water_type_form = read_form_id(&sub.data),
+                        b"XCIM" => image_space_form = read_form_id(reader, &sub.data),
+                        b"XCWT" => water_type_form = read_form_id(reader, &sub.data),
                         b"XWCU" if sub.data.len() >= 12 => {
                             let mut values = [0.0; 3];
                             for (slot, bytes) in
@@ -278,9 +278,9 @@ fn parse_cell_group_inner(
                         // cells (Solitude inn cluster, Dragonsreach
                         // throne room, Markarth cells) render with the
                         // template ambient instead of the engine default.
-                        b"LTMP" => lighting_template_form = read_form_id(&sub.data),
-                        b"XCAS" => acoustic_space_form = read_form_id(&sub.data),
-                        b"XCMO" => music_type_form = read_form_id(&sub.data),
+                        b"LTMP" => lighting_template_form = read_form_id(reader, &sub.data),
+                        b"XCAS" => acoustic_space_form = read_form_id(reader, &sub.data),
+                        b"XCMO" => music_type_form = read_form_id(reader, &sub.data),
                         // #1188 — XCRI: FO4+ PreCombined Mesh references.
                         //   `u32 mesh_count + u32 ref_count
                         //    + mesh_count × u32 hashes
@@ -353,24 +353,24 @@ fn parse_cell_group_inner(
                         // (per-cell CLMT FormID, exterior cells only,
                         // but a few interior mods have been seen with
                         // it for "outside through window" effects).
-                        b"XCCM" => climate_override = read_form_id(&sub.data),
-                        b"XLCN" => location_form = read_form_id(&sub.data),
+                        b"XCCM" => climate_override = read_form_id(reader, &sub.data),
+                        b"XLCN" => location_form = read_form_id(reader, &sub.data),
                         // XCLR is a packed FormID array — region tags
                         // referenced by REGN records. Variable length;
                         // empty list is normal.
-                        b"XCLR" => regions = read_form_id_array(&sub.data),
+                        b"XCLR" => regions = read_form_id_array(reader, &sub.data),
                         // #692 — XOWN owner, XRNK faction-rank gate,
                         // XGLB global-variable FormID. Same shape on
                         // CELL + REFR. Cross-game (Oblivion / FO3 /
                         // FNV / Skyrim+).
                         b"XOWN" => {
-                            ownership_owner = read_form_id(&sub.data);
+                            ownership_owner = read_form_id(reader, &sub.data);
                         }
                         b"XRNK" => {
                             ownership_rank = SubReader::new(&sub.data).i32().ok();
                         }
                         b"XGLB" => {
-                            ownership_global = read_form_id(&sub.data);
+                            ownership_global = read_form_id(reader, &sub.data);
                         }
                         // #970 / OBL-D3-NEW-06 — Oblivion CELL regional
                         // tint. nif.xml-equivalent here is the GECK
@@ -1070,8 +1070,11 @@ pub(crate) fn parse_land_record(
             }
             b"BTXT" if sub.data.len() >= 8 => {
                 // Base texture: formid(4) + quadrant(1) + unused(3).
+                // #3314 — LTEX reference, so it must be remapped: the
+                // `landscape_textures` map it is looked up in is keyed by the
+                // remapped record FormID.
                 let mut r = SubReader::new(&sub.data);
-                let ltex_id = r.u32_or_default();
+                let ltex_id = reader.remap_form_id(r.u32_or_default());
                 let quadrant = r.u8_or_default() as usize;
                 if quadrant < 4 {
                     quadrants[quadrant].base = Some(ltex_id);
@@ -1079,8 +1082,9 @@ pub(crate) fn parse_land_record(
             }
             b"ATXT" if sub.data.len() >= 8 => {
                 // Additional texture header: formid(4) + quadrant(1) + unused(1) + layer(u16).
+                // #3314 — same LTEX remap as BTXT above.
                 let mut r = SubReader::new(&sub.data);
-                let ltex_id = r.u32_or_default();
+                let ltex_id = reader.remap_form_id(r.u32_or_default());
                 let quadrant = r.u8_or_default() as usize;
                 let _unused = r.u8_or_default();
                 let layer = r.u16_or_default();

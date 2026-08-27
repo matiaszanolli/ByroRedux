@@ -804,7 +804,28 @@ pub fn classify_pbr_keyword(inputs: PbrClassifierInputs<'_>) -> PbrMaterial {
             metalness: 0.0,
         };
     }
-    if contains_any_ci(path, &["skin", "body", "head", "hand", "face"]) {
+    // #3315 / FNV-D2-01 — "skin" is a *material* word and stays global (a
+    // deathclaw hide texture is skin wherever it lives), but "body"/"head"/
+    // "hand"/"face" are *anatomy* words that only mean skin inside a
+    // character/creature asset family. Left unbounded they matched by mere
+    // substring: FNV's entire weapon corpus lives under `weapons\1handpistol\`,
+    // `\2handrifle\` and `\1handmelee\`, so 3 458 weapon meshes took skin
+    // roughness 0.50 instead of the 0.80-0.85 the metal/generic arms would
+    // give them — ~91% of every SKIN classification on FNV was a false
+    // positive. Same class of collision as "bobblehead"/"headgear" (head) and
+    // "interface" (face).
+    //
+    // Word-boundary matching (`contains_any_ci_word`, the #2009 remedy for
+    // "ice"/"gem"/"fur") does NOT work here: it rejects `1handpistol` but also
+    // rejects the real skin paths, because Bethesda concatenates them too
+    // (`femaleupperbody.dds`, `textures\characters\bodymods\...modbodymale.dds`).
+    // So this follows the *other* precedent already in this function — the way
+    // the metal arm scopes the cultural aliases `dwemer`/`dwarven` to a
+    // narrower haystack than the material words beside them.
+    if contains_any_ci(path, &["skin"])
+        || (is_character_asset_path(path)
+            && contains_any_ci(path, &["body", "head", "hand", "face"]))
+    {
         return PbrMaterial {
             roughness: 0.5,
             metalness: 0.0,
@@ -1100,6 +1121,18 @@ fn contains_any_ci(haystack: &str, keywords: &[&str]) -> bool {
 /// naming convention with no separator (`brokenglasssheet01.dds`,
 /// `malehead.dds`, `femalebody_1.dds`) — switching those to
 /// word-boundary matching would silently stop matching real content.
+/// Does `path` live in a character / creature / actor asset family?
+///
+/// Gates the anatomy words in [`classify_pbr_keyword`]'s skin arm. The token
+/// list is deliberately singular-stemmed so one entry covers every game's
+/// directory convention: `character` matches Oblivion/FO3/FNV's
+/// `textures\characters\...` *and* Skyrim's `textures\actors\character\...`;
+/// `creature` matches `textures\creatures\...`; `actors` covers Skyrim/FO4
+/// actor trees that don't repeat `character` deeper in the path.
+fn is_character_asset_path(path: &str) -> bool {
+    contains_any_ci(path, &["character", "creature", "actors"])
+}
+
 fn contains_any_ci_word(haystack: &str, keywords: &[&str]) -> bool {
     let hs = haystack.as_bytes();
     keywords.iter().any(|kw| {
@@ -1220,6 +1253,61 @@ mod tests {
 
         let glass = classify(&m, "textures/clutter/ICE/IceShard01.dds");
         assert!(glass.roughness < 0.2);
+    }
+
+    /// #3315 / FNV-D2-01 — FNV's whole weapon corpus lives under
+    /// `weapons\\1handpistol\\`, `\\2handrifle\\`, `\\1handmelee\\`. Before the fix the
+    /// unbounded `hand` substring pulled 3 458 real weapon meshes into the skin
+    /// arm (roughness 0.50), which is ~91% of every SKIN classification on the
+    /// game. The anatomy words must not fire outside a character/creature
+    /// family — while real skin, which concatenates the same words, still must.
+    #[test]
+    fn classify_pbr_anatomy_words_require_a_character_asset_family() {
+        let m = Material::default();
+
+        // Real vanilla FNV/DLC weapon paths — none of these are skin.
+        for path in [
+            r"textures\dlc05\weapons\1handpistol\dlc05alienpistol.dds",
+            r"textures\dlcanch\weapons\1handpistol\dlcanch1stperson10mmsilencer.dds",
+            r"textures\weapons\2handrifle\varmintrifle.dds",
+            r"textures\weapons\1handmelee\combatknife.dds",
+        ] {
+            let p = classify(&m, path);
+            assert_ne!(
+                p.roughness, 0.5,
+                "{path} is a weapon, not skin — the `hand` substring must not reach the skin arm"
+            );
+        }
+
+        // Other collisions in the same arm.
+        for path in [
+            r"textures\clutter\bobblehead\bobbleheadluck.dds",
+            r"textures\interface\pipboy_vaultboy.dds",
+        ] {
+            let p = classify(&m, path);
+            assert_ne!(p.roughness, 0.5, "{path} must not classify as skin");
+        }
+
+        // Real skin still classifies — note these concatenate the anatomy word
+        // exactly the way the weapon paths do, which is why word-boundary
+        // matching is the wrong remedy here.
+        for path in [
+            r"textures\characters\bodymods\falloutnv.esm\00132e91modbodymale.dds",
+            r"textures\characters\facemods\falloutnv.esm\00176317_0.dds",
+            r"textures\characters\male\femaleupperbody.dds",
+            r"textures\actors\character\male\malehead.dds",
+            r"textures\creatures\deathclaw\deathclawhand.dds",
+        ] {
+            let p = classify(&m, path);
+            assert_eq!(
+                p.roughness, 0.5,
+                "{path} is character skin and must still reach the skin arm"
+            );
+        }
+
+        // "skin" stays a global material word, family or not.
+        let hide = classify(&m, r"textures\creatures\brahmin\brahminskin.dds");
+        assert_eq!(hide.roughness, 0.5);
     }
 
     /// Mzulft's Dwemer architecture uses the `dwemerruins` directory for

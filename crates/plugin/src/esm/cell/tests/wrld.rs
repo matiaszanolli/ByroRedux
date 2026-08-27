@@ -572,3 +572,64 @@ fn wrld_oblivion_shape_leaves_lod_water_none() {
     // NAM2 still decodes across the zero-length OFST that follows it.
     assert_eq!(w.water_form, Some(0x0000_0018));
 }
+
+/// #3314 / FNV-2026-08-26-D1-01 — WRLD sub-record FormIDs are cross-record
+/// references and must go through the load-order remap, exactly like the REFR
+/// walker beside them (`refr::remapped_refr_subrecord_form_ids`). Every
+/// `EsmIndex` map they are looked up in (`climates`, `waters`,
+/// `lighting_templates`, …) is keyed in remapped global space, so a raw read
+/// misses every lookup the moment a third plugin shifts the indices — which
+/// every FNV DLC does, since each carries exactly one master and therefore
+/// authors its own forms at local index `0x01`.
+#[test]
+fn remapped_wrld_subrecord_form_ids() {
+    let fid = |local: u32| (0x0100_0000u32 | local).to_le_bytes().to_vec();
+
+    let wrld = build_wrld_record(
+        0x0100_0001,
+        &[
+            (b"EDID", b"TestWorld\0".to_vec()),
+            (b"WNAM", fid(0x200)),
+            (b"CNAM", fid(0x201)),
+            (b"NAM2", fid(0x202)),
+            (b"ZNAM", fid(0x203)),
+            (b"NAM3", fid(0x204)),
+        ],
+    );
+    let buf = build_wrld_group(&[wrld]);
+
+    let (worldspaces, climates, _exterior, _persistent) = parse_synthetic_wrld_with_remap(
+        &buf,
+        Some(crate::esm::reader::FormIdRemap::regular(2, vec![0])),
+    );
+
+    let global = |local: u32| 0x0200_0000u32 | local;
+    let ws = worldspaces
+        .get("testworld")
+        .expect("synthetic worldspace must be indexed");
+
+    assert_eq!(
+        ws.parent_worldspace,
+        Some(global(0x200)),
+        "WNAM parent worldspace must be remapped"
+    );
+    assert_eq!(
+        ws.water_form,
+        Some(global(0x202)),
+        "NAM2 default water must be remapped"
+    );
+    assert_eq!(
+        ws.default_music,
+        Some(global(0x203)),
+        "ZNAM default music must be remapped"
+    );
+    assert_eq!(
+        ws.lod_water_form,
+        Some(global(0x204)),
+        "NAM3 LOD water must be remapped"
+    );
+    assert!(
+        climates.values().any(|c| *c == global(0x201)),
+        "CNAM climate must be remapped before it is indexed; got {climates:?}"
+    );
+}

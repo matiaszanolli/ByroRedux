@@ -184,6 +184,99 @@ fn extract_transform_channel_follows_blend_to_dominant_sub_interp() {
     assert!((channel.scale_keys[0].value - 1.5).abs() < 1e-6);
 }
 
+/// #3316 / FNV-D6-01 — a `NiTransformInterpolator` whose `data_ref` is null
+/// carries its pose in the interpolator's own `transform` field (nif.xml
+/// documents the sibling `NiPoint3Interpolator.Value` as "Pose value if
+/// lacking NiPosData"; Gamebryo v2.6/v3.2 call it "an unchanging pose").
+/// Pre-fix the `data_ref.index()?` early-return dropped it: 39.7% of every
+/// FNV transform controlled block, and 64 vanilla `.kf` files imported as
+/// zero clips.
+#[test]
+fn extract_transform_channel_emits_constant_pose_for_null_transform_data() {
+    use crate::blocks::interpolator::NiTransformInterpolator;
+    use crate::types::{BlockRef, NiPoint3, NiQuatTransform};
+
+    let half = std::f32::consts::FRAC_1_SQRT_2;
+    let pose = NiQuatTransform {
+        translation: NiPoint3 {
+            x: 1.0,
+            y: 2.0,
+            z: 3.0,
+        },
+        rotation: [half, 0.0, 0.0, half],
+        scale: 0.75,
+    };
+    let interp = NiTransformInterpolator {
+        transform: pose,
+        data_ref: BlockRef::NULL,
+    };
+    let scene = NifScene {
+        blocks: vec![Box::new(interp)],
+        ..NifScene::default()
+    };
+
+    let mut cb = dummy_controlled_block();
+    cb.interpolator_ref = BlockRef(0);
+
+    let channel = extract_transform_channel(&scene, &cb)
+        .expect("a posed NiTransformInterpolator must not drop the channel");
+    assert_eq!(channel.translation_keys.len(), 1);
+    assert_eq!(channel.rotation_keys.len(), 1);
+    assert_eq!(channel.scale_keys.len(), 1);
+
+    // Same Z-up → Y-up conversion the look-at pose gets: (1, 2, 3) → (1, 3, -2).
+    let t = channel.translation_keys[0].value;
+    assert!((t[0] - 1.0).abs() < 1e-6);
+    assert!((t[1] - 3.0).abs() < 1e-6);
+    assert!((t[2] + 2.0).abs() < 1e-6);
+
+    let r = channel.rotation_keys[0].value;
+    assert!(r[0].abs() < 1e-6);
+    assert!((r[1] - half).abs() < 1e-6);
+    assert!(r[2].abs() < 1e-6);
+    assert!((r[3] - half).abs() < 1e-6);
+
+    assert!((channel.scale_keys[0].value - 0.75).abs() < 1e-6);
+}
+
+/// The FLT_MAX per-axis sentinel must still mean "no pose for this axis"
+/// on the null-data fallback, exactly as it does for look-at.
+#[test]
+fn posed_transform_interpolator_honours_flt_max_sentinel() {
+    use crate::blocks::interpolator::NiTransformInterpolator;
+    use crate::types::{BlockRef, NiPoint3, NiQuatTransform};
+
+    let interp = NiTransformInterpolator {
+        transform: NiQuatTransform {
+            translation: NiPoint3 {
+                x: f32::MAX,
+                y: f32::MAX,
+                z: f32::MAX,
+            },
+            rotation: [1.0, 0.0, 0.0, 0.0],
+            scale: f32::MAX,
+        },
+        data_ref: BlockRef::NULL,
+    };
+    let scene = NifScene {
+        blocks: vec![Box::new(interp)],
+        ..NifScene::default()
+    };
+    let mut cb = dummy_controlled_block();
+    cb.interpolator_ref = BlockRef(0);
+
+    let channel = extract_transform_channel(&scene, &cb).expect("channel still emitted");
+    assert!(
+        channel.translation_keys.is_empty(),
+        "FLT_MAX translation means no authored pose on that axis"
+    );
+    assert!(
+        channel.scale_keys.is_empty(),
+        "FLT_MAX scale means no authored pose on that axis"
+    );
+    assert_eq!(channel.rotation_keys.len(), 1, "rotation was authored");
+}
+
 /// #604 — NiLookAtInterpolator must produce a constant TransformChannel
 /// from its static `transform` pose instead of returning None. Pre-fix
 /// the dispatch had no third branch and embedded look-at chains in

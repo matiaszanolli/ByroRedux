@@ -12,22 +12,33 @@
 /// `records::common` alongside the localized-lstring `read_lstring` variant.
 pub(super) use crate::esm::records::common::{read_mesh_path, read_zstring};
 
+use crate::esm::reader::EsmReader;
+
 /// Read a 4-byte FormID from a sub-record payload. Returns `None` when
 /// the payload is too short to hold a u32 — defensive against truncated
 /// records the walker would otherwise pass through. Used by the
 /// Skyrim-extended CELL sub-record arms (XCIM / XCWT / XCAS / XCMO /
 /// XLCN — see #356).
-pub(super) fn read_form_id(data: &[u8]) -> Option<u32> {
-    (data.len() >= 4).then(|| u32::from_le_bytes([data[0], data[1], data[2], data[3]]))
+/// #3314 / FNV-2026-08-26-D1-01 — the reader is a *required* parameter, not a
+/// convenience: every `EsmIndex` map is keyed in global load-order space
+/// (`EsmReader::read_record_header` remaps every record FormID), so a
+/// sub-record reference read raw misses every lookup the moment the remap is
+/// non-identity. Taking `&EsmReader` here makes that impossible to forget —
+/// the old bare-`&[u8]` signature let 26 cell/worldspace/landscape call sites
+/// silently bypass the convention the REFR walker beside them follows.
+pub(super) fn read_form_id(reader: &EsmReader, data: &[u8]) -> Option<u32> {
+    (data.len() >= 4)
+        .then(|| u32::from_le_bytes([data[0], data[1], data[2], data[3]]))
+        .map(|raw| reader.remap_form_id(raw))
 }
 
 /// Read an array of 4-byte FormIDs packed back-to-back. Used for XCLR
 /// (region list) and any other list-of-FormIDs sub-record. Trailing
 /// bytes that don't make a full FormID are silently dropped — they're
 /// always alignment padding rather than a partial entry.
-pub(super) fn read_form_id_array(data: &[u8]) -> Vec<u32> {
+pub(super) fn read_form_id_array(reader: &EsmReader, data: &[u8]) -> Vec<u32> {
     data.chunks_exact(4)
-        .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .map(|c| reader.remap_form_id(u32::from_le_bytes([c[0], c[1], c[2], c[3]])))
         .collect()
 }
 

@@ -72,11 +72,11 @@ pub(crate) fn parse_wrld_group(
                         // also lives on the record for completeness
                         // via the parent-flag inheritance bit.
                         b"CNAM" if sub.data.len() >= 4 => {
-                            climate_fid = read_form_id(&sub.data);
+                            climate_fid = read_form_id(reader, &sub.data);
                         }
                         // WNAM — parent worldspace FormID (cross-game).
                         b"WNAM" if sub.data.len() >= 4 => {
-                            record.parent_worldspace = read_form_id(&sub.data);
+                            record.parent_worldspace = read_form_id(reader, &sub.data);
                         }
                         // PNAM — parent-use flags (FO3+/Skyrim, 1 or
                         // 2 bytes). Read the available prefix as a
@@ -127,7 +127,7 @@ pub(crate) fn parse_wrld_group(
                         }
                         // NAM2 — default water FormID.
                         b"NAM2" if sub.data.len() >= 4 => {
-                            record.water_form = read_form_id(&sub.data);
+                            record.water_form = read_form_id(reader, &sub.data);
                         }
                         // DNAM "Land Data": [default_land_height: f32,
                         // default_water_height: f32]. The second f32 is the
@@ -146,7 +146,7 @@ pub(crate) fn parse_wrld_group(
                         }
                         // ZNAM — default music FormID (MUSC).
                         b"ZNAM" if sub.data.len() >= 4 => {
-                            record.default_music = read_form_id(&sub.data);
+                            record.default_music = read_form_id(reader, &sub.data);
                         }
                         // NAM3 / NAM4 — LOD-water type FormID + LOD-water
                         // height, the distant-LOD-ring counterparts of
@@ -157,7 +157,7 @@ pub(crate) fn parse_wrld_group(
                         // so they get their own fields rather than folding
                         // into water_form / default_water_height. #1849.
                         b"NAM3" if sub.data.len() >= 4 => {
-                            record.lod_water_form = read_form_id(&sub.data);
+                            record.lod_water_form = read_form_id(reader, &sub.data);
                         }
                         b"NAM4" if sub.data.len() >= 4 => {
                             record.lod_water_height = Some(f32::from_le_bytes([
@@ -416,8 +416,8 @@ fn parse_wrld_children_inner(
                         // Skyrim extended sub-records — see the interior
                         // walker above for semantics. Exterior cells use
                         // the same encoding. #356.
-                        b"XCIM" => image_space_form = read_form_id(&sub.data),
-                        b"XCWT" => water_type_form = read_form_id(&sub.data),
+                        b"XCIM" => image_space_form = read_form_id(reader, &sub.data),
+                        b"XCWT" => water_type_form = read_form_id(reader, &sub.data),
                         b"XWCU" if sub.data.len() >= 12 => {
                             let mut values = [0.0; 3];
                             for (slot, bytes) in
@@ -429,8 +429,8 @@ fn parse_wrld_children_inner(
                                 water_velocity = Some(values);
                             }
                         }
-                        b"XCAS" => acoustic_space_form = read_form_id(&sub.data),
-                        b"XCMO" => music_type_form = read_form_id(&sub.data),
+                        b"XCAS" => acoustic_space_form = read_form_id(reader, &sub.data),
+                        b"XCMO" => music_type_form = read_form_id(reader, &sub.data),
                         // #693 / O3-N-05 — see interior walker for
                         // semantics. XCMT is rare on exterior cells
                         // (most exteriors use the worldspace default
@@ -439,15 +439,15 @@ fn parse_wrld_children_inner(
                         b"XCMT" if !sub.data.is_empty() => {
                             music_type_enum = Some(sub.data[0]);
                         }
-                        b"XCCM" => climate_override = read_form_id(&sub.data),
-                        b"XLCN" => location_form = read_form_id(&sub.data),
-                        b"XCLR" => regions = read_form_id_array(&sub.data),
+                        b"XCCM" => climate_override = read_form_id(reader, &sub.data),
+                        b"XLCN" => location_form = read_form_id(reader, &sub.data),
+                        b"XCLR" => regions = read_form_id_array(reader, &sub.data),
                         // LTMP — lighting template FormID (SK-D6-02 / #566).
-                        b"LTMP" => lighting_template_form = read_form_id(&sub.data),
+                        b"LTMP" => lighting_template_form = read_form_id(reader, &sub.data),
                         // #692 — exterior CELL ownership tuple (mirrors
                         // the interior walker arms above).
                         b"XOWN" if sub.data.len() >= 4 => {
-                            ownership_owner = read_form_id(&sub.data);
+                            ownership_owner = read_form_id(reader, &sub.data);
                         }
                         b"XRNK" if sub.data.len() >= 4 => {
                             ownership_rank = Some(i32::from_le_bytes([
@@ -458,7 +458,7 @@ fn parse_wrld_children_inner(
                             ]));
                         }
                         b"XGLB" if sub.data.len() >= 4 => {
-                            ownership_global = read_form_id(&sub.data);
+                            ownership_global = read_form_id(reader, &sub.data);
                         }
                         // #970 / OBL-D3-NEW-06 — see interior walker
                         // for semantics. Oblivion exterior cells are
