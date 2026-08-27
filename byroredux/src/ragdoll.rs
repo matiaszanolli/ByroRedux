@@ -116,28 +116,40 @@ pub fn template_from_imported(
             continue;
         }
 
-        // Bethesda's ragdoll CInfo pose is authored in skeleton-root/rest
-        // space, not relative to the NiNode that owns the collision object.
-        // Convert it exactly once at the NIF→ECS boundary. Activation can
-        // then compose the resulting body-local offset with the bone's live
-        // animated GlobalTransform without double-applying the rest pose
-        // (#2336).
+        // A `bhkRigidBodyT`'s CInfo transform is the collision object's pose
+        // **relative to the NiNode that owns it** — the same reading
+        // `extract_from_classic` (the architecture-collider path, #2316) has
+        // always applied to the identical `BhkRigidBody::{is_t, translation,
+        // rotation}` fields. It is therefore used verbatim as the bone-local
+        // offset.
+        //
+        // #3318 — this used to subtract the bone's rest pose out of it, on the
+        // premise that the value was authored in skeleton-root space. That
+        // premise is falsified by the authored data: across FNV's ragdoll
+        // corpus the median |CInfo translation| is 8.6 game units and only 9
+        // of 268 exceed 40 (a chandelier, a queen-ant clavicle, a swinging
+        // I-beam — single-body props, not limbs). Root-space poses would put
+        // nearly every limb within ~8.6 units of the skeleton root, which is
+        // impossible; and the subtraction produced "bone-local" offsets whose
+        // magnitude tracked the bone's own distance from the root instead
+        // (robobrain `Bip01 Head`: authored 18.1, computed local 378.3, bone
+        // 379.3 from root). 351 of 351 T bodies came out > 1 unit off, 297 of
+        // them > 10.
+        //
+        // The subtraction arrived with #2336, which was diagnosed on *non-T*
+        // bodies — and #2447 has since gated those out of this branch
+        // entirely, so it was left applying only to the case it was never
+        // validated against. Its guard for that case is kept below.
         //
         // #2447 / PHYS-01 — `b.translation`/`b.rotation` are only meaningful
         // when `b.is_t` (the source block was `bhkRigidBodyT`). Plain
         // `bhkRigidBody` carries the same wire-format CInfo bytes, but
-        // Gamebryo treats them as identity (#2316, already handled for
-        // architecture colliders in `extract_from_classic`) — resolving
-        // stale/garbage bytes against the bone rest pose here would displace
-        // the body from its bone by whatever leftover offset survived in the
-        // authoring tool's export. Fall back to zero local offset (body
-        // exactly coincident with the bone's own rest transform) instead.
+        // Gamebryo treats them as identity (#2316) — using stale/garbage
+        // bytes here would displace the body from its bone by whatever
+        // leftover offset survived the authoring tool's export. Fall back to
+        // zero local offset (body coincident with the bone's rest transform).
         let (local_translation, local_rotation) = if b.is_t {
-            let inverse_bone_rotation = rest.rotation.inverse();
-            (
-                inverse_bone_rotation * (b.translation - rest.translation) / rest.scale,
-                inverse_bone_rotation * b.rotation,
-            )
+            (b.translation, b.rotation)
         } else {
             (Vec3::ZERO, Quat::IDENTITY)
         };
@@ -1697,11 +1709,20 @@ mod tests {
         assert!(template_from_imported(&imported, &skel_map, &rest_poses).is_none());
     }
 
-    /// Regression for #2336: imported Havok body poses are skeleton-root
-    /// rest poses. Converting them to bone-local offsets prevents activation
-    /// from composing the bone rest transform a second time.
+    /// #3318 — a `bhkRigidBodyT`'s CInfo transform is the collision object's
+    /// pose relative to its owning NiNode, so it is the bone-local offset
+    /// verbatim. This test replaces
+    /// `imported_root_space_body_pose_converts_to_bone_local_once`, which
+    /// asserted the opposite (root-space, rest pose subtracted out) on a
+    /// synthetic fixture built to match that assumption. The authored data
+    /// falsifies it: FNV's median authored |translation| is 8.6 units and
+    /// only 9 of 268 exceed 40, which is limb-scale, not skeleton-scale.
+    ///
+    /// The bone rest poses here are deliberately far from the origin and
+    /// non-identity in rotation and scale — under the old reading every
+    /// assertion below would be off by exactly that rest pose.
     #[test]
-    fn imported_root_space_body_pose_converts_to_bone_local_once() {
+    fn imported_t_body_pose_is_taken_as_bone_local_verbatim() {
         let mut world = World::new();
         let spine = world.spawn();
         let head = world.spawn();
@@ -1721,30 +1742,50 @@ mod tests {
         };
         let rest_poses = HashMap::from([(spine_name, spine_rest), (head_name, head_rest)]);
 
+        let spine_local_t = Vec3::new(5.0, 0.0, 0.0);
+        let spine_local_r = Quat::from_rotation_z(std::f32::consts::FRAC_PI_6);
         let mut spine_body = body("Spine");
-        // local (5, 0, 0), rotated/scaled through spine_rest => root (100, 10, 0)
-        spine_body.translation = Vec3::new(100.0, 10.0, 0.0);
-        spine_body.rotation =
-            spine_rest.rotation * Quat::from_rotation_z(std::f32::consts::FRAC_PI_6);
+        spine_body.translation = spine_local_t;
+        spine_body.rotation = spine_local_r;
+
+        let head_local_t = Vec3::new(0.0, 4.0, 0.0);
         let mut head_body = body("Head");
-        head_body.translation = Vec3::new(100.0, 34.0, 0.0);
-        head_body.rotation = head_rest.rotation;
+        head_body.translation = head_local_t;
+        head_body.rotation = Quat::IDENTITY;
+
         let imported = ImportedRagdoll {
             bodies: vec![spine_body, head_body],
             constraints: vec![hinge_constraint(0, 1)],
         };
 
         let template = template_from_imported(&imported, &skel_map, &rest_poses)
-            .expect("both root-space bodies resolve");
-        assert!((template.bodies[0].local_translation - Vec3::new(5.0, 0.0, 0.0)).length() < 1e-4);
+            .expect("both bodies resolve");
+
         assert!(
-            template.bodies[0]
-                .local_rotation
-                .dot(Quat::from_rotation_z(std::f32::consts::FRAC_PI_6))
-                .abs()
-                > 1.0 - 1e-4
+            (template.bodies[0].local_translation - spine_local_t).length() < 1e-4,
+            "authored translation must pass through untouched, got {:?}",
+            template.bodies[0].local_translation
         );
-        assert!((template.bodies[1].local_translation - Vec3::new(2.0, 0.0, 0.0)).length() < 1e-4);
+        assert!(
+            template.bodies[0].local_rotation.dot(spine_local_r).abs() > 1.0 - 1e-4,
+            "authored rotation must pass through untouched"
+        );
+        assert!(
+            (template.bodies[1].local_translation - head_local_t).length() < 1e-4,
+            "authored translation must pass through untouched, got {:?}",
+            template.bodies[1].local_translation
+        );
+
+        // The regression this guards: a limb-scale authored offset must stay
+        // limb-scale. The old rest-pose subtraction turned these into ~100-unit
+        // offsets tracking each bone's distance from the skeleton root.
+        for b in &template.bodies {
+            assert!(
+                b.local_translation.length() < 40.0,
+                "bone-local offset must stay limb-scale, got {}",
+                b.local_translation.length()
+            );
+        }
     }
 
     /// Regression for #2447 / PHYS-01: a plain (non-T) `bhkRigidBody`

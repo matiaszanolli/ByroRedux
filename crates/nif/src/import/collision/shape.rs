@@ -157,10 +157,10 @@ fn resolve_shape_inner(
         // p1/p2 are finite, so the derived half_height is finite too.
         let half_height = (p2 - p1).length() * 0.5;
         let radius = finite(s.radius1.max(s.radius2) * scale)?;
-        return Some(CollisionShape::Capsule {
+        return Some(segment_shape(p1, p2, CollisionShape::Capsule {
             half_height,
             radius,
-        });
+        }));
     }
 
     // Cylinder
@@ -169,10 +169,10 @@ fn resolve_shape_inner(
         let p2 = finite_vec(havok_to_engine(s.point2[0], s.point2[1], s.point2[2]) * scale)?;
         let half_height = (p2 - p1).length() * 0.5;
         let radius = finite(s.cylinder_radius * scale)?;
-        return Some(CollisionShape::Cylinder {
+        return Some(segment_shape(p1, p2, CollisionShape::Cylinder {
             half_height,
             radius,
-        });
+        }));
     }
 
     // Convex hull
@@ -727,6 +727,58 @@ fn finish_trimesh(vertices: Vec<Vec3>, mut indices: Vec<[u32; 3]>) -> Option<Col
     Some(CollisionShape::TriMesh { vertices, indices })
 }
 
+/// Place a `Capsule`/`Cylinder` built from a Havok point-pair.
+///
+/// #3317 / FNV-2026-08-26-D7-01 — `bhkCapsuleShape`/`bhkCylinderShape` author
+/// their geometry as **two endpoints**, but `CollisionShape::Capsule` /
+/// `::Cylinder` are defined (see the enum's own doc comment) as "along local
+/// Y, centred on the shape's origin" so they can map straight onto Rapier's
+/// `capsule_y` / `cylinder`. Deriving only `half_height = |p2 - p1| / 2` threw
+/// away both the segment's **midpoint** and its **axis**: on FNV, 1321 of 1363
+/// authored capsules are off-origin (by up to 512 game units) and 1070 are not
+/// Y-aligned, so every `_male` ragdoll limb collider sat in the wrong place and
+/// was rotated up to 90° away from the bone it was meant to wrap.
+///
+/// Rather than widen the enum (and every exhaustive match over it), this
+/// reuses the offset-shape idiom `BhkTransformShape` already establishes just
+/// below: a single-child `Compound` carrying the local translation/rotation.
+/// A segment that really is origin-centred and Y-aligned — the case the old
+/// code silently assumed for all of them — still returns the bare primitive,
+/// so nothing that was already correct changes shape.
+fn segment_shape(p1: Vec3, p2: Vec3, shape: CollisionShape) -> CollisionShape {
+    const EPS: f32 = 1e-4;
+
+    let midpoint = (p1 + p2) * 0.5;
+    let axis = p2 - p1;
+    let len = axis.length();
+
+    // Degenerate segment (p1 == p2): there is no axis to align to. Keep the
+    // primitive unrotated — with half_height ~0 it is effectively a sphere —
+    // and honour the midpoint if it is off-origin.
+    let rotation = if len > EPS {
+        Quat::from_rotation_arc(Vec3::Y, axis / len)
+    } else {
+        Quat::IDENTITY
+    };
+
+    let centred = midpoint.length() <= EPS;
+    let y_aligned = rotation.is_near_identity();
+    if centred && y_aligned {
+        return shape;
+    }
+
+    // `from_rotation_arc` normalises internally but can still produce a
+    // non-finite quat from a non-finite input; p1/p2 are `finite_vec`-guarded
+    // upstream, so this is belt-and-braces against a future caller.
+    if !midpoint.is_finite() || !rotation.is_finite() {
+        return shape;
+    }
+
+    CollisionShape::Compound {
+        children: vec![(midpoint, rotation, Box::new(shape))],
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::field_reassign_with_default)] // Cycle fixtures are assembled block-by-block.
 mod cycle_tests {
@@ -1150,6 +1202,95 @@ mod cycle_tests {
                 }
             }
             other => panic!("expected Compound of Balls, got {other:?}"),
+        }
+    }
+
+    /// #3317 / FNV-2026-08-26-D7-01 — an off-origin, non-Y-aligned capsule
+    /// must keep BOTH its midpoint and its axis. Pre-fix only
+    /// `half_height = |p2 - p1| / 2` survived, so 1321 of FNV's 1363 authored
+    /// capsules were re-centred on the origin and 1070 were force-aligned to
+    /// Y — every `_male` ragdoll limb collider misplaced and rotated.
+    #[test]
+    fn offset_non_y_capsule_keeps_midpoint_and_axis() {
+        use crate::blocks::collision::BhkCapsuleShape;
+
+        let mut scene = NifScene::default();
+        scene.havok_scale = 1.0;
+        // A capsule lying along havok +X, centred at havok (2, 0, 0).
+        scene.blocks.push(Box::new(BhkCapsuleShape {
+            material: 0,
+            radius: 0.5,
+            point1: [1.0, 0.0, 0.0],
+            radius1: 0.5,
+            point2: [3.0, 0.0, 0.0],
+            radius2: 0.5,
+        }));
+        let mut visited = HashSet::new();
+        match resolve_shape(&scene, BlockRef(0u32), &mut visited) {
+            Some(CollisionShape::Compound { children }) => {
+                assert_eq!(children.len(), 1, "one placed capsule");
+                let (offset, rotation, shape) = &children[0];
+
+                let expected_mid = havok_to_engine(2.0, 0.0, 0.0);
+                assert!(
+                    (*offset - expected_mid).length() < 1e-4,
+                    "midpoint must survive: got {offset:?}, want {expected_mid:?}"
+                );
+
+                // The capsule's local +Y must rotate onto the authored axis.
+                let axis = (havok_to_engine(3.0, 0.0, 0.0)
+                    - havok_to_engine(1.0, 0.0, 0.0))
+                .normalize();
+                let mapped = *rotation * Vec3::Y;
+                assert!(
+                    (mapped - axis).length() < 1e-4,
+                    "axis must survive: local +Y maps to {mapped:?}, want {axis:?}"
+                );
+
+                match **shape {
+                    CollisionShape::Capsule {
+                        half_height,
+                        radius,
+                    } => {
+                        assert!((half_height - 1.0).abs() < 1e-4, "got {half_height}");
+                        assert!((radius - 0.5).abs() < 1e-4, "got {radius}");
+                    }
+                    ref other => panic!("expected Capsule child, got {other:?}"),
+                }
+            }
+            other => panic!("expected Compound-wrapped Capsule, got {other:?}"),
+        }
+    }
+
+    /// The case the pre-fix code assumed for every capsule — origin-centred and
+    /// already Y-aligned — must still come back as a bare primitive, so shapes
+    /// that were correct before are byte-for-byte unchanged.
+    #[test]
+    fn centred_y_aligned_capsule_stays_a_bare_primitive() {
+        use crate::blocks::collision::BhkCapsuleShape;
+
+        let mut scene = NifScene::default();
+        scene.havok_scale = 1.0;
+        // havok_to_engine maps havok Z onto engine Y, so a havok-Z segment is
+        // the already-aligned case.
+        scene.blocks.push(Box::new(BhkCapsuleShape {
+            material: 0,
+            radius: 0.25,
+            point1: [0.0, 0.0, -2.0],
+            radius1: 0.25,
+            point2: [0.0, 0.0, 2.0],
+            radius2: 0.25,
+        }));
+        let mut visited = HashSet::new();
+        match resolve_shape(&scene, BlockRef(0u32), &mut visited) {
+            Some(CollisionShape::Capsule {
+                half_height,
+                radius,
+            }) => {
+                assert!((half_height - 2.0).abs() < 1e-4, "got {half_height}");
+                assert!((radius - 0.25).abs() < 1e-4, "got {radius}");
+            }
+            other => panic!("a centred Y capsule must not be wrapped, got {other:?}"),
         }
     }
 

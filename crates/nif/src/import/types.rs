@@ -1355,10 +1355,16 @@ pub struct ImportedRagdollBody {
     pub restitution: f32,
     /// Collider shape in body-local space (Y-up, havok-scaled).
     pub shape: CollisionShape,
-    /// Rigid-body origin in skeleton-root/rest space (Y-up, scaled).
-    /// The engine resolves this against the host bone's rest transform once
-    /// when building its runtime ragdoll template (#2336). Only meaningful
+    /// Rigid-body origin **relative to the host bone's NiNode** (Y-up,
+    /// scaled) — the same node-local reading `extract_from_classic` applies
+    /// to architecture colliders. Used verbatim as the body's bone-local
+    /// offset when building the runtime ragdoll template. Only meaningful
     /// when [`Self::is_t`] is `true` — see that field.
+    ///
+    /// #3318 corrected this: it was previously documented (and consumed) as a
+    /// skeleton-root/rest-space pose per #2336, which the authored data
+    /// falsifies — FNV's median authored magnitude is 8.6 units, limb-scale,
+    /// not whole-skeleton-scale.
     pub translation: Vec3,
     /// Rigid-body orientation in skeleton-root/rest space (Y-up). Only
     /// meaningful when [`Self::is_t`] is `true` — see that field.

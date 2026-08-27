@@ -650,6 +650,21 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.register::<byroredux_core::ecs::components::PatrolState>();
     world.register::<crate::components::AmbientPackageRuntime>();
 
+    // #3319 — EX-16 item 3 Phase 3/4: the single-tile NAVM path cache. Every
+    // pathed procedure reads it via `query::<NavPath>()` and writes it via
+    // `query_mut::<NavPath>().insert(...)`, and BOTH bail to `None` on a
+    // storage that was never registered (`World::query`/`query_mut` open with
+    // `self.storages.get(&type_id)?`). Without this line the cache is inert in
+    // every shipped build — silently, because the write site is an
+    // `if let Some(..)` — so all six pathed procedures re-ran a full A* plus a
+    // ~10.6k-triangle localize scan every tick instead of once per goal.
+    //
+    // `NavmeshTile` needs no equivalent line: it is inserted through
+    // `&mut World` (`components::spawn_navmesh_tiles`), which creates its
+    // storage on first insert. `NavPath` is only ever inserted through a
+    // `query_mut` guard, which cannot.
+    world.register::<crate::components::NavPath>();
+
     // Register scripting component storages.
     byroredux_scripting::register(&mut world);
 
@@ -1943,5 +1958,89 @@ mod scheduler_access_report_tests {
             0,
             "unknown (undeclared) parallel pairing detected — declare both sides' access"
         );
+    }
+}
+
+#[cfg(test)]
+mod ai_storage_registration_tests {
+    //! #3319 — every AI runtime-state component the package systems write
+    //! through a `query_mut::<T>()` guard MUST be pre-registered in
+    //! `build_world`.
+    //!
+    //! `World::query`/`query_mut` both open with
+    //! `self.storages.get(&type_id)?`, so an unregistered storage makes the
+    //! read return `None` and the write site — always an `if let Some(..)` —
+    //! do nothing at all. There is no panic and no log: the feature is just
+    //! silently inert. That is exactly how `NavPath` shipped dead, with all
+    //! eight of its NavPath registration calls sitting inside
+    //! `#[cfg(test)]` blocks where they only ever made the tests pass.
+    //!
+    //! A component inserted through `&mut World` (like `NavmeshTile`, via
+    //! `spawn_navmesh_tiles`) creates its own storage and is deliberately not
+    //! on this list.
+    //!
+    //! Static source check, matching this file's existing `include_str!`
+    //! convention: the live boot path wants a Vulkan device and on-disk game
+    //! data, which is out of `cargo test` scope.
+
+    const BOOT_SRC: &str = include_str!("boot.rs");
+
+    /// Components written via `query_mut` by
+    /// `systems/{sandbox,wander,travel,follow,escort,guard,patrol}.rs`,
+    /// excluding the engine-wide ones (`Transform`, `GlobalTransform`,
+    /// `AnimationPlayer`) that other subsystems already register.
+    const AI_WRITE_STORAGES: &[&str] = &[
+        "Seated",
+        "WanderState",
+        "TravelState",
+        "Traveled",
+        "FollowState",
+        "EscortState",
+        "Escorted",
+        "GuardState",
+        "PatrolState",
+        "NavPath",
+    ];
+
+    #[test]
+    fn every_ai_query_mut_storage_is_pre_registered_in_build_world() {
+        // Only look at `build_world`'s body, so a `register::<T>()` inside
+        // some test module elsewhere in this file cannot satisfy the check.
+        // `split` hands back everything after build_world's opening line —
+        // including this very test module further down the file. Truncate at
+        // the first `#[cfg(test)]` so a `register::<T>()` written in a test
+        // (or quoted in a doc comment) cannot satisfy the check; that is the
+        // precise mistake #3319 was about in the first place.
+        let after_fn = BOOT_SRC
+            .split("pub(crate) fn build_world")
+            .nth(1)
+            .expect("build_world must exist in boot.rs");
+        let build_world = after_fn
+            .split_once("#[cfg(test)]")
+            .map_or(after_fn, |(body, _)| body);
+
+        // Collect the *actual* `register::<Path::To::T>()` calls and reduce
+        // each to its final path segment. Substring matching is not good
+        // enough here: this module's own doc comment mentions
+        // `query_mut::<NavPath>()`, which a naive `::NavPath>()` search
+        // would happily accept as proof of registration.
+        let registered: Vec<&str> = build_world
+            .match_indices("register::<")
+            .filter_map(|(i, _)| {
+                let rest = &build_world[i + "register::<".len()..];
+                let end = rest.find(">()")?;
+                Some(rest[..end].rsplit("::").next().unwrap_or(""))
+            })
+            .collect();
+
+        for component in AI_WRITE_STORAGES {
+            assert!(
+                registered.contains(component),
+                "build_world does not pre-register `{component}`, but an AI system \
+                 writes it through `query_mut::<{component}>()`. An unregistered \
+                 storage makes that write silently do nothing — see #3319, where \
+                 NavPath shipped inert for exactly this reason."
+            );
+        }
     }
 }
