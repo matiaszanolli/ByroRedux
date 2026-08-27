@@ -8,6 +8,10 @@
 //! quirks are resolved here, exactly once. This is the material slice of
 //! NIFAL, the engine's cross-game canonical translation tier.
 //!
+//! "Exactly once" is a claim about the base-material lowering; two
+//! texture-dependent fields are finished in a second, equally canonical
+//! pass — see **The boundary is two-phase** below (#2330).
+//!
 //! Before this module existed, the `Material` struct literal was built
 //! verbatim at two sites — [`crate::cell_loader`]'s `spawn` (REFR cell
 //! placement) and [`crate::scene`]'s `nif_loader` (loose-NIF load) —
@@ -20,6 +24,35 @@
 //! [`WaterVolume`]. ESM WATR water uses `env_translate::resolve_water_material`;
 //! the two producers deliberately share [`WaterKind`] classification and foam
 //! semantics rather than pretending unlike source formats are one record.
+//!
+//! ## The boundary is two-phase (#2330)
+//!
+//! "Exactly once" above is true of the **base-material** lowering, and that
+//! is the whole of the boundary for most fields — but it is not the whole
+//! story for the handful that cannot be resolved until texture handles
+//! exist. [`translate_material`] runs before `MaterialTextureHandles` is
+//! attached, so any field whose value depends on *which textures actually
+//! resolved* is necessarily written in a second pass:
+//!
+//! | Phase | Site | Writes |
+//! |---|---|---|
+//! | 1 — base lowering | [`translate_material`] | the `Material` literal: scalars, colours, flags, glass classification, `resolve_pbr` clamping |
+//! | 2 — post-texture-resolution | [`resolve_normal_alpha_spec_roughness`] | `Material::roughness`, for the Skyrim/Gamebryo normal-alpha-as-spec convention (#1480) |
+//! | 2 — post-texture-resolution | [`resolve_msn_z_source`] | `MAT_FLAG_MSN_HAS_AUTHORED_Z`, for model-space normal maps (#2826) |
+//!
+//! Both Phase-2 resolvers are called from **both** spawn sites, immediately
+//! after `MaterialTextureHandles` is attached
+//! (`scene/nif_loader.rs`, `cell_loader/spawn/mesh_instance.rs`). Both are
+//! idempotent and read only canonical components, so re-running them cannot
+//! change a value — this is a staging constraint, not a mutable-state leak,
+//! and it is why the render path carries no heuristic of its own.
+//!
+//! This matters for Skyrim in particular: it has no dedicated gloss map and
+//! its spec mask lives in the normal-map alpha, so for most Skyrim
+//! architecture the *shipped* roughness comes from Phase 2, not from
+//! Phase 1's literal. Anyone adding per-game material logic needs to know
+//! both write sites exist — a Phase-1-only change will not stick for a
+//! field that Phase 2 also writes.
 //!
 //! Architecture: see `docs/engine/nifal.md`. The canonical tier is the
 //! ECS `Material` component itself (it already lives in `byroredux_core`,

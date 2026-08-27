@@ -67,7 +67,9 @@ The reference realisation. See §3. The ECS `Material`
 (`crates/core/src/ecs/components/material.rs`) is the canonical type. Its boundary
 is the ordered pipeline formed by `merge_external_material`,
 `pack_imported_material_flags`, `translate_material`, and the final
-`Material::resolve_pbr` invariant enforcement. PBR is fully resolved
+`Material::resolve_pbr` invariant enforcement — plus a **second, post-texture-resolution
+phase** for the two fields that cannot be known until texture handles exist
+(#2330; see §3's *Two-phase boundary*). PBR is fully resolved
 (`metalness`/`roughness` are plain `f32`, no `Option`, no render-time fallback);
 glass is classified once, alpha-aware; the two previously-duplicated construction
 sites both use this pipeline.
@@ -568,6 +570,31 @@ The material slice was executed this session as the template. Mechanics:
      arrive separately through `extra_material_flags`.
   4. `Material::resolve_pbr` runs inside the lowering step and guarantees finite,
      clamped canonical PBR scalars before the result reaches ECS consumers.
+  5. `byroredux/src/material_translate.rs::resolve_normal_alpha_spec_roughness` and
+     `::resolve_msn_z_source` finish the two texture-dependent fields once
+     `MaterialTextureHandles` is attached — the second phase, below.
+
+- **Two-phase boundary** (#2330). `translate_material` runs *before* texture
+  handles exist, so any field whose value depends on which textures actually
+  resolved cannot be finished there. Two are:
+
+  | Phase | Site | Writes |
+  |---|---|---|
+  | 1 — base lowering | `translate_material` | the `Material` literal: scalars, colours, flags, glass classification, `resolve_pbr` clamping |
+  | 2 — post-texture | `resolve_normal_alpha_spec_roughness` | `Material::roughness` for the normal-alpha-as-spec convention (#1480) |
+  | 2 — post-texture | `resolve_msn_z_source` | `MAT_FLAG_MSN_HAS_AUTHORED_Z` for model-space normals (#2826) |
+
+  Both Phase-2 resolvers run at **both** spawn sites, immediately after
+  `MaterialTextureHandles` is attached. Both are idempotent and read only
+  canonical components, so this is a staging constraint rather than a
+  mutable-state leak — and it is why the render path carries no material
+  heuristic of its own (#1480's "resolve once at spawn" contract).
+
+  This is load-bearing for Skyrim: it ships no dedicated gloss map and puts its
+  spec mask in the normal-map alpha, so most Skyrim architecture's shipped
+  roughness comes from Phase 2, not Phase 1's literal. **Per-game material logic
+  must account for both write sites** — a Phase-1-only change will not stick for
+  a field Phase 2 also writes.
 
   The lowering step:
 
