@@ -240,9 +240,18 @@ impl Ba2Archive {
             BA2_V_STARFIELD_V3 => {
                 let mut extra = [0u8; 8];
                 reader.read_exact(&mut extra)?;
-                log_v2_v3_extra_bytes("v3", &extra, name_table_offset, reader.stream_position()?);
                 let mut method_buf = [0u8; 4];
                 reader.read_exact(&mut method_buf)?;
+                // #2360 / SF-BA2-02 — log AFTER the compression-method read,
+                // not before it. The point of `stream_pos` in this diagnostic
+                // is "where does the header end", to be compared against
+                // `name_table_offset`; capturing it before the 4-byte method
+                // field reported 32 bytes in rather than the true 36-byte v3
+                // header end, understating the boundary by exactly that field.
+                // The v2 arm above is already correct by construction — v2 has
+                // nothing left to read at that point, so its capture site *is*
+                // the header end.
+                log_v2_v3_extra_bytes("v3", &extra, name_table_offset, reader.stream_position()?);
                 let method = u32::from_le_bytes(method_buf);
                 let c = match method {
                     0 => Ba2Compression::Zlib,
@@ -1686,6 +1695,38 @@ mod tests {
             body.contains("lz4_flex::block::decompress"),
             "the Lz4Block arm no longer calls lz4_flex::block::decompress — if the \
              codec call moved, move this guard with it"
+        );
+    }
+
+    /// #2360 / SF-BA2-02 — the v3 header-boundary diagnostic must capture
+    /// `stream_position()` *after* the 4-byte compression-method field, so
+    /// the logged offset is the true 36-byte header end rather than 32.
+    ///
+    /// This is a source-order pin because the thing under test is when a
+    /// `log::trace!` observes the cursor, and this workspace has no
+    /// log-capture harness (only `env_logger`, a writer) — the issue's own
+    /// "assert logic equivalence if untestable via log capture" case. The
+    /// v2 arm needs no equivalent: it has nothing left to read at its
+    /// capture site, so its position *is* the header end by construction.
+    #[test]
+    fn v3_header_boundary_log_is_captured_after_the_compression_method() {
+        const SRC: &str = include_str!("ba2.rs");
+        let arm = SRC
+            .split("BA2_V_STARFIELD_V3 =>")
+            .nth(1)
+            .expect("the BA2_V_STARFIELD_V3 match arm must exist in this file");
+        let body = &arm[..arm.len().min(2000)];
+        let method_read = body
+            .find("reader.read_exact(&mut method_buf)")
+            .expect("the v3 arm must still read the 4-byte compression method");
+        let log_call = body
+            .find(r#"log_v2_v3_extra_bytes("v3""#)
+            .expect("the v3 arm must still emit the header-boundary diagnostic");
+        assert!(
+            method_read < log_call,
+            "the v3 header-boundary log is captured BEFORE the 4-byte compression \
+             method is read, so it reports a 32-byte offset where the real v3 header \
+             ends at 36 — understating the boundary by exactly that field (#2360)"
         );
     }
 
