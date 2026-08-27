@@ -27,13 +27,34 @@ fn triangle_body_parts(scene: &NifScene, skin_idx: usize, final_indices: &[u32])
         return Vec::new();
     }
 
+    // #3360 — the same index-space question as #3355, and it must be
+    // answered the same way or the two halves disagree.
+    //
+    // These keys are looked up against `final_indices`, which
+    // `try_reconstruct_sse_geometry` produces. Before #3355 both sides
+    // applied the identical wrong `vertex_map` remap and skipped the
+    // identical triangles, so they agreed and body parts landed on the
+    // (mis-indexed) survivors — self-cancelling. Fixing either side alone
+    // makes every lookup miss, every entry fall to `UNASSIGNED_BODY_PART`,
+    // and the trailing guard return `Vec::new()` — at which point
+    // `hide_skin_partitions` stops hiding anything and every NPC renders
+    // bare body skin through their armour, with `cargo test` and the
+    // parse-rate gate both still green.
+    //
+    // Gated on the partition, not the game: `global_vertex_data` is the
+    // exact SSE marker `NiSkinPartition::parse` already computes. The remap
+    // stays correct for Oblivion/FO3/FNV, where nifly's `bMappedIndices`
+    // defaults to `true` and partition triangles genuinely are vertex_map-
+    // local (`extract_skin_ni_tri_shape` routes those here too).
+    let triangles_are_global = partition.global_vertex_data.is_some();
+
     let mut by_triangle = HashMap::new();
     for (body_info, part) in inst.partitions.iter().zip(&partition.partitions) {
         for triangle in &part.triangles {
             let mut global = [0u32; 3];
             let mut valid = true;
             for (dst, &local) in global.iter_mut().zip(triangle) {
-                if part.vertex_map.is_empty() {
+                if triangles_are_global || part.vertex_map.is_empty() {
                     *dst = local as u32;
                 } else if let Some(&mapped) = part.vertex_map.get(local as usize) {
                     *dst = mapped as u32;

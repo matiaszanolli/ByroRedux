@@ -360,12 +360,21 @@ fn dynamic_skin_payload_decodes_without_vf_vertex() {
     );
 }
 
-/// vertex_map remap is the partition-local → global translation
-/// the SSE skin format depends on. Build a partition whose
-/// `vertex_map = [2, 0, 1]` and triangle `[0, 1, 2]` — the
-/// emitted indices must be the remapped `[2, 0, 1]`.
+/// #3355 — SSE partition triangles are ALREADY global indices into the
+/// packed buffer; `vertex_map` must NOT be applied to them.
+///
+/// This test previously asserted the opposite: `vertex_map = [2, 0, 1]`
+/// with triangle `[0, 1, 2]` was expected to emit `[2, 0, 1]`. It was a
+/// hand-built fixture, never extracted from shipped bytes, so it never
+/// contradicted the archives — and it locked in a defect that dropped
+/// 17.6% of every skinned triangle in Skyrim SE and mis-indexed 35.6%
+/// more. nifly forces `bMappedIndices = false` for `Stream() == 100`,
+/// making `Triangles` the true/global list.
+///
+/// Same fixture, correct expectation: a non-identity `vertex_map` must
+/// leave the emitted indices untouched.
 #[test]
-fn partition_vertex_map_remaps_local_indices_to_global() {
+fn partition_triangles_are_global_and_ignore_vertex_map() {
     let zup_positions = [[10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]];
     let (vertex_desc, vertex_size, raw_bytes) = pack_position_only(&zup_positions);
 
@@ -413,7 +422,8 @@ fn partition_vertex_map_remaps_local_indices_to_global() {
         num_triangles: 1,
         bones: Vec::new(),
         num_weights_per_vertex: 0,
-        // Non-identity vertex_map exercises the remap path.
+        // Non-identity vertex_map: if it were (wrongly) applied, the
+        // emitted indices would come out permuted.
         vertex_map: vec![2, 0, 1],
         vertex_weights: Vec::new(),
         triangles: vec![[0, 1, 2]],
@@ -443,8 +453,14 @@ fn partition_vertex_map_remaps_local_indices_to_global() {
     )
     .expect("reconstruction with non-identity vertex_map must succeed");
 
-    // partition triangle [0, 1, 2] remapped via [2, 0, 1] → [2, 0, 1].
-    assert_eq!(mesh.indices, vec![2, 0, 1]);
+    // The triangle is already global: it must pass through verbatim.
+    // Pre-#3355 this came out as the permuted [2, 0, 1].
+    assert_eq!(
+        mesh.indices,
+        vec![0, 1, 2],
+        "SSE partition triangles are global indices — applying vertex_map \
+         repoints them at unrelated vertices (#3355)"
+    );
 }
 
 /// When the linked `NiSkinPartition` has no global vertex data
@@ -675,23 +691,26 @@ fn sse_global_buffer_skin_payload_reaches_imported_skin() {
     assert_eq!(skin.vertex_bone_indices[1], [1, 7, 0, 0]);
 }
 
-/// Regression for #725 / NIF-D4-04: a partition triangle whose
-/// partition-local index lands outside the partition's `vertex_map`
-/// must be DROPPED from the index list, not aliased to the raw
-/// `local as u16` cast. Pre-fix the silent fallback let truncated
-/// or malformed NIFs reach the GPU with collapsed faces; post-fix
-/// the triangle is skipped (with a debug log) and only well-formed
-/// triangles survive into `ImportedMesh.indices`.
+/// Regression for #725 / NIF-D4-04, retargeted by #3355: a partition
+/// triangle with an out-of-range index must be DROPPED from the index
+/// list, not aliased to a raw cast. Pre-#725 the silent fallback let
+/// truncated or malformed NIFs reach the GPU with collapsed faces.
 ///
-/// Test shape: 3 vertices, partition.vertex_map = [0, 1] (length
-/// 2), two triangles — `[0, 1, 0]` (all indices in range) and
-/// `[0, 1, 2]` (last index = 2, out of range). Pre-fix: 6 indices
-/// emitted (the second triangle's `2` aliased to a raw `2u16`,
-/// which happens to match a real vertex here but in general points
-/// at undefined data). Post-fix: 3 indices emitted (only the
-/// well-formed triangle survives).
+/// #3355 changed what "out of range" means. The bound was
+/// `vertex_map.len()`, which was wrong twice over: SSE partition
+/// triangles are global indices, so a value past this partition's own
+/// vertex count is perfectly valid, and treating it as malformed is what
+/// discarded 3,297,664 vanilla triangles. The bound is now the decoded
+/// global buffer's vertex count, which is the real limit. On the shipped
+/// corpus it never fires (`raw_oob_global=0`); it remains the guard for a
+/// genuinely truncated NIF.
+///
+/// Test shape: 3 vertices, two triangles — `[0, 1, 0]` (in range) and
+/// `[0, 1, 5]` (index 5 past the 3-vertex buffer). The `vertex_map` is
+/// deliberately short (`[0, 1]`) to prove the drop no longer keys off it:
+/// index 2 in the first triangle would have been dropped pre-#3355.
 #[test]
-fn partition_triangle_with_out_of_range_vertex_map_index_is_dropped() {
+fn partition_triangle_past_the_global_buffer_is_dropped() {
     let zup_positions = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
     let (vertex_desc, vertex_size, raw_bytes) = pack_position_only(&zup_positions);
 
@@ -745,7 +764,7 @@ fn partition_triangle_with_out_of_range_vertex_map_index_is_dropped() {
         num_weights_per_vertex: 0,
         vertex_map: vec![0, 1],
         vertex_weights: Vec::new(),
-        triangles: vec![[0, 1, 0], [0, 1, 2]],
+        triangles: vec![[0, 1, 2], [0, 1, 5]],
         bone_indices: Vec::new(),
     };
 
@@ -780,7 +799,13 @@ fn partition_triangle_with_out_of_range_vertex_map_index_is_dropped() {
         3,
         "out-of-range triangle must be DROPPED, not aliased through the raw u16 cast",
     );
-    assert_eq!(mesh.indices, vec![0, 1, 0]);
+    assert_eq!(
+        mesh.indices,
+        vec![0, 1, 2],
+        "the in-range triangle survives verbatim (its index 2 is past the \
+         2-entry vertex_map, which must no longer matter), and the triangle \
+         reaching vertex 5 of a 3-vertex buffer is dropped (#725, #3355)"
+    );
 }
 
 /// Regression: SK-D3-01 (#1547) — a packed buffer whose `vertex_desc`

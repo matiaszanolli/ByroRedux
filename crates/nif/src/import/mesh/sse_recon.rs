@@ -97,38 +97,60 @@ pub fn try_reconstruct_sse_geometry(
     // with packed attributes when needed.
     let decoded = decode_sse_shape_buffer(buffer, shape)?;
 
-    // Concatenate partition triangles, remapping each partition-local
-    // index through the partition's vertex_map.
+    // Concatenate partition triangles. On SSE these are ALREADY global
+    // indices into the packed buffer — see #3355.
     //
-    // #725 / NIF-D4-04 — when a partition-local index falls outside
-    // its `vertex_map`'s range, drop the whole triangle rather than
-    // alias to the raw cast `local as u16`. The aliased fallback
-    // confines damage to malformed content (vanilla Bethesda BSAs
-    // always supply complete vertex_maps) but produced collapsed
-    // faces on truncated NIFs instead of clean drops. Mirrors the
-    // partition-local index policy in
-    // `remap_bs_tri_shape_bone_indices`.
+    // This function only runs when `partition.global_vertex_data` is `Some`,
+    // which `NiSkinPartition::parse` populates only for `bsver` in
+    // `SKYRIM_SE..FALLOUT4`. nifly forces `bMappedIndices = false` for
+    // `Stream() == 100` (`Skin.cpp`) and documents the flag as "if true, the
+    // vertex indices in triangles and strips are indices into vertexMap, not
+    // the shape's vertices" (`Skin.hpp`) — so on SSE the `Triangles` field is
+    // nifly's `trueTriangles`, in the shape's own vertex space.
+    //
+    // Pushing them through `vertex_map` was therefore inverted, and measured
+    // on both vanilla SSE mesh archives it cost:
+    //   * 3,297,664 of 18,753,141 triangles (17.6%) silently DROPPED, because
+    //     a global index >= vertex_map.len() looked malformed under the
+    //     #725/NIF-D4-04 policy when it was simply past this partition's own
+    //     vertex count;
+    //   * 6,681,098 more (35.6%) silently REPOINTED at unrelated vertices.
+    // 10,501 of 26,940 skinned shapes (39%) came out mangled — Skyrim's
+    // facegen heads and skinned bodies. The 61% that looked fine were the
+    // single-partition shapes whose vertex_map is the identity permutation,
+    // where the wrong remap is accidentally a no-op.
+    //
+    // The decisive measurement: all 56,259,423 triangle indices in the corpus
+    // are vertex_map *values* (the definition of a global index belonging to
+    // that partition), while only 48,042,230 are within vertex_map's
+    // *length*. Read as global, zero are out of range.
+    //
+    // The #725 drop policy is kept, retargeted at the real bound — the
+    // decoded buffer's vertex count. The corpus says it never fires here
+    // (`raw_oob_global=0`); it remains the guard for a truncated NIF.
+    // `remap_bs_tri_shape_bone_indices` keeps its `vertex_map` reads: that
+    // one uses the map correctly, as a global -> partition-local inverse.
+    let vertex_count = decoded.positions.len();
     let mut indices = Vec::new();
     let mut dropped_triangles: u32 = 0;
     for part in &partition.partitions {
         for tri in &part.triangles {
-            // Resolve all three indices first; commit none of them
-            // unless every lookup landed inside vertex_map.
-            let mut globals = [0u16; 3];
+            // Resolve all three first; commit none unless every index is
+            // inside the decoded buffer.
+            let mut globals = [0u32; 3];
             let mut ok = true;
-            for (i, &local) in tri.iter().enumerate() {
-                match part.vertex_map.get(local as usize).copied() {
-                    Some(g) => globals[i] = g,
-                    None => {
-                        ok = false;
-                        break;
-                    }
+            for (i, &global) in tri.iter().enumerate() {
+                if (global as usize) < vertex_count {
+                    globals[i] = global as u32;
+                } else {
+                    ok = false;
+                    break;
                 }
             }
             if ok {
-                indices.push(globals[0] as u32);
-                indices.push(globals[1] as u32);
-                indices.push(globals[2] as u32);
+                indices.push(globals[0]);
+                indices.push(globals[1]);
+                indices.push(globals[2]);
             } else {
                 dropped_triangles = dropped_triangles.saturating_add(1);
             }
