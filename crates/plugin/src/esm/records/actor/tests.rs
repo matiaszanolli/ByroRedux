@@ -522,6 +522,53 @@ fn npc_fnv_ignores_fo4_av_property_arms() {
     assert!(n.perks.is_empty(), "PRKR gated off for FNV");
 }
 
+/// #3158 — Skyrim `NPC_` carries `PRKZ`/`PRKR` (1620 of `Skyrim.esm`'s 5118
+/// records, 7993 entries; censused with the `probe_npc_perks` example), but
+/// the `PRKR` arm used to sit behind `uses_actor_value_properties`, which
+/// excludes Skyrim. Every Skyrim NPC therefore parsed with an empty `perks`
+/// list, `spawn_npc_entity` skipped the `Perks` component, and `HasPerk`
+/// evaluated a structural `0.0` on the reference title.
+///
+/// Skyrim's `PRKR` is 8 bytes, not FO4's 5 — the extra three are unused
+/// padding after the rank, so the FormID/rank offsets are shared. This pins
+/// both the wider gate and the shared decode.
+#[test]
+fn npc_skyrim_decodes_eight_byte_prkr_perks() {
+    let mut prkr_a = 0x0005_820Cu32.to_le_bytes().to_vec();
+    prkr_a.extend_from_slice(&[2, 0, 0, 0]); // rank 2 + three unused bytes
+    let mut prkr_b = 0x000C_44B7u32.to_le_bytes().to_vec();
+    prkr_b.extend_from_slice(&[1, 0, 0, 0]);
+    let subs = vec![
+        sub(b"EDID", b"SkyrimNpc\0"),
+        sub(b"PRKZ", &2u32.to_le_bytes()),
+        sub(b"PRKR", &prkr_a),
+        sub(b"PRKR", &prkr_b),
+    ];
+    let n = parse_npc(0x612, &subs, GameKind::Skyrim, &None);
+    assert_eq!(
+        n.perks,
+        vec![(0x5_820C, 2), (0xC_44B7, 1)],
+        "Skyrim PRKR must decode under uses_npc_perk_entries"
+    );
+    // The wider perk gate must NOT drag the FO4 actor-value arms along:
+    // Skyrim has no PRPS and its DNAM is a different layout.
+    assert!(n.actor_value_props.is_empty());
+    assert_eq!(n.calculated_health, 0);
+}
+
+/// The perk gate stays closed for the three masters that ship no `PRKR` at
+/// all (`Oblivion.esm` 2482 `NPC_`, `Fallout3.esm` 1647, `FalloutNV.esm`
+/// 3816 — zero perk sub-records between them). A stray `PRKR` on those games
+/// is malformed data, not perks.
+#[test]
+fn npc_perk_gate_stays_closed_for_pre_skyrim_games() {
+    for game in [GameKind::Oblivion, GameKind::Fallout3NV] {
+        let subs = vec![sub(b"EDID", b"LegacyNpc\0"), sub(b"PRKR", &[0xFF; 8])];
+        let n = parse_npc(0x613, &subs, game, &None);
+        assert!(n.perks.is_empty(), "PRKR must stay gated off for {game:?}");
+    }
+}
+
 /// Mismatched FMRI/FMRS counts truncate to the shorter array
 /// instead of panicking. Defensive against malformed mod records;
 /// vanilla Bethesda content always pairs them 1-to-1.

@@ -1369,6 +1369,28 @@ pub(crate) fn setup_scene(
                 .intern(PLAYER_FORM_ID_PAIR);
             world.insert(body, FormIdComponent(fid));
         }
+        // #3158 — give the player a `Perks` component up front, even
+        // though nothing populates it yet. `ConditionFunction::HasPerk`
+        // reads `world.get::<Perks>(entity)` and returns `0.0` when the
+        // component is absent, which is indistinguishable from "the actor
+        // genuinely lacks this perk" — so before this, every perk-gated
+        // dialogue/quest/package CTDA on the player was a silent
+        // structural false in every game, with no log or test able to tell
+        // the two apart. An empty component makes "checked and absent"
+        // representable and gives a future `AddPerk` effect somewhere to
+        // write.
+        //
+        // SIBLING (#3158's completeness box): `ActorValues`,
+        // `CharacterLevel` and `Background` have the identical
+        // single-writer shape (`spawn_npc_entity` only) and are likewise
+        // absent on the player. They are deliberately NOT stubbed here.
+        // An empty `ActorValues` would flip `melee_damage_charal_bonus`
+        // (`combat.rs`) off its `else { return 0.0 }` arm and onto a
+        // derived-value computation over a zero SPECIAL set, and
+        // `Background` has no honest value until the player has a real
+        // race/class. Populating those is CHARAL work (#3004 / #2986),
+        // not a component stub.
+        world.insert(body, byroredux_core::character::Perks::default());
         crate::inventory::attach_to_player(world, body);
         // The player participates in QUST aliases exactly like an authored
         // ACHR: Skyrim's MQ101 alias 119 is a forced reference to 0x14 and

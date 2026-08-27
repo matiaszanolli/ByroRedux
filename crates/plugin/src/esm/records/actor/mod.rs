@@ -354,11 +354,13 @@ pub struct NpcRecord {
     /// precomputed-derived treatment as [`Self::calculated_health`];
     /// `0` = absent.
     pub calculated_action_points: u16,
-    /// FO4+ `PRKR` perks — `(PERK FormID, rank)` pairs. Each `PRKR`
-    /// sub-record is 5 bytes (u32 FormID + u8 rank; xEdit `NPC_`); a
-    /// `PRKZ` count precedes them but is a benign hint we skip. Populates a
-    /// `Perks` component at spawn. Empty for pre-FO4 NPCs. Gated on
-    /// [`GameKind::uses_actor_value_properties`].
+    /// Skyrim+ `PRKR` perks — `(PERK FormID, rank)` pairs. Each `PRKR`
+    /// sub-record is 5 bytes on FO4 and 8 on Skyrim (u32 FormID + u8 rank,
+    /// plus three unused bytes on Skyrim; xEdit `NPC_`); a `PRKZ` count
+    /// precedes them but is a benign hint we skip. Populates a `Perks`
+    /// component at spawn. Empty for Oblivion / FO3 / FNV, which ship no
+    /// `PRKR` at all (censused — see [`GameKind::uses_npc_perk_entries`],
+    /// the gate this is read under since #3158).
     pub perks: Vec<(u32, u8)>,
 }
 
@@ -624,6 +626,10 @@ pub fn parse_npc(
     let captures_fo4_face = game.uses_prebaked_facegen();
     let captures_runtime_facegen = game.has_runtime_facegen_recipe();
     let captures_av_props = game.uses_actor_value_properties();
+    // #3158 — strictly wider than `captures_av_props`: Skyrim ships
+    // `PRKR` on 1620 of its 5118 `NPC_` records but predates the AVIF
+    // property model. See `GameKind::uses_npc_perk_entries`.
+    let captures_perks = game.uses_npc_perk_entries();
     // EDID / FULL / MODL / VMAD shared with every named record — drain
     // them through the helper so the per-record loop below only carries
     // NPC-specific subrecords. TD3-203 / #1113.
@@ -688,6 +694,9 @@ pub fn parse_npc(
         }
         if captures_av_props {
             parse_npc_actor_values(&mut record, sub, remap);
+        }
+        if captures_perks {
+            parse_npc_perks(&mut record, sub, remap);
         }
     }
 
@@ -1050,10 +1059,11 @@ fn parse_npc_fo4_facemorph(
     }
 }
 
-/// FO4+ actor-value model — PRPS properties, baked DNAM derived stats,
-/// and PRKR perks. Only invoked when `game.uses_actor_value_properties()`;
-/// the former per-arm `captures_av_props` guard now lives at the
-/// [`parse_npc`] call site.
+/// FO4+ actor-value model — PRPS properties and baked DNAM derived stats.
+/// Only invoked when `game.uses_actor_value_properties()`; the former
+/// per-arm `captures_av_props` guard now lives at the [`parse_npc`] call
+/// site. Perks moved out to [`parse_npc_perks`] under #3158 — they need a
+/// wider gate than this one.
 fn parse_npc_actor_values(record: &mut NpcRecord, sub: &SubRecord, remap: &Option<FormIdRemap>) {
     match &sub.sub_type {
         // PRPS "Properties": an array of (AVIF FormID, f32) pairs —
@@ -1083,14 +1093,29 @@ fn parse_npc_actor_values(record: &mut NpcRecord, sub: &SubRecord, remap: &Optio
             record.calculated_health = r.u16_or_default();
             record.calculated_action_points = r.u16_or_default();
         }
-        // PRKR (FO4+): one sub-record per perk — { PERK FormID u32,
-        // rank u8 } = 5 bytes (xEdit NPC_). The preceding PRKZ count is
-        // a benign hint, not read. Populates a `Perks` component at spawn.
-        b"PRKR" if sub.data.len() >= 5 => {
-            let perk = SubReader::new(&sub.data).u32_or_default();
-            record.perks.push((remap_fid(perk, remap), sub.data[4]));
-        }
         _ => {}
+    }
+}
+
+/// `PRKZ`/`PRKR` perk entries — one sub-record per perk.
+///
+/// Split out of [`parse_npc_actor_values`] under #3158: perks predate the
+/// FO4 actor-value property model by one release, so they need the wider
+/// [`GameKind::uses_npc_perk_entries`] gate. Under the old
+/// `uses_actor_value_properties` gate all 1620 perk-carrying Skyrim NPCs
+/// parsed with an empty `perks` list, `spawn_npc_entity` then skipped the
+/// `Perks` component entirely, and every `HasPerk` CTDA on Skyrim
+/// evaluated a structural `0.0`.
+///
+/// Layout is `{ PERK FormID u32, rank u8, .. }`: 5 bytes on FO4, 8 on
+/// Skyrim (three trailing unused bytes). The FormID and rank sit at the
+/// same offsets in both, so one read covers them; the length guard stays
+/// at the 5-byte minimum. The preceding `PRKZ` count is a benign hint, not
+/// read.
+fn parse_npc_perks(record: &mut NpcRecord, sub: &SubRecord, remap: &Option<FormIdRemap>) {
+    if &sub.sub_type == b"PRKR" && sub.data.len() >= 5 {
+        let perk = SubReader::new(&sub.data).u32_or_default();
+        record.perks.push((remap_fid(perk, remap), sub.data[4]));
     }
 }
 

@@ -1371,3 +1371,76 @@ fn pc_level_mult_actors_resolve_to_calc_min_not_the_raw_multiplier() {
     negative.acbs_flags = 0;
     assert_eq!(effective_actor_level(&negative), 0);
 }
+
+/// #3158 — the end-to-end pin the issue asks for: a *Skyrim-parsed* NPC must
+/// make `HasPerk` return non-zero.
+///
+/// This is deliberately the whole chain, not `stamp_character_components` in
+/// isolation, because the bug lived at the seam between its three links and
+/// each link looked correct on its own:
+///
+///   1. `parse_npc` reads `PRKR` into `NpcRecord::perks` — but only under
+///      `uses_npc_perk_entries`, which before #3158 was
+///      `uses_actor_value_properties` and excluded Skyrim;
+///   2. `stamp_character_components` inserts `Perks` — but skips the
+///      component entirely when the list is empty, so link 1's silence
+///      became an absent component rather than an empty one;
+///   3. `HasPerk` returns `0.0` for an absent `Perks` — which is the correct
+///      Bethesda default for "actor lacks the perk", and therefore
+///      indistinguishable from "no Skyrim actor can hold one".
+///
+/// A test on link 1 or 2 alone would have stayed green through the bug.
+#[test]
+fn skyrim_parsed_npc_perk_reaches_the_hasperk_condition() {
+    use byroredux_core::character::Perks;
+    use byroredux_plugin::esm::records::parse_npc;
+    use byroredux_plugin::esm::reader::{GameKind, SubRecord};
+    use byroredux_scripting::condition::{evaluate_function, ConditionFunction};
+
+    const PERK: u32 = 0x0005_820C;
+    const OTHER_PERK: u32 = 0x000C_44B7;
+
+    // Skyrim `PRKR`: u32 PERK FormID + u8 rank + three unused bytes.
+    let mut prkr = PERK.to_le_bytes().to_vec();
+    prkr.extend_from_slice(&[2, 0, 0, 0]);
+    let subs = vec![
+        SubRecord {
+            sub_type: *b"EDID",
+            data: b"SkyrimPerkNpc\0".to_vec(),
+        },
+        SubRecord {
+            sub_type: *b"PRKR",
+            data: prkr,
+        },
+    ];
+    let npc = parse_npc(0x0100_0020, &subs, GameKind::Skyrim, &None);
+    assert_eq!(
+        npc.perks,
+        vec![(PERK, 2)],
+        "link 1: Skyrim PRKR must survive the parse gate"
+    );
+
+    let mut world = World::new();
+    byroredux_scripting::register(&mut world);
+    world.register::<Perks>();
+    let index = EsmIndex::default();
+    let actor = world.spawn();
+    stamp_character_components(&mut world, actor, &npc, &index);
+    assert!(
+        world.get::<Perks>(actor).is_some(),
+        "link 2: a Skyrim NPC with perks must receive the Perks component"
+    );
+
+    let has = |perk: u32| {
+        let mut condition = byroredux_plugin::esm::records::condition::Condition::default();
+        condition.function_index = 448; // HasPerk (Skyrim); 449 on FO3/FNV
+        condition.param_1 = perk;
+        evaluate_function(ConditionFunction::HasPerk, &condition, actor, &world)
+    };
+    assert_eq!(has(PERK), 1.0, "link 3: HasPerk must see the owned perk");
+    assert_eq!(
+        has(OTHER_PERK),
+        0.0,
+        "an unowned perk still reads 0.0 — the fix must not make HasPerk always true"
+    );
+}

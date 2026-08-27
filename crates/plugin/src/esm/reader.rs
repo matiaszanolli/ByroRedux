@@ -241,6 +241,41 @@ impl GameKind {
     pub fn uses_actor_value_properties(self) -> bool {
         matches!(self, Self::Fallout4 | Self::Fallout76 | Self::Starfield)
     }
+
+    /// True when an actor's `NPC_` carries `PRKZ`/`PRKR` perk entries.
+    ///
+    /// **Deliberately wider than [`uses_actor_value_properties`]** (#3158).
+    /// Perks arrived in Skyrim, one release before the AVIF-FormID property
+    /// model, so gating the `PRKR` parse on the actor-value predicate made
+    /// `Perks` unreachable for every Skyrim NPC — and with it every
+    /// `HasPerk` CTDA on the project's reference title.
+    ///
+    /// Censused against the shipped masters rather than inferred from
+    /// lineage (`cargo run -p byroredux-plugin --example probe_npc_perks`):
+    ///
+    /// | master | `NPC_` | with `PRKR` | entries | `PRKR` size |
+    /// |---|---:|---:|---:|---:|
+    /// | `Skyrim.esm` | 5118 | 1620 | 7993 | 8 B |
+    /// | `Fallout4.esm` | 3015 | 1361 | 2771 | 5 B |
+    /// | `FalloutNV.esm` | 3816 | 0 | 0 | — |
+    /// | `Fallout3.esm` | 1647 | 0 | 0 | — |
+    /// | `Oblivion.esm` | 2482 | 0 | 0 | — |
+    ///
+    /// FO3/FNV/Oblivion ship none, so their `HasPerk` zero is data-correct
+    /// for NPCs — the remaining gap there is the player, who has no perk
+    /// source of any kind yet.
+    ///
+    /// The two payload widths need no separate decode: both start with the
+    /// PERK FormID `u32` and carry the rank at byte 4 (Skyrim's extra three
+    /// bytes are unused padding), which is exactly what the `PRKR` arm
+    /// reads. FO76/Starfield are included by lineage from FO4 — confirm the
+    /// width when those games are exercised.
+    pub fn uses_npc_perk_entries(self) -> bool {
+        matches!(
+            self,
+            Self::Skyrim | Self::Fallout4 | Self::Fallout76 | Self::Starfield
+        )
+    }
 }
 
 /// Binary reader for ESM/ESP files.

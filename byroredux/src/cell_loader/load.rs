@@ -418,29 +418,27 @@ pub fn load_cell_with_masters(
         &plugin_paths,
     );
 
-    // 3b. Load placed references. The absorbed-REFR gate (honour
-    // `cell.absorbed_refs` only when the precombine actually spawned)
-    // lives in the shared helper so interior + exterior can't drift.
-    let absorbed = super::precombined::absorbed_refs_or_empty(&cell.absorbed_refs, pc_spawned);
-    let result = load_references(
-        &cell.references,
-        &index.cells,
-        &index,
-        &index.races,
-        index.game,
-        world,
-        ctx,
-        tex_provider,
-        mat_provider,
-        &cell.editor_id,
-        &load_order,
-        absorbed,
-    );
-
     // 3a. Interior water plane from XCLW / XCWT — flooded ruins,
     // sewers, named indoor pools. The cell parser captured the
     // height directly; the water material comes from the global
     // WATR record table.
+    //
+    // #3320 — this MUST stay above `load_references`. `spawn_water_plane`
+    // calls `resolve_texture` on the WATR `NNAM` normal map, and
+    // `resolve_texture` does not upload: it reserves a bindless slot and
+    // points the descriptor at the fallback checkerboard until a batched
+    // flush. There are only two `flush_pending_uploads` call sites in the
+    // engine and no per-frame flush, so a texture resolved after the one at
+    // `load_references`' tail stays bound to the checkerboard for the life
+    // of the cell — fed into the water pipeline as a *tangent-space normal
+    // map*, which reads as broken chrome noise rather than water. Running
+    // the spawn first folds the water texture into that same single flush,
+    // and matches the exterior route, where `ExteriorCellApplyJob::begin`
+    // already spawns terrain + water before `advance` loads references.
+    // Re-entry never healed it either: unload drops the handle to refcount
+    // 0 and purges the path map, so every reload re-reserved a fresh
+    // unflushed slot. 21 of FNV's 39 real-water interiors are affected, and
+    // the same shape applies to Oblivion / FO3 / Skyrim / FO4.
     if let Some(water_height) = cell.water_height {
         let (water_center, water_half_extent) = water::interior_water_placement(
             cell.references.iter().map(|reference| reference.position),
@@ -473,6 +471,25 @@ pub fn load_cell_with_masters(
             );
         }
     }
+
+    // 3b. Load placed references. The absorbed-REFR gate (honour
+    // `cell.absorbed_refs` only when the precombine actually spawned)
+    // lives in the shared helper so interior + exterior can't drift.
+    let absorbed = super::precombined::absorbed_refs_or_empty(&cell.absorbed_refs, pc_spawned);
+    let result = load_references(
+        &cell.references,
+        &index.cells,
+        &index,
+        &index.races,
+        index.game,
+        world,
+        ctx,
+        tex_provider,
+        mat_provider,
+        &cell.editor_id,
+        &load_order,
+        absorbed,
+    );
 
     // SK-D6-02 / #566 — LGTM lighting-template fallback. Vanilla
     // Skyrim ships interior cells (Solitude inn cluster, Dragonsreach
@@ -567,6 +584,21 @@ pub fn load_cell_with_masters(
         esm_path: esm_path.to_string(),
         masters: masters.to_vec(),
     });
+
+    // #3320 — the ordering invariant this function now depends on, checked
+    // rather than merely commented. Everything that calls `resolve_texture`
+    // during an interior load (references, precombines, and the water plane
+    // moved above them) has to land before `load_references`' tail flush;
+    // nothing after it may reserve a bindless slot, because there is no
+    // per-frame flush to rescue one. A future insert that resolves a texture
+    // below the reference load trips this in debug/test builds instead of
+    // silently rendering the fallback checkerboard for the life of the cell.
+    debug_assert_eq!(
+        ctx.texture_registry.pending_dds_upload_count(),
+        0,
+        "interior cell load left DDS uploads unflushed — a resolve_texture \
+         call has moved below load_references' flush (#3320)"
+    );
 
     Ok(CellLoadResult {
         cell_name,
@@ -709,6 +741,39 @@ pub(crate) fn resolve_cell_lighting(
 
 #[cfg(test)]
 mod tests {
+    /// #3320 — pin the load-order invariant that makes interior water render.
+    ///
+    /// `spawn_water_plane` reserves a bindless slot via `resolve_texture` and
+    /// leaves its descriptor on the fallback checkerboard until a batched
+    /// flush; the engine has no per-frame flush, and an interior load's only
+    /// flush is the forced one at `load_references`' tail. Spawning the water
+    /// plane *after* that call therefore bound the WATR normal map to the
+    /// magenta checkerboard for the whole life of the cell.
+    ///
+    /// The runtime guard for this is the `debug_assert_eq!` on
+    /// `pending_dds_upload_count()` at the end of `load_cell_with_masters`,
+    /// but nothing in `cargo test` loads a cell (it needs a Vulkan device and
+    /// on-disk game data), so that assertion never executes in CI. This is
+    /// the CI-reachable half: it reads the function's own source and requires
+    /// the water spawn to still precede the reference load. It is a coarse
+    /// check by design — it exists because the alternative is no check at all.
+    #[test]
+    fn interior_water_spawns_before_the_reference_load_flush() {
+        let source = include_str!("load.rs");
+        let water = source
+            .find("water::spawn_water_plane(")
+            .expect("load.rs must still spawn an interior water plane");
+        let references = source
+            .find("let result = load_references(")
+            .expect("load.rs must still load placed references");
+        assert!(
+            water < references,
+            "the interior water plane is spawned after `load_references`, whose \
+             tail carries the cell load's only texture flush — its WATR normal \
+             map will render as the fallback checkerboard (#3320)"
+        );
+    }
+
     use super::*;
 
     /// SAVE-D6-02 — the live-load pre-flight must FAIL (not panic) when the
