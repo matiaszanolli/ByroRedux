@@ -277,7 +277,7 @@ fn desired_lod_quads(
     max_full_cell_radius: i32,
     world_bounds: Option<((i32, i32), (i32, i32))>,
     resident: impl Fn(i32, i32, i32) -> bool,
-    has_btr: impl Fn(i32, i32, i32) -> bool,
+    mut has_btr: impl FnMut(i32, i32, i32) -> bool,
 ) -> Vec<(i32, i32, i32)> {
     let k = LOD_BLOCK_CELLS;
     let mut desired = match ladder {
@@ -342,6 +342,7 @@ pub(crate) fn stream_lod_blocks(
     input: &LodReconcileInput<'_>,
     lod_blocks: &mut HashMap<(i32, i32, i32), LodBlock>,
     missing_blocks: &mut HashMap<(i32, i32, i32), u16>,
+    available_cache: &mut rustc_hash::FxHashMap<(i32, i32, i32), bool>,
     budget: &mut LodWorkBudget,
 ) -> bool {
     let tex_provider = input.tex_provider;
@@ -376,18 +377,30 @@ pub(crate) fn stream_lod_blocks(
         max_full_cell_radius,
         worldspace_cell_bounds(wctx),
         |level, qx, qy| lod_blocks.contains_key(&(level, qx, qy)),
+        // #3385 — memoised: the probe allocates several `String`s and hashes
+        // one lookup per open archive, and its answer cannot change while
+        // this `WorldStreamingState` lives.
         |level, qx, qy| {
-            if combined_lod_supported(game) {
-                tex_provider.has_mesh(&super::terrain_lod_btr::btr_archive_path(
-                    worldspace_key,
-                    level,
-                    qx,
-                    qy,
-                ))
-            } else {
-                translate_terrain_lod_textures(game, worldspace_key, world_form_id, level, qx, qy)
+            *available_cache.entry((level, qx, qy)).or_insert_with(|| {
+                if combined_lod_supported(game) {
+                    tex_provider.has_mesh(&super::terrain_lod_btr::btr_archive_path(
+                        worldspace_key,
+                        level,
+                        qx,
+                        qy,
+                    ))
+                } else {
+                    translate_terrain_lod_textures(
+                        game,
+                        worldspace_key,
+                        world_form_id,
+                        level,
+                        qx,
+                        qy,
+                    )
                     .is_some_and(|lod| tex_provider.has_texture(&lod.diffuse_path))
-            }
+                }
+            })
         },
     );
     let desired_set: HashSet<_> = desired.iter().copied().collect();

@@ -99,6 +99,7 @@ pub(crate) fn reconcile_lod_rings(
         &input,
         &mut state.lod_blocks,
         &mut state.lod_missing_blocks,
+        &mut state.lod_terrain_available,
         &mut terrain_budget,
     );
 
@@ -108,6 +109,7 @@ pub(crate) fn reconcile_lod_rings(
         ctx,
         &input,
         &mut state.object_lod_blocks,
+        &mut state.lod_object_available,
         &mut object_budget,
     );
 
@@ -402,6 +404,12 @@ pub fn drain_streaming_state(
     // ground texture refcount + ECS row each). Collect both rings via the
     // pure `drain_lod_reclaim_targets` (unit-tested without a GPU) and feed
     // each through its canonical reclaim fn.
+    // #3385 — the availability memo is keyed by quad within this
+    // worldspace and archive set; a drain ends that lifetime, so it is
+    // cleared alongside the rings it mirrors.
+    state.lod_terrain_available.clear();
+    state.lod_object_available.clear();
+
     let (lod_blocks, object_lod_blocks, placement_lod_blocks, lod_water) =
         drain_lod_reclaim_targets(
             &mut state.lod_blocks,

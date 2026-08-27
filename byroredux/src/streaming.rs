@@ -633,6 +633,26 @@ pub struct WorldStreamingState {
     /// the old `(level, …)` entry plus a load of the new one, which is what
     /// keeps two levels from ever double-drawing it.
     pub object_lod_blocks: HashMap<(i32, i32, i32), crate::cell_loader::ObjectLodBlock>,
+    /// Memoised "does the game ship a baked LOD asset for this quad?"
+    /// (#3385). Keyed `(level, qx, qy)`; separate maps because the terrain
+    /// and baked-object rings probe different archives for the same key.
+    ///
+    /// The answer is a pure function of the worldspace, the quad, and the
+    /// opened archive set — none of which change while a
+    /// `WorldStreamingState` lives (`tex_provider` is an `Arc` cloned into
+    /// the worker, never rebuilt in place). The band descent nonetheless
+    /// re-derived it from scratch on every reconcile frame, and each miss
+    /// costs several `String` allocations plus one hashed lookup per open
+    /// archive — work that scales with the ring while the reconcile is
+    /// allowed to do only `MAX_LOD_ATTEMPTS_PER_PROVIDER_PER_IDLE_FRAME`
+    /// loads, on the main thread inside `STREAMING_APPLY_BUDGET`.
+    ///
+    /// `FxHashMap` per the hot-path hashing rule — integer-tuple keyspace,
+    /// per-frame, not DoS-facing. Cleared with the rings in
+    /// `drain_streaming_state`.
+    pub lod_terrain_available: rustc_hash::FxHashMap<(i32, i32, i32), bool>,
+    /// Baked-object half of [`Self::lod_terrain_available`] (#3385).
+    pub lod_object_available: rustc_hash::FxHashMap<(i32, i32, i32), bool>,
     /// Real load/unload/reload churn on `lod_blocks`' keys, independent of
     /// `telemetry.superseded_lod` (which only catches one in-flight load
     /// cancelled by the *next* boundary; this catches a settled key
@@ -764,6 +784,8 @@ impl WorldStreamingState {
             lod_blocks: HashMap::new(),
             lod_missing_blocks: HashMap::new(),
             object_lod_blocks: HashMap::new(),
+            lod_terrain_available: rustc_hash::FxHashMap::default(),
+            lod_object_available: rustc_hash::FxHashMap::default(),
             terrain_lod_churn: crate::cell_loader::ChurnTracker::default(),
             object_lod_churn: crate::cell_loader::ChurnTracker::default(),
             placement_lod_blocks: HashMap::new(),

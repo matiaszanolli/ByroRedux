@@ -128,6 +128,7 @@ pub(crate) fn stream_object_lod_blocks(
     ctx: &mut VulkanContext,
     input: &LodReconcileInput<'_>,
     blocks: &mut HashMap<(i32, i32, i32), ObjectLodBlock>,
+    available_cache: &mut rustc_hash::FxHashMap<(i32, i32, i32), bool>,
     budget: &mut LodWorkBudget,
 ) -> bool {
     let tex_provider = input.tex_provider;
@@ -150,14 +151,17 @@ pub(crate) fn stream_object_lod_blocks(
     let mut desired = lod_bands::select_lod_quads(
         &selection,
         |level, qx, qy| blocks.contains_key(&(level, qx, qy)),
+        // #3385 — memoised for the same reason as the terrain ring's probe.
         |level, qx, qy| {
-            tex_provider.has_mesh(&object_lod_archive_path(
-                scheme,
-                &wctx.worldspace_key,
-                level,
-                qx,
-                qy,
-            ))
+            *available_cache.entry((level, qx, qy)).or_insert_with(|| {
+                tex_provider.has_mesh(&object_lod_archive_path(
+                    scheme,
+                    &wctx.worldspace_key,
+                    level,
+                    qx,
+                    qy,
+                ))
+            })
         },
     );
     // Closest-first, so a budgeted reconcile fills the near bands before the

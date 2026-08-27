@@ -278,7 +278,11 @@ pub(crate) struct LodBandSelection<'a> {
 pub(crate) fn select_lod_quads(
     sel: &LodBandSelection<'_>,
     resident: impl Fn(i32, i32, i32) -> bool,
-    available: impl Fn(i32, i32, i32) -> bool,
+    // `FnMut` so callers can memoise the probe behind it (#3385): archive
+    // presence is a pure function of (worldspace, level, qx, qy) and the
+    // opened archive set, none of which change for the life of a
+    // `WorldStreamingState`, yet the descent re-ran it every reconcile frame.
+    mut available: impl FnMut(i32, i32, i32) -> bool,
 ) -> Vec<(i32, i32, i32)> {
     let ladder = sel.ladder;
     let coarsest = ladder.coarsest_level();
@@ -380,6 +384,55 @@ mod tests {
     /// Everything available, nothing resident — the plain-threshold case.
     fn plain(sel: &LodBandSelection<'_>) -> Vec<(i32, i32, i32)> {
         select_lod_quads(sel, |_, _, _| false, |_, _, _| true)
+    }
+
+    /// #3385 — the availability probe is a pure function of its key, so
+    /// memoising it must not change the descent's answer, and the descent
+    /// must not need the underlying probe more than once per distinct quad.
+    ///
+    /// This pins the contract the caller-side memo relies on. The memo
+    /// itself lives on `WorldStreamingState` and its end-to-end behaviour
+    /// needs a live provider, so what is checkable without a device is
+    /// exactly this: same result, no repeat probes.
+    #[test]
+    fn memoising_the_availability_probe_preserves_the_selection() {
+        use std::collections::HashMap;
+
+        let ladder = skyrim();
+        let sel = selection(&ladder, (12, -7));
+
+        // A deterministic, non-trivial availability pattern — some quads
+        // baked, some not, so the descent actually subdivides.
+        let probe = |level: i32, qx: i32, qy: i32| (level + qx.abs() + qy.abs()) % 3 != 0;
+
+        let direct = select_lod_quads(&sel, |_, _, _| false, |l, x, y| probe(l, x, y));
+
+        let mut cache: HashMap<(i32, i32, i32), bool> = HashMap::new();
+        let mut calls: HashMap<(i32, i32, i32), usize> = HashMap::new();
+        let memoised = select_lod_quads(
+            &sel,
+            |_, _, _| false,
+            |l, x, y| {
+                *cache.entry((l, x, y)).or_insert_with(|| {
+                    *calls.entry((l, x, y)).or_insert(0) += 1;
+                    probe(l, x, y)
+                })
+            },
+        );
+
+        assert_eq!(
+            direct, memoised,
+            "memoising a pure predicate changed the selected quad set"
+        );
+        assert!(
+            !calls.is_empty(),
+            "the pattern must actually exercise the probe, or this is vacuous"
+        );
+        assert!(
+            calls.values().all(|&n| n == 1),
+            "a memoised probe was evaluated more than once for some quad: {:?}",
+            calls.iter().filter(|(_, &n)| n > 1).collect::<Vec<_>>()
+        );
     }
 
     /// The thresholds are the shipped `[TerrainManager]` values converted to
