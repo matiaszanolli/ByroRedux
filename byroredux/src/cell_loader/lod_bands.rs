@@ -132,11 +132,11 @@ pub(crate) struct LodBandLadder {
 }
 
 impl LodBandLadder {
-    /// The ladder for `game`, or `None` for titles that ship no baked
-    /// quadtree LOD at all (Oblivion / FO3 / FNV). Those keep their existing
-    /// single-band schemes — the synthesized heightmap ring and, for
-    /// Oblivion, `DistantLOD\*.lod` + `_far.nif` placement — which have no
-    /// coarser source to select between.
+    /// The **Creation-format** (`.bto` / `.btr`) ladder for `game`, or
+    /// `None` for titles that ship none (Oblivion / FO3 / FNV). Prefer
+    /// [`Self::for_terrain_game`] / [`Self::for_object_game`], which fall
+    /// back to the FO3/FNV `landscape\lod` quadtree; this raw form is the
+    /// Creation-only half they dispatch to.
     pub(crate) fn for_game(game: GameKind) -> Option<Self> {
         let refine_bu = match game {
             GameKind::Skyrim => SKYRIM_ULTRA_REFINE_BU,
@@ -150,20 +150,46 @@ impl LodBandLadder {
     }
 
     /// Terrain ladder, including the older FO3/FNV NIF/DDS quadtree.
-    /// Object LOD deliberately continues to use [`Self::for_game`], because
-    /// Fallout's legacy terrain bands are not Creation-format `.bto` bands.
     pub(crate) fn for_terrain_game(game: GameKind) -> Option<Self> {
         if matches!(game, GameKind::Fallout3NV) {
-            return Some(Self {
-                refine_cells: FALLOUT_LEGACY_REFINE_BU
-                    .iter()
-                    .copied()
-                    .map(cells_from_bu)
-                    .collect(),
-                max_cells: FALLOUT_LEGACY_MAX_CELLS,
-            });
+            return Some(Self::fallout_legacy());
         }
         Self::for_game(game)
+    }
+
+    /// Object-LOD ladder. Skyrim/FO4 use the Creation-format `.bto` bands
+    /// from [`Self::for_game`]; FO3/FNV use the same legacy quadtree their
+    /// terrain LOD does, because their object LOD is a *sibling directory*
+    /// of it (`meshes\landscape\lod\<world>\blocks\`) sharing the
+    /// `level<L>.x<qx>.y<qy>` naming and quad grid — see
+    /// [`super::object_lod::ObjectLodScheme`].
+    ///
+    /// This deliberately reverses the note that used to sit on
+    /// [`Self::for_terrain_game`] ("object LOD continues to use `for_game`,
+    /// because Fallout's legacy terrain bands are not Creation-format
+    /// `.bto` bands"). That was written under the #2086 premise that FO3/FNV
+    /// ship no object LOD at all, so the only question was which ladder an
+    /// unused code path should take. The archive falsifies the premise
+    /// (#3321), and the legacy bands are exactly the right ones for a
+    /// quadtree that shares the terrain quads' grid.
+    pub(crate) fn for_object_game(game: GameKind) -> Option<Self> {
+        if matches!(game, GameKind::Fallout3NV) {
+            return Some(Self::fallout_legacy());
+        }
+        Self::for_game(game)
+    }
+
+    /// The FO3/FNV `landscape\lod` quadtree ladder, shared by that family's
+    /// terrain and object LOD.
+    fn fallout_legacy() -> Self {
+        Self {
+            refine_cells: FALLOUT_LEGACY_REFINE_BU
+                .iter()
+                .copied()
+                .map(cells_from_bu)
+                .collect(),
+            max_cells: FALLOUT_LEGACY_MAX_CELLS,
+        }
     }
 
     /// Outer extent of the whole LOD ring, in cells.

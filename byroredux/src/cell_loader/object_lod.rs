@@ -1,26 +1,40 @@
-//! Distant **object** LOD (Skyrim+ / FO4) — the prebaked per-quad `.bto`
-//! macro-meshes that combine many static objects into one mesh per quad.
+//! Distant **object** LOD — the prebaked per-quad macro-meshes that combine
+//! many static objects into one mesh per quad, against one shared worldspace
+//! atlas.
 //!
 //! This is the object-LOD counterpart to [`super::terrain_lod`] (which
-//! synthesizes distant *terrain* from heightmaps). The two are structurally
-//! different LOD schemes (EXAL §5, docs/engine/exal.md):
+//! synthesizes distant *terrain* from heightmaps). Two shipped schemes fit
+//! that shape and share this module (EXAL §5, docs/engine/exal.md); see
+//! [`ObjectLodScheme`] for the naming each uses:
 //!
-//! - **Skyrim LE/SE, FO4** (this module): runtime loads baked per-quad
-//!   `.bto` files — renamed NIFs — selected purely **by filename**
+//! - **Skyrim LE/SE, FO4**: baked per-quad `.bto` files — renamed NIFs —
+//!   selected purely **by filename**
 //!   (`meshes\terrain\<world>\objects\<world>.<level>.<x>.<y>.bto`). STAT
 //!   `MNAM` is generation-time only; the engine never reads it at runtime
 //!   (EXAL Q3, verified). The base record's VWD / "Has Distant LOD" flag is
 //!   the one runtime signal — it culls the full model so the LOD doesn't
 //!   z-fight it (future slice; for now object LOD is loaded only for quads
 //!   **outside** the full-detail ring, where no full model is resident).
+//! - **FO3/FNV** (#3321): per-quad combined NIFs in a sibling directory of
+//!   the terrain quads,
+//!   `meshes\landscape\lod\<world>\blocks\<world>.level<L>.x<qx>.y<qy>.nif`,
+//!   sampling `textures\landscape\lod\<world>\blocks\<world>.buildings.dds`.
+//!   Same quad grid and level naming as their terrain siblings, so they ride
+//!   the same legacy band ladder ([`LodBandLadder::for_object_game`]).
+//!
+//! **This module was documented as Skyrim/FO4-only until #3321**, on the
+//! strength of #2086's conclusion that "FO3/FNV ship neither LOD scheme for
+//! distant objects" — reached without opening a `blocks\` NIF. Re-probing
+//! the archives falsified it (295 level-4 quads for `wastelandnv` alone);
+//! see [`object_lod_scheme`] for the census.
+//!
 //! - **Oblivion**: a different scheme entirely — per-cell `DistantLOD\*.lod`
 //!   placement lists instancing `_far.nif` meshes, handled by the sibling
 //!   [`super::placement_lod`] module (#1726). **FO3/FNV do not share this**:
 //!   `placement_lod_supported` gates on `GameKind::Oblivion` only (#2086) —
 //!   FO3/FNV ship zero vanilla `distantlod\*.lod` files, so for those two
-//!   titles this is a documented no-op, not "handled". FO3/FNV fold landmark
-//!   LOD into the terrain-LOD block tree instead; there is currently no
-//!   distant-object scheme wired for them.
+//!   titles that module is a documented no-op. That much of #2086 stands;
+//!   what it got wrong was concluding they therefore have no object LOD.
 //!
 //! Verified (2026-06-02): vanilla Skyrim `.bto` (e.g.
 //! `meshes\terrain\tamriel\objects\tamriel.4.-8.-16.bto`) parse with the
@@ -36,6 +50,7 @@ use byroredux_core::ecs::{
     GlobalTransform, MeshHandle, TextureHandle, Transform, World, WorldBound,
 };
 use byroredux_core::math::{Quat, Vec3};
+use byroredux_plugin::esm::reader::GameKind;
 use byroredux_renderer::VulkanContext;
 
 use crate::asset_provider::{resolve_texture, TextureProvider};
@@ -102,9 +117,9 @@ impl ObjectLodBlock {
 /// band. Gating on `radius_unload` instead means a quad only loads once
 /// every cell it covers is provably beyond any possible full-cell residency.
 ///
-/// No-op outside Skyrim / FO4. Oblivion uses the `DistantLOD\*.lod` +
-/// `_far.nif` placement scheme; FO3/FNV ship neither standalone object-LOD
-/// scheme (EXAL §5).
+/// No-op only where [`object_lod_scheme`] returns `None` — today just
+/// Oblivion, which uses the `DistantLOD\*.lod` + `_far.nif` placement
+/// scheme instead (EXAL §5).
 /// Reclaims are immediate; entering quads consume [`LodWorkBudget`] units.
 /// Returns `true` when every desired quad is resident or represented by its
 /// known-missing sentinel.
@@ -118,7 +133,10 @@ pub(crate) fn stream_object_lod_blocks(
     let tex_provider = input.tex_provider;
     let wctx = input.wctx;
     let player_grid = input.player_grid;
-    let Some(ladder) = LodBandLadder::for_game(wctx.record_index.game) else {
+    let Some(scheme) = object_lod_scheme(wctx.record_index.game) else {
+        return true;
+    };
+    let Some(ladder) = LodBandLadder::for_object_game(wctx.record_index.game) else {
         return true;
     };
 
@@ -133,7 +151,13 @@ pub(crate) fn stream_object_lod_blocks(
         &selection,
         |level, qx, qy| blocks.contains_key(&(level, qx, qy)),
         |level, qx, qy| {
-            tex_provider.has_mesh(&bto_archive_path(&wctx.worldspace_key, level, qx, qy))
+            tex_provider.has_mesh(&object_lod_archive_path(
+                scheme,
+                &wctx.worldspace_key,
+                level,
+                qx,
+                qy,
+            ))
         },
     );
     // Closest-first, so a budgeted reconcile fills the near bands before the
@@ -180,7 +204,7 @@ pub(crate) fn stream_object_lod_blocks(
             break;
         }
         attempted += 1;
-        match spawn_object_lod_quad(world, ctx, tex_provider, wctx, level, qx, qy) {
+        match spawn_object_lod_quad(world, ctx, tex_provider, wctx, scheme, level, qx, qy) {
             Some(blk) => {
                 if !blk.entities.is_empty() {
                     spawned += 1;
@@ -188,7 +212,8 @@ pub(crate) fn stream_object_lod_blocks(
                 blocks.insert((level, qx, qy), blk);
             }
             None => {
-                // No `.bto` for this quad — remember so we don't re-extract.
+                // No baked mesh for this quad — remember so we don't
+                // re-extract on every boundary crossing.
                 blocks.insert((level, qx, qy), ObjectLodBlock::empty());
             }
         }
@@ -223,11 +248,12 @@ fn spawn_object_lod_quad(
     ctx: &mut VulkanContext,
     tex_provider: &TextureProvider,
     wctx: &ExteriorWorldContext,
+    scheme: ObjectLodScheme,
     level: i32,
     qx: i32,
     qy: i32,
 ) -> Option<ObjectLodBlock> {
-    let path = bto_archive_path(&wctx.worldspace_key, level, qx, qy);
+    let path = object_lod_archive_path(scheme, &wctx.worldspace_key, level, qx, qy);
     let bytes = tex_provider.extract_mesh(&path)?;
     let scene = match byroredux_nif::parse_nif(&bytes) {
         Ok(s) => s,
@@ -260,8 +286,7 @@ fn spawn_object_lod_quad(
     // Shared object atlas for the worldspace (`<world>.objects.dds`). `0` /
     // fallback → the LOD draws untextured-grey, still better than no distant
     // objects. Resolved once and reused across the quad's sub-meshes.
-    let w = wctx.worldspace_key.to_ascii_lowercase();
-    let atlas_path = format!("textures\\terrain\\{w}\\objects\\{w}.objects.dds");
+    let atlas_path = object_lod_atlas_path(scheme, &wctx.worldspace_key);
     let atlas = resolve_texture(ctx, tex_provider, Some(atlas_path.as_str()));
     let atlas = if atlas == ctx.texture_registry.fallback() {
         0
@@ -385,17 +410,103 @@ pub(crate) fn unload_object_lod_block(
 // works for any level and keeps the worldspace-relative grid shared with
 // terrain LOD (#2586).
 
-/// Archive-relative path of the object-LOD `.bto` for a worldspace quad:
-/// `meshes\terrain\<world>\objects\<world>.<level>.<x>.<y>.bto`.
+/// Which distant-object-LOD scheme a game ships. Both are per-quad combined
+/// meshes against one shared worldspace atlas — only the naming and the
+/// container differ — so they share this module's residency, budget and
+/// eviction machinery and differ only in two path builders.
 ///
-/// **Level-first** naming with the quad's SW-corner cell `(qx, qy)` — the
-/// ordering EXAL Q2 corrected (it is NOT `<x>.<y>.<level>`). The worldspace
-/// folder + filename stem are the EDID lowercased (the cell loader's
-/// `worldspace_key` is already lowercase). Backslash separators match the
-/// BSA's internal path convention (see `terrain_lod`'s texture lookups).
-pub(crate) fn bto_archive_path(worldspace_key: &str, level: i32, qx: i32, qy: i32) -> String {
+/// Oblivion's per-cell `DistantLOD\*.lod` + `_far.nif` placement lists are a
+/// genuinely different shape (per-object instancing, no atlas, no combined
+/// mesh) and stay in [`super::placement_lod`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ObjectLodScheme {
+    /// Skyrim LE/SE + FO4: baked `.bto` under
+    /// `meshes\terrain\<world>\objects\`, atlas
+    /// `textures\terrain\<world>\objects\<world>.objects.dds`.
+    BakedBto,
+    /// FO3/FNV (#3321): per-quad combined NIFs under
+    /// `meshes\landscape\lod\<world>\blocks\`, atlas
+    /// `textures\landscape\lod\<world>\blocks\<world>.buildings.dds`.
+    ///
+    /// A clean sibling directory of the terrain quads this engine already
+    /// resolves, sharing their `level<L>.x<qx>.y<qy>` naming and quad grid.
+    FalloutLegacyBlocks,
+}
+
+/// The object-LOD scheme `game` ships, or `None` for titles with none.
+///
+/// **Oblivion is the only `None`.** FO3/FNV were `None` until #3321 on the
+/// strength of #2086's conclusion that they "ship neither LOD scheme for
+/// distant objects" — a conclusion reached without opening a `blocks\` NIF.
+/// Re-probing `Fallout - Meshes.bsa` (v104, 19,587 entries) falsifies it:
+///
+/// ```text
+/// FNV  landscape\lod entries 2663   _far.nif 0   distantlod\ 0
+///        terrain wastelandnv 1360  (level4 1024 / 8 256 / 16 64 / 32 16)
+///        blocks  wastelandnv  295  (level4)          + 7 more worldspaces
+/// FO3  landscape\lod entries 2232   _far.nif 2   distantlod\ 0
+///        blocks  across 15 worldspaces (level4 and level8)
+/// ```
+///
+/// 295 level-4 quads covering a whole worldspace is systematic by any
+/// definition. Note also that the "2 `_far.nif`" figure `exal.md` attributed
+/// to FNV is **FO3's** — FNV ships zero.
+pub(crate) fn object_lod_scheme(game: GameKind) -> Option<ObjectLodScheme> {
+    match game {
+        GameKind::Skyrim | GameKind::Fallout4 => Some(ObjectLodScheme::BakedBto),
+        GameKind::Fallout3NV => Some(ObjectLodScheme::FalloutLegacyBlocks),
+        // Oblivion: `DistantLOD\*.lod` placement lists (`placement_lod`).
+        // FO76/Starfield: not yet exercised — add an arm with archive
+        // evidence rather than by lineage.
+        _ => None,
+    }
+}
+
+/// Archive-relative path of one quad's combined object-LOD mesh.
+///
+/// Both schemes are **level-first** with the quad's SW-corner cell
+/// `(qx, qy)` — for `.bto` that is the ordering EXAL Q2 corrected (it is NOT
+/// `<x>.<y>.<level>`), and the Fallout family spells the level as
+/// `level<L>` and prefixes the coordinates, matching its terrain siblings
+/// (`env_translate::translate_terrain_lod_texture`'s `FalloutLegacy` arm).
+/// The worldspace folder + filename stem are the EDID lowercased (the cell
+/// loader's `worldspace_key` is already lowercase). Backslash separators
+/// match the BSA's internal path convention.
+pub(crate) fn object_lod_archive_path(
+    scheme: ObjectLodScheme,
+    worldspace_key: &str,
+    level: i32,
+    qx: i32,
+    qy: i32,
+) -> String {
     let w = worldspace_key.to_ascii_lowercase();
-    format!("meshes\\terrain\\{w}\\objects\\{w}.{level}.{qx}.{qy}.bto")
+    match scheme {
+        ObjectLodScheme::BakedBto => {
+            format!("meshes\\terrain\\{w}\\objects\\{w}.{level}.{qx}.{qy}.bto")
+        }
+        ObjectLodScheme::FalloutLegacyBlocks => {
+            format!("meshes\\landscape\\lod\\{w}\\blocks\\{w}.level{level}.x{qx}.y{qy}.nif")
+        }
+    }
+}
+
+/// Archive-relative path of the shared worldspace object atlas every quad of
+/// a scheme samples. Resolved once per quad and reused across its sub-meshes.
+pub(crate) fn object_lod_atlas_path(scheme: ObjectLodScheme, worldspace_key: &str) -> String {
+    let w = worldspace_key.to_ascii_lowercase();
+    match scheme {
+        ObjectLodScheme::BakedBto => {
+            format!("textures\\terrain\\{w}\\objects\\{w}.objects.dds")
+        }
+        // Verified by extracting `wastelandnv.level4.x24.y-12.nif`: its
+        // `BSShaderTextureSet` names
+        // `Data\Textures\Landscape\LOD\WastelandNV\Blocks\WastelandNV.Buildings.dds`
+        // (+ `_n`). Diffuse only here, matching the `.bto` arm — the normal
+        // slot is a follow-up for both schemes, not an FNV-specific gap.
+        ObjectLodScheme::FalloutLegacyBlocks => {
+            format!("textures\\landscape\\lod\\{w}\\blocks\\{w}.buildings.dds")
+        }
+    }
 }
 
 #[cfg(test)]
@@ -518,24 +629,90 @@ mod tests {
 
     #[test]
     fn bto_path_matches_vanilla_skyrim_filenames() {
+        use ObjectLodScheme::BakedBto;
         // These four paths were extracted verbatim from vanilla
         // Skyrim - Meshes1.bsa (2026-06-02) and parsed OK by the NIF pipeline.
         assert_eq!(
-            bto_archive_path("Tamriel", 4, 88, 8),
+            object_lod_archive_path(BakedBto, "Tamriel", 4, 88, 8),
             "meshes\\terrain\\tamriel\\objects\\tamriel.4.88.8.bto"
         );
         assert_eq!(
-            bto_archive_path("tamriel", 4, -8, -16),
+            object_lod_archive_path(BakedBto, "tamriel", 4, -8, -16),
             "meshes\\terrain\\tamriel\\objects\\tamriel.4.-8.-16.bto"
         );
         assert_eq!(
-            bto_archive_path("Tamriel", 16, 0, 0),
+            object_lod_archive_path(BakedBto, "Tamriel", 16, 0, 0),
             "meshes\\terrain\\tamriel\\objects\\tamriel.16.0.0.bto"
         );
         assert_eq!(
-            bto_archive_path("DLC2SolstheimWorld", 8, 0, 8),
+            object_lod_archive_path(BakedBto, "DLC2SolstheimWorld", 8, 0, 8),
             "meshes\\terrain\\dlc2solstheimworld\\objects\\dlc2solstheimworld.8.0.8.bto"
         );
+        assert_eq!(
+            object_lod_atlas_path(BakedBto, "Tamriel"),
+            "textures\\terrain\\tamriel\\objects\\tamriel.objects.dds"
+        );
+    }
+
+    /// #3321 — the FO3/FNV arm. Every path here was read out of vanilla
+    /// `Fallout - Meshes.bsa` (v104), not constructed from the naming rule:
+    /// the census found 295 level-4 `blocks\` quads for `wastelandnv` alone
+    /// (355 across 8 worldspaces) plus a further 15 worldspaces in
+    /// `Fallout3.esm`'s archive, against 0 `_far.nif` and 0 `distantlod\`.
+    #[test]
+    fn fallout_blocks_path_matches_vanilla_fnv_filenames() {
+        use ObjectLodScheme::FalloutLegacyBlocks as Blocks;
+        assert_eq!(
+            object_lod_archive_path(Blocks, "WastelandNV", 4, 24, -12),
+            "meshes\\landscape\\lod\\wastelandnv\\blocks\\wastelandnv.level4.x24.y-12.nif"
+        );
+        assert_eq!(
+            object_lod_archive_path(Blocks, "wastelandnv", 4, 0, -24),
+            "meshes\\landscape\\lod\\wastelandnv\\blocks\\wastelandnv.level4.x0.y-24.nif"
+        );
+        assert_eq!(
+            object_lod_archive_path(Blocks, "wastelandnv", 4, -16, 28),
+            "meshes\\landscape\\lod\\wastelandnv\\blocks\\wastelandnv.level4.x-16.y28.nif"
+        );
+        // FO3 ships level-8 blocks in some worldspaces, which is why the arm
+        // rides the legacy ladder rather than pinning a single level.
+        assert_eq!(
+            object_lod_archive_path(Blocks, "DCWorld01", 8, 0, 0),
+            "meshes\\landscape\\lod\\dcworld01\\blocks\\dcworld01.level8.x0.y0.nif"
+        );
+        // Atlas named by the extracted `BSShaderTextureSet` of
+        // `wastelandnv.level4.x24.y-12.nif`.
+        assert_eq!(
+            object_lod_atlas_path(Blocks, "WastelandNV"),
+            "textures\\landscape\\lod\\wastelandnv\\blocks\\wastelandnv.buildings.dds"
+        );
+    }
+
+    /// The scheme table is the single place a game's object-LOD support is
+    /// declared. Oblivion stays `None` (its `DistantLOD\*.lod` placement
+    /// lists are `placement_lod`'s, a genuinely different shape); FO3/FNV
+    /// moved off `None` under #3321.
+    #[test]
+    fn object_lod_scheme_table() {
+        use ObjectLodScheme::{BakedBto, FalloutLegacyBlocks};
+        assert_eq!(object_lod_scheme(GameKind::Skyrim), Some(BakedBto));
+        assert_eq!(object_lod_scheme(GameKind::Fallout4), Some(BakedBto));
+        assert_eq!(
+            object_lod_scheme(GameKind::Fallout3NV),
+            Some(FalloutLegacyBlocks),
+            "FO3/FNV ship a systematic blocks\\ family — see #3321"
+        );
+        assert_eq!(object_lod_scheme(GameKind::Oblivion), None);
+        // A game with a scheme must also have a ladder, or its quads are
+        // selected by nothing and the arm is silently dead — the exact shape
+        // of the bug #3321 reported.
+        for game in [GameKind::Skyrim, GameKind::Fallout4, GameKind::Fallout3NV] {
+            assert!(
+                LodBandLadder::for_object_game(game).is_some(),
+                "{game:?} declares an object-LOD scheme but has no band ladder"
+            );
+        }
+        assert!(LodBandLadder::for_object_game(GameKind::Oblivion).is_none());
     }
 
     /// Skyrim ships no level-32 `.bto` (measured on

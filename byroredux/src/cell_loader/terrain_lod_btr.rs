@@ -79,7 +79,7 @@ use crate::streaming::LodBlock;
 ///
 /// **Level-first** naming with the quad's SW-corner cell `(qx, qy)` (the
 /// ordering EXAL Q2 corrected — it is NOT `<x>.<y>.<level>`). Sibling of
-/// [`super::object_lod::bto_archive_path`], which uses the same scheme under
+/// [`super::object_lod::object_lod_archive_path`], which uses the same scheme under
 /// the `\objects\` subfolder for object LOD.
 pub(crate) fn btr_archive_path(worldspace_key: &str, level: i32, qx: i32, qy: i32) -> String {
     let w = worldspace_key.to_ascii_lowercase();

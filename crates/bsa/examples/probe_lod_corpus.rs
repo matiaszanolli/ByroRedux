@@ -1,3 +1,19 @@
+//! Census a game's distant-LOD corpus in one or more BSA/BA2 archives
+//! (#3321).
+//!
+//! `exal.md` and `placement_lod.rs` both carried the #2086 claim that
+//! "FO3/FNV ship neither LOD scheme for distant objects", reached from a
+//! `distantlod\\` / `_far.nif` probe alone. That is the wrong question: those
+//! two names cover Oblivion's scheme, and Fallout's lives under
+//! `landscape\\lod\\<world>\\blocks\\`. This probe counts all three families
+//! side by side so the next such claim is made against a full inventory.
+//!
+//! Splits `landscape\\lod` entries into the *terrain* quadtree and its
+//! *blocks* (object-LOD) sibling, per worldspace, per level.
+//!
+//! Usage:
+//!   cargo run -p byroredux-bsa --example probe_lod_corpus -- <ARCHIVE> [ARCHIVE ...]
+
 fn main() {
     let mut total = 0usize;
     for path in std::env::args().skip(1) {

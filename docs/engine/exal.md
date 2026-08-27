@@ -361,21 +361,43 @@ Per-game impls (the runtime source per the Q3 finding):
     instance individual `_far.nif` low-poly meshes (one draw per entry). This is
     genuinely per-object (no atlas, no combined mesh) and is a separate code path
     from the `.bto` scheme — do not try to unify them.
-  - **FO3/FNV ship neither LOD scheme for distant objects.** #2086 probed every
-    vanilla FO3/FNV archive (base game + all DLC) and found zero `distantlod\`
-    entries; `Fallout - Meshes.bsa` carries only 2 `_far.nif` files total (one-off
-    landmark assets, not a systematic scheme). The engine's `stream_placement_lod_blocks`
-    (`byroredux/src/cell_loader/placement_lod.rs`) is gated to
-    `GameKind::Oblivion` only as of #2086 — it previously also matched
-    `GameKind::Fallout3NV` (harmless but wasteful: every lookup silently
-    resolved to `None`). Distant static-object LOD (buildings, rocks, landmark
-    silhouettes) is therefore **absent** on FO3/FNV exteriors beyond the
-    streamed-cell radius; terrain LOD still renders via the heightmap fallback.
-    FO3/FNV instead fold landmark-object LOD into the
-    `meshes\landscape\lod\<worldspace>\` terrain-LOD block tree (named
-    landmark sub-folders like `washmontop`, `dcworld03/08/09`) — extending
-    `terrain_lod.rs` to spawn renderable geometry from that tree is the open
-    path to closing this gap, not a `PlacementLodProvider` fix.
+  - **FO3/FNV ship a third scheme: `blocks\` combined quads.** Corrected under
+    #3321 — this bullet previously read "FO3/FNV ship neither LOD scheme for
+    distant objects", which the archive falsifies.
+
+    What #2086 got right: FO3/FNV ship **zero** `distantlod\` entries, so
+    `stream_placement_lod_blocks` (`byroredux/src/cell_loader/placement_lod.rs`)
+    is correctly gated to `GameKind::Oblivion` only. What it got wrong was
+    inferring from that absence that they have no distant-object LOD at all,
+    and guessing that they "fold landmark-object LOD into the terrain-LOD block
+    system" — a guess reached without opening one of the files. Re-probing
+    `Fallout - Meshes.bsa` (v104, 19,587 entries):
+
+    ```text
+    FNV   landscape\lod entries 2663    _far.nif 0    distantlod\ 0
+            terrain wastelandnv 1360   level4 1024 / 8 256 / 16 64 / 32 16
+            blocks  wastelandnv  295   level4                (+7 worldspaces)
+    FO3   landscape\lod entries 2232    _far.nif 2    distantlod\ 0
+            blocks  across 15 worldspaces, level4 and level8
+    ```
+
+    The "2 `_far.nif`" figure this document attributed to FNV is **FO3's**;
+    FNV ships none. And `washmontop` / `dcworld03` / `dcworld09` are not
+    "landmark sub-folders" inside the terrain tree — they are ordinary
+    worldspace folders, each with its own `blocks\` sibling.
+
+    `meshes\landscape\lod\<world>\blocks\<world>.level<L>.x<qx>.y<qy>.nif`
+    is a per-quad **combined** mesh (`BSMultiBoundNode` /
+    `BSSegmentedTriShape` / `BSShaderPPLightingProperty`, v20.2.0.7) against
+    one shared world atlas,
+    `textures\landscape\lod\<world>\blocks\<world>.buildings[_n].dds` —
+    structurally the same shape as Skyrim/FO4's baked `.bto`, differing only
+    in naming and container. It is therefore consumed by `object_lod.rs`'s
+    [`ObjectLodScheme::FalloutLegacyBlocks`] arm, sharing that module's quad
+    residency, work budget and eviction, and riding the same legacy band
+    ladder its terrain siblings use (`LodBandLadder::for_object_game`). It is
+    **not** a `PlacementLodProvider` fix and **not** a `terrain_lod.rs`
+    extension — both of those were the pre-#3321 guesses.
 
 The renderer's draw path reads `WorldLodRes` only — it never knows which provider
 filled it. This is the §1 contract applied to LOD: one consumer, per-game

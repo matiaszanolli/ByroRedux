@@ -291,15 +291,20 @@ impl PlacementLodBlock {
 /// real Oblivion `.lod` files; a direct probe of every FO3/FNV vanilla
 /// archive (base game + all DLC) found **zero** `distantlod\` entries
 /// anywhere — Bethesda didn't ship this scheme for the Fallout titles.
-/// `Fallout - Meshes.bsa` carries only 2 `_far.nif` files total (one-off
-/// landmark assets, not a systematic scheme); FO3/FNV instead fold landmark
-/// LOD into the `meshes\landscape\lod\<worldspace>\` terrain-LOD block tree
-/// ([`super::terrain_lod`]). Gating this module to FO3/FNV as well (as it
-/// did before FO3-D4-01) was harmless — `spawn_placement_lod_cell` just
-/// returned `None` on every call and the ring silently inserted empty
-/// sentinels — but wasted a per-cell archive lookup for no result. Skyrim+/
-/// FO4 ship the unrelated baked `.bto` scheme instead
-/// ([`super::object_lod`]).
+/// FO3's `Fallout - Meshes.bsa` carries 2 `_far.nif` files total (one-off
+/// landmark assets, not a systematic scheme) and FNV's carries **zero** —
+/// #3321 corrected the attribution; the "2" was never FNV's. Gating this
+/// module to FO3/FNV as well (as it did before FO3-D4-01) was harmless —
+/// `spawn_placement_lod_cell` just returned `None` on every call and the
+/// ring silently inserted empty sentinels — but wasted a per-cell archive
+/// lookup for no result.
+///
+/// **This does not mean FO3/FNV have no distant-object LOD.** They ship a
+/// systematic per-quad combined-mesh family under
+/// `meshes\landscape\lod\<world>\blocks\`, consumed by
+/// [`super::object_lod`] since #3321 — the same module that handles
+/// Skyrim+/FO4's baked `.bto`. Only the `DistantLOD\*.lod` *placement-list*
+/// scheme this module implements is Oblivion-exclusive.
 /// Whether `game` ships the `DistantLOD\*.lod` placement scheme this module
 /// implements. Oblivion only — see FO3-D4-01 (#2086): FO3/FNV ship zero
 /// `distantlod\*.lod` files in any vanilla archive, despite
