@@ -769,34 +769,52 @@ impl VulkanContext {
                     // what changes that pressure.
                     self.failed_skin_blas.clear();
                 }
-                // #3231 — same eviction pass, `MorphSlot` sibling. Kept
-                // as its own `evictees`/destroy loop rather than folded
-                // into the skin one above: a `MorphSlot` has no matching
-                // BLAS entry to drop, and the two resources are
-                // deliberately independent (see `morph_compute`'s module
-                // doc) so a bug in one loop can't corrupt the other's
-                // bookkeeping. Same `min_idle`/`now` threshold — both
-                // resources are keyed to the same entity's draw
-                // presence.
-                let mut morph_evictees: Vec<EntityId> =
-                    std::mem::take(&mut self.pending_morph_unload_victims);
-                morph_evictees.extend(self.morph_slots.iter().filter_map(|(&eid, slot)| {
-                    super::super::skin_compute::should_evict_skin_slot(
-                        slot.last_used_frame,
-                        now,
-                        min_idle,
-                    )
-                    .then_some(eid)
-                }));
-                if !morph_evictees.is_empty() {
-                    log::debug!(
-                        "morph_slots eviction: dropping {} idle MorphSlot(s)",
-                        morph_evictees.len()
-                    );
-                    for eid in morph_evictees {
-                        if let Some(mut slot) = self.morph_slots.remove(&eid) {
-                            slot.destroy(&self.device, alloc);
-                        }
+            }
+        }
+        // #3374 — the `MorphSlot` eviction pass runs OUTSIDE the
+        // `skin_compute` + `accel_manager` guard above. It is a sibling of the
+        // skin eviction it used to be nested beside, but it needs neither of
+        // those: a `MorphSlot` owns two plain `GpuBuffer`s and no descriptor
+        // sets by explicit design (`morph_compute`'s module doc), so
+        // `destroy` wants only the device and the allocator.
+        //
+        // `MorphSlot`s are created with no such gate (the only condition is a
+        // skinned mesh with non-empty morph targets), so leaving the drain
+        // inside meant that any configuration where `skin_compute` or
+        // `accel_manager` is `None` — an RT-less device, or a skin-pipeline
+        // creation failure — accumulated morph delta buffers for the whole
+        // session with no bound and no drain. That is the #2494 mistake one
+        // nesting level out; not reachable in a supported configuration today
+        // (the main geometry pipeline needs `bufferDeviceAddress`, which is
+        // enabled only alongside ray queries), but the RT-optional path is a
+        // plausible future and this coupling is not load-bearing.
+        if let Some(ref alloc) = self.allocator {
+            let min_idle = MAX_FRAMES_IN_FLIGHT as u64 + 1;
+            let now = self.frame_counter as u64;
+            // #3231 — kept as its own `evictees`/destroy loop rather than
+            // folded into the skin one: a `MorphSlot` has no matching BLAS
+            // entry to drop, and the two resources are deliberately
+            // independent so a bug in one loop can't corrupt the other's
+            // bookkeeping. Same `min_idle`/`now` threshold — both resources
+            // are keyed to the same entity's draw presence.
+            let mut morph_evictees: Vec<EntityId> =
+                std::mem::take(&mut self.pending_morph_unload_victims);
+            morph_evictees.extend(self.morph_slots.iter().filter_map(|(&eid, slot)| {
+                super::super::skin_compute::should_evict_skin_slot(
+                    slot.last_used_frame,
+                    now,
+                    min_idle,
+                )
+                .then_some(eid)
+            }));
+            if !morph_evictees.is_empty() {
+                log::debug!(
+                    "morph_slots eviction: dropping {} idle MorphSlot(s)",
+                    morph_evictees.len()
+                );
+                for eid in morph_evictees {
+                    if let Some(mut slot) = self.morph_slots.remove(&eid) {
+                        slot.destroy(&self.device, alloc);
                     }
                 }
             }
@@ -984,6 +1002,50 @@ mod skin_chain_timing_is_consumed_tests {
 // without a GPU.
 #[cfg(test)]
 mod skin_eviction_runs_without_global_vertex_buffer_tests {
+    /// #3374 — the `MorphSlot` drain must sit outside the
+    /// `(skin_compute, accel_manager)` guard, one nesting level further out
+    /// than the #2494 assertion below covers.
+    ///
+    /// `MorphSlot::destroy` needs only the device and the allocator — no
+    /// skin pipeline, no acceleration manager — and `MorphSlot`s are created
+    /// with no such gate. Leaving the drain inside meant any configuration
+    /// where either option is `None` accumulated morph delta buffers for the
+    /// whole session, per cell load, unbounded. Same source-position style as
+    /// the #2494 test: this is a nesting property, and nesting is not
+    /// observable at runtime without a device that has no RT support.
+    #[test]
+    fn morph_eviction_drain_sits_outside_the_skin_compute_accel_guard() {
+        let src = include_str!("skinned_blas_refit.rs");
+
+        let guard_open_pos = src
+            .find("if let (Some(skin_pipeline), Some(ref mut accel)) =")
+            .expect("the skin_compute + accel_manager guard must exist");
+        // Last statement inside that guard, followed by its three closing
+        // braces. Everything after this point is outside the guard.
+        let guard_close_pos = src
+            .find("self.failed_skin_blas.clear();\n                }\n            }\n        }")
+            .expect(
+                "the (skin_compute, accel_manager) guard must close after the \
+                 failed_skin_blas clear, with no morph eviction still nested inside it",
+            );
+        let morph_drain_pos = src
+            .find("let mut morph_evictees: Vec<EntityId> =")
+            .expect("the pending_morph_unload_victims drain must exist");
+
+        assert!(
+            guard_open_pos < guard_close_pos,
+            "sanity: guard open must precede its own close"
+        );
+        assert!(
+            guard_close_pos < morph_drain_pos,
+            "pending_morph_unload_victims must be drained OUTSIDE the \
+             (skin_compute, accel_manager) guard — a MorphSlot needs neither to be \
+             destroyed, and MorphSlots are created with no such gate, so nesting the \
+             drain leaks every morph delta buffer for the session on any device \
+             where either option is None (#3374, the #2494 mistake one level out)"
+        );
+    }
+
     #[test]
     fn eviction_drain_sits_outside_the_input_buffer_bone_buffer_guard() {
         let src = include_str!("skinned_blas_refit.rs");
