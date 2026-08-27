@@ -45,21 +45,46 @@
 //! see [`btr_normal_path`], which also documents why FO4's `_msn`
 //! model-space variant is not bound yet).
 //!
-//! ## Placement convention (verified against real data — NOT like `.bto`)
+//! ## Placement convention (verified against real data)
 //!
-//! Unlike object `.bto` (whose sub-meshes are world-absolute), a `.btr` is
-//! authored as a **normalized quad-local mesh**: every `.btr`, at any level,
-//! has a constant local footprint `X ∈ [0, 4096]`, `Z ∈ [-4096, 0]` (one
-//! cell) at the origin with identity transform — only the heights differ.
-//! Placement scales the horizontal footprint by the LOD `level` (cells per
-//! quad edge) and offsets to the quad's SW world corner; **heights are
-//! absolute world heights and are not scaled**:
+//! A `.btr` is authored as a **normalized quad-local mesh**: every `.btr`,
+//! at any level, has a constant local footprint `X ∈ [0, 4096]`,
+//! `Z ∈ [-4096, 0]` (one cell) at the origin, carrying a **uniform authored
+//! scale equal to the LOD `level`** (cells per quad edge) and zero
+//! translation. Placement applies that scale on all three axes and offsets
+//! to the quad's SW world corner:
 //!   * `world_x = qx·CELL + local_x · level`
 //!   * `world_z = local_z · level − qy·CELL`   (`CELL` = [`EXTERIOR_CELL_UNITS`])
-//!   * `world_y = local_y` (height, unscaled)
+//!   * `world_y = local_y · level`
 //!
-//! Normals/tangents are corrected for the anisotropic XZ scale
-//! (normal ∝ `(nx/level, ny, nz/level)`; tangent ∝ `(tx·level, ty, tz·level)`).
+//! Because the scale is uniform it preserves directions, so normals and
+//! tangents pass through unchanged.
+//!
+//! ### #3358 — the height axis used to be left unscaled
+//!
+//! This module previously asserted "identity transform" and "heights are
+//! absolute world heights and are not scaled", and hand-multiplied only X
+//! and Z by `level`. The horizontal footprint therefore came out right by
+//! accident — hand-multiplying happens to equal applying the authored scale
+//! — while every quad rendered at 1/`level` of its true elevation.
+//!
+//! What the shipped data actually says:
+//!   * every geometry block carries `transform.scale == level`, uniform,
+//!     with zero translation (`tamriel.4.*` → 4, `tamriel.32.*` → 32);
+//!   * local height ranges halve as the level doubles
+//!     (`9848·4 = 4924·8 = 2462·16 ≈ 1227·32`), i.e. heights are stored
+//!     pre-divided by the authored scale, and all four bands converge on one
+//!     world range only once it is applied;
+//!   * a cell covered by both a level-4 and a level-8 quad has local heights
+//!     differing by exactly the level ratio, agreeing after scaling;
+//!   * `WATER` sub-mesh heights land on authored round values once scaled —
+//!     the smallest is exactly Tamriel's `DNAM` default water height,
+//!     -14000 (see `env_translate.rs`). Unscaled they are -3500, with no
+//!     relationship to any authored height.
+//!
+//! The sibling `.bto` object-LOD loader already reads the authored transform
+//! and applies it uniformly, so this brings the two baked-LOD loaders onto
+//! one convention.
 
 use byroredux_core::ecs::components::RenderLayer;
 use byroredux_core::ecs::{
@@ -117,15 +142,17 @@ pub(crate) fn btr_normal_path(worldspace_key: &str, level: i32, qx: i32, qy: i32
 
 /// Map a `.btr`'s quad-local Y-up vertex into world space for the level-`level`
 /// quad whose SW-corner cell is `(qx, qy)`. The mesh is normalized to a unit
-/// 4096-BU square, so the horizontal footprint scales by `level` and offsets
-/// to the quad's SW world corner; the height passes through unscaled. Pure +
-/// unit-tested because the convention is non-obvious (verified against vanilla
-/// Skyrim Tamriel `.btr`; module docs).
+/// 4096-BU square carrying a uniform authored scale of `level`, so all three
+/// axes scale by `level` and the result offsets to the quad's SW world corner.
+/// Pure + unit-tested because the convention is non-obvious (verified against
+/// vanilla Skyrim Tamriel `.btr`; module docs).
 fn btr_local_to_world(local: [f32; 3], level: i32, qx: i32, qy: i32) -> [f32; 3] {
     let lvl = level as f32;
     let ox = qx as f32 * EXTERIOR_CELL_UNITS;
     let oz = qy as f32 * EXTERIOR_CELL_UNITS;
-    [ox + local[0] * lvl, local[1], local[2] * lvl - oz]
+    // #3358 — the Y term used to be `local[1]`, dropping the authored scale
+    // on the height axis alone.
+    [ox + local[0] * lvl, local[1] * lvl, local[2] * lvl - oz]
 }
 
 /// Resolve + import + spawn one quad's prebaked `.btr` distant terrain.
@@ -188,11 +215,10 @@ pub(crate) fn spawn_btr_block(
     // Place the normalized quad-local mesh into world space and merge any
     // sub-meshes into one buffer (terrain LOD is a single surface → one mesh
     // handle keeps `LodBlock` `Copy`/single-mesh). `.btr` positions are
-    // quad-local with identity transform (see module docs): scale the
-    // horizontal footprint by `level`, offset to the quad's SW world corner,
-    // leave heights absolute. The mesh's own translation/rotation/scale are
-    // identity for `.btr` and deliberately ignored.
-    let lvl = level as f32;
+    // quad-local carrying a uniform authored scale of `level` (see module
+    // docs): scale all three axes by `level` and offset to the quad's SW
+    // world corner. Translation and rotation are identity on every shipped
+    // block, so only the scale is reproduced here.
     let mut vertices: Vec<Vertex> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
     for mesh in &imported.meshes {
@@ -202,17 +228,19 @@ pub(crate) fn spawn_btr_block(
         let base = vertices.len() as u32;
         for i in 0..mesh.positions.len() {
             let wp = btr_local_to_world(mesh.positions[i], level, qx, qy);
-            // Normal under the anisotropic XZ scale (S = diag(level, 1,
-            // level)): inverse-transpose = diag(1/level, 1, 1/level).
+            // #3358 — a UNIFORM scale preserves directions, so both the
+            // normal and the tangent pass through unchanged. These used to
+            // carry `(nx/level, ny, nz/level)` and `(tx·level, ty, tz·level)`
+            // corrections for an anisotropic XZ scale that was itself the
+            // bug: at level 32 that drove every normal to near (0,1,0), so
+            // distant terrain shaded as a flat plane on top of being one.
             let ln = mesh.normals.get(i).copied().unwrap_or([0.0, 1.0, 0.0]);
-            let wn = Vec3::new(ln[0] / lvl, ln[1], ln[2] / lvl).normalize_or_zero();
+            let wn = Vec3::new(ln[0], ln[1], ln[2]).normalize_or_zero();
             let color = mesh.colors.get(i).copied().unwrap_or([1.0, 1.0, 1.0, 1.0]);
             let uv = mesh.uvs.get(i).copied().unwrap_or([0.0, 0.0]);
             let mut v = Vertex::new_rgba(wp, color, [wn.x, wn.y, wn.z], uv);
             if let Some(tg) = mesh.tangents.get(i) {
-                // Tangent is a surface direction → scales like positions (XZ
-                // ×level), renormalized; the bitangent sign is preserved.
-                let wt = Vec3::new(tg[0] * lvl, tg[1], tg[2] * lvl).normalize_or_zero();
+                let wt = Vec3::new(tg[0], tg[1], tg[2]).normalize_or_zero();
                 v.tangent = [wt.x, wt.y, wt.z, tg[3]];
             }
             vertices.push(v);
@@ -433,16 +461,66 @@ mod tests {
         let cell = EXTERIOR_CELL_UNITS; // 4096
                                         // SW local corner (0,0,0) → world (0, _, 16384).
         let sw = btr_local_to_world([0.0, 10.0, 0.0], 4, 0, -4);
-        assert_eq!(sw, [0.0, 10.0, 4.0 * cell]);
+        assert_eq!(sw, [0.0, 40.0, 4.0 * cell]);
         // Opposite local corner (4096, _, -4096) → world (16384, _, 0).
         let ne = btr_local_to_world([cell, 20.0, -cell], 4, 0, -4);
-        assert_eq!(ne, [4.0 * cell, 20.0, 0.0]);
-        // Height passes through unscaled.
-        assert_eq!(sw[1], 10.0);
+        assert_eq!(ne, [4.0 * cell, 80.0, 0.0]);
+        // #3358 — the height carries the SAME authored uniform scale as the
+        // horizontal axes. This assertion used to read `10.0` / `20.0`,
+        // pinning the bug: every quad rendered at 1/level of its elevation.
+        assert_eq!(sw[1], 10.0 * 4.0);
         // Adjacent quad `4.4.-4` (cells [4,8)×[-4,0)) tiles seamlessly: its SW
         // corner sits exactly where quad `4.0.-4`'s east edge ended.
         let adj_sw = btr_local_to_world([0.0, 0.0, 0.0], 4, 4, -4);
         assert_eq!(adj_sw[0], 4.0 * cell); // = ne[0], no gap/overlap
+    }
+
+    /// #3358 — the cross-band agreement that proves the scale belongs on Y.
+    ///
+    /// Cell (-72, 32) is covered by both a level-4 and a level-8 quad. The
+    /// shipped local heights at that shared corner differ by exactly the
+    /// level ratio (`tamriel.4.-72.32.btr` reads -5934, -6184, -3500 where
+    /// `tamriel.8.-72.32.btr` reads -2967, -3092, -1750), so the two bands
+    /// can only agree on one world elevation once the authored scale is
+    /// applied. Pre-fix they disagreed by 2×, which is what made every band
+    /// boundary a vertical cliff.
+    ///
+    /// Values transcribed from vanilla Skyrim SE `.btr`; no device or game
+    /// data needed to check the mapping itself.
+    #[test]
+    fn btr_bands_agree_on_world_height_at_a_shared_corner() {
+        for (local_l4, local_l8) in [(-5934.0_f32, -2967.0_f32), (-3500.0, -1750.0)] {
+            let w4 = btr_local_to_world([0.0, local_l4, 0.0], 4, -72, 32);
+            let w8 = btr_local_to_world([0.0, local_l8, 0.0], 8, -72, 32);
+            assert_eq!(
+                w4[1], w8[1],
+                "level-4 and level-8 quads covering the same cell must place a \
+                 shared corner at ONE world height; local {local_l4} vs {local_l8} \
+                 agree only when the authored scale is applied to Y (#3358)"
+            );
+        }
+    }
+
+    /// The absolute check: `WATER` sub-mesh heights land on authored round
+    /// values once scaled. Tamriel's smallest is exactly its `WRLD` `DNAM`
+    /// default water height, -14000, which `env_translate` already records.
+    /// Unscaled, the level-4 value is -3500 — no relationship to any
+    /// authored height.
+    #[test]
+    fn btr_water_heights_resolve_to_the_authored_default() {
+        const TAMRIEL_DEFAULT_WATER: f32 = -14000.0;
+        assert_eq!(
+            btr_local_to_world([0.0, -3500.0, 0.0], 4, 0, 0)[1],
+            TAMRIEL_DEFAULT_WATER
+        );
+        assert_eq!(
+            btr_local_to_world([0.0, -1750.0, 0.0], 8, 0, 0)[1],
+            TAMRIEL_DEFAULT_WATER
+        );
+        assert_eq!(
+            btr_local_to_world([0.0, -437.5, 0.0], 32, 0, 0)[1],
+            TAMRIEL_DEFAULT_WATER
+        );
     }
 
     #[test]
