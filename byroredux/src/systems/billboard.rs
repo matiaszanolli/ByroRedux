@@ -20,6 +20,18 @@ use byroredux_core::math::{Quat, Vec2, Vec3};
 /// move: all billboard rotations are recomputed and written exactly as
 /// before.
 ///
+/// Wind reopens that gate (a stationary camera must still see canopies
+/// respond to weather), so #1374's guarantee cannot rest on the early-out
+/// alone outdoors: `WindField` is installed for every exterior worldspace
+/// from the WTHR wind byte, which is non-zero for most vanilla weathers.
+/// The two motivations are therefore served by two passes (#3192):
+///
+/// * **camera moved** — walk every `Billboard`; all of their rotations are
+///   stale by definition.
+/// * **camera parked, wind live** — walk the `SpeedTreeWind` set instead and
+///   intersect it with `Billboard`. Only marked trees can change, so nothing
+///   else is fetched mutably and the dirty set stays empty for the rest.
+///
 /// Mirrors Gamebryo's `NiBillboardNode::UpdateWorldBound`. See #225.
 pub(crate) fn make_billboard_system() -> impl FnMut(&World, f32) + Send + Sync {
     // Sentinel: `None` on first frame so the loop always runs once.
@@ -86,47 +98,101 @@ pub(crate) fn make_billboard_system() -> impl FnMut(&World, f32) + Send + Sync {
 
         let bq = world.query::<Billboard>();
         let swq = world.query::<SpeedTreeWind>();
+        let Some(bq) = bq.as_ref() else {
+            return;
+        };
+        let pass = BillboardPass {
+            cam_pos,
+            cam_forward,
+            wind,
+            wind_active,
+            wind_time,
+        };
 
-        if let Some(bq) = bq.as_ref() {
+        if camera_changed {
+            // Every billboard's rotation is a function of the camera pose, so
+            // a moved camera invalidates all of them — the full walk is the
+            // work, not overhead.
             for (entity, billboard) in bq.iter() {
                 let tree_wind = swq.as_ref().and_then(|q| q.get(entity).copied());
-                // A stationary camera leaves ordinary billboards bit-identical.
-                // Active wind and weather transitions update only the marked
-                // SpeedTree subset, preserving #1374's dirty-set fast path.
-                if !camera_changed && tree_wind.is_none() {
-                    continue;
-                }
-                let Some(global) = gq.get_mut(entity) else {
+                update_billboard(&mut gq, entity, billboard, tree_wind, pass);
+            }
+        } else {
+            // Wind-only refresh (#3192). A stationary camera leaves ordinary
+            // billboards bit-identical, so drive this pass from the
+            // `SpeedTreeWind` set — the handful of marked trees — rather than
+            // walking every `Billboard` to discard all but that subset. The
+            // discarded majority is the whole billboard population of a
+            // vegetation-heavy exterior (grass and FX impostors), and `wind`
+            // is non-zero for most vanilla weathers, so this branch is the
+            // steady state outdoors, not an edge case.
+            let Some(swq) = swq.as_ref() else {
+                return;
+            };
+            for (entity, tree_wind) in swq.iter() {
+                // A `SpeedTreeWind` without `Billboard` has no orientation
+                // this system owns — the placement root is exactly that.
+                let Some(billboard) = bq.get(entity) else {
                     continue;
                 };
-
-                let mut new_rot = compute_billboard_rotation(
-                    billboard.mode,
-                    global.translation,
-                    cam_pos,
-                    cam_forward,
-                );
-                // SpeedTree placements carry the authoritative `SpeedTreeWind`
-                // marker, but their source NIFs are not uniform about which
-                // billboard enum they use (some author `RotateAboutUp`, others
-                // Bethesda's `BsRotateAboutUp`). Key the canopy response off the
-                // marker rather than one enum value so every imported tree gets
-                // the shared weather wind while ordinary billboards remain
-                // unaffected. Phase is world-position seeded, keeping nearby
-                // trees in sync while avoiding lockstep.
-                if let (true, Some(tree_wind)) = (wind_active, tree_wind) {
-                    new_rot = apply_speedtree_wind(
-                        new_rot,
-                        global.translation,
-                        wind,
-                        tree_wind,
-                        wind_time,
-                    );
-                }
-                global.rotation = new_rot;
+                update_billboard(&mut gq, entity, billboard, Some(*tree_wind), pass);
             }
         }
     }
+}
+
+/// Per-frame values shared by every billboard update, bundled so the two
+/// iteration orders in `make_billboard_system` call one body.
+#[derive(Clone, Copy)]
+struct BillboardPass {
+    cam_pos: Vec3,
+    cam_forward: Vec3,
+    wind: WindField,
+    wind_active: bool,
+    wind_time: f32,
+}
+
+/// Re-orient one billboard and, when it is a marked tree under active wind,
+/// bend it.
+///
+/// `gq` is the system's single `GlobalTransform` write handle (#829) — taken
+/// by `&mut` rather than re-acquired here, so no second lock on the same
+/// storage is ever opened.
+fn update_billboard(
+    gq: &mut byroredux_core::ecs::QueryWrite<'_, GlobalTransform>,
+    entity: byroredux_core::ecs::EntityId,
+    billboard: &Billboard,
+    tree_wind: Option<SpeedTreeWind>,
+    pass: BillboardPass,
+) {
+    let Some(global) = gq.get_mut(entity) else {
+        return;
+    };
+
+    let mut new_rot = compute_billboard_rotation(
+        billboard.mode,
+        global.translation,
+        pass.cam_pos,
+        pass.cam_forward,
+    );
+    // SpeedTree placements carry the authoritative `SpeedTreeWind`
+    // marker, but their source NIFs are not uniform about which
+    // billboard enum they use (some author `RotateAboutUp`, others
+    // Bethesda's `BsRotateAboutUp`). Key the canopy response off the
+    // marker rather than one enum value so every imported tree gets
+    // the shared weather wind while ordinary billboards remain
+    // unaffected. Phase is world-position seeded, keeping nearby
+    // trees in sync while avoiding lockstep.
+    if let (true, Some(tree_wind)) = (pass.wind_active, tree_wind) {
+        new_rot = apply_speedtree_wind(
+            new_rot,
+            global.translation,
+            pass.wind,
+            tree_wind,
+            pass.wind_time,
+        );
+    }
+    global.rotation = new_rot;
 }
 
 /// Apply the shared atmospheric wind to an authored SpeedTree orientation.
@@ -439,6 +505,74 @@ mod tests {
             .take_dirty();
         assert!(!dirty.contains(&sprite));
         assert!(dirty.contains(&tree));
+    }
+
+    /// #3192 — the parked-camera pass iterates `SpeedTreeWind`, so a
+    /// placement root (marked, but carrying no `Billboard`) is now reached by
+    /// that walk for the first time. It has no orientation this system owns:
+    /// it must be skipped, not given a camera-facing rotation it never had.
+    #[test]
+    fn parked_camera_wind_pass_skips_a_marked_entity_without_billboard() {
+        let mut world = World::new();
+        let camera = world.spawn();
+        world.insert(camera, Transform::IDENTITY);
+        world.insert(camera, GlobalTransform::IDENTITY);
+        world.insert(camera, Camera::default());
+        world.insert_resource(ActiveCamera(camera));
+
+        // The placement root: SpeedTreeWind without Billboard.
+        let root = world.spawn();
+        let root_gt = GlobalTransform::new(Vec3::new(12.0, 0.0, 8.0), Quat::IDENTITY, 1.0);
+        world.insert(root, root_gt);
+        world.insert(root, SpeedTreeWind::new(1.0, 0.0));
+        // Its billboard child — present so the `Billboard` storage exists and
+        // the parked-camera pass has real work, rather than bailing early and
+        // passing this test vacuously.
+        let tree = world.spawn();
+        world.insert(
+            tree,
+            GlobalTransform::new(Vec3::new(12.0, 0.0, 8.0), Quat::IDENTITY, 1.0),
+        );
+        world.insert(tree, Billboard::new(BillboardMode::BsRotateAboutUp));
+        world.insert(tree, SpeedTreeWind::new(1.0, 0.0));
+        world.insert_resource(WindField {
+            direction: [1.0, 0.0],
+            speed: 220.0,
+            gust_amplitude: 0.0,
+            gust_frequency: 0.0,
+        });
+
+        let mut system = make_billboard_system();
+        system(&world, 0.0);
+        world
+            .query_mut::<GlobalTransform>()
+            .unwrap()
+            .storage_mut()
+            .take_dirty();
+        system(&world, 0.5);
+        let dirty = world
+            .query_mut::<GlobalTransform>()
+            .unwrap()
+            .storage_mut()
+            .take_dirty();
+        assert!(
+            dirty.contains(&tree),
+            "the marked billboard child must still be re-bent by the wind pass"
+        );
+        assert!(
+            !dirty.contains(&root),
+            "a SpeedTreeWind entity with no Billboard must not be re-written"
+        );
+        assert_eq!(
+            world
+                .query::<GlobalTransform>()
+                .unwrap()
+                .get(root)
+                .unwrap()
+                .rotation,
+            root_gt.rotation,
+            "the placement root keeps its authored pose"
+        );
     }
 
     #[test]

@@ -629,7 +629,9 @@ mod tests {
             .expect("production billboard source");
         assert!(!billboard.contains("use std::collections::"));
         assert!(billboard.contains("let swq = world.query::<SpeedTreeWind>()"));
-        assert!(billboard.contains("if !camera_changed && tree_wind.is_none()"));
+        // #3192 — the parked-camera pass is driven by the `SpeedTreeWind`
+        // set, not by a full `Billboard` walk that discards non-trees.
+        assert!(billboard.contains("for (entity, tree_wind) in swq.iter()"));
     }
 
     #[test]
