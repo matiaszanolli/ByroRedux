@@ -159,7 +159,10 @@ pub const PLAYER_FORM_ID_PAIR: FormIdPair = FormIdPair {
 ///
 /// Register as a global [`Resource`] on the [`World`](crate::ecs::world::World):
 ///
-/// ```ignore
+/// `text`, not `ignore` (#3348): `world` is not in scope here, so this can
+/// never compile — under `ignore` it was still *built* by
+/// `cargo test -- --ignored` and failed there, reddening the sweep.
+/// ```text
 /// world.insert_resource(FormIdPool::new());
 /// ```
 pub struct FormIdPool {

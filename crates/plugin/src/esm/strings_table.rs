@@ -40,7 +40,11 @@
 //!
 //! ## Usage
 //!
-//! ```ignore
+//! `text`, not `ignore` (#3348): this sketch uses `crate::` paths (doctests
+//! compile as an *external* crate) and undefined locals, so it can never
+//! build — but `ignore` still built it under `cargo test -- --ignored`,
+//! reddening that sweep.
+//! ```text
 //! use crate::esm::strings_table::{StringTableSet, StringsTableGuard};
 //!
 //! let tables = StringTableSet::load(plugin_path, "english");

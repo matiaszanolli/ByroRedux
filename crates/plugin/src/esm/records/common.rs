@@ -95,8 +95,8 @@ impl Drop for LocalizedPluginGuard {
 /// each guard captures and restores the prior value. Panics inside the parse
 /// also restore correctly.
 ///
-/// Typical usage:
-/// ```ignore
+/// Typical usage (`text`, not `ignore` — undefined locals, see #3348):
+/// ```text
 /// let tables = StringTableSet::load(plugin_path, "english");
 /// let _strings_guard = StringsTableGuard::new(tables);
 /// let index = parse_esm_with_load_order(bytes, remap)?;

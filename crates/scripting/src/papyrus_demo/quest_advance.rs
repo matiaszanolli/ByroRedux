@@ -299,9 +299,10 @@ pub fn register(world: &mut World) {
 /// EndIf
 /// ```
 ///
-/// becomes (in roughly equivalent pseudo-code):
+/// becomes (in roughly equivalent pseudo-code — tagged `text`, not
+/// `rust,ignore`, because pseudo-code cannot compile; see #3348):
 ///
-/// ```rust,ignore
+/// ```text
 /// if comp.require_done.iter().all(|s| stage_state.get_stage_done(quest, *s))
 ///    && comp.forbid_done.iter().all(|s| !stage_state.get_stage_done(quest, *s)) {
 ///     stage_state.set_stage(quest, comp.target_stage);

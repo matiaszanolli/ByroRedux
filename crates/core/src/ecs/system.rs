@@ -43,7 +43,9 @@ pub trait System: Send + Sync {
 
 /// Blanket impl: any `Fn(&World, f32) + Send + Sync` is a System.
 ///
-/// ```ignore
+/// `text`, not `ignore` (#3348): `scheduler` is not in scope, so this cannot
+/// compile; `ignore` still built it under `cargo test -- --ignored`.
+/// ```text
 /// // Stateless closure:
 /// scheduler.add(|world: &World, dt: f32| { /* ... */ });
 ///

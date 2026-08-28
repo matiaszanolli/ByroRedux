@@ -46,9 +46,13 @@
 //!
 //! # Usage
 //!
-//! ```ignore
-//! let archive = byroredux_bsa::Ba2Archive::open("Fallout4 - Meshes.ba2")?;
-//! let bytes = archive.extract("meshes/interiors/desk01.nif")?;
+//! `no_run` rather than `ignore` — see the crate-root docs (#3348).
+//! ```no_run
+//! fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!     let archive = byroredux_bsa::Ba2Archive::open("Fallout4 - Meshes.ba2")?;
+//!     let bytes = archive.extract("meshes/interiors/desk01.nif")?;
+//!     Ok(())
+//! }
 //! ```
 
 use crate::safety::{

@@ -358,7 +358,10 @@ pub fn image_barrier_transfer_dst_to_shader_read_layers(
 /// `DescriptorPoolSize[]` + `DescriptorPoolCreateInfo` + raw
 /// `create_descriptor_pool` boilerplate present in 8 pipelines.
 ///
-/// ```ignore
+/// `text`, not `ignore` (#3348): undefined locals and an unimported `vk`, so
+/// this can never build — `ignore` still compiled it under
+/// `cargo test -- --ignored` and failed there.
+/// ```text
 /// let pool = DescriptorPoolBuilder::new()
 ///     .pool(vk::DescriptorType::COMBINED_IMAGE_SAMPLER, n_samplers)
 ///     .pool(vk::DescriptorType::UNIFORM_BUFFER, n_ubos)

@@ -17,7 +17,10 @@
 //!
 //! ## Spawner shape
 //!
-//! ```rust,ignore
+//! `text`, not `rust,ignore` (#3348): the types named here are not imported
+//! into this doc scope, so it can never build — `ignore` still compiled it
+//! under `cargo test -- --ignored` and failed there.
+//! ```text
 //! fn spawn_rumble_on_activate(world: &mut World, entity: EntityId) {
 //!     let mut q = world.query_mut::<RumbleOnActivate>().unwrap();
 //!     q.insert(entity, RumbleOnActivate::default());

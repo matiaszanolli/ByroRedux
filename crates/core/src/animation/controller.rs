@@ -24,7 +24,11 @@
 //! parser into every consumer of `byroredux-core`. Instead the caller
 //! assembles the state machine from the KFM in their own crate:
 //!
-//! ```ignore
+//! `text`, not `ignore` (#3348). This snippet names `byroredux_nif` — which
+//! is exactly the dependency the section above explains `byroredux-core` must
+//! not have — so it can never compile from here. Under `ignore` it was still
+//! built by `cargo test -- --ignored` and failed, reddening that sweep.
+//! ```text
 //! use byroredux_core::animation::{
 //!     AnimationController, ControllerTransitionDefaults, TransitionKind,
 //! };

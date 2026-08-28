@@ -4,11 +4,17 @@
 //! (Oblivion, Skyrim, Fallout 3/4). Three-phase loading: parse → link → scene.
 //!
 //! # Usage
-//! ```ignore
-//! let bytes = std::fs::read("mesh.nif")?;
-//! let scene = byroredux_nif::parse_nif(&bytes)?;
-//! for block in &scene.blocks {
-//!     println!("{}", block.block_type_name());
+//!
+//! `no_run` rather than `ignore` (#3348): needs a real NIF on disk, so it must
+//! not execute — but it still compiles, pinning the public signatures.
+//! ```no_run
+//! fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!     let bytes = std::fs::read("mesh.nif")?;
+//!     let scene = byroredux_nif::parse_nif(&bytes)?;
+//!     for block in &scene.blocks {
+//!         println!("{}", block.block_type_name());
+//!     }
+//!     Ok(())
 //! }
 //! ```
 

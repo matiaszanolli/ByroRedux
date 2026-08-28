@@ -343,6 +343,50 @@ pub struct MaterialTextureSet<T> {
 }
 
 impl<T> MaterialTextureSet<T> {
+    /// Every semantic role paired with its canonical name, in the same slot
+    /// order [`Self::map_ref`] uses.
+    ///
+    /// Added for #3349: `tex.missing` needed to report fallbacks per role, and
+    /// the only prior role enumeration was a hand-written table inside
+    /// `mat.dump`. Because `MaterialTextureHandles.textures`, and the paths and
+    /// sources on `MaterialTextureDebugInfo`, are all
+    /// `MaterialTextureSet<_>`-shaped, one generic walk here serves every
+    /// consumer instead of each growing its own list that can drift as roles
+    /// are added.
+    ///
+    /// Decals are flattened to `decal0..decal3`.
+    pub fn roles(&self) -> impl Iterator<Item = (&'static str, &T)> {
+        [
+            ("base_color", &self.base_color),
+            ("normal", &self.normal),
+            ("emissive", &self.emissive),
+            ("detail", &self.detail),
+            ("smooth_spec", &self.smooth_spec),
+            ("dark", &self.dark),
+            ("height", &self.height),
+            ("environment", &self.environment),
+            ("environment_mask", &self.environment_mask),
+            ("tint", &self.tint),
+            ("inner_layer", &self.inner_layer),
+            ("specular", &self.specular),
+            ("lighting_mask", &self.lighting_mask),
+            ("back_lighting", &self.back_lighting),
+            ("lighting", &self.lighting),
+            ("flow", &self.flow),
+            ("wrinkle", &self.wrinkle),
+            ("greyscale_lut", &self.greyscale_lut),
+            ("reflectance", &self.reflectance),
+            ("emittance_gradient", &self.emittance_gradient),
+            ("glass_roughness_scratch", &self.glass_roughness_scratch),
+            ("glass_dirt_overlay", &self.glass_dirt_overlay),
+            ("decal0", &self.decals[0]),
+            ("decal1", &self.decals[1]),
+            ("decal2", &self.decals[2]),
+            ("decal3", &self.decals[3]),
+        ]
+        .into_iter()
+    }
+
     /// Convert every role to the representation used by the next pipeline
     /// stage while preserving the semantic slot ordering.
     pub fn map_ref<U>(&self, mut map: impl FnMut(&T) -> U) -> MaterialTextureSet<U> {
@@ -1646,4 +1690,63 @@ pub struct ImportedParticleEmitterFlat {
     /// Mirror of [`ImportedParticleEmitter::max_particles`] for the flat
     /// (cell-loader) path. Authored particle budget (`BS Max Vertices`).
     pub max_particles: Option<u32>,
+}
+
+#[cfg(test)]
+mod role_enumeration_tests {
+    use super::MaterialTextureSet;
+
+    /// #3349 — `roles()` must enumerate every field of the set. If a role is
+    /// added to the struct and not to `roles()`, `tex.missing` silently stops
+    /// reporting it, which is the exact blind spot #3349 was filed about.
+    /// Cross-check against `map_ref`, which touches every field by
+    /// construction: count the roles the mapper visits and compare.
+    #[test]
+    fn roles_covers_every_field_in_the_set() {
+        let set = MaterialTextureSet::<u32>::default();
+        let mut mapped = 0usize;
+        let _ = set.map_ref(|_| {
+            mapped += 1;
+        });
+        assert_eq!(
+            set.roles().count(),
+            mapped,
+            "roles() enumerates {} slots but map_ref touches {mapped} — a role \
+             was added to the struct without being added to roles()",
+            set.roles().count(),
+        );
+    }
+
+    /// Role names are the operator-facing labels in `tex.missing` output, so a
+    /// duplicate would merge two distinct slots into one bucket.
+    #[test]
+    fn role_names_are_unique() {
+        let set = MaterialTextureSet::<u32>::default();
+        let names: Vec<&str> = set.roles().map(|(n, _)| n).collect();
+        let mut sorted = names.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(
+            sorted.len(),
+            names.len(),
+            "duplicate role name in {names:?}"
+        );
+    }
+
+    /// The values yielded must be the matching field, not a fixed slot.
+    #[test]
+    fn roles_yields_the_matching_field() {
+        let mut set = MaterialTextureSet::<u32>::default();
+        set.normal = 7;
+        set.decals[2] = 9;
+        let by_name = |want: &str| -> u32 {
+            *set.roles()
+                .find(|(n, _)| *n == want)
+                .expect("role must exist")
+                .1
+        };
+        assert_eq!(by_name("normal"), 7);
+        assert_eq!(by_name("decal2"), 9);
+        assert_eq!(by_name("base_color"), 0);
+    }
 }

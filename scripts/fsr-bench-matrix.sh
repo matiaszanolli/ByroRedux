@@ -23,7 +23,11 @@
 # against the current working directory, not the --esm folder. Each scene below
 # cd's into its own game Data directory for exactly that reason; running from
 # elsewhere makes archives silently fail to open and the scene loads near-empty
-# with a spurious FPS figure.
+# with a spurious FPS figure. Since #3347 that is checked rather than merely
+# documented: every run must clear three gates before its row is written —
+# no archive-open error in the log, an entity count above a per-scene floor,
+# and a state_hash matching the other runs of its config. Any rejection makes
+# the script exit 3, because a matrix with a bad row in it reads as data.
 #
 # Usage:
 #   scripts/fsr-bench-matrix.sh [runs] [frames]
@@ -41,6 +45,10 @@ OUT="${FSR_BENCH_OUT:-$REPO/target/fsr-bench}"
 
 mkdir -p "$OUT"
 TSV="$OUT/raw.tsv"
+# Rows rejected by the #3347 sanity gates. A non-empty list makes the script
+# exit non-zero: a bench-of-record matrix with a silently-bad row in it is worse
+# than no matrix, because the row looks like data.
+REJECTED=()
 
 if [[ ! -x "$BIN" ]]; then
   echo "error: $BIN not found — run 'cargo build --release' first" >&2
@@ -68,6 +76,32 @@ CONFIGS=(
 # game scenes are the existing bench-of-record trio so the numbers stay
 # comparable with ROADMAP's history; Cornell is the redistributable control
 # that anyone can reproduce without game data.
+# Minimum plausible entity count per scene (#3347).
+#
+# The documented failure mode in the header — archives silently failing to open
+# and the scene loading near-empty — still emits a `bench:` line, so the run
+# loop's "did a bench line appear" check accepted it as data. A near-empty
+# Prospector loads ~36 entities and reports a spurious ~1792 FPS.
+#
+# Floors are ~50% of the counts this harness actually recorded in the
+# bench-of-record table (ROADMAP: Prospector 3757, Whiterun 5183, MedTek 32920,
+# Dugout 7346, Cornell 37) — loose enough that legitimate content-scope drift
+# does not trip them, tight enough that a near-empty load cannot pass.
+#
+# NOTE the floors must be per-scene, not global: Cornell is a 37-entity
+# synthetic control, i.e. the same order as a *failed* game-scene load. A single
+# global floor would either miss the failure or reject Cornell outright.
+scene_entity_floor() {
+  case "$1" in
+    cornell)    echo 20 ;;
+    prospector) echo 1800 ;;
+    whiterun)   echo 2500 ;;
+    medtek)     echo 16000 ;;
+    dugout)     echo 3600 ;;
+    *)          echo 0 ;;
+  esac
+}
+
 scene_dir() {
   case "$1" in
     cornell)    echo "$REPO" ;;
@@ -156,6 +190,8 @@ for scene in "${SCENES[@]}"; do
     name="${config%%:*}"
     flags="${config#*:}"
     read -r -a FLAG_ARR <<< "$flags"
+    # Reset per config: gate 3 compares runs within one (scene, config) pair.
+    config_hash=""
 
     for run in $(seq 1 "$RUNS"); do
       log="$OUT/${scene}_${name}_${run}.log"
@@ -173,9 +209,22 @@ for scene in "${SCENES[@]}"; do
       line="$(grep '^bench:' "$log" | tail -1)"
       if [[ -z "$line" ]]; then
         echo "warn: $scene/$name run $run produced no bench line (see $log)" >&2
+        REJECTED+=("$scene/$name run $run: no bench line")
         continue
       fi
-      python3 - "$scene" "$name" "$run" "$line" >> "$TSV" <<'PY'
+
+      # Gate 1 (#3347) — the exact failure this file's header describes. The
+      # engine logs these at error! (#1776) and the harness runs RUST_LOG=warn,
+      # so the message IS in the log; nothing used to read it. Matching the
+      # emitted string is exact: no threshold, no false positives.
+      if grep -q 'was specified but 0 .* archives opened' "$log"; then
+        echo "reject: $scene/$name run $run — archives failed to open, scene is \
+near-empty (see $log)" >&2
+        REJECTED+=("$scene/$name run $run: archives failed to open")
+        continue
+      fi
+
+      row="$(python3 - "$scene" "$name" "$run" "$line" <<'PY'
 import re, sys
 scene, name, run, line = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 def num(key, default="0"):
@@ -196,6 +245,36 @@ print("\t".join([
     num("lights"), num("tlas"), token("state_hash"),
 ]))
 PY
+)"
+
+      # Gate 2 (#3347) — entity floor. Defence in depth behind gate 1: catches a
+      # near-empty load that arrived some other way (a wrong --cell, a missing
+      # master) and never printed the archive error.
+      entities="$(printf '%s' "$row" | cut -f19)"
+      floor="$(scene_entity_floor "$scene")"
+      if [[ "${entities%%.*}" -lt "$floor" ]]; then
+        echo "reject: $scene/$name run $run — $entities entities is below the \
+$floor floor for this scene; the run did not load real content (see $log)" >&2
+        REJECTED+=("$scene/$name run $run: $entities entities < $floor floor")
+        continue
+      fi
+
+      # Gate 3 (#3347) — state_hash must be identical across the runs of one
+      # config. The three runs are the same scene at the same frame; a differing
+      # hash means they did not converge on the same world state, so a median
+      # over them is a median over different scenes. The archived TSV is already
+      # constant here, so this pins an invariant that holds today.
+      hash="$(printf '%s' "$row" | cut -f23)"
+      if [[ -z "$config_hash" ]]; then
+        config_hash="$hash"
+      elif [[ "$hash" != "$config_hash" ]]; then
+        echo "reject: $scene/$name run $run — state_hash $hash differs from \
+$config_hash on earlier runs of this config; the runs are not the same scene" >&2
+        REJECTED+=("$scene/$name run $run: state_hash $hash != $config_hash")
+        continue
+      fi
+
+      printf '%s\n' "$row" >> "$TSV"
       printf '.' >&2
     done
     echo " $scene/$name done" >&2
@@ -205,3 +284,16 @@ done
 echo >&2
 echo "raw rows: $TSV" >&2
 python3 "$REPO/scripts/fsr_bench_report.py" "$TSV"
+
+# #3347 — a matrix with silently-bad rows in it is worse than no matrix, so
+# surface every rejection and exit non-zero. The report above still prints:
+# the operator needs to see what *did* land alongside what was thrown out.
+if (( ${#REJECTED[@]} > 0 )); then
+  echo >&2
+  echo "error: ${#REJECTED[@]} run(s) rejected by the sanity gates — this \
+matrix is NOT a valid bench-of-record:" >&2
+  for r in "${REJECTED[@]}"; do
+    echo "  - $r" >&2
+  done
+  exit 3
+fi

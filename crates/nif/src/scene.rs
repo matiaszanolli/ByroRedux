@@ -182,10 +182,15 @@ impl NifScene {
     /// This is an optional post-parse sanity pass — `parse_nif` does not
     /// run it, so consumers that care (debug builds, `nif_stats`, tests
     /// against real corpora) can opt in via:
-    /// ```ignore
+    /// ```no_run
+    /// # // `no_run` rather than `ignore` (#3348) — compiled, not executed.
+    /// fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let bytes: Vec<u8> = Vec::new();
     /// let scene = byroredux_nif::parse_nif(&bytes)?;
     /// for err in scene.validate_refs() {
     ///     log::warn!("{err:?}");
+    /// }
+    /// # Ok(())
     /// }
     /// ```
     ///

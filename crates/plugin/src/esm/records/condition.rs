@@ -246,37 +246,55 @@ pub type ConditionList = Vec<Condition>;
 /// caller (a record walker) skips the condition silently in that
 /// case rather than failing the entire record.
 ///
-/// Accepts the 24-byte (Oblivion / TES4), 28-byte (FO3 / FNV), and
-/// 32-byte (Skyrim+) layouts. Anything shorter than 24 (truncated CTDA,
-/// malformed plugin) returns `None`.
+/// Accepts the 20-byte (FNV short form), 24-byte (Oblivion / TES4), 28-byte
+/// (FO3 / FNV), and 32-byte (Skyrim+) layouts. Anything shorter than 20
+/// (truncated CTDA, malformed plugin) returns `None`.
 pub fn parse_ctda(sub: &SubRecord) -> Option<Condition> {
     if sub.sub_type != *b"CTDA" {
         return None;
     }
     let data = &sub.data;
-    // Layout by length (#1548): Oblivion (TES4) CTDA is 24 bytes; FO3 / FNV
-    // are 28; Skyrim+ is 32. Offsets 0-19 (type, comparand, function@8,
-    // function u16@8 + unused@10, param1@12, param2@16) are byte-identical
-    // across all three — the
-    // Oblivion 24-byte record simply lacks the run_on@20 / reference@24
-    // tail (its bytes 20-23 are unused). Pre-fix the hard `< 28` reject
-    // dropped every Oblivion condition silently.
-    if data.len() < 24 {
+    // Layout by length (#1548, #3350): the canonical prefix is 20 bytes —
+    // type@0, comparand@4, function u16@8 (+ unused@10), param1@12, param2@16
+    // — and every known layout is that prefix plus an optional tail:
+    //
+    //   20  FNV short form: prefix only, no run_on/reference tail
+    //   24  Oblivion (TES4): prefix + 4 unused bytes
+    //   28  FO3 / FNV:       prefix + run_on@20 + reference@24
+    //   32  Skyrim+:         the above + extra_data_id@28
+    //
+    // The 20-byte form is real, vanilla FNV content, not corruption. A CTDA
+    // size histogram over the whole of FalloutNV.esm reads
+    // `{28: 67880, 20: 123, 24: 2}`; the 20-byte rows are 24 PACK conditions
+    // (the two Patrol packages `0x26d86 mvsRaiderTowerPatrolA` and
+    // `0x26d88 mvsRaiderTowerPatrolB`, each a twelve-leaf OR-chain of
+    // hour-of-day windows), 98 IDLE conditions and 1 QUST condition. The
+    // sub-record size field reads `0x0014` verbatim in the file — this is the
+    // authored length, not a walker artefact.
+    //
+    // Pre-#3350 the `< 24` reject dropped all of them with only a debug log,
+    // exactly as the earlier `< 28` reject had dropped every Oblivion
+    // condition before #1548. That was invisible rather than harmless: the
+    // conditions never reached `PackRecord.conditions`, so an empty list made
+    // the packages unconditionally active, and the day `ConditionFunction`
+    // learns function 18 those two Patrol packages would *still* be
+    // unconditionally active — a wrong result arriving via a change in an
+    // unrelated file, with no test to catch it.
+    if data.len() < 20 {
         log::debug!(
-            "CTDA payload {} bytes < 24 (Oblivion minimum) — dropping condition",
+            "CTDA payload {} bytes < 20 (shortest known prefix) — dropping condition",
             data.len()
         );
         return None;
     }
-    // Defense-in-depth (#1550): a CTDA is exactly 24 (Oblivion), 28 (FO3/FNV),
-    // or 32 (Skyrim+) bytes. Anything else is parsed best-effort against the
-    // 24-byte prefix but is a layout signal worth surfacing rather than
-    // silently absorbing — this is the trap that hid the Oblivion 24-byte
-    // case (#1548) for so long.
-    if !matches!(data.len(), 24 | 28 | 32) {
+    // Defense-in-depth (#1550): a CTDA is exactly 20, 24, 28 or 32 bytes.
+    // Anything else is parsed best-effort against the 20-byte prefix but is a
+    // layout signal worth surfacing rather than silently absorbing — this is
+    // the trap that hid the Oblivion 24-byte case (#1548) for so long.
+    if !matches!(data.len(), 20 | 24 | 28 | 32) {
         log::debug!(
-            "CTDA unexpected payload length {} (expected 24/28/32) — \
-             parsing against the 24-byte prefix; possible per-game layout drift",
+            "CTDA unexpected payload length {} (expected 20/24/28/32) — \
+             parsing against the 20-byte prefix; possible per-game layout drift",
             data.len()
         );
     }
@@ -301,8 +319,10 @@ pub fn parse_ctda(sub: &SubRecord) -> Option<Condition> {
     let function_index = u16::from_le_bytes([data[8], data[9]]) as u32;
     let param_1 = u32::from_le_bytes([data[12], data[13], data[14], data[15]]);
     let param_2 = u32::from_le_bytes([data[16], data[17], data[18], data[19]]);
-    // run_on / reference exist only on the 28+ byte (FO3+) layout; on
-    // Oblivion 24-byte records they are absent → default Subject / 0.
+    // run_on / reference exist only on the 28+ byte (FO3+) layout; on the
+    // 20-byte FNV short form and Oblivion's 24-byte records they are absent
+    // → default Subject / 0. `param_1`/`param_2` above need no length gate:
+    // they live at 12..20, entirely inside the shortest accepted form.
     let (run_on, reference_form_id) = if data.len() >= 28 {
         let run_on_raw = u32::from_le_bytes([data[20], data[21], data[22], data[23]]);
         (
@@ -537,14 +557,74 @@ mod tests {
         assert_eq!(cond.param_1, 0x11);
     }
 
-    /// A payload shorter than the Oblivion minimum (24) is still rejected.
+    /// #3350 — a payload shorter than the 20-byte canonical prefix is still
+    /// rejected. The floor moved from 24 to 20 (real FNV content authors the
+    /// short form), not to zero: below 20 the `param_2` read at 16..20 would
+    /// be out of bounds.
     #[test]
-    fn parse_ctda_under_24_bytes_returns_none() {
-        let sub = SubRecord {
+    fn parse_ctda_under_20_bytes_returns_none() {
+        for len in [0usize, 8, 19] {
+            let sub = SubRecord {
+                sub_type: *b"CTDA",
+                data: vec![0u8; len],
+            };
+            assert!(
+                parse_ctda(&sub).is_none(),
+                "{len}-byte CTDA is below the 20-byte prefix and must be rejected"
+            );
+        }
+    }
+
+    /// #3350 — the 20-byte CTDA form is real vanilla FNV content and must
+    /// parse. Pre-fix the `< 24` guard dropped it with only a debug log,
+    /// taking 123 conditions on `FalloutNV.esm` with it (24 PACK, 98 IDLE,
+    /// 1 QUST — verified against the file: the sub-record size field reads
+    /// `0x0014` verbatim, so this is the authored length, not a walker
+    /// artefact).
+    ///
+    /// Bytes are the first two CTDAs of `0x26d88 mvsRaiderTowerPatrolB`,
+    /// transcribed from a raw record dump. It is a twelve-leaf OR-chain of
+    /// hour-of-day windows for a tower patrol: function 18, comparand
+    /// stepping 2.0 -> 4.0 -> 6.0 ..., and the `0x01` OR bit set on
+    /// alternating rows.
+    #[test]
+    fn parse_fnv_20_byte_ctda_from_patrol_package() {
+        // 60 00 00 00 | 00 00 00 40 | 12 00 | 00 00 | 00000000 | 00000000
+        let first = SubRecord {
             sub_type: *b"CTDA",
-            data: vec![0u8; 20],
+            data: vec![
+                0x60, 0x00, 0x00, 0x00, // type: comparator bits, OR bit clear
+                0x00, 0x00, 0x00, 0x40, // comparand f32 = 2.0
+                0x12, 0x00, // function index u16 = 18
+                0x00, 0x00, // unused
+                0x00, 0x00, 0x00, 0x00, // param_1
+                0x00, 0x00, 0x00, 0x00, // param_2
+            ],
         };
-        assert!(parse_ctda(&sub).is_none());
+        assert_eq!(first.data.len(), 20);
+        let cond = parse_ctda(&first).expect("20-byte FNV CTDA must parse, not drop");
+        assert_eq!(cond.function_index, 18);
+        assert_eq!(cond.comparand, ConditionValue::Literal(2.0));
+        assert!(!cond.or_next, "OR bit is clear on this row (type 0x60)");
+        // The run_on / reference tail is absent on the short form.
+        assert_eq!(cond.run_on, RunOn::Subject);
+        assert_eq!(cond.reference_form_id, 0);
+
+        // 81 00 00 00 | 00 00 80 40 | 12 00 | ... — OR bit set, comparand 4.0.
+        let second = SubRecord {
+            sub_type: *b"CTDA",
+            data: vec![
+                0x81, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x40, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            ],
+        };
+        let cond = parse_ctda(&second).expect("20-byte FNV CTDA must parse, not drop");
+        assert_eq!(cond.function_index, 18);
+        assert_eq!(cond.comparand, ConditionValue::Literal(4.0));
+        assert!(
+            cond.or_next,
+            "type 0x81 has the 0x01 OR bit set — this is an OR-chain leaf"
+        );
     }
 
     #[test]
@@ -661,11 +741,16 @@ mod tests {
         assert_eq!(cond.extra_data_id, 0xABCD);
     }
 
+    /// #3350 — the accepted floor is the 20-byte canonical prefix. This test
+    /// used a 20-byte payload with the comment "< 28 bytes", which had been
+    /// stale since #1548 lowered the guard to 24 and was wrong outright once
+    /// real FNV 20-byte CTDAs were found. Use a genuinely truncated payload.
+    /// See `parse_ctda_under_20_bytes_returns_none` for the boundary sweep.
     #[test]
     fn parse_ctda_rejects_too_short() {
         let sub = SubRecord {
             sub_type: *b"CTDA",
-            data: vec![0; 20], // < 28 bytes
+            data: vec![0; 19], // one byte under the 20-byte prefix
         };
         assert!(parse_ctda(&sub).is_none());
     }

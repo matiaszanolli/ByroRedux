@@ -32,12 +32,18 @@
 //!
 //! # Example
 //!
-//! ```ignore
-//! let bytes = std::fs::read("character.kfm")?;
-//! let kfm = byroredux_nif::kfm::parse_kfm(&bytes)?;
-//! println!("Model: {}", kfm.model_path);
-//! for seq in &kfm.sequences {
-//!     println!("  [{}] {} → {}", seq.sequence_id, seq.name, seq.filename);
+//! `no_run` rather than `ignore` (#3348). The `ignore` tag was hiding real doc
+//! rot: this example printed `seq.name`, and [`KfmSequence`] has no such field.
+//! Compiling the example is what pins it.
+//! ```no_run
+//! fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!     let bytes = std::fs::read("character.kfm")?;
+//!     let kfm = byroredux_nif::kfm::parse_kfm(&bytes)?;
+//!     println!("Model: {}", kfm.model_path);
+//!     for seq in &kfm.sequences {
+//!         println!("  [{}] {}", seq.sequence_id, seq.filename);
+//!     }
+//!     Ok(())
 //! }
 //! ```
 

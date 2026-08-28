@@ -3,7 +3,7 @@
 //! `tex.missing`, `tex.loaded`, `mesh.info`, `mesh.cache`, `skin.coverage`, `skin.list`, `skin.dump`.
 
 use super::shared::*;
-use crate::components::MaterialTextureHandles;
+use crate::components::{MaterialTextureDebugInfo, MaterialTextureHandles, MaterialTextureSource};
 
 pub(crate) struct TexMissingCommand;
 impl ConsoleCommand for TexMissingCommand {
@@ -11,7 +11,8 @@ impl ConsoleCommand for TexMissingCommand {
         "tex.missing"
     }
     fn description(&self) -> &str {
-        "List entities with fallback (checkerboard) texture and their expected paths \
+        "List entities with a fallback texture in ANY material slot (base_color, \
+         normal, specular, environment, glow, ...) and their expected paths \
          (use `tex.missing entities` to sample entity IDs per bucket)"
     }
     fn execute(&self, world: &World, args: &str) -> CommandOutput {
@@ -22,9 +23,17 @@ impl ConsoleCommand for TexMissingCommand {
             return CommandOutput::line("No TextureHandle or Material components found");
         };
 
-        // Bucket aggregator: path → (count, first-N entity IDs).
+        // Bucket aggregator: "path [slot=role]" → (count, first-N entity IDs).
         let mut missing: HashMap<String, (u32, Vec<EntityId>)> = HashMap::new();
         const ENTITY_SAMPLE_LIMIT: usize = 5;
+        let mut bucket = |key: String, entity: EntityId| {
+            let slot = missing.entry(key).or_insert((0, Vec::new()));
+            slot.0 += 1;
+            if slot.1.len() < ENTITY_SAMPLE_LIMIT {
+                slot.1.push(entity);
+            }
+        };
+
         for (entity, tex) in tex_q.iter() {
             if tex.0 != 0 {
                 continue;
@@ -34,10 +43,49 @@ impl ConsoleCommand for TexMissingCommand {
                 .and_then(|m| m.texture_path.as_deref())
                 .or_else(|| mat.and_then(|m| m.material_path.as_deref()))
                 .unwrap_or("<no path, no material>");
-            let slot = missing.entry(path.to_string()).or_insert((0, Vec::new()));
-            slot.0 += 1;
-            if slot.1.len() < ENTITY_SAMPLE_LIMIT {
-                slot.1.push(entity);
+            bucket(format!("{path}  [slot=base_color]"), entity);
+        }
+
+        // #3349 — the loop above sees only `TextureHandle`, the single
+        // base-color handle. The documented FNV triage ("chrome / posterized
+        // surfaces → run `tex.missing` first") dead-ended whenever the normal,
+        // specular, environment or glow slot was the one that fell back: this
+        // command reported 0 and the operator had no scene-wide signal, with
+        // `mat.dump` (per-entity) the only alternative.
+        //
+        // Walk the full 26-role `MaterialTextureHandles` set. `MaterialTextureSource`
+        // supplies the provenance needed to tell "fell back" from "absent by
+        // design": a role the source never authored is `Absent` and is skipped,
+        // so an emissive-less wall does not read as a missing glow map.
+        if let (Some(handles_q), Some(debug_q)) = (
+            world.query::<MaterialTextureHandles>(),
+            world.query::<MaterialTextureDebugInfo>(),
+        ) {
+            for (entity, handles) in handles_q.iter() {
+                let Some(debug) = debug_q.get(entity) else {
+                    continue;
+                };
+                for ((role, handle), (_, source)) in
+                    handles.textures.roles().zip(debug.sources.roles())
+                {
+                    // base_color is already bucketed above via TextureHandle.
+                    if role == "base_color" || *handle != 0 {
+                        continue;
+                    }
+                    if matches!(*source, MaterialTextureSource::Absent) {
+                        continue;
+                    }
+                    let path = debug
+                        .paths
+                        .roles()
+                        .find(|(name, _)| *name == role)
+                        .and_then(|(_, p)| p.as_deref())
+                        .unwrap_or("<authored, path not retained>");
+                    bucket(
+                        format!("{path}  [slot={role}, src={}]", source.label()),
+                        entity,
+                    );
+                }
             }
         }
 
@@ -661,5 +709,114 @@ impl ConsoleCommand for SkinDumpCommand {
         };
         let lines = format_skin_dump(world, entity, &skin);
         CommandOutput::lines(lines)
+    }
+}
+
+#[cfg(test)]
+mod tex_missing_tests {
+    use super::*;
+    use crate::components::{
+        MaterialTextureDebugInfo, MaterialTextureHandles, MaterialTextureSource,
+    };
+    use byroredux_core::ecs::World;
+    use byroredux_nif::import::MaterialTextureSet;
+
+    fn handles(set: MaterialTextureSet<u32>) -> MaterialTextureHandles {
+        MaterialTextureHandles {
+            textures: set,
+            normal_has_alpha: false,
+            parallax_height_scale: 0.04,
+            parallax_max_passes: 4.0,
+        }
+    }
+
+    /// #3349 — a fallback in a NON-base-color slot must be reported.
+    ///
+    /// Pre-fix `tex.missing` iterated `TextureHandle` only (the single
+    /// base-color handle), so an entity whose base color resolved but whose
+    /// normal map fell back reported "No missing textures" — dead-ending the
+    /// documented "chrome / posterized → run tex.missing first" FNV triage.
+    #[test]
+    fn reports_fallback_in_non_base_color_slot() {
+        let mut world = World::new();
+        let e = world.spawn();
+        // Base color resolved (handle 5); normal fell back (handle 0).
+        world.insert(e, TextureHandle(5));
+        world.insert(e, Material::default());
+        let mut set = MaterialTextureSet::<u32>::default();
+        set.base_color = 5;
+        world.insert(e, handles(set));
+        let mut paths = MaterialTextureSet::<Option<String>>::default();
+        paths.normal = Some("textures/wall_n.dds".to_string());
+        let mut sources = MaterialTextureSet::<MaterialTextureSource>::default();
+        sources.base_color = MaterialTextureSource::MeshMaterial;
+        sources.normal = MaterialTextureSource::MeshMaterial;
+        world.insert(
+            e,
+            MaterialTextureDebugInfo {
+                paths,
+                sources,
+                clamp_mode: 0,
+            },
+        );
+
+        let out = TexMissingCommand.execute(&world, "").lines.join("\n");
+        assert!(
+            out.contains("textures/wall_n.dds") && out.contains("slot=normal"),
+            "a fallen-back normal map must be reported scene-wide; got:\n{out}"
+        );
+    }
+
+    /// A role the source never authored is `Absent`, not a fallback — an
+    /// emissive-less wall must not read as a missing glow map. This is what
+    /// makes the widened walk usable rather than 26x noisier.
+    #[test]
+    fn absent_by_design_roles_are_not_reported() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, TextureHandle(5));
+        world.insert(e, Material::default());
+        let mut set = MaterialTextureSet::<u32>::default();
+        set.base_color = 5;
+        world.insert(e, handles(set));
+        // Every non-base role is handle 0 AND Absent — nothing fell back.
+        let mut sources = MaterialTextureSet::<MaterialTextureSource>::default();
+        sources.base_color = MaterialTextureSource::MeshMaterial;
+        world.insert(
+            e,
+            MaterialTextureDebugInfo {
+                paths: MaterialTextureSet::<Option<String>>::default(),
+                sources,
+                clamp_mode: 0,
+            },
+        );
+
+        let out = TexMissingCommand.execute(&world, "").lines.join("\n");
+        assert!(
+            out.contains("No missing textures"),
+            "roles absent by design must not be reported as missing; got:\n{out}"
+        );
+    }
+
+    /// The pre-existing base-color behaviour is unchanged, and its bucket is
+    /// now labelled with its slot.
+    #[test]
+    fn base_color_fallback_still_reported() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, TextureHandle(0));
+        world.insert(
+            e,
+            Material {
+                texture_path: Some("textures/floor.dds".to_string()),
+                ..Default::default()
+            },
+        );
+
+        let out = TexMissingCommand.execute(&world, "").lines.join("\n");
+        assert!(
+            out.contains("textures/floor.dds") && out.contains("slot=base_color"),
+            "base-color fallback must still be reported; got:\n{out}"
+        );
     }
 }
