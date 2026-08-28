@@ -448,6 +448,86 @@ mod tests {
         );
     }
 
+    /// #2768 — the CPU-side dispatch grid must be derived from the same
+    /// `WORKGROUP_X` / `WORKGROUP_Y` the shader's `local_size` qualifier is
+    /// generated from, never a literal that happens to match today.
+    ///
+    /// The failure mode is silent and one-directional: raise the tile and
+    /// you over-dispatch (harmless, the shader bounds-checks); *lower* it and
+    /// the bottom-right of the output image is never written, so that slot
+    /// keeps the previous cycle's contents and composite samples them as this
+    /// frame's HDR. `bloom.rs` and `volumetrics.rs` already imported the
+    /// constants; the other four kept the literal.
+    #[test]
+    fn compute_dispatches_derive_their_grid_from_the_generated_workgroup_size() {
+        for (file, src) in [
+            ("taa.rs", include_str!("vulkan/taa.rs")),
+            ("svgf.rs", include_str!("vulkan/svgf.rs")),
+            ("ssao.rs", include_str!("vulkan/ssao.rs")),
+            ("caustic.rs", include_str!("vulkan/caustic.rs")),
+            ("bloom.rs", include_str!("vulkan/bloom.rs")),
+            ("volumetrics.rs", include_str!("vulkan/volumetrics.rs")),
+        ] {
+            // Code lines only, same reason as the sibling test below.
+            let production: String = src
+                .split("#[cfg(test)]")
+                .next()
+                .unwrap_or(src)
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(
+                !production.contains(&format!("div_ceil({WORKGROUP_X})")),
+                "{file}: dispatch grid uses a literal tile size — import \
+                 WORKGROUP_X / WORKGROUP_Y instead, so lowering the tile \
+                 cannot leave the pass's output partially unwritten (#2768)"
+            );
+            assert!(
+                production.contains("WORKGROUP_X") && production.contains("WORKGROUP_Y"),
+                "{file}: must derive its dispatch grid from the generated \
+                 workgroup constants (#2768)"
+            );
+        }
+    }
+
+    /// #2771 — every temporal pass that reads "last frame's slot" must use
+    /// the general `(f + N - 1) % N` form, not `(f + 1) % N`.
+    ///
+    /// The two are equal only at `MAX_FRAMES_IN_FLIGHT == 2`. At 3 the short
+    /// form names the frame *two* steps back — a slot that may still be in
+    /// flight — so it silently converts a raise of the sync tier into a
+    /// history-aliasing bug. `sync.rs`'s `== 2` gate (#870) is the real
+    /// ceiling today, but its own comment enumerates the remedies that would
+    /// let it be relaxed, so relaxing it is a contemplated change and these
+    /// call sites must not be what breaks.
+    #[test]
+    fn temporal_history_indexing_uses_the_general_previous_slot_form() {
+        for (file, src) in [
+            ("taa.rs", include_str!("vulkan/taa.rs")),
+            ("svgf.rs", include_str!("vulkan/svgf.rs")),
+            ("restir.rs", include_str!("vulkan/restir.rs")),
+            ("volumetrics.rs", include_str!("vulkan/volumetrics.rs")),
+        ] {
+            // Code lines only — the prose above these call sites names the
+            // rejected form in order to explain why it is rejected.
+            let production: String = src
+                .split("#[cfg(test)]")
+                .next()
+                .unwrap_or(src)
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(
+                !production.contains("+ 1) % MAX_FRAMES_IN_FLIGHT"),
+                "{file}: `(f + 1) % MAX_FRAMES_IN_FLIGHT` names the previous \
+                 slot only at exactly 2 — use `(f + MAX_FRAMES_IN_FLIGHT - \
+                 1) % MAX_FRAMES_IN_FLIGHT` (#2771)"
+            );
+        }
+    }
+
     /// Verify all affected shaders include the shared header.
     ///
     /// #1780 (D14-LOW-01) — this allow-list MUST cover every shader that

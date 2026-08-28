@@ -147,28 +147,24 @@ impl AccelerationManager {
         // the post-`queue_submit` history advance in `draw_frame`
         // (#917 / REN-D10-NEW-03).
 
-        // Mark referenced BLAS entries as used for LRU eviction.
-        // Skinned draws ride the per-entity skinned_blas table; rigid
-        // draws ride the per-mesh blas_entries table. The override
-        // mirror in the build loop above kept the same discriminator.
-        // Filter is `draw_command_eligible_for_tlas` so water surfaces
-        // (#1024) and `!in_tlas` draws stay out of the LRU-bump path
-        // in lockstep with the build loop above.
-        for draw_cmd in draw_commands {
-            if !draw_command_eligible_for_tlas(draw_cmd) {
-                continue;
-            }
-            if draw_cmd.bone_offset != 0 {
-                if let Some(entry) = self.skinned_blas.get_mut(&draw_cmd.entity_id) {
-                    entry.last_used_frame = self.frame_counter;
-                }
-            } else {
-                let h = draw_cmd.mesh_handle as usize;
-                if let Some(Some(ref mut blas)) = self.blas_entries.get_mut(h) {
-                    blas.last_used_frame = self.frame_counter;
-                }
-            }
-        }
+        // #2769 — the LRU stamping pass that used to sit here was removed:
+        // `build_tlas_instances` above already sets `last_used_frame` on
+        // exactly the same set. Both walked `draw_commands` under the same
+        // `draw_command_eligible_for_tlas` filter and stamped through the
+        // same skinned/rigid discriminator, so the second walk was a full
+        // O(draw_commands) re-bump of stamps that already carried this
+        // frame's counter.
+        //
+        // The finding that flagged it read the two as non-equivalent — the
+        // second also protecting BLAS the first dropped on its
+        // `missing_ssbo_instance` arm. That is not what the first pass does:
+        // it stamps while *resolving* the BLAS address, which is upstream of
+        // the `instance_map` lookup, so a draw dropped for lacking an SSBO
+        // instance has already been stamped by the time that arm runs. That
+        // ordering is the whole equivalence, and it is load-bearing rather
+        // than incidental — a BLAS whose draw is briefly missing from the
+        // compacted SSBO (mid-eviction) must not age out — so
+        // `stamp_precedes_the_ssbo_drop_in_build_tlas_instances` pins it.
 
         // Write instances to host-visible staging buffer.
         //

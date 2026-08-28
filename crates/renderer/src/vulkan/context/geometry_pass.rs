@@ -361,7 +361,15 @@ impl VulkanContext {
                 // fallback elides VB/IB rebinds when consecutive
                 // dispatches share `mesh_handle` (the two-sided
                 // alpha-blend split is the dominant case).
-                let dispatch_direct = |this: &Self, last_bound: &mut u32| {
+                //
+                // #2766 — returns whether a draw was actually recorded, so
+                // the two early-out arms below (missing mesh, per-mesh
+                // buffers absent) don't get counted into
+                // `indirect_call_count`. Both are reachable on the
+                // `global_bound == false` path only, where the metric would
+                // otherwise be an upper bound rather than the GPU-draw count
+                // it is documented as.
+                let dispatch_direct = |this: &Self, last_bound: &mut u32| -> bool {
                     if global_bound {
                         this.device.cmd_draw_indexed(
                             cmd,
@@ -371,6 +379,7 @@ impl VulkanContext {
                             batch.global_vertex_offset,
                             batch.first_instance,
                         );
+                        true
                     } else {
                         // Per-mesh fallback (global SSBO not bound this frame).
                         // A global-only scene mesh (distant terrain LOD, #1370)
@@ -378,12 +387,12 @@ impl VulkanContext {
                         // the global buffer once `rebuild_geometry_ssbo` runs
                         // (≤1-frame distant pop-in, invisible).
                         let Some(mesh) = this.mesh_registry.get(batch.mesh_handle) else {
-                            return;
+                            return false;
                         };
                         let (Some(vb), Some(ib)) =
                             (mesh.vertex_buffer.as_ref(), mesh.index_buffer.as_ref())
                         else {
-                            return;
+                            return false;
                         };
                         if batch.mesh_handle != *last_bound {
                             this.device
@@ -404,6 +413,7 @@ impl VulkanContext {
                             0,
                             batch.first_instance,
                         );
+                        true
                     }
                 };
 
@@ -415,11 +425,16 @@ impl VulkanContext {
                     // `cmd_draw_indexed_indirect` over a group can't
                     // express without interleaving meshes.
                     set_cull(vk::CullModeFlags::FRONT, &mut last_cull_mode);
-                    dispatch_direct(self, &mut last_bound_mesh_handle);
+                    let back = dispatch_direct(self, &mut last_bound_mesh_handle);
                     set_cull(vk::CullModeFlags::BACK, &mut last_cull_mode);
-                    dispatch_direct(self, &mut last_bound_mesh_handle);
-                    // #1258 — two-sided split emits 2 direct draws.
-                    self.last_draw_call_stats.indirect_call_count += 2;
+                    let front = dispatch_direct(self, &mut last_bound_mesh_handle);
+                    // #1258 — two-sided split emits 2 direct draws, #2766 —
+                    // unless the fallback skipped them. Both calls see the
+                    // same batch so they agree, but counting each keeps the
+                    // metric derived from what was recorded rather than from
+                    // an assumption about the pair.
+                    self.last_draw_call_stats.indirect_call_count +=
+                        u32::from(back) + u32::from(front);
                     i += 1;
                 } else if use_indirect {
                     set_cull(default_cull, &mut last_cull_mode);
@@ -457,9 +472,12 @@ impl VulkanContext {
                     // Direct-draw fallback: global VB/IB bound or
                     // per-mesh fallback inside `dispatch_direct`.
                     set_cull(default_cull, &mut last_cull_mode);
-                    dispatch_direct(self, &mut last_bound_mesh_handle);
-                    // #1258 — direct fallback emits 1 draw per batch.
-                    self.last_draw_call_stats.indirect_call_count += 1;
+                    // #1258 — direct fallback emits 1 draw per batch; #2766 —
+                    // zero when the per-mesh fallback found no buffers to
+                    // draw from (a global-only distant-LOD mesh, #1370).
+                    if dispatch_direct(self, &mut last_bound_mesh_handle) {
+                        self.last_draw_call_stats.indirect_call_count += 1;
+                    }
                     i += 1;
                 }
             }
@@ -686,5 +704,46 @@ impl VulkanContext {
                 timers.cmd_main_render_end(&self.device, cmd, frame);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// #2766 — `indirect_call_count` is documented as the GPU-draw count
+    /// (and divides `batch_count` to give the surfaced grouping ratio), so
+    /// it must be incremented from what `dispatch_direct` actually recorded,
+    /// not from the branch that called it. Both of the closure's early-outs
+    /// — no mesh in the registry, and a mesh with no per-mesh buffers (the
+    /// #1370 global-only distant-LOD case) — are reachable on the
+    /// `global_bound == false` path, where an unconditional bump turned the
+    /// metric into an upper bound.
+    ///
+    /// Source-scan pin: the closure lives inside an `unsafe` command-buffer
+    /// recording function that needs a live device and a populated mesh
+    /// registry, so the counting rule cannot be exercised in a unit test.
+    #[test]
+    fn draw_call_stats_count_only_recorded_direct_draws() {
+        const SRC: &str = include_str!("geometry_pass.rs");
+        let production = SRC.split("#[cfg(test)]").next().unwrap_or(SRC);
+
+        assert!(
+            production
+                .contains("let dispatch_direct = |this: &Self, last_bound: &mut u32| -> bool"),
+            "dispatch_direct must report whether it recorded a draw (#2766)"
+        );
+        assert!(
+            production.contains("if dispatch_direct(self, &mut last_bound_mesh_handle) {"),
+            "the direct-fallback arm must count only on a recorded draw (#2766)"
+        );
+        assert!(
+            production.contains("u32::from(back) + u32::from(front)"),
+            "the two-sided split must count each of its two dispatches by \
+             what it recorded, not by assuming both drew (#2766)"
+        );
+        assert!(
+            !production.contains("indirect_call_count += 2"),
+            "an unconditional +=2 assumes both halves of the two-sided \
+             split recorded; they can both early-out (#2766)"
+        );
     }
 }

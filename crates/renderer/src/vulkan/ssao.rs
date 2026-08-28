@@ -11,6 +11,7 @@ use super::descriptors::{
     DescriptorPoolBuilder,
 };
 use super::reflect::{validate_set_layout, ReflectedShader};
+use crate::shader_constants::{WORKGROUP_X, WORKGROUP_Y};
 use anyhow::{Context, Result};
 use ash::vk;
 
@@ -560,8 +561,10 @@ impl SsaoPipeline {
             &[],
         );
 
-        let groups_x = self.width.div_ceil(8);
-        let groups_y = self.height.div_ceil(8);
+        // #2768 — from the same constants `ssao.comp`'s `local_size` is
+        // generated from; see `taa.rs`'s dispatch.
+        let groups_x = self.width.div_ceil(WORKGROUP_X);
+        let groups_y = self.height.div_ceil(WORKGROUP_Y);
         device.cmd_dispatch(cmd, groups_x, groups_y, 1);
 
         // Transition AO image to SHADER_READ_ONLY for fragment shader sampling.

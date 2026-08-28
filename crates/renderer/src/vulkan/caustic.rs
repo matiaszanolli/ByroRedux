@@ -51,6 +51,7 @@ use super::descriptors::{
 use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 use crate::shader_constants::CAUSTIC_FIXED_SCALE;
+use crate::shader_constants::{WORKGROUP_X, WORKGROUP_Y};
 use anyhow::{Context, Result};
 use ash::vk;
 use gpu_allocator::vulkan as vk_alloc;
@@ -939,8 +940,10 @@ impl CausticPipeline {
             &[self.descriptor_sets[frame]],
             &[],
         );
-        let gx = self.width.div_ceil(8);
-        let gy = self.height.div_ceil(8);
+        // #2768 — from the same constants `caustic_splat.comp`'s
+        // `local_size` is generated from; see `taa.rs`'s dispatch.
+        let gx = self.width.div_ceil(WORKGROUP_X);
+        let gy = self.height.div_ceil(WORKGROUP_Y);
         let push_bytes = |decay_only: u32, factor: f32| -> [u8; 8] {
             let mut b = [0u8; 8];
             b[0..4].copy_from_slice(&decay_only.to_ne_bytes());

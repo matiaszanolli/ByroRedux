@@ -63,17 +63,20 @@ use super::descriptors::{
 use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::GpuUploadCtx;
+use crate::shader_constants::{WORKGROUP_X, WORKGROUP_Y};
 use anyhow::{Context, Result};
 use ash::vk;
 use gpu_allocator::vulkan as vk_alloc;
 
-// #918 / REN-D10-NEW-04 — SVGF's read-previous / write-current
-// ping-pong (`prev = (f + 1) % MAX_FRAMES_IN_FLIGHT`) silently aliases
-// to the same slot if the constant is ever lowered to 1
-// (single-frame-in-flight CPU-bound mode). Compile-time gate so a
-// future sync-tier change that touches the constant fails the build
-// here rather than producing a degenerate history-recovery boundary
-// at runtime.
+// #918 / REN-D10-NEW-04 — SVGF's read-previous / write-current ping-pong
+// silently aliases to the same slot if the constant is ever lowered to 1
+// (single-frame-in-flight CPU-bound mode). Compile-time gate so a future
+// sync-tier change that touches the constant fails the build here rather
+// than producing a degenerate history-recovery boundary at runtime.
+//
+// #2771 — `prev` uses the general `(f + N - 1) % N` previous-slot form for
+// the same reason `taa.rs` does; see the longer note there. It makes `>= 2`
+// the exact requirement rather than a weaker one than the arithmetic needed.
 const _: () = assert!(
     MAX_FRAMES_IN_FLIGHT >= 2,
     "SVGF ping-pong arithmetic requires MAX_FRAMES_IN_FLIGHT >= 2 — \
@@ -821,7 +824,7 @@ impl SvgfPipeline {
     ) {
         let param_size = std::mem::size_of::<SvgfTemporalParams>() as vk::DeviceSize;
         for f in 0..MAX_FRAMES_IN_FLIGHT {
-            let prev = (f + 1) % MAX_FRAMES_IN_FLIGHT;
+            let prev = (f + MAX_FRAMES_IN_FLIGHT - 1) % MAX_FRAMES_IN_FLIGHT;
 
             let curr_indirect = [vk::DescriptorImageInfo::default()
                 .sampler(self.point_sampler)
@@ -1295,8 +1298,10 @@ impl SvgfPipeline {
             &[],
         );
 
-        let gx = self.width.div_ceil(8);
-        let gy = self.height.div_ceil(8);
+        // #2768 — from the same constants `svgf_temporal.comp`'s
+        // `local_size` is generated from; see `taa.rs`'s dispatch.
+        let gx = self.width.div_ceil(WORKGROUP_X);
+        let gy = self.height.div_ceil(WORKGROUP_Y);
         device.cmd_dispatch(cmd, gx, gy, 1);
 
         // Barrier: compute write → composite's fragment shader sampling.
@@ -1331,8 +1336,9 @@ impl SvgfPipeline {
         // overwrites). The final iteration's slot is read by composite
         // (FRAGMENT) — `indirect_view(frame)` returns it.
         device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.atrous_pipeline);
-        let agx = self.width.div_ceil(8);
-        let agy = self.height.div_ceil(8);
+        // #2768 — `svgf_atrous.comp` is generated from the same pair.
+        let agx = self.width.div_ceil(WORKGROUP_X);
+        let agy = self.height.div_ceil(WORKGROUP_Y);
         for k in 0..ATROUS_ITERATIONS {
             let push = AtrousPush {
                 screen: [self.width, self.height],

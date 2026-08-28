@@ -553,3 +553,50 @@ fn as_build_to_ray_query_barrier_runs_on_both_build_tlas_arms() {
          while the barrier itself does not (#2931)"
     );
 }
+
+/// #2769 — `build_tlas` used to walk `draw_commands` a second time purely
+/// to re-stamp `last_used_frame`. Removing that pass is only safe because
+/// `build_tlas_instances` stamps while *resolving* the BLAS address, which
+/// is upstream of the `instance_map` lookup — so a draw that gets dropped
+/// for having no compacted SSBO instance (a BLAS briefly outliving its
+/// entry mid-eviction) has already been stamped and cannot age out.
+///
+/// Move the stamp below that `continue` and the LRU silently starts
+/// evicting live BLAS a few frames later — a corrupted-BVH class of bug
+/// with no local symptom. Source-scan pin: the manager needs a live device
+/// to instantiate, so the ordering cannot be asserted behaviourally here.
+#[test]
+fn stamp_precedes_the_ssbo_drop_in_build_tlas_instances() {
+    const TLAS_RS: &str = include_str!("../tlas.rs");
+    let body = TLAS_RS
+        .split_once("fn build_tlas_instances(")
+        .expect("build_tlas_instances still exists")
+        .1;
+
+    let skinned_stamp = body
+        .find("entry.last_used_frame = self.frame_counter;")
+        .expect("skinned draws must stamp their LRU");
+    let rigid_stamp = body
+        .find("blas.last_used_frame = self.frame_counter;")
+        .expect("rigid draws must stamp their LRU");
+    let ssbo_drop = body
+        .find("missing_ssbo_instance += 1;")
+        .expect("the no-SSBO-instance drop arm must still exist");
+
+    assert!(
+        skinned_stamp < ssbo_drop && rigid_stamp < ssbo_drop,
+        "both LRU stamps must precede the missing-SSBO-instance drop — \
+         #2769 deleted build_tlas's compensating second pass on exactly \
+         that ordering"
+    );
+
+    assert_eq!(
+        TLAS_RS
+            .matches("last_used_frame = self.frame_counter")
+            .count(),
+        2,
+        "exactly two stamp sites (skinned + rigid), both in \
+         build_tlas_instances — a second stamping pass is redundant work \
+         over every draw command, every frame (#2769)"
+    );
+}

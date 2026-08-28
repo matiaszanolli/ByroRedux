@@ -101,9 +101,14 @@ impl ReservoirBuffers {
     }
 
     /// The reservoir buffer this frame reads as temporal history (binding 17):
-    /// the other frame-in-flight slot, mirroring the SVGF ping-pong.
+    /// the previous frame-in-flight slot, mirroring the SVGF ping-pong.
+    ///
+    /// #2771 — general `(f + N - 1) % N` form, like `taa.rs` / `svgf.rs` /
+    /// `volumetrics.rs`. Identical to `(f + 1) % N` at today's
+    /// `MAX_FRAMES_IN_FLIGHT == 2`, but that one names the frame *two* steps
+    /// back at 3, which is a slot that may still be in flight.
     pub fn prev_buffer(&self, frame: usize) -> vk::Buffer {
-        self.buffers[(frame + 1) % MAX_FRAMES_IN_FLIGHT].buffer
+        self.buffers[(frame + MAX_FRAMES_IN_FLIGHT - 1) % MAX_FRAMES_IN_FLIGHT].buffer
     }
 
     /// Byte size of one reservoir buffer (for the descriptor range).
@@ -388,15 +393,17 @@ mod tests {
         );
     }
 
-    /// Ping-pong: curr/prev are always different slots at
-    /// MAX_FRAMES_IN_FLIGHT == 2 (else temporal history aliases the write).
+    /// Ping-pong: curr/prev are always different slots (else temporal
+    /// history aliases the write). #2771 — asserted against the general
+    /// previous-slot form the accessor now uses, so this stays meaningful
+    /// if `MAX_FRAMES_IN_FLIGHT` is ever raised past 2.
     #[test]
     fn ping_pong_slots_differ() {
         const {
             assert!(MAX_FRAMES_IN_FLIGHT >= 2);
         }
         for f in 0..MAX_FRAMES_IN_FLIGHT {
-            assert_ne!(f, (f + 1) % MAX_FRAMES_IN_FLIGHT);
+            assert_ne!(f, (f + MAX_FRAMES_IN_FLIGHT - 1) % MAX_FRAMES_IN_FLIGHT);
         }
     }
 

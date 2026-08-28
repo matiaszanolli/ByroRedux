@@ -40,16 +40,27 @@ use super::reflect::{validate_set_layout, ReflectedShader};
 use super::svgf::should_force_history_reset;
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::GpuUploadCtx;
+use crate::shader_constants::{WORKGROUP_X, WORKGROUP_Y};
 use anyhow::{Context, Result};
 use ash::vk;
 use gpu_allocator::vulkan as vk_alloc;
 
-// #918 / REN-D10-NEW-04 — TAA's read-previous / write-current
-// ping-pong (`prev = (f + 1) % MAX_FRAMES_IN_FLIGHT` at line ~441,
-// history-slot indexing throughout) requires at least 2 slots.
-// Compile-time gate so a future sync-tier change that touches the
-// constant fails the build here rather than producing a degenerate
-// history-recovery boundary at runtime.
+// #918 / REN-D10-NEW-04 — TAA's read-previous / write-current ping-pong
+// (`prev` in `write_descriptor_sets`, history-slot indexing throughout)
+// requires at least 2 slots. Compile-time gate so a future sync-tier change
+// that touches the constant fails the build here rather than producing a
+// degenerate history-recovery boundary at runtime.
+//
+// #2771 — this assert used to be weaker than the arithmetic it guarded:
+// `prev` was `(f + 1) % MAX_FRAMES_IN_FLIGHT`, which names the previous slot
+// only at exactly 2 (at 3 it is two frames ago, reading a slot that may still
+// be in flight). `>= 2` therefore admitted values the expression got wrong.
+// Rather than tighten the assert to `== 2`, `prev` now uses the general
+// previous-slot form `(f + N - 1) % N` that `volumetrics.rs` already uses —
+// identical at 2, correct at any N — so `>= 2` is now exactly the
+// requirement. `sync.rs`'s own `== 2` gate (#870) remains the real ceiling,
+// and its comment enumerates the two remedies that would let it be relaxed;
+// this file no longer has an opinion on that beyond needing a distinct slot.
 const _: () = assert!(
     MAX_FRAMES_IN_FLIGHT >= 2,
     "TAA ping-pong arithmetic requires MAX_FRAMES_IN_FLIGHT >= 2 — \
@@ -511,12 +522,14 @@ impl TaaPipeline {
     ) {
         let param_size = std::mem::size_of::<TaaParams>() as vk::DeviceSize;
         for f in 0..MAX_FRAMES_IN_FLIGHT {
-            // `prev` selects the OTHER FIF slot — the descriptor for
+            // `prev` selects the PREVIOUS FIF slot — the descriptor for
             // frame slot `f` reads its previous-frame inputs
-            // (`prev_mid`, `prev_history`) from slot `(f + 1) %
-            // MAX_FRAMES_IN_FLIGHT`. Steady state this is the slot
-            // that just submitted last frame and is now resident in
-            // `SHADER_READ_ONLY_OPTIMAL` / `GENERAL`.
+            // (`prev_mid`, `prev_history`) from slot `(f + N - 1) % N`.
+            // Steady state this is the slot that just submitted last frame
+            // and is now resident in `SHADER_READ_ONLY_OPTIMAL` / `GENERAL`.
+            // #2771 — the general form, not `(f + 1) % N`: the two agree at
+            // `N == 2` (today's gate) but only this one still names the
+            // previous frame if `sync.rs` ever raises it.
             //
             // First-frame note (REN-D11-NEW-04, audit 2026-05-09; reworded
             // #1933 / TAA-D13-02): on session frame 0, the OTHER slot's
@@ -532,7 +545,7 @@ impl TaaPipeline {
             // first-frame guard is ever dropped or moved, this descriptor
             // write needs to pre-clear the OTHER slot's images to a defined
             // colour first, or skip the dispatch for frame 0.
-            let prev = (f + 1) % MAX_FRAMES_IN_FLIGHT;
+            let prev = (f + MAX_FRAMES_IN_FLIGHT - 1) % MAX_FRAMES_IN_FLIGHT;
 
             let curr_hdr = [vk::DescriptorImageInfo::default()
                 .sampler(self.linear_sampler)
@@ -746,8 +759,13 @@ impl TaaPipeline {
             &[],
         );
 
-        let gx = self.width.div_ceil(8);
-        let gy = self.height.div_ceil(8);
+        // #2768 — the tile must come from the same constants `taa.comp`'s
+        // `local_size` is generated from. With a literal here, lowering the
+        // tile would leave the bottom-right of the output never written and
+        // composite would sample the previous cycle's history as this
+        // frame's HDR.
+        let gx = self.width.div_ceil(WORKGROUP_X);
+        let gy = self.height.div_ceil(WORKGROUP_Y);
         device.cmd_dispatch(cmd, gx, gy, 1);
 
         // Expose the result to composite's fragment shader read.
