@@ -623,7 +623,16 @@ pub struct FactionRelation {
     /// Modifier (-100..100, larger means more friendly).
     pub modifier: i32,
     /// Combat reaction (0=neutral, 1=enemy, 2=ally, 3=friend).
-    pub combat_reaction: u8,
+    ///
+    /// Stored at the on-disk width (`u32` per UESP), not narrowed to the
+    /// vanilla 0..=3 range. Pre-#3339 this was `u8` while the parser read
+    /// a full `u32` and cast — so the `as u8` truncated back to exactly the
+    /// eight bits the pre-#482 `sub.data[8]` read had, defeating the stated
+    /// purpose of the wider read. Vanilla FNV never exceeds 3 (all 1,314
+    /// `XNAM` sub-records are 12 bytes; values `{0: 179, 1: 264, 2: 472,
+    /// 3: 399}`), so no live data changes — this only makes the field
+    /// honour what the parser actually decodes.
+    pub combat_reaction: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -1611,13 +1620,16 @@ pub fn parse_fact(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
             // The reaction field is a full 4-byte u32 per UESP; pre-#482 the
             // parser read only the low byte via `sub.data[8]`, which happened
             // to be correct for vanilla values 0..=3 but would silently
-            // truncate any future mod that extends the enum past 255.
+            // truncate any future mod that extends the enum past 255. The
+            // decoded value is stored at its full width (#3339) — the old
+            // `as u8` cast here threw away the extra 24 bits immediately,
+            // leaving the wider read purely a cursor-alignment step.
             b"XNAM" if sub.data.len() >= 8 => {
                 let mut r = SubReader::new(&sub.data);
                 let other = r.u32_or_default();
                 let modifier = r.i32_or_default();
                 let combat = if sub.data.len() >= 12 {
-                    r.u32_or_default() as u8
+                    r.u32_or_default()
                 } else {
                     0
                 };

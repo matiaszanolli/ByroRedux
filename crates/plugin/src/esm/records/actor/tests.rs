@@ -336,6 +336,36 @@ fn fact_xnam_combat_reaction_reads_full_u32() {
     );
 }
 
+/// Regression for #3339: the decoded reaction is *stored* at its full
+/// `u32` width, not truncated back to 8 bits.
+///
+/// #482 widened the read to 4 bytes to survive "a future mod that extends
+/// the enum past 255", but the value landed in a `u8` field via `as u8` —
+/// so the wider read only advanced the cursor and threw away exactly the
+/// bits it was added to preserve. `fact_xnam_combat_reaction_reads_full_u32`
+/// above can't catch this: it uses `2`, which fits either width. A value
+/// above 255 is the only input that distinguishes them.
+#[test]
+fn fact_xnam_combat_reaction_survives_values_above_u8() {
+    let mut xnam = Vec::new();
+    xnam.extend_from_slice(&0x999u32.to_le_bytes()); // other faction
+    xnam.extend_from_slice(&0i32.to_le_bytes()); // modifier
+    xnam.extend_from_slice(&0x0001_0002u32.to_le_bytes()); // reaction, low byte == 2
+
+    let subs = vec![
+        sub(b"EDID", b"WideReactionFaction\0"),
+        sub(b"DATA", &0x00u32.to_le_bytes()),
+        sub(b"XNAM", &xnam),
+    ];
+    let f = parse_fact(0x78, &subs, &None);
+    assert_eq!(f.relations.len(), 1);
+    assert_eq!(
+        f.relations[0].combat_reaction, 0x0001_0002,
+        "the full u32 must be stored — an `as u8` cast would yield 2, which is \
+         indistinguishable from the vanilla `ally` value"
+    );
+}
+
 /// Regression for #481 (FNV-2-L1): FACT DATA is a single-byte
 /// flags field on FO3 / FNV per UESP. Pre-fix the parser read 4
 /// bytes, so any garbage in bytes 1..=3 of the DATA payload

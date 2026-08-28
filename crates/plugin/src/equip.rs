@@ -231,11 +231,23 @@ pub fn resolve_armor_meshes<'a>(
 }
 
 /// Maximum LVLI recursion depth before [`expand_leveled_form_id`] gives
-/// up. Vanilla outfit nesting tops out around 3-4 levels (a master list
-/// of regional sub-lists, each of which references variant lists);
-/// 8 leaves comfortable headroom and stops circular references from
-/// spinning the parser. Hit-the-cap is logged once per fired site and
-/// returns whatever was collected up to that point.
+/// up. A master list of regional sub-lists, each referencing variant
+/// lists, is the usual shape; the cap also stops circular references
+/// from spinning the parser. Hit-the-cap is logged once per fired site
+/// and returns whatever was collected up to that point.
+///
+/// **Measured headroom (#3340).** A full walk of the LVLI graph over
+/// vanilla `FalloutNV.esm` (2,738 lists, 13,319 `LVLO` entries, 6,430 of
+/// them nested LVLI refs) gives a chain-depth histogram of
+/// `{0: 1221, 1: 780, 2: 521, 3: 128, 4: 76, 5: 8, 6: 2, 7: 2}` — maximum
+/// **7**, zero chains at 8 or deeper. The margin over real content is one
+/// level, not the "comfortable headroom" an earlier revision of this
+/// comment claimed. The two depth-7 roots are `VendorChestLydiaMontenegro`-
+/// `WeaponsArmor` (`000CAE03`) and `VendorChestProntoFreeformListGoodStuff`
+/// (`000BE41B`); both are vendor-*chest* roots with no direct NPC `CNTO`
+/// reference, so nothing on the live NPC/player inventory paths comes close.
+/// Raise this if a container-loot consumer starts expanding CONT
+/// inventories through the same helper.
 pub const LVLI_MAX_DEPTH: u32 = 8;
 
 /// FNV / FO3 `NpcRecord::template_flags` bits. Sourced from xEdit
@@ -384,6 +396,49 @@ fn resolve_inherited_record<'a>(
     npc
 }
 
+/// Name the record class of a leaf that `expand_leveled_inner` is about to
+/// drop, when that leaf *is* indexed — just not in `index.items` (#3341).
+///
+/// `index.items` covers the equippable/carryable set (ARMO / WEAP / MISC /
+/// ALCH / KEYM / AMMO / NOTE / BOOK / INGR). FNV additionally dispatches
+/// three of its own record types into dedicated maps, and those are the
+/// leaves that reach the silent-skip branch on vanilla data. Census of all
+/// 13,319 `LVLO` leaf targets in `FalloutNV.esm` by resolved record type:
+///
+/// ```text
+/// {LVLI: 6430, ALCH: 2472, MISC: 1465, WEAP: 1146, ARMO: 941, AMMO: 342,
+///  CCRD: 270, CMNY: 97, IMOD: 69, BOOK: 46, KEYM: 38, NOTE: 3}
+/// ```
+///
+/// CCRD + CMNY + IMOD = 436 leaves, 3.3% of the corpus. Caravan cards,
+/// caravan money and weapon mods are all correctly excluded from an outfit
+/// expansion, so this is a *boundary marker*, not a bug — hence `debug!`
+/// and no behaviour change. The `cells.statics` fallback covers the MODL-only
+/// world-placement family (STAT/MSTT/FURN/DOOR/**LIGH**/FLOR/…), which is
+/// reached because NPC `CNTO` entries — 3 `LIGH` on vanilla FNV — run through
+/// this same helper on the inventory path. That map is a catch-all, so the
+/// label names the family rather than the exact record type.
+///
+/// Returns `None` for a genuinely unknown form ID, which stays silent: the
+/// caller's own log already names the originating outfit / NPC.
+fn non_item_leaf_kind(form_id: u32, index: &EsmIndex) -> Option<&'static str> {
+    if index.caravan_cards.contains_key(&form_id) {
+        Some("CCRD (caravan card)")
+    } else if index.caravan_money.contains_key(&form_id) {
+        Some("CMNY (caravan money)")
+    } else if index.item_mods.contains_key(&form_id) {
+        Some("IMOD (weapon mod)")
+    } else if index.caravan_decks.contains_key(&form_id) {
+        Some("CDCK (caravan deck)")
+    } else if index.poker_chips.contains_key(&form_id) {
+        Some("CHIP (poker chip)")
+    } else if index.cells.statics.contains_key(&form_id) {
+        Some("MODL world-placement family (STAT/MSTT/FURN/DOOR/LIGH/…)")
+    } else {
+        None
+    }
+}
+
 /// Expand a single form ID — which may be either a base item (ARMO /
 /// WEAP / MISC) or a leveled-list reference (LVLI) — into a flat list
 /// of base form IDs gated on `actor_level`. Pushes results onto `out`
@@ -418,6 +473,19 @@ fn expand_leveled_inner(
     out: &mut Vec<u32>,
     depth: u32,
 ) {
+    // Direct base record — push and stop. Most outfit entries land
+    // here on the first call.
+    //
+    // Ordered *above* the depth guard deliberately (#3340): a terminal
+    // base item costs no further recursion, so discarding one that
+    // happens to sit exactly at the boundary loses a leaf for no
+    // benefit. The cap exists to bound LVLI→LVLI chains and to break
+    // cycles — and cycles run through `leveled_items`, never through
+    // `items`, so this early return can't spin.
+    if index.items.contains_key(&form_id) {
+        out.push(form_id);
+        return;
+    }
     if depth >= LVLI_MAX_DEPTH {
         log::debug!(
             "expand_leveled_form_id: LVLI recursion cap ({}) hit at form_id {:08X} \
@@ -427,18 +495,26 @@ fn expand_leveled_inner(
         );
         return;
     }
-    // Direct base record — push and stop. Most outfit entries land
-    // here on the first call.
-    if index.items.contains_key(&form_id) {
-        out.push(form_id);
-        return;
-    }
     // Leveled list — recurse on the eligible entry / entries.
     let Some(lvli) = index.leveled_items.get(&form_id) else {
         // Unknown form ID — neither a base item nor a leveled list.
-        // Could be a WEAP / KEYM / NOTE the dispatch hasn't categorised
-        // yet, or a load-order conflict. Skip silently; the caller's
-        // log already names the originating outfit / NPC.
+        // Could be a record the dispatch hasn't categorised yet, or a
+        // load-order conflict. Dropping it is correct for the equip use
+        // case this helper serves (see `non_item_leaf_kind`), so the
+        // caller's log — which already names the originating outfit /
+        // NPC — is the only unconditional signal. Name the record class
+        // at `debug!` when the form *is* indexed, just not as an item
+        // (#3341): a future container/loot consumer reusing this helper
+        // needs the boundary to be visible rather than silent.
+        if let Some(kind) = non_item_leaf_kind(form_id, index) {
+            log::debug!(
+                "expand_leveled_form_id: leaf {:08X} resolves to {} — not an \
+                 equippable item, dropped. Correct for equip; a loot/container \
+                 consumer needs expand_leveled_any (#3341).",
+                form_id,
+                kind,
+            );
+        }
         return;
     };
 
@@ -1035,6 +1111,102 @@ mod tests {
             out,
             vec![0x00DD_DDDD],
             "nested LVLI must resolve to the innermost ARMO"
+        );
+    }
+
+    /// Regression for #3340: a terminal base item sitting exactly at the
+    /// depth boundary is collected, not discarded.
+    ///
+    /// Pre-fix the `depth >= LVLI_MAX_DEPTH` guard ran *before* the
+    /// `index.items` push, so the leaf of a chain whose final hop lands at
+    /// depth 8 was thrown away even though pushing it costs no further
+    /// recursion. Build the deepest possible chain — `LVLI_MAX_DEPTH`
+    /// nested lists, so the ARMO is reached at `depth == LVLI_MAX_DEPTH`.
+    #[test]
+    fn expand_leveled_base_item_at_depth_boundary_is_kept() {
+        let mut idx = empty_index();
+        add_armo(&mut idx, 0x00AA_AAAA);
+
+        // Chain of LVLI_MAX_DEPTH lists: list[i] at depth i, so list[0] is
+        // entered at depth 0 and the ARMO it bottoms out in is reached at
+        // depth LVLI_MAX_DEPTH.
+        let list_fid = |i: u32| 0x0100_0000 + i;
+        for i in 0..LVLI_MAX_DEPTH {
+            let target = if i + 1 < LVLI_MAX_DEPTH {
+                list_fid(i + 1)
+            } else {
+                0x00AA_AAAA
+            };
+            add_lvli(&mut idx, list_fid(i), 0, vec![(1, target, 1)]);
+        }
+
+        let mut out = Vec::new();
+        expand_leveled_form_id(list_fid(0), 10, &idx, &mut out);
+        assert_eq!(
+            out,
+            vec![0x00AA_AAAA],
+            "a base item reached at exactly LVLI_MAX_DEPTH must be collected — \
+             the cap bounds LVLI->LVLI recursion, not terminal leaves (#3340)"
+        );
+    }
+
+    /// The #3340 reordering must not weaken the cycle guard: a cycle runs
+    /// through `leveled_items`, never through `items`, so moving the item
+    /// push above the depth check cannot make one spin. One extra LVLI hop
+    /// past the boundary still stops with nothing collected.
+    #[test]
+    fn expand_leveled_lvli_past_depth_boundary_still_stops() {
+        let mut idx = empty_index();
+        add_armo(&mut idx, 0x00BB_BBBB);
+        let list_fid = |i: u32| 0x0200_0000 + i;
+        // One list deeper than the previous test: the ARMO now sits at
+        // depth LVLI_MAX_DEPTH + 1, behind a list entered at the cap.
+        for i in 0..=LVLI_MAX_DEPTH {
+            let target = if i < LVLI_MAX_DEPTH {
+                list_fid(i + 1)
+            } else {
+                0x00BB_BBBB
+            };
+            add_lvli(&mut idx, list_fid(i), 0, vec![(1, target, 1)]);
+        }
+
+        let mut out = Vec::new();
+        expand_leveled_form_id(list_fid(0), 10, &idx, &mut out);
+        assert!(
+            out.is_empty(),
+            "an LVLI reached at the cap must not expand further (#3340)"
+        );
+    }
+
+    /// Regression for #3341: FNV-unique non-item leaves are classified by
+    /// `non_item_leaf_kind` so the drop is visible to a future loot
+    /// consumer, while expansion behaviour is unchanged (they stay dropped).
+    #[test]
+    fn non_item_leaves_are_classified_but_still_dropped() {
+        use crate::esm::records::MinimalEsmRecord;
+
+        let mut idx = empty_index();
+        let ccrd = 0x00C0_0001;
+        let cmny = 0x00C0_0002;
+        let unknown = 0x00C0_0003;
+        idx.caravan_cards.insert(ccrd, MinimalEsmRecord::default());
+        idx.caravan_money.insert(cmny, MinimalEsmRecord::default());
+
+        assert_eq!(non_item_leaf_kind(ccrd, &idx), Some("CCRD (caravan card)"));
+        assert_eq!(non_item_leaf_kind(cmny, &idx), Some("CMNY (caravan money)"));
+        assert_eq!(
+            non_item_leaf_kind(unknown, &idx),
+            None,
+            "a genuinely unknown form ID stays silent — the caller already logs it"
+        );
+
+        // Behaviour is unchanged: still not expanded into the outfit.
+        let mut out = Vec::new();
+        expand_leveled_form_id(ccrd, 10, &idx, &mut out);
+        expand_leveled_form_id(cmny, 10, &idx, &mut out);
+        assert!(
+            out.is_empty(),
+            "caravan cards / money are not equippable — #3341 adds a log, not a behaviour change"
         );
     }
 
