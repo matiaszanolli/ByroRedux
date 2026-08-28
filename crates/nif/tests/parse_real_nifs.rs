@@ -186,9 +186,18 @@ fn parse_rate_starfield() {
 /// by 2-3 points on every archive except MeshesPatch:
 ///   Meshes01.ba2        ≥ 99.5% (31 058 NIFs; 100.00% actual; was 97.0%)
 ///   Meshes02.ba2        ≥ 99.5% ( 7 552 NIFs; 100.00% actual; was 99.0%)
-///   MeshesPatch.ba2     ≥ 98.0% (29 849 NIFs; 98.91% actual; was 97.0%)
+///   MeshesPatch.ba2     ≥ 99.5% (29 849 NIFs; 99.98% actual; was 98.0%)
 ///   LODMeshes.ba2       ≥ 99.5% (19 535 NIFs; 100.00% actual; unchanged)
 ///   FaceMeshes.ba2      ≥ 99.5% ( 1 282 NIFs; 100.00% actual; unchanged)
+///
+/// #3397 — MeshesPatch's row was refreshed 2026-08-27. Its `98.91% actual`
+/// was the *pre-#2105* measurement (29 849 − 325 truncated); `b7e0318f` took
+/// that tail 325 → 6, i.e. 99.98%, but the floor was never re-tightened after
+/// the fix it predates. At 98.0% the gate tolerated 597 truncations against
+/// an actual 6 — a full revert of #2105 would have left this test green,
+/// which is precisely the regression it exists to catch (and the shape of
+/// #2201, which only tripped because Meshes02's floor happened to sit at
+/// 99.5%). Now on the same "measured minus ~0.5%" rule as its four siblings.
 #[test]
 #[ignore]
 fn parse_rate_starfield_all_meshes() {
@@ -209,7 +218,7 @@ fn parse_rate_starfield_all_meshes() {
         },
         ArchiveSpec {
             name: "Starfield - MeshesPatch.ba2",
-            min_clean: 0.980,
+            min_clean: 0.995,
         },
         ArchiveSpec {
             name: "Starfield - LODMeshes.ba2",

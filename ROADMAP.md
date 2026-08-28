@@ -1275,7 +1275,8 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
   material-slot-aware discovery. PNG intermediates are intentional until
   those policies exist.
 - [ ] `parry3d` panics on nested compound collision shapes (catch_unwind guard in place)
-- [ ] **Starfield CDB Phase 2 — per-field `.mat` material extraction, single highest-value remaining Starfield fidelity item, currently untracked outside this row.** [#2359](https://github.com/matiaszanolli/ByroRedux/issues/2359).
+- [ ] **Starfield CDB Phase 2 — per-field `.mat` material extraction, single highest-value remaining Starfield fidelity item.** [#3398](https://github.com/matiaszanolli/ByroRedux/issues/3398).
+  (Tracker repointed 2026-08-27 under [#3395](https://github.com/matiaszanolli/ByroRedux/issues/3395): this row used to cite #2359, which is **closed-completed** — its deliverable was the deferral note plus the invariant test below, not the feature — so the chain read as shipped work.)
   `crates/sfmaterial` parses the Component Database end-to-end (97 classes /
   1.44M instances) and `register_starfield_cdb` confirms presence via
   `ComponentDatabaseFile::probe_header`, but nothing walks the tree for

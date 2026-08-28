@@ -642,6 +642,31 @@ fn expand_scol_placements_with_depth(
                     continue;
                 }
             }
+            // #2611 / FO4-D8-001 — the symmetric direction of #1180. That
+            // fix taught the PKIN expander to fan out a child that resolves
+            // to a SCOL; this teaches the SCOL expander to fan out a part
+            // that resolves to a PKIN. Without it a SCOL nesting a PKIN
+            // emitted the PKIN's base form as a leaf placement and silently
+            // dropped its whole `contents` list. No vanilla FO4 SCOL nests
+            // a PKIN — this is mod/DLC content only — but the asymmetry was
+            // an accident of which direction #1180 happened to fix, not a
+            // deliberate limit. Same depth cap, same "empty result falls
+            // through to the leaf path" contract as the SCOL arm above.
+            if depth + 1 < MAX_PKIN_DEPTH && index.packins.contains_key(&part.base_form_id) {
+                if let Some(nested) = expand_pkin_placements_with_depth(
+                    part.base_form_id,
+                    final_pos,
+                    final_rot,
+                    final_scale,
+                    index,
+                    depth + 1,
+                ) {
+                    if !nested.is_empty() {
+                        out.extend(nested);
+                        continue;
+                    }
+                }
+            }
             out.push((part.base_form_id, final_pos, final_rot, final_scale));
         }
     }

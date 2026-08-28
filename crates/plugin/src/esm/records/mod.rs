@@ -468,7 +468,7 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
             | b"MUSC" | b"SOUN" | b"VTYP" | b"AMEF" | b"DEBR" | b"GRAS" | b"IMAD" | b"LSCR"
             | b"LSCT" | b"PWAT" | b"RGDL" | b"DEHY" | b"HUNG" | b"RADS" | b"SLPD" | b"CCRD"
             | b"CDCK" | b"CHAL" | b"CHIP" | b"CMNY" | b"CSNO" | b"RCCT" | b"RCPE" | b"BSGN"
-            | b"CLOT" | b"APPA" | b"SGST" | b"SLGM" => {
+            | b"CLOT" | b"APPA" | b"SGST" | b"SLGM" | b"SECH" | b"AOPF" => {
                 dispatch_misc_stub::dispatch_misc_stub_group(
                     &label,
                     &mut reader,

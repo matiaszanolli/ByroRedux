@@ -292,6 +292,17 @@ pub struct EsmIndex {
     pub animation_objects: HashMap<u32, MinimalEsmRecord>,
     /// `ASPC` acoustic space.
     pub acoustic_spaces: HashMap<u32, MinimalEsmRecord>,
+    /// `SECH` sound echo (`BGSSoundEcho`, Starfield-era).
+    ///
+    /// #2636 — captured for the same reason as its `ASPC`/`ALOC` siblings:
+    /// neither `SECH` nor `AOPF` carries a mesh, so nothing visible was
+    /// lost, but both fell to the bare catch-all skip with no counter and
+    /// no `skipped_unconsumed_groups` entry, leaving 190 `SECH` + 30 `AOPF`
+    /// REFRs in `CityCydoniaMainLevel` alone invisible to coverage tooling.
+    pub sound_echoes: HashMap<u32, MinimalEsmRecord>,
+    /// `AOPF` audio occlusion primitive (`BGSAudioOcclusionPrimitive`,
+    /// Starfield-era). See [`EsmIndex::sound_echoes`] (#2636).
+    pub audio_occlusion_primitives: HashMap<u32, MinimalEsmRecord>,
     /// `CAMS` camera shot.
     pub camera_shots: HashMap<u32, MinimalEsmRecord>,
     /// `CPTH` camera path.
@@ -554,6 +565,8 @@ impl EsmIndex {
             map_category!("audio_locations", audio_locations),
             map_category!("animation_objects", animation_objects),
             map_category!("acoustic_spaces", acoustic_spaces),
+            map_category!("sound_echoes", sound_echoes),
+            map_category!("audio_occlusion_primitives", audio_occlusion_primitives),
             map_category!("camera_shots", camera_shots),
             map_category!("camera_paths", camera_paths),
             map_category!("default_objects", default_objects),

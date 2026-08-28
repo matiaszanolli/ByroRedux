@@ -1443,8 +1443,12 @@ fn categories_table_row_count_pinned() {
     //   the lone populated map missing from `categories()`, so a TREE
     //   category-wipe passed the parse-rate CI floor silently).
     // Bumped 95 → 96 for typed Skyrim+ SCEN phase/action records.
+    // Bumped 96 → 98 in #2636 (SF-D4-05: sound_echoes +
+    //   audio_occlusion_primitives — the Starfield-era SECH/AOPF pair
+    //   had zero dispatch and fell to the bare catch-all skip, so
+    //   neither had a category row to regress against).
     // Bump in lockstep with the struct + `categories()` edits.
-    assert_eq!(EsmIndex::categories().len(), 96);
+    assert_eq!(EsmIndex::categories().len(), 98);
 }
 
 /// Regression test for #989 — `.STRINGS` companion file resolves lstring
@@ -2068,5 +2072,63 @@ fn dial_conversation_tree_resolves_pnam_chains_and_tclt_edges() {
         tree.topic_links.get(&0x1003),
         Some(&vec![0x5555]),
         "INFO C should link to topic 0x5555"
+    );
+}
+
+/// Regression: #2636 / SF-D4-05 — top-level `SECH` (`BGSSoundEcho`) and
+/// `AOPF` (`BGSAudioOcclusionPrimitive`) GRUPs must reach
+/// `dispatch_misc_stub_group` and land in typed `EsmIndex` maps.
+///
+/// Pre-fix both fell to the bare `_ => skip_group` catch-all: no typed
+/// capture, no counter, no `skipped_unconsumed_groups` entry — unlike
+/// every one of their audio-metadata siblings (`ASPC`, `ALOC`, `MUSC`, …).
+/// Neither type carries a mesh, so nothing visible was lost; the cost was
+/// diagnostic. `CityCydoniaMainLevel` alone has 190 SECH + 30 AOPF REFRs,
+/// and a future FourCC repurposing or content patch would have been
+/// invisible. Both are genuine Starfield-era FourCCs (Gibbed
+/// `FormType.cs`), not garbage.
+#[test]
+fn sech_and_aopf_groups_dispatch_into_typed_audio_maps() {
+    let sech = build_record(
+        b"SECH",
+        0xBEEF_0101,
+        &[(b"EDID", b"EchoCydoniaHall\0".to_vec())],
+    );
+    let aopf = build_record(
+        b"AOPF",
+        0xBEEF_0102,
+        &[(b"EDID", b"OcclusionCydoniaDoor\0".to_vec())],
+    );
+    let mut tes4 = build_record(b"TES4", 0, &[]);
+    tes4.extend_from_slice(&wrap_group(b"SECH", &sech));
+    tes4.extend_from_slice(&wrap_group(b"AOPF", &aopf));
+    let index = parse_esm(&tes4).unwrap();
+
+    assert_eq!(
+        index.sound_echoes.len(),
+        1,
+        "SECH must populate the sound_echoes map, not fall to the catch-all skip"
+    );
+    assert_eq!(
+        index
+            .sound_echoes
+            .get(&0xBEEF_0101)
+            .expect("SECH indexed")
+            .editor_id,
+        "EchoCydoniaHall"
+    );
+
+    assert_eq!(
+        index.audio_occlusion_primitives.len(),
+        1,
+        "AOPF must populate the audio_occlusion_primitives map, not fall to the catch-all skip"
+    );
+    assert_eq!(
+        index
+            .audio_occlusion_primitives
+            .get(&0xBEEF_0102)
+            .expect("AOPF indexed")
+            .editor_id,
+        "OcclusionCydoniaDoor"
     );
 }

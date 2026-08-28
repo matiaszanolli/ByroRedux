@@ -10,7 +10,7 @@
 //! REFR per child placement with the composed transform.
 use super::*;
 use byroredux_plugin::esm::cell::{EsmCellIndex, StaticObject};
-use byroredux_plugin::esm::records::{ScolPart, ScolPlacement, ScolRecord};
+use byroredux_plugin::esm::records::{PkinRecord, ScolPart, ScolPlacement, ScolRecord};
 
 fn mk_stat(form_id: u32, editor_id: &str, model_path: &str) -> StaticObject {
     StaticObject {
@@ -417,5 +417,124 @@ fn expand_scol_composes_non_identity_outer_rotation() {
     assert!(
         got_rot.dot(Quat::IDENTITY).abs() < 1.0 - 1e-3,
         "composed rotation must not collapse to identity"
+    );
+}
+
+// ── #2611 / FO4-D8-001 — SCOL → PKIN recursion ─────────────────────
+//
+// The symmetric direction of #1180. That fix taught the PKIN expander
+// to fan out a child resolving to a SCOL; pre-#2611 the SCOL expander
+// had no matching check, so a SCOL part whose `base_form_id` was a
+// PKIN emitted that PKIN's base form as an opaque leaf placement and
+// silently dropped its whole `contents` list. No vanilla FO4 SCOL
+// nests a PKIN — mod/DLC content only — but the asymmetry was an
+// accident of which direction #1180 happened to fix.
+
+fn mk_pkin_for_scol(form_id: u32, editor_id: &str, contents: Vec<u32>) -> PkinRecord {
+    PkinRecord {
+        form_id,
+        editor_id: editor_id.to_string(),
+        full_name: String::new(),
+        contents,
+        vnam_form_id: 0,
+        flags: 0,
+        filter: Vec::new(),
+    }
+}
+
+#[test]
+fn expand_scol_recurses_into_pkin_part() {
+    let mut index = EsmCellIndex::default();
+    let scol_id = 0x0069_0001;
+    let pkin_id = 0x0069_0002;
+    let leaf_a = 0x0010_0001;
+    let leaf_b = 0x0010_0002;
+
+    // SCOL with no cached CM model → must expand. Its single part
+    // points at a PKIN rather than a plain base mesh.
+    index.scols.insert(
+        scol_id,
+        ScolRecord {
+            form_id: scol_id,
+            editor_id: "ScolWithPkin".to_string(),
+            model_path: String::new(),
+            parts: vec![ScolPart {
+                base_form_id: pkin_id,
+                placements: vec![ScolPlacement {
+                    pos: [50.0, 0.0, 0.0],
+                    rot: [0.0, 0.0, 0.0],
+                    scale: 1.0,
+                }],
+            }],
+            filter: Vec::new(),
+            full_name: String::new(),
+            has_script: false,
+        },
+    );
+    index.packins.insert(
+        pkin_id,
+        mk_pkin_for_scol(pkin_id, "PkinInsideScol", vec![leaf_a, leaf_b]),
+    );
+
+    let outer_pos = Vec3::new(1000.0, 0.0, 0.0);
+    let synths = expand_scol_placements(scol_id, outer_pos, Quat::IDENTITY, 1.0, &index);
+
+    // Pre-fix this was a single (pkin_id, …) leaf — the PKIN's two
+    // contents were dropped entirely.
+    assert_eq!(
+        synths.len(),
+        2,
+        "the PKIN part's contents must fan out, not collapse to the PKIN base form"
+    );
+    assert_eq!(synths[0].0, leaf_a);
+    assert_eq!(synths[1].0, leaf_b);
+    assert!(
+        !synths.iter().any(|s| s.0 == pkin_id),
+        "the PKIN's own form ID must not survive as an opaque placement"
+    );
+    // Outer (1000,0,0) + SCOL placement Y-up (50,0,0) = (1050,0,0);
+    // PKIN contents inherit that composed transform.
+    assert_eq!(synths[0].1, Vec3::new(1050.0, 0.0, 0.0));
+    assert_eq!(synths[1].1, Vec3::new(1050.0, 0.0, 0.0));
+}
+
+#[test]
+fn expand_scol_with_empty_pkin_part_falls_through_to_the_leaf() {
+    // An empty `contents` list makes the PKIN expander return `None`.
+    // The SCOL expander must then fall through to the leaf path rather
+    // than dropping the placement — same contract as its SCOL arm.
+    let mut index = EsmCellIndex::default();
+    let scol_id = 0x006A_0001;
+    let pkin_id = 0x006A_0002;
+
+    index.scols.insert(
+        scol_id,
+        ScolRecord {
+            form_id: scol_id,
+            editor_id: "ScolWithEmptyPkin".to_string(),
+            model_path: String::new(),
+            parts: vec![ScolPart {
+                base_form_id: pkin_id,
+                placements: vec![ScolPlacement {
+                    pos: [0.0, 0.0, 0.0],
+                    rot: [0.0, 0.0, 0.0],
+                    scale: 1.0,
+                }],
+            }],
+            filter: Vec::new(),
+            full_name: String::new(),
+            has_script: false,
+        },
+    );
+    index.packins.insert(
+        pkin_id,
+        mk_pkin_for_scol(pkin_id, "EmptyPkin", Vec::new()),
+    );
+
+    let synths = expand_scol_placements(scol_id, Vec3::ZERO, Quat::IDENTITY, 1.0, &index);
+    assert_eq!(synths.len(), 1, "an empty PKIN must not drop the placement");
+    assert_eq!(
+        synths[0].0, pkin_id,
+        "the leaf path keeps the PKIN base form so it still reaches stat-miss accounting"
     );
 }

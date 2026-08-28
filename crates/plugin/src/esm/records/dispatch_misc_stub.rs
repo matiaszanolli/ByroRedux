@@ -44,6 +44,24 @@ pub(super) fn dispatch_misc_stub_group(
                 .acoustic_spaces
                 .insert(fid, parse_minimal_esm_record(fid, subs));
         })?,
+        // #2636 / SF-D4-05 — Starfield-era audio metadata. Both are genuine
+        // FourCCs (confirmed against Gibbed `FormType.cs`), not garbage, and
+        // both previously fell to the bare `_ => skip_group` catch-all: no
+        // typed capture, no counter, no `skipped_unconsumed_groups` entry,
+        // unlike every one of their audio-metadata siblings here. Neither
+        // carries a mesh, so this is diagnostic rather than visible-content
+        // recovery — but a future FourCC repurposing or content patch would
+        // otherwise be invisible.
+        b"SECH" => extract_records(reader, end, b"SECH", &mut |fid, subs| {
+            index
+                .sound_echoes
+                .insert(fid, parse_minimal_esm_record(fid, subs));
+        })?,
+        b"AOPF" => extract_records(reader, end, b"AOPF", &mut |fid, subs| {
+            index
+                .audio_occlusion_primitives
+                .insert(fid, parse_minimal_esm_record(fid, subs));
+        })?,
         b"CAMS" => extract_records(reader, end, b"CAMS", &mut |fid, subs| {
             index
                 .camera_shots
