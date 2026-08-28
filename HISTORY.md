@@ -24,6 +24,70 @@ Commits hold that record.
 
 ---
 
+## Session 75 — Comprehensive audit suite, 139 issues filed, and a per-game correctness sweep  (2026-08-28, `4d3f9761..d5a8c36c`, 68 commits)
+
+The session's spine is a full `/audit-suite --preset comprehensive` run —
+25 audits, 34 reports, 143 findings — bracketed by the fix work it fed on
+either side. Ahead of the suite, a per-game correctness push closed the
+FNV and Skyrim audit backlogs; behind it, four `/fix-issue` batches took
+the highest-signal findings straight back into the tree. Net effect: the
+audit surface caught up with two weeks of code, and the tracker now holds
+a measured, deduplicated backlog instead of an inferred one.
+
+- **Comprehensive audit suite** (`c6c8ba55`, `558af58c`, 34 reports under
+  `docs/audits/`) — every subsystem, every per-game arm, plus the runtime
+  telemetry diff. 143 findings: 0 CRITICAL, 21 HIGH. Four recurring defect
+  *classes* mattered more than any single finding: unbounded
+  validate-then-don't-enforce decompression at three separate entry points
+  (#3399/#3410/#3512), gender-variant data parsed and dropped at the
+  consumer (#3416/#3418/#3408), texture addressing broken in two opposite
+  directions (#3516/#3507), and a fix→issue traceability gate that only
+  checks one direction (#3425).
+- **Per-game correctness — Skyrim + FNV** (#3355/#3356/#3357/#3358/#3359/
+  #3360/#3361/#3362/#3363, #3313–#3322) — SSE `SkinPartition` triangles are
+  global indices (17.6% of skinned triangles were being dropped), `INAM` is
+  an array not a scalar (61% of outfit items silently lost), an ARMO
+  contributes every race-matching ARMA rather than the first, the ice
+  classifier arm was exactly inverted, and REFR tombstones now remove the
+  placement wherever it lives.
+- **CHARAL + ESM records** (#3171/#3172, #3381/#3382/#3383/#3384, #3300,
+  #3324/#3325) — `TPLT` "Use Stats" now resolves for every stat model rather
+  than auto-calc alone; a failed plugin parse no longer erases the load
+  order's character rules; WEAP `VATS` and the `WMI1` faction→reputation
+  edge are decoded; NAVM door/cover/grid landed.
+- **Starfield + NIF parser** (#3391–#3397, #2550, #2345, #2361, #2097) —
+  char-boundary slicing fixed in `canonical_mesh_path` and two source-order
+  pins, the LZ4 panic guard made reachable, `hkSubPartData` decoded instead
+  of skipped, and the pre-10.1.0.106 `NiSequence`/`ControlledBlock` layout
+  implemented.
+- **Renderer + exterior** (#3323, #3321, #2766/#2768/#2769/#2771, #3385,
+  #3372/#3373) — the live exterior sky now transmits through interior
+  window portals, FNV/FO3 distant-object LOD is consumed, and the
+  distant-LOD archive-presence probe is memoised.
+- **Audit-suite closeout batches** (`5c8a1581`, `b4c0fde3`, `83a81da8`,
+  `d5a8c36c`) — 15 findings fixed across four batches. The HIGH of the set
+  is #3458: Skyrim's `SLSF2_Soft_Lighting` gate crossed the NIFAL boundary
+  without its slot-2 mask on 50.3% of vanilla soft-lighting properties —
+  every FaceGen head and skin-tinted body — and the shader substituted an
+  unauthored `vec3(1.0)`. Resolved at the boundary by letting slot 2 fill
+  both `Tint` and `LightingMask`, which is what the wire format
+  multiplexes. Also #3459 (glass pivots routed through `shader_constants`,
+  SPIR-V byte-identical), #3460 (duplicate lighting gates removed; save
+  shape baseline updated without a `FORMAT_MAJOR` bump), and #3423
+  (`combat.approach` now rejects occluded ring candidates).
+- **Audit infrastructure** (#3218, #3041, #3175/#2574, #3288, #2587/#2347,
+  #3456, #3422, #3424, #3457) — close-time citation audit added, the
+  parse-rate gate walks every mesh-bearing archive, per-block baselines
+  re-keyed on wire RTTI, and four audit skills corrected against code they
+  had drifted from. The citation audit's first real run immediately found a
+  defect in itself (#3538) — see Known Issues.
+
+Net: tests 5996 → **6142** (+146), non-test LOC ~436 665 → **444 861**
+(+8 196), 103 issues closed by commit keyword, 139 new issues filed
+(#3399–#3537). No milestone churn — this was an audit-and-closeout session.
+
+---
+
 ## Session 74 — Renderer-independent SDK, ECS concurrency-declaration sweep, terrain-seam closeout, and a 27-issue doc-rot batch  (2026-08-26, `21a840d5..2bcaf1cc`, 47 commits)
 
 A broad, multi-arc session bridging several tracks that had been queued

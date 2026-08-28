@@ -25,7 +25,7 @@ shadows on RTX 4070 Ti. Current entity count + bench numbers in
 | | |
 |-|-|
 | **Games supported** | 7 — Oblivion · Fallout 3 · Fallout New Vegas · Skyrim SE · Fallout 4 · Fallout 76 · Starfield |
-| **NIF parse rate** | **100% clean** on FO3 / FNV / Skyrim SE / FO4 / FO76; Oblivion 99.93%, Starfield 99.99% aggregate; 100% recoverable on all seven — 184 886 files validated. See [ROADMAP compatibility matrix](ROADMAP.md#compatibility-matrix). |
+| **NIF parse rate** | **100% clean** on FO3 / FNV / Skyrim SE / FO4 / FO76 / Oblivion; Starfield 99.99% aggregate; 100% recoverable on all seven — 184 886 files validated. See [ROADMAP compatibility matrix](ROADMAP.md#compatibility-matrix). |
 | **Archive formats** | BSA v103 / v104 / v105 · BA2 v1 / v2 / v3 / v7 / v8 (GNRL + DX10, zlib + LZ4) |
 | **NIF block types** | See `crates/nif/src/blocks/mod.rs` for the canonical dispatch registry (incl. Havok skip-stubs) |
 | **ESM records (FNV)** | ~25 structured types (items, NPCs, factions, cells, CREA, LVLC, SCPT, PACK, QUST, DIAL, MESG, PERK, SPEL, MGEF, …) plus a separate long-tail bucket (sounds / idle / grasses / debris). See [ROADMAP Status](ROADMAP.md#status) for the current count — it's tracked by a floor-based integration test, not a number pinned here. |
