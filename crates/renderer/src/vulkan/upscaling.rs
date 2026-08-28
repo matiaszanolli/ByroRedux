@@ -223,10 +223,7 @@ impl FrameExtentSet {
             UpscalerMode::Fsr3(quality) => {
                 let [width, height] =
                     fsr3::render_resolution(output.width, output.height, quality.sdk_mode())?;
-                vk::Extent2D {
-                    width: width.min(max_image_dimension_2d),
-                    height: height.min(max_image_dimension_2d),
-                }
+                Self::checked_render_extent(width, height, max_image_dimension_2d)?
             }
         };
         if render.width == 0 || render.height == 0 {
@@ -234,6 +231,34 @@ impl FrameExtentSet {
         }
 
         Ok(Self { render, output })
+    }
+
+    /// Validate an SDK-queried render extent against the device 2D-image
+    /// limit — reject, never clamp (#2830).
+    ///
+    /// Clamping the SDK's answer with `min` would rewrite the render extent
+    /// *after* the SDK produced it, so [`FsrTemporalState::new`]'s
+    /// `jitter_phase_count` and the `render_size` handed to `dispatch` would
+    /// describe a scale ratio the SDK never sanctioned — precisely the
+    /// hand-computed-vs-queried mismatch this module's doc header exists to
+    /// prevent. Unreachable through [`Self::for_output`] today (an over-limit
+    /// `output` is rejected before the query, and every shipping preset
+    /// returns render <= output); it is a guard for whoever raises the output
+    /// ceiling or adds a supersampling preset. Split out so that guard is
+    /// testable without contriving an output the earlier check would reject.
+    fn checked_render_extent(
+        width: u32,
+        height: u32,
+        max_image_dimension_2d: u32,
+    ) -> Result<vk::Extent2D, FrameExtentError> {
+        if width > max_image_dimension_2d || height > max_image_dimension_2d {
+            return Err(FrameExtentError::RenderDeviceLimit {
+                width,
+                height,
+                limit: max_image_dimension_2d,
+            });
+        }
+        Ok(vk::Extent2D { width, height })
     }
 
     /// Recommended material-texture mip bias for the selected mode.
@@ -404,6 +429,11 @@ pub enum FrameExtentError {
     ZeroRender,
     #[error("output extent {width}x{height} exceeds device 2D-image limit {limit}")]
     DeviceLimit { width: u32, height: u32, limit: u32 },
+    #[error(
+        "FSR-queried render extent {width}x{height} exceeds device 2D-image limit {limit}; \
+         the extent cannot be clamped without desynchronising the SDK's jitter phase count"
+    )]
+    RenderDeviceLimit { width: u32, height: u32, limit: u32 },
     #[error("FSR render-resolution query failed: {0}")]
     Fsr(#[from] fsr3::Error),
 }
@@ -509,6 +539,39 @@ mod tests {
             FrameExtentSet::for_output(FULL_HD, UpscalerMode::Taa, 1024),
             Err(FrameExtentError::DeviceLimit { .. })
         ));
+    }
+
+    /// #2830 — an SDK render extent above the device 2D-image limit must be
+    /// an error, not a silent `min` that leaves the jitter phase count and the
+    /// dispatch `render_size` describing a ratio the SDK never returned.
+    #[test]
+    fn an_over_limit_render_extent_is_rejected_not_clamped() {
+        assert_eq!(
+            FrameExtentSet::checked_render_extent(1280, 720, 16_384).unwrap(),
+            vk::Extent2D {
+                width: 1280,
+                height: 720
+            }
+        );
+        assert!(matches!(
+            FrameExtentSet::checked_render_extent(2048, 720, 1024),
+            Err(FrameExtentError::RenderDeviceLimit { limit: 1024, .. })
+        ));
+        assert!(matches!(
+            FrameExtentSet::checked_render_extent(720, 2048, 1024),
+            Err(FrameExtentError::RenderDeviceLimit { limit: 1024, .. })
+        ));
+        // The guard stays dead for every shipping preset at a real device
+        // limit — the reason the clamp it replaced went unnoticed.
+        for quality in [
+            FsrQuality::NativeAa,
+            FsrQuality::Quality,
+            FsrQuality::Balanced,
+            FsrQuality::Performance,
+        ] {
+            let set = extents(UpscalerMode::Fsr3(quality));
+            assert!(set.render.width <= FULL_HD.width && set.render.height <= FULL_HD.height);
+        }
     }
 
     #[test]

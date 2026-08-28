@@ -27,12 +27,12 @@ use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::WindowId;
 
-use crate::bench_frame_distribution;
 use crate::cell_loader;
 use crate::components::InputState;
 use crate::helpers::world_resource_set;
 use crate::systems::toggle_player_mode;
 use crate::App;
+use crate::{bench_frame_distribution, bench_gpu_inactive_token};
 
 impl App {
     /// Shared orderly shutdown for both the OS close button and the native
@@ -849,29 +849,54 @@ impl ApplicationHandler for App {
                     // the former shrink with a preset — reporting a frame-time
                     // win without netting out presentation and the upscale
                     // dispatch would overstate what a player actually gets.
-                    let gpu = self
+                    // #2821 — the `_active` mirrors travel with the values.
+                    // A bracket that did not run reports `0.000` here like any
+                    // other, because widening a numeric field to `n/a` would
+                    // break every `key=<float>` extractor across the four
+                    // sweep harnesses; instead the companion `gpu_inactive=`
+                    // token below names the brackets whose zero is "skipped",
+                    // so a skipped pass no longer lands in the TSV as a hard
+                    // 0.000 indistinguishable from a measured one.
+                    let (gpu, gpu_active) = self
                         .world
                         .try_resource::<byroredux_core::ecs::SkinCoverageStats>()
                         .map(|s| {
                             // Copy just the timing fields out from under the
                             // resource read guard; the resource itself carries
                             // non-Copy diagnostic state we do not need here.
-                            [
-                                s.gpu_skin_dispatch_ms,
-                                s.gpu_skin_blas_refit_ms,
-                                s.gpu_taa_ms,
-                                s.gpu_upscale_ms,
-                                s.gpu_main_render_ms,
-                                s.gpu_svgf_ms,
-                                s.gpu_composite_ms,
-                                s.gpu_ssao_ms,
-                                s.gpu_bloom_ms,
-                                s.gpu_volumetrics_ms,
-                                s.gpu_cluster_cull_ms,
-                                s.gpu_presentation_ms,
-                            ]
+                            (
+                                [
+                                    s.gpu_skin_dispatch_ms,
+                                    s.gpu_skin_blas_refit_ms,
+                                    s.gpu_taa_ms,
+                                    s.gpu_upscale_ms,
+                                    s.gpu_main_render_ms,
+                                    s.gpu_svgf_ms,
+                                    s.gpu_composite_ms,
+                                    s.gpu_ssao_ms,
+                                    s.gpu_bloom_ms,
+                                    s.gpu_volumetrics_ms,
+                                    s.gpu_cluster_cull_ms,
+                                    s.gpu_presentation_ms,
+                                ],
+                                [
+                                    s.gpu_skin_dispatch_active,
+                                    s.gpu_skin_blas_refit_active,
+                                    s.gpu_taa_active,
+                                    s.gpu_upscale_active,
+                                    s.gpu_main_render_active,
+                                    s.gpu_svgf_active,
+                                    s.gpu_composite_active,
+                                    s.gpu_ssao_active,
+                                    s.gpu_bloom_active,
+                                    s.gpu_volumetrics_active,
+                                    s.gpu_cluster_cull_active,
+                                    s.gpu_presentation_active,
+                                ],
+                            )
                         })
-                        .unwrap_or([0.0; 12]);
+                        .unwrap_or(([0.0; 12], [false; 12]));
+                    let gpu_inactive = bench_gpu_inactive_token(gpu_active);
                     let rt_integrity_line = self
                         .world
                         .try_resource::<RtIntegrityStats>()
@@ -886,7 +911,7 @@ impl ApplicationHandler for App {
                          gpu_upscale={:.3} gpu_main_render={:.3} gpu_svgf={:.3} \
                          gpu_composite={:.3} gpu_ssao={:.3} gpu_bloom={:.3} \
                          gpu_volumetrics={:.3} gpu_cluster_cull={:.3} \
-                         gpu_presentation={:.3}] \
+                         gpu_presentation={:.3}] gpu_inactive={} \
                          systems_ms={:.2} ticks_per_frame={:.1} unaccounted_ms={:.2} \
                          camera_pos={:.3},{:.3},{:.3} camera_forward={:.6},{:.6},{:.6} \
                          sim_time_s={:.6} entities={} meshes={} textures={} \
@@ -921,6 +946,7 @@ impl ApplicationHandler for App {
                         gpu[9],
                         gpu[10],
                         gpu[11],
+                        gpu_inactive,
                         systems_ms,
                         ticks_per_frame,
                         unaccounted_ms,

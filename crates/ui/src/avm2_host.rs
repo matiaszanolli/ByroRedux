@@ -17,7 +17,9 @@ use swf::avm2::types::{
 };
 use swf::avm2::write::Writer;
 use swf::extensions::ReadSwfExt;
-use swf::{decompress_swf, parse_swf, write_swf, DoAbc2, DoAbc2Flag, SwfStr, Tag};
+#[cfg(test)]
+use swf::{decompress_swf, parse_swf};
+use swf::{write_swf, DoAbc2, DoAbc2Flag, SwfStr, Tag};
 
 use crate::ScaleformHostCatalog;
 
@@ -58,6 +60,13 @@ impl ScaleformHostObjectState {
     }
 }
 
+/// Byte-taking wrapper over [`inject_into_parsed_movie`].
+///
+/// The load path no longer goes through here — it prepares the movie once and
+/// injects off that decode (#2968) — but the injection corpus sweeps and
+/// idempotency tests are written against bytes, and re-decoding is exactly
+/// what they mean to exercise.
+#[cfg(test)]
 pub(crate) fn inject_host_object_adapter(
     swf_data: &[u8],
     catalog: ScaleformHostCatalog,
@@ -68,7 +77,33 @@ pub(crate) fn inject_host_object_adapter(
 
     let decompressed =
         decompress_swf(swf_data).map_err(|error| format!("decompressing SWF: {error}"))?;
-    let mut movie = parse_swf(&decompressed).map_err(|error| format!("parsing SWF: {error}"))?;
+    let movie = parse_swf(&decompressed).map_err(|error| format!("parsing SWF: {error}"))?;
+    let (patched, state) = inject_into_parsed_movie(movie, catalog)?;
+    Ok((patched.unwrap_or_else(|| swf_data.to_vec()), state))
+}
+
+/// [`inject_host_object_adapter`]'s body over a movie the caller already
+/// decompressed and tag-parsed (#2968).
+///
+/// `Ok((None, state))` means nothing was rewritten — the caller keeps the
+/// bytes it already has, which is also why this returns an `Option` rather
+/// than re-serialising an untouched movie just to hand back a `Vec`.
+///
+/// Split out because the archive load path needs the same parse for
+/// `ImportAssets` extraction and profile detection; taking bytes here forced
+/// every stage to inflate the whole stream again, four times per menu open on
+/// a multi-megabyte Fallout 4 movie.
+pub(crate) fn inject_into_parsed_movie(
+    movie: swf::Swf<'_>,
+    catalog: ScaleformHostCatalog,
+) -> Result<(Option<Vec<u8>>, ScaleformHostObjectState), String> {
+    if catalog.host_object().is_none() {
+        return Ok((None, ScaleformHostObjectState::NotRequired));
+    }
+    // Taken by value: `Tag` is not `Clone`, and the injection splices in tags
+    // backed by this function's own locals, which a borrow of the caller's
+    // longer-lived tag list could not hold.
+    let swf::Swf { header, mut tags } = movie;
     // #2970 — idempotency. `ADAPTER_NAME` was written as the injected tag's
     // name and never read back (a workspace grep found the `const` and one
     // write site, no read). Feeding already-patched bytes through would emit a
@@ -78,7 +113,7 @@ pub(crate) fn inject_host_object_adapter(
     // once on bytes freshly read from disk or archive — but caching patched
     // bytes (the obvious response to UI-D1-01) or rebuilding a player from its
     // current movie makes it reachable. Cheap scan over tags already in hand.
-    if movie.tags.iter().any(|tag| {
+    if tags.iter().any(|tag| {
         matches!(tag, Tag::DoAbc2(do_abc)
                 if do_abc.name == SwfStr::from_utf8_str(ADAPTER_NAME))
     }) {
@@ -86,23 +121,23 @@ pub(crate) fn inject_host_object_adapter(
             "Fallout 4 AVM2 adapter '{ADAPTER_NAME}' is already present; \
              skipping injection (#2970)"
         );
-        let state = if movie.tags.iter().any(|tag| {
+        let state = if tags.iter().any(|tag| {
             abc_payload(tag).is_some_and(|abc| contains_bytes(abc, DESTROY_CALLBACK.as_bytes()))
         }) {
             ScaleformHostObjectState::AdapterInjected
         } else {
             ScaleformHostObjectState::AdapterInjectedWithoutDestroyHook
         };
-        return Ok((swf_data.to_vec(), state));
+        return Ok((None, state));
     }
 
-    let declares_contract = movie.tags.iter().any(|tag| {
+    let declares_contract = tags.iter().any(|tag| {
         abc_payload(tag).is_some_and(|abc| {
             contains_bytes(abc, b"BGSCodeObj") && contains_bytes(abc, b"onCodeObjCreate")
         })
     });
     if !declares_contract {
-        return Ok((swf_data.to_vec(), ScaleformHostObjectState::NotPresent));
+        return Ok((None, ScaleformHostObjectState::NotPresent));
     }
 
     let object = catalog
@@ -120,7 +155,7 @@ pub(crate) fn inject_host_object_adapter(
     // ever calls. `has_destroy_trait` records whether this movie's class
     // carries the hook, so `build_adapter_abc` can wire (or skip) it.
     let mut has_destroy_trait = false;
-    for (index, tag) in movie.tags.iter().enumerate() {
+    for (index, tag) in tags.iter().enumerate() {
         let Some(data) = abc_payload(tag) else {
             continue;
         };
@@ -151,7 +186,7 @@ pub(crate) fn inject_host_object_adapter(
         .ok_or_else(|| "Fallout 4 BGSCodeObj lifecycle class was not found".to_string())?;
     let root_class =
         root_class.ok_or_else(|| "Fallout 4 lifecycle class has no qualified name".to_string())?;
-    let root_abc = abc_payload(&movie.tags[root_abc_index])
+    let root_abc = abc_payload(&tags[root_abc_index])
         .ok_or_else(|| "Fallout 4 root ABC index does not reference an ABC tag".to_string())?;
     let patched_root_abc = patch_root_constructor(root_abc, &root_class)?;
 
@@ -172,7 +207,7 @@ pub(crate) fn inject_host_object_adapter(
     // top of the catalog, and refusing to load a menu because its bytecode
     // has a shape the scanner cannot walk would be strictly worse than the
     // pre-fix behaviour.
-    let referenced = match referenced_host_methods_in_tags(&movie.tags) {
+    let referenced = match referenced_host_methods_in_tags(&tags) {
         Ok(referenced) => referenced,
         Err(error) => {
             log::warn!(
@@ -196,7 +231,7 @@ pub(crate) fn inject_host_object_adapter(
 
     let adapter = build_adapter_abc(catalog, &uncataloged, has_destroy_trait)
         .map_err(|error| format!("building Fallout 4 AVM2 adapter: {error}"))?;
-    let replacement = match &movie.tags[root_abc_index] {
+    let replacement = match &tags[root_abc_index] {
         Tag::DoAbc(_) => Tag::DoAbc(&patched_root_abc),
         Tag::DoAbc2(do_abc) => Tag::DoAbc2(DoAbc2 {
             flags: do_abc.flags,
@@ -205,16 +240,16 @@ pub(crate) fn inject_host_object_adapter(
         }),
         _ => unreachable!("root ABC index must reference an ABC tag"),
     };
-    movie.tags[root_abc_index] = replacement;
+    tags[root_abc_index] = replacement;
     let tag = Tag::DoAbc2(DoAbc2 {
         flags: DoAbc2Flag::empty(),
         name: SwfStr::from_utf8_str(ADAPTER_NAME),
         data: &adapter,
     });
-    movie.tags.insert(root_abc_index, tag);
+    tags.insert(root_abc_index, tag);
 
     let mut patched = Vec::new();
-    write_swf(movie.header.swf_header(), &movie.tags, &mut patched)
+    write_swf(header.swf_header(), &tags, &mut patched)
         .map_err(|error| format!("serializing patched SWF: {error}"))?;
     let state = if has_destroy_trait {
         ScaleformHostObjectState::AdapterInjected
@@ -225,7 +260,7 @@ pub(crate) fn inject_host_object_adapter(
         );
         ScaleformHostObjectState::AdapterInjectedWithoutDestroyHook
     };
-    Ok((patched, state))
+    Ok((Some(patched), state))
 }
 
 fn qualified_name(abc: &AbcFile, index: Index<Multiname>) -> Option<Vec<u8>> {

@@ -580,22 +580,27 @@ impl ConsoleCommand for SkinCoverageCommand {
             "  cpu_skin_chain_ms      = {:.3}  (host: dispatch + builds + refits + eviction)",
             cov.cpu_skin_chain_ms,
         ));
-        // #1194 — per-pass GPU timer. ms == 0.0 means either the
-        // driver lacks timestampComputeAndGraphics OR the bracket
-        // didn't fire this snapshot (skinned chain skipped, TAA
-        // disabled, first pipelined cycle hasn't completed).
+        // #1194 — per-pass GPU timer. #2821: `n/a` where the bracket did
+        // not fire this snapshot (skinned chain skipped, TAA disabled, first
+        // pipelined cycle not yet complete, or the driver lacks
+        // `timestampComputeAndGraphics`); a printed number is a bracket that
+        // genuinely ran and measured that time.
+        let ms = |value: f32, active: bool| format_gpu_bracket_ms(value, active, 3);
         lines.push(format!(
-            "  gpu_skin_dispatch_ms   = {:.3}",
-            cov.gpu_skin_dispatch_ms,
+            "  gpu_skin_dispatch_ms   = {}",
+            ms(cov.gpu_skin_dispatch_ms, cov.gpu_skin_dispatch_active),
         ));
         lines.push(format!(
-            "  gpu_skin_blas_refit_ms = {:.3}",
-            cov.gpu_skin_blas_refit_ms,
+            "  gpu_skin_blas_refit_ms = {}",
+            ms(cov.gpu_skin_blas_refit_ms, cov.gpu_skin_blas_refit_active),
         ));
-        lines.push(format!("  gpu_taa_ms             = {:.3}", cov.gpu_taa_ms,));
         lines.push(format!(
-            "  gpu_upscale_ms         = {:.3}",
-            cov.gpu_upscale_ms,
+            "  gpu_taa_ms             = {}",
+            ms(cov.gpu_taa_ms, cov.gpu_taa_active),
+        ));
+        lines.push(format!(
+            "  gpu_upscale_ms         = {}",
+            ms(cov.gpu_upscale_ms, cov.gpu_upscale_active),
         ));
         if cov.dispatches_total == 0 {
             lines.push("  coverage: n/a (no skinned entities this frame)".to_string());

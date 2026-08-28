@@ -94,6 +94,10 @@ uint32_t byro_fsr3_context_dispatch(
 uint32_t byro_fsr3_context_memory_usage(
     ByroFsr3Context* context,
     ByroFsr3MemoryUsage* out_usage);
+/* Destroys the context and always releases the wrapper, clearing `*context`
+ * even when the underlying ffxDestroyContext fails (#2829). The returned code
+ * reports that failure; the handle is dead on every path, so the caller must
+ * not retry with it. */
 uint32_t byro_fsr3_context_destroy(ByroFsr3Context** context);
 const char* byro_fsr3_error_string(uint32_t error_code);
 

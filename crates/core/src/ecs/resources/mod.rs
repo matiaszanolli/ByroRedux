@@ -478,6 +478,12 @@ pub struct UpscalerTelemetry {
     /// Mirrors `SkinCoverageStats::gpu_upscale_ms`, repeated here so the
     /// upscaler command is a single stop.
     pub gpu_ms: f32,
+    /// Whether the upscale bracket actually ran on that snapshot frame
+    /// (#2821). Mirrors `SkinCoverageStats::gpu_upscale_active`; without it
+    /// `ctx.upscaler` could not tell a genuinely free upscale from a bracket
+    /// that never fired (no upscaler, or GPU timestamps unavailable), which is
+    /// the ambiguity the `_active` plumbing exists to close.
+    pub gpu_ms_active: bool,
 }
 
 impl Resource for UpscalerTelemetry {}
@@ -1028,6 +1034,24 @@ impl SkinCoverageStats {
     /// `true` trivially.
     pub fn fully_covered(&self) -> bool {
         self.refits_succeeded == self.dispatches_total && self.slots_failed == 0
+    }
+}
+
+/// Format one GPU bracket's elapsed time for a text surface, honouring the
+/// bracket's `_active` flag (#2821).
+///
+/// The `gpu_*_active` mirrors exist so `0.000 ms` can be told apart from "this
+/// bracket did not run this snapshot cycle" — the whole point of the #2278
+/// plumbing. Every text consumer of a `gpu_*_ms` field must route through this
+/// so the console log line, `skin.coverage` and `ctx.upscaler` agree with the
+/// egui panel's `n/a` rather than each re-inventing (or losing) the
+/// distinction. `precision` is the caller's `{:.N}` — the once-a-second log
+/// line uses 1, the diagnostic commands 3.
+pub fn format_gpu_bracket_ms(ms: f32, active: bool, precision: usize) -> String {
+    if active {
+        format!("{ms:.precision$}")
+    } else {
+        "n/a".to_string()
     }
 }
 

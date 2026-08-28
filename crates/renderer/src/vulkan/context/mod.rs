@@ -2007,10 +2007,17 @@ impl VulkanContext {
     /// resize, preset switch, or a latched dispatch failure), so the steady
     /// state costs one string compare per frame rather than an allocation.
     pub fn fill_upscaler_telemetry(&self, telemetry: &mut byroredux_core::ecs::UpscalerTelemetry) {
-        telemetry.gpu_ms = self
-            .gpu_timers
-            .as_ref()
-            .map_or(0.0, |timers| timers.last_snapshot().upscale_ms);
+        // #2821 — carry the bracket's `_active` flag across with the value.
+        // `0.0` from an absent timer pool, an upscaler that never dispatched,
+        // and a genuinely sub-microsecond upscale are three different states;
+        // `ctx.upscaler` used to print all three as `0.000`.
+        let (upscale_ms, upscale_active) =
+            self.gpu_timers.as_ref().map_or((0.0, false), |timers| {
+                let snapshot = timers.last_snapshot();
+                (snapshot.upscale_ms, snapshot.upscale_active)
+            });
+        telemetry.gpu_ms = upscale_ms;
+        telemetry.gpu_ms_active = upscale_active;
         let Some(ref upscaler) = self.frame_upscaler else {
             telemetry.summary.clear();
             return;

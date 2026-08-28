@@ -12,6 +12,7 @@ mod host;
 mod input;
 mod navigator;
 mod player;
+mod prepare;
 mod profile;
 
 use std::sync::Arc;

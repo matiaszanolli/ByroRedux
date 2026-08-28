@@ -1,7 +1,8 @@
 //! Debug / demo systems — spinning cube, stats logging.
 
 use byroredux_core::ecs::{
-    CpuFrameTimings, DebugStats, DeltaTime, SkinCoverageStats, TotalTime, Transform, World,
+    format_gpu_bracket_ms, CpuFrameTimings, DebugStats, DeltaTime, SkinCoverageStats, TotalTime,
+    Transform, World,
 };
 use byroredux_core::math::Quat;
 
@@ -64,24 +65,30 @@ fn is_slow_frame(frame_time_ms: f32, frame_index: usize) -> bool {
 /// reflection rays + ReSTIR), `tlas` the acceleration-structure rebuild on
 /// cell-load frames, `svgf` the à-trous denoiser.
 fn gpu_breakdown(cov: &SkinCoverageStats) -> String {
+    // #2821 — `n/a` for a bracket that did not run this snapshot cycle. This
+    // is the primary hitch-triage surface: reading `svgf=0.0` as "the
+    // denoiser is free" when the dispatch was skipped entirely sends the
+    // reader hunting in the wrong pass, which is exactly the ambiguity the
+    // `_active` mirrors were plumbed through to close.
+    let ms = |value: f32, active: bool| format_gpu_bracket_ms(value, active, 1);
     format!(
-        "main_render={:.1} tlas={:.1} svgf={:.1} composite={:.1} cluster_cull={:.1} \
-         ssao={:.1} bloom={:.1} caustic={:.1} volumetrics={:.1} skin={:.1} blas_refit={:.1} \
-         taa={:.1} upscale={:.1} presentation={:.1}",
-        cov.gpu_main_render_ms,
-        cov.gpu_tlas_build_ms,
-        cov.gpu_svgf_ms,
-        cov.gpu_composite_ms,
-        cov.gpu_cluster_cull_ms,
-        cov.gpu_ssao_ms,
-        cov.gpu_bloom_ms,
-        cov.gpu_caustic_splat_ms,
-        cov.gpu_volumetrics_ms,
-        cov.gpu_skin_dispatch_ms,
-        cov.gpu_skin_blas_refit_ms,
-        cov.gpu_taa_ms,
-        cov.gpu_upscale_ms,
-        cov.gpu_presentation_ms,
+        "main_render={} tlas={} svgf={} composite={} cluster_cull={} \
+         ssao={} bloom={} caustic={} volumetrics={} skin={} blas_refit={} \
+         taa={} upscale={} presentation={}",
+        ms(cov.gpu_main_render_ms, cov.gpu_main_render_active),
+        ms(cov.gpu_tlas_build_ms, cov.gpu_tlas_build_active),
+        ms(cov.gpu_svgf_ms, cov.gpu_svgf_active),
+        ms(cov.gpu_composite_ms, cov.gpu_composite_active),
+        ms(cov.gpu_cluster_cull_ms, cov.gpu_cluster_cull_active),
+        ms(cov.gpu_ssao_ms, cov.gpu_ssao_active),
+        ms(cov.gpu_bloom_ms, cov.gpu_bloom_active),
+        ms(cov.gpu_caustic_splat_ms, cov.gpu_caustic_splat_active),
+        ms(cov.gpu_volumetrics_ms, cov.gpu_volumetrics_active),
+        ms(cov.gpu_skin_dispatch_ms, cov.gpu_skin_dispatch_active),
+        ms(cov.gpu_skin_blas_refit_ms, cov.gpu_skin_blas_refit_active),
+        ms(cov.gpu_taa_ms, cov.gpu_taa_active),
+        ms(cov.gpu_upscale_ms, cov.gpu_upscale_active),
+        ms(cov.gpu_presentation_ms, cov.gpu_presentation_active),
     )
 }
 

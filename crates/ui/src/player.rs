@@ -18,8 +18,9 @@ use ruffle_render_wgpu::backend::{
 use ruffle_render_wgpu::descriptors::Descriptors;
 use ruffle_render_wgpu::target::TextureTarget;
 
-use crate::avm2_host::{inject_host_object_adapter, DESTROY_CALLBACK};
+use crate::avm2_host::DESTROY_CALLBACK;
 use crate::navigator::{ScaleformNavigator, ScaleformNavigatorRuntime};
+use crate::prepare::prepare_movie;
 use crate::{
     ScaleformHostBridge, ScaleformHostObjectState, ScaleformProfile, ScaleformResourceLoad,
     ScaleformResourceProvider, ScaleformValue, UiInputEvent,
@@ -169,13 +170,19 @@ impl SwfPlayer {
     /// Sets up a headless wgpu device and configures Ruffle for
     /// offscreen rendering at the given dimensions.
     pub fn new(swf_data: &[u8], width: u32, height: u32) -> Result<Self> {
-        let profile = ScaleformProfile::detect(swf_data)?;
-        let catalog = crate::ScaleformHostCatalog::for_profile(profile);
-        let (swf_data, host_object_state) = inject_host_object_adapter(swf_data, catalog)
-            .map_err(|error| anyhow!("Failed to prepare Scaleform host object: {error}"))?;
-        let movie = SwfMovie::from_data(&swf_data, "file:///menu.swf".to_string(), None)
+        // #2968 — one decode drives detection, injection and Ruffle's parse.
+        let prepared = prepare_movie(swf_data, None, None)
+            .map_err(|error| anyhow!("Failed to prepare Scaleform movie: {error}"))?;
+        let movie = SwfMovie::from_data(&prepared.data, "file:///menu.swf".to_string(), None)
             .map_err(|e| anyhow!("Failed to parse SWF: {e}"))?;
-        Self::from_movie(movie, width, height, profile, host_object_state, None)
+        Self::from_movie(
+            movie,
+            width,
+            height,
+            prepared.profile,
+            prepared.host_object_state,
+            None,
+        )
     }
 
     /// Create a player with an explicit Bethesda Scaleform profile.
@@ -185,18 +192,20 @@ impl SwfPlayer {
         height: u32,
         profile: ScaleformProfile,
     ) -> Result<Self> {
-        let detected = ScaleformProfile::detect(swf_data)?;
-        if detected != profile {
-            return Err(anyhow!(
-                "Scaleform profile mismatch: requested {profile:?}, movie requires {detected:?}"
-            ));
-        }
-        let catalog = crate::ScaleformHostCatalog::for_profile(profile);
-        let (swf_data, host_object_state) = inject_host_object_adapter(swf_data, catalog)
-            .map_err(|error| anyhow!("Failed to prepare Scaleform host object: {error}"))?;
-        let movie = SwfMovie::from_data(&swf_data, "file:///menu.swf".to_string(), None)
+        // #2968 — the profile mismatch is still raised before any injection
+        // work, now off the same decode that answers it.
+        let prepared =
+            prepare_movie(swf_data, Some(profile), None).map_err(|error| anyhow!("{error}"))?;
+        let movie = SwfMovie::from_data(&prepared.data, "file:///menu.swf".to_string(), None)
             .map_err(|e| anyhow!("Failed to parse SWF: {e}"))?;
-        Self::from_movie(movie, width, height, profile, host_object_state, None)
+        Self::from_movie(
+            movie,
+            width,
+            height,
+            profile,
+            prepared.host_object_state,
+            None,
+        )
     }
 
     /// Load a menu and all of its relative imports through one archive source.
@@ -211,27 +220,26 @@ impl SwfPlayer {
             .load(movie_path)
             .map_err(|error| anyhow!("Failed to load Scaleform movie {movie_path:?}: {error}"))?
             .ok_or_else(|| anyhow!("Scaleform movie not found in archive: {movie_path:?}"))?;
-        let detected = ScaleformProfile::detect(&swf_data)?;
-        if detected != profile {
-            return Err(anyhow!(
-                "Scaleform profile mismatch: requested {profile:?}, movie requires {detected:?}"
-            ));
-        }
-        let catalog = crate::ScaleformHostCatalog::for_profile(profile);
-        let (swf_data, host_object_state) = inject_host_object_adapter(&swf_data, catalog)
-            .map_err(|error| anyhow!("Failed to prepare Scaleform host object: {error}"))?;
-        let (navigator, runtime, movie_url) = ScaleformNavigatorRuntime::create(
-            movie_path, &swf_data, provider,
-        )
-        .map_err(|error| anyhow!("Failed to configure Scaleform archive loading: {error}"))?;
-        let movie = SwfMovie::from_data(&swf_data, movie_url, None)
+        // #2968 — the archive route used to decompress this movie four times
+        // and tag-walk it twice before frame 1 (detect, inject, ImportAssets
+        // scan, then Ruffle's own parse). One prepare drives the first three.
+        let movie_url = crate::navigator::archive_movie_url(movie_path)
+            .map_err(|error| anyhow!("Failed to configure Scaleform archive loading: {error}"))?;
+        let prepared = prepare_movie(&swf_data, Some(profile), Some(&movie_url))
+            .map_err(|error| anyhow!("{error}"))?;
+        let (navigator, runtime, movie_url) =
+            ScaleformNavigatorRuntime::create(movie_url, prepared.import_asset_paths, provider)
+                .map_err(|error| {
+                    anyhow!("Failed to configure Scaleform archive loading: {error}")
+                })?;
+        let movie = SwfMovie::from_data(&prepared.data, movie_url, None)
             .map_err(|e| anyhow!("Failed to parse SWF: {e}"))?;
         let mut player = Self::from_movie(
             movie,
             width,
             height,
             profile,
-            host_object_state,
+            prepared.host_object_state,
             Some((navigator, runtime)),
         )?;
         // #2720 — a dependency that fails to fetch is recorded, not fatal: the

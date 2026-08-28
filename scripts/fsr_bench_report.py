@@ -57,9 +57,47 @@ FINGERPRINT_COLUMNS = [
 ]
 
 # Non-numeric columns — kept as strings rather than coerced to floats.
-TEXT_COLUMNS = ("scene", "config", "run", "mode", "camera", "draws", "state_hash")
+TEXT_COLUMNS = (
+    "scene",
+    "config",
+    "run",
+    "mode",
+    "camera",
+    "draws",
+    "state_hash",
+    "gpu_inactive",
+)
 
 MISSING = "-"
+
+# #2821 — `gpu_inactive` names the brackets whose `gpu_*` column reads 0.000
+# because the pass did not run on the snapshot frame, not because it measured
+# zero. Those two used to be the same hard `0.000` in this table, so a skipped
+# pass silently deflated the render-resolution sum and inflated the apparent
+# "render work recovered" of whichever config skipped it. Keys are the bench
+# line's own bracket names; only the ones this TSV carries a column for matter.
+INACTIVE_KEY_TO_COLUMN = {
+    "main_render": "gpu_main",
+    "svgf": "gpu_svgf",
+    "composite": "gpu_composite",
+    "ssao": "gpu_ssao",
+    "volumetrics": "gpu_volumetrics",
+    "bloom": "gpu_bloom",
+    "upscale": "gpu_upscale",
+    "presentation": "gpu_presentation",
+}
+
+
+def inactive_columns(row):
+    """TSV column names this row reports as "bracket did not run"."""
+    token = row.get("gpu_inactive", MISSING)
+    if token in (MISSING, "", "none"):
+        return set()
+    return {
+        INACTIVE_KEY_TO_COLUMN[key]
+        for key in token.split(",")
+        if key in INACTIVE_KEY_TO_COLUMN
+    }
 
 
 def median(values):
@@ -108,10 +146,16 @@ def main(path):
     # scene -> config -> list of per-run dicts of floats
     grouped = defaultdict(lambda: defaultdict(list))
     for row in rows:
+        skipped = inactive_columns(row)
         parsed = {}
         for key, value in row.items():
             if key in TEXT_COLUMNS:
                 parsed[key] = value
+            elif key in skipped:
+                # `None`, not `0.0` — a bracket that never ran contributes
+                # nothing to a median or a sum, and must not read as a
+                # measured zero (#2821).
+                parsed[key] = None
             else:
                 try:
                     parsed[key] = float(value)
@@ -127,17 +171,46 @@ def main(path):
             continue
 
         # `.get` throughout: a pass column absent from an older schema reads as
-        # a zero contribution rather than taking the whole report down.
+        # a zero contribution rather than taking the whole report down. A
+        # column present but flagged inactive parses to `None` and is dropped
+        # entirely — `stat` returns `None` when no run measured it (#2821).
         def stat(config, key):
-            return median([r.get(key, 0.0) for r in configs[config]])
+            values = [r.get(key, 0.0) for r in configs[config]]
+            values = [v for v in values if v is not None]
+            return median(values) if values else None
+
+        def stat_or_zero(config, key):
+            value = stat(config, key)
+            return 0.0 if value is None else value
 
         def spread(config, key):
             values = [r.get(key, 0.0) for r in configs[config]]
-            return min(values), max(values)
+            values = [v for v in values if v is not None]
+            return (min(values), max(values)) if values else (0.0, 0.0)
 
-        ref_frame = stat(REFERENCE, "wall_ms")
-        ref_render = sum(stat(REFERENCE, p) for p in RENDER_RES_PASSES)
-        entities = int(stat(REFERENCE, "entities"))
+        def render_sum(config):
+            """(sum of measured render-resolution passes, names not measured).
+
+            A pass no run measured is excluded from the sum and named, rather
+            than folded in as a zero that would understate this config's
+            render cost and overstate its recovery.
+            """
+            total = 0.0
+            unmeasured = []
+            for pass_name in RENDER_RES_PASSES:
+                value = stat(config, pass_name)
+                if value is None:
+                    unmeasured.append(pass_name.replace("gpu_", ""))
+                else:
+                    total += value
+            return total, unmeasured
+
+        ref_frame = stat_or_zero(REFERENCE, "wall_ms")
+        ref_render, ref_unmeasured = render_sum(REFERENCE)
+        entities = int(stat_or_zero(REFERENCE, "entities"))
+        unmeasured_notes = {}
+        if ref_unmeasured:
+            unmeasured_notes[REFERENCE] = ref_unmeasured
         runs = len(configs[REFERENCE])
 
         # Every row in an upscaler comparison must describe the same measured
@@ -173,9 +246,11 @@ def main(path):
         for config in ORDER:
             if config not in configs:
                 continue
-            fps = stat(config, "wall_fps")
-            frame = stat(config, "wall_ms")
-            render = sum(stat(config, p) for p in RENDER_RES_PASSES)
+            fps = stat_or_zero(config, "wall_fps")
+            frame = stat_or_zero(config, "wall_ms")
+            render, unmeasured = render_sum(config)
+            if unmeasured:
+                unmeasured_notes[config] = unmeasured
             upscale = stat(config, "gpu_upscale")
             present = stat(config, "gpu_presentation")
             lo, hi = spread(config, "wall_ms")
@@ -197,9 +272,14 @@ def main(path):
                 )
 
             frame_cell = f"{frame:.2f} ±{(hi - lo) / 2:.2f}"
+            # A config missing a pass is marked at the cell, so an incomplete
+            # sum is never read as a smaller render cost.
+            render_cell = f"{render:.2f}{'*' if unmeasured else ''}"
+            upscale_cell = "n/a" if upscale is None else f"{upscale:.3f}"
+            present_cell = "n/a" if present is None else f"{present:.3f}"
             print(
                 f"{config:<17}{fps:>8.1f}{frame_cell:>14}"
-                f"{render:>11.2f}{upscale:>9.3f}{present:>9.3f}"
+                f"{render_cell:>11}{upscale_cell:>9}{present_cell:>9}"
                 f"{render_rec:>16}{net_rec:>16}"
             )
 
@@ -208,6 +288,13 @@ def main(path):
             + " + ".join(p.replace("gpu_", "") for p in RENDER_RES_PASSES)
             + " (render-resolution passes only; upscale and present excluded)"
         )
+        for config, unmeasured in unmeasured_notes.items():
+            print(
+                f"  * {config}: {', '.join(unmeasured)} did not run this "
+                "snapshot cycle and is excluded from the sum, not counted as "
+                "zero — recovery against a config with a different set of "
+                "measured passes is not comparable"
+            )
     return 1 if invalid_state else 0
 
 
@@ -258,6 +345,22 @@ def self_test():
             "cornell\tfsr-quality\t1\trenderer-stepped\torbit\t462.1\t2.16\t0.1\t0.1\t"
             "1.0\t0.1\t0.1\t0.1\t0.1\t0.16\t0.01\t0.1\t5.0\t25\t120\t3\t1\tabc123\n"
         ),
+        # #2821 — the `gpu_inactive` column. `fsr-quality` skipped volumetrics
+        # on the snapshot frame: its `gpu_volumetrics` 0.1 is a stale
+        # placeholder for a pass that never ran, so the pass must drop out of
+        # the render sum with a footnote rather than be summed as measured.
+        "current 24-column with gpu_inactive": (
+            "# harness=deadbeef engine=cafef00d\n"
+            "scene\tconfig\trun\tmode\tcamera\twall_fps\twall_ms\tfence_ms\tbrd_ms\t"
+            "gpu_main\tgpu_svgf\tgpu_composite\tgpu_ssao\tgpu_volumetrics\t"
+            "gpu_upscale\tgpu_presentation\tgpu_bloom\tsim_time_s\tentities\t"
+            "draws\tlights\ttlas\tstate_hash\tgpu_inactive\n"
+            "cornell\ttaa\t1\trenderer-stepped\torbit\t323.6\t3.09\t0.1\t0.1\t2.0\t"
+            "0.1\t0.1\t0.1\t0.1\t0.01\t0.01\t0.1\t5.0\t25\t120\t3\t1\tabc123\tnone\n"
+            "cornell\tfsr-quality\t1\trenderer-stepped\torbit\t462.1\t2.16\t0.1\t0.1\t"
+            "1.0\t0.1\t0.1\t0.1\t0.1\t0.16\t0.01\t0.1\t5.0\t25\t120\t3\t1\tabc123\t"
+            "volumetrics,skin_disp\n"
+        ),
     }
 
     failures = []
@@ -289,6 +392,16 @@ def self_test():
             )
         if not legacy and noted:
             failures.append(f"{label}: current schema wrongly flagged as legacy")
+        # #2821 — a flagged bracket must be visibly excluded, not silently
+        # summed. The unflagged tables must NOT grow the footnote.
+        footnoted = "did not run this snapshot cycle" in output
+        if "gpu_inactive" in label and not footnoted:
+            failures.append(
+                f"{label}: a bracket flagged inactive was folded into the "
+                "render sum as a measured value"
+            )
+        if "gpu_inactive" not in label and footnoted:
+            failures.append(f"{label}: reported an inactive bracket it has no column for")
 
     for failure in failures:
         print(f"FAIL {failure}")

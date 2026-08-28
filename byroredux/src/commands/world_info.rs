@@ -240,7 +240,13 @@ impl ConsoleCommand for CtxUpscalerCommand {
         }
         CommandOutput::lines(vec![
             format!("  {}", telemetry.summary),
-            format!("  gpu_upscale_ms = {:.3}", telemetry.gpu_ms),
+            // #2821 — `n/a` when the upscale bracket did not run on the
+            // snapshot frame (no GPU timers at all, or the reconstruction
+            // path never dispatched); a printed number means it ran.
+            format!(
+                "  gpu_upscale_ms = {}",
+                format_gpu_bracket_ms(telemetry.gpu_ms, telemetry.gpu_ms_active, 3),
+            ),
         ])
     }
 }

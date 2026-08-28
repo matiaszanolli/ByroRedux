@@ -121,15 +121,17 @@ pub(crate) struct ScaleformNavigatorRuntime {
 }
 
 impl ScaleformNavigatorRuntime {
+    /// `import_paths` is the root movie's `ImportAssets` list, extracted by
+    /// the caller from the tag parse it already performed (#2968) — this used
+    /// to re-decompress and re-parse the whole movie to recover it.
     pub(crate) fn create(
-        movie_path: &str,
-        movie_data: &[u8],
+        movie_url: Url,
+        import_paths: Vec<String>,
         provider: Arc<dyn ScaleformResourceProvider>,
     ) -> Result<(ScaleformNavigator, Self, String), String> {
-        let movie_url = archive_movie_url(movie_path)?;
         let executor = NullExecutor::new();
         let mut state = NavigatorState::default();
-        extend_import_asset_paths(&mut state, import_asset_paths(&movie_url, movie_data)?);
+        extend_import_asset_paths(&mut state, import_paths);
         let state = Rc::new(RefCell::new(state));
         let navigator = ScaleformNavigator {
             movie_url: movie_url.clone(),
@@ -440,7 +442,7 @@ impl SuccessResponse for MemoryResponse {
     }
 }
 
-fn archive_movie_url(movie_path: &str) -> Result<Url, String> {
+pub(crate) fn archive_movie_url(movie_path: &str) -> Result<Url, String> {
     let mut virtual_path = PathBuf::from("/");
     for component in movie_path.replace('\\', "/").split('/') {
         match component {
@@ -502,9 +504,21 @@ fn import_asset_paths(movie_url: &Url, movie_data: &[u8]) -> Result<Vec<String>,
         .map_err(|error| format!("failed to decompress imported Scaleform movie: {error}"))?;
     let movie = swf::parse_swf(&decompressed)
         .map_err(|error| format!("failed to parse imported Scaleform movie: {error}"))?;
-    movie
-        .tags
-        .iter()
+    import_asset_paths_from_tags(movie_url, &movie.tags)
+}
+
+/// [`import_asset_paths`] over tags the caller already parsed (#2968).
+///
+/// The root movie's tags are parsed once by `crate::prepare` for profile
+/// detection and host-object injection; re-parsing them here to read
+/// `ImportAssets` was one of the four whole-stream inflates a menu open used
+/// to pay for. Dependency fetches, which arrive as raw bytes, still go through
+/// the byte-taking wrapper above.
+pub(crate) fn import_asset_paths_from_tags(
+    movie_url: &Url,
+    tags: &[Tag<'_>],
+) -> Result<Vec<String>, String> {
+    tags.iter()
         .filter_map(|tag| match tag {
             Tag::ImportAssets { url, .. } => Some(url.to_string_lossy(swf::UTF_8)),
             _ => None,
@@ -684,8 +698,8 @@ mod tests {
             loads: std::sync::atomic::AtomicUsize::new(0),
         });
         let (navigator, mut runtime, _) = ScaleformNavigatorRuntime::create(
-            "interface\\hudmenu.swf",
-            b"",
+            archive_movie_url("interface\\hudmenu.swf").unwrap(),
+            Vec::new(),
             provider.clone() as Arc<dyn ScaleformResourceProvider>,
         )
         .unwrap();
@@ -729,8 +743,8 @@ mod tests {
             loads: std::sync::atomic::AtomicUsize::new(0),
         });
         let (navigator, mut runtime, _) = ScaleformNavigatorRuntime::create(
-            "interface\\hudmenu.swf",
-            b"",
+            archive_movie_url("interface\\hudmenu.swf").unwrap(),
+            Vec::new(),
             provider.clone() as Arc<dyn ScaleformResourceProvider>,
         )
         .unwrap();
@@ -764,8 +778,12 @@ mod tests {
             "interface\\fonts_en.swf".to_string(),
             b"font movie".to_vec(),
         )])));
-        let (navigator, mut runtime, movie_url) =
-            ScaleformNavigatorRuntime::create("interface\\hudmenu.swf", b"", provider).unwrap();
+        let (navigator, mut runtime, movie_url) = ScaleformNavigatorRuntime::create(
+            archive_movie_url("interface\\hudmenu.swf").unwrap(),
+            Vec::new(),
+            provider,
+        )
+        .unwrap();
 
         assert_eq!(movie_url, "file:///interface/hudmenu.swf");
         let response = match block_on(navigator.fetch(Request::get("fonts_en.swf".to_string()))) {

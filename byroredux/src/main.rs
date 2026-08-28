@@ -86,15 +86,84 @@ fn bench_frame_distribution(samples_ms: &[f64]) -> [f64; 3] {
     [percentile(0.50), percentile(0.95), sorted[sorted.len() - 1]]
 }
 
+/// Bench-line key for each GPU bracket the `bench:` summary reports, in the
+/// order `app_events` copies them out of `SkinCoverageStats`.
+const BENCH_GPU_KEYS: [&str; 12] = [
+    "skin_disp",
+    "blas_refit",
+    "taa",
+    "upscale",
+    "main_render",
+    "svgf",
+    "composite",
+    "ssao",
+    "bloom",
+    "volumetrics",
+    "cluster_cull",
+    "presentation",
+];
+
+/// Value of the `bench:` line's `gpu_inactive=` token — the brackets whose
+/// `gpu_*=0.000` means "did not run this snapshot cycle" rather than "measured
+/// zero" (#2821).
+///
+/// Reported as a companion token rather than by widening the numeric fields to
+/// `n/a`: four sweep harnesses extract those with `key=<float>` regexes, and
+/// `scripts/fsr_bench_report.py` medians them. This keeps every existing
+/// extractor matching while giving the TSV the one bit it was missing — which
+/// zeros are real measurements. `none` (not the empty string) when every
+/// reported bracket ran, so a truncated line can never read as "all active".
+fn bench_gpu_inactive_token(active: [bool; 12]) -> String {
+    let inactive: Vec<&str> = BENCH_GPU_KEYS
+        .iter()
+        .zip(active)
+        .filter_map(|(key, active)| (!active).then_some(*key))
+        .collect();
+    if inactive.is_empty() {
+        "none".to_string()
+    } else {
+        inactive.join(",")
+    }
+}
+
 #[cfg(test)]
 mod bench_frame_distribution_tests {
-    use super::bench_frame_distribution;
+    use super::{bench_frame_distribution, bench_gpu_inactive_token, BENCH_GPU_KEYS};
 
     #[test]
     fn nearest_rank_reports_median_tail_and_worst_frame() {
         let samples: Vec<f64> = (1..=20).rev().map(f64::from).collect();
         assert_eq!(bench_frame_distribution(&samples), [10.0, 19.0, 20.0]);
         assert_eq!(bench_frame_distribution(&[]), [0.0; 3]);
+    }
+
+    /// #2821 — a skipped bracket must be nameable from the bench line. Before
+    /// this the TSV recorded a hard `0.000` for it, indistinguishable from a
+    /// pass that ran and measured zero.
+    #[test]
+    fn inactive_brackets_are_named_never_silently_zero() {
+        assert_eq!(bench_gpu_inactive_token([true; 12]), "none");
+        assert_eq!(
+            bench_gpu_inactive_token([false; 12]),
+            BENCH_GPU_KEYS.join(",")
+        );
+        // The realistic case: no skinned draws and TAA off under an FSR
+        // preset, everything else measured.
+        let mut active = [true; 12];
+        active[0] = false;
+        active[1] = false;
+        active[2] = false;
+        assert_eq!(bench_gpu_inactive_token(active), "skin_disp,blas_refit,taa");
+    }
+
+    /// The token's keys must stay the `gpu_<key>=` names the bench line and
+    /// the sweep harnesses' extractors use, or the token cannot be
+    /// cross-referenced with the numbers it qualifies.
+    #[test]
+    fn bench_gpu_keys_match_the_reported_bracket_order() {
+        assert_eq!(BENCH_GPU_KEYS.len(), 12);
+        assert_eq!(BENCH_GPU_KEYS[4], "main_render");
+        assert_eq!(BENCH_GPU_KEYS[11], "presentation");
     }
 }
 

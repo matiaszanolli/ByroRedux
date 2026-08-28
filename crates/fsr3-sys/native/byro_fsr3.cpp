@@ -285,10 +285,19 @@ extern "C" uint32_t byro_fsr3_context_destroy(ByroFsr3Context** context) {
     ByroFsr3Context* wrapper = *context;
     const ffxAllocationCallbacks callbacks = allocation_callbacks();
     const uint32_t result = ffxDestroyContext(&wrapper->context, &callbacks);
-    if (result == FFX_API_RETURN_OK) {
-        delete wrapper;
-        *context = nullptr;
-    }
+    // #2829 — free the wrapper and clear the out-pointer on EVERY path, not
+    // only on FFX_API_RETURN_OK. The caller (`impl Drop for Context`) has no
+    // way to retry: it holds a `NonNull` it is in the middle of dropping, so a
+    // wrapper left alive here has no remaining owner for the rest of the
+    // process — and `FrameUpscaler::recreate` destroys and rebuilds on every
+    // resize and preset switch, so a persistently-failing destroy used to
+    // compound once per switch. Anything the provider still holds behind a
+    // failed `ffxDestroyContext` is lost either way (it owns those
+    // allocations, not us); retaining our own wrapper only added a second
+    // leak on top and kept a dangling `ffxContext` reachable. `result` is
+    // still returned so the failure is reported, not swallowed.
+    delete wrapper;
+    *context = nullptr;
     return result;
 }
 

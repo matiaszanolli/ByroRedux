@@ -175,7 +175,7 @@ ENGINE_COMMIT="$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo unkno
 {
   printf '# harness=%s engine=%s mode=renderer-stepped camera=%s runs=%s frames=%s\n' \
     "$HARNESS_COMMIT" "$ENGINE_COMMIT" "$CAMERA_PATH" "$RUNS" "$FRAMES"
-  printf 'scene\tconfig\trun\tmode\tcamera\twall_fps\twall_ms\tfence_ms\tbrd_ms\tgpu_main\tgpu_svgf\tgpu_composite\tgpu_ssao\tgpu_volumetrics\tgpu_upscale\tgpu_presentation\tgpu_bloom\tsim_time_s\tentities\tdraws\tlights\ttlas\tstate_hash\n'
+  printf 'scene\tconfig\trun\tmode\tcamera\twall_fps\twall_ms\tfence_ms\tbrd_ms\tgpu_main\tgpu_svgf\tgpu_composite\tgpu_ssao\tgpu_volumetrics\tgpu_upscale\tgpu_presentation\tgpu_bloom\tsim_time_s\tentities\tdraws\tlights\ttlas\tstate_hash\tgpu_inactive\n'
 } > "$TSV"
 
 for scene in "${SCENES[@]}"; do
@@ -243,6 +243,10 @@ print("\t".join([
     num("gpu_presentation"), num("gpu_bloom"),
     num("sim_time_s"), num("entities"), draws.group(1) if draws else "-",
     num("lights"), num("tlas"), token("state_hash"),
+    # #2821 — which `gpu_*` zeros above mean "bracket did not run" rather than
+    # "measured zero". Appended LAST on purpose: the entity-floor and
+    # state-hash gates below `cut` fixed field numbers out of this row.
+    token("gpu_inactive"),
 ]))
 PY
 )"

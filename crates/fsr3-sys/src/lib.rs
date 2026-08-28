@@ -487,9 +487,20 @@ impl Drop for Context {
         // honours it by retiring this context after `device_wait_idle` — see
         // `frame_upscaler.rs`, whose #2158 Drop-ordering source pins assert the
         // FSR context is destroyed before `vkDestroyDevice`.
+        //
+        // The native side frees the wrapper and nulls `raw` on every path,
+        // including a failed `ffxDestroyContext` (#2829) — there is no retry
+        // to make here, and holding the wrapper open would strand it with no
+        // owner for the rest of the process. A non-OK code therefore means
+        // "the provider may have kept its own resources", not "this handle is
+        // still live": the pointer is dead either way.
         let code = unsafe { byro_fsr3_context_destroy(&mut raw) };
         if code != 0 {
-            eprintln!("failed to destroy FSR context: {}", Error { code });
+            eprintln!(
+                "failed to destroy FSR context: {} — the provider's own GPU \
+                 resources for this context may be leaked",
+                Error { code }
+            );
         }
     }
 }
