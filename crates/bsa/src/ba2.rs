@@ -757,14 +757,24 @@ fn decompress_chunk(
             // "may panic" when the `min_uncompressed_size` hint undershoots the
             // true decompressed size. Empirical fuzzing against the pinned
             // 0.11.6 (constructed payloads, undersized from 1 byte down to 0)
-            // found zero panics, so this is not a live bug — but "no panic
-            // today" is a property of one pinned version, not of the crate's
-            // public contract, and archive bytes are attacker-controlled in
-            // the modded-content case. A dependency bump that tightens or
-            // loosens the internal bounds discipline, entirely within its
-            // still-compatible public contract, would otherwise abort the
-            // process on a malformed v3 chunk with no change on this side to
-            // explain why.
+            // found zero panics.
+            //
+            // #3392 — that absence is a property of the `safe-decode` FEATURE,
+            // not of the pinned version: with it on, `decompress` resolves to
+            // `decompress_safe`, which allocates `vec![0; n]` and writes via a
+            // bounds-checked `SliceSink` under `forbid(unsafe_code)`, so an
+            // undersized hint is `Err(OutputTooSmall)` and the documented panic
+            // is structurally impossible. The feature is pinned on at
+            // `Cargo.toml`'s `lz4_flex` entry, which is the actual mitigation
+            // for the undersized-hint case — NOT this guard.
+            //
+            // This `catch_unwind` is kept as cheap defence-in-depth for any
+            // residual panic on the safe path (and for a future dependency bump
+            // that changes the internal discipline within its still-compatible
+            // public contract). Note it would NOT save us if `safe-decode` were
+            // ever switched off: that path writes through raw pointers with no
+            // capacity check, so the failure would be a heap overflow, not an
+            // unwind. Archive bytes are attacker-controlled for modded content.
             //
             // Converting the unwind into the `Err` path this arm already has
             // costs nothing on the success path and makes the failure mode
@@ -790,10 +800,14 @@ fn decompress_chunk(
                 )
             })?;
             // #2618 / SF-D1-01 — mirror the zlib arm's mismatch warning.
-            // `lz4_flex::block::decompress`'s `unpacked_size` parameter is
-            // only a capacity hint (`Vec::with_capacity`); when the block
-            // actually decodes to FEWER bytes (an under-run — declared
-            // size larger than actual), the function silently returns
+            // `lz4_flex::block::decompress`'s `unpacked_size` parameter is a
+            // hard output bound on the `safe-decode` build this workspace pins
+            // (`vec![0; n]` + bounds-checked `SliceSink`, then `truncate` to
+            // the true length — #3392; the "capacity hint / `Vec::with_capacity`"
+            // description this comment used to carry belongs to the unsafe
+            // module we do not compile). The observable behaviour is unchanged:
+            // when the block actually decodes to FEWER bytes (an under-run —
+            // declared size larger than actual), the function silently returns
             // the shorter buffer with no error, unlike an over-run (more
             // bytes than declared), which it DOES hard-error on. LZ4 is
             // the only codec for every Starfield v3 texture archive, and
@@ -1413,8 +1427,10 @@ mod tests {
     /// FEWER bytes than the record's declared `unpacked_size` (an
     /// "under-run") is a distinct case from `decompress_chunk_lz4_corrupt_data_fails`'s
     /// outright-garbage input — `lz4_flex::block::decompress`'s
-    /// `unpacked_size` parameter is only a capacity hint, not a strict
-    /// validator, so this still returns `Ok` with the shorter buffer
+    /// `unpacked_size` parameter bounds the output buffer but does not
+    /// validate the decoded length against it (the safe decoder allocates
+    /// `vec![0; n]` and then `truncate`s to the true length — #3392), so
+    /// this still returns `Ok` with the shorter buffer
     /// (mirrors `decompress_chunk_zlib_short_stream_returns_actual_length`'s
     /// lenient-mode pin on the sibling zlib arm — this asymmetry with an
     /// over-run, which DOES hard-error, is deliberate upstream behaviour
@@ -1644,10 +1660,21 @@ mod tests {
         let actual_payload = b"a payload comfortably larger than the hints probed below";
         let compressed = lz4_flex::block::compress(actual_payload);
 
-        // 0 is rejected upstream by `checked_chunk_size_usize`; start at 1 and
-        // walk up through the true size so both the undershoot and the exact
-        // boundary are covered.
-        for hint in [1usize, 2, 8, 32, actual_payload.len()] {
+        // #3394 — `0` IS reachable and is included deliberately. The previous
+        // comment here claimed "0 is rejected upstream by
+        // `checked_chunk_size_usize`", which is false: that helper only rejects
+        // sizes ABOVE `MAX_CHUNK_BYTES` and returns `Ok(0)` for zero
+        // (`crates/bsa/src/safety.rs`). A malformed archive can therefore reach
+        // this arm with `unpacked_size == 0` and a non-zero `packed_size` —
+        // `read_dx10_records` accepts it on the same rule, and `extract_dx10`
+        // takes the decompress branch whenever `packed_size != 0`. Zero is the
+        // most-undersized hint possible, i.e. exactly what this test exists to
+        // probe, so excluding it omitted the boundary case. (The safe decoder
+        // handles it: `vec![0; 0]` + `SliceSink` → `Err(OutputTooSmall)`, which
+        // this arm maps to `InvalidData`.) No vanilla archive exercises it — a
+        // scan of 19,656 v3 DX10 records found zero such chunks — but the
+        // hostile-input case is the point.
+        for hint in [0usize, 1, 2, 8, 32, actual_payload.len()] {
             let result = decompress_chunk(&compressed, hint, Ba2Compression::Lz4Block);
             // Either outcome is acceptable — the contract under test is that
             // control returns here at all.
@@ -1674,6 +1701,79 @@ mod tests {
     /// *defence*: delete the `catch_unwind` and this test fails, which is the
     /// only way this fix can be kept from silently regressing on a future
     /// dependency bump — exactly the scenario the issue was filed about.
+    /// #3393 — take at most `max_bytes` of `s`, backing up to the nearest
+    /// char boundary.
+    ///
+    /// The source-order pins below scope their search to the head of a match
+    /// arm by byte budget. A bare `&s[..s.len().min(2000)]` panics with
+    /// `byte index 2000 is not a char boundary` whenever byte 2000 lands
+    /// inside a multi-byte scalar — and both arms carry em dashes in their
+    /// comments, so the cut moving onto one is a comment edit away. Backing
+    /// up (never widening) keeps the scoping guarantee: widening to the whole
+    /// file would let an unrelated `catch_unwind` satisfy the assertion.
+    fn prefix_up_to(s: &str, max_bytes: usize) -> &str {
+        let mut end = max_bytes.min(s.len());
+        while end > 0 && !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        &s[..end]
+    }
+
+    /// #3392 — pins that `lz4_flex` still builds with `safe-decode`.
+    ///
+    /// This is the actual mitigation for the undersized-hint case the
+    /// `catch_unwind` below is often mistaken for. With `safe-decode` on,
+    /// `decompress` allocates `vec![0; n]` and writes through a
+    /// bounds-checked `SliceSink` under `forbid(unsafe_code)`, so a short
+    /// hint is `Err(OutputTooSmall)`. With it off, the same call writes
+    /// through raw pointers with no capacity check and a short hint is a
+    /// heap overflow — UB, which no `catch_unwind` can intercept. Archive
+    /// bytes are attacker-controlled for modded content.
+    ///
+    /// A source-order pin because Cargo feature resolution is not visible to
+    /// `cfg!` from a dependent crate: `safe-decode` is `lz4_flex`'s feature,
+    /// not ours. `byroredux-bsa` is its only dependent, so a
+    /// `default-features = false` here would silently swap the decoder with
+    /// nothing else in the workspace to re-enable it.
+    #[test]
+    fn lz4_flex_is_pinned_to_the_safe_decoder() {
+        const MANIFEST: &str = include_str!("../../../Cargo.toml");
+        let entry = MANIFEST
+            .split_once("lz4_flex = ")
+            .expect("the workspace must still declare lz4_flex")
+            .1;
+        let decl = prefix_up_to(entry, 400);
+        assert!(
+            decl.contains("safe-decode"),
+            "lz4_flex no longer requests `safe-decode` — BA2 LZ4 chunk decoding \
+             would fall back to the raw-pointer decoder, where an undersized \
+             size hint from a malformed archive is a heap buffer overflow \
+             rather than an error (#3392)"
+        );
+        assert!(
+            decl.contains("default-features = false"),
+            "lz4_flex's feature set is no longer pinned explicitly — the \
+             memory-safety property would revert to depending on upstream's \
+             `default` staying unchanged (#3392)"
+        );
+    }
+
+    /// #3393 — `prefix_up_to` must back up to a char boundary rather than
+    /// panicking, and must never widen past its budget.
+    #[test]
+    fn prefix_up_to_backs_up_to_a_char_boundary() {
+        // 'é' is 2 bytes at 1..3, so a budget of 2 cuts mid-scalar.
+        assert_eq!(prefix_up_to("aéb", 2), "a");
+        // An exact boundary is taken as-is.
+        assert_eq!(prefix_up_to("aéb", 3), "aé");
+        // A budget past the end clamps to the whole string, never panics.
+        assert_eq!(prefix_up_to("aéb", 999), "aéb");
+        // Never widens: the result is always within budget.
+        assert!(prefix_up_to("—————", 7).len() <= 7);
+        // Degenerate: a budget landing inside the very first scalar yields "".
+        assert_eq!(prefix_up_to("—", 1), "");
+    }
+
     #[test]
     fn lz4_decompress_is_panic_guarded() {
         const SRC: &str = include_str!("ba2.rs");
@@ -1683,7 +1783,7 @@ mod tests {
             .expect("the Lz4Block match arm must exist in this file");
         // Look only at the arm body, not the whole file, so an unrelated
         // `catch_unwind` elsewhere cannot satisfy this.
-        let body = &arm[..arm.len().min(2000)];
+        let body = prefix_up_to(arm, 2000);
         assert!(
             body.contains("catch_unwind"),
             "the Lz4Block arm no longer wraps lz4_flex::block::decompress in \
@@ -1715,7 +1815,7 @@ mod tests {
             .split("BA2_V_STARFIELD_V3 =>")
             .nth(1)
             .expect("the BA2_V_STARFIELD_V3 match arm must exist in this file");
-        let body = &arm[..arm.len().min(2000)];
+        let body = prefix_up_to(arm, 2000);
         let method_read = body
             .find("reader.read_exact(&mut method_buf)")
             .expect("the v3 arm must still read the 4-byte compression method");

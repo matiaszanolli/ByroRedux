@@ -45,8 +45,15 @@ fn canonical_mesh_path(mesh_name: &str) -> String {
     let has_head = bytes.len() > HEAD.len()
         && bytes[..HEAD.len()].eq_ignore_ascii_case(HEAD.as_bytes())
         && (bytes[HEAD.len()] == b'\\' || bytes[HEAD.len()] == b'/');
-    let has_tail = mesh_name.len() > TAIL.len()
-        && mesh_name[mesh_name.len() - TAIL.len()..].eq_ignore_ascii_case(TAIL);
+    // #3391 — byte-slice, NOT `mesh_name[mesh_name.len() - TAIL.len()..]`.
+    // `mesh_name` is archive input decoded lossily (`read_sized_string` falls
+    // back to `from_utf8_lossy`, so every invalid byte becomes a 3-byte
+    // U+FFFD), and a `&str` byte-range slice panics when the cut lands inside
+    // a multi-byte scalar — `"модель"` is 12 bytes and `12 - 5` is mid-char.
+    // This is the same technique `has_head` uses two lines above, and the one
+    // `normalize_mesh_path` uses end-to-end.
+    let has_tail = bytes.len() > TAIL.len()
+        && bytes[bytes.len() - TAIL.len()..].eq_ignore_ascii_case(TAIL.as_bytes());
 
     match (has_head, has_tail) {
         (true, true) => mesh_name.to_string(),
@@ -570,5 +577,32 @@ mod canonical_mesh_path_tests {
     fn degenerate_names_are_still_composed() {
         assert_eq!(canonical_mesh_path(".mesh"), r"geometries\.mesh.mesh");
         assert_eq!(canonical_mesh_path("geometries"), r"geometries\geometries.mesh");
+    }
+
+    /// #3391 — a non-ASCII name must compose, not panic.
+    ///
+    /// The tail test used to slice the `&str` by byte range, so any name
+    /// whose last five bytes straddled a multi-byte scalar aborted the
+    /// process. `mesh_name` reaches here from `read_sized_string`, which
+    /// falls back to `from_utf8_lossy` — so both of these are real archive
+    /// inputs, and neither is caught: `extract_bs_geometry` runs on the main
+    /// thread outside every `catch_unwind` guard, under `panic = "unwind"`.
+    #[test]
+    fn non_ascii_names_compose_instead_of_panicking() {
+        // Valid UTF-8, 12 bytes: `12 - 5 = 7` lands inside 'е'.
+        assert_eq!(
+            canonical_mesh_path("модель"),
+            "geometries\\модель.mesh"
+        );
+        // Lossily-decoded invalid bytes: each becomes a 3-byte U+FFFD, so
+        // the cut lands inside the first replacement char.
+        let lossy = String::from_utf8_lossy(&[0xFF, 0xFF]).into_owned();
+        assert_eq!(canonical_mesh_path(&lossy), format!("geometries\\{lossy}.mesh"));
+        // A non-ASCII name that genuinely IS already composed still passes
+        // through untouched — the boundary fix must not change semantics.
+        assert_eq!(
+            canonical_mesh_path("geometries\\модель.mesh"),
+            "geometries\\модель.mesh"
+        );
     }
 }

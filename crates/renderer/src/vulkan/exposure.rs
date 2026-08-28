@@ -318,7 +318,15 @@ mod tests {
             .split_once("let exposure = self")
             .expect("presentation still reads an exposure fallback")
             .1;
-        let head = &fallback_site[..fallback_site.len().min(400)];
+        // #3393 sibling — back up to a char boundary. A bare
+        // `&s[..s.len().min(400)]` panics with "byte index 400 is not a char
+        // boundary" the moment an em dash (or any multi-byte scalar) in the
+        // scanned source straddles the cut. Backing up never widens the scope.
+        let mut end = fallback_site.len().min(400);
+        while end > 0 && !fallback_site.is_char_boundary(end) {
+            end -= 1;
+        }
+        let head = &fallback_site[..end];
         assert!(
             !head.contains("DEFAULT_EXPOSURE"),
             "presentation's no-resource branch drifted back to DEFAULT_EXPOSURE (#2833)"

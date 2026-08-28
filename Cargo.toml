@@ -137,7 +137,24 @@ rayon = "1"
 
 # Compression
 flate2 = "1"
-lz4_flex = "0.11"
+# #3392 — the feature set is pinned explicitly, not left to `default`, because
+# `safe-decode` is what makes BA2 LZ4 decoding memory-safe on hostile input.
+# With it ON, `lz4_flex::block::decompress` allocates `vec![0; n]` and writes
+# through a bounds-checked `SliceSink` under `forbid(unsafe_code)`, so an
+# undersized size hint returns `Err(OutputTooSmall)`. With it OFF, the same
+# call writes through raw pointers (`PtrSink`) with no capacity check, and an
+# undersized hint is a heap buffer overflow — UB that the `catch_unwind` in
+# `crates/bsa/src/ba2.rs` cannot intercept. Archive bytes are attacker-
+# controlled for modded content, so this must not be silently switchable by a
+# `default-features = false` elsewhere. This list is byte-identical to 0.11.6's
+# own `default`; changing it is a deliberate security decision.
+lz4_flex = { version = "0.11", default-features = false, features = [
+    "std",
+    "safe-encode",
+    "safe-decode",
+    "frame",
+    "checked-decode",
+] }
 
 # Linear algebra (robust SVD for degenerate NIF matrices)
 nalgebra = "0.33"
